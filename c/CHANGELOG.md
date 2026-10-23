@@ -127,7 +127,8 @@
   verification failure carries an `AZ_IOT_SU_MANIFEST_ERROR_*` sub-code (also in the report,
   was 0). New `AZ_IOT_SU_EVENT_NO_UPDATE` (check answered with no update),
   `AZ_IOT_SU_EVENT_UPDATE_DUPLICATE` (redelivery of the current workflow ignored) and
-  `AZ_IOT_SU_EVENT_REPORT_ACCEPTED` (`report_terminal` marks the final report). An undecodable
+  `AZ_IOT_SU_EVENT_REPORT_ACCEPTED` (`report_terminal` marks the final report; also set on
+  `AZ_IOT_SU_EVENT_OPERATION_ABANDONED` for an abandoned final report). An undecodable
   update now raises `AZ_IOT_SU_EVENT_UPDATE_REFUSED` with `AZ_IOT_ERR_PROTOCOL`.
 - Software updates: the onboarding update check
   (`az_iot_su_client_request_onboarding_update()`) now sends `installedUpdateId` when the device

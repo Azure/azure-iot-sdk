@@ -262,7 +262,7 @@ typedef struct
   int workflow_active;
   int final_report; /* 0 none yet, 1 succeeded, 2 another outcome */
   int awaiting_final_report; /* a workflow started; its final report is not accepted yet */
-  int final_report_abandoned; /* ...and the client gave up on sending it in this run */
+  int final_report_dropped; /* the client retired the final report unaccepted */
   int connection_faulted;
   /* A succeeded report's installed update id, not yet in the device properties. */
   int installed_pending;
@@ -307,7 +307,7 @@ static void on_su_event(const az_iot_su_event* event, void* user_ctx)
       {
         o->flags->final_report = 0; /* a new workflow: its report is not in yet */
         o->flags->awaiting_final_report = 1;
-        o->flags->final_report_abandoned = 0;
+        o->flags->final_report_dropped = 0;
       }
       if (event->state == AZ_IOT_SU_STATE_FAILED)
       {
@@ -380,14 +380,20 @@ static void on_su_event(const az_iot_su_event* event, void* user_ctx)
           su_sample_operation_name(event->operation),
           az_iot_result_to_string(event->reason),
           (int)event->service_error.code);
-      /* With no workflow running, the abandoned report is the final one. The
-       * client retires it and never sends it again, so stop waiting for it. */
-      if (event->operation == AZ_IOT_SU_OP_REPORT_STATUS && !o->flags->workflow_active
-          && o->flags->awaiting_final_report)
+      /* Stop waiting for the final report. A lost session keeps it owed (sent
+       * again later); any other verdict retires it. */
+      if (event->operation == AZ_IOT_SU_OP_REPORT_STATUS && event->report_terminal)
       {
         o->flags->awaiting_final_report = 0;
-        o->flags->final_report_abandoned = 1;
-        fprintf(stderr, "Final report dropped; it is not sent again.\n");
+        if (event->reason == AZ_IOT_ERR_NOT_CONNECTED)
+        {
+          fprintf(stderr, "Final report not delivered; it is sent again later.\n");
+        }
+        else
+        {
+          o->flags->final_report_dropped = 1;
+          fprintf(stderr, "Final report dropped; it is not sent again.\n");
+        }
       }
       break;
     case AZ_IOT_SU_EVENT_NO_UPDATE:
@@ -568,11 +574,12 @@ int main(void)
     (void)az_iot_connection_client_do_work(&connection, 20);
     (void)az_iot_su_client_do_work(&su);
 
-    /* After the last apply the final report may be accepted before a failed
-     * write is retried, leaving the client nothing to save: any record left
-     * is stale, so erase it, and reboot only once that succeeds. */
-    if (reboot.reboot_requested && reboot.persist_failing && flags.final_report != 0
-        && !flags.workflow_active && reboot_persist(NULL, 0, &reboot) == AZ_IOT_SU_RESULT_SUCCESS)
+    /* After the last apply the final report may be accepted or dropped before
+     * a failed write is retried, leaving the client nothing to save: any record
+     * left is stale, so erase it, and reboot only once that succeeds. */
+    if (reboot.reboot_requested && reboot.persist_failing
+        && (flags.final_report != 0 || flags.final_report_dropped) && !flags.workflow_active
+        && reboot_persist(NULL, 0, &reboot) == AZ_IOT_SU_RESULT_SUCCESS)
     {
       reboot.persist_failing = 0;
     }
@@ -617,7 +624,7 @@ int main(void)
         printf("Installed: %s/%s/%s\n", installed_provider, installed_name, installed_version);
       }
     }
-    if (exit_after_workflow && (flags.final_report != 0 || flags.final_report_abandoned)
+    if (exit_after_workflow && (flags.final_report != 0 || flags.final_report_dropped)
         && !flags.workflow_active && !reboot.reboot_requested)
     {
       rc = (flags.final_report == 1) ? 0 : 2;

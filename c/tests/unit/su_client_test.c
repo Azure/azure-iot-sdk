@@ -899,6 +899,7 @@ typedef struct
   int abandoned_count;
   az_iot_result last_abandoned_reason;
   az_iot_su_operation last_abandoned_operation;
+  bool last_abandoned_report_terminal;
   int32_t last_error_code;
   char last_error_text[64];
   char last_tracking_id[64];
@@ -958,6 +959,7 @@ static void on_event(const az_iot_su_event* event, void* user_ctx)
     fx->abandoned_count++;
     fx->last_abandoned_reason = event->reason;
     fx->last_abandoned_operation = event->operation;
+    fx->last_abandoned_report_terminal = event->report_terminal;
     fx->last_error_code = event->service_error.code;
     snprintf(fx->last_error_text, sizeof(fx->last_error_text), "%s", event->service_error.message);
     snprintf(
@@ -4307,6 +4309,8 @@ static void the_terminal_record_is_kept_until_the_report_is_final(void** state)
   void* fresh_state = NULL;
   fixture* fresh = reboot_into_fresh(fx, &fresh_state);
   fresh->chan.report_verdict_deferred = true;
+  assert_int_equal(az_iot_su_client_add_observer(&fresh->su, on_event, fresh), AZ_IOT_OK);
+  fresh->abandoned_count = 0;
   assert_int_equal(az_iot_su_client_resume(&fresh->su), AZ_IOT_OK);
   assert_int_equal(az_iot_su_client_do_work(&fresh->su), AZ_IOT_OK);
   assert_int_equal(fresh->chan.report_count, 1);
@@ -4317,6 +4321,10 @@ static void the_terminal_record_is_kept_until_the_report_is_final(void** state)
       NULL,
       fresh->chan.engine_ctx);
   assert_false(fresh->log.have_persist);
+  /* The application is told the dropped report was the terminal one. */
+  assert_int_equal(fresh->abandoned_count, 1);
+  assert_int_equal(fresh->last_abandoned_operation, AZ_IOT_SU_OP_REPORT_STATUS);
+  assert_true(fresh->last_abandoned_report_terminal);
   assert_int_equal(teardown(&fresh_state), 0);
 }
 
@@ -6586,6 +6594,7 @@ static void a_report_conflict_rechecks_on_the_last_requested_route(void** state)
       fx->chan.engine_ctx);
   assert_int_equal(fx->abandoned_count, 1);
   assert_int_equal(fx->last_abandoned_operation, AZ_IOT_SU_OP_REPORT_STATUS);
+  assert_false(fx->last_abandoned_report_terminal);
   assert_string_equal(fx->last_error_text, "REPORT_CONFLICT");
   assert_int_equal(fx->su._internal.pending_fetch, SU_FETCH_ONBOARDING);
   assert_int_equal(fx->su._internal.pending_fetch_deadline_ms, deadline);
