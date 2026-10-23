@@ -26,11 +26,13 @@ the hash read-back are simulated (zero-filled payloads); install and apply only 
   workflow runs.
 - `SAMPLE_PERSIST_FAIL_COUNT=<n>` fails the first `n` writes. The client holds the workflow and
   retries (`AZ_IOT_SU_EVENT_PERSIST_FAILED`, then `_RECOVERED`), and the sample does not
-  "reboot" while a write is failing.
+  "reboot" while a write is failing. After the last apply, a final report accepted before the
+  retry also allows the "reboot", once no saved record remains.
 - Step result details set before the reboot are reported in the final report after it.
 - A failed workflow cancels the pending "reboot".
 - After a succeeded update, later checks advertise its id as installed
-  (`az_iot_su_client_update_device_properties()`).
+  (`az_iot_su_client_update_device_properties()`), once per id: a repeated report of the same
+  update does not refresh them again.
 - Requires Azure Device Provisioning service, an Azure IoT Hub and Azure Device Update.
 
 ## Configure
