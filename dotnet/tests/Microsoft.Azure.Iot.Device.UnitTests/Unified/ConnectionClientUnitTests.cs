@@ -887,6 +887,111 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
             }
         }
 
+        [Fact]
+        public async Task AlreadyCanceledDisconnectDoesNotCancelOperationsWaitingForRecovery()
+        {
+            using MockConnectionMqttClient mockMqttClient = new();
+            using ConnectionClient connectionClient = new(new()
+            {
+                MqttClient = mockMqttClient,
+                ConnectionRetryPolicy = new ExponentialBackoffRetryPolicy(uint.MaxValue, TimeSpan.Zero, useJitter: false),
+            });
+
+            await connectionClient.ConnectToHubAsync(GetMockConnectionContext(false), TestContext.Current.CancellationToken);
+
+            using CancellationTokenSource canceledDisconnect = new();
+            canceledDisconnect.Cancel();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(
+                () => connectionClient.DisconnectAsync(canceledDisconnect.Token));
+
+            int attemptCount = 0;
+            Task? disconnection = null;
+            mockMqttClient.OnPublish = publish =>
+            {
+                if (publish.Topic == "test/topic" && Interlocked.Increment(ref attemptCount) == 1)
+                {
+                    disconnection = mockMqttClient.SimulateServerDisconnectAsync(
+                        MqttDisconnectReason.ImplementationSpecificError,
+                        new IOException("mock connection reset"));
+                    throw new IOException("mock connection reset");
+                }
+
+                return Task.FromResult(new MqttPublishAck() { ReasonCode = MqttPublishAckReasonCode.Success });
+            };
+
+            await connectionClient.PublishAsync(
+                new MqttPublish() { Topic = "test/topic", QualityOfServiceLevel = MqttQualityOfServiceLevel.AtLeastOnce },
+                TestContext.Current.CancellationToken)
+                .WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+            await disconnection!.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+
+            Assert.Equal(2, attemptCount);
+        }
+
+        [Fact]
+        public async Task InterruptedOperationIsNotRetriedAfterItsConnectionLifetimeEnds()
+        {
+            using MockConnectionMqttClient mockMqttClient = new();
+            using ConnectionClient connectionClient = new(new()
+            {
+                MqttClient = mockMqttClient,
+                ConnectionRetryPolicy = new ExponentialBackoffRetryPolicy(uint.MaxValue, TimeSpan.Zero, useJitter: false),
+            });
+
+            ConnectionContext context = GetMockConnectionContext(false);
+            await connectionClient.ConnectToHubAsync(context, TestContext.Current.CancellationToken);
+
+            TaskCompletionSource firstAttemptStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            TaskCompletionSource releaseFirstAttempt = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            TaskCompletionSource presenceFlowCompleted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            connectionClient.DevicePresenceFlowCompletedAsync += _ =>
+            {
+                presenceFlowCompleted.TrySetResult();
+                return Task.CompletedTask;
+            };
+
+            int attemptCount = 0;
+            mockMqttClient.OnPublish = async publish =>
+            {
+                if (publish.Topic != "test/topic")
+                {
+                    return new MqttPublishAck() { ReasonCode = MqttPublishAckReasonCode.Success };
+                }
+
+                if (Interlocked.Increment(ref attemptCount) == 1)
+                {
+                    firstAttemptStarted.TrySetResult();
+                    await releaseFirstAttempt.Task;
+                    throw new IOException("mock connection reset");
+                }
+
+                return new MqttPublishAck() { ReasonCode = MqttPublishAckReasonCode.Success };
+            };
+
+            Task<MqttPublishAck> pendingOperation = connectionClient.PublishAsync(
+                new MqttPublish() { Topic = "test/topic", QualityOfServiceLevel = MqttQualityOfServiceLevel.AtLeastOnce },
+                TestContext.Current.CancellationToken);
+
+            try
+            {
+                await firstAttemptStarted.Task.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+                await mockMqttClient.SimulateServerDisconnectAsync(MqttDisconnectReason.ImplementationSpecificError);
+                await presenceFlowCompleted.Task.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+
+                await connectionClient.DisconnectAsync(TestContext.Current.CancellationToken);
+                await connectionClient.ConnectToHubAsync(context, TestContext.Current.CancellationToken);
+                releaseFirstAttempt.TrySetResult();
+
+                await Assert.ThrowsAnyAsync<OperationCanceledException>(
+                    () => pendingOperation.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken));
+                Assert.Equal(1, attemptCount);
+            }
+            finally
+            {
+                releaseFirstAttempt.TrySetResult();
+            }
+        }
+
         /// <summary>
         /// A QoS 0 PUBLISH is never acknowledged, so losing the connection while sending it is reported to the caller
         /// rather than being sent again.

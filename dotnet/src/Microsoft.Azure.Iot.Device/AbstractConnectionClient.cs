@@ -427,6 +427,8 @@ namespace Microsoft.Azure.Iot.Device
         {
             ObjectDisposedException.ThrowIf(_isDisposed, this);
 
+            cancellationToken.ThrowIfCancellationRequested();
+
             // The application is closing this connection deliberately, so any recovery that an earlier identity fault
             // started is no longer wanted.
             CancelOperationLifetime();
@@ -1635,6 +1637,7 @@ namespace Microsoft.Azure.Iot.Device
                         {
                             // The device became present again (or this client faulted) after this attempt started, so
                             // that release must not be waited for again. Re-evaluate straight away.
+                            connectionLifetimeCancellation.Token.ThrowIfCancellationRequested();
                             ThrowIfUnrecoverablyFaulted();
                             continue;
                         }
