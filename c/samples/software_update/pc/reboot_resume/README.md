@@ -40,8 +40,9 @@ the hash read-back are simulated (zero-filled payloads); install and apply only 
   (`az_iot_su_client_is_terminal_report_owed()`), until that report settles, so a check never
   advertises the previous installed id. A report accepted, or dropped by the client
   (`AZ_IOT_SU_EVENT_OPERATION_ABANDONED` with `report_terminal`), settles it. After an accepted
-  succeeded report, checks advertise its installed id. After a dropped one, checks stop: advertising
-  the id (`az_iot_su_client_update_device_properties()`) would send the dropped report again. A
+  succeeded report, checks advertise its installed id. After a dropped one that names a new installed
+  id, checks stop: advertising it (`az_iot_su_client_update_device_properties()`) would send the
+  dropped report again. A
   report abandoned for a lost session stays owed and is sent again that way.
 - A connection that faults for good ends the process (exit 1), even during an update; a saved
   record, if any, resumes it on the next run.
