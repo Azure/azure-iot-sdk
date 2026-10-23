@@ -34,7 +34,14 @@
 #include <stdlib.h>
 
 #include "azure/iot/az_iot.h"
+/* The MQTT adapter this build of the sample uses (see samples/CMakeLists.txt). */
+#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
 #include "azure/iot/adapters/az_iot_adapter_paho.h"
+#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
+#include "azure/iot/adapters/az_iot_adapter_az_mqtt.h"
+#else
+#error "Define AZ_IOT_SAMPLE_ADAPTER_PAHO or AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT"
+#endif
 
 #include "sample_utils.h"
 
@@ -114,8 +121,13 @@ static void sample_state_destroy(sample_state* state)
 {
   telemetry_destroy(state);
   az_iot_connection_client_deinit(&state->connection_client);
+#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
   az_iot_paho_factory_destroy(state->factory_v3);
   az_iot_paho_factory_destroy(state->factory_v5);
+#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
+  az_iot_az_mqtt_factory_destroy(state->factory_v3);
+  az_iot_az_mqtt_factory_destroy(state->factory_v5);
+#endif
   az_iot_certificate_provider_pem_deinit(&state->certs);
   sample_config_release(&state->config);
 }
@@ -212,7 +224,9 @@ int main(void)
   /* Connection client (DPS provisioning is internal). The default reconnection
    * and identity recovery policies keep the device reconnecting on its own. */
   az_iot_connection_client_options copts = az_iot_connection_client_options_default();
-  sample_apply_dps_options(&copts, &state.config);
+  copts.dps.id_scope = state.config.id_scope;
+  copts.dps.registration_id = state.config.reg_id;
+  copts.dps.global_endpoint = state.config.dps_global_endpoint; /* NULL: the global default */
   copts.certificate_provider = &state.certs.base;
 
   if (az_iot_connection_client_init(&state.connection_client, &copts) != AZ_IOT_OK)
@@ -224,14 +238,22 @@ int main(void)
 
   /* Both adapters: v3.1.1 serves DPS and an MQTTv3 hub, v5 serves an MQTTv5 hub.
    * The connection picks the one the assigned hub needs. */
+#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
   state.factory_v3 = az_iot_paho_factory_create_v3_1_1();
+#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
+  state.factory_v3 = az_iot_az_mqtt_factory_create_v3_1_1();
+#endif
   if (az_iot_connection_client_register_mqtt_factory(&state.connection_client, state.factory_v3)
       != AZ_IOT_OK)
   {
     sample_state_destroy(&state);
     return 1;
   }
+#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
   state.factory_v5 = az_iot_paho_factory_create_v5();
+#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
+  state.factory_v5 = az_iot_az_mqtt_factory_create_v5();
+#endif
   if (az_iot_connection_client_register_mqtt_factory(&state.connection_client, state.factory_v5)
       != AZ_IOT_OK)
   {

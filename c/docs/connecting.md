@@ -62,6 +62,8 @@ reconnection disabled.
 
 The same rules apply to the az_mqtt and Rust adapter factories, and match the certificate providers:
 the application creates them, and destroys them after the connection client.
+Each sample that connects is also built on az_mqtt, from the same `main.c`
+([samples](../samples/README.md#build)).
 
 Teardown:
 
@@ -148,24 +150,32 @@ The cache lives only as long as the client. To keep using an assignment across a
 application saves it and supplies it with the `dps` fields:
 
 ```c
-opts.iothub_hostname = saved_hub;        /* az_iot_connection_client_get_iothub_address() */
-opts.device_id = saved_device_id;        /* az_iot_connection_client_get_device_id() */
-opts.connection_profile = saved_profile; /* az_iot_connection_client_get_hub_profile() */
+opts.iothub_hostname = saved_hub;        /* az_iot_dps_assignment::hub_hostname */
+opts.device_id = saved_device_id;        /* az_iot_dps_assignment::device_id */
+opts.connection_profile = saved_profile; /* az_iot_dps_assignment::profile */
 opts.dps.id_scope = "<id-scope>";
 opts.dps.registration_id = "<registration-id>";
 ```
 
+- Save the values from the callback set with
+  `az_iot_connection_client_set_dps_assignment_callback()`. It fires each time an assignment is
+  adopted (first registration and every re-provision), before the hub connect. A rejected
+  assignment is not reported, and its issued certificate is not stored.
 - `open()` connects to the saved hub; DPS is not contacted while it accepts the device.
 - It goes to DPS under the same conditions as a cached assignment (above). With
   `options_default()`, `identity_recovery.mode` is `RETRY_HUB`, so a hub that refuses the identity
   is retried; set `AZ_IOT_IDENTITY_RECOVERY_REPROVISION` to register again instead.
-- A registration replaces the hub, device id and profile. Save them again after `HUB:CONNECTED`.
+- A registration replaces the hub, device id and profile; the callback reports the new values.
 - `connection_profile` is declared, as for a direct connect: a feature client for the other
   generation fails with `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH`.
 - An empty `iothub_hostname`, or one without `device_id`, fails `open()` with `AZ_IOT_ERR_INVALID_ARG`.
 - Certificates issued earlier are the provider's to keep: when `load(AZ_IOT_CRED_OPERATIONAL)`
   returns the stored chain, the saved hub is connected with it and no certificate is requested.
-  DPS still authenticates with the bootstrap credential.
+  DPS still authenticates with the bootstrap credential. With
+  `dps.request_operational_certificate`, the issued chain is already stored in the provider when
+  the callback runs (the managed provider writes it to `operational_cert_pem_path`).
+
+Sample: [`samples/authentication/dps_persist_assignment`](../samples/authentication/dps_persist_assignment/README.md).
 
 ## Reconnection
 
@@ -176,7 +186,8 @@ opts.dps.registration_id = "<registration-id>";
 | `initial_delay_ms` | 1000 | First delay. `0` disables automatic reconnect. |
 | `max_delay_ms` | 60000 | Cap on the exponential backoff. |
 | `max_attempts` | 0 | Automatic retries after a failure before `FAULTED`; the count resets on success. `0` retries forever. |
-| `jitter_pct` | 20 | Random variation, ± percent. |
+| `jitter_pct` | 20 | Random variation, percent. |
+| `jitter_mode` | `AZ_IOT_RETRY_JITTER_SYMMETRIC` | `_SYMMETRIC`: ± `jitter_pct`. `_ADDITIVE`: + 0..`jitter_pct`, never shorter than the backoff. |
 
 `az_iot_connection_client_get_default_retry_policy()`, `_get_disabled_retry_policy()` and `_get_fixed_interval_retry_policy()`
 build the common shapes.
@@ -302,7 +313,9 @@ Most X.509 samples read the device's private key from a PEM file, so they run an
 stand-in signer, and the SAS-only samples use none. A key in a file
 can be copied, and the device's identity with it. In production, keep each device's X.509 private
 key in hardware -- an HSM, a TPM or a secure element -- which signs with it but never releases it.
-The certificate can stay a file: it is public.
+The certificate can stay a file: it is public. A password-protected PEM key is not a substitute: the
+device must keep the password where it can read it, next to the key, so a copy of the device's
+storage still yields the key.
 
 | The key | The provider returns | Adapter | Sample |
 | --- | --- | --- | --- |
@@ -432,6 +445,15 @@ copts.trusted_ca.path = "ca.pem";         /* server trust, any credential */
   Until then, a rejection is `AZ_IOT_ERR_IDENTITY_REJECTED`.
 - **Server trust.** `trusted_ca` applies to every connection. Without it, the X.509 provider's CA
   is used if there is one, otherwise the adapter's default store.
+- **TPM attestation.** DPS takes it over HTTPS or AMQP, not MQTT, so it is a separate step before the
+  connection client: [`az_iot_dps_tpm_client.h`](../inc/azure/iot/az_iot_dps_tpm_client.h) builds
+  the registration requests and parses the responses; the application sends them over HTTPS and
+  runs the TPM (import the DPS key, HMAC-SHA256). For an mqttv3 hub, then connect directly to the
+  assigned hub (`iothub_hostname`, `device_id`, `connection_profile` from the assignment) and sign hub tokens
+  with the TPM key from `on_sas_token_required`. mqttv5 hubs do not accept SAS and need an X.509
+  certificate, which DPS does not document issuing under TPM attestation. The connection client does not re-provision such a device; on
+  `AZ_IOT_ERR_IDENTITY_REJECTED`, register again. See
+  [`dps_tpm`](../samples/authentication/dps_tpm/README.md).
 
 ## Crypto backend
 

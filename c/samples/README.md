@@ -26,19 +26,23 @@ run it, and what to expect.
 | [unified/file_upload](unified/file_upload/README.md) | File upload to Azure Storage (mqttv3 only). |
 | [unified/websockets](unified/websockets/README.md) | Telemetry over MQTT over WebSockets (port 443). |
 | [unified/proxy](unified/proxy/README.md) | Telemetry through an HTTP proxy. |
+| [unified/multithreaded_telemetry](unified/multithreaded_telemetry/README.md) | Telemetry with readings from other threads, handed to the one thread that calls the SDK. |
 | [mqttv5/telemetry](mqttv5/telemetry/README.md) | Telemetry on an mqttv5 hub. |
 | [mqttv5/twin_get_patch](mqttv5/twin_get_patch/README.md) | Device twin on an mqttv5 hub. |
 | [mqttv5/direct_method_responder](mqttv5/direct_method_responder/README.md) | Direct methods on an mqttv5 hub, with a probe handler. |
 | [mqttv5/direct_method_slow_responder](mqttv5/direct_method_slow_responder/README.md) | Direct methods answered later, on an mqttv5 hub. |
 | [mqttv5/custom_topic_publisher](mqttv5/custom_topic_publisher/README.md) | Publish to a custom topic on an mqttv5 hub. |
 | [authentication/dps_csr_managed](authentication/dps_csr_managed/README.md) | DPS issues an operational certificate from a CSR. |
+| [authentication/dps_persist_assignment](authentication/dps_persist_assignment/README.md) | Save the DPS assignment; later runs connect to the hub without registering. |
 | [authentication/custom_certificate_provider](authentication/custom_certificate_provider/README.md) | The same, with the CSR built by application code. |
 | [authentication/hub_renew](authentication/hub_renew/README.md) | Renew the operational certificate over an mqttv3 hub. |
 | [authentication/hsm_pkcs11](authentication/hsm_pkcs11/README.md) | Private key in a PKCS#11 token or TPM. |
 | [authentication/hsm_sign_callback](authentication/hsm_sign_callback/README.md) | Private key reachable only through a `sign()` callback. |
 | [authentication/custom_provider_template](authentication/custom_provider_template/README.md) | Skeleton of a certificate provider. |
+| [authentication/dps_tpm](authentication/dps_tpm/README.md) | DPS TPM attestation over HTTPS, then hub SAS tokens signed by a simulated TPM. |
 | [software_update/pc/simulated_onboarding](software_update/pc/simulated_onboarding/README.md) | Software updates before registration, simulated install; no IoT Hub needed. |
 | [software_update/pc/simulated_regular](software_update/pc/simulated_regular/README.md) | Software updates for a registered device, simulated install. |
+| [software_update/pc/http_download](software_update/pc/http_download/README.md) | Software updates with a real, non-blocking HTTPS download (libcurl) through a proxy; simulated install. |
 | [software_update/esp32](software_update/esp32/README.md) | Software updates with a real over-the-air install on an ESP32. |
 
 ## How a unified sample handles the hub generation
@@ -132,5 +136,16 @@ cmake --build --preset linux-gcc-debug
 ```
 
 Use `windows-msvc-debug` on Windows. Each README gives the single-sample target and the path of
-the binary: `build/<preset>/samples/<folder>/` (Windows: `.../<folder>/Debug/`). Samples need the
-Paho adapter (`AZ_IOT_WITH_PAHO=ON`, the default).
+the binary: `build/<preset>/samples/<folder>/` (Windows: `.../<folder>/Debug/`).
+
+Each sample that connects is built once per MQTT adapter in the build, from the same `main.c`:
+
+| Adapter | Option | Target | Binary |
+| --- | --- | --- | --- |
+| Paho | `AZ_IOT_WITH_PAHO=ON` (default) | `az_iot_sample_<...>` | `samples/<folder>/` |
+| az_mqtt | `AZ_IOT_WITH_AZ_MQTT=ON` | `az_iot_sample_<...>_az_mqtt` | `samples/<folder>/az_mqtt/` |
+
+`main.c` selects the adapter's header and factories with `AZ_IOT_SAMPLE_ADAPTER_PAHO` or
+`AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT`, which the build defines. With samples on, at least one of the two
+adapters is required. The SAS-key and Software Update samples use the OpenSSL crypto backend, or
+mbedTLS when OpenSSL is not built (`AZ_IOT_SAMPLE_CRYPTO_OPENSSL`, `AZ_IOT_SAMPLE_CRYPTO_MBEDTLS`).

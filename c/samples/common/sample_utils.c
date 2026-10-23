@@ -10,6 +10,7 @@
 
 #include "azure/iot/az_iot.h"
 
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -136,23 +137,6 @@ void sample_config_release(sample_config* config)
   memset(config, 0, sizeof(*config));
 }
 
-void sample_apply_dps_options(
-    struct az_iot_connection_client_options* options,
-    const sample_config* config)
-{
-  if (options == NULL || config == NULL)
-  {
-    return;
-  }
-  options->dps.id_scope = config->id_scope;
-  options->dps.registration_id = config->reg_id;
-  /* Left NULL when unset, which is what selects the SDK's global endpoint. */
-  if (config->dps_global_endpoint != NULL)
-  {
-    options->dps.global_endpoint = config->dps_global_endpoint;
-  }
-}
-
 az_iot_log_sink sample_log_sink(az_iot_log_level min_level)
 {
   /* Static: the sink writes through this state for the life of the process. */
@@ -222,18 +206,17 @@ bool sample_env_to_buffer(const char* name, const char* fallback, char* dst, siz
   return ok;
 }
 
-FILE* sample_fopen_private(const char* path)
+FILE* sample_fopen_private(const char* path, bool replace)
 {
   FILE* f = NULL;
   int fd;
-  if (!path)
+  if (!path || (replace && remove(path) != 0 && errno != ENOENT))
   {
     return NULL;
   }
 #ifdef _WIN32
-  if (_sopen_s(
-          &fd, path, _O_WRONLY | _O_CREAT | _O_TRUNC | _O_BINARY, _SH_DENYWR, _S_IREAD | _S_IWRITE)
-      != 0)
+  int flags = _O_WRONLY | _O_CREAT | _O_BINARY | (replace ? _O_EXCL : _O_TRUNC);
+  if (_sopen_s(&fd, path, flags, _SH_DENYWR, _S_IREAD | _S_IWRITE) != 0)
   {
     return NULL;
   }
@@ -243,13 +226,14 @@ FILE* sample_fopen_private(const char* path)
     (void)_close(fd);
   }
 #else
-  fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR);
+  /* O_EXCL fails on any existing name, a symbolic link included. */
+  fd = open(path, O_WRONLY | O_CREAT | (replace ? O_EXCL : O_TRUNC), S_IRUSR | S_IWUSR);
   if (fd < 0)
   {
     return NULL;
   }
   /* open() keeps the mode of a file that already exists. */
-  if (fchmod(fd, S_IRUSR | S_IWUSR) == 0)
+  if (replace || fchmod(fd, S_IRUSR | S_IWUSR) == 0)
   {
     f = fdopen(fd, "wb");
   }
@@ -259,6 +243,38 @@ FILE* sample_fopen_private(const char* path)
   }
 #endif
   return f;
+}
+
+FILE* sample_fopen_read_nofollow(const char* path)
+{
+  if (!path)
+  {
+    return NULL;
+  }
+#ifdef _WIN32
+  FILE* f = NULL;
+  return fopen_s(&f, path, "rb") == 0 ? f : NULL;
+#elif !defined(O_NOFOLLOW)
+  return fopen(path, "rb");
+#else
+  /* O_NONBLOCK: opening a FIFO does not wait for a writer; it is then refused. */
+  int fd = open(path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK);
+  if (fd < 0)
+  {
+    return NULL;
+  }
+  struct stat st;
+  FILE* f = NULL;
+  if (fstat(fd, &st) == 0 && S_ISREG(st.st_mode))
+  {
+    f = fdopen(fd, "rb");
+  }
+  if (!f)
+  {
+    (void)close(fd);
+  }
+  return f;
+#endif
 }
 
 uint64_t sample_now_ms(void)

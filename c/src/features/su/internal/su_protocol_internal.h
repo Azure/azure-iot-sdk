@@ -219,22 +219,21 @@ extern "C"
   {
     /* Not an error. */
     AZ_IOT_SU_ERROR_ACTION_NONE = 0,
-    /* No update service is configured for this device. Carry on; do not retry. */
+    /* The update service cannot serve this device (not linked, or no access to
+     * its namespace). Needs operator action; carry on, do not retry. */
     AZ_IOT_SU_ERROR_ACTION_PROCEED,
-    /* Our agentInfo or service config is stale: resend it in full and retry. */
+    /* Our agentInfo is stale or unknown: resend it in full and retry. */
     AZ_IOT_SU_ERROR_ACTION_RESEND_AGENT_INFO,
-    /* Our service-config ETag is stale: re-request without it. */
-    AZ_IOT_SU_ERROR_ACTION_DROP_SERVICE_CONFIG_ETAG,
     /* Throttled: wait for the advertised delay, then retry. */
     AZ_IOT_SU_ERROR_ACTION_RETRY_AFTER,
     /* Transient upstream failure: retry. A fetch may proceed meanwhile; a report
      * must not be dropped. */
     AZ_IOT_SU_ERROR_ACTION_RETRY,
-    /* Legacy untyped 409000 report verdict: assume a terminal report exists.
-     * An explicit REPORT_CONFLICT is FATAL, not acceptance of this payload. */
-    AZ_IOT_SU_ERROR_ACTION_ALREADY_REPORTED,
     /* The request or our credentials are wrong. Do not retry unchanged. */
     AZ_IOT_SU_ERROR_ACTION_FATAL,
+    /* A report conflicts with the service's state: drop it like FATAL, then
+     * check for updates again to learn that state. Reports only. */
+    AZ_IOT_SU_ERROR_ACTION_RECHECK,
   } az_iot_su_error_action;
 
   /* --- Service numeric error codes ----------------------------------------- */
@@ -256,7 +255,8 @@ extern "C"
 #define AZ_IOT_SU_ERR_UNAUTHORIZED 401000
 #define AZ_IOT_SU_ERR_FORBIDDEN 403000
 #define AZ_IOT_SU_ERR_FORBIDDEN_DEVICE_DISABLED 403001
-/* Shared by "account not linked" (fetch) and "report conflict" (report). */
+/* Shared by every 409: account not linked or denied, device not provisioned,
+ * report conflict. */
 #define AZ_IOT_SU_ERR_GENERIC_CONFLICT 409000
 #define AZ_IOT_SU_ERR_ENTITY_TOO_LARGE 413000
 #define AZ_IOT_SU_ERR_THROTTLED 429000

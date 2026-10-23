@@ -10,11 +10,15 @@ and closes.
 
 - Hub generation: mqttv5 (MQTT 5) only. An assignment to an mqttv3 hub fails.
 - Builds the topic from a template with `az_iot_mqttv5_custom_topic_client_format_topic()`, which
-  replaces `{deviceId}` with the device's id.
+  replaces `{deviceId}` with the device's id. Provisioning again can change that id, so a device
+  that publishes repeatedly builds the topic before each publish; `publish()` sends the topic as
+  given and does not expand `{deviceId}`: on a hub with a template such as `contoso/+/alerts`, a
+  topic still holding `{deviceId}` is accepted as is.
 - Publishes at QoS 1 with a content type and one user property. The client adds no properties of
-  its own.
+  its own. At QoS 1 a refused message completes with the hub's reason code and Reason String;
+  at QoS 0 the hub sends no acknowledgement, so a refused message is dropped without an error.
 - Custom topics are publish only.
-- Registers both Paho adapters: the hub uses MQTT 5, but DPS always uses MQTT 3.1.1.
+- Registers both MQTT adapters (v3.1.1 and v5): the hub uses MQTT 5, but DPS always uses MQTT 3.1.1.
 - Platforms: Linux and Windows.
 
 ## Service requirements
@@ -84,6 +88,9 @@ cmake --build --preset linux-gcc-debug --target az_iot_sample_mqttv5_custom_topi
 ./build/linux-gcc-debug/samples/mqttv5/az_iot_sample_custom_topic_publisher
 ```
 
+With az_mqtt (`-DAZ_IOT_WITH_AZ_MQTT=ON`), target `az_iot_sample_mqttv5_custom_topic_publisher_az_mqtt` builds the same sample in
+`az_mqtt/` next to that binary ([adapters](../../README.md#build)).
+
 Windows (*Developer PowerShell for VS 2022*):
 
 ```powershell
@@ -112,8 +119,9 @@ SDK warnings and errors go to stderr. On an mqttv3 hub it prints
 | `Required env var <NAME> not set.`, exit 1 | A required variable is missing. |
 | `Cannot build a topic from '<template>': AZ_IOT_ERR_INVALID_ARG` | The template has a `{` or `}` that is not part of `{deviceId}`. The variable is case-sensitive. |
 | `Publish to '<topic>' not sent: AZ_IOT_ERR_INVALID_ARG` | The topic is invalid: `+` or `#`, a first level of `ih`, over 256 bytes or 15 levels, or not UTF-8. |
-| `The hub refused '<topic>'.` | No topic template on the hub matches the topic. Shown only with an MQTT adapter that reports PUBACK reason codes, such as az_mqtt; the Paho adapter registered here does not yet. |
-| `Publish to '<topic>' failed: AZ_IOT_ERR_MQTT` | The publish failed and the MQTT adapter did not report why. With the Paho adapter this includes a topic no template matches. |
+| `The hub refused '<topic>' (reason code 0x87: "<text>").` | No topic template on the hub matches the topic. The quoted text is the hub's Reason String, empty when it sent none. |
+| `Publish to '<topic>' failed: AZ_IOT_ERR_BUSY` | Over the hub's quota (reason code 0x97). Retry later. |
+| `Publish to '<topic>' failed: AZ_IOT_ERR_MQTT` | The publish failed for another reason; the SDK log line `publish with packet id ... failed` gives the code. |
 | `Publish to '<topic>' failed: AZ_IOT_ERR_NOT_CONNECTED` | The connection ended before the hub acknowledged; the hub may also close the connection on a refused publish. |
 | SDK line `dps register: errorCode=<code> errorMessage=<text>` | DPS refused the registration: no matching enrollment, the certificate's common name differs from `AZ_IOT_DPS_REGISTRATION_ID`, or the enrollment is disabled. |
 | Repeated `paho: connect failed: ... TCP/TLS connect failure` | DPS or the hub is unreachable (network, proxy, `AZ_IOT_DPS_GLOBAL_ENDPOINT`), or server certificate validation fails (`AZ_IOT_TRUSTED_CA`). |

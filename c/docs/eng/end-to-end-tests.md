@@ -37,7 +37,7 @@ no dotnet, no subprocess, and no cross-process handshake.
 ```mermaid
 flowchart LR
     subgraph Proc["az_iot_tests_e2e — one process (Windows or Linux)"]
-        Device["device half<br/>shipping SDK + Paho MQTT<br/>(DPS x509 provision)"]
+        Device["device half<br/>shipping SDK + Paho or az_mqtt<br/>(DPS x509 provision)"]
         Service["cloud half<br/>az_iot_e2e_service facade<br/>(AMQP + HTTPS/SAS, hidden)"]
     end
     Device -- "MQTT: telemetry / c2d / method / twin" --> Azure[("Azure IoT Hub / DPS")]
@@ -51,10 +51,15 @@ single-threaded and non-blocking.
 
 ### Device half — the shipping SDK
 
-The device is the public SDK over the Paho adapter, connected exactly like a
+The device is the public SDK over an MQTT adapter, connected exactly like a
 real device: **DPS provisioning with an X.509 individual enrollment**
-(`dps.id_scope` set → the connection client provisions internally, then connects to the assigned hub). Both Paho MQTT v3.1.1 and v5
-factories are registered. The connect flow + all four scenarios live in
+(`dps.id_scope` set → the connection client provisions internally, then connects to the assigned hub). Both the MQTT v3.1.1 and v5
+factories are registered. Each suite that connects is built once per adapter in the build:
+`<suite>` over Paho and `<suite>_az_mqtt` over az_mqtt, selected in the sources with
+`AZ_IOT_E2E_ADAPTER_PAHO` or `AZ_IOT_E2E_ADAPTER_AZ_MQTT`. The workflows enable both, and their
+`ctest -R` filters run both. The custody suites run over az_mqtt only with OpenSSL TLS. With
+az_mqtt, `AZ_IOT_BUILD_E2E_MQTTV5` needs `-DAZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE=1114112` or more: the telemetry size cases publish just
+over 1 MiB. The connect flow + all four scenarios live in
 [`e2e_scenarios_test.c`](../../tests/e2e/tests/e2e_scenarios_test.c); the connect
 is done once for the whole suite via cmocka's group setup.
 
@@ -125,6 +130,17 @@ shared; env `AZ_IOT_DPS_SAS_GROUP_KEY`, `AZ_IOT_DPS_SAS_REGISTRATION_ID`,
   with a CSR; the hub over the DPS-issued certificate, then telemetry. Also needs
   `AZ_IOT_BUILD_E2E_CSR` (group linked to the signing CA). `ci-c-e2e-csr`.
 
+**TPM suite** (built with every e2e build and run by `ci-c-e2e` on Linux and Windows, on pull
+requests and on main; env `AZ_IOT_DPS_ID_SCOPE`, `IOT_DPS_CONNECTION_STRING` (a DPS policy with
+EnrollmentWrite and RegistrationStatusWrite), `IOTHUB_CONNECTION_STRING`,
+`IOTHUB_EVENTHUB_CONNECTION_STRING`; optional `IOTHUB_REGISTRY_CONNECTION_STRING` (RegistryWrite,
+its policy signs the device delete, sent to the `IOTHUB_CONNECTION_STRING` host) and `AZ_IOT_TRUSTED_CA`):
+
+- [`e2e_tpm_test.c`](../../tests/e2e/tests/e2e_tpm_test.c) — a TPM simulated in software
+  (`samples/common/sample_tpm_sim.c`) gets a new individual enrollment through the DPS service
+  API, registers over HTTPS, connects to the assigned mqttv3 hub with TPM-signed SAS tokens and
+  sends telemetry. The enrollment, registration and device are deleted. `ci-c-e2e`.
+
 **mqttv5 suites** (`AZ_IOT_BUILD_E2E_MQTTV5`; DPS assigns the device to an mqttv5 hub):
 
 - [`e2e_mqttv5_custom_topic_test.c`](../../tests/e2e/tests/e2e_mqttv5_custom_topic_test.c) — needs the
@@ -138,14 +154,54 @@ shared; env `AZ_IOT_DPS_SAS_GROUP_KEY`, `AZ_IOT_DPS_SAS_REGISTRATION_ID`,
 - [`e2e_mqttv5_twin_test.c`](../../tests/e2e/tests/e2e_mqttv5_twin_test.c) — desired properties
   patched through the service REST API. Without `twin_push.push_desired`, no change arrives while
   connected and a GET delivers it as a snapshot; with it, the snapshot is pushed on connect and each
-  change arrives as a patch. One connection per test, on one device. `ci-c-e2e-mqttv5`.
+  change arrives as a patch. Reported patches are acked with the version the REST twin shows; a
+  null member deletes; a stale `if_match`, non-JSON and a 40 KiB patch are refused without losing
+  the session. GET returns both sections, or the selected ones, omitting a payload whose version
+  `if_not_match` names. `twin_push.push_reported` pushes the reported section on connect; a desired
+  change made offline, or before a late handler is set, arrives as a snapshot. A second connection
+  with the same identity evicts the session: a GET in flight completes with an error and a desired
+  change made during the outage arrives after the automatic reconnect. A 1 ms request timeout
+  completes a GET `TIMEOUT`; `AZ_IOT_TWIN_MAX_PENDING` GETs are accepted and the next refused; a
+  pushed reported section without a handler is dropped. One connection per test, on one device.
+  `ci-c-e2e-mqttv5`.
+- [`e2e_mqttv5_connection_test.c`](../../tests/e2e/tests/e2e_mqttv5_connection_test.c) — DPS
+  reports the `mqttV5` profile; the saved hub (`iothub_hostname`, `device_id`, `connection_profile`
+  with the `dps` fields) connects without DPS and its telemetry reaches the events endpoint; an
+  unreachable saved hub and a saved hub declared mqttv3 both end on the mqttv5 hub through DPS;
+  three `close()`/`open()` cycles each complete a twin GET; a second connection with the same
+  identity evicts the first, which reconnects and sends telemetry and a twin GET. Every state
+  transition is printed. `ci-c-e2e-mqttv5`.
+- [`e2e_mqttv5_transport_test.c`](../../tests/e2e/tests/e2e_mqttv5_transport_test.c) — DPS and the
+  mqttv5 hub over WebSockets (443, default path), over TCP through an HTTP CONNECT proxy, and over
+  WebSockets through the proxy, each with a telemetry round trip; the proxy's access log
+  (`AZ_IOT_E2E_PROXY_LOG`) must show the CONNECT to DPS, then to the hub. A proxy on a closed port
+  keeps the device off the hub and sends nothing, through DPS and on a direct mqttv5 hub connect
+  to the assigned hub. Needs `AZ_IOT_PROXY_HOST`/`_PORT`; fails without them. `ci-c-e2e-mqttv5`
+  (tinyproxy on the runner).
+- [`e2e_mqttv5_direct_method_test.c`](../../tests/e2e/tests/e2e_mqttv5_direct_method_test.c) —
+  methods invoked through the service REST API. Answers (200, 500, no payload, a result body of
+  exactly `AZ_IOT_MQTTV5_DM_RESULT_BODY_MAX`) reach the caller; undeclared, wrong-case, withdrawn,
+  busy and too-short-timeout calls are refused at the probe without running the handler; an
+  unanswered call times out and a late answer is not sent; concurrent calls get their own results.
+  One connection for the suite. `ci-c-e2e-mqttv5`.
+- [`e2e_mqttv5_telemetry_test.c`](../../tests/e2e/tests/e2e_mqttv5_telemetry_test.c) — telemetry
+  read back from the events endpoint with its AMQP properties, application properties and
+  annotations: routing; `$.ct` / `$.cid` as AMQP content-type / correlation-id; `$.mid`, `$.ce`,
+  `$.uid`, `$.ctime`, `$.sub`; custom application properties; eight messages in flight keep their
+  order; a 512 KB - 8 KiB body is routed whole and a 1 MiB + 4 KiB body is refused (or the session
+  dropped), never routed, and telemetry flows again after. `ci-c-e2e-mqttv5`.
+- [`e2e_mqttv5_custody_test.c`](../../tests/e2e/tests/e2e_mqttv5_custody_test.c) — the device key
+  inside a SoftHSM2 token (`eng/setup-softhsm.sh`, named by `AZ_IOT_CLIENT_KEY_URI`): DPS and the
+  mqttv5 hub accept it, telemetry reaches the events endpoint, and a reconnect loads the key
+  reference again. Also needs `AZ_IOT_BUILD_E2E_PKCS11`; fails without the token.
+  `ci-c-e2e-mqttv5`.
 
 Direct-hub mode (`AZ_IOT_HUB_HOSTNAME`, `AZ_IOT_DEVICE_ID`) reaches an mqttv5 hub with
 `AZ_IOT_HUB_CONNECTION_PROFILE=mqttv5`; without DPS, nothing else reports the hub's profile.
 
 > The Windows reference transport keeps a single TLS connection at a time, so the
 > telemetry watcher is closed before the c2d/method/twin scenarios open theirs.
-> The device uses Paho's own independent TLS stack, so the two never collide.
+> The device uses its adapter's own independent TLS stack, so the two never collide.
 
 ---
 
@@ -154,8 +210,8 @@ Direct-hub mode (`AZ_IOT_HUB_HOSTNAME`, `AZ_IOT_DEVICE_ID`) reaches an mqttv5 hu
 - CMake option `AZ_IOT_BUILD_E2E` (default **OFF**) in
   [`c/cmake/az_iot_options.cmake`](../../cmake/az_iot_options.cmake).
 - [`c/tests/CMakeLists.txt`](../../tests/CMakeLists.txt) adds the `e2e`
-  subdirectory only when `AZ_IOT_BUILD_E2E` **and** `AZ_IOT_WITH_PAHO` are ON
-  (the device half needs a real MQTT adapter).
+  subdirectory when `AZ_IOT_BUILD_E2E` is ON; the configure step fails unless Paho or
+  az_mqtt is built (the device half needs a real MQTT adapter).
 - [`c/tests/e2e/CMakeLists.txt`](../../tests/e2e/CMakeLists.txt) builds the
   vendored `az_amqp` (under `c/tests/deps/amqp`, test-only), the
   `az_iot_e2e_service` facade, and the `az_iot_tests_e2e` cmocka executable
@@ -165,8 +221,8 @@ Build & run locally (needs provisioned Azure + the env vars above):
 
 ```pwsh
 # from c/  (Windows needs a VS dev shell; Linux needs ninja)
-cmake --preset windows-msvc-debug -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_WITH_PAHO=ON
-cmake --build --preset windows-msvc-debug --config Debug --target az_iot_tests_e2e
+cmake --preset windows-msvc-debug -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_WITH_PAHO=ON -DAZ_IOT_WITH_AZ_MQTT=ON
+cmake --build --preset windows-msvc-debug --config Debug --target az_iot_tests_e2e az_iot_tests_e2e_az_mqtt
 ctest --test-dir build/windows-msvc-debug -C Debug -R e2e --output-on-failure
 ```
 
@@ -238,8 +294,11 @@ long-lived IoT Hub + DPS. Each leg issues its own device certificate from the DP
 X.509 enrollment group's CA ([`c/eng/e2e-shared-device.ps1`](../../eng/e2e-shared-device.ps1));
 the SAS suite registers under the DPS symmetric-key enrollment group. Inputs are repository
 secrets `E2E_SHARED_GROUP_CA`, `E2E_SHARED_IOTHUB_CS` and `E2E_SHARED_EVENTHUB_CS`
-(`service` policy only), and `E2E_SHARED_SAS_GROUP_KEY` (the symmetric-key group's primary
-key). Devices the runs register stay in the shared hub; they are removed manually. The hub
+(`service` policy only), `E2E_SHARED_SAS_GROUP_KEY` (the symmetric-key group's primary
+key), and, for the TPM suite, `E2E_SHARED_DPS_CS` (DPS policy with EnrollmentWrite and
+RegistrationStatusWrite) and `E2E_SHARED_IOTHUB_REGISTRY_CS` (hub policy with RegistryWrite).
+The TPM suite deletes its enrollment and device; other devices the runs register stay in the
+shared hub and are removed manually. The hub
 needs consumer groups
 `e2e-0`..`e2e-9` and file upload with notifications. Push and nightly runs always provision.
 Pull requests from forks get no secrets and fail.
@@ -283,7 +342,8 @@ workflow; nightly; manual. Pull requests from forks and from Dependabot skip.
 ## Software updates e2e
 
 Two suites, built with `-DAZ_IOT_BUILD_E2E_SU=ON` (not on Windows) and selected by
-`ctest -R e2e_su`. Both run the shipping SDK over Paho and X.509 against the real service.
+`ctest -R e2e_su`. Both run the shipping SDK over each MQTT adapter (Paho, az_mqtt) and X.509 against
+the real service.
 
 | Suite | What it drives |
 | --- | --- |

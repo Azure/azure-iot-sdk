@@ -14,7 +14,7 @@
  * 5. Sends telemetry over that connection and waits for send completion.
  *
  * AZ_IOT_DPS_REGISTRATION_PAYLOAD, if set, is sent alongside the CSR as the
- * custom registration payload. Requires OpenSSL 3.0+ and the Paho adapter.
+ * custom registration payload. Requires OpenSSL 3.0+ and the Paho or az_mqtt adapter.
  * See README.md for setup and environment variables.
  */
 #include <stdbool.h>
@@ -25,7 +25,14 @@
 #include <string.h>
 
 #include "azure/iot/az_iot.h"
+/* The MQTT adapter this build of the sample uses (see samples/CMakeLists.txt). */
+#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
 #include "azure/iot/adapters/az_iot_adapter_paho.h"
+#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
+#include "azure/iot/adapters/az_iot_adapter_az_mqtt.h"
+#else
+#error "Define AZ_IOT_SAMPLE_ADAPTER_PAHO or AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT"
+#endif
 #include "az_iot_certificate_provider_managed.h"
 
 #include "sample_utils.h"
@@ -213,7 +220,9 @@ int main(void)
   }
 
   az_iot_connection_client_options opts = az_iot_connection_client_options_default();
-  sample_apply_dps_options(&opts, &config);
+  opts.dps.id_scope = config.id_scope;
+  opts.dps.registration_id = config.reg_id;
+  opts.dps.global_endpoint = config.dps_global_endpoint; /* NULL: the global default */
   opts.certificate_provider = &provider.base;
   AZ_IOT_CSR_PAYLOAD_STORAGE(csr_payload_buf);
   opts.csr_payload_buffer = az_span_create(csr_payload_buf, sizeof(csr_payload_buf));
@@ -230,7 +239,11 @@ int main(void)
         = az_span_create(registration_body_buf, sizeof(registration_body_buf));
   }
 
+#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
   factory_v3 = az_iot_paho_factory_create_v3_1_1();
+#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
+  factory_v3 = az_iot_az_mqtt_factory_create_v3_1_1();
+#endif
   if (az_iot_connection_client_init(&connection_client, &opts) != AZ_IOT_OK
       || az_iot_connection_client_add_state_observer(&connection_client, on_conn_state, &ctx)
           != AZ_IOT_OK
@@ -356,7 +369,11 @@ cleanup:
     az_iot_mqttv3_telemetry_client_deinit(&telemetry);
   }
   az_iot_connection_client_deinit(&connection_client);
+#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
   az_iot_paho_factory_destroy(factory_v3);
+#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
+  az_iot_az_mqtt_factory_destroy(factory_v3);
+#endif
   az_iot_certificate_provider_managed_deinit(&provider);
   free(op_key);
   free(op_cert);

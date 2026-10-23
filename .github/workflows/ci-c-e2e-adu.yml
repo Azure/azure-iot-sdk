@@ -79,8 +79,8 @@ jobs:
         timeout-minutes: 30
         working-directory: c
         run: |
-          cmake --preset linux-gcc-e2e-coverage -DAZ_IOT_WITH_PAHO=ON -DAZ_IOT_BUILD_E2E_SU=ON
-          cmake --build --preset linux-gcc-e2e-coverage --target az_iot_tests_e2e_su az_iot_tests_e2e_su_offer
+          cmake --preset linux-gcc-e2e-coverage -DAZ_IOT_WITH_PAHO=ON -DAZ_IOT_WITH_AZ_MQTT=ON -DAZ_IOT_BUILD_E2E_SU=ON
+          cmake --build --preset linux-gcc-e2e-coverage --target az_iot_tests_e2e_su az_iot_tests_e2e_su_offer az_iot_tests_e2e_su_az_mqtt az_iot_tests_e2e_su_offer_az_mqtt
 
       - name: Materialize device credential
         env:

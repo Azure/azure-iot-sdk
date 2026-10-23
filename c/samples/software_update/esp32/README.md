@@ -49,7 +49,7 @@ sequenceDiagram
 | `install` | `esp_ota_end` + `esp_ota_set_boot_partition`; returns `REBOOT_REQUIRED` |
 | `apply` | No-op; the new image is already running |
 | `restore` | Rollback to the running partition |
-| `persist` / `load` state | NVS namespace `su_sample`, key `wf_state` (resume across the reboot). The 36 KB `nvs` partition holds two generations of the largest checkpoint; [CMakeLists.txt](CMakeLists.txt) sets `AZ_IOT_SU_REQUEST_BUFFER_SIZE` to 8192 to bound it. Erase the flash when moving from the earlier 24 KB layout. |
+| `persist` / `load` state | NVS namespace `su_sample`, key `wf_state` (resume across the reboot). The 36 KB `nvs` partition holds two generations of the largest checkpoint; [main/app_main.c](main/app_main.c) sets `limits.max_update_size` to 8192 (`SU_MAX_UPDATE_SIZE`) to bound it. Erase the flash when moving from the earlier 24 KB layout. |
 
 Once connected to its hub, the new image calls `su_esp32_ota_mark_valid()`
 (`esp_ota_mark_app_valid_cancel_rollback`). If it crashes or never connects, the
@@ -103,7 +103,7 @@ Set with `idf.py menuconfig` → *Software Updates ESP32 Sample Configuration*
 | `SU_WIFI_PASSWORD` | yes | Wi-Fi password. |
 | `SU_DPS_ID_SCOPE` | yes | DPS ID scope. |
 | `SU_DPS_REGISTRATION_ID` | yes | Registration id / device id; must equal the certificate CN. |
-| `SU_POLL_INTERVAL_S` | no | Seconds between update checks once connected. Default `60`, range 10–86400. |
+| `SU_POLL_INTERVAL_S` | no | Seconds between update checks once connected. Default `14400` (4 h), range 10–86400. All devices share the provisioning service's request budget, which plans for one check per device every 4 hours; use a shorter interval only for testing. |
 
 **Matched against a deployed update.** A value that does not match the imported
 update is answered "nothing for me", which looks exactly like "nothing deployed".
@@ -143,8 +143,8 @@ production software updates roots compiled into the SDK. See
   git submodule update --init c/deps/azure-sdk-for-c
   ```
 
-`esp-mqtt` is fetched from the ESP Component Registry (`espressif/mqtt`) on the
-first build.
+`esp-mqtt` is fetched from the ESP Component Registry (`espressif/mqtt`, pinned
+to 1.1.0) on the first build.
 
 ### Build and flash
 
@@ -157,6 +157,20 @@ idf.py build flash monitor
 ```
 
 Leave the monitor running; see [Expected output](#expected-output).
+
+### CI builds
+
+CI (`ci-c`, job `esp-idf`) builds this sample for esp32, esp32c3, esp32s3 and
+esp32c6, with the default and the [production security](#production-security-profile-optional)
+profiles, plus the esp32 legacy and virtual eFuse profiles. Any compiler
+warning fails the build. To run one build the same way, from `c/`:
+
+```sh
+eng/esp-idf-build.sh samples/software_update/esp32 esp32c3 secure
+```
+
+Profiles: `default`, `secure`, `secure_esp32_legacy`, `secure_virtual_efuse`.
+Secure builds are signed with a throwaway key and must not be flashed.
 
 ### Deploy an update
 

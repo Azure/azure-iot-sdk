@@ -8,8 +8,8 @@
  * Both e2e executables (the fast scenario suite and the software updates suite) need the same
  * "device half": load the DPS/X.509 configuration from the environment, provision
  * via a DPS X.509 individual enrollment, and connect to the assigned IoT Hub over
- * the Paho MQTT adapter. This module owns that boilerplate so each suite only adds
- * its scenario-specific code.
+ * the MQTT adapter of the build (Paho or az_mqtt). This module owns that boilerplate so each suite
+ * only adds its scenario-specific code.
  *
  * The device id targeted by the service side is the DPS registration id (the SDK's
  * default: device id == registration id for individual enrollments).
@@ -98,7 +98,37 @@ extern "C"
      * clients that must see the first messages. Non-zero aborts the connect. Optional. */
     int (*before_open)(e2e_device* dev, void* ctx);
     void* before_open_ctx;
+    /** @brief Saved hub to connect to first, with DPS as the fallback; NULL for none. */
+    const struct e2e_device_hub* saved_hub;
+    /** @brief Replaces the default reconnection_policy; NULL keeps it. */
+    const az_iot_retry_policy* reconnection_policy;
+    /** @brief Replaces the default identity_recovery.mode (RETRY_HUB); NULL keeps it. */
+    const az_iot_identity_recovery_mode* identity_recovery_mode;
+    /** @brief Replaces the default identity_recovery.policy; NULL keeps it. */
+    const az_iot_retry_policy* identity_recovery_policy;
+    /** @brief dps.max_hub_connect_attempts_before_reprovision; 0 keeps the default. */
+    uint32_t max_hub_connect_attempts_before_reprovision;
+    /** @brief Seconds to wait for CONNECTED; 0 keeps the default. */
+    int connect_timeout_s;
+    /* Copied to the connection options' twin_push (mqttv5 only). */
+    bool twin_push_reported;
+    /** @brief Called after each pump while waiting for CONNECTED; optional. */
+    void (*during_connect)(void* ctx);
+    void* during_connect_ctx;
   } e2e_device_connect_options;
+
+  /** @brief A hub assignment, as saved after a connect (see e2e_device_get_hub()). */
+  typedef struct e2e_device_hub
+  {
+    char hostname[256];
+    char device_id[129];
+    az_iot_connection_profile profile;
+  } e2e_device_hub;
+
+  /** @brief Copies the hub's host name, device id and profile to @p out while the hub state is
+   * CONNECTED. Returns 0 on success; non-zero, leaving @p out untouched, when not CONNECTED, the
+   * profile is unknown or a value does not fit. @p out may be the connection's saved hub. */
+  int e2e_device_get_hub(const e2e_device* dev, e2e_device_hub* out);
 
   /* As e2e_device_connect(), with @p opts (NULL for the defaults). */
   int e2e_device_connect_with(e2e_device* dev, const e2e_device_connect_options* opts);

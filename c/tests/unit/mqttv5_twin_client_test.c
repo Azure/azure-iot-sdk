@@ -350,8 +350,7 @@ static void ack_birth(fixture* fx, uint64_t desired, uint64_t reported)
   ack_msg.topic = "ih/ut-device/dev/presence";
   ack_msg.correlation_data = fx->nonce;
   ack_msg.correlation_data_len = sizeof(fx->nonce);
-  ack_msg.user_properties = &ack_type;
-  ack_msg.user_properties_count = 1;
+  ack_msg.user_properties = az_iot_mqtt_user_properties_from_array(&ack_type, 1);
   ack_msg.payload = ack_len ? ack_body : NULL;
   ack_msg.payload_len = ack_len;
   az_iot_mqtt_event ack;
@@ -450,8 +449,7 @@ static void reconnect_with_versions(fixture* fx, uint8_t desired, uint8_t report
   ack_msg.topic = "ih/ut-device/dev/presence";
   ack_msg.correlation_data = fx->nonce;
   ack_msg.correlation_data_len = sizeof(fx->nonce);
-  ack_msg.user_properties = &ack_type;
-  ack_msg.user_properties_count = 1;
+  ack_msg.user_properties = az_iot_mqtt_user_properties_from_array(&ack_type, 1);
   ack_msg.payload = ack_len ? ack_body : NULL;
   ack_msg.payload_len = ack_len;
   az_iot_mqtt_event ack;
@@ -474,7 +472,16 @@ static void inject_twin_on(
     const uint8_t* payload,
     size_t payload_len)
 {
-  az_iot_mqtt_user_property type_prop = { "type", type };
+  /* `type` comes after 20 other properties, past any fixed array an adapter
+   * used to hold, so every case here also proves it is found there. */
+  az_iot_mqtt_user_property props[21];
+  for (size_t i = 0; i < 20; ++i)
+  {
+    props[i].key = "filler";
+    props[i].value = "x";
+  }
+  props[20].key = "type";
+  props[20].value = type;
   az_iot_mqtt_message msg;
   memset(&msg, 0, sizeof(msg));
   msg.topic = topic;
@@ -484,11 +491,7 @@ static void inject_twin_on(
   msg.correlation_data_len = corr_len;
   msg.content_type = "application/protobuf";
   msg.qos = AZ_IOT_MQTT_QOS_0;
-  if (type)
-  {
-    msg.user_properties = &type_prop;
-    msg.user_properties_count = 1;
-  }
+  msg.user_properties = az_iot_mqtt_user_properties_from_array(props, type != NULL ? 21 : 20);
   az_iot_mqtt_event evt;
   memset(&evt, 0, sizeof(evt));
   evt.kind = AZ_IOT_MQTT_EVT_MESSAGE;
@@ -2408,8 +2411,7 @@ static void a_reconnect_reseeds_the_versions_from_the_new_birth_ack(void** state
   ack_msg.topic = "ih/ut-device/dev/presence";
   ack_msg.correlation_data = fx->nonce;
   ack_msg.correlation_data_len = sizeof(fx->nonce);
-  ack_msg.user_properties = &ack_type;
-  ack_msg.user_properties_count = 1;
+  ack_msg.user_properties = az_iot_mqtt_user_properties_from_array(&ack_type, 1);
   ack_msg.payload = ack_body;
   ack_msg.payload_len = sizeof(ack_body);
   az_iot_mqtt_event ack;

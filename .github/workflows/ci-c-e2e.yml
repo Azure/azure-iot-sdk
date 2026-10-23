@@ -46,8 +46,10 @@
 # setup/teardown and use a long-lived IoT Hub + DPS instead. Each leg issues its
 # own device certificate from the DPS X.509 enrollment group's CA, and takes the
 # DPS symmetric-key group's key for the SAS suite (c/eng/e2e-shared-device.ps1),
-# so legs never share a device and no Azure call is made. Test code gets only the
-# hub's 'service' policy key, and the test job never logs in to Azure. Same
+# so legs never share a device and no Azure call is made. Test code gets the
+# hub's 'service' policy key, plus, for the TPM suite, a DPS policy with
+# EnrollmentWrite + RegistrationStatusWrite and a hub policy with RegistryWrite
+# (its enrollment and device cleanup); the test job never logs in to Azure. Same
 # tests. Push and nightly runs always provision. Unset the variable to return to
 # per-run provisioning.
 
@@ -211,9 +213,9 @@ jobs:
         # Linux-only for now: it needs an OpenSSL pkcs11 provider, which the
         # Windows runner image does not carry.
         run: |
-          cmake --preset ${{ matrix.preset }} -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_WITH_PAHO=ON ${{ runner.os == 'Linux' && '-DAZ_IOT_BUILD_E2E_PKCS11=ON' || '' }}
-          cmake --build --preset ${{ matrix.preset }} ${{ runner.os == 'Windows' && '--config Debug' || '' }} --target az_iot_tests_e2e az_iot_tests_e2e_fileupload az_iot_tests_e2e_transport az_iot_tests_e2e_amqp_link az_iot_tests_e2e_notify_time az_iot_tests_e2e_sas
-          ${{ runner.os == 'Linux' && format('cmake --build --preset {0} --target az_iot_tests_e2e_custody', matrix.preset) || '' }}
+          cmake --preset ${{ matrix.preset }} -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_WITH_PAHO=ON -DAZ_IOT_WITH_AZ_MQTT=ON ${{ runner.os == 'Linux' && '-DAZ_IOT_BUILD_E2E_PKCS11=ON' || '' }}
+          cmake --build --preset ${{ matrix.preset }} ${{ runner.os == 'Windows' && '--config Debug' || '' }} --target az_iot_tests_e2e az_iot_tests_e2e_fileupload az_iot_tests_e2e_transport az_iot_tests_e2e_amqp_link az_iot_tests_e2e_notify_time az_iot_tests_e2e_http_headers az_iot_tests_e2e_sas az_iot_tests_e2e_tpm az_iot_tests_e2e_az_mqtt az_iot_tests_e2e_fileupload_az_mqtt az_iot_tests_e2e_transport_az_mqtt az_iot_tests_e2e_sas_az_mqtt az_iot_tests_e2e_tpm_az_mqtt
+          ${{ runner.os == 'Linux' && format('cmake --build --preset {0} --target az_iot_tests_e2e_custody az_iot_tests_e2e_custody_az_mqtt az_iot_tests_e2e_amqp_transport_sigpipe', matrix.preset) || '' }}
 
       - name: Build the file upload sample (Linux)
         if: runner.os == 'Linux'
@@ -236,6 +238,8 @@ jobs:
           E2E_SHARED_EVENTHUB_CS: ${{ secrets.E2E_SHARED_EVENTHUB_CS }}
           E2E_SHARED_ID_SCOPE: ${{ vars.E2E_SHARED_ID_SCOPE }}
           E2E_SHARED_SAS_GROUP_KEY: ${{ secrets.E2E_SHARED_SAS_GROUP_KEY }}
+          E2E_SHARED_DPS_CS: ${{ secrets.E2E_SHARED_DPS_CS }}
+          E2E_SHARED_IOTHUB_REGISTRY_CS: ${{ secrets.E2E_SHARED_IOTHUB_REGISTRY_CS }}
           E2E_REGISTRATION_ID: ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.device-index }}
           E2E_DEVICE_INDEX: ${{ matrix.device-index }}
           E2E_RUN_ID: ${{ github.run_id }}
@@ -332,8 +336,8 @@ jobs:
           # `-R e2e` runs the fast suite (az_iot_tests_e2e), the file upload
           # suite and the transport suite (WebSockets, and MQTT through an HTTP
           # proxy; its proxy scenarios skip themselves when no proxy is
-          # configured for the leg), and the AMQP link and notification-time
-          # tests (no Azure resources).
+          # configured for the leg), the DPS TPM suite, and the AMQP link,
+          # notification-time and HTTP header parsing tests (no Azure resources).
           # The mocked ADU suite retired with ADU's twin delivery channel
           # and is not built. The CSR enrollment test is not built
           # here -- it needs a DPS enrollment linked to a signing CA, which only
@@ -347,22 +351,7 @@ jobs:
             --output-junit ./test_config/results/e2e-${{ matrix.os }}.xml
 
       - name: Run the PKCS#11 custody e2e (Linux)
-        # Runs on the nightly schedule and on demand, NOT on pull requests.
-        #
-        # The suite itself is finished and the mechanism is pinned by the
-        # unit-level custody suite, which drives the same adapter code against a
-        # real SoftHSM2 token and feeds the result to
-        # SSL_CTX_use_PrivateKey_file -- verbatim what Paho does. What is not
-        # settled is the handshake against a live hub with a token-held key: it
-        # currently ends in "TCP/TLS connect failure" with no OpenSSL reason
-        # reaching the log, and diagnosing that needs the provisioned hub in
-        # front of it rather than another blind push. Gating pull requests on an
-        # unfinished bring-up would only teach people to ignore a red check.
-        #
-        # This is the same phasing the coverage gate used: measure and publish
-        # first, block later. Move it back onto pull_request once a nightly run
-        # is green.
-        if: runner.os == 'Linux' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+        if: runner.os == 'Linux'
         shell: pwsh
         # The "Storage / custody" scenario of docs/eng/certificate-management.md:
         # the SAME device provisions through DPS and talks to the hub, but with
@@ -383,16 +372,8 @@ jobs:
           # eval the provider script rather than merely running it, so
           # setup-softhsm.sh sees OPENSSL_MODULES and writes an explicit
           # "module = .../pkcs11.so" into the configuration it generates. The
-          # coverage job in ci-c.yml has always eval'd it; this one did not.
-          #
-          # This is hygiene, NOT the cause of the nightly failure. Without the
-          # eval the configuration names the provider by section only, but
-          # OPENSSL_MODULES still reaches the test process -- the loop below
-          # parses the provider script's own export line -- so the provider
-          # resolves either way. Measured: a configuration generated with
-          # OPENSSL_MODULES unset still activates pkcs11 when the variable is set
-          # at run time. Naming the module makes the configuration independent of
-          # that variable instead of relying on it.
+          # coverage job in ci-c.yml does the same. Naming the module makes the
+          # configuration independent of OPENSSL_MODULES at run time.
           $exports = & bash -c 'set -e; mods="$(c/eng/setup-pkcs11-provider.sh)"; eval "$mods"; echo "$mods"; c/eng/setup-softhsm.sh "$AZ_IOT_CLIENT_KEY" --keep-key-file'
           if ($LASTEXITCODE -ne 0) { throw "PKCS#11 token provisioning failed ($LASTEXITCODE)" }
           foreach ($line in $exports) {

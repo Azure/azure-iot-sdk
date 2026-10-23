@@ -636,8 +636,10 @@ extern "C"
     az_iot_mqtt_transport transport;
 
     /* WebSocket resource path; used only when transport is WEBSOCKET. NULL
-     * selects AZ_IOT_MQTT_DEFAULT_WEBSOCKET_PATH ("/$iothub/websocket"), which
-     * is what IoT Hub and DPS expect; set it only for a gateway that terminates
+     * selects the service's path per session: AZ_IOT_MQTT_DEFAULT_WEBSOCKET_PATH
+     * ("/$iothub/websocket") for DPS and an mqttv3 hub,
+     * AZ_IOT_MQTT_HUB_V5_WEBSOCKET_PATH ("/mqtt") for an mqttv5 hub. A value set
+     * here is used for every session; set it only for a gateway that terminates
      * WebSockets elsewhere. */
     const char* websocket_path;
 
@@ -834,7 +836,9 @@ extern "C"
      * both roles. NULL uses the C library's time(); set it on a platform
      * without one. A time of 0, or one so large the token expiry would
      * overflow, fails the attempt with AZ_IOT_ERR_BUSY: open() returns it; a
-     * reconnect attempt is retried under reconnection_policy.
+     * reconnect attempt is retried under reconnection_policy. The software
+     * updates client also reads it to keep a failed workflow's retry wait
+     * across restarts.
      */
     struct
     {
@@ -1036,6 +1040,28 @@ extern "C"
 
   typedef void (*az_iot_publish_ack_callback)(az_iot_result status, void* user_ctx);
 
+  /** @brief How a publish ended, as its completion callback sees it. */
+  typedef struct az_iot_publish_result
+  {
+    /** The outcome; the publishing function lists the values. */
+    az_iot_result status;
+    /** MQTT 5 reason code behind @p status: the hub's PUBACK code, or one the MQTT adapter reports
+     * for a publish it dropped (0x95: over the hub's Maximum Packet Size). 0: none (QoS 0, MQTT
+     * 3.1.1, the session ended first, or an adapter that does not report one). */
+    int32_t reason_code;
+    /** The hub's PUBACK Reason String: UTF-8, not NUL-terminated, valid only during the callback.
+     * NULL: none, or not reported (an adapter need report it only for a refusal). Non-NULL with
+     * length 0: present and empty. For diagnostics; its text is not a stable interface. */
+    const char* reason_string;
+    /** Bytes at @p reason_string. */
+    size_t reason_string_len;
+  } az_iot_publish_result;
+
+  /** @brief Completion of a publish, with the hub's verdict. @p result is valid only during the
+   * call. */
+  typedef void (
+      *az_iot_publish_result_callback)(const az_iot_publish_result* result, void* user_ctx);
+
   /* Notified when an MQTT session ends -- peer disconnect, transport error, or a
    * user close -- so a feature client can complete whatever it had correlated
    * against that session instead of waiting forever for a response that can no
@@ -1105,6 +1131,42 @@ extern "C"
    * inbound MQTT message, which is reused as soon as the callback returns.
    * Copy anything that must outlive the call. */
   typedef void (*az_iot_registration_payload_callback)(az_span payload, void* user_ctx);
+
+  /**
+   * @brief A DPS assignment the client adopted. Persist it to connect straight
+   * to the hub after a restart; see docs/connecting.md.
+   *
+   * Every pointer is valid only during the callback; copy what must be kept.
+   */
+  typedef struct az_iot_dps_assignment
+  {
+    /** @brief Assigned IoT Hub hostname; restore as opts.iothub_hostname. */
+    const char* hub_hostname;
+    /** @brief Assigned device id; restore as opts.device_id. */
+    const char* device_id;
+    /** @brief Assigned profile; restore profile->connection_profile as
+     * opts.connection_profile. Never AZ_IOT_CONNECTION_PROFILE_UNKNOWN. */
+    const az_iot_hub_profile* profile;
+  } az_iot_dps_assignment;
+
+  /**
+   * @brief Fired each time the client adopts a DPS assignment: after the first
+   * registration and after every re-provision, before the hub connect starts.
+   * Not fired for an assignment the client rejects; its issued certificate,
+   * if any, is not stored either.
+   *
+   * With dps.request_operational_certificate, the issued chain is already
+   * stored in the certificate provider.
+   *
+   * Runs from az_iot_connection_client_do_work(). It may call
+   * az_iot_connection_client_close(), and then no hub connect follows; it must
+   * not call az_iot_connection_client_deinit().
+   *
+   * @param assignment The adopted assignment; valid only during the call.
+   * @param user_ctx   As registered.
+   */
+  typedef void (
+      *az_iot_dps_assignment_callback)(const az_iot_dps_assignment* assignment, void* user_ctx);
 
   /* What a refused persistent subscription costs. Both values name a FAILURE:
    * the difference is blast radius, not whether the subscription mattered.
@@ -1470,6 +1532,8 @@ extern "C"
     {
       uint16_t packet_id;
       az_iot_publish_ack_callback cb;
+      /* Set instead of cb by a publish that wants the hub's verdict. */
+      az_iot_publish_result_callback result_cb;
       void* user_ctx;
       bool in_use;
       /* Index into puback_reservations[] the slot counts against; UINT8_MAX for the shared pool. */
@@ -1843,6 +1907,15 @@ extern "C"
     az_iot_connection_profile dps_assigned_profile;
     char dps_assigned_profile_raw[AZ_IOT_CONNECTION_PROFILE_RAW_BUF];
     bool dps_assigned_profile_raw_truncated;
+
+    az_iot_dps_assignment_callback assignment_cb;
+    void* assignment_cb_ctx;
+    /* A stored issued chain awaits adoption of its assignment: the other
+     * generation cannot be required until then. */
+    bool dps_cert_awaits_adoption;
+    /* The issued chain was not stored because the assignment was to be
+     * rejected; it must not be adopted. */
+    bool dps_cert_withheld;
   };
 
   typedef struct az_iot_connection_client az_iot_connection_client;
@@ -1983,6 +2056,20 @@ extern "C"
       az_iot_registration_payload_callback cb,
       void* user_ctx);
 
+  /**
+   * @brief Registers a callback fired when a DPS assignment is adopted. Optional;
+   * NULL @p cb unregisters.
+   *
+   * @param[in] client   Client.
+   * @param[in] cb       See az_iot_dps_assignment_callback.
+   * @param[in] user_ctx Passed to @p cb.
+   * @return AZ_IOT_OK; AZ_IOT_ERR_INVALID_ARG for a NULL client.
+   */
+  az_iot_result az_iot_connection_client_set_dps_assignment_callback(
+      az_iot_connection_client* client,
+      az_iot_dps_assignment_callback cb,
+      void* user_ctx);
+
   /* Open a session to the configured host. Non-blocking; observe state via callback
    * and drive progress with do_work().
    *
@@ -2069,10 +2156,19 @@ extern "C"
   AZ_NODISCARD az_iot_result
   az_iot_connection_client_request_reprovision(az_iot_connection_client* client);
 
-  /* Pump network I/O and dispatch callbacks. Single-threaded contract: all user
-   * callbacks fire synchronously from inside this call. Not AZ_NODISCARD: this is a
-   * pump, commonly called in a loop where the per-call result is observed via the
-   * state callback rather than the return value. */
+  /**
+   * @brief Pump network I/O and dispatch callbacks.
+   *
+   * Single-threaded: user callbacks fire synchronously inside this call. The SDK does
+   * not lock its state against other threads: make every SDK call, for every client
+   * in the process, from one thread, or serialize the calls (docs/architecture.md).
+   * Not AZ_NODISCARD: it is called in a loop, and results surface on the state callback.
+   *
+   * @param[in,out] client     The client.
+   * @param[in]     timeout_ms Longest wait for network activity when idle.
+   * @return AZ_IOT_ERR_INVALID_ARG for a NULL client; otherwise the MQTT adapter's
+   *         process_loop() result.
+   */
   az_iot_result az_iot_connection_client_do_work(
       az_iot_connection_client* client,
       uint32_t timeout_ms);

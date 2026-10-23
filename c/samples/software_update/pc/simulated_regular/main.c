@@ -20,12 +20,13 @@
  * checks and status reports still run on the provisioning session, which the
  * SDK reopens on demand after registration.
  *
- * It checks once at startup, then every AZ_IOT_SU_POLL_INTERVAL_S while no
- * deployment is in flight. After an update succeeds it reports the applied
+ * It checks once at startup, again at once after each update succeeds (until
+ * the service answers "no update"), and every AZ_IOT_SU_POLL_INTERVAL_S while
+ * no deployment is in flight. After an update succeeds it reports the applied
  * update as installed, so the next check asks for what comes after it.
  *
  * Real:      connection, update request/response, manifest receipt, JWS
- *            verification (OpenSSL), per-file SHA-256 hash check, status
+ *            verification (OpenSSL or mbedTLS), per-file SHA-256 hash check, status
  *            reporting.
  * Simulated: download_fn (synthesizes deterministic payload bytes),
  *            install/apply/backup/restore (log only, optional forced failure
@@ -51,9 +52,10 @@
  *
  * Other knobs (environment variables, all optional):
  *   AZ_IOT_SU_POLL_INTERVAL_S=<s>  seconds between update checks (default
- *                                   60); 0 checks once, at startup. A
- *                                   check not answered within half the
- *                                   interval (at most 60 s) is abandoned.
+ *                                   14400, 4 h); 0 checks only at startup
+ *                                   and after an update. A check not
+ *                                   answered within half the interval (at
+ *                                   most 60 s) is abandoned.
  *   AZ_IOT_SU_LOG_LEVEL=<lvl>      trace|debug|info|warn|error|off (default
  *                                   info). The SDK's "su:" and "dps:"
  *                                   protocol lines are emitted at debug.
@@ -74,8 +76,22 @@
 
 #include "azure/iot/az_iot.h"
 #include "azure/iot/az_iot_su.h"
+/* The MQTT adapter this build of the sample uses (see samples/CMakeLists.txt). */
+#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
 #include "azure/iot/adapters/az_iot_adapter_paho.h"
+#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
+#include "azure/iot/adapters/az_iot_adapter_az_mqtt.h"
+#else
+#error "Define AZ_IOT_SAMPLE_ADAPTER_PAHO or AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT"
+#endif
+/* The crypto backend this build of the sample uses (see samples/CMakeLists.txt). */
+#if defined(AZ_IOT_SAMPLE_CRYPTO_OPENSSL)
 #include "az_iot_crypto_openssl.h"
+#elif defined(AZ_IOT_SAMPLE_CRYPTO_MBEDTLS)
+#include "az_iot_crypto_mbedtls.h"
+#else
+#error "Define AZ_IOT_SAMPLE_CRYPTO_OPENSSL or AZ_IOT_SAMPLE_CRYPTO_MBEDTLS"
+#endif
 
 #include "sample_utils.h"
 #include "su_sim.h"
@@ -124,16 +140,25 @@ typedef struct
   int su_workflow_succeeded; /* ...and it was applied successfully */
   uint32_t su_retry_after_ms; /* the service asked to wait before asking again */
 
-  AZ_IOT_SU_DEVICE_PROPERTIES_STORAGE(dp_buffer);
 } sample_state;
+
+/* The software updates client's memory: update copy, persisted-state record,
+ * scratch, message body and device-property strings. Sized for the limits
+ * main() sets; static, as it is too large for a stack frame. */
+static uint8_t g_su_workspace[AZ_IOT_SU_WORKSPACE_DEFAULT_SIZE];
 
 static void sample_state_destroy(sample_state* s)
 {
   az_iot_su_client_deinit(&s->su_client);
 
   az_iot_connection_client_deinit(&s->connection_client);
+#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
   az_iot_paho_factory_destroy(s->factory_v3);
   az_iot_paho_factory_destroy(s->factory_v5);
+#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
+  az_iot_az_mqtt_factory_destroy(s->factory_v3);
+  az_iot_az_mqtt_factory_destroy(s->factory_v5);
+#endif
   az_iot_certificate_provider_pem_deinit(&s->certs);
   sample_config_release(&s->config);
 
@@ -276,6 +301,12 @@ static void on_su_event(const az_iot_su_event* event, void* user_ctx)
     case AZ_IOT_SU_EVENT_REPORT_ACCEPTED:
       printf("Status report accepted%s.\n", event->report_terminal ? " (final)" : "");
       break;
+    case AZ_IOT_SU_EVENT_UPDATE_RETRY_WAIT:
+      /* A later update check offers it again; it is retried once the wait elapses. */
+      printf(
+          "Failed update offered again; retry in %u s.\n",
+          (unsigned)(event->retry_after_ms / 1000u));
+      break;
   }
 }
 
@@ -305,10 +336,16 @@ static int initialize_connection_client(sample_state* state)
 
   /* Connection client. */
   az_iot_connection_client_options copts = az_iot_connection_client_options_default();
-  sample_apply_dps_options(&copts, &state->config);
+  copts.dps.id_scope = state->config.id_scope;
+  copts.dps.registration_id = state->config.reg_id;
+  copts.dps.global_endpoint = state->config.dps_global_endpoint; /* NULL: the global default */
   copts.certificate_provider = &state->certs.base;
   /* Verifies update manifests and hashes downloaded files. */
+#if defined(AZ_IOT_SAMPLE_CRYPTO_OPENSSL)
   copts.crypto = az_iot_crypto_openssl();
+#elif defined(AZ_IOT_SAMPLE_CRYPTO_MBEDTLS)
+  copts.crypto = az_iot_crypto_mbedtls();
+#endif
   if (az_iot_connection_client_init(&state->connection_client, &copts) != AZ_IOT_OK)
   {
     return 1;
@@ -320,8 +357,13 @@ static int initialize_connection_client(sample_state* state)
     return 1;
   }
 
+#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
   state->factory_v3 = az_iot_paho_factory_create_v3_1_1();
   state->factory_v5 = az_iot_paho_factory_create_v5();
+#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
+  state->factory_v3 = az_iot_az_mqtt_factory_create_v3_1_1();
+  state->factory_v5 = az_iot_az_mqtt_factory_create_v5();
+#endif
   if (az_iot_connection_client_register_mqtt_factory(&state->connection_client, state->factory_v3)
           != AZ_IOT_OK
       || az_iot_connection_client_register_mqtt_factory(
@@ -359,10 +401,13 @@ int main(void)
     return 1;
   }
 
-  long poll_interval_s = su_sample_env_long("AZ_IOT_SU_POLL_INTERVAL_S", 60);
+  /* Every check and report of every device shares one per-instance request
+   * budget on the provisioning service, which plans for one check per device
+   * every 4 hours. */
+  long poll_interval_s = su_sample_env_long("AZ_IOT_SU_POLL_INTERVAL_S", 14400);
   if (poll_interval_s < 0)
   {
-    poll_interval_s = 60;
+    poll_interval_s = 14400;
   }
   /* Each check is bounded to half the poll interval: a new request resets the
    * deadline, so a longer bound would let an unanswered check outlive every
@@ -421,14 +466,14 @@ int main(void)
   fill_device_properties(&state, &dp);
 
   size_t dp_needed = az_iot_su_device_properties_buffer_size(&dp);
-  if (dp_needed == 0 || dp_needed > sizeof(state.dp_buffer))
+  if (dp_needed == 0 || dp_needed > AZ_IOT_SU_DEVICE_PROPERTIES_BUFFER_SIZE)
   {
     fprintf(
         stderr,
         "Device properties are invalid or too long for the %zu-byte cache. Need "
         "1-%d compatibility properties and a nonempty installed provider, name and "
         "version.\n",
-        sizeof(state.dp_buffer),
+        (size_t)AZ_IOT_SU_DEVICE_PROPERTIES_BUFFER_SIZE,
         AZ_IOT_SU_MAX_COMPATIBILITY_PROPERTIES);
     sample_state_destroy(&state);
     return 1;
@@ -455,8 +500,13 @@ int main(void)
   su_opts.root_keys = root_keys;
   su_opts.root_key_count = root_key_count;
   su_opts.device_properties = &dp;
-  su_opts.device_properties_buffer = state.dp_buffer;
-  su_opts.device_properties_buffer_size = sizeof(state.dp_buffer);
+  /* Limits, each the SDK default; the workspace is sized for them. */
+  su_opts.limits.max_update_size = AZ_IOT_SU_DEFAULT_MAX_UPDATE_SIZE;
+  su_opts.limits.scratch_size = AZ_IOT_SU_VERIFY_SCRATCH_SIZE;
+  su_opts.limits.max_message_size = AZ_IOT_SU_DEFAULT_MAX_MESSAGE_SIZE;
+  su_opts.limits.device_properties_size = AZ_IOT_SU_DEVICE_PROPERTIES_BUFFER_SIZE;
+  su_opts.workspace = g_su_workspace;
+  su_opts.workspace_size = sizeof(g_su_workspace);
   if (az_iot_su_client_init(&state.su_client, &state.connection_client, &su_opts) != AZ_IOT_OK)
   {
     fprintf(stderr, "az_iot_su_client_init failed\n");
@@ -513,6 +563,7 @@ int main(void)
   }
 
   uint64_t next_check_ms = sample_now_ms() + (uint64_t)poll_interval_s * 1000u;
+  int check_now = 0; /* an update was applied: ask again for what comes after it */
 
   rc = 0; /* interrupted or asked to reboot is a normal exit */
   while (!g_stop)
@@ -523,7 +574,6 @@ int main(void)
     if (state.su_workflow_completed)
     {
       state.su_workflow_completed = 0;
-      (void)remove(state.simulation_control.state_file); /* clear the resume blob */
 
       /* Report the applied update as installed. Without this the next check
        * still sends the previous id, and is offered the same update again. */
@@ -554,10 +604,12 @@ int main(void)
               state.su_device_properties.installed_provider,
               state.su_device_properties.installed_name,
               state.su_device_properties.installed_version);
+          /* Only with the new id: the old one would be offered the same update again. */
+          check_now = 1;
         }
         else
         {
-          fprintf(stderr, "Could not record the applied update as installed.\n");
+          fprintf(stderr, "Could not record the applied update as installed; not checking now.\n");
         }
       }
       state.su_workflow_succeeded = 0;
@@ -597,9 +649,12 @@ int main(void)
       state.su_retry_after_ms = 0;
     }
 
-    /* Poll, while no deployment is in flight. */
-    if (poll_interval_s > 0 && !state.su_workflow_active && sample_now_ms() >= next_check_ms)
+    /* Poll, and ask again after each applied update, while no deployment is in
+     * flight. */
+    if (!state.su_workflow_active
+        && (check_now || (poll_interval_s > 0 && sample_now_ms() >= next_check_ms)))
     {
+      check_now = 0;
       next_check_ms = sample_now_ms() + (uint64_t)poll_interval_s * 1000u;
       if (az_iot_su_client_request_update(&state.su_client, request_timeout_ms) != AZ_IOT_OK)
       {

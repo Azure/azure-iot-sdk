@@ -69,8 +69,9 @@ option(AZ_IOT_BUILD_PKCS11_TESTS "Register the Paho key-custody tests that need 
 # The custody e2e suite runs DPS issuance and hub traffic with a device key that
 # lives inside a PKCS#11 token. It needs BOTH a provisioned token and the
 # standard e2e Azure resources, which only the e2e workflow has, so it follows
-# the same build-it-when-it-will-run rule as AZ_IOT_BUILD_E2E_CSR.
-option(AZ_IOT_BUILD_E2E_PKCS11 "Build the PKCS#11 custody e2e test (needs a token + e2e resources)" OFF)
+# the same build-it-when-it-will-run rule as AZ_IOT_BUILD_E2E_CSR. With
+# AZ_IOT_BUILD_E2E_MQTTV5 it also builds the mqttv5 custody suite.
+option(AZ_IOT_BUILD_E2E_PKCS11 "Build the PKCS#11 custody e2e tests (need a token + e2e resources)" OFF)
 # Install rules and the azure-iot-sdk CMake package (find_package). On by default
 # only for a top-level build, so a parent project that adds this tree with
 # add_subdirectory() or FetchContent does not install it as a side effect.
@@ -87,6 +88,10 @@ option(AZ_IOT_ENABLE_MSVC_ANALYZE "Run the MSVC code analyzer (/analyze) on firs
 # the normal debug build. No-op on MSVC -- Windows coverage is collected
 # externally by OpenCppCoverage against an ordinary build.
 option(AZ_IOT_ENABLE_COVERAGE  "Instrument first-party targets for gcov"       OFF)
+# Tells valgrind's helgrind and DRD about the SDK's own spin lock (log_file.c),
+# which they cannot see. Needs <valgrind/helgrind.h>. No-op at run time outside
+# valgrind; used by the race-detector CI job.
+option(AZ_IOT_RACE_ANNOTATIONS "Annotate SDK synchronization for helgrind and DRD" OFF)
 # azure-sdk-for-c (az::core + az::iot::hub + az::iot::provisioning) is a
 # MANDATORY dependency. It is how we talk to DPS and the MQTTv3 hub. There is
 # intentionally no option to disable it.
@@ -96,3 +101,24 @@ option(AZ_IOT_ENABLE_COVERAGE  "Instrument first-party targets for gcov"       O
 # package-feed prefix); see docs/client-configuration.md.
 option(AZ_IOT_USE_INSTALLED_AZURE_SDK_FOR_C "Use an installed azure-sdk-for-c (cmake/Findazure-sdk-for-c.cmake) instead of fetching it" OFF)
 option(AZ_IOT_USE_INSTALLED_PAHO "Use an installed Eclipse Paho C (find_package(eclipse-paho-mqtt-c)) instead of fetching it" OFF)
+
+# Options that would otherwise create nothing without saying so.
+foreach(_opt AZ_IOT_BUILD_E2E_SU AZ_IOT_BUILD_E2E_CSR AZ_IOT_BUILD_E2E_MQTTV5 AZ_IOT_BUILD_E2E_PKCS11)
+    if(${_opt} AND NOT AZ_IOT_BUILD_E2E)
+        message(FATAL_ERROR "${_opt}=ON needs AZ_IOT_BUILD_E2E=ON")
+    endif()
+endforeach()
+unset(_opt)
+foreach(_opt AZ_IOT_BUILD_E2E AZ_IOT_BUILD_PKCS11_TESTS)
+    if(${_opt} AND NOT AZ_IOT_BUILD_TESTS)
+        message(FATAL_ERROR "${_opt}=ON needs AZ_IOT_BUILD_TESTS=ON")
+    endif()
+endforeach()
+unset(_opt)
+if(AZ_IOT_BUILD_E2E AND NOT (AZ_IOT_WITH_PAHO OR AZ_IOT_WITH_AZ_MQTT))
+    message(FATAL_ERROR "AZ_IOT_BUILD_E2E=ON needs an MQTT adapter to run over "
+        "(AZ_IOT_WITH_PAHO=ON or AZ_IOT_WITH_AZ_MQTT=ON)")
+endif()
+if(AZ_IOT_BUILD_PKCS11_TESTS AND NOT AZ_IOT_WITH_PAHO)
+    message(FATAL_ERROR "AZ_IOT_BUILD_PKCS11_TESTS=ON needs the Paho adapter (AZ_IOT_WITH_PAHO=ON)")
+endif()

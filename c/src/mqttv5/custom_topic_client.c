@@ -177,10 +177,10 @@ AZ_NODISCARD az_iot_result az_iot_mqttv5_custom_topic_client_publish(
   mqtt_message.payload_len = message->payload_len;
   mqtt_message.qos = message->qos;
   mqtt_message.content_type = message->content_type;
-  mqtt_message.user_properties = message->user_properties;
-  mqtt_message.user_properties_count = message->user_properties_count;
+  mqtt_message.user_properties = az_iot_mqtt_user_properties_from_array(
+      message->user_properties, message->user_properties_count);
   mqtt_message.message_expiry_seconds = message->message_expiry_seconds;
-  return az_iot_connection_client__publish(
+  return az_iot_connection_client__publish_with_result(
       client->_internal.conn, client, &mqtt_message, callback, user_ctx);
 }
 

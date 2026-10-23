@@ -18,10 +18,8 @@
  * arrive on the provisioning subscription the connection client already
  * establishes, which is why this channel adds no subscription of its own.
  *
- * STATUS: the bootstrap (pre-registration) path is wired. The operational poll
- * runs after the provisioning session has been torn down and needs session
- * lifetime work in the connection client that is not done yet; until then
- * request_update() reports AZ_IOT_ERR_NOT_CONNECTED rather than pretending.
+ * Both routes are implemented. After registration the channel keeps, or opens
+ * on demand, a provisioning session for the operational route.
  */
 
 #include <string.h>
@@ -346,16 +344,12 @@ static az_iot_su_error_action handle_failure(
       c->service_config_etag[0] = '\0';
       break;
 
-    case AZ_IOT_SU_ERROR_ACTION_DROP_SERVICE_CONFIG_ETAG:
-      c->service_config_etag[0] = '\0';
-      break;
-
     case AZ_IOT_SU_ERROR_ACTION_NONE:
     case AZ_IOT_SU_ERROR_ACTION_PROCEED:
     case AZ_IOT_SU_ERROR_ACTION_RETRY_AFTER:
     case AZ_IOT_SU_ERROR_ACTION_RETRY:
-    case AZ_IOT_SU_ERROR_ACTION_ALREADY_REPORTED:
     case AZ_IOT_SU_ERROR_ACTION_FATAL:
+    case AZ_IOT_SU_ERROR_ACTION_RECHECK:
     default:
       /* Nothing cached to invalidate; the caller decides whether to retry. */
       break;
@@ -801,7 +795,7 @@ static az_iot_result channel_request_update(void* ctx, az_iot_su_operation opera
       (c->agent_info_etag[0] != '\0') ? c->agent_info_etag : NULL,
       (c->service_config_etag[0] != '\0') ? c->service_config_etag : NULL,
       c->body,
-      sizeof(c->body),
+      c->body_size,
       &body_len);
   if (r == AZ_IOT_ERR_NOT_ENOUGH_SPACE
       && (c->agent_info_etag[0] != '\0' || c->service_config_etag[0] != '\0'))
@@ -813,7 +807,7 @@ static az_iot_result channel_request_update(void* ctx, az_iot_su_operation opera
     c->agent_info_etag[0] = '\0';
     c->service_config_etag[0] = '\0';
     r = az_iot_su__build_fetch_request(
-        &agent, installed, NULL, NULL, c->body, sizeof(c->body), &body_len);
+        &agent, installed, NULL, NULL, c->body, c->body_size, &body_len);
   }
   if (r != AZ_IOT_OK)
   {
@@ -849,7 +843,7 @@ static az_iot_result channel_report(void* ctx, const az_iot_su_report* report)
   }
 
   size_t body_len = 0;
-  az_iot_result r = az_iot_su__build_report_request(report, c->body, sizeof(c->body), &body_len);
+  az_iot_result r = az_iot_su__build_report_request(report, c->body, c->body_size, &body_len);
   if (r != AZ_IOT_OK)
   {
     return r;
@@ -889,7 +883,7 @@ static az_iot_result channel_set_device_properties(
    * same body, installed ID included. ETags are left out: they are optional,
    * and a request that cannot fit them drops them. */
   r = az_iot_su__fetch_request_size(
-      &agent, installed.provider != NULL ? &installed : NULL, NULL, NULL, sizeof(c->body), NULL);
+      &agent, installed.provider != NULL ? &installed : NULL, NULL, NULL, c->body_size, NULL);
   if (r != AZ_IOT_OK)
   {
     return r;
@@ -1042,7 +1036,12 @@ static size_t put_etag(uint8_t* p, const char* etag)
   return n + 1u;
 }
 
-/** @brief Serialize the cached ETags so a reboot does not force a full agentInfo resend. */
+/**
+ * @brief Serialize the cached ETags into the client's persisted record.
+ *
+ * They survive a reboot only while a workflow, terminal or retry record is
+ * retained.
+ */
 static az_iot_result channel_save_state(void* ctx, uint8_t* buf, size_t cap, size_t* out_len)
 {
   az_iot_su_channel_dps* c = (az_iot_su_channel_dps*)ctx;
@@ -1141,15 +1140,20 @@ az_iot_result az_iot_su_channel_dps_init(
     az_iot_su_channel_dps* channel_state,
     az_iot_connection_client* connection,
     const az_iot_su_device_properties* device_properties,
+    uint8_t* body,
+    size_t body_size,
     az_iot_su_channel* out_channel)
 {
-  if (channel_state == NULL || connection == NULL || out_channel == NULL)
+  if (channel_state == NULL || connection == NULL || body == NULL || body_size == 0
+      || out_channel == NULL)
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
 
   memset(channel_state, 0, sizeof(*channel_state));
   channel_state->connection = connection;
+  channel_state->body = body;
+  channel_state->body_size = body_size;
   /* The profile the device reports for compatibility matching. */
   channel_state->agent_profile = 1;
 

@@ -867,7 +867,8 @@ static void largest_engine_report_fits_the_channel_body(void** state)
   report.step_results = steps;
   report.step_results_count = _az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS;
 
-  uint8_t body[AZ_IOT_SU_CHANNEL_BODY_MAX_SIZE];
+  /* AZ_IOT_SU_MIN_MESSAGE_SIZE is the guarantee that this fits. */
+  uint8_t body[AZ_IOT_SU_MIN_MESSAGE_SIZE];
   size_t len = 0;
   assert_int_equal(az_iot_su__build_report_request(&report, body, sizeof(body), &len), AZ_IOT_OK);
   assert_true(len > 0 && len <= sizeof(body));
@@ -920,7 +921,7 @@ static void a_numeric_only_body_is_still_usable(void** state)
    * splits 409000 by operation. */
   assert_int_equal(
       az_iot_su__classify_error(code, numeric, AZ_IOT_SU_OP_REPORT_STATUS),
-      AZ_IOT_SU_ERROR_ACTION_ALREADY_REPORTED);
+      AZ_IOT_SU_ERROR_ACTION_RECHECK);
   assert_int_equal(
       az_iot_su__classify_error(code, numeric, AZ_IOT_SU_OP_GET_UPDATE),
       AZ_IOT_SU_ERROR_ACTION_PROCEED);
@@ -1010,10 +1011,39 @@ static void string_codes_map_to_the_specified_actions(void** state)
       az_iot_su__classify_error("UNKNOWN_AGENT_INFO_VERSION", 400004, AZ_IOT_SU_OP_GET_UPDATE),
       AZ_IOT_SU_ERROR_ACTION_RESEND_AGENT_INFO);
   assert_int_equal(
-      az_iot_su__classify_error("OUTDATED_SERVICE_CONFIG", 400004, AZ_IOT_SU_OP_GET_UPDATE),
-      AZ_IOT_SU_ERROR_ACTION_DROP_SERVICE_CONFIG_ETAG);
-  assert_int_equal(
       az_iot_su__classify_error("REPORT_CONFLICT", 409000, AZ_IOT_SU_OP_REPORT_STATUS),
+      AZ_IOT_SU_ERROR_ACTION_RECHECK);
+  assert_int_equal(
+      az_iot_su__classify_error("REPORT_CONFLICT", 409000, AZ_IOT_SU_OP_GET_UPDATE),
+      AZ_IOT_SU_ERROR_ACTION_FATAL);
+  assert_int_equal(
+      az_iot_su__classify_error("UPDATE_ACCOUNT_ACCESS_DENIED", 409000, AZ_IOT_SU_OP_GET_UPDATE),
+      AZ_IOT_SU_ERROR_ACTION_PROCEED);
+  assert_int_equal(
+      az_iot_su__classify_error("UPDATE_ACCOUNT_ACCESS_DENIED", 409000, AZ_IOT_SU_OP_REPORT_STATUS),
+      AZ_IOT_SU_ERROR_ACTION_PROCEED);
+  assert_int_equal(
+      az_iot_su__classify_error("DEVICE_NOT_PROVISIONED", 409000, AZ_IOT_SU_OP_GET_UPDATE),
+      AZ_IOT_SU_ERROR_ACTION_FATAL);
+  assert_int_equal(
+      az_iot_su__classify_error("MAX_DEVICE_CLASSES_EXCEEDED", 400000, AZ_IOT_SU_OP_GET_UPDATE),
+      AZ_IOT_SU_ERROR_ACTION_FATAL);
+  assert_int_equal(
+      az_iot_su__classify_error("FORBIDDEN", 403000, AZ_IOT_SU_OP_REPORT_STATUS),
+      AZ_IOT_SU_ERROR_ACTION_FATAL);
+}
+
+/* The service never sends OUTDATED_SERVICE_CONFIG: a stale service-config ETag
+ * is answered with 200 and the current configuration. The name is unknown, so
+ * the numeric code decides. */
+static void outdated_service_config_is_not_a_special_case(void** state)
+{
+  (void)state;
+  assert_int_equal(
+      az_iot_su__classify_error("OUTDATED_SERVICE_CONFIG", 400004, AZ_IOT_SU_OP_GET_UPDATE),
+      AZ_IOT_SU_ERROR_ACTION_RESEND_AGENT_INFO);
+  assert_int_equal(
+      az_iot_su__classify_error("OUTDATED_SERVICE_CONFIG", 400002, AZ_IOT_SU_OP_GET_UPDATE),
       AZ_IOT_SU_ERROR_ACTION_FATAL);
 }
 
@@ -1045,7 +1075,7 @@ static void documented_codes_keep_their_actions_without_a_string_code(void** sta
       AZ_IOT_SU_ERROR_ACTION_RESEND_AGENT_INFO);
   assert_int_equal(
       az_iot_su__classify_error(NULL, 409000, AZ_IOT_SU_OP_REPORT_STATUS),
-      AZ_IOT_SU_ERROR_ACTION_ALREADY_REPORTED);
+      AZ_IOT_SU_ERROR_ACTION_RECHECK);
   assert_int_equal(
       az_iot_su__classify_error(NULL, 409000, AZ_IOT_SU_OP_GET_UPDATE),
       AZ_IOT_SU_ERROR_ACTION_PROCEED);
@@ -1158,8 +1188,9 @@ static void the_resend_family_is_recoverable_from_the_numeric_code_alone(void** 
       AZ_IOT_SU_ERROR_ACTION_FATAL);
 }
 
-/* 409000 covers two conditions needing OPPOSITE handling. Without a string code
- * the operation in flight is the only thing that separates them. */
+/* An untyped 409000 is never a delivered report. On a fetch it proceeds (the
+ * update account must not block provisioning); on a report it is a conflict,
+ * answered by checking again. */
 static void the_shared_conflict_code_is_split_by_operation(void** state)
 {
   (void)state;
@@ -1171,10 +1202,10 @@ static void the_shared_conflict_code_is_split_by_operation(void** state)
       az_iot_su__classify_error(NULL, 409000, AZ_IOT_SU_OP_GET_ONBOARDING_UPDATE),
       AZ_IOT_SU_ERROR_ACTION_PROCEED);
 
-  /* On a report: a terminal result is already recorded -- treat as delivered. */
+  /* On a report: a conflict, never a delivery (an identical report is 200). */
   assert_int_equal(
       az_iot_su__classify_error(NULL, 409000, AZ_IOT_SU_OP_REPORT_STATUS),
-      AZ_IOT_SU_ERROR_ACTION_ALREADY_REPORTED);
+      AZ_IOT_SU_ERROR_ACTION_RECHECK);
 }
 
 static void transient_numeric_codes_are_retried(void** state)
@@ -1299,7 +1330,7 @@ static void live_error_bodies_carry_the_code_in_message(void** state)
       AZ_IOT_OK);
   assert_int_equal(numeric, 400000);
   assert_string_equal(code, "UNKNOWN_WORKFLOW_ID");
-  /* Not ALREADY_REPORTED: nothing was delivered, and resending cannot help. */
+  /* Not a delivery: nothing was recorded, and resending cannot help. */
   assert_int_equal(
       az_iot_su__classify_error(code, numeric, AZ_IOT_SU_OP_REPORT_STATUS),
       AZ_IOT_SU_ERROR_ACTION_FATAL);
@@ -1526,6 +1557,7 @@ int main(void)
     cmocka_unit_test(a_numeric_only_body_is_found_without_the_out_parameter),
     cmocka_unit_test(a_truncated_error_body_is_rejected),
     cmocka_unit_test(string_codes_map_to_the_specified_actions),
+    cmocka_unit_test(outdated_service_config_is_not_a_special_case),
     cmocka_unit_test(documented_codes_keep_their_actions_without_a_string_code),
     cmocka_unit_test(an_undocumented_code_is_classified_by_its_status_class),
     cmocka_unit_test(the_resend_family_is_recoverable_from_the_numeric_code_alone),

@@ -11,7 +11,7 @@ conformance suite. For a first build, see the [samples overview](../../samples/R
 ```
 inc/azure/iot/      public headers
 src/                core, mqttv3 and mqttv5 feature clients, software updates
-adapters/           MQTT adapters (Paho, Rust shell), OpenSSL certificate provider,
+adapters/           MQTT adapters (Paho, az_mqtt, Rust shell), OpenSSL certificate provider,
                     crypto backends (OpenSSL, mbedTLS), software updates platform adapters
 samples/            samples, one README each
 tests/              unit, conformance, end-to-end and install tests
@@ -19,6 +19,10 @@ platforms/yocto/    Yocto layer
 docs/               customer documentation; docs/eng for engineering documentation
 cmake/, eng/        build helpers and CI scripts
 ```
+
+`src/sources.cmake` lists the library sources. `src/CMakeLists.txt` and the ESP-IDF
+component of the [ESP32 sample](../../samples/software_update/esp32/README.md#ci-builds)
+both include it, so a source added there is built by both.
 
 ## Install and consume
 
@@ -37,8 +41,8 @@ target_link_libraries(app PRIVATE azure::iot::mqttv3 azure::iot::adapter_paho)
 ```
 
 - Components: `core`, `mqttv3`, `mqttv5`, and each adapter built (`adapter_paho`,
-  `adapter_rust_mqtt`, `crypto_openssl`, `crypto_mbedtls`,
-  `certificate_provider_managed`).
+  `adapter_az_mqtt`, `adapter_rust_mqtt`, `crypto_openssl`, `crypto_mbedtls`,
+  `certificate_provider_managed`). An MQTT adapter's header is installed only with the adapter.
 - azure-sdk-for-c ships in the package (headers under `include/azure-sdk-for-c`);
   Paho installs its own `eclipse-paho-mqtt-c` package into the same prefix.
 - OpenSSL, and mbedTLS for `crypto_mbedtls`, must be findable by the consumer.
@@ -62,6 +66,36 @@ Yocto: [platforms/yocto/meta-azure-iot-sdk](../../platforms/yocto/meta-azure-iot
 [tests/install](../../tests/install/CMakeLists.txt) is a consumer that CI builds against the installed package,
 with CMake and with pkg-config alone ([pkg-config-test.sh](../../tests/install/pkg-config-test.sh)).
 [tests/subproject](../../tests/subproject/CMakeLists.txt) builds the same sources with this tree added via `add_subdirectory()`.
+
+## Building without Paho
+
+`-DAZ_IOT_WITH_PAHO=OFF -DAZ_IOT_WITH_AZ_MQTT=ON` builds the SDK, its tests and every sample that
+connects on the az_mqtt adapter, with no Paho source, header or library
+([samples](../../samples/README.md#build)). Without OpenSSL (`AZ_IOT_AZ_MQTT_TLS=mbedtls`,
+`AZ_IOT_WITH_CRYPTO_OPENSSL=OFF`, `AZ_IOT_WITH_CERT_PROVIDER_MANAGED=OFF`), the samples that need
+OpenSSL are not built. The end-to-end suites run over az_mqtt too
+([end-to-end tests](end-to-end-tests.md)). `AZ_IOT_BUILD_E2E` without Paho or az_mqtt, and
+`AZ_IOT_BUILD_PKCS11_TESTS` (Paho's key-custody tests) without Paho, fail the configure step, as
+do the `AZ_IOT_BUILD_E2E_*` options without `AZ_IOT_BUILD_E2E`.
+
+### Dependency check
+
+`eng/check-dependencies.cmake` fails when a build tree depends on a library it was configured
+without (`paho`, `az_mqtt`, `rust_mqtt`, `openssl`, `mbedtls`, `curl`). It checks every first-party
+target's sources, include directories, definitions, link inputs and target dependencies (CMake File
+API), the headers compiled in (Ninja), the binaries' needed libraries and symbols, fetched copies
+under `_deps/`, and optionally an install prefix. CI runs it on every build leg.
+
+```sh
+cmake -DBUILD_DIR=build/x -DMODE=prepare -P eng/check-dependencies.cmake   # before configuring
+cmake -S . -B build/x -G Ninja -DAZ_IOT_WITH_PAHO=OFF -DAZ_IOT_WITH_AZ_MQTT=ON
+cmake --build build/x
+cmake -DBUILD_DIR=build/x -DFORBID=paho -P eng/check-dependencies.cmake
+```
+
+Options: `CONFIG` (multi-config generators), `INSTALL_PREFIX`, `EXPECT_SAMPLES` (adapters every
+sample must be built for) and `EXPECT_SAMPLES_EXCEPT`, `EXPECT_FAIL=ON` (a negative control that
+must find a violation). Needs a Ninja generator; on Windows, `dumpbin` on `PATH`.
 
 ## Build hardening
 
@@ -136,6 +170,27 @@ developer shell, in Git Bash) it uses `dumpbin` and fails any `.exe`/`.dll` with
 Flow Guard, ASLR or DEP, and, on x64, high entropy VA or CET compatibility. CI runs it on
 gcc and clang, static and shared (`hardening-linux` in `ci-c.yml`), and on MSVC, static
 and shared (`hardening-windows`).
+
+## Race detection
+
+Tests that start threads are registered with `az_iot_add_cmocka_test(<name> RACE ...)`, which
+labels them `race` in CTest. [`eng/run-race-detectors.sh`](../../eng/run-race-detectors.sh)
+runs each of them under valgrind's helgrind or DRD:
+
+```sh
+bash eng/run-race-detectors.sh helgrind   # or drd; optional second argument: build directory
+```
+
+A test fails on any reported error, on its own failure, or when valgrind ends without an
+`ERROR SUMMARY`. Logs are written to `<build-dir>/race-logs/<tool>/`. Each log lists every
+suppression used (`-s`). Suppressions live in `eng/sanitizers/{helgrind,drd}.supp`. They may
+name third-party code only, and each needs a comment giving its upstream reference;
+[`eng/check-race-suppressions.sh`](../../eng/check-race-suppressions.sh) enforces this.
+CI runs both tools on every change to `c/` (`race-detector` in `ci-c.yml`).
+
+The tools see pthread locks only. The file sink's atomic spin lock is described to them by
+`-DAZ_IOT_RACE_ANNOTATIONS=ON` (needs `<valgrind/helgrind.h>`; no effect outside valgrind), which the
+CI job sets. Without it, a race-labelled test that logs to a file sink reports false races.
 
 ## MQTT adapter conformance suite
 

@@ -1,23 +1,25 @@
 // Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
 // See LICENSE file in the project root for full license information.
 
+using Google.Protobuf;
+using Microsoft.Azure.Iot.Device.MQTTv5.Connection;
 using Microsoft.Azure.Iot.Device.Mqtt;
+using System.Text;
 
 namespace Microsoft.Azure.Iot.Device.UnitTests
 {
     /// <summary>
-    /// A minimal <see cref="IMqttClient"/> whose every response is under the test's control.
+    /// An <see cref="IMqttClient"/> whose every response is under the test's control.
     /// </summary>
     /// <remarks>
-    /// This exists alongside <see cref="MockMqttClient"/> because tests for the connection layer itself need to drive
-    /// failures that the MQTTv5-flavoured mock deliberately smooths over: a refused CONNACK, a throwing connect, and a
-    /// connected/disconnected flag that tracks those outcomes accurately.
+    /// By default every operation succeeds. Tests can drive failures such as a refused CONNACK or a throwing connect,
+    /// and the connected/disconnected flag tracks those outcomes accurately.
     /// </remarks>
     internal sealed class MockConnectionMqttClient : IMqttClient
     {
         public event Func<MqttPublishReceivedEventArgs, Task> PublishReceivedAsync = null!;
         public event Func<MqttClientConnectedEventArgs, Task> ConnectedAsync = null!;
-        public event Func<MqttConnect, Task<MqttConnect>> ConnectingAsync = null!;
+        public event Func<MqttConnect, CancellationToken, Task<MqttConnect>> ConnectingAsync = null!;
         public event Func<MqttClientDisconnectedEventArgs, Task> DisconnectedAsync = null!;
 
         private int _connectAttemptCount;
@@ -32,10 +34,25 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
         public Func<MqttUnsubscribe, Task<MqttUnsubscribeAck>>? OnUnsubscribe { get; set; }
 
+        /// <summary>Invoked on every client-initiated DISCONNECT, after it has been recorded.</summary>
+        public Func<MqttDisconnect, Task>? OnDisconnect { get; set; }
+
+        /// <summary>
+        /// When set, a publish to an MQTTv5 birth topic (<c>ih/{deviceId}/srv/presence</c>) is answered with a simulated
+        /// birth-ack.
+        /// </summary>
+        public bool AutoRespondToBirth { get; set; }
+
         /// <summary>How many CONNECTs have been attempted, including the ones the server refused.</summary>
         public int ConnectAttemptCount => Volatile.Read(ref _connectAttemptCount);
 
         public List<MqttDisconnect> DisconnectRequests { get; } = new();
+
+        /// <summary>
+        /// The publishes/subscribes/unsubscribes that were "sent on the wire", in order. An operation whose handler throws
+        /// is not recorded.
+        /// </summary>
+        public List<MockMqttOutgoingTraffic> SentMqttTrafficInOrder { get; } = new();
 
         public bool IsDisposed { get; private set; }
 
@@ -47,7 +64,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
             if (ConnectingAsync != null)
             {
-                connect = await ConnectingAsync.Invoke(connect);
+                connect = await ConnectingAsync.Invoke(connect, cancellationToken);
             }
 
             Interlocked.Increment(ref _connectAttemptCount);
@@ -70,7 +87,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             return connack;
         }
 
-        public Task DisconnectAsync(MqttDisconnect disconnect, CancellationToken cancellationToken = default)
+        public async Task DisconnectAsync(MqttDisconnect disconnect, CancellationToken cancellationToken = default)
         {
             lock (DisconnectRequests)
             {
@@ -80,13 +97,16 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             bool wasConnected = _isConnected;
             _isConnected = false;
 
+            if (OnDisconnect != null)
+            {
+                await OnDisconnect.Invoke(disconnect);
+            }
+
             if (wasConnected && DisconnectedAsync != null)
             {
                 // The real client raises this from its own I/O loop rather than inline with the caller.
                 _ = DisconnectedAsync.Invoke(new() { Reason = MqttDisconnectReason.NormalDisconnection });
             }
-
-            return Task.CompletedTask;
         }
 
         /// <summary>
@@ -129,32 +149,63 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
         public async Task<MqttPublishAck> PublishAsync(MqttPublish publish, CancellationToken cancellationToken = default)
         {
-            if (OnPublish != null)
+            if (AutoRespondToBirth)
             {
-                return await OnPublish.Invoke(publish);
+                SimulateBirthAckIfBirthPublish(publish);
             }
 
-            return new MqttPublishAck() { ReasonCode = MqttPublishAckReasonCode.Success };
+            MqttPublishAck puback = OnPublish != null
+                ? await OnPublish.Invoke(publish)
+                : new MqttPublishAck() { ReasonCode = MqttPublishAckReasonCode.Success };
+
+            RecordSentTraffic(new(publish));
+            return puback;
         }
 
         public async Task<MqttSubscribeAck> SubscribeAsync(MqttSubscribe subscribe, CancellationToken cancellationToken = default)
         {
-            if (OnSubscribe != null)
-            {
-                return await OnSubscribe.Invoke(subscribe);
-            }
+            MqttSubscribeAck suback = OnSubscribe != null
+                ? await OnSubscribe.Invoke(subscribe)
+                : MqttObjectHelpers.CreateSuccessfulSuback(subscribe);
 
-            return MqttObjectHelpers.CreateSuccessfulSuback(subscribe);
+            RecordSentTraffic(new(subscribe));
+            return suback;
         }
 
         public async Task<MqttUnsubscribeAck> UnsubscribeAsync(MqttUnsubscribe unsubscribe, CancellationToken cancellationToken = default)
         {
-            if (OnUnsubscribe != null)
+            MqttUnsubscribeAck unsuback = OnUnsubscribe != null
+                ? await OnUnsubscribe.Invoke(unsubscribe)
+                : MqttObjectHelpers.CreateSuccessfulUnsuback(unsubscribe);
+
+            RecordSentTraffic(new(unsubscribe));
+            return unsuback;
+        }
+
+        private void RecordSentTraffic(MockMqttOutgoingTraffic traffic)
+        {
+            lock (SentMqttTrafficInOrder)
             {
-                return await OnUnsubscribe.Invoke(unsubscribe);
+                SentMqttTrafficInOrder.Add(traffic);
+            }
+        }
+
+        private void SimulateBirthAckIfBirthPublish(MqttPublish publish)
+        {
+            if (!publish.Topic.StartsWith("ih/") || !publish.Topic.EndsWith("/srv/presence"))
+            {
+                return;
             }
 
-            return MqttObjectHelpers.CreateSuccessfulUnsuback(unsubscribe);
+            string deviceId = publish.Topic.Split('/')[1];
+            MqttPublish birthAck = new()
+            {
+                Topic = $"ih/{deviceId}/dev/presence",
+                Payload = new BirthAck().ToByteArray(),
+                CorrelationData = publish.CorrelationData,
+            };
+            birthAck.UserProperties.Add(new("type", Encoding.UTF8.GetBytes("birth-ack:1")));
+            _ = SimulatePublishReceivedAsync(birthAck);
         }
 
         public void Dispose()

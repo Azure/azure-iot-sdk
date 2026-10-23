@@ -1,0 +1,16 @@
+# Paho MQTTAsync.c:657 (v1.3.13): MQTTAsync_tostop written without the lock.
+{
+   paho-tostop
+   drd:ConflictingAccess
+   fun:MQTTAsync_connect
+}
+
+# glibc stdio internals, blank line and comment inside the entry.
+{
+   libc-stdio
+   Helgrind:Race
+
+   # comment
+   obj:*/libc.so.6
+   ...
+}

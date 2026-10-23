@@ -38,19 +38,6 @@ az_iot_log_sink sample_log_sink(az_iot_log_level min_level);
 // Returns 0 on success, non-zero if any required variable is missing.
 int sample_config_load(sample_config* config);
 
-// Applies the DPS options every sample sets the same way: id_scope,
-// registration_id, and the optional global endpoint. Call it instead of
-// assigning those fields by hand, so a sample picks up a new DPS option
-// without being edited.
-//
-// Deliberately does NOT touch certificate_provider or anything else: a sample
-// that needs different auth still says so itself, and this stays the one thing
-// every DPS sample shares.
-struct az_iot_connection_client_options;
-void sample_apply_dps_options(
-    struct az_iot_connection_client_options* options,
-    const sample_config* config);
-
 // Releases memory allocated by sample_config_load (Windows only; no-op on Linux).
 void sample_config_release(sample_config* config);
 
@@ -84,14 +71,26 @@ bool sample_copy_str(char* dst, size_t dst_size, const char* src);
 bool sample_env_to_buffer(const char* name, const char* fallback, char* dst, size_t dst_size);
 
 /**
- * @brief Open @p path for binary writing, truncating it, with owner-only
- * access (0600) on POSIX rather than fopen()'s 0666 less umask. On Windows the
- * file keeps the ACL inherited from its directory.
+ * @brief Open @p path for binary writing with owner-only access (0600) on
+ * POSIX rather than fopen()'s 0666 less umask. On Windows the file keeps the
+ * ACL inherited from its directory.
  *
- * @param[in] path File to create or truncate.
+ * @param[in] path File to write.
+ * @param[in] replace false: create or truncate @p path. true: remove @p path,
+ * then create it exclusively, so a file or link planted there is never opened.
+ * @return Stream to close with fclose(), or NULL on failure (with @p replace,
+ * including when @p path cannot be removed).
+ */
+FILE* sample_fopen_private(const char* path, bool replace);
+
+/**
+ * @brief Open @p path for binary reading; on POSIX only a regular file, not
+ * through a symbolic link, is opened.
+ *
+ * @param[in] path File to read.
  * @return Stream to close with fclose(), or NULL on failure.
  */
-FILE* sample_fopen_private(const char* path);
+FILE* sample_fopen_read_nofollow(const char* path);
 
 // Milliseconds from an unspecified origin, never moving backwards. Only
 // differences are meaningful. The SDK keeps its clock internal, so a sample
