@@ -52,3 +52,18 @@
    fun:Thread_wait_cond
    fun:MQTTAsync_sendThread
 }
+
+# Paho Thread.c:471 (v1.3.13): helgrind intercepts a condvar signal made inside
+# glibc's pthread_cond_timedwait (pthread_cond_wait.c:516) after the mutex
+# was released, and reports it as "dubious". The wait is the send thread's own;
+# no SDK frame is involved. Seen intermittently.
+{
+   paho-wait-cond-glibc-internal-signal
+   Helgrind:Misc
+   obj:*/vgpreload_helgrind-*.so
+   fun:__pthread_cond_wait_common
+   fun:pthread_cond_timedwait*
+   obj:*/vgpreload_helgrind-*.so
+   fun:Thread_wait_cond
+   fun:MQTTAsync_sendThread
+}
