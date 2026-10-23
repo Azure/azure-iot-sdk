@@ -33,6 +33,23 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
         bool IsConnectionTargetSet => true;
 
         /// <summary>
+        /// Whether this connection client subscribes to twin topics. See <see cref="ConnectionClientOptions.EnableTwin"/>.
+        /// </summary>
+        bool IsTwinEnabled => true;
+
+        /// <summary>
+        /// Whether this connection client subscribes to direct method topics. See
+        /// <see cref="ConnectionClientOptions.EnableDirectMethods"/>.
+        /// </summary>
+        bool AreDirectMethodsEnabled => true;
+
+        /// <summary>
+        /// Whether this connection client subscribes to cloud-to-device message topics. See
+        /// <see cref="ConnectionClientOptions.EnableCloudToDeviceMessages"/>.
+        /// </summary>
+        bool AreCloudToDeviceMessagesEnabled => true;
+
+        /// <summary>
         /// Send a PUBLISH to IoT hub. Any <see cref="DeviceIdPlaceholder"/> in the topic is replaced with the device's
         /// current ID when it is sent.
         /// </summary>
