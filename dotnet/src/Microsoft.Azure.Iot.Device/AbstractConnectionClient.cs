@@ -1083,6 +1083,8 @@ namespace Microsoft.Azure.Iot.Device
                 }
                 catch (Exception e)
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
+
                     // Saturate rather than wrap: under the default indefinite policy this loop can run without bound, and
                     // a uint that wrapped back to 0 would make the retry policy see this as a first attempt again and
                     // reset its backoff. Pinning at the maximum keeps the policy seeing an ever-growing attempt count.

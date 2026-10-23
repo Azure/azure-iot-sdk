@@ -1730,6 +1730,53 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             Assert.False(connectionClient.IsConnectionTargetSet);
         }
 
+        [Fact]
+        public async Task ExplicitDisconnectDuringACanceledReprovisioningConnectDoesNotRaiseConnectionFaulted()
+        {
+            using MockConnectionMqttClient mockMqttClient = new();
+            _ = new MockDeviceProvisioningService(mockMqttClient, _ => FirstAssignedHub);
+            TaskCompletionSource reprovisioningConnectStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            int dpsConnectAttempts = 0;
+
+            mockMqttClient.ConnectingAsync += async (connect, cancellationToken) =>
+            {
+                if (connect.HostName == GlobalDeviceEndpoint && Interlocked.Increment(ref dpsConnectAttempts) == 2)
+                {
+                    reprovisioningConnectStarted.TrySetResult();
+                    await Task.Delay(Timeout.Infinite, cancellationToken);
+                }
+
+                return connect;
+            };
+            mockMqttClient.OnConnect = _ => Task.FromResult(new MqttConnectAck() { ResultCode = MqttConnectReasonCode.Success });
+
+            using TestConnectionClient connectionClient = new(new()
+            {
+                MqttClient = mockMqttClient,
+                ConnectionRetryPolicy = new AbandonRetryPolicy(),
+            });
+            TaskCompletionSource connectionFaulted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            connectionClient.ConnectionFaultedAsync += _ =>
+            {
+                connectionFaulted.TrySetResult();
+                return Task.CompletedTask;
+            };
+
+            await connectionClient.ProvisionAndConnectAsync(
+                CreateProvisioningSettings(),
+                CreateAuthenticationProvider(),
+                cancellationToken: TestContext.Current.CancellationToken);
+
+            await mockMqttClient.SimulateServerDisconnectAsync(MqttDisconnectReason.NotAuthorized);
+            await reprovisioningConnectStarted.Task.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+
+            await connectionClient.DisconnectAsync(TestContext.Current.CancellationToken)
+                .WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+
+            Assert.False(connectionFaulted.Task.IsCompleted);
+            Assert.False(mockMqttClient.IsConnected());
+        }
+
         /// <summary>
         /// A feature client operation issued before this client has ever connected -- so nothing is maintaining or
         /// recovering a connection -- must fail fast with the underlying not-connected error rather than block forever
