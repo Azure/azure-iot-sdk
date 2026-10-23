@@ -36,6 +36,7 @@
 #include "azure/iot/mqttv3/az_iot_c2d_client.h"
 #include "azure/iot/az_iot_connection_client.h"
 #include "support/test_provider.h"
+#include "support/test_env.h"
 
 #if defined(_WIN32)
 #include <windows.h>
@@ -45,6 +46,8 @@
 
 static const char* g_host = "localhost";
 static uint16_t g_port = 1883;
+/* AZ_IOT_TEST_TIMEOUT_SCALE; set in main(). */
+static int g_timeout_scale = 1;
 
 #if defined(_WIN32)
 static void sleep_ms(unsigned ms) { Sleep(ms); }
@@ -100,7 +103,8 @@ static int count_state(const state_log* s, az_iot_connection_state want)
 }
 
 /* Pump do_work in 50 ms slices until `want` has been recorded at least `target`
- * times or the slice budget is exhausted. Returns non-zero on success. */
+ * times or the slice budget, multiplied by the timeout scale, is exhausted.
+ * Returns non-zero on success. */
 static int pump_until_count(
     az_iot_connection_client* c,
     const state_log* s,
@@ -108,7 +112,7 @@ static int pump_until_count(
     int target,
     int max_slices)
 {
-  for (int i = 0; i < max_slices; ++i)
+  for (int i = 0; i < max_slices * g_timeout_scale; ++i)
   {
     if (count_state(s, want) >= target)
     {
@@ -364,6 +368,7 @@ int main(void)
 
   g_host = host;
   g_port = port ? (uint16_t)atoi(port) : (uint16_t)1883;
+  g_timeout_scale = (int)az_iot_test_timeout_scale();
   fprintf(stderr, "reconnect-integration: broker %s:%u\n", g_host, (unsigned)g_port);
 
   if (!az_iot_test_proxy_tls_supported())

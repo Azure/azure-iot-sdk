@@ -16,6 +16,7 @@
  * compiled into this executable) with the custody module faked out, as in
  * paho_connect_cleanup_test.c.
  */
+#include <limits.h>
 #include <stdarg.h>
 #include <stddef.h>
 #include <setjmp.h>
@@ -160,6 +161,58 @@ static void a_plaintext_websocket_connect_uses_ws_and_80(void** state)
 
   assert_int_equal(do_connect(fx, &opts), AZ_IOT_OK);
   assert_string_equal(mock_paho_last_server_uri(), "ws://localhost:80/$iothub/websocket");
+}
+
+/* connect timeout: connect_timeout_seconds reaches Paho, on both versions. 0 keeps
+ * Paho's 30 s default. */
+static void the_connect_timeout_reaches_paho(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_mqtt_connect_options opts;
+  base_options(&opts);
+  opts.connect_timeout_seconds = 7;
+
+  assert_int_equal(do_connect(fx, &opts), AZ_IOT_OK);
+  assert_int_equal(mock_paho_last_connect_timeout(), 7);
+}
+
+static void a_zero_connect_timeout_keeps_the_paho_default(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_mqtt_connect_options opts;
+  base_options(&opts);
+
+  assert_int_equal(do_connect(fx, &opts), AZ_IOT_OK);
+  assert_int_equal(mock_paho_last_connect_timeout(), 30);
+}
+
+static void a_huge_connect_timeout_is_clamped(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_mqtt_connect_options opts;
+  base_options(&opts);
+  opts.connect_timeout_seconds = UINT32_MAX;
+
+  assert_int_equal(do_connect(fx, &opts), AZ_IOT_OK);
+  assert_int_equal(mock_paho_last_connect_timeout(), INT_MAX);
+}
+
+static void the_connect_timeout_reaches_paho_on_v5(void** state)
+{
+  (void)state;
+  mock_paho_reset();
+  az_iot_mqtt_factory* f = az_iot_paho_factory_create_v5();
+  assert_non_null(f);
+  az_iot_mqtt_client* c = f->create(f->factory_ctx);
+  assert_non_null(c);
+  az_iot_mqtt_connect_options opts;
+  base_options(&opts);
+  opts.connect_timeout_seconds = 9;
+
+  assert_int_equal(c->iface->connect(c, &opts), AZ_IOT_OK);
+  assert_int_equal(mock_paho_last_connect_timeout(), 9);
+  c->iface->destroy(c);
+  az_iot_paho_factory_destroy(f);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -510,6 +563,10 @@ int main(void)
     cmocka_unit_test_setup_teardown(websockets_and_a_proxy_combine, setup, teardown),
     cmocka_unit_test_setup_teardown(the_proxy_auth_trace_line_is_redacted, setup, teardown),
     cmocka_unit_test_setup_teardown(an_unrelated_trace_line_is_forwarded_verbatim, setup, teardown),
+    cmocka_unit_test_setup_teardown(the_connect_timeout_reaches_paho, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_zero_connect_timeout_keeps_the_paho_default, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_huge_connect_timeout_is_clamped, setup, teardown),
+    cmocka_unit_test(the_connect_timeout_reaches_paho_on_v5),
   };
   return cmocka_run_group_tests_name("paho_transport_proxy", tests, NULL, NULL);
 }

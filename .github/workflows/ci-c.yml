@@ -397,6 +397,18 @@ jobs:
     needs: changes
     if: needs.changes.outputs.c == 'true' || github.event_name != 'pull_request'
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    services:
+      mosquitto:
+        image: eclipse-mosquitto:2
+        ports:
+          - 1883:1883
+        options: >-
+          --health-cmd="mosquitto_pub -h localhost -p 1883 -t healthcheck -m ok"
+          --health-interval=5s
+          --health-retries=10
+          --health-start-period=5s
     strategy:
       fail-fast: false
       matrix:
@@ -406,20 +418,28 @@ jobs:
         with:
           persist-credentials: false
       - name: Install deps
-        run: sudo apt-get update && sudo apt-get install -y ninja-build valgrind
+        run: sudo apt-get update && sudo apt-get install -y ninja-build valgrind libssl-dev
       - name: Configure
-        # No broker: the race-labelled tests are hermetic. RACE_ANNOTATIONS
+        # Conformance ON registers the real-stack race tests (Paho conformance,
+        # reconnect, teardown) against the broker service. RACE_ANNOTATIONS
         # describes the SDK's atomic spin lock to the tools (valgrind
         # package ships <valgrind/helgrind.h>).
         run: >
           cmake --preset linux-gcc-debug
           -DAZ_IOT_WITH_PAHO=ON
           -DAZ_IOT_RACE_ANNOTATIONS=ON
-          -DAZ_IOT_BUILD_CONFORMANCE_TESTS=OFF
-          -DAZ_IOT_BUILD_CONFORMANCE_TESTS_TLS=OFF
+          -DAZ_IOT_BUILD_CONFORMANCE_TESTS=ON
+          -DAZ_IOT_BUILD_CONFORMANCE_TESTS_TLS=ON
       - name: Build
         run: cmake --build --preset linux-gcc-debug
       - name: Race-labelled tests under ${{ matrix.tool }}
+        env:
+          AZ_IOT_MQTT_BROKER_HOST: localhost
+          AZ_IOT_MQTT_BROKER_PORT: '1883'
+          # No PKCS#11 token on this leg.
+          AZ_IOT_CONFORMANCE_ALLOW_UNPROVEN: '1'
+          # The tools slow the stack ~10-50x; lengthens test waits only.
+          AZ_IOT_TEST_TIMEOUT_SCALE: '30'
         run: bash eng/run-race-detectors.sh ${{ matrix.tool }}
       - name: Upload race-detector logs
         if: always()
@@ -1176,7 +1196,7 @@ jobs:
       # actually had -- coverage computed over fewer tests than anyone thought.
       # Now that no suite decides at run time whether to participate, the count
       # is deterministic, so assert it exactly. Bump this when adding a suite.
-      EXPECTED_TESTS: '60'
+      EXPECTED_TESTS: '61'
     services:
       mosquitto:
         image: eclipse-mosquitto:2

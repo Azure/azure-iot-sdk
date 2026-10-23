@@ -14,6 +14,7 @@
 #include "az_iot_conformance.h"
 #include "az_iot_test_mqtt_server.h"
 #include "az_iot_test_proxy.h"
+#include "support/test_env.h"
 
 #include <stdarg.h>
 #include <stddef.h>
@@ -237,13 +238,14 @@ int az_iot_conformance_report_unproven_capability(
   return 1;
 }
 
-static const unsigned k_step_timeout_ms = 5000;
+/* Multiplied by az_iot_test_timeout_scale() when a run starts. */
+static unsigned k_step_timeout_ms = 5000;
 /* Same budget as k_step_timeout_ms, on the scale the connect option uses. */
-static const unsigned k_step_timeout_seconds = 5;
+static unsigned k_step_timeout_seconds = 5;
 /* Budget for a failure that waits on the system resolver. glibc retries a lost
  * query after 5s, per attempt and per search domain, and Paho's lookup is an
  * unbounded getaddrinfo() that connect_timeout_seconds does not cover. */
-static const unsigned k_resolver_timeout_ms = 30000;
+static unsigned k_resolver_timeout_ms = 30000;
 
 /* ------------------------------------------------------------------------- */
 /* event recorder used by every test                                         */
@@ -4163,6 +4165,12 @@ int az_iot_conformance_run_with_options(
     return 1;
   }
 
+  {
+    unsigned const scale = az_iot_test_timeout_scale();
+    k_step_timeout_ms = 5000u * scale;
+    k_step_timeout_seconds = 5u * scale;
+    k_resolver_timeout_ms = 30000u * scale;
+  }
   g_capabilities = options ? options->capabilities : 0u;
   g_key_uri = options ? options->key_uri : NULL;
   g_key_engine = options ? options->crypto_engine_id : NULL;

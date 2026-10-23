@@ -1263,6 +1263,19 @@ static void paho_apply_proxy(MQTTAsync_connectOptions* conn, const char* proxy_u
   conn->httpsProxy = proxy_uri;
 }
 
+/**
+ * @brief Apply az_iot_mqtt_connect_options::connect_timeout_seconds.
+ *
+ * 0 keeps Paho's default (30 s). Larger than INT_MAX is clamped.
+ */
+static void paho_apply_connect_timeout(MQTTAsync_connectOptions* conn, uint32_t seconds)
+{
+  if (seconds != 0)
+  {
+    conn->connectTimeout = (seconds > (uint32_t)INT_MAX) ? INT_MAX : (int)seconds;
+  }
+}
+
 static az_iot_result paho_iface_connect(
     az_iot_mqtt_client* self,
     const az_iot_mqtt_connect_options* opts)
@@ -1451,6 +1464,7 @@ static az_iot_result paho_iface_connect(
     conn.onSuccess5 = paho_connect_success5;
     conn.onFailure5 = paho_connect_failure5;
     paho_apply_proxy(&conn, m->proxy_uri);
+    paho_apply_connect_timeout(&conn, opts->connect_timeout_seconds);
     conn.keepAliveInterval = opts->keep_alive_seconds ? opts->keep_alive_seconds : 60;
     conn.cleansession = 0;
     conn.cleanstart = opts->clean_start ? 1 : 0;
@@ -1516,6 +1530,7 @@ static az_iot_result paho_iface_connect(
     conn.onSuccess = paho_connect_success;
     conn.onFailure = paho_connect_failure;
     paho_apply_proxy(&conn, m->proxy_uri);
+    paho_apply_connect_timeout(&conn, opts->connect_timeout_seconds);
     conn.keepAliveInterval = opts->keep_alive_seconds ? opts->keep_alive_seconds : 60;
     /* v3.1.1 has no separate Clean Start: the caller's clean_start maps onto
      * the Clean Session flag. This used to be hardcoded to 1, which quietly

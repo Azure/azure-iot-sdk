@@ -627,6 +627,8 @@ add_library(az_iot_conformance STATIC
 target_include_directories(az_iot_conformance PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/conformance
 )
+# support/test_env.h, for AZ_IOT_TEST_TIMEOUT_SCALE.
+target_include_directories(az_iot_conformance PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(az_iot_conformance PUBLIC az_iot_core cmocka az_iot_test_proxy
     az_iot_test_mqtt_server)
 # The certificate-validation tests drive TLS through the in-process test proxy,
@@ -748,6 +750,9 @@ if(AZ_IOT_WITH_PAHO)
     if(AZ_IOT_BUILD_CONFORMANCE_TESTS)
         add_test(NAME az_iot_conformance_paho_v3 COMMAND az_iot_conformance_paho_v3)
         add_test(NAME az_iot_conformance_paho_v5 COMMAND az_iot_conformance_paho_v5)
+        # Paho runs its own threads: run under helgrind and DRD too.
+        set_tests_properties(az_iot_conformance_paho_v3 az_iot_conformance_paho_v5
+            PROPERTIES LABELS race)
     endif()
 
     # Negative control for the sign-route custody case. No adapter here
@@ -888,6 +893,18 @@ if(AZ_IOT_WITH_PAHO)
     endif()
     if(AZ_IOT_BUILD_CONFORMANCE_TESTS)
         add_test(NAME az_iot_reconnect_integration COMMAND az_iot_reconnect_integration)
+        set_tests_properties(az_iot_reconnect_integration PROPERTIES LABELS race)
+    endif()
+
+    # Teardown under load: disconnect() and destroy() while Paho threads are
+    # still busy. Registered with the reconnect test, for the same broker.
+    az_iot_add_cmocka_test(az_iot_paho_teardown_race
+        integration/paho_teardown_race_test.c NO_CTEST)
+    target_link_libraries(az_iot_paho_teardown_race PRIVATE
+        az_iot_adapter_paho az_iot_test_support)
+    if(AZ_IOT_BUILD_CONFORMANCE_TESTS)
+        add_test(NAME az_iot_paho_teardown_race COMMAND az_iot_paho_teardown_race)
+        set_tests_properties(az_iot_paho_teardown_race PROPERTIES LABELS race)
     endif()
 endif()
 

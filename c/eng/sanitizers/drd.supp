@@ -4,3 +4,71 @@
 # - Each entry follows a comment giving the upstream file:line and, for Paho,
 #   the PAHO_C_TAG it was checked against. Re-check on every tag bump.
 # - The first frame is a concrete fun: or obj: line, never "...".
+
+# Paho MQTTAsync.c:657,660 (v1.3.13): MQTTAsync_tostop and sendThread_state
+# written without mqttasync_mutex; read by the send thread.
+{
+   paho-connect-thread-flags
+   drd:ConflictingAccess
+   fun:MQTTAsync_connect
+}
+
+# Paho MQTTAsyncUtils.c:2375 (v1.3.13): MQTTAsync_tostop written without a lock.
+{
+   paho-stop-tostop
+   drd:ConflictingAccess
+   fun:MQTTAsync_stop
+}
+
+# Paho MQTTAsyncUtils.c:1788-1819 (v1.3.13): sendThread_state and
+# MQTTAsync_tostop accessed by the send thread without a lock.
+{
+   paho-send-thread-flags
+   drd:ConflictingAccess
+   fun:MQTTAsync_sendThread
+}
+
+# Paho MQTTAsync.c:1209 (v1.3.13): Clients.connected read without a lock.
+{
+   paho-send-connected
+   drd:ConflictingAccess
+   fun:MQTTAsync_send
+}
+
+# Paho MQTTAsyncUtils.c:2662 (v1.3.13): Clients.connected read without a lock.
+{
+   paho-disconnect1-connected
+   drd:ConflictingAccess
+   fun:MQTTAsync_disconnect1
+}
+
+# Paho MQTTAsyncUtils.c:2418-2419 (v1.3.13): Clients.connected and
+# connect_state written without a lock.
+{
+   paho-closeonly-connected
+   drd:ConflictingAccess
+   fun:MQTTAsync_closeOnly
+}
+
+# Paho MQTTAsyncUtils.c:2779 (v1.3.13): static retry timestamp shared, without
+# a lock, by the receive threads of successive clients (detached threads).
+{
+   paho-retry-timestamp
+   drd:ConflictingAccess
+   fun:MQTTAsync_retry
+}
+
+# Paho MQTTProtocolClient.c:912 (v1.3.13): Clients.connected read without a lock.
+{
+   paho-protocol-retry-connected
+   drd:ConflictingAccess
+   fun:MQTTProtocol_retry
+}
+
+# Paho MQTTProtocolClient.c:711 (v1.3.13): Clients.connected and
+# keepAliveInterval read without a lock.
+{
+   paho-keepalive-connected
+   drd:ConflictingAccess
+   fun:MQTTProtocol_keepalive
+}

@@ -188,6 +188,13 @@ name third-party code only, and each needs a comment giving its upstream referen
 [`eng/check-race-suppressions.sh`](../../eng/check-race-suppressions.sh) enforces this.
 CI runs both tools on every change to `c/` (`race-detector` in `ci-c.yml`).
 
+With `-DAZ_IOT_BUILD_CONFORMANCE_TESTS=ON` the real-stack tests are labelled `race` too: the Paho
+conformance suites, `az_iot_reconnect_integration` and `az_iot_paho_teardown_race`. They need the
+broker described under the conformance suite below. The tools slow them ~10-50x, so set
+`AZ_IOT_TEST_TIMEOUT_SCALE` (1-100, default 1): it multiplies their wait budgets and nothing else.
+CI sets 30. Paho 1.3.13 reads and writes some thread flags and connection state without its own lock;
+the entries in `drd.supp` and `helgrind.supp` cover those frames only.
+
 The tools see pthread locks only. The file sink's atomic spin lock is described to them by
 `-DAZ_IOT_RACE_ANNOTATIONS=ON` (needs `<valgrind/helgrind.h>`; no effect outside valgrind), which the
 CI job sets. Without it, a race-labelled test that logs to a file sink reports false races.
