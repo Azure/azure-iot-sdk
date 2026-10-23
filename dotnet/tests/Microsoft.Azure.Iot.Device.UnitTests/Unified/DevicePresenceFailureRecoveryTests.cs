@@ -62,6 +62,70 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
                 && topicFilter.QualityOfServiceLevel == MqttQualityOfServiceLevel.AtLeastOnce);
         }
 
+        [Theory]
+        [InlineData(false, true, true)]
+        [InlineData(true, false, true)]
+        [InlineData(true, true, false)]
+        public async Task PresenceFlowSkipsTopicsOfOptedOutFeatures(bool enableTwin, bool enableDirectMethods, bool enableCloudToDeviceMessages)
+        {
+            using MockConnectionMqttClient mockMqttClient = new() { AutoRespondToBirth = true };
+            ConnectionClient connectionClient = new(new()
+            {
+                MqttClient = mockMqttClient,
+                EnableTwin = enableTwin,
+                EnableDirectMethods = enableDirectMethods,
+                EnableCloudToDeviceMessages = enableCloudToDeviceMessages,
+            });
+            mockMqttClient.OnConnect = _ => Task.FromResult(new MqttConnectAck() { IsSessionPresent = false, ResultCode = MqttConnectReasonCode.Success });
+
+            await connectionClient.ConnectToHubAsync(GetMockConnectionContext(), cancellationToken: TestContext.Current.CancellationToken)
+                .WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+
+            var topics = mockMqttClient.SentMqttTrafficInOrder.Last().Subscribe!.TopicFilters.Select(topicFilter => topicFilter.Topic).ToList();
+            Assert.Equal(enableCloudToDeviceMessages, topics.Contains("devices/someDeviceId/messages/devicebound/#"));
+            Assert.Equal(enableTwin, topics.Contains(ClassicTwinResponseTopicFilter));
+            Assert.Equal(enableTwin, topics.Contains("$iothub/twin/PATCH/properties/desired/#"));
+            Assert.Equal(enableDirectMethods, topics.Contains("$iothub/methods/POST/#"));
+        }
+
+        [Fact]
+        public async Task PresenceFlowSendsNoSubscribeWhenAllFeaturesOptedOut()
+        {
+            using MockConnectionMqttClient mockMqttClient = new() { AutoRespondToBirth = true };
+            ConnectionClient connectionClient = new(new()
+            {
+                MqttClient = mockMqttClient,
+                EnableTwin = false,
+                EnableDirectMethods = false,
+                EnableCloudToDeviceMessages = false,
+            });
+            mockMqttClient.OnConnect = _ => Task.FromResult(new MqttConnectAck() { IsSessionPresent = false, ResultCode = MqttConnectReasonCode.Success });
+
+            await connectionClient.ConnectToHubAsync(GetMockConnectionContext(), cancellationToken: TestContext.Current.CancellationToken)
+                .WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+
+            Assert.DoesNotContain(mockMqttClient.SentMqttTrafficInOrder, traffic => traffic.Subscribe != null);
+        }
+
+        [Fact]
+        public void FeatureClientsRejectOptedOutConnectionClient()
+        {
+            using MockConnectionMqttClient mockMqttClient = new();
+            using ConnectionClient connectionClient = new(new()
+            {
+                MqttClient = mockMqttClient,
+                EnableTwin = false,
+                EnableDirectMethods = false,
+                EnableCloudToDeviceMessages = false,
+            });
+
+            Assert.Throws<InvalidOperationException>(() => new Device.Unified.Twin.TwinClient(connectionClient));
+            Assert.Throws<InvalidOperationException>(() => new Device.Unified.DirectMethods.DirectMethodClient(connectionClient));
+
+            using Device.Unified.Telemetry.TelemetryClient telemetryClient = new(connectionClient);
+            Assert.Throws<InvalidOperationException>(() => telemetryClient.CloudToDeviceTelemetryReceivedAsync += _ => Task.CompletedTask);
+        }
+
         private static ConnectionContext GetMockConnectionContext()
         {
 #pragma warning disable SYSLIB0026 // Type or member is obsolete (Mock certificate, don't need to load a real one using typical X509 certificate loader
