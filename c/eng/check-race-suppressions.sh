@@ -8,8 +8,9 @@
 # - start with a concrete frame, not "...";
 # - name no function defined in c/src or c/adapters (globs are expanded);
 # - use obj: only for shared libraries (*.so*): the SDK is linked statically.
-# Each tsan.supp line must follow a comment and be race:<identifier>, naming no
-# identifier that appears in c/src or c/adapters (TSan matches it in any frame).
+# Each tsan.supp line must follow a comment and be race:<identifier> from the
+# tsan_reviewed list below (third-party globals), and no substring of any text in
+# c/src or c/adapters: TSan matches patterns as substrings, in any frame.
 # Dependency-free so it runs in the conventions job before configure.
 #
 # Usage: check-race-suppressions.sh [file.supp...]   (default: the three above)
@@ -92,6 +93,11 @@ fail() {
     violations=$((violations + 1))
 }
 
+# Third-party globals reviewed for tsan.supp: variables only, never functions,
+# and no substring of a function name in the stacks they appear in. Adding one
+# here is the review step.
+tsan_reviewed=(MQTTAsync_tostop sendThread_state sendThread_id receiveThread_id)
+
 # TSan format: one "type:pattern" per line.
 check_tsan() {
     local supp="$1" rel="$2" prev="" line_no=0 raw line pattern
@@ -113,8 +119,12 @@ check_tsan() {
             fail "${rel}" "${line_no}" "'${pattern}' is not a plain identifier"
             continue
         fi
-        if grep -rqw --include='*.c' --include='*.h' -- "${pattern}" "${root_dir}/src" "${root_dir}/adapters"; then
+        # TSan matches a pattern as a substring, so a fragment of an SDK name counts.
+        if grep -rqF --include='*.c' --include='*.h' -- "${pattern}" "${root_dir}/src" "${root_dir}/adapters"; then
             fail "${rel}" "${line_no}" "'${pattern}' appears in SDK code"
+        fi
+        if [[ " ${tsan_reviewed[*]} " != *" ${pattern} "* ]]; then
+            fail "${rel}" "${line_no}" "'${pattern}' is not a reviewed third-party global (tsan_reviewed)"
         fi
     done <"${supp}"
 }

@@ -1,0 +1,2 @@
+# a Paho function: its stacks include SDK callbacks
+race:MQTTAsync_sendThread

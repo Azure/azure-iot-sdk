@@ -570,6 +570,7 @@ jobs:
         run: >
           cmake --preset linux-gcc-debug
           -DAZ_IOT_WITH_PAHO=ON
+          -DAZ_IOT_WITH_AZ_MQTT=ON
           -DCMAKE_C_FLAGS="-D_GNU_SOURCE -fsanitize=thread -fno-omit-frame-pointer"
           -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=thread"
           -DCMAKE_SHARED_LINKER_FLAGS="-fsanitize=thread"

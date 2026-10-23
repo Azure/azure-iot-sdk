@@ -207,7 +207,7 @@ runs the whole CTest set against the broker, with `AZ_IOT_TEST_TIMEOUT_SCALE=10`
 the test (`exitcode=66`). TSan understands C11 atomics, so it needs no annotations. Locally:
 
 ```sh
-cmake --preset linux-gcc-debug -B build/tsan \
+cmake --preset linux-gcc-debug -B build/tsan -DAZ_IOT_WITH_AZ_MQTT=ON \
   -DCMAKE_C_FLAGS="-D_GNU_SOURCE -fsanitize=thread -fno-omit-frame-pointer" \
   -DCMAKE_EXE_LINKER_FLAGS=-fsanitize=thread
 cmake --build build/tsan
@@ -217,8 +217,8 @@ TSAN_OPTIONS=suppressions=$PWD/eng/sanitizers/tsan.supp ctest --test-dir build/t
 
 Suppressions live in `eng/sanitizers/tsan.supp`. TSan matches a `race:` name in any frame of
 either stack, and Paho's threads call into the SDK, so entries name a third-party global variable,
-never a function, and no identifier that appears in SDK code. `eng/check-race-suppressions.sh`
-enforces this.
+never a function, from a reviewed list in `eng/check-race-suppressions.sh`, and no substring of
+SDK code (TSan matches patterns as substrings). The script enforces this.
 
 ## MQTT adapter conformance suite
 

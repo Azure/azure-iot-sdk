@@ -4,6 +4,8 @@
 # - race: entries name a third-party global variable, never a function:
 #   TSan matches a function name anywhere in either stack, and Paho's threads
 #   call into the SDK (callbacks), so a function entry could hide an SDK race.
+# - Only globals in tsan_reviewed (eng/check-race-suppressions.sh), and no
+#   substring of SDK code: TSan matches patterns as substrings.
 # - Each entry follows a comment giving the upstream file:line and, for Paho,
 #   the PAHO_C_TAG it was checked against. Re-check on every tag bump.
 
