@@ -171,6 +171,8 @@ static void reconnect_after_real_drop(void** state)
   opts.port = proxy_port;
   opts.certificate_provider = &g_provider.base;
   opts.device_id = "az-iot-recon-it";
+  /* Scaled with the polling budget, or a slow instrumented TLS connect retries. */
+  opts.connect_timeout_seconds = AZ_IOT_DEFAULT_CONNECT_TIMEOUT_SECONDS * (uint32_t)g_timeout_scale;
   opts.reconnection_policy.initial_delay_ms = 200;
   opts.reconnection_policy.max_delay_ms = 200;
   opts.reconnection_policy.max_attempts = 5;
@@ -258,6 +260,8 @@ static az_iot_connection_client* start_client_with_c2d(
   opts.certificate_provider = &g_provider.base;
   opts.device_id = client_id;
   opts.subscription_ack_timeout_seconds = subscription_ack_timeout_seconds;
+  /* Scaled with the polling budget, or a slow instrumented TLS connect retries. */
+  opts.connect_timeout_seconds = AZ_IOT_DEFAULT_CONNECT_TIMEOUT_SECONDS * (uint32_t)g_timeout_scale;
   opts.reconnection_policy.initial_delay_ms = 200;
   opts.reconnection_policy.max_delay_ms = 200;
   opts.reconnection_policy.max_attempts = 5;
