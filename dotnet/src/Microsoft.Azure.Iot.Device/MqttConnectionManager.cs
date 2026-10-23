@@ -30,6 +30,11 @@ namespace Microsoft.Azure.Iot.Device
     /// Per-operation (contained) errors from PUBLISH, SUBSCRIBE and UNSUBSCRIBE are not connection-level errors and
     /// are thrown to the caller of those methods rather than being retried or reported here.
     /// </para>
+    /// <para>
+    /// A QoS 1 PUBLISH, SUBSCRIBE or UNSUBSCRIBE to IoT hub whose connection is lost before its PUBACK, SUBACK or
+    /// UNSUBACK arrives is not a contained error: the acknowledgement can never arrive, so it is reported to the caller as
+    /// <see cref="MqttClientNotConnectedException"/>, which tells the caller to send it again once reconnected.
+    /// </para>
     /// </remarks>
     internal class MqttConnectionManager : IDisposable
     {
@@ -130,6 +135,10 @@ namespace Microsoft.Azure.Iot.Device
         private CancellationTokenSource? _reconnectionCancellationToken;
 
         private readonly SemaphoreSlim _disconnectedEventLock = new(1);
+
+        // Incremented each time the underlying client reports a disconnection, so that an operation can tell whether the
+        // connection it was sent over was lost before its acknowledgement arrived.
+        private long _disconnectionCount;
 
         private readonly IMqttClient _underlyingMqttClient;
 
@@ -350,6 +359,9 @@ namespace Microsoft.Azure.Iot.Device
 
         private async Task InternalDisconnectedAsync(MqttClientDisconnectedEventArgs args)
         {
+            // Counted before waiting for the lock so that an operation failing because of this disconnection sees it.
+            Interlocked.Increment(ref _disconnectionCount);
+
             // MQTTNet's client often triggers the same "OnDisconnect" callback more times than expected, so only start reconnection once
             await _disconnectedEventLock.WaitAsync();
 
@@ -981,27 +993,16 @@ namespace Microsoft.Azure.Iot.Device
         /// change to that of a different endpoint connection between being read and the operation being sent. It may
         /// throw <see cref="MqttClientNotConnectedException"/> to report that the operation cannot be sent yet.
         /// </remarks>
-        public async Task<MqttPublishAck> BuildAndPublishAsync(ConnectionEndpoint endpoint, Func<MqttPublish> buildPublish, CancellationToken cancellationToken = default)
+        public Task<MqttPublishAck> BuildAndPublishAsync(ConnectionEndpoint endpoint, Func<MqttPublish> buildPublish, CancellationToken cancellationToken = default)
         {
-            BeginOperation(endpoint);
-            try
-            {
-                var puback = await _underlyingMqttClient.PublishAsync(buildPublish(), cancellationToken);
-                ThrowIfPubackHasErrorCode(puback);
-                return puback;
-            }
-            catch (Exception e) when (e is not DeviceException and not MqttClientNotConnectedException and not OperationCanceledException)
-            {
-                throw new DeviceException("Encountered an exception while publishing", e)
-                {
-                    Retryability = ErrorRetryability.Retryable,
-                    IsContained = true,
-                };
-            }
-            finally
-            {
-                EndOperation(endpoint);
-            }
+            return SendAndSettleAsync(
+                endpoint,
+                buildPublish,
+                _underlyingMqttClient.PublishAsync,
+                publish => publish.QualityOfServiceLevel == MqttQualityOfServiceLevel.AtLeastOnce,
+                ThrowIfPubackHasErrorCode,
+                "publishing",
+                cancellationToken);
         }
 
         /// <summary>
@@ -1028,27 +1029,16 @@ namespace Microsoft.Azure.Iot.Device
         /// change to that of a different endpoint connection between being read and the operation being sent. It may
         /// throw <see cref="MqttClientNotConnectedException"/> to report that the operation cannot be sent yet.
         /// </remarks>
-        public async Task<MqttSubscribeAck> BuildAndSubscribeAsync(ConnectionEndpoint endpoint, Func<MqttSubscribe> buildSubscribe, CancellationToken cancellationToken = default)
+        public Task<MqttSubscribeAck> BuildAndSubscribeAsync(ConnectionEndpoint endpoint, Func<MqttSubscribe> buildSubscribe, CancellationToken cancellationToken = default)
         {
-            BeginOperation(endpoint);
-            try
-            {
-                var suback = await _underlyingMqttClient.SubscribeAsync(buildSubscribe(), cancellationToken);
-                ThrowIfSubackHasErrorCode(suback);
-                return suback;
-            }
-            catch (Exception e) when (e is not DeviceException and not MqttClientNotConnectedException and not OperationCanceledException)
-            {
-                throw new DeviceException("Encountered an exception while subscribing", e)
-                {
-                    Retryability = ErrorRetryability.Retryable,
-                    IsContained = true,
-                };
-            }
-            finally
-            {
-                EndOperation(endpoint);
-            }
+            return SendAndSettleAsync(
+                endpoint,
+                buildSubscribe,
+                _underlyingMqttClient.SubscribeAsync,
+                _ => true,
+                ThrowIfSubackHasErrorCode,
+                "subscribing",
+                cancellationToken);
         }
 
         /// <summary>
@@ -1075,18 +1065,61 @@ namespace Microsoft.Azure.Iot.Device
         /// change to that of a different endpoint connection between being read and the operation being sent. It may
         /// throw <see cref="MqttClientNotConnectedException"/> to report that the operation cannot be sent yet.
         /// </remarks>
-        public async Task<MqttUnsubscribeAck> BuildAndUnsubscribeAsync(ConnectionEndpoint endpoint, Func<MqttUnsubscribe> buildUnsubscribe, CancellationToken cancellationToken = default)
+        public Task<MqttUnsubscribeAck> BuildAndUnsubscribeAsync(ConnectionEndpoint endpoint, Func<MqttUnsubscribe> buildUnsubscribe, CancellationToken cancellationToken = default)
+        {
+            return SendAndSettleAsync(
+                endpoint,
+                buildUnsubscribe,
+                _underlyingMqttClient.UnsubscribeAsync,
+                _ => true,
+                ThrowIfUnsubackHasErrorCode,
+                "unsubscribing",
+                cancellationToken);
+        }
+
+        /// <summary>
+        /// Admit an operation for the given endpoint, build its packet, send it and settle its acknowledgement.
+        /// </summary>
+        /// <param name="isAcknowledged">
+        /// Whether the packet is one the server acknowledges (a QoS 1 PUBLISH, a SUBSCRIBE or an UNSUBSCRIBE). Only such
+        /// packets sent to IoT hub are reported as <see cref="MqttClientNotConnectedException"/> when the connection is
+        /// lost before their acknowledgement arrives, so that the caller sends them again once reconnected. DPS traffic
+        /// is not, because the provisioning flow starts over from the beginning whenever its connection is lost.
+        /// </param>
+        private async Task<TAck> SendAndSettleAsync<TPacket, TAck>(
+            ConnectionEndpoint endpoint,
+            Func<TPacket> buildPacket,
+            Func<TPacket, CancellationToken, Task<TAck>> send,
+            Func<TPacket, bool> isAcknowledged,
+            Action<TAck> throwIfAckHasErrorCode,
+            string operationDescription,
+            CancellationToken cancellationToken)
         {
             BeginOperation(endpoint);
             try
             {
-                var unsuback = await _underlyingMqttClient.UnsubscribeAsync(buildUnsubscribe(), cancellationToken);
-                ThrowIfUnsubackHasErrorCode(unsuback);
-                return unsuback;
+                TPacket packet = buildPacket();
+                long disconnectionCountBeforeSend = Interlocked.Read(ref _disconnectionCount);
+
+                TAck ack;
+                try
+                {
+                    ack = await send(packet, cancellationToken);
+                }
+                catch (Exception e) when (endpoint == ConnectionEndpoint.IotHub
+                    && isAcknowledged(packet)
+                    && WasConnectionLostDuring(e, disconnectionCountBeforeSend, cancellationToken))
+                {
+                    throw new MqttClientNotConnectedException(
+                        $"The connection was lost while {operationDescription}, before the acknowledgement arrived.", e);
+                }
+
+                throwIfAckHasErrorCode(ack);
+                return ack;
             }
             catch (Exception e) when (e is not DeviceException and not MqttClientNotConnectedException and not OperationCanceledException)
             {
-                throw new DeviceException("Encountered an exception while unsubscribing", e)
+                throw new DeviceException($"Encountered an exception while {operationDescription}", e)
                 {
                     Retryability = ErrorRetryability.Retryable,
                     IsContained = true,
@@ -1096,6 +1129,27 @@ namespace Microsoft.Azure.Iot.Device
             {
                 EndOperation(endpoint);
             }
+        }
+
+        /// <summary>
+        /// Whether an operation failed because the connection it was sent over was lost before it was acknowledged.
+        /// </summary>
+        /// <remarks>
+        /// This holds for any <see cref="IMqttClient"/>, not just ones that report the loss as
+        /// <see cref="MqttClientNotConnectedException"/>: if a disconnection was reported after the operation was sent,
+        /// or the client is no longer connected, its acknowledgement can never arrive.
+        /// </remarks>
+        private bool WasConnectionLostDuring(Exception e, long disconnectionCountBeforeSend, CancellationToken cancellationToken)
+        {
+            if (e is MqttClientNotConnectedException or DeviceException
+                || (e is OperationCanceledException && cancellationToken.IsCancellationRequested))
+            {
+                // Already reported as a lost connection, already classified, or cancelled by the caller.
+                return false;
+            }
+
+            return Interlocked.Read(ref _disconnectionCount) != disconnectionCountBeforeSend
+                || !_underlyingMqttClient.IsConnected();
         }
 
         public void ThrowIfPubackHasErrorCode(MqttPublishAck puback)

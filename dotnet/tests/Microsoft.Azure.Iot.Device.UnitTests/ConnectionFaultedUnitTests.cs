@@ -1030,6 +1030,118 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         }
 
         /// <summary>
+        /// A QoS 1 PUBLISH, SUBSCRIBE or UNSUBSCRIBE to IoT hub whose connection is lost before its acknowledgement
+        /// arrives, where the connection can then only be recovered by re-provisioning, must be held until this device
+        /// is connected to its newly assigned hub and then sent again there.
+        /// </summary>
+        [Theory]
+        [InlineData("publish", "identityFault")]
+        [InlineData("subscribe", "identityFault")]
+        [InlineData("unsubscribe", "identityFault")]
+        [InlineData("publish", "hubUnreachable")]
+        [InlineData("subscribe", "hubUnreachable")]
+        [InlineData("unsubscribe", "hubUnreachable")]
+        public async Task OperationInterruptedBeforeAckIsHeldUntilReprovisionedAndResentToNewHub(string operation, string trigger)
+        {
+            const string Topic = "some/feature/topic";
+
+            using MockConnectionMqttClient mockMqttClient = new();
+            MockDeviceProvisioningService mockDps = new(mockMqttClient, registrationCount => registrationCount == 1 ? FirstAssignedHub : SecondAssignedHub);
+
+            string? currentHubHostName = null;
+            int firstHubConnects = 0;
+            mockMqttClient.OnConnect = connect =>
+            {
+                // When the hub becomes unreachable, the first hub refuses every reconnect so that only re-provisioning
+                // can recover the connection.
+                if (trigger == "hubUnreachable"
+                    && connect.HostName == FirstAssignedHub
+                    && Interlocked.Increment(ref firstHubConnects) > 1)
+                {
+                    throw new Exception("simulated unreachable hub");
+                }
+
+                Volatile.Write(ref currentHubHostName, connect.HostName);
+                return Task.FromResult(new MqttConnectAck() { ResultCode = MqttConnectReasonCode.Success });
+            };
+
+            // The first attempt is sent, but the connection drops before it is acknowledged, failing it the way MQTTnet
+            // fails every operation still waiting for an acknowledgement. The drop can only be recovered from by
+            // re-provisioning. Every attempt records the hub it was sent to.
+            List<string?> hubsAttempted = new();
+            Task? disconnection = null;
+            void RecordAttempt()
+            {
+                lock (hubsAttempted)
+                {
+                    hubsAttempted.Add(Volatile.Read(ref currentHubHostName));
+                    if (hubsAttempted.Count == 1)
+                    {
+                        disconnection = mockMqttClient.SimulateServerDisconnectAsync(
+                            trigger == "identityFault" ? MqttDisconnectReason.NotAuthorized : MqttDisconnectReason.ServerBusy);
+                        throw new IOException("mock connection reset");
+                    }
+                }
+            }
+
+            Func<MqttPublish, Task<MqttPublishAck>> handleProvisioningPublishAsync = mockMqttClient.OnPublish!;
+            mockMqttClient.OnPublish = publish =>
+            {
+                if (publish.Topic.StartsWith(ProvisioningTopicPrefix))
+                {
+                    return handleProvisioningPublishAsync.Invoke(publish);
+                }
+
+                RecordAttempt();
+                return Task.FromResult(new MqttPublishAck() { ReasonCode = MqttPublishAckReasonCode.Success });
+            };
+            mockMqttClient.OnSubscribe = subscribe =>
+            {
+                if (subscribe.TopicFilters.Any(topicFilter => topicFilter.Topic == Topic))
+                {
+                    RecordAttempt();
+                }
+
+                return Task.FromResult(MqttObjectHelpers.CreateSuccessfulSuback(subscribe));
+            };
+            mockMqttClient.OnUnsubscribe = unsubscribe =>
+            {
+                RecordAttempt();
+                return Task.FromResult(MqttObjectHelpers.CreateSuccessfulUnsuback(unsubscribe));
+            };
+
+            using TestConnectionClient connectionClient = new(new()
+            {
+                MqttClient = mockMqttClient,
+                ConnectionRetryPolicy = new ImmediateRetryPolicy(maxHubConnectAttemptsBeforeReprovision: 3),
+            });
+
+            await connectionClient.ProvisionAndConnectAsync(
+                CreateProvisioningSettings(),
+                CreateAuthenticationProvider(),
+                cancellationToken: TestContext.Current.CancellationToken);
+
+            Task pendingOperation = Task.Run(
+                () => operation switch
+                {
+                    "publish" => connectionClient.PublishAsync(new MqttPublish() { Topic = Topic, QualityOfServiceLevel = MqttQualityOfServiceLevel.AtLeastOnce }, TestContext.Current.CancellationToken),
+                    "subscribe" => connectionClient.SubscribeAsync(new MqttSubscribe(Topic, MqttQualityOfServiceLevel.AtLeastOnce), TestContext.Current.CancellationToken),
+                    _ => (Task)connectionClient.UnsubscribeAsync(new MqttUnsubscribe(Topic), TestContext.Current.CancellationToken),
+                },
+                TestContext.Current.CancellationToken);
+
+            await pendingOperation.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+            await disconnection!.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+
+            Assert.Equal(2, mockDps.RegistrationCount);
+            Assert.Equal(SecondAssignedHub, connectionClient.GetCurrentConnectionContext()!.IotHubHostName);
+            lock (hubsAttempted)
+            {
+                Assert.Equal(new[] { FirstAssignedHub, SecondAssignedHub }, hubsAttempted);
+            }
+        }
+
+        /// <summary>
         /// An operation that has read this device's ID for its topic must not be overtaken by a re-provisioning that
         /// assigns a different ID and connects to a different hub; otherwise the old ID would be sent over the new hub
         /// connection. Re-provisioning must instead wait for that operation, so every topic reaches the wire over a
