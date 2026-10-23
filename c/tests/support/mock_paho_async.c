@@ -43,6 +43,7 @@ static bool s_last_had_private_key;
 static char s_last_http_proxy[256];
 static char s_last_https_proxy[256];
 static int s_last_struct_version;
+static int s_last_connect_timeout;
 
 /* The inbound callbacks the adapter registered, and the context it expects
  * back. Written once by connect(), read by the test's producer threads. */
@@ -81,6 +82,7 @@ void mock_paho_reset(void)
   s_last_http_proxy[0] = '\0';
   s_last_https_proxy[0] = '\0';
   s_last_struct_version = -1;
+  s_last_connect_timeout = -1;
   s_callback_context = NULL;
   s_message_arrived = NULL;
   s_connection_lost = NULL;
@@ -132,6 +134,7 @@ const char* mock_paho_last_https_proxy(void)
 }
 
 int mock_paho_last_connect_struct_version(void) { return s_last_struct_version; }
+int mock_paho_last_connect_timeout(void) { return s_last_connect_timeout; }
 
 /* ------------------------------------------------------------------------- */
 /* MQTTAsync                                                                 */
@@ -217,6 +220,7 @@ int MQTTAsync_connect(MQTTAsync handle, const MQTTAsync_connectOptions* options)
     s_last_had_private_key = false;
   }
   s_last_struct_version = options != NULL ? options->struct_version : -1;
+  s_last_connect_timeout = options != NULL ? options->connectTimeout : -1;
   s_last_http_proxy[0] = '\0';
   s_last_https_proxy[0] = '\0';
   if (options != NULL && options->httpProxy != NULL)
