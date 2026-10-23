@@ -186,7 +186,8 @@ A test fails on any reported error, on its own failure, or when valgrind ends wi
 suppression used (`-s`). Suppressions live in `eng/sanitizers/{helgrind,drd}.supp`. They may
 name third-party code only, and each needs a comment giving its upstream reference;
 [`eng/check-race-suppressions.sh`](../../eng/check-race-suppressions.sh) enforces this.
-CI runs both tools on every change to `c/` (`race-detector` in `ci-c.yml`).
+CI runs both tools on every change to `c/` (`race-detector` in `ci-c.yml`), and ThreadSanitizer
+over all tests (below).
 
 With `-DAZ_IOT_BUILD_CONFORMANCE_TESTS=ON` the real-stack tests are labelled `race` too: the Paho
 conformance suites, `az_iot_reconnect_integration` and `az_iot_paho_teardown_race`. They need the
@@ -198,6 +199,26 @@ the entries in `drd.supp` and `helgrind.supp` cover those frames only.
 The tools see pthread locks only. The file sink's atomic spin lock is described to them by
 `-DAZ_IOT_RACE_ANNOTATIONS=ON` (needs `<valgrind/helgrind.h>`; no effect outside valgrind), which the
 CI job sets. Without it, a race-labelled test that logs to a file sink reports false races.
+
+### ThreadSanitizer
+
+The `tsan-linux` job in `ci-c.yml` builds everything, Paho included, with `-fsanitize=thread` and
+runs the whole CTest set against the broker, with `AZ_IOT_TEST_TIMEOUT_SCALE=10`. A report fails
+the test (`exitcode=66`). TSan understands C11 atomics, so it needs no annotations. Locally:
+
+```sh
+cmake --preset linux-gcc-debug -B build/tsan -DAZ_IOT_WITH_AZ_MQTT=ON \
+  -DCMAKE_C_FLAGS="-D_GNU_SOURCE -fsanitize=thread -fno-omit-frame-pointer" \
+  -DCMAKE_EXE_LINKER_FLAGS=-fsanitize=thread
+cmake --build build/tsan
+sudo sysctl -w vm.mmap_rnd_bits=28   # TSan refuses the default ASLR entropy on newer kernels
+TSAN_OPTIONS=suppressions=$PWD/eng/sanitizers/tsan.supp ctest --test-dir build/tsan
+```
+
+Suppressions live in `eng/sanitizers/tsan.supp`. TSan matches a `race:` name in any frame of
+either stack, and Paho's threads call into the SDK, so entries name a third-party global variable,
+never a function, from a reviewed list in `eng/check-race-suppressions.sh`, and no substring of
+SDK code (TSan matches patterns as substrings). The script enforces this.
 
 ## MQTT adapter conformance suite
 

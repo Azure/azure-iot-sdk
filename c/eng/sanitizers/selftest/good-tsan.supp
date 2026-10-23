@@ -1,0 +1,5 @@
+# Paho MQTTAsync.c:684 (v1.3.16): written without a lock.
+race:MQTTAsync_tostop
+
+# Paho MQTTAsyncUtils.c:1839 (v1.3.16).
+race:sendThread_state
