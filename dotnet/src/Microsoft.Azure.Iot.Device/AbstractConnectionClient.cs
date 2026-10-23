@@ -1587,6 +1587,10 @@ namespace Microsoft.Azure.Iot.Device
             // Counts the connection events that release the latch, so that an event which fires after an attempt started
             // but before the latch is reset below is not lost (which would leave this operation waiting for the next one).
             int connectionEventCount = 0;
+            using CancellationTokenSource connectionLifetimeCancellation =
+                CancellationTokenSource.CreateLinkedTokenSource(
+                    cancellationToken,
+                    ManagedMqttConnection.ConnectionLifetimeCancellationToken);
 
             Func<DevicePresenceFlowCompletedArgs, Task> HandleDevicePresenceFlowCompleted = (args) =>
             {
@@ -1646,7 +1650,7 @@ namespace Microsoft.Azure.Iot.Device
 
                         try
                         {
-                            latch.Wait(cancellationToken); // Wait for device birth flow to finish before resuming this feature client-level traffic
+                            latch.Wait(connectionLifetimeCancellation.Token); // Wait for device birth flow to finish before resuming this feature client-level traffic
                         }
                         catch (OperationCanceledException)
                         {

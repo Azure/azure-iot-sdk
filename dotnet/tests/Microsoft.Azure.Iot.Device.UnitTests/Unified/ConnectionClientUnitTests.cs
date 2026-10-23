@@ -826,6 +826,68 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
         }
 
         /// <summary>
+        /// An operation waiting for a reconnection is canceled when the caller deliberately disconnects.
+        /// </summary>
+        [Fact]
+        public async Task DisconnectCancelsOperationWaitingForReconnection()
+        {
+            using MockConnectionMqttClient mockMqttClient = new();
+            using ConnectionClient connectionClient = new(new()
+            {
+                MqttClient = mockMqttClient,
+                ConnectionRetryPolicy = new ExponentialBackoffRetryPolicy(uint.MaxValue, TimeSpan.Zero, useJitter: false),
+            });
+
+            await connectionClient.ConnectToHubAsync(GetMockConnectionContext(false), TestContext.Current.CancellationToken);
+
+            TaskCompletionSource reconnectStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            TaskCompletionSource<MqttConnectAck> finishReconnect = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            mockMqttClient.OnConnect = _ =>
+            {
+                reconnectStarted.TrySetResult();
+                return finishReconnect.Task;
+            };
+
+            Task? disconnection = null;
+            mockMqttClient.OnPublish = async _ =>
+            {
+                disconnection = mockMqttClient.SimulateServerDisconnectAsync(
+                    MqttDisconnectReason.ImplementationSpecificError,
+                    new IOException("mock connection reset"));
+                await Task.Yield();
+                throw new IOException("mock connection reset");
+            };
+
+            Task<MqttPublishAck> pendingOperation = connectionClient.PublishAsync(
+                new MqttPublish()
+                {
+                    Topic = "devices/test/messages/events/",
+                    QualityOfServiceLevel = MqttQualityOfServiceLevel.AtLeastOnce,
+                },
+                TestContext.Current.CancellationToken);
+
+            try
+            {
+                await reconnectStarted.Task.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+                await Task.Delay(TimeSpan.FromMilliseconds(100), TestContext.Current.CancellationToken);
+                Assert.False(pendingOperation.IsCompleted);
+
+                await connectionClient.DisconnectAsync(TestContext.Current.CancellationToken);
+
+                await Assert.ThrowsAnyAsync<OperationCanceledException>(
+                    () => pendingOperation.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken));
+            }
+            finally
+            {
+                finishReconnect.TrySetException(new OperationCanceledException());
+                if (disconnection != null)
+                {
+                    await disconnection.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+                }
+            }
+        }
+
+        /// <summary>
         /// A QoS 0 PUBLISH is never acknowledged, so losing the connection while sending it is reported to the caller
         /// rather than being sent again.
         /// </summary>
