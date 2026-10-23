@@ -91,6 +91,7 @@ sample has its own README.
 | Set build options, buffer limits, logging and other settings | [Client configuration](docs/client-configuration.md) |
 | Collect logs for troubleshooting or support | [Logging](docs/logging.md) |
 | Use my own MQTT client library | [Bring your own MQTT client](docs/how_to_byo_mqtt_client.md) |
+| Know which third-party libraries the SDK uses, and their known issues | [Dependencies](docs/dependencies.md) |
 | Know what stays compatible between releases | [Struct versioning](docs/struct_versioning.md) |
 | Install the SDK, consume it from CMake or pkg-config, or harden builds | [Building and installing](docs/eng/building.md) |
 | Read the design and engineering notes | [docs/eng](docs/eng/) |
