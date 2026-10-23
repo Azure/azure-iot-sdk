@@ -24,6 +24,7 @@
 
 #include "azure/iot/adapters/az_iot_adapter_paho.h"
 #include "azure/iot/az_iot_log.h"
+#include "azure/iot/az_iot_log_components.h"
 #include "azure/iot/az_iot_result.h"
 #include "azure/iot/az_iot_mqtt_iface.h"
 
@@ -67,14 +68,16 @@ typedef struct queued_event
   uint8_t* payload;
   size_t payload_len;
   bool has_message;
-  /* v5 User Properties backing storage (heap-allocated). */
-  az_iot_mqtt_user_property* user_props;
-  size_t user_props_count;
+  /* v5: the Paho message, kept when it carries User Properties; msg.user_properties reads them
+   * in place. Freed with the node. */
+  MQTTAsync_message* paho_msg;
   /* v5 Content Type (heap copy). */
   char* content_type;
   /* v5 Correlation Data (heap copy). */
   uint8_t* correlation_data;
   size_t correlation_data_len;
+  /* v5 PUBACK Reason String (heap copy); evt.reason_string points here. */
+  char* reason_string;
   struct queued_event* next;
 } queued_event;
 
@@ -171,18 +174,13 @@ static void q_free(queued_event* n)
   }
   free(n->topic);
   free(n->payload);
-  /* v5 property backing storage */
-  if (n->user_props)
+  if (n->paho_msg)
   {
-    for (size_t i = 0; i < n->user_props_count; ++i)
-    {
-      free((void*)n->user_props[i].key);
-      free((void*)n->user_props[i].value);
-    }
-    free(n->user_props);
+    MQTTAsync_freeMessage(&n->paho_msg);
   }
   free(n->content_type);
   free(n->correlation_data);
+  free(n->reason_string);
   free(n);
 }
 
@@ -251,15 +249,53 @@ static void enqueue_status(
 
 static void extract_v5_props(queued_event* n, MQTTAsync_message* msg);
 
-/* Allocate + enqueue an inbound MESSAGE event. Topic, payload and any v5
- * properties are deep-copied so the queued event is self-contained.
+/** @brief az_iot_mqtt_user_properties_next_fn over the User Properties of a Paho MQTTProperties. */
+static az_iot_result paho_user_property_next(
+    const void* source,
+    size_t source_len,
+    size_t* cursor,
+    az_iot_mqtt_user_property_view* out)
+{
+  (void)source_len;
+  const MQTTProperties* props = (const MQTTProperties*)source;
+  if (props->count < 0 || props->count > props->max_count
+      || (props->count > 0 && props->array == NULL))
+  {
+    return AZ_IOT_ERR_PROTOCOL;
+  }
+  while (*cursor < (size_t)props->count)
+  {
+    const MQTTProperty* p = &props->array[(*cursor)++];
+    if (p->identifier != MQTTPROPERTY_CODE_USER_PROPERTY)
+    {
+      continue;
+    }
+    if (p->value.data.len < 0 || p->value.value.len < 0
+        || (p->value.data.len > 0 && p->value.data.data == NULL)
+        || (p->value.value.len > 0 && p->value.value.data == NULL))
+    {
+      return AZ_IOT_ERR_PROTOCOL;
+    }
+    out->key = p->value.data.data != NULL ? p->value.data.data : "";
+    out->key_len = (size_t)p->value.data.len;
+    out->value = p->value.value.data != NULL ? p->value.value.data : "";
+    out->value_len = (size_t)p->value.value.len;
+    return AZ_IOT_OK;
+  }
+  return AZ_IOT_ERR_NOT_FOUND;
+}
+
+/* Allocate + enqueue an inbound MESSAGE event. Topic, payload and v5 Content
+ * Type and Correlation Data are copied. When the message carries User
+ * Properties, the node keeps `v5_src` instead (payload and User Properties are
+ * read from it in place) and returns true, so the caller must not free it.
  *
  * `v5_src` carries the properties to extract, or NULL for a v3.1.1 session.
  * They are attached BEFORE the event is published to the queue: q_push() makes
  * the node visible to process_loop() on the user thread, which is free to
  * dispatch and free it immediately, so anything written to the node afterwards
  * races with that free. */
-static void enqueue_message(
+static bool enqueue_message(
     paho_client* m,
     const char* topic,
     int topic_len,
@@ -272,7 +308,7 @@ static void enqueue_message(
   queued_event* n = (queued_event*)calloc(1, sizeof(*n));
   if (!n)
   {
-    return;
+    return false;
   }
 
   /* Paho passes topic_len == 0 to mean "C string". */
@@ -281,7 +317,7 @@ static void enqueue_message(
   if (!n->topic)
   {
     free(n);
-    return;
+    return false;
   }
   if (tlen)
   {
@@ -289,14 +325,24 @@ static void enqueue_message(
   }
   n->topic[tlen] = '\0';
 
-  if (payload_len > 0 && payload)
+  /* With User Properties the node keeps v5_src, which they are read from; its payload is then
+   * used in place rather than copied. A malformed property set is kept too, unread, so the view
+   * reports AZ_IOT_ERR_PROTOCOL: Paho's getters would read past its array. */
+  bool const malformed = v5_src != NULL
+      && (v5_src->properties.count < 0 || v5_src->properties.count > v5_src->properties.max_count
+          || (v5_src->properties.count > 0 && v5_src->properties.array == NULL));
+  bool const keep = v5_src != NULL
+      && (malformed
+          || MQTTProperties_propertyCount(&v5_src->properties, MQTTPROPERTY_CODE_USER_PROPERTY)
+              > 0);
+  if (!keep && payload_len > 0 && payload)
   {
     n->payload = (uint8_t*)malloc((size_t)payload_len);
     if (!n->payload)
     {
       free(n->topic);
       free(n);
-      return;
+      return false;
     }
     memcpy(n->payload, payload, (size_t)payload_len);
     n->payload_len = (size_t)payload_len;
@@ -304,20 +350,29 @@ static void enqueue_message(
 
   n->has_message = true;
   n->msg.topic = n->topic;
-  n->msg.payload = n->payload;
-  n->msg.payload_len = n->payload_len;
+  n->msg.payload = keep ? (const uint8_t*)payload : n->payload;
+  n->msg.payload_len
+      = keep ? (payload && payload_len > 0 ? (size_t)payload_len : 0) : n->payload_len;
   n->msg.qos = (az_iot_mqtt_qos)qos;
   n->msg.retain = (retain != 0);
 
   n->evt.kind = AZ_IOT_MQTT_EVT_MESSAGE;
   n->evt.message = &n->msg;
 
-  if (v5_src)
+  if (v5_src && !malformed)
   {
     extract_v5_props(n, v5_src);
   }
+  if (keep)
+  {
+    n->paho_msg = v5_src;
+    n->msg.user_properties.next = paho_user_property_next;
+    n->msg.user_properties.source = &v5_src->properties;
+  }
 
+  bool const kept = n->paho_msg != NULL;
   q_push(m, n);
+  return kept;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -388,49 +443,15 @@ static void extract_v5_props(queued_event* n, MQTTAsync_message* msg)
   {
     n->msg.message_expiry_seconds = (uint32_t)me->value.integer4;
   }
-
-  /* User Properties — count then allocate */
-  int up_count = MQTTProperties_propertyCount(props, MQTTPROPERTY_CODE_USER_PROPERTY);
-  if (up_count > 0)
-  {
-    n->user_props
-        = (az_iot_mqtt_user_property*)calloc((size_t)up_count, sizeof(az_iot_mqtt_user_property));
-    if (n->user_props)
-    {
-      for (int i = 0; i < up_count; ++i)
-      {
-        MQTTProperty* up = MQTTProperties_getPropertyAt(props, MQTTPROPERTY_CODE_USER_PROPERTY, i);
-        if (!up)
-        {
-          continue;
-        }
-        char* key = dup_str_n(up->value.data.data, up->value.data.len);
-        char* value = dup_str_n(up->value.value.data, up->value.value.len);
-        if (!key || !value)
-        {
-          /* Drop the pair whole rather than surface half of it: a NULL key or
-           * value in an array the application is told has N entries is a
-           * dereference waiting to happen. */
-          free(key);
-          free(value);
-          continue;
-        }
-        n->user_props[n->user_props_count].key = key;
-        n->user_props[n->user_props_count].value = value;
-        n->user_props_count++;
-      }
-      n->msg.user_properties = n->user_props;
-      n->msg.user_properties_count = n->user_props_count;
-    }
-  }
 }
 
 static int paho_msg_arrived(void* context, char* topic, int topic_len, MQTTAsync_message* msg)
 {
   paho_client* m = (paho_client*)context;
+  bool kept = false;
   if (m && msg)
   {
-    enqueue_message(
+    kept = enqueue_message(
         m,
         topic,
         topic_len,
@@ -440,7 +461,10 @@ static int paho_msg_arrived(void* context, char* topic, int topic_len, MQTTAsync
         msg->retained,
         (m->version == AZ_IOT_MQTT_VERSION_5) ? msg : NULL);
   }
-  MQTTAsync_freeMessage(&msg);
+  if (!kept)
+  {
+    MQTTAsync_freeMessage(&msg);
+  }
   MQTTAsync_free(topic);
   return 1; /* tell Paho we handled the message */
 }
@@ -448,7 +472,7 @@ static int paho_msg_arrived(void* context, char* topic, int topic_len, MQTTAsync
 static void paho_connection_lost(void* context, char* cause)
 {
   paho_client* m = (paho_client*)context;
-  AZ_IOT_LOG_WARNF("paho: connection lost: %s", cause ? cause : "(unknown)");
+  AZ_IOT_LOG_WARNF(AZ_IOT_LOG_COMPONENT_PAHO, "connection lost: %s", cause ? cause : "(unknown)");
   if (m)
   {
     enqueue_status(m, AZ_IOT_MQTT_EVT_DISCONNECTED, AZ_IOT_OK, 0);
@@ -465,7 +489,8 @@ static void paho_disconnected(
 {
   paho_client* m = (paho_client*)context;
   (void)properties;
-  AZ_IOT_LOG_WARNF("paho: server sent DISCONNECT (reason %d)", (int)reasonCode);
+  AZ_IOT_LOG_WARNF(
+      AZ_IOT_LOG_COMPONENT_PAHO, "server sent DISCONNECT (reason %d)", (int)reasonCode);
   if (m)
   {
     /* Classified, not assumed clean. 0x00 is an ordinary close; anything from
@@ -499,11 +524,12 @@ static void paho_trace_callback(enum MQTTASYNC_TRACE_LEVELS level, char* message
     if (marker != NULL)
     {
       size_t keep = (size_t)(marker - message) + sizeof(PAHO_TRACE_PROXY_AUTH_MARKER) - 1u;
-      AZ_IOT_LOG_TRACEF("paho: (%d) %.*s<redacted>", (int)level, (int)keep, message);
+      AZ_IOT_LOG_TRACEF(
+          AZ_IOT_LOG_COMPONENT_PAHO, "(%d) %.*s<redacted>", (int)level, (int)keep, message);
       return;
     }
   }
-  AZ_IOT_LOG_TRACEF("paho: (%d) %s", (int)level, message ? message : "");
+  AZ_IOT_LOG_TRACEF(AZ_IOT_LOG_COMPONENT_PAHO, "(%d) %s", (int)level, message ? message : "");
 }
 
 /* OpenSSL error handler wired into MQTTAsync_SSLOptions.ssl_error_cb. On a failed
@@ -543,7 +569,7 @@ static int paho_ssl_error_callback(const char* str, size_t len, void* u)
   {
     n = (size_t)INT_MAX;
   }
-  AZ_IOT_LOG_ERRORF("paho ssl: %.*s", (int)n, str);
+  AZ_IOT_LOG_ERRORF(AZ_IOT_LOG_COMPONENT_PAHO, "ssl: %.*s", (int)n, str);
   return 1; /* keep draining the remaining OpenSSL error-queue lines */
 }
 #endif
@@ -700,7 +726,8 @@ static void paho_disconnect_failure(void* context, MQTTAsync_failureData* respon
   paho_client* m = (paho_client*)context;
   int code = response ? response->code : 0;
   AZ_IOT_LOG_WARNF(
-      "paho: disconnect failed: rc=%d msg=%s",
+      AZ_IOT_LOG_COMPONENT_PAHO,
+      "disconnect failed: rc=%d msg=%s",
       code,
       (response && response->message) ? response->message : "(none)");
   if (m)
@@ -746,13 +773,14 @@ static void paho_connect_failure(void* context, MQTTAsync_failureData* response)
   if (response)
   {
     AZ_IOT_LOG_ERRORF(
-        "paho: connect failed: rc=%d msg=%s",
+        AZ_IOT_LOG_COMPONENT_PAHO,
+        "connect failed: rc=%d msg=%s",
         response->code,
         response->message ? response->message : "(none)");
   }
   else
   {
-    AZ_IOT_LOG_ERROR("paho: connect failed: (no response data)");
+    AZ_IOT_LOG_ERROR(AZ_IOT_LOG_COMPONENT_PAHO, "connect failed: (no response data)");
   }
   if (m)
   {
@@ -820,7 +848,14 @@ static void paho_publish_failure(void* context, MQTTAsync_failureData* response)
   uint16_t pid = response ? (uint16_t)response->token : 0;
   if (m)
   {
-    enqueue_status(m, AZ_IOT_MQTT_EVT_PUBLISH_ACK, AZ_IOT_ERR_MQTT, pid);
+    /* v3.1.1 PUBACKs carry no code: this is a publish that ended without one. */
+    enqueue_status_codes(
+        m,
+        AZ_IOT_MQTT_EVT_PUBLISH_ACK,
+        AZ_IOT_ERR_MQTT,
+        pid,
+        0,
+        response ? paho_transport_code(response->code) : 0);
   }
 }
 
@@ -852,14 +887,15 @@ static void paho_connect_failure5(void* context, MQTTAsync_failureData5* respons
   if (response)
   {
     AZ_IOT_LOG_ERRORF(
-        "paho: connect5 failed: rc=%d reason_code=%d msg=%s",
+        AZ_IOT_LOG_COMPONENT_PAHO,
+        "connect5 failed: rc=%d reason_code=%d msg=%s",
         response->code,
         (int)response->reasonCode,
         response->message ? response->message : "(none)");
   }
   else
   {
-    AZ_IOT_LOG_ERROR("paho: connect5 failed: (no response data)");
+    AZ_IOT_LOG_ERROR(AZ_IOT_LOG_COMPONENT_PAHO, "connect5 failed: (no response data)");
   }
   if (m)
   {
@@ -890,7 +926,7 @@ static void paho_subscribe_success5(void* context, MQTTAsync_successData5* respo
   az_iot_result status = az_iot_mqtt_suback_result(m->version, code);
   if (status != AZ_IOT_OK)
   {
-    AZ_IOT_LOG_WARNF("paho: SUBACK refused: reason_code=%d", code);
+    AZ_IOT_LOG_WARNF(AZ_IOT_LOG_COMPONENT_PAHO, "SUBACK refused: reason_code=%d", code);
   }
   enqueue_status_code(m, AZ_IOT_MQTT_EVT_SUBSCRIBE_ACK, status, pid, paho_wire_code(code));
 }
@@ -924,13 +960,106 @@ static void paho_publish_success5(void* context, MQTTAsync_successData5* respons
   }
 }
 
+/* Paho calls this for a PUBACK reason code >= 0x80 (reasonCode, with the PUBACK's properties) and
+ * for a publish that ends without one (a negative code). The properties are freed on return, so
+ * the Reason String is copied. */
 static void paho_publish_failure5(void* context, MQTTAsync_failureData5* response)
 {
   paho_client* m = (paho_client*)context;
-  uint16_t pid = response ? (uint16_t)response->token : 0;
+  if (!m)
+  {
+    return;
+  }
+  queued_event* n = (queued_event*)calloc(1, sizeof(*n));
+  if (!n)
+  {
+    return;
+  }
+  n->evt.kind = AZ_IOT_MQTT_EVT_PUBLISH_ACK;
+  n->evt.status = AZ_IOT_ERR_MQTT;
+  if (response)
+  {
+    n->evt.packet_id = (uint16_t)response->token;
+    int const code = (int)response->reasonCode;
+    if (code >= 0x80)
+    {
+      n->evt.status = az_iot_mqtt_puback_result(m->version, code);
+      n->evt.protocol_code = code;
+      MQTTProperty* reason
+          = MQTTProperties_getPropertyAt(&response->properties, MQTTPROPERTY_CODE_REASON_STRING, 0);
+      if (reason && reason->value.data.data)
+      {
+        size_t const len = (size_t)reason->value.data.len;
+        n->reason_string = (char*)malloc(len ? len : 1);
+        if (n->reason_string)
+        {
+          memcpy(n->reason_string, reason->value.data.data, len);
+          n->evt.reason_string = n->reason_string;
+          n->evt.reason_string_len = len;
+        }
+      }
+    }
+    else
+    {
+      n->evt.transport_code = paho_transport_code(response->code);
+    }
+  }
+  q_push(m, n);
+}
+
+static void paho_unsubscribe_success(void* context, MQTTAsync_successData* response)
+{
+  paho_client* m = (paho_client*)context;
   if (m)
   {
-    enqueue_status(m, AZ_IOT_MQTT_EVT_PUBLISH_ACK, AZ_IOT_ERR_MQTT, pid);
+    enqueue_status(
+        m, AZ_IOT_MQTT_EVT_UNSUBSCRIBE_ACK, AZ_IOT_OK, response ? (uint16_t)response->token : 0);
+  }
+}
+
+static void paho_unsubscribe_failure(void* context, MQTTAsync_failureData* response)
+{
+  paho_client* m = (paho_client*)context;
+  if (m)
+  {
+    enqueue_status_codes(
+        m,
+        AZ_IOT_MQTT_EVT_UNSUBSCRIBE_ACK,
+        AZ_IOT_ERR_MQTT,
+        response ? (uint16_t)response->token : 0,
+        0,
+        response ? paho_transport_code(response->code) : 0);
+  }
+}
+
+/* Paho calls this for every UNSUBACK, whatever its reason code. */
+static void paho_unsubscribe_success5(void* context, MQTTAsync_successData5* response)
+{
+  paho_client* m = (paho_client*)context;
+  if (m)
+  {
+    int const code = response ? (int)response->reasonCode : 0;
+    enqueue_status_code(
+        m,
+        AZ_IOT_MQTT_EVT_UNSUBSCRIBE_ACK,
+        code >= 0x80 ? AZ_IOT_ERR_MQTT : AZ_IOT_OK,
+        response ? (uint16_t)response->token : 0,
+        paho_wire_code(code));
+  }
+}
+
+static void paho_unsubscribe_failure5(void* context, MQTTAsync_failureData5* response)
+{
+  paho_client* m = (paho_client*)context;
+  if (m)
+  {
+    enqueue_status_codes(
+        m,
+        AZ_IOT_MQTT_EVT_UNSUBSCRIBE_ACK,
+        AZ_IOT_ERR_MQTT,
+        response ? (uint16_t)response->token : 0,
+        0,
+        response ? paho_transport_code(response->code) : 0);
   }
 }
 
@@ -1028,7 +1157,7 @@ static size_t proxy_cred_encoded_len(const char* s)
 /* Percent-encode '%' and '@' into `dst`, returning the end of what was written.
  *
  * Those two characters and no others, because those two are what Paho's parser
- * acts on (MQTTProtocol_setHTTPProxy / MQTTProtocol_specialChars in 1.3.13):
+ * acts on (Proxy_setHTTPProxy / Proxy_specialChars in 1.3.16):
  * it splits the proxy string at the FIRST '@', so an '@' anywhere in a
  * credential silently moves the host; and it decodes %XX back to a byte, so a
  * literal '%' would be eaten or -- when the next two characters are not hex
@@ -1054,7 +1183,9 @@ static char* proxy_cred_encode(char* dst, const char* s)
   return dst;
 }
 
-/* Render the proxy as the "[user:password@]host:port" string Paho expects.
+#define PAHO_PROXY_SCHEME "http://"
+
+/* Render the proxy as the "http://[user:password@]host:port" string Paho expects.
  *
  * *out_uri is NULL when no proxy is configured, which is not an error. */
 static az_iot_result build_proxy_uri(const az_iot_mqtt_proxy_options* proxy, char** out_uri)
@@ -1076,7 +1207,9 @@ static az_iot_result build_proxy_uri(const az_iot_mqtt_proxy_options* proxy, cha
     return AZ_IOT_ERR_INVALID_ARG;
   }
 
-  size_t n = strlen(proxy->host) + 1 + 5 + 1; /* host + ':' + port + NUL */
+  /* "http://" + host + ':' + port + NUL. Paho 1.3.14+ refuses an httpsProxy
+   * without a scheme, and the proxy itself is always plain HTTP. */
+  size_t n = sizeof(PAHO_PROXY_SCHEME) - 1u + strlen(proxy->host) + 1 + 5 + 1;
   if (user != NULL)
   {
     /* user + ':' + password + '@'. The colon is unconditional: Basic auth with
@@ -1088,6 +1221,11 @@ static az_iot_result build_proxy_uri(const az_iot_mqtt_proxy_options* proxy, cha
       n += proxy_cred_encoded_len(pass);
     }
   }
+  /* Only an overflowing length sum can fail this. */
+  if (n <= sizeof(PAHO_PROXY_SCHEME))
+  {
+    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+  }
 
   char* uri = (char*)malloc(n);
   if (!uri)
@@ -1096,6 +1234,8 @@ static az_iot_result build_proxy_uri(const az_iot_mqtt_proxy_options* proxy, cha
   }
 
   char* p = uri;
+  memcpy(p, PAHO_PROXY_SCHEME, sizeof(PAHO_PROXY_SCHEME) - 1u);
+  p += sizeof(PAHO_PROXY_SCHEME) - 1u;
   if (user != NULL)
   {
     p = proxy_cred_encode(p, user);
@@ -1134,6 +1274,20 @@ static void paho_apply_proxy(MQTTAsync_connectOptions* conn, const char* proxy_u
   conn->httpsProxy = proxy_uri;
 }
 
+/**
+ * @brief Apply az_iot_mqtt_connect_options::connect_timeout_seconds.
+ *
+ * 0 keeps Paho's default (30 s). Clamped to INT_MAX / 1000: Paho computes
+ * connectTimeout * 1000 in int.
+ */
+static void paho_apply_connect_timeout(MQTTAsync_connectOptions* conn, uint32_t seconds)
+{
+  if (seconds != 0)
+  {
+    conn->connectTimeout = (seconds > (uint32_t)(INT_MAX / 1000)) ? (INT_MAX / 1000) : (int)seconds;
+  }
+}
+
 static az_iot_result paho_iface_connect(
     az_iot_mqtt_client* self,
     const az_iot_mqtt_connect_options* opts)
@@ -1151,7 +1305,7 @@ static az_iot_result paho_iface_connect(
   if (opts->transport != AZ_IOT_MQTT_TRANSPORT_TCP
       && opts->transport != AZ_IOT_MQTT_TRANSPORT_WEBSOCKET)
   {
-    AZ_IOT_LOG_ERRORF("paho: unsupported transport %d", (int)opts->transport);
+    AZ_IOT_LOG_ERRORF(AZ_IOT_LOG_COMPONENT_PAHO, "unsupported transport %d", (int)opts->transport);
     return AZ_IOT_ERR_NOT_SUPPORTED;
   }
   paho_client* m = paho_self(self);
@@ -1233,9 +1387,10 @@ static az_iot_result paho_iface_connect(
   }
 
   AZ_IOT_LOG_INFOF(
+      AZ_IOT_LOG_COMPONENT_PAHO,
       /* proxy.host, never m->proxy_uri: the URI carries the Basic credential,
        * and this line is emitted at INFO on every connect. */
-      "paho: connecting to %s as '%s' (proxy=%s)",
+      "connecting to %s as '%s' (proxy=%s)",
       m->server_uri,
       m->client_id,
       is_nonempty_cstr(opts->proxy.host) ? opts->proxy.host : "none");
@@ -1295,7 +1450,8 @@ static az_iot_result paho_iface_connect(
       ssl_opts.ssl_error_cb = paho_ssl_error_callback;
     }
     AZ_IOT_LOG_DEBUGF(
-        "paho: SSL trustStore=%s keyStore=%s privateKey=%s verboseErrors=%s keyCustody=%s",
+        AZ_IOT_LOG_COMPONENT_PAHO,
+        "SSL trustStore=%s keyStore=%s privateKey=%s verboseErrors=%s keyCustody=%s",
         ssl_opts.trustStore ? ssl_opts.trustStore : "(none)",
         ssl_opts.keyStore ? ssl_opts.keyStore : "(none)",
         ssl_opts.privateKey ? ssl_opts.privateKey : "(none)",
@@ -1306,7 +1462,8 @@ static az_iot_result paho_iface_connect(
   (void)private_key_path;
   if (use_ssl)
   {
-    AZ_IOT_LOG_ERROR("paho: TLS requested but the adapter was built without SSL support");
+    AZ_IOT_LOG_ERROR(
+        AZ_IOT_LOG_COMPONENT_PAHO, "TLS requested but the adapter was built without SSL support");
     az_iot_paho_key_custody_release(&m->key_custody);
     return AZ_IOT_ERR_NOT_SUPPORTED;
   }
@@ -1319,6 +1476,7 @@ static az_iot_result paho_iface_connect(
     conn.onSuccess5 = paho_connect_success5;
     conn.onFailure5 = paho_connect_failure5;
     paho_apply_proxy(&conn, m->proxy_uri);
+    paho_apply_connect_timeout(&conn, opts->connect_timeout_seconds);
     conn.keepAliveInterval = opts->keep_alive_seconds ? opts->keep_alive_seconds : 60;
     conn.cleansession = 0;
     conn.cleanstart = opts->clean_start ? 1 : 0;
@@ -1384,6 +1542,7 @@ static az_iot_result paho_iface_connect(
     conn.onSuccess = paho_connect_success;
     conn.onFailure = paho_connect_failure;
     paho_apply_proxy(&conn, m->proxy_uri);
+    paho_apply_connect_timeout(&conn, opts->connect_timeout_seconds);
     conn.keepAliveInterval = opts->keep_alive_seconds ? opts->keep_alive_seconds : 60;
     /* v3.1.1 has no separate Clean Start: the caller's clean_start maps onto
      * the Clean Session flag. This used to be hardcoded to 1, which quietly
@@ -1533,6 +1692,16 @@ static az_iot_result paho_iface_unsubscribe(
 
   MQTTAsync_responseOptions resp = MQTTAsync_responseOptions_initializer;
   resp.context = m;
+  if (m->version == AZ_IOT_MQTT_VERSION_5)
+  {
+    resp.onSuccess5 = paho_unsubscribe_success5;
+    resp.onFailure5 = paho_unsubscribe_failure5;
+  }
+  else
+  {
+    resp.onSuccess = paho_unsubscribe_success;
+    resp.onFailure = paho_unsubscribe_failure;
+  }
   int rc = MQTTAsync_unsubscribe(m->paho, topic_filter, &resp);
   if (out_packet_id)
   {
@@ -1567,13 +1736,20 @@ static az_iot_result paho_iface_publish(
   MQTTProperties props = MQTTProperties_initializer;
   if (m->version == AZ_IOT_MQTT_VERSION_5)
   {
+    /* MQTT strings and binary data carry a 2-byte length. */
+    if ((msg->content_type != NULL && strlen(msg->content_type) > UINT16_MAX)
+        || (msg->correlation_data != NULL && msg->correlation_data_len > UINT16_MAX))
+    {
+      return AZ_IOT_ERR_INVALID_ARG;
+    }
+    bool added = true;
     if (is_nonempty_cstr(msg->content_type))
     {
       MQTTProperty p;
       p.identifier = MQTTPROPERTY_CODE_CONTENT_TYPE;
       p.value.data.data = (char*)(uintptr_t)msg->content_type;
       p.value.data.len = (int)strlen(msg->content_type);
-      MQTTProperties_add(&props, &p);
+      added = MQTTProperties_add(&props, &p) == 0;
     }
     if (msg->correlation_data && msg->correlation_data_len > 0)
     {
@@ -1581,29 +1757,47 @@ static az_iot_result paho_iface_publish(
       p.identifier = MQTTPROPERTY_CODE_CORRELATION_DATA;
       p.value.data.data = (char*)(uintptr_t)msg->correlation_data;
       p.value.data.len = (int)msg->correlation_data_len;
-      MQTTProperties_add(&props, &p);
+      added = added && MQTTProperties_add(&props, &p) == 0;
     }
     if (msg->message_expiry_seconds > 0)
     {
       MQTTProperty p;
       p.identifier = MQTTPROPERTY_CODE_MESSAGE_EXPIRY_INTERVAL;
       p.value.integer4 = (int)msg->message_expiry_seconds;
-      MQTTProperties_add(&props, &p);
+      added = added && MQTTProperties_add(&props, &p) == 0;
     }
-    for (size_t i = 0; i < msg->user_properties_count; ++i)
+    if (!added)
     {
-      const az_iot_mqtt_user_property* up = &msg->user_properties[i];
-      if (!up->key)
+      MQTTProperties_free(&props);
+      return AZ_IOT_ERR_OUT_OF_MEMORY;
+    }
+    size_t cursor = 0;
+    az_iot_mqtt_user_property_view up;
+    az_iot_result up_rc;
+    while ((up_rc = az_iot_mqtt_user_properties_next(&msg->user_properties, &cursor, &up))
+           == AZ_IOT_OK)
+    {
+      if (up.key_len > UINT16_MAX || up.value_len > UINT16_MAX)
       {
-        continue;
+        MQTTProperties_free(&props);
+        return AZ_IOT_ERR_INVALID_ARG;
       }
       MQTTProperty p;
       p.identifier = MQTTPROPERTY_CODE_USER_PROPERTY;
-      p.value.data.data = (char*)(uintptr_t)up->key;
-      p.value.data.len = (int)strlen(up->key);
-      p.value.value.data = (char*)(uintptr_t)(up->value ? up->value : "");
-      p.value.value.len = (int)(up->value ? strlen(up->value) : 0);
-      MQTTProperties_add(&props, &p);
+      p.value.data.data = (char*)(uintptr_t)up.key;
+      p.value.data.len = (int)up.key_len;
+      p.value.value.data = (char*)(uintptr_t)up.value;
+      p.value.value.len = (int)up.value_len;
+      if (MQTTProperties_add(&props, &p) != 0)
+      {
+        MQTTProperties_free(&props);
+        return AZ_IOT_ERR_OUT_OF_MEMORY;
+      }
+    }
+    if (up_rc != AZ_IOT_ERR_NOT_FOUND)
+    {
+      MQTTProperties_free(&props);
+      return AZ_IOT_ERR_INVALID_ARG;
     }
     paho_msg.properties = props;
   }
@@ -1748,8 +1942,6 @@ static az_iot_mqtt_client* paho_factory_create(void* factory_ctx)
   return &m->base;
 }
 
-static void paho_factory_cleanup(void* ctx) { free(ctx); }
-
 static az_iot_mqtt_factory* build_factory(az_iot_mqtt_version v)
 {
   paho_factory_state* st = (paho_factory_state*)calloc(1, sizeof(*st));
@@ -1760,7 +1952,6 @@ static az_iot_mqtt_factory* build_factory(az_iot_mqtt_version v)
   st->public_.version = v;
   st->public_.create = paho_factory_create;
   st->public_.factory_ctx = st;
-  st->public_.destroy = paho_factory_cleanup;
   return &st->public_;
 }
 

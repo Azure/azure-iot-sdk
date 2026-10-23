@@ -54,15 +54,20 @@ through the internal `set_state_to()` helper, which is also what raises the user
 stateDiagram-v2
     direction LR
     [*] --> IDLE
-    IDLE --> CONNECTING: open()
+    IDLE --> SETTING_UP: open()
+    SETTING_UP --> CONNECTING: local steps done, connect() issued
+    SETTING_UP --> CONNECTED: registration published on an existing DPS session
+    SETTING_UP --> RETRY_PENDING: local step failed
+    SETTING_UP --> FAULTED: local step failed, reconnect disabled
+    SETTING_UP --> IDLE: open() step failed
     CONNECTING --> CONNECTED: CONNACK ok, handshake done
-    CONNECTING --> RECONNECTING: error, drop or timeout
+    CONNECTING --> RETRY_PENDING: error, drop or timeout
     CONNECTING --> FAULTED: error, reconnect disabled
-    CONNECTED --> RECONNECTING: unexpected drop
+    CONNECTED --> RETRY_PENDING: unexpected drop
     CONNECTED --> DISCONNECTING: close()
-    RECONNECTING --> CONNECTING: backoff elapsed
-    RECONNECTING --> FAULTED: attempts exhausted
-    RECONNECTING --> IDLE: close()
+    RETRY_PENDING --> SETTING_UP: backoff elapsed
+    RETRY_PENDING --> FAULTED: attempts exhausted
+    RETRY_PENDING --> IDLE: close()
     DISCONNECTING --> IDLE: transport closed
     FAULTED --> IDLE: close()
     IDLE --> [*]: deinit()
@@ -107,7 +112,7 @@ sequenceDiagram
     participant Hub as IoT Hub / Event Grid
 
     App->>Conn: open(options)
-    Conn->>Conn: state = CONNECTING
+    Conn->>Conn: state = SETTING_UP (DPS first when it registers, then HUB)
 
     alt DPS configured (id_scope present)
         Conn->>Cert: load(BOOTSTRAP)
@@ -126,9 +131,9 @@ sequenceDiagram
             Conn->>DPS: PUBLISH get operation status
         end
         DPS-->>Conn: status = assigned (assignedHub, deviceId, connectionProfile, issuedCertificateChain)
-        opt issued chain present
+        opt request_operational_certificate (complete payload, chain required)
             Conn->>Cert: store_issued_certificate(chain)
-            Conn-->>App: operational_cert_callback(chain)
+            Conn-->>App: operational_cert_callback(chain, store_result)
         end
         Conn->>DPS: DISCONNECT + tear down v3.1.1 adapter
         Conn->>Conn: resolve connection profile, apply assigned host / client id, pick hub role
@@ -138,6 +143,7 @@ sequenceDiagram
     alt not found
         Conn->>Cert: load(BOOTSTRAP)
     end
+    Conn->>Conn: HUB state = CONNECTING
     Conn->>Hub: MQTT CONNECT (role-specific username, TLS mutual auth)
     Hub-->>Conn: CONNACK
 
@@ -168,10 +174,10 @@ Key ordering guarantees that both clients must honour:
    and DPS always uses MQTT 3.1.1 even when the hub session uses v5.
 3. The operational certificate is preferred over the bootstrap certificate on every connect attempt,
    including reconnects.
-4. **The software updates bootstrap update check runs before `open()`, not inside it.** The agent drives the
-   onboarding update call against the DPS gateway until the service reports no update, and only then
-   does the connection client register. The check is **advisory**: if it fails, the device proceeds
-   to register anyway. See [§7](#7-software-updates-onboarding-and-renewal-partly-implemented).
+4. **The software updates bootstrap update check runs inside `open()`, ahead of registration**, on
+   the DPS session, when the agent has asked for it. Registration is held until the first check
+   verdict that will not immediately repeat, and a hold timeout bounds it; on expiry the device
+   registers anyway. See [§7](#7-software-updates-onboarding-and-renewal-partly-implemented).
 5. The DPS assignment is the single delivery point for everything the device learns about its
    placement: hub, device id, connection profile and issued certificate chain.
 
@@ -184,7 +190,7 @@ reach DPS first.
 | Option | Effect |
 | --- | --- |
 | `transport` | `TCP` (default) or `WEBSOCKET`. WebSockets carries MQTT inside a WebSocket on 443, for a network that passes only HTTP(S) ports. |
-| `websocket_path` | Defaults to `/$iothub/websocket`, which is what IoT Hub and DPS expect. |
+| `websocket_path` | Defaults to `/$iothub/websocket` (DPS, mqttv3 hub) and `/mqtt` (mqttv5 hub). A value set here is used for every session. |
 | `proxy` | Host, port and optional Basic credentials of an HTTP proxy. The connection is made with HTTP `CONNECT`, for both transports. |
 | `port` | `0` derives the port from the transport: 8883 for TCP, 443 for WebSockets. An explicit value always wins. |
 
@@ -309,7 +315,8 @@ Rules both clients must implement:
 
 > The SDK now sends DPS `2026-11-02-preview` in the CONNECT username for every DPS session,
 > including CSR and provision-only update sessions. This allows DPS to return `connectionProfile`;
-> absent/null values still resolve to `classic`.
+> absent/null values still resolve to `classic`. mqttv3 hub sessions send hub `2025-08-01-preview`,
+> which hub certificate renewal requires.
 >
 > **Open:** whether a reconnect can change the generation. If DPS can reassign a device mid-life,
 > every feature client the application holds becomes invalid at that moment and it must be told.
@@ -337,10 +344,10 @@ sequenceDiagram
         Conn-->>App: state callback(FAULTED, reason)
     else
         Conn->>Conn: retry_attempt[scope]++, delay = backoff(retry_attempt[scope])
-        Conn->>Conn: state = RECONNECTING
-        Conn-->>App: state callback(RECONNECTING, reason)
+        Conn->>Conn: state = RETRY_PENDING
+        Conn-->>App: state callback(RETRY_PENDING, reason)
         Note over Conn: do_work() waits until reconnect_due_ms
-        Conn->>Conn: start_connect_attempt() -> full sequence of section 3
+        Conn->>Conn: SETTING_UP -> CONNECTING: full sequence of section 3
         Hub-->>Conn: CONNACK ok
         Conn->>Conn: retry_attempt[HUB] = 0, state = CONNECTED
     end
@@ -353,27 +360,30 @@ registration attempts, and a registration that follows an exhausted hub ladder s
 `initial_delay_ms` instead of inheriting the hub's capped backoff.
 
 Which ladder a retry climbs is the scope of the **next attempt**, which is not always the scope of
-the failure: a hub CONNACK that rejects the identity is a HUB failure whose retry is a DPS
-registration.
+the failure: a hub failure retried as a re-registration (threshold crossed, or
+a CONNACK refusal in `REPROVISION` mode) climbs a DPS ladder. A hub identity refusal climbs a third,
+identity ladder on `opts.identity_recovery` (see [connection-c.md §5.2](connection-c.md#52-what-triggers-a-reconnect)).
 
 Reset points differ per ladder:
 
 | Event | Effect |
 | --- | --- |
-| DPS registration succeeds | both ladders reset |
+| DPS registration succeeds | `DPS` and `HUB` reset; identity ladder untouched |
 | Hub CONNACK succeeds (birth-ack on MQTTv5) | `HUB` resets; `DPS` untouched |
+| `HUB:CONNECTED` | identity ladder resets |
 | `dps.max_hub_connect_attempts_before_reprovision` crossed | `DPS` resets, so the first registration attempt waits `initial_delay_ms` |
-| `open()` / `close()` | both ladders reset |
+| `open()` / `close()` | all ladders reset |
 
 ### 5.1 Backoff policy
 
-`az_iot_reconnection_policy` in
-[az_iot_connection_client.h](../../inc/azure/iot/az_iot_connection_client.h), computed by
-`az_iot_reconnect_delay_ms()` in [reconnect.c](../../src/core/reconnect.c):
+`az_iot_retry_policy` in
+[az_iot_retry_policy.h](../../inc/azure/iot/az_iot_retry_policy.h), computed by
+`az_iot_retry_policy__delay_ms()` in [retry_policy.c](../../src/core/retry_policy.c):
 
 ```text
 base   = min(max_delay_ms, initial_delay_ms << min(attempt - 1, 30))
-jitter = uniform(-jitter_pct%, +jitter_pct%) * base
+jitter = uniform(-jitter_pct%, +jitter_pct%) * base   (AZ_IOT_RETRY_JITTER_SYMMETRIC)
+         uniform(0, +jitter_pct%) * base            (AZ_IOT_RETRY_JITTER_ADDITIVE)
 delay  = clamp(base + jitter, 1, UINT32_MAX)
 ```
 
@@ -382,7 +392,8 @@ delay  = clamp(base + jitter, 1, UINT32_MAX)
 | `initial_delay_ms` | 1000 | `0` disables automatic reconnect entirely. |
 | `max_delay_ms` | 60000 | Cap for the exponential term only. Jitter varies around it, so a delay may exceed it by up to `jitter_pct`; clamping the jittered result would put half of all retries on exactly this value once the ladder reached the cap. |
 | `max_attempts` | 0 | `0` means retry forever. |
-| `jitter_pct` | 20 | Symmetric randomization, seeded from the monotonic clock. |
+| `jitter_pct` | 20 | Randomization, seeded from the monotonic clock. |
+| `jitter_mode` | `AZ_IOT_RETRY_JITTER_SYMMETRIC` | `_ADDITIVE` only lengthens a delay, for waits that must not be shortened. |
 
 The shift is clamped at 30 to avoid 32-bit overflow. The attempt counter resets to zero on every
 successful CONNACK.
@@ -410,7 +421,7 @@ checked before backoff is scheduled.
 | In-flight QoS 1 PUBACKs | No | Packet ids belong to the destroyed adapter; callers must re-send. |
 | Twin GET/PATCH, method responses, telemetry in flight | No | Feature clients must re-issue. |
 | MQTTv3 desired-property patches sent while disconnected | No | IoT Hub does not queue them, and the SDK does not fetch the twin on reconnect. The application calls `az_iot_mqttv3_twin_client_get()` if it needs the current desired state. |
-| Software updates status report not yet acked | Yes | Held in durable storage and retried until acked; idempotent on `workflowId`. |
+| Software updates status report not yet acked | Terminal: yes | Retried until the service accepts or permanently rejects it; idempotent on `workflowId`. After repeated DPS session loss it is abandoned for the process. A terminal report stays owed (in durable storage when persistence is configured) and is re-sent later (next device-properties update, or after restart and resume); an in-progress report is not replayed, the next reporting point sends current state. |
 | Presence (birth) phase | No | Restarted with a freshly generated nonce. |
 | DPS phase | No | Restarted from `CONNECTING` if DPS is configured. |
 | In-flight CSR operation | No | Abandoned; the callback fires with a failure/timeout result. |
@@ -427,10 +438,10 @@ flowchart TD
     A["open with DPS +<br/>request_operational_certificate"] --> B[get_csr from provider]
     B --> C["DPS register with csr in payload"]
     C --> D{assigned?}
-    D -->|"yes, chain present"| E["store_issued_certificate +<br/>operational_cert_callback"]
-    D -->|"yes, no chain"| F["continue with bootstrap credential"]
-    E --> G["Hub CONNECT using operational credential"]
-    F --> G
+    D -->|"yes, complete payload with chain"| E["store_issued_certificate, then<br/>operational_cert_callback(chain, store_result)"]
+    D -->|"no chain, malformed, or store failed"| F["registration fails"]
+    E -->|"stored"| G["Hub CONNECT using operational credential"]
+    E -->|"store failed"| F
 
     G --> H[CONNECTED]
     H --> I["send_csr renewal<br/>MQTTv3 hub only"]
@@ -438,9 +449,10 @@ flowchart TD
     J --> K{credentials response}
     K -->|202 accepted| L["CSR_ACCEPTED callback,<br/>keep waiting"]
     L --> K
-    K -->|200 issued| M["CSR_ISSUED callback with chain,<br/>app persists"]
+    K -->|"200 issued, complete JSON"| M["store_issued_certificate, then<br/>CSR_ISSUED callback (chain, store_status)"]
     K -->|"error or 120s timeout"| N["CSR_FAILED callback,<br/>slot released"]
-    M --> O["New certificate is used on<br/>the NEXT connect attempt"]
+    M -->|store_status OK| O["New certificate is used on<br/>the NEXT connect attempt"]
+    M -->|store_status error| P["Previous certificate stays<br/>in use"]
 ```
 
 Renewal topics (MQTTv3 hub):
@@ -449,13 +461,15 @@ Renewal topics (MQTTv3 hub):
 | --- | --- |
 | Publish | `$iothub/credentials/POST/issueCertificate/?$rid={request_id}` |
 | Subscribe | `$iothub/credentials/res/#` |
-| Response | `$iothub/credentials/res/{status}/{request_id}` |
+| Response | `$iothub/credentials/res/{status}/?$rid={request_id}` |
 
 Rules that apply to both clients:
 
 - Only one CSR operation may be in flight; a second request fails fast with a *busy* result.
-- The issued chain is delivered leaf-first as base64 DER and is only valid for the duration of the
-  callback — the application must copy or persist it.
+- The issued chain is stored through the provider's `store_issued_certificate` before the callback,
+  which reports the result in `store_status`. The chain is delivered leaf-first, each entry base64
+  of DER or of a whole PEM certificate, and is only valid for the duration of the callback; the
+  application need not persist it.
 - A successful renewal does **not** tear down the live session. The new credential takes effect on
   the next connect, whether that is a reconnect or an explicit reopen.
 - At connect time the provider is asked for `OPERATIONAL` first and falls back to `BOOTSTRAP` when
@@ -482,11 +496,11 @@ gateway it already talks to, reusing the credential it already has; the gateway 
 pass-through to the update service. The device needs no update-specific credential, and there is no
 subscription and no unsolicited offer.
 
-| Phase | Gateway | Operation (on the wire) |
-| --- | --- | --- |
-| First-time / bootstrap (**before** provisioning) | DPS | `requestOnboardingUpdates` |
-| Regular / operational (**after** provisioning) | DPS | `requestSoftwareUpdates` |
-| Reporting, either phase | same gateway as the fetch | `reportUpdateStatus` |
+| Phase | Gateway | Operation | DPS `{operation}` on the wire |
+| --- | --- | --- | --- |
+| First-time / bootstrap (**before** provisioning) | DPS | `requestOnboardingUpdates` | `iotdps-get-onboarding-deviceupdate` |
+| Regular / operational (**after** provisioning) | DPS | `requestSoftwareUpdates` | `iotdps-get-deviceupdate` |
+| Reporting, either phase | same gateway as the fetch | `reportUpdateStatus` | `iotdps-report-deviceupdatestatus` |
 
 All three are requests under the device's own registration on the gateway's device endpoint; see
 [software-updates.md](software-updates.md#2-device-contract) for the request and response shapes.
@@ -501,11 +515,14 @@ or validate the choice.
 ### 7.1 Onboarding — bootstrap update, before provisioning
 
 The critical ordering fact for this document: **the bootstrap update check happens before the device
-registers.** The agent, not the connection client, drives it. On the happy path `open()` waits until
-the check reports no update, so several updates can chain before provisioning.
+registers.** The agent, not the connection client, asks for it; it runs inside `open()`, on the DPS
+session, while registration is held.
 
-The check is **advisory and must never block provisioning.** If it errors, times out, or the account
-is not linked, the device proceeds to register anyway.
+The check **must never block provisioning.** The hold is released at the first verdict that will not
+immediately repeat: success, a fatal error, or an update account that is not linked. A retryable
+failure keeps the hold until the check is answered or the hold timeout expires; then the device
+registers anyway. Registration is held for the check, not for an install: an install, its report and
+any re-check run afterwards, alongside registration.
 
 ```mermaid
 sequenceDiagram
@@ -515,25 +532,22 @@ sequenceDiagram
     participant DPS
     participant Hub
 
-    loop until "no update" or an advisory failure
-        SU->>DPS: requestOnboardingUpdates (agentInfo, installedUpdateId, ETags)
-        alt update available
-            DPS-->>SU: serviceConfiguration + updateMetadata (workflowId, manifest, signature, fileUrls)
-            SU->>SU: verify signature, download fileUrls, install (reboot if required)
-            SU->>DPS: reportUpdateStatus (workflowId, installedUpdateId, installResult)
-        else no update
-            DPS-->>SU: 200 with updateMetadata omitted
-        end
+    Conn->>DPS: CONNECT + SUBSCRIBE, registration held
+    SU->>DPS: requestOnboardingUpdates (agentInfo, installedUpdateId, ETags)
+    alt update available
+        DPS-->>SU: serviceConfiguration + updateMetadata (workflowId, manifest, signature, fileUrls)
+    else no update
+        DPS-->>SU: 200 with updateMetadata omitted
     end
 
-    Note over SU,Conn: provisioning proceeds - on success or on an advisory failure
+    Note over SU,Conn: hold released - on a final verdict, or on hold timeout
     Conn->>DPS: Register (unchanged, CSR optional)
     DPS-->>Conn: assignedHub, deviceId, connectionProfile, issuedCertificateChain
     Conn->>Hub: CONNECT with operational auth
 ```
 
-- The loop is genuine: after installing a bootstrap update the agent re-checks, because a bootstrap
-  deployment can chain.
+- An offered update is verified, downloaded, installed and reported after the hold is released, on
+  the DPS session. A bootstrap deployment can chain, so the agent may check again after installing.
 - Bootstrap progress is stored **in the bootstrap update job**, not on the device's ADR attributes —
   the device resource does not exist yet.
 - Trust comes from the **root-key package** at `serviceConfiguration.rootKeyDownloadUrl` returned by
@@ -556,8 +570,9 @@ sequenceDiagram
     participant Store as Durable software updates state
 
     Conn-->>SU: CONNECTED
+    Note over SU,Store: on resume(), called by the application at startup
     SU->>Store: load_state()
-    Store-->>SU: installedUpdateId, ETags, unsent report
+    Store-->>SU: workflow record, if any (unsent report, ETags)
     opt report pending from a previous session
         SU->>GW: reportUpdateStatus (workflowId, installResult)
     end
@@ -578,7 +593,7 @@ sequenceDiagram
     Conn--xSU: connection drop
     Note over SU: install continues, report held in durable storage
     Conn-->>SU: CONNECTED again
-    SU->>GW: retry the report until acked, then resume polling
+    SU->>GW: re-send the report until accepted or rejected; checks continue when the agent asks
 ```
 
 `installResult` carries the outcome, its failure origin and the hex
@@ -594,14 +609,22 @@ reports include complete per-step outcomes when steps are available — see
   report. Reporting is **idempotent on `workflowId` alone**; a conflicting terminal result for the
   same id is rejected as a conflict.
 - **The device is the sole retrier.** The gateway fails fast with one attempt per hop. The agent
-  honours `Retry-After` on throttling and retries `reportUpdateStatus` until it is acked — a
-  report is a durable write and must not be lost.
+  honours `Retry-After` on throttling and retries `reportUpdateStatus` until the service accepts
+  or permanently rejects it — a terminal report is a durable write and must not be lost. A terminal
+  report given up after repeated session loss stays owed (stored, with persistence) and is re-sent
+  later; an in-progress report is not replayed.
+- **A failed workflow is retried, not abandoned.** The service re-offers a `FAILED` (or `CANCELED`)
+  workflow under the same `workflowId`; the agent applies it again after at least 1 h, doubling per
+  consecutive failure up to 24 h, with jitter, and keeps that wait across restarts. An early
+  re-offer is not applied.
 - **Drive behaviour from the machine-readable error code, never the HTTP status.** A stale
-  `agentInfoEtag` means resend the full `agentInfo`; a stale `serviceConfigEtag` means re-ask without
-  it; an unlinked update account means "no update service configured", which is not a failure.
+  `agentInfoEtag` means resend the full `agentInfo`. A missing or stale `serviceConfigEtag` is not
+  an error: the 200 response carries the current configuration. An update account the service
+  cannot use (not linked, or no access to the namespace) is not retried, is reported, and does
+  not block provisioning; neither does `DEVICE_NOT_PROVISIONED`, which a later check clears.
 - **"No update" is a success.** It is a 200 with the update metadata omitted, not an error.
 - **Software updates never drives the connection.** It does not open, close, or force a reconnect. It does
-  sequence ahead of the *first* `open()`, via the advisory bootstrap check in §7.1.
+  hold registration inside the *first* `open()` for the bootstrap check in §7.1.
 - **Compatibility properties are opaque key/value pairs** (1–5) reported by the agent alongside an
   opaque `agentProfile`; the service combines them into a device class. The agent assigns them no
   meaning.
@@ -619,12 +642,10 @@ deferred effects — they do not happen inline.
 
 ```mermaid
 flowchart TB
-    BOOT["Agent boot"] --> BCHK["Software updates bootstrap check<br/>requestOnboardingUpdates via DPS"]
-    BCHK -->|"update available"| BINST["Verify, download, install,<br/>report, re-check"]
-    BINST --> BCHK
-    BCHK -->|"no update, or advisory failure"| IDLE["IDLE"]
-
-    IDLE -->|"open() with id_scope"| REG["DPS register<br/>CSR optional"]
+    BOOT["Agent boot"] --> IDLE["IDLE"]
+    IDLE -->|"open() with id_scope"| BCHK["Registration held:<br/>software updates bootstrap check<br/>requestOnboardingUpdates via DPS"]
+    BCHK -->|"final verdict, or hold timeout"| REG["DPS register<br/>CSR optional"]
+    BCHK -.->|"update available"| BINST["Verify, download, install,<br/>report (after the hold)"]
     IDLE -->|"open() with host"| CRED
 
     REG --> ASSIGN["Assignment:<br/>assignedHub, deviceId,<br/>connectionProfile,<br/>issuedCertificateChain"]
@@ -648,7 +669,7 @@ flowchart TB
     CONNECTED -->|"close()"| DISC["DISCONNECTING"] --> IDLE
     CONNECTED --> DROP{"drop or error"}
     DROP -->|"reconnect disabled<br/>or attempts exhausted"| FAULTED["FAULTED"]
-    DROP -->|"reconnect enabled"| RECON["RECONNECTING<br/>exponential backoff + jitter"]
+    DROP -->|"reconnect enabled"| RECON["RETRY_PENDING<br/>exponential backoff + jitter"]
     RECON -->|"DPS configured"| REG
     RECON -->|"direct host"| CRED
     ARENEW -.->|"workflowId and unsent<br/>report persisted"| RECON
@@ -659,13 +680,13 @@ Reading it as four overlapping concerns:
 | Concern | Onboarding (DPS gateway, onboarding auth) | Renewal (post-`CONNECTED`, operational auth) |
 | --- | --- | --- |
 | **Certificates** | CSR in the registration, issued chain in the assignment | `send_csr` over the hub; new chain applies on the next connect |
-| **Software updates** | `requestOnboardingUpdates` loop **before** registration, advisory | Polled `requestSoftwareUpdates` / `reportUpdateStatus` (currently over DPS) |
+| **Software updates** | `requestOnboardingUpdates` inside `open()`, registration held until its verdict or a timeout | `requestSoftwareUpdates` / `reportUpdateStatus` when the agent asks (currently over DPS) |
 | **Connection profile** | Declared in the assignment; selects MQTT version and generation | Re-resolved on every reconnect that goes through DPS |
 | **Connection** | DPS phases inside `CONNECTING` | Backoff-driven reconnect replays the whole path |
 
 The two onboarding concerns are **not** symmetric, and that asymmetry is the thing to remember:
-the CSR travels *inside* registration, while the software updates bootstrap check happens *before* it and must
-complete first.
+the CSR travels *inside* registration, while the software updates bootstrap check happens *before* it, holding
+it until a verdict or a timeout.
 
 ---
 
@@ -675,7 +696,7 @@ complete first.
 | --- | --- | --- |
 | State enum, policy, options | [az_iot_connection_client.h](../../inc/azure/iot/az_iot_connection_client.h) | implemented |
 | State transitions, connect attempt, event handling | [connection_client.c](../../src/core/connection_client.c) | implemented |
-| Backoff computation and defaults | [reconnect.c](../../src/core/reconnect.c) | implemented |
+| Backoff computation and defaults | [retry_policy.c](../../src/core/retry_policy.c) | implemented |
 | Certificate provider contract | [az_iot_certificate_provider.h](../../inc/azure/iot/az_iot_certificate_provider.h) | implemented |
 | Managed OpenSSL provider | [az_iot_certificate_provider_managed.c](../../adapters/cert_openssl/az_iot_certificate_provider_managed.c) | implemented |
 | Connection profile enum, `az_iot_hub_profile`, `get_hub_profile()` | [az_iot_connection_client.h](../../inc/azure/iot/az_iot_connection_client.h) | implemented |

@@ -6,6 +6,8 @@
 #
 # Provenance: https://github.com/Azure/az_amqp @ fe7c0c2ed87257a22f0cd6b183374cdc855e5000
 # (inc/, src/, and the reference transport from samples/common/).
+# Local change: receiver links advance delivery-count per incoming delivery
+# (src/az_amqp_link.c), without which replenished credit is never granted.
 #
 # A small, allocation-free, single-pump C99 AMQP 1.0 client. It is used ONLY by
 # the end-to-end test service client (c/tests/e2e/service) to receive device
@@ -67,7 +69,8 @@ if(WIN32)
     target_link_libraries(az_amqp_transport PUBLIC ws2_32 secur32 crypt32 ncrypt)
 else()
     find_package(OpenSSL REQUIRED)
-    target_link_libraries(az_amqp_transport PUBLIC OpenSSL::SSL OpenSSL::Crypto)
+    find_package(Threads REQUIRED) # pthread_sigmask
+    target_link_libraries(az_amqp_transport PUBLIC OpenSSL::SSL OpenSSL::Crypto Threads::Threads)
     # AZ_AMQP_SAMPLE_USE_OPENSSL selects the OpenSSL TLS path. The _DEFAULT_SOURCE /
     # _POSIX_C_SOURCE macros expose the POSIX networking API the reference transport
     # relies on (getaddrinfo/struct addrinfo in az_amqp_sample_transport.c; select/
@@ -79,5 +82,7 @@ else()
         AZ_AMQP_SAMPLE_USE_OPENSSL
         _DEFAULT_SOURCE
         _POSIX_C_SOURCE=200112L
+        # Apple hides SO_NOSIGPIPE under _POSIX_C_SOURCE; the transport needs it there.
+        $<$<PLATFORM_ID:Darwin>:_DARWIN_C_SOURCE>
     )
 endif()

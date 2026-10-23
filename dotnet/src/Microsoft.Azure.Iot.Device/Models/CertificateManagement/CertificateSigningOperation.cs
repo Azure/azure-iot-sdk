@@ -13,27 +13,9 @@ namespace Microsoft.Azure.Iot.Device.Models.CertificateManagement
     /// Phase 2 (Completed): IoT Hub delivers the issued certificate with a 200 response.
     /// </summary>
     /// <remarks>
-    /// If the operation fails at any point, both <see cref="Accepted"/> and <see cref="Completed"/> will
-    /// throw a <see cref="CertificateSigningRequestException"/> when awaited. The exception contains
-    /// structured error details such as <see cref="CertificateSigningRequestException.ErrorCode"/>,
-    /// <see cref="CertificateSigningRequestException.RetryAfterSeconds"/>, and for 409005 conflict errors,
-    /// <see cref="CertificateSigningRequestException.ActiveRequestId"/>.
-    /// <code>
-    /// try
-    /// {
-    ///     CertificateAcceptedResponse accepted = await operation.Accepted;
-    ///     CertificateSigningResponse completed = await operation.Completed;
-    /// }
-    /// catch (CertificateSigningRequestException ex) when (ex.ErrorCode == 409005)
-    /// {
-    ///     // Conflict: another CSR operation is active. Use Replace = "*" to override.
-    /// }
-    /// catch (CertificateSigningRequestException ex) when (ex.RetryAfterSeconds.HasValue)
-    /// {
-    ///     await Task.Delay(TimeSpan.FromSeconds(ex.RetryAfterSeconds.Value));
-    ///     // Retry the operation.
-    /// }
-    /// </code>
+    /// If the operation fails before <see cref="Accepted"/> completes successfully, both tasks fault with the
+    /// operation's exception. If <see cref="Accepted"/> has already completed successfully, a later failure
+    /// affects only <see cref="Completed"/>. Cancellation cancels each task that has not already completed.
     /// </remarks>
     public class CertificateSigningOperation
     {
@@ -48,7 +30,7 @@ namespace Microsoft.Azure.Iot.Device.Models.CertificateManagement
         /// The result contains the correlation ID and operation expiration time.
         /// </summary>
         /// <exception cref="CertificateSigningRequestFailedException">
-        /// Thrown when the CSR is rejected by IoT Hub. Inspect <see cref="CertificateSigningRequestFailedException.ErrorCode"/>
+        /// Thrown when the CSR is rejected by IoT Hub. Inspect <see cref="CertificateSigningRequestFailedException.Error"/>
         /// for the specific failure reason (e.g., 400040 for CSR decode failure, 409005 for an active conflicting operation,
         /// 429002/429003 for throttling).
         /// </exception>
@@ -59,15 +41,20 @@ namespace Microsoft.Azure.Iot.Device.Models.CertificateManagement
         /// The result contains the certificate chain and correlation ID.
         /// </summary>
         /// <exception cref="CertificateSigningRequestFailedException">
-        /// Thrown when the certificate issuance fails after acceptance. This can also be thrown if the initial
-        /// request was rejected, since a failure at any phase propagates to both <see cref="Accepted"/> and
-        /// <see cref="Completed"/> tasks.
+        /// Thrown when IoT Hub rejects certificate issuance. It can also be thrown if the request is rejected before
+        /// <see cref="Accepted"/> completes.
+        /// </exception>
+        /// <exception cref="DeviceException">
+        /// Thrown when the certificate signing response cannot be handled.
         /// </exception>
         public Task<CertificateSigningResponse> Completed => _completed.Task;
 
         internal void SetAccepted(CertificateSigningRequestAccepted response) => _accepted.TrySetResult(response);
 
-        internal void SetCompleted(CertificateSigningResponse response) => _completed.TrySetResult(response);
+        internal void SetCompleted(CertificateSigningResponse response)
+        {
+            _completed.TrySetResult(response);
+        }
 
         internal void SetFailed(Exception ex)
         {

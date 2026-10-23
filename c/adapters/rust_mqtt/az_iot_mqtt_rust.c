@@ -22,7 +22,7 @@
 static az_iot_rust_mqtt_ffi g_ffi;
 static int g_ffi_installed = 0;
 
-az_iot_result az_iot_rust_mqtt_install(const az_iot_rust_mqtt_ffi* table)
+AZ_NODISCARD az_iot_result az_iot_rust_mqtt_install(const az_iot_rust_mqtt_ffi* table)
 {
   if (table == NULL)
   {
@@ -174,8 +174,6 @@ static az_iot_mqtt_client* rust_factory_create(void* factory_ctx)
   return (az_iot_mqtt_client*)c;
 }
 
-static void rust_factory_cleanup(void* ctx) { free(ctx); }
-
 az_iot_mqtt_factory* az_iot_rust_mqtt_factory_create_v5(void)
 {
   if (!g_ffi_installed)
@@ -190,7 +188,6 @@ az_iot_mqtt_factory* az_iot_rust_mqtt_factory_create_v5(void)
   f->version = AZ_IOT_MQTT_VERSION_5;
   f->create = rust_factory_create;
   f->factory_ctx = f;
-  f->destroy = rust_factory_cleanup;
   return f;
 }
 

@@ -6,10 +6,16 @@
 A C99 device SDK for Azure IoT Hub and the Azure IoT Hub Device Provisioning Service (DPS),
 built for constrained and embedded devices.
 
-- **Single-threaded.** No internal threads. Callbacks fire synchronously on the thread that called
-  into the SDK: mostly from `az_iot_connection_client_do_work()`, but a feature client's own entry
-  points can dispatch them too (for example `az_iot_su_client_do_work()` and
-  `az_iot_su_client_resume()`).
+- **Single-threaded API.** The connection and feature clients start no threads, and callbacks fire
+  synchronously on the thread that called into the SDK. The Paho adapter runs Paho's own I/O
+  threads internally and hands their events over to that thread. Callbacks are dispatched mostly
+  from `az_iot_connection_client_do_work()`, but a feature client's own entry points can dispatch
+  them too (for example `az_iot_su_client_do_work()` and `az_iot_su_client_resume()`).
+  The SDK does not lock its state against other threads: make every SDK call, for every client in
+  the process, from one thread, or serialize the calls in the application. Callbacks run inside
+  those calls; a callback must not wait for another thread that is calling the SDK.
+  [`unified/multithreaded_telemetry`](../samples/unified/multithreaded_telemetry/README.md) hands
+  data from other threads to the SDK thread.
 - **No dynamic allocation in the connection and feature clients.** Buffers are caller-provided or
   live in caller-allocated structs. The reference PEM certificate provider is the exception: it
   reads the certificate, key and CA files into heap buffers once, at init.
@@ -25,7 +31,7 @@ built for constrained and embedded devices.
 flowchart TB
     APP["Application"]
     V3["mqttv3 feature clients<br/>telemetry, twin, direct methods,<br/>cloud-to-device, file upload"]
-    V5["mqttv5 feature clients<br/>telemetry, twin, direct methods"]
+    V5["mqttv5 feature clients<br/>telemetry, twin, direct methods,<br/>custom topics"]
     SU["Software updates client"]
     CONN["Connection client<br/>DPS provisioning, connect, reconnect,<br/>certificates, adapter registry"]
     CORE["Core<br/>results, logging, dispatch, messages"]
@@ -44,7 +50,7 @@ flowchart TB
 
 | Layer | Headers | Role |
 | --- | --- | --- |
-| Connection client | `az_iot_connection_client.h` | One per device. Provisions through DPS, connects to the assigned hub, reconnects, and owns the MQTT session. |
+| Connection client | `az_iot_connection_client.h`, `az_iot_retry_policy.h` | One per device. Provisions through DPS, connects to the assigned hub, reconnects, and owns the MQTT session. |
 | Feature clients | `mqttv3/*.h`, `mqttv5/*.h` | Protocol features. Each binds to a connection client, which delivers its messages. Some also need their own pump: call `az_iot_mqttv5_twin_client_do_work()` to expire unanswered requests. |
 | Software updates client | `az_iot_su.h` | Checks for, verifies, downloads, installs and reports device updates. Pumped by `az_iot_su_client_do_work()`. |
 | Certificate provider | `az_iot_certificate_provider.h` | Supplies TLS credentials and, optionally, handles CSRs and issued certificates. |
@@ -86,6 +92,7 @@ The samples under [`samples/unified`](../samples/unified) handle both generation
 | Device twin | Yes | Yes |
 | Direct methods | Yes | Yes |
 | Cloud-to-device messages | Yes | No |
+| Custom topics (publish) | No | Yes |
 | File upload | Yes | No |
 | Certificate renewal over the hub | Yes | No |
 | Software updates | Yes, over DPS | Yes, over DPS |
@@ -97,8 +104,11 @@ it speaks. For every session the client picks a factory for the required version
 fresh adapter instance, so a device provisioned onto an mqttv5 hub uses a 3.1.1 adapter for DPS and
 a 5 adapter for the hub.
 
-The Paho C adapter (`az_iot_adapter_paho.h`) registers both versions. To use another MQTT library,
-see [Bring your own MQTT client](how_to_byo_mqtt_client.md).
+The Paho C adapter (`az_iot_adapter_paho.h`) registers both versions. So does the az_mqtt adapter
+(`az_iot_adapter_az_mqtt.h`, built with `AZ_IOT_WITH_AZ_MQTT=ON`): it connects and receives inside
+`process_loop()` and writes sends when called, with no thread of its own, over the bundled
+[deps/az_mqtt](../deps/az_mqtt/VENDORED.md) client. To use another MQTT library, see
+[Bring your own MQTT client](how_to_byo_mqtt_client.md).
 
 ## Library boundaries
 
@@ -113,6 +123,8 @@ These are enforced in CI by [`eng/check-layering.sh`](../eng/check-layering.sh):
 
 - [Connecting a device](connecting.md): connection states, provisioning, reconnection, proxies,
   certificates.
+- [Client configuration](client-configuration.md): build options, compile-time limits, run-time
+  settings.
 - [Struct versioning](struct_versioning.md): compatibility guarantees.
 - [Bring your own MQTT client](how_to_byo_mqtt_client.md).
 - [Samples](../samples/README.md).

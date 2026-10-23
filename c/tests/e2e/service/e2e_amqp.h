@@ -18,6 +18,7 @@
 #include <azure/az_amqp.h>
 
 #include "az_amqp_sample_transport.h"
+#include "az_iot_e2e_service.h"
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -31,9 +32,29 @@ extern "C"
 #define E2E_AMQP_MAX_PARTITIONS 32
 #define E2E_AMQP_CAPTURE_MAX 64
 #define E2E_AMQP_CAPTURE_BODY_MAX 1024
+#define E2E_AMQP_CAPTURE_PROPS_MAX 4096
+#define E2E_AMQP_WATCHED_MAX 4
+#define E2E_AMQP_WATCHED_NEEDLE_MAX 192
+/* Largest message one partition receiver reassembles (heap, per partition): past the 1 MB
+ * message limit plus the properties and annotations the hub adds, so an oversized message the
+ * hub accepted is still seen. The link silently drops a larger one. */
+#define E2E_AMQP_RECV_MESSAGE_MAX (1280 * 1024)
+
+  /** @brief One received telemetry message: a body prefix and every property, as text. */
+  typedef struct e2e_amqp_capture
+  {
+    char body[E2E_AMQP_CAPTURE_BODY_MAX]; /* NUL-terminated prefix, for substring search */
+    size_t body_size; /* full body size */
+    /* "name\0value\0" pairs, named by section: "amqp:<field>" for the properties section,
+     * "app:<key>" for application properties, "annotation:<key>" for message annotations. */
+    char props[E2E_AMQP_CAPTURE_PROPS_MAX];
+    size_t props_len;
+    bool props_truncated;
+    uint32_t seq; /* arrival order since the watcher began, from 0 */
+  } e2e_amqp_capture;
 
   /* A telemetry watcher: an AMQP connection to the IoT Hub Event Hub-compatible
-   * endpoint with one receiver link per partition. Received message bodies are
+   * endpoint with one receiver link per partition. Received messages are
    * captured into a ring (newest overwrite oldest) so the test can poll for a
    * correlation marker, even on a hub other runs are sending to.
    *
@@ -51,10 +72,16 @@ extern "C"
     bool started;
     bool connection_failed;
 
-    /* Capture ring of recently received bodies (NUL-terminated for substring search). */
-    char captured[E2E_AMQP_CAPTURE_MAX][E2E_AMQP_CAPTURE_BODY_MAX];
+    /* Capture ring of recently received messages. */
+    e2e_amqp_capture captured[E2E_AMQP_CAPTURE_MAX];
     int captured_count;
-    int captured_next; /* ring slot the next body is written to */
+    int captured_next; /* ring slot the next message is written to */
+    uint32_t received_count; /* messages captured since begin */
+
+    /** @brief Needles matched against every full body on arrival; a match latches until end. */
+    char watched[E2E_AMQP_WATCHED_MAX][E2E_AMQP_WATCHED_NEEDLE_MAX];
+    bool watched_seen[E2E_AMQP_WATCHED_MAX];
+    int watched_count;
 
     /* Backing storage referenced by the az_amqp objects above. */
     uint8_t incoming_buffer[AZ_AMQP_DEFAULT_MAX_FRAME_SIZE];
@@ -62,7 +89,7 @@ extern "C"
     az_amqp_session* session_slots[1];
     az_amqp_link* link_slots[E2E_AMQP_MAX_PARTITIONS + 2];
     uint8_t cbs_reply_buffer[1024];
-    uint8_t recv_buffers[E2E_AMQP_MAX_PARTITIONS][2048];
+    uint8_t* recv_buffers; /* partition_count * E2E_AMQP_RECV_MESSAGE_MAX, heap */
     char source_addr[E2E_AMQP_MAX_PARTITIONS][256];
     char link_name[E2E_AMQP_MAX_PARTITIONS][32];
     char audience_buffer[256];
@@ -96,6 +123,36 @@ extern "C"
   /* Returns true if any captured telemetry body contains @p needle. */
   bool e2e_amqp_telemetry_seen(const e2e_amqp_telemetry* t, const char* needle);
 
+  /** @brief Registers @p needle to be latched by e2e_amqp_telemetry_watched_seen().
+   * @return false when the table is full or @p needle is empty or too long. */
+  bool e2e_amqp_telemetry_watch_needle(e2e_amqp_telemetry* t, const char* needle);
+
+  /** @brief True once any body (full, not only the captured prefix) received since @p needle was
+   * registered has contained it, regardless of later ring eviction. */
+  bool e2e_amqp_telemetry_watched_seen(const e2e_amqp_telemetry* t, const char* needle);
+
+  /** @brief The earliest captured message whose body contains @p needle, or NULL. */
+  const e2e_amqp_capture* e2e_amqp_telemetry_find(const e2e_amqp_telemetry* t, const char* needle);
+
+  /** @brief Copies property @p name of @p c into @p out (truncated, NUL-terminated).
+   * @return false if @p c has no such property. */
+  bool e2e_amqp_capture_property(
+      const e2e_amqp_capture* c,
+      const char* name,
+      char* out,
+      size_t out_size);
+
+  /** @brief Copies into @p name_out the name of the first property of @p c whose value is
+   * @p value. @return false if none. */
+  bool e2e_amqp_capture_find_value(
+      const e2e_amqp_capture* c,
+      const char* value,
+      char* name_out,
+      size_t name_out_size);
+
+  /** @brief Prints every captured property of @p c to stdout. */
+  void e2e_amqp_capture_dump(const e2e_amqp_capture* c);
+
   /* Detach receivers and close the telemetry connection (best-effort). */
   void e2e_amqp_telemetry_end(e2e_amqp_telemetry* t);
 
@@ -103,17 +160,20 @@ extern "C"
    * endpoint (@p hub_host:5671), authorizing with @p sas_token (audience = hub
    * host). Blocks (pumping internally) until IoT Hub accepts the message or an
    * error/timeout occurs. Opens and tears down its own short-lived connection.
-   * Returns true only when the delivery outcome is `accepted`. */
+   * Returns true only when the delivery outcome is `accepted`. @p properties may
+   * be NULL. */
   bool e2e_amqp_send_c2d(
       const char* hub_host,
       const char* sas_token,
       const char* device_id,
       const uint8_t* payload,
       size_t payload_len,
+      const az_iot_e2e_c2d_properties* properties,
       const char** err_out);
 
 #define E2E_AMQP_NOTIFY_CAPTURE_MAX 8
 #define E2E_AMQP_NOTIFY_BODY_MAX 2048
+#define E2E_AMQP_NOTIFY_HOLD_MAX 10
 
   /* A file-upload notification watcher: an AMQP connection to the IoT Hub service
    * endpoint with a single receiver on /messages/serviceBound/filenotifications.
@@ -137,11 +197,20 @@ extern "C"
     int captured_count;
     char match[128]; /* only notifications containing this are consumed */
 
+    /* Other live watchers' notifications, released after a short hold. */
+    struct
+    {
+      uint32_t delivery_number;
+      int64_t held_at_s;
+    } held[E2E_AMQP_NOTIFY_HOLD_MAX];
+    int held_count;
+
     /* Diagnostics. A notification that never arrives is indistinguishable from
      * one that arrived and was filtered out or could not be decoded, so count
      * every disposition and let a failing test report them. */
     int delivered_count; /* deliveries the endpoint handed us, whatever their shape */
     int released_count; /* released because they name another device */
+    int stale_count; /* another device's, too old to have a watcher: accepted */
     int unparsed_count; /* body missing or not a DATA body */
 
     uint8_t incoming_buffer[AZ_AMQP_DEFAULT_MAX_FRAME_SIZE];
@@ -158,9 +227,11 @@ extern "C"
    *
    * The notification node is HUB-WIDE, so several test legs can be listening at
    * once. Only notifications whose body contains @p match (typically this test's
-   * device id) are captured and settled; everything else is RELEASED so the hub
-   * redelivers it to its rightful watcher. On failure returns false and (when
-   * non-NULL) points @p err_out at a static message.
+   * device id) are captured and settled; everything else is RELEASED, after a
+   * short hold, so the hub redelivers it to its rightful watcher -- except
+   * notifications enqueued too long ago for any watcher to be waiting, which are
+   * accepted. On failure returns false and (when non-NULL) points @p err_out at a
+   * static message.
    *
    * @p attach_refused_out, when non-NULL, is set to true only when the hub
    * REFUSED the receiver link on the notification node, and false for every other
@@ -190,6 +261,7 @@ extern "C"
       int* out_delivered,
       int* out_captured,
       int* out_released,
+      int* out_stale,
       int* out_unparsed);
 
   /* Detach the receiver and close the connection (best-effort). */

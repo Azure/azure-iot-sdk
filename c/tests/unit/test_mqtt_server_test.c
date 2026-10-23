@@ -20,6 +20,7 @@
 #include <stdarg.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 
 #include <cmocka.h>
 
@@ -135,6 +136,43 @@ static void puback_v5_omits_the_property_length_when_it_carries_a_reason(void** 
   assert_packet(&p, expected, sizeof(expected));
 }
 
+/* An absent Reason String is no property; an empty one is property 0x1F with length 0. */
+static void puback_v5_raw_tells_an_absent_reason_string_from_an_empty_one(void** state)
+{
+  (void)state;
+  static const uint8_t absent[] = { 0x40, 0x04, 0x00, 0x00, 0x87, 0x00 };
+  static const uint8_t empty[] = { 0x40, 0x07, 0x00, 0x00, 0x87, 0x03, 0x1F, 0x00, 0x00 };
+  static const uint8_t text[] = { 0x40, 0x09, 0x00, 0x00, 0x97, 0x05, 0x1F, 0x00, 0x02, 'n', 'o' };
+  az_iot_test_mqtt_packet p = az_iot_test_mqtt_puback_v5_raw(0x87, NULL);
+  assert_packet(&p, absent, sizeof(absent));
+  p = az_iot_test_mqtt_puback_v5_raw(0x87, "");
+  assert_packet(&p, empty, sizeof(empty));
+  p = az_iot_test_mqtt_puback_v5_raw(0x97, "no");
+  assert_packet(&p, text, sizeof(text));
+  assert_int_equal(p.packet_id_offset, 2);
+  assert_int_equal(p.echo_packet_id, 1);
+}
+
+/* Single-byte lengths only: 120 bytes is the longest Reason String (Remaining Length 127). */
+static void puback_v5_raw_refuses_a_reason_string_past_single_byte_lengths(void** state)
+{
+  (void)state;
+  char reason[122];
+  memset(reason, 'r', sizeof(reason));
+  reason[120] = '\0';
+  az_iot_test_mqtt_packet p = az_iot_test_mqtt_puback_v5_raw(0x87, reason);
+  assert_int_equal(p.len, 129);
+  assert_int_equal(p.bytes[1], 127);
+  assert_int_equal(p.bytes[5], 123);
+  assert_int_equal(p.bytes[8], 120);
+  assert_memory_equal(&p.bytes[9], reason, 120);
+
+  reason[120] = 'r';
+  reason[121] = '\0';
+  p = az_iot_test_mqtt_puback_v5_raw(0x87, reason);
+  assert_int_equal(p.len, 0);
+}
+
 /* 3.1.1 has no field for it, so the builder reports "not expressible" rather
  * than inventing a packet. A zero-length injection is refused by the proxy, so
  * a test that asks for one fails where it is set up. */
@@ -204,18 +242,46 @@ static void publish_v5_emits_zero_length_keys_and_values(void** state)
   assert_packet(&p, expected, sizeof(expected));
 }
 
+/* Past 127 bytes the Remaining Length and Property Length take two bytes, as a
+ * PUBLISH carrying many User Properties needs. */
+static void publish_v5_uses_multi_byte_lengths(void** state)
+{
+  (void)state;
+  az_iot_test_mqtt_user_property props[16];
+  for (size_t i = 0; i < 16; ++i)
+  {
+    props[i].key = "key";
+    props[i].value = "value";
+  }
+  /* 16 x (1 + 2 + 3 + 2 + 5) = 208 bytes of properties. */
+  az_iot_test_mqtt_packet p = az_iot_test_mqtt_publish_v5("tp", NULL, 0, props, 16, NULL);
+  size_t const remaining = 2u + 2u + 2u + 208u;
+  assert_int_equal(p.len, 1u + 2u + remaining);
+  assert_int_equal(p.bytes[1], (uint8_t)(0x80u | (remaining % 128u)));
+  assert_int_equal(p.bytes[2], (uint8_t)(remaining / 128u));
+  assert_int_equal(p.bytes[7], (uint8_t)(0x80u | (208u % 128u)));
+  assert_int_equal(p.bytes[8], (uint8_t)(208u / 128u));
+  assert_int_equal(p.bytes[9], 0x26u);
+}
+
 /* Too big to express comes back empty rather than truncated: the proxy rejects
  * a zero-length injection, so the test fails where it was set up instead of
  * asserting against half a packet. */
 static void publish_v5_refuses_a_packet_that_does_not_fit(void** state)
 {
   (void)state;
-  const az_iot_test_mqtt_user_property props[] = {
-    { "0123456789012345678901234567890123456789", "0123456789012345678901234567890123456789" },
-    { "0123456789012345678901234567890123456789", "0123456789012345678901234567890123456789" }
-  };
-  az_iot_test_mqtt_packet p = az_iot_test_mqtt_publish_v5("tp", NULL, 0, props, 2, NULL);
+#define K40 "0123456789012345678901234567890123456789"
+  const az_iot_test_mqtt_user_property props[]
+      = { { K40 K40, K40 K40 }, { K40 K40, K40 K40 }, { K40 K40, K40 K40 }, { K40 K40, K40 K40 } };
+#undef K40
+  az_iot_test_mqtt_packet p = az_iot_test_mqtt_publish_v5("tp", NULL, 0, props, 4, NULL);
   assert_int_equal(p.len, 0);
+
+  /* A length whose sum with the header would wrap is refused, not copied. */
+  static const uint8_t body[1] = { 0 };
+  az_iot_test_mqtt_packet huge
+      = az_iot_test_mqtt_publish_v5("tp", body, SIZE_MAX - 8u, NULL, 0, NULL);
+  assert_int_equal(huge.len, 0);
 
   /* And a missing topic is not a packet at all. */
   az_iot_test_mqtt_packet none = az_iot_test_mqtt_publish_v5(NULL, NULL, 0, NULL, 0, NULL);
@@ -299,11 +365,14 @@ int main(void)
     cmocka_unit_test(an_acknowledgement_reports_where_its_packet_id_sits),
     cmocka_unit_test(puback_success_is_the_same_in_both_versions),
     cmocka_unit_test(puback_v5_omits_the_property_length_when_it_carries_a_reason),
+    cmocka_unit_test(puback_v5_raw_tells_an_absent_reason_string_from_an_empty_one),
+    cmocka_unit_test(puback_v5_raw_refuses_a_reason_string_past_single_byte_lengths),
     cmocka_unit_test(a_refusal_a_version_cannot_express_yields_nothing),
     cmocka_unit_test(server_disconnect_carries_the_v5_reason),
     cmocka_unit_test(pingresp_is_a_bare_fixed_header),
     cmocka_unit_test(publish_v5_lays_out_topic_properties_and_payload),
     cmocka_unit_test(publish_v5_emits_zero_length_keys_and_values),
+    cmocka_unit_test(publish_v5_uses_multi_byte_lengths),
     cmocka_unit_test(publish_v5_refuses_a_packet_that_does_not_fit),
     cmocka_unit_test(pinning_a_packet_id_clears_the_echo),
     cmocka_unit_test(pinning_a_packet_id_on_a_packet_without_one_is_ignored),

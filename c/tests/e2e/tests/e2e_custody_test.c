@@ -36,7 +36,14 @@
 #include <string.h>
 #include <time.h>
 
+/* The MQTT adapter this build of the suite uses (see tests/e2e/CMakeLists.txt). */
+#if defined(AZ_IOT_E2E_ADAPTER_PAHO)
 #include "azure/iot/adapters/az_iot_adapter_paho.h"
+#elif defined(AZ_IOT_E2E_ADAPTER_AZ_MQTT)
+#include "azure/iot/adapters/az_iot_adapter_az_mqtt.h"
+#else
+#error "Define AZ_IOT_E2E_ADAPTER_PAHO or AZ_IOT_E2E_ADAPTER_AZ_MQTT"
+#endif
 #include "azure/iot/az_iot.h"
 
 #include "az_iot_e2e_service.h"
@@ -73,6 +80,8 @@ typedef struct
   custody_config config;
   custody_provider provider;
   az_iot_connection_client conn;
+  az_iot_mqtt_factory* factory_v3;
+  az_iot_mqtt_factory* factory_v5;
   az_iot_connection_state conn_state;
   bool conn_ok;
   az_iot_e2e_service* service;
@@ -108,8 +117,13 @@ static char* env_dup(const char* name)
 static az_iot_result custody_load(
     az_iot_certificate_provider* self,
     az_iot_cert_role role,
+    uint8_t index,
     az_iot_certificate_material* out)
 {
+  if (index != 0)
+  {
+    return AZ_IOT_ERR_NOT_FOUND;
+  }
   custody_provider* p = (custody_provider*)self;
   (void)role;
   p->load_calls++;
@@ -212,10 +226,15 @@ static int device_connect(custody_fixture* fx)
   fx->conn_ok = true;
   az_iot_connection_client_add_state_observer(&fx->conn, on_conn_state, fx);
 
-  if (az_iot_connection_client_register_mqtt_factory(&fx->conn, az_iot_paho_factory_create_v3_1_1())
-          != AZ_IOT_OK
-      || az_iot_connection_client_register_mqtt_factory(&fx->conn, az_iot_paho_factory_create_v5())
-          != AZ_IOT_OK)
+#if defined(AZ_IOT_E2E_ADAPTER_PAHO)
+  fx->factory_v3 = az_iot_paho_factory_create_v3_1_1();
+  fx->factory_v5 = az_iot_paho_factory_create_v5();
+#elif defined(AZ_IOT_E2E_ADAPTER_AZ_MQTT)
+  fx->factory_v3 = az_iot_az_mqtt_factory_create_v3_1_1();
+  fx->factory_v5 = az_iot_az_mqtt_factory_create_v5();
+#endif
+  if (az_iot_connection_client_register_mqtt_factory(&fx->conn, fx->factory_v3) != AZ_IOT_OK
+      || az_iot_connection_client_register_mqtt_factory(&fx->conn, fx->factory_v5) != AZ_IOT_OK)
   {
     fprintf(stderr, "[e2e-custody] MQTT factory registration failed\n");
     return 1;
@@ -264,6 +283,15 @@ static void device_disconnect(custody_fixture* fx)
     az_iot_connection_client_deinit(&fx->conn);
     fx->conn_ok = false;
   }
+#if defined(AZ_IOT_E2E_ADAPTER_PAHO)
+  az_iot_paho_factory_destroy(fx->factory_v3);
+  az_iot_paho_factory_destroy(fx->factory_v5);
+#elif defined(AZ_IOT_E2E_ADAPTER_AZ_MQTT)
+  az_iot_az_mqtt_factory_destroy(fx->factory_v3);
+  az_iot_az_mqtt_factory_destroy(fx->factory_v5);
+#endif
+  fx->factory_v3 = NULL;
+  fx->factory_v5 = NULL;
   free(fx->config.id_scope);
   free(fx->config.reg_id);
   free(fx->config.cert);

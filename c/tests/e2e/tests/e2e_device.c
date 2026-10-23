@@ -6,7 +6,14 @@
 #include "e2e_device.h"
 #include "support/test_env.h"
 
+/* The MQTT adapter this build of the suite uses (see tests/e2e/CMakeLists.txt). */
+#if defined(AZ_IOT_E2E_ADAPTER_PAHO)
 #include "azure/iot/adapters/az_iot_adapter_paho.h"
+#elif defined(AZ_IOT_E2E_ADAPTER_AZ_MQTT)
+#include "azure/iot/adapters/az_iot_adapter_az_mqtt.h"
+#else
+#error "Define AZ_IOT_E2E_ADAPTER_PAHO or AZ_IOT_E2E_ADAPTER_AZ_MQTT"
+#endif
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -74,6 +81,19 @@ static int device_config_load(e2e_device* dev)
    * what every existing leg uses. */
   if (dev->hub_hostname != NULL && dev->hub_device_id != NULL)
   {
+    char* profile = az_iot_test_env_dup("AZ_IOT_HUB_CONNECTION_PROFILE");
+    dev->hub_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V3;
+    if (profile != NULL && strcmp(profile, "mqttv5") == 0)
+    {
+      dev->hub_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5;
+    }
+    else if (profile != NULL && strcmp(profile, "mqttv3") != 0)
+    {
+      fprintf(stderr, "[e2e] AZ_IOT_HUB_CONNECTION_PROFILE must be mqttv3 or mqttv5\n");
+      free(profile);
+      return 1;
+    }
+    free(profile);
     dev->device_id = dev->hub_device_id;
     return 0;
   }
@@ -101,8 +121,21 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
   }
 
   az_iot_connection_state s = event->state;
-  az_iot_result reason = event->reason;
-  (void)reason;
+  /* A failed attempt: the transport code (the TLS stack's own, e.g. a SECURITY_STATUS) says why. */
+  if (event->error != NULL && event->error->source != AZ_IOT_CONN_ERR_SRC_NONE)
+  {
+    fprintf(
+        stderr,
+        "[e2e] hub %s reason %s: error source %d code %ld (0x%08lx): %.*s\n",
+        az_iot_connection_state_to_string(s),
+        az_iot_result_to_string(event->reason),
+        (int)event->error->source,
+        (long)event->error->code,
+        (unsigned long)(uint32_t)event->error->code,
+        (int)az_span_size(event->error->message),
+        az_span_size(event->error->message) > 0 ? (const char*)az_span_ptr(event->error->message)
+                                                : "");
+  }
   ((e2e_device*)user_ctx)->conn_state = s;
 }
 
@@ -111,7 +144,9 @@ void e2e_device_do_work(e2e_device* dev, int ms)
   (void)az_iot_connection_client_do_work(&dev->conn, ms);
 }
 
-int e2e_device_connect(e2e_device* dev)
+int e2e_device_connect(e2e_device* dev) { return e2e_device_connect_with(dev, NULL); }
+
+int e2e_device_connect_with(e2e_device* dev, const e2e_device_connect_options* opts)
 {
   if (device_config_load(dev) != 0)
   {
@@ -132,8 +167,9 @@ int e2e_device_connect(e2e_device* dev)
   az_iot_connection_client_options copts = az_iot_connection_client_options_default();
   if (dev->hub_hostname != NULL && dev->hub_device_id != NULL)
   {
-    copts.host = dev->hub_hostname;
-    copts.client_id = dev->hub_device_id;
+    copts.iothub_hostname = dev->hub_hostname;
+    copts.device_id = dev->hub_device_id;
+    copts.connection_profile = dev->hub_profile;
   }
   else
   {
@@ -151,6 +187,34 @@ int e2e_device_connect(e2e_device* dev)
   copts.proxy.port = dev->proxy_port;
   copts.proxy.username = dev->proxy_username;
   copts.proxy.password = dev->proxy_password;
+  copts.twin_push.push_desired = opts != NULL && opts->twin_push_desired;
+  if (opts != NULL)
+  {
+    if (opts->saved_hub != NULL)
+    {
+      copts.iothub_hostname = opts->saved_hub->hostname;
+      copts.device_id = opts->saved_hub->device_id;
+      copts.connection_profile = opts->saved_hub->profile;
+    }
+    if (opts->reconnection_policy != NULL)
+    {
+      copts.reconnection_policy = *opts->reconnection_policy;
+    }
+    if (opts->identity_recovery_mode != NULL)
+    {
+      copts.identity_recovery.mode = *opts->identity_recovery_mode;
+    }
+    if (opts->identity_recovery_policy != NULL)
+    {
+      copts.identity_recovery.policy = *opts->identity_recovery_policy;
+    }
+    if (opts->max_hub_connect_attempts_before_reprovision != 0)
+    {
+      copts.dps.max_hub_connect_attempts_before_reprovision
+          = opts->max_hub_connect_attempts_before_reprovision;
+    }
+  }
+  copts.twin_push.push_reported = opts != NULL && opts->twin_push_reported;
 
   if (az_iot_connection_client_init(&dev->conn, &copts) != AZ_IOT_OK)
   {
@@ -160,13 +224,24 @@ int e2e_device_connect(e2e_device* dev)
   dev->conn_ok = true;
   az_iot_connection_client_add_state_observer(&dev->conn, on_conn_state, dev);
 
-  if (az_iot_connection_client_register_mqtt_factory(
-          &dev->conn, az_iot_paho_factory_create_v3_1_1())
-          != AZ_IOT_OK
-      || az_iot_connection_client_register_mqtt_factory(&dev->conn, az_iot_paho_factory_create_v5())
-          != AZ_IOT_OK)
+#if defined(AZ_IOT_E2E_ADAPTER_PAHO)
+  dev->factory_v3 = az_iot_paho_factory_create_v3_1_1();
+  dev->factory_v5 = az_iot_paho_factory_create_v5();
+#elif defined(AZ_IOT_E2E_ADAPTER_AZ_MQTT)
+  dev->factory_v3 = az_iot_az_mqtt_factory_create_v3_1_1();
+  dev->factory_v5 = az_iot_az_mqtt_factory_create_v5();
+#endif
+  if (az_iot_connection_client_register_mqtt_factory(&dev->conn, dev->factory_v3) != AZ_IOT_OK
+      || az_iot_connection_client_register_mqtt_factory(&dev->conn, dev->factory_v5) != AZ_IOT_OK)
   {
     fprintf(stderr, "[e2e] MQTT factory registration failed\n");
+    return 1;
+  }
+
+  if (opts != NULL && opts->before_open != NULL
+      && opts->before_open(dev, opts->before_open_ctx) != 0)
+  {
+    fprintf(stderr, "[e2e] before_open failed\n");
     return 1;
   }
 
@@ -176,11 +251,16 @@ int e2e_device_connect(e2e_device* dev)
     return 1;
   }
 
+  const int timeout_s = opts != NULL && opts->connect_timeout_s > 0 ? opts->connect_timeout_s
+                                                                    : E2E_DEVICE_CONNECT_TIMEOUT_S;
   time_t start = time(NULL);
-  while (dev->conn_state != AZ_IOT_CONN_STATE_CONNECTED
-         && (time(NULL) - start) < E2E_DEVICE_CONNECT_TIMEOUT_S)
+  while (dev->conn_state != AZ_IOT_CONN_STATE_CONNECTED && (time(NULL) - start) < timeout_s)
   {
     e2e_device_do_work(dev, 50);
+    if (opts != NULL && opts->during_connect != NULL)
+    {
+      opts->during_connect(opts->during_connect_ctx);
+    }
     if (dev->conn_state == AZ_IOT_CONN_STATE_FAULTED)
     {
       break;
@@ -192,6 +272,32 @@ int e2e_device_connect(e2e_device* dev)
     fprintf(stderr, "[e2e] device did not reach CONNECTED (state=%d)\n", (int)dev->conn_state);
     return 1;
   }
+  return 0;
+}
+
+int e2e_device_get_hub(const e2e_device* dev, e2e_device_hub* out)
+{
+  if (!dev->conn_ok || dev->conn_state != AZ_IOT_CONN_STATE_CONNECTED)
+  {
+    return 1;
+  }
+  /* @p out may be the saved hub the connection still borrows: read everything first. */
+  const char* host = az_iot_connection_client_get_iothub_address(&dev->conn);
+  const char* device_id = az_iot_connection_client_get_device_id(&dev->conn);
+  az_iot_hub_profile profile;
+  if (host == NULL || device_id == NULL
+      || az_iot_connection_client_get_hub_profile(&dev->conn, &profile) != AZ_IOT_OK
+      || profile.connection_profile == AZ_IOT_CONNECTION_PROFILE_UNKNOWN
+      || strlen(host) >= sizeof(out->hostname) || strlen(device_id) >= sizeof(out->device_id))
+  {
+    return 1;
+  }
+  e2e_device_hub hub;
+  memset(&hub, 0, sizeof(hub));
+  snprintf(hub.hostname, sizeof(hub.hostname), "%s", host);
+  snprintf(hub.device_id, sizeof(hub.device_id), "%s", device_id);
+  hub.profile = profile.connection_profile;
+  *out = hub;
   return 0;
 }
 
@@ -207,6 +313,15 @@ void e2e_device_disconnect(e2e_device* dev)
     az_iot_connection_client_deinit(&dev->conn);
     dev->conn_ok = false;
   }
+#if defined(AZ_IOT_E2E_ADAPTER_PAHO)
+  az_iot_paho_factory_destroy(dev->factory_v3);
+  az_iot_paho_factory_destroy(dev->factory_v5);
+#elif defined(AZ_IOT_E2E_ADAPTER_AZ_MQTT)
+  az_iot_az_mqtt_factory_destroy(dev->factory_v3);
+  az_iot_az_mqtt_factory_destroy(dev->factory_v5);
+#endif
+  dev->factory_v3 = NULL;
+  dev->factory_v5 = NULL;
   if (dev->certs_ok)
   {
     az_iot_certificate_provider_pem_deinit(&dev->certs);

@@ -40,6 +40,7 @@
 #include "azure/iot/az_iot_result.h"
 #include "azure/iot/mqttv5/az_iot_direct_method_client.h"
 
+#include "internal/connection_client_internal.h"
 #include "support/mock_mqtt_iface.h"
 #include "support/test_provider.h"
 #include "support/subscription_ack.h"
@@ -226,9 +227,9 @@ static int setup(void** state)
   assert_non_null(fx);
 
   az_iot_connection_client_options opts = { 0 };
-  opts.host = "broker.example";
+  opts.iothub_hostname = "broker.example";
   opts.port = 8883;
-  opts.client_id = "ut-device";
+  opts.device_id = "ut-device";
   opts.connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5;
   assert_int_equal(az_iot_test_connection_client_init(&fx->conn, &opts), AZ_IOT_OK);
 
@@ -257,14 +258,8 @@ static int teardown(void** state)
   if (fx)
   {
     az_iot_mqttv5_direct_method_client_deinit(&fx->dm);
-    /* A registered factory is adopted by the client and freed from deinit();
-     * an unregistered one is still ours. */
-    bool adopted = (fx->conn.factory_count > 0);
     az_iot_connection_client_deinit(&fx->conn);
-    if (!adopted)
-    {
-      az_iot_mock_mqtt_factory_destroy(fx->factory);
-    }
+    az_iot_mock_mqtt_factory_destroy(fx->factory);
     free(fx);
   }
   return 0;
@@ -349,9 +344,9 @@ static void open_conn(fixture* fx)
   assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
 }
 
-/* Ack every filter the session issued, then echo the birth nonce back as a
- * birth-ack so the session reaches CONNECTED. */
-static void finish_birth(fixture* fx)
+/* Ack every filter the session issued; on MQTTv5 the presence SUBACK publishes
+ * the birth, leaving the session CONNECTING until the birth-ack. */
+static void ack_presence_subscription(fixture* fx)
 {
   /* Collect the packet ids first: injecting appends to the same history the
    * iteration walks, so acking in-place would read a moving array. */
@@ -378,7 +373,11 @@ static void finish_birth(fixture* fx)
     assert_true(az_iot_mock_mqtt_client_inject_event(fx->mock, &suback));
     assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
   }
+}
 
+/* Echo the birth nonce back as a birth-ack so the session reaches CONNECTED. */
+static void send_birth_ack(fixture* fx)
+{
   const az_iot_mock_call* birth
       = find_call(fx->mock, AZ_IOT_MOCK_CALL_PUBLISH, "ih/ut-device/srv/presence");
   assert_non_null(birth);
@@ -392,14 +391,20 @@ static void finish_birth(fixture* fx)
   ack_msg.topic = "ih/ut-device/dev/presence";
   ack_msg.correlation_data = nonce;
   ack_msg.correlation_data_len = sizeof(nonce);
-  ack_msg.user_properties = &ack_type;
-  ack_msg.user_properties_count = 1;
+  ack_msg.user_properties = az_iot_mqtt_user_properties_from_array(&ack_type, 1);
   az_iot_mqtt_event ack;
   memset(&ack, 0, sizeof(ack));
   ack.kind = AZ_IOT_MQTT_EVT_MESSAGE;
   ack.message = &ack_msg;
   assert_true(az_iot_mock_mqtt_client_inject_event(fx->mock, &ack));
   assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
+}
+
+/* Ack the presence filter, then the birth: the session reaches CONNECTED. */
+static void finish_birth(fixture* fx)
+{
+  ack_presence_subscription(fx);
+  send_birth_ack(fx);
 }
 
 /* Drive an MQTTv5 session all the way to CONNECTED. Unlike the MQTTv3 path,
@@ -424,7 +429,16 @@ static void inject_dm(
     size_t payload_len,
     uint32_t expiry_seconds)
 {
-  az_iot_mqtt_user_property type_prop = { "type", type_value };
+  /* `type` comes after 20 other properties, past any fixed array an adapter
+   * used to hold, so every case here also proves it is found there. */
+  az_iot_mqtt_user_property props[21];
+  for (size_t i = 0; i < 20; ++i)
+  {
+    props[i].key = "filler";
+    props[i].value = "x";
+  }
+  props[20].key = "type";
+  props[20].value = type_value;
   az_iot_mqtt_message msg;
   memset(&msg, 0, sizeof(msg));
   msg.topic = topic;
@@ -435,11 +449,7 @@ static void inject_dm(
   msg.qos = AZ_IOT_MQTT_QOS_1;
   msg.content_type = "application/protobuf";
   msg.message_expiry_seconds = expiry_seconds;
-  if (type_value != NULL)
-  {
-    msg.user_properties = &type_prop;
-    msg.user_properties_count = 1;
-  }
+  msg.user_properties = az_iot_mqtt_user_properties_from_array(props, type_value != NULL ? 21 : 20);
   az_iot_mqtt_event evt;
   memset(&evt, 0, sizeof(evt));
   evt.kind = AZ_IOT_MQTT_EVT_MESSAGE;
@@ -481,10 +491,12 @@ typedef struct log_capture
 static void capture_log(
     void* user_ctx,
     az_iot_log_level level,
+    const char* component,
     const char* file,
     int line,
     const char* msg)
 {
+  (void)component;
   log_capture* c = (log_capture*)user_ctx;
   (void)file;
   (void)line;
@@ -566,9 +578,9 @@ static void init_against_an_mqtt_v3_connection_is_rejected(void** state)
    * answered at init rather than deferred to connect. */
   az_iot_connection_client conn;
   az_iot_connection_client_options opts = { 0 };
-  opts.host = "broker.example";
+  opts.iothub_hostname = "broker.example";
   opts.port = 8883;
-  opts.client_id = "ut-device";
+  opts.device_id = "ut-device";
   opts.connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V3;
   assert_int_equal(az_iot_test_connection_client_init(&conn, &opts), AZ_IOT_OK);
 
@@ -591,9 +603,9 @@ static void a_device_id_too_long_for_the_topics_says_so(void** state)
 
   az_iot_connection_client conn;
   az_iot_connection_client_options opts = { 0 };
-  opts.host = "broker.example";
+  opts.iothub_hostname = "broker.example";
   opts.port = 8883;
-  opts.client_id = long_id;
+  opts.device_id = long_id;
   opts.connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5;
   assert_int_equal(az_iot_test_connection_client_init(&conn, &opts), AZ_IOT_OK);
 
@@ -618,6 +630,7 @@ static void a_device_id_too_long_for_the_topics_says_so(void** state)
 
   az_iot_mqttv5_direct_method_client_deinit(&dm);
   az_iot_connection_client_deinit(&conn);
+  az_iot_mock_mqtt_factory_destroy(factory);
 }
 
 static void init_does_not_subscribe_a_redundant_methods_filter(void** state)
@@ -1685,6 +1698,183 @@ static void an_accepted_result_is_not_reported_as_rejected(void** state)
   assert_int_equal(cap.count, 0);
 }
 
+static void ignore_ack(az_iot_result status, void* user_ctx)
+{
+  (void)status;
+  (void)user_ctx;
+}
+
+/* Telemetry or any other shared-pool publisher filling its slots does not
+ * reach the slots this client reserved: the result is still tracked, so a
+ * broker rejection is reported by name. */
+static void a_full_shared_pool_leaves_results_tracked(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  invocation_record rec = { 0 };
+  fx->rec = &rec;
+  run_one_invocation(fx, &rec, 0xB9);
+
+  az_iot_mqtt_message filler = { 0 };
+  filler.topic = "filler";
+  filler.qos = AZ_IOT_MQTT_QOS_1;
+  az_iot_result r = AZ_IOT_OK;
+  for (size_t i = 0; r == AZ_IOT_OK; ++i)
+  {
+    assert_true(i <= AZ_IOT_MAX_PENDING_PUBACKS);
+    r = az_iot_connection_client__publish(&fx->conn, NULL, &filler, ignore_ack, NULL);
+  }
+  assert_int_equal(r, AZ_IOT_ERR_BUSY);
+
+  az_iot_mock_mqtt_client_clear_calls(fx->mock);
+  log_capture cap;
+  install_capture(&cap, AZ_IOT_LOG_LEVEL_WARN);
+  assert_int_equal(
+      az_iot_mqttv5_direct_method_respond(&fx->dm, rec.request, 200, NULL, 0), AZ_IOT_OK);
+  const az_iot_mock_call* sent = find_phase(fx->mock, "result:1");
+  assert_non_null(sent);
+  assert_int_equal(cap.count, 0);
+  inject_puback(fx, sent->packet_id, AZ_IOT_ERR_MQTT);
+  az_iot_log_set_global_sink(NULL);
+
+  /* The connection's line with the wire code, then this client's. */
+  assert_int_equal(cap.count, 2);
+  assert_non_null(strstr(cap.last, "result:1"));
+  assert_non_null(strstr(cap.last, "rejected"));
+}
+
+/* Refused probes hold no invocation, so they can use up the reservation. The
+ * ack only feeds a log line; losing it must not cost the answer. */
+static void a_result_is_sent_untracked_when_its_reservation_is_used_up(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  invocation_record rec = { 0 };
+  fx->rec = &rec;
+  run_one_invocation(fx, &rec, 0xBB);
+
+  uint8_t frame[128];
+  size_t frame_len = build_probe(frame, "not-declared", 300);
+  for (uint8_t seed = 0; az_iot_connection_client__can_track_publish(&fx->conn, &fx->dm); ++seed)
+  {
+    assert_true(seed <= 2 * AZ_IOT_MQTTV5_DM_MAX_CONCURRENT);
+    uint8_t request_id[16];
+    make_request_id(request_id, seed);
+    inject_dm(fx, DEV_TOPIC, "probe:1", request_id, 16, frame, frame_len, 30);
+  }
+
+  az_iot_mock_mqtt_client_clear_calls(fx->mock);
+  log_capture cap;
+  install_capture(&cap, AZ_IOT_LOG_LEVEL_WARN);
+  assert_int_equal(
+      az_iot_mqttv5_direct_method_respond(&fx->dm, rec.request, 200, NULL, 0), AZ_IOT_OK);
+  az_iot_log_set_global_sink(NULL);
+
+  assert_int_equal(az_iot_mock_mqtt_client_count_of(fx->mock, AZ_IOT_MOCK_CALL_PUBLISH), 1);
+  assert_non_null(find_phase(fx->mock, "result:1"));
+  assert_int_equal(cap.count, 1);
+  assert_non_null(strstr(cap.last, "without ack tracking"));
+}
+
+/* The reservation is taken at init and given back at deinit. */
+static void init_reserves_pending_ack_slots_and_deinit_returns_them(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  az_iot_mqtt_message filler = { 0 };
+  filler.topic = "filler";
+  filler.qos = AZ_IOT_MQTT_QOS_1;
+  size_t shared = 0;
+  while (az_iot_connection_client__publish(&fx->conn, NULL, &filler, ignore_ack, NULL) == AZ_IOT_OK)
+  {
+    ++shared;
+  }
+  assert_int_equal(shared, AZ_IOT_MAX_PENDING_PUBACKS - 2 * AZ_IOT_MQTTV5_DM_MAX_CONCURRENT);
+
+  az_iot_mqttv5_direct_method_client_deinit(&fx->dm);
+  for (size_t i = 0; i < 2 * AZ_IOT_MQTTV5_DM_MAX_CONCURRENT; ++i)
+  {
+    assert_int_equal(
+        az_iot_connection_client__publish(&fx->conn, NULL, &filler, ignore_ack, NULL), AZ_IOT_OK);
+  }
+  assert_int_equal(
+      az_iot_connection_client__publish(&fx->conn, NULL, &filler, ignore_ack, NULL),
+      AZ_IOT_ERR_BUSY);
+}
+
+/* With no room for its reservation init fails cleanly and can be retried
+ * once room is made. */
+static void init_without_room_for_its_reservation_fails(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_mqttv5_direct_method_client_deinit(&fx->dm);
+
+  static const int other_owner = 0;
+  assert_int_equal(
+      az_iot_connection_client__reserve_pubacks(
+          &fx->conn, &other_owner, (uint16_t)AZ_IOT_MAX_PENDING_PUBACKS),
+      AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_mqttv5_direct_method_client_init(&fx->dm, &fx->conn), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+
+  az_iot_connection_client__release_pubacks(&fx->conn, &other_owner);
+  assert_int_equal(az_iot_mqttv5_direct_method_client_init(&fx->dm, &fx->conn), AZ_IOT_OK);
+}
+
+/* Init while tracked publishes in flight occupy the slots it would reserve:
+ * AZ_IOT_ERR_BUSY, nothing left registered, and a retry succeeds once they are
+ * acknowledged. */
+static void init_while_shared_publishes_occupy_its_slots_is_busy(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  az_iot_mqttv5_direct_method_client_deinit(&fx->dm);
+
+  az_iot_mqtt_message filler = { 0 };
+  filler.topic = "filler";
+  filler.qos = AZ_IOT_MQTT_QOS_1;
+  while (az_iot_connection_client__publish(&fx->conn, NULL, &filler, ignore_ack, NULL) == AZ_IOT_OK)
+  {
+  }
+  assert_int_equal(az_iot_mqttv5_direct_method_client_init(&fx->dm, &fx->conn), AZ_IOT_ERR_BUSY);
+
+  for (size_t i = 0; i < az_iot_mock_mqtt_client_call_count(fx->mock); ++i)
+  {
+    const az_iot_mock_call* c = az_iot_mock_mqtt_client_call_at(fx->mock, i);
+    if (c->kind == AZ_IOT_MOCK_CALL_PUBLISH && strcmp(c->topic, "filler") == 0)
+    {
+      inject_puback(fx, c->packet_id, AZ_IOT_OK);
+    }
+  }
+  assert_int_equal(az_iot_mqttv5_direct_method_client_init(&fx->dm, &fx->conn), AZ_IOT_OK);
+}
+
+/* An adapter's own BUSY is a failed send, not a full ack table: it is
+ * returned once, never retried untracked. */
+static void an_adapter_busy_is_not_mistaken_for_a_full_ack_table(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  invocation_record rec = { 0 };
+  fx->rec = &rec;
+  run_one_invocation(fx, &rec, 0xBA);
+
+  az_iot_mock_mqtt_client_set_next_result(fx->mock, AZ_IOT_MOCK_CALL_PUBLISH, AZ_IOT_ERR_BUSY);
+  az_iot_mock_mqtt_client_clear_calls(fx->mock);
+  log_capture cap;
+  install_capture(&cap, AZ_IOT_LOG_LEVEL_WARN);
+  assert_int_equal(
+      az_iot_mqttv5_direct_method_respond(&fx->dm, rec.request, 200, NULL, 0), AZ_IOT_ERR_BUSY);
+  az_iot_log_set_global_sink(NULL);
+
+  assert_int_equal(az_iot_mock_mqtt_client_count_of(fx->mock, AZ_IOT_MOCK_CALL_PUBLISH), 1);
+  assert_null(strstr(cap.all, "without ack tracking"));
+}
+
 static void a_result_that_cannot_be_published_says_why(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -1708,6 +1898,622 @@ static void a_result_that_cannot_be_published_says_why(void** state)
   assert_int_equal(cap.count, 1);
   assert_non_null(strstr(cap.last, "result:1"));
   assert_non_null(strstr(cap.last, "publish"));
+}
+
+/* ------------------------------------------------------------------------- */
+/* between CONNACK and the birth-ack                                         */
+/* ------------------------------------------------------------------------- */
+
+/* PUBLISHes on the service topic carrying the given `type`. */
+static size_t count_phase(az_iot_mock_mqtt_client* m, const char* type_value)
+{
+  size_t count = 0;
+  size_t n = az_iot_mock_mqtt_client_call_count(m);
+  for (size_t i = 0; i < n; ++i)
+  {
+    const az_iot_mock_call* c = az_iot_mock_mqtt_client_call_at(m, i);
+    if (c->kind == AZ_IOT_MOCK_CALL_PUBLISH && strcmp(c->topic, SRV_TOPIC) == 0
+        && strcmp(c->user_type, type_value) == 0)
+    {
+      count++;
+    }
+  }
+  return count;
+}
+
+/* Close the session and open a new one up to CONNACK: CONNECTING, birth-ack
+ * still to come. */
+static void reconnect_to_connack(fixture* fx)
+{
+  (void)az_iot_connection_client_close(&fx->conn);
+  az_iot_mqtt_event evt;
+  memset(&evt, 0, sizeof(evt));
+  evt.kind = AZ_IOT_MQTT_EVT_DISCONNECTED;
+  evt.status = AZ_IOT_OK;
+  (void)az_iot_mock_mqtt_client_inject_event(fx->mock, &evt);
+  (void)az_iot_connection_client_do_work(&fx->conn, 0);
+  open_conn(fx);
+}
+
+static void a_probe_before_the_birth_ack_is_answered_once_connected(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_conn(fx);
+
+  invocation_record rec = { 0 };
+  fx->rec = &rec;
+
+  uint8_t request_id[16];
+  make_request_id(request_id, 0xD1);
+  uint8_t frame[128];
+  size_t frame_len = build_probe(frame, "reboot", 300);
+
+  /* Redelivered right after CONNACK, before the presence SUBACK. */
+  inject_dm(fx, DEV_TOPIC, "probe:1", request_id, 16, frame, frame_len, 30);
+  assert_null(find_phase(fx->mock, "probe-ack:1"));
+
+  /* Still held once the birth is out: the hub is not CONNECTED yet. */
+  ack_presence_subscription(fx);
+  assert_null(find_phase(fx->mock, "probe-ack:1"));
+
+  send_birth_ack(fx);
+  const az_iot_mock_call* ack = find_phase(fx->mock, "probe-ack:1");
+  assert_non_null(ack);
+  assert_memory_equal(ack->correlation_data, request_id, 16);
+  assert_true(ack->message_expiry_seconds > 0u && ack->message_expiry_seconds <= 30u);
+
+  /* The token survived the wait: the exec it authorizes runs the method. */
+  uint8_t ready_id[16];
+  probe_ack_ready_id(ack, ready_id);
+  uint8_t exec[64];
+  size_t exec_len = build_exec(exec, ready_id, 16, NULL, 0);
+  inject_dm(fx, DEV_TOPIC, "exec:1", request_id, 16, exec, exec_len, 300);
+  assert_true(rec.fired);
+  assert_string_equal(rec.method_name, "reboot");
+}
+
+static void a_probe_after_the_birth_before_its_ack_is_answered_once_connected(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_conn(fx);
+  ack_presence_subscription(fx);
+  assert_non_null(find_call(fx->mock, AZ_IOT_MOCK_CALL_PUBLISH, "ih/ut-device/srv/presence"));
+
+  uint8_t request_id[16];
+  make_request_id(request_id, 0xD2);
+  uint8_t frame[128];
+  size_t frame_len = build_probe(frame, "reboot", 300);
+  inject_dm(fx, DEV_TOPIC, "probe:1", request_id, 16, frame, frame_len, 30);
+  assert_null(find_phase(fx->mock, "probe-ack:1"));
+
+  send_birth_ack(fx);
+  uint8_t ready_id[16];
+  probe_ack_ready_id(find_phase(fx->mock, "probe-ack:1"), ready_id);
+}
+
+static void an_exec_before_the_birth_ack_has_its_result_sent_once_connected(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  invocation_record rec = { 0 };
+  fx->rec = &rec;
+
+  uint8_t request_id[16];
+  make_request_id(request_id, 0xD3);
+  uint8_t ready_id[16];
+  probe_and_accept(fx, request_id, "dump", 300, ready_id);
+
+  /* The device reconnects; the exec lands before the new birth-ack. */
+  reconnect_to_connack(fx);
+  uint8_t exec[64];
+  size_t exec_len = build_exec(exec, ready_id, 16, NULL, 0);
+  inject_dm(fx, DEV_TOPIC, "exec:1", request_id, 16, exec, exec_len, 300);
+  assert_true(rec.fired);
+
+  static const uint8_t body[] = { '{', '}' };
+  assert_int_equal(
+      az_iot_mqttv5_direct_method_respond(&fx->dm, rec.request, 200, body, sizeof(body)),
+      AZ_IOT_OK);
+  assert_null(find_phase(fx->mock, "result:1"));
+
+  /* Held, so already answered. */
+  assert_int_equal(
+      az_iot_mqttv5_direct_method_respond(&fx->dm, rec.request, 500, NULL, 0),
+      AZ_IOT_ERR_INVALID_ARG);
+
+  finish_birth(fx);
+  const az_iot_mock_call* result = find_phase(fx->mock, "result:1");
+  assert_non_null(result);
+  assert_memory_equal(result->correlation_data, request_id, 16);
+  /* Result { status = 200, payload = "{}" } */
+  static const uint8_t expected[] = { 0x08, 0xC8, 0x01, 0x12, 0x02, '{', '}' };
+  assert_int_equal(result->payload_len, sizeof(expected));
+  assert_memory_equal(result->payload, expected, sizeof(expected));
+
+  /* Sending it released the slot: the full capacity accepts probes again. */
+  az_iot_mock_mqtt_client_clear_calls(fx->mock);
+  for (uint8_t i = 0; i < AZ_IOT_MQTTV5_DM_MAX_CONCURRENT; ++i)
+  {
+    uint8_t other[16];
+    make_request_id(other, (uint8_t)(0xE0 + i));
+    uint8_t ignored[16];
+    probe_and_accept(fx, other, "dump", 300, ignored);
+  }
+  assert_null(find_phase(fx->mock, "result:1"));
+}
+
+static void several_held_results_are_each_sent_once_with_their_own_bytes(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  invocation_record rec = { 0 };
+  fx->rec = &rec;
+
+  enum
+  {
+    HELD = 2
+  };
+  uint8_t request_ids[HELD][16];
+  uint8_t ready_ids[HELD][16];
+  for (size_t i = 0; i < HELD; ++i)
+  {
+    make_request_id(request_ids[i], (uint8_t)(0x71 + i));
+    probe_and_accept(fx, request_ids[i], "dump", 300, ready_ids[i]);
+  }
+
+  reconnect_to_connack(fx);
+  static const int statuses[HELD] = { 200, 404 };
+  static const char* const bodies[HELD] = { "first", "second-body" };
+  for (size_t i = 0; i < HELD; ++i)
+  {
+    uint8_t exec[64];
+    size_t exec_len = build_exec(exec, ready_ids[i], 16, NULL, 0);
+    rec.fired = false;
+    inject_dm(fx, DEV_TOPIC, "exec:1", request_ids[i], 16, exec, exec_len, 300);
+    assert_true(rec.fired);
+    assert_int_equal(
+        az_iot_mqttv5_direct_method_respond(
+            &fx->dm, rec.request, statuses[i], (const uint8_t*)bodies[i], strlen(bodies[i])),
+        AZ_IOT_OK);
+  }
+  assert_int_equal(count_phase(fx->mock, "result:1"), 0);
+
+  finish_birth(fx);
+  assert_int_equal(count_phase(fx->mock, "result:1"), HELD);
+  size_t matched = 0;
+  size_t n = az_iot_mock_mqtt_client_call_count(fx->mock);
+  for (size_t c = 0; c < n; ++c)
+  {
+    const az_iot_mock_call* call = az_iot_mock_mqtt_client_call_at(fx->mock, c);
+    if (call->kind != AZ_IOT_MOCK_CALL_PUBLISH || strcmp(call->user_type, "result:1") != 0)
+    {
+      continue;
+    }
+    for (size_t i = 0; i < HELD; ++i)
+    {
+      if (memcmp(call->correlation_data, request_ids[i], 16) != 0)
+      {
+        continue;
+      }
+      /* Result { status = 1 (varint), payload = 2 (bytes) }; both statuses take two bytes. */
+      size_t body_len = strlen(bodies[i]);
+      uint8_t expected[32];
+      expected[0] = 0x08;
+      expected[1] = (uint8_t)((statuses[i] & 0x7F) | 0x80);
+      expected[2] = (uint8_t)(statuses[i] >> 7);
+      expected[3] = 0x12;
+      expected[4] = (uint8_t)body_len;
+      memcpy(expected + 5, bodies[i], body_len);
+      assert_int_equal(call->payload_len, 5 + body_len);
+      assert_memory_equal(call->payload, expected, 5 + body_len);
+      matched++;
+    }
+  }
+  assert_int_equal(matched, HELD);
+}
+
+static void a_held_result_whose_budget_runs_out_is_dropped_on_connected(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  invocation_record rec = { 0 };
+  fx->rec = &rec;
+
+  /* A 5 s response timeout leaves a 1 s safety margin, so a 2 s exec is admitted. */
+  uint8_t request_id[16];
+  make_request_id(request_id, 0x81);
+  uint8_t ready_id[16];
+  probe_and_accept(fx, request_id, "dump", 5, ready_id);
+
+  reconnect_to_connack(fx);
+  uint8_t exec[64];
+  size_t exec_len = build_exec(exec, ready_id, 16, NULL, 0);
+  inject_dm(fx, DEV_TOPIC, "exec:1", request_id, 16, exec, exec_len, 2);
+  assert_true(rec.fired);
+  assert_int_equal(
+      az_iot_mqttv5_direct_method_respond(&fx->dm, rec.request, 200, NULL, 0), AZ_IOT_OK);
+
+  sleep_past_one_second();
+  sleep_past_one_second();
+
+  /* CONNECTED alone, with no further method message, drops it and frees the slot. */
+  log_capture cap;
+  install_capture(&cap, AZ_IOT_LOG_LEVEL_WARN);
+  finish_birth(fx);
+  az_iot_log_set_global_sink(NULL);
+  assert_int_equal(count_phase(fx->mock, "result:1"), 0);
+  assert_non_null(strstr(cap.all, "ran out while its result was held"));
+
+  az_iot_mock_mqtt_client_clear_calls(fx->mock);
+  for (uint8_t i = 0; i < AZ_IOT_MQTTV5_DM_MAX_CONCURRENT; ++i)
+  {
+    uint8_t other[16];
+    make_request_id(other, (uint8_t)(0x90 + i));
+    uint8_t ignored[16];
+    probe_and_accept(fx, other, "dump", 300, ignored);
+  }
+  assert_int_equal(count_phase(fx->mock, "result:1"), 0);
+}
+
+static void a_rejected_probe_before_the_birth_ack_is_answered_once_connected(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_conn(fx);
+
+  uint8_t request_id[16];
+  make_request_id(request_id, 0xD4);
+  uint8_t frame[128];
+  size_t frame_len = build_probe(frame, "not-declared", 300);
+  inject_dm(fx, DEV_TOPIC, "probe:1", request_id, 16, frame, frame_len, 30);
+  assert_null(find_phase(fx->mock, "probe-ack:1"));
+
+  finish_birth(fx);
+  const az_iot_mock_call* ack = find_phase(fx->mock, "probe-ack:1");
+  assert_non_null(ack);
+  assert_memory_equal(ack->correlation_data, request_id, 16);
+  assert_int_equal(probe_ack_rejected_reason(ack), 1 /* METHOD_NOT_FOUND */);
+}
+
+static void an_abandon_before_the_birth_ack_is_sent_once_connected(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  invocation_record rec = { 0 };
+  fx->rec = &rec;
+
+  uint8_t request_id[16];
+  make_request_id(request_id, 0xD6);
+  uint8_t ready_id[16];
+  probe_and_accept(fx, request_id, "dump", 300, ready_id);
+
+  /* An exec inside the safety margin is refused, and the refusal is held. */
+  reconnect_to_connack(fx);
+  uint8_t exec[64];
+  size_t exec_len = build_exec(exec, ready_id, 16, NULL, 0);
+  inject_dm(fx, DEV_TOPIC, "exec:1", request_id, 16, exec, exec_len, 1);
+  assert_false(rec.fired);
+  assert_null(find_phase(fx->mock, "abandon:1"));
+
+  finish_birth(fx);
+  const az_iot_mock_call* abandon = find_phase(fx->mock, "abandon:1");
+  assert_non_null(abandon);
+  assert_memory_equal(abandon->correlation_data, request_id, 16);
+}
+
+static void a_notice_past_the_live_held_entries_is_dropped(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_conn(fx);
+
+  uint8_t frame[128];
+  size_t frame_len = build_probe(frame, "not-declared", 300);
+  uint8_t held[AZ_IOT_MQTTV5_DM_MAX_CONCURRENT][16];
+  for (uint8_t i = 0; i < AZ_IOT_MQTTV5_DM_MAX_CONCURRENT; ++i)
+  {
+    make_request_id(held[i], (uint8_t)(0x31 + i));
+    /* The first carries no Message Expiry: unbounded, so never reclaimed as spent. */
+    inject_dm(fx, DEV_TOPIC, "probe:1", held[i], 16, frame, frame_len, i == 0 ? 0u : 30u);
+  }
+
+  uint8_t extra[16];
+  make_request_id(extra, 0x3F);
+  log_capture cap;
+  install_capture(&cap, AZ_IOT_LOG_LEVEL_WARN);
+  inject_dm(fx, DEV_TOPIC, "probe:1", extra, 16, frame, frame_len, 30);
+  az_iot_log_set_global_sink(NULL);
+  assert_non_null(strstr(cap.all, "held-notice entries are in use"));
+
+  finish_birth(fx);
+  assert_int_equal(count_phase(fx->mock, "probe-ack:1"), AZ_IOT_MQTTV5_DM_MAX_CONCURRENT);
+  size_t seen[AZ_IOT_MQTTV5_DM_MAX_CONCURRENT] = { 0 };
+  size_t n = az_iot_mock_mqtt_client_call_count(fx->mock);
+  for (size_t c = 0; c < n; ++c)
+  {
+    const az_iot_mock_call* call = az_iot_mock_mqtt_client_call_at(fx->mock, c);
+    if (call->kind != AZ_IOT_MOCK_CALL_PUBLISH || strcmp(call->user_type, "probe-ack:1") != 0)
+    {
+      continue;
+    }
+    assert_memory_not_equal(call->correlation_data, extra, 16);
+    assert_int_equal(probe_ack_rejected_reason(call), 1 /* METHOD_NOT_FOUND */);
+    for (size_t i = 0; i < AZ_IOT_MQTTV5_DM_MAX_CONCURRENT; ++i)
+    {
+      if (memcmp(call->correlation_data, held[i], 16) == 0)
+      {
+        seen[i]++;
+      }
+    }
+  }
+  for (size_t i = 0; i < AZ_IOT_MQTTV5_DM_MAX_CONCURRENT; ++i)
+  {
+    assert_int_equal(seen[i], 1);
+  }
+}
+
+static void held_abandons_expire_with_their_exec_budget(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  invocation_record rec = { 0 };
+  fx->rec = &rec;
+
+  /* A 300 s response timeout, but each exec arrives with 1 s left and is abandoned. */
+  uint8_t request_ids[AZ_IOT_MQTTV5_DM_MAX_CONCURRENT][16];
+  uint8_t ready_ids[AZ_IOT_MQTTV5_DM_MAX_CONCURRENT][16];
+  for (uint8_t i = 0; i < AZ_IOT_MQTTV5_DM_MAX_CONCURRENT; ++i)
+  {
+    make_request_id(request_ids[i], (uint8_t)(0x51 + i));
+    probe_and_accept(fx, request_ids[i], "dump", 300, ready_ids[i]);
+  }
+  reconnect_to_connack(fx);
+  for (uint8_t i = 0; i < AZ_IOT_MQTTV5_DM_MAX_CONCURRENT; ++i)
+  {
+    uint8_t exec[64];
+    size_t exec_len = build_exec(exec, ready_ids[i], 16, NULL, 0);
+    inject_dm(fx, DEV_TOPIC, "exec:1", request_ids[i], 16, exec, exec_len, 1);
+  }
+  assert_false(rec.fired);
+  sleep_past_one_second();
+
+  /* The abandoned callers have timed out, so their entries no longer hold this one back. */
+  uint8_t request_id[16];
+  make_request_id(request_id, 0x5F);
+  uint8_t frame[128];
+  size_t frame_len = build_probe(frame, "not-declared", 300);
+  inject_dm(fx, DEV_TOPIC, "probe:1", request_id, 16, frame, frame_len, 30);
+
+  finish_birth(fx);
+  assert_int_equal(count_phase(fx->mock, "abandon:1"), 0);
+  assert_int_equal(count_phase(fx->mock, "probe-ack:1"), 1);
+  const az_iot_mock_call* ack = find_phase(fx->mock, "probe-ack:1");
+  assert_memory_equal(ack->correlation_data, request_id, 16);
+  assert_int_equal(probe_ack_rejected_reason(ack), 1 /* METHOD_NOT_FOUND */);
+}
+
+static void a_held_probe_ack_past_its_connect_budget_is_dropped(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_conn(fx);
+
+  uint8_t request_id[16];
+  make_request_id(request_id, 0xD5);
+  uint8_t frame[128];
+  size_t frame_len = build_probe(frame, "reboot", 300);
+  inject_dm(fx, DEV_TOPIC, "probe:1", request_id, 16, frame, frame_len, 1);
+
+  /* The service stops waiting for it: sending it late would promise a token
+   * the caller can no longer use. */
+  sleep_past_one_second();
+  finish_birth(fx);
+  assert_null(find_phase(fx->mock, "probe-ack:1"));
+
+  /* And the token it would have carried no longer holds capacity. */
+  for (uint8_t i = 0; i < AZ_IOT_MQTTV5_DM_MAX_CONCURRENT; ++i)
+  {
+    uint8_t other[16];
+    make_request_id(other, (uint8_t)(0xF0 + i));
+    uint8_t ignored[16];
+    probe_and_accept(fx, other, "dump", 300, ignored);
+  }
+}
+
+static void held_probe_acks_past_their_connect_budget_free_capacity(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_conn(fx);
+
+  uint8_t frame[128];
+  size_t frame_len = build_probe(frame, "reboot", 300);
+  for (uint8_t i = 0; i < AZ_IOT_MQTTV5_DM_MAX_CONCURRENT; ++i)
+  {
+    uint8_t stale[16];
+    make_request_id(stale, (uint8_t)(0xA0 + i));
+    inject_dm(fx, DEV_TOPIC, "probe:1", stale, 16, frame, frame_len, 1);
+  }
+  sleep_past_one_second();
+
+  /* The held acceptances can no longer be sent, so they must not cost this one DEVICE_BUSY. */
+  uint8_t request_id[16];
+  make_request_id(request_id, 0xAF);
+  inject_dm(fx, DEV_TOPIC, "probe:1", request_id, 16, frame, frame_len, 30);
+
+  finish_birth(fx);
+  assert_int_equal(count_phase(fx->mock, "probe-ack:1"), 1);
+  const az_iot_mock_call* ack = find_phase(fx->mock, "probe-ack:1");
+  assert_memory_equal(ack->correlation_data, request_id, 16);
+  uint8_t ready_id[16];
+  probe_ack_ready_id(ack, ready_id);
+}
+
+static void a_held_probe_ack_past_its_ready_wait_is_dropped(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_conn(fx);
+
+  /* No Message Expiry and no response timeout: only the one-second ready wait bounds it. */
+  uint8_t request_id[16];
+  make_request_id(request_id, 0xB0);
+  uint8_t frame[128];
+  size_t frame_len = build_probe(frame, "reboot", 0);
+  inject_dm(fx, DEV_TOPIC, "probe:1", request_id, 16, frame, frame_len, 0);
+  sleep_past_one_second();
+
+  /* A ready id advertised now would name a token the exec could no longer find. */
+  finish_birth(fx);
+  assert_null(find_phase(fx->mock, "probe-ack:1"));
+}
+
+static void expired_held_notices_do_not_block_new_ones(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_conn(fx);
+
+  uint8_t frame[128];
+  size_t frame_len = build_probe(frame, "not-declared", 300);
+  for (uint8_t i = 0; i < AZ_IOT_MQTTV5_DM_MAX_CONCURRENT; ++i)
+  {
+    uint8_t stale[16];
+    make_request_id(stale, (uint8_t)(0xC0 + i));
+    inject_dm(fx, DEV_TOPIC, "probe:1", stale, 16, frame, frame_len, 1);
+  }
+  sleep_past_one_second();
+
+  uint8_t request_id[16];
+  make_request_id(request_id, 0xCF);
+  inject_dm(fx, DEV_TOPIC, "probe:1", request_id, 16, frame, frame_len, 30);
+
+  finish_birth(fx);
+  assert_int_equal(count_phase(fx->mock, "probe-ack:1"), 1);
+  const az_iot_mock_call* ack = find_phase(fx->mock, "probe-ack:1");
+  assert_memory_equal(ack->correlation_data, request_id, 16);
+  assert_int_equal(probe_ack_rejected_reason(ack), 1 /* METHOD_NOT_FOUND */);
+}
+
+/* Nothing of @p dm is left on @p conn after a failed init. */
+static void assert_nothing_left_registered(
+    const az_iot_connection_client* conn,
+    const az_iot_mqttv5_direct_method_client* dm)
+{
+  assert_int_equal(conn->required_profile_refs, 0);
+  for (size_t i = 0; i < AZ_IOT_MAX_PUBACK_RESERVATIONS; ++i)
+  {
+    assert_ptr_not_equal(conn->puback_reservations[i].owner, dm);
+  }
+  for (size_t i = 0; i < AZ_IOT_MAX_FEATURE_CLIENT_BINDS; ++i)
+  {
+    assert_ptr_not_equal(conn->feature_client_binds[i].owner, dm);
+  }
+  for (size_t i = 0; i < AZ_IOT_MAX_INBOUND_HANDLERS; ++i)
+  {
+    assert_false(conn->dispatch.entries[i].in_use && conn->dispatch.entries[i].user_ctx == dm);
+  }
+  for (size_t i = 0; i < AZ_IOT_MAX_FEATURE_STATE_OBSERVERS; ++i)
+  {
+    assert_ptr_not_equal(conn->feature_state_observers[i].user_ctx, dm);
+  }
+}
+
+static void ignore_state(const az_iot_connection_state_event* event, void* user_ctx)
+{
+  (void)event;
+  (void)user_ctx;
+}
+
+/* The connection then delivers a whole invocation to a client initialized afresh. */
+static void assert_a_new_init_serves_invocations(fixture* fx, bool already_open)
+{
+  invocation_record rec = { 0 };
+  fx->rec = &rec;
+  assert_int_equal(
+      az_iot_mqttv5_direct_method_client_register_method(&fx->dm, "dump", 0, on_method, fx),
+      AZ_IOT_OK);
+  if (already_open)
+  {
+    reconnect_to_connack(fx);
+    finish_birth(fx);
+  }
+  else
+  {
+    open_to_connected(fx);
+  }
+  run_one_invocation(fx, &rec, 0x61);
+  assert_int_equal(rec.fire_count, 1);
+  assert_int_equal(
+      az_iot_mqttv5_direct_method_respond(&fx->dm, rec.request, 200, NULL, 0), AZ_IOT_OK);
+  assert_non_null(find_phase(fx->mock, "result:1"));
+}
+
+static void init_without_a_free_state_observer_fails_and_cleans_up(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_mqttv5_direct_method_client_deinit(&fx->dm);
+
+  static int owners[AZ_IOT_MAX_FEATURE_STATE_OBSERVERS];
+  size_t taken = 0;
+  while (taken < AZ_IOT_MAX_FEATURE_STATE_OBSERVERS
+         && az_iot_connection_client__add_state_observer(&fx->conn, ignore_state, &owners[taken])
+             == AZ_IOT_OK)
+  {
+    taken++;
+  }
+  assert_true(taken > 0);
+
+  assert_int_equal(
+      az_iot_mqttv5_direct_method_client_init(&fx->dm, &fx->conn), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+  assert_nothing_left_registered(&fx->conn, &fx->dm);
+
+  assert_int_equal(
+      az_iot_connection_client__remove_state_observer(&fx->conn, ignore_state, &owners[0]),
+      AZ_IOT_OK);
+  assert_int_equal(az_iot_mqttv5_direct_method_client_init(&fx->dm, &fx->conn), AZ_IOT_OK);
+  assert_a_new_init_serves_invocations(fx, false);
+
+  for (size_t i = 1; i < taken; ++i)
+  {
+    (void)az_iot_connection_client__remove_state_observer(&fx->conn, ignore_state, &owners[i]);
+  }
+}
+
+typedef struct init_from_callback
+{
+  fixture* fx;
+  bool tried;
+  az_iot_result result;
+} init_from_callback;
+
+static void init_on_state(const az_iot_connection_state_event* event, void* user_ctx)
+{
+  (void)event;
+  init_from_callback* c = (init_from_callback*)user_ctx;
+  if (!c->tried)
+  {
+    c->tried = true;
+    c->result = az_iot_mqttv5_direct_method_client_init(&c->fx->dm, &c->fx->conn);
+  }
+}
+
+static void init_from_a_state_callback_is_busy_and_cleans_up(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_mqttv5_direct_method_client_deinit(&fx->dm);
+
+  init_from_callback c = { fx, false, AZ_IOT_OK };
+  assert_int_equal(
+      az_iot_connection_client_add_state_observer(&fx->conn, init_on_state, &c), AZ_IOT_OK);
+  open_conn(fx);
+  assert_true(c.tried);
+  assert_int_equal(c.result, AZ_IOT_ERR_BUSY);
+  assert_nothing_left_registered(&fx->conn, &fx->dm);
+  assert_int_equal(
+      az_iot_connection_client_remove_state_observer(&fx->conn, init_on_state, &c), AZ_IOT_OK);
+
+  assert_int_equal(az_iot_mqttv5_direct_method_client_init(&fx->dm, &fx->conn), AZ_IOT_OK);
+  assert_a_new_init_serves_invocations(fx, true);
 }
 
 static void respond_names_the_argument_it_was_given_wrong(void** state)
@@ -2387,7 +3193,45 @@ int main(void)
     cmocka_unit_test_setup_teardown(a_broker_rejected_result_is_reported, setup, teardown),
     cmocka_unit_test_setup_teardown(
         an_accepted_result_is_not_reported_as_rejected, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_full_shared_pool_leaves_results_tracked, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_result_is_sent_untracked_when_its_reservation_is_used_up, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        init_reserves_pending_ack_slots_and_deinit_returns_them, setup, teardown),
+    cmocka_unit_test_setup_teardown(init_without_room_for_its_reservation_fails, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        init_while_shared_publishes_occupy_its_slots_is_busy, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        an_adapter_busy_is_not_mistaken_for_a_full_ack_table, setup, teardown),
     cmocka_unit_test_setup_teardown(a_result_that_cannot_be_published_says_why, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_probe_before_the_birth_ack_is_answered_once_connected, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_probe_after_the_birth_before_its_ack_is_answered_once_connected, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        an_exec_before_the_birth_ack_has_its_result_sent_once_connected, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        several_held_results_are_each_sent_once_with_their_own_bytes, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_held_result_whose_budget_runs_out_is_dropped_on_connected, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_rejected_probe_before_the_birth_ack_is_answered_once_connected, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        an_abandon_before_the_birth_ack_is_sent_once_connected, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_notice_past_the_live_held_entries_is_dropped, setup, teardown),
+    cmocka_unit_test_setup_teardown(held_abandons_expire_with_their_exec_budget, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_held_probe_ack_past_its_connect_budget_is_dropped, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        held_probe_acks_past_their_connect_budget_free_capacity, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_held_probe_ack_past_its_ready_wait_is_dropped, setup, teardown),
+    cmocka_unit_test_setup_teardown(expired_held_notices_do_not_block_new_ones, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        init_without_a_free_state_observer_fails_and_cleans_up, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        init_from_a_state_callback_is_busy_and_cleans_up, setup, teardown),
     cmocka_unit_test_setup_teardown(respond_names_the_argument_it_was_given_wrong, setup, teardown),
     cmocka_unit_test_setup_teardown(
         respond_after_the_response_timeout_sends_nothing, setup, teardown),

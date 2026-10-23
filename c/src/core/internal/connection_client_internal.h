@@ -25,25 +25,37 @@ extern "C"
       az_iot_connection_client* client,
       az_iot_mqtt_role role);
 
-  /* Override opts.host with a heap-owned copy of `host`. Used by the DPS handoff
-   * helper to redirect a freshly-created (and still-IDLE) connection client at
-   * the assigned hub. The client owns the duplicate; it is freed in deinit().
-   * Rejects the call when state != IDLE so live sessions can never have their
-   * target rewritten under them. */
-  az_iot_result az_iot_connection_client__set_host(
+  /** @brief Copies @p iothub_hostname into the client's fixed buffer and points
+   * opts.iothub_hostname at it (no heap).
+   * @return AZ_IOT_ERR_ALREADY_INITIALIZED unless fully IDLE;
+   * AZ_IOT_ERR_INVALID_ARG for a NULL client or a NULL/empty name;
+   * AZ_IOT_ERR_NOT_ENOUGH_SPACE if it does not fit. */
+  az_iot_result az_iot_connection_client__set_iothub_hostname(
       az_iot_connection_client* client,
-      const char* host);
+      const char* iothub_hostname);
 
-  /* Override opts.client_id with a heap-owned copy of `client_id`. Same
-   * IDLE-only constraint as __set_host. */
-  az_iot_result az_iot_connection_client__set_client_id(
+  /** @brief As az_iot_connection_client__set_iothub_hostname(), for
+   * opts.device_id. */
+  az_iot_result az_iot_connection_client__set_device_id(
       az_iot_connection_client* client,
-      const char* client_id);
+      const char* device_id);
 
   /* Seed the jitter PRNG used by the reconnect logic. Tests use this to make
    * backoff timing deterministic. Production builds seed automatically from a
    * monotonic clock during create(). */
   void az_iot_connection_client__seed_rng(az_iot_connection_client* client, uint64_t seed);
+
+  /**
+   * @brief Usable SAS token area of a @p buffer_size sas_buffer holding
+   * @p key_count keys: the bytes after scratch and key slots, capped at
+   * INT32_MAX (az_span sizes are int32_t).
+   *
+   * @param[in] buffer_size Bytes in sas_buffer; at least
+   *                        AZ_IOT_SAS_BUFFER_SIZE(key_count, 0).
+   * @param[in] key_count   Distinct keys.
+   * @return Token area bytes.
+   */
+  size_t az_iot_connection_client__sas_token_area(size_t buffer_size, size_t key_count);
 
   /* Test seam: force any in-flight MQTTv5 presence (birth) handshake to time
    * out on the next do_work(). No-op when no handshake is active. Lets unit tests
@@ -79,6 +91,13 @@ extern "C"
    * from a defunct one. Returns AZ_IOT_ERR_NOT_CONNECTED when no presence
    * handshake has completed on this connection (MQTTv3/DPS sessions included). */
   az_iot_result az_iot_connection_client__presence_nonce(
+      const az_iot_connection_client* client,
+      uint8_t out[AZ_IOT_CORRELATION_UUID_LEN]);
+
+  /* As az_iot_connection_client__presence_nonce(), but available once the birth is
+   * sent: the service may send dev-bound messages before the birth-ack. Not available
+   * once close() is requested. */
+  az_iot_result az_iot_connection_client__birth_nonce(
       const az_iot_connection_client* client,
       uint8_t out[AZ_IOT_CORRELATION_UUID_LEN]);
 
@@ -151,9 +170,9 @@ extern "C"
       az_iot_connection_state_callback cb,
       void* user_ctx);
 
-  /* Returns the configured device id (== options.client_id). NULL only when the
-   * client was created with a NULL client_id (rejected at create time, so this
-   * is effectively never NULL for a live client). */
+  /** @brief Current opts.device_id: the caller's, or the adopted DPS one.
+   * @return NULL when none is set (a DPS client before an assignment is
+   * adopted, or a direct client whose open() will reject it). */
   const char* az_iot_connection_client__device_id(const az_iot_connection_client* client);
 
   /* --- Provisioning-session seam ------------------------------------------- */
@@ -281,17 +300,74 @@ extern "C"
       az_iot_dps_message_observer observer,
       void* user_ctx);
 
-  /* Publish through the active adapter. Returns ERR_NOT_CONNECTED when not in
-   * CONNECTED state. For QoS 1, callers may pass a non-NULL ack_cb; it is
-   * invoked synchronously from inside do_work() when the matching PUBLISH_ACK
-   * arrives. For QoS 0, ack_cb (if any) is invoked synchronously here with
-   * AZ_IOT_OK because QoS 0 has no on-the-wire ack. */
-
+  /**
+   * @brief Publish through the active adapter.
+   *
+   * @param owner Feature client publishing. A tracked publish takes a slot from its
+   *              reservation, or from the shared pool if it holds none. May be NULL.
+   * @param ack_cb QoS 1: called from do_work() with the PUBLISH_ACK result; without one, a
+   *               failed PUBLISH_ACK is only logged. QoS 0: called here with AZ_IOT_OK.
+   *
+   * @retval AZ_IOT_ERR_NOT_CONNECTED Not in CONNECTED state.
+   * @retval AZ_IOT_ERR_BUSY QoS 1 with @p ack_cb and every slot of the pool it draws from is in
+   *         use. Nothing was sent.
+   * @return Otherwise the adapter's result.
+   */
   az_iot_result az_iot_connection_client__publish(
       az_iot_connection_client* client,
+      const void* owner,
       const az_iot_mqtt_message* msg,
       az_iot_publish_ack_callback ack_cb,
       void* ack_user_ctx);
+
+  /**
+   * @brief As az_iot_connection_client__publish(), completing through @p result_cb with the
+   * PUBACK's reason code and Reason String.
+   */
+  az_iot_result az_iot_connection_client__publish_with_result(
+      az_iot_connection_client* client,
+      const void* owner,
+      const az_iot_mqtt_message* msg,
+      az_iot_publish_result_callback result_cb,
+      void* user_ctx);
+
+  /**
+   * @brief Set aside @p count pending-PUBACK slots for @p owner's tracked publishes.
+   *
+   * Replaces @p owner's previous reservation; 0 withdraws it. Succeeds only if every pool can
+   * hold its publishes already in flight, so a granted reservation is usable at once.
+   *
+   * @retval AZ_IOT_OK Reserved.
+   * @retval AZ_IOT_ERR_INVALID_ARG @p client or @p owner is NULL.
+   * @retval AZ_IOT_ERR_NOT_ENOUGH_SPACE All reservations would exceed AZ_IOT_MAX_PENDING_PUBACKS,
+   *         or AZ_IOT_MAX_PUBACK_RESERVATIONS owners already hold one. Nothing changes.
+   * @retval AZ_IOT_ERR_BUSY Publishes in flight occupy the slots it needs; retry once they are
+   *         acknowledged. Nothing changes.
+   */
+  az_iot_result az_iot_connection_client__reserve_pubacks(
+      az_iot_connection_client* client,
+      const void* owner,
+      size_t count);
+
+  /**
+   * @brief Withdraw @p owner's reservation. Its publishes still in flight move to the shared pool.
+   */
+  void az_iot_connection_client__release_pubacks(
+      az_iot_connection_client* client,
+      const void* owner);
+
+  /**
+   * @brief Whether a tracked QoS 1 publish by @p owner would get a pending-PUBACK slot now.
+   *
+   * Lets a caller that can live without the ack choose to publish untracked, without
+   * mistaking an adapter's AZ_IOT_ERR_BUSY for a full pool.
+   *
+   * @param owner As for az_iot_connection_client__publish().
+   * @return true if a slot is free; false if not, or if @p client is NULL.
+   */
+  bool az_iot_connection_client__can_track_publish(
+      const az_iot_connection_client* client,
+      const void* owner);
 
   /* Subscribe through the active adapter. Returns ERR_NOT_CONNECTED when not in
    * CONNECTED state. Out-arg packet_id is populated on success. */

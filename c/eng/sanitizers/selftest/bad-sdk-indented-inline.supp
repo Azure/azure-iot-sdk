@@ -1,0 +1,6 @@
+# indented static inline definition (src/core/internal/connection_client_internal.h)
+{
+   indented
+   drd:ConflictingAccess
+   fun:az_iot_mqtt_required_version_for_role
+}

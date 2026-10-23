@@ -15,6 +15,7 @@ internal class Program
 {
     public static string DpsConnectionString = ""; // The connection string of your DPS
     public static string DpsIdScope = ""; // The Id scope of your DPS
+    public static string IotHubHostName = ""; // The host name of the IoT hub linked to your DPS
 
     // Run this to register a test device on your IoT hub using the v1 IoT hub service client. It also locally saves the device credentials such that the other project
     // can be run using those credentials
@@ -22,8 +23,10 @@ internal class Program
     {
         ArgumentException.ThrowIfNullOrEmpty(DpsConnectionString);
         ArgumentException.ThrowIfNullOrEmpty(DpsIdScope);
+        ArgumentException.ThrowIfNullOrEmpty(IotHubHostName);
 
         await RegisterSampleDeviceAndSaveCredentialsAsync();
+        await RegisterSymmetricKeySampleDeviceAndSaveCredentialsAsync();
     }
 
     public static async Task RegisterSampleDeviceAndSaveCredentialsAsync(CancellationToken cancellationToken = default)
@@ -45,8 +48,30 @@ internal class Program
 
         SampleConstants.SaveDeviceId(deviceId);
         SampleConstants.SaveIdScope(DpsIdScope);
+        SampleConstants.SaveIotHubHostName(IotHubHostName);
 
         Console.WriteLine($"Device with Id {deviceId} has been registered with DPS. That device's credentials saved in root of the samples directory");
+    }
+
+    // Registers a second sample device that authenticates with a symmetric key instead of an X.509 certificate. DPS needs a
+    // separate enrollment for it because each individual enrollment has exactly one attestation mechanism.
+    public static async Task RegisterSymmetricKeySampleDeviceAndSaveCredentialsAsync(CancellationToken cancellationToken = default)
+    {
+        using ProvisioningServiceClient provisioningServiceClient = ProvisioningServiceClient.CreateFromConnectionString(DpsConnectionString);
+
+        string registrationId = Guid.NewGuid().ToString();
+        byte[] symmetricKey = RandomNumberGenerator.GetBytes(32);
+
+        // DPS takes the key Base64-encoded, while the device SDK takes the raw key bytes
+        string encodedSymmetricKey = Convert.ToBase64String(symmetricKey);
+        Attestation attestation = new SymmetricKeyAttestation(encodedSymmetricKey, encodedSymmetricKey);
+        IndividualEnrollment individualEnrollment = new(registrationId, attestation);
+        await provisioningServiceClient.CreateOrUpdateIndividualEnrollmentAsync(individualEnrollment, cancellationToken);
+
+        SampleConstants.SaveSymmetricKeyRegistrationId(registrationId);
+        SampleConstants.SaveSymmetricKey(symmetricKey);
+
+        Console.WriteLine($"Device with registration Id {registrationId} has been registered with DPS using a symmetric key. That device's credentials saved in root of the samples directory");
     }
 
     public static void CreateTestCertificates(string deviceId)

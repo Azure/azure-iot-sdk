@@ -43,21 +43,23 @@ The `su_client` is a **feature client** in the azure-iot-sdk SDK that implements
 The device checks for updates and reports results through **DPS**, reusing its DPS credential
 (X.509) and session. DPS passes each request through to the update service and returns its answer;
 it keeps no per-device state. The device never talks to the update service directly, and there is
-no subscription and no unsolicited offer: the agent polls.
+no subscription and no unsolicited offer: the device asks. The SDK has no polling cadence; the
+application decides when to check (§11).
 
 API version: `2026-11-02-preview`. Public REST definition:
-[Azure/azure-rest-api-specs#44617](https://github.com/Azure/azure-rest-api-specs/pull/44617).
+[device.json](https://github.com/Azure/azure-rest-api-specs/blob/main/specification/deviceprovisioningservices/data-plane/DeviceProvisioningServices/preview/2026-11-02-preview/device.json).
 
 ### Operations
 
-| Operation | When |
-| --- | --- |
-| `requestOnboardingUpdates` | **Before** registration: a day-zero device that has no device record yet. |
-| `requestSoftwareUpdates` | **After** registration (operational). |
-| `reportUpdateStatus` | After an install attempt, on either route. Required. |
+| Operation | DPS `{operation}` (MQTT topic) | When |
+| --- | --- | --- |
+| `requestOnboardingUpdates` | `iotdps-get-onboarding-deviceupdate` | **Before** registration: a day-zero device that has no device record yet. |
+| `requestSoftwareUpdates` | `iotdps-get-deviceupdate` | **After** registration (operational). |
+| `reportUpdateStatus` | `iotdps-report-deviceupdatestatus` | After an install attempt, on either route. Required. |
 
-The device selects the route by which operation it calls. The SDK sends them over the device's DPS
-MQTT session:
+The first column is the service operation name used in this document; the second is what the SDK
+puts on the wire. The device selects the route by which operation it calls. The SDK sends them over
+the device's DPS MQTT session:
 
 ```
 PUBLISH   $dps/registrations/POST/{operation}/?$rid={request_id}
@@ -74,27 +76,33 @@ sequenceDiagram
     participant Dev as Device (SDK)
     participant DPS as DPS
     participant SVC as Update service
-    loop until "no update"
-      Dev->>DPS: requestOnboardingUpdates (agentInfo, installedUpdateId)
-      DPS->>SVC: pass-through
-      SVC-->>DPS: serviceConfiguration [+ updateMetadata]
-      DPS-->>Dev: 200 (no updateMetadata = no update)
-      alt update available
-        Dev->>Dev: verify signature, download fileUrls, install
-        Dev->>DPS: reportUpdateStatus (workflowId, result)
-        DPS-->>Dev: 200
-      end
-    end
+    Note over Dev,DPS: registration held
+    Dev->>DPS: requestOnboardingUpdates (agentInfo, installedUpdateId)
+    DPS->>SVC: pass-through
+    SVC-->>DPS: serviceConfiguration [+ updateMetadata]
+    DPS-->>Dev: 200 (no updateMetadata = no update)
+    Note over Dev,DPS: hold released on this verdict
     Dev->>DPS: Register (unchanged)
     DPS-->>Dev: IoT Hub assignment
+    opt update was offered
+      Dev->>Dev: verify signature, download fileUrls, install
+      Dev->>DPS: reportUpdateStatus (workflowId, result)
+      DPS-->>Dev: 200
+    end
 ```
 
-- The check is **advisory**: if it fails, the device registers anyway.
-- The agent re-checks after each successful install, so updates can chain before registration.
+- The check must not block provisioning. A verdict that will not be repeated (success, or a
+  fatal or proceed error) releases registration at once. A retryable failure (e.g. 503) keeps
+  registration held until the check is answered or `dps_hold_timeout_ms` (default
+  `AZ_IOT_DPS_HOLD_TIMEOUT_MS`, 60 s) expires; then the device registers anyway.
+- Registration is held for the check, not for an install: an offered update is installed and
+  reported alongside registration. Follow-up checks the application requests (e.g. to chain
+  onboarding updates) do not hold registration.
 - Onboarding progress is recorded on the onboarding update job, not on a device record, since the
   device has none yet.
 
-The operational route polls `requestSoftwareUpdates` with the same shapes.
+The operational route uses `requestSoftwareUpdates` with the same shapes, when the application
+asks.
 
 ### Request (both fetches)
 
@@ -102,14 +110,20 @@ The operational route polls `requestSoftwareUpdates` with the same shapes.
   opaque capability id; `compatibilityProperties` is 1–5 key/value pairs. The service combines
   them into the device class. Required unless a still-current `agentInfoEtag` is sent; onboarding
   always requires it.
-- `installedUpdateId`: `{ provider, name, version }` of the installed update, or `null`.
+- `installedUpdateId`: `{ provider, name, version }` of the installed update, or `null`/absent
+  when nothing is installed. Sent on both routes: an unprovisioned device may already hold an
+  update (applied before registration completed, or preinstalled), and the service uses it to
+  withhold an offer for what is installed. The SDK omits the key when nothing is installed.
 - `agentInfoEtag`, `serviceConfigEtag`: optional; let the service skip unchanged data.
 
 ### Response
 
 - `serviceConfiguration.rootKeyDownloadUrl`: the root-key package for signature verification.
-  Omitted when the sent `serviceConfigEtag` is still current.
-- `serviceConfigEtag`, `agentInfoEtag`: always present.
+  Omitted only when the sent `serviceConfigEtag` matches; a missing or stale ETag gets the current
+  configuration in the 200 response, not an error.
+- `serviceConfigEtag`, `agentInfoEtag`: always present per the contract; the SDK tolerates their
+  absence. The SDK persists them only inside a persisted record (workflow, terminal or retry; §4
+  Persistence), so after a restart with no record the next check carries no ETags and gets a full response.
 - `updateMetadata`: `{ workflowId, updateManifest, updateManifestSignature, fileUrls }`, present
   only when an update applies. **Omitted means "no update"** (HTTP 200, not an error).
 
@@ -118,14 +132,45 @@ The operational route polls `requestSoftwareUpdates` with the same shapes.
 `{ workflowId, installedUpdateId, installResult }`, where `installResult` is
 `{ outcome, failureOrigin, resultCode, extendedResultCodes, resultDetails, stepResults }`:
 
-- `outcome`: `IN_PROGRESS`, `SUCCEEDED`, `FAILED`, `CANCELED` or `SKIPPED`.
+- `outcome`: `IN_PROGRESS`, `SUCCEEDED`, `FAILED` or `SKIPPED`. `CANCELED` is set by the service
+  only.
 - `extendedResultCodes`: comma-separated hex.
 - `stepResults`: `{ step_0, step_1, … }`, each with `outcome`, `failureOrigin`, `resultCode`,
   `extendedResultCodes` and optional `resultDetails`. Omitted from in-progress reports; complete in
   terminal reports when the manifest has steps.
 
 Reporting is **idempotent on `workflowId`**. A different terminal outcome for the same workflow is
-rejected with `409 REPORT_CONFLICT`.
+rejected with `409 REPORT_CONFLICT`; an accepted duplicate is **200 with no body**, not 409.
+`SUCCEEDED` and `SKIPPED` are absorbing; `FAILED` and `CANCELED` are not: `IN_PROGRESS` after
+`FAILED` for the same `workflowId` is a retry (see below), not a conflict.
+A conflict (`REPORT_CONFLICT`, or an untyped `409000` on a report) stops replay and raises
+`AZ_IOT_SU_EVENT_OPERATION_ABANDONED` with the service diagnosis. The client then checks for
+updates once, as the service asks: on the route the application last requested (regular if
+none), with `AZ_IOT_SU_REQUEST_DEFAULT_TIMEOUT_MS`, unless a check is already queued or in
+flight. Its answer arrives as for any check. This is the only check the SDK starts itself; it
+does not change the application's polling cadence.
+
+### Failed-workflow retries
+
+While a deployment still applies and its update is not installed, the service re-offers a workflow
+whose outcome is not `SUCCEEDED` or `SKIPPED`, with the same `workflowId` and `updateMetadata`, on
+both fetches and without limit. The response carries no retry time. The device MUST retry a
+`FAILED` workflow (apply again, report under the same id), MUST NOT give up because an earlier
+attempt failed, and MUST wait between attempts at the same id: at least 1 h after the first
+failure, at least doubling per consecutive failure, capped at 24 h. It MUST NOT apply an early
+re-offer, SHOULD add jitter and SHOULD keep the wait across restarts.
+
+Only `FAILED` is retried; the client never reports `CANCELED`. After the n-th consecutive failure it waits
+min(1 h × 2ⁿ⁻¹, 24 h) plus a uniform jitter of up to 10% of that (1 h, 2 h, 4 h, 8 h, 16 h, 24 h,
+24 h, …); there is no attempt limit. A re-offer before the wait elapses is not started and raises
+`AZ_IOT_SU_EVENT_UPDATE_RETRY_WAIT` with `retry_after_ms`. A due re-offer starts a new attempt from
+ManifestReceived under the same id, unless the previous attempt's terminal report is not yet
+settled: then it raises `AZ_IOT_SU_EVENT_UPDATE_DEFERRED` (`AZ_IOT_ERR_BUSY`). Success or skip, or
+another `workflowId`, resets the count; fetches, "no update" answers and report acknowledgements do
+not. The wait runs on the monotonic clock; it is also stored with a Unix deadline (from the
+connection client's `unix_time` source) in the persisted record, so it survives a restart (see
+§4 Persistence). It is an `az_iot_retry_policy` with `AZ_IOT_RETRY_JITTER_ADDITIVE`, kept in an
+`az_iot_retry_state`, separate from the transient fetch/report backoff below.
 
 ### Trust
 
@@ -138,20 +183,42 @@ rejected with `409 REPORT_CONFLICT`.
 
 ### Errors
 
-Act on the machine-readable `error.code`, never on the HTTP status.
+Act on the machine-readable code, never on the HTTP status. The SDK reads `info.aduErrorCode`,
+else `message`, and the numeric `errorCode`; it does not read a nested `error.code`.
+Exception: a failure whose body carries no code (empty or unparseable) is classified by its
+status alone -- 429 throttled,
+500/502/503/504 retryable, anything else fatal -- and the missing code is reported as 0.
 
 | Case | Code / status | Device action |
 | --- | --- | --- |
 | No update | 200, `updateMetadata` omitted | Nothing to apply. Not an error. |
-| Update service not linked | 409 `UPDATE_ACCOUNT_NOT_LINKED` | Treat as "no update service configured". Do not retry. |
+| Update service not linked, or linked without access to the device's namespace | 409 `UPDATE_ACCOUNT_NOT_LINKED` / `UPDATE_ACCOUNT_ACCESS_DENIED` | Stop retrying and expose abandonment for operator action; do not block provisioning. |
+| Device not fully provisioned (regular fetch only) | 409 `DEVICE_NOT_PROVISIONED` | Stop retrying and expose abandonment; a later scheduled check succeeds once the device is provisioned. |
+| Device-class limit reached | 400 `MAX_DEVICE_CLASSES_EXCEEDED` | Stop retrying and expose abandonment for operator action. |
+| Conflicting report | 409 `REPORT_CONFLICT` | Stop replay; report abandonment, not delivery. The client checks for updates once. |
+| Unknown workflow | 400 `UNKNOWN_WORKFLOW_ID` | Stop reporting the same workflow; report abandonment. |
 | Agent info stale or unknown | 400 `OUTDATED_AGENT_INFO` / `UNKNOWN_AGENT_INFO_VERSION` | Resend the full `agentInfo` and retry. |
-| Service configuration stale | 400 `OUTDATED_SERVICE_CONFIG` | Retry without `serviceConfigEtag`. |
 | Throttled | 429 + `Retry-After` | Wait, then retry. |
-| Transient upstream failure | 503 `UPSTREAM_UNAVAILABLE` / `INTERNAL_SERVER_ERROR` | Fetch: proceed (advisory) and retry later. Report: retry; it must not be lost. |
-| Bad request, auth, disabled | 400 / 401 / 403 | Fix the request or credentials; do not retry unchanged. |
+| Transient upstream failure | 503 `UPSTREAM_UNAVAILABLE` / 500 `INTERNAL_SERVER_ERROR` | Honor a valid delay, otherwise use backoff; keep the fetch deadline and owed report. |
+| Bad request, auth, disabled | 400 / 401 / 403 `FORBIDDEN` | Fix the request or credentials; do not retry unchanged. |
 
-**The device is the only retrier**: DPS makes one attempt per hop. Reports are durable writes,
-retried until acknowledged.
+**The device is the only retrier**: DPS makes one attempt per hop. A retryable failure with no
+`Retry-After` is retried after a jittered exponential backoff (1 s doubling to 60 s, ±20%), reset by
+any accepted operation; it counts against the request timeout. A report is retried until the
+service accepts it or rejects it permanently; a rejected report is dropped. A lost DPS
+session is retried up to `AZ_IOT_SU_CHANNEL_MAX_SESSION_RETRIES` (4) times; the next consecutive
+loss abandons the report for this process (`AZ_IOT_SU_EVENT_OPERATION_ABANDONED`). A terminal
+report stays owed (and stored, with persistence) and is re-sent on the next
+`az_iot_su_client_update_device_properties()` call, or after a restart and
+`az_iot_su_client_resume()`. An in-progress report is not replayed; the next reporting point sends
+the then-current state.
+
+At the DPS MQTT boundary, the body is flat (`errorCode`, `message`, optional
+`info.aduErrorCode`, `trackingId`), not the service's nested HTTP error envelope.
+A recognized string wins over numeric/status fallback. An **untyped** shared numeric `409000`
+is `PROCEED` on a fetch (it must not block provisioning) and a conflict on a report (stop
+replay, then check for updates once): an identical report is a 200, so a 409 never means the
+report was recorded. See the [local error coverage matrix](test-coverage.md#device-update-error-response-catalog).
 
 ---
 
@@ -164,10 +231,11 @@ the platform hooks.
 flowchart TB
     MAIN2["main / do_work loop"] --> CORE["engine<br/>state machine · verify · persistence"]
     CORE --> CH["az_iot_su_channel (vtable)"]
-    CH --> V2["Software updates channel<br/>Get(Onboarding)DeviceUpdate · ReportDeviceUpdateStatus<br/>over the device's DPS connection"]
+    CH --> V2["Software updates channel<br/>iotdps-get-onboarding-deviceupdate · iotdps-get-deviceupdate ·<br/>iotdps-report-deviceupdatestatus<br/>over the device's DPS connection"]
     CH --> FAKE["test fake channel"]
     CORE --> AZ["azure-sdk-for-c<br/>manifest parse/format"]
-    CORE --> HK["platform + crypto hooks"]
+    CORE --> HK["platform hooks"]
+    CORE --> CR["crypto backend<br/>(connection client)"]
 ```
 
 ---
@@ -207,9 +275,10 @@ stateDiagram-v2
 
     RestoreStarted --> Idle : restore complete (reports failure)
     Failed --> Idle : error reported to cloud
+    Idle --> ManifestReceived : same workflowId after FAILED, retry wait elapsed
 
-    DownloadStarted --> ManifestReceived : new workflowId (replacement)
-    InstallStarted --> ManifestReceived : new workflowId (replacement)
+    DownloadStarted --> ManifestReceived : new workflowId (replacement, before the first install_fn call)
+    InstallStarted --> ManifestReceived : new workflowId (replacement, before the first install_fn call)
 ```
 
 ### Already-Installed Check
@@ -230,7 +299,7 @@ payload MUST NOT be installed before both stages pass.
 `VerifyingManifest`, the client MUST verify the update manifest's JWS signature
 chain *before* it trusts any field in the manifest — including the file hashes.
 Core parses the JWS and SJWK, resolves the root key by `kid`, and calls the
-`verify_rs256_fn` crypto primitive for each of the two signature checks (see §6).
+`verify_rs256` crypto primitive for each of the two signature checks (see §6).
 If verification fails (bad signature, unknown/revoked/`disabled` key, or `alg`
 ≠ `RS256`), the client MUST transition directly to `Failed` with source =
 manifest verification (see result-code mapping below) and MUST NOT download
@@ -240,9 +309,8 @@ anything.
 MUST be hash-verified against the `hashes[]` entry from the (now-trusted)
 manifest before the file is eligible for Install:
 
-1. The platform `download_fn` streams bytes and MUST feed them through the
-   incremental crypto hooks (`sha256_init_fn` → `sha256_update_fn` →
-   `sha256_final_fn`), or hash the completed file via `sha256_fn`.
+1. After `download_fn`, core streams the file back through `read_file_fn` and
+   the backend's SHA-256 (`sha256_init` → `sha256_update` → `sha256_final`).
 2. The client MUST compare the computed SHA-256 against the manifest's
    `hash_value` (base64) for that file. The comparison MUST be constant-time.
 3. On mismatch, the client MUST treat the file as a download failure: it MUST
@@ -260,8 +328,8 @@ security.
 ### Device Properties on the Wire
 
 Device properties reach the service on **every update check**: manufacturer, model and custom
-properties as `agentInfo.compatibilityProperties`, and `installedUpdateId` on the regular route
-(the onboarding route omits it). There is no unsolicited report: status reports are keyed on
+properties as `agentInfo.compatibilityProperties`, and `installedUpdateId` on both routes when
+set (omitted when nothing is installed). There is no unsolicited report: status reports are keyed on
 `workflowId`, so a device with no workflow has nothing to report.
 
 #### Device-Properties Model
@@ -297,8 +365,22 @@ superseded. The client MUST distinguish:
 
 | Condition | Meaning | Behavior |
 |-----------|---------|----------|
-| New `workflowId` | **Replacement** | MUST restart from ManifestReceived with the new deployment |
-| Same `workflowId`, whatever the manifest bytes | **Duplicate** | MUST ignore |
+| New `workflowId`, before the first `install_fn` call, or once the workflow ended (Idle / Failed) | **Replacement** | MUST restart from ManifestReceived with the new deployment |
+| New `workflowId`, from the first `install_fn` call until the workflow ends, or after a last apply that returned `REBOOT_REQUIRED` until re-initialization (the reboot) | **Deferred** | MUST NOT process; the current workflow runs to its end; raises `AZ_IOT_SU_EVENT_UPDATE_DEFERRED` (`AZ_IOT_ERR_BUSY`) on each delivery. The application requests an update again later |
+| Same `workflowId` (whatever the manifest bytes) while it runs, or after it `SUCCEEDED` or was `SKIPPED` | **Duplicate** | MUST ignore; raises `AZ_IOT_SU_EVENT_UPDATE_DUPLICATE` on each delivery |
+| Same `workflowId` after it `FAILED`, before its retry wait elapses | **Retry wait** | MUST NOT process; raises `AZ_IOT_SU_EVENT_UPDATE_RETRY_WAIT` (`retry_after_ms`) on each delivery |
+| Same `workflowId` after it `FAILED`, wait elapsed | **Retry** | MUST restart from ManifestReceived under the same id, keeping the failure count; deferred (`AZ_IOT_SU_EVENT_UPDATE_DEFERRED`, `AZ_IOT_ERR_BUSY`) while the previous attempt's terminal report is not settled |
+| `workflowId` longer than `AZ_IOT_SU_WORKFLOW_ID_SIZE` | **Refused** | MUST NOT process; raises `AZ_IOT_SU_EVENT_UPDATE_REFUSED` (`AZ_IOT_ERR_NOT_ENOUGH_SPACE`). Not truncated: reports correlate on the exact id |
+| Payload that cannot be decoded (not JSON, required field missing or mistyped, invalid escape) | **Refused** | MUST NOT process; raises `AZ_IOT_SU_EVENT_UPDATE_REFUSED` (`AZ_IOT_ERR_PROTOCOL`) |
+
+A deployment is validated as a whole, so from its first `install_fn` call it is
+not interleaved with another: a partly applied or not yet activated deployment
+is neither dropped (no `restore_fn`, no report) nor mixed with a newer one.
+`az_iot_su_client_config_options::replacement_policy` selects this:
+`AZ_IOT_SU_REPLACEMENT_DEFER` (default) as above. `AZ_IOT_SU_REPLACEMENT_ROLLBACK`
+(roll back with `restore_fn`, report FAILED with facility `0x9`, then start the
+new workflow) is declared but not yet supported: `az_iot_su_client_init()`
+returns `AZ_IOT_ERR_NOT_SUPPORTED`.
 
 ### Result-Code Mapping
 
@@ -308,14 +390,13 @@ The state mapping above tells the service *what phase* the agent is in; the
 `result_code` (high-level) and `extended_result_code` (diagnostic). The client
 MUST populate them as follows.
 
-**`result_code`.** Follows software updates agent convention: the success value reported by
-the agent is **`700`** (the value used throughout azure-sdk-for-c examples). The
-client MUST report:
+**`result_code`.** The service contract reads a positive value as success and a
+non-positive one as failure; the value is diagnostic only. The client MUST report:
 
 | Outcome | `result_code` |
 |---|---|
 | Step/overall success | `700` |
-| Any failure | A non-success software updates code (`< 700`) indicating the failing phase |
+| Any failure | `-facility` (see below), e.g. `-5` for an Install failure |
 
 **`extended_result_code`.** A 32-bit diagnostic value the client MUST compose so
 the failing layer and raw cause are recoverable from the cloud report. The SDK
@@ -328,7 +409,7 @@ defines a structured layout:
 
 | Facility (bits 31..28) | Meaning | Set when |
 |---|---|---|
-| `0x1` | Manifest / JWS verification | `verify_rs256_fn` failed, `kid` unresolved/`disabled`, or `alg` ≠ `RS256` |
+| `0x1` | Manifest / JWS verification | `verify_rs256` failed, `kid` unresolved/`disabled`, or `alg` ≠ `RS256` |
 | `0x2` | Download (transport) | `download_fn` returned `AZ_IOT_SU_RESULT_FAILURE` |
 | `0x3` | Hash mismatch | computed SHA-256 ≠ manifest hash |
 | `0x4` | Backup | `backup_fn` failed |
@@ -336,6 +417,7 @@ defines a structured layout:
 | `0x6` | Apply | `apply_fn` failed |
 | `0x7` | Restore | `restore_fn` failed (rollback itself failed) |
 | `0x8` | Persist | `persist_state_fn` kept failing at a reboot boundary (`AZ_IOT_SU_PERSIST_MAX_ATTEMPTS`); low bits carry its last return value |
+| `0x9` | Superseded | reserved for `AZ_IOT_SU_REPLACEMENT_ROLLBACK` (not yet supported) |
 | `0xF` | Internal / client | parser, state, or buffer error inside the software updates client |
 
 The low 28 bits MUST carry the originating hook's raw return value (or an SDK
@@ -343,9 +425,38 @@ sub-code for internal failures) so a device-side failure can be diagnosed from
 the cloud without on-device logs. When a failure has no meaningful sub-code, the
 low bits MUST be `0`.
 
-**`result_details`.** OPTIONAL free-form string. When set, it MUST be a copy into
-a client-owned buffer (no pointer into hook-owned memory), consistent with the
-no-shared-ownership rule used elsewhere.
+Facility `0x1` sub-codes (`AZ_IOT_SU_MANIFEST_ERROR_*`) say why verification failed:
+
+| Sub-code | Name | Cause |
+|---|---|---|
+| `0x1` | `CRYPTO` | backend fault: no `verify_rs256`, SHA-256 failed, or `verify_rs256` failed with other than `AZ_IOT_ERR_AUTH`/`AZ_IOT_ERR_INVALID_ARG` |
+| `0x2` | `MALFORMED` | signature, `sjwk` or signing key missing, not a 3-part token, or not valid base64/JSON |
+| `0x3` | `TOO_LARGE` | a decoded part exceeds the scratch or its field limit |
+| `0x4` | `ALG` | `alg` ≠ `RS256` |
+| `0x5` | `UNKNOWN_KID` | `kid` matches no enabled root key |
+| `0x6` | `ROOT_SIGNATURE` | `sjwk` rejected by the root key (`verify_rs256`: `AZ_IOT_ERR_AUTH` or `AZ_IOT_ERR_INVALID_ARG`) |
+| `0x7` | `SIGNATURE` | manifest rejected by the `sjwk` signing key (as for `0x6`) |
+| `0x8` | `HASH` | manifest SHA-256 ≠ signed hash |
+
+Entering Failed raises `AZ_IOT_SU_EVENT_WORKFLOW_STATE_CHANGED` with
+`extended_result_code` (the first failed step's code, else the overall one) and
+`reason`: `AZ_IOT_ERR_AUTH` for facility `0x1`/`0x3` (`0x1` sub-code `CRYPTO`:
+`AZ_IOT_ERR_INTERNAL`), `AZ_IOT_ERR_PROTOCOL` for `0xF`, `AZ_IOT_ERR_INTERNAL`
+otherwise.
+
+**`result_details`.** OPTIONAL free-form string (the service allows 1024 characters). When set,
+it MUST be a copy into a client-owned buffer (no pointer into hook-owned memory), consistent with
+the no-shared-ownership rule used elsewhere. Per step, the application sets it with
+`az_iot_su_client_set_step_result_details()`, from a hook or between `do_work()` calls, once the
+manifest is verified (`is_installed_fn` included) and until the workflow ends. The text is copied into the workspace
+(`az_iot_su_limits::result_details_size` bytes per step, default 128; a longer one is refused with
+`AZ_IOT_ERR_NOT_ENOUGH_SPACE`), persisted with the step's result, and reported with the terminal
+result. A change made while the workflow waits for a reboot rewrites the saved record from a later
+`do_work()`, which holds the workflow until the write succeeds. A failed write raises
+`AZ_IOT_SU_EVENT_PERSIST_FAILED` and is retried; until `AZ_IOT_SU_EVENT_PERSIST_RECOVERED`, a reboot
+restores the previous details. A report that does not fit `max_message_size` is sent without step details. The terminal
+`AZ_IOT_SU_EVENT_REPORT_ACCEPTED` carries a copy of the report as sent, kept when it was handed to
+the channel. The client sets no details itself.
 
 ### Multi-Step Support
 
@@ -368,13 +479,13 @@ indexed by step number. As the machine progresses:
 - On failure, the step becomes `FAILED` / `AGENT_CORE` with the failing phase's
   `result_code` + composed `extended_result_code` (see Result-Code Mapping), and
   no further steps MUST be started.
-- On cancellation, the active unfinished step becomes `CANCELED` /
-  `NOT_APPLICABLE`, result code `-1`, extended result code `0`; later steps stay
-  `SKIPPED`.
 - The **overall** `result_code`/`extended_result_code` MUST mirror the *first*
   failing step (the root cause), not a later rollback outcome.
 - `step_results_count` MUST equal the number of manifest steps for terminal
   reports.
+- `resultDetails` per step: only what the application set (see Result-Code Mapping).
+- The terminal report, step results included, is handed to observers on
+  `AZ_IOT_SU_EVENT_REPORT_ACCEPTED` (`event->report`, terminal acceptance only).
 
 #### Partial-Failure Rollback
 
@@ -396,7 +507,7 @@ returned to its pre-deployment state:
 ### State reporting to cloud
 
 Workflow transitions produce a status report. The engine hands the channel a structured result
-(see Result-Code Mapping); the software updates channel sends it as `ReportDeviceUpdateStatus`:
+(see Result-Code Mapping); the software updates channel sends it as `reportUpdateStatus` (`iotdps-report-deviceupdatestatus`):
 
 ```json
 {
@@ -419,23 +530,30 @@ rules are in §2.
 
 ### Cancellation
 
-Software updates carries no cancel action. A new `workflowId` replaces the in-progress workflow: the
-engine restarts at ManifestReceived when it is delivered. `az_iot_su_is_cancelled()` remains
-for hooks to poll; no software updates input sets it.
+The device has no cancel path. A cancel is service-side: the service stops offering the
+deployment, and a device that already has it finishes it; its `SUCCEEDED` or `FAILED` report
+replaces the service's `CANCELED`. A new `workflowId` replaces the in-progress workflow only
+before its first `install_fn` call; later it is deferred (see Duplicate vs. Replacement
+Detection).
 
 ### Reboot coordination
 
 If `install_fn` or `apply_fn` returns `AZ_IOT_SU_RESULT_REBOOT_REQUIRED`:
 
 1. The client MUST report state to the cloud and MUST persist workflow progress to non-volatile storage via the customer-provided `persist_state_fn`: after `install_fn`, the step's Apply; after `apply_fn`, the next step's start (after the last step, the terminal record below).
-2. The application MUST reboot the device after the client persists state.
+2. The application MUST reboot the device after the client persists state. Until it does, a new `workflowId` is deferred.
 3. On startup, the application MUST call `az_iot_su_client_resume()`, which reads persisted state and continues the workflow from the appropriate phase.
 
-When a workflow ends (succeeded, failed, canceled, skipped), the client stores a
+When a workflow ends (succeeded, failed, skipped), the client stores a
 **terminal record** holding the unsent terminal report before sending it, and
-retires it once the channel's verdict is final: accepted, `ALREADY_REPORTED`,
-or refused by the service. A report abandoned for want of a session is kept, so
-it is re-sent after the next boot. A new `workflowId` replaces it.
+retires it once the channel's verdict is final: accepted or refused by the
+service. After a `FAILED` workflow it is replaced by a **retry record**
+instead, so the retry wait survives a restart. A report abandoned for
+want of a session is kept, so
+it is re-sent after the next boot. Retiring a permanently rejected record, including
+`REPORT_CONFLICT`, stops replay; it is not evidence of delivery. A new `workflowId` replaces
+it, unless the last apply returned `REBOOT_REQUIRED` and the client has not been
+re-initialized since: then the new workflow is deferred.
 
 ### Persistence & Resume Blob Format
 
@@ -444,18 +562,26 @@ blob** that the core serializes and the platform merely stores verbatim (file,
 NVS partition, EEPROM, …). The platform MUST NOT interpret it; the format is
 internal and may change between SDK versions.
 
-- **Size** — at most `AZ_IOT_SU_STATE_BLOB_MAX_SIZE` bytes; size storage for it.
-- **Versioned** — magic `"SUCP"` and a `u16` format version (currently 1). A
-  record of any other magic or version is ignored. All integers are
+- **Size** — at most `AZ_IOT_SU_STATE_BLOB_MAX_SIZE(max_update_size)` bytes; size storage for it.
+- **In place** — a workflow record is serialized around the update copy in the workspace: its
+  header just before it, its trailer just after. A terminal record has no request and is built
+  in a separate workspace part, so a newer update copy is never overwritten. `resume()` loads
+  the record in place, so it returns `AZ_IOT_ERR_BUSY` while a workflow is in progress.
+- **Versioned** — magic `"SUCP"` and a `u16` format version (currently 3). A
+  record of any other magic or version (versions 1 and 2 included) is ignored. All integers are
   little-endian.
 - **Integrity-checked** — a CRC-32 over the rest of the blob, stored in its last four bytes; a record with extra bytes after it is ignored.
-- **Contents** — workflow state, step/file position, flags (cancel,
-  have-request, report-owed), the raw request buffer (manifest, workflow id),
+- **Contents** — workflow state, step/file position, flags (have-request,
+  report-owed, retry record), the raw request buffer (manifest, workflow id),
   the latched outcome, the overall and per-step results, the download URLs, the
-  active workflow id, the applied update id, and opaque channel state (the DPS
-  channel's `agentInfoEtag` / `serviceConfigEtag`).
+  active workflow id, the applied update id, opaque channel state (the DPS
+  channel's `agentInfoEtag` / `serviceConfigEtag`), and the retry schedule
+  (consecutive failures, seconds of wait left when written, Unix deadline or 0
+  when unknown).
 - **Terminal record** — report-owed set, state Idle, no request: only what the
   terminal report needs.
+- **Retry record** — retry flag set, state Idle, no request, nothing owed: a
+  `FAILED` workflow whose report is settled, kept for its retry schedule.
 
 The byte layout is documented next to the serializer in
 `src/features/su/su_client.c`; it is not a public contract.
@@ -471,13 +597,18 @@ The byte layout is documented next to the serializer in
    latter is cleared.
 2. A terminal record restores the workflow id, outcome, results, applied update
    id and channel state; the client stays Idle and re-sends the report from
-   `do_work()`. Otherwise core rehydrates `current_request`, `current_step`,
-   `current_file`, the overall and per-step results and channel state.
+   `do_work()`. A retry record restores the same with nothing owed. Otherwise
+   core rehydrates `current_request`, `current_step`, `current_file`, the
+   overall and per-step results and channel state. Every record restores the
+   retry schedule: the wait left is the Unix deadline minus the current Unix
+   time when both are known (a time before 2024-01-01 is unknown), else the
+   wait left when the record was written; at most 24 h plus jitter.
 3. **Replacement check** — when the next offer arrives, core compares its
-   `workflowId` against the persisted one. A different id means the persisted
-   workflow was superseded while the device was down: core MUST discard the
-   resumed state and process the new deployment. The same id is a duplicate and
-   is ignored.
+   `workflowId` against the persisted one. The same id is a duplicate and is
+   ignored, unless it `FAILED`: then it is a retry, held
+   until the restored wait elapses. A different id is deferred while the
+   resumed workflow runs (it resumes past `install_fn`) and replaces a
+   restored terminal or retry record.
 4. **Re-entry point** — `resume()` MUST re-enter at a *phase boundary*, never
    mid-hook (hooks are not assumed re-entrant across reboot):
    - persisted `state` ∈ {`INSTALL_*`} ⇒ re-enter at the start of **Apply** for
@@ -488,9 +619,11 @@ The byte layout is documented next to the serializer in
      (Download), re-downloading any partially fetched file; partial download
      progress is intentionally **not** trusted across reboot.
 5. When the workflow returns to Idle, core replaces the stored blob with the
-   terminal record; it clears it (a zero-length `persist_state_fn` write) once
-   the report is final and when a new workflow supersedes it, so a later boot
-   does not replay a finished workflow. If the terminal record cannot be
+   terminal record; once the report is final it clears it (a zero-length
+   `persist_state_fn` write), or after `FAILED` replaces it with
+   the retry record, which a retry attempt's own records, its success or a new
+   workflow then replace or clear. So a later boot does not replay a finished
+   workflow. An early re-offer writes nothing. If the terminal record cannot be
    written, the stale blob is cleared instead. A failed checkpoint write before
    a requested reboot holds the workflow at that boundary (`INSTALL_COMPLETE`,
    or the next step's `DOWNLOAD_STARTED`); if the clear on supersede fails, the
@@ -516,11 +649,7 @@ The byte layout is documented next to the serializer in
    - a held new workflow proceeds.
 
    A write needed later is still attempted once; a tracked success resets the count.
-   While a workflow is held at a reboot boundary, a new `workflowId` is ignored
-   (the service offers it again on a later check) and a cancel waits. A cancel
-   that reaches an installed step not yet applied (`INSTALL_COMPLETE` /
-   `APPLY_STARTED`) rolls it back first, reported like the give-up above when
-   there is no `restore_fn`; completed steps are kept.
+   While a workflow is held at a reboot boundary, a new `workflowId` is deferred.
    While a failure is outstanding the application MUST NOT reboot for
    `REBOOT_REQUIRED`: nothing would resume.
 
@@ -558,7 +687,6 @@ extern "C" {
 #define AZ_IOT_SU_RESULT_IN_PROGRESS       1
 #define AZ_IOT_SU_RESULT_REBOOT_REQUIRED   2
 #define AZ_IOT_SU_RESULT_ALREADY_INSTALLED 3
-#define AZ_IOT_SU_RESULT_CANCELLED         4
 #define AZ_IOT_SU_RESULT_FAILURE          -1
 
 /* --- State enum ---------------------------------------------------------- */
@@ -588,7 +716,6 @@ typedef struct az_iot_su_platform_hooks
      * MUST return AZ_IOT_SU_RESULT_IN_PROGRESS to continue on next do_work;
      * MUST return AZ_IOT_SU_RESULT_SUCCESS when complete.
      * The hook MUST verify the file hash (helpers provided).
-     * The hook SHOULD check az_iot_su_is_cancelled() periodically.
      */
     int32_t (*download_fn)(
         const az_iot_su_client_update_manifest_file* file,
@@ -663,74 +790,26 @@ typedef struct az_iot_su_platform_hooks
     void* user_ctx;
 } az_iot_su_platform_hooks;
 
-/* --- Crypto hooks (REQUIRED) --------------------------------------------- */
+/* --- Crypto (REQUIRED, from the connection client) ----------------------- */
 
 /**
- * Crypto operations MUST be provided by the customer via hooks.
- * The core software updates library MUST NOT link any crypto backend.
+ * Software updates take SHA-256 and RS256 verification from the connection
+ * client's crypto backend (az_iot_connection_client_options::crypto, declared
+ * in az_iot_crypto.h). The core links no crypto library.
  *
- * IMPORTANT: these hooks are PURE CRYPTOGRAPHIC PRIMITIVES only. They do NOT
- * parse JWS, decode base64url, resolve keys, or enforce revocation. All of
- * that orchestration lives in software updates core (see §6), which calls these primitives.
- * An adapter therefore only has to wire up "RSA verify + SHA-256" — nothing
- * security-sensitive beyond the math itself.
+ * The backend is PURE CRYPTOGRAPHIC PRIMITIVES only: SHA-256 (init / update /
+ * final) and verify_rs256. It does not parse JWS, decode base64url, resolve
+ * keys, or enforce revocation; core does all of that (see §6). Software updates
+ * need verify_rs256, which is optional for other features.
  *
- * Pre-built implementations are available in adapters/su/ for convenience.
+ * Shipped backends: az_iot_crypto_openssl(), az_iot_crypto_mbedtls().
  */
-typedef struct az_iot_su_crypto_hooks
-{
-    /**
-     * Verify an RSASSA-PKCS1-v1_5 signature over SHA-256 (JWS "alg":"RS256").
-     * This is the ONLY asymmetric primitive software updates needs: it is used both to
-     * verify the SJWK with a root key and to verify the manifest JWS with the
-     * SJWK's signing key. The public key is passed as raw big-endian modulus
-     * and exponent (as carried in a JWK's "n"/"e", already base64url-decoded
-     * by core).
-     *
-     * MUST return AZ_IOT_SU_RESULT_SUCCESS iff the signature is valid over
-     * signed_data, AZ_IOT_SU_RESULT_FAILURE otherwise. MUST NOT interpret the
-     * bytes as anything but an RSA key + message + signature.
-     */
-    int32_t (*verify_rs256_fn)(
-        const uint8_t* modulus,      size_t modulus_len,
-        const uint8_t* exponent,     size_t exponent_len,
-        const uint8_t* signed_data,  size_t signed_data_len,
-        const uint8_t* signature,    size_t signature_len,
-        void* user_ctx);
-
-    /**
-     * Compute SHA-256 hash of a buffer.
-     */
-    int32_t (*sha256_fn)(
-        const uint8_t* data,
-        size_t data_len,
-        uint8_t hash_out[32],
-        void* user_ctx);
-
-    /**
-     * Initialize incremental SHA-256 context (for streaming payload hash).
-     * ctx_out is an opaque pointer managed by the implementation.
-     */
-    int32_t (*sha256_init_fn)(void** ctx_out, void* user_ctx);
-
-    /**
-     * Feed data into incremental SHA-256.
-     */
-    int32_t (*sha256_update_fn)(void* ctx, const uint8_t* data, size_t len, void* user_ctx);
-
-    /**
-     * Finalize incremental SHA-256, write 32-byte hash. Frees ctx.
-     */
-    int32_t (*sha256_final_fn)(void* ctx, uint8_t hash_out[32], void* user_ctx);
-
-    void* user_ctx;
-} az_iot_su_crypto_hooks;
 
 /* --- Root key store (owned and managed by software updates core) ---------------------- */
 
 /**
  * An RSA root public key trusted to sign Signed JWKs (SJWKs). Root keys are
- * managed by software updates core — NOT by the crypto adapter — so that key resolution by
+ * managed by software updates core — NOT by the crypto backend — so that key resolution by
  * `kid` and revocation policy are written once, in portable code.
  *
  * All fields are caller-owned. Core stores the pointers (no deep copy of key
@@ -786,7 +865,7 @@ typedef struct az_iot_su_client
     {
         az_iot_su_channel channel;   /* software updates channel bound to the connection client */
         az_iot_su_platform_hooks hooks;
-        az_iot_su_crypto_hooks crypto;
+        const az_iot_crypto* crypto; /* the connection client's backend */
         /* Root-key store (core-owned). Pointers reference caller arrays; see §7.
          * Capacity is compile-time (AZ_IOT_SU_MAX_ROOT_KEYS). */
         az_iot_su_root_key root_keys[AZ_IOT_SU_MAX_ROOT_KEYS];
@@ -796,10 +875,13 @@ typedef struct az_iot_su_client
         az_iot_su_client_update_manifest current_manifest;
         uint32_t current_step;
         uint32_t current_file;
-        bool cancel_requested;
-        /* Client-owned device-properties cache (deep copy of caller's struct). */
+        /* Parts of the application's workspace: update copy and its persisted
+         * record, terminal record, scratch, message body, device-property cache. */
+        uint8_t* request_buffer;
+        uint8_t* persist_blob;
+        uint8_t* terminal_blob;
+        uint8_t* scratch;
         uint8_t* device_properties_buffer;
-        size_t device_properties_buffer_size;
         bool device_properties_report_pending;
         /* Connection-state observer / detach safety (see §16). */
         bool detached;
@@ -812,7 +894,6 @@ typedef struct az_iot_su_client
  * Configuration for az_iot_su_client_init(). Zero-initialize via
  * az_iot_su_client_config_options_default() and set the required fields:
  *   hooks:   platform operations (download/install/apply/...). See §6.
- *   crypto:  pure-primitive crypto hooks (RSA verify + SHA-256). See §6.
  *   root_keys / root_key_count: caller-owned RSA root public keys that anchor
  *     manifest trust (see §7). Core copies the small descriptor array into its
  *     fixed store (the key BYTES are referenced, not copied, so they MUST
@@ -820,19 +901,24 @@ typedef struct az_iot_su_client
  *     Microsoft-signed updates, pass az_iot_su_microsoft_root_keys().
  *   device_properties: caller-owned device properties, DEEP-COPIED into the cache.
  *     May be mutated/freed by the caller after init returns.
- *   device_properties_buffer / size: caller-owned cache the client copies into.
- *     No hidden allocation; the buffer MUST outlive the client. Size it exactly
- *     with az_iot_su_device_properties_buffer_size().
+ *   limits: sizes of the workspace parts (az_iot_su_limits_default()).
+ *   workspace / workspace_size: the client's memory, at least
+ *     az_iot_su_workspace_size(&limits) bytes. No hidden allocation; it MUST
+ *     outlive the client.
+ *   replacement_policy: what a new workflow id does to a workflow that may not
+ *     be replaced. AZ_IOT_SU_REPLACEMENT_DEFER (default) or
+ *     AZ_IOT_SU_REPLACEMENT_ROLLBACK (not yet supported).
  */
 typedef struct az_iot_su_client_config_options
 {
     const az_iot_su_platform_hooks*    hooks;
-    const az_iot_su_crypto_hooks*      crypto;
     const az_iot_su_root_key*          root_keys;
     size_t                              root_key_count;
     const az_iot_su_device_properties* device_properties;
-    uint8_t*                            device_properties_buffer;
-    size_t                              device_properties_buffer_size;
+    az_iot_su_limits                    limits;
+    uint8_t*                            workspace;
+    size_t                              workspace_size;
+    az_iot_su_replacement_policy        replacement_policy;
 } az_iot_su_client_config_options;
 
 az_iot_su_client_config_options az_iot_su_client_config_options_default(void);
@@ -842,7 +928,8 @@ az_iot_su_client_config_options az_iot_su_client_config_options_default(void);
  * SDK. Every observer receives every event; read `kind` first.
  *
  *   WORKFLOW_STATE_CHANGED -- the deployment moved. Otherwise observable only
- *     by polling az_iot_su_client_get_state().
+ *     by polling az_iot_su_client_get_state(). Entering FAILED carries why
+ *     (`reason`, `extended_result_code`).
  *   OPERATION_ABANDONED    -- an operation reached a verdict that stops the
  *     CLIENT re-arming it. It does NOT mean the application may not ask again;
  *     that is the intended response, which is why the event carries the route:
@@ -851,13 +938,27 @@ az_iot_su_client_config_options az_iot_su_client_config_options_default(void);
  *   PERSIST_FAILED / PERSIST_RECOVERED -- persist_state_fn started / stopped
  *     failing; PERSIST_FAILED again when the client gives up (see
  *     AZ_IOT_SU_PERSIST_MAX_ATTEMPTS).
+ *   UPDATE_REFUSED         -- a delivered update was not processed because it
+ *     does not fit a compile-time limit (workflow id or request buffer) or
+ *     cannot be decoded.
+ *   UPDATE_DEFERRED        -- a delivered update with a new workflow id was not
+ *     started: the current workflow has changed the device, or a reboot its
+ *     last apply asked for is owed; or a due retry waits for the failed
+ *     attempt's report to settle.
+ *   NO_UPDATE              -- an update check was answered with no update.
+ *   UPDATE_DUPLICATE       -- a delivered update repeats the current workflow
+ *     id, or a SUCCEEDED / SKIPPED one, and was ignored.
+ *   REPORT_ACCEPTED        -- the service accepted a status report;
+ *     `report_terminal` marks the workflow's final one, and `report` carries it.
+ *   UPDATE_RETRY_WAIT      -- a FAILED workflow was offered again
+ *     before its retry wait elapsed; `retry_after_ms` is the time left.
  *
  * Abandonment is raised from on_channel_result()'s no-re-arm branch, which IS
  * the definition of "the client will not retry this". Deriving both from one
  * condition is deliberate: a second list in the channel would be free to drift
- * away from the engine's. It covers PROCEED as well as FATAL -- PROCEED is
- * UPDATE_ACCOUNT_NOT_LINKED on a fetch, a permanent refusal that otherwise
- * reads exactly like "no update available".
+ * away from the engine's. It covers PROCEED as well as FATAL -- PROCEED is an
+ * update account the service cannot use, a refusal that otherwise reads
+ * exactly like "no update available".
  *
  * The event carries the service diagnosis (numeric `errorCode`, the
  * best-effort error TEXT from `message`, and `trackingId`), because the
@@ -883,7 +984,9 @@ az_iot_result az_iot_su_client_remove_observer(
  * Initialize the software updates client. `connection` is the connection client whose DPS
  * session carries the software updates channel; `options` carries the rest (hooks,
  * crypto, trust store, device properties + caller cache). Returns
- * AZ_IOT_ERR_INVALID_ARG if a required field is NULL, or
+ * AZ_IOT_ERR_INVALID_ARG if a required field is NULL or replacement_policy is
+ * not an az_iot_su_replacement_policy value, AZ_IOT_ERR_NOT_SUPPORTED if
+ * replacement_policy is AZ_IOT_SU_REPLACEMENT_ROLLBACK, or
  * AZ_IOT_ERR_NOT_ENOUGH_SPACE if root_key_count > AZ_IOT_SU_MAX_ROOT_KEYS or
  * the buffer is too small for device_properties.
  */
@@ -916,18 +1019,13 @@ az_iot_result az_iot_su_client_resume(az_iot_su_client* client);
 az_iot_result az_iot_su_client_do_work(az_iot_su_client* client);
 
 /**
- * Check if cancellation has been requested (called from within platform hooks).
- */
-bool az_iot_su_is_cancelled(const az_iot_su_client* client);
-
-/**
  * Get the current software updates agent state.
  */
 az_iot_su_state az_iot_su_client_get_state(const az_iot_su_client* client);
 
 /**
  * Ask for an ONBOARDING update -- the day-0/pre-registration route. Needs no
- * device record and omits installedUpdateId.
+ * device record. Sends installedUpdateId when set, like the regular route.
  *
  * The application chooses the route: it is the only party that knows whether
  * it has a device record, because it persists its provisioning result across
@@ -1023,17 +1121,16 @@ az_iot_su_device_properties properties = {
     .custom_properties_count = 1,
 };
 
-uint8_t properties_cache[256];
+static uint8_t su_workspace[AZ_IOT_SU_WORKSPACE_DEFAULT_SIZE];
 size_t root_key_count;
 const az_iot_su_root_key* root_keys = az_iot_su_microsoft_root_keys(&root_key_count);
 az_iot_su_client_config_options su_opts = az_iot_su_client_config_options_default();
 su_opts.hooks = &hooks;
-su_opts.crypto = &crypto;
 su_opts.root_keys = root_keys;
 su_opts.root_key_count = root_key_count;
 su_opts.device_properties = &properties;
-su_opts.device_properties_buffer = properties_cache;
-su_opts.device_properties_buffer_size = sizeof(properties_cache);
+su_opts.workspace = su_workspace; /* limits: az_iot_su_limits_default() */
+su_opts.workspace_size = sizeof(su_workspace);
 az_iot_su_client_init(&su, &conn, &su_opts);
 /* `properties` and its strings may now be freed/reused; the client holds a deep copy. */
 
@@ -1090,7 +1187,8 @@ path.
  *   request_json: the `updateMetadata` object (workflowId, updateManifest,
  *     updateManifestSignature, fileUrls), exactly as the service sends it.
  *     Mutated in place (manifest string unescaped); pass a writable buffer.
- *   crypto / root_keys: same trust inputs as az_iot_su_client_init().
+ *   crypto: a backend with verify_rs256 (az_iot_su_client_init() takes the
+ *     connection client's). root_keys: as az_iot_su_client_init().
  *
  * Returns AZ_IOT_OK (verified parse), AZ_IOT_ERR_NOT_FOUND
  * (no workflowId), AZ_IOT_ERR_INVALID_ARG (bad args or
@@ -1098,7 +1196,7 @@ path.
  */
 az_iot_result az_iot_su_parse_update_request(
     az_span request_json,
-    const az_iot_su_crypto_hooks* crypto,
+    const az_iot_crypto* crypto,
     const az_iot_su_root_key* root_keys,
     size_t root_key_count,
     az_iot_su_client_update_request* out_request,
@@ -1111,7 +1209,7 @@ az_iot_result az_iot_su_parse_update_request(
  */
 az_iot_result az_iot_su_verify_file_hash(
     const az_iot_su_client_update_manifest_file* file,
-    const az_iot_su_crypto_hooks* crypto,
+    const az_iot_crypto* crypto,
     int32_t (*read_chunk)(size_t offset, uint8_t* buf, size_t cap, size_t* out_read, void* ctx),
     void* read_ctx);
 
@@ -1138,18 +1236,18 @@ download handlers, diagnostics/log upload, and privilege separation
 
 ---
 
-## 6. Cryptographic Verification — Hooks-Only Model
+## 6. Cryptographic Verification — Pluggable Backend
 
 ### Design Decision: No Built-in Crypto Backend
 
-The core software updates library (`src/features/su/`) MUST NOT link any crypto library (no mbedTLS, no OpenSSL). All cryptographic operations MUST be provided exclusively through `az_iot_su_crypto_hooks`. Rationale:
+The core software updates library (`src/features/su/`) MUST NOT link any crypto library (no mbedTLS, no OpenSSL). All cryptographic operations MUST go through the connection client's `az_iot_crypto` backend (`az_iot_connection_client_options::crypto`), which every feature that needs crypto shares. Rationale:
 
 1. **Portability** — Different platforms use different crypto stacks (mbedTLS on ESP32, OpenSSL on Linux, WolfSSL on some RTOS, hardware crypto on secure MCUs). Linking any one forces an unwanted dependency on all others.
 2. **HSM support** — Customers with hardware security modules need their crypto to route through PKCS#11 or vendor APIs. A hooks-only model naturally supports this.
 3. **Binary size** — Embedded targets (ESP32) cannot afford unused crypto code. The customer links only what they need.
-4. **Consistency** — The same pattern used for platform hooks (download, install, etc.) applies to crypto. One abstraction model, not two.
+4. **One backend per device** — The backend is set once on the connection client and shared, so a device cannot end up with two crypto libraries for two features.
 
-### Design Decision: Hooks Are Pure Primitives; Core Owns the Orchestration
+### Design Decision: The Backend Is Pure Primitives; Core Owns the Orchestration
 
 A naïve design would expose a single `verify_jws_fn(jws_token, len)` and make the
 adapter do everything: JWS compact parsing, base64url decoding, SJWK extraction,
@@ -1161,21 +1259,22 @@ signature math. That is the wrong split:
 - It scatters **root-key management and revocation policy** across adapters,
   when that logic is platform-independent.
 
-Instead, the crypto hooks are reduced to **pure primitives** — `verify_rs256_fn`
-plus one-shot and incremental SHA-256 — and **Software updates core owns all orchestration**:
+Instead, the backend is reduced to **pure primitives** — `verify_rs256` plus
+incremental SHA-256 (the SDK composes one-shot SHA-256 from it) — and **Software
+updates core owns all orchestration**:
 
 | Responsibility | Owner |
 |----------------|-------|
-| JWS compact parsing, base64url decode | **core** (uses `az::core` base64/JSON it already links) |
+| JWS compact parsing, base64url decode | **core** (uses `az::core` base64/JSON it already links; base64 through `az_iot_base64_decode()`) |
 | SJWK extraction, JWK `n`/`e` parsing | **core** |
 | Root-key store, `kid` resolution | **core** (see §7) |
 | Revocation enforcement (disabled kids) | **core** |
 | `alg` validation (MUST be `RS256`) | **core** |
 | Root Key Package verify/apply | **core** (not implemented; see §11) |
-| RSA-PKCS1-v1_5/SHA-256 signature math | **hook** (`verify_rs256_fn`) |
-| SHA-256 digest | **hook** (`sha256_*`) |
+| RSA-PKCS1-v1_5/SHA-256 signature math | **backend** (`verify_rs256`) |
+| SHA-256 digest | **backend** (`sha256_*`) |
 
-Consequences: adapters are tiny and identical in shape ("RSA verify + SHA-256");
+Consequences: backends are tiny and identical in shape ("RSA verify + SHA-256");
 the security-critical parsing and policy are written and reviewed once; an HSM
 backend still works because verification uses only **public** keys.
 
@@ -1188,31 +1287,29 @@ established two ways, and the doc/contract reflect both:
    the manifest JWS header) carries `"alg":"RS256"`. Core MUST read `alg` and
    **reject** any token whose `alg` is not exactly `RS256`. The algorithm is
    therefore validated from the wire, never assumed.
-2. **Contract** — the hook is named and documented `verify_rs256_fn`, so an
-   adapter knows precisely which primitive to implement. Supporting a future
-   algorithm (e.g. ES256) would add a new hook **and** a new accepted `alg`
-   value in core — existing adapters are unaffected.
+2. **Contract** — the function is named and documented `verify_rs256`, so a
+   backend knows precisely which primitive to implement. Supporting a future
+   algorithm (e.g. ES256) would add a new optional function **and** a new
+   accepted `alg` value in core — existing backends are unaffected.
 
-### Pre-built Crypto Adapters
+### Pre-built Crypto Backends
 
-For convenience, we ship ready-to-use `az_iot_su_crypto_hooks` implementations.
-Because root keys now live in core, an adapter's factory takes **no key
-material** — it only wires the primitives:
+We ship ready-to-use `az_iot_crypto` backends. Because root keys live in core, a
+backend takes **no key material** — it only provides the primitives:
 
-| Adapter | Location | Crypto Library | Target |
+| Backend | Location | Crypto Library | Target |
 |---------|----------|---------------|--------|
-| mbedTLS | `adapters/su/crypto_mbedtls/` | mbedTLS 3.6 LTS or 4.1+ (PSA Crypto) | ESP32, constrained Linux |
-| OpenSSL | `adapters/su/crypto_openssl/` | OpenSSL 3.0+ | Linux, general-purpose |
+| mbedTLS | `adapters/crypto_mbedtls/` | mbedTLS 3.6 LTS or 4.1+ (PSA Crypto) | ESP32, constrained Linux |
+| OpenSSL | `adapters/crypto_openssl/` | OpenSSL 3.0+ | Linux, general-purpose |
 
 ```c
-/* adapters/su/crypto_mbedtls/az_iot_su_crypto_mbedtls.h */
-az_iot_su_crypto_hooks az_iot_su_crypto_mbedtls_hooks(void);
+copts.crypto = az_iot_crypto_mbedtls(); /* adapters/crypto_mbedtls/az_iot_crypto_mbedtls.h */
 ```
 
 ### Manifest Signature (JWS) Verification Flow
 
 The manifest is protected by a **two-level** signature chain. Core performs every
-parsing and resolution step and calls `verify_rs256_fn` only for the two
+parsing and resolution step and calls `verify_rs256` only for the two
 signature checks (the green "verify" edges):
 
 ```mermaid
@@ -1220,8 +1317,8 @@ graph TD
     RK["Root key store (core; kid-indexed, §7)"]
     H1["1. core: parse manifest JWS header,<br/>assert alg=RS256, read sjwk + kid"]
     H1 -->|"resolve kid → root key (reject if disabled/unknown)"| RK
-    RK -->|"verify_rs256_fn(root key, sjwk signed bytes, sjwk sig)"| SJWK["2. SJWK verified → parse signing key (n,e)"]
-    SJWK -->|"verify_rs256_fn(signing key, manifest signed bytes, manifest sig)"| M["3. Manifest JWS verified"]
+    RK -->|"verify_rs256(root key, sjwk signed bytes, sjwk sig)"| SJWK["2. SJWK verified → parse signing key (n,e)"]
+    SJWK -->|"verify_rs256(signing key, manifest signed bytes, manifest sig)"| M["3. Manifest JWS verified"]
     M -->|"core: SHA-256(manifest body) == hash in updateManifestSignature"| BIND["4. Manifest bound to deployment"]
     BIND --> F["5. Per-file SHA-256 hashes now trusted (§ Payload Hash Verification)"]
 ```
@@ -1235,11 +1332,11 @@ Worked sequence inside core (`verify_jws` is internal, not a hook):
    is `disabled`, fail with `0x1` (manifest verification).
 3. Split the `sjwk` into its own `header.payload.signature`; reconstruct its
    signed bytes (`base64url(header) + "." + base64url(payload)`); call
-   `verify_rs256_fn(root.modulus, root.exponent, sjwk_signed, sjwk_sig)`. On
+   `verify_rs256(root.modulus, root.exponent, sjwk_signed, sjwk_sig)`. On
    failure → `0x1`.
 4. Parse the now-trusted SJWK payload as a JWK; base64url-decode `n` and `e` to
    get the **signing key**.
-5. Reconstruct the manifest's signed bytes; call `verify_rs256_fn(signing.n,
+5. Reconstruct the manifest's signed bytes; call `verify_rs256(signing.n,
    signing.e, manifest_signed, manifest_sig)`. On failure → `0x1`.
 6. The manifest JSON is now trusted. Core computes `SHA-256` over the manifest
    body and compares it to the hash in `updateManifestSignature` from the
@@ -1250,18 +1347,18 @@ including the per-file `sha256` hashes used below.
 
 ### Payload Hash Verification
 
-Each file's SHA-256 hash (from the now-trusted manifest) MUST be verified during
-download. The `download_fn` hook SHOULD use the incremental SHA-256 hooks for
-streaming verification:
+Each file's SHA-256 hash (from the now-trusted manifest) MUST be verified after
+download. Core streams the file back through `read_file_fn` and the backend's
+SHA-256, with the state in a caller-owned context (no allocation):
 
 ```c
-void* hash_ctx;
-crypto->sha256_init_fn(&hash_ctx, crypto->user_ctx);
+az_iot_sha256_ctx hash_ctx;
+crypto->sha256_init(crypto, &hash_ctx);
 while (chunk = read_next_chunk()) {
-    crypto->sha256_update_fn(hash_ctx, chunk.data, chunk.len, crypto->user_ctx);
+    crypto->sha256_update(crypto, &hash_ctx, chunk.data, chunk.len);
 }
-uint8_t computed[32];
-crypto->sha256_final_fn(hash_ctx, computed, crypto->user_ctx);
+uint8_t computed[AZ_IOT_SHA256_SIZE];
+crypto->sha256_final(crypto, &hash_ctx, computed); /* also releases hash_ctx */
 // core compares computed vs the manifest hash; mismatch aborts the download.
 ```
 
@@ -1280,12 +1377,12 @@ crypto->sha256_final_fn(hash_ctx, computed, crypto->user_ctx);
 
 ### Our Approach: Compiled-in + Runtime-loadable (Both), Core-owned Store
 
-The root-key store lives in **Software updates core**, not in the crypto adapter (see §6). Its
+The root-key store lives in **Software updates core**, not in the crypto backend (see §6). Its
 capacity is compile-time configurable:
 
 ```c
 #ifndef AZ_IOT_SU_MAX_ROOT_KEYS
-#define AZ_IOT_SU_MAX_ROOT_KEYS 4
+#define AZ_IOT_SU_MAX_ROOT_KEYS 8
 #endif
 ```
 
@@ -1335,10 +1432,10 @@ Platform-specific code (Linux libcurl downloads, ESP32 OTA partition writes, etc
 | Location | Contains | Links to |
 |----------|----------|----------|
 | `src/features/su/` | Engine, software updates channel, wire codec, report assembly, Microsoft root keys | `az_iot_connection_client`, `azure-sdk-for-c` |
-| `adapters/su/crypto_mbedtls/` | `verify_rs256_fn`, `sha256_*` using mbedTLS | mbedTLS |
-| `adapters/su/crypto_openssl/` | `verify_rs256_fn`, `sha256_*` using OpenSSL | OpenSSL |
+| `adapters/crypto_mbedtls/` | `az_iot_crypto`: `verify_rs256`, `sha256_*` using mbedTLS | mbedTLS |
+| `adapters/crypto_openssl/` | `az_iot_crypto`: `verify_rs256`, `sha256_*` using OpenSSL | OpenSSL |
 | `adapters/su/esp32/` | ESP32 platform hooks (download, OTA install, persistence) | ESP-IDF |
-| `samples/software_update/` | Samples that wire a crypto adapter, platform hooks and the main loop | All of the above |
+| `samples/software_update/` | Samples that wire a crypto backend, platform hooks and the main loop | All of the above |
 
 There is no Linux platform adapter; the PC samples implement their own hooks.
 
@@ -1348,6 +1445,8 @@ There is no Linux platform adapter; the PC samples implement their own hooks.
 |--------|-------|
 | [`pc/simulated_onboarding`](../../samples/software_update/pc/simulated_onboarding/README.md) | The onboarding route on a device with no IoT Hub (`dps.provision_only`), with simulated install. |
 | [`pc/simulated_regular`](../../samples/software_update/pc/simulated_regular/README.md) | The operational route, polled, on a registered device, with simulated install. |
+| [`pc/http_download`](../../samples/software_update/pc/http_download/README.md) | The application-owned download: libcurl, non-blocking, through the connection's proxy; real hash check; chunked simulated install. |
+| [`pc/multi_step`](../../samples/software_update/pc/multi_step/README.md) | A multi-step update: per-step backup/install/apply/restore, reverse rollback, device failure codes, `az_iot_su_client_set_step_result_details()` and the final report from `REPORT_ACCEPTED`. |
 | [`esp32`](../../samples/software_update/esp32/README.md) | A real OTA install on ESP32: onboarding route until registered, operational after. |
 
 The PC samples verify manifests for real (OpenSSL, Microsoft root keys) and simulate download and
@@ -1386,6 +1485,7 @@ sequenceDiagram
     participant Ch as software updates channel
     participant DPS
     participant Hook as Platform Hook
+    participant Crypto as Crypto backend
 
     App->>SU: request_onboarding_update() / request_update()
     SU->>Ch: request_update(route)
@@ -1394,8 +1494,8 @@ sequenceDiagram
     Ch-->>SU: updateMetadata
     SU->>SU: parse, dedupe on workflowId
     SU->>SU: az_iot_adu_client_parse_update_manifest() (ManifestReceived)
-    SU->>Hook: crypto.verify_rs256_fn(root_key, sjwk_signature) (VerifyingManifest)
-    SU->>Hook: crypto.verify_rs256_fn(signing_key, manifest_signature)
+    SU->>Crypto: verify_rs256(root_key, sjwk_signature) (VerifyingManifest)
+    SU->>Crypto: verify_rs256(signing_key, manifest_signature)
     loop For each step
         SU->>Hook: download_fn(file) [chunked]
         SU->>Hook: backup_fn(step)
@@ -1403,7 +1503,7 @@ sequenceDiagram
         SU->>Hook: apply_fn(step)
     end
     SU->>Ch: report(workflowId, installResult)
-    Ch->>DPS: ReportDeviceUpdateStatus
+    Ch->>DPS: reportUpdateStatus
 ```
 
 ### 10.2 do_work Integration
@@ -1431,10 +1531,11 @@ Operations MUST NOT be long-blocking. Each `do_work` invocation MUST process at 
   firmware.
 - **Runtime root-key rotation**, threshold-signature continuity across key rollover, and a
   persisted runtime key store.
-- **SDK-driven checks.** The application requests every update check and picks its route; the SDK
-  runs no polling cadence or post-install re-check of its own.
+- **SDK-driven checks.** The application requests update checks and picks their route; the SDK
+  runs no polling cadence or post-install re-check of its own. The one exception is the single
+  check after a conflicting report (§2).
 - **An operational channel over the IoT Hub connection.** Both routes run over DPS.
-- **A reusable conformance suite** for customer platform and crypto hooks.
+- **A reusable conformance suite** for customer platform hooks and crypto backends.
 
 ---
 
@@ -1442,14 +1543,14 @@ Operations MUST NOT be long-blocking. Each `do_work` invocation MUST process at 
 
 | Concern | Requirement |
 |---------|------------|
-| Manifest tampering | Core MUST parse JWS/SJWK, enforce `alg == RS256`, and verify both signatures via `verify_rs256_fn` before any download |
+| Manifest tampering | Core MUST parse JWS/SJWK, enforce `alg == RS256`, and verify both signatures via `verify_rs256` before any download |
 | Payload corruption/MITM | The client MUST verify SHA-256 hashes (streaming) from the signed manifest |
 | Key compromise | v1 MUST support per-root disable/revocation in the in-memory key store; runtime Root Key Package rotation is not implemented (§11) |
 | Privilege escalation | The SDK MUST NOT assume root; privilege management is the platform hook's responsibility |
 | Rollback attacks | `is_installed_fn` MUST perform version comparison; the service controls deployment targeting |
 | Memory safety | The core state machine MUST NOT perform dynamic allocation; all buffers MUST be caller-provided or static |
-| Crypto side-channels | Crypto MUST be delegated to well-audited libraries via hooks; HSM support MUST be possible |
-| Supply chain (compromised adapter) | The core library MUST contain zero crypto code — attack surface limited to what customer explicitly links |
+| Crypto side-channels | Crypto MUST be delegated to well-audited libraries through the crypto backend; HSM support MUST be possible |
+| Supply chain (compromised adapter) | The core library MUST contain no cryptographic primitive (it only composes HMAC from the backend's SHA-256) — attack surface limited to what customer explicitly links |
 
 ---
 
@@ -1459,7 +1560,7 @@ Operations MUST NOT be long-blocking. Each `do_work` invocation MUST process at 
 |---|----------|----------|
 | 1 | Chunked vs blocking download | **Both.** `download_fn` MUST return `IN_PROGRESS` for chunked (re-invoked next do_work) or `SUCCESS` for blocking completion. Adapters MAY choose their model. |
 | 2 | Root key provisioning | **Both compiled-in and runtime-loadable, core-owned.** Core ships Microsoft defaults (`az_iot_su_microsoft_root_keys()`), callers MAY override at `init`. Runtime Root Key Package rotation is not implemented (§11). |
-| 3 | Manifest algorithm | **RS256 only (v1).** Core MUST reject any JWS with `alg != RS256`; adapters MUST implement `verify_rs256_fn`. |
+| 3 | Manifest algorithm | **RS256 only (v1).** Core MUST reject any JWS with `alg != RS256`; the crypto backend MUST implement `verify_rs256`. |
 | 4 | Manifest version | **v5 only.** The client MUST support manifest v5. Earlier versions MUST NOT be supported. |
 | 5 | Multi-file handling | **Per-file.** `download_fn` MUST be called once per file per do_work, with `file_index`/`file_count` for progress awareness. Operations MUST NOT be long-blocking. |
 | 6 | Thread safety | **Single-threaded.** The software updates client MUST NOT use internal locks or threads. Applications that need concurrency MUST wrap externally. |
@@ -1475,7 +1576,7 @@ Operations MUST NOT be long-blocking. Each `do_work` invocation MUST process at 
 | Parse update manifest JSON | `az_iot_adu_client_parse_update_manifest()` |
 | Structs for manifest, workflow, file info, step results | `az_iot_su_client_update_manifest`, `az_iot_su_client_update_request`, etc. |
 
-Its device-twin helpers (service-property parsing, agent-state and acknowledgement formatting, component check) are not used by the engine. `az_iot_su_build_report()` still emits the upstream agent-state JSON; the software updates `reportStatus` body is built by the channel.
+Its device-twin helpers (service-property parsing, agent-state and acknowledgement formatting, component check) are not used by the engine. `az_iot_su_build_report()` still emits the upstream agent-state JSON; the software updates `reportUpdateStatus` body is built by the channel.
 
 **What azure-sdk-for-c does NOT provide:**
 - State machine / workflow orchestration.
@@ -1488,7 +1589,7 @@ Its device-twin helpers (service-property parsing, agent-state and acknowledgeme
 Our `su_client` MUST **delegate** manifest parsing to `azure-sdk-for-c`'s `az_iot_su_client` module. We MUST NOT reimplement JSON parsing already provided by the upstream dependency. We own:
 
 1. **State machine** — orchestrating the Download → Backup → Install → Apply → (Restore) lifecycle.
-2. **JWS verification** — via customer-provided crypto hooks.
+2. **JWS verification** — via the connection client's crypto backend.
 3. **Channel integration** — carrying an update manifest in and a structured report out, through the `az_iot_su_channel` vtable; the software updates channel serializes both.
 4. **Platform hooks** — the vtable for download, install, apply, etc.
 
@@ -1506,20 +1607,28 @@ This avoids duplicating the well-tested JSON parsing logic and keeps us aligned 
 | Workflow struct with `action`, `id`, `retry_timestamp` | Only `id` is used (from `workflowId`) |
 | File hash parsing (`hash_type` + `hash_value` as `az_span`) | ✅ Sufficient |
 | `az_json_string_unescape()` for manifest string unescaping | Not used: it stops at `\u` escapes. The SDK decodes JSON strings with `az_iot_json_string_decode()` (`src/core/json_string.c`) |
+| `az_base64_url_decode()` / `az_base64_decode()` for JWS segments | Used through `az_iot_base64_decode()` (`src/core/base64.c`), which first rejects characters outside the alphabet (az_core left-shifts a negative value on them), misplaced padding and nonzero trailing bits, and decodes in blocks so the output may overwrite the input |
 | `az_iot_hub_client_properties_writer_*` for PnP component wrapping | Not used (device twin only) |
 
 ### Configurable Limits (No Source Change Needed)
 
-The following `#ifndef`-guarded macros in `az_iot_adu_internal.h` default to `2`, which is too small for real deployments. Override via CMake compile definitions:
+The following `#ifndef`-guarded macros in `az_iot_adu_internal.h` default to `2`, which is too
+small for real deployments. They size structs shared by azure-sdk-for-c, `az_iot_core` (which
+holds the software updates sources; there is no separate `az_iot_su` target) and the
+application, through `az_iot_su.h`. Define them identically for all three, for example in the
+parent project before adding this SDK:
 
 ```cmake
-target_compile_definitions(az_iot_su PRIVATE
+add_compile_definitions(
     _az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS=10
     _az_IOT_ADU_CLIENT_MAX_TOTAL_FILE_COUNT=10
     _az_IOT_ADU_CLIENT_MAX_FILE_COUNT_PER_STEP=5
     _az_IOT_ADU_CLIENT_MAX_FILE_HASH_COUNT=3
 )
 ```
+
+With a prebuilt azure-sdk-for-c (`find_package`), that package must be built with the same
+values.
 
 ### Known limitation: strict step parsing
 
@@ -1543,8 +1652,8 @@ consumed through a normal `AZ_SDK_C_TAG` bump; this repo carries no patch of the
 | Feature | Responsibility |
 |---------|---------------|
 | Workflow state machine & orchestration | Our `su_client.c` |
-| JWS signature verification | Our `su_client.c` (parsing/orchestration) + `verify_rs256_fn` crypto hook (RSA math) |
-| SHA-256 hash computation & verification | Our `su_client.c` (compare) + `sha256_*` crypto hooks (digest) |
+| JWS signature verification | Our `su_client.c` (parsing/orchestration) + the backend's `verify_rs256` (RSA math) |
+| SHA-256 hash computation & verification | Our `su_client.c` (compare) + the backend's `sha256_*` (digest) |
 | Root key store, `kid` resolution & revocation | Our `su_client.c` (core-owned; runtime rotation not implemented, §11) |
 | File download (HTTP/HTTPS) | Platform adapter hooks |
 | Install/Apply/Backup/Restore execution | Platform adapter hooks |
@@ -1561,9 +1670,9 @@ Every external effect is a hook, so the engine is tested on the host with no net
 
 | Layer | Where | What |
 | --- | --- | --- |
-| Unit | `tests/unit/su_client_test.c` | The engine against a fake channel and scripted platform and crypto hooks: state transitions, multi-step updates, rollback, signature and hash failures, persistence and resume, device properties. |
+| Unit | `tests/unit/su_client_test.c` | The engine against a fake channel, scripted platform hooks and a mock crypto backend: state transitions, multi-step updates, rollback, signature and hash failures, persistence and resume, device properties. |
 | Unit | `tests/unit/su_channel_dps_test.c`, `tests/unit/su_protocol_test.c` | The DPS channel against the connection client, and the wire codec. |
-| Crypto adapters | `tests/unit/su_crypto_mbedtls_test.c`, `tests/unit/su_crypto_openssl_test.c` | Known-answer RS256 and SHA-256 vectors through the real library. |
+| Crypto backends | `tests/unit/crypto_mbedtls_test.c`, `tests/unit/crypto_openssl_test.c` | Known-answer RS256, SHA-256 and HMAC-SHA256 vectors through the real library (`tests/support/crypto_contract.c`). |
 | End to end | `tests/e2e/tests/e2e_su_test.c`, `tests/e2e/tests/e2e_su_offer_test.c` | The DPS channel and offered updates against the real service. Built with `-DAZ_IOT_BUILD_E2E_SU=ON`. See [end-to-end-tests.md](end-to-end-tests.md#software-updates-e2e). |
 
 Unit and crypto-adapter tests run on every CI build. The end-to-end suites run in their own

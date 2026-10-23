@@ -21,7 +21,15 @@ extern "C"
   /* Pluggable certificate provider. The default implementation passes through
    * file/PEM material from configuration. Custom implementations can integrate
    * TPM / HSM / OS keystore, and (optionally) certificate-signing-request (CSR)
-   * based enrollment. See docs/eng/certificate-management.md. */
+   * based enrollment. See docs/eng/certificate-management.md.
+   *
+   * Key stability: while the connection client is open, the operational
+   * private key does not change. get_csr() signs over that key, the one
+   * load(AZ_IOT_CRED_OPERATIONAL) presents or will present once a chain for it
+   * is stored, so resubmitting a request returns a chain that still fits. To
+   * rotate the key, close the client, change the key (provider-specific; the
+   * provider may be deinitialized and initialized again in place), then open
+   * the client and enroll or renew. */
 
   /* Which identity load() should return (design decision D3). */
   typedef enum
@@ -69,9 +77,10 @@ extern "C"
   } az_iot_certificate_signing_request;
 
   /* Operational certificate chain issued by the DPS- or Hub-linked CA (leaf first).
-   * Each entry is the base64-encoded DER of one certificate exactly as received on
-   * the wire (no PEM header/footer); a provider that persists the chain wraps each
-   * entry in PEM. Passing base64 spans (rather than pre-wrapped PEM strings) lets
+   * Each entry is one certificate exactly as received on the wire: base64 of its
+   * DER, or base64 of a whole PEM certificate (the provisioning service sends
+   * this form). A provider decodes each entry and, for DER, wraps it in PEM
+   * before persisting. Passing base64 spans (rather than pre-wrapped PEM strings) lets
    * the connection client deliver the chain with ZERO heap allocation - the spans
    * point directly into the client's receive buffer.
    *
@@ -82,7 +91,7 @@ extern "C"
    * persist it) MUST copy the bytes; storing the spans yields dangling reads. */
   typedef struct az_iot_issued_certificate
   {
-    const az_span* certificates; /* base64 DER certs, leaf first */
+    const az_span* certificates; /* base64 DER or PEM certs, leaf first */
     size_t count;
   } az_iot_issued_certificate;
 
@@ -96,15 +105,38 @@ extern "C"
   {
     uint32_t version; /* = AZ_IOT_CERTIFICATE_PROVIDER_VTABLE_VERSION (D1) */
 
-    /* v1 core. load() returns credential material for the requested role. */
+    /* v1 core. load() returns the @p index-th certificate for @p role,
+     * index 0 first; the client tries them in order when the service rejects
+     * one, and remembers the index that connected.
+     * AZ_IOT_ERR_NOT_FOUND: no certificate at @p index (past the last one, or
+     * none for the role); for index 0, trusted_ca_pem/_path may still be set
+     * (valid while the provider lives), and are then used for a role that
+     * authenticates with SAS. Any other error fails the attempt, except while
+     * the client checks an index > 0 during fallback: there it ends the
+     * certificates, like AZ_IOT_ERR_NOT_FOUND, and is logged. The client
+     * asks for at most AZ_IOT_MAX_CERTS_PER_ROLE indexes. A provider with one
+     * certificate per role returns AZ_IOT_ERR_NOT_FOUND for index > 0. */
     az_iot_result (*load)(
         az_iot_certificate_provider* self,
         az_iot_cert_role role,
+        uint8_t index,
         az_iot_certificate_material* out_material);
+    /** Ends the use of @p material from a successful load(); called once per
+     * such load(), and not after a failed one. Material for a connection
+     * attempt is released once the adapter's connect() has copied it, or when
+     * the attempt ends before connect(); material loaded only to validate or
+     * probe certificates is released at once. @p material itself is caller
+     * storage; the provider may then free what it references and SHOULD wipe
+     * any in-memory private key or password it handed out (as the PEM provider
+     * does) unless it still needs them;
+     * deinit() wipes any it kept. A non-extractable key (client_key_uri or
+     * sign()) keeps the key out of process memory altogether. */
     void (*release)(az_iot_certificate_provider* self, az_iot_certificate_material* material);
     void (*deinit)(az_iot_certificate_provider* self);
 
-    /* v2 CSR enrollment (optional; NULL get_csr => enrollment not supported). */
+    /* v2 CSR enrollment (optional; NULL get_csr => enrollment not supported).
+     * get_csr() signs over the provider's operational key (see key stability
+     * above); repeated calls use the same key. */
     az_iot_result (*get_csr)(
         az_iot_certificate_provider* self,
         const char* subject_common_name,
@@ -113,10 +145,15 @@ extern "C"
     /* Persist the issued OPERATIONAL certificate chain. Deliberately typed on
      * az_iot_issued_certificate (a leaf-first cert CHAIN) rather than
      * az_iot_certificate_material: what is issued is a certificate chain only -
-     * the matching private key was generated by the provider in get_csr() and
-     * never transits this hook - so the single-cert material shape would not fit.
-     * Each entry is base64 DER (the provider PEM-wraps to persist). The chain is
-     * valid only for this call (see the type's lifetime note). */
+     * the matching private key is the provider's operational key and never
+     * transits this hook - so the single-cert material shape would not fit.
+     * Each entry is base64 DER or PEM (see az_iot_issued_certificate). The chain is
+     * valid only for this call (see the type's lifetime note).
+     *
+     * A chain whose leaf does not certify the operational key is refused
+     * (AZ_IOT_ERR_INVALID_ARG). Must be all-or-nothing: on failure,
+     * load(AZ_IOT_CRED_OPERATIONAL) keeps returning the previous credential, so
+     * a failed renewal does not break the next connect. */
     az_iot_result (*store_issued_certificate)(
         az_iot_certificate_provider* self,
         const az_iot_issued_certificate* issued);
@@ -124,7 +161,8 @@ extern "C"
     /* v2 non-extractable key custody (optional; D8). When present the TLS
      * adapter calls sign() instead of reading a private key: signs the
      * caller-provided digest, writing up to out_sig_cap bytes and setting
-     * *out_sig_len.
+     * *out_sig_len. Called only from inside connection client calls, on the thread
+     * making them (az_iot_mqtt_sign_callback).
      *
      * The connection client forwards this to the adapter (through
      * az_iot_mqtt_tls_options::sign) when vtable->version >= 2 and the slot is

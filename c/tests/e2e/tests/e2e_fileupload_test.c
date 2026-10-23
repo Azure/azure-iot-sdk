@@ -277,8 +277,10 @@ static bool pump(fixture* fx, int ms)
   return true;
 }
 
-/* Wait for the hub to publish @p wanted_blob to the service-side notification
- * endpoint, latching whether @p unwanted_blob ever showed up alongside it.
+/* Wait for the hub to publish any of @p wanted_blobs (the blobs this test has
+ * reported uploaded so far) to the service-side notification endpoint, latching
+ * whether @p unwanted_blob ever showed up alongside it. A late notification for
+ * an earlier attempt proves the round trip as well as one for the current one.
  *
  * The connection is idle by construction while we wait, and IoT Hub drops idle
  * AMQP connections, so a peer close here is routine rather than a failure:
@@ -288,7 +290,8 @@ static bool pump(fixture* fx, int ms)
  * latched here rather than re-read from the watcher afterwards. */
 static bool await_notification(
     fixture* fx,
-    const char* wanted_blob,
+    const char* const* wanted_blobs,
+    int wanted_count,
     const char* unwanted_blob,
     bool* out_saw_unwanted)
 {
@@ -302,9 +305,12 @@ static bool await_notification(
     {
       *out_saw_unwanted = true;
     }
-    if (az_iot_e2e_service_file_notification_seen(fx->svc, wanted_blob))
+    for (int i = 0; i < wanted_count; i++)
     {
-      return true;
+      if (az_iot_e2e_service_file_notification_seen(fx->svc, wanted_blobs[i]))
+      {
+        return true;
+      }
     }
     if ((time(NULL) - start) >= E2E_NOTIFICATION_TIMEOUT_S)
     {
@@ -338,15 +344,18 @@ static void report_notification_stats(fixture* fx)
   int delivered = 0;
   int captured = 0;
   int released = 0;
+  int stale = 0;
   int unparsed = 0;
-  az_iot_e2e_service_file_notification_stats(fx->svc, &delivered, &captured, &released, &unparsed);
+  az_iot_e2e_service_file_notification_stats(
+      fx->svc, &delivered, &captured, &released, &stale, &unparsed);
   fprintf(
       stderr,
       "file-upload notifications: delivered=%d captured=%d "
-      "released(other device)=%d undecodable=%d\n",
+      "released(other device)=%d accepted(stale)=%d undecodable=%d\n",
       delivered,
       captured,
       released,
+      stale,
       unparsed);
 }
 
@@ -475,16 +484,20 @@ static void test_upload_round_trip_and_failure_reporting(void** state)
    *
    *    Uploading again is what actually probes whether the hub is publishing
    *    yet, so that is what this does. Each attempt uses a fresh blob and a
-   *    fresh correlation id -- a completion may be reported once per id. */
+   *    fresh correlation id -- a completion may be reported once per id. A
+   *    notification for any attempt counts: an earlier one may land late. */
   bool saw_failed = false;
   bool saw_uploaded = false;
-  char blob_name[96];
+  char blob_names[E2E_ROUND_TRIP_ATTEMPTS][96];
+  const char* uploaded_blobs[E2E_ROUND_TRIP_ATTEMPTS];
 
   for (int attempt = 1; attempt <= E2E_ROUND_TRIP_ATTEMPTS && !saw_uploaded; attempt++)
   {
+    char* blob_name = blob_names[attempt - 1];
     char tag[32];
     (void)snprintf(tag, sizeof(tag), "ok-%d", attempt);
-    make_blob_name(blob_name, sizeof(blob_name), tag);
+    make_blob_name(blob_name, sizeof(blob_names[0]), tag);
+    uploaded_blobs[attempt - 1] = blob_name;
     upload_ctx u;
     request_sas(fx, blob_name, &u);
 
@@ -545,7 +558,8 @@ static void test_upload_round_trip_and_failure_reporting(void** state)
      *    failed. That upload was reported FIRST, so by the time this
      *    notification lands the hub has demonstrably processed both. */
     bool saw_failed_this_attempt = false;
-    saw_uploaded = await_notification(fx, blob_name, failed_blob, &saw_failed_this_attempt);
+    saw_uploaded
+        = await_notification(fx, uploaded_blobs, attempt, failed_blob, &saw_failed_this_attempt);
     saw_failed = saw_failed || saw_failed_this_attempt;
     report_notification_stats(fx);
 

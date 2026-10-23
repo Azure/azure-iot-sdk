@@ -26,7 +26,7 @@
 #include "internal/connection_client_internal.h"
 #include "internal/log_internal.h"
 #include "internal/proto3.h"
-#include "internal/reconnect.h"
+#include "internal/mono_time.h"
 #include "internal/span_writer.h"
 
 #define AZ_IOT_TWIN_TOPIC_MAX 192
@@ -101,22 +101,15 @@ static int alloc_pending(az_iot_mqttv5_twin_client* t)
 /** @brief True when the `type` user property is exactly "<want>:1". */
 static bool type_is(const az_iot_mqtt_message* msg, const char* want)
 {
-  for (size_t i = 0; i < msg->user_properties_count; ++i)
+  az_iot_mqtt_user_property_view type;
+  if (az_iot_mqtt_user_properties_find(&msg->user_properties, TWIN_TYPE_KEY, &type) != AZ_IOT_OK)
   {
-    const az_iot_mqtt_user_property* up = &msg->user_properties[i];
-    if (!up->key || strcmp(up->key, TWIN_TYPE_KEY) != 0)
-    {
-      continue;
-    }
-    if (!up->value)
-    {
-      return false;
-    }
-    size_t n = strlen(want);
-    return strncmp(up->value, want, n) == 0 && up->value[n] == ':'
-        && strcmp(up->value + n + 1, TWIN_SCHEMA_VERSION) == 0;
+    return false;
   }
-  return false;
+  size_t const n = strlen(want);
+  size_t const v = strlen(TWIN_SCHEMA_VERSION);
+  return type.value_len == n + 1 + v && memcmp(type.value, want, n) == 0 && type.value[n] == ':'
+      && memcmp(type.value + n + 1, TWIN_SCHEMA_VERSION, v) == 0;
 }
 
 /** @brief True when @p topic is exactly `ih/{id}/dev/twin` (dispatch matches by prefix). */
@@ -147,11 +140,16 @@ static int find_pending_by_correlation_id(
   return -1;
 }
 
-/** @brief True when a backend-initiated message belongs to the current connection. */
+/**
+ * @brief True when a backend-initiated message belongs to the current connection.
+ *
+ * Accepted from the birth on: the service sends the twin-push before the birth-ack. Both come
+ * from the same session open, so the birth-ack baseline matches what the push delivered.
+ */
 static bool matches_connection(const az_iot_mqttv5_twin_client* t, const az_iot_mqtt_message* msg)
 {
   uint8_t birth_nonce[AZ_IOT_CORRELATION_UUID_LEN];
-  return az_iot_connection_client__presence_nonce(TI(t).conn, birth_nonce) == AZ_IOT_OK
+  return az_iot_connection_client__birth_nonce(TI(t).conn, birth_nonce) == AZ_IOT_OK
       && correlation_is(msg, birth_nonce);
 }
 
@@ -183,14 +181,16 @@ static az_iot_result build_topic(
   const char* device_id = az_iot_connection_client__device_id(conn);
   if (!device_id)
   {
-    AZ_IOT_LOG_WARN("mqttv5_twin: the device id is not assigned yet");
+    AZ_IOT_LOG_WARN(AZ_IOT_LOG_COMPONENT_MQTTV5_TWIN, "the device id is not assigned yet");
     return AZ_IOT_ERR_NOT_CONNECTED;
   }
   const char* parts[] = { TWIN_TOPIC_ROOT, device_id, suffix };
   if (az_iot_span_writer_build_str(AZ_SPAN_FROM_BUFFER(*topic), out_len, parts, 3) != AZ_IOT_OK)
   {
     AZ_IOT_LOG_ERRORF(
-        "mqttv5_twin: the '%s' topic did not fit AZ_IOT_TWIN_TOPIC_MAX bytes", suffix);
+        AZ_IOT_LOG_COMPONENT_MQTTV5_TWIN,
+        "the '%s' topic did not fit AZ_IOT_TWIN_TOPIC_MAX bytes",
+        suffix);
     return AZ_IOT_ERR_NOT_SUPPORTED;
   }
   return AZ_IOT_OK;
@@ -220,16 +220,18 @@ static az_iot_result publish_twin(
   out.payload_len = body_len;
   out.qos = AZ_IOT_MQTT_QOS_0; /* answered by a response message, not a PUBACK */
   out.content_type = TWIN_CONTENT_TYPE;
-  out.user_properties = &type_prop;
-  out.user_properties_count = 1;
+  out.user_properties = az_iot_mqtt_user_properties_from_array(&type_prop, 1);
   out.correlation_data = correlation_id;
   out.correlation_data_len = AZ_IOT_CORRELATION_UUID_LEN;
 
-  r = az_iot_connection_client__publish(TI(t).conn, &out, NULL, NULL);
+  r = az_iot_connection_client__publish(TI(t).conn, t, &out, NULL, NULL);
   if (r != AZ_IOT_OK)
   {
     AZ_IOT_LOG_WARNF(
-        "mqttv5_twin: the '%s' publish was refused (%s)", type_value, az_iot_result_to_string(r));
+        AZ_IOT_LOG_COMPONENT_MQTTV5_TWIN,
+        "the '%s' publish was refused (%s)",
+        type_value,
+        az_iot_result_to_string(r));
   }
   return r;
 }
@@ -486,7 +488,7 @@ static void on_twin_push(az_iot_mqttv5_twin_client* t, const az_iot_mqtt_message
   }
   if (!ok)
   {
-    AZ_IOT_LOG_WARN("mqttv5_twin: dropping a malformed twin-push");
+    AZ_IOT_LOG_WARN(AZ_IOT_LOG_COMPONENT_MQTTV5_TWIN, "dropping a malformed twin-push");
     return;
   }
 
@@ -542,7 +544,7 @@ static void on_desired_patch(az_iot_mqttv5_twin_client* t, const az_iot_mqtt_mes
   }
   if (!ok)
   {
-    AZ_IOT_LOG_WARN("mqttv5_twin: dropping a malformed desired-patch");
+    AZ_IOT_LOG_WARN(AZ_IOT_LOG_COMPONENT_MQTTV5_TWIN, "dropping a malformed desired-patch");
     return;
   }
 
@@ -567,7 +569,8 @@ static void on_snapshot_response(az_iot_mqttv5_twin_client* t, const az_iot_mqtt
   az_iot_mqttv5_twin_state twin;
   if (!type_is(msg, TWIN_TYPE_GET_RESPONSE) || !decode_get_response(msg, &twin))
   {
-    AZ_IOT_LOG_WARN("mqttv5_twin: dropping an unusable desired-snapshot response");
+    AZ_IOT_LOG_WARN(
+        AZ_IOT_LOG_COMPONENT_MQTTV5_TWIN, "dropping an unusable desired-snapshot response");
     return;
   }
   TI(t).reported_properties_service_version = twin.reported.version;
@@ -582,7 +585,7 @@ static void on_get_response(az_iot_mqttv5_twin_client* t, int idx, const az_iot_
   az_iot_mqttv5_twin_state twin;
   if (!decode_get_response(msg, &twin))
   {
-    AZ_IOT_LOG_WARN("mqttv5_twin: dropping a malformed get-response");
+    AZ_IOT_LOG_WARN(AZ_IOT_LOG_COMPONENT_MQTTV5_TWIN, "dropping a malformed get-response");
     release_pending(t, idx, AZ_IOT_ERR_PROTOCOL, NULL, NULL);
     return;
   }
@@ -627,7 +630,8 @@ static void on_patch_response(az_iot_mqttv5_twin_client* t, int idx, const az_io
   }
   if (!ok)
   {
-    AZ_IOT_LOG_WARN("mqttv5_twin: dropping a malformed reported-patch-response");
+    AZ_IOT_LOG_WARN(
+        AZ_IOT_LOG_COMPONENT_MQTTV5_TWIN, "dropping a malformed reported-patch-response");
     release_pending(t, idx, AZ_IOT_ERR_PROTOCOL, NULL, NULL);
     return;
   }
@@ -687,7 +691,9 @@ static void on_twin_inbound(void* user_ctx, const az_iot_mqtt_message* msg)
   else
   {
     /* Ours, but unreadable. The service sends one answer; do not wait for another. */
-    AZ_IOT_LOG_WARN("mqttv5_twin: releasing a pending request whose response was not usable");
+    AZ_IOT_LOG_WARN(
+        AZ_IOT_LOG_COMPONENT_MQTTV5_TWIN,
+        "releasing a pending request whose response was not usable");
     release_pending(t, idx, AZ_IOT_ERR_PROTOCOL, NULL, NULL);
   }
 }
@@ -727,9 +733,9 @@ static void adopt_session(az_iot_mqttv5_twin_client* t)
 /**
  * @brief Hub CONNECTED: requests can now be published, so catch up.
  *
- * `twin_push.push_desired` only replaces the birth-ack fetch. A replaced twin
- * not yet settled by a pushed snapshot, or a gap a patch or probe showed before
- * CONNECTED, is still fetched.
+ * With `twin_push.push_desired` the service pushes the snapshot, so the birth-ack
+ * fetch is skipped; a replaced twin not yet settled by a pushed snapshot, or a
+ * gap a patch or probe showed before CONNECTED, is still fetched.
  */
 static void on_hub_connected(az_iot_mqttv5_twin_client* t)
 {
@@ -764,7 +770,9 @@ static az_iot_result bind_topics(void* owner, az_iot_connection_client* conn)
   az_iot_result r = build_topic(conn, TWIN_INBOUND_SUFFIX, &topic, &topic_len);
   if (r != AZ_IOT_OK)
   {
-    AZ_IOT_LOG_ERROR("mqttv5_twin: cannot bind topics -- the inbound topic could not be built");
+    AZ_IOT_LOG_ERROR(
+        AZ_IOT_LOG_COMPONENT_MQTTV5_TWIN,
+        "cannot bind topics -- the inbound topic could not be built");
     return (r == AZ_IOT_ERR_NOT_CONNECTED) ? AZ_IOT_ERR_NOT_INITIALIZED : AZ_IOT_ERR_INTERNAL;
   }
   TI(client).inbound_topic_len = topic_len;
@@ -773,7 +781,8 @@ static az_iot_result bind_topics(void* owner, az_iot_connection_client* conn)
   if (r != AZ_IOT_OK)
   {
     AZ_IOT_LOG_ERRORF(
-        "mqttv5_twin: could not register delivery for the twin topic (%s)",
+        AZ_IOT_LOG_COMPONENT_MQTTV5_TWIN,
+        "could not register delivery for the twin topic (%s)",
         az_iot_result_to_string(r));
   }
   return r;
@@ -795,9 +804,8 @@ static void withdraw_registrations(
 /* public API                                                                 */
 /* ------------------------------------------------------------------------- */
 
-az_iot_result az_iot_mqttv5_twin_client_init(
-    az_iot_mqttv5_twin_client* client,
-    az_iot_connection_client* conn)
+AZ_NODISCARD az_iot_result
+az_iot_mqttv5_twin_client_init(az_iot_mqttv5_twin_client* client, az_iot_connection_client* conn)
 {
   if (client == NULL || conn == NULL)
   {
@@ -829,7 +837,8 @@ az_iot_result az_iot_mqttv5_twin_client_init(
   if (result != AZ_IOT_OK)
   {
     AZ_IOT_LOG_ERRORF(
-        "mqttv5_twin: init failed (%s); withdrawing partial registrations",
+        AZ_IOT_LOG_COMPONENT_MQTTV5_TWIN,
+        "init failed (%s); withdrawing partial registrations",
         az_iot_result_to_string(result));
     withdraw_registrations(conn, client);
     az_iot_connection_client__release_profile(conn);
@@ -856,7 +865,7 @@ void az_iot_mqttv5_twin_client_deinit(az_iot_mqttv5_twin_client* client)
   memset(client, 0, sizeof(*client));
 }
 
-az_iot_mqttv5_twin_get_options az_iot_mqttv5_twin_get_options_default(void)
+AZ_NODISCARD az_iot_mqttv5_twin_get_options az_iot_mqttv5_twin_get_options_default(void)
 {
   az_iot_mqttv5_twin_get_options opts;
   memset(&opts, 0, sizeof(opts));
@@ -885,7 +894,7 @@ static az_iot_result submit_request(
   return r;
 }
 
-az_iot_result az_iot_mqttv5_twin_client_get(
+AZ_NODISCARD az_iot_result az_iot_mqttv5_twin_client_get(
     az_iot_mqttv5_twin_client* twin,
     az_iot_mqttv5_twin_get_callback cb,
     void* user_ctx)
@@ -894,7 +903,7 @@ az_iot_result az_iot_mqttv5_twin_client_get(
   return az_iot_mqttv5_twin_client_get_with_options(twin, &opts, cb, user_ctx);
 }
 
-az_iot_result az_iot_mqttv5_twin_client_get_with_options(
+AZ_NODISCARD az_iot_result az_iot_mqttv5_twin_client_get_with_options(
     az_iot_mqttv5_twin_client* twin,
     const az_iot_mqttv5_twin_get_options* opts,
     az_iot_mqttv5_twin_get_callback cb,
@@ -917,7 +926,8 @@ az_iot_result az_iot_mqttv5_twin_client_get_with_options(
   if (idx < 0)
   {
     AZ_IOT_LOG_WARN(
-        "mqttv5_twin: refusing a GET -- AZ_IOT_TWIN_MAX_PENDING requests are in flight");
+        AZ_IOT_LOG_COMPONENT_MQTTV5_TWIN,
+        "refusing a GET -- AZ_IOT_TWIN_MAX_PENDING requests are in flight");
     return AZ_IOT_ERR_NOT_SUPPORTED;
   }
   TI(twin).pending[idx].cb.get_cb = cb;
@@ -925,7 +935,7 @@ az_iot_result az_iot_mqttv5_twin_client_get_with_options(
   return submit_request(twin, TWIN_PENDING_GET, TWIN_TYPE_GET, body, body_len, idx);
 }
 
-az_iot_result az_iot_mqttv5_twin_client_patch_reported(
+AZ_NODISCARD az_iot_result az_iot_mqttv5_twin_client_patch_reported(
     az_iot_mqttv5_twin_client* twin,
     const uint8_t* patch,
     size_t patch_len,
@@ -940,7 +950,7 @@ az_iot_result az_iot_mqttv5_twin_client_patch_reported(
       twin, TI(twin).reported_properties_service_version, patch, patch_len, cb, user_ctx);
 }
 
-az_iot_result az_iot_mqttv5_twin_client_patch_reported_if_match(
+AZ_NODISCARD az_iot_result az_iot_mqttv5_twin_client_patch_reported_if_match(
     az_iot_mqttv5_twin_client* twin,
     uint64_t if_match,
     const uint8_t* patch,
@@ -956,8 +966,10 @@ az_iot_result az_iot_mqttv5_twin_client_patch_reported_if_match(
   size_t cap = (size_t)az_span_size(TI(twin).encode_buffer);
   if (cap == 0)
   {
-    AZ_IOT_LOG_ERROR("mqttv5_twin: refusing a patch -- no encode buffer; call "
-                     "az_iot_mqttv5_twin_client_set_encode_buffer()");
+    AZ_IOT_LOG_ERROR(
+        AZ_IOT_LOG_COMPONENT_MQTTV5_TWIN,
+        "refusing a patch -- no encode buffer; call "
+        "az_iot_mqttv5_twin_client_set_encode_buffer()");
     return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
   }
 
@@ -968,7 +980,8 @@ az_iot_result az_iot_mqttv5_twin_client_patch_reported_if_match(
       || !az_iot_proto3_write_bytes_field(
           buf, cap, &pos, TWIN_F_REPORTED_PAYLOAD, patch, patch_len))
   {
-    AZ_IOT_LOG_ERROR("mqttv5_twin: the framed patch did not fit the encode buffer");
+    AZ_IOT_LOG_ERROR(
+        AZ_IOT_LOG_COMPONENT_MQTTV5_TWIN, "the framed patch did not fit the encode buffer");
     return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
   }
 
@@ -976,7 +989,8 @@ az_iot_result az_iot_mqttv5_twin_client_patch_reported_if_match(
   if (idx < 0)
   {
     AZ_IOT_LOG_WARN(
-        "mqttv5_twin: refusing a patch -- AZ_IOT_TWIN_MAX_PENDING requests are in flight");
+        AZ_IOT_LOG_COMPONENT_MQTTV5_TWIN,
+        "refusing a patch -- AZ_IOT_TWIN_MAX_PENDING requests are in flight");
     return AZ_IOT_ERR_NOT_SUPPORTED;
   }
   TI(twin).pending[idx].cb.patch_cb = cb;
@@ -1062,7 +1076,7 @@ az_iot_result az_iot_mqttv5_twin_client_do_work(az_iot_mqttv5_twin_client* twin)
   if (TI(twin).snapshot.in_flight && now >= TI(twin).snapshot.deadline_ms)
   {
     /* Re-requested on the next desired event or reconnect, not on a timer. */
-    AZ_IOT_LOG_WARN("mqttv5_twin: the desired-snapshot GET went unanswered");
+    AZ_IOT_LOG_WARN(AZ_IOT_LOG_COMPONENT_MQTTV5_TWIN, "the desired-snapshot GET went unanswered");
     TI(twin).snapshot.in_flight = false;
   }
   for (int i = 0; i < AZ_IOT_TWIN_MAX_PENDING; ++i)

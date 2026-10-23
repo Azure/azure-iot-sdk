@@ -2,6 +2,7 @@
 // See LICENSE file in the project root for full license information.
 
 using Microsoft.Azure.Iot.Device.Exceptions;
+using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Mqtt;
 using Microsoft.Azure.Iot.Device.Retry;
 using System.Diagnostics;
@@ -36,7 +37,7 @@ namespace Microsoft.Azure.Iot.Device
 
         public event Func<MqttClientConnectedEventArgs, Task>? ConnectedAsync;
 
-        public event Func<MqttConnect, Task<MqttConnect>>? ConnectingAsync;
+        public event Func<MqttConnect, CancellationToken, Task<MqttConnect>>? ConnectingAsync;
 
         /// <summary>
         /// Raised anytime this layer detects a disconnection.
@@ -52,6 +53,71 @@ namespace Microsoft.Azure.Iot.Device
         private readonly IRetryPolicy _connectionRetryPolicy;
 
         private readonly TimeSpan _connectionAttemptTimeout;
+
+        /// <summary>
+        /// Whether the device whose connection this layer maintains was provisioned through Device Provisioning
+        /// Service and therefore has a registration it can renew. This gates whether a
+        /// <see cref="RetryGuidance.Reprovision"/> from the retry policy actually crosses over to
+        /// re-provisioning: a device that holds no provisioning inputs has nothing to re-provision from, so the
+        /// guidance is treated as an ordinary retry and the hub keeps being retried.
+        /// </summary>
+        /// <remarks>
+        /// The owning connection client sets this when it connects to an IoT hub. The number of hub attempts after
+        /// which re-provisioning is advised lives in the retry policy (for example
+        /// <see cref="ExponentialBackoffRetryPolicy"/>), not here.
+        /// </remarks>
+        public bool CanReprovision { get; set; }
+
+        /// <summary>
+        /// The endpoint the current connection targets, surfaced to the retry policy so it can tell whether it is being
+        /// asked to retry connecting to an IoT hub or to Device Provisioning Service.
+        /// </summary>
+        /// <remarks>
+        /// The owning connection client changes this through <see cref="SwitchEndpointAsync"/>, to
+        /// <see cref="ConnectionEndpoint.IotHub"/> for hub connections and
+        /// <see cref="ConnectionEndpoint.DeviceProvisioningService"/> for provisioning connections, alongside
+        /// <see cref="CanReprovision"/>. Every PUBLISH, SUBSCRIBE and UNSUBSCRIBE names the endpoint it is meant for and
+        /// is only sent while this is that endpoint.
+        /// </remarks>
+        public ConnectionEndpoint ConnectionEndpoint
+        {
+            get
+            {
+                lock (_endpointLock)
+                {
+                    return _connectionEndpoint;
+                }
+            }
+        }
+
+        // Guards _connectionEndpoint, _inFlightOperationCounts and _staleOperationsDrained so that admitting an operation
+        // for an endpoint and switching away from that endpoint are serialized with each other.
+        private readonly object _endpointLock = new();
+        private ConnectionEndpoint _connectionEndpoint = ConnectionEndpoint.None;
+
+        // The number of PUBLISH/SUBSCRIBE/UNSUBSCRIBE operations currently handed to the underlying client, indexed by
+        // the endpoint each one was admitted for.
+        private readonly int[] _inFlightOperationCounts = new int[Enum.GetValues<ConnectionEndpoint>().Length];
+
+        // Completed once no operation admitted for an endpoint other than the current one is still in flight. Only set
+        // while an endpoint switch is waiting for that.
+        private TaskCompletionSource? _staleOperationsDrained;
+
+        /// <summary>
+        /// Whether this layer is in a connection lifecycle that could still release an operation waiting for the
+        /// connection to come back: it is maintaining or (re-)establishing a connection, or it is delivering a terminal
+        /// fault that unblocks such waiters. This is <c>false</c> only when the layer is deliberately idle -- it has
+        /// never connected, or it was deliberately disconnected (via <see cref="DisconnectAsync"/>) or disposed -- so no
+        /// reconnection and no fault notification is coming.
+        /// </summary>
+        /// <remarks>
+        /// The owning connection client uses this to decide whether a feature operation that finds the connection gone
+        /// should keep waiting for a reconnection or fail fast. Unlike <see cref="_isDesiredConnected"/> alone, this
+        /// stays true across the brief window in which a terminal fault has stopped the connection but has not yet been
+        /// delivered to the owning client, so such a waiter is released by the real terminal fault rather than being
+        /// failed with a bare not-connected error.
+        /// </remarks>
+        public bool IsConnectionLifecycleActive => _isDesiredConnected || (!_isClosing && _mostRecentConnect != null);
 
         private MqttConnect? _mostRecentConnect;
         private bool _isDisposed;
@@ -81,44 +147,60 @@ namespace Microsoft.Azure.Iot.Device
             _underlyingMqttClient.PublishReceivedAsync += DelegatePublishReceivedAsync;
         }
 
-        private Task DelegatePublishReceivedAsync(MqttPublishReceivedEventArgs args)
+        private async Task DelegatePublishReceivedAsync(MqttPublishReceivedEventArgs args)
         {
+
             if (PublishReceivedAsync != null)
             {
-                _ = PublishReceivedAsync.Invoke(args);
+                try
+                {
+                    await PublishReceivedAsync.Invoke(args);
+                }
+                catch (Exception e)
+                {
+                    Trace.TraceError("The publish handler threw while being notified of a publish. {0}", e);
+                }
             }
-
-            return Task.CompletedTask;
         }
 
-        private Task DelegateConnectedAsync(MqttClientConnectedEventArgs args)
+        private async Task DelegateConnectedAsync(MqttClientConnectedEventArgs args)
         {
             if (ConnectedAsync != null)
             {
-                _ = ConnectedAsync.Invoke(args);
+                try
+                {
+                    await ConnectedAsync.Invoke(args);
+                }
+                catch (Exception e)
+                {
+                    Trace.TraceError("The connected handler threw while being notified of a connection. {0}", e);
+                }
             }
-
-            return Task.CompletedTask;
         }
 
-        private async Task<MqttConnect> DelegateConnectingAsync(MqttConnect connect)
+        private async Task<MqttConnect> DelegateConnectingAsync(MqttConnect connect, CancellationToken cancellationToken)
         {
             if (ConnectingAsync != null)
             {
-                connect = await ConnectingAsync.Invoke(connect);
+                connect = await ConnectingAsync.Invoke(connect, cancellationToken);
             }
 
             return connect;
         }
 
-        private Task DelegateDisconnectedAsync(MqttClientDisconnectedEventArgs args)
+        private async Task DelegateDisconnectedAsync(MqttClientDisconnectedEventArgs args)
         {
             if (DisconnectedAsync != null)
             {
-                _ = DisconnectedAsync.Invoke(args);
+                try
+                {
+                    await DisconnectedAsync.Invoke(args);
+                }
+                catch (Exception e)
+                {
+                    Trace.TraceError("The disconnected handler threw while being notified of a disconnection. {0}", e);
+                }
             }
-
-            return Task.CompletedTask;
         }
 
         /// <summary>
@@ -143,6 +225,36 @@ namespace Microsoft.Azure.Iot.Device
 
             ArgumentNullException.ThrowIfNull(connect);
 
+            // Hold the disconnected-event lock for the whole initial connect. Each failed attempt raises the
+            // "Disconnected" callback, which would otherwise start a second retry loop alongside this one. Queued
+            // callbacks re-check their guards once this method completes and stand down (or reconnect, if the
+            // connection dropped right after being established).
+            await _disconnectedEventLock.WaitAsync(cancellationToken);
+
+            try
+            {
+                if (_isDesiredConnected)
+                {
+                    throw new InvalidOperationException("The client is already managing the connection.");
+                }
+
+                return await ConnectWhileHoldingEventLockAsync(connect, cancellationToken);
+            }
+            finally
+            {
+                try
+                {
+                    _disconnectedEventLock.Release();
+                }
+                catch (ObjectDisposedException)
+                {
+                    // Dispose raced with this connect; there is nothing left to release.
+                }
+            }
+        }
+
+        private async Task<MqttConnectAck> ConnectWhileHoldingEventLockAsync(MqttConnect connect, CancellationToken cancellationToken)
+        {
             _mostRecentConnect = connect;
             _isClosing = false;
 
@@ -325,6 +437,12 @@ namespace Microsoft.Azure.Iot.Device
                         ?? new OperationCanceledException("This operation was canceled because the MQTT client was closed.");
                 }
 
+                // A hub that simply will not answer is otherwise retried under the policy forever, which for a device
+                // provisioned through DPS would never fall back to asking DPS for a fresh assignment. The retry policy
+                // (see ExponentialBackoffRetryPolicy) decides when enough consecutive hub attempts have failed and
+                // returns RetryGuidance.Reprovision, which the consultation below turns into a
+                // re-provisioning crossover.
+
                 DeviceException? deviceException = Classify(lastException, cancellationToken.IsCancellationRequested);
 
                 if (deviceException != null)
@@ -351,28 +469,70 @@ namespace Microsoft.Azure.Iot.Device
 
                 // Always consult the retry policy when reconnecting, but only consult it on attempt > 1 when
                 // initially connecting
-                if ((isReconnection || attemptCount > 1)
-                    && !_connectionRetryPolicy.ShouldRetry(attemptCount, lastException, out retryDelay))
+                if (isReconnection || attemptCount > 1)
                 {
-                    // Should not occur with the default policy as it's indefinite retry
-                    Trace.TraceError("Retry policy was exhausted while trying to maintain a connection {0}", lastException);
-                    var retryException = new RetryExpiredException("Retry policy has been exhausted. See inner exception for the latest exception encountered while retrying.", lastException!);
+                    RetryGuidance guidance = _connectionRetryPolicy.GetRetryGuidance(attemptCount, lastException, ConnectionEndpoint, out retryDelay);
 
-                    // An exhausted policy is terminal by construction: there are no attempts left to make.
-                    var exhaustedException = new DeviceException("Retry policy has been exhausted while maintaining the connection.", retryException)
+                    // The policy wants this device to stop retrying the hub and re-provision through DPS instead. This is
+                    // only meaningful for a hub connection on a device that holds provisioning inputs to re-provision
+                    // from; otherwise (a DPS connection, or a device connected with directly supplied credentials) it is
+                    // treated the same as Retry, per the RetryGuidance documentation. End maintenance with a fault the
+                    // owning client turns into a re-provisioning attempt.
+                    if (guidance == RetryGuidance.Reprovision
+                        && ConnectionEndpoint == ConnectionEndpoint.IotHub
+                        && CanReprovision)
                     {
-                        Retryability = ErrorRetryability.Terminal,
-                        IsContained = false,
-                    };
+                        Trace.TraceWarning("Retry policy asked to abandon hub reconnection and re-provision through DPS. {0}", lastException);
 
-                    await EndConnectionMaintenanceAsync(exhaustedException, lastDisconnect);
+                        var policyReprovisionFault = new DeviceException(
+                            "The retry policy asked this device to abandon reconnecting to the IoT hub and re-provision through Device Provisioning Service.",
+                            lastException!)
+                        {
+                            Retryability = ErrorRetryability.Terminal,
+                            IsContained = false,
+                        };
 
-                    if (isReconnection)
-                    {
-                        return null;
+                        await EndConnectionMaintenanceAsync(policyReprovisionFault, lastDisconnect, reprovisionRequired: true);
+
+                        if (isReconnection)
+                        {
+                            return null;
+                        }
+
+                        // Called directly from the initial ConnectAsync, which cannot use a null ack and would otherwise
+                        // await a presence flow that never arrives. The reprovisionRequired fault raised above has
+                        // already asked the owning client to re-provision; surface the crossover to the caller too, the
+                        // same way the terminal branches below do on an initial connect.
+                        throw policyReprovisionFault;
                     }
 
-                    throw exhaustedException;
+                    // The policy wants this device to stop retrying altogether, which puts it in a terminal state.
+                    if (guidance == RetryGuidance.AbandonRetry)
+                    {
+                        // Should not occur with the default policy as it's indefinite retry
+                        Trace.TraceError("Retry policy asked to abandon retrying while maintaining a connection {0}", lastException);
+                        var retryException = new RetryExpiredException("Retry policy asked to abandon retrying. See inner exception for the latest exception encountered while retrying.", lastException!);
+
+                        // Abandoning retries is terminal by construction: there are no attempts left to make.
+                        var exhaustedException = new DeviceException("Retry policy asked to abandon retrying while maintaining the connection.", retryException)
+                        {
+                            Retryability = ErrorRetryability.Terminal,
+                            IsContained = false,
+                        };
+
+                        await EndConnectionMaintenanceAsync(exhaustedException, lastDisconnect);
+
+                        if (isReconnection)
+                        {
+                            return null;
+                        }
+
+                        throw exhaustedException;
+                    }
+
+                    // Otherwise the policy allows another attempt (RetryGuidance.Retry, or RetryGuidance.Reprovision on a
+                    // DPS connection or on a device that cannot re-provision), so fall through and retry after the delay
+                    // the policy provided.
                 }
 
                 // With all the above conditions checked, the client should attempt to connect again after a delay
@@ -414,7 +574,13 @@ namespace Microsoft.Azure.Iot.Device
                     Trace.TraceWarning("Encountered an exception while connecting. May attempt to reconnect. {0}", e);
                 }
 
-                attemptCount++;
+                // Saturate rather than wrap: under the default indefinite policy this reconnection loop can run without
+                // bound, and a uint that wrapped back to 0 would make the retry policy see this as a first attempt again
+                // and reset its backoff. Pinning at the maximum keeps the policy seeing an ever-growing attempt count.
+                if (attemptCount < uint.MaxValue)
+                {
+                    attemptCount++;
+                }
             }
         }
 
@@ -442,7 +608,7 @@ namespace Microsoft.Azure.Iot.Device
         /// Only ever called with a terminal or identity-terminal error: retryable errors are absorbed by the retry loop
         /// and never reach here.
         /// </remarks>
-        private async Task EndConnectionMaintenanceAsync(DeviceException fault, MqttClientDisconnectedEventArgs? lastDisconnect)
+        private Task EndConnectionMaintenanceAsync(DeviceException fault, MqttClientDisconnectedEventArgs? lastDisconnect, bool reprovisionRequired = false)
         {
             Debug.Assert(fault.Retryability != ErrorRetryability.Retryable);
 
@@ -452,18 +618,33 @@ namespace Microsoft.Azure.Iot.Device
             if (handler == null)
             {
                 Trace.TraceError("Connection maintenance ended with no fault handler attached. {0}", fault);
-                return;
+                return Task.CompletedTask;
             }
 
             var args = new MqttConnectionFaultedEventArgs()
             {
                 Exception = fault,
                 LastDisconnect = lastDisconnect,
+                ReprovisionRequired = reprovisionRequired,
             };
 
             try
             {
-                await handler.Invoke(args);
+                _ = ObserveConnectionFaultHandlerAsync(handler.Invoke(args));
+            }
+            catch (Exception e)
+            {
+                Trace.TraceError("The connection fault handler threw while being notified of a fatal error. {0}", e);
+            }
+
+            return Task.CompletedTask;
+        }
+
+        private static async Task ObserveConnectionFaultHandlerAsync(Task handlerTask)
+        {
+            try
+            {
+                await handlerTask.ConfigureAwait(false);
             }
             catch (Exception e)
             {
@@ -693,19 +874,119 @@ namespace Microsoft.Azure.Iot.Device
         }
 
         /// <summary>
-        /// Send a PUBLISH and settle it.
+        /// Change the endpoint that the connections this layer maintains target, and wait until no PUBLISH, SUBSCRIBE or
+        /// UNSUBSCRIBE meant for the previous endpoint is still in flight.
+        /// </summary>
+        /// <remarks>
+        /// Operations are admitted for an endpoint under the same lock that this switches the endpoint under, so once
+        /// this returns no operation meant for the previous endpoint can reach the underlying client. The caller must
+        /// await this before connecting to the new endpoint; otherwise an operation that was admitted while the previous
+        /// endpoint was current could be sent over the new endpoint's connection (for example, feature traffic meant
+        /// for IoT hub being sent to Device Provisioning Service while re-provisioning).
+        /// </remarks>
+        public async Task SwitchEndpointAsync(ConnectionEndpoint endpoint, CancellationToken cancellationToken = default)
+        {
+            Task staleOperationsDrained;
+            lock (_endpointLock)
+            {
+                _connectionEndpoint = endpoint;
+
+                if (!HasStaleOperationsInFlight())
+                {
+                    return;
+                }
+
+                _staleOperationsDrained ??= new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                staleOperationsDrained = _staleOperationsDrained.Task;
+            }
+
+            Trace.TraceInformation("Waiting for operations meant for the previous endpoint to finish before targeting {0}.", endpoint);
+            await staleOperationsDrained.WaitAsync(cancellationToken);
+        }
+
+        /// <summary>
+        /// Admit an operation meant for the given endpoint, or throw <see cref="MqttClientNotConnectedException"/> if
+        /// this layer is not targeting that endpoint.
+        /// </summary>
+        /// <remarks>
+        /// Every admitted operation must be ended with exactly one call to <see cref="EndOperation"/>.
+        /// </remarks>
+        private void BeginOperation(ConnectionEndpoint endpoint)
+        {
+            lock (_endpointLock)
+            {
+                if (_connectionEndpoint != endpoint)
+                {
+                    // Reported as "not connected" because, from the caller's point of view, it is: there is no
+                    // connection to the endpoint it wants. The layer above waits for one rather than failing.
+                    throw new MqttClientNotConnectedException($"Not connected to {endpoint}; the current connection targets {_connectionEndpoint}.");
+                }
+
+                _inFlightOperationCounts[(int)endpoint]++;
+            }
+        }
+
+        private void EndOperation(ConnectionEndpoint endpoint)
+        {
+            TaskCompletionSource? staleOperationsDrained = null;
+            lock (_endpointLock)
+            {
+                _inFlightOperationCounts[(int)endpoint]--;
+
+                if (_staleOperationsDrained != null && !HasStaleOperationsInFlight())
+                {
+                    staleOperationsDrained = _staleOperationsDrained;
+                    _staleOperationsDrained = null;
+                }
+            }
+
+            staleOperationsDrained?.TrySetResult();
+        }
+
+        // Must be called while holding _endpointLock.
+        private bool HasStaleOperationsInFlight()
+        {
+            for (int endpoint = 0; endpoint < _inFlightOperationCounts.Length; endpoint++)
+            {
+                if (endpoint != (int)_connectionEndpoint && _inFlightOperationCounts[endpoint] > 0)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// Send a PUBLISH to the given endpoint and settle it.
         /// </summary>
         /// <remarks>
         /// Failures here are contained to the one operation, so they are thrown to the caller rather than being
         /// retried or reported as connection faults. Already-classified <see cref="DeviceException"/>s are rethrown
         /// unchanged so their retryability survives, and <see cref="MqttClientNotConnectedException"/> is left alone
-        /// because it reports connection state rather than an operation failure, and the layer above acts on it.
+        /// because it reports connection state rather than an operation failure, and the layer above acts on it. That
+        /// includes the case where this layer is not targeting <paramref name="endpoint"/>.
         /// </remarks>
-        public async Task<MqttPublishAck> PublishAsync(MqttPublish publish, CancellationToken cancellationToken = default)
+        public Task<MqttPublishAck> PublishAsync(ConnectionEndpoint endpoint, MqttPublish publish, CancellationToken cancellationToken = default)
         {
+            return BuildAndPublishAsync(endpoint, () => publish, cancellationToken);
+        }
+
+        /// <summary>
+        /// Build a PUBLISH only once it has been admitted for the given endpoint, then send it to that endpoint and settle it.
+        /// </summary>
+        /// <remarks>
+        /// <paramref name="buildPublish"/> runs after the operation is admitted and before it is sent, while
+        /// <see cref="SwitchEndpointAsync"/> waits for it, so state it reads (such as the device ID in the topic) cannot
+        /// change to that of a different endpoint connection between being read and the operation being sent. It may
+        /// throw <see cref="MqttClientNotConnectedException"/> to report that the operation cannot be sent yet.
+        /// </remarks>
+        public async Task<MqttPublishAck> BuildAndPublishAsync(ConnectionEndpoint endpoint, Func<MqttPublish> buildPublish, CancellationToken cancellationToken = default)
+        {
+            BeginOperation(endpoint);
             try
             {
-                var puback = await _underlyingMqttClient.PublishAsync(publish, cancellationToken);
+                var puback = await _underlyingMqttClient.PublishAsync(buildPublish(), cancellationToken);
                 ThrowIfPubackHasErrorCode(puback);
                 return puback;
             }
@@ -717,22 +998,42 @@ namespace Microsoft.Azure.Iot.Device
                     IsContained = true,
                 };
             }
+            finally
+            {
+                EndOperation(endpoint);
+            }
         }
 
         /// <summary>
-        /// Send a SUBSCRIBE and settle it.
+        /// Send a SUBSCRIBE to the given endpoint and settle it.
         /// </summary>
         /// <remarks>
         /// Failures here are contained to the one operation, so they are thrown to the caller rather than being
         /// retried or reported as connection faults. Already-classified <see cref="DeviceException"/>s are rethrown
         /// unchanged so their retryability survives, and <see cref="MqttClientNotConnectedException"/> is left alone
-        /// because it reports connection state rather than an operation failure, and the layer above acts on it.
+        /// because it reports connection state rather than an operation failure, and the layer above acts on it. That
+        /// includes the case where this layer is not targeting <paramref name="endpoint"/>.
         /// </remarks>
-        public async Task<MqttSubscribeAck> SubscribeAsync(MqttSubscribe subscribe, CancellationToken cancellationToken = default)
+        public Task<MqttSubscribeAck> SubscribeAsync(ConnectionEndpoint endpoint, MqttSubscribe subscribe, CancellationToken cancellationToken = default)
         {
+            return BuildAndSubscribeAsync(endpoint, () => subscribe, cancellationToken);
+        }
+
+        /// <summary>
+        /// Build a SUBSCRIBE only once it has been admitted for the given endpoint, then send it to that endpoint and settle it.
+        /// </summary>
+        /// <remarks>
+        /// <paramref name="buildSubscribe"/> runs after the operation is admitted and before it is sent, while
+        /// <see cref="SwitchEndpointAsync"/> waits for it, so state it reads (such as the device ID in the topic) cannot
+        /// change to that of a different endpoint connection between being read and the operation being sent. It may
+        /// throw <see cref="MqttClientNotConnectedException"/> to report that the operation cannot be sent yet.
+        /// </remarks>
+        public async Task<MqttSubscribeAck> BuildAndSubscribeAsync(ConnectionEndpoint endpoint, Func<MqttSubscribe> buildSubscribe, CancellationToken cancellationToken = default)
+        {
+            BeginOperation(endpoint);
             try
             {
-                var suback = await _underlyingMqttClient.SubscribeAsync(subscribe, cancellationToken);
+                var suback = await _underlyingMqttClient.SubscribeAsync(buildSubscribe(), cancellationToken);
                 ThrowIfSubackHasErrorCode(suback);
                 return suback;
             }
@@ -744,22 +1045,42 @@ namespace Microsoft.Azure.Iot.Device
                     IsContained = true,
                 };
             }
+            finally
+            {
+                EndOperation(endpoint);
+            }
         }
 
         /// <summary>
-        /// Send a UNSUBSCRIBE and settle it.
+        /// Send a UNSUBSCRIBE to the given endpoint and settle it.
         /// </summary>
         /// <remarks>
         /// Failures here are contained to the one operation, so they are thrown to the caller rather than being
         /// retried or reported as connection faults. Already-classified <see cref="DeviceException"/>s are rethrown
         /// unchanged so their retryability survives, and <see cref="MqttClientNotConnectedException"/> is left alone
-        /// because it reports connection state rather than an operation failure, and the layer above acts on it.
+        /// because it reports connection state rather than an operation failure, and the layer above acts on it. That
+        /// includes the case where this layer is not targeting <paramref name="endpoint"/>.
         /// </remarks>
-        public async Task<MqttUnsubscribeAck> UnsubscribeAsync(MqttUnsubscribe unsubscribe, CancellationToken cancellationToken = default)
+        public Task<MqttUnsubscribeAck> UnsubscribeAsync(ConnectionEndpoint endpoint, MqttUnsubscribe unsubscribe, CancellationToken cancellationToken = default)
         {
+            return BuildAndUnsubscribeAsync(endpoint, () => unsubscribe, cancellationToken);
+        }
+
+        /// <summary>
+        /// Build a UNSUBSCRIBE only once it has been admitted for the given endpoint, then send it to that endpoint and settle it.
+        /// </summary>
+        /// <remarks>
+        /// <paramref name="buildUnsubscribe"/> runs after the operation is admitted and before it is sent, while
+        /// <see cref="SwitchEndpointAsync"/> waits for it, so state it reads (such as the device ID in the topic) cannot
+        /// change to that of a different endpoint connection between being read and the operation being sent. It may
+        /// throw <see cref="MqttClientNotConnectedException"/> to report that the operation cannot be sent yet.
+        /// </remarks>
+        public async Task<MqttUnsubscribeAck> BuildAndUnsubscribeAsync(ConnectionEndpoint endpoint, Func<MqttUnsubscribe> buildUnsubscribe, CancellationToken cancellationToken = default)
+        {
+            BeginOperation(endpoint);
             try
             {
-                var unsuback = await _underlyingMqttClient.UnsubscribeAsync(unsubscribe, cancellationToken);
+                var unsuback = await _underlyingMqttClient.UnsubscribeAsync(buildUnsubscribe(), cancellationToken);
                 ThrowIfUnsubackHasErrorCode(unsuback);
                 return unsuback;
             }
@@ -770,6 +1091,10 @@ namespace Microsoft.Azure.Iot.Device
                     Retryability = ErrorRetryability.Retryable,
                     IsContained = true,
                 };
+            }
+            finally
+            {
+                EndOperation(endpoint);
             }
         }
 

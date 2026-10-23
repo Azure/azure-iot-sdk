@@ -43,7 +43,7 @@
 #include "wifi_connect.h"
 #include "az_iot_mqtt_esp.h"
 #include "az_iot_cert_embedded.h"
-#include "az_iot_su_crypto_mbedtls.h"
+#include "az_iot_crypto_mbedtls.h"
 #include "su_esp32_ota.h"
 
 static const char* TAG = "su_esp32";
@@ -219,6 +219,17 @@ static void on_su_event(const az_iot_su_event* event, void* ctx)
   {
     g_persist_failing = false;
   }
+  else if (event->kind == AZ_IOT_SU_EVENT_UPDATE_REFUSED)
+  {
+    ESP_LOGE(TAG, "update refused: reason=0x%08x", (unsigned)event->reason);
+  }
+  else if (event->kind == AZ_IOT_SU_EVENT_UPDATE_DEFERRED)
+  {
+    ESP_LOGI(
+        TAG,
+        "new update deferred until %s",
+        event->state == AZ_IOT_SU_STATE_IDLE ? "the device reboots" : "the current one ends");
+  }
 }
 
 /* ------------------------------------------------------------------------- */
@@ -251,11 +262,12 @@ void app_main(void)
   az_iot_cert_embedded_init(
       &certs, trusted_ca_pem_start, device_cert_pem_start, device_key_pem_start);
 
-  /* Connection client: DPS provisioning + X.509. */
+  /* Connection client: DPS provisioning + X.509, mbedTLS crypto. */
   az_iot_connection_client_options copts = az_iot_connection_client_options_default();
   copts.dps.id_scope = CONFIG_SU_DPS_ID_SCOPE;
   copts.dps.registration_id = CONFIG_SU_DPS_REGISTRATION_ID;
   copts.certificate_provider = &certs.base;
+  copts.crypto = az_iot_crypto_mbedtls();
 
   az_iot_connection_client conn;
   if (az_iot_connection_client_init(&conn, &copts) != AZ_IOT_OK)
@@ -265,20 +277,20 @@ void app_main(void)
   }
   az_iot_connection_client_add_state_observer(&conn, on_conn_state, NULL);
 
-  if (az_iot_connection_client_register_mqtt_factory(&conn, az_iot_esp_mqtt_factory_create_v3_1_1())
-          != AZ_IOT_OK
-      || az_iot_connection_client_register_mqtt_factory(&conn, az_iot_esp_mqtt_factory_create_v5())
-          != AZ_IOT_OK)
+  /* The factories must outlive conn. This task never returns, so they are never destroyed. */
+  az_iot_mqtt_factory* factory_v3 = az_iot_esp_mqtt_factory_create_v3_1_1();
+  az_iot_mqtt_factory* factory_v5 = az_iot_esp_mqtt_factory_create_v5();
+  if (az_iot_connection_client_register_mqtt_factory(&conn, factory_v3) != AZ_IOT_OK
+      || az_iot_connection_client_register_mqtt_factory(&conn, factory_v5) != AZ_IOT_OK)
   {
     ESP_LOGE(TAG, "register mqtt factory failed");
     esp_restart();
   }
 
-  /* Real OTA platform hooks + mbedTLS crypto + Microsoft root keys. */
+  /* Real OTA platform hooks + Microsoft root keys. */
   su_ota_ctx ota = { 0 };
   ota.installed_version = SU_UPDATE_VERSION;
   az_iot_su_platform_hooks hooks = su_esp32_ota_hooks(&ota);
-  az_iot_su_crypto_hooks crypto = az_iot_su_crypto_mbedtls_hooks();
 
   size_t root_key_count = 0;
   const az_iot_su_root_key* root_keys = az_iot_su_microsoft_root_keys(&root_key_count);
@@ -290,17 +302,31 @@ void app_main(void)
   dp.installed_update_id.name = SU_UPDATE_NAME;
   dp.installed_update_id.version = SU_UPDATE_VERSION;
 
-  static AZ_IOT_SU_DEVICE_PROPERTIES_STORAGE(dp_buffer);
-  /* ~14 KB: too large for the 12 KB main task stack. */
+  /* Largest update accepted. A one-file offer is about 5 KiB, and NVS
+   * (partitions*.csv) must hold two generations of the largest checkpoint
+   * (AZ_IOT_SU_STATE_BLOB_MAX_SIZE(), about 9 KiB) while one
+   * replaces the other. */
+#define SU_MAX_UPDATE_SIZE 8192
+  /* The client's memory, about 20 KB: too large for the 12 KB main task stack. */
+  static uint8_t su_workspace[AZ_IOT_SU_WORKSPACE_SIZE(
+      SU_MAX_UPDATE_SIZE,
+      AZ_IOT_SU_VERIFY_SCRATCH_SIZE,
+      AZ_IOT_SU_DEFAULT_MAX_MESSAGE_SIZE,
+      AZ_IOT_SU_DEVICE_PROPERTIES_BUFFER_SIZE,
+      AZ_IOT_SU_DEFAULT_RESULT_DETAILS_SIZE)];
   static az_iot_su_client su;
   az_iot_su_client_config_options su_opts = az_iot_su_client_config_options_default();
   su_opts.hooks = &hooks;
-  su_opts.crypto = &crypto;
   su_opts.root_keys = root_keys;
   su_opts.root_key_count = root_key_count;
   su_opts.device_properties = &dp;
-  su_opts.device_properties_buffer = dp_buffer;
-  su_opts.device_properties_buffer_size = sizeof(dp_buffer);
+  su_opts.limits.max_update_size = SU_MAX_UPDATE_SIZE;
+  su_opts.limits.scratch_size = AZ_IOT_SU_VERIFY_SCRATCH_SIZE;
+  su_opts.limits.max_message_size = AZ_IOT_SU_DEFAULT_MAX_MESSAGE_SIZE;
+  su_opts.limits.device_properties_size = AZ_IOT_SU_DEVICE_PROPERTIES_BUFFER_SIZE;
+  su_opts.limits.result_details_size = AZ_IOT_SU_DEFAULT_RESULT_DETAILS_SIZE;
+  su_opts.workspace = su_workspace;
+  su_opts.workspace_size = sizeof(su_workspace);
   if (az_iot_su_client_init(&su, &conn, &su_opts) != AZ_IOT_OK)
   {
     ESP_LOGE(TAG, "az_iot_su_client_init failed");

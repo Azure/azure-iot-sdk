@@ -6,12 +6,12 @@ idf_component_register(
         "app_main.c"
         "wifi_connect.c"
         "az_iot_mqtt_esp.c"
-        "${CMAKE_CURRENT_LIST_DIR}/../../../../adapters/su/crypto_mbedtls/az_iot_su_crypto_mbedtls.c"
+        "${CMAKE_CURRENT_LIST_DIR}/../../../../adapters/crypto_mbedtls/az_iot_crypto_mbedtls.c"
         "az_iot_cert_embedded.c"
         "${CMAKE_CURRENT_LIST_DIR}/../../../../adapters/su/esp32/su_esp32_ota.c"
     INCLUDE_DIRS
         "."
-        "${CMAKE_CURRENT_LIST_DIR}/../../../../adapters/su/crypto_mbedtls"
+        "${CMAKE_CURRENT_LIST_DIR}/../../../../adapters/crypto_mbedtls"
         "${CMAKE_CURRENT_LIST_DIR}/../../../../adapters/su/esp32"
     EMBED_TXTFILES
         "certs/device_cert.pem"
@@ -24,7 +24,7 @@ idf_component_register(
         esp-tls            # crt bundle attach
         app_update         # esp_ota_* / partition switching
         spi_flash          # esp_partition_read
-        mbedtls            # software updates crypto hooks
+        mbedtls            # crypto backend
         nvs_flash          # Wi-Fi + software updates resume blob
         esp_wifi
         esp_netif

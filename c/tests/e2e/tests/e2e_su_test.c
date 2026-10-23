@@ -9,7 +9,7 @@
  *
  * Everything beneath the test is the shipping SDK: the connection client, its
  * DPS flow and the pre-registration hold, the device-update channel, the
- * codecs, the Paho MQTT adapter, and X.509 authentication. Nothing here
+ * codecs, the MQTT adapter (Paho or az_mqtt), and X.509 authentication. Nothing here
  * implements a transport or a credential of its own.
  *
  * The scenarios drive the channel vtable directly rather than going through
@@ -25,12 +25,10 @@
  *     route
  *   - that registration still proceeds once device update has had its turn
  *
- * Not covered for a different reason: the operational (software-update) route.
- * The channel only ever issues the onboarding operation today -- the operational
- * poll needs a provisioning session after registration, which is not built yet.
- * Its request and response shapes are pinned at the codec level in
- * su_protocol_test.c meanwhile. Add the scenario here when the channel can
- * issue it.
+ * Not covered: the operational (software-update) route. The channel implements
+ * it (unit-tested in su_channel_dps_test.c), but the e2e scripts stage only
+ * onboarding update jobs. Its request and response shapes are pinned at the
+ * codec level in su_protocol_test.c meanwhile.
  *
  * The offer path -- a real updateMetadata driven through the engine, and the
  * conflict on re-reporting a terminal result -- is in e2e_su_offer_test.c.
@@ -61,7 +59,14 @@
 #include "su_channel_internal.h"
 #include "su_protocol_internal.h"
 
+/* The MQTT adapter this build of the suite uses (see tests/e2e/CMakeLists.txt). */
+#if defined(AZ_IOT_E2E_ADAPTER_PAHO)
 #include "azure/iot/adapters/az_iot_adapter_paho.h"
+#elif defined(AZ_IOT_E2E_ADAPTER_AZ_MQTT)
+#include "azure/iot/adapters/az_iot_adapter_az_mqtt.h"
+#else
+#error "Define AZ_IOT_E2E_ADAPTER_PAHO or AZ_IOT_E2E_ADAPTER_AZ_MQTT"
+#endif
 #include "azure/iot/az_iot_certificate_provider_pem.h"
 
 /* --- environment --------------------------------------------------------- */
@@ -73,9 +78,11 @@ static e2e_su_env g_env;
 typedef struct
 {
   az_iot_connection_client conn;
+  az_iot_mqtt_factory* factory;
   az_iot_certificate_provider_pem certs;
 
   az_iot_su_channel_dps channel_state;
+  uint8_t channel_body[AZ_IOT_SU_DEFAULT_MAX_MESSAGE_SIZE];
   az_iot_su_channel channel;
 
   /* what the channel reported back */
@@ -159,14 +166,24 @@ static void fixture_open(e2e_fixture* fx)
   dp.installed_update_id.name = "tractor";
   dp.installed_update_id.version = "1.0";
   assert_int_equal(
-      az_iot_su_channel_dps_init(&fx->channel_state, &fx->conn, &dp, &fx->channel), AZ_IOT_OK);
+      az_iot_su_channel_dps_init(
+          &fx->channel_state,
+          &fx->conn,
+          &dp,
+          fx->channel_body,
+          sizeof(fx->channel_body),
+          &fx->channel),
+      AZ_IOT_OK);
   assert_int_equal(fx->channel.vtable->open(fx->channel.ctx, on_update, on_result, fx), AZ_IOT_OK);
 
-  /* The shipping Paho adapter. DPS is v3.1.1 only, so one factory is enough. */
+  /* The shipping MQTT adapter. DPS is v3.1.1 only, so one factory is enough. */
+#if defined(AZ_IOT_E2E_ADAPTER_PAHO)
+  fx->factory = az_iot_paho_factory_create_v3_1_1();
+#elif defined(AZ_IOT_E2E_ADAPTER_AZ_MQTT)
+  fx->factory = az_iot_az_mqtt_factory_create_v3_1_1();
+#endif
   assert_int_equal(
-      az_iot_connection_client_register_mqtt_factory(
-          &fx->conn, az_iot_paho_factory_create_v3_1_1()),
-      AZ_IOT_OK);
+      az_iot_connection_client_register_mqtt_factory(&fx->conn, fx->factory), AZ_IOT_OK);
   assert_int_equal(az_iot_connection_client_open(&fx->conn), AZ_IOT_OK);
 }
 
@@ -177,6 +194,12 @@ static void fixture_close(e2e_fixture* fx)
     fx->channel.vtable->close(fx->channel.ctx);
   }
   az_iot_connection_client_deinit(&fx->conn);
+#if defined(AZ_IOT_E2E_ADAPTER_PAHO)
+  az_iot_paho_factory_destroy(fx->factory);
+#elif defined(AZ_IOT_E2E_ADAPTER_AZ_MQTT)
+  az_iot_az_mqtt_factory_destroy(fx->factory);
+#endif
+  fx->factory = NULL;
   az_iot_certificate_provider_pem_deinit(&fx->certs);
 }
 
@@ -409,7 +432,6 @@ static void an_unknown_workflow_report_is_not_treated_as_delivered(void** state)
 
   assert_int_equal(fx.last_op, AZ_IOT_SU_OP_REPORT_STATUS);
   assert_int_not_equal(fx.last_result, AZ_IOT_OK);
-  assert_int_not_equal(fx.last_action, AZ_IOT_SU_ERROR_ACTION_ALREADY_REPORTED);
   assert_int_equal(fx.last_action, AZ_IOT_SU_ERROR_ACTION_FATAL);
 
   fixture_close(&fx);

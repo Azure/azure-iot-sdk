@@ -1,0 +1,6 @@
+# definition whose signature spans lines (src/core/mqtt_iface.c)
+{
+   multiline
+   drd:ConflictingAccess
+   fun:az_iot_mqtt_disconnect_result
+}

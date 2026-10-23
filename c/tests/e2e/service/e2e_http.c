@@ -51,8 +51,8 @@ static bool ci_starts_with(const uint8_t* line, int line_len, const char* prefix
   return true;
 }
 
-/* Parse the status line and Content-Length once the header terminator is present. */
-static void http_parse_headers(e2e_http_request* r)
+/* Parse the status line, Content-Length and Retry-After once the header terminator is present. */
+void e2e_http_parse_headers(e2e_http_request* r)
 {
   if (r->headers_done)
   {
@@ -87,9 +87,9 @@ static void http_parse_headers(e2e_http_request* r)
     }
   }
 
-  /* Header lines up to header_end. */
+  /* Header lines, the last one ending with the CRLF at header_end. */
   int line_start = 0;
-  for (int i = 0; i + 1 <= header_end; i++)
+  for (int i = 0; i <= header_end; i++)
   {
     if (r->response[i] == '\r' && r->response[i + 1] == '\n')
     {
@@ -113,6 +113,31 @@ static void http_parse_headers(e2e_http_request* r)
         if (any)
         {
           r->content_length = value;
+        }
+      }
+      else if (ci_starts_with(line, line_len, "retry-after:"))
+      {
+        int p = (int)strlen("retry-after:");
+        while (p < line_len && (line[p] == ' ' || line[p] == '\t'))
+        {
+          p++;
+        }
+        unsigned long value = 0;
+        int digits = 0;
+        while (p < line_len && line[p] >= '0' && line[p] <= '9' && value <= 86400ul)
+        {
+          value = value * 10ul + (unsigned long)(line[p] - '0');
+          digits++;
+          p++;
+        }
+        while (p < line_len && (line[p] == ' ' || line[p] == '\t'))
+        {
+          p++;
+        }
+        /* Delay-seconds only, capped at a day; an HTTP-date leaves it 0. */
+        if (digits > 0 && p == line_len && value <= 86400ul)
+        {
+          r->retry_after_s = (unsigned)value;
         }
       }
       line_start = i + 2;
@@ -364,7 +389,7 @@ int e2e_http_poll(e2e_http_request* r)
       int cap = E2E_HTTP_RESPONSE_MAX - r->response_len;
       if (cap <= 0)
       {
-        http_parse_headers(r);
+        e2e_http_parse_headers(r);
         r->phase = E2E_HTTP_PHASE_DONE;
         return 1;
       }
@@ -374,9 +399,8 @@ int e2e_http_poll(e2e_http_request* r)
       if (status == AZ_AMQP_TRANSPORT_STATUS_OK)
       {
         r->response_len += (int)got;
-        http_parse_headers(r);
-        if (r->headers_done && r->content_length >= 0
-            && (r->response_len - r->body_start) >= r->content_length)
+        e2e_http_parse_headers(r);
+        if (e2e_http_response_complete(r))
         {
           r->phase = E2E_HTTP_PHASE_DONE;
           return 1;
@@ -391,7 +415,7 @@ int e2e_http_poll(e2e_http_request* r)
       }
       if (status == AZ_AMQP_TRANSPORT_STATUS_CLOSED)
       {
-        http_parse_headers(r);
+        e2e_http_parse_headers(r);
         r->phase = E2E_HTTP_PHASE_DONE;
         return 1;
       }
@@ -409,7 +433,23 @@ int e2e_http_poll(e2e_http_request* r)
   }
 }
 
+bool e2e_http_response_complete(const e2e_http_request* r)
+{
+  if (!r->headers_done)
+  {
+    return false;
+  }
+  /* 204 and 304 carry no body (RFC 9110), whatever the headers say. */
+  if (r->http_status == 204 || r->http_status == 304)
+  {
+    return true;
+  }
+  return r->content_length >= 0 && (r->response_len - r->body_start) >= r->content_length;
+}
+
 int e2e_http_status(const e2e_http_request* r) { return r->http_status; }
+
+unsigned e2e_http_retry_after(const e2e_http_request* r) { return r->retry_after_s; }
 
 const uint8_t* e2e_http_body(const e2e_http_request* r, int* out_len)
 {

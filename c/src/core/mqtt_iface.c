@@ -5,6 +5,91 @@
 /* SPDX-License-Identifier: MIT */
 #include "azure/iot/az_iot_mqtt_iface.h"
 
+#include <string.h>
+
+AZ_NODISCARD az_iot_result az_iot_mqtt_user_properties_next(
+    const az_iot_mqtt_user_properties* props,
+    size_t* cursor,
+    az_iot_mqtt_user_property_view* out)
+{
+  if (props == NULL || cursor == NULL || out == NULL)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  if (props->next == NULL)
+  {
+    return AZ_IOT_ERR_NOT_FOUND;
+  }
+  size_t const before = *cursor;
+  az_iot_result r = props->next(props->source, props->source_len, cursor, out);
+  if (r == AZ_IOT_OK && (out->key == NULL || out->value == NULL || *cursor <= before))
+  {
+    return AZ_IOT_ERR_PROTOCOL;
+  }
+  return r;
+}
+
+AZ_NODISCARD az_iot_result az_iot_mqtt_user_properties_find(
+    const az_iot_mqtt_user_properties* props,
+    const char* key,
+    az_iot_mqtt_user_property_view* out)
+{
+  if (props == NULL || key == NULL || out == NULL)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  size_t const key_len = strlen(key);
+  size_t cursor = 0;
+  az_iot_mqtt_user_property_view p;
+  az_iot_result r;
+  while ((r = az_iot_mqtt_user_properties_next(props, &cursor, &p)) == AZ_IOT_OK)
+  {
+    if (p.key_len == key_len && memcmp(p.key, key, key_len) == 0)
+    {
+      *out = p;
+      return AZ_IOT_OK;
+    }
+  }
+  return r;
+}
+
+/** @brief az_iot_mqtt_user_properties_next_fn over an az_iot_mqtt_user_property array. */
+static az_iot_result array_next(
+    const void* source,
+    size_t source_len,
+    size_t* cursor,
+    az_iot_mqtt_user_property_view* out)
+{
+  const az_iot_mqtt_user_property* array = (const az_iot_mqtt_user_property*)source;
+  while (*cursor < source_len)
+  {
+    const az_iot_mqtt_user_property* p = &array[(*cursor)++];
+    if (p->key != NULL)
+    {
+      out->key = p->key;
+      out->key_len = strlen(p->key);
+      out->value = p->value != NULL ? p->value : "";
+      out->value_len = p->value != NULL ? strlen(p->value) : 0;
+      return AZ_IOT_OK;
+    }
+  }
+  return AZ_IOT_ERR_NOT_FOUND;
+}
+
+az_iot_mqtt_user_properties az_iot_mqtt_user_properties_from_array(
+    const az_iot_mqtt_user_property* array,
+    size_t count)
+{
+  az_iot_mqtt_user_properties props = { 0 };
+  if (array != NULL && count > 0)
+  {
+    props.next = array_next;
+    props.source = array;
+    props.source_len = count;
+  }
+  return props;
+}
+
 const char* az_iot_mqtt_version_to_string(az_iot_mqtt_version v)
 {
   switch (v)
@@ -29,13 +114,13 @@ const char* az_iot_mqtt_version_to_string(az_iot_mqtt_version v)
 /* MQTT 5 CONNACK reason codes (spec 3.2.2.2) that reject the identity. 0x86 is
  * included alongside the three the core needs because it is the v5 spelling of
  * v3.1.1's code 4, and treating the same refusal differently per protocol
- * version would make the re-provisioning trigger depend on the hub flavor. */
+ * version would make identity recovery depend on the hub flavor. */
 #define CONNACK_V5_CLIENT_ID_NOT_VALID 0x85
 #define CONNACK_V5_BAD_CREDENTIALS 0x86
 #define CONNACK_V5_NOT_AUTHORIZED 0x87
 #define CONNACK_V5_BAD_AUTH_METHOD 0x8C
 
-az_iot_result az_iot_mqtt_connack_result(az_iot_mqtt_version version, int connack_code)
+AZ_NODISCARD az_iot_result az_iot_mqtt_connack_result(az_iot_mqtt_version version, int connack_code)
 {
   if (connack_code == 0)
   {
@@ -80,7 +165,7 @@ az_iot_result az_iot_mqtt_connack_result(az_iot_mqtt_version version, int connac
   /* A version this function does not know. The code cannot be interpreted --
    * the two schemes overlap numerically (2, 4 and 5 mean identity refusals in
    * v3.1.1 and something else entirely in v5) -- so guessing a scheme would be
-   * guessing whether to re-provision. Report a connection failure, which is the
+   * guessing whether the identity was refused. Report a connection failure, which is the
    * conservative half of the split: a device retries instead of abandoning
    * credentials that may be perfectly good.
    *
@@ -113,7 +198,8 @@ az_iot_result az_iot_mqtt_connack_result(az_iot_mqtt_version version, int connac
 #define DISCONNECT_V5_NORMAL 0x00
 #define DISCONNECT_V5_NOT_AUTHORIZED 0x87
 
-az_iot_result az_iot_mqtt_disconnect_result(az_iot_mqtt_version version, int disconnect_code)
+AZ_NODISCARD az_iot_result
+az_iot_mqtt_disconnect_result(az_iot_mqtt_version version, int disconnect_code)
 {
   /* No code: an ordinary end of session, and what v3.1.1 always reports. */
   if (disconnect_code == DISCONNECT_V5_NORMAL || version != AZ_IOT_MQTT_VERSION_5)
@@ -138,7 +224,7 @@ az_iot_result az_iot_mqtt_disconnect_result(az_iot_mqtt_version version, int dis
   return AZ_IOT_ERR_MQTT;
 }
 
-az_iot_result az_iot_mqtt_suback_result(az_iot_mqtt_version version, int suback_code)
+AZ_NODISCARD az_iot_result az_iot_mqtt_suback_result(az_iot_mqtt_version version, int suback_code)
 {
   /* A granted QoS, including one below what was requested. That is still a
    * grant: the subscription exists, and delivery is min(publish QoS, granted
@@ -182,5 +268,56 @@ az_iot_result az_iot_mqtt_suback_result(az_iot_mqtt_version version, int suback_
   /* Same reasoning as the CONNACK mapper: the schemes overlap numerically, so
    * an unknown version cannot be interpreted, and retrying is the conservative
    * half of the split. */
+  return AZ_IOT_ERR_MQTT;
+}
+
+/* MQTT 5 PUBACK reason codes (spec 3.4.2.1) the broker will repeat for the same
+ * PUBLISH. 0x97 quota exceeded is transient; 0x80, 0x83, 0x91 and the rest are
+ * read as transient too. 0x95 is not a PUBACK code on the wire: az_mqtt reports
+ * it for a publish it dropped as over the server's Maximum Packet Size. */
+#define PUBACK_V5_FAILURE_MIN 0x80
+#define PUBACK_V5_NOT_AUTHORIZED 0x87
+#define PUBACK_V5_TOPIC_NAME_INVALID 0x90
+#define PUBACK_V5_PACKET_TOO_LARGE 0x95
+#define PUBACK_V5_QUOTA_EXCEEDED 0x97
+#define PUBACK_V5_PAYLOAD_FORMAT_INVALID 0x99
+
+AZ_NODISCARD az_iot_result az_iot_mqtt_puback_result(az_iot_mqtt_version version, int puback_code)
+{
+  if (puback_code == 0)
+  {
+    return AZ_IOT_OK;
+  }
+
+  /* Adapter-internal failures: no verdict from the broker. */
+  if (puback_code < 0)
+  {
+    return AZ_IOT_ERR_MQTT;
+  }
+
+  if (version == AZ_IOT_MQTT_VERSION_5)
+  {
+    /* Below 0x80 is success, including 0x10 no matching subscribers. */
+    if (puback_code < PUBACK_V5_FAILURE_MIN)
+    {
+      return AZ_IOT_OK;
+    }
+    switch (puback_code)
+    {
+      case PUBACK_V5_NOT_AUTHORIZED:
+      case PUBACK_V5_TOPIC_NAME_INVALID:
+      case PUBACK_V5_PACKET_TOO_LARGE:
+      case PUBACK_V5_PAYLOAD_FORMAT_INVALID:
+        return AZ_IOT_ERR_PUBLISH_REFUSED;
+      case PUBACK_V5_QUOTA_EXCEEDED:
+        return AZ_IOT_ERR_BUSY;
+      default:
+        return AZ_IOT_ERR_MQTT;
+    }
+  }
+
+  /* MQTT 3.1.1 PUBACK carries no code: anything but 0 is the adapter's own
+   * failure. An unknown version cannot be interpreted; retrying is the safe
+   * answer. */
   return AZ_IOT_ERR_MQTT;
 }

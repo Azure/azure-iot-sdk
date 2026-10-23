@@ -27,8 +27,8 @@ SRC_URI += " \
 "
 # 1.5.0
 SRCREV_azure-sdk-for-c = "6d6e634a3bb7f4d6bb5666ec8e1005ecd248e635"
-# v1.3.13
-SRCREV_paho = "07a875788d8cc6f5833b12581d6e3e349b34d719"
+# v1.3.16
+SRCREV_paho = "4a939ddb01eea581a32fd6f0adcfee51b91d2601"
 SRCREV_FORMAT = "sdk_azure-sdk-for-c_paho"
 
 S = "${WORKDIR}/git/c"
@@ -37,12 +37,12 @@ inherit cmake pkgconfig
 
 DEPENDS = "openssl"
 
-PACKAGECONFIG ??= "paho su-crypto-openssl certificate-provider-managed"
+PACKAGECONFIG ??= "paho crypto-openssl certificate-provider-managed"
 PACKAGECONFIG[paho] = "-DAZ_IOT_WITH_PAHO=ON,-DAZ_IOT_WITH_PAHO=OFF"
 PACKAGECONFIG[rust-mqtt] = "-DAZ_IOT_WITH_RUST_MQTT=ON,-DAZ_IOT_WITH_RUST_MQTT=OFF"
-PACKAGECONFIG[su-crypto-openssl] = "-DAZ_IOT_WITH_SU_CRYPTO_OPENSSL=ON,-DAZ_IOT_WITH_SU_CRYPTO_OPENSSL=OFF"
+PACKAGECONFIG[crypto-openssl] = "-DAZ_IOT_WITH_CRYPTO_OPENSSL=ON,-DAZ_IOT_WITH_CRYPTO_OPENSSL=OFF"
 # mbedTLS 3.6 LTS or 4.1+ (meta-oe).
-PACKAGECONFIG[mbedtls] = "-DAZ_IOT_WITH_SU_CRYPTO_MBEDTLS=ON,-DAZ_IOT_WITH_SU_CRYPTO_MBEDTLS=OFF,mbedtls"
+PACKAGECONFIG[mbedtls] = "-DAZ_IOT_WITH_CRYPTO_MBEDTLS=ON,-DAZ_IOT_WITH_CRYPTO_MBEDTLS=OFF,mbedtls"
 PACKAGECONFIG[certificate-provider-managed] = "-DAZ_IOT_WITH_CERT_PROVIDER_MANAGED=ON,-DAZ_IOT_WITH_CERT_PROVIDER_MANAGED=OFF"
 
 EXTRA_OECMAKE = " \
@@ -67,8 +67,8 @@ DEBUG_PREFIX_MAP:append = " \
 AZ_IOT_SDK_COMPONENTS = "core mqttv3 mqttv5 \
     ${@bb.utils.contains('PACKAGECONFIG', 'paho', 'adapter_paho', '', d)} \
     ${@bb.utils.contains('PACKAGECONFIG', 'rust-mqtt', 'adapter_rust_mqtt', '', d)} \
-    ${@bb.utils.contains('PACKAGECONFIG', 'su-crypto-openssl', 'su_crypto_openssl', '', d)} \
-    ${@bb.utils.contains('PACKAGECONFIG', 'mbedtls', 'su_crypto_mbedtls', '', d)} \
+    ${@bb.utils.contains('PACKAGECONFIG', 'crypto-openssl', 'crypto_openssl', '', d)} \
+    ${@bb.utils.contains('PACKAGECONFIG', 'mbedtls', 'crypto_mbedtls', '', d)} \
     ${@bb.utils.contains('PACKAGECONFIG', 'certificate-provider-managed', 'certificate_provider_managed', '', d)} \
 "
 

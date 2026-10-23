@@ -12,6 +12,7 @@ using System.Security.Cryptography.X509Certificates;
 using Microsoft.Azure.Devices;
 using System.Text.Json;
 using Xunit;
+using Microsoft.Azure.Iot.Device.Authentication;
 
 namespace Microsoft.Azure.Iot.Device.IntegrationTests
 {
@@ -68,10 +69,15 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
             X509Certificate2 certificate = X509CertificateLoader.LoadCertificateFromFile(certPath);
             X509Certificate2 pfx = X509CertificateLoader.LoadPkcs12FromFile(pfxPath, TestCertificatesPassword);
 
-            // Create individual enrollment for the test device to provision from
+            // Create individual enrollment for the test device to provision from. The object built here is cached
+            // (rather than the one the service returns from the create call) because the service response carries only
+            // the certificate's metadata (thumbprint/subject), not the certificate body. Re-creating an enrollment from
+            // that metadata-only object would register an enrollment that rejects this device's certificate with a 401
+            // "Invalid certificate", so a test that deletes and restores the enrollment must restore this full-certificate
+            // copy instead.
             Attestation attestation = X509Attestation.CreateFromClientCertificates(certificate);
             IndividualEnrollment individualEnrollment = new(registrationId, attestation);
-            individualEnrollment = await provisioningServiceClient.CreateOrUpdateIndividualEnrollmentAsync(individualEnrollment, cancellationToken);
+            await provisioningServiceClient.CreateOrUpdateIndividualEnrollmentAsync(individualEnrollment, cancellationToken);
 
             X509AuthenticationProvider x509AuthenticationProvider = new(pfx);
 
@@ -87,6 +93,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
                 ConnectionClient = connectionClient,
                 ConnectionContext = connectionContext!,
                 AuthenticationProvider = x509AuthenticationProvider,
+                IndividualEnrollment = individualEnrollment,
             };
         }
 
@@ -113,10 +120,12 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
             X509Certificate2 certificate = X509CertificateLoader.LoadCertificate(certificateBytes);
             X509Certificate2 pfx = X509CertificateLoader.LoadPkcs12(pfxBytes, null);
 
-            // Create individual enrollment for the test device to provision from
+            // Create individual enrollment for the test device to provision from. See the note in
+            // CreateConnectedUnifiedConnectionClientAsync: the cached enrollment must hold the full certificate body,
+            // which the object the create call returns does not, so the client-side object is cached instead.
             Attestation attestation = X509Attestation.CreateFromClientCertificates(certificate);
             IndividualEnrollment individualEnrollment = new(registrationId, attestation);
-            individualEnrollment = await provisioningServiceClient.CreateOrUpdateIndividualEnrollmentAsync(individualEnrollment, cancellationToken);
+            await provisioningServiceClient.CreateOrUpdateIndividualEnrollmentAsync(individualEnrollment, cancellationToken);
 
             X509AuthenticationProvider x509AuthenticationProvider = new(pfx);
 
@@ -138,7 +147,75 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
                 ConnectionContext = connectionContext!,
                 PrivateKeyPem = pfxPem,
                 AuthenticationProvider = x509AuthenticationProvider,
+                IndividualEnrollment = individualEnrollment,
             };
+        }
+
+        /// <summary>
+        /// Creates a symmetric-key device using an individual enrollment, or the configured certificate-management
+        /// enrollment group when a CSR private key is supplied. The caller owns the private key.
+        /// </summary>
+        public static async Task<UnifiedDeviceTestContext> CreateConnectedUnifiedConnectionClientWithSymmetricKeyAsync(
+            ConnectionClientOptions? options = null,
+            CancellationToken cancellationToken = default,
+            AsymmetricAlgorithm? issuedCertificatePrivateKey = null)
+        {
+            string registrationId = Guid.NewGuid().ToString();
+            byte[] symmetricKey;
+            IndividualEnrollment? individualEnrollment = null;
+            if (issuedCertificatePrivateKey != null)
+            {
+                string? groupKey = Environment.GetEnvironmentVariable("IOT_DPS_SYMM_KEY_GROUP_PRIMARY_KEY");
+                if (string.IsNullOrWhiteSpace(groupKey))
+                {
+                    Assert.Skip("IOT_DPS_SYMM_KEY_GROUP_PRIMARY_KEY is not set; certificate signing needs a symmetric-key enrollment group linked to a certificate policy.");
+                }
+
+                using HMACSHA256 hmac = new(Convert.FromBase64String(groupKey));
+                symmetricKey = hmac.ComputeHash(System.Text.Encoding.UTF8.GetBytes(registrationId));
+            }
+            else
+            {
+                using ProvisioningServiceClient provisioningServiceClient = GetDpsHubServiceClient();
+                symmetricKey = RandomNumberGenerator.GetBytes(32);
+                string encodedSymmetricKey = Convert.ToBase64String(symmetricKey);
+                Attestation attestation = new SymmetricKeyAttestation(encodedSymmetricKey, encodedSymmetricKey);
+                individualEnrollment = new(registrationId, attestation);
+                await provisioningServiceClient.CreateOrUpdateIndividualEnrollmentAsync(individualEnrollment, cancellationToken);
+            }
+
+            SymmetricKeyAuthenticationProvider authentication = issuedCertificatePrivateKey == null
+                ? new(registrationId, DpsIdScope, symmetricKey)
+                : new(registrationId, DpsIdScope, symmetricKey, issuedCertificatePrivateKey);
+
+            ConnectionClient connectionClient = new(options);
+            ProvisioningSettings provisioningSettings = new(DpsIdScope)
+            {
+                CertificateSigningRequest = issuedCertificatePrivateKey == null
+                    ? null
+                    : new(issuedCertificatePrivateKey, CertificateUtilities.GenerateCsrWithPrivateKey(registrationId, issuedCertificatePrivateKey)),
+            };
+
+            try
+            {
+                ConnectionContext connectionContext = await RetryAroundAuthorizationAsync<ConnectionContext>(
+                    async () => await connectionClient.ProvisionAndConnectAsync(provisioningSettings, authentication, cancellationToken: cancellationToken),
+                    cancellationToken);
+
+                return new UnifiedDeviceTestContext()
+                {
+                    ConnectionClient = connectionClient,
+                    ConnectionContext = connectionContext,
+                    AuthenticationProvider = authentication,
+                    IndividualEnrollment = individualEnrollment,
+                };
+            }
+            catch
+            {
+                await UnifiedDeviceTestContext.CleanupAsync(
+                    connectionClient, connectionClient.GetCurrentConnectionContext(), individualEnrollment);
+                throw;
+            }
         }
 
         public static void CreateTestCertificates(string pfxPath, string certPath, string deviceId)

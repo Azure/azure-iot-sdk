@@ -10,14 +10,22 @@
 
 #include "azure/iot/az_iot.h"
 
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #ifdef _WIN32
+#include <fcntl.h>
+#include <io.h>
+#include <share.h>
+#include <sys/stat.h>
 #include <windows.h>
 #else
+#include <fcntl.h>
+#include <sys/stat.h>
 #include <time.h>
+#include <unistd.h>
 #endif
 
 // Returns a heap copy of `s` (NUL-terminated), or NULL when `s` is NULL or on
@@ -94,11 +102,6 @@ int sample_config_load(sample_config* config)
 {
   memset(config, 0, sizeof(*config));
 
-  /* Optional: MQTTv5 mock bypass. When set, DPS vars are still loaded
-   * but provisioning is skipped internally by the connection client. */
-  config->mock_endpoint = read_env_var_optional("AZ_IOT_HUB_MQTT_V5_MOCK_ENDPOINT");
-  config->device_id = read_env_var_optional("AZ_IOT_DEVICE_ID");
-
   config->id_scope = read_env_var("AZ_IOT_DPS_ID_SCOPE");
   config->reg_id = read_env_var("AZ_IOT_DPS_REGISTRATION_ID");
   config->cert = read_env_var("AZ_IOT_CLIENT_CERT");
@@ -129,28 +132,34 @@ void sample_config_release(sample_config* config)
   free(config->cert);
   free(config->key);
   free(config->ca);
-  free(config->device_id);
-  free(config->mock_endpoint);
   free(config->dps_global_endpoint);
 #endif
   memset(config, 0, sizeof(*config));
 }
 
-void sample_apply_dps_options(
-    struct az_iot_connection_client_options* options,
-    const sample_config* config)
+az_iot_log_sink sample_log_sink(az_iot_log_level min_level)
 {
-  if (options == NULL || config == NULL)
+  /* Static: the sink writes through this state for the life of the process. */
+  static az_iot_log_file_sink s_file_sink;
+  az_iot_log_sink sink;
+  char* enabled = sample_env_dup("AZ_IOT_SAMPLE_LOG_TO_FILE", NULL);
+  if (enabled == NULL)
   {
-    return;
+    return az_iot_log_stderr_sink(min_level);
   }
-  options->dps.id_scope = config->id_scope;
-  options->dps.registration_id = config->reg_id;
-  /* Left NULL when unset, which is what selects the SDK's global endpoint. */
-  if (config->dps_global_endpoint != NULL)
+  free(enabled);
+  az_iot_result r = az_iot_log_file_sink_open(
+      &s_file_sink, AZ_IOT_LOG_FILE_DEFAULT_NAME, NULL, min_level, &sink);
+  if (r != AZ_IOT_OK)
   {
-    options->dps.global_endpoint = config->dps_global_endpoint;
+    fprintf(
+        stderr,
+        "AZ_IOT_SAMPLE_LOG_TO_FILE: cannot open '%s' (%s); logging to stderr\n",
+        AZ_IOT_LOG_FILE_DEFAULT_NAME,
+        az_iot_result_to_string(r));
+    sink = az_iot_log_stderr_sink(min_level);
   }
+  return sink;
 }
 
 char* sample_env_dup(const char* name, const char* fallback)
@@ -197,6 +206,77 @@ bool sample_env_to_buffer(const char* name, const char* fallback, char* dst, siz
   return ok;
 }
 
+FILE* sample_fopen_private(const char* path, bool replace)
+{
+  FILE* f = NULL;
+  int fd;
+  if (!path || (replace && remove(path) != 0 && errno != ENOENT))
+  {
+    return NULL;
+  }
+#ifdef _WIN32
+  int flags = _O_WRONLY | _O_CREAT | _O_BINARY | (replace ? _O_EXCL : _O_TRUNC);
+  if (_sopen_s(&fd, path, flags, _SH_DENYWR, _S_IREAD | _S_IWRITE) != 0)
+  {
+    return NULL;
+  }
+  f = _fdopen(fd, "wb");
+  if (!f)
+  {
+    (void)_close(fd);
+  }
+#else
+  /* O_EXCL fails on any existing name, a symbolic link included. */
+  fd = open(path, O_WRONLY | O_CREAT | (replace ? O_EXCL : O_TRUNC), S_IRUSR | S_IWUSR);
+  if (fd < 0)
+  {
+    return NULL;
+  }
+  /* open() keeps the mode of a file that already exists. */
+  if (replace || fchmod(fd, S_IRUSR | S_IWUSR) == 0)
+  {
+    f = fdopen(fd, "wb");
+  }
+  if (!f)
+  {
+    (void)close(fd);
+  }
+#endif
+  return f;
+}
+
+FILE* sample_fopen_read_nofollow(const char* path)
+{
+  if (!path)
+  {
+    return NULL;
+  }
+#ifdef _WIN32
+  FILE* f = NULL;
+  return fopen_s(&f, path, "rb") == 0 ? f : NULL;
+#elif !defined(O_NOFOLLOW)
+  return fopen(path, "rb");
+#else
+  /* O_NONBLOCK: opening a FIFO does not wait for a writer; it is then refused. */
+  int fd = open(path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK);
+  if (fd < 0)
+  {
+    return NULL;
+  }
+  struct stat st;
+  FILE* f = NULL;
+  if (fstat(fd, &st) == 0 && S_ISREG(st.st_mode))
+  {
+    f = fdopen(fd, "rb");
+  }
+  if (!f)
+  {
+    (void)close(fd);
+  }
+  return f;
+#endif
+}
+
 uint64_t sample_now_ms(void)
 {
 #ifdef _WIN32
@@ -239,12 +319,14 @@ const char* sample_connection_state_name(az_iot_connection_state state)
       return "Connecting";
     case AZ_IOT_CONN_STATE_CONNECTED:
       return "Connected";
-    case AZ_IOT_CONN_STATE_RECONNECTING:
-      return "Reconnecting";
+    case AZ_IOT_CONN_STATE_RETRY_PENDING:
+      return "Retry pending";
     case AZ_IOT_CONN_STATE_DISCONNECTING:
       return "Disconnecting";
     case AZ_IOT_CONN_STATE_FAULTED:
       return "Faulted";
+    case AZ_IOT_CONN_STATE_SETTING_UP:
+      return "Setting up";
     default:
       return "?";
   }
@@ -302,9 +384,8 @@ bool sample_event_is_profile_mismatch(
 
 az_iot_connection_profile sample_initial_profile(const sample_config* config)
 {
-  /* The mock bypass skips DPS, so no mismatch would ever correct a guess. */
-  return (config != NULL && config->mock_endpoint != NULL) ? AZ_IOT_CONNECTION_PROFILE_MQTT_V5
-                                                           : AZ_IOT_CONNECTION_PROFILE_MQTT_V3;
+  (void)config;
+  return AZ_IOT_CONNECTION_PROFILE_MQTT_V3;
 }
 
 void sample_report_unsupported_profile(const az_iot_connection_state_event* event)

@@ -56,6 +56,8 @@ typedef struct az_iot_mock_mqtt_factory_state
 {
   az_iot_mqtt_factory public_;
   az_iot_mock_mqtt_client* last_client;
+  /* Clients destroyed after a disconnect() call. */
+  size_t disconnected_destroyed;
   /* One-shot CONNECT failure armed on the FACTORY rather than a client, for
    * the cases where the client under test has not been created yet -- the
    * connection client builds a fresh adapter inside the call being tested. */
@@ -130,6 +132,17 @@ static void copy_str(char* dst, size_t cap, const char* src)
   dst[n] = '\0';
 }
 
+/* As copy_str, for a string that is not NUL-terminated. */
+static void copy_view(char* dst, size_t cap, const char* src, size_t n)
+{
+  if (n >= cap)
+  {
+    n = cap - 1;
+  }
+  memcpy(dst, src, n);
+  dst[n] = '\0';
+}
+
 static void copy_bytes(uint8_t* dst, size_t cap, const uint8_t* src, size_t n, size_t* out_n)
 {
   /* A NULL source records nothing: reporting the caller's length would leave
@@ -162,6 +175,7 @@ static az_iot_result mock_connect(az_iot_mqtt_client* self, const az_iot_mqtt_co
     /* `topic` keeps carrying the host so older assertions still work. */
     copy_str(c->topic, sizeof(c->topic), opts->host);
     copy_str(c->username, sizeof(c->username), opts->username);
+    copy_str(c->password, sizeof(c->password), opts->password);
     copy_str(c->connect.host, sizeof(c->connect.host), opts->host);
     copy_str(c->connect.client_id, sizeof(c->connect.client_id), opts->client_id);
     c->connect.port = opts->port;
@@ -180,6 +194,12 @@ static az_iot_result mock_connect(az_iot_mqtt_client* self, const az_iot_mqtt_co
     c->connect.has_trusted_ca_pem = (opts->tls.trusted_ca_pem != NULL);
     c->connect.has_client_cert_pem = (opts->tls.client_cert_pem != NULL);
     c->connect.has_client_key_pem = (opts->tls.client_key_pem != NULL);
+    copy_str(
+        c->connect.client_key_pem, sizeof(c->connect.client_key_pem), opts->tls.client_key_pem);
+    copy_str(
+        c->connect.client_key_password,
+        sizeof(c->connect.client_key_password),
+        opts->tls.client_key_password);
     copy_str(
         c->connect.client_key_uri, sizeof(c->connect.client_key_uri), opts->tls.client_key_uri);
     copy_str(
@@ -289,20 +309,29 @@ static az_iot_result mock_publish(
         msg->correlation_data,
         msg->correlation_data_len,
         &c->correlation_data_len);
+    c->correlation_data_offered_len = msg->correlation_data ? msg->correlation_data_len : 0;
     copy_str(c->content_type, sizeof(c->content_type), msg->content_type);
     c->message_expiry_seconds = msg->message_expiry_seconds;
-    for (size_t i = 0; i < msg->user_properties_count; ++i)
+    size_t cursor = 0;
+    az_iot_mqtt_user_property_view up;
+    while ((c->user_properties_end
+            = az_iot_mqtt_user_properties_next(&msg->user_properties, &cursor, &up))
+           == AZ_IOT_OK)
     {
-      const az_iot_mqtt_user_property* up = &msg->user_properties[i];
-      if (up->key && strcmp(up->key, "type") == 0)
+      c->user_properties_offered++;
+      if (up.key_len == 4 && memcmp(up.key, "type", 4) == 0)
       {
-        copy_str(c->user_type, sizeof(c->user_type), up->value);
+        copy_view(c->user_type, sizeof(c->user_type), up.value, up.value_len);
       }
       if (c->user_properties_count < AZ_IOT_MOCK_MAX_USER_PROPS)
       {
         size_t k = c->user_properties_count++;
-        copy_str(c->user_properties[k].key, sizeof(c->user_properties[k].key), up->key);
-        copy_str(c->user_properties[k].value, sizeof(c->user_properties[k].value), up->value);
+        copy_view(c->user_properties[k].key, sizeof(c->user_properties[k].key), up.key, up.key_len);
+        copy_view(
+            c->user_properties[k].value,
+            sizeof(c->user_properties[k].value),
+            up.value,
+            up.value_len);
       }
     }
   }
@@ -378,6 +407,10 @@ static void mock_destroy(az_iot_mqtt_client* self)
   }
   az_iot_mock_mqtt_client* m = mock_self(self);
   push_call(m, AZ_IOT_MOCK_CALL_DESTROY);
+  if (m->owner && az_iot_mock_mqtt_client_count_of(m, AZ_IOT_MOCK_CALL_DISCONNECT) > 0)
+  {
+    m->owner->disconnected_destroyed++;
+  }
   /* Detach from owner's last_client cache so factory destroy doesn't double-free. */
   if (m->owner && m->owner->last_client == m)
   {
@@ -431,8 +464,6 @@ static az_iot_mqtt_client* mock_factory_create(void* factory_ctx)
   return &m->base;
 }
 
-static void mock_factory_cleanup(void* ctx) { free(ctx); }
-
 az_iot_mqtt_factory* az_iot_mock_mqtt_factory_create(az_iot_mqtt_version version)
 {
   az_iot_mock_mqtt_factory_state* st = (az_iot_mock_mqtt_factory_state*)calloc(1, sizeof(*st));
@@ -443,7 +474,6 @@ az_iot_mqtt_factory* az_iot_mock_mqtt_factory_create(az_iot_mqtt_version version
   st->public_.version = version;
   st->public_.create = mock_factory_create;
   st->public_.factory_ctx = st;
-  st->public_.destroy = mock_factory_cleanup;
   return &st->public_;
 }
 
@@ -678,4 +708,13 @@ bool az_iot_mock_mqtt_client_inject_message(
   evt.kind = AZ_IOT_MQTT_EVT_MESSAGE;
   evt.message = &msg;
   return az_iot_mock_mqtt_client_inject_event(m, &evt);
+}
+
+size_t az_iot_mock_mqtt_factory_disconnected_destroyed(const az_iot_mqtt_factory* factory)
+{
+  if (factory == NULL)
+  {
+    return 0;
+  }
+  return ((const az_iot_mock_mqtt_factory_state*)factory->factory_ctx)->disconnected_destroyed;
 }

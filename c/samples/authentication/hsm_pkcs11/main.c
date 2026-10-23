@@ -8,7 +8,7 @@
  * Connect to whichever hub DPS assigns -- MQTTv3 or MQTTv5 -- with a
  * device private key that NEVER LEAVES the hardware (design decision D8). The
  * provider hands the SDK a key REFERENCE -- an RFC 7512 "pkcs11:" URI plus the
- * id of the OpenSSL provider that owns it -- instead of a key, and the Paho
+ * id of the OpenSSL provider that owns it -- instead of a key, and the MQTT
  * adapter signs the TLS handshake through that token.
  *
  * The device certificate is still an ordinary PEM file: a certificate is public
@@ -19,9 +19,9 @@
  * names the object inside it; the SDK never learns anything else about it.
  *
  * Key custody is generation-agnostic -- the token signs a TLS handshake and
- * neither MQTT version is visible to it. So, as in every unified sample (see
- * samples/unified/telemetry), both MQTT adapters are registered and the
- * telemetry client is built only once CONNECTED, for the profile DPS assigned.
+ * neither MQTT version is visible to it. So, as in samples/unified/connect_first,
+ * both MQTT adapters are registered and the telemetry client is built only once
+ * CONNECTED, for the profile DPS assigned.
  * The custody code is the same either way.
  *
  * Requirements on the host:
@@ -31,7 +31,8 @@
  *     OPENSSL_MODULES pointing at it) and configured with the PKCS#11 module it
  *     should drive.
  *   - The Paho adapter built with OpenSSL 3.0+ (AZ_IOT_PAHO_KEY_CUSTODY, on by
- *     default when OpenSSL 3.0+ is found).
+ *     default when OpenSSL 3.0+ is found), or the az_mqtt adapter with OpenSSL
+ *     TLS (AZ_IOT_AZ_MQTT_TLS=openssl, Linux and macOS).
  *
  * A key reference that cannot be resolved fails at connect time with
  * AZ_IOT_ERR_TLS and a log line naming the URI, rather than in the middle of
@@ -53,7 +54,14 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* The MQTT adapter this build of the sample uses (see samples/CMakeLists.txt). */
+#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
 #include "azure/iot/adapters/az_iot_adapter_paho.h"
+#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
+#include "azure/iot/adapters/az_iot_adapter_az_mqtt.h"
+#else
+#error "Define AZ_IOT_SAMPLE_ADAPTER_PAHO or AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT"
+#endif
 #include "azure/iot/az_iot.h"
 
 #include "sample_utils.h"
@@ -142,8 +150,13 @@ typedef struct
 static az_iot_result hsm_load(
     az_iot_certificate_provider* self,
     az_iot_cert_role role,
+    uint8_t index,
     az_iot_certificate_material* out)
 {
+  if (index != 0)
+  {
+    return AZ_IOT_ERR_NOT_FOUND;
+  }
   hsm_provider* p = (hsm_provider*)self;
   (void)role; /* one static identity for both roles */
   memset(out, 0, sizeof(*out));
@@ -216,7 +229,7 @@ static void on_send_done(az_iot_result status, void* user_ctx)
 
 int main(void)
 {
-  az_iot_log_sink log = az_iot_log_stderr_sink(AZ_IOT_LOG_LEVEL_INFO);
+  az_iot_log_sink log = sample_log_sink(AZ_IOT_LOG_LEVEL_INFO);
   az_iot_log_set_global_sink(&log);
 
   hsm_config config = { 0 };
@@ -238,6 +251,8 @@ int main(void)
   user_context user_ctx = { 0 };
   hsm_provider provider = { .base = { .vtable = &k_hsm_vtable }, .config = &config };
   az_iot_connection_client connection_client = { 0 };
+  az_iot_mqtt_factory* factory_v3 = NULL;
+  az_iot_mqtt_factory* factory_v5 = NULL;
   /* Only the one matching `profile` is initialized, once CONNECTED. */
   az_iot_mqttv3_telemetry_client mqttv3 = { 0 };
   az_iot_mqttv5_telemetry_client mqttv5 = { 0 };
@@ -245,7 +260,7 @@ int main(void)
   int telemetry_initialized = 0;
 
   az_iot_connection_client_options copts = az_iot_connection_client_options_default();
-  copts.client_id = config.reg_id;
+  copts.device_id = config.reg_id;
   /* This sample carries its own config struct (PKCS#11 URI and engine id), not
    * the shared sample_config, so it sets the DPS fields directly -- including
    * the optional endpoint, so it targets the same provisioning service as every
@@ -265,15 +280,21 @@ int main(void)
   az_iot_connection_client_add_state_observer(&connection_client, on_conn_state, &user_ctx);
 
   /* Both adapters: v3.1.1 serves DPS and an MQTTv3 hub, v5 serves an MQTTv5 hub. */
-  if (az_iot_connection_client_register_mqtt_factory(
-          &connection_client, az_iot_paho_factory_create_v3_1_1())
-      != AZ_IOT_OK)
+#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
+  factory_v3 = az_iot_paho_factory_create_v3_1_1();
+#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
+  factory_v3 = az_iot_az_mqtt_factory_create_v3_1_1();
+#endif
+  if (az_iot_connection_client_register_mqtt_factory(&connection_client, factory_v3) != AZ_IOT_OK)
   {
     goto cleanup;
   }
-  if (az_iot_connection_client_register_mqtt_factory(
-          &connection_client, az_iot_paho_factory_create_v5())
-      != AZ_IOT_OK)
+#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
+  factory_v5 = az_iot_paho_factory_create_v5();
+#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
+  factory_v5 = az_iot_az_mqtt_factory_create_v5();
+#endif
+  if (az_iot_connection_client_register_mqtt_factory(&connection_client, factory_v5) != AZ_IOT_OK)
   {
     goto cleanup;
   }
@@ -367,6 +388,13 @@ cleanup:
     }
   }
   az_iot_connection_client_deinit(&connection_client);
+#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
+  az_iot_paho_factory_destroy(factory_v3);
+  az_iot_paho_factory_destroy(factory_v5);
+#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
+  az_iot_az_mqtt_factory_destroy(factory_v3);
+  az_iot_az_mqtt_factory_destroy(factory_v5);
+#endif
   hsm_config_release(&config);
   return rc;
 }

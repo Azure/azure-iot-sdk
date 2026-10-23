@@ -23,9 +23,21 @@ extern "C"
     AZ_IOT_LOG_LEVEL_OFF
   } az_iot_log_level;
 
+  /**
+   * @brief Receives one log message.
+   *
+   * @param[in] user_ctx az_iot_log_sink::user_ctx.
+   * @param[in] level Level.
+   * @param[in] component Area that logged it (for SDK messages, a value from
+   * az_iot_log_components.h). Never NULL.
+   * @param[in] file Source file. Never NULL.
+   * @param[in] line Source line.
+   * @param[in] msg Message, unescaped. Never NULL.
+   */
   typedef void (*az_iot_log_sink_callback)(
       void* user_ctx,
       az_iot_log_level level,
+      const char* component,
       const char* file,
       int line,
       const char* msg);
@@ -37,18 +49,32 @@ extern "C"
     az_iot_log_level min_level;
   } az_iot_log_sink;
 
-  /* Register a process-wide log sink. Pass NULL to disable logging (default). */
+  /**
+   * @brief Register the process-wide log sink. NULL disables logging (default).
+   *
+   * Not thread-safe: set it before creating any client and do not change it
+   * while a client or MQTT adapter thread may log.
+   *
+   * @param[in] sink Copied; NULL to disable.
+   */
   void az_iot_log_set_global_sink(const az_iot_log_sink* sink);
 
-  /* Built-in sink that writes to stderr. Usage:
-   *   az_iot_log_sink sink = az_iot_log_stderr_sink(AZ_IOT_LOG_LEVEL_ERROR);
-   *   az_iot_log_set_global_sink(&sink); */
+  /**
+   * @brief Built-in sink that writes one line per message to stderr.
+   *
+   * Line format, shared with the file sink (az_iot_log_file.h):
+   * `<UTC ISO 8601 time> [<LEVEL>] [<component>] [<thread id>] [<file>:<line>] <message>`.
+   * The thread id is omitted where the platform has none.
+   *
+   * @param[in] min_level Lowest level written.
+   * @return Sink to pass to az_iot_log_set_global_sink().
+   */
   az_iot_log_sink az_iot_log_stderr_sink(az_iot_log_level min_level);
 
-/* Maximum length, terminator included, of a message built by
- * az_iot_log_emitf(). Longer messages are truncated rather than dropped: a
- * shortened diagnostic is more useful than none. Override to trade stack
- * footprint for detail. */
+/* Maximum length, terminator included, of a message any sink receives, from
+ * az_iot_log_emit() or az_iot_log_emitf(). Longer messages are truncated rather
+ * than dropped, and end in "..." so the cut is visible. Override to trade stack
+ * footprint for detail; at least 16. */
 #ifndef AZ_IOT_LOG_MESSAGE_MAX
 #define AZ_IOT_LOG_MESSAGE_MAX 384
 #endif
@@ -58,17 +84,28 @@ extern "C"
    * would be wasted when logging is off. */
   bool az_iot_log_is_enabled(az_iot_log_level level);
 
-  /* Route a ready-made message to the registered sink. A NULL @p msg or @p file
-   * is replaced with a placeholder before the sink sees it, so a sink may format
-   * both with "%s" unconditionally. */
-  void az_iot_log_emit(az_iot_log_level level, const char* file, int line, const char* msg);
+  /* Route a ready-made message to the registered sink. A NULL @p component,
+   * @p file or @p msg is replaced with a placeholder before the sink sees it,
+   * so a sink may format them with "%s" unconditionally. */
+  void az_iot_log_emit(
+      az_iot_log_level level,
+      const char* component,
+      const char* file,
+      int line,
+      const char* msg);
 
   /* Route a printf-formatted message to the registered sink. Nothing is
    * formatted when no sink would accept @p level, and a NULL @p fmt emits
    * nothing at all. */
-  void az_iot_log_emitf(az_iot_log_level level, const char* file, int line, const char* fmt, ...)
+  void az_iot_log_emitf(
+      az_iot_log_level level,
+      const char* component,
+      const char* file,
+      int line,
+      const char* fmt,
+      ...)
 #if defined(__GNUC__) || defined(__clang__)
-      __attribute__((format(printf, 4, 5)))
+      __attribute__((format(printf, 5, 6)))
 #endif
       ;
 
@@ -79,12 +116,15 @@ extern "C"
  * The severity constants are spelled AZ_IOT_LOG_LEVEL_* precisely so that these
  * macro names stay free; nothing here shadows an enumerator.
  *
+ * The first argument is the component: an AZ_IOT_LOG_COMPONENT_* value from
+ * az_iot_log_components.h in SDK code, or any string in application code.
+ *
  * WHY TWO FAMILIES. AZ_IOT_LOG_X takes a ready-made string; AZ_IOT_LOG_XF takes
  * a printf format and arguments. A single variadic family would be shorter to
  * declare, and would be wrong for two reasons.
  *
  * The first is safety, and it is the one that matters everywhere. In a variadic
- * family the first argument is a format string, so AZ_IOT_LOG_ERROR(msg) would
+ * family the message argument is a format string, so AZ_IOT_LOG_ERROR(c, msg) would
  * hand a runtime value to printf as a format. Any percent sign travelling in
  * that value -- a topic filter, a service response, anything reflected back
  * from the network -- is then interpreted as a conversion with no argument
@@ -100,22 +140,27 @@ extern "C"
  * embedded libc where stdio is opt-in -- newlib-nano and similar -- and worth
  * nothing on a hosted glibc build, which links printf regardless of what this
  * SDK calls. Claim the saving only for the former. */
-#define AZ_IOT_LOG_TRACE(msg) az_iot_log_emit(AZ_IOT_LOG_LEVEL_TRACE, __FILE__, __LINE__, (msg))
-#define AZ_IOT_LOG_DEBUG(msg) az_iot_log_emit(AZ_IOT_LOG_LEVEL_DEBUG, __FILE__, __LINE__, (msg))
-#define AZ_IOT_LOG_INFO(msg) az_iot_log_emit(AZ_IOT_LOG_LEVEL_INFO, __FILE__, __LINE__, (msg))
-#define AZ_IOT_LOG_WARN(msg) az_iot_log_emit(AZ_IOT_LOG_LEVEL_WARN, __FILE__, __LINE__, (msg))
-#define AZ_IOT_LOG_ERROR(msg) az_iot_log_emit(AZ_IOT_LOG_LEVEL_ERROR, __FILE__, __LINE__, (msg))
+#define AZ_IOT_LOG_TRACE(component, msg) \
+  az_iot_log_emit(AZ_IOT_LOG_LEVEL_TRACE, (component), __FILE__, __LINE__, (msg))
+#define AZ_IOT_LOG_DEBUG(component, msg) \
+  az_iot_log_emit(AZ_IOT_LOG_LEVEL_DEBUG, (component), __FILE__, __LINE__, (msg))
+#define AZ_IOT_LOG_INFO(component, msg) \
+  az_iot_log_emit(AZ_IOT_LOG_LEVEL_INFO, (component), __FILE__, __LINE__, (msg))
+#define AZ_IOT_LOG_WARN(component, msg) \
+  az_iot_log_emit(AZ_IOT_LOG_LEVEL_WARN, (component), __FILE__, __LINE__, (msg))
+#define AZ_IOT_LOG_ERROR(component, msg) \
+  az_iot_log_emit(AZ_IOT_LOG_LEVEL_ERROR, (component), __FILE__, __LINE__, (msg))
 
-#define AZ_IOT_LOG_TRACEF(...) \
-  az_iot_log_emitf(AZ_IOT_LOG_LEVEL_TRACE, __FILE__, __LINE__, __VA_ARGS__)
-#define AZ_IOT_LOG_DEBUGF(...) \
-  az_iot_log_emitf(AZ_IOT_LOG_LEVEL_DEBUG, __FILE__, __LINE__, __VA_ARGS__)
-#define AZ_IOT_LOG_INFOF(...) \
-  az_iot_log_emitf(AZ_IOT_LOG_LEVEL_INFO, __FILE__, __LINE__, __VA_ARGS__)
-#define AZ_IOT_LOG_WARNF(...) \
-  az_iot_log_emitf(AZ_IOT_LOG_LEVEL_WARN, __FILE__, __LINE__, __VA_ARGS__)
-#define AZ_IOT_LOG_ERRORF(...) \
-  az_iot_log_emitf(AZ_IOT_LOG_LEVEL_ERROR, __FILE__, __LINE__, __VA_ARGS__)
+#define AZ_IOT_LOG_TRACEF(component, ...) \
+  az_iot_log_emitf(AZ_IOT_LOG_LEVEL_TRACE, (component), __FILE__, __LINE__, __VA_ARGS__)
+#define AZ_IOT_LOG_DEBUGF(component, ...) \
+  az_iot_log_emitf(AZ_IOT_LOG_LEVEL_DEBUG, (component), __FILE__, __LINE__, __VA_ARGS__)
+#define AZ_IOT_LOG_INFOF(component, ...) \
+  az_iot_log_emitf(AZ_IOT_LOG_LEVEL_INFO, (component), __FILE__, __LINE__, __VA_ARGS__)
+#define AZ_IOT_LOG_WARNF(component, ...) \
+  az_iot_log_emitf(AZ_IOT_LOG_LEVEL_WARN, (component), __FILE__, __LINE__, __VA_ARGS__)
+#define AZ_IOT_LOG_ERRORF(component, ...) \
+  az_iot_log_emitf(AZ_IOT_LOG_LEVEL_ERROR, (component), __FILE__, __LINE__, __VA_ARGS__)
 
 #ifdef __cplusplus
 }

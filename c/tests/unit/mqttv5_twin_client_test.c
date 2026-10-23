@@ -182,18 +182,14 @@ typedef struct fixture
    * messages must carry to be accepted. */
   uint8_t nonce[16];
   uint8_t encode_buffer[256];
-  /* Set once the factory has been handed to the connection, which adopts it.
-   * Read in teardown rather than the connection's own counter, because a test
-   * may already have destroyed the connection. */
-  bool factory_registered;
 } fixture;
 
 static void init_connection_ex(az_iot_connection_client* conn, bool push_desired)
 {
   az_iot_connection_client_options opts = { 0 };
-  opts.host = "broker.example";
+  opts.iothub_hostname = "broker.example";
   opts.port = 8883;
-  opts.client_id = "ut-device";
+  opts.device_id = "ut-device";
   opts.connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5;
   opts.twin_push.push_desired = push_desired;
   assert_int_equal(az_iot_test_connection_client_init(conn, &opts), AZ_IOT_OK);
@@ -234,10 +230,7 @@ static int teardown(void** state)
   {
     az_iot_mqttv5_twin_client_deinit(&fx->twin);
     az_iot_connection_client_deinit(&fx->conn);
-    if (!fx->factory_registered)
-    {
-      az_iot_mock_mqtt_factory_destroy(fx->factory);
-    }
+    az_iot_mock_mqtt_factory_destroy(fx->factory);
     free(fx);
   }
   return 0;
@@ -287,13 +280,8 @@ static size_t count_twin_publishes(az_iot_mock_mqtt_client* m)
   return count;
 }
 
-/* Drive an MQTT v5 session to CONNECTED, admitting the birth with a birth-ack
- * carrying @p desired and @p reported as the authoritative twin versions.
- *
- * Unlike MQTTv3, CONNACK alone does not announce CONNECTED: the presence
- * wildcard and the birth handshake complete first. */
-/* From an opened session (fx->mock set): CONNACK, presence SUBACKs, birth-ack. */
-static void open_to_birth_ack_after_open(fixture* fx, uint64_t desired, uint64_t reported)
+/* CONNACK and SUBACKs after open(), up to the published birth; records its nonce. */
+static void open_to_birth_after_open(fixture* fx)
 {
   assert_non_null(fx->mock);
 
@@ -334,7 +322,11 @@ static void open_to_birth_ack_after_open(fixture* fx, uint64_t desired, uint64_t
   assert_non_null(birth);
   assert_int_equal(birth->correlation_data_len, 16);
   memcpy(fx->nonce, birth->correlation_data, sizeof(fx->nonce));
+}
 
+/* Answer the birth recorded by open_to_birth_after_open(). */
+static void ack_birth(fixture* fx, uint64_t desired, uint64_t reported)
+{
   /* BirthAck { 10: desired_version, 11: reported_version }; proto3 omits a
    * zero, so an unset version simply is not written. */
   uint8_t ack_body[24];
@@ -358,8 +350,7 @@ static void open_to_birth_ack_after_open(fixture* fx, uint64_t desired, uint64_t
   ack_msg.topic = "ih/ut-device/dev/presence";
   ack_msg.correlation_data = fx->nonce;
   ack_msg.correlation_data_len = sizeof(fx->nonce);
-  ack_msg.user_properties = &ack_type;
-  ack_msg.user_properties_count = 1;
+  ack_msg.user_properties = az_iot_mqtt_user_properties_from_array(&ack_type, 1);
   ack_msg.payload = ack_len ? ack_body : NULL;
   ack_msg.payload_len = ack_len;
   az_iot_mqtt_event ack;
@@ -370,17 +361,25 @@ static void open_to_birth_ack_after_open(fixture* fx, uint64_t desired, uint64_t
   assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
 }
 
+/* From an opened session (fx->mock set): CONNACK, presence SUBACKs, birth-ack. */
+static void open_to_birth_ack_after_open(fixture* fx, uint64_t desired, uint64_t reported)
+{
+  open_to_birth_after_open(fx);
+  ack_birth(fx, desired, reported);
+}
+
 static void open_to_birth_ack_with_versions(fixture* fx, uint64_t desired, uint64_t reported)
 {
   assert_int_equal(
       az_iot_connection_client_register_mqtt_factory(&fx->conn, fx->factory), AZ_IOT_OK);
-  fx->factory_registered = true;
   assert_int_equal(az_iot_connection_client_open(&fx->conn), AZ_IOT_OK);
   fx->mock = az_iot_mock_mqtt_factory_last_client(fx->factory);
   open_to_birth_ack_after_open(fx, desired, reported);
 }
 
-/* Up to the birth-ack, then ack any feature SUBACKs so hub CONNECTED is announced. */
+/* Drive an MQTT v5 session to CONNECTED: birth-ack with @p desired and @p reported as the
+ * authoritative twin versions, then feature SUBACKs. Unlike MQTTv3, CONNACK alone does not
+ * announce CONNECTED. */
 static void open_to_connected_with_versions(fixture* fx, uint64_t desired, uint64_t reported)
 {
   open_to_birth_ack_with_versions(fx, desired, reported);
@@ -450,8 +449,7 @@ static void reconnect_with_versions(fixture* fx, uint8_t desired, uint8_t report
   ack_msg.topic = "ih/ut-device/dev/presence";
   ack_msg.correlation_data = fx->nonce;
   ack_msg.correlation_data_len = sizeof(fx->nonce);
-  ack_msg.user_properties = &ack_type;
-  ack_msg.user_properties_count = 1;
+  ack_msg.user_properties = az_iot_mqtt_user_properties_from_array(&ack_type, 1);
   ack_msg.payload = ack_len ? ack_body : NULL;
   ack_msg.payload_len = ack_len;
   az_iot_mqtt_event ack;
@@ -474,7 +472,16 @@ static void inject_twin_on(
     const uint8_t* payload,
     size_t payload_len)
 {
-  az_iot_mqtt_user_property type_prop = { "type", type };
+  /* `type` comes after 20 other properties, past any fixed array an adapter
+   * used to hold, so every case here also proves it is found there. */
+  az_iot_mqtt_user_property props[21];
+  for (size_t i = 0; i < 20; ++i)
+  {
+    props[i].key = "filler";
+    props[i].value = "x";
+  }
+  props[20].key = "type";
+  props[20].value = type;
   az_iot_mqtt_message msg;
   memset(&msg, 0, sizeof(msg));
   msg.topic = topic;
@@ -484,11 +491,7 @@ static void inject_twin_on(
   msg.correlation_data_len = corr_len;
   msg.content_type = "application/protobuf";
   msg.qos = AZ_IOT_MQTT_QOS_0;
-  if (type)
-  {
-    msg.user_properties = &type_prop;
-    msg.user_properties_count = 1;
-  }
+  msg.user_properties = az_iot_mqtt_user_properties_from_array(props, type != NULL ? 21 : 20);
   az_iot_mqtt_event evt;
   memset(&evt, 0, sizeof(evt));
   evt.kind = AZ_IOT_MQTT_EVT_MESSAGE;
@@ -1445,6 +1448,124 @@ static void with_push_desired_connecting_does_not_fetch(void** state)
   assert_int_equal(rec.version, 5);
 }
 
+static void open_to_birth(fixture* fx)
+{
+  assert_int_equal(
+      az_iot_connection_client_register_mqtt_factory(&fx->conn, fx->factory), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client_open(&fx->conn), AZ_IOT_OK);
+  fx->mock = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  open_to_birth_after_open(fx);
+}
+
+/* The service may push before the birth-ack; the push is delivered once and not refetched. */
+static void with_push_desired_a_push_before_the_birth_ack_is_delivered(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  desired_record rec = { 0 };
+  set_desired(fx, &rec);
+  open_to_birth(fx);
+
+  /* TwinPush { 1: Section{ version=5, payload } } */
+  const uint8_t body[] = { 0x0A, 0x0B, 0x08, 0x05, 0x12, 0x07, '{', '"', 's', '"', ':', '5', '}' };
+  inject_twin(fx, "twin-push:1", fx->nonce, body, sizeof(body));
+  assert_int_equal(rec.count, 1);
+  assert_int_equal(rec.kind, AZ_IOT_MQTTV5_TWIN_DESIRED_SNAPSHOT);
+  assert_int_equal(rec.version, 5);
+
+  ack_birth(fx, 5, 0);
+  az_iot_test_ack_subscriptions(&fx->conn, fx->mock);
+  assert_int_equal(rec.count, 1);
+  assert_int_equal(count_gets(fx), 0);
+}
+
+/* After close() during the birth, a push for that connection is dropped. */
+static void a_push_after_close_during_the_birth_is_dropped(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  desired_record rec = { 0 };
+  set_desired(fx, &rec);
+  open_to_birth(fx);
+  az_iot_connection_client_close(&fx->conn);
+
+  const uint8_t body[] = { 0x0A, 0x0B, 0x08, 0x05, 0x12, 0x07, '{', '"', 's', '"', ':', '5', '}' };
+  inject_twin(fx, "twin-push:1", fx->nonce, body, sizeof(body));
+  assert_false(rec.fired);
+}
+
+/* Before the birth-ack, a push for another connection is still dropped. */
+static void a_push_before_the_birth_ack_from_another_connection_is_dropped(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  desired_record rec = { 0 };
+  set_desired(fx, &rec);
+  open_to_birth(fx);
+
+  uint8_t other[16];
+  memcpy(other, fx->nonce, sizeof(other));
+  other[0] ^= 0xFF;
+  const uint8_t body[] = { 0x0A, 0x0B, 0x08, 0x05, 0x12, 0x07, '{', '"', 's', '"', ':', '5', '}' };
+  inject_twin(fx, "twin-push:1", other, body, sizeof(body));
+  assert_false(rec.fired);
+}
+
+/* A desired-patch before the birth-ack is delivered in order; the birth-ack adds no fetch. */
+static void a_desired_patch_before_the_birth_ack_is_delivered(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  desired_record rec = { 0 };
+  set_desired(fx, &rec);
+  open_to_birth(fx);
+
+  /* DesiredPatch { 1: version=1, 2: payload } */
+  const uint8_t body[] = { 0x08, 0x01, 0x12, 0x07, '{', '"', 'p', '"', ':', '1', '}' };
+  inject_twin(fx, "desired-patch:1", fx->nonce, body, sizeof(body));
+  assert_int_equal(rec.count, 1);
+  assert_int_equal(rec.kind, AZ_IOT_MQTTV5_TWIN_DESIRED_PATCH);
+  assert_int_equal(rec.version, 1);
+
+  ack_birth(fx, 1, 0);
+  az_iot_test_ack_subscriptions(&fx->conn, fx->mock);
+  assert_int_equal(rec.count, 1);
+  assert_int_equal(count_gets(fx), 0);
+}
+
+/* Before the birth is published, even this connection's nonce is not accepted. */
+static void a_push_before_the_birth_is_dropped(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  desired_record rec = { 0 };
+  set_desired(fx, &rec);
+  assert_int_equal(
+      az_iot_connection_client_register_mqtt_factory(&fx->conn, fx->factory), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client_open(&fx->conn), AZ_IOT_OK);
+  fx->mock = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  az_iot_mqtt_event connack;
+  memset(&connack, 0, sizeof(connack));
+  connack.kind = AZ_IOT_MQTT_EVT_CONNECTED;
+  connack.status = AZ_IOT_OK;
+  assert_true(az_iot_mock_mqtt_client_inject_event(fx->mock, &connack));
+  assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
+  assert_null(find_publish(fx->mock, "ih/ut-device/srv/presence"));
+
+  /* The nonce rides the CONNECT username: correlationId=<32 hex>&... */
+  const az_iot_mock_call* connect = az_iot_mock_mqtt_client_call_at(fx->mock, 0);
+  assert_int_equal(connect->kind, AZ_IOT_MOCK_CALL_CONNECT);
+  static const char hexd[] = "0123456789abcdef";
+  uint8_t nonce[16];
+  for (size_t i = 0; i < sizeof(nonce); ++i)
+  {
+    const char* hex = connect->username + 14 + i * 2;
+    const char* hi = strchr(hexd, hex[0]);
+    const char* lo = strchr(hexd, hex[1]);
+    assert_true(hex[0] != '\0' && hi != NULL && hex[1] != '\0' && lo != NULL);
+    nonce[i] = (uint8_t)(((hi - hexd) << 4) | (lo - hexd));
+  }
+
+  const uint8_t body[] = { 0x0A, 0x0B, 0x08, 0x05, 0x12, 0x07, '{', '"', 's', '"', ':', '5', '}' };
+  inject_twin(fx, "twin-push:1", nonce, body, sizeof(body));
+  assert_false(rec.fired);
+}
+
 static void connecting_current_does_not_fetch(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -1452,6 +1573,32 @@ static void connecting_current_does_not_fetch(void** state)
   set_desired(fx, &rec);
   open_to_connected(fx);
   assert_int_equal(count_gets(fx), 0);
+}
+
+/* Without push_desired the service sends no patches, so an application GET is how
+ * a change made while connected is found: one showing desired ahead fetches a
+ * snapshot for the handler. */
+static void a_get_ahead_fetches_a_snapshot(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  desired_record drec = { 0 };
+  set_desired(fx, &drec);
+  open_to_connected(fx);
+
+  get_record rec = { 0 };
+  uint8_t corr[16];
+  issue_get(fx, &rec, corr);
+  /* TwinGetResponse { 1: desired_version=3, 2: reported_version=1 } */
+  const uint8_t body[] = { 0x08, 0x03, 0x10, 0x01 };
+  inject_twin(fx, "get-response:1", corr, body, sizeof(body));
+  assert_true(rec.fired);
+  assert_false(drec.fired);
+  assert_int_equal(count_gets(fx), 2);
+
+  answer_last_get(fx, 3, "{\"s\":3}");
+  assert_int_equal(drec.kind, AZ_IOT_MQTTV5_TWIN_DESIRED_SNAPSHOT);
+  assert_int_equal(drec.version, 3);
+  assert_string_equal(drec.payload, "{\"s\":3}");
 }
 
 /* A handler set while connected starts from a snapshot. */
@@ -2220,7 +2367,6 @@ static void a_reconnect_reseeds_the_versions_from_the_new_birth_ack(void** state
   /* A second connection admits the birth with a different reported version. */
   assert_true(az_iot_mock_mqtt_client_inject_disconnected(fx->mock));
   assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
-  fx->factory_registered = true;
   assert_int_equal(az_iot_connection_client_open(&fx->conn), AZ_IOT_OK);
   fx->mock = az_iot_mock_mqtt_factory_last_client(fx->factory);
   assert_non_null(fx->mock);
@@ -2265,8 +2411,7 @@ static void a_reconnect_reseeds_the_versions_from_the_new_birth_ack(void** state
   ack_msg.topic = "ih/ut-device/dev/presence";
   ack_msg.correlation_data = fx->nonce;
   ack_msg.correlation_data_len = sizeof(fx->nonce);
-  ack_msg.user_properties = &ack_type;
-  ack_msg.user_properties_count = 1;
+  ack_msg.user_properties = az_iot_mqtt_user_properties_from_array(&ack_type, 1);
   ack_msg.payload = ack_body;
   ack_msg.payload_len = sizeof(ack_body);
   az_iot_mqtt_event ack;
@@ -2381,8 +2526,8 @@ static void init_against_an_mqtt_v3_connection_is_rejected(void** state)
   /* A direct connection declares its generation up front, so the pin can be
    * answered at init rather than deferred to connect. */
   az_iot_connection_client_options opts = { 0 };
-  opts.host = "broker.example";
-  opts.client_id = "ut-device";
+  opts.iothub_hostname = "broker.example";
+  opts.device_id = "ut-device";
   opts.connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V3;
   az_iot_connection_client conn;
   assert_int_equal(az_iot_test_connection_client_init(&conn, &opts), AZ_IOT_OK);
@@ -2560,7 +2705,20 @@ int main(void)
     cmocka_unit_test_setup_teardown(connecting_behind_fetches_a_snapshot, setup, teardown),
     cmocka_unit_test_setup_teardown(
         with_push_desired_connecting_does_not_fetch, setup_push_desired, teardown),
+    cmocka_unit_test_setup_teardown(
+        with_push_desired_a_push_before_the_birth_ack_is_delivered, setup_push_desired, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_push_before_the_birth_ack_from_another_connection_is_dropped,
+        setup_push_desired,
+        teardown),
+    cmocka_unit_test_setup_teardown(
+        a_desired_patch_before_the_birth_ack_is_delivered, setup_push_desired, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_push_before_the_birth_is_dropped, setup_push_desired, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_push_after_close_during_the_birth_is_dropped, setup_push_desired, teardown),
     cmocka_unit_test_setup_teardown(connecting_current_does_not_fetch, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_get_ahead_fetches_a_snapshot, setup, teardown),
     cmocka_unit_test_setup_teardown(
         setting_a_handler_while_connected_fetches_a_snapshot, setup, teardown),
     cmocka_unit_test_setup_teardown(

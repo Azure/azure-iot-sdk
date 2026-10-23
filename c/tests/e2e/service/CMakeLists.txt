@@ -15,6 +15,7 @@ add_library(az_iot_e2e_service STATIC
     az_iot_e2e_service.c
     e2e_sas.c
     e2e_amqp.c
+    e2e_notify_time.c
     e2e_http.c
 )
 

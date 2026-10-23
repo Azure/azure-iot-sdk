@@ -25,6 +25,7 @@
 
 #include "../../src/features/su/internal/su_channel_internal.h"
 #include "../../src/features/su/internal/su_protocol_internal.h"
+#include "../support/su_error_cases.h"
 
 /* ------------------------------------------------------------------------- */
 /* topics                                                                    */
@@ -207,7 +208,7 @@ static az_iot_su_agent_info make_agent_info(void)
   return a;
 }
 
-static void onboarding_request_omits_the_installed_update_id(void** state)
+static void fetch_request_without_an_installed_id_omits_the_key(void** state)
 {
   (void)state;
   uint8_t buf[512];
@@ -225,7 +226,7 @@ static void onboarding_request_omits_the_installed_update_id(void** state)
   assert_non_null(strstr(json, "\"agentProfile\":1"));
   assert_null(strstr(json, "\"agentProfile\":\"1\""));
   assert_non_null(strstr(json, "\"manufacturer\":\"Contoso\""));
-  /* A day-0 device has nothing installed: the key is absent, not null. */
+  /* Nothing installed: the key is absent, not null. */
   assert_null(strstr(json, "installedUpdateId"));
   assert_null(strstr(json, "null"));
 }
@@ -866,7 +867,8 @@ static void largest_engine_report_fits_the_channel_body(void** state)
   report.step_results = steps;
   report.step_results_count = _az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS;
 
-  uint8_t body[AZ_IOT_SU_CHANNEL_BODY_MAX_SIZE];
+  /* AZ_IOT_SU_MIN_MESSAGE_SIZE is the guarantee that this fits. */
+  uint8_t body[AZ_IOT_SU_MIN_MESSAGE_SIZE];
   size_t len = 0;
   assert_int_equal(az_iot_su__build_report_request(&report, body, sizeof(body), &len), AZ_IOT_OK);
   assert_true(len > 0 && len <= sizeof(body));
@@ -919,7 +921,7 @@ static void a_numeric_only_body_is_still_usable(void** state)
    * splits 409000 by operation. */
   assert_int_equal(
       az_iot_su__classify_error(code, numeric, AZ_IOT_SU_OP_REPORT_STATUS),
-      AZ_IOT_SU_ERROR_ACTION_ALREADY_REPORTED);
+      AZ_IOT_SU_ERROR_ACTION_RECHECK);
   assert_int_equal(
       az_iot_su__classify_error(code, numeric, AZ_IOT_SU_OP_GET_UPDATE),
       AZ_IOT_SU_ERROR_ACTION_PROCEED);
@@ -982,6 +984,9 @@ static void a_truncated_error_body_is_rejected(void** state)
       az_iot_su__parse_error_code(
           (const uint8_t*)cut_after_value, strlen(cut_after_value), code, sizeof(code), &numeric),
       AZ_IOT_ERR_NOT_FOUND);
+  /* What was read before the cut is not reported. */
+  assert_string_equal(code, "");
+  assert_int_equal(numeric, 0);
 
   /* Cut inside the nested info object, after a complete string code. */
   const char* cut_in_info = "{\"errorCode\":409000,\"info\":{\"aduErrorCode\":\"REPORT_CONFLICT\"";
@@ -989,6 +994,8 @@ static void a_truncated_error_body_is_rejected(void** state)
       az_iot_su__parse_error_code(
           (const uint8_t*)cut_in_info, strlen(cut_in_info), code, sizeof(code), &numeric),
       AZ_IOT_ERR_NOT_FOUND);
+  assert_string_equal(code, "");
+  assert_int_equal(numeric, 0);
 }
 
 static void string_codes_map_to_the_specified_actions(void** state)
@@ -1004,11 +1011,40 @@ static void string_codes_map_to_the_specified_actions(void** state)
       az_iot_su__classify_error("UNKNOWN_AGENT_INFO_VERSION", 400004, AZ_IOT_SU_OP_GET_UPDATE),
       AZ_IOT_SU_ERROR_ACTION_RESEND_AGENT_INFO);
   assert_int_equal(
-      az_iot_su__classify_error("OUTDATED_SERVICE_CONFIG", 400004, AZ_IOT_SU_OP_GET_UPDATE),
-      AZ_IOT_SU_ERROR_ACTION_DROP_SERVICE_CONFIG_ETAG);
-  assert_int_equal(
       az_iot_su__classify_error("REPORT_CONFLICT", 409000, AZ_IOT_SU_OP_REPORT_STATUS),
-      AZ_IOT_SU_ERROR_ACTION_ALREADY_REPORTED);
+      AZ_IOT_SU_ERROR_ACTION_RECHECK);
+  assert_int_equal(
+      az_iot_su__classify_error("REPORT_CONFLICT", 409000, AZ_IOT_SU_OP_GET_UPDATE),
+      AZ_IOT_SU_ERROR_ACTION_FATAL);
+  assert_int_equal(
+      az_iot_su__classify_error("UPDATE_ACCOUNT_ACCESS_DENIED", 409000, AZ_IOT_SU_OP_GET_UPDATE),
+      AZ_IOT_SU_ERROR_ACTION_PROCEED);
+  assert_int_equal(
+      az_iot_su__classify_error("UPDATE_ACCOUNT_ACCESS_DENIED", 409000, AZ_IOT_SU_OP_REPORT_STATUS),
+      AZ_IOT_SU_ERROR_ACTION_PROCEED);
+  assert_int_equal(
+      az_iot_su__classify_error("DEVICE_NOT_PROVISIONED", 409000, AZ_IOT_SU_OP_GET_UPDATE),
+      AZ_IOT_SU_ERROR_ACTION_FATAL);
+  assert_int_equal(
+      az_iot_su__classify_error("MAX_DEVICE_CLASSES_EXCEEDED", 400000, AZ_IOT_SU_OP_GET_UPDATE),
+      AZ_IOT_SU_ERROR_ACTION_FATAL);
+  assert_int_equal(
+      az_iot_su__classify_error("FORBIDDEN", 403000, AZ_IOT_SU_OP_REPORT_STATUS),
+      AZ_IOT_SU_ERROR_ACTION_FATAL);
+}
+
+/* The service never sends OUTDATED_SERVICE_CONFIG: a stale service-config ETag
+ * is answered with 200 and the current configuration. The name is unknown, so
+ * the numeric code decides. */
+static void outdated_service_config_is_not_a_special_case(void** state)
+{
+  (void)state;
+  assert_int_equal(
+      az_iot_su__classify_error("OUTDATED_SERVICE_CONFIG", 400004, AZ_IOT_SU_OP_GET_UPDATE),
+      AZ_IOT_SU_ERROR_ACTION_RESEND_AGENT_INFO);
+  assert_int_equal(
+      az_iot_su__classify_error("OUTDATED_SERVICE_CONFIG", 400002, AZ_IOT_SU_OP_GET_UPDATE),
+      AZ_IOT_SU_ERROR_ACTION_FATAL);
 }
 
 /* The documented codes whose action follows from their status are no longer
@@ -1039,7 +1075,7 @@ static void documented_codes_keep_their_actions_without_a_string_code(void** sta
       AZ_IOT_SU_ERROR_ACTION_RESEND_AGENT_INFO);
   assert_int_equal(
       az_iot_su__classify_error(NULL, 409000, AZ_IOT_SU_OP_REPORT_STATUS),
-      AZ_IOT_SU_ERROR_ACTION_ALREADY_REPORTED);
+      AZ_IOT_SU_ERROR_ACTION_RECHECK);
   assert_int_equal(
       az_iot_su__classify_error(NULL, 409000, AZ_IOT_SU_OP_GET_UPDATE),
       AZ_IOT_SU_ERROR_ACTION_PROCEED);
@@ -1152,8 +1188,9 @@ static void the_resend_family_is_recoverable_from_the_numeric_code_alone(void** 
       AZ_IOT_SU_ERROR_ACTION_FATAL);
 }
 
-/* 409000 covers two conditions needing OPPOSITE handling. Without a string code
- * the operation in flight is the only thing that separates them. */
+/* An untyped 409000 is never a delivered report. On a fetch it proceeds (the
+ * update account must not block provisioning); on a report it is a conflict,
+ * answered by checking again. */
 static void the_shared_conflict_code_is_split_by_operation(void** state)
 {
   (void)state;
@@ -1165,10 +1202,10 @@ static void the_shared_conflict_code_is_split_by_operation(void** state)
       az_iot_su__classify_error(NULL, 409000, AZ_IOT_SU_OP_GET_ONBOARDING_UPDATE),
       AZ_IOT_SU_ERROR_ACTION_PROCEED);
 
-  /* On a report: a terminal result is already recorded -- treat as delivered. */
+  /* On a report: a conflict, never a delivery (an identical report is 200). */
   assert_int_equal(
       az_iot_su__classify_error(NULL, 409000, AZ_IOT_SU_OP_REPORT_STATUS),
-      AZ_IOT_SU_ERROR_ACTION_ALREADY_REPORTED);
+      AZ_IOT_SU_ERROR_ACTION_RECHECK);
 }
 
 static void transient_numeric_codes_are_retried(void** state)
@@ -1293,7 +1330,7 @@ static void live_error_bodies_carry_the_code_in_message(void** state)
       AZ_IOT_OK);
   assert_int_equal(numeric, 400000);
   assert_string_equal(code, "UNKNOWN_WORKFLOW_ID");
-  /* Not ALREADY_REPORTED: nothing was delivered, and resending cannot help. */
+  /* Not a delivery: nothing was recorded, and resending cannot help. */
   assert_int_equal(
       az_iot_su__classify_error(code, numeric, AZ_IOT_SU_OP_REPORT_STATUS),
       AZ_IOT_SU_ERROR_ACTION_FATAL);
@@ -1360,6 +1397,39 @@ static void an_oversized_message_is_dropped_not_truncated(void** state)
       AZ_IOT_SU_ERROR_ACTION_RETRY);
 }
 
+/* An oversized info.aduErrorCode is dropped the same way; errorCode survives. */
+static void an_oversized_string_code_is_dropped_not_truncated(void** state)
+{
+  (void)state;
+  char code[8];
+  int32_t numeric = 0;
+
+  const char* body = "{\"errorCode\":400004,\"info\":{\"aduErrorCode\":\"OUTDATED_AGENT_INFO\"}}";
+  assert_int_equal(
+      az_iot_su__parse_error_code((const uint8_t*)body, strlen(body), code, sizeof(code), &numeric),
+      AZ_IOT_OK);
+  assert_string_equal(code, "");
+  assert_int_equal(numeric, 400004);
+
+  /* An oversized aduErrorCode falls back to `message`, whichever comes first. */
+  char wide[16];
+  const char* message_first = "{\"errorCode\":400000,\"message\":\"INVALID_REQUEST\","
+                              "\"info\":{\"aduErrorCode\":\"A_CODE_TOO_LONG_FOR_THE_BUFFER\"}}";
+  const char* info_first
+      = "{\"errorCode\":400000,\"info\":{\"aduErrorCode\":\"A_CODE_TOO_LONG_FOR_THE_BUFFER\"},"
+        "\"message\":\"INVALID_REQUEST\"}";
+  assert_int_equal(
+      az_iot_su__parse_error_code(
+          (const uint8_t*)message_first, strlen(message_first), wide, sizeof(wide), &numeric),
+      AZ_IOT_OK);
+  assert_string_equal(wide, "INVALID_REQUEST");
+  assert_int_equal(
+      az_iot_su__parse_error_code(
+          (const uint8_t*)info_first, strlen(info_first), wide, sizeof(wide), &numeric),
+      AZ_IOT_OK);
+  assert_string_equal(wide, "INVALID_REQUEST");
+}
+
 /* The service correlation GUID is the one value a support request needs, so it
  * is extracted rather than discarded. */
 static void the_tracking_id_is_extracted(void** state)
@@ -1415,10 +1485,35 @@ static void the_tracking_id_is_extracted(void** state)
   assert_string_equal(small, "");
 }
 
+static void catalog_error_signals_and_actions(void** state)
+{
+  const su_error_case* row = (const su_error_case*)*state;
+  char body[512];
+  size_t length = su_error_body_build(row, body, sizeof(body));
+  char code[256];
+  int32_t numeric = -1;
+  assert_int_equal(
+      az_iot_su__parse_error_code((const uint8_t*)body, length, code, sizeof(code), &numeric),
+      row->shape == SU_ERROR_BODYLESS ? AZ_IOT_ERR_NOT_FOUND : AZ_IOT_OK);
+  assert_string_equal(code, row->code);
+  assert_int_equal(numeric, row->numeric);
+  assert_int_equal(
+      az_iot_su__classify_error(code, numeric != 0 ? numeric : row->status, row->operation),
+      row->action);
+  char topic[256];
+  int n = snprintf(
+      topic, sizeof(topic), "$dps/registrations/res/%d/?$rid=su1%s", (int)row->status, row->query);
+  assert_true(n > 0 && (size_t)n < sizeof(topic));
+  assert_int_equal(az_iot_su__parse_retry_after_seconds(topic, (size_t)n), row->delay_ms / 1000u);
+}
+
+#define SU_REGISTER_PROTOCOL_CASE(name, op, code, status, numeric, action, shape, query, delay) \
+  { #name, catalog_error_signals_and_actions, NULL, NULL, (void*)&name },
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
-    cmocka_unit_test(topics_match_the_operation_names),
+    SU_ERROR_CASES(SU_REGISTER_PROTOCOL_CASE) cmocka_unit_test(topics_match_the_operation_names),
     cmocka_unit_test(the_declared_topic_bound_is_sufficient),
     cmocka_unit_test(a_short_topic_buffer_is_rejected_not_truncated),
     cmocka_unit_test(an_empty_request_id_is_rejected),
@@ -1426,7 +1521,7 @@ int main(void)
     cmocka_unit_test(a_retry_after_is_read_off_the_response_topic),
     cmocka_unit_test(an_absent_or_unusable_retry_after_reads_as_zero),
     cmocka_unit_test(malformed_response_topics_are_rejected),
-    cmocka_unit_test(onboarding_request_omits_the_installed_update_id),
+    cmocka_unit_test(fetch_request_without_an_installed_id_omits_the_key),
     cmocka_unit_test(operational_request_carries_the_installed_update_id),
     cmocka_unit_test(etags_are_echoed_only_when_held),
     cmocka_unit_test(a_partial_installed_update_id_is_rejected),
@@ -1457,10 +1552,12 @@ int main(void)
     cmocka_unit_test(live_deserialization_error_parses),
     cmocka_unit_test(prose_in_message_does_not_make_a_retryable_error_fatal),
     cmocka_unit_test(an_oversized_message_is_dropped_not_truncated),
+    cmocka_unit_test(an_oversized_string_code_is_dropped_not_truncated),
     cmocka_unit_test(the_internal_envelope_is_not_the_device_body),
     cmocka_unit_test(a_numeric_only_body_is_found_without_the_out_parameter),
     cmocka_unit_test(a_truncated_error_body_is_rejected),
     cmocka_unit_test(string_codes_map_to_the_specified_actions),
+    cmocka_unit_test(outdated_service_config_is_not_a_special_case),
     cmocka_unit_test(documented_codes_keep_their_actions_without_a_string_code),
     cmocka_unit_test(an_undocumented_code_is_classified_by_its_status_class),
     cmocka_unit_test(the_resend_family_is_recoverable_from_the_numeric_code_alone),
