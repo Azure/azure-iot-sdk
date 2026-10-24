@@ -164,8 +164,10 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
         public async Task<MqttSubscribeAck> SubscribeAsync(MqttSubscribe subscribe, CancellationToken cancellationToken = default)
         {
+            cancellationToken.ThrowIfCancellationRequested();
+
             MqttSubscribeAck suback = OnSubscribe != null
-                ? await OnSubscribe.Invoke(subscribe)
+                ? await OnSubscribe.Invoke(subscribe).WaitAsync(cancellationToken)
                 : MqttObjectHelpers.CreateSuccessfulSuback(subscribe);
 
             RecordSentTraffic(new(subscribe));
