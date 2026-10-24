@@ -2,6 +2,7 @@
 // See LICENSE file in the project root for full license information.
 
 using Google.Protobuf;
+using Microsoft.Azure.Iot.Device.Events;
 using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Models.DirectMethods;
 using Microsoft.Azure.Iot.Device.Mqtt;
@@ -24,11 +25,22 @@ namespace Microsoft.Azure.Iot.Device.Unified.DirectMethods
 
         private IConnectionClient _connection;
 
+        private readonly SingleHandlerEvent<Func<DirectMethodRequestReceivedEventArgs, Task<DirectMethodResponse>>> _directMethodInvoked =
+            new(nameof(DirectMethodInvokedAsync));
+
         /// <summary>
         /// An event that executes whenever this device receives a direct method request from IoT hub. After executing the direct method, the device must
         /// provide a direct method response.
         /// </summary>
-        public event Func<DirectMethodRequestReceivedEventArgs, Task<DirectMethodResponse>>? DirectMethodInvokedAsync;
+        /// <remarks>
+        /// Only one handler can be added at a time because only one direct method response can be sent per request.
+        /// </remarks>
+        /// <exception cref="InvalidOperationException">Thrown when adding a handler while another handler is already added.</exception>
+        public event Func<DirectMethodRequestReceivedEventArgs, Task<DirectMethodResponse>>? DirectMethodInvokedAsync
+        {
+            add => _directMethodInvoked.Add(value);
+            remove => _directMethodInvoked.Remove(value);
+        }
 
         /// <summary>
         /// Construct a new <see cref="DirectMethodClient"/> instance.
@@ -66,7 +78,8 @@ namespace Microsoft.Azure.Iot.Device.Unified.DirectMethods
 
         private async Task<DirectMethodResponse> HandleMqttv5DirectMethodRequestAsync(DirectMethodRequestReceivedEventArgs args)
         {
-            if (DirectMethodInvokedAsync == null)
+            Func<DirectMethodRequestReceivedEventArgs, Task<DirectMethodResponse>>? handler = _directMethodInvoked.Handler;
+            if (handler == null)
             {
                 Trace.TraceError("Received a direct method request, but no handler was set on this client to handle it.");
 #pragma warning disable CS8600 // Converting null literal or possible null value to non-nullable type.
@@ -76,7 +89,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.DirectMethods
 #pragma warning restore CS8600 // Converting null literal or possible null value to non-nullable type.
             }
 
-            return await DirectMethodInvokedAsync.Invoke(args);
+            return await handler.Invoke(args);
         }
 
         private async Task HandleReceivedMqttPublish(MqttPublishReceivedEventArgs args)
@@ -113,9 +126,11 @@ namespace Microsoft.Azure.Iot.Device.Unified.DirectMethods
                 return;
             }
 
-            if (DirectMethodInvokedAsync == null)
+            Func<DirectMethodRequestReceivedEventArgs, Task<DirectMethodResponse>>? handler = _directMethodInvoked.Handler;
+            if (handler == null)
             {
                 Trace.TraceError("Received a direct method request, but no handler was set on this client to handle it.");
+                return;
             }
 
             byte[] payload = args.Publish.Payload;
@@ -137,7 +152,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.DirectMethods
                 MethodName = methodName,
             };
 
-            DirectMethodResponse methodResponse = await DirectMethodInvokedAsync!.Invoke(methodRequest);
+            DirectMethodResponse methodResponse = await handler.Invoke(methodRequest);
 
             string responsePublishTopic = string.Format(ClassicDirectMethodsResponseTopicFormat, methodResponse.Status, requestId);
             MqttPublish publish = new MqttPublish()
