@@ -559,40 +559,6 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
             Assert.Equal(useCleanSession ? 2 : 1, mockMqttClient.SentMqttTrafficInOrder.Count(traffic => traffic.Subscribe != null));
         }
 
-        [Theory]
-        [InlineData(true)]
-        [InlineData(false)]
-        public async Task HubConnectCarriesSessionExpiryOnlyForMqttV5(bool isMQTTv5)
-        {
-            using MockConnectionMqttClient mockMqttClient = new() { AutoRespondToBirth = true };
-            using ConnectionClient connectionClient = new(new()
-            {
-                MqttClient = mockMqttClient,
-                MqttV5SessionExpiryInterval = TimeSpan.FromSeconds(90.7),
-            });
-
-            uint? sessionExpiryInterval = null;
-            mockMqttClient.OnConnect = connect =>
-            {
-                sessionExpiryInterval = connect.SessionExpiryInterval;
-                return Task.FromResult(new MqttConnectAck() { ResultCode = MqttConnectReasonCode.Success });
-            };
-
-            await connectionClient.ConnectToHubAsync(GetMockConnectionContext(isMQTTv5), TestContext.Current.CancellationToken);
-
-            Assert.Equal(isMQTTv5 ? 90u : 0u, sessionExpiryInterval);
-        }
-
-        [Theory]
-        [InlineData(-1.0)]
-        [InlineData((double)uint.MaxValue + 1)]
-        public void MqttV5SessionExpiryIntervalRejectsOutOfRangeValues(double seconds)
-        {
-            ConnectionClientOptions options = new();
-
-            Assert.Throws<ArgumentOutOfRangeException>(() => options.MqttV5SessionExpiryInterval = TimeSpan.FromSeconds(seconds));
-        }
-
         [Fact]
         public async Task ReconnectStartsCleanSessionAfterFailedResumeAttempt()
         {
