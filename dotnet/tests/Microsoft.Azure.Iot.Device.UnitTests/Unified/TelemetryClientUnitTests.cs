@@ -203,6 +203,47 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
         }
 
         [Fact]
+        public async Task CloudToDeviceTelemetryReceivedAsync_AwaitsEveryHandlerBeforeAcknowledging()
+        {
+            MockFeatureConnectionClient connection = new()
+            {
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv3, DeviceId),
+            };
+            using TelemetryClient telemetryClient = new(connection);
+            TaskCompletionSource completeFirstHandler = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            bool secondHandlerRan = false;
+            telemetryClient.CloudToDeviceTelemetryReceivedAsync += async _ => await completeFirstHandler.Task;
+            telemetryClient.CloudToDeviceTelemetryReceivedAsync += _ =>
+            {
+                secondHandlerRan = true;
+                return Task.CompletedTask;
+            };
+            MockMqttPublishReceivedEventArgs args = new()
+            {
+                Publish = new MqttPublish
+                {
+                    Topic = $"devices/{DeviceId}/messages/devicebound/",
+                    QualityOfServiceLevel = MqttQualityOfServiceLevel.AtLeastOnce,
+                },
+            };
+
+            Task receiveTask = connection.SimulateReceiveAsync(args);
+            try
+            {
+                Assert.False(args.IsAcknowledged);
+                Assert.False(receiveTask.IsCompleted);
+            }
+            finally
+            {
+                completeFirstHandler.TrySetResult();
+                await receiveTask.WaitAsync(TestContext.Current.CancellationToken);
+            }
+
+            Assert.True(secondHandlerRan);
+            Assert.True(args.IsAcknowledged);
+        }
+
+        [Fact]
         public async Task CloudToDeviceTelemetryReceivedAsync_PropagatesHandlerFailureWithoutAcknowledging()
         {
             MockFeatureConnectionClient connection = new()
