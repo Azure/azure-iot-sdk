@@ -4743,6 +4743,62 @@ static void a_rejected_report_completes_the_workflow(void** state)
   assert_false(fx->su._internal.report_owed);
 }
 
+/* An install that asks for a reboot is READY once its position record is
+ * stored, PENDING while that write fails. */
+static void an_install_reboot_is_ready_once_its_record_is_stored(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  assert_int_equal(az_iot_su_client_get_reboot_state(NULL), AZ_IOT_SU_REBOOT_NONE);
+  open_to_connected(fx);
+  fx->log.install_result = AZ_IOT_SU_RESULT_REBOOT_REQUIRED;
+  inject_patch(fx, signed_patch());
+  pump_to_state(fx, AZ_IOT_SU_STATE_INSTALL_STARTED, 20);
+  assert_int_equal(az_iot_su_client_get_reboot_state(&fx->su), AZ_IOT_SU_REBOOT_NONE);
+
+  fx->log.persist_failures = 1;
+  assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_INSTALL_COMPLETE);
+  assert_int_equal(az_iot_su_client_get_reboot_state(&fx->su), AZ_IOT_SU_REBOOT_PENDING);
+
+  fx->su._internal.persist_retry._internal.due_ms = 0;
+  assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  assert_int_equal(az_iot_su_client_get_reboot_state(&fx->su), AZ_IOT_SU_REBOOT_READY);
+}
+
+/* After the last apply asks for a reboot, READY needs the terminal record
+ * stored; a workflow that fails after asking needs no reboot. */
+static void a_last_apply_reboot_waits_for_the_terminal_record(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  fx->chan.report_verdict_deferred = true;
+  fx->log.apply_result = AZ_IOT_SU_RESULT_REBOOT_REQUIRED;
+  fx->log.persist_failures = 1;
+  inject_patch(fx, signed_patch());
+  pump(fx, 40);
+  assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_IDLE);
+  assert_int_equal(az_iot_su_client_get_reboot_state(&fx->su), AZ_IOT_SU_REBOOT_PENDING);
+
+  fx->su._internal.persist_retry._internal.due_ms = 0;
+  assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  assert_true(fx->su._internal.checkpoint_terminal);
+  assert_int_equal(az_iot_su_client_get_reboot_state(&fx->su), AZ_IOT_SU_REBOOT_READY);
+}
+
+static void a_failed_workflow_needs_no_reboot(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  fx->log.install_result = AZ_IOT_SU_RESULT_REBOOT_REQUIRED;
+  fx->log.apply_result = AZ_IOT_SU_RESULT_FAILURE;
+  inject_patch(fx, signed_patch());
+  pump_to_checkpoint(fx);
+  assert_int_equal(az_iot_su_client_get_reboot_state(&fx->su), AZ_IOT_SU_REBOOT_READY);
+  pump(fx, 40);
+  assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_FAILED);
+  assert_int_equal(az_iot_su_client_get_reboot_state(&fx->su), AZ_IOT_SU_REBOOT_NONE);
+}
+
 /* A failed workflow stores its terminal report, with its retry schedule,
  * before sending it. Once accepted after a reboot, the retry record remains
  * and the wait still holds. */
@@ -8918,6 +8974,11 @@ int main(void)
     cmocka_unit_test_setup_teardown(a_rejected_report_completes_the_workflow, setup, teardown),
     cmocka_unit_test_setup_teardown(
         properties_changed_before_the_verdict_complete_once, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        an_install_reboot_is_ready_once_its_record_is_stored, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_last_apply_reboot_waits_for_the_terminal_record, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_failed_workflow_needs_no_reboot, setup, teardown),
     cmocka_unit_test_setup_teardown(new_properties_do_not_resend_a_settled_report, setup, teardown),
     cmocka_unit_test_setup_teardown(a_check_resends_an_owed_terminal_report_first, setup, teardown),
     cmocka_unit_test_setup_teardown(

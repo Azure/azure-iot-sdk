@@ -1030,6 +1030,13 @@ az_iot_result az_iot_su_client_do_work(az_iot_su_client* client);
 az_iot_su_state az_iot_su_client_get_state(const az_iot_su_client* client);
 
 /**
+ * Whether a hook asked for a reboot (NONE), and whether storage holds what
+ * resume() needs (READY) or a write is still failing (PENDING). Checked after
+ * each do_work(); a FAILED workflow needs no reboot.
+ */
+az_iot_su_reboot_state az_iot_su_client_get_reboot_state(const az_iot_su_client* client);
+
+/**
  * Ask for an ONBOARDING update -- the day-0/pre-registration route. Needs no
  * device record. Sends installedUpdateId when set, like the regular route.
  *
