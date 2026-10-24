@@ -189,6 +189,10 @@ static int32_t persist_result(reboot_context* c, size_t len, int32_t r)
   else
   {
     c->write_failing = failed;
+    if (!failed)
+    {
+      c->erase_failing = 0; /* the new record replaces the one not erased */
+    }
   }
   return r;
 }
