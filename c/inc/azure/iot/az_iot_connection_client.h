@@ -654,10 +654,11 @@ extern "C"
      * Adapters that cannot honour it fail the connect with
      * AZ_IOT_ERR_NOT_SUPPORTED rather than connecting around the proxy.
      *
-     * Note for the Paho adapter: when this is left unset, Paho itself still
-     * falls back to the lowercase `http_proxy` / `https_proxy` environment
-     * variables (the uppercase spellings are ignored). Set the proxy here to be
-     * explicit and independent of the environment. */
+     * Note for the Paho adapter: when this is left unset, Paho reads the
+     * lowercase `http_proxy` / `https_proxy` environment variables only if
+     * `PAHO_C_CLIENT_USE_HTTP_PROXY=TRUE` is set (and then honours `no_proxy`;
+     * `https_proxy` must start with `http://` or `https://`). Set the proxy
+     * here to be explicit and independent of the environment. */
     az_iot_mqtt_proxy_options proxy;
 
     /* MQTTv5 hub twin push advertisement. These two bits ride the birth
@@ -1836,6 +1837,9 @@ extern "C"
       uint8_t pass_from_x509_index;
       bool x509_available;
       uint8_t x509_role; /* az_iot_cert_role */
+      /* Hub only: the last attempt's source, kept once the next clears
+       * source (NONE: none yet). */
+      az_iot_auth_source last_source;
     } auth[AZ_IOT_CONN_SCOPE_COUNT];
     /* Token area of opts.sas_buffer: after the scratch and key slots. */
     char* sas_token;

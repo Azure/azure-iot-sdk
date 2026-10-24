@@ -52,8 +52,14 @@ namespace Microsoft.Azure.Iot.Device.Unified.DirectMethods
         /// await connectionClient.ProvisionAndConnectAsync();
         /// </code>
         /// </example>
+        /// <exception cref="InvalidOperationException">Thrown if <paramref name="connection"/> opted out of direct methods (see <see cref="ConnectionClientOptions.EnableDirectMethods"/>).</exception>
         public DirectMethodClient(IConnectionClient connection)
         {
+            if (!connection.AreDirectMethodsEnabled)
+            {
+                throw new InvalidOperationException($"The provided connection client opted out of direct methods. Set {nameof(ConnectionClientOptions)}.{nameof(ConnectionClientOptions.EnableDirectMethods)} to true to use a {nameof(DirectMethodClient)}.");
+            }
+
             _connection = connection;
             _connection.PublishReceivedAsync += HandleReceivedMqttPublish;
         }

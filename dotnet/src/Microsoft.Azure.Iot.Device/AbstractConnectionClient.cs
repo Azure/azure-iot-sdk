@@ -110,6 +110,8 @@ namespace Microsoft.Azure.Iot.Device
         private bool _isUserSuppliedMqttClient = false;
 
         internal MqttConnectionManager ManagedMqttConnection;
+        private CancellationTokenSource _operationLifetimeCancellation = new();
+        private readonly object _operationLifetimeCancellationLock = new();
 
         internal abstract bool DoesClientSupportHubType(ConnectionProfile connectionProfile);
 
@@ -325,6 +327,7 @@ namespace Microsoft.Azure.Iot.Device
         public async Task<ConnectionContext> ProvisionAndConnectAsync(ProvisioningSettings provisioningSettings, AuthenticationProvider authentication, bool forceProvisioning = false, CancellationToken cancellationToken = default)
         {
             ObjectDisposedException.ThrowIf(_isDisposed, this);
+            StartOperationLifetime();
 
             Volatile.Write(ref _currentReprovisioningCancellationToken, null);
 
@@ -485,6 +488,8 @@ namespace Microsoft.Azure.Iot.Device
         {
             ObjectDisposedException.ThrowIf(_isDisposed, this);
 
+            cancellationToken.ThrowIfCancellationRequested();
+
             // Record the disconnect before cancelling anything, so that a re-provisioning attempt or a waiting operation
             // that races this call observes it and stands down.
             Interlocked.Increment(ref _deliberateDisconnectsInProgress);
@@ -492,6 +497,9 @@ namespace Microsoft.Azure.Iot.Device
 
             try
             {
+                // Cancel every feature operation tied to this connection's lifetime.
+                CancelOperationLifetime();
+
                 // Abandon any queued feature operations straight away rather than leaving them to wait for a recovery
                 // that this disconnect is about to stop.
                 ReleaseOperationsWaitingForConnection();
@@ -556,6 +564,7 @@ namespace Microsoft.Azure.Iot.Device
         /// <param name="disposing">true to release both managed and unmanaged resources; false to releases only unmanaged resources.</param>
         public virtual void Dispose(bool disposing)
         {
+            CancelOperationLifetime();
             DetachConnectionCallbacks();
 
             if (disposing)
@@ -575,6 +584,7 @@ namespace Microsoft.Azure.Iot.Device
         /// </summary>
         public virtual void Dispose()
         {
+            CancelOperationLifetime();
             DetachConnectionCallbacks();
 
             ManagedMqttConnection.Dispose();
@@ -1770,6 +1780,12 @@ namespace Microsoft.Azure.Iot.Device
             // Counts the connection events that release the latch, so that an event which fires after an attempt started
             // but before the latch is reset below is not lost (which would leave this operation waiting for the next one).
             int connectionEventCount = 0;
+            // An operation started after the client's operation lifetime already ended (for example, after a deliberate
+            // disconnect) is not tied to that lifetime. It is attempted and fails fast as not-connected instead.
+            CancellationToken operationLifetimeToken = GetOperationLifetimeCancellationToken();
+            using CancellationTokenSource connectionLifetimeCancellation = operationLifetimeToken.IsCancellationRequested
+                ? CancellationTokenSource.CreateLinkedTokenSource(cancellationToken)
+                : CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, operationLifetimeToken);
 
             Func<DevicePresenceFlowCompletedArgs, Task> HandleDevicePresenceFlowCompleted = (args) =>
             {
@@ -1814,6 +1830,7 @@ namespace Microsoft.Azure.Iot.Device
             {
                 while (true) // Retry sending publish until user cancels as long as the failure is just that the underlying mqtt client was disconnected.
                 {
+                    connectionLifetimeCancellation.Token.ThrowIfCancellationRequested();
                     int connectionEventCountBeforeAttempt = Volatile.Read(ref connectionEventCount);
 
                     try
@@ -1834,6 +1851,7 @@ namespace Microsoft.Azure.Iot.Device
                             // after this attempt started, so that release must not be waited for again. Re-evaluate
                             // straight away.
                             ThrowIfAbandoned();
+                            connectionLifetimeCancellation.Token.ThrowIfCancellationRequested();
                             continue;
                         }
 
@@ -1856,7 +1874,7 @@ namespace Microsoft.Azure.Iot.Device
 
                         try
                         {
-                            latch.Wait(cancellationToken); // Wait for device birth flow to finish before resuming this feature client-level traffic
+                            latch.Wait(connectionLifetimeCancellation.Token); // Wait for device birth flow to finish before resuming this feature client-level traffic
                         }
                         catch (OperationCanceledException)
                         {
@@ -1872,6 +1890,33 @@ namespace Microsoft.Azure.Iot.Device
                 DevicePresenceFlowCompletedAsync -= HandleDevicePresenceFlowCompleted;
                 UnrecoverablyFaulted -= HandleUnrecoverableFault;
                 DeliberatelyDisconnected -= HandleDeliberateDisconnect;
+            }
+        }
+
+        private void StartOperationLifetime()
+        {
+            lock (_operationLifetimeCancellationLock)
+            {
+                if (_operationLifetimeCancellation.IsCancellationRequested)
+                {
+                    _operationLifetimeCancellation = new CancellationTokenSource();
+                }
+            }
+        }
+
+        private CancellationToken GetOperationLifetimeCancellationToken()
+        {
+            lock (_operationLifetimeCancellationLock)
+            {
+                return _operationLifetimeCancellation.Token;
+            }
+        }
+
+        private void CancelOperationLifetime()
+        {
+            lock (_operationLifetimeCancellationLock)
+            {
+                _operationLifetimeCancellation.Cancel();
             }
         }
     }

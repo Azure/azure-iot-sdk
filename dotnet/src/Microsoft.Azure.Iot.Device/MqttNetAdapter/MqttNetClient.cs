@@ -227,6 +227,10 @@ namespace Microsoft.Azure.Iot.Device.MQTTnetAdapter
             {
                 throw new MqttClientNotConnectedException(e.Message, e);
             }
+            catch (MQTTnet.Exceptions.MqttCommunicationException e) when (publish.QualityOfServiceLevel == Mqtt.MqttQualityOfServiceLevel.AtLeastOnce && IsConnectionLoss(e))
+            {
+                throw new MqttClientNotConnectedException("The connection was lost before the PUBACK was received.", e);
+            }
         }
 
         public virtual async Task<MqttSubscribeAck> SubscribeAsync(MqttSubscribe mqttSubscribe, CancellationToken cancellationToken = default)
@@ -254,6 +258,10 @@ namespace Microsoft.Azure.Iot.Device.MQTTnetAdapter
             catch (MQTTnet.Exceptions.MqttClientNotConnectedException e)
             {
                 throw new MqttClientNotConnectedException(e.Message, e);
+            }
+            catch (MQTTnet.Exceptions.MqttCommunicationException e) when (IsConnectionLoss(e))
+            {
+                throw new MqttClientNotConnectedException("The connection was lost before the SUBACK was received.", e);
             }
         }
 
@@ -283,6 +291,23 @@ namespace Microsoft.Azure.Iot.Device.MQTTnetAdapter
             {
                 throw new MqttClientNotConnectedException(e.Message, e);
             }
+            catch (MQTTnet.Exceptions.MqttCommunicationException e) when (IsConnectionLoss(e))
+            {
+                throw new MqttClientNotConnectedException("The connection was lost before the UNSUBACK was received.", e);
+            }
+        }
+
+        /// <summary>
+        /// Whether MQTTnet failed an operation because its connection was lost, which is how it fails every operation
+        /// still waiting for an acknowledgement when the connection drops. It may do so before
+        /// <see cref="IsConnected"/> reports the disconnection, so the exception itself is what says so.
+        /// </summary>
+        private static bool IsConnectionLoss(MQTTnet.Exceptions.MqttCommunicationException e)
+        {
+            // A timeout says only that the acknowledgement was late, not that the connection is gone; a connecting
+            // failure is raised while connecting rather than while an operation is in flight.
+            return e is not MQTTnet.Exceptions.MqttCommunicationTimedOutException
+                and not MQTTnet.Adapter.MqttConnectingFailedException;
         }
 
         /// <summary>

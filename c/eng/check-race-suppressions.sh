@@ -2,15 +2,18 @@
 # Copyright (c) Microsoft. All rights reserved.
 # Licensed under the MIT license. See LICENSE file in the project root for full license information.
 #
-# Guards eng/sanitizers/{helgrind,drd}.supp: a suppression may hide a race in
-# third-party code, never in the SDK's own. Each entry must:
+# Guards eng/sanitizers/{helgrind,drd,tsan}.supp: a suppression may hide a race
+# in third-party code, never in the SDK's own. Each valgrind entry must:
 # - follow a comment line (its upstream reference);
 # - start with a concrete frame, not "...";
 # - name no function defined in c/src or c/adapters (globs are expanded);
 # - use obj: only for shared libraries (*.so*): the SDK is linked statically.
+# Each tsan.supp line must follow a comment and be race:<identifier> from the
+# tsan_reviewed list below (third-party globals), and no substring of any text in
+# c/src or c/adapters: TSan matches patterns as substrings, in any frame.
 # Dependency-free so it runs in the conventions job before configure.
 #
-# Usage: check-race-suppressions.sh [file.supp...]   (default: the two above)
+# Usage: check-race-suppressions.sh [file.supp...]   (default: the three above)
 #        check-race-suppressions.sh --self-test      (fixtures in eng/sanitizers/selftest)
 
 set -euo pipefail
@@ -90,15 +93,56 @@ fail() {
     violations=$((violations + 1))
 }
 
+# Third-party globals reviewed for tsan.supp: variables only, never functions,
+# and no substring of a function name in the stacks they appear in. Adding one
+# here is the review step.
+tsan_reviewed=(MQTTAsync_tostop sendThread_state sendThread_id receiveThread_id)
+
+# TSan format: one "type:pattern" per line.
+check_tsan() {
+    local supp="$1" rel="$2" prev="" line_no=0 raw line pattern
+    while IFS= read -r raw || [ -n "${raw}" ]; do
+        line_no=$((line_no + 1))
+        line="$(sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' <<<"${raw}")"
+        if [ -z "${line}" ] || [[ "${line}" == \#* ]]; then
+            [ -z "${line}" ] || prev="${line}"
+            continue
+        fi
+        [[ "${prev}" == \#* ]] || fail "${rel}" "${line_no}" "entry has no comment before it"
+        prev="${line}"
+        if [[ "${line}" != race:* ]]; then
+            fail "${rel}" "${line_no}" "only race: entries are allowed"
+            continue
+        fi
+        pattern="${line#race:}"
+        if ! [[ "${pattern}" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+            fail "${rel}" "${line_no}" "'${pattern}' is not a plain identifier"
+            continue
+        fi
+        # TSan matches a pattern as a substring, so a fragment of an SDK name counts.
+        if grep -rqF --include='*.c' --include='*.h' -- "${pattern}" "${root_dir}/src" "${root_dir}/adapters"; then
+            fail "${rel}" "${line_no}" "'${pattern}' appears in SDK code"
+        fi
+        if [[ " ${tsan_reviewed[*]} " != *" ${pattern} "* ]]; then
+            fail "${rel}" "${line_no}" "'${pattern}' is not a reviewed third-party global (tsan_reviewed)"
+        fi
+    done <"${supp}"
+}
+
 if [ "$#" -gt 0 ]; then
     files=("$@")
 else
-    files=("${root_dir}/eng/sanitizers/helgrind.supp" "${root_dir}/eng/sanitizers/drd.supp")
+    files=("${root_dir}/eng/sanitizers/helgrind.supp" "${root_dir}/eng/sanitizers/drd.supp"
+        "${root_dir}/eng/sanitizers/tsan.supp")
 fi
 
 for supp in "${files[@]}"; do
     [ -f "${supp}" ] || continue
     rel="${supp#"${root_dir}"/}"
+    if [[ "${supp}" == *tsan*.supp ]]; then
+        check_tsan "${supp}" "${rel}"
+        continue
+    fi
     prev=""
     in_entry=0
     line_no=0
@@ -156,7 +200,7 @@ for supp in "${files[@]}"; do
 done
 
 if [ "${violations}" -gt 0 ]; then
-    echo "${violations} race-suppression violation(s). See the header of eng/sanitizers/helgrind.supp."
+    echo "${violations} race-suppression violation(s). See the header of eng/sanitizers/helgrind.supp (tsan.supp for TSan)."
     exit 1
 fi
 echo "race suppressions name third-party code only (${#first_party[@]} SDK functions checked)."

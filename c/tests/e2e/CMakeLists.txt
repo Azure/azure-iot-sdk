@@ -234,7 +234,9 @@ endforeach()
 # completion, while the service side watches the hub's file-upload NOTIFICATION
 # endpoint -- the only cloud-side proof that a round trip completed. It also
 # covers the failure report (accepted, but never notified), a completion carrying
-# an unknown correlation id, and local argument rejection.
+# an unknown correlation id, local argument rejection, and an upload by a SAS-key
+# device (DPS symmetric-key group, as az_iot_tests_e2e_sas) whose hub calls are
+# authorized by the SDK's hub SAS token.
 #
 # The MQTTv3 HTTP hook and the Storage PUT/GET go through the e2e service lib's
 # HTTPS helper (the harness az_amqp TLS transport), so there is no external HTTP
@@ -252,8 +254,8 @@ if(WIN32)
     set(_e2e_fileupload_ctest NO_CTEST)
 endif()
 az_iot_add_e2e_suite(az_iot_tests_e2e_fileupload ${_e2e_fileupload_ctest}
-    SOURCES tests/e2e_fileupload_test.c tests/e2e_device.c
-    LIBS az_iot_e2e_service az_iot_mqttv3)
+    SOURCES tests/e2e_fileupload_test.c tests/e2e_device.c tests/e2e_sas_device.c
+    LIBS az_iot_e2e_service az_iot_mqttv3 az_iot_crypto_openssl)
 
 # ---------------------------------------------------------------------------
 # az_iot_tests_e2e_transport
