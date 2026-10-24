@@ -307,6 +307,11 @@ static void on_su_event(const az_iot_su_event* event, void* user_ctx)
           "Failed update offered again; retry in %u s.\n",
           (unsigned)(event->retry_after_ms / 1000u));
       break;
+    case AZ_IOT_SU_EVENT_WORKFLOW_COMPLETED:
+      printf(
+          "Workflow completed; final report %s.\n",
+          event->reason == AZ_IOT_OK ? "accepted" : "rejected by the service");
+      break;
   }
 }
 

@@ -1922,6 +1922,38 @@ static void raise_abandoned(
   dispatch_event(client, &event);
 }
 
+/** @brief Raise AZ_IOT_SU_EVENT_WORKFLOW_COMPLETED for a settled terminal report. */
+static void raise_completed(
+    az_iot_su_client* client,
+    az_iot_result result,
+    const az_iot_su_service_error* service_error,
+    const az_iot_su_report* report)
+{
+  az_iot_su_event event = {
+    .kind = AZ_IOT_SU_EVENT_WORKFLOW_COMPLETED,
+    .state = SU_I(client).state,
+    .previous_state = SU_I(client).state,
+    .operation = AZ_IOT_SU_OP_REPORT_STATUS,
+    .reason = result,
+    .service_error = k_no_service_error,
+    .report_terminal = true,
+    .report = report,
+  };
+  if (result != AZ_IOT_OK && service_error != NULL)
+  {
+    event.service_error = *service_error;
+    if (event.service_error.message == NULL)
+    {
+      event.service_error.message = "";
+    }
+    if (event.service_error.tracking_id == NULL)
+    {
+      event.service_error.tracking_id = "";
+    }
+  }
+  dispatch_event(client, &event);
+}
+
 /** @brief Raise AZ_IOT_SU_EVENT_UPDATE_REFUSED for an update not processed. */
 static void raise_refused(az_iot_su_client* client, az_iot_result reason)
 {
@@ -2236,22 +2268,24 @@ static void on_channel_result(
     {
       bool terminal = SU_I(client).report_sent_terminal;
       /* The report as sent: the engine state may have moved on since. */
-      az_iot_su_report accepted;
-      az_iot_su_report_update_id accepted_installed;
-      bool have_view = result == AZ_IOT_OK && terminal
-          && az_iot_su__sent_terminal_report(client, &accepted, &accepted_installed);
+      az_iot_su_report sent;
+      az_iot_su_report_update_id sent_installed;
+      bool have_view = terminal && az_iot_su__sent_terminal_report(client, &sent, &sent_installed);
+      /* Settled unless kept for a later send (see settle_terminal_report()). */
+      bool settled = terminal && SU_I(client).terminal_report_in_flight
+          && result != AZ_IOT_ERR_NOT_CONNECTED;
       SU_I(client).sent_terminal[SU_I(client).sent_terminal_slot].valid = false;
       settle_terminal_report(client, result);
       if (result == AZ_IOT_OK)
       {
         raise_simple(
-            client,
-            AZ_IOT_SU_EVENT_REPORT_ACCEPTED,
-            operation,
-            terminal,
-            have_view ? &accepted : NULL);
+            client, AZ_IOT_SU_EVENT_REPORT_ACCEPTED, operation, terminal, have_view ? &sent : NULL);
       }
-      else if (action == AZ_IOT_SU_ERROR_ACTION_RECHECK)
+      if (settled)
+      {
+        raise_completed(client, result, service_error, have_view ? &sent : NULL);
+      }
+      if (result != AZ_IOT_OK && action == AZ_IOT_SU_ERROR_ACTION_RECHECK)
       {
         queue_conflict_recheck(client);
       }
