@@ -95,6 +95,8 @@ namespace Microsoft.Azure.Iot.Device
         // In both cases, this method should trigger the "OnDevicePresenceFlowCompleted" callback
         public abstract Task HandleConnectedToHubAsync(MqttClientConnectedEventArgs args);
 
+        internal bool IsHubSessionResumeRequested => Volatile.Read(ref _hubSessionResumeRequested) == 1;
+
         // Workaround so that inheriting classes can invoke the "DevicePresenceFlowCompletedAsync" event.
         protected Task RaiseDevicePresenceFlowCompletedAsync(DevicePresenceFlowCompletedArgs args)
         {
@@ -192,8 +194,9 @@ namespace Microsoft.Azure.Iot.Device
         // 1 once a presence flow has completed on the current IoT hub, so that the session it set up holds every
         // subscription that flow needs. Consumed by the next CONNECT attempt so that only that attempt asks to resume the
         // session: if its CONNACK is lost, the broker may have started an empty session that a later attempt would resume
-        // without knowing its subscriptions were lost, so later attempts start clean until a presence flow completes again.
+        // without knowing its subscriptions were lost, so later attempts do not resume until a presence flow completes again.
         private int _canResumeHubSession;
+        private int _hubSessionResumeRequested;
 
         // Standing intent to re-provision: the cached assignment is no good -- an identity rejection at CONNACK or the
         // hub-unreachable threshold -- so this client should ask DPS for a fresh assignment rather than reconnecting to
@@ -823,7 +826,8 @@ namespace Microsoft.Azure.Iot.Device
             connectPacketToEdit = ApplyAuthentication(hubCredentials, connectPacketToEdit);
 
             bool resumeSession = !_useCleanSession && Interlocked.Exchange(ref _canResumeHubSession, 0) == 1;
-            connectPacketToEdit.CleanSession = !resumeSession;
+            Volatile.Write(ref _hubSessionResumeRequested, resumeSession ? 1 : 0);
+            connectPacketToEdit.CleanSession = _useCleanSession;
             connectPacketToEdit.CleanStart = !resumeSession;
 
             // Gen 1 hub clients and gen 2 hub clients can insert their specific username/password/protocol version/etc before each connect attempt

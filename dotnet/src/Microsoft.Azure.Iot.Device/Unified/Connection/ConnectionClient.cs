@@ -88,7 +88,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
             Debug.Assert(CurrentConnectionContext != null);
 
             // Upon an MQTT connection being established, immediately re-subscribe to the enabled twin/cloud-to-device/direct methods topics if there is no session present.
-            if (args.ConnectAck.IsSessionPresent)
+            if (args.ConnectAck.IsSessionPresent && IsHubSessionResumeRequested)
             {
                 await RaiseDevicePresenceFlowCompletedAsync(new DevicePresenceFlowCompletedArgs() { IsSuccess = true });
 

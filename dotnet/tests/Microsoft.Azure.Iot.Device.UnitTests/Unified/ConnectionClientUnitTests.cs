@@ -531,6 +531,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
             });
 
             List<bool> cleanSessionFlags = new();
+            bool brokerHasSession = true;
             mockMqttClient.OnConnect = connect =>
             {
                 lock (cleanSessionFlags)
@@ -538,7 +539,9 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
                     cleanSessionFlags.Add(connect.CleanSession);
                 }
 
-                return Task.FromResult(new MqttConnectAck() { IsSessionPresent = !connect.CleanSession, ResultCode = MqttConnectReasonCode.Success });
+                bool isSessionPresent = !connect.CleanSession && brokerHasSession;
+                brokerHasSession = !connect.CleanSession;
+                return Task.FromResult(new MqttConnectAck() { IsSessionPresent = isSessionPresent, ResultCode = MqttConnectReasonCode.Success });
             };
 
             await connectionClient.ConnectToHubAsync(GetMockConnectionContext(false), TestContext.Current.CancellationToken);
@@ -554,8 +557,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
                 .WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
             await reconnected.Task.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
 
-            // The first connection to a hub always starts clean since the subscriptions of any session left there are unknown.
-            Assert.Equal(new[] { true, useCleanSession }, cleanSessionFlags);
+            Assert.Equal(new[] { useCleanSession, useCleanSession }, cleanSessionFlags);
             Assert.Equal(useCleanSession ? 2 : 1, mockMqttClient.SentMqttTrafficInOrder.Count(traffic => traffic.Subscribe != null));
         }
 
@@ -573,6 +575,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
             await connectionClient.ConnectToHubAsync(GetMockConnectionContext(false), TestContext.Current.CancellationToken);
 
             List<bool> cleanSessionFlags = new();
+            bool brokerHasSession = true;
             mockMqttClient.OnConnect = connect =>
             {
                 lock (cleanSessionFlags)
@@ -580,12 +583,16 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
                     cleanSessionFlags.Add(connect.CleanSession);
                     if (cleanSessionFlags.Count == 1)
                     {
-                        // The broker may have started a new, empty session for this attempt, but its CONNACK was lost.
+                        // The broker may have accepted the resume attempt, but its CONNACK was lost.
                         throw new TimeoutException("mock CONNACK lost");
                     }
                 }
 
-                return Task.FromResult(new MqttConnectAck() { IsSessionPresent = !connect.CleanSession, ResultCode = MqttConnectReasonCode.Success });
+                return Task.FromResult(new MqttConnectAck()
+                {
+                    IsSessionPresent = !connect.CleanSession && brokerHasSession,
+                    ResultCode = MqttConnectReasonCode.Success,
+                });
             };
 
             TaskCompletionSource reconnected = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -599,7 +606,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
                 .WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
             await reconnected.Task.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
 
-            Assert.Equal(new[] { false, true }, cleanSessionFlags);
+            Assert.Equal(new[] { false, false }, cleanSessionFlags);
             Assert.Equal(2, mockMqttClient.SentMqttTrafficInOrder.Count(traffic => traffic.Subscribe != null));
         }
 
