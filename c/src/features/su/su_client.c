@@ -2144,6 +2144,7 @@ static void on_channel_result(
      * goes with it; the report stays owed, and only a new check sends it
      * again. Taken before observers run, so a check they queue stays. */
     uint8_t held_check = SU_FETCH_NONE;
+    az_iot_result held_reason = AZ_IOT_ERR_NOT_CONNECTED;
     if (operation == AZ_IOT_SU_OP_REPORT_STATUS && result == AZ_IOT_ERR_NOT_CONNECTED
         && SU_I(client).report_sent_terminal)
     {
@@ -2151,6 +2152,12 @@ static void on_channel_result(
       SU_I(client).pending_fetch = SU_FETCH_NONE;
       if (held_check != SU_FETCH_NONE)
       {
+        /* One already past its deadline is reported as the timeout it is. */
+        if (SU_I(client).pending_fetch_deadline_ms != 0
+            && az_iot_time_mono_ms() >= SU_I(client).pending_fetch_deadline_ms)
+        {
+          held_reason = AZ_IOT_ERR_TIMEOUT;
+        }
         SU_I(client).pending_fetch_deadline_ms = 0;
       }
     }
@@ -2185,8 +2192,7 @@ static void on_channel_result(
       }
       if (held_check != SU_FETCH_NONE)
       {
-        raise_abandoned(
-            client, fetch_operation(held_check), AZ_IOT_ERR_NOT_CONNECTED, &k_no_service_error);
+        raise_abandoned(client, fetch_operation(held_check), held_reason, &k_no_service_error);
       }
       return;
     }
