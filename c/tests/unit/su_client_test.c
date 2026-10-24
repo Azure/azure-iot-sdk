@@ -4624,6 +4624,30 @@ static void the_workflow_completes_once_its_report_settles(void** state)
   assert_int_equal(fx->completed_count, 1);
 }
 
+/* Properties changed while the terminal verdict is pending do not re-send
+ * that report after it settles, nor complete the workflow twice. */
+static void properties_changed_before_the_verdict_complete_once(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
+  finish_with_report_unacknowledged(fx);
+  az_iot_su_device_properties dp = { 0 };
+  dp.manufacturer = "Contoso";
+  dp.model = "Foobar";
+  assert_int_equal(az_iot_su_client_update_device_properties(&fx->su, &dp), AZ_IOT_OK);
+  fx->chan.result_cb(
+      AZ_IOT_SU_OP_REPORT_STATUS,
+      AZ_IOT_OK,
+      AZ_IOT_SU_ERROR_ACTION_NONE,
+      NULL,
+      fx->chan.engine_ctx);
+  assert_int_equal(fx->completed_count, 1);
+  int sent = fx->chan.report_count;
+  pump(fx, 3);
+  assert_int_equal(fx->chan.report_count, sent);
+  assert_int_equal(fx->completed_count, 1);
+}
+
 /* A permanent rejection completes the workflow with the service's verdict. */
 static void a_rejected_report_completes_the_workflow(void** state)
 {
@@ -7287,6 +7311,7 @@ static void accepted_reports_are_raised(void** state)
   assert_true(fx->chan.report_count > 1);
   assert_int_equal(fx->accepted_count, fx->chan.report_count);
   assert_int_equal(fx->accepted_terminal_count, 1);
+  assert_int_equal(fx->completed_count, 1);
 
   /* Held verdicts: nothing until the service answers, nothing for a rejection. */
   fx->chan.report_verdict_deferred = true;
@@ -7303,6 +7328,7 @@ static void accepted_reports_are_raised(void** state)
       NULL,
       fx->chan.engine_ctx);
   assert_int_equal(fx->accepted_count, accepted);
+  assert_int_equal(fx->completed_count, 2);
 
   inject_patch(fx, build_patch("cccccccc-0000-0000-0000-000000000003"));
   pump(fx, 40);
@@ -7314,6 +7340,7 @@ static void accepted_reports_are_raised(void** state)
       fx->chan.engine_ctx);
   assert_int_equal(fx->accepted_count, accepted + 1);
   assert_int_equal(fx->accepted_terminal_count, 2);
+  assert_int_equal(fx->completed_count, 3);
 
   /* A workflow that supersedes one whose terminal verdict is pending does not
    * change what that verdict reports. */
@@ -7334,6 +7361,9 @@ static void accepted_reports_are_raised(void** state)
   assert_int_equal(fx->accepted_report_count, reports + 1);
   assert_int_equal(fx->accepted_report_outcome, AZ_IOT_SU_OUTCOME_FAILED);
   assert_string_equal(fx->accepted_workflow_id, "dddddddd-0000-0000-0000-000000000004");
+  /* Its workflow completes too. */
+  assert_int_equal(fx->completed_count, 4);
+  assert_int_equal(fx->last_completed_outcome, AZ_IOT_SU_OUTCOME_FAILED);
 }
 
 /* A LATE verdict must not resurrect an operation after the slot was abandoned.
@@ -8812,6 +8842,8 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         the_workflow_completes_once_its_report_settles, setup, teardown),
     cmocka_unit_test_setup_teardown(a_rejected_report_completes_the_workflow, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        properties_changed_before_the_verdict_complete_once, setup, teardown),
     cmocka_unit_test_setup_teardown(new_properties_do_not_resend_a_settled_report, setup, teardown),
     cmocka_unit_test_setup_teardown(a_check_resends_an_owed_terminal_report_first, setup, teardown),
     cmocka_unit_test_setup_teardown(
