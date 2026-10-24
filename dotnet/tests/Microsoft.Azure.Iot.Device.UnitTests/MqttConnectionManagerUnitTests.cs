@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
 // See LICENSE file in the project root for full license information.
 
+using Microsoft.Azure.Iot.Device.Exceptions;
 using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Mqtt;
 using Microsoft.Azure.Iot.Device.Retry;
@@ -170,6 +171,181 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             // With nothing left in flight, a later switch completes straight away.
             await connectionManager.SwitchEndpointAsync(ConnectionEndpoint.DeviceProvisioningService, TestContext.Current.CancellationToken)
                 .WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+        }
+
+        /// <summary>
+        /// Disconnect callbacks from the underlying client that do not correspond to a connection that came up and was
+        /// lost -- one for a connect attempt that never connected, one while still connected, or a second one for the same
+        /// loss -- must not be reported.
+        /// </summary>
+        [Fact]
+        public async Task DisconnectedIsReportedOnlyOncePerLostConnection()
+        {
+            using MockConnectionMqttClient mqttClient = new();
+            using MqttConnectionManager connectionManager = new(mqttClient, TimeSpan.FromSeconds(30), new RecordingRetryPolicy());
+            int disconnectedCount = 0;
+            TaskCompletionSource reconnected = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            int connectedCount = 0;
+            connectionManager.DisconnectedAsync += _ =>
+            {
+                Interlocked.Increment(ref disconnectedCount);
+                return Task.CompletedTask;
+            };
+            connectionManager.ConnectedAsync += _ =>
+            {
+                if (Interlocked.Increment(ref connectedCount) == 2)
+                {
+                    reconnected.TrySetResult();
+                }
+
+                return Task.CompletedTask;
+            };
+
+            // A callback for a connect attempt that never connected.
+            await mqttClient.SimulateSpuriousDisconnectCallbackAsync(MqttDisconnectReason.ImplementationSpecificError);
+            Assert.Equal(0, Volatile.Read(ref disconnectedCount));
+
+            await connectionManager.ConnectAsync(new MqttConnect() { HostName = "some-hub.azure-devices.net" }, TestContext.Current.CancellationToken);
+
+            // A callback while the connection is still up.
+            await mqttClient.SimulateSpuriousDisconnectCallbackAsync(MqttDisconnectReason.ImplementationSpecificError);
+            Assert.Equal(0, Volatile.Read(ref disconnectedCount));
+
+            TaskCompletionSource<MqttConnectAck> reconnect = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            mqttClient.OnConnect = _ => reconnect.Task;
+            await mqttClient.SimulateServerDisconnectAsync(MqttDisconnectReason.ServerBusy)
+                .WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+            Assert.Equal(1, Volatile.Read(ref disconnectedCount));
+
+            // A second callback for the same loss, while reconnection is still pending.
+            await mqttClient.SimulateSpuriousDisconnectCallbackAsync(MqttDisconnectReason.ServerBusy);
+            Assert.Equal(1, Volatile.Read(ref disconnectedCount));
+
+            reconnect.TrySetResult(new() { ResultCode = MqttConnectReasonCode.Success });
+            await reconnected.Task.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+            Assert.Equal(1, Volatile.Read(ref disconnectedCount));
+        }
+
+        /// <summary>
+        /// When the underlying client's disconnect callback for a lost connection only arrives after the next connection
+        /// is up, the loss must still be reported, exactly once and before the next connection is.
+        /// </summary>
+        [Fact]
+        public async Task LateDisconnectCallbackIsReportedOnceBeforeNextConnection()
+        {
+            using MockConnectionMqttClient mqttClient = new();
+            using MqttConnectionManager connectionManager = new(mqttClient, TimeSpan.FromSeconds(30), new RecordingRetryPolicy());
+            List<string> events = new();
+            connectionManager.ConnectedAsync += _ =>
+            {
+                lock (events) { events.Add("connected"); }
+                return Task.CompletedTask;
+            };
+            connectionManager.DisconnectedAsync += _ =>
+            {
+                lock (events) { events.Add("disconnected"); }
+                return Task.CompletedTask;
+            };
+
+            await connectionManager.ConnectAsync(new MqttConnect() { HostName = "some-hub.azure-devices.net" }, TestContext.Current.CancellationToken);
+
+            // The underlying client reconnects before raising the disconnect callback for the connection it lost...
+            await mqttClient.ConnectAsync(new MqttConnect() { HostName = "some-hub.azure-devices.net" }, TestContext.Current.CancellationToken);
+
+            // ...which then arrives late.
+            await mqttClient.SimulateSpuriousDisconnectCallbackAsync(MqttDisconnectReason.ImplementationSpecificError);
+
+            lock (events)
+            {
+                Assert.Equal(new[] { "connected", "disconnected", "connected" }, events);
+            }
+        }
+
+        /// <summary>
+        /// A spurious disconnect callback must not make an operation that failed for another reason look as if its
+        /// connection was lost, which would have it sent again rather than reported as a contained error.
+        /// </summary>
+        [Fact]
+        public async Task SpuriousDisconnectCallbackDoesNotMakeFailedOperationLookInterrupted()
+        {
+            using MockConnectionMqttClient mqttClient = new();
+            mqttClient.OnPublish = async _ =>
+            {
+                await mqttClient.SimulateSpuriousDisconnectCallbackAsync(MqttDisconnectReason.ImplementationSpecificError);
+                throw new TimeoutException("mock ack timeout");
+            };
+            using MqttConnectionManager connectionManager = new(mqttClient, TimeSpan.FromSeconds(30), new RecordingRetryPolicy());
+            await connectionManager.SwitchEndpointAsync(ConnectionEndpoint.IotHub, TestContext.Current.CancellationToken);
+            await connectionManager.ConnectAsync(new MqttConnect() { HostName = "some-hub.azure-devices.net" }, TestContext.Current.CancellationToken);
+
+            DeviceException exception = await Assert.ThrowsAsync<DeviceException>(
+                () => connectionManager.PublishAsync(
+                    ConnectionEndpoint.IotHub,
+                    new MqttPublish() { Topic = "devices/d/messages/events/", QualityOfServiceLevel = MqttQualityOfServiceLevel.AtLeastOnce },
+                    TestContext.Current.CancellationToken));
+
+            Assert.True(exception.IsContained);
+            Assert.IsType<TimeoutException>(exception.InnerException);
+        }
+
+        /// <summary>
+        /// Handlers of a connection loss must finish before reconnection starts, so that work they abandon for the lost
+        /// connection (such as pending certificate signing requests) cannot include work started on the next one.
+        /// </summary>
+        [Fact]
+        public async Task ReconnectionStartsOnlyAfterDisconnectedHandlersFinish()
+        {
+            using MockConnectionMqttClient mqttClient = new();
+            using MqttConnectionManager connectionManager = new(mqttClient, TimeSpan.FromSeconds(30), new RecordingRetryPolicy());
+            await connectionManager.ConnectAsync(new MqttConnect() { HostName = "some-hub.azure-devices.net" }, TestContext.Current.CancellationToken);
+            TaskCompletionSource<int> connectAttemptsAfterHandler = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            connectionManager.DisconnectedAsync += async _ =>
+            {
+                // Longer than the retry policy's delay, so a reconnection running alongside this handler would attempt
+                // to connect before it finishes.
+                await Task.Delay(TimeSpan.FromMilliseconds(500));
+                connectAttemptsAfterHandler.TrySetResult(mqttClient.ConnectAttemptCount);
+            };
+            connectionManager.DisconnectedAsync += _ => Task.CompletedTask;
+
+            await mqttClient.SimulateServerDisconnectAsync(MqttDisconnectReason.ServerBusy);
+
+            Assert.Equal(1, await connectAttemptsAfterHandler.Task.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken));
+        }
+
+        /// <summary>
+        /// A spurious disconnect callback while the connection is active must not make an acknowledgement timeout look
+        /// like a connection loss.
+        /// </summary>
+        [Fact]
+        public async Task SpuriousDisconnectCallbackDoesNotMisclassifyAcknowledgementTimeout()
+        {
+            using MockConnectionMqttClient mqttClient = new();
+            TaskCompletionSource publishReachedClient = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            TaskCompletionSource timeOutAcknowledgement = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            mqttClient.OnPublish = async _ =>
+            {
+                publishReachedClient.TrySetResult();
+                await timeOutAcknowledgement.Task;
+                throw new TimeoutException("The mock acknowledgement timed out.");
+            };
+            using MqttConnectionManager connectionManager = new(mqttClient, TimeSpan.FromSeconds(30), new RecordingRetryPolicy());
+
+            await connectionManager.ConnectAsync(new MqttConnect() { HostName = "some-hub.azure-devices.net" }, TestContext.Current.CancellationToken);
+            await connectionManager.SwitchEndpointAsync(ConnectionEndpoint.IotHub, TestContext.Current.CancellationToken);
+
+            Task<MqttPublishAck> publish = connectionManager.PublishAsync(
+                ConnectionEndpoint.IotHub,
+                new MqttPublish() { Topic = "devices/d/messages/events/", QualityOfServiceLevel = MqttQualityOfServiceLevel.AtLeastOnce },
+                TestContext.Current.CancellationToken);
+            await publishReachedClient.Task.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+
+            await mqttClient.SimulateSpuriousDisconnectCallbackAsync(MqttDisconnectReason.ImplementationSpecificError);
+            timeOutAcknowledgement.TrySetResult();
+
+            DeviceException exception = await Assert.ThrowsAsync<DeviceException>(
+                () => publish.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken));
+            Assert.IsType<TimeoutException>(exception.InnerException);
         }
 
         private class RecordingRetryPolicy : IRetryPolicy
