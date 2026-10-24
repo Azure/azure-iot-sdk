@@ -671,7 +671,16 @@ extern "C"
      * Raised again on each early offer. The wait is 1 h after the first
      * failure, doubling per consecutive failure up to 24 h, plus up to 10%
      * jitter, and survives a restart when persistence is configured. */
-    AZ_IOT_SU_EVENT_UPDATE_RETRY_WAIT
+    AZ_IOT_SU_EVENT_UPDATE_RETRY_WAIT,
+
+    /* A workflow's terminal report is settled: nothing more is sent for that
+     * workflow. Raised once, after REPORT_ACCEPTED or OPERATION_ABANDONED for
+     * that report. Carries `state`, `report` (the report as sent) and
+     * `reason`: AZ_IOT_OK when the service accepted it; otherwise the verdict
+     * that retired it, with `service_error`. Not raised for a report kept
+     * after a lost session (AZ_IOT_ERR_NOT_CONNECTED): that one is sent again
+     * and settles later. */
+    AZ_IOT_SU_EVENT_WORKFLOW_COMPLETED
   } az_iot_su_event_kind;
 
   /**
@@ -753,8 +762,8 @@ extern "C"
     bool report_terminal;
     /** UPDATE_RETRY_WAIT: milliseconds until the workflow may be retried. */
     uint32_t retry_after_ms;
-    /** REPORT_ACCEPTED with report_terminal: the accepted terminal report as sent, step results
-     * included; its installed_update_id is NULL when longer than
+    /** REPORT_ACCEPTED with report_terminal, or WORKFLOW_COMPLETED: the terminal report as sent,
+     * step results included; its installed_update_id is NULL when longer than
      * AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE. NULL otherwise. Valid only during the callback. */
     const az_iot_su_report* report;
   } az_iot_su_event;

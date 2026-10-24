@@ -955,6 +955,9 @@ az_iot_su_client_config_options az_iot_su_client_config_options_default(void);
  *     `report_terminal` marks the workflow's final one, and `report` carries it.
  *   UPDATE_RETRY_WAIT      -- a FAILED workflow was offered again
  *     before its retry wait elapsed; `retry_after_ms` is the time left.
+ *   WORKFLOW_COMPLETED     -- the terminal report is settled (accepted, or
+ *     retired by the service); raised once, after that verdict's event, with
+ *     `report` and `reason`. Not for a report kept after a lost session.
  *
  * Abandonment is raised from on_channel_result()'s no-re-arm branch, which IS
  * the definition of "the client will not retry this". Deriving both from one

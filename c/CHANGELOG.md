@@ -237,6 +237,10 @@
   installed one (also on resuming its terminal record), so later checks advertise it without
   `az_iot_su_client_update_device_properties()`. That call no longer re-sends a settled terminal
   report; the next check carries the new properties.
+- Software updates: new `AZ_IOT_SU_EVENT_WORKFLOW_COMPLETED`, raised once when a workflow's terminal
+  report is settled (accepted, or retired by the service), with the report and the verdict. An
+  application waiting for the end of a workflow no longer has to combine `REPORT_ACCEPTED` and
+  `OPERATION_ABANDONED`.
 
 - MQTT over WebSockets to an mqttv5 hub: the hub session now uses the hub's path `/mqtt`
   (`AZ_IOT_MQTT_HUB_V5_WEBSOCKET_PATH`) when `websocket_path` is NULL. The mqttv5 hub refuses
