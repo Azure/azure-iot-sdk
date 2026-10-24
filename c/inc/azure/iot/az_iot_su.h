@@ -1300,6 +1300,11 @@ extern "C"
    * accepted operation; status reports are paced the same way. The backoff
    * counts against @p timeout_ms. A new request is not held by it.
    *
+   * While a workflow's terminal report is owed, the check waits for that
+   * report's verdict, so the service sees the outcome first; the report is
+   * sent again if nothing else will send it. The wait counts against
+   * @p timeout_ms.
+   *
    * Pass AZ_IOT_SU_REQUEST_NO_TIMEOUT for no bound: the request is then
    * retried indefinitely and the only abandonment is a channel verdict.
    * AZ_IOT_SU_REQUEST_DEFAULT_TIMEOUT_MS is available for callers with no

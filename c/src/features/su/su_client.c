@@ -2383,6 +2383,17 @@ static void drive_pending_fetch(az_iot_su_client* client)
   {
     return;
   }
+  /* An owed terminal report goes first: until the service has the outcome, a
+   * check advertises the previous state and may be offered the same update
+   * again. Queued here if nothing will send it (e.g. its session was lost). */
+  if (SU_I(client).report_owed || SU_I(client).terminal_report_in_flight)
+  {
+    if (!SU_I(client).terminal_report_in_flight && !SU_I(client).device_properties_report_pending)
+    {
+      SU_I(client).device_properties_report_pending = true;
+    }
+    return;
+  }
 
   SU_I(client).pending_fetch = SU_FETCH_NONE;
   /* Set before the call: a synchronous channel may deliver the verdict from
