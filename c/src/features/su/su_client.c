@@ -2276,8 +2276,9 @@ static void on_channel_result(
       az_iot_su_report sent;
       az_iot_su_report_update_id sent_installed;
       bool have_view = terminal && az_iot_su__sent_terminal_report(client, &sent, &sent_installed);
-      /* Settled unless kept for a later send (see settle_terminal_report()). */
-      bool settled = terminal && SU_I(client).terminal_report_in_flight
+      /* Settled unless kept for a later send (see settle_terminal_report()). A
+       * superseding workflow clears the in-flight flag, not the snapshot. */
+      bool settled = terminal && (have_view || SU_I(client).terminal_report_in_flight)
           && result != AZ_IOT_ERR_NOT_CONNECTED;
       SU_I(client).sent_terminal[SU_I(client).sent_terminal_slot].valid = false;
       settle_terminal_report(client, result);
@@ -2288,6 +2289,15 @@ static void on_channel_result(
       }
       if (settled)
       {
+        /* A report queued meanwhile would only repeat this one; one for a
+         * superseding workflow (not Idle) stays. */
+        if (!SU_I(client).report_owed
+            && (SU_I(client).state == AZ_IOT_SU_STATE_IDLE
+                || SU_I(client).state == AZ_IOT_SU_STATE_FAILED))
+        {
+          SU_I(client).device_properties_report_pending = false;
+          SU_I(client).report_paced = false;
+        }
         raise_completed(client, result, service_error, have_view ? &sent : NULL);
       }
       if (result != AZ_IOT_OK && action == AZ_IOT_SU_ERROR_ACTION_RECHECK)
