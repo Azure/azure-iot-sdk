@@ -625,6 +625,22 @@ int main(void)
     (void)az_iot_connection_client_do_work(&connection, 20);
     (void)az_iot_su_client_do_work(&su);
 
+    /* FAULTED is settled: the SDK does not retry out of it, and a workflow in
+     * flight cannot report again, so it would never reach Idle. Checked
+     * before the "reboot" and workflow exits, so a fault is never reported
+     * as success. */
+    if (flags.connection_faulted)
+    {
+      fprintf(
+          stderr,
+          flags.workflow_active
+              ? "The connection faulted and will not recover on its own; the update in progress "
+                "stops here (a saved record, if any, resumes it on the next run).\n"
+              : "The connection faulted and will not recover on its own.\n");
+      rc = 1;
+      break;
+    }
+
     int report_settled
         = (flags.final_report != 0 || flags.final_report_dropped) && !flags.workflow_active;
     /* The final report may be accepted or dropped before a failed write is
@@ -705,19 +721,6 @@ int main(void)
         && !reboot.reboot_requested)
     {
       rc = (flags.final_report == 1) ? 0 : 2;
-      break;
-    }
-    /* FAULTED is settled: the SDK does not retry out of it, and a workflow in
-     * flight cannot report again, so it would never reach Idle. */
-    if (flags.connection_faulted)
-    {
-      fprintf(
-          stderr,
-          flags.workflow_active
-              ? "The connection faulted and will not recover on its own; the update in progress "
-                "stops here (a saved record, if any, resumes it on the next run).\n"
-              : "The connection faulted and will not recover on its own.\n");
-      rc = 1;
       break;
     }
     /* Until the final report is accepted, a check would advertise the
