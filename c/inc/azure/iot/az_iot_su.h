@@ -949,6 +949,9 @@ extern "C"
        * workflow was about". Strings are packed into applied_update_id_buf. */
       char applied_update_id_buf[AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE];
       az_iot_su_report_update_id applied_update_id;
+      /** Installed update id adopted after a SUCCEEDED workflow; the cached
+       * device properties point here, so it fits whatever their buffer size. */
+      char adopted_installed_id_buf[AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE];
       bool applied_update_id_valid;
 
       /* Connection-state observer / detach safety (see design doc §16). */

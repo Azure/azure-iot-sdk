@@ -155,7 +155,8 @@ static az_iot_result store_device_properties(
  *
  * The application asserted it when apply_fn succeeded; later update checks
  * carry it without the application having to call
- * az_iot_su_client_update_device_properties().
+ * az_iot_su_client_update_device_properties(). Kept in its own buffer, so the
+ * device-properties buffer need not have room for it.
  */
 static void adopt_applied_update_id(az_iot_su_client* client)
 {
@@ -163,16 +164,24 @@ static void adopt_applied_update_id(az_iot_su_client* client)
   {
     return;
   }
+  const char* src = SU_I(client).applied_update_id_buf;
+  char* dst = SU_I(client).adopted_installed_id_buf;
+  memcpy(dst, src, sizeof(SU_I(client).adopted_installed_id_buf));
   az_iot_su_device_properties next = SU_I(client).device_properties;
-  next.installed_update_id.provider = SU_I(client).applied_update_id.provider;
-  next.installed_update_id.name = SU_I(client).applied_update_id.name;
-  next.installed_update_id.version = SU_I(client).applied_update_id.version;
-  if (store_device_properties(client, &next) != AZ_IOT_OK)
+  next.installed_update_id.provider = dst + (SU_I(client).applied_update_id.provider - src);
+  next.installed_update_id.name = dst + (SU_I(client).applied_update_id.name - src);
+  next.installed_update_id.version = dst + (SU_I(client).applied_update_id.version - src);
+  if (SU_I(client).channel.vtable != NULL
+      && SU_I(client).channel.vtable->set_device_properties != NULL
+      && SU_I(client).channel.vtable->set_device_properties(SU_I(client).channel.ctx, &next)
+          != AZ_IOT_OK)
   {
     AZ_IOT_LOG_WARN(
         AZ_IOT_LOG_COMPONENT_SU,
         "applied update id not adopted as installed; checks keep the previous one");
+    return;
   }
+  SU_I(client).device_properties.installed_update_id = next.installed_update_id;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -4201,8 +4210,9 @@ AZ_NODISCARD az_iot_result az_iot_su_client_update_device_properties(
   /* A settled terminal report is not sent again: re-sending an accepted one
    * changes nothing, and a rejected one would be replayed. The next update
    * check carries the new properties. */
-  if (SU_I(client).state != AZ_IOT_SU_STATE_IDLE || SU_I(client).report_owed
-      || SU_I(client).terminal_report_in_flight)
+  bool running
+      = SU_I(client).state != AZ_IOT_SU_STATE_IDLE && SU_I(client).state != AZ_IOT_SU_STATE_FAILED;
+  if (running || SU_I(client).report_owed || SU_I(client).terminal_report_in_flight)
   {
     SU_I(client).device_properties_report_pending = true;
     SU_I(client).report_paced = false;

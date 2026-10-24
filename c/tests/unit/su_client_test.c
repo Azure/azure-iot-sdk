@@ -4501,6 +4501,40 @@ static void a_succeeded_update_becomes_the_installed_id(void** state)
   assert_int_equal(teardown(&fresh_state), 0);
 }
 
+/* Adoption does not depend on room in the device-properties buffer: one
+ * sized exactly for the startup properties still advertises the applied id. */
+static void the_applied_id_is_adopted_with_an_exact_sized_cache(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_su_device_properties dp = { 0 };
+  dp.manufacturer = "Contoso";
+  dp.model = "Foobar";
+  dp.installed_update_id.provider = "Contoso";
+  dp.installed_update_id.name = "Foobar";
+  dp.installed_update_id.version = "1"; /* shorter than the applied "1.1" */
+  az_iot_su_platform_hooks hooks = fx->su._internal.hooks;
+  az_iot_su_client_deinit(&fx->su);
+  az_iot_su_client_config_options o = az_iot_su_client_config_options_default();
+  o.hooks = &hooks;
+  o.root_keys = k_root_keys;
+  o.root_key_count = sizeof(k_root_keys) / sizeof(k_root_keys[0]);
+  o.device_properties = &dp;
+  o.limits.device_properties_size = az_iot_su_device_properties_buffer_size(&dp);
+  o.workspace = fx->workspace;
+  o.workspace_size = sizeof(fx->workspace);
+  assert_int_equal(
+      az_iot_su_client__initialize_with_channel(&fx->su, &fx->channel, &fx->crypto.base, &o),
+      AZ_IOT_OK);
+
+  finish_with_report_unacknowledged(fx);
+  const az_iot_su_device_properties* cached = &fx->su._internal.device_properties;
+  assert_string_equal(cached->installed_update_id.provider, fx->chan.last_installed_provider);
+  assert_string_equal(cached->installed_update_id.name, fx->chan.last_installed_name);
+  assert_string_equal(cached->installed_update_id.version, fx->chan.last_installed_version);
+  assert_string_equal(
+      fx->chan.properties.properties.installed_update_id.name, fx->chan.last_installed_name);
+}
+
 /* Once the terminal report is settled, new device properties are not
  * followed by that report again; the next check carries them. */
 static void new_properties_do_not_resend_a_settled_report(void** state)
@@ -8687,6 +8721,8 @@ int main(void)
         the_terminal_record_is_kept_until_the_report_is_final, setup, teardown),
     cmocka_unit_test_setup_teardown(a_check_waits_for_the_owed_terminal_report, setup, teardown),
     cmocka_unit_test_setup_teardown(a_succeeded_update_becomes_the_installed_id, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        the_applied_id_is_adopted_with_an_exact_sized_cache, setup, teardown),
     cmocka_unit_test_setup_teardown(new_properties_do_not_resend_a_settled_report, setup, teardown),
     cmocka_unit_test_setup_teardown(a_check_resends_an_owed_terminal_report_first, setup, teardown),
     cmocka_unit_test_setup_teardown(
