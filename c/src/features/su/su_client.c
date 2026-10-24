@@ -2094,25 +2094,7 @@ static void queue_conflict_recheck(az_iot_su_client* client)
   arm_pending_fetch_deadline(client, AZ_IOT_SU_REQUEST_DEFAULT_TIMEOUT_MS);
 }
 
-/**
- * @brief Abandon a check held for an owed terminal report whose session was lost.
- *
- * The report stays owed; a new check sends it again (once). Without this, the
- * held check would re-queue it past the channel's session-retry bound.
- */
 static az_iot_su_operation fetch_operation(uint8_t fetch);
-
-static void abandon_check_held_for_report(az_iot_su_client* client)
-{
-  uint8_t held = SU_I(client).pending_fetch;
-  if (held == SU_FETCH_NONE)
-  {
-    return;
-  }
-  SU_I(client).pending_fetch = SU_FETCH_NONE;
-  SU_I(client).pending_fetch_deadline_ms = 0;
-  raise_abandoned(client, fetch_operation(held), AZ_IOT_ERR_NOT_CONNECTED, &k_no_service_error);
-}
 
 static void on_channel_result(
     az_iot_su_operation operation,
@@ -2158,6 +2140,20 @@ static void on_channel_result(
      * were dropped, and both are reported. PROCEED in particular is an update
      * account the service cannot use: the device asked, was refused, and
      * without this reads exactly like "no update available". */
+    /* A check held for an owed terminal report whose session is lost for good
+     * goes with it; the report stays owed, and only a new check sends it
+     * again. Taken before observers run, so a check they queue stays. */
+    uint8_t held_check = SU_FETCH_NONE;
+    if (operation == AZ_IOT_SU_OP_REPORT_STATUS && result == AZ_IOT_ERR_NOT_CONNECTED
+        && SU_I(client).report_sent_terminal)
+    {
+      held_check = SU_I(client).pending_fetch;
+      SU_I(client).pending_fetch = SU_FETCH_NONE;
+      if (held_check != SU_FETCH_NONE)
+      {
+        SU_I(client).pending_fetch_deadline_ms = 0;
+      }
+    }
     if (result != AZ_IOT_OK
         && (action == AZ_IOT_SU_ERROR_ACTION_FATAL || action == AZ_IOT_SU_ERROR_ACTION_PROCEED
             || action == AZ_IOT_SU_ERROR_ACTION_RECHECK))
@@ -2187,9 +2183,10 @@ static void on_channel_result(
       {
         queue_conflict_recheck(client);
       }
-      else if (result == AZ_IOT_ERR_NOT_CONNECTED && terminal)
+      if (held_check != SU_FETCH_NONE)
       {
-        abandon_check_held_for_report(client);
+        raise_abandoned(
+            client, fetch_operation(held_check), AZ_IOT_ERR_NOT_CONNECTED, &k_no_service_error);
       }
       return;
     }

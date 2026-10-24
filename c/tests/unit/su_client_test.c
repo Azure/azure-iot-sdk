@@ -4406,6 +4406,38 @@ static void a_held_check_is_abandoned_when_its_report_cannot_be_sent(void** stat
   assert_int_equal(fx->chan.report_count, reports);
 }
 
+/* Requests a check when a status report is abandoned. */
+static void request_on_report_abandoned(const az_iot_su_event* event, void* user_ctx)
+{
+  fixture* fx = (fixture*)user_ctx;
+  if (event->kind == AZ_IOT_SU_EVENT_OPERATION_ABANDONED
+      && event->operation == AZ_IOT_SU_OP_REPORT_STATUS)
+  {
+    assert_int_equal(az_iot_su_client_request_update(&fx->su, UT_TIMEOUT_MS), AZ_IOT_OK);
+  }
+}
+
+/* A check an observer queues from the report's abandonment is not the held
+ * one, and stays. */
+static void a_check_queued_by_an_observer_is_kept(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_su_client_add_observer(&fx->su, request_on_report_abandoned, fx), AZ_IOT_OK);
+  finish_with_report_unacknowledged(fx);
+  fx->abandoned_count = 0;
+  fx->chan.result_cb(
+      AZ_IOT_SU_OP_REPORT_STATUS,
+      AZ_IOT_ERR_NOT_CONNECTED,
+      AZ_IOT_SU_ERROR_ACTION_FATAL,
+      NULL,
+      fx->chan.engine_ctx);
+  assert_int_equal(fx->abandoned_count, 1);
+  assert_int_equal(fx->last_abandoned_operation, AZ_IOT_SU_OP_REPORT_STATUS);
+  assert_int_equal(fx->su._internal.pending_fetch, SU_FETCH_REGULAR);
+}
+
 /* The check's deadline still holds while it waits for the report. */
 static void a_check_held_for_a_report_keeps_its_deadline(void** state)
 {
@@ -8586,6 +8618,7 @@ int main(void)
     cmocka_unit_test_setup_teardown(a_check_resends_an_owed_terminal_report_first, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_held_check_is_abandoned_when_its_report_cannot_be_sent, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_check_queued_by_an_observer_is_kept, setup, teardown),
     cmocka_unit_test_setup_teardown(a_check_held_for_a_report_keeps_its_deadline, setup, teardown),
     cmocka_unit_test_setup_teardown(a_failed_workflow_report_survives_a_reboot, setup, teardown),
     cmocka_unit_test_setup_teardown(a_new_workflow_supersedes_an_owed_report, setup, teardown),
