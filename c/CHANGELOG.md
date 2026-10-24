@@ -232,6 +232,11 @@
   report is settled (accepted, or retired by the service), with the report and the verdict. An
   application waiting for the end of a workflow no longer has to combine `REPORT_ACCEPTED` and
   `OPERATION_ABANDONED`.
+- Software updates: new `az_iot_su_client_get_reboot_state()` tells whether `install_fn` or
+  `apply_fn` asked for a reboot and whether storage already holds what `az_iot_su_client_resume()`
+  needs (`AZ_IOT_SU_REBOOT_NONE` / `_PENDING` / `_READY`), so an application no longer tracks
+  `PERSIST_FAILED` / `PERSIST_RECOVERED` itself to decide when to reboot. `PENDING` also covers
+  storage behind with no reboot asked for, so it gates any planned exit.
 
 - MQTT over WebSockets to an mqttv5 hub: the hub session now uses the hub's path `/mqtt`
   (`AZ_IOT_MQTT_HUB_V5_WEBSOCKET_PATH`) when `websocket_path` is NULL. The mqttv5 hub refuses
