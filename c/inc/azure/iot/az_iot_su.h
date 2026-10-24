@@ -949,6 +949,9 @@ extern "C"
        * workflow was about". Strings are packed into applied_update_id_buf. */
       char applied_update_id_buf[AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE];
       az_iot_su_report_update_id applied_update_id;
+      /** Installed update id adopted after a SUCCEEDED workflow; the cached
+       * device properties point here, so it fits whatever their buffer size. */
+      char adopted_installed_id_buf[AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE];
       bool applied_update_id_valid;
 
       /* Connection-state observer / detach safety (see design doc §16). */
@@ -1345,10 +1348,16 @@ extern "C"
    *
    * Deep-copies @p device_properties. No I/O, and no update check is scheduled:
    * the next az_iot_su_client_request_update() or
-   * az_iot_su_client_request_onboarding_update() sends them. Also marks a
-   * workflow-status report due on do_work(), which does nothing without a
-   * recorded workflow. That report never carries the compatibility properties,
-   * but carries the new installed update ID unless an applied update succeeded.
+   * az_iot_su_client_request_onboarding_update() sends them. While a workflow
+   * runs or its terminal report is owed, also marks a workflow-status report
+   * due on do_work(); once that report is settled, it is not sent again. That
+   * report never carries the compatibility properties, but carries the new
+   * installed update ID unless an applied update succeeded.
+   *
+   * Not needed after a SUCCEEDED workflow: the client then adopts the applied
+   * update ID as installed by itself (also when az_iot_su_client_resume()
+   * restores its terminal record). Call it when the installed software changes
+   * otherwise.
    *
    * Call on the do_work() thread, or serialize with it.
    *
