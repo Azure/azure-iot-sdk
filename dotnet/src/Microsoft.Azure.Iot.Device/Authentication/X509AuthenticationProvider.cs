@@ -58,6 +58,7 @@ namespace Microsoft.Azure.Iot.Device.Authentication
             CertificateChain = certificateChain;
             HandleCertificateSigningCompleteAsync = PresentOriginalCertificateAsync;
             _issuedCertificateHandler = new IssuedCertificateHandler(HandleCertificateSigningCompleteAsync);
+            _presentsIssuedCertificates = false;
         }
 
         /// <summary>
@@ -171,7 +172,23 @@ namespace Microsoft.Azure.Iot.Device.Authentication
         /// </summary>
         public Func<IReadOnlyList<string>, Task<X509Certificate2>> HandleCertificateSigningCompleteAsync { get; }
 
+        /// <summary>
+        /// A secondary client certificate for this device, or null if it has none.
+        /// </summary>
+        /// <remarks>
+        /// When IoT Hub or the device provisioning service rejects <see cref="ClientCertificate"/>, the connection client
+        /// retries at once with this certificate. If IoT Hub rejects both, the connection client re-provisions the device
+        /// when it can. This certificate must identify the same device as <see cref="ClientCertificate"/>, whose name is
+        /// still used as the registration Id. Once an issued client certificate is presented to IoT Hub, this
+        /// certificate is only used for the device provisioning service. The SDK never exports this certificate or its
+        /// private key.
+        /// </remarks>
+        public X509Certificate2? SecondaryClientCertificate { get; init; }
+
         private readonly IssuedCertificateHandler _issuedCertificateHandler;
+
+        // False when issued certificates are ignored in favor of ClientCertificate.
+        private readonly bool _presentsIssuedCertificates = true;
 
         public override async Task<AuthenticationCredentials> GetOperationalAuthenticationCredentialsAsync(string hostName, string deviceId, IReadOnlyList<string>? issuedClientCertificates, CancellationToken cancellationToken = default)
         {
@@ -193,6 +210,22 @@ namespace Microsoft.Azure.Iot.Device.Authentication
         public override AuthenticationCredentials GetBootAuthenticationCredentials()
         {
             return CreateCredentials(ClientCertificate);
+        }
+
+        public override Task<AuthenticationCredentials?> GetSecondaryOperationalAuthenticationCredentialsAsync(string hostName, string deviceId, IReadOnlyList<string>? issuedClientCertificates, CancellationToken cancellationToken = default)
+        {
+            if (SecondaryClientCertificate == null || (issuedClientCertificates is { Count: > 0 } && _presentsIssuedCertificates))
+            {
+                // An issued certificate takes the place of ClientCertificate, so there is no secondary to fall back to.
+                return Task.FromResult<AuthenticationCredentials?>(null);
+            }
+
+            return Task.FromResult<AuthenticationCredentials?>(CreateCredentials(SecondaryClientCertificate));
+        }
+
+        public override AuthenticationCredentials? GetSecondaryBootAuthenticationCredentials()
+        {
+            return SecondaryClientCertificate == null ? null : CreateCredentials(SecondaryClientCertificate);
         }
 
         private AuthenticationCredentials CreateCredentials(X509Certificate2 clientCertificate)

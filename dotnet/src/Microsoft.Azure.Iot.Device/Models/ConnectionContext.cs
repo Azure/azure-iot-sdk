@@ -42,5 +42,74 @@ namespace Microsoft.Azure.Iot.Device.Models
         private volatile IReadOnlyList<string>? _issuedClientCertificates;
 
         public required AuthenticationProvider AuthenticationProvider { get; set; }
+
+        /// <summary>
+        /// Whether connections to this IoT Hub authenticate with the secondary credentials of
+        /// <see cref="AuthenticationProvider"/>, because IoT Hub rejected the primary ones.
+        /// </summary>
+        internal bool UsesSecondaryCredentials
+        {
+            get => _usesSecondaryCredentials;
+            set => _usesSecondaryCredentials = value;
+        }
+
+        // Volatile because a connection fault switches it while file uploads may read it on another thread.
+        private volatile bool _usesSecondaryCredentials;
+
+        /// <summary>
+        /// Get the credentials to present to this IoT Hub: the secondary ones when <see cref="UsesSecondaryCredentials"/>
+        /// is set and the provider still has them, otherwise the primary ones.
+        /// </summary>
+        internal async Task<AuthenticationCredentials> GetOperationalAuthenticationCredentialsAsync(CancellationToken cancellationToken)
+        {
+            AuthenticationProvider authentication = AuthenticationProvider;
+            if (UsesSecondaryCredentials)
+            {
+                AuthenticationCredentials? secondaryCredentials = await authentication.GetSecondaryOperationalAuthenticationCredentialsAsync(
+                    IotHubHostName,
+                    DeviceId,
+                    IssuedClientCertificates,
+                    cancellationToken).ConfigureAwait(false);
+                if (secondaryCredentials != null)
+                {
+                    return secondaryCredentials;
+                }
+
+                // The secondary credentials no longer apply, for example because a client certificate was issued since.
+                UsesSecondaryCredentials = false;
+            }
+
+            return await authentication.GetOperationalAuthenticationCredentialsAsync(
+                IotHubHostName,
+                DeviceId,
+                IssuedClientCertificates,
+                cancellationToken).ConfigureAwait(false);
+        }
+
+        /// <summary>
+        /// Switch to the other set of credentials after IoT Hub rejected the current ones.
+        /// </summary>
+        /// <returns>False if the provider has no secondary credentials to switch between.</returns>
+        internal async Task<bool> TrySwitchCredentialsAsync(CancellationToken cancellationToken)
+        {
+            if (UsesSecondaryCredentials)
+            {
+                UsesSecondaryCredentials = false;
+                return true;
+            }
+
+            AuthenticationCredentials? secondaryCredentials = await AuthenticationProvider.GetSecondaryOperationalAuthenticationCredentialsAsync(
+                IotHubHostName,
+                DeviceId,
+                IssuedClientCertificates,
+                cancellationToken).ConfigureAwait(false);
+            if (secondaryCredentials == null)
+            {
+                return false;
+            }
+
+            UsesSecondaryCredentials = true;
+            return true;
+        }
     }
 }

@@ -34,6 +34,47 @@ namespace Microsoft.Azure.Iot.Device.Authentication
         /// <param name="hostName">The device provisioning service host name being connected to.</param>
         public abstract AuthenticationCredentials GetBootAuthenticationCredentials();
 
+        /// <summary>
+        /// Gets the secondary authentication material for connecting to an IoT Hub, if this provider has any.
+        /// </summary>
+        /// <remarks>
+        /// When IoT Hub rejects the credentials from <see cref="GetOperationalAuthenticationCredentialsAsync"/> as an
+        /// identity failure (for example, because the primary key was rotated), the connection client retries at once with
+        /// these credentials. If they are rejected too, it re-provisions the device when it can. The client keeps using
+        /// whichever credentials IoT Hub last accepted until they are rejected, and starts again with the primary
+        /// credentials each time it connects to an IoT Hub.
+        /// </remarks>
+        /// <param name="hostName">The IoT Hub host name being connected to.</param>
+        /// <param name="deviceId">The device Id being authenticated.</param>
+        /// <param name="issuedClientCertificates">
+        /// The most recently issued client certificate chain for this device, as passed to
+        /// <see cref="GetOperationalAuthenticationCredentialsAsync"/>.
+        /// </param>
+        /// <param name="cancellationToken">The cancellation token.</param>
+        /// <returns>
+        /// The secondary credentials, or null if there are none to fall back to, which is the default. Return null when an
+        /// issued client certificate takes the place of the primary credentials.
+        /// </returns>
+        public virtual Task<AuthenticationCredentials?> GetSecondaryOperationalAuthenticationCredentialsAsync(string hostName, string deviceId, IReadOnlyList<string>? issuedClientCertificates, CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult<AuthenticationCredentials?>(null);
+        }
+
+        /// <summary>
+        /// Gets the secondary authentication material for connecting to the device provisioning service, if this
+        /// provider has any.
+        /// </summary>
+        /// <remarks>
+        /// When the device provisioning service rejects the credentials from <see cref="GetBootAuthenticationCredentials"/>
+        /// when connecting, the connection client retries at once with these credentials. Each provisioning run starts
+        /// again with the primary credentials.
+        /// </remarks>
+        /// <returns>The secondary credentials, or null if there are none to fall back to, which is the default.</returns>
+        public virtual AuthenticationCredentials? GetSecondaryBootAuthenticationCredentials()
+        {
+            return null;
+        }
+
         public abstract string GetRegistrationId();
 
         /// <summary>

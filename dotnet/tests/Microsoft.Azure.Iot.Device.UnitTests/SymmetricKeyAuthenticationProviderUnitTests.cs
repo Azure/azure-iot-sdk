@@ -137,6 +137,30 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             Assert.Same(localSelection, bootCredentials.LocalCertificateSelectionCallback);
         }
 
+        [Fact]
+        public async Task SecondaryCredentialsAreSignedWithTheSecondaryKeyUntilACertificateIsIssued()
+        {
+            byte[] secondaryKey = new byte[] { 0x10, 0x20, 0x30, 0x40 };
+            SymmetricKeyAuthenticationProvider withoutSecondary = new("registration-id", "0ne00000000", new byte[] { 1 }, _ => throw new InvalidOperationException());
+            SymmetricKeyAuthenticationProvider authentication = new("registration-id", "0ne00000000", new byte[] { 1 }, _ => throw new InvalidOperationException())
+            {
+                SecondarySymmetricKey = secondaryKey,
+            };
+
+            Assert.Null(withoutSecondary.GetSecondaryBootAuthenticationCredentials());
+            Assert.Null(await withoutSecondary.GetSecondaryOperationalAuthenticationCredentialsAsync(
+                "some-hub.azure-devices.net", "device-id", null, TestContext.Current.CancellationToken));
+
+            AssertSasToken(authentication.GetSecondaryBootAuthenticationCredentials()!.Password, secondaryKey, "0ne00000000/registrations/registration-id", "registration", TimeSpan.FromMinutes(10));
+            var secondaryCredentials = await authentication.GetSecondaryOperationalAuthenticationCredentialsAsync(
+                "some-hub.azure-devices.net", "device-id", null, TestContext.Current.CancellationToken);
+            AssertSasToken(secondaryCredentials!.Password, secondaryKey, "some-hub.azure-devices.net/devices/device-id", null, TimeSpan.FromHours(1));
+
+            // Once a certificate is issued it is presented instead of a SAS token, so there is no secondary to fall back to.
+            Assert.Null(await authentication.GetSecondaryOperationalAuthenticationCredentialsAsync(
+                "some-hub.azure-devices.net", "device-id", new[] { "issued-certificate" }, TestContext.Current.CancellationToken));
+        }
+
         [Theory]
         [InlineData(true, 0)]
         [InlineData(true, -1)]
