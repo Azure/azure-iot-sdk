@@ -927,6 +927,14 @@ typedef struct
   char accepted_installed[3][AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE];
   az_iot_result last_refused_reason;
 
+  int completed_count;
+  az_iot_result last_completed_reason;
+  int32_t last_completed_code;
+  bool last_completed_has_report;
+  az_iot_su_outcome last_completed_outcome;
+  bool completed_after_verdict_event; /* REPORT_ACCEPTED/ABANDONED came first */
+  int verdict_events; /* REPORT_ACCEPTED + ABANDONED of REPORT_STATUS */
+
   int deferred_count;
   az_iot_result last_deferred_reason;
   az_iot_su_state last_deferred_state;
@@ -955,6 +963,7 @@ static void on_event(const az_iot_su_event* event, void* user_ctx)
   fixture* fx = (fixture*)user_ctx;
   if (event->kind == AZ_IOT_SU_EVENT_OPERATION_ABANDONED)
   {
+    fx->verdict_events += event->operation == AZ_IOT_SU_OP_REPORT_STATUS ? 1 : 0;
     fx->abandoned_count++;
     fx->last_abandoned_reason = event->reason;
     fx->last_abandoned_operation = event->operation;
@@ -996,8 +1005,21 @@ static void on_event(const az_iot_su_event* event, void* user_ctx)
     fx->duplicate_count++;
     fx->last_duplicate_state = event->state;
   }
+  else if (event->kind == AZ_IOT_SU_EVENT_WORKFLOW_COMPLETED)
+  {
+    fx->completed_count++;
+    fx->last_completed_reason = event->reason;
+    fx->last_completed_code = event->service_error.code;
+    fx->last_completed_has_report = event->report != NULL;
+    fx->completed_after_verdict_event = fx->verdict_events > 0;
+    if (event->report != NULL)
+    {
+      fx->last_completed_outcome = event->report->outcome;
+    }
+  }
   else if (event->kind == AZ_IOT_SU_EVENT_REPORT_ACCEPTED)
   {
+    fx->verdict_events++;
     fx->accepted_count++;
     fx->accepted_terminal_count += event->report_terminal ? 1 : 0;
     /* The report comes with, and only with, a terminal acceptance. */
@@ -4561,6 +4583,94 @@ static void new_properties_do_not_resend_a_settled_report(void** state)
   assert_string_equal(fx->chan.properties.properties.installed_update_id.version, "9.9");
 }
 
+/* WORKFLOW_COMPLETED follows the verdict that settles the terminal report:
+ * once on acceptance, once on a permanent rejection, never for a report kept
+ * after a lost session (it settles when sent again). */
+static void the_workflow_completes_once_its_report_settles(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
+  finish_with_report_unacknowledged(fx);
+  assert_int_equal(fx->completed_count, 0);
+
+  fx->chan.result_cb(
+      AZ_IOT_SU_OP_REPORT_STATUS,
+      AZ_IOT_ERR_NOT_CONNECTED,
+      AZ_IOT_SU_ERROR_ACTION_FATAL,
+      NULL,
+      fx->chan.engine_ctx);
+  assert_int_equal(fx->completed_count, 0);
+
+  /* Sent again ahead of a check, then accepted. */
+  fx->verdict_events = 0;
+  assert_int_equal(az_iot_su_client_request_update(&fx->su, UT_TIMEOUT_MS), AZ_IOT_OK);
+  pump(fx, 3);
+  fx->chan.result_cb(
+      AZ_IOT_SU_OP_REPORT_STATUS,
+      AZ_IOT_OK,
+      AZ_IOT_SU_ERROR_ACTION_NONE,
+      NULL,
+      fx->chan.engine_ctx);
+  assert_int_equal(fx->completed_count, 1);
+  assert_true(fx->completed_after_verdict_event);
+  assert_int_equal(fx->last_completed_reason, AZ_IOT_OK);
+  assert_true(fx->last_completed_has_report);
+  assert_int_equal(fx->last_completed_outcome, AZ_IOT_SU_OUTCOME_SUCCEEDED);
+
+  /* Nothing more for that workflow. */
+  int sent = fx->chan.report_count;
+  pump(fx, 3);
+  assert_int_equal(fx->chan.report_count, sent);
+  assert_int_equal(fx->completed_count, 1);
+}
+
+/* Properties changed while the terminal verdict is pending do not re-send
+ * that report after it settles, nor complete the workflow twice. */
+static void properties_changed_before_the_verdict_complete_once(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
+  finish_with_report_unacknowledged(fx);
+  az_iot_su_device_properties dp = { 0 };
+  dp.manufacturer = "Contoso";
+  dp.model = "Foobar";
+  assert_int_equal(az_iot_su_client_update_device_properties(&fx->su, &dp), AZ_IOT_OK);
+  fx->chan.result_cb(
+      AZ_IOT_SU_OP_REPORT_STATUS,
+      AZ_IOT_OK,
+      AZ_IOT_SU_ERROR_ACTION_NONE,
+      NULL,
+      fx->chan.engine_ctx);
+  assert_int_equal(fx->completed_count, 1);
+  int sent = fx->chan.report_count;
+  pump(fx, 3);
+  assert_int_equal(fx->chan.report_count, sent);
+  assert_int_equal(fx->completed_count, 1);
+}
+
+/* A permanent rejection completes the workflow with the service's verdict. */
+static void a_rejected_report_completes_the_workflow(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
+  finish_with_report_unacknowledged(fx);
+  az_iot_su_service_error se
+      = { .code = 404001, .message = "UNKNOWN_WORKFLOW_ID", .tracking_id = "t-2" };
+  fx->verdict_events = 0;
+  fx->chan.result_cb(
+      AZ_IOT_SU_OP_REPORT_STATUS,
+      AZ_IOT_ERR_DPS,
+      AZ_IOT_SU_ERROR_ACTION_FATAL,
+      &se,
+      fx->chan.engine_ctx);
+  assert_int_equal(fx->completed_count, 1);
+  assert_true(fx->completed_after_verdict_event);
+  assert_int_equal(fx->last_completed_reason, AZ_IOT_ERR_DPS);
+  assert_int_equal(fx->last_completed_code, 404001);
+  assert_true(fx->last_completed_has_report);
+  assert_false(fx->su._internal.report_owed);
+}
+
 /* A failed workflow stores its terminal report, with its retry schedule,
  * before sending it. Once accepted after a reboot, the retry record remains
  * and the wait still holds. */
@@ -7201,6 +7311,7 @@ static void accepted_reports_are_raised(void** state)
   assert_true(fx->chan.report_count > 1);
   assert_int_equal(fx->accepted_count, fx->chan.report_count);
   assert_int_equal(fx->accepted_terminal_count, 1);
+  assert_int_equal(fx->completed_count, 1);
 
   /* Held verdicts: nothing until the service answers, nothing for a rejection. */
   fx->chan.report_verdict_deferred = true;
@@ -7217,6 +7328,7 @@ static void accepted_reports_are_raised(void** state)
       NULL,
       fx->chan.engine_ctx);
   assert_int_equal(fx->accepted_count, accepted);
+  assert_int_equal(fx->completed_count, 2);
 
   inject_patch(fx, build_patch("cccccccc-0000-0000-0000-000000000003"));
   pump(fx, 40);
@@ -7228,6 +7340,7 @@ static void accepted_reports_are_raised(void** state)
       fx->chan.engine_ctx);
   assert_int_equal(fx->accepted_count, accepted + 1);
   assert_int_equal(fx->accepted_terminal_count, 2);
+  assert_int_equal(fx->completed_count, 3);
 
   /* A workflow that supersedes one whose terminal verdict is pending does not
    * change what that verdict reports. */
@@ -7248,6 +7361,9 @@ static void accepted_reports_are_raised(void** state)
   assert_int_equal(fx->accepted_report_count, reports + 1);
   assert_int_equal(fx->accepted_report_outcome, AZ_IOT_SU_OUTCOME_FAILED);
   assert_string_equal(fx->accepted_workflow_id, "dddddddd-0000-0000-0000-000000000004");
+  /* Its workflow completes too. */
+  assert_int_equal(fx->completed_count, 4);
+  assert_int_equal(fx->last_completed_outcome, AZ_IOT_SU_OUTCOME_FAILED);
 }
 
 /* A LATE verdict must not resurrect an operation after the slot was abandoned.
@@ -8723,6 +8839,11 @@ int main(void)
     cmocka_unit_test_setup_teardown(a_succeeded_update_becomes_the_installed_id, setup, teardown),
     cmocka_unit_test_setup_teardown(
         the_applied_id_is_adopted_with_an_exact_sized_cache, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        the_workflow_completes_once_its_report_settles, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_rejected_report_completes_the_workflow, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        properties_changed_before_the_verdict_complete_once, setup, teardown),
     cmocka_unit_test_setup_teardown(new_properties_do_not_resend_a_settled_report, setup, teardown),
     cmocka_unit_test_setup_teardown(a_check_resends_an_owed_terminal_report_first, setup, teardown),
     cmocka_unit_test_setup_teardown(
