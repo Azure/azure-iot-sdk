@@ -217,6 +217,10 @@ namespace Microsoft.Azure.Iot.Device
         // on the latest value rather than a stale cache.
         private volatile bool _needsReprovision;
 
+        // Whether connections to Device Provisioning Service present the secondary boot credentials, because DPS
+        // rejected the primary ones during the current provisioning run.
+        private volatile bool _usesSecondaryBootCredentials;
+
         // The Retry-After that Device Provisioning Service most recently asked for during a registration, in ticks (0
         // when it asked for none). It is captured from each provisioning response and read as a floor on the
         // re-provisioning backoff, so a registration that fails after the service asked to be left alone waits at least
@@ -320,6 +324,7 @@ namespace Microsoft.Azure.Iot.Device
             ManagedMqttConnection.ConnectedAsync += HandleConnectedAsync;
             ManagedMqttConnection.DisconnectedAsync += HandleDisconnectedAsync;
             ManagedMqttConnection.ConnectionFaultedAsync += HandleConnectionFaultedAsync;
+            ManagedMqttConnection.TrySwitchCredentialsAsync = TrySwitchCredentialsAsync;
             ManagedMqttConnection.PublishReceivedAsync += HandleReceivedProvisioningPublishAsync;
         }
 
@@ -339,9 +344,12 @@ namespace Microsoft.Azure.Iot.Device
         /// connects to the hub it is assigned.
         /// </para>
         /// <para>
-        /// If the connection to the assigned IoT hub later faults because of this device's identity, this client
-        /// provisions again with these same credentials and reconnects to whichever hub it is assigned, without the
-        /// application having to do anything.
+        /// If the connection to the assigned IoT hub later faults because of this device's identity, this client first
+        /// retries at once with the other of the provider's primary and secondary credentials (see
+        /// <see cref="AuthenticationProvider.GetSecondaryOperationalAuthenticationCredentialsAsync"/>), if it has
+        /// both. Only once the hub has rejected both does this client provision again with these same credentials
+        /// and reconnect to whichever hub it is assigned, without the application having to do anything. Device
+        /// Provisioning Service rejecting the primary boot credentials is likewise retried with the secondary ones.
         /// </para>
         /// </remarks>
         /// <param name="provisioningSettings">The mandatory and optional provisioning-specific fields</param>
@@ -744,6 +752,8 @@ namespace Microsoft.Azure.Iot.Device
             // This client is establishing a connection again, so any earlier fault no longer describes its state.
             ClearUnrecoverableFault();
 
+            // Every connection to a hub starts again with the primary credentials, mirroring the C client's open().
+            connectionContext.UsesSecondaryCredentials = false;
             CurrentConnectionContext = connectionContext;
 
             string deviceId = CurrentConnectionContext.DeviceId;
@@ -813,7 +823,18 @@ namespace Microsoft.Azure.Iot.Device
                 AuthenticationProvider? provisioningAuthentication = _provisioningAuthentication;
                 if (provisioningAuthentication != null)
                 {
-                    connectPacketToEdit = ApplyAuthentication(provisioningAuthentication.GetBootAuthenticationCredentials(), connectPacketToEdit);
+                    AuthenticationCredentials? bootCredentials = null;
+                    if (_usesSecondaryBootCredentials)
+                    {
+                        bootCredentials = provisioningAuthentication.GetSecondaryBootAuthenticationCredentials();
+                        if (bootCredentials == null)
+                        {
+                            _usesSecondaryBootCredentials = false;
+                        }
+                    }
+
+                    bootCredentials ??= provisioningAuthentication.GetBootAuthenticationCredentials();
+                    connectPacketToEdit = ApplyAuthentication(bootCredentials, connectPacketToEdit);
                 }
 
                 return connectPacketToEdit;
@@ -821,20 +842,45 @@ namespace Microsoft.Azure.Iot.Device
 
             // Authenticate with the credentials of the current hub connection rather than the provisioning inputs: a
             // device connected directly to a hub has no provisioning inputs, and a device provisioned with a CSR must
-            // connect with the operational certificate DPS issued rather than its boot credentials.
+            // connect with the operational certificate DPS issued rather than its boot credentials. These are the
+            // secondary credentials if the hub rejected the primary ones.
             ConnectionContext connectionContext = CurrentConnectionContext!;
-            AuthenticationProvider authentication = connectionContext.AuthenticationProvider;
-            IReadOnlyList<string>? issuedClientCertificates = connectionContext.IssuedClientCertificates;
-
-            AuthenticationCredentials hubCredentials = await authentication.GetOperationalAuthenticationCredentialsAsync(
-                connectPacketToEdit.HostName,
-                connectPacketToEdit.ClientId ?? authentication.GetRegistrationId(),
-                issuedClientCertificates,
-                cancellationToken).ConfigureAwait(false);
+            AuthenticationCredentials hubCredentials = await connectionContext.GetOperationalAuthenticationCredentialsAsync(cancellationToken).ConfigureAwait(false);
             connectPacketToEdit = ApplyAuthentication(hubCredentials, connectPacketToEdit);
 
             // Gen 1 hub clients and gen 2 hub clients can insert their specific username/password/protocol version/etc before each connect attempt
             return IotHubMqttConnectOverride(connectPacketToEdit);
+        }
+
+        /// <summary>
+        /// Switch between the primary and secondary credentials for the current endpoint after it rejected the current
+        /// ones as an identity failure. The connection layer calls this before giving up on the connection, so that the
+        /// device only re-provisions once both sets of credentials have been rejected.
+        /// </summary>
+        /// <returns>False if there are no secondary credentials to switch between.</returns>
+        private async Task<bool> TrySwitchCredentialsAsync(CancellationToken cancellationToken)
+        {
+            if (CurrentEndpoint == ConnectionEndpoint.DeviceProvisioningService)
+            {
+                AuthenticationProvider? provisioningAuthentication = _provisioningAuthentication;
+                if (_usesSecondaryBootCredentials)
+                {
+                    _usesSecondaryBootCredentials = false;
+                    return true;
+                }
+
+                if (provisioningAuthentication?.GetSecondaryBootAuthenticationCredentials() == null)
+                {
+                    return false;
+                }
+
+                _usesSecondaryBootCredentials = true;
+                return true;
+            }
+
+            ConnectionContext? connectionContext = CurrentConnectionContext;
+            return connectionContext != null
+                && await connectionContext.TrySwitchCredentialsAsync(cancellationToken).ConfigureAwait(false);
         }
 
         // Maps the protocol-agnostic authentication material onto an MQTT CONNECT packet
@@ -1334,6 +1380,8 @@ namespace Microsoft.Azure.Iot.Device
             // This client is establishing a connection again, so any earlier fault no longer describes its state.
             ClearUnrecoverableFault();
 
+            // Every provisioning run starts again with the primary boot credentials.
+            _usesSecondaryBootCredentials = false;
             _provisioningAuthentication = authentication;
 
             MqttConnect connect = CreateProvisioningConnectPacket(

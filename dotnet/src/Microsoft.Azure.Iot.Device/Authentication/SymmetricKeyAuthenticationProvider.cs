@@ -147,6 +147,17 @@ namespace Microsoft.Azure.Iot.Device.Authentication
         /// </summary>
         public Func<IReadOnlyList<string>, Task<X509Certificate2>>? HandleCertificateSigningCompleteAsync { get; }
 
+        /// <summary>
+        /// The raw secondary symmetric key bytes, not a Base64-encoded string, or null if this device has none.
+        /// </summary>
+        /// <remarks>
+        /// When IoT Hub or the device provisioning service rejects the SAS token signed with the primary key, the
+        /// connection client retries at once with one signed with this key. If IoT Hub rejects both, the connection
+        /// client re-provisions the device when it can. Once a client certificate is issued and presented to IoT Hub
+        /// instead of a SAS token, this key is only used for the device provisioning service.
+        /// </remarks>
+        public byte[]? SecondarySymmetricKey { get; init; }
+
         public override async Task<AuthenticationCredentials> GetOperationalAuthenticationCredentialsAsync(string hostName, string deviceId, IReadOnlyList<string>? issuedClientCertificates, CancellationToken cancellationToken = default)
         {
             if (issuedClientCertificates is { Count: > 0 })
@@ -166,14 +177,40 @@ namespace Microsoft.Azure.Iot.Device.Authentication
             }
 
             // Note that hostname + device id may change over time, so cannot just take them in constructor.
-            // Device-scoped token: no key name (skn) since the key is the device's own key
-            string sasToken = BuildSasToken(string.Empty, _symmetricKey, string.Concat(hostName, "/devices/", deviceId), _iotHubSasTokenTimeToLive);
-            return CreateCredentials(sasToken);
+            return CreateOperationalCredentials(_symmetricKey, hostName, deviceId);
+        }
+
+        public override Task<AuthenticationCredentials?> GetSecondaryOperationalAuthenticationCredentialsAsync(string hostName, string deviceId, IReadOnlyList<string>? issuedClientCertificates, CancellationToken cancellationToken = default)
+        {
+            if (SecondarySymmetricKey == null || (issuedClientCertificates is { Count: > 0 } && _issuedCertificateHandler != null))
+            {
+                // An issued certificate is presented instead of a SAS token, so there is no secondary to fall back to.
+                return Task.FromResult<AuthenticationCredentials?>(null);
+            }
+
+            return Task.FromResult<AuthenticationCredentials?>(CreateOperationalCredentials(SecondarySymmetricKey, hostName, deviceId));
         }
 
         public override AuthenticationCredentials GetBootAuthenticationCredentials()
         {
-            string sasToken = BuildSasToken("registration", _symmetricKey, string.Concat(_idScope, '/', "registrations", '/', _registrationId), _dpsSasTokenTimeToLive);
+            return CreateBootCredentials(_symmetricKey);
+        }
+
+        public override AuthenticationCredentials? GetSecondaryBootAuthenticationCredentials()
+        {
+            return SecondarySymmetricKey == null ? null : CreateBootCredentials(SecondarySymmetricKey);
+        }
+
+        private AuthenticationCredentials CreateOperationalCredentials(byte[] key, string hostName, string deviceId)
+        {
+            // Device-scoped token: no key name (skn) since the key is the device's own key
+            string sasToken = BuildSasToken(string.Empty, key, string.Concat(hostName, "/devices/", deviceId), _iotHubSasTokenTimeToLive);
+            return CreateCredentials(sasToken);
+        }
+
+        private AuthenticationCredentials CreateBootCredentials(byte[] key)
+        {
+            string sasToken = BuildSasToken("registration", key, string.Concat(_idScope, '/', "registrations", '/', _registrationId), _dpsSasTokenTimeToLive);
             return CreateCredentials(sasToken);
         }
 
