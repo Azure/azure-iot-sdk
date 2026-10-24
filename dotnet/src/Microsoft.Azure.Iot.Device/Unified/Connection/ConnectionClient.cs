@@ -74,9 +74,6 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
             connect.WebsocketUri = $"wss://{connect.HostName}/$iothub/websocket";
             connect.ProtocolVersion = CurrentConnectionContext.ConnectionProfile == IotHubConnectionType.Mqttv5 ? MqttProtocolVersion.V500 : MqttProtocolVersion.V311;
 
-            // An MQTT 5 session that expires as soon as the connection closes could never be resumed, so by default keep
-            // it for an hour like the C SDK does. It is set even for clean sessions: clean start only discards the
-            // previous session, while the expiry governs this one. MQTT 3.1.1 has no such property.
             connect.Username = $"{connect.HostName}/{connect.ClientId}/?api-version={ClassicHubApiVersion}&DeviceClientType={Uri.EscapeDataString(GetUserAgentString())}";
 
             // MQTTv3 flow does not need to insert anything unique per connect attempt
