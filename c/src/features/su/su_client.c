@@ -4152,20 +4152,22 @@ az_iot_su_state az_iot_su_client_get_state(const az_iot_su_client* client)
 AZ_NODISCARD az_iot_su_reboot_state
 az_iot_su_client_get_reboot_state(const az_iot_su_client* client)
 {
-  if (client == NULL || SU_I(client).detached || !SU_I(client).reboot_requested)
+  if (client == NULL || SU_I(client).detached)
   {
     return AZ_IOT_SU_REBOOT_NONE;
   }
-  if (SU_I(client).hooks.persist_state_fn == NULL)
+  /* Mid-workflow: the position record the workflow resumes from. Otherwise:
+   * the terminal or retry record, or none once its report settled. */
+  bool running
+      = SU_I(client).state != AZ_IOT_SU_STATE_IDLE && SU_I(client).state != AZ_IOT_SU_STATE_FAILED;
+  bool behind = SU_I(client).hooks.persist_state_fn != NULL
+      && (running ? (SU_I(client).checkpoint_pending || SU_I(client).checkpoint_superseded)
+                  : checkpoint_out_of_sync(client));
+  if (behind)
   {
-    return AZ_IOT_SU_REBOOT_READY;
+    return AZ_IOT_SU_REBOOT_PENDING;
   }
-  /* Mid-workflow: the position record the workflow resumes from. Idle (after
-   * the last apply): the terminal record, or none once its report settled. */
-  bool not_stored = (SU_I(client).state == AZ_IOT_SU_STATE_IDLE)
-      ? checkpoint_out_of_sync(client)
-      : (SU_I(client).checkpoint_pending || SU_I(client).checkpoint_superseded);
-  return not_stored ? AZ_IOT_SU_REBOOT_PENDING : AZ_IOT_SU_REBOOT_READY;
+  return SU_I(client).reboot_requested ? AZ_IOT_SU_REBOOT_READY : AZ_IOT_SU_REBOOT_NONE;
 }
 
 az_iot_result az_iot_su_client_add_observer(

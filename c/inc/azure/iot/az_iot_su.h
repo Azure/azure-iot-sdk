@@ -1214,27 +1214,31 @@ extern "C"
   /** Get the current software updates agent state. */
   az_iot_su_state az_iot_su_client_get_state(const az_iot_su_client* client);
 
-  /** @brief Whether the device may reboot for the current workflow. */
+  /** @brief Whether the device may reboot (or the process restart) now. */
   typedef enum
   {
-    /** No reboot was asked for in this process, or the workflow that asked failed. */
+    /** Storage is current and no reboot was asked for in this process (or the
+     * workflow that asked failed). */
     AZ_IOT_SU_REBOOT_NONE = 0,
-    /** install_fn or apply_fn asked for a reboot, but the record the workflow
-     * resumes from is not stored yet (a persist_state_fn write is failing or
-     * being retried). Rebooting now could lose or repeat work. */
+    /** Storage is behind what az_iot_su_client_resume() needs: a
+     * persist_state_fn write is failing or being retried. A restart now could
+     * lose or repeat work, whether or not a reboot was asked for. Stays so
+     * after the client gives up retrying (PERSIST_FAILED with
+     * `persist_retrying` false) until a later write succeeds. */
     AZ_IOT_SU_REBOOT_PENDING,
-    /** A reboot was asked for and storage holds what az_iot_su_client_resume()
-     * needs: reboot now. */
+    /** install_fn or apply_fn asked for a reboot and storage is current:
+     * reboot now. */
     AZ_IOT_SU_REBOOT_READY,
   } az_iot_su_reboot_state;
 
   /**
-   * @brief Whether a hook asked for a reboot, and whether it is safe now.
+   * @brief Whether a hook asked for a reboot, and whether storage allows a restart now.
    *
    * Check after each az_iot_su_client_do_work(): the next call continues the
-   * workflow as if the device had not rebooted. With no persist_state_fn there
-   * is nothing to store, so a requested reboot is READY at once (and the
-   * workflow does not survive it).
+   * workflow as if the device had not rebooted. Also use it before a planned
+   * exit or shutdown: PENDING means storage is not current yet. With no
+   * persist_state_fn there is nothing to store, so it is never PENDING (and a
+   * workflow does not survive a restart).
    *
    * @param[in] client Initialized client.
    * @return AZ_IOT_SU_REBOOT_NONE if @p client is NULL or detached.
