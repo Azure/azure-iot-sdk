@@ -98,6 +98,12 @@ namespace Microsoft.Azure.Iot.Device
         // Workaround so that inheriting classes can invoke the "DevicePresenceFlowCompletedAsync" event.
         protected Task RaiseDevicePresenceFlowCompletedAsync(DevicePresenceFlowCompletedArgs args)
         {
+            if (args.IsSuccess && args.Exception == null && CurrentEndpoint == ConnectionEndpoint.IotHub)
+            {
+                // The current session now holds every subscription the presence flow needs, so the next reconnect may resume it.
+                Volatile.Write(ref _canResumeHubSession, 1);
+            }
+
             if (DevicePresenceFlowCompletedAsync != null)
             {
                 DevicePresenceFlowCompletedAsync.Invoke(args);
@@ -179,6 +185,15 @@ namespace Microsoft.Azure.Iot.Device
         // repeated after it fails. Mirrors the C connection client, whose needs_reprovision intent keeps sending the
         // device back to DPS until a registration succeeds rather than giving up after a single failed attempt.
         private readonly IRetryPolicy _connectionRetryPolicy;
+
+        // True if the application asked for a clean session on every IoT hub connection.
+        private readonly bool _useCleanSession;
+
+        // 1 once a presence flow has completed on the current IoT hub, so that the session it set up holds every
+        // subscription that flow needs. Consumed by the next CONNECT attempt so that only that attempt asks to resume the
+        // session: if its CONNACK is lost, the broker may have started an empty session that a later attempt would resume
+        // without knowing its subscriptions were lost, so later attempts start clean until a presence flow completes again.
+        private int _canResumeHubSession;
 
         // Standing intent to re-provision: the cached assignment is no good -- an identity rejection at CONNACK or the
         // hub-unreachable threshold -- so this client should ask DPS for a fresh assignment rather than reconnecting to
@@ -273,6 +288,7 @@ namespace Microsoft.Azure.Iot.Device
             CurrentConnectionContext = connectionContext;
 
             _connectionRetryPolicy = options.ConnectionRetryPolicy;
+            _useCleanSession = options.UseCleanSession;
 
             // This is the basic MQTT client that has no reconnection/retry logic
             MqttNetClientOptions mqttNetClientOptions = new()
@@ -721,6 +737,9 @@ namespace Microsoft.Azure.Iot.Device
 
             CurrentConnectionContext = connectionContext;
 
+            // Any session left on this IoT hub was not set up by this connection's presence flow, so its subscriptions are unknown.
+            Volatile.Write(ref _canResumeHubSession, 0);
+
             string deviceId = CurrentConnectionContext.DeviceId;
             string hostname = CurrentConnectionContext.IotHubHostName;
 
@@ -750,14 +769,9 @@ namespace Microsoft.Azure.Iot.Device
                     WebsocketPort = 443,
                     ClientId = deviceId,
 
-                    // It can save some SUBSCRIBE calls to attempt to resume sessions, but there is a race condition
-                    // wherein a device attempts to reconnect w/ clean session=false, server sends back CONNACK w/ "session not resumed"
-                    // and starts a new session with no subscriptions, but that CONNACK is lost. The device will likely reconnect then.
-                    // If the device connects with cleanSession=false at that time, the broker may send back CONNACK with "session resumed", but
-                    // it isn't the same session that the device initially wanted to resume, and so subscriptions are unknowingly lost.
-                    //
-                    // Because of the above, it is simpler to just start clean sessions each time.
+                    // Overwritten on each connect attempt by PatchConnectPacketAsync when session resumption is allowed.
                     CleanSession = true,
+                    CleanStart = true,
                 };
 
                 MqttConnectAck connack = await ManagedMqttConnection.ConnectAsync(connectPacket, cancellationToken);
@@ -807,6 +821,10 @@ namespace Microsoft.Azure.Iot.Device
                 issuedClientCertificates,
                 cancellationToken).ConfigureAwait(false);
             connectPacketToEdit = ApplyAuthentication(hubCredentials, connectPacketToEdit);
+
+            bool resumeSession = !_useCleanSession && Interlocked.Exchange(ref _canResumeHubSession, 0) == 1;
+            connectPacketToEdit.CleanSession = !resumeSession;
+            connectPacketToEdit.CleanStart = !resumeSession;
 
             // Gen 1 hub clients and gen 2 hub clients can insert their specific username/password/protocol version/etc before each connect attempt
             return IotHubMqttConnectOverride(connectPacketToEdit);

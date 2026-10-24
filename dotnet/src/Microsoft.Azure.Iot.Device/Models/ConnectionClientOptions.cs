@@ -73,5 +73,46 @@ namespace Microsoft.Azure.Iot.Device.Models
         /// is unaffected. This value is read once when the connection client is constructed.
         /// </remarks>
         public bool EnableCloudToDeviceMessages { get; set; } = true;
+
+        /// <summary>
+        /// False (the default) to ask IoT hub to resume the previous MQTT session when the connection is re-established.
+        /// True to start a new session each time this client connects to IoT hub.
+        /// </summary>
+        /// <remarks>
+        /// When IoT hub reports that it resumed the session, the subscriptions made by the device presence flow are still
+        /// active, so they are not sent again. To guarantee that a resumed session holds those subscriptions, resumption
+        /// is only requested on the first reconnect attempt after a presence flow completed on the same IoT hub; the first
+        /// connection to an IoT hub and any further reconnect attempts start a new session. This only applies to IoT hub
+        /// connections because Device Provisioning Service does not support persistent sessions. This value is read once
+        /// when the connection client is constructed.
+        /// </remarks>
+        public bool UseCleanSession { get; set; }
+
+        /// <summary>
+        /// How long IoT hub keeps this device's MQTT 5 session after the connection closes. Defaults to one hour.
+        /// </summary>
+        /// <remarks>
+        /// A session can only be resumed on reconnect if it has not expired, so <see cref="TimeSpan.Zero"/> effectively
+        /// disables session resumption. The value is sent in whole seconds (any fraction is dropped) and must be between
+        /// zero and <see cref="uint.MaxValue"/> seconds; the maximum means the session never expires. Deliberate
+        /// disconnects still end the session immediately. This only applies to MQTT 5 IoT hub connections because MQTT
+        /// 3.1.1 has no session expiry. This value is read once when the connection client is constructed.
+        /// </remarks>
+        /// <exception cref="ArgumentOutOfRangeException">The value is negative or longer than <see cref="uint.MaxValue"/> seconds.</exception>
+        public TimeSpan MqttV5SessionExpiryInterval
+        {
+            get => _mqttV5SessionExpiryInterval;
+            set
+            {
+                if (value < TimeSpan.Zero || value.TotalSeconds >= (double)uint.MaxValue + 1)
+                {
+                    throw new ArgumentOutOfRangeException(nameof(value), value, $"The MQTT 5 session expiry interval must be between zero and {uint.MaxValue} seconds.");
+                }
+
+                _mqttV5SessionExpiryInterval = value;
+            }
+        }
+
+        private TimeSpan _mqttV5SessionExpiryInterval = TimeSpan.FromHours(1);
     }
 }

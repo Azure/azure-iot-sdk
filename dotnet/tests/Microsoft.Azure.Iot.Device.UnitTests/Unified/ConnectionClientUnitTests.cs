@@ -520,6 +520,126 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
         [Theory]
         [InlineData(true)]
         [InlineData(false)]
+        public async Task ReconnectResumesSessionWithoutResubscribingOnlyWhenCleanSessionOptedOut(bool useCleanSession)
+        {
+            using MockConnectionMqttClient mockMqttClient = new();
+            using ConnectionClient connectionClient = new(new()
+            {
+                MqttClient = mockMqttClient,
+                UseCleanSession = useCleanSession,
+                ConnectionRetryPolicy = new ExponentialBackoffRetryPolicy(uint.MaxValue, TimeSpan.Zero, useJitter: false),
+            });
+
+            List<bool> cleanSessionFlags = new();
+            mockMqttClient.OnConnect = connect =>
+            {
+                lock (cleanSessionFlags)
+                {
+                    cleanSessionFlags.Add(connect.CleanSession);
+                }
+
+                return Task.FromResult(new MqttConnectAck() { IsSessionPresent = !connect.CleanSession, ResultCode = MqttConnectReasonCode.Success });
+            };
+
+            await connectionClient.ConnectToHubAsync(GetMockConnectionContext(false), TestContext.Current.CancellationToken);
+
+            TaskCompletionSource reconnected = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            connectionClient.DevicePresenceFlowCompletedAsync += _ =>
+            {
+                reconnected.TrySetResult();
+                return Task.CompletedTask;
+            };
+
+            await mockMqttClient.SimulateServerDisconnectAsync(MqttDisconnectReason.ImplementationSpecificError, new Exception("mock exception"))
+                .WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+            await reconnected.Task.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+
+            // The first connection to a hub always starts clean since the subscriptions of any session left there are unknown.
+            Assert.Equal(new[] { true, useCleanSession }, cleanSessionFlags);
+            Assert.Equal(useCleanSession ? 2 : 1, mockMqttClient.SentMqttTrafficInOrder.Count(traffic => traffic.Subscribe != null));
+        }
+
+        [Theory]
+        [InlineData(true)]
+        [InlineData(false)]
+        public async Task HubConnectCarriesSessionExpiryOnlyForMqttV5(bool isMQTTv5)
+        {
+            using MockConnectionMqttClient mockMqttClient = new() { AutoRespondToBirth = true };
+            using ConnectionClient connectionClient = new(new()
+            {
+                MqttClient = mockMqttClient,
+                MqttV5SessionExpiryInterval = TimeSpan.FromSeconds(90.7),
+            });
+
+            uint? sessionExpiryInterval = null;
+            mockMqttClient.OnConnect = connect =>
+            {
+                sessionExpiryInterval = connect.SessionExpiryInterval;
+                return Task.FromResult(new MqttConnectAck() { ResultCode = MqttConnectReasonCode.Success });
+            };
+
+            await connectionClient.ConnectToHubAsync(GetMockConnectionContext(isMQTTv5), TestContext.Current.CancellationToken);
+
+            Assert.Equal(isMQTTv5 ? 90u : 0u, sessionExpiryInterval);
+        }
+
+        [Theory]
+        [InlineData(-1.0)]
+        [InlineData((double)uint.MaxValue + 1)]
+        public void MqttV5SessionExpiryIntervalRejectsOutOfRangeValues(double seconds)
+        {
+            ConnectionClientOptions options = new();
+
+            Assert.Throws<ArgumentOutOfRangeException>(() => options.MqttV5SessionExpiryInterval = TimeSpan.FromSeconds(seconds));
+        }
+
+        [Fact]
+        public async Task ReconnectStartsCleanSessionAfterFailedResumeAttempt()
+        {
+            using MockConnectionMqttClient mockMqttClient = new();
+            using ConnectionClient connectionClient = new(new()
+            {
+                MqttClient = mockMqttClient,
+                UseCleanSession = false,
+                ConnectionRetryPolicy = new ExponentialBackoffRetryPolicy(uint.MaxValue, TimeSpan.Zero, useJitter: false),
+            });
+
+            await connectionClient.ConnectToHubAsync(GetMockConnectionContext(false), TestContext.Current.CancellationToken);
+
+            List<bool> cleanSessionFlags = new();
+            mockMqttClient.OnConnect = connect =>
+            {
+                lock (cleanSessionFlags)
+                {
+                    cleanSessionFlags.Add(connect.CleanSession);
+                    if (cleanSessionFlags.Count == 1)
+                    {
+                        // The broker may have started a new, empty session for this attempt, but its CONNACK was lost.
+                        throw new TimeoutException("mock CONNACK lost");
+                    }
+                }
+
+                return Task.FromResult(new MqttConnectAck() { IsSessionPresent = !connect.CleanSession, ResultCode = MqttConnectReasonCode.Success });
+            };
+
+            TaskCompletionSource reconnected = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            connectionClient.DevicePresenceFlowCompletedAsync += _ =>
+            {
+                reconnected.TrySetResult();
+                return Task.CompletedTask;
+            };
+
+            await mockMqttClient.SimulateServerDisconnectAsync(MqttDisconnectReason.ImplementationSpecificError, new Exception("mock exception"))
+                .WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+            await reconnected.Task.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+
+            Assert.Equal(new[] { false, true }, cleanSessionFlags);
+            Assert.Equal(2, mockMqttClient.SentMqttTrafficInOrder.Count(traffic => traffic.Subscribe != null));
+        }
+
+        [Theory]
+        [InlineData(true)]
+        [InlineData(false)]
         public async Task ConnectionClientReannouncesBirthBeforeContinuingPublish(bool isSessionResumed)
         {
             using MockConnectionMqttClient mockMqttClient = new() { AutoRespondToBirth = true };

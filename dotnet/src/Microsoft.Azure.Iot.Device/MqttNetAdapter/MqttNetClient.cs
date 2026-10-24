@@ -65,7 +65,8 @@ namespace Microsoft.Azure.Iot.Device.MQTTnetAdapter
             {
                 optionsBuilder = new MqttClientOptionsBuilder()
                     .WithProtocolVersion(MQTTnet.Formatter.MqttProtocolVersion.V500)
-                    .WithCleanStart(connect.CleanStart);
+                    .WithCleanStart(connect.CleanStart)
+                    .WithSessionExpiryInterval(connect.SessionExpiryInterval);
             }
             else
             {
