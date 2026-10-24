@@ -4713,6 +4713,24 @@ static void a_last_apply_reboot_waits_for_the_terminal_record(void** state)
   assert_int_equal(az_iot_su_client_get_reboot_state(&fx->su), AZ_IOT_SU_REBOOT_READY);
 }
 
+/* Storage behind is PENDING even with no reboot asked for: a restart then
+ * could resume a finished workflow. */
+static void storage_behind_is_pending_without_a_reboot_request(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  fx->chan.report_verdict_deferred = true;
+  fx->log.persist_failures = 1;
+  inject_patch(fx, signed_patch());
+  pump(fx, 40);
+  assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_IDLE);
+  assert_int_equal(az_iot_su_client_get_reboot_state(&fx->su), AZ_IOT_SU_REBOOT_PENDING);
+
+  fx->su._internal.persist_retry._internal.due_ms = 0;
+  assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  assert_int_equal(az_iot_su_client_get_reboot_state(&fx->su), AZ_IOT_SU_REBOOT_NONE);
+}
+
 static void a_failed_workflow_needs_no_reboot(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -8905,6 +8923,8 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         a_last_apply_reboot_waits_for_the_terminal_record, setup, teardown),
     cmocka_unit_test_setup_teardown(a_failed_workflow_needs_no_reboot, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        storage_behind_is_pending_without_a_reboot_request, setup, teardown),
     cmocka_unit_test_setup_teardown(new_properties_do_not_resend_a_settled_report, setup, teardown),
     cmocka_unit_test_setup_teardown(a_check_resends_an_owed_terminal_report_first, setup, teardown),
     cmocka_unit_test_setup_teardown(

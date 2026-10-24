@@ -1030,9 +1030,10 @@ az_iot_result az_iot_su_client_do_work(az_iot_su_client* client);
 az_iot_su_state az_iot_su_client_get_state(const az_iot_su_client* client);
 
 /**
- * Whether a hook asked for a reboot (NONE), and whether storage holds what
- * resume() needs (READY) or a write is still failing (PENDING). Checked after
- * each do_work(); a FAILED workflow needs no reboot.
+ * PENDING while storage is behind what resume() needs (a write failing or
+ * retried), whether or not a reboot was asked for; else READY if a hook asked
+ * for a reboot, NONE if not. Checked after each do_work() and before a
+ * planned exit; a FAILED workflow needs no reboot.
  */
 az_iot_su_reboot_state az_iot_su_client_get_reboot_state(const az_iot_su_client* client);
 
