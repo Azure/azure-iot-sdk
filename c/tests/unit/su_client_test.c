@@ -4373,6 +4373,39 @@ static void a_check_resends_an_owed_terminal_report_first(void** state)
   assert_int_equal(fx->chan.request_update_count, requests + 1);
 }
 
+/* If that resend loses its session for good too, the held check is
+ * abandoned and the report stays owed: no resend past the session bound. */
+static void a_held_check_is_abandoned_when_its_report_cannot_be_sent(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
+  finish_with_report_unacknowledged(fx);
+  fx->chan.result_cb(
+      AZ_IOT_SU_OP_REPORT_STATUS,
+      AZ_IOT_ERR_NOT_CONNECTED,
+      AZ_IOT_SU_ERROR_ACTION_FATAL,
+      NULL,
+      fx->chan.engine_ctx);
+  assert_int_equal(
+      az_iot_su_client_request_update(&fx->su, AZ_IOT_SU_REQUEST_NO_TIMEOUT), AZ_IOT_OK);
+  pump(fx, 3);
+  int reports = fx->chan.report_count;
+  fx->abandoned_count = 0;
+
+  fx->chan.result_cb(
+      AZ_IOT_SU_OP_REPORT_STATUS,
+      AZ_IOT_ERR_NOT_CONNECTED,
+      AZ_IOT_SU_ERROR_ACTION_FATAL,
+      NULL,
+      fx->chan.engine_ctx);
+  assert_int_equal(fx->abandoned_count, 2);
+  assert_int_equal(fx->last_abandoned_operation, AZ_IOT_SU_OP_GET_UPDATE);
+  assert_int_equal(fx->last_abandoned_reason, AZ_IOT_ERR_NOT_CONNECTED);
+  assert_true(fx->su._internal.report_owed);
+  pump(fx, 5);
+  assert_int_equal(fx->chan.report_count, reports);
+}
+
 /* The check's deadline still holds while it waits for the report. */
 static void a_check_held_for_a_report_keeps_its_deadline(void** state)
 {
@@ -8551,6 +8584,8 @@ int main(void)
         the_terminal_record_is_kept_until_the_report_is_final, setup, teardown),
     cmocka_unit_test_setup_teardown(a_check_waits_for_the_owed_terminal_report, setup, teardown),
     cmocka_unit_test_setup_teardown(a_check_resends_an_owed_terminal_report_first, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_held_check_is_abandoned_when_its_report_cannot_be_sent, setup, teardown),
     cmocka_unit_test_setup_teardown(a_check_held_for_a_report_keeps_its_deadline, setup, teardown),
     cmocka_unit_test_setup_teardown(a_failed_workflow_report_survives_a_reboot, setup, teardown),
     cmocka_unit_test_setup_teardown(a_new_workflow_supersedes_an_owed_report, setup, teardown),
