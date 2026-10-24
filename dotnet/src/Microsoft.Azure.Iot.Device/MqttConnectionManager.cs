@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
 // See LICENSE file in the project root for full license information.
 
+using Microsoft.Azure.Iot.Device.Events;
 using Microsoft.Azure.Iot.Device.Exceptions;
 using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Mqtt;
@@ -38,11 +39,32 @@ namespace Microsoft.Azure.Iot.Device
     /// </remarks>
     internal class MqttConnectionManager : IDisposable
     {
-        public event Func<MqttPublishReceivedEventArgs, Task>? PublishReceivedAsync;
+        private readonly AsyncEvent<MqttPublishReceivedEventArgs> _publishReceived = new();
+        private readonly AsyncEvent<MqttClientConnectedEventArgs> _connected = new();
+        private readonly AsyncPipelineEvent<MqttConnect> _connecting = new();
+        private readonly AsyncEvent<MqttClientDisconnectedEventArgs> _disconnected = new();
+        private readonly AsyncEvent<MqttConnectionFaultedEventArgs> _connectionFaulted = new();
 
-        public event Func<MqttClientConnectedEventArgs, Task>? ConnectedAsync;
+        public event Func<MqttPublishReceivedEventArgs, Task>? PublishReceivedAsync
+        {
+            add => _publishReceived.Add(value);
+            remove => _publishReceived.Remove(value);
+        }
 
-        public event Func<MqttConnect, CancellationToken, Task<MqttConnect>>? ConnectingAsync;
+        public event Func<MqttClientConnectedEventArgs, Task>? ConnectedAsync
+        {
+            add => _connected.Add(value);
+            remove => _connected.Remove(value);
+        }
+
+        /// <remarks>
+        /// Handlers are chained in the order they were added, each receiving the CONNECT packet the previous one returned.
+        /// </remarks>
+        public event Func<MqttConnect, CancellationToken, Task<MqttConnect>>? ConnectingAsync
+        {
+            add => _connecting.Add(value);
+            remove => _connecting.Remove(value);
+        }
 
         /// <summary>
         /// Raised exactly once for each connection that <see cref="ConnectedAsync"/> reported, once that connection has
@@ -55,13 +77,21 @@ namespace Microsoft.Azure.Iot.Device
         /// before <see cref="ConnectedAsync"/> is raised for the next one, and before this layer starts reconnecting, so
         /// that handlers can abandon work that belonged to the lost connection without affecting the next one.
         /// </remarks>
-        public event Func<MqttClientDisconnectedEventArgs, Task>? DisconnectedAsync;
+        public event Func<MqttClientDisconnectedEventArgs, Task>? DisconnectedAsync
+        {
+            add => _disconnected.Add(value);
+            remove => _disconnected.Remove(value);
+        }
 
         /// <summary>
         /// Raised when this layer stops maintaining the connection because it hit a terminal or identity-terminal
         /// connection-level error. Retryable errors are handled internally and never raise this event.
         /// </summary>
-        public event Func<MqttConnectionFaultedEventArgs, Task>? ConnectionFaultedAsync;
+        public event Func<MqttConnectionFaultedEventArgs, Task>? ConnectionFaultedAsync
+        {
+            add => _connectionFaulted.Add(value);
+            remove => _connectionFaulted.Remove(value);
+        }
 
         private readonly IRetryPolicy _connectionRetryPolicy;
 
@@ -190,17 +220,13 @@ namespace Microsoft.Azure.Iot.Device
 
         private async Task DelegatePublishReceivedAsync(MqttPublishReceivedEventArgs args)
         {
-
-            if (PublishReceivedAsync != null)
+            try
             {
-                try
-                {
-                    await PublishReceivedAsync.Invoke(args);
-                }
-                catch (Exception e)
-                {
-                    Trace.TraceError("The publish handler threw while being notified of a publish. {0}", e);
-                }
+                await _publishReceived.InvokeAsync(args);
+            }
+            catch (Exception e)
+            {
+                Trace.TraceError("The publish handler threw while being notified of a publish. {0}", e);
             }
         }
 
@@ -295,45 +321,30 @@ namespace Microsoft.Azure.Iot.Device
 
         private async Task DelegateConnectedAsync(MqttClientConnectedEventArgs args)
         {
-            if (ConnectedAsync != null)
+            try
             {
-                try
-                {
-                    await ConnectedAsync.Invoke(args);
-                }
-                catch (Exception e)
-                {
-                    Trace.TraceError("The connected handler threw while being notified of a connection. {0}", e);
-                }
+                await _connected.InvokeAsync(args);
+            }
+            catch (Exception e)
+            {
+                Trace.TraceError("The connected handler threw while being notified of a connection. {0}", e);
             }
         }
 
-        private async Task<MqttConnect> DelegateConnectingAsync(MqttConnect connect, CancellationToken cancellationToken)
+        private Task<MqttConnect> DelegateConnectingAsync(MqttConnect connect, CancellationToken cancellationToken)
         {
-            if (ConnectingAsync != null)
-            {
-                connect = await ConnectingAsync.Invoke(connect, cancellationToken);
-            }
-
-            return connect;
+            return _connecting.InvokeAsync(connect, cancellationToken);
         }
 
         private async Task DelegateDisconnectedAsync(MqttClientDisconnectedEventArgs args)
         {
-            Func<MqttClientDisconnectedEventArgs, Task>? disconnectedHandlers = DisconnectedAsync;
-            if (disconnectedHandlers != null)
+            try
             {
-                foreach (Delegate disconnectedHandler in disconnectedHandlers.GetInvocationList())
-                {
-                    try
-                    {
-                        await ((Func<MqttClientDisconnectedEventArgs, Task>)disconnectedHandler)(args);
-                    }
-                    catch (Exception e)
-                    {
-                        Trace.TraceError("The disconnected handler threw while being notified of a disconnection. {0}", e);
-                    }
-                }
+                await _disconnected.InvokeAsync(args);
+            }
+            catch (Exception e)
+            {
+                Trace.TraceError("The disconnected handler threw while being notified of a disconnection. {0}", e);
             }
         }
 
@@ -796,8 +807,7 @@ namespace Microsoft.Azure.Iot.Device
 
             _isDesiredConnected = false;
 
-            Func<MqttConnectionFaultedEventArgs, Task>? handler = ConnectionFaultedAsync;
-            if (handler == null)
+            if (!_connectionFaulted.HasHandlers)
             {
                 Trace.TraceError("Connection maintenance ended with no fault handler attached. {0}", fault);
                 return Task.CompletedTask;
@@ -810,14 +820,7 @@ namespace Microsoft.Azure.Iot.Device
                 ReprovisionRequired = reprovisionRequired,
             };
 
-            try
-            {
-                _ = ObserveConnectionFaultHandlerAsync(handler.Invoke(args));
-            }
-            catch (Exception e)
-            {
-                Trace.TraceError("The connection fault handler threw while being notified of a fatal error. {0}", e);
-            }
+            _ = ObserveConnectionFaultHandlerAsync(_connectionFaulted.InvokeAsync(args));
 
             return Task.CompletedTask;
         }

@@ -1,6 +1,7 @@
 ﻿// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
 // See LICENSE file in the project root for full license information.
 
+using Microsoft.Azure.Iot.Device.Events;
 using Microsoft.Azure.Iot.Device.Exceptions;
 using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Mqtt;
@@ -52,9 +53,29 @@ namespace Microsoft.Azure.Iot.Device
             public void Close() => Volatile.Write(ref _isActive, 0);
         }
 
-        public event Func<MqttPublishReceivedEventArgs, Task>? PublishReceivedAsync;
+        private readonly AsyncEvent<MqttPublishReceivedEventArgs> _publishReceived = new();
+        private readonly AsyncEvent<ConnectionFaultedEventArgs> _connectionFaulted = new();
+        private readonly AsyncEvent<ReprovisioningStartedEventArgs> _reprovisioningStarted = new();
+        private readonly AsyncEvent<DevicePresenceFlowCompletedArgs> _devicePresenceFlowCompleted = new();
+        private readonly AsyncEvent<ProvisioningFlowCompletedArgs> _provisioningFlowCompleted = new();
 
-        public event Func<ConnectionFaultedEventArgs, Task>? ConnectionFaultedAsync;
+        /// <remarks>
+        /// Every handler is invoked and awaited in the order it was added, even if an earlier one throws.
+        /// </remarks>
+        public event Func<MqttPublishReceivedEventArgs, Task>? PublishReceivedAsync
+        {
+            add => _publishReceived.Add(value);
+            remove => _publishReceived.Remove(value);
+        }
+
+        /// <remarks>
+        /// Every handler is invoked and awaited in the order it was added, even if an earlier one throws.
+        /// </remarks>
+        public event Func<ConnectionFaultedEventArgs, Task>? ConnectionFaultedAsync
+        {
+            add => _connectionFaulted.Add(value);
+            remove => _connectionFaulted.Remove(value);
+        }
 
         /// <summary>
         /// Raised, for informational purposes only, when this client starts re-provisioning the device through Device
@@ -65,16 +86,28 @@ namespace Microsoft.Azure.Iot.Device
         /// should return quickly because re-provisioning starts once they complete; any exception they throw is logged
         /// and ignored.
         /// </remarks>
-        public event Func<ReprovisioningStartedEventArgs, Task>? ReprovisioningStartedAsync;
+        public event Func<ReprovisioningStartedEventArgs, Task>? ReprovisioningStartedAsync
+        {
+            add => _reprovisioningStarted.Add(value);
+            remove => _reprovisioningStarted.Remove(value);
+        }
 
-        internal event Func<DevicePresenceFlowCompletedArgs, Task>? DevicePresenceFlowCompletedAsync;
+        internal event Func<DevicePresenceFlowCompletedArgs, Task>? DevicePresenceFlowCompletedAsync
+        {
+            add => _devicePresenceFlowCompleted.Add(value);
+            remove => _devicePresenceFlowCompleted.Remove(value);
+        }
 
         /// <summary>
         /// Raised once the provisioning flow that runs upon connecting to Device Provisioning Service has either
         /// produced a registration result or failed. This is the provisioning counterpart of
         /// <see cref="DevicePresenceFlowCompletedAsync"/>.
         /// </summary>
-        private event Func<ProvisioningFlowCompletedArgs, Task>? ProvisioningFlowCompletedAsync;
+        private event Func<ProvisioningFlowCompletedArgs, Task>? ProvisioningFlowCompletedAsync
+        {
+            add => _provisioningFlowCompleted.Add(value);
+            remove => _provisioningFlowCompleted.Remove(value);
+        }
 
         private const string ProvisioningUsernameFormat = "{0}/registrations/{1}/api-version={2}&ClientVersion={3}";
 
@@ -104,12 +137,7 @@ namespace Microsoft.Azure.Iot.Device
                 Volatile.Write(ref _canResumeHubSession, 1);
             }
 
-            if (DevicePresenceFlowCompletedAsync != null)
-            {
-                DevicePresenceFlowCompletedAsync.Invoke(args);
-            }
-
-            return Task.CompletedTask;
+            return _devicePresenceFlowCompleted.InvokeAsync(args);
         }
 
         internal bool _isDisposed = false;
@@ -608,12 +636,9 @@ namespace Microsoft.Azure.Iot.Device
             _isDisposed = true;
         }
 
-        private async Task DelegatePublishAsync(MqttPublishReceivedEventArgs args)
+        private Task DelegatePublishAsync(MqttPublishReceivedEventArgs args)
         {
-            if (PublishReceivedAsync != null)
-            {
-                await PublishReceivedAsync.Invoke(args);
-            }
+            return _publishReceived.InvokeAsync(args);
         }
         /// <summary>
         /// Provision this device through Device Provisioning Service and connect it to the IoT hub it is assigned.
@@ -875,23 +900,15 @@ namespace Microsoft.Azure.Iot.Device
         /// Raise an event that only informs the application, invoking each handler in turn so that one that throws
         /// cannot stop the others from running or affect this client's own recovery.
         /// </summary>
-        private async Task RaiseInformationalEventAsync<TArgs>(Func<TArgs, Task>? handlers, TArgs args, string eventName)
+        private async Task RaiseInformationalEventAsync<TArgs>(AsyncEvent<TArgs> handlers, TArgs args, string eventName)
         {
-            if (handlers == null)
+            try
             {
-                return;
+                await handlers.InvokeAsync(args, InvokeReprovisioningCallbackAsync);
             }
-
-            foreach (Delegate handler in handlers.GetInvocationList())
+            catch (Exception e)
             {
-                try
-                {
-                    await InvokeReprovisioningCallbackAsync(() => ((Func<TArgs, Task>)handler).Invoke(args));
-                }
-                catch (Exception e)
-                {
-                    Trace.TraceWarning("A {0} handler threw and was ignored. {1}", eventName, e);
-                }
+                Trace.TraceWarning("A {0} handler threw and was ignored. {1}", eventName, e);
             }
         }
 
@@ -926,10 +943,7 @@ namespace Microsoft.Azure.Iot.Device
                 // The connection layer has stopped maintaining the connection to DPS, so no further connection will
                 // arrive to start the provisioning flow again.
                 CancelCurrentProvisioningFlow();
-                if (ProvisioningFlowCompletedAsync != null)
-                {
-                    await ProvisioningFlowCompletedAsync.Invoke(new ProvisioningFlowCompletedArgs(args.Exception));
-                }
+                await _provisioningFlowCompleted.InvokeAsync(new ProvisioningFlowCompletedArgs(args.Exception));
 
                 return;
             }
@@ -1065,7 +1079,7 @@ namespace Microsoft.Azure.Iot.Device
                     Trace.TraceInformation("Re-provisioning this device because the connection demanded it. {0}", args.Exception);
 
                     await RaiseInformationalEventAsync(
-                        ReprovisioningStartedAsync,
+                        _reprovisioningStarted,
                         new ReprovisioningStartedEventArgs { Exception = args.Exception },
                         nameof(ReprovisioningStartedAsync));
 
@@ -1225,11 +1239,7 @@ namespace Microsoft.Azure.Iot.Device
 
             // Always let the application know, even if one of the internal waiters above threw, so that it can connect
             // again itself if it wants to keep using this client.
-            if (ConnectionFaultedAsync != null)
-            {
-                await InvokeReprovisioningCallbackAsync(
-                    () => ConnectionFaultedAsync.Invoke(new ConnectionFaultedEventArgs { Exception = fault }));
-            }
+            await _connectionFaulted.InvokeAsync(new ConnectionFaultedEventArgs { Exception = fault }, InvokeReprovisioningCallbackAsync);
         }
 
         /// <summary>
@@ -1436,10 +1446,7 @@ namespace Microsoft.Azure.Iot.Device
                     registrationStatus.OperationId,
                     provisioningFlowCancellation.Token);
 
-                if (ProvisioningFlowCompletedAsync != null)
-                {
-                    await ProvisioningFlowCompletedAsync.Invoke(new ProvisioningFlowCompletedArgs(registrationResult));
-                }
+                await _provisioningFlowCompleted.InvokeAsync(new ProvisioningFlowCompletedArgs(registrationResult));
             }
             catch (OperationCanceledException)
             {
@@ -1450,10 +1457,7 @@ namespace Microsoft.Azure.Iot.Device
             catch (Exception e)
             {
                 Trace.TraceError("Exception thrown while running the provisioning flow. {0}", e);
-                if (ProvisioningFlowCompletedAsync != null)
-                {
-                    await ProvisioningFlowCompletedAsync.Invoke(new ProvisioningFlowCompletedArgs(e));
-                }
+                await _provisioningFlowCompleted.InvokeAsync(new ProvisioningFlowCompletedArgs(e));
             }
             finally
             {
