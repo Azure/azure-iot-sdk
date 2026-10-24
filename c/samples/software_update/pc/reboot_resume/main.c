@@ -504,7 +504,8 @@ int main(void)
       break;
     }
     /* The "reboot": once the client has stored what resume() needs. */
-    if (az_iot_su_client_get_reboot_state(&su) == AZ_IOT_SU_REBOOT_READY)
+    az_iot_su_reboot_state reboot_state = az_iot_su_client_get_reboot_state(&su);
+    if (reboot_state == AZ_IOT_SU_REBOOT_READY)
     {
       if (exit_after_workflow && flags.completed != 0)
       {
@@ -516,7 +517,9 @@ int main(void)
       break;
     }
     int idle = az_iot_su_client_get_state(&su) == AZ_IOT_SU_STATE_IDLE;
-    if (exit_after_workflow && flags.completed != 0 && idle)
+    /* Not while storage is behind: the next run could resume the finished workflow. */
+    if (exit_after_workflow && flags.completed != 0 && idle
+        && reboot_state != AZ_IOT_SU_REBOOT_PENDING)
     {
       rc = (flags.completed == 1) ? 0 : 2;
       break;
