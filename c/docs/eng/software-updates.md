@@ -211,7 +211,9 @@ loss abandons the report for this process (`AZ_IOT_SU_EVENT_OPERATION_ABANDONED`
 report stays owed (and stored, with persistence) and is re-sent on the next
 `az_iot_su_client_update_device_properties()` call or update check, or after a restart and
 `az_iot_su_client_resume()`. An update check waits for an owed terminal report's verdict, so the
-service sees the outcome before it is asked for the next update. An in-progress report is not replayed; the next reporting point sends
+service sees the outcome before it is asked for the next update. After a SUCCEEDED workflow, the
+client adopts the applied update ID as installed, so later checks carry it; new device properties
+do not re-send a settled terminal report. An in-progress report is not replayed; the next reporting point sends
 the then-current state.
 
 At the DPS MQTT boundary, the body is flat (`errorCode`, `message`, optional
