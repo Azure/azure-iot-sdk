@@ -934,7 +934,8 @@ az_iot_su_client_config_options az_iot_su_client_config_options_default(void);
  *     CLIENT re-arming it. It does NOT mean the application may not ask again;
  *     that is the intended response, which is why the event carries the route:
  *     a lost status report is not a lost update check, and the onboarding and
- *     regular fetches are asked for separately.
+ *     regular fetches are asked for separately. For a status report,
+ *     `report_terminal` marks the workflow's final one, and `report` carries it.
  *   PERSIST_FAILED / PERSIST_RECOVERED -- persist_state_fn started / stopped
  *     failing; PERSIST_FAILED again when the client gives up (see
  *     AZ_IOT_SU_PERSIST_MAX_ATTEMPTS).
@@ -1022,6 +1023,13 @@ az_iot_result az_iot_su_client_do_work(az_iot_su_client* client);
  * Get the current software updates agent state.
  */
 az_iot_su_state az_iot_su_client_get_state(const az_iot_su_client* client);
+
+/**
+ * Whether a terminal report is owed: neither accepted nor retired yet. Also
+ * true after resume() restores an unsent one, so the application can hold its
+ * update checks until it settles.
+ */
+bool az_iot_su_client_is_terminal_report_owed(const az_iot_su_client* client);
 
 /**
  * Ask for an ONBOARDING update -- the day-0/pre-registration route. Needs no
@@ -1447,6 +1455,7 @@ There is no Linux platform adapter; the PC samples implement their own hooks.
 | [`pc/simulated_regular`](../../samples/software_update/pc/simulated_regular/README.md) | The operational route, polled, on a registered device, with simulated install. |
 | [`pc/http_download`](../../samples/software_update/pc/http_download/README.md) | The application-owned download: libcurl, non-blocking, through the connection's proxy; real hash check; chunked simulated install. |
 | [`pc/multi_step`](../../samples/software_update/pc/multi_step/README.md) | A multi-step update: per-step backup/install/apply/restore, reverse rollback, device failure codes, `az_iot_su_client_set_step_result_details()` and the final report from `REPORT_ACCEPTED`. |
+| [`pc/reboot_resume`](../../samples/software_update/pc/reboot_resume/README.md) | `REBOOT_REQUIRED` from install or apply, atomic `persist_state_fn` / `load_state_fn`, `resume()` before the first check, persist failures, and `UPDATE_DEFERRED` after a last-apply reboot. |
 | [`esp32`](../../samples/software_update/esp32/README.md) | A real OTA install on ESP32: onboarding route until registered, operational after. |
 
 The PC samples verify manifests for real (OpenSSL, Microsoft root keys) and simulate download and

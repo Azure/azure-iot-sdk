@@ -1829,7 +1829,8 @@ static void raise_abandoned(
     az_iot_su_client* client,
     az_iot_su_operation operation,
     az_iot_result reason,
-    const az_iot_su_service_error* service_error)
+    const az_iot_su_service_error* service_error,
+    const az_iot_su_report* report)
 {
   az_iot_su_event event = {
     .kind = AZ_IOT_SU_EVENT_OPERATION_ABANDONED,
@@ -1838,6 +1839,8 @@ static void raise_abandoned(
     .operation = operation,
     .reason = reason,
     .service_error = k_no_service_error,
+    .report_terminal = operation == AZ_IOT_SU_OP_REPORT_STATUS && SU_I(client).report_sent_terminal,
+    .report = report,
   };
   if (service_error != NULL)
   {
@@ -2138,36 +2141,37 @@ static void on_channel_result(
      * were dropped, and both are reported. PROCEED in particular is an update
      * account the service cannot use: the device asked, was refused, and
      * without this reads exactly like "no update available". */
-    if (result != AZ_IOT_OK
+    /* The terminal report as sent: the engine state may have moved on since. */
+    bool terminal = operation == AZ_IOT_SU_OP_REPORT_STATUS && SU_I(client).report_sent_terminal;
+    az_iot_su_report sent;
+    az_iot_su_report_update_id sent_installed;
+    bool have_view = terminal && az_iot_su__sent_terminal_report(client, &sent, &sent_installed);
+    bool abandoned = result != AZ_IOT_OK
         && (action == AZ_IOT_SU_ERROR_ACTION_FATAL || action == AZ_IOT_SU_ERROR_ACTION_PROCEED
-            || action == AZ_IOT_SU_ERROR_ACTION_RECHECK))
-    {
-      raise_abandoned(client, operation, result, service_error);
-    }
+            || action == AZ_IOT_SU_ERROR_ACTION_RECHECK);
     if (operation == AZ_IOT_SU_OP_REPORT_STATUS)
     {
-      bool terminal = SU_I(client).report_sent_terminal;
-      /* The report as sent: the engine state may have moved on since. */
-      az_iot_su_report accepted;
-      az_iot_su_report_update_id accepted_installed;
-      bool have_view = result == AZ_IOT_OK && terminal
-          && az_iot_su__sent_terminal_report(client, &accepted, &accepted_installed);
+      /* Settled first, so an observer sees the report's final standing. */
       SU_I(client).sent_terminal[SU_I(client).sent_terminal_slot].valid = false;
       settle_terminal_report(client, result);
+      if (abandoned)
+      {
+        raise_abandoned(client, operation, result, service_error, have_view ? &sent : NULL);
+      }
       if (result == AZ_IOT_OK)
       {
         raise_simple(
-            client,
-            AZ_IOT_SU_EVENT_REPORT_ACCEPTED,
-            operation,
-            terminal,
-            have_view ? &accepted : NULL);
+            client, AZ_IOT_SU_EVENT_REPORT_ACCEPTED, operation, terminal, have_view ? &sent : NULL);
       }
       else if (action == AZ_IOT_SU_ERROR_ACTION_RECHECK)
       {
         queue_conflict_recheck(client);
       }
       return;
+    }
+    if (abandoned)
+    {
+      raise_abandoned(client, operation, result, service_error, NULL);
     }
     /* The request is over -- but only ITS deadline goes with it. A newer
      * request may already be queued, holding the slot with its own deadline;
@@ -2218,7 +2222,7 @@ static void on_channel_result(
             (unsigned)service_error->retry_after_ms);
         SU_I(client).pending_fetch = SU_FETCH_NONE;
         SU_I(client).pending_fetch_deadline_ms = 0;
-        raise_abandoned(client, operation, AZ_IOT_ERR_TIMEOUT, service_error);
+        raise_abandoned(client, operation, AZ_IOT_ERR_TIMEOUT, service_error, NULL);
         break;
       }
       /* Re-arm the route that failed, not a default: the application asked for
@@ -2329,7 +2333,8 @@ static bool expire_fetch_in_flight(az_iot_su_client* client)
     SU_I(client).channel.vtable->cancel_update(
         SU_I(client).channel.ctx, fetch_operation(in_flight));
   }
-  raise_abandoned(client, fetch_operation(in_flight), AZ_IOT_ERR_TIMEOUT, &k_no_service_error);
+  raise_abandoned(
+      client, fetch_operation(in_flight), AZ_IOT_ERR_TIMEOUT, &k_no_service_error, NULL);
   return true;
 }
 
@@ -2374,7 +2379,7 @@ static void drive_pending_fetch(az_iot_su_client* client)
       SU_I(client).channel.vtable->cancel_update(
           SU_I(client).channel.ctx, fetch_operation(in_flight));
     }
-    raise_abandoned(client, operation, AZ_IOT_ERR_TIMEOUT, &k_no_service_error);
+    raise_abandoned(client, operation, AZ_IOT_ERR_TIMEOUT, &k_no_service_error, NULL);
     return;
   }
   /* After the deadline check: pacing must not postpone an abandonment. A newer
@@ -3982,6 +3987,11 @@ az_iot_su_state az_iot_su_client_get_state(const az_iot_su_client* client)
     return AZ_IOT_SU_STATE_IDLE;
   }
   return SU_I(client).state;
+}
+
+AZ_NODISCARD bool az_iot_su_client_is_terminal_report_owed(const az_iot_su_client* client)
+{
+  return client != NULL && !SU_I(client).detached && SU_I(client).report_owed;
 }
 
 az_iot_result az_iot_su_client_add_observer(

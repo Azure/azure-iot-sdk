@@ -572,7 +572,8 @@ extern "C"
     AZ_IOT_SU_EVENT_WORKFLOW_STATE_CHANGED = 0,
 
     /* An operation was ABANDONED: it reached a verdict that stops the client
-     * re-arming it. Carries `operation`, `reason` and the service diagnosis.
+     * re-arming it. Carries `operation`, `reason`, the service diagnosis
+     * and, for a status report, `report_terminal` (and `report` when set).
      *
      * "Retry" here means the CLIENT's own re-arming, which the application
      * cannot see: on a retryable failure the engine puts the request back and
@@ -749,12 +750,13 @@ extern "C"
      * parsed, AZ_IOT_ERR_INTERNAL otherwise (AZ_IOT_SU_MANIFEST_ERROR_CRYPTO
      * included). 0 for other events. */
     int32_t extended_result_code;
-    /** REPORT_ACCEPTED: the report carried a terminal outcome. */
+    /** REPORT_ACCEPTED, and OPERATION_ABANDONED of a status report: the report
+     * carried a terminal outcome. */
     bool report_terminal;
     /** UPDATE_RETRY_WAIT: milliseconds until the workflow may be retried. */
     uint32_t retry_after_ms;
-    /** REPORT_ACCEPTED with report_terminal: the accepted terminal report as sent, step results
-     * included; its installed_update_id is NULL when longer than
+    /** REPORT_ACCEPTED or OPERATION_ABANDONED with report_terminal: the terminal report as sent,
+     * step results included; its installed_update_id is NULL when longer than
      * AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE. NULL otherwise. Valid only during the callback. */
     const az_iot_su_report* report;
   } az_iot_su_event;
@@ -1199,6 +1201,20 @@ extern "C"
 
   /** Get the current software updates agent state. */
   az_iot_su_state az_iot_su_client_get_state(const az_iot_su_client* client);
+
+  /**
+   * @brief Whether a workflow's terminal report is owed: neither accepted nor
+   * retired yet.
+   *
+   * True from a workflow's end, or from az_iot_su_client_resume() restoring an
+   * unsent terminal report, until AZ_IOT_SU_EVENT_REPORT_ACCEPTED or an
+   * AZ_IOT_SU_EVENT_OPERATION_ABANDONED that retires it (see that event); already false
+   * when either is raised.
+   *
+   * @param[in] client Initialized client.
+   * @return false if @p client is NULL or detached.
+   */
+  AZ_NODISCARD bool az_iot_su_client_is_terminal_report_owed(const az_iot_su_client* client);
 
   /**
    * @brief Start being told about az_iot_su_event. Every observer receives

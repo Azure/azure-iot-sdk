@@ -44,6 +44,7 @@ run it, and what to expect.
 | [software_update/pc/simulated_regular](software_update/pc/simulated_regular/README.md) | Software updates for a registered device, simulated install. |
 | [software_update/pc/http_download](software_update/pc/http_download/README.md) | Software updates with a real, non-blocking HTTPS download (libcurl) through a proxy; simulated install. |
 | [software_update/pc/multi_step](software_update/pc/multi_step/README.md) | A multi-step update: per-step hooks, rollback, failure codes, step result details and the final report. |
+| [software_update/pc/reboot_resume](software_update/pc/reboot_resume/README.md) | An update that needs a reboot: atomic state persistence, resume, persist failures and the deferral after the last apply. |
 | [software_update/esp32](software_update/esp32/README.md) | Software updates with a real over-the-air install on an ESP32. |
 
 ## How a unified sample handles the hub generation
