@@ -87,32 +87,5 @@ namespace Microsoft.Azure.Iot.Device.Models
         /// when the connection client is constructed.
         /// </remarks>
         public bool UseCleanSession { get; set; }
-
-        /// <summary>
-        /// How long IoT hub keeps this device's MQTT 5 session after the connection closes. Defaults to one hour.
-        /// </summary>
-        /// <remarks>
-        /// A session can only be resumed on reconnect if it has not expired, so <see cref="TimeSpan.Zero"/> effectively
-        /// disables session resumption. The value is sent in whole seconds (any fraction is dropped) and must be between
-        /// zero and <see cref="uint.MaxValue"/> seconds; the maximum means the session never expires. Deliberate
-        /// disconnects still end the session immediately. This only applies to MQTT 5 IoT hub connections because MQTT
-        /// 3.1.1 has no session expiry. This value is read once when the connection client is constructed.
-        /// </remarks>
-        /// <exception cref="ArgumentOutOfRangeException">The value is negative or longer than <see cref="uint.MaxValue"/> seconds.</exception>
-        public TimeSpan MqttV5SessionExpiryInterval
-        {
-            get => _mqttV5SessionExpiryInterval;
-            set
-            {
-                if (value < TimeSpan.Zero || value.TotalSeconds >= (double)uint.MaxValue + 1)
-                {
-                    throw new ArgumentOutOfRangeException(nameof(value), value, $"The MQTT 5 session expiry interval must be between zero and {uint.MaxValue} seconds.");
-                }
-
-                _mqttV5SessionExpiryInterval = value;
-            }
-        }
-
-        private TimeSpan _mqttV5SessionExpiryInterval = TimeSpan.FromHours(1);
     }
 }

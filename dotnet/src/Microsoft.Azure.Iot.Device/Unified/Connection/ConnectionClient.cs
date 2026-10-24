@@ -23,8 +23,6 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
         private const string CertificateSigningResponseTopic = "$iothub/credentials/res/";
         internal const string ClassicHubApiVersion = "2025-08-01-preview";
 
-        private readonly uint _mqttV5SessionExpiryIntervalSeconds;
-
         private const string RequestId = "?$rid=";
 
         private readonly ConcurrentDictionary<string, CertificateSigningOperation> _pendingCertificateSigningOperations = new();
@@ -58,7 +56,6 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
             IsTwinEnabled = options.EnableTwin;
             AreDirectMethodsEnabled = options.EnableDirectMethods;
             AreCloudToDeviceMessagesEnabled = options.EnableCloudToDeviceMessages;
-            _mqttV5SessionExpiryIntervalSeconds = (uint)options.MqttV5SessionExpiryInterval.TotalSeconds;
 
             ManagedMqttConnection.PublishReceivedAsync += HandleReceivedCertificateSigningPublish;
             ManagedMqttConnection.DisconnectedAsync += HandleCertificateSigningDisconnectedAsync;
@@ -80,7 +77,6 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
             // An MQTT 5 session that expires as soon as the connection closes could never be resumed, so by default keep
             // it for an hour like the C SDK does. It is set even for clean sessions: clean start only discards the
             // previous session, while the expiry governs this one. MQTT 3.1.1 has no such property.
-            connect.SessionExpiryInterval = connect.ProtocolVersion == MqttProtocolVersion.V500 ? _mqttV5SessionExpiryIntervalSeconds : 0;
             connect.Username = $"{connect.HostName}/{connect.ClientId}/?api-version={ClassicHubApiVersion}&DeviceClientType={Uri.EscapeDataString(GetUserAgentString())}";
 
             // MQTTv3 flow does not need to insert anything unique per connect attempt
