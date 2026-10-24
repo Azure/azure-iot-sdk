@@ -178,67 +178,9 @@ static int32_t reboot_apply(
   return AZ_IOT_SU_RESULT_SUCCESS;
 }
 
-/**
- * @brief Save the workflow so it survives a reboot.
- *
- * Written to a temporary file and renamed over the old one, so a crash
- * mid-write leaves the previous record intact. A zero-length write erases
- * the record: the workflow ended and must not be resumed.
- */
-static int32_t reboot_persist_write(const uint8_t* blob, size_t len, reboot_context* c)
+/** @brief Record a write's result in @p c (erase or record write); returns @p r. */
+static int32_t persist_result(reboot_context* c, size_t len, int32_t r)
 {
-  if (len == 0)
-  {
-    if (remove(c->state_file) != 0 && errno != ENOENT)
-    {
-      return AZ_IOT_SU_RESULT_FAILURE;
-    }
-    printf("[persist] erased %s\n", c->state_file);
-    return AZ_IOT_SU_RESULT_SUCCESS;
-  }
-  if (c->persist_failures_left > 0)
-  {
-    c->persist_failures_left--;
-    printf("[persist] simulated write failure\n");
-    return AZ_IOT_SU_RESULT_FAILURE;
-  }
-  char tmp[512];
-  int tmp_len = snprintf(tmp, sizeof(tmp), "%s.tmp", c->state_file);
-  if (tmp_len < 0 || (size_t)tmp_len >= sizeof(tmp))
-  {
-    return AZ_IOT_SU_RESULT_FAILURE; /* the old record stays */
-  }
-  FILE* f = sample_fopen_private(tmp, true);
-  if (f == NULL)
-  {
-    return AZ_IOT_SU_RESULT_FAILURE;
-  }
-  size_t written = fwrite(blob, 1, len, f);
-  int closed = fclose(f); /* reports a delayed write failure */
-  if (written != len || closed != 0)
-  {
-    (void)remove(tmp);
-    return AZ_IOT_SU_RESULT_FAILURE;
-  }
-#ifdef _WIN32
-  /* rename() does not replace on Windows. */
-  if (!MoveFileExA(tmp, c->state_file, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
-#else
-  if (rename(tmp, c->state_file) != 0)
-#endif
-  {
-    (void)remove(tmp);
-    return AZ_IOT_SU_RESULT_FAILURE;
-  }
-  printf("[persist] %zu bytes -> %s\n", len, c->state_file);
-  return AZ_IOT_SU_RESULT_SUCCESS;
-}
-
-/** @brief persist_state_fn: reboot_persist_write(), recording whether it failed. */
-static int32_t reboot_persist(const uint8_t* blob, size_t len, void* user_ctx)
-{
-  reboot_context* c = (reboot_context*)user_ctx;
-  int32_t r = reboot_persist_write(blob, len, c);
   int failed = r != AZ_IOT_SU_RESULT_SUCCESS;
   if (len == 0)
   {
@@ -249,6 +191,64 @@ static int32_t reboot_persist(const uint8_t* blob, size_t len, void* user_ctx)
     c->write_failing = failed;
   }
   return r;
+}
+
+/**
+ * @brief persist_state_fn: save the workflow so it survives a reboot; records
+ * whether the write failed.
+ *
+ * Written to a temporary file and renamed over the old one, so a crash
+ * mid-write leaves the previous record intact. A zero-length write erases
+ * the record: the workflow ended and must not be resumed.
+ */
+static int32_t reboot_persist(const uint8_t* blob, size_t len, void* user_ctx)
+{
+  reboot_context* c = (reboot_context*)user_ctx;
+  if (len == 0)
+  {
+    if (remove(c->state_file) != 0 && errno != ENOENT)
+    {
+      return persist_result(c, len, AZ_IOT_SU_RESULT_FAILURE);
+    }
+    printf("[persist] erased %s\n", c->state_file);
+    return persist_result(c, len, AZ_IOT_SU_RESULT_SUCCESS);
+  }
+  if (c->persist_failures_left > 0)
+  {
+    c->persist_failures_left--;
+    printf("[persist] simulated write failure\n");
+    return persist_result(c, len, AZ_IOT_SU_RESULT_FAILURE);
+  }
+  char tmp[512];
+  int tmp_len = snprintf(tmp, sizeof(tmp), "%s.tmp", c->state_file);
+  if (tmp_len < 0 || (size_t)tmp_len >= sizeof(tmp))
+  {
+    return persist_result(c, len, AZ_IOT_SU_RESULT_FAILURE); /* the old record stays */
+  }
+  FILE* f = sample_fopen_private(tmp, true);
+  if (f == NULL)
+  {
+    return persist_result(c, len, AZ_IOT_SU_RESULT_FAILURE);
+  }
+  size_t written = fwrite(blob, 1, len, f);
+  int closed = fclose(f); /* reports a delayed write failure */
+  if (written != len || closed != 0)
+  {
+    (void)remove(tmp);
+    return persist_result(c, len, AZ_IOT_SU_RESULT_FAILURE);
+  }
+#ifdef _WIN32
+  /* rename() does not replace on Windows. */
+  if (!MoveFileExA(tmp, c->state_file, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+#else
+  if (rename(tmp, c->state_file) != 0)
+#endif
+  {
+    (void)remove(tmp);
+    return persist_result(c, len, AZ_IOT_SU_RESULT_FAILURE);
+  }
+  printf("[persist] %zu bytes -> %s\n", len, c->state_file);
+  return persist_result(c, len, AZ_IOT_SU_RESULT_SUCCESS);
 }
 
 /** @brief Whether the stored record may be missing or stale. */
