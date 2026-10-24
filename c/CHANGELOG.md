@@ -220,6 +220,10 @@
 - Software updates: a status report rejected as conflicting (`REPORT_CONFLICT` or an untyped
   `409000`) now makes the client check for updates once, as the service requires, after raising
   `AZ_IOT_SU_EVENT_OPERATION_ABANDONED`.
+- Software updates: an update check requested while a workflow's terminal report is owed now waits
+  for that report's verdict (sending it again if nothing else would), so the check no longer goes
+  out before the service has the outcome. The wait counts against the check's timeout. If the
+  report then loses its session for good, the check is abandoned (`AZ_IOT_ERR_NOT_CONNECTED`).
 
 - MQTT over WebSockets to an mqttv5 hub: the hub session now uses the hub's path `/mqtt`
   (`AZ_IOT_MQTT_HUB_V5_WEBSOCKET_PATH`) when `websocket_path` is NULL. The mqttv5 hub refuses
