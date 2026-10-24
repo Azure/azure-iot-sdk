@@ -2072,6 +2072,10 @@ static void set_su_state(az_iot_su_client* client, az_iot_su_state next)
     return;
   }
   SU_I(client).state = next;
+  if (next == AZ_IOT_SU_STATE_FAILED)
+  {
+    SU_I(client).reboot_requested = false; /* nothing left to activate */
+  }
 
   az_iot_su_event event = {
     .kind = AZ_IOT_SU_EVENT_WORKFLOW_STATE_CHANGED,
@@ -3986,6 +3990,7 @@ az_iot_result az_iot_su_client_do_work(az_iot_su_client* client)
       }
       if (ir == AZ_IOT_SU_RESULT_REBOOT_REQUIRED)
       {
+        SU_I(client).reboot_requested = true;
         /* The install needs a reboot to take effect: snapshot the
          * workflow so az_iot_su_client_resume() can continue at Apply
          * on the next boot, report, and advance (a real device reboots
@@ -4031,6 +4036,10 @@ az_iot_result az_iot_su_client_do_work(az_iot_su_client* client)
         break;
       }
       result_step_success(client, step);
+      if (ar == AZ_IOT_SU_RESULT_REBOOT_REQUIRED)
+      {
+        SU_I(client).reboot_requested = true;
+      }
 
       /* Advance to the next step, or finish. */
       uint32_t steps = SU_I(client).current_manifest.instructions.steps_count;
@@ -4133,6 +4142,25 @@ az_iot_su_state az_iot_su_client_get_state(const az_iot_su_client* client)
     return AZ_IOT_SU_STATE_IDLE;
   }
   return SU_I(client).state;
+}
+
+AZ_NODISCARD az_iot_su_reboot_state
+az_iot_su_client_get_reboot_state(const az_iot_su_client* client)
+{
+  if (client == NULL || SU_I(client).detached || !SU_I(client).reboot_requested)
+  {
+    return AZ_IOT_SU_REBOOT_NONE;
+  }
+  if (SU_I(client).hooks.persist_state_fn == NULL)
+  {
+    return AZ_IOT_SU_REBOOT_READY;
+  }
+  /* Mid-workflow: the position record the workflow resumes from. Idle (after
+   * the last apply): the terminal record, or none once its report settled. */
+  bool not_stored = (SU_I(client).state == AZ_IOT_SU_STATE_IDLE)
+      ? checkpoint_out_of_sync(client)
+      : (SU_I(client).checkpoint_pending || SU_I(client).checkpoint_superseded);
+  return not_stored ? AZ_IOT_SU_REBOOT_PENDING : AZ_IOT_SU_REBOOT_READY;
 }
 
 az_iot_result az_iot_su_client_add_observer(

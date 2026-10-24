@@ -619,7 +619,7 @@ extern "C"
      * Any write may fail: a reboot checkpoint, the terminal record, or the
      * clear of a superseded record. Until PERSIST_RECOVERED, stored state may
      * be missing or stale; a workflow at a reboot boundary is held there, so
-     * do not reboot the device. */
+     * do not reboot the device (see az_iot_su_client_get_reboot_state()). */
     AZ_IOT_SU_EVENT_PERSIST_FAILED,
 
     /* A tracked persist_state_fn write succeeded after
@@ -988,6 +988,8 @@ extern "C"
       bool install_called;
       /** The last apply asked for a reboot; cleared by the reboot (re-initialization). */
       bool reboot_owed;
+      /** install_fn or apply_fn asked for a reboot in this process; cleared on FAILED. */
+      bool reboot_requested;
       /** Route of the application's last update request (pending_fetch encoding); 0 if none. */
       uint8_t last_requested_fetch;
       /** Terminal reports handed to the channel, for the REPORT_ACCEPTED event:
@@ -1211,6 +1213,34 @@ extern "C"
 
   /** Get the current software updates agent state. */
   az_iot_su_state az_iot_su_client_get_state(const az_iot_su_client* client);
+
+  /** @brief Whether the device may reboot for the current workflow. */
+  typedef enum
+  {
+    /** No reboot was asked for in this process, or the workflow that asked failed. */
+    AZ_IOT_SU_REBOOT_NONE = 0,
+    /** install_fn or apply_fn asked for a reboot, but the record the workflow
+     * resumes from is not stored yet (a persist_state_fn write is failing or
+     * being retried). Rebooting now could lose or repeat work. */
+    AZ_IOT_SU_REBOOT_PENDING,
+    /** A reboot was asked for and storage holds what az_iot_su_client_resume()
+     * needs: reboot now. */
+    AZ_IOT_SU_REBOOT_READY,
+  } az_iot_su_reboot_state;
+
+  /**
+   * @brief Whether a hook asked for a reboot, and whether it is safe now.
+   *
+   * Check after each az_iot_su_client_do_work(): the next call continues the
+   * workflow as if the device had not rebooted. With no persist_state_fn there
+   * is nothing to store, so a requested reboot is READY at once (and the
+   * workflow does not survive it).
+   *
+   * @param[in] client Initialized client.
+   * @return AZ_IOT_SU_REBOOT_NONE if @p client is NULL or detached.
+   */
+  AZ_NODISCARD az_iot_su_reboot_state
+  az_iot_su_client_get_reboot_state(const az_iot_su_client* client);
 
   /**
    * @brief Start being told about az_iot_su_event. Every observer receives
