@@ -3,7 +3,7 @@
 // information.
 
 /* SPDX-License-Identifier: MIT */
-/* The hooks of az_mqtt_wipe_hooks.h. Does not include it: here malloc and free are the C library's. */
+/* The hooks of az_mqtt_wipe_hooks.h, which is not included: malloc and free are the C library's. */
 
 #include <stdint.h>
 #include <stdlib.h>
@@ -79,8 +79,7 @@ void az_mqtt_wipe_test_free(void* p)
     if (g_blocks[i].p == p)
     {
       az_mqtt_wipe_test_frees++;
-      if (az_mqtt_wipe_test_secret != NULL
-          && holds(p, g_blocks[i].size, az_mqtt_wipe_test_secret))
+      if (az_mqtt_wipe_test_secret != NULL && holds(p, g_blocks[i].size, az_mqtt_wipe_test_secret))
       {
         az_mqtt_wipe_test_leaks++;
       }
