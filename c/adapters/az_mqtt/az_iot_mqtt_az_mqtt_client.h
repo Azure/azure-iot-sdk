@@ -21,6 +21,7 @@
  */
 
 #include "az_iot_mqtt_az_mqtt_internal.h"
+#include "internal/crypto.h" // az_iot_crypto__wipe()
 
 #include "azure/iot/adapters/az_iot_adapter_az_mqtt.h"
 #include "azure/iot/az_iot_log.h"
@@ -98,6 +99,7 @@ typedef struct
   az_mqtt_proxy_options proxy;
   _AZM(will_options) will;
   char* owned[_AZM_OWNED_MAX];
+  size_t owned_size[_AZM_OWNED_MAX]; /* Bytes of each, wiped before it is freed. */
   int owned_count;
   uint8_t* send_buffer;
   uint8_t* receive_buffer;
@@ -556,10 +558,12 @@ static void _azm_on_unsuback(az_mqtt3_client* client, az_mqtt3_ack_data const* u
 
 // ──────────────────────── Connect ────────────────────────────
 
+/** @brief Wipes the connect strings (credentials) and frees them. */
 static void _azm_release_owned(_azm_client* m)
 {
   for (int i = 0; i < m->owned_count; i++)
   {
+    az_iot_crypto__wipe(m->owned[i], m->owned_size[i]);
     free(m->owned[i]);
   }
   m->owned_count = 0;
@@ -582,6 +586,7 @@ static bool _azm_own(_azm_client* m, const char* s, az_span* out)
   {
     return false;
   }
+  m->owned_size[m->owned_count] = strlen(copy) + 1;
   m->owned[m->owned_count++] = copy;
   *out = az_span_create_from_str(copy);
   return true;
@@ -604,6 +609,7 @@ static bool _azm_own_bytes(_azm_client* m, uint8_t const* data, size_t size, az_
     return false;
   }
   memcpy(copy, data, size);
+  m->owned_size[m->owned_count] = size;
   m->owned[m->owned_count++] = copy;
   *out = az_span_create((uint8_t*)copy, (int32_t)size);
   return true;
@@ -1123,6 +1129,7 @@ static void _azm_destroy(az_iot_mqtt_client* self)
   }
   _azm_release_owned(m);
   free(m->message_storage);
+  az_iot_crypto__wipe(m->send_buffer, AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE); // The CONNECT: credentials.
   free(m->send_buffer); // The block of _azm_create().
   free(m);
 }
