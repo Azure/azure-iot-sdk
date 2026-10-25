@@ -200,6 +200,9 @@
 - az_mqtt adapter: the copies `connect()` makes of credentials (password or SAS token, PEM key and
   certificate, proxy credentials) are zeroed before they are freed, and `destroy()` zeroes the send
   buffer, which holds the CONNECT, before freeing it.
+- az_mqtt adapter: a `connect()` refused after the busy check (invalid or unsupported options, no
+  memory for the message store) now releases the copies of the previous connect's strings, including
+  credentials; they were kept until the next accepted connect or `destroy()`.
 - Paho adapter: `az_iot_mqtt_connect_options::connect_timeout_seconds` is passed to Paho; it was
   ignored, so every connect attempt used Paho's 30 s default. 0 still selects that default.
 - Paho: the bundled Eclipse Paho C is now v1.3.16 (was v1.3.13), and an installed Paho must be
