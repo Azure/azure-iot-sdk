@@ -1,4 +1,4 @@
-﻿// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
+// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
 // See LICENSE file in the project root for full license information.
 
 using Microsoft.Azure.Iot.Device.Events;
@@ -115,6 +115,7 @@ namespace Microsoft.Azure.Iot.Device
         // certificate signing requests.
         private const string ProvisioningApiVersion = "2026-11-02-preview";
         private const string ProvisioningSubscribeFilter = "$dps/registrations/res/#";
+        private const string ProvisioningResponseTopicPrefix = "$dps/registrations/res/";
         private const string ProvisioningRegisterTopic = "$dps/registrations/PUT/iotdps-register/?$rid={0}";
         private const string ProvisioningGetOperationsTopic = "$dps/registrations/GET/iotdps-get-operationstatus/?$rid={0}&operationId={1}";
         private const string RetryAfterHeader = "Retry-After";
@@ -1410,7 +1411,7 @@ namespace Microsoft.Azure.Iot.Device
             TaskCompletionSource<ProvisioningFlowCompletedArgs> provisioningFlowResult = new(TaskCreationOptions.RunContinuationsAsynchronously);
             Task HandleProvisioningFlowCompletedAsync(ProvisioningFlowCompletedArgs args)
             {
-                provisioningFlowResult.TrySetResult(args);
+                Volatile.Read(ref provisioningFlowResult).TrySetResult(args);
                 return Task.CompletedTask;
             }
 
@@ -1419,20 +1420,40 @@ namespace Microsoft.Azure.Iot.Device
 
             try
             {
-                // MQTT connection manager already checks connack for non-success cases, so no need to check it here as well
-                MqttConnectAck connack = await ManagedMqttConnection.ConnectAsync(connect, cancellationToken);
+                // Set once DPS has rejected one set of boot credentials in this run, so each set is tried at most once.
+                bool switchedCredentialsAfterRejectedRegistration = false;
 
-                ProvisioningFlowCompletedArgs provisioningFlowCompletedArgs = await provisioningFlowResult.Task.WaitAsync(cancellationToken);
-
-                if (provisioningFlowCompletedArgs.Exception != null)
+                while (true)
                 {
-                    throw provisioningFlowCompletedArgs.Exception;
+                    // MQTT connection manager already checks connack for non-success cases, so no need to check it here as well
+                    MqttConnectAck connack = await ManagedMqttConnection.ConnectAsync(connect, cancellationToken);
+
+                    ProvisioningFlowCompletedArgs provisioningFlowCompletedArgs = await provisioningFlowResult.Task.WaitAsync(cancellationToken);
+
+                    if (provisioningFlowCompletedArgs.Exception is DeviceException { Retryability: ErrorRetryability.IdentityTerminal }
+                        && !switchedCredentialsAfterRejectedRegistration
+                        && await TrySwitchCredentialsAsync(cancellationToken))
+                    {
+                        // DPS rejected these boot credentials when registering rather than when connecting, so connect
+                        // again to present the other set.
+                        Trace.TraceWarning("Device Provisioning Service rejected the device's credentials, retrying with its other credentials. {0}", provisioningFlowCompletedArgs.Exception);
+                        switchedCredentialsAfterRejectedRegistration = true;
+                        CancelCurrentProvisioningFlow();
+                        Volatile.Write(ref provisioningFlowResult, new(TaskCreationOptions.RunContinuationsAsynchronously));
+                        await DisconnectFromDpsAsync();
+                        continue;
+                    }
+
+                    if (provisioningFlowCompletedArgs.Exception != null)
+                    {
+                        throw provisioningFlowCompletedArgs.Exception;
+                    }
+
+                    Debug.Assert(provisioningFlowCompletedArgs.RegistrationResult != null);
+
+                    //TODO do we care about initial twin as returned by DPS?
+                    return provisioningFlowCompletedArgs.RegistrationResult;
                 }
-
-                Debug.Assert(provisioningFlowCompletedArgs.RegistrationResult != null);
-
-                //TODO do we care about initial twin as returned by DPS?
-                return provisioningFlowCompletedArgs.RegistrationResult;
             }
             finally
             {
@@ -1447,19 +1468,24 @@ namespace Microsoft.Azure.Iot.Device
 
                 // Always close the MQTT connection once provisioning has finished so that the connection can be
                 // re-established against the assigned IoT hub.
-                var disconnect = new MqttDisconnect() { Reason = MqttDisconnectReasonCode.NormalDisconnection };
+                await DisconnectFromDpsAsync();
+            }
+        }
 
-                try
-                {
-                    await ManagedMqttConnection.DisconnectAsync(false, disconnect, CancellationToken.None);
-                }
-                catch (Exception)
-                {
-                    // Deliberately not rethrowing the exception because this is a "best effort" close.
-                    // The service may not have acknowledged that the client closed the connection, but
-                    // all local resources have been closed. The service will eventually realize the
-                    // connection is closed in cases like these.
-                }
+        private async Task DisconnectFromDpsAsync()
+        {
+            var disconnect = new MqttDisconnect() { Reason = MqttDisconnectReasonCode.NormalDisconnection };
+
+            try
+            {
+                await ManagedMqttConnection.DisconnectAsync(false, disconnect, CancellationToken.None);
+            }
+            catch (Exception)
+            {
+                // Deliberately not rethrowing the exception because this is a "best effort" close.
+                // The service may not have acknowledged that the client closed the connection, but
+                // all local resources have been closed. The service will eventually realize the
+                // connection is closed in cases like these.
             }
         }
 
@@ -1577,8 +1603,20 @@ namespace Microsoft.Azure.Iot.Device
                     // Anything else is the service refusing to start this registration, and its response says why:
                     // the status code lives in the response topic and the reason in the body. Reporting both is the
                     // only way the caller can tell, say, a malformed request from an enrollment that does not exist.
-                    throw new Exception(
-                        $"Device Provisioning Service did not start this registration. Response topic: '{response.Topic}'. Response body: '{response.Payload}'.");
+                    string message = $"Device Provisioning Service did not start this registration. Response topic: '{response.Topic}'. Response body: '{response.Payload}'.";
+
+                    if (GetStatusCodeFromTopic(response.Topic) == (int)System.Net.HttpStatusCode.Unauthorized)
+                    {
+                        // DPS accepts the CONNECT and only checks the credentials when registering, so this is how it
+                        // rejects them. ProvisionAsync retries with the other boot credentials, if there are any.
+                        throw new DeviceException(message)
+                        {
+                            Retryability = ErrorRetryability.IdentityTerminal,
+                            IsContained = false,
+                        };
+                    }
+
+                    throw new Exception(message);
                 }
 
                 return operation;
@@ -1771,6 +1809,18 @@ namespace Microsoft.Azure.Iot.Device
         {
             long ticks = Volatile.Read(ref _lastProvisioningServiceRetryAfterTicks);
             return ticks > 0 ? TimeSpan.FromTicks(ticks) : TimeSpan.Zero;
+        }
+
+        // Response topics are shaped like "$dps/registrations/res/{status}/?$rid={request id}".
+        private static int? GetStatusCodeFromTopic(string topic)
+        {
+            if (!topic.StartsWith(ProvisioningResponseTopicPrefix, StringComparison.Ordinal))
+            {
+                return null;
+            }
+
+            string statusCode = topic[ProvisioningResponseTopicPrefix.Length..].Split('/')[0];
+            return int.TryParse(statusCode, NumberStyles.None, CultureInfo.InvariantCulture, out int value) ? value : null;
         }
 
         private static TimeSpan? GetRetryAfterFromTopic(string topic)

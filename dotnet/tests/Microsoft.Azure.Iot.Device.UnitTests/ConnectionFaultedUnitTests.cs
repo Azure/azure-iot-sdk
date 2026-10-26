@@ -387,6 +387,71 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         [Theory]
         [InlineData(false)]
         [InlineData(true)]
+        public async Task RegistrationRejectedAsUnauthorizedIsRetriedWithSecondaryBootCredentials(bool dpsRejectsSecondary)
+        {
+            using MockConnectionMqttClient mockMqttClient = new();
+            MockDeviceProvisioningService mockDps = new(mockMqttClient, _ => FirstAssignedHub);
+
+            // Like the real service, DPS accepts any CONNECT and only checks the credentials when registering.
+            string lastDpsPassword = string.Empty;
+            List<string> connectAttempts = new();
+            mockMqttClient.OnConnect = connect =>
+            {
+                lock (connectAttempts)
+                {
+                    connectAttempts.Add(ConnectAttempt(connect));
+                }
+
+                if (connect.HostName == GlobalDeviceEndpoint)
+                {
+                    Volatile.Write(ref lastDpsPassword, Encoding.UTF8.GetString(connect.Password!));
+                }
+
+                return Task.FromResult(new MqttConnectAck() { ResultCode = MqttConnectReasonCode.Success });
+            };
+            mockDps.RejectRegistrationAsUnauthorized = () =>
+                Volatile.Read(ref lastDpsPassword) == "primary-boot" || dpsRejectsSecondary;
+
+            using TestConnectionClient connectionClient = new(new() { MqttClient = mockMqttClient });
+
+            Task<ConnectionContext> provisioning = connectionClient.ProvisionAndConnectAsync(
+                CreateProvisioningSettings(),
+                new PrimaryAndSecondaryAuthenticationProvider(),
+                cancellationToken: TestContext.Current.CancellationToken).WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+
+            if (dpsRejectsSecondary)
+            {
+                DeviceException exception = await Assert.ThrowsAsync<DeviceException>(async () => await provisioning);
+                Assert.Equal(ErrorRetryability.IdentityTerminal, exception.Retryability);
+                Assert.Equal(0, mockDps.RegistrationCount);
+                lock (connectAttempts)
+                {
+                    Assert.Equal(new[] { $"{GlobalDeviceEndpoint}:primary-boot", $"{GlobalDeviceEndpoint}:secondary-boot" }, connectAttempts);
+                }
+
+                return;
+            }
+
+            ConnectionContext connectionContext = await provisioning;
+
+            Assert.Equal(FirstAssignedHub, connectionContext.IotHubHostName);
+            Assert.Equal(1, mockDps.RegistrationCount);
+            lock (connectAttempts)
+            {
+                Assert.Equal(
+                    new[]
+                    {
+                        $"{GlobalDeviceEndpoint}:primary-boot",
+                        $"{GlobalDeviceEndpoint}:secondary-boot",
+                        $"{FirstAssignedHub}:primary-hub",
+                    },
+                    connectAttempts);
+            }
+        }
+
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
         public async Task MidSessionIdentityFaultTriesSecondaryCredentialsBeforeReprovisioning(bool hubRejectsSecondary)
         {
             using MockConnectionMqttClient mockMqttClient = new();
@@ -2878,9 +2943,24 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             /// </summary>
             public event Func<int, Task>? RegistrationRequested;
 
+            /// <summary>
+            /// When set and returning true, the registration request is refused with a 401 the way the real service
+            /// refuses credentials it does not recognize, after having accepted the CONNECT. Rejected requests are not
+            /// counted as registrations.
+            /// </summary>
+            public Func<bool>? RejectRegistrationAsUnauthorized { get; set; }
+
             private async Task<MqttPublishAck> HandlePublishAsync(MqttPublish publish)
             {
-                if (publish.Topic.StartsWith(RegisterTopicPrefix))
+                if (publish.Topic.StartsWith(RegisterTopicPrefix) && RejectRegistrationAsUnauthorized?.Invoke() == true)
+                {
+                    await _mqttClient.SimulatePublishReceivedAsync(new MqttPublish()
+                    {
+                        Topic = "$dps/registrations/res/401/?$rid=1",
+                        Payload = Encoding.UTF8.GetBytes("{\"errorCode\":401002,\"message\":\"The device is unauthorized.\"}"),
+                    });
+                }
+                else if (publish.Topic.StartsWith(RegisterTopicPrefix))
                 {
                     int registrationCount = Interlocked.Increment(ref _registrationCount);
 
