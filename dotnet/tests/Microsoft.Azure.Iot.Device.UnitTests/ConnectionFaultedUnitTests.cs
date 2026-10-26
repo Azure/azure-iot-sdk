@@ -607,7 +607,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             Assert.Equal(hubRejectsSecondary ? 2 : 1, mockDps.RegistrationCount);
         }
 
-        [Theory]
+        [Theory(Timeout = 60000)]
         [InlineData(false)]
         [InlineData(true)]
         public async Task SecondaryCredentialsRejectedLaterFallBackToPrimaryWithoutReprovisioning(bool rejectedMidSession)
