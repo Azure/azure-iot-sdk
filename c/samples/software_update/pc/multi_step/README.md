@@ -95,8 +95,8 @@ jitter) and its final report is settled; an earlier offer raises
 
 | What | Where |
 |---|---|
-| Per-step hooks and the backup record | `step_backup()`, `step_install()`, `step_apply()`, `step_restore()` |
-| Step result details | `set_details()` |
+| Per-step hooks and the backup record | `back_up_update_step()`, `install_update_step()`, `apply_update_step()`, `restore_update_step()` |
+| Step result details | `set_step_result_details()` |
 | Device failure codes | `SAMPLE_ERR_*` |
 | The final report, step by step | `print_report()`, called from `on_su_event()` |
 | Limits and workspace | `su_opts.limits`, `g_su_workspace` |

@@ -4,6 +4,8 @@
 
 ### Features Added
 
+- Breaking: `az_iot_su_platform_hooks` fields `persist_state_fn` and `load_state_fn` are renamed
+  `persist_workflow_state_fn` and `load_workflow_state_fn`.
 - az_mqtt adapter: `AZ_IOT_AZ_MQTT_MESSAGE_STORAGE_SIZE` may be 0, for devices that only use clean
   sessions: no message store is allocated, and a connect whose session outlives the connection
   (`clean_start` false; MQTT 5: with `session_expiry_seconds` > 0) returns `AZ_IOT_ERR_NOT_SUPPORTED`.
