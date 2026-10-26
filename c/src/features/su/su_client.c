@@ -1797,6 +1797,12 @@ static void process_update_metadata(
     return;
   }
 
+  /* A request still set here is an earlier workflow's (it succeeded): its
+   * reboot is still owed whatever this workflow does. */
+  SU_I(client).earlier_reboot_requested
+      = SU_I(client).earlier_reboot_requested || SU_I(client).reboot_requested;
+  SU_I(client).reboot_requested = false;
+
   /* A new workflow supersedes whatever the stored checkpoint belongs to,
    * including an unsent terminal report of the previous one. A retry keeps
    * the retry record until its own progress replaces it. */
@@ -4173,7 +4179,9 @@ az_iot_su_client_get_reboot_state(const az_iot_su_client* client)
   {
     return AZ_IOT_SU_REBOOT_PENDING;
   }
-  return SU_I(client).reboot_requested ? AZ_IOT_SU_REBOOT_READY : AZ_IOT_SU_REBOOT_NONE;
+  return SU_I(client).reboot_requested || SU_I(client).earlier_reboot_requested
+      ? AZ_IOT_SU_REBOOT_READY
+      : AZ_IOT_SU_REBOOT_NONE;
 }
 
 az_iot_result az_iot_su_client_add_observer(

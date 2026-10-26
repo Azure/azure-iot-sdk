@@ -4817,6 +4817,27 @@ static void a_failed_workflow_needs_no_reboot(void** state)
   assert_int_equal(az_iot_su_client_get_reboot_state(&fx->su), AZ_IOT_SU_REBOOT_NONE);
 }
 
+/* A later workflow that fails does not cancel an earlier one's outstanding
+ * reboot: the install asked for one, the application did not reboot, and the
+ * workflow still succeeded. */
+static void a_later_failed_workflow_keeps_an_earlier_reboot_request(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  fx->log.install_result = AZ_IOT_SU_RESULT_REBOOT_REQUIRED;
+  inject_patch(fx, signed_patch());
+  pump(fx, 40);
+  assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_SUCCEEDED);
+  assert_int_equal(az_iot_su_client_get_reboot_state(&fx->su), AZ_IOT_SU_REBOOT_READY);
+
+  fx->log.download_result = AZ_IOT_SU_RESULT_FAILURE;
+  inject_patch(fx, build_patch("bbbbbbbb-0000-0000-0000-000000000003"));
+  pump(fx, 40);
+  assert_string_equal(fx->chan.last_workflow_id, "bbbbbbbb-0000-0000-0000-000000000003");
+  assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_FAILED);
+  assert_int_equal(az_iot_su_client_get_reboot_state(&fx->su), AZ_IOT_SU_REBOOT_READY);
+}
+
 /* A failed workflow stores its terminal report, with its retry schedule,
  * before sending it. Once accepted after a reboot, the retry record remains
  * and the wait still holds. */
@@ -9003,6 +9024,8 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         a_last_apply_reboot_waits_for_the_terminal_record, setup, teardown),
     cmocka_unit_test_setup_teardown(a_failed_workflow_needs_no_reboot, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_later_failed_workflow_keeps_an_earlier_reboot_request, setup, teardown),
     cmocka_unit_test_setup_teardown(
         storage_behind_is_pending_without_a_reboot_request, setup, teardown),
     cmocka_unit_test_setup_teardown(new_properties_do_not_resend_a_settled_report, setup, teardown),

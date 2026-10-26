@@ -991,8 +991,10 @@ extern "C"
       bool install_called;
       /** The last apply asked for a reboot; cleared by the reboot (re-initialization). */
       bool reboot_owed;
-      /** install_fn or apply_fn asked for a reboot in this process; cleared on FAILED. */
+      /** install_fn or apply_fn of the current workflow asked for a reboot; cleared on FAILED. */
       bool reboot_requested;
+      /** An earlier workflow in this process asked for a reboot that has not happened. */
+      bool earlier_reboot_requested;
       /** Route of the application's last update request (pending_fetch encoding); 0 if none. */
       uint8_t last_requested_fetch;
       /** Terminal reports handed to the channel, for the REPORT_ACCEPTED event:
