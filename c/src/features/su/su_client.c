@@ -123,6 +123,72 @@ static void commit_device_properties_cache(
       (char*)SU_I(client).device_properties_buffer);
 }
 
+/** @brief Validate @p src, refresh the channel's copy, then the cache; unchanged on failure. */
+static az_iot_result store_device_properties(
+    az_iot_su_client* client,
+    const az_iot_su_device_properties* src)
+{
+  az_iot_su_device_properties_snapshot snapshot;
+  az_iot_result r = prepare_device_properties_cache(client, src, &snapshot);
+  if (r != AZ_IOT_OK)
+  {
+    return r;
+  }
+  /* The channel may hold its own copy (compatibility properties, installed
+   * update id). Refresh it, or fetches keep carrying the startup identity. */
+  if (SU_I(client).channel.vtable != NULL
+      && SU_I(client).channel.vtable->set_device_properties != NULL)
+  {
+    r = SU_I(client).channel.vtable->set_device_properties(
+        SU_I(client).channel.ctx, &snapshot.properties);
+    if (r != AZ_IOT_OK)
+    {
+      return r;
+    }
+  }
+  commit_device_properties_cache(client, &snapshot);
+  return AZ_IOT_OK;
+}
+
+/**
+ * @brief After a SUCCEEDED workflow, advertise the update it applied as installed.
+ *
+ * The application asserted it when apply_fn succeeded; later update checks
+ * carry it without the application having to call
+ * az_iot_su_client_update_device_properties(). Kept in its own buffer, so the
+ * device-properties buffer need not have room for it.
+ */
+static void adopt_applied_update_id(az_iot_su_client* client)
+{
+  if (!SU_I(client).applied_update_id_valid || SU_I(client).device_properties_buffer == NULL)
+  {
+    return;
+  }
+  /* The channel copies the id. The cache may point into the adopted buffer, so
+   * that is overwritten only once the channel has accepted the new id. */
+  az_iot_su_device_properties next = SU_I(client).device_properties;
+  next.installed_update_id.provider = SU_I(client).applied_update_id.provider;
+  next.installed_update_id.name = SU_I(client).applied_update_id.name;
+  next.installed_update_id.version = SU_I(client).applied_update_id.version;
+  if (SU_I(client).channel.vtable != NULL
+      && SU_I(client).channel.vtable->set_device_properties != NULL
+      && SU_I(client).channel.vtable->set_device_properties(SU_I(client).channel.ctx, &next)
+          != AZ_IOT_OK)
+  {
+    AZ_IOT_LOG_WARN(
+        AZ_IOT_LOG_COMPONENT_SU,
+        "applied update id not adopted as installed; checks keep the previous one");
+    return;
+  }
+  const char* src = SU_I(client).applied_update_id_buf;
+  char* dst = SU_I(client).adopted_installed_id_buf;
+  memcpy(dst, src, sizeof(SU_I(client).adopted_installed_id_buf));
+  az_iot_su_update_id_info* cached = &SU_I(client).device_properties.installed_update_id;
+  cached->provider = dst + (SU_I(client).applied_update_id.provider - src);
+  cached->name = dst + (SU_I(client).applied_update_id.name - src);
+  cached->version = dst + (SU_I(client).applied_update_id.version - src);
+}
+
 /* ------------------------------------------------------------------------- */
 /* result-code accumulation                                                  */
 /* ------------------------------------------------------------------------- */
@@ -1219,6 +1285,10 @@ static void latch_terminal(az_iot_su_client* client, az_iot_su_outcome outcome)
   SU_I(client).checkpoint_terminal = false;
   SU_I(client).checkpoint_retry = false;
   SU_I(client).terminal_write_failed = false;
+  if (outcome == AZ_IOT_SU_OUTCOME_SUCCEEDED)
+  {
+    adopt_applied_update_id(client);
+  }
 }
 
 /* Reset the workflow back to Idle, clearing the parsed request. */
@@ -1857,6 +1927,38 @@ static void raise_abandoned(
   dispatch_event(client, &event);
 }
 
+/** @brief Raise AZ_IOT_SU_EVENT_WORKFLOW_COMPLETED for a settled terminal report. */
+static void raise_completed(
+    az_iot_su_client* client,
+    az_iot_result result,
+    const az_iot_su_service_error* service_error,
+    const az_iot_su_report* report)
+{
+  az_iot_su_event event = {
+    .kind = AZ_IOT_SU_EVENT_WORKFLOW_COMPLETED,
+    .state = SU_I(client).state,
+    .previous_state = SU_I(client).state,
+    .operation = AZ_IOT_SU_OP_REPORT_STATUS,
+    .reason = result,
+    .service_error = k_no_service_error,
+    .report_terminal = true,
+    .report = report,
+  };
+  if (result != AZ_IOT_OK && service_error != NULL)
+  {
+    event.service_error = *service_error;
+    if (event.service_error.message == NULL)
+    {
+      event.service_error.message = "";
+    }
+    if (event.service_error.tracking_id == NULL)
+    {
+      event.service_error.tracking_id = "";
+    }
+  }
+  dispatch_event(client, &event);
+}
+
 /** @brief Raise AZ_IOT_SU_EVENT_UPDATE_REFUSED for an update not processed. */
 static void raise_refused(az_iot_su_client* client, az_iot_result reason)
 {
@@ -2171,22 +2273,34 @@ static void on_channel_result(
     {
       bool terminal = SU_I(client).report_sent_terminal;
       /* The report as sent: the engine state may have moved on since. */
-      az_iot_su_report accepted;
-      az_iot_su_report_update_id accepted_installed;
-      bool have_view = result == AZ_IOT_OK && terminal
-          && az_iot_su__sent_terminal_report(client, &accepted, &accepted_installed);
+      az_iot_su_report sent;
+      az_iot_su_report_update_id sent_installed;
+      bool have_view = terminal && az_iot_su__sent_terminal_report(client, &sent, &sent_installed);
+      /* Settled unless kept for a later send (see settle_terminal_report()). A
+       * superseding workflow clears the in-flight flag, not the snapshot. */
+      bool settled = terminal && (have_view || SU_I(client).terminal_report_in_flight)
+          && result != AZ_IOT_ERR_NOT_CONNECTED;
       SU_I(client).sent_terminal[SU_I(client).sent_terminal_slot].valid = false;
       settle_terminal_report(client, result);
       if (result == AZ_IOT_OK)
       {
         raise_simple(
-            client,
-            AZ_IOT_SU_EVENT_REPORT_ACCEPTED,
-            operation,
-            terminal,
-            have_view ? &accepted : NULL);
+            client, AZ_IOT_SU_EVENT_REPORT_ACCEPTED, operation, terminal, have_view ? &sent : NULL);
       }
-      else if (action == AZ_IOT_SU_ERROR_ACTION_RECHECK)
+      if (settled)
+      {
+        /* A report queued meanwhile would only repeat this one; one for a
+         * superseding workflow (not Idle) stays. */
+        if (!SU_I(client).report_owed
+            && (SU_I(client).state == AZ_IOT_SU_STATE_IDLE
+                || SU_I(client).state == AZ_IOT_SU_STATE_FAILED))
+        {
+          SU_I(client).device_properties_report_pending = false;
+          SU_I(client).report_paced = false;
+        }
+        raise_completed(client, result, service_error, have_view ? &sent : NULL);
+      }
+      if (result != AZ_IOT_OK && action == AZ_IOT_SU_ERROR_ACTION_RECHECK)
       {
         queue_conflict_recheck(client);
       }
@@ -3377,6 +3491,10 @@ AZ_NODISCARD az_iot_result az_iot_su_client_resume(az_iot_su_client* client)
     set_active_workflow(client, az_span_create(&blob[wf_at], (int32_t)wf_id_len), AZ_SPAN_EMPTY, 0);
     SU_I(client).active_workflow_running = false;
     SU_I(client).pending_outcome = (az_iot_su_outcome)outcome;
+    if (outcome == (uint32_t)AZ_IOT_SU_OUTCOME_SUCCEEDED)
+    {
+      adopt_applied_update_id(client);
+    }
     workflow_retry_restore(client, &blob[retry_at]);
     SU_I(client).report_owed = !retry_record;
     SU_I(client).terminal_report_in_flight = false;
@@ -4133,29 +4251,21 @@ AZ_NODISCARD az_iot_result az_iot_su_client_update_device_properties(
     return AZ_IOT_ERR_DETACHED;
   }
 
-  az_iot_su_device_properties_snapshot snapshot;
-  az_iot_result r = prepare_device_properties_cache(client, device_properties, &snapshot);
+  az_iot_result r = store_device_properties(client, device_properties);
   if (r != AZ_IOT_OK)
   {
     return r;
   }
-
-  /* The channel may hold its own copy (compatibility properties, installed
-   * update id). Refresh it, or fetches keep carrying the startup identity. */
-  if (SU_I(client).channel.vtable != NULL
-      && SU_I(client).channel.vtable->set_device_properties != NULL)
+  /* A settled terminal report is not sent again: re-sending an accepted one
+   * changes nothing, and a rejected one would be replayed. The next update
+   * check carries the new properties. */
+  bool running
+      = SU_I(client).state != AZ_IOT_SU_STATE_IDLE && SU_I(client).state != AZ_IOT_SU_STATE_FAILED;
+  if (running || SU_I(client).report_owed || SU_I(client).terminal_report_in_flight)
   {
-    r = SU_I(client).channel.vtable->set_device_properties(
-        SU_I(client).channel.ctx, &snapshot.properties);
-    if (r != AZ_IOT_OK)
-    {
-      return r;
-    }
+    SU_I(client).device_properties_report_pending = true;
+    SU_I(client).report_paced = false;
   }
-
-  commit_device_properties_cache(client, &snapshot);
-  SU_I(client).device_properties_report_pending = true;
-  SU_I(client).report_paced = false;
   return AZ_IOT_OK;
 }
 
