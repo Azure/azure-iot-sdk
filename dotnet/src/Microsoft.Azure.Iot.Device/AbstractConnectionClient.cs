@@ -1371,6 +1371,7 @@ namespace Microsoft.Azure.Iot.Device
 
             cancellationToken.ThrowIfCancellationRequested();
             _provisioningFlowParentCancellationToken = cancellationToken;
+            int deliberateDisconnectCount = Volatile.Read(ref _deliberateDisconnectCount);
 
             _provisioningRequestPayload = new RegistrationRequestPayload()
             {
@@ -1443,6 +1444,13 @@ namespace Microsoft.Azure.Iot.Device
                         CancelCurrentProvisioningFlow();
                         Volatile.Write(ref provisioningFlowResult, new(TaskCreationOptions.RunContinuationsAsynchronously));
                         await DisconnectFromDpsAsync();
+
+                        if (Volatile.Read(ref _deliberateDisconnectCount) != deliberateDisconnectCount
+                            || Volatile.Read(ref _deliberateDisconnectsInProgress) != 0)
+                        {
+                            throw new OperationCanceledException("Provisioning was canceled because the connection client was deliberately disconnected.");
+                        }
+
                         continue;
                     }
 

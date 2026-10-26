@@ -459,6 +459,59 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             }
         }
 
+        [Fact]
+        public async Task RegistrationRetryDoesNotReconnectAfterDisconnectDuringDpsTeardown()
+        {
+            using MockConnectionMqttClient mockMqttClient = new();
+            MockDeviceProvisioningService mockDps = new(mockMqttClient, _ => FirstAssignedHub);
+            mockDps.RejectRegistrationAsUnauthorized = () => true;
+
+            int connectAttemptCount = 0;
+            mockMqttClient.OnConnect = _ =>
+            {
+                Interlocked.Increment(ref connectAttemptCount);
+                return Task.FromResult(new MqttConnectAck() { ResultCode = MqttConnectReasonCode.Success });
+            };
+
+            TaskCompletionSource internalDisconnectStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            TaskCompletionSource releaseInternalDisconnect = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            int disconnectAttemptCount = 0;
+            mockMqttClient.OnDisconnect = async _ =>
+            {
+                if (Interlocked.Increment(ref disconnectAttemptCount) == 1)
+                {
+                    internalDisconnectStarted.TrySetResult();
+                    await releaseInternalDisconnect.Task;
+                }
+            };
+
+            using TestConnectionClient connectionClient = new(new() { MqttClient = mockMqttClient });
+            Task<ConnectionContext> provisioning = connectionClient.ProvisionAndConnectAsync(
+                CreateProvisioningSettings(),
+                new PrimaryAndSecondaryAuthenticationProvider(),
+                forceProvisioning: true,
+                cancellationToken: TestContext.Current.CancellationToken);
+
+            try
+            {
+                await internalDisconnectStarted.Task.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+
+                // Complete a public disconnect while the registration retry is still waiting for its DPS teardown.
+                await connectionClient.DisconnectAsync(TestContext.Current.CancellationToken)
+                    .WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+            }
+            finally
+            {
+                releaseInternalDisconnect.TrySetResult();
+            }
+
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(
+                async () => await provisioning.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken));
+
+            Assert.Equal(1, connectAttemptCount);
+            Assert.Equal(0, mockDps.RegistrationCount);
+        }
+
         [Theory]
         [InlineData(false)]
         [InlineData(true)]
