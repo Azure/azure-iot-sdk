@@ -571,7 +571,7 @@ sequenceDiagram
 
     Conn-->>SU: CONNECTED
     Note over SU,Store: on resume(), called by the application at startup
-    SU->>Store: load_state()
+    SU->>Store: load_workflow_state()
     Store-->>SU: workflow record, if any (unsent report, ETags)
     opt report pending from a previous session
         SU->>GW: reportUpdateStatus (workflowId, installResult)
@@ -583,7 +583,7 @@ sequenceDiagram
         alt update available
             GW-->>SU: serviceConfiguration + updateMetadata (workflowId, manifest, signature, fileUrls)
             SU->>SU: verify, download, backup, install, apply
-            SU->>Store: persist_state()
+            SU->>Store: persist_workflow_state()
             SU->>GW: reportUpdateStatus (workflowId, installedUpdateId, installResult)
         else no update
             GW-->>SU: 200 with updateMetadata omitted

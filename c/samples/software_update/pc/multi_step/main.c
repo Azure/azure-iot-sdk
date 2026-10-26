@@ -109,7 +109,7 @@ typedef struct
 } step_context;
 
 /** @brief Set the resultDetails reported for @p step. */
-static void set_details(step_context* c, uint32_t step, const char* text)
+static void set_step_result_details(step_context* c, uint32_t step, const char* text)
 {
   az_iot_result r
       = az_iot_su_client_set_step_result_details(c->su, step, az_span_create_from_str((char*)text));
@@ -125,17 +125,18 @@ static int fails_here(const step_context* c, uint32_t step, fail_phase phase)
   return c->fail_step > 0 && (uint32_t)(c->fail_step - 1) == step && c->fail_phase == phase;
 }
 
-static int32_t step_download(
+static int32_t download_update_file(
     const az_iot_su_client_update_manifest_file* file,
     az_span url,
     uint32_t file_index,
     uint32_t file_count,
     void* user_ctx)
 {
-  return su_download(file, url, file_index, file_count, &((step_context*)user_ctx)->sim);
+  return simulate_update_file_download(
+      file, url, file_index, file_count, &((step_context*)user_ctx)->sim);
 }
 
-static int32_t step_read_file(
+static int32_t read_back_downloaded_file(
     const az_iot_su_client_update_manifest_file* file,
     uint32_t file_index,
     size_t offset,
@@ -144,11 +145,13 @@ static int32_t step_read_file(
     size_t* out_read,
     void* user_ctx)
 {
-  return su_read_file(
+  return read_back_simulated_update_file(
       file, file_index, offset, buffer, buffer_size, out_read, &((step_context*)user_ctx)->sim);
 }
 
-static int32_t step_is_installed(const az_iot_su_client_update_manifest* manifest, void* user_ctx)
+static int32_t is_offered_update_installed(
+    const az_iot_su_client_update_manifest* manifest,
+    void* user_ctx)
 {
   step_context* c = (step_context*)user_ctx;
   return (az_span_is_content_equal(
@@ -162,7 +165,7 @@ static int32_t step_is_installed(const az_iot_su_client_update_manifest* manifes
 }
 
 /** @brief backup_fn: keep what this step will replace, so it can be restored. */
-static int32_t step_backup(
+static int32_t back_up_update_step(
     const az_iot_su_client_update_manifest* manifest,
     uint32_t step,
     void* user_ctx)
@@ -175,7 +178,7 @@ static int32_t step_backup(
       (const char*)az_span_ptr(manifest->instructions.steps[step].handler));
   if (fails_here(c, step, FAIL_BACKUP))
   {
-    set_details(c, step, "backup: not enough space for the backup");
+    set_step_result_details(c, step, "backup: not enough space for the backup");
     return SAMPLE_ERR_BACKUP;
   }
   if (step < SAMPLE_MAX_STEPS)
@@ -186,7 +189,7 @@ static int32_t step_backup(
 }
 
 /** @brief install_fn: write this step's payload. */
-static int32_t step_install(
+static int32_t install_update_step(
     const az_iot_su_client_update_manifest* manifest,
     uint32_t step,
     void* user_ctx)
@@ -196,15 +199,15 @@ static int32_t step_install(
   printf("Step %u: install\n", step);
   if (fails_here(c, step, FAIL_INSTALL))
   {
-    set_details(c, step, "install: payload rejected by the target component");
+    set_step_result_details(c, step, "install: payload rejected by the target component");
     return SAMPLE_ERR_INSTALL;
   }
-  set_details(c, step, "installed");
+  set_step_result_details(c, step, "installed");
   return AZ_IOT_SU_RESULT_SUCCESS;
 }
 
 /** @brief apply_fn: activate this step; the last one makes the update installed. */
-static int32_t step_apply(
+static int32_t apply_update_step(
     const az_iot_su_client_update_manifest* manifest,
     uint32_t step,
     void* user_ctx)
@@ -213,10 +216,10 @@ static int32_t step_apply(
   printf("Step %u: apply\n", step);
   if (fails_here(c, step, FAIL_APPLY))
   {
-    set_details(c, step, "apply: component did not start");
+    set_step_result_details(c, step, "apply: component did not start");
     return SAMPLE_ERR_APPLY;
   }
-  set_details(c, step, "installed and applied");
+  set_step_result_details(c, step, "installed and applied");
   if (step + 1 == manifest->instructions.steps_count)
   {
     (void)snprintf(
@@ -248,7 +251,7 @@ static int32_t step_apply(
  * backed up. The failing step keeps its own result; a restore failure is
  * added to the overall result by the SDK.
  */
-static int32_t step_restore(
+static int32_t restore_update_step(
     const az_iot_su_client_update_manifest* manifest,
     uint32_t step,
     void* user_ctx)
@@ -488,13 +491,13 @@ int main(void)
 
   /* Software updates client: one hook per phase, each called per step. */
   az_iot_su_platform_hooks hooks = { 0 };
-  hooks.download_fn = step_download;
-  hooks.read_file_fn = step_read_file;
-  hooks.is_installed_fn = step_is_installed;
-  hooks.backup_fn = step_backup;
-  hooks.install_fn = step_install;
-  hooks.apply_fn = step_apply;
-  hooks.restore_fn = step_restore;
+  hooks.download_fn = download_update_file;
+  hooks.read_file_fn = read_back_downloaded_file;
+  hooks.is_installed_fn = is_offered_update_installed;
+  hooks.backup_fn = back_up_update_step;
+  hooks.install_fn = install_update_step;
+  hooks.apply_fn = apply_update_step;
+  hooks.restore_fn = restore_update_step;
   hooks.user_ctx = &steps;
 
   az_iot_su_device_properties dp = { 0 };

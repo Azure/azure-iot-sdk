@@ -974,12 +974,13 @@ static int32_t verify_file_hash(
   return verify_file_hash_core(SU_I(client).crypto, file, su_read_file_adapter, &a);
 }
 
-/** @brief Delay, in milliseconds, before the first retry of a failed persist_state_fn write. */
+/** @brief Delay, in milliseconds, before the first retry of a failed persist_workflow_state_fn
+ * write. */
 #define AZ_IOT_SU_PERSIST_RETRY_BASE_MS 1000u
 /** @brief Upper bound, in milliseconds, of the doubling retry delay. */
 #define AZ_IOT_SU_PERSIST_RETRY_MAX_MS 60000u
 
-/** @brief Schedule for retrying a failed persist_state_fn write: doubling, no jitter. */
+/** @brief Schedule for retrying a failed persist_workflow_state_fn write: doubling, no jitter. */
 static const az_iot_retry_policy k_persist_retry_policy
     = { .initial_delay_ms = AZ_IOT_SU_PERSIST_RETRY_BASE_MS,
         .max_delay_ms = AZ_IOT_SU_PERSIST_RETRY_MAX_MS,
@@ -1028,7 +1029,7 @@ static void raise_persist(az_iot_su_client* client, bool failed, uint32_t attemp
 }
 
 /**
- * @brief Call persist_state_fn and account for the result.
+ * @brief Call persist_workflow_state_fn and account for the result.
  *
  * A failure arms the next retry (doubling from AZ_IOT_SU_PERSIST_RETRY_BASE_MS,
  * capped at AZ_IOT_SU_PERSIST_RETRY_MAX_MS) and raises PERSIST_FAILED on the
@@ -1040,7 +1041,7 @@ static void raise_persist(az_iot_su_client* client, bool failed, uint32_t attemp
 static bool persist_write(az_iot_su_client* client, const uint8_t* blob, size_t len)
 {
   az_iot_su_platform_hooks* h = &SU_I(client).hooks;
-  int32_t rc = h->persist_state_fn(blob, len, h->user_ctx);
+  int32_t rc = h->persist_workflow_state_fn(blob, len, h->user_ctx);
   if (rc == 0)
   {
     /* The single stored record was replaced or cleared. */
@@ -1059,7 +1060,7 @@ static bool persist_write(az_iot_su_client* client, const uint8_t* blob, size_t 
       &SU_I(client).persist_retry, &k_persist_retry_policy, &SU_I(client).retry_rng);
   uint32_t n = az_iot_retry_state__attempts(&SU_I(client).persist_retry);
   AZ_IOT_LOG_ERRORF(
-      AZ_IOT_LOG_COMPONENT_SU, "persist_state_fn failed (%u consecutive)", (unsigned)n);
+      AZ_IOT_LOG_COMPONENT_SU, "persist_workflow_state_fn failed (%u consecutive)", (unsigned)n);
   if (n == 1u || n == SU_I(client).persist_max_attempts)
   {
     raise_persist(client, true, n);
@@ -1068,7 +1069,7 @@ static bool persist_write(az_iot_su_client* client, const uint8_t* blob, size_t 
 }
 
 /**
- * @brief Retire the stored checkpoint with a zero-length persist_state_fn write.
+ * @brief Retire the stored checkpoint with a zero-length persist_workflow_state_fn write.
  *
  * Both shipped loaders re-read the same record on every boot, so without this
  * a finished workflow is reloaded, re-applied and re-reported. Only issued when
@@ -1079,7 +1080,7 @@ static bool persist_write(az_iot_su_client* client, const uint8_t* blob, size_t 
 static void clear_checkpoint(az_iot_su_client* client)
 {
   az_iot_su_platform_hooks* h = &SU_I(client).hooks;
-  if (!SU_I(client).checkpoint_stored || h->persist_state_fn == NULL)
+  if (!SU_I(client).checkpoint_stored || h->persist_workflow_state_fn == NULL)
   {
     return;
   }
@@ -1103,7 +1104,7 @@ static void clear_stale_checkpoint(az_iot_su_client* client)
 {
   az_iot_su_platform_hooks* h = &SU_I(client).hooks;
   if (SU_I(client).checkpoint_stored
-      && h->persist_state_fn(SU_I(client).terminal_blob, 0, h->user_ctx) == 0)
+      && h->persist_workflow_state_fn(SU_I(client).terminal_blob, 0, h->user_ctx) == 0)
   {
     SU_I(client).superseded_record_stored = false;
     SU_I(client).checkpoint_stored = false;
@@ -1124,7 +1125,7 @@ static void clear_stale_checkpoint(az_iot_su_client* client)
  */
 static void sync_checkpoint(az_iot_su_client* client)
 {
-  if (SU_I(client).hooks.persist_state_fn == NULL)
+  if (SU_I(client).hooks.persist_workflow_state_fn == NULL)
   {
     return;
   }
@@ -1167,7 +1168,7 @@ static void sync_checkpoint(az_iot_su_client* client)
 /** @brief Whether storage differs from what sync_checkpoint() would leave there. */
 static bool checkpoint_out_of_sync(const az_iot_su_client* client)
 {
-  if (SU_I(client).hooks.persist_state_fn == NULL)
+  if (SU_I(client).hooks.persist_workflow_state_fn == NULL)
   {
     return false;
   }
@@ -3070,17 +3071,17 @@ static size_t applied_update_id_len(const az_iot_su_client* client)
 }
 
 /**
- * @brief Serialize the workflow and hand it to persist_state_fn.
+ * @brief Serialize the workflow and hand it to persist_workflow_state_fn.
  *
  * @param kind The record to write; every kind carries the retry schedule.
  * @return AZ_IOT_OK when written; AZ_IOT_ERR_NOT_SUPPORTED when no
- * persist_state_fn is set; AZ_IOT_ERR_INVALID_ARG when the state cannot be
+ * persist_workflow_state_fn is set; AZ_IOT_ERR_INVALID_ARG when the state cannot be
  * represented; AZ_IOT_ERR_INTERNAL when the hook fails.
  */
 static az_iot_result su_persist(az_iot_su_client* client, su_record kind)
 {
   az_iot_su_platform_hooks* h = &SU_I(client).hooks;
-  if (h->persist_state_fn == NULL)
+  if (h->persist_workflow_state_fn == NULL)
   {
     return AZ_IOT_ERR_NOT_SUPPORTED;
   }
@@ -3365,7 +3366,7 @@ AZ_NODISCARD az_iot_result az_iot_su_client_resume(az_iot_su_client* client)
   {
     return AZ_IOT_ERR_DETACHED;
   }
-  if (SU_I(client).hooks.load_state_fn == NULL)
+  if (SU_I(client).hooks.load_workflow_state_fn == NULL)
   {
     return AZ_IOT_OK;
   }
@@ -3378,7 +3379,7 @@ AZ_NODISCARD az_iot_result az_iot_su_client_resume(az_iot_su_client* client)
 
   uint8_t* blob = SU_I(client).persist_blob;
   size_t blen = 0;
-  if (SU_I(client).hooks.load_state_fn(
+  if (SU_I(client).hooks.load_workflow_state_fn(
           blob, SU_I(client).persist_blob_size, &blen, SU_I(client).hooks.user_ctx)
       != 0)
   {
@@ -3469,7 +3470,7 @@ AZ_NODISCARD az_iot_result az_iot_su_client_resume(az_iot_su_client* client)
   {
     return AZ_IOT_OK; /* corrupt */
   }
-  if (SU_I(client).hooks.persist_state_fn == NULL)
+  if (SU_I(client).hooks.persist_workflow_state_fn == NULL)
   {
     /* It could never be invalidated, so every later boot would re-apply it. */
     return AZ_IOT_ERR_NOT_SUPPORTED;
@@ -4013,7 +4014,7 @@ az_iot_result az_iot_su_client_do_work(az_iot_su_client* client)
          * here; the loop simply continues if it does not). */
         set_su_state(client, AZ_IOT_SU_STATE_INSTALL_COMPLETE);
         /* A failed write blocks Apply until a retry succeeds; with no
-         * persist_state_fn there is nothing to retry. */
+         * persist_workflow_state_fn there is nothing to retry. */
         SU_I(client).checkpoint_pending
             = (su_persist(client, SU_RECORD_POSITION) == AZ_IOT_ERR_INTERNAL);
         (void)az_iot_su__report_state(client);

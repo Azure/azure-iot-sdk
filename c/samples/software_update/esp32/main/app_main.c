@@ -187,7 +187,7 @@ static az_iot_result app_request_check(az_iot_su_client* su, bool registered, ui
 
 /* Service-requested delay before the next check, set by on_su_event. */
 static uint32_t g_retry_after_ms;
-/* persist_state_fn is failing: the checkpoint a reboot needs is not stored. */
+/* persist_workflow_state_fn is failing: the checkpoint a reboot needs is not stored. */
 static bool g_persist_failing;
 
 /** @brief Logs abandoned operations (the poll loop asks again later) and tracks persist failures.

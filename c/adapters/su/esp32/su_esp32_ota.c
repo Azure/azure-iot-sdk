@@ -382,8 +382,8 @@ az_iot_su_platform_hooks su_esp32_ota_hooks(su_ota_ctx* ctx)
   h.backup_fn = ota_backup;
   h.restore_fn = ota_restore;
   h.is_installed_fn = ota_is_installed;
-  h.persist_state_fn = ota_persist;
-  h.load_state_fn = ota_load;
+  h.persist_workflow_state_fn = ota_persist;
+  h.load_workflow_state_fn = ota_load;
   h.user_ctx = ctx;
   return h;
 }
