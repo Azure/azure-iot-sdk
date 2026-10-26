@@ -6094,7 +6094,8 @@ static void a_terminal_record_that_never_lands_stops_being_retried(void** state)
 }
 
 /* A superseded record that can never be cleared stops holding the new
- * workflow once the client gives up. */
+ * workflow once the client gives up; the reboot state stays PENDING until a
+ * later write replaces it. */
 static void a_supersede_clear_that_never_lands_lets_the_new_workflow_proceed(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -6111,10 +6112,15 @@ static void a_supersede_clear_that_never_lands_lets_the_new_workflow_proceed(voi
   }
   assert_false(fx->su._internal.checkpoint_superseded);
   assert_int_equal(fx->su._internal.persist_retry._internal.attempt, SU_TEST_PERSIST_MAX_ATTEMPTS);
+  /* The superseded record is still stored: a restart now would resume it. */
+  assert_int_equal(az_iot_su_client_get_reboot_state(&fx->su), AZ_IOT_SU_REBOOT_PENDING);
+  fx->log.persist_failures = 0;
   pump(fx, 40);
   assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_IDLE);
   assert_string_equal(fx->chan.last_workflow_id, "bbbbbbbb-0000-0000-0000-000000000002");
   assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_SUCCEEDED);
+  assert_false(fx->su._internal.superseded_record_stored);
+  assert_int_not_equal(az_iot_su_client_get_reboot_state(&fx->su), AZ_IOT_SU_REBOOT_PENDING);
 }
 
 /* With a limit of 1, the first failed reboot checkpoint gives up at once: one

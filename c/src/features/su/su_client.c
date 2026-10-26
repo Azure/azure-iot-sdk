@@ -1043,6 +1043,8 @@ static bool persist_write(az_iot_su_client* client, const uint8_t* blob, size_t 
   int32_t rc = h->persist_state_fn(blob, len, h->user_ctx);
   if (rc == 0)
   {
+    /* The single stored record was replaced or cleared. */
+    SU_I(client).superseded_record_stored = false;
     uint32_t failed = az_iot_retry_state__attempts(&SU_I(client).persist_retry);
     az_iot_retry_state__reset(&SU_I(client).persist_retry);
     if (failed > 0)
@@ -1103,6 +1105,7 @@ static void clear_stale_checkpoint(az_iot_su_client* client)
   if (SU_I(client).checkpoint_stored
       && h->persist_state_fn(SU_I(client).terminal_blob, 0, h->user_ctx) == 0)
   {
+    SU_I(client).superseded_record_stored = false;
     SU_I(client).checkpoint_stored = false;
     SU_I(client).checkpoint_terminal = false;
     SU_I(client).checkpoint_superseded = false;
@@ -3783,6 +3786,8 @@ az_iot_result az_iot_su_client_do_work(az_iot_su_client* client)
   {
     /* The new workflow proceeds; a reboot before it ends may resume the old
      * record, which the new workflowId supersedes again. */
+    SU_I(client).superseded_record_stored
+        = SU_I(client).superseded_record_stored || SU_I(client).checkpoint_superseded;
     SU_I(client).checkpoint_superseded = false;
     if (SU_I(client).checkpoint_pending && running)
     {
@@ -4161,8 +4166,9 @@ az_iot_su_client_get_reboot_state(const az_iot_su_client* client)
   bool running
       = SU_I(client).state != AZ_IOT_SU_STATE_IDLE && SU_I(client).state != AZ_IOT_SU_STATE_FAILED;
   bool behind = SU_I(client).hooks.persist_state_fn != NULL
-      && (running ? (SU_I(client).checkpoint_pending || SU_I(client).checkpoint_superseded)
-                  : checkpoint_out_of_sync(client));
+      && (SU_I(client).superseded_record_stored
+          || (running ? (SU_I(client).checkpoint_pending || SU_I(client).checkpoint_superseded)
+                      : checkpoint_out_of_sync(client)));
   if (behind)
   {
     return AZ_IOT_SU_REBOOT_PENDING;

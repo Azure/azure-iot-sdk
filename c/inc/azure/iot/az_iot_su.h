@@ -852,6 +852,9 @@ extern "C"
       /** The stored checkpoint belongs to a superseded workflow; the new one waits for its clear.
        */
       bool checkpoint_superseded;
+      /** The superseded record is still stored after its clear gave up; storage is behind
+       * until a later write replaces or clears it. */
+      bool superseded_record_stored;
       /** The stored checkpoint is the retry record of a FAILED workflow. */
       bool checkpoint_retry;
 
