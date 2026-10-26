@@ -5,10 +5,12 @@ using Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods;
 using Xunit;
 using Microsoft.Azure.Iot.Device.IntegrationTests.Models;
 using Microsoft.Azure.Devices;
+using Microsoft.Azure.Devices.Common.Exceptions;
 using Microsoft.Azure.Iot.Device.Models.DirectMethods;
 
 namespace Microsoft.Azure.Iot.Device.IntegrationTests.MQTTv5
 {
+    [Trait(Setup.HubTrait, Setup.MQTTv5HubTraitValue)]
     public class DirectMethodClientIntegrationTests
     {
         [Fact(Timeout = Setup.TestTimeoutMilliseconds)]
@@ -16,12 +18,13 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.MQTTv5
         {
             string expectedDirectMethodName = "someDirectMethod-" + Guid.NewGuid().ToString();
             uint expectedResponseTimeout = 20;
+            uint expectedConnectTimeout = 20;
 
             MQTTv5DeviceTestContext testDeviceContext = await Setup.CreateConnectedMQTTv5ConnectionClientAsync(null, null, TestContext.Current.CancellationToken);
             using DirectMethodClient directMethodClient = new DirectMethodClient(testDeviceContext.ConnectionClient);
 
-            ServiceClient serviceClient = Setup.GetMQTTv3IotHubServiceClient();
-            var directMethodInvocation = new CloudToDeviceMethod(expectedDirectMethodName, TimeSpan.FromSeconds(expectedResponseTimeout));
+            ServiceClient serviceClient = Setup.GetMQTTv5IotHubServiceClient();
+            var directMethodInvocation = new CloudToDeviceMethod(expectedDirectMethodName, TimeSpan.FromSeconds(expectedResponseTimeout), TimeSpan.FromSeconds(expectedConnectTimeout));
             SimpleDirectMethodPayload expectedRequestPayload = new()
             {
                 SomeInt = 5,
@@ -111,13 +114,14 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.MQTTv5
             string expectedDirectMethod1Name = "someDirectMethod-" + Guid.NewGuid().ToString();
             string expectedDirectMethod2Name = "someDirectMethod-" + Guid.NewGuid().ToString();
             uint expectedResponseTimeout = 20;
+            uint expectedConnectTimeout = 20;
 
             MQTTv5DeviceTestContext testDeviceContext = await Setup.CreateConnectedMQTTv5ConnectionClientAsync(null, null, TestContext.Current.CancellationToken);
             using DirectMethodClient directMethodClient = new DirectMethodClient(testDeviceContext.ConnectionClient);
 
-            ServiceClient serviceClient = Setup.GetMQTTv3IotHubServiceClient();
-            var directMethod1Invocation = new CloudToDeviceMethod(expectedDirectMethod1Name, TimeSpan.FromSeconds(expectedResponseTimeout));
-            var directMethod2Invocation = new CloudToDeviceMethod(expectedDirectMethod2Name, TimeSpan.FromSeconds(expectedResponseTimeout));
+            ServiceClient serviceClient = Setup.GetMQTTv5IotHubServiceClient();
+            var directMethod1Invocation = new CloudToDeviceMethod(expectedDirectMethod1Name, TimeSpan.FromSeconds(expectedResponseTimeout), TimeSpan.FromSeconds(expectedConnectTimeout));
+            var directMethod2Invocation = new CloudToDeviceMethod(expectedDirectMethod2Name, TimeSpan.FromSeconds(expectedResponseTimeout), TimeSpan.FromSeconds(expectedConnectTimeout));
             SimpleDirectMethodPayload expectedRequest1Payload = new()
             {
                 SomeInt = 5,
@@ -137,7 +141,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.MQTTv5
             };
 
             directMethod1Invocation.SetPayloadJson(expectedRequest1Payload.ToJson());
-            directMethod2Invocation.SetPayloadJson(expectedRequest1Payload.ToJson());
+            directMethod2Invocation.SetPayloadJson(expectedRequest2Payload.ToJson());
 
             int actualDirectMethodRequestsReceivedCount = 0;
 
@@ -204,15 +208,9 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.MQTTv5
                 }
             };
 
-            try
-            {
-                var directMethod1Response = await serviceClient.InvokeDeviceMethodAsync(testDeviceContext.DeviceId, directMethod1Invocation, TestContext.Current.CancellationToken);
-                Assert.Fail("Expected the first direct method invocation to fail since the device rejects that invocation's probe message");
-            }
-            catch (Exception)
-            {
-                //TODO what kind of exception will the service client see when a probe message is rejected?
-            }
+            await Assert.ThrowsAnyAsync<IotHubException>(
+                () => serviceClient.InvokeDeviceMethodAsync(testDeviceContext.DeviceId, directMethod1Invocation, TestContext.Current.CancellationToken));
+            await Probe1ReceivedTcs.Task.WaitAsync(TestContext.Current.CancellationToken);
 
             var directMethod2Response = await serviceClient.InvokeDeviceMethodAsync(testDeviceContext.DeviceId, directMethod2Invocation, TestContext.Current.CancellationToken);
 

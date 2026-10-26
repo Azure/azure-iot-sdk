@@ -18,7 +18,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
     {
         [Theory(Timeout = Setup.TestTimeoutMilliseconds)]
         [InlineData(true)]
-        [InlineData(false)]
+        [InlineData(false, Traits = new[] { Setup.HubTrait, Setup.MQTTv5HubTraitValue })]
         public async Task CanConnectOverWebsocket(bool isClassicHub)
         {
             MqttNetClientOptions mqttClientOptions = new()
@@ -38,7 +38,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
 
         [Theory(Timeout = Setup.TestTimeoutMilliseconds)]
         [InlineData(true)]
-        [InlineData(false)]
+        [InlineData(false, Traits = new[] { Setup.HubTrait, Setup.MQTTv5HubTraitValue })]
         public async Task CanConnectOverWebsocketAndHttpProxy(bool isClassicHub)
         {
             int proxyPort = isClassicHub ? 8877 : 8878; // Use a different port per test so they don't collide if run in parallel
@@ -69,11 +69,19 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
             httpProxy.Dispose();
         }
 
-        [Fact(Timeout = Setup.TestTimeoutMilliseconds)]
-        public async Task CanProvisionAndConnectWithSymmetricKeyIndividualEnrollment()
+        [Theory(Timeout = Setup.TestTimeoutMilliseconds)]
+        [InlineData(true)]
+        [InlineData(false, Traits = new[] { Setup.HubTrait, Setup.MQTTv5HubTraitValue })]
+        public async Task CanProvisionAndConnectWithSymmetricKeyIndividualEnrollment(bool testAgainstClassicHub)
         {
+            if (!testAgainstClassicHub)
+            {
+                Assert.Skip("MQTTv5 IoT Hub does not support symmetric key authentication.");
+            }
+            
             // The same key signs the DPS SAS token and, after provisioning, the IoT hub SAS token
-            await using UnifiedDeviceTestContext testDeviceContext = await Setup.CreateConnectedUnifiedConnectionClientWithSymmetricKeyAsync(cancellationToken: TestContext.Current.CancellationToken);
+            await using UnifiedDeviceTestContext testDeviceContext = await Setup.CreateConnectedUnifiedConnectionClientWithSymmetricKeyAsync(
+                testAgainstClassicHub, cancellationToken: TestContext.Current.CancellationToken);
 
             Assert.IsType<SymmetricKeyAuthenticationProvider>(testDeviceContext.AuthenticationProvider);
             Assert.False(string.IsNullOrEmpty(testDeviceContext.ConnectionContext.IotHubHostName));

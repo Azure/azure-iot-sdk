@@ -90,6 +90,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTnetAdapter
                 optionsBuilder.WithWebSocketServer(options =>
                 {
                     options.WithUri(uriString);
+                    options.WithSubProtocols(new List<string> { "mqtt" });
 
                     if (_proxy != null && uriString != null)
                     {

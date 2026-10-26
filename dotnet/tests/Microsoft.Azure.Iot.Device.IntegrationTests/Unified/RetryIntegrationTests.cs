@@ -14,17 +14,26 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
 {
     public class RetryIntegrationTests
     {
-        [Fact(Timeout = Setup.TestTimeoutMilliseconds)]
-        public async Task TestReprovisioningAfterDeviceDeleted()
+        [Theory(Timeout = Setup.TestTimeoutMilliseconds)]
+        [InlineData(true)]
+        [InlineData(false, Traits = new[] { Setup.HubTrait, Setup.MQTTv5HubTraitValue })]
+        public async Task TestReprovisioningAfterDeviceDeleted(bool testAgainstClassicHub)
         {
+            if (!testAgainstClassicHub)
+            {
+                Assert.Skip("This device doesn't go to reprovisioning once deleted? Service bug?");
+            }
+
             // In this test, the test device should successfully provision to an IoT Hub and successfully connect to that IoT Hub.
             // Shortly afterwards, the test should deliberately delete the device from the IoT Hub's device registry to cause
             // the device to lose connection. The device should attempt to reconnect to Hub for a while, but should eventually
             // reprovision
             CancellationToken cancellationToken = TestContext.Current.CancellationToken;
 
-            using RegistryManager registryManager = Setup.GetMQTTv3IotHubRegistryManager();
-            using ProvisioningServiceClient provisioningServiceClient = Setup.GetDpsHubServiceClient();
+            using RegistryManager registryManager = testAgainstClassicHub
+                ? Setup.GetMQTTv3IotHubRegistryManager()
+                : Setup.GetMQTTv5IotHubRegistryManager();
+            using ProvisioningServiceClient provisioningServiceClient = Setup.GetDpsHubServiceClient(testAgainstClassicHub);
 
             // Give the device a fast reconnect cadence and a low re-provision threshold so that, once it can no longer
             // reach its assigned hub, it falls back to DPS well within this test's time budget rather than retrying the
@@ -36,7 +45,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
             };
 
             await using UnifiedDeviceTestContext device = await Setup.CreateConnectedUnifiedConnectionClientAsync(
-                testAgainstClassicHub: true,
+                testAgainstClassicHub,
                 options,
                 cancellationToken);
 
@@ -65,16 +74,25 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
             telemetryClient.Dispose(false);
         }
 
-        [Fact(Timeout = 2 * Setup.TestTimeoutMilliseconds)]
-        public async Task TestReprovisioningAfterDeviceDeletedUsingCachedAssignment()
+        [Theory(Timeout = 2 * Setup.TestTimeoutMilliseconds)]
+        [InlineData(true)]
+        [InlineData(false, Traits = new[] { Setup.HubTrait, Setup.MQTTv5HubTraitValue })]
+        public async Task TestReprovisioningAfterDeviceDeletedUsingCachedAssignment(bool testAgainstClassicHub)
         {
+            if (!testAgainstClassicHub)
+            {
+                Assert.Skip("This device doesn't go to reprovisioning once deleted? Service bug?");
+            }
+
             // In this test, the test device provisions to an IoT hub and connects, and the connection context that
             // provisioning returned is cached. The test then deliberately disconnects the device and deletes the
             // device's identity from the IoT hub's registry. A fresh client seeded with the cached context should fail
             // to connect directly and automatically fall back to provisioning again.
             CancellationToken cancellationToken = TestContext.Current.CancellationToken;
 
-            using RegistryManager registryManager = Setup.GetMQTTv3IotHubRegistryManager();
+            using RegistryManager registryManager = testAgainstClassicHub
+                ? Setup.GetMQTTv3IotHubRegistryManager()
+                : Setup.GetMQTTv5IotHubRegistryManager();
 
             // A fast reconnect cadence and a low re-provision threshold keep the direct connection attempt inside this
             // test's time budget, so the direct connection is abandoned (rather than retrying the unreachable hub for
@@ -86,7 +104,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
             };
 
             await using UnifiedDeviceTestContext device = await Setup.CreateConnectedUnifiedConnectionClientAsync(
-                testAgainstClassicHub: true,
+                testAgainstClassicHub,
                 options,
                 cancellationToken);
 
@@ -112,7 +130,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
             // provisioning and reconnects to whichever hub it is assigned.
             using ConnectionClient reconnectingClient = new(options, cachedConnectionContext);
             await reconnectingClient.ProvisionAndConnectAsync(
-                new ProvisioningSettings(Setup.DpsIdScope),
+                Setup.CreateProvisioningSettings(testAgainstClassicHub),
                 device.AuthenticationProvider,
                 cancellationToken: cancellationToken);
 
@@ -128,9 +146,16 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
             telemetryClient.Dispose(false);
         }
 
-        [Fact(Timeout = 2 * Setup.TestTimeoutMilliseconds)]
-        public async Task TestReprovisioningAfterDeviceDeletedAndEnrollmentTemporarilyDeleted()
+        [Theory(Timeout = 2 * Setup.TestTimeoutMilliseconds)]
+        [InlineData(true)]
+        [InlineData(false, Traits = new[] { Setup.HubTrait, Setup.MQTTv5HubTraitValue })]
+        public async Task TestReprovisioningAfterDeviceDeletedAndEnrollmentTemporarilyDeleted(bool testAgainstClassicHub)
         {
+            if (!testAgainstClassicHub)
+            {
+                Assert.Skip("This device doesn't go to reprovisioning once deleted? Service bug?");
+            }
+
             // In this test, the test device should successfully provision to an IoT Hub and successfully connect to that IoT Hub.
             // Shortly afterwards, the test should deliberately delete that device's enrollment in DPS and delete the device from
             // the IoT Hub's device registry. This should cause the device to attempt to reconnect to Hub for a while before falling
@@ -138,8 +163,10 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
             // to DPS to allow re-provisioning to succeed
             CancellationToken cancellationToken = TestContext.Current.CancellationToken;
 
-            using RegistryManager registryManager = Setup.GetMQTTv3IotHubRegistryManager();
-            using ProvisioningServiceClient provisioningServiceClient = Setup.GetDpsHubServiceClient();
+            using RegistryManager registryManager = testAgainstClassicHub
+                ? Setup.GetMQTTv3IotHubRegistryManager()
+                : Setup.GetMQTTv5IotHubRegistryManager();
+            using ProvisioningServiceClient provisioningServiceClient = Setup.GetDpsHubServiceClient(testAgainstClassicHub);
 
             // As above, a fast reconnect cadence and a low re-provision threshold keep the hub-retry-then-reprovision cycle
             // inside this test's time budget. The retry policy is wrapped so the test can count how many times the client
@@ -153,7 +180,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
             };
 
             await using UnifiedDeviceTestContext device = await Setup.CreateConnectedUnifiedConnectionClientAsync(
-                testAgainstClassicHub: true,
+                testAgainstClassicHub,
                 options,
                 cancellationToken);
 

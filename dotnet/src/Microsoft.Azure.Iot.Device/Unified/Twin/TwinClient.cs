@@ -155,6 +155,11 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
         /// <param name="cancellationToken">The cancellation token.</param>
         /// <returns>Whether IoT hub accepted this patch.</returns>
         /// <exception cref="PublishRejectedException">Thrown if this reported property update message is rejected by IoT Hub for any reason.</exception>
+        /// <remarks>
+        /// Note that the MQTTv5 IoT Hub supports using an If-Match property when reporting properties that allows you to have IoT Hub reject 
+        /// a reported properties update if it is out-of-date. However, MQTTv3 IoT Hubs do not support this flow. As a result, this unified client 
+        /// does not support sending If-Match values and will always send "unconditional" as the If-Match value when connected to an MQTTv5 IoT Hub.
+        /// </remarks>
         public async Task<ReportedPatchResponse> UpdateReportedPropertiesAsync(JsonObject reportedProperties, CancellationToken cancellationToken = default)
         {
             ObjectDisposedException.ThrowIf(_isDisposed, this);
@@ -167,7 +172,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
                 ReportedPatchRequest mqttv5Request = new()
                 {
                     ReportedProperties = reportedProperties,
-                    IfMatch = 0
+                    IfMatch = 0 // MQTTv5 IoT hub treats this as unconditional which matches the behavior when updating reported properties for an MQTTv3 IoT Hub
                 };
                 return await _mqttv5HubTwinClient.UpdateReportedPropertiesAsync(mqttv5Request, cancellationToken);
             }

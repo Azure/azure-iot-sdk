@@ -14,6 +14,8 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
 
         public required ConnectionContext ConnectionContext { get; set; }
 
+        public required bool TestAgainstClassicHub { get; init; }
+
         /// <summary>
         /// The authentication this device provisioned and connected with, for example an
         /// <see cref="X509AuthenticationProvider"/> or a <see cref="SymmetricKeyAuthenticationProvider"/>.
@@ -35,12 +37,13 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
         /// </summary>
         public string RegistrationId => IndividualEnrollment?.RegistrationId ?? AuthenticationProvider.GetRegistrationId();
 
-        public ValueTask DisposeAsync() => CleanupAsync(ConnectionClient, ConnectionContext, IndividualEnrollment);
+        public ValueTask DisposeAsync() => CleanupAsync(ConnectionClient, ConnectionContext, IndividualEnrollment, TestAgainstClassicHub);
 
         internal static async ValueTask CleanupAsync(
             ConnectionClient connectionClient,
             ConnectionContext? connectionContext,
-            IndividualEnrollment? individualEnrollment)
+            IndividualEnrollment? individualEnrollment,
+            bool testAgainstClassicHub)
         {
             try
             {
@@ -83,7 +86,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
                     {
                         if (individualEnrollment != null)
                         {
-                            using var provisioningServiceClient = Setup.GetDpsHubServiceClient();
+                            using var provisioningServiceClient = Setup.GetDpsHubServiceClient(testAgainstClassicHub);
                             await provisioningServiceClient.DeleteIndividualEnrollmentAsync(individualEnrollment.RegistrationId);
                         }
                     }

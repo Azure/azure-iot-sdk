@@ -185,7 +185,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
                 CorrelationData = requestId.ToByteArray(bigEndian: true),
                 Payload = new ReportedPatch()
                 {
-                    IfMatch = patch.IfMatch,
+                    IfMatch = patch.IfMatch, // If this value is 0, the if-match field will not be included in the serialized payload and the request is treated as unconditional
                     Payload = ByteString.CopyFromUtf8(JsonSerializer.Serialize(patch.ReportedProperties))
                 }.ToByteArray(),
                 ContentType = ProtobufContentType,

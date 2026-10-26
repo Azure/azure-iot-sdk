@@ -12,6 +12,13 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
     {
         public required JsonObject ReportedProperties { get; set; }
 
+        /// <summary>
+        /// The version of the reported properties as the device currently understands it. If out-of-date, this patch request will be rejected.
+        /// </summary>
+        /// <remarks>
+        /// If this value is set to 0, then the if-match field will not be included in the serialized payload and the request will be treated 
+        /// as unconditional by IoT Hub.
+        /// </remarks>
         public UInt64 IfMatch { get; set; }
     }
 }

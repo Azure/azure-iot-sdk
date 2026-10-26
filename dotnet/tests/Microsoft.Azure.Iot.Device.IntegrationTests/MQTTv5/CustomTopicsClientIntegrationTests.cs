@@ -12,9 +12,10 @@ using Xunit;
 
 namespace Microsoft.Azure.Iot.Device.IntegrationTests.MQTTv5
 {
+    [Trait(Setup.HubTrait, Setup.MQTTv5HubTraitValue)]
     public class CustomTopicsClientIntegrationTests
     {
-        [Fact(Timeout = 2 * Setup.TestTimeoutMilliseconds)]
+        [Fact(Timeout = 2 * Setup.TestTimeoutMilliseconds, Skip = "Need test infrastructure to authorize these test custom topics")]
         public async Task TestCustomTopicSubscriptionSurvivesReprovisioningAfterDeviceDeleted()
         {
             // In this test, a device subscribes to a custom topic, then the test deletes that device from the IoT hub's

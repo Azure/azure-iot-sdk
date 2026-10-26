@@ -54,6 +54,25 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             Assert.StartsWith("SharedAccessSignature ", System.Text.Encoding.UTF8.GetString(sentPassword));
         }
 
+        // Matches the C SDK: the MQTTv5 hub serves MQTT over WebSockets at "/mqtt" on port 443.
+        [Fact]
+        public async Task ConnectUsesMqttV5HubWebSocketUri()
+        {
+            using MockConnectionMqttClient mockMqttClient = new() { AutoRespondToBirth = true };
+            using ConnectionClient connectionClient = new(new() { MqttClient = mockMqttClient });
+
+            string? sentWebSocketUri = null;
+            mockMqttClient.OnConnect = connect =>
+            {
+                sentWebSocketUri = connect.WebsocketUri;
+                return Task.FromResult(new MqttConnectAck() { ResultCode = MqttConnectReasonCode.Success });
+            };
+
+            await connectionClient.ConnectToHubAsync(GetMockConnectionContext(), cancellationToken: TestContext.Current.CancellationToken);
+
+            Assert.Equal("wss://someHostName:443/mqtt", sentWebSocketUri);
+        }
+
         // A publish attempt that fails only after the reconnect and its birth flow have already completed must still be
         // retried, rather than waiting for a connection-restored wakeup that already happened.
         [Fact]

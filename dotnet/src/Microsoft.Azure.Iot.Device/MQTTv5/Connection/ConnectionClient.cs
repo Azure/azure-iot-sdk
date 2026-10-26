@@ -226,7 +226,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
             // TODO do we want to also include previous user agent details like OS, architecture, etc? Service currently discards those
             string username = $"correlationId={Uri.EscapeDataString(hexEncodedConnectNonce)}&clientVersion={Uri.EscapeDataString($"csharp/{GetPackageVersion()}")}";
 
-            connect.WebsocketUri = $"wss://{connect.HostName}/$iothub/websocket";
+            connect.WebsocketUri = BuildWebSocketUri(connect.HostName, connect.WebsocketPort, MqttV5HubWebSocketPath);
             connect.Username = username;
             connect.ProtocolVersion = MqttProtocolVersion.V500;
 

@@ -13,7 +13,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
     {
         [Theory(Timeout = Setup.TestTimeoutMilliseconds)]
         [InlineData(true)]
-        [InlineData(false)]
+        [InlineData(false, Traits = new[] { Setup.HubTrait, Setup.MQTTv5HubTraitValue })]
         public async Task TestTwin(bool testAgainstClassicHub)
         {
             UnifiedDeviceTestContext testDeviceContext = await Setup.CreateConnectedUnifiedConnectionClientAsync(testAgainstClassicHub, null, TestContext.Current.CancellationToken);

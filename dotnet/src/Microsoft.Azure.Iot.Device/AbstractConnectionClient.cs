@@ -62,6 +62,14 @@ namespace Microsoft.Azure.Iot.Device
 
         private const string ProvisioningUsernameFormat = "{0}/registrations/{1}/api-version={2}&ClientVersion={3}";
 
+        // WebSocket settings mirror the C SDK (AZ_IOT_MQTT_DEFAULT_WEBSOCKET_PATH / AZ_IOT_MQTT_HUB_V5_WEBSOCKET_PATH):
+        // DPS and the MQTTv3 hub use "/$iothub/websocket"; the MQTTv5 hub uses "/mqtt". Both use port 443 and the "mqtt" subprotocol.
+        internal const int WebSocketPort = 443;
+        internal const string DefaultWebSocketPath = "/$iothub/websocket";
+        internal const string MqttV5HubWebSocketPath = "/mqtt";
+
+        internal static string BuildWebSocketUri(string hostName, int port, string path) => $"wss://{hostName}:{port}{path}";
+
         // Used for every DPS session. Required for the "connectionProfile" registration result field and supports
         // certificate signing requests.
         private const string ProvisioningApiVersion = "2026-11-02-preview";
@@ -705,7 +713,7 @@ namespace Microsoft.Azure.Iot.Device
                 {
                     HostName = hostname,
                     TcpPort = 8883,
-                    WebsocketPort = 443,
+                    WebsocketPort = WebSocketPort,
                     ClientId = deviceId,
 
                     // It can save some SUBSCRIBE calls to attempt to resume sessions, but there is a race condition
@@ -1481,8 +1489,8 @@ namespace Microsoft.Azure.Iot.Device
             {
                 HostName = hostName,
                 TcpPort = 8883,
-                WebsocketPort = 443,
-                WebsocketUri = $"wss://{hostName}:443",
+                WebsocketPort = WebSocketPort,
+                WebsocketUri = BuildWebSocketUri(hostName, WebSocketPort, DefaultWebSocketPath),
                 CleanSession = true, // The DPS MQTT broker does not support session persistence, so setting these clean start/clean session flags does nothing
                 CleanStart = true,
                 SessionExpiryInterval = 0,

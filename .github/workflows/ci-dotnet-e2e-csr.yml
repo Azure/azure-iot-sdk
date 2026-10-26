@@ -1,6 +1,18 @@
 # Copyright (c) Microsoft. All rights reserved.
 # Licensed under the MIT license. See LICENSE file in the project root for full license information.
 
+# .NET certificate-management CSR integration tests.
+#
+# The classic-hub cases use the per-run certificate-management environment.
+# MQTTv5 cases use the shared MQTTv5 environment, which must have certificate
+# management enabled and a symmetric-key enrollment group linked to its policy.
+# The X.509 MQTTv5 hub-renewal case remains skipped by the test because that
+# operation is not implemented.
+#
+#   vars:    E2E_MQTTV5_SHARED_ID_SCOPE, E2E_MQTTV5_SHARED_DPS_HOST (optional)
+#   secrets: E2E_MQTTV5_SHARED_IOTHUB_CS, E2E_MQTTV5_SHARED_DPS_CS,
+#            E2E_MQTTV5_SHARED_SYMM_KEY_GROUP_PRIMARY_KEY
+
 name: ci-dotnet-e2e-csr
 
 on:
@@ -11,7 +23,7 @@ on:
       - '!dotnet/**/*.md'
       - 'common/**'
       - '!common/**/*.md'
-      - '.github/workflows/ci-dotnet-cert-management.yml'
+      - '.github/workflows/ci-dotnet-e2e-csr.yml'
   push:
     branches: [ main ]
     paths:
@@ -19,7 +31,7 @@ on:
       - '!dotnet/**/*.md'
       - 'common/**'
       - '!common/**/*.md'
-      - '.github/workflows/ci-dotnet-cert-management.yml'
+      - '.github/workflows/ci-dotnet-e2e-csr.yml'
   schedule:
     - cron: '0 11 * * *'  # Nightly at 4am PST
 
@@ -116,6 +128,12 @@ jobs:
 
       - name: Run e2e
         shell: pwsh
+        env:
+          E2E_MQTTV5_SHARED_IOTHUB_CS: ${{ secrets.E2E_MQTTV5_SHARED_IOTHUB_CS }}
+          E2E_MQTTV5_SHARED_DPS_CS: ${{ secrets.E2E_MQTTV5_SHARED_DPS_CS }}
+          E2E_MQTTV5_SHARED_ID_SCOPE: ${{ vars.E2E_MQTTV5_SHARED_ID_SCOPE }}
+          E2E_MQTTV5_SHARED_DPS_HOST: ${{ vars.E2E_MQTTV5_SHARED_DPS_HOST }}
+          E2E_MQTTV5_SHARED_SYMM_KEY_GROUP_PRIMARY_KEY: ${{ secrets.E2E_MQTTV5_SHARED_SYMM_KEY_GROUP_PRIMARY_KEY }}
         run: |
           # Service-side config (IOTHUB_*, IOT_DPS_*) is set by the generated script.
           . ./test_config/set_test_env_vars.ps1
@@ -188,9 +206,14 @@ jobs:
           $env:AZ_IOT_CLIENT_KEY          = $keyPath
           $env:AZ_IOT_TRUSTED_CA          = $caPath
           if ($env:IOT_DPS_GLOBAL_ENDPOINT) { $env:AZ_IOT_DPS_GLOBAL_ENDPOINT = $env:IOT_DPS_GLOBAL_ENDPOINT }
+          $env:IOTHUB_CONNECTION_STRING_MQTTV5 = $env:E2E_MQTTV5_SHARED_IOTHUB_CS
+          $env:IOT_DPS_CONNECTION_STRING_MQTTV5 = $env:E2E_MQTTV5_SHARED_DPS_CS
+          $env:IOT_DPS_ID_SCOPE_MQTTV5 = $env:E2E_MQTTV5_SHARED_ID_SCOPE
+          $env:IOT_DPS_GLOBAL_ENDPOINT_MQTTV5 = $env:E2E_MQTTV5_SHARED_DPS_HOST
+          $env:IOT_DPS_SYMM_KEY_GROUP_PRIMARY_KEY_MQTTV5 = $env:E2E_MQTTV5_SHARED_SYMM_KEY_GROUP_PRIMARY_KEY
 
-          # Only tests labeled Category=CertificateManagement run here;
-          # all other tests run in ci-dotnet.
+          # Run all certificate-management cases here; other MQTTv5 tests run in
+          # ci-dotnet-e2e-mqttv5 and all remaining tests run in ci-dotnet.
           dotnet test ./dotnet/Project.slnx `
             --filter "Category=CertificateManagement" `
             --collect:"XPlat Code Coverage" `
