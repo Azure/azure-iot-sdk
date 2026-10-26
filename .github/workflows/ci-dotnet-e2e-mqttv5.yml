@@ -127,4 +127,5 @@ jobs:
         if: always()
         env:
           REPORT_URL: ${{ steps.test-reporter.outputs.url_html }}
+        shell: bash
         run: echo "Test Report $REPORT_URL" >> "$GITHUB_STEP_SUMMARY"
