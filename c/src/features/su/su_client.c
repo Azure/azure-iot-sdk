@@ -4172,7 +4172,7 @@ az_iot_su_client_get_reboot_state(const az_iot_su_client* client)
    * the terminal or retry record, or none once its report settled. */
   bool running
       = SU_I(client).state != AZ_IOT_SU_STATE_IDLE && SU_I(client).state != AZ_IOT_SU_STATE_FAILED;
-  bool behind = SU_I(client).hooks.persist_state_fn != NULL
+  bool behind = SU_I(client).hooks.persist_workflow_state_fn != NULL
       && (SU_I(client).superseded_record_stored
           || (running ? (SU_I(client).checkpoint_pending || SU_I(client).checkpoint_superseded)
                       : checkpoint_out_of_sync(client)));

@@ -1230,7 +1230,7 @@ extern "C"
      * workflow that asked failed). */
     AZ_IOT_SU_REBOOT_NONE = 0,
     /** Storage is behind what az_iot_su_client_resume() needs: a
-     * persist_state_fn write is failing or being retried. A restart now could
+     * persist_workflow_state_fn write is failing or being retried. A restart now could
      * lose or repeat work, whether or not a reboot was asked for. Stays so
      * after the client gives up retrying (PERSIST_FAILED with
      * `persist_retrying` false) until a later write succeeds. */
@@ -1246,7 +1246,7 @@ extern "C"
    * Check after each az_iot_su_client_do_work(): the next call continues the
    * workflow as if the device had not rebooted. Also use it before a planned
    * exit or shutdown: PENDING means storage is not current yet. With no
-   * persist_state_fn there is nothing to store, so it is never PENDING (and a
+   * persist_workflow_state_fn there is nothing to store, so it is never PENDING (and a
    * workflow does not survive a restart).
    *
    * @param[in] client Initialized client.
