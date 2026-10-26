@@ -1043,6 +1043,8 @@ static bool persist_write(az_iot_su_client* client, const uint8_t* blob, size_t 
   int32_t rc = h->persist_state_fn(blob, len, h->user_ctx);
   if (rc == 0)
   {
+    /* The single stored record was replaced or cleared. */
+    SU_I(client).superseded_record_stored = false;
     uint32_t failed = az_iot_retry_state__attempts(&SU_I(client).persist_retry);
     az_iot_retry_state__reset(&SU_I(client).persist_retry);
     if (failed > 0)
@@ -1103,6 +1105,7 @@ static void clear_stale_checkpoint(az_iot_su_client* client)
   if (SU_I(client).checkpoint_stored
       && h->persist_state_fn(SU_I(client).terminal_blob, 0, h->user_ctx) == 0)
   {
+    SU_I(client).superseded_record_stored = false;
     SU_I(client).checkpoint_stored = false;
     SU_I(client).checkpoint_terminal = false;
     SU_I(client).checkpoint_superseded = false;
@@ -1794,6 +1797,12 @@ static void process_update_metadata(
     return;
   }
 
+  /* A request still set here is an earlier workflow's (it succeeded): its
+   * reboot is still owed whatever this workflow does. */
+  SU_I(client).earlier_reboot_requested
+      = SU_I(client).earlier_reboot_requested || SU_I(client).reboot_requested;
+  SU_I(client).reboot_requested = false;
+
   /* A new workflow supersedes whatever the stored checkpoint belongs to,
    * including an unsent terminal report of the previous one. A retry keeps
    * the retry record until its own progress replaces it. */
@@ -2077,6 +2086,10 @@ static void set_su_state(az_iot_su_client* client, az_iot_su_state next)
     return;
   }
   SU_I(client).state = next;
+  if (next == AZ_IOT_SU_STATE_FAILED)
+  {
+    SU_I(client).reboot_requested = false; /* nothing left to activate */
+  }
 
   az_iot_su_event event = {
     .kind = AZ_IOT_SU_EVENT_WORKFLOW_STATE_CHANGED,
@@ -3779,6 +3792,8 @@ az_iot_result az_iot_su_client_do_work(az_iot_su_client* client)
   {
     /* The new workflow proceeds; a reboot before it ends may resume the old
      * record, which the new workflowId supersedes again. */
+    SU_I(client).superseded_record_stored
+        = SU_I(client).superseded_record_stored || SU_I(client).checkpoint_superseded;
     SU_I(client).checkpoint_superseded = false;
     if (SU_I(client).checkpoint_pending && running)
     {
@@ -3991,6 +4006,7 @@ az_iot_result az_iot_su_client_do_work(az_iot_su_client* client)
       }
       if (ir == AZ_IOT_SU_RESULT_REBOOT_REQUIRED)
       {
+        SU_I(client).reboot_requested = true;
         /* The install needs a reboot to take effect: snapshot the
          * workflow so az_iot_su_client_resume() can continue at Apply
          * on the next boot, report, and advance (a real device reboots
@@ -4036,6 +4052,10 @@ az_iot_result az_iot_su_client_do_work(az_iot_su_client* client)
         break;
       }
       result_step_success(client, step);
+      if (ar == AZ_IOT_SU_RESULT_REBOOT_REQUIRED)
+      {
+        SU_I(client).reboot_requested = true;
+      }
 
       /* Advance to the next step, or finish. */
       uint32_t steps = SU_I(client).current_manifest.instructions.steps_count;
@@ -4138,6 +4158,30 @@ az_iot_su_state az_iot_su_client_get_state(const az_iot_su_client* client)
     return AZ_IOT_SU_STATE_IDLE;
   }
   return SU_I(client).state;
+}
+
+AZ_NODISCARD az_iot_su_reboot_state
+az_iot_su_client_get_reboot_state(const az_iot_su_client* client)
+{
+  if (client == NULL || SU_I(client).detached)
+  {
+    return AZ_IOT_SU_REBOOT_NONE;
+  }
+  /* Mid-workflow: the position record the workflow resumes from. Otherwise:
+   * the terminal or retry record, or none once its report settled. */
+  bool running
+      = SU_I(client).state != AZ_IOT_SU_STATE_IDLE && SU_I(client).state != AZ_IOT_SU_STATE_FAILED;
+  bool behind = SU_I(client).hooks.persist_state_fn != NULL
+      && (SU_I(client).superseded_record_stored
+          || (running ? (SU_I(client).checkpoint_pending || SU_I(client).checkpoint_superseded)
+                      : checkpoint_out_of_sync(client)));
+  if (behind)
+  {
+    return AZ_IOT_SU_REBOOT_PENDING;
+  }
+  return SU_I(client).reboot_requested || SU_I(client).earlier_reboot_requested
+      ? AZ_IOT_SU_REBOOT_READY
+      : AZ_IOT_SU_REBOOT_NONE;
 }
 
 az_iot_result az_iot_su_client_add_observer(
