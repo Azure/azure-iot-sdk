@@ -32,7 +32,7 @@ internal class Program
         string deviceId = File.ReadAllText("../../../../deviceId.txt");
         string hostName = File.ReadAllText("../../../../hostname.txt");
 
-        X509AuthenticationProvider authentication = new(X509CertificateLoader.LoadPkcs12FromFile(Pcks12CertificatePath, Pcks12CertificatePassword));
+        X509AuthenticationProvider authentication = new(X509CertificateLoader.LoadPkcs12FromFile(Pcks12CertificatePath, Pcks12CertificatePassword), null);
 
         // Remove this to eliminate all SDK + MQTT level logs
         Trace.Listeners.Add(new ConsoleTraceListener());

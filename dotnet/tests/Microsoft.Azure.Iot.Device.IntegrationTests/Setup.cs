@@ -79,7 +79,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
             IndividualEnrollment individualEnrollment = new(registrationId, attestation);
             await provisioningServiceClient.CreateOrUpdateIndividualEnrollmentAsync(individualEnrollment, cancellationToken);
 
-            X509AuthenticationProvider x509AuthenticationProvider = new(pfx);
+            X509AuthenticationProvider x509AuthenticationProvider = new(pfx, null);
 
             ConnectionClient connectionClient = new(options);
             ProvisioningSettings provisioningSettings = new(DpsIdScope);
@@ -127,7 +127,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
             IndividualEnrollment individualEnrollment = new(registrationId, attestation);
             await provisioningServiceClient.CreateOrUpdateIndividualEnrollmentAsync(individualEnrollment, cancellationToken);
 
-            X509AuthenticationProvider x509AuthenticationProvider = new(pfx);
+            X509AuthenticationProvider x509AuthenticationProvider = new(pfx, null);
 
             var (csrBase64, privateKey) = CertificateUtilities.GenerateCsrAndPrivateKey(registrationId, CertificateUtilities.CsrAlgorithm.RSA);
 
@@ -185,8 +185,8 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
             }
 
             SymmetricKeyAuthenticationProvider authentication = issuedCertificatePrivateKey == null
-                ? new(registrationId, DpsIdScope, symmetricKey)
-                : new(registrationId, DpsIdScope, symmetricKey, issuedCertificatePrivateKey);
+                ? new(registrationId, DpsIdScope, symmetricKey, null)
+                : new(registrationId, DpsIdScope, symmetricKey, null, issuedCertificatePrivateKey);
 
             ConnectionClient connectionClient = new(options);
             ProvisioningSettings provisioningSettings = new(DpsIdScope)

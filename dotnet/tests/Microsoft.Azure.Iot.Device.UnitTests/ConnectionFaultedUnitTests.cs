@@ -2816,7 +2816,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             var certificateRequest = new CertificateRequest($"CN={RegistrationId}", key, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
             X509Certificate2 certificate = certificateRequest.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(1));
 
-            return new X509AuthenticationProvider(certificate);
+            return new X509AuthenticationProvider(certificate, null);
         }
 
         /// <summary>

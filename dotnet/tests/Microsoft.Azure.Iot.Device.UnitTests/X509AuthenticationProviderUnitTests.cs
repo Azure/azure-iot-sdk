@@ -28,18 +28,9 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
             X509AuthenticationProvider authentication = constructorKind switch
             {
-                0 => new X509AuthenticationProvider(primaryCertificate)
-                {
-                    SecondaryClientCertificate = secondaryCertificate,
-                },
-                1 => new X509AuthenticationProvider(primaryCertificate, issuedKey)
-                {
-                    SecondaryClientCertificate = secondaryCertificate,
-                },
-                2 => new X509AuthenticationProvider(primaryCertificate, _ => Task.FromResult(issuedCertificate))
-                {
-                    SecondaryClientCertificate = secondaryCertificate,
-                },
+                0 => new X509AuthenticationProvider(primaryCertificate, secondaryCertificate),
+                1 => new X509AuthenticationProvider(primaryCertificate, secondaryCertificate, issuedKey),
+                2 => new X509AuthenticationProvider(primaryCertificate, secondaryCertificate, _ => Task.FromResult(issuedCertificate)),
                 _ => throw new ArgumentOutOfRangeException(nameof(constructorKind)),
             };
 

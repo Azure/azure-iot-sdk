@@ -24,7 +24,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
         [Fact]
         public async Task SymmetricKeyAuthenticationSendsSasTokenInAuthorizationHeader()
         {
-            var authentication = new SymmetricKeyAuthenticationProvider("registration-id", "0ne00000000", new byte[] { 0x01, 0x02, 0x03 });
+            var authentication = new SymmetricKeyAuthenticationProvider("registration-id", "0ne00000000", new byte[] { 0x01, 0x02, 0x03 }, null);
             var handler = new CapturingHandler();
             using var fileUploadClient = new FileUploadClient(new FakeConnectionClient(authentication), new HttpClient(handler));
 
@@ -79,7 +79,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
             using X509Certificate2 certificate = new CertificateRequest($"CN={DeviceId}", key, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1)
                 .CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(1));
             var handler = new CapturingHandler();
-            using var fileUploadClient = new FileUploadClient(new FakeConnectionClient(new X509AuthenticationProvider(certificate)), new HttpClient(handler));
+            using var fileUploadClient = new FileUploadClient(new FakeConnectionClient(new X509AuthenticationProvider(certificate, null)), new HttpClient(handler));
 
             await fileUploadClient.GetFileUploadSasUriAsync(new FileUploadSasUriRequest { BlobName = "file.txt" }, TestContext.Current.CancellationToken);
 

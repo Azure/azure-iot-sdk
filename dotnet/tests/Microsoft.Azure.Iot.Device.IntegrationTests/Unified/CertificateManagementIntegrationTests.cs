@@ -129,7 +129,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
 
             // Create initial CSR to be processed by DPS
             var (csrBase64, privateKey) = CertificateUtilities.GenerateCsrAndPrivateKey(registrationId, CertificateUtilities.CsrAlgorithm.RSA);
-            X509AuthenticationProvider x509AuthenticationProvider = new(deviceCertificate, privateKey);
+            X509AuthenticationProvider x509AuthenticationProvider = new(deviceCertificate, null, privateKey);
 
             ConnectionClient connectionClient = new();
 

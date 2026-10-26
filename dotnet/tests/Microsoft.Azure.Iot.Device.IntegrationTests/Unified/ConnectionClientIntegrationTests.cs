@@ -101,10 +101,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
             }
 
             // Neither DPS nor the IoT hub device that DPS creates knows this key, so they can only accept the secondary.
-            SymmetricKeyAuthenticationProvider authentication = new(registrationId, Setup.DpsIdScope, RandomNumberGenerator.GetBytes(32))
-            {
-                SecondarySymmetricKey = enrolledSecondaryKey,
-            };
+            SymmetricKeyAuthenticationProvider authentication = new(registrationId, Setup.DpsIdScope, RandomNumberGenerator.GetBytes(32), enrolledSecondaryKey);
 
             await using UnifiedDeviceTestContext testDeviceContext = await ProvisionAndConnectAsync(authentication, individualEnrollment);
 
@@ -129,10 +126,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
                 await provisioningServiceClient.CreateOrUpdateIndividualEnrollmentAsync(individualEnrollment, TestContext.Current.CancellationToken);
             }
 
-            X509AuthenticationProvider authentication = new(unenrolledCertificate)
-            {
-                SecondaryClientCertificate = enrolledCertificate,
-            };
+            X509AuthenticationProvider authentication = new(unenrolledCertificate, enrolledCertificate);
 
             await using UnifiedDeviceTestContext testDeviceContext = await ProvisionAndConnectAsync(authentication, individualEnrollment);
 

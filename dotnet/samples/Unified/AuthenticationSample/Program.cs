@@ -53,7 +53,7 @@ internal class Program
     /// </summary>
     private static async Task X509BootAndOperationalAsync(CancellationToken cancellationToken)
     {
-        X509AuthenticationProvider authentication = new(SampleConstants.LoadBootCertificate());
+        X509AuthenticationProvider authentication =         new(SampleConstants.LoadBootCertificate(), null);
         ProvisioningSettings provisioningSettings = new(SampleConstants.LoadIdScope());
 
         using ConnectionClient connectionClient = new();
@@ -76,7 +76,7 @@ internal class Program
 
         // Passing the operational key tells the provider to present issued certificates, paired with that key, to IoT Hub
         // instead of the boot certificate. Every certificate signing request this device sends must use this same key.
-        X509AuthenticationProvider authentication = new(SampleConstants.LoadBootCertificate(), operationalKey);
+        X509AuthenticationProvider authentication = new(SampleConstants.LoadBootCertificate(), null, operationalKey);
 
         ProvisioningSettings provisioningSettings = new(SampleConstants.LoadIdScope())
         {
@@ -97,7 +97,7 @@ internal class Program
         using OperationalCredentialStore credentialStore = new();
         ECDsa operationalKey = credentialStore.CreateKey();
 
-        X509AuthenticationProvider authentication = new(SampleConstants.LoadBootCertificate(), credentialStore.HandleCertificateSigningCompleteAsync);
+        X509AuthenticationProvider authentication = new(SampleConstants.LoadBootCertificate(), null, credentialStore.HandleCertificateSigningCompleteAsync);
 
         ProvisioningSettings provisioningSettings = new(SampleConstants.LoadIdScope())
         {
@@ -118,7 +118,8 @@ internal class Program
         SymmetricKeyAuthenticationProvider authentication = new(
             SampleConstants.LoadSymmetricKeyRegistrationId(),
             idScope,
-            SampleConstants.LoadSymmetricKey());
+            SampleConstants.LoadSymmetricKey(),
+            null);
 
         ProvisioningSettings provisioningSettings = new(idScope);
 
@@ -142,7 +143,7 @@ internal class Program
         string registrationId = SampleConstants.LoadSymmetricKeyRegistrationId();
 
         // Until a certificate is issued, this provider authenticates with IoT Hub with a SAS token
-        SymmetricKeyAuthenticationProvider authentication = new(registrationId, idScope, SampleConstants.LoadSymmetricKey(), operationalKey);
+        SymmetricKeyAuthenticationProvider authentication = new(registrationId, idScope, SampleConstants.LoadSymmetricKey(), null, operationalKey);
 
         ProvisioningSettings provisioningSettings = new(idScope)
         {
@@ -168,6 +169,7 @@ internal class Program
             registrationId,
             idScope,
             SampleConstants.LoadSymmetricKey(),
+            null,
             credentialStore.HandleCertificateSigningCompleteAsync);
 
         ProvisioningSettings provisioningSettings = new(idScope)
