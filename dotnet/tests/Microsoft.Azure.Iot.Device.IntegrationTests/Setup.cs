@@ -331,10 +331,13 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
             IndividualEnrollment? individualEnrollment = null;
             if (issuedCertificatePrivateKey != null)
             {
-                string? groupKey = Environment.GetEnvironmentVariable("IOT_DPS_SYMM_KEY_GROUP_PRIMARY_KEY");
+                string groupKeyVariable = testAgainstClassicHub
+                    ? "IOT_DPS_SYMM_KEY_GROUP_PRIMARY_KEY"
+                    : "IOT_DPS_SYMM_KEY_GROUP_PRIMARY_KEY_MQTTV5";
+                string? groupKey = Environment.GetEnvironmentVariable(groupKeyVariable);
                 if (string.IsNullOrWhiteSpace(groupKey))
                 {
-                    Assert.Skip("IOT_DPS_SYMM_KEY_GROUP_PRIMARY_KEY is not set; certificate signing needs a symmetric-key enrollment group linked to a certificate policy.");
+                    Assert.Skip($"{groupKeyVariable} is not set; certificate signing needs a symmetric-key enrollment group linked to a certificate policy.");
                 }
 
                 using HMACSHA256 hmac = new(Convert.FromBase64String(groupKey));
