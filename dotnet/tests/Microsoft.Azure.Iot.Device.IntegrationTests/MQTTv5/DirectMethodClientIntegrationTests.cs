@@ -114,13 +114,14 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.MQTTv5
             string expectedDirectMethod1Name = "someDirectMethod-" + Guid.NewGuid().ToString();
             string expectedDirectMethod2Name = "someDirectMethod-" + Guid.NewGuid().ToString();
             uint expectedResponseTimeout = 20;
+            uint expectedConnectTimeout = 20;
 
             MQTTv5DeviceTestContext testDeviceContext = await Setup.CreateConnectedMQTTv5ConnectionClientAsync(null, null, TestContext.Current.CancellationToken);
             using DirectMethodClient directMethodClient = new DirectMethodClient(testDeviceContext.ConnectionClient);
 
             ServiceClient serviceClient = Setup.GetMQTTv5IotHubServiceClient();
-            var directMethod1Invocation = new CloudToDeviceMethod(expectedDirectMethod1Name, TimeSpan.FromSeconds(expectedResponseTimeout));
-            var directMethod2Invocation = new CloudToDeviceMethod(expectedDirectMethod2Name, TimeSpan.FromSeconds(expectedResponseTimeout));
+            var directMethod1Invocation = new CloudToDeviceMethod(expectedDirectMethod1Name, TimeSpan.FromSeconds(expectedResponseTimeout), TimeSpan.FromSeconds(expectedConnectTimeout));
+            var directMethod2Invocation = new CloudToDeviceMethod(expectedDirectMethod2Name, TimeSpan.FromSeconds(expectedResponseTimeout), TimeSpan.FromSeconds(expectedConnectTimeout));
             SimpleDirectMethodPayload expectedRequest1Payload = new()
             {
                 SomeInt = 5,
