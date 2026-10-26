@@ -28,7 +28,7 @@ The split in one line: the **.NET mqttv5 client set lives only on the preview br
 - **C** exposes two sibling API families and makes the **application** branch: read `az_iot_connection_client_get_hub_profile()`, then instantiate either `az_iot_mqttv3_telemetry_client` or `az_iot_mqttv5_telemetry_client`. A mismatch is refused with `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH`.
 - **.NET** branches internally on `ConnectionProfile` at runtime.
 
-- **DPS always speaks MQTT v3.1.1**, whichever hub follows, and is **not a separate client** — it runs inside the connection client, which then picks the MQTT version from the DPS-returned `connectionProfile`.
+- **DPS speaks MQTT v3.1.1**, whichever hub follows, and is **not a separate client** — it runs inside the connection client, which then picks the MQTT version from the DPS-returned `connectionProfile`. Exception: C TPM attestation uses a separate, application-driven HTTPS client (§5).
 - C keeps **one** connection client and splits only the feature clients (`c/docs/eng/client-separation.md`).
 - Shared protobuf contracts live in `common/Protos/{presence,directmethods,twin}.proto`; C hand-rolls the codec (`src/mqttv5/direct_method_codec.c`), .NET compiles them with Grpc.Tools.
 
@@ -41,7 +41,7 @@ Legend: **Yes** supported · **Partial** partial/caveated · **No** absent · **
 | Feature | C mqttv3 | C mqttv5 | .NET mqttv3 | .NET mqttv5 | Notes |
 |---|---|---|---|---|---|
 | Maturity | Partial | Partial | Partial | Partial | C `1.0.0-preview` on both branches (header is the single source of truth, gated by `eng/check-version.sh`); .NET 1.1.0 on `main`, 2.0.0-preview3 on the preview branch |
-| Single connection client, DPS internal | Yes | Yes | Yes | Yes | `az_iot_connection_client` / `AbstractConnectionClient`; provisioning is not an app step. .NET mqttv5: preview only |
+| Single connection client, DPS internal | Yes | Yes | Yes | Yes | `az_iot_connection_client` / `AbstractConnectionClient`; provisioning is not an app step, except C TPM attestation (app-driven HTTPS client, §5). .NET mqttv5: preview only |
 | Per-feature clients over one connection | Yes | Yes | Yes | Yes | telemetry / c2d / direct method / twin (+ file upload mqttv3 only), plus custom topics on mqttv5. .NET `ConnectionClientOptions.EnableTwin` / `EnableDirectMethods` / `EnableCloudToDeviceMessages` opt a feature out (#527, **.NET: main only**). .NET mqttv5: preview only |
 | Generation selected at | client init (app picks the API) | ← | runtime, per connection | ← | C refuses a mismatch with `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH`; .NET switches on `ConnectionProfile`. .NET mqttv5: preview only |
 | Runtime generation query | Yes | Yes | Yes | Yes | `az_iot_connection_client_get_hub_profile()` / `ConnectionProfile`. .NET mqttv5: preview only |
@@ -82,7 +82,7 @@ Legend: **Yes** supported · **Partial** partial/caveated · **No** absent · **
 | SAS renewal before expiry | **Partial** | **Partial** | C renews at `renewal_percent` of lifetime (default 80) and reconnects; surfaced as `is_credential_renewal`. .NET mints a fresh token on every connect attempt (configurable lifetimes: hub 1 h, DPS 10 min) and per file-upload request; no proactive renewal timer found. **DPS and mqttv3 hub only** |
 | Credential fallback on rejection | **Yes** | No | C order: X.509 certificate indexes → primary key → secondary key → application token, without a backoff delay. .NET switches only from SAS to an issued certificate |
 | Multiple certificates per role | **Yes** | No | C `load(index)`, up to `AZ_IOT_MAX_CERTS_PER_ROLE` (4); each index is its own auth source |
-| TPM attestation | **Partial** | No | C: **DPS only, over HTTPS** (`az_iot_dps_tpm_client.h`, #437) — the library builds the requests; the app supplies the HTTPS transport and TPM operations. See §5 |
+| TPM attestation | **Partial** | No | C: **DPS only, over HTTPS**, through a separate app-driven client (`az_iot_dps_tpm_client.h`, #437) — the library builds the requests; the app supplies the HTTPS transport and TPM operations. See §5 |
 | Entra ID / token credential | No | No | |
 | Certificate-provider abstraction | Yes | Partial | C `az_iot_certificate_provider.h` vtable (load/release + csr/sign, v2); providers wipe X.509 key material on `release()` (#433); the managed provider validates stored chains (#410) and has opt-in key rotation and EC P-384 (#415, #434). .NET has `X509AuthenticationProvider` only |
 | CSR at DPS enrollment | Yes | Yes | Both send it |
@@ -105,14 +105,14 @@ Legend: **Yes** supported · **Partial** partial/caveated · **No** absent · **
 | Configurable QoS | Partial | Partial | No | No | .NET `//TODO do we want configurable QoS here?` |
 | C2D receive | Yes | **N/A** | **Yes** | N/A | Service supports C2D on mqttv3 only. C mqttv5 C2D client was **removed** (#272). .NET re-added mqttv3 C2D (#483), covered by `TestCloudToDeviceMessages` |
 | C2D settlement (accept/reject/abandon) | No | N/A | N/A | N/A | C: "design C2D strict-settlement state machine" still open (mqttv3 only) |
-| Direct methods | Yes | Yes | Yes | Yes | mqttv5 adds the MQTTv5 **probe / exec / abandon** protobuf handshake. C mqttv5 holds replies until CONNECTED instead of dropping them (#516, **C: main only**); result body capped at 512 B. .NET mqttv5: preview only |
+| Direct methods | Yes | Yes | Yes | Yes | mqttv5 adds the MQTTv5 **probe / exec / abandon** protobuf handshake. C mqttv5 holds replies until CONNECTED instead of dropping them (#516, **C: main only**); result body limit `AZ_IOT_MQTTV5_DM_RESULT_BODY_MAX`, 512 B by default, overridable at compile time (SDK and application must use the same value). .NET mqttv5: preview only |
 | Slow / async method responses | Yes | Yes | Partial | Partial | C has a `direct_method_slow_responder` sample under both `samples/unified/` and `samples/mqttv5/` (#260). .NET mqttv5: preview only |
 | Twin get | Yes | Yes | Yes | Yes | .NET mqttv5 supports selective/ETag (`getReported`, `ifNotMatch`). .NET mqttv5: preview only |
 | Reported-properties patch | Yes | Yes | Yes | Yes | .NET mqttv5: preview only |
 | Desired-properties patch events | Yes | Yes | Yes | Yes | C mqttv5 now delivers the real version, SNAPSHOT vs PATCH kind, and resyncs when behind (#240). .NET mqttv5: preview only |
 | Twin push (MQTTv5 birth-driven) | N/A | **Yes** | N/A | Yes | Both consume it. C `on_twin_push()` in `src/mqttv5/twin_client.c`; opt-in via `push_desired`/`push_reported`, default false. .NET `TwinPushReceived`/`TwinPushOptions`. .NET mqttv5: preview only |
 | MQTTv5 presence / birth handshake | N/A | Yes | N/A | Yes | `common/Protos/presence.proto`; C `presence_encode_birth()`. .NET mqttv5: preview only |
-| Custom topics | N/A | **Yes** | N/A | **Partial** | mqttv5-only service feature, **publish-only in public preview** (one topic group, 10 templates, `{deviceId}` the only variable). C `az_iot_custom_topic_client.h`: publish only, user properties, 256-char / 15-level topic cap, `$`-prefixed topics allowed, e2e suite. .NET `CustomTopicsClient` re-subscribes on reconnect and substitutes `{deviceId}` per send (#511), but still exposes Subscribe/Unsubscribe. **.NET: preview only** |
+| Custom topics | N/A | **Yes** | N/A | **Partial** | mqttv5-only service feature, **publish-only in public preview** (one topic group, 10 templates, `{deviceId}` the only variable). C `az_iot_custom_topic_client.h`: publish only, user properties, 256-byte (UTF-8) / 15-level topic cap, `$`-prefixed topics allowed, e2e suite. .NET `CustomTopicsClient` re-subscribes on reconnect and substitutes `{deviceId}` per send (#511), but still exposes Subscribe/Unsubscribe. **.NET: preview only** |
 | File upload (SAS URI + notify) | Yes | **N/A** | **Yes** | N/A | Not offered on mqttv5. C mqttv3 (app supplies the HTTP hook), also for SAS-key devices (#436, **C: main only**). .NET re-added mqttv3 file upload (#486), covered by `FileUploadIntegrationTests` |
 | Device update (software updates) | Partial | Partial | **No** | No | C only: `az_iot_su.h`, su-over-DPS. Per-step result details (#496), an update check waits for the owed terminal report (#531), the applied update is adopted as installed (#532) — **C: main only**. **.NET has no software-update code at all** |
 | Connection state / error propagation | **Yes** | **Yes** | Yes | Yes | C: observer registry, scoped (DPS or HUB) state, `is_retriable` + `{source,code,message}`; mqttv5 PUBACK reason codes and Reason Strings reach the app (#400, #513); `az_iot_connection_client_get_device_id()` (#432); assignment-adopted notification (#431). .NET: re-provisioning notification (#521); `DisconnectAsync` halts reconnection and cancels pending requests (#509, **.NET: main only**). .NET mqttv5: preview only |
@@ -120,7 +120,7 @@ Legend: **Yes** supported · **Partial** partial/caveated · **No** absent · **
 | Retry: exponential backoff + jitter | Yes | Yes | Yes | Yes | C 1 s→**60 s** default cap, ∞, ±20 %, jitter not clamped to the cap, per-scope ladders, selectable additive jitter and restart-safe `az_iot_retry_state` (#472); .NET `ExponentialBackoffRetryPolicy` (cap 60 s, jitter 95–105 %). .NET mqttv5: preview only |
 | Retry-after honoured | Partial | Partial | Partial | Partial | Both honour DPS polling retry-after; C also honours it on the software-update topic. CSR `RetryAfterSeconds` is surfaced, not auto-applied. .NET mqttv5: preview only |
 | Identity-rejection recovery | Yes | Yes | Yes | Yes | C selectable: `REPROVISION`, `RETRY_HUB` (retry the cached hub) or `NONE`, bounded by `max_hub_connect_attempts_before_reprovision`; a saved hub with DPS fallback is documented and tested (#429). .NET mqttv5: preview only |
-| Offline queueing / persistence | No | No | **Partial** | No | Publishing while disconnected fails (`AZ_IOT_ERR_NOT_CONNECTED` / `MqttClientNotConnectedException`). .NET mqttv3 holds QoS 1 publishes/subscribes/unsubscribes interrupted in flight and re-sends them after reconnect or re-provisioning (#524, **.NET: main only**) |
+| Offline queueing / persistence | No | No | **Partial** | **Partial** | No durable offline store in either library. C: publishing while disconnected fails (`AZ_IOT_ERR_NOT_CONNECTED`). .NET: feature operations submitted during automatic reconnection or re-provisioning wait for recovery instead of failing; they fail fast before the first connect or after a deliberate disconnect. .NET mqttv3 also re-sends QoS 1 publishes/subscribes/unsubscribes interrupted in flight (#524, **.NET: main only**). .NET mqttv5: preview only |
 | Modules / IoT Edge | No | No | No | No | No ModuleClient, no edgeHub/workload HSM, no gateway support anywhere in the repo |
 | Service-side client | No | No | No | No | No registry/jobs/query/digital-twin/C2D-send. .NET tests consume the **old** v1 packages for the service side |
 
@@ -128,11 +128,11 @@ Legend: **Yes** supported · **Partial** partial/caveated · **No** absent · **
 
 | Feature | C | .NET | Notes |
 |---|---|---|---|
-| Separate provisioning client | No | No | By design: a phase inside the connection client (`c/docs/dps-integration.md`) |
+| Separate provisioning client | Partial | No | By design: a phase inside the connection client (`c/docs/dps-integration.md`). Exception: C TPM attestation (`az_iot_dps_tpm_client`) runs outside it |
 | Register + poll + assignment | Yes | Yes | .NET now pins api-version **2026-11-02-preview** for all DPS device sessions (#262); both poll with retry-after + jitter |
 | X.509 attestation | Yes | Yes | Both also support symmetric key (see the row below) |
 | Symmetric key (SAS) attestation | **Yes** | **Yes** | C derives the device key from an enrollment-group key, or takes a device key directly. .NET `SymmetricKeyAuthenticationProvider` takes the device key; group-key derivation is left to the app |
-| TPM attestation | **Yes** | No | C over **HTTPS** (`az_iot_dps_tpm_client.h`, #437); app supplies the HTTPS transport and TPM operations; e2e `az_iot_tests_e2e_tpm` in `ci-c-e2e` |
+| TPM attestation | **Yes** | No | C over **HTTPS** (`az_iot_dps_tpm_client.h`, #437), **not** part of `az_iot_connection_client` (DPS takes TPM over HTTPS/AMQP only). The client builds requests and parses responses; the app sends them, runs the TPM ops, hands the assignment to the connection client and handles re-registration. mqttv5 assignments need the app's own X.509 credential (the hub refuses SAS). e2e `az_iot_tests_e2e_tpm` in `ci-c-e2e` |
 | CSR-based provisioning | Yes | Yes | .NET now serializes the CSR and requests a CSR-capable api-version (#202) |
 | Custom registration payload | **Yes** | **Yes** | C `dps.registration_payload`, composes with the CSR body (#206); .NET `ProvisioningPayload` |
 | DPS-returned payload surfaced to the app | **Yes** | **Yes** | C `set_registration_payload_callback()` (#206); .NET `DeviceRegistrationResult.Payload` |
@@ -183,7 +183,7 @@ Legend: **Yes** supported · **Partial** partial/caveated · **No** absent · **
 | MQTT-interface conformance suite | Yes | No | C `tests/conformance/` for BYO adapters; Paho v3 + v5 **and** az_mqtt v3 + v5, against a Mosquitto service container |
 | Integration tests | Yes | Yes | |
 | E2E against live Azure | Yes | Yes | Resources provisioned per run via OIDC, torn down after; Windows + Linux legs. Every C suite runs over both Paho and az_mqtt |
-| SAS e2e | **Yes** | Partial | C `e2e_sas_test.c`, `e2e_csr_sas_test.c`: DPS and hub over SAS, and SAS onboarding with a DPS-issued certificate. .NET CSR integration tests onboard through a symmetric-key enrollment group (skipped when its key is not configured) |
+| SAS e2e | **Yes** | **Yes** | C `e2e_sas_test.c`, `e2e_csr_sas_test.c`: DPS and hub over SAS, and SAS onboarding with a DPS-issued certificate. .NET `CanProvisionAndConnectWithSymmetricKeyIndividualEnrollment` and `TestFileUpload_SymmetricKey` (individual enrollment, run by `ci-dotnet`); the CSR-over-SAS path is skipped when the enrollment-group key is not configured |
 | **MQTTv5 e2e actually executed** | **Yes (real mqttv5 hub)** | **No** | C `ci-c-e2e-mqttv5.yml`: provisions through real DPS and runs connection/DPS, telemetry, twin, direct method, custom topics, transport (WebSockets, proxy) and PKCS#11 custody suites. Runs on same-repo PRs, a daily schedule and on demand — **no push trigger**. .NET mqttv5 tests still skip: 3 skip sites on `main` ("No MQTTv5 hub to test against yet"), 8 on preview (adds "No test infrastructure setup…" and twin "Not implemented yet") |
 | Dedicated software-update / CSR / PKCS#11 / TPM e2e | Partial | **Yes** | C: `ci-c-e2e-csr.yml` (Linux only), PKCS#11 on the Linux leg, TPM in `ci-c-e2e`. **`ci-c-e2e-adu.yml` is manual-trigger only** (no PR, push or schedule trigger). .NET: `ci-dotnet-e2e-csr.yml` |
 | Software-update e2e vs the real service | **Partial** | N/A | `az_iot_tests_e2e_su_offer`: real offered update, libcurl download, engine hash check — exists, but only runs when triggered manually |
@@ -223,7 +223,7 @@ Areas that decide whether a device client is adoptable, distinct from protocol f
 - **Hub-side CSR renewal is mqttv3-only.**
 - **MQTT v5 fields accepted but never serialized by the Paho adapter**: `az_iot_mqtt_connect_options.user_properties` on CONNECT, and `response_topic` / `topic_alias` on PUBLISH. Silent loss, no error. The az_mqtt adapter serializes all three.
 - **PnP model id is announced on the mqttv3 username only** — never on the mqttv5 path, and not placed in the DPS payload.
-- **mqttv5 direct-method result body is capped at 512 B.**
+- **mqttv5 direct-method result body limit is compile-time only** (`AZ_IOT_MQTTV5_DM_RESULT_BODY_MAX`, default 512 B); SDK and application must be built with the same value.
 - **mqttv5 telemetry does not expose message expiry.**
 - **Software updates:** no root-key rotation API (root keys are a list supplied at init); the e2e runs only when triggered manually.
 - **`max_attempts` is per-ladder and misnamed** (`az_iot_retry_policy.h`); renaming is cheap only before release.
@@ -241,7 +241,7 @@ Areas that decide whether a device client is adoptable, distinct from protocol f
 - Content type/encoding carries a `//TODO` on the unified telemetry path (`Unified/Telemetry/TelemetryClient.cs`: `main` :95, preview :83).
 - Telemetry QoS is not configurable (`Models/Telemetry/DeviceToCloudTelemetry.cs:13`).
 - CSR QoS/ack correctness TODOs remain (`Unified/Connection/ConnectionClient.cs`: `main` :209, preview :208).
-- Publishing while disconnected throws (`MqttNetAdapter/MqttNetClient.cs`); only operations interrupted in flight are re-sent (`main` only).
+- No durable offline queue: operations wait out automatic reconnection or re-provisioning, but fail before the first connect or after a deliberate disconnect; in-flight QoS 1 re-send is `main` only.
 - No credential fallback across keys/certificates, and no proactive SAS renewal before expiry.
 - Proxy support is websocket-only on the MQTTnet adapter.
 - No TPM attestation; no software-update/ADU code at all.
