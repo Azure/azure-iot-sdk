@@ -60,7 +60,9 @@ namespace Microsoft.Azure.Iot.Device.Models
         /// Get the credentials to present to this IoT Hub: the secondary ones when <see cref="UsesSecondaryCredentials"/>
         /// is set and the provider still has them, otherwise the primary ones.
         /// </summary>
-        internal async Task<AuthenticationCredentials> GetOperationalAuthenticationCredentialsAsync(CancellationToken cancellationToken)
+        internal async Task<AuthenticationCredentials> GetOperationalAuthenticationCredentialsAsync(
+            CancellationToken cancellationToken,
+            bool updateSecondaryCredentialSelection)
         {
             AuthenticationProvider authentication = AuthenticationProvider;
             if (UsesSecondaryCredentials)
@@ -76,7 +78,10 @@ namespace Microsoft.Azure.Iot.Device.Models
                 }
 
                 // The secondary credentials no longer apply, for example because a client certificate was issued since.
-                UsesSecondaryCredentials = false;
+                if (updateSecondaryCredentialSelection)
+                {
+                    UsesSecondaryCredentials = false;
+                }
             }
 
             return await authentication.GetOperationalAuthenticationCredentialsAsync(
