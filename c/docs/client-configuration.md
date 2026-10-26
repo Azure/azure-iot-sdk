@@ -79,7 +79,7 @@ comes from, in order:
 | `AZ_IOT_AZ_MQTT_RECEIVE_BUFFER_SIZE` | 270336 (264 KiB) | 135168 (132 KiB) | Largest incoming packet. MQTT 5: the Maximum Packet Size advertised; the server drops larger messages. MQTT 3.1.1: a larger packet ends the session. |
 | `AZ_IOT_AZ_MQTT_INFLIGHT_MAX` | 64 | 8 | QoS 1/2 exchanges in flight, 1-32767. MQTT 5: also the Receive Maximum advertised. |
 | `AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX` | 16 | 4 | MQTT 5 user properties on CONNECT; more is refused. PUBLISH user properties are not limited (sent and received in place). |
-| `AZ_IOT_AZ_MQTT_MESSAGE_STORAGE_SIZE` | send size + 18 | send size + 18 | Store of unacknowledged QoS 1/2 PUBLISH, for sessions that outlive the connection. Macro only. |
+| `AZ_IOT_AZ_MQTT_MESSAGE_STORAGE_SIZE` | send size + 18 | send size + 18 | Store of unacknowledged QoS 1/2 PUBLISH, for sessions that outlive the connection. 0: no store; a connect with `clean_start` false (MQTT 5: and `session_expiry_seconds` > 0) returns `AZ_IOT_ERR_NOT_SUPPORTED`. Macro only. |
 
 IoT Hub limits: device-to-cloud messages 256 KB, direct method payloads 128 KB, cloud-to-device
 messages 64 KB, twin documents 32 KB. `CONSTRAINED` receives all of these, and sends packets up to

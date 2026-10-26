@@ -61,15 +61,21 @@
 #define _AZM_INFLIGHT_ENTRIES AZ_IOT_AZ_MQTT_INFLIGHT_MAX
 #endif
 
-/** @brief Copies of unacknowledged QoS 1/2 PUBLISH; at least one of the largest. */
+/** @brief Copies of unacknowledged QoS 1/2 PUBLISH; at least one of the largest. 0: none, and a
+ * connect with clean_start false (MQTT 5: and session_expiry_seconds > 0) is refused. */
 #ifndef AZ_IOT_AZ_MQTT_MESSAGE_STORAGE_SIZE
 #define AZ_IOT_AZ_MQTT_MESSAGE_STORAGE_SIZE \
   (AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE + AZ_MQTT_INFLIGHT_MESSAGE_OVERHEAD)
 #endif
 
-#if AZ_IOT_AZ_MQTT_MESSAGE_STORAGE_SIZE \
-    < AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE + AZ_MQTT_INFLIGHT_MESSAGE_OVERHEAD
-#error "AZ_IOT_AZ_MQTT_MESSAGE_STORAGE_SIZE must hold one packet of AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE"
+#if AZ_IOT_AZ_MQTT_MESSAGE_STORAGE_SIZE != 0 \
+    && AZ_IOT_AZ_MQTT_MESSAGE_STORAGE_SIZE   \
+        < AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE + AZ_MQTT_INFLIGHT_MESSAGE_OVERHEAD
+#error \
+    "AZ_IOT_AZ_MQTT_MESSAGE_STORAGE_SIZE must be 0 or hold one packet of AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE"
+#endif
+#if AZ_IOT_AZ_MQTT_MESSAGE_STORAGE_SIZE > 2147483647
+#error "AZ_IOT_AZ_MQTT_MESSAGE_STORAGE_SIZE must be at most 2147483647 (an az_span size)"
 #endif
 
 /** @brief Room for the strings of one received PUBLISH (topic, Content Type, Response Topic): its
@@ -802,6 +808,16 @@ static az_iot_result _azm_connect(az_iot_mqtt_client* self, az_iot_mqtt_connect_
   }
 
   bool const persists = _azm_session_persists(o);
+#if AZ_IOT_AZ_MQTT_MESSAGE_STORAGE_SIZE == 0
+  if (persists)
+  {
+    AZ_IOT_LOG_ERROR(
+        AZ_IOT_LOG_COMPONENT_AZ_MQTT,
+        "connect: clean_start false (MQTT 5: with session_expiry_seconds > 0) needs "
+        "AZ_IOT_AZ_MQTT_MESSAGE_STORAGE_SIZE");
+    return AZ_IOT_ERR_NOT_SUPPORTED;
+  }
+#else
   if (persists && m->message_storage == NULL)
   {
     m->message_storage = (uint8_t*)malloc(AZ_IOT_AZ_MQTT_MESSAGE_STORAGE_SIZE);
@@ -810,6 +826,7 @@ static az_iot_result _azm_connect(az_iot_mqtt_client* self, az_iot_mqtt_connect_
       return AZ_IOT_ERR_OUT_OF_MEMORY;
     }
   }
+#endif
 
   _azm_release_owned(m);
   _AZM(client_options) options;
