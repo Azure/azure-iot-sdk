@@ -947,6 +947,21 @@ namespace Microsoft.Azure.Iot.Device
                         };
                     }
 
+                case MQTTnet.Adapter.MqttConnectingFailedException connectingFailed:
+                    {
+                        DeviceException? innerException = Classify(connectingFailed.InnerException, userCancellationRequested);
+                        if (innerException == null)
+                        {
+                            return null;
+                        }
+
+                        return new DeviceException(innerException.Message, connectingFailed)
+                        {
+                            Retryability = innerException.Retryability,
+                            IsContained = false,
+                        };
+                    }
+
                 // connection.md section 9.4.1: name resolution, address selection, socket connect and connection reset
                 // are all retryable, and none of them say anything about the device's identity.
                 case SocketException:

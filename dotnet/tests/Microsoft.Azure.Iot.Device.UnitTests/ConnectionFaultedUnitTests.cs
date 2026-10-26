@@ -342,8 +342,10 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             Assert.Equal(3, authentication.BootCredentialRequests);
         }
 
-        [Fact]
-        public async Task RejectedPrimaryCredentialsAreRetriedWithSecondaryCredentialsWithoutReprovisioning()
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task RejectedPrimaryCredentialsAreRetriedWithSecondaryCredentialsWithoutReprovisioning(bool throwOnPrimary)
         {
             using MockConnectionMqttClient mockMqttClient = new();
             MockDeviceProvisioningService mockDps = new(mockMqttClient, _ => FirstAssignedHub);
@@ -358,6 +360,14 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
                 // Both DPS and the hub have rotated out the primary credentials.
                 bool primary = Encoding.UTF8.GetString(connect.Password!).StartsWith("primary", StringComparison.Ordinal);
+                if (primary && throwOnPrimary)
+                {
+                    var connackException = new MqttConnectingFailedException(
+                        "The server denied the connection.",
+                        new MqttConnectAck() { ResultCode = MqttConnectReasonCode.NotAuthorized });
+                    throw new MQTTnet.Adapter.MqttConnectingFailedException("MQTTnet failed to connect.", connackException);
+                }
+
                 return Task.FromResult(new MqttConnectAck() { ResultCode = primary ? MqttConnectReasonCode.NotAuthorized : MqttConnectReasonCode.Success });
             };
 

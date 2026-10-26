@@ -40,6 +40,20 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
         }
 
         [Fact]
+        public async Task FileUploadDoesNotChangeMqttCredentialSelectionWhenSecondaryCredentialsAreUnavailable()
+        {
+            var authentication = new SwitchableAuthenticationProvider { Credentials = CreateSasCredentials() };
+            var connection = new FakeConnectionClient(authentication);
+            connection.Context.IssuedClientCertificates = ["issued-certificate"];
+            connection.Context.UsesSecondaryCredentials = true;
+            using var fileUploadClient = new FileUploadClient(connection, new HttpClient(new CapturingHandler()));
+
+            await GetSasUriAsync(fileUploadClient);
+
+            Assert.True(connection.Context.UsesSecondaryCredentials);
+        }
+
+        [Fact]
         public async Task X509AuthenticationDoesNotSendAuthorizationHeader()
         {
             using RSA key = RSA.Create(2048);
