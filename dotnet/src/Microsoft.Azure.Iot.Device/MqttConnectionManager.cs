@@ -822,7 +822,10 @@ namespace Microsoft.Azure.Iot.Device
 
             try
             {
-                if (!await trySwitchCredentials(cancellationToken).ConfigureAwait(false))
+                using CancellationTokenSource credentialTimeoutCancellationToken = new();
+                credentialTimeoutCancellationToken.CancelAfter(_connectionAttemptTimeout);
+                using CancellationTokenSource linkedCancellationToken = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, credentialTimeoutCancellationToken.Token);
+                if (!await trySwitchCredentials(linkedCancellationToken.Token).ConfigureAwait(false))
                 {
                     return false;
                 }
