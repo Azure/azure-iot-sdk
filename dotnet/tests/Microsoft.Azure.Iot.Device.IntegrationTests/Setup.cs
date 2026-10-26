@@ -254,18 +254,27 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
             ConnectionClient connectionClient = new(options);
             ProvisioningSettings provisioningSettings = CreateProvisioningSettings(testAgainstClassicHub);
 
-            ConnectionContext connectionContext = await RetryAroundAuthorizationAsync<ConnectionContext>(
-                async () => await connectionClient.ProvisionAndConnectAsync(provisioningSettings, x509AuthenticationProvider, cancellationToken: cancellationToken),
-                cancellationToken);
-
-            return new UnifiedDeviceTestContext()
+            try
             {
-                ConnectionClient = connectionClient,
-                ConnectionContext = connectionContext!,
-                TestAgainstClassicHub = testAgainstClassicHub,
-                AuthenticationProvider = x509AuthenticationProvider,
-                IndividualEnrollment = individualEnrollment,
-            };
+                ConnectionContext connectionContext = await RetryAroundAuthorizationAsync<ConnectionContext>(
+                    async () => await connectionClient.ProvisionAndConnectAsync(provisioningSettings, x509AuthenticationProvider, cancellationToken: cancellationToken),
+                    cancellationToken);
+
+                return new UnifiedDeviceTestContext()
+                {
+                    ConnectionClient = connectionClient,
+                    ConnectionContext = connectionContext!,
+                    TestAgainstClassicHub = testAgainstClassicHub,
+                    AuthenticationProvider = x509AuthenticationProvider,
+                    IndividualEnrollment = individualEnrollment,
+                };
+            }
+            catch
+            {
+                await UnifiedDeviceTestContext.CleanupAsync(
+                    connectionClient, connectionClient.GetCurrentConnectionContext(), individualEnrollment, testAgainstClassicHub);
+                throw;
+            }
         }
 
         public static async Task<UnifiedDeviceTestContext> CreateConnectedUnifiedConnectionClientWithCertificateSigningAsync(bool testAgainstClassicHub, ConnectionClientOptions? options = null, CancellationToken cancellationToken = default)
