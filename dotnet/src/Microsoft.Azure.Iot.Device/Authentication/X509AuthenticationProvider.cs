@@ -229,9 +229,9 @@ namespace Microsoft.Azure.Iot.Device.Authentication
             return Task.FromResult(PrimaryClientCertificate);
         }
 
-        public override AuthenticationCredentials GetPrimaryBootAuthenticationCredentials()
+        public override Task<AuthenticationCredentials> GetPrimaryBootAuthenticationCredentialsAsync(CancellationToken cancellationToken = default)
         {
-            return CreateCredentials(PrimaryClientCertificate);
+            return Task.FromResult(CreateCredentials(PrimaryClientCertificate));
         }
 
         public override Task<AuthenticationCredentials?> GetSecondaryOperationalAuthenticationCredentialsAsync(string hostName, string deviceId, IReadOnlyList<string>? issuedClientCertificates, CancellationToken cancellationToken = default)
@@ -245,9 +245,9 @@ namespace Microsoft.Azure.Iot.Device.Authentication
             return Task.FromResult<AuthenticationCredentials?>(CreateCredentials(SecondaryClientCertificate));
         }
 
-        public override AuthenticationCredentials? GetSecondaryBootAuthenticationCredentials()
+        public override Task<AuthenticationCredentials?> GetSecondaryBootAuthenticationCredentialsAsync(CancellationToken cancellationToken = default)
         {
-            return SecondaryClientCertificate == null ? null : CreateCredentials(SecondaryClientCertificate);
+            return Task.FromResult(SecondaryClientCertificate == null ? null : CreateCredentials(SecondaryClientCertificate));
         }
 
         private AuthenticationCredentials CreateCredentials(X509Certificate2 clientCertificate)

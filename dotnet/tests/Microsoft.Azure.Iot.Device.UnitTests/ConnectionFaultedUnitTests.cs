@@ -2895,10 +2895,10 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
             public int BootCredentialRequests => Volatile.Read(ref _bootCredentialRequests);
 
-            public override AuthenticationCredentials GetPrimaryBootAuthenticationCredentials()
+            public override Task<AuthenticationCredentials> GetPrimaryBootAuthenticationCredentialsAsync(CancellationToken cancellationToken = default)
             {
                 int request = Interlocked.Increment(ref _bootCredentialRequests);
-                return new AuthenticationCredentials() { Password = Encoding.UTF8.GetBytes($"boot-{request}") };
+                return Task.FromResult(new AuthenticationCredentials() { Password = Encoding.UTF8.GetBytes($"boot-{request}") });
             }
 
             public override Task<AuthenticationCredentials> GetPrimaryOperationalAuthenticationCredentialsAsync(string hostName, string deviceId, IReadOnlyList<string>? issuedClientCertificates, CancellationToken cancellationToken = default)
@@ -2915,9 +2915,9 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         /// </summary>
         private sealed class PrimaryAndSecondaryAuthenticationProvider : AuthenticationProvider
         {
-            public override AuthenticationCredentials GetPrimaryBootAuthenticationCredentials() => Create("primary-boot");
+            public override Task<AuthenticationCredentials> GetPrimaryBootAuthenticationCredentialsAsync(CancellationToken cancellationToken = default) => Task.FromResult(Create("primary-boot"));
 
-            public override AuthenticationCredentials? GetSecondaryBootAuthenticationCredentials() => Create("secondary-boot");
+            public override Task<AuthenticationCredentials?> GetSecondaryBootAuthenticationCredentialsAsync(CancellationToken cancellationToken = default) => Task.FromResult<AuthenticationCredentials?>(Create("secondary-boot"));
 
             public override Task<AuthenticationCredentials> GetPrimaryOperationalAuthenticationCredentialsAsync(string hostName, string deviceId, IReadOnlyList<string>? issuedClientCertificates, CancellationToken cancellationToken = default)
             {

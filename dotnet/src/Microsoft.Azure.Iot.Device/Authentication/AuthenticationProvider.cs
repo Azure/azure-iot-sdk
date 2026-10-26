@@ -31,8 +31,11 @@ namespace Microsoft.Azure.Iot.Device.Authentication
         /// Gets the protocol-agnostic authentication material (client certificate, password/token, and TLS callbacks)
         /// for connecting to the device provisioning service. The caller maps it onto its own transport (MQTT, HTTP, etc.).
         /// </summary>
-        /// <param name="hostName">The device provisioning service host name being connected to.</param>
-        public abstract AuthenticationCredentials GetPrimaryBootAuthenticationCredentials();
+        /// <param name="cancellationToken">The cancellation token.</param>
+        /// <remarks>
+        /// Called before every connection attempt to the device provisioning service.
+        /// </remarks>
+        public abstract Task<AuthenticationCredentials> GetPrimaryBootAuthenticationCredentialsAsync(CancellationToken cancellationToken = default);
 
         /// <summary>
         /// Gets the secondary authentication material for connecting to an IoT Hub, if this provider has any.
@@ -65,14 +68,15 @@ namespace Microsoft.Azure.Iot.Device.Authentication
         /// provider has any.
         /// </summary>
         /// <remarks>
-        /// When the device provisioning service rejects the credentials from <see cref="GetPrimaryBootAuthenticationCredentials"/>
+        /// When the device provisioning service rejects the credentials from <see cref="GetPrimaryBootAuthenticationCredentialsAsync"/>
         /// when connecting, the connection client retries at once with these credentials. Each provisioning run starts
         /// again with the primary credentials.
         /// </remarks>
+        /// <param name="cancellationToken">The cancellation token.</param>
         /// <returns>The secondary credentials, or null if there are none to fall back to, which is the default.</returns>
-        public virtual AuthenticationCredentials? GetSecondaryBootAuthenticationCredentials()
+        public virtual Task<AuthenticationCredentials?> GetSecondaryBootAuthenticationCredentialsAsync(CancellationToken cancellationToken = default)
         {
-            return null;
+            return Task.FromResult<AuthenticationCredentials?>(null);
         }
 
         public abstract string GetRegistrationId();

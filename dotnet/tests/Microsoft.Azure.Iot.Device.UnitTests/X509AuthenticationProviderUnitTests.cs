@@ -34,7 +34,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
                 _ => throw new ArgumentOutOfRangeException(nameof(constructorKind)),
             };
 
-            Assert.Same(secondaryCertificate, authentication.GetSecondaryBootAuthenticationCredentials()!.ClientCertificate);
+            Assert.Same(secondaryCertificate, (await authentication.GetSecondaryBootAuthenticationCredentialsAsync(TestContext.Current.CancellationToken))!.ClientCertificate);
             Assert.Same(
                 secondaryCertificate,
                 (await authentication.GetSecondaryOperationalAuthenticationCredentialsAsync(

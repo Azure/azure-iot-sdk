@@ -207,14 +207,14 @@ namespace Microsoft.Azure.Iot.Device.Authentication
             return Task.FromResult<AuthenticationCredentials?>(CreateOperationalCredentials(_secondarySymmetricKey, hostName, deviceId));
         }
 
-        public override AuthenticationCredentials GetPrimaryBootAuthenticationCredentials()
+        public override Task<AuthenticationCredentials> GetPrimaryBootAuthenticationCredentialsAsync(CancellationToken cancellationToken = default)
         {
-            return CreateBootCredentials(_primarySymmetricKey);
+            return Task.FromResult(CreateBootCredentials(_primarySymmetricKey));
         }
 
-        public override AuthenticationCredentials? GetSecondaryBootAuthenticationCredentials()
+        public override Task<AuthenticationCredentials?> GetSecondaryBootAuthenticationCredentialsAsync(CancellationToken cancellationToken = default)
         {
-            return _secondarySymmetricKey == null ? null : CreateBootCredentials(_secondarySymmetricKey);
+            return Task.FromResult(_secondarySymmetricKey == null ? null : CreateBootCredentials(_secondarySymmetricKey));
         }
 
         private AuthenticationCredentials CreateOperationalCredentials(byte[] key, string hostName, string deviceId)

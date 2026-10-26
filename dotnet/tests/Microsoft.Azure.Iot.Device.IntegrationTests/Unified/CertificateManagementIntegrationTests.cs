@@ -61,7 +61,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
             Assert.True(hubCredentials.ClientCertificate.HasPrivateKey);
             Assert.Empty(hubCredentials.Password);
 
-            AuthenticationCredentials dpsCredentials = authentication.GetPrimaryBootAuthenticationCredentials();
+            AuthenticationCredentials dpsCredentials = await authentication.GetPrimaryBootAuthenticationCredentialsAsync(TestContext.Current.CancellationToken);
             Assert.Null(dpsCredentials.ClientCertificate);
             Assert.StartsWith("SharedAccessSignature ", Encoding.UTF8.GetString(dpsCredentials.Password));
         }

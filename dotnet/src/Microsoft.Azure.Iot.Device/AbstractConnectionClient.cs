@@ -841,14 +841,14 @@ namespace Microsoft.Azure.Iot.Device
                     AuthenticationCredentials? bootCredentials = null;
                     if (_usesSecondaryBootCredentials)
                     {
-                        bootCredentials = provisioningAuthentication.GetSecondaryBootAuthenticationCredentials();
+                        bootCredentials = await provisioningAuthentication.GetSecondaryBootAuthenticationCredentialsAsync(cancellationToken).ConfigureAwait(false);
                         if (bootCredentials == null)
                         {
                             _usesSecondaryBootCredentials = false;
                         }
                     }
 
-                    bootCredentials ??= provisioningAuthentication.GetPrimaryBootAuthenticationCredentials();
+                    bootCredentials ??= await provisioningAuthentication.GetPrimaryBootAuthenticationCredentialsAsync(cancellationToken).ConfigureAwait(false);
                     connectPacketToEdit = ApplyAuthentication(bootCredentials, connectPacketToEdit);
                 }
 
@@ -890,7 +890,8 @@ namespace Microsoft.Azure.Iot.Device
                     return true;
                 }
 
-                if (provisioningAuthentication?.GetSecondaryBootAuthenticationCredentials() == null)
+                if (provisioningAuthentication == null
+                    || await provisioningAuthentication.GetSecondaryBootAuthenticationCredentialsAsync(cancellationToken).ConfigureAwait(false) == null)
                 {
                     return false;
                 }
