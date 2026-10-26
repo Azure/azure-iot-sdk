@@ -549,7 +549,11 @@ namespace Microsoft.Azure.Iot.Device
                 bool switchedCredentials = false;
                 if (disconnectException is { Retryability: not ErrorRetryability.Retryable })
                 {
-                    switchedCredentials = await TrySwitchCredentialsAfterIdentityFaultAsync(disconnectException, CancellationToken.None);
+                    switchedCredentials = await TrySwitchCredentialsAfterIdentityFaultAsync(disconnectException, ConnectionLifetimeCancellationToken);
+                    if (_isClosing)
+                    {
+                        return;
+                    }
                     if (!switchedCredentials)
                     {
                         // The server told us why it hung up, and the reason says that coming back is the wrong move.
