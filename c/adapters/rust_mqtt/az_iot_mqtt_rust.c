@@ -216,6 +216,10 @@ static az_iot_mqtt_client* rust_factory_create(void* factory_ctx)
   (void)factory_ctx;
   static const az_iot_mqtt_limits limits = { 1, 1, 1, 0, 0 }; /* The Rust client sizes its own. */
   size_t const size = az_iot_rust_mqtt_get_workspace_size(&limits);
+  if (size == 0)
+  {
+    return NULL;
+  }
   uint8_t* allocation = (uint8_t*)malloc(size);
   az_iot_mqtt_client* client = NULL;
   if (allocation == NULL

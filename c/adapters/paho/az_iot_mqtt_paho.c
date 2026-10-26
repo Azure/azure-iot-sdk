@@ -2064,6 +2064,10 @@ static az_iot_mqtt_client* paho_factory_create(void* factory_ctx)
   paho_factory_state* st = (paho_factory_state*)factory_ctx;
   static const az_iot_mqtt_limits limits = { 1, 1, 1, 0, 0 }; /* Paho sizes its own buffers. */
   size_t const size = az_iot_paho_get_workspace_size(&limits);
+  if (size == 0)
+  {
+    return NULL;
+  }
   uint8_t* allocation = (uint8_t*)malloc(size);
   az_iot_mqtt_client* client = NULL;
   if (allocation == NULL
