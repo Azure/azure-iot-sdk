@@ -83,8 +83,10 @@ Two Paho data races are reported upstream and not fixed in v1.3.16:
   `mqttasync_mutex`, while the async threads read it (`MQTTAsync_checkTimeouts`, `MQTTAsync_retry`).
 
 ThreadSanitizer reports them intermittently in `az_iot_paho_teardown_race` and the Paho conformance
-suites. They are on heap memory, so the suppression policy cannot cover them. No failure other than
-the sanitizer reports has been seen.
+suites. The races on the command queue and the client state are on heap memory (the queue's list
+and the client), which the suppression policy (third-party globals only) cannot cover.
+`retryLoopIntervalms` is a global a reviewed entry could cover; it is not suppressed, as the reports
+on the client state would remain. No failure other than the sanitizer reports has been seen.
 
 **Mitigation:** none in the SDK. In CI these reports are known flaky failures: rerun the job. A
 report in those tests with other frames is not covered by this. Remove this entry when a
