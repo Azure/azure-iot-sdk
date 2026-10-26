@@ -11,6 +11,7 @@
 #include <setjmp.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include <cmocka.h>
@@ -20,9 +21,10 @@
 
 #include <az_mqtt/az_mqtt_transport.h>
 
-#define TEST_WORKSPACE_MAX (64 * 1024)
-
-static uint8_t g_workspace[TEST_WORKSPACE_MAX + 1];
+/* Sized from the largest limits below, plus one byte for the misaligned start: the TLS state alone
+ * varies by backend (Schannel: about 197 KB). */
+static uint8_t* g_workspace;
+static size_t g_workspace_size;
 
 static az_iot_mqtt_limits small_limits(void)
 {
@@ -34,6 +36,30 @@ static az_iot_mqtt_limits small_limits(void)
     .connect_strings_size = 512,
   };
   return limits;
+}
+
+static az_iot_mqtt_limits largest_limits(void)
+{
+  az_iot_mqtt_limits limits = small_limits();
+  limits.message_store_size = limits.send_buffer_size + 18;
+  return limits;
+}
+
+static int allocate_workspace(void** state)
+{
+  (void)state;
+  az_iot_mqtt_limits const limits = largest_limits();
+  g_workspace_size = az_iot_az_mqtt_get_workspace_size(&limits) + 1;
+  g_workspace = (uint8_t*)malloc(g_workspace_size);
+  return g_workspace == NULL ? -1 : 0;
+}
+
+static int free_workspace(void** state)
+{
+  (void)state;
+  free(g_workspace);
+  g_workspace = NULL;
+  return 0;
 }
 
 static bool holds(void const* data, size_t size, char const* text)
@@ -97,7 +123,7 @@ static void init_needs_the_whole_workspace_at_any_alignment(void** state)
   (void)state;
   az_iot_mqtt_limits const limits = small_limits();
   size_t const size = az_iot_az_mqtt_get_workspace_size(&limits);
-  assert_true(size <= TEST_WORKSPACE_MAX);
+  assert_true(size < g_workspace_size);
   az_iot_mqtt_adapter const* adapter = az_iot_az_mqtt_get_adapter();
   az_iot_mqtt_version const versions[] = { AZ_IOT_MQTT_VERSION_3_1_1, AZ_IOT_MQTT_VERSION_5 };
   for (size_t i = 0; i < sizeof(versions) / sizeof(versions[0]); i++)
@@ -129,19 +155,19 @@ static void init_rejects_bad_arguments(void** state)
   az_iot_mqtt_adapter const* adapter = az_iot_az_mqtt_get_adapter();
   az_iot_mqtt_client* client = NULL;
   assert_int_equal(
-      adapter->init(AZ_IOT_MQTT_VERSION_5, &limits, g_workspace, sizeof(g_workspace), NULL),
+      adapter->init(AZ_IOT_MQTT_VERSION_5, &limits, g_workspace, g_workspace_size, NULL),
       AZ_IOT_ERR_INVALID_ARG);
   assert_int_equal(
-      adapter->init(AZ_IOT_MQTT_VERSION_5, NULL, g_workspace, sizeof(g_workspace), &client),
+      adapter->init(AZ_IOT_MQTT_VERSION_5, NULL, g_workspace, g_workspace_size, &client),
       AZ_IOT_ERR_INVALID_ARG);
   assert_int_equal(
-      adapter->init(AZ_IOT_MQTT_VERSION_5, &bad, g_workspace, sizeof(g_workspace), &client),
+      adapter->init(AZ_IOT_MQTT_VERSION_5, &bad, g_workspace, g_workspace_size, &client),
       AZ_IOT_ERR_INVALID_ARG);
   assert_int_equal(
-      adapter->init(AZ_IOT_MQTT_VERSION_5, &limits, NULL, sizeof(g_workspace), &client),
+      adapter->init(AZ_IOT_MQTT_VERSION_5, &limits, NULL, g_workspace_size, &client),
       AZ_IOT_ERR_INVALID_ARG);
   assert_int_equal(
-      adapter->init((az_iot_mqtt_version)99, &limits, g_workspace, sizeof(g_workspace), &client),
+      adapter->init((az_iot_mqtt_version)99, &limits, g_workspace, g_workspace_size, &client),
       AZ_IOT_ERR_NOT_SUPPORTED);
 }
 
@@ -210,8 +236,9 @@ static void a_session_that_outlives_the_connection_needs_a_message_store(void** 
   assert_int_equal(connect_with(client, "pw", false), AZ_IOT_ERR_NOT_SUPPORTED);
   client->iface->destroy(client);
 
-  limits.message_store_size = limits.send_buffer_size + 18;
+  limits = largest_limits();
   size = az_iot_az_mqtt_get_workspace_size(&limits);
+  assert_true(size <= g_workspace_size);
   assert_int_equal(
       adapter->init(AZ_IOT_MQTT_VERSION_5, &limits, g_workspace, size, &client), AZ_IOT_OK);
   assert_int_equal(connect_with(client, "pw", false), AZ_IOT_OK);
@@ -230,5 +257,6 @@ int main(void)
     cmocka_unit_test(connect_strings_that_do_not_fit_are_refused),
     cmocka_unit_test(a_session_that_outlives_the_connection_needs_a_message_store),
   };
-  return cmocka_run_group_tests_name("az_mqtt_adapter_workspace", tests, NULL, NULL);
+  return cmocka_run_group_tests_name(
+      "az_mqtt_adapter_workspace", tests, allocate_workspace, free_workspace);
 }
