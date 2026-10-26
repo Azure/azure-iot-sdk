@@ -13,6 +13,36 @@ process exits, and running it again is the device starting. `az_iot_su_client_re
 workflow back through `load_state_fn`, and it continues. Download and the hash read-back are
 simulated (zero-filled payloads); install and apply only log.
 
+```mermaid
+flowchart TD
+    start(["Run the sample: the device starts"]) --> resume["az_iot_su_client_resume():<br/>load_state_fn reads SAMPLE_STATE_FILE"]
+    resume --> saved{"Workflow saved?"}
+    saved -- "no" --> check["az_iot_su_client_request_update()"]
+    saved -- "yes" --> cont["The workflow continues, no check:<br/>after install:n, at apply_fn of step n;<br/>after apply:n, at step n+1<br/>(after the last step: an unsent final report)"]
+    check --> open["Open the connection: DPS, then IoT Hub"]
+    cont --> open
+    open --> work["do_work(): the client runs the workflow"]
+
+    subgraph wf ["Workflow: the client calls the sample's hooks"]
+        direction TB
+        dl["download_fn, read_file_fn:<br/>simulated; hashes checked"] --> inst["install_fn, step n"]
+        inst -- "done" --> app["apply_fn, step n"]
+        app -- "done; more steps" --> inst
+        app -- "done; last step" --> fin["Final report sent<br/>WORKFLOW_COMPLETED"]
+        inst -- "SAMPLE_REBOOT_AT=install:n" --> rr["REBOOT_REQUIRED:<br/>persist_state_fn saves the workflow"]
+        app -- "SAMPLE_REBOOT_AT=apply:n" --> rr
+    end
+
+    work -.-> wf
+    work --> rs{"az_iot_su_client_get_reboot_state()"}
+    rs -- "READY: reboot asked, workflow saved" --> boot(["Reboot: the process exits"])
+    boot -. "run it again" .-> start
+    rs -- "PENDING: a write is failing; the client retries" --> work
+    rs -- "NONE" --> poll{"Idle and poll interval elapsed?"}
+    poll -- "yes" --> recheck["az_iot_su_client_request_update()"] --> work
+    poll -- "no" --> work
+```
+
 ## Sample features
 
 - Target platforms: **Linux** and **Windows**.
