@@ -88,9 +88,10 @@ and the client), which the suppression policy (third-party globals only) cannot 
 `retryLoopIntervalms` is a global a reviewed entry could cover; it is not suppressed, as the reports
 on the client state would remain. No failure other than the sanitizer reports has been seen.
 
-**Mitigation:** none in the SDK. In CI these reports are known flaky failures: rerun the job. A
-report in those tests with other frames is not covered by this. Remove this entry when a
-`PAHO_C_TAG` with the fixes is adopted.
+**Mitigation:** none in the SDK. The TSan CI job skips `az_iot_paho_teardown_race`, where the
+#1709 report occurs most; helgrind and DRD still run it. Other reports listed here are known flaky
+failures: rerun the job. A report in those tests with other frames is not covered by this. Remove
+this entry when a `PAHO_C_TAG` with the fixes is adopted.
 
 ### WebSocket handshake split across TCP segments
 
