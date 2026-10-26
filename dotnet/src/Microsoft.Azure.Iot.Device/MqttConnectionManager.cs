@@ -949,7 +949,9 @@ namespace Microsoft.Azure.Iot.Device
 
                 case MQTTnet.Adapter.MqttConnectingFailedException connectingFailed:
                     {
-                        DeviceException? innerException = Classify(connectingFailed.InnerException, userCancellationRequested);
+                        DeviceException? innerException = connectingFailed.Result is { } result
+                            ? Classify(MQTTnetAdapter.ModelConverter.ToGeneric(result.ResultCode))
+                            : Classify(connectingFailed.InnerException, userCancellationRequested);
                         if (innerException == null)
                         {
                             return null;
