@@ -10,6 +10,7 @@ using Xunit;
 
 namespace Microsoft.Azure.Iot.Device.IntegrationTests.MQTTv5
 {
+    [Trait(Setup.HubTrait, Setup.MQTTv5HubTraitValue)]
     public class ConnectionClientIntegrationTests
     {
         [Fact(Timeout = Setup.TestTimeoutMilliseconds)]

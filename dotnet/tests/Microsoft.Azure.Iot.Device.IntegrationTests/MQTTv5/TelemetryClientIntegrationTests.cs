@@ -13,6 +13,7 @@ using Microsoft.Azure.Devices;
 
 namespace Microsoft.Azure.Iot.Device.IntegrationTests.MQTTv5
 {
+    [Trait(Setup.HubTrait, Setup.MQTTv5HubTraitValue)]
     public class TelemetryClientIntegrationTests
     {
         [Fact(Timeout = Setup.TestTimeoutMilliseconds)]

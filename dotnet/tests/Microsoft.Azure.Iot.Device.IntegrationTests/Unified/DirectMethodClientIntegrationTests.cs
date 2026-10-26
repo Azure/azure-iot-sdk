@@ -13,7 +13,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
     {
         [Theory(Timeout = Setup.TestTimeoutMilliseconds)]
         [InlineData(true)]
-        [InlineData(false)]
+        [InlineData(false, Traits = new[] { Setup.HubTrait, Setup.MQTTv5HubTraitValue })]
         public async Task TestDirectMethods(bool testAgainstClassicHub)
         {
             string expectedDirectMethodName = "someDirectMethod-" + Guid.NewGuid().ToString();

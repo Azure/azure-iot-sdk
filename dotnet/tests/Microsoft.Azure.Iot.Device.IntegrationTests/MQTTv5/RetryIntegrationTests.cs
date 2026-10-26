@@ -17,6 +17,7 @@ using Xunit;
 
 namespace Microsoft.Azure.Iot.Device.IntegrationTests.MQTTv5
 {
+    [Trait(Setup.HubTrait, Setup.MQTTv5HubTraitValue)]
     public class RetryIntegrationTests
     {
         [Fact(Timeout = 2 * Setup.TestTimeoutMilliseconds)]
@@ -67,7 +68,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.MQTTv5
             try
             {
                 ConnectionContext recoveredContext = await reconnectingClient.ProvisionAndConnectAsync(
-                    new(Setup.MQTTv5DpsIdScope), device.AuthenticationProvider, cancellationToken: cancellationToken);
+                    Setup.CreateProvisioningSettings(testAgainstClassicHub: false), device.AuthenticationProvider, cancellationToken: cancellationToken);
 
                 Assert.NotSame(cachedContext, recoveredContext);
                 Assert.Equal(IotHubConnectionType.Mqttv5, recoveredContext.ConnectionProfile);
@@ -140,7 +141,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.MQTTv5
         {
             ConnectionContext context = await Setup.RetryAroundAuthorizationAsync<ConnectionContext>(
                 () => device.ConnectionClient.ProvisionAndConnectAsync(
-                    new(Setup.MQTTv5DpsIdScope), device.AuthenticationProvider, cancellationToken: cancellationToken),
+                    Setup.CreateProvisioningSettings(testAgainstClassicHub: false), device.AuthenticationProvider, cancellationToken: cancellationToken),
                 cancellationToken);
             Assert.Equal(IotHubConnectionType.Mqttv5, context.ConnectionProfile);
             Assert.Equal(device.DeviceId, context.DeviceId);

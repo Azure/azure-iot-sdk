@@ -10,6 +10,7 @@ using Microsoft.Azure.Iot.Device.Models.DirectMethods;
 
 namespace Microsoft.Azure.Iot.Device.IntegrationTests.MQTTv5
 {
+    [Trait(Setup.HubTrait, Setup.MQTTv5HubTraitValue)]
     public class DirectMethodClientIntegrationTests
     {
         [Fact(Timeout = Setup.TestTimeoutMilliseconds)]

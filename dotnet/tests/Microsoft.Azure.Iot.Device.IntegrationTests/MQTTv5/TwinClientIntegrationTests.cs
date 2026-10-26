@@ -12,6 +12,7 @@ using Microsoft.Azure.Devices;
 
 namespace Microsoft.Azure.Iot.Device.IntegrationTests.MQTTv5
 {
+    [Trait(Setup.HubTrait, Setup.MQTTv5HubTraitValue)]
     public class TwinClientIntegrationTests
     {
         [Fact(Timeout = Setup.TestTimeoutMilliseconds)]
@@ -34,7 +35,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.MQTTv5
 
             RegistryManager registryManager = Setup.GetMQTTv5IotHubRegistryManager();
 
-            ProvisioningSettings provisioningSettings = new(Setup.MQTTv5DpsIdScope);
+            ProvisioningSettings provisioningSettings = Setup.CreateProvisioningSettings(testAgainstClassicHub: false);
 
             TwinClient twinClient = new(testDeviceContext.ConnectionClient);
             TaskCompletionSource<TwinPushReceivedEventArgs> twinPushTcs = new();
@@ -131,7 +132,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.MQTTv5
 
                 await Setup.RetryAroundAuthorizationAsync<ConnectionContext>(
                     () => testDeviceContext.ConnectionClient.ProvisionAndConnectAsync(
-                        new(Setup.MQTTv5DpsIdScope), testDeviceContext.AuthenticationProvider, cancellationToken: cancellationToken),
+                        Setup.CreateProvisioningSettings(testAgainstClassicHub: false), testDeviceContext.AuthenticationProvider, cancellationToken: cancellationToken),
                     cancellationToken);
 
                 TwinPushReceivedEventArgs push = await twinPushTcs.Task.WaitAsync(cancellationToken);

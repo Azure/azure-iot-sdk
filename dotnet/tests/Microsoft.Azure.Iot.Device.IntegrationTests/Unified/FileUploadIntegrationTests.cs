@@ -17,7 +17,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
         [Theory(Timeout = Setup.TestTimeoutMilliseconds)]
         [InlineData(true, false)]
         [InlineData(true, true)]
-        [InlineData(false, false)]
+        [InlineData(false, false, Traits = new[] { Setup.HubTrait, Setup.MQTTv5HubTraitValue })]
         public async Task TestFileUpload(bool testAgainstClassicHub, bool withProvidedHttpClient)
         {
             UnifiedDeviceTestContext testDeviceContext = await Setup.CreateConnectedUnifiedConnectionClientAsync(testAgainstClassicHub, null, TestContext.Current.CancellationToken);
@@ -98,7 +98,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
 
         [Theory(Timeout = Setup.TestTimeoutMilliseconds)]
         [InlineData(true)]
-        [InlineData(false)]
+        [InlineData(false, Traits = new[] { Setup.HubTrait, Setup.MQTTv5HubTraitValue })]
         public async Task TestFileUpload_BadFormat(bool testAgainstClassicHub)
         {
             UnifiedDeviceTestContext testDeviceContext = await Setup.CreateConnectedUnifiedConnectionClientAsync(testAgainstClassicHub, null, TestContext.Current.CancellationToken);

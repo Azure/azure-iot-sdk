@@ -189,10 +189,11 @@ jobs:
           $env:AZ_IOT_TRUSTED_CA          = $caPath
           if ($env:IOT_DPS_GLOBAL_ENDPOINT) { $env:AZ_IOT_DPS_GLOBAL_ENDPOINT = $env:IOT_DPS_GLOBAL_ENDPOINT }
 
-          # Only tests labeled Category=CertificateManagement run here;
-          # all other tests run in ci-dotnet.
+          # Only classic-hub tests labeled Category=CertificateManagement run here;
+          # MQTTv5 hub tests (Hub=MQTTv5) run in ci-dotnet-e2e-mqttv5 and all
+          # other tests run in ci-dotnet.
           dotnet test ./dotnet/Project.slnx `
-            --filter "Category=CertificateManagement" `
+            --filter "Category=CertificateManagement&Hub!=MQTTv5" `
             --collect:"XPlat Code Coverage" `
             --logger:"trx;LogFileName=test-results.trx" `
             --environment IOTHUB_CONNECTION_STRING=$env:IOTHUB_CONNECTION_STRING `
