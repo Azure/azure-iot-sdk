@@ -136,8 +136,9 @@ target_include_directories(az_iot_tests_connection_client PRIVATE
     ${PROJECT_SOURCE_DIR}/src/core)
 
 # Applications built with connection-client capacity macros that differ from az_iot_core:
-# az_iot_connection_client_init() must refuse the client. The second moves 8 bytes from one
-# buffer to another, so only the per-macro check catches it if the size stays the same.
+# az_iot_connection_client_init() must refuse the client. The others keep the size on 64-bit
+# (8 bytes moved between two buffers; dispatch entries 8x(128+32) = 10x(96+32)), so only the
+# per-macro check catches them.
 add_library(az_iot_test_connection_client_default_layout STATIC unit/connection_client_layout_default.c)
 target_link_libraries(az_iot_test_connection_client_default_layout PRIVATE az_iot_core)
 az_iot_apply_warnings(az_iot_test_connection_client_default_layout)
@@ -156,6 +157,15 @@ target_compile_definitions(az_iot_tests_connection_client_layout_same_size PRIVA
     AZ_IOT_DPS_HOST_BUF=120
     AZ_IOT_DPS_DEVICE_ID_BUF=136
     AZ_IOT_TEST_EXPECTED_MISMATCH="AZ_IOT_DPS_HOST_BUF"
+    AZ_IOT_TEST_SAME_SIZE_ON_64_BIT=1)
+az_iot_add_cmocka_test(az_iot_tests_connection_client_layout_dispatch_same_size
+    unit/connection_client_layout_mismatch_test.c)
+target_link_libraries(az_iot_tests_connection_client_layout_dispatch_same_size PRIVATE
+    az_iot_test_connection_client_default_layout)
+target_compile_definitions(az_iot_tests_connection_client_layout_dispatch_same_size PRIVATE
+    AZ_IOT_MAX_INBOUND_HANDLERS=10
+    AZ_IOT_DISPATCH_PREFIX_MAX=96
+    AZ_IOT_TEST_EXPECTED_MISMATCH="AZ_IOT_MAX_INBOUND_HANDLERS"
     AZ_IOT_TEST_SAME_SIZE_ON_64_BIT=1)
 az_iot_add_cmocka_test(az_iot_tests_connection_lifecycle unit/connection_lifecycle_test.c)
 target_link_libraries(az_iot_tests_connection_lifecycle PRIVATE az_iot_test_support)

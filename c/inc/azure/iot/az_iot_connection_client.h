@@ -1982,6 +1982,8 @@ extern "C"
     size_t connection_profile_raw_buffer_size; /**< AZ_IOT_CONNECTION_PROFILE_RAW_BUF. */
     size_t max_feature_client_binds; /**< AZ_IOT_MAX_FEATURE_CLIENT_BINDS. */
     size_t mqtt_username_buffer_size; /**< AZ_IOT_MQTT_USERNAME_BUF. */
+    size_t max_inbound_handlers; /**< AZ_IOT_MAX_INBOUND_HANDLERS. */
+    size_t dispatch_prefix_max; /**< AZ_IOT_DISPATCH_PREFIX_MAX. */
   } az_iot_connection_client_layout;
 
   /**
@@ -2028,6 +2030,8 @@ extern "C"
       (size_t)AZ_IOT_CONNECTION_PROFILE_RAW_BUF,
       (size_t)AZ_IOT_MAX_FEATURE_CLIENT_BINDS,
       (size_t)AZ_IOT_MQTT_USERNAME_BUF,
+      (size_t)AZ_IOT_MAX_INBOUND_HANDLERS,
+      (size_t)AZ_IOT_DISPATCH_PREFIX_MAX,
     };
     return az_iot_connection_client_init_checked(client, opts, &layout);
   }

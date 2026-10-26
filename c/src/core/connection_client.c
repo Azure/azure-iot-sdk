@@ -6501,6 +6501,10 @@ static bool layout_matches_sdk(const az_iot_connection_client_layout* layout)
       AZ_IOT_MAX_FEATURE_CLIENT_BINDS);
   ok &= layout_value_matches(
       "AZ_IOT_MQTT_USERNAME_BUF", layout->mqtt_username_buffer_size, AZ_IOT_MQTT_USERNAME_BUF);
+  ok &= layout_value_matches(
+      "AZ_IOT_MAX_INBOUND_HANDLERS", layout->max_inbound_handlers, AZ_IOT_MAX_INBOUND_HANDLERS);
+  ok &= layout_value_matches(
+      "AZ_IOT_DISPATCH_PREFIX_MAX", layout->dispatch_prefix_max, AZ_IOT_DISPATCH_PREFIX_MAX);
   /* Last: a capacity mismatch above already explains a size mismatch. Sizes also catch layout
    * changes no listed macro explains (e.g. a macro of another header). */
   if (ok)
