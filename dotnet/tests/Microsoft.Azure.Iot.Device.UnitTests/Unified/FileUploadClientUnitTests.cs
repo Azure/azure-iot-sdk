@@ -54,6 +54,25 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
         }
 
         [Fact]
+        public async Task FileUploadUsesSecondarySasTokenAfterCredentialFallback()
+        {
+            AuthenticationCredentials secondaryCredentials = CreateSasCredentials();
+            var authentication = new SwitchableAuthenticationProvider
+            {
+                Credentials = CreateSasCredentials(),
+                SecondaryCredentials = secondaryCredentials,
+            };
+            var connection = new FakeConnectionClient(authentication);
+            connection.Context.UsesSecondaryCredentials = true;
+            var handler = new CapturingHandler();
+            using var fileUploadClient = new FileUploadClient(connection, _ => handler);
+
+            await GetSasUriAsync(fileUploadClient);
+
+            Assert.Equal(Encoding.UTF8.GetString(secondaryCredentials.Password), Assert.Single(handler.AuthorizationHeaders));
+        }
+
+        [Fact]
         public async Task X509AuthenticationDoesNotSendAuthorizationHeader()
         {
             using RSA key = RSA.Create(2048);
@@ -138,6 +157,45 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
             await firstRequest;
             Assert.True(handlers[0].IsDisposed);
             Assert.False(handlers[1].IsDisposed);
+        }
+
+        [Fact]
+        public async Task SwitchingToSecondaryCertificateReplacesHttpClientAfterInFlightRequestCompletes()
+        {
+            using X509Certificate2 firstCertificate = CreateCertificate();
+            using X509Certificate2 secondCertificate = CreateCertificate();
+            var authentication = new SwitchableAuthenticationProvider
+            {
+                Credentials = CreateSasCredentials(),
+                SecondaryCredentials = new AuthenticationCredentials { ClientCertificate = firstCertificate },
+            };
+            var connection = new FakeConnectionClient(authentication);
+            connection.Context.UsesSecondaryCredentials = true;
+            var firstRequestGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var handlers = new List<(X509Certificate2? Certificate, CapturingHandler Handler)>();
+            using var fileUploadClient = new FileUploadClient(connection, credentials =>
+            {
+                var handler = new CapturingHandler(handlers.Count == 0 ? firstRequestGate.Task : null);
+                handlers.Add((credentials.ClientCertificate, handler));
+                return handler;
+            });
+
+            Task<FileUploadSasUriResponse> firstRequest = GetSasUriAsync(fileUploadClient);
+            await handlers[0].Handler.RequestStarted.WaitAsync(TestContext.Current.CancellationToken);
+
+            authentication.SecondaryCredentials = new AuthenticationCredentials { ClientCertificate = secondCertificate };
+            await GetSasUriAsync(fileUploadClient);
+
+            Assert.Equal(2, handlers.Count);
+            Assert.Same(firstCertificate, handlers[0].Certificate);
+            Assert.Same(secondCertificate, handlers[1].Certificate);
+            Assert.False(handlers[0].Handler.IsDisposed);
+
+            firstRequestGate.SetResult();
+            await firstRequest;
+
+            Assert.True(handlers[0].Handler.IsDisposed);
+            Assert.False(handlers[1].Handler.IsDisposed);
         }
 
         [Fact]
@@ -298,8 +356,13 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
         {
             public AuthenticationCredentials Credentials { get; set; } = new();
 
+            public AuthenticationCredentials? SecondaryCredentials { get; set; }
+
             public override Task<AuthenticationCredentials> GetOperationalAuthenticationCredentialsAsync(string hostName, string deviceId, IReadOnlyList<string>? issuedClientCertificates, CancellationToken cancellationToken = default)
                 => Task.FromResult(Credentials);
+
+            public override Task<AuthenticationCredentials?> GetSecondaryOperationalAuthenticationCredentialsAsync(string hostName, string deviceId, IReadOnlyList<string>? issuedClientCertificates, CancellationToken cancellationToken = default)
+                => Task.FromResult(SecondaryCredentials);
 
             public override AuthenticationCredentials GetBootAuthenticationCredentials() => Credentials;
 
