@@ -875,6 +875,17 @@ if(AZ_IOT_WITH_AZ_MQTT)
         target_link_libraries(az_iot_tests_az_mqtt_adapter_no_store PRIVATE ws2_32)
     endif()
 
+    # The adapter compiled in, so its copies of connect strings can be inspected.
+    az_iot_add_cmocka_test(az_iot_tests_az_mqtt_adapter_release
+        unit/az_mqtt_adapter_release_test.c
+        ${PROJECT_SOURCE_DIR}/adapters/az_mqtt/az_iot_mqtt_az_mqtt.c)
+    target_include_directories(az_iot_tests_az_mqtt_adapter_release PRIVATE
+        ${PROJECT_SOURCE_DIR}/inc ${PROJECT_SOURCE_DIR}/adapters/az_mqtt ${PROJECT_SOURCE_DIR}/src/core)
+    target_link_libraries(az_iot_tests_az_mqtt_adapter_release PRIVATE az_mqttv3 az_mqttv5)
+    if(WIN32)
+        target_link_libraries(az_iot_tests_az_mqtt_adapter_release PRIVATE ws2_32)
+    endif()
+
     # Each footprint, a user's definition over it, and a config file: resolved as documented.
     foreach(_case DEFAULT CONSTRAINED OVERRIDE CONFIG_FILE)
         set(_t az_iot_tests_az_mqtt_config_${_case})
