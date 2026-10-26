@@ -6418,10 +6418,113 @@ static void sas_wipe(az_iot_connection_client* c)
   az_iot_crypto__wipe(c->auth, sizeof(c->auth));
 }
 
-AZ_NODISCARD az_iot_result az_iot_connection_client_init(
-    az_iot_connection_client* client,
-    const az_iot_connection_client_options* opts)
+/**
+ * @brief Whether one value of the application's layout matches the SDK's; logs the mismatch.
+ *
+ * @param name The macro or sizeof() the value comes from.
+ * @param application_value The value in the application's build.
+ * @param sdk_value The value in the SDK's build.
+ */
+static bool layout_value_matches(const char* name, size_t application_value, size_t sdk_value)
 {
+  if (application_value == sdk_value)
+  {
+    return true;
+  }
+  AZ_IOT_LOG_ERRORF(
+      AZ_IOT_LOG_COMPONENT_CONNECTION,
+      "init: %s is %lu in the application and %lu in the SDK; build both with the same value",
+      name,
+      (unsigned long)application_value,
+      (unsigned long)sdk_value);
+  return false;
+}
+
+/**
+ * @brief Whether the application compiled az_iot_connection_client and its options as the SDK did.
+ *
+ * @param layout The application's layout, from az_iot_connection_client_init().
+ */
+static bool layout_matches_sdk(const az_iot_connection_client_layout* layout)
+{
+  if (layout == NULL)
+  {
+    AZ_IOT_LOG_ERROR(AZ_IOT_LOG_COMPONENT_CONNECTION, "init: no layout");
+    return false;
+  }
+  /* layout_size first: the other fields are only readable when the layouts agree on it. */
+  if (!layout_value_matches(
+          "sizeof(az_iot_connection_client_layout)",
+          layout->layout_size,
+          sizeof(az_iot_connection_client_layout)))
+  {
+    return false;
+  }
+  bool ok = true;
+  ok &= layout_value_matches(
+      "AZ_IOT_MAX_MQTT_FACTORIES", layout->max_mqtt_factories, AZ_IOT_MAX_MQTT_FACTORIES);
+  ok &= layout_value_matches(
+      "AZ_IOT_MAX_PENDING_PUBACKS", layout->max_pending_pubacks, AZ_IOT_MAX_PENDING_PUBACKS);
+  ok &= layout_value_matches(
+      "AZ_IOT_MAX_PUBACK_RESERVATIONS",
+      layout->max_puback_reservations,
+      AZ_IOT_MAX_PUBACK_RESERVATIONS);
+  ok &= layout_value_matches(
+      "AZ_IOT_MAX_PERSISTENT_SUBS", layout->max_persistent_subs, AZ_IOT_MAX_PERSISTENT_SUBS);
+  ok &= layout_value_matches(
+      "AZ_IOT_MAX_SESSION_HANDLERS", layout->max_session_handlers, AZ_IOT_MAX_SESSION_HANDLERS);
+  ok &= layout_value_matches(
+      "AZ_IOT_MAX_FEATURE_STATE_OBSERVERS",
+      layout->max_feature_state_observers,
+      AZ_IOT_MAX_FEATURE_STATE_OBSERVERS);
+  ok &= layout_value_matches(
+      "AZ_IOT_MAX_APP_STATE_OBSERVERS",
+      layout->max_app_state_observers,
+      AZ_IOT_MAX_APP_STATE_OBSERVERS);
+  ok &= layout_value_matches(
+      "AZ_IOT_PERSISTENT_SUB_TOPIC_MAX",
+      layout->persistent_sub_topic_max,
+      AZ_IOT_PERSISTENT_SUB_TOPIC_MAX);
+  ok &= layout_value_matches(
+      "AZ_IOT_DPS_OPERATION_ID_MAX", layout->dps_operation_id_max, AZ_IOT_DPS_OPERATION_ID_MAX);
+  ok &= layout_value_matches(
+      "AZ_IOT_DPS_HOST_BUF", layout->dps_host_buffer_size, AZ_IOT_DPS_HOST_BUF);
+  ok &= layout_value_matches(
+      "AZ_IOT_DPS_DEVICE_ID_BUF", layout->dps_device_id_buffer_size, AZ_IOT_DPS_DEVICE_ID_BUF);
+  ok &= layout_value_matches(
+      "AZ_IOT_CONNECTION_PROFILE_RAW_BUF",
+      layout->connection_profile_raw_buffer_size,
+      AZ_IOT_CONNECTION_PROFILE_RAW_BUF);
+  ok &= layout_value_matches(
+      "AZ_IOT_MAX_FEATURE_CLIENT_BINDS",
+      layout->max_feature_client_binds,
+      AZ_IOT_MAX_FEATURE_CLIENT_BINDS);
+  ok &= layout_value_matches(
+      "AZ_IOT_MQTT_USERNAME_BUF", layout->mqtt_username_buffer_size, AZ_IOT_MQTT_USERNAME_BUF);
+  /* Last: a capacity mismatch above already explains a size mismatch. Sizes also catch layout
+   * changes no listed macro explains (e.g. a macro of another header). */
+  if (ok)
+  {
+    ok &= layout_value_matches(
+        "sizeof(az_iot_connection_client)", layout->client_size, sizeof(az_iot_connection_client));
+    ok &= layout_value_matches(
+        "sizeof(az_iot_connection_client_options)",
+        layout->options_size,
+        sizeof(az_iot_connection_client_options));
+  }
+  return ok;
+}
+
+AZ_NODISCARD az_iot_result az_iot_connection_client_init_checked(
+    az_iot_connection_client* client,
+    const az_iot_connection_client_options* opts,
+    const az_iot_connection_client_layout* layout)
+{
+  /* Before anything else: with another layout, client and opts cannot be read or written. */
+  if (!layout_matches_sdk(layout))
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
   if (!client || !opts)
   {
     AZ_IOT_LOG_ERROR(AZ_IOT_LOG_COMPONENT_CONNECTION, "init: invalid arguments");

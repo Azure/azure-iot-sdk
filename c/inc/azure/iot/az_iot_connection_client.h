@@ -1956,9 +1956,81 @@ extern "C"
    *     user-provided token callback in dps_auth / hub_auth. */
   AZ_NODISCARD az_iot_connection_client_options az_iot_connection_client_options_default(void);
 
-  AZ_NODISCARD az_iot_result az_iot_connection_client_init(
+  /**
+   * @brief az_iot_connection_client and its options as compiled where they are allocated. Filled
+   * by az_iot_connection_client_init() in the application's build.
+   *
+   * The capacity macros below size arrays in those structs. Define each one identically for the
+   * application and the SDK.
+   */
+  typedef struct az_iot_connection_client_layout
+  {
+    size_t layout_size; /**< sizeof(az_iot_connection_client_layout). */
+    size_t client_size; /**< sizeof(az_iot_connection_client). */
+    size_t options_size; /**< sizeof(az_iot_connection_client_options). */
+    size_t max_mqtt_factories; /**< AZ_IOT_MAX_MQTT_FACTORIES. */
+    size_t max_pending_pubacks; /**< AZ_IOT_MAX_PENDING_PUBACKS. */
+    size_t max_puback_reservations; /**< AZ_IOT_MAX_PUBACK_RESERVATIONS. */
+    size_t max_persistent_subs; /**< AZ_IOT_MAX_PERSISTENT_SUBS. */
+    size_t max_session_handlers; /**< AZ_IOT_MAX_SESSION_HANDLERS. */
+    size_t max_feature_state_observers; /**< AZ_IOT_MAX_FEATURE_STATE_OBSERVERS. */
+    size_t max_app_state_observers; /**< AZ_IOT_MAX_APP_STATE_OBSERVERS. */
+    size_t persistent_sub_topic_max; /**< AZ_IOT_PERSISTENT_SUB_TOPIC_MAX. */
+    size_t dps_operation_id_max; /**< AZ_IOT_DPS_OPERATION_ID_MAX. */
+    size_t dps_host_buffer_size; /**< AZ_IOT_DPS_HOST_BUF. */
+    size_t dps_device_id_buffer_size; /**< AZ_IOT_DPS_DEVICE_ID_BUF. */
+    size_t connection_profile_raw_buffer_size; /**< AZ_IOT_CONNECTION_PROFILE_RAW_BUF. */
+    size_t max_feature_client_binds; /**< AZ_IOT_MAX_FEATURE_CLIENT_BINDS. */
+    size_t mqtt_username_buffer_size; /**< AZ_IOT_MQTT_USERNAME_BUF. */
+  } az_iot_connection_client_layout;
+
+  /**
+   * @brief Exported initializer behind az_iot_connection_client_init(); call that instead.
+   *
+   * @param[in] layout The application's az_iot_connection_client_layout. If it is NULL or any
+   * field differs from the SDK build, the client is not written.
+   * @return See az_iot_connection_client_init().
+   */
+  AZ_NODISCARD az_iot_result az_iot_connection_client_init_checked(
       az_iot_connection_client* client,
-      const az_iot_connection_client_options* opts);
+      const az_iot_connection_client_options* opts,
+      const az_iot_connection_client_layout* layout);
+
+  /**
+   * @brief Initialize the client.
+   *
+   * Inline, so the SDK can check that az_iot_connection_client and its options were compiled with
+   * the same capacity macros in the application as in the SDK (see
+   * az_iot_connection_client_layout).
+   *
+   * @retval AZ_IOT_ERR_INVALID_ARG Also returned, with an error log naming the value and the
+   * client untouched, when the application's layout differs from the SDK's.
+   */
+  AZ_NODISCARD AZ_INLINE az_iot_result az_iot_connection_client_init(
+      az_iot_connection_client* client,
+      const az_iot_connection_client_options* opts)
+  {
+    const az_iot_connection_client_layout layout = {
+      sizeof(az_iot_connection_client_layout),
+      sizeof(az_iot_connection_client),
+      sizeof(az_iot_connection_client_options),
+      (size_t)AZ_IOT_MAX_MQTT_FACTORIES,
+      (size_t)AZ_IOT_MAX_PENDING_PUBACKS,
+      (size_t)AZ_IOT_MAX_PUBACK_RESERVATIONS,
+      (size_t)AZ_IOT_MAX_PERSISTENT_SUBS,
+      (size_t)AZ_IOT_MAX_SESSION_HANDLERS,
+      (size_t)AZ_IOT_MAX_FEATURE_STATE_OBSERVERS,
+      (size_t)AZ_IOT_MAX_APP_STATE_OBSERVERS,
+      (size_t)AZ_IOT_PERSISTENT_SUB_TOPIC_MAX,
+      (size_t)AZ_IOT_DPS_OPERATION_ID_MAX,
+      (size_t)AZ_IOT_DPS_HOST_BUF,
+      (size_t)AZ_IOT_DPS_DEVICE_ID_BUF,
+      (size_t)AZ_IOT_CONNECTION_PROFILE_RAW_BUF,
+      (size_t)AZ_IOT_MAX_FEATURE_CLIENT_BINDS,
+      (size_t)AZ_IOT_MQTT_USERNAME_BUF,
+    };
+    return az_iot_connection_client_init_checked(client, opts, &layout);
+  }
 
   /**
    * @brief Deinitialize the client.

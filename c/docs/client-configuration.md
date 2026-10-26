@@ -123,6 +123,10 @@ arrays inside caller-allocated structs, or buffers inside the SDK.
     compile the application with the same one. The installed CMake package does not carry it.
 - After changing a value, rebuild the SDK and the application. See
   [Struct versioning](struct_versioning.md).
+- `az_iot_connection_client_init()` checks the connection client's capacity macros and struct
+  sizes against the SDK's. On a mismatch it returns `AZ_IOT_ERR_INVALID_ARG` without writing the
+  client, and logs an `ERROR` naming the value, e.g. `AZ_IOT_MAX_PENDING_PUBACKS is 17 in the
+  application and 16 in the SDK`.
 
 When a limit is exceeded:
 

@@ -6,6 +6,11 @@
 
 - Breaking: `az_iot_su_platform_hooks` fields `persist_state_fn` and `load_state_fn` are renamed
   `persist_workflow_state_fn` and `load_workflow_state_fn`.
+- Connection client: `az_iot_connection_client_init()` is now inline and checks that the
+  application and the SDK were built with the same capacity macros (`AZ_IOT_MAX_PENDING_PUBACKS`,
+  `AZ_IOT_DPS_HOST_BUF`, ...) and struct sizes, through the new exported
+  `az_iot_connection_client_init_checked()` and `az_iot_connection_client_layout`. On a mismatch it
+  returns `AZ_IOT_ERR_INVALID_ARG` without writing the client and logs the value that differs.
 - az_mqtt adapter: `AZ_IOT_AZ_MQTT_MESSAGE_STORAGE_SIZE` may be 0, for devices that only use clean
   sessions: no message store is allocated, and a connect whose session outlives the connection
   (`clean_start` false; MQTT 5: with `session_expiry_seconds` > 0) returns `AZ_IOT_ERR_NOT_SUPPORTED`.
