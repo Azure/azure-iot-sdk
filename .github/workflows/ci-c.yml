@@ -541,6 +541,10 @@ jobs:
   # ThreadSanitizer over the whole ctest set, conformance against a real broker
   # included. Paho is built instrumented too. TSan needs fewer ASLR bits than
   # the runner kernel's default, hence the sysctl.
+  # Known flaky: Paho races eclipse-paho/paho.mqtt.c#1709 and #1714 fail
+  # az_iot_paho_teardown_race and the Paho conformance suites intermittently
+  # (c/docs/dependencies.md, "Races on the command queue and client state").
+  # Rerun on those; any other report is a real failure.
   tsan-linux:
     name: linux-gcc / TSan
     needs: changes
