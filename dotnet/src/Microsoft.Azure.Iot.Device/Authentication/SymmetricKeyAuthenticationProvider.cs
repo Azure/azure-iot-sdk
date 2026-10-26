@@ -21,7 +21,7 @@ namespace Microsoft.Azure.Iot.Device.Authentication
     /// </remarks>
     public class SymmetricKeyAuthenticationProvider : AuthenticationProvider
     {
-        private readonly byte[] _symmetricKey;
+        private readonly byte[] _primarySymmetricKey;
 
         private readonly byte[]? _secondarySymmetricKey;
 
@@ -41,10 +41,10 @@ namespace Microsoft.Azure.Iot.Device.Authentication
         /// </summary>
         /// <param name="registrationId">The registration Id to provision as.</param>
         /// <param name="idScope">The device provisioning service Id scope.</param>
-        /// <param name="symmetricKey">The raw symmetric key bytes, not a Base64-encoded string.</param>
+        /// <param name="primarySymmetricKey">The raw primary symmetric key bytes, not a Base64-encoded string.</param>
         /// <param name="secondarySymmetricKey">
         /// The raw secondary symmetric key bytes, not a Base64-encoded string, or null if this device has none. When IoT
-        /// Hub or the device provisioning service rejects the SAS token signed with <paramref name="symmetricKey"/>, the
+        /// Hub or the device provisioning service rejects the SAS token signed with <paramref name="primarySymmetricKey"/>, the
         /// connection client retries at once with one signed with this key. If IoT Hub rejects both, the connection
         /// client re-provisions the device when it can. Once a client certificate is issued and presented to IoT Hub
         /// instead of a SAS token, this key is only used for the device provisioning service.
@@ -56,7 +56,7 @@ namespace Microsoft.Azure.Iot.Device.Authentication
         public SymmetricKeyAuthenticationProvider(
             string registrationId,
             string idScope,
-            byte[] symmetricKey,
+            byte[] primarySymmetricKey,
             byte[]? secondarySymmetricKey,
             RemoteCertificateValidationCallback? remoteCertificateValidationCallback = null,
             LocalCertificateSelectionCallback? localCertificateSelectionCallback = null,
@@ -64,7 +64,7 @@ namespace Microsoft.Azure.Iot.Device.Authentication
             TimeSpan? dpsSasTokenTimeToLive = null)
             : base(remoteCertificateValidationCallback, localCertificateSelectionCallback)
         {
-            ArgumentNullException.ThrowIfNull(symmetricKey);
+            ArgumentNullException.ThrowIfNull(primarySymmetricKey);
             _iotHubSasTokenTimeToLive = iotHubSasTokenTimeToLive ?? TimeSpan.FromHours(1);
             _dpsSasTokenTimeToLive = dpsSasTokenTimeToLive ?? TimeSpan.FromMinutes(10);
             if (_iotHubSasTokenTimeToLive <= TimeSpan.Zero)
@@ -80,7 +80,7 @@ namespace Microsoft.Azure.Iot.Device.Authentication
             _idScope = idScope;
             _registrationId = registrationId;
             // Note that the device will use the same symmetric key when deriving SAS tokens to authenticate with IoT Hub and with DPS
-            _symmetricKey = symmetricKey;
+            _primarySymmetricKey = primarySymmetricKey;
             _secondarySymmetricKey = secondarySymmetricKey;
         }
 
@@ -89,10 +89,10 @@ namespace Microsoft.Azure.Iot.Device.Authentication
         /// </summary>
         /// <param name="registrationId">The registration Id to provision as.</param>
         /// <param name="idScope">The device provisioning service Id scope.</param>
-        /// <param name="symmetricKey">The raw symmetric key bytes used for DPS and for IoT Hub until a certificate is issued.</param>
+        /// <param name="primarySymmetricKey">The raw primary symmetric key bytes used for DPS and for IoT Hub until a certificate is issued.</param>
         /// <param name="secondarySymmetricKey">
         /// The raw secondary symmetric key bytes, not a Base64-encoded string, or null if this device has none. When IoT
-        /// Hub or the device provisioning service rejects the SAS token signed with <paramref name="symmetricKey"/>, the
+        /// Hub or the device provisioning service rejects the SAS token signed with <paramref name="primarySymmetricKey"/>, the
         /// connection client retries at once with one signed with this key. If IoT Hub rejects both, the connection
         /// client re-provisions the device when it can. Once a client certificate is issued and presented to IoT Hub
         /// instead of a SAS token, this key is only used for the device provisioning service.
@@ -108,14 +108,14 @@ namespace Microsoft.Azure.Iot.Device.Authentication
         public SymmetricKeyAuthenticationProvider(
             string registrationId,
             string idScope,
-            byte[] symmetricKey,
+            byte[] primarySymmetricKey,
             byte[]? secondarySymmetricKey,
             AsymmetricAlgorithm issuedCertificatePrivateKey,
             RemoteCertificateValidationCallback? remoteCertificateValidationCallback = null,
             LocalCertificateSelectionCallback? localCertificateSelectionCallback = null,
             TimeSpan? iotHubSasTokenTimeToLive = null,
             TimeSpan? dpsSasTokenTimeToLive = null)
-            : this(registrationId, idScope, symmetricKey, secondarySymmetricKey, remoteCertificateValidationCallback, localCertificateSelectionCallback, iotHubSasTokenTimeToLive, dpsSasTokenTimeToLive)
+            : this(registrationId, idScope, primarySymmetricKey, secondarySymmetricKey, remoteCertificateValidationCallback, localCertificateSelectionCallback, iotHubSasTokenTimeToLive, dpsSasTokenTimeToLive)
         {
             IssuedCertificatePrivateKey = issuedCertificatePrivateKey ?? throw new ArgumentNullException(nameof(issuedCertificatePrivateKey));
             HandleCertificateSigningCompleteAsync = IssuedCertificateHandler.CreateDefaultCallback(issuedCertificatePrivateKey);
@@ -127,10 +127,10 @@ namespace Microsoft.Azure.Iot.Device.Authentication
         /// </summary>
         /// <param name="registrationId">The registration Id to provision as.</param>
         /// <param name="idScope">The device provisioning service Id scope.</param>
-        /// <param name="symmetricKey">The raw symmetric key bytes used for DPS and for IoT Hub until a certificate is issued.</param>
+        /// <param name="primarySymmetricKey">The raw primary symmetric key bytes used for DPS and for IoT Hub until a certificate is issued.</param>
         /// <param name="secondarySymmetricKey">
         /// The raw secondary symmetric key bytes, not a Base64-encoded string, or null if this device has none. When IoT
-        /// Hub or the device provisioning service rejects the SAS token signed with <paramref name="symmetricKey"/>, the
+        /// Hub or the device provisioning service rejects the SAS token signed with <paramref name="primarySymmetricKey"/>, the
         /// connection client retries at once with one signed with this key. If IoT Hub rejects both, the connection
         /// client re-provisions the device when it can. Once a client certificate is issued and presented to IoT Hub
         /// instead of a SAS token, this key is only used for the device provisioning service.
@@ -148,14 +148,14 @@ namespace Microsoft.Azure.Iot.Device.Authentication
         public SymmetricKeyAuthenticationProvider(
             string registrationId,
             string idScope,
-            byte[] symmetricKey,
+            byte[] primarySymmetricKey,
             byte[]? secondarySymmetricKey,
             Func<IReadOnlyList<string>, Task<X509Certificate2>> handleCertificateSigningCompleteAsync,
             RemoteCertificateValidationCallback? remoteCertificateValidationCallback = null,
             LocalCertificateSelectionCallback? localCertificateSelectionCallback = null,
             TimeSpan? iotHubSasTokenTimeToLive = null,
             TimeSpan? dpsSasTokenTimeToLive = null)
-            : this(registrationId, idScope, symmetricKey, secondarySymmetricKey, remoteCertificateValidationCallback, localCertificateSelectionCallback, iotHubSasTokenTimeToLive, dpsSasTokenTimeToLive)
+            : this(registrationId, idScope, primarySymmetricKey, secondarySymmetricKey, remoteCertificateValidationCallback, localCertificateSelectionCallback, iotHubSasTokenTimeToLive, dpsSasTokenTimeToLive)
         {
             HandleCertificateSigningCompleteAsync = handleCertificateSigningCompleteAsync
                 ?? throw new ArgumentNullException(nameof(handleCertificateSigningCompleteAsync));
@@ -193,7 +193,7 @@ namespace Microsoft.Azure.Iot.Device.Authentication
             }
 
             // Note that hostname + device id may change over time, so cannot just take them in constructor.
-            return CreateOperationalCredentials(_symmetricKey, hostName, deviceId);
+            return CreateOperationalCredentials(_primarySymmetricKey, hostName, deviceId);
         }
 
         public override Task<AuthenticationCredentials?> GetSecondaryOperationalAuthenticationCredentialsAsync(string hostName, string deviceId, IReadOnlyList<string>? issuedClientCertificates, CancellationToken cancellationToken = default)
@@ -209,7 +209,7 @@ namespace Microsoft.Azure.Iot.Device.Authentication
 
         public override AuthenticationCredentials GetBootAuthenticationCredentials()
         {
-            return CreateBootCredentials(_symmetricKey);
+            return CreateBootCredentials(_primarySymmetricKey);
         }
 
         public override AuthenticationCredentials? GetSecondaryBootAuthenticationCredentials()

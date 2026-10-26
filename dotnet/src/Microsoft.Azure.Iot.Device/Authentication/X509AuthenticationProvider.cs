@@ -14,11 +14,11 @@ namespace Microsoft.Azure.Iot.Device.Authentication
     public class X509AuthenticationProvider : AuthenticationProvider
     {
         /// <summary>
-        /// Creates an instance of this class that always presents <paramref name="clientCertificate"/>, even if a client
+        /// Creates an instance of this class that always presents <paramref name="primaryClientCertificate"/>, even if a client
         /// certificate is issued to this device. To present issued certificates, use a constructor that takes the
         /// certificate signing request's private key or a certificate signing complete callback.
         /// </summary>
-        /// <param name="clientCertificate">
+        /// <param name="primaryClientCertificate">
         /// The client certificate used for authentication.
         /// <para>
         /// The certificate's private key does not need to be exportable, and its key material never leaves this process.
@@ -33,9 +33,9 @@ namespace Microsoft.Azure.Iot.Device.Authentication
         /// </param>
         /// <param name="secondaryClientCertificate">
         /// A secondary client certificate for this device, or null if it has none. When IoT Hub or the device
-        /// provisioning service rejects <paramref name="clientCertificate"/>, the connection client retries at once with
+        /// provisioning service rejects <paramref name="primaryClientCertificate"/>, the connection client retries at once with
         /// this certificate. If IoT Hub rejects both, the connection client re-provisions the device when it can. This
-        /// certificate must identify the same device as <paramref name="clientCertificate"/>, whose name is still used as
+        /// certificate must identify the same device as <paramref name="primaryClientCertificate"/>, whose name is still used as
         /// the registration Id. Once an issued client certificate is presented to IoT Hub, this certificate is only used
         /// for the device provisioning service. The SDK never exports this certificate or its private key.
         /// </param>
@@ -51,18 +51,18 @@ namespace Microsoft.Azure.Iot.Device.Authentication
         /// <param name="localCertificateSelectionCallback">
         /// An optional callback used to select which client certificate to present during the TLS handshake, for example
         /// to choose a specific certificate from a store or to support certificate rotation. When null,
-        /// <paramref name="clientCertificate"/> is presented. The selected certificate must be able to sign with its
+        /// <paramref name="primaryClientCertificate"/> is presented. The selected certificate must be able to sign with its
         /// associated (possibly HSM-backed) private key.
         /// </param>
         public X509AuthenticationProvider(
-            X509Certificate2 clientCertificate,
+            X509Certificate2 primaryClientCertificate,
             X509Certificate2? secondaryClientCertificate,
             X509Certificate2Collection? certificateChain = null,
             RemoteCertificateValidationCallback? remoteCertificateValidationCallback = null,
             LocalCertificateSelectionCallback? localCertificateSelectionCallback = null) : base(remoteCertificateValidationCallback, localCertificateSelectionCallback)
         {
-            ClientCertificate = clientCertificate
-                ?? throw new ArgumentException("No certificate was found. To use certificate authentication certificate must be present.", nameof(clientCertificate));
+            PrimaryClientCertificate = primaryClientCertificate
+                ?? throw new ArgumentException("No certificate was found. To use certificate authentication certificate must be present.", nameof(primaryClientCertificate));
 
             SecondaryClientCertificate = secondaryClientCertificate;
             CertificateChain = certificateChain;
@@ -75,22 +75,22 @@ namespace Microsoft.Azure.Iot.Device.Authentication
         /// Creates an instance of this class that presents client certificates issued to this device, paired with the
         /// private key their certificate signing requests were generated with, to IoT Hub.
         /// </summary>
-        /// <param name="clientCertificate">
+        /// <param name="primaryClientCertificate">
         /// The client certificate used to authenticate with the device provisioning service, and with IoT Hub until a
         /// client certificate is issued to this device.
         /// </param>
         /// <param name="secondaryClientCertificate">
         /// A secondary client certificate for this device, or null if it has none. When IoT Hub or the device
-        /// provisioning service rejects <paramref name="clientCertificate"/>, the connection client retries at once with
+        /// provisioning service rejects <paramref name="primaryClientCertificate"/>, the connection client retries at once with
         /// this certificate. If IoT Hub rejects both, the connection client re-provisions the device when it can. This
-        /// certificate must identify the same device as <paramref name="clientCertificate"/>, whose name is still used as
+        /// certificate must identify the same device as <paramref name="primaryClientCertificate"/>, whose name is still used as
         /// the registration Id. Once an issued client certificate is presented to IoT Hub, this certificate is only used
         /// for the device provisioning service. The SDK never exports this certificate or its private key.
         /// </param>
         /// <param name="issuedCertificatePrivateKey">
         /// The private key that this device's certificate signing requests are generated with. When a client certificate
         /// is issued to this device (either by the device provisioning service during provisioning or by IoT Hub), the
-        /// issued device certificate is paired with this key and presented to IoT Hub instead of <paramref name="clientCertificate"/>.
+        /// issued device certificate is paired with this key and presented to IoT Hub instead of <paramref name="primaryClientCertificate"/>.
         /// </param>
         /// <param name="certificateChain">
         /// The certificate chain leading to the root certificate uploaded to the device provisioning service.
@@ -103,15 +103,15 @@ namespace Microsoft.Azure.Iot.Device.Authentication
         /// An optional callback used to select which client certificate to present during the TLS handshake.
         /// </param>
         public X509AuthenticationProvider(
-            X509Certificate2 clientCertificate,
+            X509Certificate2 primaryClientCertificate,
             X509Certificate2? secondaryClientCertificate,
             AsymmetricAlgorithm issuedCertificatePrivateKey,
             X509Certificate2Collection? certificateChain = null,
             RemoteCertificateValidationCallback? remoteCertificateValidationCallback = null,
             LocalCertificateSelectionCallback? localCertificateSelectionCallback = null) : base(remoteCertificateValidationCallback, localCertificateSelectionCallback)
         {
-            ClientCertificate = clientCertificate
-                ?? throw new ArgumentException("No certificate was found. To use certificate authentication certificate must be present.", nameof(clientCertificate));
+            PrimaryClientCertificate = primaryClientCertificate
+                ?? throw new ArgumentException("No certificate was found. To use certificate authentication certificate must be present.", nameof(primaryClientCertificate));
 
             SecondaryClientCertificate = secondaryClientCertificate;
             CertificateChain = certificateChain;
@@ -123,15 +123,15 @@ namespace Microsoft.Azure.Iot.Device.Authentication
         /// <summary>
         /// Creates an instance of this class that delegates handling of issued client certificates to a callback.
         /// </summary>
-        /// <param name="clientCertificate">
+        /// <param name="primaryClientCertificate">
         /// The client certificate used to authenticate with the device provisioning service, and with IoT Hub until a
         /// client certificate is issued to this device.
         /// </param>
         /// <param name="secondaryClientCertificate">
         /// A secondary client certificate for this device, or null if it has none. When IoT Hub or the device
-        /// provisioning service rejects <paramref name="clientCertificate"/>, the connection client retries at once with
+        /// provisioning service rejects <paramref name="primaryClientCertificate"/>, the connection client retries at once with
         /// this certificate. If IoT Hub rejects both, the connection client re-provisions the device when it can. This
-        /// certificate must identify the same device as <paramref name="clientCertificate"/>, whose name is still used as
+        /// certificate must identify the same device as <paramref name="primaryClientCertificate"/>, whose name is still used as
         /// the registration Id. Once an issued client certificate is presented to IoT Hub, this certificate is only used
         /// for the device provisioning service. The SDK never exports this certificate or its private key.
         /// </param>
@@ -153,15 +153,15 @@ namespace Microsoft.Azure.Iot.Device.Authentication
         /// An optional callback used to select which client certificate to present during the TLS handshake.
         /// </param>
         public X509AuthenticationProvider(
-            X509Certificate2 clientCertificate,
+            X509Certificate2 primaryClientCertificate,
             X509Certificate2? secondaryClientCertificate,
             Func<IReadOnlyList<string>, Task<X509Certificate2>> handleCertificateSigningCompleteAsync,
             X509Certificate2Collection? certificateChain = null,
             RemoteCertificateValidationCallback? remoteCertificateValidationCallback = null,
             LocalCertificateSelectionCallback? localCertificateSelectionCallback = null) : base(remoteCertificateValidationCallback, localCertificateSelectionCallback)
         {
-            ClientCertificate = clientCertificate
-                ?? throw new ArgumentException("No certificate was found. To use certificate authentication certificate must be present.", nameof(clientCertificate));
+            PrimaryClientCertificate = primaryClientCertificate
+                ?? throw new ArgumentException("No certificate was found. To use certificate authentication certificate must be present.", nameof(primaryClientCertificate));
 
             SecondaryClientCertificate = secondaryClientCertificate;
             CertificateChain = certificateChain;
@@ -173,7 +173,7 @@ namespace Microsoft.Azure.Iot.Device.Authentication
         /// <summary>
         /// The client certificate used for TLS device authentication.
         /// </summary>
-        public X509Certificate2 ClientCertificate { get; }
+        public X509Certificate2 PrimaryClientCertificate { get; }
 
         /// <summary>
         /// The certificate trust chain that will end in the Trusted Root installed on the server side.
@@ -185,7 +185,7 @@ namespace Microsoft.Azure.Iot.Device.Authentication
         /// </summary>
         /// <remarks>
         /// When set, and a client certificate has been issued to this device, the issued device certificate is paired
-        /// with this key and presented to IoT Hub instead of <see cref="ClientCertificate"/>. Every certificate signing
+        /// with this key and presented to IoT Hub instead of <see cref="PrimaryClientCertificate"/>. Every certificate signing
         /// request this device sends must be generated with this key; to rotate keys, create a new provider.
         /// <para>
         /// On platforms whose TLS stack cannot use an in-memory key (such as Windows SChannel), the paired certificate is
@@ -198,7 +198,7 @@ namespace Microsoft.Azure.Iot.Device.Authentication
         /// <summary>
         /// Produces the certificate to present to IoT Hub from an issued client certificate chain. Either the callback
         /// this provider was created with or, by default, one that pairs the issued device certificate with
-        /// <see cref="IssuedCertificatePrivateKey"/> (or presents <see cref="ClientCertificate"/> if there is no such key).
+        /// <see cref="IssuedCertificatePrivateKey"/> (or presents <see cref="PrimaryClientCertificate"/> if there is no such key).
         /// </summary>
         public Func<IReadOnlyList<string>, Task<X509Certificate2>> HandleCertificateSigningCompleteAsync { get; }
 
@@ -209,14 +209,14 @@ namespace Microsoft.Azure.Iot.Device.Authentication
 
         private readonly IssuedCertificateHandler _issuedCertificateHandler;
 
-        // False when issued certificates are ignored in favor of ClientCertificate.
+        // False when issued certificates are ignored in favor of PrimaryClientCertificate.
         private readonly bool _presentsIssuedCertificates = true;
 
         public override async Task<AuthenticationCredentials> GetOperationalAuthenticationCredentialsAsync(string hostName, string deviceId, IReadOnlyList<string>? issuedClientCertificates, CancellationToken cancellationToken = default)
         {
             if (issuedClientCertificates == null || issuedClientCertificates.Count == 0)
             {
-                return CreateCredentials(ClientCertificate);
+                return CreateCredentials(PrimaryClientCertificate);
             }
 
             X509Certificate2 certificate = await _issuedCertificateHandler.GetCertificateAsync(issuedClientCertificates, cancellationToken).ConfigureAwait(false);
@@ -226,19 +226,19 @@ namespace Microsoft.Azure.Iot.Device.Authentication
         private Task<X509Certificate2> PresentOriginalCertificateAsync(IReadOnlyList<string> issuedClientCertificates)
         {
             Trace.TraceWarning("A client certificate was issued to this device, but this provider was created without an issuedCertificatePrivateKey or handleCertificateSigningCompleteAsync callback, so the original client certificate will be presented to IoT Hub instead.");
-            return Task.FromResult(ClientCertificate);
+            return Task.FromResult(PrimaryClientCertificate);
         }
 
         public override AuthenticationCredentials GetBootAuthenticationCredentials()
         {
-            return CreateCredentials(ClientCertificate);
+            return CreateCredentials(PrimaryClientCertificate);
         }
 
         public override Task<AuthenticationCredentials?> GetSecondaryOperationalAuthenticationCredentialsAsync(string hostName, string deviceId, IReadOnlyList<string>? issuedClientCertificates, CancellationToken cancellationToken = default)
         {
             if (SecondaryClientCertificate == null || (issuedClientCertificates is { Count: > 0 } && _presentsIssuedCertificates))
             {
-                // An issued certificate takes the place of ClientCertificate, so there is no secondary to fall back to.
+                // An issued certificate takes the place of PrimaryClientCertificate, so there is no secondary to fall back to.
                 return Task.FromResult<AuthenticationCredentials?>(null);
             }
 
@@ -262,7 +262,7 @@ namespace Microsoft.Azure.Iot.Device.Authentication
 
         public override string GetRegistrationId()
         {
-            return ClientCertificate.GetNameInfo(X509NameType.DnsName, false);
+            return PrimaryClientCertificate.GetNameInfo(X509NameType.DnsName, false);
         }
     }
 }

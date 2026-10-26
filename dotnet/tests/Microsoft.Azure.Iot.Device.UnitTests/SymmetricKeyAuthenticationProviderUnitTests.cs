@@ -65,7 +65,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         {
             ArgumentNullException exception = Assert.Throws<ArgumentNullException>(
                 () => new SymmetricKeyAuthenticationProvider("registration-id", "0ne00000000", null!, null));
-            Assert.Equal("symmetricKey", exception.ParamName);
+            Assert.Equal("primarySymmetricKey", exception.ParamName);
         }
 
         [Fact]
