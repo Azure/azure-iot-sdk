@@ -164,13 +164,12 @@ static void adopt_applied_update_id(az_iot_su_client* client)
   {
     return;
   }
-  const char* src = SU_I(client).applied_update_id_buf;
-  char* dst = SU_I(client).adopted_installed_id_buf;
-  memcpy(dst, src, sizeof(SU_I(client).adopted_installed_id_buf));
+  /* The channel copies the id. The cache may point into the adopted buffer, so
+   * that is overwritten only once the channel has accepted the new id. */
   az_iot_su_device_properties next = SU_I(client).device_properties;
-  next.installed_update_id.provider = dst + (SU_I(client).applied_update_id.provider - src);
-  next.installed_update_id.name = dst + (SU_I(client).applied_update_id.name - src);
-  next.installed_update_id.version = dst + (SU_I(client).applied_update_id.version - src);
+  next.installed_update_id.provider = SU_I(client).applied_update_id.provider;
+  next.installed_update_id.name = SU_I(client).applied_update_id.name;
+  next.installed_update_id.version = SU_I(client).applied_update_id.version;
   if (SU_I(client).channel.vtable != NULL
       && SU_I(client).channel.vtable->set_device_properties != NULL
       && SU_I(client).channel.vtable->set_device_properties(SU_I(client).channel.ctx, &next)
@@ -181,7 +180,13 @@ static void adopt_applied_update_id(az_iot_su_client* client)
         "applied update id not adopted as installed; checks keep the previous one");
     return;
   }
-  SU_I(client).device_properties.installed_update_id = next.installed_update_id;
+  const char* src = SU_I(client).applied_update_id_buf;
+  char* dst = SU_I(client).adopted_installed_id_buf;
+  memcpy(dst, src, sizeof(SU_I(client).adopted_installed_id_buf));
+  az_iot_su_update_id_info* cached = &SU_I(client).device_properties.installed_update_id;
+  cached->provider = dst + (SU_I(client).applied_update_id.provider - src);
+  cached->name = dst + (SU_I(client).applied_update_id.name - src);
+  cached->version = dst + (SU_I(client).applied_update_id.version - src);
 }
 
 /* ------------------------------------------------------------------------- */

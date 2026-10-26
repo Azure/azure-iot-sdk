@@ -4535,6 +4535,78 @@ static void the_applied_id_is_adopted_with_an_exact_sized_cache(void** state)
       fx->chan.properties.properties.installed_update_id.name, fx->chan.last_installed_name);
 }
 
+/* CRC-32 over a persisted record, as the client computes it. */
+static uint32_t record_crc32(const uint8_t* data, size_t len)
+{
+  uint32_t crc = 0xFFFFFFFFu;
+  for (size_t i = 0; i < len; ++i)
+  {
+    crc ^= data[i];
+    for (int b = 0; b < 8; ++b)
+    {
+      crc = (crc >> 1) ^ (0xEDB88320u & (uint32_t)(-(int32_t)(crc & 1u)));
+    }
+  }
+  return crc ^ 0xFFFFFFFFu;
+}
+
+/* A later adoption the channel refuses leaves the adopted installed id intact,
+ * even when the new id's components have other lengths. */
+static void a_refused_adoption_keeps_the_adopted_installed_id(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  finish_with_report_unacknowledged(fx);
+  void* fresh_state = NULL;
+  fixture* fresh = reboot_into_fresh(fx, &fresh_state);
+  assert_int_equal(az_iot_su_client_resume(&fresh->su), AZ_IOT_OK);
+  const az_iot_su_update_id_info* id = &fresh->su._internal.device_properties.installed_update_id;
+  assert_string_equal(id->provider, fx->chan.last_installed_provider);
+
+  /* The same record with the applied id split elsewhere: same bytes overall,
+   * components of other lengths ("Contoso\0Foobar\0..." -> "Con\0tosoFoobar\0..."). */
+  const char* provider = fx->chan.last_installed_provider;
+  const char* name = fx->chan.last_installed_name;
+  const char* version = fx->chan.last_installed_version;
+  size_t provider_len = strlen(provider);
+  size_t name_len = strlen(name);
+  size_t version_len = strlen(version);
+  size_t applied_len = provider_len + name_len + version_len + 3u;
+  char applied[64];
+  char split[64];
+  assert_true(provider_len > 3u && applied_len <= sizeof(applied));
+  memcpy(applied, provider, provider_len + 1u);
+  memcpy(&applied[provider_len + 1u], name, name_len + 1u);
+  memcpy(&applied[provider_len + name_len + 2u], version, version_len + 1u);
+  memcpy(split, provider, 3u);
+  split[3] = '\0';
+  memcpy(&split[4], &provider[3], provider_len - 3u);
+  memcpy(&split[provider_len + 1u], name, name_len + 1u);
+  memcpy(&split[provider_len + name_len + 2u], version, version_len + 1u);
+  uint8_t* blob = fresh->log.persist_blob;
+  size_t len = fx->log.persist_len;
+  size_t at = 0;
+  while (at + applied_len <= len && memcmp(&blob[at], applied, applied_len) != 0)
+  {
+    ++at;
+  }
+  assert_true(at + applied_len <= len);
+  memcpy(&blob[at], split, applied_len);
+  uint32_t crc = record_crc32(blob, len - 4u);
+  for (int i = 0; i < 4; ++i)
+  {
+    blob[len - 4u + (size_t)i] = (uint8_t)(crc >> (8 * i));
+  }
+  fresh->log.persist_len = len;
+
+  fresh->chan.set_properties_result = AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+  assert_int_equal(az_iot_su_client_resume(&fresh->su), AZ_IOT_OK);
+  assert_string_equal(fresh->su._internal.applied_update_id.provider, split);
+  assert_string_equal(id->provider, fx->chan.last_installed_provider);
+  assert_string_equal(id->name, fx->chan.last_installed_name);
+  assert_string_equal(id->version, fx->chan.last_installed_version);
+  assert_int_equal(teardown(&fresh_state), 0);
+}
+
 /* Once the terminal report is settled, new device properties are not
  * followed by that report again; the next check carries them. */
 static void new_properties_do_not_resend_a_settled_report(void** state)
@@ -8723,6 +8795,8 @@ int main(void)
     cmocka_unit_test_setup_teardown(a_succeeded_update_becomes_the_installed_id, setup, teardown),
     cmocka_unit_test_setup_teardown(
         the_applied_id_is_adopted_with_an_exact_sized_cache, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_refused_adoption_keeps_the_adopted_installed_id, setup, teardown),
     cmocka_unit_test_setup_teardown(new_properties_do_not_resend_a_settled_report, setup, teardown),
     cmocka_unit_test_setup_teardown(a_check_resends_an_owed_terminal_report_first, setup, teardown),
     cmocka_unit_test_setup_teardown(
