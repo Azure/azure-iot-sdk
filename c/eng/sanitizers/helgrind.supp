@@ -39,10 +39,11 @@
 # Paho Thread.c:338 (v1.3.16): helgrind intercepts a condvar signal made inside
 # glibc's pthread_cond_timedwait (pthread_cond_wait.c:516) after the mutex was
 # released, and reports it as "dubious". The wait is the send thread's own; no
-# SDK frame is involved. Seen intermittently.
+# SDK frame is involved. Seen intermittently. Valgrind 3.21+ reports it as kind
+# Dubious (helgrind/hg_main.c), so older valgrind rejects this entry.
 {
    paho-wait-evt-glibc-internal-signal
-   Helgrind:Misc
+   Helgrind:Dubious
    obj:*/vgpreload_helgrind-*.so
    fun:__pthread_cond_wait_common
    fun:pthread_cond_timedwait*
