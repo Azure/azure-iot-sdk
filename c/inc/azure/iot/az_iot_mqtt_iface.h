@@ -492,6 +492,64 @@ extern "C"
     void* factory_ctx;
   } az_iot_mqtt_factory;
 
+  /**
+   * @brief Sizes of one MQTT client, chosen by the application. An adapter turns them into the
+   * workspace it needs (az_iot_mqtt_adapter::get_workspace_size).
+   */
+  typedef struct az_iot_mqtt_limits
+  {
+    /** @brief Largest outgoing packet, in bytes. */
+    size_t send_buffer_size;
+    /** @brief Largest incoming packet, in bytes. MQTT 5: the Maximum Packet Size advertised. */
+    size_t receive_buffer_size;
+    /** @brief QoS 1/2 exchanges at once, 1-32767. MQTT 5: also the Receive Maximum advertised. */
+    uint16_t max_in_flight_messages;
+    /**
+     * @brief Bytes for copies of unacknowledged QoS 1/2 PUBLISH, resent on a resumed session. 0:
+     * clean sessions only (a connect whose session outlives the connection is refused); otherwise
+     * at least one packet of send_buffer_size plus the adapter's per-message overhead.
+     */
+    size_t message_store_size;
+    /**
+     * @brief Bytes for the copies a connect makes of its strings (host, credentials, TLS paths or
+     * PEM, proxy, will, user properties), each with a NUL. A connect whose copies do not fit
+     * returns AZ_IOT_ERR_NOT_ENOUGH_SPACE.
+     */
+    size_t connect_strings_size;
+  } az_iot_mqtt_limits;
+
+  /**
+   * @brief An MQTT implementation that builds its clients in application memory.
+   *
+   * A client built by init() is released with its iface destroy(): that wipes what the client
+   * copied (credentials included) and frees nothing; the application then owns the workspace again.
+   */
+  typedef struct az_iot_mqtt_adapter
+  {
+    /**
+     * @brief Workspace bytes for the largest client this adapter builds with @p limits, over the
+     * MQTT versions compiled in. 0 when @p limits is invalid.
+     */
+    size_t (*get_workspace_size)(const az_iot_mqtt_limits* limits);
+    /**
+     * @brief Build a client of @p mqtt_version in @p workspace.
+     *
+     * @param[in] workspace At least get_workspace_size(limits) bytes, valid until the client is
+     * destroyed. Any alignment.
+     * @param[out] out_client The client, which lives in @p workspace.
+     * @retval AZ_IOT_OK Built.
+     * @retval AZ_IOT_ERR_INVALID_ARG NULL argument or invalid @p limits.
+     * @retval AZ_IOT_ERR_NOT_SUPPORTED @p mqtt_version not compiled in.
+     * @retval AZ_IOT_ERR_NOT_ENOUGH_SPACE @p workspace_size is smaller than needed.
+     */
+    az_iot_result (*init)(
+        az_iot_mqtt_version mqtt_version,
+        const az_iot_mqtt_limits* limits,
+        uint8_t* workspace,
+        size_t workspace_size,
+        az_iot_mqtt_client** out_client);
+  } az_iot_mqtt_adapter;
+
   const char* az_iot_mqtt_version_to_string(az_iot_mqtt_version v);
 
   /* Map a CONNACK code from the wire onto the status an adapter reports with

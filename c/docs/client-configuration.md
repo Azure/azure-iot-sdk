@@ -107,6 +107,30 @@ cc -DAZ_IOT_AZ_MQTT_CONFIG_FILE='"my_az_mqtt_config.h"' ...   # a header on the 
 With CMake: `-DAZ_IOT_AZ_MQTT_FOOTPRINT=CONSTRAINED`, any option above, or
 `-DAZ_IOT_AZ_MQTT_CONFIG_FILE=<header>` (an absolute path, or a name on the include path).
 
+#### Clients in application memory
+
+`az_iot_az_mqtt_get_adapter()` builds clients in a workspace the application provides (static,
+stack or heap), with no allocation by the adapter. The sizes above become run-time values in
+`az_iot_mqtt_limits`:
+
+| Field | Meaning |
+| --- | --- |
+| `send_buffer_size` | Largest outgoing packet. |
+| `receive_buffer_size` | Largest incoming packet; MQTT 5: the Maximum Packet Size advertised. |
+| `max_in_flight_messages` | QoS 1/2 exchanges at once, 1-32767; MQTT 5: the Receive Maximum advertised. |
+| `message_store_size` | Copies for resend on a resumed session; 0: clean sessions only. |
+| `connect_strings_size` | Copies a connect makes of its strings (host, credentials, TLS paths or PEM, proxy, will, user properties), one NUL each. |
+
+- `az_iot_az_mqtt_get_workspace_size(&limits)`: the exact size, for the largest of the MQTT 3.1.1
+  and MQTT 5 clients, with this build's TLS backend.
+- `AZ_IOT_AZ_MQTT_WORKSPACE_SIZE(send, receive, in_flight, store, connect_strings, max_tls_state)`:
+  a constant-expression bound for static arrays. `max_tls_state` must be at least the TLS backend's
+  state (measured: OpenSSL 560 B, mbedTLS 4.2-4.6 KB, Schannel about 197 KB).
+- `init()` returns `AZ_IOT_ERR_NOT_ENOUGH_SPACE` if the workspace is too small and logs the size
+  needed. A connect whose string copies do not fit `connect_strings_size` returns the same.
+- The client's `destroy()` wipes the whole workspace (credentials included) and frees nothing.
+- `AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX` stays a compile-time value.
+
 ### Limits in the public headers
 
 Buffer sizes, pool sizes and default timeouts are `#define`s that you can override at compile
