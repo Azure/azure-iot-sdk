@@ -7,15 +7,15 @@ Licensed under the MIT license. See LICENSE file in the project root for full li
 
 Some updates take effect only after the device restarts. This sample shows how a workflow
 survives that restart. `install_fn` or `apply_fn` returns `AZ_IOT_SU_RESULT_REBOOT_REQUIRED`,
-and the client saves the workflow through `persist_state_fn`. Once
+and the client saves the workflow through `persist_workflow_state_fn`. Once
 `az_iot_su_client_get_reboot_state()` is `AZ_IOT_SU_REBOOT_READY`, the sample "reboots": the
 process exits, and running it again is the device starting. `az_iot_su_client_resume()` reads the
-workflow back through `load_state_fn`, and it continues. Download and the hash read-back are
+workflow back through `load_workflow_state_fn`, and it continues. Download and the hash read-back are
 simulated (zero-filled payloads); install and apply only log.
 
 ```mermaid
 flowchart TD
-    start(["Run the sample: the device starts"]) --> resume["az_iot_su_client_resume():<br/>load_saved_update_workflow() (load_state_fn)<br/>reads SAMPLE_STATE_FILE"]
+    start(["Run the sample: the device starts"]) --> resume["az_iot_su_client_resume():<br/>load_saved_update_workflow() (load_workflow_state_fn)<br/>reads SAMPLE_STATE_FILE"]
     resume --> saved{"Workflow saved?"}
     saved -- "no" --> check["az_iot_su_client_request_update()"]
     saved -- "yes" --> cont["The workflow continues, no check:<br/>after install:n, at apply_update_step() of step n;<br/>after apply:n, at step n+1<br/>(after the last step: an unsent final report)"]
@@ -29,7 +29,7 @@ flowchart TD
         inst -- "done" --> app["apply_update_step() (apply_fn), step n"]
         app -- "done; more steps" --> inst
         app -- "done; last step" --> fin["Final report sent<br/>WORKFLOW_COMPLETED"]
-        inst -- "SAMPLE_REBOOT_AT=install:n" --> rr["REBOOT_REQUIRED:<br/>save_update_workflow() (persist_state_fn)<br/>saves the workflow"]
+        inst -- "SAMPLE_REBOOT_AT=install:n" --> rr["REBOOT_REQUIRED:<br/>save_update_workflow() (persist_workflow_state_fn)<br/>saves the workflow"]
         app -- "SAMPLE_REBOOT_AT=apply:n" --> rr
     end
 
@@ -46,8 +46,8 @@ flowchart TD
 ## Sample features
 
 - Target platforms: **Linux** and **Windows**.
-- `persist_state_fn` writes a file atomically (temporary file, then rename; `MoveFileExA` on
-  Windows) and erases it on a zero-length write. `load_state_fn` reads it back.
+- `persist_workflow_state_fn` writes a file atomically (temporary file, then rename; `MoveFileExA` on
+  Windows) and erases it on a zero-length write. `load_workflow_state_fn` reads it back.
 - `SAMPLE_REBOOT_AT=install:<n>` or `apply:<n>` picks where a reboot is needed (1-based step).
   - After an install reboot, the step resumes at Apply.
   - After an apply reboot, the workflow resumes at the next step.
@@ -92,7 +92,7 @@ $B                              # resumes at Apply, finishes, reports
 With az_mqtt (`-DAZ_IOT_WITH_AZ_MQTT=ON`), target `az_iot_sample_software_update_reboot_resume_az_mqtt`
 builds the same sample in `az_mqtt/` next to that binary ([adapters](../../../README.md#build)).
 
-Size the storage behind `persist_state_fn` for `AZ_IOT_SU_STATE_BLOB_MAX_SIZE(max_update_size,
+Size the storage behind `persist_workflow_state_fn` for `AZ_IOT_SU_STATE_BLOB_MAX_SIZE(max_update_size,
 result_details_size)` bytes.
 
 ## Where to look in `main.c`
