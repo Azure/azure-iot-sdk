@@ -136,10 +136,8 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
 
             ConnectionClient connectionClient = new();
 
-            ProvisioningSettings provisioningSettings = new(GetDpsIdScope(testAgainstClassicHub))
-            {
-                CertificateSigningRequest = new(privateKey, csrBase64),
-            };
+            ProvisioningSettings provisioningSettings = CreateProvisioningSettings(testAgainstClassicHub);
+            provisioningSettings.CertificateSigningRequest = new(privateKey, csrBase64);
 
             ConnectionContext connectionContext = await RetryAroundAuthorizationAsync<ConnectionContext>(
                 async () => await connectionClient.ProvisionAndConnectAsync(provisioningSettings, x509AuthenticationProvider, cancellationToken: TestContext.Current.CancellationToken),
