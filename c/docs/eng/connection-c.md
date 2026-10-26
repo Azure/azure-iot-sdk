@@ -419,7 +419,8 @@ Reset points differ per ladder:
 
 ```text
 base   = min(max_delay_ms, initial_delay_ms << min(attempt - 1, 30))
-jitter = uniform(-jitter_pct%, +jitter_pct%) * base
+jitter = uniform(-jitter_pct%, +jitter_pct%) * base   (AZ_IOT_RETRY_JITTER_SYMMETRIC)
+         uniform(0, +jitter_pct%) * base            (AZ_IOT_RETRY_JITTER_ADDITIVE)
 delay  = clamp(base + jitter, 1, UINT32_MAX)
 ```
 
@@ -428,7 +429,8 @@ delay  = clamp(base + jitter, 1, UINT32_MAX)
 | `initial_delay_ms` | 1000 | `0` disables automatic reconnect entirely. |
 | `max_delay_ms` | 60000 | Cap for the exponential term only. Jitter varies around it, so a delay may exceed it by up to `jitter_pct`; clamping the jittered result would put half of all retries on exactly this value once the ladder reached the cap. |
 | `max_attempts` | 0 | `0` means retry forever. |
-| `jitter_pct` | 20 | Symmetric randomization, seeded from the monotonic clock. |
+| `jitter_pct` | 20 | Randomization, seeded from the monotonic clock. |
+| `jitter_mode` | `AZ_IOT_RETRY_JITTER_SYMMETRIC` | `_ADDITIVE` only lengthens a delay, for waits that must not be shortened. |
 
 The shift is clamped at 30 to avoid 32-bit overflow. The `HUB` counter resets on every successful hub
 CONNACK; the `DPS` counter only when registration succeeds.
@@ -720,9 +722,15 @@ reports include complete per-step outcomes when steps are available — see
 - **The device is the sole retrier.** The gateway fails fast with one attempt per hop. The agent
   honours `Retry-After` on throttling and retries `reportUpdateStatus` until it is acked — a
   report is a durable write and must not be lost.
+- **A failed workflow is retried, not abandoned.** The service re-offers a `FAILED` (or `CANCELED`)
+  workflow under the same `workflowId`; the agent applies it again after at least 1 h, doubling per
+  consecutive failure up to 24 h, with jitter, and keeps that wait across restarts. An early
+  re-offer is not applied.
 - **Drive behaviour from the machine-readable error code, never the HTTP status.** A stale
-  `agentInfoEtag` means resend the full `agentInfo`; a stale `serviceConfigEtag` means re-ask without
-  it; an unlinked update account means "no update service configured", which is not a failure.
+  `agentInfoEtag` means resend the full `agentInfo`. A missing or stale `serviceConfigEtag` is not
+  an error: the 200 response carries the current configuration. An update account the service
+  cannot use (not linked, or no access to the namespace) is not retried, is reported, and does
+  not block provisioning; neither does `DEVICE_NOT_PROVISIONED`, which a later check clears.
 - **"No update" is a success.** It is a 200 with the update metadata omitted, not an error.
 - **Software updates follows the DPS scope, not the hub one.** The channel records both scopes but acts only on
   `AZ_IOT_CONN_SCOPE_DPS`, so it works whatever the hub state and under `provision_only`. It never opens, closes or reconnects
@@ -1032,9 +1040,9 @@ registry carries MQTTv3 feature filters and application custom topics.
 | Phase | Trigger | Surfaced as | Mapped by | SDK action | Notes / limits |
 | --- | --- | --- | --- | --- | --- |
 | PUBACK | v5 PUBACK `< 0x80`, including `0x10 No matching subscribers` | `AZ_IOT_OK` | `paho_publish_success5` | the ack callback fires with success | Correct — `0x10` is a success. Paho routes reason codes `>= 0x80` to the failure callback, so success5 only sees grants. |
-| PUBACK | v5 PUBACK `>= 0x80` — `0x87 Not authorized`, `0x90 Topic Name invalid`, `0x97 Quota exceeded`, `0x99 Payload format invalid` | `AZ_IOT_ERR_MQTT` | `paho_publish_failure5` | the ack callback fires with the failure; the connection survives | Correctly **Contained**, but the reason code is **flattened**: `response->reasonCode` is not inspected, so a caller cannot tell a deterministic refusal from a quota it should back off on. |
-| PUBACK | v3.1.1 PUBACK | `AZ_IOT_OK` / `AZ_IOT_ERR_MQTT` | `paho_publish_success` / `_failure` | as above | v3.1.1 PUBACK carries no reason code; there is nothing to flatten. |
-| PUBACK | az_mqtt adapter, any PUBACK | `AZ_IOT_OK` below `0x80`; `AZ_IOT_ERR_PUBLISH_REFUSED` for `0x87`, `0x90`, `0x99`, and `0x95` (reported by az_mqtt for a publish over the server's Maximum Packet Size, not a wire PUBACK code); `AZ_IOT_ERR_BUSY` for `0x97`; else `AZ_IOT_ERR_MQTT` | `az_iot_mqtt_puback_result()` | the ack callback fires with that status; the connection logs `protocol_code` and survives | Correct. |
+| PUBACK | v5 PUBACK `>= 0x80` — `0x87 Not authorized`, `0x90 Topic Name invalid`, `0x97 Quota exceeded`, `0x99 Payload format invalid` | `az_iot_mqtt_puback_result()`: `AZ_IOT_ERR_PUBLISH_REFUSED` for `0x87`, `0x90`, `0x99`; `AZ_IOT_ERR_BUSY` for `0x97`; else `AZ_IOT_ERR_MQTT` | `paho_publish_failure5` | the ack callback fires with that status, the wire code and the Reason String; the connection survives | Correct. A failure without a reason code (the publish ended without a PUBACK) is `AZ_IOT_ERR_MQTT` with Paho's code as `transport_code`. |
+| PUBACK | v3.1.1 PUBACK | `AZ_IOT_OK` / `AZ_IOT_ERR_MQTT` | `paho_publish_success` / `_failure` | as above | v3.1.1 PUBACK carries no reason code; a failure is a publish that ended without one. |
+| PUBACK | az_mqtt adapter, any PUBACK | `AZ_IOT_OK` below `0x80`; `AZ_IOT_ERR_PUBLISH_REFUSED` for `0x87`, `0x90`, `0x99`, and `0x95` (reported by az_mqtt for a publish over the server's Maximum Packet Size, not a wire PUBACK code); `AZ_IOT_ERR_BUSY` for `0x97`; else `AZ_IOT_ERR_MQTT` | `az_iot_mqtt_puback_result()` | the ack callback fires with that status and the Reason String; the connection logs `protocol_code` and the Reason String and survives | Correct. A Reason String is dropped for an event held past the receive buffer. |
 | PUBACK | Unknown packet id | dropped | connection client | nothing | Deliberate: a publish issued without an ack callback has no table entry. |
 | DISCONNECT | Server-initiated v5 DISCONNECT | `az_iot_mqtt_disconnect_result()`: `AZ_IOT_OK` for `0x00`, `AZ_IOT_ERR_AUTH` for `0x87`, `AZ_IOT_ERR_MQTT` otherwise; the wire code is carried as `error->code` | `paho_disconnected` | `DEFER_RECONNECT` for every code while a policy is configured, `DEFER_IDLE` otherwise (`DEFER_FAULT` for `0x87`); `0x87` (`AZ_IOT_ERR_AUTH`) climbs the identity ladder | `0x87` is reported non-retriable and retries the same hub on `identity_recovery`; `0x8E Session taken over` is not named, so it reconnects like a routine drop. |
 | Keep-alive | Local keep-alive expiry | DISCONNECTED with no status: reported as `AZ_IOT_ERR_NOT_CONNECTED` on `RETRY_PENDING`, `AZ_IOT_OK` on `IDLE` | Paho `connectionLost` | `DEFER_RECONNECT` while a policy is configured, `DEFER_IDLE` otherwise | Keep-alive is 30 s by default. |

@@ -18,11 +18,20 @@ extern "C"
 {
 #endif
 
+  /** @brief How jitter_pct varies a retry delay. */
+  typedef enum az_iot_retry_jitter
+  {
+    /** delay +/- jitter_pct (default). */
+    AZ_IOT_RETRY_JITTER_SYMMETRIC = 0,
+    /** delay + [0, jitter_pct]: never shorter than the delay. */
+    AZ_IOT_RETRY_JITTER_ADDITIVE = 1,
+  } az_iot_retry_jitter;
+
   /**
    * @brief How a failed operation is retried.
    *
    * The delay before attempt N is initial_delay_ms doubled N-1 times, capped at
-   * max_delay_ms, then varied by +/-jitter_pct.
+   * max_delay_ms, then varied by jitter_pct as jitter_mode says.
    */
   typedef struct az_iot_retry_policy
   {
@@ -40,8 +49,10 @@ extern "C"
     uint32_t max_delay_ms;
     /** Retries before giving up; 0 = no limit. */
     uint32_t max_attempts;
-    /** Jitter, 0..100 percent, applied around each delay. */
+    /** Jitter, 0..100 percent, applied to each delay as jitter_mode says. */
     uint8_t jitter_pct;
+    /** How jitter_pct is applied. Zero-initialized: AZ_IOT_RETRY_JITTER_SYMMETRIC. */
+    az_iot_retry_jitter jitter_mode;
   } az_iot_retry_policy;
 
   /**
@@ -55,6 +66,8 @@ extern "C"
     {
       uint64_t due_ms; /**< Monotonic ms the retry may run at; 0 = none scheduled. */
       uint32_t attempt; /**< Failures counted since the last reset. */
+      uint64_t due_unix_s; /**< due_ms in Unix seconds; 0 = unknown. */
+      bool due_unix_aligned; /**< due_unix_s was set from the same instant as due_ms. */
     } _internal;
   } az_iot_retry_state;
 

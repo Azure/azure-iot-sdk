@@ -434,7 +434,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             Task pendingPublish = Task.Run(
                 () => connectionClient.PublishAsync(
                     new MqttPublish() { Topic = $"devices/{DeviceId}/messages/events/" },
-                    TestContext.Current.CancellationToken),
+                    throwOnErrorReasonCode: true, TestContext.Current.CancellationToken),
                 TestContext.Current.CancellationToken);
 
             await publishAttempted.Task.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
@@ -624,6 +624,61 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         }
 
         [Fact]
+        public async Task ReprovisioningStartedAsyncIsRaisedOnceWhenAnIdentityFaultReprovisions()
+        {
+            using MockConnectionMqttClient mockMqttClient = new();
+            MockDeviceProvisioningService mockDps = new(mockMqttClient, registrationCount => registrationCount == 1 ? FirstAssignedHub : SecondAssignedHub);
+
+            TaskCompletionSource connectedToSecondHub = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            mockMqttClient.OnConnect = connect =>
+            {
+                if (connect.HostName == SecondAssignedHub)
+                {
+                    connectedToSecondHub.TrySetResult();
+                }
+
+                return Task.FromResult(new MqttConnectAck() { ResultCode = MqttConnectReasonCode.Success });
+            };
+
+            using TestConnectionClient connectionClient = new(new() { MqttClient = mockMqttClient });
+
+            List<ReprovisioningStartedEventArgs> reprovisioningStartedArgs = new();
+
+            // A handler that throws must not stop the other handlers or the re-provisioning itself.
+            connectionClient.ReprovisioningStartedAsync += _ => throw new InvalidOperationException("misbehaving handler");
+            connectionClient.ReprovisioningStartedAsync += args =>
+            {
+                lock (reprovisioningStartedArgs)
+                {
+                    reprovisioningStartedArgs.Add(args);
+                }
+
+                return Task.CompletedTask;
+            };
+
+            await connectionClient.ProvisionAndConnectAsync(
+                CreateProvisioningSettings(),
+                CreateAuthenticationProvider(),
+                cancellationToken: TestContext.Current.CancellationToken);
+
+            lock (reprovisioningStartedArgs)
+            {
+                // The initial provisioning requested by the application is not a re-provisioning.
+                Assert.Empty(reprovisioningStartedArgs);
+            }
+
+            await mockMqttClient.SimulateServerDisconnectAsync(MqttDisconnectReason.NotAuthorized);
+            await connectedToSecondHub.Task.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+            await Task.Delay(s_negativeTestTimeout, TestContext.Current.CancellationToken);
+
+            Assert.Equal(2, mockDps.RegistrationCount);
+            lock (reprovisioningStartedArgs)
+            {
+                ReprovisioningStartedEventArgs args = Assert.Single(reprovisioningStartedArgs);
+                Assert.Equal(ErrorRetryability.IdentityTerminal, args.Exception.Retryability);
+            }
+        }
+        [Fact]
         public async Task IdentityFaultDoesNotReprovisionADeviceThatWasNeverProvisioned()
         {
             using MockConnectionMqttClient mockMqttClient = new();
@@ -713,7 +768,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
                 },
                 (connectionClient, cancellationToken) => connectionClient.PublishAsync(
                     new MqttPublish() { Topic = $"devices/{DeviceId}/messages/events/" },
-                    cancellationToken));
+                    throwOnErrorReasonCode: true, cancellationToken));
         }
 
         [Fact]
@@ -744,7 +799,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
                 },
                 (connectionClient, cancellationToken) => connectionClient.SubscribeAsync(
                     new MqttSubscribe($"devices/{DeviceId}/messages/devicebound/#", MqttQualityOfServiceLevel.AtLeastOnce),
-                    cancellationToken));
+                    throwOnErrorReasonCode: true, cancellationToken));
         }
 
         [Fact]
@@ -769,7 +824,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
                 },
                 (connectionClient, cancellationToken) => connectionClient.UnsubscribeAsync(
                     new MqttUnsubscribe($"devices/{DeviceId}/messages/devicebound/#"),
-                    cancellationToken));
+                    throwOnErrorReasonCode: true, cancellationToken));
         }
 
         [Fact]
@@ -840,7 +895,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             // wait blocks whichever thread the publish was started on.
             var publish = new MqttPublish() { Topic = $"devices/{DeviceId}/messages/events/" };
             Task<MqttPublishAck> pendingPublish = Task.Run(
-                () => connectionClient.PublishAsync(publish, TestContext.Current.CancellationToken),
+                () => connectionClient.PublishAsync(publish, throwOnErrorReasonCode: true, TestContext.Current.CancellationToken),
                 TestContext.Current.CancellationToken);
 
             await publishAttempted.Task.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
@@ -947,9 +1002,9 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             Task pendingOperation = Task.Run(
                 () => operation switch
                 {
-                    "publish" => connectionClient.PublishAsync(publish, TestContext.Current.CancellationToken),
-                    "subscribe" => connectionClient.SubscribeAsync(subscribe, TestContext.Current.CancellationToken),
-                    _ => (Task)connectionClient.UnsubscribeAsync(unsubscribe, TestContext.Current.CancellationToken),
+                    "publish" => connectionClient.PublishAsync(publish, throwOnErrorReasonCode: true, TestContext.Current.CancellationToken),
+                    "subscribe" => connectionClient.SubscribeAsync(subscribe, throwOnErrorReasonCode: true, TestContext.Current.CancellationToken),
+                    _ => (Task)connectionClient.UnsubscribeAsync(unsubscribe, throwOnErrorReasonCode: true, TestContext.Current.CancellationToken),
                 },
                 TestContext.Current.CancellationToken);
 
@@ -1073,9 +1128,9 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             Task pendingOperation = Task.Run(
                 () => operation switch
                 {
-                    "publish" => connectionClient.PublishAsync(publish, TestContext.Current.CancellationToken),
-                    "subscribe" => connectionClient.SubscribeAsync(subscribe, TestContext.Current.CancellationToken),
-                    _ => (Task)connectionClient.UnsubscribeAsync(unsubscribe, TestContext.Current.CancellationToken),
+                    "publish" => connectionClient.PublishAsync(publish, throwOnErrorReasonCode: true, TestContext.Current.CancellationToken),
+                    "subscribe" => connectionClient.SubscribeAsync(subscribe, throwOnErrorReasonCode: true, TestContext.Current.CancellationToken),
+                    _ => (Task)connectionClient.UnsubscribeAsync(unsubscribe, throwOnErrorReasonCode: true, TestContext.Current.CancellationToken),
                 },
                 TestContext.Current.CancellationToken);
 
@@ -1360,7 +1415,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             // for a reconnection, and the WaitAsync below would time out (failing this test) rather than hang the runner.
             var publish = new MqttPublish() { Topic = $"devices/{DeviceId}/messages/events/" };
             Task<MqttPublishAck> publishTask = Task.Run(
-                () => connectionClient.PublishAsync(publish, TestContext.Current.CancellationToken),
+                () => connectionClient.PublishAsync(publish, throwOnErrorReasonCode: true, TestContext.Current.CancellationToken),
                 TestContext.Current.CancellationToken);
 
             await Assert.ThrowsAsync<MqttClientNotConnectedException>(
@@ -1933,7 +1988,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
                 return new AuthenticationCredentials() { Password = Encoding.UTF8.GetBytes($"boot-{request}") };
             }
 
-            public override Task<AuthenticationCredentials> GetOperationalAuthenticationCredentialsAsync(string hostName, string deviceId, IReadOnlyList<string>? issuedClientCertificates)
+            public override Task<AuthenticationCredentials> GetOperationalAuthenticationCredentialsAsync(string hostName, string deviceId, IReadOnlyList<string>? issuedClientCertificates, CancellationToken cancellationToken = default)
             {
                 return Task.FromResult(new AuthenticationCredentials() { Password = Encoding.UTF8.GetBytes("operational") });
             }

@@ -10,7 +10,7 @@ shows the mqttv3 route side by side; this is the feature where the generations d
 ## Sample features
 
 - Hub generation: mqttv5 (MQTT 5) only. An assignment to an mqttv3 hub fails; use the `unified/` sample instead.
-- Registers both Paho adapters: the hub uses MQTT 5, but DPS always uses MQTT 3.1.1. Registering only the MQTT 5 adapter makes provisioning fail with `AZ_IOT_ERR_NOT_SUPPORTED`.
+- Registers both MQTT adapters (v3.1.1 and v5): the hub uses MQTT 5, but DPS always uses MQTT 3.1.1. Registering only the MQTT 5 adapter makes provisioning fail with `AZ_IOT_ERR_NOT_SUPPORTED`.
 - Builds its client before `open()`: an mqttv5 client records the generation it needs instead of reading it from a live connection.
 - mqttv5 asks before it calls: every invocation starts with a probe that names the method and carries the caller's timeout; only a device that accepts receives the arguments.
 - Methods are declared with `register_method()`. A probe for any other name is answered `METHOD_NOT_FOUND` by the SDK and never reaches the application.
@@ -67,6 +67,9 @@ cmake --build --preset linux-gcc-debug --target az_iot_sample_mqttv5_direct_meth
 ./build/linux-gcc-debug/samples/mqttv5/az_iot_sample_direct_method_responder
 ```
 
+With az_mqtt (`-DAZ_IOT_WITH_AZ_MQTT=ON`), target `az_iot_sample_mqttv5_direct_method_responder_az_mqtt` builds the same sample in
+`az_mqtt/` next to that binary ([adapters](../../README.md#build)).
+
 Windows (*Developer PowerShell for VS 2022*):
 
 ```powershell
@@ -100,7 +103,7 @@ method 'echo' invoked, 17 byte payload
 
 | What | Code |
 | --- | --- |
-| Register both MQTT adapters | `az_iot_paho_factory_create_v3_1_1()`, `az_iot_paho_factory_create_v5()` |
+| Register both MQTT adapters | `az_iot_paho_factory_create_v3_1_1()`, `az_iot_paho_factory_create_v5()`; az_mqtt: `az_iot_az_mqtt_factory_create_v3_1_1()`, `az_iot_az_mqtt_factory_create_v5()` |
 | Declare the method | `az_iot_mqttv5_direct_method_client_register_method()` |
 | Probe handler | `az_iot_mqttv5_direct_method_client_set_probe_handler()`, `on_probe()` |
 | Answer inline | `on_echo()` → `az_iot_mqttv5_direct_method_respond()` |

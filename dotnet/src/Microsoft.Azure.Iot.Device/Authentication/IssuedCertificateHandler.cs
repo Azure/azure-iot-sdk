@@ -33,7 +33,7 @@ namespace Microsoft.Azure.Iot.Device.Authentication
         /// <summary>
         /// Gets the certificate for this chain, invoking the callback if it has not already been handled.
         /// </summary>
-        public async Task<X509Certificate2> GetCertificateAsync(IReadOnlyList<string> issuedClientCertificates)
+        public async Task<X509Certificate2> GetCertificateAsync(IReadOnlyList<string> issuedClientCertificates, CancellationToken cancellationToken = default)
         {
             HandledChain? lastHandled = _lastHandled;
             if (ReferenceEquals(lastHandled?.Chain, issuedClientCertificates))
@@ -41,7 +41,8 @@ namespace Microsoft.Azure.Iot.Device.Authentication
                 return lastHandled.Certificate;
             }
 
-            await _callbackLock.WaitAsync().ConfigureAwait(false);
+            await _callbackLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+            bool callbackOwnsLock = false;
             try
             {
                 lastHandled = _lastHandled;
@@ -50,6 +51,24 @@ namespace Microsoft.Azure.Iot.Device.Authentication
                     return lastHandled.Certificate;
                 }
 
+                cancellationToken.ThrowIfCancellationRequested();
+                Task<X509Certificate2> callbackTask = HandleCallbackAsync(issuedClientCertificates);
+                callbackOwnsLock = true;
+                return await callbackTask.WaitAsync(cancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                if (!callbackOwnsLock)
+                {
+                    _callbackLock.Release();
+                }
+            }
+        }
+
+        private async Task<X509Certificate2> HandleCallbackAsync(IReadOnlyList<string> issuedClientCertificates)
+        {
+            try
+            {
                 X509Certificate2 certificate = await _callback(issuedClientCertificates).ConfigureAwait(false)
                     ?? throw new InvalidOperationException("The certificate signing complete callback returned a null certificate.");
 

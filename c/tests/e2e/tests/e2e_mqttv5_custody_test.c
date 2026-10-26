@@ -30,7 +30,14 @@
 #include <string.h>
 #include <time.h>
 
+/* The MQTT adapter this build of the suite uses (see tests/e2e/CMakeLists.txt). */
+#if defined(AZ_IOT_E2E_ADAPTER_PAHO)
 #include "azure/iot/adapters/az_iot_adapter_paho.h"
+#elif defined(AZ_IOT_E2E_ADAPTER_AZ_MQTT)
+#include "azure/iot/adapters/az_iot_adapter_az_mqtt.h"
+#else
+#error "Define AZ_IOT_E2E_ADAPTER_PAHO or AZ_IOT_E2E_ADAPTER_AZ_MQTT"
+#endif
 #include "azure/iot/az_iot.h"
 
 #include "az_iot_e2e_service.h"
@@ -263,8 +270,13 @@ static int device_connect(fixture* fx)
   }
 
   /* Both generations, so an mqttv3 assignment still connects and the first test names it. */
+#if defined(AZ_IOT_E2E_ADAPTER_PAHO)
   fx->factory_v3 = az_iot_paho_factory_create_v3_1_1();
   fx->factory_v5 = az_iot_paho_factory_create_v5();
+#elif defined(AZ_IOT_E2E_ADAPTER_AZ_MQTT)
+  fx->factory_v3 = az_iot_az_mqtt_factory_create_v3_1_1();
+  fx->factory_v5 = az_iot_az_mqtt_factory_create_v5();
+#endif
   if (az_iot_connection_client_register_mqtt_factory(&fx->conn, fx->factory_v3) != AZ_IOT_OK
       || az_iot_connection_client_register_mqtt_factory(&fx->conn, fx->factory_v5) != AZ_IOT_OK)
   {
@@ -345,8 +357,13 @@ static int group_teardown(void** state)
     az_iot_connection_client_deinit(&fx->conn);
     fx->conn_ok = false;
   }
+#if defined(AZ_IOT_E2E_ADAPTER_PAHO)
   az_iot_paho_factory_destroy(fx->factory_v3);
   az_iot_paho_factory_destroy(fx->factory_v5);
+#elif defined(AZ_IOT_E2E_ADAPTER_AZ_MQTT)
+  az_iot_az_mqtt_factory_destroy(fx->factory_v3);
+  az_iot_az_mqtt_factory_destroy(fx->factory_v5);
+#endif
   if (fx->service != NULL)
   {
     az_iot_e2e_service_destroy(fx->service);

@@ -5,7 +5,7 @@
 
 Provisions through DPS and connects with a device private key that **never leaves the hardware**.
 The certificate provider hands the SDK a key *reference* (an RFC 7512 `pkcs11:` URI plus the id of
-the OpenSSL provider that owns it) instead of a key, and the Paho adapter signs the TLS handshake
+the OpenSSL provider that owns it) instead of a key, and the MQTT adapter signs the TLS handshake
 through the token. After connecting, the sample sends one telemetry message
 (`{"custody":"hardware"}`).
 
@@ -37,7 +37,8 @@ through the token. After connecting, the sample sends one telemetry message
   older builds (Ubuntu 24.04 packages 0.3) are detected at connect time and refused with a message
   saying so.
 - The Paho adapter built with key custody (`AZ_IOT_PAHO_KEY_CUSTODY`, on by default with OpenSSL
-  3.0+; configure prints `non-extractable key custody enabled`).
+  3.0+; configure prints `non-extractable key custody enabled`), or the az_mqtt adapter with
+  OpenSSL TLS (`AZ_IOT_AZ_MQTT_TLS=openssl`, Linux and macOS).
 
 For testing without hardware, the repository's CI uses two helper scripts:
 [`c/eng/setup-pkcs11-provider.sh`](../../../eng/setup-pkcs11-provider.sh) builds a suitable
@@ -143,8 +144,12 @@ cmake --build --preset linux-gcc-debug --target az_iot_sample_auth_hsm_pkcs11
 ./build/linux-gcc-debug/samples/authentication/az_iot_sample_auth_hsm_pkcs11
 ```
 
-The target builds whenever the Paho adapter is enabled; the token and its OpenSSL provider are
-needed only at run time.
+With az_mqtt (`-DAZ_IOT_WITH_AZ_MQTT=ON`) over OpenSSL TLS (`AZ_IOT_AZ_MQTT_TLS=openssl`, not on
+Windows), target `az_iot_sample_auth_hsm_pkcs11_az_mqtt` builds the same sample in `az_mqtt/` next to that binary
+([adapters](../../README.md#build)).
+
+The Paho target builds whenever the Paho adapter is enabled, the az_mqtt one when az_mqtt uses
+OpenSSL TLS; the token and its OpenSSL provider are needed only at run time.
 
 ## How it ends
 

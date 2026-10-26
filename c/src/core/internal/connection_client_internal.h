@@ -321,6 +321,17 @@ extern "C"
       void* ack_user_ctx);
 
   /**
+   * @brief As az_iot_connection_client__publish(), completing through @p result_cb with the
+   * PUBACK's reason code and Reason String.
+   */
+  az_iot_result az_iot_connection_client__publish_with_result(
+      az_iot_connection_client* client,
+      const void* owner,
+      const az_iot_mqtt_message* msg,
+      az_iot_publish_result_callback result_cb,
+      void* user_ctx);
+
+  /**
    * @brief Set aside @p count pending-PUBACK slots for @p owner's tracked publishes.
    *
    * Replaces @p owner's previous reservation; 0 withdraws it. Succeeds only if every pool can

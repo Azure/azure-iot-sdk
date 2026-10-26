@@ -1,0 +1,6 @@
+# function defined through #define _AZM_FACTORY_CREATE (adapters/az_mqtt/az_iot_mqtt_az_mqtt_client.h)
+{
+   macro-alias-v5
+   drd:ConflictingAccess
+   fun:az_iot_az_mqtt_factory_create_v5
+}

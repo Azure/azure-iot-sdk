@@ -199,16 +199,33 @@ typedef struct
       AZ_IOT_SU_ERR_SERVER_ERROR)                                                                  \
   SU_FETCH_ROUTES(                                                                                 \
       X,                                                                                           \
-      OUTDATED_SERVICE_CONFIG,                                                                     \
+      MAX_DEVICE_CLASSES_EXCEEDED,                                                                 \
       400,                                                                                         \
-      AZ_IOT_SU_ERROR_ACTION_DROP_SERVICE_CONFIG_ETAG,                                             \
+      AZ_IOT_SU_ERROR_ACTION_FATAL,                                                                \
       AZ_IOT_SU_ERR_SERVER_ERROR)                                                                  \
+  SU_ALL_ROUTES(X, FORBIDDEN, 403, AZ_IOT_SU_ERROR_ACTION_FATAL, AZ_IOT_SU_ERR_SERVER_ERROR)       \
   SU_ALL_ROUTES(                                                                                   \
       X,                                                                                           \
       UPDATE_ACCOUNT_NOT_LINKED,                                                                   \
       409,                                                                                         \
       AZ_IOT_SU_ERROR_ACTION_PROCEED,                                                              \
       AZ_IOT_SU_ERR_SERVER_ERROR)                                                                  \
+  SU_ALL_ROUTES(                                                                                   \
+      X,                                                                                           \
+      UPDATE_ACCOUNT_ACCESS_DENIED,                                                                \
+      409,                                                                                         \
+      AZ_IOT_SU_ERROR_ACTION_PROCEED,                                                              \
+      AZ_IOT_SU_ERR_SERVER_ERROR)                                                                  \
+  SU_NAMED_SHAPES(                                                                                 \
+      X,                                                                                           \
+      DEVICE_NOT_PROVISIONED,                                                                      \
+      regular,                                                                                     \
+      AZ_IOT_SU_OP_GET_UPDATE,                                                                     \
+      409,                                                                                         \
+      AZ_IOT_SU_ERROR_ACTION_FATAL,                                                                \
+      AZ_IOT_SU_ERR_SERVER_ERROR,                                                                  \
+      "",                                                                                          \
+      0)                                                                                           \
   SU_NAMED_SHAPES(                                                                                 \
       X,                                                                                           \
       UNKNOWN_WORKFLOW_ID,                                                                         \
@@ -225,7 +242,7 @@ typedef struct
       report,                                                                                      \
       AZ_IOT_SU_OP_REPORT_STATUS,                                                                  \
       409,                                                                                         \
-      AZ_IOT_SU_ERROR_ACTION_FATAL,                                                                \
+      AZ_IOT_SU_ERROR_ACTION_RECHECK,                                                              \
       AZ_IOT_SU_ERR_SERVER_ERROR,                                                                  \
       "",                                                                                          \
       0)                                                                                           \
@@ -271,7 +288,7 @@ typedef struct
     "REPORT_CONFLICT",                                                                             \
     409,                                                                                           \
     AZ_IOT_SU_ERR_GENERIC_CONFLICT,                                                                \
-    AZ_IOT_SU_ERROR_ACTION_FATAL,                                                                  \
+    AZ_IOT_SU_ERROR_ACTION_RECHECK,                                                                \
     SU_ERROR_INFO,                                                                                 \
     "",                                                                                            \
     0)                                                                                             \
@@ -296,7 +313,7 @@ typedef struct
   SU_FALLBACK_ROUTE(X, regular, AZ_IOT_SU_OP_GET_UPDATE, AZ_IOT_SU_ERROR_ACTION_PROCEED)           \
   SU_FALLBACK_ROUTE(                                                                               \
       X, onboarding, AZ_IOT_SU_OP_GET_ONBOARDING_UPDATE, AZ_IOT_SU_ERROR_ACTION_PROCEED)           \
-  SU_FALLBACK_ROUTE(X, report, AZ_IOT_SU_OP_REPORT_STATUS, AZ_IOT_SU_ERROR_ACTION_ALREADY_REPORTED)
+  SU_FALLBACK_ROUTE(X, report, AZ_IOT_SU_OP_REPORT_STATUS, AZ_IOT_SU_ERROR_ACTION_RECHECK)
 
 /* A report has no agentInfo fields; corrective resends apply only to fetches. */
 

@@ -20,7 +20,14 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* The MQTT adapter this build of the sample uses (see samples/CMakeLists.txt). */
+#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
 #include "azure/iot/adapters/az_iot_adapter_paho.h"
+#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
+#include "azure/iot/adapters/az_iot_adapter_az_mqtt.h"
+#else
+#error "Define AZ_IOT_SAMPLE_ADAPTER_PAHO or AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT"
+#endif
 #include "azure/iot/az_iot.h"
 #include "az_iot_certificate_provider_managed.h"
 #include "az_iot_crypto_openssl.h"
@@ -245,8 +252,13 @@ int main(void)
   AZ_IOT_CSR_PAYLOAD_STORAGE(csr_payload_buf);
   opts.csr_payload_buffer = az_span_create(csr_payload_buf, sizeof(csr_payload_buf));
 
+#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
   factory_v3 = az_iot_paho_factory_create_v3_1_1();
   factory_v5 = az_iot_paho_factory_create_v5();
+#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
+  factory_v3 = az_iot_az_mqtt_factory_create_v3_1_1();
+  factory_v5 = az_iot_az_mqtt_factory_create_v5();
+#endif
   if (az_iot_connection_client_init(&client, &opts) != AZ_IOT_OK
       || az_iot_connection_client_add_state_observer(&client, on_conn_state, &ctx) != AZ_IOT_OK
       || az_iot_connection_client_set_operational_cert_callback(&client, on_operational_cert, &ctx)
@@ -293,8 +305,13 @@ int main(void)
 
 cleanup:
   az_iot_connection_client_deinit(&client);
+#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
   az_iot_paho_factory_destroy(factory_v3);
   az_iot_paho_factory_destroy(factory_v5);
+#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
+  az_iot_az_mqtt_factory_destroy(factory_v3);
+  az_iot_az_mqtt_factory_destroy(factory_v5);
+#endif
   az_iot_certificate_provider_managed_deinit(&operational);
   config_release(&config);
   return rc;

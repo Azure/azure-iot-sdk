@@ -119,7 +119,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Telemetry
             }
 
             // Puback is checked for non-success cases under this layer, so no need to check it here as well
-            MqttPublishAck puback = await _connection.PublishAsync(mqttMessage, cancellationToken);
+            MqttPublishAck puback = await _connection.PublishAsync(mqttMessage, throwOnErrorReasonCode: true, cancellationToken);
         }
 
         private async Task HandleReceivedMqttPublish(MqttPublishReceivedEventArgs args)

@@ -10,7 +10,7 @@
  *        through the whole client.
  *
  * Everything under the test is shipping code: az_iot_su_client (engine), the
- * DPS device-update channel, the Paho adapter, X.509 auth and the OpenSSL
+ * DPS device-update channel, the MQTT adapter (Paho or az_mqtt), X.509 auth and the OpenSSL
  * crypto backend. Files are downloaded for real (libcurl) and hashed by the
  * engine. Install and apply only record that they ran, with failures injected
  * per scenario.
@@ -53,7 +53,14 @@
 
 #include <curl/curl.h>
 
+/* The MQTT adapter this build of the suite uses (see tests/e2e/CMakeLists.txt). */
+#if defined(AZ_IOT_E2E_ADAPTER_PAHO)
 #include "azure/iot/adapters/az_iot_adapter_paho.h"
+#elif defined(AZ_IOT_E2E_ADAPTER_AZ_MQTT)
+#include "azure/iot/adapters/az_iot_adapter_az_mqtt.h"
+#else
+#error "Define AZ_IOT_E2E_ADAPTER_PAHO or AZ_IOT_E2E_ADAPTER_AZ_MQTT"
+#endif
 #include "azure/iot/az_iot_certificate_provider_pem.h"
 #include "azure/iot/az_iot_connection_client.h"
 #include "azure/iot/az_iot_log.h"
@@ -460,7 +467,7 @@ static bool verdict_is_final(az_iot_result result, az_iot_su_error_action action
 {
   return result == AZ_IOT_OK || action == AZ_IOT_SU_ERROR_ACTION_NONE
       || action == AZ_IOT_SU_ERROR_ACTION_FATAL || action == AZ_IOT_SU_ERROR_ACTION_PROCEED
-      || action == AZ_IOT_SU_ERROR_ACTION_ALREADY_REPORTED;
+      || action == AZ_IOT_SU_ERROR_ACTION_RECHECK;
 }
 
 static void spy_on_result(
@@ -586,10 +593,11 @@ typedef struct
   az_iot_connection_client conn;
   az_iot_mqtt_factory* factory;
   az_iot_su_channel_dps channel_state;
+  uint8_t channel_body[AZ_IOT_SU_DEFAULT_MAX_MESSAGE_SIZE];
   spy_channel spy;
   az_iot_su_client su;
   platform plat;
-  AZ_IOT_SU_DEVICE_PROPERTIES_STORAGE(dp_buf);
+  uint8_t su_workspace[AZ_IOT_SU_WORKSPACE_DEFAULT_SIZE];
   const char* model;
 
   /* What fixture_open() got through, so teardown releases exactly that. */
@@ -678,7 +686,11 @@ static void fixture_open(fixture* fx, const fixture_options* o)
   fx->have_conn = true;
   assert_int_equal(
       az_iot_connection_client_add_state_observer(&fx->conn, on_conn_state, fx), AZ_IOT_OK);
+#if defined(AZ_IOT_E2E_ADAPTER_PAHO)
   fx->factory = az_iot_paho_factory_create_v3_1_1();
+#elif defined(AZ_IOT_E2E_ADAPTER_AZ_MQTT)
+  fx->factory = az_iot_az_mqtt_factory_create_v3_1_1();
+#endif
   assert_int_equal(
       az_iot_connection_client_register_mqtt_factory(&fx->conn, fx->factory), AZ_IOT_OK);
 
@@ -689,7 +701,14 @@ static void fixture_open(fixture* fx, const fixture_options* o)
   dp.installed_update_id.name = "e2e";
   dp.installed_update_id.version = "0.0.0";
   assert_int_equal(
-      az_iot_su_channel_dps_init(&fx->channel_state, &fx->conn, &dp, &fx->spy.inner), AZ_IOT_OK);
+      az_iot_su_channel_dps_init(
+          &fx->channel_state,
+          &fx->conn,
+          &dp,
+          fx->channel_body,
+          sizeof(fx->channel_body),
+          &fx->spy.inner),
+      AZ_IOT_OK);
 
   az_iot_su_platform_hooks hooks = {
     .download_fn = hook_download,
@@ -708,8 +727,8 @@ static void fixture_open(fixture* fx, const fixture_options* o)
   su.root_keys = o->roots;
   su.root_key_count = o->root_count;
   su.device_properties = &dp;
-  su.device_properties_buffer = fx->dp_buf;
-  su.device_properties_buffer_size = sizeof(fx->dp_buf);
+  su.workspace = fx->su_workspace;
+  su.workspace_size = sizeof(fx->su_workspace);
   az_iot_su_channel spy = { .vtable = &k_spy_vtable, .ctx = &fx->spy };
   assert_int_equal(
       az_iot_su_client__initialize_with_channel(&fx->su, &spy, az_iot_crypto_openssl(), &su),
@@ -738,7 +757,11 @@ static void fixture_close(fixture* fx)
     az_iot_connection_client_deinit(&fx->conn);
     fx->have_conn = false;
   }
+#if defined(AZ_IOT_E2E_ADAPTER_PAHO)
   az_iot_paho_factory_destroy(fx->factory);
+#elif defined(AZ_IOT_E2E_ADAPTER_AZ_MQTT)
+  az_iot_az_mqtt_factory_destroy(fx->factory);
+#endif
   fx->factory = NULL;
   if (fx->have_certs)
   {
@@ -872,7 +895,7 @@ static void real_update_is_downloaded_verified_installed_and_reported(void** sta
 }
 
 /* An identical report is accepted. An explicit conflict rejects this payload
- * permanently; it is not acceptance of a duplicate. */
+ * permanently and asks for a new check; it is not acceptance of a duplicate. */
 static void terminal_report_is_idempotent_and_a_conflict_is_detected(void** state)
 {
   (void)state;
@@ -907,7 +930,7 @@ static void terminal_report_is_idempotent_and_a_conflict_is_detected(void** stat
   r = send_report(fx, saved_report_view(&conflicting));
   assert_int_not_equal(r->result, AZ_IOT_OK);
   assert_int_equal(r->service_code, 409000);
-  assert_int_equal(r->action, AZ_IOT_SU_ERROR_ACTION_FATAL);
+  assert_int_equal(r->action, AZ_IOT_SU_ERROR_ACTION_RECHECK);
 }
 
 /* The service keeps offering a workflow after its terminal report. A client
@@ -968,7 +991,7 @@ static void install_failure_is_rolled_back_and_reported_failed(void** state)
   assert_true(ops_in_order(&fx->plat, k_order, sizeof(k_order) / sizeof(k_order[0])));
   assert_false(op_seen(&fx->plat, OP_APPLY));
   assert_int_equal(r->outcome, AZ_IOT_SU_OUTCOME_FAILED);
-  assert_int_equal(r->result_code, 700 - (int32_t)AZ_IOT_SU_FACILITY_INSTALL);
+  assert_int_equal(r->result_code, -(int32_t)AZ_IOT_SU_FACILITY_INSTALL);
   assert_int_not_equal(r->failure_origin, AZ_IOT_SU_FAILURE_ORIGIN_NOT_APPLICABLE);
   assert_true(r->step_count >= 1);
   assert_int_equal(r->step0_outcome, AZ_IOT_SU_OUTCOME_FAILED);
@@ -1007,7 +1030,7 @@ static void untrusted_manifest_is_reported_failed(void** state)
   assert_false(op_seen(&fx->plat, OP_DOWNLOAD));
   assert_int_equal(r->outcome, AZ_IOT_SU_OUTCOME_FAILED);
   /* The failure is the signature check, not anything else before download. */
-  assert_int_equal(r->result_code, 700 - (int32_t)AZ_IOT_SU_FACILITY_MANIFEST);
+  assert_int_equal(r->result_code, -(int32_t)AZ_IOT_SU_FACILITY_MANIFEST);
   assert_int_equal(r->result, AZ_IOT_OK);
 }
 

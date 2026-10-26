@@ -87,25 +87,37 @@ typedef az_result (*az_mqtt_tls_configure_fn)(void* native_config, void* context
 typedef struct
 {
   /**
-   * @brief Path to CA certificate file (PEM). With neither this nor
-   * ca_cert_pem, OpenSSL and Schannel use the system store; mbedTLS has none
-   * and needs `configure` to install trust (else AZ_MQTT_ERROR_NOT_SUPPORTED).
+   * @brief Path to a CA file: one or more PEM certificates (Schannel: or one DER).
+   * With neither this nor ca_cert_pem, OpenSSL and Schannel use the system
+   * store; mbedTLS has none and needs `configure` to install trust (else
+   * AZ_MQTT_ERROR_NOT_SUPPORTED).
    */
   az_span ca_cert_path;
 
-  /** @brief Client certificate file (PEM) for mutual TLS. */
+  /**
+   * @brief Client certificate file (PEM), then any chain certificates, for mutual TLS.
+   * Schannel: TLS 1.2 only (the server is validated before the certificate is sent).
+   * Schannel sends only chain certificates it finds in the system stores: the chain certificates
+   * given (not self-issued ones) are added to the current user's intermediate CA store (CA), and
+   * stay there.
+   */
   az_span client_cert_path;
 
-  /** @brief Client private key file (PEM) for mutual TLS. */
+  /**
+   * @brief Client private key file (PEM) for mutual TLS.
+   * Schannel: unencrypted PKCS#8, PKCS#1 (RSA) or SEC1 (EC: P-256, P-384, P-521), up to 32 KiB.
+   * Schannel takes persisted keys only: the key is imported into the user's CNG key store
+   * (Microsoft Software Key Storage Provider) for each connection, and deleted when it closes.
+   */
   az_span client_key_path;
 
-  /** @brief CA certificates, PEM in memory (OpenSSL, mbedTLS). */
+  /** @brief CA certificates, PEM in memory. */
   az_span ca_cert_pem;
 
-  /** @brief Client certificate (chain), PEM in memory (OpenSSL, mbedTLS). */
+  /** @brief Client certificate, then any chain certificates, PEM in memory; as client_cert_path. */
   az_span client_cert_pem;
 
-  /** @brief Client private key, PEM in memory (OpenSSL, mbedTLS). */
+  /** @brief Client private key, PEM in memory; Schannel: as client_key_path. */
   az_span client_key_pem;
 
   /**

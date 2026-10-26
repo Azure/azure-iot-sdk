@@ -68,6 +68,9 @@ cmake --build --preset linux-gcc-debug --target az_iot_sample_auth_hub_renew
 ./build/linux-gcc-debug/samples/authentication/az_iot_sample_auth_hub_renew
 ```
 
+With az_mqtt (`-DAZ_IOT_WITH_AZ_MQTT=ON`), target `az_iot_sample_auth_hub_renew_az_mqtt` builds the same sample in
+`az_mqtt/` next to that binary ([adapters](../../README.md#build)).
+
 Windows (*Developer PowerShell for VS 2022*):
 
 ```powershell
@@ -76,8 +79,8 @@ cmake --build --preset windows-msvc-debug --target az_iot_sample_auth_hub_renew
 .\build\windows-msvc-debug\samples\authentication\Debug\az_iot_sample_auth_hub_renew.exe
 ```
 
-The target exists only when OpenSSL 3.0+ is found and the Paho adapter is enabled
-(`AZ_IOT_WITH_CERT_PROVIDER_MANAGED`, `AZ_IOT_WITH_PAHO`); configure then prints
+The target exists only when OpenSSL 3.0+ is found (`AZ_IOT_WITH_CERT_PROVIDER_MANAGED`); configure
+then prints
 `building managed certificate provider`.
 
 ## How it ends

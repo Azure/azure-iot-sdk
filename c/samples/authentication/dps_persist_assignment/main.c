@@ -19,7 +19,7 @@
  * persisted operational certificate. DPS stays configured: if the hub refuses
  * the identity, the client re-provisions and the new assignment is saved.
  *
- * Requires OpenSSL 3.0+ and the Paho adapter. See README.md.
+ * Requires OpenSSL 3.0+ and the Paho or az_mqtt adapter. See README.md.
  */
 #include <stdbool.h>
 #include <stddef.h>
@@ -40,7 +40,14 @@
 #endif
 
 #include "azure/iot/az_iot.h"
+/* The MQTT adapter this build of the sample uses (see samples/CMakeLists.txt). */
+#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
 #include "azure/iot/adapters/az_iot_adapter_paho.h"
+#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
+#include "azure/iot/adapters/az_iot_adapter_az_mqtt.h"
+#else
+#error "Define AZ_IOT_SAMPLE_ADAPTER_PAHO or AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT"
+#endif
 #include "az_iot_certificate_provider_managed.h"
 
 #include "sample_utils.h"
@@ -324,8 +331,13 @@ int main(void)
         SAMPLE_ASSIGNMENT_FILE);
   }
 
+#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
   factory_v3 = az_iot_paho_factory_create_v3_1_1();
   factory_v5 = az_iot_paho_factory_create_v5();
+#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
+  factory_v3 = az_iot_az_mqtt_factory_create_v3_1_1();
+  factory_v5 = az_iot_az_mqtt_factory_create_v5();
+#endif
   if (az_iot_connection_client_init(&client, &opts) != AZ_IOT_OK
       || az_iot_connection_client_add_state_observer(&client, on_conn_state, &ctx) != AZ_IOT_OK
       || az_iot_connection_client_set_dps_assignment_callback(&client, on_assignment, &ctx)
@@ -385,8 +397,13 @@ int main(void)
 
 cleanup:
   az_iot_connection_client_deinit(&client);
+#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
   az_iot_paho_factory_destroy(factory_v3);
   az_iot_paho_factory_destroy(factory_v5);
+#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
+  az_iot_az_mqtt_factory_destroy(factory_v3);
+  az_iot_az_mqtt_factory_destroy(factory_v5);
+#endif
   az_iot_certificate_provider_managed_deinit(&provider);
   free(op_key);
   free(op_cert);

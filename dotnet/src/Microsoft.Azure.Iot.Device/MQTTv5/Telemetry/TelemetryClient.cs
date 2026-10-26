@@ -75,9 +75,8 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Telemetry
                 PayloadAsReadOnlySequence = message.PayloadAsReadOnlySequence,
                 QualityOfServiceLevel = MqttQualityOfServiceLevel.AtLeastOnce,
 
-                // Telemetry payloads in the MQTTv5 flow are UTF-8 text/JSON; this surfaces as
-                // content-encoding: utf-8 on the routed message.
-                PayloadFormatIndicator = MqttPayloadFormatIndicator.CharacterData,
+                // Telemetry may contain arbitrary binary data, so do not declare it UTF-8 unconditionally.
+                PayloadFormatIndicator = MqttPayloadFormatIndicator.Unspecified,
             };
 
             if (message.ContentType != null)
@@ -108,7 +107,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Telemetry
             }
 
             // Puback is checked for non-success cases under this layer, so no need to check it here as well
-            MqttPublishAck puback = await _connection.PublishAsync(mqttMessage, cancellationToken);
+            MqttPublishAck puback = await _connection.PublishAsync(mqttMessage, throwOnErrorReasonCode: true, cancellationToken);
         }
 
         /// <summary>

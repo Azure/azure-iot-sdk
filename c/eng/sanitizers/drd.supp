@@ -1,0 +1,6 @@
+# drd suppressions for eng/run-race-detectors.sh. Policy (enforced by
+# eng/check-race-suppressions.sh):
+# - Third-party code only (Paho, OpenSSL, glibc, ld.so). Never SDK code.
+# - Each entry follows a comment giving the upstream file:line and, for Paho,
+#   the PAHO_C_TAG it was checked against. Re-check on every tag bump.
+# - The first frame is a concrete fun: or obj: line, never "...".

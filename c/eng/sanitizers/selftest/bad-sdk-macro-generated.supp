@@ -1,0 +1,6 @@
+# function defined by IMPLEMENT_ASN1_ALLOC_FUNCTIONS (adapters/paho/az_iot_paho_key_custody.c)
+{
+   macro-generated
+   drd:ConflictingAccess
+   fun:az_iot_pk11_uri_new
+}

@@ -155,10 +155,7 @@ int main(void)
     }
   }
   opts.capabilities |= (uint32_t)AZ_IOT_CONFORMANCE_CAP_PROXY;
-#if !defined(_WIN32)
-  /* Schannel takes no in-memory client certificate (see az_iot_adapter_az_mqtt.h). */
   opts.capabilities |= (uint32_t)AZ_IOT_CONFORMANCE_CAP_TLS_PEM;
-#endif
   int rc = az_iot_conformance_run_with_options(suite, f, &opts);
   az_iot_az_mqtt_factory_destroy(f);
   return rc;

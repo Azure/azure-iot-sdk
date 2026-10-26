@@ -109,10 +109,19 @@ install(TARGETS ${_az_iot_targets} ${_az_iot_sdk_for_c_targets} ${_az_iot_az_mqt
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
 
+# An adapter's public header ships only with the adapter.
+set(_az_iot_absent_headers)
+foreach(_adapter paho az_mqtt rust_mqtt)
+    if(NOT TARGET az_iot_adapter_${_adapter})
+        list(APPEND _az_iot_absent_headers PATTERN "az_iot_adapter_${_adapter}.h" EXCLUDE)
+    endif()
+endforeach()
 install(DIRECTORY "${PROJECT_SOURCE_DIR}/inc/"
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
     FILES_MATCHING PATTERN "*.h"
+    ${_az_iot_absent_headers}
 )
+unset(_az_iot_absent_headers)
 if(NOT AZ_IOT_USE_INSTALLED_AZURE_SDK_FOR_C)
     install(DIRECTORY "${azure_sdk_for_c_SOURCE_DIR}/sdk/inc/"
         DESTINATION ${_az_iot_sdk_for_c_inc}

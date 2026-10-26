@@ -194,7 +194,11 @@ static void _azm_emit(_azm_client* m, az_iot_mqtt_event const* event)
   }
   else if (m->pending_count < AZ_IOT_AZ_MQTT_PENDING_EVENTS_MAX)
   {
-    m->pending[m->pending_count++] = *event;
+    m->pending[m->pending_count] = *event;
+    // The reason string points into the receive buffer, which a held event outlives.
+    m->pending[m->pending_count].reason_string = NULL;
+    m->pending[m->pending_count].reason_string_len = 0;
+    m->pending_count++;
   }
   else
   {
@@ -481,6 +485,14 @@ static void _azm_emit_publish_ack(_azm_client* m, _AZM(ack_data) const* ack)
   {
     event.status = AZ_IOT_ERR_MQTT;
   }
+#if AZ_IOT_AZ_MQTT_V == 5
+  // NULL: no Reason String. Non-NULL with length 0: present and empty.
+  if (az_span_ptr(ack->reason_string) != NULL)
+  {
+    event.reason_string = (char const*)az_span_ptr(ack->reason_string);
+    event.reason_string_len = (size_t)az_span_size(ack->reason_string);
+  }
+#endif
   _azm_emit(m, &event);
 }
 
@@ -624,20 +636,6 @@ static az_iot_result _azm_check_options(az_iot_mqtt_connect_options const* o)
         AZ_IOT_LOG_COMPONENT_AZ_MQTT, "sign callback and key password are not supported");
     return AZ_IOT_ERR_NOT_SUPPORTED;
   }
-#if defined(_WIN32)
-  if (o->tls.client_cert_path != NULL || o->tls.client_cert_pem != NULL)
-  {
-    AZ_IOT_LOG_ERROR(
-        AZ_IOT_LOG_COMPONENT_AZ_MQTT, "client certificates are not supported on Windows");
-    return AZ_IOT_ERR_NOT_SUPPORTED;
-  }
-  // Schannel takes a CA file only (trusted_ca_path wins when both are set).
-  if (o->tls.trusted_ca_pem != NULL && o->tls.trusted_ca_path == NULL)
-  {
-    AZ_IOT_LOG_ERROR(AZ_IOT_LOG_COMPONENT_AZ_MQTT, "in-memory CA PEM is not supported on Windows");
-    return AZ_IOT_ERR_NOT_SUPPORTED;
-  }
-#endif
   if (o->tls.client_key_uri != NULL || o->tls.crypto_engine_id != NULL)
   {
     if (!az_iot_az_mqtt_has_text(o->tls.client_key_uri)

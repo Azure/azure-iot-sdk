@@ -11,11 +11,20 @@
  *
  * Provision via DPS, open, publish, close.
  */
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "azure/iot/az_iot.h"
+/* The MQTT adapter this build of the sample uses (see samples/CMakeLists.txt). */
+#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
 #include "azure/iot/adapters/az_iot_adapter_paho.h"
+#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
+#include "azure/iot/adapters/az_iot_adapter_az_mqtt.h"
+#else
+#error "Define AZ_IOT_SAMPLE_ADAPTER_PAHO or AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT"
+#endif
 
 #include "sample_utils.h"
 
@@ -38,8 +47,13 @@ static void sample_state_destroy(sample_state* state)
     state->custom_initialized = 0;
   }
   az_iot_connection_client_deinit(&state->connection_client);
+#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
   az_iot_paho_factory_destroy(state->factory_v3);
   az_iot_paho_factory_destroy(state->factory_v5);
+#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
+  az_iot_az_mqtt_factory_destroy(state->factory_v3);
+  az_iot_az_mqtt_factory_destroy(state->factory_v5);
+#endif
   az_iot_certificate_provider_pem_deinit(&state->certs);
   sample_config_release(&state->config);
 }
@@ -51,6 +65,8 @@ typedef struct
   az_iot_result conn_reason;
   int send_done;
   az_iot_result send_status;
+  int32_t send_reason_code;
+  char send_reason[128]; /* The hub's Reason String, if any. */
 } user_context;
 
 static void on_conn_state(const az_iot_connection_state_event* event, void* user_ctx)
@@ -84,10 +100,20 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
   ctx->conn_reason = event->reason;
 }
 
-static void on_send_done(az_iot_result status, void* user_ctx)
+static void on_send_done(const az_iot_publish_result* result, void* user_ctx)
 {
   user_context* ctx = (user_context*)user_ctx;
-  ctx->send_status = status;
+  ctx->send_status = result->status;
+  ctx->send_reason_code = result->reason_code;
+  /* Valid only during the callback: copy it. */
+  size_t len = result->reason_string_len < sizeof(ctx->send_reason) - 1
+      ? result->reason_string_len
+      : sizeof(ctx->send_reason) - 1;
+  if (len > 0)
+  {
+    memcpy(ctx->send_reason, result->reason_string, len);
+  }
+  ctx->send_reason[len] = '\0';
   ctx->send_done = 1;
 }
 
@@ -133,14 +159,22 @@ int main(void)
 
   /* v3.1.1 for the DPS leg, v5 for the hub leg. Both are required even though
    * only the hub is v5. */
+#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
   state.factory_v3 = az_iot_paho_factory_create_v3_1_1();
+#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
+  state.factory_v3 = az_iot_az_mqtt_factory_create_v3_1_1();
+#endif
   if (az_iot_connection_client_register_mqtt_factory(&state.connection_client, state.factory_v3)
       != AZ_IOT_OK)
   {
     sample_state_destroy(&state);
     return 1;
   }
+#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
   state.factory_v5 = az_iot_paho_factory_create_v5();
+#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
+  state.factory_v5 = az_iot_az_mqtt_factory_create_v5();
+#endif
   if (az_iot_connection_client_register_mqtt_factory(&state.connection_client, state.factory_v5)
       != AZ_IOT_OK)
   {
@@ -220,12 +254,14 @@ int main(void)
           printf("Published to '%s'.\n", topic);
           rc = 0;
         }
-        /* Needs an MQTT adapter that reports PUBACK reason codes. The Paho adapter does not yet, so
-         * there a refusal arrives as AZ_IOT_ERR_MQTT below. */
         else if (user_ctx.send_done && user_ctx.send_status == AZ_IOT_ERR_PUBLISH_REFUSED)
         {
           printf(
-              "The hub refused '%s'. Check that a topic template on the hub matches it.\n", topic);
+              "The hub refused '%s' (reason code 0x%02X: \"%s\"). Check that a topic template on "
+              "the hub matches it.\n",
+              topic,
+              (unsigned)user_ctx.send_reason_code,
+              user_ctx.send_reason);
         }
         else
         {

@@ -42,8 +42,11 @@ cmake --build --preset linux-gcc-debug --target az_iot_sample_auth_dps_persist_a
 ./build/linux-gcc-debug/samples/authentication/az_iot_sample_auth_dps_persist_assignment   # restores
 ```
 
-Built when OpenSSL 3.0+ and the Paho adapter are available (`AZ_IOT_WITH_CERT_PROVIDER_MANAGED`,
-`AZ_IOT_WITH_PAHO`). Connects to mqttv3 and mqttv5 hubs.
+With az_mqtt (`-DAZ_IOT_WITH_AZ_MQTT=ON`), target `az_iot_sample_auth_dps_persist_assignment_az_mqtt` builds the same sample in
+`az_mqtt/` next to that binary ([adapters](../../README.md#build)).
+
+Built when OpenSSL 3.0+ is available (`AZ_IOT_WITH_CERT_PROVIDER_MANAGED`). Connects to mqttv3 and
+mqttv5 hubs.
 
 ## Behavior
 
