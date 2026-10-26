@@ -607,6 +607,86 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             Assert.Equal(hubRejectsSecondary ? 2 : 1, mockDps.RegistrationCount);
         }
 
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task SecondaryCredentialsRejectedLaterFallBackToPrimaryWithoutReprovisioning(bool rejectedMidSession)
+        {
+            using MockConnectionMqttClient mockMqttClient = new();
+            MockDeviceProvisioningService mockDps = new(mockMqttClient, _ => FirstAssignedHub);
+
+            // The hub first accepts only the secondary credentials, then only the primary ones once the keys are rotated
+            // back while the device is connected with the secondary.
+            bool hubAcceptsPrimary = false;
+            List<string> connectAttempts = new();
+            TaskCompletionSource recovered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            mockMqttClient.OnConnect = connect =>
+            {
+                string attempt = ConnectAttempt(connect);
+                lock (connectAttempts)
+                {
+                    connectAttempts.Add(attempt);
+                }
+
+                if (connect.HostName == GlobalDeviceEndpoint)
+                {
+                    return Task.FromResult(new MqttConnectAck() { ResultCode = MqttConnectReasonCode.Success });
+                }
+
+                bool acceptsPrimary = Volatile.Read(ref hubAcceptsPrimary);
+                bool accepted = attempt == $"{FirstAssignedHub}:primary-hub" ? acceptsPrimary : !acceptsPrimary;
+                if (accepted && acceptsPrimary)
+                {
+                    recovered.TrySetResult();
+                }
+
+                return Task.FromResult(new MqttConnectAck() { ResultCode = accepted ? MqttConnectReasonCode.Success : MqttConnectReasonCode.NotAuthorized });
+            };
+
+            using TestConnectionClient connectionClient = new(new()
+            {
+                MqttClient = mockMqttClient,
+                ConnectionRetryPolicy = new ImmediateRetryPolicy(),
+            });
+
+            await connectionClient.ProvisionAndConnectAsync(
+                CreateProvisioningSettings(),
+                new PrimaryAndSecondaryAuthenticationProvider(),
+                cancellationToken: TestContext.Current.CancellationToken).WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+
+            Volatile.Write(ref hubAcceptsPrimary, true);
+
+            // Either the hub revokes the secondary credentials of the live session, or the connection is lost for an
+            // unrelated reason and the hub refuses the secondary credentials when reconnecting.
+            await mockMqttClient.SimulateServerDisconnectAsync(
+                rejectedMidSession ? MqttDisconnectReason.NotAuthorized : MqttDisconnectReason.ServerBusy);
+
+            await recovered.Task.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+
+            string[] expectedAttempts = rejectedMidSession
+                ? new[]
+                {
+                    $"{GlobalDeviceEndpoint}:primary-boot",
+                    $"{FirstAssignedHub}:primary-hub",
+                    $"{FirstAssignedHub}:secondary-hub",
+                    $"{FirstAssignedHub}:primary-hub",
+                }
+                : new[]
+                {
+                    $"{GlobalDeviceEndpoint}:primary-boot",
+                    $"{FirstAssignedHub}:primary-hub",
+                    $"{FirstAssignedHub}:secondary-hub",
+                    $"{FirstAssignedHub}:secondary-hub",
+                    $"{FirstAssignedHub}:primary-hub",
+                };
+            lock (connectAttempts)
+            {
+                Assert.Equal(expectedAttempts, connectAttempts);
+            }
+
+            Assert.Equal(1, mockDps.RegistrationCount);
+        }
+
         [Fact]
         public async Task TerminalFaultThatIsNotAboutIdentityDoesNotReprovision()
         {
