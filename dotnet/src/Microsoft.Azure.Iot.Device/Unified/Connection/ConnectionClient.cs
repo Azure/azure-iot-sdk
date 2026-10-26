@@ -76,7 +76,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
                 return _mqttv5ConnectionClient.IotHubMqttConnectOverride(connect);
             }
 
-            connect.WebsocketUri = $"wss://{connect.HostName}/$iothub/websocket";
+            connect.WebsocketUri = BuildWebSocketUri(connect.HostName, connect.WebsocketPort, DefaultWebSocketPath);
             connect.ProtocolVersion = CurrentConnectionContext.ConnectionProfile == IotHubConnectionType.Mqttv5 ? MqttProtocolVersion.V500 : MqttProtocolVersion.V311;
             connect.Username = $"{connect.HostName}/{connect.ClientId}/?api-version={ClassicHubApiVersion}&DeviceClientType={Uri.EscapeDataString(GetUserAgentString())}";
 
