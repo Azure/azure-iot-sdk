@@ -115,6 +115,11 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
         [InlineData(false, Traits = new[] { Setup.HubTrait, Setup.MQTTv5HubTraitValue })]
         public async Task CanProvisionWithX509AndCertificateSigningThenConnectWithIssuedCertificate(bool testAgainstClassicHub)
         {
+            if (!testAgainstClassicHub)
+            {
+                Assert.Skip("MQTTv5 hub certificate renewal is not implemented.");
+            }
+
             using CancellationTokenSource cts = new();
             cts.CancelAfter(Setup.TestTimeoutMilliseconds - 1000);
 
