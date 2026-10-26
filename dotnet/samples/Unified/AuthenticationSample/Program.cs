@@ -53,7 +53,7 @@ internal class Program
     /// </summary>
     private static async Task X509BootAndOperationalAsync(CancellationToken cancellationToken)
     {
-        X509AuthenticationProvider authentication =         new(SampleConstants.LoadBootCertificate(), null);
+        X509AuthenticationProvider authentication = new(SampleConstants.LoadBootCertificate(), null);
         ProvisioningSettings provisioningSettings = new(SampleConstants.LoadIdScope());
 
         using ConnectionClient connectionClient = new();
