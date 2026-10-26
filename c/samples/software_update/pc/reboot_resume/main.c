@@ -8,10 +8,10 @@
  *
  * Portable PC sample. install_fn or apply_fn returns
  * AZ_IOT_SU_RESULT_REBOOT_REQUIRED at a chosen step; the client saves the
- * workflow through persist_state_fn. Once az_iot_su_client_get_reboot_state()
+ * workflow through persist_workflow_state_fn. Once az_iot_su_client_get_reboot_state()
  * is READY the sample "reboots" (exits). The next run calls
  * az_iot_su_client_resume(), which reads the workflow back through
- * load_state_fn, and the workflow continues where it stopped. Download and
+ * load_workflow_state_fn, and the workflow continues where it stopped. Download and
  * the file read-back are simulated (../common/su_sim.c, zero-filled
  * payloads); install and apply only log.
  *
@@ -108,7 +108,8 @@ static int32_t download_update_file(
     uint32_t file_count,
     void* user_ctx)
 {
-  return su_download(file, url, file_index, file_count, &((update_hooks_context*)user_ctx)->sim);
+  return simulate_update_file_download(
+      file, url, file_index, file_count, &((update_hooks_context*)user_ctx)->sim);
 }
 
 static int32_t read_back_downloaded_file(
@@ -120,7 +121,7 @@ static int32_t read_back_downloaded_file(
     size_t* out_read,
     void* user_ctx)
 {
-  return su_read_file(
+  return read_back_simulated_update_file(
       file,
       file_index,
       offset,
@@ -167,7 +168,7 @@ static int32_t apply_update_step(
 }
 
 /**
- * @brief persist_state_fn: save the workflow so it survives a reboot.
+ * @brief persist_workflow_state_fn: save the workflow so it survives a reboot.
  *
  * Written to a temporary file and renamed over the old one, so a crash
  * mid-write leaves the previous record intact. A zero-length write erases
@@ -217,7 +218,7 @@ static int32_t save_update_workflow(const uint8_t* blob, size_t len, void* user_
   return AZ_IOT_SU_RESULT_SUCCESS;
 }
 
-/** @brief load_state_fn: read the saved workflow back; nonzero when there is none. */
+/** @brief load_workflow_state_fn: read the saved workflow back; nonzero when there is none. */
 static int32_t load_saved_update_workflow(
     uint8_t* blob,
     size_t capacity,
@@ -437,8 +438,8 @@ int main(void)
   hooks.read_file_fn = read_back_downloaded_file;
   hooks.install_fn = install_update_step;
   hooks.apply_fn = apply_update_step;
-  hooks.persist_state_fn = save_update_workflow;
-  hooks.load_state_fn = load_saved_update_workflow;
+  hooks.persist_workflow_state_fn = save_update_workflow;
+  hooks.load_workflow_state_fn = load_saved_update_workflow;
   hooks.user_ctx = &hooks_context;
 
   az_iot_su_device_properties dp = { 0 };

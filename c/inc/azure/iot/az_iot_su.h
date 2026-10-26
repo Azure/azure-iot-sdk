@@ -65,7 +65,8 @@ extern "C"
 #define AZ_IOT_SU_FACILITY_INSTALL 0x5u /* install_fn failure */
 #define AZ_IOT_SU_FACILITY_APPLY 0x6u /* apply_fn failure */
 #define AZ_IOT_SU_FACILITY_RESTORE 0x7u /* restore_fn failure (rollback failed) */
-#define AZ_IOT_SU_FACILITY_PERSIST 0x8u /* persist_state_fn kept failing at a reboot boundary */
+/* persist_workflow_state_fn kept failing at a reboot boundary */
+#define AZ_IOT_SU_FACILITY_PERSIST 0x8u
 /* Superseded by a new workflow under AZ_IOT_SU_REPLACEMENT_ROLLBACK (reserved; not yet produced) */
 #define AZ_IOT_SU_FACILITY_SUPERSEDED 0x9u
 #define AZ_IOT_SU_FACILITY_INTERNAL 0xFu /* parser/state/buffer error in the client */
@@ -161,7 +162,7 @@ extern "C"
 #endif
 
 /**
- * @brief Consecutive failed persist_state_fn writes after which the client stops retrying.
+ * @brief Consecutive failed persist_workflow_state_fn writes after which the client stops retrying.
  *
  * Retries are spaced 1 s, 2 s, 4 s, ... (at most 60 s). On reaching the limit
  * AZ_IOT_SU_EVENT_PERSIST_FAILED is raised with `persist_retrying` false and:
@@ -183,7 +184,7 @@ extern "C"
 #error "AZ_IOT_SU_PERSIST_MAX_ATTEMPTS must be between 1 and 0xFFFFFFFF"
 #endif
 
-/** @brief Largest blob passed to persist_state_fn for a client with these
+/** @brief Largest blob passed to persist_workflow_state_fn for a client with these
  * az_iot_su_limits::max_update_size and result_details_size; size storage for this. The format
  * version is internal and checked by az_iot_su_client_resume(). */
 #define AZ_IOT_SU_STATE_BLOB_MAX_SIZE(max_update_size, result_details_size) \
@@ -303,14 +304,17 @@ extern "C"
      * retries from do_work() with back-off, holding the workflow at a reboot
      * boundary, up to AZ_IOT_SU_PERSIST_MAX_ATTEMPTS.
      */
-    int32_t (*persist_state_fn)(const uint8_t* state_blob, size_t state_blob_len, void* user_ctx);
+    int32_t (*persist_workflow_state_fn)(
+        const uint8_t* state_blob,
+        size_t state_blob_len,
+        void* user_ctx);
 
     /**
      * Load previously-persisted workflow state. Return 0 and fill
      * state_blob/len on success; non-zero if no state persisted. A successful
      * zero-length read also means nothing to resume.
      */
-    int32_t (*load_state_fn)(
+    int32_t (*load_workflow_state_fn)(
         uint8_t* state_blob,
         size_t state_blob_capacity,
         size_t* state_blob_len,
@@ -611,7 +615,7 @@ extern "C"
      * arrives as for any check. */
     AZ_IOT_SU_EVENT_OPERATION_ABANDONED,
 
-    /* persist_state_fn failed. Raised on the first failure of an episode
+    /* persist_workflow_state_fn failed. Raised on the first failure of an episode
      * (`persist_retrying` true) and when AZ_IOT_SU_PERSIST_MAX_ATTEMPTS is
      * reached (`persist_retrying` false); with a limit of 1, once, with
      * `persist_retrying` false. See that macro for what giving up does.
@@ -622,7 +626,7 @@ extern "C"
      * do not reboot the device (see az_iot_su_client_get_reboot_state()). */
     AZ_IOT_SU_EVENT_PERSIST_FAILED,
 
-    /* A tracked persist_state_fn write succeeded after
+    /* A tracked persist_workflow_state_fn write succeeded after
      * AZ_IOT_SU_EVENT_PERSIST_FAILED. Carries `state` and `persist_attempts`
      * (the failures that preceded it). The best-effort erase of a stale record
      * after a failed terminal-record write is not tracked and never raises it. */
@@ -835,11 +839,11 @@ extern "C"
       /* Storage is believed to hold a checkpoint this client wrote or resumed
        * from, so an invalidation write is owed when the workflow ends. */
       bool checkpoint_stored;
-      /** Failed persist_state_fn writes since the last success, and when to retry. */
+      /** Failed persist_workflow_state_fn writes since the last success, and when to retry. */
       az_iot_retry_state persist_retry;
       /** AZ_IOT_SU_PERSIST_MAX_ATTEMPTS, copied at initialization. */
       uint32_t persist_max_attempts;
-      /** Return value of the last failed persist_state_fn write. */
+      /** Return value of the last failed persist_workflow_state_fn write. */
       int32_t persist_last_error;
       /** The terminal record's write failed; further attempts wait for persist_retry. */
       bool terminal_write_failed;
@@ -1173,7 +1177,7 @@ extern "C"
    *
    * @return AZ_IOT_OK if resumed or nothing usable was persisted (including a
    *   record of another format version); AZ_IOT_ERR_NOT_SUPPORTED for a valid
-   *   record of this format when persist_state_fn is NULL (it could never be cleared);
+   *   record of this format when persist_workflow_state_fn is NULL (it could never be cleared);
    *   AZ_IOT_ERR_INVALID_ARG for a NULL client or
    *   a record whose download URLs do not cover the remaining steps;
    *   AZ_IOT_ERR_BUSY when a workflow is in progress (the record is loaded over its
@@ -1198,7 +1202,7 @@ extern "C"
    * result; an empty @p details clears it. The client sets the step's outcome and codes.
    * When the report would not fit az_iot_su_limits::max_message_size it is sent without
    * step details. A change made while the workflow waits for a reboot is written by a later
-   * do_work() through persist_state_fn before the workflow goes on. A failed write raises
+   * do_work() through persist_workflow_state_fn before the workflow goes on. A failed write raises
    * AZ_IOT_SU_EVENT_PERSIST_FAILED and is retried; a reboot before it succeeds
    * (AZ_IOT_SU_EVENT_PERSIST_RECOVERED) restores the previous details.
    *
@@ -1226,7 +1230,7 @@ extern "C"
      * workflow that asked failed). */
     AZ_IOT_SU_REBOOT_NONE = 0,
     /** Storage is behind what az_iot_su_client_resume() needs: a
-     * persist_state_fn write is failing or being retried. A restart now could
+     * persist_workflow_state_fn write is failing or being retried. A restart now could
      * lose or repeat work, whether or not a reboot was asked for. Stays so
      * after the client gives up retrying (PERSIST_FAILED with
      * `persist_retrying` false) until a later write succeeds. */
@@ -1242,7 +1246,7 @@ extern "C"
    * Check after each az_iot_su_client_do_work(): the next call continues the
    * workflow as if the device had not rebooted. Also use it before a planned
    * exit or shutdown: PENDING means storage is not current yet. With no
-   * persist_state_fn there is nothing to store, so it is never PENDING (and a
+   * persist_workflow_state_fn there is nothing to store, so it is never PENDING (and a
    * workflow does not survive a restart).
    *
    * @param[in] client Initialized client.

@@ -414,15 +414,15 @@ int main(void)
   /* Software updates client. The platform hooks do the device-side work of a
    * deployment; here each one is simulated (see ../common/su_sim.c). */
   az_iot_su_platform_hooks hooks = { 0 };
-  hooks.download_fn = su_download;
-  hooks.read_file_fn = su_read_file;
-  hooks.is_installed_fn = su_is_installed;
-  hooks.backup_fn = su_backup;
-  hooks.install_fn = su_install;
-  hooks.apply_fn = su_apply;
-  hooks.restore_fn = su_restore;
-  hooks.persist_state_fn = su_persist_state;
-  hooks.load_state_fn = su_load_state;
+  hooks.download_fn = simulate_update_file_download;
+  hooks.read_file_fn = read_back_simulated_update_file;
+  hooks.is_installed_fn = is_offered_update_already_installed;
+  hooks.backup_fn = simulate_update_step_backup;
+  hooks.install_fn = simulate_update_step_install;
+  hooks.apply_fn = simulate_update_step_apply;
+  hooks.restore_fn = simulate_update_step_restore;
+  hooks.persist_workflow_state_fn = save_update_workflow_to_file;
+  hooks.load_workflow_state_fn = load_update_workflow_from_file;
   hooks.user_ctx = &state.simulation_control;
 
   /* Microsoft's compiled-in software updates production root keys: anchors the trust chain

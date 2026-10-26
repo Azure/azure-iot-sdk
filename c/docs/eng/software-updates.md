@@ -419,7 +419,7 @@ defines a structured layout:
 | `0x5` | Install | `install_fn` failed |
 | `0x6` | Apply | `apply_fn` failed |
 | `0x7` | Restore | `restore_fn` failed (rollback itself failed) |
-| `0x8` | Persist | `persist_state_fn` kept failing at a reboot boundary (`AZ_IOT_SU_PERSIST_MAX_ATTEMPTS`); low bits carry its last return value |
+| `0x8` | Persist | `persist_workflow_state_fn` kept failing at a reboot boundary (`AZ_IOT_SU_PERSIST_MAX_ATTEMPTS`); low bits carry its last return value |
 | `0x9` | Superseded | reserved for `AZ_IOT_SU_REPLACEMENT_ROLLBACK` (not yet supported) |
 | `0xF` | Internal / client | parser, state, or buffer error inside the software updates client |
 
@@ -543,7 +543,7 @@ Detection).
 
 If `install_fn` or `apply_fn` returns `AZ_IOT_SU_RESULT_REBOOT_REQUIRED`:
 
-1. The client MUST report state to the cloud and MUST persist workflow progress to non-volatile storage via the customer-provided `persist_state_fn`: after `install_fn`, the step's Apply; after `apply_fn`, the next step's start (after the last step, the terminal record below).
+1. The client MUST report state to the cloud and MUST persist workflow progress to non-volatile storage via the customer-provided `persist_workflow_state_fn`: after `install_fn`, the step's Apply; after `apply_fn`, the next step's start (after the last step, the terminal record below).
 2. The application MUST reboot the device after the client persists state. Until it does, a new `workflowId` is deferred.
 3. On startup, the application MUST call `az_iot_su_client_resume()`, which reads persisted state and continues the workflow from the appropriate phase.
 
@@ -560,7 +560,7 @@ re-initialized since: then the new workflow is deferred.
 
 ### Persistence & Resume Blob Format
 
-`persist_state_fn` / `load_state_fn` exchange an **opaque, self-contained byte
+`persist_workflow_state_fn` / `load_workflow_state_fn` exchange an **opaque, self-contained byte
 blob** that the core serializes and the platform merely stores verbatim (file,
 NVS partition, EEPROM, …). The platform MUST NOT interpret it; the format is
 internal and may change between SDK versions.
@@ -591,11 +591,11 @@ The byte layout is documented next to the serializer in
 
 #### Resume semantics (`az_iot_su_client_resume()`)
 
-1. Call `load_state_fn`. If it reports no state (including an empty record), or
+1. Call `load_workflow_state_fn`. If it reports no state (including an empty record), or
    `magic`/`version`/`crc32` fail validation, `resume()` is a **no-op** returning
    success — the agent starts clean and waits for the next update offer. A
    valid record is refused with `AZ_IOT_ERR_NOT_SUPPORTED` when
-   `persist_state_fn` is NULL (it could never be cleared), and with
+   `persist_workflow_state_fn` is NULL (it could never be cleared), and with
    `AZ_IOT_ERR_INVALID_ARG` when its URLs do not cover the remaining steps; the
    latter is cleared.
 2. A terminal record restores the workflow id, outcome, results, applied update
@@ -623,7 +623,7 @@ The byte layout is documented next to the serializer in
      progress is intentionally **not** trusted across reboot.
 5. When the workflow returns to Idle, core replaces the stored blob with the
    terminal record; once the report is final it clears it (a zero-length
-   `persist_state_fn` write), or after `FAILED` replaces it with
+   `persist_workflow_state_fn` write), or after `FAILED` replaces it with
    the retry record, which a retry attempt's own records, its success or a new
    workflow then replace or clear. So a later boot does not replay a finished
    workflow. An early re-offer writes nothing. If the terminal record cannot be
@@ -632,7 +632,7 @@ The byte layout is documented next to the serializer in
    or the next step's `DOWNLOAD_STARTED`); if the clear on supersede fails, the
    new workflow waits. Moving past a step whose checkpoint is stored refreshes
    it to the next step.
-6. **Write failures.** A failed `persist_state_fn` write raises
+6. **Write failures.** A failed `persist_workflow_state_fn` write raises
    `AZ_IOT_SU_EVENT_PERSIST_FAILED` (first failure, `persist_retrying` true) and
    is retried from `do_work()` after 1 s, 2 s, 4 s, … (at most 60 s). A tracked
    success raises `AZ_IOT_SU_EVENT_PERSIST_RECOVERED` and resets the count; the
@@ -775,7 +775,7 @@ typedef struct az_iot_su_platform_hooks
      * OPTIONAL — REQUIRED only if reboot is possible during update.
      * state_blob_len == 0 means erase the stored record.
      */
-    int32_t (*persist_state_fn)(
+    int32_t (*persist_workflow_state_fn)(
         const uint8_t* state_blob,
         size_t state_blob_len,
         void* user_ctx);
@@ -784,7 +784,7 @@ typedef struct az_iot_su_platform_hooks
      * Load previously-persisted workflow state. Returns 0 and fills
      * state_blob/len on success; returns non-zero if no state persisted.
      */
-    int32_t (*load_state_fn)(
+    int32_t (*load_workflow_state_fn)(
         uint8_t* state_blob,
         size_t state_blob_capacity,
         size_t* state_blob_len,
@@ -938,7 +938,7 @@ az_iot_su_client_config_options az_iot_su_client_config_options_default(void);
  *     that is the intended response, which is why the event carries the route:
  *     a lost status report is not a lost update check, and the onboarding and
  *     regular fetches are asked for separately.
- *   PERSIST_FAILED / PERSIST_RECOVERED -- persist_state_fn started / stopped
+ *   PERSIST_FAILED / PERSIST_RECOVERED -- persist_workflow_state_fn started / stopped
  *     failing; PERSIST_FAILED again when the client gives up (see
  *     AZ_IOT_SU_PERSIST_MAX_ATTEMPTS).
  *   UPDATE_REFUSED         -- a delivered update was not processed because it

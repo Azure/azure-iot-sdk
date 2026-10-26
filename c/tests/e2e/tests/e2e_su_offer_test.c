@@ -719,8 +719,8 @@ static void fixture_open(fixture* fx, const fixture_options* o)
     .backup_fn = hook_backup,
     .restore_fn = hook_restore,
     .is_installed_fn = hook_is_installed,
-    .persist_state_fn = hook_persist,
-    .load_state_fn = hook_load,
+    .persist_workflow_state_fn = hook_persist,
+    .load_workflow_state_fn = hook_load,
     .user_ctx = &fx->plat,
   };
   az_iot_su_client_config_options su = az_iot_su_client_config_options_default();

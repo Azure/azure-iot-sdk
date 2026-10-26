@@ -1123,8 +1123,8 @@ static void wire_hooks(hook_log* log, az_iot_su_platform_hooks* hooks, mock_cryp
   hooks->backup_fn = mock_backup;
   hooks->restore_fn = mock_restore;
   hooks->is_installed_fn = mock_is_installed;
-  hooks->persist_state_fn = mock_persist;
-  hooks->load_state_fn = mock_load;
+  hooks->persist_workflow_state_fn = mock_persist;
+  hooks->load_workflow_state_fn = mock_load;
   hooks->user_ctx = log;
 
   /* By default the streaming file-hash matches the manifest, so the happy
@@ -3861,7 +3861,7 @@ static void an_undecodable_replacement_keeps_the_active_checkpoint(void** state)
   assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_SUCCEEDED);
 }
 
-/* Without persist_state_fn a restored record could never be retired, so every
+/* Without persist_workflow_state_fn a restored record could never be retired, so every
  * boot would re-apply it; resume refuses it instead. */
 static void resume_without_a_persist_hook_is_not_supported(void** state)
 {
@@ -3873,7 +3873,7 @@ static void resume_without_a_persist_hook_is_not_supported(void** state)
   pump_to_checkpoint(fx);
 
   reboot_client(fx);
-  fx->su._internal.hooks.persist_state_fn = NULL;
+  fx->su._internal.hooks.persist_workflow_state_fn = NULL;
   assert_int_equal(az_iot_su_client_resume(&fx->su), AZ_IOT_ERR_NOT_SUPPORTED);
 }
 
@@ -3946,7 +3946,7 @@ static void a_record_of_another_format_is_ignored(void** state)
     fixture* fresh = resume_distinct_files_from_step_0(source, &fresh_state);
     if (c >= 2)
     {
-      fresh->su._internal.hooks.persist_state_fn = NULL;
+      fresh->su._internal.hooks.persist_workflow_state_fn = NULL;
     }
     uint8_t* b = fresh->log.persist_blob;
     assert_memory_equal(b, "SUCP", 4);
@@ -5955,7 +5955,7 @@ static void a_failed_checkpoint_is_retried_while_a_report_is_pending(void** stat
   assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_INSTALL_COMPLETE);
 }
 
-/* --- persist_state_fn failure: back-off, events, giving up -------------- */
+/* --- persist_workflow_state_fn failure: back-off, events, giving up -------------- */
 
 /* Make the next retry due now and tick once. */
 static void persist_retry_now(fixture* fx)
