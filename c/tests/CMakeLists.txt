@@ -829,7 +829,7 @@ if(AZ_IOT_WITH_AZ_MQTT)
         support/az_mqtt_asymmetric_v3.c
         support/az_mqtt_asymmetric_v5.c)
     target_include_directories(az_iot_tests_az_mqtt_adapter_sizes PRIVATE
-        ${PROJECT_SOURCE_DIR}/inc ${PROJECT_SOURCE_DIR}/adapters/az_mqtt
+        ${PROJECT_SOURCE_DIR}/inc ${PROJECT_SOURCE_DIR}/adapters/az_mqtt ${PROJECT_SOURCE_DIR}/src/core
         ${CMAKE_CURRENT_SOURCE_DIR}/support)
     target_link_libraries(az_iot_tests_az_mqtt_adapter_sizes PRIVATE az_mqttv3 az_mqttv5)
     if(WIN32)
@@ -842,10 +842,48 @@ if(AZ_IOT_WITH_AZ_MQTT)
         ${PROJECT_SOURCE_DIR}/adapters/az_mqtt/az_iot_mqtt_az_mqtt.c
         ${PROJECT_SOURCE_DIR}/adapters/az_mqtt/az_iot_mqtt_az_mqtt_v3.c)
     target_include_directories(az_iot_tests_az_mqtt_adapter_ack PRIVATE
-        ${PROJECT_SOURCE_DIR}/inc ${PROJECT_SOURCE_DIR}/adapters/az_mqtt)
+        ${PROJECT_SOURCE_DIR}/inc ${PROJECT_SOURCE_DIR}/adapters/az_mqtt ${PROJECT_SOURCE_DIR}/src/core)
     target_link_libraries(az_iot_tests_az_mqtt_adapter_ack PRIVATE az_mqttv3 az_mqttv5)
     if(WIN32)
         target_link_libraries(az_iot_tests_az_mqtt_adapter_ack PRIVATE ws2_32)
+    endif()
+
+    # The adapter with recording malloc and free: freed memory holds no credential.
+    az_iot_add_cmocka_test(az_iot_tests_az_mqtt_adapter_wipe
+        unit/az_mqtt_adapter_wipe_test.c
+        support/az_mqtt_wipe_hooks.c
+        support/az_mqtt_wipe_common.c)
+    target_include_directories(az_iot_tests_az_mqtt_adapter_wipe PRIVATE
+        ${PROJECT_SOURCE_DIR}/inc ${PROJECT_SOURCE_DIR}/adapters/az_mqtt ${PROJECT_SOURCE_DIR}/src/core
+        ${CMAKE_CURRENT_SOURCE_DIR}/support)
+    target_link_libraries(az_iot_tests_az_mqtt_adapter_wipe PRIVATE az_mqttv3 az_mqttv5)
+    if(WIN32)
+        target_link_libraries(az_iot_tests_az_mqtt_adapter_wipe PRIVATE ws2_32)
+    endif()
+
+    # The adapter with no message store (AZ_IOT_AZ_MQTT_MESSAGE_STORAGE_SIZE 0).
+    az_iot_add_cmocka_test(az_iot_tests_az_mqtt_adapter_no_store
+        unit/az_mqtt_adapter_no_store_test.c
+        ${PROJECT_SOURCE_DIR}/adapters/az_mqtt/az_iot_mqtt_az_mqtt.c
+        support/az_mqtt_no_store_v3.c
+        support/az_mqtt_no_store_v5.c)
+    target_include_directories(az_iot_tests_az_mqtt_adapter_no_store PRIVATE
+        ${PROJECT_SOURCE_DIR}/inc ${PROJECT_SOURCE_DIR}/adapters/az_mqtt ${PROJECT_SOURCE_DIR}/src/core
+        ${CMAKE_CURRENT_SOURCE_DIR}/support)
+    target_link_libraries(az_iot_tests_az_mqtt_adapter_no_store PRIVATE az_mqttv3 az_mqttv5)
+    if(WIN32)
+        target_link_libraries(az_iot_tests_az_mqtt_adapter_no_store PRIVATE ws2_32)
+    endif()
+
+    # The adapter compiled in, so its copies of connect strings can be inspected.
+    az_iot_add_cmocka_test(az_iot_tests_az_mqtt_adapter_release
+        unit/az_mqtt_adapter_release_test.c
+        ${PROJECT_SOURCE_DIR}/adapters/az_mqtt/az_iot_mqtt_az_mqtt.c)
+    target_include_directories(az_iot_tests_az_mqtt_adapter_release PRIVATE
+        ${PROJECT_SOURCE_DIR}/inc ${PROJECT_SOURCE_DIR}/adapters/az_mqtt ${PROJECT_SOURCE_DIR}/src/core)
+    target_link_libraries(az_iot_tests_az_mqtt_adapter_release PRIVATE az_mqttv3 az_mqttv5)
+    if(WIN32)
+        target_link_libraries(az_iot_tests_az_mqtt_adapter_release PRIVATE ws2_32)
     endif()
 
     # Each footprint, a user's definition over it, and a config file: resolved as documented.

@@ -4,6 +4,9 @@
 
 ### Features Added
 
+- az_mqtt adapter: `AZ_IOT_AZ_MQTT_MESSAGE_STORAGE_SIZE` may be 0, for devices that only use clean
+  sessions: no message store is allocated, and a connect whose session outlives the connection
+  (`clean_start` false; MQTT 5: with `session_expiry_seconds` > 0) returns `AZ_IOT_ERR_NOT_SUPPORTED`.
 - Retry policy: `az_iot_retry_policy::jitter_mode`. `AZ_IOT_RETRY_JITTER_ADDITIVE` only lengthens a
   delay (+0..`jitter_pct`); the default `AZ_IOT_RETRY_JITTER_SYMMETRIC` keeps the existing ± jitter.
 - Initial preview of the C SDK for Azure IoT Hub (mqttv3 and mqttv5).
@@ -194,6 +197,12 @@
 
 ### Bugs Fixed
 
+- az_mqtt adapter: the copies `connect()` makes of credentials (password or SAS token, PEM key and
+  certificate, proxy credentials) are zeroed before they are freed, and `destroy()` zeroes the send
+  buffer, which holds the CONNECT, before freeing it.
+- az_mqtt adapter: a `connect()` refused after the busy check (invalid or unsupported options, no
+  memory for the message store) now releases the copies of the previous connect's strings, including
+  credentials; they were kept until the next accepted connect or `destroy()`.
 - Paho adapter: `az_iot_mqtt_connect_options::connect_timeout_seconds` is passed to Paho; it was
   ignored, so every connect attempt used Paho's 30 s default. 0 still selects that default.
 - Paho: the bundled Eclipse Paho C is now v1.3.16 (was v1.3.13), and an installed Paho must be
@@ -220,6 +229,10 @@
 - Software updates: a status report rejected as conflicting (`REPORT_CONFLICT` or an untyped
   `409000`) now makes the client check for updates once, as the service requires, after raising
   `AZ_IOT_SU_EVENT_OPERATION_ABANDONED`.
+- Software updates: an update check requested while a workflow's terminal report is owed now waits
+  for that report's verdict (sending it again if nothing else would), so the check no longer goes
+  out before the service has the outcome. The wait counts against the check's timeout. If the
+  report then loses its session for good, the check is abandoned (`AZ_IOT_ERR_NOT_CONNECTED`).
 
 - MQTT over WebSockets to an mqttv5 hub: the hub session now uses the hub's path `/mqtt`
   (`AZ_IOT_MQTT_HUB_V5_WEBSOCKET_PATH`) when `websocket_path` is NULL. The mqttv5 hub refuses

@@ -209,8 +209,9 @@ service accepts it or rejects it permanently; a rejected report is dropped. A lo
 session is retried up to `AZ_IOT_SU_CHANNEL_MAX_SESSION_RETRIES` (4) times; the next consecutive
 loss abandons the report for this process (`AZ_IOT_SU_EVENT_OPERATION_ABANDONED`). A terminal
 report stays owed (and stored, with persistence) and is re-sent on the next
-`az_iot_su_client_update_device_properties()` call, or after a restart and
-`az_iot_su_client_resume()`. An in-progress report is not replayed; the next reporting point sends
+`az_iot_su_client_update_device_properties()` call or update check, or after a restart and
+`az_iot_su_client_resume()`. An update check waits for an owed terminal report's verdict, so the
+service sees the outcome before it is asked for the next update. An in-progress report is not replayed; the next reporting point sends
 the then-current state.
 
 At the DPS MQTT boundary, the body is flat (`errorCode`, `message`, optional

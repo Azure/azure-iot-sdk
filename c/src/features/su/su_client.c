@@ -2094,6 +2094,8 @@ static void queue_conflict_recheck(az_iot_su_client* client)
   arm_pending_fetch_deadline(client, AZ_IOT_SU_REQUEST_DEFAULT_TIMEOUT_MS);
 }
 
+static az_iot_su_operation fetch_operation(uint8_t fetch);
+
 static void on_channel_result(
     az_iot_su_operation operation,
     az_iot_result result,
@@ -2138,6 +2140,27 @@ static void on_channel_result(
      * were dropped, and both are reported. PROCEED in particular is an update
      * account the service cannot use: the device asked, was refused, and
      * without this reads exactly like "no update available". */
+    /* A check held for an owed terminal report whose session is lost for good
+     * goes with it; the report stays owed, and only a new check sends it
+     * again. Taken before observers run, so a check they queue stays. */
+    uint8_t held_check = SU_FETCH_NONE;
+    az_iot_result held_reason = AZ_IOT_ERR_NOT_CONNECTED;
+    if (operation == AZ_IOT_SU_OP_REPORT_STATUS && result == AZ_IOT_ERR_NOT_CONNECTED
+        && SU_I(client).report_sent_terminal)
+    {
+      held_check = SU_I(client).pending_fetch;
+      SU_I(client).pending_fetch = SU_FETCH_NONE;
+      if (held_check != SU_FETCH_NONE)
+      {
+        /* One already past its deadline is reported as the timeout it is. */
+        if (SU_I(client).pending_fetch_deadline_ms != 0
+            && az_iot_time_mono_ms() >= SU_I(client).pending_fetch_deadline_ms)
+        {
+          held_reason = AZ_IOT_ERR_TIMEOUT;
+        }
+        SU_I(client).pending_fetch_deadline_ms = 0;
+      }
+    }
     if (result != AZ_IOT_OK
         && (action == AZ_IOT_SU_ERROR_ACTION_FATAL || action == AZ_IOT_SU_ERROR_ACTION_PROCEED
             || action == AZ_IOT_SU_ERROR_ACTION_RECHECK))
@@ -2166,6 +2189,10 @@ static void on_channel_result(
       else if (action == AZ_IOT_SU_ERROR_ACTION_RECHECK)
       {
         queue_conflict_recheck(client);
+      }
+      if (held_check != SU_FETCH_NONE)
+      {
+        raise_abandoned(client, fetch_operation(held_check), held_reason, &k_no_service_error);
       }
       return;
     }
@@ -2381,6 +2408,17 @@ static void drive_pending_fetch(az_iot_su_client* client)
    * application request is not paced: the application owns its cadence. */
   if (SU_I(client).pending_fetch_paced && !az_iot_retry_state__due(&SU_I(client).retry))
   {
+    return;
+  }
+  /* An owed terminal report goes first: until the service has the outcome, a
+   * check advertises the previous state and may be offered the same update
+   * again. Queued here if nothing will send it (e.g. its session was lost). */
+  if (SU_I(client).report_owed || SU_I(client).terminal_report_in_flight)
+  {
+    if (!SU_I(client).terminal_report_in_flight && !SU_I(client).device_properties_report_pending)
+    {
+      SU_I(client).device_properties_report_pending = true;
+    }
     return;
   }
 

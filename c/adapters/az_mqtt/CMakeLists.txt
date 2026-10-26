@@ -74,6 +74,8 @@ add_library(azure::iot::adapter_az_mqtt ALIAS az_iot_adapter_az_mqtt)
 target_include_directories(az_iot_adapter_az_mqtt
     PUBLIC
         $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/inc>
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/src/core # internal/crypto.h: az_iot_crypto__wipe()
 )
 target_link_libraries(az_iot_adapter_az_mqtt
     PUBLIC

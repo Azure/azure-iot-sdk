@@ -4320,6 +4320,163 @@ static void the_terminal_record_is_kept_until_the_report_is_final(void** state)
   assert_int_equal(teardown(&fresh_state), 0);
 }
 
+/* An update check waits for the owed terminal report's verdict, then goes out. */
+static void a_check_waits_for_the_owed_terminal_report(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  finish_with_report_unacknowledged(fx);
+  int requests = fx->chan.request_update_count;
+
+  assert_int_equal(az_iot_su_client_request_update(&fx->su, UT_TIMEOUT_MS), AZ_IOT_OK);
+  pump(fx, 3);
+  assert_int_equal(fx->chan.request_update_count, requests);
+
+  fx->chan.result_cb(
+      AZ_IOT_SU_OP_REPORT_STATUS,
+      AZ_IOT_OK,
+      AZ_IOT_SU_ERROR_ACTION_NONE,
+      NULL,
+      fx->chan.engine_ctx);
+  assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  assert_int_equal(fx->chan.request_update_count, requests + 1);
+}
+
+/* A terminal report left owed with nothing queued (its session was lost) is
+ * sent again ahead of a check; the check follows its verdict. */
+static void a_check_resends_an_owed_terminal_report_first(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  finish_with_report_unacknowledged(fx);
+  fx->chan.result_cb(
+      AZ_IOT_SU_OP_REPORT_STATUS,
+      AZ_IOT_ERR_NOT_CONNECTED,
+      AZ_IOT_SU_ERROR_ACTION_FATAL,
+      NULL,
+      fx->chan.engine_ctx);
+  assert_true(fx->su._internal.report_owed);
+  int reports = fx->chan.report_count;
+  int requests = fx->chan.request_update_count;
+
+  assert_int_equal(az_iot_su_client_request_update(&fx->su, UT_TIMEOUT_MS), AZ_IOT_OK);
+  pump(fx, 3);
+  assert_int_equal(fx->chan.report_count, reports + 1);
+  assert_true(fx->chan.last_report.outcome == AZ_IOT_SU_OUTCOME_SUCCEEDED);
+  assert_int_equal(fx->chan.request_update_count, requests);
+
+  fx->chan.result_cb(
+      AZ_IOT_SU_OP_REPORT_STATUS,
+      AZ_IOT_OK,
+      AZ_IOT_SU_ERROR_ACTION_NONE,
+      NULL,
+      fx->chan.engine_ctx);
+  assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  assert_int_equal(fx->chan.request_update_count, requests + 1);
+}
+
+/* If that resend loses its session for good too, the held check is
+ * abandoned and the report stays owed: no resend past the session bound. */
+static void a_held_check_is_abandoned_when_its_report_cannot_be_sent(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
+  finish_with_report_unacknowledged(fx);
+  fx->chan.result_cb(
+      AZ_IOT_SU_OP_REPORT_STATUS,
+      AZ_IOT_ERR_NOT_CONNECTED,
+      AZ_IOT_SU_ERROR_ACTION_FATAL,
+      NULL,
+      fx->chan.engine_ctx);
+  assert_int_equal(
+      az_iot_su_client_request_update(&fx->su, AZ_IOT_SU_REQUEST_NO_TIMEOUT), AZ_IOT_OK);
+  pump(fx, 3);
+  int reports = fx->chan.report_count;
+  fx->abandoned_count = 0;
+
+  fx->chan.result_cb(
+      AZ_IOT_SU_OP_REPORT_STATUS,
+      AZ_IOT_ERR_NOT_CONNECTED,
+      AZ_IOT_SU_ERROR_ACTION_FATAL,
+      NULL,
+      fx->chan.engine_ctx);
+  assert_int_equal(fx->abandoned_count, 2);
+  assert_int_equal(fx->last_abandoned_operation, AZ_IOT_SU_OP_GET_UPDATE);
+  assert_int_equal(fx->last_abandoned_reason, AZ_IOT_ERR_NOT_CONNECTED);
+  assert_true(fx->su._internal.report_owed);
+  pump(fx, 5);
+  assert_int_equal(fx->chan.report_count, reports);
+}
+
+/* A held check already past its deadline when the report's session is lost
+ * is abandoned with AZ_IOT_ERR_TIMEOUT. */
+static void an_expired_held_check_is_abandoned_as_a_timeout(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
+  finish_with_report_unacknowledged(fx);
+  assert_int_equal(az_iot_su_client_request_update(&fx->su, UT_TIMEOUT_MS), AZ_IOT_OK);
+  fx->su._internal.pending_fetch_deadline_ms = az_iot_time_mono_ms();
+  fx->abandoned_count = 0;
+  fx->chan.result_cb(
+      AZ_IOT_SU_OP_REPORT_STATUS,
+      AZ_IOT_ERR_NOT_CONNECTED,
+      AZ_IOT_SU_ERROR_ACTION_FATAL,
+      NULL,
+      fx->chan.engine_ctx);
+  assert_int_equal(fx->abandoned_count, 2);
+  assert_int_equal(fx->last_abandoned_operation, AZ_IOT_SU_OP_GET_UPDATE);
+  assert_int_equal(fx->last_abandoned_reason, AZ_IOT_ERR_TIMEOUT);
+}
+
+/* Requests a check when a status report is abandoned. */
+static void request_on_report_abandoned(const az_iot_su_event* event, void* user_ctx)
+{
+  fixture* fx = (fixture*)user_ctx;
+  if (event->kind == AZ_IOT_SU_EVENT_OPERATION_ABANDONED
+      && event->operation == AZ_IOT_SU_OP_REPORT_STATUS)
+  {
+    assert_int_equal(az_iot_su_client_request_update(&fx->su, UT_TIMEOUT_MS), AZ_IOT_OK);
+  }
+}
+
+/* A check an observer queues from the report's abandonment is not the held
+ * one, and stays. */
+static void a_check_queued_by_an_observer_is_kept(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_su_client_add_observer(&fx->su, request_on_report_abandoned, fx), AZ_IOT_OK);
+  finish_with_report_unacknowledged(fx);
+  fx->abandoned_count = 0;
+  fx->chan.result_cb(
+      AZ_IOT_SU_OP_REPORT_STATUS,
+      AZ_IOT_ERR_NOT_CONNECTED,
+      AZ_IOT_SU_ERROR_ACTION_FATAL,
+      NULL,
+      fx->chan.engine_ctx);
+  assert_int_equal(fx->abandoned_count, 1);
+  assert_int_equal(fx->last_abandoned_operation, AZ_IOT_SU_OP_REPORT_STATUS);
+  assert_int_equal(fx->su._internal.pending_fetch, SU_FETCH_REGULAR);
+}
+
+/* The check's deadline still holds while it waits for the report. */
+static void a_check_held_for_a_report_keeps_its_deadline(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
+  finish_with_report_unacknowledged(fx);
+  fx->abandoned_count = 0;
+  int requests = fx->chan.request_update_count;
+
+  assert_int_equal(az_iot_su_client_request_update(&fx->su, UT_TIMEOUT_MS), AZ_IOT_OK);
+  fx->su._internal.pending_fetch_deadline_ms = az_iot_time_mono_ms();
+  assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  assert_int_equal(fx->abandoned_count, 1);
+  assert_int_equal(fx->last_abandoned_operation, AZ_IOT_SU_OP_GET_UPDATE);
+  assert_int_equal(fx->last_abandoned_reason, AZ_IOT_ERR_TIMEOUT);
+  assert_int_equal(fx->chan.request_update_count, requests);
+}
+
 /* A failed workflow stores its terminal report, with its retry schedule,
  * before sending it. Once accepted after a reboot, the retry record remains
  * and the wait still holds. */
@@ -8478,6 +8635,14 @@ int main(void)
         an_unacknowledged_terminal_report_survives_a_reboot, setup, teardown),
     cmocka_unit_test_setup_teardown(
         the_terminal_record_is_kept_until_the_report_is_final, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_check_waits_for_the_owed_terminal_report, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_check_resends_an_owed_terminal_report_first, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_held_check_is_abandoned_when_its_report_cannot_be_sent, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_check_queued_by_an_observer_is_kept, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        an_expired_held_check_is_abandoned_as_a_timeout, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_check_held_for_a_report_keeps_its_deadline, setup, teardown),
     cmocka_unit_test_setup_teardown(a_failed_workflow_report_survives_a_reboot, setup, teardown),
     cmocka_unit_test_setup_teardown(a_new_workflow_supersedes_an_owed_report, setup, teardown),
     cmocka_unit_test_setup_teardown(
