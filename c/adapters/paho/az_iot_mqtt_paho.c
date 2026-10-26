@@ -33,6 +33,7 @@
 #include "azure/iot/az_iot_mqtt_iface.h"
 
 #include "az_iot_paho_key_custody.h"
+#include "internal/mqtt_limits.h"
 
 #include <MQTTAsync.h>
 
@@ -1999,16 +2000,9 @@ static const az_iot_mqtt_iface s_iface_template_v5
 typedef char paho_client_fits_AZ_IOT_PAHO_WORKSPACE_SIZE
     [sizeof(paho_client) + 15u <= AZ_IOT_PAHO_WORKSPACE_SIZE ? 1 : -1];
 
-/** @brief Whether @p limits is valid. Paho sizes its own buffers: the values are only checked. */
-static bool paho_limits_valid(const az_iot_mqtt_limits* limits)
-{
-  return limits != NULL && limits->send_buffer_size > 0 && limits->receive_buffer_size > 0
-      && limits->max_in_flight_messages > 0 && limits->max_in_flight_messages <= 32767;
-}
-
 size_t az_iot_paho_get_workspace_size(const az_iot_mqtt_limits* limits)
 {
-  return paho_limits_valid(limits) ? sizeof(paho_client) + 15u : 0;
+  return az_iot_mqtt__limits_are_valid(limits) ? sizeof(paho_client) + 15u : 0;
 }
 
 /** @brief az_iot_mqtt_adapter::init: the client's state in @p workspace; Paho allocates its own. */
@@ -2024,7 +2018,7 @@ static az_iot_result paho_adapter_init(
     return AZ_IOT_ERR_INVALID_ARG;
   }
   *out_client = NULL;
-  if (workspace == NULL || !paho_limits_valid(limits))
+  if (workspace == NULL || !az_iot_mqtt__limits_are_valid(limits))
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }

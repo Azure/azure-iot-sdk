@@ -437,6 +437,7 @@ if(AZ_IOT_WITH_PAHO)
         ${PROJECT_SOURCE_DIR}/adapters/paho/az_iot_mqtt_paho.c)
     target_include_directories(az_iot_tests_paho_connect_cleanup PRIVATE
         ${PROJECT_SOURCE_DIR}/adapters/paho
+        ${PROJECT_SOURCE_DIR}/src/core
         ${CMAKE_CURRENT_SOURCE_DIR}/support)
     if(AZ_IOT_PAHO_INCLUDE_DIRS)
         target_include_directories(az_iot_tests_paho_connect_cleanup SYSTEM PRIVATE
@@ -479,6 +480,7 @@ if(AZ_IOT_WITH_PAHO)
         ${PROJECT_SOURCE_DIR}/adapters/paho/az_iot_mqtt_paho.c)
     target_include_directories(az_iot_tests_paho_transport_proxy PRIVATE
         ${PROJECT_SOURCE_DIR}/adapters/paho
+        ${PROJECT_SOURCE_DIR}/src/core
         ${CMAKE_CURRENT_SOURCE_DIR}/support)
     if(AZ_IOT_PAHO_INCLUDE_DIRS)
         target_include_directories(az_iot_tests_paho_transport_proxy SYSTEM PRIVATE
@@ -520,6 +522,7 @@ if(AZ_IOT_WITH_PAHO)
         AZ_IOT_TEST_PAHO_WAIT_HOOK=1)
     target_include_directories(az_iot_tests_paho_event_queue_race PRIVATE
         ${PROJECT_SOURCE_DIR}/adapters/paho
+        ${PROJECT_SOURCE_DIR}/src/core
         ${CMAKE_CURRENT_SOURCE_DIR}/support)
     if(AZ_IOT_PAHO_INCLUDE_DIRS)
         target_include_directories(az_iot_tests_paho_event_queue_race SYSTEM PRIVATE

@@ -17,6 +17,7 @@
 
 #include "azure/iot/adapters/az_iot_adapter_rust_mqtt.h"
 #include "az_iot_mqtt_rust_ffi.h"
+#include "internal/mqtt_limits.h"
 
 /* Globally installed FFI table. NULL means "no Rust runtime present". */
 static az_iot_rust_mqtt_ffi g_ffi;
@@ -157,17 +158,9 @@ static const az_iot_mqtt_iface s_rust_iface_v5 = {
 typedef char rust_client_fits_AZ_IOT_RUST_MQTT_WORKSPACE_SIZE
     [sizeof(rust_client) + sizeof(void*) - 1u <= AZ_IOT_RUST_MQTT_WORKSPACE_SIZE ? 1 : -1];
 
-/** @brief Whether @p limits is valid. The Rust client sizes its own buffers: values are only
- * checked. */
-static int rust_limits_valid(const az_iot_mqtt_limits* limits)
-{
-  return limits != NULL && limits->send_buffer_size > 0 && limits->receive_buffer_size > 0
-      && limits->max_in_flight_messages > 0 && limits->max_in_flight_messages <= 32767;
-}
-
 size_t az_iot_rust_mqtt_get_workspace_size(const az_iot_mqtt_limits* limits)
 {
-  return rust_limits_valid(limits) ? sizeof(rust_client) + sizeof(void*) - 1u : 0;
+  return az_iot_mqtt__limits_are_valid(limits) ? sizeof(rust_client) + sizeof(void*) - 1u : 0;
 }
 
 /** @brief az_iot_mqtt_adapter::init: the wrapper in @p workspace; the Rust client allocates its
@@ -184,7 +177,7 @@ static az_iot_result rust_adapter_init(
     return AZ_IOT_ERR_INVALID_ARG;
   }
   *out_client = NULL;
-  if (workspace == NULL || !rust_limits_valid(limits))
+  if (workspace == NULL || !az_iot_mqtt__limits_are_valid(limits))
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }

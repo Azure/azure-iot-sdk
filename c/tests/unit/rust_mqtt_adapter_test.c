@@ -275,6 +275,11 @@ static void test_adapter_rejects_invalid_limits(void** s)
   az_iot_mqtt_limits limits = { 0, 1024, 4, 0, 0 };
   assert_int_equal(0, adapter->get_workspace_size(&limits));
   assert_int_equal(0, adapter->get_workspace_size(NULL));
+  limits.send_buffer_size = 1024;
+  limits.message_store_size = 1024; /* Under one packet plus overhead, as az_mqtt rejects. */
+  assert_int_equal(0, adapter->get_workspace_size(&limits));
+  limits.send_buffer_size = 0;
+  limits.message_store_size = 0;
   uint8_t workspace[AZ_IOT_RUST_MQTT_WORKSPACE_SIZE];
   az_iot_mqtt_client* c = NULL;
   assert_int_equal(

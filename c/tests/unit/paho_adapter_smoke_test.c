@@ -88,6 +88,9 @@ static void adapter_runs_a_client_in_a_workspace(void** state)
   assert_int_equal(
       AZ_IOT_ERR_INVALID_ARG, adapter->init(AZ_IOT_MQTT_VERSION_5, &limits, workspace, size, &c));
   limits.max_in_flight_messages = 4;
+  limits.message_store_size = limits.send_buffer_size; /* Under one packet plus overhead. */
+  assert_int_equal(0, adapter->get_workspace_size(&limits));
+  limits.message_store_size = 0;
 
   assert_int_equal(AZ_IOT_OK, adapter->init(AZ_IOT_MQTT_VERSION_5, &limits, workspace, size, &c));
   size_t const offset = (size_t)((uint8_t*)c - workspace);
