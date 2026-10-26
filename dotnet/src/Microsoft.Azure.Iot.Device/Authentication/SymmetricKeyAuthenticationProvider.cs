@@ -174,7 +174,7 @@ namespace Microsoft.Azure.Iot.Device.Authentication
         /// </summary>
         public Func<IReadOnlyList<string>, Task<X509Certificate2>>? HandleCertificateSigningCompleteAsync { get; }
 
-        public override async Task<AuthenticationCredentials> GetOperationalAuthenticationCredentialsAsync(string hostName, string deviceId, IReadOnlyList<string>? issuedClientCertificates, CancellationToken cancellationToken = default)
+        public override async Task<AuthenticationCredentials> GetPrimaryOperationalAuthenticationCredentialsAsync(string hostName, string deviceId, IReadOnlyList<string>? issuedClientCertificates, CancellationToken cancellationToken = default)
         {
             if (issuedClientCertificates is { Count: > 0 })
             {
@@ -207,7 +207,7 @@ namespace Microsoft.Azure.Iot.Device.Authentication
             return Task.FromResult<AuthenticationCredentials?>(CreateOperationalCredentials(_secondarySymmetricKey, hostName, deviceId));
         }
 
-        public override AuthenticationCredentials GetBootAuthenticationCredentials()
+        public override AuthenticationCredentials GetPrimaryBootAuthenticationCredentials()
         {
             return CreateBootCredentials(_primarySymmetricKey);
         }

@@ -51,11 +51,11 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
                 _ => throw new ArgumentOutOfRangeException(nameof(providerKind)),
             };
 
-            var bootCredentials = authentication.GetBootAuthenticationCredentials();
+            var bootCredentials = authentication.GetPrimaryBootAuthenticationCredentials();
             Assert.Null(bootCredentials.ClientCertificate);
             AssertSasToken(bootCredentials.Password, key, $"{idScope}/registrations/{registrationId}", "registration", dpsTimeToLive ?? TimeSpan.FromMinutes(10));
 
-            var operationalCredentials = await authentication.GetOperationalAuthenticationCredentialsAsync(hostName, deviceId, null, TestContext.Current.CancellationToken);
+            var operationalCredentials = await authentication.GetPrimaryOperationalAuthenticationCredentialsAsync(hostName, deviceId, null, TestContext.Current.CancellationToken);
             Assert.Null(operationalCredentials.ClientCertificate);
             AssertSasToken(operationalCredentials.Password, key, $"{hostName}/devices/{deviceId}", null, iotHubTimeToLive ?? TimeSpan.FromHours(1));
         }
@@ -94,7 +94,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             byte[] key = new byte[] { 0x00, 0xFF, 0x80, 0x01 };
             SymmetricKeyAuthenticationProvider authentication = new("registration-id", "0ne00000000", key, null);
 
-            var credentials = await authentication.GetOperationalAuthenticationCredentialsAsync(
+            var credentials = await authentication.GetPrimaryOperationalAuthenticationCredentialsAsync(
                 "some-hub.azure-devices.net", "device-id", new[] { "issued-certificate" }, TestContext.Current.CancellationToken);
 
             Assert.Null(authentication.IssuedCertificatePrivateKey);
@@ -121,7 +121,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
             Assert.Same(useCallback ? null : privateKey, authentication.IssuedCertificatePrivateKey);
             Assert.NotNull(authentication.HandleCertificateSigningCompleteAsync);
-            var operationalCredentials = await authentication.GetOperationalAuthenticationCredentialsAsync(
+            var operationalCredentials = await authentication.GetPrimaryOperationalAuthenticationCredentialsAsync(
                 "some-hub.azure-devices.net", "device-id", issuedChain, TestContext.Current.CancellationToken);
             Assert.NotNull(operationalCredentials.ClientCertificate);
             Assert.Equal(certificate.Thumbprint, operationalCredentials.ClientCertificate.Thumbprint);
@@ -130,7 +130,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             Assert.Same(remoteValidation, operationalCredentials.RemoteCertificateValidationCallback);
             Assert.Same(localSelection, operationalCredentials.LocalCertificateSelectionCallback);
 
-            var bootCredentials = authentication.GetBootAuthenticationCredentials();
+            var bootCredentials = authentication.GetPrimaryBootAuthenticationCredentials();
             Assert.Null(bootCredentials.ClientCertificate);
             AssertSasToken(bootCredentials.Password, key, "0ne00000000/registrations/registration-id", "registration", TimeSpan.FromMinutes(10));
             Assert.Same(remoteValidation, bootCredentials.RemoteCertificateValidationCallback);

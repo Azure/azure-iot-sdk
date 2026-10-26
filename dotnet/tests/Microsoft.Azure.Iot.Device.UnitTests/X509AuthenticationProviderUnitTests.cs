@@ -40,7 +40,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
                 (await authentication.GetSecondaryOperationalAuthenticationCredentialsAsync(
                     "some-hub.azure-devices.net", "device-id", null, TestContext.Current.CancellationToken))!.ClientCertificate);
 
-            X509Certificate2 operationalCertificate = (await authentication.GetOperationalAuthenticationCredentialsAsync(
+            X509Certificate2 operationalCertificate = (await authentication.GetPrimaryOperationalAuthenticationCredentialsAsync(
                 "some-hub.azure-devices.net", "device-id", issuedChain, TestContext.Current.CancellationToken)).ClientCertificate!;
             Assert.Equal(
                 constructorKind == 0 ? primaryCertificate.Thumbprint : issuedCertificate.Thumbprint,

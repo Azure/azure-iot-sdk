@@ -25,20 +25,20 @@ namespace Microsoft.Azure.Iot.Device.Authentication
         /// Called before every connection attempt to IoT Hub. Providers should prepare any issued certificates here
         /// before returning the credentials to present. If preparation fails, the connection attempt fails.
         /// </remarks>
-        public abstract Task<AuthenticationCredentials> GetOperationalAuthenticationCredentialsAsync(string hostName, string deviceId, IReadOnlyList<string>? issuedClientCertificates, CancellationToken cancellationToken = default);
+        public abstract Task<AuthenticationCredentials> GetPrimaryOperationalAuthenticationCredentialsAsync(string hostName, string deviceId, IReadOnlyList<string>? issuedClientCertificates, CancellationToken cancellationToken = default);
 
         /// <summary>
         /// Gets the protocol-agnostic authentication material (client certificate, password/token, and TLS callbacks)
         /// for connecting to the device provisioning service. The caller maps it onto its own transport (MQTT, HTTP, etc.).
         /// </summary>
         /// <param name="hostName">The device provisioning service host name being connected to.</param>
-        public abstract AuthenticationCredentials GetBootAuthenticationCredentials();
+        public abstract AuthenticationCredentials GetPrimaryBootAuthenticationCredentials();
 
         /// <summary>
         /// Gets the secondary authentication material for connecting to an IoT Hub, if this provider has any.
         /// </summary>
         /// <remarks>
-        /// When IoT Hub rejects the credentials from <see cref="GetOperationalAuthenticationCredentialsAsync"/> as an
+        /// When IoT Hub rejects the credentials from <see cref="GetPrimaryOperationalAuthenticationCredentialsAsync"/> as an
         /// identity failure (for example, because the primary key was rotated), the connection client retries at once with
         /// these credentials. If they are rejected too, it re-provisions the device when it can. The client keeps using
         /// whichever credentials IoT Hub last accepted until they are rejected, and starts again with the primary
@@ -48,7 +48,7 @@ namespace Microsoft.Azure.Iot.Device.Authentication
         /// <param name="deviceId">The device Id being authenticated.</param>
         /// <param name="issuedClientCertificates">
         /// The most recently issued client certificate chain for this device, as passed to
-        /// <see cref="GetOperationalAuthenticationCredentialsAsync"/>.
+        /// <see cref="GetPrimaryOperationalAuthenticationCredentialsAsync"/>.
         /// </param>
         /// <param name="cancellationToken">The cancellation token.</param>
         /// <returns>
@@ -65,7 +65,7 @@ namespace Microsoft.Azure.Iot.Device.Authentication
         /// provider has any.
         /// </summary>
         /// <remarks>
-        /// When the device provisioning service rejects the credentials from <see cref="GetBootAuthenticationCredentials"/>
+        /// When the device provisioning service rejects the credentials from <see cref="GetPrimaryBootAuthenticationCredentials"/>
         /// when connecting, the connection client retries at once with these credentials. Each provisioning run starts
         /// again with the primary credentials.
         /// </remarks>

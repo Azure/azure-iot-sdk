@@ -212,7 +212,7 @@ namespace Microsoft.Azure.Iot.Device.Authentication
         // False when issued certificates are ignored in favor of PrimaryClientCertificate.
         private readonly bool _presentsIssuedCertificates = true;
 
-        public override async Task<AuthenticationCredentials> GetOperationalAuthenticationCredentialsAsync(string hostName, string deviceId, IReadOnlyList<string>? issuedClientCertificates, CancellationToken cancellationToken = default)
+        public override async Task<AuthenticationCredentials> GetPrimaryOperationalAuthenticationCredentialsAsync(string hostName, string deviceId, IReadOnlyList<string>? issuedClientCertificates, CancellationToken cancellationToken = default)
         {
             if (issuedClientCertificates == null || issuedClientCertificates.Count == 0)
             {
@@ -229,7 +229,7 @@ namespace Microsoft.Azure.Iot.Device.Authentication
             return Task.FromResult(PrimaryClientCertificate);
         }
 
-        public override AuthenticationCredentials GetBootAuthenticationCredentials()
+        public override AuthenticationCredentials GetPrimaryBootAuthenticationCredentials()
         {
             return CreateCredentials(PrimaryClientCertificate);
         }

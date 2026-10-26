@@ -28,7 +28,7 @@ namespace Microsoft.Azure.Iot.Device.Models
         /// <summary>
         /// The most recently issued client certificate chain (Base64-encoded, device certificate first), whether signed
         /// during provisioning or signed by IoT Hub. Passed to
-        /// <see cref="AuthenticationProvider.GetOperationalAuthenticationCredentialsAsync(string, string, IReadOnlyList{string}?)"/> on every
+        /// <see cref="AuthenticationProvider.GetPrimaryOperationalAuthenticationCredentialsAsync(string, string, IReadOnlyList{string}?)"/> on every
         /// connection attempt to IoT Hub. Null if no client certificate has been issued.
         /// </summary>
         public IReadOnlyList<string>? IssuedClientCertificates
@@ -84,7 +84,7 @@ namespace Microsoft.Azure.Iot.Device.Models
                 }
             }
 
-            return await authentication.GetOperationalAuthenticationCredentialsAsync(
+            return await authentication.GetPrimaryOperationalAuthenticationCredentialsAsync(
                 IotHubHostName,
                 DeviceId,
                 IssuedClientCertificates,

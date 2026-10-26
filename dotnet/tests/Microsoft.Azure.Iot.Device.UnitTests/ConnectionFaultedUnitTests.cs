@@ -2895,13 +2895,13 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
             public int BootCredentialRequests => Volatile.Read(ref _bootCredentialRequests);
 
-            public override AuthenticationCredentials GetBootAuthenticationCredentials()
+            public override AuthenticationCredentials GetPrimaryBootAuthenticationCredentials()
             {
                 int request = Interlocked.Increment(ref _bootCredentialRequests);
                 return new AuthenticationCredentials() { Password = Encoding.UTF8.GetBytes($"boot-{request}") };
             }
 
-            public override Task<AuthenticationCredentials> GetOperationalAuthenticationCredentialsAsync(string hostName, string deviceId, IReadOnlyList<string>? issuedClientCertificates, CancellationToken cancellationToken = default)
+            public override Task<AuthenticationCredentials> GetPrimaryOperationalAuthenticationCredentialsAsync(string hostName, string deviceId, IReadOnlyList<string>? issuedClientCertificates, CancellationToken cancellationToken = default)
             {
                 return Task.FromResult(new AuthenticationCredentials() { Password = Encoding.UTF8.GetBytes("operational") });
             }
@@ -2915,11 +2915,11 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         /// </summary>
         private sealed class PrimaryAndSecondaryAuthenticationProvider : AuthenticationProvider
         {
-            public override AuthenticationCredentials GetBootAuthenticationCredentials() => Create("primary-boot");
+            public override AuthenticationCredentials GetPrimaryBootAuthenticationCredentials() => Create("primary-boot");
 
             public override AuthenticationCredentials? GetSecondaryBootAuthenticationCredentials() => Create("secondary-boot");
 
-            public override Task<AuthenticationCredentials> GetOperationalAuthenticationCredentialsAsync(string hostName, string deviceId, IReadOnlyList<string>? issuedClientCertificates, CancellationToken cancellationToken = default)
+            public override Task<AuthenticationCredentials> GetPrimaryOperationalAuthenticationCredentialsAsync(string hostName, string deviceId, IReadOnlyList<string>? issuedClientCertificates, CancellationToken cancellationToken = default)
             {
                 return Task.FromResult(Create("primary-hub"));
             }

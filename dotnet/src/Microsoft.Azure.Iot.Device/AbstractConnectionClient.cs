@@ -848,7 +848,7 @@ namespace Microsoft.Azure.Iot.Device
                         }
                     }
 
-                    bootCredentials ??= provisioningAuthentication.GetBootAuthenticationCredentials();
+                    bootCredentials ??= provisioningAuthentication.GetPrimaryBootAuthenticationCredentials();
                     connectPacketToEdit = ApplyAuthentication(bootCredentials, connectPacketToEdit);
                 }
 
