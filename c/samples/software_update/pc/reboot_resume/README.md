@@ -15,21 +15,21 @@ simulated (zero-filled payloads); install and apply only log.
 
 ```mermaid
 flowchart TD
-    start(["Run the sample: the device starts"]) --> resume["az_iot_su_client_resume():<br/>load_state_fn reads SAMPLE_STATE_FILE"]
+    start(["Run the sample: the device starts"]) --> resume["az_iot_su_client_resume():<br/>load_saved_update_workflow() (load_state_fn)<br/>reads SAMPLE_STATE_FILE"]
     resume --> saved{"Workflow saved?"}
     saved -- "no" --> check["az_iot_su_client_request_update()"]
-    saved -- "yes" --> cont["The workflow continues, no check:<br/>after install:n, at apply_fn of step n;<br/>after apply:n, at step n+1<br/>(after the last step: an unsent final report)"]
+    saved -- "yes" --> cont["The workflow continues, no check:<br/>after install:n, at apply_update_step() of step n;<br/>after apply:n, at step n+1<br/>(after the last step: an unsent final report)"]
     check --> open["Open the connection: DPS, then IoT Hub"]
     cont --> open
     open --> work["do_work(): the client runs the workflow"]
 
     subgraph wf ["Workflow: the client calls the sample's hooks"]
         direction TB
-        dl["download_fn, read_file_fn:<br/>simulated; hashes checked"] --> inst["install_fn, step n"]
-        inst -- "done" --> app["apply_fn, step n"]
+        dl["download_update_file(), read_back_downloaded_file():<br/>simulated; hashes checked"] --> inst["install_update_step() (install_fn), step n"]
+        inst -- "done" --> app["apply_update_step() (apply_fn), step n"]
         app -- "done; more steps" --> inst
         app -- "done; last step" --> fin["Final report sent<br/>WORKFLOW_COMPLETED"]
-        inst -- "SAMPLE_REBOOT_AT=install:n" --> rr["REBOOT_REQUIRED:<br/>persist_state_fn saves the workflow"]
+        inst -- "SAMPLE_REBOOT_AT=install:n" --> rr["REBOOT_REQUIRED:<br/>save_update_workflow() (persist_state_fn)<br/>saves the workflow"]
         app -- "SAMPLE_REBOOT_AT=apply:n" --> rr
     end
 
