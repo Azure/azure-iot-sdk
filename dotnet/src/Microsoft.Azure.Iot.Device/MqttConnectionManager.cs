@@ -947,14 +947,16 @@ namespace Microsoft.Azure.Iot.Device
                         };
                     }
 
+                // MQTTnet 5 returns a CONNACK refusal (including NotAuthorized) as a result rather than throwing it; the
+                // adapter maps that result and TryEstablishConnectionAsync turns it into the SDK's own
+                // MqttConnectingFailedException above. MQTTnet only throws this exception to wrap a failure while
+                // exchanging CONNECT/CONNACK (for example the connection closing first), so classify what it wraps.
                 case MQTTnet.Adapter.MqttConnectingFailedException connectingFailed:
                     {
-                        DeviceException? innerException = connectingFailed.Result is { } result
-                            ? Classify(MQTTnetAdapter.ModelConverter.ToGeneric(result.ResultCode))
-                            : Classify(connectingFailed.InnerException, userCancellationRequested);
+                        DeviceException? innerException = Classify(connectingFailed.InnerException, userCancellationRequested);
                         if (innerException == null)
                         {
-                            return null;
+                            return Retryable(connectingFailed, "The connection attempt failed before the server answered it.");
                         }
 
                         return new DeviceException(innerException.Message, connectingFailed)

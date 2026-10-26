@@ -345,7 +345,43 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         [Theory]
         [InlineData(false)]
         [InlineData(true)]
-        public async Task RejectedPrimaryCredentialsAreRetriedWithSecondaryCredentialsWithoutReprovisioning(bool throwOnPrimary)
+        public async Task ConnectFailureWrappedByMqttNetIsRetried(bool hasInnerException)
+        {
+            using MockConnectionMqttClient mockMqttClient = new();
+            MockDeviceProvisioningService mockDps = new(mockMqttClient, _ => FirstAssignedHub);
+
+            int dpsAttempts = 0;
+            mockMqttClient.OnConnect = connect =>
+            {
+                // MQTTnet 5 wraps a failure while exchanging CONNECT/CONNACK, such as the server closing the
+                // connection before answering, in its own MqttConnectingFailedException.
+                if (connect.HostName == GlobalDeviceEndpoint && Interlocked.Increment(ref dpsAttempts) == 1)
+                {
+                    throw new MQTTnet.Adapter.MqttConnectingFailedException(
+                        "Error while authenticating. Connection closed.",
+                        hasInnerException ? new MQTTnet.Exceptions.MqttCommunicationException("Connection closed.") : null!);
+                }
+
+                return Task.FromResult(new MqttConnectAck() { ResultCode = MqttConnectReasonCode.Success });
+            };
+
+            using TestConnectionClient connectionClient = new(new()
+            {
+                MqttClient = mockMqttClient,
+                ConnectionRetryPolicy = new ImmediateRetryPolicy(),
+            });
+
+            ConnectionContext connectionContext = await connectionClient.ProvisionAndConnectAsync(
+                CreateProvisioningSettings(),
+                new PrimaryAndSecondaryAuthenticationProvider(),
+                cancellationToken: TestContext.Current.CancellationToken).WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+
+            Assert.Equal(FirstAssignedHub, connectionContext.IotHubHostName);
+            Assert.Equal(2, Volatile.Read(ref dpsAttempts));
+        }
+
+        [Fact]
+        public async Task RejectedPrimaryCredentialsAreRetriedWithSecondaryCredentialsWithoutReprovisioning()
         {
             using MockConnectionMqttClient mockMqttClient = new();
             MockDeviceProvisioningService mockDps = new(mockMqttClient, _ => FirstAssignedHub);
@@ -358,16 +394,9 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
                     connectAttempts.Add(ConnectAttempt(connect));
                 }
 
-                // Both DPS and the hub have rotated out the primary credentials.
+                // Both DPS and the hub have rotated out the primary credentials. MQTTnet 5 returns a refused CONNACK
+                // rather than throwing it.
                 bool primary = Encoding.UTF8.GetString(connect.Password!).StartsWith("primary", StringComparison.Ordinal);
-                if (primary && throwOnPrimary)
-                {
-                    var connackException = new MqttConnectingFailedException(
-                        "The server denied the connection.",
-                        new MqttConnectAck() { ResultCode = MqttConnectReasonCode.NotAuthorized });
-                    throw new MQTTnet.Adapter.MqttConnectingFailedException("MQTTnet failed to connect.", connackException);
-                }
-
                 return Task.FromResult(new MqttConnectAck() { ResultCode = primary ? MqttConnectReasonCode.NotAuthorized : MqttConnectReasonCode.Success });
             };
 
