@@ -224,6 +224,67 @@ static void test_uninstall_disables_factory(void** s)
  * them, so forwarding the connect would open a direct session to the broker --
  * around the proxy the caller demanded, or on 8883 when only 443 is reachable.
  * Refusing is the only answer that cannot silently do the wrong thing. */
+static void test_adapter_runs_a_client_in_a_workspace(void** s)
+{
+  (void)s;
+  const az_iot_mqtt_adapter* adapter = az_iot_rust_mqtt_get_adapter();
+  az_iot_mqtt_limits limits = { 1024, 1024, 4, 0, 0 };
+  size_t const size = adapter->get_workspace_size(&limits);
+  assert_true(size > 0 && size <= AZ_IOT_RUST_MQTT_WORKSPACE_SIZE);
+  uint8_t workspace[AZ_IOT_RUST_MQTT_WORKSPACE_SIZE];
+  az_iot_mqtt_client* c = NULL;
+
+  /* No runtime installed yet. */
+  assert_int_equal(
+      AZ_IOT_ERR_NOT_SUPPORTED,
+      adapter->init(AZ_IOT_MQTT_VERSION_5, &limits, workspace, sizeof(workspace), &c));
+  assert_null(c);
+
+  assert_int_equal(AZ_IOT_OK, az_iot_rust_mqtt_install(&k_fake_ffi));
+  assert_int_equal(
+      AZ_IOT_ERR_NOT_SUPPORTED,
+      adapter->init(AZ_IOT_MQTT_VERSION_3_1_1, &limits, workspace, sizeof(workspace), &c));
+  assert_int_equal(
+      AZ_IOT_ERR_NOT_ENOUGH_SPACE,
+      adapter->init(AZ_IOT_MQTT_VERSION_5, &limits, workspace, size - 1, &c));
+  assert_int_equal(g_create_calls, 0);
+
+  assert_int_equal(AZ_IOT_OK, adapter->init(AZ_IOT_MQTT_VERSION_5, &limits, workspace, size, &c));
+  assert_non_null(c);
+  assert_true((uint8_t*)c >= workspace && (uint8_t*)c < workspace + size);
+  assert_int_equal(c->iface->version, AZ_IOT_MQTT_VERSION_5);
+  assert_int_equal(AZ_IOT_OK, c->iface->process_loop(c, 0));
+  assert_int_equal(g_last_client->process_loop_calls, 1);
+
+  /* destroy() releases the Rust client and wipes the workspace; it frees nothing it did not
+   * allocate (a free of the stack array would abort). */
+  c->iface->destroy(c);
+  assert_int_equal(g_destroy_calls, 1);
+  /* The wrapper occupies the workspace minus its alignment slack. */
+  size_t const offset = (size_t)((uint8_t*)c - workspace);
+  for (size_t i = offset; i < offset + size - (sizeof(void*) - 1u); i++)
+  {
+    assert_int_equal(workspace[i], 0);
+  }
+}
+
+static void test_adapter_rejects_invalid_limits(void** s)
+{
+  (void)s;
+  const az_iot_mqtt_adapter* adapter = az_iot_rust_mqtt_get_adapter();
+  az_iot_mqtt_limits limits = { 0, 1024, 4, 0, 0 };
+  assert_int_equal(0, adapter->get_workspace_size(&limits));
+  assert_int_equal(0, adapter->get_workspace_size(NULL));
+  uint8_t workspace[AZ_IOT_RUST_MQTT_WORKSPACE_SIZE];
+  az_iot_mqtt_client* c = NULL;
+  assert_int_equal(
+      AZ_IOT_ERR_INVALID_ARG,
+      adapter->init(AZ_IOT_MQTT_VERSION_5, &limits, workspace, sizeof(workspace), &c));
+  assert_int_equal(
+      AZ_IOT_ERR_INVALID_ARG,
+      adapter->init(AZ_IOT_MQTT_VERSION_5, NULL, workspace, sizeof(workspace), &c));
+}
+
 static void test_connect_refuses_a_proxy(void** s)
 {
   (void)s;
@@ -291,6 +352,8 @@ int main(void)
     cmocka_unit_test_setup(test_install_rejects_partial_table, reset_fixture),
     cmocka_unit_test_setup(test_install_then_factory_then_dispatch, reset_fixture),
     cmocka_unit_test_setup(test_uninstall_disables_factory, reset_fixture),
+    cmocka_unit_test_setup(test_adapter_runs_a_client_in_a_workspace, reset_fixture),
+    cmocka_unit_test_setup(test_adapter_rejects_invalid_limits, reset_fixture),
     cmocka_unit_test_setup(test_connect_refuses_a_proxy, reset_fixture),
     cmocka_unit_test_setup(test_connect_refuses_websockets, reset_fixture),
     cmocka_unit_test_setup(test_connect_allows_an_empty_proxy_host, reset_fixture),

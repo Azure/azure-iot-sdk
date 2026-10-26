@@ -64,6 +64,44 @@ static void v5_factory_creates_v5_client(void** state)
   az_iot_paho_factory_destroy(f);
 }
 
+/* A client in an application workspace: same vtable; destroy() wipes the state and frees
+ * nothing it did not allocate (a free of the stack array would abort). */
+static void adapter_runs_a_client_in_a_workspace(void** state)
+{
+  (void)state;
+  const az_iot_mqtt_adapter* adapter = az_iot_paho_get_adapter();
+  az_iot_mqtt_limits limits = { 1024, 1024, 4, 0, 0 };
+  size_t const size = adapter->get_workspace_size(&limits);
+  assert_true(size > 0 && size <= AZ_IOT_PAHO_WORKSPACE_SIZE);
+  uint8_t workspace[AZ_IOT_PAHO_WORKSPACE_SIZE];
+  az_iot_mqtt_client* c = NULL;
+
+  assert_int_equal(
+      AZ_IOT_ERR_NOT_ENOUGH_SPACE,
+      adapter->init(AZ_IOT_MQTT_VERSION_5, &limits, workspace, size - 1, &c));
+  assert_null(c);
+  assert_int_equal(
+      AZ_IOT_ERR_NOT_SUPPORTED,
+      adapter->init((az_iot_mqtt_version)99, &limits, workspace, size, &c));
+  limits.max_in_flight_messages = 0;
+  assert_int_equal(0, adapter->get_workspace_size(&limits));
+  assert_int_equal(
+      AZ_IOT_ERR_INVALID_ARG, adapter->init(AZ_IOT_MQTT_VERSION_5, &limits, workspace, size, &c));
+  limits.max_in_flight_messages = 4;
+
+  assert_int_equal(AZ_IOT_OK, adapter->init(AZ_IOT_MQTT_VERSION_5, &limits, workspace, size, &c));
+  size_t const offset = (size_t)((uint8_t*)c - workspace);
+  assert_true(offset < 16u);
+  assert_int_equal(c->iface->version, AZ_IOT_MQTT_VERSION_5);
+  assert_int_equal(c->iface->disconnect(c), AZ_IOT_ERR_NOT_CONNECTED);
+  assert_int_equal(c->iface->process_loop(c, 0), AZ_IOT_OK);
+  c->iface->destroy(c);
+  for (size_t i = offset; i < offset + size - 15u; i++)
+  {
+    assert_int_equal(workspace[i], 0);
+  }
+}
+
 /* Registration only lends the factories to the connection client: the
  * application destroys them after deinit(). Under valgrind/ASan, a double free
  * here means deinit() released them; a leak means nothing did. */
@@ -104,6 +142,7 @@ int main(void)
   const struct CMUnitTest tests[] = {
     cmocka_unit_test(v3_factory_creates_v3_client),
     cmocka_unit_test(v5_factory_creates_v5_client),
+    cmocka_unit_test(adapter_runs_a_client_in_a_workspace),
     cmocka_unit_test(registered_factories_are_destroyed_by_the_application_after_deinit),
     cmocka_unit_test(a_factory_that_failed_to_register_is_destroyed_by_the_application),
   };

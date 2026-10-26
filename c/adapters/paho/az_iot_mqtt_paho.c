@@ -166,6 +166,9 @@ typedef struct paho_client
    * the session that asked for it. Unused on v3.1.1, which has no reason
    * codes. */
   uint8_t disconnect_reason_code;
+
+  /* Factory client: the allocation destroy() frees. NULL: built in an application workspace. */
+  void* allocation;
 } paho_client;
 
 static paho_client* paho_self(az_iot_mqtt_client* c) { return (paho_client*)c; }
@@ -1973,7 +1976,9 @@ static void paho_iface_destroy(az_iot_mqtt_client* self)
   free(m->server_uri);
   free(m->proxy_uri);
   free(m->client_id);
-  free(m);
+  void* const allocation = m->allocation;
+  memset(m, 0, sizeof(*m));
+  free(allocation); /* NULL for a client in an application workspace. */
 }
 
 static const az_iot_mqtt_iface s_iface_template_v3
@@ -1987,8 +1992,73 @@ static const az_iot_mqtt_iface s_iface_template_v5
         paho_iface_process_loop, paho_iface_set_inbound_cb, paho_iface_destroy };
 
 /* ------------------------------------------------------------------------- */
-/* factory                                                                   */
+/* adapter (application workspace) and factory                               */
 /* ------------------------------------------------------------------------- */
+
+/* AZ_IOT_PAHO_WORKSPACE_SIZE relies on this bound. */
+typedef char paho_client_fits_AZ_IOT_PAHO_WORKSPACE_SIZE
+    [sizeof(paho_client) + 15u <= AZ_IOT_PAHO_WORKSPACE_SIZE ? 1 : -1];
+
+/** @brief Whether @p limits is valid. Paho sizes its own buffers: the values are only checked. */
+static bool paho_limits_valid(const az_iot_mqtt_limits* limits)
+{
+  return limits != NULL && limits->send_buffer_size > 0 && limits->receive_buffer_size > 0
+      && limits->max_in_flight_messages > 0 && limits->max_in_flight_messages <= 32767;
+}
+
+size_t az_iot_paho_get_workspace_size(const az_iot_mqtt_limits* limits)
+{
+  return paho_limits_valid(limits) ? sizeof(paho_client) + 15u : 0;
+}
+
+/** @brief az_iot_mqtt_adapter::init: the client's state in @p workspace; Paho allocates its own. */
+static az_iot_result paho_adapter_init(
+    az_iot_mqtt_version mqtt_version,
+    const az_iot_mqtt_limits* limits,
+    uint8_t* workspace,
+    size_t workspace_size,
+    az_iot_mqtt_client** out_client)
+{
+  if (out_client == NULL)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  *out_client = NULL;
+  if (workspace == NULL || !paho_limits_valid(limits))
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  if (mqtt_version != AZ_IOT_MQTT_VERSION_3_1_1 && mqtt_version != AZ_IOT_MQTT_VERSION_5)
+  {
+    return AZ_IOT_ERR_NOT_SUPPORTED;
+  }
+  if (workspace_size < az_iot_paho_get_workspace_size(limits))
+  {
+    AZ_IOT_LOG_ERRORF(
+        AZ_IOT_LOG_COMPONENT_PAHO,
+        "init: the workspace has %lu bytes; %lu needed",
+        (unsigned long)workspace_size,
+        (unsigned long)az_iot_paho_get_workspace_size(limits));
+    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+  }
+  paho_client* m = (paho_client*)(void*)(((uintptr_t)workspace + 15u) & ~(uintptr_t)15u);
+  memset(m, 0, sizeof(*m));
+  m->version = mqtt_version;
+  m->iface_storage
+      = (mqtt_version == AZ_IOT_MQTT_VERSION_5) ? s_iface_template_v5 : s_iface_template_v3;
+  m->base.iface = &m->iface_storage;
+  paho_mutex_init(&m->q_mutex);
+  paho_cond_init(&m->q_cond);
+  *out_client = &m->base;
+  return AZ_IOT_OK;
+}
+
+static const az_iot_mqtt_adapter s_paho_adapter = {
+  .get_workspace_size = az_iot_paho_get_workspace_size,
+  .init = paho_adapter_init,
+};
+
+const az_iot_mqtt_adapter* az_iot_paho_get_adapter(void) { return &s_paho_adapter; }
 
 typedef struct paho_factory_state
 {
@@ -1998,20 +2068,18 @@ typedef struct paho_factory_state
 static az_iot_mqtt_client* paho_factory_create(void* factory_ctx)
 {
   paho_factory_state* st = (paho_factory_state*)factory_ctx;
-
-  paho_client* m = (paho_client*)calloc(1, sizeof(*m));
-  if (!m)
+  static const az_iot_mqtt_limits limits = { 1, 1, 1, 0, 0 }; /* Paho sizes its own buffers. */
+  size_t const size = az_iot_paho_get_workspace_size(&limits);
+  uint8_t* allocation = (uint8_t*)malloc(size);
+  az_iot_mqtt_client* client = NULL;
+  if (allocation == NULL
+      || paho_adapter_init(st->public_.version, &limits, allocation, size, &client) != AZ_IOT_OK)
   {
+    free(allocation);
     return NULL;
   }
-
-  m->version = st->public_.version;
-  m->iface_storage
-      = (st->public_.version == AZ_IOT_MQTT_VERSION_5) ? s_iface_template_v5 : s_iface_template_v3;
-  m->base.iface = &m->iface_storage;
-  paho_mutex_init(&m->q_mutex);
-  paho_cond_init(&m->q_cond);
-  return &m->base;
+  paho_self(client)->allocation = allocation;
+  return client;
 }
 
 static az_iot_mqtt_factory* build_factory(az_iot_mqtt_version v)
