@@ -82,6 +82,11 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
         [InlineData(false, Traits = new[] { Setup.HubTrait, Setup.MQTTv5HubTraitValue })]
         public async Task TestCloudToDeviceMessages(bool testAgainstClassicHub)
         {
+            if (!testAgainstClassicHub)
+            {
+                Assert.Skip("C2D is not supported for MQTTv5 hubs yet");
+            }
+
             UnifiedDeviceTestContext testDeviceContext = await Setup.CreateConnectedUnifiedConnectionClientAsync(testAgainstClassicHub, null, TestContext.Current.CancellationToken);
             ConnectionClient connectionClient = testDeviceContext.ConnectionClient;
 
