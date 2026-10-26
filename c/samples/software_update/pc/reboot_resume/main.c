@@ -79,13 +79,13 @@ typedef struct
   char* state_file; /* owned */
   int reboot_on_apply; /* 0: install_fn asks, 1: apply_fn asks */
   long reboot_step; /* 1-based */
-} reboot_context;
+} update_hooks_context;
 
 /** @brief Set the resultDetails reported for @p step. */
-static void set_details(reboot_context* c, uint32_t step, const char* text)
+static void set_step_result_details(update_hooks_context* context, uint32_t step, const char* text)
 {
-  az_iot_result r
-      = az_iot_su_client_set_step_result_details(c->su, step, az_span_create_from_str((char*)text));
+  az_iot_result r = az_iot_su_client_set_step_result_details(
+      context->su, step, az_span_create_from_str((char*)text));
   if (r != AZ_IOT_OK)
   {
     fprintf(stderr, "Step %u: details not kept: %s\n", step, az_iot_result_to_string(r));
@@ -93,22 +93,25 @@ static void set_details(reboot_context* c, uint32_t step, const char* text)
 }
 
 /** @brief Whether this hook call is the one SAMPLE_REBOOT_AT names. */
-static int reboot_here(const reboot_context* c, int on_apply, uint32_t step)
+static int is_reboot_requested_at_step(
+    const update_hooks_context* context,
+    int on_apply,
+    uint32_t step)
 {
-  return c->reboot_on_apply == on_apply && (uint32_t)(c->reboot_step - 1) == step;
+  return context->reboot_on_apply == on_apply && (uint32_t)(context->reboot_step - 1) == step;
 }
 
-static int32_t reboot_download(
+static int32_t download_update_file(
     const az_iot_su_client_update_manifest_file* file,
     az_span url,
     uint32_t file_index,
     uint32_t file_count,
     void* user_ctx)
 {
-  return su_download(file, url, file_index, file_count, &((reboot_context*)user_ctx)->sim);
+  return su_download(file, url, file_index, file_count, &((update_hooks_context*)user_ctx)->sim);
 }
 
-static int32_t reboot_read_file(
+static int32_t read_back_downloaded_file(
     const az_iot_su_client_update_manifest_file* file,
     uint32_t file_index,
     size_t offset,
@@ -118,21 +121,27 @@ static int32_t reboot_read_file(
     void* user_ctx)
 {
   return su_read_file(
-      file, file_index, offset, buffer, buffer_size, out_read, &((reboot_context*)user_ctx)->sim);
+      file,
+      file_index,
+      offset,
+      buffer,
+      buffer_size,
+      out_read,
+      &((update_hooks_context*)user_ctx)->sim);
 }
 
 /** @brief install_fn: may need a reboot before the step can be applied. */
-static int32_t reboot_install(
+static int32_t install_update_step(
     const az_iot_su_client_update_manifest* manifest,
     uint32_t step,
     void* user_ctx)
 {
   (void)manifest;
-  reboot_context* c = (reboot_context*)user_ctx;
-  if (reboot_here(c, 0, step))
+  update_hooks_context* context = (update_hooks_context*)user_ctx;
+  if (is_reboot_requested_at_step(context, 0, step))
   {
     printf("Step %u: installed; a reboot activates it\n", step);
-    set_details(c, step, "installed into the inactive slot; activated by reboot");
+    set_step_result_details(context, step, "installed into the inactive slot; activated by reboot");
     return AZ_IOT_SU_RESULT_REBOOT_REQUIRED;
   }
   printf("Step %u: installed\n", step);
@@ -140,17 +149,17 @@ static int32_t reboot_install(
 }
 
 /** @brief apply_fn: may need a reboot after the step is applied. */
-static int32_t reboot_apply(
+static int32_t apply_update_step(
     const az_iot_su_client_update_manifest* manifest,
     uint32_t step,
     void* user_ctx)
 {
   (void)manifest;
-  reboot_context* c = (reboot_context*)user_ctx;
-  if (reboot_here(c, 1, step))
+  update_hooks_context* context = (update_hooks_context*)user_ctx;
+  if (is_reboot_requested_at_step(context, 1, step))
   {
     printf("Step %u: applied; takes effect after a reboot\n", step);
-    set_details(c, step, "applied; takes effect after reboot");
+    set_step_result_details(context, step, "applied; takes effect after reboot");
     return AZ_IOT_SU_RESULT_REBOOT_REQUIRED;
   }
   printf("Step %u: applied\n", step);
@@ -164,20 +173,20 @@ static int32_t reboot_apply(
  * mid-write leaves the previous record intact. A zero-length write erases
  * the record: the workflow ended and must not be resumed.
  */
-static int32_t reboot_persist(const uint8_t* blob, size_t len, void* user_ctx)
+static int32_t save_update_workflow(const uint8_t* blob, size_t len, void* user_ctx)
 {
-  reboot_context* c = (reboot_context*)user_ctx;
+  update_hooks_context* context = (update_hooks_context*)user_ctx;
   if (len == 0)
   {
-    if (remove(c->state_file) != 0 && errno != ENOENT)
+    if (remove(context->state_file) != 0 && errno != ENOENT)
     {
       return AZ_IOT_SU_RESULT_FAILURE;
     }
-    printf("[persist] erased %s\n", c->state_file);
+    printf("[persist] erased %s\n", context->state_file);
     return AZ_IOT_SU_RESULT_SUCCESS;
   }
   char tmp[512];
-  int tmp_len = snprintf(tmp, sizeof(tmp), "%s.tmp", c->state_file);
+  int tmp_len = snprintf(tmp, sizeof(tmp), "%s.tmp", context->state_file);
   if (tmp_len < 0 || (size_t)tmp_len >= sizeof(tmp))
   {
     return AZ_IOT_SU_RESULT_FAILURE; /* the old record stays */
@@ -196,23 +205,27 @@ static int32_t reboot_persist(const uint8_t* blob, size_t len, void* user_ctx)
   }
 #ifdef _WIN32
   /* rename() does not replace on Windows. */
-  if (!MoveFileExA(tmp, c->state_file, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+  if (!MoveFileExA(tmp, context->state_file, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
 #else
-  if (rename(tmp, c->state_file) != 0)
+  if (rename(tmp, context->state_file) != 0)
 #endif
   {
     (void)remove(tmp);
     return AZ_IOT_SU_RESULT_FAILURE;
   }
-  printf("[persist] %zu bytes -> %s\n", len, c->state_file);
+  printf("[persist] %zu bytes -> %s\n", len, context->state_file);
   return AZ_IOT_SU_RESULT_SUCCESS;
 }
 
 /** @brief load_state_fn: read the saved workflow back; nonzero when there is none. */
-static int32_t reboot_load(uint8_t* blob, size_t capacity, size_t* out_len, void* user_ctx)
+static int32_t load_saved_update_workflow(
+    uint8_t* blob,
+    size_t capacity,
+    size_t* out_len,
+    void* user_ctx)
 {
-  reboot_context* c = (reboot_context*)user_ctx;
-  FILE* f = sample_fopen_read_nofollow(c->state_file);
+  update_hooks_context* context = (update_hooks_context*)user_ctx;
+  FILE* f = sample_fopen_read_nofollow(context->state_file);
   if (f == NULL)
   {
     return 1;
@@ -226,7 +239,7 @@ static int32_t reboot_load(uint8_t* blob, size_t capacity, size_t* out_len, void
     return 1;
   }
   *out_len = n;
-  printf("[load] %zu bytes <- %s\n", n, c->state_file);
+  printf("[load] %zu bytes <- %s\n", n, context->state_file);
   return 0;
 }
 
@@ -344,7 +357,7 @@ int main(void)
   int rc = 1;
   sample_config config = { 0 };
   sample_flags flags = { 0 };
-  reboot_context reboot = { 0 };
+  update_hooks_context hooks_context = { 0 };
   az_iot_certificate_provider_pem certs = { 0 };
   az_iot_connection_client connection;
   az_iot_su_client su;
@@ -359,11 +372,11 @@ int main(void)
   char* model = sample_env_dup("AZ_IOT_SU_MODEL", "SU-Reboot");
   char* reboot_at = sample_env_dup("SAMPLE_REBOOT_AT", "install:1");
 
-  reboot.su = &su;
-  reboot.state_file = sample_env_dup("SAMPLE_STATE_FILE", "./su_reboot_state.bin");
+  hooks_context.su = &su;
+  hooks_context.state_file = sample_env_dup("SAMPLE_STATE_FILE", "./su_reboot_state.bin");
   int exit_after_workflow = su_sample_env_flag("AZ_IOT_SU_EXIT_AFTER_WORKFLOW");
   long poll_interval_s = su_sample_env_long("AZ_IOT_SU_POLL_INTERVAL_S", 14400);
-  if (manufacturer == NULL || model == NULL || reboot_at == NULL || reboot.state_file == NULL
+  if (manufacturer == NULL || model == NULL || reboot_at == NULL || hooks_context.state_file == NULL
       || poll_interval_s < 0
       || !sample_env_to_buffer(
           "AZ_IOT_SU_INSTALLED_PROVIDER", "Contoso", installed_provider, sizeof(installed_provider))
@@ -376,8 +389,8 @@ int main(void)
     goto cleanup;
   }
   const char* colon = strchr(reboot_at, ':');
-  reboot.reboot_on_apply = (strncmp(reboot_at, "apply", 5) == 0);
-  reboot.reboot_step = (colon != NULL) ? strtol(colon + 1, NULL, 10) : 1;
+  hooks_context.reboot_on_apply = (strncmp(reboot_at, "apply", 5) == 0);
+  hooks_context.reboot_step = (colon != NULL) ? strtol(colon + 1, NULL, 10) : 1;
 
   /* Certificate provider and connection client. */
   az_iot_certificate_provider_pem_options pem = az_iot_certificate_provider_pem_options_default();
@@ -420,13 +433,13 @@ int main(void)
 
   /* Software updates client, with the persistence hooks a reboot needs. */
   az_iot_su_platform_hooks hooks = { 0 };
-  hooks.download_fn = reboot_download;
-  hooks.read_file_fn = reboot_read_file;
-  hooks.install_fn = reboot_install;
-  hooks.apply_fn = reboot_apply;
-  hooks.persist_state_fn = reboot_persist;
-  hooks.load_state_fn = reboot_load;
-  hooks.user_ctx = &reboot;
+  hooks.download_fn = download_update_file;
+  hooks.read_file_fn = read_back_downloaded_file;
+  hooks.install_fn = install_update_step;
+  hooks.apply_fn = apply_update_step;
+  hooks.persist_state_fn = save_update_workflow;
+  hooks.load_state_fn = load_saved_update_workflow;
+  hooks.user_ctx = &hooks_context;
 
   az_iot_su_device_properties dp = { 0 };
   dp.manufacturer = manufacturer;
@@ -513,7 +526,7 @@ int main(void)
       }
       printf(
           "Rebooting: the workflow is saved in %s. Run the sample again to resume.\n",
-          reboot.state_file);
+          hooks_context.state_file);
       break;
     }
     int idle = az_iot_su_client_get_state(&su) == AZ_IOT_SU_STATE_IDLE;
@@ -558,7 +571,7 @@ cleanup:
 #endif
   az_iot_certificate_provider_pem_deinit(&certs);
   sample_config_release(&config);
-  free(reboot.state_file);
+  free(hooks_context.state_file);
   free(manufacturer);
   free(model);
   free(reboot_at);

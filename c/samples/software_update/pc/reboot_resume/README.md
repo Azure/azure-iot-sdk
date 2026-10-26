@@ -99,8 +99,8 @@ result_details_size)` bytes.
 
 | What | Where |
 |---|---|
-| Atomic save, erase and load | `reboot_persist()`, `reboot_load()` |
-| Asking for a reboot | `reboot_install()`, `reboot_apply()` |
+| Atomic save, erase and load | `save_update_workflow()`, `load_saved_update_workflow()` |
+| Asking for a reboot | `install_update_step()`, `apply_update_step()` |
 | Resume before the first check | `az_iot_su_client_resume()` in `main()` |
 | When to reboot | `az_iot_su_client_get_reboot_state()` in the main loop |
 | End of a workflow | `AZ_IOT_SU_EVENT_WORKFLOW_COMPLETED` in `on_su_event()` |
