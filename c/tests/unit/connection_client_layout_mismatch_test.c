@@ -29,6 +29,7 @@
 #endif
 
 size_t az_iot_test_connection_client_default_size(void);
+void az_iot_test_connection_client_default_layout(az_iot_connection_client_layout* out);
 
 /* Every error logged, so the test finds the one it expects among several. */
 static char logged_errors[1024];
@@ -114,12 +115,52 @@ static void a_layout_of_another_size_is_refused_before_its_fields_are_read(void*
   az_iot_log_set_global_sink(NULL);
 }
 
+/* Capacities that match but a struct size that differs: the size checks alone refuse it (layout
+ * changes no listed macro explains). */
+static void refuse_struct_size(size_t client_delta, size_t options_delta, const char* expected_name)
+{
+  start_capture();
+  static az_iot_connection_client client;
+  static uint8_t untouched[sizeof(az_iot_connection_client)];
+  memset(&client, 0x5A, sizeof(client));
+  memset(untouched, 0x5A, sizeof(untouched));
+  az_iot_connection_client_options options = az_iot_connection_client_options_default();
+  az_iot_connection_client_layout layout;
+  az_iot_test_connection_client_default_layout(&layout);
+  layout.client_size += client_delta;
+  layout.options_size += options_delta;
+
+  assert_int_equal(
+      az_iot_connection_client_init_checked(&client, &options, &layout), AZ_IOT_ERR_INVALID_ARG);
+  assert_memory_equal(&client, untouched, sizeof(client));
+  assert_non_null(strstr(logged_errors, expected_name));
+  assert_null(strstr(logged_errors, "AZ_IOT_")); /* every capacity matched */
+
+  az_iot_log_set_global_sink(NULL);
+}
+
+static void a_client_of_another_size_is_refused(void** state)
+{
+  (void)state;
+  refuse_struct_size(8, 0, "sizeof(az_iot_connection_client) is ");
+  refuse_struct_size((size_t)-8, 0, "sizeof(az_iot_connection_client) is ");
+}
+
+static void options_of_another_size_are_refused(void** state)
+{
+  (void)state;
+  refuse_struct_size(0, 8, "sizeof(az_iot_connection_client_options) is ");
+  refuse_struct_size(0, (size_t)-8, "sizeof(az_iot_connection_client_options) is ");
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
     cmocka_unit_test(a_mismatched_layout_is_refused_and_the_client_untouched),
     cmocka_unit_test(a_missing_layout_is_refused),
     cmocka_unit_test(a_layout_of_another_size_is_refused_before_its_fields_are_read),
+    cmocka_unit_test(a_client_of_another_size_is_refused),
+    cmocka_unit_test(options_of_another_size_are_refused),
   };
   return cmocka_run_group_tests_name("connection_client_layout", tests, NULL, NULL);
 }
