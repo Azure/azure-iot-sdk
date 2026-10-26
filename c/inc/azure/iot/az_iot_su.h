@@ -671,7 +671,16 @@ extern "C"
      * Raised again on each early offer. The wait is 1 h after the first
      * failure, doubling per consecutive failure up to 24 h, plus up to 10%
      * jitter, and survives a restart when persistence is configured. */
-    AZ_IOT_SU_EVENT_UPDATE_RETRY_WAIT
+    AZ_IOT_SU_EVENT_UPDATE_RETRY_WAIT,
+
+    /* A workflow's terminal report is settled: nothing more is sent for that
+     * workflow. Raised once, after REPORT_ACCEPTED or OPERATION_ABANDONED for
+     * that report. Carries `state`, `report` (the report as sent) and
+     * `reason`: AZ_IOT_OK when the service accepted it; otherwise the verdict
+     * that retired it, with `service_error`. Not raised for a report kept
+     * after a lost session (AZ_IOT_ERR_NOT_CONNECTED): that one is sent again
+     * and settles later. */
+    AZ_IOT_SU_EVENT_WORKFLOW_COMPLETED
   } az_iot_su_event_kind;
 
   /**
@@ -753,8 +762,8 @@ extern "C"
     bool report_terminal;
     /** UPDATE_RETRY_WAIT: milliseconds until the workflow may be retried. */
     uint32_t retry_after_ms;
-    /** REPORT_ACCEPTED with report_terminal: the accepted terminal report as sent, step results
-     * included; its installed_update_id is NULL when longer than
+    /** REPORT_ACCEPTED with report_terminal, or WORKFLOW_COMPLETED: the terminal report as sent,
+     * step results included; its installed_update_id is NULL when longer than
      * AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE. NULL otherwise. Valid only during the callback. */
     const az_iot_su_report* report;
   } az_iot_su_event;
@@ -949,6 +958,9 @@ extern "C"
        * workflow was about". Strings are packed into applied_update_id_buf. */
       char applied_update_id_buf[AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE];
       az_iot_su_report_update_id applied_update_id;
+      /** Installed update id adopted after a SUCCEEDED workflow; the cached
+       * device properties point here, so it fits whatever their buffer size. */
+      char adopted_installed_id_buf[AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE];
       bool applied_update_id_valid;
 
       /* Connection-state observer / detach safety (see design doc §16). */
@@ -1345,10 +1357,16 @@ extern "C"
    *
    * Deep-copies @p device_properties. No I/O, and no update check is scheduled:
    * the next az_iot_su_client_request_update() or
-   * az_iot_su_client_request_onboarding_update() sends them. Also marks a
-   * workflow-status report due on do_work(), which does nothing without a
-   * recorded workflow. That report never carries the compatibility properties,
-   * but carries the new installed update ID unless an applied update succeeded.
+   * az_iot_su_client_request_onboarding_update() sends them. While a workflow
+   * runs or its terminal report is owed, also marks a workflow-status report
+   * due on do_work(); once that report is settled, it is not sent again. That
+   * report never carries the compatibility properties, but carries the new
+   * installed update ID unless an applied update succeeded.
+   *
+   * Not needed after a SUCCEEDED workflow: the client then adopts the applied
+   * update ID as installed by itself (also when az_iot_su_client_resume()
+   * restores its terminal record). Call it when the installed software changes
+   * otherwise.
    *
    * Call on the do_work() thread, or serialize with it.
    *
