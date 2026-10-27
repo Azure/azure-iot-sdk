@@ -390,12 +390,15 @@ is treated as done if the update now exists (another run imported it), else retr
 CI ([`ci-c-e2e-adu.yml`](../../../.github/workflows/ci-c-e2e-adu.yml)) runs on the shared mqttv5
 environment, whose ADR namespace is linked to a Device Update instance, on pull requests touching
 core, Software Update or adapter code, the e2e harness or the workflow; nightly; manual. Pull requests
-from forks and from Dependabot skip. One job: it ensures the standing offers
-(`New-SuE2EOffers -RunId standing -Reuse`; seconds once staged), issues a new device per adapter from
-the enrollment group's CA (`e2e-shared-device.ps1`), runs both suites per adapter, then checks each
-device's job results. Nothing is deleted per run. Inputs: variables `E2E_MQTTV5_SHARED_SUBSCRIPTION_ID`,
-`_RESOURCE_GROUP`, `_ADR_NAMESPACE`, `_ID_SCOPE`, `_DPS_HOST`, `_LOCATION`, `_SU_ENDPOINT`,
-`_SU_STORAGE_ACCOUNT`, `_SU_STORAGE_CONTAINER`; secrets `E2E_MQTTV5_SHARED_GROUP_CA`,
+from forks and from Dependabot skip. Scheduled and manual runs first run the namespace repair
+(`ci-c-e2e-mqttv5-adr-namespace.yml`), which also restores the Software Update link. One job then
+ensures the standing offers (`New-SuE2EOffers -RunId "s$(Get-SuE2EFixtureTag)" -Reuse`; seconds once
+staged), issues a new device per suite execution (4: each suite on each adapter) from the enrollment
+group's CA (`e2e-shared-device.ps1`), runs the suites, then checks the offer devices' job results.
+Nothing is deleted per run; offer sets staged by older fixture code are left in place. Inputs:
+variables `E2E_MQTTV5_SHARED_SUBSCRIPTION_ID`, `_RESOURCE_GROUP`, `_ADR_NAMESPACE`, `_ID_SCOPE`,
+`_DPS_HOST`, `_LOCATION`, `_SU_ENDPOINT`, `_SU_STORAGE_ACCOUNT`, `_SU_STORAGE_CONTAINER`, and
+`_SU_INSTANCE` (the Device Update instance the namespace repair links); secrets `E2E_MQTTV5_SHARED_GROUP_CA`,
 `_IOTHUB_SERVICE_CS`, `_EVENTHUB_CS`, `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`.
 
 Every variable is required; a missing one fails the suite or the scenario that needs it.

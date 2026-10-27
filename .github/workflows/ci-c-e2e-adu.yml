@@ -11,13 +11,18 @@
 #
 # Runs against the shared mqttv5 environment (ci-c-e2e-mqttv5.yml), whose ADR
 # namespace is linked to a Device Update instance. Offers are standing: staged
-# once under the fixed RunId 'standing' and reused by every run
-# (New-SuE2EOffers -Reuse; c/tests/e2e/scripts/SuE2E.psm1). An offer reaches each
-# new device once, so runs do not interfere. Nothing is deleted per run.
+# once per version of the code that defines them (RunId 's<Get-SuE2EFixtureTag>')
+# and reused by every run (New-SuE2EOffers -Reuse; c/tests/e2e/scripts/SuE2E.psm1).
+# An offer reaches each new device once, so runs do not interfere; each suite
+# execution gets its own new device. Nothing is deleted per run.
+#
+# Same-repository pull requests log in to Azure, as in ci-c-e2e.yml: opening one
+# needs write access, which can already run any workflow with these secrets.
 #
 #   vars:    E2E_MQTTV5_SHARED_SUBSCRIPTION_ID, _RESOURCE_GROUP, _ADR_NAMESPACE,
 #            _ID_SCOPE, _DPS_HOST, _LOCATION, _SU_ENDPOINT, _SU_STORAGE_ACCOUNT,
-#            _SU_STORAGE_CONTAINER (all E2E_MQTTV5_SHARED_*)
+#            _SU_STORAGE_CONTAINER, and _SU_INSTANCE for the namespace repair
+#            (all E2E_MQTTV5_SHARED_*)
 #   secrets: E2E_MQTTV5_SHARED_GROUP_CA, E2E_MQTTV5_SHARED_IOTHUB_SERVICE_CS,
 #            E2E_MQTTV5_SHARED_EVENTHUB_CS (required by e2e-shared-device.ps1),
 #            AZURE_CLIENT_ID, AZURE_TENANT_ID (OIDC; ADR job and Device Update
@@ -32,12 +37,17 @@ on:
   workflow_dispatch:
   pull_request:
     paths:
+      - 'c/src/CMakeLists.txt'
+      - 'c/src/sources.cmake'
       - 'c/src/core/**'
       - 'c/src/features/su/**'
       - 'c/inc/azure/iot/*.h'
       - 'c/inc/azure/iot/adapters/**'
       - 'c/adapters/paho/**'
       - 'c/adapters/az_mqtt/**'
+      - 'c/adapters/crypto_openssl/**'
+      - 'c/adapters/cert_openssl/**'
+      - 'c/adapters/su/**'
       - 'c/deps/az_mqtt/**'
       - 'c/CMakeLists.txt'
       - 'c/CMakePresets.json'
@@ -48,7 +58,9 @@ on:
       - 'c/tests/e2e/**'
       - 'c/eng/e2e-shared-device.ps1'
       - 'c/eng/collect-coverage.sh'
+      - 'c/eng/e2e-mqttv5-adr-namespace.ps1'
       - '.github/workflows/ci-c-e2e-adu.yml'
+      - '.github/workflows/ci-c-e2e-mqttv5-adr-namespace.yml'
   schedule:
     - cron: '0 12 * * *'
 
@@ -60,17 +72,37 @@ permissions:
   contents: read
 
 jobs:
+  # As in ci-c-e2e-mqttv5.yml: the namespace (and its Software Update link) can
+  # drop out of Azure. Not on pull requests, which rely on the scheduled repair
+  # (every 10 minutes) in ci-c-e2e-mqttv5-adr-namespace.yml.
+  adr-namespace:
+    name: ADR namespace
+    if: ${{ github.event_name != 'pull_request' }}
+    permissions:
+      contents: read
+      id-token: write
+    # actionlint 1.7.12 does not accept the $/ self-repository form yet.
+    uses: ./.github/workflows/ci-c-e2e-mqttv5-adr-namespace.yml # zizmor: ignore[self-repository]
+    secrets:
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+
   e2e-su:
     name: software updates e2e (linux)
+    needs: adr-namespace
     if: >-
-      ${{ github.event_name != 'pull_request' ||
-          (github.event.pull_request.head.repo.full_name == github.repository &&
-           github.actor != 'dependabot[bot]') }}
+      ${{ !cancelled() &&
+          (needs.adr-namespace.result == 'success' || needs.adr-namespace.result == 'skipped') &&
+          (github.event_name != 'pull_request' ||
+           (github.event.pull_request.head.repo.full_name == github.repository &&
+            github.actor != 'dependabot[bot]')) }}
     runs-on: ubuntu-24.04
     permissions:
       contents: read
       id-token: write   # azure/login OIDC
-    timeout-minutes: 60
+    # Above the sum of the step budgets (about 215 min), so every step's own
+    # timeout fires first.
+    timeout-minutes: 230
     env:
       AZ_IOT_E2E_SU_DPS_HOST: ${{ vars.E2E_MQTTV5_SHARED_DPS_HOST }}
       AZ_IOT_E2E_SU_ID_SCOPE: ${{ vars.E2E_MQTTV5_SHARED_ID_SCOPE }}
@@ -108,17 +140,18 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.E2E_MQTTV5_SHARED_SUBSCRIPTION_ID }}
 
-      # Seconds when the offers are staged; up to about 15 min when not (imports,
-      # then 5 min for new runs).
+      # Seconds when the offers are staged. Otherwise typically about 11 min; at
+      # most 4 x (10 min import + 5 min job) + 10 min to Active + 5 min grace.
       - name: Ensure standing offers
         id: offers
-        timeout-minutes: 30
+        timeout-minutes: 75
         shell: pwsh
         run: |
           Import-Module ./c/tests/e2e/scripts/SuE2E.psm1
-          New-SuE2EOffers -RunId standing -StatePath $env:SU_OFFERS_STATE -Reuse
+          New-SuE2EOffers -RunId "s$(Get-SuE2EFixtureTag)" -StatePath $env:SU_OFFERS_STATE -Reuse
 
-      # A new device per adapter: an offer reaches a device once.
+      # A new device per suite execution: an offer reaches a device once, and the
+      # offer suite starts from a device with no registration.
       - name: Issue devices
         shell: pwsh
         env:
@@ -132,44 +165,56 @@ jobs:
           $dir = Join-Path $env:RUNNER_TEMP 'su-devices'
           New-Item -ItemType Directory -Force -Path $dir | Out-Null
           chmod 700 $dir
-          foreach ($adapter in 'paho', 'az-mqtt') {
-            $regId = "ci-su-$adapter-$env:RUN_TAG"
-            $config = Join-Path $dir "$adapter.ps1"
+          foreach ($device in 'paho', 'paho-offer', 'az-mqtt', 'az-mqtt-offer') {
+            $regId = "ci-su-$device-$env:RUN_TAG"
+            $config = Join-Path $dir "$device.ps1"
             ./c/eng/e2e-shared-device.ps1 -Prefix E2E_MQTTV5_SHARED -RegistrationId $regId -OutFile $config
             . $config
-            [IO.File]::WriteAllBytes((Join-Path $dir "$adapter-cert.pem"), [Convert]::FromBase64String($env:IOT_DPS_INDIVIDUAL_X509_CERTIFICATE_0))
-            [IO.File]::WriteAllBytes((Join-Path $dir "$adapter-key.pem"), [Convert]::FromBase64String($env:IOT_DPS_INDIVIDUAL_X509_KEY_0))
+            [IO.File]::WriteAllBytes((Join-Path $dir "$device-cert.pem"), [Convert]::FromBase64String($env:IOT_DPS_INDIVIDUAL_X509_CERTIFICATE_0))
+            [IO.File]::WriteAllBytes((Join-Path $dir "$device-key.pem"), [Convert]::FromBase64String($env:IOT_DPS_INDIVIDUAL_X509_KEY_0))
             Remove-Item $config
-            chmod 600 (Join-Path $dir "$adapter-key.pem")
-            $name = $adapter.Replace('-', '_').ToUpperInvariant()
+            chmod 600 (Join-Path $dir "$device-key.pem")
+            $name = $device.Replace('-', '_').ToUpperInvariant()
             "SU_REG_ID_$name=$regId" | Add-Content -Path $env:GITHUB_ENV
           }
           "SU_DEVICES=$dir" | Add-Content -Path $env:GITHUB_ENV
 
+      # Budgets: e2e_su 10 min; e2e_su_offer 30 min (4 offers x (90 s check +
+      # 300 s workflow), plus setup).
       - name: Run software updates e2e (paho)
         id: paho
-        timeout-minutes: 15
-        env:
-          AZ_IOT_E2E_SU_REG_ID: ${{ env.SU_REG_ID_PAHO }}
+        timeout-minutes: 45
         run: |
           mkdir -p results
+          AZ_IOT_E2E_SU_REG_ID="$SU_REG_ID_PAHO" \
           AZ_IOT_E2E_SU_CERT="$SU_DEVICES/paho-cert.pem" AZ_IOT_E2E_SU_KEY="$SU_DEVICES/paho-key.pem" \
-          ctest --test-dir c/build/linux-gcc-e2e-coverage -R '^az_iot_tests_e2e_su(_offer)?$' \
+          ctest --test-dir c/build/linux-gcc-e2e-coverage -R '^az_iot_tests_e2e_su$' \
             --verbose --no-tests=error --timeout 600 \
-            --output-junit "$GITHUB_WORKSPACE/results/e2e-su-paho.xml"
+            --output-junit "$GITHUB_WORKSPACE/results/e2e-su-paho.xml" || status=$?
+          AZ_IOT_E2E_SU_REG_ID="$SU_REG_ID_PAHO_OFFER" \
+          AZ_IOT_E2E_SU_CERT="$SU_DEVICES/paho-offer-cert.pem" AZ_IOT_E2E_SU_KEY="$SU_DEVICES/paho-offer-key.pem" \
+          ctest --test-dir c/build/linux-gcc-e2e-coverage -R '^az_iot_tests_e2e_su_offer$' \
+            --verbose --no-tests=error --timeout 1800 \
+            --output-junit "$GITHUB_WORKSPACE/results/e2e-su-offer-paho.xml" || status=$?
+          exit "${status:-0}"
 
       - name: Run software updates e2e (az_mqtt)
         id: az_mqtt
         if: ${{ !cancelled() && steps.offers.outcome == 'success' }}
-        timeout-minutes: 15
-        env:
-          AZ_IOT_E2E_SU_REG_ID: ${{ env.SU_REG_ID_AZ_MQTT }}
+        timeout-minutes: 45
         run: |
           mkdir -p results
+          AZ_IOT_E2E_SU_REG_ID="$SU_REG_ID_AZ_MQTT" \
           AZ_IOT_E2E_SU_CERT="$SU_DEVICES/az-mqtt-cert.pem" AZ_IOT_E2E_SU_KEY="$SU_DEVICES/az-mqtt-key.pem" \
-          ctest --test-dir c/build/linux-gcc-e2e-coverage -R '^az_iot_tests_e2e_su(_offer)?_az_mqtt$' \
+          ctest --test-dir c/build/linux-gcc-e2e-coverage -R '^az_iot_tests_e2e_su_az_mqtt$' \
             --verbose --no-tests=error --timeout 600 \
-            --output-junit "$GITHUB_WORKSPACE/results/e2e-su-az-mqtt.xml"
+            --output-junit "$GITHUB_WORKSPACE/results/e2e-su-az-mqtt.xml" || status=$?
+          AZ_IOT_E2E_SU_REG_ID="$SU_REG_ID_AZ_MQTT_OFFER" \
+          AZ_IOT_E2E_SU_CERT="$SU_DEVICES/az-mqtt-offer-cert.pem" AZ_IOT_E2E_SU_KEY="$SU_DEVICES/az-mqtt-offer-key.pem" \
+          ctest --test-dir c/build/linux-gcc-e2e-coverage -R '^az_iot_tests_e2e_su_offer_az_mqtt$' \
+            --verbose --no-tests=error --timeout 1800 \
+            --output-junit "$GITHUB_WORKSPACE/results/e2e-su-offer-az-mqtt.xml" || status=$?
+          exit "${status:-0}"
 
       - name: Check job results
         if: ${{ !cancelled() && steps.offers.outcome == 'success' }}
@@ -178,7 +223,7 @@ jobs:
         run: |
           Import-Module ./c/tests/e2e/scripts/SuE2E.psm1
           $failed = @()
-          foreach ($regId in $env:SU_REG_ID_PAHO, $env:SU_REG_ID_AZ_MQTT) {
+          foreach ($regId in $env:SU_REG_ID_PAHO_OFFER, $env:SU_REG_ID_AZ_MQTT_OFFER) {
             Write-Host "== $regId"
             try { Test-SuE2EOffers -StatePath $env:SU_OFFERS_STATE -RegistrationId $regId }
             catch { Write-Host "::error::$regId`: $_"; $failed += $regId }
