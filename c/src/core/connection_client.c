@@ -5103,10 +5103,10 @@ static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
         c->deferred = DEFER_IDLE;
         c->deferred_reason = evt->status;
       }
-      else if (c->requested_reconnect.in_progress && c->deferred != DEFER_NONE)
+      else if (evt->status == AZ_IOT_OK && c->deferred != DEFER_NONE)
       {
-        /* A failure staged earlier in this pump (e.g. a refused SUBACK) ends the
-         * session with its own reason. */
+        /* A failure staged earlier in this pump (e.g. a refused SUBACK or a failed
+         * DISCONNECTED) ends the session with its own reason. */
         c->requested_reconnect.in_progress = false;
         c->requested_reconnect.ending = false;
       }
@@ -6283,6 +6283,15 @@ static void apply_deferred(az_iot_connection_client* c)
   az_iot_result reason = c->deferred_reason;
   c->deferred = DEFER_NONE;
   c->deferred_reason = AZ_IOT_OK;
+  if (c->user_close && c->requested_reconnect.ending)
+  {
+    /* close() came after the requested disconnect completed: it decides how the
+     * session ends. */
+    c->requested_reconnect.in_progress = false;
+    c->requested_reconnect.ending = false;
+    action = DEFER_IDLE;
+    reason = AZ_IOT_OK;
+  }
 
   switch (action)
   {

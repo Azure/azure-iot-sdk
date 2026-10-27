@@ -3312,6 +3312,69 @@ static void a_failed_disconnect_after_the_disconnect_in_one_pump_counts_no_miss(
   assert_twin_push_wait_for_attempt(fx, 1);
 }
 
+/* A failed DISCONNECTED and then the requested disconnect's completion in one pump: the
+ * failure ends the session. */
+static void a_disconnect_completion_after_a_failure_in_one_pump_keeps_the_failure(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  expire_twin_push_wait_to_disconnect(fx);
+  az_iot_mock_mqtt_client_set_events_per_loop(fx->mock, 2);
+  az_iot_mqtt_event refused;
+  memset(&refused, 0, sizeof(refused));
+  refused.kind = AZ_IOT_MQTT_EVT_DISCONNECTED;
+  refused.status = AZ_IOT_ERR_AUTH;
+  assert_true(az_iot_mock_mqtt_client_inject_event(fx->mock, &refused));
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(fx->mock));
+  assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
+
+  assert_int_equal(
+      az_iot_connection_client_get_state(&fx->conn, AZ_IOT_CONN_SCOPE_HUB),
+      AZ_IOT_CONN_STATE_FAULTED);
+  assert_int_equal(count_states(AZ_IOT_CONN_STATE_FAULTED, AZ_IOT_ERR_AUTH), 1);
+  assert_int_equal(count_states(AZ_IOT_CONN_STATE_IDLE, AZ_IOT_OK), 0);
+}
+
+/* A close() from a callback after the requested disconnect completed, in the same pump, ends at
+ * IDLE: no timeout fault or retry. */
+static void a_close_after_the_disconnect_completion_in_one_pump_ends_idle(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  assert_int_equal(
+      az_iot_mqttv5_twin_client_get(&fx->twin, close_on_get_completion, &fx->conn), AZ_IOT_OK);
+  const az_iot_mock_call* pub = find_publish(fx->mock, TWIN_SRV_TOPIC);
+  assert_non_null(pub);
+  uint8_t corr[16];
+  memcpy(corr, pub->correlation_data, sizeof(corr));
+  expire_twin_push_wait_to_disconnect(fx);
+
+  az_iot_mock_mqtt_client_set_events_per_loop(fx->mock, 2);
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(fx->mock));
+  az_iot_mqtt_user_property type = { "type", "get-response:1" };
+  const uint8_t body[] = { 0x08, 0x01, 0x10, 0x01 };
+  az_iot_mqtt_message msg;
+  memset(&msg, 0, sizeof(msg));
+  msg.topic = TWIN_DEV_TOPIC;
+  msg.payload = body;
+  msg.payload_len = sizeof(body);
+  msg.correlation_data = corr;
+  msg.correlation_data_len = sizeof(corr);
+  msg.content_type = "application/protobuf";
+  msg.user_properties = az_iot_mqtt_user_properties_from_array(&type, 1);
+  az_iot_mqtt_event evt;
+  memset(&evt, 0, sizeof(evt));
+  evt.kind = AZ_IOT_MQTT_EVT_MESSAGE;
+  evt.message = &msg;
+  assert_true(az_iot_mock_mqtt_client_inject_event(fx->mock, &evt));
+  assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
+
+  assert_int_equal(
+      az_iot_connection_client_get_state(&fx->conn, AZ_IOT_CONN_SCOPE_HUB), AZ_IOT_CONN_STATE_IDLE);
+  assert_int_equal(count_states(AZ_IOT_CONN_STATE_RETRY_PENDING, AZ_IOT_ERR_TIMEOUT), 0);
+  assert_int_equal(count_states(AZ_IOT_CONN_STATE_FAULTED, AZ_IOT_ERR_TIMEOUT), 0);
+}
+
 /* Without a reconnection policy an overdue push faults the hub scope. */
 static void an_overdue_twin_push_without_a_policy_faults(void** state)
 {
@@ -3680,6 +3743,18 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         a_failed_disconnect_after_the_disconnect_in_one_pump_counts_no_miss,
         setup_push_desired_reconnect,
+        teardown),
+    cmocka_unit_test_setup_teardown(
+        a_disconnect_completion_after_a_failure_in_one_pump_keeps_the_failure,
+        setup_push_desired_no_policy,
+        teardown),
+    cmocka_unit_test_setup_teardown(
+        a_close_after_the_disconnect_completion_in_one_pump_ends_idle,
+        setup_push_desired_reconnect,
+        teardown),
+    cmocka_unit_test_setup_teardown(
+        a_close_after_the_disconnect_completion_in_one_pump_ends_idle,
+        setup_push_desired_no_policy,
         teardown),
     cmocka_unit_test_setup_teardown(
         an_overdue_twin_push_without_a_policy_faults, setup_push_desired_no_policy, teardown),
