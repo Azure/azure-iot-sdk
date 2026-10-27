@@ -443,6 +443,20 @@ function Get-SuE2EOfferNames {
 
 <#
 .SYNOPSIS
+    Short hash of the code that defines the staged offers (names, update
+    content, job). Appended to a reused -RunId, a fixture change stages a new
+    offer set instead of reusing one staged by older code.
+#>
+function Get-SuE2EFixtureTag {
+    $text = ('Get-SuE2EOfferNames', 'Import-SuE2EUpdate', 'New-SuE2EOnboardingJob', 'New-SuE2EJobRun' |
+            ForEach-Object { (Get-Command -Module SuE2E -Name $_).Definition }) -join "`n"
+    $text += ($script:Scenarios.Keys | ForEach-Object { "$_=$($script:Scenarios[$_].Short)" }) -join ','
+    $hash = [System.Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes(($text -replace "`r`n", "`n")))
+    return [Convert]::ToHexString($hash).Substring(0, 8).ToLowerInvariant()
+}
+
+<#
+.SYNOPSIS
     Exports the variables the device suites read for the offers staged under
     -RunId (also to $env:GITHUB_ENV when set). No remote call.
 #>
@@ -517,9 +531,25 @@ function New-SuE2EOffers {
             Write-Host "$scenario`: update $($n.Model) kept"
         }
         else {
-            [void](Import-SuE2EUpdate -Config $config -Provider 'sdke2e' -Name $n.Model `
-                    -Version '1.0.0' -Manufacturer $manufacturer -Model $n.Model -WorkDir $WorkDir `
-                    -Blobs $offer.Blobs -OnChange $save)
+            # Concurrent stagers of one -RunId overwrite each other's blobs, so
+            # an import can fail while another succeeds: re-check, then retry.
+            for ($attempt = 1; ; $attempt++) {
+                try {
+                    [void](Import-SuE2EUpdate -Config $config -Provider 'sdke2e' -Name $n.Model `
+                            -Version '1.0.0' -Manufacturer $manufacturer -Model $n.Model -WorkDir $WorkDir `
+                            -Blobs $offer.Blobs -OnChange $save)
+                    break
+                }
+                catch {
+                    if (-not $Reuse) { throw }
+                    if (Get-SuE2EResource $updateUri $script:AduScope) {
+                        Write-Host "$scenario`: update $($n.Model) imported by another run"
+                        break
+                    }
+                    if ($attempt -ge 3) { throw }
+                    Write-Warning "$scenario`: import attempt $attempt failed, retrying: $_"
+                }
+            }
         }
 
         $offer.Job = $n.Job
@@ -647,4 +677,4 @@ function Remove-SuE2EOffers {
 
 Export-ModuleMember -Function New-SuE2EOffers, Test-SuE2EOffers, Remove-SuE2EOffers, Import-SuE2EUpdate,
 New-SuE2EOnboardingJob, New-SuE2EJobRun, Wait-SuE2EJobRuns, Get-SuE2EDeviceResult, Get-SuE2EOfferNames,
-Export-SuE2EOfferVariables
+Export-SuE2EOfferVariables, Get-SuE2EFixtureTag

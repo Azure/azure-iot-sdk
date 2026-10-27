@@ -382,7 +382,9 @@ runs: `New-SuE2EOffers -Reuse` keeps the updates, jobs and `Active` runs that al
 its `-RunId`, and only waits for runs it creates (or for what is left of the 5 minutes of a kept run
 started less than 5 minutes ago). A reused job may hold several runs, so `Test-SuE2EOffers` looks for
 the device in every `Active` run, then in the newest. `Export-SuE2EOfferVariables` sets the offer
-variables for a `-RunId` without contacting Azure.
+variables for a `-RunId` without contacting Azure. `Get-SuE2EFixtureTag` hashes the code that defines the offers;
+appended to a reused `-RunId`, a change to that code stages a new set. With `-Reuse`, a failed import
+is treated as done if the update now exists (another run imported it), else retried up to 3 times.
 
 Every variable is required; a missing one fails the suite or the scenario that needs it.
 
