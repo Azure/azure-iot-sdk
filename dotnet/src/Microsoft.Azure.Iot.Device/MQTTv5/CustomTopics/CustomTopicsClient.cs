@@ -1,6 +1,7 @@
 ﻿// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
 // See LICENSE file in the project root for full license information.
 
+using Microsoft.Azure.Iot.Device.Events;
 using Microsoft.Azure.Iot.Device.Exceptions;
 using Microsoft.Azure.Iot.Device.Mqtt;
 using Microsoft.Azure.Iot.Device.MQTTv5.Connection;
@@ -41,8 +42,8 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.CustomTopics
     /// <see cref="MqttClientSubscribeReasonCode.NotAuthorized"/>) is returned to the caller rather than thrown as an
     /// exception, and the operation is not retried. Connection-level failures are still handled by the connection client:
     /// an operation that cannot be sent because the device is not connected waits for the connection to be re-established
-    /// and is then sent. An operation that the connection drops after it was sent is not re-sent; it fails instead. See the
-    /// remarks on each operation for how it behaves in exceptional cases.
+    /// and is then sent. A QoS 1 PUBLISH, SUBSCRIBE or UNSUBSCRIBE interrupted before its acknowledgement arrives is
+    /// re-sent after reconnection. See the remarks on each operation for how it behaves in exceptional cases.
     /// </para>
     /// <para>
     /// Subscriptions survive connection loss. Whenever the connection client re-establishes this device's presence on IoT
@@ -78,7 +79,21 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.CustomTopics
         // are updated in the same order the operations were sent on the wire.
         private readonly SemaphoreSlim _subscriptionOperationLock = new(1, 1);
 
-        public event Func<MqttPublishReceivedEventArgs, Task>? CustomTopicPublishReceivedAsync;
+        private readonly AsyncEvent<MqttPublishReceivedEventArgs> _customTopicPublishReceived = new();
+
+        /// <summary>
+        /// Raised when a publish matches a subscribed custom topic.
+        /// </summary>
+        /// <remarks>
+        /// Every handler is invoked and awaited in the order it was added, even if an earlier one throws.
+        /// The publish is acknowledged only if no handler throws and this client has not been disposed.
+        /// Handlers that have not started are skipped if this client is disposed.
+        /// </remarks>
+        public event Func<MqttPublishReceivedEventArgs, Task>? CustomTopicPublishReceivedAsync
+        {
+            add => _customTopicPublishReceived.Add(value);
+            remove => _customTopicPublishReceived.Remove(value);
+        }
 
         /// <summary>
         /// Construct a new <see cref="CustomTopicsClient"/> instance.
@@ -129,10 +144,9 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.CustomTopics
         /// sent (for example, because the connection dropped and is being re-established, or because the device is being
         /// re-provisioned), this method waits until the connection client has re-established this device's presence on IoT
         /// hub, then sends the PUBLISH. Any <see cref="IConnectionClient.DeviceIdPlaceholder"/> is replaced with the
-        /// device ID at that time. However, if the connection drops after the PUBLISH was sent but before its PUBACK
-        /// arrived, the PUBLISH is not re-sent. Instead, this method throws a <see cref="DeviceException"/> whose
-        /// <see cref="DeviceException.Retryability"/> is <see cref="ErrorRetryability.Retryable"/>. IoT hub may or may not
-        /// have received that PUBLISH, so publishing it again may deliver it twice.
+        /// device ID at that time. If the connection drops after a QoS 1 PUBLISH was sent but before its PUBACK arrived,
+        /// the PUBLISH is re-sent after reconnection, including after re-provisioning. IoT hub may receive it more than
+        /// once. A QoS 0 PUBLISH is not re-sent if the connection drops while it is being sent.
         /// </description></item>
         /// <item><description>
         /// <b>A fatal disconnection.</b> If the connection client hits a fault that it will not recover from (which it
@@ -148,13 +162,8 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.CustomTopics
         /// <item><description>
         /// <b>A deliberate disconnection by the application.</b> If <see cref="AbstractConnectionClient.DisconnectAsync"/>
         /// has been called before this method is called, this method throws a <see cref="NotSupportedException"/> without
-        /// sending anything. If it is called while the PUBLISH is awaiting its PUBACK, this method throws a
-        /// <see cref="DeviceException"/>, as described above for a dropped connection. If it is called while this method is
-        /// waiting for a lost connection to be re-established, this method keeps waiting until the application connects
-        /// the connection client again, the connection client faults, or <paramref name="cancellationToken"/> is canceled.
-        /// Use a cancellable token so that this wait is bounded. If it is called just as this method finds the connection
-        /// gone, before this method has started waiting, this method throws a <see cref="MqttClientNotConnectedException"/>
-        /// instead.
+        /// sending anything. If it interrupts a QoS 1 PUBLISH awaiting its PUBACK, or is called while this method waits
+        /// for a lost connection to be re-established, this method throws an <see cref="OperationCanceledException"/>.
         /// </description></item>
         /// </list>
         /// </remarks>
@@ -167,13 +176,12 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.CustomTopics
         /// connection gone, before it has started waiting for the connection to be re-established.
         /// </exception>
         /// <exception cref="OperationCanceledException">
-        /// Thrown if <paramref name="cancellationToken"/> is canceled, or if the connection client hits a fault that it
-        /// will not recover from while this operation is waiting for the connection. In the latter case, the
+        /// Thrown if <paramref name="cancellationToken"/> is canceled, the application deliberately disconnects, or the
+        /// connection client hits a fault that it will not recover from while this operation waits for the connection. In the latter case, the
         /// <see cref="Exception.InnerException"/> is the <see cref="DeviceException"/> describing that fault.
         /// </exception>
         /// <exception cref="DeviceException">
-        /// Thrown if this operation fails for any reason other than an MQTT reason code, for example because the connection
-        /// dropped while the operation was in flight.
+        /// Thrown if this operation fails for a reason other than an MQTT reason code or a recoverable connection loss.
         /// </exception>
         /// <exception cref="ObjectDisposedException">Thrown if this client has been disposed.</exception>
         public async Task<MqttPublishAck> PublishAsync(MqttPublish publish, CancellationToken cancellationToken = default)
@@ -243,10 +251,8 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.CustomTopics
         /// sent (for example, because the connection dropped and is being re-established, or because the device is being
         /// re-provisioned), this method waits until the connection client has re-established this device's presence on IoT
         /// hub, then sends the SUBSCRIBE. Any <see cref="IConnectionClient.DeviceIdPlaceholder"/> is replaced with the
-        /// device ID at that time. However, if the connection drops after the SUBSCRIBE was sent but before its SUBACK
-        /// arrived, the SUBSCRIBE is not re-sent. Instead, this method throws a <see cref="DeviceException"/> whose
-        /// <see cref="DeviceException.Retryability"/> is         <see cref="ErrorRetryability.Retryable"/>, and this request leaves
-                /// <see cref="GetSubscribedTopics"/> as it was. Subscribe again to retry.
+        /// device ID at that time. If the connection drops after the SUBSCRIBE was sent but before its SUBACK arrived,
+        /// the SUBSCRIBE is re-sent after reconnection, including after re-provisioning.
         /// </description></item>
         /// <item><description>
         /// <b>A fatal disconnection.</b> If the connection client hits a fault that it will not recover from (which it
@@ -266,13 +272,9 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.CustomTopics
         /// <b>A deliberate disconnection by the application.</b> If <see cref="AbstractConnectionClient.DisconnectAsync"/>
         /// has been called before this method sends the SUBSCRIBE (including while this method waits for an earlier
         /// subscribe or unsubscribe on this client to finish), this method throws a <see cref="NotSupportedException"/>
-        /// without sending anything. If it is called while the SUBSCRIBE is awaiting its SUBACK, this method throws a
-        /// <see cref="DeviceException"/>, as described above for a dropped connection. If it is called while this method
-        /// is waiting for a lost connection to be re-established, this method keeps waiting until the application connects
-        /// the connection client again, the connection client faults, or <paramref name="cancellationToken"/> is canceled.
-        /// Use a cancellable token so that this wait is bounded. If it is called just as this method finds the connection
-        /// gone, before this method has started waiting, this method throws a <see cref="MqttClientNotConnectedException"/>
-        /// instead. In every case where this method throws, this request leaves <see cref="GetSubscribedTopics"/> as it was.
+        /// without sending anything. If it interrupts a SUBSCRIBE awaiting its SUBACK, or is called while this method
+        /// waits for a lost connection to be re-established, this method throws an <see cref="OperationCanceledException"/>.
+        /// In every case where this method throws, this request leaves <see cref="GetSubscribedTopics"/> as it was.
         /// </description></item>
         /// </list>
         /// </remarks>
@@ -285,13 +287,12 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.CustomTopics
         /// connection gone, before it has started waiting for the connection to be re-established.
         /// </exception>
         /// <exception cref="OperationCanceledException">
-        /// Thrown if <paramref name="cancellationToken"/> is canceled, or if the connection client hits a fault that it
-        /// will not recover from while this operation is waiting for the connection. In the latter case, the
+        /// Thrown if <paramref name="cancellationToken"/> is canceled, the application deliberately disconnects, or the
+        /// connection client hits a fault that it will not recover from while this operation waits for the connection. In the latter case, the
         /// <see cref="Exception.InnerException"/> is the <see cref="DeviceException"/> describing that fault.
         /// </exception>
         /// <exception cref="DeviceException">
-        /// Thrown if this operation fails for any reason other than an MQTT reason code, for example because the connection
-        /// dropped while the operation was in flight.
+        /// Thrown if this operation fails for a reason other than an MQTT reason code or a recoverable connection loss.
         /// </exception>
         /// <exception cref="ObjectDisposedException">Thrown if this client has been disposed.</exception>
         public async Task<MqttSubscribeAck> SubscribeAsync(MqttSubscribe subscribe, CancellationToken cancellationToken = default)
@@ -436,10 +437,8 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.CustomTopics
         /// hub, then sends the UNSUBSCRIBE. Any <see cref="IConnectionClient.DeviceIdPlaceholder"/> is replaced with the
         /// device ID at that time. The topics being unsubscribed from are not re-subscribed to upon that reconnection, so
         /// they stop being tracked as subscribed (see <see cref="GetSubscribedTopics"/>) whatever the outcome of this
-        /// method. However, if the connection drops after the UNSUBSCRIBE was sent but before its UNSUBACK arrived, the
-        /// UNSUBSCRIBE is not re-sent. Instead, this method throws a <see cref="DeviceException"/> whose
-        /// <see cref="DeviceException.Retryability"/> is <see cref="ErrorRetryability.Retryable"/>, the topics stay tracked
-        /// as subscribed, and they are re-subscribed to when the connection is re-established. Unsubscribe again to retry.
+        /// method. If the connection drops after the UNSUBSCRIBE was sent but before its UNSUBACK arrived, the
+        /// UNSUBSCRIBE is re-sent after reconnection, including after re-provisioning.
         /// </description></item>
         /// <item><description>
         /// <b>A fatal disconnection.</b> If the connection client hits a fault that it will not recover from (which it
@@ -461,12 +460,8 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.CustomTopics
         /// has been called before this method sends the UNSUBSCRIBE (including while this method waits for an earlier
         /// subscribe or unsubscribe on this client to finish), this method throws a <see cref="NotSupportedException"/>
         /// without sending anything, and the topics stay tracked as subscribed. If it is called while the UNSUBSCRIBE is
-        /// awaiting its UNSUBACK, this method throws a <see cref="DeviceException"/>, as described above for a dropped
-        /// connection. If it is called while this method is waiting for a lost connection to be re-established, this
-        /// method keeps waiting until the application connects the connection client again, the connection client faults,
-        /// or <paramref name="cancellationToken"/> is canceled. Use a cancellable token so that this wait is bounded. If it
-        /// is called just as this method finds the connection gone, before this method has started waiting, this method
-        /// throws a <see cref="MqttClientNotConnectedException"/> instead.
+        /// awaiting its UNSUBACK, or while this method waits for a lost connection to be re-established, this method
+        /// throws an <see cref="OperationCanceledException"/>.
         /// </description></item>
         /// </list>
         /// </remarks>
@@ -479,13 +474,12 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.CustomTopics
         /// connection gone, before it has started waiting for the connection to be re-established.
         /// </exception>
         /// <exception cref="OperationCanceledException">
-        /// Thrown if <paramref name="cancellationToken"/> is canceled, or if the connection client hits a fault that it
-        /// will not recover from while this operation is waiting for the connection. In the latter case, the
+        /// Thrown if <paramref name="cancellationToken"/> is canceled, the application deliberately disconnects, or the
+        /// connection client hits a fault that it will not recover from while this operation waits for the connection. In the latter case, the
         /// <see cref="Exception.InnerException"/> is the <see cref="DeviceException"/> describing that fault.
         /// </exception>
         /// <exception cref="DeviceException">
-        /// Thrown if this operation fails for any reason other than an MQTT reason code, for example because the connection
-        /// dropped while the operation was in flight.
+        /// Thrown if this operation fails for a reason other than an MQTT reason code or a recoverable connection loss.
         /// </exception>
         /// <exception cref="ObjectDisposedException">Thrown if this client has been disposed.</exception>
         public async Task<MqttUnsubscribeAck> UnsubscribeAsync(MqttUnsubscribe unsubscribe, CancellationToken cancellationToken = default)
@@ -757,10 +751,9 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.CustomTopics
                         }
 
                         // Read and invoke the event under the disposal lock so disposal cannot return between the check and callback start.
-                        var handlers = CustomTopicPublishReceivedAsync;
-                        if (handlers != null)
+                        if (_customTopicPublishReceived.HasHandlers)
                         {
-                            callbackTask = InvokeAllHandlersAsync(handlers, args);
+                            callbackTask = _customTopicPublishReceived.InvokeAsync(args, InvokePublishHandlerUnlessDisposedAsync);
                         }
                         else
                         {
@@ -788,28 +781,13 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.CustomTopics
             }
         }
 
-        /// <summary>
-        /// Invokes every handler attached to a multicast async event and waits for all of them. Invoking the multicast
-        /// delegate directly would only return (and so only await) the last handler's task.
-        /// </summary>
-        private static async Task InvokeAllHandlersAsync(Func<MqttPublishReceivedEventArgs, Task> handlers, MqttPublishReceivedEventArgs args)
+        private Task InvokePublishHandlerUnlessDisposedAsync(Func<Task> handler)
         {
-            Delegate[] invocationList = handlers.GetInvocationList();
-            var tasks = new Task[invocationList.Length];
-            for (int i = 0; i < invocationList.Length; i++)
+            // Later handlers may start after an await, so admit each one under the disposal lock.
+            lock (_subscribedCustomTopicsLock)
             {
-                try
-                {
-                    tasks[i] = ((Func<MqttPublishReceivedEventArgs, Task>)invocationList[i]).Invoke(args);
-                }
-                catch (Exception ex)
-                {
-                    // A handler throwing synchronously shouldn't prevent the remaining handlers from running
-                    tasks[i] = Task.FromException(ex);
-                }
+                return _isDisposed ? Task.CompletedTask : handler();
             }
-
-            await Task.WhenAll(tasks);
         }
 
         /// <summary>

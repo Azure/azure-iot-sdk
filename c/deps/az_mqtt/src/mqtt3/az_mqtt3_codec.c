@@ -60,6 +60,11 @@ az_mqtt3_codec_encode_connect(az_span* dest, az_mqtt3_connect_options const* opt
   _az_PRECONDITION_NOT_NULL(dest);
   _az_PRECONDITION_NOT_NULL(opts);
 
+  if (opts->will != NULL && !_az_mqtt_qos_valid(opts->will->qos))
+  {
+    return AZ_ERROR_ARG;
+  }
+
   int32_t remaining = _connect_remaining_length(opts);
 
   // Fixed header
@@ -159,8 +164,9 @@ AZ_NODISCARD az_result az_mqtt3_codec_encode_publish(
   _az_PRECONDITION_NOT_NULL(dest);
   _az_PRECONDITION_NOT_NULL(opts);
 
-  // 4.7.3: a Topic Name has at least one character and no wildcards.
-  if (az_span_size(opts->topic) == 0 || _az_mqtt_topic_has_wildcard(opts->topic))
+  // 4.7.3: a Topic Name has at least one character and no wildcards. 3.3.1.2: QoS 3 is malformed.
+  if (az_span_size(opts->topic) == 0 || _az_mqtt_topic_has_wildcard(opts->topic)
+      || !_az_mqtt_qos_valid(opts->qos))
   {
     return AZ_ERROR_ARG;
   }
@@ -271,6 +277,10 @@ AZ_NODISCARD az_result az_mqtt3_codec_encode_subscribe(
 
   for (int32_t i = 0; i < sub_count; i++)
   {
+    if (!_az_mqtt_qos_valid(subs[i].qos))
+    {
+      return AZ_ERROR_ARG;
+    }
     remaining += 2 + az_span_size(subs[i].topic_filter) + 1; // string + options byte
   }
 

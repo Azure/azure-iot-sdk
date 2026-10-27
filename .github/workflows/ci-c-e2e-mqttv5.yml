@@ -12,7 +12,10 @@
 #   vars:    E2E_MQTTV5_SHARED_ID_SCOPE (unset: the workflow skips),
 #            E2E_MQTTV5_SHARED_DPS_HOST, plus those of
 #            ci-c-e2e-mqttv5-adr-namespace.yml
-#   secrets: E2E_MQTTV5_SHARED_GROUP_CA, E2E_MQTTV5_SHARED_IOTHUB_CS,
+#   secrets: E2E_MQTTV5_SHARED_GROUP_CA,
+#            E2E_MQTTV5_SHARED_IOTHUB_SERVICE_CS ('service' policy, passed as
+#            E2E_MQTTV5_SHARED_IOTHUB_CS; the secret of that name holds the
+#            .NET e2e's iothubowner one),
 #            E2E_MQTTV5_SHARED_EVENTHUB_CS, AZURE_CLIENT_ID, AZURE_TENANT_ID
 #   No SAS: mqttv5 hubs accept X.509 only.
 #
@@ -100,7 +103,7 @@ jobs:
         shell: pwsh
         env:
           E2E_MQTTV5_SHARED_GROUP_CA: ${{ secrets.E2E_MQTTV5_SHARED_GROUP_CA }}
-          E2E_MQTTV5_SHARED_IOTHUB_CS: ${{ secrets.E2E_MQTTV5_SHARED_IOTHUB_CS }}
+          E2E_MQTTV5_SHARED_IOTHUB_CS: ${{ secrets.E2E_MQTTV5_SHARED_IOTHUB_SERVICE_CS }}
           E2E_MQTTV5_SHARED_EVENTHUB_CS: ${{ secrets.E2E_MQTTV5_SHARED_EVENTHUB_CS }}
           E2E_MQTTV5_SHARED_ID_SCOPE: ${{ vars.E2E_MQTTV5_SHARED_ID_SCOPE }}
           E2E_MQTTV5_SHARED_DPS_HOST: ${{ vars.E2E_MQTTV5_SHARED_DPS_HOST }}
@@ -172,7 +175,7 @@ jobs:
         shell: pwsh
         env:
           E2E_MQTTV5_SHARED_GROUP_CA: ${{ secrets.E2E_MQTTV5_SHARED_GROUP_CA }}
-          E2E_MQTTV5_SHARED_IOTHUB_CS: ${{ secrets.E2E_MQTTV5_SHARED_IOTHUB_CS }}
+          E2E_MQTTV5_SHARED_IOTHUB_CS: ${{ secrets.E2E_MQTTV5_SHARED_IOTHUB_SERVICE_CS }}
           E2E_MQTTV5_SHARED_EVENTHUB_CS: ${{ secrets.E2E_MQTTV5_SHARED_EVENTHUB_CS }}
           E2E_MQTTV5_SHARED_ID_SCOPE: ${{ vars.E2E_MQTTV5_SHARED_ID_SCOPE }}
           E2E_MQTTV5_SHARED_DPS_HOST: ${{ vars.E2E_MQTTV5_SHARED_DPS_HOST }}
@@ -238,7 +241,7 @@ jobs:
         shell: pwsh
         env:
           E2E_MQTTV5_SHARED_GROUP_CA: ${{ secrets.E2E_MQTTV5_SHARED_GROUP_CA }}
-          E2E_MQTTV5_SHARED_IOTHUB_CS: ${{ secrets.E2E_MQTTV5_SHARED_IOTHUB_CS }}
+          E2E_MQTTV5_SHARED_IOTHUB_CS: ${{ secrets.E2E_MQTTV5_SHARED_IOTHUB_SERVICE_CS }}
           E2E_MQTTV5_SHARED_EVENTHUB_CS: ${{ secrets.E2E_MQTTV5_SHARED_EVENTHUB_CS }}
           E2E_MQTTV5_SHARED_ID_SCOPE: ${{ vars.E2E_MQTTV5_SHARED_ID_SCOPE }}
           E2E_MQTTV5_SHARED_DPS_HOST: ${{ vars.E2E_MQTTV5_SHARED_DPS_HOST }}
@@ -304,7 +307,7 @@ jobs:
         shell: pwsh
         env:
           E2E_MQTTV5_SHARED_GROUP_CA: ${{ secrets.E2E_MQTTV5_SHARED_GROUP_CA }}
-          E2E_MQTTV5_SHARED_IOTHUB_CS: ${{ secrets.E2E_MQTTV5_SHARED_IOTHUB_CS }}
+          E2E_MQTTV5_SHARED_IOTHUB_CS: ${{ secrets.E2E_MQTTV5_SHARED_IOTHUB_SERVICE_CS }}
           E2E_MQTTV5_SHARED_EVENTHUB_CS: ${{ secrets.E2E_MQTTV5_SHARED_EVENTHUB_CS }}
           E2E_MQTTV5_SHARED_ID_SCOPE: ${{ vars.E2E_MQTTV5_SHARED_ID_SCOPE }}
           E2E_MQTTV5_SHARED_DPS_HOST: ${{ vars.E2E_MQTTV5_SHARED_DPS_HOST }}
@@ -370,7 +373,7 @@ jobs:
         shell: pwsh
         env:
           E2E_MQTTV5_SHARED_GROUP_CA: ${{ secrets.E2E_MQTTV5_SHARED_GROUP_CA }}
-          E2E_MQTTV5_SHARED_IOTHUB_CS: ${{ secrets.E2E_MQTTV5_SHARED_IOTHUB_CS }}
+          E2E_MQTTV5_SHARED_IOTHUB_CS: ${{ secrets.E2E_MQTTV5_SHARED_IOTHUB_SERVICE_CS }}
           E2E_MQTTV5_SHARED_EVENTHUB_CS: ${{ secrets.E2E_MQTTV5_SHARED_EVENTHUB_CS }}
           E2E_MQTTV5_SHARED_ID_SCOPE: ${{ vars.E2E_MQTTV5_SHARED_ID_SCOPE }}
           E2E_MQTTV5_SHARED_DPS_HOST: ${{ vars.E2E_MQTTV5_SHARED_DPS_HOST }}
@@ -467,7 +470,7 @@ jobs:
         shell: pwsh
         env:
           E2E_MQTTV5_SHARED_GROUP_CA: ${{ secrets.E2E_MQTTV5_SHARED_GROUP_CA }}
-          E2E_MQTTV5_SHARED_IOTHUB_CS: ${{ secrets.E2E_MQTTV5_SHARED_IOTHUB_CS }}
+          E2E_MQTTV5_SHARED_IOTHUB_CS: ${{ secrets.E2E_MQTTV5_SHARED_IOTHUB_SERVICE_CS }}
           E2E_MQTTV5_SHARED_EVENTHUB_CS: ${{ secrets.E2E_MQTTV5_SHARED_EVENTHUB_CS }}
           E2E_MQTTV5_SHARED_ID_SCOPE: ${{ vars.E2E_MQTTV5_SHARED_ID_SCOPE }}
           E2E_MQTTV5_SHARED_DPS_HOST: ${{ vars.E2E_MQTTV5_SHARED_DPS_HOST }}
@@ -539,7 +542,7 @@ jobs:
         shell: pwsh
         env:
           E2E_MQTTV5_SHARED_GROUP_CA: ${{ secrets.E2E_MQTTV5_SHARED_GROUP_CA }}
-          E2E_MQTTV5_SHARED_IOTHUB_CS: ${{ secrets.E2E_MQTTV5_SHARED_IOTHUB_CS }}
+          E2E_MQTTV5_SHARED_IOTHUB_CS: ${{ secrets.E2E_MQTTV5_SHARED_IOTHUB_SERVICE_CS }}
           E2E_MQTTV5_SHARED_EVENTHUB_CS: ${{ secrets.E2E_MQTTV5_SHARED_EVENTHUB_CS }}
           E2E_MQTTV5_SHARED_ID_SCOPE: ${{ vars.E2E_MQTTV5_SHARED_ID_SCOPE }}
           E2E_MQTTV5_SHARED_DPS_HOST: ${{ vars.E2E_MQTTV5_SHARED_DPS_HOST }}

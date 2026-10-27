@@ -5,6 +5,7 @@ using Microsoft.Azure.Iot.Device.Authentication;
 using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Models.Telemetry;
 using Microsoft.Azure.Iot.Device.Unified.Connection;
+using Microsoft.Azure.Iot.Device.Unified.Models;
 using Microsoft.Azure.Iot.Device.Unified.Telemetry;
 using SetupSampleDevice;
 using System.Diagnostics;
@@ -56,7 +57,7 @@ internal class Program
         try
         {
             using var certificate = SampleConstants.LoadBootCertificate();
-            X509AuthenticationProvider authentication = new(certificate);
+            X509AuthenticationProvider authentication = new(certificate, null);
             ProvisioningSettings provisioningSettings = new(SampleConstants.LoadIdScope());
             using ConnectionClient connectionClient = new(new ConnectionClientOptions
             {

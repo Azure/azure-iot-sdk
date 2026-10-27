@@ -7,6 +7,7 @@ using Microsoft.Azure.Iot.Device.MqttNetAdapter;
 using Microsoft.Azure.Iot.Device.MQTTnetAdapter;
 using System.Net;
 using Xunit;
+using ConnectionClientOptions = Microsoft.Azure.Iot.Device.MQTTv5.Models.ConnectionClientOptions;
 
 namespace Microsoft.Azure.Iot.Device.IntegrationTests.MQTTv5
 {

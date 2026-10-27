@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
 // See LICENSE file in the project root for full license information.
 
+using Microsoft.Azure.Iot.Device.Events;
 using Microsoft.Azure.Iot.Device.Exceptions;
 using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Mqtt;
@@ -30,25 +31,67 @@ namespace Microsoft.Azure.Iot.Device
     /// Per-operation (contained) errors from PUBLISH, SUBSCRIBE and UNSUBSCRIBE are not connection-level errors and
     /// are thrown to the caller of those methods rather than being retried or reported here.
     /// </para>
+    /// <para>
+    /// A QoS 1 PUBLISH, SUBSCRIBE or UNSUBSCRIBE to IoT hub whose connection is lost before its PUBACK, SUBACK or
+    /// UNSUBACK arrives is not a contained error: the acknowledgement can never arrive, so it is reported to the caller as
+    /// <see cref="MqttClientNotConnectedException"/>, which tells the caller to send it again once reconnected.
+    /// </para>
     /// </remarks>
     internal class MqttConnectionManager : IDisposable
     {
-        public event Func<MqttPublishReceivedEventArgs, Task>? PublishReceivedAsync;
+        private readonly AsyncEvent<MqttPublishReceivedEventArgs> _publishReceived = new();
+        private readonly AsyncEvent<MqttClientConnectedEventArgs> _connected = new();
+        private readonly AsyncPipelineEvent<MqttConnect> _connecting = new();
+        private readonly AsyncEvent<MqttClientDisconnectedEventArgs> _disconnected = new();
+        private readonly AsyncEvent<MqttConnectionFaultedEventArgs> _connectionFaulted = new();
 
-        public event Func<MqttClientConnectedEventArgs, Task>? ConnectedAsync;
+        public event Func<MqttPublishReceivedEventArgs, Task>? PublishReceivedAsync
+        {
+            add => _publishReceived.Add(value);
+            remove => _publishReceived.Remove(value);
+        }
 
-        public event Func<MqttConnect, CancellationToken, Task<MqttConnect>>? ConnectingAsync;
+        public event Func<MqttClientConnectedEventArgs, Task>? ConnectedAsync
+        {
+            add => _connected.Add(value);
+            remove => _connected.Remove(value);
+        }
+
+        /// <remarks>
+        /// Handlers are chained in the order they were added, each receiving the CONNECT packet the previous one returned.
+        /// </remarks>
+        public event Func<MqttConnect, CancellationToken, Task<MqttConnect>>? ConnectingAsync
+        {
+            add => _connecting.Add(value);
+            remove => _connecting.Remove(value);
+        }
 
         /// <summary>
-        /// Raised anytime this layer detects a disconnection.
+        /// Raised exactly once for each connection that <see cref="ConnectedAsync"/> reported, once that connection has
+        /// been lost.
         /// </summary>
-        public event Func<MqttClientDisconnectedEventArgs, Task>? DisconnectedAsync;
+        /// <remarks>
+        /// The underlying client's own disconnect callback is not trusted as is: it may be raised for a connect attempt
+        /// that never connected, more than once for one disconnection, or late, after a newer connection is already up.
+        /// Such callbacks are filtered out, so this is never raised spuriously. It is always raised for a connection
+        /// before <see cref="ConnectedAsync"/> is raised for the next one, and before this layer starts reconnecting, so
+        /// that handlers can abandon work that belonged to the lost connection without affecting the next one.
+        /// </remarks>
+        public event Func<MqttClientDisconnectedEventArgs, Task>? DisconnectedAsync
+        {
+            add => _disconnected.Add(value);
+            remove => _disconnected.Remove(value);
+        }
 
         /// <summary>
         /// Raised when this layer stops maintaining the connection because it hit a terminal or identity-terminal
         /// connection-level error. Retryable errors are handled internally and never raise this event.
         /// </summary>
-        public event Func<MqttConnectionFaultedEventArgs, Task>? ConnectionFaultedAsync;
+        public event Func<MqttConnectionFaultedEventArgs, Task>? ConnectionFaultedAsync
+        {
+            add => _connectionFaulted.Add(value);
+            remove => _connectionFaulted.Remove(value);
+        }
 
         private readonly IRetryPolicy _connectionRetryPolicy;
 
@@ -67,6 +110,20 @@ namespace Microsoft.Azure.Iot.Device
         /// <see cref="ExponentialBackoffRetryPolicy"/>), not here.
         /// </remarks>
         public bool CanReprovision { get; set; }
+
+        /// <summary>
+        /// Asks the owning connection client to switch to its other set of credentials (primary or secondary) for the
+        /// current endpoint after the server rejected the current ones as an identity failure.
+        /// </summary>
+        /// <remarks>
+        /// Returns false when there is nothing to switch to. Each set of credentials is tried at most once between
+        /// successful connects, so an identity failure only ends connection maintenance once both have been rejected.
+        /// The next CONNECT picks up the switched credentials when the owning client patches it.
+        /// </remarks>
+        public Func<CancellationToken, Task<bool>>? TrySwitchCredentialsAsync { get; set; }
+
+        // Set once the credentials have been switched after an identity failure, and cleared by a successful connect.
+        private volatile bool _credentialsSwitchedSinceLastConnect;
 
         /// <summary>
         /// The endpoint the current connection targets, surfaced to the retry policy so it can tell whether it is being
@@ -119,6 +176,17 @@ namespace Microsoft.Azure.Iot.Device
         /// </remarks>
         public bool IsConnectionLifecycleActive => _isDesiredConnected || (!_isClosing && _mostRecentConnect != null);
 
+        internal CancellationToken ConnectionLifetimeCancellationToken
+        {
+            get
+            {
+                lock (_connectionLifetimeCancellationTokenLock)
+                {
+                    return _connectionLifetimeCancellationToken.Token;
+                }
+            }
+        }
+
         private MqttConnect? _mostRecentConnect;
         private bool _isDisposed;
 
@@ -129,7 +197,26 @@ namespace Microsoft.Azure.Iot.Device
         // loop or a reconnection's. DisconnectAsync(desireReconnection: false) cancels this to abandon retrying.
         private CancellationTokenSource? _reconnectionCancellationToken;
 
+        // Cancels operations waiting for this connection to return when the user deliberately disconnects.
+        private CancellationTokenSource _connectionLifetimeCancellationToken = new();
+        private readonly object _connectionLifetimeCancellationTokenLock = new();
+
         private readonly SemaphoreSlim _disconnectedEventLock = new(1);
+
+        // Incremented each time a connection is lost, so that an operation can tell whether the connection it was sent
+        // over was lost before its acknowledgement arrived.
+        private long _disconnectionCount;
+
+        // Guards _isConnectionUp and _connectionLossNotification, so that each connection that came up is reported as
+        // lost exactly once.
+        private readonly object _connectionStateLock = new();
+
+        // Whether a connection has been reported through ConnectedAsync and not yet through DisconnectedAsync.
+        private bool _isConnectionUp;
+
+        // Completes once the most recent connection loss has been reported through DisconnectedAsync. The next
+        // connection is only reported through ConnectedAsync after that.
+        private Task _connectionLossNotification = Task.CompletedTask;
 
         private readonly IMqttClient _underlyingMqttClient;
 
@@ -139,67 +226,139 @@ namespace Microsoft.Azure.Iot.Device
             _connectionAttemptTimeout = connectionAttemptTimeout;
             _connectionRetryPolicy = retryPolicy;
 
-            _underlyingMqttClient.DisconnectedAsync += InternalDisconnectedAsync;
-
-            _underlyingMqttClient.DisconnectedAsync += DelegateDisconnectedAsync;
+            _underlyingMqttClient.DisconnectedAsync += HandleUnderlyingDisconnectedAsync;
             _underlyingMqttClient.ConnectingAsync += DelegateConnectingAsync;
-            _underlyingMqttClient.ConnectedAsync += DelegateConnectedAsync;
+            _underlyingMqttClient.ConnectedAsync += HandleUnderlyingConnectedAsync;
             _underlyingMqttClient.PublishReceivedAsync += DelegatePublishReceivedAsync;
         }
 
         private async Task DelegatePublishReceivedAsync(MqttPublishReceivedEventArgs args)
         {
+            try
+            {
+                await _publishReceived.InvokeAsync(args);
+            }
+            catch (Exception e)
+            {
+                Trace.TraceError("The publish handler threw while being notified of a publish. {0}", e);
+            }
+        }
 
-            if (PublishReceivedAsync != null)
+        private async Task HandleUnderlyingConnectedAsync(MqttClientConnectedEventArgs args)
+        {
+            TaskCompletionSource? lateLossNotified = null;
+            Task previousLossNotification;
+            lock (_connectionStateLock)
+            {
+                previousLossNotification = _connectionLossNotification;
+
+                if (_isConnectionUp)
+                {
+                    // The previous connection's disconnect callback has not arrived yet, so report its loss now, before
+                    // this connection. The late callback will then find this connection up and be dropped.
+                    lateLossNotified = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                    _connectionLossNotification = lateLossNotified.Task;
+                }
+
+                _isConnectionUp = true;
+            }
+
+            // Handlers of the previous connection's loss must finish before handlers of this connection start, so that
+            // abandoning the previous connection's work cannot affect this one's.
+            await previousLossNotification;
+
+            if (lateLossNotified != null)
             {
                 try
                 {
-                    await PublishReceivedAsync.Invoke(args);
+                    await NotifyConnectionLostAsync(new MqttClientDisconnectedEventArgs()
+                    {
+                        Reason = MqttDisconnectReason.UnspecifiedError,
+                        ReasonString = "The previous connection was lost before this connection was established.",
+                    });
                 }
-                catch (Exception e)
+                finally
                 {
-                    Trace.TraceError("The publish handler threw while being notified of a publish. {0}", e);
+                    lateLossNotified.SetResult();
                 }
             }
+
+            await DelegateConnectedAsync(args);
+        }
+
+        /// <summary>
+        /// Report a connection loss from the underlying client, unless no connection that came up was actually lost.
+        /// </summary>
+        /// <remarks>
+        /// The underlying client may raise its disconnect callback for a connect attempt that never connected, more than
+        /// once for one disconnection, or late, after a newer connection is already up. Only the first callback after a
+        /// connection came up, and while the underlying client is not connected, is a connection loss.
+        /// </remarks>
+        private async Task HandleUnderlyingDisconnectedAsync(MqttClientDisconnectedEventArgs args)
+        {
+            var lossNotified = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            Task previousLossNotification;
+            lock (_connectionStateLock)
+            {
+                if (!_isConnectionUp || _underlyingMqttClient.IsConnected())
+                {
+                    Trace.TraceInformation("Ignoring a disconnect callback that does not correspond to a lost connection. Disconnect reason: {0}", args.Reason);
+                    return;
+                }
+
+                _isConnectionUp = false;
+                previousLossNotification = _connectionLossNotification;
+                _connectionLossNotification = lossNotified.Task;
+            }
+
+            try
+            {
+                await previousLossNotification;
+                await NotifyConnectionLostAsync(args);
+            }
+            finally
+            {
+                lossNotified.SetResult();
+            }
+
+            // Only start reconnecting once handlers have abandoned the lost connection's work. Reconnection is not awaited
+            // because it may retry for as long as the retry policy allows, and the underlying client's callback must not
+            // be held up for that long.
+            _ = InternalDisconnectedAsync(args);
+        }
+
+        private async Task NotifyConnectionLostAsync(MqttClientDisconnectedEventArgs args)
+        {
+            Interlocked.Increment(ref _disconnectionCount);
+            await DelegateDisconnectedAsync(args);
         }
 
         private async Task DelegateConnectedAsync(MqttClientConnectedEventArgs args)
         {
-            if (ConnectedAsync != null)
+            try
             {
-                try
-                {
-                    await ConnectedAsync.Invoke(args);
-                }
-                catch (Exception e)
-                {
-                    Trace.TraceError("The connected handler threw while being notified of a connection. {0}", e);
-                }
+                await _connected.InvokeAsync(args);
+            }
+            catch (Exception e)
+            {
+                Trace.TraceError("The connected handler threw while being notified of a connection. {0}", e);
             }
         }
 
-        private async Task<MqttConnect> DelegateConnectingAsync(MqttConnect connect, CancellationToken cancellationToken)
+        private Task<MqttConnect> DelegateConnectingAsync(MqttConnect connect, CancellationToken cancellationToken)
         {
-            if (ConnectingAsync != null)
-            {
-                connect = await ConnectingAsync.Invoke(connect, cancellationToken);
-            }
-
-            return connect;
+            return _connecting.InvokeAsync(connect, cancellationToken);
         }
 
         private async Task DelegateDisconnectedAsync(MqttClientDisconnectedEventArgs args)
         {
-            if (DisconnectedAsync != null)
+            try
             {
-                try
-                {
-                    await DisconnectedAsync.Invoke(args);
-                }
-                catch (Exception e)
-                {
-                    Trace.TraceError("The disconnected handler threw while being notified of a disconnection. {0}", e);
-                }
+                await _disconnected.InvokeAsync(args);
+            }
+            catch (Exception e)
+            {
+                Trace.TraceError("The disconnected handler threw while being notified of a disconnection. {0}", e);
             }
         }
 
@@ -257,6 +416,15 @@ namespace Microsoft.Azure.Iot.Device
         {
             _mostRecentConnect = connect;
             _isClosing = false;
+            _credentialsSwitchedSinceLastConnect = false;
+
+            lock (_connectionLifetimeCancellationTokenLock)
+            {
+                CancellationTokenSource previousConnectionLifetimeCancellationToken = _connectionLifetimeCancellationToken;
+                _connectionLifetimeCancellationToken = new CancellationTokenSource();
+                previousConnectionLifetimeCancellationToken.Cancel();
+                previousConnectionLifetimeCancellationToken.Dispose();
+            }
 
             // Link the caller's token with this layer's own token so that DisconnectAsync(desireReconnection: false)
             // can abandon the initial connect's retry loop just as it abandons a reconnection's.
@@ -314,7 +482,12 @@ namespace Microsoft.Azure.Iot.Device
                 // "Disconnected" callback both observe it and stand down rather than racing this call.
                 _isClosing = true;
                 _isDesiredConnected = false;
+                Interlocked.MemoryBarrier();
                 _reconnectionCancellationToken?.Cancel();
+                lock (_connectionLifetimeCancellationTokenLock)
+                {
+                    _connectionLifetimeCancellationToken.Cancel();
+                }
             }
 
             await _underlyingMqttClient.DisconnectAsync(options, cancellationToken);
@@ -331,14 +504,18 @@ namespace Microsoft.Azure.Iot.Device
             _isClosing = true;
             _isDesiredConnected = false;
 
-            _underlyingMqttClient.DisconnectedAsync -= InternalDisconnectedAsync;
-            _underlyingMqttClient.DisconnectedAsync -= DelegateDisconnectedAsync;
+            _underlyingMqttClient.DisconnectedAsync -= HandleUnderlyingDisconnectedAsync;
             _underlyingMqttClient.ConnectingAsync -= DelegateConnectingAsync;
-            _underlyingMqttClient.ConnectedAsync -= DelegateConnectedAsync;
+            _underlyingMqttClient.ConnectedAsync -= HandleUnderlyingConnectedAsync;
             _underlyingMqttClient.PublishReceivedAsync -= DelegatePublishReceivedAsync;
 
             _reconnectionCancellationToken?.Cancel();
             _reconnectionCancellationToken?.Dispose();
+            lock (_connectionLifetimeCancellationTokenLock)
+            {
+                _connectionLifetimeCancellationToken.Cancel();
+                _connectionLifetimeCancellationToken.Dispose();
+            }
             _disconnectedEventLock.Dispose();
 
             // The underlying client has an MQTT client as a managed resource that no other client has access to, so always dispose it
@@ -350,7 +527,8 @@ namespace Microsoft.Azure.Iot.Device
 
         private async Task InternalDisconnectedAsync(MqttClientDisconnectedEventArgs args)
         {
-            // MQTTNet's client often triggers the same "OnDisconnect" callback more times than expected, so only start reconnection once
+            // Serialized with the initial connect, which holds this lock while it retries, so that a connection lost
+            // right after being established is reconnected by only one of them.
             await _disconnectedEventLock.WaitAsync();
 
             try
@@ -368,11 +546,20 @@ namespace Microsoft.Azure.Iot.Device
                 }
 
                 DeviceException? disconnectException = Classify(args.Reason);
+                bool switchedCredentials = false;
                 if (disconnectException is { Retryability: not ErrorRetryability.Retryable })
                 {
-                    // The server told us why it hung up, and the reason says that coming back is the wrong move.
-                    await EndConnectionMaintenanceAsync(disconnectException, args);
-                    return;
+                    switchedCredentials = await TrySwitchCredentialsAfterIdentityFaultAsync(disconnectException, ConnectionLifetimeCancellationToken);
+                    if (_isClosing)
+                    {
+                        return;
+                    }
+                    if (!switchedCredentials)
+                    {
+                        // The server told us why it hung up, and the reason says that coming back is the wrong move.
+                        await EndConnectionMaintenanceAsync(disconnectException, args);
+                        return;
+                    }
                 }
 
                 Trace.TraceInformation("Disconnect detected, starting reconnection. Disconnect reason: {0}", args.Reason);
@@ -380,11 +567,19 @@ namespace Microsoft.Azure.Iot.Device
                 _reconnectionCancellationToken?.Dispose();
                 _reconnectionCancellationToken = new CancellationTokenSource();
 
+                // A deliberate close may have landed after the check above but before the new token existed, in which
+                // case it cancelled the previous token instead. Re-check so that close still takes precedence.
+                Interlocked.MemoryBarrier();
+                if (_isClosing)
+                {
+                    return;
+                }
+
                 // The most recent connect cache should be set since at least one connect must happen before this "Disconnected" callback is triggered
                 Debug.Assert(_mostRecentConnect != null);
 
                 // start reconnection if the user didn't initiate this disconnect
-                await MaintainConnectionAsync(_mostRecentConnect!, args, _reconnectionCancellationToken.Token);
+                await MaintainConnectionAsync(_mostRecentConnect!, args, _reconnectionCancellationToken.Token, switchedCredentials);
             }
             catch (Exception e)
             {
@@ -407,8 +602,12 @@ namespace Microsoft.Azure.Iot.Device
         /// what decides whether a terminal failure is thrown to a caller or only reported through the fault event.
         /// </param>
         /// <param name="cancellationToken">Cancels the retry loop.</param>
+        /// <param name="switchedCredentialsBeforeFirstAttempt">
+        /// True when the disconnect that triggered this reconnection rejected the credentials and they were already
+        /// switched, so the first attempt is made at once with the other set.
+        /// </param>
         /// <returns>The CONNACK, or null when reconnection was abandoned.</returns>
-        private async Task<MqttConnectAck?> MaintainConnectionAsync(MqttConnect options, MqttClientDisconnectedEventArgs? lastDisconnect, CancellationToken cancellationToken)
+        private async Task<MqttConnectAck?> MaintainConnectionAsync(MqttConnect options, MqttClientDisconnectedEventArgs? lastDisconnect, CancellationToken cancellationToken, bool switchedCredentialsBeforeFirstAttempt = false)
         {
             // This function is either called when initially connecting the client or when reconnecting it. The behavior
             // of this function should change depending on the context it was called. For instance, thrown exceptions are the expected
@@ -450,7 +649,13 @@ namespace Microsoft.Azure.Iot.Device
                     lastException = deviceException;
                 }
 
-                if (deviceException is { Retryability: not ErrorRetryability.Retryable })
+                // An identity failure only ends maintenance once both sets of credentials have been rejected. Until
+                // then, retry at once with the other set rather than waiting out the retry policy.
+                bool retryWithSwitchedCredentials = switchedCredentialsBeforeFirstAttempt
+                    || await TrySwitchCredentialsAfterIdentityFaultAsync(deviceException, cancellationToken);
+                switchedCredentialsBeforeFirstAttempt = false;
+
+                if (!retryWithSwitchedCredentials && deviceException is { Retryability: not ErrorRetryability.Retryable })
                 {
                     Trace.TraceError("Encountered a fatal exception while maintaining connection {0}", deviceException);
                     await EndConnectionMaintenanceAsync(deviceException, lastDisconnect);
@@ -469,7 +674,11 @@ namespace Microsoft.Azure.Iot.Device
 
                 // Always consult the retry policy when reconnecting, but only consult it on attempt > 1 when
                 // initially connecting
-                if (isReconnection || attemptCount > 1)
+                if (retryWithSwitchedCredentials)
+                {
+                    retryDelay = TimeSpan.Zero;
+                }
+                else if (isReconnection || attemptCount > 1)
                 {
                     RetryGuidance guidance = _connectionRetryPolicy.GetRetryGuidance(attemptCount, lastException, ConnectionEndpoint, out retryDelay);
 
@@ -552,6 +761,18 @@ namespace Microsoft.Azure.Iot.Device
                     using CancellationTokenSource linkedCancellationToken = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, reconnectionTimeoutCancellationToken.Token);
                     MqttConnectAck? mostRecentConnectResult = await TryEstablishConnectionAsync(options, linkedCancellationToken.Token).ConfigureAwait(false);
 
+                    // The server accepted the current credentials, so a later rejection may fall back to the other set again.
+                    _credentialsSwitchedSinceLastConnect = false;
+
+                    if (isReconnection && _isClosing)
+                    {
+                        // The owner deliberately closed the connection while this attempt was completing. The close
+                        // takes precedence, so drop the connection this attempt just established.
+                        Trace.TraceInformation("MQTT reconnection cancelled because the client is being closed.");
+                        await DisconnectSupersededReconnectionAsync().ConfigureAwait(false);
+                        return null;
+                    }
+
                     if (isReconnection)
                     {
                         Trace.TraceInformation("Reconnection finished after successfully connecting to the MQTT broker again.");
@@ -581,6 +802,55 @@ namespace Microsoft.Azure.Iot.Device
                 {
                     attemptCount++;
                 }
+            }
+        }
+
+        /// <summary>
+        /// Switch to the other set of credentials after an identity failure, unless they were already switched since the
+        /// last successful connect.
+        /// </summary>
+        /// <returns>True if the next attempt should be made with the switched credentials.</returns>
+        private async Task<bool> TrySwitchCredentialsAfterIdentityFaultAsync(DeviceException? fault, CancellationToken cancellationToken)
+        {
+            Func<CancellationToken, Task<bool>>? trySwitchCredentials = TrySwitchCredentialsAsync;
+            if (fault is not { Retryability: ErrorRetryability.IdentityTerminal }
+                || _credentialsSwitchedSinceLastConnect
+                || trySwitchCredentials == null)
+            {
+                return false;
+            }
+
+            try
+            {
+                using CancellationTokenSource credentialTimeoutCancellationToken = new();
+                credentialTimeoutCancellationToken.CancelAfter(_connectionAttemptTimeout);
+                using CancellationTokenSource linkedCancellationToken = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, credentialTimeoutCancellationToken.Token);
+                if (!await trySwitchCredentials(linkedCancellationToken.Token).ConfigureAwait(false))
+                {
+                    return false;
+                }
+            }
+            catch (Exception e)
+            {
+                Trace.TraceError("Failed to switch credentials after an identity failure. {0}", e);
+                return false;
+            }
+
+            _credentialsSwitchedSinceLastConnect = true;
+            Trace.TraceWarning("{0} rejected the device's credentials, retrying with its other credentials. {1}", ConnectionEndpoint, fault);
+            return true;
+        }
+
+        private async Task DisconnectSupersededReconnectionAsync()
+        {
+            try
+            {
+                await _underlyingMqttClient.DisconnectAsync(new MqttDisconnect() { Reason = MqttDisconnectReasonCode.NormalDisconnection, SessionExpiryInterval = 0 }, CancellationToken.None).ConfigureAwait(false);
+            }
+            catch (Exception e)
+            {
+                // Best effort: the owner's own close is already tearing this connection down.
+                Trace.TraceWarning("Failed to drop a reconnection that completed after the client was closed. {0}", e);
             }
         }
 
@@ -614,8 +884,7 @@ namespace Microsoft.Azure.Iot.Device
 
             _isDesiredConnected = false;
 
-            Func<MqttConnectionFaultedEventArgs, Task>? handler = ConnectionFaultedAsync;
-            if (handler == null)
+            if (!_connectionFaulted.HasHandlers)
             {
                 Trace.TraceError("Connection maintenance ended with no fault handler attached. {0}", fault);
                 return Task.CompletedTask;
@@ -628,14 +897,7 @@ namespace Microsoft.Azure.Iot.Device
                 ReprovisionRequired = reprovisionRequired,
             };
 
-            try
-            {
-                _ = ObserveConnectionFaultHandlerAsync(handler.Invoke(args));
-            }
-            catch (Exception e)
-            {
-                Trace.TraceError("The connection fault handler threw while being notified of a fatal error. {0}", e);
-            }
+            _ = ObserveConnectionFaultHandlerAsync(_connectionFaulted.InvokeAsync(args));
 
             return Task.CompletedTask;
         }
@@ -684,6 +946,25 @@ namespace Microsoft.Azure.Iot.Device
                         return new DeviceException(connackException.Message, connectingFailed)
                         {
                             Retryability = connackException.Retryability,
+                            IsContained = false,
+                        };
+                    }
+
+                // MQTTnet 5 returns a CONNACK refusal (including NotAuthorized) as a result rather than throwing it; the
+                // adapter maps that result and TryEstablishConnectionAsync turns it into the SDK's own
+                // MqttConnectingFailedException above. MQTTnet only throws this exception to wrap a failure while
+                // exchanging CONNECT/CONNACK (for example the connection closing first), so classify what it wraps.
+                case MQTTnet.Adapter.MqttConnectingFailedException connectingFailed:
+                    {
+                        DeviceException? innerException = Classify(connectingFailed.InnerException, userCancellationRequested);
+                        if (innerException == null)
+                        {
+                            return Retryable(connectingFailed, "The connection attempt failed before the server answered it.");
+                        }
+
+                        return new DeviceException(innerException.Message, connectingFailed)
+                        {
+                            Retryability = innerException.Retryability,
                             IsContained = false,
                         };
                     }
@@ -990,31 +1271,16 @@ namespace Microsoft.Azure.Iot.Device
         /// <param name="throwOnPubackErrorCode">
         /// False to return the PUBACK as-is even if it reports an error, for callers that hand MQTT-level results to the user.
         /// </param>
-        internal async Task<MqttPublishAck> BuildAndPublishAsync(ConnectionEndpoint endpoint, Func<MqttPublish> buildPublish, bool throwOnPubackErrorCode, CancellationToken cancellationToken = default)
+        internal Task<MqttPublishAck> BuildAndPublishAsync(ConnectionEndpoint endpoint, Func<MqttPublish> buildPublish, bool throwOnPubackErrorCode, CancellationToken cancellationToken = default)
         {
-            BeginOperation(endpoint);
-            try
-            {
-                var puback = await _underlyingMqttClient.PublishAsync(buildPublish(), cancellationToken);
-                if (throwOnPubackErrorCode)
-                {
-                    ThrowIfPubackHasErrorCode(puback);
-                }
-
-                return puback;
-            }
-            catch (Exception e) when (e is not DeviceException and not MqttClientNotConnectedException and not OperationCanceledException)
-            {
-                throw new DeviceException("Encountered an exception while publishing", e)
-                {
-                    Retryability = ErrorRetryability.Retryable,
-                    IsContained = true,
-                };
-            }
-            finally
-            {
-                EndOperation(endpoint);
-            }
+            return SendAndSettleAsync(
+                endpoint,
+                buildPublish,
+                _underlyingMqttClient.PublishAsync,
+                publish => publish.QualityOfServiceLevel == MqttQualityOfServiceLevel.AtLeastOnce,
+                throwOnPubackErrorCode ? ThrowIfPubackHasErrorCode : null,
+                "publishing",
+                cancellationToken);
         }
 
         /// <summary>
@@ -1050,31 +1316,16 @@ namespace Microsoft.Azure.Iot.Device
         /// <param name="throwOnSubackErrorCode">
         /// False to return the SUBACK as-is even if it rejects some topic filters, for callers that judge each item themselves.
         /// </param>
-        internal async Task<MqttSubscribeAck> BuildAndSubscribeAsync(ConnectionEndpoint endpoint, Func<MqttSubscribe> buildSubscribe, bool throwOnSubackErrorCode, CancellationToken cancellationToken = default)
+        internal Task<MqttSubscribeAck> BuildAndSubscribeAsync(ConnectionEndpoint endpoint, Func<MqttSubscribe> buildSubscribe, bool throwOnSubackErrorCode, CancellationToken cancellationToken = default)
         {
-            BeginOperation(endpoint);
-            try
-            {
-                var suback = await _underlyingMqttClient.SubscribeAsync(buildSubscribe(), cancellationToken);
-                if (throwOnSubackErrorCode)
-                {
-                    ThrowIfSubackHasErrorCode(suback);
-                }
-
-                return suback;
-            }
-            catch (Exception e) when (e is not DeviceException and not MqttClientNotConnectedException and not OperationCanceledException)
-            {
-                throw new DeviceException("Encountered an exception while subscribing", e)
-                {
-                    Retryability = ErrorRetryability.Retryable,
-                    IsContained = true,
-                };
-            }
-            finally
-            {
-                EndOperation(endpoint);
-            }
+            return SendAndSettleAsync(
+                endpoint,
+                buildSubscribe,
+                _underlyingMqttClient.SubscribeAsync,
+                _ => true,
+                throwOnSubackErrorCode ? ThrowIfSubackHasErrorCode : null,
+                "subscribing",
+                cancellationToken);
         }
 
         /// <summary>
@@ -1111,22 +1362,61 @@ namespace Microsoft.Azure.Iot.Device
         /// False to return the UNSUBACK as-is even if it rejects some topic filters, for callers that hand MQTT-level
         /// results to the user.
         /// </param>
-        internal async Task<MqttUnsubscribeAck> BuildAndUnsubscribeAsync(ConnectionEndpoint endpoint, Func<MqttUnsubscribe> buildUnsubscribe, bool throwOnUnsubackErrorCode, CancellationToken cancellationToken = default)
+        internal Task<MqttUnsubscribeAck> BuildAndUnsubscribeAsync(ConnectionEndpoint endpoint, Func<MqttUnsubscribe> buildUnsubscribe, bool throwOnUnsubackErrorCode, CancellationToken cancellationToken = default)
+        {
+            return SendAndSettleAsync(
+                endpoint,
+                buildUnsubscribe,
+                _underlyingMqttClient.UnsubscribeAsync,
+                _ => true,
+                throwOnUnsubackErrorCode ? ThrowIfUnsubackHasErrorCode : null,
+                "unsubscribing",
+                cancellationToken);
+        }
+
+        /// <summary>
+        /// Admit an operation for the given endpoint, build its packet, send it and settle its acknowledgement.
+        /// </summary>
+        /// <param name="isAcknowledged">
+        /// Whether the packet is one the server acknowledges (a QoS 1 PUBLISH, a SUBSCRIBE or an UNSUBSCRIBE). Only such
+        /// packets sent to IoT hub are reported as <see cref="MqttClientNotConnectedException"/> when the connection is
+        /// lost before their acknowledgement arrives, so that the caller sends them again once reconnected. DPS traffic
+        /// is not, because the provisioning flow starts over from the beginning whenever its connection is lost.
+        /// </param>
+        private async Task<TAck> SendAndSettleAsync<TPacket, TAck>(
+            ConnectionEndpoint endpoint,
+            Func<TPacket> buildPacket,
+            Func<TPacket, CancellationToken, Task<TAck>> send,
+            Func<TPacket, bool> isAcknowledged,
+            Action<TAck>? throwIfAckHasErrorCode,
+            string operationDescription,
+            CancellationToken cancellationToken)
         {
             BeginOperation(endpoint);
             try
             {
-                var unsuback = await _underlyingMqttClient.UnsubscribeAsync(buildUnsubscribe(), cancellationToken);
-                if (throwOnUnsubackErrorCode)
+                TPacket packet = buildPacket();
+                long disconnectionCountBeforeSend = Interlocked.Read(ref _disconnectionCount);
+
+                TAck ack;
+                try
                 {
-                    ThrowIfUnsubackHasErrorCode(unsuback);
+                    ack = await send(packet, cancellationToken);
+                }
+                catch (Exception e) when (endpoint == ConnectionEndpoint.IotHub
+                    && isAcknowledged(packet)
+                    && WasConnectionLostDuring(e, disconnectionCountBeforeSend, cancellationToken))
+                {
+                    throw new MqttClientNotConnectedException(
+                        $"The connection was lost while {operationDescription}, before the acknowledgement arrived.", e);
                 }
 
-                return unsuback;
+                throwIfAckHasErrorCode?.Invoke(ack);
+                return ack;
             }
             catch (Exception e) when (e is not DeviceException and not MqttClientNotConnectedException and not OperationCanceledException)
             {
-                throw new DeviceException("Encountered an exception while unsubscribing", e)
+                throw new DeviceException($"Encountered an exception while {operationDescription}", e)
                 {
                     Retryability = ErrorRetryability.Retryable,
                     IsContained = true,
@@ -1136,6 +1426,27 @@ namespace Microsoft.Azure.Iot.Device
             {
                 EndOperation(endpoint);
             }
+        }
+
+        /// <summary>
+        /// Whether an operation failed because the connection it was sent over was lost before it was acknowledged.
+        /// </summary>
+        /// <remarks>
+        /// This holds for any <see cref="IMqttClient"/>, not just ones that report the loss as
+        /// <see cref="MqttClientNotConnectedException"/>: if a disconnection was reported after the operation was sent,
+        /// or the client is no longer connected, its acknowledgement can never arrive.
+        /// </remarks>
+        private bool WasConnectionLostDuring(Exception e, long disconnectionCountBeforeSend, CancellationToken cancellationToken)
+        {
+            if (e is MqttClientNotConnectedException or DeviceException
+                || (e is OperationCanceledException && cancellationToken.IsCancellationRequested))
+            {
+                // Already reported as a lost connection, already classified, or cancelled by the caller.
+                return false;
+            }
+
+            return Interlocked.Read(ref _disconnectionCount) != disconnectionCountBeforeSend
+                || !_underlyingMqttClient.IsConnected();
         }
 
         public void ThrowIfPubackHasErrorCode(MqttPublishAck puback)

@@ -422,13 +422,19 @@ static az_result _tls_failure(_tls_transport* transport, int ret, bool handshake
 {
   _az_mqtt_io_layer_errors const* const sink = &transport->errors;
   // A certificate whose (extended) key usage does not allow it fails as a bad certificate.
+  // A verify callback's failure (e.g. ESP-IDF's certificate bundle) comes back as
+  // X509_FATAL_ERROR, with no flags; only certificate verification returns it.
   uint32_t const flags = handshake ? mbedtls_ssl_get_verify_result(&transport->ssl) : 0;
+  bool const has_flags = flags != 0 && flags != UINT32_MAX;
   if (handshake
-      && (ret == MBEDTLS_ERR_X509_CERT_VERIFY_FAILED
-          || (ret == MBEDTLS_ERR_SSL_BAD_CERTIFICATE && flags != 0 && flags != UINT32_MAX)))
+      && (ret == MBEDTLS_ERR_X509_CERT_VERIFY_FAILED || ret == MBEDTLS_ERR_X509_FATAL_ERROR
+          || (ret == MBEDTLS_ERR_SSL_BAD_CERTIFICATE && has_flags)))
   {
-    _az_mqtt_io_layer_report(
-        sink, AZ_MQTT_NATIVE_ERROR_TLS_VERIFY, (int32_t)flags, AZ_MQTT_ERROR_TLS_VERIFY);
+    if (has_flags)
+    {
+      _az_mqtt_io_layer_report(
+          sink, AZ_MQTT_NATIVE_ERROR_TLS_VERIFY, (int32_t)flags, AZ_MQTT_ERROR_TLS_VERIFY);
+    }
     _az_mqtt_io_layer_report(sink, AZ_MQTT_NATIVE_ERROR_TLS, ret, AZ_MQTT_ERROR_TLS_VERIFY);
     return AZ_MQTT_ERROR_TLS_VERIFY;
   }

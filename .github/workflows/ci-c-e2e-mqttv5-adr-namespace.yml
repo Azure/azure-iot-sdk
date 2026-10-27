@@ -15,7 +15,9 @@
 #   vars:    E2E_MQTTV5_SHARED_SUBSCRIPTION_ID, E2E_MQTTV5_SHARED_RESOURCE_GROUP,
 #            E2E_MQTTV5_SHARED_HUB_NAME, E2E_MQTTV5_SHARED_DPS_NAME,
 #            E2E_MQTTV5_SHARED_ADR_NAMESPACE,
-#            E2E_MQTTV5_SHARED_ADR_API_VERSION (optional; default 2026-11-02-preview)
+#            E2E_MQTTV5_SHARED_ADR_API_VERSION (optional; default 2026-11-02-preview),
+#            E2E_MQTTV5_SHARED_SU_INSTANCE (optional; Software Updates instance in the
+#            resource group, linked as updating/su-1)
 #   secrets: AZURE_CLIENT_ID, AZURE_TENANT_ID (OIDC). The identity needs
 #            Contributor on the resource group. Grant the link's role
 #            assignments on the resource group once; otherwise it also needs
@@ -48,10 +50,11 @@ jobs:
     concurrency:
       group: mqttv5-adr-namespace
       cancel-in-progress: false
-    # Above the script's worst case: delete wait 15 + namespace 10 + role
-    # grants 14 + 4 link attempts x 13 + 3 settle waits x 5 + reconcile 5 +
-    # DPS 5 = 116 min, plus ARM latency.
-    timeout-minutes: 135
+    # Above the script's worst case: operation wait 15 + delete wait 15 +
+    # namespace 10 + role grants 14 + 4 link attempts x 13 + 3 settle waits x 5 +
+    # reconcile 5 + update instance (grants 6 + 4 attempts x 13) + DPS 5 =
+    # 189 min, plus ARM latency.
+    timeout-minutes: 210
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -74,9 +77,11 @@ jobs:
           DPS_NAME: ${{ vars.E2E_MQTTV5_SHARED_DPS_NAME }}
           ADR_NAMESPACE: ${{ vars.E2E_MQTTV5_SHARED_ADR_NAMESPACE }}
           ADR_API_VERSION: ${{ vars.E2E_MQTTV5_SHARED_ADR_API_VERSION }}
+          SU_INSTANCE: ${{ vars.E2E_MQTTV5_SHARED_SU_INSTANCE }}
         run: |
           $extra = @{}
           if ($env:ADR_API_VERSION) { $extra.AdrApiVersion = $env:ADR_API_VERSION }
+          if ($env:SU_INSTANCE) { $extra.UpdateInstanceName = $env:SU_INSTANCE }
           ./c/eng/e2e-mqttv5-adr-namespace.ps1 -SubscriptionId $env:SUBSCRIPTION_ID `
             -ResourceGroup $env:RESOURCE_GROUP -HubName $env:HUB_NAME `
             -DpsName $env:DPS_NAME -NamespaceName $env:ADR_NAMESPACE @extra

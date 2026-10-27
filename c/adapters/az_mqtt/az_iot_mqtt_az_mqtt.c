@@ -89,8 +89,9 @@ az_iot_result az_iot_az_mqtt_session_result(az_result rc)
   {
     return AZ_IOT_ERR_NOT_SUPPORTED;
   }
-  // A CONNECT or an inbound packet larger than the buffers.
-  if (rc == AZ_ERROR_NOT_ENOUGH_SPACE)
+  // A CONNECT or an inbound packet larger than the buffers; MQTT 5: an inbound packet over the
+  // advertised Maximum Packet Size (the receive buffer size), refused after its fixed header.
+  if (rc == AZ_ERROR_NOT_ENOUGH_SPACE || rc == AZ_MQTT_ERROR_PACKET_TOO_LARGE)
   {
     return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
   }

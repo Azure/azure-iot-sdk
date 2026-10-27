@@ -35,8 +35,9 @@ built for constrained and embedded devices.
   ([connecting](docs/connecting.md#authentication)).
 - **Resilient connections:** reconnection with backoff, re-provisioning, WebSockets and HTTP
   proxy support.
-- **Embedded-friendly API:** callbacks run on the thread that calls into the SDK, and the
-  connection and feature clients do no dynamic allocation.
+- **Embedded-friendly API:** single-threaded: call the SDK from one thread, or serialize the calls
+  ([architecture](docs/architecture.md)). Callbacks run on that thread, and the connection and
+  feature clients do no dynamic allocation.
 - **Pluggable MQTT:** Eclipse Paho C by default; az_mqtt (single-threaded, no background
   thread) with `AZ_IOT_WITH_AZ_MQTT=ON`; or bring your own MQTT client through a small adapter
   interface.
@@ -90,6 +91,7 @@ sample has its own README.
 | Set build options, buffer limits, logging and other settings | [Client configuration](docs/client-configuration.md) |
 | Collect logs for troubleshooting or support | [Logging](docs/logging.md) |
 | Use my own MQTT client library | [Bring your own MQTT client](docs/how_to_byo_mqtt_client.md) |
+| Know which third-party libraries the SDK uses, and their known issues | [Dependencies](docs/dependencies.md) |
 | Know what stays compatible between releases | [Struct versioning](docs/struct_versioning.md) |
 | Install the SDK, consume it from CMake or pkg-config, or harden builds | [Building and installing](docs/eng/building.md) |
 | Read the design and engineering notes | [docs/eng](docs/eng/) |

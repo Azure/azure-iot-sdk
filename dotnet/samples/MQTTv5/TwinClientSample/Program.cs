@@ -30,13 +30,13 @@ internal class Program
         string idScope = SampleConstants.LoadIdScope();
         X509AuthenticationProvider authentication = SampleConstants.LoadAuthenticationProvider();
 
-        TwinPushOptions twinPushOptions = new()
+        Microsoft.Azure.Iot.Device.MQTTv5.Models.ConnectionClientOptions options = new()
         {
             ReceiveDesiredPropertyUpdates = true,
             ReceiveReportedPropertiesUponConnect = true,
         };
 
-        using ConnectionClient connectionClient = new ConnectionClient(null, twinPushOptions);
+        using ConnectionClient connectionClient = new ConnectionClient(options);
 
         using TwinClient twinClient = new TwinClient(connectionClient);
 

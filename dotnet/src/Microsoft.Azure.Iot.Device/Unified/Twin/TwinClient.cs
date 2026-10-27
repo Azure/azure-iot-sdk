@@ -15,6 +15,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using System.Web;
+using Microsoft.Azure.Iot.Device.Unified.Models;
 
 namespace Microsoft.Azure.Iot.Device.Unified.Twin
 {
@@ -74,8 +75,14 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
         /// await connectionClient.ProvisionAndConnectAsync();
         /// </code>
         /// </example>
+        /// <exception cref="InvalidOperationException">Thrown if <paramref name="connection"/> opted out of twins (see <see cref="ConnectionClientOptions.EnableTwin"/>).</exception>
         public TwinClient(IConnectionClient connection)
         {
+            if (!connection.IsTwinEnabled)
+            {
+                throw new InvalidOperationException($"The provided connection client opted out of twins. Set {nameof(ConnectionClientOptions)}.{nameof(ConnectionClientOptions.EnableTwin)} to true to use a {nameof(TwinClient)}.");
+            }
+
             _connection = connection;
             _mqttv5HubTwinClient = new MQTTv5.Twin.TwinClient(new Stub(connection));
             _mqttv5HubTwinClient.DesiredPatchReceived += HandleMQTTv5DesiredPatchReceivedAsync;

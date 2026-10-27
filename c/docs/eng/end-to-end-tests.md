@@ -126,6 +126,8 @@ shared; env `AZ_IOT_DPS_SAS_GROUP_KEY`, `AZ_IOT_DPS_SAS_REGISTRATION_ID`,
 
 - [`e2e_sas_test.c`](../../tests/e2e/tests/e2e_sas_test.c) — DPS and hub over SAS
   from the group key, then telemetry. `ci-c-e2e`.
+- [`e2e_fileupload_test.c`](../../tests/e2e/tests/e2e_fileupload_test.c) — its
+  SAS-key scenario uploads a file as `<AZ_IOT_DPS_SAS_REGISTRATION_ID>-fu`.
 - [`e2e_csr_sas_test.c`](../../tests/e2e/tests/e2e_csr_sas_test.c) — DPS over SAS
   with a CSR; the hub over the DPS-issued certificate, then telemetry. Also needs
   `AZ_IOT_BUILD_E2E_CSR` (group linked to the signing CA). `ci-c-e2e-csr`.
@@ -314,14 +316,18 @@ to the same certificate policy.
 
 The shared mqttv5 environment (ADR-linked mqttv5 hub and DPS) is kept usable by
 [`ci-c-e2e-mqttv5-adr-namespace.yml`](../../../.github/workflows/ci-c-e2e-mqttv5-adr-namespace.yml)
-(hourly, manual, or `workflow_call` as the first job of a mqttv5 e2e workflow). The ADR namespace
+(every 10 minutes, manual, or `workflow_call` as the first job of a mqttv5 e2e workflow). The ADR namespace
 can disappear from ARM, removing its role assignments; DPS registrations then fail.
 [`c/eng/e2e-mqttv5-adr-namespace.ps1`](../../eng/e2e-mqttv5-adr-namespace.ps1) re-creates it
 (same name, hub region), ensures the 8 role assignments, re-links hub and DPS, and pushes the
 namespace to DPS; when the namespace is healthy it makes one ARM read. Inputs are repository
 variables `E2E_MQTTV5_SHARED_SUBSCRIPTION_ID`, `_RESOURCE_GROUP`, `_HUB_NAME`, `_DPS_NAME`
 and `_ADR_NAMESPACE` (unset `_ADR_NAMESPACE` skips the job); optional `_ADR_API_VERSION`
-(default `2026-11-02-preview`) must match the version the namespace was linked with. The OIDC identity needs Contributor
+(default `2026-11-02-preview`) must match the version the namespace was linked with. Optional
+`_SU_INSTANCE` names the Software Updates instance (same resource group) to keep linked as
+`updating/su-1`: linked by a separate PATCH after hub and DPS, with its 3 role assignments. A rebuild
+re-sends existing updating endpoints, and a namespace still in an operation is waited out, not
+rebuilt. The OIDC identity needs Contributor
 on the resource group. Grant the link's role assignments (hub, DPS and namespace identities) on the
 resource group once: those survive the namespace, so the job creates none and needs no role
 assignment write unless the namespace identity changes.
@@ -330,7 +336,8 @@ assignment write unless the namespace identity changes.
 that environment, one job per client. On schedule and manual runs the namespace job runs first; pull
 requests skip it (it logs in to Azure and runs the checked-out script) and rely on its scheduled run (every 10 minutes). Each job issues a device with
 `e2e-shared-device.ps1 -Prefix E2E_MQTTV5_SHARED` from secret `E2E_MQTTV5_SHARED_GROUP_CA`, and
-reads secrets `E2E_MQTTV5_SHARED_IOTHUB_CS` and `_EVENTHUB_CS` (`service` policy), and variables `E2E_MQTTV5_SHARED_ID_SCOPE` (unset skips the workflow) and
+reads secrets `E2E_MQTTV5_SHARED_IOTHUB_SERVICE_CS` and `_EVENTHUB_CS` (`service` policy; the former is passed to the
+script as `E2E_MQTTV5_SHARED_IOTHUB_CS`, as the secret of that name holds `iothubowner` for the .NET e2e), and variables `E2E_MQTTV5_SHARED_ID_SCOPE` (unset skips the workflow) and
 `_DPS_HOST`. No SAS: mqttv5 hubs accept X.509 only. Triggers: pull requests touching mqttv5 or core device code, the e2e harness or the
 workflow; nightly; manual. Pull requests from forks and from Dependabot skip.
 

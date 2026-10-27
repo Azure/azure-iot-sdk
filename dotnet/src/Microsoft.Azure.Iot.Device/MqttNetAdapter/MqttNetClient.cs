@@ -1,6 +1,7 @@
 ﻿// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
 // See LICENSE file in the project root for full license information.
 
+using Microsoft.Azure.Iot.Device.Events;
 using Microsoft.Azure.Iot.Device.Mqtt;
 using Microsoft.Azure.Iot.Device.MqttNetAdapter;
 using MQTTnet;
@@ -46,26 +47,51 @@ namespace Microsoft.Azure.Iot.Device.MQTTnetAdapter
             _underlyingClient.DisconnectedAsync += DelegateDisconnectedAsync;
         }
 
-        public event Func<Mqtt.MqttPublishReceivedEventArgs, Task>? PublishReceivedAsync;
-        public event Func<Mqtt.MqttClientConnectedEventArgs, Task>? ConnectedAsync;
-        public event Func<Mqtt.MqttClientDisconnectedEventArgs, Task>? DisconnectedAsync;
-        public event Func<MqttConnect, CancellationToken, Task<MqttConnect>>? ConnectingAsync;
+        private readonly AsyncEvent<Mqtt.MqttPublishReceivedEventArgs> _publishReceived = new();
+        private readonly AsyncEvent<Mqtt.MqttClientConnectedEventArgs> _connected = new();
+        private readonly AsyncEvent<Mqtt.MqttClientDisconnectedEventArgs> _disconnected = new();
+        private readonly AsyncPipelineEvent<MqttConnect> _connecting = new();
+
+        public event Func<Mqtt.MqttPublishReceivedEventArgs, Task>? PublishReceivedAsync
+        {
+            add => _publishReceived.Add(value);
+            remove => _publishReceived.Remove(value);
+        }
+
+        public event Func<Mqtt.MqttClientConnectedEventArgs, Task>? ConnectedAsync
+        {
+            add => _connected.Add(value);
+            remove => _connected.Remove(value);
+        }
+
+        public event Func<Mqtt.MqttClientDisconnectedEventArgs, Task>? DisconnectedAsync
+        {
+            add => _disconnected.Add(value);
+            remove => _disconnected.Remove(value);
+        }
+
+        /// <remarks>
+        /// Handlers are chained in the order they were added, each receiving the CONNECT packet the previous one returned.
+        /// </remarks>
+        public event Func<MqttConnect, CancellationToken, Task<MqttConnect>>? ConnectingAsync
+        {
+            add => _connecting.Add(value);
+            remove => _connecting.Remove(value);
+        }
 
         public virtual async Task<MqttConnectAck> ConnectAsync(MqttConnect connect, CancellationToken cancellationToken = default)
         {
             ObjectDisposedException.ThrowIf(_isDisposed, this);
 
-            if (ConnectingAsync != null)
-            {
-                connect = await ConnectingAsync.Invoke(connect, cancellationToken); // Allow MQTTv5 connection client to inject a fresh connect nonce each time a connect happens
-            }
+            connect = await _connecting.InvokeAsync(connect, cancellationToken); // Allow MQTTv5 connection client to inject a fresh connect nonce each time a connect happens
 
             MqttClientOptionsBuilder optionsBuilder;
             if (connect.ProtocolVersion == MqttProtocolVersion.V500)
             {
                 optionsBuilder = new MqttClientOptionsBuilder()
                     .WithProtocolVersion(MQTTnet.Formatter.MqttProtocolVersion.V500)
-                    .WithCleanStart(connect.CleanStart);
+                    .WithCleanStart(connect.CleanStart)
+                    .WithSessionExpiryInterval(connect.SessionExpiryInterval);
             }
             else
             {
@@ -228,6 +254,10 @@ namespace Microsoft.Azure.Iot.Device.MQTTnetAdapter
             {
                 throw new MqttClientNotConnectedException(e.Message, e);
             }
+            catch (MQTTnet.Exceptions.MqttCommunicationException e) when (publish.QualityOfServiceLevel == Mqtt.MqttQualityOfServiceLevel.AtLeastOnce && IsConnectionLoss(e))
+            {
+                throw new MqttClientNotConnectedException("The connection was lost before the PUBACK was received.", e);
+            }
         }
 
         public virtual async Task<MqttSubscribeAck> SubscribeAsync(MqttSubscribe mqttSubscribe, CancellationToken cancellationToken = default)
@@ -255,6 +285,10 @@ namespace Microsoft.Azure.Iot.Device.MQTTnetAdapter
             catch (MQTTnet.Exceptions.MqttClientNotConnectedException e)
             {
                 throw new MqttClientNotConnectedException(e.Message, e);
+            }
+            catch (MQTTnet.Exceptions.MqttCommunicationException e) when (IsConnectionLoss(e))
+            {
+                throw new MqttClientNotConnectedException("The connection was lost before the SUBACK was received.", e);
             }
         }
 
@@ -284,6 +318,23 @@ namespace Microsoft.Azure.Iot.Device.MQTTnetAdapter
             {
                 throw new MqttClientNotConnectedException(e.Message, e);
             }
+            catch (MQTTnet.Exceptions.MqttCommunicationException e) when (IsConnectionLoss(e))
+            {
+                throw new MqttClientNotConnectedException("The connection was lost before the UNSUBACK was received.", e);
+            }
+        }
+
+        /// <summary>
+        /// Whether MQTTnet failed an operation because its connection was lost, which is how it fails every operation
+        /// still waiting for an acknowledgement when the connection drops. It may do so before
+        /// <see cref="IsConnected"/> reports the disconnection, so the exception itself is what says so.
+        /// </summary>
+        private static bool IsConnectionLoss(MQTTnet.Exceptions.MqttCommunicationException e)
+        {
+            // A timeout says only that the acknowledgement was late, not that the connection is gone; a connecting
+            // failure is raised while connecting rather than while an operation is in flight.
+            return e is not MQTTnet.Exceptions.MqttCommunicationTimedOutException
+                and not MQTTnet.Adapter.MqttConnectingFailedException;
         }
 
         /// <summary>
@@ -303,7 +354,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTnetAdapter
 
         private Task DelegateReceivedPublishAsync(MqttApplicationMessageReceivedEventArgs args)
         {
-            if (PublishReceivedAsync == null)
+            if (!_publishReceived.HasHandlers)
             {
                 Trace.TraceWarning("Could not delegate a received MQTT publish because no 'PublishReceivedAsync' callback handler was registered");
                 return Task.CompletedTask;
@@ -333,22 +384,17 @@ namespace Microsoft.Azure.Iot.Device.MQTTnetAdapter
 
             args.AutoAcknowledge = false;
 
-            if (PublishReceivedAsync != null)
-            {
-                return PublishReceivedAsync.Invoke(genericArgs);
-            }
-
-            return Task.CompletedTask;
+            return _publishReceived.InvokeAsync(genericArgs);
         }
 
         private Task DelegateConnectedAsync(MQTTnet.MqttClientConnectedEventArgs args)
         {
-            if (ConnectedAsync == null)
+            if (!_connected.HasHandlers)
             {
                 return Task.CompletedTask;
             }
 
-            return ConnectedAsync.Invoke(new()
+            return _connected.InvokeAsync(new()
             {
                 ConnectAck = ModelConverter.ToGeneric(args.ConnectResult),
             });
@@ -356,7 +402,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTnetAdapter
 
         private Task DelegateDisconnectedAsync(MQTTnet.MqttClientDisconnectedEventArgs args)
         {
-            if (DisconnectedAsync == null)
+            if (!_disconnected.HasHandlers)
             {
                 return Task.CompletedTask;
             }
@@ -375,12 +421,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTnetAdapter
                 }
             }
 
-            if (DisconnectedAsync != null)
-            {
-                return DisconnectedAsync.Invoke(genericArgs);
-            }
-
-            return Task.CompletedTask;
+            return _disconnected.InvokeAsync(genericArgs);
         }
     }
 }

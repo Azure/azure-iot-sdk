@@ -244,6 +244,14 @@ extern "C"
       char* resp_buf,
       size_t resp_buf_size);
 
+  /**
+   * @brief Whether the request named by @p handle has been written in full to the
+   *        service; advanced only by az_iot_e2e_service_request_poll_handle().
+   *
+   * @return false for an invalid handle or a request that already completed.
+   */
+  bool az_iot_e2e_service_request_is_sent(const az_iot_e2e_service* svc, int handle);
+
   /** @brief Abandon the request named by @p handle; safe once it completed. */
   void az_iot_e2e_service_request_cancel(az_iot_e2e_service* svc, int handle);
 

@@ -187,7 +187,7 @@ static az_iot_result app_request_check(az_iot_su_client* su, bool registered, ui
 
 /* Service-requested delay before the next check, set by on_su_event. */
 static uint32_t g_retry_after_ms;
-/* persist_state_fn is failing: the checkpoint a reboot needs is not stored. */
+/* persist_workflow_state_fn is failing: the checkpoint a reboot needs is not stored. */
 static bool g_persist_failing;
 
 /** @brief Logs abandoned operations (the poll loop asks again later) and tracks persist failures.
@@ -304,7 +304,7 @@ void app_main(void)
 
   /* Largest update accepted. A one-file offer is about 5 KiB, and NVS
    * (partitions*.csv) must hold two generations of the largest checkpoint
-   * (AZ_IOT_SU_STATE_BLOB_MAX_SIZE(SU_MAX_UPDATE_SIZE), about 8.6 KiB) while one
+   * (AZ_IOT_SU_STATE_BLOB_MAX_SIZE(), about 9 KiB) while one
    * replaces the other. */
 #define SU_MAX_UPDATE_SIZE 8192
   /* The client's memory, about 20 KB: too large for the 12 KB main task stack. */
@@ -312,7 +312,8 @@ void app_main(void)
       SU_MAX_UPDATE_SIZE,
       AZ_IOT_SU_VERIFY_SCRATCH_SIZE,
       AZ_IOT_SU_DEFAULT_MAX_MESSAGE_SIZE,
-      AZ_IOT_SU_DEVICE_PROPERTIES_BUFFER_SIZE)];
+      AZ_IOT_SU_DEVICE_PROPERTIES_BUFFER_SIZE,
+      AZ_IOT_SU_DEFAULT_RESULT_DETAILS_SIZE)];
   static az_iot_su_client su;
   az_iot_su_client_config_options su_opts = az_iot_su_client_config_options_default();
   su_opts.hooks = &hooks;
@@ -323,6 +324,7 @@ void app_main(void)
   su_opts.limits.scratch_size = AZ_IOT_SU_VERIFY_SCRATCH_SIZE;
   su_opts.limits.max_message_size = AZ_IOT_SU_DEFAULT_MAX_MESSAGE_SIZE;
   su_opts.limits.device_properties_size = AZ_IOT_SU_DEVICE_PROPERTIES_BUFFER_SIZE;
+  su_opts.limits.result_details_size = AZ_IOT_SU_DEFAULT_RESULT_DETAILS_SIZE;
   su_opts.workspace = su_workspace;
   su_opts.workspace_size = sizeof(su_workspace);
   if (az_iot_su_client_init(&su, &conn, &su_opts) != AZ_IOT_OK)

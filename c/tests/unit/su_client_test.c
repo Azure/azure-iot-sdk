@@ -250,7 +250,7 @@ typedef enum
   OP_RESTORE
 } op_kind;
 
-#define MAX_OPS 32
+#define MAX_OPS 96
 
 typedef struct
 {
@@ -285,7 +285,9 @@ typedef struct
   int32_t persist_error; /* what a failing persist call returns; 0 means 1 */
   int persist_blob_failures; /* this many non-empty writes fail; erases succeed */
   int persist_calls;
-  uint8_t persist_blob[AZ_IOT_SU_STATE_BLOB_MAX_SIZE(AZ_IOT_SU_DEFAULT_MAX_UPDATE_SIZE)];
+  uint8_t persist_blob[AZ_IOT_SU_STATE_BLOB_MAX_SIZE(
+      AZ_IOT_SU_DEFAULT_MAX_UPDATE_SIZE,
+      AZ_IOT_SU_DEFAULT_RESULT_DETAILS_SIZE)];
   size_t persist_len;
   bool have_persist;
 
@@ -306,6 +308,11 @@ typedef struct
   size_t verify_exp_len;
   uint8_t verify_sig[8];
   size_t verify_sig_len;
+
+  /* When set, is_installed sets these details on step 0 of su_client. */
+  az_iot_su_client* su_client;
+  const char* is_installed_details;
+  az_iot_result is_installed_details_result;
 } hook_log;
 
 static void span_to_cstr(az_span s, char* out, size_t cap)
@@ -404,6 +411,11 @@ static int32_t mock_is_installed(const az_iot_su_client_update_manifest* m, void
   (void)m;
   hook_log* l = (hook_log*)ctx;
   log_op(l, OP_IS_INSTALLED, 0);
+  if (l->su_client != NULL && l->is_installed_details != NULL)
+  {
+    l->is_installed_details_result = az_iot_su_client_set_step_result_details(
+        l->su_client, 0, az_span_create_from_str((char*)(uintptr_t)l->is_installed_details));
+  }
   return l->is_installed_result;
 }
 
@@ -611,6 +623,8 @@ typedef struct
   int report_count;
   /* AZ_IOT_OK unless a test wants to see a refusal handled. */
   az_iot_result report_result;
+  /* A report with step details does not fit: refused as too large. */
+  bool report_details_do_not_fit;
   /* An accepted report gets an OK verdict from inside report(), as from a
    * service that accepts it; true leaves the verdict to the test. */
   bool report_verdict_deferred;
@@ -701,6 +715,16 @@ static void copy_str(char* dst, size_t cap, const char* src)
 static az_iot_result fake_channel_report(void* ctx, const az_iot_su_report* report)
 {
   fake_channel* fc = (fake_channel*)ctx;
+  if (fc->report_details_do_not_fit)
+  {
+    for (int32_t i = 0; i < report->step_results_count; ++i)
+    {
+      if (az_span_size(report->step_results[i].result_details) > 0)
+      {
+        return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+      }
+    }
+  }
   fc->report_count++;
   fc->last_report = *report;
   assert_true(report->step_results_count >= 0);
@@ -893,7 +917,23 @@ typedef struct
   az_iot_result last_persist_reason;
 
   int refused_count;
+  int accepted_report_count; /* REPORT_ACCEPTED events that carried the report */
+  az_iot_su_outcome accepted_report_outcome;
+  int32_t accepted_report_result_code;
+  char accepted_workflow_id[AZ_IOT_SU_WORKFLOW_ID_SIZE + 1];
+  int32_t accepted_report_steps;
+  char accepted_step_details[64];
+  bool accepted_has_installed;
+  char accepted_installed[3][AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE];
   az_iot_result last_refused_reason;
+
+  int completed_count;
+  az_iot_result last_completed_reason;
+  int32_t last_completed_code;
+  bool last_completed_has_report;
+  az_iot_su_outcome last_completed_outcome;
+  bool completed_after_verdict_event; /* REPORT_ACCEPTED/ABANDONED came first */
+  int verdict_events; /* REPORT_ACCEPTED + ABANDONED of REPORT_STATUS */
 
   int deferred_count;
   az_iot_result last_deferred_reason;
@@ -923,6 +963,7 @@ static void on_event(const az_iot_su_event* event, void* user_ctx)
   fixture* fx = (fixture*)user_ctx;
   if (event->kind == AZ_IOT_SU_EVENT_OPERATION_ABANDONED)
   {
+    fx->verdict_events += event->operation == AZ_IOT_SU_OP_REPORT_STATUS ? 1 : 0;
     fx->abandoned_count++;
     fx->last_abandoned_reason = event->reason;
     fx->last_abandoned_operation = event->operation;
@@ -964,10 +1005,54 @@ static void on_event(const az_iot_su_event* event, void* user_ctx)
     fx->duplicate_count++;
     fx->last_duplicate_state = event->state;
   }
+  else if (event->kind == AZ_IOT_SU_EVENT_WORKFLOW_COMPLETED)
+  {
+    fx->completed_count++;
+    fx->last_completed_reason = event->reason;
+    fx->last_completed_code = event->service_error.code;
+    fx->last_completed_has_report = event->report != NULL;
+    fx->completed_after_verdict_event = fx->verdict_events > 0;
+    if (event->report != NULL)
+    {
+      fx->last_completed_outcome = event->report->outcome;
+    }
+  }
   else if (event->kind == AZ_IOT_SU_EVENT_REPORT_ACCEPTED)
   {
+    fx->verdict_events++;
     fx->accepted_count++;
     fx->accepted_terminal_count += event->report_terminal ? 1 : 0;
+    /* The report comes with, and only with, a terminal acceptance. */
+    assert_true((event->report != NULL) == event->report_terminal);
+    if (event->report != NULL)
+    {
+      fx->accepted_report_count++;
+      fx->accepted_report_outcome = event->report->outcome;
+      fx->accepted_report_result_code = event->report->result_code;
+      copy_str(
+          fx->accepted_workflow_id, sizeof(fx->accepted_workflow_id), event->report->workflow_id);
+      fx->accepted_report_steps = event->report->step_results_count;
+      fx->accepted_has_installed = event->report->installed_update_id != NULL;
+      if (fx->accepted_has_installed)
+      {
+        const az_iot_su_report_update_id* id = event->report->installed_update_id;
+        copy_str(fx->accepted_installed[0], sizeof(fx->accepted_installed[0]), id->provider);
+        copy_str(fx->accepted_installed[1], sizeof(fx->accepted_installed[1]), id->name);
+        copy_str(fx->accepted_installed[2], sizeof(fx->accepted_installed[2]), id->version);
+      }
+      fx->accepted_step_details[0] = '\0';
+      if (event->report->step_results_count > 0)
+      {
+        az_span d = event->report->step_results[0].result_details;
+        int32_t n = az_span_size(d);
+        assert_true(n >= 0 && (size_t)n < sizeof(fx->accepted_step_details));
+        if (n > 0)
+        {
+          memcpy(fx->accepted_step_details, az_span_ptr(d), (size_t)n);
+        }
+        fx->accepted_step_details[n] = '\0';
+      }
+    }
   }
   else if (event->kind == AZ_IOT_SU_EVENT_UPDATE_REFUSED)
   {
@@ -1038,8 +1123,8 @@ static void wire_hooks(hook_log* log, az_iot_su_platform_hooks* hooks, mock_cryp
   hooks->backup_fn = mock_backup;
   hooks->restore_fn = mock_restore;
   hooks->is_installed_fn = mock_is_installed;
-  hooks->persist_state_fn = mock_persist;
-  hooks->load_state_fn = mock_load;
+  hooks->persist_workflow_state_fn = mock_persist;
+  hooks->load_workflow_state_fn = mock_load;
   hooks->user_ctx = log;
 
   /* By default the streaming file-hash matches the manifest, so the happy
@@ -1462,16 +1547,40 @@ static void unusable_update_metadata_is_ignored(void** state)
   assert_int_equal((int)fx->log.op_count, 0);
 }
 
-/* fileUrls is bounded by _az_IOT_ADU_CLIENT_MAX_TOTAL_FILE_COUNT: at the bound
- * the payload is accepted, one past it is ignored rather than overflowing. */
+/* Counts ERROR lines containing `needle`. */
+typedef struct
+{
+  const char* needle;
+  int count;
+} su_error_log_capture;
+
+static void su_error_log_sink(
+    void* user_ctx,
+    az_iot_log_level level,
+    const char* component,
+    const char* file,
+    int line,
+    const char* msg)
+{
+  (void)component;
+  su_error_log_capture* cap = (su_error_log_capture*)user_ctx;
+  (void)file;
+  (void)line;
+  if (level == AZ_IOT_LOG_LEVEL_ERROR && msg != NULL && strstr(msg, cap->needle) != NULL)
+  {
+    cap->count++;
+  }
+}
+
+/* fileUrls is bounded by AZ_IOT_SU_MAX_FILE_COUNT: at the bound the payload is accepted, one past
+ * it is refused with AZ_IOT_ERR_NOT_ENOUGH_SPACE and an error log rather than overflowing. */
 static void file_urls_are_bounded(void** state)
 {
   fixture* fx = (fixture*)*state;
   open_to_connected(fx);
+  assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
 
-  for (int count = _az_IOT_ADU_CLIENT_MAX_TOTAL_FILE_COUNT + 1;
-       count >= _az_IOT_ADU_CLIENT_MAX_TOTAL_FILE_COUNT;
-       --count)
+  for (int count = AZ_IOT_SU_MAX_FILE_COUNT + 1; count >= AZ_IOT_SU_MAX_FILE_COUNT; --count)
   {
     char urls[256] = "";
     size_t used = 0;
@@ -1490,11 +1599,19 @@ static void file_urls_are_bounded(void** state)
         urls);
     assert_true(n > 0 && (size_t)n < sizeof(doc));
 
+    su_error_log_capture cap = { .needle = "AZ_IOT_SU_MAX_FILE_COUNT", .count = 0 };
+    az_iot_log_sink sink
+        = { .sink = su_error_log_sink, .user_ctx = &cap, .min_level = AZ_IOT_LOG_LEVEL_ERROR };
+    az_iot_log_set_global_sink(&sink);
     inject_patch(fx, doc);
+    az_iot_log_set_global_sink(NULL);
+    bool over = count > AZ_IOT_SU_MAX_FILE_COUNT;
     assert_int_equal(
         az_iot_su_client_get_state(&fx->su),
-        count > _az_IOT_ADU_CLIENT_MAX_TOTAL_FILE_COUNT ? AZ_IOT_SU_STATE_IDLE
-                                                        : AZ_IOT_SU_STATE_MANIFEST_RECEIVED);
+        over ? AZ_IOT_SU_STATE_IDLE : AZ_IOT_SU_STATE_MANIFEST_RECEIVED);
+    assert_int_equal(cap.count, over ? 1 : 0);
+    assert_int_equal(fx->refused_count, 1);
+    assert_int_equal(fx->last_refused_reason, AZ_IOT_ERR_NOT_ENOUGH_SPACE);
   }
 }
 
@@ -1916,7 +2033,8 @@ static void reboot_required_persists_and_resumes(void** state)
   pump_to_checkpoint(fx);
   assert_true(fx->log.persist_len > 40);
   assert_true(
-      fx->log.persist_len <= AZ_IOT_SU_STATE_BLOB_MAX_SIZE(AZ_IOT_SU_DEFAULT_MAX_UPDATE_SIZE));
+      fx->log.persist_len <= AZ_IOT_SU_STATE_BLOB_MAX_SIZE(
+          AZ_IOT_SU_DEFAULT_MAX_UPDATE_SIZE, AZ_IOT_SU_DEFAULT_RESULT_DETAILS_SIZE));
 
   /* Simulate a reboot: forget the in-RAM workflow and the pre-reboot op log,
    * then resume purely from the persisted blob (post-reboot the install is
@@ -2417,6 +2535,351 @@ static void a_channel_without_cancel_update_is_rejected(void** state)
   assert_false(fc.opened);
 }
 
+/** @brief Run do_work until the workflow reaches @p target; fails after @p max_iters. */
+static void pump_to_state(fixture* fx, az_iot_su_state target, int max_iters)
+{
+  for (int i = 0; i < max_iters && az_iot_su_client_get_state(&fx->su) != target; ++i)
+  {
+    assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  }
+  assert_int_equal(az_iot_su_client_get_state(&fx->su), target);
+}
+
+/* Details are taken only for a step of a verified workflow, bounded by
+ * result_details_size, and reported with the terminal step result. The
+ * observer gets that report on the terminal acceptance. */
+static void step_result_details_are_bounded_and_reported(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
+  az_span ok = AZ_SPAN_FROM_STR("flash bank B written");
+
+  assert_int_equal(az_iot_su_client_set_step_result_details(NULL, 0, ok), AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(az_iot_su_client_set_step_result_details(&fx->su, 0, ok), AZ_IOT_ERR_NOT_FOUND);
+
+  inject_patch(fx, signed_patch());
+  assert_int_equal(az_iot_su_client_set_step_result_details(&fx->su, 0, ok), AZ_IOT_ERR_NOT_FOUND);
+  pump_to_state(fx, AZ_IOT_SU_STATE_DOWNLOAD_STARTED, 10);
+
+  uint8_t too_long[AZ_IOT_SU_DEFAULT_RESULT_DETAILS_SIZE + 1];
+  memset(too_long, 'x', sizeof(too_long));
+  assert_int_equal(
+      az_iot_su_client_set_step_result_details(
+          &fx->su, 0, az_span_create(too_long, (int32_t)sizeof(too_long))),
+      AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+  assert_int_equal(
+      az_iot_su_client_set_step_result_details(
+          &fx->su, 0, az_span_create(too_long, (int32_t)sizeof(too_long) - 1)),
+      AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_su_client_set_step_result_details(
+          &fx->su, (uint32_t)fx->su._internal.step_results_count, ok),
+      AZ_IOT_ERR_NOT_FOUND);
+  /* The last call wins; the caller's buffer is not referenced. */
+  char text[32];
+  snprintf(text, sizeof(text), "%s", "flash bank B written");
+  assert_int_equal(
+      az_iot_su_client_set_step_result_details(&fx->su, 0, az_span_create_from_str(text)),
+      AZ_IOT_OK);
+  memset(text, 0, sizeof(text));
+
+  pump(fx, 40);
+  assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_SUCCEEDED);
+  assert_int_equal(fx->chan.last_report.step_results_count, 1);
+  assert_true(az_span_is_content_equal(fx->chan.last_report.step_results[0].result_details, ok));
+  assert_int_equal(fx->accepted_report_count, 1);
+  assert_int_equal(fx->accepted_report_outcome, AZ_IOT_SU_OUTCOME_SUCCEEDED);
+  assert_int_equal(fx->accepted_report_steps, 1);
+  assert_string_equal(fx->accepted_step_details, "flash bank B written");
+
+  /* After the workflow there is no step to annotate. */
+  assert_int_equal(az_iot_su_client_set_step_result_details(&fx->su, 0, ok), AZ_IOT_ERR_NOT_FOUND);
+}
+
+/* Details of a step that failed are reported with its failure. */
+static void a_failed_step_reports_its_details(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  fx->log.install_result = AZ_IOT_SU_RESULT_FAILURE;
+  inject_patch(fx, signed_patch());
+  pump_to_state(fx, AZ_IOT_SU_STATE_DOWNLOAD_STARTED, 10);
+  assert_int_equal(
+      az_iot_su_client_set_step_result_details(
+          &fx->su, 0, AZ_SPAN_FROM_STR("signature check of image failed")),
+      AZ_IOT_OK);
+  pump(fx, 40);
+  assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_FAILED);
+  assert_int_equal(fx->chan.last_report.step_results[0].outcome, AZ_IOT_SU_OUTCOME_FAILED);
+  assert_true(az_span_is_content_equal(
+      fx->chan.last_report.step_results[0].result_details,
+      AZ_SPAN_FROM_STR("signature check of image failed")));
+}
+
+/* Details set before a reboot are persisted with the step and reported after it. */
+static void step_result_details_survive_a_reboot(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  fx->log.install_result = AZ_IOT_SU_RESULT_REBOOT_REQUIRED;
+  inject_patch(fx, signed_patch());
+  pump_to_state(fx, AZ_IOT_SU_STATE_DOWNLOAD_STARTED, 10);
+  assert_int_equal(
+      az_iot_su_client_set_step_result_details(&fx->su, 0, AZ_SPAN_FROM_STR("installed slot 2")),
+      AZ_IOT_OK);
+  pump_to_checkpoint(fx);
+
+  fx->log.install_result = AZ_IOT_SU_RESULT_SUCCESS;
+  reboot_client(fx);
+  assert_int_equal(az_iot_su_client_resume(&fx->su), AZ_IOT_OK);
+  pump(fx, 40);
+  assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_SUCCEEDED);
+  assert_true(az_span_is_content_equal(
+      fx->chan.last_report.step_results[0].result_details, AZ_SPAN_FROM_STR("installed slot 2")));
+}
+
+/* Details replaced or cleared while waiting for the reboot are saved before
+ * the workflow goes on, and the resumed workflow reports them. */
+static void change_details_at_the_reboot_point(fixture* fx, az_span replacement)
+{
+  open_to_connected(fx);
+  fx->log.install_result = AZ_IOT_SU_RESULT_REBOOT_REQUIRED;
+  inject_patch(fx, signed_patch());
+  pump_to_state(fx, AZ_IOT_SU_STATE_DOWNLOAD_STARTED, 10);
+  assert_int_equal(
+      az_iot_su_client_set_step_result_details(&fx->su, 0, AZ_SPAN_FROM_STR("first text")),
+      AZ_IOT_OK);
+  pump_to_checkpoint(fx);
+
+  int writes = fx->log.persist_calls;
+  assert_int_equal(az_iot_su_client_set_step_result_details(&fx->su, 0, replacement), AZ_IOT_OK);
+  assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  /* Rewritten before the workflow moves on; the device reboots here. */
+  assert_int_equal(fx->log.persist_calls, writes + 1);
+  assert_int_equal(count_ops(&fx->log, OP_APPLY), 0);
+
+  fx->log.install_result = AZ_IOT_SU_RESULT_SUCCESS;
+  reboot_client(fx);
+  assert_int_equal(az_iot_su_client_resume(&fx->su), AZ_IOT_OK);
+  pump(fx, 40);
+  assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_SUCCEEDED);
+  assert_true(
+      az_span_is_content_equal(fx->chan.last_report.step_results[0].result_details, replacement));
+}
+
+static void step_result_details_replaced_at_the_reboot_point_are_saved(void** state)
+{
+  change_details_at_the_reboot_point((fixture*)*state, AZ_SPAN_FROM_STR("second text"));
+}
+
+static void step_result_details_cleared_at_the_reboot_point_are_saved(void** state)
+{
+  change_details_at_the_reboot_point((fixture*)*state, AZ_SPAN_EMPTY);
+}
+
+/* Setting the saved text again at a reboot point, as a hook called per chunk
+ * may, writes nothing; a different text still rewrites the record once. */
+static void unchanged_step_result_details_write_nothing(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  fx->log.install_result = AZ_IOT_SU_RESULT_REBOOT_REQUIRED;
+  inject_patch(fx, signed_patch());
+  pump_to_state(fx, AZ_IOT_SU_STATE_DOWNLOAD_STARTED, 10);
+  assert_int_equal(
+      az_iot_su_client_set_step_result_details(&fx->su, 0, AZ_SPAN_FROM_STR("same text")),
+      AZ_IOT_OK);
+  pump_to_checkpoint(fx);
+
+  for (int i = 0; i < 3; ++i)
+  {
+    assert_int_equal(
+        az_iot_su_client_set_step_result_details(&fx->su, 0, AZ_SPAN_FROM_STR("same text")),
+        AZ_IOT_OK);
+    assert_false(fx->su._internal.checkpoint_pending);
+  }
+  assert_int_equal(
+      az_iot_su_client_set_step_result_details(&fx->su, 0, AZ_SPAN_FROM_STR("other text")),
+      AZ_IOT_OK);
+  assert_true(fx->su._internal.checkpoint_pending);
+  int writes = fx->log.persist_calls;
+  assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  assert_int_equal(fx->log.persist_calls, writes + 1);
+}
+
+/* A failed rewrite is reported and retried; the workflow waits, and the
+ * change is durable only after PERSIST_RECOVERED. */
+static void a_failed_details_rewrite_is_retried_before_the_workflow_goes_on(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
+  fx->log.install_result = AZ_IOT_SU_RESULT_REBOOT_REQUIRED;
+  inject_patch(fx, signed_patch());
+  pump_to_state(fx, AZ_IOT_SU_STATE_DOWNLOAD_STARTED, 10);
+  pump_to_checkpoint(fx);
+
+  fx->log.persist_failures = 1;
+  assert_int_equal(
+      az_iot_su_client_set_step_result_details(&fx->su, 0, AZ_SPAN_FROM_STR("new text")),
+      AZ_IOT_OK);
+  assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  assert_int_equal(fx->persist_failed_count, 1);
+  assert_int_equal(fx->persist_recovered_count, 0);
+  assert_true(fx->su._internal.checkpoint_pending);
+  assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_INSTALL_COMPLETE);
+  assert_int_equal(count_ops(&fx->log, OP_APPLY), 0);
+
+  fx->su._internal.persist_retry._internal.due_ms = 0;
+  assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  assert_int_equal(fx->persist_recovered_count, 1);
+  assert_false(fx->su._internal.checkpoint_pending);
+
+  fx->log.install_result = AZ_IOT_SU_RESULT_SUCCESS;
+  reboot_client(fx);
+  assert_int_equal(az_iot_su_client_resume(&fx->su), AZ_IOT_OK);
+  pump(fx, 40);
+  assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_SUCCEEDED);
+  assert_true(az_span_is_content_equal(
+      fx->chan.last_report.step_results[0].result_details, AZ_SPAN_FROM_STR("new text")));
+}
+
+/* A report that does not fit the message limit goes out without step
+ * details rather than not at all. */
+static void a_report_too_large_is_sent_without_step_details(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
+  fx->chan.report_details_do_not_fit = true;
+  inject_patch(fx, signed_patch());
+  pump_to_state(fx, AZ_IOT_SU_STATE_DOWNLOAD_STARTED, 10);
+  assert_int_equal(
+      az_iot_su_client_set_step_result_details(&fx->su, 0, AZ_SPAN_FROM_STR("long text")),
+      AZ_IOT_OK);
+  pump(fx, 40);
+  assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_SUCCEEDED);
+  assert_int_equal(fx->chan.last_report.step_results_count, 1);
+  assert_int_equal(az_span_size(fx->chan.last_report.step_results[0].result_details), 0);
+  assert_int_equal(
+      fx->chan.last_report.step_results[0].result_code, AZ_IOT_SU_AGENT_RESULT_CODE_SUCCESS);
+  /* The event carries the report as sent: without the details. */
+  assert_int_equal(fx->accepted_report_count, 1);
+  assert_int_equal(fx->accepted_report_steps, 1);
+  assert_string_equal(fx->accepted_step_details, "");
+}
+
+/* Details set from is_installed_fn are reported with the SKIPPED outcome. */
+static void details_set_from_is_installed_are_reported(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
+  fx->log.is_installed_result = AZ_IOT_SU_RESULT_ALREADY_INSTALLED;
+  fx->log.su_client = &fx->su;
+  fx->log.is_installed_details = "version 1.0 found";
+  inject_patch(fx, signed_patch());
+  pump(fx, 40);
+  assert_int_equal(fx->log.is_installed_details_result, AZ_IOT_OK);
+  assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_SKIPPED);
+  assert_int_equal(fx->chan.last_report.step_results_count, 1);
+  assert_true(az_span_is_content_equal(
+      fx->chan.last_report.step_results[0].result_details, AZ_SPAN_FROM_STR("version 1.0 found")));
+  assert_int_equal(fx->accepted_report_outcome, AZ_IOT_SU_OUTCOME_SKIPPED);
+  assert_string_equal(fx->accepted_step_details, "version 1.0 found");
+}
+
+/* A refused report leaves an earlier one awaiting its verdict as the one the
+ * verdict reports. */
+static void a_refused_report_keeps_the_pending_one(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
+  fx->chan.report_verdict_deferred = true;
+  fx->log.install_result = AZ_IOT_SU_RESULT_FAILURE;
+  inject_patch(fx, signed_patch());
+  pump(fx, 40);
+  assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_FAILED);
+  int32_t sent_code = fx->chan.last_report.result_code;
+
+  /* A newer terminal report, with another result, is refused. */
+  fx->su._internal.pending_outcome = AZ_IOT_SU_OUTCOME_SKIPPED;
+  fx->su._internal.install_result.result_code = -77;
+  fx->chan.report_result = AZ_IOT_ERR_BUSY;
+  assert_int_equal(az_iot_su__report_state(&fx->su), AZ_IOT_ERR_BUSY);
+
+  fx->chan.result_cb(
+      AZ_IOT_SU_OP_REPORT_STATUS,
+      AZ_IOT_OK,
+      AZ_IOT_SU_ERROR_ACTION_NONE,
+      NULL,
+      fx->chan.engine_ctx);
+  assert_int_equal(fx->accepted_report_count, 1);
+  assert_int_equal(fx->accepted_report_outcome, AZ_IOT_SU_OUTCOME_FAILED);
+  assert_int_equal(fx->accepted_report_result_code, sent_code);
+}
+
+/* The largest installed update id the client accepts (its three parts and their
+ * terminators fill AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE) reaches the accepted-report
+ * event whole, whichever part is long; one byte more is refused up front. */
+static void the_largest_installed_id_reaches_the_accepted_report(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
+  fx->chan.report_verdict_deferred = true;
+  fx->log.install_result = AZ_IOT_SU_RESULT_FAILURE;
+
+  enum
+  {
+    LONG = AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE - 5 /* two 1-byte parts, three NULs */
+  };
+  static char long_part[LONG + 2];
+  memset(long_part, 'p', LONG + 1);
+  long_part[LONG + 1] = '\0';
+
+  az_iot_su_device_properties dp = { 0 };
+  dp.manufacturer = "Contoso";
+  dp.model = "Foobar";
+  dp.installed_update_id.provider = "a";
+  dp.installed_update_id.name = "b";
+  dp.installed_update_id.version = long_part; /* one byte too many */
+  assert_int_not_equal(az_iot_su_client_update_device_properties(&fx->su, &dp), AZ_IOT_OK);
+  long_part[LONG] = '\0';
+
+  const char* workflows[3] = { "aaaaaaaa-0000-0000-0000-00000000000a",
+                               "bbbbbbbb-0000-0000-0000-00000000000b",
+                               "cccccccc-0000-0000-0000-00000000000c" };
+  for (int i = 0; i < 3; ++i)
+  {
+    const char* parts[3] = { "a", "b", "c" };
+    parts[i] = long_part;
+    dp.installed_update_id.provider = parts[0];
+    dp.installed_update_id.name = parts[1];
+    dp.installed_update_id.version = parts[2];
+    assert_int_equal(az_iot_su_client_update_device_properties(&fx->su, &dp), AZ_IOT_OK);
+
+    inject_patch(fx, build_patch(workflows[i]));
+    pump(fx, 40);
+    assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_FAILED);
+    int before = fx->accepted_report_count;
+    fx->chan.result_cb(
+        AZ_IOT_SU_OP_REPORT_STATUS,
+        AZ_IOT_OK,
+        AZ_IOT_SU_ERROR_ACTION_NONE,
+        NULL,
+        fx->chan.engine_ctx);
+    assert_int_equal(fx->accepted_report_count, before + 1);
+    assert_true(fx->accepted_has_installed);
+    for (int k = 0; k < 3; ++k)
+    {
+      assert_string_equal(fx->accepted_installed[k], parts[k]);
+    }
+  }
+}
+
 static void workspace_size_follows_the_limits(void** state)
 {
   (void)state;
@@ -2425,6 +2888,7 @@ static void workspace_size_follows_the_limits(void** state)
   assert_int_equal(limits.scratch_size, AZ_IOT_SU_VERIFY_SCRATCH_SIZE);
   assert_int_equal(limits.max_message_size, AZ_IOT_SU_DEFAULT_MAX_MESSAGE_SIZE);
   assert_int_equal(limits.device_properties_size, AZ_IOT_SU_DEVICE_PROPERTIES_BUFFER_SIZE);
+  assert_int_equal(limits.result_details_size, AZ_IOT_SU_DEFAULT_RESULT_DETAILS_SIZE);
   assert_int_equal(az_iot_su_workspace_size(&limits), AZ_IOT_SU_WORKSPACE_DEFAULT_SIZE);
   az_iot_su_client_config_options o = az_iot_su_client_config_options_default();
   assert_memory_equal(&o.limits, &limits, sizeof(limits));
@@ -2433,12 +2897,14 @@ static void workspace_size_follows_the_limits(void** state)
   limits.scratch_size = 300;
   limits.max_message_size = AZ_IOT_SU_MIN_MESSAGE_SIZE;
   limits.device_properties_size = 50;
+  limits.result_details_size = 10;
   assert_int_equal(
       az_iot_su_workspace_size(&limits),
-      1350 + AZ_IOT_SU_MIN_MESSAGE_SIZE + 2u * AZ_IOT_SU_PERSIST_OVERHEAD);
+      1350 + AZ_IOT_SU_MIN_MESSAGE_SIZE + 2u * AZ_IOT_SU_PERSIST_OVERHEAD
+          + 50u * _az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS);
   assert_int_equal(
       az_iot_su_workspace_size(&limits),
-      AZ_IOT_SU_WORKSPACE_SIZE(1000, 300, AZ_IOT_SU_MIN_MESSAGE_SIZE, 50));
+      AZ_IOT_SU_WORKSPACE_SIZE(1000, 300, AZ_IOT_SU_MIN_MESSAGE_SIZE, 50, 10));
 
   assert_int_equal(az_iot_su_workspace_size(NULL), 0);
   az_iot_su_limits bad = limits;
@@ -2452,6 +2918,9 @@ static void workspace_size_follows_the_limits(void** state)
   assert_int_equal(az_iot_su_workspace_size(&bad), 0);
   bad = limits;
   bad.device_properties_size = 0;
+  assert_int_equal(az_iot_su_workspace_size(&bad), 0);
+  bad = limits;
+  bad.result_details_size = AZ_IOT_SU_MAX_RESULT_DETAILS_SIZE + 1;
   assert_int_equal(az_iot_su_workspace_size(&bad), 0);
   bad = limits;
   bad.max_update_size = (size_t)INT32_MAX;
@@ -3424,7 +3893,7 @@ static void an_undecodable_replacement_keeps_the_active_checkpoint(void** state)
   assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_SUCCEEDED);
 }
 
-/* Without persist_state_fn a restored record could never be retired, so every
+/* Without persist_workflow_state_fn a restored record could never be retired, so every
  * boot would re-apply it; resume refuses it instead. */
 static void resume_without_a_persist_hook_is_not_supported(void** state)
 {
@@ -3436,7 +3905,7 @@ static void resume_without_a_persist_hook_is_not_supported(void** state)
   pump_to_checkpoint(fx);
 
   reboot_client(fx);
-  fx->su._internal.hooks.persist_state_fn = NULL;
+  fx->su._internal.hooks.persist_workflow_state_fn = NULL;
   assert_int_equal(az_iot_su_client_resume(&fx->su), AZ_IOT_ERR_NOT_SUPPORTED);
 }
 
@@ -3498,7 +3967,7 @@ static void a_snapshot_missing_a_needed_url_is_refused(void** state)
   assert_int_equal(teardown(&fresh_state), 0);
 }
 
-/* A record of another magic or format version (version 1 included) is
+/* A record of another magic or format version (versions 1 and 2 included) is
  * ignored, not resumed, with or without a persist hook. */
 static void a_record_of_another_format_is_ignored(void** state)
 {
@@ -3509,11 +3978,11 @@ static void a_record_of_another_format_is_ignored(void** state)
     fixture* fresh = resume_distinct_files_from_step_0(source, &fresh_state);
     if (c >= 2)
     {
-      fresh->su._internal.hooks.persist_state_fn = NULL;
+      fresh->su._internal.hooks.persist_workflow_state_fn = NULL;
     }
     uint8_t* b = fresh->log.persist_blob;
     assert_memory_equal(b, "SUCP", 4);
-    assert_int_equal(b[4], 2);
+    assert_int_equal(b[4], 3);
     assert_int_equal(b[5], 0);
     if (c % 2 == 0)
     {
@@ -3521,7 +3990,7 @@ static void a_record_of_another_format_is_ignored(void** state)
     }
     else
     {
-      b[4] = 1;
+      b[4] = c == 1 ? 1 : 2; /* earlier formats */
     }
     blob_reseal(b, fresh->log.persist_len);
     assert_int_equal(az_iot_su_client_resume(&fresh->su), AZ_IOT_OK);
@@ -3819,7 +4288,7 @@ static void an_unacknowledged_terminal_report_survives_a_reboot(void** state)
   finish_with_report_unacknowledged(fx);
 
   assert_true(fx->log.have_persist);
-  assert_int_equal(fx->log.persist_blob[4], 2);
+  assert_int_equal(fx->log.persist_blob[4], 3);
   assert_true((fx->log.persist_blob[6] & 0x4u) != 0);
   assert_int_equal(blob_u32(&fx->log.persist_blob[8]), AZ_IOT_SU_STATE_IDLE);
 
@@ -3855,6 +4324,38 @@ static void an_unacknowledged_terminal_report_survives_a_reboot(void** state)
   assert_false(fresh->su._internal.report_owed);
   inject_patch(fresh, signed_patch());
   assert_int_equal(az_iot_su_client_get_state(&fresh->su), AZ_IOT_SU_STATE_IDLE);
+  assert_int_equal(teardown(&fresh_state), 0);
+}
+
+/* The service does not re-offer a SUCCEEDED workflow. If it does after a
+ * reboot, when the acknowledged report's record is gone and the workflow id
+ * with it, the installed check turns the offer into SKIPPED: nothing is
+ * downloaded, installed or applied again. */
+static void a_succeeded_workflow_reoffered_after_a_reboot_is_skipped(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  inject_patch(fx, signed_patch());
+  pump(fx, 40);
+  assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_SUCCEEDED);
+  assert_false(fx->log.have_persist);
+
+  void* fresh_state = NULL;
+  fixture* fresh = reboot_into_fresh(fx, &fresh_state);
+  assert_int_equal(az_iot_su_client_resume(&fresh->su), AZ_IOT_OK);
+  assert_int_equal(az_iot_su_client_add_observer(&fresh->su, on_event, fresh), AZ_IOT_OK);
+  fresh->log.is_installed_result = AZ_IOT_SU_RESULT_ALREADY_INSTALLED;
+
+  inject_patch(fresh, signed_patch());
+  pump(fresh, 40);
+  assert_int_equal(az_iot_su_client_get_state(&fresh->su), AZ_IOT_SU_STATE_IDLE);
+  assert_int_equal(fresh->duplicate_count, 0);
+  assert_int_equal(count_ops(&fresh->log, OP_IS_INSTALLED), 1);
+  assert_int_equal(count_ops(&fresh->log, OP_DOWNLOAD), 0);
+  assert_int_equal(count_ops(&fresh->log, OP_INSTALL), 0);
+  assert_int_equal(count_ops(&fresh->log, OP_APPLY), 0);
+  assert_int_equal(fresh->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_SKIPPED);
+  assert_string_equal(fresh->chan.last_workflow_id, "51552a54-765e-419f-892a-c822549b6f38");
   assert_int_equal(teardown(&fresh_state), 0);
 }
 
@@ -3903,6 +4404,502 @@ static void the_terminal_record_is_kept_until_the_report_is_final(void** state)
       fresh->chan.engine_ctx);
   assert_false(fresh->log.have_persist);
   assert_int_equal(teardown(&fresh_state), 0);
+}
+
+/* An update check waits for the owed terminal report's verdict, then goes out. */
+static void a_check_waits_for_the_owed_terminal_report(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  finish_with_report_unacknowledged(fx);
+  int requests = fx->chan.request_update_count;
+
+  assert_int_equal(az_iot_su_client_request_update(&fx->su, UT_TIMEOUT_MS), AZ_IOT_OK);
+  pump(fx, 3);
+  assert_int_equal(fx->chan.request_update_count, requests);
+
+  fx->chan.result_cb(
+      AZ_IOT_SU_OP_REPORT_STATUS,
+      AZ_IOT_OK,
+      AZ_IOT_SU_ERROR_ACTION_NONE,
+      NULL,
+      fx->chan.engine_ctx);
+  assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  assert_int_equal(fx->chan.request_update_count, requests + 1);
+}
+
+/* A terminal report left owed with nothing queued (its session was lost) is
+ * sent again ahead of a check; the check follows its verdict. */
+static void a_check_resends_an_owed_terminal_report_first(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  finish_with_report_unacknowledged(fx);
+  fx->chan.result_cb(
+      AZ_IOT_SU_OP_REPORT_STATUS,
+      AZ_IOT_ERR_NOT_CONNECTED,
+      AZ_IOT_SU_ERROR_ACTION_FATAL,
+      NULL,
+      fx->chan.engine_ctx);
+  assert_true(fx->su._internal.report_owed);
+  int reports = fx->chan.report_count;
+  int requests = fx->chan.request_update_count;
+
+  assert_int_equal(az_iot_su_client_request_update(&fx->su, UT_TIMEOUT_MS), AZ_IOT_OK);
+  pump(fx, 3);
+  assert_int_equal(fx->chan.report_count, reports + 1);
+  assert_true(fx->chan.last_report.outcome == AZ_IOT_SU_OUTCOME_SUCCEEDED);
+  assert_int_equal(fx->chan.request_update_count, requests);
+
+  fx->chan.result_cb(
+      AZ_IOT_SU_OP_REPORT_STATUS,
+      AZ_IOT_OK,
+      AZ_IOT_SU_ERROR_ACTION_NONE,
+      NULL,
+      fx->chan.engine_ctx);
+  assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  assert_int_equal(fx->chan.request_update_count, requests + 1);
+}
+
+/* If that resend loses its session for good too, the held check is
+ * abandoned and the report stays owed: no resend past the session bound. */
+static void a_held_check_is_abandoned_when_its_report_cannot_be_sent(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
+  finish_with_report_unacknowledged(fx);
+  fx->chan.result_cb(
+      AZ_IOT_SU_OP_REPORT_STATUS,
+      AZ_IOT_ERR_NOT_CONNECTED,
+      AZ_IOT_SU_ERROR_ACTION_FATAL,
+      NULL,
+      fx->chan.engine_ctx);
+  assert_int_equal(
+      az_iot_su_client_request_update(&fx->su, AZ_IOT_SU_REQUEST_NO_TIMEOUT), AZ_IOT_OK);
+  pump(fx, 3);
+  int reports = fx->chan.report_count;
+  fx->abandoned_count = 0;
+
+  fx->chan.result_cb(
+      AZ_IOT_SU_OP_REPORT_STATUS,
+      AZ_IOT_ERR_NOT_CONNECTED,
+      AZ_IOT_SU_ERROR_ACTION_FATAL,
+      NULL,
+      fx->chan.engine_ctx);
+  assert_int_equal(fx->abandoned_count, 2);
+  assert_int_equal(fx->last_abandoned_operation, AZ_IOT_SU_OP_GET_UPDATE);
+  assert_int_equal(fx->last_abandoned_reason, AZ_IOT_ERR_NOT_CONNECTED);
+  assert_true(fx->su._internal.report_owed);
+  pump(fx, 5);
+  assert_int_equal(fx->chan.report_count, reports);
+}
+
+/* A held check already past its deadline when the report's session is lost
+ * is abandoned with AZ_IOT_ERR_TIMEOUT. */
+static void an_expired_held_check_is_abandoned_as_a_timeout(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
+  finish_with_report_unacknowledged(fx);
+  assert_int_equal(az_iot_su_client_request_update(&fx->su, UT_TIMEOUT_MS), AZ_IOT_OK);
+  fx->su._internal.pending_fetch_deadline_ms = az_iot_time_mono_ms();
+  fx->abandoned_count = 0;
+  fx->chan.result_cb(
+      AZ_IOT_SU_OP_REPORT_STATUS,
+      AZ_IOT_ERR_NOT_CONNECTED,
+      AZ_IOT_SU_ERROR_ACTION_FATAL,
+      NULL,
+      fx->chan.engine_ctx);
+  assert_int_equal(fx->abandoned_count, 2);
+  assert_int_equal(fx->last_abandoned_operation, AZ_IOT_SU_OP_GET_UPDATE);
+  assert_int_equal(fx->last_abandoned_reason, AZ_IOT_ERR_TIMEOUT);
+}
+
+/* Requests a check when a status report is abandoned. */
+static void request_on_report_abandoned(const az_iot_su_event* event, void* user_ctx)
+{
+  fixture* fx = (fixture*)user_ctx;
+  if (event->kind == AZ_IOT_SU_EVENT_OPERATION_ABANDONED
+      && event->operation == AZ_IOT_SU_OP_REPORT_STATUS)
+  {
+    assert_int_equal(az_iot_su_client_request_update(&fx->su, UT_TIMEOUT_MS), AZ_IOT_OK);
+  }
+}
+
+/* A check an observer queues from the report's abandonment is not the held
+ * one, and stays. */
+static void a_check_queued_by_an_observer_is_kept(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_su_client_add_observer(&fx->su, request_on_report_abandoned, fx), AZ_IOT_OK);
+  finish_with_report_unacknowledged(fx);
+  fx->abandoned_count = 0;
+  fx->chan.result_cb(
+      AZ_IOT_SU_OP_REPORT_STATUS,
+      AZ_IOT_ERR_NOT_CONNECTED,
+      AZ_IOT_SU_ERROR_ACTION_FATAL,
+      NULL,
+      fx->chan.engine_ctx);
+  assert_int_equal(fx->abandoned_count, 1);
+  assert_int_equal(fx->last_abandoned_operation, AZ_IOT_SU_OP_REPORT_STATUS);
+  assert_int_equal(fx->su._internal.pending_fetch, SU_FETCH_REGULAR);
+}
+
+/* The check's deadline still holds while it waits for the report. */
+static void a_check_held_for_a_report_keeps_its_deadline(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
+  finish_with_report_unacknowledged(fx);
+  fx->abandoned_count = 0;
+  int requests = fx->chan.request_update_count;
+
+  assert_int_equal(az_iot_su_client_request_update(&fx->su, UT_TIMEOUT_MS), AZ_IOT_OK);
+  fx->su._internal.pending_fetch_deadline_ms = az_iot_time_mono_ms();
+  assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  assert_int_equal(fx->abandoned_count, 1);
+  assert_int_equal(fx->last_abandoned_operation, AZ_IOT_SU_OP_GET_UPDATE);
+  assert_int_equal(fx->last_abandoned_reason, AZ_IOT_ERR_TIMEOUT);
+  assert_int_equal(fx->chan.request_update_count, requests);
+}
+
+/* A SUCCEEDED workflow's applied update becomes the installed update id the
+ * client and its channel advertise; after a restart, a restored terminal
+ * record does the same. */
+static void a_succeeded_update_becomes_the_installed_id(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  finish_with_report_unacknowledged(fx);
+  assert_true(fx->chan.last_had_installed_update_id);
+  const az_iot_su_device_properties* cached = &fx->su._internal.device_properties;
+  assert_string_equal(cached->installed_update_id.provider, fx->chan.last_installed_provider);
+  assert_string_equal(cached->installed_update_id.name, fx->chan.last_installed_name);
+  assert_string_equal(cached->installed_update_id.version, fx->chan.last_installed_version);
+  const az_iot_su_device_properties* channel = &fx->chan.properties.properties;
+  assert_string_equal(channel->installed_update_id.version, fx->chan.last_installed_version);
+
+  void* fresh_state = NULL;
+  fixture* fresh = reboot_into_fresh(fx, &fresh_state);
+  assert_int_equal(az_iot_su_client_resume(&fresh->su), AZ_IOT_OK);
+  assert_string_equal(
+      fresh->su._internal.device_properties.installed_update_id.version,
+      fx->chan.last_installed_version);
+  assert_int_equal(teardown(&fresh_state), 0);
+}
+
+/* Adoption does not depend on room in the device-properties buffer: one
+ * sized exactly for the startup properties still advertises the applied id. */
+static void the_applied_id_is_adopted_with_an_exact_sized_cache(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_su_device_properties dp = { 0 };
+  dp.manufacturer = "Contoso";
+  dp.model = "Foobar";
+  dp.installed_update_id.provider = "Contoso";
+  dp.installed_update_id.name = "Foobar";
+  dp.installed_update_id.version = "1"; /* shorter than the applied "1.1" */
+  az_iot_su_platform_hooks hooks = fx->su._internal.hooks;
+  az_iot_su_client_deinit(&fx->su);
+  az_iot_su_client_config_options o = az_iot_su_client_config_options_default();
+  o.hooks = &hooks;
+  o.root_keys = k_root_keys;
+  o.root_key_count = sizeof(k_root_keys) / sizeof(k_root_keys[0]);
+  o.device_properties = &dp;
+  o.limits.device_properties_size = az_iot_su_device_properties_buffer_size(&dp);
+  o.workspace = fx->workspace;
+  o.workspace_size = sizeof(fx->workspace);
+  assert_int_equal(
+      az_iot_su_client__initialize_with_channel(&fx->su, &fx->channel, &fx->crypto.base, &o),
+      AZ_IOT_OK);
+
+  finish_with_report_unacknowledged(fx);
+  const az_iot_su_device_properties* cached = &fx->su._internal.device_properties;
+  assert_string_equal(cached->installed_update_id.provider, fx->chan.last_installed_provider);
+  assert_string_equal(cached->installed_update_id.name, fx->chan.last_installed_name);
+  assert_string_equal(cached->installed_update_id.version, fx->chan.last_installed_version);
+  assert_string_equal(
+      fx->chan.properties.properties.installed_update_id.name, fx->chan.last_installed_name);
+}
+
+/* CRC-32 over a persisted record, as the client computes it. */
+static uint32_t record_crc32(const uint8_t* data, size_t len)
+{
+  uint32_t crc = 0xFFFFFFFFu;
+  for (size_t i = 0; i < len; ++i)
+  {
+    crc ^= data[i];
+    for (int b = 0; b < 8; ++b)
+    {
+      crc = (crc >> 1) ^ (0xEDB88320u & (uint32_t)(-(int32_t)(crc & 1u)));
+    }
+  }
+  return crc ^ 0xFFFFFFFFu;
+}
+
+/* A later adoption the channel refuses leaves the adopted installed id intact,
+ * even when the new id's components have other lengths. */
+static void a_refused_adoption_keeps_the_adopted_installed_id(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  finish_with_report_unacknowledged(fx);
+  void* fresh_state = NULL;
+  fixture* fresh = reboot_into_fresh(fx, &fresh_state);
+  assert_int_equal(az_iot_su_client_resume(&fresh->su), AZ_IOT_OK);
+  const az_iot_su_update_id_info* id = &fresh->su._internal.device_properties.installed_update_id;
+  assert_string_equal(id->provider, fx->chan.last_installed_provider);
+
+  /* The same record with the applied id split elsewhere: same bytes overall,
+   * components of other lengths ("Contoso\0Foobar\0..." -> "Con\0tosoFoobar\0..."). */
+  const char* provider = fx->chan.last_installed_provider;
+  const char* name = fx->chan.last_installed_name;
+  const char* version = fx->chan.last_installed_version;
+  size_t provider_len = strlen(provider);
+  size_t name_len = strlen(name);
+  size_t version_len = strlen(version);
+  size_t applied_len = provider_len + name_len + version_len + 3u;
+  char applied[64];
+  char split[64];
+  assert_true(provider_len > 3u && applied_len <= sizeof(applied));
+  memcpy(applied, provider, provider_len + 1u);
+  memcpy(&applied[provider_len + 1u], name, name_len + 1u);
+  memcpy(&applied[provider_len + name_len + 2u], version, version_len + 1u);
+  memcpy(split, provider, 3u);
+  split[3] = '\0';
+  memcpy(&split[4], &provider[3], provider_len - 3u);
+  memcpy(&split[provider_len + 1u], name, name_len + 1u);
+  memcpy(&split[provider_len + name_len + 2u], version, version_len + 1u);
+  uint8_t* blob = fresh->log.persist_blob;
+  size_t len = fx->log.persist_len;
+  size_t at = 0;
+  while (at + applied_len <= len && memcmp(&blob[at], applied, applied_len) != 0)
+  {
+    ++at;
+  }
+  assert_true(at + applied_len <= len);
+  memcpy(&blob[at], split, applied_len);
+  uint32_t crc = record_crc32(blob, len - 4u);
+  for (int i = 0; i < 4; ++i)
+  {
+    blob[len - 4u + (size_t)i] = (uint8_t)(crc >> (8 * i));
+  }
+  fresh->log.persist_len = len;
+
+  fresh->chan.set_properties_result = AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+  assert_int_equal(az_iot_su_client_resume(&fresh->su), AZ_IOT_OK);
+  assert_string_equal(fresh->su._internal.applied_update_id.provider, split);
+  assert_string_equal(id->provider, fx->chan.last_installed_provider);
+  assert_string_equal(id->name, fx->chan.last_installed_name);
+  assert_string_equal(id->version, fx->chan.last_installed_version);
+  assert_int_equal(teardown(&fresh_state), 0);
+}
+
+/* Once the terminal report is settled, new device properties are not
+ * followed by that report again; the next check carries them. */
+static void new_properties_do_not_resend_a_settled_report(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  finish_with_report_unacknowledged(fx);
+  fx->chan.result_cb(
+      AZ_IOT_SU_OP_REPORT_STATUS,
+      AZ_IOT_OK,
+      AZ_IOT_SU_ERROR_ACTION_NONE,
+      NULL,
+      fx->chan.engine_ctx);
+  int sent = fx->chan.report_count;
+
+  az_iot_su_device_properties dp = { 0 };
+  dp.manufacturer = "Contoso";
+  dp.model = "Foobar";
+  dp.installed_update_id.provider = "Contoso";
+  dp.installed_update_id.name = "Foobar";
+  dp.installed_update_id.version = "9.9";
+  assert_int_equal(az_iot_su_client_update_device_properties(&fx->su, &dp), AZ_IOT_OK);
+  pump(fx, 3);
+  assert_int_equal(fx->chan.report_count, sent);
+  assert_string_equal(fx->chan.properties.properties.installed_update_id.version, "9.9");
+}
+
+/* WORKFLOW_COMPLETED follows the verdict that settles the terminal report:
+ * once on acceptance, once on a permanent rejection, never for a report kept
+ * after a lost session (it settles when sent again). */
+static void the_workflow_completes_once_its_report_settles(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
+  finish_with_report_unacknowledged(fx);
+  assert_int_equal(fx->completed_count, 0);
+
+  fx->chan.result_cb(
+      AZ_IOT_SU_OP_REPORT_STATUS,
+      AZ_IOT_ERR_NOT_CONNECTED,
+      AZ_IOT_SU_ERROR_ACTION_FATAL,
+      NULL,
+      fx->chan.engine_ctx);
+  assert_int_equal(fx->completed_count, 0);
+
+  /* Sent again ahead of a check, then accepted. */
+  fx->verdict_events = 0;
+  assert_int_equal(az_iot_su_client_request_update(&fx->su, UT_TIMEOUT_MS), AZ_IOT_OK);
+  pump(fx, 3);
+  fx->chan.result_cb(
+      AZ_IOT_SU_OP_REPORT_STATUS,
+      AZ_IOT_OK,
+      AZ_IOT_SU_ERROR_ACTION_NONE,
+      NULL,
+      fx->chan.engine_ctx);
+  assert_int_equal(fx->completed_count, 1);
+  assert_true(fx->completed_after_verdict_event);
+  assert_int_equal(fx->last_completed_reason, AZ_IOT_OK);
+  assert_true(fx->last_completed_has_report);
+  assert_int_equal(fx->last_completed_outcome, AZ_IOT_SU_OUTCOME_SUCCEEDED);
+
+  /* Nothing more for that workflow. */
+  int sent = fx->chan.report_count;
+  pump(fx, 3);
+  assert_int_equal(fx->chan.report_count, sent);
+  assert_int_equal(fx->completed_count, 1);
+}
+
+/* Properties changed while the terminal verdict is pending do not re-send
+ * that report after it settles, nor complete the workflow twice. */
+static void properties_changed_before_the_verdict_complete_once(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
+  finish_with_report_unacknowledged(fx);
+  az_iot_su_device_properties dp = { 0 };
+  dp.manufacturer = "Contoso";
+  dp.model = "Foobar";
+  assert_int_equal(az_iot_su_client_update_device_properties(&fx->su, &dp), AZ_IOT_OK);
+  fx->chan.result_cb(
+      AZ_IOT_SU_OP_REPORT_STATUS,
+      AZ_IOT_OK,
+      AZ_IOT_SU_ERROR_ACTION_NONE,
+      NULL,
+      fx->chan.engine_ctx);
+  assert_int_equal(fx->completed_count, 1);
+  int sent = fx->chan.report_count;
+  pump(fx, 3);
+  assert_int_equal(fx->chan.report_count, sent);
+  assert_int_equal(fx->completed_count, 1);
+}
+
+/* A permanent rejection completes the workflow with the service's verdict. */
+static void a_rejected_report_completes_the_workflow(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
+  finish_with_report_unacknowledged(fx);
+  az_iot_su_service_error se
+      = { .code = 404001, .message = "UNKNOWN_WORKFLOW_ID", .tracking_id = "t-2" };
+  fx->verdict_events = 0;
+  fx->chan.result_cb(
+      AZ_IOT_SU_OP_REPORT_STATUS,
+      AZ_IOT_ERR_DPS,
+      AZ_IOT_SU_ERROR_ACTION_FATAL,
+      &se,
+      fx->chan.engine_ctx);
+  assert_int_equal(fx->completed_count, 1);
+  assert_true(fx->completed_after_verdict_event);
+  assert_int_equal(fx->last_completed_reason, AZ_IOT_ERR_DPS);
+  assert_int_equal(fx->last_completed_code, 404001);
+  assert_true(fx->last_completed_has_report);
+  assert_false(fx->su._internal.report_owed);
+}
+
+/* An install that asks for a reboot is READY once its position record is
+ * stored, PENDING while that write fails. */
+static void an_install_reboot_is_ready_once_its_record_is_stored(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  assert_int_equal(az_iot_su_client_get_reboot_state(NULL), AZ_IOT_SU_REBOOT_NONE);
+  open_to_connected(fx);
+  fx->log.install_result = AZ_IOT_SU_RESULT_REBOOT_REQUIRED;
+  inject_patch(fx, signed_patch());
+  pump_to_state(fx, AZ_IOT_SU_STATE_INSTALL_STARTED, 20);
+  assert_int_equal(az_iot_su_client_get_reboot_state(&fx->su), AZ_IOT_SU_REBOOT_NONE);
+
+  fx->log.persist_failures = 1;
+  assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_INSTALL_COMPLETE);
+  assert_int_equal(az_iot_su_client_get_reboot_state(&fx->su), AZ_IOT_SU_REBOOT_PENDING);
+
+  fx->su._internal.persist_retry._internal.due_ms = 0;
+  assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  assert_int_equal(az_iot_su_client_get_reboot_state(&fx->su), AZ_IOT_SU_REBOOT_READY);
+}
+
+/* After the last apply asks for a reboot, READY needs the terminal record
+ * stored; a workflow that fails after asking needs no reboot. */
+static void a_last_apply_reboot_waits_for_the_terminal_record(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  fx->chan.report_verdict_deferred = true;
+  fx->log.apply_result = AZ_IOT_SU_RESULT_REBOOT_REQUIRED;
+  fx->log.persist_failures = 1;
+  inject_patch(fx, signed_patch());
+  pump(fx, 40);
+  assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_IDLE);
+  assert_int_equal(az_iot_su_client_get_reboot_state(&fx->su), AZ_IOT_SU_REBOOT_PENDING);
+
+  fx->su._internal.persist_retry._internal.due_ms = 0;
+  assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  assert_true(fx->su._internal.checkpoint_terminal);
+  assert_int_equal(az_iot_su_client_get_reboot_state(&fx->su), AZ_IOT_SU_REBOOT_READY);
+}
+
+/* Storage behind is PENDING even with no reboot asked for: a restart then
+ * could resume a finished workflow. */
+static void storage_behind_is_pending_without_a_reboot_request(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  fx->chan.report_verdict_deferred = true;
+  fx->log.persist_failures = 1;
+  inject_patch(fx, signed_patch());
+  pump(fx, 40);
+  assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_IDLE);
+  assert_int_equal(az_iot_su_client_get_reboot_state(&fx->su), AZ_IOT_SU_REBOOT_PENDING);
+
+  fx->su._internal.persist_retry._internal.due_ms = 0;
+  assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  assert_int_equal(az_iot_su_client_get_reboot_state(&fx->su), AZ_IOT_SU_REBOOT_NONE);
+}
+
+static void a_failed_workflow_needs_no_reboot(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  fx->log.install_result = AZ_IOT_SU_RESULT_REBOOT_REQUIRED;
+  fx->log.apply_result = AZ_IOT_SU_RESULT_FAILURE;
+  inject_patch(fx, signed_patch());
+  pump_to_checkpoint(fx);
+  assert_int_equal(az_iot_su_client_get_reboot_state(&fx->su), AZ_IOT_SU_REBOOT_READY);
+  pump(fx, 40);
+  assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_FAILED);
+  assert_int_equal(az_iot_su_client_get_reboot_state(&fx->su), AZ_IOT_SU_REBOOT_NONE);
+}
+
+/* A later workflow that fails does not cancel an earlier one's outstanding
+ * reboot: the install asked for one, the application did not reboot, and the
+ * workflow still succeeded. */
+static void a_later_failed_workflow_keeps_an_earlier_reboot_request(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  fx->log.install_result = AZ_IOT_SU_RESULT_REBOOT_REQUIRED;
+  inject_patch(fx, signed_patch());
+  pump(fx, 40);
+  assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_SUCCEEDED);
+  assert_int_equal(az_iot_su_client_get_reboot_state(&fx->su), AZ_IOT_SU_REBOOT_READY);
+
+  fx->log.download_result = AZ_IOT_SU_RESULT_FAILURE;
+  inject_patch(fx, build_patch("bbbbbbbb-0000-0000-0000-000000000003"));
+  pump(fx, 40);
+  assert_string_equal(fx->chan.last_workflow_id, "bbbbbbbb-0000-0000-0000-000000000003");
+  assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_FAILED);
+  assert_int_equal(az_iot_su_client_get_reboot_state(&fx->su), AZ_IOT_SU_REBOOT_READY);
 }
 
 /* A failed workflow stores its terminal report, with its retry schedule,
@@ -4429,7 +5426,7 @@ static void the_retry_record_round_trips_through_the_blob(void** state)
 
   const uint8_t* b = fx->log.persist_blob;
   assert_memory_equal(b, "SUCP", 4);
-  assert_int_equal(b[4], 2);
+  assert_int_equal(b[4], 3);
   assert_int_equal(blob_u32(&b[4]) >> 16, 0x8u);
   assert_int_equal(blob_u32(&b[8]), AZ_IOT_SU_STATE_IDLE);
   assert_int_equal(blob_u32(&b[36]), 0);
@@ -4473,6 +5470,31 @@ static void the_retry_record_round_trips_through_the_blob(void** state)
   inject_patch(fresh, signed_patch());
   assert_int_equal(fresh->log.persist_calls, writes);
   assert_int_equal(teardown(&fresh_state), 0);
+}
+
+/* The first step is no resume point: details set there during a retry write
+ * no position record over the retry record, and are reported. */
+static void step_result_details_set_at_a_retry_start_write_nothing(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  fail_signed_patch(fx);
+  elapse_retry_wait(fx);
+  inject_patch(fx, signed_patch());
+  pump_to_state(fx, AZ_IOT_SU_STATE_DOWNLOAD_STARTED, 10);
+
+  int writes = fx->log.persist_calls;
+  assert_int_equal(
+      az_iot_su_client_set_step_result_details(&fx->su, 0, AZ_SPAN_FROM_STR("retry text")),
+      AZ_IOT_OK);
+  assert_false(fx->su._internal.checkpoint_pending);
+  assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  assert_int_equal(fx->log.persist_calls, writes);
+
+  pump(fx, 40);
+  assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_SUCCEEDED);
+  assert_true(az_span_is_content_equal(
+      fx->chan.last_report.step_results[0].result_details, AZ_SPAN_FROM_STR("retry text")));
 }
 
 /* A new workflow replaces an owed report of the one it supersedes. */
@@ -4648,31 +5670,6 @@ static void a_workflow_id_at_the_limit_is_reported_in_full(void** state)
   assert_string_equal(fx->chan.last_workflow_id, decoded);
 }
 
-/* Counts ERROR lines containing `needle`. */
-typedef struct
-{
-  const char* needle;
-  int count;
-} su_error_log_capture;
-
-static void su_error_log_sink(
-    void* user_ctx,
-    az_iot_log_level level,
-    const char* component,
-    const char* file,
-    int line,
-    const char* msg)
-{
-  (void)component;
-  su_error_log_capture* cap = (su_error_log_capture*)user_ctx;
-  (void)file;
-  (void)line;
-  if (level == AZ_IOT_LOG_LEVEL_ERROR && msg != NULL && strstr(msg, cap->needle) != NULL)
-  {
-    cap->count++;
-  }
-}
-
 /* Counts DEBUG and TRACE "su" lines containing `needle` and a JSON body. */
 typedef struct
 {
@@ -4702,6 +5699,252 @@ static void su_level_log_sink(
   cap->trace_count += level == AZ_IOT_LOG_LEVEL_TRACE ? 1 : 0;
 }
 
+/* --- Manifest limits (AZ_IOT_SU_MAX_*) ------------------------------------ */
+
+/** @brief Shape of a payload built by manifest_limits_patch(). */
+typedef struct
+{
+  int step_count;
+  int file_count; /* in the manifest `files` map; fileUrls lists at most AZ_IOT_SU_MAX_FILE_COUNT */
+  int first_step_file_count; /* ids f00, f01, ... listed by step 0; other steps list one file */
+  int hash_count; /* per file; the first is the fixture's sha256 */
+  const char* file_extra; /* appended to each file object when not NULL */
+} manifest_shape;
+
+static size_t append_text(char* buffer, size_t capacity, size_t used, const char* text)
+{
+  size_t length = strlen(text);
+  assert_true(used + length < capacity);
+  memcpy(buffer + used, text, length + 1);
+  return used + length;
+}
+
+/* Build a signed payload whose manifest has the given shape. Returns a static buffer, valid
+ * until the next call. */
+static const char* manifest_limits_patch(const char* workflow_id, manifest_shape shape)
+{
+  static char manifest[8192];
+  char item[160];
+  size_t used = append_text(
+      manifest,
+      sizeof(manifest),
+      0,
+      "{\"manifestVersion\":\"5\",\"updateId\":{\"provider\":\"Contoso\",\"name\":\"Foobar\","
+      "\"version\":\"1.1\"},\"compatibility\":[{\"deviceManufacturer\":\"Contoso\","
+      "\"deviceModel\":\"Foobar\"}],\"instructions\":{\"steps\":[");
+  for (int step = 0; step < shape.step_count; ++step)
+  {
+    used = append_text(
+        manifest,
+        sizeof(manifest),
+        used,
+        step == 0 ? "{\"handler\":\"microsoft/swupdate:1\",\"files\":["
+                  : ",{\"handler\":\"microsoft/swupdate:1\",\"files\":[");
+    int listed = step == 0 ? shape.first_step_file_count : 1;
+    for (int i = 0; i < listed; ++i)
+    {
+      int file = step == 0 ? i : step % shape.file_count;
+      (void)snprintf(item, sizeof(item), "%s\"f%02d\"", i == 0 ? "" : ",", file);
+      used = append_text(manifest, sizeof(manifest), used, item);
+    }
+    (void)snprintf(
+        item, sizeof(item), "],\"handlerProperties\":{\"installedCriteria\":\"%d\"}}", step);
+    used = append_text(manifest, sizeof(manifest), used, item);
+  }
+  used = append_text(manifest, sizeof(manifest), used, "]},\"files\":{");
+  for (int file = 0; file < shape.file_count; ++file)
+  {
+    (void)snprintf(
+        item,
+        sizeof(item),
+        "%s\"f%02d\":{\"fileName\":\"payload-%02d.bin\",\"sizeInBytes\":64,\"hashes\":{"
+        "\"sha256\":\"" SU_TEST_FILE_HASH_B64 "\"",
+        file == 0 ? "" : ",",
+        file,
+        file);
+    used = append_text(manifest, sizeof(manifest), used, item);
+    for (int hash = 1; hash < shape.hash_count; ++hash)
+    {
+      (void)snprintf(item, sizeof(item), ",\"sha%d\":\"AAAA\"", 384 + hash);
+      used = append_text(manifest, sizeof(manifest), used, item);
+    }
+    used = append_text(manifest, sizeof(manifest), used, "}");
+    if (shape.file_extra != NULL)
+    {
+      used = append_text(manifest, sizeof(manifest), used, shape.file_extra);
+    }
+    used = append_text(manifest, sizeof(manifest), used, "}");
+  }
+  used = append_text(
+      manifest, sizeof(manifest), used, "},\"createdDateTime\":\"2022-07-07T03:02:48.8449038Z\"}");
+
+  static char patch[SU_TEST_PATCH_SIZE];
+  char jws[2048];
+  build_jws(jws, (int32_t)sizeof(jws));
+  used = 0;
+  (void)snprintf(item, sizeof(item), "{\"workflowId\":\"%s\",\"updateManifest\":\"", workflow_id);
+  used = append_text(patch, sizeof(patch), used, item);
+  for (const char* c = manifest; *c != '\0'; ++c)
+  {
+    char one[2];
+    one[0] = *c;
+    one[1] = '\0';
+    used = append_text(patch, sizeof(patch), used, *c == '"' ? "\\\"" : one);
+  }
+  used = append_text(patch, sizeof(patch), used, "\",\"updateManifestSignature\":\"");
+  used = append_text(patch, sizeof(patch), used, jws);
+  used = append_text(patch, sizeof(patch), used, "\",\"fileUrls\":{");
+  int url_count
+      = shape.file_count < AZ_IOT_SU_MAX_FILE_COUNT ? shape.file_count : AZ_IOT_SU_MAX_FILE_COUNT;
+  for (int file = 0; file < url_count; ++file)
+  {
+    (void)snprintf(
+        item,
+        sizeof(item),
+        "%s\"f%02d\":\"http://example.com/payload-%02d.bin\"",
+        file == 0 ? "" : ",",
+        file,
+        file);
+    used = append_text(patch, sizeof(patch), used, item);
+  }
+  (void)append_text(patch, sizeof(patch), used, "}}");
+  return patch;
+}
+
+/* The largest manifest the limits allow, by default the Device Update limits (10 steps,
+ * 10 files, all 10 in one step), installs every step and reports each. */
+static void update_at_the_manifest_limits_installs_every_step(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  const manifest_shape shape = { .step_count = AZ_IOT_SU_MAX_STEP_COUNT,
+                                 .file_count = AZ_IOT_SU_MAX_FILE_COUNT,
+                                 .first_step_file_count = AZ_IOT_SU_MAX_FILE_COUNT_PER_STEP,
+                                 .hash_count = 1 };
+
+  inject_patch(fx, manifest_limits_patch("at-the-limits", shape));
+  pump(fx, 400);
+
+  assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_IDLE);
+  assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_SUCCEEDED);
+  assert_int_equal(fx->chan.last_report.step_results_count, AZ_IOT_SU_MAX_STEP_COUNT);
+  for (int32_t i = 0; i < AZ_IOT_SU_MAX_STEP_COUNT; ++i)
+  {
+    assert_int_equal(fx->chan.last_report.step_results[i].outcome, AZ_IOT_SU_OUTCOME_SUCCEEDED);
+  }
+  assert_int_equal((int)count_ops(&fx->log, OP_INSTALL), AZ_IOT_SU_MAX_STEP_COUNT);
+  assert_int_equal(
+      fx->log.download_calls, AZ_IOT_SU_MAX_FILE_COUNT_PER_STEP + AZ_IOT_SU_MAX_STEP_COUNT - 1);
+
+  /* The public parser yields the same layout: the field after every array is intact. */
+  az_iot_su_client_update_request request;
+  az_iot_su_client_update_manifest manifest;
+  assert_int_equal(
+      parse_with_roots(
+          &fx->log,
+          manifest_limits_patch("at-the-limits", shape),
+          k_root_keys,
+          1,
+          &request,
+          &manifest),
+      AZ_IOT_OK);
+  assert_int_equal(manifest.instructions.steps_count, AZ_IOT_SU_MAX_STEP_COUNT);
+  assert_int_equal(manifest.instructions.steps[0].files_count, AZ_IOT_SU_MAX_FILE_COUNT_PER_STEP);
+  assert_int_equal(manifest.files_count, AZ_IOT_SU_MAX_FILE_COUNT);
+  assert_int_equal(request.file_urls_count, AZ_IOT_SU_MAX_FILE_COUNT);
+  assert_true(az_span_is_content_equal(
+      manifest.create_date_time, AZ_SPAN_FROM_STR("2022-07-07T03:02:48.8449038Z")));
+}
+
+/* A manifest one over any limit fails before anything is downloaded, is reported failed, and
+ * logs the limit; the public parser refuses it with AZ_IOT_ERR_NOT_ENOUGH_SPACE. The step and
+ * hash counts are not bounded by the azure-sdk-for-c parser, so this also keeps it from
+ * writing past its arrays. */
+static void update_over_a_manifest_limit_fails_before_download(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  const struct
+  {
+    manifest_shape shape;
+    const char* logged;
+  } cases[] = {
+    { { AZ_IOT_SU_MAX_STEP_COUNT + 1, AZ_IOT_SU_MAX_FILE_COUNT, 1, 1, NULL },
+      "AZ_IOT_SU_MAX_STEP_COUNT" },
+    { { 1, AZ_IOT_SU_MAX_FILE_COUNT + 1, 1, 1, NULL }, "AZ_IOT_SU_MAX_FILE_COUNT is" },
+    { { 1, AZ_IOT_SU_MAX_FILE_COUNT, AZ_IOT_SU_MAX_FILE_COUNT_PER_STEP + 1, 1, NULL },
+      "AZ_IOT_SU_MAX_FILE_COUNT_PER_STEP" },
+    { { 1, 1, 1, _az_IOT_ADU_CLIENT_MAX_FILE_HASH_COUNT + 1, NULL }, "hashes" },
+  };
+  for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i)
+  {
+    char workflow_id[32];
+    (void)snprintf(workflow_id, sizeof(workflow_id), "over-the-limits-%u", (unsigned)i);
+    int reports = fx->chan.report_count;
+
+    su_error_log_capture cap = { .needle = cases[i].logged, .count = 0 };
+    az_iot_log_sink sink
+        = { .sink = su_error_log_sink, .user_ctx = &cap, .min_level = AZ_IOT_LOG_LEVEL_ERROR };
+    az_iot_log_set_global_sink(&sink);
+    inject_patch(fx, manifest_limits_patch(workflow_id, cases[i].shape));
+    pump(fx, 60);
+    az_iot_log_set_global_sink(NULL);
+
+    assert_int_equal(cap.count, 1);
+    assert_true(fx->chan.report_count > reports);
+    assert_idle_report_retains_outcome(fx, AZ_IOT_SU_OUTCOME_FAILED);
+    assert_string_equal(fx->chan.last_workflow_id, workflow_id);
+    assert_int_equal(fx->log.download_calls, 0);
+    assert_int_equal((int)count_ops(&fx->log, OP_IS_INSTALLED), 0);
+
+    az_iot_su_client_update_request request;
+    az_iot_su_client_update_manifest manifest;
+    assert_int_equal(
+        parse_with_roots(
+            &fx->log,
+            manifest_limits_patch(workflow_id, cases[i].shape),
+            k_root_keys,
+            1,
+            &request,
+            &manifest),
+        AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+  }
+}
+
+/* A file mimeType that is not a string is refused before parsing: the azure-sdk-for-c parser
+ * would read its members as file properties, past the hash count checked here. */
+static void manifest_with_a_non_string_mime_type_fails_before_download(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  const manifest_shape shape
+      = { .step_count = 1,
+          .file_count = 1,
+          .first_step_file_count = 1,
+          .hash_count = 1,
+          .file_extra
+          = ",\"mimeType\":{\"hashes\":{\"sha256\":\"a\",\"sha384\":\"b\",\"sha512\":\"c\"}}" };
+
+  inject_patch(fx, manifest_limits_patch("non-string-mime-type", shape));
+  pump(fx, 60);
+
+  assert_idle_report_retains_outcome(fx, AZ_IOT_SU_OUTCOME_FAILED);
+  assert_string_equal(fx->chan.last_workflow_id, "non-string-mime-type");
+  assert_int_equal(fx->log.download_calls, 0);
+
+  az_iot_su_client_update_request request;
+  az_iot_su_client_update_manifest manifest;
+  assert_int_equal(
+      parse_with_roots(
+          &fx->log,
+          manifest_limits_patch("non-string-mime-type", shape),
+          k_root_keys,
+          1,
+          &request,
+          &manifest),
+      AZ_IOT_ERR_INVALID_ARG);
+}
 /* The update body carries service-issued download URLs; DEBUG logs only its
  * size, TRACE the body. */
 static void update_payload_body_is_logged_only_at_trace(void** state)
@@ -4733,7 +5976,8 @@ static void a_resumed_oversized_workflow_id_is_logged(void** state)
 
   /* Splice an id too long to keep into the stored request. It is the first
    * string, so every later request offset moves by `delta`. */
-  static uint8_t old_blob[AZ_IOT_SU_STATE_BLOB_MAX_SIZE(AZ_IOT_SU_DEFAULT_MAX_UPDATE_SIZE)];
+  static uint8_t old_blob[AZ_IOT_SU_STATE_BLOB_MAX_SIZE(
+      AZ_IOT_SU_DEFAULT_MAX_UPDATE_SIZE, AZ_IOT_SU_DEFAULT_RESULT_DETAILS_SIZE)];
   size_t old_len = fx->log.persist_len;
   memcpy(old_blob, fx->log.persist_blob, old_len);
   uint32_t old_req_len = blob_u32(&old_blob[36]);
@@ -4996,7 +6240,7 @@ static void a_failed_checkpoint_is_retried_while_a_report_is_pending(void** stat
   assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_INSTALL_COMPLETE);
 }
 
-/* --- persist_state_fn failure: back-off, events, giving up -------------- */
+/* --- persist_workflow_state_fn failure: back-off, events, giving up -------------- */
 
 /* Make the next retry due now and tick once. */
 static void persist_retry_now(fixture* fx)
@@ -5156,7 +6400,8 @@ static void a_terminal_record_that_never_lands_stops_being_retried(void** state)
 }
 
 /* A superseded record that can never be cleared stops holding the new
- * workflow once the client gives up. */
+ * workflow once the client gives up; the reboot state stays PENDING until a
+ * later write replaces it. */
 static void a_supersede_clear_that_never_lands_lets_the_new_workflow_proceed(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -5173,10 +6418,15 @@ static void a_supersede_clear_that_never_lands_lets_the_new_workflow_proceed(voi
   }
   assert_false(fx->su._internal.checkpoint_superseded);
   assert_int_equal(fx->su._internal.persist_retry._internal.attempt, SU_TEST_PERSIST_MAX_ATTEMPTS);
+  /* The superseded record is still stored: a restart now would resume it. */
+  assert_int_equal(az_iot_su_client_get_reboot_state(&fx->su), AZ_IOT_SU_REBOOT_PENDING);
+  fx->log.persist_failures = 0;
   pump(fx, 40);
   assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_IDLE);
   assert_string_equal(fx->chan.last_workflow_id, "bbbbbbbb-0000-0000-0000-000000000002");
   assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_SUCCEEDED);
+  assert_false(fx->su._internal.superseded_record_stored);
+  assert_int_not_equal(az_iot_su_client_get_reboot_state(&fx->su), AZ_IOT_SU_REBOOT_PENDING);
 }
 
 /* With a limit of 1, the first failed reboot checkpoint gives up at once: one
@@ -6519,6 +7769,7 @@ static void accepted_reports_are_raised(void** state)
   assert_true(fx->chan.report_count > 1);
   assert_int_equal(fx->accepted_count, fx->chan.report_count);
   assert_int_equal(fx->accepted_terminal_count, 1);
+  assert_int_equal(fx->completed_count, 1);
 
   /* Held verdicts: nothing until the service answers, nothing for a rejection. */
   fx->chan.report_verdict_deferred = true;
@@ -6535,6 +7786,7 @@ static void accepted_reports_are_raised(void** state)
       NULL,
       fx->chan.engine_ctx);
   assert_int_equal(fx->accepted_count, accepted);
+  assert_int_equal(fx->completed_count, 2);
 
   inject_patch(fx, build_patch("cccccccc-0000-0000-0000-000000000003"));
   pump(fx, 40);
@@ -6546,12 +7798,14 @@ static void accepted_reports_are_raised(void** state)
       fx->chan.engine_ctx);
   assert_int_equal(fx->accepted_count, accepted + 1);
   assert_int_equal(fx->accepted_terminal_count, 2);
+  assert_int_equal(fx->completed_count, 3);
 
   /* A workflow that supersedes one whose terminal verdict is pending does not
    * change what that verdict reports. */
   inject_patch(fx, build_patch("dddddddd-0000-0000-0000-000000000004"));
   pump(fx, 40);
   assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_FAILED);
+  int reports = fx->accepted_report_count;
   inject_patch(fx, build_patch("eeeeeeee-0000-0000-0000-000000000005"));
   assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_MANIFEST_RECEIVED);
   fx->chan.result_cb(
@@ -6562,6 +7816,12 @@ static void accepted_reports_are_raised(void** state)
       fx->chan.engine_ctx);
   assert_int_equal(fx->accepted_count, accepted + 2);
   assert_int_equal(fx->accepted_terminal_count, 3);
+  assert_int_equal(fx->accepted_report_count, reports + 1);
+  assert_int_equal(fx->accepted_report_outcome, AZ_IOT_SU_OUTCOME_FAILED);
+  assert_string_equal(fx->accepted_workflow_id, "dddddddd-0000-0000-0000-000000000004");
+  /* Its workflow completes too. */
+  assert_int_equal(fx->completed_count, 4);
+  assert_int_equal(fx->last_completed_outcome, AZ_IOT_SU_OUTCOME_FAILED);
 }
 
 /* A LATE verdict must not resurrect an operation after the slot was abandoned.
@@ -7601,7 +8861,8 @@ static void catalog_engine_error(void** state)
     assert_non_null(strstr((const char*)pub->payload, "\"resultDetails\":\"catalog step detail\""));
   }
   size_t sent = az_iot_mock_mqtt_client_count_of(fx->mock, AZ_IOT_MOCK_CALL_PUBLISH);
-  static uint8_t checkpoint[AZ_IOT_SU_STATE_BLOB_MAX_SIZE(AZ_IOT_SU_DEFAULT_MAX_UPDATE_SIZE)];
+  static uint8_t checkpoint[AZ_IOT_SU_STATE_BLOB_MAX_SIZE(
+      AZ_IOT_SU_DEFAULT_MAX_UPDATE_SIZE, AZ_IOT_SU_DEFAULT_RESULT_DETAILS_SIZE)];
   size_t checkpoint_len = fx->log.persist_len;
   memcpy(checkpoint, fx->log.persist_blob, checkpoint_len);
 
@@ -7929,6 +9190,12 @@ int main(void)
     cmocka_unit_test(a_request_on_a_null_client_is_rejected),
     cmocka_unit_test_setup_teardown(deployment_drives_full_workflow_single_step, setup, teardown),
     cmocka_unit_test_setup_teardown(update_payload_body_is_logged_only_at_trace, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        update_at_the_manifest_limits_installs_every_step, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        update_over_a_manifest_limit_fails_before_download, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        manifest_with_a_non_string_mime_type_fails_before_download, setup, teardown),
     cmocka_unit_test_setup_teardown(update_metadata_drives_full_workflow, setup, teardown),
     cmocka_unit_test_setup_teardown(escaped_file_url_is_decoded, setup, teardown),
     cmocka_unit_test_setup_teardown(escaped_workflow_id_is_decoded, setup, teardown),
@@ -7972,6 +9239,24 @@ int main(void)
     cmocka_unit_test_setup_teardown(device_properties_too_small_is_rejected, setup, teardown),
     cmocka_unit_test_setup_teardown(device_properties_buffer_size_matches_need, setup, teardown),
     cmocka_unit_test(workspace_size_follows_the_limits),
+    cmocka_unit_test_setup_teardown(step_result_details_are_bounded_and_reported, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_failed_step_reports_its_details, setup, teardown),
+    cmocka_unit_test_setup_teardown(step_result_details_survive_a_reboot, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_report_too_large_is_sent_without_step_details, setup, teardown),
+    cmocka_unit_test_setup_teardown(details_set_from_is_installed_are_reported, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_refused_report_keeps_the_pending_one, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        step_result_details_set_at_a_retry_start_write_nothing, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        step_result_details_replaced_at_the_reboot_point_are_saved, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        step_result_details_cleared_at_the_reboot_point_are_saved, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_failed_details_rewrite_is_retried_before_the_workflow_goes_on, setup, teardown),
+    cmocka_unit_test_setup_teardown(unchanged_step_result_details_write_nothing, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        the_largest_installed_id_reaches_the_accepted_report, setup, teardown),
     cmocka_unit_test_setup_teardown(init_checks_the_workspace, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_string_over_the_scratch_is_refused_as_too_large, setup, teardown),
@@ -8013,7 +9298,37 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         an_unacknowledged_terminal_report_survives_a_reboot, setup, teardown),
     cmocka_unit_test_setup_teardown(
+        a_succeeded_workflow_reoffered_after_a_reboot_is_skipped, setup, teardown),
+    cmocka_unit_test_setup_teardown(
         the_terminal_record_is_kept_until_the_report_is_final, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_check_waits_for_the_owed_terminal_report, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_succeeded_update_becomes_the_installed_id, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        the_applied_id_is_adopted_with_an_exact_sized_cache, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_refused_adoption_keeps_the_adopted_installed_id, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        the_workflow_completes_once_its_report_settles, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_rejected_report_completes_the_workflow, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        properties_changed_before_the_verdict_complete_once, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        an_install_reboot_is_ready_once_its_record_is_stored, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_last_apply_reboot_waits_for_the_terminal_record, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_failed_workflow_needs_no_reboot, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_later_failed_workflow_keeps_an_earlier_reboot_request, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        storage_behind_is_pending_without_a_reboot_request, setup, teardown),
+    cmocka_unit_test_setup_teardown(new_properties_do_not_resend_a_settled_report, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_check_resends_an_owed_terminal_report_first, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_held_check_is_abandoned_when_its_report_cannot_be_sent, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_check_queued_by_an_observer_is_kept, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        an_expired_held_check_is_abandoned_as_a_timeout, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_check_held_for_a_report_keeps_its_deadline, setup, teardown),
     cmocka_unit_test_setup_teardown(a_failed_workflow_report_survives_a_reboot, setup, teardown),
     cmocka_unit_test_setup_teardown(a_new_workflow_supersedes_an_owed_report, setup, teardown),
     cmocka_unit_test_setup_teardown(

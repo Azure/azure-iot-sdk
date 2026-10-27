@@ -6,12 +6,12 @@ certificate signing request (CSR) to IoT Hub and reconnects with the certificate
 
 | Scenario | Boot (DPS) | Operational (IoT Hub) | Renewed by an IoT Hub CSR | Authentication provider |
 | --- | --- | --- | --- | --- |
-| `x509` | X.509 certificate | The same X.509 certificate | No | `X509AuthenticationProvider(certificate)` |
-| `x509-issued` | X.509 certificate + CSR | Certificate DPS issued, paired with the CSR key by the SDK | Yes | `X509AuthenticationProvider(certificate, privateKey)` |
-| `x509-issued-callback` | X.509 certificate + CSR | Certificate DPS issued, prepared by an application callback | Yes, with a new key | `X509AuthenticationProvider(certificate, callback)` |
-| `sas` | SAS token from a symmetric key | SAS token from the same key | No | `SymmetricKeyAuthenticationProvider(registrationId, idScope, key)` |
-| `sas-issued` | SAS token + CSR | Certificate DPS issued, paired with the CSR key by the SDK | Yes | `SymmetricKeyAuthenticationProvider(registrationId, idScope, key, privateKey)` |
-| `sas-issued-callback` | SAS token + CSR | Certificate DPS issued, prepared by an application callback | Yes, with a new key | `SymmetricKeyAuthenticationProvider(registrationId, idScope, key, callback)` |
+| `x509` | X.509 certificate | The same X.509 certificate | No | `X509AuthenticationProvider(certificate, secondaryCertificate)` |
+| `x509-issued` | X.509 certificate + CSR | Certificate DPS issued, paired with the CSR key by the SDK | Yes | `X509AuthenticationProvider(certificate, secondaryCertificate, privateKey)` |
+| `x509-issued-callback` | X.509 certificate + CSR | Certificate DPS issued, prepared by an application callback | Yes, with a new key | `X509AuthenticationProvider(certificate, secondaryCertificate, callback)` |
+| `sas` | SAS token from a symmetric key | SAS token from the same key | No | `SymmetricKeyAuthenticationProvider(registrationId, idScope, key, secondaryKey)` |
+| `sas-issued` | SAS token + CSR | Certificate DPS issued, paired with the CSR key by the SDK | Yes | `SymmetricKeyAuthenticationProvider(registrationId, idScope, key, secondaryKey, privateKey)` |
+| `sas-issued-callback` | SAS token + CSR | Certificate DPS issued, prepared by an application callback | Yes, with a new key | `SymmetricKeyAuthenticationProvider(registrationId, idScope, key, secondaryKey, callback)` |
 
 > **Note:** Symmetric key authentication only works with MQTTv3 IoT Hubs; MQTTv5 IoT Hubs only accept X.509
 > authentication. The `sas*` scenarios need a symmetric key enrollment that assigns the device to an MQTTv3 IoT Hub.

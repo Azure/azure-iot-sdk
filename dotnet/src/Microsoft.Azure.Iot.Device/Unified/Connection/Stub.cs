@@ -1,6 +1,7 @@
 ﻿// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
 // See LICENSE file in the project root for full license information.
 
+using Microsoft.Azure.Iot.Device.Events;
 using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Mqtt;
 using System;
@@ -12,7 +13,13 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
     // A stub class that is for converting Unified connection client traffic into MQTTv5 client traffic
     internal class Stub : MQTTv5.Connection.IConnectionClient
     {
-        public event Func<MqttPublishReceivedEventArgs, Task> PublishReceivedAsync;
+        private readonly AsyncEvent<MqttPublishReceivedEventArgs> _publishReceived = new();
+
+        public event Func<MqttPublishReceivedEventArgs, Task> PublishReceivedAsync
+        {
+            add => _publishReceived.Add(value);
+            remove => _publishReceived.Remove(value);
+        }
 
         private readonly Unified.Connection.IConnectionClient _unifiedConnectionClient;
 
@@ -27,7 +34,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
         // underlying MQTTv5 feature clients) would never be invoked.
         private Task ForwardPublishReceivedAsync(MqttPublishReceivedEventArgs args)
         {
-            return PublishReceivedAsync?.Invoke(args) ?? Task.CompletedTask;
+            return _publishReceived.InvokeAsync(args);
         }
 
         public void Dispose()

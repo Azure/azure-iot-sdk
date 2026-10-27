@@ -34,3 +34,15 @@ else()
     message(STATUS "az_iot_sample_unified_file_upload: libcurl not found; building without the "
                    "HTTPS upload path. Install libcurl (e.g. 'vcpkg install curl') to enable it.")
 endif()
+
+# unified/telemetry with readings produced on other threads: the application's
+# hand-off to the one thread that calls the SDK. reading_queue.c is the
+# application's own code; tests/unit/sample_reading_queue_race_test.c checks it.
+find_package(Threads REQUIRED)
+az_iot_add_adapter_sample(az_iot_sample_unified_multithreaded_telemetry
+    OUTPUT_NAME az_iot_sample_multithreaded_telemetry
+    SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/multithreaded_telemetry/main.c
+            ${CMAKE_CURRENT_SOURCE_DIR}/multithreaded_telemetry/reading_queue.c
+            ${AZ_IOT_SAMPLES_COMMON_DIR}/sample_utils.c
+    INCLUDES ${CMAKE_CURRENT_SOURCE_DIR}/multithreaded_telemetry
+    LIBS az_iot_mqttv3 az_iot_mqttv5 Threads::Threads)

@@ -113,6 +113,25 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
             Assert.Equal(responseBody, result.Body.ToByteArray());
         }
 
+        [Fact]
+        public void DirectMethodInvokedAsync_RejectsASecondHandler()
+        {
+            MockFeatureConnectionClient connection = new()
+            {
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv3, DeviceId),
+            };
+            using DirectMethodClient directMethodClient = new(connection);
+            Func<DirectMethodRequestReceivedEventArgs, Task<DirectMethodResponse>> handler =
+                _ => Task.FromResult(new DirectMethodResponse() { Status = 200 });
+
+            directMethodClient.DirectMethodInvokedAsync += handler;
+
+            Assert.Throws<InvalidOperationException>(() => directMethodClient.DirectMethodInvokedAsync += handler);
+
+            directMethodClient.DirectMethodInvokedAsync -= handler;
+            directMethodClient.DirectMethodInvokedAsync += handler;
+        }
+
         private static MqttPublish CreateMqttv5MethodPublish(string type, byte[] correlationData, byte[] payload)
         {
             var publish = new MqttPublish()
