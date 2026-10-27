@@ -3132,6 +3132,34 @@ static void hub_mqtt_v5_late_birth_ack_is_a_timeout(void** state)
   assert_int_equal(fx->client->presence.consecutive_birth_ack_timeouts, 1);
 }
 
+/* A DISCONNECTED processed after the birth-ack deadline tears down before the
+ * timeout check runs; the miss still counts. One before the deadline does not. */
+static void hub_mqtt_v5_disconnect_after_birth_deadline_counts_a_miss(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  uint64_t jitter = k_fixed_jitter;
+  az_iot_connection_client__set_defensive_timeout_random_source(
+      fx->client, fixed_random_source, &jitter);
+  az_iot_mock_mqtt_client* m = NULL;
+  (void)drive_to_birth_published(fx, false, &m);
+
+  /* Before the deadline: a transport drop is not a birth-ack miss. */
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(m));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_int_equal(fx->client->presence.consecutive_birth_ack_timeouts, 0);
+  m = reconnect(fx);
+  (void)connack_and_suback(fx, m);
+  assert_birth_ack_timeout(fx, 300000u + (uint32_t)k_fixed_jitter);
+
+  /* Past the deadline: the drop is drained first, and the miss counts. */
+  az_iot_connection_client__presence_force_timeout(fx->client);
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(m));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_int_equal(fx->client->presence.consecutive_birth_ack_timeouts, 1);
+  (void)connack_and_suback(fx, reconnect(fx));
+  assert_birth_ack_timeout(fx, 360000u + (uint32_t)k_fixed_jitter);
+}
+
 /* open() is a fresh connect cycle: the schedule starts over. */
 static void hub_mqtt_v5_open_resets_the_birth_ack_schedule(void** state)
 {
@@ -4232,6 +4260,10 @@ int main(void)
         hub_mqtt_v5_birth_ack_in_time_resets_the_schedule, setup_mqtt_v5_with_reconnect, teardown),
     cmocka_unit_test_setup_teardown(
         hub_mqtt_v5_late_birth_ack_is_a_timeout, setup_mqtt_v5_with_reconnect, teardown),
+    cmocka_unit_test_setup_teardown(
+        hub_mqtt_v5_disconnect_after_birth_deadline_counts_a_miss,
+        setup_mqtt_v5_with_reconnect,
+        teardown),
     cmocka_unit_test_setup_teardown(
         hub_mqtt_v5_open_resets_the_birth_ack_schedule, setup_mqtt_v5_with_reconnect, teardown),
     cmocka_unit_test_setup_teardown(

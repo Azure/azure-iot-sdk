@@ -1028,6 +1028,13 @@ static void teardown_active(az_iot_connection_client* c)
     c->active_client->iface->destroy(c->active_client);
   }
   c->active_client = NULL;
+  /* A birth-ack wait torn down at or past its deadline is a miss, whatever
+   * ended the session (timeout, DISCONNECTED or ERROR processed first). */
+  if (c->presence.phase == PRESENCE_PHASE_BIRTH && az_iot_time_mono_ms() >= c->presence.deadline_ms
+      && c->presence.consecutive_birth_ack_timeouts < UINT32_MAX)
+  {
+    c->presence.consecutive_birth_ack_timeouts++;
+  }
   /* Abandon any in-flight MQTTv5 presence (birth) handshake: it belonged to the
    * now-destroyed session and must restart from CONNACK on the next connect. */
   c->presence.phase = PRESENCE_PHASE_NONE;
@@ -7777,12 +7784,8 @@ az_iot_result az_iot_connection_client_do_work(
           AZ_IOT_LOG_COMPONENT_CONNECTION,
           "no birth-ack within %lu ms; reconnecting",
           (unsigned long)client->presence.birth_ack_timeout_ms);
-      if (client->presence.consecutive_birth_ack_timeouts < UINT32_MAX)
-      {
-        client->presence.consecutive_birth_ack_timeouts++;
-      }
     }
-    client->presence.phase = AZ_IOT_PRESENCE_PHASE_NONE;
+    /* Both branches tear down, which counts the missed birth-ack. */
     if (az_iot_retry_policy_is_enabled(&client->opts.reconnection_policy) && !client->user_close)
     {
       schedule_reconnect(client, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_ERR_TIMEOUT);

@@ -450,7 +450,7 @@ CONNACK; the `DPS` counter only when registration succeeds.
   birth-ack, and checked in `do_work()`. The birth-ack timeout escalates with
   `presence.consecutive_birth_ack_timeouts`: attempt N waits
   `az_iot_defensive_timeout__ms(N, random)` — a 5, 6, 8, then 10 min base plus a uniform 0–5 min
-  jitter. The count grows only on a missed birth-ack (not a missed SUBACK) and is cleared by
+  jitter. The count grows in `teardown_active()` when a BIRTH wait ends at or past its deadline (timeout, or a DISCONNECTED or ERROR drained first; not a missed SUBACK) and is cleared by
   `open()` and by a birth-ack that arrives in time.
 
 - **A failed registration, or one with no assignment.** `dps_apply_deferred()` sets
@@ -1011,7 +1011,7 @@ connection client itself, or a feature client.
 | Subscribing | `presence_start()` fails after CONNACK | its own result | connection client | clear the phase, reconnect | |
 | Birth | `presence_publish_birth()` fails | its own result | connection client | clear the phase, reconnect | |
 | Subscribing | No presence SUBACK within `subscription_ack_timeout_seconds` (default 60 s) | `AZ_IOT_ERR_TIMEOUT` | `_do_work()` | reconnect, or `FAULTED` with no policy | Does not escalate the birth-ack schedule. |
-| Birth | No birth-ack within the escalating timeout | `AZ_IOT_ERR_TIMEOUT` | `_do_work()` | disconnect and reconnect, or `FAULTED` with no policy | Armed after the birth publish: 5–10, 6–11, 8–13, then 10–15 min for consecutive misses. Reset by `open()` and by a birth-ack in time. A birth-ack drained after the deadline is ignored and counts as a miss. |
+| Birth | No birth-ack within the escalating timeout | `AZ_IOT_ERR_TIMEOUT` | `_do_work()` | disconnect and reconnect, or `FAULTED` with no policy | Armed after the birth publish: 5–10, 6–11, 8–13, then 10–15 min for consecutive misses. Reset by `open()` and by a birth-ack in time. A birth-ack drained after the deadline is ignored; any teardown at or past the deadline counts as a miss. |
 | Birth | Birth-ack arrives while still subscribing | ignored as a birth-ack | connection client | falls through to `az_iot_dispatch_route()`, and is dropped if no prefix matches | The interception is guarded on `presence.phase == PRESENCE_PHASE_BIRTH`. Correct. |
 | Birth | Birth-ack carries a correlation value from an earlier attempt | ignored as a birth-ack | `presence_is_birth_ack()` | routed to dispatch, then dropped | A fresh 16-byte nonce is generated per attempt and compared with `memcmp`. This is the epoch guard; there is no separate generation counter. |
 | Birth | Birth-ack arrives after `close()` | ignored | connection client | logged at debug, `break` | Same guard as the late CONNACK. |
