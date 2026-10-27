@@ -111,11 +111,15 @@ else()
     # subproject so it stays quiet (the empty PROJECT_VERSION vars are harmless here).
     set(CMAKE_POLICY_DEFAULT_CMP0048 NEW)
 
+    # One source directory per tag: the Git update step of a shared one would carry
+    # the patches (local changes) over to another PAHO_C_TAG.
+    string(MAKE_C_IDENTIFIER "${PAHO_C_TAG}" _paho_tag_dir)
     FetchContent_Declare(
         paho_mqtt_c
         GIT_REPOSITORY ${PAHO_C_REPO}
         GIT_TAG        ${PAHO_C_TAG}
         GIT_SHALLOW    TRUE
+        SOURCE_DIR     ${FETCHCONTENT_BASE_DIR}/paho_mqtt_c-${_paho_tag_dir}-src
         PATCH_COMMAND  ${CMAKE_COMMAND}
             -DGIT_EXECUTABLE=${GIT_EXECUTABLE}
             -DPATCH_DIR=${CMAKE_CURRENT_SOURCE_DIR}/patches
