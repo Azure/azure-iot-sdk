@@ -1250,11 +1250,17 @@ extern "C"
   /* Reports that a FAILS_SELF subscription did not come up. The entry is already
    * out of the registry when this runs, so the callback may re-register.
    * `protocol_code` is the verbatim wire code, 0 when there was none.
-   * `topic_filter` is valid only for the duration of the call. */
+   * `reason_string` is the MQTT 5 SUBACK's Reason String, verbatim: UTF-8, not
+   * NUL-terminated; NULL when there was none or the adapter did not report it,
+   * non-NULL with `reason_string_len` 0 when present and empty. Diagnostics
+   * only. `topic_filter` and `reason_string` are valid only for the duration of
+   * the call. */
   typedef void (*az_iot_subscription_failed_callback)(
       const char* topic_filter,
       az_iot_result reason,
       int32_t protocol_code,
+      const char* reason_string,
+      size_t reason_string_len,
       const void* owner);
 
   /* ------------------------------------------------------------------------- */
