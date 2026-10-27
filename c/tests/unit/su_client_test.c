@@ -3358,31 +3358,6 @@ static void property_copies_survive_mutation_and_aliasing(void** state)
   assert_string_equal(cached->custom_properties[0].value, "revision-2");
 }
 
-/* Counts ERROR lines containing `needle`. */
-typedef struct
-{
-  const char* needle;
-  int count;
-} su_error_log_capture;
-
-static void su_error_log_sink(
-    void* user_ctx,
-    az_iot_log_level level,
-    const char* component,
-    const char* file,
-    int line,
-    const char* msg)
-{
-  (void)component;
-  su_error_log_capture* cap = (su_error_log_capture*)user_ctx;
-  (void)file;
-  (void)line;
-  if (level == AZ_IOT_LOG_LEVEL_ERROR && msg != NULL && strstr(msg, cap->needle) != NULL)
-  {
-    cap->count++;
-  }
-}
-
 /* Compatibility strings are bounded only by az_iot_su_limits::device_properties_size, and the
  * installed update ID by AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE. An exact fit is accepted; one byte
  * more is refused with the client unchanged. The workspace needs no alignment. */

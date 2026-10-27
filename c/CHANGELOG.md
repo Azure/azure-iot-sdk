@@ -9,7 +9,7 @@
   `AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE` (192 bytes, as before). A set that does not fit is refused with
   `AZ_IOT_ERR_NOT_ENOUGH_SPACE` and an `ERROR` log of the bytes needed; properties whose strings
   point into the client's copy are refused with `AZ_IOT_ERR_INVALID_ARG`. The update check's copy
-  moves from `az_iot_su_client` (about 420 bytes smaller on 64-bit) into the workspace, which now
+  moves from `az_iot_su_client` (432 bytes smaller on 64-bit) into the workspace, which now
   counts `device_properties_size` twice plus `AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE` (default: 1216
   bytes, was 512).
 - Breaking: `az_iot_su_platform_hooks` fields `persist_state_fn` and `load_state_fn` are renamed

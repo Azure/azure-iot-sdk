@@ -1330,10 +1330,8 @@ static void public_replacement_is_atomic_when_properties_do_not_fit(void** state
   az_iot_su_client client;
   assert_int_equal(az_iot_su_client_init(&client, &fx->client, &options), AZ_IOT_OK);
 
-  /* One byte over the channel's compatibility storage. Storage-sized properties, even fully
-   * escaped, fit the smallest message body when AZ_IOT_SU_MAX_STEP_COUNT is above 8, so the
-   * escaped-request overflow is covered at the channel level instead. */
-  char oversized[257];
+  /* One byte over az_iot_su_limits::device_properties_size. */
+  char oversized[AZ_IOT_SU_DEVICE_PROPERTIES_BUFFER_SIZE + 1];
   memset(oversized, 'x', sizeof(oversized) - 1);
   oversized[sizeof(oversized) - 1] = '\0';
   properties.manufacturer = oversized;
