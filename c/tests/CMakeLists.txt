@@ -847,7 +847,8 @@ if(AZ_IOT_WITH_AZ_MQTT)
         unit/az_mqtt_adapter_sizes_test.c
         support/az_mqtt_asymmetric_common.c
         support/az_mqtt_asymmetric_v3.c
-        support/az_mqtt_asymmetric_v5.c)
+        support/az_mqtt_asymmetric_v5.c
+        support/az_mqtt_asymmetric_adapter.c)
     target_include_directories(az_iot_tests_az_mqtt_adapter_sizes PRIVATE
         ${PROJECT_SOURCE_DIR}/inc ${PROJECT_SOURCE_DIR}/adapters/az_mqtt ${PROJECT_SOURCE_DIR}/src/core
         ${CMAKE_CURRENT_SOURCE_DIR}/support)

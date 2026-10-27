@@ -223,8 +223,9 @@ static size_t read_packet(az_iot_mqtt_client* c, test_sock s, uint8_t* buf, size
   return packet_len;
 }
 
-/* The Maximum Packet Size property of an MQTT 5 CONNECT, 0 when absent. */
-static uint32_t connect_maximum_packet_size(const uint8_t* p, size_t n)
+/* The value of property @p wanted (0x27 Maximum Packet Size or 0x21 Receive Maximum) of an MQTT 5
+ * CONNECT, 0 when absent. */
+static uint32_t connect_property(const uint8_t* p, size_t n, uint8_t wanted)
 {
   size_t i = 1;
   (void)read_varint(p, n, &i);
@@ -237,12 +238,23 @@ static uint32_t connect_maximum_packet_size(const uint8_t* p, size_t n)
     switch (id)
     {
       case 0x27: // Maximum Packet Size.
-        return ((uint32_t)p[i] << 24) | ((uint32_t)p[i + 1] << 16) | ((uint32_t)p[i + 2] << 8)
-            | p[i + 3];
-      case 0x11: // Session Expiry Interval.
+        if (id == wanted)
+        {
+          return ((uint32_t)p[i] << 24) | ((uint32_t)p[i + 1] << 16) | ((uint32_t)p[i + 2] << 8)
+              | p[i + 3];
+        }
         i += 4;
         break;
       case 0x21: // Receive Maximum.
+        if (id == wanted)
+        {
+          return ((uint32_t)p[i] << 8) | p[i + 1];
+        }
+        i += 2;
+        break;
+      case 0x11: // Session Expiry Interval.
+        i += 4;
+        break;
       case 0x22: // Topic Alias Maximum.
         i += 2;
         break;
@@ -276,17 +288,22 @@ typedef struct
 
 static recorder s_recorder;
 
-/** @brief Connects a client of @p f to an in-process server and accepts it with a CONNACK. */
-static session open_session(az_iot_mqtt_factory* f)
+/**
+ * @brief Connects @p c to an in-process server and accepts it with a CONNACK. MQTT 5: the
+ * CONNECT must advertise @p maximum_packet_size and @p receive_maximum.
+ */
+static session open_session_of(
+    az_iot_mqtt_client* c,
+    bool v5,
+    uint32_t maximum_packet_size,
+    uint32_t receive_maximum)
 {
   session s;
-  s.v5 = f->version == AZ_IOT_MQTT_VERSION_5;
-  bool const v5 = s.v5;
+  s.v5 = v5;
   uint16_t port = 0;
   test_sock listener = listen_loopback(&port);
   memset(&s_recorder, 0, sizeof(s_recorder));
   recorder* r = &s_recorder;
-  az_iot_mqtt_client* c = f->create(f->factory_ctx);
   assert_non_null(c);
   c->iface->set_inbound_cb(c, on_event, r);
   az_iot_mqtt_connect_options o = { 0 };
@@ -312,7 +329,8 @@ static session open_session(az_iot_mqtt_factory* f)
   assert_int_equal(packet[0], 0x10); // CONNECT.
   if (v5)
   {
-    assert_int_equal(connect_maximum_packet_size(packet, n), AZ_IOT_AZ_MQTT_RECEIVE_BUFFER_SIZE);
+    assert_int_equal(connect_property(packet, n, 0x27), maximum_packet_size);
+    assert_int_equal(connect_property(packet, n, 0x21), receive_maximum);
   }
   static const uint8_t connack_v3[] = { 0x20, 0x02, 0x00, 0x00 };
   static const uint8_t connack_v5[] = { 0x20, 0x03, 0x00, 0x00, 0x00 };
@@ -326,6 +344,16 @@ static session open_session(az_iot_mqtt_factory* f)
   s.listener = listener;
   s.connection = conn;
   return s;
+}
+
+/** @brief A client of @p f, connected with the compile-time sizes. */
+static session open_session(az_iot_mqtt_factory* f)
+{
+  return open_session_of(
+      f->create(f->factory_ctx),
+      f->version == AZ_IOT_MQTT_VERSION_5,
+      AZ_IOT_AZ_MQTT_RECEIVE_BUFFER_SIZE,
+      AZ_IOT_AZ_MQTT_INFLIGHT_MAX);
 }
 
 static void close_session(session* s)
@@ -522,6 +550,28 @@ static void receives_more_than_it_can_send_and_advertises_it_v5(void** state)
   az_iot_az_mqtt_factory_destroy(f);
 }
 
+/* A workspace client advertises its own limits, not the compile-time ones. */
+static void a_workspace_client_advertises_its_limits_v5(void** state)
+{
+  (void)state;
+  static uint8_t workspace[64 * 1024];
+  az_iot_mqtt_limits limits = { 0 };
+  limits.send_buffer_size = 512;
+  limits.receive_buffer_size = 4096;
+  limits.max_in_flight_messages = 3;
+  limits.connect_strings_size = 256;
+  assert_true(limits.receive_buffer_size != AZ_IOT_AZ_MQTT_RECEIVE_BUFFER_SIZE);
+  assert_true(limits.max_in_flight_messages != AZ_IOT_AZ_MQTT_INFLIGHT_MAX);
+  size_t const size = az_iot_az_mqtt_get_workspace_size(&limits);
+  assert_true(size > 0 && size <= sizeof(workspace));
+  az_iot_mqtt_client* c = NULL;
+  assert_int_equal(
+      az_iot_az_mqtt_get_adapter()->init(AZ_IOT_MQTT_VERSION_5, &limits, workspace, size, &c),
+      AZ_IOT_OK);
+  session s = open_session_of(c, true, 4096, 3);
+  close_session(&s);
+}
+
 int main(void)
 {
 #if defined(_WIN32)
@@ -537,6 +587,7 @@ int main(void)
     cmocka_unit_test(receives_a_packet_of_exactly_the_receive_size_v3),
     cmocka_unit_test(receives_a_packet_of_exactly_the_receive_size_v5),
     cmocka_unit_test(a_packet_over_the_receive_size_ends_the_session_from_its_header_v5),
+    cmocka_unit_test(a_workspace_client_advertises_its_limits_v5),
   };
   int const failed = cmocka_run_group_tests_name("az_mqtt_adapter_sizes", tests, NULL, NULL);
 #if defined(_WIN32)
