@@ -37,6 +37,9 @@ if(AZ_IOT_RACE_ANNOTATIONS)
     target_compile_definitions(az_iot_core PRIVATE AZ_IOT_RACE_ANNOTATIONS=1)
 endif()
 
+# Size the manifest structures in az_iot_su.h; the application must use the same values.
+target_compile_definitions(az_iot_core PUBLIC ${AZ_IOT_SU_LIMIT_DEFINITIONS})
+
 # azure-sdk-for-c is required by the public struct definition
 # (az_iot_hub_client / az_iot_provisioning_client are embedded).
 target_link_libraries(az_iot_core

@@ -13,8 +13,55 @@
 #include "az_iot_connection_client.h"
 #include "az_iot_result.h"
 
+/**
+ * @brief Most steps an update manifest may have. Device Update allows 10.
+ *
+ * With AZ_IOT_SU_MAX_FILE_COUNT and AZ_IOT_SU_MAX_FILE_COUNT_PER_STEP, sizes the manifest
+ * structures azure-sdk-for-c parses into and az_iot_su_client embeds. A manifest over any of
+ * them fails parsing, so its workflow fails. Set them with the CMake options of the same names:
+ * azure-sdk-for-c, the SDK and the application must all be built with the same values.
+ */
+#ifndef AZ_IOT_SU_MAX_STEP_COUNT
+#define AZ_IOT_SU_MAX_STEP_COUNT 10
+#endif
+
+/** @brief Most files an update may have (manifest `files` and payload `fileUrls`). Device
+ * Update allows 10. See AZ_IOT_SU_MAX_STEP_COUNT. */
+#ifndef AZ_IOT_SU_MAX_FILE_COUNT
+#define AZ_IOT_SU_MAX_FILE_COUNT 10
+#endif
+
+/** @brief Most files one step may reference; at most AZ_IOT_SU_MAX_FILE_COUNT. See
+ * AZ_IOT_SU_MAX_STEP_COUNT. */
+#ifndef AZ_IOT_SU_MAX_FILE_COUNT_PER_STEP
+#define AZ_IOT_SU_MAX_FILE_COUNT_PER_STEP AZ_IOT_SU_MAX_FILE_COUNT
+#endif
+
+#if AZ_IOT_SU_MAX_STEP_COUNT < 1 || AZ_IOT_SU_MAX_FILE_COUNT < 1 \
+    || AZ_IOT_SU_MAX_FILE_COUNT_PER_STEP < 1                     \
+    || AZ_IOT_SU_MAX_FILE_COUNT_PER_STEP > AZ_IOT_SU_MAX_FILE_COUNT
+#error "AZ_IOT_SU_MAX_*: each must be at least 1, and files per step at most the file count"
+#endif
+
+#ifndef _az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS
+#define _az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS AZ_IOT_SU_MAX_STEP_COUNT
+#endif
+#ifndef _az_IOT_ADU_CLIENT_MAX_TOTAL_FILE_COUNT
+#define _az_IOT_ADU_CLIENT_MAX_TOTAL_FILE_COUNT AZ_IOT_SU_MAX_FILE_COUNT
+#endif
+#ifndef _az_IOT_ADU_CLIENT_MAX_FILE_COUNT_PER_STEP
+#define _az_IOT_ADU_CLIENT_MAX_FILE_COUNT_PER_STEP AZ_IOT_SU_MAX_FILE_COUNT_PER_STEP
+#endif
+
 /* azure-sdk-for-c manifest parsing types, re-exported below under software updates names. */
 #include <azure/iot/az_iot_adu_client.h>
+
+#if _az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS != AZ_IOT_SU_MAX_STEP_COUNT  \
+    || _az_IOT_ADU_CLIENT_MAX_TOTAL_FILE_COUNT != AZ_IOT_SU_MAX_FILE_COUNT \
+    || _az_IOT_ADU_CLIENT_MAX_FILE_COUNT_PER_STEP != AZ_IOT_SU_MAX_FILE_COUNT_PER_STEP
+#error \
+    "azure-sdk-for-c limits differ from AZ_IOT_SU_MAX_*: set AZ_IOT_SU_MAX_*, and include az_iot_su.h before az_iot_adu_client.h"
+#endif
 
 #ifdef __cplusplus
 extern "C"
@@ -98,12 +145,13 @@ extern "C"
 #endif
 
 /** @brief Smallest az_iot_su_limits::max_message_size: the largest status report the client
- * builds fits, so no report is refused for its size. */
-#define AZ_IOT_SU_MIN_MESSAGE_SIZE 2048
+ * builds fits, so no report is refused for its size. That report takes up to 1734 bytes plus 117
+ * per step. */
+#define AZ_IOT_SU_MIN_MESSAGE_SIZE (1792u + 128u * (AZ_IOT_SU_MAX_STEP_COUNT))
 
 /** @brief Default az_iot_su_limits::max_message_size. */
 #ifndef AZ_IOT_SU_DEFAULT_MAX_MESSAGE_SIZE
-#define AZ_IOT_SU_DEFAULT_MAX_MESSAGE_SIZE 2048
+#define AZ_IOT_SU_DEFAULT_MAX_MESSAGE_SIZE AZ_IOT_SU_MIN_MESSAGE_SIZE
 #endif
 
 /** @brief Default az_iot_su_limits::result_details_size. */
@@ -635,7 +683,8 @@ extern "C"
     /* A delivered update was refused before processing, so nothing was
      * installed or reported for it. Carries `state` (unchanged) and `reason`:
      * AZ_IOT_ERR_NOT_ENOUGH_SPACE when its workflow id exceeds
-     * AZ_IOT_SU_WORKFLOW_ID_SIZE or the payload exceeds
+     * AZ_IOT_SU_WORKFLOW_ID_SIZE, it has more `fileUrls` than
+     * AZ_IOT_SU_MAX_FILE_COUNT or the payload exceeds
      * az_iot_su_limits::max_update_size; AZ_IOT_ERR_PROTOCOL when the payload
      * cannot be decoded (not JSON, a required field missing or of the wrong
      * type, or an invalid string escape). Raised again on each redelivery. */
@@ -1472,6 +1521,8 @@ extern "C"
    * @param out_manifest   The verified manifest.
    * @return AZ_IOT_OK; AZ_IOT_ERR_NOT_FOUND without `workflowId`;
    * AZ_IOT_ERR_INVALID_ARG on bad arguments or malformed input;
+   * AZ_IOT_ERR_NOT_ENOUGH_SPACE when the update exceeds AZ_IOT_SU_MAX_STEP_COUNT,
+   * AZ_IOT_SU_MAX_FILE_COUNT, AZ_IOT_SU_MAX_FILE_COUNT_PER_STEP or 2 hashes per file;
    * AZ_IOT_ERR_NOT_SUPPORTED when @p crypto has no verify_rs256;
    * AZ_IOT_ERR_AUTH when verification fails.
    */

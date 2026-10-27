@@ -28,8 +28,8 @@ reports for each one. Download and the hash read-back are simulated (zero-filled
 - Requires Azure Device Provisioning service, an Azure IoT Hub and Azure Device Update.
 
 The update to deploy needs at least two inline steps, with compatibility
-`manufacturer=Contoso`, `model=SU-MultiStep` and zero-filled files. The SDK's default build
-handles at most 2 steps and 2 files per update.
+`manufacturer=Contoso`, `model=SU-MultiStep` and zero-filled files. By default the SDK
+accepts what Device Update allows: 10 steps and 10 files per update (`AZ_IOT_SU_MAX_*`).
 
 ## Configure
 

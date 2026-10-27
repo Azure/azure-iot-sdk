@@ -250,7 +250,7 @@ typedef enum
   OP_RESTORE
 } op_kind;
 
-#define MAX_OPS 32
+#define MAX_OPS 96
 
 typedef struct
 {
@@ -1547,16 +1547,40 @@ static void unusable_update_metadata_is_ignored(void** state)
   assert_int_equal((int)fx->log.op_count, 0);
 }
 
-/* fileUrls is bounded by _az_IOT_ADU_CLIENT_MAX_TOTAL_FILE_COUNT: at the bound
- * the payload is accepted, one past it is ignored rather than overflowing. */
+/* Counts ERROR lines containing `needle`. */
+typedef struct
+{
+  const char* needle;
+  int count;
+} su_error_log_capture;
+
+static void su_error_log_sink(
+    void* user_ctx,
+    az_iot_log_level level,
+    const char* component,
+    const char* file,
+    int line,
+    const char* msg)
+{
+  (void)component;
+  su_error_log_capture* cap = (su_error_log_capture*)user_ctx;
+  (void)file;
+  (void)line;
+  if (level == AZ_IOT_LOG_LEVEL_ERROR && msg != NULL && strstr(msg, cap->needle) != NULL)
+  {
+    cap->count++;
+  }
+}
+
+/* fileUrls is bounded by AZ_IOT_SU_MAX_FILE_COUNT: at the bound the payload is accepted, one past
+ * it is refused with AZ_IOT_ERR_NOT_ENOUGH_SPACE and an error log rather than overflowing. */
 static void file_urls_are_bounded(void** state)
 {
   fixture* fx = (fixture*)*state;
   open_to_connected(fx);
+  assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
 
-  for (int count = _az_IOT_ADU_CLIENT_MAX_TOTAL_FILE_COUNT + 1;
-       count >= _az_IOT_ADU_CLIENT_MAX_TOTAL_FILE_COUNT;
-       --count)
+  for (int count = AZ_IOT_SU_MAX_FILE_COUNT + 1; count >= AZ_IOT_SU_MAX_FILE_COUNT; --count)
   {
     char urls[256] = "";
     size_t used = 0;
@@ -1575,11 +1599,19 @@ static void file_urls_are_bounded(void** state)
         urls);
     assert_true(n > 0 && (size_t)n < sizeof(doc));
 
+    su_error_log_capture cap = { .needle = "AZ_IOT_SU_MAX_FILE_COUNT", .count = 0 };
+    az_iot_log_sink sink
+        = { .sink = su_error_log_sink, .user_ctx = &cap, .min_level = AZ_IOT_LOG_LEVEL_ERROR };
+    az_iot_log_set_global_sink(&sink);
     inject_patch(fx, doc);
+    az_iot_log_set_global_sink(NULL);
+    bool over = count > AZ_IOT_SU_MAX_FILE_COUNT;
     assert_int_equal(
         az_iot_su_client_get_state(&fx->su),
-        count > _az_IOT_ADU_CLIENT_MAX_TOTAL_FILE_COUNT ? AZ_IOT_SU_STATE_IDLE
-                                                        : AZ_IOT_SU_STATE_MANIFEST_RECEIVED);
+        over ? AZ_IOT_SU_STATE_IDLE : AZ_IOT_SU_STATE_MANIFEST_RECEIVED);
+    assert_int_equal(cap.count, over ? 1 : 0);
+    assert_int_equal(fx->refused_count, 1);
+    assert_int_equal(fx->last_refused_reason, AZ_IOT_ERR_NOT_ENOUGH_SPACE);
   }
 }
 
@@ -5606,31 +5638,6 @@ static void a_workflow_id_at_the_limit_is_reported_in_full(void** state)
   assert_string_equal(fx->chan.last_workflow_id, decoded);
 }
 
-/* Counts ERROR lines containing `needle`. */
-typedef struct
-{
-  const char* needle;
-  int count;
-} su_error_log_capture;
-
-static void su_error_log_sink(
-    void* user_ctx,
-    az_iot_log_level level,
-    const char* component,
-    const char* file,
-    int line,
-    const char* msg)
-{
-  (void)component;
-  su_error_log_capture* cap = (su_error_log_capture*)user_ctx;
-  (void)file;
-  (void)line;
-  if (level == AZ_IOT_LOG_LEVEL_ERROR && msg != NULL && strstr(msg, cap->needle) != NULL)
-  {
-    cap->count++;
-  }
-}
-
 /* Counts DEBUG and TRACE "su" lines containing `needle` and a JSON body. */
 typedef struct
 {
@@ -5660,6 +5667,252 @@ static void su_level_log_sink(
   cap->trace_count += level == AZ_IOT_LOG_LEVEL_TRACE ? 1 : 0;
 }
 
+/* --- Manifest limits (AZ_IOT_SU_MAX_*) ------------------------------------ */
+
+/** @brief Shape of a payload built by manifest_limits_patch(). */
+typedef struct
+{
+  int step_count;
+  int file_count; /* in the manifest `files` map; fileUrls lists at most AZ_IOT_SU_MAX_FILE_COUNT */
+  int first_step_file_count; /* ids f00, f01, ... listed by step 0; other steps list one file */
+  int hash_count; /* per file; the first is the fixture's sha256 */
+  const char* file_extra; /* appended to each file object when not NULL */
+} manifest_shape;
+
+static size_t append_text(char* buffer, size_t capacity, size_t used, const char* text)
+{
+  size_t length = strlen(text);
+  assert_true(used + length < capacity);
+  memcpy(buffer + used, text, length + 1);
+  return used + length;
+}
+
+/* Build a signed payload whose manifest has the given shape. Returns a static buffer, valid
+ * until the next call. */
+static const char* manifest_limits_patch(const char* workflow_id, manifest_shape shape)
+{
+  static char manifest[8192];
+  char item[160];
+  size_t used = append_text(
+      manifest,
+      sizeof(manifest),
+      0,
+      "{\"manifestVersion\":\"5\",\"updateId\":{\"provider\":\"Contoso\",\"name\":\"Foobar\","
+      "\"version\":\"1.1\"},\"compatibility\":[{\"deviceManufacturer\":\"Contoso\","
+      "\"deviceModel\":\"Foobar\"}],\"instructions\":{\"steps\":[");
+  for (int step = 0; step < shape.step_count; ++step)
+  {
+    used = append_text(
+        manifest,
+        sizeof(manifest),
+        used,
+        step == 0 ? "{\"handler\":\"microsoft/swupdate:1\",\"files\":["
+                  : ",{\"handler\":\"microsoft/swupdate:1\",\"files\":[");
+    int listed = step == 0 ? shape.first_step_file_count : 1;
+    for (int i = 0; i < listed; ++i)
+    {
+      int file = step == 0 ? i : step % shape.file_count;
+      (void)snprintf(item, sizeof(item), "%s\"f%02d\"", i == 0 ? "" : ",", file);
+      used = append_text(manifest, sizeof(manifest), used, item);
+    }
+    (void)snprintf(
+        item, sizeof(item), "],\"handlerProperties\":{\"installedCriteria\":\"%d\"}}", step);
+    used = append_text(manifest, sizeof(manifest), used, item);
+  }
+  used = append_text(manifest, sizeof(manifest), used, "]},\"files\":{");
+  for (int file = 0; file < shape.file_count; ++file)
+  {
+    (void)snprintf(
+        item,
+        sizeof(item),
+        "%s\"f%02d\":{\"fileName\":\"payload-%02d.bin\",\"sizeInBytes\":64,\"hashes\":{"
+        "\"sha256\":\"" SU_TEST_FILE_HASH_B64 "\"",
+        file == 0 ? "" : ",",
+        file,
+        file);
+    used = append_text(manifest, sizeof(manifest), used, item);
+    for (int hash = 1; hash < shape.hash_count; ++hash)
+    {
+      (void)snprintf(item, sizeof(item), ",\"sha%d\":\"AAAA\"", 384 + hash);
+      used = append_text(manifest, sizeof(manifest), used, item);
+    }
+    used = append_text(manifest, sizeof(manifest), used, "}");
+    if (shape.file_extra != NULL)
+    {
+      used = append_text(manifest, sizeof(manifest), used, shape.file_extra);
+    }
+    used = append_text(manifest, sizeof(manifest), used, "}");
+  }
+  used = append_text(
+      manifest, sizeof(manifest), used, "},\"createdDateTime\":\"2022-07-07T03:02:48.8449038Z\"}");
+
+  static char patch[SU_TEST_PATCH_SIZE];
+  char jws[2048];
+  build_jws(jws, (int32_t)sizeof(jws));
+  used = 0;
+  (void)snprintf(item, sizeof(item), "{\"workflowId\":\"%s\",\"updateManifest\":\"", workflow_id);
+  used = append_text(patch, sizeof(patch), used, item);
+  for (const char* c = manifest; *c != '\0'; ++c)
+  {
+    char one[2];
+    one[0] = *c;
+    one[1] = '\0';
+    used = append_text(patch, sizeof(patch), used, *c == '"' ? "\\\"" : one);
+  }
+  used = append_text(patch, sizeof(patch), used, "\",\"updateManifestSignature\":\"");
+  used = append_text(patch, sizeof(patch), used, jws);
+  used = append_text(patch, sizeof(patch), used, "\",\"fileUrls\":{");
+  int url_count
+      = shape.file_count < AZ_IOT_SU_MAX_FILE_COUNT ? shape.file_count : AZ_IOT_SU_MAX_FILE_COUNT;
+  for (int file = 0; file < url_count; ++file)
+  {
+    (void)snprintf(
+        item,
+        sizeof(item),
+        "%s\"f%02d\":\"http://example.com/payload-%02d.bin\"",
+        file == 0 ? "" : ",",
+        file,
+        file);
+    used = append_text(patch, sizeof(patch), used, item);
+  }
+  (void)append_text(patch, sizeof(patch), used, "}}");
+  return patch;
+}
+
+/* The largest manifest the limits allow, by default the Device Update limits (10 steps,
+ * 10 files, all 10 in one step), installs every step and reports each. */
+static void update_at_the_manifest_limits_installs_every_step(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  const manifest_shape shape = { .step_count = AZ_IOT_SU_MAX_STEP_COUNT,
+                                 .file_count = AZ_IOT_SU_MAX_FILE_COUNT,
+                                 .first_step_file_count = AZ_IOT_SU_MAX_FILE_COUNT_PER_STEP,
+                                 .hash_count = 1 };
+
+  inject_patch(fx, manifest_limits_patch("at-the-limits", shape));
+  pump(fx, 400);
+
+  assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_IDLE);
+  assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_SUCCEEDED);
+  assert_int_equal(fx->chan.last_report.step_results_count, AZ_IOT_SU_MAX_STEP_COUNT);
+  for (int32_t i = 0; i < AZ_IOT_SU_MAX_STEP_COUNT; ++i)
+  {
+    assert_int_equal(fx->chan.last_report.step_results[i].outcome, AZ_IOT_SU_OUTCOME_SUCCEEDED);
+  }
+  assert_int_equal((int)count_ops(&fx->log, OP_INSTALL), AZ_IOT_SU_MAX_STEP_COUNT);
+  assert_int_equal(
+      fx->log.download_calls, AZ_IOT_SU_MAX_FILE_COUNT_PER_STEP + AZ_IOT_SU_MAX_STEP_COUNT - 1);
+
+  /* The public parser yields the same layout: the field after every array is intact. */
+  az_iot_su_client_update_request request;
+  az_iot_su_client_update_manifest manifest;
+  assert_int_equal(
+      parse_with_roots(
+          &fx->log,
+          manifest_limits_patch("at-the-limits", shape),
+          k_root_keys,
+          1,
+          &request,
+          &manifest),
+      AZ_IOT_OK);
+  assert_int_equal(manifest.instructions.steps_count, AZ_IOT_SU_MAX_STEP_COUNT);
+  assert_int_equal(manifest.instructions.steps[0].files_count, AZ_IOT_SU_MAX_FILE_COUNT_PER_STEP);
+  assert_int_equal(manifest.files_count, AZ_IOT_SU_MAX_FILE_COUNT);
+  assert_int_equal(request.file_urls_count, AZ_IOT_SU_MAX_FILE_COUNT);
+  assert_true(az_span_is_content_equal(
+      manifest.create_date_time, AZ_SPAN_FROM_STR("2022-07-07T03:02:48.8449038Z")));
+}
+
+/* A manifest one over any limit fails before anything is downloaded, is reported failed, and
+ * logs the limit; the public parser refuses it with AZ_IOT_ERR_NOT_ENOUGH_SPACE. The step and
+ * hash counts are not bounded by the azure-sdk-for-c parser, so this also keeps it from
+ * writing past its arrays. */
+static void update_over_a_manifest_limit_fails_before_download(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  const struct
+  {
+    manifest_shape shape;
+    const char* logged;
+  } cases[] = {
+    { { AZ_IOT_SU_MAX_STEP_COUNT + 1, AZ_IOT_SU_MAX_FILE_COUNT, 1, 1, NULL },
+      "AZ_IOT_SU_MAX_STEP_COUNT" },
+    { { 1, AZ_IOT_SU_MAX_FILE_COUNT + 1, 1, 1, NULL }, "AZ_IOT_SU_MAX_FILE_COUNT is" },
+    { { 1, AZ_IOT_SU_MAX_FILE_COUNT, AZ_IOT_SU_MAX_FILE_COUNT_PER_STEP + 1, 1, NULL },
+      "AZ_IOT_SU_MAX_FILE_COUNT_PER_STEP" },
+    { { 1, 1, 1, _az_IOT_ADU_CLIENT_MAX_FILE_HASH_COUNT + 1, NULL }, "hashes" },
+  };
+  for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i)
+  {
+    char workflow_id[32];
+    (void)snprintf(workflow_id, sizeof(workflow_id), "over-the-limits-%u", (unsigned)i);
+    int reports = fx->chan.report_count;
+
+    su_error_log_capture cap = { .needle = cases[i].logged, .count = 0 };
+    az_iot_log_sink sink
+        = { .sink = su_error_log_sink, .user_ctx = &cap, .min_level = AZ_IOT_LOG_LEVEL_ERROR };
+    az_iot_log_set_global_sink(&sink);
+    inject_patch(fx, manifest_limits_patch(workflow_id, cases[i].shape));
+    pump(fx, 60);
+    az_iot_log_set_global_sink(NULL);
+
+    assert_int_equal(cap.count, 1);
+    assert_true(fx->chan.report_count > reports);
+    assert_idle_report_retains_outcome(fx, AZ_IOT_SU_OUTCOME_FAILED);
+    assert_string_equal(fx->chan.last_workflow_id, workflow_id);
+    assert_int_equal(fx->log.download_calls, 0);
+    assert_int_equal((int)count_ops(&fx->log, OP_IS_INSTALLED), 0);
+
+    az_iot_su_client_update_request request;
+    az_iot_su_client_update_manifest manifest;
+    assert_int_equal(
+        parse_with_roots(
+            &fx->log,
+            manifest_limits_patch(workflow_id, cases[i].shape),
+            k_root_keys,
+            1,
+            &request,
+            &manifest),
+        AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+  }
+}
+
+/* A file mimeType that is not a string is refused before parsing: the azure-sdk-for-c parser
+ * would read its members as file properties, past the hash count checked here. */
+static void manifest_with_a_non_string_mime_type_fails_before_download(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  const manifest_shape shape
+      = { .step_count = 1,
+          .file_count = 1,
+          .first_step_file_count = 1,
+          .hash_count = 1,
+          .file_extra
+          = ",\"mimeType\":{\"hashes\":{\"sha256\":\"a\",\"sha384\":\"b\",\"sha512\":\"c\"}}" };
+
+  inject_patch(fx, manifest_limits_patch("non-string-mime-type", shape));
+  pump(fx, 60);
+
+  assert_idle_report_retains_outcome(fx, AZ_IOT_SU_OUTCOME_FAILED);
+  assert_string_equal(fx->chan.last_workflow_id, "non-string-mime-type");
+  assert_int_equal(fx->log.download_calls, 0);
+
+  az_iot_su_client_update_request request;
+  az_iot_su_client_update_manifest manifest;
+  assert_int_equal(
+      parse_with_roots(
+          &fx->log,
+          manifest_limits_patch("non-string-mime-type", shape),
+          k_root_keys,
+          1,
+          &request,
+          &manifest),
+      AZ_IOT_ERR_INVALID_ARG);
+}
 /* The update body carries service-issued download URLs; DEBUG logs only its
  * size, TRACE the body. */
 static void update_payload_body_is_logged_only_at_trace(void** state)
@@ -8905,6 +9158,12 @@ int main(void)
     cmocka_unit_test(a_request_on_a_null_client_is_rejected),
     cmocka_unit_test_setup_teardown(deployment_drives_full_workflow_single_step, setup, teardown),
     cmocka_unit_test_setup_teardown(update_payload_body_is_logged_only_at_trace, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        update_at_the_manifest_limits_installs_every_step, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        update_over_a_manifest_limit_fails_before_download, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        manifest_with_a_non_string_mime_type_fails_before_download, setup, teardown),
     cmocka_unit_test_setup_teardown(update_metadata_drives_full_workflow, setup, teardown),
     cmocka_unit_test_setup_teardown(escaped_file_url_is_decoded, setup, teardown),
     cmocka_unit_test_setup_teardown(escaped_workflow_id_is_decoded, setup, teardown),

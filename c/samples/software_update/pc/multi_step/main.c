@@ -74,8 +74,8 @@
 #define SAMPLE_ERR_APPLY 0x103
 #define SAMPLE_ERR_RESTORE 0x104
 
-/** @brief Steps this sample keeps a backup record for. */
-#define SAMPLE_MAX_STEPS 8
+/** @brief Steps this sample keeps a backup record for: every step the SDK accepts. */
+#define SAMPLE_MAX_STEPS AZ_IOT_SU_MAX_STEP_COUNT
 
 static volatile sig_atomic_t g_stop = 0;
 static void on_sigint(int signo)
