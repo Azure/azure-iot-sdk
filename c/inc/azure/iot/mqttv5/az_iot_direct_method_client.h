@@ -282,7 +282,7 @@ extern "C"
    * same error is returned when an mqttv3 client is already attached.
    *
    * Reserves 2 * AZ_IOT_MQTTV5_DM_MAX_CONCURRENT of the connection's
-   * AZ_IOT_MAX_PENDING_PUBACKS slots until deinit. Returns
+   * limits.max_pending_publishes slots until deinit. Returns
    * AZ_IOT_ERR_NOT_ENOUGH_SPACE if they do not fit, or AZ_IOT_ERR_BUSY if
    * tracked publishes in flight still occupy them (retry once acknowledged).
    * Also observes the connection state, to publish held messages on CONNECTED:

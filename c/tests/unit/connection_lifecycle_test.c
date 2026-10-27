@@ -1080,10 +1080,10 @@ static void removing_an_unregistered_observer_reports_not_found(void** state)
 static void a_full_application_pool_is_reported(void** state)
 {
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
-  az_iot_test_state_log logs[AZ_IOT_MAX_APP_STATE_OBSERVERS];
+  az_iot_test_state_log logs[AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_APPLICATION_STATE_OBSERVERS];
   memset(logs, 0, sizeof(logs));
 
-  for (size_t i = 0; i + 1 < AZ_IOT_MAX_APP_STATE_OBSERVERS; ++i)
+  for (size_t i = 0; i + 1 < AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_APPLICATION_STATE_OBSERVERS; ++i)
   {
     assert_int_equal(
         az_iot_connection_client_add_state_observer(fx->client, az_iot_test_on_state, &logs[i]),
@@ -1091,7 +1091,9 @@ static void a_full_application_pool_is_reported(void** state)
   }
   assert_int_equal(
       az_iot_connection_client_add_state_observer(
-          fx->client, az_iot_test_on_state, &logs[AZ_IOT_MAX_APP_STATE_OBSERVERS - 1]),
+          fx->client,
+          az_iot_test_on_state,
+          &logs[AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_APPLICATION_STATE_OBSERVERS - 1]),
       AZ_IOT_ERR_NOT_ENOUGH_SPACE);
 }
 
@@ -1151,10 +1153,10 @@ static void feature_observers_are_dispatched_before_application_ones(void** stat
 static void a_full_application_pool_does_not_block_a_feature_client(void** state)
 {
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
-  az_iot_test_state_log logs[AZ_IOT_MAX_APP_STATE_OBSERVERS];
+  az_iot_test_state_log logs[AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_APPLICATION_STATE_OBSERVERS];
   memset(logs, 0, sizeof(logs));
 
-  for (size_t i = 0; i + 1 < AZ_IOT_MAX_APP_STATE_OBSERVERS; ++i)
+  for (size_t i = 0; i + 1 < AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_APPLICATION_STATE_OBSERVERS; ++i)
   {
     assert_int_equal(
         az_iot_connection_client_add_state_observer(fx->client, az_iot_test_on_state, &logs[i]),
@@ -1162,7 +1164,9 @@ static void a_full_application_pool_does_not_block_a_feature_client(void** state
   }
   assert_int_equal(
       az_iot_connection_client_add_state_observer(
-          fx->client, az_iot_test_on_state, &logs[AZ_IOT_MAX_APP_STATE_OBSERVERS - 1]),
+          fx->client,
+          az_iot_test_on_state,
+          &logs[AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_APPLICATION_STATE_OBSERVERS - 1]),
       AZ_IOT_ERR_NOT_ENOUGH_SPACE);
 
   assert_int_equal(

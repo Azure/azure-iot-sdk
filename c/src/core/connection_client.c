@@ -255,14 +255,14 @@ static void dispatch_state_event(
 {
   bool was_dispatching = c->dispatching_state;
   c->dispatching_state = true;
-  for (size_t i = 0; i < AZ_IOT_MAX_FEATURE_STATE_OBSERVERS; ++i)
+  for (size_t i = 0; i < c->opts.limits.max_feature_state_observers; ++i)
   {
     if (c->feature_state_observers[i].cb)
     {
       c->feature_state_observers[i].cb(event, c->feature_state_observers[i].user_ctx);
     }
   }
-  for (size_t i = 0; i < AZ_IOT_MAX_APP_STATE_OBSERVERS; ++i)
+  for (size_t i = 0; i < c->opts.limits.max_application_state_observers; ++i)
   {
     if (c->app_state_observers[i].cb)
     {
@@ -274,14 +274,14 @@ static void dispatch_state_event(
 
 static bool have_state_observers(const az_iot_connection_client* c)
 {
-  for (size_t i = 0; i < AZ_IOT_MAX_FEATURE_STATE_OBSERVERS; ++i)
+  for (size_t i = 0; i < c->opts.limits.max_feature_state_observers; ++i)
   {
     if (c->feature_state_observers[i].cb)
     {
       return true;
     }
   }
-  for (size_t i = 0; i < AZ_IOT_MAX_APP_STATE_OBSERVERS; ++i)
+  for (size_t i = 0; i < c->opts.limits.max_application_state_observers; ++i)
   {
     if (c->app_state_observers[i].cb)
     {
@@ -1042,7 +1042,7 @@ static void teardown_active(az_iot_connection_client* c)
    *
    * The slot is released BEFORE the callback runs so a callback that
    * republishes immediately can claim it. */
-  for (size_t i = 0; i < AZ_IOT_MAX_PENDING_PUBACKS; ++i)
+  for (size_t i = 0; i < c->opts.limits.max_pending_publishes; ++i)
   {
     az_iot_publish_ack_callback cb = c->pending_pubacks[i].cb;
     az_iot_publish_result_callback result_cb = c->pending_pubacks[i].result_cb;
@@ -1070,7 +1070,7 @@ static void teardown_active(az_iot_connection_client* c)
    * Runs last so a handler that immediately re-issues its request sees a fully
    * torn-down session and gets a clean NOT_CONNECTED rather than publishing
    * into a half-freed adapter. */
-  for (size_t i = 0; i < AZ_IOT_MAX_SESSION_HANDLERS; ++i)
+  for (size_t i = 0; i < c->opts.limits.max_session_handlers; ++i)
   {
     if (c->session_handlers[i].in_use && c->session_handlers[i].cb)
     {
@@ -4672,14 +4672,14 @@ static void subscription_gate_track(
     size_t sub_index,
     bool gated)
 {
-  if (c->subscription_gate.pending_count >= AZ_IOT_MAX_PERSISTENT_SUBS)
+  if (c->subscription_gate.pending_count >= c->opts.limits.max_persistent_subscriptions)
   {
     return;
   }
   size_t p = c->subscription_gate.pending_count++;
-  c->subscription_gate.pending[p].packet_id = packet_id;
-  c->subscription_gate.pending[p].sub_index = (uint8_t)sub_index;
-  c->subscription_gate.pending[p].gated = gated;
+  c->subscription_acks[p].packet_id = packet_id;
+  c->subscription_acks[p].sub_index = (uint8_t)sub_index;
+  c->subscription_acks[p].gated = gated;
   if (gated)
   {
     c->subscription_gate.gated_outstanding++;
@@ -4697,16 +4697,15 @@ static void subscription_gate_forget(az_iot_connection_client* c, size_t sub_ind
 {
   for (size_t i = 0; i < c->subscription_gate.pending_count; ++i)
   {
-    if (c->subscription_gate.pending[i].sub_index != sub_index)
+    if (c->subscription_acks[i].sub_index != sub_index)
     {
       continue;
     }
-    if (c->subscription_gate.pending[i].gated && c->subscription_gate.gated_outstanding > 0)
+    if (c->subscription_acks[i].gated && c->subscription_gate.gated_outstanding > 0)
     {
       c->subscription_gate.gated_outstanding--;
     }
-    c->subscription_gate.pending[i]
-        = c->subscription_gate.pending[c->subscription_gate.pending_count - 1];
+    c->subscription_acks[i] = c->subscription_acks[c->subscription_gate.pending_count - 1];
     c->subscription_gate.pending_count--;
     return;
   }
@@ -4726,7 +4725,7 @@ static void begin_feature_subscriptions(az_iot_connection_client* c)
     return;
   }
 
-  for (size_t i = 0; i < AZ_IOT_MAX_PERSISTENT_SUBS; ++i)
+  for (size_t i = 0; i < c->opts.limits.max_persistent_subscriptions; ++i)
   {
     if (!c->persistent_subs[i].in_use)
     {
@@ -4782,15 +4781,14 @@ static bool subscription_gate_settle(
   }
   for (size_t i = 0; i < c->subscription_gate.pending_count; ++i)
   {
-    if (c->subscription_gate.pending[i].packet_id != packet_id)
+    if (c->subscription_acks[i].packet_id != packet_id)
     {
       continue;
     }
-    const bool gated = c->subscription_gate.pending[i].gated;
-    const size_t sub_index = c->subscription_gate.pending[i].sub_index;
+    const bool gated = c->subscription_acks[i].gated;
+    const size_t sub_index = c->subscription_acks[i].sub_index;
 
-    c->subscription_gate.pending[i]
-        = c->subscription_gate.pending[c->subscription_gate.pending_count - 1];
+    c->subscription_acks[i] = c->subscription_acks[c->subscription_gate.pending_count - 1];
     c->subscription_gate.pending_count--;
 
     if (status != AZ_IOT_OK)
@@ -5128,7 +5126,7 @@ static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
       az_iot_publish_ack_callback cb = NULL;
       az_iot_publish_result_callback result_cb = NULL;
       void* ctx = NULL;
-      for (size_t i = 0; i < AZ_IOT_MAX_PENDING_PUBACKS; ++i)
+      for (size_t i = 0; i < c->opts.limits.max_pending_publishes; ++i)
       {
         /* No callback yet: reserved by a publish still in progress; not yet matchable. */
         if (c->pending_pubacks[i].in_use
@@ -6418,6 +6416,152 @@ static void sas_wipe(az_iot_connection_client* c)
   az_iot_crypto__wipe(c->auth, sizeof(c->auth));
 }
 
+/* Counts the embedded area holds: _az_IOT_CONNECTION_CLIENT_EMBEDDED_WORKSPACE_SIZE. */
+#define LIMIT_EMBEDDED_PENDING_PUBLISHES 16u
+#define LIMIT_EMBEDDED_PUBLISH_RESERVATIONS 2u
+#define LIMIT_EMBEDDED_PERSISTENT_SUBSCRIPTIONS 8u
+#define LIMIT_EMBEDDED_SESSION_HANDLERS 4u
+#define LIMIT_EMBEDDED_FEATURE_STATE_OBSERVERS 6u
+#define LIMIT_EMBEDDED_APPLICATION_STATE_OBSERVERS 4u
+#define LIMIT_EMBEDDED_FEATURE_CLIENTS 8u
+#define LIMIT_EMBEDDED_INBOUND_HANDLERS 8u
+typedef char az_iot_connection_embedded_workspace_counts_agree
+    [(_az_IOT_CONNECTION_CLIENT_EMBEDDED_WORKSPACE_SIZE
+      == AZ_IOT_CONNECTION_CLIENT_WORKSPACE_SIZE(
+          LIMIT_EMBEDDED_PENDING_PUBLISHES,
+          LIMIT_EMBEDDED_PUBLISH_RESERVATIONS,
+          LIMIT_EMBEDDED_PERSISTENT_SUBSCRIPTIONS,
+          LIMIT_EMBEDDED_SESSION_HANDLERS,
+          LIMIT_EMBEDDED_FEATURE_STATE_OBSERVERS,
+          LIMIT_EMBEDDED_APPLICATION_STATE_OBSERVERS,
+          LIMIT_EMBEDDED_FEATURE_CLIENTS,
+          LIMIT_EMBEDDED_INBOUND_HANDLERS))
+         ? 1
+         : -1];
+/* Bound on the counts with no tighter maximum, so the size arithmetic cannot overflow. */
+#define LIMIT_MAX_ENTRIES 65535u
+
+/**
+ * @brief Writes @p limits with every 0 replaced by its default to @p out.
+ * @return false when a value is above its maximum.
+ */
+static bool limits_resolve(
+    const az_iot_connection_client_limits* limits,
+    az_iot_connection_client_limits* out)
+{
+  *out = *limits;
+  size_t* const value[] = {
+    &out->max_pending_publishes,        &out->max_publish_reservations,
+    &out->max_persistent_subscriptions, &out->max_session_handlers,
+    &out->max_feature_state_observers,  &out->max_application_state_observers,
+    &out->max_feature_clients,          &out->max_inbound_handlers,
+  };
+  static const size_t fallback[] = {
+    AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_PENDING_PUBLISHES,
+    AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_PUBLISH_RESERVATIONS,
+    AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_PERSISTENT_SUBSCRIPTIONS,
+    AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_SESSION_HANDLERS,
+    AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_FEATURE_STATE_OBSERVERS,
+    AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_APPLICATION_STATE_OBSERVERS,
+    AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_FEATURE_CLIENTS,
+    AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_INBOUND_HANDLERS,
+  };
+  for (size_t i = 0; i < sizeof(fallback) / sizeof(fallback[0]); ++i)
+  {
+    if (*value[i] == 0)
+    {
+      *value[i] = fallback[i];
+    }
+    if (*value[i] > LIMIT_MAX_ENTRIES)
+    {
+      return false;
+    }
+  }
+  /* Reservation and subscription indexes are stored in a uint8_t. */
+  return out->max_publish_reservations < UINT8_MAX
+      && out->max_persistent_subscriptions <= UINT8_MAX;
+}
+
+/** @brief Whether any resolved count in @p l is above what the embedded area holds. */
+static bool limits_exceed_embedded_workspace(const az_iot_connection_client_limits* l)
+{
+  return l->max_pending_publishes > LIMIT_EMBEDDED_PENDING_PUBLISHES
+      || l->max_publish_reservations > LIMIT_EMBEDDED_PUBLISH_RESERVATIONS
+      || l->max_persistent_subscriptions > LIMIT_EMBEDDED_PERSISTENT_SUBSCRIPTIONS
+      || l->max_session_handlers > LIMIT_EMBEDDED_SESSION_HANDLERS
+      || l->max_feature_state_observers > LIMIT_EMBEDDED_FEATURE_STATE_OBSERVERS
+      || l->max_application_state_observers > LIMIT_EMBEDDED_APPLICATION_STATE_OBSERVERS
+      || l->max_feature_clients > LIMIT_EMBEDDED_FEATURE_CLIENTS
+      || l->max_inbound_handlers > LIMIT_EMBEDDED_INBOUND_HANDLERS;
+}
+
+/** @brief Workspace bytes for resolved @p l. */
+static size_t workspace_size_of(const az_iot_connection_client_limits* l)
+{
+  return AZ_IOT_CONNECTION_CLIENT_WORKSPACE_SIZE(
+      l->max_pending_publishes,
+      l->max_publish_reservations,
+      l->max_persistent_subscriptions,
+      l->max_session_handlers,
+      l->max_feature_state_observers,
+      l->max_application_state_observers,
+      l->max_feature_clients,
+      l->max_inbound_handlers);
+}
+
+size_t az_iot_connection_client_get_workspace_size(const az_iot_connection_client_limits* limits)
+{
+  az_iot_connection_client_limits resolved;
+  return limits != NULL && limits_resolve(limits, &resolved) ? workspace_size_of(&resolved) : 0;
+}
+
+/** @brief Takes @p count entries of @p entry_size at @p *cursor, which moves past them. */
+static void* workspace_take(uint8_t** cursor, size_t count, size_t entry_size)
+{
+  void* const entries = *cursor;
+  *cursor += AZ_IOT_CONNECTION_CLIENT_WORKSPACE_ALIGN(count * entry_size);
+  return entries;
+}
+
+/** @brief Points @p c's entries into its cleared workspace, laid out as workspace_size_of(). */
+static void workspace_assign(az_iot_connection_client* c, uint8_t* workspace)
+{
+  const az_iot_connection_client_limits* l = &c->opts.limits;
+  uint8_t* cursor = (uint8_t*)(((uintptr_t)workspace + 15u) & ~(uintptr_t)15u);
+  c->pending_pubacks
+      = workspace_take(&cursor, l->max_pending_publishes, sizeof(*c->pending_pubacks));
+  c->puback_reservations
+      = workspace_take(&cursor, l->max_publish_reservations, sizeof(*c->puback_reservations));
+  c->persistent_subs
+      = workspace_take(&cursor, l->max_persistent_subscriptions, sizeof(*c->persistent_subs));
+  c->subscription_acks
+      = workspace_take(&cursor, l->max_persistent_subscriptions, sizeof(*c->subscription_acks));
+  c->session_handlers
+      = workspace_take(&cursor, l->max_session_handlers, sizeof(*c->session_handlers));
+  c->feature_state_observers = workspace_take(
+      &cursor, l->max_feature_state_observers, sizeof(*c->feature_state_observers));
+  c->app_state_observers = workspace_take(
+      &cursor, l->max_application_state_observers, sizeof(*c->app_state_observers));
+  c->feature_client_binds
+      = workspace_take(&cursor, l->max_feature_clients, sizeof(*c->feature_client_binds));
+  az_iot_dispatch_init(
+      &c->dispatch,
+      workspace_take(&cursor, l->max_inbound_handlers, sizeof(az_iot_dispatch_entry)),
+      l->max_inbound_handlers);
+}
+
+/** @brief The workspace @p c uses: the application's, or its own default one. */
+static uint8_t* workspace_of(az_iot_connection_client* c)
+{
+  return c->opts.workspace != NULL ? c->opts.workspace : c->default_workspace;
+}
+
+/** @brief Bytes of @p c's workspace: all of the application's, or the whole embedded area. */
+static size_t workspace_capacity_of(const az_iot_connection_client* c)
+{
+  return c->opts.workspace != NULL ? c->opts.workspace_size : sizeof(c->default_workspace);
+}
+
 AZ_NODISCARD az_iot_result az_iot_connection_client_init(
     az_iot_connection_client* client,
     const az_iot_connection_client_options* opts)
@@ -6460,8 +6604,34 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_init(
   {
     return sv;
   }
+  az_iot_connection_client_limits limits;
+  if (!limits_resolve(&opts->limits, &limits))
+  {
+    AZ_IOT_LOG_ERROR(AZ_IOT_LOG_COMPONENT_CONNECTION, "init: a limit is above its maximum");
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  const size_t workspace_size = workspace_size_of(&limits);
+  if (opts->workspace == NULL && limits_exceed_embedded_workspace(&limits))
+  {
+    AZ_IOT_LOG_ERROR(
+        AZ_IOT_LOG_COMPONENT_CONNECTION,
+        "init: limits above the built-in defaults need a workspace");
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  if (opts->workspace != NULL && opts->workspace_size < workspace_size)
+  {
+    AZ_IOT_LOG_ERRORF(
+        AZ_IOT_LOG_COMPONENT_CONNECTION,
+        "init: the workspace has %lu bytes; %lu needed",
+        (unsigned long)opts->workspace_size,
+        (unsigned long)workspace_size);
+    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+  }
   memset(client, 0, sizeof(*client));
   client->opts = *opts;
+  client->opts.limits = limits;
+  memset(workspace_of(client), 0, workspace_size);
+  workspace_assign(client, workspace_of(client));
   sv = sas_load_keys(client);
   if (sv != AZ_IOT_OK)
   {
@@ -6537,7 +6707,7 @@ void az_iot_connection_client_deinit(az_iot_connection_client* client)
    * client down, and the context those callbacks close over may already be
    * gone. Calling back into it here would turn cleanup into a use-after-free.
    * Cleared before teardown_active() so it has nothing left to complete. */
-  for (size_t i = 0; i < AZ_IOT_MAX_PENDING_PUBACKS; ++i)
+  for (size_t i = 0; i < client->opts.limits.max_pending_publishes; ++i)
   {
     client->pending_pubacks[i].in_use = false;
     client->pending_pubacks[i].cb = NULL;
@@ -6548,7 +6718,7 @@ void az_iot_connection_client_deinit(az_iot_connection_client* client)
   /* Same reasoning for the session-end handlers: on deinit() the feature
    * clients are being torn down alongside this one, so calling into them is
    * at best pointless and at worst a use-after-free. */
-  for (size_t i = 0; i < AZ_IOT_MAX_SESSION_HANDLERS; ++i)
+  for (size_t i = 0; i < client->opts.limits.max_session_handlers; ++i)
   {
     client->session_handlers[i].in_use = false;
     client->session_handlers[i].cb = NULL;
@@ -6559,8 +6729,8 @@ void az_iot_connection_client_deinit(az_iot_connection_client* client)
   teardown_active(client);
   dps_teardown_mqtt(client);
   sas_wipe(client);
-  /* dispatch is embedded; nothing to free. Registered factories are borrowed;
-   * the application destroys them after this returns. */
+  /* Registered factories are borrowed; the application destroys them after this returns. */
+  az_iot_crypto__wipe(workspace_of(client), workspace_capacity_of(client));
   /* provisioned_iot_hub_hostname / provisioned_device_id are inline fixed buffers; nothing to free.
    */
 }
@@ -6619,8 +6789,8 @@ static az_iot_result add_state_observer_to(
     return AZ_IOT_ERR_BUSY;
   }
 
-  size_t count
-      = feature_client ? AZ_IOT_MAX_FEATURE_STATE_OBSERVERS : AZ_IOT_MAX_APP_STATE_OBSERVERS;
+  size_t count = feature_client ? client->opts.limits.max_feature_state_observers
+                                : client->opts.limits.max_application_state_observers;
   size_t free_slot = count;
   for (size_t i = 0; i < count; ++i)
   {
@@ -6704,7 +6874,7 @@ static az_iot_result remove_state_observer_from(
    * skips a NULL callback, and nothing is compacted, so clearing a slot only
    * means that observer is not called -- which is exactly what withdrawing
    * asks for. An entry already visited in this pass is unaffected. */
-  for (size_t i = 0; i < AZ_IOT_MAX_FEATURE_STATE_OBSERVERS; ++i)
+  for (size_t i = 0; i < client->opts.limits.max_feature_state_observers; ++i)
   {
     if (client->feature_state_observers[i].cb == cb
         && client->feature_state_observers[i].user_ctx == user_ctx)
@@ -6714,7 +6884,7 @@ static az_iot_result remove_state_observer_from(
       return AZ_IOT_OK;
     }
   }
-  for (size_t i = 0; i < AZ_IOT_MAX_APP_STATE_OBSERVERS; ++i)
+  for (size_t i = 0; i < client->opts.limits.max_application_state_observers; ++i)
   {
     if (client->app_state_observers[i].cb == cb
         && client->app_state_observers[i].user_ctx == user_ctx)
@@ -7962,8 +8132,8 @@ az_iot_result az_iot_connection_client__register_session_end_handler(
     return AZ_IOT_ERR_INVALID_ARG;
   }
 
-  size_t free_slot = AZ_IOT_MAX_SESSION_HANDLERS;
-  for (size_t i = 0; i < AZ_IOT_MAX_SESSION_HANDLERS; ++i)
+  size_t free_slot = client->opts.limits.max_session_handlers;
+  for (size_t i = 0; i < client->opts.limits.max_session_handlers; ++i)
   {
     /* Keyed on user_ctx: a feature client that re-initializes over a live
      * instance replaces its entry instead of consuming a second slot. */
@@ -7975,13 +8145,13 @@ az_iot_result az_iot_connection_client__register_session_end_handler(
         return AZ_IOT_OK;
       }
     }
-    else if (free_slot == AZ_IOT_MAX_SESSION_HANDLERS)
+    else if (free_slot == client->opts.limits.max_session_handlers)
     {
       free_slot = i;
     }
   }
 
-  if (free_slot == AZ_IOT_MAX_SESSION_HANDLERS)
+  if (free_slot == client->opts.limits.max_session_handlers)
   {
     AZ_IOT_LOG_ERROR(AZ_IOT_LOG_COMPONENT_CONNECTION, "session-end handler registry is full");
     return AZ_IOT_ERR_NOT_SUPPORTED;
@@ -8001,7 +8171,7 @@ size_t az_iot_connection_client__unregister_session_end_handler(
   {
     return 0;
   }
-  for (size_t i = 0; i < AZ_IOT_MAX_SESSION_HANDLERS; ++i)
+  for (size_t i = 0; i < client->opts.limits.max_session_handlers; ++i)
   {
     if (client->session_handlers[i].in_use && client->session_handlers[i].user_ctx == user_ctx)
     {
@@ -8124,20 +8294,21 @@ az_iot_result az_iot_connection_client__register_feature_client_bind(
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
-  size_t free_slot = AZ_IOT_MAX_FEATURE_CLIENT_BINDS;
-  for (size_t i = 0; i < AZ_IOT_MAX_FEATURE_CLIENT_BINDS; ++i)
+  size_t free_slot = client->opts.limits.max_feature_clients;
+  for (size_t i = 0; i < client->opts.limits.max_feature_clients; ++i)
   {
     if (client->feature_client_binds[i].owner == owner)
     {
       client->feature_client_binds[i].on_bind = on_bind;
       return AZ_IOT_OK;
     }
-    if (!client->feature_client_binds[i].owner && free_slot == AZ_IOT_MAX_FEATURE_CLIENT_BINDS)
+    if (!client->feature_client_binds[i].owner
+        && free_slot == client->opts.limits.max_feature_clients)
     {
       free_slot = i;
     }
   }
-  if (free_slot == AZ_IOT_MAX_FEATURE_CLIENT_BINDS)
+  if (free_slot == client->opts.limits.max_feature_clients)
   {
     return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
   }
@@ -8161,7 +8332,7 @@ void az_iot_connection_client__unregister_feature_client_bind(
   {
     return;
   }
-  for (size_t i = 0; i < AZ_IOT_MAX_FEATURE_CLIENT_BINDS; ++i)
+  for (size_t i = 0; i < client->opts.limits.max_feature_clients; ++i)
   {
     if (client->feature_client_binds[i].owner == owner)
     {
@@ -8177,7 +8348,7 @@ void az_iot_connection_client__unregister_feature_client_bind(
  * a filter behind that the new hub would refuse. */
 static az_iot_result run_feature_client_binds(az_iot_connection_client* c)
 {
-  for (size_t i = 0; i < AZ_IOT_MAX_FEATURE_CLIENT_BINDS; ++i)
+  for (size_t i = 0; i < c->opts.limits.max_feature_clients; ++i)
   {
     void* owner = c->feature_client_binds[i].owner;
     az_iot_result (*on_bind)(void*, az_iot_connection_client*) = c->feature_client_binds[i].on_bind;
@@ -8476,13 +8647,6 @@ void az_iot_connection_client__set_dps_message_observer(
   client->dps_message_observer_ctx = user_ctx;
 }
 
-#if AZ_IOT_MAX_PENDING_PUBACKS > UINT16_MAX
-#error "AZ_IOT_MAX_PENDING_PUBACKS must be at most 65535"
-#endif
-#if AZ_IOT_MAX_PUBACK_RESERVATIONS >= UINT8_MAX
-#error "AZ_IOT_MAX_PUBACK_RESERVATIONS must be at most 254"
-#endif
-
 #define PUBACK_POOL_SHARED UINT8_MAX
 
 /** @brief puback_reservations[] index held by @p owner, or PUBACK_POOL_SHARED if none. */
@@ -8490,11 +8654,11 @@ static uint8_t puback_pool_of(const az_iot_connection_client* c, const void* own
 {
   if (owner != NULL)
   {
-    for (uint8_t i = 0; i < AZ_IOT_MAX_PUBACK_RESERVATIONS; ++i)
+    for (size_t i = 0; i < c->opts.limits.max_publish_reservations; ++i)
     {
       if (c->puback_reservations[i].owner == owner)
       {
-        return i;
+        return (uint8_t)i;
       }
     }
   }
@@ -8505,7 +8669,7 @@ static uint8_t puback_pool_of(const az_iot_connection_client* c, const void* own
 static size_t puback_reserved_except(const az_iot_connection_client* c, uint8_t skip)
 {
   size_t reserved = 0;
-  for (uint8_t i = 0; i < AZ_IOT_MAX_PUBACK_RESERVATIONS; ++i)
+  for (size_t i = 0; i < c->opts.limits.max_publish_reservations; ++i)
   {
     if (i != skip)
     {
@@ -8520,14 +8684,14 @@ static size_t puback_pool_capacity(const az_iot_connection_client* c, uint8_t po
 {
   return pool != PUBACK_POOL_SHARED
       ? c->puback_reservations[pool].count
-      : AZ_IOT_MAX_PENDING_PUBACKS - puback_reserved_except(c, PUBACK_POOL_SHARED);
+      : c->opts.limits.max_pending_publishes - puback_reserved_except(c, PUBACK_POOL_SHARED);
 }
 
 /** @brief Slots in use that count against @p pool. */
 static size_t puback_pool_used(const az_iot_connection_client* c, uint8_t pool)
 {
   size_t used = 0;
-  for (size_t i = 0; i < AZ_IOT_MAX_PENDING_PUBACKS; ++i)
+  for (size_t i = 0; i < c->opts.limits.max_pending_publishes; ++i)
   {
     if (c->pending_pubacks[i].in_use && c->pending_pubacks[i].reservation == pool)
     {
@@ -8538,7 +8702,7 @@ static size_t puback_pool_used(const az_iot_connection_client* c, uint8_t pool)
 }
 
 /**
- * @brief A free pending_pubacks[] index @p pool may take, or AZ_IOT_MAX_PENDING_PUBACKS if the
+ * @brief A free pending_pubacks[] index @p pool may take, or limits.max_pending_publishes if the
  *        pool is at capacity.
  *
  * Every pool's in-flight count stays within its capacity (reserve_pubacks() refuses a change that
@@ -8549,16 +8713,16 @@ static size_t puback_free_slot(const az_iot_connection_client* c, uint8_t pool)
 {
   if (puback_pool_used(c, pool) >= puback_pool_capacity(c, pool))
   {
-    return AZ_IOT_MAX_PENDING_PUBACKS;
+    return c->opts.limits.max_pending_publishes;
   }
-  for (size_t i = 0; i < AZ_IOT_MAX_PENDING_PUBACKS; ++i)
+  for (size_t i = 0; i < c->opts.limits.max_pending_publishes; ++i)
   {
     if (!c->pending_pubacks[i].in_use)
     {
       return i;
     }
   }
-  return AZ_IOT_MAX_PENDING_PUBACKS;
+  return c->opts.limits.max_pending_publishes;
 }
 
 /**
@@ -8574,7 +8738,7 @@ static void puback_abandon(az_iot_connection_client* c, const void* owner)
   {
     return;
   }
-  for (size_t i = 0; i < AZ_IOT_MAX_PENDING_PUBACKS; ++i)
+  for (size_t i = 0; i < c->opts.limits.max_pending_publishes; ++i)
   {
     if (c->pending_pubacks[i].in_use && c->pending_pubacks[i].reservation == pool)
     {
@@ -8611,12 +8775,12 @@ static az_iot_result publish_tracked(
    * nor teardown_active() acts on it. Adapters deliver events only from
    * process_loop() (az_iot_mqtt_iface), so no PUBACK can arrive before the
    * packet id is filled in below. */
-  size_t slot = AZ_IOT_MAX_PENDING_PUBACKS;
+  size_t slot = client->opts.limits.max_pending_publishes;
   if (msg->qos != AZ_IOT_MQTT_QOS_0 && has_cb)
   {
     uint8_t pool = puback_pool_of(client, owner);
     slot = puback_free_slot(client, pool);
-    if (slot == AZ_IOT_MAX_PENDING_PUBACKS)
+    if (slot == client->opts.limits.max_pending_publishes)
     {
       return AZ_IOT_ERR_BUSY;
     }
@@ -8630,7 +8794,7 @@ static az_iot_result publish_tracked(
 
   uint16_t pid = 0;
   az_iot_result r = client->active_client->iface->publish(client->active_client, msg, &pid);
-  if (slot < AZ_IOT_MAX_PENDING_PUBACKS)
+  if (slot < client->opts.limits.max_pending_publishes)
   {
     if (r != AZ_IOT_OK)
     {
@@ -8695,30 +8859,31 @@ az_iot_result az_iot_connection_client__reserve_pubacks(
   uint8_t entry = puback_pool_of(client, owner);
   if (entry == PUBACK_POOL_SHARED)
   {
-    for (uint8_t i = 0; i < AZ_IOT_MAX_PUBACK_RESERVATIONS; ++i)
+    for (size_t i = 0; i < client->opts.limits.max_publish_reservations; ++i)
     {
       if (client->puback_reservations[i].owner == NULL)
       {
-        entry = i;
+        entry = (uint8_t)i;
         break;
       }
     }
   }
   size_t others = puback_reserved_except(client, entry);
-  if (entry == PUBACK_POOL_SHARED || count > AZ_IOT_MAX_PENDING_PUBACKS - others)
+  if (entry == PUBACK_POOL_SHARED || count > client->opts.limits.max_pending_publishes - others)
   {
     AZ_IOT_LOG_ERRORF(
         AZ_IOT_LOG_COMPONENT_CONNECTION,
         "cannot reserve %lu pending-PUBACK slots: %lu of %u reserved by others, %u holders at most",
         (unsigned long)count,
         (unsigned long)others,
-        (unsigned)AZ_IOT_MAX_PENDING_PUBACKS,
-        (unsigned)AZ_IOT_MAX_PUBACK_RESERVATIONS);
+        (unsigned)client->opts.limits.max_pending_publishes,
+        (unsigned)client->opts.limits.max_publish_reservations);
     return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
   }
   /* Keep every pool within its capacity, so a granted reservation is usable at once instead of
    * waiting for shared publishes already in flight to be acknowledged. */
-  if (puback_pool_used(client, PUBACK_POOL_SHARED) > AZ_IOT_MAX_PENDING_PUBACKS - others - count
+  if (puback_pool_used(client, PUBACK_POOL_SHARED)
+          > client->opts.limits.max_pending_publishes - others - count
       || (client->puback_reservations[entry].owner == owner
           && puback_pool_used(client, entry) > count))
   {
@@ -8742,7 +8907,7 @@ void az_iot_connection_client__release_pubacks(az_iot_connection_client* client,
   }
   /* In-flight publishes keep their callbacks and move to the shared pool, whose capacity grows by
    * at least as much, so the entry can be reused at once. */
-  for (size_t i = 0; i < AZ_IOT_MAX_PENDING_PUBACKS; ++i)
+  for (size_t i = 0; i < client->opts.limits.max_pending_publishes; ++i)
   {
     if (client->pending_pubacks[i].in_use && client->pending_pubacks[i].reservation == entry)
     {
@@ -8758,7 +8923,8 @@ bool az_iot_connection_client__can_track_publish(
     const void* owner)
 {
   return client != NULL
-      && puback_free_slot(client, puback_pool_of(client, owner)) < AZ_IOT_MAX_PENDING_PUBACKS;
+      && puback_free_slot(client, puback_pool_of(client, owner))
+      < client->opts.limits.max_pending_publishes;
 }
 
 az_iot_result az_iot_connection_client__subscribe(
@@ -8798,8 +8964,8 @@ az_iot_result az_iot_connection_client__add_subscription_on_connect(
   }
   /* Find a free slot. Duplicates are allowed but pointless; callers are
    * expected to register each filter once. */
-  size_t slot = AZ_IOT_MAX_PERSISTENT_SUBS;
-  for (size_t i = 0; i < AZ_IOT_MAX_PERSISTENT_SUBS; ++i)
+  size_t slot = client->opts.limits.max_persistent_subscriptions;
+  for (size_t i = 0; i < client->opts.limits.max_persistent_subscriptions; ++i)
   {
     if (!client->persistent_subs[i].in_use)
     {
@@ -8807,7 +8973,7 @@ az_iot_result az_iot_connection_client__add_subscription_on_connect(
       break;
     }
   }
-  if (slot == AZ_IOT_MAX_PERSISTENT_SUBS)
+  if (slot == client->opts.limits.max_persistent_subscriptions)
   {
     /* A fixed array -- c/src does not allocate -- so running out is a capacity
      * failure, not an unsupported operation. NOT_SUPPORTED was too vague to act
@@ -8821,9 +8987,9 @@ az_iot_result az_iot_connection_client__add_subscription_on_connect(
     AZ_IOT_LOG_ERRORF(
         AZ_IOT_LOG_COMPONENT_CONNECTION,
         "cannot register '%s': all %d persistent subscription slots are in use "
-        "(raise AZ_IOT_MAX_PERSISTENT_SUBS)",
+        "(raise limits.max_persistent_subscriptions)",
         topic_filter,
-        (int)AZ_IOT_MAX_PERSISTENT_SUBS);
+        (int)client->opts.limits.max_persistent_subscriptions);
     return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
   }
   memcpy(client->persistent_subs[slot].topic_filter, topic_filter, n + 1);
@@ -8884,7 +9050,7 @@ size_t az_iot_connection_client__remove_subscriptions_for(
       && client->state[AZ_IOT_CONN_SCOPE_HUB] == AZ_IOT_CONN_STATE_CONNECTED;
 
   size_t removed = 0;
-  for (size_t i = 0; i < AZ_IOT_MAX_PERSISTENT_SUBS; ++i)
+  for (size_t i = 0; i < client->opts.limits.max_persistent_subscriptions; ++i)
   {
     if (!client->persistent_subs[i].in_use || client->persistent_subs[i].owner != owner)
     {
@@ -8911,7 +9077,7 @@ size_t az_iot_connection_client__remove_subscriptions_for(
  * removed them. See docs/eng/connection-c.md section 5.3. */
 static void drop_subscriptions_from_other_generations(az_iot_connection_client* c)
 {
-  for (size_t i = 0; i < AZ_IOT_MAX_PERSISTENT_SUBS; ++i)
+  for (size_t i = 0; i < c->opts.limits.max_persistent_subscriptions; ++i)
   {
     if (!c->persistent_subs[i].in_use || c->persistent_subs[i].profile == c->connection_profile)
     {

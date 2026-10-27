@@ -7,11 +7,20 @@
 
 #include <string.h>
 
-void az_iot_dispatch_init(az_iot_dispatch_table* tbl)
+void az_iot_dispatch_init(
+    az_iot_dispatch_table* tbl,
+    az_iot_dispatch_entry* entries,
+    size_t capacity)
 {
   if (tbl)
   {
-    memset(tbl, 0, sizeof(*tbl));
+    tbl->entries = entries;
+    tbl->capacity = entries != NULL ? capacity : 0;
+    tbl->count = 0;
+    if (entries != NULL && capacity > 0)
+    {
+      memset(entries, 0, capacity * sizeof(*entries));
+    }
   }
 }
 
@@ -46,7 +55,7 @@ az_iot_result az_iot_dispatch_register_prefix(
    * ("devices/{device-id}/..."), so distinct identities never collide here and
    * stay free to register side by side. Only a genuine duplicate is refused. */
   az_iot_dispatch_entry* slot = NULL;
-  for (size_t i = 0; i < AZ_IOT_MAX_INBOUND_HANDLERS; ++i)
+  for (size_t i = 0; i < tbl->capacity; ++i)
   {
     az_iot_dispatch_entry* e = &tbl->entries[i];
     if (!e->in_use)
@@ -83,7 +92,7 @@ size_t az_iot_dispatch_unregister_by_ctx(az_iot_dispatch_table* tbl, void* user_
     return 0;
   }
   size_t removed = 0;
-  for (size_t i = 0; i < AZ_IOT_MAX_INBOUND_HANDLERS; ++i)
+  for (size_t i = 0; i < tbl->capacity; ++i)
   {
     az_iot_dispatch_entry* e = &tbl->entries[i];
     if (e->in_use && e->user_ctx == user_ctx)
@@ -106,7 +115,7 @@ bool az_iot_dispatch_route(const az_iot_dispatch_table* tbl, const az_iot_mqtt_m
 
   /* Longest-prefix match: walk all entries, track the best one. */
   const az_iot_dispatch_entry* best = NULL;
-  for (size_t i = 0; i < AZ_IOT_MAX_INBOUND_HANDLERS; ++i)
+  for (size_t i = 0; i < tbl->capacity; ++i)
   {
     const az_iot_dispatch_entry* e = &tbl->entries[i];
     if (!e->in_use)

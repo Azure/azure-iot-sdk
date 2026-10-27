@@ -365,8 +365,8 @@ extern "C"
    *
    * @retval AZ_IOT_OK Reserved.
    * @retval AZ_IOT_ERR_INVALID_ARG @p client or @p owner is NULL.
-   * @retval AZ_IOT_ERR_NOT_ENOUGH_SPACE All reservations would exceed AZ_IOT_MAX_PENDING_PUBACKS,
-   *         or AZ_IOT_MAX_PUBACK_RESERVATIONS owners already hold one. Nothing changes.
+   * @retval AZ_IOT_ERR_NOT_ENOUGH_SPACE All reservations would exceed limits.max_pending_publishes,
+   *         or limits.max_publish_reservations owners already hold one. Nothing changes.
    * @retval AZ_IOT_ERR_BUSY Publishes in flight occupy the slots it needs; retry once they are
    *         acknowledged. Nothing changes.
    */

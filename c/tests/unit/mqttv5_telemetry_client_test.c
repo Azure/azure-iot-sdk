@@ -710,7 +710,7 @@ static void a_full_puback_table_sends_nothing(void** state)
   connect_and_init(test);
 
   az_iot_telemetry_message message = { 0 };
-  send_record records[AZ_IOT_MAX_PENDING_PUBACKS];
+  send_record records[AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_PENDING_PUBLISHES];
   memset(records, 0, sizeof(records));
   for (size_t i = 0; i < ARRAY_SIZE(records); ++i)
   {

@@ -2604,15 +2604,15 @@ static void deinit_frees_the_connect_time_bind_slot(void** state)
   (void)state;
 
   /* deinit() must withdraw the bind registration. Releasing the profile does
-   * NOT do it. A leak retires one of the connection's AZ_IOT_MAX_FEATURE_CLIENT_BINDS
-   * slots per cycle and -- far worse -- leaves the connection holding a callback
-   * into a destroyed client to invoke on the next connect. Distinct addresses,
-   * because the registry is keyed on the owner pointer and reusing one address
+   * NOT do it. A leak retires one of the connection's
+   * AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_FEATURE_CLIENTS slots per cycle and -- far worse -- leaves
+   * the connection holding a callback into a destroyed client to invoke on the next connect.
+   * Distinct addresses, because the registry is keyed on the owner pointer and reusing one address
    * would overwrite the same slot and hide the leak. */
   az_iot_connection_client conn;
   init_connection(&conn);
 
-  az_iot_mqttv5_twin_client twins[AZ_IOT_MAX_FEATURE_CLIENT_BINDS + 2];
+  az_iot_mqttv5_twin_client twins[AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_FEATURE_CLIENTS + 2];
   for (size_t i = 0; i < sizeof(twins) / sizeof(twins[0]); ++i)
   {
     assert_int_equal(az_iot_mqttv5_twin_client_init(&twins[i], &conn), AZ_IOT_OK);
