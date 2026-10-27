@@ -299,6 +299,18 @@ static void print_sanitizer_reports_from_log(const char* path, const char* label
   fclose(log);
 }
 
+/**
+ * @brief Writes the name of the file that captures a suite's output.
+ *
+ * @param[out] path Receives the name.
+ * @param[in] size Size of @p path.
+ * @param[in] label The suite label.
+ */
+static void format_suite_log_path(char* path, size_t size, const char* label)
+{
+  snprintf(path, size, "suite-%s.log", label);
+}
+
 /* Count of "[  FAILED  ] <name>" lines, and whether the expected case is among
  * them. cmocka prints that summary line once per failing case and repeats it in
  * the trailing list, so names are counted, not lines. */
@@ -453,7 +465,7 @@ static int run_control(
   opts.client_cert_path = cert_path;
 
   char log_path[64];
-  snprintf(log_path, sizeof(log_path), "suite-%s.log", label);
+  format_suite_log_path(log_path, sizeof(log_path), label);
 
   g_sign_called = 0;
   remove(SIGN_CALLED_MARKER);
@@ -677,6 +689,13 @@ static int run_control_isolated(
       fprintf(stderr, "sign-negative[%s]: could not wait for the isolated run\n", label);
       return 1;
     }
+    /* The child deletes the log after replaying it, so a log still here means
+     * the child ended early, e.g. aborted by a sanitizer while its output was
+     * redirected. */
+    char log_path[64];
+    format_suite_log_path(log_path, sizeof(log_path), label);
+    print_sanitizer_reports_from_log(log_path, label);
+    remove(log_path);
     if (!WIFEXITED(status))
     {
       fprintf(stderr, "sign-negative[%s]: the isolated run did not exit normally\n", label);
