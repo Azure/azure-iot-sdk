@@ -6155,7 +6155,8 @@ static void process_sas_token_request(az_iot_connection_client* c)
  * @brief @p timeout_ms, capped so a process_loop() wait ends by the next SAS
  * token deadline: a token request's bound (none while one waits to be asked,
  * as do_work() asks it), a session's renewal, or the hub's renewal disconnect
- * bound.
+ * bound. The hub's renewal deadlines are skipped while a reconnect request
+ * suppresses them.
  */
 static uint32_t limit_wait_to_sas_token_deadlines(
     const az_iot_connection_client* c,
@@ -6185,6 +6186,12 @@ static uint32_t limit_wait_to_sas_token_deadlines(
   {
     az_iot_connection_scope scope = scopes[i];
     if (!sas_session_renewable(c, scope))
+    {
+      continue;
+    }
+    /* A reconnect request suppresses the hub renewal; its bound limits the wait. */
+    if (scope == AZ_IOT_CONN_SCOPE_HUB
+        && (c->requested_reconnect.requested || c->requested_reconnect.in_progress))
     {
       continue;
     }
