@@ -1,4 +1,4 @@
-﻿// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
+// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
 // See LICENSE file in the project root for full license information.
 
 using Azure.Storage.Blobs.Models;
@@ -28,7 +28,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
                 if (withProvidedHttpClient)
                 {
                     var handler = new HttpClientHandler();
-                    handler.ClientCertificates.Add(Assert.IsType<X509AuthenticationProvider>(testDeviceContext.AuthenticationProvider).ClientCertificate);
+                    handler.ClientCertificates.Add(Assert.IsType<X509AuthenticationProvider>(testDeviceContext.AuthenticationProvider).PrimaryClientCertificate);
                     HttpClient userProvidedHttpClient = new(handler);
                     fileUploadClient = new FileUploadClient(testDeviceContext.ConnectionClient, userProvidedHttpClient);
                 }
