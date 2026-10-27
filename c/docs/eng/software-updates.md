@@ -1624,25 +1624,38 @@ This avoids duplicating the well-tested JSON parsing logic and keeps us aligned 
 | `az_base64_url_decode()` / `az_base64_decode()` for JWS segments | Used through `az_iot_base64_decode()` (`src/core/base64.c`), which first rejects characters outside the alphabet (az_core left-shifts a negative value on them), misplaced padding and nonzero trailing bits, and decodes in blocks so the output may overwrite the input |
 | `az_iot_hub_client_properties_writer_*` for PnP component wrapping | Not used (device twin only) |
 
-### Configurable Limits (No Source Change Needed)
+### Manifest Limits
 
-The following `#ifndef`-guarded macros in `az_iot_adu_internal.h` default to `2`, which is too
-small for real deployments. They size structs shared by azure-sdk-for-c, `az_iot_core` (which
-holds the software updates sources; there is no separate `az_iot_su` target) and the
-application, through `az_iot_su.h`. Define them identically for all three, for example in the
-parent project before adding this SDK:
+`az_iot_adu_internal.h` sizes the manifest arrays with `#ifndef`-guarded macros that default to 2.
+Device Update allows 10 files and 10 steps per update, so the SDK sets them from its own limits,
+`AZ_IOT_SU_MAX_STEP_COUNT`, `AZ_IOT_SU_MAX_FILE_COUNT` and `AZ_IOT_SU_MAX_FILE_COUNT_PER_STEP`
+(default 10, 10 and the file count; `cmake/az_iot_su_limits.cmake`). The arrays are shared by
+azure-sdk-for-c (the parser), `az_iot_core` and the application (`az_iot_su.h`), so:
 
-```cmake
-add_compile_definitions(
-    _az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS=10
-    _az_IOT_ADU_CLIENT_MAX_TOTAL_FILE_COUNT=10
-    _az_IOT_ADU_CLIENT_MAX_FILE_COUNT_PER_STEP=5
-    _az_IOT_ADU_CLIENT_MAX_FILE_HASH_COUNT=3
-)
-```
+- the CMake options of those names set them as public definitions on the azure-sdk-for-c parser
+  (`az_iot_hub`, fetched or installed) and on `az_iot_core`, its installed CMake package and
+  its pkg-config file;
+- an installed azure-sdk-for-c is checked at configure time by parsing a manifest at the limits
+  (`cmake/az_iot_su_limits_check.c`); [eng/install-deps.sh](../../eng/install-deps.sh) builds it
+  with them;
+- `az_iot_su.h` maps `AZ_IOT_SU_MAX_*` to the `_az_IOT_ADU_CLIENT_MAX_*` macros and fails to
+  compile when they differ.
 
-With a prebuilt azure-sdk-for-c (`find_package`), that package must be built with the same
-values.
+`_az_IOT_ADU_CLIENT_MAX_FILE_HASH_COUNT` keeps its default (2); manifests carry one `sha256`.
+
+The parser bounds the total and per-step file counts (`AZ_ERROR_NOT_ENOUGH_SPACE`) but not the step
+count or the hashes of a file: it would write past those arrays. `su_client.c` therefore counts all
+four before calling it (`check_manifest_limits()`), logs each exceeded limit, and fails the workflow
+(reported) or returns `AZ_IOT_ERR_NOT_ENOUGH_SPACE` from `az_iot_su_parse_update_request()`. More
+`fileUrls` than `AZ_IOT_SU_MAX_FILE_COUNT` refuses the update before processing
+(`AZ_IOT_SU_EVENT_UPDATE_REFUSED`, `AZ_IOT_ERR_NOT_ENOUGH_SPACE`).
+A file `mimeType` that is not a string is rejected the same way as malformed JSON: the parser
+advances past it without skipping its members, which it would then read as file properties.
+
+The largest status report grows 117 bytes per step, so `AZ_IOT_SU_MIN_MESSAGE_SIZE` is
+1792 + 128 × `AZ_IOT_SU_MAX_STEP_COUNT` (3072 by default). Memory cost of the default limits against
+2/2 on 64-bit: `az_iot_su_client` 8584 bytes (4616), default workspace 85640 (78920), parsed manifest
+3216 (464). See [client-configuration.md](../client-configuration.md#software-updates-manifest-limits).
 
 ### Known limitation: strict step parsing
 

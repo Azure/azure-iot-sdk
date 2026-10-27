@@ -61,6 +61,24 @@ foreach(_i RANGE 0 ${_last} 2)
     add_test(NAME install_test_${_comp} COMMAND install_test_${_comp})
 endforeach()
 
+# The azure-sdk-for-c manifest parser target alone: it must carry the manifest layout the SDK
+# built it with. The check exits nonzero when the parsed manifest is misplaced.
+if(TARGET az::iot::hub)
+    set(_az_iot_parser az::iot::hub)
+elseif(TARGET azure::iot::az_iot_hub)
+    set(_az_iot_parser azure::iot::az_iot_hub)
+else()
+    message(FATAL_ERROR "The package provides no azure-sdk-for-c parser target")
+endif()
+add_executable(install_test_manifest_parser_layout ../../cmake/az_iot_su_limits_check.c)
+target_link_libraries(install_test_manifest_parser_layout PRIVATE ${_az_iot_parser})
+if(MSVC)
+    target_compile_options(install_test_manifest_parser_layout PRIVATE /W4 /WX)
+else()
+    target_compile_options(install_test_manifest_parser_layout PRIVATE -Wall -Wextra -Wpedantic -Werror)
+endif()
+add_test(NAME install_test_manifest_parser_layout COMMAND install_test_manifest_parser_layout)
+
 if(TARGET install_test_crypto_openssl)
     target_compile_definitions(install_test_crypto_openssl PRIVATE
         AZ_IOT_TEST_CRYPTO_HEADER="az_iot_crypto_openssl.h"

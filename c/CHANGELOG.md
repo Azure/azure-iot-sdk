@@ -199,6 +199,35 @@
 
 ### Bugs Fixed
 
+- az_mqtt adapter: the bundled az_mqtt is updated to main `3a2c61b` (was `58a0799` plus selected
+  changes; see `deps/az_mqtt/VENDORED.md`). Invalid options are refused with `AZ_ERROR_ARG` before
+  anything is sent: Will, SUBSCRIBE and PUBLISH QoS above 2; MQTT 5 Retain Handling above 2, No
+  Local on a shared subscription, Authentication Data without Authentication Method, and AUTH reason
+  codes other than Success, Continue authentication and Re-authenticate. The connection is closed
+  when a CONNACK reports Session Present after Clean Session (MQTT 3.1.1) or Clean Start (MQTT 5),
+  and, in MQTT 5, as soon as a received packet's fixed header announces more than the advertised
+  Maximum Packet Size (the receive buffer size), after DISCONNECT 0x95; that session ends with
+  `AZ_IOT_ERR_NOT_ENOUGH_SPACE`, as before. An mbedTLS verify callback's rejection is reported as a
+  TLS verification failure.
+- Software updates: updates with up to 10 steps and 10 files, the Device Update limits, are
+  accepted; the azure-sdk-for-c limits they depend on defaulted to 2 and nothing set them. CMake
+  options `AZ_IOT_SU_MAX_STEP_COUNT`, `AZ_IOT_SU_MAX_FILE_COUNT` and
+  `AZ_IOT_SU_MAX_FILE_COUNT_PER_STEP` (10, 10, the file count) set them for azure-sdk-for-c,
+  `az_iot_core` and, through its CMake and pkg-config packages, the application; smaller values
+  save memory. An installed azure-sdk-for-c built with other values fails configuration. A manifest
+  with more steps, or more hashes for a file, than its parsed form holds was written past those
+  arrays; now any manifest over a limit fails the workflow with an `ERROR` log naming the limit, and
+  more `fileUrls` than `AZ_IOT_SU_MAX_FILE_COUNT` raises `AZ_IOT_SU_EVENT_UPDATE_REFUSED` with
+  `AZ_IOT_ERR_NOT_ENOUGH_SPACE` (was `AZ_IOT_ERR_PROTOCOL`). A file `mimeType` that is not a string
+  fails the workflow as malformed (the parser would read its members as file properties).
+  `AZ_IOT_SU_MIN_MESSAGE_SIZE` and the default `max_message_size` are 1792 + 128 per step (3072).
+  `az_iot_su_client` grows from 4616 to 8584 bytes and the default workspace from 78920 to 85640
+  (64-bit).
+- Paho: the bundled v1.3.16 is patched with two upstream fixes for data races between the
+  application thread and Paho's threads: `MQTTAsync_destroy()` against the send thread on the
+  command queue (eclipse-paho/paho.mqtt.c#1709), and `MQTTAsync_connect()` against the timeout and
+  retry checks on the client's state (#1714). An installed Paho is not patched. See
+  [docs/dependencies.md](docs/dependencies.md#races-on-the-command-queue-and-client-state).
 - az_mqtt adapter: the copies `connect()` makes of credentials (password or SAS token, PEM key and
   certificate, proxy credentials) are zeroed before they are freed, and `destroy()` zeroes the send
   buffer, which holds the CONNECT, before freeing it.

@@ -102,6 +102,11 @@ In another CMake project, `add_subdirectory()` this directory and link `az_mqtt:
 `az_mqtt::mqttv5`. If the project already builds azure-sdk-for-c (target `az_core`), az_mqtt uses
 it instead of `deps/azure-sdk-for-c`.
 
+### ESP-IDF
+
+The repository root is also an ESP-IDF component (options in [Kconfig](Kconfig)); see
+[samples/esp32](samples/esp32/README.md).
+
 ### Migrating from the previous `az_mqtt5` / `az_mqtt3` trees
 
 - Names common to both versions moved to the core. Rename `az_mqttN_` / `AZ_MQTTN_` to `az_mqtt_` / `AZ_MQTT_` for:
@@ -135,7 +140,9 @@ it instead of `deps/azure-sdk-for-c`.
   it is retained and Retain Available is 0, or when `topic_alias` exceeds the server's Topic Alias
   Maximum (0 if not sent); with `AZ_MQTT_ERROR_FLOW_CONTROL` at its Receive Maximum; and with
   `AZ_MQTT_ERROR_PACKET_TOO_LARGE` above its Maximum Packet Size (also subscribe and unsubscribe;
-  an acknowledgement above it closes the session with that result).
+  an acknowledgement above it closes the session with that result). A received packet above the
+  client's own `connect_options.maximum_packet_size` (when non-zero) closes the session with
+  `AZ_MQTT_ERROR_PACKET_TOO_LARGE`, after a best-effort DISCONNECT 0x95 (Packet too large).
 - CMake:
   - targets: `az_mqtt::mqttv5` / `az_mqtt::mqttv3` (were `az_mqtt5::client` / `az_mqtt3::client`);
   - options: `AZ_MQTT_*` (were `AZ_MQTT5_*` / `AZ_MQTT3_*`).
@@ -171,6 +178,7 @@ Warnings in our code are errors in every job.
 | Subproject | `add_subdirectory()` from a parent project, with the parent's azure-sdk-for-c and with the bundled one; fails if the parent's cache changes ([tests/subproject](tests/subproject/CMakeLists.txt)) |
 | Hardened | Release build with `_FORTIFY_SOURCE=3`, stack protector, CET, full RELRO and PIE, verified on every executable, then all tests |
 | Windows | MSVC `/W4 /WX`, Schannel, all tests |
+| ESP-IDF | ESP-IDF v6.0.3 (esp32): the [ESP32 sample](samples/esp32/README.md) in each `ci/sdkconfig.ci.*` variant, then in QEMU against a local Mosquitto (TLS, TCP, untrusted CA) |
 
 The Linux steps are scripts, so the same run works locally:
 

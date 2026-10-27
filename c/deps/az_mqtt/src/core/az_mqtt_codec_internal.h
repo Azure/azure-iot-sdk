@@ -36,6 +36,12 @@ AZ_NODISCARD az_result _az_mqtt_write_uint16(az_span* dest, uint16_t val);
  */
 AZ_NODISCARD az_result _az_mqtt_write_utf8_string(az_span* dest, az_span str);
 
+/** @brief Whether @p qos is 0, 1 or 2 (3 is malformed: MQTT 3.1.1 3.1.2.6, 3.8.3; 5.0 3.1.2.6). */
+AZ_NODISCARD AZ_INLINE bool _az_mqtt_qos_valid(az_mqtt_qos qos)
+{
+  return (uint32_t)qos <= (uint32_t)AZ_MQTT_QOS_EXACTLY_ONCE;
+}
+
 /** @brief Whether @p topic contains a wildcard ('+' or '#'), not allowed in a Topic Name. */
 AZ_NODISCARD AZ_INLINE bool _az_mqtt_topic_has_wildcard(az_span topic)
 {
