@@ -90,7 +90,7 @@ function Invoke-Arm([string]$Method, [string]$Url, $Body) {
 }
 
 function Get-EndpointStates($Ns) {
-    foreach ($g in 'messaging', 'provisioning') {
+    foreach ($g in 'messaging', 'provisioning', 'updating') {
         $eps = $Ns.properties.$g.endpoints
         if (-not $eps) { continue }
         foreach ($p in $eps.PSObject.Properties) {
@@ -174,16 +174,32 @@ function Grant-Role([string]$Scope, [string]$PrincipalId, [string]$RoleId, [stri
 [void](& az account set --subscription $SubscriptionId)
 if ($LASTEXITCODE -ne 0) { throw "az account set --subscription $SubscriptionId failed." }
 
+# The 3 role assignments an updating link to InstanceId needs.
+function Grant-UpdateInstanceRoles([string]$InstanceId, [string]$NsPid) {
+    $su = Invoke-Arm get "$Arm${InstanceId}?api-version=$UpdateApiVersion"
+    if (-not $su) { throw "Update instance $InstanceId not found." }
+    if (-not $su.identity.principalId) { throw "Update instance $InstanceId needs a system-assigned identity." }
+    Grant-Role $InstanceId $NsPid $RoleContributor 'namespace -> update instance (Contributor)'
+    Grant-Role $InstanceId $NsPid $RoleDeviceUpdateAdmin 'namespace -> update instance (Device Update Administrator)'
+    Grant-Role $NsId $su.identity.principalId $RoleAdr 'update instance -> namespace (Azure Device Registry Contributor)'
+}
+
+# Endpoints linked but namespace Failed: a tags-only update re-runs reconciliation
+# (re-sending endpoints is rejected as immutable). Failed can persist briefly after it is accepted.
+function Invoke-NamespaceReconcile($Ns) {
+    Write-Host '  endpoints linked, namespace Failed; reconciling (tags-only update)'
+    $t = Get-NsTags $Ns
+    $t['adrReconcile'] = [guid]::NewGuid().ToString('N')
+    [void](Invoke-Arm patch $NsUrl @{ tags = $t })
+    [void](Wait-For 'namespace reconcile' 5 {
+            $ps = (Invoke-Arm get $NsUrl).properties.provisioningState
+            @{ Done = ($ps -eq 'Succeeded'); Detail = $ps } })
+}
+
 # Links the update instance (updating/su-1) once hub and DPS are linked: a PATCH of that endpoint
 # only, as 'az iot adr ns link su add' does.
 function Connect-UpdateInstance($Ns) {
-    $su = Invoke-Arm get "$Arm${SuId}?api-version=$UpdateApiVersion"
-    if (-not $su) { throw "Update instance $UpdateInstanceName not found." }
-    if (-not $su.identity.principalId) { throw 'The update instance needs a system-assigned identity.' }
-    $nsPid = $Ns.identity.principalId
-    Grant-Role $SuId $nsPid $RoleContributor 'namespace -> update instance (Contributor)'
-    Grant-Role $SuId $nsPid $RoleDeviceUpdateAdmin 'namespace -> update instance (Device Update Administrator)'
-    Grant-Role $NsId $su.identity.principalId $RoleAdr 'update instance -> namespace (Azure Device Registry Contributor)'
+    Grant-UpdateInstanceRoles $SuId $Ns.identity.principalId
     $patch = @{ properties = @{ updating = @{ endpoints = @{ $SuEndpoint = @{
                         endpointType = 'Microsoft.DeviceUpdate/updateInstances'; resourceId = $SuId
                         inboundCallerIdentity = @{ type = 'SystemAssigned' } } } } } }
@@ -201,8 +217,13 @@ function Connect-UpdateInstance($Ns) {
             $e = if ($n -and $n.properties.updating) { $n.properties.updating.endpoints.$SuEndpoint }
             $s = if ($e) { [string]$e.linkingState } else { '<none>' }
             @{ Done = ($s -in 'Succeeded', 'Failed' -and $n.properties.provisioningState -in 'Succeeded', 'Failed', 'Canceled')
-               State = $s; Code = [string]$e.linkingError.code; Message = [string]$e.linkingError.message; Detail = "$SuEndpoint=$s" } }
-        if ($r.State -eq 'Succeeded') { return }
+               State = $s; Code = [string]$e.linkingError.code; Message = [string]$e.linkingError.message; Detail = "$SuEndpoint=$s"; Ns = $n } }
+        if ($r.State -eq 'Succeeded') {
+            $ps = $r.Ns.properties.provisioningState
+            if ($ps -eq 'Succeeded') { return }
+            if ($ps -eq 'Failed' -and (Test-EndpointsLinked $r.Ns)) { Invoke-NamespaceReconcile $r.Ns; return }
+            throw "Update instance linked but namespace $ps."
+        }
         if ($r.Code -notmatch "^($PropagationCodes)$" -or $attempt -ge $LinkAttempts) { throw "Update instance link failed: $($r.Code) $($r.Message)" }
         Write-Host "  role replication pending ($($r.Code)); retrying"
     }
@@ -291,6 +312,10 @@ Grant-Role $NsId $dpsPid $RoleAdr 'DPS -> namespace (Azure Device Registry Contr
 Grant-Role $HubId $dpsPid $RoleHubData 'DPS -> hub (IoT Hub Data Contributor)'
 Grant-Role $NsId $nsPid $RoleContributor 'namespace -> namespace (Contributor)'
 Grant-Role $HubId $nsPid $RoleHubData 'namespace -> hub (IoT Hub Data Contributor)'
+# Before the PUT re-sends them: a replayed updating link needs its roles too.
+foreach ($u in $updating.Values) {
+    if ($u.endpointType -eq 'Microsoft.DeviceUpdate/updateInstances') { Grant-UpdateInstanceRoles $u.resourceId $nsPid }
+}
 
 # 3. Link hub + DPS in one write (ADR refuses a messaging endpoint alone).
 for ($attempt = 1; ; $attempt++) {
@@ -318,16 +343,11 @@ for ($attempt = 1; ; $attempt++) {
         @{ Done = $done; Linked = (Test-Linked $n); Failed = $false; States = $failed; Ns = $n
            Detail = if ($s) { ($s | ForEach-Object { "$($_.Name)=$($_.State)" }) -join ', ' } else { '<no endpoints>' } } }
     if ($r.Linked) { break }
-    # Endpoints linked but namespace Failed: a tags-only update re-runs reconciliation
-    # (re-sending endpoints is rejected as immutable). Failed can persist briefly after it is accepted.
-    if ((Test-EndpointsLinked $r.Ns) -and $r.Ns.properties.provisioningState -eq 'Failed') {
-        Write-Host '  endpoints linked, namespace Failed; reconciling (tags-only update)'
-        $t = Get-NsTags $r.Ns
-        $t['adrReconcile'] = [guid]::NewGuid().ToString('N')
-        [void](Invoke-Arm patch $NsUrl @{ tags = $t })
-        [void](Wait-For 'namespace reconcile' 5 {
-                $ps = (Invoke-Arm get $NsUrl).properties.provisioningState
-                @{ Done = ($ps -eq 'Succeeded'); Detail = $ps } })
+    # Every endpoint (updating included) linked but namespace Failed: reconcile. A failed endpoint
+    # instead goes to the retry below.
+    if ((Test-EndpointsLinked $r.Ns) -and $r.Ns.properties.provisioningState -eq 'Failed' -and
+        -not @(Get-EndpointStates $r.Ns | Where-Object State -ne 'Succeeded')) {
+        Invoke-NamespaceReconcile $r.Ns
         break
     }
     $why = ($r.States | ForEach-Object { "$($_.Name): $($_.Code) $($_.Message)" }) -join '; '
