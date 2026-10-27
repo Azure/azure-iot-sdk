@@ -4327,6 +4327,38 @@ static void an_unacknowledged_terminal_report_survives_a_reboot(void** state)
   assert_int_equal(teardown(&fresh_state), 0);
 }
 
+/* The service does not re-offer a SUCCEEDED workflow. If it does after a
+ * reboot, when the acknowledged report's record is gone and the workflow id
+ * with it, the installed check turns the offer into SKIPPED: nothing is
+ * downloaded, installed or applied again. */
+static void a_succeeded_workflow_reoffered_after_a_reboot_is_skipped(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  inject_patch(fx, signed_patch());
+  pump(fx, 40);
+  assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_SUCCEEDED);
+  assert_false(fx->log.have_persist);
+
+  void* fresh_state = NULL;
+  fixture* fresh = reboot_into_fresh(fx, &fresh_state);
+  assert_int_equal(az_iot_su_client_resume(&fresh->su), AZ_IOT_OK);
+  assert_int_equal(az_iot_su_client_add_observer(&fresh->su, on_event, fresh), AZ_IOT_OK);
+  fresh->log.is_installed_result = AZ_IOT_SU_RESULT_ALREADY_INSTALLED;
+
+  inject_patch(fresh, signed_patch());
+  pump(fresh, 40);
+  assert_int_equal(az_iot_su_client_get_state(&fresh->su), AZ_IOT_SU_STATE_IDLE);
+  assert_int_equal(fresh->duplicate_count, 0);
+  assert_int_equal(count_ops(&fresh->log, OP_IS_INSTALLED), 1);
+  assert_int_equal(count_ops(&fresh->log, OP_DOWNLOAD), 0);
+  assert_int_equal(count_ops(&fresh->log, OP_INSTALL), 0);
+  assert_int_equal(count_ops(&fresh->log, OP_APPLY), 0);
+  assert_int_equal(fresh->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_SKIPPED);
+  assert_string_equal(fresh->chan.last_workflow_id, "51552a54-765e-419f-892a-c822549b6f38");
+  assert_int_equal(teardown(&fresh_state), 0);
+}
+
 /* The record is kept through a retryable verdict and a report abandoned for
  * want of a session; a final service rejection retires it. */
 static void the_terminal_record_is_kept_until_the_report_is_final(void** state)
@@ -9265,6 +9297,8 @@ int main(void)
     cmocka_unit_test_setup_teardown(a_failed_checkpoint_retire_is_retried, setup, teardown),
     cmocka_unit_test_setup_teardown(
         an_unacknowledged_terminal_report_survives_a_reboot, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_succeeded_workflow_reoffered_after_a_reboot_is_skipped, setup, teardown),
     cmocka_unit_test_setup_teardown(
         the_terminal_record_is_kept_until_the_report_is_final, setup, teardown),
     cmocka_unit_test_setup_teardown(a_check_waits_for_the_owed_terminal_report, setup, teardown),
