@@ -119,8 +119,10 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
             Assert.Same(testDeviceContext.ConnectionContext, testDeviceContext.ConnectionClient.GetCurrentConnectionContext());
         }
 
-        [Fact(Timeout = Setup.TestTimeoutMilliseconds)]
-        public async Task CanProvisionAndConnectWithSecondaryCertificateWhenPrimaryCertificateIsWrong()
+        [Theory(Timeout = Setup.TestTimeoutMilliseconds)]
+        [InlineData(true)]
+        [InlineData(false, Traits = new[] { Setup.HubTrait, Setup.MQTTv5HubTraitValue })]
+        public async Task CanProvisionAndConnectWithSecondaryCertificateWhenPrimaryCertificateIsWrong(bool testAgainstClassicHub)
         {
             string registrationId = Guid.NewGuid().ToString();
             X509Certificate2 enrolledCertificate = CreateCertificate(registrationId, out X509Certificate2 enrolledPublicCertificate);
@@ -130,28 +132,29 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
             X509Certificate2 unenrolledCertificate = CreateCertificate(registrationId, out _);
 
             IndividualEnrollment individualEnrollment = new(registrationId, X509Attestation.CreateFromClientCertificates(enrolledPublicCertificate));
-            using (ProvisioningServiceClient provisioningServiceClient = Setup.GetDpsHubServiceClient())
+            using (ProvisioningServiceClient provisioningServiceClient = Setup.GetDpsHubServiceClient(testAgainstClassicHub))
             {
                 await provisioningServiceClient.CreateOrUpdateIndividualEnrollmentAsync(individualEnrollment, TestContext.Current.CancellationToken);
             }
 
             X509AuthenticationProvider authentication = new(unenrolledCertificate, enrolledCertificate);
 
-            await using UnifiedDeviceTestContext testDeviceContext = await ProvisionAndConnectAsync(authentication, individualEnrollment);
+            await using UnifiedDeviceTestContext testDeviceContext = await ProvisionAndConnectAsync(authentication, individualEnrollment, testAgainstClassicHub);
 
             Assert.Equal(registrationId, testDeviceContext.ConnectionContext.DeviceId);
             Assert.False(string.IsNullOrEmpty(testDeviceContext.ConnectionContext.IotHubHostName));
             Assert.Same(testDeviceContext.ConnectionContext, testDeviceContext.ConnectionClient.GetCurrentConnectionContext());
         }
 
-        private static async Task<UnifiedDeviceTestContext> ProvisionAndConnectAsync(AuthenticationProvider authentication, IndividualEnrollment individualEnrollment)
+        private static async Task<UnifiedDeviceTestContext> ProvisionAndConnectAsync(
+            AuthenticationProvider authentication, IndividualEnrollment individualEnrollment, bool testAgainstClassicHub = true)
         {
             ConnectionClient connectionClient = new();
             try
             {
                 ConnectionContext connectionContext = await Setup.RetryAroundAuthorizationAsync(
                     async () => await connectionClient.ProvisionAndConnectAsync(
-                        new ProvisioningSettings(Setup.DpsIdScope),
+                        Setup.CreateProvisioningSettings(testAgainstClassicHub),
                         authentication,
                         cancellationToken: TestContext.Current.CancellationToken),
                     TestContext.Current.CancellationToken);
@@ -162,12 +165,12 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
                     ConnectionContext = connectionContext,
                     AuthenticationProvider = authentication,
                     IndividualEnrollment = individualEnrollment,
-                    TestAgainstClassicHub = true,
+                    TestAgainstClassicHub = testAgainstClassicHub,
                 };
             }
             catch
             {
-                await UnifiedDeviceTestContext.CleanupAsync(connectionClient, connectionClient.GetCurrentConnectionContext(), individualEnrollment, testAgainstClassicHub: true);
+                await UnifiedDeviceTestContext.CleanupAsync(connectionClient, connectionClient.GetCurrentConnectionContext(), individualEnrollment, testAgainstClassicHub);
                 throw;
             }
         }

@@ -90,7 +90,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Telemetry
                 throw new NotSupportedException("Must be connected before calling this method.");
             }
 
-            if (currentConnectionContext.ConnectionProfile == Models.IotHubConnectionType.Mqttv5)
+            if (currentConnectionContext.ConnectionProfile == Device.Models.IotHubConnectionType.Mqttv5)
             {
                 await _mqttv5TelemetryClient.SendTelemetryAsync(message, cancellationToken);
                 return;

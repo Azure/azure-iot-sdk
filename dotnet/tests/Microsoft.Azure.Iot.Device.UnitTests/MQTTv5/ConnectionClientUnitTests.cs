@@ -7,6 +7,8 @@ using Microsoft.Azure.Iot.Device.MQTTv5.Telemetry;
 using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Mqtt;
 using Microsoft.Azure.Iot.Device.Retry;
+using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
 using Xunit;
 using MqttV5ConnectionClientOptions = Microsoft.Azure.Iot.Device.MQTTv5.Models.ConnectionClientOptions;
 using Microsoft.Azure.Iot.Device.Unified.Models;
@@ -101,6 +103,64 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
 
             Assert.NotNull(sentPassword);
             Assert.StartsWith("SharedAccessSignature ", System.Text.Encoding.UTF8.GetString(sentPassword));
+        }
+
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task RejectedPrimaryCertificateFallsBackToSecondaryAndKeepsItForReconnect(bool useUnifiedClient)
+        {
+            using RSA key = RSA.Create(2048);
+            CertificateRequest request = new("CN=someDeviceId", key, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+            using X509Certificate2 primaryCertificate = request.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(1));
+            using X509Certificate2 secondaryCertificate = request.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(1));
+            using MockConnectionMqttClient mockMqttClient = new() { AutoRespondToBirth = true };
+            AbstractConnectionClient connectionClient = useUnifiedClient
+                ? new Device.Unified.Connection.ConnectionClient(new() { MqttClient = mockMqttClient })
+                : new ConnectionClient(new() { MqttClient = mockMqttClient });
+            using IDisposable connectionClientLifetime = (IDisposable)connectionClient;
+
+            List<(X509Certificate2? Certificate, MqttProtocolVersion ProtocolVersion, string? Username)> connectAttempts = new();
+            mockMqttClient.OnConnect = connect =>
+            {
+                lock (connectAttempts)
+                {
+                    connectAttempts.Add((connect.ClientCertificate, connect.ProtocolVersion, connect.Username));
+                }
+
+                return Task.FromResult(new MqttConnectAck()
+                {
+                    ResultCode = ReferenceEquals(connect.ClientCertificate, secondaryCertificate)
+                        ? MqttConnectReasonCode.Success
+                        : MqttConnectReasonCode.NotAuthorized,
+                });
+            };
+
+            await connectionClient.ConnectToHubAsync(new()
+            {
+                AuthenticationProvider = new X509AuthenticationProvider(primaryCertificate, secondaryCertificate),
+                DeviceId = "someDeviceId",
+                IotHubHostName = "someHostName",
+                ConnectionProfile = IotHubConnectionType.Mqttv5,
+            }, TestContext.Current.CancellationToken).WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+
+            TaskCompletionSource reconnected = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            connectionClient.DevicePresenceFlowCompletedAsync += _ =>
+            {
+                reconnected.TrySetResult();
+                return Task.CompletedTask;
+            };
+            await mockMqttClient.SimulateServerDisconnectAsync(MqttDisconnectReason.ServerBusy)
+                .WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+            await reconnected.Task.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+
+            Assert.Equal(new[] { primaryCertificate, secondaryCertificate, secondaryCertificate },
+                connectAttempts.Select(attempt => attempt.Certificate));
+            Assert.All(connectAttempts, attempt => Assert.Equal(MqttProtocolVersion.V500, attempt.ProtocolVersion));
+            Assert.All(connectAttempts, attempt => Assert.StartsWith("correlationId=", attempt.Username));
+            Assert.Equal(3, connectAttempts.Select(attempt => attempt.Username).Distinct().Count());
+            Assert.Equal(2, mockMqttClient.SentMqttTrafficInOrder.Count(traffic =>
+                traffic.Publish?.Topic == "ih/someDeviceId/srv/presence"));
         }
 
         // Matches the C SDK: the MQTTv5 hub serves MQTT over WebSockets at "/mqtt" on port 443.
