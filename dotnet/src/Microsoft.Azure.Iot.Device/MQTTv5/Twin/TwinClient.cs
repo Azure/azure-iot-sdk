@@ -12,6 +12,7 @@ using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using ConnectionClientOptions = Microsoft.Azure.Iot.Device.MQTTv5.Models.ConnectionClientOptions;
 
 namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
 {

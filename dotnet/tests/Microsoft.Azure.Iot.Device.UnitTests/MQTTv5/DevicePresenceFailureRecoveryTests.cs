@@ -11,6 +11,7 @@ using Microsoft.Azure.Iot.Device.Mqtt;
 using Microsoft.Azure.Iot.Device.Retry;
 using System.Text;
 using Xunit;
+using MqttV5ConnectionClientOptions = Microsoft.Azure.Iot.Device.MQTTv5.Models.ConnectionClientOptions;
 
 namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
 {
@@ -67,14 +68,25 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
                 EnableCloudToDeviceMessages = enableCloudToDeviceMessages,
                 ConnectionRetryPolicy = new ExponentialBackoffRetryPolicy(uint.MaxValue, TimeSpan.Zero, useJitter: false),
             };
+            MqttV5ConnectionClientOptions nativeOptions = new()
+            {
+                MqttClient = mockMqttClient,
+                EnableTwin = enableTwin,
+                EnableDirectMethods = enableDirectMethods,
+                EnableCloudToDeviceMessages = enableCloudToDeviceMessages,
+                ConnectionRetryPolicy = options.ConnectionRetryPolicy,
+            };
             AbstractConnectionClient connectionClient = useUnifiedClient
                 ? new Device.Unified.Connection.ConnectionClient(options)
-                : new ConnectionClient(options);
+                : new ConnectionClient(nativeOptions);
             using IDisposable connectionClientLifetime = (IDisposable)connectionClient;
 
             options.EnableTwin = !enableTwin;
             options.EnableDirectMethods = !enableDirectMethods;
             options.EnableCloudToDeviceMessages = !enableCloudToDeviceMessages;
+            nativeOptions.EnableTwin = !enableTwin;
+            nativeOptions.EnableDirectMethods = !enableDirectMethods;
+            nativeOptions.EnableCloudToDeviceMessages = !enableCloudToDeviceMessages;
 
             await connectionClient.ConnectToHubAsync(GetMockConnectionContext(), TestContext.Current.CancellationToken)
                 .WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
@@ -139,7 +151,13 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             };
             AbstractConnectionClient connectionClient = useUnifiedClient
                 ? new Device.Unified.Connection.ConnectionClient(options)
-                : new ConnectionClient(options);
+                : new ConnectionClient(new()
+                {
+                    MqttClient = mockMqttClient,
+                    EnableTwin = false,
+                    EnableDirectMethods = false,
+                    EnableCloudToDeviceMessages = false,
+                });
             using IConnectionClient featureConnection = useUnifiedClient
                 ? new Device.Unified.Connection.Stub((Device.Unified.Connection.IConnectionClient)connectionClient)
                 : (IConnectionClient)connectionClient;
@@ -159,16 +177,18 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
         [InlineData(false, false)]
         [InlineData(false, true)]
         [InlineData(true, false)]
-        public async Task BirthHonorsExplicitTwinPushSettings(bool pushDesired, bool pushReported)
+        public async Task BirthHonorsSnapshottedTwinPushSettings(bool pushDesired, bool pushReported)
         {
             using MockConnectionMqttClient mockMqttClient = new() { AutoRespondToBirth = true };
-            using ConnectionClient connectionClient = new(
-                new() { MqttClient = mockMqttClient },
-                new TwinPushOptions()
-                {
-                    ReceiveDesiredPropertyUpdates = pushDesired,
-                    ReceiveReportedPropertiesUponConnect = pushReported,
-                });
+            MqttV5ConnectionClientOptions options = new()
+            {
+                MqttClient = mockMqttClient,
+                ReceiveDesiredPropertyUpdates = pushDesired,
+                ReceiveReportedPropertiesUponConnect = pushReported,
+            };
+            using ConnectionClient connectionClient = new(options);
+            options.ReceiveDesiredPropertyUpdates = !pushDesired;
+            options.ReceiveReportedPropertiesUponConnect = !pushReported;
 
             await connectionClient.ConnectToHubAsync(GetMockConnectionContext(), TestContext.Current.CancellationToken)
                 .WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
@@ -194,7 +214,12 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             };
             AbstractConnectionClient connectionClient = useUnifiedClient
                 ? new Device.Unified.Connection.ConnectionClient(options)
-                : new ConnectionClient(options);
+                : new ConnectionClient(new()
+                {
+                    MqttClient = mockMqttClient,
+                    EnableCloudToDeviceMessages = false,
+                    ConnectionRetryPolicy = options.ConnectionRetryPolicy,
+                });
             using IDisposable connectionClientLifetime = (IDisposable)connectionClient;
             int subscribeAttempts = 0;
             mockMqttClient.OnSubscribe = subscribe =>
@@ -325,7 +350,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             ConnectionClientOptions options = new() { MqttClient = mockMqttClient };
             AbstractConnectionClient connectionClient = useUnifiedClient
                 ? new Device.Unified.Connection.ConnectionClient(options)
-                : new ConnectionClient(options);
+                : new ConnectionClient(new() { MqttClient = mockMqttClient });
 
             TaskCompletionSource stageStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
             TaskCompletionSource recoveryCompleted = new(TaskCreationOptions.RunContinuationsAsynchronously);

@@ -10,6 +10,7 @@ using Microsoft.Azure.Iot.Device.Mqtt;
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Text;
+using ConnectionClientOptions = Microsoft.Azure.Iot.Device.MQTTv5.Models.ConnectionClientOptions;
 
 namespace Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods
 {

@@ -562,7 +562,6 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
             {
                 MqttClient = mockMqttClient,
                 UseCleanSession = useCleanSession,
-                SessionExpiryInterval = 3600,
                 ConnectionRetryPolicy = new ExponentialBackoffRetryPolicy(uint.MaxValue, TimeSpan.Zero, useJitter: false),
             });
 

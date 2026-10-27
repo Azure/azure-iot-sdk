@@ -123,12 +123,16 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             ConnectionClientOptions options = new()
             {
                 MqttClient = mockMqttClient,
-                SessionExpiryInterval = 3600,
                 ConnectionRetryPolicy = new ImmediateRetryPolicy(),
             };
             AbstractConnectionClient connectionClient = useUnifiedClient
                 ? new ConnectionClient(options)
-                : new Device.MQTTv5.Connection.ConnectionClient(options);
+                : new Device.MQTTv5.Connection.ConnectionClient(new()
+                {
+                    MqttClient = mockMqttClient,
+                    SessionExpiryInterval = 3600,
+                    ConnectionRetryPolicy = options.ConnectionRetryPolicy,
+                });
             using IDisposable connectionClientLifetime = (IDisposable)connectionClient;
 
             await connectionClient.ProvisionAndConnectAsync(
@@ -147,13 +151,14 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
                 .WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
             await reconnected.Task.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
 
+            uint expectedExpiry = useUnifiedClient ? 0u : 3600u;
             Assert.Equal(
                 new[]
                 {
                     (GlobalDeviceEndpoint, true, 0u, MqttProtocolVersion.V311),
-                    (FirstAssignedHub, true, 3600u, MqttProtocolVersion.V500),
+                    (FirstAssignedHub, true, expectedExpiry, MqttProtocolVersion.V500),
                     (GlobalDeviceEndpoint, true, 0u, MqttProtocolVersion.V311),
-                    (SecondAssignedHub, true, 3600u, MqttProtocolVersion.V500),
+                    (SecondAssignedHub, true, expectedExpiry, MqttProtocolVersion.V500),
                 },
                 connectSettings);
             Assert.Equal(SecondAssignedHub, connectionClient.GetCurrentConnectionContext()!.IotHubHostName);

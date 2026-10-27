@@ -58,12 +58,11 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
             // not be handed the application-supplied MQTT client. Doing so would attach a second MqttConnectionManager to that
             // same client, and that manager's "connecting" handler would rewrite every CONNECT this client sends (including the
             // one sent to DPS) with gen 2 hub credentials and MQTT 5.
-            _mqttv5ConnectionClient = new(new ConnectionClientOptions()
+            _mqttv5ConnectionClient = new(new MQTTv5.Models.ConnectionClientOptions()
             {
                 ConnectionRetryPolicy = options.ConnectionRetryPolicy,
                 ConnectionAttemptTimeout = options.ConnectionAttemptTimeout,
                 EnableMqttLogging = options.EnableMqttLogging,
-                SessionExpiryInterval = options.SessionExpiryInterval,
                 EnableTwin = options.EnableTwin,
                 EnableDirectMethods = options.EnableDirectMethods,
                 EnableCloudToDeviceMessages = options.EnableCloudToDeviceMessages,

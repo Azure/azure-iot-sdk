@@ -9,6 +9,7 @@ using Microsoft.Azure.Iot.Device.MQTTv5.CustomTopics;
 using Microsoft.Azure.Iot.Device.Retry;
 using System.Text;
 using Xunit;
+using ConnectionClientOptions = Microsoft.Azure.Iot.Device.MQTTv5.Models.ConnectionClientOptions;
 
 namespace Microsoft.Azure.Iot.Device.IntegrationTests.MQTTv5
 {

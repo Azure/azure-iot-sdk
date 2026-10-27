@@ -2,7 +2,6 @@
 // See LICENSE file in the project root for full license information.
 
 using Google.Protobuf;
-using Microsoft.Azure.Iot.Device.MQTTv5.Twin;
 using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Models.CertificateManagement;
 using Microsoft.Azure.Iot.Device.Models.Twin;
@@ -11,6 +10,7 @@ using System.Diagnostics;
 using System.Reflection;
 using System.Text;
 using Microsoft.Azure.Iot.Device.Provisioning.Models;
+using ConnectionClientOptions = Microsoft.Azure.Iot.Device.MQTTv5.Models.ConnectionClientOptions;
 
 namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
 {
@@ -18,7 +18,8 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
     {
         private static TimeSpan birthAckReceivedDefensiveTimeout = TimeSpan.FromSeconds(60); //TODO value is magic number
 
-        private readonly TwinPushOptions _twinPushOptions;
+        private readonly bool _receiveDesiredPropertyUpdates;
+        private readonly bool _receiveReportedPropertiesUponConnect;
         private readonly uint _sessionExpiryInterval;
 
         private Guid? CurrentConnectionNonce { get; set; }
@@ -32,10 +33,12 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
         /// <inheritdoc/>
         public bool AreCloudToDeviceMessagesEnabled { get; }
 
-        public ConnectionClient(ConnectionClientOptions? options = null, TwinPushOptions? twinPushOptions = null, ConnectionContext? connectionContext = null) : base(options, connectionContext)
+        public ConnectionClient(ConnectionClientOptions? options = null, ConnectionContext? connectionContext = null)
+            : base((options ?? new ConnectionClientOptions()).ToCommonOptions(), connectionContext)
         {
             options ??= new ConnectionClientOptions();
-            _twinPushOptions = twinPushOptions ?? new TwinPushOptions();
+            _receiveDesiredPropertyUpdates = options.ReceiveDesiredPropertyUpdates;
+            _receiveReportedPropertiesUponConnect = options.ReceiveReportedPropertiesUponConnect;
             _sessionExpiryInterval = options.SessionExpiryInterval;
             IsTwinEnabled = options.EnableTwin;
             AreDirectMethodsEnabled = options.EnableDirectMethods;
@@ -190,8 +193,8 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
             uint deviceDesiredPropertyVersion = 0;
             uint deviceReportedPropertyVersion = 0;
 
-            bool pushDesired = IsTwinEnabled && _twinPushOptions.ReceiveDesiredPropertyUpdates;
-            bool pushReported = IsTwinEnabled && _twinPushOptions.ReceiveReportedPropertiesUponConnect;
+            bool pushDesired = IsTwinEnabled && _receiveDesiredPropertyUpdates;
+            bool pushReported = IsTwinEnabled && _receiveReportedPropertiesUponConnect;
 
             Birth birth = new()
             {

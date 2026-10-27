@@ -10,6 +10,9 @@ using System.Text;
 
 namespace Microsoft.Azure.Iot.Device.Models
 {
+    /// <summary>
+    /// Configures the unified connection client using settings common to both MQTT versions.
+    /// </summary>
     public class ConnectionClientOptions
     {
         /// <summary>
@@ -88,20 +91,7 @@ namespace Microsoft.Azure.Iot.Device.Models
         /// connection to an IoT hub and any further reconnect attempts start a new session. This only applies to IoT hub
         /// connections because Device Provisioning Service does not support persistent sessions. This value is read once
         /// when the connection client is constructed.
-        /// For MQTT 5, persisting a session also requires a nonzero <see cref="SessionExpiryInterval"/>.
         /// </remarks>
         public bool UseCleanSession { get; set; }
-
-        /// <summary>
-        /// How many seconds an MQTT 5 IoT hub session should persist after the connection is lost.
-        /// Zero (the default) expires the session immediately; <see cref="uint.MaxValue"/> requests that it never expire.
-        /// </summary>
-        /// <remarks>
-        /// Only applies to MQTT 5 IoT hub connections, including those made by the unified connection client.
-        /// MQTT 3.1.1 and Device Provisioning Service connections are unaffected. The broker may override the requested
-        /// interval in its CONNACK. Explicit disconnections and session resets still expire the session immediately.
-        /// This value is read once when the connection client is constructed.
-        /// </remarks>
-        public uint SessionExpiryInterval { get; set; }
     }
 }

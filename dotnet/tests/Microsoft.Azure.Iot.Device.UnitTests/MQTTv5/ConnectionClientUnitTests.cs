@@ -8,6 +8,7 @@ using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Mqtt;
 using Microsoft.Azure.Iot.Device.Retry;
 using Xunit;
+using MqttV5ConnectionClientOptions = Microsoft.Azure.Iot.Device.MQTTv5.Models.ConnectionClientOptions;
 
 namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
 {
@@ -35,7 +36,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             ConnectionClientOptions options = new() { MqttClient = mockMqttClient };
             AbstractConnectionClient connectionClient = useUnifiedClient
                 ? new Device.Unified.Connection.ConnectionClient(options)
-                : new ConnectionClient(options);
+                : new ConnectionClient(new() { MqttClient = mockMqttClient });
             TaskCompletionSource firstHandlerCanFinish = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
             try
@@ -122,30 +123,35 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
 
         [Theory]
         [InlineData(false, false, 3600u)]
-        [InlineData(true, false, 3600u)]
-        [InlineData(false, true, 3600u)]
-        [InlineData(true, true, 3600u)]
-        [InlineData(false, false, 0u)]
         [InlineData(true, false, 0u)]
+        [InlineData(false, true, 3600u)]
+        [InlineData(true, true, 0u)]
+        [InlineData(false, false, 0u)]
         [InlineData(false, false, uint.MaxValue)]
-        [InlineData(true, false, uint.MaxValue)]
         public async Task ReconnectUsesSnapshottedSessionSettings(bool useUnifiedClient, bool useCleanSession, uint sessionExpiryInterval)
         {
             using MockConnectionMqttClient mockMqttClient = new() { AutoRespondToBirth = true };
-            ConnectionClientOptions options = new()
+            MqttV5ConnectionClientOptions options = new()
             {
                 MqttClient = mockMqttClient,
                 UseCleanSession = useCleanSession,
                 SessionExpiryInterval = sessionExpiryInterval,
                 ConnectionRetryPolicy = new ExponentialBackoffRetryPolicy(uint.MaxValue, TimeSpan.Zero, useJitter: false),
             };
+            ConnectionClientOptions unifiedOptions = new()
+            {
+                MqttClient = mockMqttClient,
+                UseCleanSession = useCleanSession,
+                ConnectionRetryPolicy = options.ConnectionRetryPolicy,
+            };
             AbstractConnectionClient connectionClient = useUnifiedClient
-                ? new Device.Unified.Connection.ConnectionClient(options)
+                ? new Device.Unified.Connection.ConnectionClient(unifiedOptions)
                 : new ConnectionClient(options);
             using IDisposable connectionClientLifetime = (IDisposable)connectionClient;
 
             options.UseCleanSession = !useCleanSession;
             options.SessionExpiryInterval = sessionExpiryInterval == 0 ? 3600u : 0u;
+            unifiedOptions.UseCleanSession = !useCleanSession;
 
             List<(bool CleanStart, uint SessionExpiryInterval)> connectSettings = new();
             mockMqttClient.OnConnect = connect =>
@@ -187,14 +193,18 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
         public async Task FailedResumeAttemptStartsCleanSessionWithConfiguredExpiry(bool useUnifiedClient)
         {
             using MockConnectionMqttClient mockMqttClient = new() { AutoRespondToBirth = true };
-            ConnectionClientOptions options = new()
+            MqttV5ConnectionClientOptions options = new()
             {
                 MqttClient = mockMqttClient,
                 SessionExpiryInterval = 3600,
                 ConnectionRetryPolicy = new ExponentialBackoffRetryPolicy(uint.MaxValue, TimeSpan.Zero, useJitter: false),
             };
             AbstractConnectionClient connectionClient = useUnifiedClient
-                ? new Device.Unified.Connection.ConnectionClient(options)
+                ? new Device.Unified.Connection.ConnectionClient(new()
+                {
+                    MqttClient = mockMqttClient,
+                    ConnectionRetryPolicy = options.ConnectionRetryPolicy,
+                })
                 : new ConnectionClient(options);
             using IDisposable connectionClientLifetime = (IDisposable)connectionClient;
 
@@ -226,7 +236,8 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
                 .WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
             await reconnected.Task.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
 
-            Assert.Equal(new[] { (false, 3600u), (true, 3600u) }, connectSettings);
+            uint expectedExpiry = useUnifiedClient ? 0u : 3600u;
+            Assert.Equal(new[] { (false, expectedExpiry), (true, expectedExpiry) }, connectSettings);
             Assert.Equal(2, mockMqttClient.SentMqttTrafficInOrder.Count(traffic => traffic.Subscribe != null));
         }
 
@@ -236,14 +247,18 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
         public async Task ConnectionLostBeforeBirthAckStartsCleanSession(bool useUnifiedClient)
         {
             using MockConnectionMqttClient mockMqttClient = new();
-            ConnectionClientOptions options = new()
+            MqttV5ConnectionClientOptions options = new()
             {
                 MqttClient = mockMqttClient,
                 SessionExpiryInterval = 3600,
                 ConnectionRetryPolicy = new ExponentialBackoffRetryPolicy(uint.MaxValue, TimeSpan.Zero, useJitter: false),
             };
             AbstractConnectionClient connectionClient = useUnifiedClient
-                ? new Device.Unified.Connection.ConnectionClient(options)
+                ? new Device.Unified.Connection.ConnectionClient(new()
+                {
+                    MqttClient = mockMqttClient,
+                    ConnectionRetryPolicy = options.ConnectionRetryPolicy,
+                })
                 : new ConnectionClient(options);
             using IDisposable connectionClientLifetime = (IDisposable)connectionClient;
 
