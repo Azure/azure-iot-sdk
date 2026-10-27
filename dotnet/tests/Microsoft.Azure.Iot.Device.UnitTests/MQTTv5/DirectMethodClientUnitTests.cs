@@ -7,6 +7,8 @@ using Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods;
 using Microsoft.Azure.Iot.Device.Models.DirectMethods;
 using Microsoft.Azure.Iot.Device.Mqtt;
 using Microsoft.Azure.Iot.Device.Models;
+using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Text;
 using Xunit;
 
@@ -148,6 +150,55 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             Assert.Empty(connection.PublishedMessages);
         }
 
+        [Fact]
+        public async Task Exec_WithMalformedPayload_LogsErrorAndClearsPendingRequest()
+        {
+            MockFeatureConnectionClient connection = new()
+            {
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv5, DeviceId),
+            };
+            using DirectMethodClient directMethodClient = new(connection);
+
+            bool methodInvoked = false;
+            directMethodClient.DirectMethodProbeReceivedAsync += (_) => Task.FromResult(DirectMethodProbeAck.Accepted());
+            directMethodClient.DirectMethodInvokedAsync += (_) =>
+            {
+                methodInvoked = true;
+                return Task.FromResult(new DirectMethodResponse() { Status = 200 });
+            };
+
+            Guid requestId = Guid.NewGuid();
+            // Request Ids are encoded big-endian on the wire.
+            byte[] correlationData = requestId.ToByteArray(bigEndian: true);
+            var probe = new Probe() { MethodName = "reboot", ResponseTimeoutSeconds = 30 };
+            await connection.SimulateReceiveAsync(CreateInboundMethodPublish("probe:1", correlationData, probe.ToByteArray()));
+            ByteString readyId = ProbeAck.Parser.ParseFrom(Assert.Single(connection.PublishedMessages).Payload).Ready.ReadyId;
+
+            using var listener = new CapturingTraceListener(requestId.ToString());
+            Trace.Listeners.Add(listener);
+            try
+            {
+                // Field 1 (ready_id) declares 5 bytes of data, but none follow, so this is a truncated protobuf message.
+                byte[] malformedExecPayload = [0x0A, 0x05];
+                await connection.SimulateReceiveAsync(CreateInboundMethodPublish("exec:1", correlationData, malformedExecPayload));
+            }
+            finally
+            {
+                Trace.Listeners.Remove(listener);
+            }
+
+            Assert.Contains(listener.Messages, m => m.Contains("malformed payload", StringComparison.Ordinal));
+            Assert.False(methodInvoked);
+            Assert.Single(connection.PublishedMessages);
+
+            // The request is no longer pending, so a well-formed exec for it afterwards is ignored.
+            var exec = new Exec() { ReadyId = readyId };
+            await connection.SimulateReceiveAsync(CreateInboundMethodPublish("exec:1", correlationData, exec.ToByteArray()));
+
+            Assert.False(methodInvoked);
+            Assert.Single(connection.PublishedMessages);
+        }
+
         private static MqttPublish CreateInboundMethodPublish(string type, byte[] correlationData, byte[] payload)
         {
             var publish = new MqttPublish()
@@ -165,6 +216,36 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
         private static string GetType(MqttPublish publish)
         {
             return Assert.Single(publish.UserProperties, p => p.Name == "type").ReadValueAsString();
+        }
+
+        // Trace listeners are process-wide, so only keep messages that mention this test's request Id.
+        private sealed class CapturingTraceListener : TraceListener
+        {
+            private readonly string _filter;
+
+            public CapturingTraceListener(string filter)
+            {
+                _filter = filter;
+            }
+
+            public ConcurrentQueue<string> Messages { get; } = new();
+
+            public override void Write(string? message) => Capture(message);
+
+            public override void WriteLine(string? message) => Capture(message);
+
+            public override void TraceEvent(TraceEventCache? eventCache, string source, TraceEventType eventType, int id, string? format, params object?[]? args)
+            {
+                Capture(args == null || format == null ? format : string.Format(format, args));
+            }
+
+            private void Capture(string? message)
+            {
+                if (message != null && message.Contains(_filter, StringComparison.Ordinal))
+                {
+                    Messages.Enqueue(message);
+                }
+            }
         }
     }
 }

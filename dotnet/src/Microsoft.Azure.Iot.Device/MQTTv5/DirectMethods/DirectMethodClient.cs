@@ -230,10 +230,20 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods
                     return;
                 }
 
+                // The request is no longer pending at this point, even if the exec payload turns out to be malformed below.
                 uint responseTimeoutInSeconds = publish.MessageExpiryInterval;
                 Stopwatch stopwatch = Stopwatch.StartNew();
 
-                Exec exec = Exec.Parser.ParseFrom(publish.Payload);
+                Exec exec;
+                try
+                {
+                    exec = Exec.Parser.ParseFrom(publish.Payload);
+                }
+                catch (InvalidProtocolBufferException ex)
+                {
+                    Trace.TraceError("Received direct method exec message for request Id {0} with a malformed payload. Discarding the direct method request. Error: {1}", requestId.Value, ex.Message);
+                    return;
+                }
 
                 if (!expectedReadyId.Equals(exec.ReadyId))
                 {
