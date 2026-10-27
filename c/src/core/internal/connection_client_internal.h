@@ -59,9 +59,39 @@ extern "C"
 
   /* Test seam: force any in-flight MQTTv5 presence (birth) handshake to time
    * out on the next do_work(). No-op when no handshake is active. Lets unit tests
-   * exercise the birth-ack timeout path without waiting the real
-   * AZ_IOT_PRESENCE_BIRTH_ACK_TIMEOUT_MS. */
+   * exercise the SUBACK and birth-ack timeout paths without waiting them out. */
   void az_iot_connection_client__presence_force_timeout(az_iot_connection_client* client);
+
+  /**
+   * @brief Replace the random source of defensive-timeout jitter.
+   *
+   * Test seam: makes az_iot_connection_client__defensive_timeout_ms()
+   * deterministic.
+   *
+   * @param[in,out] client The client.
+   * @param[in] source Returns a uniformly distributed value; NULL restores the
+   *                   default (the client's PRNG).
+   * @param[in] context Passed to @p source.
+   */
+  void az_iot_connection_client__set_defensive_timeout_random_source(
+      az_iot_connection_client* client,
+      uint64_t (*source)(void* context),
+      void* context);
+
+  /**
+   * @brief mqttv5 defensive timeout of 1-based @p attempt, with jitter drawn
+   * from the client's random source.
+   *
+   * Arms the presence birth-ack timeout; for any wait on a service message
+   * that must follow the same schedule (see internal/defensive_timeout.h).
+   *
+   * @param[in,out] client The client; its PRNG advances unless a source is set.
+   * @param[in] attempt Attempt number (0 is treated as 1).
+   * @return The timeout in milliseconds, 5 to 15 min.
+   */
+  uint32_t az_iot_connection_client__defensive_timeout_ms(
+      az_iot_connection_client* client,
+      uint32_t attempt);
 
   /* Authoritative twin versions the service reported on the most recent MQTTv5
    * birth-ack, as of birth admission on the current connection. The twin client

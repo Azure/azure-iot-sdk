@@ -445,8 +445,13 @@ CONNACK; the `DPS` counter only when registration succeeds.
   after CONNACK, the presence SUBACK arriving with a failure status, and `presence_publish_birth()`
   failing all clear the phase and reconnect.
 - An MQTTv5 presence step that does not complete in time. `presence.deadline_ms` is armed at CONNACK
-  for the SUBACK and re-armed after the birth PUBLISH for the birth-ack, each
-  `AZ_IOT_PRESENCE_BIRTH_ACK_TIMEOUT_MS` (60 s), and checked in `do_work()`.
+  for the SUBACK (`subscription_ack_deadline()`: `subscription_ack_timeout_seconds`, default
+  `AZ_IOT_DEFAULT_SUBSCRIPTION_ACK_TIMEOUT_SECONDS`) and re-armed after the birth PUBLISH for the
+  birth-ack, and checked in `do_work()`. The birth-ack timeout escalates with
+  `presence.consecutive_birth_ack_timeouts`: attempt N waits
+  `az_iot_defensive_timeout__ms(N, random)` — a 5, 6, 8, then 10 min base plus a uniform 0–5 min
+  jitter. The count grows only on a missed birth-ack (not a missed SUBACK) and is cleared by
+  `open()` and by a birth-ack that arrives in time.
 
 - **A failed registration, or one with no assignment.** `dps_apply_deferred()` sets
   `needs_reprovision` and calls `schedule_reconnect(AZ_IOT_CONN_SCOPE_DPS, status)`, so the retry is
@@ -927,8 +932,8 @@ a slow path. Constants are `#ifndef`-guarded and can be raised at build time, ex
 | CSR slot | 1 | In-flight hub CSR renewals | `AZ_IOT_ERR_BUSY` |
 | `AZ_IOT_DEFAULT_CONNECT_TIMEOUT_SECONDS` | 30 | Connect attempt, hub and DPS alike | Adapter-reported failure → `AZ_IOT_ERR_MQTT` |
 | `AZ_IOT_DEFAULT_KEEP_ALIVE_SECONDS` | 30 | MQTT keep-alive in CONNECT | — |
-| `AZ_IOT_DEFAULT_SUBSCRIPTION_ACK_TIMEOUT_SECONDS` | 60 | The subscription gate: how long the SUBACKs of one batch may take | `AZ_IOT_ERR_TIMEOUT` |
-| `AZ_IOT_PRESENCE_BIRTH_ACK_TIMEOUT_MS` | 60000 | Each presence handshake step | `AZ_IOT_ERR_TIMEOUT` |
+| `AZ_IOT_DEFAULT_SUBSCRIPTION_ACK_TIMEOUT_SECONDS` | 60 | The subscription gate and the MQTTv5 presence SUBACK: how long the SUBACKs of one batch may take | `AZ_IOT_ERR_TIMEOUT` |
+| `az_iot_defensive_timeout__ms()` | 5–15 min | MQTTv5 birth-ack: 5, 6, 8, then 10 min base per consecutive miss, plus 0–5 min jitter | `AZ_IOT_ERR_TIMEOUT` |
 | `AZ_IOT_DPS_HOLD_TIMEOUT_MS` | 60000 | How long registration may be held for a pre-registration exchange | the hold expires and registration proceeds |
 | `AZ_IOT_DEFAULT_MAX_HUB_CONNECT_ATTEMPTS_BEFORE_REPROVISION` | 50 | Consecutive hub connect failures before the client re-provisions | `needs_reprovision` set; not an error |
 | `CSR_OP_TIMEOUT_MS` | 120000 | Hub CSR renewal, re-armed on each `202 Accepted` | `AZ_IOT_ERR_TIMEOUT` |
@@ -1005,7 +1010,8 @@ connection client itself, or a feature client.
 | Subscribing | Presence SUBACK carries a failure | `AZ_IOT_ERR_SUBSCRIPTION_REFUSED` or `AZ_IOT_ERR_MQTT` | `az_iot_mqtt_suback_result()` | clear the phase, then `DEFER_RECONNECT` if a policy is configured, else `DEFER_FAULT` | The presence path branches on `reconnect_enabled()`; `AZ_IOT_ERR_SUBSCRIPTION_REFUSED` is not treated as terminal here. |
 | Subscribing | `presence_start()` fails after CONNACK | its own result | connection client | clear the phase, reconnect | |
 | Birth | `presence_publish_birth()` fails | its own result | connection client | clear the phase, reconnect | |
-| Birth | No birth-ack within 60 s | `AZ_IOT_ERR_TIMEOUT` | `_do_work()` | reconnect, or `FAULTED` with no policy | The deadline is armed at CONNACK and re-armed after the birth publish, so each step gets its own 60 s. |
+| Subscribing | No presence SUBACK within `subscription_ack_timeout_seconds` (default 60 s) | `AZ_IOT_ERR_TIMEOUT` | `_do_work()` | reconnect, or `FAULTED` with no policy | Does not escalate the birth-ack schedule. |
+| Birth | No birth-ack within the escalating timeout | `AZ_IOT_ERR_TIMEOUT` | `_do_work()` | disconnect and reconnect, or `FAULTED` with no policy | Armed after the birth publish: 5–10, 6–11, 8–13, then 10–15 min for consecutive misses. Reset by `open()` and by a birth-ack in time. |
 | Birth | Birth-ack arrives while still subscribing | ignored as a birth-ack | connection client | falls through to `az_iot_dispatch_route()`, and is dropped if no prefix matches | The interception is guarded on `presence.phase == PRESENCE_PHASE_BIRTH`. Correct. |
 | Birth | Birth-ack carries a correlation value from an earlier attempt | ignored as a birth-ack | `presence_is_birth_ack()` | routed to dispatch, then dropped | A fresh 16-byte nonce is generated per attempt and compared with `memcmp`. This is the epoch guard; there is no separate generation counter. |
 | Birth | Birth-ack arrives after `close()` | ignored | connection client | logged at debug, `break` | Same guard as the late CONNACK. |

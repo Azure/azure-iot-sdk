@@ -43,6 +43,7 @@
 #include "internal/cert_util.h"
 #include "internal/connection_client_internal.h"
 #include "internal/crypto.h"
+#include "internal/defensive_timeout.h"
 #include "internal/dispatch.h"
 #include "internal/log_internal.h"
 #include "internal/proto3.h"
@@ -4845,8 +4846,9 @@ static az_iot_result presence_start(az_iot_connection_client* c, bool session_pr
    * so it could ride the CONNECT username as correlationId; reuse it here as
    * the birth Correlation Data. Do NOT regenerate it, or the username's
    * correlationId and the birth would diverge and the service could not
-   * correlate them. */
-  c->presence.deadline_ms = az_iot_time_mono_ms() + AZ_IOT_PRESENCE_BIRTH_ACK_TIMEOUT_MS;
+   * correlate them. The broker answers the SUBSCRIBE, so it gets the SUBACK
+   * window; the birth-ack timeout is armed once the birth is published. */
+  c->presence.deadline_ms = subscription_ack_deadline(c);
 
   uint16_t pid = 0;
   az_iot_result r
@@ -4910,9 +4912,19 @@ static az_iot_result presence_publish_birth(az_iot_connection_client* c)
     return r;
   }
 
-  /* Give the birth-ack its own full window now that the birth is on the wire. */
-  c->presence.deadline_ms = az_iot_time_mono_ms() + AZ_IOT_PRESENCE_BIRTH_ACK_TIMEOUT_MS;
+  /* The birth is on the wire: arm the escalating birth-ack timeout. Its attempt
+   * is one past the birth-acks missed in a row. */
+  uint32_t attempt = c->presence.consecutive_birth_ack_timeouts < UINT32_MAX
+      ? c->presence.consecutive_birth_ack_timeouts + 1u
+      : UINT32_MAX;
+  c->presence.birth_ack_timeout_ms = az_iot_connection_client__defensive_timeout_ms(c, attempt);
+  c->presence.deadline_ms = az_iot_time_mono_ms() + c->presence.birth_ack_timeout_ms;
   c->presence.phase = PRESENCE_PHASE_BIRTH;
+  AZ_IOT_LOG_DEBUGF(
+      AZ_IOT_LOG_COMPONENT_CONNECTION,
+      "birth published; birth-ack timeout %lu ms (attempt %lu)",
+      (unsigned long)c->presence.birth_ack_timeout_ms,
+      (unsigned long)attempt);
   return AZ_IOT_OK;
 }
 
@@ -5109,6 +5121,8 @@ static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
           }
           presence_decode_birth_ack(c, evt->message->payload, evt->message->payload_len);
           c->presence.phase = PRESENCE_PHASE_DONE;
+          /* Arrived in time: the next birth starts the schedule over. */
+          c->presence.consecutive_birth_ack_timeouts = 0;
           begin_feature_subscriptions(c);
           break;
         }
@@ -7189,6 +7203,8 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_open(az_iot_connection_clien
   client->retry_attempt[AZ_IOT_CONN_SCOPE_DPS] = 0;
   client->retry_attempt[AZ_IOT_CONN_SCOPE_HUB] = 0;
   client->reconnect_due_ms = 0;
+  /* A fresh connect cycle starts the birth-ack timeout schedule over. */
+  client->presence.consecutive_birth_ack_timeouts = 0;
   reset_identity_recovery(client);
   dps_user_retry_reset(client);
   /* open() starts again at the first credential source. */
@@ -7740,13 +7756,24 @@ az_iot_result az_iot_connection_client_do_work(
   }
 
   /* Fail a stalled MQTTv5 presence (birth) handshake so a missing SUBACK or
-   * birth-ack can't wedge the client in CONNECTING forever. Reconnect when a
-   * policy is configured (mirrors the .NET SDK, which disconnects and
-   * retries), otherwise fault. */
+   * birth-ack can't wedge the client in CONNECTING forever. Disconnect and
+   * reconnect when a policy is configured, otherwise fault. A missed birth-ack
+   * escalates the next birth's timeout. */
   if ((client->presence.phase == AZ_IOT_PRESENCE_PHASE_SUBSCRIBING
        || client->presence.phase == AZ_IOT_PRESENCE_PHASE_BIRTH)
       && az_iot_time_mono_ms() >= client->presence.deadline_ms)
   {
+    if (client->presence.phase == AZ_IOT_PRESENCE_PHASE_BIRTH)
+    {
+      AZ_IOT_LOG_WARNF(
+          AZ_IOT_LOG_COMPONENT_CONNECTION,
+          "no birth-ack within %lu ms; reconnecting",
+          (unsigned long)client->presence.birth_ack_timeout_ms);
+      if (client->presence.consecutive_birth_ack_timeouts < UINT32_MAX)
+      {
+        client->presence.consecutive_birth_ack_timeouts++;
+      }
+    }
     client->presence.phase = AZ_IOT_PRESENCE_PHASE_NONE;
     if (az_iot_retry_policy_is_enabled(&client->opts.reconnection_policy) && !client->user_close)
     {
@@ -8016,6 +8043,38 @@ void az_iot_connection_client__seed_rng(az_iot_connection_client* client, uint64
     return;
   }
   client->rng_state = seed ? seed : 1ull;
+}
+
+void az_iot_connection_client__set_defensive_timeout_random_source(
+    az_iot_connection_client* client,
+    uint64_t (*source)(void* context),
+    void* context)
+{
+  if (!client)
+  {
+    return;
+  }
+  client->defensive_timeout_random_source = source;
+  client->defensive_timeout_random_context = source ? context : NULL;
+}
+
+uint32_t az_iot_connection_client__defensive_timeout_ms(
+    az_iot_connection_client* client,
+    uint32_t attempt)
+{
+  uint64_t random_value = 0;
+  if (client && client->defensive_timeout_random_source)
+  {
+    random_value
+        = client->defensive_timeout_random_source(client->defensive_timeout_random_context);
+  }
+  else if (client)
+  {
+    /* Same LCG as gen_uuid_v4(); the high half is the well-mixed part. */
+    client->rng_state = client->rng_state * 6364136223846793005ull + 1442695040888963407ull;
+    random_value = client->rng_state >> 32;
+  }
+  return az_iot_defensive_timeout__ms(attempt, random_value);
 }
 
 void az_iot_connection_client__presence_force_timeout(az_iot_connection_client* client)

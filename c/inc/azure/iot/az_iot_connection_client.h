@@ -449,11 +449,12 @@ extern "C"
     uint32_t connect_timeout_seconds;
 
     /* How long CONNECTED may be withheld waiting for the SUBACKs of the
-     * persistent filters issued on connect, in seconds. 0 selects
+     * persistent filters issued on connect, in seconds. Also bounds the SUBACK
+     * of the mqttv5 presence (dev/#) SUBSCRIBE. 0 selects
      * AZ_IOT_DEFAULT_SUBSCRIPTION_ACK_TIMEOUT_SECONDS.
      *
      * Nothing else bounds that wait: connect_timeout_seconds covers the CONNACK,
-     * the presence handshake has its own timeout, and keep-alive cannot help
+     * the mqttv5 birth-ack has its own timeout, and keep-alive cannot help
      * because the link is alive -- a broker that accepts the connection and then
      * never answers the SUBSCRIBE would otherwise hold the client in CONNECTING
      * indefinitely.
@@ -1346,9 +1347,9 @@ extern "C"
 #ifndef AZ_IOT_MAX_CERTS_PER_ROLE
 #define AZ_IOT_MAX_CERTS_PER_ROLE 4
 #endif
-/* Matches the presence birth-ack timeout: both bound "the broker accepted the
- * connection and then went quiet", and having two different windows for that on
- * one connect path would be arbitrary. */
+/* Default SUBACK wait: the subscription gate and the mqttv5 presence (dev/#)
+ * SUBSCRIBE. The broker answers a SUBSCRIBE itself, so this is far shorter than
+ * the mqttv5 birth-ack timeout (5 to 15 min), which waits on the service. */
 #ifndef AZ_IOT_DEFAULT_SUBSCRIPTION_ACK_TIMEOUT_SECONDS
 #define AZ_IOT_DEFAULT_SUBSCRIPTION_ACK_TIMEOUT_SECONDS 60
 #endif
@@ -1386,12 +1387,6 @@ extern "C"
  * MQTTv5 birth handshake. */
 #ifndef AZ_IOT_PRESENCE_TOPIC_BUF
 #define AZ_IOT_PRESENCE_TOPIC_BUF 256
-#endif
-/* How long to wait for the SUBACK + birth-ack that complete the MQTTv5
- * presence handshake before abandoning the attempt (mirrors the .NET SDK's
- * 60s defensive birth-ack timeout). */
-#ifndef AZ_IOT_PRESENCE_BIRTH_ACK_TIMEOUT_MS
-#define AZ_IOT_PRESENCE_BIRTH_ACK_TIMEOUT_MS 60000u
 #endif
 
 /* How long registration may be held for a pre-registration exchange on the
@@ -1650,6 +1645,10 @@ extern "C"
      * source of truth that nothing reads and a later change could desync. */
     uint64_t reconnect_due_ms;
     uint64_t rng_state;
+    /* Random source for defensive-timeout jitter; NULL draws from rng_state.
+     * Unit tests replace it to make the jitter deterministic. */
+    uint64_t (*defensive_timeout_random_source)(void* context);
+    void* defensive_timeout_random_context;
 
     az_iot_dispatch_table dispatch;
 
@@ -1898,6 +1897,10 @@ extern "C"
       uint16_t sub_packet_id; /* SUBACK correlation for the dev/# sub */
       uint8_t nonce[16]; /* connection nonce echoed by birth-ack */
       uint64_t deadline_ms; /* handshake timeout (monotonic ms) */
+      /* Birth-acks missed in a row since open() or the last birth-ack in time;
+       * selects the escalating timeout of the next birth. */
+      uint32_t consecutive_birth_ack_timeouts;
+      uint32_t birth_ack_timeout_ms; /* timeout armed for the last birth */
       uint64_t desired_version; /* authoritative twin versions carried by the */
       uint64_t reported_version; /* last birth-ack (0 when the service omits them) */
     } presence;
