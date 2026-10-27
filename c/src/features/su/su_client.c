@@ -2943,7 +2943,7 @@ AZ_NODISCARD size_t az_iot_su_workspace_size(const az_iot_su_limits* limits)
   size_t details = (size_t)_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS * limits->result_details_size;
   size_t parts[9] = { limits->max_root_keys * sizeof(az_iot_su_root_key)
                           + limits->max_observers * sizeof(az_iot_su_observer_registration)
-                          + sizeof(_az_iot_su_workspace_alignment) - 1u,
+                          + sizeof(az_iot_su_workspace_alignment) - 1u,
                       limits->max_update_size + (size_t)AZ_IOT_SU_PERSIST_OVERHEAD + details,
                       (size_t)AZ_IOT_SU_PERSIST_OVERHEAD + details,
                       limits->scratch_size,
@@ -3012,7 +3012,7 @@ static az_iot_result su_workspace_lay_out(
   size_t details
       = (size_t)_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS * options->limits.result_details_size;
   /* Parts holding pointers come first, aligned: the workspace itself need not be. */
-  const uintptr_t alignment = (uintptr_t)sizeof(_az_iot_su_workspace_alignment);
+  const uintptr_t alignment = (uintptr_t)sizeof(az_iot_su_workspace_alignment);
   uint8_t* p = options->workspace
       + ((alignment - ((uintptr_t)options->workspace % alignment)) % alignment);
   out->root_keys = (az_iot_su_root_key*)(void*)p;

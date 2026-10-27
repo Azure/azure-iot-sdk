@@ -3031,7 +3031,7 @@ static void workspace_size_follows_the_limits(void** state)
           + 50u * _az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS
           + AZ_IOT_SU_DEFAULT_MAX_ROOT_KEYS * sizeof(az_iot_su_root_key)
           + AZ_IOT_SU_DEFAULT_MAX_OBSERVERS * sizeof(az_iot_su_observer_registration)
-          + sizeof(_az_iot_su_workspace_alignment) - 1u);
+          + sizeof(az_iot_su_workspace_alignment) - 1u);
   assert_int_equal(
       az_iot_su_workspace_size(&limits),
       AZ_IOT_SU_WORKSPACE_SIZE(
@@ -4768,9 +4768,9 @@ static void root_keys_and_observers_are_bounded_by_the_limits(void** state)
       az_iot_su_client__initialize_with_channel(&fx->su, &fx->channel, &fx->crypto.base, &o),
       AZ_IOT_OK);
   assert_int_equal(
-      (uintptr_t)fx->su._internal.root_keys % sizeof(_az_iot_su_workspace_alignment), 0);
+      (uintptr_t)fx->su._internal.root_keys % sizeof(az_iot_su_workspace_alignment), 0);
   assert_int_equal(
-      (uintptr_t)fx->su._internal.observers % sizeof(_az_iot_su_workspace_alignment), 0);
+      (uintptr_t)fx->su._internal.observers % sizeof(az_iot_su_workspace_alignment), 0);
   assert_string_equal(fx->su._internal.root_keys[0].kid, k_root_keys[0].kid);
   int first = 0;
   int second = 0;

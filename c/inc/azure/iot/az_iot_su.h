@@ -848,7 +848,7 @@ extern "C"
     void (*function)(void);
     uint64_t integer;
     size_t size;
-  } _az_iot_su_workspace_alignment;
+  } az_iot_su_workspace_alignment;
 
 /** @brief Largest az_iot_su_limits::max_root_keys and max_observers. */
 #define AZ_IOT_SU_MAX_LIMIT_COUNT 1024
@@ -1150,7 +1150,7 @@ extern "C"
    + 5u * (size_t)(_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS) * (size_t)(result_details_size) \
    + (size_t)(max_root_keys) * sizeof(az_iot_su_root_key)                                     \
    + (size_t)(max_observers) * sizeof(az_iot_su_observer_registration)                        \
-   + sizeof(_az_iot_su_workspace_alignment) - 1u)
+   + sizeof(az_iot_su_workspace_alignment) - 1u)
 
 /** @brief Workspace bytes for az_iot_su_limits_default(). */
 #define AZ_IOT_SU_WORKSPACE_DEFAULT_SIZE       \

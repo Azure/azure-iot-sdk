@@ -233,7 +233,7 @@ The software updates client's variable-size memory is not set by macros. The app
 | `result_details_size` | 128 | `resultDetails` kept per step (`az_iot_su_client_set_step_result_details()`); at most 1024. Counted five times per step: the details, both persisted records and two copies of the reports sent. |
 
 The workspace also holds `2 * AZ_IOT_SU_PERSIST_OVERHEAD` bytes for the persisted-state records and
-up to `sizeof(_az_iot_su_workspace_alignment) - 1` bytes to align the root keys and observers. These
+up to `sizeof(az_iot_su_workspace_alignment) - 1` bytes to align the root keys and observers. These
 values do not change the layout of `az_iot_su_client`.
 
 #### Software updates manifest limits
