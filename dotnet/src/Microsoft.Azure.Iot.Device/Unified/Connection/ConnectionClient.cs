@@ -249,6 +249,8 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
             }
             catch (Exception ex)
             {
+                string requestId = publish.Topic[CertificateSigningRequestTopic.Length..];
+                _pendingCertificateSigningOperations.TryRemove(new KeyValuePair<string, CertificateSigningOperation>(requestId, operation));
                 if (!sent.TrySetException(ex))
                 {
                     if (ex is OperationCanceledException)
