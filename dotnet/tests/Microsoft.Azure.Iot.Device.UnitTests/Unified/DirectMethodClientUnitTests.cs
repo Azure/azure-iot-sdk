@@ -134,6 +134,30 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
         }
 
         [Fact]
+        public async Task MqttV5_DisposeAndReplace_DetachesPreviousClientFromSharedConnection()
+        {
+            MockFeatureConnectionClient connection = new()
+            {
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv5, DeviceId),
+            };
+            DirectMethodClient previousClient = new(connection);
+
+            previousClient.Dispose(false);
+
+            using DirectMethodClient replacementClient = new(connection);
+            replacementClient.DirectMethodInvokedAsync += _ =>
+                Task.FromResult(new DirectMethodResponse() { Status = 200 });
+
+            var probe = new Probe() { MethodName = "reboot", ResponseTimeoutSeconds = 30 };
+            await connection.SimulateReceiveAsync(CreateMqttv5MethodPublish("probe:1", Guid.NewGuid().ToByteArray(), probe.ToByteArray()));
+
+            Assert.False(connection.IsDisposed);
+            MqttPublish probeAckPublish = Assert.Single(connection.PublishedMessages);
+            ProbeAck sentProbeAck = ProbeAck.Parser.ParseFrom(probeAckPublish.Payload);
+            Assert.Equal(ProbeAck.ResultOneofCase.Ready, sentProbeAck.ResultCase);
+        }
+
+        [Fact]
         public void DirectMethodInvokedAsync_RejectsASecondHandler()
         {
             MockFeatureConnectionClient connection = new()

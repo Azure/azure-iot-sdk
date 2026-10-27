@@ -203,6 +203,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.DirectMethods
 
             _mqttv5DirectMethodClient.DirectMethodProbeReceivedAsync -= HandleMqttv5DirectMethodProbeRequestAsync;
             _mqttv5DirectMethodClient.DirectMethodInvokedAsync -= HandleMqttv5DirectMethodRequestAsync;
+            _mqttv5DirectMethodClient.Dispose(false);
 
             if (disposing)
             {
@@ -219,6 +220,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.DirectMethods
 
             _mqttv5DirectMethodClient.DirectMethodProbeReceivedAsync -= HandleMqttv5DirectMethodProbeRequestAsync;
             _mqttv5DirectMethodClient.DirectMethodInvokedAsync -= HandleMqttv5DirectMethodRequestAsync;
+            _mqttv5DirectMethodClient.Dispose(false);
 
             _connection.Dispose();
         }
