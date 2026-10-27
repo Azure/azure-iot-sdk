@@ -3076,6 +3076,40 @@ static void a_close_from_a_teardown_callback_survives_a_refusal(void** state)
   assert_int_equal(count_states(AZ_IOT_CONN_STATE_RETRY_PENDING, AZ_IOT_ERR_IDENTITY_REJECTED), 0);
 }
 
+static void reopen_on_get_completion(
+    az_iot_result status,
+    const az_iot_mqttv5_twin_state* twin,
+    void* user_ctx)
+{
+  (void)status;
+  (void)twin;
+  az_iot_connection_client* conn = (az_iot_connection_client*)user_ctx;
+  (void)az_iot_connection_client_close(conn);
+  assert_int_equal(az_iot_connection_client_open(conn), AZ_IOT_OK);
+}
+
+/* close() during the requested disconnect, no disconnect event, and a teardown callback
+ * that reopens: the new attempt is kept, not overwritten with IDLE. */
+static void a_reopen_from_a_teardown_callback_survives_the_close_bound(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  assert_int_equal(
+      az_iot_mqttv5_twin_client_get(&fx->twin, reopen_on_get_completion, &fx->conn), AZ_IOT_OK);
+  expire_twin_push_wait_to_disconnect(fx);
+  assert_int_equal(az_iot_connection_client_close(&fx->conn), AZ_IOT_OK);
+  az_iot_connection_client__requested_reconnect_force_timeout(&fx->conn);
+  size_t idle_before = count_states(AZ_IOT_CONN_STATE_IDLE, AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
+
+  az_iot_connection_state hub
+      = az_iot_connection_client_get_state(&fx->conn, AZ_IOT_CONN_SCOPE_HUB);
+  assert_true(hub == AZ_IOT_CONN_STATE_SETTING_UP || hub == AZ_IOT_CONN_STATE_CONNECTING);
+  assert_non_null(az_iot_mock_mqtt_factory_last_client(fx->factory));
+  /* Only the callback's own close() reached IDLE. */
+  assert_int_equal(count_states(AZ_IOT_CONN_STATE_IDLE, AZ_IOT_OK), idle_before + 1u);
+}
+
 static void close_on_publish_completion(az_iot_result status, void* user_ctx)
 {
   (void)status;
@@ -3421,6 +3455,10 @@ int main(void)
         teardown),
     cmocka_unit_test_setup_teardown(
         a_close_from_a_teardown_callback_survives_a_refusal,
+        setup_push_desired_reconnect,
+        teardown),
+    cmocka_unit_test_setup_teardown(
+        a_reopen_from_a_teardown_callback_survives_the_close_bound,
         setup_push_desired_reconnect,
         teardown),
     cmocka_unit_test_setup_teardown(

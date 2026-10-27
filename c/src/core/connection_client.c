@@ -6296,7 +6296,15 @@ static void apply_deferred(az_iot_connection_client* c)
       reconnect_for_sas_token_renewal(c);
       break;
     case DEFER_IDLE:
+    {
+      uint32_t closes = c->close_count;
+      uint32_t seq = c->open_seq;
       teardown_active(c);
+      /* Teardown callbacks may have closed or reopened the client. */
+      if (c->close_count != closes || c->open_seq != seq)
+      {
+        break;
+      }
       c->user_close = false;
       c->retry_attempt[AZ_IOT_CONN_SCOPE_DPS] = 0;
       c->retry_attempt[AZ_IOT_CONN_SCOPE_HUB] = 0;
@@ -6304,6 +6312,7 @@ static void apply_deferred(az_iot_connection_client* c)
       reset_identity_recovery(c);
       set_state_to(c, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_IDLE, reason);
       break;
+    }
     default:
       break;
   }
