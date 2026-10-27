@@ -1617,6 +1617,54 @@ static az_iot_mock_mqtt_client* start_renewal(fixture* fx)
   return m;
 }
 
+/* A reconnect request and a renewal due in the same pump: one DISCONNECT, and the
+ * request decides how the session ends (no policy: FAULTED with its reason). */
+static void a_reconnect_request_takes_precedence_over_a_due_renewal(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  uint64_t now = NOW;
+  open_renewable_hub(fx, &now, NULL);
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+
+  now = NOW + 50u;
+  fx->client.sas_token_renewal_due_ms[AZ_IOT_CONN_SCOPE_HUB] = az_iot_time_mono_ms();
+  assert_int_equal(
+      az_iot_connection_client__request_reconnect(&fx->client, AZ_IOT_ERR_TIMEOUT), AZ_IOT_OK);
+  pump(fx, 1);
+  assert_int_equal(az_iot_mock_mqtt_client_count_of(m, AZ_IOT_MOCK_CALL_DISCONNECT), 1);
+  assert_false(fx->client.sas_token_renewal_in_progress[AZ_IOT_CONN_SCOPE_HUB]);
+
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(m));
+  pump(fx, 1);
+  assert_int_equal(fx->client.state[AZ_IOT_CONN_SCOPE_HUB], AZ_IOT_CONN_STATE_FAULTED);
+  assert_int_equal(fx->log[fx->log_count - 1].reason, AZ_IOT_ERR_TIMEOUT);
+}
+
+/* A reconnect request during a renewal is dropped: the renewal ends the session and
+ * reconnects with a new token, with one DISCONNECT. */
+static void a_reconnect_request_during_a_renewal_is_dropped(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  uint64_t now = NOW;
+  open_renewable_hub(fx, &now, NULL);
+
+  now = NOW + 50u;
+  az_iot_mock_mqtt_client* m = start_renewal(fx);
+  assert_int_equal(
+      az_iot_connection_client__request_reconnect(&fx->client, AZ_IOT_ERR_TIMEOUT), AZ_IOT_OK);
+  pump(fx, 1);
+  assert_int_equal(az_iot_mock_mqtt_client_count_of(m, AZ_IOT_MOCK_CALL_DISCONNECT), 1);
+  assert_false(az_iot_connection_client__session_ending_by_request(&fx->client));
+
+  size_t from = fx->log_count;
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(m));
+  pump(fx, 1);
+  assert_true(fx->log_count > from);
+  assert_int_equal(fx->log[from].state, AZ_IOT_CONN_STATE_RETRY_PENDING);
+  assert_int_equal(fx->log[from].reason, AZ_IOT_OK);
+  assert_true(fx->log[from].renewal);
+}
+
 /* The hub session is disconnected and reconnected with a new token, with no
  * reconnection policy: RETRY_PENDING to CONNECTED, all flagged, reason OK. */
 static void the_hub_sas_token_is_renewed(void** state)
@@ -4007,6 +4055,10 @@ int main(void)
         dps_failed_operation_401000_falls_back_to_the_secondary_key, setup, teardown),
     cmocka_unit_test_setup_teardown(a_registration_on_a_held_session_falls_back, setup, teardown),
     cmocka_unit_test_setup_teardown(the_hub_sas_token_is_renewed, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_reconnect_request_takes_precedence_over_a_due_renewal, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_reconnect_request_during_a_renewal_is_dropped, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_renewal_without_a_disconnect_event_reconnects, setup, teardown),
     cmocka_unit_test_setup_teardown(an_x509_session_is_not_renewed, setup, teardown),

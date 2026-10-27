@@ -198,7 +198,9 @@ extern "C"
    * reconnect is scheduled with @p reason; without an enabled reconnection
    * policy the hub scope faults with @p reason instead. If close() is called
    * meanwhile, the session ends as close() asks. Dropped if the session ends
-   * before it is served. A request while one is in progress is ignored.
+   * before it is served, or when a SAS token renewal is ending it. Takes
+   * precedence over a renewal that becomes due. A request while one is in
+   * progress is ignored.
    *
    * @return AZ_IOT_ERR_NOT_CONNECTED unless the hub scope is CONNECTED;
    *         AZ_IOT_ERR_INVALID_ARG for a NULL @p client.

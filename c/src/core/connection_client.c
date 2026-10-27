@@ -5857,6 +5857,11 @@ static void process_sas_token_renewal(az_iot_connection_client* c)
   {
     return;
   }
+  /* A requested reconnect already ends the session; the next one gets a new token. */
+  if (c->requested_reconnect.requested || c->requested_reconnect.in_progress)
+  {
+    return;
+  }
   uint64_t now = az_iot_time_mono_ms();
   if (!c->sas_token_renewal_in_progress[hub] && sas_token_renewal_ready(c, hub))
   {
@@ -7889,8 +7894,10 @@ az_iot_result az_iot_connection_client_do_work(
   if (client->requested_reconnect.requested)
   {
     client->requested_reconnect.requested = false;
+    /* A SAS renewal in progress already ends the session and reconnects. */
     if (client->state[AZ_IOT_CONN_SCOPE_HUB] == AZ_IOT_CONN_STATE_CONNECTED && !client->user_close
-        && client->active_client && client->active_client->iface)
+        && !client->sas_token_renewal_in_progress[AZ_IOT_CONN_SCOPE_HUB] && client->active_client
+        && client->active_client->iface)
     {
       AZ_IOT_LOG_WARNF(
           AZ_IOT_LOG_COMPONENT_CONNECTION,
