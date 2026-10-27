@@ -386,7 +386,9 @@ extern "C"
   {
     az_iot_mqtt_event_kind kind;
     uint16_t packet_id; /* for *_ACK events */
-    az_iot_result status; /* for ACK / ERROR events */
+    /* For ACK / ERROR events. For AZ_IOT_MQTT_EVT_DISCONNECTED: AZ_IOT_OK only
+     * when a disconnect() the client asked for completed; an error otherwise. */
+    az_iot_result status;
     const az_iot_mqtt_message* message; /* for AZ_IOT_MQTT_EVT_MESSAGE only */
     /* For AZ_IOT_MQTT_EVT_CONNECTED: the Session Present flag the broker
      * returned in the CONNACK. Carried by BOTH protocol versions -- MQTT 3.1.1

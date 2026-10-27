@@ -40,7 +40,7 @@ The contract is in [inc/azure/iot/az_iot_mqtt_iface.h](../inc/azure/iot/az_iot_m
 | Slot              | Required behavior                                                                                    |
 |-------------------|------------------------------------------------------------------------------------------------------|
 | `connect`         | Initiate CONNECT to `opts->host:opts->port` with `client_id`. Non-blocking. Result via inbound `EVT_CONNECTED`. For v5: honor `clean_start`, `session_expiry_seconds`, `user_properties`, and LWT fields from `connect_options`. |
-| `disconnect`      | Initiate DISCONNECT. Non-blocking. Eventually emits `EVT_DISCONNECTED`. For v5: carry `disconnect_reason_code` from the options the session was connected with. |
+| `disconnect`      | Initiate DISCONNECT. Non-blocking. Eventually emits `EVT_DISCONNECTED` with status `AZ_IOT_OK` (only this completion uses `AZ_IOT_OK`; a lost connection or a server DISCONNECT reports an error). For v5: carry `disconnect_reason_code` from the options the session was connected with. |
 | `subscribe`       | Send SUBSCRIBE. Return `out_packet_id` synchronously; emit `EVT_SUBSCRIBE_ACK` when SUBACK arrives.   |
 | `unsubscribe`     | Send UNSUBSCRIBE. Same pattern as `subscribe`. Emit `EVT_UNSUBSCRIBE_ACK`.                            |
 | `publish`         | Send PUBLISH. For QoS>0, emit `EVT_PUBLISH_ACK` when PUBACK arrives. For v5: set `content_type`, `response_topic`, `correlation_data`, and `user_properties` from `az_iot_mqtt_message` on the outbound packet. |

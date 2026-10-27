@@ -296,6 +296,8 @@
   birth-ack in time reset it. `AZ_IOT_PRESENCE_BIRTH_ACK_TIMEOUT_MS` is removed; the presence
   `dev/#` SUBACK now uses `subscription_ack_timeout_seconds`
   (`AZ_IOT_DEFAULT_SUBSCRIPTION_ACK_TIMEOUT_SECONDS`, 60 s).
+- Paho adapter: a lost connection is reported as `AZ_IOT_MQTT_EVT_DISCONNECTED` with
+  `AZ_IOT_ERR_NOT_CONNECTED`; it was `AZ_IOT_OK`, the status of a completed `disconnect()`.
 - mqttv5 twin: with `twin_push.push_desired` or `push_reported` set, a session whose twin-push
   does not arrive within the presence defensive timeout of hub CONNECTED (5 to 15 minutes, longer
   after consecutive misses) is now disconnected and reconnected (or faulted with

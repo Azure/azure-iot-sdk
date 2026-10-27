@@ -443,6 +443,33 @@ static void connect_then_disconnect(fixture* fx, evt_sink* sink, az_iot_result* 
   }
 }
 
+/* A connection the client did not close is reported with an error, not AZ_IOT_OK, so it
+ * cannot be taken for the completion of a requested disconnect. */
+static void a_lost_connection_reports_an_error(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  evt_sink sink = { 0 };
+  fx->client->iface->set_inbound_cb(fx->client, on_evt, &sink);
+  az_iot_mqtt_connect_options opts;
+  memset(&opts, 0, sizeof(opts));
+  opts.host = "broker.invalid";
+  opts.port = 8883;
+  opts.client_id = "ut-device";
+  opts.tls.client_cert_path = "/dev/null/device.pem";
+  opts.tls.client_key_path = "/dev/null/device.key";
+  assert_int_equal(fx->client->iface->connect(fx->client, &opts), AZ_IOT_OK);
+
+  MQTTAsync_connectionLost* lost = mock_paho_connection_lost();
+  assert_non_null(lost);
+  lost(mock_paho_callback_context(), NULL);
+  for (int i = 0; i < 20 && sink.disconnected == 0; ++i)
+  {
+    (void)fx->client->iface->process_loop(fx->client, 1);
+  }
+  assert_int_equal(sink.disconnected, 1);
+  assert_int_equal(sink.last_status, AZ_IOT_ERR_NOT_CONNECTED);
+}
+
 /* The completion of a disconnect the application asked for is reported. */
 static void a_client_initiated_disconnect_reports_disconnected(void** state)
 {
@@ -549,6 +576,7 @@ int main(void)
     cmocka_unit_test_setup_teardown(a_plaintext_connect_stays_plaintext, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_client_initiated_disconnect_reports_disconnected, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_lost_connection_reports_an_error, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_v5_client_initiated_disconnect_reports_disconnected, setup, teardown),
     cmocka_unit_test_setup_teardown(
