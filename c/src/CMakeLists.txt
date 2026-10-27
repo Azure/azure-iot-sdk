@@ -59,8 +59,9 @@ unset(_az_iot_connection_limits)
 set(AZ_IOT_CONNECTION_CLIENT_CONFIG_FILE "" CACHE STRING
     "Connection client: header with default limits, as written in a quoted #include (empty: none)")
 if(NOT AZ_IOT_CONNECTION_CLIENT_CONFIG_FILE STREQUAL "")
+    # Build tree only: the header is not installed, so the exported target must not name it.
     target_compile_definitions(az_iot_core PUBLIC
-        AZ_IOT_CONNECTION_CLIENT_CONFIG_FILE="${AZ_IOT_CONNECTION_CLIENT_CONFIG_FILE}")
+        "$<BUILD_INTERFACE:AZ_IOT_CONNECTION_CLIENT_CONFIG_FILE=\"${AZ_IOT_CONNECTION_CLIENT_CONFIG_FILE}\">")
 endif()
 
 # azure-sdk-for-c is required by the public struct definition

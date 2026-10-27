@@ -159,9 +159,11 @@ The defaults are compile-time values
 `AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_<LIMIT>`, for example
 `AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_PENDING_PUBLISHES`. Set them as definitions, in a header
 named by `AZ_IOT_CONNECTION_CLIENT_CONFIG_FILE` (as written in a quoted `#include`), or with the
-CMake options of the same names, which also apply them to targets linking `az_iot_core`. They do
-not change the layout of `az_iot_connection_client`: if the SDK and the application use different
-values, `init()` refuses a static workspace too small for the SDK's.
+CMake options of the same names, which also apply them to targets linking `az_iot_core`. An
+installed SDK exports the numeric options but not the config file: compile the application with
+the same header. The values do not change the layout of `az_iot_connection_client`: if the SDK
+and the application use different values, `init()` refuses a static workspace too small for the
+SDK's.
 
 ```c
 static uint8_t workspace[AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE];
