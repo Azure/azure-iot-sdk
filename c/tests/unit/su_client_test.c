@@ -3358,6 +3358,31 @@ static void property_copies_survive_mutation_and_aliasing(void** state)
   assert_string_equal(cached->custom_properties[0].value, "revision-2");
 }
 
+/* Counts ERROR lines containing `needle`. */
+typedef struct
+{
+  const char* needle;
+  int count;
+} su_error_log_capture;
+
+static void su_error_log_sink(
+    void* user_ctx,
+    az_iot_log_level level,
+    const char* component,
+    const char* file,
+    int line,
+    const char* msg)
+{
+  (void)component;
+  su_error_log_capture* cap = (su_error_log_capture*)user_ctx;
+  (void)file;
+  (void)line;
+  if (level == AZ_IOT_LOG_LEVEL_ERROR && msg != NULL && strstr(msg, cap->needle) != NULL)
+  {
+    cap->count++;
+  }
+}
+
 /* Compatibility strings are bounded only by az_iot_su_limits::device_properties_size, and the
  * installed update ID by AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE. An exact fit is accepted; one byte
  * more is refused with the client unchanged. The workspace needs no alignment. */
@@ -3396,17 +3421,28 @@ static void properties_fit_device_properties_size_exactly(void** state)
 
   static az_iot_su_client before;
   memcpy(&before, &client, sizeof(before));
+  su_error_log_capture cap
+      = { "need 794 bytes; az_iot_su_limits::device_properties_size is 793", 0 };
+  az_iot_log_sink sink
+      = { .sink = su_error_log_sink, .user_ctx = &cap, .min_level = AZ_IOT_LOG_LEVEL_ERROR };
+  az_iot_log_set_global_sink(&sink);
   manufacturer[600] = 'm';
   manufacturer[601] = '\0';
   assert_int_equal(
       az_iot_su_client_update_device_properties(&client, &dp), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
   assert_memory_equal(&client, &before, sizeof(before));
+  assert_int_equal(cap.count, 1);
   manufacturer[600] = '\0';
   provider[sizeof(provider) - 2] = 'p';
   provider[sizeof(provider) - 1] = '\0';
+  cap = (su_error_log_capture){
+    "installed update ID needs 193 bytes; AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE is 192", 0
+  };
   assert_int_equal(
       az_iot_su_client_update_device_properties(&client, &dp), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
   assert_memory_equal(&client, &before, sizeof(before));
+  assert_int_equal(cap.count, 1);
+  az_iot_log_set_global_sink(NULL);
   assert_int_equal(az_iot_su_device_properties_buffer_size(&dp), 0);
   az_iot_su_client_deinit(&client);
 }
