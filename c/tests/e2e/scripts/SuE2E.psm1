@@ -11,7 +11,8 @@
 .DESCRIPTION
     One offer per scenario. Each is an imported update whose compatibility is
     unique to the run and the scenario, plus an Azure Device Registry
-    OnboardingUpdate job for it, so runs and scenarios never see each other's
+    OnboardingUpdate job for it, scheduled with one run, so runs and scenarios
+    never see each other's
     offers.
 
     Calls the published REST APIs (api-version 2026-11-02-preview):
@@ -230,7 +231,8 @@ function Import-SuE2EUpdate {
 
     $deadline = (Get-Date).AddMinutes(10)
     while ($true) {
-        $op = (Invoke-SuE2ERest -Method Get -Uri $operation -Token $token).Body
+        # A fresh token per poll: a cached one can expire within the wait.
+        $op = (Invoke-SuE2ERest -Method Get -Uri $operation -Token (Get-SuE2EToken $script:AduScope)).Body
         if ($op.status -eq 'Succeeded') { break }
         if ($op.status -eq 'Failed') { throw "Import of $Provider/$Name/$Version failed: $($op | ConvertTo-Json -Depth 10 -Compress)" }
         if ((Get-Date) -gt $deadline) { throw "Import of $Provider/$Name/$Version did not finish in time" }
@@ -239,6 +241,11 @@ function Import-SuE2EUpdate {
     return "updates/providers/$Provider/names/$Name/versions/$Version"
 }
 
+<#
+.SYNOPSIS
+    Creates an OnboardingUpdate job and schedules one run of it, which starts
+    now. Returns the run name. A job offers nothing until it has a run.
+#>
 function New-SuE2EOnboardingJob {
     param(
         [Parameter(Mandatory)][hashtable]$Config,
@@ -259,13 +266,46 @@ function New-SuE2EOnboardingJob {
 
     $deadline = (Get-Date).AddMinutes(5)
     while ($true) {
-        $job = (Invoke-SuE2ERest -Method Get -Uri $uri -Token $token).Body
+        $job = (Invoke-SuE2ERest -Method Get -Uri $uri -Token (Get-SuE2EToken $script:ArmScope)).Body
         $state = $job.properties.provisioningState
-        if ($state -eq 'Succeeded') { return }
+        if ($state -eq 'Succeeded') { break }
         if ($state -in 'Failed', 'Canceled') { throw "Job $JobName provisioning $state" }
         if ((Get-Date) -gt $deadline) { throw "Job $JobName did not provision in time" }
         Start-Sleep -Seconds 10
     }
+
+    # No scheduledTime: the run starts now.
+    $run = 'run-1'
+    $runUri = "$(Get-SuE2EJobsUri $Config)/$JobName/runs/$($run)?api-version=$script:ApiVersion"
+    Invoke-SuE2ERest -Method Put -Uri $runUri -Token (Get-SuE2EToken $script:ArmScope) -Body @{ properties = @{} } | Out-Null
+    return $run
+}
+
+<#
+.SYNOPSIS
+    Waits until every job's run is Active, then -GraceSeconds more: devices
+    were measured to get 401000 for about 3 min after a run turned Active.
+#>
+function Wait-SuE2EJobRuns {
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][hashtable[]]$Runs,   # @{ Job; Run }
+        [int]$Minutes = 10,
+        [int]$GraceSeconds = 300
+    )
+    $deadline = (Get-Date).AddMinutes($Minutes)
+    foreach ($r in $Runs) {
+        $uri = "$(Get-SuE2EJobsUri $Config)/$($r.Job)/runs/$($r.Run)?api-version=$script:ApiVersion"
+        while ($true) {
+            $p = (Invoke-SuE2ERest -Method Get -Uri $uri -Token (Get-SuE2EToken $script:ArmScope)).Body.properties
+            $status = if ($p.PSObject.Properties['status']) { $p.status } else { '<none>' }
+            if ($status -eq 'Active') { break }
+            if ($status -in 'Failed', 'Canceled', 'Completed') { throw "Run $($r.Job)/$($r.Run) is $status" }
+            if ((Get-Date) -gt $deadline) { throw "Run $($r.Job)/$($r.Run) not Active in $Minutes min (status $status)" }
+            Start-Sleep -Seconds 10
+        }
+    }
+    Start-Sleep -Seconds $GraceSeconds
 }
 
 <#
@@ -312,9 +352,12 @@ function New-SuE2EOffers {
     param(
         [Parameter(Mandatory)][string]$RunId,
         [Parameter(Mandatory)][string]$StatePath,
-        [string]$WorkDir = (Join-Path ([System.IO.Path]::GetTempPath()) "su-e2e-$RunId")
+        [string]$WorkDir = (Join-Path ([System.IO.Path]::GetTempPath()) "su-e2e-$RunId"),
+        # Wait after the runs turn Active; see Wait-SuE2EJobRuns.
+        [int]$GraceSeconds = 300
     )
     $config = Get-SuE2EConfig
+    $runs = @()
     $tag = ($RunId -replace '[^A-Za-z0-9]', '').ToLowerInvariant()
     $manufacturer = "e2e$tag"
     $state = [ordered]@{ Manufacturer = $manufacturer; Offers = [ordered]@{} }
@@ -333,6 +376,7 @@ function New-SuE2EOffers {
             Blobs  = [System.Collections.Generic.List[string]]::new()
             Update = "updates/providers/sdke2e/names/$model/versions/1.0.0"
             Job    = $null
+            Run    = $null
         }
         $state.Offers[$scenario] = $offer
         & $save
@@ -341,9 +385,12 @@ function New-SuE2EOffers {
             -Blobs $offer.Blobs -OnChange $save
         $offer.Job = "su-e2e-$tag-$short"
         & $save
-        New-SuE2EOnboardingJob -Config $config -JobName $offer.Job -UpdateResourceId $update
+        $offer.Run = New-SuE2EOnboardingJob -Config $config -JobName $offer.Job -UpdateResourceId $update
+        & $save
+        $runs += @{ Job = $offer.Job; Run = $offer.Run }
         $exports[$script:Scenarios[$scenario].Variable] = $model
     }
+    Wait-SuE2EJobRuns -Config $config -Runs $runs -GraceSeconds $GraceSeconds
 
     foreach ($k in $exports.Keys) {
         Set-Item -Path "env:$k" -Value $exports[$k]
@@ -440,4 +487,4 @@ function Remove-SuE2EOffers {
 }
 
 Export-ModuleMember -Function New-SuE2EOffers, Test-SuE2EOffers, Remove-SuE2EOffers, Import-SuE2EUpdate,
-New-SuE2EOnboardingJob, Get-SuE2EDeviceResult
+New-SuE2EOnboardingJob, Wait-SuE2EJobRuns, Get-SuE2EDeviceResult
