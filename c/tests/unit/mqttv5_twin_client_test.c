@@ -3240,6 +3240,56 @@ static void a_refusal_and_the_disconnect_in_one_pump_keep_the_refusal(void** sta
   assert_int_equal(count_states(AZ_IOT_CONN_STATE_RETRY_PENDING, AZ_IOT_ERR_TIMEOUT), 0);
 }
 
+/* The requested disconnect completes and a transport error follows in the same pump: the
+ * error ends the session (its reason, no miss). */
+static void a_transport_error_after_the_disconnect_in_one_pump_counts_no_miss(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  expire_twin_push_wait_to_disconnect(fx);
+  az_iot_mock_mqtt_client_set_events_per_loop(fx->mock, 2);
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(fx->mock));
+  assert_true(az_iot_mock_mqtt_client_inject_error(fx->mock, AZ_IOT_ERR_MQTT));
+  assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
+  assert_int_equal(count_states(AZ_IOT_CONN_STATE_RETRY_PENDING, AZ_IOT_ERR_TIMEOUT), 0);
+  assert_int_equal(count_states(AZ_IOT_CONN_STATE_RETRY_PENDING, AZ_IOT_ERR_MQTT), 1);
+
+  reconnect_to_connected(fx);
+  assert_twin_push_wait_for_attempt(fx, 1);
+}
+
+/* The requested disconnect completes and a failed SUBACK follows in the same pump: the
+ * subscription failure ends the session (its reason, no miss). */
+static void a_subscription_failure_after_the_disconnect_in_one_pump_counts_no_miss(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  assert_int_equal(
+      az_iot_connection_client__add_subscription_on_connect(
+          &fx->conn,
+          "ih/ut-device/dev/custom",
+          AZ_IOT_MQTT_QOS_1,
+          fx,
+          AZ_IOT_SUBSCRIPTION_FAILS_SESSION,
+          NULL),
+      AZ_IOT_OK);
+  const az_iot_mock_call* sub = find_subscribe(fx->mock, "ih/ut-device/dev/custom");
+  assert_non_null(sub);
+  uint16_t pid = sub->packet_id;
+  expire_twin_push_wait_to_disconnect(fx);
+
+  az_iot_mock_mqtt_client_set_events_per_loop(fx->mock, 2);
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(fx->mock));
+  assert_true(az_iot_mock_mqtt_client_inject_suback(fx->mock, pid, AZ_IOT_ERR_MQTT));
+  assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
+  assert_int_equal(count_states(AZ_IOT_CONN_STATE_RETRY_PENDING, AZ_IOT_ERR_TIMEOUT), 0);
+  assert_int_equal(count_states(AZ_IOT_CONN_STATE_RETRY_PENDING, AZ_IOT_ERR_MQTT), 1);
+  assert_int_equal(az_iot_connection_client__remove_subscriptions_for(&fx->conn, fx), 1);
+
+  reconnect_to_connected(fx);
+  assert_twin_push_wait_for_attempt(fx, 1);
+}
+
 /* Without a reconnection policy an overdue push faults the hub scope. */
 static void an_overdue_twin_push_without_a_policy_faults(void** state)
 {
@@ -3595,6 +3645,14 @@ int main(void)
         teardown),
     cmocka_unit_test_setup_teardown(
         a_refusal_and_the_disconnect_in_one_pump_keep_the_refusal,
+        setup_push_desired_reconnect,
+        teardown),
+    cmocka_unit_test_setup_teardown(
+        a_transport_error_after_the_disconnect_in_one_pump_counts_no_miss,
+        setup_push_desired_reconnect,
+        teardown),
+    cmocka_unit_test_setup_teardown(
+        a_subscription_failure_after_the_disconnect_in_one_pump_counts_no_miss,
         setup_push_desired_reconnect,
         teardown),
     cmocka_unit_test_setup_teardown(

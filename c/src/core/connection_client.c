@@ -4644,6 +4644,8 @@ static void announce_connected(az_iot_connection_client* c)
 static void fail_subscription_restore(az_iot_connection_client* c, az_iot_result reason)
 {
   memset(&c->subscription_gate, 0, sizeof(c->subscription_gate));
+  /* This failure, not a reconnect request, ends the session. */
+  c->requested_reconnect.ending = false;
   c->deferred = (reason != AZ_IOT_ERR_SUBSCRIPTION_REFUSED
                  && az_iot_retry_policy_is_enabled(&c->opts.reconnection_policy) && !c->user_close)
       ? DEFER_RECONNECT
@@ -5141,6 +5143,7 @@ static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
       az_iot_result r = (evt->status != AZ_IOT_OK) ? evt->status : AZ_IOT_ERR_MQTT;
       /* A transport failure, not the request, ends the session. */
       c->requested_reconnect.in_progress = false;
+      c->requested_reconnect.ending = false;
       c->deferred = (az_iot_retry_policy_is_enabled(&c->opts.reconnection_policy) && !c->user_close)
           ? DEFER_RECONNECT
           : DEFER_FAULT;
