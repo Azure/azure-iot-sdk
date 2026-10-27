@@ -51,6 +51,12 @@ typedef void (*_az_mqtt_core_on_transport_error_fn)(
     az_mqtt_core* core,
     az_mqtt_native_error const* error);
 
+/**
+ * @brief Internal: called by the core before it closes a session for a received packet over
+ * client_maximum_packet_size; may send DISCONNECT.
+ */
+typedef void (*_az_mqtt_core_on_packet_too_large_fn)(az_mqtt_core* core);
+
 /** @brief Connection, framing, keep-alive and session state of one client. Internal. */
 struct az_mqtt_core
 {
@@ -65,6 +71,8 @@ struct az_mqtt_core
     az_mqtt_proxy_options const* proxy;
     _az_mqtt_core_on_closed_fn on_closed;
     _az_mqtt_core_on_transport_error_fn on_transport_error;
+    /** @brief May be NULL. */
+    _az_mqtt_core_on_packet_too_large_fn on_packet_too_large;
     /** @brief In-flight requests: az_mqtt_inflight_entry[] (caller storage), at most UINT16_MAX. */
     az_span inflight_control_buffer;
     /** @brief Stored PUBLISH packets awaiting acknowledgement (caller storage), oldest first. */
@@ -83,6 +91,8 @@ struct az_mqtt_core
     uint32_t dispatching_generation;
     /** @brief Server Maximum Packet Size (mqttv5 CONNACK); 0: none. Reset when a session ends. */
     uint32_t server_maximum_packet_size;
+    /** @brief Maximum Packet Size the client sent (mqttv5 CONNECT); 0: none. */
+    uint32_t client_maximum_packet_size;
     az_mqtt_client_state state;
     uint16_t port;
     uint16_t next_packet_id;

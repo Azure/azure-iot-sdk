@@ -18,7 +18,11 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <netdb.h>
+#ifdef ESP_PLATFORM
+#include <sys/poll.h> // ESP-IDF has no <poll.h>.
+#else
 #include <poll.h>
+#endif
 #include <stdio.h>
 #include <string.h>
 #include <sys/socket.h>

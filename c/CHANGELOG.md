@@ -199,6 +199,14 @@
 
 ### Bugs Fixed
 
+- az_mqtt adapter: the bundled az_mqtt is updated to main `3a2c61b` (was `58a0799` plus selected
+  changes; see `deps/az_mqtt/VENDORED.md`). Invalid options are refused with `AZ_ERROR_ARG` before
+  anything is sent: Will, SUBSCRIBE and PUBLISH QoS above 2; MQTT 5 Retain Handling above 2, No
+  Local on a shared subscription, Authentication Data without Authentication Method, and AUTH reason
+  codes other than Success, Continue authentication and Re-authenticate. The connection is closed
+  when a CONNACK reports Session Present after Clean Session (MQTT 3.1.1) or Clean Start (MQTT 5),
+  and, in MQTT 5, when a received packet exceeds the client's Maximum Packet Size (after DISCONNECT
+  0x95). An mbedTLS verify callback's rejection is reported as a TLS verification failure.
 - az_mqtt adapter: the copies `connect()` makes of credentials (password or SAS token, PEM key and
   certificate, proxy credentials) are zeroed before they are freed, and `destroy()` zeroes the send
   buffer, which holds the CONNECT, before freeing it.
