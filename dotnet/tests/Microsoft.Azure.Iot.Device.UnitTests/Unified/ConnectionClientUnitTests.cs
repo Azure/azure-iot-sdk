@@ -205,6 +205,57 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
             Assert.Equal(sentRequestCount, mockMqttClient.SentMqttTrafficInOrder.Count(traffic => traffic.Publish?.Topic == requestTopic));
         }
 
+        [Fact]
+        public async Task InterruptedSendIsCanceledNotResentWhenFaultCallbackReconnects()
+        {
+            using MockConnectionMqttClient mockMqttClient = new();
+            ConnectionContext context = GetMockConnectionContext(false);
+            using ConnectionClient client = new(new() { MqttClient = mockMqttClient });
+            await client.ConnectToHubAsync(context, TestContext.Current.CancellationToken);
+
+            // The application reconnects straight from the fault callback, without disconnecting first, which clears
+            // the client-wide fault while the interrupted send is still waiting for its acknowledgement.
+            TaskCompletionSource reconnected = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            client.ConnectionFaultedAsync += async _ =>
+            {
+                try
+                {
+                    await client.ConnectToHubAsync(context, TestContext.Current.CancellationToken);
+                    reconnected.TrySetResult();
+                }
+                catch (Exception e)
+                {
+                    reconnected.TrySetException(e);
+                }
+            };
+
+            const string requestTopic = "test/request";
+            TaskCompletionSource<string> response = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            int requestAttempts = 0;
+            mockMqttClient.OnPublish = async publish =>
+            {
+                if (publish.Topic == requestTopic && Interlocked.Increment(ref requestAttempts) == 1)
+                {
+                    // Hold the interrupted send until the fault callback has reconnected, then report it as interrupted.
+                    _ = mockMqttClient.SimulateServerDisconnectAsync(MqttDisconnectReason.NotAuthorized);
+                    await reconnected.Task.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+                    throw new MqttClientNotConnectedException("Connection lost while waiting for the acknowledgement.");
+                }
+
+                return new() { ReasonCode = MqttPublishAckReasonCode.Success };
+            };
+
+            Task<string> pending = ((IConnectionClient)client).PublishAndWaitForResponseAsync(
+                new MqttPublish() { Topic = requestTopic, QualityOfServiceLevel = MqttQualityOfServiceLevel.AtLeastOnce },
+                response.Task,
+                TestContext.Current.CancellationToken);
+
+            OperationCanceledException exception = await Assert.ThrowsAnyAsync<OperationCanceledException>(
+                () => pending.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken));
+            Assert.IsAssignableFrom<DeviceException>(exception.InnerException);
+            Assert.Equal(1, Volatile.Read(ref requestAttempts));
+        }
+
         [Theory]
         [InlineData(false)]
         [InlineData(true)]

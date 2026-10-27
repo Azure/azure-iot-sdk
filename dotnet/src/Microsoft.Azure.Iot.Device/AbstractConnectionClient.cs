@@ -1899,11 +1899,21 @@ namespace Microsoft.Azure.Iot.Device
 
             // Keep the fault that ended this request's connection for the whole request, because a reconnection started
             // from the application's fault callback clears the client-wide fault before this request resumes. Without
-            // this the request would be sent again in the new session instead of being canceled.
+            // this the request would be sent again in the new session instead of being canceled. The fault also cancels
+            // this request's token so that a send interrupted by it is not retried by the nested publish or subscribe
+            // retry loops, which only see the client-wide fault.
             DeviceException? requestFault = null;
             void CaptureFault(DeviceException fault)
             {
                 Interlocked.CompareExchange(ref requestFault, fault, null);
+                try
+                {
+                    lifetime.Cancel();
+                }
+                catch (ObjectDisposedException)
+                {
+                    // This request already finished, so there is nothing left to cancel.
+                }
             }
             void ThrowIfRequestFaulted()
             {
@@ -2008,6 +2018,12 @@ namespace Microsoft.Azure.Iot.Device
                         UnrecoverablyFaulted -= HandleFault;
                     }
                 }, lifetime.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested && Volatile.Read(ref requestFault) != null)
+            {
+                // Report the cancellation caused by the fault with that fault, wherever the cancellation surfaced.
+                ThrowIfUnrecoverablyFaulted(Volatile.Read(ref requestFault));
+                throw;
             }
             finally
             {
