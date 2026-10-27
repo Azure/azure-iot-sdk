@@ -111,7 +111,8 @@ run_unit() { # <test index> <shard spec or ->
     (
         # errexit is off in a subshell tested by ||, so a failed cd must exit here.
         [ -z "${wd}" ] || cd "${wd}" || exit 97
-        if [ "$2" != "-" ]; then export AZ_IOT_TEST_SHARD="$2"; fi
+        # An unsplit unit runs every test, whatever the caller exported.
+        if [ "$2" != "-" ]; then export AZ_IOT_TEST_SHARD="$2"; else unset AZ_IOT_TEST_SHARD; fi
         "${valgrind}" --tool="${tool}" --error-exitcode=42 -s --num-callers=40 \
             "${tool_opts[@]}" --suppressions="${supp}" "${cmd[@]}"
     ) >"${log}" 2>&1 || rc=$?

@@ -719,9 +719,11 @@ static int write_temp_pem(const char* pem, char* path_out, size_t cap)
   /* A millisecond stamp alone is not unique: writing a CA and a client
    * certificate back to back can land both in the same millisecond, and the
    * second silently overwrites the first -- which presents as a handshake that
-   * fails for no visible reason. */
+   * fails for no visible reason. The process id keeps parallel processes
+   * (AZ_IOT_TEST_SHARD) sharing this directory apart. */
   static unsigned long seq = 0;
-  int written = snprintf(path_out, cap, "az_iot_conf_pem_%lu_%lu.pem", conf_now_ms(), seq++);
+  int written = snprintf(
+      path_out, cap, "az_iot_conf_pem_%lu_%lu_%lu.pem", conf_process_id(), conf_now_ms(), seq++);
   if (written < 0 || (size_t)written >= cap)
   {
     return 0; /* a truncated path is how the collision above happens again */
