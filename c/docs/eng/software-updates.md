@@ -1651,8 +1651,9 @@ A file `mimeType` that is not a string is rejected the same way as malformed JSO
 advances past it without skipping its members, which it would then read as file properties.
 
 The largest status report grows 117 bytes per step, so `AZ_IOT_SU_MIN_MESSAGE_SIZE` is
-1792 + 128 × `AZ_IOT_SU_MAX_STEP_COUNT` (3072 by default). Memory cost of the default limits against
-2/2 on 64-bit: `az_iot_su_client` 8584 bytes (4616), default workspace 85640 (78920), parsed manifest
+2176 + 128 × `AZ_IOT_SU_MAX_STEP_COUNT` (3456 by default; the base fits a 128-byte workflow id, fully
+escaped). Memory cost of the default limits against 2/2 on 64-bit: `az_iot_su_client` 8352 bytes
+(4384), default workspace 86607 (79887), parsed manifest
 3216 (464). See [client-configuration.md](../client-configuration.md#software-updates-manifest-limits).
 
 ### Known limitation: strict step parsing

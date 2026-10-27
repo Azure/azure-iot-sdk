@@ -142,6 +142,10 @@ extern "C"
 #error \
     "AZ_IOT_SU_WORKFLOW_ID_SIZE and AZ_IOT_SU_RETRY_TIMESTAMP_SIZE are fixed and cannot be overridden"
 #endif
+#ifdef AZ_IOT_SU_MAX_WORKFLOW_ID_LEN
+#error \
+    "AZ_IOT_SU_MAX_WORKFLOW_ID_LEN is removed: workflow IDs are bounded by AZ_IOT_SU_WORKFLOW_ID_SIZE"
+#endif
 
 /** @brief Default az_iot_su_limits::max_root_keys. */
 #ifndef AZ_IOT_SU_DEFAULT_MAX_ROOT_KEYS
@@ -159,9 +163,9 @@ extern "C"
 #endif
 
 /** @brief Smallest az_iot_su_limits::max_message_size: the largest status report the client
- * builds fits, so no report is refused for its size. That report takes up to 1734 bytes plus 117
+ * builds fits, so no report is refused for its size. That report needs up to 2166 bytes plus 117
  * per step. */
-#define AZ_IOT_SU_MIN_MESSAGE_SIZE (1792u + 128u * (AZ_IOT_SU_MAX_STEP_COUNT))
+#define AZ_IOT_SU_MIN_MESSAGE_SIZE (2176u + 128u * (AZ_IOT_SU_MAX_STEP_COUNT))
 
 /** @brief Default az_iot_su_limits::max_message_size. */
 #ifndef AZ_IOT_SU_DEFAULT_MAX_MESSAGE_SIZE
@@ -209,15 +213,11 @@ extern "C"
  * @brief Largest decoded workflow `id` the client accepts, in bytes. It is kept for reporting,
  * duplicate detection and persistence. A deployment with a longer id is refused: nothing is
  * processed or reported, and AZ_IOT_SU_EVENT_UPDATE_REFUSED is raised with
- * AZ_IOT_ERR_NOT_ENOUGH_SPACE. Deployment ids are GUID-shaped (~36 chars).
+ * AZ_IOT_ERR_NOT_ENOUGH_SPACE. 128, the service's maximum workflow id length.
  */
-#define AZ_IOT_SU_WORKFLOW_ID_SIZE 64
+#define AZ_IOT_SU_WORKFLOW_ID_SIZE 128
 /** @brief Capacity for the copied-out `retryTimestamp` (ISO-8601, ~28 chars; not persisted). */
 #define AZ_IOT_SU_RETRY_TIMESTAMP_SIZE 64
-
-#ifndef AZ_IOT_SU_MAX_WORKFLOW_ID_LEN
-#define AZ_IOT_SU_MAX_WORKFLOW_ID_LEN 73 /* software updates service id: GUID-style, plus NUL */
-#endif
 
 /**
  * @brief Consecutive failed persist_workflow_state_fn writes after which the client stops retrying.

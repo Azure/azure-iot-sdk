@@ -639,7 +639,7 @@ typedef struct
   /* Outcome and workflow id of each report, in order. */
   az_iot_su_outcome outcomes[64];
   char workflow_ids[64][48];
-  char last_workflow_id[128];
+  char last_workflow_id[AZ_IOT_SU_WORKFLOW_ID_SIZE + 1];
   char last_extended[32];
   char last_details[256];
   bool last_had_installed_update_id;
