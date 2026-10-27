@@ -439,6 +439,31 @@ static int wait_until(
   return p(r);
 }
 
+/** @brief Poll until the proxy has made more than @p minimum writes in @p dir.
+ *
+ * The proxy publishes its write count after a pass of its pump, so a client can
+ * see the last byte before the count includes it.
+ *
+ * @return 1 once more than @p minimum, 0 on timeout.
+ */
+static int wait_proxy_writes_above(
+    az_iot_test_proxy* proxy,
+    az_iot_test_proxy_direction dir,
+    uint64_t minimum,
+    unsigned timeout_ms)
+{
+  unsigned long deadline = conf_now_ms() + timeout_ms;
+  while (az_iot_test_proxy_writes(proxy, dir) <= minimum)
+  {
+    if (conf_now_ms() >= deadline)
+    {
+      return 0;
+    }
+    conf_sleep_ms(10);
+  }
+  return 1;
+}
+
 /** @brief Poll the proxy for the client DISCONNECT reason.
  *
  * The adapter reports DISCONNECTED once the packet is written; the proxy relays
@@ -1906,7 +1931,7 @@ static void roundtrip_survives_broker_to_client_fragmentation(void** state)
    * silently ignored -- which is exactly the bug it exists to catch. An
    * unfragmented session needs a handful of writes to reach this point; one
    * byte at a time needs one per byte. */
-  assert_true(az_iot_test_proxy_writes(proxy, AZ_IOT_TEST_PROXY_B2C) > 50);
+  assert_true(wait_proxy_writes_above(proxy, AZ_IOT_TEST_PROXY_B2C, 50, k_step_timeout_ms));
 
   (void)c->iface->disconnect(c);
   destroy_client(c);
@@ -3545,7 +3570,7 @@ static void a_websocket_session_survives_fragmentation(void** state)
   /* The shaping was actually applied, not silently ignored: one write per byte
    * means far more writes than packets. Without this the case would pass just
    * as well against a proxy that forwarded whole buffers. */
-  assert_true(az_iot_test_proxy_writes(proxy, AZ_IOT_TEST_PROXY_B2C) > 10);
+  assert_true(wait_proxy_writes_above(proxy, AZ_IOT_TEST_PROXY_B2C, 10, k_step_timeout_ms));
 
   (void)c->iface->disconnect(c);
   destroy_client(c);
