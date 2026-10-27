@@ -3207,6 +3207,39 @@ static void a_refused_subscription_during_the_requested_disconnect_counts_no_mis
   assert_twin_push_wait_for_attempt(fx, 1);
 }
 
+/* A refused session subscription and the requested disconnect's completion in one pump:
+ * the refusal is kept (no retry, no miss), not replaced by the timeout reconnect. */
+static void a_refusal_and_the_disconnect_in_one_pump_keep_the_refusal(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  assert_int_equal(
+      az_iot_connection_client__add_subscription_on_connect(
+          &fx->conn,
+          "ih/ut-device/dev/custom",
+          AZ_IOT_MQTT_QOS_1,
+          fx,
+          AZ_IOT_SUBSCRIPTION_FAILS_SESSION,
+          NULL),
+      AZ_IOT_OK);
+  const az_iot_mock_call* sub = find_subscribe(fx->mock, "ih/ut-device/dev/custom");
+  assert_non_null(sub);
+  uint16_t pid = sub->packet_id;
+  expire_twin_push_wait_to_disconnect(fx);
+
+  az_iot_mock_mqtt_client_set_events_per_loop(fx->mock, 2);
+  assert_true(
+      az_iot_mock_mqtt_client_inject_suback(fx->mock, pid, AZ_IOT_ERR_SUBSCRIPTION_REFUSED));
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(fx->mock));
+  assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
+
+  assert_int_equal(
+      az_iot_connection_client_get_state(&fx->conn, AZ_IOT_CONN_SCOPE_HUB),
+      AZ_IOT_CONN_STATE_FAULTED);
+  assert_int_equal(count_states(AZ_IOT_CONN_STATE_FAULTED, AZ_IOT_ERR_SUBSCRIPTION_REFUSED), 1);
+  assert_int_equal(count_states(AZ_IOT_CONN_STATE_RETRY_PENDING, AZ_IOT_ERR_TIMEOUT), 0);
+}
+
 /* Without a reconnection policy an overdue push faults the hub scope. */
 static void an_overdue_twin_push_without_a_policy_faults(void** state)
 {
@@ -3558,6 +3591,10 @@ int main(void)
         teardown),
     cmocka_unit_test_setup_teardown(
         a_refused_subscription_during_the_requested_disconnect_counts_no_miss,
+        setup_push_desired_reconnect,
+        teardown),
+    cmocka_unit_test_setup_teardown(
+        a_refusal_and_the_disconnect_in_one_pump_keep_the_refusal,
         setup_push_desired_reconnect,
         teardown),
     cmocka_unit_test_setup_teardown(

@@ -5100,6 +5100,12 @@ static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
         c->deferred = DEFER_IDLE;
         c->deferred_reason = evt->status;
       }
+      else if (c->requested_reconnect.in_progress && c->deferred != DEFER_NONE)
+      {
+        /* A failure staged earlier in this pump (e.g. a refused SUBACK) ends the
+         * session with its own reason. */
+        c->requested_reconnect.in_progress = false;
+      }
       else if (c->requested_reconnect.in_progress)
       {
         /* The disconnect a feature client's reconnect request sent. */
