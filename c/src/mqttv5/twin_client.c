@@ -189,6 +189,8 @@ static void twin_push_wait_on_push(az_iot_mqttv5_twin_client* t, const az_iot_mq
   TI(t).twin_push_wait.received = true;
   TI(t).twin_push_wait.armed = false;
   TI(t).twin_push_wait.missed_count = 0;
+  /* A request already queued no longer counts as a miss when it ends the session. */
+  TI(t).twin_push_wait.reconnect_requested = false;
 }
 
 /** @brief Hub CONNECTED: arm the wait unless no push is expected or it already arrived. */

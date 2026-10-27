@@ -6200,6 +6200,33 @@ static uint32_t limit_wait_to_sas_token_deadlines(
   return (uint64_t)timeout_ms > remaining ? (uint32_t)remaining : timeout_ms;
 }
 
+/**
+ * @brief @p timeout_ms, capped by the SAS token deadlines and by a feature
+ * client's reconnect request: none while it waits to be served, and its
+ * disconnect bound once served.
+ */
+static uint32_t limit_wait_to_connection_deadlines(
+    const az_iot_connection_client* c,
+    uint32_t timeout_ms)
+{
+  timeout_ms = limit_wait_to_sas_token_deadlines(c, timeout_ms);
+  if (c->requested_reconnect.requested)
+  {
+    return 0;
+  }
+  uint64_t deadline = c->requested_reconnect.disconnect_deadline_ms;
+  if (c->requested_reconnect.in_progress && deadline != 0)
+  {
+    uint64_t now = az_iot_time_mono_ms();
+    uint64_t remaining = deadline > now ? deadline - now : 0;
+    if ((uint64_t)timeout_ms > remaining)
+    {
+      timeout_ms = (uint32_t)remaining;
+    }
+  }
+  return timeout_ms;
+}
+
 static void apply_deferred(az_iot_connection_client* c)
 {
   if (c->deferred == DEFER_NONE)
@@ -7747,7 +7774,7 @@ az_iot_result az_iot_connection_client_do_work(
         }
       }
       /* A hub session beside it is pumped only after this wait. */
-      wait_ms = limit_wait_to_sas_token_deadlines(client, wait_ms);
+      wait_ms = limit_wait_to_connection_deadlines(client, wait_ms);
       r = client->dps_mqtt->iface->process_loop(client->dps_mqtt, wait_ms);
     }
 
@@ -7793,7 +7820,7 @@ az_iot_result az_iot_connection_client_do_work(
   if (client->active_client)
   {
     r = client->active_client->iface->process_loop(
-        client->active_client, limit_wait_to_sas_token_deadlines(client, timeout_ms));
+        client->active_client, limit_wait_to_connection_deadlines(client, timeout_ms));
   }
 
   apply_deferred(client);
@@ -7874,8 +7901,19 @@ az_iot_result az_iot_connection_client_do_work(
       && az_iot_time_mono_ms() >= client->requested_reconnect.disconnect_deadline_ms)
   {
     AZ_IOT_LOG_WARN(
-        AZ_IOT_LOG_COMPONENT_CONNECTION, "requested reconnect: no disconnect event; reconnecting");
-    end_session_for_requested_reconnect(client);
+        AZ_IOT_LOG_COMPONENT_CONNECTION,
+        "requested reconnect: no disconnect event; ending the session");
+    if (client->user_close)
+    {
+      /* close() came during the wait: it decides how the session ends. */
+      client->deferred = DEFER_IDLE;
+      client->deferred_reason = AZ_IOT_OK;
+      apply_deferred(client);
+    }
+    else
+    {
+      end_session_for_requested_reconnect(client);
+    }
   }
 
   /* A gated filter withdrawn while its ack was still outstanding stops holding
