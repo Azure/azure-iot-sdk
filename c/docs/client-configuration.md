@@ -147,12 +147,27 @@ Entry counts are run-time values in `az_iot_connection_client_options::limits`
 
 - `az_iot_connection_client_get_workspace_size(&limits)`: bytes needed, any alignment.
 - `AZ_IOT_CONNECTION_CLIENT_WORKSPACE_SIZE(...)`: the same as a constant expression, for static
-  arrays.
-- With `options.workspace` NULL, the client uses its own area, sized for the defaults; a limit
-  above its default then fails `init()` with `AZ_IOT_ERR_INVALID_ARG`. A workspace that is too small fails it
-  with `AZ_IOT_ERR_NOT_ENOUGH_SPACE` and logs the size needed.
+  arrays. `AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE`: the same for the defaults.
+- With `options.workspace` NULL, the client uses its own area, sized for the built-in defaults
+  below; a limit above one of them then fails `init()` with `AZ_IOT_ERR_INVALID_ARG`. A workspace
+  that is too small fails it with `AZ_IOT_ERR_NOT_ENOUGH_SPACE` and logs the size needed.
 - Defining one of the former macros (`AZ_IOT_MAX_PENDING_PUBACKS`, `AZ_IOT_DPS_HOST_BUF`, ...)
   before including the header is a compile error.
+
+The defaults are compile-time values
+([az_iot_connection_client_config.h](../inc/azure/iot/az_iot_connection_client_config.h)):
+`AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_<LIMIT>`, for example
+`AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_PENDING_PUBLISHES`. Set them as definitions, in a header
+named by `AZ_IOT_CONNECTION_CLIENT_CONFIG_FILE` (as written in a quoted `#include`), or with the
+CMake options of the same names, which also apply them to targets linking `az_iot_core`. They do
+not change the layout of `az_iot_connection_client`: if the SDK and the application use different
+values, `init()` refuses a static workspace too small for the SDK's.
+
+```c
+static uint8_t workspace[AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE];
+opts.workspace = workspace;
+opts.workspace_size = sizeof(workspace);
+```
 
 | Limit | Default | Bounds |
 | --- | --- | --- |

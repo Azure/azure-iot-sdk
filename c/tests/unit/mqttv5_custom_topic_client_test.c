@@ -21,7 +21,6 @@
 #include "support/connection_test_harness.h"
 #include "support/mock_mqtt_iface.h"
 #include "support/test_provider.h"
-#include "support/connection_default_limits.h"
 
 #define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
 #define DEVICE_ID "ut-device"
@@ -543,7 +542,7 @@ static void a_full_puback_table_sends_nothing(void** state)
   connect_and_init(test);
 
   az_iot_mqttv5_custom_topic_message message = { .topic = "x/y", .qos = AZ_IOT_MQTT_QOS_1 };
-  send_record records[AZ_IOT_TEST_DEFAULT_PENDING_PUBLISHES];
+  send_record records[AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_PENDING_PUBLISHES];
   memset(records, 0, sizeof(records));
   for (size_t i = 0; i < ARRAY_SIZE(records); ++i)
   {

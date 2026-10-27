@@ -6416,16 +6416,28 @@ static void sas_wipe(az_iot_connection_client* c)
   az_iot_crypto__wipe(c->auth, sizeof(c->auth));
 }
 
-/* Default entry counts: see az_iot_connection_client_limits. Must match
- * AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE. */
-#define LIMIT_DEFAULT_PENDING_PUBLISHES 16u
-#define LIMIT_DEFAULT_PUBLISH_RESERVATIONS 2u
-#define LIMIT_DEFAULT_PERSISTENT_SUBSCRIPTIONS 8u
-#define LIMIT_DEFAULT_SESSION_HANDLERS 4u
-#define LIMIT_DEFAULT_FEATURE_STATE_OBSERVERS 6u
-#define LIMIT_DEFAULT_APPLICATION_STATE_OBSERVERS 4u
-#define LIMIT_DEFAULT_FEATURE_CLIENTS 8u
-#define LIMIT_DEFAULT_INBOUND_HANDLERS 8u
+/* Counts the embedded area holds: _az_IOT_CONNECTION_CLIENT_EMBEDDED_WORKSPACE_SIZE. */
+#define LIMIT_EMBEDDED_PENDING_PUBLISHES 16u
+#define LIMIT_EMBEDDED_PUBLISH_RESERVATIONS 2u
+#define LIMIT_EMBEDDED_PERSISTENT_SUBSCRIPTIONS 8u
+#define LIMIT_EMBEDDED_SESSION_HANDLERS 4u
+#define LIMIT_EMBEDDED_FEATURE_STATE_OBSERVERS 6u
+#define LIMIT_EMBEDDED_APPLICATION_STATE_OBSERVERS 4u
+#define LIMIT_EMBEDDED_FEATURE_CLIENTS 8u
+#define LIMIT_EMBEDDED_INBOUND_HANDLERS 8u
+typedef char az_iot_connection_embedded_workspace_counts_agree
+    [(_az_IOT_CONNECTION_CLIENT_EMBEDDED_WORKSPACE_SIZE
+      == AZ_IOT_CONNECTION_CLIENT_WORKSPACE_SIZE(
+          LIMIT_EMBEDDED_PENDING_PUBLISHES,
+          LIMIT_EMBEDDED_PUBLISH_RESERVATIONS,
+          LIMIT_EMBEDDED_PERSISTENT_SUBSCRIPTIONS,
+          LIMIT_EMBEDDED_SESSION_HANDLERS,
+          LIMIT_EMBEDDED_FEATURE_STATE_OBSERVERS,
+          LIMIT_EMBEDDED_APPLICATION_STATE_OBSERVERS,
+          LIMIT_EMBEDDED_FEATURE_CLIENTS,
+          LIMIT_EMBEDDED_INBOUND_HANDLERS))
+         ? 1
+         : -1];
 /* Bound on the counts with no tighter maximum, so the size arithmetic cannot overflow. */
 #define LIMIT_MAX_ENTRIES 65535u
 
@@ -6445,10 +6457,14 @@ static bool limits_resolve(
     &out->max_feature_clients,          &out->max_inbound_handlers,
   };
   static const size_t fallback[] = {
-    LIMIT_DEFAULT_PENDING_PUBLISHES,        LIMIT_DEFAULT_PUBLISH_RESERVATIONS,
-    LIMIT_DEFAULT_PERSISTENT_SUBSCRIPTIONS, LIMIT_DEFAULT_SESSION_HANDLERS,
-    LIMIT_DEFAULT_FEATURE_STATE_OBSERVERS,  LIMIT_DEFAULT_APPLICATION_STATE_OBSERVERS,
-    LIMIT_DEFAULT_FEATURE_CLIENTS,          LIMIT_DEFAULT_INBOUND_HANDLERS,
+    AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_PENDING_PUBLISHES,
+    AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_PUBLISH_RESERVATIONS,
+    AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_PERSISTENT_SUBSCRIPTIONS,
+    AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_SESSION_HANDLERS,
+    AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_FEATURE_STATE_OBSERVERS,
+    AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_APPLICATION_STATE_OBSERVERS,
+    AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_FEATURE_CLIENTS,
+    AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_INBOUND_HANDLERS,
   };
   for (size_t i = 0; i < sizeof(fallback) / sizeof(fallback[0]); ++i)
   {
@@ -6466,17 +6482,17 @@ static bool limits_resolve(
       && out->max_persistent_subscriptions <= UINT8_MAX;
 }
 
-/** @brief Whether any resolved count in @p l is above its default. */
-static bool limits_above_defaults(const az_iot_connection_client_limits* l)
+/** @brief Whether any resolved count in @p l is above what the embedded area holds. */
+static bool limits_exceed_embedded_workspace(const az_iot_connection_client_limits* l)
 {
-  return l->max_pending_publishes > LIMIT_DEFAULT_PENDING_PUBLISHES
-      || l->max_publish_reservations > LIMIT_DEFAULT_PUBLISH_RESERVATIONS
-      || l->max_persistent_subscriptions > LIMIT_DEFAULT_PERSISTENT_SUBSCRIPTIONS
-      || l->max_session_handlers > LIMIT_DEFAULT_SESSION_HANDLERS
-      || l->max_feature_state_observers > LIMIT_DEFAULT_FEATURE_STATE_OBSERVERS
-      || l->max_application_state_observers > LIMIT_DEFAULT_APPLICATION_STATE_OBSERVERS
-      || l->max_feature_clients > LIMIT_DEFAULT_FEATURE_CLIENTS
-      || l->max_inbound_handlers > LIMIT_DEFAULT_INBOUND_HANDLERS;
+  return l->max_pending_publishes > LIMIT_EMBEDDED_PENDING_PUBLISHES
+      || l->max_publish_reservations > LIMIT_EMBEDDED_PUBLISH_RESERVATIONS
+      || l->max_persistent_subscriptions > LIMIT_EMBEDDED_PERSISTENT_SUBSCRIPTIONS
+      || l->max_session_handlers > LIMIT_EMBEDDED_SESSION_HANDLERS
+      || l->max_feature_state_observers > LIMIT_EMBEDDED_FEATURE_STATE_OBSERVERS
+      || l->max_application_state_observers > LIMIT_EMBEDDED_APPLICATION_STATE_OBSERVERS
+      || l->max_feature_clients > LIMIT_EMBEDDED_FEATURE_CLIENTS
+      || l->max_inbound_handlers > LIMIT_EMBEDDED_INBOUND_HANDLERS;
 }
 
 /** @brief Workspace bytes for resolved @p l. */
@@ -6589,10 +6605,11 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_init(
     return AZ_IOT_ERR_INVALID_ARG;
   }
   const size_t workspace_size = workspace_size_of(&limits);
-  if (opts->workspace == NULL && limits_above_defaults(&limits))
+  if (opts->workspace == NULL && limits_exceed_embedded_workspace(&limits))
   {
     AZ_IOT_LOG_ERROR(
-        AZ_IOT_LOG_COMPONENT_CONNECTION, "init: limits above the defaults need a workspace");
+        AZ_IOT_LOG_COMPONENT_CONNECTION,
+        "init: limits above the built-in defaults need a workspace");
     return AZ_IOT_ERR_INVALID_ARG;
   }
   if (opts->workspace != NULL && opts->workspace_size < workspace_size)

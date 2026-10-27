@@ -13,6 +13,7 @@
 #include "az_iot_log.h"
 #include "az_iot_mqtt_iface.h"
 #include "az_iot_certificate_provider.h"
+#include "az_iot_connection_client_config.h"
 #include "az_iot_crypto.h"
 #include "az_iot_dispatch.h"
 #include "az_iot_retry_policy.h"
@@ -369,7 +370,8 @@ extern "C"
   } az_iot_auth;
 
   /**
-   * @brief How many of each kind of entry the client keeps. 0 selects the default.
+   * @brief How many of each kind of entry the client keeps. 0 selects the default, set at compile
+   * time (az_iot_connection_client_config.h).
    *
    * The entries live in az_iot_connection_client_options::workspace, sized by
    * az_iot_connection_client_get_workspace_size(). A value above its maximum makes init() fail
@@ -907,7 +909,8 @@ extern "C"
     /**
      * Memory for the entries, owned by the client from init() to deinit(), which wipes it.
      * At least az_iot_connection_client_get_workspace_size(&limits) bytes, any alignment.
-     * NULL: the client uses its own area, sized for the defaults; no limit may exceed its default.
+     * NULL: the client uses its own area, sized for the built-in defaults (16, 2, 8, 4, 6, 4, 8,
+     * 8 in field order); no limit may exceed those.
      */
     uint8_t* workspace;
     size_t workspace_size; /**< Bytes in workspace. */
@@ -1519,8 +1522,8 @@ extern "C"
 
 /**
  * @brief Workspace bytes for these limits, as a constant expression for static arrays. Pass
- * the values az_iot_connection_client_limits would hold, defaults written out (16, 2, 8, 4, 6,
- * 4, 8, 8). Equal to az_iot_connection_client_get_workspace_size() for the same values.
+ * the values az_iot_connection_client_limits would hold, with the defaults written out in place
+ * of 0. Equal to az_iot_connection_client_get_workspace_size() for the same values.
  */
 #define AZ_IOT_CONNECTION_CLIENT_WORKSPACE_SIZE(                                       \
     pending_publishes,                                                                 \
@@ -1550,8 +1553,24 @@ extern "C"
        (feature_clients) * sizeof(az_iot_connection_feature_client_bind))              \
    + AZ_IOT_CONNECTION_CLIENT_WORKSPACE_ALIGN((inbound_handlers) * sizeof(az_iot_dispatch_entry)))
 
-/** @brief Workspace the client uses when az_iot_connection_client_options::workspace is NULL. */
-#define AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE \
+/**
+ * @brief Workspace bytes for the default limits (az_iot_connection_client_config.h), as a
+ * constant expression for static arrays.
+ */
+#define AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE                 \
+  AZ_IOT_CONNECTION_CLIENT_WORKSPACE_SIZE(                              \
+      AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_PENDING_PUBLISHES,           \
+      AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_PUBLISH_RESERVATIONS,        \
+      AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_PERSISTENT_SUBSCRIPTIONS,    \
+      AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_SESSION_HANDLERS,            \
+      AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_FEATURE_STATE_OBSERVERS,     \
+      AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_APPLICATION_STATE_OBSERVERS, \
+      AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_FEATURE_CLIENTS,             \
+      AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_INBOUND_HANDLERS)
+
+/* Area used when the options give no workspace (internal). Fixed counts 16, 2, 8, 4, 6, 4, 8, 8,
+ * not the overridable defaults, so the struct layout never depends on a macro. */
+#define _az_IOT_CONNECTION_CLIENT_EMBEDDED_WORKSPACE_SIZE \
   AZ_IOT_CONNECTION_CLIENT_WORKSPACE_SIZE(16, 2, 8, 4, 6, 4, 8, 8)
 
   struct az_iot_connection_client
@@ -1971,7 +1990,7 @@ extern "C"
      * rejected; it must not be adopted. */
     bool dps_cert_withheld;
     /* Workspace used when the options give none. */
-    uint8_t default_workspace[AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE];
+    uint8_t default_workspace[_az_IOT_CONNECTION_CLIENT_EMBEDDED_WORKSPACE_SIZE];
   };
 
   typedef struct az_iot_connection_client az_iot_connection_client;

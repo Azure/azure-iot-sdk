@@ -129,7 +129,18 @@ target_include_directories(az_iot_tests_smoke PRIVATE
 az_iot_add_cmocka_test(az_iot_tests_mqtt_iface_contract unit/mqtt_iface_contract_test.c)
 target_link_libraries(az_iot_tests_mqtt_iface_contract PRIVATE az_iot_test_support)
 az_iot_add_cmocka_test(az_iot_tests_connection_client_workspace unit/connection_client_workspace_test.c)
-target_include_directories(az_iot_tests_connection_client_workspace PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+# Default limits: built in, a user's definition, and a config file, resolved as documented.
+foreach(_case DEFAULT OVERRIDE CONFIG_FILE)
+    set(_t az_iot_tests_connection_client_config_${_case})
+    add_executable(${_t} unit/connection_client_config_test.c)
+    target_include_directories(${_t} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/unit)
+    target_link_libraries(${_t} PRIVATE az_iot_core)
+    target_compile_definitions(${_t} PRIVATE AZ_IOT_CONNECTION_CLIENT_CONFIG_TEST_${_case})
+    az_iot_apply_warnings(${_t})
+    add_test(NAME ${_t} COMMAND ${_t})
+endforeach()
+unset(_case)
+unset(_t)
 az_iot_add_cmocka_test(az_iot_tests_connection_client unit/connection_client_test.c)
 target_link_libraries(az_iot_tests_connection_client PRIVATE az_iot_test_support)
 # connection_client_test pulls internal headers (retry_policy.h, connection_client_internal.h)
@@ -196,7 +207,6 @@ az_iot_add_cmocka_test(az_iot_tests_diagnostics unit/diagnostics_test.c)
 target_include_directories(az_iot_tests_diagnostics PRIVATE
     ${PROJECT_SOURCE_DIR}/src/core)
 az_iot_add_cmocka_test(az_iot_tests_dispatch unit/dispatch_test.c)
-target_include_directories(az_iot_tests_dispatch PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_include_directories(az_iot_tests_dispatch PRIVATE
     ${PROJECT_SOURCE_DIR}/src/core)
 az_iot_add_cmocka_test(

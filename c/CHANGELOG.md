@@ -25,7 +25,10 @@
   `AZ_IOT_DPS_DEVICE_ID_BUF`, `AZ_IOT_DPS_OPERATION_ID_MAX`, `AZ_IOT_CONNECTION_PROFILE_RAW_BUF`,
   `AZ_IOT_MQTT_USERNAME_BUF`, `AZ_IOT_PERSISTENT_SUB_TOPIC_MAX` and `AZ_IOT_DISPATCH_PREFIX_MAX` are
   fixed. Defining any of them before including the headers is a compile error, so no build of the
-  application can lay out the client differently from the SDK.
+  application can lay out the client differently from the SDK. The defaults are compile-time
+  values (`AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_*`, `AZ_IOT_CONNECTION_CLIENT_CONFIG_FILE`, or the
+  CMake options of the same names); `AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE` sizes a static
+  workspace for them.
 - Breaking: `az_iot_su_platform_hooks` fields `persist_state_fn` and `load_state_fn` are renamed
   `persist_workflow_state_fn` and `load_workflow_state_fn`.
 - az_mqtt adapter: `AZ_IOT_AZ_MQTT_MESSAGE_STORAGE_SIZE` may be 0, for devices that only use clean

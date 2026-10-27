@@ -17,8 +17,6 @@
 
 #include "azure/iot/az_iot_connection_client.h"
 
-#include "support/connection_default_limits.h"
-
 #define TEST_WORKSPACE_MAX 16384u
 
 static uint8_t g_workspace[TEST_WORKSPACE_MAX + 1];
@@ -48,14 +46,14 @@ static void sizes_follow_the_limits(void** state)
   assert_int_equal(
       AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE,
       AZ_IOT_CONNECTION_CLIENT_WORKSPACE_SIZE(
-          AZ_IOT_TEST_DEFAULT_PENDING_PUBLISHES,
-          AZ_IOT_TEST_DEFAULT_PUBLISH_RESERVATIONS,
-          AZ_IOT_TEST_DEFAULT_PERSISTENT_SUBSCRIPTIONS,
-          AZ_IOT_TEST_DEFAULT_SESSION_HANDLERS,
-          AZ_IOT_TEST_DEFAULT_FEATURE_STATE_OBSERVERS,
-          AZ_IOT_TEST_DEFAULT_APPLICATION_STATE_OBSERVERS,
-          AZ_IOT_TEST_DEFAULT_FEATURE_CLIENTS,
-          AZ_IOT_TEST_DEFAULT_INBOUND_HANDLERS));
+          AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_PENDING_PUBLISHES,
+          AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_PUBLISH_RESERVATIONS,
+          AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_PERSISTENT_SUBSCRIPTIONS,
+          AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_SESSION_HANDLERS,
+          AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_FEATURE_STATE_OBSERVERS,
+          AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_APPLICATION_STATE_OBSERVERS,
+          AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_FEATURE_CLIENTS,
+          AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_INBOUND_HANDLERS));
 
   limits.max_pending_publishes = 64;
   limits.max_application_state_observers = 1;
@@ -63,13 +61,13 @@ static void sizes_follow_the_limits(void** state)
       az_iot_connection_client_get_workspace_size(&limits),
       AZ_IOT_CONNECTION_CLIENT_WORKSPACE_SIZE(
           64,
-          AZ_IOT_TEST_DEFAULT_PUBLISH_RESERVATIONS,
-          AZ_IOT_TEST_DEFAULT_PERSISTENT_SUBSCRIPTIONS,
-          AZ_IOT_TEST_DEFAULT_SESSION_HANDLERS,
-          AZ_IOT_TEST_DEFAULT_FEATURE_STATE_OBSERVERS,
+          AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_PUBLISH_RESERVATIONS,
+          AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_PERSISTENT_SUBSCRIPTIONS,
+          AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_SESSION_HANDLERS,
+          AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_FEATURE_STATE_OBSERVERS,
           1,
-          AZ_IOT_TEST_DEFAULT_FEATURE_CLIENTS,
-          AZ_IOT_TEST_DEFAULT_INBOUND_HANDLERS));
+          AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_FEATURE_CLIENTS,
+          AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_INBOUND_HANDLERS));
 
   /* Above a maximum: no size. */
   limits = (az_iot_connection_client_limits){ 0 };
@@ -83,27 +81,34 @@ static void sizes_follow_the_limits(void** state)
   assert_int_equal(az_iot_connection_client_get_workspace_size(&limits), 0);
 }
 
-static void zero_limits_resolve_to_the_defaults(void** state)
+static void zero_limits_resolve_to_the_defaults_in_a_static_workspace(void** state)
 {
   (void)state;
   static az_iot_connection_client client;
+  static uint8_t workspace[AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE];
   az_iot_connection_client_options opts = direct_options();
+  opts.workspace = workspace;
+  opts.workspace_size = sizeof(workspace);
   assert_int_equal(az_iot_connection_client_init(&client, &opts), AZ_IOT_OK);
   const az_iot_connection_client_limits* l = &client.opts.limits;
-  assert_int_equal(l->max_pending_publishes, AZ_IOT_TEST_DEFAULT_PENDING_PUBLISHES);
-  assert_int_equal(l->max_publish_reservations, AZ_IOT_TEST_DEFAULT_PUBLISH_RESERVATIONS);
-  assert_int_equal(l->max_persistent_subscriptions, AZ_IOT_TEST_DEFAULT_PERSISTENT_SUBSCRIPTIONS);
-  assert_int_equal(l->max_session_handlers, AZ_IOT_TEST_DEFAULT_SESSION_HANDLERS);
-  assert_int_equal(l->max_feature_state_observers, AZ_IOT_TEST_DEFAULT_FEATURE_STATE_OBSERVERS);
   assert_int_equal(
-      l->max_application_state_observers, AZ_IOT_TEST_DEFAULT_APPLICATION_STATE_OBSERVERS);
-  assert_int_equal(l->max_feature_clients, AZ_IOT_TEST_DEFAULT_FEATURE_CLIENTS);
-  assert_int_equal(l->max_inbound_handlers, AZ_IOT_TEST_DEFAULT_INBOUND_HANDLERS);
-  /* No workspace given: the entries are in the client's own one. */
+      l->max_pending_publishes, AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_PENDING_PUBLISHES);
+  assert_int_equal(
+      l->max_publish_reservations, AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_PUBLISH_RESERVATIONS);
+  assert_int_equal(
+      l->max_persistent_subscriptions,
+      AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_PERSISTENT_SUBSCRIPTIONS);
+  assert_int_equal(l->max_session_handlers, AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_SESSION_HANDLERS);
+  assert_int_equal(
+      l->max_feature_state_observers, AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_FEATURE_STATE_OBSERVERS);
+  assert_int_equal(
+      l->max_application_state_observers,
+      AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_APPLICATION_STATE_OBSERVERS);
+  assert_int_equal(l->max_feature_clients, AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_FEATURE_CLIENTS);
+  assert_int_equal(l->max_inbound_handlers, AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_INBOUND_HANDLERS);
   assert_true(
-      (uint8_t*)client.pending_pubacks >= client.default_workspace
-      && (uint8_t*)client.pending_pubacks
-          < client.default_workspace + sizeof(client.default_workspace));
+      (uint8_t*)client.pending_pubacks >= workspace
+      && (uint8_t*)client.pending_pubacks < workspace + sizeof(workspace));
   az_iot_connection_client_deinit(&client);
 }
 
@@ -147,7 +152,7 @@ static void a_workspace_holds_more_than_the_defaults(void** state)
   (void)state;
   enum
   {
-    OBSERVERS = AZ_IOT_TEST_DEFAULT_APPLICATION_STATE_OBSERVERS * 3
+    OBSERVERS = AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_APPLICATION_STATE_OBSERVERS * 3
   };
   static az_iot_connection_client client;
   az_iot_connection_client_options opts = direct_options();
@@ -195,8 +200,10 @@ static void init_refuses_limits_it_cannot_hold(void** state)
 
   /* Above one default and below another, with no workspace: same total size, still refused. */
   opts = direct_options();
-  opts.limits.max_feature_state_observers = AZ_IOT_TEST_DEFAULT_APPLICATION_STATE_OBSERVERS;
-  opts.limits.max_application_state_observers = AZ_IOT_TEST_DEFAULT_FEATURE_STATE_OBSERVERS;
+  opts.limits.max_feature_state_observers
+      = AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_APPLICATION_STATE_OBSERVERS;
+  opts.limits.max_application_state_observers
+      = AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_FEATURE_STATE_OBSERVERS;
   assert_int_equal(
       az_iot_connection_client_get_workspace_size(&opts.limits),
       AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE);
@@ -214,10 +221,14 @@ static void init_refuses_limits_it_cannot_hold(void** state)
 
   assert_memory_equal(&client, untouched, sizeof(client));
 
-  /* Fewer than the defaults fit the client's own workspace. */
+  /* No workspace: limits within the built-in defaults use the client's own. */
   opts = direct_options();
-  opts.limits.max_pending_publishes = 1;
+  opts.limits = (az_iot_connection_client_limits){ 1, 1, 1, 1, 1, 1, 1, 1 };
   assert_int_equal(az_iot_connection_client_init(&client, &opts), AZ_IOT_OK);
+  assert_true(
+      (uint8_t*)client.pending_pubacks >= client.default_workspace
+      && (uint8_t*)client.pending_pubacks
+          < client.default_workspace + sizeof(client.default_workspace));
   az_iot_connection_client_deinit(&client);
 }
 
@@ -225,7 +236,7 @@ int main(void)
 {
   const struct CMUnitTest tests[] = {
     cmocka_unit_test(sizes_follow_the_limits),
-    cmocka_unit_test(zero_limits_resolve_to_the_defaults),
+    cmocka_unit_test(zero_limits_resolve_to_the_defaults_in_a_static_workspace),
     cmocka_unit_test(entries_live_in_the_application_workspace_and_are_wiped),
     cmocka_unit_test(a_workspace_holds_more_than_the_defaults),
     cmocka_unit_test(init_refuses_limits_it_cannot_hold),

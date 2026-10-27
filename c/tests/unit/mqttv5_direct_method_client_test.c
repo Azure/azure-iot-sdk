@@ -44,7 +44,6 @@
 #include "support/mock_mqtt_iface.h"
 #include "support/test_provider.h"
 #include "support/subscription_ack.h"
-#include "support/connection_default_limits.h"
 
 #define DEV_TOPIC "ih/ut-device/dev/methods"
 #define SRV_TOPIC "ih/ut-device/srv/methods"
@@ -1723,7 +1722,7 @@ static void a_full_shared_pool_leaves_results_tracked(void** state)
   az_iot_result r = AZ_IOT_OK;
   for (size_t i = 0; r == AZ_IOT_OK; ++i)
   {
-    assert_true(i <= AZ_IOT_TEST_DEFAULT_PENDING_PUBLISHES);
+    assert_true(i <= AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_PENDING_PUBLISHES);
     r = az_iot_connection_client__publish(&fx->conn, NULL, &filler, ignore_ack, NULL);
   }
   assert_int_equal(r, AZ_IOT_ERR_BUSY);
@@ -1794,7 +1793,8 @@ static void init_reserves_pending_ack_slots_and_deinit_returns_them(void** state
     ++shared;
   }
   assert_int_equal(
-      shared, AZ_IOT_TEST_DEFAULT_PENDING_PUBLISHES - 2 * AZ_IOT_MQTTV5_DM_MAX_CONCURRENT);
+      shared,
+      AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_PENDING_PUBLISHES - 2 * AZ_IOT_MQTTV5_DM_MAX_CONCURRENT);
 
   az_iot_mqttv5_direct_method_client_deinit(&fx->dm);
   for (size_t i = 0; i < 2 * AZ_IOT_MQTTV5_DM_MAX_CONCURRENT; ++i)
@@ -1817,7 +1817,9 @@ static void init_without_room_for_its_reservation_fails(void** state)
   static const int other_owner = 0;
   assert_int_equal(
       az_iot_connection_client__reserve_pubacks(
-          &fx->conn, &other_owner, (uint16_t)AZ_IOT_TEST_DEFAULT_PENDING_PUBLISHES),
+          &fx->conn,
+          &other_owner,
+          (uint16_t)AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_PENDING_PUBLISHES),
       AZ_IOT_OK);
   assert_int_equal(
       az_iot_mqttv5_direct_method_client_init(&fx->dm, &fx->conn), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
@@ -2402,19 +2404,19 @@ static void assert_nothing_left_registered(
     const az_iot_mqttv5_direct_method_client* dm)
 {
   assert_int_equal(conn->required_profile_refs, 0);
-  for (size_t i = 0; i < AZ_IOT_TEST_DEFAULT_PUBLISH_RESERVATIONS; ++i)
+  for (size_t i = 0; i < AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_PUBLISH_RESERVATIONS; ++i)
   {
     assert_ptr_not_equal(conn->puback_reservations[i].owner, dm);
   }
-  for (size_t i = 0; i < AZ_IOT_TEST_DEFAULT_FEATURE_CLIENTS; ++i)
+  for (size_t i = 0; i < AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_FEATURE_CLIENTS; ++i)
   {
     assert_ptr_not_equal(conn->feature_client_binds[i].owner, dm);
   }
-  for (size_t i = 0; i < AZ_IOT_TEST_DEFAULT_INBOUND_HANDLERS; ++i)
+  for (size_t i = 0; i < AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_INBOUND_HANDLERS; ++i)
   {
     assert_false(conn->dispatch.entries[i].in_use && conn->dispatch.entries[i].user_ctx == dm);
   }
-  for (size_t i = 0; i < AZ_IOT_TEST_DEFAULT_FEATURE_STATE_OBSERVERS; ++i)
+  for (size_t i = 0; i < AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_FEATURE_STATE_OBSERVERS; ++i)
   {
     assert_ptr_not_equal(conn->feature_state_observers[i].user_ctx, dm);
   }
@@ -2455,9 +2457,9 @@ static void init_without_a_free_state_observer_fails_and_cleans_up(void** state)
   fixture* fx = (fixture*)*state;
   az_iot_mqttv5_direct_method_client_deinit(&fx->dm);
 
-  static int owners[AZ_IOT_TEST_DEFAULT_FEATURE_STATE_OBSERVERS];
+  static int owners[AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_FEATURE_STATE_OBSERVERS];
   size_t taken = 0;
-  while (taken < AZ_IOT_TEST_DEFAULT_FEATURE_STATE_OBSERVERS
+  while (taken < AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_FEATURE_STATE_OBSERVERS
          && az_iot_connection_client__add_state_observer(&fx->conn, ignore_state, &owners[taken])
              == AZ_IOT_OK)
   {
