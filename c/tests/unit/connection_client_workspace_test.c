@@ -142,6 +142,44 @@ static void entries_live_in_the_application_workspace_and_are_wiped(void** state
   assert_int_equal(g_workspace[size + 1], 0xA5);
 }
 
+static void a_workspace_holds_more_than_the_defaults(void** state)
+{
+  (void)state;
+  enum
+  {
+    OBSERVERS = AZ_IOT_TEST_DEFAULT_APPLICATION_STATE_OBSERVERS * 3
+  };
+  static az_iot_connection_client client;
+  az_iot_connection_client_options opts = direct_options();
+  opts.limits.max_application_state_observers = OBSERVERS;
+  const size_t size = az_iot_connection_client_get_workspace_size(&opts.limits);
+  assert_true(size > AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE && size < TEST_WORKSPACE_MAX);
+  memset(g_workspace, 0xA5, sizeof(g_workspace));
+  opts.workspace = g_workspace;
+  opts.workspace_size = size;
+  assert_int_equal(az_iot_connection_client_init(&client, &opts), AZ_IOT_OK);
+  assert_true(
+      (uint8_t*)client.app_state_observers >= g_workspace
+      && (uint8_t*)(client.app_state_observers + OBSERVERS) <= g_workspace + size);
+
+  int contexts[OBSERVERS + 1];
+  for (size_t i = 0; i < OBSERVERS; i++)
+  {
+    assert_int_equal(
+        az_iot_connection_client_add_state_observer(&client, on_state, &contexts[i]), AZ_IOT_OK);
+  }
+  assert_int_equal(
+      az_iot_connection_client_add_state_observer(&client, on_state, &contexts[OBSERVERS]),
+      AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+
+  az_iot_connection_client_deinit(&client);
+  for (size_t i = 0; i < size; i++)
+  {
+    assert_int_equal(g_workspace[i], 0);
+  }
+  assert_int_equal(g_workspace[size], 0xA5);
+}
+
 static void init_refuses_limits_it_cannot_hold(void** state)
 {
   (void)state;
@@ -153,6 +191,15 @@ static void init_refuses_limits_it_cannot_hold(void** state)
   /* Above a maximum. */
   az_iot_connection_client_options opts = direct_options();
   opts.limits.max_publish_reservations = 255;
+  assert_int_equal(az_iot_connection_client_init(&client, &opts), AZ_IOT_ERR_INVALID_ARG);
+
+  /* Above one default and below another, with no workspace: same total size, still refused. */
+  opts = direct_options();
+  opts.limits.max_feature_state_observers = AZ_IOT_TEST_DEFAULT_APPLICATION_STATE_OBSERVERS;
+  opts.limits.max_application_state_observers = AZ_IOT_TEST_DEFAULT_FEATURE_STATE_OBSERVERS;
+  assert_int_equal(
+      az_iot_connection_client_get_workspace_size(&opts.limits),
+      AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE);
   assert_int_equal(az_iot_connection_client_init(&client, &opts), AZ_IOT_ERR_INVALID_ARG);
 
   /* More than the defaults, with no workspace. */
@@ -180,6 +227,7 @@ int main(void)
     cmocka_unit_test(sizes_follow_the_limits),
     cmocka_unit_test(zero_limits_resolve_to_the_defaults),
     cmocka_unit_test(entries_live_in_the_application_workspace_and_are_wiped),
+    cmocka_unit_test(a_workspace_holds_more_than_the_defaults),
     cmocka_unit_test(init_refuses_limits_it_cannot_hold),
   };
   return cmocka_run_group_tests_name("connection_client_workspace", tests, NULL, NULL);

@@ -6466,6 +6466,19 @@ static bool limits_resolve(
       && out->max_persistent_subscriptions <= UINT8_MAX;
 }
 
+/** @brief Whether any resolved count in @p l is above its default. */
+static bool limits_above_defaults(const az_iot_connection_client_limits* l)
+{
+  return l->max_pending_publishes > LIMIT_DEFAULT_PENDING_PUBLISHES
+      || l->max_publish_reservations > LIMIT_DEFAULT_PUBLISH_RESERVATIONS
+      || l->max_persistent_subscriptions > LIMIT_DEFAULT_PERSISTENT_SUBSCRIPTIONS
+      || l->max_session_handlers > LIMIT_DEFAULT_SESSION_HANDLERS
+      || l->max_feature_state_observers > LIMIT_DEFAULT_FEATURE_STATE_OBSERVERS
+      || l->max_application_state_observers > LIMIT_DEFAULT_APPLICATION_STATE_OBSERVERS
+      || l->max_feature_clients > LIMIT_DEFAULT_FEATURE_CLIENTS
+      || l->max_inbound_handlers > LIMIT_DEFAULT_INBOUND_HANDLERS;
+}
+
 /** @brief Workspace bytes for resolved @p l. */
 static size_t workspace_size_of(const az_iot_connection_client_limits* l)
 {
@@ -6576,7 +6589,7 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_init(
     return AZ_IOT_ERR_INVALID_ARG;
   }
   const size_t workspace_size = workspace_size_of(&limits);
-  if (opts->workspace == NULL && workspace_size > AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE)
+  if (opts->workspace == NULL && limits_above_defaults(&limits))
   {
     AZ_IOT_LOG_ERROR(
         AZ_IOT_LOG_COMPONENT_CONNECTION, "init: limits above the defaults need a workspace");

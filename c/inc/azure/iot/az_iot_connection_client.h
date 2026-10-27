@@ -907,7 +907,7 @@ extern "C"
     /**
      * Memory for the entries, owned by the client from init() to deinit(), which wipes it.
      * At least az_iot_connection_client_get_workspace_size(&limits) bytes, any alignment.
-     * NULL: the client uses its own default-sized area (limits must then be all 0).
+     * NULL: the client uses its own area, sized for the defaults; no limit may exceed its default.
      */
     uint8_t* workspace;
     size_t workspace_size; /**< Bytes in workspace. */
