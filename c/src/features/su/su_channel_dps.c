@@ -902,15 +902,12 @@ static az_iot_result channel_set_device_properties(
   memset(longest_part, 0x01, sizeof(longest_part) - 1u);
   longest_part[sizeof(longest_part) - 1u] = '\0';
   az_iot_su_report_update_id longest_installed = { longest_part, longest_part, longest_part };
-  size_t body_size = 0;
-  r = az_iot_su__fetch_request_size(
-      &agent, &longest_installed, NULL, NULL, (size_t)INT32_MAX, &body_size);
-  if (r != AZ_IOT_OK)
+  r = az_iot_su__fetch_request_size(&agent, &longest_installed, NULL, NULL, c->body_size, NULL);
+  if (r == AZ_IOT_ERR_NOT_ENOUGH_SPACE)
   {
-    return r;
-  }
-  if (body_size > c->body_size)
-  {
+    size_t body_size = 0;
+    (void)az_iot_su__fetch_request_size(
+        &agent, &longest_installed, NULL, NULL, (size_t)INT32_MAX, &body_size);
     AZ_IOT_LOG_ERRORF(
         AZ_IOT_LOG_COMPONENT_SU,
         "an update check with these device properties needs up to %lu bytes; "
@@ -918,6 +915,10 @@ static az_iot_result channel_set_device_properties(
         (unsigned long)body_size,
         (unsigned long)c->body_size);
     return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+  }
+  if (r != AZ_IOT_OK)
+  {
+    return r;
   }
 
   az_iot_su__copy_device_properties(

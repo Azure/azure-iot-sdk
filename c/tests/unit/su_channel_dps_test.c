@@ -1143,6 +1143,14 @@ static void accepted_properties_leave_room_for_the_longest_installed_id(void** s
   assert_int_equal(
       fx->channel.vtable->set_device_properties(fx->channel.ctx, &properties), AZ_IOT_OK);
   assert_string_equal(fx->channel_state.installed_update_id.version, longest_part);
+
+  /* That boundary request is actually serialized and sent. */
+  az_iot_mock_mqtt_client* m = open_and_bind(fx);
+  assert_int_equal(
+      fx->channel.vtable->request_update(fx->channel.ctx, AZ_IOT_SU_OP_GET_UPDATE), AZ_IOT_OK);
+  const az_iot_mock_call* pub = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_PUBLISH);
+  assert_non_null(pub);
+  assert_true(pub->payload_len <= sizeof(fx->body));
 }
 
 /* The channel's copy holds at most its storage; one byte more is refused, unchanged. */
