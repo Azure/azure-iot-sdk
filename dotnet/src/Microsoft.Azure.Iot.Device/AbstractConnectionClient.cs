@@ -1891,9 +1891,7 @@ namespace Microsoft.Azure.Iot.Device
             CancellationToken cancellationToken)
         {
             CancellationToken operationLifetime = GetOperationLifetimeCancellationToken();
-            using CancellationTokenSource lifetime = operationLifetime.IsCancellationRequested
-                ? CancellationTokenSource.CreateLinkedTokenSource(cancellationToken)
-                : CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, operationLifetime);
+            using CancellationTokenSource lifetime = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, operationLifetime);
 
             return await PerformWhileRespectingConnectionState(async token =>
             {
