@@ -237,6 +237,10 @@ extern "C"
        * locally configured one -- so neither belongs on the shared type. */
       uint32_t exec_budget_seconds[AZ_IOT_MQTTV5_DM_MAX_CONCURRENT];
       uint64_t exec_received_at_ms[AZ_IOT_MQTTV5_DM_MAX_CONCURRENT];
+      /* Parallel to req_pool: monotonic milliseconds at and after which no
+       * result is published -- receipt time plus the execution budget, less the
+       * safety margin. UINT64_MAX when the exec carried no expiry. */
+      uint64_t exec_deadline_ms[AZ_IOT_MQTTV5_DM_MAX_CONCURRENT];
       /* Bumped on every acquire and copied into the request handed out, so a
        * request naming a slot that has since been reused no longer matches. */
       uint32_t next_seq;
@@ -389,10 +393,18 @@ extern "C"
    * hand out, and a body that does not fit. That last one is worth answering
    * again with a shorter body; the others are programming errors.
    *
+   * **Result deadline.** When the exec arrives, the client fixes a deadline:
+   * its receipt time plus its execution budget (the exec's MQTT message
+   * expiry), less a safety margin for network transit -- a tenth of the
+   * probe's response timeout, between 1 and 10 seconds. No result is published
+   * at or after that deadline: a call at or past it publishes nothing,
+   * releases the slot and returns AZ_IOT_ERR_TIMEOUT. An exec that carries no
+   * expiry has no deadline.
+   *
    * Before the connection is CONNECTED (for example between CONNACK and the
    * birth-ack, or while reconnecting) the result is held, with its slot, and
-   * published on the next CONNECTED; it is dropped if the response budget runs
-   * out first. AZ_IOT_OK covers both cases.
+   * published on the next CONNECTED; it is dropped if the deadline passes
+   * first. AZ_IOT_OK covers both cases.
    *
    * Nothing is sent to the service on any failure. It reports the invocation as
    * timed out, which is the truthful outcome -- the handler may already have
@@ -408,9 +420,10 @@ extern "C"
    *         its slot was reclaimed and reused, or if it never came from this
    *         client, AZ_IOT_ERR_NOT_ENOUGH_SPACE if
    *         @p payload_len exceeds AZ_IOT_MQTTV5_DM_RESULT_BODY_MAX,
-   *         AZ_IOT_ERR_TIMEOUT if the caller's response timeout ran out while
-   *         the handler worked -- nothing is sent in that case, because the
-   *         service has already given up.
+   *         AZ_IOT_ERR_TIMEOUT if the result deadline has been reached -- nothing
+   *         is sent in that case, because the service has given up or would
+   *         before the result arrived. A request whose slot was already
+   *         reclaimed past its deadline returns AZ_IOT_ERR_INVALID_ARG.
    */
   az_iot_result az_iot_mqttv5_direct_method_respond(
       az_iot_mqttv5_direct_method_client* client,

@@ -267,6 +267,10 @@
   command queue (eclipse-paho/paho.mqtt.c#1709), and `MQTTAsync_connect()` against the timeout and
   retry checks on the client's state (#1714). An installed Paho is not patched. See
   [docs/dependencies.md](docs/dependencies.md#races-on-the-command-queue-and-client-state).
+- mqttv5 direct methods: a result is no longer published at or after its deadline -- the exec's
+  receipt time plus its budget, less the safety margin. `az_iot_mqttv5_direct_method_respond()`
+  past it publishes nothing, releases the slot and returns `AZ_IOT_ERR_TIMEOUT`; a held result is
+  dropped. Results were sent while a whole second of budget was left, ignoring the margin.
 - az_mqtt adapter: the copies `connect()` makes of credentials (password or SAS token, PEM key and
   certificate, proxy credentials) are zeroed before they are freed, and `destroy()` zeroes the send
   buffer, which holds the CONNECT, before freeing it.
