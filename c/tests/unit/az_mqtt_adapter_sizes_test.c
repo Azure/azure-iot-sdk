@@ -6,7 +6,9 @@
 /* az_mqtt adapter built with a receive buffer larger than its send buffer
  * (az_mqtt_asymmetric_sizes.h), against an in-process server: CONNECT advertises the receive size
  * (MQTT 5 Maximum Packet Size), and a PUBLISH whose payload, topic and user property value each
- * exceed the send size arrives whole. */
+ * exceed the send size arrives whole. A packet of exactly the receive size arrives; on MQTT 5, one
+ * announced above it is refused from its fixed header with DISCONNECT 0x95, and the session ends
+ * with AZ_IOT_ERR_NOT_ENOUGH_SPACE (not retriable). */
 #include "az_mqtt_asymmetric_sizes.h"
 
 #include <stdarg.h>
@@ -60,9 +62,11 @@ typedef socklen_t test_socklen;
 typedef struct
 {
   int connected;
+  int disconnected;
+  az_iot_result disconnect_status;
   int messages;
   char topic[TOPIC_LEN + 1];
-  uint8_t payload[PAYLOAD_LEN];
+  uint8_t payload[AZ_IOT_AZ_MQTT_RECEIVE_BUFFER_SIZE];
   size_t payload_len;
   size_t properties;
   char key[2];
@@ -83,6 +87,11 @@ static void on_event(const az_iot_mqtt_event* evt, void* ctx)
   if (evt->kind == AZ_IOT_MQTT_EVT_CONNECTED && evt->status == AZ_IOT_OK)
   {
     r->connected++;
+  }
+  else if (evt->kind == AZ_IOT_MQTT_EVT_DISCONNECTED)
+  {
+    r->disconnected++;
+    r->disconnect_status = evt->status;
   }
   else if (evt->kind == AZ_IOT_MQTT_EVT_MESSAGE)
   {
@@ -256,14 +265,27 @@ static uint32_t connect_maximum_packet_size(const uint8_t* p, size_t n)
   return 0;
 }
 
-static void run_client(az_iot_mqtt_factory* f)
+/** @brief A client of @p f connected to an in-process server. */
+typedef struct
 {
-  bool const v5 = f->version == AZ_IOT_MQTT_VERSION_5;
+  az_iot_mqtt_client* client;
+  test_sock listener;
+  test_sock connection;
+  bool v5;
+} session;
+
+static recorder s_recorder;
+
+/** @brief Connects a client of @p f to an in-process server and accepts it with a CONNACK. */
+static session open_session(az_iot_mqtt_factory* f)
+{
+  session s;
+  s.v5 = f->version == AZ_IOT_MQTT_VERSION_5;
+  bool const v5 = s.v5;
   uint16_t port = 0;
   test_sock listener = listen_loopback(&port);
-  static recorder rec;
-  memset(&rec, 0, sizeof(rec));
-  recorder* r = &rec;
+  memset(&s_recorder, 0, sizeof(s_recorder));
+  recorder* r = &s_recorder;
   az_iot_mqtt_client* c = f->create(f->factory_ctx);
   assert_non_null(c);
   c->iface->set_inbound_cb(c, on_event, r);
@@ -300,6 +322,37 @@ static void run_client(az_iot_mqtt_factory* f)
     assert_int_equal(c->iface->process_loop(c, 10), AZ_IOT_OK);
   }
   assert_int_equal(r->connected, 1);
+  s.client = c;
+  s.listener = listener;
+  s.connection = conn;
+  return s;
+}
+
+static void close_session(session* s)
+{
+  (void)s->client->iface->disconnect(s->client);
+  s->client->iface->destroy(s->client);
+  test_closesock(s->connection);
+  test_closesock(s->listener);
+}
+
+/** @brief Runs the client until @p count messages arrived. */
+static void run_until_messages(az_iot_mqtt_client* c, int count)
+{
+  for (int step = 0; step < STEPS && s_recorder.messages < count; step++)
+  {
+    assert_int_equal(c->iface->process_loop(c, 10), AZ_IOT_OK);
+  }
+  assert_int_equal(s_recorder.messages, count);
+}
+
+static void run_client(az_iot_mqtt_factory* f)
+{
+  session s = open_session(f);
+  bool const v5 = s.v5;
+  az_iot_mqtt_client* c = s.client;
+  test_sock conn = s.connection;
+  recorder* r = &s_recorder;
 
   // QoS 0 PUBLISH; MQTT 5: one User Property "k" = value.
   static char topic[TOPIC_LEN + 1];
@@ -339,11 +392,7 @@ static void run_client(az_iot_mqtt_factory* f)
     publish[i++] = (uint8_t)k;
   }
   send_all(conn, publish, i);
-  for (int step = 0; step < STEPS && r->messages == 0; step++)
-  {
-    assert_int_equal(c->iface->process_loop(c, 10), AZ_IOT_OK);
-  }
-  assert_int_equal(r->messages, 1);
+  run_until_messages(c, 1);
   assert_string_equal(r->topic, topic);
   assert_int_equal(r->payload_len, PAYLOAD_LEN);
   for (size_t k = 0; k < PAYLOAD_LEN; k++)
@@ -357,10 +406,101 @@ static void run_client(az_iot_mqtt_factory* f)
     assert_string_equal(r->value, value);
   }
 
-  (void)c->iface->disconnect(c);
-  c->iface->destroy(c);
-  test_closesock(conn);
-  test_closesock(listener);
+  close_session(&s);
+}
+
+/** @brief Writes a QoS 0 PUBLISH to topic "t" of @p total bytes into @p out; returns its size. */
+static size_t make_publish_of_size(uint8_t* out, size_t total, bool v5)
+{
+  // Remaining Length of 2 bytes for every size used here (128..16,383).
+  size_t const remaining = total - 3;
+  size_t i = 0;
+  out[i++] = 0x30;
+  assert_int_equal(write_varint(out + i, remaining), 2);
+  i += 2;
+  out[i++] = 0;
+  out[i++] = 1;
+  out[i++] = 't';
+  if (v5)
+  {
+    out[i++] = 0; // No properties.
+  }
+  memset(out + i, 'p', total - i);
+  return total;
+}
+
+static void receives_a_packet_of_exactly_the_receive_size(az_iot_mqtt_factory* f)
+{
+  session s = open_session(f);
+  static uint8_t publish[AZ_IOT_AZ_MQTT_RECEIVE_BUFFER_SIZE];
+  size_t const n = make_publish_of_size(publish, sizeof(publish), s.v5);
+  send_all(s.connection, publish, n);
+  run_until_messages(s.client, 1);
+  assert_string_equal(s_recorder.topic, "t");
+  assert_int_equal(s_recorder.payload_len, n - (s.v5 ? 7 : 6));
+  assert_int_equal(s_recorder.disconnected, 0);
+  close_session(&s);
+}
+
+static void receives_a_packet_of_exactly_the_receive_size_v3(void** state)
+{
+  (void)state;
+  az_iot_mqtt_factory* f = az_iot_az_mqtt_factory_create_v3_1_1();
+  assert_non_null(f);
+  receives_a_packet_of_exactly_the_receive_size(f);
+  az_iot_az_mqtt_factory_destroy(f);
+}
+
+static void receives_a_packet_of_exactly_the_receive_size_v5(void** state)
+{
+  (void)state;
+  az_iot_mqtt_factory* f = az_iot_az_mqtt_factory_create_v5();
+  assert_non_null(f);
+  receives_a_packet_of_exactly_the_receive_size(f);
+  az_iot_az_mqtt_factory_destroy(f);
+}
+
+static void a_packet_over_the_receive_size_ends_the_session_from_its_header_v5(void** state)
+{
+  (void)state;
+  az_iot_mqtt_factory* f = az_iot_az_mqtt_factory_create_v5();
+  assert_non_null(f);
+  session s = open_session(f);
+
+  // Fixed header only, announcing one byte over the advertised Maximum Packet Size; no body follows.
+  uint8_t header[3];
+  header[0] = 0x30;
+  assert_int_equal(write_varint(header + 1, (size_t)AZ_IOT_AZ_MQTT_RECEIVE_BUFFER_SIZE + 1 - 3), 2);
+  send_all(s.connection, header, sizeof(header));
+  for (int step = 0; step < STEPS && s_recorder.disconnected == 0; step++)
+  {
+    (void)s.client->iface->process_loop(s.client, 10);
+  }
+  assert_int_equal(s_recorder.disconnected, 1);
+  assert_int_equal(s_recorder.disconnect_status, AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+  assert_int_equal(s_recorder.messages, 0);
+
+  // The client's DISCONNECT with reason 0x95 (Packet too large).
+  uint8_t received[16];
+  size_t have = 0;
+  for (int step = 0; step < STEPS && have < 3; step++)
+  {
+    if (readable(s.connection))
+    {
+      int const got = recv(s.connection, (char*)received + have, (int)(sizeof(received) - have), 0);
+      if (got <= 0)
+      {
+        break;
+      }
+      have += (size_t)got;
+    }
+  }
+  assert_true(have >= 3);
+  assert_int_equal(received[0], 0xE0);
+  assert_int_equal(received[2], 0x95);
+
+  close_session(&s);
+  az_iot_az_mqtt_factory_destroy(f);
 }
 
 static void receives_more_than_it_can_send_v3(void** state)
@@ -393,6 +533,9 @@ int main(void)
   const struct CMUnitTest tests[] = {
     cmocka_unit_test(receives_more_than_it_can_send_v3),
     cmocka_unit_test(receives_more_than_it_can_send_and_advertises_it_v5),
+    cmocka_unit_test(receives_a_packet_of_exactly_the_receive_size_v3),
+    cmocka_unit_test(receives_a_packet_of_exactly_the_receive_size_v5),
+    cmocka_unit_test(a_packet_over_the_receive_size_ends_the_session_from_its_header_v5),
   };
   int const failed = cmocka_run_group_tests_name("az_mqtt_adapter_sizes", tests, NULL, NULL);
 #if defined(_WIN32)
