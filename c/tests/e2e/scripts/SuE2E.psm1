@@ -129,6 +129,11 @@ function Get-SuE2EResource([string]$Uri, [string]$Resource) {
     }
 }
 
+# Storage blob name Import-SuE2EUpdate gives one of an update's files.
+function Get-SuE2EUpdateBlobName([string]$Provider, [string]$Name, [string]$Version, [string]$FileName) {
+    return "$Provider/$Name/$Version/$FileName"
+}
+
 <#
 .SYNOPSIS
     Waits for the long-running operation a response started, if it started
@@ -227,7 +232,7 @@ function Import-SuE2EUpdate {
 
     $urls = @{}
     foreach ($file in $payload, $manifestPath) {
-        $blob = "$Provider/$Name/$Version/$(Split-Path -Leaf $file)"
+        $blob = Get-SuE2EUpdateBlobName $Provider $Name $Version (Split-Path -Leaf $file)
         az storage blob upload --auth-mode login --account-name $Config.STORAGE_ACCOUNT `
             --container-name $Config.STORAGE_CONTAINER --name $blob --file $file --overwrite --only-show-errors | Out-Null
         if ($LASTEXITCODE -ne 0) { throw "Upload of $blob failed" }
@@ -312,7 +317,8 @@ function New-SuE2EJobRun {
         [Parameter(Mandatory)][hashtable]$Config,
         [Parameter(Mandatory)][string]$JobName
     )
-    $run = "run-$((Get-Date).ToUniversalTime().ToString('yyyyMMddHHmmss'))"
+    # The suffix keeps calls within the same second apart.
+    $run = "run-$((Get-Date).ToUniversalTime().ToString('yyyyMMddHHmmss'))-$([guid]::NewGuid().ToString('N').Substring(0, 8))"
     $runUri = "$(Get-SuE2EJobsUri $Config)/$JobName/runs/$($run)?api-version=$script:ApiVersion"
     Invoke-SuE2ERest -Method Put -Uri $runUri -Resource $script:ArmScope -Body @{ properties = @{} } | Out-Null
     return $run
@@ -473,6 +479,11 @@ function New-SuE2EOffers {
         $updateUri = "https://$($config.ADU_ENDPOINT)/$($n.Update)?api-version=$script:ApiVersion"
         if ($Reuse -and (Get-SuE2EResource $updateUri $script:AduScope)) {
             Write-Host "$scenario`: update $($n.Model) kept"
+            # Its blobs too, so Remove-SuE2EOffers still deletes them.
+            foreach ($file in "$($n.Model).bin", "$($n.Model).importmanifest.json") {
+                $offer.Blobs.Add((Get-SuE2EUpdateBlobName 'sdke2e' $n.Model '1.0.0' $file))
+            }
+            & $save
         }
         else {
             [void](Import-SuE2EUpdate -Config $config -Provider 'sdke2e' -Name $n.Model `
@@ -563,6 +574,11 @@ function Remove-SuE2EOffers {
                         Wait-SuE2EOperation -Response $r -Resource $script:AduScope -BaseUri "https://$($config.ADU_ENDPOINT)"
                     }
                     'Blob' {
+                        # Recorded for a reused update, so it may be gone already.
+                        $exists = az storage blob exists --auth-mode login --account-name $config.STORAGE_ACCOUNT `
+                            --container-name $config.STORAGE_CONTAINER --name $name --query exists -o tsv
+                        if ($LASTEXITCODE -ne 0) { throw "Existence check of blob $name failed" }
+                        if ($exists -ne 'true') { continue }
                         az storage blob delete --auth-mode login --account-name $config.STORAGE_ACCOUNT `
                             --container-name $config.STORAGE_CONTAINER --name $name --only-show-errors | Out-Null
                         if ($LASTEXITCODE -ne 0) { throw "Delete of blob $name failed" }
