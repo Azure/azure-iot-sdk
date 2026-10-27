@@ -5676,6 +5676,7 @@ typedef struct
   int file_count; /* in the manifest `files` map; fileUrls lists at most AZ_IOT_SU_MAX_FILE_COUNT */
   int first_step_file_count; /* ids f00, f01, ... listed by step 0; other steps list one file */
   int hash_count; /* per file; the first is the fixture's sha256 */
+  const char* file_extra; /* appended to each file object when not NULL */
 } manifest_shape;
 
 static size_t append_text(char* buffer, size_t capacity, size_t used, const char* text)
@@ -5735,7 +5736,12 @@ static const char* manifest_limits_patch(const char* workflow_id, manifest_shape
       (void)snprintf(item, sizeof(item), ",\"sha%d\":\"AAAA\"", 384 + hash);
       used = append_text(manifest, sizeof(manifest), used, item);
     }
-    used = append_text(manifest, sizeof(manifest), used, "}}");
+    used = append_text(manifest, sizeof(manifest), used, "}");
+    if (shape.file_extra != NULL)
+    {
+      used = append_text(manifest, sizeof(manifest), used, shape.file_extra);
+    }
+    used = append_text(manifest, sizeof(manifest), used, "}");
   }
   used = append_text(
       manifest, sizeof(manifest), used, "},\"createdDateTime\":\"2022-07-07T03:02:48.8449038Z\"}");
@@ -5832,12 +5838,12 @@ static void update_over_a_manifest_limit_fails_before_download(void** state)
     manifest_shape shape;
     const char* logged;
   } cases[] = {
-    { { AZ_IOT_SU_MAX_STEP_COUNT + 1, AZ_IOT_SU_MAX_FILE_COUNT, 1, 1 },
+    { { AZ_IOT_SU_MAX_STEP_COUNT + 1, AZ_IOT_SU_MAX_FILE_COUNT, 1, 1, NULL },
       "AZ_IOT_SU_MAX_STEP_COUNT" },
-    { { 1, AZ_IOT_SU_MAX_FILE_COUNT + 1, 1, 1 }, "AZ_IOT_SU_MAX_FILE_COUNT is" },
-    { { 1, AZ_IOT_SU_MAX_FILE_COUNT, AZ_IOT_SU_MAX_FILE_COUNT_PER_STEP + 1, 1 },
+    { { 1, AZ_IOT_SU_MAX_FILE_COUNT + 1, 1, 1, NULL }, "AZ_IOT_SU_MAX_FILE_COUNT is" },
+    { { 1, AZ_IOT_SU_MAX_FILE_COUNT, AZ_IOT_SU_MAX_FILE_COUNT_PER_STEP + 1, 1, NULL },
       "AZ_IOT_SU_MAX_FILE_COUNT_PER_STEP" },
-    { { 1, 1, 1, _az_IOT_ADU_CLIENT_MAX_FILE_HASH_COUNT + 1 }, "hashes" },
+    { { 1, 1, 1, _az_IOT_ADU_CLIENT_MAX_FILE_HASH_COUNT + 1, NULL }, "hashes" },
   };
   for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i)
   {
@@ -5872,6 +5878,40 @@ static void update_over_a_manifest_limit_fails_before_download(void** state)
             &manifest),
         AZ_IOT_ERR_NOT_ENOUGH_SPACE);
   }
+}
+
+/* A file mimeType that is not a string is refused before parsing: the azure-sdk-for-c parser
+ * would read its members as file properties, past the hash count checked here. */
+static void manifest_with_a_non_string_mime_type_fails_before_download(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  const manifest_shape shape
+      = { .step_count = 1,
+          .file_count = 1,
+          .first_step_file_count = 1,
+          .hash_count = 1,
+          .file_extra
+          = ",\"mimeType\":{\"hashes\":{\"sha256\":\"a\",\"sha384\":\"b\",\"sha512\":\"c\"}}" };
+
+  inject_patch(fx, manifest_limits_patch("non-string-mime-type", shape));
+  pump(fx, 60);
+
+  assert_idle_report_retains_outcome(fx, AZ_IOT_SU_OUTCOME_FAILED);
+  assert_string_equal(fx->chan.last_workflow_id, "non-string-mime-type");
+  assert_int_equal(fx->log.download_calls, 0);
+
+  az_iot_su_client_update_request request;
+  az_iot_su_client_update_manifest manifest;
+  assert_int_equal(
+      parse_with_roots(
+          &fx->log,
+          manifest_limits_patch("non-string-mime-type", shape),
+          k_root_keys,
+          1,
+          &request,
+          &manifest),
+      AZ_IOT_ERR_INVALID_ARG);
 }
 /* The update body carries service-issued download URLs; DEBUG logs only its
  * size, TRACE the body. */
@@ -9122,6 +9162,8 @@ int main(void)
         update_at_the_manifest_limits_installs_every_step, setup, teardown),
     cmocka_unit_test_setup_teardown(
         update_over_a_manifest_limit_fails_before_download, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        manifest_with_a_non_string_mime_type_fails_before_download, setup, teardown),
     cmocka_unit_test_setup_teardown(update_metadata_drives_full_workflow, setup, teardown),
     cmocka_unit_test_setup_teardown(escaped_file_url_is_decoded, setup, teardown),
     cmocka_unit_test_setup_teardown(escaped_workflow_id_is_decoded, setup, teardown),

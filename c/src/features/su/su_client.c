@@ -1518,6 +1518,14 @@ static void count_manifest_files(az_json_reader* jr, manifest_counts* counts, bo
           counts->largest_file_hash_count = hashes;
         }
       }
+      else if (
+          az_json_token_is_text_equal(&file_property, AZ_SPAN_FROM_STR("mimeType"))
+          && jr->token.kind != AZ_JSON_TOKEN_STRING)
+      {
+        /* The parser reads past a non-string mimeType without skipping it, so its members
+         * would be parsed as file properties. */
+        *is_error = true;
+      }
       else
       {
         json_skip_value(jr, is_error);
@@ -1535,7 +1543,7 @@ static void count_manifest_files(az_json_reader* jr, manifest_counts* counts, bo
  *
  * @param manifest_text The decoded manifest JSON.
  * @return AZ_IOT_OK; AZ_IOT_ERR_NOT_ENOUGH_SPACE (logged) when a count exceeds its limit;
- * AZ_IOT_ERR_INVALID_ARG when the JSON is malformed.
+ * AZ_IOT_ERR_INVALID_ARG when the JSON is malformed or a file `mimeType` is not a string.
  */
 static az_iot_result check_manifest_limits(az_span manifest_text)
 {

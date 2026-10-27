@@ -240,8 +240,8 @@ in an `ERROR` log:
 
 They size structures that azure-sdk-for-c parses into and that `az_iot_su_client` embeds, so
 azure-sdk-for-c, the SDK and the application must be built with the same values. Set them as CMake
-options of the SDK build; it applies them to the azure-sdk-for-c it fetches and to `az_iot_core` as
-public compile definitions, which reach the application through the `azure::iot::core` target and the
+options of the SDK build; it applies them to the azure-sdk-for-c parser (`az_iot_hub`) and to
+`az_iot_core` as public compile definitions, which reach the application through the `azure::iot::core` target and the
 `azure-iot-sdk-core` pkg-config file. `az_iot_su.h` refuses to compile with values that differ from
 azure-sdk-for-c's. An installed azure-sdk-for-c must be built with them (see
 [Installed dependencies](#installed-dependencies)).

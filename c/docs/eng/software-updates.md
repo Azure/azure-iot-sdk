@@ -1632,8 +1632,8 @@ Device Update allows 10 files and 10 steps per update, so the SDK sets them from
 (default 10, 10 and the file count; `cmake/az_iot_su_limits.cmake`). The arrays are shared by
 azure-sdk-for-c (the parser), `az_iot_core` and the application (`az_iot_su.h`), so:
 
-- the CMake options of those names set the definitions on the fetched azure-sdk-for-c parser
-  (`az_iot_hub`) and, as public definitions, on `az_iot_core`, its installed CMake package and
+- the CMake options of those names set them as public definitions on the azure-sdk-for-c parser
+  (`az_iot_hub`, fetched or installed) and on `az_iot_core`, its installed CMake package and
   its pkg-config file;
 - an installed azure-sdk-for-c is checked at configure time by parsing a manifest at the limits
   (`cmake/az_iot_su_limits_check.c`); [eng/install-deps.sh](../../eng/install-deps.sh) builds it
@@ -1649,6 +1649,8 @@ four before calling it (`check_manifest_limits()`), logs each exceeded limit, an
 (reported) or returns `AZ_IOT_ERR_NOT_ENOUGH_SPACE` from `az_iot_su_parse_update_request()`. More
 `fileUrls` than `AZ_IOT_SU_MAX_FILE_COUNT` refuses the update before processing
 (`AZ_IOT_SU_EVENT_UPDATE_REFUSED`, `AZ_IOT_ERR_NOT_ENOUGH_SPACE`).
+A file `mimeType` that is not a string is rejected the same way as malformed JSON: the parser
+advances past it without skipping its members, which it would then read as file properties.
 
 The largest status report grows 117 bytes per step, so `AZ_IOT_SU_MIN_MESSAGE_SIZE` is
 1792 + 128 × `AZ_IOT_SU_MAX_STEP_COUNT` (3072 by default). Memory cost of the default limits against
