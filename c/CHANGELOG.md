@@ -209,6 +209,18 @@
   Maximum Packet Size (the receive buffer size), after DISCONNECT 0x95; that session ends with
   `AZ_IOT_ERR_NOT_ENOUGH_SPACE`, as before. An mbedTLS verify callback's rejection is reported as a
   TLS verification failure.
+- Software updates: updates with up to 10 steps and 10 files, the Device Update limits, are
+  accepted; the azure-sdk-for-c limits they depend on defaulted to 2 and nothing set them. CMake
+  options `AZ_IOT_SU_MAX_STEP_COUNT`, `AZ_IOT_SU_MAX_FILE_COUNT` and
+  `AZ_IOT_SU_MAX_FILE_COUNT_PER_STEP` (10, 10, the file count) set them for azure-sdk-for-c,
+  `az_iot_core` and, through its CMake and pkg-config packages, the application; smaller values
+  save memory. An installed azure-sdk-for-c built with other values fails configuration. A manifest
+  with more steps, or more hashes for a file, than its parsed form holds was written past those
+  arrays; now any manifest over a limit fails the workflow with an `ERROR` log naming the limit, and
+  more `fileUrls` than `AZ_IOT_SU_MAX_FILE_COUNT` raises `AZ_IOT_SU_EVENT_UPDATE_REFUSED` with
+  `AZ_IOT_ERR_NOT_ENOUGH_SPACE` (was `AZ_IOT_ERR_PROTOCOL`). `AZ_IOT_SU_MIN_MESSAGE_SIZE` and the
+  default `max_message_size` are 1792 + 128 per step (3072). `az_iot_su_client` grows from 4616 to
+  8584 bytes and the default workspace from 78920 to 85640 (64-bit).
 - az_mqtt adapter: the copies `connect()` makes of credentials (password or SAS token, PEM key and
   certificate, proxy credentials) are zeroed before they are freed, and `destroy()` zeroes the send
   buffer, which holds the CONNECT, before freeing it.

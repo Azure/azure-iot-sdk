@@ -13,6 +13,11 @@
 # <prefix>/lib, the layout cmake/Findazure-sdk-for-c.cmake searches. On Windows
 # (MSVC, Ninja) it is built Release into <prefix>/lib and Debug into
 # <prefix>/debug/lib, with its static C runtime (/MT, /MTd).
+#
+# azure-sdk-for-c is built with the software updates manifest limits, which must
+# match the SDK configuration: AZ_IOT_SU_MAX_STEP_COUNT, AZ_IOT_SU_MAX_FILE_COUNT
+# and AZ_IOT_SU_MAX_FILE_COUNT_PER_STEP from the environment, else the SDK
+# defaults (10, 10, and the file count).
 
 set -euo pipefail
 
@@ -47,7 +52,13 @@ clone() {
 build_azure_sdk_for_c() {
     local type="$1" platform="$2" libdir="$3" build="${work}/azure-sdk-for-c-build-$1" generator=()
     if [ "${windows}" = 1 ]; then generator=(-G Ninja); fi
-    # Without a toolchain file, azure-sdk-for-c would clone vcpkg.
+    local steps="${AZ_IOT_SU_MAX_STEP_COUNT:-10}" files="${AZ_IOT_SU_MAX_FILE_COUNT:-10}"
+    local files_per_step="${AZ_IOT_SU_MAX_FILE_COUNT_PER_STEP:-${files}}"
+    # Without a toolchain file, azure-sdk-for-c would clone vcpkg. CFLAGS adds to
+    # the platform's default flags.
+    CFLAGS="${CFLAGS:-} -D_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS=${steps} \
+-D_az_IOT_ADU_CLIENT_MAX_TOTAL_FILE_COUNT=${files} \
+-D_az_IOT_ADU_CLIENT_MAX_FILE_COUNT_PER_STEP=${files_per_step}" \
     AZURE_SDK_DISABLE_AUTO_VCPKG=1 cmake -S "${work}/azure-sdk-for-c" -B "${build}" "${generator[@]}" \
         -DCMAKE_BUILD_TYPE="${type}" \
         -DCMAKE_POSITION_INDEPENDENT_CODE=ON \

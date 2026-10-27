@@ -58,7 +58,8 @@ typedef struct
 
   az_iot_su_channel_dps channel_state;
   az_iot_su_channel channel;
-  uint8_t body[AZ_IOT_SU_DEFAULT_MAX_MESSAGE_SIZE];
+  /* 2048 bytes: storage-sized device properties, fully escaped, overflow it. */
+  uint8_t body[2048];
 
   /* What the engine would have been told. */
   size_t update_count;
@@ -1255,7 +1256,7 @@ static void assert_oversized_cached_etags_are_dropped(fixture* fx, az_iot_su_ope
   assert_int_equal(fx->channel.vtable->request_update(fx->channel.ctx, operation), AZ_IOT_OK);
   const az_iot_mock_call* pub = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_PUBLISH);
   assert_non_null(pub);
-  char body[2048 + 1];
+  char body[sizeof(fx->body) + 1];
   assert_true(pub->payload_len < sizeof(body));
   memcpy(body, pub->payload, pub->payload_len);
   body[pub->payload_len] = '\0';
@@ -1276,7 +1277,7 @@ static void oversized_cached_etags_are_dropped_from_an_onboarding_request(void**
   assert_oversized_cached_etags_are_dropped((fixture*)*state, AZ_IOT_SU_OP_GET_ONBOARDING_UPDATE);
 }
 
-static void public_replacement_is_atomic_when_escaped_request_does_not_fit(void** state)
+static void public_replacement_is_atomic_when_properties_do_not_fit(void** state)
 {
   fixture* fx = (fixture*)*state;
   az_iot_su_platform_hooks hooks = { 0 };
@@ -1290,16 +1291,13 @@ static void public_replacement_is_atomic_when_escaped_request_does_not_fit(void*
   az_iot_su_client client;
   assert_int_equal(az_iot_su_client_init(&client, &fx->client, &options), AZ_IOT_OK);
 
-  char escaped_compat[256];
-  char escaped_provider[188];
-  memset(escaped_compat, '\1', sizeof(escaped_compat) - 1);
-  escaped_compat[sizeof(escaped_compat) - 1] = '\0';
-  memset(escaped_provider, '\1', sizeof(escaped_provider) - 1);
-  escaped_provider[sizeof(escaped_provider) - 1] = '\0';
-  properties.manufacturer = escaped_compat;
-  properties.installed_update_id = (az_iot_su_update_id_info){ escaped_provider, "n", "v" };
-  size_t need = az_iot_su_device_properties_buffer_size(&properties);
-  assert_true(need > 0 && need <= options.limits.device_properties_size);
+  /* One byte over the channel's compatibility storage. Storage-sized properties, even fully
+   * escaped, fit the smallest message body when AZ_IOT_SU_MAX_STEP_COUNT is above 8, so the
+   * escaped-request overflow is covered at the channel level instead. */
+  char oversized[257];
+  memset(oversized, 'x', sizeof(oversized) - 1);
+  oversized[sizeof(oversized) - 1] = '\0';
+  properties.manufacturer = oversized;
 
   az_iot_su_client before;
   memcpy(&before, &client, sizeof(before));
@@ -3127,7 +3125,7 @@ int main(void)
     cmocka_unit_test_setup_teardown(etags_round_trip_through_saved_state, setup, teardown),
     cmocka_unit_test_setup_teardown(malformed_saved_state_is_refused, setup, teardown),
     cmocka_unit_test_setup_teardown(
-        public_replacement_is_atomic_when_escaped_request_does_not_fit, setup, teardown),
+        public_replacement_is_atomic_when_properties_do_not_fit, setup, teardown),
     cmocka_unit_test_setup_teardown(request_update_publishes_on_the_dps_topic, setup, teardown),
     cmocka_unit_test_setup_teardown(
         the_onboarding_route_selects_its_topic_and_sends_the_installed_id, setup, teardown),
