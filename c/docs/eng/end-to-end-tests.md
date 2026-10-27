@@ -316,14 +316,18 @@ to the same certificate policy.
 
 The shared mqttv5 environment (ADR-linked mqttv5 hub and DPS) is kept usable by
 [`ci-c-e2e-mqttv5-adr-namespace.yml`](../../../.github/workflows/ci-c-e2e-mqttv5-adr-namespace.yml)
-(hourly, manual, or `workflow_call` as the first job of a mqttv5 e2e workflow). The ADR namespace
+(every 10 minutes, manual, or `workflow_call` as the first job of a mqttv5 e2e workflow). The ADR namespace
 can disappear from ARM, removing its role assignments; DPS registrations then fail.
 [`c/eng/e2e-mqttv5-adr-namespace.ps1`](../../eng/e2e-mqttv5-adr-namespace.ps1) re-creates it
 (same name, hub region), ensures the 8 role assignments, re-links hub and DPS, and pushes the
 namespace to DPS; when the namespace is healthy it makes one ARM read. Inputs are repository
 variables `E2E_MQTTV5_SHARED_SUBSCRIPTION_ID`, `_RESOURCE_GROUP`, `_HUB_NAME`, `_DPS_NAME`
 and `_ADR_NAMESPACE` (unset `_ADR_NAMESPACE` skips the job); optional `_ADR_API_VERSION`
-(default `2026-11-02-preview`) must match the version the namespace was linked with. The OIDC identity needs Contributor
+(default `2026-11-02-preview`) must match the version the namespace was linked with. Optional
+`_SU_INSTANCE` names the Software Updates instance (same resource group) to keep linked as
+`updating/su-1`: linked by a separate PATCH after hub and DPS, with its 3 role assignments. A rebuild
+re-sends existing updating endpoints, and a namespace still in an operation is waited out, not
+rebuilt. The OIDC identity needs Contributor
 on the resource group. Grant the link's role assignments (hub, DPS and namespace identities) on the
 resource group once: those survive the namespace, so the job creates none and needs no role
 assignment write unless the namespace identity changes.
