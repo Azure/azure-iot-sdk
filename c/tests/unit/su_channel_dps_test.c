@@ -60,6 +60,7 @@ typedef struct
   az_iot_su_channel channel;
   /* 2048 bytes: storage-sized device properties, fully escaped, overflow it. */
   uint8_t body[2048];
+  char device_properties_strings[AZ_IOT_SU_DEVICE_PROPERTIES_BUFFER_SIZE];
 
   /* What the engine would have been told. */
   size_t update_count;
@@ -214,7 +215,14 @@ static int setup(void** state)
   dp.installed_update_id.version = "1.0";
   assert_int_equal(
       az_iot_su_channel_dps_init(
-          &fx->channel_state, &fx->client, &dp, fx->body, sizeof(fx->body), &fx->channel),
+          &fx->channel_state,
+          &fx->client,
+          &dp,
+          fx->body,
+          sizeof(fx->body),
+          fx->device_properties_strings,
+          sizeof(fx->device_properties_strings),
+          &fx->channel),
       AZ_IOT_OK);
 
   *state = fx;
@@ -1048,7 +1056,7 @@ static void invalid_replacements_preserve_channel_state_and_outstanding_body(voi
   az_iot_su_custom_property six[]
       = { { "a", "1" }, { "b", "2" }, { "c", "3" }, { "d", "4" }, { "e", "5" }, { "f", "6" } };
   az_iot_su_custom_property duplicate[] = { { "manufacturer", "other" } };
-  char oversized[257];
+  char oversized[AZ_IOT_SU_DEVICE_PROPERTIES_BUFFER_SIZE + 1]; /* one byte over a channel copy */
   memset(oversized, 'x', sizeof(oversized) - 1);
   oversized[sizeof(oversized) - 1] = '\0';
   char escaped_compat[256];
@@ -1088,6 +1096,24 @@ static void invalid_replacements_preserve_channel_state_and_outstanding_body(voi
   assert_int_equal(fx->result_count, 0);
 }
 
+/* The channel's copy holds at most its storage; one byte more is refused, unchanged. */
+static void channel_property_copy_is_bounded_by_its_storage(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_su_device_properties exact = { .manufacturer = "abc", .model = "de" };
+  fx->channel_state.device_properties_strings_size = 7;
+  assert_int_equal(fx->channel.vtable->set_device_properties(fx->channel.ctx, &exact), AZ_IOT_OK);
+  assert_string_equal(fx->channel_state.compat[0].value, "abc");
+
+  az_iot_su_channel_dps before;
+  memcpy(&before, &fx->channel_state, sizeof(before));
+  az_iot_su_device_properties over = { .manufacturer = "abcd", .model = "de" };
+  assert_int_equal(
+      fx->channel.vtable->set_device_properties(fx->channel.ctx, &over),
+      AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+  assert_memory_equal(&fx->channel_state, &before, sizeof(before));
+}
+
 static void channel_keeps_all_five_custom_properties_and_owns_their_strings(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -1107,16 +1133,29 @@ static void channel_keeps_all_five_custom_properties_and_owns_their_strings(void
   assert_string_equal(fx->channel_state.compat[1].value, "");
   assert_string_equal(fx->channel_state.compat[4].name, "e");
 
-  properties = fx->channel_state.device_properties.properties;
+  /* Properties pointing into the channel's copy would be overwritten while copied: refused. */
+  az_iot_su_channel_dps before;
+  memcpy(&before, &fx->channel_state, sizeof(before));
+  properties = fx->channel_state.device_properties;
   properties.installed_update_id
       = (az_iot_su_update_id_info){ "provider-2", "name-2", "version-2" };
+  assert_int_equal(
+      fx->channel.vtable->set_device_properties(fx->channel.ctx, &properties),
+      AZ_IOT_ERR_INVALID_ARG);
+  assert_memory_equal(&fx->channel_state, &before, sizeof(before));
+
+  az_iot_su_custom_property again[]
+      = { { "a", "revision-2" }, { "b", "" }, { "c", "3" }, { "d", "4" }, { "e", "5" } };
+  properties = (az_iot_su_device_properties){
+    .custom_properties = again,
+    .custom_properties_count = 5,
+    .installed_update_id = { "provider-2", "name-2", "version-2" },
+  };
   assert_int_equal(
       fx->channel.vtable->set_device_properties(fx->channel.ctx, &properties), AZ_IOT_OK);
   assert_string_equal(fx->channel_state.compat[0].value, "revision-2");
   assert_string_equal(fx->channel_state.installed_update_id.version, "version-2");
   properties.installed_update_id = (az_iot_su_update_id_info){ 0 };
-  /* Re-read the aliased custom-property descriptors after the preceding commit. */
-  properties.custom_properties = fx->channel_state.device_properties.properties.custom_properties;
   assert_int_equal(
       fx->channel.vtable->set_device_properties(fx->channel.ctx, &properties), AZ_IOT_OK);
   assert_false(fx->channel_state.has_installed_update_id);
@@ -1738,7 +1777,14 @@ static void a_zero_hold_timeout_selects_the_default(void** state)
   dp.model = "Foobar";
   assert_int_equal(
       az_iot_su_channel_dps_init(
-          &fx->channel_state, &fx->client, &dp, fx->body, sizeof(fx->body), &fx->channel),
+          &fx->channel_state,
+          &fx->client,
+          &dp,
+          fx->body,
+          sizeof(fx->body),
+          fx->device_properties_strings,
+          sizeof(fx->device_properties_strings),
+          &fx->channel),
       AZ_IOT_OK);
   assert_int_equal(fx->channel.vtable->open(fx->channel.ctx, on_update, on_result, fx), AZ_IOT_OK);
   (void)open_to_registering(fx);
@@ -3116,6 +3162,8 @@ int main(void)
         closing_the_channel_from_a_state_observer_returns_the_seat, setup, teardown),
     cmocka_unit_test_setup_teardown(
         invalid_replacements_preserve_channel_state_and_outstanding_body, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        channel_property_copy_is_bounded_by_its_storage, setup, teardown),
     cmocka_unit_test_setup_teardown(
         channel_keeps_all_five_custom_properties_and_owns_their_strings, setup, teardown),
     cmocka_unit_test_setup_teardown(

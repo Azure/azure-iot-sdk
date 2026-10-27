@@ -12,11 +12,6 @@ extern "C"
 {
 #endif
 
-/** @brief Bytes for compatibility-property strings, NUL terminators included. */
-#define AZ_IOT_SU_COMPATIBILITY_STORAGE_SIZE 256
-/** @brief Bytes for installed-update-ID strings, NUL terminators included. */
-#define AZ_IOT_SU_INSTALLED_ID_STORAGE_SIZE 192
-
 /**
  * @brief Longest string passed to the JSON writer.
  *
@@ -24,18 +19,6 @@ extern "C"
  * input byte) exceeds 1,000,000,000 bytes; longer strings are rejected first.
  */
 #define AZ_IOT_SU_MAX_JSON_STRING_SIZE (1000000000 / 6)
-
-  /** @brief Self-contained copy of validated device properties. */
-  typedef struct az_iot_su_device_properties_snapshot
-  {
-    /** Copied properties; strings point into strings. */
-    az_iot_su_device_properties properties;
-    /** Copied custom properties referenced by properties. */
-    az_iot_su_custom_property custom_properties[AZ_IOT_SU_MAX_COMPATIBILITY_PROPERTIES];
-    /** Packed NUL-terminated strings. */
-    char strings[AZ_IOT_SU_COMPATIBILITY_STORAGE_SIZE + AZ_IOT_SU_INSTALLED_ID_STORAGE_SIZE];
-    size_t strings_size; /**< Bytes used in strings. */
-  } az_iot_su_device_properties_snapshot;
 
   /**
    * @brief Validates the compatibility properties of an update check.
@@ -64,18 +47,32 @@ extern "C"
   az_iot_result az_iot_su__validate_installed_update_id(const az_iot_su_report_update_id* id);
 
   /**
-   * @brief Validates @p properties and copies them into @p snapshot.
+   * @brief Validates @p properties and measures their strings.
    *
-   * Changes no live state, so a failure leaves the current properties in place.
-   *
-   * @param[in] properties Caller's properties; must not overlap @p snapshot.
-   * @param[out] snapshot Scratch copy.
+   * @param[in] properties Properties to check.
+   * @param[out] out_strings_size Bytes az_iot_su__copy_device_properties() writes, NUL
+   *   terminators included.
    * @return AZ_IOT_OK, AZ_IOT_ERR_INVALID_ARG for malformed input, or
-   *   AZ_IOT_ERR_NOT_ENOUGH_SPACE if a count or storage limit is exceeded.
+   *   AZ_IOT_ERR_NOT_ENOUGH_SPACE for more than AZ_IOT_SU_MAX_COMPATIBILITY_PROPERTIES
+   *   compatibility properties, a string over AZ_IOT_SU_MAX_JSON_STRING_SIZE, or an installed
+   *   update ID over AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE.
    */
-  az_iot_result az_iot_su__prepare_device_properties(
+  az_iot_result az_iot_su__measure_device_properties(
       const az_iot_su_device_properties* properties,
-      az_iot_su_device_properties_snapshot* snapshot);
+      size_t* out_strings_size);
+
+  /**
+   * @brief Whether a string of @p properties lies in @p buffer.
+   *
+   * @param[in] properties Validated properties.
+   * @param[in] buffer Destination of a copy.
+   * @param[in] buffer_size Size of @p buffer.
+   * @return true if copying @p properties into @p buffer could overwrite them.
+   */
+  bool az_iot_su__device_properties_overlap(
+      const az_iot_su_device_properties* properties,
+      const char* buffer,
+      size_t buffer_size);
 
   /**
    * @brief Lists the emitted compatibility properties: manufacturer, model, then custom.
@@ -89,19 +86,20 @@ extern "C"
       az_iot_su_custom_property* out);
 
   /**
-   * @brief Copies a prepared snapshot into live storage. Cannot fail.
+   * @brief Copies @p properties, packing their strings into @p strings.
    *
-   * @param[in] snapshot From az_iot_su__prepare_device_properties().
-   * @param[out] properties Live properties, repointed at @p strings.
-   * @param[out] custom_properties AZ_IOT_SU_MAX_COMPATIBILITY_PROPERTIES entries.
-   * @param[out] strings At least snapshot->strings_size bytes, separate from
-   *   @p snapshot.
+   * @param[in] properties Validated by az_iot_su__measure_device_properties().
+   * @param[out] strings At least the measured size; no string of @p properties may lie in it
+   *   (see az_iot_su__device_properties_overlap()).
+   * @param[out] copy The copy; its strings point into @p strings. May be @p properties.
+   * @param[out] custom_properties AZ_IOT_SU_MAX_COMPATIBILITY_PROPERTIES entries, referenced by
+   *   @p copy.
    */
-  void az_iot_su__commit_device_properties(
-      const az_iot_su_device_properties_snapshot* snapshot,
-      az_iot_su_device_properties* properties,
-      az_iot_su_custom_property* custom_properties,
-      char* strings);
+  void az_iot_su__copy_device_properties(
+      const az_iot_su_device_properties* properties,
+      char* strings,
+      az_iot_su_device_properties* copy,
+      az_iot_su_custom_property* custom_properties);
 
 #ifdef __cplusplus
 }

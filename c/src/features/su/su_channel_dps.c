@@ -861,11 +861,27 @@ static az_iot_result channel_set_device_properties(
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
-  az_iot_su_device_properties_snapshot snapshot;
-  az_iot_result r = az_iot_su__prepare_device_properties(properties, &snapshot);
+  size_t strings_size = 0;
+  az_iot_result r = az_iot_su__measure_device_properties(properties, &strings_size);
   if (r != AZ_IOT_OK)
   {
     return r;
+  }
+  if (az_iot_su__device_properties_overlap(
+          properties, c->device_properties_strings, c->device_properties_strings_size))
+  {
+    AZ_IOT_LOG_ERROR(
+        AZ_IOT_LOG_COMPONENT_SU, "device properties must not point into the channel's copy");
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  if (strings_size > c->device_properties_strings_size)
+  {
+    AZ_IOT_LOG_ERRORF(
+        AZ_IOT_LOG_COMPONENT_SU,
+        "device properties need %lu bytes; the update-check copy holds %lu",
+        (unsigned long)strings_size,
+        (unsigned long)c->device_properties_strings_size);
+    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
   }
 
   az_iot_su_custom_property compatibility[AZ_IOT_SU_MAX_COMPATIBILITY_PROPERTIES];
@@ -875,10 +891,10 @@ static az_iot_result channel_set_device_properties(
   agent.agent_profile = c->agent_profile;
   agent.compatibility_properties = compatibility;
   agent.compatibility_properties_count
-      = az_iot_su__compatibility_properties(&snapshot.properties, compatibility);
-  az_iot_su_report_update_id installed = { snapshot.properties.installed_update_id.provider,
-                                           snapshot.properties.installed_update_id.name,
-                                           snapshot.properties.installed_update_id.version };
+      = az_iot_su__compatibility_properties(properties, compatibility);
+  az_iot_su_report_update_id installed = { properties->installed_update_id.provider,
+                                           properties->installed_update_id.name,
+                                           properties->installed_update_id.version };
   /* Size only: c->body may hold an outstanding operation. Both routes send the
    * same body, installed ID included. ETags are left out: they are optional,
    * and a request that cannot fit them drops them. */
@@ -889,15 +905,10 @@ static az_iot_result channel_set_device_properties(
     return r;
   }
 
-  az_iot_su__commit_device_properties(
-      &snapshot,
-      &c->device_properties.properties,
-      c->device_properties.custom_properties,
-      c->device_properties.strings);
-  c->device_properties.strings_size = snapshot.strings_size;
-  c->compat_count
-      = az_iot_su__compatibility_properties(&c->device_properties.properties, c->compat);
-  const az_iot_su_update_id_info* id = &c->device_properties.properties.installed_update_id;
+  az_iot_su__copy_device_properties(
+      properties, c->device_properties_strings, &c->device_properties, c->device_properties_custom);
+  c->compat_count = az_iot_su__compatibility_properties(&c->device_properties, c->compat);
+  const az_iot_su_update_id_info* id = &c->device_properties.installed_update_id;
   c->installed_update_id = (az_iot_su_report_update_id){ id->provider, id->name, id->version };
   c->has_installed_update_id = id->provider != NULL;
   return AZ_IOT_OK;
@@ -1142,10 +1153,12 @@ az_iot_result az_iot_su_channel_dps_init(
     const az_iot_su_device_properties* device_properties,
     uint8_t* body,
     size_t body_size,
+    char* device_properties_strings,
+    size_t device_properties_strings_size,
     az_iot_su_channel* out_channel)
 {
   if (channel_state == NULL || connection == NULL || body == NULL || body_size == 0
-      || out_channel == NULL)
+      || device_properties_strings == NULL || out_channel == NULL)
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
@@ -1154,6 +1167,8 @@ az_iot_result az_iot_su_channel_dps_init(
   channel_state->connection = connection;
   channel_state->body = body;
   channel_state->body_size = body_size;
+  channel_state->device_properties_strings = device_properties_strings;
+  channel_state->device_properties_strings_size = device_properties_strings_size;
   /* The profile the device reports for compatibility matching. */
   channel_state->agent_profile = 1;
 
