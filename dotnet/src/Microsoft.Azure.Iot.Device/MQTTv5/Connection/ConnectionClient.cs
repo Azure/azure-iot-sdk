@@ -24,15 +24,6 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
 
         private Guid? CurrentConnectionNonce { get; set; }
 
-        /// <inheritdoc/>
-        public bool IsTwinEnabled { get; }
-
-        /// <inheritdoc/>
-        public bool AreDirectMethodsEnabled { get; }
-
-        /// <inheritdoc/>
-        public bool AreCloudToDeviceMessagesEnabled { get; }
-
         public ConnectionClient(ConnectionClientOptions? options = null, ConnectionContext? connectionContext = null)
             : base((options ?? new ConnectionClientOptions()).ToCommonOptions(), connectionContext)
         {
@@ -40,9 +31,6 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
             _receiveDesiredPropertyUpdates = options.ReceiveDesiredPropertyUpdates;
             _receiveReportedPropertiesUponConnect = options.ReceiveReportedPropertiesUponConnect;
             _sessionExpiryInterval = options.SessionExpiryInterval;
-            IsTwinEnabled = options.EnableTwin;
-            AreDirectMethodsEnabled = options.EnableDirectMethods;
-            AreCloudToDeviceMessagesEnabled = options.EnableCloudToDeviceMessages;
         }
 
         public override Task HandleConnectedToHubAsync(MqttClientConnectedEventArgs args)
@@ -115,34 +103,13 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
                     // re-established in the same SUBSCRIBE as the devicebound topic. They are collected only once the
                     // SUBSCRIBE is about to be sent, so that it reflects every subscribe/unsubscribe made before then.
                     IReadOnlyList<DevicePresenceSubscriptionRequest> featureSubscriptions = Array.Empty<DevicePresenceSubscriptionRequest>();
-                    int builtInTopicFilterCount = 0;
                     int sentTopicFilterCount = 0;
                     var suback = await connection.BuildAndSubscribeAsync(
                         ConnectionEndpoint.IotHub,
                         () =>
                         {
                             featureSubscriptions = subscriptionSourceOwner.CollectDevicePresenceSubscriptions();
-                            MqttSubscribe subscribe = new();
-                            if (IsTwinEnabled && AreDirectMethodsEnabled && AreCloudToDeviceMessagesEnabled)
-                            {
-                                subscribe.TopicFilters.Add(new($"ih/{deviceId}/dev/#", MqttQualityOfServiceLevel.AtLeastOnce));
-                            }
-                            else
-                            {
-                                // Birth acknowledgements are mandatory even when every optional feature is disabled.
-                                subscribe.TopicFilters.Add(new($"ih/{deviceId}/dev/presence", MqttQualityOfServiceLevel.AtLeastOnce));
-                                if (IsTwinEnabled)
-                                {
-                                    subscribe.TopicFilters.Add(new($"ih/{deviceId}/dev/twin", MqttQualityOfServiceLevel.AtLeastOnce));
-                                }
-
-                                if (AreDirectMethodsEnabled)
-                                {
-                                    subscribe.TopicFilters.Add(new($"ih/{deviceId}/dev/methods", MqttQualityOfServiceLevel.AtLeastOnce));
-                                }
-                            }
-
-                            builtInTopicFilterCount = subscribe.TopicFilters.Count;
+                            MqttSubscribe subscribe = new($"ih/{deviceId}/dev/#", MqttQualityOfServiceLevel.AtLeastOnce);
                             foreach (DevicePresenceSubscriptionRequest request in featureSubscriptions)
                             {
                                 foreach (MqttTopicFilter topicFilter in request.TopicFilters)
@@ -162,24 +129,22 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
 
                     cancellationToken.ThrowIfCancellationRequested();
 
-                    if (suback.Items.Count != sentTopicFilterCount)
+                    MqttSubscribeAckItem? presenceSuback = suback.Items.FirstOrDefault();
+                    if (presenceSuback == null || suback.Items.Count != sentTopicFilterCount)
                     {
                         Trace.TraceWarning("Received malformed SUBACK on devicebound SUBSCRIBE. Attempting connection again...");
                         await connection.DisconnectAsync(true, new MqttDisconnect() { Reason = MqttDisconnectReasonCode.NormalDisconnection, SessionExpiryInterval = 0 }, cancellationToken);
                         return;
                     }
 
-                    foreach (MqttSubscribeAckItem item in suback.Items.Take(builtInTopicFilterCount))
+                    if (presenceSuback.ReasonCode != MqttClientSubscribeReasonCode.GrantedQoS1)
                     {
-                        if (item.ReasonCode != MqttClientSubscribeReasonCode.GrantedQoS1)
-                        {
-                            Trace.TraceWarning("Received SUBACK on device presence SUBSCRIBE with unsuccessful result code: {0}.", item.ReasonCode);
-                            await connection.DisconnectAsync(true, new MqttDisconnect() { Reason = MqttDisconnectReasonCode.NormalDisconnection, SessionExpiryInterval = 0 }, cancellationToken);
-                            return;
-                        }
+                        Trace.TraceWarning("Received SUBACK on device presence SUBSCRIBE with unsuccessful result code: {0}.", presenceSuback.ReasonCode);
+                        await connection.DisconnectAsync(true, new MqttDisconnect() { Reason = MqttDisconnectReasonCode.NormalDisconnection, SessionExpiryInterval = 0 }, cancellationToken);
+                        return;
                     }
 
-                    ReportDevicePresenceSubscriptionResults(featureSubscriptions, suback.Items.Skip(builtInTopicFilterCount).ToList());
+                    ReportDevicePresenceSubscriptionResults(featureSubscriptions, suback.Items.Skip(1).ToList());
                 }
                 catch (Exception e) when (!cancellationToken.IsCancellationRequested)
                 {
@@ -193,17 +158,14 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
             uint deviceDesiredPropertyVersion = 0;
             uint deviceReportedPropertyVersion = 0;
 
-            bool pushDesired = IsTwinEnabled && _receiveDesiredPropertyUpdates;
-            bool pushReported = IsTwinEnabled && _receiveReportedPropertiesUponConnect;
-
             Birth birth = new()
             {
                 SessionPresent = connack.IsSessionPresent,
-                ReportedVersion = deviceReportedPropertyVersion, // Service allows for device to "resume" its previously known state if device boots up and has twin in durable storage somewhere. Not something we supported in v1, though AFAIK
+                ReportedVersion = deviceReportedPropertyVersion, // Service allows for device to "resume" its previously known state if device boots up and has twin in durable storage somewhere.
                 DesiredVersion = deviceDesiredPropertyVersion,
 
-                PushDesired = pushDesired, // If false, users will only get desired properties via a GetTwin call. Akin to subscribing to desired properties in v1 land
-                PushReported = pushReported, // If true, all current reported properties will be pushed to this device to "re-hydrate" its reported properties state. Not analogous to anything in v1 AFAIK
+                PushDesired = _receiveDesiredPropertyUpdates, // If false, users will only get desired properties via a GetTwin call. Akin to subscribing to desired properties in v1 land
+                PushReported = _receiveReportedPropertiesUponConnect, // If true, all current reported properties will be pushed to this device to "re-hydrate" its reported properties state. Not analogous to anything in v1 AFAIK
             };
 
             MqttPublish birthMessage = new MqttPublish()

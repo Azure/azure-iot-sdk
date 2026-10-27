@@ -3,7 +3,6 @@
 
 using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Mqtt;
-using ConnectionClientOptions = Microsoft.Azure.Iot.Device.MQTTv5.Models.ConnectionClientOptions;
 
 namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
 {
@@ -32,22 +31,6 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
         /// reconnecting and becomes false after an explicit disconnect.
         /// </summary>
         bool IsConnectionTargetSet => true;
-
-        /// <summary>
-        /// Whether twin subscriptions and automatic twin pushes are enabled. See <see cref="ConnectionClientOptions.EnableTwin"/>.
-        /// </summary>
-        bool IsTwinEnabled => true;
-
-        /// <summary>
-        /// Whether direct method subscriptions are enabled. See <see cref="ConnectionClientOptions.EnableDirectMethods"/>.
-        /// </summary>
-        bool AreDirectMethodsEnabled => true;
-
-        /// <summary>
-        /// Whether cloud-to-device messages are enabled. MQTTv5 cloud-to-device receiving is not currently supported.
-        /// See <see cref="ConnectionClientOptions.EnableCloudToDeviceMessages"/>.
-        /// </summary>
-        bool AreCloudToDeviceMessagesEnabled => true;
 
         /// <summary>
         /// Send a PUBLISH to IoT hub. Any <see cref="DeviceIdPlaceholder"/> in the topic is replaced with the device's

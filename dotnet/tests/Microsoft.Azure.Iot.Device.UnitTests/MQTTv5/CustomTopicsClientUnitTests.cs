@@ -814,29 +814,21 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
                     .Skip(trafficCountBeforeReconnect)
                     .Select(traffic => traffic.Subscribe)
                     .OfType<MqttSubscribe>()
-                    .Single(subscribe => subscribe.TopicFilters.Any(topicFilter =>
-                        topicFilter.Topic == $"ih/{DeviceId}/dev/#" || topicFilter.Topic == $"ih/{DeviceId}/dev/presence"));
+                    .Single(subscribe => subscribe.TopicFilters.Any(topicFilter => topicFilter.Topic == $"ih/{DeviceId}/dev/#"));
             }
         }
 
         // Custom topic subscriptions are lost with the session, so they must be re-subscribed to (with their QoS and the
         // device's current ID) in the device presence SUBSCRIBE. A topic the service then rejects must stop being tracked
         // without failing the presence flow.
-        [Theory]
-        [InlineData(false)]
-        [InlineData(true)]
-        public async Task SubscribedTopicsAreResubscribedInDevicePresenceSubscribeUponReconnecting(bool useSelectiveSubscriptions)
+        [Fact]
+        public async Task SubscribedTopicsAreResubscribedInDevicePresenceSubscribeUponReconnecting()
         {
             const string placeholderTopic = "foo/{deviceId}/bar";
             const string rejectedTopic = "rejected/topic";
 
             using MockConnectionMqttClient mockMqttClient = new() { AutoRespondToBirth = true };
-            using ConnectionClient connectionClient = new(new()
-            {
-                MqttClient = mockMqttClient,
-                EnableCloudToDeviceMessages = !useSelectiveSubscriptions,
-                ConnectionRetryPolicy = new ExponentialBackoffRetryPolicy(uint.MaxValue, TimeSpan.Zero, useJitter: false),
-            });
+            using ConnectionClient connectionClient = CreateReconnectingConnectionClient(mockMqttClient);
             using CustomTopicsClient customTopicsClient = new(connectionClient);
 
             await connectionClient.ConnectToHubAsync(CreateHubConnectionContext(), TestContext.Current.CancellationToken);
@@ -858,23 +850,14 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
 
             MqttSubscribe presenceSubscribe = await ReconnectAndGetPresenceSubscribeAsync(mockMqttClient, connectionClient);
 
-            List<(string, MqttQualityOfServiceLevel)> expectedTopics = useSelectiveSubscriptions
-                ? new()
-                {
-                    ($"ih/{DeviceId}/dev/presence", MqttQualityOfServiceLevel.AtLeastOnce),
-                    ($"ih/{DeviceId}/dev/twin", MqttQualityOfServiceLevel.AtLeastOnce),
-                    ($"ih/{DeviceId}/dev/methods", MqttQualityOfServiceLevel.AtLeastOnce),
-                }
-                : new() { ($"ih/{DeviceId}/dev/#", MqttQualityOfServiceLevel.AtLeastOnce) };
-            expectedTopics.AddRange(
+            Assert.Equal(
                 new (string, MqttQualityOfServiceLevel)[]
                 {
+                    ($"ih/{DeviceId}/dev/#", MqttQualityOfServiceLevel.AtLeastOnce),
                     ($"foo/{DeviceId}/bar", MqttQualityOfServiceLevel.AtMostOnce),
                     ("baz/#", MqttQualityOfServiceLevel.AtLeastOnce),
                     (rejectedTopic, MqttQualityOfServiceLevel.AtLeastOnce),
-                });
-            Assert.Equal(
-                expectedTopics,
+                },
                 presenceSubscribe.TopicFilters.Select(topicFilter => (topicFilter.Topic, topicFilter.QualityOfServiceLevel)));
 
             Assert.Equal(new[] { placeholderTopic, "baz/#" }, customTopicsClient.GetSubscribedTopics);

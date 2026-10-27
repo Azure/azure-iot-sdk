@@ -12,6 +12,7 @@ using Microsoft.Azure.Iot.Device.Retry;
 using System.Text;
 using Xunit;
 using MqttV5ConnectionClientOptions = Microsoft.Azure.Iot.Device.MQTTv5.Models.ConnectionClientOptions;
+using Microsoft.Azure.Iot.Device.Unified.Models;
 
 namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
 {
@@ -46,18 +47,12 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
         }
 
         [Theory]
-        [InlineData(false, true, true, true)]
-        [InlineData(true, true, true, true)]
-        [InlineData(false, false, true, true)]
-        [InlineData(true, false, true, true)]
-        [InlineData(false, true, false, true)]
-        [InlineData(true, true, false, true)]
-        [InlineData(false, true, true, false)]
-        [InlineData(true, true, true, false)]
-        [InlineData(false, false, false, false)]
-        [InlineData(true, false, false, false)]
-        public async Task FeatureOptOutsAreSnapshottedAndAppliedOnEveryBirth(
-            bool useUnifiedClient, bool enableTwin, bool enableDirectMethods, bool enableCloudToDeviceMessages)
+        [InlineData(false, true, true)]
+        [InlineData(true, false, true)]
+        [InlineData(true, true, false)]
+        [InlineData(false, false, false)]
+        public async Task UnifiedFeatureOptOutsKeepSharedMqttV5Subscription(
+            bool enableTwin, bool enableDirectMethods, bool enableCloudToDeviceMessages)
         {
             using MockConnectionMqttClient mockMqttClient = new() { AutoRespondToBirth = true };
             ConnectionClientOptions options = new()
@@ -68,25 +63,11 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
                 EnableCloudToDeviceMessages = enableCloudToDeviceMessages,
                 ConnectionRetryPolicy = new ExponentialBackoffRetryPolicy(uint.MaxValue, TimeSpan.Zero, useJitter: false),
             };
-            MqttV5ConnectionClientOptions nativeOptions = new()
-            {
-                MqttClient = mockMqttClient,
-                EnableTwin = enableTwin,
-                EnableDirectMethods = enableDirectMethods,
-                EnableCloudToDeviceMessages = enableCloudToDeviceMessages,
-                ConnectionRetryPolicy = options.ConnectionRetryPolicy,
-            };
-            AbstractConnectionClient connectionClient = useUnifiedClient
-                ? new Device.Unified.Connection.ConnectionClient(options)
-                : new ConnectionClient(nativeOptions);
-            using IDisposable connectionClientLifetime = (IDisposable)connectionClient;
+            using Device.Unified.Connection.ConnectionClient connectionClient = new(options);
 
             options.EnableTwin = !enableTwin;
             options.EnableDirectMethods = !enableDirectMethods;
             options.EnableCloudToDeviceMessages = !enableCloudToDeviceMessages;
-            nativeOptions.EnableTwin = !enableTwin;
-            nativeOptions.EnableDirectMethods = !enableDirectMethods;
-            nativeOptions.EnableCloudToDeviceMessages = !enableCloudToDeviceMessages;
 
             await connectionClient.ConnectToHubAsync(GetMockConnectionContext(), TestContext.Current.CancellationToken)
                 .WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
@@ -101,29 +82,10 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
                 .WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
             await reconnected.Task.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
 
-            List<string> expectedTopics = new();
-            if (enableTwin && enableDirectMethods && enableCloudToDeviceMessages)
-            {
-                expectedTopics.Add("ih/someDeviceId/dev/#");
-            }
-            else
-            {
-                expectedTopics.Add("ih/someDeviceId/dev/presence");
-                if (enableTwin)
-                {
-                    expectedTopics.Add("ih/someDeviceId/dev/twin");
-                }
-
-                if (enableDirectMethods)
-                {
-                    expectedTopics.Add("ih/someDeviceId/dev/methods");
-                }
-            }
-
             MqttSubscribe[] subscribes = mockMqttClient.SentMqttTrafficInOrder
                 .Select(traffic => traffic.Subscribe).OfType<MqttSubscribe>().ToArray();
             Assert.Equal(2, subscribes.Length);
-            Assert.All(subscribes, subscribe => Assert.Equal(expectedTopics, subscribe.TopicFilters.Select(filter => filter.Topic)));
+            Assert.All(subscribes, subscribe => Assert.Equal("ih/someDeviceId/dev/#", Assert.Single(subscribe.TopicFilters).Topic));
 
             MqttPublish[] births = mockMqttClient.SentMqttTrafficInOrder
                 .Select(traffic => traffic.Publish).OfType<MqttPublish>().ToArray();
@@ -137,46 +99,10 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
         }
 
         [Theory]
-        [InlineData(false)]
-        [InlineData(true)]
-        public async Task OptedOutFeatureClientsAreRejectedButTelemetryStillSends(bool useUnifiedClient)
-        {
-            using MockConnectionMqttClient mockMqttClient = new() { AutoRespondToBirth = true };
-            ConnectionClientOptions options = new()
-            {
-                MqttClient = mockMqttClient,
-                EnableTwin = false,
-                EnableDirectMethods = false,
-                EnableCloudToDeviceMessages = false,
-            };
-            AbstractConnectionClient connectionClient = useUnifiedClient
-                ? new Device.Unified.Connection.ConnectionClient(options)
-                : new ConnectionClient(new()
-                {
-                    MqttClient = mockMqttClient,
-                    EnableTwin = false,
-                    EnableDirectMethods = false,
-                    EnableCloudToDeviceMessages = false,
-                });
-            using IConnectionClient featureConnection = useUnifiedClient
-                ? new Device.Unified.Connection.Stub((Device.Unified.Connection.IConnectionClient)connectionClient)
-                : (IConnectionClient)connectionClient;
-
-            Assert.Throws<InvalidOperationException>(() => new TwinClient(featureConnection));
-            Assert.Throws<InvalidOperationException>(() => new Device.MQTTv5.DirectMethods.DirectMethodClient(featureConnection));
-
-            using Device.MQTTv5.Telemetry.TelemetryClient telemetryClient = new(featureConnection);
-            await connectionClient.ConnectToHubAsync(GetMockConnectionContext(), TestContext.Current.CancellationToken)
-                .WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
-            await telemetryClient.SendTelemetryAsync(new(), TestContext.Current.CancellationToken);
-
-            Assert.Equal("ih/someDeviceId/srv/telemetry", mockMqttClient.SentMqttTrafficInOrder.Last().Publish!.Topic);
-        }
-
-        [Theory]
         [InlineData(false, false)]
         [InlineData(false, true)]
         [InlineData(true, false)]
+        [InlineData(true, true)]
         public async Task BirthHonorsSnapshottedTwinPushSettings(bool pushDesired, bool pushReported)
         {
             using MockConnectionMqttClient mockMqttClient = new() { AutoRespondToBirth = true };
@@ -185,60 +111,41 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
                 MqttClient = mockMqttClient,
                 ReceiveDesiredPropertyUpdates = pushDesired,
                 ReceiveReportedPropertiesUponConnect = pushReported,
+                ConnectionRetryPolicy = new ExponentialBackoffRetryPolicy(uint.MaxValue, TimeSpan.Zero, useJitter: false),
             };
             using ConnectionClient connectionClient = new(options);
+            using TwinClient twinClient = new(connectionClient);
+            using Device.MQTTv5.DirectMethods.DirectMethodClient directMethodClient = new(connectionClient);
             options.ReceiveDesiredPropertyUpdates = !pushDesired;
             options.ReceiveReportedPropertiesUponConnect = !pushReported;
 
             await connectionClient.ConnectToHubAsync(GetMockConnectionContext(), TestContext.Current.CancellationToken)
                 .WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
 
-            Birth birth = Birth.Parser.ParseFrom(mockMqttClient.SentMqttTrafficInOrder.Last().Publish!.Payload);
-            Assert.Equal(pushDesired, birth.PushDesired);
-            Assert.Equal(pushReported, birth.PushReported);
-        }
-
-        [Theory]
-        [InlineData(false, 1)]
-        [InlineData(true, 1)]
-        [InlineData(false, 2)]
-        [InlineData(true, 2)]
-        public async Task PresenceRecoversWhenAnEnabledFeatureSubscriptionIsRejected(bool useUnifiedClient, int rejectedTopicIndex)
-        {
-            using MockConnectionMqttClient mockMqttClient = new() { AutoRespondToBirth = true };
-            ConnectionClientOptions options = new()
+            TaskCompletionSource reconnected = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            connectionClient.DevicePresenceFlowCompletedAsync += _ =>
             {
-                MqttClient = mockMqttClient,
-                EnableCloudToDeviceMessages = false,
-                ConnectionRetryPolicy = new ExponentialBackoffRetryPolicy(uint.MaxValue, TimeSpan.Zero, useJitter: false),
+                reconnected.TrySetResult();
+                return Task.CompletedTask;
             };
-            AbstractConnectionClient connectionClient = useUnifiedClient
-                ? new Device.Unified.Connection.ConnectionClient(options)
-                : new ConnectionClient(new()
-                {
-                    MqttClient = mockMqttClient,
-                    EnableCloudToDeviceMessages = false,
-                    ConnectionRetryPolicy = options.ConnectionRetryPolicy,
-                });
-            using IDisposable connectionClientLifetime = (IDisposable)connectionClient;
-            int subscribeAttempts = 0;
-            mockMqttClient.OnSubscribe = subscribe =>
-            {
-                MqttSubscribeAck suback = MqttObjectHelpers.CreateSuccessfulSuback(subscribe);
-                if (Interlocked.Increment(ref subscribeAttempts) == 1)
-                {
-                    suback.Items.ElementAt(rejectedTopicIndex).ReasonCode = MqttClientSubscribeReasonCode.NotAuthorized;
-                }
-
-                return Task.FromResult(suback);
-            };
-
-            await connectionClient.ConnectToHubAsync(GetMockConnectionContext(), TestContext.Current.CancellationToken)
+            await mockMqttClient.SimulateServerDisconnectAsync(MqttDisconnectReason.ServerBusy)
                 .WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+            await reconnected.Task.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
 
-            Assert.Equal(2, subscribeAttempts);
-            Assert.Equal(2, mockMqttClient.ConnectAttemptCount);
-            Assert.Single(mockMqttClient.DisconnectRequests);
+            MqttSubscribe[] subscribes = mockMqttClient.SentMqttTrafficInOrder
+                .Select(traffic => traffic.Subscribe).OfType<MqttSubscribe>().ToArray();
+            Assert.Equal(2, subscribes.Length);
+            Assert.All(subscribes, subscribe => Assert.Equal("ih/someDeviceId/dev/#", Assert.Single(subscribe.TopicFilters).Topic));
+
+            MqttPublish[] births = mockMqttClient.SentMqttTrafficInOrder
+                .Select(traffic => traffic.Publish).OfType<MqttPublish>().ToArray();
+            Assert.Equal(2, births.Length);
+            Assert.All(births, publish =>
+            {
+                Birth birth = Birth.Parser.ParseFrom(publish.Payload);
+                Assert.Equal(pushDesired, birth.PushDesired);
+                Assert.Equal(pushReported, birth.PushReported);
+            });
         }
 
         [Fact]

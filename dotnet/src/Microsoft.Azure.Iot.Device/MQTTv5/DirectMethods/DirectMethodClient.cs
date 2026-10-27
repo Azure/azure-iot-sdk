@@ -4,13 +4,11 @@
 using Google.Protobuf;
 using Microsoft.Azure.Iot.Device.Events;
 using Microsoft.Azure.Iot.Device.MQTTv5.Connection;
-using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Models.DirectMethods;
 using Microsoft.Azure.Iot.Device.Mqtt;
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Text;
-using ConnectionClientOptions = Microsoft.Azure.Iot.Device.MQTTv5.Models.ConnectionClientOptions;
 
 namespace Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods
 {
@@ -93,14 +91,8 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods
         /// await connectionClient.ProvisionAndConnectAsync();
         /// </code>
         /// </example>
-        /// <exception cref="InvalidOperationException">Thrown if <paramref name="connection"/> opted out of direct methods (see <see cref="ConnectionClientOptions.EnableDirectMethods"/>).</exception>
         public DirectMethodClient(IConnectionClient connection)
         {
-            if (!connection.AreDirectMethodsEnabled)
-            {
-                throw new InvalidOperationException($"The provided connection client opted out of direct methods. Set {nameof(ConnectionClientOptions)}.{nameof(ConnectionClientOptions.EnableDirectMethods)} to true to use a {nameof(DirectMethodClient)}.");
-            }
-
             _connection = connection;
             _connection.PublishReceivedAsync += HandleReceivedMqttPublish;
         }

@@ -8,7 +8,7 @@ using System;
 using System.Collections.Generic;
 using System.Text;
 
-namespace Microsoft.Azure.Iot.Device.Models
+namespace Microsoft.Azure.Iot.Device.Unified.Models
 {
     /// <summary>
     /// Configures the unified connection client using settings common to both MQTT versions.
@@ -50,8 +50,8 @@ namespace Microsoft.Azure.Iot.Device.Models
         /// True (the default) if this device uses twins. False to opt out of twins.
         /// </summary>
         /// <remarks>
-        /// When false, the device presence flow does not subscribe to twin topics or request automatic MQTTv5 twin
-        /// pushes, and constructing a <see cref="Unified.Twin.TwinClient"/> or <see cref="MQTTv5.Twin.TwinClient"/> with
+        /// When false, the device presence flow does not subscribe to MQTTv3 twin topics or request automatic MQTTv5 twin
+        /// pushes, and constructing a <see cref="Twin.TwinClient"/> with
         /// this connection client throws an <see cref="InvalidOperationException"/>.
         /// This value is read once when the connection client is constructed.
         /// </remarks>
@@ -61,8 +61,8 @@ namespace Microsoft.Azure.Iot.Device.Models
         /// True (the default) if this device receives direct methods. False to opt out of direct methods.
         /// </summary>
         /// <remarks>
-        /// When false, the device presence flow does not subscribe to the direct method request topic, and constructing a
-        /// <see cref="Unified.DirectMethods.DirectMethodClient"/> or <see cref="MQTTv5.DirectMethods.DirectMethodClient"/>
+        /// When false, the MQTTv3 device presence flow does not subscribe to the direct method request topic, and constructing a
+        /// <see cref="DirectMethods.DirectMethodClient"/>
         /// with this connection client throws an <see cref="InvalidOperationException"/>.
         /// This value is read once when the connection client is constructed.
         /// </remarks>
@@ -72,8 +72,8 @@ namespace Microsoft.Azure.Iot.Device.Models
         /// True (the default) if this device receives cloud-to-device messages. False to opt out of cloud-to-device messages.
         /// </summary>
         /// <remarks>
-        /// When false, the device presence flow does not subscribe to the cloud-to-device message topic, and adding a handler
-        /// to <see cref="Unified.Telemetry.TelemetryClient.CloudToDeviceTelemetryReceivedAsync"/> on a telemetry client that
+        /// When false, the MQTTv3 device presence flow does not subscribe to the cloud-to-device message topic, and adding a handler
+        /// to <see cref="Telemetry.TelemetryClient.CloudToDeviceTelemetryReceivedAsync"/> on a telemetry client that
         /// uses this connection client throws an <see cref="InvalidOperationException"/>. Sending device-to-cloud telemetry
         /// is unaffected. MQTTv5 cloud-to-device receiving is not currently supported.
         /// This value is read once when the connection client is constructed.

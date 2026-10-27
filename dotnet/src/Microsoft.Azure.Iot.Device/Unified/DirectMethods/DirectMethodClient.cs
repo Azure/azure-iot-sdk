@@ -11,6 +11,7 @@ using System.Collections.Specialized;
 using System.Diagnostics;
 using System.Text.RegularExpressions;
 using System.Web;
+using Microsoft.Azure.Iot.Device.Unified.Models;
 
 namespace Microsoft.Azure.Iot.Device.Unified.DirectMethods
 {

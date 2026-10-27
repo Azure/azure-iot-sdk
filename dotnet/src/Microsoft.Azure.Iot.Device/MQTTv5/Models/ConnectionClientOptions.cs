@@ -11,28 +11,19 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Models
     /// </summary>
     public class ConnectionClientOptions
     {
-        /// <inheritdoc cref="Device.Models.ConnectionClientOptions.ConnectionRetryPolicy"/>
+        /// <inheritdoc cref="Unified.Models.ConnectionClientOptions.ConnectionRetryPolicy"/>
         public IRetryPolicy ConnectionRetryPolicy { get; set; } = new ExponentialBackoffRetryPolicy(uint.MaxValue, TimeSpan.FromSeconds(60));
 
-        /// <inheritdoc cref="Device.Models.ConnectionClientOptions.ConnectionAttemptTimeout"/>
+        /// <inheritdoc cref="Unified.Models.ConnectionClientOptions.ConnectionAttemptTimeout"/>
         public TimeSpan ConnectionAttemptTimeout { get; set; } = TimeSpan.FromSeconds(10);
 
-        /// <inheritdoc cref="Device.Models.ConnectionClientOptions.EnableMqttLogging"/>
+        /// <inheritdoc cref="Unified.Models.ConnectionClientOptions.EnableMqttLogging"/>
         public bool EnableMqttLogging { get; set; }
 
-        /// <inheritdoc cref="Device.Models.ConnectionClientOptions.MqttClient"/>
+        /// <inheritdoc cref="Unified.Models.ConnectionClientOptions.MqttClient"/>
         public IMqttClient? MqttClient { get; set; }
 
-        /// <inheritdoc cref="Device.Models.ConnectionClientOptions.EnableTwin"/>
-        public bool EnableTwin { get; set; } = true;
-
-        /// <inheritdoc cref="Device.Models.ConnectionClientOptions.EnableDirectMethods"/>
-        public bool EnableDirectMethods { get; set; } = true;
-
-        /// <inheritdoc cref="Device.Models.ConnectionClientOptions.EnableCloudToDeviceMessages"/>
-        public bool EnableCloudToDeviceMessages { get; set; } = true;
-
-        /// <inheritdoc cref="Device.Models.ConnectionClientOptions.UseCleanSession"/>
+        /// <inheritdoc cref="Unified.Models.ConnectionClientOptions.UseCleanSession"/>
         public bool UseCleanSession { get; set; }
 
         /// <summary>
@@ -51,7 +42,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Models
         /// Maps to the birth message's push_desired flag.
         /// </summary>
         /// <remarks>
-        /// Ignored when <see cref="EnableTwin"/> is false. This value is read once when the connection client is constructed.
+        /// This value is read once when the connection client is constructed. It does not disable explicit twin requests.
         /// </remarks>
         public bool ReceiveDesiredPropertyUpdates { get; set; } = true;
 
@@ -60,11 +51,11 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Models
         /// Maps to the birth message's push_reported flag.
         /// </summary>
         /// <remarks>
-        /// Ignored when <see cref="EnableTwin"/> is false. This value is read once when the connection client is constructed.
+        /// This value is read once when the connection client is constructed. It does not disable explicit twin requests.
         /// </remarks>
         public bool ReceiveReportedPropertiesUponConnect { get; set; } = true;
 
-        internal Device.Models.ConnectionClientOptions ToCommonOptions()
+        internal Unified.Models.ConnectionClientOptions ToCommonOptions()
         {
             return new()
             {
@@ -72,9 +63,6 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Models
                 ConnectionAttemptTimeout = ConnectionAttemptTimeout,
                 EnableMqttLogging = EnableMqttLogging,
                 MqttClient = MqttClient,
-                EnableTwin = EnableTwin,
-                EnableDirectMethods = EnableDirectMethods,
-                EnableCloudToDeviceMessages = EnableCloudToDeviceMessages,
                 UseCleanSession = UseCleanSession,
             };
         }

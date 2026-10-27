@@ -50,12 +50,6 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
 
         public bool IsConnectionTargetSet => _unifiedConnectionClient.IsConnectionTargetSet;
 
-        public bool IsTwinEnabled => _unifiedConnectionClient.IsTwinEnabled;
-
-        public bool AreDirectMethodsEnabled => _unifiedConnectionClient.AreDirectMethodsEnabled;
-
-        public bool AreCloudToDeviceMessagesEnabled => _unifiedConnectionClient.AreCloudToDeviceMessagesEnabled;
-
         public Task<MqttPublishAck> PublishAsync(MqttPublish publish, bool throwOnErrorReasonCode, CancellationToken cancellationToken = default)
         {
             return _unifiedConnectionClient.PublishAsync(publish, throwOnErrorReasonCode, cancellationToken);
