@@ -847,7 +847,8 @@ if(AZ_IOT_WITH_AZ_MQTT)
         unit/az_mqtt_adapter_sizes_test.c
         support/az_mqtt_asymmetric_common.c
         support/az_mqtt_asymmetric_v3.c
-        support/az_mqtt_asymmetric_v5.c)
+        support/az_mqtt_asymmetric_v5.c
+        support/az_mqtt_asymmetric_adapter.c)
     target_include_directories(az_iot_tests_az_mqtt_adapter_sizes PRIVATE
         ${PROJECT_SOURCE_DIR}/inc ${PROJECT_SOURCE_DIR}/adapters/az_mqtt ${PROJECT_SOURCE_DIR}/src/core
         ${CMAKE_CURRENT_SOURCE_DIR}/support)
@@ -866,6 +867,14 @@ if(AZ_IOT_WITH_AZ_MQTT)
     target_link_libraries(az_iot_tests_az_mqtt_adapter_ack PRIVATE az_mqttv3 az_mqttv5)
     if(WIN32)
         target_link_libraries(az_iot_tests_az_mqtt_adapter_ack PRIVATE ws2_32)
+    endif()
+
+    # The adapter building its clients in application memory.
+    az_iot_add_cmocka_test(az_iot_tests_az_mqtt_adapter_workspace unit/az_mqtt_adapter_workspace_test.c)
+    target_link_libraries(az_iot_tests_az_mqtt_adapter_workspace PRIVATE
+        az_iot_adapter_az_mqtt az_mqttv3 az_mqttv5)
+    if(WIN32)
+        target_link_libraries(az_iot_tests_az_mqtt_adapter_workspace PRIVATE ws2_32)
     endif()
 
     # The adapter with recording malloc and free: freed memory holds no credential.

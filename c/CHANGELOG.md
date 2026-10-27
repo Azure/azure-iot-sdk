@@ -31,6 +31,13 @@
   workspace for them.
 - Breaking: `az_iot_su_platform_hooks` fields `persist_state_fn` and `load_state_fn` are renamed
   `persist_workflow_state_fn` and `load_workflow_state_fn`.
+- az_mqtt adapter in application memory: `az_iot_az_mqtt_get_adapter()` returns an
+  `az_iot_mqtt_adapter` whose `init()` builds an MQTT 3.1.1 or MQTT 5 client in a workspace the
+  application provides, with no allocation. Sizes are run-time values (`az_iot_mqtt_limits`): send
+  and receive buffers, in-flight messages, message store and connect-string copies.
+  `az_iot_az_mqtt_get_workspace_size()` gives the exact size; `AZ_IOT_AZ_MQTT_WORKSPACE_SIZE()` a
+  constant-expression bound for static arrays. The client's `destroy()` wipes the workspace and
+  frees nothing. The factories are unchanged; they now allocate one workspace per client.
 - az_mqtt adapter: `AZ_IOT_AZ_MQTT_MESSAGE_STORAGE_SIZE` may be 0, for devices that only use clean
   sessions: no message store is allocated, and a connect whose session outlives the connection
   (`clean_start` false; MQTT 5: with `session_expiry_seconds` > 0) returns `AZ_IOT_ERR_NOT_SUPPORTED`.
