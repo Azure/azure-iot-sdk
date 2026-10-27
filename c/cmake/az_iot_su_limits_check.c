@@ -5,6 +5,7 @@
 /* Configure-time check (cmake/az_iot_su_limits.cmake): the installed azure-sdk-for-c parses a
  * manifest at the configured limits into the layout this build compiles. Exits 0 when it does. */
 
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -79,9 +80,10 @@ int main(void)
     return 1;
   }
   const az_iot_adu_client_update_manifest* manifest = &g_parsed.manifest;
-  if (manifest->instructions.steps_count != _az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS
-      || manifest->instructions.steps[0].files_count != _az_IOT_ADU_CLIENT_MAX_FILE_COUNT_PER_STEP
-      || manifest->files_count != _az_IOT_ADU_CLIENT_MAX_TOTAL_FILE_COUNT
+  if (manifest->instructions.steps_count != (uint32_t)_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS
+      || manifest->instructions.steps[0].files_count
+          != (uint32_t)_az_IOT_ADU_CLIENT_MAX_FILE_COUNT_PER_STEP
+      || manifest->files_count != (uint32_t)_az_IOT_ADU_CLIENT_MAX_TOTAL_FILE_COUNT
       || !az_span_is_content_equal(manifest->create_date_time, AZ_SPAN_FROM_STR("end")))
   {
     return 2;
