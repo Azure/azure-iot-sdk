@@ -3290,6 +3290,28 @@ static void a_subscription_failure_after_the_disconnect_in_one_pump_counts_no_mi
   assert_twin_push_wait_for_attempt(fx, 1);
 }
 
+/* The requested disconnect completes and a failed DISCONNECTED follows in the same pump: the
+ * failure ends the session (its reason, no miss). */
+static void a_failed_disconnect_after_the_disconnect_in_one_pump_counts_no_miss(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  expire_twin_push_wait_to_disconnect(fx);
+  az_iot_mock_mqtt_client_set_events_per_loop(fx->mock, 2);
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(fx->mock));
+  az_iot_mqtt_event failed;
+  memset(&failed, 0, sizeof(failed));
+  failed.kind = AZ_IOT_MQTT_EVT_DISCONNECTED;
+  failed.status = AZ_IOT_ERR_MQTT;
+  assert_true(az_iot_mock_mqtt_client_inject_event(fx->mock, &failed));
+  assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
+  assert_int_equal(count_states(AZ_IOT_CONN_STATE_RETRY_PENDING, AZ_IOT_ERR_TIMEOUT), 0);
+  assert_int_equal(count_states(AZ_IOT_CONN_STATE_RETRY_PENDING, AZ_IOT_ERR_MQTT), 1);
+
+  reconnect_to_connected(fx);
+  assert_twin_push_wait_for_attempt(fx, 1);
+}
+
 /* Without a reconnection policy an overdue push faults the hub scope. */
 static void an_overdue_twin_push_without_a_policy_faults(void** state)
 {
@@ -3653,6 +3675,10 @@ int main(void)
         teardown),
     cmocka_unit_test_setup_teardown(
         a_subscription_failure_after_the_disconnect_in_one_pump_counts_no_miss,
+        setup_push_desired_reconnect,
+        teardown),
+    cmocka_unit_test_setup_teardown(
+        a_failed_disconnect_after_the_disconnect_in_one_pump_counts_no_miss,
         setup_push_desired_reconnect,
         teardown),
     cmocka_unit_test_setup_teardown(

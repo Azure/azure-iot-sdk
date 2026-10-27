@@ -5096,6 +5096,7 @@ static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
       if (c->user_close || evt->status != AZ_IOT_OK)
       {
         c->requested_reconnect.in_progress = false;
+        c->requested_reconnect.ending = false;
       }
       if (c->user_close)
       {
@@ -5107,6 +5108,7 @@ static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
         /* A failure staged earlier in this pump (e.g. a refused SUBACK) ends the
          * session with its own reason. */
         c->requested_reconnect.in_progress = false;
+        c->requested_reconnect.ending = false;
       }
       else if (c->requested_reconnect.in_progress)
       {
