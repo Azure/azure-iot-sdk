@@ -5184,6 +5184,15 @@ static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
       {
         complete_publish(cb, result_cb, ctx, evt->status, evt);
       }
+      /* Any PUBACK frees adapter capacity, whoever published. A callback may withdraw itself. */
+      for (size_t i = 0; i < AZ_IOT_CONNECTION_CLIENT_PUBLISH_COMPLETION_OBSERVERS; ++i)
+      {
+        void (*observer)(void*) = c->publish_completion_observers[i].cb;
+        if (observer != NULL)
+        {
+          observer(c->publish_completion_observers[i].user_ctx);
+        }
+      }
       break;
     }
 
@@ -8916,6 +8925,76 @@ void az_iot_connection_client__release_pubacks(az_iot_connection_client* client,
   }
   client->puback_reservations[entry].owner = NULL;
   client->puback_reservations[entry].count = 0;
+}
+
+void az_iot_connection_client__abandon_pubacks(az_iot_connection_client* client, const void* owner)
+{
+  if (client == NULL || owner == NULL)
+  {
+    return;
+  }
+  puback_abandon(client, owner);
+}
+
+az_iot_result az_iot_connection_client__add_publish_completion_observer(
+    az_iot_connection_client* client,
+    void (*cb)(void* user_ctx),
+    void* user_ctx)
+{
+  if (client == NULL || cb == NULL)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  for (size_t i = 0; i < AZ_IOT_CONNECTION_CLIENT_PUBLISH_COMPLETION_OBSERVERS; ++i)
+  {
+    if (client->publish_completion_observers[i].cb == NULL)
+    {
+      client->publish_completion_observers[i].cb = cb;
+      client->publish_completion_observers[i].user_ctx = user_ctx;
+      return AZ_IOT_OK;
+    }
+  }
+  return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+}
+
+void az_iot_connection_client__remove_publish_completion_observer(
+    az_iot_connection_client* client,
+    void (*cb)(void* user_ctx),
+    void* user_ctx)
+{
+  if (client == NULL)
+  {
+    return;
+  }
+  for (size_t i = 0; i < AZ_IOT_CONNECTION_CLIENT_PUBLISH_COMPLETION_OBSERVERS; ++i)
+  {
+    if (client->publish_completion_observers[i].cb == cb
+        && client->publish_completion_observers[i].user_ctx == user_ctx)
+    {
+      client->publish_completion_observers[i].cb = NULL;
+      client->publish_completion_observers[i].user_ctx = NULL;
+    }
+  }
+}
+
+bool az_iot_connection_client__has_publish_completion_observer(
+    const az_iot_connection_client* client,
+    void (*cb)(void* user_ctx),
+    const void* user_ctx)
+{
+  if (client == NULL || cb == NULL)
+  {
+    return false;
+  }
+  for (size_t i = 0; i < AZ_IOT_CONNECTION_CLIENT_PUBLISH_COMPLETION_OBSERVERS; ++i)
+  {
+    if (client->publish_completion_observers[i].cb == cb
+        && client->publish_completion_observers[i].user_ctx == user_ctx)
+    {
+      return true;
+    }
+  }
+  return false;
 }
 
 bool az_iot_connection_client__can_track_publish(
