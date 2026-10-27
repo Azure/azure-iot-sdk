@@ -217,8 +217,31 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods
                     return;
                 }
 
+                if (!_pendingExpectedDirectMethodReadyIds.ContainsKey(requestId.Value))
+                {
+                    Trace.TraceWarning("Received direct method exec message with unknown request Id. Ignoring it.");
+                    return;
+                }
+
+                uint responseTimeoutInSeconds = publish.MessageExpiryInterval;
+                Stopwatch stopwatch = Stopwatch.StartNew();
+
+                // Parse before removing the pending request so that a malformed exec leaves this client ready to receive a well-formed
+                // exec for the same request.
+                Exec exec;
+                try
+                {
+                    exec = Exec.Parser.ParseFrom(publish.Payload);
+                }
+                catch (InvalidProtocolBufferException ex)
+                {
+                    Trace.TraceError("Received direct method exec message for request Id {0} with a malformed payload. Ignoring it and continuing to wait for a valid exec message for this request. Error: {1}", requestId.Value, ex.Message);
+                    return;
+                }
+
                 if (!_pendingExpectedDirectMethodReadyIds.TryRemove(requestId.Value, out ByteString? expectedReadyId))
                 {
+                    // A concurrently handled exec for the same request already claimed it.
                     Trace.TraceWarning("Received direct method exec message with unknown request Id. Ignoring it.");
                     return;
                 }
@@ -229,11 +252,6 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods
                     Trace.TraceWarning("Received direct method exec message, but could not correlate its method name to a previously received probe message. Ignoring it.");
                     return;
                 }
-
-                uint responseTimeoutInSeconds = publish.MessageExpiryInterval;
-                Stopwatch stopwatch = Stopwatch.StartNew();
-
-                Exec exec = Exec.Parser.ParseFrom(publish.Payload);
 
                 if (!expectedReadyId.Equals(exec.ReadyId))
                 {
