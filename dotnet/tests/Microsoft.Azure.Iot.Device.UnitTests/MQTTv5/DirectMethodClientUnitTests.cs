@@ -151,7 +151,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
         }
 
         [Fact]
-        public async Task Exec_WithMalformedPayload_LogsErrorAndClearsPendingRequest()
+        public async Task Exec_WithMalformedPayload_LogsErrorAndKeepsRequestPending()
         {
             MockFeatureConnectionClient connection = new()
             {
@@ -191,12 +191,13 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             Assert.False(methodInvoked);
             Assert.Single(connection.PublishedMessages);
 
-            // The request is no longer pending, so a well-formed exec for it afterwards is ignored.
+            // The request is still pending, so a well-formed exec for it afterwards is handled.
             var exec = new Exec() { ReadyId = readyId };
             await connection.SimulateReceiveAsync(CreateInboundMethodPublish("exec:1", correlationData, exec.ToByteArray()));
 
-            Assert.False(methodInvoked);
-            Assert.Single(connection.PublishedMessages);
+            Assert.True(methodInvoked);
+            Assert.Equal(2, connection.PublishedMessages.Count);
+            Assert.Equal("result:1", GetType(connection.PublishedMessages[1]));
         }
 
         private static MqttPublish CreateInboundMethodPublish(string type, byte[] correlationData, byte[] payload)
