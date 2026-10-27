@@ -852,6 +852,46 @@ static az_iot_result channel_report(void* ctx, const az_iot_su_report* report)
   return publish_operation(c, AZ_IOT_SU_OP_REPORT_STATUS, c->body, body_len);
 }
 
+/**
+ * @brief Smallest body capacity that holds the update-check request.
+ *
+ * @details The JSON writer needs headroom past the serialized bytes, so this can exceed the
+ *   serialized length. Diagnostic only.
+ *
+ * @param[in] agent Agent information to send.
+ * @param[in] installed_update_id Installed update ID to send.
+ * @param[in] rejected_capacity A capacity known to be too small.
+ * @return The smallest accepted capacity, or 0 if none up to INT32_MAX is accepted.
+ */
+static size_t minimum_update_check_capacity(
+    const az_iot_su_agent_info* agent,
+    const az_iot_su_report_update_id* installed_update_id,
+    size_t rejected_capacity)
+{
+  size_t too_small = rejected_capacity;
+  size_t fits = (size_t)INT32_MAX;
+  if (too_small >= fits
+      || az_iot_su__fetch_request_size(agent, installed_update_id, NULL, NULL, fits, NULL)
+          != AZ_IOT_OK)
+  {
+    return 0;
+  }
+  while (fits - too_small > 1u)
+  {
+    size_t middle = too_small + (fits - too_small) / 2u;
+    if (az_iot_su__fetch_request_size(agent, installed_update_id, NULL, NULL, middle, NULL)
+        == AZ_IOT_OK)
+    {
+      fits = middle;
+    }
+    else
+    {
+      too_small = middle;
+    }
+  }
+  return fits;
+}
+
 static az_iot_result channel_set_device_properties(
     void* ctx,
     const az_iot_su_device_properties* properties)
@@ -861,11 +901,27 @@ static az_iot_result channel_set_device_properties(
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
-  az_iot_su_device_properties_snapshot snapshot;
-  az_iot_result r = az_iot_su__prepare_device_properties(properties, &snapshot);
+  size_t strings_size = 0;
+  az_iot_result r = az_iot_su__measure_device_properties(properties, &strings_size);
   if (r != AZ_IOT_OK)
   {
     return r;
+  }
+  if (az_iot_su__device_properties_overlap(
+          properties, c->device_properties_strings, c->device_properties_strings_size))
+  {
+    AZ_IOT_LOG_ERROR(
+        AZ_IOT_LOG_COMPONENT_SU, "device properties must not point into the channel's copy");
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  if (strings_size > c->device_properties_strings_size)
+  {
+    AZ_IOT_LOG_ERRORF(
+        AZ_IOT_LOG_COMPONENT_SU,
+        "device properties need %lu bytes; the update-check copy holds %lu",
+        (unsigned long)strings_size,
+        (unsigned long)c->device_properties_strings_size);
+    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
   }
 
   az_iot_su_custom_property compatibility[AZ_IOT_SU_MAX_COMPATIBILITY_PROPERTIES];
@@ -875,29 +931,38 @@ static az_iot_result channel_set_device_properties(
   agent.agent_profile = c->agent_profile;
   agent.compatibility_properties = compatibility;
   agent.compatibility_properties_count
-      = az_iot_su__compatibility_properties(&snapshot.properties, compatibility);
-  az_iot_su_report_update_id installed = { snapshot.properties.installed_update_id.provider,
-                                           snapshot.properties.installed_update_id.name,
-                                           snapshot.properties.installed_update_id.version };
+      = az_iot_su__compatibility_properties(properties, compatibility);
   /* Size only: c->body may hold an outstanding operation. Both routes send the
-   * same body, installed ID included. ETags are left out: they are optional,
-   * and a request that cannot fit them drops them. */
-  r = az_iot_su__fetch_request_size(
-      &agent, installed.provider != NULL ? &installed : NULL, NULL, NULL, c->body_size, NULL);
+   * same body. It is sized with the longest installed ID, fully escaped, so the
+   * applied ID adopted after a successful update always fits. ETags are left
+   * out: they are optional, and a request that cannot fit them drops them. */
+  /* Three parts that, with their terminators, fill AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE, in a
+   * character JSON escapes to 6 bytes. */
+  char longest_part[AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE / 3u];
+  memset(longest_part, 0x01, sizeof(longest_part) - 1u);
+  longest_part[sizeof(longest_part) - 1u] = '\0';
+  az_iot_su_report_update_id longest_installed = { longest_part, longest_part, longest_part };
+  r = az_iot_su__fetch_request_size(&agent, &longest_installed, NULL, NULL, c->body_size, NULL);
+  if (r == AZ_IOT_ERR_NOT_ENOUGH_SPACE)
+  {
+    size_t body_size = minimum_update_check_capacity(&agent, &longest_installed, c->body_size);
+    AZ_IOT_LOG_ERRORF(
+        AZ_IOT_LOG_COMPONENT_SU,
+        "an update check with these device properties needs a body capacity of %lu bytes; "
+        "az_iot_su_limits::max_message_size is %lu",
+        (unsigned long)body_size,
+        (unsigned long)c->body_size);
+    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+  }
   if (r != AZ_IOT_OK)
   {
     return r;
   }
 
-  az_iot_su__commit_device_properties(
-      &snapshot,
-      &c->device_properties.properties,
-      c->device_properties.custom_properties,
-      c->device_properties.strings);
-  c->device_properties.strings_size = snapshot.strings_size;
-  c->compat_count
-      = az_iot_su__compatibility_properties(&c->device_properties.properties, c->compat);
-  const az_iot_su_update_id_info* id = &c->device_properties.properties.installed_update_id;
+  az_iot_su__copy_device_properties(
+      properties, c->device_properties_strings, &c->device_properties, c->device_properties_custom);
+  c->compat_count = az_iot_su__compatibility_properties(&c->device_properties, c->compat);
+  const az_iot_su_update_id_info* id = &c->device_properties.installed_update_id;
   c->installed_update_id = (az_iot_su_report_update_id){ id->provider, id->name, id->version };
   c->has_installed_update_id = id->provider != NULL;
   return AZ_IOT_OK;
@@ -1142,10 +1207,12 @@ az_iot_result az_iot_su_channel_dps_init(
     const az_iot_su_device_properties* device_properties,
     uint8_t* body,
     size_t body_size,
+    char* device_properties_strings,
+    size_t device_properties_strings_size,
     az_iot_su_channel* out_channel)
 {
   if (channel_state == NULL || connection == NULL || body == NULL || body_size == 0
-      || out_channel == NULL)
+      || device_properties_strings == NULL || out_channel == NULL)
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
@@ -1154,6 +1221,8 @@ az_iot_result az_iot_su_channel_dps_init(
   channel_state->connection = connection;
   channel_state->body = body;
   channel_state->body_size = body_size;
+  channel_state->device_properties_strings = device_properties_strings;
+  channel_state->device_properties_strings_size = device_properties_strings_size;
   /* The profile the device reports for compatibility matching. */
   channel_state->agent_profile = 1;
 
