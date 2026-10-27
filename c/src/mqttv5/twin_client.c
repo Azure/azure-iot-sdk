@@ -183,27 +183,23 @@ static uint64_t deadline_from_now(const az_iot_mqttv5_twin_client* t)
 static void twin_push_wait_on_push(az_iot_mqttv5_twin_client* t, const az_iot_mqtt_message* msg)
 {
   memcpy(
-      TI(t).twin_push_wait.received_birth_nonce,
-      msg->correlation_data,
-      AZ_IOT_CORRELATION_UUID_LEN);
-  TI(t).twin_push_wait.received = true;
+      TI(t).twin_push_wait.settled_birth_nonce, msg->correlation_data, AZ_IOT_CORRELATION_UUID_LEN);
+  TI(t).twin_push_wait.settled = true;
   TI(t).twin_push_wait.armed = false;
   TI(t).twin_push_wait.missed_count = 0;
   /* A request already queued no longer counts as a miss when it ends the session. */
   TI(t).twin_push_wait.reconnect_requested = false;
 }
 
-/** @brief Hub CONNECTED: arm the wait unless no push is expected or it already arrived. */
+/** @brief Hub CONNECTED: arm the wait unless no push is expected or the session is settled. */
 static void twin_push_wait_arm(az_iot_mqttv5_twin_client* t)
 {
   uint8_t birth_nonce[AZ_IOT_CORRELATION_UUID_LEN];
   if (!az_iot_connection_client__twin_push_expected(TI(t).conn)
       || az_iot_connection_client__birth_nonce(TI(t).conn, birth_nonce) != AZ_IOT_OK
-      || (TI(t).twin_push_wait.received
+      || (TI(t).twin_push_wait.settled
           && memcmp(
-                 TI(t).twin_push_wait.received_birth_nonce,
-                 birth_nonce,
-                 AZ_IOT_CORRELATION_UUID_LEN)
+                 TI(t).twin_push_wait.settled_birth_nonce, birth_nonce, AZ_IOT_CORRELATION_UUID_LEN)
               == 0))
   {
     return;
@@ -239,7 +235,7 @@ static void twin_push_wait_on_session_end(az_iot_mqttv5_twin_client* t)
   }
   TI(t).twin_push_wait.reconnect_requested = false;
   TI(t).twin_push_wait.armed = false;
-  TI(t).twin_push_wait.received = false;
+  TI(t).twin_push_wait.settled = false;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -932,6 +928,13 @@ az_iot_mqttv5_twin_client_init(az_iot_mqttv5_twin_client* client, az_iot_connect
     az_iot_connection_client__release_profile(conn);
     memset(client, 0, sizeof(*client));
     return result;
+  }
+
+  /* A birth already sent may have had its push before this client existed. */
+  if (az_iot_connection_client__birth_nonce(conn, TI(client).twin_push_wait.settled_birth_nonce)
+      == AZ_IOT_OK)
+  {
+    TI(client).twin_push_wait.settled = true;
   }
 
   /* Observers are not told about a session already up; catch up on it. */

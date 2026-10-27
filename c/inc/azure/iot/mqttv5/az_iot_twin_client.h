@@ -212,9 +212,10 @@ extern "C"
         uint32_t missed_count;
         /* The wait expired and asked the connection to reconnect. */
         bool reconnect_requested;
-        /* Birth nonce of the session whose twin-push arrived. */
-        uint8_t received_birth_nonce[AZ_IOT_MQTTV5_TWIN_CORRELATION_ID_LEN];
-        bool received;
+        /* Birth nonce of a session not to wait on: its twin-push arrived, or
+         * the client was attached after its birth was sent. */
+        uint8_t settled_birth_nonce[AZ_IOT_MQTTV5_TWIN_CORRELATION_ID_LEN];
+        bool settled;
       } twin_push_wait;
       /* The SDK's own desired-snapshot GET, kept out of `pending`. */
       struct

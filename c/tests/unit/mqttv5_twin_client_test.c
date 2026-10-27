@@ -3252,6 +3252,23 @@ static void a_twin_client_created_while_connected_does_not_wait(void** state)
   assert_false(az_iot_mqttv5_twin_client__twin_push_deadline(&fx->twin, NULL));
 }
 
+/* A client attached between an early twin-push and the birth-ack does not wait for a second push.
+ */
+static void a_twin_client_attached_after_the_birth_does_not_wait(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_birth(fx);
+  push_twin(fx);
+  az_iot_mqttv5_twin_client_deinit(&fx->twin);
+  assert_int_equal(az_iot_mqttv5_twin_client_init(&fx->twin, &fx->conn), AZ_IOT_OK);
+  ack_birth(fx, 0, 0);
+  az_iot_test_ack_subscriptions(&fx->conn, fx->mock);
+  assert_int_equal(
+      az_iot_connection_client_get_state(&fx->conn, AZ_IOT_CONN_SCOPE_HUB),
+      AZ_IOT_CONN_STATE_CONNECTED);
+  assert_false(az_iot_mqttv5_twin_client__twin_push_deadline(&fx->twin, NULL));
+}
+
 /* The request is served only for a CONNECTED hub scope. */
 static void a_reconnect_request_needs_a_connected_session(void** state)
 {
@@ -3520,6 +3537,10 @@ int main(void)
         a_new_connect_cycle_restarts_the_schedule, setup_push_desired_reconnect, teardown),
     cmocka_unit_test_setup_teardown(
         a_twin_client_created_while_connected_does_not_wait,
+        setup_push_desired_no_policy,
+        teardown),
+    cmocka_unit_test_setup_teardown(
+        a_twin_client_attached_after_the_birth_does_not_wait,
         setup_push_desired_no_policy,
         teardown),
     cmocka_unit_test_setup_teardown(
