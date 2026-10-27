@@ -298,10 +298,12 @@ az_iot_add_cmocka_test(az_iot_tests_su_client unit/su_client_test.c)
 add_library(az_iot_test_su_default_layout STATIC unit/su_client_layout_default.c)
 target_link_libraries(az_iot_test_su_default_layout PRIVATE az_iot_core)
 az_iot_apply_warnings(az_iot_test_su_default_layout)
+# One step more than the SDK build, whatever AZ_IOT_SU_MAX_STEP_COUNT is configured to.
+math(EXPR _az_iot_test_su_other_step_count "${AZ_IOT_SU_MAX_STEP_COUNT} + 1")
 az_iot_add_cmocka_test(az_iot_tests_su_client_layout_mismatch unit/su_client_layout_mismatch_test.c)
 target_link_libraries(az_iot_tests_su_client_layout_mismatch PRIVATE az_iot_test_su_default_layout)
 target_compile_definitions(az_iot_tests_su_client_layout_mismatch PRIVATE
-    AZ_IOT_TEST_SU_MAX_STEP_COUNT=3
+    AZ_IOT_TEST_SU_MAX_STEP_COUNT=${_az_iot_test_su_other_step_count}
     AZ_IOT_TEST_SU_EXPECTED_MISMATCH="AZ_IOT_SU_MAX_STEP_COUNT")
 az_iot_add_cmocka_test(az_iot_tests_su_client_layout_same_size unit/su_client_layout_mismatch_test.c)
 target_link_libraries(az_iot_tests_su_client_layout_same_size PRIVATE az_iot_test_su_default_layout)
