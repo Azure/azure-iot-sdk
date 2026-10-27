@@ -14,12 +14,17 @@ is missing, or an endpoint is not linked, this script:
      (e.g. on the resource group, which survives the namespace) is not re-created,
   3. links the hub (messaging/hub-1) and DPS (provisioning/dps-1) and waits for Succeeded,
   4. pushes the namespace to the DPS data plane (tags-only DPS update).
-If the namespace is present with both endpoints Succeeded it makes one ARM read and exits.
+With -UpdateInstanceName it also links that Software Updates instance (updating/su-1) with a
+separate PATCH, after hub and DPS, and grants its 3 role assignments. A rebuild re-sends the
+namespace's existing updating endpoints so it never unlinks them.
+If the namespace is present with all endpoints Succeeded it makes one ARM read and exits. A
+namespace still in an operation (e.g. a link in progress) is waited out first, not rebuilt.
 
 Requires `az` logged in with Contributor on the resource group. Role assignment write (for
 Contributor b24988ac-..., IoT Hub Data Contributor 4fc6c259-..., Azure Device Registry Contributor
-a5c3590a-...) is needed only for grants not already present at the resource group or above.
-Hub and DPS must have system-assigned identities.
+a5c3590a-..., Device Update Administrator 02ca0879-...) is needed only for grants not already
+present at the resource group or above.
+Hub, DPS and the update instance must have system-assigned identities.
 #>
 [CmdletBinding(PositionalBinding = $false)]
 param(
@@ -35,7 +40,10 @@ param(
     # Empty: the first of 2026-11-02-preview / 2026-03-01-preview that ARM serves, else its newest.
     [string]$DpsApiVersion = '',
     [int]$LinkTimeoutMinutes = 12,
-    [int]$LinkAttempts = 4
+    [int]$LinkAttempts = 4,
+    # Microsoft.DeviceUpdate/updateInstances in the same resource group; empty: not linked.
+    [string]$UpdateInstanceName = '',
+    [string]$UpdateApiVersion = '2026-11-02-preview'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -50,6 +58,9 @@ $NsUrl = "$Arm${NsId}?api-version=$AdrApiVersion"
 $RoleContributor = 'b24988ac-6180-42a0-ab88-20f7382dd24c'
 $RoleHubData = '4fc6c259-987e-4a07-842e-c321cc9d413f'
 $RoleAdr = 'a5c3590a-3a1a-4cd4-9648-ea0a32b15137'
+$RoleDeviceUpdateAdmin = '02ca0879-e8e4-47a5-a61e-5c618b76e64a'
+$SuEndpoint = 'su-1'
+$SuId = if ($UpdateInstanceName) { "$Rg/providers/Microsoft.DeviceUpdate/updateInstances/$UpdateInstanceName" } else { '' }
 # Link failures that clear once new role assignments replicate.
 $PropagationCodes = 'AdrMiNotAuthorized|LinkableResourceNotReady|AuthorizationFailed|LinkInitiateFailed|NamespaceMiTokenAcquisitionFailed|OutboundIdentityUnavailable'
 # Link submissions that may be rejected outright yet succeed on a later attempt.
@@ -100,6 +111,24 @@ function Test-EndpointsLinked($Ns) {
 
 function Test-Linked($Ns) { $Ns -and $Ns.properties.provisioningState -eq 'Succeeded' -and (Test-EndpointsLinked $Ns) }
 
+# updating/su-1 Succeeded and pointing at the update instance; true when none is configured.
+function Test-SuLinked($Ns) {
+    if (-not $SuId) { return $true }
+    $e = if ($Ns -and $Ns.properties.updating) { $Ns.properties.updating.endpoints.$SuEndpoint }
+    [bool]($e -and $e.linkingState -eq 'Succeeded' -and (-not $e.resourceId -or $e.resourceId -eq $SuId))
+}
+
+# The namespace's updating endpoints, writable fields only, for a PUT to re-send.
+function Get-UpdatingEndpoints($Ns) {
+    $eps = @{}
+    if ($Ns -and $Ns.properties.updating -and $Ns.properties.updating.endpoints) {
+        foreach ($p in $Ns.properties.updating.endpoints.PSObject.Properties) {
+            $eps[$p.Name] = @{ endpointType = $p.Value.endpointType; resourceId = $p.Value.resourceId; inboundCallerIdentity = $p.Value.inboundCallerIdentity }
+        }
+    }
+    $eps
+}
+
 function Get-NsTags($Ns) {
     $t = @{}
     if ($Ns -and $Ns.tags) { $Ns.tags.PSObject.Properties | ForEach-Object { $t[$_.Name] = $_.Value } }
@@ -145,8 +174,55 @@ function Grant-Role([string]$Scope, [string]$PrincipalId, [string]$RoleId, [stri
 [void](& az account set --subscription $SubscriptionId)
 if ($LASTEXITCODE -ne 0) { throw "az account set --subscription $SubscriptionId failed." }
 
+# Links the update instance (updating/su-1) once hub and DPS are linked: a PATCH of that endpoint
+# only, as 'az iot adr ns link su add' does.
+function Connect-UpdateInstance($Ns) {
+    $su = Invoke-Arm get "$Arm${SuId}?api-version=$UpdateApiVersion"
+    if (-not $su) { throw "Update instance $UpdateInstanceName not found." }
+    if (-not $su.identity.principalId) { throw 'The update instance needs a system-assigned identity.' }
+    $nsPid = $Ns.identity.principalId
+    Grant-Role $SuId $nsPid $RoleContributor 'namespace -> update instance (Contributor)'
+    Grant-Role $SuId $nsPid $RoleDeviceUpdateAdmin 'namespace -> update instance (Device Update Administrator)'
+    Grant-Role $NsId $su.identity.principalId $RoleAdr 'update instance -> namespace (Azure Device Registry Contributor)'
+    $patch = @{ properties = @{ updating = @{ endpoints = @{ $SuEndpoint = @{
+                        endpointType = 'Microsoft.DeviceUpdate/updateInstances'; resourceId = $SuId
+                        inboundCallerIdentity = @{ type = 'SystemAssigned' } } } } } }
+    for ($attempt = 1; ; $attempt++) {
+        Start-Sleep -Seconds 60   # role assignment replication
+        Write-Host "  update instance link attempt $attempt/$LinkAttempts"
+        try { [void](Invoke-Arm patch $NsUrl $patch) }
+        catch {
+            if ($_.Exception.Message -notmatch $RetryableSubmit -or $attempt -ge $LinkAttempts) { throw }
+            Write-Host "  link rejected, retrying: $($_.Exception.Message)"
+            continue
+        }
+        $r = Wait-For 'update instance link' $LinkTimeoutMinutes {
+            $n = Invoke-Arm get $NsUrl
+            $e = if ($n -and $n.properties.updating) { $n.properties.updating.endpoints.$SuEndpoint }
+            $s = if ($e) { [string]$e.linkingState } else { '<none>' }
+            @{ Done = ($s -in 'Succeeded', 'Failed' -and $n.properties.provisioningState -in 'Succeeded', 'Failed', 'Canceled')
+               State = $s; Code = [string]$e.linkingError.code; Message = [string]$e.linkingError.message; Detail = "$SuEndpoint=$s" } }
+        if ($r.State -eq 'Succeeded') { return }
+        if ($r.Code -notmatch "^($PropagationCodes)$" -or $attempt -ge $LinkAttempts) { throw "Update instance link failed: $($r.Code) $($r.Message)" }
+        Write-Host "  role replication pending ($($r.Code)); retrying"
+    }
+}
+
 $ns = Invoke-Arm get $NsUrl
-if (Test-Linked $ns) { Write-Host "ADR namespace $NamespaceName present and linked."; return }
+# A namespace mid-operation (e.g. a link in progress) is waited out, not rebuilt over.
+if ($ns -and $ns.properties.provisioningState -notin 'Succeeded', 'Failed', 'Canceled', 'Deleting') {
+    $ns = (Wait-For 'namespace operation' 15 {
+            $n = Invoke-Arm get $NsUrl
+            $ps = if ($n) { $n.properties.provisioningState } else { 'absent' }
+            @{ Done = ($ps -in 'Succeeded', 'Failed', 'Canceled', 'Deleting', 'absent'); Detail = $ps; Ns = $n } }).Ns
+}
+if (Test-Linked $ns) {
+    if (Test-SuLinked $ns) { Write-Host "ADR namespace $NamespaceName present and linked."; return }
+    Write-Host "::warning::ADR namespace $NamespaceName has no linked update instance; linking $UpdateInstanceName."
+    Connect-UpdateInstance $ns
+    Write-Host "Update instance $UpdateInstanceName linked."
+    return
+}
 Write-Host "::warning::ADR namespace $NamespaceName $(if ($ns) { 'not linked' } else { 'missing from ARM' }); rebuilding it."
 
 if (-not $DpsApiVersion) {
@@ -177,6 +253,9 @@ $linkBody = @{
                         inboundCallerIdentity = @{ type = 'SystemAssigned' } } } }
     }
 }
+# Re-send existing updating endpoints: a PUT without them would unlink the update instance.
+$updating = Get-UpdatingEndpoints $ns
+if ($updating.Count) { $linkBody.properties.updating = @{ endpoints = $updating } }
 
 # A namespace being deleted is waited out, then created again.
 if ($ns -and $ns.properties.provisioningState -eq 'Deleting') {
@@ -257,7 +336,10 @@ for ($attempt = 1; ; $attempt++) {
     Write-Host "  role replication pending ($why); retrying"
 }
 
-# 4. Push the namespace to the DPS data plane (tags-only update).
+# 4. Update instance, once hub and DPS are linked.
+if (-not (Test-SuLinked (Invoke-Arm get $NsUrl))) { Connect-UpdateInstance (Invoke-Arm get $NsUrl) }
+
+# 5. Push the namespace to the DPS data plane (tags-only update).
 # Fresh read: recovery can take over an hour and the PATCH replaces the whole tag map.
 $dps = Invoke-Arm get $DpsUrl
 $dpsTags = @{}
