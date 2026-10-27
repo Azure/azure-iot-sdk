@@ -6556,6 +6556,12 @@ static uint8_t* workspace_of(az_iot_connection_client* c)
   return c->opts.workspace != NULL ? c->opts.workspace : c->default_workspace;
 }
 
+/** @brief Bytes of @p c's workspace: all of the application's, or the whole embedded area. */
+static size_t workspace_capacity_of(const az_iot_connection_client* c)
+{
+  return c->opts.workspace != NULL ? c->opts.workspace_size : sizeof(c->default_workspace);
+}
+
 AZ_NODISCARD az_iot_result az_iot_connection_client_init(
     az_iot_connection_client* client,
     const az_iot_connection_client_options* opts)
@@ -6724,7 +6730,7 @@ void az_iot_connection_client_deinit(az_iot_connection_client* client)
   dps_teardown_mqtt(client);
   sas_wipe(client);
   /* Registered factories are borrowed; the application destroys them after this returns. */
-  az_iot_crypto__wipe(workspace_of(client), workspace_size_of(&client->opts.limits));
+  az_iot_crypto__wipe(workspace_of(client), workspace_capacity_of(client));
   /* provisioned_iot_hub_hostname / provisioned_device_id are inline fixed buffers; nothing to free.
    */
 }
