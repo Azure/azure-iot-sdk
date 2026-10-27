@@ -71,6 +71,28 @@ locked queue. The race CI suppresses only these Paho frames
 [tsan.supp](../eng/sanitizers/tsan.supp)); see
 [Race detection](eng/building.md#race-detection).
 
+### Races on the command queue and client state
+
+Two Paho data races are reported upstream and not fixed in v1.3.16:
+
+- [eclipse-paho/paho.mqtt.c#1709](https://github.com/eclipse-paho/paho.mqtt.c/issues/1709):
+  `MQTTAsync_destroy()` changes the global command queue (`MQTTAsync_freeCommands`) holding only
+  `mqttasync_mutex`. The send thread reads the queue holding `mqttcommand_mutex`.
+- [eclipse-paho/paho.mqtt.c#1714](https://github.com/eclipse-paho/paho.mqtt.c/issues/1714):
+  `MQTTAsync_connect()` writes the client's state (and the `retryLoopIntervalms` global) without
+  `mqttasync_mutex`, while the async threads read it (`MQTTAsync_checkTimeouts`, `MQTTAsync_retry`).
+
+ThreadSanitizer reports them intermittently in `az_iot_paho_teardown_race` and the Paho conformance
+suites. The races on the command queue and the client state are on heap memory (the queue's list
+and the client), which the suppression policy (third-party globals only) cannot cover.
+`retryLoopIntervalms` is a global a reviewed entry could cover; it is not suppressed, as the reports
+on the client state would remain. No failure other than the sanitizer reports has been seen.
+
+**Mitigation:** none in the SDK. The TSan CI job skips `az_iot_paho_teardown_race`, where the
+#1709 report occurs most; helgrind and DRD still run it. Other reports listed here are known flaky
+failures: rerun the job. A report in those tests with other frames is not covered by this. Remove
+this entry when a `PAHO_C_TAG` with the fixes is adopted.
+
 ### WebSocket handshake split across TCP segments
 
 With `AZ_IOT_MQTT_TRANSPORT_WEBSOCKET`, the connection can stall without an error when the server's
