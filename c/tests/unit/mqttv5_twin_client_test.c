@@ -2910,16 +2910,17 @@ static void a_session_lost_before_the_request_is_served_counts_no_miss(void** st
 /* Timeout of the newest process_loop() call. */
 static uint32_t last_process_loop_timeout(az_iot_mock_mqtt_client* m)
 {
-  for (size_t i = az_iot_mock_mqtt_client_call_count(m); i > 0; --i)
+  const az_iot_mock_call* found = NULL;
+  for (size_t i = az_iot_mock_mqtt_client_call_count(m); i > 0 && !found; --i)
   {
     const az_iot_mock_call* c = az_iot_mock_mqtt_client_call_at(m, i - 1);
     if (c->kind == AZ_IOT_MOCK_CALL_PROCESS_LOOP)
     {
-      return c->timeout_ms;
+      found = c;
     }
   }
-  fail_msg("no process_loop() call");
-  return 0;
+  assert_non_null(found);
+  return found->timeout_ms;
 }
 
 /* A long caller wait is cut short to serve the request, then to its disconnect bound. */
@@ -2966,6 +2967,50 @@ static void a_push_after_the_wait_expired_restarts_the_schedule(void** state)
   assert_true(az_iot_mock_mqtt_client_inject_disconnected(fx->mock));
   assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
   assert_int_equal(count_states(AZ_IOT_CONN_STATE_RETRY_PENDING, AZ_IOT_ERR_TIMEOUT), 1);
+
+  reconnect_to_connected(fx);
+  assert_twin_push_wait_for_attempt(fx, 1);
+}
+
+static void close_on_get_completion(
+    az_iot_result status,
+    const az_iot_mqttv5_twin_state* twin,
+    void* user_ctx)
+{
+  (void)status;
+  (void)twin;
+  (void)az_iot_connection_client_close((az_iot_connection_client*)user_ctx);
+}
+
+/* A callback that closes during the timeout's teardown keeps its IDLE; no fault overwrites it. */
+static void a_close_from_a_teardown_callback_is_not_overwritten(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  assert_int_equal(
+      az_iot_mqttv5_twin_client_get(&fx->twin, close_on_get_completion, &fx->conn), AZ_IOT_OK);
+  expire_twin_push_wait_to_disconnect(fx);
+  az_iot_connection_client__requested_reconnect_force_timeout(&fx->conn);
+  assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
+
+  assert_int_equal(
+      az_iot_connection_client_get_state(&fx->conn, AZ_IOT_CONN_SCOPE_HUB), AZ_IOT_CONN_STATE_IDLE);
+  assert_int_equal(count_states(AZ_IOT_CONN_STATE_FAULTED, AZ_IOT_ERR_TIMEOUT), 0);
+}
+
+/* An identity refusal that ends the session first is not a twin-push miss. */
+static void a_refusal_during_the_requested_disconnect_counts_no_miss(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  expire_twin_push_wait_to_disconnect(fx);
+  az_iot_mqtt_event refused;
+  memset(&refused, 0, sizeof(refused));
+  refused.kind = AZ_IOT_MQTT_EVT_DISCONNECTED;
+  refused.status = AZ_IOT_ERR_IDENTITY_REJECTED;
+  assert_true(az_iot_mock_mqtt_client_inject_event(fx->mock, &refused));
+  assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
+  assert_int_equal(count_states(AZ_IOT_CONN_STATE_RETRY_PENDING, AZ_IOT_ERR_TIMEOUT), 0);
 
   reconnect_to_connected(fx);
   assert_twin_push_wait_for_attempt(fx, 1);
@@ -3265,6 +3310,14 @@ int main(void)
         close_during_the_requested_disconnect_ends_idle, setup_push_desired_reconnect, teardown),
     cmocka_unit_test_setup_teardown(
         a_push_after_the_wait_expired_restarts_the_schedule,
+        setup_push_desired_reconnect,
+        teardown),
+    cmocka_unit_test_setup_teardown(
+        a_close_from_a_teardown_callback_is_not_overwritten,
+        setup_push_desired_no_policy,
+        teardown),
+    cmocka_unit_test_setup_teardown(
+        a_refusal_during_the_requested_disconnect_counts_no_miss,
         setup_push_desired_reconnect,
         teardown),
     cmocka_unit_test_setup_teardown(

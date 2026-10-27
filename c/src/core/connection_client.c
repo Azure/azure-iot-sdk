@@ -5082,12 +5082,17 @@ static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
     case AZ_IOT_MQTT_EVT_DISCONNECTED:
       /* An mqttv5 Not authorized DISCONNECT is an identity refusal too. */
       note_identity_refusal(c, evt->status);
+      /* A close() or a refusal takes precedence: the session does not end by the request. */
+      if (c->user_close || reason_is_identity_refusal(evt->status))
+      {
+        c->requested_reconnect.in_progress = false;
+      }
       if (c->user_close)
       {
         c->deferred = DEFER_IDLE;
         c->deferred_reason = evt->status;
       }
-      else if (c->requested_reconnect.in_progress && !reason_is_identity_refusal(evt->status))
+      else if (c->requested_reconnect.in_progress)
       {
         /* The disconnect a feature client's reconnect request sent. */
         c->deferred = az_iot_retry_policy_is_enabled(&c->opts.reconnection_policy) ? DEFER_RECONNECT
@@ -5119,6 +5124,8 @@ static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
     case AZ_IOT_MQTT_EVT_ERROR:
     {
       az_iot_result r = (evt->status != AZ_IOT_OK) ? evt->status : AZ_IOT_ERR_MQTT;
+      /* A transport failure, not the request, ends the session. */
+      c->requested_reconnect.in_progress = false;
       c->deferred = (az_iot_retry_policy_is_enabled(&c->opts.reconnection_policy) && !c->user_close)
           ? DEFER_RECONNECT
           : DEFER_FAULT;
@@ -5564,8 +5571,14 @@ static void end_session_for_requested_reconnect(az_iot_connection_client* c)
   }
   else
   {
+    uint32_t closes = c->close_count;
+    uint32_t seq = c->open_seq;
     teardown_active(c);
-    set_state_to(c, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_FAULTED, reason);
+    /* Teardown runs PUBACK and session callbacks, which may close or reopen. */
+    if (c->close_count == closes && c->open_seq == seq)
+    {
+      set_state_to(c, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_FAULTED, reason);
+    }
   }
 }
 
