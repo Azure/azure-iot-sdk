@@ -296,6 +296,12 @@
   birth-ack in time reset it. `AZ_IOT_PRESENCE_BIRTH_ACK_TIMEOUT_MS` is removed; the presence
   `dev/#` SUBACK now uses `subscription_ack_timeout_seconds`
   (`AZ_IOT_DEFAULT_SUBSCRIPTION_ACK_TIMEOUT_SECONDS`, 60 s).
+- mqttv5 twin: with `twin_push.push_desired` or `push_reported` set, a session whose twin-push
+  does not arrive within the presence defensive timeout of hub CONNECTED (5 to 15 minutes, longer
+  after consecutive misses) is now disconnected and reconnected (or faulted with
+  `AZ_IOT_ERR_TIMEOUT` without a reconnection policy). Before, no timeout was armed and a lost push
+  left the device without desired patches until the next reconnect. Requires
+  `az_iot_mqttv5_twin_client_do_work()`.
 - az_mqtt adapter: the copies `connect()` makes of credentials (password or SAS token, PEM key and
   certificate, proxy credentials) are zeroed before they are freed, and `destroy()` zeroes the send
   buffer, which holds the CONNECT, before freeing it.

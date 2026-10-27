@@ -20,6 +20,13 @@
  * GET and reported patches are requests: each completes exactly once, with the
  * service's answer, AZ_IOT_ERR_TIMEOUT, or AZ_IOT_ERR_NOT_CONNECTED. The SDK
  * never retries them.
+ *
+ * With `options.twin_push.push_desired` or `push_reported` set, the birth asks
+ * for a twin-push. If none arrives within the presence defensive timeout of
+ * hub CONNECTED (5 to 15 minutes, longer after consecutive misses), the client
+ * has the connection disconnect and reconnect (or fault without a reconnection
+ * policy), since a session without it receives no desired patches. This needs
+ * az_iot_mqttv5_twin_client_do_work().
  */
 #ifndef AZ_IOT_MQTTV5_TWIN_CLIENT_H
 #define AZ_IOT_MQTTV5_TWIN_CLIENT_H
@@ -196,6 +203,17 @@ extern "C"
       uint64_t reported_properties_service_version;
       az_span encode_buffer;
       uint32_t request_timeout_ms;
+      /* Defensive wait for the twin-push the birth asks for. */
+      struct
+      {
+        bool armed;
+        uint64_t deadline_ms;
+        /* Consecutive sessions ended because their twin-push did not arrive. */
+        uint32_t missed_count;
+        /* Birth nonce of the session whose twin-push arrived. */
+        uint8_t received_birth_nonce[AZ_IOT_MQTTV5_TWIN_CORRELATION_ID_LEN];
+        bool received;
+      } twin_push_wait;
       /* The SDK's own desired-snapshot GET, kept out of `pending`. */
       struct
       {
@@ -328,7 +346,8 @@ extern "C"
       uint32_t timeout_ms);
 
   /**
-   * @brief Expire requests past their timeout. Call alongside
+   * @brief Expire requests past their timeout, and end a session whose expected
+   *        twin-push did not arrive in time. Call alongside
    *        az_iot_connection_client_do_work().
    *
    * Without it, an unanswered request completes only when the session ends.

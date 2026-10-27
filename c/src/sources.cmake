@@ -17,6 +17,7 @@ set(AZ_IOT_CORE_SOURCES
     core/retry_policy.c
     core/defensive_timeout.c
     core/deadline.c
+    core/presence_timeout.c
     core/env.c
     core/dispatch.c
     core/proto3.c

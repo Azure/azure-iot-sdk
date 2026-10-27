@@ -49,6 +49,7 @@
 #include "internal/log_internal.h"
 #include "internal/proto3.h"
 #include "internal/mono_time.h"
+#include "internal/presence_timeout.h"
 #include "internal/retry_policy.h"
 #include "internal/span_writer.h"
 
@@ -1040,6 +1041,9 @@ static void teardown_active(az_iot_connection_client* c)
   /* Abandon any in-flight MQTTv5 presence (birth) handshake: it belonged to the
    * now-destroyed session and must restart from CONNACK on the next connect. */
   c->presence.phase = PRESENCE_PHASE_NONE;
+  /* A requested reconnect was for the session that just ended. */
+  c->reconnect_requested = false;
+  c->reconnect_requested_reason = AZ_IOT_OK;
   /* Same for the subscription gate. Its packet ids died with the session and
    * will never be acked, so nothing is left for a deadline to wait on. */
   memset(&c->subscription_gate, 0, sizeof(c->subscription_gate));
@@ -7811,6 +7815,31 @@ az_iot_result az_iot_connection_client_do_work(
     }
   }
 
+  /* A feature client found the session unusable (an expected message never
+   * arrived): end it and reconnect, as for a stalled presence handshake. */
+  if (client->reconnect_requested)
+  {
+    az_iot_result reason = client->reconnect_requested_reason;
+    client->reconnect_requested = false;
+    client->reconnect_requested_reason = AZ_IOT_OK;
+    if (client->state[AZ_IOT_CONN_SCOPE_HUB] == AZ_IOT_CONN_STATE_CONNECTED && !client->user_close)
+    {
+      AZ_IOT_LOG_WARNF(
+          AZ_IOT_LOG_COMPONENT_CONNECTION,
+          "reconnecting at a feature client's request (%s)",
+          az_iot_result_to_string(reason));
+      if (az_iot_retry_policy_is_enabled(&client->opts.reconnection_policy))
+      {
+        schedule_reconnect(client, AZ_IOT_CONN_SCOPE_HUB, reason);
+      }
+      else
+      {
+        teardown_active(client);
+        set_state_to(client, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_FAULTED, reason);
+      }
+    }
+  }
+
   /* A gated filter withdrawn while its ack was still outstanding stops holding
    * the transition -- but the ack that would have announced CONNECTED is never
    * coming, so the release has to be noticed here. */
@@ -8206,6 +8235,55 @@ az_iot_result az_iot_connection_client__birth_nonce(
 bool az_iot_connection_client__twin_push_desired(const az_iot_connection_client* client)
 {
   return client && client->opts.twin_push.push_desired;
+}
+
+bool az_iot_connection_client__twin_push_expected(const az_iot_connection_client* client)
+{
+  return client && (client->opts.twin_push.push_desired || client->opts.twin_push.push_reported);
+}
+
+uint32_t az_iot_connection_client__presence_timeout_ms(
+    az_iot_connection_client* client,
+    uint32_t attempt)
+{
+  if (!client)
+  {
+    return 0;
+  }
+  uint32_t jitter_ms = client->presence.timeout_jitter_fixed
+      ? client->presence.timeout_jitter_ms
+      : az_iot_presence_timeout__random_jitter_ms(&client->rng_state);
+  return az_iot_presence_timeout__ms(attempt, jitter_ms);
+}
+
+void az_iot_connection_client__set_presence_timeout_jitter(
+    az_iot_connection_client* client,
+    bool fixed,
+    uint32_t jitter_ms)
+{
+  if (!client)
+  {
+    return;
+  }
+  client->presence.timeout_jitter_fixed = fixed;
+  client->presence.timeout_jitter_ms = jitter_ms;
+}
+
+az_iot_result az_iot_connection_client__request_reconnect(
+    az_iot_connection_client* client,
+    az_iot_result reason)
+{
+  if (!client)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  if (client->state[AZ_IOT_CONN_SCOPE_HUB] != AZ_IOT_CONN_STATE_CONNECTED || client->user_close)
+  {
+    return AZ_IOT_ERR_NOT_CONNECTED;
+  }
+  client->reconnect_requested = true;
+  client->reconnect_requested_reason = reason;
+  return AZ_IOT_OK;
 }
 
 void az_iot_connection_client__subscription_gate_force_timeout(az_iot_connection_client* client)

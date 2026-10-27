@@ -189,6 +189,9 @@ target_include_directories(az_iot_tests_defensive_timeout PRIVATE
 az_iot_add_cmocka_test(az_iot_tests_deadline unit/deadline_test.c)
 target_include_directories(az_iot_tests_deadline PRIVATE
     ${PROJECT_SOURCE_DIR}/src/core)
+az_iot_add_cmocka_test(az_iot_tests_presence_timeout unit/presence_timeout_test.c)
+target_include_directories(az_iot_tests_presence_timeout PRIVATE
+    ${PROJECT_SOURCE_DIR}/src/core)
 az_iot_add_cmocka_test(az_iot_tests_span_writer unit/span_writer_test.c)
 target_include_directories(az_iot_tests_span_writer PRIVATE
     ${PROJECT_SOURCE_DIR}/src/core)
@@ -314,7 +317,8 @@ az_iot_add_cmocka_test(az_iot_tests_mqttv3_twin_client unit/mqttv3_twin_client_t
 target_link_libraries(az_iot_tests_mqttv3_twin_client PRIVATE az_iot_test_support az_iot_mqttv3)
 az_iot_add_cmocka_test(az_iot_tests_mqttv5_twin_client unit/mqttv5_twin_client_test.c)
 target_link_libraries(az_iot_tests_mqttv5_twin_client PRIVATE az_iot_test_support az_iot_mqttv5)
-target_include_directories(az_iot_tests_mqttv5_twin_client PRIVATE ${PROJECT_SOURCE_DIR}/src/core)
+target_include_directories(az_iot_tests_mqttv5_twin_client PRIVATE
+    ${PROJECT_SOURCE_DIR}/src/core ${PROJECT_SOURCE_DIR}/src/mqttv5)
 
 az_iot_add_cmocka_test(az_iot_tests_su_client unit/su_client_test.c)
 # An application built with a manifest limit that differs from az_iot_core:
