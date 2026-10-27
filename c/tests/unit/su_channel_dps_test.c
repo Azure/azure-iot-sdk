@@ -41,6 +41,7 @@
 #include "support/mock_mqtt_iface.h"
 #include "support/test_provider.h"
 #include "support/su_error_cases.h"
+#include "support/connection_default_limits.h"
 
 /* A registration response the provisioning parser accepts, used to prove the
  * channel's observer does not disturb the provisioning flow. */
@@ -2671,7 +2672,7 @@ static void an_answered_operation_clears_the_retry_count(void** state)
  * freed storage on the next transition. */
 static bool channel_observes_state(const fixture* fx)
 {
-  for (size_t i = 0; i < AZ_IOT_MAX_FEATURE_STATE_OBSERVERS; ++i)
+  for (size_t i = 0; i < AZ_IOT_TEST_DEFAULT_FEATURE_STATE_OBSERVERS; ++i)
   {
     if (fx->client.feature_state_observers[i].cb != NULL
         && fx->client.feature_state_observers[i].user_ctx == &fx->channel_state)
@@ -2694,7 +2695,7 @@ static void the_channel_takes_and_returns_a_state_observer_seat(void** state)
   assert_false(channel_observes_state(fx));
 
   /* More bind/unbind cycles than the pool has seats: none leak. */
-  for (size_t i = 0; i < AZ_IOT_MAX_FEATURE_STATE_OBSERVERS + 2u; ++i)
+  for (size_t i = 0; i < AZ_IOT_TEST_DEFAULT_FEATURE_STATE_OBSERVERS + 2u; ++i)
   {
     assert_int_equal(
         fx->channel.vtable->open(fx->channel.ctx, on_update, on_result, fx), AZ_IOT_OK);
@@ -2708,7 +2709,7 @@ static void the_channel_takes_and_returns_a_state_observer_seat(void** state)
 static void a_full_observer_pool_refuses_the_bind(void** state)
 {
   fixture* fx = (fixture*)*state;
-  for (size_t i = 0; i < AZ_IOT_MAX_FEATURE_STATE_OBSERVERS; ++i)
+  for (size_t i = 0; i < AZ_IOT_TEST_DEFAULT_FEATURE_STATE_OBSERVERS; ++i)
   {
     fx->client.feature_state_observers[i].cb = az_iot_test_on_state;
     fx->client.feature_state_observers[i].user_ctx = &fx->log;
@@ -2722,7 +2723,10 @@ static void a_full_observer_pool_refuses_the_bind(void** state)
   assert_int_equal(fx->client.dps_user_count, 0);
   assert_int_equal(fx->client.dps_hold_count, 0);
 
-  memset(fx->client.feature_state_observers, 0, sizeof(fx->client.feature_state_observers));
+  memset(
+      fx->client.feature_state_observers,
+      0,
+      AZ_IOT_TEST_DEFAULT_FEATURE_STATE_OBSERVERS * sizeof(*fx->client.feature_state_observers));
 }
 
 /* The session a request rode can be replaced between two channel ticks: the
@@ -2900,7 +2904,7 @@ static void a_deferred_seat_refused_by_a_full_pool_refuses_operations(void** sta
   assert_int_equal(g_bind_from_observer_result, AZ_IOT_OK);
   assert_false(channel_observes_state(fx));
 
-  for (size_t i = 0; i < AZ_IOT_MAX_FEATURE_STATE_OBSERVERS; ++i)
+  for (size_t i = 0; i < AZ_IOT_TEST_DEFAULT_FEATURE_STATE_OBSERVERS; ++i)
   {
     fx->client.feature_state_observers[i].cb = az_iot_test_on_state;
     fx->client.feature_state_observers[i].user_ctx = &fx->log;
@@ -2922,7 +2926,7 @@ static void a_deferred_seat_refused_by_a_full_pool_refuses_operations(void** sta
   assert_int_equal(fx->channel.vtable->do_work(fx->channel.ctx), AZ_IOT_OK);
   assert_true(channel_observes_state(fx));
 
-  for (size_t i = 1; i < AZ_IOT_MAX_FEATURE_STATE_OBSERVERS; ++i)
+  for (size_t i = 1; i < AZ_IOT_TEST_DEFAULT_FEATURE_STATE_OBSERVERS; ++i)
   {
     memset(
         &fx->client.feature_state_observers[i], 0, sizeof(fx->client.feature_state_observers[i]));

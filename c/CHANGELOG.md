@@ -14,6 +14,18 @@
   moves from `az_iot_su_client` (432 bytes smaller on 64-bit) into the workspace, which now
   counts `device_properties_size` twice plus `AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE` (default: 1216
   bytes, was 512).
+- Breaking: connection client entry counts are run-time limits
+  (`az_iot_connection_client_options::limits`, 0 = default) instead of compile-time macros. The
+  entries live in `options.workspace`, sized by `az_iot_connection_client_get_workspace_size()` or
+  `AZ_IOT_CONNECTION_CLIENT_WORKSPACE_SIZE()`; with no workspace the client uses its own, sized for
+  the defaults. `AZ_IOT_MAX_PENDING_PUBACKS`, `AZ_IOT_MAX_PUBACK_RESERVATIONS`,
+  `AZ_IOT_MAX_PERSISTENT_SUBS`, `AZ_IOT_MAX_SESSION_HANDLERS`, `AZ_IOT_MAX_FEATURE_STATE_OBSERVERS`,
+  `AZ_IOT_MAX_APP_STATE_OBSERVERS`, `AZ_IOT_MAX_FEATURE_CLIENT_BINDS` and
+  `AZ_IOT_MAX_INBOUND_HANDLERS` are removed. `AZ_IOT_MAX_MQTT_FACTORIES`, `AZ_IOT_DPS_HOST_BUF`,
+  `AZ_IOT_DPS_DEVICE_ID_BUF`, `AZ_IOT_DPS_OPERATION_ID_MAX`, `AZ_IOT_CONNECTION_PROFILE_RAW_BUF`,
+  `AZ_IOT_MQTT_USERNAME_BUF`, `AZ_IOT_PERSISTENT_SUB_TOPIC_MAX` and `AZ_IOT_DISPATCH_PREFIX_MAX` are
+  fixed. Defining any of them before including the headers is a compile error, so no build of the
+  application can lay out the client differently from the SDK.
 - Breaking: `az_iot_su_platform_hooks` fields `persist_state_fn` and `load_state_fn` are renamed
   `persist_workflow_state_fn` and `load_workflow_state_fn`.
 - az_mqtt adapter: `AZ_IOT_AZ_MQTT_MESSAGE_STORAGE_SIZE` may be 0, for devices that only use clean

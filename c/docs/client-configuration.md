@@ -110,7 +110,8 @@ With CMake: `-DAZ_IOT_AZ_MQTT_FOOTPRINT=CONSTRAINED`, any option above, or
 ### Limits in the public headers
 
 Buffer sizes, pool sizes and default timeouts are `#define`s that you can override at compile
-time, for example `-DAZ_IOT_MAX_PERSISTENT_SUBS=12`. The sizes are fixed when compiled: they size
+time, for example `-DAZ_IOT_DEFAULT_KEEP_ALIVE_SECONDS=120`. Connection client entry counts are
+run-time limits instead (below). The sizes are fixed when compiled: they size
 arrays inside caller-allocated structs, or buffers inside the SDK.
 
 **Set every override for the whole build, with the same value for the SDK and the application.**
@@ -121,7 +122,7 @@ arrays inside caller-allocated structs, or buffers inside the SDK.
   effect.
 - Ways to apply one value to both:
   - The SDK built inside your project (`add_subdirectory()` or `FetchContent`): call
-    `add_compile_definitions(AZ_IOT_MAX_PERSISTENT_SUBS=12)` before adding `c/`. Directory-level
+    `add_compile_definitions(AZ_IOT_DEFAULT_KEEP_ALIVE_SECONDS=120)` before adding `c/`. Directory-level
     definitions apply to the SDK's targets and to yours.
   - An installed SDK: build the SDK with the definition (for example in `CMAKE_C_FLAGS`), and
     compile the application with the same one. The installed CMake package does not carry it.
@@ -140,24 +141,48 @@ The tables state each outcome that is not a failed call or a dropped message.
 
 #### Connection client ([az_iot_connection_client.h](../inc/azure/iot/az_iot_connection_client.h))
 
-| Macro | Default | Bounds |
+Entry counts are run-time values in `az_iot_connection_client_options::limits`
+(`az_iot_connection_client_limits`); 0 selects the default. The entries live in
+`options.workspace` (static, stack or heap), owned by the client until `deinit()`, which wipes it:
+
+- `az_iot_connection_client_get_workspace_size(&limits)`: bytes needed, any alignment.
+- `AZ_IOT_CONNECTION_CLIENT_WORKSPACE_SIZE(...)`: the same as a constant expression, for static
+  arrays.
+- With `options.workspace` NULL, the client uses its own area, sized for the defaults; larger
+  limits then fail `init()` with `AZ_IOT_ERR_INVALID_ARG`. A workspace that is too small fails it
+  with `AZ_IOT_ERR_NOT_ENOUGH_SPACE` and logs the size needed.
+- Defining one of the former macros (`AZ_IOT_MAX_PENDING_PUBACKS`, `AZ_IOT_DPS_HOST_BUF`, ...)
+  before including the header is a compile error.
+
+| Limit | Default | Bounds |
+| --- | --- | --- |
+| `max_pending_publishes` | 16 | QoS 1 publishes awaiting an acknowledgement with a completion callback, across all feature clients. When the caller's pool is full, nothing is sent and the call returns `AZ_IOT_ERR_BUSY`; retry once an acknowledgement arrives. See [In-flight QoS 1 publishes](#in-flight-qos-1-publishes). At most 65535. |
+| `max_publish_reservations` | 2 | Feature clients holding a reservation of `max_pending_publishes`; an mqttv5 direct method client takes one; certificate renewal takes one when `opts.csr_payload_buffer` is set. At most 254. |
+| `max_persistent_subscriptions` | 8 | Topic filters re-subscribed on every session. A fully loaded mqttv3 device uses 5; mqttv5 feature clients use none. At most 255. |
+| `max_session_handlers` | 4 | Feature clients told when a session ends. |
+| `max_feature_state_observers` | 6 | Connection-state observers used by feature clients. |
+| `max_application_state_observers` | 4 | Connection-state observers the application can register. |
+| `max_feature_clients` | 8 | Feature clients attached to one connection client. |
+| `max_inbound_handlers` | 8 | Inbound topic handlers. |
+
+Fixed sizes:
+
+| Constant | Value | Bounds |
 | --- | --- | --- |
 | `AZ_IOT_MAX_MQTT_FACTORIES` | 4 | MQTT adapter factories registered with one connection client. |
-| `AZ_IOT_MAX_PENDING_PUBACKS` | 16 | QoS 1 publishes awaiting an acknowledgement with a completion callback, across all feature clients. When the caller's pool is full, nothing is sent and the call returns `AZ_IOT_ERR_BUSY`; retry once an acknowledgement arrives. See [In-flight QoS 1 publishes](#in-flight-qos-1-publishes). |
-| `AZ_IOT_MAX_PUBACK_RESERVATIONS` | 2 | Feature clients holding an `AZ_IOT_MAX_PENDING_PUBACKS` reservation; an mqttv5 direct method client takes one; certificate renewal takes one when `opts.csr_payload_buffer` is set. At most 254. |
-| `AZ_IOT_MAX_PERSISTENT_SUBS` | 8 | Topic filters re-subscribed on every session. A fully loaded mqttv3 device uses 5; mqttv5 feature clients use none. |
-| `AZ_IOT_PERSISTENT_SUB_TOPIC_MAX` | 128 | Length of one such topic filter. |
-| `AZ_IOT_MAX_SESSION_HANDLERS` | 4 | Feature clients told when a session ends. |
-| `AZ_IOT_MAX_FEATURE_STATE_OBSERVERS` | 6 | Connection-state observers used by feature clients. |
-| `AZ_IOT_MAX_APP_STATE_OBSERVERS` | 4 | Connection-state observers the application can register. |
-| `AZ_IOT_MAX_FEATURE_CLIENT_BINDS` | 8 | Feature clients attached to one connection client. |
+| `AZ_IOT_PERSISTENT_SUB_TOPIC_MAX` | 128 | Length of one persistent topic filter. |
 | `AZ_IOT_DPS_HOST_BUF` | 128 | Assigned IoT Hub host name, terminator included. A longer one fails the provisioning attempt with `AZ_IOT_ERR_NOT_SUPPORTED`. |
 | `AZ_IOT_DPS_DEVICE_ID_BUF` | 128 | Assigned device ID, terminator included. A longer one fails the provisioning attempt with `AZ_IOT_ERR_NOT_SUPPORTED`. |
 | `AZ_IOT_DPS_OPERATION_ID_MAX` | 64 | DPS operation ID. A longer one fails the provisioning attempt with `AZ_IOT_ERR_NOT_SUPPORTED`. |
-| `AZ_IOT_DPS_TOPIC_BUF` | 256 | DPS publish topic. |
-| `AZ_IOT_DPS_REGISTRATION_PAYLOAD_MAX` | 512 | Custom registration payload that `AZ_IOT_DPS_REGISTRATION_BODY_STORAGE()` leaves room for. Application-side only; you can also size the buffer yourself. |
 | `AZ_IOT_CONNECTION_PROFILE_RAW_BUF` | 64 | Connection profile string returned by DPS. A longer value is reported truncated and fails the connection with `AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED`. |
 | `AZ_IOT_MQTT_USERNAME_BUF` | 256 | MQTT user name. |
+
+Compile-time macros, only read by SDK source files:
+
+| Macro | Default | Bounds |
+| --- | --- | --- |
+| `AZ_IOT_DPS_TOPIC_BUF` | 256 | DPS publish topic. |
+| `AZ_IOT_DPS_REGISTRATION_PAYLOAD_MAX` | 512 | Custom registration payload that `AZ_IOT_DPS_REGISTRATION_BODY_STORAGE()` leaves room for. Application-side only; you can also size the buffer yourself. |
 | `AZ_IOT_PRESENCE_TOPIC_BUF` | 256 | mqttv5 presence topics. |
 
 Defaults used when the matching option is left at 0:
@@ -185,7 +210,7 @@ Defaults used when the matching option is left at 0:
 | `AZ_IOT_DM_RID_MAX` | 32 | mqttv3 request ID. |
 | `AZ_IOT_DM_CORR_DATA_MAX` | 64 | mqttv5 correlation data. |
 | `AZ_IOT_MQTTV3_DM_RESPONSE_TIMEOUT_SECONDS` | 300 | Default for `az_iot_mqttv3_direct_method_client_set_response_timeout()`. |
-| `AZ_IOT_MQTTV5_DM_MAX_CONCURRENT` | `AZ_IOT_DM_MAX_INFLIGHT` | mqttv5 invocations probed or awaiting an answer. A probe past it is refused `DEVICE_BUSY`. The client reserves twice this many `AZ_IOT_MAX_PENDING_PUBACKS` slots. |
+| `AZ_IOT_MQTTV5_DM_MAX_CONCURRENT` | `AZ_IOT_DM_MAX_INFLIGHT` | mqttv5 invocations probed or awaiting an answer. A probe past it is refused `DEVICE_BUSY`. The client reserves twice this many `max_pending_publishes` slots. |
 | `AZ_IOT_MQTTV5_DM_MAX_METHODS` | 8 | Method names one mqttv5 client can declare. |
 | `AZ_IOT_MQTTV5_DM_RESULT_BODY_MAX` | 512 | mqttv5 direct-method result body. The client holds one result buffer per `AZ_IOT_MQTTV5_DM_MAX_CONCURRENT` slot, so a result can wait for `CONNECTED`. |
 | `AZ_IOT_MQTTV5_DM_TOPIC_MAX` | 192 | mqttv5 direct-method topic. |
@@ -275,8 +300,7 @@ Smaller values save memory on constrained devices, for example
 
 | Macro | Default | Bounds |
 | --- | --- | --- |
-| `AZ_IOT_MAX_INBOUND_HANDLERS` | 8 | Inbound topic handlers in one dispatch table. |
-| `AZ_IOT_DISPATCH_PREFIX_MAX` | 128 | Topic prefix of one handler. |
+| `AZ_IOT_DISPATCH_PREFIX_MAX` | 128 | Topic prefix of one handler. Fixed. |
 | `AZ_IOT_LOG_MESSAGE_MAX` | 384 | One formatted log message, terminator included. Longer messages are truncated and end in `...`. |
 | `AZ_IOT_LOG_FILE_PATH_MAX` | 256 | Log file path for the file sink, terminator included. |
 | `AZ_IOT_LOG_FILE_DEFAULT_MAX_BYTES` | 1 MiB | Default size at which the file sink rotates. |
@@ -284,7 +308,7 @@ Smaller values save memory on constrained devices, for example
 
 #### In-flight QoS 1 publishes
 
-A QoS 1 publish sent with a completion callback holds one `AZ_IOT_MAX_PENDING_PUBACKS` slot until
+A QoS 1 publish sent with a completion callback holds one `max_pending_publishes` slot until
 its acknowledgement arrives or the session ends. A feature client may reserve slots for its own
 publishes at init; the rest form a shared pool. Neither side uses the other's slots. A reservation
 is granted only when usable at once: if tracked publishes in flight occupy its slots, it fails with

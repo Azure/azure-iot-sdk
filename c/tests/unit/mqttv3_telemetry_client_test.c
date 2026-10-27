@@ -20,6 +20,7 @@
 
 #include "support/mock_mqtt_iface.h"
 #include "support/test_provider.h"
+#include "support/connection_default_limits.h"
 
 #define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
 
@@ -520,7 +521,7 @@ static void a_full_puback_table_sends_nothing(void** state)
   open_mqtt_v3(test);
 
   az_iot_telemetry_message message = { 0 };
-  send_record records[AZ_IOT_MAX_PENDING_PUBACKS];
+  send_record records[AZ_IOT_TEST_DEFAULT_PENDING_PUBLISHES];
   memset(records, 0, sizeof(records));
   for (size_t i = 0; i < ARRAY_SIZE(records); ++i)
   {

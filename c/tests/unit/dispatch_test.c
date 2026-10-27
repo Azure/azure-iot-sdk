@@ -17,6 +17,7 @@
 #include "azure/iot/az_iot_result.h"
 
 #include "internal/dispatch.h"
+#include "support/connection_default_limits.h"
 
 /* ------------------------------------------------------------------------- */
 /* dispatch                                                                  */
@@ -50,7 +51,8 @@ static void dispatch_route_returns_false_when_no_match(void** state)
 {
   (void)state;
   az_iot_dispatch_table t;
-  az_iot_dispatch_init(&t);
+  az_iot_dispatch_entry entries[AZ_IOT_TEST_DEFAULT_INBOUND_HANDLERS];
+  az_iot_dispatch_init(&t, entries, AZ_IOT_TEST_DEFAULT_INBOUND_HANDLERS);
 
   az_iot_mqtt_message msg = { 0 };
   msg.topic = "$iothub/twin/res/200/?$rid=1";
@@ -61,7 +63,8 @@ static void dispatch_routes_to_matching_prefix(void** state)
 {
   (void)state;
   az_iot_dispatch_table t;
-  az_iot_dispatch_init(&t);
+  az_iot_dispatch_entry entries[AZ_IOT_TEST_DEFAULT_INBOUND_HANDLERS];
+  az_iot_dispatch_init(&t, entries, AZ_IOT_TEST_DEFAULT_INBOUND_HANDLERS);
   hit_record twin = { 0 };
   hit_record methods = { 0 };
 
@@ -88,7 +91,8 @@ static void dispatch_longest_prefix_wins(void** state)
 {
   (void)state;
   az_iot_dispatch_table t;
-  az_iot_dispatch_init(&t);
+  az_iot_dispatch_entry entries[AZ_IOT_TEST_DEFAULT_INBOUND_HANDLERS];
+  az_iot_dispatch_init(&t, entries, AZ_IOT_TEST_DEFAULT_INBOUND_HANDLERS);
   hit_record generic = { 0 };
   hit_record specific = { 0 };
 
@@ -116,7 +120,8 @@ static void dispatch_unregister_by_ctx_removes_all_owned(void** state)
 {
   (void)state;
   az_iot_dispatch_table t;
-  az_iot_dispatch_init(&t);
+  az_iot_dispatch_entry entries[AZ_IOT_TEST_DEFAULT_INBOUND_HANDLERS];
+  az_iot_dispatch_init(&t, entries, AZ_IOT_TEST_DEFAULT_INBOUND_HANDLERS);
   hit_record ctx_a = { 0 };
   hit_record ctx_b = { 0 };
 
@@ -140,11 +145,12 @@ static void dispatch_register_rejects_when_full(void** state)
 {
   (void)state;
   az_iot_dispatch_table t;
-  az_iot_dispatch_init(&t);
+  az_iot_dispatch_entry entries[AZ_IOT_TEST_DEFAULT_INBOUND_HANDLERS];
+  az_iot_dispatch_init(&t, entries, AZ_IOT_TEST_DEFAULT_INBOUND_HANDLERS);
   hit_record ctx = { 0 };
 
   char buf[16];
-  for (int i = 0; i < AZ_IOT_MAX_INBOUND_HANDLERS; ++i)
+  for (int i = 0; i < AZ_IOT_TEST_DEFAULT_INBOUND_HANDLERS; ++i)
   {
     snprintf(buf, sizeof(buf), "p%02d/", i);
     assert_int_equal(az_iot_dispatch_register_prefix(&t, buf, hit_handler, &ctx), AZ_IOT_OK);
@@ -159,7 +165,8 @@ static void dispatch_register_validates_args(void** state)
 {
   (void)state;
   az_iot_dispatch_table t;
-  az_iot_dispatch_init(&t);
+  az_iot_dispatch_entry entries[AZ_IOT_TEST_DEFAULT_INBOUND_HANDLERS];
+  az_iot_dispatch_init(&t, entries, AZ_IOT_TEST_DEFAULT_INBOUND_HANDLERS);
   hit_record ctx = { 0 };
   assert_int_equal(
       az_iot_dispatch_register_prefix(NULL, "p/", hit_handler, &ctx), AZ_IOT_ERR_INVALID_ARG);
@@ -172,7 +179,8 @@ static void dispatch_register_rejects_a_duplicate_prefix(void** state)
 {
   (void)state;
   az_iot_dispatch_table t;
-  az_iot_dispatch_init(&t);
+  az_iot_dispatch_entry entries[AZ_IOT_TEST_DEFAULT_INBOUND_HANDLERS];
+  az_iot_dispatch_init(&t, entries, AZ_IOT_TEST_DEFAULT_INBOUND_HANDLERS);
   hit_record first = { 0 };
   hit_record second = { 0 };
 
@@ -198,7 +206,8 @@ static void dispatch_allows_distinct_identities_to_coexist(void** state)
 {
   (void)state;
   az_iot_dispatch_table t;
-  az_iot_dispatch_init(&t);
+  az_iot_dispatch_entry entries[AZ_IOT_TEST_DEFAULT_INBOUND_HANDLERS];
+  az_iot_dispatch_init(&t, entries, AZ_IOT_TEST_DEFAULT_INBOUND_HANDLERS);
   hit_record one = { 0 };
   hit_record two = { 0 };
 
@@ -222,7 +231,8 @@ static void dispatch_frees_a_prefix_when_its_owner_unregisters(void** state)
 {
   (void)state;
   az_iot_dispatch_table t;
-  az_iot_dispatch_init(&t);
+  az_iot_dispatch_entry entries[AZ_IOT_TEST_DEFAULT_INBOUND_HANDLERS];
+  az_iot_dispatch_init(&t, entries, AZ_IOT_TEST_DEFAULT_INBOUND_HANDLERS);
   hit_record first = { 0 };
   hit_record second = { 0 };
 

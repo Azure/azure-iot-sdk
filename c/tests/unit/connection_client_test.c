@@ -28,6 +28,7 @@
 #include "support/connection_test_harness.h"
 #include "support/mock_mqtt_iface.h"
 #include "support/test_provider.h"
+#include "support/connection_default_limits.h"
 
 /* ------------------------------------------------------------------------- */
 /* fixtures                                                                  */
@@ -2755,7 +2756,7 @@ static void send_csr_is_tracked_when_the_shared_pool_is_full(void** state)
   {
     ++shared;
   }
-  assert_int_equal(shared, AZ_IOT_MAX_PENDING_PUBACKS - 1);
+  assert_int_equal(shared, AZ_IOT_TEST_DEFAULT_PENDING_PUBLISHES - 1);
 
   csr_test_ctx tc = { 0 };
   assert_int_equal(
