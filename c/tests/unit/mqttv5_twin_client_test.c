@@ -3160,6 +3160,24 @@ static void a_server_failure_during_the_requested_disconnect_counts_no_miss(void
   assert_twin_push_wait_for_attempt(fx, 1);
 }
 
+/* A normal server DISCONNECT (0x00) during the requested disconnect is not its completion. */
+static void a_normal_server_disconnect_during_the_requested_disconnect_counts_no_miss(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  expire_twin_push_wait_to_disconnect(fx);
+  az_iot_mqtt_event closed;
+  memset(&closed, 0, sizeof(closed));
+  closed.kind = AZ_IOT_MQTT_EVT_DISCONNECTED;
+  closed.status = az_iot_mqtt_disconnect_result(AZ_IOT_MQTT_VERSION_5, 0x00);
+  assert_true(az_iot_mock_mqtt_client_inject_event(fx->mock, &closed));
+  assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
+  assert_int_equal(count_states(AZ_IOT_CONN_STATE_RETRY_PENDING, AZ_IOT_ERR_TIMEOUT), 0);
+
+  reconnect_to_connected(fx);
+  assert_twin_push_wait_for_attempt(fx, 1);
+}
+
 /* Without a reconnection policy an overdue push faults the hub scope. */
 static void an_overdue_twin_push_without_a_policy_faults(void** state)
 {
@@ -3486,6 +3504,10 @@ int main(void)
         teardown),
     cmocka_unit_test_setup_teardown(
         a_server_failure_during_the_requested_disconnect_counts_no_miss,
+        setup_push_desired_reconnect,
+        teardown),
+    cmocka_unit_test_setup_teardown(
+        a_normal_server_disconnect_during_the_requested_disconnect_counts_no_miss,
         setup_push_desired_reconnect,
         teardown),
     cmocka_unit_test_setup_teardown(

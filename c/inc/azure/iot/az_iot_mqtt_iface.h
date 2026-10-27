@@ -612,6 +612,10 @@ extern "C"
    * exceeded" indistinguishable from an ordinary peer close, and with retries
    * disabled it settled the session at IDLE with nothing to explain it.
    *
+   * 0x00 yields AZ_IOT_ERR_NOT_CONNECTED, not AZ_IOT_OK: AZ_IOT_OK is reserved
+   * for a disconnect the client asked for. 0x87 yields AZ_IOT_ERR_AUTH; other
+   * codes AZ_IOT_ERR_MQTT.
+   *
    * v3.1.1 has no DISCONNECT reason code; pass 0. */
   AZ_NODISCARD az_iot_result
   az_iot_mqtt_disconnect_result(az_iot_mqtt_version version, int disconnect_code);
