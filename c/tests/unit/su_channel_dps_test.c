@@ -1096,6 +1096,55 @@ static void invalid_replacements_preserve_channel_state_and_outstanding_body(voi
   assert_int_equal(fx->result_count, 0);
 }
 
+/* Accepted properties leave room in the update-check body for the longest installed ID, fully
+ * escaped: the applied ID adopted after a successful update always fits. */
+static void accepted_properties_leave_room_for_the_longest_installed_id(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  static char manufacturer[AZ_IOT_SU_DEVICE_PROPERTIES_BUFFER_SIZE];
+  az_iot_su_device_properties properties
+      = { .manufacturer = manufacturer, .installed_update_id = { "p", "n", "v" } };
+
+  /* Grow a fully escaped manufacturer until the channel refuses it. */
+  size_t refused_length = 0;
+  for (size_t length = 1; length < sizeof(manufacturer) && refused_length == 0; ++length)
+  {
+    memset(manufacturer, '\1', length);
+    manufacturer[length] = '\0';
+    if (fx->channel.vtable->set_device_properties(fx->channel.ctx, &properties) != AZ_IOT_OK)
+    {
+      refused_length = length;
+    }
+  }
+  assert_true(refused_length > 1);
+
+  /* The refused set fits with its own short installed ID: room is reserved. */
+  az_iot_su_custom_property compatibility[1] = { { "manufacturer", manufacturer } };
+  az_iot_su_agent_info agent = { 0 };
+  agent.agent_sdk_version = AZ_IOT_SU_CLIENT_AGENT_VERSION;
+  agent.agent_profile = 1;
+  agent.compatibility_properties = compatibility;
+  agent.compatibility_properties_count = 1;
+  az_iot_su_report_update_id short_id = { "p", "n", "v" };
+  size_t body_length = 0;
+  assert_int_equal(
+      az_iot_su__fetch_request_size(&agent, &short_id, NULL, NULL, sizeof(fx->body), &body_length),
+      AZ_IOT_OK);
+
+  /* The longest accepted set still takes the longest escaped installed ID. */
+  manufacturer[refused_length - 1] = '\0';
+  assert_int_equal(
+      fx->channel.vtable->set_device_properties(fx->channel.ctx, &properties), AZ_IOT_OK);
+  char longest_part[AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE / 3];
+  memset(longest_part, '\1', sizeof(longest_part) - 1);
+  longest_part[sizeof(longest_part) - 1] = '\0';
+  properties.installed_update_id
+      = (az_iot_su_update_id_info){ longest_part, longest_part, longest_part };
+  assert_int_equal(
+      fx->channel.vtable->set_device_properties(fx->channel.ctx, &properties), AZ_IOT_OK);
+  assert_string_equal(fx->channel_state.installed_update_id.version, longest_part);
+}
+
 /* The channel's copy holds at most its storage; one byte more is refused, unchanged. */
 static void channel_property_copy_is_bounded_by_its_storage(void** state)
 {
@@ -1273,7 +1322,7 @@ static void malformed_saved_state_is_refused(void** state)
  * survives the drop escaped. */
 static void assert_oversized_cached_etags_are_dropped(fixture* fx, az_iot_su_operation operation)
 {
-  char manufacturer[151];
+  char manufacturer[101];
   memset(manufacturer, '\1', sizeof(manufacturer) - 1);
   manufacturer[sizeof(manufacturer) - 1] = '\0';
   az_iot_su_device_properties properties
@@ -3162,6 +3211,8 @@ int main(void)
         invalid_replacements_preserve_channel_state_and_outstanding_body, setup, teardown),
     cmocka_unit_test_setup_teardown(
         channel_property_copy_is_bounded_by_its_storage, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        accepted_properties_leave_room_for_the_longest_installed_id, setup, teardown),
     cmocka_unit_test_setup_teardown(
         channel_keeps_all_five_custom_properties_and_owns_their_strings, setup, teardown),
     cmocka_unit_test_setup_teardown(

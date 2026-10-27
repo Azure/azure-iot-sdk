@@ -892,17 +892,32 @@ static az_iot_result channel_set_device_properties(
   agent.compatibility_properties = compatibility;
   agent.compatibility_properties_count
       = az_iot_su__compatibility_properties(properties, compatibility);
-  az_iot_su_report_update_id installed = { properties->installed_update_id.provider,
-                                           properties->installed_update_id.name,
-                                           properties->installed_update_id.version };
   /* Size only: c->body may hold an outstanding operation. Both routes send the
-   * same body, installed ID included. ETags are left out: they are optional,
-   * and a request that cannot fit them drops them. */
+   * same body. It is sized with the longest installed ID, fully escaped, so the
+   * applied ID adopted after a successful update always fits. ETags are left
+   * out: they are optional, and a request that cannot fit them drops them. */
+  /* Three parts that, with their terminators, fill AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE, in a
+   * character JSON escapes to 6 bytes. */
+  char longest_part[AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE / 3u];
+  memset(longest_part, 0x01, sizeof(longest_part) - 1u);
+  longest_part[sizeof(longest_part) - 1u] = '\0';
+  az_iot_su_report_update_id longest_installed = { longest_part, longest_part, longest_part };
+  size_t body_size = 0;
   r = az_iot_su__fetch_request_size(
-      &agent, installed.provider != NULL ? &installed : NULL, NULL, NULL, c->body_size, NULL);
+      &agent, &longest_installed, NULL, NULL, (size_t)INT32_MAX, &body_size);
   if (r != AZ_IOT_OK)
   {
     return r;
+  }
+  if (body_size > c->body_size)
+  {
+    AZ_IOT_LOG_ERRORF(
+        AZ_IOT_LOG_COMPONENT_SU,
+        "an update check with these device properties needs up to %lu bytes; "
+        "az_iot_su_limits::max_message_size is %lu",
+        (unsigned long)body_size,
+        (unsigned long)c->body_size);
+    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
   }
 
   az_iot_su__copy_device_properties(

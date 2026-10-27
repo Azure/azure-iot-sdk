@@ -1550,8 +1550,9 @@ extern "C"
    *   copy of them.
    * @retval AZ_IOT_ERR_NOT_ENOUGH_SPACE The count limit, AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE,
    *   az_iot_su_limits::device_properties_size or the update-check body capacity would be
-   *   exceeded. For AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE and device_properties_size, an ERROR log
-   *   gives the bytes needed.
+   *   exceeded. The body is sized with the longest installed ID, fully escaped, so a later
+   *   adoption of the applied update ID always fits. For AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE and
+   * device_properties_size, an ERROR log gives the bytes needed.
    */
   AZ_NODISCARD az_iot_result az_iot_su_client_update_device_properties(
       az_iot_su_client* client,

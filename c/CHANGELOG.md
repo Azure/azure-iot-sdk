@@ -8,7 +8,9 @@
   is `az_iot_su_limits::device_properties_size`. The installed update ID is capped at
   `AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE` (192 bytes, as before). A set that does not fit is refused with
   `AZ_IOT_ERR_NOT_ENOUGH_SPACE` and an `ERROR` log of the bytes needed; properties whose strings
-  point into the client's copy are refused with `AZ_IOT_ERR_INVALID_ARG`. The update check's copy
+  point into the client's copy are refused with `AZ_IOT_ERR_INVALID_ARG`. The update-check body
+  is sized with the longest installed ID, fully escaped, so the applied ID adopted after a
+  successful update always fits `max_message_size`. The update check's copy
   moves from `az_iot_su_client` (432 bytes smaller on 64-bit) into the workspace, which now
   counts `device_properties_size` twice plus `AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE` (default: 1216
   bytes, was 512).
