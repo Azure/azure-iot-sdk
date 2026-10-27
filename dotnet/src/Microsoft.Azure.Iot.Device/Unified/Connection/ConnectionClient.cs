@@ -245,6 +245,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
                     await PublishAsync(publish, token);
                     sent.TrySetResult();
                 }, operation.Completed, cancellationToken).ConfigureAwait(false);
+                sent.TrySetResult();
             }
             catch (Exception ex)
             {
