@@ -25,14 +25,59 @@ namespace Microsoft.Azure.Iot.Device.Authentication
         /// Called before every connection attempt to IoT Hub. Providers should prepare any issued certificates here
         /// before returning the credentials to present. If preparation fails, the connection attempt fails.
         /// </remarks>
-        public abstract Task<AuthenticationCredentials> GetOperationalAuthenticationCredentialsAsync(string hostName, string deviceId, IReadOnlyList<string>? issuedClientCertificates, CancellationToken cancellationToken = default);
+        public abstract Task<AuthenticationCredentials> GetPrimaryOperationalAuthenticationCredentialsAsync(string hostName, string deviceId, IReadOnlyList<string>? issuedClientCertificates, CancellationToken cancellationToken = default);
 
         /// <summary>
         /// Gets the protocol-agnostic authentication material (client certificate, password/token, and TLS callbacks)
         /// for connecting to the device provisioning service. The caller maps it onto its own transport (MQTT, HTTP, etc.).
         /// </summary>
-        /// <param name="hostName">The device provisioning service host name being connected to.</param>
-        public abstract AuthenticationCredentials GetBootAuthenticationCredentials();
+        /// <param name="cancellationToken">The cancellation token.</param>
+        /// <remarks>
+        /// Called before every connection attempt to the device provisioning service.
+        /// </remarks>
+        public abstract Task<AuthenticationCredentials> GetPrimaryBootAuthenticationCredentialsAsync(CancellationToken cancellationToken = default);
+
+        /// <summary>
+        /// Gets the secondary authentication material for connecting to an IoT Hub, if this provider has any.
+        /// </summary>
+        /// <remarks>
+        /// When IoT Hub rejects the credentials from <see cref="GetPrimaryOperationalAuthenticationCredentialsAsync"/> as an
+        /// identity failure (for example, because the primary key was rotated), the connection client retries at once with
+        /// these credentials. If they are rejected too, it re-provisions the device when it can. The client keeps using
+        /// whichever credentials IoT Hub last accepted until they are rejected, and starts again with the primary
+        /// credentials each time it connects to an IoT Hub.
+        /// </remarks>
+        /// <param name="hostName">The IoT Hub host name being connected to.</param>
+        /// <param name="deviceId">The device Id being authenticated.</param>
+        /// <param name="issuedClientCertificates">
+        /// The most recently issued client certificate chain for this device, as passed to
+        /// <see cref="GetPrimaryOperationalAuthenticationCredentialsAsync"/>.
+        /// </param>
+        /// <param name="cancellationToken">The cancellation token.</param>
+        /// <returns>
+        /// The secondary credentials, or null if there are none to fall back to, which is the default. Return null when an
+        /// issued client certificate takes the place of the primary credentials.
+        /// </returns>
+        public virtual Task<AuthenticationCredentials?> GetSecondaryOperationalAuthenticationCredentialsAsync(string hostName, string deviceId, IReadOnlyList<string>? issuedClientCertificates, CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult<AuthenticationCredentials?>(null);
+        }
+
+        /// <summary>
+        /// Gets the secondary authentication material for connecting to the device provisioning service, if this
+        /// provider has any.
+        /// </summary>
+        /// <remarks>
+        /// When the device provisioning service rejects the credentials from <see cref="GetPrimaryBootAuthenticationCredentialsAsync"/>
+        /// when connecting, the connection client retries at once with these credentials. Each provisioning run starts
+        /// again with the primary credentials.
+        /// </remarks>
+        /// <param name="cancellationToken">The cancellation token.</param>
+        /// <returns>The secondary credentials, or null if there are none to fall back to, which is the default.</returns>
+        public virtual Task<AuthenticationCredentials?> GetSecondaryBootAuthenticationCredentialsAsync(CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult<AuthenticationCredentials?>(null);
+        }
 
         public abstract string GetRegistrationId();
 
