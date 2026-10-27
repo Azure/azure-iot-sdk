@@ -236,7 +236,7 @@ function Import-SuE2EUpdate {
         az storage blob upload --auth-mode login --account-name $Config.STORAGE_ACCOUNT `
             --container-name $Config.STORAGE_CONTAINER --name $blob --file $file --overwrite --only-show-errors | Out-Null
         if ($LASTEXITCODE -ne 0) { throw "Upload of $blob failed" }
-        $Blobs.Add($blob)
+        if (-not $Blobs.Contains($blob)) { $Blobs.Add($blob) }
         & $OnChange
         $expiry = (Get-Date).ToUniversalTime().AddHours(6).ToString('yyyy-MM-ddTHH:mmZ')
         $url = az storage blob generate-sas --auth-mode login --as-user --account-name $Config.STORAGE_ACCOUNT `
@@ -464,26 +464,33 @@ function New-SuE2EOffers {
     # Remove-SuE2EOffers everything it may have created.
     $save = { $state | ConvertTo-Json -Depth 5 | Set-Content -Path $StatePath }
 
+    # With -Reuse every offer may already exist, so all names are recorded
+    # before the first lookup; cleanup skips what does not exist.
     foreach ($scenario in $names.Offers.Keys) {
         $n = $names.Offers[$scenario]
-        $offer = [ordered]@{
+        $blobs = [System.Collections.Generic.List[string]]::new()
+        if ($Reuse) {
+            foreach ($file in "$($n.Model).bin", "$($n.Model).importmanifest.json") {
+                $blobs.Add((Get-SuE2EUpdateBlobName 'sdke2e' $n.Model '1.0.0' $file))
+            }
+        }
+        $state.Offers[$scenario] = [ordered]@{
             Model  = $n.Model
-            Blobs  = [System.Collections.Generic.List[string]]::new()
+            Blobs  = $blobs
             Update = $n.Update
-            Job    = $null
+            Job    = $Reuse ? $n.Job : $null
             Run    = $null
         }
-        $state.Offers[$scenario] = $offer
-        & $save
+    }
+    & $save
+
+    foreach ($scenario in $names.Offers.Keys) {
+        $n = $names.Offers[$scenario]
+        $offer = $state.Offers[$scenario]
 
         $updateUri = "https://$($config.ADU_ENDPOINT)/$($n.Update)?api-version=$script:ApiVersion"
         if ($Reuse -and (Get-SuE2EResource $updateUri $script:AduScope)) {
             Write-Host "$scenario`: update $($n.Model) kept"
-            # Its blobs too, so Remove-SuE2EOffers still deletes them.
-            foreach ($file in "$($n.Model).bin", "$($n.Model).importmanifest.json") {
-                $offer.Blobs.Add((Get-SuE2EUpdateBlobName 'sdke2e' $n.Model '1.0.0' $file))
-            }
-            & $save
         }
         else {
             [void](Import-SuE2EUpdate -Config $config -Provider 'sdke2e' -Name $n.Model `
