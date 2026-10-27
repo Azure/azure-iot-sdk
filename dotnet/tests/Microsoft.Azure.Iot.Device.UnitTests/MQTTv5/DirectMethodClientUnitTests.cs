@@ -20,6 +20,38 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
         private const string OutgoingMethodsTopic = "ih/" + IConnectionClient.DeviceIdPlaceholder + "/srv/methods";
 
         [Fact]
+        public void DirectMethodInvokedAsync_RejectsMultipleHandlers()
+        {
+            MockFeatureConnectionClient connection = new();
+            using DirectMethodClient directMethodClient = new(connection);
+            Func<DirectMethodRequestReceivedEventArgs, Task<DirectMethodResponse>> handler =
+                _ => Task.FromResult(new DirectMethodResponse() { Status = 200 });
+
+            Assert.Throws<InvalidOperationException>(() => directMethodClient.DirectMethodInvokedAsync += handler + handler);
+            directMethodClient.DirectMethodInvokedAsync += handler;
+            Assert.Throws<InvalidOperationException>(() => directMethodClient.DirectMethodInvokedAsync += handler);
+
+            directMethodClient.DirectMethodInvokedAsync -= handler;
+            directMethodClient.DirectMethodInvokedAsync += handler;
+        }
+
+        [Fact]
+        public void DirectMethodProbeReceivedAsync_RejectsMultipleHandlers()
+        {
+            MockFeatureConnectionClient connection = new();
+            using DirectMethodClient directMethodClient = new(connection);
+            Func<DirectMethodRequestProbeReceivedEventArgs, Task<DirectMethodProbeAck>> handler =
+                _ => Task.FromResult(DirectMethodProbeAck.Accepted());
+
+            Assert.Throws<InvalidOperationException>(() => directMethodClient.DirectMethodProbeReceivedAsync += handler + handler);
+            directMethodClient.DirectMethodProbeReceivedAsync += handler;
+            Assert.Throws<InvalidOperationException>(() => directMethodClient.DirectMethodProbeReceivedAsync += handler);
+
+            directMethodClient.DirectMethodProbeReceivedAsync -= handler;
+            directMethodClient.DirectMethodProbeReceivedAsync += handler;
+        }
+
+        [Fact]
         public async Task ProbeThenExec_InvokesHandlerAndPublishesResult()
         {
             MockFeatureConnectionClient connection = new()

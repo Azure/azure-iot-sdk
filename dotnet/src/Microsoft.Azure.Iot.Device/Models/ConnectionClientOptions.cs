@@ -47,9 +47,10 @@ namespace Microsoft.Azure.Iot.Device.Models
         /// True (the default) if this device uses twins. False to opt out of twins.
         /// </summary>
         /// <remarks>
-        /// When false, the device presence flow does not subscribe to the twin response or desired property update
-        /// topics, and constructing a <see cref="Unified.Twin.TwinClient"/> with this connection client throws an
-        /// <see cref="InvalidOperationException"/>. This value is read once when the connection client is constructed.
+        /// When false, the device presence flow does not subscribe to twin topics or request automatic MQTTv5 twin
+        /// pushes, and constructing a <see cref="Unified.Twin.TwinClient"/> or <see cref="MQTTv5.Twin.TwinClient"/> with
+        /// this connection client throws an <see cref="InvalidOperationException"/>.
+        /// This value is read once when the connection client is constructed.
         /// </remarks>
         public bool EnableTwin { get; set; } = true;
 
@@ -58,8 +59,9 @@ namespace Microsoft.Azure.Iot.Device.Models
         /// </summary>
         /// <remarks>
         /// When false, the device presence flow does not subscribe to the direct method request topic, and constructing a
-        /// <see cref="Unified.DirectMethods.DirectMethodClient"/> with this connection client throws an
-        /// <see cref="InvalidOperationException"/>. This value is read once when the connection client is constructed.
+        /// <see cref="Unified.DirectMethods.DirectMethodClient"/> or <see cref="MQTTv5.DirectMethods.DirectMethodClient"/>
+        /// with this connection client throws an <see cref="InvalidOperationException"/>.
+        /// This value is read once when the connection client is constructed.
         /// </remarks>
         public bool EnableDirectMethods { get; set; } = true;
 
@@ -70,7 +72,8 @@ namespace Microsoft.Azure.Iot.Device.Models
         /// When false, the device presence flow does not subscribe to the cloud-to-device message topic, and adding a handler
         /// to <see cref="Unified.Telemetry.TelemetryClient.CloudToDeviceTelemetryReceivedAsync"/> on a telemetry client that
         /// uses this connection client throws an <see cref="InvalidOperationException"/>. Sending device-to-cloud telemetry
-        /// is unaffected. This value is read once when the connection client is constructed.
+        /// is unaffected. MQTTv5 cloud-to-device receiving is not currently supported.
+        /// This value is read once when the connection client is constructed.
         /// </remarks>
         public bool EnableCloudToDeviceMessages { get; set; } = true;
 
@@ -85,7 +88,20 @@ namespace Microsoft.Azure.Iot.Device.Models
         /// connection to an IoT hub and any further reconnect attempts start a new session. This only applies to IoT hub
         /// connections because Device Provisioning Service does not support persistent sessions. This value is read once
         /// when the connection client is constructed.
+        /// For MQTT 5, persisting a session also requires a nonzero <see cref="SessionExpiryInterval"/>.
         /// </remarks>
         public bool UseCleanSession { get; set; }
+
+        /// <summary>
+        /// How many seconds an MQTT 5 IoT hub session should persist after the connection is lost.
+        /// Zero (the default) expires the session immediately; <see cref="uint.MaxValue"/> requests that it never expire.
+        /// </summary>
+        /// <remarks>
+        /// Only applies to MQTT 5 IoT hub connections, including those made by the unified connection client.
+        /// MQTT 3.1.1 and Device Provisioning Service connections are unaffected. The broker may override the requested
+        /// interval in its CONNACK. Explicit disconnections and session resets still expire the session immediately.
+        /// This value is read once when the connection client is constructed.
+        /// </remarks>
+        public uint SessionExpiryInterval { get; set; }
     }
 }

@@ -2,7 +2,9 @@
 // See LICENSE file in the project root for full license information.
 
 using Google.Protobuf;
+using Microsoft.Azure.Iot.Device.Events;
 using Microsoft.Azure.Iot.Device.MQTTv5.Connection;
+using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Models.DirectMethods;
 using Microsoft.Azure.Iot.Device.Mqtt;
 using System.Collections.Concurrent;
@@ -33,18 +35,39 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods
 
         private IConnectionClient _connection;
 
+        private readonly SingleHandlerEvent<Func<DirectMethodRequestReceivedEventArgs, Task<DirectMethodResponse>>> _directMethodInvoked =
+            new(nameof(DirectMethodInvokedAsync));
+        private readonly SingleHandlerEvent<Func<DirectMethodRequestProbeReceivedEventArgs, Task<DirectMethodProbeAck>>> _directMethodProbeReceived =
+            new(nameof(DirectMethodProbeReceivedAsync));
+
         /// <summary>
         /// An event that executes whenever this device receives a direct method request from IoT hub. After executing the direct method, the device must
         /// provide a direct method response.
         /// </summary>
-        public event Func<DirectMethodRequestReceivedEventArgs, Task<DirectMethodResponse>>? DirectMethodInvokedAsync;
+        /// <remarks>
+        /// Only one handler can be added at a time because only one direct method response can be sent per request.
+        /// </remarks>
+        /// <exception cref="InvalidOperationException">Thrown when adding a handler while another handler is already added, or adding a multicast delegate.</exception>
+        public event Func<DirectMethodRequestReceivedEventArgs, Task<DirectMethodResponse>>? DirectMethodInvokedAsync
+        {
+            add => _directMethodInvoked.Add(value);
+            remove => _directMethodInvoked.Remove(value);
+        }
 
         /// <summary>
         /// An event that executes whenever this device receives a direct method probe from IoT hub. This event is a precursor to receiving the direct method itself 
         /// and allows your application to decide whether it is ready to receive this direct method or not.
         /// </summary>
-        /// <remarks>This feature is only supported by IoT hubs that use MQTTv5. Older IoT hubs will never send this probe.</remarks>
-        public event Func<DirectMethodRequestProbeReceivedEventArgs, Task<DirectMethodProbeAck>>? DirectMethodProbeReceivedAsync;
+        /// <remarks>
+        /// This feature is only supported by IoT hubs that use MQTTv5. Older IoT hubs will never send this probe.
+        /// Only one handler can be added at a time because only one probe response can be sent per request.
+        /// </remarks>
+        /// <exception cref="InvalidOperationException">Thrown when adding a handler while another handler is already added, or adding a multicast delegate.</exception>
+        public event Func<DirectMethodRequestProbeReceivedEventArgs, Task<DirectMethodProbeAck>>? DirectMethodProbeReceivedAsync
+        {
+            add => _directMethodProbeReceived.Add(value);
+            remove => _directMethodProbeReceived.Remove(value);
+        }
 
         /// <summary>
         /// Construct a new <see cref="DirectMethodClient"/> instance.
@@ -69,8 +92,14 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods
         /// await connectionClient.ProvisionAndConnectAsync();
         /// </code>
         /// </example>
+        /// <exception cref="InvalidOperationException">Thrown if <paramref name="connection"/> opted out of direct methods (see <see cref="ConnectionClientOptions.EnableDirectMethods"/>).</exception>
         public DirectMethodClient(IConnectionClient connection)
         {
+            if (!connection.AreDirectMethodsEnabled)
+            {
+                throw new InvalidOperationException($"The provided connection client opted out of direct methods. Set {nameof(ConnectionClientOptions)}.{nameof(ConnectionClientOptions.EnableDirectMethods)} to true to use a {nameof(DirectMethodClient)}.");
+            }
+
             _connection = connection;
             _connection.PublishReceivedAsync += HandleReceivedMqttPublish;
         }
@@ -100,7 +129,9 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods
                 return;
             }
 
-            if (DirectMethodInvokedAsync == null || DirectMethodProbeReceivedAsync == null)
+            Func<DirectMethodRequestReceivedEventArgs, Task<DirectMethodResponse>>? methodHandler = _directMethodInvoked.Handler;
+            Func<DirectMethodRequestProbeReceivedEventArgs, Task<DirectMethodProbeAck>>? probeHandler = _directMethodProbeReceived.Handler;
+            if (methodHandler == null || probeHandler == null)
             {
                 Trace.TraceError("Received a direct method message, but this client has not registered both callbacks, so it cannot be handled.");
                 return;
@@ -135,7 +166,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods
 
                 Probe probe = Probe.Parser.ParseFrom(publish.Payload);
 
-                DirectMethodProbeAck probeAck = await DirectMethodProbeReceivedAsync.Invoke(new() { MethodName = probe.MethodName, ResponseTimeoutSeconds = probe.ResponseTimeoutSeconds });
+                DirectMethodProbeAck probeAck = await probeHandler.Invoke(new() { MethodName = probe.MethodName, ResponseTimeoutSeconds = probe.ResponseTimeoutSeconds });
 
                 stopwatch.Stop();
 
@@ -223,7 +254,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods
                     Payload = exec.Params.Span.ToArray()
                 };
 
-                DirectMethodResponse methodResponse = await DirectMethodInvokedAsync.Invoke(directMethodInvokedArgs);
+                DirectMethodResponse methodResponse = await methodHandler.Invoke(directMethodInvokedArgs);
 
                 stopwatch.Stop();
 

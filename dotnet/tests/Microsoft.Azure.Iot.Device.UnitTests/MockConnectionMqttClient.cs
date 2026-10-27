@@ -149,13 +149,15 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
         public async Task<MqttPublishAck> PublishAsync(MqttPublish publish, CancellationToken cancellationToken = default)
         {
+            cancellationToken.ThrowIfCancellationRequested();
+
             if (AutoRespondToBirth)
             {
                 SimulateBirthAckIfBirthPublish(publish);
             }
 
             MqttPublishAck puback = OnPublish != null
-                ? await OnPublish.Invoke(publish)
+                ? await OnPublish.Invoke(publish).WaitAsync(cancellationToken)
                 : new MqttPublishAck() { ReasonCode = MqttPublishAckReasonCode.Success };
 
             RecordSentTraffic(new(publish));

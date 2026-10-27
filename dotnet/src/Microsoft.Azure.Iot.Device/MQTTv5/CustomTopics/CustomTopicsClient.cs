@@ -1,6 +1,7 @@
 ﻿// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
 // See LICENSE file in the project root for full license information.
 
+using Microsoft.Azure.Iot.Device.Events;
 using Microsoft.Azure.Iot.Device.Exceptions;
 using Microsoft.Azure.Iot.Device.Mqtt;
 using Microsoft.Azure.Iot.Device.MQTTv5.Connection;
@@ -78,7 +79,21 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.CustomTopics
         // are updated in the same order the operations were sent on the wire.
         private readonly SemaphoreSlim _subscriptionOperationLock = new(1, 1);
 
-        public event Func<MqttPublishReceivedEventArgs, Task>? CustomTopicPublishReceivedAsync;
+        private readonly AsyncEvent<MqttPublishReceivedEventArgs> _customTopicPublishReceived = new();
+
+        /// <summary>
+        /// Raised when a publish matches a subscribed custom topic.
+        /// </summary>
+        /// <remarks>
+        /// Every handler is invoked and awaited in the order it was added, even if an earlier one throws.
+        /// The publish is acknowledged only if no handler throws and this client has not been disposed.
+        /// Handlers that have not started are skipped if this client is disposed.
+        /// </remarks>
+        public event Func<MqttPublishReceivedEventArgs, Task>? CustomTopicPublishReceivedAsync
+        {
+            add => _customTopicPublishReceived.Add(value);
+            remove => _customTopicPublishReceived.Remove(value);
+        }
 
         /// <summary>
         /// Construct a new <see cref="CustomTopicsClient"/> instance.
@@ -736,10 +751,9 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.CustomTopics
                         }
 
                         // Read and invoke the event under the disposal lock so disposal cannot return between the check and callback start.
-                        var handlers = CustomTopicPublishReceivedAsync;
-                        if (handlers != null)
+                        if (_customTopicPublishReceived.HasHandlers)
                         {
-                            callbackTask = InvokeAllHandlersAsync(handlers, args);
+                            callbackTask = _customTopicPublishReceived.InvokeAsync(args, InvokePublishHandlerUnlessDisposedAsync);
                         }
                         else
                         {
@@ -767,28 +781,13 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.CustomTopics
             }
         }
 
-        /// <summary>
-        /// Invokes every handler attached to a multicast async event and waits for all of them. Invoking the multicast
-        /// delegate directly would only return (and so only await) the last handler's task.
-        /// </summary>
-        private static async Task InvokeAllHandlersAsync(Func<MqttPublishReceivedEventArgs, Task> handlers, MqttPublishReceivedEventArgs args)
+        private Task InvokePublishHandlerUnlessDisposedAsync(Func<Task> handler)
         {
-            Delegate[] invocationList = handlers.GetInvocationList();
-            var tasks = new Task[invocationList.Length];
-            for (int i = 0; i < invocationList.Length; i++)
+            // Later handlers may start after an await, so admit each one under the disposal lock.
+            lock (_subscribedCustomTopicsLock)
             {
-                try
-                {
-                    tasks[i] = ((Func<MqttPublishReceivedEventArgs, Task>)invocationList[i]).Invoke(args);
-                }
-                catch (Exception ex)
-                {
-                    // A handler throwing synchronously shouldn't prevent the remaining handlers from running
-                    tasks[i] = Task.FromException(ex);
-                }
+                return _isDisposed ? Task.CompletedTask : handler();
             }
-
-            await Task.WhenAll(tasks);
         }
 
         /// <summary>
