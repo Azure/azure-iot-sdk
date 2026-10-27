@@ -3177,9 +3177,11 @@ static bool su_client_layout_matches(const az_iot_su_client_layout* layout)
       layout->retry_timestamp_size,
       (size_t)AZ_IOT_SU_RETRY_TIMESTAMP_SIZE },
     { "AZ_IOT_MAX_SU_OBSERVERS", layout->max_observers, (size_t)AZ_IOT_MAX_SU_OBSERVERS },
-    { "_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS",
-      layout->max_instruction_steps,
-      (size_t)_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS },
+    { "AZ_IOT_SU_MAX_STEP_COUNT", layout->max_step_count, (size_t)AZ_IOT_SU_MAX_STEP_COUNT },
+    { "AZ_IOT_SU_MAX_FILE_COUNT", layout->max_file_count, (size_t)AZ_IOT_SU_MAX_FILE_COUNT },
+    { "AZ_IOT_SU_MAX_FILE_COUNT_PER_STEP",
+      layout->max_file_count_per_step,
+      (size_t)AZ_IOT_SU_MAX_FILE_COUNT_PER_STEP },
     { "sizeof(az_iot_su_client)", layout->client_size, sizeof(az_iot_su_client) },
   };
 

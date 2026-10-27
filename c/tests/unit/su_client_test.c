@@ -2481,13 +2481,11 @@ static void public_initialize_rejects_a_client_layout_mismatch(void** state)
   memset(untouched, 0xA5, sizeof(untouched));
 
   const az_iot_su_client_layout good = {
-    sizeof(az_iot_su_client_layout),
-    sizeof(az_iot_su_client),
-    (size_t)AZ_IOT_SU_MAX_ROOT_KEYS,
-    (size_t)AZ_IOT_SU_WORKFLOW_ID_SIZE,
-    (size_t)AZ_IOT_SU_RETRY_TIMESTAMP_SIZE,
-    (size_t)AZ_IOT_MAX_SU_OBSERVERS,
-    (size_t)_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS,
+    sizeof(az_iot_su_client_layout),           sizeof(az_iot_su_client),
+    (size_t)AZ_IOT_SU_MAX_ROOT_KEYS,           (size_t)AZ_IOT_SU_WORKFLOW_ID_SIZE,
+    (size_t)AZ_IOT_SU_RETRY_TIMESTAMP_SIZE,    (size_t)AZ_IOT_MAX_SU_OBSERVERS,
+    (size_t)AZ_IOT_SU_MAX_STEP_COUNT,          (size_t)AZ_IOT_SU_MAX_FILE_COUNT,
+    (size_t)AZ_IOT_SU_MAX_FILE_COUNT_PER_STEP,
   };
   const struct
   {
@@ -2500,8 +2498,10 @@ static void public_initialize_rejects_a_client_layout_mismatch(void** state)
     { offsetof(az_iot_su_client_layout, workflow_id_size), "AZ_IOT_SU_WORKFLOW_ID_SIZE" },
     { offsetof(az_iot_su_client_layout, retry_timestamp_size), "AZ_IOT_SU_RETRY_TIMESTAMP_SIZE" },
     { offsetof(az_iot_su_client_layout, max_observers), "AZ_IOT_MAX_SU_OBSERVERS" },
-    { offsetof(az_iot_su_client_layout, max_instruction_steps),
-      "_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS" },
+    { offsetof(az_iot_su_client_layout, max_step_count), "AZ_IOT_SU_MAX_STEP_COUNT" },
+    { offsetof(az_iot_su_client_layout, max_file_count), "AZ_IOT_SU_MAX_FILE_COUNT" },
+    { offsetof(az_iot_su_client_layout, max_file_count_per_step),
+      "AZ_IOT_SU_MAX_FILE_COUNT_PER_STEP" },
   };
   const long deltas[] = { -1, 1 };
 

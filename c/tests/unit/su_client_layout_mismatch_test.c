@@ -16,6 +16,15 @@
 #include <string.h>
 #include <cmocka.h>
 
+/* az_iot_core exports the SDK's manifest limits as compile definitions; replace the step count as
+ * an application overriding it in its own build would. */
+#ifdef AZ_IOT_TEST_SU_MAX_STEP_COUNT
+#undef AZ_IOT_SU_MAX_STEP_COUNT
+#define AZ_IOT_SU_MAX_STEP_COUNT AZ_IOT_TEST_SU_MAX_STEP_COUNT
+#undef _az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS
+#define _az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS AZ_IOT_TEST_SU_MAX_STEP_COUNT
+#endif
+
 #include "azure/iot/az_iot_connection_client.h"
 #include "azure/iot/az_iot_log.h"
 #include "azure/iot/az_iot_su.h"

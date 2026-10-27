@@ -198,7 +198,8 @@ Defaults used when the matching option is left at 0:
 #### Software updates ([az_iot_su.h](../inc/azure/iot/az_iot_su.h))
 
 `AZ_IOT_SU_MAX_ROOT_KEYS`, `AZ_IOT_SU_WORKFLOW_ID_SIZE`, `AZ_IOT_SU_RETRY_TIMESTAMP_SIZE`,
-`AZ_IOT_MAX_SU_OBSERVERS` and azure-sdk-for-c's `_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS` size
+`AZ_IOT_MAX_SU_OBSERVERS` and the manifest limits (`AZ_IOT_SU_MAX_STEP_COUNT`, `AZ_IOT_SU_MAX_FILE_COUNT`,
+`AZ_IOT_SU_MAX_FILE_COUNT_PER_STEP`) size
 `az_iot_su_client`, which the application allocates: define them identically for the application
 and the SDK. `az_iot_su_client_init()`
 returns `AZ_IOT_ERR_INVALID_ARG`, with an `ERROR` log, when `sizeof(az_iot_su_client)` or any
@@ -251,7 +252,8 @@ azure-sdk-for-c, the SDK and the application must be built with the same values.
 options of the SDK build; it applies them to the azure-sdk-for-c parser (`az_iot_hub`) and to
 `az_iot_core` as public compile definitions, which reach the application through the `azure::iot::core` target and the
 `azure-iot-sdk-core` pkg-config file. `az_iot_su.h` refuses to compile with values that differ from
-azure-sdk-for-c's. An installed azure-sdk-for-c must be built with them (see
+azure-sdk-for-c's, and `az_iot_su_client_init()` refuses an application built with values that
+differ from the SDK's. An installed azure-sdk-for-c must be built with them (see
 [Installed dependencies](#installed-dependencies)).
 
 Smaller values save memory on constrained devices, for example
