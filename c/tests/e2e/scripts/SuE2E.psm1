@@ -334,9 +334,16 @@ function Get-SuE2ERunProperty([object]$Run, [string]$Name) {
 
 # The job's runs, newest startTime first (none: empty).
 function Get-SuE2EJobRuns([hashtable]$Config, [string]$JobName) {
-    $list = Get-SuE2EResource "$(Get-SuE2EJobsUri $Config)/$JobName/runs?api-version=$script:ApiVersion" $script:ArmScope
-    if (-not $list) { return @() }
-    return @(@($list.value) | Sort-Object {
+    $runs = @()
+    $uri = "$(Get-SuE2EJobsUri $Config)/$JobName/runs?api-version=$script:ApiVersion"
+    while ($uri) {
+        $page = Get-SuE2EResource $uri $script:ArmScope
+        if (-not $page) { break }
+        $runs += @($page.value)
+        # Paged by nextLink.
+        $uri = if ($page.PSObject.Properties['nextLink']) { $page.nextLink } else { $null }
+    }
+    return @($runs | Sort-Object {
         $t = Get-SuE2ERunProperty $_ 'startTime'
         if ($t) { ([datetime]$t).ToUniversalTime() } else { [datetime]::MinValue }
     } -Descending)
@@ -474,7 +481,7 @@ function New-SuE2EOffers {
     $names = Get-SuE2EOfferNames -RunId $RunId
     $manufacturer = $names.Manufacturer
     $runs = @()
-    $graceLeft = 0
+    $graceUntil = [datetime]::MinValue
     $state = [ordered]@{ Manufacturer = $manufacturer; Offers = [ordered]@{} }
 
     # Saved before every remote call, so a run killed mid-step still leaves
@@ -527,8 +534,8 @@ function New-SuE2EOffers {
                 # Another run may have just created it: wait out what is left of its grace.
                 $started = Get-SuE2ERunProperty $active 'startTime'
                 if ($started) {
-                    $left = ([datetime]$started).ToUniversalTime().AddSeconds($GraceSeconds) - (Get-Date).ToUniversalTime()
-                    if ($left.TotalSeconds -gt $graceLeft) { $graceLeft = [int][math]::Ceiling($left.TotalSeconds) }
+                    $until = ([datetime]$started).ToUniversalTime().AddSeconds($GraceSeconds)
+                    if ($until -gt $graceUntil) { $graceUntil = $until }
                 }
             }
             else { $offer.Run = New-SuE2EJobRun -Config $config -JobName $n.Job; $runs += @{ Job = $n.Job; Run = $offer.Run } }
@@ -540,9 +547,13 @@ function New-SuE2EOffers {
         & $save
     }
     if ($runs.Count) { Wait-SuE2EJobRuns -Config $config -Runs $runs -GraceSeconds $GraceSeconds }
-    elseif ($graceLeft -gt 0) {
-        Write-Host "Waiting $graceLeft s: a kept run started less than $GraceSeconds s ago"
-        Start-Sleep -Seconds $graceLeft
+    else {
+        # Measured after every lookup, so their time counts toward the grace.
+        $left = [math]::Ceiling(($graceUntil - (Get-Date).ToUniversalTime()).TotalSeconds)
+        if ($left -gt 0) {
+            Write-Host "Waiting $left s: a kept run started less than $GraceSeconds s ago"
+            Start-Sleep -Seconds $left
+        }
     }
     Export-SuE2EOfferVariables -RunId $RunId
 }
