@@ -654,10 +654,11 @@ extern "C"
      * Adapters that cannot honour it fail the connect with
      * AZ_IOT_ERR_NOT_SUPPORTED rather than connecting around the proxy.
      *
-     * Note for the Paho adapter: when this is left unset, Paho itself still
-     * falls back to the lowercase `http_proxy` / `https_proxy` environment
-     * variables (the uppercase spellings are ignored). Set the proxy here to be
-     * explicit and independent of the environment. */
+     * Note for the Paho adapter: when this is left unset, Paho reads the
+     * lowercase `http_proxy` / `https_proxy` environment variables only if
+     * `PAHO_C_CLIENT_USE_HTTP_PROXY=TRUE` is set (and then honours `no_proxy`;
+     * `https_proxy` must start with `http://` or `https://`). Set the proxy
+     * here to be explicit and independent of the environment. */
     az_iot_mqtt_proxy_options proxy;
 
     /* MQTTv5 hub twin push advertisement. These two bits ride the birth
@@ -1836,6 +1837,9 @@ extern "C"
       uint8_t pass_from_x509_index;
       bool x509_available;
       uint8_t x509_role; /* az_iot_cert_role */
+      /* Hub only: the last attempt's source, kept once the next clears
+       * source (NONE: none yet). */
+      az_iot_auth_source last_source;
     } auth[AZ_IOT_CONN_SCOPE_COUNT];
     /* Token area of opts.sas_buffer: after the scratch and key slots. */
     char* sas_token;
@@ -2156,10 +2160,19 @@ extern "C"
   AZ_NODISCARD az_iot_result
   az_iot_connection_client_request_reprovision(az_iot_connection_client* client);
 
-  /* Pump network I/O and dispatch callbacks. Single-threaded contract: all user
-   * callbacks fire synchronously from inside this call. Not AZ_NODISCARD: this is a
-   * pump, commonly called in a loop where the per-call result is observed via the
-   * state callback rather than the return value. */
+  /**
+   * @brief Pump network I/O and dispatch callbacks.
+   *
+   * Single-threaded: user callbacks fire synchronously inside this call. The SDK does
+   * not lock its state against other threads: make every SDK call, for every client
+   * in the process, from one thread, or serialize the calls (docs/architecture.md).
+   * Not AZ_NODISCARD: it is called in a loop, and results surface on the state callback.
+   *
+   * @param[in,out] client     The client.
+   * @param[in]     timeout_ms Longest wait for network activity when idle.
+   * @return AZ_IOT_ERR_INVALID_ARG for a NULL client; otherwise the MQTT adapter's
+   *         process_loop() result.
+   */
   az_iot_result az_iot_connection_client_do_work(
       az_iot_connection_client* client,
       uint32_t timeout_ms);

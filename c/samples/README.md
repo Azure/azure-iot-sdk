@@ -26,6 +26,7 @@ run it, and what to expect.
 | [unified/file_upload](unified/file_upload/README.md) | File upload to Azure Storage (mqttv3 only). |
 | [unified/websockets](unified/websockets/README.md) | Telemetry over MQTT over WebSockets (port 443). |
 | [unified/proxy](unified/proxy/README.md) | Telemetry through an HTTP proxy. |
+| [unified/multithreaded_telemetry](unified/multithreaded_telemetry/README.md) | Telemetry with readings from other threads, handed to the one thread that calls the SDK. |
 | [mqttv5/telemetry](mqttv5/telemetry/README.md) | Telemetry on an mqttv5 hub. |
 | [mqttv5/twin_get_patch](mqttv5/twin_get_patch/README.md) | Device twin on an mqttv5 hub. |
 | [mqttv5/direct_method_responder](mqttv5/direct_method_responder/README.md) | Direct methods on an mqttv5 hub, with a probe handler. |
@@ -41,6 +42,9 @@ run it, and what to expect.
 | [authentication/dps_tpm](authentication/dps_tpm/README.md) | DPS TPM attestation over HTTPS, then hub SAS tokens signed by a simulated TPM. |
 | [software_update/pc/simulated_onboarding](software_update/pc/simulated_onboarding/README.md) | Software updates before registration, simulated install; no IoT Hub needed. |
 | [software_update/pc/simulated_regular](software_update/pc/simulated_regular/README.md) | Software updates for a registered device, simulated install. |
+| [software_update/pc/http_download](software_update/pc/http_download/README.md) | Software updates with a real, non-blocking HTTPS download (libcurl) through a proxy; simulated install. |
+| [software_update/pc/multi_step](software_update/pc/multi_step/README.md) | A multi-step update: per-step hooks, rollback, failure codes, step result details and the final report. |
+| [software_update/pc/reboot_resume](software_update/pc/reboot_resume/README.md) | An update that needs a reboot: atomic state persistence, when to reboot, and resume. |
 | [software_update/esp32](software_update/esp32/README.md) | Software updates with a real over-the-air install on an ESP32. |
 
 ## How a unified sample handles the hub generation

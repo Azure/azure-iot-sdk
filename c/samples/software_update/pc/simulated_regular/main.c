@@ -122,7 +122,8 @@ typedef struct
   {
     char* manufacturer;
     char* model;
-    /* What is installed now: sent on every check and read by su_is_installed(). */
+    /* What is installed now: sent on every check and read by is_offered_update_already_installed().
+     */
     char installed_provider[SU_SIM_ID_PART_SIZE];
     char installed_name[SU_SIM_ID_PART_SIZE];
     char installed_version[SU_SIM_ID_PART_SIZE];
@@ -307,6 +308,11 @@ static void on_su_event(const az_iot_su_event* event, void* user_ctx)
           "Failed update offered again; retry in %u s.\n",
           (unsigned)(event->retry_after_ms / 1000u));
       break;
+    case AZ_IOT_SU_EVENT_WORKFLOW_COMPLETED:
+      printf(
+          "Workflow completed; final report %s.\n",
+          event->reason == AZ_IOT_OK ? "accepted" : "rejected by the service");
+      break;
   }
 }
 
@@ -482,15 +488,15 @@ int main(void)
   /* Software updates client. The platform hooks do the device-side work of a
    * deployment; here each one is simulated (see ../common/su_sim.c). */
   az_iot_su_platform_hooks hooks = { 0 };
-  hooks.download_fn = su_download;
-  hooks.read_file_fn = su_read_file;
-  hooks.is_installed_fn = su_is_installed;
-  hooks.backup_fn = su_backup;
-  hooks.install_fn = su_install;
-  hooks.apply_fn = su_apply;
-  hooks.restore_fn = su_restore;
-  hooks.persist_state_fn = su_persist_state;
-  hooks.load_state_fn = su_load_state;
+  hooks.download_fn = simulate_update_file_download;
+  hooks.read_file_fn = read_back_simulated_update_file;
+  hooks.is_installed_fn = is_offered_update_already_installed;
+  hooks.backup_fn = simulate_update_step_backup;
+  hooks.install_fn = simulate_update_step_install;
+  hooks.apply_fn = simulate_update_step_apply;
+  hooks.restore_fn = simulate_update_step_restore;
+  hooks.persist_workflow_state_fn = save_update_workflow_to_file;
+  hooks.load_workflow_state_fn = load_update_workflow_from_file;
   hooks.user_ctx = &state.simulation_control;
   size_t root_key_count = 0;
   const az_iot_su_root_key* root_keys = az_iot_su_microsoft_root_keys(&root_key_count);
@@ -505,6 +511,7 @@ int main(void)
   su_opts.limits.scratch_size = AZ_IOT_SU_VERIFY_SCRATCH_SIZE;
   su_opts.limits.max_message_size = AZ_IOT_SU_DEFAULT_MAX_MESSAGE_SIZE;
   su_opts.limits.device_properties_size = AZ_IOT_SU_DEVICE_PROPERTIES_BUFFER_SIZE;
+  su_opts.limits.result_details_size = AZ_IOT_SU_DEFAULT_RESULT_DETAILS_SIZE;
   su_opts.workspace = g_su_workspace;
   su_opts.workspace_size = sizeof(g_su_workspace);
   if (az_iot_su_client_init(&state.su_client, &state.connection_client, &su_opts) != AZ_IOT_OK)

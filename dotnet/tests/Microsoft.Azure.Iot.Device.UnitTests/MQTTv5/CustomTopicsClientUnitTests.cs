@@ -711,7 +711,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
 #pragma warning disable SYSLIB0026 // Mock certificate, no need to load a real one
             return new ConnectionContext()
             {
-                AuthenticationProvider = new X509AuthenticationProvider(new System.Security.Cryptography.X509Certificates.X509Certificate2()),
+                AuthenticationProvider = new X509AuthenticationProvider(new System.Security.Cryptography.X509Certificates.X509Certificate2(), null),
                 DeviceId = DeviceId,
                 IotHubHostName = "someHostName",
                 ConnectionProfile = IotHubConnectionType.Mqttv5,
@@ -952,10 +952,9 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             Assert.Equal(2, customTopicPublishAttempts);
         }
 
-        // An operation that the connection drops after it was sent may or may not have reached the service, so it is not
-        // re-sent. It fails with a retryable DeviceException instead, and leaves the tracked topics as they were.
+        // A transport exception without a reported connection loss fails only the operation and leaves tracked topics unchanged.
         [Fact]
-        public async Task OperationsDroppedAfterBeingSentThrowRetryableDeviceExceptionWithoutBeingResent()
+        public async Task OperationFailuresWithoutConnectionLossThrowRetryableDeviceExceptionWithoutBeingResent()
         {
             using MockConnectionMqttClient mockMqttClient = new() { AutoRespondToBirth = true };
             using ConnectionClient connectionClient = CreateReconnectingConnectionClient(mockMqttClient);
@@ -1016,10 +1015,9 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             Assert.Equal(1, unsubscribeAttempts);
         }
 
-        // An application that disconnects the connection client while an operation awaits its ack drops that operation
-        // like any other connection loss, so the operation fails with a DeviceException.
+        // A deliberate disconnect abandons an operation interrupted before its acknowledgement arrives.
         [Fact]
-        public async Task DeliberateDisconnectWhileAwaitingAckThrowsDeviceException()
+        public async Task DeliberateDisconnectWhileAwaitingAckCancelsOperation()
         {
             using MockConnectionMqttClient mockMqttClient = new() { AutoRespondToBirth = true };
             using ConnectionClient connectionClient = CreateReconnectingConnectionClient(mockMqttClient);
@@ -1049,7 +1047,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
 
             await connectionClient.DisconnectAsync(TestContext.Current.CancellationToken);
 
-            await Assert.ThrowsAsync<DeviceException>(() => publishTask.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken));
+            await Assert.ThrowsAsync<OperationCanceledException>(() => publishTask.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken));
         }
 
         // An operation waiting for the connection must stop waiting once the connection client hits a fault it will not
@@ -1100,10 +1098,9 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             Assert.Empty(customTopicsClient.GetSubscribedTopics);
         }
 
-        // DisconnectAsync does not release an operation already waiting for the connection, so the operation keeps waiting
-        // until its cancellation token is canceled.
+        // DisconnectAsync releases an operation waiting for the connection without requiring caller cancellation.
         [Fact]
-        public async Task OperationWaitingForConnectionKeepsWaitingAfterDeliberateDisconnectUntilCanceled()
+        public async Task DeliberateDisconnectCancelsOperationWaitingForConnection()
         {
             using MockConnectionMqttClient mockMqttClient = new() { AutoRespondToBirth = true };
             using ConnectionClient connectionClient = CreateReconnectingConnectionClient(mockMqttClient);
@@ -1129,12 +1126,9 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             await Task.Delay(TimeSpan.FromMilliseconds(500), TestContext.Current.CancellationToken);
 
             await connectionClient.DisconnectAsync(TestContext.Current.CancellationToken);
-            await Task.Delay(TimeSpan.FromSeconds(1), TestContext.Current.CancellationToken);
-            Assert.False(publishTask.IsCompleted);
-
-            operationCancellation.Cancel();
 
             await Assert.ThrowsAsync<OperationCanceledException>(() => publishTask.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken));
+            Assert.False(operationCancellation.IsCancellationRequested);
         }
 
         // The single-topic overloads return the one reason code they asked for, so an ack holding any other number of

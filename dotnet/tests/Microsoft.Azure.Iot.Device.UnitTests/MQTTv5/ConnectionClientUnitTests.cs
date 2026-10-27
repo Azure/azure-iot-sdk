@@ -18,7 +18,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
 #pragma warning disable SYSLIB0026 // Type or member is obsolete (Mock certificate, don't need to load a real one using typical X509 certificate loader
             return new ConnectionContext()
             {
-                AuthenticationProvider = new X509AuthenticationProvider(new System.Security.Cryptography.X509Certificates.X509Certificate2()),
+                AuthenticationProvider = new X509AuthenticationProvider(new System.Security.Cryptography.X509Certificates.X509Certificate2(), null),
                 DeviceId = "someDeviceId",
                 IotHubHostName = "someHostName",
                 ConnectionProfile = IotHubConnectionType.Mqttv5
@@ -43,7 +43,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             await connectionClient.ConnectToHubAsync(
                 new ConnectionContext()
                 {
-                    AuthenticationProvider = new SymmetricKeyAuthenticationProvider("someDeviceId", "0ne00000000", new byte[] { 1, 2, 3 }),
+                    AuthenticationProvider = new SymmetricKeyAuthenticationProvider("someDeviceId", "0ne00000000", new byte[] { 1, 2, 3 }, null),
                     DeviceId = "someDeviceId",
                     IotHubHostName = "someHostName",
                     ConnectionProfile = IotHubConnectionType.Mqttv5,

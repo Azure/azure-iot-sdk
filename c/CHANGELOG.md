@@ -4,6 +4,11 @@
 
 ### Features Added
 
+- Breaking: `az_iot_su_platform_hooks` fields `persist_state_fn` and `load_state_fn` are renamed
+  `persist_workflow_state_fn` and `load_workflow_state_fn`.
+- az_mqtt adapter: `AZ_IOT_AZ_MQTT_MESSAGE_STORAGE_SIZE` may be 0, for devices that only use clean
+  sessions: no message store is allocated, and a connect whose session outlives the connection
+  (`clean_start` false; MQTT 5: with `session_expiry_seconds` > 0) returns `AZ_IOT_ERR_NOT_SUPPORTED`.
 - Retry policy: `az_iot_retry_policy::jitter_mode`. `AZ_IOT_RETRY_JITTER_ADDITIVE` only lengthens a
   delay (+0..`jitter_pct`); the default `AZ_IOT_RETRY_JITTER_SYMMETRIC` keeps the existing ± jitter.
 - Initial preview of the C SDK for Azure IoT Hub (mqttv3 and mqttv5).
@@ -58,6 +63,9 @@
   `deinit()`. Adapters must copy every `az_iot_mqtt_tls_options` string during `connect()`
   (`sign` and `sign_ctx` stay valid until the adapter client is destroyed). See
   [docs/how_to_byo_mqtt_client.md](docs/how_to_byo_mqtt_client.md).
+- mqttv3 file upload for SAS-key devices: when the connection authenticates the hub with a SAS
+  key, the HTTP transport hook receives a hub SAS token as `authorization`. Sized by
+  `AZ_IOT_FILE_UPLOAD_AUTHORIZATION_MAX`.
 - Breaking: the certificate provider's `load()` takes an index. A provider may offer several
   certificates per role (index 0, 1, ...; `AZ_IOT_ERR_NOT_FOUND` past the last); the client
   tries them in order when the service rejects one, before the SAS sources, and reports the index
@@ -90,6 +98,13 @@
   server's Maximum Packet Size, is the new `AZ_IOT_ERR_PUBLISH_REFUSED`, quota exceeded (`0x97`) is `AZ_IOT_ERR_BUSY`, other failures stay
   `AZ_IOT_ERR_MQTT`. The az_mqtt adapter uses it; publish callbacks receive it unchanged, and the
   connection client logs the code of a failed PUBACK.
+- Software updates: `az_iot_su_client_set_step_result_details()` sets the `resultDetails` reported
+  for a step, from a hook or between `do_work()` calls. The text is copied into the workspace
+  (`az_iot_su_limits::result_details_size`, default 128 bytes per step, at most 1024), persisted with
+  the step (persisted-state format 3; earlier-format records are ignored) and reported with the terminal
+  result; a report over `max_message_size` is sent without step details.
+  `AZ_IOT_SU_EVENT_REPORT_ACCEPTED` carries the accepted terminal report, as sent, in `event->report`.
+  `AZ_IOT_SU_WORKSPACE_SIZE()` and `AZ_IOT_SU_STATE_BLOB_MAX_SIZE()` take `result_details_size`.
 - Breaking: software updates memory comes from one application-provided workspace.
   `az_iot_su_client_config_options` replaces `device_properties_buffer` /
   `device_properties_buffer_size` with `limits` (`az_iot_su_limits`: `max_update_size`,
@@ -175,13 +190,66 @@
   retried after 1 h, doubling per consecutive failure up to 24 h, plus up to 10% jitter. An earlier
   offer raises the new `AZ_IOT_SU_EVENT_UPDATE_RETRY_WAIT` (`retry_after_ms`). The wait survives a
   restart; the persisted format moves to version 2, so version-1 records are ignored.
+- Threading contract documented: the SDK does not lock its state against other threads, so every
+  SDK call in a process must come from one thread or be serialized by the application
+  ([docs/architecture.md](docs/architecture.md)). `tls.sign` and the certificate provider's
+  `sign()` are called only on that thread. Sample
+  [unified/multithreaded_telemetry](samples/unified/multithreaded_telemetry/README.md) hands
+  readings from other threads to the SDK thread.
 
 ### Bugs Fixed
 
+- az_mqtt adapter: the bundled az_mqtt is updated to main `3a2c61b` (was `58a0799` plus selected
+  changes; see `deps/az_mqtt/VENDORED.md`). Invalid options are refused with `AZ_ERROR_ARG` before
+  anything is sent: Will, SUBSCRIBE and PUBLISH QoS above 2; MQTT 5 Retain Handling above 2, No
+  Local on a shared subscription, Authentication Data without Authentication Method, and AUTH reason
+  codes other than Success, Continue authentication and Re-authenticate. The connection is closed
+  when a CONNACK reports Session Present after Clean Session (MQTT 3.1.1) or Clean Start (MQTT 5),
+  and, in MQTT 5, as soon as a received packet's fixed header announces more than the advertised
+  Maximum Packet Size (the receive buffer size), after DISCONNECT 0x95; that session ends with
+  `AZ_IOT_ERR_NOT_ENOUGH_SPACE`, as before. An mbedTLS verify callback's rejection is reported as a
+  TLS verification failure.
+- Software updates: updates with up to 10 steps and 10 files, the Device Update limits, are
+  accepted; the azure-sdk-for-c limits they depend on defaulted to 2 and nothing set them. CMake
+  options `AZ_IOT_SU_MAX_STEP_COUNT`, `AZ_IOT_SU_MAX_FILE_COUNT` and
+  `AZ_IOT_SU_MAX_FILE_COUNT_PER_STEP` (10, 10, the file count) set them for azure-sdk-for-c,
+  `az_iot_core` and, through its CMake and pkg-config packages, the application; smaller values
+  save memory. An installed azure-sdk-for-c built with other values fails configuration. A manifest
+  with more steps, or more hashes for a file, than its parsed form holds was written past those
+  arrays; now any manifest over a limit fails the workflow with an `ERROR` log naming the limit, and
+  more `fileUrls` than `AZ_IOT_SU_MAX_FILE_COUNT` raises `AZ_IOT_SU_EVENT_UPDATE_REFUSED` with
+  `AZ_IOT_ERR_NOT_ENOUGH_SPACE` (was `AZ_IOT_ERR_PROTOCOL`). A file `mimeType` that is not a string
+  fails the workflow as malformed (the parser would read its members as file properties).
+  `AZ_IOT_SU_MIN_MESSAGE_SIZE` and the default `max_message_size` are 1792 + 128 per step (3072).
+  `az_iot_su_client` grows from 4616 to 8584 bytes and the default workspace from 78920 to 85640
+  (64-bit).
+- Paho: the bundled v1.3.16 is patched with two upstream fixes for data races between the
+  application thread and Paho's threads: `MQTTAsync_destroy()` against the send thread on the
+  command queue (eclipse-paho/paho.mqtt.c#1709), and `MQTTAsync_connect()` against the timeout and
+  retry checks on the client's state (#1714). An installed Paho is not patched. See
+  [docs/dependencies.md](docs/dependencies.md#races-on-the-command-queue-and-client-state).
+- az_mqtt adapter: the copies `connect()` makes of credentials (password or SAS token, PEM key and
+  certificate, proxy credentials) are zeroed before they are freed, and `destroy()` zeroes the send
+  buffer, which holds the CONNECT, before freeing it.
+- az_mqtt adapter: a `connect()` refused after the busy check (invalid or unsupported options, no
+  memory for the message store) now releases the copies of the previous connect's strings, including
+  credentials; they were kept until the next accepted connect or `destroy()`.
+- Paho adapter: `az_iot_mqtt_connect_options::connect_timeout_seconds` is passed to Paho; it was
+  ignored, so every connect attempt used Paho's 30 s default. 0 still selects that default.
+- Paho: the bundled Eclipse Paho C is now v1.3.16 (was v1.3.13), and an installed Paho must be
+  1.3.14 or later. 1.3.13 leaked the topic and payload of publishes still queued when the client was
+  destroyed. The adapter now passes the HTTP proxy as `http://...`, which Paho 1.3.14+ requires.
+  With `proxy` unset, Paho now reads `http_proxy` / `https_proxy` only when
+  `PAHO_C_CLIENT_USE_HTTP_PROXY=TRUE` is set (it then honours `no_proxy`); 1.3.13 read them always.
 - Paho adapter: a refused MQTT 5 PUBACK is reported with its reason code, the status
   `az_iot_mqtt_puback_result()` gives it (`AZ_IOT_ERR_PUBLISH_REFUSED`, `AZ_IOT_ERR_BUSY` for quota)
   and its Reason String; it was `AZ_IOT_ERR_MQTT` with no code. UNSUBACKs are now reported
   (`AZ_IOT_MQTT_EVT_UNSUBSCRIBE_ACK`). The conformance suite requires both of every adapter.
+- mqttv5 direct methods: a probe-ack, result or abandon that cannot be published because the hub is
+  not `CONNECTED` (for example between CONNACK and the birth-ack) is held with its ready token or
+  slot and published on the next `CONNECTED`, instead of being dropped. `respond()` returns
+  `AZ_IOT_OK` for a held result. The client now holds one result buffer per
+  `AZ_IOT_MQTTV5_DM_MAX_CONCURRENT` slot.
 - Software updates: a failed workflow or step now reports a non-positive `resultCode` (`-facility`,
   e.g. `-5` for an install failure), as the service contract requires; it was `700 - facility`.
 - Software updates error handling: `UPDATE_ACCOUNT_ACCESS_DENIED` is handled like
@@ -192,6 +260,23 @@
 - Software updates: a status report rejected as conflicting (`REPORT_CONFLICT` or an untyped
   `409000`) now makes the client check for updates once, as the service requires, after raising
   `AZ_IOT_SU_EVENT_OPERATION_ABANDONED`.
+- Software updates: an update check requested while a workflow's terminal report is owed now waits
+  for that report's verdict (sending it again if nothing else would), so the check no longer goes
+  out before the service has the outcome. The wait counts against the check's timeout. If the
+  report then loses its session for good, the check is abandoned (`AZ_IOT_ERR_NOT_CONNECTED`).
+- Software updates: after a SUCCEEDED workflow the client adopts the applied update ID as the
+  installed one (also on resuming its terminal record), so later checks advertise it without
+  `az_iot_su_client_update_device_properties()`. That call no longer re-sends a settled terminal
+  report; the next check carries the new properties.
+- Software updates: new `AZ_IOT_SU_EVENT_WORKFLOW_COMPLETED`, raised once when a workflow's terminal
+  report is settled (accepted, or retired by the service), with the report and the verdict. An
+  application waiting for the end of a workflow no longer has to combine `REPORT_ACCEPTED` and
+  `OPERATION_ABANDONED`.
+- Software updates: new `az_iot_su_client_get_reboot_state()` tells whether `install_fn` or
+  `apply_fn` asked for a reboot and whether storage already holds what `az_iot_su_client_resume()`
+  needs (`AZ_IOT_SU_REBOOT_NONE` / `_PENDING` / `_READY`), so an application no longer tracks
+  `PERSIST_FAILED` / `PERSIST_RECOVERED` itself to decide when to reboot. `PENDING` also covers
+  storage behind with no reboot asked for, so it gates any planned exit.
 
 - MQTT over WebSockets to an mqttv5 hub: the hub session now uses the hub's path `/mqtt`
   (`AZ_IOT_MQTT_HUB_V5_WEBSOCKET_PATH`) when `websocket_path` is NULL. The mqttv5 hub refuses

@@ -33,9 +33,31 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
         bool IsConnectionTargetSet => true;
 
         /// <summary>
+        /// Whether this connection client subscribes to twin topics. See <see cref="ConnectionClientOptions.EnableTwin"/>.
+        /// </summary>
+        bool IsTwinEnabled => true;
+
+        /// <summary>
+        /// Whether this connection client subscribes to direct method topics. See
+        /// <see cref="ConnectionClientOptions.EnableDirectMethods"/>.
+        /// </summary>
+        bool AreDirectMethodsEnabled => true;
+
+        /// <summary>
+        /// Whether this connection client subscribes to cloud-to-device message topics. See
+        /// <see cref="ConnectionClientOptions.EnableCloudToDeviceMessages"/>.
+        /// </summary>
+        bool AreCloudToDeviceMessagesEnabled => true;
+
+        /// <summary>
         /// Send a PUBLISH to IoT hub. Any <see cref="DeviceIdPlaceholder"/> in the topic is replaced with the device's
         /// current ID when it is sent.
         /// </summary>
+        /// <remarks>
+        /// If the connection is lost before a QoS 1 PUBLISH is acknowledged, it is sent again once the device is
+        /// reconnected to IoT hub (including after re-provisioning, in which case it is sent to the newly assigned hub
+        /// with the newly assigned device ID), so IoT hub may receive it more than once.
+        /// </remarks>
         /// <param name="publish">The publish to send.</param>
         /// <param name="throwOnErrorReasonCode">
         /// True to throw a <see cref="DeviceException"/> if the PUBACK reports an error. False to return the PUBACK as-is
@@ -49,6 +71,10 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
         /// Send a SUBSCRIBE to IoT hub. Any <see cref="DeviceIdPlaceholder"/> in a topic filter is replaced with the
         /// device's current ID when it is sent.
         /// </summary>
+        /// <remarks>
+        /// If the connection is lost before the SUBACK arrives, the SUBSCRIBE is sent again once the device is reconnected
+        /// to IoT hub, including after re-provisioning.
+        /// </remarks>
         /// <param name="subscribe">The subscribe to send.</param>
         /// <param name="throwOnErrorReasonCode">
         /// True to throw a <see cref="DeviceException"/> if the SUBACK rejects a topic filter. False to return the SUBACK
@@ -62,6 +88,10 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
         /// Send an UNSUBSCRIBE to IoT hub. Any <see cref="DeviceIdPlaceholder"/> in a topic filter is replaced with the
         /// device's current ID when it is sent.
         /// </summary>
+        /// <remarks>
+        /// If the connection is lost before the UNSUBACK arrives, the UNSUBSCRIBE is sent again once the device is
+        /// reconnected to IoT hub, including after re-provisioning.
+        /// </remarks>
         /// <param name="unsubscribe">The unsubscribe to send.</param>
         /// <param name="throwOnErrorReasonCode">
         /// True to throw a <see cref="DeviceException"/> if the UNSUBACK rejects a topic filter. False to return the

@@ -1,0 +1,161 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Pavel Sokolov <pavel@sokolov.me>
+Date: Mon, 5 Oct 2026 21:35:12 +0300
+Subject: [PATCH 1/2] Guard the command queue with mqttcommand_mutex in
+ freeCommands, isComplete and restoreCommands #1709
+
+MQTTAsync_commands is shared by all clients and MQTTAsync_addCommand
+changes it holding mqttcommand_mutex only (MQTTAsync_connect queues its
+CONNECT command without mqttasync_mutex). MQTTAsync_freeCommands (called
+from MQTTAsync_destroy), MQTTAsync_isComplete and MQTTAsync_restoreCommands
+walked or changed the queue holding mqttasync_mutex only, so destroying
+one client while another connects races on the list.
+
+freeCommands now detaches each of the client's commands under
+mqttcommand_mutex and calls its failure callback after releasing it, so
+that application code never runs holding that mutex; the callback still
+runs holding mqttasync_mutex, as before. The search restarts after each
+callback as the queue may have changed meanwhile.
+The lock order is mqttasync_mutex then mqttcommand_mutex, as in
+MQTTAsync_processCommand.
+
+Signed-off-by: Pavel Sokolov <pavel@sokolov.me>
+---
+ src/MQTTAsync.c      |  6 +++-
+ src/MQTTAsyncUtils.c | 76 +++++++++++++++++++++++++-------------------
+ 2 files changed, 48 insertions(+), 34 deletions(-)
+
+diff --git a/src/MQTTAsync.c b/src/MQTTAsync.c
+index d5bf929..2981c2f 100644
+--- a/src/MQTTAsync.c
++++ b/src/MQTTAsync.c
+@@ -1455,13 +1455,17 @@ int MQTTAsync_isComplete(MQTTAsync handle, MQTTAsync_token dt)
+ 
+ 	/* First check unprocessed commands */
+ 	current = NULL;
++	MQTTAsync_lock_mutex(mqttcommand_mutex);
+ 	while (ListNextElement(MQTTAsync_commands, &current))
+ 	{
+ 		MQTTAsync_queuedCommand* cmd = (MQTTAsync_queuedCommand*)(current->content);
+ 
+ 		if (cmd->client == m && cmd->command.token == dt)
+-			goto exit;
++			break;
+ 	}
++	MQTTAsync_unlock_mutex(mqttcommand_mutex);
++	if (current)
++		goto exit;
+ 
+ 	/* Now check the inflight messages */
+ 	if (m->c && m->c->outboundMsgs->count > 0)
+diff --git a/src/MQTTAsyncUtils.c b/src/MQTTAsyncUtils.c
+index 2754179..c64c96b 100644
+--- a/src/MQTTAsyncUtils.c
++++ b/src/MQTTAsyncUtils.c
+@@ -667,7 +667,9 @@ int MQTTAsync_restoreCommands(MQTTAsyncs* client)
+ 					cmd->client = client;
+ 					cmd->seqno = atoi(strchr(msgkeys[i], '-')+1); /* key format is tag'-'seqno */
+ 					/* we can just append the commands to the list as they've already been sorted */
++					MQTTAsync_lock_mutex(mqttcommand_mutex);
+ 					ListAppend(MQTTAsync_commands, cmd, sizeof(MQTTAsync_queuedCommand));
++					MQTTAsync_unlock_mutex(mqttcommand_mutex);
+ 					client->command_seqno = max(client->command_seqno, cmd->seqno);
+ 					commands_restored++;
+ 					if (cmd->command.type == PUBLISH)
+@@ -1950,55 +1952,63 @@ void MQTTAsync_freeResponses(MQTTAsyncs* m)
+ }
+ 
+ 
++static int cmdClientCompare(void* a, void* b)
++{
++	MQTTAsync_queuedCommand* cmd = (MQTTAsync_queuedCommand*)a;
++	return cmd->client == (MQTTAsyncs*)b;
++}
++
++
+ void MQTTAsync_freeCommands(MQTTAsyncs* m)
+ {
+ 	int count = 0;
+ 	ListElement* current = NULL;
+-	ListElement *next = NULL;
+ 
+ 	FUNC_ENTRY;
+-	/* remove commands in the command queue relating to this client */
+-	current = ListNextElement(MQTTAsync_commands, &next);
+-	ListNextElement(MQTTAsync_commands, &next);
+-	while (current)
++	/* remove commands in the command queue relating to this client.  The queue is shared by
++	 * all clients, and MQTTAsync_addCommand changes it holding mqttcommand_mutex only, so it
++	 * is searched and changed here under that mutex too.  The mutex is released while the
++	 * failure callback runs, so that application code never runs holding it (the callback
++	 * still runs holding mqttasync_mutex, which MQTTAsync_destroy holds throughout), and the
++	 * search restarts afterwards because the queue may have changed in the meantime. */
++	MQTTAsync_lock_mutex(mqttcommand_mutex);
++	while ((current = ListFindItem(MQTTAsync_commands, m, cmdClientCompare)) != NULL)
+ 	{
+ 		MQTTAsync_queuedCommand* command = (MQTTAsync_queuedCommand*)(current->content);
+ 
+-		if (command->client == m)
+-		{
+-			ListDetach(MQTTAsync_commands, command);
++		ListDetach(MQTTAsync_commands, command);
++		MQTTAsync_unlock_mutex(mqttcommand_mutex);
+ 
+-			if (command->command.onFailure)
+-			{
+-				MQTTAsync_failureData data;
++		if (command->command.onFailure)
++		{
++			MQTTAsync_failureData data;
+ 
+-				data.token = command->command.token;
+-				data.code = MQTTASYNC_OPERATION_INCOMPLETE; /* interrupted return code */
+-				data.message = NULL;
++			data.token = command->command.token;
++			data.code = MQTTASYNC_OPERATION_INCOMPLETE; /* interrupted return code */
++			data.message = NULL;
+ 
+-				Log(TRACE_MIN, -1, "Calling %s failure for client %s",
+-							MQTTPacket_name(command->command.type), m->c->clientID);
+-					(*(command->command.onFailure))(command->command.context, &data);
+-			}
+-			else if (command->command.onFailure5)
+-			{
+-				MQTTAsync_failureData5 data = MQTTAsync_failureData5_initializer;
++			Log(TRACE_MIN, -1, "Calling %s failure for client %s",
++						MQTTPacket_name(command->command.type), m->c->clientID);
++				(*(command->command.onFailure))(command->command.context, &data);
++		}
++		else if (command->command.onFailure5)
++		{
++			MQTTAsync_failureData5 data = MQTTAsync_failureData5_initializer;
+ 
+-				data.token = command->command.token;
+-				data.code = MQTTASYNC_OPERATION_INCOMPLETE; /* interrupted return code */
+-				data.message = NULL;
++			data.token = command->command.token;
++			data.code = MQTTASYNC_OPERATION_INCOMPLETE; /* interrupted return code */
++			data.message = NULL;
+ 
+-				Log(TRACE_MIN, -1, "Calling %s failure for client %s",
+-							MQTTPacket_name(command->command.type), m->c->clientID);
+-					(*(command->command.onFailure5))(command->command.context, &data);
+-			}
+-
+-			MQTTAsync_freeCommand(command);
+-			count++;
++			Log(TRACE_MIN, -1, "Calling %s failure for client %s",
++						MQTTPacket_name(command->command.type), m->c->clientID);
++				(*(command->command.onFailure5))(command->command.context, &data);
+ 		}
+-		current = next;
+-		ListNextElement(MQTTAsync_commands, &next);
++
++		MQTTAsync_freeCommand(command);
++		count++;
++		MQTTAsync_lock_mutex(mqttcommand_mutex);
+ 	}
++	MQTTAsync_unlock_mutex(mqttcommand_mutex);
+ 	Log(TRACE_MINIMUM, -1, "%d commands removed for client %s", count, m->c->clientID);
+ 	FUNC_EXIT;
+ }

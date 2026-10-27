@@ -1,6 +1,7 @@
-﻿// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
+// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
 // See LICENSE file in the project root for full license information.
 
+using Microsoft.Azure.Iot.Device.Events;
 using Microsoft.Azure.Iot.Device.Exceptions;
 using Microsoft.Azure.Iot.Device.MQTTv5.Twin;
 using Microsoft.Azure.Iot.Device.Models;
@@ -36,9 +37,48 @@ namespace Microsoft.Azure.Iot.Device
     /// </remarks>
     public abstract class AbstractConnectionClient
     {
-        public event Func<MqttPublishReceivedEventArgs, Task>? PublishReceivedAsync;
+        private sealed class CancellationTokenHolder
+        {
+            public CancellationTokenHolder(CancellationToken token)
+            {
+                Token = token;
+            }
 
-        public event Func<ConnectionFaultedEventArgs, Task>? ConnectionFaultedAsync;
+            public CancellationToken Token { get; }
+        }
+
+        private sealed class ReprovisioningCallbackScope
+        {
+            private int _isActive = 1;
+
+            public bool IsActive => Volatile.Read(ref _isActive) != 0;
+
+            public void Close() => Volatile.Write(ref _isActive, 0);
+        }
+
+        private readonly AsyncEvent<MqttPublishReceivedEventArgs> _publishReceived = new();
+        private readonly AsyncEvent<ConnectionFaultedEventArgs> _connectionFaulted = new();
+        private readonly AsyncEvent<ReprovisioningStartedEventArgs> _reprovisioningStarted = new();
+        private readonly AsyncEvent<DevicePresenceFlowCompletedArgs> _devicePresenceFlowCompleted = new();
+        private readonly AsyncEvent<ProvisioningFlowCompletedArgs> _provisioningFlowCompleted = new();
+
+        /// <remarks>
+        /// Every handler is invoked and awaited in the order it was added, even if an earlier one throws.
+        /// </remarks>
+        public event Func<MqttPublishReceivedEventArgs, Task>? PublishReceivedAsync
+        {
+            add => _publishReceived.Add(value);
+            remove => _publishReceived.Remove(value);
+        }
+
+        /// <remarks>
+        /// Every handler is invoked and awaited in the order it was added, even if an earlier one throws.
+        /// </remarks>
+        public event Func<ConnectionFaultedEventArgs, Task>? ConnectionFaultedAsync
+        {
+            add => _connectionFaulted.Add(value);
+            remove => _connectionFaulted.Remove(value);
+        }
 
         /// <summary>
         /// Raised, for informational purposes only, when this client starts re-provisioning the device through Device
@@ -49,16 +89,28 @@ namespace Microsoft.Azure.Iot.Device
         /// should return quickly because re-provisioning starts once they complete; any exception they throw is logged
         /// and ignored.
         /// </remarks>
-        public event Func<ReprovisioningStartedEventArgs, Task>? ReprovisioningStartedAsync;
+        public event Func<ReprovisioningStartedEventArgs, Task>? ReprovisioningStartedAsync
+        {
+            add => _reprovisioningStarted.Add(value);
+            remove => _reprovisioningStarted.Remove(value);
+        }
 
-        internal event Func<DevicePresenceFlowCompletedArgs, Task>? DevicePresenceFlowCompletedAsync;
+        internal event Func<DevicePresenceFlowCompletedArgs, Task>? DevicePresenceFlowCompletedAsync
+        {
+            add => _devicePresenceFlowCompleted.Add(value);
+            remove => _devicePresenceFlowCompleted.Remove(value);
+        }
 
         /// <summary>
         /// Raised once the provisioning flow that runs upon connecting to Device Provisioning Service has either
         /// produced a registration result or failed. This is the provisioning counterpart of
         /// <see cref="DevicePresenceFlowCompletedAsync"/>.
         /// </summary>
-        private event Func<ProvisioningFlowCompletedArgs, Task>? ProvisioningFlowCompletedAsync;
+        private event Func<ProvisioningFlowCompletedArgs, Task>? ProvisioningFlowCompletedAsync
+        {
+            add => _provisioningFlowCompleted.Add(value);
+            remove => _provisioningFlowCompleted.Remove(value);
+        }
 
         private const string ProvisioningUsernameFormat = "{0}/registrations/{1}/api-version={2}&ClientVersion={3}";
 
@@ -74,6 +126,7 @@ namespace Microsoft.Azure.Iot.Device
         // certificate signing requests.
         private const string ProvisioningApiVersion = "2026-11-02-preview";
         private const string ProvisioningSubscribeFilter = "$dps/registrations/res/#";
+        private const string ProvisioningResponseTopicPrefix = "$dps/registrations/res/";
         private const string ProvisioningRegisterTopic = "$dps/registrations/PUT/iotdps-register/?$rid={0}";
         private const string ProvisioningGetOperationsTopic = "$dps/registrations/GET/iotdps-get-operationstatus/?$rid={0}&operationId={1}";
         private const string RetryAfterHeader = "Retry-After";
@@ -90,12 +143,13 @@ namespace Microsoft.Azure.Iot.Device
         // Workaround so that inheriting classes can invoke the "DevicePresenceFlowCompletedAsync" event.
         protected Task RaiseDevicePresenceFlowCompletedAsync(DevicePresenceFlowCompletedArgs args)
         {
-            if (DevicePresenceFlowCompletedAsync != null)
+            if (args.IsSuccess && args.Exception == null && CurrentEndpoint == ConnectionEndpoint.IotHub)
             {
-                DevicePresenceFlowCompletedAsync.Invoke(args);
+                // The current session now holds every subscription the presence flow needs, so the next reconnect may resume it.
+                Volatile.Write(ref _canResumeHubSession, 1);
             }
 
-            return Task.CompletedTask;
+            return _devicePresenceFlowCompleted.InvokeAsync(args);
         }
 
         // Feature clients whose subscriptions are re-established as part of the device presence flow. Immutable so the
@@ -177,6 +231,8 @@ namespace Microsoft.Azure.Iot.Device
         private bool _isUserSuppliedMqttClient = false;
 
         internal MqttConnectionManager ManagedMqttConnection;
+        private CancellationTokenSource _operationLifetimeCancellation = new();
+        private readonly object _operationLifetimeCancellationLock = new();
 
         internal abstract bool DoesClientSupportHubType(ConnectionProfile connectionProfile);
 
@@ -245,6 +301,15 @@ namespace Microsoft.Azure.Iot.Device
         // device back to DPS until a registration succeeds rather than giving up after a single failed attempt.
         private readonly IRetryPolicy _connectionRetryPolicy;
 
+        // True if the application asked for a clean session on every IoT hub connection.
+        private readonly bool _useCleanSession;
+
+        // 1 once a presence flow has completed on the current IoT hub, so that the session it set up holds every
+        // subscription that flow needs. Consumed by the next CONNECT attempt so that only that attempt asks to resume the
+        // session: if its CONNACK is lost, the broker may have started an empty session that a later attempt would resume
+        // without knowing its subscriptions were lost, so later attempts start clean until a presence flow completes again.
+        private int _canResumeHubSession;
+
         // Standing intent to re-provision: the cached assignment is no good -- an identity rejection at CONNACK or the
         // hub-unreachable threshold -- so this client should ask DPS for a fresh assignment rather than reconnecting to
         // the same hub. Mirrors the C client's needs_reprovision: it is the single input to the Hub-vs-DPS recovery
@@ -253,6 +318,10 @@ namespace Microsoft.Azure.Iot.Device
         // layer's callback threads set it while caller threads read it (and vice versa), so the decision must be made
         // on the latest value rather than a stale cache.
         private volatile bool _needsReprovision;
+
+        // Whether connections to Device Provisioning Service present the secondary boot credentials, because DPS
+        // rejected the primary ones during the current provisioning run.
+        private volatile bool _usesSecondaryBootCredentials;
 
         // The Retry-After that Device Provisioning Service most recently asked for during a registration, in ticks (0
         // when it asked for none). It is captured from each provisioning response and read as a floor on the
@@ -267,6 +336,7 @@ namespace Microsoft.Azure.Iot.Device
         /// runs on its own, it is only abandoned when this client is deliberately disconnected or disposed.
         /// </summary>
         private CancellationTokenSource? _currentReprovisioningCancellation;
+        private CancellationTokenHolder? _currentReprovisioningCancellationToken;
 
         /// <summary>
         /// The fault that ended connection maintenance without anything left to bring the connection back, if this
@@ -280,6 +350,30 @@ namespace Microsoft.Azure.Iot.Device
         /// </summary>
         private event Action? UnrecoverablyFaulted;
 
+        // Incremented each time the application deliberately disconnects this client. An operation that was waiting for
+        // the connection to come back, or a re-provisioning attempt that was about to start, compares this against the
+        // value it saw when it began so that a deliberate disconnect always takes precedence over automatic recovery.
+        private int _deliberateDisconnectCount;
+
+        // The number of deliberate disconnects currently in progress. An operation that finds the connection gone while
+        // one is in progress fails fast rather than waiting for a recovery that the disconnect is stopping.
+        private int _deliberateDisconnectsInProgress;
+
+        /// <summary>
+        /// Raised when the application deliberately disconnects this client, so that operations waiting for the
+        /// connection to come back stop waiting for a recovery that the disconnect has abandoned.
+        /// </summary>
+        private event Action? DeliberatelyDisconnected;
+
+        // Completed once the most recently started re-provisioning attempt has fully stopped, so that a deliberate
+        // disconnect can wait for it rather than racing it for this client's connection.
+        private Task _reprovisioningCompletion = Task.CompletedTask;
+
+        // Set on the flow of a re-provisioning attempt, so that callbacks can identify when they may need to avoid
+        // waiting for that same attempt.
+        private readonly AsyncLocal<bool> _isOnReprovisioningFlow = new();
+        private readonly AsyncLocal<ReprovisioningCallbackScope?> _reprovisioningCallbackScope = new();
+
         // The DPS responses that the in-progress provisioning flow is waiting on. Both are reset for each new connection
         // to DPS since a registration only lives as long as the connection it was started on.
         private TaskCompletionSource<ProvisioningServiceResponse>? _startProvisioningRequestStatusSource;
@@ -291,6 +385,7 @@ namespace Microsoft.Azure.Iot.Device
         /// flow is only valid for the connection it was started on, so this is cancelled whenever that connection ends.
         /// </summary>
         private CancellationTokenSource? _currentProvisioningFlowCancellation;
+        private CancellationToken _provisioningFlowParentCancellationToken;
 
         /// <summary>
         /// Construct a new <see cref="ConnectionClient"/>
@@ -312,6 +407,7 @@ namespace Microsoft.Azure.Iot.Device
             CurrentConnectionContext = connectionContext;
 
             _connectionRetryPolicy = options.ConnectionRetryPolicy;
+            _useCleanSession = options.UseCleanSession;
 
             // This is the basic MQTT client that has no reconnection/retry logic
             MqttNetClientOptions mqttNetClientOptions = new()
@@ -331,6 +427,7 @@ namespace Microsoft.Azure.Iot.Device
             ManagedMqttConnection.ConnectedAsync += HandleConnectedAsync;
             ManagedMqttConnection.DisconnectedAsync += HandleDisconnectedAsync;
             ManagedMqttConnection.ConnectionFaultedAsync += HandleConnectionFaultedAsync;
+            ManagedMqttConnection.TrySwitchCredentialsAsync = TrySwitchCredentialsAsync;
             ManagedMqttConnection.PublishReceivedAsync += HandleReceivedProvisioningPublishAsync;
         }
 
@@ -350,9 +447,12 @@ namespace Microsoft.Azure.Iot.Device
         /// connects to the hub it is assigned.
         /// </para>
         /// <para>
-        /// If the connection to the assigned IoT hub later faults because of this device's identity, this client
-        /// provisions again with these same credentials and reconnects to whichever hub it is assigned, without the
-        /// application having to do anything.
+        /// If the connection to the assigned IoT hub later faults because of this device's identity, this client first
+        /// retries at once with the other of the provider's primary and secondary credentials (see
+        /// <see cref="AuthenticationProvider.GetSecondaryOperationalAuthenticationCredentialsAsync"/>), if it has
+        /// both. Only once the hub has rejected both does this client provision again with these same credentials
+        /// and reconnect to whichever hub it is assigned, without the application having to do anything. Device
+        /// Provisioning Service rejecting the primary boot credentials is likewise retried with the secondary ones.
         /// </para>
         /// </remarks>
         /// <param name="provisioningSettings">The mandatory and optional provisioning-specific fields</param>
@@ -364,6 +464,16 @@ namespace Microsoft.Azure.Iot.Device
         /// <param name="cancellationToken">The cancellation token.</param>
         /// <returns>The connection context for the IoT hub this device connected to.</returns>
         public async Task<ConnectionContext> ProvisionAndConnectAsync(ProvisioningSettings provisioningSettings, AuthenticationProvider authentication, bool forceProvisioning = false, CancellationToken cancellationToken = default)
+        {
+            ObjectDisposedException.ThrowIf(_isDisposed, this);
+            StartOperationLifetime();
+
+            Volatile.Write(ref _currentReprovisioningCancellationToken, null);
+
+            return await ProvisionAndConnectCoreAsync(provisioningSettings, authentication, forceProvisioning, cancellationToken);
+        }
+
+        private async Task<ConnectionContext> ProvisionAndConnectCoreAsync(ProvisioningSettings provisioningSettings, AuthenticationProvider authentication, bool forceProvisioning, CancellationToken cancellationToken)
         {
             ObjectDisposedException.ThrowIf(_isDisposed, this);
 
@@ -510,20 +620,87 @@ namespace Microsoft.Azure.Iot.Device
         /// The <see cref="ConnectionContext"/> this client holds survives a disconnect. A later <see cref="ProvisionAndConnectAsync"/> 
         /// therefore reconnects directly to the same IoT hub (with any certificates it issued) unless forceProvisioning is set or unless 
         /// the cached credentials expire.
+        /// <para>
+        /// A deliberate disconnect takes precedence over any automatic recovery in progress. Reconnection to the IoT hub
+        /// and re-provisioning through Device Provisioning Service both stop, and every feature operation (PUBLISH,
+        /// SUBSCRIBE or UNSUBSCRIBE) that is waiting for the connection to be re-established is released and throws
+        /// <see cref="OperationCanceledException"/> rather than being sent once the connection comes back. Feature
+        /// operations started after this call fail fast until this client is connected again.
+        /// </para>
         /// </remarks>
         /// <param name="cancellationToken">The cancellation token.</param>
         public async Task DisconnectAsync(CancellationToken cancellationToken = default)
         {
             ObjectDisposedException.ThrowIf(_isDisposed, this);
 
-            // The application is closing this connection deliberately, so any recovery that an earlier identity fault
-            // started is no longer wanted.
-            CancelCurrentReprovisioning();
+            cancellationToken.ThrowIfCancellationRequested();
 
-            await ManagedMqttConnection.DisconnectAsync(false, new MqttDisconnect() { Reason = MqttDisconnectReasonCode.NormalDisconnection }, cancellationToken);
+            // Record the disconnect before cancelling anything, so that a re-provisioning attempt or a waiting operation
+            // that races this call observes it and stands down.
+            Interlocked.Increment(ref _deliberateDisconnectsInProgress);
+            Interlocked.Increment(ref _deliberateDisconnectCount);
 
-            Trace.TraceInformation("ConnectionClient's current endpoint is now neither IoT Hub or DPS");
-            CurrentEndpoint = ConnectionEndpoint.None;
+            try
+            {
+                // Cancel every feature operation tied to this connection's lifetime.
+                CancelOperationLifetime();
+
+                // Abandon any queued feature operations straight away rather than leaving them to wait for a recovery
+                // that this disconnect is about to stop.
+                ReleaseOperationsWaitingForConnection();
+
+                // The application is closing this connection deliberately, so any recovery that an earlier identity fault
+                // started is no longer wanted.
+                CancelCurrentReprovisioning();
+
+                // Wait for the cancelled re-provisioning attempt to stop, so that it cannot re-establish a connection
+                // (or change the endpoint this client targets) after this disconnect completes. This is skipped only
+                // while an awaited callback on that attempt is executing, which would otherwise wait on itself.
+                if (_reprovisioningCallbackScope.Value?.IsActive != true)
+                {
+                    await Volatile.Read(ref _reprovisioningCompletion).WaitAsync(cancellationToken);
+                }
+
+                // This also stops the connection layer from reconnecting to the IoT hub.
+                await ManagedMqttConnection.DisconnectAsync(false, new MqttDisconnect() { Reason = MqttDisconnectReasonCode.NormalDisconnection }, cancellationToken);
+
+                Trace.TraceInformation("ConnectionClient's current endpoint is now neither IoT Hub or DPS");
+                CurrentEndpoint = ConnectionEndpoint.None;
+            }
+            finally
+            {
+                // Release once more for any operation that started while this disconnect was in progress and began
+                // waiting for a recovery that has since been stopped. Such an operation re-evaluates, finds this client
+                // deliberately idle and fails fast.
+                Interlocked.Decrement(ref _deliberateDisconnectsInProgress);
+                ReleaseOperationsWaitingForConnection();
+            }
+        }
+
+        /// <summary>
+        /// Release every feature operation that is waiting for the connection to be re-established, because the
+        /// application deliberately disconnected this client.
+        /// </summary>
+        private void ReleaseOperationsWaitingForConnection()
+        {
+            Action? deliberatelyDisconnected = DeliberatelyDisconnected;
+            if (deliberatelyDisconnected == null)
+            {
+                return;
+            }
+
+            // Each waiter is released independently so that one that throws cannot keep the others waiting.
+            foreach (Delegate releaseWaiter in deliberatelyDisconnected.GetInvocationList())
+            {
+                try
+                {
+                    ((Action)releaseWaiter).Invoke();
+                }
+                catch (Exception e)
+                {
+                    Trace.TraceWarning("An internal handler for a deliberate disconnect threw and was ignored. {0}", e);
+                }
+            }
         }
 
         /// <summary>
@@ -532,6 +709,7 @@ namespace Microsoft.Azure.Iot.Device
         /// <param name="disposing">true to release both managed and unmanaged resources; false to releases only unmanaged resources.</param>
         public virtual void Dispose(bool disposing)
         {
+            CancelOperationLifetime();
             DetachConnectionCallbacks();
 
             if (disposing)
@@ -551,6 +729,7 @@ namespace Microsoft.Azure.Iot.Device
         /// </summary>
         public virtual void Dispose()
         {
+            CancelOperationLifetime();
             DetachConnectionCallbacks();
 
             ManagedMqttConnection.Dispose();
@@ -558,12 +737,9 @@ namespace Microsoft.Azure.Iot.Device
             _isDisposed = true;
         }
 
-        private async Task DelegatePublishAsync(MqttPublishReceivedEventArgs args)
+        private Task DelegatePublishAsync(MqttPublishReceivedEventArgs args)
         {
-            if (PublishReceivedAsync != null)
-            {
-                await PublishReceivedAsync.Invoke(args);
-            }
+            return _publishReceived.InvokeAsync(args);
         }
         /// <summary>
         /// Provision this device through Device Provisioning Service and connect it to the IoT hub it is assigned.
@@ -685,7 +861,12 @@ namespace Microsoft.Azure.Iot.Device
             // This client is establishing a connection again, so any earlier fault no longer describes its state.
             ClearUnrecoverableFault();
 
+            // Every connection to a hub starts again with the primary credentials, mirroring the C client's open().
+            connectionContext.UsesSecondaryCredentials = false;
             CurrentConnectionContext = connectionContext;
+
+            // Any session left on this IoT hub was not set up by this connection's presence flow, so its subscriptions are unknown.
+            Volatile.Write(ref _canResumeHubSession, 0);
 
             string deviceId = CurrentConnectionContext.DeviceId;
             string hostname = CurrentConnectionContext.IotHubHostName;
@@ -716,14 +897,9 @@ namespace Microsoft.Azure.Iot.Device
                     WebsocketPort = WebSocketPort,
                     ClientId = deviceId,
 
-                    // It can save some SUBSCRIBE calls to attempt to resume sessions, but there is a race condition
-                    // wherein a device attempts to reconnect w/ clean session=false, server sends back CONNACK w/ "session not resumed"
-                    // and starts a new session with no subscriptions, but that CONNACK is lost. The device will likely reconnect then.
-                    // If the device connects with cleanSession=false at that time, the broker may send back CONNACK with "session resumed", but
-                    // it isn't the same session that the device initially wanted to resume, and so subscriptions are unknowingly lost.
-                    //
-                    // Because of the above, it is simpler to just start clean sessions each time.
+                    // Overwritten on each connect attempt by PatchConnectPacketAsync when session resumption is allowed.
                     CleanSession = true,
+                    CleanStart = true,
                 };
 
                 MqttConnectAck connack = await ManagedMqttConnection.ConnectAsync(connectPacket, cancellationToken);
@@ -754,7 +930,18 @@ namespace Microsoft.Azure.Iot.Device
                 AuthenticationProvider? provisioningAuthentication = _provisioningAuthentication;
                 if (provisioningAuthentication != null)
                 {
-                    connectPacketToEdit = ApplyAuthentication(provisioningAuthentication.GetBootAuthenticationCredentials(), connectPacketToEdit);
+                    AuthenticationCredentials? bootCredentials = null;
+                    if (_usesSecondaryBootCredentials)
+                    {
+                        bootCredentials = await provisioningAuthentication.GetSecondaryBootAuthenticationCredentialsAsync(cancellationToken).ConfigureAwait(false);
+                        if (bootCredentials == null)
+                        {
+                            _usesSecondaryBootCredentials = false;
+                        }
+                    }
+
+                    bootCredentials ??= await provisioningAuthentication.GetPrimaryBootAuthenticationCredentialsAsync(cancellationToken).ConfigureAwait(false);
+                    connectPacketToEdit = ApplyAuthentication(bootCredentials, connectPacketToEdit);
                 }
 
                 return connectPacketToEdit;
@@ -762,20 +949,52 @@ namespace Microsoft.Azure.Iot.Device
 
             // Authenticate with the credentials of the current hub connection rather than the provisioning inputs: a
             // device connected directly to a hub has no provisioning inputs, and a device provisioned with a CSR must
-            // connect with the operational certificate DPS issued rather than its boot credentials.
+            // connect with the operational certificate DPS issued rather than its boot credentials. These are the
+            // secondary credentials if the hub rejected the primary ones.
             ConnectionContext connectionContext = CurrentConnectionContext!;
-            AuthenticationProvider authentication = connectionContext.AuthenticationProvider;
-            IReadOnlyList<string>? issuedClientCertificates = connectionContext.IssuedClientCertificates;
-
-            AuthenticationCredentials hubCredentials = await authentication.GetOperationalAuthenticationCredentialsAsync(
-                connectPacketToEdit.HostName,
-                connectPacketToEdit.ClientId ?? authentication.GetRegistrationId(),
-                issuedClientCertificates,
-                cancellationToken).ConfigureAwait(false);
+            AuthenticationCredentials hubCredentials = await connectionContext.GetOperationalAuthenticationCredentialsAsync(
+                cancellationToken,
+                updateSecondaryCredentialSelection: true).ConfigureAwait(false);
             connectPacketToEdit = ApplyAuthentication(hubCredentials, connectPacketToEdit);
+
+            bool resumeSession = !_useCleanSession && Interlocked.Exchange(ref _canResumeHubSession, 0) == 1;
+            connectPacketToEdit.CleanSession = !resumeSession;
+            connectPacketToEdit.CleanStart = !resumeSession;
 
             // Gen 1 hub clients and gen 2 hub clients can insert their specific username/password/protocol version/etc before each connect attempt
             return IotHubMqttConnectOverride(connectPacketToEdit);
+        }
+
+        /// <summary>
+        /// Switch between the primary and secondary credentials for the current endpoint after it rejected the current
+        /// ones as an identity failure. The connection layer calls this before giving up on the connection, so that the
+        /// device only re-provisions once both sets of credentials have been rejected.
+        /// </summary>
+        /// <returns>False if there are no secondary credentials to switch between.</returns>
+        private async Task<bool> TrySwitchCredentialsAsync(CancellationToken cancellationToken)
+        {
+            if (CurrentEndpoint == ConnectionEndpoint.DeviceProvisioningService)
+            {
+                AuthenticationProvider? provisioningAuthentication = _provisioningAuthentication;
+                if (_usesSecondaryBootCredentials)
+                {
+                    _usesSecondaryBootCredentials = false;
+                    return true;
+                }
+
+                if (provisioningAuthentication == null
+                    || await provisioningAuthentication.GetSecondaryBootAuthenticationCredentialsAsync(cancellationToken).ConfigureAwait(false) == null)
+                {
+                    return false;
+                }
+
+                _usesSecondaryBootCredentials = true;
+                return true;
+            }
+
+            ConnectionContext? connectionContext = CurrentConnectionContext;
+            return connectionContext != null
+                && await connectionContext.TrySwitchCredentialsAsync(cancellationToken).ConfigureAwait(false);
         }
 
         // Maps the protocol-agnostic authentication material onto an MQTT CONNECT packet
@@ -823,23 +1042,38 @@ namespace Microsoft.Azure.Iot.Device
         /// Raise an event that only informs the application, invoking each handler in turn so that one that throws
         /// cannot stop the others from running or affect this client's own recovery.
         /// </summary>
-        private static async Task RaiseInformationalEventAsync<TArgs>(Func<TArgs, Task>? handlers, TArgs args, string eventName)
+        private async Task RaiseInformationalEventAsync<TArgs>(AsyncEvent<TArgs> handlers, TArgs args, string eventName)
         {
-            if (handlers == null)
+            try
             {
+                await handlers.InvokeAsync(args, InvokeReprovisioningCallbackAsync);
+            }
+            catch (Exception e)
+            {
+                Trace.TraceWarning("A {0} handler threw and was ignored. {1}", eventName, e);
+            }
+        }
+
+        private async Task InvokeReprovisioningCallbackAsync(Func<Task> callback)
+        {
+            if (!_isOnReprovisioningFlow.Value)
+            {
+                await callback();
                 return;
             }
 
-            foreach (Delegate handler in handlers.GetInvocationList())
+            ReprovisioningCallbackScope? previousScope = _reprovisioningCallbackScope.Value;
+            ReprovisioningCallbackScope scope = new();
+            _reprovisioningCallbackScope.Value = scope;
+
+            try
             {
-                try
-                {
-                    await ((Func<TArgs, Task>)handler).Invoke(args);
-                }
-                catch (Exception e)
-                {
-                    Trace.TraceWarning("A {0} handler threw and was ignored. {1}", eventName, e);
-                }
+                await callback();
+            }
+            finally
+            {
+                scope.Close();
+                _reprovisioningCallbackScope.Value = previousScope;
             }
         }
 
@@ -851,11 +1085,18 @@ namespace Microsoft.Azure.Iot.Device
                 // The connection layer has stopped maintaining the connection to DPS, so no further connection will
                 // arrive to start the provisioning flow again.
                 CancelCurrentProvisioningFlow();
-                if (ProvisioningFlowCompletedAsync != null)
-                {
-                    await ProvisioningFlowCompletedAsync.Invoke(new ProvisioningFlowCompletedArgs(args.Exception));
-                }
+                await _provisioningFlowCompleted.InvokeAsync(new ProvisioningFlowCompletedArgs(args.Exception));
 
+                return;
+            }
+
+            if (!ManagedMqttConnection.IsConnectionLifecycleActive)
+            {
+                // The application deliberately disconnected this client while this fault was being delivered. The
+                // disconnect takes precedence, so neither recover from the fault nor report it as unrecoverable; only
+                // release a connect attempt that may still be waiting on the device presence flow.
+                Trace.TraceInformation("Ignoring a connection fault because this client was deliberately disconnected. {0}", args.Exception);
+                await RaiseDevicePresenceFlowCompletedAsync(new DevicePresenceFlowCompletedArgs(args.Exception));
                 return;
             }
 
@@ -941,22 +1182,46 @@ namespace Microsoft.Azure.Iot.Device
                 return true;
             }
 
+            int deliberateDisconnectCount = Volatile.Read(ref _deliberateDisconnectCount);
+
+            var reprovisioningCompletion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            Volatile.Write(ref _reprovisioningCompletion, reprovisioningCompletion.Task);
+
+            var reprovisioningCancellation = new CancellationTokenSource();
+            Interlocked.Exchange(ref _currentReprovisioningCancellation, reprovisioningCancellation);
+            Volatile.Write(ref _currentReprovisioningCancellationToken, new(reprovisioningCancellation.Token));
+
+            if (Volatile.Read(ref _deliberateDisconnectCount) != deliberateDisconnectCount
+                || Volatile.Read(ref _deliberateDisconnectsInProgress) != 0
+                || !ManagedMqttConnection.IsConnectionLifecycleActive)
+            {
+                // The application deliberately disconnected this client while this recovery was being set up, possibly
+                // before that disconnect could see (and cancel) it, or the connection lifecycle already ended. The
+                // disconnect takes precedence, so do not start.
+                Trace.TraceInformation("Not re-provisioning because this client was deliberately disconnected.");
+                Interlocked.CompareExchange(ref _currentReprovisioningCancellation, null, reprovisioningCancellation);
+                Volatile.Write(ref _currentReprovisioningCancellationToken, null);
+                reprovisioningCancellation.Dispose();
+                Volatile.Write(ref _isReprovisioning, 0);
+                reprovisioningCompletion.SetResult();
+                return true;
+            }
+
             // The decision to re-provision has been taken, so the standing demand is consumed. Mirrors the C client,
             // which clears needs_reprovision once a registration attempt is actually under way; a trigger that could
             // not be acted on above leaves the demand standing instead.
             _needsReprovision = false;
 
-            var reprovisioningCancellation = new CancellationTokenSource();
-            _currentReprovisioningCancellation = reprovisioningCancellation;
-
             _ = Task.Run(async () =>
             {
+                _isOnReprovisioningFlow.Value = true;
+
                 try
                 {
                     Trace.TraceInformation("Re-provisioning this device because the connection demanded it. {0}", args.Exception);
 
                     await RaiseInformationalEventAsync(
-                        ReprovisioningStartedAsync,
+                        _reprovisioningStarted,
                         new ReprovisioningStartedEventArgs { Exception = args.Exception },
                         nameof(ReprovisioningStartedAsync));
 
@@ -979,6 +1244,7 @@ namespace Microsoft.Azure.Iot.Device
                     Interlocked.CompareExchange(ref _currentReprovisioningCancellation, null, reprovisioningCancellation);
                     reprovisioningCancellation.Dispose();
                     Volatile.Write(ref _isReprovisioning, 0);
+                    reprovisioningCompletion.SetResult();
                 }
             });
 
@@ -1022,7 +1288,7 @@ namespace Microsoft.Azure.Iot.Device
                 {
                     // This loop is itself the re-provisioning recovery: the cached assignment is known to be no good, so
                     // force provisioning rather than letting ProvisionAndConnectAsync try the cached assignment again.
-                    await ProvisionAndConnectAsync(provisioningSettings, provisioningAuthentication, forceProvisioning: true, cancellationToken);
+                    await ProvisionAndConnectCoreAsync(provisioningSettings, provisioningAuthentication, forceProvisioning: true, cancellationToken);
 
                     Trace.TraceInformation("Finished re-provisioning this device and connected it to the IoT hub it was assigned.");
                     return;
@@ -1034,6 +1300,8 @@ namespace Microsoft.Azure.Iot.Device
                 }
                 catch (Exception e)
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
+
                     // Saturate rather than wrap: under the default indefinite policy this loop can run without bound, and
                     // a uint that wrapped back to 0 would make the retry policy see this as a first attempt again and
                     // reset its backoff. Pinning at the maximum keeps the policy seeing an ever-growing attempt count.
@@ -1113,10 +1381,7 @@ namespace Microsoft.Azure.Iot.Device
 
             // Always let the application know, even if one of the internal waiters above threw, so that it can connect
             // again itself if it wants to keep using this client.
-            if (ConnectionFaultedAsync != null)
-            {
-                await ConnectionFaultedAsync.Invoke(new ConnectionFaultedEventArgs { Exception = fault });
-            }
+            await _connectionFaulted.InvokeAsync(new ConnectionFaultedEventArgs { Exception = fault }, InvokeReprovisioningCallbackAsync);
         }
 
         /// <summary>
@@ -1176,6 +1441,11 @@ namespace Microsoft.Azure.Iot.Device
             }
         }
 
+        internal CancellationToken CurrentReprovisioningCancellationToken
+        {
+            get => Volatile.Read(ref _currentReprovisioningCancellationToken)?.Token ?? CancellationToken.None;
+        }
+
         /// <summary>
         /// Connect to Device Provisioning Service and register this device.
         /// </summary>
@@ -1193,6 +1463,8 @@ namespace Microsoft.Azure.Iot.Device
             ObjectDisposedException.ThrowIf(_isDisposed, this);
 
             cancellationToken.ThrowIfCancellationRequested();
+            _provisioningFlowParentCancellationToken = cancellationToken;
+            int deliberateDisconnectCount = Volatile.Read(ref _deliberateDisconnectCount);
 
             _provisioningRequestPayload = new RegistrationRequestPayload()
             {
@@ -1223,6 +1495,8 @@ namespace Microsoft.Azure.Iot.Device
             // This client is establishing a connection again, so any earlier fault no longer describes its state.
             ClearUnrecoverableFault();
 
+            // Every provisioning run starts again with the primary boot credentials.
+            _usesSecondaryBootCredentials = false;
             _provisioningAuthentication = authentication;
 
             MqttConnect connect = CreateProvisioningConnectPacket(
@@ -1233,7 +1507,7 @@ namespace Microsoft.Azure.Iot.Device
             TaskCompletionSource<ProvisioningFlowCompletedArgs> provisioningFlowResult = new(TaskCreationOptions.RunContinuationsAsynchronously);
             Task HandleProvisioningFlowCompletedAsync(ProvisioningFlowCompletedArgs args)
             {
-                provisioningFlowResult.TrySetResult(args);
+                Volatile.Read(ref provisioningFlowResult).TrySetResult(args);
                 return Task.CompletedTask;
             }
 
@@ -1242,20 +1516,47 @@ namespace Microsoft.Azure.Iot.Device
 
             try
             {
-                // MQTT connection manager already checks connack for non-success cases, so no need to check it here as well
-                MqttConnectAck connack = await ManagedMqttConnection.ConnectAsync(connect, cancellationToken);
+                // Set once DPS has rejected one set of boot credentials in this run, so each set is tried at most once.
+                bool switchedCredentialsAfterRejectedRegistration = false;
 
-                ProvisioningFlowCompletedArgs provisioningFlowCompletedArgs = await provisioningFlowResult.Task.WaitAsync(cancellationToken);
-
-                if (provisioningFlowCompletedArgs.Exception != null)
+                while (true)
                 {
-                    throw provisioningFlowCompletedArgs.Exception;
+                    // MQTT connection manager already checks connack for non-success cases, so no need to check it here as well
+                    MqttConnectAck connack = await ManagedMqttConnection.ConnectAsync(connect, cancellationToken);
+
+                    ProvisioningFlowCompletedArgs provisioningFlowCompletedArgs = await provisioningFlowResult.Task.WaitAsync(cancellationToken);
+
+                    if (provisioningFlowCompletedArgs.Exception is DeviceException { Retryability: ErrorRetryability.IdentityTerminal }
+                        && !switchedCredentialsAfterRejectedRegistration
+                        && await TrySwitchCredentialsAsync(cancellationToken))
+                    {
+                        // DPS rejected these boot credentials when registering rather than when connecting, so connect
+                        // again to present the other set.
+                        Trace.TraceWarning("Device Provisioning Service rejected the device's credentials, retrying with its other credentials. {0}", provisioningFlowCompletedArgs.Exception);
+                        switchedCredentialsAfterRejectedRegistration = true;
+                        CancelCurrentProvisioningFlow();
+                        Volatile.Write(ref provisioningFlowResult, new(TaskCreationOptions.RunContinuationsAsynchronously));
+                        await DisconnectFromDpsAsync();
+
+                        if (Volatile.Read(ref _deliberateDisconnectCount) != deliberateDisconnectCount
+                            || Volatile.Read(ref _deliberateDisconnectsInProgress) != 0)
+                        {
+                            throw new OperationCanceledException("Provisioning was canceled because the connection client was deliberately disconnected.");
+                        }
+
+                        continue;
+                    }
+
+                    if (provisioningFlowCompletedArgs.Exception != null)
+                    {
+                        throw provisioningFlowCompletedArgs.Exception;
+                    }
+
+                    Debug.Assert(provisioningFlowCompletedArgs.RegistrationResult != null);
+
+                    //TODO do we care about initial twin as returned by DPS?
+                    return provisioningFlowCompletedArgs.RegistrationResult;
                 }
-
-                Debug.Assert(provisioningFlowCompletedArgs.RegistrationResult != null);
-
-                //TODO do we care about initial twin as returned by DPS?
-                return provisioningFlowCompletedArgs.RegistrationResult;
             }
             finally
             {
@@ -1270,19 +1571,24 @@ namespace Microsoft.Azure.Iot.Device
 
                 // Always close the MQTT connection once provisioning has finished so that the connection can be
                 // re-established against the assigned IoT hub.
-                var disconnect = new MqttDisconnect() { Reason = MqttDisconnectReasonCode.NormalDisconnection };
+                await DisconnectFromDpsAsync();
+            }
+        }
 
-                try
-                {
-                    await ManagedMqttConnection.DisconnectAsync(false, disconnect, CancellationToken.None);
-                }
-                catch (Exception)
-                {
-                    // Deliberately not rethrowing the exception because this is a "best effort" close.
-                    // The service may not have acknowledged that the client closed the connection, but
-                    // all local resources have been closed. The service will eventually realize the
-                    // connection is closed in cases like these.
-                }
+        private async Task DisconnectFromDpsAsync()
+        {
+            var disconnect = new MqttDisconnect() { Reason = MqttDisconnectReasonCode.NormalDisconnection };
+
+            try
+            {
+                await ManagedMqttConnection.DisconnectAsync(false, disconnect, CancellationToken.None);
+            }
+            catch (Exception)
+            {
+                // Deliberately not rethrowing the exception because this is a "best effort" close.
+                // The service may not have acknowledged that the client closed the connection, but
+                // all local resources have been closed. The service will eventually realize the
+                // connection is closed in cases like these.
             }
         }
 
@@ -1300,7 +1606,7 @@ namespace Microsoft.Azure.Iot.Device
             // Any flow left over from a previous connection belongs to a session that no longer exists, so abandon it.
             CancelCurrentProvisioningFlow();
 
-            var provisioningFlowCancellation = new CancellationTokenSource();
+            var provisioningFlowCancellation = CancellationTokenSource.CreateLinkedTokenSource(_provisioningFlowParentCancellationToken);
             _currentProvisioningFlowCancellation = provisioningFlowCancellation;
 
             // Responses to the previous connection's requests are no longer expected.
@@ -1317,10 +1623,7 @@ namespace Microsoft.Azure.Iot.Device
                     registrationStatus.OperationId,
                     provisioningFlowCancellation.Token);
 
-                if (ProvisioningFlowCompletedAsync != null)
-                {
-                    await ProvisioningFlowCompletedAsync.Invoke(new ProvisioningFlowCompletedArgs(registrationResult));
-                }
+                await _provisioningFlowCompleted.InvokeAsync(new ProvisioningFlowCompletedArgs(registrationResult));
             }
             catch (OperationCanceledException)
             {
@@ -1331,10 +1634,7 @@ namespace Microsoft.Azure.Iot.Device
             catch (Exception e)
             {
                 Trace.TraceError("Exception thrown while running the provisioning flow. {0}", e);
-                if (ProvisioningFlowCompletedAsync != null)
-                {
-                    await ProvisioningFlowCompletedAsync.Invoke(new ProvisioningFlowCompletedArgs(e));
-                }
+                await _provisioningFlowCompleted.InvokeAsync(new ProvisioningFlowCompletedArgs(e));
             }
             finally
             {
@@ -1406,8 +1706,20 @@ namespace Microsoft.Azure.Iot.Device
                     // Anything else is the service refusing to start this registration, and its response says why:
                     // the status code lives in the response topic and the reason in the body. Reporting both is the
                     // only way the caller can tell, say, a malformed request from an enrollment that does not exist.
-                    throw new Exception(
-                        $"Device Provisioning Service did not start this registration. Response topic: '{response.Topic}'. Response body: '{response.Payload}'.");
+                    string message = $"Device Provisioning Service did not start this registration. Response topic: '{response.Topic}'. Response body: '{response.Payload}'.";
+
+                    if (GetStatusCodeFromTopic(response.Topic) == (int)System.Net.HttpStatusCode.Unauthorized)
+                    {
+                        // DPS accepts the CONNECT and only checks the credentials when registering, so this is how it
+                        // rejects them. ProvisionAsync retries with the other boot credentials, if there are any.
+                        throw new DeviceException(message)
+                        {
+                            Retryability = ErrorRetryability.IdentityTerminal,
+                            IsContained = false,
+                        };
+                    }
+
+                    throw new Exception(message);
                 }
 
                 return operation;
@@ -1602,6 +1914,18 @@ namespace Microsoft.Azure.Iot.Device
             return ticks > 0 ? TimeSpan.FromTicks(ticks) : TimeSpan.Zero;
         }
 
+        // Response topics are shaped like "$dps/registrations/res/{status}/?$rid={request id}".
+        private static int? GetStatusCodeFromTopic(string topic)
+        {
+            if (!topic.StartsWith(ProvisioningResponseTopicPrefix, StringComparison.Ordinal))
+            {
+                return null;
+            }
+
+            string statusCode = topic[ProvisioningResponseTopicPrefix.Length..].Split('/')[0];
+            return int.TryParse(statusCode, NumberStyles.None, CultureInfo.InvariantCulture, out int value) ? value : null;
+        }
+
         private static TimeSpan? GetRetryAfterFromTopic(string topic)
         {
             string[] topicAndQueryString = topic.Split('?');
@@ -1679,6 +2003,12 @@ namespace Microsoft.Azure.Iot.Device
             // Counts the connection events that release the latch, so that an event which fires after an attempt started
             // but before the latch is reset below is not lost (which would leave this operation waiting for the next one).
             int connectionEventCount = 0;
+            // An operation started after the client's operation lifetime already ended (for example, after a deliberate
+            // disconnect) is not tied to that lifetime. It is attempted and fails fast as not-connected instead.
+            CancellationToken operationLifetimeToken = GetOperationLifetimeCancellationToken();
+            using CancellationTokenSource connectionLifetimeCancellation = operationLifetimeToken.IsCancellationRequested
+                ? CancellationTokenSource.CreateLinkedTokenSource(cancellationToken)
+                : CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, operationLifetimeToken);
 
             Func<DevicePresenceFlowCompletedArgs, Task> HandleDevicePresenceFlowCompleted = (args) =>
             {
@@ -1695,10 +2025,35 @@ namespace Microsoft.Azure.Iot.Device
                 ReleaseLatch();
             };
             UnrecoverablyFaulted += HandleUnrecoverableFault;
+            Action HandleDeliberateDisconnect = () =>
+            {
+                // Stop waiting for a recovery that the application's deliberate disconnect has abandoned
+                Interlocked.Increment(ref connectionEventCount);
+                ReleaseLatch();
+            };
+            DeliberatelyDisconnected += HandleDeliberateDisconnect;
+
+            // Read only after subscribing above, so that a deliberate disconnect is either counted here or releases this
+            // operation through the handler, never neither.
+            int deliberateDisconnectCount = Volatile.Read(ref _deliberateDisconnectCount);
+
+            // Throw if nothing is going to bring the connection back for this operation: either this client hit a fault
+            // it will not recover from, or the application deliberately disconnected it after this operation started.
+            void ThrowIfAbandoned()
+            {
+                ThrowIfUnrecoverablyFaulted();
+
+                if (Volatile.Read(ref _deliberateDisconnectCount) != deliberateDisconnectCount)
+                {
+                    throw new OperationCanceledException("Operation canceled because the connection client was deliberately disconnected while this operation was waiting for the connection to be re-established.");
+                }
+            }
+
             try
             {
                 while (true) // Retry sending publish until user cancels as long as the failure is just that the underlying mqtt client was disconnected.
                 {
+                    connectionLifetimeCancellation.Token.ThrowIfCancellationRequested();
                     int connectionEventCountBeforeAttempt = Volatile.Read(ref connectionEventCount);
 
                     try
@@ -1715,37 +2070,41 @@ namespace Microsoft.Azure.Iot.Device
 
                         if (Volatile.Read(ref connectionEventCount) != connectionEventCountBeforeAttempt)
                         {
-                            // The device became present again (or this client faulted) after this attempt started, so
-                            // that release must not be waited for again. Re-evaluate straight away.
-                            ThrowIfUnrecoverablyFaulted();
+                            // The device became present again (or this client faulted or was deliberately disconnected)
+                            // after this attempt started, so that release must not be waited for again. Re-evaluate
+                            // straight away.
+                            ThrowIfAbandoned();
+                            connectionLifetimeCancellation.Token.ThrowIfCancellationRequested();
                             continue;
                         }
 
-                        // A fault that this client will not recover from must not be waited out, whether it happened
-                        // before this operation started or while this operation was waiting.
-                        ThrowIfUnrecoverablyFaulted();
+                        // A fault that this client will not recover from, or a deliberate disconnect, must not be
+                        // waited out, whether it happened before this operation started or while it was waiting.
+                        ThrowIfAbandoned();
 
                         // If this client is deliberately idle -- it has never connected, or it was deliberately
                         // disconnected -- then no reconnection and no re-provisioning will ever arrive to release this
                         // operation, so fail fast with the not-connected error instead of waiting forever. While a
                         // connection is being (re-)established, a terminal fault is still being delivered, or a
                         // re-provision is in flight (which has its own gaps where no socket is up), a release is coming,
-                        // so keep waiting in those cases.
-                        if (!ManagedMqttConnection.IsConnectionLifecycleActive && Volatile.Read(ref _isReprovisioning) == 0)
+                        // so keep waiting in those cases. A deliberate disconnect that is still in progress is stopping
+                        // all of that, so fail fast during it as well.
+                        if (Volatile.Read(ref _deliberateDisconnectsInProgress) > 0
+                            || (!ManagedMqttConnection.IsConnectionLifecycleActive && Volatile.Read(ref _isReprovisioning) == 0))
                         {
                             throw;
                         }
 
                         try
                         {
-                            latch.Wait(cancellationToken); // Wait for device birth flow to finish before resuming this feature client-level traffic
+                            latch.Wait(connectionLifetimeCancellation.Token); // Wait for device birth flow to finish before resuming this feature client-level traffic
                         }
                         catch (OperationCanceledException)
                         {
                             throw new OperationCanceledException("Operation canceled while waiting for reconnection to finish");
                         }
 
-                        ThrowIfUnrecoverablyFaulted();
+                        ThrowIfAbandoned();
                     }
                 }
             }
@@ -1753,6 +2112,34 @@ namespace Microsoft.Azure.Iot.Device
             {
                 DevicePresenceFlowCompletedAsync -= HandleDevicePresenceFlowCompleted;
                 UnrecoverablyFaulted -= HandleUnrecoverableFault;
+                DeliberatelyDisconnected -= HandleDeliberateDisconnect;
+            }
+        }
+
+        private void StartOperationLifetime()
+        {
+            lock (_operationLifetimeCancellationLock)
+            {
+                if (_operationLifetimeCancellation.IsCancellationRequested)
+                {
+                    _operationLifetimeCancellation = new CancellationTokenSource();
+                }
+            }
+        }
+
+        private CancellationToken GetOperationLifetimeCancellationToken()
+        {
+            lock (_operationLifetimeCancellationLock)
+            {
+                return _operationLifetimeCancellation.Token;
+            }
+        }
+
+        private void CancelOperationLifetime()
+        {
+            lock (_operationLifetimeCancellationLock)
+            {
+                _operationLifetimeCancellation.Cancel();
             }
         }
     }

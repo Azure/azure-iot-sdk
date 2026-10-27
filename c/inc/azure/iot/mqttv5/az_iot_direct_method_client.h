@@ -25,9 +25,10 @@ extern "C"
 #endif
 
 /* Bytes of a result body this client can frame into a protobuf Result. The
- * frame is built in a buffer inside the client rather than on the heap, so this
- * is the hard limit on what az_iot_mqttv5_direct_method_respond() will send; a
- * larger body is refused with AZ_IOT_ERR_NOT_ENOUGH_SPACE. */
+ * frame is built in a buffer inside the client rather than on the heap, one per
+ * AZ_IOT_MQTTV5_DM_MAX_CONCURRENT slot so a result can be held until the
+ * connection is CONNECTED, so this is the hard limit on what az_iot_mqttv5_direct_method_respond()
+ * will send; a larger body is refused with AZ_IOT_ERR_NOT_ENOUGH_SPACE. */
 #ifndef AZ_IOT_MQTTV5_DM_RESULT_BODY_MAX
 #define AZ_IOT_MQTTV5_DM_RESULT_BODY_MAX 512
 #endif
@@ -174,8 +175,36 @@ extern "C"
       void* handler_ctx;
       /** Monotonic milliseconds after which the token is abandoned. */
       uint64_t expires_at_ms;
+      /** The probe-ack is held until the connection is CONNECTED. */
+      bool probe_ack_held;
+      /** Connect budget of the probe, in seconds; 0 means unbounded. */
+      uint32_t connect_budget_seconds;
+      /** Monotonic milliseconds when the probe arrived. */
+      uint64_t probe_received_at_ms;
     } _internal;
   } az_iot_mqttv5_direct_method_ready_slot;
+
+/* Bytes of the largest held ProbeAck{rejected} or Abandon frame. */
+#define AZ_IOT_MQTTV5_DM_NOTICE_FRAME_MAX 20u
+
+  /* A ProbeAck{rejected} or Abandon held until the connection is CONNECTED.
+   * Opaque -- do NOT read _internal. */
+  typedef struct az_iot_mqttv5_direct_method_held_notice
+  {
+    struct
+    {
+      bool in_use;
+      /** "probe-ack:1" or "abandon:1"; a string literal. */
+      const char* type;
+      uint8_t request_id[AZ_IOT_MQTTV5_DM_REQUEST_ID_LEN];
+      uint8_t frame[AZ_IOT_MQTTV5_DM_NOTICE_FRAME_MAX];
+      size_t frame_len;
+      /** Message expiry when held, in seconds; 0 means unbounded. */
+      uint32_t budget_seconds;
+      /** Monotonic milliseconds when it was held. */
+      uint64_t held_at_ms;
+    } _internal;
+  } az_iot_mqttv5_direct_method_held_notice;
 
   /* MQTTv5 direct methods (MQTT v5).
    *
@@ -227,8 +256,17 @@ extern "C"
       /* Ready-id generator state. Uniqueness, not unpredictability: the token
        * is single-use and the service only knows it because we sent it. */
       uint64_t rng_state;
+      /* Parallel to req_pool: each invocation's encoded result, kept until it
+       * is published. A result answered before the connection is CONNECTED is
+       * held here, with result_held set, and its slot stays taken. */
       uint8_t
-          result_frame[AZ_IOT_MQTTV5_DM_RESULT_BODY_MAX + AZ_IOT_MQTTV5_DM_RESULT_FRAME_OVERHEAD];
+          result_frame[AZ_IOT_MQTTV5_DM_MAX_CONCURRENT]
+                      [AZ_IOT_MQTTV5_DM_RESULT_BODY_MAX + AZ_IOT_MQTTV5_DM_RESULT_FRAME_OVERHEAD];
+      size_t result_frame_len[AZ_IOT_MQTTV5_DM_MAX_CONCURRENT];
+      bool result_held[AZ_IOT_MQTTV5_DM_MAX_CONCURRENT];
+      /* Probe rejections and abandons held until the connection is CONNECTED.
+       * Best effort: one that finds this full is dropped. */
+      az_iot_mqttv5_direct_method_held_notice held_notices[AZ_IOT_MQTTV5_DM_MAX_CONCURRENT];
     } _internal;
   } az_iot_mqttv5_direct_method_client;
 
@@ -247,6 +285,8 @@ extern "C"
    * AZ_IOT_MAX_PENDING_PUBACKS slots until deinit. Returns
    * AZ_IOT_ERR_NOT_ENOUGH_SPACE if they do not fit, or AZ_IOT_ERR_BUSY if
    * tracked publishes in flight still occupy them (retry once acknowledged).
+   * Also observes the connection state, to publish held messages on CONNECTED:
+   * returns AZ_IOT_ERR_BUSY when called from a connection state callback.
    */
   AZ_NODISCARD az_iot_result az_iot_mqttv5_direct_method_client_init(
       az_iot_mqttv5_direct_method_client* client,
@@ -348,6 +388,11 @@ extern "C"
    * before it takes effect: invalid arguments, a handle this client did not
    * hand out, and a body that does not fit. That last one is worth answering
    * again with a shorter body; the others are programming errors.
+   *
+   * Before the connection is CONNECTED (for example between CONNACK and the
+   * birth-ack, or while reconnecting) the result is held, with its slot, and
+   * published on the next CONNECTED; it is dropped if the response budget runs
+   * out first. AZ_IOT_OK covers both cases.
    *
    * Nothing is sent to the service on any failure. It reports the invocation as
    * timed out, which is the truthful outcome -- the handler may already have

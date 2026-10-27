@@ -30,8 +30,9 @@
  *
  * A missing variable fails the scenario that needs it.
  *
- * E2E-PLACEHOLDER: scenarios not written yet, each blocked on the client:
- *   - operational route (az_iot_su_client_request_update() after registration)
+ * E2E-PLACEHOLDER: scenarios not written yet:
+ *   - operational route (az_iot_su_client_request_update() after registration);
+ *     the client supports it, the e2e scripts stage only onboarding jobs
  *   - multi-step update (reports with more than one step are unmeasured)
  *   - reboot and resume() mid-workflow (reboot-safe reporting)
  */
@@ -718,8 +719,8 @@ static void fixture_open(fixture* fx, const fixture_options* o)
     .backup_fn = hook_backup,
     .restore_fn = hook_restore,
     .is_installed_fn = hook_is_installed,
-    .persist_state_fn = hook_persist,
-    .load_state_fn = hook_load,
+    .persist_workflow_state_fn = hook_persist,
+    .load_workflow_state_fn = hook_load,
     .user_ctx = &fx->plat,
   };
   az_iot_su_client_config_options su = az_iot_su_client_config_options_default();

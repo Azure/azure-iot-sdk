@@ -31,15 +31,17 @@ it adds `c/`.
 | `AZ_IOT_WARNINGS_AS_ERRORS` | `ON` | Treat compiler warnings as errors. |
 | `AZ_IOT_ENABLE_HARDENING` | `ON` | Hardened compiler and linker flags: stack protector, FORTIFY, PIE and RELRO on GCC and Clang; `/guard:cf`, `/CETCOMPAT` and `/sdl` on MSVC. |
 | `AZ_SDK_C_TAG`, `AZ_SDK_C_REPO` | `1.5.0`, GitHub | Version and source of azure-sdk-for-c, fetched at configure time. |
-| `PAHO_C_TAG`, `PAHO_C_REPO` | `v1.3.13`, GitHub | Version and source of Eclipse Paho C, fetched at configure time. |
+| `PAHO_C_TAG`, `PAHO_C_REPO` | `v1.3.16`, GitHub | Version and source of Eclipse Paho C, fetched at configure time. |
 | `AZ_IOT_USE_INSTALLED_AZURE_SDK_FOR_C` | `OFF` | Use an installed azure-sdk-for-c 1.5.0+ instead of fetching it. See [Installed dependencies](#installed-dependencies). |
-| `AZ_IOT_USE_INSTALLED_PAHO` | `OFF` | Use an installed Eclipse Paho C 1.3.13+ (`eclipse-paho-mqtt-c` CMake package) instead of fetching it. See [Installed dependencies](#installed-dependencies). |
+| `AZ_IOT_USE_INSTALLED_PAHO` | `OFF` | Use an installed Eclipse Paho C 1.3.14+ (`eclipse-paho-mqtt-c` CMake package) instead of fetching it. See [Installed dependencies](#installed-dependencies). |
+| `AZ_IOT_SU_MAX_STEP_COUNT`, `AZ_IOT_SU_MAX_FILE_COUNT`, `AZ_IOT_SU_MAX_FILE_COUNT_PER_STEP` | 10, 10, empty (the file count) | Software updates manifest limits; the defaults accept every manifest Device Update accepts. See [Software updates manifest limits](#software-updates-manifest-limits). |
 
 Options for the test suites, coverage and static analysis are described in [docs/eng](eng/).
 
 ### Installed dependencies
 
-azure-sdk-for-c and Eclipse Paho C are fetched and built from source by default. To use installed
+azure-sdk-for-c and Eclipse Paho C are fetched and built from source by default. Versions and known
+issues: [Dependencies](dependencies.md). To use installed
 copies instead (e.g. from vcpkg or a package feed), turn on `AZ_IOT_USE_INSTALLED_AZURE_SDK_FOR_C`
 and/or `AZ_IOT_USE_INSTALLED_PAHO` and put their prefixes on `CMAKE_PREFIX_PATH`:
 
@@ -49,6 +51,9 @@ and/or `AZ_IOT_USE_INSTALLED_PAHO` and put their prefixes on `CMAKE_PREFIX_PATH`
   `az_win32` or `az_noplatform`) libraries under `lib`. Debug builds link libraries of the same
   names from `debug/lib` (vcpkg layout) when present. Consumers of the installed SDK need exactly the
   azure-sdk-for-c version it was built with.
+  It must also be built with the [software updates manifest limits](#software-updates-manifest-limits)
+  of this build; configuration fails otherwise (checked by running a small program, so not when
+  cross-compiling).
   [eng/install-deps.sh](../eng/install-deps.sh) (POSIX) builds such a prefix, and Paho's, from the pinned
   commits.
 - Paho is found with `find_package(eclipse-paho-mqtt-c CONFIG)`; its static, SSL-capable target
@@ -78,7 +83,7 @@ comes from, in order:
 | `AZ_IOT_AZ_MQTT_RECEIVE_BUFFER_SIZE` | 270336 (264 KiB) | 135168 (132 KiB) | Largest incoming packet. MQTT 5: the Maximum Packet Size advertised; the server drops larger messages. MQTT 3.1.1: a larger packet ends the session. |
 | `AZ_IOT_AZ_MQTT_INFLIGHT_MAX` | 64 | 8 | QoS 1/2 exchanges in flight, 1-32767. MQTT 5: also the Receive Maximum advertised. |
 | `AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX` | 16 | 4 | MQTT 5 user properties on CONNECT; more is refused. PUBLISH user properties are not limited (sent and received in place). |
-| `AZ_IOT_AZ_MQTT_MESSAGE_STORAGE_SIZE` | send size + 18 | send size + 18 | Store of unacknowledged QoS 1/2 PUBLISH, for sessions that outlive the connection. Macro only. |
+| `AZ_IOT_AZ_MQTT_MESSAGE_STORAGE_SIZE` | send size + 18 | send size + 18 | Store of unacknowledged QoS 1/2 PUBLISH, for sessions that outlive the connection. 0: no store; a connect with `clean_start` false (MQTT 5: and `session_expiry_seconds` > 0) returns `AZ_IOT_ERR_NOT_SUPPORTED`. Macro only. |
 
 IoT Hub limits: device-to-cloud messages 256 KB, direct method payloads 128 KB, cloud-to-device
 messages 64 KB, twin documents 32 KB. `CONSTRAINED` receives all of these, and sends packets up to
@@ -182,12 +187,13 @@ Defaults used when the matching option is left at 0:
 | `AZ_IOT_MQTTV3_DM_RESPONSE_TIMEOUT_SECONDS` | 300 | Default for `az_iot_mqttv3_direct_method_client_set_response_timeout()`. |
 | `AZ_IOT_MQTTV5_DM_MAX_CONCURRENT` | `AZ_IOT_DM_MAX_INFLIGHT` | mqttv5 invocations probed or awaiting an answer. A probe past it is refused `DEVICE_BUSY`. The client reserves twice this many `AZ_IOT_MAX_PENDING_PUBACKS` slots. |
 | `AZ_IOT_MQTTV5_DM_MAX_METHODS` | 8 | Method names one mqttv5 client can declare. |
-| `AZ_IOT_MQTTV5_DM_RESULT_BODY_MAX` | 512 | mqttv5 direct-method result body. |
+| `AZ_IOT_MQTTV5_DM_RESULT_BODY_MAX` | 512 | mqttv5 direct-method result body. The client holds one result buffer per `AZ_IOT_MQTTV5_DM_MAX_CONCURRENT` slot, so a result can wait for `CONNECTED`. |
 | `AZ_IOT_MQTTV5_DM_TOPIC_MAX` | 192 | mqttv5 direct-method topic. |
 | `AZ_IOT_FILE_UPLOAD_BODY_MAX` | 512 | File-upload request body; bounds the blob name (about 495 bytes once JSON-escaped). |
 | `AZ_IOT_FILE_UPLOAD_URL_MAX` | 512 | File-upload request URL. |
 | `AZ_IOT_FILE_UPLOAD_SAS_URI_MAX` | 2048 | Blob SAS URI. |
 | `AZ_IOT_FILE_UPLOAD_CORR_ID_MAX` | 192 | File-upload correlation ID. |
+| `AZ_IOT_FILE_UPLOAD_AUTHORIZATION_MAX` | 1024 | Hub SAS token passed to the file-upload HTTP hook; at least `AZ_IOT_SAS_TOKEN_SIZE()` of the hub host and device ID lengths (267 bytes together by default). |
 
 #### Software updates ([az_iot_su.h](../inc/azure/iot/az_iot_su.h))
 
@@ -195,7 +201,8 @@ Defaults used when the matching option is left at 0:
 | --- | --- | --- |
 | `AZ_IOT_SU_MAX_ROOT_KEYS` | 8 | Root keys in the trust store. |
 | `AZ_IOT_SU_DEFAULT_MAX_UPDATE_SIZE` | 65536 | Default `az_iot_su_limits::max_update_size`. |
-| `AZ_IOT_SU_DEFAULT_MAX_MESSAGE_SIZE` | 2048 | Default `az_iot_su_limits::max_message_size`. |
+| `AZ_IOT_SU_DEFAULT_MAX_MESSAGE_SIZE` | `AZ_IOT_SU_MIN_MESSAGE_SIZE` (3072) | Default `az_iot_su_limits::max_message_size`. |
+| `AZ_IOT_SU_DEFAULT_RESULT_DETAILS_SIZE` | 128 | Default `az_iot_su_limits::result_details_size`. |
 | `AZ_IOT_SU_VERIFY_SCRATCH_SIZE` | 8192 | Stack used by `az_iot_su_parse_update_request()` for the decoded signature (JWS header with the signing key, and the signatures), and the default `az_iot_su_limits::scratch_size`. A signature that does not fit fails with `AZ_IOT_ERR_AUTH` and an `ERROR` log naming the part that is too large. |
 | `AZ_IOT_SU_WORKFLOW_ID_SIZE` | 64 | Workflow ID kept for reporting, duplicate detection and persistence. A deployment with a longer ID is refused: nothing is processed or reported, and `AZ_IOT_SU_EVENT_UPDATE_REFUSED` is raised with `AZ_IOT_ERR_NOT_ENOUGH_SPACE`. |
 | `AZ_IOT_SU_PERSIST_MAX_ATTEMPTS` | 5 | Consecutive failed state writes before the client stops retrying (1 to `0xFFFFFFFF`). |
@@ -210,11 +217,44 @@ The software updates client's variable-size memory is not set by macros. The app
 | --- | --- | --- |
 | `max_update_size` | 65536 | Copy of the update metadata (manifest, signature and file URLs); a one-file offer is about 5 KiB. A larger one is refused: `AZ_IOT_SU_EVENT_UPDATE_REFUSED` with `AZ_IOT_ERR_NOT_ENOUGH_SPACE`. Also bounds the persisted state, `AZ_IOT_SU_STATE_BLOB_MAX_SIZE(max_update_size)`. |
 | `scratch_size` | 8192 | Signature verification and string decoding. A signature part that does not fit fails verification; a file URL that does not fit is refused with `AZ_IOT_ERR_NOT_ENOUGH_SPACE`. |
-| `max_message_size` | 2048 | Update-check and status-report bodies. At least 2048 (`AZ_IOT_SU_MIN_MESSAGE_SIZE`), which fits the largest status report the client builds, so no report is refused for its size. |
+| `max_message_size` | 3072 | Update-check and status-report bodies. At least `AZ_IOT_SU_MIN_MESSAGE_SIZE` (1792 plus 128 per `AZ_IOT_SU_MAX_STEP_COUNT`; 3072 by default), which fits the largest status report the client builds, so no report is refused for its size. |
 | `device_properties_size` | 512 | Copied device-property strings. |
+| `result_details_size` | 128 | `resultDetails` kept per step (`az_iot_su_client_set_step_result_details()`); at most 1024. Counted five times per step: the details, both persisted records and two copies of the reports sent. |
 
 The workspace also holds `2 * AZ_IOT_SU_PERSIST_OVERHEAD` bytes for the persisted-state records. These
 values do not change the layout of `az_iot_su_client`.
+
+#### Software updates manifest limits
+
+`AZ_IOT_SU_MAX_STEP_COUNT`, `AZ_IOT_SU_MAX_FILE_COUNT` and `AZ_IOT_SU_MAX_FILE_COUNT_PER_STEP` bound
+an update: steps in its manifest, files in its manifest and `fileUrls`, and files one step
+references. The defaults (10, 10, 10) are the Device Update limits, so no update it accepts is
+refused for its step or file count. An update over a limit is not installed and the limit is named
+in an `ERROR` log:
+
+- more `fileUrls` than `AZ_IOT_SU_MAX_FILE_COUNT`: refused, nothing reported,
+  `AZ_IOT_SU_EVENT_UPDATE_REFUSED` with `AZ_IOT_ERR_NOT_ENOUGH_SPACE`;
+- a manifest over a limit, or with more than 2 hashes for a file: the workflow fails after
+  manifest verification and is reported failed. `az_iot_su_parse_update_request()` returns
+  `AZ_IOT_ERR_NOT_ENOUGH_SPACE`.
+
+They size structures that azure-sdk-for-c parses into and that `az_iot_su_client` embeds, so
+azure-sdk-for-c, the SDK and the application must be built with the same values. Set them as CMake
+options of the SDK build; it applies them to the azure-sdk-for-c parser (`az_iot_hub`) and to
+`az_iot_core` as public compile definitions, which reach the application through the `azure::iot::core` target and the
+`azure-iot-sdk-core` pkg-config file. `az_iot_su.h` refuses to compile with values that differ from
+azure-sdk-for-c's. An installed azure-sdk-for-c must be built with them (see
+[Installed dependencies](#installed-dependencies)).
+
+Smaller values save memory on constrained devices, for example
+`-DAZ_IOT_SU_MAX_STEP_COUNT=2 -DAZ_IOT_SU_MAX_FILE_COUNT=2`. Sizes on a 64-bit build:
+
+| | 2 steps, 2 files | 10 steps, 10 files (default) |
+| --- | --- | --- |
+| `az_iot_su_client` | 4616 | 8584 |
+| Default workspace (`AZ_IOT_SU_WORKSPACE_DEFAULT_SIZE`) | 78920 | 85640 |
+| `az_iot_su_client_update_manifest` (also on the stack of `az_iot_su_parse_update_request()`) | 464 | 3216 |
+| `AZ_IOT_SU_MIN_MESSAGE_SIZE` | 2048 | 3072 |
 
 #### Dispatch and logging
 
@@ -300,4 +340,5 @@ Supported environment variables. The samples read their own; each sample's READM
 | --- | --- | --- |
 | `AZ_IOT_PAHO_TRACE` | Paho adapter | Turns on Paho's trace and detailed OpenSSL errors on a failed TLS handshake. Values, least to most verbose: `error`, `protocol`, `minimum` (or `min`), `medium`, `maximum` (or `max`); any other non-empty value means `minimum`. The trace is logged at `TRACE`, so set the log sink to `AZ_IOT_LOG_LEVEL_TRACE` to see it. Proxy credentials are redacted. |
 | `TMPDIR` | Paho adapter, key custody (not Windows) | Directory for the short-lived key-reference file. Default `/tmp`. |
-| `http_proxy`, `https_proxy` | Eclipse Paho C | HTTP proxy used when the connection options set none. Lowercase only. Set `proxy` in the connection options to avoid this; see [Connecting a device](connecting.md#network-websockets-and-proxies). |
+| `PAHO_C_CLIENT_USE_HTTP_PROXY` | Eclipse Paho C | `TRUE` lets Paho read `http_proxy` / `https_proxy` when the connection options set no proxy. See [Dependencies](dependencies.md#proxy-from-the-environment-is-opt-in). |
+| `http_proxy`, `https_proxy`, `no_proxy` | Eclipse Paho C | HTTP proxy used when the connection options set none and `PAHO_C_CLIENT_USE_HTTP_PROXY=TRUE`. Lowercase only; `https_proxy` needs an `http://` or `https://` scheme. Set `proxy` in the connection options to avoid this; see [Connecting a device](connecting.md#network-websockets-and-proxies). |

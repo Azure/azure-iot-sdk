@@ -128,7 +128,8 @@ jobs:
         # Linux presets set AZ_IOT_BUILD_CONFORMANCE_TESTS_TLS, and that option
         # fails the configure step outright when OpenSSL is missing instead of
         # dropping the certificate-validation tests.
-        # libcurl: the samples that use it (dps_tpm, file_upload's upload path)
+        # libcurl: the samples that use it (dps_tpm, file_upload's upload path,
+        # software_update/pc/http_download)
         # are expected to build.
         run: sudo apt-get update && sudo apt-get install -y ninja-build libssl-dev libcurl4-openssl-dev
 
@@ -145,7 +146,7 @@ jobs:
           cmake -DBUILD_DIR=build/${{ matrix.preset }} -DCONFIG=${{ matrix.build_type }}
           "-DFORBID=rust_mqtt${{ matrix.with_paho == 'OFF' && ';paho' || '' }}"
           "-DEXPECT_SAMPLES=${{ matrix.with_paho == 'OFF' && 'az_mqtt' || 'paho;az_mqtt' }}"
-          "-DEXPECT_SAMPLES_EXCEPT=${{ runner.os == 'Windows' && 'dps_tpm;hsm_pkcs11:az_mqtt' || '' }}"
+          "-DEXPECT_SAMPLES_EXCEPT=${{ runner.os == 'Windows' && 'dps_tpm;http_download;hsm_pkcs11:az_mqtt' || '' }}"
           -P eng/check-dependencies.cmake
       - name: Check dependencies (negative control)
         if: matrix.with_paho == 'ON'
@@ -396,6 +397,18 @@ jobs:
     needs: changes
     if: needs.changes.outputs.c == 'true' || github.event_name != 'pull_request'
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    services:
+      mosquitto:
+        image: eclipse-mosquitto:2
+        ports:
+          - 1883:1883
+        options: >-
+          --health-cmd="mosquitto_pub -h localhost -p 1883 -t healthcheck -m ok"
+          --health-interval=5s
+          --health-retries=10
+          --health-start-period=5s
     strategy:
       fail-fast: false
       matrix:
@@ -405,20 +418,28 @@ jobs:
         with:
           persist-credentials: false
       - name: Install deps
-        run: sudo apt-get update && sudo apt-get install -y ninja-build valgrind
+        run: sudo apt-get update && sudo apt-get install -y ninja-build valgrind libssl-dev
       - name: Configure
-        # No broker: the race-labelled tests are hermetic. RACE_ANNOTATIONS
+        # Conformance ON registers the real-stack race tests (Paho conformance,
+        # reconnect, teardown) against the broker service. RACE_ANNOTATIONS
         # describes the SDK's atomic spin lock to the tools (valgrind
         # package ships <valgrind/helgrind.h>).
         run: >
           cmake --preset linux-gcc-debug
           -DAZ_IOT_WITH_PAHO=ON
           -DAZ_IOT_RACE_ANNOTATIONS=ON
-          -DAZ_IOT_BUILD_CONFORMANCE_TESTS=OFF
-          -DAZ_IOT_BUILD_CONFORMANCE_TESTS_TLS=OFF
+          -DAZ_IOT_BUILD_CONFORMANCE_TESTS=ON
+          -DAZ_IOT_BUILD_CONFORMANCE_TESTS_TLS=ON
       - name: Build
         run: cmake --build --preset linux-gcc-debug
       - name: Race-labelled tests under ${{ matrix.tool }}
+        env:
+          AZ_IOT_MQTT_BROKER_HOST: localhost
+          AZ_IOT_MQTT_BROKER_PORT: '1883'
+          # No PKCS#11 token on this leg.
+          AZ_IOT_CONFORMANCE_ALLOW_UNPROVEN: '1'
+          # The tools slow the stack ~10-50x; lengthens test waits only.
+          AZ_IOT_TEST_TIMEOUT_SCALE: '30'
         run: bash eng/run-race-detectors.sh ${{ matrix.tool }}
       - name: Upload race-detector logs
         if: always()
@@ -516,6 +537,57 @@ jobs:
           export ASAN_SYMBOLIZER_PATH="$symbolizer"
           export UBSAN_OPTIONS="$UBSAN_OPTIONS:external_symbolizer_path=$symbolizer"
           ctest --preset linux-clang-debug --output-on-failure
+
+  # ThreadSanitizer over the whole ctest set, conformance against a real broker
+  # included. Paho is built instrumented too. TSan needs fewer ASLR bits than
+  # the runner kernel's default, hence the sysctl.
+  tsan-linux:
+    name: linux-gcc / TSan
+    needs: changes
+    if: needs.changes.outputs.c == 'true' || github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    services:
+      mosquitto:
+        image: eclipse-mosquitto:2
+        ports:
+          - 1883:1883
+        options: >-
+          --health-cmd="mosquitto_pub -h localhost -p 1883 -t healthcheck -m ok"
+          --health-interval=5s
+          --health-retries=10
+          --health-start-period=5s
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Install deps
+        run: sudo apt-get update && sudo apt-get install -y ninja-build libssl-dev
+      - name: Configure
+        # _GNU_SOURCE: replacing CMAKE_C_FLAGS otherwise leaves cmocka without
+        # sigjmp_buf under -std=c99.
+        run: >
+          cmake --preset linux-gcc-debug
+          -DAZ_IOT_WITH_PAHO=ON
+          -DAZ_IOT_WITH_AZ_MQTT=ON
+          -DCMAKE_C_FLAGS="-D_GNU_SOURCE -fsanitize=thread -fno-omit-frame-pointer"
+          -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=thread"
+          -DCMAKE_SHARED_LINKER_FLAGS="-fsanitize=thread"
+      - name: Build
+        run: cmake --build --preset linux-gcc-debug
+      - name: Reduce ASLR entropy for TSan
+        run: sudo sysctl -w vm.mmap_rnd_bits=28
+      - name: Test under TSan
+        env:
+          AZ_IOT_MQTT_BROKER_HOST: localhost
+          AZ_IOT_MQTT_BROKER_PORT: '1883'
+          # No PKCS#11 token on this leg.
+          AZ_IOT_CONFORMANCE_ALLOW_UNPROVEN: '1'
+          # TSan slows the stack ~5-15x; lengthens test waits only.
+          AZ_IOT_TEST_TIMEOUT_SCALE: '10'
+          TSAN_OPTIONS: halt_on_error=0:exitcode=66:second_deadlock_stack=1:history_size=4:suppressions=${{ github.workspace }}/c/eng/sanitizers/tsan.supp
+        run: ctest --preset linux-gcc-debug --output-on-failure --timeout 1800
 
   # ---------------------------------------------------------------------------
   # Software updates mbedTLS crypto adapter, once per maintained mbedTLS branch
@@ -697,7 +769,7 @@ jobs:
           cmake -DBUILD_DIR=build/isolation -DINSTALL_PREFIX="$RUNNER_TEMP/az-iot-sdk"
           "-DFORBID=paho;rust_mqtt;openssl;curl"
           -DEXPECT_SAMPLES=az_mqtt
-          "-DEXPECT_SAMPLES_EXCEPT=custom_certificate_provider;dps_csr_managed;dps_persist_assignment;hub_renew;dps_sas_key_issued_cert;user_provided_sas_token;dps_tpm;hsm_pkcs11"
+          "-DEXPECT_SAMPLES_EXCEPT=custom_certificate_provider;dps_csr_managed;dps_persist_assignment;hub_renew;dps_sas_key_issued_cert;user_provided_sas_token;dps_tpm;http_download;hsm_pkcs11"
           -P eng/check-dependencies.cmake
 
   # Optimized build (so _FORTIFY_SOURCE is active) checked by
@@ -1175,7 +1247,7 @@ jobs:
       # actually had -- coverage computed over fewer tests than anyone thought.
       # Now that no suite decides at run time whether to participate, the count
       # is deterministic, so assert it exactly. Bump this when adding a suite.
-      EXPECTED_TESTS: '59'
+      EXPECTED_TESTS: '63'
     services:
       mosquitto:
         image: eclipse-mosquitto:2

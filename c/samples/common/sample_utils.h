@@ -71,14 +71,26 @@ bool sample_copy_str(char* dst, size_t dst_size, const char* src);
 bool sample_env_to_buffer(const char* name, const char* fallback, char* dst, size_t dst_size);
 
 /**
- * @brief Open @p path for binary writing, truncating it, with owner-only
- * access (0600) on POSIX rather than fopen()'s 0666 less umask. On Windows the
- * file keeps the ACL inherited from its directory.
+ * @brief Open @p path for binary writing with owner-only access (0600) on
+ * POSIX rather than fopen()'s 0666 less umask. On Windows the file keeps the
+ * ACL inherited from its directory.
  *
- * @param[in] path File to create or truncate.
+ * @param[in] path File to write.
+ * @param[in] replace false: create or truncate @p path. true: remove @p path,
+ * then create it exclusively, so a file or link planted there is never opened.
+ * @return Stream to close with fclose(), or NULL on failure (with @p replace,
+ * including when @p path cannot be removed).
+ */
+FILE* sample_fopen_private(const char* path, bool replace);
+
+/**
+ * @brief Open @p path for binary reading; on POSIX only a regular file, not
+ * through a symbolic link, is opened.
+ *
+ * @param[in] path File to read.
  * @return Stream to close with fclose(), or NULL on failure.
  */
-FILE* sample_fopen_private(const char* path);
+FILE* sample_fopen_read_nofollow(const char* path);
 
 // Milliseconds from an unspecified origin, never moving backwards. Only
 // differences are meaningful. The SDK keeps its clock internal, so a sample

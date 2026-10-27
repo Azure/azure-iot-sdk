@@ -86,7 +86,7 @@ const char* su_sample_operation_name(az_iot_su_operation operation)
   return SU_SAMPLE_NAME_OF(k_su_operation_names, operation);
 }
 
-int32_t su_download(
+int32_t simulate_update_file_download(
     const az_iot_su_client_update_manifest_file* file,
     az_span url,
     uint32_t file_index,
@@ -107,7 +107,7 @@ int32_t su_download(
 /* Serve deterministic payload bytes so the SHA-256 the core computes is
  * reproducible. To make the REAL hash check pass against a deployment, the
  * imported payload must be byte-identical (see README: zero-filled file). */
-int32_t su_read_file(
+int32_t read_back_simulated_update_file(
     const az_iot_su_client_update_manifest_file* file,
     uint32_t file_index,
     size_t offset,
@@ -140,7 +140,9 @@ static int span_equals_str(az_span span, const char* str)
   return str != NULL && az_span_is_content_equal(span, az_span_create_from_str((char*)str));
 }
 
-int32_t su_is_installed(const az_iot_su_client_update_manifest* manifest, void* user_ctx)
+int32_t is_offered_update_already_installed(
+    const az_iot_su_client_update_manifest* manifest,
+    void* user_ctx)
 {
   su_simulation_control* s = (su_simulation_control*)user_ctx;
   const az_iot_su_report_update_id* id = s->installed;
@@ -154,7 +156,10 @@ int32_t su_is_installed(const az_iot_su_client_update_manifest* manifest, void* 
   return AZ_IOT_SU_RESULT_SUCCESS;
 }
 
-int32_t su_backup(const az_iot_su_client_update_manifest* manifest, uint32_t step, void* user_ctx)
+int32_t simulate_update_step_backup(
+    const az_iot_su_client_update_manifest* manifest,
+    uint32_t step,
+    void* user_ctx)
 {
   (void)manifest;
   (void)user_ctx;
@@ -162,7 +167,10 @@ int32_t su_backup(const az_iot_su_client_update_manifest* manifest, uint32_t ste
   return AZ_IOT_SU_RESULT_SUCCESS;
 }
 
-int32_t su_install(const az_iot_su_client_update_manifest* manifest, uint32_t step, void* user_ctx)
+int32_t simulate_update_step_install(
+    const az_iot_su_client_update_manifest* manifest,
+    uint32_t step,
+    void* user_ctx)
 {
   (void)manifest;
   su_simulation_control* s = (su_simulation_control*)user_ctx;
@@ -194,7 +202,10 @@ static int copy_span(char* dst, size_t dst_size, az_span src)
   return 1;
 }
 
-int32_t su_apply(const az_iot_su_client_update_manifest* manifest, uint32_t step, void* user_ctx)
+int32_t simulate_update_step_apply(
+    const az_iot_su_client_update_manifest* manifest,
+    uint32_t step,
+    void* user_ctx)
 {
   su_simulation_control* s = (su_simulation_control*)user_ctx;
   s->applied_valid
@@ -205,7 +216,10 @@ int32_t su_apply(const az_iot_su_client_update_manifest* manifest, uint32_t step
   return AZ_IOT_SU_RESULT_SUCCESS;
 }
 
-int32_t su_restore(const az_iot_su_client_update_manifest* manifest, uint32_t step, void* user_ctx)
+int32_t simulate_update_step_restore(
+    const az_iot_su_client_update_manifest* manifest,
+    uint32_t step,
+    void* user_ctx)
 {
   (void)manifest;
   su_simulation_control* s = (su_simulation_control*)user_ctx;
@@ -217,7 +231,7 @@ int32_t su_restore(const az_iot_su_client_update_manifest* manifest, uint32_t st
   return AZ_IOT_SU_RESULT_SUCCESS;
 }
 
-int32_t su_persist_state(const uint8_t* blob, size_t len, void* user_ctx)
+int32_t save_update_workflow_to_file(const uint8_t* blob, size_t len, void* user_ctx)
 {
   su_simulation_control* s = (su_simulation_control*)user_ctx;
   if (len == 0)
@@ -231,7 +245,7 @@ int32_t su_persist_state(const uint8_t* blob, size_t len, void* user_ctx)
     return AZ_IOT_SU_RESULT_SUCCESS;
   }
   s->persist_failed = 1;
-  FILE* f = sample_fopen_private(s->state_file);
+  FILE* f = sample_fopen_private(s->state_file, false);
   if (f == NULL)
   {
     return AZ_IOT_SU_RESULT_FAILURE;
@@ -248,7 +262,7 @@ int32_t su_persist_state(const uint8_t* blob, size_t len, void* user_ctx)
   return AZ_IOT_SU_RESULT_SUCCESS;
 }
 
-int32_t su_load_state(uint8_t* blob, size_t cap, size_t* out_len, void* user_ctx)
+int32_t load_update_workflow_from_file(uint8_t* blob, size_t cap, size_t* out_len, void* user_ctx)
 {
   su_simulation_control* s = (su_simulation_control*)user_ctx;
   FILE* f = fopen(s->state_file, "rb");

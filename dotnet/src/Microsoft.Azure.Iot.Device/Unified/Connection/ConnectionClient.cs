@@ -29,6 +29,15 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
 
         private MQTTv5.Connection.ConnectionClient _mqttv5ConnectionClient;
 
+        /// <inheritdoc/>
+        public bool IsTwinEnabled { get; }
+
+        /// <inheritdoc/>
+        public bool AreDirectMethodsEnabled { get; }
+
+        /// <inheritdoc/>
+        public bool AreCloudToDeviceMessagesEnabled { get; }
+
         /// <summary>
         /// Construct a new <see cref="ConnectionClient"/>
         /// </summary>
@@ -57,6 +66,12 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
                 // MqttClient = options.MqttClient, //TODO See above for why this isn't passed to the MQTTv5 client, but this design feels a bit off, but needs testing of websocket + proxy support when using unified client to connect to MQTTv5 hub
             });
 
+            // Snapshot the opt-outs so that later changes to the options object cannot change which topics the
+            // presence flow subscribes to out from under feature clients that already checked them.
+            IsTwinEnabled = options.EnableTwin;
+            AreDirectMethodsEnabled = options.EnableDirectMethods;
+            AreCloudToDeviceMessagesEnabled = options.EnableCloudToDeviceMessages;
+
             ManagedMqttConnection.PublishReceivedAsync += HandleReceivedCertificateSigningPublish;
             _mqttv5ConnectionClient.DevicePresenceFlowCompletedAsync += HandleMQTTv5ClientConnectionReady;
             ManagedMqttConnection.DisconnectedAsync += HandleCertificateSigningDisconnectedAsync;
@@ -78,6 +93,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
 
             connect.WebsocketUri = BuildWebSocketUri(connect.HostName, connect.WebsocketPort, DefaultWebSocketPath);
             connect.ProtocolVersion = CurrentConnectionContext.ConnectionProfile == IotHubConnectionType.Mqttv5 ? MqttProtocolVersion.V500 : MqttProtocolVersion.V311;
+
             connect.Username = $"{connect.HostName}/{connect.ClientId}/?api-version={ClassicHubApiVersion}&DeviceClientType={Uri.EscapeDataString(GetUserAgentString())}";
 
             // MQTTv3 flow does not need to insert anything unique per connect attempt
@@ -100,7 +116,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
                 return;
             }
 
-            // Upon an MQTT connection being established, immediately re-subscribe to all twin/telemetry/direct methods topics if there is no session present.
+            // Upon an MQTT connection being established, immediately re-subscribe to the enabled twin/cloud-to-device/direct methods topics if there is no session present.
             if (args.ConnectAck.IsSessionPresent)
             {
                 await RaiseDevicePresenceFlowCompletedAsync(new DevicePresenceFlowCompletedArgs() { IsSuccess = true });
@@ -109,10 +125,30 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
             }
 
             MqttSubscribe mqttSubscribe = new();
-            mqttSubscribe.TopicFilters.Add(new(Telemetry.TelemetryClient.DeviceBoundMessagesTopicFormat + "#", MqttQualityOfServiceLevel.AtLeastOnce));
-            mqttSubscribe.TopicFilters.Add(new(Twin.TwinClient.ClassicTwinResponseTopic + "#", MqttQualityOfServiceLevel.AtMostOnce));
-            mqttSubscribe.TopicFilters.Add(new(Twin.TwinClient.ClassicTwinDesiredPropertiesPatchTopic + "#", MqttQualityOfServiceLevel.AtMostOnce));
-            mqttSubscribe.TopicFilters.Add(new(DirectMethods.DirectMethodClient.ClassicDirectMethodsRequestTopic + "#", MqttQualityOfServiceLevel.AtMostOnce));
+            if (AreCloudToDeviceMessagesEnabled)
+            {
+                mqttSubscribe.TopicFilters.Add(new(Telemetry.TelemetryClient.DeviceBoundMessagesTopicFormat + "#", MqttQualityOfServiceLevel.AtLeastOnce));
+            }
+
+            if (IsTwinEnabled)
+            {
+                mqttSubscribe.TopicFilters.Add(new(Twin.TwinClient.ClassicTwinResponseTopic + "#", MqttQualityOfServiceLevel.AtMostOnce));
+                mqttSubscribe.TopicFilters.Add(new(Twin.TwinClient.ClassicTwinDesiredPropertiesPatchTopic + "#", MqttQualityOfServiceLevel.AtMostOnce));
+            }
+
+            if (AreDirectMethodsEnabled)
+            {
+                mqttSubscribe.TopicFilters.Add(new(DirectMethods.DirectMethodClient.ClassicDirectMethodsRequestTopic + "#", MqttQualityOfServiceLevel.AtMostOnce));
+            }
+
+            if (mqttSubscribe.TopicFilters.Count == 0)
+            {
+                // A SUBSCRIBE with no topic filters is a protocol error, and there is nothing to wait for.
+                await RaiseDevicePresenceFlowCompletedAsync(new DevicePresenceFlowCompletedArgs() { IsSuccess = true });
+
+                return;
+            }
+
             string deviceBoundMessagesTopic = string.Empty;
             var suback = await ManagedMqttConnection.BuildAndSubscribeAsync(ConnectionEndpoint.IotHub, () =>
             {
@@ -126,7 +162,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
                             topicFilter.QualityOfServiceLevel)
                         : topicFilter)
                     .ToList());
-            });
+            }, CurrentReprovisioningCancellationToken);
 
             bool anySubscribeFailed = false;
             foreach (var topicSuback in suback.Items)

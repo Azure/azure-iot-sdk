@@ -54,6 +54,10 @@ enum az_mqtt_result
   /**
    * @brief The packet exceeds the MQTT 5.0 server's Maximum Packet Size. Nothing was sent; for
    * an acknowledgement, the session is closed with this reason.
+   *
+   * As the reason a session ended, also: a received packet exceeded the Maximum Packet Size the
+   * client sent in CONNECT. MQTT 5.0 first attempts a DISCONNECT with Packet too large (best
+   * effort).
    */
   AZ_MQTT_ERROR_PACKET_TOO_LARGE = _az_RESULT_MAKE_ERROR(_az_FACILITY_IOT_MQTT, 22),
   /** @brief The host name could not be resolved. */

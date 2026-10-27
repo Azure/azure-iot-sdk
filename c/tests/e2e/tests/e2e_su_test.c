@@ -25,12 +25,10 @@
  *     route
  *   - that registration still proceeds once device update has had its turn
  *
- * Not covered for a different reason: the operational (software-update) route.
- * The channel only ever issues the onboarding operation today -- the operational
- * poll needs a provisioning session after registration, which is not built yet.
- * Its request and response shapes are pinned at the codec level in
- * su_protocol_test.c meanwhile. Add the scenario here when the channel can
- * issue it.
+ * Not covered: the operational (software-update) route. The channel implements
+ * it (unit-tested in su_channel_dps_test.c), but the e2e scripts stage only
+ * onboarding update jobs. Its request and response shapes are pinned at the
+ * codec level in su_protocol_test.c meanwhile.
  *
  * The offer path -- a real updateMetadata driven through the engine, and the
  * conflict on re-reporting a terminal result -- is in e2e_su_offer_test.c.

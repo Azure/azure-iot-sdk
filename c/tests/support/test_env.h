@@ -77,4 +77,28 @@ static inline const char* az_iot_test_env(const char* name)
 
 #endif /* _WIN32 */
 
+/**
+ * @brief Multiplier for test wait budgets, from AZ_IOT_TEST_TIMEOUT_SCALE (1..100).
+ *
+ * Runs under a slow instrumentation (helgrind, DRD) set it so waits that are
+ * generous natively do not expire. Unset, empty or out of range: 1. It only
+ * lengthens waits; it never decides whether a test runs.
+ */
+static inline unsigned az_iot_test_timeout_scale(void)
+{
+  char* value = az_iot_test_env_dup("AZ_IOT_TEST_TIMEOUT_SCALE");
+  unsigned scale = 1u;
+  if (value != NULL)
+  {
+    char* end = NULL;
+    unsigned long v = strtoul(value, &end, 10);
+    if (end != value && *end == '\0' && v >= 1ul && v <= 100ul)
+    {
+      scale = (unsigned)v;
+    }
+    free(value);
+  }
+  return scale;
+}
+
 #endif /* AZ_IOT_TEST_ENV_H */

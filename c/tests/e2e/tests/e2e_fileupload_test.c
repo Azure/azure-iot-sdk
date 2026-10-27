@@ -28,6 +28,10 @@
  *                rejected by the hub and surfaces as a mapped error.
  *   arguments    the client refuses malformed arguments locally, without
  *                touching the network.
+ *   SAS key      a second device, provisioned with the DPS symmetric-key group,
+ *                requests a SAS URI, PUTs the blob and reports completion; its
+ *                hub calls carry the SDK's hub SAS token, with no client
+ *                certificate.
  *
  * The device HTTP hook (MQTTv3 control plane) and the Storage PUT/GET go through
  * the e2e harness's own TLS transport (az_iot_e2e_https_request) -- the same
@@ -54,10 +58,19 @@
 #include <time.h>
 
 #include "azure/iot/az_iot.h"
+/* The MQTT adapter this build of the suite uses (see tests/e2e/CMakeLists.txt). */
+#if defined(AZ_IOT_E2E_ADAPTER_PAHO)
+#include "azure/iot/adapters/az_iot_adapter_paho.h"
+#elif defined(AZ_IOT_E2E_ADAPTER_AZ_MQTT)
+#include "azure/iot/adapters/az_iot_adapter_az_mqtt.h"
+#else
+#error "Define AZ_IOT_E2E_ADAPTER_PAHO or AZ_IOT_E2E_ADAPTER_AZ_MQTT"
+#endif
 
 #include "az_iot_e2e_service.h"
 #include "e2e_device.h"
 #include "e2e_log.h"
+#include "e2e_sas_device.h"
 
 /* How long to wait for IoT Hub to post a file-upload notification. The hub
  * batches these and a freshly provisioned hub is slower still, so the budget is
@@ -653,6 +666,170 @@ static void test_sequential_uploads_reuse_the_client(void** state)
   assert_int_equal(second.notify_status, AZ_IOT_OK);
 }
 
+/* ---- SAS-key device ------------------------------------------------------- */
+
+#define E2E_SAS_FU_CONNECT_TIMEOUT_S 120
+#define E2E_SAS_FU_CLOSE_TIMEOUT_S 30
+
+/* SDK HTTP hook for a SAS-key device: server-authenticated TLS, authorized by
+ * the hub SAS token the SDK passes. Counts the requests that carried one. */
+static az_iot_result e2e_http_send_sas(
+    const char* method,
+    const char* url,
+    const char* authorization,
+    const char* content_type,
+    const uint8_t* body,
+    size_t body_len,
+    az_iot_file_upload_http_response* response,
+    void* hook_ctx)
+{
+  int* authorized = (int*)hook_ctx;
+  if (authorization == NULL || strncmp(authorization, "SharedAccessSignature sr=", 25) != 0)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  (*authorized)++;
+
+  char host[256];
+  char path[1024];
+  char header[AZ_IOT_FILE_UPLOAD_AUTHORIZATION_MAX + 16];
+  if (!split_url(url, host, sizeof(host), path, sizeof(path))
+      || snprintf(header, sizeof(header), "Authorization: %s", authorization)
+          >= (int)sizeof(header))
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+
+  int status = 0;
+  size_t resp_len = 0;
+  bool ok = az_iot_e2e_https_request(
+      host,
+      method,
+      path,
+      NULL,
+      NULL,
+      content_type,
+      header,
+      body,
+      body_len,
+      &status,
+      (char*)response->body,
+      response->body_capacity,
+      &resp_len);
+  memset(header, 0, sizeof(header));
+  if (!ok)
+  {
+    return AZ_IOT_ERR_MQTT;
+  }
+  response->status_code = status;
+  response->body_len = resp_len;
+  return AZ_IOT_OK;
+}
+
+static void on_sas_hub_state(const az_iot_connection_state_event* event, void* user_ctx)
+{
+  if (event->scope == AZ_IOT_CONN_SCOPE_HUB)
+  {
+    *(az_iot_connection_state*)user_ctx = event->state;
+  }
+}
+
+/* A device that authenticates with a SAS key (DPS symmetric-key group) uploads a
+ * blob: both hub REST calls are authorized by the hub SAS token the SDK passes
+ * to the hook, with no client certificate. */
+static void test_sas_key_device_uploads_a_file(void** state)
+{
+  (void)state;
+  e2e_sas_config cfg = { 0 };
+  e2e_sas_config_load(&cfg);
+  /* Its own device: the SAS suite's runs share the configured ID. */
+  char registration_id[160];
+  assert_true(
+      snprintf(registration_id, sizeof(registration_id), "%s-fu", cfg.registration_id)
+      < (int)sizeof(registration_id));
+
+  az_iot_connection_client_options copts = az_iot_connection_client_options_default();
+  e2e_sas_apply_dps(&cfg, &copts);
+  copts.dps.registration_id = registration_id;
+  copts.hub_auth = copts.dps_auth;
+
+  az_iot_connection_state hub_state = AZ_IOT_CONN_STATE_IDLE;
+  az_iot_connection_client conn = { 0 };
+  assert_int_equal(az_iot_connection_client_init(&conn, &copts), AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_connection_client_add_state_observer(&conn, on_sas_hub_state, &hub_state), AZ_IOT_OK);
+#if defined(AZ_IOT_E2E_ADAPTER_PAHO)
+  az_iot_mqtt_factory* factory = az_iot_paho_factory_create_v3_1_1();
+#elif defined(AZ_IOT_E2E_ADAPTER_AZ_MQTT)
+  az_iot_mqtt_factory* factory = az_iot_az_mqtt_factory_create_v3_1_1();
+#endif
+  assert_int_equal(az_iot_connection_client_register_mqtt_factory(&conn, factory), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client_open(&conn), AZ_IOT_OK);
+  time_t start = time(NULL);
+  while (hub_state != AZ_IOT_CONN_STATE_CONNECTED && hub_state != AZ_IOT_CONN_STATE_FAULTED
+         && (time(NULL) - start) < E2E_SAS_FU_CONNECT_TIMEOUT_S)
+  {
+    (void)az_iot_connection_client_do_work(&conn, 50);
+  }
+  assert_int_equal(hub_state, AZ_IOT_CONN_STATE_CONNECTED);
+
+  int authorized = 0;
+  az_iot_mqttv3_file_upload_client fu;
+  az_iot_file_upload_http_transport http = { e2e_http_send_sas, &authorized };
+  assert_int_equal(az_iot_mqttv3_file_upload_client_init(&fu, &conn, &http), AZ_IOT_OK);
+
+  char blob_name[96];
+  make_blob_name(blob_name, sizeof(blob_name), "sas");
+  upload_ctx u;
+  memset(&u, 0, sizeof(u));
+  assert_int_equal(
+      AZ_IOT_OK, az_iot_mqttv3_file_upload_client_get_sas_uri(&fu, blob_name, on_sas, &u));
+  assert_true(u.sas_done);
+  assert_int_equal(u.sas_status, AZ_IOT_OK);
+
+  char blob_host[256];
+  char blob_path[2048];
+  assert_true(split_url(u.sas_uri, blob_host, sizeof(blob_host), blob_path, sizeof(blob_path)));
+  int put_status = 0;
+  assert_true(az_iot_e2e_https_request(
+      blob_host,
+      "PUT",
+      blob_path,
+      NULL,
+      NULL,
+      NULL,
+      "x-ms-blob-type: BlockBlob",
+      k_blob_content,
+      strlen(k_blob_content),
+      &put_status,
+      NULL,
+      0,
+      NULL));
+  assert_in_range(put_status, 200, 299);
+
+  assert_int_equal(
+      AZ_IOT_OK,
+      az_iot_mqttv3_file_upload_client_notify_complete(&fu, u.correlation_id, true, on_notify, &u));
+  assert_true(u.notify_done);
+  assert_int_equal(u.notify_status, AZ_IOT_OK);
+  assert_int_equal(authorized, 2);
+
+  az_iot_mqttv3_file_upload_client_deinit(&fu);
+  assert_int_equal(az_iot_connection_client_close(&conn), AZ_IOT_OK);
+  start = time(NULL);
+  while (hub_state != AZ_IOT_CONN_STATE_IDLE && (time(NULL) - start) < E2E_SAS_FU_CLOSE_TIMEOUT_S)
+  {
+    (void)az_iot_connection_client_do_work(&conn, 50);
+  }
+  az_iot_connection_client_deinit(&conn);
+#if defined(AZ_IOT_E2E_ADAPTER_PAHO)
+  az_iot_paho_factory_destroy(factory);
+#elif defined(AZ_IOT_E2E_ADAPTER_AZ_MQTT)
+  az_iot_az_mqtt_factory_destroy(factory);
+#endif
+  e2e_sas_config_free(&cfg);
+}
+
 int main(void)
 {
   e2e_install_log_sink();
@@ -662,6 +839,7 @@ int main(void)
     cmocka_unit_test(test_notify_with_unknown_correlation_id_is_rejected),
     cmocka_unit_test(test_client_rejects_invalid_arguments),
     cmocka_unit_test(test_sequential_uploads_reuse_the_client),
+    cmocka_unit_test(test_sas_key_device_uploads_a_file),
   };
 
   /* Not registered as a test on Windows -- see c/tests/e2e/CMakeLists.txt. The

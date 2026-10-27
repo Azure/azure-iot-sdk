@@ -1,6 +1,12 @@
 # Copyright (c) Microsoft. All rights reserved.
 # Licensed under the MIT license. See LICENSE file in the project root for full license information.
 
+# ESP-IDF component (Kconfig options; see port/esp-idf).
+if(ESP_PLATFORM)
+  include(${CMAKE_CURRENT_LIST_DIR}/port/esp-idf/component.cmake)
+  return()
+endif()
+
 cmake_minimum_required(VERSION 3.14)
 project(az_mqtt LANGUAGES C)
 
@@ -179,6 +185,7 @@ elseif(AZ_MQTT_TLS_BACKEND STREQUAL "mbedtls")
   find_package(MbedTLS CONFIG QUIET)
   if(TARGET MbedTLS::mbedtls)
     target_link_libraries(az_mqtt_core PRIVATE MbedTLS::mbedtls)
+    set(AZ_MQTT_MBEDTLS_LIBRARIES MbedTLS::mbedtls)
   else()
     find_library(MBEDTLS_SSL_LIB    NAMES mbedtls    REQUIRED)
     find_library(MBEDTLS_X509_LIB   NAMES mbedx509   REQUIRED)
@@ -190,6 +197,7 @@ elseif(AZ_MQTT_TLS_BACKEND STREQUAL "mbedtls")
     # Order matters: ssl depends on x509 depends on crypto.
     target_link_libraries(az_mqtt_core PRIVATE
         ${MBEDTLS_SSL_LIB} ${MBEDTLS_X509_LIB} ${MBEDTLS_CRYPTO_LIB})
+    set(AZ_MQTT_MBEDTLS_LIBRARIES ${MBEDTLS_SSL_LIB} ${MBEDTLS_X509_LIB} ${MBEDTLS_CRYPTO_LIB})
   endif()
   message(STATUS "az_mqtt: TLS backend = mbedTLS")
 elseif(AZ_MQTT_TLS_BACKEND STREQUAL "openssl" OR AZ_MQTT_TLS_BACKEND STREQUAL "auto")
