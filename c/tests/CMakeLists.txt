@@ -760,8 +760,6 @@ if(AZ_IOT_WITH_PAHO)
     endif()
 
     if(AZ_IOT_BUILD_CONFORMANCE_TESTS)
-        # Known flaky under ThreadSanitizer: Paho races eclipse-paho/paho.mqtt.c#1709 and #1714
-        # (docs/dependencies.md, "Races on the command queue and client state").
         add_test(NAME az_iot_conformance_paho_v3 COMMAND az_iot_conformance_paho_v3)
         add_test(NAME az_iot_conformance_paho_v5 COMMAND az_iot_conformance_paho_v5)
         # Paho runs its own threads: run under helgrind and DRD too.
@@ -950,8 +948,6 @@ if(AZ_IOT_WITH_PAHO)
 
     # Teardown under load: disconnect() and destroy() while Paho threads are
     # still busy. Registered with the reconnect test, for the same broker.
-    # Excluded from the TSan job (ci-c.yml) for Paho race eclipse-paho/paho.mqtt.c#1709
-    # (docs/dependencies.md, "Races on the command queue and client state").
     az_iot_add_cmocka_test(az_iot_paho_teardown_race
         integration/paho_teardown_race_test.c NO_CTEST)
     target_link_libraries(az_iot_paho_teardown_race PRIVATE

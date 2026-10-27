@@ -223,6 +223,11 @@
   `AZ_IOT_SU_MIN_MESSAGE_SIZE` and the default `max_message_size` are 1792 + 128 per step (3072).
   `az_iot_su_client` grows from 4616 to 8584 bytes and the default workspace from 78920 to 85640
   (64-bit).
+- Paho: the bundled v1.3.16 is patched with two upstream fixes for data races between the
+  application thread and Paho's threads: `MQTTAsync_destroy()` against the send thread on the
+  command queue (eclipse-paho/paho.mqtt.c#1709), and `MQTTAsync_connect()` against the timeout and
+  retry checks on the client's state (#1714). An installed Paho is not patched. See
+  [docs/dependencies.md](docs/dependencies.md#races-on-the-command-queue-and-client-state).
 - az_mqtt adapter: the copies `connect()` makes of credentials (password or SAS token, PEM key and
   certificate, proxy credentials) are zeroed before they are freed, and `destroy()` zeroes the send
   buffer, which holds the CONNECT, before freeing it.

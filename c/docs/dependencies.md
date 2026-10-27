@@ -5,7 +5,7 @@ Libraries the C SDK builds against, and the known issues of each.
 | Library | Version | Used by | Needed |
 | --- | --- | --- | --- |
 | [azure-sdk-for-c](https://github.com/Azure/azure-sdk-for-c) | 1.5.0 (`AZ_SDK_C_TAG`) | Core, mqttv3 and mqttv5 clients | Always |
-| [Eclipse Paho MQTT C](https://github.com/eclipse-paho/paho.mqtt.c) | v1.3.16 (`PAHO_C_TAG`); installed: 1.3.14+ | Paho adapter | `AZ_IOT_WITH_PAHO` |
+| [Eclipse Paho MQTT C](https://github.com/eclipse-paho/paho.mqtt.c) | v1.3.16 (`PAHO_C_TAG`) with [two upstream fixes](#races-on-the-command-queue-and-client-state); installed: 1.3.14+ | Paho adapter | `AZ_IOT_WITH_PAHO` |
 | [OpenSSL](https://www.openssl.org/) | Any Paho supports for Paho TLS; 3.0+ for Paho key custody, az_mqtt TLS (`AZ_IOT_AZ_MQTT_TLS=openssl`), the OpenSSL crypto backend and the managed certificate provider | Those components | Only for the components listed; az_mqtt can use Mbed TLS, or Schannel on Windows |
 | [Mbed TLS](https://github.com/Mbed-TLS/mbedtls) | 3.6 LTS or 4.1+ | mbedTLS crypto backend, az_mqtt TLS (`AZ_IOT_AZ_MQTT_TLS=mbedtls`) | Optional |
 | az_mqtt | Published from this repository: [deps/az_mqtt](../deps/az_mqtt/README.md) | az_mqtt adapter | `AZ_IOT_WITH_AZ_MQTT` |
@@ -73,7 +73,7 @@ locked queue. The race CI suppresses only these Paho frames
 
 ### Races on the command queue and client state
 
-Two Paho data races are reported upstream and not fixed in v1.3.16:
+Two Paho data races, reported upstream and not fixed in v1.3.16:
 
 - [eclipse-paho/paho.mqtt.c#1709](https://github.com/eclipse-paho/paho.mqtt.c/issues/1709):
   `MQTTAsync_destroy()` changes the global command queue (`MQTTAsync_freeCommands`) holding only
@@ -82,16 +82,16 @@ Two Paho data races are reported upstream and not fixed in v1.3.16:
   `MQTTAsync_connect()` writes the client's state (and the `retryLoopIntervalms` global) without
   `mqttasync_mutex`, while the async threads read it (`MQTTAsync_checkTimeouts`, `MQTTAsync_retry`).
 
-ThreadSanitizer reports them intermittently in `az_iot_paho_teardown_race` and the Paho conformance
-suites. The races on the command queue and the client state are on heap memory (the queue's list
-and the client), which the suppression policy (third-party globals only) cannot cover.
-`retryLoopIntervalms` is a global a reviewed entry could cover; it is not suppressed, as the reports
-on the client state would remain. No failure other than the sanitizer reports has been seen.
+The adapter cannot avoid them: no Paho API stops its threads, and `MQTTAsync_connect()` starts them
+itself before the unlocked writes.
 
-**Mitigation:** none in the SDK. The TSan CI job skips `az_iot_paho_teardown_race`, where the
-#1709 report occurs most; helgrind and DRD still run it. Other reports listed here are known flaky
-failures: rerun the job. A report in those tests with other frames is not covered by this. Remove
-this entry when a `PAHO_C_TAG` with the fixes is adopted.
+**Mitigation:** the fetched Paho is patched with the upstream fixes, which are not merged yet:
+[#1711](https://github.com/eclipse-paho/paho.mqtt.c/pull/1711) (#1709) and
+[#1716](https://github.com/eclipse-paho/paho.mqtt.c/pull/1716) (#1714), in
+[adapters/paho/patches](../adapters/paho/patches/README.md). They are applied only to v1.3.16 (commit
+`4a939ddb`). Any other `PAHO_C_TAG`, `FETCHCONTENT_SOURCE_DIR_PAHO_MQTT_C` or
+`AZ_IOT_USE_INSTALLED_PAHO` builds Paho unpatched, with the races; CMake warns for the first two.
+Remove the patches when a `PAHO_C_TAG` contains the fixes.
 
 ### WebSocket handshake split across TCP segments
 

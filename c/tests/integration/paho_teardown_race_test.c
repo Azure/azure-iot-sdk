@@ -12,9 +12,6 @@
  * callback and MQTTAsync_destroy() under one global mutex, so no callback
  * can touch the adapter after destroy() returns. This test pins that: a
  * use-after-free or race shows under ASan, valgrind, helgrind and DRD.
- *
- * Known flaky under ThreadSanitizer: Paho race eclipse-paho/paho.mqtt.c#1709
- * (docs/dependencies.md, "Races on the command queue and client state").
  */
 
 #include <setjmp.h>
