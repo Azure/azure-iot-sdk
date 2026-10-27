@@ -1900,25 +1900,43 @@ namespace Microsoft.Azure.Iot.Device
                     return await response.ConfigureAwait(false);
                 }
 
+                // Readiness is tracked per connection generation: a disconnect after a readiness signal starts a new
+                // generation, so a signal from a connection that has since dropped is never mistaken for the current one.
+                object readinessLock = new();
+                bool isFaulted = false;
                 TaskCompletionSource disconnected = new(TaskCreationOptions.RunContinuationsAsynchronously);
                 TaskCompletionSource ready = new(TaskCreationOptions.RunContinuationsAsynchronously);
                 Task HandleDisconnected(MqttClientDisconnectedEventArgs args)
                 {
-                    disconnected.TrySetResult();
+                    lock (readinessLock)
+                    {
+                        disconnected.TrySetResult();
+                        if (!isFaulted && ready.Task.IsCompleted)
+                        {
+                            ready = new(TaskCreationOptions.RunContinuationsAsynchronously);
+                        }
+                    }
                     return Task.CompletedTask;
                 }
                 Task HandleReady(DevicePresenceFlowCompletedArgs args)
                 {
                     if (args.IsSuccess && args.Exception == null)
                     {
-                        ready.TrySetResult();
+                        lock (readinessLock)
+                        {
+                            ready.TrySetResult();
+                        }
                     }
                     return Task.CompletedTask;
                 }
                 void HandleFault()
                 {
-                    disconnected.TrySetResult();
-                    ready.TrySetResult();
+                    lock (readinessLock)
+                    {
+                        isFaulted = true;
+                        disconnected.TrySetResult();
+                        ready.TrySetResult();
+                    }
                 }
 
                 ManagedMqttConnection.DisconnectedAsync += HandleDisconnected;
@@ -1934,11 +1952,29 @@ namespace Microsoft.Azure.Iot.Device
                         return await response.ConfigureAwait(false);
                     }
 
-                    // A transport connection alone is not enough: response subscriptions must be restored first.
-                    await Task.WhenAny(response, ready.Task).WaitAsync(token).ConfigureAwait(false);
-                    if (response.IsCompleted)
+                    // A transport connection alone is not enough: response subscriptions must be restored first. Recheck
+                    // that the readiness observed is still the latest connection's before replaying the request.
+                    while (true)
                     {
-                        return await response.ConfigureAwait(false);
+                        Task readyTask;
+                        lock (readinessLock)
+                        {
+                            readyTask = ready.Task;
+                        }
+
+                        await Task.WhenAny(response, readyTask).WaitAsync(token).ConfigureAwait(false);
+                        if (response.IsCompleted)
+                        {
+                            return await response.ConfigureAwait(false);
+                        }
+
+                        lock (readinessLock)
+                        {
+                            if (readyTask == ready.Task)
+                            {
+                                break;
+                            }
+                        }
                     }
 
                     ThrowIfUnrecoverablyFaulted();

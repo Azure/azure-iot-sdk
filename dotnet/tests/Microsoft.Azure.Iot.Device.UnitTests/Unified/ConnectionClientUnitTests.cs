@@ -209,6 +209,71 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
             Assert.Equal(2, mockMqttClient.SentMqttTrafficInOrder.Count(traffic => traffic.Subscribe?.TopicFilters.Any(filter => filter.Topic == "$iothub/credentials/res/#") == true));
         }
 
+        [Fact]
+        public async Task RequestIsNotReplayedUsingStaleReadinessAfterRepeatedConnectionLosses()
+        {
+            using MockConnectionMqttClient mockMqttClient = new();
+            using ConnectionClient client = new(new()
+            {
+                MqttClient = mockMqttClient,
+                ConnectionRetryPolicy = new ExponentialBackoffRetryPolicy(uint.MaxValue, TimeSpan.Zero, useJitter: false),
+            });
+            await client.ConnectToHubAsync(GetMockConnectionContext(false), TestContext.Current.CancellationToken);
+
+            const string requestTopic = "test/request";
+            TaskCompletionSource<string> response = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            TaskCompletionSource restorationStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            TaskCompletionSource restoreSubscriptions = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            int requestAttempts = 0;
+            mockMqttClient.OnPublish = async publish =>
+            {
+                if (publish.Topic == requestTopic && Interlocked.Increment(ref requestAttempts) == 1)
+                {
+                    // The first connection drops and the second becomes ready while the request is being sent...
+                    await mockMqttClient.SimulateServerDisconnectAsync(MqttDisconnectReason.ImplementationSpecificError)
+                        .WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+
+                    // ...then the second connection drops too, and the third is slow to restore its subscriptions.
+                    mockMqttClient.OnSubscribe = async subscribe =>
+                    {
+                        restorationStarted.TrySetResult();
+                        await restoreSubscriptions.Task;
+                        return MqttObjectHelpers.CreateSuccessfulSuback(subscribe);
+                    };
+                    _ = mockMqttClient.SimulateServerDisconnectAsync(MqttDisconnectReason.ImplementationSpecificError);
+                    await restorationStarted.Task.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+                }
+                else if (publish.Topic == requestTopic)
+                {
+                    response.TrySetResult("response");
+                }
+
+                return new() { ReasonCode = MqttPublishAckReasonCode.Success };
+            };
+
+            Task<string> pending = ((IConnectionClient)client).PublishAndWaitForResponseAsync(
+                new MqttPublish() { Topic = requestTopic, QualityOfServiceLevel = MqttQualityOfServiceLevel.AtLeastOnce },
+                response.Task,
+                TestContext.Current.CancellationToken);
+
+            try
+            {
+                await restorationStarted.Task.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+                await Task.Delay(TimeSpan.FromMilliseconds(500), TestContext.Current.CancellationToken);
+
+                // The second connection's readiness is stale, so the request must wait for the third connection to be ready.
+                Assert.Equal(1, Volatile.Read(ref requestAttempts));
+                Assert.False(pending.IsCompleted);
+            }
+            finally
+            {
+                restoreSubscriptions.TrySetResult();
+            }
+
+            Assert.Equal("response", await pending.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken));
+            Assert.Equal(2, Volatile.Read(ref requestAttempts));
+        }
+
         [Theory]
         [InlineData(false)]
         [InlineData(true)]
