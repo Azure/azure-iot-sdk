@@ -2208,7 +2208,7 @@ static void dispatch_event(az_iot_su_client* client, const az_iot_su_event* even
 {
   bool was_dispatching = SU_I(client).dispatching;
   SU_I(client).dispatching = true;
-  for (size_t i = 0; i < AZ_IOT_MAX_SU_OBSERVERS; ++i)
+  for (size_t i = 0; i < SU_I(client).max_observers; ++i)
   {
     if (SU_I(client).observers[i].cb != NULL)
     {
@@ -2913,6 +2913,8 @@ AZ_NODISCARD az_iot_su_limits az_iot_su_limits_default(void)
   limits.max_message_size = AZ_IOT_SU_DEFAULT_MAX_MESSAGE_SIZE;
   limits.device_properties_size = AZ_IOT_SU_DEVICE_PROPERTIES_BUFFER_SIZE;
   limits.result_details_size = AZ_IOT_SU_DEFAULT_RESULT_DETAILS_SIZE;
+  limits.max_root_keys = AZ_IOT_SU_DEFAULT_MAX_ROOT_KEYS;
+  limits.max_observers = AZ_IOT_SU_DEFAULT_MAX_OBSERVERS;
   return limits;
 }
 
@@ -2925,7 +2927,9 @@ AZ_NODISCARD size_t az_iot_su_workspace_size(const az_iot_su_limits* limits)
       || limits->scratch_size < AZ_IOT_SU_MIN_LIMIT
       || limits->max_message_size < AZ_IOT_SU_MIN_MESSAGE_SIZE
       || limits->device_properties_size == 0
-      || limits->result_details_size > AZ_IOT_SU_MAX_RESULT_DETAILS_SIZE)
+      || limits->result_details_size > AZ_IOT_SU_MAX_RESULT_DETAILS_SIZE
+      || limits->max_root_keys > AZ_IOT_SU_MAX_LIMIT_COUNT
+      || limits->max_observers > AZ_IOT_SU_MAX_LIMIT_COUNT)
   {
     return 0;
   }
@@ -2937,7 +2941,10 @@ AZ_NODISCARD size_t az_iot_su_workspace_size(const az_iot_su_limits* limits)
     return 0;
   }
   size_t details = (size_t)_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS * limits->result_details_size;
-  size_t parts[7] = { limits->max_update_size + (size_t)AZ_IOT_SU_PERSIST_OVERHEAD + details,
+  size_t parts[9] = { limits->max_root_keys * sizeof(az_iot_su_root_key)
+                          + limits->max_observers * sizeof(az_iot_su_observer_registration)
+                          + sizeof(az_iot_su_workspace_alignment) - 1u,
+                      limits->max_update_size + (size_t)AZ_IOT_SU_PERSIST_OVERHEAD + details,
                       (size_t)AZ_IOT_SU_PERSIST_OVERHEAD + details,
                       limits->scratch_size,
                       limits->max_message_size,
@@ -2966,6 +2973,8 @@ AZ_NODISCARD az_iot_su_client_config_options az_iot_su_client_config_options_def
 /** @brief Where each workspace part starts. */
 typedef struct
 {
+  az_iot_su_root_key* root_keys;
+  az_iot_su_observer_registration* observers;
   uint8_t* persist_blob; /**< Workflow record: header, request, trailer. */
   uint8_t* terminal_blob;
   uint8_t* scratch;
@@ -3002,7 +3011,14 @@ static az_iot_result su_workspace_lay_out(
   }
   size_t details
       = (size_t)_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS * options->limits.result_details_size;
-  uint8_t* p = options->workspace;
+  /* Parts holding pointers come first, aligned: the workspace itself need not be. */
+  const uintptr_t alignment = (uintptr_t)sizeof(az_iot_su_workspace_alignment);
+  uint8_t* p = options->workspace
+      + ((alignment - ((uintptr_t)options->workspace % alignment)) % alignment);
+  out->root_keys = (az_iot_su_root_key*)(void*)p;
+  p += options->limits.max_root_keys * sizeof(az_iot_su_root_key);
+  out->observers = (az_iot_su_observer_registration*)(void*)p;
+  p += options->limits.max_observers * sizeof(az_iot_su_observer_registration);
   out->persist_blob = p;
   p += options->limits.max_update_size + (size_t)AZ_IOT_SU_PERSIST_OVERHEAD + details;
   out->terminal_blob = p;
@@ -3058,8 +3074,13 @@ static az_iot_result su_client_init_core(
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
-  if (options->root_key_count > AZ_IOT_SU_MAX_ROOT_KEYS)
+  if (options->root_key_count > options->limits.max_root_keys)
   {
+    AZ_IOT_LOG_ERRORF(
+        AZ_IOT_LOG_COMPONENT_SU,
+        "%u root keys exceed az_iot_su_limits::max_root_keys (%u)",
+        (unsigned)options->root_key_count,
+        (unsigned)options->limits.max_root_keys);
     return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
   }
   if (options->replacement_policy == AZ_IOT_SU_REPLACEMENT_ROLLBACK)
@@ -3090,6 +3111,11 @@ static az_iot_result su_client_init_core(
   SU_I(client).scratch_size = options->limits.scratch_size;
   SU_I(client).device_properties_buffer = layout.device_properties;
   SU_I(client).device_properties_buffer_size = options->limits.device_properties_size;
+  SU_I(client).root_keys = layout.root_keys;
+  SU_I(client).observers = layout.observers;
+  SU_I(client).max_observers = options->limits.max_observers;
+  memset(
+      layout.observers, 0, options->limits.max_observers * sizeof(az_iot_su_observer_registration));
   set_su_state(client, AZ_IOT_SU_STATE_IDLE);
 
   if (options->root_keys != NULL && options->root_key_count > 0)
@@ -3148,11 +3174,64 @@ az_iot_result az_iot_su_client__initialize_with_channel(
   return su_client_init_core(client, channel, crypto, options);
 }
 
-AZ_NODISCARD az_iot_result az_iot_su_client_init(
+/**
+ * @brief Checks the caller's build-time view of az_iot_su_client against this build.
+ *
+ * Runs before anything writes to the client: a smaller caller allocation must not be zeroed.
+ *
+ * @return true if all fields match; false, with an error log naming the first mismatch.
+ */
+static bool su_client_layout_matches(const az_iot_su_client_layout* layout)
+{
+  if (layout == NULL || layout->layout_size != sizeof(az_iot_su_client_layout))
+  {
+    AZ_IOT_LOG_ERROR(
+        AZ_IOT_LOG_COMPONENT_SU,
+        "az_iot_su_client_layout is missing or differs between the application and the SDK");
+    return false;
+  }
+
+  const struct
+  {
+    const char* name;
+    size_t app;
+    size_t sdk;
+  } fields[] = {
+    { "AZ_IOT_SU_MAX_STEP_COUNT", layout->max_step_count, (size_t)AZ_IOT_SU_MAX_STEP_COUNT },
+    { "AZ_IOT_SU_MAX_FILE_COUNT", layout->max_file_count, (size_t)AZ_IOT_SU_MAX_FILE_COUNT },
+    { "AZ_IOT_SU_MAX_FILE_COUNT_PER_STEP",
+      layout->max_file_count_per_step,
+      (size_t)AZ_IOT_SU_MAX_FILE_COUNT_PER_STEP },
+    { "sizeof(az_iot_su_client)", layout->client_size, sizeof(az_iot_su_client) },
+  };
+
+  for (size_t i = 0; i < sizeof(fields) / sizeof(fields[0]); ++i)
+  {
+    if (fields[i].app != fields[i].sdk)
+    {
+      AZ_IOT_LOG_ERRORF(
+          AZ_IOT_LOG_COMPONENT_SU,
+          "%s is %lu in the application but %lu in the SDK; "
+          "build both from the same SDK headers with the same capacity macros",
+          fields[i].name,
+          (unsigned long)fields[i].app,
+          (unsigned long)fields[i].sdk);
+      return false;
+    }
+  }
+  return true;
+}
+
+AZ_NODISCARD az_iot_result az_iot_su_client_init_checked(
     az_iot_su_client* client,
     az_iot_connection_client* connection,
-    const az_iot_su_client_config_options* options)
+    const az_iot_su_client_config_options* options,
+    const az_iot_su_client_layout* client_layout)
 {
+  if (!su_client_layout_matches(client_layout))
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
   if (client == NULL || connection == NULL || options == NULL)
   {
     return AZ_IOT_ERR_INVALID_ARG;
@@ -4522,8 +4601,8 @@ az_iot_result az_iot_su_client_add_observer(
     return AZ_IOT_ERR_BUSY;
   }
 
-  size_t free_slot = AZ_IOT_MAX_SU_OBSERVERS;
-  for (size_t i = 0; i < AZ_IOT_MAX_SU_OBSERVERS; ++i)
+  size_t free_slot = SU_I(client).max_observers;
+  for (size_t i = 0; i < SU_I(client).max_observers; ++i)
   {
     /* Idempotent on the (cb, user_ctx) PAIR, not on cb alone: one callback
      * shared by two owners is two subscriptions and must be delivered twice. */
@@ -4531,12 +4610,12 @@ az_iot_result az_iot_su_client_add_observer(
     {
       return AZ_IOT_OK;
     }
-    if (SU_I(client).observers[i].cb == NULL && free_slot == AZ_IOT_MAX_SU_OBSERVERS)
+    if (SU_I(client).observers[i].cb == NULL && free_slot == SU_I(client).max_observers)
     {
       free_slot = i;
     }
   }
-  if (free_slot == AZ_IOT_MAX_SU_OBSERVERS)
+  if (free_slot == SU_I(client).max_observers)
   {
     AZ_IOT_LOG_ERROR(AZ_IOT_LOG_COMPONENT_SU, "no free observer slot");
     return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
@@ -4562,7 +4641,7 @@ az_iot_result az_iot_su_client_remove_observer(
    * loop re-reads each slot and skips a NULL callback, and nothing is
    * compacted, so clearing a slot only means that observer is not called --
    * which is what withdrawing asks for. */
-  for (size_t i = 0; i < AZ_IOT_MAX_SU_OBSERVERS; ++i)
+  for (size_t i = 0; i < SU_I(client).max_observers; ++i)
   {
     if (SU_I(client).observers[i].cb == cb && SU_I(client).observers[i].user_ctx == user_ctx)
     {
