@@ -324,15 +324,28 @@ function New-SuE2EJobRun {
     return $run
 }
 
-# Name of an Active run of the job, or $null.
-function Get-SuE2EActiveRun([hashtable]$Config, [string]$JobName) {
-    $list = Get-SuE2EResource "$(Get-SuE2EJobsUri $Config)/$JobName/runs?api-version=$script:ApiVersion" $script:ArmScope
-    if (-not $list) { return $null }
-    $active = @($list.value) | Where-Object {
-        $_.PSObject.Properties['properties'] -and $_.properties.PSObject.Properties['status'] -and $_.properties.status -eq 'Active'
-    } | Select-Object -First 1
-    if ($active) { return $active.name }
+# StrictMode-safe read of a run's properties.<Name>, or $null.
+function Get-SuE2ERunProperty([object]$Run, [string]$Name) {
+    if (-not $Run.PSObject.Properties['properties']) { return $null }
+    $p = $Run.properties.PSObject.Properties[$Name]
+    if ($p) { return $p.Value }
     return $null
+}
+
+# The job's runs, newest startTime first (none: empty).
+function Get-SuE2EJobRuns([hashtable]$Config, [string]$JobName) {
+    $list = Get-SuE2EResource "$(Get-SuE2EJobsUri $Config)/$JobName/runs?api-version=$script:ApiVersion" $script:ArmScope
+    if (-not $list) { return @() }
+    return @(@($list.value) | Sort-Object {
+        $t = Get-SuE2ERunProperty $_ 'startTime'
+        if ($t) { ([datetime]$t).ToUniversalTime() } else { [datetime]::MinValue }
+    } -Descending)
+}
+
+# The newest Active run of the job, or $null.
+function Get-SuE2EActiveRun([hashtable]$Config, [string]$JobName) {
+    return Get-SuE2EJobRuns $Config $JobName | Where-Object { (Get-SuE2ERunProperty $_ 'status') -eq 'Active' } |
+        Select-Object -First 1
 }
 
 <#
@@ -374,26 +387,29 @@ function Get-SuE2EDeviceResult {
         [Parameter(Mandatory)][string]$RegistrationId
     )
     $job = "$(Get-SuE2EJobsUri $Config)/$JobName"
-    # A Continuous onboarding job records results on its runs; the newest by
-    # startTime is the current one (measured).
-    $runs = @((Invoke-SuE2ERest -Method Get -Uri "$job/runs?api-version=$script:ApiVersion" -Resource $script:ArmScope).Body.value)
-    if (-not $runs) { return $null }
-    # StrictMode: entries may omit optional properties, so each is probed before use.
-    $run = $runs | Sort-Object { $p = $_.properties; if ($p.PSObject.Properties['startTime']) { $p.startTime } else { '' } } -Descending |
-        Select-Object -First 1
-    $uri = "$job/runs/$($run.name)/listResults?api-version=$script:ApiVersion"
-    $body = @{}
-    while ($true) {
-        $page = (Invoke-SuE2ERest -Method Post -Uri $uri -Resource $script:ArmScope -Body $body).Body
-        $hit = @($page.value) | Where-Object {
-            $_.PSObject.Properties['resourceExternalId'] -and $_.resourceExternalId -eq $RegistrationId
-        } | Select-Object -First 1
-        if ($hit) { return $hit }
-        # Paged by a skipToken sent back in the next request body.
-        $next = if ($page.PSObject.Properties['skipToken']) { $page.skipToken } else { $null }
-        if (-not $next) { return $null }
-        $body = @{ skipToken = $next }
+    # A Continuous onboarding job records results on its runs (measured). A
+    # reused job may hold several, so every Active run is searched, newest
+    # first, then the newest run whatever its status.
+    $all = @(Get-SuE2EJobRuns $Config $JobName)
+    if (-not $all) { return $null }
+    $candidates = @($all | Where-Object { (Get-SuE2ERunProperty $_ 'status') -eq 'Active' })
+    if ($all[0].name -notin @($candidates | ForEach-Object name)) { $candidates += $all[0] }
+    foreach ($run in $candidates) {
+        $uri = "$job/runs/$($run.name)/listResults?api-version=$script:ApiVersion"
+        $body = @{}
+        while ($true) {
+            $page = (Invoke-SuE2ERest -Method Post -Uri $uri -Resource $script:ArmScope -Body $body).Body
+            $hit = @($page.value) | Where-Object {
+                $_.PSObject.Properties['resourceExternalId'] -and $_.resourceExternalId -eq $RegistrationId
+            } | Select-Object -First 1
+            if ($hit) { return $hit }
+            # Paged by a skipToken sent back in the next request body.
+            $next = if ($page.PSObject.Properties['skipToken']) { $page.skipToken } else { $null }
+            if (-not $next) { break }
+            $body = @{ skipToken = $next }
+        }
     }
+    return $null
 }
 
 <#
@@ -458,6 +474,7 @@ function New-SuE2EOffers {
     $names = Get-SuE2EOfferNames -RunId $RunId
     $manufacturer = $names.Manufacturer
     $runs = @()
+    $graceLeft = 0
     $state = [ordered]@{ Manufacturer = $manufacturer; Offers = [ordered]@{} }
 
     # Saved before every remote call, so a run killed mid-step still leaves
@@ -503,8 +520,17 @@ function New-SuE2EOffers {
         $jobUri = "$(Get-SuE2EJobsUri $config)/$($n.Job)?api-version=$script:ApiVersion"
         $job = if ($Reuse) { Get-SuE2EResource $jobUri $script:ArmScope } else { $null }
         if ($job -and $job.properties.provisioningState -eq 'Succeeded') {
-            $offer.Run = Get-SuE2EActiveRun $config $n.Job
-            if ($offer.Run) { Write-Host "$scenario`: job $($n.Job) kept, run $($offer.Run) Active" }
+            $active = Get-SuE2EActiveRun $config $n.Job
+            if ($active) {
+                $offer.Run = $active.name
+                Write-Host "$scenario`: job $($n.Job) kept, run $($offer.Run) Active"
+                # Another run may have just created it: wait out what is left of its grace.
+                $started = Get-SuE2ERunProperty $active 'startTime'
+                if ($started) {
+                    $left = ([datetime]$started).ToUniversalTime().AddSeconds($GraceSeconds) - (Get-Date).ToUniversalTime()
+                    if ($left.TotalSeconds -gt $graceLeft) { $graceLeft = [int][math]::Ceiling($left.TotalSeconds) }
+                }
+            }
             else { $offer.Run = New-SuE2EJobRun -Config $config -JobName $n.Job; $runs += @{ Job = $n.Job; Run = $offer.Run } }
         }
         else {
@@ -514,6 +540,10 @@ function New-SuE2EOffers {
         & $save
     }
     if ($runs.Count) { Wait-SuE2EJobRuns -Config $config -Runs $runs -GraceSeconds $GraceSeconds }
+    elseif ($graceLeft -gt 0) {
+        Write-Host "Waiting $graceLeft s: a kept run started less than $GraceSeconds s ago"
+        Start-Sleep -Seconds $graceLeft
+    }
     Export-SuE2EOfferVariables -RunId $RunId
 }
 

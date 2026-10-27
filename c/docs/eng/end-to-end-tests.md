@@ -379,7 +379,9 @@ offer suite (one per MQTT adapter) needs its own new device.
 checks each job's per-device result (`Test-SuE2EOffers`) and deletes them
 (`Remove-SuE2EOffers`). Since each offer reaches each new device, one staged set can serve many
 runs: `New-SuE2EOffers -Reuse` keeps the updates, jobs and `Active` runs that already exist under
-its `-RunId`, and only waits for runs it creates. `Export-SuE2EOfferVariables` sets the offer
+its `-RunId`, and only waits for runs it creates (or for what is left of the 5 minutes of a kept run
+started less than 5 minutes ago). A reused job may hold several runs, so `Test-SuE2EOffers` looks for
+the device in every `Active` run, then in the newest. `Export-SuE2EOfferVariables` sets the offer
 variables for a `-RunId` without contacting Azure.
 
 Every variable is required; a missing one fails the suite or the scenario that needs it.
