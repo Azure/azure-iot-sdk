@@ -467,7 +467,8 @@ static void a_packet_over_the_receive_size_ends_the_session_from_its_header_v5(v
   assert_non_null(f);
   session s = open_session(f);
 
-  // Fixed header only, announcing one byte over the advertised Maximum Packet Size; no body follows.
+  // Fixed header only, announcing one byte over the advertised Maximum Packet Size; no body
+  // follows.
   uint8_t header[3];
   header[0] = 0x30;
   assert_int_equal(write_varint(header + 1, (size_t)AZ_IOT_AZ_MQTT_RECEIVE_BUFFER_SIZE + 1 - 3), 2);
