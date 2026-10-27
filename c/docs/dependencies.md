@@ -89,7 +89,7 @@ itself before the unlocked writes.
 [#1711](https://github.com/eclipse-paho/paho.mqtt.c/pull/1711) (#1709) and
 [#1716](https://github.com/eclipse-paho/paho.mqtt.c/pull/1716) (#1714), in
 [adapters/paho/patches](../adapters/paho/patches/README.md). They are applied only to v1.3.16 (commit
-`4a939ddb`). Any other `PAHO_C_TAG`, `FETCHCONTENT_SOURCE_DIR_PAHO_MQTT_C` or
+`4a939ddb`). Any other `PAHO_C_TAG`, `FETCHCONTENT_SOURCE_DIR_PAHO_MQTT_C` (as the Yocto recipe sets) or
 `AZ_IOT_USE_INSTALLED_PAHO` builds Paho unpatched, with the races; CMake warns for the first two.
 Remove the patches when a `PAHO_C_TAG` contains the fixes.
 

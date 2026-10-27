@@ -66,7 +66,17 @@ else()
     # The commit patches/ is made against (v1.3.16). Any other commit is built
     # unpatched, with a warning below (docs/dependencies.md).
     set(_paho_patched_commit "4a939ddb01eea581a32fd6f0adcfee51b91d2601")
-    find_package(Git REQUIRED)
+    # Optional: FETCHCONTENT_SOURCE_DIR_PAHO_MQTT_C builds need no Git, and are
+    # left unpatched, with the warning below.
+    find_package(Git QUIET)
+    set(_paho_patch_args)
+    if(GIT_FOUND)
+        set(_paho_patch_args PATCH_COMMAND ${CMAKE_COMMAND}
+            -DGIT_EXECUTABLE=${GIT_EXECUTABLE}
+            -DPATCH_DIR=${CMAKE_CURRENT_SOURCE_DIR}/patches
+            -DPATCHED_COMMIT=${_paho_patched_commit}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/../../cmake/patch_paho.cmake)
+    endif()
 
     # Paho before 1.3.14 declares cmake_minimum_required <3.5 (PAHO_C_TAG may select one),
     # which CMake >= 4.0 refuses outright. Override the floor so the upstream
@@ -120,37 +130,35 @@ else()
         GIT_TAG        ${PAHO_C_TAG}
         GIT_SHALLOW    TRUE
         SOURCE_DIR     ${FETCHCONTENT_BASE_DIR}/paho_mqtt_c-${_paho_tag_dir}-src
-        PATCH_COMMAND  ${CMAKE_COMMAND}
-            -DGIT_EXECUTABLE=${GIT_EXECUTABLE}
-            -DPATCH_DIR=${CMAKE_CURRENT_SOURCE_DIR}/patches
-            -DPATCHED_COMMIT=${_paho_patched_commit}
-            -P ${CMAKE_CURRENT_SOURCE_DIR}/../../cmake/patch_paho.cmake
+        ${_paho_patch_args}
     )
     FetchContent_MakeAvailable(paho_mqtt_c)
 
     # The patch step is skipped for another commit and for FETCHCONTENT_SOURCE_DIR_PAHO_MQTT_C,
     # so check the source actually built.
-    execute_process(
-        COMMAND "${GIT_EXECUTABLE}" rev-parse HEAD
-        WORKING_DIRECTORY "${paho_mqtt_c_SOURCE_DIR}"
-        OUTPUT_VARIABLE _paho_head
-        OUTPUT_STRIP_TRAILING_WHITESPACE
-        RESULT_VARIABLE _paho_rc
-        ERROR_QUIET)
     set(_paho_patched OFF)
-    if(_paho_rc EQUAL 0 AND _paho_head STREQUAL _paho_patched_commit)
-        set(_paho_patched ON)
-        file(GLOB _paho_patches "${CMAKE_CURRENT_SOURCE_DIR}/patches/*.patch")
-        foreach(_paho_patch IN LISTS _paho_patches)
-            execute_process(
-                COMMAND "${GIT_EXECUTABLE}" apply --reverse --check "${_paho_patch}"
-                WORKING_DIRECTORY "${paho_mqtt_c_SOURCE_DIR}"
-                RESULT_VARIABLE _paho_rc
-                OUTPUT_QUIET ERROR_QUIET)
-            if(NOT _paho_rc EQUAL 0)
-                set(_paho_patched OFF)
-            endif()
-        endforeach()
+    if(GIT_FOUND)
+        execute_process(
+            COMMAND "${GIT_EXECUTABLE}" rev-parse HEAD
+            WORKING_DIRECTORY "${paho_mqtt_c_SOURCE_DIR}"
+            OUTPUT_VARIABLE _paho_head
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+            RESULT_VARIABLE _paho_rc
+            ERROR_QUIET)
+        if(_paho_rc EQUAL 0 AND _paho_head STREQUAL _paho_patched_commit)
+            set(_paho_patched ON)
+            file(GLOB _paho_patches "${CMAKE_CURRENT_SOURCE_DIR}/patches/*.patch")
+            foreach(_paho_patch IN LISTS _paho_patches)
+                execute_process(
+                    COMMAND "${GIT_EXECUTABLE}" apply --reverse --check "${_paho_patch}"
+                    WORKING_DIRECTORY "${paho_mqtt_c_SOURCE_DIR}"
+                    RESULT_VARIABLE _paho_rc
+                    OUTPUT_QUIET ERROR_QUIET)
+                if(NOT _paho_rc EQUAL 0)
+                    set(_paho_patched OFF)
+                endif()
+            endforeach()
+        endif()
     endif()
     if(NOT _paho_patched)
         message(WARNING "Paho at ${paho_mqtt_c_SOURCE_DIR} is not v1.3.16 with "
