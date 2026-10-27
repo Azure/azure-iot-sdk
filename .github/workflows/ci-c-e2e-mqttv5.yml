@@ -74,8 +74,13 @@ jobs:
       AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
       AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
 
+  # The longest suites run as one job per adapter and shard (AZ_IOT_TEST_SHARD,
+  # c/tests/support/test_shard.h), each with its own device: run serially on one
+  # device they took up to 15 min. The shard count in AZ_IOT_TEST_SHARD must match
+  # the matrix's shard list. Jobs that read events spread over consumer groups
+  # e2e-0..e2e-9 (E2E_GROUP_SLOT), at most two per group in a run.
   custom-topics:
-    name: custom topics / linux
+    name: custom topics / linux / ${{ matrix.adapter }} / shard ${{ matrix.shard }} of 2
     needs: adr-namespace
     if: >-
       ${{ !cancelled() && vars.E2E_MQTTV5_SHARED_ID_SCOPE != '' &&
@@ -85,6 +90,17 @@ jobs:
             github.actor != 'dependabot[bot]')) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        adapter: [ paho, az_mqtt ]
+        shard: [ 0, 1 ]
+        include:
+          - { adapter: paho, target-suffix: '', tag: pa, index: 0 }
+          - { adapter: az_mqtt, target-suffix: _az_mqtt, tag: az, index: 1 }
+    env:
+      AZ_IOT_E2E_TEST: az_iot_tests_e2e_mqttv5_custom_topic${{ matrix.target-suffix }}
+      AZ_IOT_TEST_SHARD: ${{ matrix.shard }}/2
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -97,7 +113,7 @@ jobs:
         working-directory: c
         run: |
           cmake --preset linux-gcc-debug -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_BUILD_E2E_MQTTV5=ON -DAZ_IOT_WITH_PAHO=ON -DAZ_IOT_WITH_AZ_MQTT=ON -DAZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE=1114112
-          cmake --build --preset linux-gcc-debug --target az_iot_tests_e2e_mqttv5_custom_topic az_iot_tests_e2e_mqttv5_custom_topic_az_mqtt
+          cmake --build --preset linux-gcc-debug --target "$AZ_IOT_E2E_TEST"
 
       - name: Issue a device
         shell: pwsh
@@ -107,11 +123,16 @@ jobs:
           E2E_MQTTV5_SHARED_EVENTHUB_CS: ${{ secrets.E2E_MQTTV5_SHARED_EVENTHUB_CS }}
           E2E_MQTTV5_SHARED_ID_SCOPE: ${{ vars.E2E_MQTTV5_SHARED_ID_SCOPE }}
           E2E_MQTTV5_SHARED_DPS_HOST: ${{ vars.E2E_MQTTV5_SHARED_DPS_HOST }}
-          E2E_REGISTRATION_ID: ci-mqttv5-ct-${{ github.run_id }}-${{ github.run_attempt }}
+          E2E_REGISTRATION_ID: ci-mqttv5-ct-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.tag }}${{ matrix.shard }}
+          E2E_GROUP_SLOT: 0
+          E2E_ADAPTER_INDEX: ${{ matrix.index }}
           E2E_RUN_ID: ${{ github.run_id }}
         # Consumer groups e2e-0..e2e-9; Event Hubs allows 5 readers per partition per group.
         run: |
-          $group = 'e2e-' + ([long]$env:E2E_RUN_ID % 10)
+          # One consumer group per job of this suite: slot + adapter index * shard count + shard.
+          $shard, $count = $env:AZ_IOT_TEST_SHARD -split '/'
+          $slot = [long]$env:E2E_GROUP_SLOT + [long]$env:E2E_ADAPTER_INDEX * [long]$count + [long]$shard
+          $group = 'e2e-' + (([long]$env:E2E_RUN_ID + $slot) % 10)
           ./c/eng/e2e-shared-device.ps1 -Prefix E2E_MQTTV5_SHARED -RegistrationId $env:E2E_REGISTRATION_ID `
             -ConsumerGroup $group -OutFile test_config/set_test_env_vars.ps1
 
@@ -143,11 +164,11 @@ jobs:
           $env:AZ_IOT_TRUSTED_CA = '/etc/ssl/certs/ca-certificates.crt'
           if ($env:IOT_DPS_GLOBAL_ENDPOINT) { $env:AZ_IOT_DPS_GLOBAL_ENDPOINT = $env:IOT_DPS_GLOBAL_ENDPOINT }
 
-          ctest --test-dir c/build/linux-gcc-debug -R e2e_mqttv5_custom_topic `
+          ctest --test-dir c/build/linux-gcc-debug -R "^$($env:AZ_IOT_E2E_TEST)$" `
             --verbose --no-tests=error --timeout 900
 
   twin:
-    name: twin / linux
+    name: twin / linux / ${{ matrix.adapter }} / shard ${{ matrix.shard }} of 3
     needs: adr-namespace
     if: >-
       ${{ !cancelled() && vars.E2E_MQTTV5_SHARED_ID_SCOPE != '' &&
@@ -157,6 +178,17 @@ jobs:
             github.actor != 'dependabot[bot]')) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        adapter: [ paho, az_mqtt ]
+        shard: [ 0, 1, 2 ]
+        include:
+          - { adapter: paho, target-suffix: '', tag: pa, index: 0 }
+          - { adapter: az_mqtt, target-suffix: _az_mqtt, tag: az, index: 1 }
+    env:
+      AZ_IOT_E2E_TEST: az_iot_tests_e2e_mqttv5_twin${{ matrix.target-suffix }}
+      AZ_IOT_TEST_SHARD: ${{ matrix.shard }}/3
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -169,7 +201,7 @@ jobs:
         working-directory: c
         run: |
           cmake --preset linux-gcc-debug -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_BUILD_E2E_MQTTV5=ON -DAZ_IOT_WITH_PAHO=ON -DAZ_IOT_WITH_AZ_MQTT=ON -DAZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE=1114112
-          cmake --build --preset linux-gcc-debug --target az_iot_tests_e2e_mqttv5_twin az_iot_tests_e2e_mqttv5_twin_az_mqtt
+          cmake --build --preset linux-gcc-debug --target "$AZ_IOT_E2E_TEST"
 
       - name: Issue a device
         shell: pwsh
@@ -179,7 +211,7 @@ jobs:
           E2E_MQTTV5_SHARED_EVENTHUB_CS: ${{ secrets.E2E_MQTTV5_SHARED_EVENTHUB_CS }}
           E2E_MQTTV5_SHARED_ID_SCOPE: ${{ vars.E2E_MQTTV5_SHARED_ID_SCOPE }}
           E2E_MQTTV5_SHARED_DPS_HOST: ${{ vars.E2E_MQTTV5_SHARED_DPS_HOST }}
-          E2E_REGISTRATION_ID: ci-mqttv5-tw-${{ github.run_id }}-${{ github.run_attempt }}
+          E2E_REGISTRATION_ID: ci-mqttv5-tw-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.tag }}${{ matrix.shard }}
           E2E_RUN_ID: ${{ github.run_id }}
         # The twin suite reads no events; the consumer group only satisfies the script.
         run: |
@@ -209,7 +241,7 @@ jobs:
           $env:AZ_IOT_TRUSTED_CA = '/etc/ssl/certs/ca-certificates.crt'
           if ($env:IOT_DPS_GLOBAL_ENDPOINT) { $env:AZ_IOT_DPS_GLOBAL_ENDPOINT = $env:IOT_DPS_GLOBAL_ENDPOINT }
 
-          ctest --test-dir c/build/linux-gcc-debug -R e2e_mqttv5_twin `
+          ctest --test-dir c/build/linux-gcc-debug -R "^$($env:AZ_IOT_E2E_TEST)$" `
             --verbose --no-tests=error --timeout 900
 
   connection:
@@ -246,10 +278,11 @@ jobs:
           E2E_MQTTV5_SHARED_ID_SCOPE: ${{ vars.E2E_MQTTV5_SHARED_ID_SCOPE }}
           E2E_MQTTV5_SHARED_DPS_HOST: ${{ vars.E2E_MQTTV5_SHARED_DPS_HOST }}
           E2E_REGISTRATION_ID: ci-mqttv5-cn-${{ github.run_id }}-${{ github.run_attempt }}
+          E2E_GROUP_SLOT: 9
           E2E_RUN_ID: ${{ github.run_id }}
         # Consumer groups e2e-0..e2e-9; Event Hubs allows 5 readers per partition per group.
         run: |
-          $group = 'e2e-' + ([long]$env:E2E_RUN_ID % 10)
+          $group = 'e2e-' + (([long]$env:E2E_RUN_ID + [long]$env:E2E_GROUP_SLOT) % 10)
           ./c/eng/e2e-shared-device.ps1 -Prefix E2E_MQTTV5_SHARED -RegistrationId $env:E2E_REGISTRATION_ID `
             -ConsumerGroup $group -OutFile test_config/set_test_env_vars.ps1
 
@@ -312,10 +345,11 @@ jobs:
           E2E_MQTTV5_SHARED_ID_SCOPE: ${{ vars.E2E_MQTTV5_SHARED_ID_SCOPE }}
           E2E_MQTTV5_SHARED_DPS_HOST: ${{ vars.E2E_MQTTV5_SHARED_DPS_HOST }}
           E2E_REGISTRATION_ID: ci-mqttv5-te-${{ github.run_id }}-${{ github.run_attempt }}
+          E2E_GROUP_SLOT: 8
           E2E_RUN_ID: ${{ github.run_id }}
         # Consumer groups e2e-0..e2e-9; Event Hubs allows 5 readers per partition per group.
         run: |
-          $group = 'e2e-' + ([long]$env:E2E_RUN_ID % 10)
+          $group = 'e2e-' + (([long]$env:E2E_RUN_ID + [long]$env:E2E_GROUP_SLOT) % 10)
           ./c/eng/e2e-shared-device.ps1 -Prefix E2E_MQTTV5_SHARED -RegistrationId $env:E2E_REGISTRATION_ID `
             -ConsumerGroup $group -OutFile test_config/set_test_env_vars.ps1
 
@@ -411,7 +445,7 @@ jobs:
             --verbose --no-tests=error --timeout 900
 
   transport:
-    name: transport / linux
+    name: transport / linux / ${{ matrix.adapter }} / shard ${{ matrix.shard }} of 2
     needs: adr-namespace
     if: >-
       ${{ !cancelled() && vars.E2E_MQTTV5_SHARED_ID_SCOPE != '' &&
@@ -421,6 +455,17 @@ jobs:
             github.actor != 'dependabot[bot]')) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        adapter: [ paho, az_mqtt ]
+        shard: [ 0, 1 ]
+        include:
+          - { adapter: paho, target-suffix: '', tag: pa, index: 0 }
+          - { adapter: az_mqtt, target-suffix: _az_mqtt, tag: az, index: 1 }
+    env:
+      AZ_IOT_E2E_TEST: az_iot_tests_e2e_mqttv5_transport${{ matrix.target-suffix }}
+      AZ_IOT_TEST_SHARD: ${{ matrix.shard }}/2
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -464,7 +509,7 @@ jobs:
         working-directory: c
         run: |
           cmake --preset linux-gcc-debug -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_BUILD_E2E_MQTTV5=ON -DAZ_IOT_WITH_PAHO=ON -DAZ_IOT_WITH_AZ_MQTT=ON -DAZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE=1114112
-          cmake --build --preset linux-gcc-debug --target az_iot_tests_e2e_mqttv5_transport az_iot_tests_e2e_mqttv5_transport_az_mqtt
+          cmake --build --preset linux-gcc-debug --target "$AZ_IOT_E2E_TEST"
 
       - name: Issue a device
         shell: pwsh
@@ -474,11 +519,16 @@ jobs:
           E2E_MQTTV5_SHARED_EVENTHUB_CS: ${{ secrets.E2E_MQTTV5_SHARED_EVENTHUB_CS }}
           E2E_MQTTV5_SHARED_ID_SCOPE: ${{ vars.E2E_MQTTV5_SHARED_ID_SCOPE }}
           E2E_MQTTV5_SHARED_DPS_HOST: ${{ vars.E2E_MQTTV5_SHARED_DPS_HOST }}
-          E2E_REGISTRATION_ID: ci-mqttv5-tr-${{ github.run_id }}-${{ github.run_attempt }}
+          E2E_REGISTRATION_ID: ci-mqttv5-tr-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.tag }}${{ matrix.shard }}
+          E2E_GROUP_SLOT: 4
+          E2E_ADAPTER_INDEX: ${{ matrix.index }}
           E2E_RUN_ID: ${{ github.run_id }}
         # Consumer groups e2e-0..e2e-9; Event Hubs allows 5 readers per partition per group.
         run: |
-          $group = 'e2e-' + ([long]$env:E2E_RUN_ID % 10)
+          # One consumer group per job of this suite: slot + adapter index * shard count + shard.
+          $shard, $count = $env:AZ_IOT_TEST_SHARD -split '/'
+          $slot = [long]$env:E2E_GROUP_SLOT + [long]$env:E2E_ADAPTER_INDEX * [long]$count + [long]$shard
+          $group = 'e2e-' + (([long]$env:E2E_RUN_ID + $slot) % 10)
           ./c/eng/e2e-shared-device.ps1 -Prefix E2E_MQTTV5_SHARED -RegistrationId $env:E2E_REGISTRATION_ID `
             -ConsumerGroup $group -OutFile test_config/set_test_env_vars.ps1
 
@@ -504,7 +554,7 @@ jobs:
           $env:AZ_IOT_TRUSTED_CA = '/etc/ssl/certs/ca-certificates.crt'
           if ($env:IOT_DPS_GLOBAL_ENDPOINT) { $env:AZ_IOT_DPS_GLOBAL_ENDPOINT = $env:IOT_DPS_GLOBAL_ENDPOINT }
 
-          ctest --test-dir c/build/linux-gcc-debug -R e2e_mqttv5_transport `
+          ctest --test-dir c/build/linux-gcc-debug -R "^$($env:AZ_IOT_E2E_TEST)$" `
             --verbose --no-tests=error --timeout 900
 
       - name: Proxy log
@@ -547,10 +597,11 @@ jobs:
           E2E_MQTTV5_SHARED_ID_SCOPE: ${{ vars.E2E_MQTTV5_SHARED_ID_SCOPE }}
           E2E_MQTTV5_SHARED_DPS_HOST: ${{ vars.E2E_MQTTV5_SHARED_DPS_HOST }}
           E2E_REGISTRATION_ID: ci-mqttv5-cu-${{ github.run_id }}-${{ github.run_attempt }}
+          E2E_GROUP_SLOT: 8
           E2E_RUN_ID: ${{ github.run_id }}
         # Consumer groups e2e-0..e2e-9; Event Hubs allows 5 readers per partition per group.
         run: |
-          $group = 'e2e-' + ([long]$env:E2E_RUN_ID % 10)
+          $group = 'e2e-' + (([long]$env:E2E_RUN_ID + [long]$env:E2E_GROUP_SLOT) % 10)
           ./c/eng/e2e-shared-device.ps1 -Prefix E2E_MQTTV5_SHARED -RegistrationId $env:E2E_REGISTRATION_ID `
             -ConsumerGroup $group -OutFile test_config/set_test_env_vars.ps1
 

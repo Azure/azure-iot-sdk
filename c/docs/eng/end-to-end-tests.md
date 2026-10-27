@@ -333,7 +333,10 @@ resource group once: those survive the namespace, so the job creates none and ne
 assignment write unless the namespace identity changes.
 
 [`ci-c-e2e-mqttv5.yml`](../../../.github/workflows/ci-c-e2e-mqttv5.yml) runs the mqttv5 suites on
-that environment, one job per client. On schedule and manual runs the namespace job runs first; pull
+that environment, one job per client. The twin, transport and custom topic suites run one job per
+adapter and per shard instead (`AZ_IOT_TEST_SHARD=<index>/<count>`, see
+[`test_shard.h`](../../tests/support/test_shard.h)), each with its own device, so their cases run in
+parallel. On schedule and manual runs the namespace job runs first; pull
 requests skip it (it logs in to Azure and runs the checked-out script) and rely on its scheduled run (every 10 minutes). Each job issues a device with
 `e2e-shared-device.ps1 -Prefix E2E_MQTTV5_SHARED` from secret `E2E_MQTTV5_SHARED_GROUP_CA`, and
 reads secrets `E2E_MQTTV5_SHARED_IOTHUB_SERVICE_CS` and `_EVENTHUB_CS` (`service` policy; the former is passed to the
