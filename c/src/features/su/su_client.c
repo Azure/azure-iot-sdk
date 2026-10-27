@@ -3148,11 +3148,68 @@ az_iot_result az_iot_su_client__initialize_with_channel(
   return su_client_init_core(client, channel, crypto, options);
 }
 
-AZ_NODISCARD az_iot_result az_iot_su_client_init(
+/**
+ * @brief Checks the caller's build-time view of az_iot_su_client against this build.
+ *
+ * Runs before anything writes to the client: a smaller caller allocation must not be zeroed.
+ *
+ * @return true if all fields match; false, with an error log naming the first mismatch.
+ */
+static bool su_client_layout_matches(const az_iot_su_client_layout* layout)
+{
+  if (layout == NULL || layout->layout_size != sizeof(az_iot_su_client_layout))
+  {
+    AZ_IOT_LOG_ERROR(
+        AZ_IOT_LOG_COMPONENT_SU,
+        "az_iot_su_client_layout is missing or differs between the application and the SDK");
+    return false;
+  }
+
+  const struct
+  {
+    const char* name;
+    size_t app;
+    size_t sdk;
+  } fields[] = {
+    { "AZ_IOT_SU_MAX_ROOT_KEYS", layout->max_root_keys, (size_t)AZ_IOT_SU_MAX_ROOT_KEYS },
+    { "AZ_IOT_SU_WORKFLOW_ID_SIZE", layout->workflow_id_size, (size_t)AZ_IOT_SU_WORKFLOW_ID_SIZE },
+    { "AZ_IOT_SU_RETRY_TIMESTAMP_SIZE",
+      layout->retry_timestamp_size,
+      (size_t)AZ_IOT_SU_RETRY_TIMESTAMP_SIZE },
+    { "AZ_IOT_MAX_SU_OBSERVERS", layout->max_observers, (size_t)AZ_IOT_MAX_SU_OBSERVERS },
+    { "_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS",
+      layout->max_instruction_steps,
+      (size_t)_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS },
+    { "sizeof(az_iot_su_client)", layout->client_size, sizeof(az_iot_su_client) },
+  };
+
+  for (size_t i = 0; i < sizeof(fields) / sizeof(fields[0]); ++i)
+  {
+    if (fields[i].app != fields[i].sdk)
+    {
+      AZ_IOT_LOG_ERRORF(
+          AZ_IOT_LOG_COMPONENT_SU,
+          "%s is %lu in the application but %lu in the SDK; "
+          "build both from the same SDK headers with the same capacity macros",
+          fields[i].name,
+          (unsigned long)fields[i].app,
+          (unsigned long)fields[i].sdk);
+      return false;
+    }
+  }
+  return true;
+}
+
+AZ_NODISCARD az_iot_result az_iot_su_client_init_checked(
     az_iot_su_client* client,
     az_iot_connection_client* connection,
-    const az_iot_su_client_config_options* options)
+    const az_iot_su_client_config_options* options,
+    const az_iot_su_client_layout* client_layout)
 {
+  if (!su_client_layout_matches(client_layout))
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
   if (client == NULL || connection == NULL || options == NULL)
   {
     return AZ_IOT_ERR_INVALID_ARG;

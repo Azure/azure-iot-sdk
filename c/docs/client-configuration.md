@@ -197,6 +197,13 @@ Defaults used when the matching option is left at 0:
 
 #### Software updates ([az_iot_su.h](../inc/azure/iot/az_iot_su.h))
 
+`AZ_IOT_SU_MAX_ROOT_KEYS`, `AZ_IOT_SU_WORKFLOW_ID_SIZE`, `AZ_IOT_SU_RETRY_TIMESTAMP_SIZE`,
+`AZ_IOT_MAX_SU_OBSERVERS` and azure-sdk-for-c's `_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS` size
+`az_iot_su_client`, which the application allocates: define them identically for the application
+and the SDK. `az_iot_su_client_init()`
+returns `AZ_IOT_ERR_INVALID_ARG`, with an `ERROR` log, when `sizeof(az_iot_su_client)` or any
+field of `az_iot_su_client_layout` differs between the two builds.
+
 | Macro | Default | Bounds |
 | --- | --- | --- |
 | `AZ_IOT_SU_MAX_ROOT_KEYS` | 8 | Root keys in the trust store. |
@@ -205,6 +212,7 @@ Defaults used when the matching option is left at 0:
 | `AZ_IOT_SU_DEFAULT_RESULT_DETAILS_SIZE` | 128 | Default `az_iot_su_limits::result_details_size`. |
 | `AZ_IOT_SU_VERIFY_SCRATCH_SIZE` | 8192 | Stack used by `az_iot_su_parse_update_request()` for the decoded signature (JWS header with the signing key, and the signatures), and the default `az_iot_su_limits::scratch_size`. A signature that does not fit fails with `AZ_IOT_ERR_AUTH` and an `ERROR` log naming the part that is too large. |
 | `AZ_IOT_SU_WORKFLOW_ID_SIZE` | 64 | Workflow ID kept for reporting, duplicate detection and persistence. A deployment with a longer ID is refused: nothing is processed or reported, and `AZ_IOT_SU_EVENT_UPDATE_REFUSED` is raised with `AZ_IOT_ERR_NOT_ENOUGH_SPACE`. |
+| `AZ_IOT_SU_RETRY_TIMESTAMP_SIZE` | 64 | Copy of the deployment's `retryTimestamp` (ISO-8601, about 28 characters; not persisted). A longer one is treated as absent. |
 | `AZ_IOT_SU_PERSIST_MAX_ATTEMPTS` | 5 | Consecutive failed state writes before the client stops retrying (1 to `0xFFFFFFFF`). |
 | `AZ_IOT_SU_DEVICE_PROPERTIES_BUFFER_SIZE` | 512 | Default `az_iot_su_limits::device_properties_size`; `az_iot_su_device_properties_buffer_size()` gives the exact size. |
 | `AZ_IOT_MAX_SU_OBSERVERS` | 4 | Observers the application can register. |
