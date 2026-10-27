@@ -175,8 +175,8 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods
                     {
                         // The user signalled that the device was ready for the direct method, so locally save the ready Id and request Id.
                         // If a duplicate probe for the same request was accepted concurrently, reuse whichever ready Id was saved first.
-                        ByteString savedReadyId = _pendingExpectedDirectMethodReadyIds.GetOrAdd(requestId.Value, probeAckToSend.Ready.ReadyId);
                         _pendingExpectedDirectMethodNames.TryAdd(requestId.Value, probe.MethodName);
+                        ByteString savedReadyId = _pendingExpectedDirectMethodReadyIds.GetOrAdd(requestId.Value, probeAckToSend.Ready.ReadyId);
 
                         if (!savedReadyId.Equals(probeAckToSend.Ready.ReadyId))
                         {
