@@ -370,7 +370,11 @@ Offered-update scenarios:
 
 The device identity is fixed by its certificate, so offers are told apart by compatibility:
 each is an update compatible only with `AZ_IOT_E2E_SU_OFFER_MANUFACTURER` and its model, with
-its own Azure Device Registry `OnboardingUpdate` job.
+its own Azure Device Registry `OnboardingUpdate` job. A job offers nothing until it has a run, so
+each gets one run that starts at once; staging waits until every run is `Active`, then 5 more
+minutes (devices got `401000` for about 3 minutes after a run turned `Active`). An onboarding offer
+reaches a device once: a device that reported it is not offered it again, so every execution of the
+offer suite (one per MQTT adapter) needs its own new device.
 [`scripts/SuE2E.psm1`](../../tests/e2e/scripts/SuE2E.psm1) stages them (`New-SuE2EOffers`),
 checks each job's per-device result (`Test-SuE2EOffers`) and deletes them
 (`Remove-SuE2EOffers`).
