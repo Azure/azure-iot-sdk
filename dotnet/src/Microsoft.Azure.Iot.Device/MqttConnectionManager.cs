@@ -112,6 +112,20 @@ namespace Microsoft.Azure.Iot.Device
         public bool CanReprovision { get; set; }
 
         /// <summary>
+        /// Asks the owning connection client to switch to its other set of credentials (primary or secondary) for the
+        /// current endpoint after the server rejected the current ones as an identity failure.
+        /// </summary>
+        /// <remarks>
+        /// Returns false when there is nothing to switch to. Each set of credentials is tried at most once between
+        /// successful connects, so an identity failure only ends connection maintenance once both have been rejected.
+        /// The next CONNECT picks up the switched credentials when the owning client patches it.
+        /// </remarks>
+        public Func<CancellationToken, Task<bool>>? TrySwitchCredentialsAsync { get; set; }
+
+        // Set once the credentials have been switched after an identity failure, and cleared by a successful connect.
+        private volatile bool _credentialsSwitchedSinceLastConnect;
+
+        /// <summary>
         /// The endpoint the current connection targets, surfaced to the retry policy so it can tell whether it is being
         /// asked to retry connecting to an IoT hub or to Device Provisioning Service.
         /// </summary>
@@ -402,6 +416,7 @@ namespace Microsoft.Azure.Iot.Device
         {
             _mostRecentConnect = connect;
             _isClosing = false;
+            _credentialsSwitchedSinceLastConnect = false;
 
             lock (_connectionLifetimeCancellationTokenLock)
             {
@@ -531,11 +546,20 @@ namespace Microsoft.Azure.Iot.Device
                 }
 
                 DeviceException? disconnectException = Classify(args.Reason);
+                bool switchedCredentials = false;
                 if (disconnectException is { Retryability: not ErrorRetryability.Retryable })
                 {
-                    // The server told us why it hung up, and the reason says that coming back is the wrong move.
-                    await EndConnectionMaintenanceAsync(disconnectException, args);
-                    return;
+                    switchedCredentials = await TrySwitchCredentialsAfterIdentityFaultAsync(disconnectException, ConnectionLifetimeCancellationToken);
+                    if (_isClosing)
+                    {
+                        return;
+                    }
+                    if (!switchedCredentials)
+                    {
+                        // The server told us why it hung up, and the reason says that coming back is the wrong move.
+                        await EndConnectionMaintenanceAsync(disconnectException, args);
+                        return;
+                    }
                 }
 
                 Trace.TraceInformation("Disconnect detected, starting reconnection. Disconnect reason: {0}", args.Reason);
@@ -555,7 +579,7 @@ namespace Microsoft.Azure.Iot.Device
                 Debug.Assert(_mostRecentConnect != null);
 
                 // start reconnection if the user didn't initiate this disconnect
-                await MaintainConnectionAsync(_mostRecentConnect!, args, _reconnectionCancellationToken.Token);
+                await MaintainConnectionAsync(_mostRecentConnect!, args, _reconnectionCancellationToken.Token, switchedCredentials);
             }
             catch (Exception e)
             {
@@ -578,8 +602,12 @@ namespace Microsoft.Azure.Iot.Device
         /// what decides whether a terminal failure is thrown to a caller or only reported through the fault event.
         /// </param>
         /// <param name="cancellationToken">Cancels the retry loop.</param>
+        /// <param name="switchedCredentialsBeforeFirstAttempt">
+        /// True when the disconnect that triggered this reconnection rejected the credentials and they were already
+        /// switched, so the first attempt is made at once with the other set.
+        /// </param>
         /// <returns>The CONNACK, or null when reconnection was abandoned.</returns>
-        private async Task<MqttConnectAck?> MaintainConnectionAsync(MqttConnect options, MqttClientDisconnectedEventArgs? lastDisconnect, CancellationToken cancellationToken)
+        private async Task<MqttConnectAck?> MaintainConnectionAsync(MqttConnect options, MqttClientDisconnectedEventArgs? lastDisconnect, CancellationToken cancellationToken, bool switchedCredentialsBeforeFirstAttempt = false)
         {
             // This function is either called when initially connecting the client or when reconnecting it. The behavior
             // of this function should change depending on the context it was called. For instance, thrown exceptions are the expected
@@ -621,7 +649,13 @@ namespace Microsoft.Azure.Iot.Device
                     lastException = deviceException;
                 }
 
-                if (deviceException is { Retryability: not ErrorRetryability.Retryable })
+                // An identity failure only ends maintenance once both sets of credentials have been rejected. Until
+                // then, retry at once with the other set rather than waiting out the retry policy.
+                bool retryWithSwitchedCredentials = switchedCredentialsBeforeFirstAttempt
+                    || await TrySwitchCredentialsAfterIdentityFaultAsync(deviceException, cancellationToken);
+                switchedCredentialsBeforeFirstAttempt = false;
+
+                if (!retryWithSwitchedCredentials && deviceException is { Retryability: not ErrorRetryability.Retryable })
                 {
                     Trace.TraceError("Encountered a fatal exception while maintaining connection {0}", deviceException);
                     await EndConnectionMaintenanceAsync(deviceException, lastDisconnect);
@@ -640,7 +674,11 @@ namespace Microsoft.Azure.Iot.Device
 
                 // Always consult the retry policy when reconnecting, but only consult it on attempt > 1 when
                 // initially connecting
-                if (isReconnection || attemptCount > 1)
+                if (retryWithSwitchedCredentials)
+                {
+                    retryDelay = TimeSpan.Zero;
+                }
+                else if (isReconnection || attemptCount > 1)
                 {
                     RetryGuidance guidance = _connectionRetryPolicy.GetRetryGuidance(attemptCount, lastException, ConnectionEndpoint, out retryDelay);
 
@@ -723,6 +761,9 @@ namespace Microsoft.Azure.Iot.Device
                     using CancellationTokenSource linkedCancellationToken = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, reconnectionTimeoutCancellationToken.Token);
                     MqttConnectAck? mostRecentConnectResult = await TryEstablishConnectionAsync(options, linkedCancellationToken.Token).ConfigureAwait(false);
 
+                    // The server accepted the current credentials, so a later rejection may fall back to the other set again.
+                    _credentialsSwitchedSinceLastConnect = false;
+
                     if (isReconnection && _isClosing)
                     {
                         // The owner deliberately closed the connection while this attempt was completing. The close
@@ -762,6 +803,42 @@ namespace Microsoft.Azure.Iot.Device
                     attemptCount++;
                 }
             }
+        }
+
+        /// <summary>
+        /// Switch to the other set of credentials after an identity failure, unless they were already switched since the
+        /// last successful connect.
+        /// </summary>
+        /// <returns>True if the next attempt should be made with the switched credentials.</returns>
+        private async Task<bool> TrySwitchCredentialsAfterIdentityFaultAsync(DeviceException? fault, CancellationToken cancellationToken)
+        {
+            Func<CancellationToken, Task<bool>>? trySwitchCredentials = TrySwitchCredentialsAsync;
+            if (fault is not { Retryability: ErrorRetryability.IdentityTerminal }
+                || _credentialsSwitchedSinceLastConnect
+                || trySwitchCredentials == null)
+            {
+                return false;
+            }
+
+            try
+            {
+                using CancellationTokenSource credentialTimeoutCancellationToken = new();
+                credentialTimeoutCancellationToken.CancelAfter(_connectionAttemptTimeout);
+                using CancellationTokenSource linkedCancellationToken = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, credentialTimeoutCancellationToken.Token);
+                if (!await trySwitchCredentials(linkedCancellationToken.Token).ConfigureAwait(false))
+                {
+                    return false;
+                }
+            }
+            catch (Exception e)
+            {
+                Trace.TraceError("Failed to switch credentials after an identity failure. {0}", e);
+                return false;
+            }
+
+            _credentialsSwitchedSinceLastConnect = true;
+            Trace.TraceWarning("{0} rejected the device's credentials, retrying with its other credentials. {1}", ConnectionEndpoint, fault);
+            return true;
         }
 
         private async Task DisconnectSupersededReconnectionAsync()
@@ -869,6 +946,25 @@ namespace Microsoft.Azure.Iot.Device
                         return new DeviceException(connackException.Message, connectingFailed)
                         {
                             Retryability = connackException.Retryability,
+                            IsContained = false,
+                        };
+                    }
+
+                // MQTTnet 5 returns a CONNACK refusal (including NotAuthorized) as a result rather than throwing it; the
+                // adapter maps that result and TryEstablishConnectionAsync turns it into the SDK's own
+                // MqttConnectingFailedException above. MQTTnet only throws this exception to wrap a failure while
+                // exchanging CONNECT/CONNACK (for example the connection closing first), so classify what it wraps.
+                case MQTTnet.Adapter.MqttConnectingFailedException connectingFailed:
+                    {
+                        DeviceException? innerException = Classify(connectingFailed.InnerException, userCancellationRequested);
+                        if (innerException == null)
+                        {
+                            return Retryable(connectingFailed, "The connection attempt failed before the server answered it.");
+                        }
+
+                        return new DeviceException(innerException.Message, connectingFailed)
+                        {
+                            Retryability = innerException.Retryability,
                             IsContained = false,
                         };
                     }

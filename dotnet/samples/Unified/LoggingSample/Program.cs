@@ -56,7 +56,7 @@ internal class Program
         try
         {
             using var certificate = SampleConstants.LoadBootCertificate();
-            X509AuthenticationProvider authentication = new(certificate);
+            X509AuthenticationProvider authentication = new(certificate, null);
             ProvisioningSettings provisioningSettings = new(SampleConstants.LoadIdScope());
             using ConnectionClient connectionClient = new(new ConnectionClientOptions
             {

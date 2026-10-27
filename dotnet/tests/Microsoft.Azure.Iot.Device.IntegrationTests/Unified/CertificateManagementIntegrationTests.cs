@@ -50,7 +50,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
             Assert.Same(connectionContext, device.ConnectionClient.GetCurrentConnectionContext());
 
             // A successful Hub connection with an issued certificate must not fall back to a SAS token.
-            AuthenticationCredentials hubCredentials = await authentication.GetOperationalAuthenticationCredentialsAsync(
+            AuthenticationCredentials hubCredentials = await authentication.GetPrimaryOperationalAuthenticationCredentialsAsync(
                 connectionContext.IotHubHostName,
                 connectionContext.DeviceId,
                 connectionContext.IssuedClientCertificates,
@@ -61,7 +61,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
             Assert.True(hubCredentials.ClientCertificate.HasPrivateKey);
             Assert.Empty(hubCredentials.Password);
 
-            AuthenticationCredentials dpsCredentials = authentication.GetBootAuthenticationCredentials();
+            AuthenticationCredentials dpsCredentials = await authentication.GetPrimaryBootAuthenticationCredentialsAsync(TestContext.Current.CancellationToken);
             Assert.Null(dpsCredentials.ClientCertificate);
             Assert.StartsWith("SharedAccessSignature ", Encoding.UTF8.GetString(dpsCredentials.Password));
         }
@@ -82,7 +82,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
                 Assert.NotEmpty(connectionContext.IssuedClientCertificates);
 
                 // The provider can mint SAS tokens, but once a certificate is issued the file upload client must authenticate with it instead
-                AuthenticationCredentials hubCredentials = await device.AuthenticationProvider.GetOperationalAuthenticationCredentialsAsync(
+                AuthenticationCredentials hubCredentials = await device.AuthenticationProvider.GetPrimaryOperationalAuthenticationCredentialsAsync(
                     connectionContext.IotHubHostName,
                     connectionContext.DeviceId,
                     connectionContext.IssuedClientCertificates,
@@ -129,7 +129,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
 
             // Create initial CSR to be processed by DPS
             var (csrBase64, privateKey) = CertificateUtilities.GenerateCsrAndPrivateKey(registrationId, CertificateUtilities.CsrAlgorithm.RSA);
-            X509AuthenticationProvider x509AuthenticationProvider = new(deviceCertificate, privateKey);
+            X509AuthenticationProvider x509AuthenticationProvider = new(deviceCertificate, null, privateKey);
 
             ConnectionClient connectionClient = new();
 
