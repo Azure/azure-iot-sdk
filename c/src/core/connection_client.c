@@ -5089,8 +5089,9 @@ static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
     case AZ_IOT_MQTT_EVT_DISCONNECTED:
       /* An mqttv5 Not authorized DISCONNECT is an identity refusal too. */
       note_identity_refusal(c, evt->status);
-      /* A close() or a refusal takes precedence: the session does not end by the request. */
-      if (c->user_close || reason_is_identity_refusal(evt->status))
+      /* Only a clean completion (AZ_IOT_OK) is the requested disconnect; a close() or
+       * any failure takes precedence and keeps its own reason. */
+      if (c->user_close || evt->status != AZ_IOT_OK)
       {
         c->requested_reconnect.in_progress = false;
       }

@@ -193,10 +193,11 @@ extern "C"
    * @brief Ask the connection to end the hub session and reconnect.
    *
    * Served by the next az_iot_connection_client_do_work(), which sends
-   * DISCONNECT. When the adapter reports the disconnect, or after 5 s without
+   * DISCONNECT. When the adapter reports it completed (AZ_IOT_OK), or after 5 s without
    * it, or at once if disconnect() is refused, the session is torn down and a
    * reconnect is scheduled with @p reason; without an enabled reconnection
-   * policy the hub scope faults with @p reason instead. If close() is called
+   * policy the hub scope faults with @p reason instead. A disconnect reported
+   * with an error ends the session as that failure, not as the request. If close() is called
    * meanwhile, the session ends as close() asks. Dropped if the session ends
    * before it is served, or when a SAS token renewal is ending it. Takes
    * precedence over a renewal that becomes due. A request while one is in
