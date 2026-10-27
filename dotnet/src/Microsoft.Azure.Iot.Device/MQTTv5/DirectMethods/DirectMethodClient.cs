@@ -187,13 +187,13 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods
                     return;
                 }
 
-                uint remainingConnectTimeoutInSeconds = connectTimeoutRemainingUponReceivingProbe - secondsSinceReceivingProbe;
-
-                if (remainingConnectTimeoutInSeconds < 1)
+                if (secondsSinceReceivingProbe >= connectTimeoutRemainingUponReceivingProbe)
                 {
                     Trace.TraceWarning("Application did not respond to direct method probe message before the connect timeout elapsed, so no probe ack message will be sent.");
                     return;
                 }
+
+                uint remainingConnectTimeoutInSeconds = connectTimeoutRemainingUponReceivingProbe - secondsSinceReceivingProbe;
 
                 if (!isDuplicateProbe && probeAckToSend.Ready != default)
                 {

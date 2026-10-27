@@ -161,7 +161,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             {
                 if (++probeHandlerInvocations == 1)
                 {
-                    await Task.Delay(TimeSpan.FromMilliseconds(1100));
+                    await Task.Delay(TimeSpan.FromMilliseconds(2100));
                 }
 
                 return DirectMethodProbeAck.Accepted();
