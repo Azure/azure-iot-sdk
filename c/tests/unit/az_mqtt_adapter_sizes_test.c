@@ -16,6 +16,7 @@
 #include <setjmp.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 
 #if defined(_WIN32)
@@ -554,7 +555,6 @@ static void receives_more_than_it_can_send_and_advertises_it_v5(void** state)
 static void a_workspace_client_advertises_its_limits_v5(void** state)
 {
   (void)state;
-  static uint8_t workspace[64 * 1024];
   az_iot_mqtt_limits limits = { 0 };
   limits.send_buffer_size = 512;
   limits.receive_buffer_size = 4096;
@@ -563,13 +563,17 @@ static void a_workspace_client_advertises_its_limits_v5(void** state)
   assert_true(limits.receive_buffer_size != AZ_IOT_AZ_MQTT_RECEIVE_BUFFER_SIZE);
   assert_true(limits.max_in_flight_messages != AZ_IOT_AZ_MQTT_INFLIGHT_MAX);
   size_t const size = az_iot_az_mqtt_get_workspace_size(&limits);
-  assert_true(size > 0 && size <= sizeof(workspace));
+  assert_true(size > 0);
+  /* Sized from the adapter: the TLS backend's state is part of it (Schannel: about 197 KB). */
+  uint8_t* workspace = (uint8_t*)malloc(size);
+  assert_non_null(workspace);
   az_iot_mqtt_client* c = NULL;
   assert_int_equal(
       az_iot_az_mqtt_get_adapter()->init(AZ_IOT_MQTT_VERSION_5, &limits, workspace, size, &c),
       AZ_IOT_OK);
   session s = open_session_of(c, true, 4096, 3);
   close_session(&s);
+  free(workspace);
 }
 
 int main(void)
