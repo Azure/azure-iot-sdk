@@ -2181,7 +2181,7 @@ namespace Microsoft.Azure.Iot.Device
             }
         }
 
-        private CancellationToken GetOperationLifetimeCancellationToken()
+        protected CancellationToken GetOperationLifetimeCancellationToken()
         {
             lock (_operationLifetimeCancellationLock)
             {

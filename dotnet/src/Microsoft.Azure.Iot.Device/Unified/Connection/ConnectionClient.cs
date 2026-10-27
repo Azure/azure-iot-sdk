@@ -58,6 +58,16 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
             AreCloudToDeviceMessagesEnabled = options.EnableCloudToDeviceMessages;
 
             ManagedMqttConnection.PublishReceivedAsync += HandleReceivedCertificateSigningPublish;
+            ConnectionFaultedAsync += _ =>
+            {
+                CancelPendingCertificateSigningOperations();
+                return Task.CompletedTask;
+            };
+            ReprovisioningStartedAsync += _ =>
+            {
+                CancelPendingCertificateSigningOperations();
+                return Task.CompletedTask;
+            };
         }
 
         private async Task HandleMQTTv5ClientConnectionReady(DevicePresenceFlowCompletedArgs args)
@@ -178,6 +188,8 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
             }
 
             cancellationToken.ThrowIfCancellationRequested();
+            CancellationToken operationLifetime = GetOperationLifetimeCancellationToken();
+            operationLifetime.ThrowIfCancellationRequested();
 
             CertificateSigningOperation operation = new();
 
@@ -187,23 +199,31 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
             }
 
             CancellationTokenRegistration cancellationRegistration = default;
+            CancellationTokenRegistration operationLifetimeRegistration = default;
+            void CancelOperation(CancellationToken token)
+            {
+                if (_pendingCertificateSigningOperations.TryRemove(new KeyValuePair<string, CertificateSigningOperation>(request.RequestId, operation)))
+                {
+                    operation.SetCanceled(token);
+                }
+            }
             try
             {
                 if (cancellationToken.CanBeCanceled)
                 {
-                    cancellationRegistration = cancellationToken.Register(() =>
-                    {
-                        if (_pendingCertificateSigningOperations.TryRemove(new KeyValuePair<string, CertificateSigningOperation>(request.RequestId, operation)))
-                        {
-                            operation.SetCanceled(cancellationToken);
-                        }
-                    });
-                    _ = operation.Completed.ContinueWith(
-                        _ => cancellationRegistration.Dispose(),
-                        CancellationToken.None,
-                        TaskContinuationOptions.ExecuteSynchronously,
-                        TaskScheduler.Default);
+                    cancellationRegistration = cancellationToken.Register(() => CancelOperation(cancellationToken));
                 }
+                operationLifetimeRegistration = operationLifetime.Register(() => CancelOperation(operationLifetime));
+                operationLifetime.ThrowIfCancellationRequested();
+                _ = operation.Completed.ContinueWith(
+                    _ =>
+                    {
+                        cancellationRegistration.Dispose();
+                        operationLifetimeRegistration.Dispose();
+                    },
+                    CancellationToken.None,
+                    TaskContinuationOptions.ExecuteSynchronously,
+                    TaskScheduler.Default);
 
                 MqttPublish certificateSigningRequestPublish = new()
                 {
@@ -219,6 +239,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
             {
                 _pendingCertificateSigningOperations.TryRemove(new KeyValuePair<string, CertificateSigningOperation>(request.RequestId, operation));
                 cancellationRegistration.Dispose();
+                operationLifetimeRegistration.Dispose();
                 throw;
             }
 

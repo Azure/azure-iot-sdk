@@ -190,6 +190,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
                 try
                 {
                     await client.ConnectToHubAsync(context, TestContext.Current.CancellationToken);
+                    await ReceiveCertificateSigningResponseAsync(client, request.RequestId, "200", CompletedResponse);
                     reconnected.TrySetResult();
                 }
                 catch (Exception e)
@@ -206,6 +207,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
             await Assert.ThrowsAnyAsync<OperationCanceledException>(() => operation.Completed.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken));
             Assert.Equal(acceptedFirst, operation.Accepted.IsCompletedSuccessfully);
             Assert.Equal(sentRequestCount, mockMqttClient.SentMqttTrafficInOrder.Count(traffic => traffic.Publish?.Topic == requestTopic));
+            Assert.Null(context.IssuedClientCertificates);
         }
 
         [Fact]

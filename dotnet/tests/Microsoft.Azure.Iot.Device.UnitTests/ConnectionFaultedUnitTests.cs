@@ -4,6 +4,7 @@
 using Microsoft.Azure.Iot.Device.Authentication;
 using Microsoft.Azure.Iot.Device.Exceptions;
 using Microsoft.Azure.Iot.Device.Models;
+using Microsoft.Azure.Iot.Device.Models.CertificateManagement;
 using Microsoft.Azure.Iot.Device.Models.Telemetry;
 using Microsoft.Azure.Iot.Device.Mqtt;
 using Microsoft.Azure.Iot.Device.Provisioning.Models;
@@ -89,6 +90,35 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
                     new[] { GlobalDeviceEndpoint, FirstAssignedHub, GlobalDeviceEndpoint, SecondAssignedHub },
                     connectedHostNames);
             }
+        }
+
+        [Fact]
+        public async Task ReprovisioningCancelsPendingCertificateSigningOperations()
+        {
+            using MockConnectionMqttClient mockMqttClient = new();
+            _ = new MockDeviceProvisioningService(mockMqttClient, _ => FirstAssignedHub);
+            using ConnectionClient connectionClient = new(new() { MqttClient = mockMqttClient });
+
+            ConnectionContext connectionContext = await connectionClient.ProvisionAndConnectAsync(
+                CreateProvisioningSettings(),
+                CreateAuthenticationProvider(),
+                cancellationToken: TestContext.Current.CancellationToken);
+            CertificateSigningOperation operation = await connectionClient.SendCertificateSigningRequestAsync(
+                new IotHubCertificateSigningRequest(DeviceId, "csr"),
+                TestContext.Current.CancellationToken);
+            TaskCompletionSource reprovisioningStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            connectionClient.ReprovisioningStartedAsync += _ =>
+            {
+                reprovisioningStarted.TrySetResult();
+                return Task.CompletedTask;
+            };
+
+            await mockMqttClient.SimulateServerDisconnectAsync(MqttDisconnectReason.NotAuthorized);
+            await reprovisioningStarted.Task.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => operation.Completed);
+            Assert.True(operation.Accepted.IsCanceled);
+            Assert.Null(connectionContext.IssuedClientCertificates);
         }
 
         [Fact]
