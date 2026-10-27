@@ -152,7 +152,10 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
 
             if (clientInitiated || reason == MqttDisconnectReason.NotAuthorized)
             {
-                await client.ConnectToHubAsync(context, TestContext.Current.CancellationToken);
+                await client.ProvisionAndConnectAsync(
+                    new ProvisioningSettings("someIdScope"),
+                    context.AuthenticationProvider,
+                    cancellationToken: TestContext.Current.CancellationToken);
             }
             await ReceiveCertificateSigningResponseAsync(client, unacceptedRequest.RequestId, "202", AcceptedResponse);
             await ReceiveCertificateSigningResponseAsync(client, acceptedRequest.RequestId, "200", CompletedResponse);
