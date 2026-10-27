@@ -5103,6 +5103,7 @@ static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
       else if (c->requested_reconnect.in_progress)
       {
         /* The disconnect a feature client's reconnect request sent. */
+        c->requested_reconnect.ending = true;
         c->deferred = az_iot_retry_policy_is_enabled(&c->opts.reconnection_policy) ? DEFER_RECONNECT
                                                                                    : DEFER_FAULT;
         c->deferred_reason = c->requested_reconnect.reason;
@@ -5573,6 +5574,7 @@ static az_iot_result start_connect_attempt(az_iot_connection_client* c)
 static void end_session_for_requested_reconnect(az_iot_connection_client* c)
 {
   az_iot_result reason = c->requested_reconnect.reason;
+  c->requested_reconnect.ending = true;
   if (az_iot_retry_policy_is_enabled(&c->opts.reconnection_policy))
   {
     schedule_reconnect(c, AZ_IOT_CONN_SCOPE_HUB, reason);
@@ -8419,7 +8421,7 @@ az_iot_result az_iot_connection_client__request_reconnect(
 
 bool az_iot_connection_client__session_ending_by_request(const az_iot_connection_client* client)
 {
-  return client && client->requested_reconnect.in_progress;
+  return client && client->requested_reconnect.ending;
 }
 
 void az_iot_connection_client__requested_reconnect_force_timeout(az_iot_connection_client* client)

@@ -1942,6 +1942,8 @@ extern "C"
     {
       bool requested;
       bool in_progress;
+      /* The session is ending by this request (not by another failure). */
+      bool ending;
       az_iot_result reason;
       uint64_t disconnect_deadline_ms;
     } requested_reconnect;
