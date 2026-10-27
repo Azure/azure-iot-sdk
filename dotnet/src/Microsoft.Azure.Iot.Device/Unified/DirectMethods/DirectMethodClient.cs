@@ -99,10 +99,16 @@ namespace Microsoft.Azure.Iot.Device.Unified.DirectMethods
             return await handler.Invoke(args);
         }
 
-        private async Task<DirectMethodProbeAck> HandleMqttv5DirectMethodProbeRequestAsync(DirectMethodRequestProbeReceivedEventArgs args)
+        private Task<DirectMethodProbeAck> HandleMqttv5DirectMethodProbeRequestAsync(DirectMethodRequestProbeReceivedEventArgs args)
         {
+            if (_directMethodInvoked.Handler == null)
+            {
+                Trace.TraceError("Received a direct method probe, but no handler was set on this client to handle it, so it is rejecting the probe as method not found.");
+                return Task.FromResult(DirectMethodProbeAck.Rejected(RejectedReason.MethodNotFound));
+            }
+
             // Since Classic Hub has no concept of a direct method probe message, make this unified client just accept any received probe request
-            return DirectMethodProbeAck.Accepted();
+            return Task.FromResult(DirectMethodProbeAck.Accepted());
         }
 
         private async Task HandleReceivedMqttPublish(MqttPublishReceivedEventArgs args)

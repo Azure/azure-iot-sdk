@@ -114,6 +114,26 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
         }
 
         [Fact]
+        public async Task MqttV5_RejectsProbeAsMethodNotFoundWhenNoHandlerIsSet()
+        {
+            MockFeatureConnectionClient connection = new()
+            {
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv5, DeviceId),
+            };
+            using DirectMethodClient directMethodClient = new(connection);
+
+            var probe = new Probe() { MethodName = "reboot", ResponseTimeoutSeconds = 30 };
+            MockMqttPublishReceivedEventArgs args = await connection.SimulateReceiveAsync(CreateMqttv5MethodPublish("probe:1", Guid.NewGuid().ToByteArray(), probe.ToByteArray()));
+
+            Assert.Equal(1, args.AcknowledgeCount);
+            MqttPublish probeAckPublish = Assert.Single(connection.PublishedMessages);
+            Assert.Equal("probe-ack:1", GetType(probeAckPublish));
+            ProbeAck sentProbeAck = ProbeAck.Parser.ParseFrom(probeAckPublish.Payload);
+            Assert.Equal(ProbeAck.ResultOneofCase.Rejected, sentProbeAck.ResultCase);
+            Assert.Equal(RejectedReason.MethodNotFound, sentProbeAck.Rejected.Reason);
+        }
+
+        [Fact]
         public void DirectMethodInvokedAsync_RejectsASecondHandler()
         {
             MockFeatureConnectionClient connection = new()
