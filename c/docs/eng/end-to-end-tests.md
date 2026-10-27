@@ -363,7 +363,6 @@ Offered-update scenarios:
 | --- | --- |
 | real update downloaded, verified, installed, reported SUCCEEDED | `AZ_IOT_E2E_SU_OFFER_MODEL` |
 | identical terminal report accepted; conflicting one gets 409000 `REPORT_CONFLICT` | same |
-| workflow offered again after its terminal report; identical re-report accepted | same |
 | incompatible device offered nothing | none |
 | install failure rolled back, reported FAILED | `AZ_IOT_E2E_SU_OFFER_MODEL_INSTALL_FAILURE` |
 | already installed, reported SKIPPED | `AZ_IOT_E2E_SU_OFFER_MODEL_ALREADY_INSTALLED` |
