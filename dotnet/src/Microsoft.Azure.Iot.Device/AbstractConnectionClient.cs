@@ -1,4 +1,4 @@
-﻿// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
+// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
 // See LICENSE file in the project root for full license information.
 
 using Microsoft.Azure.Iot.Device.Events;
@@ -115,6 +115,7 @@ namespace Microsoft.Azure.Iot.Device
         // certificate signing requests.
         private const string ProvisioningApiVersion = "2026-11-02-preview";
         private const string ProvisioningSubscribeFilter = "$dps/registrations/res/#";
+        private const string ProvisioningResponseTopicPrefix = "$dps/registrations/res/";
         private const string ProvisioningRegisterTopic = "$dps/registrations/PUT/iotdps-register/?$rid={0}";
         private const string ProvisioningGetOperationsTopic = "$dps/registrations/GET/iotdps-get-operationstatus/?$rid={0}&operationId={1}";
         private const string RetryAfterHeader = "Retry-After";
@@ -232,6 +233,10 @@ namespace Microsoft.Azure.Iot.Device
         // on the latest value rather than a stale cache.
         private volatile bool _needsReprovision;
 
+        // Whether connections to Device Provisioning Service present the secondary boot credentials, because DPS
+        // rejected the primary ones during the current provisioning run.
+        private volatile bool _usesSecondaryBootCredentials;
+
         // The Retry-After that Device Provisioning Service most recently asked for during a registration, in ticks (0
         // when it asked for none). It is captured from each provisioning response and read as a floor on the
         // re-provisioning backoff, so a registration that fails after the service asked to be left alone waits at least
@@ -336,6 +341,7 @@ namespace Microsoft.Azure.Iot.Device
             ManagedMqttConnection.ConnectedAsync += HandleConnectedAsync;
             ManagedMqttConnection.DisconnectedAsync += HandleDisconnectedAsync;
             ManagedMqttConnection.ConnectionFaultedAsync += HandleConnectionFaultedAsync;
+            ManagedMqttConnection.TrySwitchCredentialsAsync = TrySwitchCredentialsAsync;
             ManagedMqttConnection.PublishReceivedAsync += HandleReceivedProvisioningPublishAsync;
         }
 
@@ -355,9 +361,12 @@ namespace Microsoft.Azure.Iot.Device
         /// connects to the hub it is assigned.
         /// </para>
         /// <para>
-        /// If the connection to the assigned IoT hub later faults because of this device's identity, this client
-        /// provisions again with these same credentials and reconnects to whichever hub it is assigned, without the
-        /// application having to do anything.
+        /// If the connection to the assigned IoT hub later faults because of this device's identity, this client first
+        /// retries at once with the other of the provider's primary and secondary credentials (see
+        /// <see cref="AuthenticationProvider.GetSecondaryOperationalAuthenticationCredentialsAsync"/>), if it has
+        /// both. Only once the hub has rejected both does this client provision again with these same credentials
+        /// and reconnect to whichever hub it is assigned, without the application having to do anything. Device
+        /// Provisioning Service rejecting the primary boot credentials is likewise retried with the secondary ones.
         /// </para>
         /// </remarks>
         /// <param name="provisioningSettings">The mandatory and optional provisioning-specific fields</param>
@@ -760,6 +769,8 @@ namespace Microsoft.Azure.Iot.Device
             // This client is establishing a connection again, so any earlier fault no longer describes its state.
             ClearUnrecoverableFault();
 
+            // Every connection to a hub starts again with the primary credentials, mirroring the C client's open().
+            connectionContext.UsesSecondaryCredentials = false;
             CurrentConnectionContext = connectionContext;
 
             // Any session left on this IoT hub was not set up by this connection's presence flow, so its subscriptions are unknown.
@@ -827,7 +838,18 @@ namespace Microsoft.Azure.Iot.Device
                 AuthenticationProvider? provisioningAuthentication = _provisioningAuthentication;
                 if (provisioningAuthentication != null)
                 {
-                    connectPacketToEdit = ApplyAuthentication(provisioningAuthentication.GetBootAuthenticationCredentials(), connectPacketToEdit);
+                    AuthenticationCredentials? bootCredentials = null;
+                    if (_usesSecondaryBootCredentials)
+                    {
+                        bootCredentials = await provisioningAuthentication.GetSecondaryBootAuthenticationCredentialsAsync(cancellationToken).ConfigureAwait(false);
+                        if (bootCredentials == null)
+                        {
+                            _usesSecondaryBootCredentials = false;
+                        }
+                    }
+
+                    bootCredentials ??= await provisioningAuthentication.GetPrimaryBootAuthenticationCredentialsAsync(cancellationToken).ConfigureAwait(false);
+                    connectPacketToEdit = ApplyAuthentication(bootCredentials, connectPacketToEdit);
                 }
 
                 return connectPacketToEdit;
@@ -835,16 +857,12 @@ namespace Microsoft.Azure.Iot.Device
 
             // Authenticate with the credentials of the current hub connection rather than the provisioning inputs: a
             // device connected directly to a hub has no provisioning inputs, and a device provisioned with a CSR must
-            // connect with the operational certificate DPS issued rather than its boot credentials.
+            // connect with the operational certificate DPS issued rather than its boot credentials. These are the
+            // secondary credentials if the hub rejected the primary ones.
             ConnectionContext connectionContext = CurrentConnectionContext!;
-            AuthenticationProvider authentication = connectionContext.AuthenticationProvider;
-            IReadOnlyList<string>? issuedClientCertificates = connectionContext.IssuedClientCertificates;
-
-            AuthenticationCredentials hubCredentials = await authentication.GetOperationalAuthenticationCredentialsAsync(
-                connectPacketToEdit.HostName,
-                connectPacketToEdit.ClientId ?? authentication.GetRegistrationId(),
-                issuedClientCertificates,
-                cancellationToken).ConfigureAwait(false);
+            AuthenticationCredentials hubCredentials = await connectionContext.GetOperationalAuthenticationCredentialsAsync(
+                cancellationToken,
+                updateSecondaryCredentialSelection: true).ConfigureAwait(false);
             connectPacketToEdit = ApplyAuthentication(hubCredentials, connectPacketToEdit);
 
             bool resumeSession = !_useCleanSession && Interlocked.Exchange(ref _canResumeHubSession, 0) == 1;
@@ -853,6 +871,38 @@ namespace Microsoft.Azure.Iot.Device
 
             // Gen 1 hub clients and gen 2 hub clients can insert their specific username/password/protocol version/etc before each connect attempt
             return IotHubMqttConnectOverride(connectPacketToEdit);
+        }
+
+        /// <summary>
+        /// Switch between the primary and secondary credentials for the current endpoint after it rejected the current
+        /// ones as an identity failure. The connection layer calls this before giving up on the connection, so that the
+        /// device only re-provisions once both sets of credentials have been rejected.
+        /// </summary>
+        /// <returns>False if there are no secondary credentials to switch between.</returns>
+        private async Task<bool> TrySwitchCredentialsAsync(CancellationToken cancellationToken)
+        {
+            if (CurrentEndpoint == ConnectionEndpoint.DeviceProvisioningService)
+            {
+                AuthenticationProvider? provisioningAuthentication = _provisioningAuthentication;
+                if (_usesSecondaryBootCredentials)
+                {
+                    _usesSecondaryBootCredentials = false;
+                    return true;
+                }
+
+                if (provisioningAuthentication == null
+                    || await provisioningAuthentication.GetSecondaryBootAuthenticationCredentialsAsync(cancellationToken).ConfigureAwait(false) == null)
+                {
+                    return false;
+                }
+
+                _usesSecondaryBootCredentials = true;
+                return true;
+            }
+
+            ConnectionContext? connectionContext = CurrentConnectionContext;
+            return connectionContext != null
+                && await connectionContext.TrySwitchCredentialsAsync(cancellationToken).ConfigureAwait(false);
         }
 
         // Maps the protocol-agnostic authentication material onto an MQTT CONNECT packet
@@ -1322,6 +1372,7 @@ namespace Microsoft.Azure.Iot.Device
 
             cancellationToken.ThrowIfCancellationRequested();
             _provisioningFlowParentCancellationToken = cancellationToken;
+            int deliberateDisconnectCount = Volatile.Read(ref _deliberateDisconnectCount);
 
             _provisioningRequestPayload = new RegistrationRequestPayload()
             {
@@ -1352,6 +1403,8 @@ namespace Microsoft.Azure.Iot.Device
             // This client is establishing a connection again, so any earlier fault no longer describes its state.
             ClearUnrecoverableFault();
 
+            // Every provisioning run starts again with the primary boot credentials.
+            _usesSecondaryBootCredentials = false;
             _provisioningAuthentication = authentication;
 
             MqttConnect connect = CreateProvisioningConnectPacket(
@@ -1362,7 +1415,7 @@ namespace Microsoft.Azure.Iot.Device
             TaskCompletionSource<ProvisioningFlowCompletedArgs> provisioningFlowResult = new(TaskCreationOptions.RunContinuationsAsynchronously);
             Task HandleProvisioningFlowCompletedAsync(ProvisioningFlowCompletedArgs args)
             {
-                provisioningFlowResult.TrySetResult(args);
+                Volatile.Read(ref provisioningFlowResult).TrySetResult(args);
                 return Task.CompletedTask;
             }
 
@@ -1371,20 +1424,47 @@ namespace Microsoft.Azure.Iot.Device
 
             try
             {
-                // MQTT connection manager already checks connack for non-success cases, so no need to check it here as well
-                MqttConnectAck connack = await ManagedMqttConnection.ConnectAsync(connect, cancellationToken);
+                // Set once DPS has rejected one set of boot credentials in this run, so each set is tried at most once.
+                bool switchedCredentialsAfterRejectedRegistration = false;
 
-                ProvisioningFlowCompletedArgs provisioningFlowCompletedArgs = await provisioningFlowResult.Task.WaitAsync(cancellationToken);
-
-                if (provisioningFlowCompletedArgs.Exception != null)
+                while (true)
                 {
-                    throw provisioningFlowCompletedArgs.Exception;
+                    // MQTT connection manager already checks connack for non-success cases, so no need to check it here as well
+                    MqttConnectAck connack = await ManagedMqttConnection.ConnectAsync(connect, cancellationToken);
+
+                    ProvisioningFlowCompletedArgs provisioningFlowCompletedArgs = await provisioningFlowResult.Task.WaitAsync(cancellationToken);
+
+                    if (provisioningFlowCompletedArgs.Exception is DeviceException { Retryability: ErrorRetryability.IdentityTerminal }
+                        && !switchedCredentialsAfterRejectedRegistration
+                        && await TrySwitchCredentialsAsync(cancellationToken))
+                    {
+                        // DPS rejected these boot credentials when registering rather than when connecting, so connect
+                        // again to present the other set.
+                        Trace.TraceWarning("Device Provisioning Service rejected the device's credentials, retrying with its other credentials. {0}", provisioningFlowCompletedArgs.Exception);
+                        switchedCredentialsAfterRejectedRegistration = true;
+                        CancelCurrentProvisioningFlow();
+                        Volatile.Write(ref provisioningFlowResult, new(TaskCreationOptions.RunContinuationsAsynchronously));
+                        await DisconnectFromDpsAsync();
+
+                        if (Volatile.Read(ref _deliberateDisconnectCount) != deliberateDisconnectCount
+                            || Volatile.Read(ref _deliberateDisconnectsInProgress) != 0)
+                        {
+                            throw new OperationCanceledException("Provisioning was canceled because the connection client was deliberately disconnected.");
+                        }
+
+                        continue;
+                    }
+
+                    if (provisioningFlowCompletedArgs.Exception != null)
+                    {
+                        throw provisioningFlowCompletedArgs.Exception;
+                    }
+
+                    Debug.Assert(provisioningFlowCompletedArgs.RegistrationResult != null);
+
+                    //TODO do we care about initial twin as returned by DPS?
+                    return provisioningFlowCompletedArgs.RegistrationResult;
                 }
-
-                Debug.Assert(provisioningFlowCompletedArgs.RegistrationResult != null);
-
-                //TODO do we care about initial twin as returned by DPS?
-                return provisioningFlowCompletedArgs.RegistrationResult;
             }
             finally
             {
@@ -1399,19 +1479,24 @@ namespace Microsoft.Azure.Iot.Device
 
                 // Always close the MQTT connection once provisioning has finished so that the connection can be
                 // re-established against the assigned IoT hub.
-                var disconnect = new MqttDisconnect() { Reason = MqttDisconnectReasonCode.NormalDisconnection };
+                await DisconnectFromDpsAsync();
+            }
+        }
 
-                try
-                {
-                    await ManagedMqttConnection.DisconnectAsync(false, disconnect, CancellationToken.None);
-                }
-                catch (Exception)
-                {
-                    // Deliberately not rethrowing the exception because this is a "best effort" close.
-                    // The service may not have acknowledged that the client closed the connection, but
-                    // all local resources have been closed. The service will eventually realize the
-                    // connection is closed in cases like these.
-                }
+        private async Task DisconnectFromDpsAsync()
+        {
+            var disconnect = new MqttDisconnect() { Reason = MqttDisconnectReasonCode.NormalDisconnection };
+
+            try
+            {
+                await ManagedMqttConnection.DisconnectAsync(false, disconnect, CancellationToken.None);
+            }
+            catch (Exception)
+            {
+                // Deliberately not rethrowing the exception because this is a "best effort" close.
+                // The service may not have acknowledged that the client closed the connection, but
+                // all local resources have been closed. The service will eventually realize the
+                // connection is closed in cases like these.
             }
         }
 
@@ -1529,8 +1614,20 @@ namespace Microsoft.Azure.Iot.Device
                     // Anything else is the service refusing to start this registration, and its response says why:
                     // the status code lives in the response topic and the reason in the body. Reporting both is the
                     // only way the caller can tell, say, a malformed request from an enrollment that does not exist.
-                    throw new Exception(
-                        $"Device Provisioning Service did not start this registration. Response topic: '{response.Topic}'. Response body: '{response.Payload}'.");
+                    string message = $"Device Provisioning Service did not start this registration. Response topic: '{response.Topic}'. Response body: '{response.Payload}'.";
+
+                    if (GetStatusCodeFromTopic(response.Topic) == (int)System.Net.HttpStatusCode.Unauthorized)
+                    {
+                        // DPS accepts the CONNECT and only checks the credentials when registering, so this is how it
+                        // rejects them. ProvisionAsync retries with the other boot credentials, if there are any.
+                        throw new DeviceException(message)
+                        {
+                            Retryability = ErrorRetryability.IdentityTerminal,
+                            IsContained = false,
+                        };
+                    }
+
+                    throw new Exception(message);
                 }
 
                 return operation;
@@ -1723,6 +1820,18 @@ namespace Microsoft.Azure.Iot.Device
         {
             long ticks = Volatile.Read(ref _lastProvisioningServiceRetryAfterTicks);
             return ticks > 0 ? TimeSpan.FromTicks(ticks) : TimeSpan.Zero;
+        }
+
+        // Response topics are shaped like "$dps/registrations/res/{status}/?$rid={request id}".
+        private static int? GetStatusCodeFromTopic(string topic)
+        {
+            if (!topic.StartsWith(ProvisioningResponseTopicPrefix, StringComparison.Ordinal))
+            {
+                return null;
+            }
+
+            string statusCode = topic[ProvisioningResponseTopicPrefix.Length..].Split('/')[0];
+            return int.TryParse(statusCode, NumberStyles.None, CultureInfo.InvariantCulture, out int value) ? value : null;
         }
 
         private static TimeSpan? GetRetryAfterFromTopic(string topic)
