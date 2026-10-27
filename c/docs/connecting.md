@@ -273,6 +273,12 @@ Examples: [`samples/unified/websockets`](../samples/unified/websockets/main.c),
 | `keep_alive_seconds`, `connect_timeout_seconds` | Default 30 s each. |
 | `twin_push` | mqttv5 only. Fixed for the client's lifetime. `push_desired` (default `false`): the service pushes the desired snapshot on connect and each desired patch while connected. When `false`, no desired patches are sent; the twin client fetches the snapshot on connect when behind, and later changes are seen only on reconnect or after `az_iot_mqttv5_twin_client_get()`. `push_reported` (default `false`): the service pushes the reported section on connect. |
 
+A device that does not use twin initializes no twin client and leaves both `twin_push` bits `false`.
+On an mqttv5 hub its birth then requests no twin session and the service sends it no twin traffic;
+`ih/{device_id}/dev/#` covers the twin topic, but nothing is published there. On an mqttv3 hub, only
+an initialized twin client subscribes to twin topics. A `twin_push` bit set without a twin client
+makes the service push sections that the device drops.
+
 ## Certificates
 
 Every connection uses TLS. `certificate_provider` supplies the trusted CA and the X.509 device

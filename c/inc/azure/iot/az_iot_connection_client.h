@@ -677,6 +677,11 @@ extern "C"
      * az_iot_mqttv5_twin_client_set_reported_handler(); without a handler it is
      * dropped. Ignored for MQTTv3 hubs and for DPS sessions.
      *
+     * A device that does not use twin initializes no twin client and leaves
+     * both false: the birth then requests no twin session and the service sends
+     * no twin traffic. A bit set without a twin client makes the service push
+     * sections that the device drops.
+     *
      * Appended, like the options above it and for the same reason: this struct
      * is filled by callers, so a member inserted anywhere else would shift
      * every one after it for positional aggregate initializers. */
