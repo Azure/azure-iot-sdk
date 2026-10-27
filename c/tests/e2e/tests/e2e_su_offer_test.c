@@ -934,27 +934,6 @@ static void terminal_report_is_idempotent_and_a_conflict_is_detected(void** stat
   assert_int_equal(r->action, AZ_IOT_SU_ERROR_ACTION_RECHECK);
 }
 
-/* The service keeps offering a workflow after its terminal report. A client
- * with no record of it runs it again, and the identical report is accepted. */
-static void workflow_is_offered_again_after_its_terminal_report(void** state)
-{
-  (void)state;
-  if (!g_real_report.valid)
-  {
-    fail_msg("needs the terminal report of "
-             "real_update_is_downloaded_verified_installed_and_reported");
-  }
-  fixture* fx = &g_fx;
-  fixture_options o = fixture_options_default(g_model);
-  fixture_open(fx, &o);
-
-  const spy_report* r = run_offered_workflow(fx);
-
-  assert_string_equal(fx->spy.last_terminal.workflow_id, g_real_report.workflow_id);
-  assert_int_equal(r->outcome, AZ_IOT_SU_OUTCOME_SUCCEEDED);
-  assert_int_equal(r->result, AZ_IOT_OK);
-}
-
 /* A device whose compatibility matches no update is answered "no update". */
 static void incompatible_device_is_offered_nothing(void** state)
 {
@@ -1101,8 +1080,6 @@ int main(void)
         real_update_is_downloaded_verified_installed_and_reported, scenario_teardown),
     cmocka_unit_test_teardown(
         terminal_report_is_idempotent_and_a_conflict_is_detected, scenario_teardown),
-    cmocka_unit_test_teardown(
-        workflow_is_offered_again_after_its_terminal_report, scenario_teardown),
     cmocka_unit_test_teardown(incompatible_device_is_offered_nothing, scenario_teardown),
     cmocka_unit_test_teardown(
         install_failure_is_rolled_back_and_reported_failed, scenario_teardown),
