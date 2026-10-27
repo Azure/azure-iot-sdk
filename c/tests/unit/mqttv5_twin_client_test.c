@@ -3016,6 +3016,77 @@ static void a_refusal_during_the_requested_disconnect_counts_no_miss(void** stat
   assert_twin_push_wait_for_attempt(fx, 1);
 }
 
+/* The requested disconnect completes with a GET callback that closes: no fault (no policy). */
+static void a_close_from_a_teardown_callback_survives_the_disconnect_event(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  assert_int_equal(
+      az_iot_mqttv5_twin_client_get(&fx->twin, close_on_get_completion, &fx->conn), AZ_IOT_OK);
+  expire_twin_push_wait(fx);
+  assert_int_equal(
+      az_iot_connection_client_get_state(&fx->conn, AZ_IOT_CONN_SCOPE_HUB), AZ_IOT_CONN_STATE_IDLE);
+  assert_int_equal(count_states(AZ_IOT_CONN_STATE_FAULTED, AZ_IOT_ERR_TIMEOUT), 0);
+}
+
+/* With a policy, a close from a teardown callback is not followed by a reconnect, whether
+ * the disconnect event arrives or the bound expires. */
+static void a_close_from_a_teardown_callback_cancels_the_reconnect(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  assert_int_equal(
+      az_iot_mqttv5_twin_client_get(&fx->twin, close_on_get_completion, &fx->conn), AZ_IOT_OK);
+  expire_twin_push_wait(fx);
+  assert_int_equal(
+      az_iot_connection_client_get_state(&fx->conn, AZ_IOT_CONN_SCOPE_HUB), AZ_IOT_CONN_STATE_IDLE);
+  assert_int_equal(count_states(AZ_IOT_CONN_STATE_RETRY_PENDING, AZ_IOT_ERR_TIMEOUT), 0);
+
+  assert_int_equal(az_iot_connection_client_open(&fx->conn), AZ_IOT_OK);
+  fx->mock = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  open_to_birth_ack_after_open(fx, 0, 0);
+  az_iot_test_ack_subscriptions(&fx->conn, fx->mock);
+  assert_int_equal(
+      az_iot_mqttv5_twin_client_get(&fx->twin, close_on_get_completion, &fx->conn), AZ_IOT_OK);
+  expire_twin_push_wait_to_disconnect(fx);
+  az_iot_connection_client__requested_reconnect_force_timeout(&fx->conn);
+  assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_connection_client_get_state(&fx->conn, AZ_IOT_CONN_SCOPE_HUB), AZ_IOT_CONN_STATE_IDLE);
+  assert_int_equal(count_states(AZ_IOT_CONN_STATE_RETRY_PENDING, AZ_IOT_ERR_TIMEOUT), 0);
+}
+
+static void close_on_publish_completion(az_iot_result status, void* user_ctx)
+{
+  (void)status;
+  (void)az_iot_connection_client_close((az_iot_connection_client*)user_ctx);
+}
+
+/* A PUBACK callback that closes during the timeout's teardown starts a fresh cycle: the
+ * next open() waits on attempt 1. */
+static void a_close_from_a_publish_callback_restarts_the_schedule(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  az_iot_mqtt_message msg;
+  memset(&msg, 0, sizeof(msg));
+  msg.topic = "ih/ut-device/srv/test";
+  msg.qos = AZ_IOT_MQTT_QOS_1;
+  assert_int_equal(
+      az_iot_connection_client__publish(
+          &fx->conn, fx, &msg, close_on_publish_completion, &fx->conn),
+      AZ_IOT_OK);
+  expire_twin_push_wait(fx);
+  assert_int_equal(
+      az_iot_connection_client_get_state(&fx->conn, AZ_IOT_CONN_SCOPE_HUB), AZ_IOT_CONN_STATE_IDLE);
+
+  assert_int_equal(az_iot_connection_client_open(&fx->conn), AZ_IOT_OK);
+  fx->mock = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  open_to_birth_ack_after_open(fx, 0, 0);
+  az_iot_test_ack_subscriptions(&fx->conn, fx->mock);
+  assert_twin_push_wait_for_attempt(fx, 1);
+}
+
 /* Without a reconnection policy an overdue push faults the hub scope. */
 static void an_overdue_twin_push_without_a_policy_faults(void** state)
 {
@@ -3318,6 +3389,18 @@ int main(void)
         teardown),
     cmocka_unit_test_setup_teardown(
         a_refusal_during_the_requested_disconnect_counts_no_miss,
+        setup_push_desired_reconnect,
+        teardown),
+    cmocka_unit_test_setup_teardown(
+        a_close_from_a_teardown_callback_survives_the_disconnect_event,
+        setup_push_desired_no_policy,
+        teardown),
+    cmocka_unit_test_setup_teardown(
+        a_close_from_a_teardown_callback_cancels_the_reconnect,
+        setup_push_desired_reconnect,
+        teardown),
+    cmocka_unit_test_setup_teardown(
+        a_close_from_a_publish_callback_restarts_the_schedule,
         setup_push_desired_reconnect,
         teardown),
     cmocka_unit_test_setup_teardown(

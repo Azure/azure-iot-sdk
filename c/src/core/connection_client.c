@@ -1709,7 +1709,14 @@ static void schedule_reconnect(
     az_iot_connection_scope failure_scope,
     az_iot_result reason)
 {
+  uint32_t closes = c->close_count;
+  uint32_t seq = c->open_seq;
   teardown_active(c);
+  /* Teardown callbacks may have closed or reopened the client; nothing to schedule. */
+  if (c->close_count != closes || c->open_seq != seq)
+  {
+    return;
+  }
 
   if (failure_scope == AZ_IOT_CONN_SCOPE_HUB && reason_is_identity_refusal(reason))
   {
@@ -6259,9 +6266,17 @@ static void apply_deferred(az_iot_connection_client* c)
   switch (action)
   {
     case DEFER_FAULT:
+    {
+      uint32_t closes = c->close_count;
+      uint32_t seq = c->open_seq;
       teardown_active(c);
-      set_state_to(c, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_FAULTED, reason);
+      /* Teardown callbacks may have closed or reopened the client. */
+      if (c->close_count == closes && c->open_seq == seq)
+      {
+        set_state_to(c, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_FAULTED, reason);
+      }
       break;
+    }
     case DEFER_RECONNECT:
       /* Reached from on_mqtt_event, which serves the HUB session only. */
       schedule_reconnect(c, AZ_IOT_CONN_SCOPE_HUB, reason);

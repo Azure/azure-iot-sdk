@@ -841,6 +841,7 @@ static void on_connection_state(const az_iot_connection_state_event* event, void
   {
     TI(t).twin_push_wait.armed = false;
     TI(t).twin_push_wait.missed_count = 0;
+    TI(t).twin_push_wait.reconnect_requested = false;
   }
 }
 
