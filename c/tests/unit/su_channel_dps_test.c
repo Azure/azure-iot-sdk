@@ -1410,6 +1410,65 @@ static void public_replacement_is_atomic_when_properties_do_not_fit(void** state
   assert_int_equal(fx->client.dps_hold_count, 0);
 }
 
+/** @brief Records the capacity in the update-check body ERROR line. */
+static void body_capacity_log_sink(
+    void* user_ctx,
+    az_iot_log_level level,
+    const char* component,
+    const char* file,
+    int line,
+    const char* msg)
+{
+  (void)component;
+  (void)file;
+  (void)line;
+  static const char prefix[]
+      = "an update check with these device properties needs a body capacity of ";
+  const char* found = msg != NULL ? strstr(msg, prefix) : NULL;
+  if (level == AZ_IOT_LOG_LEVEL_ERROR && found != NULL)
+  {
+    *(unsigned long*)user_ctx = strtoul(found + sizeof(prefix) - 1u, NULL, 10);
+  }
+}
+
+/* The capacity logged for an oversized update-check body is the smallest one accepted, not the
+ * serialized length: the JSON writer needs headroom past it. */
+static void update_check_body_log_gives_the_smallest_accepted_capacity(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_su_platform_hooks hooks = { 0 };
+  static char manufacturer[3001];
+  memset(manufacturer, 'm', sizeof(manufacturer) - 1u);
+  manufacturer[sizeof(manufacturer) - 1u] = '\0';
+  az_iot_su_device_properties properties = { .manufacturer = manufacturer };
+  static uint8_t workspace[4u * AZ_IOT_SU_WORKSPACE_DEFAULT_SIZE];
+  az_iot_su_client_config_options options = az_iot_su_client_config_options_default();
+  options.hooks = &hooks;
+  options.device_properties = &properties;
+  options.limits.device_properties_size = sizeof(manufacturer);
+  options.workspace = workspace;
+  options.workspace_size = sizeof(workspace);
+  az_iot_su_client client;
+
+  unsigned long logged = 0;
+  az_iot_log_sink sink = { .sink = body_capacity_log_sink,
+                           .user_ctx = &logged,
+                           .min_level = AZ_IOT_LOG_LEVEL_ERROR };
+  az_iot_log_set_global_sink(&sink);
+  assert_int_equal(
+      az_iot_su_client_init(&client, &fx->client, &options), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+  az_iot_log_set_global_sink(NULL);
+  assert_true(logged > options.limits.max_message_size);
+
+  options.limits.max_message_size = (size_t)logged - 1u;
+  assert_true(az_iot_su_workspace_size(&options.limits) <= options.workspace_size);
+  assert_int_equal(
+      az_iot_su_client_init(&client, &fx->client, &options), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+  options.limits.max_message_size = (size_t)logged;
+  assert_int_equal(az_iot_su_client_init(&client, &fx->client, &options), AZ_IOT_OK);
+  az_iot_su_client_deinit(&client);
+}
+
 /* Without a usable provisioning session there is nothing to publish onto. */
 static void a_request_before_the_session_is_ready_is_refused(void** state)
 {
@@ -3231,6 +3290,8 @@ int main(void)
     cmocka_unit_test_setup_teardown(malformed_saved_state_is_refused, setup, teardown),
     cmocka_unit_test_setup_teardown(
         public_replacement_is_atomic_when_properties_do_not_fit, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        update_check_body_log_gives_the_smallest_accepted_capacity, setup, teardown),
     cmocka_unit_test_setup_teardown(request_update_publishes_on_the_dps_topic, setup, teardown),
     cmocka_unit_test_setup_teardown(
         the_onboarding_route_selects_its_topic_and_sends_the_installed_id, setup, teardown),

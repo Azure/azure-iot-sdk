@@ -852,6 +852,46 @@ static az_iot_result channel_report(void* ctx, const az_iot_su_report* report)
   return publish_operation(c, AZ_IOT_SU_OP_REPORT_STATUS, c->body, body_len);
 }
 
+/**
+ * @brief Smallest body capacity that holds the update-check request.
+ *
+ * @details The JSON writer needs headroom past the serialized bytes, so this can exceed the
+ *   serialized length. Diagnostic only.
+ *
+ * @param[in] agent Agent information to send.
+ * @param[in] installed_update_id Installed update ID to send.
+ * @param[in] rejected_capacity A capacity known to be too small.
+ * @return The smallest accepted capacity, or 0 if none up to INT32_MAX is accepted.
+ */
+static size_t minimum_update_check_capacity(
+    const az_iot_su_agent_info* agent,
+    const az_iot_su_report_update_id* installed_update_id,
+    size_t rejected_capacity)
+{
+  size_t too_small = rejected_capacity;
+  size_t fits = (size_t)INT32_MAX;
+  if (too_small >= fits
+      || az_iot_su__fetch_request_size(agent, installed_update_id, NULL, NULL, fits, NULL)
+          != AZ_IOT_OK)
+  {
+    return 0;
+  }
+  while (fits - too_small > 1u)
+  {
+    size_t middle = too_small + (fits - too_small) / 2u;
+    if (az_iot_su__fetch_request_size(agent, installed_update_id, NULL, NULL, middle, NULL)
+        == AZ_IOT_OK)
+    {
+      fits = middle;
+    }
+    else
+    {
+      too_small = middle;
+    }
+  }
+  return fits;
+}
+
 static az_iot_result channel_set_device_properties(
     void* ctx,
     const az_iot_su_device_properties* properties)
@@ -905,12 +945,10 @@ static az_iot_result channel_set_device_properties(
   r = az_iot_su__fetch_request_size(&agent, &longest_installed, NULL, NULL, c->body_size, NULL);
   if (r == AZ_IOT_ERR_NOT_ENOUGH_SPACE)
   {
-    size_t body_size = 0;
-    (void)az_iot_su__fetch_request_size(
-        &agent, &longest_installed, NULL, NULL, (size_t)INT32_MAX, &body_size);
+    size_t body_size = minimum_update_check_capacity(&agent, &longest_installed, c->body_size);
     AZ_IOT_LOG_ERRORF(
         AZ_IOT_LOG_COMPONENT_SU,
-        "an update check with these device properties needs up to %lu bytes; "
+        "an update check with these device properties needs a body capacity of %lu bytes; "
         "az_iot_su_limits::max_message_size is %lu",
         (unsigned long)body_size,
         (unsigned long)c->body_size);
