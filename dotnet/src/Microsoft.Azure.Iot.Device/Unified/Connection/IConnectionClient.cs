@@ -60,6 +60,12 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
         /// </remarks>
         Task<MqttPublishAck> PublishAsync(MqttPublish publish, CancellationToken cancellationToken = default);
 
+        internal async Task<T> PublishAndWaitForResponseAsync<T>(MqttPublish publish, Task<T> response, CancellationToken cancellationToken)
+        {
+            await PublishAsync(publish, cancellationToken);
+            return await response.WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
+
         /// <summary>
         /// Send a SUBSCRIBE to IoT hub. Any <see cref="DeviceIdPlaceholder"/> in a topic filter is replaced with the
         /// device's current ID when it is sent.

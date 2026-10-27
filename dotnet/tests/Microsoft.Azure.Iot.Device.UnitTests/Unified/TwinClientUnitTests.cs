@@ -52,6 +52,93 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
         }
 
         [Fact]
+        public async Task GetTwinAsync_ResendsAfterConnectionLossWhileWaitingForResponse()
+        {
+            using MockConnectionMqttClient mqttClient = new();
+            using ConnectionClient connection = new(new() { MqttClient = mqttClient });
+            await connection.ConnectToHubAsync(
+                MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv3, DeviceId),
+                TestContext.Current.CancellationToken);
+            using TwinClient twinClient = new(connection);
+            List<string> topics = new();
+            TaskCompletionSource[] published = Enumerable.Range(0, 3)
+                .Select(_ => new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously)).ToArray();
+            mqttClient.OnPublish = async publish =>
+            {
+                topics.Add(publish.Topic);
+                if (topics.Count == 3)
+                {
+                    await mqttClient.SimulatePublishReceivedAsync(new()
+                    {
+                        Topic = $"$iothub/twin/res/200/?$rid={ExtractRid(publish.Topic)}",
+                        Payload = Encoding.UTF8.GetBytes("""{"desired":{"$version":5},"reported":{"$version":7}}"""),
+                    });
+                }
+                published[topics.Count - 1].TrySetResult();
+                return new() { ReasonCode = MqttPublishAckReasonCode.Success };
+            };
+
+            Task<DeviceTwin> pending = twinClient.GetTwinAsync(TestContext.Current.CancellationToken);
+            for (int attempt = 0; attempt < 2; attempt++)
+            {
+                await published[attempt].Task.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+                await mqttClient.SimulateServerDisconnectAsync(MqttDisconnectReason.ImplementationSpecificError);
+            }
+
+            DeviceTwin twin = await pending.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+            Assert.Equal(3, topics.Count);
+            Assert.All(topics, topic => Assert.Equal(topics[0], topic));
+            Assert.Equal(5ul, twin.DesiredVersion);
+            Assert.Equal(7ul, twin.ReportedVersion);
+        }
+
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task GetTwinAsync_CancelsWhileWaitingForResponse(bool disconnect)
+        {
+            using MockConnectionMqttClient mqttClient = new();
+            using ConnectionClient connection = new(new() { MqttClient = mqttClient });
+            await connection.ConnectToHubAsync(
+                MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv3, DeviceId),
+                TestContext.Current.CancellationToken);
+            using TwinClient twinClient = new(connection);
+            using CancellationTokenSource cancellation = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+            Task<DeviceTwin> pending = twinClient.GetTwinAsync(cancellation.Token);
+
+            if (disconnect)
+            {
+                await connection.DisconnectAsync(TestContext.Current.CancellationToken);
+            }
+            else
+            {
+                cancellation.Cancel();
+            }
+
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(
+                () => pending.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken));
+            Assert.Single(mqttClient.SentMqttTrafficInOrder, traffic => traffic.Publish != null);
+        }
+
+        [Fact]
+        public async Task GetTwinAsync_FailsWhenConnectionRecoveryIsAbandoned()
+        {
+            using MockConnectionMqttClient mqttClient = new();
+            using ConnectionClient connection = new(new() { MqttClient = mqttClient });
+            await connection.ConnectToHubAsync(
+                MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv3, DeviceId),
+                TestContext.Current.CancellationToken);
+            using TwinClient twinClient = new(connection);
+            Task<DeviceTwin> pending = twinClient.GetTwinAsync(TestContext.Current.CancellationToken);
+
+            await mqttClient.SimulateServerDisconnectAsync(MqttDisconnectReason.NotAuthorized);
+
+            OperationCanceledException exception = await Assert.ThrowsAnyAsync<OperationCanceledException>(
+                () => pending.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken));
+            Assert.IsType<Microsoft.Azure.Iot.Device.Exceptions.DeviceException>(exception.InnerException);
+        }
+
+        [Fact]
         public async Task UpdateReportedPropertiesAsync_Classic_PublishesPatchAndReturnsResponse()
         {
             MockFeatureConnectionClient connection = new()

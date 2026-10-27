@@ -1885,6 +1885,76 @@ namespace Microsoft.Azure.Iot.Device
             CurrentEndpoint = ConnectionEndpoint.None;
         }
 
+        internal async Task<T> SendRequestAndWaitForResponseAsync<T>(
+            Func<CancellationToken, Task> sendRequest,
+            Task<T> response,
+            CancellationToken cancellationToken)
+        {
+            CancellationToken operationLifetime = GetOperationLifetimeCancellationToken();
+            using CancellationTokenSource lifetime = operationLifetime.IsCancellationRequested
+                ? CancellationTokenSource.CreateLinkedTokenSource(cancellationToken)
+                : CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, operationLifetime);
+
+            return await PerformWhileRespectingConnectionState(async token =>
+            {
+                if (response.IsCompleted)
+                {
+                    return await response.ConfigureAwait(false);
+                }
+
+                TaskCompletionSource disconnected = new(TaskCreationOptions.RunContinuationsAsynchronously);
+                TaskCompletionSource ready = new(TaskCreationOptions.RunContinuationsAsynchronously);
+                Task HandleDisconnected(MqttClientDisconnectedEventArgs args)
+                {
+                    disconnected.TrySetResult();
+                    return Task.CompletedTask;
+                }
+                Task HandleReady(DevicePresenceFlowCompletedArgs args)
+                {
+                    if (args.IsSuccess && args.Exception == null)
+                    {
+                        ready.TrySetResult();
+                    }
+                    return Task.CompletedTask;
+                }
+                void HandleFault()
+                {
+                    disconnected.TrySetResult();
+                    ready.TrySetResult();
+                }
+
+                ManagedMqttConnection.DisconnectedAsync += HandleDisconnected;
+                DevicePresenceFlowCompletedAsync += HandleReady;
+                UnrecoverablyFaulted += HandleFault;
+                try
+                {
+                    ThrowIfUnrecoverablyFaulted();
+                    await sendRequest(token).ConfigureAwait(false);
+                    await Task.WhenAny(response, disconnected.Task).WaitAsync(token).ConfigureAwait(false);
+                    if (response.IsCompleted)
+                    {
+                        return await response.ConfigureAwait(false);
+                    }
+
+                    // A transport connection alone is not enough: response subscriptions must be restored first.
+                    await Task.WhenAny(response, ready.Task).WaitAsync(token).ConfigureAwait(false);
+                    if (response.IsCompleted)
+                    {
+                        return await response.ConfigureAwait(false);
+                    }
+
+                    ThrowIfUnrecoverablyFaulted();
+                    throw new MqttClientNotConnectedException("Connection lost while waiting for the service response.");
+                }
+                finally
+                {
+                    ManagedMqttConnection.DisconnectedAsync -= HandleDisconnected;
+                    DevicePresenceFlowCompletedAsync -= HandleReady;
+                    UnrecoverablyFaulted -= HandleFault;
+                }
+            }, lifetime.Token).ConfigureAwait(false);
+        }
+
         private async Task<TResp> PerformWhileRespectingConnectionState<TResp>(Func<CancellationToken, Task<TResp>> funcToRetry, CancellationToken cancellationToken)
         {
             // Assume an open connection to start, but increment this by one if MqttClientNotConnectedException is thrown to counteract that assumption
