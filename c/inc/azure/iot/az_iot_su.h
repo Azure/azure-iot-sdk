@@ -132,13 +132,25 @@ extern "C"
 #define AZ_IOT_SU_MANIFEST_ERROR_SIGNATURE 0x7u /* manifest does not verify with the sjwk key */
 #define AZ_IOT_SU_MANIFEST_ERROR_HASH 0x8u /* manifest SHA-256 differs from the signed one */
 
-/* --- Compile-time capacities --------------------------------------------- */
+  /* --- Compile-time capacities --------------------------------------------- */
 
-/* Maximum number of RSA root public keys the core trust store holds. Sizes
- * az_iot_su_client: define it identically for the application and the SDK
- * (az_iot_su_client_init() rejects a mismatch). */
-#ifndef AZ_IOT_SU_MAX_ROOT_KEYS
-#define AZ_IOT_SU_MAX_ROOT_KEYS 8
+#if defined(AZ_IOT_SU_MAX_ROOT_KEYS) || defined(AZ_IOT_MAX_SU_OBSERVERS)
+#error \
+    "AZ_IOT_SU_MAX_ROOT_KEYS and AZ_IOT_MAX_SU_OBSERVERS are removed: set az_iot_su_limits::max_root_keys and max_observers"
+#endif
+#if defined(AZ_IOT_SU_WORKFLOW_ID_SIZE) || defined(AZ_IOT_SU_RETRY_TIMESTAMP_SIZE)
+#error \
+    "AZ_IOT_SU_WORKFLOW_ID_SIZE and AZ_IOT_SU_RETRY_TIMESTAMP_SIZE are fixed and cannot be overridden"
+#endif
+
+/** @brief Default az_iot_su_limits::max_root_keys. */
+#ifndef AZ_IOT_SU_DEFAULT_MAX_ROOT_KEYS
+#define AZ_IOT_SU_DEFAULT_MAX_ROOT_KEYS 8
+#endif
+
+/** @brief Default az_iot_su_limits::max_observers. */
+#ifndef AZ_IOT_SU_DEFAULT_MAX_OBSERVERS
+#define AZ_IOT_SU_DEFAULT_MAX_OBSERVERS 4
 #endif
 
 /** @brief Default az_iot_su_limits::max_update_size: the service's 64 KiB response ceiling. */
@@ -199,13 +211,9 @@ extern "C"
  * processed or reported, and AZ_IOT_SU_EVENT_UPDATE_REFUSED is raised with
  * AZ_IOT_ERR_NOT_ENOUGH_SPACE. Deployment ids are GUID-shaped (~36 chars).
  */
-#ifndef AZ_IOT_SU_WORKFLOW_ID_SIZE
 #define AZ_IOT_SU_WORKFLOW_ID_SIZE 64
-#endif
-/* Capacity for the copied-out `retryTimestamp` (ISO-8601, ~28 chars; not persisted). */
-#ifndef AZ_IOT_SU_RETRY_TIMESTAMP_SIZE
+/** @brief Capacity for the copied-out `retryTimestamp` (ISO-8601, ~28 chars; not persisted). */
 #define AZ_IOT_SU_RETRY_TIMESTAMP_SIZE 64
-#endif
 
 #ifndef AZ_IOT_SU_MAX_WORKFLOW_ID_LEN
 #define AZ_IOT_SU_MAX_WORKFLOW_ID_LEN 73 /* software updates service id: GUID-style, plus NUL */
@@ -608,14 +616,6 @@ extern "C"
     AZ_IOT_SU_OP_REPORT_STATUS,
   } az_iot_su_operation;
 
-  /* How many application observers the software updates client can carry. Fixed, because
-   * the client performs no allocation of its own. Only applications subscribe
-   * -- no feature client sits on top of software updates -- so unlike the connection client
-   * there is one pool rather than two. */
-#ifndef AZ_IOT_MAX_SU_OBSERVERS
-#define AZ_IOT_MAX_SU_OBSERVERS 4
-#endif
-
   /** @brief Which kind of thing an az_iot_su_event reports. */
   typedef enum az_iot_su_event_kind
   {
@@ -834,6 +834,25 @@ extern "C"
    * any one of them. */
   typedef void (*az_iot_su_observer_callback)(const az_iot_su_event* event, void* user_ctx);
 
+  /** @brief Internal: one registered observer, in the workspace. */
+  typedef struct az_iot_su_observer_registration
+  {
+    az_iot_su_observer_callback cb;
+    void* user_ctx;
+  } az_iot_su_observer_registration;
+
+  /** @brief Internal: the strictest alignment of the workspace parts that hold pointers. */
+  typedef union
+  {
+    void* pointer;
+    void (*function)(void);
+    uint64_t integer;
+    size_t size;
+  } _az_iot_su_workspace_alignment;
+
+/** @brief Largest az_iot_su_limits::max_root_keys and max_observers. */
+#define AZ_IOT_SU_MAX_LIMIT_COUNT 1024
+
   /** @brief Internal: a copy of a terminal report handed to the channel. */
   typedef struct az_iot_su_sent_report_internal
   {
@@ -873,8 +892,9 @@ extern "C"
       /* Upstream parser/formatter handle. */
       az_iot_adu_client az;
 
-      /* Root-key store (core-owned). Pointers reference caller arrays. */
-      az_iot_su_root_key root_keys[AZ_IOT_SU_MAX_ROOT_KEYS];
+      /* Root-key store, in the workspace (az_iot_su_limits::max_root_keys entries). The
+       * descriptors' key bytes reference caller arrays. */
+      az_iot_su_root_key* root_keys;
       size_t root_key_count;
 
       az_iot_su_state state;
@@ -1024,13 +1044,10 @@ extern "C"
       /* Connection-state observer / detach safety (see design doc §16). */
       bool detached;
 
-      /* Application observers, and the guard that keeps the array stable while
-       * it is being walked. Fixed-size: the client allocates nothing. */
-      struct
-      {
-        az_iot_su_observer_callback cb;
-        void* user_ctx;
-      } observers[AZ_IOT_MAX_SU_OBSERVERS];
+      /* Application observers, in the workspace (max_observers entries), and the guard that
+       * keeps the array stable while it is being walked. */
+      az_iot_su_observer_registration* observers;
+      size_t max_observers;
       bool dispatching;
 
       /** Backoff after retryable verdicts with no service delay; reset by any accepted operation.
@@ -1108,17 +1125,32 @@ extern "C"
     /** Bytes of resultDetails kept per step; see az_iot_su_client_set_step_result_details().
      * At most AZ_IOT_SU_MAX_RESULT_DETAILS_SIZE. */
     size_t result_details_size;
+    /** Most root keys az_iot_su_client_config_options::root_keys may hold. At most
+     * AZ_IOT_SU_MAX_LIMIT_COUNT. */
+    size_t max_root_keys;
+    /** Most observers az_iot_su_client_add_observer() can register. At most
+     * AZ_IOT_SU_MAX_LIMIT_COUNT. */
+    size_t max_observers;
   } az_iot_su_limits;
 
 /**
  * @brief Workspace bytes for the given az_iot_su_limits fields, as a constant expression for
  * static allocation. Equal to az_iot_su_workspace_size() for valid limits.
  */
-#define AZ_IOT_SU_WORKSPACE_SIZE(                                                                 \
-    max_update_size, scratch_size, max_message_size, device_properties_size, result_details_size) \
-  ((size_t)(max_update_size) + (size_t)(scratch_size) + (size_t)(max_message_size)                \
-   + (size_t)(device_properties_size) + 2u * (size_t)AZ_IOT_SU_PERSIST_OVERHEAD                   \
-   + 5u * (size_t)(_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS) * (size_t)(result_details_size))
+#define AZ_IOT_SU_WORKSPACE_SIZE(                                                             \
+    max_update_size,                                                                          \
+    scratch_size,                                                                             \
+    max_message_size,                                                                         \
+    device_properties_size,                                                                   \
+    result_details_size,                                                                      \
+    max_root_keys,                                                                            \
+    max_observers)                                                                            \
+  ((size_t)(max_update_size) + (size_t)(scratch_size) + (size_t)(max_message_size)            \
+   + (size_t)(device_properties_size) + 2u * (size_t)AZ_IOT_SU_PERSIST_OVERHEAD               \
+   + 5u * (size_t)(_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS) * (size_t)(result_details_size) \
+   + (size_t)(max_root_keys) * sizeof(az_iot_su_root_key)                                     \
+   + (size_t)(max_observers) * sizeof(az_iot_su_observer_registration)                        \
+   + sizeof(_az_iot_su_workspace_alignment) - 1u)
 
 /** @brief Workspace bytes for az_iot_su_limits_default(). */
 #define AZ_IOT_SU_WORKSPACE_DEFAULT_SIZE       \
@@ -1127,12 +1159,15 @@ extern "C"
       AZ_IOT_SU_VERIFY_SCRATCH_SIZE,           \
       AZ_IOT_SU_DEFAULT_MAX_MESSAGE_SIZE,      \
       AZ_IOT_SU_DEVICE_PROPERTIES_BUFFER_SIZE, \
-      AZ_IOT_SU_DEFAULT_RESULT_DETAILS_SIZE)
+      AZ_IOT_SU_DEFAULT_RESULT_DETAILS_SIZE,   \
+      AZ_IOT_SU_DEFAULT_MAX_ROOT_KEYS,         \
+      AZ_IOT_SU_DEFAULT_MAX_OBSERVERS)
 
   /**
    * @brief Returns the default limits: AZ_IOT_SU_DEFAULT_MAX_UPDATE_SIZE,
    * AZ_IOT_SU_VERIFY_SCRATCH_SIZE, AZ_IOT_SU_DEFAULT_MAX_MESSAGE_SIZE,
-   * AZ_IOT_SU_DEVICE_PROPERTIES_BUFFER_SIZE and AZ_IOT_SU_DEFAULT_RESULT_DETAILS_SIZE.
+   * AZ_IOT_SU_DEVICE_PROPERTIES_BUFFER_SIZE, AZ_IOT_SU_DEFAULT_RESULT_DETAILS_SIZE,
+   * AZ_IOT_SU_DEFAULT_MAX_ROOT_KEYS and AZ_IOT_SU_DEFAULT_MAX_OBSERVERS.
    *
    * @return The default limits.
    */
@@ -1159,7 +1194,7 @@ extern "C"
      * key bytes are referenced and must outlive the client. For Microsoft-signed
      * updates pass az_iot_su_microsoft_root_keys(). */
     const az_iot_su_root_key* root_keys;
-    size_t root_key_count; /**< Entries in root_keys; at most AZ_IOT_SU_MAX_ROOT_KEYS. */
+    size_t root_key_count; /**< Entries in root_keys; at most limits.max_root_keys. */
     /** Required. Deep-copied; may be changed or freed after initialize. */
     const az_iot_su_device_properties* device_properties;
     /** Sizes of the workspace parts. Default az_iot_su_limits_default(). */
@@ -1192,10 +1227,6 @@ extern "C"
   {
     size_t layout_size; /**< sizeof(az_iot_su_client_layout). */
     size_t client_size; /**< sizeof(az_iot_su_client). */
-    size_t max_root_keys; /**< AZ_IOT_SU_MAX_ROOT_KEYS. */
-    size_t workflow_id_size; /**< AZ_IOT_SU_WORKFLOW_ID_SIZE. */
-    size_t retry_timestamp_size; /**< AZ_IOT_SU_RETRY_TIMESTAMP_SIZE. */
-    size_t max_observers; /**< AZ_IOT_MAX_SU_OBSERVERS. */
     size_t max_step_count; /**< AZ_IOT_SU_MAX_STEP_COUNT. */
     size_t max_file_count; /**< AZ_IOT_SU_MAX_FILE_COUNT. */
     size_t max_file_count_per_step; /**< AZ_IOT_SU_MAX_FILE_COUNT_PER_STEP. */
@@ -1218,8 +1249,8 @@ extern "C"
    * @brief Initializes the software updates client.
    *
    * Inline, so the SDK can check that az_iot_su_client was compiled with the
-   * same capacity macros in the application as in the SDK (see
-   * az_iot_su_client_layout): define them identically for both builds.
+   * same manifest limits (AZ_IOT_SU_MAX_*) in the application as in the SDK (see
+   * az_iot_su_client_layout).
    *
    * @param[out] client Client to initialize.
    * @param[in] connection Connection client the device-update channel is built
@@ -1238,7 +1269,7 @@ extern "C"
    * @retval AZ_IOT_ERR_NOT_SUPPORTED The crypto backend has no verify_rs256, or
    *   replacement_policy is AZ_IOT_SU_REPLACEMENT_ROLLBACK.
    * @retval AZ_IOT_ERR_NOT_ENOUGH_SPACE root_key_count exceeds
-   *   AZ_IOT_SU_MAX_ROOT_KEYS, the properties exceed the count or storage
+   *   limits.max_root_keys, the properties exceed the count or storage
    *   limits, the device_properties_size or max_message_size limit is too small
    *   for them, or the workspace is smaller than az_iot_su_workspace_size().
    */
@@ -1249,8 +1280,6 @@ extern "C"
   {
     const az_iot_su_client_layout layout = {
       sizeof(az_iot_su_client_layout),           sizeof(az_iot_su_client),
-      (size_t)AZ_IOT_SU_MAX_ROOT_KEYS,           (size_t)AZ_IOT_SU_WORKFLOW_ID_SIZE,
-      (size_t)AZ_IOT_SU_RETRY_TIMESTAMP_SIZE,    (size_t)AZ_IOT_MAX_SU_OBSERVERS,
       (size_t)AZ_IOT_SU_MAX_STEP_COUNT,          (size_t)AZ_IOT_SU_MAX_FILE_COUNT,
       (size_t)AZ_IOT_SU_MAX_FILE_COUNT_PER_STEP,
     };
@@ -1374,8 +1403,8 @@ extern "C"
    * race.
    *
    * Returns AZ_IOT_ERR_INVALID_ARG on a NULL client or NULL cb,
-   * AZ_IOT_ERR_NOT_ENOUGH_SPACE when the pool (AZ_IOT_MAX_SU_OBSERVERS) is
-   * full, and AZ_IOT_ERR_BUSY when called from inside an observer.
+   * AZ_IOT_ERR_NOT_ENOUGH_SPACE when az_iot_su_limits::max_observers are already
+   * registered, and AZ_IOT_ERR_BUSY when called from inside an observer.
    *
    * @param[in] client   The software updates client.
    * @param[in] cb       Callback to register. MUST NOT be NULL.

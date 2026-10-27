@@ -32,12 +32,6 @@
 #ifndef AZ_IOT_TEST_SU_EXPECTED_MISMATCH
 #error "Build with AZ_IOT_TEST_SU_EXPECTED_MISMATCH (see tests/CMakeLists.txt)."
 #endif
-/* 1 if the overrides keep sizeof(az_iot_su_client) unchanged on 64-bit targets. */
-#ifndef AZ_IOT_TEST_SU_SAME_SIZE_ON_64_BIT
-#define AZ_IOT_TEST_SU_SAME_SIZE_ON_64_BIT 0
-#endif
-
-size_t az_iot_test_su_default_client_size(void);
 
 static char last_error[256];
 
@@ -62,11 +56,6 @@ static void capture_error(
 static void a_mismatched_layout_is_refused(void** state)
 {
   (void)state;
-  if (AZ_IOT_TEST_SU_SAME_SIZE_ON_64_BIT && sizeof(void*) == 8)
-  {
-    assert_int_equal(sizeof(az_iot_su_client), az_iot_test_su_default_client_size());
-  }
-
   az_iot_log_sink sink = { capture_error, NULL, AZ_IOT_LOG_LEVEL_ERROR };
   az_iot_log_set_global_sink(&sink);
 

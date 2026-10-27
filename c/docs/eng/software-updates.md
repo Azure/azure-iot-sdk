@@ -869,9 +869,9 @@ typedef struct az_iot_su_client
         az_iot_su_channel channel;   /* software updates channel bound to the connection client */
         az_iot_su_platform_hooks hooks;
         const az_iot_crypto* crypto; /* the connection client's backend */
-        /* Root-key store (core-owned). Pointers reference caller arrays; see §7.
-         * Capacity is compile-time (AZ_IOT_SU_MAX_ROOT_KEYS). */
-        az_iot_su_root_key root_keys[AZ_IOT_SU_MAX_ROOT_KEYS];
+        /* Root-key store, in the workspace (limits.max_root_keys entries). Key bytes
+         * reference caller arrays; see §7. */
+        az_iot_su_root_key* root_keys;
         size_t root_key_count;
         az_iot_su_state state;
         az_iot_su_client_update_request current_request;
@@ -900,7 +900,7 @@ typedef struct az_iot_su_client
  *   root_keys / root_key_count: caller-owned RSA root public keys that anchor
  *     manifest trust (see §7). Core copies the small descriptor array into its
  *     fixed store (the key BYTES are referenced, not copied, so they MUST
- *     outlive the client), capped at AZ_IOT_SU_MAX_ROOT_KEYS. For
+ *     outlive the client), capped at limits.max_root_keys. For
  *     Microsoft-signed updates, pass az_iot_su_microsoft_root_keys().
  *   device_properties: caller-owned device properties, DEEP-COPIED into the cache.
  *     May be mutated/freed by the caller after init returns.
@@ -993,10 +993,10 @@ az_iot_result az_iot_su_client_remove_observer(
  * AZ_IOT_ERR_INVALID_ARG if a required field is NULL or replacement_policy is
  * not an az_iot_su_replacement_policy value, AZ_IOT_ERR_NOT_SUPPORTED if
  * replacement_policy is AZ_IOT_SU_REPLACEMENT_ROLLBACK, or
- * AZ_IOT_ERR_NOT_ENOUGH_SPACE if root_key_count > AZ_IOT_SU_MAX_ROOT_KEYS or
+ * AZ_IOT_ERR_NOT_ENOUGH_SPACE if root_key_count > limits.max_root_keys or
  * the buffer is too small for device_properties. Inline: it passes the
  * application's az_iot_su_client_layout (sizeof(az_iot_su_client) and the
- * capacity macros that size it) to
+ * manifest limits that size it) to
  * az_iot_su_client_init_checked(), which returns AZ_IOT_ERR_INVALID_ARG
  * without touching the client if any field differs from the SDK build.
  */
@@ -1396,17 +1396,11 @@ crypto->sha256_final(crypto, &hash_ctx, computed); /* also releases hash_ctx */
 ### Our Approach: Compiled-in + Runtime-loadable (Both), Core-owned Store
 
 The root-key store lives in **Software updates core**, not in the crypto backend (see §6). Its
-capacity is compile-time configurable:
-
-```c
-#ifndef AZ_IOT_SU_MAX_ROOT_KEYS
-#define AZ_IOT_SU_MAX_ROOT_KEYS 8
-#endif
-```
+capacity is the run-time limit `az_iot_su_limits::max_root_keys` (default
+`AZ_IOT_SU_DEFAULT_MAX_ROOT_KEYS`, 8).
 
 `az_iot_su_client_init` accepts an `az_iot_su_root_key[]` and copies the
-descriptors into the fixed `root_keys[AZ_IOT_SU_MAX_ROOT_KEYS]` array (key bytes
-are referenced, not copied). `init` returns `AZ_IOT_ERR_NOT_ENOUGH_SPACE` if more
+descriptors into the workspace (key bytes are referenced, not copied). `init` returns `AZ_IOT_ERR_NOT_ENOUGH_SPACE` if more
 keys are supplied than the store can hold.
 
 **Compiled-in keys:**

@@ -138,12 +138,17 @@
   (`az_iot_su_client_request_onboarding_update()`) now sends `installedUpdateId` when the device
   properties set one, as the regular check does, so the service does not offer an update that is
   already installed. It is still omitted when nothing is installed.
+- Breaking: software updates root keys and observers are run-time limits in the workspace:
+  `az_iot_su_limits::max_root_keys` and `max_observers` (defaults
+  `AZ_IOT_SU_DEFAULT_MAX_ROOT_KEYS` 8 and `AZ_IOT_SU_DEFAULT_MAX_OBSERVERS` 4, at most
+  `AZ_IOT_SU_MAX_LIMIT_COUNT`). `AZ_IOT_SU_WORKSPACE_SIZE()` takes them as two more arguments.
+  `AZ_IOT_SU_MAX_ROOT_KEYS` and `AZ_IOT_MAX_SU_OBSERVERS` are removed;
+  `AZ_IOT_SU_WORKFLOW_ID_SIZE` and `AZ_IOT_SU_RETRY_TIMESTAMP_SIZE` are fixed. Defining any of the
+  four is a compile error.
 - Software updates: `az_iot_su_client_init()` is now inline and returns `AZ_IOT_ERR_INVALID_ARG`,
   with an `ERROR` log and the client untouched, when `sizeof(az_iot_su_client)` or any of
-  `AZ_IOT_SU_MAX_ROOT_KEYS`, `AZ_IOT_SU_WORKFLOW_ID_SIZE`, `AZ_IOT_SU_RETRY_TIMESTAMP_SIZE`,
-  `AZ_IOT_MAX_SU_OBSERVERS`, `AZ_IOT_SU_MAX_STEP_COUNT`, `AZ_IOT_SU_MAX_FILE_COUNT` or
-  `AZ_IOT_SU_MAX_FILE_COUNT_PER_STEP` differs between the
-  application and SDK builds. The exported symbol is
+  `AZ_IOT_SU_MAX_STEP_COUNT`, `AZ_IOT_SU_MAX_FILE_COUNT` or `AZ_IOT_SU_MAX_FILE_COUNT_PER_STEP`
+  differs between the application and SDK builds. The exported symbol is
   `az_iot_su_client_init_checked()`, taking an `az_iot_su_client_layout`.
 - Breaking: the connection client no longer reads `AZ_IOT_HUB_MQTT_V5_MOCK_ENDPOINT`,
   `AZ_IOT_DEVICE_ID` or `AZ_IOT_DPS_CONNECTION_PROFILE_OVERRIDE`. DPS now returns

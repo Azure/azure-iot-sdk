@@ -291,26 +291,13 @@ target_link_libraries(az_iot_tests_mqttv5_twin_client PRIVATE az_iot_test_suppor
 target_include_directories(az_iot_tests_mqttv5_twin_client PRIVATE ${PROJECT_SOURCE_DIR}/src/core)
 
 az_iot_add_cmocka_test(az_iot_tests_su_client unit/su_client_test.c)
-# Applications built with SU capacity macros that differ from az_iot_core:
-# az_iot_su_client_init() must refuse the client. The second keeps
-# sizeof(az_iot_su_client) unchanged on 64-bit (the 4 bytes fall into padding),
-# so only the per-macro check catches it.
-add_library(az_iot_test_su_default_layout STATIC unit/su_client_layout_default.c)
-target_link_libraries(az_iot_test_su_default_layout PRIVATE az_iot_core)
-az_iot_apply_warnings(az_iot_test_su_default_layout)
-# One step more than the SDK build, whatever AZ_IOT_SU_MAX_STEP_COUNT is configured to.
+# An application built with a manifest limit that differs from az_iot_core:
+# az_iot_su_client_init() must refuse the client. One step more than the SDK build, whatever AZ_IOT_SU_MAX_STEP_COUNT is configured to.
 math(EXPR _az_iot_test_su_other_step_count "${AZ_IOT_SU_MAX_STEP_COUNT} + 1")
 az_iot_add_cmocka_test(az_iot_tests_su_client_layout_mismatch unit/su_client_layout_mismatch_test.c)
-target_link_libraries(az_iot_tests_su_client_layout_mismatch PRIVATE az_iot_test_su_default_layout)
 target_compile_definitions(az_iot_tests_su_client_layout_mismatch PRIVATE
     AZ_IOT_TEST_SU_MAX_STEP_COUNT=${_az_iot_test_su_other_step_count}
     AZ_IOT_TEST_SU_EXPECTED_MISMATCH="AZ_IOT_SU_MAX_STEP_COUNT")
-az_iot_add_cmocka_test(az_iot_tests_su_client_layout_same_size unit/su_client_layout_mismatch_test.c)
-target_link_libraries(az_iot_tests_su_client_layout_same_size PRIVATE az_iot_test_su_default_layout)
-target_compile_definitions(az_iot_tests_su_client_layout_same_size PRIVATE
-    AZ_IOT_SU_RETRY_TIMESTAMP_SIZE=60
-    AZ_IOT_TEST_SU_EXPECTED_MISMATCH="AZ_IOT_SU_RETRY_TIMESTAMP_SIZE"
-    AZ_IOT_TEST_SU_SAME_SIZE_ON_64_BIT=1)
 az_iot_add_cmocka_test(az_iot_tests_su_protocol unit/su_protocol_test.c)
 target_link_libraries(az_iot_tests_su_client PRIVATE az_iot_test_support)
 # For az_iot_time_mono_ms: the request deadline is a monotonic instant, so a
