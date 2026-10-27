@@ -313,7 +313,9 @@ void app_main(void)
       AZ_IOT_SU_VERIFY_SCRATCH_SIZE,
       AZ_IOT_SU_DEFAULT_MAX_MESSAGE_SIZE,
       AZ_IOT_SU_DEVICE_PROPERTIES_BUFFER_SIZE,
-      AZ_IOT_SU_DEFAULT_RESULT_DETAILS_SIZE)];
+      AZ_IOT_SU_DEFAULT_RESULT_DETAILS_SIZE,
+      AZ_IOT_SU_DEFAULT_MAX_ROOT_KEYS,
+      AZ_IOT_SU_DEFAULT_MAX_OBSERVERS)];
   static az_iot_su_client su;
   az_iot_su_client_config_options su_opts = az_iot_su_client_config_options_default();
   su_opts.hooks = &hooks;

@@ -350,7 +350,7 @@ typedef struct
 typedef struct
 {
   bool valid;
-  char workflow_id[AZ_IOT_SU_MAX_WORKFLOW_ID_LEN];
+  char workflow_id[AZ_IOT_SU_WORKFLOW_ID_SIZE + 1];
   bool has_installed;
   char provider[64];
   char name[64];

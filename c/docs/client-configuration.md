@@ -197,17 +197,27 @@ Defaults used when the matching option is left at 0:
 
 #### Software updates ([az_iot_su.h](../inc/azure/iot/az_iot_su.h))
 
+Only the manifest limits (`AZ_IOT_SU_MAX_STEP_COUNT`, `AZ_IOT_SU_MAX_FILE_COUNT`,
+`AZ_IOT_SU_MAX_FILE_COUNT_PER_STEP`, see below) change the layout of `az_iot_su_client`, which the
+application allocates. `az_iot_su_client_init()` returns `AZ_IOT_ERR_INVALID_ARG`, with an `ERROR`
+log, when `sizeof(az_iot_su_client)` or any of them differs between the application and SDK builds.
+The macros in this table only set defaults. `AZ_IOT_SU_WORKFLOW_ID_SIZE` (128) and
+`AZ_IOT_SU_RETRY_TIMESTAMP_SIZE` (64) are fixed; defining them, or the removed
+`AZ_IOT_SU_MAX_ROOT_KEYS`, `AZ_IOT_MAX_SU_OBSERVERS` and `AZ_IOT_SU_MAX_WORKFLOW_ID_LEN`, is a compile
+error.
+
 | Macro | Default | Bounds |
 | --- | --- | --- |
-| `AZ_IOT_SU_MAX_ROOT_KEYS` | 8 | Root keys in the trust store. |
+| `AZ_IOT_SU_DEFAULT_MAX_ROOT_KEYS` | 8 | Default `az_iot_su_limits::max_root_keys`. |
+| `AZ_IOT_SU_DEFAULT_MAX_OBSERVERS` | 4 | Default `az_iot_su_limits::max_observers`. |
 | `AZ_IOT_SU_DEFAULT_MAX_UPDATE_SIZE` | 65536 | Default `az_iot_su_limits::max_update_size`. |
-| `AZ_IOT_SU_DEFAULT_MAX_MESSAGE_SIZE` | `AZ_IOT_SU_MIN_MESSAGE_SIZE` (3072) | Default `az_iot_su_limits::max_message_size`. |
+| `AZ_IOT_SU_DEFAULT_MAX_MESSAGE_SIZE` | `AZ_IOT_SU_MIN_MESSAGE_SIZE` (3456) | Default `az_iot_su_limits::max_message_size`. |
 | `AZ_IOT_SU_DEFAULT_RESULT_DETAILS_SIZE` | 128 | Default `az_iot_su_limits::result_details_size`. |
 | `AZ_IOT_SU_VERIFY_SCRATCH_SIZE` | 8192 | Stack used by `az_iot_su_parse_update_request()` for the decoded signature (JWS header with the signing key, and the signatures), and the default `az_iot_su_limits::scratch_size`. A signature that does not fit fails with `AZ_IOT_ERR_AUTH` and an `ERROR` log naming the part that is too large. |
-| `AZ_IOT_SU_WORKFLOW_ID_SIZE` | 64 | Workflow ID kept for reporting, duplicate detection and persistence. A deployment with a longer ID is refused: nothing is processed or reported, and `AZ_IOT_SU_EVENT_UPDATE_REFUSED` is raised with `AZ_IOT_ERR_NOT_ENOUGH_SPACE`. |
+| `AZ_IOT_SU_WORKFLOW_ID_SIZE` (fixed) | 128 | Workflow ID kept for reporting, duplicate detection and persistence. A deployment with a longer ID is refused: nothing is processed or reported, and `AZ_IOT_SU_EVENT_UPDATE_REFUSED` is raised with `AZ_IOT_ERR_NOT_ENOUGH_SPACE`. |
+| `AZ_IOT_SU_RETRY_TIMESTAMP_SIZE` (fixed) | 64 | Copy of the deployment's `retryTimestamp` (ISO-8601, about 28 characters; not persisted). A longer one is treated as absent. |
 | `AZ_IOT_SU_PERSIST_MAX_ATTEMPTS` | 5 | Consecutive failed state writes before the client stops retrying (1 to `0xFFFFFFFF`). |
 | `AZ_IOT_SU_DEVICE_PROPERTIES_BUFFER_SIZE` | 512 | Default `az_iot_su_limits::device_properties_size`; `az_iot_su_device_properties_buffer_size()` gives the exact size. |
-| `AZ_IOT_MAX_SU_OBSERVERS` | 4 | Observers the application can register. |
 
 The software updates client's variable-size memory is not set by macros. The application passes one
 `workspace` buffer at `az_iot_su_client_init()`, sized with `az_iot_su_workspace_size()` (or
@@ -217,11 +227,14 @@ The software updates client's variable-size memory is not set by macros. The app
 | --- | --- | --- |
 | `max_update_size` | 65536 | Copy of the update metadata (manifest, signature and file URLs); a one-file offer is about 5 KiB. A larger one is refused: `AZ_IOT_SU_EVENT_UPDATE_REFUSED` with `AZ_IOT_ERR_NOT_ENOUGH_SPACE`. Also bounds the persisted state, `AZ_IOT_SU_STATE_BLOB_MAX_SIZE(max_update_size)`. |
 | `scratch_size` | 8192 | Signature verification and string decoding. A signature part that does not fit fails verification; a file URL that does not fit is refused with `AZ_IOT_ERR_NOT_ENOUGH_SPACE`. |
-| `max_message_size` | 3072 | Update-check and status-report bodies. At least `AZ_IOT_SU_MIN_MESSAGE_SIZE` (1792 plus 128 per `AZ_IOT_SU_MAX_STEP_COUNT`; 3072 by default), which fits the largest status report the client builds, so no report is refused for its size. |
+| `max_message_size` | 3456 | Update-check and status-report bodies. At least `AZ_IOT_SU_MIN_MESSAGE_SIZE` (2176 plus 128 per `AZ_IOT_SU_MAX_STEP_COUNT`; 3456 by default), which fits the largest status report the client builds, so no report is refused for its size. |
 | `device_properties_size` | 512 | Copied device-property strings. |
+| `max_root_keys` | 8 | Root keys `root_keys` may hold; more fail `az_iot_su_client_init()` with `AZ_IOT_ERR_NOT_ENOUGH_SPACE`. At most `AZ_IOT_SU_MAX_LIMIT_COUNT` (1024). |
+| `max_observers` | 4 | Observers `az_iot_su_client_add_observer()` can register; one more returns `AZ_IOT_ERR_NOT_ENOUGH_SPACE`. At most `AZ_IOT_SU_MAX_LIMIT_COUNT` (1024). |
 | `result_details_size` | 128 | `resultDetails` kept per step (`az_iot_su_client_set_step_result_details()`); at most 1024. Counted five times per step: the details, both persisted records and two copies of the reports sent. |
 
-The workspace also holds `2 * AZ_IOT_SU_PERSIST_OVERHEAD` bytes for the persisted-state records. These
+The workspace also holds `2 * AZ_IOT_SU_PERSIST_OVERHEAD` bytes for the persisted-state records and
+up to `sizeof(az_iot_su_workspace_alignment) - 1` bytes to align the root keys and observers. These
 values do not change the layout of `az_iot_su_client`.
 
 #### Software updates manifest limits
@@ -243,7 +256,8 @@ azure-sdk-for-c, the SDK and the application must be built with the same values.
 options of the SDK build; it applies them to the azure-sdk-for-c parser (`az_iot_hub`) and to
 `az_iot_core` as public compile definitions, which reach the application through the `azure::iot::core` target and the
 `azure-iot-sdk-core` pkg-config file. `az_iot_su.h` refuses to compile with values that differ from
-azure-sdk-for-c's. An installed azure-sdk-for-c must be built with them (see
+azure-sdk-for-c's, and `az_iot_su_client_init()` refuses an application built with values that
+differ from the SDK's. An installed azure-sdk-for-c must be built with them (see
 [Installed dependencies](#installed-dependencies)).
 
 Smaller values save memory on constrained devices, for example
@@ -251,10 +265,10 @@ Smaller values save memory on constrained devices, for example
 
 | | 2 steps, 2 files | 10 steps, 10 files (default) |
 | --- | --- | --- |
-| `az_iot_su_client` | 4616 | 8584 |
-| Default workspace (`AZ_IOT_SU_WORKSPACE_DEFAULT_SIZE`) | 78920 | 85640 |
+| `az_iot_su_client` | 4384 | 8352 |
+| Default workspace (`AZ_IOT_SU_WORKSPACE_DEFAULT_SIZE`) | 79887 | 86607 |
 | `az_iot_su_client_update_manifest` (also on the stack of `az_iot_su_parse_update_request()`) | 464 | 3216 |
-| `AZ_IOT_SU_MIN_MESSAGE_SIZE` | 2048 | 3072 |
+| `AZ_IOT_SU_MIN_MESSAGE_SIZE` | 2432 | 3456 |
 
 #### Dispatch and logging
 
