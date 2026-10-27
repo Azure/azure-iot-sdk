@@ -103,6 +103,48 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
         }
 
         [Fact]
+        public async Task DuplicateProbe_ResendsOriginalReadyId()
+        {
+            MockFeatureConnectionClient connection = new()
+            {
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv5, DeviceId),
+            };
+            using DirectMethodClient directMethodClient = new(connection);
+
+            int probeHandlerInvocations = 0;
+            bool methodInvoked = false;
+            directMethodClient.DirectMethodProbeReceivedAsync += (_) =>
+            {
+                probeHandlerInvocations++;
+                return Task.FromResult(DirectMethodProbeAck.Accepted());
+            };
+            directMethodClient.DirectMethodInvokedAsync += (_) =>
+            {
+                methodInvoked = true;
+                return Task.FromResult(new DirectMethodResponse() { Status = 200 });
+            };
+
+            byte[] correlationData = Guid.NewGuid().ToByteArray();
+            byte[] probePayload = new Probe() { MethodName = "reboot", ResponseTimeoutSeconds = 30 }.ToByteArray();
+
+            await connection.SimulateReceiveAsync(CreateInboundMethodPublish("probe:1", correlationData, probePayload));
+            await connection.SimulateReceiveAsync(CreateInboundMethodPublish("probe:1", correlationData, probePayload));
+
+            Assert.Equal(2, connection.PublishedMessages.Count);
+            ByteString firstReadyId = ProbeAck.Parser.ParseFrom(connection.PublishedMessages[0].Payload).Ready.ReadyId;
+            ByteString secondReadyId = ProbeAck.Parser.ParseFrom(connection.PublishedMessages[1].Payload).Ready.ReadyId;
+            Assert.Equal(firstReadyId, secondReadyId);
+            Assert.Equal(correlationData, connection.PublishedMessages[1].CorrelationData);
+            Assert.Equal(1, probeHandlerInvocations);
+
+            var exec = new Exec() { ReadyId = firstReadyId };
+            await connection.SimulateReceiveAsync(CreateInboundMethodPublish("exec:1", correlationData, exec.ToByteArray()));
+
+            Assert.True(methodInvoked);
+            Assert.Equal("result:1", GetType(connection.PublishedMessages[2]));
+        }
+
+        [Fact]
         public async Task Exec_WithUnknownRequestId_IsIgnored()
         {
             MockFeatureConnectionClient connection = new()

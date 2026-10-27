@@ -159,7 +159,31 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods
 
                 Probe probe = Probe.Parser.ParseFrom(publish.Payload);
 
-                DirectMethodProbeAck probeAck = await probeHandler.Invoke(new() { MethodName = probe.MethodName, ResponseTimeoutSeconds = probe.ResponseTimeoutSeconds });
+                ProbeAck probeAckToSend;
+                if (_pendingExpectedDirectMethodReadyIds.TryGetValue(requestId.Value, out ByteString? existingReadyId))
+                {
+                    // Duplicate probe for a request this client already accepted. Re-send the same ready Id rather than asking the
+                    // application again so that the eventual exec message still correlates with the ready Id this client expects.
+                    probeAckToSend = new() { Ready = new() { ReadyId = existingReadyId } };
+                }
+                else
+                {
+                    DirectMethodProbeAck probeAck = await probeHandler.Invoke(new() { MethodName = probe.MethodName, ResponseTimeoutSeconds = probe.ResponseTimeoutSeconds });
+                    probeAckToSend = probeAck.ProbeAck;
+
+                    if (probeAckToSend.Ready != default)
+                    {
+                        // The user signalled that the device was ready for the direct method, so locally save the ready Id and request Id.
+                        // If a duplicate probe for the same request was accepted concurrently, reuse whichever ready Id was saved first.
+                        ByteString savedReadyId = _pendingExpectedDirectMethodReadyIds.GetOrAdd(requestId.Value, probeAckToSend.Ready.ReadyId);
+                        _pendingExpectedDirectMethodNames.TryAdd(requestId.Value, probe.MethodName);
+
+                        if (!savedReadyId.Equals(probeAckToSend.Ready.ReadyId))
+                        {
+                            probeAckToSend = new() { Ready = new() { ReadyId = savedReadyId } };
+                        }
+                    }
+                }
 
                 stopwatch.Stop();
 
@@ -187,20 +211,13 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods
                 {
                     Topic = DirectMethodsResponseTopic,
                     QualityOfServiceLevel = MqttQualityOfServiceLevel.AtLeastOnce,
-                    Payload = probeAck.ProbeAck.ToByteArray(),
+                    Payload = probeAckToSend.ToByteArray(),
                     CorrelationData = publish.CorrelationData,
                     MessageExpiryInterval = remainingConnectTimeoutInSeconds,
                     ContentType = ProtobufContentType
                 };
 
                 probeAckPublish.UserProperties.Add(new("type", Encoding.UTF8.GetBytes("probe-ack:1")));
-
-                if (probeAck.ProbeAck.Ready != default)
-                {
-                    // The user signalled that the device was ready for the direct method, so locally save the ready Id and request Id
-                    _pendingExpectedDirectMethodReadyIds.TryAdd(requestId.Value, probeAck.ProbeAck.Ready.ReadyId);
-                    _pendingExpectedDirectMethodNames.TryAdd(requestId.Value, probe.MethodName);
-                }
 
                 MqttPublishAck puback = await _connection.PublishAsync(probeAckPublish, throwOnErrorReasonCode: true);
 
