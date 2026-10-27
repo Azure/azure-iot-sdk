@@ -377,7 +377,10 @@ reaches a device once: a device that reported it is not offered it again, so eve
 offer suite (one per MQTT adapter) needs its own new device.
 [`scripts/SuE2E.psm1`](../../tests/e2e/scripts/SuE2E.psm1) stages them (`New-SuE2EOffers`),
 checks each job's per-device result (`Test-SuE2EOffers`) and deletes them
-(`Remove-SuE2EOffers`).
+(`Remove-SuE2EOffers`). Since each offer reaches each new device, one staged set can serve many
+runs: `New-SuE2EOffers -Reuse` keeps the updates, jobs and `Active` runs that already exist under
+its `-RunId`, and only waits for runs it creates. `Export-SuE2EOfferVariables` sets the offer
+variables for a `-RunId` without contacting Azure.
 
 Every variable is required; a missing one fails the suite or the scenario that needs it.
 
@@ -388,7 +391,7 @@ Every variable is required; a missing one fails the suite or the scenario that n
 | `AZ_IOT_E2E_SU_REG_ID` | registration id the certificate carries |
 | `AZ_IOT_E2E_SU_CERT` / `_KEY` | device certificate and key PEM paths |
 | `AZ_IOT_E2E_SU_TRUSTED_CA` | CA bundle PEM path |
-| `AZ_IOT_E2E_SU_OFFER_*` | offers, as above (set by `New-SuE2EOffers`) |
+| `AZ_IOT_E2E_SU_OFFER_*` | offers, as above (set by `New-SuE2EOffers` or `Export-SuE2EOfferVariables`) |
 
 `https_proxy`, when set, is used for the MQTT connection; libcurl reads it as well.
 
