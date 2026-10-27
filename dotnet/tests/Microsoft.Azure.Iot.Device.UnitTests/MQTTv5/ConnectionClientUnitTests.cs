@@ -182,6 +182,19 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             Assert.Equal("wss://someHostName:443/mqtt", sentWebSocketUri);
         }
 
+        [Fact]
+        public async Task BirthMessageUsesProtobufContentType()
+        {
+            using MockConnectionMqttClient mockMqttClient = new() { AutoRespondToBirth = true };
+            using ConnectionClient connectionClient = new(new() { MqttClient = mockMqttClient });
+
+            await connectionClient.ConnectToHubAsync(GetMockConnectionContext(), cancellationToken: TestContext.Current.CancellationToken);
+
+            MqttPublish birthMessage = Assert.Single(mockMqttClient.SentMqttTrafficInOrder,
+                traffic => traffic.Publish?.Topic.EndsWith("/srv/presence", StringComparison.Ordinal) == true).Publish!;
+            Assert.Equal("application/protobuf", birthMessage.ContentType);
+        }
+
         [Theory]
         [InlineData(false, false, 3600u)]
         [InlineData(true, false, 0u)]

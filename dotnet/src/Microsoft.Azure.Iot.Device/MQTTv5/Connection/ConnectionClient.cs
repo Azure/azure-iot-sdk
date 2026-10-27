@@ -16,6 +16,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
 {
     public class ConnectionClient : AbstractConnectionClient, IConnectionClient
     {
+        private const string ProtobufContentType = "application/protobuf";
         private static TimeSpan birthAckReceivedDefensiveTimeout = TimeSpan.FromMinutes(5); // As prescribed by the service team
 
         private readonly bool _receiveDesiredPropertyUpdates;
@@ -173,6 +174,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
                 Topic = string.Format("ih/{0}/srv/presence", deviceId),
                 CorrelationData = connectNonce.ToByteArray(bigEndian: true),
                 Payload = birth.ToByteArray(),
+                ContentType = ProtobufContentType,
                 QualityOfServiceLevel = MqttQualityOfServiceLevel.AtMostOnce, // QoS 0 because we don't care about the MQTT-level ack for this message.  The service will send a fully-fledged MQTT publish as the ack and we will listen for that below
             };
 
