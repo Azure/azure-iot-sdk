@@ -266,8 +266,8 @@ Smaller values save memory on constrained devices, for example
 
 | | 2 steps, 2 files | 10 steps, 10 files (default) |
 | --- | --- | --- |
-| `az_iot_su_client` | 4384 | 8352 |
-| Default workspace (`AZ_IOT_SU_WORKSPACE_DEFAULT_SIZE`) | 79887 | 86607 |
+| `az_iot_su_client` | 3952 | 7920 |
+| Default workspace (`AZ_IOT_SU_WORKSPACE_DEFAULT_SIZE`) | 80591 | 87311 |
 | `az_iot_su_client_update_manifest` (also on the stack of `az_iot_su_parse_update_request()`) | 464 | 3216 |
 | `AZ_IOT_SU_MIN_MESSAGE_SIZE` | 2432 | 3456 |
 

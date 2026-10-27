@@ -2954,16 +2954,16 @@ AZ_NODISCARD size_t az_iot_su_workspace_size(const az_iot_su_limits* limits)
   }
   size_t details = (size_t)_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS * limits->result_details_size;
   size_t parts[10] = { limits->max_root_keys * sizeof(az_iot_su_root_key)
-                          + limits->max_observers * sizeof(az_iot_su_observer_registration)
-                          + sizeof(az_iot_su_workspace_alignment) - 1u,
-                      limits->max_update_size + (size_t)AZ_IOT_SU_PERSIST_OVERHEAD + details,
-                      (size_t)AZ_IOT_SU_PERSIST_OVERHEAD + details,
-                      limits->scratch_size,
-                      limits->max_message_size,
-                      limits->device_properties_size,
-                      limits->device_properties_size + (size_t)AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE,
-                      details,
-                      2u * details };
+                           + limits->max_observers * sizeof(az_iot_su_observer_registration)
+                           + sizeof(az_iot_su_workspace_alignment) - 1u,
+                       limits->max_update_size + (size_t)AZ_IOT_SU_PERSIST_OVERHEAD + details,
+                       (size_t)AZ_IOT_SU_PERSIST_OVERHEAD + details,
+                       limits->scratch_size,
+                       limits->max_message_size,
+                       limits->device_properties_size,
+                       limits->device_properties_size + (size_t)AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE,
+                       details,
+                       2u * details };
   size_t total = 0;
   for (size_t i = 0; i < sizeof(parts) / sizeof(parts[0]); ++i)
   {
