@@ -16,7 +16,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
 {
     public class ConnectionClient : AbstractConnectionClient, IConnectionClient
     {
-        private static TimeSpan birthAckReceivedDefensiveTimeout = TimeSpan.FromMinutes(5); // As perscribed by serivce team
+        private static TimeSpan birthAckReceivedDefensiveTimeout = TimeSpan.FromMinutes(5); // As prescribed by the service team
 
         private readonly bool _receiveDesiredPropertyUpdates;
         private readonly bool _receiveReportedPropertiesUponConnect;
