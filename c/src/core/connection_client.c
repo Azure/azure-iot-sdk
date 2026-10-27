@@ -5119,6 +5119,14 @@ static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
                 AZ_IOT_LOG_COMPONENT_CONNECTION, "birth-ack ignored: close already requested");
             break;
           }
+          /* do_work() drains events before checking the deadline: an ack past
+           * it is a miss, left to the timeout path to reconnect and escalate. */
+          if (az_iot_time_mono_ms() >= c->presence.deadline_ms)
+          {
+            AZ_IOT_LOG_DEBUG(
+                AZ_IOT_LOG_COMPONENT_CONNECTION, "birth-ack ignored: birth-ack timeout expired");
+            break;
+          }
           presence_decode_birth_ack(c, evt->message->payload, evt->message->payload_len);
           c->presence.phase = PRESENCE_PHASE_DONE;
           /* Arrived in time: the next birth starts the schedule over. */

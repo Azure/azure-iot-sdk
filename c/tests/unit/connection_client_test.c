@@ -2954,6 +2954,25 @@ static void hub_mqtt_v5_birth_timeout_retries_with_a_new_nonce(void** state)
   assert_memory_not_equal(second_birth->correlation_data, first_nonce, first_len);
 }
 
+/* Deliver a birth-ack echoing the 16-byte `nonce` and pump it (the mock keeps
+ * a pointer to the message, so it must be processed before this returns). */
+static void deliver_birth_ack(fixture* fx, az_iot_mock_mqtt_client* m, const uint8_t* nonce)
+{
+  az_iot_mqtt_user_property ack_type = { "type", "birth-ack:1" };
+  az_iot_mqtt_message ack_msg;
+  memset(&ack_msg, 0, sizeof(ack_msg));
+  ack_msg.topic = "ih/ut-device/dev/presence";
+  ack_msg.correlation_data = nonce;
+  ack_msg.correlation_data_len = 16u;
+  ack_msg.user_properties = az_iot_mqtt_user_properties_from_array(&ack_type, 1);
+  az_iot_mqtt_event ack;
+  memset(&ack, 0, sizeof(ack));
+  ack.kind = AZ_IOT_MQTT_EVT_MESSAGE;
+  ack.message = &ack_msg;
+  assert_true(az_iot_mock_mqtt_client_inject_event(m, &ack));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+}
+
 /* Defensive-timeout random source returning a fixed value. */
 static uint64_t fixed_random_source(void* context) { return *(const uint64_t*)context; }
 
@@ -3078,19 +3097,7 @@ static void hub_mqtt_v5_birth_ack_in_time_resets_the_schedule(void** state)
   uint8_t nonce[16];
   assert_int_equal(birth->correlation_data_len, sizeof(nonce));
   memcpy(nonce, birth->correlation_data, sizeof(nonce));
-  az_iot_mqtt_user_property ack_type = { "type", "birth-ack:1" };
-  az_iot_mqtt_message ack_msg;
-  memset(&ack_msg, 0, sizeof(ack_msg));
-  ack_msg.topic = "ih/ut-device/dev/presence";
-  ack_msg.correlation_data = nonce;
-  ack_msg.correlation_data_len = sizeof(nonce);
-  ack_msg.user_properties = az_iot_mqtt_user_properties_from_array(&ack_type, 1);
-  az_iot_mqtt_event ack;
-  memset(&ack, 0, sizeof(ack));
-  ack.kind = AZ_IOT_MQTT_EVT_MESSAGE;
-  ack.message = &ack_msg;
-  assert_true(az_iot_mock_mqtt_client_inject_event(m, &ack));
-  (void)az_iot_connection_client_do_work(fx->client, 0);
+  deliver_birth_ack(fx, m, nonce);
   assert_int_equal(fx->rec.states[fx->rec.count - 1], AZ_IOT_CONN_STATE_CONNECTED);
   assert_int_equal(fx->client->presence.consecutive_birth_ack_timeouts, 0);
 
@@ -3099,6 +3106,30 @@ static void hub_mqtt_v5_birth_ack_in_time_resets_the_schedule(void** state)
   (void)az_iot_connection_client_do_work(fx->client, 0);
   (void)connack_and_suback(fx, reconnect(fx));
   assert_birth_ack_timeout(fx, 300000u + (uint32_t)k_fixed_jitter);
+}
+
+/* A birth-ack drained after the deadline passed is a miss: the client
+ * reconnects and escalates rather than announcing CONNECTED. */
+static void hub_mqtt_v5_late_birth_ack_is_a_timeout(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_mock_mqtt_client* m = NULL;
+  const az_iot_mock_call* birth = drive_to_birth_published(fx, false, &m);
+  uint8_t nonce[16];
+  assert_int_equal(birth->correlation_data_len, sizeof(nonce));
+  memcpy(nonce, birth->correlation_data, sizeof(nonce));
+
+  az_iot_connection_client__presence_force_timeout(fx->client);
+  fx->rec.count = 0;
+  deliver_birth_ack(fx, m, nonce);
+
+  for (size_t i = 0; i < fx->rec.count; ++i)
+  {
+    assert_int_not_equal(fx->rec.states[i], AZ_IOT_CONN_STATE_CONNECTED);
+  }
+  assert_int_equal(fx->rec.states[fx->rec.count - 1], AZ_IOT_CONN_STATE_RETRY_PENDING);
+  assert_int_equal(fx->rec.reasons[fx->rec.count - 1], AZ_IOT_ERR_TIMEOUT);
+  assert_int_equal(fx->client->presence.consecutive_birth_ack_timeouts, 1);
 }
 
 /* open() is a fresh connect cycle: the schedule starts over. */
@@ -4199,6 +4230,8 @@ int main(void)
         hub_mqtt_v5_birth_ack_timeout_jitter_spans_five_minutes, setup_mqtt_v5, teardown),
     cmocka_unit_test_setup_teardown(
         hub_mqtt_v5_birth_ack_in_time_resets_the_schedule, setup_mqtt_v5_with_reconnect, teardown),
+    cmocka_unit_test_setup_teardown(
+        hub_mqtt_v5_late_birth_ack_is_a_timeout, setup_mqtt_v5_with_reconnect, teardown),
     cmocka_unit_test_setup_teardown(
         hub_mqtt_v5_open_resets_the_birth_ack_schedule, setup_mqtt_v5_with_reconnect, teardown),
     cmocka_unit_test_setup_teardown(
