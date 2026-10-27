@@ -15,6 +15,14 @@ on:
   pull_request:
   workflow_dispatch:
 
+# A new push to a pull request cancels that pull request's older run. Other
+# events get a group of their own (the run id), so every push to main and dev/c
+# keeps its result: a shared group would cancel a pending run even without
+# cancel-in-progress.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
