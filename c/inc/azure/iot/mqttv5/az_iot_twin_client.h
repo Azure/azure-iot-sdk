@@ -210,6 +210,8 @@ extern "C"
         uint64_t deadline_ms;
         /* Consecutive sessions ended because their twin-push did not arrive. */
         uint32_t missed_count;
+        /* The wait expired and asked the connection to reconnect. */
+        bool reconnect_requested;
         /* Birth nonce of the session whose twin-push arrived. */
         uint8_t received_birth_nonce[AZ_IOT_MQTTV5_TWIN_CORRELATION_ID_LEN];
         bool received;

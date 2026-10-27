@@ -1934,10 +1934,17 @@ extern "C"
       uint32_t timeout_jitter_ms;
     } presence;
 
-    /* A feature client asked to end the hub session and reconnect; served by
-     * do_work() and dropped when the session ends first. */
-    bool reconnect_requested;
-    az_iot_result reconnect_requested_reason;
+    /* A feature client asked to end the hub session and reconnect. `requested`
+     * waits for do_work(), which sends DISCONNECT and sets `in_progress` until
+     * the session ends (bounded by `disconnect_deadline_ms`; 0: none). Both are
+     * cleared when the session ends. */
+    struct
+    {
+      bool requested;
+      bool in_progress;
+      az_iot_result reason;
+      uint64_t disconnect_deadline_ms;
+    } requested_reconnect;
 
     /* Per scope: where init() put the decoded SAS keys in opts.sas_buffer
      * (NULL when unset), and the credential the last attempt used. */

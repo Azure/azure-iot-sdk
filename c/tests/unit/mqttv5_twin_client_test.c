@@ -2734,12 +2734,26 @@ static size_t count_states(az_iot_connection_state wanted, az_iot_result reason)
   return n;
 }
 
-/* Expire the armed wait and let the connection act on it. */
-static void expire_twin_push_wait(fixture* fx)
+/* Expire the armed wait; the connection sends DISCONNECT and keeps the session
+ * until the adapter reports the disconnect. */
+static void expire_twin_push_wait_to_disconnect(fixture* fx)
 {
   az_iot_mqttv5_twin_client__twin_push_force_timeout(&fx->twin);
   assert_int_equal(az_iot_mqttv5_twin_client_do_work(&fx->twin), AZ_IOT_OK);
   assert_false(az_iot_mqttv5_twin_client__twin_push_deadline(&fx->twin, NULL));
+  assert_int_equal(az_iot_mock_mqtt_client_count_of(fx->mock, AZ_IOT_MOCK_CALL_DISCONNECT), 0);
+  assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
+  assert_int_equal(az_iot_mock_mqtt_client_count_of(fx->mock, AZ_IOT_MOCK_CALL_DISCONNECT), 1);
+  assert_int_equal(
+      az_iot_connection_client_get_state(&fx->conn, AZ_IOT_CONN_SCOPE_HUB),
+      AZ_IOT_CONN_STATE_CONNECTED);
+}
+
+/* Expire the armed wait and complete the disconnect it sends. */
+static void expire_twin_push_wait(fixture* fx)
+{
+  expire_twin_push_wait_to_disconnect(fx);
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(fx->mock));
   assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
 }
 
@@ -2747,8 +2761,8 @@ static void expire_twin_push_wait(fixture* fx)
 static void reconnect_to_connected(fixture* fx)
 {
   uint64_t give_up = az_iot_time_mono_ms() + 5000u;
-  /* The old adapter was destroyed, which clears the factory's last client. */
-  assert_null(az_iot_mock_mqtt_factory_last_client(fx->factory));
+  /* Destroying the old adapter cleared the factory's last client; a non-NULL one
+   * is its replacement, possibly started by the call that scheduled it. */
   while (az_iot_mock_mqtt_factory_last_client(fx->factory) == NULL)
   {
     assert_true(az_iot_time_mono_ms() < give_up);
@@ -2838,15 +2852,59 @@ static void an_overdue_twin_push_reconnects(void** state)
   fixture* fx = (fixture*)*state;
   open_to_connected(fx);
   expire_twin_push_wait(fx);
-  assert_int_equal(
-      az_iot_connection_client_get_state(&fx->conn, AZ_IOT_CONN_SCOPE_HUB),
-      AZ_IOT_CONN_STATE_RETRY_PENDING);
   assert_int_equal(count_states(AZ_IOT_CONN_STATE_RETRY_PENDING, AZ_IOT_ERR_TIMEOUT), 1);
+  assert_int_equal(az_iot_mock_mqtt_factory_disconnected_destroyed(fx->factory), 1);
 
   reconnect_to_connected(fx);
   assert_int_equal(
       az_iot_connection_client_get_state(&fx->conn, AZ_IOT_CONN_SCOPE_HUB),
       AZ_IOT_CONN_STATE_CONNECTED);
+}
+
+/* Without a disconnect event within its bound, the session is ended anyway. */
+static void an_overdue_twin_push_reconnects_without_a_disconnect_event(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  expire_twin_push_wait_to_disconnect(fx);
+  assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
+  assert_int_equal(count_states(AZ_IOT_CONN_STATE_RETRY_PENDING, AZ_IOT_ERR_TIMEOUT), 0);
+
+  az_iot_connection_client__requested_reconnect_force_timeout(&fx->conn);
+  assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
+  assert_int_equal(count_states(AZ_IOT_CONN_STATE_RETRY_PENDING, AZ_IOT_ERR_TIMEOUT), 1);
+  reconnect_to_connected(fx);
+  assert_twin_push_wait_for_attempt(fx, 2);
+}
+
+/* A refused disconnect() ends the session at once. */
+static void an_overdue_twin_push_with_a_refused_disconnect_reconnects_at_once(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  az_iot_mock_mqtt_client_set_next_result(fx->mock, AZ_IOT_MOCK_CALL_DISCONNECT, AZ_IOT_ERR_MQTT);
+  az_iot_mqttv5_twin_client__twin_push_force_timeout(&fx->twin);
+  assert_int_equal(az_iot_mqttv5_twin_client_do_work(&fx->twin), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
+  assert_int_equal(count_states(AZ_IOT_CONN_STATE_RETRY_PENDING, AZ_IOT_ERR_TIMEOUT), 1);
+  reconnect_to_connected(fx);
+  assert_twin_push_wait_for_attempt(fx, 2);
+}
+
+/* A session lost before the timeout's request is served did not end by it: no miss counts. */
+static void a_session_lost_before_the_request_is_served_counts_no_miss(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  az_iot_mqttv5_twin_client__twin_push_force_timeout(&fx->twin);
+  assert_int_equal(az_iot_mqttv5_twin_client_do_work(&fx->twin), AZ_IOT_OK);
+  /* The adapter reports a lost connection in the same pump that would serve the request. */
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(fx->mock));
+  assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
+  assert_int_equal(count_states(AZ_IOT_CONN_STATE_RETRY_PENDING, AZ_IOT_ERR_TIMEOUT), 0);
+
+  reconnect_to_connected(fx);
+  assert_twin_push_wait_for_attempt(fx, 1);
 }
 
 /* Without a reconnection policy an overdue push faults the hub scope. */
@@ -3125,6 +3183,18 @@ int main(void)
         teardown),
     cmocka_unit_test_setup_teardown(
         an_overdue_twin_push_reconnects, setup_push_desired_reconnect, teardown),
+    cmocka_unit_test_setup_teardown(
+        an_overdue_twin_push_reconnects_without_a_disconnect_event,
+        setup_push_desired_reconnect,
+        teardown),
+    cmocka_unit_test_setup_teardown(
+        an_overdue_twin_push_with_a_refused_disconnect_reconnects_at_once,
+        setup_push_desired_reconnect,
+        teardown),
+    cmocka_unit_test_setup_teardown(
+        a_session_lost_before_the_request_is_served_counts_no_miss,
+        setup_push_desired_reconnect,
+        teardown),
     cmocka_unit_test_setup_teardown(
         an_overdue_twin_push_without_a_policy_faults, setup_push_desired_no_policy, teardown),
     cmocka_unit_test_setup_teardown(

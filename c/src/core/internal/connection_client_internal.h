@@ -192,10 +192,12 @@ extern "C"
   /**
    * @brief Ask the connection to end the hub session and reconnect.
    *
-   * Served by the next az_iot_connection_client_do_work(): the session is torn
-   * down (the adapter sends DISCONNECT) and a reconnect is scheduled with
-   * @p reason, or the hub scope faults with @p reason when no reconnection
-   * policy is enabled. Dropped if the session ends first.
+   * Served by the next az_iot_connection_client_do_work(), which sends
+   * DISCONNECT. When the adapter reports the disconnect, or after 5 s without
+   * it, or at once if disconnect() is refused, the session is torn down and a
+   * reconnect is scheduled with @p reason; without an enabled reconnection
+   * policy the hub scope faults with @p reason instead. Dropped if the session
+   * ends before it is served. A request while one is in progress is ignored.
    *
    * @return AZ_IOT_ERR_NOT_CONNECTED unless the hub scope is CONNECTED;
    *         AZ_IOT_ERR_INVALID_ARG for a NULL @p client.
@@ -203,6 +205,20 @@ extern "C"
   az_iot_result az_iot_connection_client__request_reconnect(
       az_iot_connection_client* client,
       az_iot_result reason);
+
+  /**
+   * @brief Whether the hub session is ending because a reconnect request was served.
+   *
+   * Meant for session-end handlers: true while they run for that session.
+   */
+  bool az_iot_connection_client__session_ending_by_request(const az_iot_connection_client* client);
+
+  /**
+   * @brief Test seam: end a requested reconnect's wait for its disconnect event
+   *        on the next do_work(). No-op when not waiting.
+   */
+  void az_iot_connection_client__requested_reconnect_force_timeout(
+      az_iot_connection_client* client);
 
   /* Test seam: force a pending subscription gate to expire on the next
    * do_work(). No-op when no gate is armed. Lets unit tests exercise the

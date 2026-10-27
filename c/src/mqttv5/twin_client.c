@@ -212,7 +212,7 @@ static void twin_push_wait_arm(az_iot_mqttv5_twin_client* t)
   TI(t).twin_push_wait.deadline_ms = az_iot_time_mono_ms() + timeout_ms;
 }
 
-/** @brief End the session when its twin-push is overdue. */
+/** @brief End the session when its twin-push is overdue. The miss is counted when it ends. */
 static void twin_push_wait_check(az_iot_mqttv5_twin_client* t, uint64_t now)
 {
   if (!TI(t).twin_push_wait.armed || now < TI(t).twin_push_wait.deadline_ms)
@@ -220,13 +220,24 @@ static void twin_push_wait_check(az_iot_mqttv5_twin_client* t, uint64_t now)
     return;
   }
   TI(t).twin_push_wait.armed = false;
-  if (TI(t).twin_push_wait.missed_count < UINT32_MAX - 1u)
+  AZ_IOT_LOG_WARN(
+      AZ_IOT_LOG_COMPONENT_MQTTV5_TWIN, "the expected twin-push did not arrive; reconnecting");
+  TI(t).twin_push_wait.reconnect_requested
+      = az_iot_connection_client__request_reconnect(TI(t).conn, AZ_IOT_ERR_TIMEOUT) == AZ_IOT_OK;
+}
+
+/** @brief Session end: count a miss only if this wait's reconnect request ended it. */
+static void twin_push_wait_on_session_end(az_iot_mqttv5_twin_client* t)
+{
+  if (TI(t).twin_push_wait.reconnect_requested
+      && az_iot_connection_client__session_ending_by_request(TI(t).conn)
+      && TI(t).twin_push_wait.missed_count < UINT32_MAX - 1u)
   {
     TI(t).twin_push_wait.missed_count++;
   }
-  AZ_IOT_LOG_WARN(
-      AZ_IOT_LOG_COMPONENT_MQTTV5_TWIN, "the expected twin-push did not arrive; reconnecting");
-  (void)az_iot_connection_client__request_reconnect(TI(t).conn, AZ_IOT_ERR_TIMEOUT);
+  TI(t).twin_push_wait.reconnect_requested = false;
+  TI(t).twin_push_wait.armed = false;
+  TI(t).twin_push_wait.received = false;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -391,8 +402,7 @@ static void twin_fail_pending(void* user_ctx)
     return;
   }
   TI(t).snapshot.in_flight = false;
-  TI(t).twin_push_wait.armed = false;
-  TI(t).twin_push_wait.received = false;
+  twin_push_wait_on_session_end(t);
   for (int i = 0; i < AZ_IOT_TWIN_MAX_PENDING; ++i)
   {
     if (TI(t).pending[i].in_use)

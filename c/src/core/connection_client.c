@@ -70,6 +70,10 @@
  * reconnecting anyway. */
 #define SAS_TOKEN_RENEWAL_DISCONNECT_TIMEOUT_MS 5000u
 
+/** @brief How long a feature client's reconnect request waits for its disconnect
+ * to complete before ending the session anyway. */
+#define REQUESTED_RECONNECT_DISCONNECT_TIMEOUT_MS 5000u
+
 /** @brief When to ask again for a renewal token that could not be asked for. */
 #define SAS_TOKEN_RENEWAL_RETRY_MS 30000u
 
@@ -1041,9 +1045,8 @@ static void teardown_active(az_iot_connection_client* c)
   /* Abandon any in-flight MQTTv5 presence (birth) handshake: it belonged to the
    * now-destroyed session and must restart from CONNACK on the next connect. */
   c->presence.phase = PRESENCE_PHASE_NONE;
-  /* A requested reconnect was for the session that just ended. */
-  c->reconnect_requested = false;
-  c->reconnect_requested_reason = AZ_IOT_OK;
+  /* A reconnect requested but not yet served was for the session that is ending. */
+  c->requested_reconnect.requested = false;
   /* Same for the subscription gate. Its packet ids died with the session and
    * will never be acked, so nothing is left for a deadline to wait on. */
   memset(&c->subscription_gate, 0, sizeof(c->subscription_gate));
@@ -1091,6 +1094,8 @@ static void teardown_active(az_iot_connection_client* c)
       c->session_handlers[i].cb(c->session_handlers[i].user_ctx);
     }
   }
+  /* Cleared after the handlers, which may ask why the session ended. */
+  memset(&c->requested_reconnect, 0, sizeof(c->requested_reconnect));
 }
 
 static void puback_abandon(az_iot_connection_client* c, const void* owner);
@@ -5082,6 +5087,13 @@ static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
         c->deferred = DEFER_IDLE;
         c->deferred_reason = evt->status;
       }
+      else if (c->requested_reconnect.in_progress && !reason_is_identity_refusal(evt->status))
+      {
+        /* The disconnect a feature client's reconnect request sent. */
+        c->deferred = az_iot_retry_policy_is_enabled(&c->opts.reconnection_policy) ? DEFER_RECONNECT
+                                                                                   : DEFER_FAULT;
+        c->deferred_reason = c->requested_reconnect.reason;
+      }
       else if (
           c->sas_token_renewal_in_progress[AZ_IOT_CONN_SCOPE_HUB]
           && c->state[AZ_IOT_CONN_SCOPE_HUB] == AZ_IOT_CONN_STATE_CONNECTED
@@ -5539,6 +5551,22 @@ static az_iot_result start_connect_attempt(az_iot_connection_client* c)
   }
   c->active_client = mc;
   return AZ_IOT_OK;
+}
+
+/** @brief Ends the session a feature client asked to end, then reconnects with
+ * its reason, or faults with it when no reconnection policy is enabled. */
+static void end_session_for_requested_reconnect(az_iot_connection_client* c)
+{
+  az_iot_result reason = c->requested_reconnect.reason;
+  if (az_iot_retry_policy_is_enabled(&c->opts.reconnection_policy))
+  {
+    schedule_reconnect(c, AZ_IOT_CONN_SCOPE_HUB, reason);
+  }
+  else
+  {
+    teardown_active(c);
+    set_state_to(c, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_FAULTED, reason);
+  }
 }
 
 /** @brief Ends the session a SAS renewal disconnected and reconnects at once
@@ -7816,28 +7844,38 @@ az_iot_result az_iot_connection_client_do_work(
   }
 
   /* A feature client found the session unusable (an expected message never
-   * arrived): end it and reconnect, as for a stalled presence handshake. */
-  if (client->reconnect_requested)
+   * arrived): close it with DISCONNECT, then reconnect when the adapter reports
+   * the disconnect (see on_mqtt_event), or after a bound if it never does. */
+  if (client->requested_reconnect.requested)
   {
-    az_iot_result reason = client->reconnect_requested_reason;
-    client->reconnect_requested = false;
-    client->reconnect_requested_reason = AZ_IOT_OK;
-    if (client->state[AZ_IOT_CONN_SCOPE_HUB] == AZ_IOT_CONN_STATE_CONNECTED && !client->user_close)
+    client->requested_reconnect.requested = false;
+    if (client->state[AZ_IOT_CONN_SCOPE_HUB] == AZ_IOT_CONN_STATE_CONNECTED && !client->user_close
+        && client->active_client && client->active_client->iface)
     {
       AZ_IOT_LOG_WARNF(
           AZ_IOT_LOG_COMPONENT_CONNECTION,
-          "reconnecting at a feature client's request (%s)",
-          az_iot_result_to_string(reason));
-      if (az_iot_retry_policy_is_enabled(&client->opts.reconnection_policy))
+          "disconnecting at a feature client's request (%s)",
+          az_iot_result_to_string(client->requested_reconnect.reason));
+      client->requested_reconnect.in_progress = true;
+      if (client->active_client->iface->disconnect(client->active_client) == AZ_IOT_OK)
       {
-        schedule_reconnect(client, AZ_IOT_CONN_SCOPE_HUB, reason);
+        client->requested_reconnect.disconnect_deadline_ms
+            = az_iot_time_mono_ms() + REQUESTED_RECONNECT_DISCONNECT_TIMEOUT_MS;
       }
       else
       {
-        teardown_active(client);
-        set_state_to(client, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_FAULTED, reason);
+        end_session_for_requested_reconnect(client);
       }
     }
+  }
+  else if (
+      client->requested_reconnect.in_progress
+      && client->requested_reconnect.disconnect_deadline_ms != 0
+      && az_iot_time_mono_ms() >= client->requested_reconnect.disconnect_deadline_ms)
+  {
+    AZ_IOT_LOG_WARN(
+        AZ_IOT_LOG_COMPONENT_CONNECTION, "requested reconnect: no disconnect event; reconnecting");
+    end_session_for_requested_reconnect(client);
   }
 
   /* A gated filter withdrawn while its ack was still outstanding stops holding
@@ -8281,9 +8319,25 @@ az_iot_result az_iot_connection_client__request_reconnect(
   {
     return AZ_IOT_ERR_NOT_CONNECTED;
   }
-  client->reconnect_requested = true;
-  client->reconnect_requested_reason = reason;
+  if (!client->requested_reconnect.in_progress)
+  {
+    client->requested_reconnect.requested = true;
+    client->requested_reconnect.reason = reason;
+  }
   return AZ_IOT_OK;
+}
+
+bool az_iot_connection_client__session_ending_by_request(const az_iot_connection_client* client)
+{
+  return client && client->requested_reconnect.in_progress;
+}
+
+void az_iot_connection_client__requested_reconnect_force_timeout(az_iot_connection_client* client)
+{
+  if (client && client->requested_reconnect.disconnect_deadline_ms != 0)
+  {
+    client->requested_reconnect.disconnect_deadline_ms = 1u;
+  }
 }
 
 void az_iot_connection_client__subscription_gate_force_timeout(az_iot_connection_client* client)
