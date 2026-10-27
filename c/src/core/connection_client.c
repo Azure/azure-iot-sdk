@@ -7782,7 +7782,7 @@ az_iot_result az_iot_connection_client_do_work(
     {
       AZ_IOT_LOG_WARNF(
           AZ_IOT_LOG_COMPONENT_CONNECTION,
-          "no birth-ack within %lu ms; reconnecting",
+          "no birth-ack within %lu ms; ending the session",
           (unsigned long)client->presence.birth_ack_timeout_ms);
     }
     /* Both branches tear down, which counts the missed birth-ack. */
