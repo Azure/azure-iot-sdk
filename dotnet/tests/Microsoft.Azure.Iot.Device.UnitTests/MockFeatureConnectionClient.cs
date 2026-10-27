@@ -30,6 +30,13 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         /// <summary>Whether the connection client is connected or reconnecting. False simulates an explicit disconnect.</summary>
         public bool IsConnectionTargetSet { get; set; } = true;
 
+        /// <summary>The connection nonce returned to feature clients. Null simulates a connection client that does not expose it.</summary>
+        public Guid? ConnectionNonce { get; set; }
+
+        Guid? global::Microsoft.Azure.Iot.Device.MQTTv5.Connection.IConnectionClient.ConnectionNonce => ConnectionNonce;
+
+        Guid? global::Microsoft.Azure.Iot.Device.Unified.Connection.IConnectionClient.ConnectionNonce => ConnectionNonce;
+
         /// <summary>Every publish, subscribe and unsubscribe the feature clients sent, in order.</summary>
         public List<MqttPublish> PublishedMessages { get; } = new();
 

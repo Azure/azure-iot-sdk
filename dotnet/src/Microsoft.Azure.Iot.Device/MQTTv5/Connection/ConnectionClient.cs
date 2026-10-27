@@ -22,7 +22,9 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
         private readonly bool _receiveReportedPropertiesUponConnect;
         private readonly uint _sessionExpiryInterval;
 
-        private Guid? CurrentConnectionNonce { get; set; }
+        internal Guid? CurrentConnectionNonce { get; private set; }
+
+        Guid? IConnectionClient.ConnectionNonce => CurrentConnectionNonce;
 
         public ConnectionClient(ConnectionClientOptions? options = null, ConnectionContext? connectionContext = null)
             : base((options ?? new ConnectionClientOptions()).ToCommonOptions(), connectionContext)

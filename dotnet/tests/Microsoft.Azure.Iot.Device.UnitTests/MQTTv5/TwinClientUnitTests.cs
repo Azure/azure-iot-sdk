@@ -238,14 +238,14 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
 
             var desiredPatch = new DesiredPatch()
             {
-                Version = 3,
+                Version = 1,
                 Payload = ByteString.CopyFromUtf8("{\"fanSpeed\":40}"),
             };
 
             await connection.SimulateReceiveAsync(CreateInboundTwinPublish("desired-patch:1", Guid.NewGuid().ToByteArray(), desiredPatch.ToByteArray()));
 
             Assert.NotNull(received);
-            Assert.Equal(3ul, received!.DesiredPropertiesVersion);
+            Assert.Equal(1ul, received!.DesiredPropertiesVersion);
             Assert.Equal(40, (int)received.DesiredProperties["fanSpeed"]!);
         }
 
@@ -344,6 +344,309 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
 
             await Assert.ThrowsAsync<ObjectDisposedException>(
                 async () => await twinClient.GetTwinAsync(cancellationToken: TestContext.Current.CancellationToken));
+        }
+
+        [Theory]
+        [InlineData(5ul)] // Matches this device's view
+        [InlineData(4ul)] // Stale
+        public async Task DesiredProbe_NotAheadOfLocalVersion_IsDropped(ulong probeVersion)
+        {
+            (MockFeatureConnectionClient connection, Guid nonce) = CreateConnectionWithNonce();
+            using TwinClient twinClient = new(connection);
+            await ReceiveTwinPushAsync(connection, nonce, 5, "{\"fanSpeed\":40}");
+
+            int eventCount = 0;
+            twinClient.DesiredPatchReceived += _ => eventCount++;
+            twinClient.TwinPushReceived += _ => eventCount++;
+
+            await ReceiveDesiredPatchAsync(connection, nonce, probeVersion, payload: null);
+
+            Assert.Equal(0, eventCount);
+            Assert.Empty(connection.PublishedMessages);
+        }
+
+        [Fact]
+        public async Task DesiredProbe_AheadOfLocalVersion_ResyncsAndDeliversSnapshotThenBufferedPatches()
+        {
+            (MockFeatureConnectionClient connection, Guid nonce) = CreateConnectionWithNonce();
+            using TwinClient twinClient = new(connection);
+            await ReceiveTwinPushAsync(connection, nonce, 5, "{\"fanSpeed\":40}");
+
+            List<object> received = new();
+            twinClient.DesiredPatchReceived += args => received.Add(args);
+            twinClient.TwinPushReceived += args => received.Add(args);
+
+            await ReceiveDesiredPatchAsync(connection, nonce, 7, payload: null);
+
+            MqttPublish getPublish = Assert.Single(connection.PublishedMessages);
+            Assert.Equal(OutgoingTwinTopic, getPublish.Topic);
+            Assert.Equal("get:1", GetType(getPublish));
+            Assert.Equal(Sections.Desired, TwinGet.Parser.ParseFrom(getPublish.Payload).Sections);
+
+            // While resyncing, patches are buffered and probes are dropped.
+            await ReceiveDesiredPatchAsync(connection, nonce, 8, "{\"fanSpeed\":80}");
+            await ReceiveDesiredPatchAsync(connection, nonce, 8, payload: null);
+            Assert.Empty(received);
+            Assert.Single(connection.PublishedMessages);
+
+            await ReceiveGetResponseAsync(connection, getPublish, 7, "{\"fanSpeed\":70}");
+
+            Assert.Collection(
+                received,
+                snapshot =>
+                {
+                    var push = Assert.IsType<TwinPushReceivedEventArgs>(snapshot);
+                    Assert.Equal(7ul, push.Desired!.PropertiesVersion);
+                    Assert.Equal(70, (int)push.Desired.Properties["fanSpeed"]!);
+                    Assert.Null(push.Reported);
+                },
+                patch =>
+                {
+                    var desiredPatch = Assert.IsType<DesiredPatchReceivedEventArgs>(patch);
+                    Assert.Equal(8ul, desiredPatch.DesiredPropertiesVersion);
+                    Assert.Equal(80, (int)desiredPatch.DesiredProperties["fanSpeed"]!);
+                });
+
+            // Back to idle, so the next patch is delivered right away.
+            await ReceiveDesiredPatchAsync(connection, nonce, 9, "{\"fanSpeed\":90}");
+            Assert.Equal(9ul, Assert.IsType<DesiredPatchReceivedEventArgs>(received.Last()).DesiredPropertiesVersion);
+        }
+
+        [Fact]
+        public async Task DesiredPatchGap_ResyncsAndDrainsOnlyPatchesNewerThanSnapshot()
+        {
+            (MockFeatureConnectionClient connection, Guid nonce) = CreateConnectionWithNonce();
+            using TwinClient twinClient = new(connection);
+            await ReceiveTwinPushAsync(connection, nonce, 1, "{}");
+
+            List<ulong> patchVersions = new();
+            List<ulong> snapshotVersions = new();
+            twinClient.DesiredPatchReceived += args => patchVersions.Add(args.DesiredPropertiesVersion);
+            twinClient.TwinPushReceived += args => snapshotVersions.Add(args.Desired!.PropertiesVersion);
+
+            await ReceiveDesiredPatchAsync(connection, nonce, 3, "{\"a\":3}");
+            MqttPublish getPublish = Assert.Single(connection.PublishedMessages);
+            await ReceiveDesiredPatchAsync(connection, nonce, 4, "{\"a\":4}");
+
+            await ReceiveGetResponseAsync(connection, getPublish, 3, "{\"a\":3}");
+
+            Assert.Equal(new[] { 3ul }, snapshotVersions);
+            Assert.Equal(new[] { 4ul }, patchVersions);
+        }
+
+        [Fact]
+        public async Task TwinPush_DuringResync_ResolvesResyncAndLaterGetResponseIsDropped()
+        {
+            (MockFeatureConnectionClient connection, Guid nonce) = CreateConnectionWithNonce();
+            using TwinClient twinClient = new(connection);
+
+            await ReceiveDesiredPatchAsync(connection, nonce, 4, payload: null);
+            MqttPublish getPublish = Assert.Single(connection.PublishedMessages);
+            await ReceiveDesiredPatchAsync(connection, nonce, 5, "{\"a\":5}");
+            await ReceiveDesiredPatchAsync(connection, nonce, 6, "{\"a\":6}");
+
+            List<object> received = new();
+            twinClient.DesiredPatchReceived += args => received.Add(args);
+            twinClient.TwinPushReceived += args => received.Add(args);
+
+            await ReceiveTwinPushAsync(connection, nonce, 5, "{\"a\":5}");
+
+            Assert.Collection(
+                received,
+                push => Assert.Equal(5ul, Assert.IsType<TwinPushReceivedEventArgs>(push).Desired!.PropertiesVersion),
+                patch => Assert.Equal(6ul, Assert.IsType<DesiredPatchReceivedEventArgs>(patch).DesiredPropertiesVersion));
+
+            await ReceiveGetResponseAsync(connection, getPublish, 4, "{\"a\":4}");
+            Assert.Equal(2, received.Count);
+        }
+
+        [Fact]
+        public async Task DesiredResyncBufferOverflow_RequestsDesiredPropertiesAgain()
+        {
+            (MockFeatureConnectionClient connection, Guid nonce) = CreateConnectionWithNonce();
+            using TwinClient twinClient = new(connection);
+
+            List<ulong> snapshotVersions = new();
+            twinClient.TwinPushReceived += args => snapshotVersions.Add(args.Desired!.PropertiesVersion);
+
+            await ReceiveDesiredPatchAsync(connection, nonce, 2, payload: null);
+            MqttPublish firstGet = Assert.Single(connection.PublishedMessages);
+
+            for (ulong version = 3; version < 3 + TwinClient.DesiredResyncBufferCapacity + 1; version++)
+            {
+                await ReceiveDesiredPatchAsync(connection, nonce, version, "{}");
+            }
+
+            Assert.Equal(2, connection.PublishedMessages.Count);
+            MqttPublish secondGet = connection.PublishedMessages[1];
+            Assert.Equal("get:1", GetType(secondGet));
+            Assert.NotEqual(firstGet.CorrelationData, secondGet.CorrelationData);
+
+            await ReceiveGetResponseAsync(connection, firstGet, 2, "{}");
+            Assert.Empty(snapshotVersions);
+
+            await ReceiveGetResponseAsync(connection, secondGet, 11, "{}");
+            Assert.Equal(new[] { 11ul }, snapshotVersions);
+        }
+
+        [Fact]
+        public async Task DesiredResyncGet_TimesOut_IsSentAgainWithNewCorrelationData()
+        {
+            (MockFeatureConnectionClient connection, Guid nonce) = CreateConnectionWithNonce();
+            using TwinClient twinClient = new(connection);
+            using SemaphoreSlim getPublished = new(0);
+            connection.OnPublish = publish =>
+            {
+                getPublished.Release();
+                return Task.FromResult(new MqttPublishAck() { ReasonCode = MqttPublishAckReasonCode.Success });
+            };
+
+            List<int> timedOutAttempts = new();
+            twinClient.DesiredResyncTimeoutSchedule = attempt =>
+            {
+                timedOutAttempts.Add(attempt);
+                return attempt == 1 ? TimeSpan.FromMilliseconds(10) : TimeSpan.FromHours(1);
+            };
+
+            List<ulong> snapshotVersions = new();
+            twinClient.TwinPushReceived += args => snapshotVersions.Add(args.Desired!.PropertiesVersion);
+
+            await ReceiveDesiredPatchAsync(connection, nonce, 3, payload: null);
+            Assert.True(await getPublished.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
+            Assert.True(await getPublished.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
+
+            Assert.Equal(new[] { 1, 2 }, timedOutAttempts);
+            Assert.NotEqual(connection.PublishedMessages[0].CorrelationData, connection.PublishedMessages[1].CorrelationData);
+
+            // Only the response to the latest attempt is applied.
+            await ReceiveGetResponseAsync(connection, connection.PublishedMessages[0], 3, "{}");
+            await ReceiveGetResponseAsync(connection, connection.PublishedMessages[1], 3, "{}");
+            Assert.Equal(new[] { 3ul }, snapshotVersions);
+        }
+
+        [Fact]
+        public async Task DesiredResync_IsDiscardedOnNewConnection()
+        {
+            (MockFeatureConnectionClient connection, Guid nonce) = CreateConnectionWithNonce();
+            using TwinClient twinClient = new(connection);
+
+            bool eventRaised = false;
+            twinClient.TwinPushReceived += _ => eventRaised = true;
+
+            await ReceiveDesiredPatchAsync(connection, nonce, 3, payload: null);
+            MqttPublish getPublish = Assert.Single(connection.PublishedMessages);
+
+            connection.ConnectionNonce = Guid.NewGuid();
+            await ReceiveGetResponseAsync(connection, getPublish, 3, "{}");
+
+            Assert.False(eventRaised);
+        }
+
+        [Fact]
+        public async Task DesiredPatchAndTwinPush_ForAnotherConnection_AreDropped()
+        {
+            (MockFeatureConnectionClient connection, _) = CreateConnectionWithNonce();
+            using TwinClient twinClient = new(connection);
+
+            bool eventRaised = false;
+            twinClient.DesiredPatchReceived += _ => eventRaised = true;
+            twinClient.TwinPushReceived += _ => eventRaised = true;
+
+            Guid otherNonce = Guid.NewGuid();
+            await ReceiveTwinPushAsync(connection, otherNonce, 1, "{}");
+            await ReceiveDesiredPatchAsync(connection, otherNonce, 1, "{}");
+            await ReceiveDesiredPatchAsync(connection, otherNonce, 5, payload: null);
+
+            Assert.False(eventRaised);
+            Assert.Empty(connection.PublishedMessages);
+        }
+
+        [Fact]
+        public async Task TwinPush_WithStaleDesiredSection_DeliversOnlyReportedSection()
+        {
+            (MockFeatureConnectionClient connection, Guid nonce) = CreateConnectionWithNonce();
+            using TwinClient twinClient = new(connection);
+            await ReceiveTwinPushAsync(connection, nonce, 5, "{}");
+
+            TwinPushReceivedEventArgs? received = null;
+            twinClient.TwinPushReceived += args => received = args;
+
+            var push = new TwinPush()
+            {
+                Desired = new Section { Version = 5, Payload = ByteString.CopyFromUtf8("{}") },
+                Reported = new Section { Version = 2, Payload = ByteString.CopyFromUtf8("{\"temperature\":21}") },
+            };
+            await connection.SimulateReceiveAsync(CreateInboundTwinPublish("twin-push:1", nonce.ToByteArray(bigEndian: true), push.ToByteArray()));
+
+            Assert.NotNull(received);
+            Assert.Null(received!.Desired);
+            Assert.Equal(2ul, received.Reported!.PropertiesVersion);
+        }
+
+        [Fact]
+        public async Task GetTwinAsync_WithDesiredPayload_AdvancesLocalDesiredVersion()
+        {
+            (MockFeatureConnectionClient connection, Guid nonce) = CreateConnectionWithNonce();
+            using TwinClient twinClient = new(connection);
+            connection.OnPublish = async publish =>
+            {
+                var response = new TwinGetResponse()
+                {
+                    DesiredVersion = 5,
+                    DesiredPayload = ByteString.CopyFromUtf8("{}"),
+                };
+                await connection.SimulateReceiveAsync(CreateInboundTwinPublish("get-response:1", publish.CorrelationData!, response.ToByteArray()));
+                return new MqttPublishAck() { ReasonCode = MqttPublishAckReasonCode.Success };
+            };
+
+            await twinClient.GetTwinAsync(getReported: false, cancellationToken: TestContext.Current.CancellationToken);
+            await ReceiveDesiredPatchAsync(connection, nonce, 5, payload: null);
+
+            // The probe matched the version the application fetched, so no resync GET was sent.
+            Assert.Single(connection.PublishedMessages);
+        }
+
+        private static (MockFeatureConnectionClient, Guid) CreateConnectionWithNonce()
+        {
+            Guid nonce = Guid.NewGuid();
+            MockFeatureConnectionClient connection = new()
+            {
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv5, DeviceId),
+                ConnectionNonce = nonce,
+            };
+            return (connection, nonce);
+        }
+
+        private static Task ReceiveDesiredPatchAsync(MockFeatureConnectionClient connection, Guid nonce, ulong version, string? payload)
+        {
+            var patch = new DesiredPatch() { Version = version };
+            if (payload != null)
+            {
+                patch.Payload = ByteString.CopyFromUtf8(payload);
+            }
+
+            return connection.SimulateReceiveAsync(CreateInboundTwinPublish("desired-patch:1", nonce.ToByteArray(bigEndian: true), patch.ToByteArray()));
+        }
+
+        private static Task ReceiveTwinPushAsync(MockFeatureConnectionClient connection, Guid nonce, ulong desiredVersion, string desiredPayload)
+        {
+            var push = new TwinPush()
+            {
+                Desired = new Section { Version = desiredVersion, Payload = ByteString.CopyFromUtf8(desiredPayload) },
+            };
+
+            return connection.SimulateReceiveAsync(CreateInboundTwinPublish("twin-push:1", nonce.ToByteArray(bigEndian: true), push.ToByteArray()));
+        }
+
+        private static Task ReceiveGetResponseAsync(MockFeatureConnectionClient connection, MqttPublish getPublish, ulong desiredVersion, string desiredPayload)
+        {
+            var response = new TwinGetResponse()
+            {
+                DesiredVersion = desiredVersion,
+                DesiredPayload = ByteString.CopyFromUtf8(desiredPayload),
+            };
+
+            return connection.SimulateReceiveAsync(CreateInboundTwinPublish("get-response:1", getPublish.CorrelationData!, response.ToByteArray()));
         }
 
         private static MqttPublish CreateInboundTwinPublish(string type, byte[] correlationData, byte[] payload)

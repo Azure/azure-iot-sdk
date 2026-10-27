@@ -34,6 +34,12 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
         bool IsConnectionTargetSet => true;
 
         /// <summary>
+        /// The connection nonce sent in the birth message of the current (or most recent) connection attempt to an
+        /// MQTTv5 IoT hub, or null if it is not known or this client is not connected to an MQTTv5 IoT hub.
+        /// </summary>
+        internal Guid? ConnectionNonce => null;
+
+        /// <summary>
         /// Whether this connection client subscribes to twin topics. See <see cref="ConnectionClientOptions.EnableTwin"/>.
         /// </summary>
         bool IsTwinEnabled => true;

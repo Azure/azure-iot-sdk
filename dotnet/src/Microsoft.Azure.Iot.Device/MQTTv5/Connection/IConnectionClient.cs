@@ -33,6 +33,15 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
         bool IsConnectionTargetSet => true;
 
         /// <summary>
+        /// The connection nonce sent in the birth message of the current (or most recent) connection attempt to an
+        /// MQTTv5 IoT hub, or null if it is not known.
+        /// </summary>
+        /// <remarks>
+        /// IoT hub tags connection-scoped messages (such as twin pushes and desired property patches) with this nonce.
+        /// </remarks>
+        internal Guid? ConnectionNonce => null;
+
+        /// <summary>
         /// Send a PUBLISH to IoT hub. Any <see cref="DeviceIdPlaceholder"/> in the topic is replaced with the device's
         /// current ID when it is sent.
         /// </summary>

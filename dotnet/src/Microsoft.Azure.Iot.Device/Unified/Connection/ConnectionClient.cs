@@ -30,6 +30,11 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
 
         private MQTTv5.Connection.ConnectionClient _mqttv5ConnectionClient;
 
+        Guid? IConnectionClient.ConnectionNonce =>
+            CurrentConnectionContext?.ConnectionProfile == IotHubConnectionType.Mqttv5
+                ? _mqttv5ConnectionClient.CurrentConnectionNonce
+                : null;
+
         /// <inheritdoc/>
         public bool IsTwinEnabled { get; }
 

@@ -20,16 +20,22 @@ message Section {
   bytes payload = 2;      // Full opaque section payload.
 }
 
-// Incremental desired-properties patch: Service → Device
+// Incremental desired-properties patch (or version probe): Service → Device
 // type = "desired-patch:1"
 // Published on ih/{deviceId}/dev/twin at QoS 0.
 // Correlation Data = connectionNonce of the most recent admitted birth (§2.1).
-// Patches are dispatched in version order, beginning at (authoritative desired
-// version at birth-ack admission) + 1.
+// Steady-state patches are dispatched in version order, beginning at
+// (authoritative desired version at birth-ack admission) + 1. The backend MAY
+// additionally publish empty (payload-absent) messages as version probes
+// at any time (§4.10).
 message DesiredPatch {
-  uint64 version = 1;     // The new authoritative desired version after applying
-                          // this patch. Strictly monotonic: version N+1 follows N.
-  bytes payload = 2;      // Opaque patch payload.
+  uint64 version = 1;       // With payload present: the new authoritative desired
+                            // version after applying this patch (strictly monotonic
+                            // V → V+1).
+                            // With payload absent (probe): the current authoritative
+                            // version at publish time; the message does not advance
+                            // the device's view (see §7.1).
+  optional bytes payload = 2;  // Opaque patch payload. Absent ⇒ version probe.
 }
 
 
