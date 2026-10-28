@@ -16,6 +16,7 @@ set(AZ_IOT_CORE_SOURCES
     core/mono_time.c
     core/retry_policy.c
     core/defensive_timeout.c
+    core/deadline.c
     core/env.c
     core/dispatch.c
     core/proto3.c
