@@ -3,12 +3,13 @@
 
 using Microsoft.Azure.Iot.Device;
 using Microsoft.Azure.Iot.Device.Authentication;
-using Microsoft.Azure.Iot.Device.Exceptions;
 using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Models.Twin;
 using Microsoft.Azure.Iot.Device.MQTTv5.Connection;
+using Microsoft.Azure.Iot.Device.MQTTv5.Models;
 using Microsoft.Azure.Iot.Device.MQTTv5.Twin;
 using SetupSampleDevice;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 
 /// <summary>
@@ -27,6 +28,8 @@ using System.Text.Json.Nodes;
 /// </remarks>
 internal class Program
 {
+    private static readonly JsonSerializerOptions s_serializerOptions = new() { WriteIndented = true };
+
     private static async Task Main(string[] args)
     {
         using CancellationTokenSource cts = new CancellationTokenSource();
@@ -43,12 +46,12 @@ internal class Program
         string idScope = SampleConstants.LoadIdScope();
         X509AuthenticationProvider authentication = SampleConstants.LoadAuthenticationProvider();
 
-        // The SDK doesn't persist the twin, so this application does.
+        // The SDK keeps this device's copy of its twin, but doesn't persist it, so this application does.
         string twinPath = Path.Combine(AppContext.BaseDirectory, $"twin-{deviceId}.json");
-        PersistedTwin twin = PersistedTwin.Load(twinPath);
-        Console.WriteLine($"Loaded this device's twin from {twinPath} (desired version {twin.DesiredVersion}, reported version {twin.ReportedVersion})");
+        TwinState? persistedTwin = LoadTwin(twinPath);
+        Console.WriteLine($"Loaded this device's twin from {twinPath} (desired version {persistedTwin?.DesiredVersion ?? 0}, reported version {persistedTwin?.ReportedVersion ?? 0})");
 
-        Microsoft.Azure.Iot.Device.MQTTv5.Models.ConnectionClientOptions options = new()
+        ConnectionClientOptions options = new()
         {
             // Ask IoT hub to push the desired properties upon connecting if they changed while the device was offline, and then
             // to send each desired properties update as it happens. These can't be changed once the connection client is created.
@@ -56,137 +59,74 @@ internal class Program
 
             // Ask IoT hub to push the reported properties upon connecting if this device doesn't hold their latest version.
             ReceiveReportedPropertiesUponConnect = true,
-
-            // Tell IoT hub which versions this device already holds, so it doesn't push sections that haven't changed. If a
-            // persisted version is newer than IoT hub's (for example, because the twin was recreated), the SDK discards it.
-            InitialDesiredPropertiesVersion = twin.DesiredVersion,
-            InitialReportedPropertiesVersion = twin.ReportedVersion,
         };
 
         using ConnectionClient connectionClient = new ConnectionClient(options);
-        using TwinClient twinClient = new TwinClient(connectionClient);
 
-        // Sends a reported properties patch that was recorded in the persisted twin, and records IoT hub's response to it.
-        async Task SendReportedPatchAsync(PersistedTwin.PendingPatch pending)
+        // Starting from the persisted twin tells IoT hub which versions this device already holds, so it doesn't push sections
+        // that haven't changed, and sends the reported properties patches that IoT hub hadn't applied when the sample stopped.
+        using TwinClient twinClient = new TwinClient(connectionClient, persistedTwin);
+
+        // The SDK raises each change to this device's copy of its twin (including each reported properties patch it is yet to
+        // send) one at a time, in order, so saving each one keeps the persisted twin up to date.
+        twinClient.TwinStateChanged += twin => SaveTwin(twinPath, twin);
+
+        // The SDK sends reported properties patches in order, keeps them across reconnects until IoT hub responds, and only
+        // adds them to its copy of the reported properties once IoT hub applies them, so a rejected patch needs no cleanup.
+        //
+        // The SDK sends one patch at a time. Patches queued while one is in flight (or while the device isn't connected) are
+        // combined into one JSON merge patch and sent together, so this is raised once for all of them, and args.Patch is the
+        // combined patch rather than any one of them. Later values win, so if several "appliedDesiredVersion" patches are
+        // combined, IoT hub only receives the latest one, and the reported version advances by one for the combined patch.
+        // Patches that can't be combined (such as one that removes a property followed by one that sets its children) are
+        // sent one after another.
+        twinClient.ReportedPatchCompleted += args =>
         {
-            try
+            if (args.Response?.Result == Result.Ok)
             {
-                // The SDK makes the patch conditional on IoT hub's version of the reported properties, combines it with
-                // other patches made while one is in flight, and keeps it across reconnects until IoT hub responds.
-                ReportedPatchResponse response = await twinClient.UpdateReportedPropertiesAsync(new() { ReportedProperties = pending.Patch }, cts.Token);
-                if (response.Result == Result.Ok)
-                {
-                    twin.CompleteReportedPatch(pending, response.Version);
-                    Console.WriteLine($"IoT hub applied the reported properties patch {pending.Patch.ToJsonString()} (reported version {response.Version})");
-                    return;
-                }
-
-                Console.WriteLine($"IoT hub rejected the reported properties patch {pending.Patch.ToJsonString()}: {response.Result}");
-                twin.RejectReportedPatch(pending);
-                await ResyncReportedPropertiesAsync();
+                Console.WriteLine($"IoT hub applied the reported properties patch {args.Patch.ToJsonString()} (reported version {args.Response.Version})");
             }
-            catch (OperationCanceledException) when (cts.IsCancellationRequested)
+            else
             {
-                // The sample is stopping. The patch stays in the persisted twin and is sent again on the next run. IoT hub may
-                // already have applied it, but applying the same merge patch again leaves the same reported properties.
+                Console.WriteLine($"IoT hub didn't apply the reported properties patch {args.Patch.ToJsonString()}: {args.Response?.Result.ToString() ?? args.Error?.Message}");
             }
-            catch (Exception e)
-            {
-                Console.WriteLine($"Failed to send the reported properties patch {pending.Patch.ToJsonString()}: {e.Message}");
-                twin.RejectReportedPatch(pending);
-                await ResyncReportedPropertiesAsync();
-            }
-        }
-
-        // Records a reported properties patch in the persisted twin before sending it, so that it isn't lost if the
-        // application stops before IoT hub applies it. The SDK holds patches until the device connects, and queues each one
-        // before UpdateReportedPropertiesAsync returns, so recording and sending under one lock sends them in recorded order.
-        // Sends aren't awaited here, since they only complete once IoT hub responds (which may be after reconnecting), and
-        // the event handlers that make patches must not block the SDK. They are awaited before the sample exits instead.
-        object reportedPatchLock = new();
-        List<Task> reportedPatchSends = new();
-        void UpdateReportedProperties(JsonObject patch)
-        {
-            lock (reportedPatchLock)
-            {
-                StartSendingReportedPatch(twin.AddPendingReportedPatch(patch));
-            }
-        }
-
-        // Must be called while holding reportedPatchLock.
-        void StartSendingReportedPatch(PersistedTwin.PendingPatch pending)
-        {
-            reportedPatchSends.RemoveAll(send => send.IsCompleted);
-            reportedPatchSends.Add(SendReportedPatchAsync(pending));
-        }
-
-        // Fetches IoT hub's copy of the reported properties when this device no longer knows whether its copy matches.
-        async Task ResyncReportedPropertiesAsync()
-        {
-            try
-            {
-                DeviceTwin current = await twinClient.GetTwinAsync(getReported: true, getDesired: false, cancellationToken: cts.Token);
-                if (current.Reported != null && current.ReportedVersion is ulong reportedVersion)
-                {
-                    twin.ApplySnapshot(desired: false, reportedVersion, current.Reported);
-                    Console.WriteLine($"Fetched the reported properties from IoT hub (reported version {reportedVersion})");
-                }
-            }
-            catch (Exception e)
-            {
-                // The reported version stays 0, so IoT hub pushes the reported properties the next time this device connects.
-                Console.WriteLine($"Failed to fetch the reported properties. They will be pushed by IoT hub upon reconnecting: {e.Message}");
-            }
-        }
+        };
 
         // The SDK only raises this for the next version of the desired properties that this device holds. If it misses an
         // update, it fetches the full desired properties and raises TwinPushReceived with them instead.
-        void HandleDesiredPatch(DesiredPatchReceivedEventArgs args)
+        twinClient.DesiredPatchReceived += args =>
         {
             Console.WriteLine($"Received desired properties patch {args.DesiredProperties.ToJsonString()} (desired version {args.DesiredPropertiesVersion})");
-            twin.ApplyDesiredPatch(args.DesiredPropertiesVersion, args.DesiredProperties);
 
             // Some application-level processing based on what desired properties changed
 
-            UpdateReportedProperties(new JsonObject { ["appliedDesiredVersion"] = args.DesiredPropertiesVersion });
-        }
+            // Queue the patch rather than awaiting IoT hub's response, since event handlers must not block the SDK. If desired
+            // patches arrive faster than IoT hub responds, the SDK combines these acknowledgements, so only the latest is sent.
+            twinClient.EnqueueReportedPropertiesUpdate(new JsonObject { ["appliedDesiredVersion"] = args.DesiredPropertiesVersion });
+        };
 
         // IoT hub pushes the full desired and/or reported properties upon connecting if this device's versions are out of date.
         // The SDK also raises this with the full desired properties when it resynchronizes them.
-        void HandleTwinPush(TwinPushReceivedEventArgs args)
+        twinClient.TwinPushReceived += args =>
         {
             if (args.Reported != null)
             {
                 Console.WriteLine($"Received the full reported properties (reported version {args.Reported.PropertiesVersion})");
-                twin.ApplySnapshot(desired: false, args.Reported.PropertiesVersion, args.Reported.Properties);
             }
 
             if (args.Desired != null)
             {
                 Console.WriteLine($"Received the full desired properties (desired version {args.Desired.PropertiesVersion})");
-                twin.ApplySnapshot(desired: true, args.Desired.PropertiesVersion, args.Desired.Properties);
 
                 // Some application-level processing based on the new desired properties
 
-                UpdateReportedProperties(new JsonObject { ["appliedDesiredVersion"] = args.Desired.PropertiesVersion });
+                twinClient.EnqueueReportedPropertiesUpdate(new JsonObject { ["appliedDesiredVersion"] = args.Desired.PropertiesVersion });
             }
-        }
+        };
 
-        // Set handlers before connecting, since IoT hub may push the twin as soon as the device connects.
-        twinClient.DesiredPatchReceived += HandleDesiredPatch;
-        twinClient.TwinPushReceived += HandleTwinPush;
-
-        // Send the reported properties patches that IoT hub hadn't applied when the sample last stopped. The SDK holds them
-        // until the device connects, then sends them before any patches made afterwards.
-        lock (reportedPatchLock)
-        {
-            foreach (PersistedTwin.PendingPatch pending in twin.GetPendingReportedPatches())
-            {
-                StartSendingReportedPatch(pending);
-            }
-        }
-
-        UpdateReportedProperties(new JsonObject { ["lastStartedAt"] = DateTimeOffset.UtcNow });
+        // The device doesn't need to be connected to update its reported properties. The SDK sends the patch once it connects,
+        // combined with any patches restored from the persisted twin and any acknowledgements queued before then.
+        twinClient.EnqueueReportedPropertiesUpdate(new JsonObject { ["lastStartedAt"] = DateTimeOffset.UtcNow });
 
         ProvisioningSettings provisioningSettings = new(idScope);
 
@@ -203,21 +143,39 @@ internal class Program
             Console.WriteLine("Sample timeout has completed. Shutting down the sample...");
         }
 
-        twinClient.DesiredPatchReceived -= HandleDesiredPatch;
-        twinClient.TwinPushReceived -= HandleTwinPush;
-
-        // No more patches are made now. The sample's cancellation token has been cancelled, so outstanding sends finish
-        // promptly, leaving any patch that IoT hub hasn't responded to in the persisted twin for the next run.
-        Task[] outstandingSends;
-        lock (reportedPatchLock)
-        {
-            outstandingSends = reportedPatchSends.ToArray();
-        }
-
-        await Task.WhenAll(outstandingSends);
+        // Any reported properties patch that IoT hub hasn't applied yet stays in the persisted twin, and is sent on the next run.
+        // IoT hub may already have applied it, but applying the same merge patch again leaves the same reported properties.
         await connectionClient.DisconnectAsync();
 
         Console.WriteLine($"This device's twin, as persisted to {twinPath}:");
-        Console.WriteLine(twin.ToJsonString());
+        Console.WriteLine(JsonSerializer.Serialize(twinClient.GetTwinState(), s_serializerOptions));
+    }
+
+    // Loads the twin persisted at the given path, or returns null if this device holds no copy of its twin.
+    private static TwinState? LoadTwin(string path)
+    {
+        if (!File.Exists(path))
+        {
+            return null;
+        }
+
+        try
+        {
+            return JsonSerializer.Deserialize<TwinState>(File.ReadAllText(path));
+        }
+        catch (JsonException e)
+        {
+            // Holding no copy is always safe: IoT hub pushes both sections upon connecting.
+            Console.WriteLine($"Ignoring the unreadable persisted twin at {path}: {e.Message}");
+            return null;
+        }
+    }
+
+    // Writes to a temporary file first, so that a crash mid-write never leaves a corrupt twin.
+    private static void SaveTwin(string path, TwinState twin)
+    {
+        string temporaryPath = path + ".tmp";
+        File.WriteAllText(temporaryPath, JsonSerializer.Serialize(twin, s_serializerOptions));
+        File.Move(temporaryPath, path, overwrite: true);
     }
 }

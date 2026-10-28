@@ -9,6 +9,7 @@ using Microsoft.Azure.Iot.Device.Models.Twin;
 using Microsoft.Azure.Iot.Device.Mqtt;
 using Microsoft.Azure.Iot.Device.Models;
 using System.Text;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using Xunit;
 
@@ -1180,6 +1181,101 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             var response = new ReportedPatchResponse() { Result = Result.Ok, Version = 5 };
             await mqttClient.SimulatePublishReceivedAsync(CreateInboundTwinPublish("reported-patch-response:1", patchPublish.CorrelationData!, response.ToByteArray()));
             Assert.Equal(5ul, (await update).Version);
+        }
+
+        [Fact]
+        public async Task Constructor_WithTwinState_RestoresVersionsAndSendsPendingPatchesAfterBirthAck()
+        {
+            (MockFeatureConnectionClient connection, Guid nonce) = CreateConnectionWithNonce();
+            TwinState initialState = JsonSerializer.Deserialize<TwinState>(
+                "{\"DesiredVersion\":3,\"Desired\":{\"d\":1},\"ReportedVersion\":4,\"Reported\":{\"a\":0,\"c\":3},\"PendingReportedPatches\":[{\"a\":1},{\"b\":2}]}")!;
+            using TwinClient twinClient = new(connection, initialState);
+            List<string> events = new();
+            TwinState? latestState = null;
+            twinClient.ReportedPatchCompleted += args => events.Add($"completed {args.Patch.ToJsonString()} {args.Response?.Result}");
+            twinClient.TwinStateChanged += state =>
+            {
+                events.Add("state");
+                latestState = state;
+            };
+
+            Assert.Equal([3ul], connection.ReplacedDesiredPropertiesVersions);
+            Assert.Equal([4ul], connection.ReplacedReportedPropertiesVersions);
+            Assert.Equal(2, twinClient.GetTwinState().PendingReportedPatches.Count);
+            Assert.Empty(connection.PublishedMessages);
+
+            await ReceiveBirthAckAsync(connection, nonce, desiredVersion: 3, reportedVersion: 4);
+            await WaitUntilAsync(() => connection.PublishedMessages.Count == 1);
+            MqttPublish patchPublish = connection.PublishedMessages[0];
+            (ulong ifMatch, JsonObject patch) = ParseReportedPatch(patchPublish);
+            Assert.Equal(4ul, ifMatch);
+            Assert.Equal("{\"a\":1,\"b\":2}", patch.ToJsonString());
+
+            await RespondToReportedPatchAsync(connection, patchPublish, Result.Ok, 5);
+
+            Assert.Equal(["completed {\"a\":1,\"b\":2} Ok", "state"], events);
+            Assert.NotNull(latestState);
+            Assert.Equal(3ul, latestState.DesiredVersion);
+            Assert.Equal("{\"d\":1}", latestState.Desired.ToJsonString());
+            Assert.Equal(5ul, latestState.ReportedVersion);
+            Assert.Equal("{\"a\":1,\"c\":3,\"b\":2}", latestState.Reported.ToJsonString());
+            Assert.Empty(latestState.PendingReportedPatches);
+        }
+
+        [Fact]
+        public async Task TwinState_TracksDesiredChangesAndOnlyAppliedReportedPatches()
+        {
+            (MockFeatureConnectionClient connection, Guid nonce) = CreateConnectionWithNonce();
+            using TwinClient twinClient = new(connection);
+            await ReceiveBirthAckAsync(connection, nonce, desiredVersion: 1, reportedVersion: 2);
+            var push = new TwinPush()
+            {
+                Desired = new Section { Version = 1, Payload = ByteString.CopyFromUtf8("{\"x\":{\"y\":1,\"z\":2}}") },
+                Reported = new Section { Version = 2, Payload = ByteString.CopyFromUtf8("{\"r\":1}") },
+            };
+            await connection.SimulateReceiveAsync(CreateInboundTwinPublish("twin-push:1", nonce.ToByteArray(bigEndian: true), push.ToByteArray()));
+            await ReceiveDesiredPatchAsync(connection, nonce, 2, "{\"x\":{\"y\":null,\"w\":3}}");
+
+            Task<ReportedPatchResponse> rejected = UpdateReportedAsync(twinClient, "{\"bad\":1}");
+            await WaitUntilAsync(() => connection.PublishedMessages.Count(p => GetType(p) == "reported-patch:1") == 1);
+            await RespondToReportedPatchAsync(connection, connection.PublishedMessages.Last(p => GetType(p) == "reported-patch:1"), Result.PayloadTooLarge, 2);
+            await rejected;
+
+            Task<ReportedPatchResponse> applied = UpdateReportedAsync(twinClient, "{\"r\":null,\"s\":2}");
+            await WaitUntilAsync(() => connection.PublishedMessages.Count(p => GetType(p) == "reported-patch:1") == 2);
+            await RespondToReportedPatchAsync(connection, connection.PublishedMessages.Last(p => GetType(p) == "reported-patch:1"), Result.Ok, 3);
+            await applied;
+
+            TwinState state = twinClient.GetTwinState();
+            Assert.Equal(2ul, state.DesiredVersion);
+            Assert.Equal("{\"x\":{\"z\":2,\"w\":3}}", state.Desired.ToJsonString());
+            Assert.Equal(3ul, state.ReportedVersion);
+            Assert.Equal("{\"s\":2}", state.Reported.ToJsonString());
+            Assert.Empty(state.PendingReportedPatches);
+        }
+
+        [Fact]
+        public async Task EnqueueReportedPropertiesUpdate_PersistsPatchBeforeReturningAndRaisesSendFailure()
+        {
+            (MockFeatureConnectionClient connection, Guid nonce) = CreateConnectionWithNonce();
+            connection.OnPublish = _ => throw new InvalidOperationException("send failed");
+            using TwinClient twinClient = new(connection);
+            List<TwinState> states = new();
+            ReportedPatchCompletedEventArgs? completion = null;
+            twinClient.TwinStateChanged += states.Add;
+            twinClient.ReportedPatchCompleted += args => completion = args;
+
+            twinClient.EnqueueReportedPropertiesUpdate(JsonNode.Parse("{\"a\":1}")!.AsObject());
+
+            Assert.Equal("{\"a\":1}", Assert.Single(Assert.Single(states).PendingReportedPatches).ToJsonString());
+
+            await ReceiveBirthAckAsync(connection, nonce, desiredVersion: 1, reportedVersion: 4);
+            await WaitUntilAsync(() => completion != null);
+            Assert.Equal("{\"a\":1}", completion!.Patch.ToJsonString());
+            Assert.Null(completion.Response);
+            Assert.IsType<InvalidOperationException>(completion.Error);
+            await WaitUntilAsync(() => states.Count == 2);
+            Assert.Empty(states[1].PendingReportedPatches);
         }
 
         private static (MockFeatureConnectionClient, Guid) CreateConnectionWithNonce()

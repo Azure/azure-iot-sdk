@@ -35,19 +35,18 @@ Delete `twin-{deviceId}.json` to start over. The device then holds no versions, 
 
 ## Persisted twin
 
-[PersistedTwin.cs](./PersistedTwin.cs) holds the device's copy of its twin:
+The SDK keeps the device's copy of its twin as a `TwinState`, but doesn't persist it. The sample saves each snapshot
+raised by `TwinClient.TwinStateChanged`, and passes the saved one to the `TwinClient` constructor on the next run:
 
 | Field | Meaning |
 | --- | --- |
-| `DesiredVersion`, `Desired` | The latest desired properties this device has applied, and their version. |
-| `ReportedVersion`, `Reported` | IoT Hub's latest known reported properties, and their version. |
-| `PendingReported` | Reported properties patches that IoT Hub hasn't applied yet, in the order they were made. |
+| `DesiredVersion`, `Desired` | The latest desired properties the device received, and their version. |
+| `ReportedVersion`, `Reported` | The reported properties IoT Hub has applied, and their version. |
+| `PendingReportedPatches` | Reported properties patches that IoT Hub hasn't applied yet, in the order they were made. |
 
-A version of `0` means the device doesn't hold that section in full, since IoT Hub's versions are never `0`. Each change
-is written to a temporary file that then replaces the twin file, so a crash mid-write never leaves a corrupt twin. An
-unreadable file is ignored, which is always safe because IoT Hub then pushes the whole twin.
-
-The SDK doesn't persist the twin. Persistence is the application's responsibility.
+A version of `0` means the device doesn't hold that section in full, since IoT Hub's versions are never `0`. Each
+snapshot is written to a temporary file that then replaces the twin file, so a crash mid-write never leaves a corrupt
+twin. An unreadable file is ignored, which is always safe because IoT Hub then pushes the whole twin.
 
 ## Best practices demonstrated
 
@@ -55,41 +54,44 @@ The SDK doesn't persist the twin. Persistence is the application's responsibilit
 
 - **Choose the push options once.** `ReceiveDesiredPropertyUpdates` and `ReceiveReportedPropertiesUponConnect` are
   set on `ConnectionClientOptions` and can't change while the connection client exists.
-- **Pass the versions the device already holds.** `InitialDesiredPropertiesVersion` and
-  `InitialReportedPropertiesVersion` come from the persisted twin. IoT Hub only pushes the sections whose versions
-  differ, rather than the device fetching the whole twin each time it starts. If a persisted version is newer than
-  IoT Hub's (for example, because the device's twin was recreated), the SDK discards it.
-- **Set handlers before connecting.** IoT Hub may push the twin as soon as the device connects, so
-  `DesiredPatchReceived` and `TwinPushReceived` are subscribed before `ProvisionAndConnectAsync`.
+- **Start from the persisted twin.** Passing it to the `TwinClient` constructor tells IoT Hub which versions the
+  device already holds, so IoT Hub only pushes the sections whose versions differ, rather than the device fetching the
+  whole twin each time it starts. If a persisted version is newer than IoT Hub's (for example, because the device's
+  twin was recreated), the SDK discards it.
+- **Set handlers before connecting.** IoT Hub may push the twin as soon as the device connects, so every handler is
+  subscribed before `ProvisionAndConnectAsync`.
 
 ### Desired properties
 
-- **Apply patches as JSON merge patches** to the local copy, and record the new version.
-- **Replace the local copy with each twin push.** `TwinPushReceived` carries a whole section, which replaces the
-  local one.
 - **Rely on the SDK for ordering.** `DesiredPatchReceived` is only raised for the next desired version after the
   one the device holds. If the SDK detects a missed update, it fetches the desired properties and raises
-  `TwinPushReceived` with them instead, so the application never applies patches out of order.
+  `TwinPushReceived` with them instead, so the application never applies patches out of order. The SDK applies
+  each patch and push to its `TwinState`.
 - **Acknowledge what was applied** by reporting `appliedDesiredVersion`, so the service side can tell which
   desired version the device is acting on.
 
 ### Reported properties
 
-- **Persist each patch before sending it.** A patch is added to `PendingReported` before
-  `UpdateReportedPropertiesAsync` is called, so it isn't lost if the device stops before IoT Hub applies it.
-- **Send patches whether or not the device is connected.** The SDK holds patches until the device connects and IoT
-  Hub acknowledges its presence. Patches left over from the previous run are queued before connecting, so they are
-  sent before newer ones. Re-sending a patch that IoT Hub may already have applied is safe, because applying the
-  same merge patch again leaves the same reported properties.
-- **Keep the persisted order and the send order the same.** The SDK queues each patch before
-  `UpdateReportedPropertiesAsync` returns, so the sample records and sends each patch under one lock.
+- **Don't block event handlers.** Handlers call `EnqueueReportedPropertiesUpdate`, which returns immediately, rather
+  than awaiting `UpdateReportedPropertiesAsync`. Outcomes are logged from `ReportedPatchCompleted`.
+- **Persist each patch before it's sent.** `TwinStateChanged` is raised with the patch in `PendingReportedPatches`
+  before `EnqueueReportedPropertiesUpdate` returns, so it isn't lost if the device stops before IoT Hub applies it.
+  Re-sending a patch that IoT Hub may already have applied is safe, because applying the same merge patch again
+  leaves the same reported properties.
+- **Update reported properties whether or not the device is connected.** The SDK holds patches until the device
+  connects and IoT Hub acknowledges its presence, and sends patches restored from the persisted twin before newer
+  ones.
 - **Let the SDK make patches conditional.** The SDK sends one patch at a time, conditional on IoT Hub's version of
   the reported properties, and combines patches made while another is in flight. It also re-sends patches after
-  timeouts, version mismatches and reconnects. When a patch completes, the sample applies it and every earlier
-  pending patch to its copy of the reported properties, since IoT Hub applied them in order.
-- **Resynchronize after a rejection.** If IoT Hub rejects a patch, the device no longer knows whether its copy
-  matches IoT Hub's. The sample sets its reported version to `0` and fetches the reported properties. If that fails,
-  IoT Hub pushes them on the next connection because the device holds no version.
-- **Keep patches when shutting down.** Patches whose sends are cancelled when the sample stops stay in the
-  persisted twin and are sent again on the next run. The sample awaits every outstanding send before disconnecting,
-  so none are left running unobserved.
+  timeouts, version mismatches and reconnects. A rejected patch needs no cleanup, since the SDK only adds patches to
+  its copy of the reported properties once IoT Hub applies them.
+- **Expect patches to be combined.** The SDK sends one patch at a time. Patches queued while one is in flight, or
+  while the device isn't connected, are combined into one JSON merge patch, where later values win. For example, on
+  startup the patches restored from the persisted twin, `lastStartedAt` and any `appliedDesiredVersion`
+  acknowledgements may all go out in one send. As a result:
+  - `ReportedPatchCompleted` is raised once per send, and its `Patch` is the combined patch.
+  - If several `appliedDesiredVersion` acknowledgements are combined, IoT Hub only receives the latest, and the
+    reported version advances once for the whole send. The service side shouldn't expect one reported version per
+    desired update.
+  - Patches that can't be combined into one merge patch (such as one that removes a property followed by one that
+    sets that property's children) are sent one after another.
