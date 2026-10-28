@@ -679,6 +679,49 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
             }
         }
 
+        [Fact]
+        public async Task FailedUnsubscribeOfDisabledFeaturesOnResumedSessionReconnects()
+        {
+            using MockConnectionMqttClient mockMqttClient = new();
+            using ConnectionClient connectionClient = new(new()
+            {
+                MqttClient = mockMqttClient,
+                UseCleanSession = false,
+                EnableCloudToDeviceMessages = false,
+                EnableDirectMethods = false,
+            });
+
+            mockMqttClient.OnConnect = connect =>
+                Task.FromResult(new MqttConnectAck() { IsSessionPresent = true, ResultCode = MqttConnectReasonCode.Success });
+
+            // The first UNSUBSCRIBE fails without the connection being lost, as on an UNSUBACK timeout.
+            int unsubscribeCount = 0;
+            mockMqttClient.OnUnsubscribe = unsubscribe =>
+            {
+                if (Interlocked.Increment(ref unsubscribeCount) == 1)
+                {
+                    throw new TimeoutException("mock UNSUBACK timeout");
+                }
+
+                return Task.FromResult(MqttObjectHelpers.CreateSuccessfulUnsuback(unsubscribe));
+            };
+
+            TaskCompletionSource subscribed = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            mockMqttClient.OnSubscribe = subscribe =>
+            {
+                subscribed.TrySetResult();
+                return Task.FromResult(MqttObjectHelpers.CreateSuccessfulSuback(subscribe));
+            };
+
+            await connectionClient.ConnectToHubAsync(GetMockConnectionContext(false), TestContext.Current.CancellationToken);
+            await subscribed.Task.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+
+            // The failed presence flow tore the connection down so that the next connection could finish it.
+            Assert.Single(mockMqttClient.DisconnectRequests);
+            Assert.Equal(2, mockMqttClient.ConnectAttemptCount);
+            Assert.Equal(2, Volatile.Read(ref unsubscribeCount));
+        }
+
         [Theory]
         [InlineData(true, true)]
         [InlineData(true, false)]

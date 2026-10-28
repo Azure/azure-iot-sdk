@@ -168,25 +168,10 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
                 mqttUnsubscribe.TopicFilters.Add(DirectMethods.DirectMethodClient.ClassicDirectMethodsRequestTopic + "#");
             }
 
-            if (args.ConnectAck.IsSessionPresent && mqttUnsubscribe.TopicFilters.Count > 0)
+            if (args.ConnectAck.IsSessionPresent && mqttUnsubscribe.TopicFilters.Count > 0
+                && !await TryUnsubscribeDisabledFeaturesAsync(mqttUnsubscribe))
             {
-                var unsuback = await ManagedMqttConnection.BuildAndUnsubscribeAsync(ConnectionEndpoint.IotHub, () =>
-                {
-                    string deviceId = GetDeviceIdForTopics();
-                    return mqttUnsubscribe.WithTopicFilters(mqttUnsubscribe.TopicFilters
-                        .Select(topicFilter => topicFilter.Replace(IConnectionClient.DeviceIdPlaceholder, deviceId, StringComparison.Ordinal))
-                        .ToList());
-                }, throwOnUnsubackErrorCode: false, CurrentReprovisioningCancellationToken);
-
-                if (unsuback.Items.Any(item => item.ReasonCode != MqttClientUnsubscribeReasonCode.Success
-                    && item.ReasonCode != MqttClientUnsubscribeReasonCode.NoSubscriptionExisted))
-                {
-                    // Signal to the underlying MQTT connection manager that, even though we are manually disconnecting, we still want to reconnect.
-                    await ManagedMqttConnection.DisconnectAsync(true, new MqttDisconnect() { Reason = MqttDisconnectReasonCode.NormalDisconnection });
-
-                    Trace.TraceError("Device failed to unsubscribe from the MQTT topics of disabled features upon resuming a session with IoT Hub. Disconnecting the MQTT client and trying again.");
-                    return;
-                }
+                return;
             }
 
             if (mqttSubscribe.TopicFilters.Count == 0)
@@ -237,6 +222,85 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
             {
                 MarkDevicePresenceSubscribed();
                 await RaiseDevicePresenceFlowCompletedAsync(new DevicePresenceFlowCompletedArgs() { IsSuccess = true });
+            }
+        }
+
+        /// <summary>
+        /// Remove a resumed session's subscriptions for disabled features.
+        /// </summary>
+        /// <returns>
+        /// True if the presence flow can continue; false if it was abandoned because the connection was lost, or if the
+        /// connection was torn down so that it is retried.
+        /// </returns>
+        private async Task<bool> TryUnsubscribeDisabledFeaturesAsync(MqttUnsubscribe mqttUnsubscribe)
+        {
+            // Abandon the UNSUBSCRIBE once this connection is lost, so that a failure on it can never tear down a newer one.
+            using CancellationTokenSource presenceCancellation = CancellationTokenSource.CreateLinkedTokenSource(
+                ManagedMqttConnection.ConnectionLifetimeCancellationToken,
+                CurrentReprovisioningCancellationToken);
+
+            Task HandleConnectionLostAsync(MqttClientDisconnectedEventArgs _)
+            {
+                try
+                {
+                    presenceCancellation.Cancel();
+                }
+                catch (ObjectDisposedException)
+                {
+                    // A disconnect dispatch may have captured this handler before the UNSUBSCRIBE completed.
+                }
+
+                return Task.CompletedTask;
+            }
+
+            ManagedMqttConnection.DisconnectedAsync += HandleConnectionLostAsync;
+            try
+            {
+                var unsuback = await ManagedMqttConnection.BuildAndUnsubscribeAsync(ConnectionEndpoint.IotHub, () =>
+                {
+                    string deviceId = GetDeviceIdForTopics();
+                    return mqttUnsubscribe.WithTopicFilters(mqttUnsubscribe.TopicFilters
+                        .Select(topicFilter => topicFilter.Replace(IConnectionClient.DeviceIdPlaceholder, deviceId, StringComparison.Ordinal))
+                        .ToList());
+                }, throwOnUnsubackErrorCode: false, presenceCancellation.Token);
+
+                presenceCancellation.Token.ThrowIfCancellationRequested();
+
+                if (unsuback.Items.Any(item => item.ReasonCode != MqttClientUnsubscribeReasonCode.Success
+                    && item.ReasonCode != MqttClientUnsubscribeReasonCode.NoSubscriptionExisted))
+                {
+                    Trace.TraceError("Device failed to unsubscribe from the MQTT topics of disabled features upon resuming a session with IoT Hub. Disconnecting the MQTT client and trying again.");
+
+                    // Signal to the underlying MQTT connection manager that, even though we are manually disconnecting, we still want to reconnect.
+                    await ManagedMqttConnection.DisconnectAsync(true, new MqttDisconnect() { Reason = MqttDisconnectReasonCode.NormalDisconnection }, presenceCancellation.Token);
+                    return false;
+                }
+
+                return true;
+            }
+            catch (OperationCanceledException) when (presenceCancellation.IsCancellationRequested)
+            {
+                // The connection layer owns recovery; an abandoned presence flow must not restart it.
+                return false;
+            }
+            catch (Exception e) when (!presenceCancellation.IsCancellationRequested)
+            {
+                // Without this, nothing would reconnect or complete the presence flow while the connection stays up.
+                Trace.TraceError("Exception thrown while unsubscribing from the MQTT topics of disabled features upon resuming a session with IoT Hub. Disconnecting the MQTT client and trying again. {0}", e);
+                try
+                {
+                    await ManagedMqttConnection.DisconnectAsync(true, new MqttDisconnect() { Reason = MqttDisconnectReasonCode.NormalDisconnection }, presenceCancellation.Token);
+                }
+                catch (OperationCanceledException) when (presenceCancellation.IsCancellationRequested)
+                {
+                    // The connection was lost or closed meanwhile, so the connection layer owns recovery.
+                }
+
+                return false;
+            }
+            finally
+            {
+                ManagedMqttConnection.DisconnectedAsync -= HandleConnectionLostAsync;
             }
         }
 
