@@ -233,14 +233,13 @@ Defaults used when the matching option is left at 0:
 | --- | --- | --- |
 | `AZ_IOT_DEFAULT_KEEP_ALIVE_SECONDS` | 30 | `keep_alive_seconds` |
 | `AZ_IOT_DEFAULT_CONNECT_TIMEOUT_SECONDS` | 30 | `connect_timeout_seconds` |
-| `AZ_IOT_DEFAULT_SUBSCRIPTION_ACK_TIMEOUT_SECONDS` | 60 | `subscription_ack_timeout_seconds` |
+| `AZ_IOT_DEFAULT_SUBSCRIPTION_ACK_TIMEOUT_SECONDS` | 60 | `subscription_ack_timeout_seconds` (also the mqttv5 presence SUBACK) |
 | `AZ_IOT_DEFAULT_SESSION_EXPIRY_SECONDS` | 3600 | `session_expiry_seconds` (mqttv5) |
 | `AZ_IOT_DPS_HOLD_TIMEOUT_MS` | 60000 | `dps_hold_timeout_ms` |
 | `AZ_IOT_DEFAULT_MAX_HUB_CONNECT_ATTEMPTS_BEFORE_REPROVISION` | 50 | `dps.max_hub_connect_attempts_before_reprovision`, set by `az_iot_connection_client_options_default()` |
 | `AZ_IOT_DEFAULT_IDENTITY_RECOVERY_INITIAL_DELAY_MS` | 300000 | `identity_recovery.policy.initial_delay_ms`, set by `az_iot_connection_client_options_default()` |
 | `AZ_IOT_DEFAULT_IDENTITY_RECOVERY_MAX_DELAY_MS` | 3600000 | `identity_recovery.policy.max_delay_ms`, set by `az_iot_connection_client_options_default()` |
 | `AZ_IOT_DEFAULT_IDENTITY_RECOVERY_JITTER_PCT` | 25 | `identity_recovery.policy.jitter_pct`, set by `az_iot_connection_client_options_default()` |
-| `AZ_IOT_PRESENCE_BIRTH_ACK_TIMEOUT_MS` | 60000 | mqttv5 presence handshake timeout (no option) |
 
 #### Feature clients ([az_iot_message.h](../inc/azure/iot/az_iot_message.h) and the client headers)
 

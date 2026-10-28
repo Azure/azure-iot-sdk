@@ -183,6 +183,9 @@ target_include_directories(az_iot_tests_connection_dps_payload PRIVATE
 az_iot_add_cmocka_test(az_iot_tests_retry_policy unit/retry_policy_test.c)
 target_include_directories(az_iot_tests_retry_policy PRIVATE
     ${PROJECT_SOURCE_DIR}/src/core)
+az_iot_add_cmocka_test(az_iot_tests_defensive_timeout unit/defensive_timeout_test.c)
+target_include_directories(az_iot_tests_defensive_timeout PRIVATE
+    ${PROJECT_SOURCE_DIR}/src/core)
 az_iot_add_cmocka_test(az_iot_tests_span_writer unit/span_writer_test.c)
 target_include_directories(az_iot_tests_span_writer PRIVATE
     ${PROJECT_SOURCE_DIR}/src/core)

@@ -278,6 +278,12 @@
   receipt time plus its budget, less the safety margin. `az_iot_mqttv5_direct_method_respond()`
   past it publishes nothing, releases the slot and returns `AZ_IOT_ERR_TIMEOUT`; a held result is
   dropped. Results were sent while a whole second of budget was left, ignoring the margin.
+- mqttv5: the birth-ack timeout follows the presence schedule instead of a fixed 60 s. Armed after
+  the birth PUBLISH, it waits 5–10 min, then 6–11, 8–13 and 10–15 min for consecutive misses (base
+  plus uniform 0–5 min jitter); on expiry the client disconnects and reconnects. `open()` and a
+  birth-ack in time reset it. `AZ_IOT_PRESENCE_BIRTH_ACK_TIMEOUT_MS` is removed; the presence
+  `dev/#` SUBACK now uses `subscription_ack_timeout_seconds`
+  (`AZ_IOT_DEFAULT_SUBSCRIPTION_ACK_TIMEOUT_SECONDS`, 60 s).
 - az_mqtt adapter: the copies `connect()` makes of credentials (password or SAS token, PEM key and
   certificate, proxy credentials) are zeroed before they are freed, and `destroy()` zeroes the send
   buffer, which holds the CONNECT, before freeing it.
