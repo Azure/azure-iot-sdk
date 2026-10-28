@@ -26,6 +26,7 @@
 #include <stdbool.h>
 #include <limits.h>
 #include <stddef.h>
+#include <stdint.h>
 #include <string.h>
 
 #include "azure/iot/az_iot_mqtt_iface.h"
@@ -47,9 +48,10 @@
  * would decode the wrong shape. */
 #define DM_TYPE_VERSION "1"
 
-/* The service starts a timer and waits; a probe-ack or result with under a
+/* The service starts a timer and waits; a probe-ack or abandon with under a
  * second of budget left has already missed that window, so it is dropped rather
- * than published into a request the service has given up on. */
+ * than published into a request the service has given up on. A result is held
+ * to its own deadline instead (see exec_deadline_ms()). */
 #define DM_MIN_USEFUL_BUDGET_SECONDS 1u
 
 /* Pending-PUBACK slots reserved at init: per invocation, a probe-ack plus a
@@ -562,17 +564,38 @@ static void ready_expire_stale(az_iot_mqttv5_direct_method_client* dm)
   }
 }
 
-/* True once a result for this slot could no longer reach the caller in time.
+/**
+ * @brief Monotonic milliseconds at and after which no result may be published.
+ *
+ * @param received_at_ms When the exec arrived.
+ * @param exec_budget_seconds The exec's message expiry; 0 means it carried none.
+ * @param margin_seconds Safety margin for network transit.
+ * @return UINT64_MAX when @p exec_budget_seconds is 0; @p received_at_ms when
+ *         the budget does not exceed the margin.
+ */
+static uint64_t exec_deadline_ms(
+    uint64_t received_at_ms,
+    uint32_t exec_budget_seconds,
+    uint32_t margin_seconds)
+{
+  if (exec_budget_seconds == 0u)
+  {
+    return UINT64_MAX;
+  }
+  if (exec_budget_seconds <= margin_seconds)
+  {
+    return received_at_ms;
+  }
+  return received_at_ms + (uint64_t)(exec_budget_seconds - margin_seconds) * MS_PER_SECOND;
+}
+
+/* True once the result deadline of this slot has been reached.
  *
  * Shared with respond() so the sweep below and the send path cannot disagree
- * about when an invocation stopped being answerable. A budget of 0 means the
- * exec carried no expiry at all, which is not an exhausted one. */
+ * about when an invocation stopped being answerable. */
 static bool exec_budget_is_spent(const az_iot_mqttv5_direct_method_client* dm, size_t index)
 {
-  return DI(dm).exec_budget_seconds[index] > 0u
-      && remaining_budget_seconds(
-             DI(dm).exec_budget_seconds[index], DI(dm).exec_received_at_ms[index])
-      < DM_MIN_USEFUL_BUDGET_SECONDS;
+  return az_iot_time_mono_ms() >= DI(dm).exec_deadline_ms[index];
 }
 
 /* Release every in-flight slot whose response window has closed.
@@ -909,6 +932,7 @@ static void handle_exec(
   RI(req_slot).correlation_data_len = AZ_IOT_MQTTV5_DM_REQUEST_ID_LEN;
   DI(dm).exec_budget_seconds[index] = exec_budget;
   DI(dm).exec_received_at_ms[index] = received_at_ms;
+  DI(dm).exec_deadline_ms[index] = exec_deadline_ms(received_at_ms, exec_budget, margin);
 
   /* The token is single-use: consumed here, so a redelivered exec cannot run
    * the method a second time. Its handler is read out first -- the slot is
@@ -1349,14 +1373,14 @@ az_iot_result az_iot_mqttv5_direct_method_respond(
 
   /* The caller's response timer has been running since the service published
    * the exec, and a result that lands after it fires is discarded -- so send
-   * only while a window to arrive in is left. */
+   * only before the deadline, which reserves the safety margin for transit. */
   uint32_t remaining = remaining_budget_seconds(
       DI(dm).exec_budget_seconds[index], DI(dm).exec_received_at_ms[index]);
   if (exec_budget_is_spent(dm, index))
   {
     AZ_IOT_LOG_WARNF(
         AZ_IOT_LOG_COMPONENT_MQTTV5_DIRECT_METHOD,
-        "'%s' finished after its response timeout had elapsed; sending no "
+        "'%s' finished at or after its result deadline; sending no "
         "result",
         RI(slot).method_name);
     RI(slot).in_use = false;

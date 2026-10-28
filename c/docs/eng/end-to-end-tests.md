@@ -260,7 +260,7 @@ Each job downloads the shared
    that is dot-sourced.
 4. Materializes the device X.509 material to files (decodes the base64 PEMs and
    builds a CA bundle), maps the DPS config onto the `AZ_IOT_*` vars, then runs
-   `ctest -R e2e`.
+   its group of `e2e` suites.
 5. **Always** (`if: always()`) deletes the resource group (`az group delete
    --no-wait`).
 
@@ -283,16 +283,21 @@ failure, or a runner that dies before teardown.
 | Job | Runs on | Purpose |
 | --- | --- | --- |
 | `setup` | ubuntu | provisions one resource group (IoT Hub + DPS) via the shared `provision-e2e-resources` action and publishes the test-config artifact |
-| `test` | ubuntu + windows (matrix) | builds `az_iot_tests_e2e`, materializes the device X.509 material, and runs `ctest -R e2e` |
+| `test` | ubuntu + windows, 4 groups each (matrix) | builds the e2e tests, materializes its device's X.509 material, and runs its group: `core` (every e2e suite but the three below, plus custody and the file upload sample on Linux), `transport-paho`, `transport-az_mqtt`, `sas` (both adapters) |
+| `coverage` | ubuntu | merges the four Linux groups' tracefiles into `coverage-trace-e2e`, only when every `test` job passed |
 | `teardown` | ubuntu | `always()` deletes the resource group via `destroy-e2e-resources`, using the run-derived name (not a `setup` output) |
 
-The two `test` legs share the one resource group provisioned by `setup`, and
-`teardown` runs even if a leg fails — or if the run is cancelled — so resources
+Each `test` job has its own device (index os-index * 4 + group-index; eight DPS
+enrollments) and its own Event Hubs consumer group (`e2e-<index>`, created by
+`setup`; Event Hubs allows 5 readers per partition per group), so the groups run
+in parallel without sharing a device, twin or reader quota.
+The `test` jobs share the one resource group provisioned by `setup`, and
+`teardown` runs even if a job fails — or if the run is cancelled — so resources
 are never leaked.
 
 **Shared environment (temporary, opt-in).** When repository variable
 `E2E_SHARED_ID_SCOPE` is set, pull request runs skip `setup`/`teardown` and use a
-long-lived IoT Hub + DPS. Each leg issues its own device certificate from the DPS
+long-lived IoT Hub + DPS. Each job issues its own device certificate from the DPS
 X.509 enrollment group's CA ([`c/eng/e2e-shared-device.ps1`](../../eng/e2e-shared-device.ps1));
 the SAS suite registers under the DPS symmetric-key enrollment group. Inputs are repository
 secrets `E2E_SHARED_GROUP_CA`, `E2E_SHARED_IOTHUB_CS` and `E2E_SHARED_EVENTHUB_CS`
@@ -333,7 +338,10 @@ resource group once: those survive the namespace, so the job creates none and ne
 assignment write unless the namespace identity changes.
 
 [`ci-c-e2e-mqttv5.yml`](../../../.github/workflows/ci-c-e2e-mqttv5.yml) runs the mqttv5 suites on
-that environment, one job per client. On schedule and manual runs the namespace job runs first; pull
+that environment, one job per client. The twin, transport and custom topic suites run one job per
+adapter and per shard instead (`AZ_IOT_TEST_SHARD=<index>/<count>`, see
+[`test_shard.h`](../../tests/support/test_shard.h)), each with its own device, so their cases run in
+parallel. On schedule and manual runs the namespace job runs first; pull
 requests skip it (it logs in to Azure and runs the checked-out script) and rely on its scheduled run (every 10 minutes). Each job issues a device with
 `e2e-shared-device.ps1 -Prefix E2E_MQTTV5_SHARED` from secret `E2E_MQTTV5_SHARED_GROUP_CA`, and
 reads secrets `E2E_MQTTV5_SHARED_IOTHUB_SERVICE_CS` and `_EVENTHUB_CS` (`service` policy; the former is passed to the
@@ -342,7 +350,8 @@ script as `E2E_MQTTV5_SHARED_IOTHUB_CS`, as the secret of that name holds `iothu
 workflow; nightly; manual. Pull requests from forks and from Dependabot skip.
 
 > **Software updates e2e** runs in its own workflow
-> ([`ci-c-e2e-adu.yml`](../../../.github/workflows/ci-c-e2e-adu.yml), Linux, manual dispatch). See [Software updates e2e](#software-updates-e2e).
+> ([`ci-c-e2e-adu.yml`](../../../.github/workflows/ci-c-e2e-adu.yml), Linux) on the same shared mqttv5
+> environment and triggers. See [Software updates e2e](#software-updates-e2e).
 
 ---
 
@@ -370,10 +379,35 @@ Offered-update scenarios:
 
 The device identity is fixed by its certificate, so offers are told apart by compatibility:
 each is an update compatible only with `AZ_IOT_E2E_SU_OFFER_MANUFACTURER` and its model, with
-its own Azure Device Registry `OnboardingUpdate` job.
+its own Azure Device Registry `OnboardingUpdate` job. A job offers nothing until it has a run, so
+each gets one run that starts at once; staging waits until every run is `Active`, then 5 more
+minutes (devices got `401000` for about 3 minutes after a run turned `Active`). An onboarding offer
+reaches a device once: a device that reported it is not offered it again, so every execution of the
+offer suite (one per MQTT adapter) needs its own new device.
 [`scripts/SuE2E.psm1`](../../tests/e2e/scripts/SuE2E.psm1) stages them (`New-SuE2EOffers`),
 checks each job's per-device result (`Test-SuE2EOffers`) and deletes them
-(`Remove-SuE2EOffers`).
+(`Remove-SuE2EOffers`). Since each offer reaches each new device, one staged set can serve many
+runs: `New-SuE2EOffers -Reuse` keeps the updates, jobs and `Active` runs that already exist under
+its `-RunId`, and only waits for runs it creates (or for what is left of the 5 minutes of a kept run
+started less than 5 minutes ago). A reused job may hold several runs, so `Test-SuE2EOffers` looks for
+the device in every `Active` run, then in the newest. `Export-SuE2EOfferVariables` sets the offer
+variables for a `-RunId` without contacting Azure. `Get-SuE2EFixtureTag` hashes the code that defines the offers;
+appended to a reused `-RunId`, a change to that code stages a new set. With `-Reuse`, a failed import
+is treated as done if the update now exists (another run imported it), else retried up to 3 times.
+
+CI ([`ci-c-e2e-adu.yml`](../../../.github/workflows/ci-c-e2e-adu.yml)) runs on the shared mqttv5
+environment, whose ADR namespace is linked to a Device Update instance, on pull requests touching
+core, Software Update or adapter code, the e2e harness or the workflow; nightly; manual. Pull requests
+from forks and from Dependabot skip. Scheduled and manual runs first run the namespace repair
+(`ci-c-e2e-mqttv5-adr-namespace.yml`), which also restores the Software Update link. One job then
+ensures the standing offers (`New-SuE2EOffers -RunId "s$(Get-SuE2EFixtureTag)" -Reuse`; seconds once
+staged), issues a new device per suite execution (4: each suite on each adapter) from the enrollment
+group's CA (`e2e-shared-device.ps1`), runs the suites, then checks the offer devices' job results.
+Nothing is deleted per run; offer sets staged by older fixture code are left in place. Inputs:
+variables `E2E_MQTTV5_SHARED_SUBSCRIPTION_ID`, `_RESOURCE_GROUP`, `_ADR_NAMESPACE`, `_ID_SCOPE`,
+`_DPS_HOST`, `_LOCATION`, `_SU_ENDPOINT`, `_SU_STORAGE_ACCOUNT`, `_SU_STORAGE_CONTAINER`, and
+`_SU_INSTANCE` (the Device Update instance the namespace repair links); secrets `E2E_MQTTV5_SHARED_GROUP_CA`,
+`_IOTHUB_SERVICE_CS`, `_EVENTHUB_CS`, `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`.
 
 Every variable is required; a missing one fails the suite or the scenario that needs it.
 
@@ -384,7 +418,7 @@ Every variable is required; a missing one fails the suite or the scenario that n
 | `AZ_IOT_E2E_SU_REG_ID` | registration id the certificate carries |
 | `AZ_IOT_E2E_SU_CERT` / `_KEY` | device certificate and key PEM paths |
 | `AZ_IOT_E2E_SU_TRUSTED_CA` | CA bundle PEM path |
-| `AZ_IOT_E2E_SU_OFFER_*` | offers, as above (set by `New-SuE2EOffers`) |
+| `AZ_IOT_E2E_SU_OFFER_*` | offers, as above (set by `New-SuE2EOffers` or `Export-SuE2EOfferVariables`) |
 
 `https_proxy`, when set, is used for the MQTT connection; libcurl reads it as well.
 
@@ -409,7 +443,7 @@ multi-step updates, and reboot/resume.
   watcher before opening the c2d/method/twin connections.
 - **Resource quotas are hard limits.** Provisioning per matrix leg keeps tests
   isolated but multiplies resource usage; keep the matrix lean and always delete
-  the RG. Software updates is intentionally kept off PRs for this reason.
+  the RG.
 
 ---
 

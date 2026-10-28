@@ -41,6 +41,7 @@
 #include "azure/iot/mqttv5/az_iot_direct_method_client.h"
 
 #include "internal/connection_client_internal.h"
+#include "internal/mono_time.h"
 #include "support/mock_mqtt_iface.h"
 #include "support/test_provider.h"
 #include "support/subscription_ack.h"
@@ -48,7 +49,7 @@
 #define DEV_TOPIC "ih/ut-device/dev/methods"
 #define SRV_TOPIC "ih/ut-device/srv/methods"
 
-/* Two tests turn on a budget actually elapsing, and the budgets are whole
+/* Some tests turn on a budget actually elapsing, and the budgets are whole
  * seconds off a monotonic clock with no test seam behind it. Anything under a
  * second would be measuring timer granularity instead of the behaviour. */
 static void sleep_past_one_second(void)
@@ -1722,7 +1723,7 @@ static void a_full_shared_pool_leaves_results_tracked(void** state)
   az_iot_result r = AZ_IOT_OK;
   for (size_t i = 0; r == AZ_IOT_OK; ++i)
   {
-    assert_true(i <= AZ_IOT_MAX_PENDING_PUBACKS);
+    assert_true(i <= AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_PENDING_PUBLISHES);
     r = az_iot_connection_client__publish(&fx->conn, NULL, &filler, ignore_ack, NULL);
   }
   assert_int_equal(r, AZ_IOT_ERR_BUSY);
@@ -1792,7 +1793,9 @@ static void init_reserves_pending_ack_slots_and_deinit_returns_them(void** state
   {
     ++shared;
   }
-  assert_int_equal(shared, AZ_IOT_MAX_PENDING_PUBACKS - 2 * AZ_IOT_MQTTV5_DM_MAX_CONCURRENT);
+  assert_int_equal(
+      shared,
+      AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_PENDING_PUBLISHES - 2 * AZ_IOT_MQTTV5_DM_MAX_CONCURRENT);
 
   az_iot_mqttv5_direct_method_client_deinit(&fx->dm);
   for (size_t i = 0; i < 2 * AZ_IOT_MQTTV5_DM_MAX_CONCURRENT; ++i)
@@ -1815,7 +1818,9 @@ static void init_without_room_for_its_reservation_fails(void** state)
   static const int other_owner = 0;
   assert_int_equal(
       az_iot_connection_client__reserve_pubacks(
-          &fx->conn, &other_owner, (uint16_t)AZ_IOT_MAX_PENDING_PUBACKS),
+          &fx->conn,
+          &other_owner,
+          (uint16_t)AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_PENDING_PUBLISHES),
       AZ_IOT_OK);
   assert_int_equal(
       az_iot_mqttv5_direct_method_client_init(&fx->dm, &fx->conn), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
@@ -2400,19 +2405,19 @@ static void assert_nothing_left_registered(
     const az_iot_mqttv5_direct_method_client* dm)
 {
   assert_int_equal(conn->required_profile_refs, 0);
-  for (size_t i = 0; i < AZ_IOT_MAX_PUBACK_RESERVATIONS; ++i)
+  for (size_t i = 0; i < AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_PUBLISH_RESERVATIONS; ++i)
   {
     assert_ptr_not_equal(conn->puback_reservations[i].owner, dm);
   }
-  for (size_t i = 0; i < AZ_IOT_MAX_FEATURE_CLIENT_BINDS; ++i)
+  for (size_t i = 0; i < AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_FEATURE_CLIENTS; ++i)
   {
     assert_ptr_not_equal(conn->feature_client_binds[i].owner, dm);
   }
-  for (size_t i = 0; i < AZ_IOT_MAX_INBOUND_HANDLERS; ++i)
+  for (size_t i = 0; i < AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_INBOUND_HANDLERS; ++i)
   {
     assert_false(conn->dispatch.entries[i].in_use && conn->dispatch.entries[i].user_ctx == dm);
   }
-  for (size_t i = 0; i < AZ_IOT_MAX_FEATURE_STATE_OBSERVERS; ++i)
+  for (size_t i = 0; i < AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_FEATURE_STATE_OBSERVERS; ++i)
   {
     assert_ptr_not_equal(conn->feature_state_observers[i].user_ctx, dm);
   }
@@ -2453,9 +2458,9 @@ static void init_without_a_free_state_observer_fails_and_cleans_up(void** state)
   fixture* fx = (fixture*)*state;
   az_iot_mqttv5_direct_method_client_deinit(&fx->dm);
 
-  static int owners[AZ_IOT_MAX_FEATURE_STATE_OBSERVERS];
+  static int owners[AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_FEATURE_STATE_OBSERVERS];
   size_t taken = 0;
-  while (taken < AZ_IOT_MAX_FEATURE_STATE_OBSERVERS
+  while (taken < AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_FEATURE_STATE_OBSERVERS
          && az_iot_connection_client__add_state_observer(&fx->conn, ignore_state, &owners[taken])
              == AZ_IOT_OK)
   {
@@ -2579,6 +2584,191 @@ static void respond_after_the_response_timeout_sends_nothing(void** state)
   /* The service stopped waiting and would discard this anyway; publishing it
    * only spends the device's radio. */
   assert_null(find_phase(fx->mock, "result:1"));
+}
+
+/* Drive one "slow" invocation to its handler, with the given probe response
+ * timeout and exec budget. */
+static void start_invocation(
+    fixture* fx,
+    uint8_t seed,
+    uint32_t response_timeout_seconds,
+    uint32_t exec_budget_seconds)
+{
+  uint8_t request_id[16];
+  make_request_id(request_id, seed);
+  uint8_t ready_id[16];
+  probe_and_accept(fx, request_id, "slow", response_timeout_seconds, ready_id);
+  uint8_t exec[64];
+  size_t exec_len = build_exec(exec, ready_id, 16, NULL, 0);
+  inject_dm(fx, DEV_TOPIC, "exec:1", request_id, 16, exec, exec_len, exec_budget_seconds);
+}
+
+/* The result deadline the client stored for @p request. Writable, so a test
+ * can place it relative to now without waiting on the clock. */
+static uint64_t* result_deadline_of(fixture* fx, az_iot_direct_method_request request)
+{
+  return &fx->dm._internal.exec_deadline_ms[request._internal.slot];
+}
+
+static void the_result_deadline_is_the_budget_less_the_safety_margin(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  invocation_record rec = { 0 };
+  fx->rec = &rec;
+
+  /* 10 s timeout: margin 1 s, its floor. 3 s budget leaves 2 s. */
+  uint64_t before = az_iot_time_mono_ms();
+  start_invocation(fx, 0xD0, 10, 3);
+  uint64_t after = az_iot_time_mono_ms();
+  assert_true(rec.fired);
+  uint64_t deadline = *result_deadline_of(fx, rec.request);
+  assert_true(deadline >= before + 2000u);
+  assert_true(deadline <= after + 2000u);
+  assert_int_equal(
+      az_iot_mqttv5_direct_method_respond(&fx->dm, rec.request, 200, NULL, 0), AZ_IOT_OK);
+
+  /* 300 s timeout: margin 10 s, its ceiling. 60 s budget leaves 50 s. */
+  rec.fired = false;
+  before = az_iot_time_mono_ms();
+  start_invocation(fx, 0xD1, 300, 60);
+  after = az_iot_time_mono_ms();
+  assert_true(rec.fired);
+  deadline = *result_deadline_of(fx, rec.request);
+  assert_true(deadline >= before + 50000u);
+  assert_true(deadline <= after + 50000u);
+  assert_int_equal(
+      az_iot_mqttv5_direct_method_respond(&fx->dm, rec.request, 200, NULL, 0), AZ_IOT_OK);
+
+  /* No expiry on the exec: no deadline. */
+  rec.fired = false;
+  start_invocation(fx, 0xD2, 300, 0);
+  assert_true(rec.fired);
+  assert_true(*result_deadline_of(fx, rec.request) == UINT64_MAX);
+  assert_int_equal(
+      az_iot_mqttv5_direct_method_respond(&fx->dm, rec.request, 200, NULL, 0), AZ_IOT_OK);
+}
+
+static void respond_just_before_the_result_deadline_publishes(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  invocation_record rec = { 0 };
+  fx->rec = &rec;
+  start_invocation(fx, 0xD3, 300, 300);
+  assert_true(rec.fired);
+  *result_deadline_of(fx, rec.request) = az_iot_time_mono_ms() + 1000u;
+
+  az_iot_mock_mqtt_client_clear_calls(fx->mock);
+  assert_int_equal(
+      az_iot_mqttv5_direct_method_respond(&fx->dm, rec.request, 200, NULL, 0), AZ_IOT_OK);
+  assert_non_null(find_phase(fx->mock, "result:1"));
+}
+
+/* Shared by the at- and after-deadline cases: nothing is published, the call
+ * reports a timeout and the slot is released. */
+static void assert_respond_past_deadline_sends_nothing(fixture* fx, uint64_t deadline_ms)
+{
+  invocation_record rec = { 0 };
+  fx->rec = &rec;
+  start_invocation(fx, 0xD4, 300, 300);
+  assert_true(rec.fired);
+  *result_deadline_of(fx, rec.request) = deadline_ms;
+
+  az_iot_mock_mqtt_client_clear_calls(fx->mock);
+  assert_int_equal(
+      az_iot_mqttv5_direct_method_respond(&fx->dm, rec.request, 200, NULL, 0), AZ_IOT_ERR_TIMEOUT);
+  assert_null(find_phase(fx->mock, "result:1"));
+  assert_false(fx->dm._internal.req_pool[rec.request._internal.slot]._internal.in_use);
+  assert_int_equal(
+      az_iot_mqttv5_direct_method_respond(&fx->dm, rec.request, 200, NULL, 0),
+      AZ_IOT_ERR_INVALID_ARG);
+  assert_null(find_phase(fx->mock, "result:1"));
+}
+
+static void respond_at_the_result_deadline_sends_nothing(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  /* The clock can only have moved forward since, so respond() runs at or
+   * after this instant. */
+  assert_respond_past_deadline_sends_nothing(fx, az_iot_time_mono_ms());
+}
+
+static void respond_just_after_the_result_deadline_sends_nothing(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  assert_respond_past_deadline_sends_nothing(fx, az_iot_time_mono_ms() - 1u);
+}
+
+/* Without a seam: under the old whole-second check, a 3 s budget still had 1 s
+ * "left" here and the result went out inside the safety margin. */
+static void respond_inside_the_safety_margin_sends_nothing(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  invocation_record rec = { 0 };
+  fx->rec = &rec;
+  /* 10 s timeout: 1 s margin, so a 3 s budget has its deadline 2 s out. */
+  start_invocation(fx, 0xD5, 10, 3);
+  assert_true(rec.fired);
+
+  sleep_past_one_second();
+  sleep_past_one_second();
+
+  az_iot_mock_mqtt_client_clear_calls(fx->mock);
+  assert_int_equal(
+      az_iot_mqttv5_direct_method_respond(&fx->dm, rec.request, 200, NULL, 0), AZ_IOT_ERR_TIMEOUT);
+  assert_null(find_phase(fx->mock, "result:1"));
+}
+
+static void an_exec_budget_smaller_than_the_safety_margin_never_runs(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  invocation_record rec = { 0 };
+  fx->rec = &rec;
+  /* 100 s timeout: 10 s margin. A 5 s budget ends before execution could. */
+  az_iot_mock_mqtt_client_clear_calls(fx->mock);
+  start_invocation(fx, 0xD6, 100, 5);
+
+  assert_false(rec.fired);
+  const az_iot_mock_call* abandon = find_phase(fx->mock, "abandon:1");
+  assert_non_null(abandon);
+  assert_int_equal(abandon->payload[19], 2); /* INSUFFICIENT_TIME */
+  assert_null(find_phase(fx->mock, "result:1"));
+}
+
+static void a_held_result_is_dropped_once_its_deadline_passes(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  invocation_record rec = { 0 };
+  fx->rec = &rec;
+  uint8_t request_id[16];
+  make_request_id(request_id, 0xD7);
+  uint8_t ready_id[16];
+  probe_and_accept(fx, request_id, "slow", 300, ready_id);
+
+  reconnect_to_connack(fx);
+  uint8_t exec[64];
+  size_t exec_len = build_exec(exec, ready_id, 16, NULL, 0);
+  inject_dm(fx, DEV_TOPIC, "exec:1", request_id, 16, exec, exec_len, 300);
+  assert_true(rec.fired);
+  assert_int_equal(
+      az_iot_mqttv5_direct_method_respond(&fx->dm, rec.request, 200, NULL, 0), AZ_IOT_OK);
+
+  /* Most of the 300 s budget is left; only the deadline has passed. */
+  *result_deadline_of(fx, rec.request) = az_iot_time_mono_ms();
+  finish_birth(fx);
+  assert_int_equal(count_phase(fx->mock, "result:1"), 0);
+  assert_false(fx->dm._internal.req_pool[rec.request._internal.slot]._internal.in_use);
 }
 
 /* Occupy every request slot with an invocation the application never answers.
@@ -3235,6 +3425,19 @@ int main(void)
     cmocka_unit_test_setup_teardown(respond_names_the_argument_it_was_given_wrong, setup, teardown),
     cmocka_unit_test_setup_teardown(
         respond_after_the_response_timeout_sends_nothing, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        the_result_deadline_is_the_budget_less_the_safety_margin, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        respond_just_before_the_result_deadline_publishes, setup, teardown),
+    cmocka_unit_test_setup_teardown(respond_at_the_result_deadline_sends_nothing, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        respond_just_after_the_result_deadline_sends_nothing, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        respond_inside_the_safety_margin_sends_nothing, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        an_exec_budget_smaller_than_the_safety_margin_never_runs, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_held_result_is_dropped_once_its_deadline_passes, setup, teardown),
     cmocka_unit_test_setup_teardown(responding_twice_is_rejected, setup, teardown),
     cmocka_unit_test_setup_teardown(
         respond_rejects_a_request_from_the_other_generation, setup, teardown),

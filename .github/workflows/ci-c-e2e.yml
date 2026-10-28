@@ -28,9 +28,11 @@
 #   1. setup    : provision the resource group + emit the test-config script
 #                 ONCE (via the reusable provision-e2e-resources step), publish
 #                 it as an artifact, and expose the resource-group name.
-#   2. test     : the Windows AND Linux test legs (matrix). Each builds the
-#                 native e2e test, downloads the shared test-config, materializes
-#                 the device X.509 material to files, and runs `ctest -R e2e`.
+#   2. test     : one job per OS (Windows, Linux) and test group (core,
+#                 transport per adapter, sas), each with its own device. Each
+#                 builds the native e2e tests, gets its test-config, materializes
+#                 the device X.509 material to files, and runs its group.
+#      coverage : merges the Linux groups' tracefiles into coverage-trace-e2e.
 #   3. teardown : always() deletes the shared resource group (via the reusable
 #                 destroy-e2e-resources step). It recomputes the group name from
 #                 the run id rather than reading a setup output, so it also cleans
@@ -131,10 +133,9 @@ jobs:
           # An undefined repository variable arrives as an empty string, which
           # would otherwise override the action default, so the fallback is here.
           azure-location: ${{ vars.E2E_AZURE_LOCATION || 'eastus2euap' }}
-          # Two DPS enrollments so the parallel Linux/Windows test legs can each
-          # claim their own device (see the per-leg device-index selection below)
-          # and never share a device twin.
-          dps-x509-individual-enrollments: '2'
+          # One DPS enrollment per test job (2 OSes x 4 groups) so parallel jobs
+          # never share a device or its twin (device index: see the test job).
+          dps-x509-individual-enrollments: '8'
           # A symmetric-key enrollment group for the SAS e2e suite
           # (az_iot_tests_e2e_sas); each leg registers its own device under it.
           dps-symmkey-group-enrollment-devices: '1'
@@ -142,6 +143,18 @@ jobs:
           # always-run file-upload e2e (az_iot_tests_e2e_fileupload) can obtain a
           # SAS URI and upload a blob.
           enable-file-upload: 'true'
+
+      # One Event Hubs consumer group per test job, e2e-<device index>: Event
+      # Hubs allows 5 readers per partition per group, and the test-config leaves
+      # IOTHUB_EVENTHUB_CONSUMER_GROUP unset, i.e. every job on $Default.
+      - name: Create consumer groups
+        run: |
+          set -euo pipefail
+          hub="$(az iot hub list -g "$E2E_RESOURCE_GROUP" --query '[0].name' -o tsv)"
+          [ -n "$hub" ] || { echo "::error::no IoT Hub in $E2E_RESOURCE_GROUP"; exit 1; }
+          for i in 0 1 2 3 4 5 6 7; do
+            az iot hub consumer-group create -g "$E2E_RESOURCE_GROUP" --hub-name "$hub" -n "e2e-$i" -o none
+          done
 
       - name: Upload test config
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -152,7 +165,7 @@ jobs:
           if-no-files-found: error
 
   test:
-    name: ${{ matrix.os }}
+    name: ${{ matrix.os }} / ${{ matrix.group }}
     needs: setup
     # Runs after setup, or without it in shared mode (setup skipped).
     if: ${{ !cancelled() && (needs.setup.result == 'success' || needs.setup.result == 'skipped') }}
@@ -165,7 +178,13 @@ jobs:
       # deliberately: it is the only leg that exercises the Schannel TLS path in
       # the test harness's AMQP transport (the shipping device SDK is MQTT/Paho
       # on both), and it preserves Windows local-dev parity.
+      # Each OS runs as four groups, each on its own device: one device's suites
+      # cannot overlap, and serially one OS took ~7 min of tests. transport and
+      # sas are the slow suites (~100 s per adapter); core is the rest.
+      # Device index = os-index * 4 + group-index (0..7).
       matrix:
+        os: [ ubuntu-24.04, windows-latest ]
+        group: [ core, transport-paho, transport-az_mqtt, sas ]
         include:
           # The Linux leg builds instrumented (linux-gcc-e2e-coverage) so its run
           # contributes to the coverage picture. e2e is where the feature clients
@@ -176,10 +195,23 @@ jobs:
           # network-bound, so it does not move the wall clock.
           - os: ubuntu-24.04
             preset: linux-gcc-e2e-coverage
-            device-index: 0
+            os-index: 0
           - os: windows-latest
             preset: windows-msvc-debug
-            device-index: 1
+            os-index: 1
+          - group: core
+            group-index: 0
+            tests: e2e
+            tests-exclude: '^az_iot_tests_e2e_(transport|sas)(_az_mqtt)?$'
+          - group: transport-paho
+            group-index: 1
+            tests: '^az_iot_tests_e2e_transport$'
+          - group: transport-az_mqtt
+            group-index: 2
+            tests: '^az_iot_tests_e2e_transport_az_mqtt$'
+          - group: sas
+            group-index: 3
+            tests: '^az_iot_tests_e2e_sas(_az_mqtt)?$'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     steps:
@@ -222,6 +254,20 @@ jobs:
         working-directory: c
         run: cmake --build --preset ${{ matrix.preset }} --target az_iot_sample_unified_file_upload
 
+      # Provisioned runs read events on this job's own consumer group (created
+      # by setup). On the shared environment the generated test config sets it.
+      - name: Select the device index
+        shell: bash
+        env:
+          OS_INDEX: ${{ matrix.os-index }}
+          GROUP_INDEX: ${{ matrix.group-index }}
+        run: |
+          idx=$((OS_INDEX * 4 + GROUP_INDEX))
+          echo "E2E_DEVICE_INDEX=$idx" >> "$GITHUB_ENV"
+          if [ "$E2E_SHARED" != 'true' ]; then
+            echo "IOTHUB_EVENTHUB_CONSUMER_GROUP=e2e-$idx" >> "$GITHUB_ENV"
+          fi
+
       - name: Download shared test config
         if: env.E2E_SHARED != 'true'
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
@@ -240,31 +286,31 @@ jobs:
           E2E_SHARED_SAS_GROUP_KEY: ${{ secrets.E2E_SHARED_SAS_GROUP_KEY }}
           E2E_SHARED_DPS_CS: ${{ secrets.E2E_SHARED_DPS_CS }}
           E2E_SHARED_IOTHUB_REGISTRY_CS: ${{ secrets.E2E_SHARED_IOTHUB_REGISTRY_CS }}
-          E2E_REGISTRATION_ID: ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.device-index }}
-          E2E_DEVICE_INDEX: ${{ matrix.device-index }}
           E2E_RUN_ID: ${{ github.run_id }}
-        # Spread legs over consumer groups e2e-0..e2e-9: Event Hubs allows 5
-        # readers per partition per group, and each leg reads every partition.
+          E2E_RUN_ATTEMPT: ${{ github.run_attempt }}
+        # Spread jobs over consumer groups e2e-0..e2e-9: Event Hubs allows 5
+        # readers per partition per group, and each job reads every partition.
         run: |
-          $group = 'e2e-' + (([long]$env:E2E_RUN_ID * 2 + [int]$env:E2E_DEVICE_INDEX) % 10)
+          $env:E2E_REGISTRATION_ID = "ci-$($env:E2E_RUN_ID)-$($env:E2E_RUN_ATTEMPT)-$($env:E2E_DEVICE_INDEX)"
+          $group = 'e2e-' + (([long]$env:E2E_RUN_ID * 8 + [int]$env:E2E_DEVICE_INDEX) % 10)
           ./c/eng/e2e-shared-device.ps1 -RegistrationId $env:E2E_REGISTRATION_ID `
             -DeviceIndex ([int]$env:E2E_DEVICE_INDEX) -ConsumerGroup $group `
             -OutFile test_config/set_test_env_vars.ps1
 
       - name: Run e2e
         shell: pwsh
+        env:
+          E2E_TESTS: ${{ matrix.tests }}
+          E2E_EXCLUDE: ${{ matrix.tests-exclude }}
         run: |
           # Service-side config (IOTHUB_*, IOT_DPS_*) is set by the generated script.
           . ./test_config/set_test_env_vars.ps1
 
-          # Select this leg's device. Two DPS enrollments are provisioned; the
-          # Linux and Windows legs each claim a DISTINCT one (via matrix
-          # device-index) so they never share a device twin -- the mocked ADU
-          # suite patches large desired properties, and a shared twin would bloat
-          # the other leg's twin GET and flake test_twin. Fall back to the
-          # unsuffixed index-0 vars if the pinned provisioning action emits a
-          # pre-indexing test config.
-          $idx = '${{ matrix.device-index }}'
+          # Select this job's device: one DPS enrollment per job (index from
+          # the "Select the device index" step), so no two jobs share a device
+          # or its twin. Fall back to the unsuffixed index-0 vars if the pinned
+          # provisioning action emits a pre-indexing test config.
+          $idx = $env:E2E_DEVICE_INDEX
           $regId   = (Get-Item "env:IOT_DPS_INDIVIDUAL_REGISTRATION_ID_$idx" -ErrorAction SilentlyContinue).Value
           $certB64 = (Get-Item "env:IOT_DPS_INDIVIDUAL_X509_CERTIFICATE_$idx" -ErrorAction SilentlyContinue).Value
           $keyB64  = (Get-Item "env:IOT_DPS_INDIVIDUAL_X509_KEY_$idx" -ErrorAction SilentlyContinue).Value
@@ -346,12 +392,14 @@ jobs:
           # filter, so it stays out of this job.
           # The custody suite is excluded here and run by its own step below: it
           # needs the device key moved into a PKCS#11 token first.
-          ctest --test-dir c/build/${{ matrix.preset }} @cfg -R e2e -E custody `
+          # This job's group: -R/-E from the matrix; custody always excluded.
+          $exclude = if ($env:E2E_EXCLUDE) { "custody|$($env:E2E_EXCLUDE)" } else { 'custody' }
+          ctest --test-dir c/build/${{ matrix.preset }} @cfg -R $env:E2E_TESTS -E $exclude `
             --verbose --no-tests=error --timeout 900 `
-            --output-junit ./test_config/results/e2e-${{ matrix.os }}.xml
+            --output-junit ./test_config/results/e2e-${{ matrix.os }}-${{ matrix.group }}.xml
 
       - name: Run the PKCS#11 custody e2e (Linux)
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && matrix.group == 'core'
         shell: pwsh
         # The "Storage / custody" scenario of docs/eng/certificate-management.md:
         # the SAME device provisions through DPS and talks to the hub, but with
@@ -418,7 +466,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "custody e2e failed ($LASTEXITCODE)" }
 
       - name: Run the file upload sample (Linux)
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && matrix.group == 'core'
         shell: pwsh
         # The sample is the reference integration of the application HTTP hook the
         # Classic file-upload control plane requires (this SDK ships no HTTP
@@ -435,7 +483,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: e2e-results-${{ matrix.os }}
+          name: e2e-results-${{ matrix.os }}-${{ matrix.group }}
           path: ./test_config/results/**/*.xml
           if-no-files-found: ignore
 
@@ -449,6 +497,45 @@ jobs:
 
       - name: Upload coverage tracefile (Linux)
         if: runner.os == 'Linux' && success()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: coverage-trace-e2e-linux-${{ matrix.group }}
+          path: c/coverage/e2e.json
+          if-no-files-found: error
+
+  # One e2e tracefile for ci-c-coverage-combined: the union of the Linux groups.
+  # Only when every test job succeeded, as before: a failed group leaves partial
+  # coverage, and merging it would understate coverage for an unrelated reason.
+  coverage:
+    name: coverage (merge)
+    needs: test
+    if: ${{ !cancelled() && needs.test.result == 'success' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Install gcovr
+        run: python3 -m pip install --upgrade 'gcovr==7.2'
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: coverage-trace-e2e-linux-*
+          path: traces
+      - name: Merge tracefiles
+        run: |
+          set -euo pipefail
+          mapfile -t files < <(find traces -name '*.json' | sort)
+          if [ "${#files[@]}" -ne 4 ]; then
+            echo "::error::expected 4 Linux tracefiles, got ${#files[@]}"
+            exit 1
+          fi
+          args=()
+          for f in "${files[@]}"; do echo "  $f"; args+=(--add-tracefile "$f"); done
+          mkdir -p c/coverage
+          gcovr --root c "${args[@]}" --merge-mode-functions=separate --json c/coverage/e2e.json
+      - name: Upload coverage tracefile
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: coverage-trace-e2e

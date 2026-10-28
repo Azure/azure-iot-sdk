@@ -68,6 +68,7 @@ add_library(az_iot_adapter_az_mqtt STATIC
     az_iot_mqtt_az_mqtt.c
     az_iot_mqtt_az_mqtt_v3.c
     az_iot_mqtt_az_mqtt_v5.c
+    az_iot_mqtt_az_mqtt_adapter.c
 )
 add_library(azure::iot::adapter_az_mqtt ALIAS az_iot_adapter_az_mqtt)
 

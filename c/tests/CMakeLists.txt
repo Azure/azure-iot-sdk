@@ -128,6 +128,19 @@ target_include_directories(az_iot_tests_smoke PRIVATE
     ${PROJECT_SOURCE_DIR}/src/core)
 az_iot_add_cmocka_test(az_iot_tests_mqtt_iface_contract unit/mqtt_iface_contract_test.c)
 target_link_libraries(az_iot_tests_mqtt_iface_contract PRIVATE az_iot_test_support)
+az_iot_add_cmocka_test(az_iot_tests_connection_client_workspace unit/connection_client_workspace_test.c)
+# Default limits: built in, a user's definition, and a config file, resolved as documented.
+foreach(_case DEFAULT OVERRIDE CONFIG_FILE)
+    set(_t az_iot_tests_connection_client_config_${_case})
+    add_executable(${_t} unit/connection_client_config_test.c)
+    target_include_directories(${_t} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/unit)
+    target_link_libraries(${_t} PRIVATE az_iot_core)
+    target_compile_definitions(${_t} PRIVATE AZ_IOT_CONNECTION_CLIENT_CONFIG_TEST_${_case})
+    az_iot_apply_warnings(${_t})
+    add_test(NAME ${_t} COMMAND ${_t})
+endforeach()
+unset(_case)
+unset(_t)
 az_iot_add_cmocka_test(az_iot_tests_connection_client unit/connection_client_test.c)
 target_link_libraries(az_iot_tests_connection_client PRIVATE az_iot_test_support)
 # connection_client_test pulls internal headers (retry_policy.h, connection_client_internal.h)
@@ -180,6 +193,13 @@ az_iot_add_cmocka_test(az_iot_tests_json_string unit/json_string_test.c)
 target_include_directories(az_iot_tests_json_string PRIVATE
     ${PROJECT_SOURCE_DIR}/src/core)
 az_iot_add_cmocka_test(az_iot_tests_log unit/log_test.c)
+# support/test_shard.h: AZ_IOT_TEST_SHARD parsing and test selection.
+az_iot_add_cmocka_test(az_iot_tests_test_shard unit/test_shard_test.c)
+target_include_directories(az_iot_tests_test_shard PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+if(UNIX)
+    # setenv()/unsetenv() are POSIX, not C99.
+    target_compile_definitions(az_iot_tests_test_shard PRIVATE _POSIX_C_SOURCE=200809L)
+endif()
 # Concurrent writers and rotation in the file sink, which documents itself as
 # thread-safe. RACE: also run under helgrind and DRD.
 az_iot_add_cmocka_test(az_iot_tests_log_file_race RACE unit/log_file_race_test.c)
@@ -769,9 +789,11 @@ if(AZ_IOT_WITH_PAHO)
     if(AZ_IOT_BUILD_CONFORMANCE_TESTS)
         add_test(NAME az_iot_conformance_paho_v3 COMMAND az_iot_conformance_paho_v3)
         add_test(NAME az_iot_conformance_paho_v5 COMMAND az_iot_conformance_paho_v5)
-        # Paho runs its own threads: run under helgrind and DRD too.
+        # Paho runs its own threads: run under helgrind and DRD too. shardable:
+        # honours AZ_IOT_TEST_SHARD (support/test_shard.h), so
+        # eng/run-race-detectors.sh splits each across parallel processes.
         set_tests_properties(az_iot_conformance_paho_v3 az_iot_conformance_paho_v5
-            PROPERTIES LABELS race)
+            PROPERTIES LABELS "race;shardable")
     endif()
 
     # Negative control for the sign-route custody case. No adapter here
@@ -834,7 +856,8 @@ if(AZ_IOT_WITH_AZ_MQTT)
         unit/az_mqtt_adapter_sizes_test.c
         support/az_mqtt_asymmetric_common.c
         support/az_mqtt_asymmetric_v3.c
-        support/az_mqtt_asymmetric_v5.c)
+        support/az_mqtt_asymmetric_v5.c
+        support/az_mqtt_asymmetric_adapter.c)
     target_include_directories(az_iot_tests_az_mqtt_adapter_sizes PRIVATE
         ${PROJECT_SOURCE_DIR}/inc ${PROJECT_SOURCE_DIR}/adapters/az_mqtt ${PROJECT_SOURCE_DIR}/src/core
         ${CMAKE_CURRENT_SOURCE_DIR}/support)
@@ -853,6 +876,14 @@ if(AZ_IOT_WITH_AZ_MQTT)
     target_link_libraries(az_iot_tests_az_mqtt_adapter_ack PRIVATE az_mqttv3 az_mqttv5)
     if(WIN32)
         target_link_libraries(az_iot_tests_az_mqtt_adapter_ack PRIVATE ws2_32)
+    endif()
+
+    # The adapter building its clients in application memory.
+    az_iot_add_cmocka_test(az_iot_tests_az_mqtt_adapter_workspace unit/az_mqtt_adapter_workspace_test.c)
+    target_link_libraries(az_iot_tests_az_mqtt_adapter_workspace PRIVATE
+        az_iot_adapter_az_mqtt az_mqttv3 az_mqttv5)
+    if(WIN32)
+        target_link_libraries(az_iot_tests_az_mqtt_adapter_workspace PRIVATE ws2_32)
     endif()
 
     # The adapter with recording malloc and free: freed memory holds no credential.

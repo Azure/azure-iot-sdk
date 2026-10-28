@@ -24,7 +24,7 @@ stateDiagram-v2
 | --- | --- |
 | Completion | Each accepted send gets exactly one callback, unless the connection is deinitialized first (see below). It is the only completion signal. |
 | Pending sends | No query. Count them yourself: accepted sends minus callbacks; after connection deinit, none are pending. |
-| Capacity | Telemetry shares the `AZ_IOT_MAX_PENDING_PUBACKS` pool ([sizing](client-configuration.md#in-flight-qos-1-publishes)). When it is full, `send()` returns `AZ_IOT_ERR_BUSY` and sends nothing. |
+| Capacity | Telemetry shares the `limits.max_pending_publishes` pool ([sizing](client-configuration.md#in-flight-qos-1-publishes)). When it is full, `send()` returns `AZ_IOT_ERR_BUSY` and sends nothing. |
 | Acknowledgement detail | The callback result: `AZ_IOT_OK`; on mqttv5 also `AZ_IOT_ERR_PUBLISH_REFUSED`, `AZ_IOT_ERR_BUSY` (quota) or `AZ_IOT_ERR_MQTT` (other reason codes). Packet ids are not exposed: the adapter reuses them. |
 | Cancellation | None. An accepted PUBLISH is already with the transport. |
 | Offline | No buffering. While not connected, `send()` returns `AZ_IOT_ERR_NOT_CONNECTED`. Persist and resend in the application. |

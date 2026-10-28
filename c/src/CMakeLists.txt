@@ -40,6 +40,30 @@ endif()
 # Size the manifest structures in az_iot_su.h; the application must use the same values.
 target_compile_definitions(az_iot_core PUBLIC ${AZ_IOT_SU_LIMIT_DEFINITIONS})
 
+# Default connection client limits (az_iot_connection_client_config.h). Each is passed only when
+# set, so a value from AZ_IOT_CONNECTION_CLIENT_CONFIG_FILE applies. PUBLIC: the application's
+# AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE then agrees with the SDK.
+set(_az_iot_connection_limits
+    PENDING_PUBLISHES PUBLISH_RESERVATIONS PERSISTENT_SUBSCRIPTIONS SESSION_HANDLERS
+    FEATURE_STATE_OBSERVERS APPLICATION_STATE_OBSERVERS FEATURE_CLIENTS INBOUND_HANDLERS)
+foreach(_v ${_az_iot_connection_limits})
+    set(AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_${_v} "" CACHE STRING
+        "Connection client: default max_${_v} limit (empty: built-in default)")
+    if(NOT AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_${_v} STREQUAL "")
+        target_compile_definitions(az_iot_core PUBLIC
+            AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_${_v}=${AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_${_v}})
+    endif()
+endforeach()
+unset(_v)
+unset(_az_iot_connection_limits)
+set(AZ_IOT_CONNECTION_CLIENT_CONFIG_FILE "" CACHE STRING
+    "Connection client: header with default limits, as written in a quoted #include (empty: none)")
+if(NOT AZ_IOT_CONNECTION_CLIENT_CONFIG_FILE STREQUAL "")
+    # Build tree only: the header is not installed, so the exported target must not name it.
+    target_compile_definitions(az_iot_core PUBLIC
+        "$<BUILD_INTERFACE:AZ_IOT_CONNECTION_CLIENT_CONFIG_FILE=\"${AZ_IOT_CONNECTION_CLIENT_CONFIG_FILE}\">")
+endif()
+
 # azure-sdk-for-c is required by the public struct definition
 # (az_iot_hub_client / az_iot_provisioning_client are embedded).
 target_link_libraries(az_iot_core

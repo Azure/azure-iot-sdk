@@ -4,8 +4,40 @@
 
 ### Features Added
 
+- Software updates: compatibility-property strings are no longer capped at 256 bytes; the only limit
+  is `az_iot_su_limits::device_properties_size`. The installed update ID is capped at
+  `AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE` (192 bytes, as before). A set that does not fit is refused with
+  `AZ_IOT_ERR_NOT_ENOUGH_SPACE` and an `ERROR` log of the bytes needed; properties whose strings
+  point into the client's copy are refused with `AZ_IOT_ERR_INVALID_ARG`. The update-check body
+  is sized with the longest installed ID, fully escaped, so the applied ID adopted after a
+  successful update always fits `max_message_size`. The update check's copy
+  moves from `az_iot_su_client` (432 bytes smaller on 64-bit) into the workspace, which now
+  counts `device_properties_size` twice plus `AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE` (default: 1216
+  bytes, was 512).
+- Breaking: connection client entry counts are run-time limits
+  (`az_iot_connection_client_options::limits`, 0 = default) instead of compile-time macros. The
+  entries live in `options.workspace`, sized by `az_iot_connection_client_get_workspace_size()` or
+  `AZ_IOT_CONNECTION_CLIENT_WORKSPACE_SIZE()`; with no workspace the client uses its own, sized for
+  the defaults. `AZ_IOT_MAX_PENDING_PUBACKS`, `AZ_IOT_MAX_PUBACK_RESERVATIONS`,
+  `AZ_IOT_MAX_PERSISTENT_SUBS`, `AZ_IOT_MAX_SESSION_HANDLERS`, `AZ_IOT_MAX_FEATURE_STATE_OBSERVERS`,
+  `AZ_IOT_MAX_APP_STATE_OBSERVERS`, `AZ_IOT_MAX_FEATURE_CLIENT_BINDS` and
+  `AZ_IOT_MAX_INBOUND_HANDLERS` are removed. `AZ_IOT_MAX_MQTT_FACTORIES`, `AZ_IOT_DPS_HOST_BUF`,
+  `AZ_IOT_DPS_DEVICE_ID_BUF`, `AZ_IOT_DPS_OPERATION_ID_MAX`, `AZ_IOT_CONNECTION_PROFILE_RAW_BUF`,
+  `AZ_IOT_MQTT_USERNAME_BUF`, `AZ_IOT_PERSISTENT_SUB_TOPIC_MAX` and `AZ_IOT_DISPATCH_PREFIX_MAX` are
+  fixed. Defining any of them before including the headers is a compile error, so no build of the
+  application can lay out the client differently from the SDK. The defaults are compile-time
+  values (`AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_*`, `AZ_IOT_CONNECTION_CLIENT_CONFIG_FILE`, or the
+  CMake options of the same names); `AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE` sizes a static
+  workspace for them.
 - Breaking: `az_iot_su_platform_hooks` fields `persist_state_fn` and `load_state_fn` are renamed
   `persist_workflow_state_fn` and `load_workflow_state_fn`.
+- az_mqtt adapter in application memory: `az_iot_az_mqtt_get_adapter()` returns an
+  `az_iot_mqtt_adapter` whose `init()` builds an MQTT 3.1.1 or MQTT 5 client in a workspace the
+  application provides, with no allocation. Sizes are run-time values (`az_iot_mqtt_limits`): send
+  and receive buffers, in-flight messages, message store and connect-string copies.
+  `az_iot_az_mqtt_get_workspace_size()` gives the exact size; `AZ_IOT_AZ_MQTT_WORKSPACE_SIZE()` a
+  constant-expression bound for static arrays. The client's `destroy()` wipes the workspace and
+  frees nothing. The factories are unchanged; they now allocate one workspace per client.
 - az_mqtt adapter: `AZ_IOT_AZ_MQTT_MESSAGE_STORAGE_SIZE` may be 0, for devices that only use clean
   sessions: no message store is allocated, and a connect whose session outlives the connection
   (`clean_start` false; MQTT 5: with `session_expiry_seconds` > 0) returns `AZ_IOT_ERR_NOT_SUPPORTED`.
@@ -242,6 +274,10 @@
   command queue (eclipse-paho/paho.mqtt.c#1709), and `MQTTAsync_connect()` against the timeout and
   retry checks on the client's state (#1714). An installed Paho is not patched. See
   [docs/dependencies.md](docs/dependencies.md#races-on-the-command-queue-and-client-state).
+- mqttv5 direct methods: a result is no longer published at or after its deadline -- the exec's
+  receipt time plus its budget, less the safety margin. `az_iot_mqttv5_direct_method_respond()`
+  past it publishes nothing, releases the slot and returns `AZ_IOT_ERR_TIMEOUT`; a held result is
+  dropped. Results were sent while a whole second of budget was left, ignoring the margin.
 - az_mqtt adapter: the copies `connect()` makes of credentials (password or SAS token, PEM key and
   certificate, proxy credentials) are zeroed before they are freed, and `destroy()` zeroes the send
   buffer, which holds the CONNECT, before freeing it.

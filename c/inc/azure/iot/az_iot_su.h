@@ -431,9 +431,10 @@ extern "C"
    * The managed client requires 1 to AZ_IOT_SU_MAX_COMPATIBILITY_PROPERTIES
    * compatibility properties: manufacturer and model count one each when
    * non-NULL, plus the custom ones. az_iot_su_build_report() keeps its own
-   * limit of up to five custom properties. The copy holds at most 256 bytes of compatibility
-   * strings and 192 bytes of installed-ID strings, NUL terminators included; these are SDK storage
-   * limits, not protocol limits.
+   * limit of up to five custom properties. The installed update ID takes at most
+   * AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE bytes, NUL terminators included. All copied strings take
+   * az_iot_su_device_properties_buffer_size() bytes, at most
+   * az_iot_su_limits::device_properties_size.
    */
   typedef struct az_iot_su_device_properties
   {
@@ -448,8 +449,8 @@ extern "C"
 /**
  * @brief Default az_iot_su_limits::device_properties_size, in bytes.
  *
- * 512 covers the 448-byte maximum of property strings. Size exactly with
- * az_iot_su_device_properties_buffer_size(). A larger value does not raise any limit.
+ * Size it with az_iot_su_device_properties_buffer_size() of the largest properties the
+ * application will set, including later az_iot_su_client_update_device_properties() calls.
  */
 #ifndef AZ_IOT_SU_DEVICE_PROPERTIES_BUFFER_SIZE
 #define AZ_IOT_SU_DEVICE_PROPERTIES_BUFFER_SIZE 512
@@ -484,7 +485,7 @@ extern "C"
    *
    * @param[in] device_properties Properties to size.
    * @return Bytes of packed NUL-terminated strings; 0 if @p device_properties is
-   *   NULL, invalid, or over the storage limits. An update-check body that would
+   *   NULL or invalid. An update-check body that would
    *   not fit the channel is still rejected when the properties are set.
    */
   AZ_NODISCARD size_t
@@ -883,7 +884,7 @@ extern "C"
       struct
       {
         void* pointers[24];
-        uint8_t bytes[1280];
+        uint8_t bytes[848];
         uint64_t alignment[4];
       } channel_storage;
       az_iot_su_platform_hooks hooks;
@@ -1146,7 +1147,8 @@ extern "C"
     max_root_keys,                                                                            \
     max_observers)                                                                            \
   ((size_t)(max_update_size) + (size_t)(scratch_size) + (size_t)(max_message_size)            \
-   + (size_t)(device_properties_size) + 2u * (size_t)AZ_IOT_SU_PERSIST_OVERHEAD               \
+   + 2u * (size_t)(device_properties_size) + (size_t)AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE         \
+   + 2u * (size_t)AZ_IOT_SU_PERSIST_OVERHEAD                                                  \
    + 5u * (size_t)(_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS) * (size_t)(result_details_size) \
    + (size_t)(max_root_keys) * sizeof(az_iot_su_root_key)                                     \
    + (size_t)(max_observers) * sizeof(az_iot_su_observer_registration)                        \
@@ -1269,8 +1271,9 @@ extern "C"
    * @retval AZ_IOT_ERR_NOT_SUPPORTED The crypto backend has no verify_rs256, or
    *   replacement_policy is AZ_IOT_SU_REPLACEMENT_ROLLBACK.
    * @retval AZ_IOT_ERR_NOT_ENOUGH_SPACE root_key_count exceeds
-   *   limits.max_root_keys, the properties exceed the count or storage
-   *   limits, the device_properties_size or max_message_size limit is too small
+   *   limits.max_root_keys, the properties exceed the count limit or
+   *   AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE, the device_properties_size or max_message_size limit is
+   *   too small
    *   for them, or the workspace is smaller than az_iot_su_workspace_size().
    */
   AZ_NODISCARD AZ_INLINE az_iot_result az_iot_su_client_init(
@@ -1543,9 +1546,13 @@ extern "C"
    * @param[in] device_properties New properties; may be changed or freed after return.
    * @return AZ_IOT_OK on success. On failure the previous properties and pending
    *   work are unchanged.
-   * @retval AZ_IOT_ERR_INVALID_ARG Malformed properties.
-   * @retval AZ_IOT_ERR_NOT_ENOUGH_SPACE The cache, count or storage limits, or
-   *   the update-check body capacity, would be exceeded.
+   * @retval AZ_IOT_ERR_INVALID_ARG Malformed properties, or strings pointing into the client's
+   *   copy of them.
+   * @retval AZ_IOT_ERR_NOT_ENOUGH_SPACE The count limit, AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE,
+   *   az_iot_su_limits::device_properties_size or the update-check body capacity would be
+   *   exceeded. The body is sized with the longest installed ID, fully escaped, so a later
+   *   adoption of the applied update ID always fits. For AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE and
+   * device_properties_size, an ERROR log gives the bytes needed.
    */
   AZ_NODISCARD az_iot_result az_iot_su_client_update_device_properties(
       az_iot_su_client* client,

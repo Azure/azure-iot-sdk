@@ -22,7 +22,7 @@
 #include "azure/iot/az_iot_su.h"
 
 /** @brief Capacity of each part of an update id captured by simulate_update_step_apply(): the
- * SDK's whole installed-id storage (192 bytes, see az_iot_su_device_properties),
+ * SDK's applied-update-ID capacity (AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE, 192 bytes),
  * so any part it accepts fits. */
 #define SU_SIM_ID_PART_SIZE 192
 

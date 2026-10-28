@@ -38,11 +38,15 @@
 #define _AZM(name) az_mqtt5_##name
 #define _AZM_VERSION AZ_IOT_MQTT_VERSION_5
 #define _AZM_FACTORY_CREATE az_iot_az_mqtt_factory_create_v5
+#define _AZM_GET_WORKSPACE_SIZE az_iot_az_mqtt__get_workspace_size_v5
+#define _AZM_INIT az_iot_az_mqtt__init_v5
 #elif AZ_IOT_AZ_MQTT_V == 3
 #include <az_mqtt3/az_mqtt3_client.h>
 #define _AZM(name) az_mqtt3_##name
 #define _AZM_VERSION AZ_IOT_MQTT_VERSION_3_1_1
 #define _AZM_FACTORY_CREATE az_iot_az_mqtt_factory_create_v3_1_1
+#define _AZM_GET_WORKSPACE_SIZE az_iot_az_mqtt__get_workspace_size_v3_1_1
+#define _AZM_INIT az_iot_az_mqtt__init_v3_1_1
 #else
 #error "Define AZ_IOT_AZ_MQTT_V as 3 or 5"
 #endif
@@ -51,15 +55,6 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
-
-#if AZ_IOT_AZ_MQTT_V == 5
-/** @brief Receive Maximum advertised: inbound QoS 1/2 the server may leave unacknowledged. */
-#define _AZM_RECEIVE_MAXIMUM ((uint16_t)AZ_IOT_AZ_MQTT_INFLIGHT_MAX)
-/** @brief In-flight entries: AZ_IOT_AZ_MQTT_INFLIGHT_MAX requests, plus those kept for inbound. */
-#define _AZM_INFLIGHT_ENTRIES (2 * AZ_IOT_AZ_MQTT_INFLIGHT_MAX)
-#else
-#define _AZM_INFLIGHT_ENTRIES AZ_IOT_AZ_MQTT_INFLIGHT_MAX
-#endif
 
 /** @brief Copies of unacknowledged QoS 1/2 PUBLISH; at least one of the largest. 0: none, and a
  * connect with clean_start false (MQTT 5: and session_expiry_seconds > 0) is refused. */
@@ -77,10 +72,6 @@
 #if AZ_IOT_AZ_MQTT_MESSAGE_STORAGE_SIZE > 2147483647
 #error "AZ_IOT_AZ_MQTT_MESSAGE_STORAGE_SIZE must be at most 2147483647 (an az_span size)"
 #endif
-
-/** @brief Room for the strings of one received PUBLISH (topic, Content Type, Response Topic): its
- * bytes, plus one NUL each. User Properties are not copied. */
-#define _AZM_STRINGS_SIZE (AZ_IOT_AZ_MQTT_RECEIVE_BUFFER_SIZE + 3)
 
 /** @brief Connect strings owned until the next connect: host, credentials, TLS, proxy, will... */
 #define _AZM_OWNED_MAX (20 + 2 * AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX)
@@ -108,10 +99,26 @@ typedef struct
   size_t owned_size[_AZM_OWNED_MAX]; /* Bytes of each, wiped before it is freed. */
   int owned_count;
   uint8_t* send_buffer;
+  size_t send_buffer_size;
   uint8_t* receive_buffer;
-  char* strings;
-  uint8_t* message_storage; /* Allocated on the first connect whose session outlives it. */
-  az_mqtt_inflight_entry inflight[_AZM_INFLIGHT_ENTRIES];
+  size_t receive_buffer_size;
+  char* strings; /* receive_buffer_size + 3 bytes. */
+  /* Workspace: the area of message_store_size bytes. Factory: allocated on the first connect
+   * whose session outlives it. */
+  uint8_t* message_storage;
+  size_t message_store_size;
+  az_mqtt_inflight_entry* inflight;
+  size_t inflight_count;
+  uint16_t max_in_flight_messages;
+  /* Workspace: copies of connect strings, in place of owned[]. */
+  char* connect_strings;
+  size_t connect_strings_size;
+  size_t connect_strings_used;
+  /* Factory client (az_iot_az_mqtt_factory_create_*): the workspace, connect strings and message
+   * store are allocated; destroy() frees them. */
+  bool heap_mode;
+  uint8_t* workspace;
+  size_t workspace_size;
 #if AZ_IOT_AZ_MQTT_V == 5
   az_mqtt5_user_property connect_properties[AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX];
   int32_t decode_codes[4]; /* Subscription identifiers or reason codes. */
@@ -141,6 +148,13 @@ typedef struct
   az_iot_mqtt_event_callback callback;
   void* callback_context;
 } _azm_client;
+
+/* AZ_IOT_AZ_MQTT_WORKSPACE_SIZE() relies on these bounds. */
+typedef char _azm_client_state_fits_AZ_IOT_AZ_MQTT_CLIENT_STATE_SIZE
+    [AZ_IOT_AZ_MQTT_WORKSPACE_ALIGN(sizeof(_azm_client)) <= AZ_IOT_AZ_MQTT_CLIENT_STATE_SIZE ? 1
+                                                                                             : -1];
+typedef char _azm_in_flight_entry_fits_AZ_IOT_AZ_MQTT_IN_FLIGHT_ENTRY_SIZE
+    [sizeof(az_mqtt_inflight_entry) <= AZ_IOT_AZ_MQTT_IN_FLIGHT_ENTRY_SIZE ? 1 : -1];
 
 static _azm_client* _azm_self(az_iot_mqtt_client* c) { return (_azm_client*)c; }
 
@@ -434,7 +448,7 @@ static az_result _azm_publish_user_property_next(
 static void _azm_on_publish(_AZM(client) * client, _AZM(publish_data) const* publish)
 {
   _azm_client* m = _azm_of(client);
-  az_iot_az_mqtt_string_writer strings = { m->strings, m->strings + _AZM_STRINGS_SIZE };
+  az_iot_az_mqtt_string_writer strings = { m->strings, m->strings + m->receive_buffer_size + 3u };
   az_iot_mqtt_message message;
   memset(&message, 0, sizeof(message));
   message.topic = az_iot_az_mqtt_string_writer_add(&strings, publish->topic);
@@ -564,15 +578,60 @@ static void _azm_on_unsuback(az_mqtt3_client* client, az_mqtt3_ack_data const* u
 
 // ──────────────────────── Connect ────────────────────────────
 
-/** @brief Wipes the connect strings (credentials) and frees them. */
+/** @brief Wipes the connect strings (credentials) and releases them. */
 static void _azm_release_owned(_azm_client* m)
 {
+  if (!m->heap_mode)
+  {
+    az_iot_crypto__wipe(m->connect_strings, m->connect_strings_used);
+    m->connect_strings_used = 0;
+    return;
+  }
   for (int i = 0; i < m->owned_count; i++)
   {
     az_iot_crypto__wipe(m->owned[i], m->owned_size[i]);
     free(m->owned[i]);
   }
   m->owned_count = 0;
+}
+
+/**
+ * @brief A copy of @p size bytes of @p data, plus a NUL when @p nul, owned until the next connect:
+ * in the connect strings area (workspace) or allocated (factory). NULL when it does not fit.
+ */
+static char* _azm_copy(_azm_client* m, void const* data, size_t size, bool nul)
+{
+  size_t const total = size + (nul ? 1u : 0u);
+  char* copy;
+  if (!m->heap_mode)
+  {
+    if (total > m->connect_strings_size - m->connect_strings_used)
+    {
+      return NULL;
+    }
+    copy = m->connect_strings + m->connect_strings_used;
+    m->connect_strings_used += total;
+  }
+  else
+  {
+    if (m->owned_count >= _AZM_OWNED_MAX)
+    {
+      return NULL;
+    }
+    copy = (char*)malloc(total);
+    if (copy == NULL)
+    {
+      return NULL;
+    }
+    m->owned_size[m->owned_count] = total;
+    m->owned[m->owned_count++] = copy;
+  }
+  memcpy(copy, data, size);
+  if (nul)
+  {
+    copy[size] = '\0';
+  }
+  return copy;
 }
 
 /** @brief A copy of @p s owned until the next connect, as a span; empty for NULL or "". */
@@ -583,18 +642,13 @@ static bool _azm_own(_azm_client* m, const char* s, az_span* out)
   {
     return true;
   }
-  if (m->owned_count >= _AZM_OWNED_MAX)
-  {
-    return false;
-  }
-  char* copy = az_iot_az_mqtt_strdup(s);
+  size_t const size = strlen(s);
+  char* copy = size < (size_t)INT32_MAX ? _azm_copy(m, s, size, true) : NULL;
   if (copy == NULL)
   {
     return false;
   }
-  m->owned_size[m->owned_count] = strlen(copy) + 1;
-  m->owned[m->owned_count++] = copy;
-  *out = az_span_create_from_str(copy);
+  *out = az_span_create((uint8_t*)copy, (int32_t)size);
   return true;
 }
 
@@ -605,18 +659,11 @@ static bool _azm_own_bytes(_azm_client* m, uint8_t const* data, size_t size, az_
   {
     return true;
   }
-  if (m->owned_count >= _AZM_OWNED_MAX || size > (size_t)INT32_MAX)
-  {
-    return false;
-  }
-  char* copy = (char*)malloc(size);
+  char* copy = size <= (size_t)INT32_MAX ? _azm_copy(m, data, size, false) : NULL;
   if (copy == NULL)
   {
     return false;
   }
-  memcpy(copy, data, size);
-  m->owned_size[m->owned_count] = size;
-  m->owned[m->owned_count++] = copy;
   *out = az_span_create((uint8_t*)copy, (int32_t)size);
   return true;
 }
@@ -755,9 +802,9 @@ static bool _azm_copy_options(
   c->clean_start = o->clean_start;
   c->session_expiry_interval = o->session_expiry_seconds;
   // Below the entry count, so az_mqtt keeps this many entries for inbound QoS 2.
-  c->receive_maximum = _AZM_RECEIVE_MAXIMUM;
+  c->receive_maximum = m->max_in_flight_messages;
   // Omitted, it would mean any size; larger packets do not fit the receive buffer.
-  c->maximum_packet_size = (uint32_t)AZ_IOT_AZ_MQTT_RECEIVE_BUFFER_SIZE;
+  c->maximum_packet_size = (uint32_t)m->receive_buffer_size;
   int32_t count = 0;
   for (size_t i = 0; i < o->user_properties_count; i++)
   {
@@ -814,38 +861,37 @@ static az_iot_result _azm_connect(az_iot_mqtt_client* self, az_iot_mqtt_connect_
   }
 
   bool const persists = _azm_session_persists(o);
-#if AZ_IOT_AZ_MQTT_MESSAGE_STORAGE_SIZE == 0
-  if (persists)
+  if (persists && m->message_store_size == 0)
   {
     AZ_IOT_LOG_ERROR(
         AZ_IOT_LOG_COMPONENT_AZ_MQTT,
-        "connect: clean_start false (MQTT 5: with session_expiry_seconds > 0) needs "
-        "AZ_IOT_AZ_MQTT_MESSAGE_STORAGE_SIZE");
+        "connect: clean_start false (MQTT 5: with session_expiry_seconds > 0) needs a message "
+        "store (az_iot_mqtt_limits.message_store_size; factory: "
+        "AZ_IOT_AZ_MQTT_MESSAGE_STORAGE_SIZE)");
     return AZ_IOT_ERR_NOT_SUPPORTED;
   }
-#else
-  if (persists && m->message_storage == NULL)
+  if (persists && m->message_storage == NULL) /* Factory: allocated on first need. */
   {
-    m->message_storage = (uint8_t*)malloc(AZ_IOT_AZ_MQTT_MESSAGE_STORAGE_SIZE);
+    m->message_storage = (uint8_t*)malloc(m->message_store_size);
     if (m->message_storage == NULL)
     {
       return AZ_IOT_ERR_OUT_OF_MEMORY;
     }
   }
-#endif
 
   _AZM(client_options) options;
   memset(&options, 0, sizeof(options));
   if (!_azm_copy_options(m, o, &options))
   {
     _azm_release_owned(m);
-    return AZ_IOT_ERR_OUT_OF_MEMORY;
+    return m->heap_mode ? AZ_IOT_ERR_OUT_OF_MEMORY : AZ_IOT_ERR_NOT_ENOUGH_SPACE;
   }
-  options.send_buffer = az_span_create(m->send_buffer, AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE);
-  options.receive_buffer = az_span_create(m->receive_buffer, AZ_IOT_AZ_MQTT_RECEIVE_BUFFER_SIZE);
-  options.inflight_control_buffer = _AZM_SPAN_OF(m->inflight);
+  options.send_buffer = az_span_create(m->send_buffer, (int32_t)m->send_buffer_size);
+  options.receive_buffer = az_span_create(m->receive_buffer, (int32_t)m->receive_buffer_size);
+  options.inflight_control_buffer = az_span_create(
+      (uint8_t*)m->inflight, (int32_t)(m->inflight_count * sizeof(az_mqtt_inflight_entry)));
   options.inflight_message_buffer = persists
-      ? az_span_create(m->message_storage, AZ_IOT_AZ_MQTT_MESSAGE_STORAGE_SIZE)
+      ? az_span_create(m->message_storage, (int32_t)m->message_store_size)
       : AZ_SPAN_EMPTY;
   options.user_context = m;
   options.on_connack = _azm_on_connack;
@@ -877,7 +923,7 @@ static az_iot_result _azm_connect(az_iot_mqtt_client* self, az_iot_mqtt_connect_
             &websocket.path))
     {
       _azm_release_owned(m);
-      return AZ_IOT_ERR_OUT_OF_MEMORY;
+      return m->heap_mode ? AZ_IOT_ERR_OUT_OF_MEMORY : AZ_IOT_ERR_NOT_ENOUGH_SPACE;
     }
     result = az_mqtt_websocket_init(&m->websocket, m->transport, &websocket);
     options.transport = az_mqtt_websocket_get_transport(&m->websocket);
@@ -1150,10 +1196,20 @@ static void _azm_destroy(az_iot_mqtt_client* self)
     (void)_azm_disconnect(self);
   }
   _azm_release_owned(m);
-  free(m->message_storage);
-  az_iot_crypto__wipe(m->send_buffer, AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE); // The CONNECT: credentials.
-  free(m->send_buffer); // The block of _azm_create().
-  free(m);
+  /* The client lives in the workspace: read what is needed before wiping it. */
+  bool const heap_mode = m->heap_mode;
+  uint8_t* const workspace = m->workspace;
+  size_t const workspace_size = m->workspace_size;
+  if (heap_mode)
+  {
+    free(m->message_storage);
+  }
+  /* Client state, the CONNECT (credentials), received data, connect string copies. */
+  az_iot_crypto__wipe(workspace, workspace_size);
+  if (heap_mode)
+  {
+    free(workspace);
+  }
 }
 
 static az_iot_mqtt_iface const _azm_iface = {
@@ -1168,32 +1224,156 @@ static az_iot_mqtt_iface const _azm_iface = {
   .destroy = _azm_destroy,
 };
 
+/** @brief Offsets of the parts of a workspace, from its 16-byte aligned start. */
+typedef struct
+{
+  size_t inflight;
+  size_t inflight_count;
+  size_t send;
+  size_t receive;
+  size_t strings;
+  size_t transport;
+  size_t connect_strings;
+  size_t store;
+  size_t total; /**< Workspace bytes, alignment slack included. */
+} _azm_layout;
+
+/** @brief Adds @p size, rounded up to 16, to @p offset; false on overflow. */
+static bool _azm_layout_add(size_t* offset, size_t size)
+{
+  size_t const rounded = size + 15u;
+  if (rounded < size || *offset > SIZE_MAX - (rounded & ~(size_t)15u))
+  {
+    return false;
+  }
+  *offset += rounded & ~(size_t)15u;
+  return true;
+}
+
+/** @brief The workspace parts for @p limits; false when they are invalid. */
+static bool _azm_layout_of(az_iot_mqtt_limits const* limits, _azm_layout* out)
+{
+  if (limits == NULL || limits->send_buffer_size == 0 || limits->send_buffer_size > INT32_MAX
+      || limits->receive_buffer_size == 0 || limits->receive_buffer_size > INT32_MAX - 3
+      || limits->max_in_flight_messages == 0 || limits->max_in_flight_messages > 32767
+      || limits->message_store_size > INT32_MAX || limits->connect_strings_size > INT32_MAX
+      || (limits->message_store_size != 0
+          && limits->message_store_size
+              < limits->send_buffer_size + AZ_MQTT_INFLIGHT_MESSAGE_OVERHEAD))
+  {
+    return false;
+  }
+  int32_t const transport_size = az_mqtt_transport_sizeof();
+  if (transport_size <= 0)
+  {
+    return false;
+  }
+#if AZ_IOT_AZ_MQTT_V == 5
+  /* As many again for inbound QoS 2, which the server may send up to Receive Maximum of. */
+  out->inflight_count = 2u * (size_t)limits->max_in_flight_messages;
+#else
+  out->inflight_count = (size_t)limits->max_in_flight_messages;
+#endif
+  size_t offset = 0;
+  bool ok = _azm_layout_add(&offset, sizeof(_azm_client));
+  out->inflight = offset;
+  ok = ok && _azm_layout_add(&offset, out->inflight_count * sizeof(az_mqtt_inflight_entry));
+  out->send = offset;
+  ok = ok && _azm_layout_add(&offset, limits->send_buffer_size);
+  out->receive = offset;
+  ok = ok && _azm_layout_add(&offset, limits->receive_buffer_size);
+  out->strings = offset;
+  /* The strings of one received PUBLISH (topic, Content Type, Response Topic), one NUL each. */
+  ok = ok && _azm_layout_add(&offset, limits->receive_buffer_size + 3u);
+  out->transport = offset;
+  ok = ok && _azm_layout_add(&offset, (size_t)transport_size);
+  out->connect_strings = offset;
+  ok = ok && _azm_layout_add(&offset, limits->connect_strings_size);
+  out->store = offset;
+  ok = ok && _azm_layout_add(&offset, limits->message_store_size);
+  ok = ok && offset <= SIZE_MAX - 15u;
+  out->total = offset + 15u; /* The workspace may start anywhere. */
+  return ok;
+}
+
+size_t _AZM_GET_WORKSPACE_SIZE(az_iot_mqtt_limits const* limits)
+{
+  _azm_layout layout;
+  return _azm_layout_of(limits, &layout) ? layout.total : 0;
+}
+
+az_iot_result _AZM_INIT(
+    az_iot_mqtt_limits const* limits,
+    uint8_t* workspace,
+    size_t workspace_size,
+    az_iot_mqtt_client** out_client)
+{
+  if (out_client == NULL)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  *out_client = NULL;
+  _azm_layout layout;
+  if (workspace == NULL || !_azm_layout_of(limits, &layout))
+  {
+    AZ_IOT_LOG_ERROR(AZ_IOT_LOG_COMPONENT_AZ_MQTT, "init: no workspace or invalid limits");
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  if (workspace_size < layout.total)
+  {
+    AZ_IOT_LOG_ERRORF(
+        AZ_IOT_LOG_COMPONENT_AZ_MQTT,
+        "init: the workspace has %lu bytes; these limits need %lu",
+        (unsigned long)workspace_size,
+        (unsigned long)layout.total);
+    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+  }
+  uint8_t* const base = (uint8_t*)(((uintptr_t)workspace + 15u) & ~(uintptr_t)15u);
+  memset(base, 0, layout.send); /* Client state and in-flight entries. */
+  _azm_client* m = (_azm_client*)(void*)base;
+  m->base.iface = &_azm_iface;
+  m->workspace = workspace;
+  m->workspace_size = workspace_size;
+  m->inflight = (az_mqtt_inflight_entry*)(void*)(base + layout.inflight);
+  m->inflight_count = layout.inflight_count;
+  m->max_in_flight_messages = limits->max_in_flight_messages;
+  m->send_buffer = base + layout.send;
+  m->send_buffer_size = limits->send_buffer_size;
+  m->receive_buffer = base + layout.receive;
+  m->receive_buffer_size = limits->receive_buffer_size;
+  m->strings = (char*)(base + layout.strings);
+  m->transport = (az_mqtt_transport*)(void*)(base + layout.transport);
+  m->connect_strings = (char*)(base + layout.connect_strings);
+  m->connect_strings_size = limits->connect_strings_size;
+  m->message_store_size = limits->message_store_size;
+  m->message_storage = limits->message_store_size > 0 ? base + layout.store : NULL;
+  *out_client = &m->base;
+  return AZ_IOT_OK;
+}
+
+/** @brief A factory client: the workspace and, as needed, connect strings and store allocated. */
 static az_iot_mqtt_client* _azm_create(void* factory_context)
 {
   (void)factory_context;
-  _azm_client* m = (_azm_client*)calloc(1, sizeof(*m));
-  if (m == NULL)
+  az_iot_mqtt_limits const limits = {
+    .send_buffer_size = AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE,
+    .receive_buffer_size = AZ_IOT_AZ_MQTT_RECEIVE_BUFFER_SIZE,
+    .max_in_flight_messages = (uint16_t)AZ_IOT_AZ_MQTT_INFLIGHT_MAX,
+    .message_store_size = 0, /* Allocated on the first connect that needs it. */
+    .connect_strings_size = 0, /* Each copy allocated. */
+  };
+  size_t const size = _AZM_GET_WORKSPACE_SIZE(&limits);
+  uint8_t* workspace = size > 0 ? (uint8_t*)malloc(size) : NULL;
+  az_iot_mqtt_client* client = NULL;
+  if (workspace == NULL || _AZM_INIT(&limits, workspace, size, &client) != AZ_IOT_OK)
   {
+    free(workspace);
     return NULL;
   }
-  // One block: send buffer, receive buffer, transport (16-byte aligned), received strings.
-  size_t const transport_offset
-      = ((size_t)AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE + AZ_IOT_AZ_MQTT_RECEIVE_BUFFER_SIZE + 15u)
-      & ~(size_t)15u;
-  size_t const strings_offset
-      = transport_offset + (((size_t)az_mqtt_transport_sizeof() + 15u) & ~(size_t)15u);
-  uint8_t* block = (uint8_t*)malloc(strings_offset + (size_t)_AZM_STRINGS_SIZE);
-  if (block == NULL)
-  {
-    free(m);
-    return NULL;
-  }
-  m->send_buffer = block;
-  m->receive_buffer = block + AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE;
-  m->transport = (az_mqtt_transport*)(void*)(block + transport_offset);
-  m->strings = (char*)(block + strings_offset);
-  m->base.iface = &_azm_iface;
-  return &m->base;
+  _azm_client* m = _azm_self(client);
+  m->heap_mode = true;
+  m->message_store_size = AZ_IOT_AZ_MQTT_MESSAGE_STORAGE_SIZE;
+  return client;
 }
 
 az_iot_mqtt_factory* _AZM_FACTORY_CREATE(void)

@@ -11,7 +11,8 @@
 .DESCRIPTION
     One offer per scenario. Each is an imported update whose compatibility is
     unique to the run and the scenario, plus an Azure Device Registry
-    OnboardingUpdate job for it, so runs and scenarios never see each other's
+    OnboardingUpdate job for it, scheduled with one run, so runs and scenarios
+    never see each other's
     offers.
 
     Calls the published REST APIs (api-version 2026-11-02-preview):
@@ -34,7 +35,7 @@
 
 .EXAMPLE
     Import-Module ./SuE2E.psm1
-    New-SuE2EOffers -RunId $env:GITHUB_RUN_ID -StatePath ./su-offers.json
+    New-SuE2EOffers -RunId $env:GITHUB_RUN_ID -StatePath ./su-offers.json   # -Reuse keeps what exists
     # ... run ctest -R e2e_su ...
     Test-SuE2EOffers -StatePath ./su-offers.json -RegistrationId $env:AZ_IOT_E2E_SU_REG_ID
     Remove-SuE2EOffers -StatePath ./su-offers.json
@@ -54,7 +55,7 @@ $script:ArmScope = 'https://management.azure.com/'
 $script:Scenarios = [ordered]@{
     REAL              = @{ Short = 'real'; Variable = 'AZ_IOT_E2E_SU_OFFER_MODEL'; Expected = 'Succeeded' }
     INSTALL_FAILURE   = @{ Short = 'fail'; Variable = 'AZ_IOT_E2E_SU_OFFER_MODEL_INSTALL_FAILURE'; Expected = 'Failed' }
-    # E2E-PLACEHOLDER: status recorded for a SKIPPED report is unmeasured.
+    # A SKIPPED report is recorded as Succeeded (measured).
     ALREADY_INSTALLED = @{ Short = 'skip'; Variable = 'AZ_IOT_E2E_SU_OFFER_MODEL_ALREADY_INSTALLED'; Expected = 'Succeeded' }
     UNTRUSTED         = @{ Short = 'untrusted'; Variable = 'AZ_IOT_E2E_SU_OFFER_MODEL_UNTRUSTED'; Expected = 'Failed' }
 }
@@ -80,24 +81,57 @@ function Get-SuE2EToken([string]$Resource) {
     return $token
 }
 
+<#
+.SYNOPSIS
+    Sends one request with a token for -Resource fetched for it. A 401
+    invalid_token (a token replaced as it expired) is retried once, after
+    -RetrySeconds, with a new token.
+#>
 function Invoke-SuE2ERest {
     param(
         [Parameter(Mandatory)][string]$Method,
         [Parameter(Mandatory)][string]$Uri,
-        [Parameter(Mandatory)][string]$Token,
-        [object]$Body
+        [Parameter(Mandatory)][string]$Resource,
+        [object]$Body,
+        [int]$RetrySeconds = 30
     )
     $params = @{
         Method                  = $Method
         Uri                     = $Uri
-        Headers                 = @{ Authorization = "Bearer $Token" }
         ContentType             = 'application/json'
         ResponseHeadersVariable = 'headers'
         StatusCodeVariable      = 'status'
     }
     if ($null -ne $Body) { $params.Body = ($Body | ConvertTo-Json -Depth 20) }
-    $response = Invoke-RestMethod @params
-    return [pscustomobject]@{ Status = $status; Headers = $headers; Body = $response }
+    for ($attempt = 1; ; $attempt++) {
+        $params.Headers = @{ Authorization = "Bearer $(Get-SuE2EToken $Resource)" }
+        try {
+            $response = Invoke-RestMethod @params
+            return [pscustomobject]@{ Status = $status; Headers = $headers; Body = $response }
+        }
+        catch {
+            $r = $_.Exception.PSObject.Properties['Response'] ? $_.Exception.Response : $null
+            $invalidToken = $r -and [int]$r.StatusCode -eq 401 -and "$($r.Headers.WwwAuthenticate)" -match 'invalid_token'
+            if (-not $invalidToken -or $attempt -ge 2) { throw }
+            Write-Warning "401 invalid_token on $Method $($Uri -replace '\?.*'); retrying with a new token"
+            Start-Sleep -Seconds $RetrySeconds
+        }
+    }
+}
+
+# GET that returns the body, or $null on 404.
+function Get-SuE2EResource([string]$Uri, [string]$Resource) {
+    try { return (Invoke-SuE2ERest -Method Get -Uri $Uri -Resource $Resource).Body }
+    catch {
+        $r = $_.Exception.PSObject.Properties['Response'] ? $_.Exception.Response : $null
+        if ($r -and [int]$r.StatusCode -eq 404) { return $null }
+        throw
+    }
+}
+
+# Storage blob name Import-SuE2EUpdate gives one of an update's files.
+function Get-SuE2EUpdateBlobName([string]$Provider, [string]$Name, [string]$Version, [string]$FileName) {
+    return "$Provider/$Name/$Version/$FileName"
 }
 
 <#
@@ -108,7 +142,7 @@ function Invoke-SuE2ERest {
 function Wait-SuE2EOperation {
     param(
         [Parameter(Mandatory)][object]$Response,
-        [Parameter(Mandatory)][string]$Token,
+        [Parameter(Mandatory)][string]$Resource,
         [Parameter(Mandatory)][string]$BaseUri,
         [int]$Minutes = 5
     )
@@ -125,7 +159,7 @@ function Wait-SuE2EOperation {
 
     $deadline = (Get-Date).AddMinutes($Minutes)
     while ($true) {
-        $r = Invoke-SuE2ERest -Method Get -Uri $uri -Token $Token
+        $r = Invoke-SuE2ERest -Method Get -Uri $uri -Resource $Resource
         if ($status) {
             # Status monitor: the body carries the state.
             $state = $r.Body.status
@@ -198,11 +232,11 @@ function Import-SuE2EUpdate {
 
     $urls = @{}
     foreach ($file in $payload, $manifestPath) {
-        $blob = "$Provider/$Name/$Version/$(Split-Path -Leaf $file)"
+        $blob = Get-SuE2EUpdateBlobName $Provider $Name $Version (Split-Path -Leaf $file)
         az storage blob upload --auth-mode login --account-name $Config.STORAGE_ACCOUNT `
             --container-name $Config.STORAGE_CONTAINER --name $blob --file $file --overwrite --only-show-errors | Out-Null
         if ($LASTEXITCODE -ne 0) { throw "Upload of $blob failed" }
-        $Blobs.Add($blob)
+        if (-not $Blobs.Contains($blob)) { $Blobs.Add($blob) }
         & $OnChange
         $expiry = (Get-Date).ToUniversalTime().AddHours(6).ToString('yyyy-MM-ddTHH:mmZ')
         $url = az storage blob generate-sas --auth-mode login --as-user --account-name $Config.STORAGE_ACCOUNT `
@@ -221,16 +255,15 @@ function Import-SuE2EUpdate {
                 files          = @(@{ fileName = "$Model.bin"; url = $urls[$payload] })
             })
     }
-    $token = Get-SuE2EToken $script:AduScope
     $base = "https://$($Config.ADU_ENDPOINT)"
-    $r = Invoke-SuE2ERest -Method Post -Uri "$base/updates:import?api-version=$script:ApiVersion" -Token $token -Body $body
+    $r = Invoke-SuE2ERest -Method Post -Uri "$base/updates:import?api-version=$script:ApiVersion" -Resource $script:AduScope -Body $body
     $operation = @($r.Headers['Operation-Location'])[0]
     if (-not $operation) { throw 'Import returned no Operation-Location' }
     if ($operation -notmatch '^https?://') { $operation = "$base$operation" }
 
     $deadline = (Get-Date).AddMinutes(10)
     while ($true) {
-        $op = (Invoke-SuE2ERest -Method Get -Uri $operation -Token $token).Body
+        $op = (Invoke-SuE2ERest -Method Get -Uri $operation -Resource $script:AduScope).Body
         if ($op.status -eq 'Succeeded') { break }
         if ($op.status -eq 'Failed') { throw "Import of $Provider/$Name/$Version failed: $($op | ConvertTo-Json -Depth 10 -Compress)" }
         if ((Get-Date) -gt $deadline) { throw "Import of $Provider/$Name/$Version did not finish in time" }
@@ -239,13 +272,17 @@ function Import-SuE2EUpdate {
     return "updates/providers/$Provider/names/$Name/versions/$Version"
 }
 
+<#
+.SYNOPSIS
+    Creates an OnboardingUpdate job and schedules one run of it, which starts
+    now. Returns the run name. A job offers nothing until it has a run.
+#>
 function New-SuE2EOnboardingJob {
     param(
         [Parameter(Mandatory)][hashtable]$Config,
         [Parameter(Mandatory)][string]$JobName,
         [Parameter(Mandatory)][string]$UpdateResourceId
     )
-    $token = Get-SuE2EToken $script:ArmScope
     $uri = "$(Get-SuE2EJobsUri $Config)/$($JobName)?api-version=$script:ApiVersion"
     $body = @{
         location   = $Config.LOCATION
@@ -255,17 +292,94 @@ function New-SuE2EOnboardingJob {
             definition  = @{ schedulingType = 'Continuous'; updateResourceId = $UpdateResourceId }
         }
     }
-    Invoke-SuE2ERest -Method Put -Uri $uri -Token $token -Body $body | Out-Null
+    Invoke-SuE2ERest -Method Put -Uri $uri -Resource $script:ArmScope -Body $body | Out-Null
 
     $deadline = (Get-Date).AddMinutes(5)
     while ($true) {
-        $job = (Invoke-SuE2ERest -Method Get -Uri $uri -Token $token).Body
+        $job = (Invoke-SuE2ERest -Method Get -Uri $uri -Resource $script:ArmScope).Body
         $state = $job.properties.provisioningState
-        if ($state -eq 'Succeeded') { return }
+        if ($state -eq 'Succeeded') { break }
         if ($state -in 'Failed', 'Canceled') { throw "Job $JobName provisioning $state" }
         if ((Get-Date) -gt $deadline) { throw "Job $JobName did not provision in time" }
         Start-Sleep -Seconds 10
     }
+
+    return New-SuE2EJobRun -Config $Config -JobName $JobName
+}
+
+<#
+.SYNOPSIS
+    Schedules a run of a job that starts now (no scheduledTime) and returns its
+    name.
+#>
+function New-SuE2EJobRun {
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][string]$JobName
+    )
+    # The suffix keeps calls within the same second apart.
+    $run = "run-$((Get-Date).ToUniversalTime().ToString('yyyyMMddHHmmss'))-$([guid]::NewGuid().ToString('N').Substring(0, 8))"
+    $runUri = "$(Get-SuE2EJobsUri $Config)/$JobName/runs/$($run)?api-version=$script:ApiVersion"
+    Invoke-SuE2ERest -Method Put -Uri $runUri -Resource $script:ArmScope -Body @{ properties = @{} } | Out-Null
+    return $run
+}
+
+# StrictMode-safe read of a run's properties.<Name>, or $null.
+function Get-SuE2ERunProperty([object]$Run, [string]$Name) {
+    if (-not $Run.PSObject.Properties['properties']) { return $null }
+    $p = $Run.properties.PSObject.Properties[$Name]
+    if ($p) { return $p.Value }
+    return $null
+}
+
+# The job's runs, newest startTime first (none: empty).
+function Get-SuE2EJobRuns([hashtable]$Config, [string]$JobName) {
+    $runs = @()
+    $uri = "$(Get-SuE2EJobsUri $Config)/$JobName/runs?api-version=$script:ApiVersion"
+    while ($uri) {
+        $page = Get-SuE2EResource $uri $script:ArmScope
+        if (-not $page) { break }
+        $runs += @($page.value)
+        # Paged by nextLink.
+        $uri = if ($page.PSObject.Properties['nextLink']) { $page.nextLink } else { $null }
+    }
+    return @($runs | Sort-Object {
+        $t = Get-SuE2ERunProperty $_ 'startTime'
+        if ($t) { ([datetime]$t).ToUniversalTime() } else { [datetime]::MinValue }
+    } -Descending)
+}
+
+# The newest Active run of the job, or $null.
+function Get-SuE2EActiveRun([hashtable]$Config, [string]$JobName) {
+    return Get-SuE2EJobRuns $Config $JobName | Where-Object { (Get-SuE2ERunProperty $_ 'status') -eq 'Active' } |
+        Select-Object -First 1
+}
+
+<#
+.SYNOPSIS
+    Waits until every job's run is Active, then -GraceSeconds more: devices
+    were measured to get 401000 for about 3 min after a run turned Active.
+#>
+function Wait-SuE2EJobRuns {
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][hashtable[]]$Runs,   # @{ Job; Run }
+        [int]$Minutes = 10,
+        [int]$GraceSeconds = 300
+    )
+    $deadline = (Get-Date).AddMinutes($Minutes)
+    foreach ($r in $Runs) {
+        $uri = "$(Get-SuE2EJobsUri $Config)/$($r.Job)/runs/$($r.Run)?api-version=$script:ApiVersion"
+        while ($true) {
+            $p = (Invoke-SuE2ERest -Method Get -Uri $uri -Resource $script:ArmScope).Body.properties
+            $status = if ($p.PSObject.Properties['status']) { $p.status } else { '<none>' }
+            if ($status -eq 'Active') { break }
+            if ($status -in 'Failed', 'Canceled', 'Completed') { throw "Run $($r.Job)/$($r.Run) is $status" }
+            if ((Get-Date) -gt $deadline) { throw "Run $($r.Job)/$($r.Run) not Active in $Minutes min (status $status)" }
+            Start-Sleep -Seconds 10
+        }
+    }
+    Start-Sleep -Seconds $GraceSeconds
 }
 
 <#
@@ -279,76 +393,199 @@ function Get-SuE2EDeviceResult {
         [Parameter(Mandatory)][string]$JobName,
         [Parameter(Mandatory)][string]$RegistrationId
     )
-    $token = Get-SuE2EToken $script:ArmScope
     $job = "$(Get-SuE2EJobsUri $Config)/$JobName"
-    # E2E-PLACEHOLDER: assumes a Continuous onboarding job carries its runs in
-    # runs/, newest by startTime; unmeasured.
-    $runs = @((Invoke-SuE2ERest -Method Get -Uri "$job/runs?api-version=$script:ApiVersion" -Token $token).Body.value)
-    if (-not $runs) { return $null }
-    # StrictMode: entries may omit optional properties, so each is probed before use.
-    $run = $runs | Sort-Object { $p = $_.properties; if ($p.PSObject.Properties['startTime']) { $p.startTime } else { '' } } -Descending |
-        Select-Object -First 1
-    $uri = "$job/runs/$($run.name)/listResults?api-version=$script:ApiVersion"
-    $body = @{}
-    while ($true) {
-        $page = (Invoke-SuE2ERest -Method Post -Uri $uri -Token $token -Body $body).Body
-        $hit = @($page.value) | Where-Object {
-            $_.PSObject.Properties['resourceExternalId'] -and $_.resourceExternalId -eq $RegistrationId
-        } | Select-Object -First 1
-        if ($hit) { return $hit }
-        # Paged by a skipToken sent back in the next request body.
-        $next = if ($page.PSObject.Properties['skipToken']) { $page.skipToken } else { $null }
-        if (-not $next) { return $null }
-        $body = @{ skipToken = $next }
+    # A Continuous onboarding job records results on its runs (measured). A
+    # reused job may hold several, so every Active run is searched, newest
+    # first, then the newest run whatever its status.
+    $all = @(Get-SuE2EJobRuns $Config $JobName)
+    if (-not $all) { return $null }
+    $candidates = @($all | Where-Object { (Get-SuE2ERunProperty $_ 'status') -eq 'Active' })
+    if ($all[0].name -notin @($candidates | ForEach-Object name)) { $candidates += $all[0] }
+    foreach ($run in $candidates) {
+        $uri = "$job/runs/$($run.name)/listResults?api-version=$script:ApiVersion"
+        $body = @{}
+        while ($true) {
+            $page = (Invoke-SuE2ERest -Method Post -Uri $uri -Resource $script:ArmScope -Body $body).Body
+            $hit = @($page.value) | Where-Object {
+                $_.PSObject.Properties['resourceExternalId'] -and $_.resourceExternalId -eq $RegistrationId
+            } | Select-Object -First 1
+            if ($hit) { return $hit }
+            # Paged by a skipToken sent back in the next request body.
+            $next = if ($page.PSObject.Properties['skipToken']) { $page.skipToken } else { $null }
+            if (-not $next) { break }
+            $body = @{ skipToken = $next }
+        }
+    }
+    return $null
+}
+
+<#
+.SYNOPSIS
+    Names of the offers staged under -RunId: the manufacturer, and per scenario
+    its model, update and job. No remote call.
+#>
+function Get-SuE2EOfferNames {
+    param([Parameter(Mandatory)][string]$RunId)
+    $tag = ($RunId -replace '[^A-Za-z0-9]', '').ToLowerInvariant()
+    $offers = [ordered]@{}
+    foreach ($scenario in $script:Scenarios.Keys) {
+        # Short names: the whole offer must fit the client's 4 KiB request buffer.
+        $short = $script:Scenarios[$scenario].Short
+        $model = "e2e-$tag-$short"
+        $offers[$scenario] = [ordered]@{
+            Model  = $model
+            Update = "updates/providers/sdke2e/names/$model/versions/1.0.0"
+            Job    = "su-e2e-$tag-$short"
+        }
+    }
+    return [ordered]@{ Manufacturer = "e2e$tag"; Offers = $offers }
+}
+
+<#
+.SYNOPSIS
+    Short hash of the code that defines the staged offers (names, update
+    content, job). Appended to a reused -RunId, a fixture change stages a new
+    offer set instead of reusing one staged by older code.
+#>
+function Get-SuE2EFixtureTag {
+    $text = ('Get-SuE2EOfferNames', 'Import-SuE2EUpdate', 'New-SuE2EOnboardingJob', 'New-SuE2EJobRun' |
+            ForEach-Object { (Get-Command -Module SuE2E -Name $_).Definition }) -join "`n"
+    $text += ($script:Scenarios.Keys | ForEach-Object { "$_=$($script:Scenarios[$_].Short)" }) -join ','
+    $hash = [System.Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes(($text -replace "`r`n", "`n")))
+    return [Convert]::ToHexString($hash).Substring(0, 8).ToLowerInvariant()
+}
+
+<#
+.SYNOPSIS
+    Exports the variables the device suites read for the offers staged under
+    -RunId (also to $env:GITHUB_ENV when set). No remote call.
+#>
+function Export-SuE2EOfferVariables {
+    param([Parameter(Mandatory)][string]$RunId)
+    $names = Get-SuE2EOfferNames -RunId $RunId
+    $exports = [ordered]@{ AZ_IOT_E2E_SU_OFFER_MANUFACTURER = $names.Manufacturer }
+    foreach ($scenario in $names.Offers.Keys) { $exports[$script:Scenarios[$scenario].Variable] = $names.Offers[$scenario].Model }
+    foreach ($k in $exports.Keys) {
+        Set-Item -Path "env:$k" -Value $exports[$k]
+        if ($env:GITHUB_ENV) { Add-Content -Path $env:GITHUB_ENV -Value "$k=$($exports[$k])" }
     }
 }
 
 <#
 .SYNOPSIS
     Stages one offer per scenario, records them in -StatePath, and exports the
-    variables the device suite reads (also to $env:GITHUB_ENV when set).
+    variables the device suites read (also to $env:GITHUB_ENV when set).
+
+.DESCRIPTION
+    With -Reuse, offers already staged under -RunId are kept: an existing
+    update is not imported again, an existing job is not recreated, and a job
+    with an Active run gets no new run. Only new runs are waited for. An offer
+    reaches each device once, so reused offers serve any number of new devices.
 #>
 function New-SuE2EOffers {
     param(
         [Parameter(Mandatory)][string]$RunId,
         [Parameter(Mandatory)][string]$StatePath,
-        [string]$WorkDir = (Join-Path ([System.IO.Path]::GetTempPath()) "su-e2e-$RunId")
+        [string]$WorkDir = (Join-Path ([System.IO.Path]::GetTempPath()) "su-e2e-$RunId"),
+        # Wait after the runs turn Active; see Wait-SuE2EJobRuns.
+        [int]$GraceSeconds = 300,
+        [switch]$Reuse
     )
     $config = Get-SuE2EConfig
-    $tag = ($RunId -replace '[^A-Za-z0-9]', '').ToLowerInvariant()
-    $manufacturer = "e2e$tag"
+    $names = Get-SuE2EOfferNames -RunId $RunId
+    $manufacturer = $names.Manufacturer
+    $runs = @()
+    $graceUntil = [datetime]::MinValue
     $state = [ordered]@{ Manufacturer = $manufacturer; Offers = [ordered]@{} }
-    $exports = [ordered]@{ AZ_IOT_E2E_SU_OFFER_MANUFACTURER = $manufacturer }
 
     # Saved before every remote call, so a run killed mid-step still leaves
     # Remove-SuE2EOffers everything it may have created.
     $save = { $state | ConvertTo-Json -Depth 5 | Set-Content -Path $StatePath }
 
-    foreach ($scenario in $script:Scenarios.Keys) {
-        # Short names: the whole offer must fit the client's 4 KiB request buffer.
-        $short = $script:Scenarios[$scenario].Short
-        $model = "e2e-$tag-$short"
-        $offer = [ordered]@{
-            Model  = $model
-            Blobs  = [System.Collections.Generic.List[string]]::new()
-            Update = "updates/providers/sdke2e/names/$model/versions/1.0.0"
-            Job    = $null
+    # With -Reuse every offer may already exist, so all names are recorded
+    # before the first lookup; cleanup skips what does not exist.
+    foreach ($scenario in $names.Offers.Keys) {
+        $n = $names.Offers[$scenario]
+        $blobs = [System.Collections.Generic.List[string]]::new()
+        if ($Reuse) {
+            foreach ($file in "$($n.Model).bin", "$($n.Model).importmanifest.json") {
+                $blobs.Add((Get-SuE2EUpdateBlobName 'sdke2e' $n.Model '1.0.0' $file))
+            }
         }
-        $state.Offers[$scenario] = $offer
-        & $save
-        $update = Import-SuE2EUpdate -Config $config -Provider 'sdke2e' -Name $model `
-            -Version '1.0.0' -Manufacturer $manufacturer -Model $model -WorkDir $WorkDir `
-            -Blobs $offer.Blobs -OnChange $save
-        $offer.Job = "su-e2e-$tag-$short"
-        & $save
-        New-SuE2EOnboardingJob -Config $config -JobName $offer.Job -UpdateResourceId $update
-        $exports[$script:Scenarios[$scenario].Variable] = $model
+        $state.Offers[$scenario] = [ordered]@{
+            Model  = $n.Model
+            Blobs  = $blobs
+            Update = $n.Update
+            Job    = $Reuse ? $n.Job : $null
+            Run    = $null
+        }
     }
+    & $save
 
-    foreach ($k in $exports.Keys) {
-        Set-Item -Path "env:$k" -Value $exports[$k]
-        if ($env:GITHUB_ENV) { Add-Content -Path $env:GITHUB_ENV -Value "$k=$($exports[$k])" }
+    foreach ($scenario in $names.Offers.Keys) {
+        $n = $names.Offers[$scenario]
+        $offer = $state.Offers[$scenario]
+
+        $updateUri = "https://$($config.ADU_ENDPOINT)/$($n.Update)?api-version=$script:ApiVersion"
+        if ($Reuse -and (Get-SuE2EResource $updateUri $script:AduScope)) {
+            Write-Host "$scenario`: update $($n.Model) kept"
+        }
+        else {
+            # Concurrent stagers of one -RunId overwrite each other's blobs, so
+            # an import can fail while another succeeds: re-check, then retry.
+            for ($attempt = 1; ; $attempt++) {
+                try {
+                    [void](Import-SuE2EUpdate -Config $config -Provider 'sdke2e' -Name $n.Model `
+                            -Version '1.0.0' -Manufacturer $manufacturer -Model $n.Model -WorkDir $WorkDir `
+                            -Blobs $offer.Blobs -OnChange $save)
+                    break
+                }
+                catch {
+                    if (-not $Reuse) { throw }
+                    if (Get-SuE2EResource $updateUri $script:AduScope) {
+                        Write-Host "$scenario`: update $($n.Model) imported by another run"
+                        break
+                    }
+                    if ($attempt -ge 3) { throw }
+                    Write-Warning "$scenario`: import attempt $attempt failed, retrying: $_"
+                }
+            }
+        }
+
+        $offer.Job = $n.Job
+        & $save
+        $jobUri = "$(Get-SuE2EJobsUri $config)/$($n.Job)?api-version=$script:ApiVersion"
+        $job = if ($Reuse) { Get-SuE2EResource $jobUri $script:ArmScope } else { $null }
+        if ($job -and $job.properties.provisioningState -eq 'Succeeded') {
+            $active = Get-SuE2EActiveRun $config $n.Job
+            if ($active) {
+                $offer.Run = $active.name
+                Write-Host "$scenario`: job $($n.Job) kept, run $($offer.Run) Active"
+                # Another run may have just created it: wait out what is left of its grace.
+                $started = Get-SuE2ERunProperty $active 'startTime'
+                if ($started) {
+                    $until = ([datetime]$started).ToUniversalTime().AddSeconds($GraceSeconds)
+                    if ($until -gt $graceUntil) { $graceUntil = $until }
+                }
+            }
+            else { $offer.Run = New-SuE2EJobRun -Config $config -JobName $n.Job; $runs += @{ Job = $n.Job; Run = $offer.Run } }
+        }
+        else {
+            $offer.Run = New-SuE2EOnboardingJob -Config $config -JobName $n.Job -UpdateResourceId $n.Update
+            $runs += @{ Job = $n.Job; Run = $offer.Run }
+        }
+        & $save
     }
+    if ($runs.Count) { Wait-SuE2EJobRuns -Config $config -Runs $runs -GraceSeconds $GraceSeconds }
+    else {
+        # Measured after every lookup, so their time counts toward the grace.
+        $left = [math]::Ceiling(($graceUntil - (Get-Date).ToUniversalTime()).TotalSeconds)
+        if ($left -gt 0) {
+            Write-Host "Waiting $left s: a kept run started less than $GraceSeconds s ago"
+            Start-Sleep -Seconds $left
+        }
+    }
+    Export-SuE2EOfferVariables -RunId $RunId
 }
 
 <#
@@ -392,10 +629,6 @@ function Remove-SuE2EOffers {
     if (-not (Test-Path $StatePath)) { return }
     $config = Get-SuE2EConfig
     $state = Get-Content -Raw -Path $StatePath | ConvertFrom-Json -AsHashtable
-    # Fetched on first use inside each item's try, so a token failure costs only
-    # the items that need it.
-    $tokens = @{}
-    $token = { param($scope) if (-not $tokens.ContainsKey($scope)) { $tokens[$scope] = Get-SuE2EToken $scope }; $tokens[$scope] }
     $firstError = $null
     foreach ($offer in $state.Offers.Values) {
         # Each item separately, so one failure does not strand the others.
@@ -409,18 +642,21 @@ function Remove-SuE2EOffers {
                 switch ($kind) {
                     'Job' {
                         # Awaited: the update it references is deleted next.
-                        $armToken = & $token $script:ArmScope
-                        $r = Invoke-SuE2ERest -Method Delete -Token $armToken `
+                        $r = Invoke-SuE2ERest -Method Delete -Resource $script:ArmScope `
                             -Uri "$(Get-SuE2EJobsUri $config)/$($name)?api-version=$script:ApiVersion"
-                        Wait-SuE2EOperation -Response $r -Token $armToken -BaseUri $config.ARM_ENDPOINT
+                        Wait-SuE2EOperation -Response $r -Resource $script:ArmScope -BaseUri $config.ARM_ENDPOINT
                     }
                     'Update' {
-                        $aduToken = & $token $script:AduScope
-                        $r = Invoke-SuE2ERest -Method Delete -Token $aduToken `
+                        $r = Invoke-SuE2ERest -Method Delete -Resource $script:AduScope `
                             -Uri "https://$($config.ADU_ENDPOINT)/$($name)?api-version=$script:ApiVersion"
-                        Wait-SuE2EOperation -Response $r -Token $aduToken -BaseUri "https://$($config.ADU_ENDPOINT)"
+                        Wait-SuE2EOperation -Response $r -Resource $script:AduScope -BaseUri "https://$($config.ADU_ENDPOINT)"
                     }
                     'Blob' {
+                        # Recorded for a reused update, so it may be gone already.
+                        $exists = az storage blob exists --auth-mode login --account-name $config.STORAGE_ACCOUNT `
+                            --container-name $config.STORAGE_CONTAINER --name $name --query exists -o tsv
+                        if ($LASTEXITCODE -ne 0) { throw "Existence check of blob $name failed" }
+                        if ($exists -ne 'true') { continue }
                         az storage blob delete --auth-mode login --account-name $config.STORAGE_ACCOUNT `
                             --container-name $config.STORAGE_CONTAINER --name $name --only-show-errors | Out-Null
                         if ($LASTEXITCODE -ne 0) { throw "Delete of blob $name failed" }
@@ -440,4 +676,5 @@ function Remove-SuE2EOffers {
 }
 
 Export-ModuleMember -Function New-SuE2EOffers, Test-SuE2EOffers, Remove-SuE2EOffers, Import-SuE2EUpdate,
-New-SuE2EOnboardingJob, Get-SuE2EDeviceResult
+New-SuE2EOnboardingJob, New-SuE2EJobRun, Wait-SuE2EJobRuns, Get-SuE2EDeviceResult, Get-SuE2EOfferNames,
+Export-SuE2EOfferVariables, Get-SuE2EFixtureTag

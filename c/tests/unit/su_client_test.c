@@ -651,7 +651,9 @@ typedef struct
   size_t do_work_count;
   size_t set_properties_count;
   az_iot_result set_properties_result;
-  az_iot_su_device_properties_snapshot properties;
+  az_iot_su_device_properties properties;
+  az_iot_su_custom_property custom_properties[AZ_IOT_SU_MAX_COMPATIBILITY_PROPERTIES];
+  char property_strings[1024];
   /* Simulates the channel deferring because the SERVICE asked, as opposed to
    * because an operation is already outstanding. Monotonic instant; 0 = none. */
 } fake_channel;
@@ -823,18 +825,18 @@ static az_iot_result fake_channel_set_properties(
   {
     return fc->set_properties_result;
   }
-  az_iot_su_device_properties_snapshot snapshot;
-  az_iot_result r = az_iot_su__prepare_device_properties(properties, &snapshot);
+  size_t strings_size = 0;
+  az_iot_result r = az_iot_su__measure_device_properties(properties, &strings_size);
   if (r != AZ_IOT_OK)
   {
     return r;
   }
-  az_iot_su__commit_device_properties(
-      &snapshot,
-      &fc->properties.properties,
-      fc->properties.custom_properties,
-      fc->properties.strings);
-  fc->properties.strings_size = snapshot.strings_size;
+  if (strings_size > sizeof(fc->property_strings))
+  {
+    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+  }
+  az_iot_su__copy_device_properties(
+      properties, fc->property_strings, &fc->properties, fc->custom_properties);
   return AZ_IOT_OK;
 }
 
@@ -3027,8 +3029,8 @@ static void workspace_size_follows_the_limits(void** state)
   limits.result_details_size = 10;
   assert_int_equal(
       az_iot_su_workspace_size(&limits),
-      1350 + AZ_IOT_SU_MIN_MESSAGE_SIZE + 2u * AZ_IOT_SU_PERSIST_OVERHEAD
-          + 50u * _az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS
+      1300 + 2u * 50u + AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE + AZ_IOT_SU_MIN_MESSAGE_SIZE
+          + 2u * AZ_IOT_SU_PERSIST_OVERHEAD + 50u * _az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS
           + AZ_IOT_SU_DEFAULT_MAX_ROOT_KEYS * sizeof(az_iot_su_root_key)
           + AZ_IOT_SU_DEFAULT_MAX_OBSERVERS * sizeof(az_iot_su_observer_registration)
           + sizeof(az_iot_su_workspace_alignment) - 1u);
@@ -3341,68 +3343,83 @@ static void property_copies_survive_mutation_and_aliasing(void** state)
   assert_string_equal(cached->custom_properties[0].name, "board");
   assert_string_equal(cached->custom_properties[0].value, "revision-2");
   assert_string_equal(cached->installed_update_id.version, "2.0");
-  assert_string_equal(fx->chan.properties.properties.custom_properties[0].value, "revision-2");
+  assert_string_equal(fx->chan.properties.custom_properties[0].value, "revision-2");
 
-  /* Resizing one string must not overwrite aliased later source strings. */
+  /* Properties pointing into the client's copy would be overwritten while copied: refused. */
+  static az_iot_su_client before;
+  memcpy(&before, &fx->su, sizeof(before));
   dp = *cached;
   dp.manufacturer = "A much longer manufacturer";
-  assert_int_equal(az_iot_su_client_update_device_properties(&fx->su, &dp), AZ_IOT_OK);
-  assert_string_equal(cached->manufacturer, "A much longer manufacturer");
+  assert_int_equal(az_iot_su_client_update_device_properties(&fx->su, &dp), AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(
+      az_iot_su_client_update_device_properties(&fx->su, cached), AZ_IOT_ERR_INVALID_ARG);
+  assert_memory_equal(&fx->su, &before, sizeof(before));
+  assert_string_equal(cached->manufacturer, "Fabrikam");
   assert_string_equal(cached->custom_properties[0].value, "revision-2");
-  assert_string_equal(cached->installed_update_id.version, "2.0");
-  assert_int_equal(az_iot_su_client_update_device_properties(&fx->su, cached), AZ_IOT_OK);
-  assert_string_equal(cached->custom_properties[0].name, "board");
-  assert_string_equal(fx->chan.properties.properties.manufacturer, cached->manufacturer);
 }
 
-static void properties_support_exact_limits_and_unaligned_cache(void** state)
+/* Compatibility strings are bounded only by az_iot_su_limits::device_properties_size, and the
+ * installed update ID by AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE. An exact fit is accepted; one byte
+ * more is refused with the client unchanged. The workspace needs no alignment. */
+static void properties_fit_device_properties_size_exactly(void** state)
 {
   fixture* fx = (fixture*)*state;
-  char manufacturer[257];
-  char provider[189];
+  static char manufacturer[602];
   memset(manufacturer, 'm', sizeof(manufacturer));
-  manufacturer[255] = '\0';
+  manufacturer[600] = '\0';
+  char provider[AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE - 4 + 1]; /* with "n" and "v": the whole ID */
   memset(provider, 'p', sizeof(provider));
-  provider[187] = '\0';
+  provider[sizeof(provider) - 2] = '\0';
   az_iot_su_device_properties dp
       = { .manufacturer = manufacturer, .installed_update_id = { provider, "n", "v" } };
-  assert_int_equal(az_iot_su_device_properties_buffer_size(&dp), 448);
-  uint8_t* fixture_buffer = fx->su._internal.device_properties_buffer;
-  size_t fixture_buffer_size = fx->su._internal.device_properties_buffer_size;
-  uint8_t storage[449];
-  fx->su._internal.device_properties_buffer = storage + 1;
-  fx->su._internal.device_properties_buffer_size = 448;
-  assert_int_equal(az_iot_su_client_update_device_properties(&fx->su, &dp), AZ_IOT_OK);
-  assert_string_equal(fx->su._internal.device_properties.installed_update_id.provider, provider);
-  assert_true(strlen(fx->su._internal.device_properties.installed_update_id.provider) > 128);
-  uint8_t saved[448];
-  memcpy(saved, storage + 1, sizeof(saved));
+  const size_t need = 601u + AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE;
+  assert_int_equal(az_iot_su_device_properties_buffer_size(&dp), need);
 
-  fx->su._internal.device_properties_buffer_size = 447;
-  az_iot_su_client before;
-  memcpy(&before, &fx->su, sizeof(before));
+  az_iot_su_client_config_options opts = az_iot_su_client_config_options_default();
+  opts.hooks = &fx->su._internal.hooks;
+  opts.device_properties = &dp;
+  opts.limits.max_update_size = 4096;
+  opts.limits.device_properties_size = need;
+  opts.workspace = g_second_workspace + 1;
+  opts.workspace_size = sizeof(g_second_workspace) - 1;
+  assert_true(az_iot_su_workspace_size(&opts.limits) <= opts.workspace_size);
+  static az_iot_su_client client;
+  fake_channel fc = { 0 };
+  az_iot_su_channel channel = { &k_fake_channel_vtable, &fc };
   assert_int_equal(
-      az_iot_su_client_update_device_properties(&fx->su, &dp), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
-  assert_memory_equal(&fx->su, &before, sizeof(before));
-  assert_memory_equal(storage + 1, saved, sizeof(saved));
+      az_iot_su_client__initialize_with_channel(&client, &channel, fx->su._internal.crypto, &opts),
+      AZ_IOT_OK);
+  assert_string_equal(client._internal.device_properties.manufacturer, manufacturer);
+  assert_string_equal(client._internal.device_properties.installed_update_id.provider, provider);
+  assert_int_equal(az_iot_su_client_update_device_properties(&client, &dp), AZ_IOT_OK);
+  assert_string_equal(client._internal.device_properties.manufacturer, manufacturer);
 
-  fx->su._internal.device_properties_buffer_size = 448;
-  manufacturer[255] = 'm';
-  manufacturer[256] = '\0';
+  static az_iot_su_client before;
+  memcpy(&before, &client, sizeof(before));
+  su_error_log_capture cap
+      = { "need 794 bytes; az_iot_su_limits::device_properties_size is 793", 0 };
+  az_iot_log_sink sink
+      = { .sink = su_error_log_sink, .user_ctx = &cap, .min_level = AZ_IOT_LOG_LEVEL_ERROR };
+  az_iot_log_set_global_sink(&sink);
+  manufacturer[600] = 'm';
+  manufacturer[601] = '\0';
   assert_int_equal(
-      az_iot_su_client_update_device_properties(&fx->su, &dp), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
-  manufacturer[255] = '\0';
-  provider[187] = 'p';
-  provider[188] = '\0';
+      az_iot_su_client_update_device_properties(&client, &dp), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+  assert_memory_equal(&client, &before, sizeof(before));
+  assert_int_equal(cap.count, 1);
+  manufacturer[600] = '\0';
+  provider[sizeof(provider) - 2] = 'p';
+  provider[sizeof(provider) - 1] = '\0';
+  cap = (su_error_log_capture){
+    "installed update ID needs 193 bytes; AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE is 192", 0
+  };
   assert_int_equal(
-      az_iot_su_client_update_device_properties(&fx->su, &dp), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
-  assert_memory_equal(storage + 1, saved, sizeof(saved));
-
-  /* Restore fixture-owned storage before this stack buffer goes out of scope. */
-  fx->su._internal.device_properties_buffer = fixture_buffer;
-  fx->su._internal.device_properties_buffer_size = fixture_buffer_size;
-  dp = (az_iot_su_device_properties){ .manufacturer = "m" };
-  assert_int_equal(az_iot_su_client_update_device_properties(&fx->su, &dp), AZ_IOT_OK);
+      az_iot_su_client_update_device_properties(&client, &dp), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+  assert_memory_equal(&client, &before, sizeof(before));
+  assert_int_equal(cap.count, 1);
+  az_iot_log_set_global_sink(NULL);
+  assert_int_equal(az_iot_su_device_properties_buffer_size(&dp), 0);
+  az_iot_su_client_deinit(&client);
 }
 
 static void properties_validate_initialization_before_opening_the_channel(void** state)
@@ -4729,7 +4746,7 @@ static void a_succeeded_update_becomes_the_installed_id(void** state)
   assert_string_equal(cached->installed_update_id.provider, fx->chan.last_installed_provider);
   assert_string_equal(cached->installed_update_id.name, fx->chan.last_installed_name);
   assert_string_equal(cached->installed_update_id.version, fx->chan.last_installed_version);
-  const az_iot_su_device_properties* channel = &fx->chan.properties.properties;
+  const az_iot_su_device_properties* channel = &fx->chan.properties;
   assert_string_equal(channel->installed_update_id.version, fx->chan.last_installed_version);
 
   void* fresh_state = NULL;
@@ -4817,8 +4834,7 @@ static void the_applied_id_is_adopted_with_an_exact_sized_cache(void** state)
   assert_string_equal(cached->installed_update_id.provider, fx->chan.last_installed_provider);
   assert_string_equal(cached->installed_update_id.name, fx->chan.last_installed_name);
   assert_string_equal(cached->installed_update_id.version, fx->chan.last_installed_version);
-  assert_string_equal(
-      fx->chan.properties.properties.installed_update_id.name, fx->chan.last_installed_name);
+  assert_string_equal(fx->chan.properties.installed_update_id.name, fx->chan.last_installed_name);
 }
 
 /* CRC-32 over a persisted record, as the client computes it. */
@@ -4916,7 +4932,7 @@ static void new_properties_do_not_resend_a_settled_report(void** state)
   assert_int_equal(az_iot_su_client_update_device_properties(&fx->su, &dp), AZ_IOT_OK);
   pump(fx, 3);
   assert_int_equal(fx->chan.report_count, sent);
-  assert_string_equal(fx->chan.properties.properties.installed_update_id.version, "9.9");
+  assert_string_equal(fx->chan.properties.installed_update_id.version, "9.9");
 }
 
 /* WORKFLOW_COMPLETED follows the verdict that settles the terminal report:
@@ -9350,8 +9366,7 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         a_channel_rejection_does_not_replace_the_engine_cache, setup, teardown),
     cmocka_unit_test_setup_teardown(property_copies_survive_mutation_and_aliasing, setup, teardown),
-    cmocka_unit_test_setup_teardown(
-        properties_support_exact_limits_and_unaligned_cache, setup, teardown),
+    cmocka_unit_test_setup_teardown(properties_fit_device_properties_size_exactly, setup, teardown),
     cmocka_unit_test_setup_teardown(
         properties_validate_initialization_before_opening_the_channel, setup, teardown),
     cmocka_unit_test_setup_teardown(

@@ -595,6 +595,8 @@ typedef struct
   az_iot_mqtt_factory* factory;
   az_iot_su_channel_dps channel_state;
   uint8_t channel_body[AZ_IOT_SU_DEFAULT_MAX_MESSAGE_SIZE];
+  char channel_device_properties
+      [AZ_IOT_SU_DEVICE_PROPERTIES_BUFFER_SIZE + AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE];
   spy_channel spy;
   az_iot_su_client su;
   platform plat;
@@ -708,6 +710,8 @@ static void fixture_open(fixture* fx, const fixture_options* o)
           &dp,
           fx->channel_body,
           sizeof(fx->channel_body),
+          fx->channel_device_properties,
+          sizeof(fx->channel_device_properties),
           &fx->spy.inner),
       AZ_IOT_OK);
 

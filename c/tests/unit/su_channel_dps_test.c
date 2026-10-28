@@ -60,6 +60,7 @@ typedef struct
   az_iot_su_channel channel;
   /* 2048 bytes: storage-sized device properties, fully escaped, overflow it. */
   uint8_t body[2048];
+  char device_properties_strings[AZ_IOT_SU_DEVICE_PROPERTIES_BUFFER_SIZE];
 
   /* What the engine would have been told. */
   size_t update_count;
@@ -214,7 +215,14 @@ static int setup(void** state)
   dp.installed_update_id.version = "1.0";
   assert_int_equal(
       az_iot_su_channel_dps_init(
-          &fx->channel_state, &fx->client, &dp, fx->body, sizeof(fx->body), &fx->channel),
+          &fx->channel_state,
+          &fx->client,
+          &dp,
+          fx->body,
+          sizeof(fx->body),
+          fx->device_properties_strings,
+          sizeof(fx->device_properties_strings),
+          &fx->channel),
       AZ_IOT_OK);
 
   *state = fx;
@@ -1048,7 +1056,7 @@ static void invalid_replacements_preserve_channel_state_and_outstanding_body(voi
   az_iot_su_custom_property six[]
       = { { "a", "1" }, { "b", "2" }, { "c", "3" }, { "d", "4" }, { "e", "5" }, { "f", "6" } };
   az_iot_su_custom_property duplicate[] = { { "manufacturer", "other" } };
-  char oversized[257];
+  char oversized[AZ_IOT_SU_DEVICE_PROPERTIES_BUFFER_SIZE + 1]; /* one byte over a channel copy */
   memset(oversized, 'x', sizeof(oversized) - 1);
   oversized[sizeof(oversized) - 1] = '\0';
   char escaped_compat[256];
@@ -1088,6 +1096,81 @@ static void invalid_replacements_preserve_channel_state_and_outstanding_body(voi
   assert_int_equal(fx->result_count, 0);
 }
 
+/* Accepted properties leave room in the update-check body for the longest installed ID, fully
+ * escaped: the applied ID adopted after a successful update always fits. */
+static void accepted_properties_leave_room_for_the_longest_installed_id(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  static char manufacturer[AZ_IOT_SU_DEVICE_PROPERTIES_BUFFER_SIZE];
+  az_iot_su_device_properties properties
+      = { .manufacturer = manufacturer, .installed_update_id = { "p", "n", "v" } };
+
+  /* Grow a fully escaped manufacturer until the channel refuses it. */
+  size_t refused_length = 0;
+  for (size_t length = 1; length < sizeof(manufacturer) && refused_length == 0; ++length)
+  {
+    memset(manufacturer, '\1', length);
+    manufacturer[length] = '\0';
+    if (fx->channel.vtable->set_device_properties(fx->channel.ctx, &properties) != AZ_IOT_OK)
+    {
+      refused_length = length;
+    }
+  }
+  assert_true(refused_length > 1);
+
+  /* The refused set fits with its own short installed ID: room is reserved. */
+  az_iot_su_custom_property compatibility[1] = { { "manufacturer", manufacturer } };
+  az_iot_su_agent_info agent = { 0 };
+  agent.agent_sdk_version = AZ_IOT_SU_CLIENT_AGENT_VERSION;
+  agent.agent_profile = 1;
+  agent.compatibility_properties = compatibility;
+  agent.compatibility_properties_count = 1;
+  az_iot_su_report_update_id short_id = { "p", "n", "v" };
+  size_t body_length = 0;
+  assert_int_equal(
+      az_iot_su__fetch_request_size(&agent, &short_id, NULL, NULL, sizeof(fx->body), &body_length),
+      AZ_IOT_OK);
+
+  /* The longest accepted set still takes the longest escaped installed ID. */
+  manufacturer[refused_length - 1] = '\0';
+  assert_int_equal(
+      fx->channel.vtable->set_device_properties(fx->channel.ctx, &properties), AZ_IOT_OK);
+  char longest_part[AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE / 3];
+  memset(longest_part, '\1', sizeof(longest_part) - 1);
+  longest_part[sizeof(longest_part) - 1] = '\0';
+  properties.installed_update_id
+      = (az_iot_su_update_id_info){ longest_part, longest_part, longest_part };
+  assert_int_equal(
+      fx->channel.vtable->set_device_properties(fx->channel.ctx, &properties), AZ_IOT_OK);
+  assert_string_equal(fx->channel_state.installed_update_id.version, longest_part);
+
+  /* That boundary request is actually serialized and sent. */
+  az_iot_mock_mqtt_client* m = open_and_bind(fx);
+  assert_int_equal(
+      fx->channel.vtable->request_update(fx->channel.ctx, AZ_IOT_SU_OP_GET_UPDATE), AZ_IOT_OK);
+  const az_iot_mock_call* pub = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_PUBLISH);
+  assert_non_null(pub);
+  assert_true(pub->payload_len <= sizeof(fx->body));
+}
+
+/* The channel's copy holds at most its storage; one byte more is refused, unchanged. */
+static void channel_property_copy_is_bounded_by_its_storage(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_su_device_properties exact = { .manufacturer = "abc", .model = "de" };
+  fx->channel_state.device_properties_strings_size = 7;
+  assert_int_equal(fx->channel.vtable->set_device_properties(fx->channel.ctx, &exact), AZ_IOT_OK);
+  assert_string_equal(fx->channel_state.compat[0].value, "abc");
+
+  az_iot_su_channel_dps before;
+  memcpy(&before, &fx->channel_state, sizeof(before));
+  az_iot_su_device_properties over = { .manufacturer = "abcd", .model = "de" };
+  assert_int_equal(
+      fx->channel.vtable->set_device_properties(fx->channel.ctx, &over),
+      AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+  assert_memory_equal(&fx->channel_state, &before, sizeof(before));
+}
+
 static void channel_keeps_all_five_custom_properties_and_owns_their_strings(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -1107,16 +1190,29 @@ static void channel_keeps_all_five_custom_properties_and_owns_their_strings(void
   assert_string_equal(fx->channel_state.compat[1].value, "");
   assert_string_equal(fx->channel_state.compat[4].name, "e");
 
-  properties = fx->channel_state.device_properties.properties;
+  /* Properties pointing into the channel's copy would be overwritten while copied: refused. */
+  az_iot_su_channel_dps before;
+  memcpy(&before, &fx->channel_state, sizeof(before));
+  properties = fx->channel_state.device_properties;
   properties.installed_update_id
       = (az_iot_su_update_id_info){ "provider-2", "name-2", "version-2" };
+  assert_int_equal(
+      fx->channel.vtable->set_device_properties(fx->channel.ctx, &properties),
+      AZ_IOT_ERR_INVALID_ARG);
+  assert_memory_equal(&fx->channel_state, &before, sizeof(before));
+
+  az_iot_su_custom_property again[]
+      = { { "a", "revision-2" }, { "b", "" }, { "c", "3" }, { "d", "4" }, { "e", "5" } };
+  properties = (az_iot_su_device_properties){
+    .custom_properties = again,
+    .custom_properties_count = 5,
+    .installed_update_id = { "provider-2", "name-2", "version-2" },
+  };
   assert_int_equal(
       fx->channel.vtable->set_device_properties(fx->channel.ctx, &properties), AZ_IOT_OK);
   assert_string_equal(fx->channel_state.compat[0].value, "revision-2");
   assert_string_equal(fx->channel_state.installed_update_id.version, "version-2");
   properties.installed_update_id = (az_iot_su_update_id_info){ 0 };
-  /* Re-read the aliased custom-property descriptors after the preceding commit. */
-  properties.custom_properties = fx->channel_state.device_properties.properties.custom_properties;
   assert_int_equal(
       fx->channel.vtable->set_device_properties(fx->channel.ctx, &properties), AZ_IOT_OK);
   assert_false(fx->channel_state.has_installed_update_id);
@@ -1234,7 +1330,7 @@ static void malformed_saved_state_is_refused(void** state)
  * survives the drop escaped. */
 static void assert_oversized_cached_etags_are_dropped(fixture* fx, az_iot_su_operation operation)
 {
-  char manufacturer[151];
+  char manufacturer[101];
   memset(manufacturer, '\1', sizeof(manufacturer) - 1);
   manufacturer[sizeof(manufacturer) - 1] = '\0';
   az_iot_su_device_properties properties
@@ -1291,10 +1387,8 @@ static void public_replacement_is_atomic_when_properties_do_not_fit(void** state
   az_iot_su_client client;
   assert_int_equal(az_iot_su_client_init(&client, &fx->client, &options), AZ_IOT_OK);
 
-  /* One byte over the channel's compatibility storage. Storage-sized properties, even fully
-   * escaped, fit the smallest message body when AZ_IOT_SU_MAX_STEP_COUNT is above 8, so the
-   * escaped-request overflow is covered at the channel level instead. */
-  char oversized[257];
+  /* One byte over az_iot_su_limits::device_properties_size. */
+  char oversized[AZ_IOT_SU_DEVICE_PROPERTIES_BUFFER_SIZE + 1];
   memset(oversized, 'x', sizeof(oversized) - 1);
   oversized[sizeof(oversized) - 1] = '\0';
   properties.manufacturer = oversized;
@@ -1314,6 +1408,65 @@ static void public_replacement_is_atomic_when_properties_do_not_fit(void** state
       az_iot_su_client_init(&client, &fx->client, &options), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
   assert_int_equal(fx->client.dps_user_count, 0);
   assert_int_equal(fx->client.dps_hold_count, 0);
+}
+
+/** @brief Records the capacity in the update-check body ERROR line. */
+static void body_capacity_log_sink(
+    void* user_ctx,
+    az_iot_log_level level,
+    const char* component,
+    const char* file,
+    int line,
+    const char* msg)
+{
+  (void)component;
+  (void)file;
+  (void)line;
+  static const char prefix[]
+      = "an update check with these device properties needs a body capacity of ";
+  const char* found = msg != NULL ? strstr(msg, prefix) : NULL;
+  if (level == AZ_IOT_LOG_LEVEL_ERROR && found != NULL)
+  {
+    *(unsigned long*)user_ctx = strtoul(found + sizeof(prefix) - 1u, NULL, 10);
+  }
+}
+
+/* The capacity logged for an oversized update-check body is the smallest one accepted, not the
+ * serialized length: the JSON writer needs headroom past it. */
+static void update_check_body_log_gives_the_smallest_accepted_capacity(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_su_platform_hooks hooks = { 0 };
+  static char manufacturer[3001];
+  memset(manufacturer, 'm', sizeof(manufacturer) - 1u);
+  manufacturer[sizeof(manufacturer) - 1u] = '\0';
+  az_iot_su_device_properties properties = { .manufacturer = manufacturer };
+  static uint8_t workspace[4u * AZ_IOT_SU_WORKSPACE_DEFAULT_SIZE];
+  az_iot_su_client_config_options options = az_iot_su_client_config_options_default();
+  options.hooks = &hooks;
+  options.device_properties = &properties;
+  options.limits.device_properties_size = sizeof(manufacturer);
+  options.workspace = workspace;
+  options.workspace_size = sizeof(workspace);
+  az_iot_su_client client;
+
+  unsigned long logged = 0;
+  az_iot_log_sink sink = { .sink = body_capacity_log_sink,
+                           .user_ctx = &logged,
+                           .min_level = AZ_IOT_LOG_LEVEL_ERROR };
+  az_iot_log_set_global_sink(&sink);
+  assert_int_equal(
+      az_iot_su_client_init(&client, &fx->client, &options), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+  az_iot_log_set_global_sink(NULL);
+  assert_true(logged > options.limits.max_message_size);
+
+  options.limits.max_message_size = (size_t)logged - 1u;
+  assert_true(az_iot_su_workspace_size(&options.limits) <= options.workspace_size);
+  assert_int_equal(
+      az_iot_su_client_init(&client, &fx->client, &options), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+  options.limits.max_message_size = (size_t)logged;
+  assert_int_equal(az_iot_su_client_init(&client, &fx->client, &options), AZ_IOT_OK);
+  az_iot_su_client_deinit(&client);
 }
 
 /* Without a usable provisioning session there is nothing to publish onto. */
@@ -1738,7 +1891,14 @@ static void a_zero_hold_timeout_selects_the_default(void** state)
   dp.model = "Foobar";
   assert_int_equal(
       az_iot_su_channel_dps_init(
-          &fx->channel_state, &fx->client, &dp, fx->body, sizeof(fx->body), &fx->channel),
+          &fx->channel_state,
+          &fx->client,
+          &dp,
+          fx->body,
+          sizeof(fx->body),
+          fx->device_properties_strings,
+          sizeof(fx->device_properties_strings),
+          &fx->channel),
       AZ_IOT_OK);
   assert_int_equal(fx->channel.vtable->open(fx->channel.ctx, on_update, on_result, fx), AZ_IOT_OK);
   (void)open_to_registering(fx);
@@ -2511,7 +2671,7 @@ static void an_answered_operation_clears_the_retry_count(void** state)
  * freed storage on the next transition. */
 static bool channel_observes_state(const fixture* fx)
 {
-  for (size_t i = 0; i < AZ_IOT_MAX_FEATURE_STATE_OBSERVERS; ++i)
+  for (size_t i = 0; i < AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_FEATURE_STATE_OBSERVERS; ++i)
   {
     if (fx->client.feature_state_observers[i].cb != NULL
         && fx->client.feature_state_observers[i].user_ctx == &fx->channel_state)
@@ -2534,7 +2694,7 @@ static void the_channel_takes_and_returns_a_state_observer_seat(void** state)
   assert_false(channel_observes_state(fx));
 
   /* More bind/unbind cycles than the pool has seats: none leak. */
-  for (size_t i = 0; i < AZ_IOT_MAX_FEATURE_STATE_OBSERVERS + 2u; ++i)
+  for (size_t i = 0; i < AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_FEATURE_STATE_OBSERVERS + 2u; ++i)
   {
     assert_int_equal(
         fx->channel.vtable->open(fx->channel.ctx, on_update, on_result, fx), AZ_IOT_OK);
@@ -2548,7 +2708,7 @@ static void the_channel_takes_and_returns_a_state_observer_seat(void** state)
 static void a_full_observer_pool_refuses_the_bind(void** state)
 {
   fixture* fx = (fixture*)*state;
-  for (size_t i = 0; i < AZ_IOT_MAX_FEATURE_STATE_OBSERVERS; ++i)
+  for (size_t i = 0; i < AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_FEATURE_STATE_OBSERVERS; ++i)
   {
     fx->client.feature_state_observers[i].cb = az_iot_test_on_state;
     fx->client.feature_state_observers[i].user_ctx = &fx->log;
@@ -2562,7 +2722,11 @@ static void a_full_observer_pool_refuses_the_bind(void** state)
   assert_int_equal(fx->client.dps_user_count, 0);
   assert_int_equal(fx->client.dps_hold_count, 0);
 
-  memset(fx->client.feature_state_observers, 0, sizeof(fx->client.feature_state_observers));
+  memset(
+      fx->client.feature_state_observers,
+      0,
+      AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_FEATURE_STATE_OBSERVERS
+          * sizeof(*fx->client.feature_state_observers));
 }
 
 /* The session a request rode can be replaced between two channel ticks: the
@@ -2740,7 +2904,7 @@ static void a_deferred_seat_refused_by_a_full_pool_refuses_operations(void** sta
   assert_int_equal(g_bind_from_observer_result, AZ_IOT_OK);
   assert_false(channel_observes_state(fx));
 
-  for (size_t i = 0; i < AZ_IOT_MAX_FEATURE_STATE_OBSERVERS; ++i)
+  for (size_t i = 0; i < AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_FEATURE_STATE_OBSERVERS; ++i)
   {
     fx->client.feature_state_observers[i].cb = az_iot_test_on_state;
     fx->client.feature_state_observers[i].user_ctx = &fx->log;
@@ -2762,7 +2926,7 @@ static void a_deferred_seat_refused_by_a_full_pool_refuses_operations(void** sta
   assert_int_equal(fx->channel.vtable->do_work(fx->channel.ctx), AZ_IOT_OK);
   assert_true(channel_observes_state(fx));
 
-  for (size_t i = 1; i < AZ_IOT_MAX_FEATURE_STATE_OBSERVERS; ++i)
+  for (size_t i = 1; i < AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_FEATURE_STATE_OBSERVERS; ++i)
   {
     memset(
         &fx->client.feature_state_observers[i], 0, sizeof(fx->client.feature_state_observers[i]));
@@ -3117,6 +3281,10 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         invalid_replacements_preserve_channel_state_and_outstanding_body, setup, teardown),
     cmocka_unit_test_setup_teardown(
+        channel_property_copy_is_bounded_by_its_storage, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        accepted_properties_leave_room_for_the_longest_installed_id, setup, teardown),
+    cmocka_unit_test_setup_teardown(
         channel_keeps_all_five_custom_properties_and_owns_their_strings, setup, teardown),
     cmocka_unit_test_setup_teardown(
         oversized_cached_etags_are_dropped_from_the_request, setup, teardown),
@@ -3126,6 +3294,8 @@ int main(void)
     cmocka_unit_test_setup_teardown(malformed_saved_state_is_refused, setup, teardown),
     cmocka_unit_test_setup_teardown(
         public_replacement_is_atomic_when_properties_do_not_fit, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        update_check_body_log_gives_the_smallest_accepted_capacity, setup, teardown),
     cmocka_unit_test_setup_teardown(request_update_publishes_on_the_dps_topic, setup, teardown),
     cmocka_unit_test_setup_teardown(
         the_onboarding_route_selects_its_topic_and_sends_the_installed_id, setup, teardown),
