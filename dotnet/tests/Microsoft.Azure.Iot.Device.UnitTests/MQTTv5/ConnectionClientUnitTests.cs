@@ -242,8 +242,10 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
                 .WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
             await reconnected.Task.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
 
-            Assert.Equal(new[] { (true, sessionExpiryInterval), (useCleanSession, sessionExpiryInterval) }, connectSettings);
-            Assert.Equal(useCleanSession || sessionExpiryInterval == 0 ? 2 : 1,
+            // The unified client does not expose a session expiry, so its MQTTv5 connections use the default.
+            uint expectedExpiry = useUnifiedClient ? 3600u : sessionExpiryInterval;
+            Assert.Equal(new[] { (useCleanSession, expectedExpiry), (useCleanSession, expectedExpiry) }, connectSettings);
+            Assert.Equal(useCleanSession || expectedExpiry == 0 ? 2 : 1,
                 mockMqttClient.SentMqttTrafficInOrder.Count(traffic => traffic.Subscribe != null));
             Assert.Equal(2, mockMqttClient.SentMqttTrafficInOrder.Count(traffic => traffic.Publish?.Topic.EndsWith("/srv/presence", StringComparison.Ordinal) == true));
         }
@@ -251,13 +253,12 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
         [Theory]
         [InlineData(false)]
         [InlineData(true)]
-        public async Task FailedResumeAttemptStartsCleanSessionWithConfiguredExpiry(bool useUnifiedClient)
+        public async Task FailedConnectAttemptForcesResubscribeOnResumedSession(bool useUnifiedClient)
         {
             using MockConnectionMqttClient mockMqttClient = new() { AutoRespondToBirth = true };
             MqttV5ConnectionClientOptions options = new()
             {
                 MqttClient = mockMqttClient,
-                SessionExpiryInterval = 3600,
                 ConnectionRetryPolicy = new ExponentialBackoffRetryPolicy(uint.MaxValue, TimeSpan.Zero, useJitter: false),
             };
             AbstractConnectionClient connectionClient = useUnifiedClient
@@ -297,21 +298,21 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
                 .WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
             await reconnected.Task.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
 
-            uint expectedExpiry = useUnifiedClient ? 0u : 3600u;
-            Assert.Equal(new[] { (false, expectedExpiry), (true, expectedExpiry) }, connectSettings);
+            // Both attempts ask to resume with the default expiry, but the lost CONNACK may have left an empty session
+            // behind, so the session the final attempt resumes is subscribed again.
+            Assert.Equal(new[] { (false, 3600u), (false, 3600u) }, connectSettings);
             Assert.Equal(2, mockMqttClient.SentMqttTrafficInOrder.Count(traffic => traffic.Subscribe != null));
         }
 
         [Theory]
         [InlineData(false)]
         [InlineData(true)]
-        public async Task ConnectionLostBeforeBirthAckStartsCleanSession(bool useUnifiedClient)
+        public async Task ConnectionLostBeforeBirthAckResumesSessionWithoutResubscribing(bool useUnifiedClient)
         {
             using MockConnectionMqttClient mockMqttClient = new();
             MqttV5ConnectionClientOptions options = new()
             {
                 MqttClient = mockMqttClient,
-                SessionExpiryInterval = 3600,
                 ConnectionRetryPolicy = new ExponentialBackoffRetryPolicy(uint.MaxValue, TimeSpan.Zero, useJitter: false),
             };
             AbstractConnectionClient connectionClient = useUnifiedClient
@@ -349,8 +350,11 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
                 .WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
             await connecting.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
 
-            Assert.Equal(new[] { true, true }, cleanStartFlags);
-            Assert.Equal(2, mockMqttClient.SentMqttTrafficInOrder.Count(traffic => traffic.Subscribe != null));
+            // The SUBACK was observed on the session before the connection dropped, so the resumed session still holds
+            // the subscriptions and only the birth is sent again.
+            Assert.Equal(new[] { false, false }, cleanStartFlags);
+            Assert.Equal(1, mockMqttClient.SentMqttTrafficInOrder.Count(traffic => traffic.Subscribe != null));
+            Assert.Equal(2, mockMqttClient.SentMqttTrafficInOrder.Count(traffic => traffic.Publish?.Topic.EndsWith("/srv/presence", StringComparison.Ordinal) == true));
         }
 
         // A publish attempt that fails only after the reconnect and its birth flow have already completed must still be
@@ -682,6 +686,117 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             {
                 Assert.Equal(new[] { 0, 1, 2, 0 }, requestedTimeouts);
             }
+        }
+
+        // A birth-ack timeout puts the session's subscriptions in doubt, so the next connection re-subscribes even
+        // though the broker resumes the session. Once a SUBACK is seen again, later resumed sessions skip the SUBSCRIBE.
+        [Fact]
+        public async Task BirthAckTimeoutForcesResubscribeOnResumedSession()
+        {
+            using MockConnectionMqttClient mockMqttClient = new();
+            using ConnectionClient connectionClient = new(new()
+            {
+                MqttClient = mockMqttClient,
+                ConnectionRetryPolicy = new ExponentialBackoffRetryPolicy(uint.MaxValue, TimeSpan.Zero, useJitter: false),
+            });
+            connectionClient.BirthAckTimeoutProvider = _ => TimeSpan.FromMilliseconds(100);
+
+            List<bool> cleanStartFlags = new();
+            mockMqttClient.OnConnect = connect =>
+            {
+                lock (cleanStartFlags)
+                {
+                    cleanStartFlags.Add(connect.CleanStart);
+                }
+
+                return Task.FromResult(new MqttConnectAck() { IsSessionPresent = !connect.CleanStart, ResultCode = MqttConnectReasonCode.Success });
+            };
+
+            int birthCount = 0;
+            mockMqttClient.OnPublish = publish =>
+            {
+                if (publish.Topic == "ih/someDeviceId/srv/presence" && Interlocked.Increment(ref birthCount) > 1)
+                {
+                    _ = Task.Run(() => mockMqttClient.SimulatePublishReceivedAsync(CreateBirthAck("birth-ack:1", publish.CorrelationData, Array.Empty<byte>())));
+                }
+
+                return Task.FromResult(new MqttPublishAck() { ReasonCode = MqttPublishAckReasonCode.Success });
+            };
+
+            await connectionClient.ConnectToHubAsync(GetMockConnectionContext(), TestContext.Current.CancellationToken)
+                .WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+
+            TaskCompletionSource reconnected = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            connectionClient.DevicePresenceFlowCompletedAsync += _ =>
+            {
+                reconnected.TrySetResult();
+                return Task.CompletedTask;
+            };
+            await mockMqttClient.SimulateServerDisconnectAsync(MqttDisconnectReason.ServerBusy)
+                .WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+            await reconnected.Task.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+
+            Assert.Equal(new[] { false, false, false }, cleanStartFlags);
+            Assert.Equal(2, mockMqttClient.SentMqttTrafficInOrder.Count(traffic => traffic.Subscribe != null));
+            Assert.Equal(3, Volatile.Read(ref birthCount));
+        }
+
+        // Only birth-ack:1 with this connection's nonce and a decodable payload completes the presence flow. Other
+        // schema versions may not be readable as version 1, and a malformed payload would drop recovery state, so
+        // those are ignored and the birth-ack timeout reconnects.
+        [Theory]
+        [InlineData("birth-ack:1", true, false, true)]
+        [InlineData("birth-ack:1", true, true, false)]
+        [InlineData("birth-ack:1", false, false, false)]
+        [InlineData("birth-ack", true, false, false)]
+        [InlineData("birth-ack:2", true, false, false)]
+        [InlineData("birth-acknowledged:1", true, false, false)]
+        [InlineData("birth:1", true, false, false)]
+        public async Task OnlyWellFormedBirthAckVersion1ForThisNonceCompletesPresence(string type, bool matchNonce, bool malformedPayload, bool expectAccepted)
+        {
+            using MockConnectionMqttClient mockMqttClient = new();
+            using ConnectionClient connectionClient = new(new()
+            {
+                MqttClient = mockMqttClient,
+                ConnectionRetryPolicy = new ExponentialBackoffRetryPolicy(uint.MaxValue, TimeSpan.Zero, useJitter: false),
+            });
+            connectionClient.BirthAckTimeoutProvider = _ => TimeSpan.FromMilliseconds(100);
+
+            // The first birth gets the birth-ack under test. If it is not accepted, the flow times out and the next
+            // birth gets a well-formed birth-ack.
+            int birthCount = 0;
+            mockMqttClient.OnPublish = publish =>
+            {
+                if (publish.Topic == "ih/someDeviceId/srv/presence")
+                {
+                    MqttPublish birthAck = Interlocked.Increment(ref birthCount) == 1
+                        ? CreateBirthAck(
+                            type,
+                            matchNonce ? publish.CorrelationData : Guid.NewGuid().ToByteArray(bigEndian: true),
+                            malformedPayload ? new byte[] { 0xFF } : Array.Empty<byte>())
+                        : CreateBirthAck("birth-ack:1", publish.CorrelationData, Array.Empty<byte>());
+                    _ = Task.Run(() => mockMqttClient.SimulatePublishReceivedAsync(birthAck));
+                }
+
+                return Task.FromResult(new MqttPublishAck() { ReasonCode = MqttPublishAckReasonCode.Success });
+            };
+
+            await connectionClient.ConnectToHubAsync(GetMockConnectionContext(), TestContext.Current.CancellationToken)
+                .WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+
+            Assert.Equal(expectAccepted ? 1 : 2, Volatile.Read(ref birthCount));
+        }
+
+        private static MqttPublish CreateBirthAck(string type, byte[]? correlationData, byte[] payload)
+        {
+            MqttPublish birthAck = new()
+            {
+                Topic = "ih/someDeviceId/dev/presence",
+                Payload = payload,
+                CorrelationData = correlationData,
+            };
+            birthAck.UserProperties.Add(new("type", System.Text.Encoding.UTF8.GetBytes(type)));
+            return birthAck;
         }
     }
 }

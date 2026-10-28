@@ -464,9 +464,13 @@ namespace Microsoft.Azure.Iot.Device
         /// Send a DISCONNECT to the server.
         /// </summary>
         /// <param name="desireReconnection">
-        /// When true, this is a deliberate session reset: the connection is torn down but this layer keeps maintaining
-        /// it and will reconnect. When false, the caller is closing for good: any in-progress retry loop is cancelled
-        /// and this layer stops maintaining the connection.
+        /// When true, the connection is torn down but this layer keeps maintaining it and will reconnect. When false, the
+        /// caller is closing for good: any in-progress retry loop is cancelled and this layer stops maintaining the connection.
+        /// </param>
+        /// <param name="options">
+        /// The DISCONNECT to send. Its <see cref="MqttDisconnect.SessionExpiryInterval"/> of 0 is omitted from the packet by
+        /// MQTTnet, so the broker keeps the session for the interval requested at CONNECT. This is what lets an SDK-initiated
+        /// reconnect resume the session; MQTT 5 forbids a DISCONNECT from raising the interval when the CONNECT's was 0.
         /// </param>
         public async Task DisconnectAsync(bool desireReconnection, MqttDisconnect? options = null, CancellationToken cancellationToken = default)
         {
@@ -474,7 +478,6 @@ namespace Microsoft.Azure.Iot.Device
             cancellationToken.ThrowIfCancellationRequested();
 
             options ??= new MqttDisconnect();
-            options.SessionExpiryInterval = 0;
 
             if (!desireReconnection)
             {

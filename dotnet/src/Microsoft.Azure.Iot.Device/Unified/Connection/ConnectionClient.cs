@@ -119,8 +119,9 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
                 return;
             }
 
-            // Upon an MQTT connection being established, immediately re-subscribe to the enabled twin/cloud-to-device/direct methods topics if there is no session present.
-            if (args.ConnectAck.IsSessionPresent)
+            // Upon an MQTT connection being established, re-subscribe to the enabled twin/cloud-to-device/direct methods
+            // topics unless the resumed session is known to still hold them.
+            if (TryElideDevicePresenceSubscribe(args.ConnectAck))
             {
                 await RaiseDevicePresenceFlowCompletedAsync(new DevicePresenceFlowCompletedArgs() { IsSuccess = true });
 
@@ -147,6 +148,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
             if (mqttSubscribe.TopicFilters.Count == 0)
             {
                 // A SUBSCRIBE with no topic filters is a protocol error, and there is nothing to wait for.
+                MarkDevicePresenceSubscribed();
                 await RaiseDevicePresenceFlowCompletedAsync(new DevicePresenceFlowCompletedArgs() { IsSuccess = true });
 
                 return;
@@ -183,12 +185,13 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
             if (anySubscribeFailed)
             {
                 // Signal to the underlying MQTT connection manager that, even though we are manually disconnecting, we still want to reconnect.
-                await ManagedMqttConnection.DisconnectAsync(true, new MqttDisconnect() { Reason = MqttDisconnectReasonCode.NormalDisconnection, SessionExpiryInterval = 0 });
+                await ManagedMqttConnection.DisconnectAsync(true, new MqttDisconnect() { Reason = MqttDisconnectReasonCode.NormalDisconnection });
 
                 Trace.TraceError("Device failed to subscribe to one or more necessary MQTT topics upon connecting to IoT Hub. Disconnecting the MQTT client and trying again.");
             }
             else
             {
+                MarkDevicePresenceSubscribed();
                 await RaiseDevicePresenceFlowCompletedAsync(new DevicePresenceFlowCompletedArgs() { IsSuccess = true });
             }
         }
