@@ -8,9 +8,33 @@ survives restarts. The sample:
 - Reports `lastStartedAt` each time it starts.
 - Saves the twin to `twin-{deviceId}.json` next to the sample's binaries, and restores it on the next run.
 
-It uses `ConcurrentTwinClient`, which implements the device-side behavior that the twin spec recommends. The SDK also
-offers `TwinClient`, which just mirrors IoT Hub's twin API (one request, one response, no queuing, retries or
-ordering). Most devices should use `ConcurrentTwinClient`.
+## Why `ConcurrentTwinClient` rather than `TwinClient`
+
+The SDK offers two MQTTv5 twin clients. This sample uses `ConcurrentTwinClient`, and most devices should too.
+
+`TwinClient` just mirrors IoT Hub's twin API. It sends each request once and raises each message as it arrives. The
+application then has to do all of the following itself to keep its twin in sync:
+
+- **Ordering.** Desired properties updates may be raised out of version order, more than once, or not at all if the
+  device was disconnected when IoT Hub sent them.
+- **Retries.** Requests aren't queued or retried, so a reported properties patch fails if the connection drops before
+  IoT Hub responds.
+- **Conditional patches.** Patches are only conditional on IoT Hub's version of the reported properties if the caller
+  supplies that version.
+- **Versions held.** It doesn't track which twin versions the device holds, so it can't tell IoT Hub upon connecting
+  to skip pushing sections that haven't changed.
+- **Persistence.** It keeps no copy of the twin to persist.
+
+`ConcurrentTwinClient` implements the device-side behavior that the twin spec recommends, built on a `TwinClient` of
+its own. It:
+
+- Announces the versions the device holds upon each connection.
+- Delivers desired updates in version order, and resyncs if one is missed.
+- Queues reported properties patches, sending them one at a time across reconnects, conditional on IoT Hub's version.
+- Raises a `TwinState` snapshot to persist each time the device's copy of its twin changes.
+
+The persistence and best practices below all depend on that behavior. It is also safe to use from multiple threads.
+Use `TwinClient` only if your application implements this behavior itself, or just needs one-off twin requests.
 
 ## Prerequisites
 

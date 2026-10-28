@@ -63,6 +63,13 @@ internal class Program
 
         using ConnectionClient connectionClient = new ConnectionClient(options);
 
+        // This sample uses ConcurrentTwinClient rather than TwinClient. TwinClient only mirrors IoT hub's twin API. It sends
+        // each request once and raises each message as received, so the application would have to do all of this itself:
+        // - order desired updates, and recover ones it missed;
+        // - retry reported patches across reconnects, and make them conditional on IoT hub's version;
+        // - track and persist the twin versions this device holds.
+        // ConcurrentTwinClient does all of that, as the twin spec recommends. See README.md for details.
+        //
         // Starting from the persisted twin tells IoT hub which versions this device already holds, so it doesn't push sections
         // that haven't changed, and sends the reported properties patches that IoT hub hadn't applied when the sample stopped.
         using ConcurrentTwinClient twinClient = new ConcurrentTwinClient(connectionClient, persistedTwin);
