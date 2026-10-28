@@ -11,6 +11,7 @@
 #include <stdarg.h>
 #include <stddef.h>
 #include <setjmp.h>
+#include <stdbool.h>
 #include <stdint.h>
 
 #include <cmocka.h>
@@ -105,6 +106,64 @@ static void adapter_runs_a_client_in_a_workspace(void** state)
   }
 }
 
+static bool limits_accepted(const az_iot_mqtt_limits* limits)
+{
+  return az_iot_paho_get_adapter()->get_workspace_size(limits) != 0;
+}
+
+/* The bounds every adapter shares (az_iot_mqtt__limits_are_valid): the largest value of each
+ * field is accepted, the next one and SIZE_MAX are not. */
+static void the_shared_limits_check_bounds_each_size(void** state)
+{
+  (void)state;
+  az_iot_mqtt_limits const base = { 1024, 1024, 4, 0, 0 };
+  az_iot_mqtt_limits l = base;
+  assert_true(limits_accepted(&l));
+
+  l.send_buffer_size = INT32_MAX;
+  assert_true(limits_accepted(&l));
+  l.send_buffer_size = (size_t)INT32_MAX + 1u;
+  assert_false(limits_accepted(&l));
+  l.send_buffer_size = SIZE_MAX;
+  assert_false(limits_accepted(&l));
+
+  l = base;
+  l.receive_buffer_size = (size_t)INT32_MAX - 3u;
+  assert_true(limits_accepted(&l));
+  l.receive_buffer_size = (size_t)INT32_MAX - 2u;
+  assert_false(limits_accepted(&l));
+  l.receive_buffer_size = SIZE_MAX;
+  assert_false(limits_accepted(&l));
+
+  l = base;
+  l.max_in_flight_messages = 32767;
+  assert_true(limits_accepted(&l));
+  l.max_in_flight_messages = 32768;
+  assert_false(limits_accepted(&l));
+  l.max_in_flight_messages = UINT16_MAX;
+  assert_false(limits_accepted(&l));
+
+  l = base;
+  l.message_store_size = INT32_MAX;
+  assert_true(limits_accepted(&l));
+  l.message_store_size = (size_t)INT32_MAX + 1u;
+  assert_false(limits_accepted(&l));
+  l.message_store_size = SIZE_MAX;
+  assert_false(limits_accepted(&l));
+  l.message_store_size = l.send_buffer_size + 18u; /* One packet plus the per-message overhead. */
+  assert_true(limits_accepted(&l));
+  l.message_store_size = l.send_buffer_size + 17u;
+  assert_false(limits_accepted(&l));
+
+  l = base;
+  l.connect_strings_size = INT32_MAX;
+  assert_true(limits_accepted(&l));
+  l.connect_strings_size = (size_t)INT32_MAX + 1u;
+  assert_false(limits_accepted(&l));
+  l.connect_strings_size = SIZE_MAX;
+  assert_false(limits_accepted(&l));
+}
+
 /* Registration only lends the factories to the connection client: the
  * application destroys them after deinit(). Under valgrind/ASan, a double free
  * here means deinit() released them; a leak means nothing did. */
@@ -146,6 +205,7 @@ int main(void)
     cmocka_unit_test(v3_factory_creates_v3_client),
     cmocka_unit_test(v5_factory_creates_v5_client),
     cmocka_unit_test(adapter_runs_a_client_in_a_workspace),
+    cmocka_unit_test(the_shared_limits_check_bounds_each_size),
     cmocka_unit_test(registered_factories_are_destroyed_by_the_application_after_deinit),
     cmocka_unit_test(a_factory_that_failed_to_register_is_destroyed_by_the_application),
   };
