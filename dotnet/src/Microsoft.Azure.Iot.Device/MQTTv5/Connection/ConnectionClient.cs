@@ -394,7 +394,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
         {
             lock (_birthAckLock)
             {
-                CurrentConnectionNonce = Guid.NewGuid(); //Note that this nonce must be unique per connection attempt, not per successfuly connection
+                CurrentConnectionNonce = Guid.NewGuid(); //Note that this nonce must be unique per connection attempt, not per successfully connection
             }
 
             // The service's auth webhook expects exactly 32 lowercase hex characters; anything else is recorded as malformed
