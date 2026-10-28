@@ -56,6 +56,8 @@ function(az_iot_add_e2e_suite name)
         az_iot_add_cmocka_test(${t} ${no_ctest} ${arg_SOURCES})
         target_compile_definitions(${t} PRIVATE AZ_IOT_E2E_ADAPTER_${ADAPTER})
         target_link_libraries(${t} PRIVATE ${arg_LIBS} az_iot_adapter_${adapter})
+        # e2e_defensive_timeout.h sets the internal defensive-timeout schedule.
+        target_include_directories(${t} PRIVATE ${PROJECT_SOURCE_DIR}/src/core)
     endforeach()
 endfunction()
 

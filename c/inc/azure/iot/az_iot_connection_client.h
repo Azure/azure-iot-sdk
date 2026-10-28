@@ -1650,6 +1650,11 @@ extern "C"
      * Unit tests replace it to make the jitter deterministic. */
     uint64_t (*defensive_timeout_random_source)(void* context);
     void* defensive_timeout_random_context;
+    /* Defensive-timeout schedule override; NULL uses the spec's schedule. Only
+     * tests set it (e2e shortens minutes to seconds). */
+    const uint32_t* defensive_timeout_base_ms_by_attempt;
+    size_t defensive_timeout_attempt_count;
+    uint32_t defensive_timeout_jitter_max_ms;
 
     az_iot_dispatch_table dispatch;
 

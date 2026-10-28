@@ -75,6 +75,40 @@ static void any_random_value_stays_in_range(void** state)
   }
 }
 
+/* A caller schedule: its bases per attempt, the last repeating, 0 as the first. */
+static void a_schedule_uses_its_own_bases(void** state)
+{
+  (void)state;
+  const uint32_t base_ms[] = { 5000u, 6000u, 8000u };
+  assert_int_equal(az_iot_defensive_timeout__schedule_ms(base_ms, 3u, 5000u, 0u, 0u), 5000u);
+  assert_int_equal(az_iot_defensive_timeout__schedule_ms(base_ms, 3u, 5000u, 1u, 0u), 5000u);
+  assert_int_equal(az_iot_defensive_timeout__schedule_ms(base_ms, 3u, 5000u, 2u, 0u), 6000u);
+  assert_int_equal(az_iot_defensive_timeout__schedule_ms(base_ms, 3u, 5000u, 3u, 0u), 8000u);
+  assert_int_equal(az_iot_defensive_timeout__schedule_ms(base_ms, 3u, 5000u, 4u, 0u), 8000u);
+  assert_int_equal(
+      az_iot_defensive_timeout__schedule_ms(base_ms, 3u, 5000u, UINT32_MAX, 0u), 8000u);
+}
+
+/* A schedule's jitter spans [0, jitter_max]; 0 adds none. */
+static void a_schedule_uses_its_own_jitter(void** state)
+{
+  (void)state;
+  const uint32_t base_ms[] = { 5000u };
+  assert_int_equal(az_iot_defensive_timeout__schedule_ms(base_ms, 1u, 5000u, 1u, 5000u), 10000u);
+  assert_int_equal(az_iot_defensive_timeout__schedule_ms(base_ms, 1u, 5000u, 1u, 5001u), 5000u);
+  assert_int_equal(az_iot_defensive_timeout__schedule_ms(base_ms, 1u, 0u, 1u, UINT64_MAX), 5000u);
+}
+
+/* Base plus jitter saturates instead of wrapping. */
+static void a_schedule_saturates(void** state)
+{
+  (void)state;
+  const uint32_t base_ms[] = { UINT32_MAX - 10u };
+  assert_int_equal(az_iot_defensive_timeout__schedule_ms(base_ms, 1u, 100u, 1u, 100u), UINT32_MAX);
+  assert_int_equal(az_iot_defensive_timeout__schedule_ms(base_ms, 1u, 100u, 1u, 10u), UINT32_MAX);
+  assert_int_equal(
+      az_iot_defensive_timeout__schedule_ms(base_ms, 1u, 100u, 1u, 9u), UINT32_MAX - 1u);
+}
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -82,6 +116,9 @@ int main(void)
     cmocka_unit_test(later_attempts_stay_at_ten_minutes),
     cmocka_unit_test(each_attempt_spans_its_range),
     cmocka_unit_test(any_random_value_stays_in_range),
+    cmocka_unit_test(a_schedule_uses_its_own_bases),
+    cmocka_unit_test(a_schedule_uses_its_own_jitter),
+    cmocka_unit_test(a_schedule_saturates),
   };
   return cmocka_run_group_tests_name("defensive_timeout", tests, NULL, NULL);
 }
