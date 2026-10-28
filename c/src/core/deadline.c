@@ -15,13 +15,14 @@ void az_iot_deadline__clear(az_iot_deadline* deadline)
   deadline->_internal.state = DEADLINE_STATE_NONE;
 }
 
-void az_iot_deadline__arm_after_ms(
-    az_iot_deadline* deadline,
-    uint64_t now_ms,
-    uint64_t duration_ms)
+void az_iot_deadline__arm_after_ms(az_iot_deadline* deadline, uint64_t now_ms, uint64_t duration_ms)
 {
-  deadline->_internal.at_ms
-      = (duration_ms > UINT64_MAX - now_ms) ? UINT64_MAX : now_ms + duration_ms;
+  uint64_t at_ms = UINT64_MAX;
+  if (duration_ms <= UINT64_MAX - now_ms)
+  {
+    at_ms = now_ms + duration_ms;
+  }
+  deadline->_internal.at_ms = at_ms;
   deadline->_internal.state = DEADLINE_STATE_ARMED;
 }
 
@@ -46,9 +47,11 @@ bool az_iot_deadline__is_set(const az_iot_deadline* deadline)
 
 bool az_iot_deadline__has_passed(const az_iot_deadline* deadline, uint64_t now_ms)
 {
-  return deadline->_internal.state == DEADLINE_STATE_EXPIRED
-      || (deadline->_internal.state == DEADLINE_STATE_ARMED
-          && now_ms >= deadline->_internal.at_ms);
+  if (deadline->_internal.state == DEADLINE_STATE_EXPIRED)
+  {
+    return true;
+  }
+  return deadline->_internal.state == DEADLINE_STATE_ARMED && now_ms >= deadline->_internal.at_ms;
 }
 
 uint64_t az_iot_deadline__remaining_ms(const az_iot_deadline* deadline, uint64_t now_ms)
