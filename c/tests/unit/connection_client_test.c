@@ -3108,6 +3108,23 @@ static void hub_mqtt_v5_birth_ack_in_time_resets_the_schedule(void** state)
   assert_birth_ack_timeout(fx, 300000u + (uint32_t)k_fixed_jitter);
 }
 
+/* max_unconfirmed_delivery_timeout_ms: 0 (and a NULL client) resolve to the default. */
+static void max_unconfirmed_delivery_timeout_resolves_zero_to_the_default(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  assert_int_equal(
+      az_iot_connection_client__max_unconfirmed_delivery_timeout_ms(fx->client),
+      AZ_IOT_DEFAULT_MAX_UNCONFIRMED_DELIVERY_TIMEOUT_MS);
+  assert_int_equal(
+      az_iot_connection_client__max_unconfirmed_delivery_timeout_ms(NULL),
+      AZ_IOT_DEFAULT_MAX_UNCONFIRMED_DELIVERY_TIMEOUT_MS);
+  fx->client->opts.max_unconfirmed_delivery_timeout_ms = 1u;
+  assert_int_equal(az_iot_connection_client__max_unconfirmed_delivery_timeout_ms(fx->client), 1u);
+  fx->client->opts.max_unconfirmed_delivery_timeout_ms = UINT32_MAX;
+  assert_int_equal(
+      az_iot_connection_client__max_unconfirmed_delivery_timeout_ms(fx->client), UINT32_MAX);
+}
+
 /* A birth-ack drained after the deadline passed is a miss: the client
  * reconnects and escalates rather than announcing CONNECTED. */
 static void hub_mqtt_v5_late_birth_ack_is_a_timeout(void** state)
@@ -4258,6 +4275,8 @@ int main(void)
         hub_mqtt_v5_birth_ack_timeout_jitter_spans_five_minutes, setup_mqtt_v5, teardown),
     cmocka_unit_test_setup_teardown(
         hub_mqtt_v5_birth_ack_in_time_resets_the_schedule, setup_mqtt_v5_with_reconnect, teardown),
+    cmocka_unit_test_setup_teardown(
+        max_unconfirmed_delivery_timeout_resolves_zero_to_the_default, setup, teardown),
     cmocka_unit_test_setup_teardown(
         hub_mqtt_v5_late_birth_ack_is_a_timeout, setup_mqtt_v5_with_reconnect, teardown),
     cmocka_unit_test_setup_teardown(

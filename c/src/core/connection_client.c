@@ -8047,6 +8047,16 @@ az_iot_result az_iot_connection_client__set_device_id(
       device_id);
 }
 
+uint32_t az_iot_connection_client__max_unconfirmed_delivery_timeout_ms(
+    const az_iot_connection_client* client)
+{
+  if (client == NULL || client->opts.max_unconfirmed_delivery_timeout_ms == 0u)
+  {
+    return AZ_IOT_DEFAULT_MAX_UNCONFIRMED_DELIVERY_TIMEOUT_MS;
+  }
+  return client->opts.max_unconfirmed_delivery_timeout_ms;
+}
+
 void az_iot_connection_client__seed_rng(az_iot_connection_client* client, uint64_t seed)
 {
   if (!client)

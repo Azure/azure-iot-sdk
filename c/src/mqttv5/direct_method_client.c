@@ -773,6 +773,23 @@ static az_iot_result publish_notice(
 }
 
 /**
+ * @brief True when notice @p n may no longer be sent: its budget is spent or, with no budget, the
+ *        max unconfirmed delivery timeout has passed since it was queued.
+ */
+static bool notice_is_spent(
+    const az_iot_mqttv5_direct_method_client* dm,
+    const az_iot_mqttv5_direct_method_queued_notice* n)
+{
+  if (RI(n).budget_seconds > 0u)
+  {
+    return outbound_budget_is_spent(RI(n).budget_seconds, RI(n).budget_start_ms);
+  }
+  uint64_t now = az_iot_time_mono_ms();
+  uint64_t elapsed_ms = (now > RI(n).budget_start_ms) ? (now - RI(n).budget_start_ms) : 0u;
+  return elapsed_ms >= az_iot_connection_client__max_unconfirmed_delivery_timeout_ms(DI(dm).conn);
+}
+
+/**
  * @brief A notice_queue entry for a new notice: a free one, or one whose budget is spent.
  *
  * @return Its index, or AZ_IOT_MQTTV5_DM_NOTICE_QUEUE_MAX when every entry holds a live notice.
@@ -782,8 +799,7 @@ static size_t notice_acquire(const az_iot_mqttv5_direct_method_client* dm)
   for (size_t i = 0; i < AZ_IOT_MQTTV5_DM_NOTICE_QUEUE_MAX; ++i)
   {
     const az_iot_mqttv5_direct_method_queued_notice* n = &DI(dm).notice_queue[i];
-    if (RI(n).state == AZ_IOT_MQTTV5_DM_OUTBOUND_NONE
-        || outbound_budget_is_spent(RI(n).budget_seconds, RI(n).budget_start_ms))
+    if (RI(n).state == AZ_IOT_MQTTV5_DM_OUTBOUND_NONE || notice_is_spent(dm, n))
     {
       return i;
     }
@@ -797,7 +813,8 @@ static size_t notice_acquire(const az_iot_mqttv5_direct_method_client* dm)
  * Best effort when the notice queue is full: published untracked while CONNECTED, otherwise
  * dropped. Both are logged.
  *
- * @param budget_seconds Message Expiry counted from @p start_ms; 0 is unbounded.
+ * @param budget_seconds Message Expiry counted from @p start_ms; 0 sends none, and the notice is
+ *        then kept at most the max unconfirmed delivery timeout.
  */
 static void send_notice(
     az_iot_mqttv5_direct_method_client* dm,
@@ -958,17 +975,20 @@ static void ready_expire_stale(az_iot_mqttv5_direct_method_client* dm)
  * @param received_at_ms When the exec arrived.
  * @param exec_budget_seconds The exec's message expiry; 0 means it carried none.
  * @param margin_seconds Safety margin for network transit.
- * @return UINT64_MAX when @p exec_budget_seconds is 0; @p received_at_ms when
- *         the budget does not exceed the margin.
+ * @param max_unconfirmed_delivery_timeout_ms Bound used when the exec carried no expiry.
+ * @return @p received_at_ms + @p max_unconfirmed_delivery_timeout_ms when
+ *         @p exec_budget_seconds is 0; @p received_at_ms when the budget does not
+ *         exceed the margin.
  */
 static uint64_t exec_deadline_ms(
     uint64_t received_at_ms,
     uint32_t exec_budget_seconds,
-    uint32_t margin_seconds)
+    uint32_t margin_seconds,
+    uint32_t max_unconfirmed_delivery_timeout_ms)
 {
   if (exec_budget_seconds == 0u)
   {
-    return UINT64_MAX;
+    return received_at_ms + max_unconfirmed_delivery_timeout_ms;
   }
   if (exec_budget_seconds <= margin_seconds)
   {
@@ -1295,7 +1315,11 @@ static void handle_exec(
   RI(req_slot).correlation_data_len = AZ_IOT_MQTTV5_DM_REQUEST_ID_LEN;
   DI(dm).exec_budget_seconds[index] = exec_budget;
   DI(dm).exec_received_at_ms[index] = received_at_ms;
-  DI(dm).exec_deadline_ms[index] = exec_deadline_ms(received_at_ms, exec_budget, margin);
+  DI(dm).exec_deadline_ms[index] = exec_deadline_ms(
+      received_at_ms,
+      exec_budget,
+      margin,
+      az_iot_connection_client__max_unconfirmed_delivery_timeout_ms(DI(dm).conn));
 
   /* The token is single-use: consumed here, so a redelivered exec cannot run
    * the method a second time. Its handler is read out first -- the slot is
@@ -1459,7 +1483,7 @@ static void flush_outbound_queue(az_iot_mqttv5_direct_method_client* dm)
     {
       continue;
     }
-    if (outbound_budget_is_spent(RI(n).budget_seconds, RI(n).budget_start_ms))
+    if (notice_is_spent(dm, n))
     {
       RI(n).state = AZ_IOT_MQTTV5_DM_OUTBOUND_NONE;
       continue;

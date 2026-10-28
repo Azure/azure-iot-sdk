@@ -40,6 +40,15 @@ extern "C"
       az_iot_connection_client* client,
       const char* device_id);
 
+  /**
+   * @brief Resolved az_iot_connection_client_options::max_unconfirmed_delivery_timeout_ms.
+   *
+   * @param[in] client The client; NULL gives the default.
+   * @return The option, or #AZ_IOT_DEFAULT_MAX_UNCONFIRMED_DELIVERY_TIMEOUT_MS when it is 0.
+   */
+  uint32_t az_iot_connection_client__max_unconfirmed_delivery_timeout_ms(
+      const az_iot_connection_client* client);
+
   /* Seed the jitter PRNG used by the reconnect logic. Tests use this to make
    * backoff timing deterministic. Production builds seed automatically from a
    * monotonic clock during create(). */
