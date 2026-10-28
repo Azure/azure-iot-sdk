@@ -26,6 +26,8 @@
 
 #include <cmocka.h>
 
+#include "support/test_shard.h"
+
 #include "azure/iot/az_iot_result.h"
 #include "azure/iot/az_iot_mqtt_iface.h"
 
@@ -33,8 +35,11 @@
 #include <windows.h>
 static void conf_sleep_ms(unsigned ms) { Sleep(ms); }
 static unsigned long conf_now_ms(void) { return (unsigned long)GetTickCount64(); }
+static unsigned long conf_process_id(void) { return (unsigned long)GetCurrentProcessId(); }
 #else
 #include <time.h>
+#include <unistd.h>
+static unsigned long conf_process_id(void) { return (unsigned long)getpid(); }
 static void conf_sleep_ms(unsigned ms)
 {
   struct timespec ts;
@@ -668,8 +673,8 @@ static void inject_packet(
 
 static void unique_client_id(char* buf, size_t cap, const char* prefix)
 {
-  /* Cheap uniqueness: prefix + monotonic ticks + pid-ish. */
-  snprintf(buf, cap, "%s-%lu", prefix, conf_now_ms());
+  /* Unique across the processes sharing a broker (AZ_IOT_TEST_SHARD runs them in parallel). */
+  snprintf(buf, cap, "%s-%lu-%lu", prefix, conf_process_id(), conf_now_ms());
 }
 
 static az_iot_mqtt_client* make_client(void)
@@ -714,9 +719,11 @@ static int write_temp_pem(const char* pem, char* path_out, size_t cap)
   /* A millisecond stamp alone is not unique: writing a CA and a client
    * certificate back to back can land both in the same millisecond, and the
    * second silently overwrites the first -- which presents as a handshake that
-   * fails for no visible reason. */
+   * fails for no visible reason. The process id keeps parallel processes
+   * (AZ_IOT_TEST_SHARD) sharing this directory apart. */
   static unsigned long seq = 0;
-  int written = snprintf(path_out, cap, "az_iot_conf_pem_%lu_%lu.pem", conf_now_ms(), seq++);
+  int written = snprintf(
+      path_out, cap, "az_iot_conf_pem_%lu_%lu_%lu.pem", conf_process_id(), conf_now_ms(), seq++);
   if (written < 0 || (size_t)written >= cap)
   {
     return 0; /* a truncated path is how the collision above happens again */
@@ -4350,14 +4357,14 @@ int az_iot_conformance_run_with_options(
             cmocka_unit_test(v5_many_properties_survive_a_roundtrip),
             cmocka_unit_test(v5_many_properties_from_the_server_are_all_surfaced),
             cmocka_unit_test(v5_session_present_from_connack_is_reported) };
-    failed = cmocka_run_group_tests(v5_tests, NULL, NULL);
+    failed = az_iot_test_shard_run_group_tests(v5_tests, NULL, NULL);
   }
   else
   {
     const struct CMUnitTest v3_tests[]
         = { AZ_IOT_CONFORMANCE_COMMON_TESTS,
             cmocka_unit_test(v3_1_1_publish_ignores_the_v5_only_fields) };
-    failed = cmocka_run_group_tests(v3_tests, NULL, NULL);
+    failed = az_iot_test_shard_run_group_tests(v3_tests, NULL, NULL);
   }
 
   /* Before the custody groups: they load the key's provider process-wide, after
@@ -4367,7 +4374,7 @@ int az_iot_conformance_run_with_options(
 #ifdef AZ_IOT_CONFORMANCE_WITH_TLS
     const struct CMUnitTest pem_tests[]
         = { cmocka_unit_test(mutual_tls_does_not_read_pem_after_returning) };
-    failed += cmocka_run_group_tests(pem_tests, NULL, NULL);
+    failed += az_iot_test_shard_run_group_tests(pem_tests, NULL, NULL);
 #else
     char allow[16];
     failed += az_iot_conformance_report_unproven_capability(
@@ -4395,7 +4402,7 @@ int az_iot_conformance_run_with_options(
     {
       const struct CMUnitTest custody_tests[]
           = { cmocka_unit_test(key_custody_completes_a_tls_handshake) };
-      failed += cmocka_run_group_tests(custody_tests, NULL, NULL);
+      failed += az_iot_test_shard_run_group_tests(custody_tests, NULL, NULL);
     }
     else
     {
@@ -4426,7 +4433,7 @@ int az_iot_conformance_run_with_options(
     {
       const struct CMUnitTest sign_tests[]
           = { cmocka_unit_test(key_custody_sign_hook_completes_a_tls_handshake) };
-      failed += cmocka_run_group_tests(sign_tests, NULL, NULL);
+      failed += az_iot_test_shard_run_group_tests(sign_tests, NULL, NULL);
     }
     else
     {
@@ -4469,7 +4476,7 @@ int az_iot_conformance_run_with_options(
       (void)(a_websocket_session_carries_a_large_payload);
       const struct CMUnitTest ws_tests[]
           = { cmocka_unit_test(a_websocket_session_completes_a_roundtrip) };
-      failed += cmocka_run_group_tests(ws_tests, NULL, NULL);
+      failed += az_iot_test_shard_run_group_tests(ws_tests, NULL, NULL);
     }
     else
     {
@@ -4497,7 +4504,7 @@ int az_iot_conformance_run_with_options(
             cmocka_unit_test(a_proxy_rejects_a_missing_credential),
             cmocka_unit_test(a_tunnel_dropped_mid_session_is_reported),
             cmocka_unit_test(a_proxy_that_refuses_the_tunnel_fails_the_connect) };
-    failed += cmocka_run_group_tests(proxy_tests, NULL, NULL);
+    failed += az_iot_test_shard_run_group_tests(proxy_tests, NULL, NULL);
   }
 
   return (failed == 0) ? 0 : 1;

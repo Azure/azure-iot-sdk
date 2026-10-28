@@ -333,7 +333,10 @@ resource group once: those survive the namespace, so the job creates none and ne
 assignment write unless the namespace identity changes.
 
 [`ci-c-e2e-mqttv5.yml`](../../../.github/workflows/ci-c-e2e-mqttv5.yml) runs the mqttv5 suites on
-that environment, one job per client. On schedule and manual runs the namespace job runs first; pull
+that environment, one job per client. The twin, transport and custom topic suites run one job per
+adapter and per shard instead (`AZ_IOT_TEST_SHARD=<index>/<count>`, see
+[`test_shard.h`](../../tests/support/test_shard.h)), each with its own device, so their cases run in
+parallel. On schedule and manual runs the namespace job runs first; pull
 requests skip it (it logs in to Azure and runs the checked-out script) and rely on its scheduled run (every 10 minutes). Each job issues a device with
 `e2e-shared-device.ps1 -Prefix E2E_MQTTV5_SHARED` from secret `E2E_MQTTV5_SHARED_GROUP_CA`, and
 reads secrets `E2E_MQTTV5_SHARED_IOTHUB_SERVICE_CS` and `_EVENTHUB_CS` (`service` policy; the former is passed to the
@@ -342,7 +345,8 @@ script as `E2E_MQTTV5_SHARED_IOTHUB_CS`, as the secret of that name holds `iothu
 workflow; nightly; manual. Pull requests from forks and from Dependabot skip.
 
 > **Software updates e2e** runs in its own workflow
-> ([`ci-c-e2e-adu.yml`](../../../.github/workflows/ci-c-e2e-adu.yml), Linux, manual dispatch). See [Software updates e2e](#software-updates-e2e).
+> ([`ci-c-e2e-adu.yml`](../../../.github/workflows/ci-c-e2e-adu.yml), Linux) on the same shared mqttv5
+> environment and triggers. See [Software updates e2e](#software-updates-e2e).
 
 ---
 
@@ -377,7 +381,28 @@ reaches a device once: a device that reported it is not offered it again, so eve
 offer suite (one per MQTT adapter) needs its own new device.
 [`scripts/SuE2E.psm1`](../../tests/e2e/scripts/SuE2E.psm1) stages them (`New-SuE2EOffers`),
 checks each job's per-device result (`Test-SuE2EOffers`) and deletes them
-(`Remove-SuE2EOffers`).
+(`Remove-SuE2EOffers`). Since each offer reaches each new device, one staged set can serve many
+runs: `New-SuE2EOffers -Reuse` keeps the updates, jobs and `Active` runs that already exist under
+its `-RunId`, and only waits for runs it creates (or for what is left of the 5 minutes of a kept run
+started less than 5 minutes ago). A reused job may hold several runs, so `Test-SuE2EOffers` looks for
+the device in every `Active` run, then in the newest. `Export-SuE2EOfferVariables` sets the offer
+variables for a `-RunId` without contacting Azure. `Get-SuE2EFixtureTag` hashes the code that defines the offers;
+appended to a reused `-RunId`, a change to that code stages a new set. With `-Reuse`, a failed import
+is treated as done if the update now exists (another run imported it), else retried up to 3 times.
+
+CI ([`ci-c-e2e-adu.yml`](../../../.github/workflows/ci-c-e2e-adu.yml)) runs on the shared mqttv5
+environment, whose ADR namespace is linked to a Device Update instance, on pull requests touching
+core, Software Update or adapter code, the e2e harness or the workflow; nightly; manual. Pull requests
+from forks and from Dependabot skip. Scheduled and manual runs first run the namespace repair
+(`ci-c-e2e-mqttv5-adr-namespace.yml`), which also restores the Software Update link. One job then
+ensures the standing offers (`New-SuE2EOffers -RunId "s$(Get-SuE2EFixtureTag)" -Reuse`; seconds once
+staged), issues a new device per suite execution (4: each suite on each adapter) from the enrollment
+group's CA (`e2e-shared-device.ps1`), runs the suites, then checks the offer devices' job results.
+Nothing is deleted per run; offer sets staged by older fixture code are left in place. Inputs:
+variables `E2E_MQTTV5_SHARED_SUBSCRIPTION_ID`, `_RESOURCE_GROUP`, `_ADR_NAMESPACE`, `_ID_SCOPE`,
+`_DPS_HOST`, `_LOCATION`, `_SU_ENDPOINT`, `_SU_STORAGE_ACCOUNT`, `_SU_STORAGE_CONTAINER`, and
+`_SU_INSTANCE` (the Device Update instance the namespace repair links); secrets `E2E_MQTTV5_SHARED_GROUP_CA`,
+`_IOTHUB_SERVICE_CS`, `_EVENTHUB_CS`, `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`.
 
 Every variable is required; a missing one fails the suite or the scenario that needs it.
 
@@ -388,7 +413,7 @@ Every variable is required; a missing one fails the suite or the scenario that n
 | `AZ_IOT_E2E_SU_REG_ID` | registration id the certificate carries |
 | `AZ_IOT_E2E_SU_CERT` / `_KEY` | device certificate and key PEM paths |
 | `AZ_IOT_E2E_SU_TRUSTED_CA` | CA bundle PEM path |
-| `AZ_IOT_E2E_SU_OFFER_*` | offers, as above (set by `New-SuE2EOffers`) |
+| `AZ_IOT_E2E_SU_OFFER_*` | offers, as above (set by `New-SuE2EOffers` or `Export-SuE2EOfferVariables`) |
 
 `https_proxy`, when set, is used for the MQTT connection; libcurl reads it as well.
 
@@ -413,7 +438,7 @@ multi-step updates, and reboot/resume.
   watcher before opening the c2d/method/twin connections.
 - **Resource quotas are hard limits.** Provisioning per matrix leg keeps tests
   isolated but multiplies resource usage; keep the matrix lean and always delete
-  the RG. Software updates is intentionally kept off PRs for this reason.
+  the RG.
 
 ---
 

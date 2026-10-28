@@ -34,6 +34,7 @@
 #include "az_iot_e2e_service.h"
 #include "e2e_device.h"
 #include "e2e_log.h"
+#include "support/test_shard.h"
 
 #define E2E_REQUEST_TIMEOUT_S 60
 #define E2E_DELIVERY_TIMEOUT_S 60
@@ -1608,5 +1609,5 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         pushed_reported_without_handler_is_dropped, setup_pull, teardown),
   };
-  return cmocka_run_group_tests_name("e2e_mqttv5_twin", tests, NULL, NULL);
+  return az_iot_test_shard_run_group_tests_name("e2e_mqttv5_twin", tests, NULL, NULL);
 }

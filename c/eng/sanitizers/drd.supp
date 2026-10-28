@@ -28,6 +28,14 @@
    fun:MQTTAsync_sendThread
 }
 
+# Paho MQTTAsyncUtils.c:2392 (v1.3.16): the receive thread reads sendThread_state
+# after releasing mqttasync_mutex; the send thread writes it.
+{
+   paho-receive-thread-send-state
+   drd:ConflictingAccess
+   fun:MQTTAsync_receiveThread
+}
+
 # Paho MQTTAsync.c:1013 (v1.3.16): receiveThread_id and sendThread_id read
 # without a lock; the receive thread writes them (MQTTAsyncUtils.c:2080).
 {
