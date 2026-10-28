@@ -521,9 +521,10 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
                     Volatile.Write(ref _twinPushTimeoutAttempt, attempt + 1);
                     Trace.TraceWarning("Timed out waiting for the twin push that IoT hub should send upon connecting. Reconnecting so that IoT hub sends it again.");
 
-                    // Don't let the disconnect this causes cancel itself.
+                    // Don't let the disconnect this causes cancel itself. The MQTT session is kept (as the spec only calls for a
+                    // clean disconnect), so that other features' queued QoS 1 messages survive the reconnect.
                     connection.DisconnectedAsync -= HandleConnectionLostAsync;
-                    await connection.DisconnectAsync(true, new MqttDisconnect() { Reason = MqttDisconnectReasonCode.NormalDisconnection, SessionExpiryInterval = 0 }, connectionLost.Token);
+                    await connection.DisconnectAsync(true, new MqttDisconnect() { Reason = MqttDisconnectReasonCode.NormalDisconnection }, connectionLost.Token);
                 }
             }
             catch (Exception e) when (e is OperationCanceledException || e is ObjectDisposedException)
