@@ -1474,6 +1474,8 @@ extern "C"
     bool in_use;
     /* Index into publish_reservations[] the slot counts against; UINT8_MAX for the shared pool. */
     uint8_t reservation;
+    /* Identifies the publish holding the slot (see az_iot_publish_handle); 0 when none. */
+    uint32_t generation;
   } az_iot_connection_pending_publish;
   typedef struct az_iot_connection_persistent_subscription
   {
@@ -1645,6 +1647,8 @@ extern "C"
      * source of truth that nothing reads and a later change could desync. */
     uint64_t reconnect_due_ms;
     uint64_t rng_state;
+    /* Generation of the next tracked publish; never 0. */
+    uint32_t next_publish_generation;
     /* Random source for defensive-timeout jitter; NULL draws from rng_state.
      * Unit tests replace it to make the jitter deterministic. */
     uint64_t (*defensive_timeout_random_source)(void* context);

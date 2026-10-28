@@ -377,15 +377,40 @@ extern "C"
       void* ack_user_ctx);
 
   /**
+   * @brief One tracked publish awaiting its PUBACK.
+   *
+   * Stale once the publish completes or is forgotten: a slot reused by a later publish gets a new
+   * generation, so a stale handle never names it.
+   */
+  typedef struct az_iot_publish_handle
+  {
+    size_t slot; /**< Index into pending_pubacks. */
+    uint32_t generation; /**< 0: no tracked publish. */
+  } az_iot_publish_handle;
+
+  /**
    * @brief As az_iot_connection_client__publish(), completing through @p result_cb with the
    * PUBACK's reason code and Reason String.
+   *
+   * @param[out] out_handle Optional. The tracked publish; generation 0 when the publish is not
+   *             tracked (QoS 0, no @p result_cb) or failed.
    */
   az_iot_result az_iot_connection_client__publish_with_result(
       az_iot_connection_client* client,
       const void* owner,
       const az_iot_mqtt_message* msg,
       az_iot_publish_result_callback result_cb,
-      void* user_ctx);
+      void* user_ctx,
+      az_iot_publish_handle* out_handle);
+
+  /**
+   * @brief Forget the tracked publish @p handle names, without calling its callback.
+   *
+   * Frees its pending-PUBACK slot; its late PUBACK is ignored. No-op for a stale handle.
+   */
+  void az_iot_connection_client__forget_publish(
+      az_iot_connection_client* client,
+      az_iot_publish_handle handle);
 
   /**
    * @brief Set aside @p count pending-PUBACK slots for @p owner's tracked publishes.

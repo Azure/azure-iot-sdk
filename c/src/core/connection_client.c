@@ -6725,6 +6725,7 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_init(
   }
   /* Seed jitter PRNG; tests can overwrite via the internal seed entry point
    * if they need determinism. */
+  client->next_publish_generation = 1u;
   client->rng_state = az_iot_time_mono_ms() ^ 0xA5A5C3C3DEADBEEFull;
   if (client->rng_state == 0)
   {
@@ -8836,8 +8837,14 @@ static az_iot_result publish_tracked(
     const az_iot_mqtt_message* msg,
     az_iot_publish_ack_callback ack_cb,
     az_iot_publish_result_callback result_cb,
-    void* user_ctx)
+    void* user_ctx,
+    az_iot_publish_handle* out_handle)
 {
+  if (out_handle)
+  {
+    out_handle->slot = 0;
+    out_handle->generation = 0;
+  }
   if (!client || !msg)
   {
     return AZ_IOT_ERR_INVALID_ARG;
@@ -8868,6 +8875,7 @@ static az_iot_result publish_tracked(
     client->pending_pubacks[slot].result_cb = NULL;
     client->pending_pubacks[slot].user_ctx = NULL;
     client->pending_pubacks[slot].reservation = pool;
+    client->pending_pubacks[slot].generation = 0;
     client->pending_pubacks[slot].in_use = true;
   }
 
@@ -8884,6 +8892,14 @@ static az_iot_result publish_tracked(
     client->pending_pubacks[slot].cb = ack_cb;
     client->pending_pubacks[slot].result_cb = result_cb;
     client->pending_pubacks[slot].user_ctx = user_ctx;
+    client->pending_pubacks[slot].generation = client->next_publish_generation;
+    client->next_publish_generation
+        = client->next_publish_generation == UINT32_MAX ? 1u : client->next_publish_generation + 1u;
+    if (out_handle)
+    {
+      out_handle->slot = slot;
+      out_handle->generation = client->pending_pubacks[slot].generation;
+    }
     return AZ_IOT_OK;
   }
   if (r != AZ_IOT_OK)
@@ -8907,7 +8923,7 @@ az_iot_result az_iot_connection_client__publish(
     az_iot_publish_ack_callback ack_cb,
     void* ack_user_ctx)
 {
-  return publish_tracked(client, owner, msg, ack_cb, NULL, ack_user_ctx);
+  return publish_tracked(client, owner, msg, ack_cb, NULL, ack_user_ctx, NULL);
 }
 
 az_iot_result az_iot_connection_client__publish_with_result(
@@ -8915,9 +8931,26 @@ az_iot_result az_iot_connection_client__publish_with_result(
     const void* owner,
     const az_iot_mqtt_message* msg,
     az_iot_publish_result_callback result_cb,
-    void* user_ctx)
+    void* user_ctx,
+    az_iot_publish_handle* out_handle)
 {
-  return publish_tracked(client, owner, msg, NULL, result_cb, user_ctx);
+  return publish_tracked(client, owner, msg, NULL, result_cb, user_ctx, out_handle);
+}
+
+void az_iot_connection_client__forget_publish(
+    az_iot_connection_client* client,
+    az_iot_publish_handle handle)
+{
+  if (client == NULL || handle.generation == 0u
+      || handle.slot >= client->opts.limits.max_pending_publishes)
+  {
+    return;
+  }
+  az_iot_connection_pending_publish* p = &client->pending_pubacks[handle.slot];
+  if (p->in_use && p->generation == handle.generation)
+  {
+    memset(p, 0, sizeof(*p));
+  }
 }
 
 az_iot_result az_iot_connection_client__reserve_pubacks(
