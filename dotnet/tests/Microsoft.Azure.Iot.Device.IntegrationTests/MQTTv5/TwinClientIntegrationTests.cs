@@ -314,7 +314,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.MQTTv5
         }
 
         [Fact(Timeout = 2 * Setup.TestTimeoutMilliseconds)]
-        public async Task TestReconnectWithoutDesiredUpdatesDropsStaleDesiredSection()
+        public async Task TestReconnectWithoutTwinUpdatesSkipsTwinPush()
         {
             CancellationToken cancellationToken = TestContext.Current.CancellationToken;
             using RegistryManager registryManager = Setup.GetMQTTv5IotHubRegistryManager();
@@ -324,24 +324,69 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.MQTTv5
             {
                 TwinEventRecorder events = new(twinClient);
                 await ConnectAsync(testDeviceContext, cancellationToken);
-                ulong pushedVersion = (await events.NextAsync<TwinPushReceivedEventArgs>(cancellationToken)).Desired!.PropertiesVersion;
+                TwinPushReceivedEventArgs firstPush = await events.NextAsync<TwinPushReceivedEventArgs>(cancellationToken);
+                ulong pushedVersion = firstPush.Desired!.PropertiesVersion;
 
                 await testDeviceContext.ConnectionClient.DisconnectAsync(cancellationToken);
                 await ConnectAsync(testDeviceContext, cancellationToken);
 
-                // The birth doesn't tell IoT hub which desired properties version this device has, so IoT hub pushes the
-                // same desired properties again. This client has already observed them, so only the reported section is delivered.
-                TwinPushReceivedEventArgs push = await events.NextAsync<TwinPushReceivedEventArgs>(cancellationToken);
-                Assert.Null(push.Desired);
-                Assert.NotNull(push.Reported);
+                // The birth tells IoT hub which versions this device holds, and the birth ack confirms that IoT hub has the same ones.
+                Assert.Equal(pushedVersion, await WaitForAuthoritativeDesiredVersionAsync(twinClient, cancellationToken));
+                Assert.Equal(firstPush.Reported!.PropertiesVersion, twinClient.AuthoritativeReportedPropertiesVersion);
 
-                // The dropped section did not change this client's view of the desired properties, so the next patch is delivered as normal.
+                // Since neither section changed, IoT hub doesn't push the twin again, so the next event is the next patch.
                 (string key, string value) = await UpdateDesiredPropertyAsync(registryManager, testDeviceContext.DeviceId, cancellationToken);
 
                 DesiredPatchReceivedEventArgs patch = await events.NextAsync<DesiredPatchReceivedEventArgs>(cancellationToken);
                 Assert.Equal(pushedVersion + 1, patch.DesiredPropertiesVersion);
                 Assert.Equal(value, patch.DesiredProperties[key]!.GetValue<string>());
             }
+        }
+
+        [Fact(Timeout = Setup.TestTimeoutMilliseconds)]
+        public async Task TestInitialDesiredVersionNewerThanHubResyncsDesiredProperties()
+        {
+            CancellationToken cancellationToken = TestContext.Current.CancellationToken;
+            using RegistryManager registryManager = Setup.GetMQTTv5IotHubRegistryManager();
+            MQTTv5DeviceTestContext testDeviceContext = await Setup.CreateProvisionableMQTTv5DeviceAsync(
+                null,
+                new Device.MQTTv5.Models.ConnectionClientOptions() { InitialDesiredPropertiesVersion = 1000 },
+                cancellationToken);
+            using TwinClient twinClient = new(testDeviceContext.ConnectionClient);
+            await using (testDeviceContext)
+            {
+                TwinEventRecorder events = new(twinClient);
+                await ConnectAsync(testDeviceContext, cancellationToken);
+
+                // IoT hub's push may look stale (and so carry no desired section) until the birth ack reveals that this
+                // device's version is not valid, at which point the twin client fetches the desired properties instead.
+                TwinPushSection? desired;
+                do
+                {
+                    desired = (await events.NextAsync<TwinPushReceivedEventArgs>(cancellationToken)).Desired;
+                }
+                while (desired == null);
+
+                Assert.Equal(twinClient.AuthoritativeDesiredPropertiesVersion, desired.PropertiesVersion);
+
+                (string key, string value) = await UpdateDesiredPropertyAsync(registryManager, testDeviceContext.DeviceId, cancellationToken);
+
+                DesiredPatchReceivedEventArgs patch = await events.NextAsync<DesiredPatchReceivedEventArgs>(cancellationToken);
+                Assert.Equal(desired.PropertiesVersion + 1, patch.DesiredPropertiesVersion);
+                Assert.Equal(value, patch.DesiredProperties[key]!.GetValue<string>());
+            }
+        }
+
+        private static async Task<ulong> WaitForAuthoritativeDesiredVersionAsync(TwinClient twinClient, CancellationToken cancellationToken)
+        {
+            // The twin client handles the birth ack independently of the connection client, so it may do so slightly later.
+            ulong? version;
+            while ((version = twinClient.AuthoritativeDesiredPropertiesVersion) == null)
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(100), cancellationToken);
+            }
+
+            return version.Value;
         }
 
         private static Task<ConnectionContext> ConnectAsync(MQTTv5DeviceTestContext testDeviceContext, CancellationToken cancellationToken)

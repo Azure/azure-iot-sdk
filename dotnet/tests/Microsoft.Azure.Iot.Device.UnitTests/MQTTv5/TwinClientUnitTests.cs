@@ -649,6 +649,95 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             Assert.Equal(new[] { 4ul }, connection.ObservedReportedPropertiesVersions);
         }
 
+        [Fact]
+        public async Task BirthAck_RevealsAuthoritativeVersionsForCurrentConnectionOnly()
+        {
+            (MockFeatureConnectionClient connection, Guid nonce) = CreateConnectionWithNonce();
+            using TwinClient twinClient = new(connection);
+
+            Assert.Null(twinClient.AuthoritativeDesiredPropertiesVersion);
+            Assert.Null(twinClient.AuthoritativeReportedPropertiesVersion);
+
+            await ReceiveBirthAckAsync(connection, Guid.NewGuid(), desiredVersion: 9, reportedVersion: 9);
+            Assert.Null(twinClient.AuthoritativeDesiredPropertiesVersion);
+
+            await ReceiveBirthAckAsync(connection, nonce, desiredVersion: 4, reportedVersion: 2);
+            Assert.Equal(4ul, twinClient.AuthoritativeDesiredPropertiesVersion);
+            Assert.Equal(2ul, twinClient.AuthoritativeReportedPropertiesVersion);
+
+            connection.OnPublish = async publish =>
+            {
+                var response = new ReportedPatchResponse() { Result = Result.VersionMismatch, Version = 5 };
+                await connection.SimulateReceiveAsync(CreateInboundTwinPublish("reported-patch-response:1", publish.CorrelationData!, response.ToByteArray()));
+                return new MqttPublishAck() { ReasonCode = MqttPublishAckReasonCode.Success };
+            };
+            await twinClient.UpdateReportedPropertiesAsync(new() { IfMatch = 2, ReportedProperties = new JsonObject() }, TestContext.Current.CancellationToken);
+            await ReceiveDesiredPatchAsync(connection, nonce, 5, payload: null);
+
+            Assert.Equal(5ul, twinClient.AuthoritativeDesiredPropertiesVersion);
+            Assert.Equal(5ul, twinClient.AuthoritativeReportedPropertiesVersion);
+
+            connection.ConnectionNonce = Guid.NewGuid();
+            Assert.Null(twinClient.AuthoritativeDesiredPropertiesVersion);
+            Assert.Null(twinClient.AuthoritativeReportedPropertiesVersion);
+        }
+
+        [Fact]
+        public async Task BirthAck_OlderDesiredVersionThanHeld_DiscardsHeldVersionAndResyncs()
+        {
+            (MockFeatureConnectionClient connection, Guid nonce) = CreateConnectionWithNonce();
+            connection.InitialDesiredPropertiesVersion = 10;
+            using TwinClient twinClient = new(connection);
+
+            TwinPushReceivedEventArgs? snapshot = null;
+            twinClient.TwinPushReceived += args => snapshot = args;
+            List<ulong> patches = new();
+            twinClient.DesiredPatchReceived += args => patches.Add(args.DesiredPropertiesVersion);
+
+            // IoT hub pushes its desired properties before the birth ack, but they look stale until the birth ack arrives.
+            await ReceiveTwinPushAsync(connection, nonce, 5, "{\"fanSpeed\":50}");
+            Assert.Null(snapshot);
+
+            await ReceiveBirthAckAsync(connection, nonce, desiredVersion: 5, reportedVersion: 1);
+
+            Assert.Equal(new[] { 0ul }, connection.ReplacedDesiredPropertiesVersions);
+            MqttPublish get = Assert.Single(connection.PublishedMessages);
+            Assert.Equal("get:1", GetType(get));
+
+            await ReceiveGetResponseAsync(connection, get, 5, "{\"fanSpeed\":50}");
+            await ReceiveDesiredPatchAsync(connection, nonce, 6, "{\"fanSpeed\":60}");
+
+            Assert.Equal(5ul, snapshot!.Desired!.PropertiesVersion);
+            Assert.Equal(new[] { 6ul }, patches);
+        }
+
+        [Fact]
+        public async Task BirthAck_OlderReportedVersionThanHeld_DiscardsHeldVersion()
+        {
+            (MockFeatureConnectionClient connection, Guid nonce) = CreateConnectionWithNonce();
+            connection.InitialReportedPropertiesVersion = 10;
+            using TwinClient twinClient = new(connection);
+
+            await ReceiveBirthAckAsync(connection, nonce, desiredVersion: 1, reportedVersion: 5);
+
+            Assert.Equal(new[] { 0ul }, connection.ReplacedReportedPropertiesVersions);
+            Assert.Empty(connection.PublishedMessages);
+        }
+
+        [Fact]
+        public async Task TwinPush_OlderReportedVersionThanHeld_AdoptsPushedVersion()
+        {
+            (MockFeatureConnectionClient connection, Guid nonce) = CreateConnectionWithNonce();
+            connection.InitialReportedPropertiesVersion = 10;
+            using TwinClient twinClient = new(connection);
+
+            var push = new TwinPush() { Reported = new Section { Version = 5, Payload = ByteString.CopyFromUtf8("{}") } };
+            await connection.SimulateReceiveAsync(CreateInboundTwinPublish("twin-push:1", nonce.ToByteArray(bigEndian: true), push.ToByteArray()));
+            await ReceiveBirthAckAsync(connection, nonce, desiredVersion: 1, reportedVersion: 5);
+
+            Assert.Equal(new[] { 5ul }, connection.ReplacedReportedPropertiesVersions);
+        }
+
         private static (MockFeatureConnectionClient, Guid) CreateConnectionWithNonce()
         {
             Guid nonce = Guid.NewGuid();
@@ -690,6 +779,19 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             };
 
             return connection.SimulateReceiveAsync(CreateInboundTwinPublish("get-response:1", getPublish.CorrelationData!, response.ToByteArray()));
+        }
+
+        private static Task ReceiveBirthAckAsync(MockFeatureConnectionClient connection, Guid nonce, ulong desiredVersion, ulong reportedVersion)
+        {
+            var publish = new MqttPublish()
+            {
+                Topic = "ih/someDeviceId/dev/presence",
+                Payload = new BirthAck() { DesiredVersion = desiredVersion, ReportedVersion = reportedVersion }.ToByteArray(),
+                CorrelationData = nonce.ToByteArray(bigEndian: true),
+                QualityOfServiceLevel = MqttQualityOfServiceLevel.AtMostOnce,
+            };
+            publish.UserProperties.Add(new("type", Encoding.UTF8.GetBytes("birth-ack:1")));
+            return connection.SimulateReceiveAsync(publish);
         }
 
         private static MqttPublish CreateInboundTwinPublish(string type, byte[] correlationData, byte[] payload)

@@ -66,6 +66,8 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Models
         /// <see cref="Twin.TwinPushReceivedEventArgs"/>.
         /// This value is read once when the connection client is constructed. Afterwards, the connection client tells
         /// IoT hub the latest desired properties version that the device has received.
+        /// If this version is newer than IoT hub's version of the desired properties, the twin client discards it upon
+        /// connecting and fetches the desired properties from IoT hub instead.
         /// </remarks>
         public ulong InitialDesiredPropertiesVersion { get; set; }
 
@@ -79,6 +81,8 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Models
         /// <see cref="ReceiveReportedPropertiesUponConnect"/>) if they have changed since.
         /// This value is read once when the connection client is constructed. Afterwards, the connection client tells
         /// IoT hub the latest reported properties version that the device has received in full.
+        /// If this version is newer than IoT hub's version of the reported properties, the twin client discards it upon
+        /// connecting.
         /// </remarks>
         public ulong InitialReportedPropertiesVersion { get; set; }
 

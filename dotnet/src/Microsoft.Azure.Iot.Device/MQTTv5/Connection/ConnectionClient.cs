@@ -41,6 +41,10 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
 
         void IConnectionClient.ObserveReportedPropertiesVersion(ulong version) => AdvanceTo(ref _reportedPropertiesVersion, version);
 
+        void IConnectionClient.ReplaceDesiredPropertiesVersion(ulong version) => Interlocked.Exchange(ref _desiredPropertiesVersion, version);
+
+        void IConnectionClient.ReplaceReportedPropertiesVersion(ulong version) => Interlocked.Exchange(ref _reportedPropertiesVersion, version);
+
         private static void AdvanceTo(ref ulong location, ulong version)
         {
             ulong current = Interlocked.Read(ref location);

@@ -64,6 +64,18 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
         internal void ObserveReportedPropertiesVersion(ulong version) { }
 
         /// <summary>
+        /// Replace the recorded version of the desired properties that the device holds, even with an older one. Used when
+        /// IoT hub reveals that the recorded version is not valid (for example, it is newer than IoT hub's version).
+        /// </summary>
+        internal void ReplaceDesiredPropertiesVersion(ulong version) { }
+
+        /// <summary>
+        /// Replace the recorded version of the reported properties that the device holds, even with an older one. Used when
+        /// IoT hub reveals that the recorded version is not valid (for example, it is newer than IoT hub's version).
+        /// </summary>
+        internal void ReplaceReportedPropertiesVersion(ulong version) { }
+
+        /// <summary>
         /// Send a PUBLISH to IoT hub. Any <see cref="DeviceIdPlaceholder"/> in the topic is replaced with the device's
         /// current ID when it is sent.
         /// </summary>

@@ -55,6 +55,16 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
         void global::Microsoft.Azure.Iot.Device.MQTTv5.Connection.IConnectionClient.ObserveReportedPropertiesVersion(ulong version) => ObservedReportedPropertiesVersions.Add(version);
 
+        /// <summary>Every version that a feature client replaced the recorded desired properties version with, in order.</summary>
+        public List<ulong> ReplacedDesiredPropertiesVersions { get; } = new();
+
+        /// <summary>Every version that a feature client replaced the recorded reported properties version with, in order.</summary>
+        public List<ulong> ReplacedReportedPropertiesVersions { get; } = new();
+
+        void global::Microsoft.Azure.Iot.Device.MQTTv5.Connection.IConnectionClient.ReplaceDesiredPropertiesVersion(ulong version) => ReplacedDesiredPropertiesVersions.Add(version);
+
+        void global::Microsoft.Azure.Iot.Device.MQTTv5.Connection.IConnectionClient.ReplaceReportedPropertiesVersion(ulong version) => ReplacedReportedPropertiesVersions.Add(version);
+
         /// <summary>Every publish, subscribe and unsubscribe the feature clients sent, in order.</summary>
         public List<MqttPublish> PublishedMessages { get; } = new();
 
