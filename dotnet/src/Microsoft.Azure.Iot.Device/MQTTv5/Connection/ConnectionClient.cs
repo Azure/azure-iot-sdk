@@ -42,6 +42,10 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
         // timeout, and resets once a birth-ack arrives.
         private int _consecutiveBirthAckTimeouts;
 
+        // Guards _consecutiveBirthAckTimeouts together with CurrentConnectionNonce, so that only the current connection
+        // attempt's presence flow can accept a birth-ack and reset the streak.
+        private readonly object _birthAckLock = new();
+
         /// <summary>
         /// Picks the birth-ack timeout from the number of consecutive birth-ack timeouts so far. Replaceable by tests.
         /// </summary>
@@ -105,7 +109,10 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
 
         internal override void ResetBirthAckTimeoutSchedule()
         {
-            Volatile.Write(ref _consecutiveBirthAckTimeouts, 0);
+            lock (_birthAckLock)
+            {
+                _consecutiveBirthAckTimeouts = 0;
+            }
         }
 
         /// <summary>
@@ -282,7 +289,17 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
                             // The birth message flow is only complete once Hub sends a birth message ack with connection epoch equal to the latest connection epoch we have attempted
                             if (TryParseBirthAck(publish.Payload, out BirthAck? birthAck))
                             {
-                                birthAckReceivedTaskCompletionSource.TrySetResult(birthAck);
+                                // Reset the streak as soon as the ack is accepted, even if the flow is canceled before it
+                                // observes the ack. An abandoned handler cannot reset a newer attempt's streak because a
+                                // newer CONNECT attempt replaces the nonce under the same lock.
+                                lock (_birthAckLock)
+                                {
+                                    if (CurrentConnectionNonce == connectNonce
+                                        && birthAckReceivedTaskCompletionSource.TrySetResult(birthAck))
+                                    {
+                                        _consecutiveBirthAckTimeouts = 0;
+                                    }
+                                }
                             }
                         }
                         else
@@ -325,17 +342,34 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
                 }
 
                 // Armed only once the birth has been handed to the MQTT client, as the spec requires.
-                int consecutiveTimeouts = Volatile.Read(ref _consecutiveBirthAckTimeouts);
+                int consecutiveTimeouts;
+                lock (_birthAckLock)
+                {
+                    consecutiveTimeouts = _consecutiveBirthAckTimeouts;
+                }
+
                 TimeSpan birthAckTimeout = BirthAckTimeoutProvider(consecutiveTimeouts);
+                bool birthAckTimedOut = false;
                 try
                 {
                     await birthAckReceivedTaskCompletionSource.Task.WaitAsync(birthAckTimeout, cancellationToken);
-                    Volatile.Write(ref _consecutiveBirthAckTimeouts, 0);
                 }
                 catch (TimeoutException)
                 {
-                    Interlocked.Increment(ref _consecutiveBirthAckTimeouts);
+                    lock (_birthAckLock)
+                    {
+                        // Claim the attempt so that a birth-ack racing with the timeout is either accepted (and the
+                        // flow completes) or counted as a timeout, never both.
+                        birthAckTimedOut = birthAckReceivedTaskCompletionSource.TrySetCanceled();
+                        if (birthAckTimedOut)
+                        {
+                            _consecutiveBirthAckTimeouts++;
+                        }
+                    }
+                }
 
+                if (birthAckTimedOut)
+                {
                     // The session may not hold the subscriptions the service expects, so re-subscribe on the next connection.
                     subscriptionSourceOwner.ClearDevicePresenceSubscribed();
                     Trace.TraceWarning(
@@ -358,7 +392,10 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
 
         internal override MqttConnect IotHubMqttConnectOverride(MqttConnect connect)
         {
-            CurrentConnectionNonce = Guid.NewGuid(); //Note that this nonce must be unique per connection attempt, not per successfuly connection
+            lock (_birthAckLock)
+            {
+                CurrentConnectionNonce = Guid.NewGuid(); //Note that this nonce must be unique per connection attempt, not per successfuly connection
+            }
 
             // The service's auth webhook expects exactly 32 lowercase hex characters; anything else is recorded as malformed
             // and dropped, losing the correlation between this attempt and its birth.
