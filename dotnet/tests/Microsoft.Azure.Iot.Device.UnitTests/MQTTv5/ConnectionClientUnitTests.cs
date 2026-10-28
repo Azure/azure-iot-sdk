@@ -578,5 +578,110 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             Assert.Single(lastTraffic.Unsubscribe.TopicFilters);
             Assert.Equal(expectedTopicString, lastTraffic.Unsubscribe.TopicFilters.FirstOrDefault());
         }
+
+        // The auth webhook only accepts a correlationId of 32 lowercase hex characters, and it must be the same nonce
+        // that rides the birth as its Correlation Data.
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task ConnectNonceIsLowercaseHexOfBirthCorrelationDataAndBirthIsProtobuf(bool useUnifiedClient)
+        {
+            using MockConnectionMqttClient mockMqttClient = new() { AutoRespondToBirth = true };
+            AbstractConnectionClient connectionClient = useUnifiedClient
+                ? new Device.Unified.Connection.ConnectionClient(new ConnectionClientOptions() { MqttClient = mockMqttClient })
+                : new ConnectionClient(new() { MqttClient = mockMqttClient });
+            using IDisposable connectionClientLifetime = (IDisposable)connectionClient;
+
+            string? sentUsername = null;
+            mockMqttClient.OnConnect = connect =>
+            {
+                sentUsername = connect.Username;
+                return Task.FromResult(new MqttConnectAck() { ResultCode = MqttConnectReasonCode.Success });
+            };
+
+            await connectionClient.ConnectToHubAsync(GetMockConnectionContext(), TestContext.Current.CancellationToken)
+                .WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+
+            MqttPublish birth = Assert.Single(mockMqttClient.SentMqttTrafficInOrder
+                .Select(traffic => traffic.Publish).OfType<MqttPublish>());
+            Assert.Equal("application/protobuf", birth.ContentType);
+            Assert.NotNull(birth.CorrelationData);
+            Assert.Equal(16, birth.CorrelationData.Length);
+            Assert.NotNull(sentUsername);
+            Assert.StartsWith($"correlationId={Convert.ToHexStringLower(birth.CorrelationData)}&clientVersion=", sentUsername);
+        }
+
+        [Theory]
+        [InlineData(0, 0.0, 5.0)]
+        [InlineData(0, 1.0, 10.0)]
+        [InlineData(1, 0.0, 6.0)]
+        [InlineData(2, 0.5, 10.5)]
+        [InlineData(3, 0.0, 10.0)]
+        [InlineData(50, 1.0, 15.0)]
+        public void BirthAckTimeoutFollowsSpecSchedule(int consecutiveTimeouts, double jitterFraction, double expectedMinutes)
+        {
+            Assert.Equal(TimeSpan.FromMinutes(expectedMinutes), ConnectionClient.GetBirthAckTimeout(consecutiveTimeouts, jitterFraction));
+        }
+
+        // Each consecutive birth-ack timeout moves to the next row of the schedule, and a received birth-ack starts the
+        // next connection back at the first row.
+        [Fact]
+        public async Task BirthAckTimeoutEscalatesOnConsecutiveTimeoutsAndResetsAfterBirthAck()
+        {
+            using MockConnectionMqttClient mockMqttClient = new();
+            using ConnectionClient connectionClient = new(new()
+            {
+                MqttClient = mockMqttClient,
+                ConnectionRetryPolicy = new ExponentialBackoffRetryPolicy(uint.MaxValue, TimeSpan.Zero, useJitter: false),
+            });
+
+            List<int> requestedTimeouts = new();
+            connectionClient.BirthAckTimeoutProvider = consecutiveTimeouts =>
+            {
+                lock (requestedTimeouts)
+                {
+                    requestedTimeouts.Add(consecutiveTimeouts);
+                }
+
+                return TimeSpan.FromMilliseconds(100);
+            };
+
+            // Leave the first two births unanswered so that they time out, then answer every birth after that.
+            int birthCount = 0;
+            mockMqttClient.OnPublish = publish =>
+            {
+                if (publish.Topic == "ih/someDeviceId/srv/presence" && Interlocked.Increment(ref birthCount) > 2)
+                {
+                    MqttPublish birthAck = new()
+                    {
+                        Topic = "ih/someDeviceId/dev/presence",
+                        Payload = Array.Empty<byte>(),
+                        CorrelationData = publish.CorrelationData,
+                    };
+                    birthAck.UserProperties.Add(new("type", System.Text.Encoding.UTF8.GetBytes("birth-ack:1")));
+                    _ = Task.Run(() => mockMqttClient.SimulatePublishReceivedAsync(birthAck));
+                }
+
+                return Task.FromResult(new MqttPublishAck() { ReasonCode = MqttPublishAckReasonCode.Success });
+            };
+
+            await connectionClient.ConnectToHubAsync(GetMockConnectionContext(), TestContext.Current.CancellationToken)
+                .WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+
+            TaskCompletionSource reconnected = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            connectionClient.DevicePresenceFlowCompletedAsync += _ =>
+            {
+                reconnected.TrySetResult();
+                return Task.CompletedTask;
+            };
+            await mockMqttClient.SimulateServerDisconnectAsync(MqttDisconnectReason.ServerBusy)
+                .WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+            await reconnected.Task.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+
+            lock (requestedTimeouts)
+            {
+                Assert.Equal(new[] { 0, 1, 2, 0 }, requestedTimeouts);
+            }
+        }
     }
 }

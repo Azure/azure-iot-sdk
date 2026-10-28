@@ -16,13 +16,48 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
 {
     public class ConnectionClient : AbstractConnectionClient, IConnectionClient
     {
-        private static TimeSpan birthAckReceivedDefensiveTimeout = TimeSpan.FromMinutes(5); // As prescribed by the service team
+        private const string ProtobufContentType = "application/protobuf";
+
+        // Base birth-ack timeouts for consecutive timeouts 0, 1, 2 and 3+, per the device presence spec. Each is extended
+        // by a uniform random jitter of up to s_birthAckTimeoutMaxJitter so that devices on a degraded backend don't
+        // reconnect in lockstep.
+        private static readonly TimeSpan[] s_birthAckTimeoutBases =
+        {
+            TimeSpan.FromMinutes(5),
+            TimeSpan.FromMinutes(6),
+            TimeSpan.FromMinutes(8),
+            TimeSpan.FromMinutes(10),
+        };
+
+        private static readonly TimeSpan s_birthAckTimeoutMaxJitter = TimeSpan.FromMinutes(5);
 
         private readonly bool _receiveDesiredPropertyUpdates;
         private readonly bool _receiveReportedPropertiesUponConnect;
         private readonly uint _sessionExpiryInterval;
 
         private Guid? CurrentConnectionNonce { get; set; }
+
+        // How many presence flows in a row have timed out waiting for their birth-ack. Selects the next birth-ack
+        // timeout, and resets once a birth-ack arrives.
+        private int _consecutiveBirthAckTimeouts;
+
+        /// <summary>
+        /// Picks the birth-ack timeout from the number of consecutive birth-ack timeouts so far. Replaceable by tests.
+        /// </summary>
+        internal Func<int, TimeSpan> BirthAckTimeoutProvider { get; set; } =
+            consecutiveTimeouts => GetBirthAckTimeout(consecutiveTimeouts, Random.Shared.NextDouble());
+
+        /// <summary>
+        /// The birth-ack timeout schedule from the device presence spec: 5, 6, 8 and then 10 minutes, each plus up to
+        /// 5 minutes of jitter.
+        /// </summary>
+        /// <param name="consecutiveTimeouts">How many birth-ack timeouts in a row preceded this attempt.</param>
+        /// <param name="jitterFraction">A value in [0, 1) that selects how much of the maximum jitter to add.</param>
+        internal static TimeSpan GetBirthAckTimeout(int consecutiveTimeouts, double jitterFraction)
+        {
+            TimeSpan baseTimeout = s_birthAckTimeoutBases[Math.Clamp(consecutiveTimeouts, 0, s_birthAckTimeoutBases.Length - 1)];
+            return baseTimeout + s_birthAckTimeoutMaxJitter * Math.Clamp(jitterFraction, 0, 1);
+        }
 
         public ConnectionClient(ConnectionClientOptions? options = null, ConnectionContext? connectionContext = null)
             : base((options ?? new ConnectionClientOptions()).ToCommonOptions(), connectionContext)
@@ -173,6 +208,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
                 Topic = string.Format("ih/{0}/srv/presence", deviceId),
                 CorrelationData = connectNonce.ToByteArray(bigEndian: true),
                 Payload = birth.ToByteArray(),
+                ContentType = ProtobufContentType,
                 QualityOfServiceLevel = MqttQualityOfServiceLevel.AtMostOnce, // QoS 0 because we don't care about the MQTT-level ack for this message.  The service will send a fully-fledged MQTT publish as the ack and we will listen for that below
             };
 
@@ -235,13 +271,22 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
                     return;
                 }
 
+                // Armed only once the birth has been handed to the MQTT client, as the spec requires.
+                int consecutiveTimeouts = Volatile.Read(ref _consecutiveBirthAckTimeouts);
+                TimeSpan birthAckTimeout = BirthAckTimeoutProvider(consecutiveTimeouts);
                 try
                 {
-                    await birthAckReceivedTaskCompletionSource.Task.WaitAsync(birthAckReceivedDefensiveTimeout, cancellationToken);
+                    await birthAckReceivedTaskCompletionSource.Task.WaitAsync(birthAckTimeout, cancellationToken);
+                    Volatile.Write(ref _consecutiveBirthAckTimeouts, 0);
                 }
                 catch (TimeoutException)
                 {
-                    Trace.TraceWarning("Timed out waiting for birth ack message");
+                    Interlocked.Increment(ref _consecutiveBirthAckTimeouts);
+                    Trace.TraceWarning(
+                        "Timed out after {0} waiting for birth ack message for connection nonce {1} ({2} consecutive birth ack timeouts)",
+                        birthAckTimeout,
+                        connectNonce,
+                        consecutiveTimeouts + 1);
                     await connection.DisconnectAsync(true, new MqttDisconnect() { Reason = MqttDisconnectReasonCode.NormalDisconnection, SessionExpiryInterval = 0 }, cancellationToken);
                     return;
                 }
@@ -259,7 +304,10 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
         {
             CurrentConnectionNonce = Guid.NewGuid(); //Note that this nonce must be unique per connection attempt, not per successfuly connection
 
-            string hexEncodedConnectNonce = Convert.ToHexString(CurrentConnectionNonce.Value.ToByteArray(bigEndian: true));
+            // The service's auth webhook expects exactly 32 lowercase hex characters; anything else is recorded as malformed
+            // and dropped, losing the correlation between this attempt and its birth.
+            string hexEncodedConnectNonce = Convert.ToHexStringLower(CurrentConnectionNonce.Value.ToByteArray(bigEndian: true));
+            Trace.TraceInformation("Connecting to IoT hub with connection nonce {0}", hexEncodedConnectNonce);
 
             // Should look something like "correlationId=4f3c2a1b9d8e47f0a1b2c3d4e5f60718&clientVersion=csharp%2F1.42.0"
             // TODO do we want to also include previous user agent details like OS, architecture, etc? Service currently discards those
