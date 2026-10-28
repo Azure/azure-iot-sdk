@@ -3202,6 +3202,54 @@ static void hub_mqtt_v5_birth_ack_in_time_resets_the_schedule(void** state)
   assert_birth_ack_timeout(fx, 300000u + (uint32_t)k_fixed_jitter);
 }
 
+/* A replaced schedule arms the birth-ack with its own bases (the last repeats)
+ * and jitter; NULL restores the spec's schedule at the same attempt. */
+static void hub_mqtt_v5_birth_ack_timeout_follows_a_replaced_schedule(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  static const uint32_t base_ms[] = { 5000u, 6000u };
+  uint64_t random_value = 5000u + 1u + 123u; /* modulo (jitter_max + 1) = 123 */
+  az_iot_connection_client__set_defensive_timeout_random_source(
+      fx->client, fixed_random_source, &random_value);
+  assert_int_equal(
+      az_iot_connection_client__set_defensive_timeout_schedule(fx->client, base_ms, 2u, 5000u),
+      AZ_IOT_OK);
+
+  (void)drive_to_birth_published(fx, false, NULL);
+  assert_birth_ack_timeout(fx, 5123u);
+  expire_presence_step(fx);
+  (void)connack_and_suback(fx, reconnect(fx));
+  assert_birth_ack_timeout(fx, 6123u);
+  expire_presence_step(fx);
+  (void)connack_and_suback(fx, reconnect(fx));
+  assert_birth_ack_timeout(fx, 6123u);
+
+  assert_int_equal(
+      az_iot_connection_client__set_defensive_timeout_schedule(fx->client, NULL, 0u, 0u),
+      AZ_IOT_OK);
+  expire_presence_step(fx);
+  (void)connack_and_suback(fx, reconnect(fx));
+  assert_birth_ack_timeout(fx, 600000u + (uint32_t)(random_value % 300001u));
+}
+
+/* The schedule needs both a table and a count, or neither. */
+static void set_defensive_timeout_schedule_rejects_bad_arguments(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  static const uint32_t base_ms[] = { 5000u };
+  assert_int_equal(
+      az_iot_connection_client__set_defensive_timeout_schedule(NULL, base_ms, 1u, 0u),
+      AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(
+      az_iot_connection_client__set_defensive_timeout_schedule(fx->client, base_ms, 0u, 0u),
+      AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(
+      az_iot_connection_client__set_defensive_timeout_schedule(fx->client, NULL, 1u, 0u),
+      AZ_IOT_ERR_INVALID_ARG);
+  assert_null(fx->client->defensive_timeout_base_ms_by_attempt);
+  assert_true(az_iot_connection_client__defensive_timeout_ms(fx->client, 1) >= 300000u);
+}
+
 /* A birth-ack drained after the deadline passed is a miss: the client
  * reconnects and escalates rather than announcing CONNECTED. */
 static void hub_mqtt_v5_late_birth_ack_is_a_timeout(void** state)
@@ -4352,6 +4400,12 @@ int main(void)
         hub_mqtt_v5_birth_ack_timeout_jitter_spans_five_minutes, setup_mqtt_v5, teardown),
     cmocka_unit_test_setup_teardown(
         hub_mqtt_v5_birth_ack_in_time_resets_the_schedule, setup_mqtt_v5_with_reconnect, teardown),
+    cmocka_unit_test_setup_teardown(
+        hub_mqtt_v5_birth_ack_timeout_follows_a_replaced_schedule,
+        setup_mqtt_v5_with_reconnect,
+        teardown),
+    cmocka_unit_test_setup_teardown(
+        set_defensive_timeout_schedule_rejects_bad_arguments, setup_mqtt_v5, teardown),
     cmocka_unit_test_setup_teardown(
         hub_mqtt_v5_late_birth_ack_is_a_timeout, setup_mqtt_v5_with_reconnect, teardown),
     cmocka_unit_test_setup_teardown(

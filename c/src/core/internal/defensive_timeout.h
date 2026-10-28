@@ -23,6 +23,7 @@
 #ifndef AZ_IOT_DEFENSIVE_TIMEOUT_INTERNAL_H
 #define AZ_IOT_DEFENSIVE_TIMEOUT_INTERNAL_H
 
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -52,6 +53,25 @@ extern "C"
    *         [base, base + AZ_IOT_DEFENSIVE_TIMEOUT_JITTER_MAX_MS].
    */
   uint32_t az_iot_defensive_timeout__ms(uint32_t attempt, uint64_t random_value);
+
+  /**
+   * @brief As az_iot_defensive_timeout__ms(), over a caller-supplied schedule.
+   *
+   * @param[in] base_ms_by_attempt Base of attempts 1..@p attempt_count; the last
+   *                               entry repeats for later attempts.
+   * @param[in] attempt_count Entries in @p base_ms_by_attempt; at least 1.
+   * @param[in] jitter_max_ms Largest jitter added to the base.
+   * @param[in] attempt Attempt number (0 is treated as 1).
+   * @param[in] random_value Uniformly distributed value; the jitter is
+   *                         @p random_value modulo (@p jitter_max_ms + 1).
+   * @return Base plus jitter, in milliseconds, saturated at UINT32_MAX.
+   */
+  uint32_t az_iot_defensive_timeout__schedule_ms(
+      const uint32_t* base_ms_by_attempt,
+      size_t attempt_count,
+      uint32_t jitter_max_ms,
+      uint32_t attempt,
+      uint64_t random_value);
 
 #ifdef __cplusplus
 }
