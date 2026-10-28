@@ -57,7 +57,7 @@ typedef struct esp_client
   az_iot_mqtt_version version;
 
   esp_mqtt_client_handle_t handle; /* NULL until connect() */
-  /* disconnect() was called; guarded by q_mutex. */
+  /* disconnect() was called and reported its completion; guarded by q_mutex. */
   bool local_disconnect_requested;
 
   az_iot_mqtt_event_callback inbound_cb;
@@ -378,16 +378,15 @@ static void mqtt_event_handler(
       break;
     case MQTT_EVENT_DISCONNECTED:
     {
-      /* AZ_IOT_OK is reserved for a disconnect this client asked for. */
+      /* disconnect() already reported its completion (AZ_IOT_OK); any other
+       * disconnect is a lost connection. */
       xSemaphoreTake(m->q_mutex, portMAX_DELAY);
       bool requested = m->local_disconnect_requested;
       xSemaphoreGive(m->q_mutex);
-      enqueue_status(
-          m,
-          AZ_IOT_MQTT_EVT_DISCONNECTED,
-          requested ? AZ_IOT_OK : AZ_IOT_ERR_NOT_CONNECTED,
-          0,
-          false);
+      if (!requested)
+      {
+        enqueue_status(m, AZ_IOT_MQTT_EVT_DISCONNECTED, AZ_IOT_ERR_NOT_CONNECTED, 0, false);
+      }
       break;
     }
     case MQTT_EVENT_SUBSCRIBED:
