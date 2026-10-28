@@ -787,6 +787,89 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             Assert.Equal(expectAccepted ? 1 : 2, Volatile.Read(ref birthCount));
         }
 
+        // A connect the application starts after closing is a fresh CONNECT cycle, so it uses the first row of the
+        // schedule even if the presence flows of the earlier connect timed out without a birth-ack ever arriving.
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task ConnectToHubResetsBirthAckTimeoutSchedule(bool useUnifiedClient)
+        {
+            using MockConnectionMqttClient mockMqttClient = new();
+            IRetryPolicy retryPolicy = new ExponentialBackoffRetryPolicy(uint.MaxValue, TimeSpan.Zero, useJitter: false);
+            ConnectionClient mqttv5Client;
+            AbstractConnectionClient connectionClient;
+            if (useUnifiedClient)
+            {
+                var unifiedClient = new Device.Unified.Connection.ConnectionClient(new() { MqttClient = mockMqttClient, ConnectionRetryPolicy = retryPolicy });
+                mqttv5Client = GetNestedMqttV5Client(unifiedClient);
+                connectionClient = unifiedClient;
+            }
+            else
+            {
+                mqttv5Client = new ConnectionClient(new() { MqttClient = mockMqttClient, ConnectionRetryPolicy = retryPolicy });
+                connectionClient = mqttv5Client;
+            }
+
+            using IDisposable connectionClientLifetime = (IDisposable)connectionClient;
+
+            // Leave births unanswered so that two time out, then abandon that connect while the third is pending.
+            using CancellationTokenSource abandonFirstConnect = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+            List<int> requestedTimeouts = new();
+            mqttv5Client.BirthAckTimeoutProvider = consecutiveTimeouts =>
+            {
+                lock (requestedTimeouts)
+                {
+                    requestedTimeouts.Add(consecutiveTimeouts);
+                }
+
+                if (consecutiveTimeouts == 2)
+                {
+                    abandonFirstConnect.Cancel();
+                    return Timeout.InfiniteTimeSpan;
+                }
+
+                return TimeSpan.FromMilliseconds(100);
+            };
+
+            bool answerBirths = false;
+            mockMqttClient.OnPublish = publish =>
+            {
+                if (publish.Topic == "ih/someDeviceId/srv/presence" && Volatile.Read(ref answerBirths))
+                {
+                    _ = Task.Run(() => mockMqttClient.SimulatePublishReceivedAsync(CreateBirthAck("birth-ack:1", publish.CorrelationData, Array.Empty<byte>())));
+                }
+
+                return Task.FromResult(new MqttPublishAck() { ReasonCode = MqttPublishAckReasonCode.Success });
+            };
+
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(
+                () => connectionClient.ConnectToHubAsync(GetMockConnectionContext(), abandonFirstConnect.Token)
+                    .WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken));
+
+            Volatile.Write(ref answerBirths, true);
+            lock (requestedTimeouts)
+            {
+                Assert.Equal(new[] { 0, 1, 2 }, requestedTimeouts);
+            }
+
+            await connectionClient.DisconnectAsync(TestContext.Current.CancellationToken);
+
+            await connectionClient.ConnectToHubAsync(GetMockConnectionContext(), TestContext.Current.CancellationToken)
+                .WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+
+            lock (requestedTimeouts)
+            {
+                Assert.Equal(new[] { 0, 1, 2, 0 }, requestedTimeouts);
+            }
+        }
+
+        private static ConnectionClient GetNestedMqttV5Client(Device.Unified.Connection.ConnectionClient unifiedClient)
+        {
+            return (ConnectionClient)typeof(Device.Unified.Connection.ConnectionClient)
+                .GetField("_mqttv5ConnectionClient", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+                .GetValue(unifiedClient)!;
+        }
+
         private static MqttPublish CreateBirthAck(string type, byte[]? correlationData, byte[] payload)
         {
             MqttPublish birthAck = new()

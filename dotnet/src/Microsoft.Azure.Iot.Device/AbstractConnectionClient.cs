@@ -1,4 +1,4 @@
-// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
+﻿// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
 // See LICENSE file in the project root for full license information.
 
 using Microsoft.Azure.Iot.Device.Events;
@@ -182,6 +182,13 @@ namespace Microsoft.Azure.Iot.Device
         internal void ClearDevicePresenceSubscribed()
         {
             Volatile.Write(ref _isDevicePresenceSubscribed, 0);
+        }
+
+        /// <summary>
+        /// Restart the birth-ack timeout schedule from its first row. Only clients that run the MQTTv5 presence flow have one.
+        /// </summary>
+        internal virtual void ResetBirthAckTimeoutSchedule()
+        {
         }
 
         // Feature clients whose subscriptions are re-established as part of the device presence flow. Immutable so the
@@ -904,6 +911,9 @@ namespace Microsoft.Azure.Iot.Device
 
             // Any session left on this IoT hub was not set up by this connection's presence flow, so its subscriptions are unknown.
             ClearDevicePresenceSubscribed();
+
+            // This is a fresh CONNECT cycle, so the birth-ack timeout schedule starts again from its first row.
+            ResetBirthAckTimeoutSchedule();
 
             string deviceId = CurrentConnectionContext.DeviceId;
             string hostname = CurrentConnectionContext.IotHubHostName;

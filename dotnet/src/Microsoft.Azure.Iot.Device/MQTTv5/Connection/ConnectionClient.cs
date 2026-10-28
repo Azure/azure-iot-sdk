@@ -103,6 +103,11 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
             return AnnounceDevicePresenceAsync(ManagedMqttConnection, CurrentConnectionContext.DeviceId, args, this);
         }
 
+        internal override void ResetBirthAckTimeoutSchedule()
+        {
+            Volatile.Write(ref _consecutiveBirthAckTimeouts, 0);
+        }
+
         /// <summary>
         /// Run the gen 2 device presence flow (subscribe to the device topic if needed, announce this device's birth
         /// and wait for the birth ack) on the provided connection, then raise <see cref="AbstractConnectionClient.DevicePresenceFlowCompletedAsync"/>.

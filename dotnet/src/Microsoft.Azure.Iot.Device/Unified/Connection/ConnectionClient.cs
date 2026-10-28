@@ -103,6 +103,12 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
             return connect;
         }
 
+        internal override void ResetBirthAckTimeoutSchedule()
+        {
+            // The nested gen 2 client runs the presence flow for MQTTv5 hubs, so it owns the schedule.
+            _mqttv5ConnectionClient.ResetBirthAckTimeoutSchedule();
+        }
+
         public override async Task HandleConnectedToHubAsync(MqttClientConnectedEventArgs args)
         {
             // Note that this callback handler is only set after provisioning has completed. It is only to respond to IoT Hub connection events, not DPS connection events.
