@@ -43,6 +43,7 @@
 #include "internal/cert_util.h"
 #include "internal/connection_client_internal.h"
 #include "internal/crypto.h"
+#include "internal/deadline.h"
 #include "internal/defensive_timeout.h"
 #include "internal/dispatch.h"
 #include "internal/log_internal.h"
@@ -1030,7 +1031,8 @@ static void teardown_active(az_iot_connection_client* c)
   c->active_client = NULL;
   /* A birth-ack wait torn down at or past its deadline is a miss, whatever
    * ended the session (timeout, DISCONNECTED or ERROR processed first). */
-  if (c->presence.phase == PRESENCE_PHASE_BIRTH && az_iot_time_mono_ms() >= c->presence.deadline_ms
+  if (c->presence.phase == PRESENCE_PHASE_BIRTH
+      && az_iot_deadline__has_passed(&c->presence.deadline, az_iot_time_mono_ms())
       && c->presence.consecutive_birth_ack_timeouts < UINT32_MAX)
   {
     c->presence.consecutive_birth_ack_timeouts++;
@@ -4664,12 +4666,15 @@ static void report_and_drop_subscription(
 }
 
 /* Deadline for the SUBACKs of the filters just handed to the adapter. */
+static uint32_t subscription_ack_timeout_seconds(const az_iot_connection_client* c)
+{
+  return c->opts.subscription_ack_timeout_seconds ? c->opts.subscription_ack_timeout_seconds
+                                                  : AZ_IOT_DEFAULT_SUBSCRIPTION_ACK_TIMEOUT_SECONDS;
+}
+
 static uint64_t subscription_ack_deadline(const az_iot_connection_client* c)
 {
-  uint32_t secs = c->opts.subscription_ack_timeout_seconds
-      ? c->opts.subscription_ack_timeout_seconds
-      : AZ_IOT_DEFAULT_SUBSCRIPTION_ACK_TIMEOUT_SECONDS;
-  return az_iot_time_mono_ms() + (uint64_t)secs * 1000u;
+  return az_iot_time_mono_ms() + (uint64_t)subscription_ack_timeout_seconds(c) * 1000u;
 }
 
 /* Record a SUBSCRIBE that is waiting for its ack. Gated entries hold CONNECTED;
@@ -4855,7 +4860,8 @@ static az_iot_result presence_start(az_iot_connection_client* c, bool session_pr
    * correlationId and the birth would diverge and the service could not
    * correlate them. The broker answers the SUBSCRIBE, so it gets the SUBACK
    * window; the birth-ack timeout is armed once the birth is published. */
-  c->presence.deadline_ms = subscription_ack_deadline(c);
+  az_iot_deadline__arm_after_seconds(
+      &c->presence.deadline, az_iot_time_mono_ms(), subscription_ack_timeout_seconds(c));
 
   uint16_t pid = 0;
   az_iot_result r
@@ -4925,7 +4931,8 @@ static az_iot_result presence_publish_birth(az_iot_connection_client* c)
       ? c->presence.consecutive_birth_ack_timeouts + 1u
       : UINT32_MAX;
   c->presence.birth_ack_timeout_ms = az_iot_connection_client__defensive_timeout_ms(c, attempt);
-  c->presence.deadline_ms = az_iot_time_mono_ms() + c->presence.birth_ack_timeout_ms;
+  az_iot_deadline__arm_after_ms(
+      &c->presence.deadline, az_iot_time_mono_ms(), c->presence.birth_ack_timeout_ms);
   c->presence.phase = PRESENCE_PHASE_BIRTH;
   AZ_IOT_LOG_DEBUGF(
       AZ_IOT_LOG_COMPONENT_CONNECTION,
@@ -5128,7 +5135,7 @@ static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
           }
           /* do_work() drains events before checking the deadline: an ack past
            * it is a miss, left to the timeout path to reconnect and escalate. */
-          if (az_iot_time_mono_ms() >= c->presence.deadline_ms)
+          if (az_iot_deadline__has_passed(&c->presence.deadline, az_iot_time_mono_ms()))
           {
             AZ_IOT_LOG_DEBUG(
                 AZ_IOT_LOG_COMPONENT_CONNECTION, "birth-ack ignored: birth-ack timeout expired");
@@ -7776,7 +7783,7 @@ az_iot_result az_iot_connection_client_do_work(
    * escalates the next birth's timeout. */
   if ((client->presence.phase == AZ_IOT_PRESENCE_PHASE_SUBSCRIBING
        || client->presence.phase == AZ_IOT_PRESENCE_PHASE_BIRTH)
-      && az_iot_time_mono_ms() >= client->presence.deadline_ms)
+      && az_iot_deadline__has_passed(&client->presence.deadline, az_iot_time_mono_ms()))
   {
     if (client->presence.phase == AZ_IOT_PRESENCE_PHASE_BIRTH)
     {
@@ -8122,7 +8129,7 @@ void az_iot_connection_client__presence_force_timeout(az_iot_connection_client* 
   if (client->presence.phase == AZ_IOT_PRESENCE_PHASE_SUBSCRIBING
       || client->presence.phase == AZ_IOT_PRESENCE_PHASE_BIRTH)
   {
-    client->presence.deadline_ms = 0;
+    az_iot_deadline__expire_now(&client->presence.deadline);
   }
 }
 
