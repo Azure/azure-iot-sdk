@@ -51,6 +51,17 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
         /// </summary>
         public event Action<DesiredPatchReceivedEventArgs>? DesiredPatchReceived;
 
+        /// <summary>
+        /// An event that executes whenever this client receives a snapshot of the twin from IoT hub without asking for it.
+        /// </summary>
+        /// <remarks>
+        /// Only MQTTv5 IoT hubs send these. They push the twin when the device connects (if this device's versions of its
+        /// desired or reported properties are out of date), and in place of a desired properties patch that this device can't
+        /// apply (for example, because it missed earlier patches). In that case, the desired properties in this snapshot replace
+        /// the ones this device held, and no <see cref="DesiredPatchReceived"/> event is raised for them.
+        /// </remarks>
+        public event Action<TwinPushReceivedEventArgs>? TwinPushReceived;
+
         private MQTTv5.Twin.TwinClient _mqttv5HubTwinClient;
 
         /// <summary>
@@ -86,6 +97,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
             _connection = connection;
             _mqttv5HubTwinClient = new MQTTv5.Twin.TwinClient(new Stub(connection));
             _mqttv5HubTwinClient.DesiredPatchReceived += HandleMQTTv5DesiredPatchReceivedAsync;
+            _mqttv5HubTwinClient.TwinPushReceived += HandleMQTTv5TwinPushReceived;
             _connection.PublishReceivedAsync += HandleReceivedMqttPublish;
         }
 
@@ -95,6 +107,11 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
             {
                 DesiredPatchReceived.Invoke(args);
             }
+        }
+
+        private void HandleMQTTv5TwinPushReceived(TwinPushReceivedEventArgs args)
+        {
+            TwinPushReceived?.Invoke(args);
         }
 
         /// <summary>
@@ -163,9 +180,9 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
         /// <returns>Whether IoT hub accepted this patch.</returns>
         /// <exception cref="PublishRejectedException">Thrown if this reported property update message is rejected by IoT Hub for any reason.</exception>
         /// <remarks>
-        /// Note that the MQTTv5 IoT Hub supports using an If-Match property when reporting properties that allows you to have IoT Hub reject 
-        /// a reported properties update if it is out-of-date. However, MQTTv3 IoT Hubs do not support this flow. As a result, this unified client 
-        /// does not support sending If-Match values and will always send "unconditional" as the If-Match value when connected to an MQTTv5 IoT Hub.
+        /// MQTTv3 IoT hubs apply reported properties patches unconditionally. To behave the same way, this unified client sends
+        /// unconditional patches when connected to an MQTTv5 IoT hub, rather than making them conditional on IoT hub's version of
+        /// the reported properties as <see cref="MQTTv5.Twin.TwinClient"/> does.
         /// </remarks>
         public async Task<ReportedPatchResponse> UpdateReportedPropertiesAsync(JsonObject reportedProperties, CancellationToken cancellationToken = default)
         {
@@ -176,12 +193,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
             MqttPublish publish;
             if (currentConnectionContext.ConnectionProfile == IotHubConnectionType.Mqttv5)
             {
-                ReportedPatchRequest mqttv5Request = new()
-                {
-                    ReportedProperties = reportedProperties,
-                    IfMatch = 0 // MQTTv5 IoT hub treats this as unconditional which matches the behavior when updating reported properties for an MQTTv3 IoT Hub
-                };
-                return await _mqttv5HubTwinClient.UpdateReportedPropertiesAsync(mqttv5Request, cancellationToken);
+                return await _mqttv5HubTwinClient.UpdateReportedPropertiesUnconditionallyAsync(reportedProperties, cancellationToken);
             }
             else
             {
@@ -374,6 +386,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
         public void Dispose(bool disposing)
         {
             _mqttv5HubTwinClient.DesiredPatchReceived -= HandleMQTTv5DesiredPatchReceivedAsync;
+            _mqttv5HubTwinClient.TwinPushReceived -= HandleMQTTv5TwinPushReceived;
             _connection.PublishReceivedAsync -= HandleReceivedMqttPublish;
             if (disposing)
             {
@@ -388,6 +401,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
         public void Dispose()
         {
             _mqttv5HubTwinClient.DesiredPatchReceived -= HandleMQTTv5DesiredPatchReceivedAsync;
+            _mqttv5HubTwinClient.TwinPushReceived -= HandleMQTTv5TwinPushReceived;
             _connection.PublishReceivedAsync -= HandleReceivedMqttPublish;
             _connection.Dispose();
             _isDisposed = true;

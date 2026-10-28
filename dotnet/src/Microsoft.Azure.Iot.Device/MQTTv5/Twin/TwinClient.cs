@@ -41,7 +41,26 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
         // The outstanding get twin exchanges, keyed by the ID of their latest attempt. Responses to earlier attempts are dropped.
         private readonly Dictionary<Guid, GetTwinExchange> _getTwinExchangesById = new();
 
-        private readonly ConcurrentDictionary<Guid, ReportedPatchExchange> _pendingReportedPropertyUpdateOperations = new();
+        // Guards the reported patch state below.
+        private readonly object _reportedPatchLock = new();
+
+        // The application's reported property patches that IoT hub hasn't applied yet, in the order they were made. These
+        // survive disconnects. The attempt in flight (if any) carries a prefix of them, combined into one patch.
+        private readonly List<PendingReportedPatch> _pendingReportedPatches = new();
+
+        // The one reported patch attempt in flight, if any.
+        private ReportedPatchAttempt? _reportedPatchAttempt;
+
+        // The defensive timeout attempt (starting at 1) for the next reported patch attempt. It escalates each time an attempt
+        // times out, and resets once a response arrives or the connection is lost.
+        private int _reportedPatchTimeoutAttempt = 1;
+
+        // The connection nonce of the latest birth ack that this client observed.
+        private Guid? _birthAckConnectionNonce;
+
+        // The connection nonce of the latest connection that was lost. Reported patches must not be sent on it again, since they
+        // would carry if-match versions from before the connection was lost.
+        private Guid? _lostConnectionNonce;
 
         // The maximum number of desired patches buffered while resyncing the desired properties.
         internal const int DesiredResyncBufferCapacity = 8;
@@ -81,6 +100,12 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
         internal Func<int, TimeSpan> GetTwinTimeoutSchedule { get; set; } = DefensiveTimeoutSchedule.GetTimeout;
 
         /// <summary>
+        /// How long to wait for the response to the given consecutive attempt (starting at 1) of a reported properties patch
+        /// before sending it again.
+        /// </summary>
+        internal Func<int, TimeSpan> ReportedPatchTimeoutSchedule { get; set; } = DefensiveTimeoutSchedule.GetTimeout;
+
+        /// <summary>
         /// An event that executes whenever this client receives a desired properties update from IoT hub.
         /// </summary>
         /// <remarks>
@@ -118,9 +143,8 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
         /// </summary>
         /// <remarks>
         /// IoT hub reveals its version of the reported properties when it acknowledges this device's presence upon each
-        /// (re)connection, and in every twin push, get twin response and reported properties update response. This is the
-        /// value to use as <see cref="ReportedPatchRequest.IfMatch"/> to only update the reported properties if nothing
-        /// else has updated them since. This value is reset whenever the device reconnects.
+        /// (re)connection, and in every twin push, get twin response and reported properties update response. This client
+        /// makes each reported properties patch conditional on this version. This value is reset whenever the device reconnects.
         /// </remarks>
         public ulong? AuthoritativeReportedPropertiesVersion => GetAuthoritativeVersion(desired: false);
 
@@ -237,34 +261,217 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
         /// Update this device's reported properties.
         /// </summary>
         /// <param name="patch">The patch of the reported properties to send to IoT hub</param>
-        /// <param name="cancellationToken">The cancellation token.</param>
-        /// <returns>Whether IoT hub accepted this patch.</returns>
-        /// <exception cref="DeviceException">
-        /// Thrown if this patch could not be sent, or with <see cref="ErrorRetryability.Retryable"/> if the connection to
-        /// IoT hub was lost before the response arrived. In that case, IoT hub may or may not have applied the patch.
-        /// </exception>
-        public async Task<ReportedPatchResponse> UpdateReportedPropertiesAsync(ReportedPatchRequest patch, CancellationToken cancellationToken = default)
+        /// <param name="cancellationToken">
+        /// The cancellation token. Cancelling stops waiting for the response. The patch is discarded if it hasn't been sent
+        /// yet. Otherwise, IoT hub may still apply it.
+        /// </param>
+        /// <returns>
+        /// IoT hub's response to the patch that carried these changes: <see cref="Result.Ok"/> with the new version of the
+        /// reported properties, or the reason why IoT hub rejected the changes.
+        /// </returns>
+        /// <remarks>
+        /// <para>
+        /// This client sends one reported properties patch at a time, and makes it conditional on IoT hub's current version
+        /// of the reported properties so that IoT hub applies each change at most once. Patches made while another patch is
+        /// in flight (or while the device is reconnecting) are combined, in order, into the next patch that this client sends,
+        /// so they share its response. Patches that can't be combined into one JSON merge patch (such as one that removes a
+        /// property followed by one that sets some of that property's children) are sent one after another.
+        /// </para>
+        /// <para>
+        /// If IoT hub's version of the reported properties has moved on (for example, because IoT hub applied an earlier attempt
+        /// whose response was lost), this client sends the patch again against IoT hub's version. If IoT hub doesn't respond
+        /// within a defensive timeout (5 to 15 minutes, growing with each attempt), the patch is sent again. If the
+        /// connection is lost, the patch is sent again once the device has reconnected and IoT hub has acknowledged its presence.
+        /// </para>
+        /// </remarks>
+        /// <exception cref="DeviceException">Thrown if the patch could not be sent.</exception>
+        /// <exception cref="ObjectDisposedException">Thrown if this client is disposed before IoT hub responds.</exception>
+        public Task<ReportedPatchResponse> UpdateReportedPropertiesAsync(ReportedPatchRequest patch, CancellationToken cancellationToken = default)
+        {
+            ArgumentNullException.ThrowIfNull(patch);
+            return UpdateReportedPropertiesAsync(patch.ReportedProperties, isUnconditional: false, cancellationToken);
+        }
+
+        /// <summary>
+        /// Update this device's reported properties without making the patch conditional on IoT hub's version of them. Unlike
+        /// conditional patches, these don't wait for IoT hub to acknowledge this device's presence before being sent.
+        /// </summary>
+        /// <remarks>
+        /// Used by the unified twin client to match the unconditional reported property updates of older IoT hubs.
+        /// </remarks>
+        internal Task<ReportedPatchResponse> UpdateReportedPropertiesUnconditionallyAsync(JsonObject reportedProperties, CancellationToken cancellationToken = default)
+        {
+            return UpdateReportedPropertiesAsync(reportedProperties, isUnconditional: true, cancellationToken);
+        }
+
+        private async Task<ReportedPatchResponse> UpdateReportedPropertiesAsync(JsonObject reportedProperties, bool isUnconditional, CancellationToken cancellationToken)
         {
             ObjectDisposedException.ThrowIf(_isDisposed, this);
+            ArgumentNullException.ThrowIfNull(reportedProperties);
+            cancellationToken.ThrowIfCancellationRequested();
 
             EnsureConnected();
 
-            Guid requestId = Guid.NewGuid();
+            // Copy the patch so that later changes the application makes to it don't affect what is sent.
+            PendingReportedPatch pendingPatch = new(reportedProperties.DeepClone().AsObject(), isUnconditional);
+            ReportedPatchAttempt? attempt;
+            lock (_reportedPatchLock)
+            {
+                ObjectDisposedException.ThrowIf(_isDisposed, this);
+                _pendingReportedPatches.Add(pendingPatch);
+                attempt = TryStartReportedPatchAttempt();
+            }
 
-            // Note the request as "in progress" before actually sending it so that no matter how quickly the service
-            // responds, this layer can correlate the request.
-            var exchange = new ReportedPatchExchange();
-            _pendingReportedPropertyUpdateOperations[requestId] = exchange;
+            SendReportedPatchAttempt(attempt);
 
+            try
+            {
+                return await pendingPatch.Response.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                lock (_reportedPatchLock)
+                {
+                    // A patch in the attempt in flight may already be applied, so it stays until IoT hub responds to it.
+                    if (_reportedPatchAttempt == null || !_reportedPatchAttempt.Patches.Contains(pendingPatch))
+                    {
+                        _pendingReportedPatches.Remove(pendingPatch);
+                    }
+                }
+
+                throw;
+            }
+        }
+
+        // Must be called while holding _reportedPatchLock. Starts the next reported patch attempt from the pending patches, unless
+        // one is already in flight, there are none, or IoT hub's version of the reported properties is not known yet.
+        private ReportedPatchAttempt? TryStartReportedPatchAttempt()
+        {
+            if (_isDisposed || _reportedPatchAttempt != null || _pendingReportedPatches.Count == 0)
+            {
+                return null;
+            }
+
+            bool isUnconditional = _pendingReportedPatches[0].IsUnconditional;
+            Guid? connectionNonce = _connection.ConnectionNonce;
+            ulong ifMatch = 0;
+            if (!isUnconditional)
+            {
+                // Each connection's birth ack reveals IoT hub's current version of the reported properties, so wait for it.
+                // Connection clients that don't expose a connection nonce don't announce this device's presence at all.
+                if (connectionNonce != null && !HasBirthAck(connectionNonce.Value))
+                {
+                    return null;
+                }
+
+                // If IoT hub didn't reveal its version, an if-match of 0 makes this patch unconditional.
+                ifMatch = GetAuthoritativeVersion(desired: false) ?? 0;
+            }
+
+            JsonObject payload = _pendingReportedPatches[0].Patch.DeepClone().AsObject();
+            int patchCount = 1;
+            while (patchCount < _pendingReportedPatches.Count && _pendingReportedPatches[patchCount].IsUnconditional == isUnconditional)
+            {
+                JsonObject combined = payload.DeepClone().AsObject();
+                if (!TryCombineMergePatches(combined, _pendingReportedPatches[patchCount].Patch))
+                {
+                    break;
+                }
+
+                payload = combined;
+                patchCount++;
+            }
+
+            ReportedPatchAttempt attempt = new(
+                Guid.NewGuid(),
+                ifMatch,
+                isUnconditional,
+                _pendingReportedPatches.GetRange(0, patchCount),
+                Encoding.UTF8.GetBytes(JsonSerializer.Serialize(payload)));
+            attempt.Timer = new System.Threading.Timer(
+                _ => HandleReportedPatchTimeout(attempt),
+                null,
+                ReportedPatchTimeoutSchedule(_reportedPatchTimeoutAttempt),
+                Timeout.InfiniteTimeSpan);
+            _reportedPatchAttempt = attempt;
+            return attempt;
+        }
+
+        // Must be called while holding _reportedPatchLock.
+        private bool HasBirthAck(Guid connectionNonce)
+        {
+            if (connectionNonce == _lostConnectionNonce)
+            {
+                return false;
+            }
+
+            return _birthAckConnectionNonce == connectionNonce || _connection.LatestBirthAck?.ConnectionNonce == connectionNonce;
+        }
+
+        // Must be called while holding _reportedPatchLock. The patches it carried stay pending unless the caller removes them.
+        private void EndReportedPatchAttempt(ReportedPatchAttempt attempt)
+        {
+            _reportedPatchAttempt = null;
+            attempt.Timer?.Dispose();
+
+            // Callbacks registered on this token run asynchronously so that they never run while holding the lock.
+            _ = attempt.Cancellation.CancelAsync();
+        }
+
+        // Combines a JSON merge patch (RFC 7396) into another, in place, so that it has the same effect as applying both in order.
+        // Returns false if no single merge patch has that effect. The first patch may be partially modified in that case.
+        private static bool TryCombineMergePatches(JsonObject first, JsonObject second)
+        {
+            foreach (KeyValuePair<string, JsonNode?> property in second)
+            {
+                if (property.Value is JsonObject secondChild)
+                {
+                    if (!first.TryGetPropertyValue(property.Key, out JsonNode? firstValue))
+                    {
+                        first[property.Key] = secondChild.DeepClone();
+                    }
+                    else if (firstValue is JsonObject firstChild)
+                    {
+                        if (!TryCombineMergePatches(firstChild, secondChild))
+                        {
+                            return false;
+                        }
+                    }
+                    else
+                    {
+                        // The first patch replaces or removes this property, and the second merges into what the first left. If
+                        // the property was an object to begin with, a single merge patch would merge into that object instead.
+                        return false;
+                    }
+                }
+                else
+                {
+                    first[property.Key] = property.Value?.DeepClone();
+                }
+            }
+
+            return true;
+        }
+
+        private void SendReportedPatchAttempt(ReportedPatchAttempt? attempt)
+        {
+            if (attempt != null)
+            {
+                _ = PublishReportedPatchAttemptAsync(attempt);
+            }
+        }
+
+        private async Task PublishReportedPatchAttemptAsync(ReportedPatchAttempt attempt)
+        {
             MqttPublish publish = new MqttPublish()
             {
                 Topic = AzureEventGridOutgoingTwinPublishTopic,
                 QualityOfServiceLevel = MqttQualityOfServiceLevel.AtMostOnce,
-                CorrelationData = requestId.ToByteArray(bigEndian: true),
+                CorrelationData = attempt.PatchId.ToByteArray(bigEndian: true),
                 Payload = new ReportedPatch()
                 {
-                    IfMatch = patch.IfMatch, // If this value is 0, the if-match field will not be included in the serialized payload and the request is treated as unconditional
-                    Payload = ByteString.CopyFromUtf8(JsonSerializer.Serialize(patch.ReportedProperties))
+                    IfMatch = attempt.IfMatch, // If this value is 0, the if-match field will not be included in the serialized payload and the request is treated as unconditional
+                    Payload = ByteString.CopyFrom(attempt.Payload),
                 }.ToByteArray(),
                 ContentType = ProtobufContentType,
             };
@@ -275,27 +482,111 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
             {
                 Trace.TraceInformation("Publishing 'PatchReported' request on topic " + publish.Topic);
 
-                using (var publishCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, exchange.Cancellation.Token))
+                // Puback is checked for non-success cases under this layer, so no need to check it here as well
+                await _connection.PublishAsync(publish, throwOnErrorReasonCode: true, attempt.Cancellation.Token);
+            }
+            catch (OperationCanceledException) when (attempt.Cancellation.IsCancellationRequested)
+            {
+                // The attempt already ended (for example, the connection was lost), so it must not be sent.
+            }
+            catch (Exception e)
+            {
+                ReportedPatchAttempt? nextAttempt;
+                lock (_reportedPatchLock)
                 {
-                    try
+                    if (_reportedPatchAttempt != attempt)
                     {
-                        // Puback is checked for non-success cases under this layer, so no need to check it here as well
-                        await _connection.PublishAsync(publish, throwOnErrorReasonCode: true, publishCancellation.Token);
+                        return;
                     }
-                    catch (OperationCanceledException) when (exchange.Response.Task.IsCompleted && !cancellationToken.IsCancellationRequested)
+
+                    EndReportedPatchAttempt(attempt);
+                    _pendingReportedPatches.RemoveRange(0, attempt.Patches.Count);
+                    nextAttempt = TryStartReportedPatchAttempt();
+                }
+
+                foreach (PendingReportedPatch pendingPatch in attempt.Patches)
+                {
+                    pendingPatch.Response.TrySetException(e);
+                }
+
+                SendReportedPatchAttempt(nextAttempt);
+            }
+        }
+
+        private void HandleReportedPatchTimeout(ReportedPatchAttempt attempt)
+        {
+            ReportedPatchAttempt? nextAttempt;
+            lock (_reportedPatchLock)
+            {
+                if (_isDisposed || _reportedPatchAttempt != attempt)
+                {
+                    return;
+                }
+
+                EndReportedPatchAttempt(attempt);
+                _reportedPatchTimeoutAttempt++;
+                nextAttempt = TryStartReportedPatchAttempt();
+            }
+
+            Trace.TraceWarning("Timed out waiting for the response to a reported properties patch. Sending it again.");
+            SendReportedPatchAttempt(nextAttempt);
+        }
+
+        private void HandleReportedPatchResponse(Guid patchId, ReportedPatchResponse response)
+        {
+            ReportedPatchAttempt? nextAttempt;
+            List<PendingReportedPatch>? resolvedPatches = null;
+            lock (_reportedPatchLock)
+            {
+                ReportedPatchAttempt? attempt = _reportedPatchAttempt;
+                if (attempt == null || attempt.PatchId != patchId)
+                {
+                    // A response to an earlier attempt. The latest attempt carries the same changes.
+                    Trace.TraceInformation("Dropping a reported properties patch response that does not match the reported properties patch in flight.");
+                    return;
+                }
+
+                // Whatever the result, the response carries IoT hub's current version of the reported properties.
+                RecordAuthoritativeVersions(_connection.ConnectionNonce, 0, response.Version);
+                EndReportedPatchAttempt(attempt);
+                _reportedPatchTimeoutAttempt = 1;
+
+                // IoT hub rejects a stale if-match with its current version, which the next attempt uses instead. If IoT hub's
+                // version matches the if-match, retrying would be rejected the same way, so give up instead.
+                if (response.Result == Result.VersionMismatch && !attempt.IsUnconditional && response.Version != attempt.IfMatch)
+                {
+                    Trace.TraceInformation("IoT hub's version of the reported properties is {0}, not {1}. Sending the reported properties patch again.", response.Version, attempt.IfMatch);
+                }
+                else
+                {
+                    _pendingReportedPatches.RemoveRange(0, attempt.Patches.Count);
+                    resolvedPatches = attempt.Patches;
+                    if (response.Result == Result.Ok)
                     {
-                        // The connection was lost before this patch was sent. The response task surfaces why below.
+                        lock (_reportedStateLock)
+                        {
+                            // Only the device writes its reported properties, so if it held the version before this patch, it now holds
+                            // them in full at the patched version. Otherwise, it still doesn't hold them in full.
+                            if (_localReportedVersion != 0 && response.Version == _localReportedVersion + 1)
+                            {
+                                AdvanceLocalReportedVersion(response.Version);
+                            }
+                        }
                     }
                 }
 
-                // Wait until IoT hub sends a message to this client with the response to this patch twin request.
-                return await exchange.Response.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+                nextAttempt = TryStartReportedPatchAttempt();
             }
-            finally
+
+            if (resolvedPatches != null)
             {
-                // This may already be removed during happy path, but this removal covers scenarios where the response is never received
-                _ = _pendingReportedPropertyUpdateOperations.Remove(requestId, out _);
+                foreach (PendingReportedPatch pendingPatch in resolvedPatches)
+                {
+                    pendingPatch.Response.TrySetResult(response);
+                }
             }
+
+            SendReportedPatchAttempt(nextAttempt);
         }
 
         // Sends the first attempt of the exchange, or a new attempt (with a new ID, so that responses to earlier attempts are dropped).
@@ -414,11 +705,28 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
         // Twin exchanges can't outlive the connection they were sent on, since IoT hub never sends their responses on a later one.
         private void HandleConnectionLost()
         {
-            AbandonOutstandingExchanges(() => new DeviceException("The connection to IoT hub was lost before the response to this twin request arrived. It may be retried once reconnected.")
+            AbandonGetTwinExchanges(() => new DeviceException("The connection to IoT hub was lost before the response to this twin request arrived. It may be retried once reconnected.")
             {
                 Retryability = ErrorRetryability.Retryable,
                 IsContained = true,
             });
+
+            // Reported patches are kept and sent again on the next connection. IoT hub may have applied the attempt in flight,
+            // in which case the next attempt's if-match is rejected with the version that it was applied at, and so on.
+            ReportedPatchAttempt? nextAttempt;
+            lock (_reportedPatchLock)
+            {
+                _lostConnectionNonce = _connection.ConnectionNonce;
+                if (_reportedPatchAttempt != null)
+                {
+                    EndReportedPatchAttempt(_reportedPatchAttempt);
+                }
+
+                _reportedPatchTimeoutAttempt = 1;
+                nextAttempt = TryStartReportedPatchAttempt();
+            }
+
+            SendReportedPatchAttempt(nextAttempt);
 
             lock (_desiredStateLock)
             {
@@ -426,7 +734,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
             }
         }
 
-        private void AbandonOutstandingExchanges(Func<Exception> createException)
+        private void AbandonGetTwinExchanges(Func<Exception> createException)
         {
             List<GetTwinExchange> getTwinExchanges;
             lock (_getTwinExchangesLock)
@@ -442,17 +750,8 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
             {
                 exchange.Response.TrySetException(createException());
             }
-
-            foreach (Guid requestId in _pendingReportedPropertyUpdateOperations.Keys)
-            {
-                if (_pendingReportedPropertyUpdateOperations.TryRemove(requestId, out ReportedPatchExchange? exchange))
-                {
-                    // Complete the response before cancelling, so that a patch that wasn't sent yet surfaces this exception.
-                    exchange.Response.TrySetException(createException());
-                    exchange.Cancellation.Cancel();
-                }
-            }
         }
+
         private void EnsureConnected()
         {
             if (_connection.GetCurrentConnectionContext() == null || !_connection.IsConnectionTargetSet)
@@ -585,28 +884,27 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
 
                 exchange.Response.TrySetResult(twin);
             }
-            else if (type.Equals("reported-patch-response")
-                && GuidExtensions.TryParseBytes(args.Publish.CorrelationData, out Guid? patchResponseCorrelationData)
-                && _pendingReportedPropertyUpdateOperations.TryRemove(patchResponseCorrelationData.Value, out ReportedPatchExchange? reportedPatchExchange))
+            else if (type.Equals("reported-patch-response"))
             {
-                ReportedPatchResponse reportedPatchResponse = ReportedPatchResponse.Parser.ParseFrom(args.Publish.PayloadAsReadOnlySequence);
-
-                // Whatever the result, the response carries IoT hub's current version of the reported properties.
-                RecordAuthoritativeVersions(_connection.ConnectionNonce, 0, reportedPatchResponse.Version);
-                if (reportedPatchResponse.Result == Result.Ok)
+                if (!GuidExtensions.TryParseBytes(args.Publish.CorrelationData, out Guid? patchId))
                 {
-                    lock (_reportedStateLock)
-                    {
-                        // Only the device writes its reported properties, so if it held the version before this patch, it now holds
-                        // them in full at the patched version. Otherwise, it still doesn't hold them in full.
-                        if (_localReportedVersion != 0 && reportedPatchResponse.Version == _localReportedVersion + 1)
-                        {
-                            AdvanceLocalReportedVersion(reportedPatchResponse.Version);
-                        }
-                    }
+                    Trace.TraceWarning("Dropping a reported properties patch response without a valid correlation ID.");
+                    return;
                 }
 
-                reportedPatchExchange.Response.TrySetResult(reportedPatchResponse);
+                ReportedPatchResponse reportedPatchResponse;
+                try
+                {
+                    reportedPatchResponse = ReportedPatchResponse.Parser.ParseFrom(args.Publish.PayloadAsReadOnlySequence);
+                }
+                catch (InvalidProtocolBufferException e)
+                {
+                    // The patch is sent again once its response times out.
+                    Trace.TraceWarning("Dropping a malformed reported properties patch response: {0}", e);
+                    return;
+                }
+
+                HandleReportedPatchResponse(patchId.Value, reportedPatchResponse);
             }
             else if (type.Equals("desired-patch"))
             {
@@ -737,6 +1035,16 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
                 }
             }
 
+            // IoT hub's version of the reported properties is now known (if it has one), so conditional patches can be sent.
+            ReportedPatchAttempt? nextAttempt;
+            lock (_reportedPatchLock)
+            {
+                _birthAckConnectionNonce = connectionNonce;
+                nextAttempt = TryStartReportedPatchAttempt();
+            }
+
+            SendReportedPatchAttempt(nextAttempt);
+
             await CompleteAsync(outcome);
         }
 
@@ -757,6 +1065,14 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
 
         private ulong? GetAuthoritativeVersion(bool desired)
         {
+            // This client may have been created after the current connection's birth ack arrived.
+            Guid? connectionNonce = _connection.ConnectionNonce;
+            BirthAckVersions? latestBirthAck = _connection.LatestBirthAck;
+            if (connectionNonce != null && latestBirthAck?.ConnectionNonce == connectionNonce)
+            {
+                RecordAuthoritativeVersions(connectionNonce, latestBirthAck.DesiredVersion, latestBirthAck.ReportedVersion);
+            }
+
             lock (_authoritativeVersionsLock)
             {
                 if (_authoritativeVersions == null || _authoritativeVersions.ConnectionNonce != _connection.ConnectionNonce)
@@ -1133,16 +1449,38 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
             public System.Threading.Timer? Timer { get; set; }
         }
 
-        private sealed class ReportedPatchExchange
+        // A reported properties patch that the application made, which is pending until IoT hub responds to an attempt carrying it.
+        private sealed class PendingReportedPatch(JsonObject patch, bool isUnconditional)
         {
-            public TaskCompletionSource<ReportedPatchResponse> Response { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            public JsonObject Patch { get; } = patch;
 
-            // Cancelled when the connection is lost, so that a patch still waiting to be sent is never sent.
+            public bool IsUnconditional { get; } = isUnconditional;
+
+            public TaskCompletionSource<ReportedPatchResponse> Response { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        }
+
+        // One attempt to send a prefix of the pending reported patches, combined into one patch.
+        private sealed class ReportedPatchAttempt(Guid patchId, ulong ifMatch, bool isUnconditional, List<PendingReportedPatch> patches, byte[] payload)
+        {
+            public Guid PatchId { get; } = patchId;
+
+            public ulong IfMatch { get; } = ifMatch;
+
+            public bool IsUnconditional { get; } = isUnconditional;
+
+            public List<PendingReportedPatch> Patches { get; } = patches;
+
+            public byte[] Payload { get; } = payload;
+
+            // Cancelled when the attempt ends, so that an attempt still waiting to be sent is never sent.
             public CancellationTokenSource Cancellation { get; } = new();
+
+            public System.Threading.Timer? Timer { get; set; }
         }
 
         private void ReleaseResources()
         {
+            _isDisposed = true;
             _connection.PublishReceivedAsync -= HandleReceivedMqttPublish;
             _connection.ConnectionLost -= HandleConnectionLost;
             lock (_desiredStateLock)
@@ -1150,7 +1488,24 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
                 CancelDesiredResync();
             }
 
-            AbandonOutstandingExchanges(() => new ObjectDisposedException(nameof(TwinClient)));
+            List<PendingReportedPatch> pendingPatches;
+            lock (_reportedPatchLock)
+            {
+                if (_reportedPatchAttempt != null)
+                {
+                    EndReportedPatchAttempt(_reportedPatchAttempt);
+                }
+
+                pendingPatches = new(_pendingReportedPatches);
+                _pendingReportedPatches.Clear();
+            }
+
+            foreach (PendingReportedPatch pendingPatch in pendingPatches)
+            {
+                pendingPatch.Response.TrySetException(new ObjectDisposedException(nameof(TwinClient)));
+            }
+
+            AbandonGetTwinExchanges(() => new ObjectDisposedException(nameof(TwinClient)));
         }
 
         /// <summary>

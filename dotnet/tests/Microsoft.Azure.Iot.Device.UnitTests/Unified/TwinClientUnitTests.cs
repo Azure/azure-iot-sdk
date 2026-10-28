@@ -146,6 +146,61 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
         }
 
         [Fact]
+        public async Task UpdateReportedPropertiesAsync_MqttV5_SendsUnconditionalPatchWithoutWaitingForBirthAck()
+        {
+            MockFeatureConnectionClient connection = new()
+            {
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv5, DeviceId),
+                ConnectionNonce = Guid.NewGuid(),
+            };
+            using TwinClient twinClient = new(connection);
+
+            Task<ReportedPatchResponse> patchTask = twinClient.UpdateReportedPropertiesAsync(new JsonObject() { ["temperature"] = 25 }, TestContext.Current.CancellationToken);
+
+            MqttPublish patchPublish = Assert.Single(connection.PublishedMessages);
+            ReportedPatch patch = ReportedPatch.Parser.ParseFrom(patchPublish.Payload);
+            Assert.Equal(0ul, patch.IfMatch);
+            Assert.Equal("{\"temperature\":25}", patch.Payload.ToStringUtf8());
+
+            var response = new ReportedPatchResponse() { Result = Result.Ok, Version = 3 };
+            await connection.SimulateReceiveAsync(CreateInboundMqttv5TwinPublish("reported-patch-response:1", patchPublish.CorrelationData!, response.ToByteArray()));
+            Assert.Equal(3ul, (await patchTask).Version);
+        }
+
+        [Fact]
+        public async Task TwinPushReceived_MqttV5_IsForwarded()
+        {
+            MockFeatureConnectionClient connection = new()
+            {
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv5, DeviceId),
+            };
+            using TwinClient twinClient = new(connection);
+            Microsoft.Azure.Iot.Device.MQTTv5.Twin.TwinPushReceivedEventArgs? received = null;
+            twinClient.TwinPushReceived += args => received = args;
+
+            var push = new TwinPush()
+            {
+                Desired = new Section { Version = 4, Payload = ByteString.CopyFromUtf8("{\"fanSpeed\":40}") },
+            };
+            await connection.SimulateReceiveAsync(CreateInboundMqttv5TwinPublish("twin-push:1", Guid.NewGuid().ToByteArray(bigEndian: true), push.ToByteArray()));
+
+            Assert.Equal(4ul, received!.Desired!.PropertiesVersion);
+        }
+
+        private static MqttPublish CreateInboundMqttv5TwinPublish(string type, byte[] correlationData, byte[] payload)
+        {
+            var publish = new MqttPublish()
+            {
+                Topic = $"ih/{DeviceId}/dev/twin",
+                Payload = payload,
+                CorrelationData = correlationData,
+                QualityOfServiceLevel = MqttQualityOfServiceLevel.AtMostOnce,
+            };
+            publish.UserProperties.Add(new("type", Encoding.UTF8.GetBytes(type)));
+            return publish;
+        }
+
+        [Fact]
         public async Task GetTwinAsync_ThrowsWhenDisconnected()
         {
             MockFeatureConnectionClient connection = new();

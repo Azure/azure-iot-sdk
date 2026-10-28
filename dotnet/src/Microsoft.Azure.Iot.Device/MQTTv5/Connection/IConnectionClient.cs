@@ -42,6 +42,15 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
         internal Guid? ConnectionNonce => null;
 
         /// <summary>
+        /// The twin versions from the latest birth ack that IoT hub sent this connection client, or null if there hasn't
+        /// been one (or this connection client doesn't track them).
+        /// </summary>
+        /// <remarks>
+        /// Feature clients constructed after the device connected use this to learn the versions they missed.
+        /// </remarks>
+        internal BirthAckVersions? LatestBirthAck => null;
+
+        /// <summary>
         /// Raised whenever the connection to IoT hub is lost or closed, before any reconnection starts.
         /// </summary>
         /// <remarks>

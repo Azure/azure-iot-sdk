@@ -26,6 +26,10 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
 
         Guid? IConnectionClient.ConnectionNonce => CurrentConnectionNonce;
 
+        private volatile BirthAckVersions? _latestBirthAck;
+
+        BirthAckVersions? IConnectionClient.LatestBirthAck => _latestBirthAck;
+
         event Action? IConnectionClient.ConnectionLost
         {
             add => HubConnectionLost += value;
@@ -251,7 +255,9 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
                                 if (receivedGuid.Equals(connectNonce))
                                 {
                                     // The birth message flow is only complete once Hub sends a birth message ack with connection epoch equal to the latest connection epoch we have attempted
-                                    birthAckReceivedTaskCompletionSource.TrySetResult(BirthAck.Parser.ParseFrom(args.Publish.Payload));
+                                    BirthAck receivedBirthAck = BirthAck.Parser.ParseFrom(args.Publish.Payload);
+                                    _latestBirthAck = new BirthAckVersions(connectNonce, receivedBirthAck.DesiredVersion, receivedBirthAck.ReportedVersion);
+                                    birthAckReceivedTaskCompletionSource.TrySetResult(receivedBirthAck);
                                 }
                                 else
                                 {

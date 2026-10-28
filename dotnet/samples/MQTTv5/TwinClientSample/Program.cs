@@ -60,7 +60,6 @@ internal class Program
             ReportedPatchRequest reportedPatch = new()
             {
                 ReportedProperties = reportedProperties,
-                IfMatch = 0,
             };
             ReportedPatchResponse patchResponse = await twinClient.UpdateReportedPropertiesAsync(reportedPatch);
             currentTwin.ReportedVersion = patchResponse.Version;

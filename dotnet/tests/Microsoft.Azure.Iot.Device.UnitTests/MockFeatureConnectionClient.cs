@@ -37,6 +37,11 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
         Guid? global::Microsoft.Azure.Iot.Device.Unified.Connection.IConnectionClient.ConnectionNonce => ConnectionNonce;
 
+        /// <summary>The versions from the latest birth ack that the connection client received, if any.</summary>
+        public global::Microsoft.Azure.Iot.Device.MQTTv5.Connection.BirthAckVersions? LatestBirthAck { get; set; }
+
+        global::Microsoft.Azure.Iot.Device.MQTTv5.Connection.BirthAckVersions? global::Microsoft.Azure.Iot.Device.MQTTv5.Connection.IConnectionClient.LatestBirthAck => LatestBirthAck;
+
         public event Action? ConnectionLost;
 
         event Action? global::Microsoft.Azure.Iot.Device.MQTTv5.Connection.IConnectionClient.ConnectionLost

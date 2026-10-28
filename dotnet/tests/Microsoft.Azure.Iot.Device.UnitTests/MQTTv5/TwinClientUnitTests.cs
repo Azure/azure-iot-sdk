@@ -212,7 +212,6 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             ReportedPatchRequest patch = new()
             {
                 ReportedProperties = new JsonObject() { ["temperature"] = 25 },
-                IfMatch = 11,
             };
 
             ReportedPatchResponse response = await twinClient.UpdateReportedPropertiesAsync(patch, TestContext.Current.CancellationToken);
@@ -220,6 +219,9 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             MqttPublish patchPublish = Assert.Single(connection.PublishedMessages);
             Assert.Equal(OutgoingTwinTopic, patchPublish.Topic);
             Assert.Equal("reported-patch:1", GetType(patchPublish));
+            (ulong ifMatch, JsonObject sentPatch) = ParseReportedPatch(patchPublish);
+            Assert.Equal(0ul, ifMatch);
+            Assert.Equal(25, (int)sentPatch["temperature"]!);
 
             Assert.Equal(Result.Ok, response.Result);
             Assert.Equal(12ul, response.Version);
@@ -427,7 +429,98 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
         }
 
         [Fact]
-        public async Task UpdateReportedPropertiesAsync_ConnectionLostFailsWithRetryableError()
+        public async Task UpdateReportedPropertiesAsync_WaitsForBirthAckThenTracksReportedVersion()
+        {
+            (MockFeatureConnectionClient connection, Guid nonce) = CreateConnectionWithNonce();
+            using TwinClient twinClient = new(connection);
+
+            Task<ReportedPatchResponse> first = UpdateReportedAsync(twinClient, "{\"temperature\":1}");
+            Assert.Empty(connection.PublishedMessages);
+
+            await ReceiveBirthAckAsync(connection, nonce, desiredVersion: 1, reportedVersion: 7);
+            Assert.Equal(7ul, ParseReportedPatch(Assert.Single(connection.PublishedMessages)).IfMatch);
+
+            await RespondToReportedPatchAsync(connection, connection.PublishedMessages[0], Result.Ok, 8);
+            Assert.Equal(8ul, (await first).Version);
+
+            _ = UpdateReportedAsync(twinClient, "{\"temperature\":2}");
+            Assert.Equal(8ul, ParseReportedPatch(connection.PublishedMessages[1]).IfMatch);
+        }
+
+        [Fact]
+        public async Task UpdateReportedPropertiesAsync_CreatedAfterBirthAck_UsesConnectionsBirthAckVersion()
+        {
+            (MockFeatureConnectionClient connection, Guid nonce) = CreateConnectionWithNonce();
+            connection.LatestBirthAck = new BirthAckVersions(nonce, 3, 7);
+            using TwinClient twinClient = new(connection);
+
+            _ = UpdateReportedAsync(twinClient, "{\"temperature\":1}");
+
+            Assert.Equal(7ul, ParseReportedPatch(Assert.Single(connection.PublishedMessages)).IfMatch);
+            Assert.Equal(7ul, twinClient.AuthoritativeReportedPropertiesVersion);
+        }
+
+        [Fact]
+        public async Task UpdateReportedPropertiesAsync_CombinesPatchesMadeWhileOneIsInFlight()
+        {
+            (MockFeatureConnectionClient connection, Guid nonce) = CreateConnectionWithNonce();
+            using TwinClient twinClient = new(connection);
+            await ReceiveBirthAckAsync(connection, nonce, desiredVersion: 1, reportedVersion: 1);
+
+            Task<ReportedPatchResponse> first = UpdateReportedAsync(twinClient, "{\"temperature\":1}");
+            Task<ReportedPatchResponse> second = UpdateReportedAsync(twinClient, "{\"temperature\":2,\"fan\":{\"speed\":1}}");
+            Task<ReportedPatchResponse> third = UpdateReportedAsync(twinClient, "{\"temperature\":null,\"fan\":{\"mode\":\"auto\"}}");
+            Task<ReportedPatchResponse> fourth = UpdateReportedAsync(twinClient, "{\"fan\":null}");
+
+            // Merging into a property that an earlier patch removed can't be expressed in the same merge patch.
+            Task<ReportedPatchResponse> fifth = UpdateReportedAsync(twinClient, "{\"fan\":{\"speed\":3}}");
+            Assert.Single(connection.PublishedMessages);
+
+            await RespondToReportedPatchAsync(connection, connection.PublishedMessages[0], Result.Ok, 2);
+            Assert.Equal(2ul, (await first).Version);
+
+            (ulong ifMatch, JsonObject combined) = ParseReportedPatch(connection.PublishedMessages[1]);
+            Assert.Equal(2ul, ifMatch);
+            Assert.Equal("{\"temperature\":null,\"fan\":null}", combined.ToJsonString());
+
+            await RespondToReportedPatchAsync(connection, connection.PublishedMessages[1], Result.Ok, 3);
+            Assert.Equal(3ul, (await second).Version);
+            Assert.Equal(3ul, (await third).Version);
+            Assert.Equal(3ul, (await fourth).Version);
+            Assert.False(fifth.IsCompleted);
+
+            (ifMatch, JsonObject last) = ParseReportedPatch(connection.PublishedMessages[2]);
+            Assert.Equal(3ul, ifMatch);
+            Assert.Equal("{\"fan\":{\"speed\":3}}", last.ToJsonString());
+        }
+
+        [Fact]
+        public async Task UpdateReportedPropertiesAsync_VersionMismatch_IsSentAgainAgainstHubVersion()
+        {
+            (MockFeatureConnectionClient connection, Guid nonce) = CreateConnectionWithNonce();
+            using TwinClient twinClient = new(connection);
+            await ReceiveBirthAckAsync(connection, nonce, desiredVersion: 1, reportedVersion: 2);
+
+            Task<ReportedPatchResponse> patch = UpdateReportedAsync(twinClient, "{\"temperature\":1}");
+            await RespondToReportedPatchAsync(connection, connection.PublishedMessages[0], Result.VersionMismatch, 4);
+
+            MqttPublish retry = connection.PublishedMessages[1];
+            Assert.NotEqual(connection.PublishedMessages[0].CorrelationData, retry.CorrelationData);
+            Assert.Equal(4ul, ParseReportedPatch(retry).IfMatch);
+            Assert.False(patch.IsCompleted);
+
+            await RespondToReportedPatchAsync(connection, retry, Result.Ok, 5);
+            Assert.Equal(Result.Ok, (await patch).Result);
+
+            // A mismatch against IoT hub's own version would be rejected again, so it is returned.
+            Task<ReportedPatchResponse> rejected = UpdateReportedAsync(twinClient, "{\"temperature\":2}");
+            await RespondToReportedPatchAsync(connection, connection.PublishedMessages[2], Result.VersionMismatch, 5);
+            Assert.Equal(Result.VersionMismatch, (await rejected).Result);
+            Assert.Equal(3, connection.PublishedMessages.Count);
+        }
+
+        [Fact]
+        public async Task UpdateReportedPropertiesAsync_RejectedPatch_IsReturnedAndNextPatchIsSent()
         {
             MockFeatureConnectionClient connection = new()
             {
@@ -435,15 +528,116 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             };
             using TwinClient twinClient = new(connection);
 
-            Task<ReportedPatchResponse> patchTask = twinClient.UpdateReportedPropertiesAsync(
-                new() { ReportedProperties = new JsonObject() },
-                TestContext.Current.CancellationToken);
-            Assert.Single(connection.PublishedMessages);
+            Task<ReportedPatchResponse> tooLarge = UpdateReportedAsync(twinClient, "{\"temperature\":1}");
+            Task<ReportedPatchResponse> next = UpdateReportedAsync(twinClient, "{\"temperature\":2}");
+
+            await RespondToReportedPatchAsync(connection, connection.PublishedMessages[0], Result.PayloadTooLarge, 1);
+            Assert.Equal(Result.PayloadTooLarge, (await tooLarge).Result);
+
+            Assert.Equal(2, (int)ParseReportedPatch(connection.PublishedMessages[1]).Patch["temperature"]!);
+            await RespondToReportedPatchAsync(connection, connection.PublishedMessages[1], Result.Ok, 2);
+            Assert.Equal(Result.Ok, (await next).Result);
+        }
+
+        [Fact]
+        public async Task UpdateReportedPropertiesAsync_TimesOut_IsSentAgainWithNewIdAndDropsStaleResponse()
+        {
+            MockFeatureConnectionClient connection = new()
+            {
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv5, DeviceId),
+            };
+            using TwinClient twinClient = new(connection);
+            List<int> attempts = new();
+            twinClient.ReportedPatchTimeoutSchedule = attempt =>
+            {
+                lock (attempts)
+                {
+                    attempts.Add(attempt);
+                }
+
+                return attempt == 1 ? TimeSpan.FromMilliseconds(50) : Timeout.InfiniteTimeSpan;
+            };
+
+            Task<ReportedPatchResponse> patch = UpdateReportedAsync(twinClient, "{\"temperature\":1}");
+            await WaitUntilAsync(() => connection.PublishedMessages.Count == 2);
+
+            MqttPublish firstAttempt = connection.PublishedMessages[0];
+            MqttPublish secondAttempt = connection.PublishedMessages[1];
+            Assert.NotEqual(firstAttempt.CorrelationData, secondAttempt.CorrelationData);
+            Assert.Equal(ReportedPatch.Parser.ParseFrom(firstAttempt.Payload), ReportedPatch.Parser.ParseFrom(secondAttempt.Payload));
+
+            await RespondToReportedPatchAsync(connection, firstAttempt, Result.Ok, 1);
+            Assert.False(patch.IsCompleted);
+            await RespondToReportedPatchAsync(connection, secondAttempt, Result.Ok, 2);
+
+            Assert.Equal(2ul, (await patch).Version);
+            Assert.Equal(new[] { 1, 2 }, attempts);
+        }
+
+        [Fact]
+        public async Task UpdateReportedPropertiesAsync_ConnectionLost_IsSentAgainAfterNextBirthAck()
+        {
+            (MockFeatureConnectionClient connection, Guid nonce) = CreateConnectionWithNonce();
+            using TwinClient twinClient = new(connection);
+            await ReceiveBirthAckAsync(connection, nonce, desiredVersion: 1, reportedVersion: 2);
+
+            Task<ReportedPatchResponse> patch = UpdateReportedAsync(twinClient, "{\"temperature\":1}");
+            MqttPublish firstAttempt = Assert.Single(connection.PublishedMessages);
 
             connection.SimulateConnectionLost();
+            Guid newNonce = Guid.NewGuid();
+            connection.ConnectionNonce = newNonce;
+            Assert.Single(connection.PublishedMessages);
 
-            DeviceException exception = await Assert.ThrowsAsync<DeviceException>(() => patchTask);
-            Assert.Equal(ErrorRetryability.Retryable, exception.Retryability);
+            // IoT hub applied the first attempt before the connection was lost, so its version moved on.
+            await ReceiveBirthAckAsync(connection, newNonce, desiredVersion: 1, reportedVersion: 3);
+            MqttPublish secondAttempt = connection.PublishedMessages[1];
+            Assert.Equal(3ul, ParseReportedPatch(secondAttempt).IfMatch);
+
+            await RespondToReportedPatchAsync(connection, firstAttempt, Result.Ok, 3);
+            Assert.False(patch.IsCompleted);
+
+            await RespondToReportedPatchAsync(connection, secondAttempt, Result.Ok, 4);
+            Assert.Equal(4ul, (await patch).Version);
+        }
+
+        [Fact]
+        public async Task UpdateReportedPropertiesAsync_CancelledBeforeBeingSent_IsDiscarded()
+        {
+            MockFeatureConnectionClient connection = new()
+            {
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv5, DeviceId),
+            };
+            using TwinClient twinClient = new(connection);
+            using CancellationTokenSource caller = new();
+
+            Task<ReportedPatchResponse> first = UpdateReportedAsync(twinClient, "{\"temperature\":1}");
+            Task<ReportedPatchResponse> cancelled = twinClient.UpdateReportedPropertiesAsync(
+                new() { ReportedProperties = new JsonObject() { ["temperature"] = 2 } },
+                caller.Token);
+            caller.Cancel();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => cancelled);
+
+            await RespondToReportedPatchAsync(connection, connection.PublishedMessages[0], Result.Ok, 2);
+            await first;
+            Assert.Single(connection.PublishedMessages);
+        }
+
+        [Fact]
+        public async Task UpdateReportedPropertiesAsync_Dispose_FailsPendingPatches()
+        {
+            MockFeatureConnectionClient connection = new()
+            {
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv5, DeviceId),
+            };
+            TwinClient twinClient = new(connection);
+
+            Task<ReportedPatchResponse> inFlight = UpdateReportedAsync(twinClient, "{\"temperature\":1}");
+            Task<ReportedPatchResponse> queued = UpdateReportedAsync(twinClient, "{\"temperature\":2}");
+            twinClient.Dispose();
+
+            await Assert.ThrowsAsync<ObjectDisposedException>(() => inFlight);
+            await Assert.ThrowsAsync<ObjectDisposedException>(() => queued);
         }
 
         [Fact]
@@ -806,6 +1000,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             (MockFeatureConnectionClient connection, _) = CreateConnectionWithNonce();
             connection.InitialReportedPropertiesVersion = 3;
             using TwinClient twinClient = new(connection);
+            await ReceiveBirthAckAsync(connection, connection.ConnectionNonce!.Value, desiredVersion: 1, reportedVersion: 3);
 
             ulong nextResponseVersion = 0;
             connection.OnPublish = async publish =>
@@ -843,11 +1038,11 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
 
             connection.OnPublish = async publish =>
             {
-                var response = new ReportedPatchResponse() { Result = Result.VersionMismatch, Version = 5 };
+                var response = new ReportedPatchResponse() { Result = Result.Ok, Version = 5 };
                 await connection.SimulateReceiveAsync(CreateInboundTwinPublish("reported-patch-response:1", publish.CorrelationData!, response.ToByteArray()));
                 return new MqttPublishAck() { ReasonCode = MqttPublishAckReasonCode.Success };
             };
-            await twinClient.UpdateReportedPropertiesAsync(new() { IfMatch = 2, ReportedProperties = new JsonObject() }, TestContext.Current.CancellationToken);
+            await twinClient.UpdateReportedPropertiesAsync(new() { ReportedProperties = new JsonObject() }, TestContext.Current.CancellationToken);
             await ReceiveDesiredPatchAsync(connection, nonce, 5, payload: null);
 
             Assert.Equal(5ul, twinClient.AuthoritativeDesiredPropertiesVersion);
@@ -978,6 +1173,25 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             };
             publish.UserProperties.Add(new("type", Encoding.UTF8.GetBytes("birth-ack:1")));
             return connection.SimulateReceiveAsync(publish);
+        }
+
+        private static Task<ReportedPatchResponse> UpdateReportedAsync(TwinClient twinClient, string patch)
+        {
+            return twinClient.UpdateReportedPropertiesAsync(
+                new() { ReportedProperties = JsonNode.Parse(patch)!.AsObject() },
+                TestContext.Current.CancellationToken);
+        }
+
+        private static (ulong IfMatch, JsonObject Patch) ParseReportedPatch(MqttPublish publish)
+        {
+            ReportedPatch patch = ReportedPatch.Parser.ParseFrom(publish.Payload);
+            return (patch.IfMatch, JsonNode.Parse(patch.Payload.ToStringUtf8())!.AsObject());
+        }
+
+        private static Task RespondToReportedPatchAsync(MockFeatureConnectionClient connection, MqttPublish patchPublish, Result result, ulong version)
+        {
+            var response = new ReportedPatchResponse() { Result = result, Version = version };
+            return connection.SimulateReceiveAsync(CreateInboundTwinPublish("reported-patch-response:1", patchPublish.CorrelationData!, response.ToByteArray()));
         }
 
         private static MqttPublish CreateInboundTwinPublish(string type, byte[] correlationData, byte[] payload)

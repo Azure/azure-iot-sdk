@@ -101,7 +101,6 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.MQTTv5
             ReportedPatchRequest reportedPatchRequest = new()
             {
                 ReportedProperties = new JsonObject(),
-                IfMatch = 0
             };
 
             reportedPatchRequest.ReportedProperties[expectedReportedPropertyKey] = expectedReportedPropertyValue;
@@ -166,48 +165,44 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.MQTTv5
         }
 
         [Fact(Timeout = Setup.TestTimeoutMilliseconds)]
-        public async Task TestIfMatchFilteringReportedPatchRequest()
+        public async Task TestReportedPatchesAreConditionalOnTrackedVersionAndCombined()
         {
             CancellationToken cancellationToken = TestContext.Current.CancellationToken;
             MQTTv5DeviceTestContext testDeviceContext = await Setup.CreateConnectedMQTTv5ConnectionClientAsync(null, cancellationToken: cancellationToken);
             using TwinClient twinClient = new(testDeviceContext.ConnectionClient);
             await using (testDeviceContext)
             {
+                // Each patch is made conditional on the version from the birth ack or the previous response, so sequential
+                // patches are all accepted.
                 string propertyName = Guid.NewGuid().ToString();
                 var first = await twinClient.UpdateReportedPropertiesAsync(
                     new() { ReportedProperties = new JsonObject { [propertyName] = "first" } }, cancellationToken);
                 Assert.Equal(Result.Ok, first.Result);
+                Assert.Equal(first.Version, twinClient.AuthoritativeReportedPropertiesVersion);
 
-                var current = await twinClient.UpdateReportedPropertiesAsync(
-                    new()
-                    {
-                        ReportedProperties = new JsonObject { [propertyName] = "current" },
-                        IfMatch = first.Version,
-                    }, cancellationToken);
-                Assert.Equal(Result.Ok, current.Result);
-                Assert.True(current.Version > first.Version);
+                var second = await twinClient.UpdateReportedPropertiesAsync(
+                    new() { ReportedProperties = new JsonObject { [propertyName] = "second" } }, cancellationToken);
+                Assert.Equal(Result.Ok, second.Result);
+                Assert.Equal(first.Version + 1, second.Version);
 
-                var stale = await twinClient.UpdateReportedPropertiesAsync(
-                    new()
-                    {
-                        ReportedProperties = new JsonObject { [propertyName] = "stale" },
-                        IfMatch = first.Version,
-                    }, cancellationToken);
-                Assert.Equal(Result.VersionMismatch, stale.Result);
-                Assert.Equal(current.Version, stale.Version);
+                // Patches made while one is in flight are combined into the next patch, in order.
+                string otherPropertyName = Guid.NewGuid().ToString();
+                ReportedPatchResponse[] concurrent = await Task.WhenAll(
+                    twinClient.UpdateReportedPropertiesAsync(new() { ReportedProperties = new JsonObject { [propertyName] = "third" } }, cancellationToken),
+                    twinClient.UpdateReportedPropertiesAsync(new() { ReportedProperties = new JsonObject { [propertyName] = "fourth" } }, cancellationToken),
+                    twinClient.UpdateReportedPropertiesAsync(new() { ReportedProperties = new JsonObject { [otherPropertyName] = "other" } }, cancellationToken));
+                Assert.All(concurrent, response => Assert.Equal(Result.Ok, response.Result));
+                ulong latestVersion = concurrent.Max(response => response.Version);
+                Assert.True(latestVersion <= second.Version + 2);
+                Assert.Equal(latestVersion, twinClient.AuthoritativeReportedPropertiesVersion);
 
-                DeviceTwin unchanged = await twinClient.GetTwinAsync(cancellationToken: cancellationToken);
-                Assert.NotNull(unchanged.Reported);
-                Assert.Equal("current", unchanged.Reported[propertyName]!.GetValue<string>());
-                Assert.Equal(current.Version, unchanged.ReportedVersion);
-
-                var next = await twinClient.UpdateReportedPropertiesAsync(
-                    new() { ReportedProperties = new JsonObject { [propertyName] = "next" } }, cancellationToken);
-                Assert.Equal(Result.Ok, next.Result);
-                Assert.True(next.Version > current.Version);
+                DeviceTwin twin = await twinClient.GetTwinAsync(cancellationToken: cancellationToken);
+                Assert.NotNull(twin.Reported);
+                Assert.Equal("fourth", twin.Reported[propertyName]!.GetValue<string>());
+                Assert.Equal("other", twin.Reported[otherPropertyName]!.GetValue<string>());
+                Assert.Equal(latestVersion, twin.ReportedVersion);
             }
         }
-
         [Fact(Timeout = Setup.TestTimeoutMilliseconds)]
         public async Task TestDesiredPatchesAfterTwinPushAreDeliveredInVersionOrder()
         {
