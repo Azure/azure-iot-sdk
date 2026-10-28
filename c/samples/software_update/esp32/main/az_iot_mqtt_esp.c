@@ -57,6 +57,8 @@ typedef struct esp_client
   az_iot_mqtt_version version;
 
   esp_mqtt_client_handle_t handle; /* NULL until connect() */
+  /* disconnect() was called; guarded by q_mutex. */
+  bool local_disconnect_requested;
 
   az_iot_mqtt_event_callback inbound_cb;
   void* inbound_ctx;
@@ -375,8 +377,19 @@ static void mqtt_event_handler(
       enqueue_status(m, AZ_IOT_MQTT_EVT_CONNECTED, AZ_IOT_OK, 0, e->session_present);
       break;
     case MQTT_EVENT_DISCONNECTED:
-      enqueue_status(m, AZ_IOT_MQTT_EVT_DISCONNECTED, AZ_IOT_OK, 0, false);
+    {
+      /* AZ_IOT_OK is reserved for a disconnect this client asked for. */
+      xSemaphoreTake(m->q_mutex, portMAX_DELAY);
+      bool requested = m->local_disconnect_requested;
+      xSemaphoreGive(m->q_mutex);
+      enqueue_status(
+          m,
+          AZ_IOT_MQTT_EVT_DISCONNECTED,
+          requested ? AZ_IOT_OK : AZ_IOT_ERR_NOT_CONNECTED,
+          0,
+          false);
       break;
+    }
     case MQTT_EVENT_SUBSCRIBED:
       enqueue_status(m, AZ_IOT_MQTT_EVT_SUBSCRIBE_ACK, AZ_IOT_OK, (uint16_t)e->msg_id, false);
       break;
@@ -485,6 +498,9 @@ static az_iot_result esp_disconnect(az_iot_mqtt_client* self)
   {
     return AZ_IOT_ERR_NOT_CONNECTED;
   }
+  xSemaphoreTake(m->q_mutex, portMAX_DELAY);
+  m->local_disconnect_requested = true;
+  xSemaphoreGive(m->q_mutex);
   esp_mqtt_client_disconnect(m->handle);
   enqueue_status(m, AZ_IOT_MQTT_EVT_DISCONNECTED, AZ_IOT_OK, 0, false);
   return AZ_IOT_OK;

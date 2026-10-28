@@ -301,6 +301,10 @@
 - Paho and az_mqtt adapters: `AZ_IOT_MQTT_EVT_DISCONNECTED` carries `AZ_IOT_OK` only for a
   completed `disconnect()`. A lost connection (Paho) and a server DISCONNECT with reason 0x00
   (`az_iot_mqtt_disconnect_result()`) now report `AZ_IOT_ERR_NOT_CONNECTED`.
+- Paho, az_mqtt and ESP32 sample adapters: `AZ_IOT_MQTT_EVT_DISCONNECTED` carries `AZ_IOT_OK`
+  only for a completed `disconnect()`. A lost connection (Paho, ESP32 sample) and a server
+  DISCONNECT with reason 0x00 (`az_iot_mqtt_disconnect_result()`) now report
+  `AZ_IOT_ERR_NOT_CONNECTED`.
 - mqttv5 twin: with `twin_push.push_desired` or `push_reported` set, a session whose twin-push
   does not arrive within the presence defensive timeout of hub CONNECTED (5 to 15 minutes, longer
   after consecutive misses) is now disconnected and reconnected (or faulted with
