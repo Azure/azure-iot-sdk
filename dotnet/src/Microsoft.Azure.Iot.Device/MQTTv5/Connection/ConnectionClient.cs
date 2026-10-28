@@ -224,7 +224,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
                     }
 
                     subscriptionSourceOwner.MarkDevicePresenceSubscribed();
-                    ReportDevicePresenceSubscriptionResults(featureSubscriptions, suback.Items.Skip(1).ToList());
+                    ReportDevicePresenceSubscriptionResults(featureSubscriptions, suback.Items.Skip(1).ToList(), connack.IsSessionPresent);
                 }
                 catch (Exception e) when (!cancellationToken.IsCancellationRequested)
                 {

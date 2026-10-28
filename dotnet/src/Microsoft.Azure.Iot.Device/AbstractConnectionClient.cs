@@ -242,7 +242,8 @@ namespace Microsoft.Azure.Iot.Device
         /// </summary>
         /// <param name="requests">The requests whose filters were sent, in the order they were sent.</param>
         /// <param name="subackItems">The SUBACK items for exactly those filters, in the same order.</param>
-        internal static void ReportDevicePresenceSubscriptionResults(IReadOnlyList<DevicePresenceSubscriptionRequest> requests, IReadOnlyList<MqttSubscribeAckItem> subackItems)
+        /// <param name="isSessionPresent">Whether the broker resumed the previous MQTT session on this connection.</param>
+        internal static void ReportDevicePresenceSubscriptionResults(IReadOnlyList<DevicePresenceSubscriptionRequest> requests, IReadOnlyList<MqttSubscribeAckItem> subackItems, bool isSessionPresent)
         {
             int offset = 0;
             foreach (DevicePresenceSubscriptionRequest request in requests)
@@ -258,7 +259,7 @@ namespace Microsoft.Azure.Iot.Device
 
                 try
                 {
-                    request.Source.OnDevicePresenceSubscribeCompleted(request.TopicFilters, results);
+                    request.Source.OnDevicePresenceSubscribeCompleted(request.TopicFilters, results, isSessionPresent);
                 }
                 catch (Exception e)
                 {

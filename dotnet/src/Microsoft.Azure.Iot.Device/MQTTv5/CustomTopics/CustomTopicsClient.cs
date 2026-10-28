@@ -50,7 +50,8 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.CustomTopics
     /// hub without a resumed session (including after re-provisioning), it re-subscribes to every topic in
     /// <see cref="GetSubscribedTopics"/> in the same SUBSCRIBE as its own device presence subscriptions, with the QoS each
     /// topic was most recently successfully subscribed to with. Operations that were waiting on the reconnection resume only after that. A
-    /// topic that IoT hub rejects upon re-subscribing is no longer tracked as subscribed. A topic whose unsubscribe is in
+    /// topic that IoT hub rejects upon re-subscribing is no longer tracked as subscribed, unless IoT hub resumed the
+    /// previous MQTT session (which still holds it). A topic whose unsubscribe is in
     /// flight is not re-subscribed to, and stops being tracked even if that unsubscribe then fails.
     /// </para>
     /// </remarks>
@@ -637,13 +638,21 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.CustomTopics
             }
         }
 
-        void IDevicePresenceSubscriptionSource.OnDevicePresenceSubscribeCompleted(IReadOnlyList<MqttTopicFilter> topicFilters, IReadOnlyList<MqttSubscribeAckItem> results)
+        void IDevicePresenceSubscriptionSource.OnDevicePresenceSubscribeCompleted(IReadOnlyList<MqttTopicFilter> topicFilters, IReadOnlyList<MqttSubscribeAckItem> results, bool isSessionPresent)
         {
             List<string> rejectedTopics = new();
             for (int i = 0; i < topicFilters.Count; i++)
             {
                 if (!IsGranted(results[i].ReasonCode))
                 {
+                    // A rejected replacement SUBSCRIBE does not remove the subscription a resumed session still holds,
+                    // so keep tracking the topic to keep delivering and acknowledging its messages.
+                    if (isSessionPresent)
+                    {
+                        Trace.TraceWarning("IoT hub rejected re-subscribing to custom topic {0} upon reconnecting with reason code {1}. The resumed session's existing subscription to it is kept.", topicFilters[i].Topic, results[i].ReasonCode);
+                        continue;
+                    }
+
                     Trace.TraceWarning("IoT hub rejected re-subscribing to custom topic {0} upon reconnecting with reason code {1}. It is no longer subscribed to.", topicFilters[i].Topic, results[i].ReasonCode);
                     rejectedTopics.Add(topicFilters[i].Topic);
                 }

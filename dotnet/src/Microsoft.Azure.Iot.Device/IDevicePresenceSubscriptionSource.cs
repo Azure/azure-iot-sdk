@@ -35,7 +35,11 @@ namespace Microsoft.Azure.Iot.Device
         /// </summary>
         /// <param name="topicFilters">The filters as returned by <see cref="GetDevicePresenceTopicFilters"/> (placeholders not replaced).</param>
         /// <param name="results">The SUBACK item for each filter in <paramref name="topicFilters"/>.</param>
-        void OnDevicePresenceSubscribeCompleted(IReadOnlyList<MqttTopicFilter> topicFilters, IReadOnlyList<MqttSubscribeAckItem> results);
+        /// <param name="isSessionPresent">
+        /// Whether the broker resumed the previous MQTT session, in which case a rejected filter's previous subscription
+        /// may still be in place.
+        /// </param>
+        void OnDevicePresenceSubscribeCompleted(IReadOnlyList<MqttTopicFilter> topicFilters, IReadOnlyList<MqttSubscribeAckItem> results, bool isSessionPresent);
     }
 
     /// <summary>
