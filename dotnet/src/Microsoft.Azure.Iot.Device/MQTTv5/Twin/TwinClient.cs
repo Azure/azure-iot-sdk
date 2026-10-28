@@ -64,7 +64,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
         /// How long to wait for the response to the given attempt (starting at 1) of a desired properties resync GET
         /// request before sending it again.
         /// </summary>
-        internal Func<int, TimeSpan> DesiredResyncTimeoutSchedule { get; set; } = GetDefensiveTimeout;
+        internal Func<int, TimeSpan> DesiredResyncTimeoutSchedule { get; set; } = DefensiveTimeoutSchedule.GetTimeout;
 
         /// <summary>
         /// An event that executes whenever this client receives a desired properties update from IoT hub.
@@ -871,19 +871,6 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
         private static JsonObject ParseSectionPayload(ByteString payload)
         {
             return payload.IsEmpty ? new JsonObject() : JsonObject.Parse(payload.Span)!.AsObject();
-        }
-
-        private static TimeSpan GetDefensiveTimeout(int attempt)
-        {
-            int baseMinutes = attempt switch
-            {
-                1 => 5,
-                2 => 6,
-                3 => 8,
-                _ => 10,
-            };
-
-            return TimeSpan.FromMinutes(baseMinutes) + TimeSpan.FromMinutes(5 * Random.Shared.NextDouble());
         }
 
         private sealed class DesiredResync(Guid? connectionNonce)
