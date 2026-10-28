@@ -14,6 +14,7 @@
 #include "az_iot_mqtt_iface.h"
 #include "az_iot_certificate_provider.h"
 #include "az_iot_connection_client_config.h"
+#include "az_iot_deadline.h"
 #include "az_iot_crypto.h"
 #include "az_iot_dispatch.h"
 #include "az_iot_retry_policy.h"
@@ -1915,7 +1916,7 @@ extern "C"
       bool session_present; /* observed in CONNACK; reported in birth */
       uint16_t sub_packet_id; /* SUBACK correlation for the dev/# sub */
       uint8_t nonce[16]; /* connection nonce echoed by birth-ack */
-      uint64_t deadline_ms; /* handshake timeout (monotonic ms) */
+      az_iot_deadline deadline; /* handshake timeout */
       /* Birth-acks missed in a row since open() or the last birth-ack in time;
        * selects the escalating timeout of the next birth. */
       uint32_t consecutive_birth_ack_timeouts;

@@ -22,6 +22,7 @@
 
 #include "internal/cert_util.h"
 #include "internal/connection_client_internal.h"
+#include "internal/deadline.h"
 #include "internal/mono_time.h"
 #include "internal/retry_policy.h"
 
@@ -2999,8 +3000,9 @@ static void assert_birth_ack_timeout(fixture* fx, uint32_t expected_ms)
 {
   uint64_t now = az_iot_time_mono_ms();
   assert_int_equal(fx->client->presence.birth_ack_timeout_ms, expected_ms);
-  assert_true(fx->client->presence.deadline_ms <= now + expected_ms);
-  assert_true(fx->client->presence.deadline_ms + 1000u >= now + expected_ms);
+  uint64_t remaining = az_iot_deadline__remaining_ms(&fx->client->presence.deadline, now);
+  assert_true(remaining <= expected_ms);
+  assert_true(remaining + 1000u >= expected_ms);
 }
 
 /* Expire the pending presence step: the session is torn down and a retry
@@ -3267,8 +3269,9 @@ static void hub_mqtt_v5_presence_suback_timeout_does_not_escalate(void** state)
   assert_int_equal(fx->client->presence.phase, AZ_IOT_PRESENCE_PHASE_SUBSCRIBING);
   uint64_t now = az_iot_time_mono_ms();
   uint64_t suback_window_ms = (uint64_t)AZ_IOT_DEFAULT_SUBSCRIPTION_ACK_TIMEOUT_SECONDS * 1000u;
-  assert_true(fx->client->presence.deadline_ms <= now + suback_window_ms);
-  assert_true(fx->client->presence.deadline_ms + 1000u >= now + suback_window_ms);
+  uint64_t remaining = az_iot_deadline__remaining_ms(&fx->client->presence.deadline, now);
+  assert_true(remaining <= suback_window_ms);
+  assert_true(remaining + 1000u >= suback_window_ms);
 
   expire_presence_step(fx);
   assert_int_equal(fx->client->presence.consecutive_birth_ack_timeouts, 0);
