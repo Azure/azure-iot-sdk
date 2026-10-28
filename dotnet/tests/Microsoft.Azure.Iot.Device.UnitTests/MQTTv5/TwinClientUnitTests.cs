@@ -1278,6 +1278,113 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             Assert.Empty(states[1].PendingReportedPatches);
         }
 
+        [Fact]
+        public async Task TwinState_InitialVersionsWithoutPayloads_AreOnlyClaimedOnceFullPayloadsAreHeld()
+        {
+            (MockFeatureConnectionClient connection, Guid nonce) = CreateConnectionWithNonce();
+            connection.InitialDesiredPropertiesVersion = 5;
+            connection.InitialReportedPropertiesVersion = 3;
+            using TwinClient twinClient = new(connection);
+
+            TwinState state = twinClient.GetTwinState();
+            Assert.Equal(0ul, state.DesiredVersion);
+            Assert.Equal(0ul, state.ReportedVersion);
+
+            // The patch is still delivered in order, but the device doesn't hold the rest of the desired properties.
+            await ReceiveDesiredPatchAsync(connection, nonce, 6, "{\"b\":2}");
+            Assert.Equal(0ul, twinClient.GetTwinState().DesiredVersion);
+
+            connection.OnPublish = async publish =>
+            {
+                var response = new TwinGetResponse()
+                {
+                    DesiredVersion = 6,
+                    DesiredPayload = ByteString.CopyFromUtf8("{\"a\":1,\"b\":2}"),
+                    ReportedVersion = 3,
+                    ReportedPayload = ByteString.CopyFromUtf8("{\"r\":1}"),
+                };
+                await connection.SimulateReceiveAsync(CreateInboundTwinPublish("get-response:1", publish.CorrelationData!, response.ToByteArray()));
+                return new MqttPublishAck() { ReasonCode = MqttPublishAckReasonCode.Success };
+            };
+            await twinClient.GetTwinAsync(cancellationToken: TestContext.Current.CancellationToken);
+
+            state = twinClient.GetTwinState();
+            Assert.Equal(6ul, state.DesiredVersion);
+            Assert.Equal("{\"a\":1,\"b\":2}", state.Desired.ToJsonString());
+            Assert.Equal(3ul, state.ReportedVersion);
+            Assert.Equal("{\"r\":1}", state.Reported.ToJsonString());
+        }
+
+        [Fact]
+        public async Task UpdateReportedPropertiesAsync_CancelledAfterBeingSentAndConnectionLost_StaysPending()
+        {
+            (MockFeatureConnectionClient connection, Guid nonce) = CreateConnectionWithNonce();
+            using TwinClient twinClient = new(connection);
+            await ReceiveBirthAckAsync(connection, nonce, desiredVersion: 1, reportedVersion: 2);
+            using CancellationTokenSource caller = new();
+
+            Task<ReportedPatchResponse> cancelled = twinClient.UpdateReportedPropertiesAsync(
+                new() { ReportedProperties = new JsonObject() { ["temperature"] = 1 } },
+                caller.Token);
+            Assert.Single(connection.PublishedMessages);
+
+            connection.SimulateConnectionLost();
+            caller.Cancel();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => cancelled);
+
+            // IoT hub may have applied the patch, so it is kept for persistence and sent again once reconnected.
+            Assert.Equal("{\"temperature\":1}", Assert.Single(twinClient.GetTwinState().PendingReportedPatches).ToJsonString());
+
+            Guid newNonce = Guid.NewGuid();
+            connection.ConnectionNonce = newNonce;
+            await ReceiveBirthAckAsync(connection, newNonce, desiredVersion: 1, reportedVersion: 2);
+            Assert.Equal(2, connection.PublishedMessages.Count);
+            Assert.Equal("{\"temperature\":1}", ParseReportedPatch(connection.PublishedMessages[1]).Patch.ToJsonString());
+        }
+
+        [Fact]
+        public async Task EnqueueReportedPropertiesUpdate_FromTwinStateChangedHandler_IsSentAfterSnapshotContainingIt()
+        {
+            (MockFeatureConnectionClient connection, Guid nonce) = CreateConnectionWithNonce();
+            using TwinClient twinClient = new(connection);
+            await ReceiveBirthAckAsync(connection, nonce, desiredVersion: 1, reportedVersion: 2);
+            List<string> events = new();
+            connection.OnPublish = publish =>
+            {
+                events.Add("publish");
+                return Task.FromResult(new MqttPublishAck() { ReasonCode = MqttPublishAckReasonCode.Success });
+            };
+            twinClient.TwinStateChanged += state =>
+            {
+                events.Add($"state {state.PendingReportedPatches.Count}");
+                if (events.Count == 1)
+                {
+                    twinClient.EnqueueReportedPropertiesUpdate(JsonNode.Parse("{\"a\":1}")!.AsObject());
+                }
+            };
+
+            await ReceiveTwinPushAsync(connection, nonce, 1, "{\"d\":1}");
+
+            Assert.Equal(["state 0", "state 1", "publish"], events);
+        }
+
+        [Fact]
+        public async Task ReportedPatchOk_SkippedVersion_MarksReportedPropertiesIncomplete()
+        {
+            (MockFeatureConnectionClient connection, Guid nonce) = CreateConnectionWithNonce();
+            TwinState initialState = new() { ReportedVersion = 4, Reported = new JsonObject() { ["a"] = 0 } };
+            using TwinClient twinClient = new(connection, initialState);
+            await ReceiveBirthAckAsync(connection, nonce, desiredVersion: 1, reportedVersion: 4);
+
+            Task<ReportedPatchResponse> update = UpdateReportedAsync(twinClient, "{\"b\":1}");
+            await RespondToReportedPatchAsync(connection, Assert.Single(connection.PublishedMessages), Result.Ok, 6);
+            await update;
+
+            // Version 5 was written by someone else, so this device's copy lacks its changes.
+            Assert.Equal(0ul, twinClient.GetTwinState().ReportedVersion);
+            Assert.Equal(0ul, connection.ReplacedReportedPropertiesVersions.Last());
+        }
+
         private static (MockFeatureConnectionClient, Guid) CreateConnectionWithNonce()
         {
             Guid nonce = Guid.NewGuid();
