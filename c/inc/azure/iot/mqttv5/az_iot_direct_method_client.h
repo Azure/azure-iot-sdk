@@ -325,6 +325,11 @@ extern "C"
        * drain that follows the same PUBACK is skipped: the retry waits for a later CONNECTED,
        * PUBACK or method message. Cleared by every drain. */
       bool skip_next_drain;
+      /* Fingerprint of the hub host name and device id the client was last bound to;
+       * identity_bound is false before the first bind. Retained state belongs to that
+       * identity. */
+      uint64_t bound_identity;
+      bool identity_bound;
       /* Parallel to req_pool: each invocation's encoded result and its delivery
        * state. The slot stays taken until the result is acknowledged by the
        * broker or its result deadline passes, so a result whose PUBACK is lost
@@ -366,7 +371,7 @@ extern "C"
    * PUBACK (of any publish) or method message. A probe-ack
    * or result is never sent untracked: with every pending-PUBACK slot in use it
    * waits for the next PUBACK. They are kept in memory only, so a device
-   * restart loses them; they are dropped when the device id changes.
+   * restart loses them; they are dropped when the hub or device id changes.
    */
   AZ_NODISCARD az_iot_result az_iot_mqttv5_direct_method_client_init(
       az_iot_mqttv5_direct_method_client* client,

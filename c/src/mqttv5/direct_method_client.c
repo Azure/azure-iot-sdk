@@ -93,6 +93,10 @@ typedef enum
  * and the direction-specific tail. */
 #define DM_TOPIC_PART_COUNT 3
 
+/* 64-bit FNV-1a parameters for the identity fingerprint. */
+#define DM_FNV_OFFSET_BASIS 14695981039346656037ull
+#define DM_FNV_PRIME 1099511628211ull
+
 /* The public header has to size the result buffer without being able to see the
  * codec's internal header, so it carries its own copy of the framing overhead.
  * This is the only place both are in scope; a mismatch would silently undersize
@@ -1497,11 +1501,11 @@ static void on_publish_completed(void* user_ctx)
 /* ------------------------------------------------------------------------- */
 
 /**
- * @brief Drop every token, invocation and reply of the device identity the client was bound to.
+ * @brief Drop every token, invocation and reply of the identity the client was bound to.
  *
- * They belong to the previous device id: published under a new one they would answer nothing,
- * and an exec for an old token can no longer arrive. A request the application still holds is
- * refused by respond() afterwards.
+ * They belong to the previous hub and device id: published under new ones they would answer
+ * nothing, and an exec for an old token can no longer arrive. A request the application still holds
+ * is refused by respond() afterwards.
  */
 static void discard_previous_identity_state(az_iot_mqttv5_direct_method_client* dm)
 {
@@ -1529,17 +1533,36 @@ static void discard_previous_identity_state(az_iot_mqttv5_direct_method_client* 
   {
     AZ_IOT_LOG_WARNF(
         AZ_IOT_LOG_COMPONENT_MQTTV5_DIRECT_METHOD,
-        "the device id changed; dropping %u token(s), invocation(s) and reply(ies) of the previous "
-        "one",
+        "the hub or device id changed; dropping %u token(s), invocation(s) and reply(ies) of "
+        "the previous identity",
         (unsigned)dropped);
   }
+}
+
+/**
+ * @brief FNV-1a hash of the hub host name and device id, separated by a NUL.
+ *
+ * Identifies the identity retained replies belong to; NULL parts hash as empty.
+ */
+static uint64_t identity_fingerprint(const char* hub_hostname, const char* device_id)
+{
+  uint64_t hash = DM_FNV_OFFSET_BASIS;
+  const char* parts[] = { hub_hostname, device_id };
+  for (size_t p = 0; p < sizeof(parts) / sizeof(parts[0]); ++p)
+  {
+    for (const char* c = parts[p]; c != NULL && *c != '\0'; ++c)
+    {
+      hash = (hash ^ (uint8_t)*c) * DM_FNV_PRIME;
+    }
+    /* The separator: hashes a NUL byte, so ("ab","c") and ("a","bc") differ. */
+    hash *= DM_FNV_PRIME;
+  }
+  return hash;
 }
 
 static az_iot_result bind_topics(void* owner, az_iot_connection_client* conn)
 {
   az_iot_mqttv5_direct_method_client* client = (az_iot_mqttv5_direct_method_client*)owner;
-  char previous_outbound_topic[AZ_IOT_MQTTV5_DM_TOPIC_MAX];
-  memcpy(previous_outbound_topic, DI(client).outbound_topic, sizeof(previous_outbound_topic));
 
   const char* device_id = az_iot_connection_client__device_id(conn);
   if (!device_id)
@@ -1574,12 +1597,15 @@ static az_iot_result bind_topics(void* owner, az_iot_connection_client* conn)
     return AZ_IOT_ERR_INTERNAL;
   }
 
-  /* Replies are tied to the device id they were received under. */
-  if (previous_outbound_topic[0] != '\0'
-      && strcmp(previous_outbound_topic, DI(client).outbound_topic) != 0)
+  /* Replies are tied to the hub and device id they were received under: DPS can change either. */
+  uint64_t const identity
+      = identity_fingerprint(az_iot_connection_client_get_iothub_address(conn), device_id);
+  if (DI(client).identity_bound && DI(client).bound_identity != identity)
   {
     discard_previous_identity_state(client);
   }
+  DI(client).bound_identity = identity;
+  DI(client).identity_bound = true;
 
   /* No SUBSCRIBE: ih/{device_id}/dev/# from the presence handshake already
    * covers this. */

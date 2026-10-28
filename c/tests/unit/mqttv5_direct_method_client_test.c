@@ -3071,12 +3071,15 @@ static void a_handler_that_deinitializes_the_client_is_not_followed_by_a_drain(v
   assert_int_equal(az_iot_mqttv5_direct_method_client_init(&fx->dm, &fx->conn), AZ_IOT_OK);
 }
 
-/* The device is re-provisioned to another device id while a result, a ready
+/* The device is re-provisioned to another identity while a result, a ready
  * token and a rejection are still waiting for their PUBACK: none of them is
- * published under the new id, and the old request is no longer answerable. */
-static void replies_of_a_previous_device_id_are_dropped(void** state)
+ * published under the new identity, and the old request is no longer
+ * answerable. @p new_hub NULL keeps the hub; @p new_device_id NULL keeps the id. */
+static void assert_replies_are_dropped_on_reassignment(
+    fixture* fx,
+    const char* new_hub,
+    const char* new_device_id)
 {
-  fixture* fx = (fixture*)*state;
   open_to_connected(fx);
 
   invocation_record rec = { 0 };
@@ -3101,19 +3104,30 @@ static void replies_of_a_previous_device_id_are_dropped(void** state)
   evt.kind = AZ_IOT_MQTT_EVT_DISCONNECTED;
   (void)az_iot_mock_mqtt_client_inject_event(fx->mock, &evt);
   (void)az_iot_connection_client_do_work(&fx->conn, 0);
-  assert_int_equal(az_iot_connection_client__set_device_id(&fx->conn, "ut-device-2"), AZ_IOT_OK);
+  if (new_hub != NULL)
+  {
+    assert_int_equal(az_iot_connection_client__set_iothub_hostname(&fx->conn, new_hub), AZ_IOT_OK);
+  }
+  if (new_device_id != NULL)
+  {
+    assert_int_equal(az_iot_connection_client__set_device_id(&fx->conn, new_device_id), AZ_IOT_OK);
+  }
+  const char* device_id = new_device_id != NULL ? new_device_id : "ut-device";
+  char presence_out[64];
+  char presence_in[64];
+  snprintf(presence_out, sizeof(presence_out), "ih/%s/srv/presence", device_id);
+  snprintf(presence_in, sizeof(presence_in), "ih/%s/dev/presence", device_id);
   open_conn(fx);
   ack_presence_subscription(fx);
 
-  const az_iot_mock_call* birth
-      = find_call(fx->mock, AZ_IOT_MOCK_CALL_PUBLISH, "ih/ut-device-2/srv/presence");
+  const az_iot_mock_call* birth = find_call(fx->mock, AZ_IOT_MOCK_CALL_PUBLISH, presence_out);
   assert_non_null(birth);
   uint8_t nonce[16];
   memcpy(nonce, birth->correlation_data, sizeof(nonce));
   az_iot_mqtt_user_property ack_type = { "type", "birth-ack:1" };
   az_iot_mqtt_message ack_msg;
   memset(&ack_msg, 0, sizeof(ack_msg));
-  ack_msg.topic = "ih/ut-device-2/dev/presence";
+  ack_msg.topic = presence_in;
   ack_msg.correlation_data = nonce;
   ack_msg.correlation_data_len = sizeof(nonce);
   ack_msg.user_properties = az_iot_mqtt_user_properties_from_array(&ack_type, 1);
@@ -3138,6 +3152,33 @@ static void replies_of_a_previous_device_id_are_dropped(void** state)
   assert_int_equal(
       az_iot_mqttv5_direct_method_respond(&fx->dm, rec.request, 500, NULL, 0),
       AZ_IOT_ERR_INVALID_ARG);
+}
+
+static void replies_of_a_previous_device_id_are_dropped(void** state)
+{
+  assert_replies_are_dropped_on_reassignment((fixture*)*state, NULL, "ut-device-2");
+}
+
+/* DPS can move the device to another hub keeping its id: the method topic is
+ * the same, but the replies belong to the old hub. */
+static void replies_of_a_previous_hub_are_dropped(void** state)
+{
+  assert_replies_are_dropped_on_reassignment((fixture*)*state, "otherhub.example", NULL);
+}
+
+/* Negative control: a reconnect to the same hub and id keeps them. */
+static void replies_survive_a_reconnect_to_the_same_identity(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  invocation_record rec = { 0 };
+  fx->rec = &rec;
+  run_one_invocation(fx, &rec, 0x57);
+  assert_int_equal(
+      az_iot_mqttv5_direct_method_respond(&fx->dm, rec.request, 200, NULL, 0), AZ_IOT_OK);
+  reconnect_to_connack(fx);
+  finish_birth(fx);
+  assert_int_equal(count_phase(fx->mock, "result:1"), 1);
 }
 
 static void a_broker_rejected_result_is_not_published_again(void** state)
@@ -4639,6 +4680,9 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         a_handler_that_deinitializes_the_client_is_not_followed_by_a_drain, setup, teardown),
     cmocka_unit_test_setup_teardown(replies_of_a_previous_device_id_are_dropped, setup, teardown),
+    cmocka_unit_test_setup_teardown(replies_of_a_previous_hub_are_dropped, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        replies_survive_a_reconnect_to_the_same_identity, setup, teardown),
     cmocka_unit_test_setup_teardown(
         an_unacknowledged_result_past_its_budget_is_dropped_after_reconnect, setup, teardown),
     cmocka_unit_test_setup_teardown(

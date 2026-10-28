@@ -308,8 +308,8 @@
   failure. A result keeps its slot until its PUBACK, and a probe-ack or
   result waits for a free pending-PUBACK slot instead of being sent untracked. Probe rejections and
   abandons are kept in a queue of `AZ_IOT_MQTTV5_DM_NOTICE_QUEUE_MAX` entries (default
-  `AZ_IOT_MQTTV5_DM_MAX_CONCURRENT`). All are dropped when the device id changes (for example after
-  DPS re-provisioning).
+  `AZ_IOT_MQTTV5_DM_MAX_CONCURRENT`). All are dropped when the hub or device id changes (for
+  example after DPS re-provisioning).
 - Software updates: a failed workflow or step now reports a non-positive `resultCode` (`-facility`,
   e.g. `-5` for an install failure), as the service contract requires; it was `700 - facility`.
 - Software updates error handling: `UPDATE_ACCOUNT_ACCESS_DENIED` is handled like
