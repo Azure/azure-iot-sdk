@@ -147,6 +147,43 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
         }
 
         [Fact]
+        public async Task DuplicateProbe_WithDifferentMethodName_IsIgnored()
+        {
+            MockFeatureConnectionClient connection = new()
+            {
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv5, DeviceId),
+            };
+            using DirectMethodClient directMethodClient = new(connection);
+
+            int probeHandlerInvocations = 0;
+            string? invokedMethodName = null;
+            directMethodClient.DirectMethodProbeReceivedAsync += (_) =>
+            {
+                probeHandlerInvocations++;
+                return Task.FromResult(DirectMethodProbeAck.Accepted());
+            };
+            directMethodClient.DirectMethodInvokedAsync += (args) =>
+            {
+                invokedMethodName = args.MethodName;
+                return Task.FromResult(new DirectMethodResponse() { Status = 200 });
+            };
+
+            byte[] correlationData = Guid.NewGuid().ToByteArray();
+            await connection.SimulateReceiveAsync(CreateInboundMethodPublish("probe:1", correlationData, new Probe() { MethodName = "reboot", ResponseTimeoutSeconds = 30 }.ToByteArray()));
+            await connection.SimulateReceiveAsync(CreateInboundMethodPublish("probe:1", correlationData, new Probe() { MethodName = "factoryReset", ResponseTimeoutSeconds = 30 }.ToByteArray()));
+
+            Assert.Equal(1, probeHandlerInvocations);
+            ByteString readyId = ProbeAck.Parser.ParseFrom(Assert.Single(connection.PublishedMessages).Payload).Ready.ReadyId;
+
+            var exec = new Exec() { ReadyId = readyId };
+            await connection.SimulateReceiveAsync(CreateInboundMethodPublish("exec:1", correlationData, exec.ToByteArray()));
+
+            Assert.Equal("reboot", invokedMethodName);
+            Assert.Equal(2, connection.PublishedMessages.Count);
+            Assert.Equal("result:1", GetType(connection.PublishedMessages[1]));
+        }
+
+        [Fact]
         public async Task ProbeThatTimesOut_DoesNotCacheRequest()
         {
             MockFeatureConnectionClient connection = new()

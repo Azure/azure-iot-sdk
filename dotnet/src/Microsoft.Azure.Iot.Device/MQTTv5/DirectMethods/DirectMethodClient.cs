@@ -25,12 +25,12 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods
         private const string DirectMethodsResponseTopic = "ih/" + IConnectionClient.DeviceIdPlaceholder + "/srv/methods";
         private const string DirectMethodsRequestTopic = "ih/" + IConnectionClient.DeviceIdPlaceholder + "/dev/methods";
 
-        // Only applicable for MQTTv5 Hub scenario. Maps from request Id (GUID) to ready Id (also GUID). When this client receives an Exec message, it should only notify the user about it
-        // if this map contains the exec's request Id and it maps to the ready Id in the Exec message.
-        private ConcurrentDictionary<Guid, ByteString> _pendingExpectedDirectMethodReadyIds = new();
+        // Only applicable for MQTTv5 Hub scenario. Maps from request Id (GUID) to the ready Id (also GUID) and method name of an accepted probe. When this
+        // client receives an Exec message, it should only notify the user about it if this map contains the exec's request Id and it maps to the ready Id
+        // in the Exec message. The ready Id and method name are stored together so that they are always added and removed as one consistent request state.
+        private ConcurrentDictionary<Guid, PendingDirectMethodRequest> _pendingDirectMethodRequests = new();
 
-        // Only applicable for MQTTv5 Hub scenario. Maps from request Id (GUID) to method name.
-        private ConcurrentDictionary<Guid, string> _pendingExpectedDirectMethodNames = new();
+        private sealed record PendingDirectMethodRequest(ByteString ReadyId, string MethodName);
 
         private IConnectionClient _connection;
 
@@ -160,12 +160,18 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods
                 Probe probe = Probe.Parser.ParseFrom(publish.Payload);
 
                 ProbeAck probeAckToSend;
-                bool isDuplicateProbe = _pendingExpectedDirectMethodReadyIds.TryGetValue(requestId.Value, out ByteString? existingReadyId);
+                bool isDuplicateProbe = _pendingDirectMethodRequests.TryGetValue(requestId.Value, out PendingDirectMethodRequest? existingRequest);
                 if (isDuplicateProbe)
                 {
+                    if (!string.Equals(existingRequest!.MethodName, probe.MethodName, StringComparison.Ordinal))
+                    {
+                        Trace.TraceWarning("Received direct method probe for request Id {0} whose method name does not match the pending request with that Id. Ignoring it.", requestId.Value);
+                        return;
+                    }
+
                     // Duplicate probe for a request this client already accepted. Re-send the same ready Id rather than asking the
                     // application again so that the eventual exec message still correlates with the ready Id this client expects.
-                    probeAckToSend = new() { Ready = new() { ReadyId = existingReadyId } };
+                    probeAckToSend = new() { Ready = new() { ReadyId = existingRequest.ReadyId } };
                 }
                 else
                 {
@@ -199,12 +205,19 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods
                 {
                     // The user signalled that the device was ready for the direct method, so locally save the ready Id and request Id.
                     // If a duplicate probe for the same request was accepted concurrently, reuse whichever ready Id was saved first.
-                    _pendingExpectedDirectMethodNames.TryAdd(requestId.Value, probe.MethodName);
-                    ByteString savedReadyId = _pendingExpectedDirectMethodReadyIds.GetOrAdd(requestId.Value, probeAckToSend.Ready.ReadyId);
+                    PendingDirectMethodRequest savedRequest = _pendingDirectMethodRequests.GetOrAdd(
+                        requestId.Value,
+                        new PendingDirectMethodRequest(probeAckToSend.Ready.ReadyId, probe.MethodName));
 
-                    if (!savedReadyId.Equals(probeAckToSend.Ready.ReadyId))
+                    if (!string.Equals(savedRequest.MethodName, probe.MethodName, StringComparison.Ordinal))
                     {
-                        probeAckToSend = new() { Ready = new() { ReadyId = savedReadyId } };
+                        Trace.TraceWarning("Received direct method probe for request Id {0} whose method name does not match the pending request with that Id. Ignoring it.", requestId.Value);
+                        return;
+                    }
+
+                    if (!savedRequest.ReadyId.Equals(probeAckToSend.Ready.ReadyId))
+                    {
+                        probeAckToSend = new() { Ready = new() { ReadyId = savedRequest.ReadyId } };
                     }
                 }
 
@@ -235,7 +248,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods
                     return;
                 }
 
-                if (!_pendingExpectedDirectMethodReadyIds.ContainsKey(requestId.Value))
+                if (!_pendingDirectMethodRequests.ContainsKey(requestId.Value))
                 {
                     Trace.TraceWarning("Received direct method exec message with unknown request Id. Ignoring it.");
                     return;
@@ -257,21 +270,14 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods
                     return;
                 }
 
-                if (!_pendingExpectedDirectMethodReadyIds.TryRemove(requestId.Value, out ByteString? expectedReadyId))
+                if (!_pendingDirectMethodRequests.TryRemove(requestId.Value, out PendingDirectMethodRequest? pendingRequest))
                 {
                     // A concurrently handled exec for the same request already claimed it.
                     Trace.TraceWarning("Received direct method exec message with unknown request Id. Ignoring it.");
                     return;
                 }
 
-                if (!_pendingExpectedDirectMethodNames.TryRemove(requestId.Value, out string? methodName))
-                {
-                    // This should never happen since _pendingExpectedDirectMethodReadyIds and _pendingExpectedDirectMethodNames should have the same set of keys.
-                    Trace.TraceWarning("Received direct method exec message, but could not correlate its method name to a previously received probe message. Ignoring it.");
-                    return;
-                }
-
-                if (!expectedReadyId.Equals(exec.ReadyId))
+                if (!pendingRequest.ReadyId.Equals(exec.ReadyId))
                 {
                     Trace.TraceWarning("Received direct method exec message with unexpected ready Id. Ignoring it.");
                     return;
@@ -279,7 +285,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods
 
                 DirectMethodRequestReceivedEventArgs directMethodInvokedArgs = new()
                 {
-                    MethodName = methodName,
+                    MethodName = pendingRequest.MethodName,
                     Payload = exec.Params.Span.ToArray()
                 };
 
