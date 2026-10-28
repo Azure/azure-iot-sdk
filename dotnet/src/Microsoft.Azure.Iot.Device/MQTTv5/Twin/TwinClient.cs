@@ -44,6 +44,12 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
         // observed the desired properties yet. Unlike the resync state, this survives disconnects.
         private ulong _localDesiredVersion;
 
+        // Guards _localReportedVersion.
+        private readonly object _reportedStateLock = new();
+
+        // The version of the reported properties that this device holds in full. 0 means the device does not hold them.
+        private ulong _localReportedVersion;
+
         // Non-null while this client is resyncing its desired properties with IoT hub.
         private DesiredResync? _desiredResync;
 
@@ -99,6 +105,8 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
         public TwinClient(IConnectionClient connection)
         {
             _connection = connection;
+            _localDesiredVersion = connection.InitialDesiredPropertiesVersion;
+            _localReportedVersion = connection.InitialReportedPropertiesVersion;
             _connection.PublishReceivedAsync += HandleReceivedMqttPublish;
         }
 
@@ -306,8 +314,13 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
                     lock (_desiredStateLock)
                     {
                         // The application fetched the desired properties, so this device's view of them is now at least this version.
-                        _localDesiredVersion = Math.Max(_localDesiredVersion, twinGetResponse.DesiredVersion);
+                        AdvanceLocalDesiredVersion(twinGetResponse.DesiredVersion);
                     }
+                }
+
+                if (pendingGetTwinRequest.GetReported && twinGetResponse.HasReportedPayload)
+                {
+                    AdvanceLocalReportedVersion(twinGetResponse.ReportedVersion);
                 }
 
                 pendingGetTwinRequest.TwinResponseTask.TrySetResult(new()
@@ -329,6 +342,19 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
                 && _pendingReportedPropertyUpdateOperations.TryRemove(patchResponseCorrelationData.Value, out PendingReportedPropertiesUpdateRequest? pendingReportedPropertiesUpdateRequest))
             {
                 ReportedPatchResponse reportedPatchResponse = ReportedPatchResponse.Parser.ParseFrom(args.Publish.PayloadAsReadOnlySequence);
+                if (reportedPatchResponse.Result == Result.Ok)
+                {
+                    lock (_reportedStateLock)
+                    {
+                        // Only the device writes its reported properties, so if it held the version before this patch, it now holds
+                        // them in full at the patched version. Otherwise, it still doesn't hold them in full.
+                        if (_localReportedVersion != 0 && reportedPatchResponse.Version == _localReportedVersion + 1)
+                        {
+                            AdvanceLocalReportedVersion(reportedPatchResponse.Version);
+                        }
+                    }
+                }
+
                 pendingReportedPropertiesUpdateRequest.ReportedPropertyUpdateResponse.TrySetResult(reportedPatchResponse);
             }
             else if (type.Equals("desired-patch"))
@@ -365,6 +391,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
                         Properties = ParseSectionPayload(receivedTwinPush.Reported.Payload),
                         PropertiesVersion = receivedTwinPush.Reported.Version
                     };
+                    AdvanceLocalReportedVersion(receivedTwinPush.Reported.Version);
                 }
 
                 DesiredStateOutcome outcome = new();
@@ -472,7 +499,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
             }
 
             JsonObject desiredProperties = ParseSectionPayload(patch.Payload);
-            _localDesiredVersion = patch.Version;
+            AdvanceLocalDesiredVersion(patch.Version);
             outcome.Deliveries.Add(new DesiredPatchReceivedEventArgs()
             {
                 DesiredProperties = desiredProperties,
@@ -489,12 +516,34 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
             }
 
             JsonObject desiredProperties = ParseSectionPayload(payload);
-            _localDesiredVersion = version;
+            AdvanceLocalDesiredVersion(version);
             return new TwinPushSection()
             {
                 Properties = desiredProperties,
                 PropertiesVersion = version,
             };
+        }
+
+        // Must be called while holding _desiredStateLock.
+        private void AdvanceLocalDesiredVersion(ulong version)
+        {
+            if (version > _localDesiredVersion)
+            {
+                _localDesiredVersion = version;
+                _connection.ObserveDesiredPropertiesVersion(version);
+            }
+        }
+
+        private void AdvanceLocalReportedVersion(ulong version)
+        {
+            lock (_reportedStateLock)
+            {
+                if (version > _localReportedVersion)
+                {
+                    _localReportedVersion = version;
+                    _connection.ObserveReportedPropertiesVersion(version);
+                }
+            }
         }
 
         // Must be called while holding _desiredStateLock.

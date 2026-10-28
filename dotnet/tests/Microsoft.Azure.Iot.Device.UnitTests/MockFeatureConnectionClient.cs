@@ -37,6 +37,24 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
         Guid? global::Microsoft.Azure.Iot.Device.Unified.Connection.IConnectionClient.ConnectionNonce => ConnectionNonce;
 
+        public ulong InitialDesiredPropertiesVersion { get; set; }
+
+        public ulong InitialReportedPropertiesVersion { get; set; }
+
+        /// <summary>Every desired properties version a feature client reported that the device now holds, in order.</summary>
+        public List<ulong> ObservedDesiredPropertiesVersions { get; } = new();
+
+        /// <summary>Every reported properties version a feature client reported that the device now holds, in order.</summary>
+        public List<ulong> ObservedReportedPropertiesVersions { get; } = new();
+
+        ulong global::Microsoft.Azure.Iot.Device.MQTTv5.Connection.IConnectionClient.InitialDesiredPropertiesVersion => InitialDesiredPropertiesVersion;
+
+        ulong global::Microsoft.Azure.Iot.Device.MQTTv5.Connection.IConnectionClient.InitialReportedPropertiesVersion => InitialReportedPropertiesVersion;
+
+        void global::Microsoft.Azure.Iot.Device.MQTTv5.Connection.IConnectionClient.ObserveDesiredPropertiesVersion(ulong version) => ObservedDesiredPropertiesVersions.Add(version);
+
+        void global::Microsoft.Azure.Iot.Device.MQTTv5.Connection.IConnectionClient.ObserveReportedPropertiesVersion(ulong version) => ObservedReportedPropertiesVersions.Add(version);
+
         /// <summary>Every publish, subscribe and unsubscribe the feature clients sent, in order.</summary>
         public List<MqttPublish> PublishedMessages { get; } = new();
 

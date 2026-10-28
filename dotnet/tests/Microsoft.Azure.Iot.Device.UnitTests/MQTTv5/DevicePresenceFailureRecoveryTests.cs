@@ -149,6 +149,59 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
         }
 
         [Fact]
+        public async Task BirthAnnouncesInitialThenLatestObservedTwinVersions()
+        {
+            using MockConnectionMqttClient mockMqttClient = new() { AutoRespondToBirth = true };
+            MqttV5ConnectionClientOptions options = new()
+            {
+                MqttClient = mockMqttClient,
+                InitialDesiredPropertiesVersion = 5,
+                InitialReportedPropertiesVersion = 3,
+                ConnectionRetryPolicy = new ExponentialBackoffRetryPolicy(uint.MaxValue, TimeSpan.Zero, useJitter: false),
+            };
+            using ConnectionClient connectionClient = new(options);
+            using TwinClient twinClient = new(connectionClient);
+
+            await connectionClient.ConnectToHubAsync(GetMockConnectionContext(), TestContext.Current.CancellationToken)
+                .WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+
+            var push = new Device.Models.Twin.TwinPush()
+            {
+                Desired = new Device.Models.Twin.Section { Version = 7, Payload = ByteString.CopyFromUtf8("{}") },
+                Reported = new Device.Models.Twin.Section { Version = 4, Payload = ByteString.CopyFromUtf8("{}") },
+            };
+            MqttPublish pushPublish = new()
+            {
+                Topic = "ih/someDeviceId/dev/twin",
+                CorrelationData = connectionClient.CurrentConnectionNonce!.Value.ToByteArray(bigEndian: true),
+                Payload = push.ToByteArray(),
+            };
+            pushPublish.UserProperties.Add(new("type", Encoding.UTF8.GetBytes("twin-push:1")));
+            await mockMqttClient.SimulatePublishReceivedAsync(pushPublish);
+
+            TaskCompletionSource reconnected = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            connectionClient.DevicePresenceFlowCompletedAsync += _ =>
+            {
+                reconnected.TrySetResult();
+                return Task.CompletedTask;
+            };
+            await mockMqttClient.SimulateServerDisconnectAsync(MqttDisconnectReason.ServerBusy)
+                .WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+            await reconnected.Task.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+
+            Birth[] births = mockMqttClient.SentMqttTrafficInOrder
+                .Select(traffic => traffic.Publish).OfType<MqttPublish>()
+                .Where(publish => publish.Topic.EndsWith("/srv/presence", StringComparison.Ordinal))
+                .Select(publish => Birth.Parser.ParseFrom(publish.Payload))
+                .ToArray();
+            Assert.Equal(2, births.Length);
+            Assert.Equal(5ul, births[0].DesiredVersion);
+            Assert.Equal(3ul, births[0].ReportedVersion);
+            Assert.Equal(7ul, births[1].DesiredVersion);
+            Assert.Equal(4ul, births[1].ReportedVersion);
+        }
+
+        [Fact]
         public async Task AnnounceDevicePresenceRecoversWhenSubackIsMalformed()
         {
             // A SUBACK with no items is malformed, so the birth flow disconnects and lets the manager reconnect.

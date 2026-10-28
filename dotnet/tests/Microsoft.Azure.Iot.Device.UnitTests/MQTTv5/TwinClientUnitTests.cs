@@ -606,6 +606,49 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             Assert.Single(connection.PublishedMessages);
         }
 
+        [Fact]
+        public async Task InitialDesiredVersion_NextPatchIsDeliveredWithoutResync()
+        {
+            (MockFeatureConnectionClient connection, Guid nonce) = CreateConnectionWithNonce();
+            connection.InitialDesiredPropertiesVersion = 5;
+            using TwinClient twinClient = new(connection);
+
+            DesiredPatchReceivedEventArgs? received = null;
+            twinClient.DesiredPatchReceived += args => received = args;
+
+            await ReceiveDesiredPatchAsync(connection, nonce, 5, payload: null);
+            await ReceiveDesiredPatchAsync(connection, nonce, 6, "{\"fanSpeed\":60}");
+
+            Assert.Empty(connection.PublishedMessages);
+            Assert.Equal(6ul, received!.DesiredPropertiesVersion);
+            Assert.Equal(new[] { 6ul }, connection.ObservedDesiredPropertiesVersions);
+        }
+
+        [Fact]
+        public async Task ReportedPatchOk_RecordsReportedVersionOnlyWhenDeviceHeldPreviousVersion()
+        {
+            (MockFeatureConnectionClient connection, _) = CreateConnectionWithNonce();
+            connection.InitialReportedPropertiesVersion = 3;
+            using TwinClient twinClient = new(connection);
+
+            ulong nextResponseVersion = 0;
+            connection.OnPublish = async publish =>
+            {
+                var response = new ReportedPatchResponse() { Result = Result.Ok, Version = nextResponseVersion };
+                await connection.SimulateReceiveAsync(CreateInboundTwinPublish("reported-patch-response:1", publish.CorrelationData!, response.ToByteArray()));
+                return new MqttPublishAck() { ReasonCode = MqttPublishAckReasonCode.Success };
+            };
+
+            nextResponseVersion = 4;
+            await twinClient.UpdateReportedPropertiesAsync(new() { ReportedProperties = new JsonObject() }, TestContext.Current.CancellationToken);
+
+            // Version 5 was written by someone else, so this device doesn't hold the reported properties at version 6 in full.
+            nextResponseVersion = 6;
+            await twinClient.UpdateReportedPropertiesAsync(new() { ReportedProperties = new JsonObject() }, TestContext.Current.CancellationToken);
+
+            Assert.Equal(new[] { 4ul }, connection.ObservedReportedPropertiesVersions);
+        }
+
         private static (MockFeatureConnectionClient, Guid) CreateConnectionWithNonce()
         {
             Guid nonce = Guid.NewGuid();

@@ -26,6 +26,36 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
 
         Guid? IConnectionClient.ConnectionNonce => CurrentConnectionNonce;
 
+        private readonly ulong _initialDesiredPropertiesVersion;
+        private readonly ulong _initialReportedPropertiesVersion;
+
+        // The latest twin section versions that the device holds, which are announced in each birth.
+        private ulong _desiredPropertiesVersion;
+        private ulong _reportedPropertiesVersion;
+
+        ulong IConnectionClient.InitialDesiredPropertiesVersion => _initialDesiredPropertiesVersion;
+
+        ulong IConnectionClient.InitialReportedPropertiesVersion => _initialReportedPropertiesVersion;
+
+        void IConnectionClient.ObserveDesiredPropertiesVersion(ulong version) => AdvanceTo(ref _desiredPropertiesVersion, version);
+
+        void IConnectionClient.ObserveReportedPropertiesVersion(ulong version) => AdvanceTo(ref _reportedPropertiesVersion, version);
+
+        private static void AdvanceTo(ref ulong location, ulong version)
+        {
+            ulong current = Interlocked.Read(ref location);
+            while (version > current)
+            {
+                ulong original = Interlocked.CompareExchange(ref location, version, current);
+                if (original == current)
+                {
+                    return;
+                }
+
+                current = original;
+            }
+        }
+
         public ConnectionClient(ConnectionClientOptions? options = null, ConnectionContext? connectionContext = null)
             : base((options ?? new ConnectionClientOptions()).ToCommonOptions(), connectionContext)
         {
@@ -33,6 +63,10 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
             _receiveDesiredPropertyUpdates = options.ReceiveDesiredPropertyUpdates;
             _receiveReportedPropertiesUponConnect = options.ReceiveReportedPropertiesUponConnect;
             _sessionExpiryInterval = options.SessionExpiryInterval;
+            _initialDesiredPropertiesVersion = options.InitialDesiredPropertiesVersion;
+            _initialReportedPropertiesVersion = options.InitialReportedPropertiesVersion;
+            _desiredPropertiesVersion = options.InitialDesiredPropertiesVersion;
+            _reportedPropertiesVersion = options.InitialReportedPropertiesVersion;
         }
 
         public override Task HandleConnectedToHubAsync(MqttClientConnectedEventArgs args)
@@ -156,9 +190,10 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
                 }
             }
 
-            // The device's last known version of the twin's reported and desired properties. Currently, there is no support for persisting this state on disk, so assume the device has never seen the twin.
-            uint deviceDesiredPropertyVersion = 0;
-            uint deviceReportedPropertyVersion = 0;
+            // The latest versions of the twin's desired and reported properties that the device holds. IoT hub pushes a section upon
+            // connecting (if requested) only if its version differs from the one announced here.
+            ulong deviceDesiredPropertyVersion = Interlocked.Read(ref _desiredPropertiesVersion);
+            ulong deviceReportedPropertyVersion = Interlocked.Read(ref _reportedPropertiesVersion);
 
             Birth birth = new()
             {

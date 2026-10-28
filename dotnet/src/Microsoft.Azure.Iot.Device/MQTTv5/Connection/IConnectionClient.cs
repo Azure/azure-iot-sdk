@@ -42,6 +42,28 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
         internal Guid? ConnectionNonce => null;
 
         /// <summary>
+        /// The version of the desired properties that the device held when this connection client was constructed.
+        /// </summary>
+        internal ulong InitialDesiredPropertiesVersion => 0;
+
+        /// <summary>
+        /// The version of the reported properties that the device held when this connection client was constructed.
+        /// </summary>
+        internal ulong InitialReportedPropertiesVersion => 0;
+
+        /// <summary>
+        /// Record that the device now holds this version of the desired properties, so that it is announced to IoT hub upon
+        /// (re)connecting. Older versions than the one already recorded are ignored.
+        /// </summary>
+        internal void ObserveDesiredPropertiesVersion(ulong version) { }
+
+        /// <summary>
+        /// Record that the device now holds this version of the reported properties, so that it is announced to IoT hub upon
+        /// (re)connecting. Older versions than the one already recorded are ignored.
+        /// </summary>
+        internal void ObserveReportedPropertiesVersion(ulong version) { }
+
+        /// <summary>
         /// Send a PUBLISH to IoT hub. Any <see cref="DeviceIdPlaceholder"/> in the topic is replaced with the device's
         /// current ID when it is sent.
         /// </summary>
