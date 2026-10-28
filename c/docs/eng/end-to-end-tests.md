@@ -342,7 +342,8 @@ script as `E2E_MQTTV5_SHARED_IOTHUB_CS`, as the secret of that name holds `iothu
 workflow; nightly; manual. Pull requests from forks and from Dependabot skip.
 
 > **Software updates e2e** runs in its own workflow
-> ([`ci-c-e2e-adu.yml`](../../../.github/workflows/ci-c-e2e-adu.yml), Linux, manual dispatch). See [Software updates e2e](#software-updates-e2e).
+> ([`ci-c-e2e-adu.yml`](../../../.github/workflows/ci-c-e2e-adu.yml), Linux) on the same shared mqttv5
+> environment and triggers. See [Software updates e2e](#software-updates-e2e).
 
 ---
 
@@ -386,6 +387,20 @@ variables for a `-RunId` without contacting Azure. `Get-SuE2EFixtureTag` hashes 
 appended to a reused `-RunId`, a change to that code stages a new set. With `-Reuse`, a failed import
 is treated as done if the update now exists (another run imported it), else retried up to 3 times.
 
+CI ([`ci-c-e2e-adu.yml`](../../../.github/workflows/ci-c-e2e-adu.yml)) runs on the shared mqttv5
+environment, whose ADR namespace is linked to a Device Update instance, on pull requests touching
+core, Software Update or adapter code, the e2e harness or the workflow; nightly; manual. Pull requests
+from forks and from Dependabot skip. Scheduled and manual runs first run the namespace repair
+(`ci-c-e2e-mqttv5-adr-namespace.yml`), which also restores the Software Update link. One job then
+ensures the standing offers (`New-SuE2EOffers -RunId "s$(Get-SuE2EFixtureTag)" -Reuse`; seconds once
+staged), issues a new device per suite execution (4: each suite on each adapter) from the enrollment
+group's CA (`e2e-shared-device.ps1`), runs the suites, then checks the offer devices' job results.
+Nothing is deleted per run; offer sets staged by older fixture code are left in place. Inputs:
+variables `E2E_MQTTV5_SHARED_SUBSCRIPTION_ID`, `_RESOURCE_GROUP`, `_ADR_NAMESPACE`, `_ID_SCOPE`,
+`_DPS_HOST`, `_LOCATION`, `_SU_ENDPOINT`, `_SU_STORAGE_ACCOUNT`, `_SU_STORAGE_CONTAINER`, and
+`_SU_INSTANCE` (the Device Update instance the namespace repair links); secrets `E2E_MQTTV5_SHARED_GROUP_CA`,
+`_IOTHUB_SERVICE_CS`, `_EVENTHUB_CS`, `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`.
+
 Every variable is required; a missing one fails the suite or the scenario that needs it.
 
 | Env var | Meaning |
@@ -420,7 +435,7 @@ multi-step updates, and reboot/resume.
   watcher before opening the c2d/method/twin connections.
 - **Resource quotas are hard limits.** Provisioning per matrix leg keeps tests
   isolated but multiplies resource usage; keep the matrix lean and always delete
-  the RG. Software updates is intentionally kept off PRs for this reason.
+  the RG.
 
 ---
 

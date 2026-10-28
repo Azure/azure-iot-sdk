@@ -1702,7 +1702,8 @@ Every external effect is a hook, so the engine is tested on the host with no net
 | End to end | `tests/e2e/tests/e2e_su_test.c`, `tests/e2e/tests/e2e_su_offer_test.c` | The DPS channel and offered updates against the real service. Built with `-DAZ_IOT_BUILD_E2E_SU=ON`. See [end-to-end-tests.md](end-to-end-tests.md#software-updates-e2e). |
 
 Unit and crypto-adapter tests run on every CI build. The end-to-end suites run in their own
-workflow ([`ci-c-e2e-adu.yml`](../../../.github/workflows/ci-c-e2e-adu.yml)), started manually.
+workflow ([`ci-c-e2e-adu.yml`](../../../.github/workflows/ci-c-e2e-adu.yml)): on pull requests,
+nightly and manually.
 
 Suites never skip themselves at run time: a missing prerequisite fails the suite, and an optional
 suite is excluded at build time.
