@@ -1496,9 +1496,50 @@ static void on_publish_completed(void* user_ctx)
 /* lifecycle                                                                 */
 /* ------------------------------------------------------------------------- */
 
+/**
+ * @brief Drop every token, invocation and reply of the device identity the client was bound to.
+ *
+ * They belong to the previous device id: published under a new one they would answer nothing,
+ * and an exec for an old token can no longer arrive. A request the application still holds is
+ * refused by respond() afterwards.
+ */
+static void discard_previous_identity_state(az_iot_mqttv5_direct_method_client* dm)
+{
+  size_t dropped = 0;
+  for (size_t i = 0; i < AZ_IOT_MQTTV5_DM_MAX_CONCURRENT; ++i)
+  {
+    if (DI(dm).ready_pool[i]._internal.in_use || DI(dm).req_pool[i]._internal.in_use)
+    {
+      dropped++;
+    }
+    DI(dm).ready_pool[i]._internal.in_use = false;
+    DI(dm).ready_pool[i]._internal.probe_ack_state = AZ_IOT_MQTTV5_DM_OUTBOUND_NONE;
+    DI(dm).req_pool[i]._internal.in_use = false;
+    DI(dm).result_state[i] = AZ_IOT_MQTTV5_DM_OUTBOUND_NONE;
+  }
+  for (size_t i = 0; i < AZ_IOT_MQTTV5_DM_NOTICE_QUEUE_MAX; ++i)
+  {
+    if (DI(dm).notice_queue[i]._internal.state != AZ_IOT_MQTTV5_DM_OUTBOUND_NONE)
+    {
+      dropped++;
+    }
+    DI(dm).notice_queue[i]._internal.state = AZ_IOT_MQTTV5_DM_OUTBOUND_NONE;
+  }
+  if (dropped > 0u)
+  {
+    AZ_IOT_LOG_WARNF(
+        AZ_IOT_LOG_COMPONENT_MQTTV5_DIRECT_METHOD,
+        "the device id changed; dropping %u token(s), invocation(s) and reply(ies) of the previous "
+        "one",
+        (unsigned)dropped);
+  }
+}
+
 static az_iot_result bind_topics(void* owner, az_iot_connection_client* conn)
 {
   az_iot_mqttv5_direct_method_client* client = (az_iot_mqttv5_direct_method_client*)owner;
+  char previous_outbound_topic[AZ_IOT_MQTTV5_DM_TOPIC_MAX];
+  memcpy(previous_outbound_topic, DI(client).outbound_topic, sizeof(previous_outbound_topic));
 
   const char* device_id = az_iot_connection_client__device_id(conn);
   if (!device_id)
@@ -1529,7 +1570,15 @@ static az_iot_result bind_topics(void* owner, az_iot_connection_client* conn)
         (unsigned)AZ_IOT_MQTTV5_DM_TOPIC_MAX);
     DI(client).inbound_topic[0] = '\0';
     DI(client).outbound_topic[0] = '\0';
+    discard_previous_identity_state(client);
     return AZ_IOT_ERR_INTERNAL;
+  }
+
+  /* Replies are tied to the device id they were received under. */
+  if (previous_outbound_topic[0] != '\0'
+      && strcmp(previous_outbound_topic, DI(client).outbound_topic) != 0)
+  {
+    discard_previous_identity_state(client);
   }
 
   /* No SUBSCRIBE: ih/{device_id}/dev/# from the presence handshake already

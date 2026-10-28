@@ -366,7 +366,7 @@ extern "C"
    * PUBACK (of any publish) or method message. A probe-ack
    * or result is never sent untracked: with every pending-PUBACK slot in use it
    * waits for the next PUBACK. They are kept in memory only, so a device
-   * restart loses them.
+   * restart loses them; they are dropped when the device id changes.
    */
   AZ_NODISCARD az_iot_result az_iot_mqttv5_direct_method_client_init(
       az_iot_mqttv5_direct_method_client* client,
