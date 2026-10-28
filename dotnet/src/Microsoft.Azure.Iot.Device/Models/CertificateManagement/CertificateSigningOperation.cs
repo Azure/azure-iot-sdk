@@ -25,6 +25,10 @@ namespace Microsoft.Azure.Iot.Device.Models.CertificateManagement
         private readonly TaskCompletionSource<CertificateSigningResponse> _completed
             = new TaskCompletionSource<CertificateSigningResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
 
+        // Canceled when this operation is canceled, so that sending its request stops even if a send or one of its
+        // retries is still in progress.
+        private readonly CancellationTokenSource _abandoned = new();
+
         /// <summary>
         /// A task that completes when IoT Hub accepts the certificate signing request (202 Accepted).
         /// The result contains the correlation ID and operation expiration time.
@@ -49,6 +53,8 @@ namespace Microsoft.Azure.Iot.Device.Models.CertificateManagement
         /// </exception>
         public Task<CertificateSigningResponse> Completed => _completed.Task;
 
+        internal CancellationToken Abandoned => _abandoned.Token;
+
         internal void SetAccepted(CertificateSigningRequestAccepted response) => _accepted.TrySetResult(response);
 
         internal void SetCompleted(CertificateSigningResponse response)
@@ -64,6 +70,7 @@ namespace Microsoft.Azure.Iot.Device.Models.CertificateManagement
 
         internal void SetCanceled(CancellationToken cancellationToken)
         {
+            _abandoned.Cancel();
             _accepted.TrySetCanceled(cancellationToken);
             _completed.TrySetCanceled(cancellationToken);
         }

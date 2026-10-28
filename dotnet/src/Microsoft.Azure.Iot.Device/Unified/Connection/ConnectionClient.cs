@@ -258,6 +258,9 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
             TaskCompletionSource sent,
             CancellationToken cancellationToken)
         {
+            // Sends and their retries also stop when the operation is abandoned, for example by re-provisioning, so that
+            // they cannot publish the abandoned request on a newly assigned hub.
+            using CancellationTokenSource sendCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, operation.Abandoned);
             try
             {
                 await SendRequestAndWaitForResponseAsync(async token =>
@@ -265,7 +268,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
                     await SubscribeAsync(new(CertificateSigningResponseTopicFilter, MqttQualityOfServiceLevel.AtLeastOnce), token);
                     await PublishAsync(publish, token);
                     sent.TrySetResult();
-                }, operation.Completed, cancellationToken).ConfigureAwait(false);
+                }, operation.Completed, sendCancellation.Token).ConfigureAwait(false);
                 sent.TrySetResult();
             }
             catch (Exception ex)
