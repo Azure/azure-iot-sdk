@@ -33,6 +33,7 @@
 #include "e2e_device.h"
 #include "e2e_log.h"
 #include "support/test_env.h"
+#include "support/test_shard.h"
 
 #define E2E_TELEMETRY_TIMEOUT_S 90
 /* The first watch per process is a cold AMQP connect (see e2e_transport_test.c). */
@@ -649,5 +650,6 @@ int main(void)
     cmocka_unit_test_teardown(
         unreachable_proxy_does_not_fall_back_on_the_mqttv5_hub, test_teardown),
   };
-  return cmocka_run_group_tests_name("e2e_mqttv5_transport", tests, group_setup, group_teardown);
+  return az_iot_test_shard_run_group_tests_name(
+      "e2e_mqttv5_transport", tests, group_setup, group_teardown);
 }
