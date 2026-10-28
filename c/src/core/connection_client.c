@@ -8894,7 +8894,7 @@ static az_iot_result publish_tracked(
     client->pending_pubacks[slot].user_ctx = user_ctx;
     client->pending_pubacks[slot].generation = client->next_publish_generation;
     client->next_publish_generation
-        = client->next_publish_generation == UINT32_MAX ? 1u : client->next_publish_generation + 1u;
+        = client->next_publish_generation == UINT64_MAX ? 1u : client->next_publish_generation + 1u;
     if (out_handle)
     {
       out_handle->slot = slot;

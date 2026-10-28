@@ -385,7 +385,7 @@ extern "C"
   typedef struct az_iot_publish_handle
   {
     size_t slot; /**< Index into pending_pubacks. */
-    uint32_t generation; /**< 0: no tracked publish. */
+    uint64_t generation; /**< 0: no tracked publish. */
   } az_iot_publish_handle;
 
   /**

@@ -2868,6 +2868,30 @@ static void a_stale_handle_does_not_forget_a_reused_slot(void** state)
   az_iot_connection_client__forget_publish(NULL, current);
 }
 
+/* The 64-bit generation wraps to 1, never to 0 (no tracked publish). */
+static void the_publish_generation_skips_zero_when_it_wraps(void** state)
+{
+  fixture* fx = *state;
+  (void)connect_fixture(fx);
+  int completions = 0;
+  az_iot_mqtt_message msg = { 0 };
+  msg.topic = "t";
+  msg.qos = AZ_IOT_MQTT_QOS_1;
+  fx->client->next_publish_generation = UINT64_MAX;
+  az_iot_publish_handle last = { 0 };
+  assert_int_equal(
+      az_iot_connection_client__publish_with_result(
+          fx->client, NULL, &msg, count_publish_result, &completions, &last),
+      AZ_IOT_OK);
+  assert_true(last.generation == UINT64_MAX);
+  az_iot_publish_handle wrapped = { 0 };
+  assert_int_equal(
+      az_iot_connection_client__publish_with_result(
+          fx->client, NULL, &msg, count_publish_result, &completions, &wrapped),
+      AZ_IOT_OK);
+  assert_true(wrapped.generation == 1u);
+}
+
 /* MQTTv5 requires MQTT v5. With only a v3.1.1 factory registered there is no
  * adapter that can speak the protocol, and open() must say so rather than
  * silently downgrading to an MQTTv3 session. */
@@ -4412,6 +4436,8 @@ int main(void)
     cmocka_unit_test_setup_teardown(a_forgotten_publish_is_not_completed, setup_csr, teardown),
     cmocka_unit_test_setup_teardown(
         a_stale_handle_does_not_forget_a_reused_slot, setup_csr, teardown),
+    cmocka_unit_test_setup_teardown(
+        the_publish_generation_skips_zero_when_it_wraps, setup_csr, teardown),
     cmocka_unit_test_setup_teardown(
         send_csr_subscribes_the_credentials_response_filter, setup_csr, teardown),
     cmocka_unit_test_setup_teardown(
