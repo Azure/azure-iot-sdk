@@ -134,10 +134,18 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
                 return;
             }
 
+            // A resumed session whose subscriptions this process has not observed (for example one left behind by a previous
+            // process that had other features enabled) may still hold subscriptions for features that are now disabled.
+            // Nothing would handle or acknowledge their messages, so those subscriptions are removed.
             MqttSubscribe mqttSubscribe = new();
+            MqttUnsubscribe mqttUnsubscribe = new();
             if (AreCloudToDeviceMessagesEnabled)
             {
                 mqttSubscribe.TopicFilters.Add(new(Telemetry.TelemetryClient.DeviceBoundMessagesTopicFormat + "#", MqttQualityOfServiceLevel.AtLeastOnce));
+            }
+            else
+            {
+                mqttUnsubscribe.TopicFilters.Add(Telemetry.TelemetryClient.DeviceBoundMessagesTopicFormat + "#");
             }
 
             if (IsTwinEnabled)
@@ -145,10 +153,40 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
                 mqttSubscribe.TopicFilters.Add(new(Twin.TwinClient.ClassicTwinResponseTopic + "#", MqttQualityOfServiceLevel.AtMostOnce));
                 mqttSubscribe.TopicFilters.Add(new(Twin.TwinClient.ClassicTwinDesiredPropertiesPatchTopic + "#", MqttQualityOfServiceLevel.AtMostOnce));
             }
+            else
+            {
+                mqttUnsubscribe.TopicFilters.Add(Twin.TwinClient.ClassicTwinResponseTopic + "#");
+                mqttUnsubscribe.TopicFilters.Add(Twin.TwinClient.ClassicTwinDesiredPropertiesPatchTopic + "#");
+            }
 
             if (AreDirectMethodsEnabled)
             {
                 mqttSubscribe.TopicFilters.Add(new(DirectMethods.DirectMethodClient.ClassicDirectMethodsRequestTopic + "#", MqttQualityOfServiceLevel.AtMostOnce));
+            }
+            else
+            {
+                mqttUnsubscribe.TopicFilters.Add(DirectMethods.DirectMethodClient.ClassicDirectMethodsRequestTopic + "#");
+            }
+
+            if (args.ConnectAck.IsSessionPresent && mqttUnsubscribe.TopicFilters.Count > 0)
+            {
+                var unsuback = await ManagedMqttConnection.BuildAndUnsubscribeAsync(ConnectionEndpoint.IotHub, () =>
+                {
+                    string deviceId = GetDeviceIdForTopics();
+                    return mqttUnsubscribe.WithTopicFilters(mqttUnsubscribe.TopicFilters
+                        .Select(topicFilter => topicFilter.Replace(IConnectionClient.DeviceIdPlaceholder, deviceId, StringComparison.Ordinal))
+                        .ToList());
+                }, throwOnUnsubackErrorCode: false, CurrentReprovisioningCancellationToken);
+
+                if (unsuback.Items.Any(item => item.ReasonCode != MqttClientUnsubscribeReasonCode.Success
+                    && item.ReasonCode != MqttClientUnsubscribeReasonCode.NoSubscriptionExisted))
+                {
+                    // Signal to the underlying MQTT connection manager that, even though we are manually disconnecting, we still want to reconnect.
+                    await ManagedMqttConnection.DisconnectAsync(true, new MqttDisconnect() { Reason = MqttDisconnectReasonCode.NormalDisconnection });
+
+                    Trace.TraceError("Device failed to unsubscribe from the MQTT topics of disabled features upon resuming a session with IoT Hub. Disconnecting the MQTT client and trying again.");
+                    return;
+                }
             }
 
             if (mqttSubscribe.TopicFilters.Count == 0)

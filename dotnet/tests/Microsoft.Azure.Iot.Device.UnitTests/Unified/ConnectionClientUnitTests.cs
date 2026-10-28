@@ -642,6 +642,44 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
         }
 
         [Theory]
+        [InlineData(true)]
+        [InlineData(false)]
+        public async Task FirstConnectionUnsubscribesDisabledFeaturesOnlyOnResumedSession(bool isSessionResumed)
+        {
+            using MockConnectionMqttClient mockMqttClient = new();
+            using ConnectionClient connectionClient = new(new()
+            {
+                MqttClient = mockMqttClient,
+                UseCleanSession = false,
+                EnableCloudToDeviceMessages = false,
+                EnableDirectMethods = false,
+            });
+
+            mockMqttClient.OnConnect = connect =>
+                Task.FromResult(new MqttConnectAck() { IsSessionPresent = isSessionResumed, ResultCode = MqttConnectReasonCode.Success });
+
+            await connectionClient.ConnectToHubAsync(GetMockConnectionContext(false), TestContext.Current.CancellationToken);
+
+            // A session left behind by a previous process may still hold subscriptions for the features that are now
+            // disabled, so they are removed before the enabled features are subscribed to.
+            List<MockMqttOutgoingTraffic> traffic = mockMqttClient.SentMqttTrafficInOrder;
+            if (isSessionResumed)
+            {
+                Assert.Equal(2, traffic.Count);
+                Assert.NotNull(traffic[0].Unsubscribe);
+                Assert.Equal(
+                    new[] { "devices/someDeviceId/messages/devicebound/#", Microsoft.Azure.Iot.Device.Unified.DirectMethods.DirectMethodClient.ClassicDirectMethodsRequestTopic + "#" },
+                    traffic[0].Unsubscribe!.TopicFilters);
+                Assert.NotNull(traffic[1].Subscribe);
+            }
+            else
+            {
+                Assert.Single(traffic);
+                Assert.NotNull(traffic[0].Subscribe);
+            }
+        }
+
+        [Theory]
         [InlineData(true, true)]
         [InlineData(true, false)]
         [InlineData(false, true)]
