@@ -95,7 +95,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         [Theory]
         [InlineData(false)]
         [InlineData(true)]
-        public async Task MqttV5SessionSettingsDoNotPersistDpsOrCrossHubSessions(bool useUnifiedClient)
+        public async Task MqttV5SessionSettingsKeepDpsCleanAndResubscribeOnNewHub(bool useUnifiedClient)
         {
             using MockConnectionMqttClient mockMqttClient = new() { AutoRespondToBirth = true };
             _ = new MockDeviceProvisioningService(mockMqttClient, registrationCount => registrationCount == 1 ? FirstAssignedHub : SecondAssignedHub)
@@ -131,7 +131,6 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
                 : new Device.MQTTv5.Connection.ConnectionClient(new()
                 {
                     MqttClient = mockMqttClient,
-                    SessionExpiryInterval = 3600,
                     ConnectionRetryPolicy = options.ConnectionRetryPolicy,
                 });
             using IDisposable connectionClientLifetime = (IDisposable)connectionClient;
@@ -152,16 +151,19 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
                 .WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
             await reconnected.Task.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
 
-            uint expectedExpiry = useUnifiedClient ? 0u : 3600u;
+            // Hub connections always ask to resume, but a session left on a hub this process had not subscribed on (here
+            // the broker claims every hub session is resumed) is re-subscribed. DPS never persists sessions.
             Assert.Equal(
                 new[]
                 {
                     (GlobalDeviceEndpoint, true, 0u, MqttProtocolVersion.V311),
-                    (FirstAssignedHub, true, expectedExpiry, MqttProtocolVersion.V500),
+                    (FirstAssignedHub, false, 3600u, MqttProtocolVersion.V500),
                     (GlobalDeviceEndpoint, true, 0u, MqttProtocolVersion.V311),
-                    (SecondAssignedHub, true, expectedExpiry, MqttProtocolVersion.V500),
+                    (SecondAssignedHub, false, 3600u, MqttProtocolVersion.V500),
                 },
                 connectSettings);
+            Assert.Equal(2, mockMqttClient.SentMqttTrafficInOrder.Count(traffic =>
+                traffic.Subscribe?.TopicFilters.Any(filter => filter.Topic == $"ih/{DeviceId}/dev/#") == true));
             Assert.Equal(SecondAssignedHub, connectionClient.GetCurrentConnectionContext()!.IotHubHostName);
         }
 
