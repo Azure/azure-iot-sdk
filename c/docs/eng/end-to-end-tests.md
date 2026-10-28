@@ -260,7 +260,7 @@ Each job downloads the shared
    that is dot-sourced.
 4. Materializes the device X.509 material to files (decodes the base64 PEMs and
    builds a CA bundle), maps the DPS config onto the `AZ_IOT_*` vars, then runs
-   `ctest -R e2e`.
+   its group of `e2e` suites.
 5. **Always** (`if: always()`) deletes the resource group (`az group delete
    --no-wait`).
 
@@ -283,16 +283,19 @@ failure, or a runner that dies before teardown.
 | Job | Runs on | Purpose |
 | --- | --- | --- |
 | `setup` | ubuntu | provisions one resource group (IoT Hub + DPS) via the shared `provision-e2e-resources` action and publishes the test-config artifact |
-| `test` | ubuntu + windows (matrix) | builds `az_iot_tests_e2e`, materializes the device X.509 material, and runs `ctest -R e2e` |
+| `test` | ubuntu + windows, 4 groups each (matrix) | builds the e2e tests, materializes its device's X.509 material, and runs its group: `core` (every e2e suite but the three below, plus custody and the file upload sample on Linux), `transport-paho`, `transport-az_mqtt`, `sas` (both adapters) |
+| `coverage` | ubuntu | merges the four Linux groups' tracefiles into `coverage-trace-e2e`, only when every `test` job passed |
 | `teardown` | ubuntu | `always()` deletes the resource group via `destroy-e2e-resources`, using the run-derived name (not a `setup` output) |
 
-The two `test` legs share the one resource group provisioned by `setup`, and
-`teardown` runs even if a leg fails — or if the run is cancelled — so resources
+Each `test` job has its own device (index os-index * 4 + group-index; eight DPS
+enrollments), so the groups run in parallel without sharing a device or twin.
+The `test` jobs share the one resource group provisioned by `setup`, and
+`teardown` runs even if a job fails — or if the run is cancelled — so resources
 are never leaked.
 
 **Shared environment (temporary, opt-in).** When repository variable
 `E2E_SHARED_ID_SCOPE` is set, pull request runs skip `setup`/`teardown` and use a
-long-lived IoT Hub + DPS. Each leg issues its own device certificate from the DPS
+long-lived IoT Hub + DPS. Each job issues its own device certificate from the DPS
 X.509 enrollment group's CA ([`c/eng/e2e-shared-device.ps1`](../../eng/e2e-shared-device.ps1));
 the SAS suite registers under the DPS symmetric-key enrollment group. Inputs are repository
 secrets `E2E_SHARED_GROUP_CA`, `E2E_SHARED_IOTHUB_CS` and `E2E_SHARED_EVENTHUB_CS`
