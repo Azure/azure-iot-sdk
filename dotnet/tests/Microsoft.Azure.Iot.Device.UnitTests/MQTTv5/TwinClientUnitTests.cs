@@ -2,6 +2,7 @@
 // See LICENSE file in the project root for full license information.
 
 using Google.Protobuf;
+using Microsoft.Azure.Iot.Device.Exceptions;
 using Microsoft.Azure.Iot.Device.MQTTv5.Connection;
 using Microsoft.Azure.Iot.Device.MQTTv5.Twin;
 using Microsoft.Azure.Iot.Device.Models.Twin;
@@ -307,6 +308,162 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
         }
 
         [Fact]
+        public async Task GetTwinAsync_RetriesWithNewIdAfterTimeoutAndDropsStaleResponses()
+        {
+            MockFeatureConnectionClient connection = new()
+            {
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv5, DeviceId),
+            };
+            using TwinClient twinClient = new(connection);
+            List<int> attempts = new();
+            twinClient.GetTwinTimeoutSchedule = attempt =>
+            {
+                lock (attempts)
+                {
+                    attempts.Add(attempt);
+                }
+
+                return attempt == 1 ? TimeSpan.FromMilliseconds(50) : Timeout.InfiniteTimeSpan;
+            };
+
+            Task<DeviceTwin> getTask = twinClient.GetTwinAsync(getReported: false, cancellationToken: TestContext.Current.CancellationToken);
+            await WaitUntilAsync(() => connection.PublishedMessages.Count == 2);
+
+            MqttPublish firstAttempt = connection.PublishedMessages[0];
+            MqttPublish secondAttempt = connection.PublishedMessages[1];
+            Assert.NotEqual(firstAttempt.CorrelationData, secondAttempt.CorrelationData);
+            Assert.Equal(TwinGet.Parser.ParseFrom(firstAttempt.Payload), TwinGet.Parser.ParseFrom(secondAttempt.Payload));
+
+            // The response to the first attempt is stale, so only the response to the latest attempt completes the request.
+            await ReceiveGetResponseAsync(connection, firstAttempt, 1, "{\"fanSpeed\":1}");
+            Assert.False(getTask.IsCompleted);
+            await ReceiveGetResponseAsync(connection, secondAttempt, 2, "{\"fanSpeed\":2}");
+
+            DeviceTwin twin = await getTask;
+            Assert.Equal(2ul, twin.DesiredVersion);
+            Assert.Equal(new[] { 1, 2 }, attempts);
+        }
+
+        [Fact]
+        public async Task GetTwinAsync_IdenticalConcurrentCallsShareOneRequest()
+        {
+            MockFeatureConnectionClient connection = new()
+            {
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv5, DeviceId),
+            };
+            using TwinClient twinClient = new(connection);
+            using CancellationTokenSource cancelledCaller = new();
+
+            Task<DeviceTwin> first = twinClient.GetTwinAsync(getReported: false, cancellationToken: TestContext.Current.CancellationToken);
+            Task<DeviceTwin> cancelled = twinClient.GetTwinAsync(getReported: false, cancellationToken: cancelledCaller.Token);
+            Task<DeviceTwin> second = twinClient.GetTwinAsync(getReported: false, cancellationToken: TestContext.Current.CancellationToken);
+            Task<DeviceTwin> different = twinClient.GetTwinAsync(getReported: false, ifNotMatchDesired: 1, cancellationToken: TestContext.Current.CancellationToken);
+
+            Assert.Equal(2, connection.PublishedMessages.Count);
+
+            // One caller giving up doesn't abandon the request for the others.
+            cancelledCaller.Cancel();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => cancelled);
+
+            await ReceiveGetResponseAsync(connection, connection.PublishedMessages[0], 3, "{\"fanSpeed\":3}");
+            Assert.Equal(3ul, (await first).DesiredVersion);
+            Assert.Same(await first, await second);
+            Assert.False(different.IsCompleted);
+
+            await ReceiveGetResponseAsync(connection, connection.PublishedMessages[1], 4, "{\"fanSpeed\":4}");
+            Assert.Equal(4ul, (await different).DesiredVersion);
+
+            // Once the shared request completes, a new call sends a new request.
+            Task<DeviceTwin> later = twinClient.GetTwinAsync(getReported: false, cancellationToken: TestContext.Current.CancellationToken);
+            Assert.Equal(3, connection.PublishedMessages.Count);
+            await ReceiveGetResponseAsync(connection, connection.PublishedMessages[2], 5, "{\"fanSpeed\":5}");
+            Assert.Equal(5ul, (await later).DesiredVersion);
+        }
+
+        [Fact]
+        public async Task GetTwinAsync_StopsRetryingOnceNoCallerIsWaiting()
+        {
+            MockFeatureConnectionClient connection = new()
+            {
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv5, DeviceId),
+            };
+            using TwinClient twinClient = new(connection);
+            twinClient.GetTwinTimeoutSchedule = _ => TimeSpan.FromMilliseconds(50);
+            using CancellationTokenSource caller = new();
+
+            Task<DeviceTwin> getTask = twinClient.GetTwinAsync(cancellationToken: caller.Token);
+            caller.Cancel();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => getTask);
+
+            await Task.Delay(300, TestContext.Current.CancellationToken);
+            Assert.Single(connection.PublishedMessages);
+        }
+
+        [Fact]
+        public async Task GetTwinAsync_ConnectionLostFailsWithRetryableErrorAndStopsRetrying()
+        {
+            MockFeatureConnectionClient connection = new()
+            {
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv5, DeviceId),
+            };
+            using TwinClient twinClient = new(connection);
+            twinClient.GetTwinTimeoutSchedule = _ => TimeSpan.FromMilliseconds(100);
+
+            Task<DeviceTwin> getTask = twinClient.GetTwinAsync(cancellationToken: TestContext.Current.CancellationToken);
+            connection.SimulateConnectionLost();
+
+            DeviceException exception = await Assert.ThrowsAsync<DeviceException>(() => getTask);
+            Assert.Equal(ErrorRetryability.Retryable, exception.Retryability);
+
+            // A late response is dropped, and the request is not sent again.
+            await ReceiveGetResponseAsync(connection, connection.PublishedMessages[0], 1, "{}");
+            await Task.Delay(300, TestContext.Current.CancellationToken);
+            Assert.Single(connection.PublishedMessages);
+
+            // A new request after reconnecting is unaffected.
+            Task<DeviceTwin> retry = twinClient.GetTwinAsync(cancellationToken: TestContext.Current.CancellationToken);
+            await ReceiveGetResponseAsync(connection, connection.PublishedMessages[1], 2, "{}");
+            Assert.Equal(2ul, (await retry).DesiredVersion);
+        }
+
+        [Fact]
+        public async Task UpdateReportedPropertiesAsync_ConnectionLostFailsWithRetryableError()
+        {
+            MockFeatureConnectionClient connection = new()
+            {
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv5, DeviceId),
+            };
+            using TwinClient twinClient = new(connection);
+
+            Task<ReportedPatchResponse> patchTask = twinClient.UpdateReportedPropertiesAsync(
+                new() { ReportedProperties = new JsonObject() },
+                TestContext.Current.CancellationToken);
+            Assert.Single(connection.PublishedMessages);
+
+            connection.SimulateConnectionLost();
+
+            DeviceException exception = await Assert.ThrowsAsync<DeviceException>(() => patchTask);
+            Assert.Equal(ErrorRetryability.Retryable, exception.Retryability);
+        }
+
+        [Fact]
+        public async Task GetTwinAsync_ConnectionClientConnectionLossFailsOutstandingRequest()
+        {
+            using MockConnectionMqttClient mqttClient = new() { AutoRespondToBirth = true };
+            using ConnectionClient connection = new(new() { MqttClient = mqttClient });
+            await connection.ConnectToHubAsync(
+                MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv5, DeviceId),
+                TestContext.Current.CancellationToken);
+            using TwinClient twinClient = new(connection);
+
+            Task<DeviceTwin> getTask = twinClient.GetTwinAsync(cancellationToken: TestContext.Current.CancellationToken);
+            await mqttClient.SimulateServerDisconnectAsync(MqttDisconnectReason.UnspecifiedError);
+
+            DeviceException exception = await Assert.ThrowsAsync<DeviceException>(() => getTask);
+            Assert.Equal(ErrorRetryability.Retryable, exception.Retryability);
+        }
+
+        [Fact]
         public async Task GetTwinAsync_ThrowsWhenDisconnected()
         {
             MockFeatureConnectionClient connection = new();
@@ -543,6 +700,25 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
         }
 
         [Fact]
+        public async Task DesiredResync_IsDiscardedWhenConnectionIsLost()
+        {
+            (MockFeatureConnectionClient connection, Guid nonce) = CreateConnectionWithNonce();
+            using TwinClient twinClient = new(connection);
+
+            bool eventRaised = false;
+            twinClient.TwinPushReceived += _ => eventRaised = true;
+
+            await ReceiveDesiredPatchAsync(connection, nonce, 3, payload: null);
+            MqttPublish getPublish = Assert.Single(connection.PublishedMessages);
+
+            // Even before the device reconnects (with the same nonce, as seen by this client), the resync is abandoned.
+            connection.SimulateConnectionLost();
+            await ReceiveGetResponseAsync(connection, getPublish, 3, "{}");
+
+            Assert.False(eventRaised);
+        }
+
+        [Fact]
         public async Task DesiredPatchAndTwinPush_ForAnotherConnection_AreDropped()
         {
             (MockFeatureConnectionClient connection, _) = CreateConnectionWithNonce();
@@ -768,6 +944,16 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             };
 
             return connection.SimulateReceiveAsync(CreateInboundTwinPublish("twin-push:1", nonce.ToByteArray(bigEndian: true), push.ToByteArray()));
+        }
+
+        private static async Task WaitUntilAsync(Func<bool> condition)
+        {
+            using CancellationTokenSource timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+            timeout.CancelAfter(TimeSpan.FromSeconds(10));
+            while (!condition())
+            {
+                await Task.Delay(10, timeout.Token);
+            }
         }
 
         private static Task ReceiveGetResponseAsync(MockFeatureConnectionClient connection, MqttPublish getPublish, ulong desiredVersion, string desiredPayload)

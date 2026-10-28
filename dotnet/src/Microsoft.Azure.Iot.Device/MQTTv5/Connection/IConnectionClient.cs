@@ -42,6 +42,14 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
         internal Guid? ConnectionNonce => null;
 
         /// <summary>
+        /// Raised whenever the connection to IoT hub is lost or closed, before any reconnection starts.
+        /// </summary>
+        /// <remarks>
+        /// Twin exchanges are bound to the connection that they were sent on, so feature clients use this to abandon them.
+        /// </remarks>
+        internal event Action? ConnectionLost { add { } remove { } }
+
+        /// <summary>
         /// The version of the desired properties that the device held when this connection client was constructed.
         /// </summary>
         internal ulong InitialDesiredPropertiesVersion => 0;

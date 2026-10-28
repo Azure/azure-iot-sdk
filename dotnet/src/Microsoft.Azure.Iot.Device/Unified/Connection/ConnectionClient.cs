@@ -35,6 +35,12 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
                 ? _mqttv5ConnectionClient.CurrentConnectionNonce
                 : null;
 
+        event Action? IConnectionClient.ConnectionLost
+        {
+            add => HubConnectionLost += value;
+            remove => HubConnectionLost -= value;
+        }
+
         /// <inheritdoc/>
         public bool IsTwinEnabled { get; }
 

@@ -40,6 +40,11 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
         internal Guid? ConnectionNonce => null;
 
         /// <summary>
+        /// Raised whenever the connection to IoT hub is lost or closed, before any reconnection starts.
+        /// </summary>
+        internal event Action? ConnectionLost { add { } remove { } }
+
+        /// <summary>
         /// Whether this connection client subscribes to twin topics. See <see cref="ConnectionClientOptions.EnableTwin"/>.
         /// </summary>
         bool IsTwinEnabled => true;

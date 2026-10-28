@@ -52,6 +52,12 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
 
         Guid? MQTTv5.Connection.IConnectionClient.ConnectionNonce => _unifiedConnectionClient.ConnectionNonce;
 
+        event Action? MQTTv5.Connection.IConnectionClient.ConnectionLost
+        {
+            add => _unifiedConnectionClient.ConnectionLost += value;
+            remove => _unifiedConnectionClient.ConnectionLost -= value;
+        }
+
         public Task<MqttPublishAck> PublishAsync(MqttPublish publish, bool throwOnErrorReasonCode, CancellationToken cancellationToken = default)
         {
             return _unifiedConnectionClient.PublishAsync(publish, throwOnErrorReasonCode, cancellationToken);

@@ -26,6 +26,12 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
 
         Guid? IConnectionClient.ConnectionNonce => CurrentConnectionNonce;
 
+        event Action? IConnectionClient.ConnectionLost
+        {
+            add => HubConnectionLost += value;
+            remove => HubConnectionLost -= value;
+        }
+
         private readonly ulong _initialDesiredPropertiesVersion;
         private readonly ulong _initialReportedPropertiesVersion;
 

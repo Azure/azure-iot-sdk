@@ -37,6 +37,23 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
         Guid? global::Microsoft.Azure.Iot.Device.Unified.Connection.IConnectionClient.ConnectionNonce => ConnectionNonce;
 
+        public event Action? ConnectionLost;
+
+        event Action? global::Microsoft.Azure.Iot.Device.MQTTv5.Connection.IConnectionClient.ConnectionLost
+        {
+            add => ConnectionLost += value;
+            remove => ConnectionLost -= value;
+        }
+
+        event Action? global::Microsoft.Azure.Iot.Device.Unified.Connection.IConnectionClient.ConnectionLost
+        {
+            add => ConnectionLost += value;
+            remove => ConnectionLost -= value;
+        }
+
+        /// <summary>Notify feature clients that the connection to IoT hub was lost.</summary>
+        public void SimulateConnectionLost() => ConnectionLost?.Invoke();
+
         public ulong InitialDesiredPropertiesVersion { get; set; }
 
         public ulong InitialReportedPropertiesVersion { get; set; }
