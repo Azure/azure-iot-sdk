@@ -2651,6 +2651,13 @@ static void a_deinitialized_twin_client_is_not_called_on_a_later_session_end(voi
 #define MINUTE_MS 60000u
 /* Fixed jitter, so each armed deadline is exact up to the time the test takes. */
 #define TWIN_PUSH_TEST_JITTER_MS 1234u
+
+/* Below the jitter modulus, so the defensive timeout's jitter is exactly this value. */
+static uint64_t twin_push_test_random_value(void* context)
+{
+  (void)context;
+  return TWIN_PUSH_TEST_JITTER_MS;
+}
 /* Slack for the time between arming and reading the deadline. */
 #define TWIN_PUSH_TEST_SLACK_MS 5000u
 
@@ -2676,7 +2683,8 @@ static int setup_twin_push(void** state, bool push_desired, bool push_reported, 
     opts.reconnection_policy.max_delay_ms = 1;
   }
   assert_int_equal(az_iot_test_connection_client_init(&fx->conn, &opts), AZ_IOT_OK);
-  az_iot_connection_client__set_presence_timeout_jitter(&fx->conn, true, TWIN_PUSH_TEST_JITTER_MS);
+  az_iot_connection_client__set_defensive_timeout_random_source(
+      &fx->conn, twin_push_test_random_value, NULL);
   memset(&s_twin_push_states, 0, sizeof(s_twin_push_states));
   assert_int_equal(
       az_iot_connection_client_add_state_observer(
@@ -2705,7 +2713,7 @@ static int setup_push_desired_no_policy(void** state)
   return setup_twin_push(state, true, false, false);
 }
 
-/* Asserts the wait is armed for @p attempt of the presence schedule. */
+/* Asserts the wait is armed for @p attempt of the defensive-timeout schedule. */
 static void assert_twin_push_wait_for_attempt(fixture* fx, uint32_t attempt)
 {
   uint64_t deadline = 0;

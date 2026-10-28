@@ -167,29 +167,6 @@ extern "C"
   bool az_iot_connection_client__twin_push_expected(const az_iot_connection_client* client);
 
   /**
-   * @brief Presence defensive timeout for 1-based @p attempt (see presence_timeout.h).
-   *
-   * Jitter is drawn from the client's PRNG, or is the value fixed by
-   * az_iot_connection_client__set_presence_timeout_jitter().
-   *
-   * @return The timeout in milliseconds; 0 for a NULL @p client.
-   */
-  uint32_t az_iot_connection_client__presence_timeout_ms(
-      az_iot_connection_client* client,
-      uint32_t attempt);
-
-  /**
-   * @brief Test seam: fix the presence defensive-timeout jitter.
-   *
-   * @param[in] fixed     false restores random jitter.
-   * @param[in] jitter_ms Jitter used while @p fixed; capped at the schedule maximum.
-   */
-  void az_iot_connection_client__set_presence_timeout_jitter(
-      az_iot_connection_client* client,
-      bool fixed,
-      uint32_t jitter_ms);
-
-  /**
    * @brief Ask the connection to end the hub session and reconnect.
    *
    * Served by the next az_iot_connection_client_do_work(), which sends

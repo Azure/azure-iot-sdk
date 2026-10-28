@@ -171,12 +171,13 @@ static uint64_t deadline_from_now(const az_iot_mqttv5_twin_client* t)
 /* ------------------------------------------------------------------------- */
 /* twin-push defensive timeout                                               */
 /*                                                                           */
-/* A birth with push_desired or push_reported is answered by a twin-push; a   */
-/* session that never gets it gets no desired patches either. The wait is     */
-/* armed on hub CONNECTED and timed on the presence schedule; on expiry the   */
-/* connection reconnects. Attempt N is the wait after N-1 consecutive         */
-/* sessions ended by this timeout; it restarts at 1 once a push arrives or    */
-/* the hub scope goes IDLE or FAULTED (the next open() is a fresh cycle).     */
+/* A birth with push_desired or push_reported is answered by a twin-push; a  */
+/* session that never gets it gets no desired patches either. The wait is    */
+/* armed on hub CONNECTED and timed like the birth-ack (defensive_timeout.h);*/
+/* on expiry the connection reconnects. Attempt N is the wait after N-1      */
+/* consecutive sessions ended by this timeout; it restarts at 1 once a push  */
+/* arrives or the hub scope goes IDLE or FAULTED (the next open() is a fresh */
+/* cycle).                                                                   */
 /* ------------------------------------------------------------------------- */
 
 /** @brief Record the twin-push of the session @p msg belongs to. */
@@ -204,7 +205,7 @@ static void twin_push_wait_arm(az_iot_mqttv5_twin_client* t)
   {
     return;
   }
-  uint32_t timeout_ms = az_iot_connection_client__presence_timeout_ms(
+  uint32_t timeout_ms = az_iot_connection_client__defensive_timeout_ms(
       TI(t).conn, TI(t).twin_push_wait.missed_count + 1u);
   TI(t).twin_push_wait.armed = true;
   TI(t).twin_push_wait.deadline_ms = az_iot_time_mono_ms() + timeout_ms;

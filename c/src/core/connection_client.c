@@ -49,7 +49,6 @@
 #include "internal/log_internal.h"
 #include "internal/proto3.h"
 #include "internal/mono_time.h"
-#include "internal/presence_timeout.h"
 #include "internal/retry_policy.h"
 #include "internal/span_writer.h"
 
@@ -8390,33 +8389,6 @@ bool az_iot_connection_client__twin_push_desired(const az_iot_connection_client*
 bool az_iot_connection_client__twin_push_expected(const az_iot_connection_client* client)
 {
   return client && (client->opts.twin_push.push_desired || client->opts.twin_push.push_reported);
-}
-
-uint32_t az_iot_connection_client__presence_timeout_ms(
-    az_iot_connection_client* client,
-    uint32_t attempt)
-{
-  if (!client)
-  {
-    return 0;
-  }
-  uint32_t jitter_ms = client->presence.timeout_jitter_fixed
-      ? client->presence.timeout_jitter_ms
-      : az_iot_presence_timeout__random_jitter_ms(&client->rng_state);
-  return az_iot_presence_timeout__ms(attempt, jitter_ms);
-}
-
-void az_iot_connection_client__set_presence_timeout_jitter(
-    az_iot_connection_client* client,
-    bool fixed,
-    uint32_t jitter_ms)
-{
-  if (!client)
-  {
-    return;
-  }
-  client->presence.timeout_jitter_fixed = fixed;
-  client->presence.timeout_jitter_ms = jitter_ms;
 }
 
 az_iot_result az_iot_connection_client__request_reconnect(

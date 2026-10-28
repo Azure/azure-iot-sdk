@@ -22,8 +22,8 @@
  * never retries them.
  *
  * With `options.twin_push.push_desired` or `push_reported` set, the birth asks
- * for a twin-push. If none arrives within the presence defensive timeout of
- * hub CONNECTED (5 to 15 minutes, longer after consecutive misses), the client
+ * for a twin-push. If none arrives within the mqttv5 defensive timeout of hub
+ * CONNECTED (5 to 15 minutes, longer after consecutive misses), the client
  * has the connection disconnect and reconnect (or fault without a reconnection
  * policy), since a session without it receives no desired patches. This needs
  * az_iot_mqttv5_twin_client_do_work().

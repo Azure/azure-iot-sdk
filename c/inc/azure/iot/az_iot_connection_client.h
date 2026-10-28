@@ -1929,9 +1929,6 @@ extern "C"
       uint32_t birth_ack_timeout_ms; /* timeout armed for the last birth */
       uint64_t desired_version; /* authoritative twin versions carried by the */
       uint64_t reported_version; /* last birth-ack (0 when the service omits them) */
-      /* Defensive-timeout jitter: drawn from rng_state unless fixed by a test. */
-      bool timeout_jitter_fixed;
-      uint32_t timeout_jitter_ms;
     } presence;
 
     /* A feature client asked to end the hub session and reconnect. `requested`

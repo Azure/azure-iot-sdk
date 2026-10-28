@@ -296,18 +296,13 @@
   birth-ack in time reset it. `AZ_IOT_PRESENCE_BIRTH_ACK_TIMEOUT_MS` is removed; the presence
   `dev/#` SUBACK now uses `subscription_ack_timeout_seconds`
   (`AZ_IOT_DEFAULT_SUBSCRIPTION_ACK_TIMEOUT_SECONDS`, 60 s).
-- Paho adapter: a lost connection is reported as `AZ_IOT_MQTT_EVT_DISCONNECTED` with
-  `AZ_IOT_ERR_NOT_CONNECTED`; it was `AZ_IOT_OK`, the status of a completed `disconnect()`.
-- Paho and az_mqtt adapters: `AZ_IOT_MQTT_EVT_DISCONNECTED` carries `AZ_IOT_OK` only for a
-  completed `disconnect()`. A lost connection (Paho) and a server DISCONNECT with reason 0x00
-  (`az_iot_mqtt_disconnect_result()`) now report `AZ_IOT_ERR_NOT_CONNECTED`.
 - Paho, az_mqtt and ESP32 sample adapters: `AZ_IOT_MQTT_EVT_DISCONNECTED` carries `AZ_IOT_OK`
   only for a completed `disconnect()`. A lost connection (Paho, ESP32 sample) and a server
   DISCONNECT with reason 0x00 (`az_iot_mqtt_disconnect_result()`) now report
   `AZ_IOT_ERR_NOT_CONNECTED`.
 - mqttv5 twin: with `twin_push.push_desired` or `push_reported` set, a session whose twin-push
-  does not arrive within the presence defensive timeout of hub CONNECTED (5 to 15 minutes, longer
-  after consecutive misses) is now disconnected and reconnected (or faulted with
+  does not arrive within the mqttv5 defensive timeout of hub CONNECTED (5 to 15 minutes, longer
+  after consecutive misses, as for the birth-ack) is now disconnected and reconnected (or faulted with
   `AZ_IOT_ERR_TIMEOUT` without a reconnection policy). Before, no timeout was armed and a lost push
   left the device without desired patches until the next reconnect. Requires
   `az_iot_mqttv5_twin_client_do_work()`.
