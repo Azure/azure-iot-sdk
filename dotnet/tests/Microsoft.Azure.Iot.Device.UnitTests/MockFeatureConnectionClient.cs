@@ -42,6 +42,11 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
         global::Microsoft.Azure.Iot.Device.MQTTv5.Connection.BirthAckVersions? global::Microsoft.Azure.Iot.Device.MQTTv5.Connection.IConnectionClient.LatestBirthAck => LatestBirthAck;
 
+        /// <summary>The connection nonce whose birth ack the connection client stopped waiting for, if any.</summary>
+        public Guid? TimedOutBirthAckNonce { get; set; }
+
+        bool global::Microsoft.Azure.Iot.Device.MQTTv5.Connection.IConnectionClient.IsBirthAckTimedOut(Guid connectionNonce) => TimedOutBirthAckNonce == connectionNonce;
+
         public event Action? ConnectionLost;
 
         event Action? global::Microsoft.Azure.Iot.Device.MQTTv5.Connection.IConnectionClient.ConnectionLost

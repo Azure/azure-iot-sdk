@@ -51,6 +51,16 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
         internal BirthAckVersions? LatestBirthAck => null;
 
         /// <summary>
+        /// Whether this connection client gave up waiting for the birth ack of the connection attempt with the given
+        /// connection nonce (and so is abandoning that connection).
+        /// </summary>
+        /// <remarks>
+        /// Feature clients use this to ignore a birth ack that arrives after the connection client's birth ack timeout,
+        /// since the connection client does not accept it either.
+        /// </remarks>
+        internal bool IsBirthAckTimedOut(Guid connectionNonce) => false;
+
+        /// <summary>
         /// Raised whenever the connection to IoT hub is lost or closed, before any reconnection starts.
         /// </summary>
         /// <remarks>

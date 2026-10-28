@@ -449,6 +449,20 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
         }
 
         [Fact]
+        public async Task UpdateReportedPropertiesAsync_IgnoresBirthAckThatConnectionClientTimedOut()
+        {
+            (MockFeatureConnectionClient connection, Guid nonce) = CreateConnectionWithNonce();
+            connection.TimedOutBirthAckNonce = nonce;
+            using ConcurrentTwinClient twinClient = new(connection);
+
+            _ = UpdateReportedAsync(twinClient, "{\"temperature\":1}");
+            await ReceiveBirthAckAsync(connection, nonce, desiredVersion: 1, reportedVersion: 7);
+
+            Assert.Empty(connection.PublishedMessages);
+            Assert.Null(twinClient.AuthoritativeReportedPropertiesVersion);
+        }
+
+        [Fact]
         public async Task UpdateReportedPropertiesAsync_CreatedAfterBirthAck_UsesConnectionsBirthAckVersion()
         {
             (MockFeatureConnectionClient connection, Guid nonce) = CreateConnectionWithNonce();

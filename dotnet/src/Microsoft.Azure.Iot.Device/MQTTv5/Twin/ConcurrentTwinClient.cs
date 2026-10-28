@@ -1083,6 +1083,12 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
                 return;
             }
 
+            if (connectionNonce != null && _connection.IsBirthAckTimedOut(connectionNonce.Value))
+            {
+                Trace.TraceWarning("Ignoring a birth ack that arrived after the connection client stopped waiting for it.");
+                return;
+            }
+
             BirthAck birthAck;
             try
             {

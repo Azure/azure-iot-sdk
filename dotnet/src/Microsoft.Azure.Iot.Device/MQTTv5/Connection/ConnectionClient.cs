@@ -44,6 +44,17 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
 
         BirthAckVersions? IConnectionClient.LatestBirthAck => _latestBirthAck;
 
+        // The connection nonce of the latest connection attempt whose birth ack timed out. Guarded by _birthAckLock.
+        private Guid? _timedOutBirthAckNonce;
+
+        bool IConnectionClient.IsBirthAckTimedOut(Guid connectionNonce)
+        {
+            lock (_birthAckLock)
+            {
+                return _timedOutBirthAckNonce == connectionNonce;
+            }
+        }
+
         event Action? IConnectionClient.ConnectionLost
         {
             add => HubConnectionLost += value;
@@ -431,6 +442,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
                         if (birthAckTimedOut)
                         {
                             _consecutiveBirthAckTimeouts++;
+                            _timedOutBirthAckNonce = connectNonce;
                         }
                     }
                 }
@@ -570,8 +582,10 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
             {
                 MqttPublish publish = args.Publish;
                 if (publish.Topic.Equals(_topic, StringComparison.Ordinal)
-                    && publish.UserProperties.TryGetType(out string? messageType, out _)
-                    && messageType.Equals("twin-push")
+                    && publish.UserProperties.TryGetType(out string? messageType, out int? typeVersion)
+                    && messageType.Equals("twin-push", StringComparison.Ordinal)
+                    && typeVersion == 1 // only twin-push:1 is understood; other versions don't satisfy the watch
+
                     && GuidExtensions.TryParseBytes(publish.CorrelationData, out Guid? receivedNonce)
                     && receivedNonce.Value == _connectNonce)
                 {
