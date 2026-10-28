@@ -1262,6 +1262,11 @@ extern "C"
 /* MQTT adapter factories one client can register. */
 #define AZ_IOT_MAX_MQTT_FACTORIES 4
 
+/* Feature clients told after each hub PUBACK, whichever publish it was for, so
+ * one waiting for publish capacity can retry. Used by the mqttv5 direct method
+ * client. */
+#define AZ_IOT_CONNECTION_CLIENT_PUBLISH_COMPLETION_OBSERVERS 2
+
 /* Defaults applied when the corresponding option is left at 0. */
 #ifndef AZ_IOT_DEFAULT_KEEP_ALIVE_SECONDS
 #define AZ_IOT_DEFAULT_KEEP_ALIVE_SECONDS 30
@@ -1593,6 +1598,13 @@ extern "C"
      * of subscriber can starve the other. */
     az_iot_connection_state_observer* feature_state_observers;
     az_iot_connection_state_observer* app_state_observers;
+    /* Feature clients told after each hub PUBACK (see
+     * az_iot_connection_client__add_publish_completion_observer). */
+    struct
+    {
+      void (*cb)(void* user_ctx);
+      void* user_ctx;
+    } publish_completion_observers[AZ_IOT_CONNECTION_CLIENT_PUBLISH_COMPLETION_OBSERVERS];
     /* Set while a transition is being dispatched. Registering an observer from
      * inside a callback would hand it the transition in flight, so adding is
      * refused with AZ_IOT_ERR_BUSY while this is set. Removing is allowed: the

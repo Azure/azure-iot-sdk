@@ -383,6 +383,47 @@ extern "C"
       const void* owner);
 
   /**
+   * @brief Forget @p owner's publishes awaiting a PUBACK, without calling their callbacks.
+   *
+   * For an owner whose callback context is about to go away. Only publishes tracked against
+   * @p owner's reservation are affected; their late PUBACKs are then ignored.
+   */
+  void az_iot_connection_client__abandon_pubacks(
+      az_iot_connection_client* client,
+      const void* owner);
+
+  /**
+   * @brief Call @p cb after every hub PUBACK, once the publish's own callback has run.
+   *
+   * For a feature client holding messages until the adapter has room: a PUBACK for any publish
+   * frees in-flight capacity. Withdraw it before the feature client's storage goes away.
+   *
+   * @retval AZ_IOT_ERR_INVALID_ARG @p client or @p cb is NULL.
+   * @retval AZ_IOT_ERR_NOT_ENOUGH_SPACE Every observer entry is in use.
+   */
+  az_iot_result az_iot_connection_client__add_publish_completion_observer(
+      az_iot_connection_client* client,
+      void (*cb)(void* user_ctx),
+      void* user_ctx);
+
+  /** @brief Withdraw an observer added with the same @p cb and @p user_ctx. */
+  void az_iot_connection_client__remove_publish_completion_observer(
+      az_iot_connection_client* client,
+      void (*cb)(void* user_ctx),
+      void* user_ctx);
+
+  /**
+   * @brief Whether an observer with @p cb and @p user_ctx is registered.
+   *
+   * Lets a feature client check, after calling application code, that it was not deinitialized
+   * meanwhile: its observer is withdrawn by its deinit.
+   */
+  bool az_iot_connection_client__has_publish_completion_observer(
+      const az_iot_connection_client* client,
+      void (*cb)(void* user_ctx),
+      const void* user_ctx);
+
+  /**
    * @brief Whether a tracked QoS 1 publish by @p owner would get a pending-PUBACK slot now.
    *
    * Lets a caller that can live without the ack choose to publish untracked, without
