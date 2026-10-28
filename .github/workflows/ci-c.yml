@@ -392,7 +392,9 @@ jobs:
   # Runs every ctest test labelled "race" (az_iot_add_cmocka_test(... RACE
   # ...)) through eng/run-race-detectors.sh, which fails on a reported error,
   # a failed test, or a run that ended without an ERROR SUMMARY. A new
-  # threaded test joins by carrying the label.
+  # threaded test joins by carrying the label. The script runs one process per
+  # CPU at a time and splits tests also labelled "shardable" (the Paho
+  # conformance suites) into 4 processes each: serially, DRD took ~20 min.
   #
   # One leg per tool; either reporting an error fails the job. They implement
   # happens-before differently and DRD also reports lock-order and mutex
@@ -1286,7 +1288,7 @@ jobs:
       # actually had -- coverage computed over fewer tests than anyone thought.
       # Now that no suite decides at run time whether to participate, the count
       # is deterministic, so assert it exactly. Bump this when adding a suite.
-      EXPECTED_TESTS: '68'
+      EXPECTED_TESTS: '69'
     services:
       mosquitto:
         image: eclipse-mosquitto:2

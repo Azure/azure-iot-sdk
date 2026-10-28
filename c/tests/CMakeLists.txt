@@ -193,6 +193,13 @@ az_iot_add_cmocka_test(az_iot_tests_json_string unit/json_string_test.c)
 target_include_directories(az_iot_tests_json_string PRIVATE
     ${PROJECT_SOURCE_DIR}/src/core)
 az_iot_add_cmocka_test(az_iot_tests_log unit/log_test.c)
+# support/test_shard.h: AZ_IOT_TEST_SHARD parsing and test selection.
+az_iot_add_cmocka_test(az_iot_tests_test_shard unit/test_shard_test.c)
+target_include_directories(az_iot_tests_test_shard PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+if(UNIX)
+    # setenv()/unsetenv() are POSIX, not C99.
+    target_compile_definitions(az_iot_tests_test_shard PRIVATE _POSIX_C_SOURCE=200809L)
+endif()
 # Concurrent writers and rotation in the file sink, which documents itself as
 # thread-safe. RACE: also run under helgrind and DRD.
 az_iot_add_cmocka_test(az_iot_tests_log_file_race RACE unit/log_file_race_test.c)
@@ -782,9 +789,11 @@ if(AZ_IOT_WITH_PAHO)
     if(AZ_IOT_BUILD_CONFORMANCE_TESTS)
         add_test(NAME az_iot_conformance_paho_v3 COMMAND az_iot_conformance_paho_v3)
         add_test(NAME az_iot_conformance_paho_v5 COMMAND az_iot_conformance_paho_v5)
-        # Paho runs its own threads: run under helgrind and DRD too.
+        # Paho runs its own threads: run under helgrind and DRD too. shardable:
+        # honours AZ_IOT_TEST_SHARD (support/test_shard.h), so
+        # eng/run-race-detectors.sh splits each across parallel processes.
         set_tests_properties(az_iot_conformance_paho_v3 az_iot_conformance_paho_v5
-            PROPERTIES LABELS race)
+            PROPERTIES LABELS "race;shardable")
     endif()
 
     # Negative control for the sign-route custody case. No adapter here
