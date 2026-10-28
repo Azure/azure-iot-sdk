@@ -55,10 +55,8 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
         /// An event that executes whenever this client receives a snapshot of the twin from IoT hub without asking for it.
         /// </summary>
         /// <remarks>
-        /// Only MQTTv5 IoT hubs send these. They push the twin when the device connects (if this device's versions of its
-        /// desired or reported properties are out of date), and in place of a desired properties patch that this device can't
-        /// apply (for example, because it missed earlier patches). In that case, the desired properties in this snapshot replace
-        /// the ones this device held, and no <see cref="DesiredPatchReceived"/> event is raised for them.
+        /// Only MQTTv5 IoT hubs send these. They push the twin when the device connects, if this device's versions of its
+        /// desired or reported properties are out of date. Like <see cref="DesiredPatchReceived"/>, they are raised as received.
         /// </remarks>
         public event Action<TwinPushReceivedEventArgs>? TwinPushReceived;
 
@@ -182,7 +180,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
         /// <remarks>
         /// MQTTv3 IoT hubs apply reported properties patches unconditionally. To behave the same way, this unified client sends
         /// unconditional patches when connected to an MQTTv5 IoT hub, rather than making them conditional on IoT hub's version of
-        /// the reported properties as <see cref="MQTTv5.Twin.TwinClient"/> does.
+        /// the reported properties as <see cref="MQTTv5.Twin.ConcurrentTwinClient"/> does.
         /// </remarks>
         public async Task<ReportedPatchResponse> UpdateReportedPropertiesAsync(JsonObject reportedProperties, CancellationToken cancellationToken = default)
         {
@@ -193,7 +191,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
             MqttPublish publish;
             if (currentConnectionContext.ConnectionProfile == IotHubConnectionType.Mqttv5)
             {
-                return await _mqttv5HubTwinClient.UpdateReportedPropertiesUnconditionallyAsync(reportedProperties, cancellationToken);
+                return await _mqttv5HubTwinClient.UpdateReportedPropertiesAsync(new ReportedPatchRequest() { ReportedProperties = reportedProperties }, ifMatch: 0, cancellationToken);
             }
             else
             {

@@ -10,7 +10,8 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
     /// </summary>
     /// <remarks>
     /// The patch is applied to the reported properties as a JSON merge patch, so a property set to null is removed.
-    /// The SDK makes each patch conditional on IoT hub's current version of the reported properties itself.
+    /// <see cref="ConcurrentTwinClient"/> makes each patch conditional on IoT hub's current version of the reported properties
+    /// itself, while <see cref="TwinClient"/> only makes it conditional on the version that the caller provides.
     /// </remarks>
     public class ReportedPatchRequest
     {

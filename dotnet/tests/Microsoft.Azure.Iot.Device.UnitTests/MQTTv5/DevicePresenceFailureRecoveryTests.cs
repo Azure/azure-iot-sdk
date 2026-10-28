@@ -114,7 +114,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
                 ConnectionRetryPolicy = new ExponentialBackoffRetryPolicy(uint.MaxValue, TimeSpan.Zero, useJitter: false),
             };
             using ConnectionClient connectionClient = new(options);
-            using TwinClient twinClient = new(connectionClient);
+            using ConcurrentTwinClient twinClient = new(connectionClient);
             using Device.MQTTv5.DirectMethods.DirectMethodClient directMethodClient = new(connectionClient);
             options.ReceiveDesiredPropertyUpdates = !pushDesired;
             options.ReceiveReportedPropertiesUponConnect = !pushReported;
@@ -160,7 +160,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
                 ConnectionRetryPolicy = new ExponentialBackoffRetryPolicy(uint.MaxValue, TimeSpan.Zero, useJitter: false),
             };
             using ConnectionClient connectionClient = new(options);
-            using TwinClient twinClient = new(connectionClient);
+            using ConcurrentTwinClient twinClient = new(connectionClient);
 
             await connectionClient.ConnectToHubAsync(GetMockConnectionContext(), TestContext.Current.CancellationToken)
                 .WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);

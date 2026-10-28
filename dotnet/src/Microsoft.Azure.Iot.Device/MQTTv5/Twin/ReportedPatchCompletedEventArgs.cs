@@ -7,7 +7,7 @@ using System.Text.Json.Nodes;
 namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
 {
     /// <summary>
-    /// The outcome of a reported properties patch that <see cref="TwinClient"/> sent to IoT hub.
+    /// The outcome of a reported properties patch that <see cref="ConcurrentTwinClient"/> sent to IoT hub.
     /// </summary>
     public class ReportedPatchCompletedEventArgs : EventArgs
     {

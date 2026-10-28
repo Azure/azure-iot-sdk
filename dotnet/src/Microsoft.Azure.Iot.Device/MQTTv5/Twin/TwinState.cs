@@ -6,7 +6,7 @@ using System.Text.Json.Nodes;
 namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
 {
     /// <summary>
-    /// A device's copy of its twin, as kept by <see cref="TwinClient"/>. Serializable with System.Text.Json, so that an
+    /// A device's copy of its twin, as kept by <see cref="ConcurrentTwinClient"/>. Serializable with System.Text.Json, so that an
     /// application can persist it and restore it the next time it starts.
     /// </summary>
     /// <remarks>

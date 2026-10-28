@@ -8,6 +8,10 @@ survives restarts. The sample:
 - Reports `lastStartedAt` each time it starts.
 - Saves the twin to `twin-{deviceId}.json` next to the sample's binaries, and restores it on the next run.
 
+It uses `ConcurrentTwinClient`, which implements the device-side behavior that the twin spec recommends. The SDK also
+offers `TwinClient`, which just mirrors IoT Hub's twin API (one request, one response, no queuing, retries or
+ordering). Most devices should use `ConcurrentTwinClient`.
+
 ## Prerequisites
 
 - The .NET 10 SDK.
@@ -36,7 +40,7 @@ Delete `twin-{deviceId}.json` to start over. The device then holds no versions, 
 ## Persisted twin
 
 The SDK keeps the device's copy of its twin as a `TwinState`, but doesn't persist it. The sample saves each snapshot
-raised by `TwinClient.TwinStateChanged`, and passes the saved one to the `TwinClient` constructor on the next run:
+raised by `ConcurrentTwinClient.TwinStateChanged`, and passes the saved one to the `ConcurrentTwinClient` constructor on the next run:
 
 | Field | Meaning |
 | --- | --- |
@@ -54,7 +58,7 @@ twin. An unreadable file is ignored, which is always safe because IoT Hub then p
 
 - **Choose the push options once.** `ReceiveDesiredPropertyUpdates` and `ReceiveReportedPropertiesUponConnect` are
   set on `ConnectionClientOptions` and can't change while the connection client exists.
-- **Start from the persisted twin.** Passing it to the `TwinClient` constructor tells IoT Hub which versions the
+- **Start from the persisted twin.** Passing it to the `ConcurrentTwinClient` constructor tells IoT Hub which versions the
   device already holds, so IoT Hub only pushes the sections whose versions differ, rather than the device fetching the
   whole twin each time it starts. If a persisted version is newer than IoT Hub's (for example, because the device's
   twin was recreated), the SDK discards it.

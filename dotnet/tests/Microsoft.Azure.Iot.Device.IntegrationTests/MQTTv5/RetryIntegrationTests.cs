@@ -28,7 +28,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.MQTTv5
             using RegistryManager registryManager = Setup.GetMQTTv5IotHubRegistryManager();
             MQTTv5DeviceTestContext device = await Setup.CreateProvisionableMQTTv5DeviceAsync(null, CreateOptions(), cancellationToken);
             using TelemetryClient telemetryClient = new(device.ConnectionClient);
-            using TwinClient twinClient = new(device.ConnectionClient);
+            using ConcurrentTwinClient twinClient = new(device.ConnectionClient);
             await using (device)
             {
                 ConnectionContext initialContext = await ConnectAsync(device, cancellationToken);
@@ -65,7 +65,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.MQTTv5
 
             using ConnectionClient reconnectingClient = new(options, connectionContext: cachedContext);
             using TelemetryClient telemetryClient = new(reconnectingClient);
-            using TwinClient twinClient = new(reconnectingClient);
+            using ConcurrentTwinClient twinClient = new(reconnectingClient);
             try
             {
                 ConnectionContext recoveredContext = await reconnectingClient.ProvisionAndConnectAsync(
@@ -97,7 +97,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.MQTTv5
             CountingRetryPolicy retryPolicy = new();
             MQTTv5DeviceTestContext device = await Setup.CreateProvisionableMQTTv5DeviceAsync(null, CreateOptions(retryPolicy), cancellationToken);
             using TelemetryClient telemetryClient = new(device.ConnectionClient);
-            using TwinClient twinClient = new(device.ConnectionClient);
+            using ConcurrentTwinClient twinClient = new(device.ConnectionClient);
             await using (device)
             {
                 ConnectionContext initialContext = await ConnectAsync(device, cancellationToken);
@@ -165,7 +165,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.MQTTv5
         }
 
         private static async Task AssertFeatureClientsWorkAsync(
-            TelemetryClient telemetryClient, TwinClient twinClient, CancellationToken cancellationToken)
+            TelemetryClient telemetryClient, ConcurrentTwinClient twinClient, CancellationToken cancellationToken)
         {
             await telemetryClient.SendTelemetryAsync(
                 new DeviceToCloudTelemetry { Payload = Encoding.UTF8.GetBytes("{\"recovered\":true}") }, cancellationToken);

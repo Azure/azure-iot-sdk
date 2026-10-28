@@ -65,7 +65,7 @@ internal class Program
 
         // Starting from the persisted twin tells IoT hub which versions this device already holds, so it doesn't push sections
         // that haven't changed, and sends the reported properties patches that IoT hub hadn't applied when the sample stopped.
-        using TwinClient twinClient = new TwinClient(connectionClient, persistedTwin);
+        using ConcurrentTwinClient twinClient = new ConcurrentTwinClient(connectionClient, persistedTwin);
 
         // The SDK raises each change to this device's copy of its twin (including each reported properties patch it is yet to
         // send) one at a time, in order, so saving each one keeps the persisted twin up to date.
