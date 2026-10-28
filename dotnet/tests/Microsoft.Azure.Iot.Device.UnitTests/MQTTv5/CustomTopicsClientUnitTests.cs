@@ -864,6 +864,47 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             Assert.Empty(mockMqttClient.DisconnectRequests);
         }
 
+        // When a failed CONNECT leaves the resumed session's subscriptions unknown, the topics are re-subscribed to, but a
+        // rejected replacement SUBSCRIBE does not remove the subscription the session still holds, so it stays tracked.
+        [Fact]
+        public async Task TopicRejectedUponReconnectingWithResumedSessionStaysTracked()
+        {
+            const string rejectedTopic = "rejected/topic";
+
+            using MockConnectionMqttClient mockMqttClient = new() { AutoRespondToBirth = true };
+            using ConnectionClient connectionClient = CreateReconnectingConnectionClient(mockMqttClient);
+            using CustomTopicsClient customTopicsClient = new(connectionClient);
+
+            await connectionClient.ConnectToHubAsync(CreateHubConnectionContext(), TestContext.Current.CancellationToken);
+
+            await customTopicsClient.SubscribeAsync("a", MqttQualityOfServiceLevel.AtLeastOnce, TestContext.Current.CancellationToken);
+            await customTopicsClient.SubscribeAsync(rejectedTopic, MqttQualityOfServiceLevel.AtLeastOnce, TestContext.Current.CancellationToken);
+
+            // The first reconnection attempt fails, so the resumed session of the next one is not known to hold the subscriptions
+            int connectAttempts = 0;
+            mockMqttClient.OnConnect = _ => Interlocked.Increment(ref connectAttempts) == 1
+                ? throw new IOException("mock connect failure")
+                : Task.FromResult(new MqttConnectAck() { IsSessionPresent = true, ResultCode = MqttConnectReasonCode.Success });
+
+            mockMqttClient.OnSubscribe = subscribe =>
+            {
+                MqttSubscribeAck suback = MqttObjectHelpers.CreateSuccessfulSuback(subscribe);
+                foreach (MqttSubscribeAckItem item in suback.Items.Where(item => item.TopicFilter.Topic == rejectedTopic))
+                {
+                    item.ReasonCode = MqttClientSubscribeReasonCode.NotAuthorized;
+                }
+
+                return Task.FromResult(suback);
+            };
+
+            MqttSubscribe presenceSubscribe = await ReconnectAndGetPresenceSubscribeAsync(mockMqttClient, connectionClient);
+
+            Assert.True(connectAttempts >= 2);
+            Assert.Equal(new[] { $"ih/{DeviceId}/dev/#", "a", rejectedTopic }, presenceSubscribe.TopicFilters.Select(topicFilter => topicFilter.Topic));
+            Assert.Equal(new[] { "a", rejectedTopic }, customTopicsClient.GetSubscribedTopics);
+            Assert.Empty(mockMqttClient.DisconnectRequests);
+        }
+
         // A reconnection while an unsubscribe is in flight must not re-subscribe to its topic (which could undo the
         // unsubscribe), and since the service then no longer has that subscription, it stops being tracked even if the
         // unsubscribe fails.

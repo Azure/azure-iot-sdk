@@ -150,13 +150,51 @@ namespace Microsoft.Azure.Iot.Device
         // Workaround so that inheriting classes can invoke the "DevicePresenceFlowCompletedAsync" event.
         protected Task RaiseDevicePresenceFlowCompletedAsync(DevicePresenceFlowCompletedArgs args)
         {
-            if (args.IsSuccess && args.Exception == null && CurrentEndpoint == ConnectionEndpoint.IotHub)
+            return _devicePresenceFlowCompleted.InvokeAsync(args);
+        }
+
+        /// <summary>
+        /// Decide whether the device presence flow for the connection that was just established may skip its SUBSCRIBE.
+        /// </summary>
+        /// <remarks>
+        /// Per the device presence spec's subscribe-elide rule, the SUBSCRIBE is skipped only when the broker resumed the
+        /// session and this process cleanly observed a SUBACK on that session before. When it may be skipped, the
+        /// subscriptions are known to still be in place, so they stay marked as such. Otherwise they remain unmarked
+        /// (the write-ahead clear) until <see cref="MarkDevicePresenceSubscribed"/> records a successful SUBACK.
+        /// Must be called before the presence flow first awaits, so that it reads the state of this connection's CONNECT.
+        /// </remarks>
+        internal bool TryElideDevicePresenceSubscribe(MqttConnectAck connack)
+        {
+            if (connack.IsSessionPresent && _wasSubscribedAtConnect)
             {
-                // The current session now holds every subscription the presence flow needs, so the next reconnect may resume it.
-                Volatile.Write(ref _canResumeHubSession, 1);
+                Volatile.Write(ref _isDevicePresenceSubscribed, 1);
+                return true;
             }
 
-            return _devicePresenceFlowCompleted.InvokeAsync(args);
+            return false;
+        }
+
+        /// <summary>
+        /// Record that a SUBACK for the device presence subscriptions was observed on the current session.
+        /// </summary>
+        internal void MarkDevicePresenceSubscribed()
+        {
+            Volatile.Write(ref _isDevicePresenceSubscribed, 1);
+        }
+
+        /// <summary>
+        /// Forget the device presence subscriptions, so that the next connection re-subscribes even if its session is resumed.
+        /// </summary>
+        internal void ClearDevicePresenceSubscribed()
+        {
+            Volatile.Write(ref _isDevicePresenceSubscribed, 0);
+        }
+
+        /// <summary>
+        /// Restart the birth-ack timeout schedule from its first row. Only clients that run the MQTTv5 presence flow have one.
+        /// </summary>
+        internal virtual void ResetBirthAckTimeoutSchedule()
+        {
         }
 
         // Feature clients whose subscriptions are re-established as part of the device presence flow. Immutable so the
@@ -182,14 +220,15 @@ namespace Microsoft.Azure.Iot.Device
         /// <remarks>
         /// A source that throws is skipped (and logged) so that it cannot stop this device from becoming present.
         /// </remarks>
-        internal IReadOnlyList<DevicePresenceSubscriptionRequest> CollectDevicePresenceSubscriptions()
+        /// <param name="isSessionPresent">Whether the broker resumed the previous MQTT session on this connection.</param>
+        internal IReadOnlyList<DevicePresenceSubscriptionRequest> CollectDevicePresenceSubscriptions(bool isSessionPresent)
         {
             List<DevicePresenceSubscriptionRequest> requests = new();
             foreach (IDevicePresenceSubscriptionSource source in Volatile.Read(ref _devicePresenceSubscriptionSources))
             {
                 try
                 {
-                    IReadOnlyList<MqttTopicFilter> topicFilters = source.GetDevicePresenceTopicFilters();
+                    IReadOnlyList<MqttTopicFilter> topicFilters = source.GetDevicePresenceTopicFilters(isSessionPresent);
                     if (topicFilters.Count > 0)
                     {
                         requests.Add(new DevicePresenceSubscriptionRequest(source, topicFilters));
@@ -209,7 +248,8 @@ namespace Microsoft.Azure.Iot.Device
         /// </summary>
         /// <param name="requests">The requests whose filters were sent, in the order they were sent.</param>
         /// <param name="subackItems">The SUBACK items for exactly those filters, in the same order.</param>
-        internal static void ReportDevicePresenceSubscriptionResults(IReadOnlyList<DevicePresenceSubscriptionRequest> requests, IReadOnlyList<MqttSubscribeAckItem> subackItems)
+        /// <param name="isSessionPresent">Whether the broker resumed the previous MQTT session on this connection.</param>
+        internal static void ReportDevicePresenceSubscriptionResults(IReadOnlyList<DevicePresenceSubscriptionRequest> requests, IReadOnlyList<MqttSubscribeAckItem> subackItems, bool isSessionPresent)
         {
             int offset = 0;
             foreach (DevicePresenceSubscriptionRequest request in requests)
@@ -225,7 +265,7 @@ namespace Microsoft.Azure.Iot.Device
 
                 try
                 {
-                    request.Source.OnDevicePresenceSubscribeCompleted(request.TopicFilters, results);
+                    request.Source.OnDevicePresenceSubscribeCompleted(request.TopicFilters, results, isSessionPresent);
                 }
                 catch (Exception e)
                 {
@@ -311,11 +351,16 @@ namespace Microsoft.Azure.Iot.Device
         // True if the application asked for a clean session on every IoT hub connection.
         private readonly bool _useCleanSession;
 
-        // 1 once a presence flow has completed on the current IoT hub, so that the session it set up holds every
-        // subscription that flow needs. Consumed by the next CONNECT attempt so that only that attempt asks to resume the
-        // session: if its CONNACK is lost, the broker may have started an empty session that a later attempt would resume
-        // without knowing its subscriptions were lost, so later attempts start clean until a presence flow completes again.
-        private int _canResumeHubSession;
+        // The device presence spec's process-memory "subscribed" flag: 1 once a SUBACK for the device presence
+        // subscriptions has been observed on the current IoT hub session, with nothing since putting it in doubt. Never
+        // persisted, so every process starts by subscribing.
+        //
+        // Each CONNECT attempt moves the flag into _wasSubscribedAtConnect and clears it, which implements the spec's
+        // failed-CONNECT clear: if the attempt never reaches a successful CONNACK (for example because the CONNACK was
+        // lost after the broker created an empty session), the next attempt sees 0 and re-subscribes even if that
+        // session is then resumed. A successful CONNACK hands the snapshot to TryElideDevicePresenceSubscribe instead.
+        private int _isDevicePresenceSubscribed;
+        private volatile bool _wasSubscribedAtConnect;
 
         // Standing intent to re-provision: the cached assignment is no good -- an identity rejection at CONNACK or the
         // hub-unreachable threshold -- so this client should ask DPS for a fresh assignment rather than reconnecting to
@@ -873,7 +918,10 @@ namespace Microsoft.Azure.Iot.Device
             CurrentConnectionContext = connectionContext;
 
             // Any session left on this IoT hub was not set up by this connection's presence flow, so its subscriptions are unknown.
-            Volatile.Write(ref _canResumeHubSession, 0);
+            ClearDevicePresenceSubscribed();
+
+            // This is a fresh CONNECT cycle, so the birth-ack timeout schedule starts again from its first row.
+            ResetBirthAckTimeoutSchedule();
 
             string deviceId = CurrentConnectionContext.DeviceId;
             string hostname = CurrentConnectionContext.IotHubHostName;
@@ -964,9 +1012,12 @@ namespace Microsoft.Azure.Iot.Device
                 updateSecondaryCredentialSelection: true).ConfigureAwait(false);
             connectPacketToEdit = ApplyAuthentication(hubCredentials, connectPacketToEdit);
 
-            bool resumeSession = !_useCleanSession && Interlocked.Exchange(ref _canResumeHubSession, 0) == 1;
-            connectPacketToEdit.CleanSession = !resumeSession;
-            connectPacketToEdit.CleanStart = !resumeSession;
+            // Always ask to resume the session unless the application opted out: correctness never depends on it, but it
+            // preserves the broker's QoS 1 redelivery across transient drops. Whether the resumed session still holds the
+            // device presence subscriptions is decided separately, from the subscribed flag.
+            _wasSubscribedAtConnect = Interlocked.Exchange(ref _isDevicePresenceSubscribed, 0) == 1;
+            connectPacketToEdit.CleanSession = _useCleanSession;
+            connectPacketToEdit.CleanStart = _useCleanSession;
 
             // Gen 1 hub clients and gen 2 hub clients can insert their specific username/password/protocol version/etc before each connect attempt
             return IotHubMqttConnectOverride(connectPacketToEdit);
