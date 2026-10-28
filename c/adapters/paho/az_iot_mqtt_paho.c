@@ -33,6 +33,7 @@
 #include "azure/iot/az_iot_mqtt_iface.h"
 
 #include "az_iot_paho_key_custody.h"
+#include "internal/crypto.h"
 #include "internal/mqtt_limits.h"
 
 #include <MQTTAsync.h>
@@ -1243,6 +1244,17 @@ static char* proxy_cred_encode(char* dst, const char* s)
 /* Render the proxy as the "http://[user:password@]host:port" string Paho expects.
  *
  * *out_uri is NULL when no proxy is configured, which is not an error. */
+/** @brief Wipes and frees @p *uri (a proxy URI may hold the Basic credential); sets it to NULL. */
+static void proxy_uri_release(char** uri)
+{
+  if (*uri != NULL)
+  {
+    az_iot_crypto__wipe(*uri, strlen(*uri));
+    free(*uri);
+    *uri = NULL;
+  }
+}
+
 static az_iot_result build_proxy_uri(const az_iot_mqtt_proxy_options* proxy, char** out_uri)
 {
   *out_uri = NULL;
@@ -1306,6 +1318,7 @@ static az_iot_result build_proxy_uri(const az_iot_mqtt_proxy_options* proxy, cha
   int written = snprintf(p, n - used, "%s:%u", proxy->host, port);
   if (written < 0 || (size_t)written >= n - used)
   {
+    az_iot_crypto__wipe(uri, n);
     free(uri);
     return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
   }
@@ -1405,8 +1418,7 @@ static az_iot_result paho_iface_connect(
   }
   free(m->server_uri);
   m->server_uri = NULL;
-  free(m->proxy_uri);
-  m->proxy_uri = NULL;
+  proxy_uri_release(&m->proxy_uri);
   free(m->client_id);
   m->client_id = NULL;
 
@@ -1975,7 +1987,7 @@ static void paho_iface_destroy(az_iot_mqtt_client* self)
   paho_cond_destroy(&m->q_cond);
   paho_mutex_destroy(&m->q_mutex);
   free(m->server_uri);
-  free(m->proxy_uri);
+  proxy_uri_release(&m->proxy_uri);
   free(m->client_id);
   void* const allocation = m->allocation;
   memset(m, 0, sizeof(*m));
