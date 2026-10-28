@@ -8070,6 +8070,22 @@ void az_iot_connection_client__set_defensive_timeout_random_source(
   client->defensive_timeout_random_context = source ? context : NULL;
 }
 
+az_iot_result az_iot_connection_client__set_defensive_timeout_schedule(
+    az_iot_connection_client* client,
+    const uint32_t* base_ms_by_attempt,
+    size_t attempt_count,
+    uint32_t jitter_max_ms)
+{
+  if (!client || (base_ms_by_attempt == NULL) != (attempt_count == 0u))
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  client->defensive_timeout_base_ms_by_attempt = base_ms_by_attempt;
+  client->defensive_timeout_attempt_count = attempt_count;
+  client->defensive_timeout_jitter_max_ms = base_ms_by_attempt ? jitter_max_ms : 0u;
+  return AZ_IOT_OK;
+}
+
 uint32_t az_iot_connection_client__defensive_timeout_ms(
     az_iot_connection_client* client,
     uint32_t attempt)
@@ -8085,6 +8101,15 @@ uint32_t az_iot_connection_client__defensive_timeout_ms(
     /* Same LCG as gen_uuid_v4(); the high half is the well-mixed part. */
     client->rng_state = client->rng_state * 6364136223846793005ull + 1442695040888963407ull;
     random_value = client->rng_state >> 32;
+  }
+  if (client && client->defensive_timeout_base_ms_by_attempt)
+  {
+    return az_iot_defensive_timeout__schedule_ms(
+        client->defensive_timeout_base_ms_by_attempt,
+        client->defensive_timeout_attempt_count,
+        client->defensive_timeout_jitter_max_ms,
+        attempt,
+        random_value);
   }
   return az_iot_defensive_timeout__ms(attempt, random_value);
 }

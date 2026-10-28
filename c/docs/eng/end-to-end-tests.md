@@ -444,6 +444,13 @@ multi-step updates, and reboot/resume.
 - **Resource quotas are hard limits.** Provisioning per matrix leg keeps tests
   isolated but multiplies resource usage; keep the matrix lean and always delete
   the RG.
+- **Seconds-scale defensive timeouts.** Every client that can open an mqttv5
+  session (`e2e_device.c`, both custody suites) calls
+  `e2e_use_short_defensive_timeouts()` (`tests/e2e_defensive_timeout.h`): the
+  birth-ack schedule becomes 5/6/8/10 s + 0-5 s jitter instead of minutes, so a
+  missed birth-ack recovers inside the connect windows. It uses the internal
+  `az_iot_connection_client__set_defensive_timeout_schedule()`; clients that
+  do not call it keep the spec's schedule.
 
 ---
 

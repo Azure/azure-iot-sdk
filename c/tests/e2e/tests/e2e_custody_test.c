@@ -47,6 +47,7 @@
 #include "azure/iot/az_iot.h"
 
 #include "az_iot_e2e_service.h"
+#include "e2e_defensive_timeout.h"
 #include "e2e_log.h"
 
 #define E2E_CONNECT_TIMEOUT_S 90
@@ -224,6 +225,11 @@ static int device_connect(custody_fixture* fx)
     return 1;
   }
   fx->conn_ok = true;
+  if (e2e_use_short_defensive_timeouts(&fx->conn) != AZ_IOT_OK)
+  {
+    fprintf(stderr, "[e2e-custody] defensive-timeout schedule rejected\n");
+    return 1;
+  }
   az_iot_connection_client_add_state_observer(&fx->conn, on_conn_state, fx);
 
 #if defined(AZ_IOT_E2E_ADAPTER_PAHO)
