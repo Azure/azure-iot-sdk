@@ -23,7 +23,11 @@ namespace Microsoft.Azure.Iot.Device
         /// <remarks>
         /// Topics may contain the device ID placeholder, which the connection client replaces with the device's current ID.
         /// </remarks>
-        IReadOnlyList<MqttTopicFilter> GetDevicePresenceTopicFilters();
+        /// <param name="isSessionPresent">
+        /// Whether the broker resumed the previous MQTT session, in which case it may still hold subscriptions that this
+        /// connection does not re-subscribe to.
+        /// </param>
+        IReadOnlyList<MqttTopicFilter> GetDevicePresenceTopicFilters(bool isSessionPresent);
 
         /// <summary>
         /// Called with the SUBACK result of each filter returned by <see cref="GetDevicePresenceTopicFilters"/>, in the

@@ -436,8 +436,8 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.CustomTopics
         /// re-provisioned), this method waits until the connection client has re-established this device's presence on IoT
         /// hub, then sends the UNSUBSCRIBE. Any <see cref="IConnectionClient.DeviceIdPlaceholder"/> is replaced with the
         /// device ID at that time. The topics being unsubscribed from are not re-subscribed to upon that reconnection, so
-        /// they stop being tracked as subscribed (see <see cref="GetSubscribedTopics"/>) whatever the outcome of this
-        /// method. If the connection drops after the UNSUBSCRIBE was sent but before its UNSUBACK arrived, the
+        /// unless IoT hub resumed the previous MQTT session (which still holds them), they stop being tracked as subscribed
+        /// (see <see cref="GetSubscribedTopics"/>) whatever the outcome of this method. If the connection drops after the UNSUBSCRIBE was sent but before its UNSUBACK arrived, the
         /// UNSUBSCRIBE is re-sent after reconnection, including after re-provisioning.
         /// </description></item>
         /// <item><description>
@@ -515,8 +515,8 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.CustomTopics
                         _pendingUnsubscribe = null;
                     }
 
-                    // A reconnection that skipped these topics left them unsubscribed on the service, whatever the
-                    // outcome of this UNSUBSCRIBE, so stop tracking them.
+                    // A reconnection without a resumed session that skipped these topics left them unsubscribed on the
+                    // service, whatever the outcome of this UNSUBSCRIBE, so stop tracking them.
                     if (pendingUnsubscribe.WasSkippedByResubscription)
                     {
                         UpdateSubscribedTopics((builder, _) => builder.RemoveAll(pendingUnsubscribe.Topics.Contains));
@@ -600,7 +600,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.CustomTopics
             }
         }
 
-        IReadOnlyList<MqttTopicFilter> IDevicePresenceSubscriptionSource.GetDevicePresenceTopicFilters()
+        IReadOnlyList<MqttTopicFilter> IDevicePresenceSubscriptionSource.GetDevicePresenceTopicFilters(bool isSessionPresent)
         {
             lock (_subscribedCustomTopicsLock)
             {
@@ -615,7 +615,12 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.CustomTopics
                 {
                     if (_pendingUnsubscribe != null && _pendingUnsubscribe.Topics.Contains(topic))
                     {
-                        _pendingUnsubscribe.WasSkippedByResubscription = true;
+                        // A resumed session still holds this subscription, so only the UNSUBACK may stop it being tracked.
+                        if (!isSessionPresent)
+                        {
+                            _pendingUnsubscribe.WasSkippedByResubscription = true;
+                        }
+
                         continue;
                     }
 

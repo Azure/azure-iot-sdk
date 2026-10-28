@@ -180,7 +180,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
                         ConnectionEndpoint.IotHub,
                         () =>
                         {
-                            featureSubscriptions = subscriptionSourceOwner.CollectDevicePresenceSubscriptions();
+                            featureSubscriptions = subscriptionSourceOwner.CollectDevicePresenceSubscriptions(connack.IsSessionPresent);
                             MqttSubscribe subscribe = new($"ih/{deviceId}/dev/#", MqttQualityOfServiceLevel.AtLeastOnce);
                             foreach (DevicePresenceSubscriptionRequest request in featureSubscriptions)
                             {

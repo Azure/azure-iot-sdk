@@ -214,14 +214,15 @@ namespace Microsoft.Azure.Iot.Device
         /// <remarks>
         /// A source that throws is skipped (and logged) so that it cannot stop this device from becoming present.
         /// </remarks>
-        internal IReadOnlyList<DevicePresenceSubscriptionRequest> CollectDevicePresenceSubscriptions()
+        /// <param name="isSessionPresent">Whether the broker resumed the previous MQTT session on this connection.</param>
+        internal IReadOnlyList<DevicePresenceSubscriptionRequest> CollectDevicePresenceSubscriptions(bool isSessionPresent)
         {
             List<DevicePresenceSubscriptionRequest> requests = new();
             foreach (IDevicePresenceSubscriptionSource source in Volatile.Read(ref _devicePresenceSubscriptionSources))
             {
                 try
                 {
-                    IReadOnlyList<MqttTopicFilter> topicFilters = source.GetDevicePresenceTopicFilters();
+                    IReadOnlyList<MqttTopicFilter> topicFilters = source.GetDevicePresenceTopicFilters(isSessionPresent);
                     if (topicFilters.Count > 0)
                     {
                         requests.Add(new DevicePresenceSubscriptionRequest(source, topicFilters));
