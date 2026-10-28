@@ -2766,6 +2766,100 @@ static void send_csr_is_tracked_when_the_shared_pool_is_full(void** state)
   assert_int_equal(tc.failed, 1);
 }
 
+typedef struct tick_counter
+{
+  int calls;
+  az_iot_connection_client* client;
+  struct tick_counter* also_remove;
+} tick_counter;
+
+static void count_tick(void* user_ctx);
+static void count_tick(void* user_ctx)
+{
+  tick_counter* counter = (tick_counter*)user_ctx;
+  ++counter->calls;
+  if (counter->client != NULL)
+  {
+    az_iot_connection_client__remove_tick_observer(counter->client, count_tick, counter);
+    if (counter->also_remove != NULL)
+    {
+      az_iot_connection_client__remove_tick_observer(
+          counter->client, count_tick, counter->also_remove);
+    }
+  }
+}
+
+/* Each observer runs once per do_work(), whether or not a session is open. */
+static void tick_observers_run_once_per_do_work(void** state)
+{
+  fixture* fx = *state;
+  tick_counter a = { 0 };
+  tick_counter b = { 0 };
+  assert_int_equal(
+      az_iot_connection_client__add_tick_observer(fx->client, count_tick, &a), AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_connection_client__add_tick_observer(fx->client, count_tick, &b), AZ_IOT_OK);
+
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_int_equal(a.calls, 1);
+  assert_int_equal(b.calls, 1);
+
+  (void)connect_fixture(fx);
+  int before = a.calls;
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_int_equal(a.calls, before + 1);
+  assert_int_equal(b.calls, before + 1);
+
+  az_iot_connection_client__remove_tick_observer(fx->client, count_tick, &a);
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_int_equal(a.calls, before + 1);
+  assert_int_equal(b.calls, before + 2);
+}
+
+/* An observer may withdraw itself and a later one from its callback. */
+static void a_tick_observer_may_withdraw_observers(void** state)
+{
+  fixture* fx = *state;
+  tick_counter later = { 0 };
+  tick_counter first = { 0, fx->client, &later };
+  assert_int_equal(
+      az_iot_connection_client__add_tick_observer(fx->client, count_tick, &first), AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_connection_client__add_tick_observer(fx->client, count_tick, &later), AZ_IOT_OK);
+
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_int_equal(first.calls, 1);
+  assert_int_equal(later.calls, 0);
+}
+
+/* NULL arguments are refused; a full table refuses until an entry is withdrawn. */
+static void tick_observer_registration_is_bounded(void** state)
+{
+  fixture* fx = *state;
+  tick_counter counters[AZ_IOT_CONNECTION_CLIENT_TICK_OBSERVERS + 1] = { 0 };
+  assert_int_equal(
+      az_iot_connection_client__add_tick_observer(NULL, count_tick, &counters[0]),
+      AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(
+      az_iot_connection_client__add_tick_observer(fx->client, NULL, &counters[0]),
+      AZ_IOT_ERR_INVALID_ARG);
+  for (size_t i = 0; i < AZ_IOT_CONNECTION_CLIENT_TICK_OBSERVERS; ++i)
+  {
+    assert_int_equal(
+        az_iot_connection_client__add_tick_observer(fx->client, count_tick, &counters[i]),
+        AZ_IOT_OK);
+  }
+  tick_counter* extra = &counters[AZ_IOT_CONNECTION_CLIENT_TICK_OBSERVERS];
+  assert_int_equal(
+      az_iot_connection_client__add_tick_observer(fx->client, count_tick, extra),
+      AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+  az_iot_connection_client__remove_tick_observer(fx->client, count_tick, &counters[0]);
+  assert_int_equal(
+      az_iot_connection_client__add_tick_observer(fx->client, count_tick, extra), AZ_IOT_OK);
+  az_iot_connection_client__remove_tick_observer(NULL, count_tick, extra);
+}
+
 /* MQTTv5 requires MQTT v5. With only a v3.1.1 factory registered there is no
  * adapter that can speak the protocol, and open() must say so rather than
  * silently downgrading to an MQTTv3 session. */
@@ -4306,6 +4400,9 @@ int main(void)
         send_csr_unacknowledged_at_disconnect_stays_open, setup_csr, teardown),
     cmocka_unit_test_setup_teardown(
         send_csr_is_tracked_when_the_shared_pool_is_full, setup_csr, teardown),
+    cmocka_unit_test_setup_teardown(tick_observers_run_once_per_do_work, setup_csr, teardown),
+    cmocka_unit_test_setup_teardown(a_tick_observer_may_withdraw_observers, setup_csr, teardown),
+    cmocka_unit_test_setup_teardown(tick_observer_registration_is_bounded, setup_csr, teardown),
     cmocka_unit_test_setup_teardown(
         send_csr_subscribes_the_credentials_response_filter, setup_csr, teardown),
     cmocka_unit_test_setup_teardown(

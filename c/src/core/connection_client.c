@@ -7571,15 +7571,9 @@ static void settle_spent_dps_retry(az_iot_connection_client* c)
   set_state_to(c, AZ_IOT_CONN_SCOPE_DPS, now, AZ_IOT_OK);
 }
 
-az_iot_result az_iot_connection_client_do_work(
-    az_iot_connection_client* client,
-    uint32_t timeout_ms)
+/** @brief One do_work() pass, without the tick observers. */
+static az_iot_result do_work_pass(az_iot_connection_client* client, uint32_t timeout_ms)
 {
-  if (!client)
-  {
-    return AZ_IOT_ERR_INVALID_ARG;
-  }
-
   process_sas_token_request(client);
 
   /* --- DPS provisioning pump --- */
@@ -7947,6 +7941,27 @@ az_iot_result az_iot_connection_client_do_work(
     }
   }
 
+  return r;
+}
+
+az_iot_result az_iot_connection_client_do_work(
+    az_iot_connection_client* client,
+    uint32_t timeout_ms)
+{
+  if (!client)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  az_iot_result r = do_work_pass(client, timeout_ms);
+  /* After every timer, on every path. A callback may withdraw itself or another observer. */
+  for (size_t i = 0; i < AZ_IOT_CONNECTION_CLIENT_TICK_OBSERVERS; ++i)
+  {
+    void (*observer)(void*) = client->tick_observers[i].cb;
+    if (observer != NULL)
+    {
+      observer(client->tick_observers[i].user_ctx);
+    }
+  }
   return r;
 }
 
@@ -9065,6 +9080,46 @@ bool az_iot_connection_client__has_publish_completion_observer(
     }
   }
   return false;
+}
+
+az_iot_result az_iot_connection_client__add_tick_observer(
+    az_iot_connection_client* client,
+    void (*cb)(void* user_ctx),
+    void* user_ctx)
+{
+  if (client == NULL || cb == NULL)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  for (size_t i = 0; i < AZ_IOT_CONNECTION_CLIENT_TICK_OBSERVERS; ++i)
+  {
+    if (client->tick_observers[i].cb == NULL)
+    {
+      client->tick_observers[i].cb = cb;
+      client->tick_observers[i].user_ctx = user_ctx;
+      return AZ_IOT_OK;
+    }
+  }
+  return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+}
+
+void az_iot_connection_client__remove_tick_observer(
+    az_iot_connection_client* client,
+    void (*cb)(void* user_ctx),
+    void* user_ctx)
+{
+  if (client == NULL)
+  {
+    return;
+  }
+  for (size_t i = 0; i < AZ_IOT_CONNECTION_CLIENT_TICK_OBSERVERS; ++i)
+  {
+    if (client->tick_observers[i].cb == cb && client->tick_observers[i].user_ctx == user_ctx)
+    {
+      client->tick_observers[i].cb = NULL;
+      client->tick_observers[i].user_ctx = NULL;
+    }
+  }
 }
 
 bool az_iot_connection_client__can_track_publish(

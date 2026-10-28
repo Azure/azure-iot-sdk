@@ -454,6 +454,28 @@ extern "C"
       const void* user_ctx);
 
   /**
+   * @brief Call @p cb once per az_iot_connection_client_do_work(), after the client's own timers.
+   *
+   * Called on every do_work() return path, connected or not. For a feature client that expires
+   * or resends without traffic. Withdraw it before the feature client's storage goes away; a
+   * callback may withdraw itself or another observer.
+   *
+   * @retval AZ_IOT_ERR_INVALID_ARG @p client or @p cb is NULL.
+   * @retval AZ_IOT_ERR_NOT_ENOUGH_SPACE All AZ_IOT_CONNECTION_CLIENT_TICK_OBSERVERS entries are in
+   * use.
+   */
+  az_iot_result az_iot_connection_client__add_tick_observer(
+      az_iot_connection_client* client,
+      void (*cb)(void* user_ctx),
+      void* user_ctx);
+
+  /** @brief Withdraw a tick observer added with the same @p cb and @p user_ctx. */
+  void az_iot_connection_client__remove_tick_observer(
+      az_iot_connection_client* client,
+      void (*cb)(void* user_ctx),
+      void* user_ctx);
+
+  /**
    * @brief Whether a tracked QoS 1 publish by @p owner would get a pending-PUBACK slot now.
    *
    * Lets a caller that can live without the ack choose to publish untracked, without

@@ -1268,6 +1268,10 @@ extern "C"
  * client. */
 #define AZ_IOT_CONNECTION_CLIENT_PUBLISH_COMPLETION_OBSERVERS 2
 
+/* Feature clients told once per do_work(), after its own timers, so they can
+ * expire and resend without traffic or a separate do_work() of their own. */
+#define AZ_IOT_CONNECTION_CLIENT_TICK_OBSERVERS 4
+
 /* Defaults applied when the corresponding option is left at 0. */
 #ifndef AZ_IOT_DEFAULT_KEEP_ALIVE_SECONDS
 #define AZ_IOT_DEFAULT_KEEP_ALIVE_SECONDS 30
@@ -1600,6 +1604,13 @@ extern "C"
       void (*cb)(void* user_ctx);
       void* user_ctx;
     } publish_completion_observers[AZ_IOT_CONNECTION_CLIENT_PUBLISH_COMPLETION_OBSERVERS];
+    /* Feature clients told once per do_work() (see
+     * az_iot_connection_client__add_tick_observer). */
+    struct
+    {
+      void (*cb)(void* user_ctx);
+      void* user_ctx;
+    } tick_observers[AZ_IOT_CONNECTION_CLIENT_TICK_OBSERVERS];
     /* Set while a transition is being dispatched. Registering an observer from
      * inside a callback would hand it the transition in flight, so adding is
      * refused with AZ_IOT_ERR_BUSY while this is set. Removing is allowed: the
