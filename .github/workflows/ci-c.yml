@@ -911,7 +911,22 @@ jobs:
             echo "AZ_IOT_DEPS=$tmp/deps"
             echo "AZ_IOT_BUILD=$tmp/build"
             echo "AZ_IOT_TOOLCHAIN=$(cygpath -m "$AZ_IOT_VCPKG")/scripts/buildsystems/vcpkg.cmake"
+            echo "VCPKG_DEFAULT_BINARY_CACHE=$tmp/vcpkg-archives"
+            echo "VCPKG_CACHE_PREFIX=vcpkg-x64-windows-static-$ImageOS-$ImageVersion-$(sha256sum vcpkg.json | cut -c1-16)-"
           } >> "$GITHUB_ENV"
+          mkdir -p "$RUNNER_TEMP/vcpkg-archives"
+      # vcpkg's binary cache. Without it every run builds OpenSSL from source
+      # (~6 min). vcpkg names each archive by its ABI hash, so a stale archive is
+      # never used, only ignored. The image version is in the key: a new image
+      # starts a new entry instead of growing the old one.
+      - name: Restore vcpkg binary cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ runner.temp }}/vcpkg-archives
+          key: ${{ env.VCPKG_CACHE_PREFIX }}${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: ${{ env.VCPKG_CACHE_PREFIX }}
+      - name: Count restored vcpkg archives
+        run: find "$RUNNER_TEMP/vcpkg-archives" -type f | wc -l > "$RUNNER_TEMP/vcpkg-archives-before"
       - name: Install azure-sdk-for-c
         run: bash eng/install-deps.sh "$AZ_IOT_DEPS" azure-sdk-for-c
       - name: Configure
@@ -949,6 +964,22 @@ jobs:
             cmake --build "$AZ_IOT_BUILD-$cfg-consumer"
             ctest --test-dir "$AZ_IOT_BUILD-$cfg-consumer" --output-on-failure --no-tests=error
           done
+      # Saved only when vcpkg built something new. Also after a failure: the
+      # packages built before it are still valid.
+      - name: Check for new vcpkg archives
+        id: vcpkg-archives
+        if: always()
+        run: |
+          before="$(cat "$RUNNER_TEMP/vcpkg-archives-before" 2>/dev/null || echo 0)"
+          after="$(find "$RUNNER_TEMP/vcpkg-archives" -type f | wc -l)"
+          echo "vcpkg archives: $before restored, $after now"
+          echo "save=$([ "$after" -gt "$before" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+      - name: Save vcpkg binary cache
+        if: always() && steps.vcpkg-archives.outputs.save == 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ runner.temp }}/vcpkg-archives
+          key: ${{ env.VCPKG_CACHE_PREFIX }}${{ github.run_id }}-${{ github.run_attempt }}
 
   # ---------------------------------------------------------------------------
   # The installed package (cmake --install, find_package(azure-iot-sdk)).
