@@ -144,6 +144,18 @@ jobs:
           # SAS URI and upload a blob.
           enable-file-upload: 'true'
 
+      # One Event Hubs consumer group per test job, e2e-<device index>: Event
+      # Hubs allows 5 readers per partition per group, and the test-config leaves
+      # IOTHUB_EVENTHUB_CONSUMER_GROUP unset, i.e. every job on $Default.
+      - name: Create consumer groups
+        run: |
+          set -euo pipefail
+          hub="$(az iot hub list -g "$E2E_RESOURCE_GROUP" --query '[0].name' -o tsv)"
+          [ -n "$hub" ] || { echo "::error::no IoT Hub in $E2E_RESOURCE_GROUP"; exit 1; }
+          for i in 0 1 2 3 4 5 6 7; do
+            az iot hub consumer-group create -g "$E2E_RESOURCE_GROUP" --hub-name "$hub" -n "e2e-$i" -o none
+          done
+
       - name: Upload test config
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -242,12 +254,19 @@ jobs:
         working-directory: c
         run: cmake --build --preset ${{ matrix.preset }} --target az_iot_sample_unified_file_upload
 
+      # Provisioned runs read events on this job's own consumer group (created
+      # by setup). On the shared environment the generated test config sets it.
       - name: Select the device index
         shell: bash
         env:
           OS_INDEX: ${{ matrix.os-index }}
           GROUP_INDEX: ${{ matrix.group-index }}
-        run: echo "E2E_DEVICE_INDEX=$((OS_INDEX * 4 + GROUP_INDEX))" >> "$GITHUB_ENV"
+        run: |
+          idx=$((OS_INDEX * 4 + GROUP_INDEX))
+          echo "E2E_DEVICE_INDEX=$idx" >> "$GITHUB_ENV"
+          if [ "$E2E_SHARED" != 'true' ]; then
+            echo "IOTHUB_EVENTHUB_CONSUMER_GROUP=e2e-$idx" >> "$GITHUB_ENV"
+          fi
 
       - name: Download shared test config
         if: env.E2E_SHARED != 'true'

@@ -288,7 +288,9 @@ failure, or a runner that dies before teardown.
 | `teardown` | ubuntu | `always()` deletes the resource group via `destroy-e2e-resources`, using the run-derived name (not a `setup` output) |
 
 Each `test` job has its own device (index os-index * 4 + group-index; eight DPS
-enrollments), so the groups run in parallel without sharing a device or twin.
+enrollments) and its own Event Hubs consumer group (`e2e-<index>`, created by
+`setup`; Event Hubs allows 5 readers per partition per group), so the groups run
+in parallel without sharing a device, twin or reader quota.
 The `test` jobs share the one resource group provisioned by `setup`, and
 `teardown` runs even if a job fails — or if the run is cancelled — so resources
 are never leaked.
