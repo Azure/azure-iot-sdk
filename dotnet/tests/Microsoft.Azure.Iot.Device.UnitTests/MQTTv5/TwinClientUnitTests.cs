@@ -1109,6 +1109,79 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             Assert.Equal(new[] { 5ul }, connection.ReplacedReportedPropertiesVersions);
         }
 
+        [Fact]
+        public async Task UpdateReportedPropertiesAsync_BeforeConnecting_IsSentAfterBirthAck()
+        {
+            MockFeatureConnectionClient connection = new() { IsConnectionTargetSet = false };
+            using TwinClient twinClient = new(connection);
+
+            Task<ReportedPatchResponse> first = UpdateReportedAsync(twinClient, "{\"a\":1}");
+            Task<ReportedPatchResponse> second = UpdateReportedAsync(twinClient, "{\"b\":2}");
+            Assert.False(first.IsCompleted);
+            Assert.Empty(connection.PublishedMessages);
+
+            Guid nonce = Guid.NewGuid();
+            connection.CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv5, DeviceId);
+            connection.IsConnectionTargetSet = true;
+            connection.ConnectionNonce = nonce;
+            await ReceiveBirthAckAsync(connection, nonce, desiredVersion: 1, reportedVersion: 4);
+
+            await WaitUntilAsync(() => connection.PublishedMessages.Count == 1);
+            MqttPublish patchPublish = connection.PublishedMessages[0];
+            (ulong ifMatch, JsonObject patch) = ParseReportedPatch(patchPublish);
+            Assert.Equal(4ul, ifMatch);
+            Assert.Equal("{\"a\":1,\"b\":2}", patch.ToJsonString());
+
+            await RespondToReportedPatchAsync(connection, patchPublish, Result.Ok, 5);
+            Assert.Equal(5ul, (await first).Version);
+            Assert.Equal(5ul, (await second).Version);
+        }
+
+        [Fact]
+        public async Task UpdateReportedPropertiesAsync_AfterDisconnect_IsSentOnceReconnected()
+        {
+            List<MqttPublish> patchPublishes = new();
+            using MockConnectionMqttClient mqttClient = new()
+            {
+                AutoRespondToBirth = true,
+                AutoBirthAck = new BirthAck() { DesiredVersion = 1, ReportedVersion = 4 },
+            };
+            mqttClient.OnPublish = publish =>
+            {
+                if (publish.UserProperties.Any(p => p.Name == "type" && p.ReadValueAsString() == "reported-patch:1"))
+                {
+                    lock (patchPublishes)
+                    {
+                        patchPublishes.Add(publish);
+                    }
+                }
+
+                return Task.FromResult(new MqttPublishAck() { ReasonCode = MqttPublishAckReasonCode.Success });
+            };
+            using ConnectionClient connection = new(new() { MqttClient = mqttClient });
+            using TwinClient twinClient = new(connection);
+            ConnectionContext context = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv5, DeviceId);
+            await connection.ConnectToHubAsync(context, TestContext.Current.CancellationToken);
+            await connection.DisconnectAsync(TestContext.Current.CancellationToken);
+
+            Task<ReportedPatchResponse> update = UpdateReportedAsync(twinClient, "{\"a\":1}");
+            Assert.False(update.IsCompleted);
+            lock (patchPublishes)
+            {
+                Assert.Empty(patchPublishes);
+            }
+
+            await connection.ConnectToHubAsync(context, TestContext.Current.CancellationToken);
+
+            await WaitUntilAsync(() => { lock (patchPublishes) { return patchPublishes.Count == 1; } });
+            MqttPublish patchPublish = patchPublishes[0];
+            Assert.Equal(4ul, ParseReportedPatch(patchPublish).IfMatch);
+
+            var response = new ReportedPatchResponse() { Result = Result.Ok, Version = 5 };
+            await mqttClient.SimulatePublishReceivedAsync(CreateInboundTwinPublish("reported-patch-response:1", patchPublish.CorrelationData!, response.ToByteArray()));
+            Assert.Equal(5ul, (await update).Version);
+        }
+
         private static (MockFeatureConnectionClient, Guid) CreateConnectionWithNonce()
         {
             Guid nonce = Guid.NewGuid();

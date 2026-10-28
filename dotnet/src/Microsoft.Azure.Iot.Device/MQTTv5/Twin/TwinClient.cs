@@ -154,7 +154,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
         /// <param name="connection">The connection client this feature client will use.</param>
         /// <remarks>
         /// The provided connection client does not need to be connected before this constructor is called. However, the provided connection client must be connected prior
-        /// to using this feature client to send/receive any twin messages.
+        /// to using this feature client to send/receive any twin messages, except for reported properties patches, which are held until the device connects.
         /// </remarks>
         /// <example>
         /// The recommended order to instantiate feature clients and the connection client is as follows:
@@ -283,6 +283,12 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
         /// within a defensive timeout (5 to 15 minutes, growing with each attempt), the patch is sent again. If the
         /// connection is lost, the patch is sent again once the device has reconnected and IoT hub has acknowledged its presence.
         /// </para>
+        /// <para>
+        /// The device doesn't need to be connected to call this method. Patches made before the device connects (or while it is
+        /// disconnected) are held, in order, and sent once the device has connected and IoT hub has acknowledged its presence.
+        /// Patches are only discarded if <paramref name="cancellationToken"/> is cancelled before they are sent, or if this
+        /// client is disposed.
+        /// </para>
         /// </remarks>
         /// <exception cref="DeviceException">Thrown if the patch could not be sent.</exception>
         /// <exception cref="ObjectDisposedException">Thrown if this client is disposed before IoT hub responds.</exception>
@@ -309,8 +315,6 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
             ObjectDisposedException.ThrowIf(_isDisposed, this);
             ArgumentNullException.ThrowIfNull(reportedProperties);
             cancellationToken.ThrowIfCancellationRequested();
-
-            EnsureConnected();
 
             // Copy the patch so that later changes the application makes to it don't affect what is sent.
             PendingReportedPatch pendingPatch = new(reportedProperties.DeepClone().AsObject(), isUnconditional);
@@ -344,10 +348,11 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
         }
 
         // Must be called while holding _reportedPatchLock. Starts the next reported patch attempt from the pending patches, unless
-        // one is already in flight, there are none, or IoT hub's version of the reported properties is not known yet.
+        // one is already in flight, there are none, the device isn't connected, or IoT hub's version of the reported properties
+        // is not known yet. Patches held while the device isn't connected are sent once IoT hub acknowledges its presence.
         private ReportedPatchAttempt? TryStartReportedPatchAttempt()
         {
-            if (_isDisposed || _reportedPatchAttempt != null || _pendingReportedPatches.Count == 0)
+            if (_isDisposed || _reportedPatchAttempt != null || _pendingReportedPatches.Count == 0 || !IsConnected())
             {
                 return null;
             }
@@ -754,10 +759,15 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
 
         private void EnsureConnected()
         {
-            if (_connection.GetCurrentConnectionContext() == null || !_connection.IsConnectionTargetSet)
+            if (!IsConnected())
             {
                 throw new NotSupportedException("Must be connected before calling this method.");
             }
+        }
+
+        private bool IsConnected()
+        {
+            return _connection.GetCurrentConnectionContext() != null && _connection.IsConnectionTargetSet;
         }
 
         private async Task HandleReceivedMqttPublish(MqttPublishReceivedEventArgs args)

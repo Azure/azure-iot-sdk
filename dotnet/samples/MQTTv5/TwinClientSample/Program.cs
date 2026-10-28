@@ -98,34 +98,26 @@ internal class Program
             }
         }
 
-        // Pending patches are sent in the order they were recorded, which is the order the SDK sends them to IoT hub in.
-        object sendLock = new();
-        bool isConnected = false;
-        void SendPendingReportedPatches()
+        // Records a reported properties patch in the persisted twin before sending it, so that it isn't lost if the
+        // application stops before IoT hub applies it. The SDK holds patches until the device connects, and queues each one
+        // before UpdateReportedPropertiesAsync returns, so recording and sending under one lock sends them in recorded order.
+        // Sends aren't awaited here, since they only complete once IoT hub responds (which may be after reconnecting), and
+        // the event handlers that make patches must not block the SDK. They are awaited before the sample exits instead.
+        object reportedPatchLock = new();
+        List<Task> reportedPatchSends = new();
+        void UpdateReportedProperties(JsonObject patch)
         {
-            lock (sendLock)
+            lock (reportedPatchLock)
             {
-                if (!isConnected)
-                {
-                    return;
-                }
-
-                foreach (PersistedTwin.PendingPatch pending in twin.GetPendingReportedPatches().Where(pending => !pending.IsSent))
-                {
-                    pending.IsSent = true;
-
-                    // The SDK queues the patch before this call returns, so patches are queued in this order.
-                    _ = SendReportedPatchAsync(pending);
-                }
+                StartSendingReportedPatch(twin.AddPendingReportedPatch(patch));
             }
         }
 
-        // Records a reported properties patch in the persisted twin before sending it, so that it isn't lost if the
-        // application stops before IoT hub applies it.
-        void UpdateReportedProperties(JsonObject patch)
+        // Must be called while holding reportedPatchLock.
+        void StartSendingReportedPatch(PersistedTwin.PendingPatch pending)
         {
-            twin.AddPendingReportedPatch(patch);
-            SendPendingReportedPatches();
+            reportedPatchSends.RemoveAll(send => send.IsCompleted);
+            reportedPatchSends.Add(SendReportedPatchAsync(pending));
         }
 
         // Fetches IoT hub's copy of the reported properties when this device no longer knows whether its copy matches.
@@ -140,7 +132,7 @@ internal class Program
                     Console.WriteLine($"Fetched the reported properties from IoT hub (reported version {reportedVersion})");
                 }
             }
-            catch (Exception e) when (e is DeviceException or OperationCanceledException)
+            catch (Exception e)
             {
                 // The reported version stays 0, so IoT hub pushes the reported properties the next time this device connects.
                 Console.WriteLine($"Failed to fetch the reported properties. They will be pushed by IoT hub upon reconnecting: {e.Message}");
@@ -184,21 +176,22 @@ internal class Program
         twinClient.DesiredPatchReceived += HandleDesiredPatch;
         twinClient.TwinPushReceived += HandleTwinPush;
 
+        // Send the reported properties patches that IoT hub hadn't applied when the sample last stopped. The SDK holds them
+        // until the device connects, then sends them before any patches made afterwards.
+        lock (reportedPatchLock)
+        {
+            foreach (PersistedTwin.PendingPatch pending in twin.GetPendingReportedPatches())
+            {
+                StartSendingReportedPatch(pending);
+            }
+        }
+
+        UpdateReportedProperties(new JsonObject { ["lastStartedAt"] = DateTimeOffset.UtcNow });
+
         ProvisioningSettings provisioningSettings = new(idScope);
 
         await connectionClient.ProvisionAndConnectAsync(provisioningSettings, authentication, cancellationToken: cts.Token);
         Console.WriteLine($"Device {deviceId} is now provisioned and connected to IoT Hub. Now listening for desired property patches");
-
-        // Send the reported properties patches that IoT hub hadn't applied when the sample last stopped, along with any made
-        // while connecting.
-        lock (sendLock)
-        {
-            isConnected = true;
-        }
-
-        SendPendingReportedPatches();
-
-        UpdateReportedProperties(new JsonObject { ["lastStartedAt"] = DateTimeOffset.UtcNow });
 
         try
         {
@@ -212,6 +205,16 @@ internal class Program
 
         twinClient.DesiredPatchReceived -= HandleDesiredPatch;
         twinClient.TwinPushReceived -= HandleTwinPush;
+
+        // No more patches are made now. The sample's cancellation token has been cancelled, so outstanding sends finish
+        // promptly, leaving any patch that IoT hub hasn't responded to in the persisted twin for the next run.
+        Task[] outstandingSends;
+        lock (reportedPatchLock)
+        {
+            outstandingSends = reportedPatchSends.ToArray();
+        }
+
+        await Task.WhenAll(outstandingSends);
         await connectionClient.DisconnectAsync();
 
         Console.WriteLine($"This device's twin, as persisted to {twinPath}:");

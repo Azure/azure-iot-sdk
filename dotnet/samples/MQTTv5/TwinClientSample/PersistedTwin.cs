@@ -219,10 +219,6 @@ internal sealed class PersistedTwin
     internal sealed class PendingPatch
     {
         public required JsonObject Patch { get; init; }
-
-        // Whether this run of the application has sent this patch. Patches left over from a previous run are sent again.
-        [JsonIgnore]
-        public bool IsSent { get; set; }
     }
 
     private sealed class State
