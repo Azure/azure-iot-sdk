@@ -79,6 +79,28 @@ extern "C"
       void* context);
 
   /**
+   * @brief Replace the defensive-timeout schedule.
+   *
+   * Test seam: e2e tests use a seconds-scale schedule so a missed birth-ack
+   * recovers within their connect windows.
+   *
+   * @param[in,out] client The client.
+   * @param[in] base_ms_by_attempt Base of attempts 1..@p attempt_count; the last
+   *                               entry repeats. Must outlive the client. NULL
+   *                               restores the spec's schedule.
+   * @param[in] attempt_count Entries in @p base_ms_by_attempt; 0 only with NULL.
+   * @param[in] jitter_max_ms Largest jitter added to the base.
+   * @return AZ_IOT_OK; AZ_IOT_ERR_INVALID_ARG for a NULL @p client, or when
+   *         exactly one of @p base_ms_by_attempt and @p attempt_count is
+   *         NULL / 0.
+   */
+  az_iot_result az_iot_connection_client__set_defensive_timeout_schedule(
+      az_iot_connection_client* client,
+      const uint32_t* base_ms_by_attempt,
+      size_t attempt_count,
+      uint32_t jitter_max_ms);
+
+  /**
    * @brief mqttv5 defensive timeout of 1-based @p attempt, with jitter drawn
    * from the client's random source.
    *
@@ -87,7 +109,9 @@ extern "C"
    *
    * @param[in,out] client The client; its PRNG advances unless a source is set.
    * @param[in] attempt Attempt number (0 is treated as 1).
-   * @return The timeout in milliseconds, 5 to 15 min.
+   * @return The timeout in milliseconds; 5 to 15 min unless
+   *         az_iot_connection_client__set_defensive_timeout_schedule() replaced
+   *         the schedule.
    */
   uint32_t az_iot_connection_client__defensive_timeout_ms(
       az_iot_connection_client* client,
