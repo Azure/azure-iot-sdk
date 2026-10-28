@@ -26,6 +26,12 @@ concurrency:
 permissions:
   contents: read
 
+# ctest runs this many tests at once (GitHub-hosted runners have 4 vCPUs). No
+# two tests share a file, port or broker client id. The e2e workflows stay
+# serial: their tests share one device per job.
+env:
+  CTEST_PARALLEL_LEVEL: '4'
+
 # All run steps execute from the c/ project directory (where CMakePresets.json
 # lives). Path-based fields (paths filters, working-directory overrides, artifact
 # paths) stay relative to the repo root and are qualified with c/ explicitly.
