@@ -96,8 +96,15 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
         // The desired properties as of _localDesiredVersion.
         private JsonObject _desiredProperties = new();
 
+        // Whether _desiredProperties are the desired properties in full at _localDesiredVersion. A version that the application
+        // only knows the number of (from the connection client's options) orders the patches, but isn't held in full.
+        private bool _isDesiredPropertiesComplete;
+
         // The reported properties that IoT hub has applied, as of _localReportedVersion.
         private JsonObject _reportedProperties = new();
+
+        // Whether _reportedProperties are the reported properties in full at _localReportedVersion.
+        private bool _isReportedPropertiesComplete;
 
         // Whether this device's copy of its twin (including its pending reported patches) changed since TwinStateChanged was last raised.
         private bool _isTwinStateChanged;
@@ -168,7 +175,8 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
         /// <para>
         /// Snapshots are raised one at a time, in the order the changes were made, so the latest one raised is always the
         /// latest state. Changes made by a handler of this event (or of <see cref="ReportedPatchCompleted"/>) are raised once
-        /// that handler returns. The snapshot belongs to the handler, which may keep it.
+        /// that handler returns, and reported properties patches made by such a handler are only sent once a snapshot containing
+        /// them has been raised. The snapshot belongs to the handler, which may keep it.
         /// </para>
         /// </remarks>
         public event Action<TwinState>? TwinStateChanged;
@@ -232,6 +240,8 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
             _connection = connection;
             _localDesiredVersion = connection.InitialDesiredPropertiesVersion;
             _localReportedVersion = connection.InitialReportedPropertiesVersion;
+            _isDesiredPropertiesComplete = _localDesiredVersion == 0;
+            _isReportedPropertiesComplete = _localReportedVersion == 0;
             _twinClient = new TwinClient(connection)
             {
                 GetResponseHandler = HandleGetResponseAsync,
@@ -266,13 +276,15 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
 
             _localDesiredVersion = initialState.DesiredVersion;
             _desiredProperties = initialState.Desired.DeepClone().AsObject();
+            _isDesiredPropertiesComplete = true;
             _localReportedVersion = initialState.ReportedVersion;
             _reportedProperties = initialState.Reported.DeepClone().AsObject();
+            _isReportedPropertiesComplete = true;
             _connection.ReplaceDesiredPropertiesVersion(initialState.DesiredVersion);
             _connection.ReplaceReportedPropertiesVersion(initialState.ReportedVersion);
             foreach (JsonObject patch in initialState.PendingReportedPatches)
             {
-                _pendingReportedPatches.Add(new PendingReportedPatch(patch.DeepClone().AsObject(), hasWaiter: false));
+                _pendingReportedPatches.Add(new PendingReportedPatch(patch.DeepClone().AsObject(), hasWaiter: false, isReleased: true));
             }
         }
 
@@ -425,9 +437,8 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
             {
                 lock (_reportedPatchLock)
                 {
-                    // A patch in the attempt in flight may already be applied, so it stays until IoT hub responds to it.
-                    if ((_reportedPatchAttempt == null || !_reportedPatchAttempt.Patches.Contains(pendingPatch))
-                        && _pendingReportedPatches.Remove(pendingPatch))
+                    // A patch that was ever sent may already be applied, so it stays until IoT hub responds to it.
+                    if (!pendingPatch.HasBeenSent && _pendingReportedPatches.Remove(pendingPatch))
                     {
                         MarkTwinStateChanged();
                     }
@@ -462,8 +473,12 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
 
         private PendingReportedPatch AddPendingReportedPatch(JsonObject reportedProperties, bool hasWaiter)
         {
+            // A patch made by a twin event handler is only sent once the outer call to RaiseTwinEvents has raised a snapshot
+            // containing it, so that it is persisted before being sent.
+            bool isReentrant = Monitor.IsEntered(_twinEventsLock);
+
             // Copy the patch so that later changes the application makes to it don't affect what is sent.
-            PendingReportedPatch pendingPatch = new(reportedProperties.DeepClone().AsObject(), hasWaiter);
+            PendingReportedPatch pendingPatch = new(reportedProperties.DeepClone().AsObject(), hasWaiter, isReleased: !isReentrant);
             ReportedPatchAttempt? attempt;
             lock (_reportedPatchLock)
             {
@@ -483,7 +498,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
         // is not known yet. Patches held while the device isn't connected are sent once IoT hub acknowledges its presence.
         private ReportedPatchAttempt? TryStartReportedPatchAttempt()
         {
-            if (_isDisposed || _reportedPatchAttempt != null || _pendingReportedPatches.Count == 0 || !IsConnected())
+            if (_isDisposed || _reportedPatchAttempt != null || _pendingReportedPatches.Count == 0 || !_pendingReportedPatches[0].IsReleased || !IsConnected())
             {
                 return null;
             }
@@ -501,7 +516,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
 
             JsonObject payload = _pendingReportedPatches[0].Patch.DeepClone().AsObject();
             int patchCount = 1;
-            while (patchCount < _pendingReportedPatches.Count)
+            while (patchCount < _pendingReportedPatches.Count && _pendingReportedPatches[patchCount].IsReleased)
             {
                 JsonObject combined = payload.DeepClone().AsObject();
                 if (!TryCombineMergePatches(combined, _pendingReportedPatches[patchCount].Patch))
@@ -513,10 +528,16 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
                 patchCount++;
             }
 
+            List<PendingReportedPatch> patches = _pendingReportedPatches.GetRange(0, patchCount);
+            foreach (PendingReportedPatch pendingPatch in patches)
+            {
+                pendingPatch.HasBeenSent = true;
+            }
+
             ReportedPatchAttempt attempt = new(
                 Guid.NewGuid(),
                 ifMatch,
-                _pendingReportedPatches.GetRange(0, patchCount),
+                patches,
                 Encoding.UTF8.GetBytes(JsonSerializer.Serialize(payload)));
             attempt.Timer = new System.Threading.Timer(
                 _ => HandleReportedPatchTimeout(attempt),
@@ -690,11 +711,18 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
                                 }
                             }
 
-                            // Only the device writes its reported properties, so if it held the version before this patch, it now holds
-                            // them in full at the patched version. Otherwise, it still doesn't hold them in full.
+                            // If this device held the version before this patch, it now holds them at the patched version (in full, if it
+                            // held them in full before). Otherwise, it still doesn't hold them in full.
                             if (_localReportedVersion != 0 && response.Version == _localReportedVersion + 1)
                             {
                                 AdvanceLocalReportedVersion(response.Version);
+                            }
+                            else if (_localReportedVersion != 0 && response.Version > _localReportedVersion + 1)
+                            {
+                                // Someone else changed the reported properties in between, so this device's copy lacks their changes.
+                                Trace.TraceWarning("This device held version {0} of the reported properties, but IoT hub applied its patch at version {1}. This device no longer considers itself to hold the reported properties.", _localReportedVersion, response.Version);
+                                SetLocalReportedState(0, null);
+                                _connection.ReplaceReportedPropertiesVersion(0);
                             }
                         }
                     }
@@ -1095,6 +1123,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
                         lock (_twinStateLock)
                         {
                             _localDesiredVersion = 0;
+                            _isDesiredPropertiesComplete = false;
                             _isTwinStateChanged = true;
                         }
 
@@ -1247,6 +1276,11 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
         {
             if (version <= _localDesiredVersion)
             {
+                if (version == _localDesiredVersion && !_isDesiredPropertiesComplete)
+                {
+                    AdvanceLocalDesiredVersion(version, ParseSectionPayload(payload), isPatch: false);
+                }
+
                 return null;
             }
 
@@ -1270,17 +1304,29 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
                     _localDesiredVersion = version;
                     if (isPatch)
                     {
+                        // The patch takes the previous version to this one, so the properties are complete only if they were before.
                         ApplyMergePatch(_desiredProperties, properties);
                     }
                     else
                     {
                         _desiredProperties = properties.DeepClone().AsObject();
+                        _isDesiredPropertiesComplete = true;
                     }
 
                     _isTwinStateChanged = true;
                 }
 
                 _connection.ObserveDesiredPropertiesVersion(version);
+            }
+            else if (!isPatch && version == _localDesiredVersion && !_isDesiredPropertiesComplete)
+            {
+                // This device only knew the number of this version. Now it holds the desired properties in full at it.
+                lock (_twinStateLock)
+                {
+                    _desiredProperties = properties.DeepClone().AsObject();
+                    _isDesiredPropertiesComplete = true;
+                    _isTwinStateChanged = true;
+                }
             }
         }
 
@@ -1293,6 +1339,11 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
                 {
                     SetLocalReportedState(version, properties);
                     _connection.ObserveReportedPropertiesVersion(version);
+                }
+                else if (properties != null && version == _localReportedVersion && !_isReportedPropertiesComplete)
+                {
+                    // This device only knew the number of this version. Now it holds the reported properties in full at it.
+                    SetLocalReportedState(version, properties);
                 }
             }
         }
@@ -1316,7 +1367,8 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
             }
         }
 
-        // Must be called while holding _reportedStateLock.
+        // Must be called while holding _reportedStateLock. The properties, if any, are the reported properties in full at this
+        // version. Otherwise, the caller already updated them, and they are complete only if they were before (and the version isn't 0).
         private void SetLocalReportedState(ulong version, JsonObject? properties)
         {
             lock (_twinStateLock)
@@ -1325,6 +1377,11 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
                 if (properties != null)
                 {
                     _reportedProperties = properties.DeepClone().AsObject();
+                    _isReportedPropertiesComplete = true;
+                }
+                else if (version == 0)
+                {
+                    _isReportedPropertiesComplete = false;
                 }
 
                 _isTwinStateChanged = true;
@@ -1344,9 +1401,9 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
         {
             return new TwinState()
             {
-                DesiredVersion = _localDesiredVersion,
+                DesiredVersion = _isDesiredPropertiesComplete ? _localDesiredVersion : 0,
                 Desired = _desiredProperties.DeepClone().AsObject(),
-                ReportedVersion = _localReportedVersion,
+                ReportedVersion = _isReportedPropertiesComplete ? _localReportedVersion : 0,
                 Reported = _reportedProperties.DeepClone().AsObject(),
                 PendingReportedPatches = _pendingReportedPatches.Select(pendingPatch => pendingPatch.Patch.DeepClone().AsObject()).ToList(),
             };
@@ -1379,7 +1436,8 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
         }
 
         // Raises the twin events that are due, one at a time and in order. Must be called without holding any of this client's
-        // other locks, so that handlers can call back into this client. If called from a handler, the outer call raises them.
+        // other locks, so that handlers can call back into this client. If called from a handler, the outer call raises them,
+        // and then sends the reported patches that the handlers made.
         private void RaiseTwinEvents()
         {
             if (Monitor.IsEntered(_twinEventsLock))
@@ -1387,6 +1445,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
                 return;
             }
 
+            ReportedPatchAttempt? attempt = null;
             lock (_twinEventsLock)
             {
                 while (!_isDisposed)
@@ -1406,6 +1465,18 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
                                 }
                             }
                         }
+
+                        if (completion == null && state == null)
+                        {
+                            // Every pending patch was in a snapshot that was raised, so the ones made by handlers can be sent.
+                            foreach (PendingReportedPatch pendingPatch in _pendingReportedPatches)
+                            {
+                                pendingPatch.IsReleased = true;
+                            }
+
+                            attempt = TryStartReportedPatchAttempt();
+                            break;
+                        }
                     }
 
                     try
@@ -1414,13 +1485,9 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
                         {
                             ReportedPatchCompleted?.Invoke(completion);
                         }
-                        else if (state != null)
-                        {
-                            TwinStateChanged?.Invoke(state);
-                        }
                         else
                         {
-                            return;
+                            TwinStateChanged?.Invoke(state!);
                         }
                     }
                     catch (Exception e)
@@ -1429,6 +1496,8 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
                     }
                 }
             }
+
+            SendReportedPatchAttempt(attempt);
         }
 
         // Must be called while holding _desiredStateLock.
@@ -1639,10 +1708,16 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
         }
 
         // A reported properties patch that the application made, which is pending until IoT hub responds to an attempt carrying it.
-        private sealed class PendingReportedPatch(JsonObject patch, bool hasWaiter)
+        private sealed class PendingReportedPatch(JsonObject patch, bool hasWaiter, bool isReleased)
         {
             public JsonObject Patch { get; } = patch;
 
+            // Guarded by _reportedPatchLock. False until a TwinStateChanged snapshot containing this patch has been raised, if
+            // it was made by a twin event handler. It isn't sent until then.
+            public bool IsReleased { get; set; } = isReleased;
+
+            // Guarded by _reportedPatchLock. Whether an attempt carrying this patch was ever started, so IoT hub may apply it.
+            public bool HasBeenSent { get; set; }
 
             // Null if nobody awaits this patch, so that its failure isn't an unobserved exception.
             public TaskCompletionSource<ReportedPatchResponse>? Response { get; } = hasWaiter ? new(TaskCreationOptions.RunContinuationsAsynchronously) : null;
