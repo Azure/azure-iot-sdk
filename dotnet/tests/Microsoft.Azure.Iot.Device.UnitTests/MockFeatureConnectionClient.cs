@@ -52,7 +52,10 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
         public async Task<MqttPublishAck> PublishAsync(MqttPublish publish, bool throwOnErrorReasonCode, CancellationToken cancellationToken = default)
         {
-            PublishedMessages.Add(publish);
+            lock (PublishedMessages)
+            {
+                PublishedMessages.Add(publish);
+            }
 
             if (OnPublish != null)
             {

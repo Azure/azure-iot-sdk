@@ -32,6 +32,13 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods
 
         private sealed record PendingDirectMethodRequest(ByteString ReadyId, string MethodName);
 
+        // Maps from request Id to the probe that is currently being decided by the application's probe handler. Duplicate probes that arrive
+        // while the handler is still running share its decision rather than invoking the application again. The decision is null if the
+        // handler threw.
+        private readonly ConcurrentDictionary<Guid, InFlightProbe> _inFlightProbes = new();
+
+        private sealed record InFlightProbe(string MethodName, Task<ProbeAck?> Decision);
+
         private IConnectionClient _connection;
 
         private readonly SingleHandlerEvent<Func<DirectMethodRequestReceivedEventArgs, Task<DirectMethodResponse>>> _directMethodInvoked =
@@ -160,8 +167,10 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods
                 Probe probe = Probe.Parser.ParseFrom(publish.Payload);
 
                 ProbeAck probeAckToSend;
-                bool isDuplicateProbe = _pendingDirectMethodRequests.TryGetValue(requestId.Value, out PendingDirectMethodRequest? existingRequest);
-                if (isDuplicateProbe)
+                bool isCachedProbe = _pendingDirectMethodRequests.TryGetValue(requestId.Value, out PendingDirectMethodRequest? existingRequest);
+                TaskCompletionSource<ProbeAck?>? ownedDecision = null;
+                InFlightProbe? inFlightProbe = null;
+                if (isCachedProbe)
                 {
                     if (!string.Equals(existingRequest!.MethodName, probe.MethodName, StringComparison.Ordinal))
                     {
@@ -175,69 +184,116 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods
                 }
                 else
                 {
-                    DirectMethodProbeAck probeAck = await probeHandler.Invoke(new() { MethodName = probe.MethodName, ResponseTimeoutSeconds = probe.ResponseTimeoutSeconds });
-                    probeAckToSend = probeAck.ProbeAck;
-                }
-
-                stopwatch.Stop();
-
-                uint secondsSinceReceivingProbe;
-                try
-                {
-                    secondsSinceReceivingProbe = (uint)stopwatch.Elapsed.TotalSeconds;
-                }
-                catch (InvalidCastException)
-                {
-                    // Should only happen if the double grows so large that a uint can't contain it.
-                    Trace.TraceError("Could not calculate time since probe message was received. This likely means the 'DirectMethodProbeReceivedAsync' callback took too long. Cannot send probe ack, so discarding this probe message");
-                    return;
-                }
-
-                if (secondsSinceReceivingProbe >= connectTimeoutRemainingUponReceivingProbe)
-                {
-                    Trace.TraceWarning("Application did not respond to direct method probe message before the connect timeout elapsed, so no probe ack message will be sent.");
-                    return;
-                }
-
-                uint remainingConnectTimeoutInSeconds = connectTimeoutRemainingUponReceivingProbe - secondsSinceReceivingProbe;
-
-                if (!isDuplicateProbe && probeAckToSend.Ready != default)
-                {
-                    // The user signalled that the device was ready for the direct method, so locally save the ready Id and request Id.
-                    // If a duplicate probe for the same request was accepted concurrently, reuse whichever ready Id was saved first.
-                    PendingDirectMethodRequest savedRequest = _pendingDirectMethodRequests.GetOrAdd(
-                        requestId.Value,
-                        new PendingDirectMethodRequest(probeAckToSend.Ready.ReadyId, probe.MethodName));
-
-                    if (!string.Equals(savedRequest.MethodName, probe.MethodName, StringComparison.Ordinal))
+                    TaskCompletionSource<ProbeAck?> decision = new(TaskCreationOptions.RunContinuationsAsynchronously);
+                    inFlightProbe = _inFlightProbes.GetOrAdd(requestId.Value, new InFlightProbe(probe.MethodName, decision.Task));
+                    if (inFlightProbe.Decision == decision.Task)
+                    {
+                        ownedDecision = decision;
+                    }
+                    else if (!string.Equals(inFlightProbe.MethodName, probe.MethodName, StringComparison.Ordinal))
                     {
                         Trace.TraceWarning("Received direct method probe for request Id {0} whose method name does not match the pending request with that Id. Ignoring it.", requestId.Value);
                         return;
                     }
 
-                    if (!savedRequest.ReadyId.Equals(probeAckToSend.Ready.ReadyId))
+                    if (ownedDecision == null)
                     {
-                        probeAckToSend = new() { Ready = new() { ReadyId = savedRequest.ReadyId } };
+                        // Duplicate of a probe whose handler is still running. Share its decision rather than invoking the application again.
+                        ProbeAck? sharedDecision = await inFlightProbe.Decision;
+                        if (sharedDecision == null)
+                        {
+                            return;
+                        }
+
+                        probeAckToSend = sharedDecision;
+                    }
+                    else
+                    {
+                        try
+                        {
+                            DirectMethodProbeAck probeAck = await probeHandler.Invoke(new() { MethodName = probe.MethodName, ResponseTimeoutSeconds = probe.ResponseTimeoutSeconds });
+                            probeAckToSend = probeAck.ProbeAck;
+                        }
+                        catch
+                        {
+                            ownedDecision.SetResult(null);
+                            _inFlightProbes.TryRemove(new KeyValuePair<Guid, InFlightProbe>(requestId.Value, inFlightProbe));
+                            throw;
+                        }
+
+                        ownedDecision.SetResult(probeAckToSend);
                     }
                 }
 
-                MqttPublish probeAckPublish = new()
+                try
                 {
-                    Topic = DirectMethodsResponseTopic,
-                    QualityOfServiceLevel = MqttQualityOfServiceLevel.AtLeastOnce,
-                    Payload = probeAckToSend.ToByteArray(),
-                    CorrelationData = publish.CorrelationData,
-                    MessageExpiryInterval = remainingConnectTimeoutInSeconds,
-                    ContentType = ProtobufContentType
-                };
+                    stopwatch.Stop();
 
-                probeAckPublish.UserProperties.Add(new("type", Encoding.UTF8.GetBytes("probe-ack:1")));
+                    uint secondsSinceReceivingProbe;
+                    try
+                    {
+                        secondsSinceReceivingProbe = (uint)stopwatch.Elapsed.TotalSeconds;
+                    }
+                    catch (InvalidCastException)
+                    {
+                        // Should only happen if the double grows so large that a uint can't contain it.
+                        Trace.TraceError("Could not calculate time since probe message was received. This likely means the 'DirectMethodProbeReceivedAsync' callback took too long. Cannot send probe ack, so discarding this probe message");
+                        return;
+                    }
 
-                MqttPublishAck puback = await _connection.PublishAsync(probeAckPublish, throwOnErrorReasonCode: true);
+                    if (secondsSinceReceivingProbe >= connectTimeoutRemainingUponReceivingProbe)
+                    {
+                        Trace.TraceWarning("Application did not respond to direct method probe message before the connect timeout elapsed, so no probe ack message will be sent.");
+                        return;
+                    }
 
-                if (puback.ReasonCode != MqttPublishAckReasonCode.Success)
+                    uint remainingConnectTimeoutInSeconds = connectTimeoutRemainingUponReceivingProbe - secondsSinceReceivingProbe;
+
+                    if (!isCachedProbe && probeAckToSend.Ready != default)
+                    {
+                        // The user signalled that the device was ready for the direct method, so locally save the ready Id and request Id.
+                        // If a duplicate probe for the same request was accepted concurrently, reuse whichever ready Id was saved first.
+                        PendingDirectMethodRequest savedRequest = _pendingDirectMethodRequests.GetOrAdd(
+                            requestId.Value,
+                            new PendingDirectMethodRequest(probeAckToSend.Ready.ReadyId, probe.MethodName));
+
+                        if (!string.Equals(savedRequest.MethodName, probe.MethodName, StringComparison.Ordinal))
+                        {
+                            Trace.TraceWarning("Received direct method probe for request Id {0} whose method name does not match the pending request with that Id. Ignoring it.", requestId.Value);
+                            return;
+                        }
+
+                        if (!savedRequest.ReadyId.Equals(probeAckToSend.Ready.ReadyId))
+                        {
+                            probeAckToSend = new() { Ready = new() { ReadyId = savedRequest.ReadyId } };
+                        }
+                    }
+
+                    MqttPublish probeAckPublish = new()
+                    {
+                        Topic = DirectMethodsResponseTopic,
+                        QualityOfServiceLevel = MqttQualityOfServiceLevel.AtLeastOnce,
+                        Payload = probeAckToSend.ToByteArray(),
+                        CorrelationData = publish.CorrelationData,
+                        MessageExpiryInterval = remainingConnectTimeoutInSeconds,
+                        ContentType = ProtobufContentType
+                    };
+
+                    probeAckPublish.UserProperties.Add(new("type", Encoding.UTF8.GetBytes("probe-ack:1")));
+
+                    MqttPublishAck puback = await _connection.PublishAsync(probeAckPublish, throwOnErrorReasonCode: true);
+
+                    if (puback.ReasonCode != MqttPublishAckReasonCode.Success)
+                    {
+                        Trace.TraceError("Failed to send the response to a direct method probe because the MQTT broker rejected the publish with reason code {0} and reason string {1}", puback.ReasonCode, puback.ReasonString);
+                    }
+                }
+                finally
                 {
-                    Trace.TraceError("Failed to send the response to a direct method probe because the MQTT broker rejected the publish with reason code {0} and reason string {1}", puback.ReasonCode, puback.ReasonString);
+                    if (ownedDecision != null)
+                    {
+                        _inFlightProbes.TryRemove(new KeyValuePair<Guid, InFlightProbe>(requestId.Value, inFlightProbe!));
+                    }
                 }
             }
             else if (directMethodMessageType.Equals("exec"))
