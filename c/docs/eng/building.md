@@ -15,14 +15,15 @@ adapters/           MQTT adapters (Paho, az_mqtt, Rust shell), OpenSSL certifica
                     crypto backends (OpenSSL, mbedTLS), software updates platform adapters
 samples/            samples, one README each
 tests/              unit, conformance, end-to-end and install tests
+platforms/esp32/    ESP-IDF components
 platforms/yocto/    Yocto layer
 docs/               customer documentation; docs/eng for engineering documentation
 cmake/, eng/        build helpers and CI scripts
 ```
 
-`src/sources.cmake` lists the library sources. `src/CMakeLists.txt` and the ESP-IDF
-component of the [ESP32 sample](../../samples/software_update/esp32/README.md#ci-builds)
-both include it, so a source added there is built by both.
+`src/sources.cmake` lists the library sources. `src/CMakeLists.txt` and the
+[ESP-IDF component](../../platforms/esp32/README.md) `azure-iot-sdk` both include it, so a
+source added there is built by both.
 
 ## Install and consume
 

@@ -44,7 +44,7 @@
 #include "az_iot_mqtt_esp.h"
 #include "az_iot_cert_embedded.h"
 #include "az_iot_crypto_mbedtls.h"
-#include "su_esp32_ota.h"
+#include "az_iot_su_esp32_ota.h"
 
 static const char* TAG = "su_esp32";
 
@@ -288,9 +288,9 @@ void app_main(void)
   }
 
   /* Real OTA platform hooks + Microsoft root keys. */
-  su_ota_ctx ota = { 0 };
+  az_iot_su_esp32_ota_context ota = { 0 };
   ota.installed_version = SU_UPDATE_VERSION;
-  az_iot_su_platform_hooks hooks = su_esp32_ota_hooks(&ota);
+  az_iot_su_platform_hooks hooks = az_iot_su_esp32_ota_get_platform_hooks(&ota);
 
   size_t root_key_count = 0;
   const az_iot_su_root_key* root_keys = az_iot_su_microsoft_root_keys(&root_key_count);
@@ -427,7 +427,7 @@ void app_main(void)
   }
 
   /* Connected to IoT Hub: this image works, so cancel any pending rollback. */
-  su_esp32_ota_mark_valid();
+  az_iot_su_esp32_ota_mark_running_image_valid();
 
   /* Registration created the device record: later checks use the regular route. */
   if (!registered)
