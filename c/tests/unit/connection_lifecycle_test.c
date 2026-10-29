@@ -1113,7 +1113,7 @@ static void record_order(char tag)
   }
 }
 
-static void feature_observer(const az_iot_connection_state_event* event, void* user_ctx)
+static void feature_observer(const az_iot_connection_feature_event* event, void* user_ctx)
 {
   (void)event;
   (void)user_ctx;
@@ -1139,7 +1139,9 @@ static void feature_observers_are_dispatched_before_application_ones(void** stat
   assert_int_equal(
       az_iot_connection_client_add_state_observer(fx->client, app_observer, NULL), AZ_IOT_OK);
   assert_int_equal(
-      az_iot_connection_client__add_state_observer(fx->client, feature_observer, NULL), AZ_IOT_OK);
+      az_iot_connection_client__add_feature_observer(
+          fx->client, AZ_IOT_CONNECTION_FEATURE_EVENT_STATE, feature_observer, NULL),
+      AZ_IOT_OK);
 
   (void)open_to_connecting(fx);
 
@@ -1170,7 +1172,9 @@ static void a_full_application_pool_does_not_block_a_feature_client(void** state
       AZ_IOT_ERR_NOT_ENOUGH_SPACE);
 
   assert_int_equal(
-      az_iot_connection_client__add_state_observer(fx->client, feature_observer, NULL), AZ_IOT_OK);
+      az_iot_connection_client__add_feature_observer(
+          fx->client, AZ_IOT_CONNECTION_FEATURE_EVENT_STATE, feature_observer, NULL),
+      AZ_IOT_OK);
 }
 
 /* ADDING from inside a dispatch would hand the new subscriber the transition

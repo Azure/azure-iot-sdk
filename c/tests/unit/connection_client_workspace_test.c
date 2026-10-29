@@ -49,8 +49,7 @@ static void sizes_follow_the_limits(void** state)
           AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_PENDING_PUBLISHES,
           AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_PUBLISH_RESERVATIONS,
           AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_PERSISTENT_SUBSCRIPTIONS,
-          AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_SESSION_HANDLERS,
-          AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_FEATURE_STATE_OBSERVERS,
+          AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_FEATURE_OBSERVERS,
           AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_APPLICATION_STATE_OBSERVERS,
           AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_FEATURE_CLIENTS,
           AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_INBOUND_HANDLERS));
@@ -63,8 +62,7 @@ static void sizes_follow_the_limits(void** state)
           64,
           AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_PUBLISH_RESERVATIONS,
           AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_PERSISTENT_SUBSCRIPTIONS,
-          AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_SESSION_HANDLERS,
-          AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_FEATURE_STATE_OBSERVERS,
+          AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_FEATURE_OBSERVERS,
           1,
           AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_FEATURE_CLIENTS,
           AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_INBOUND_HANDLERS));
@@ -98,9 +96,8 @@ static void zero_limits_resolve_to_the_defaults_in_a_static_workspace(void** sta
   assert_int_equal(
       l->max_persistent_subscriptions,
       AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_PERSISTENT_SUBSCRIPTIONS);
-  assert_int_equal(l->max_session_handlers, AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_SESSION_HANDLERS);
   assert_int_equal(
-      l->max_feature_state_observers, AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_FEATURE_STATE_OBSERVERS);
+      l->max_feature_observers, AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_FEATURE_OBSERVERS);
   assert_int_equal(
       l->max_application_state_observers,
       AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_APPLICATION_STATE_OBSERVERS);
@@ -202,10 +199,9 @@ static void init_refuses_limits_it_cannot_hold(void** state)
 
   /* Above one default and below another, with no workspace: same total size, still refused. */
   opts = direct_options();
-  opts.limits.max_feature_state_observers
-      = AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_APPLICATION_STATE_OBSERVERS;
+  opts.limits.max_feature_observers = AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_FEATURE_OBSERVERS - 2u;
   opts.limits.max_application_state_observers
-      = AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_FEATURE_STATE_OBSERVERS;
+      = AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_APPLICATION_STATE_OBSERVERS + 3u;
   assert_int_equal(
       az_iot_connection_client_get_workspace_size(&opts.limits),
       AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE);
@@ -225,7 +221,7 @@ static void init_refuses_limits_it_cannot_hold(void** state)
 
   /* No workspace: limits within the built-in defaults use the client's own. */
   opts = direct_options();
-  opts.limits = (az_iot_connection_client_limits){ 1, 1, 1, 1, 1, 1, 1, 1 };
+  opts.limits = (az_iot_connection_client_limits){ 1, 1, 1, 1, 1, 1, 1 };
   assert_int_equal(az_iot_connection_client_init(&client, &opts), AZ_IOT_OK);
   assert_true(
       (uint8_t*)client.pending_pubacks >= client.default_workspace

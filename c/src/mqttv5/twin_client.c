@@ -757,6 +757,19 @@ static void on_connection_state(const az_iot_connection_state_event* event, void
   }
 }
 
+/** @brief Feature observer: fail pending requests at session end; act on state transitions. */
+static void on_connection_event(const az_iot_connection_feature_event* event, void* user_ctx)
+{
+  if (event->kind == AZ_IOT_CONNECTION_FEATURE_EVENT_SESSION_END)
+  {
+    twin_fail_pending(user_ctx);
+  }
+  else
+  {
+    on_connection_state(event->state, user_ctx);
+  }
+}
+
 /* ------------------------------------------------------------------------- */
 /* binding                                                                   */
 /* ------------------------------------------------------------------------- */
@@ -793,8 +806,7 @@ static void withdraw_registrations(
     az_iot_connection_client* conn,
     az_iot_mqttv5_twin_client* client)
 {
-  (void)az_iot_connection_client__remove_state_observer(conn, on_connection_state, client);
-  (void)az_iot_connection_client__unregister_session_end_handler(conn, client);
+  az_iot_connection_client__remove_feature_observer(conn, on_connection_event, client);
   az_iot_connection_client__unregister_feature_client_bind(conn, client);
   (void)az_iot_connection_client__remove_subscriptions_for(conn, client);
   (void)az_iot_connection_client__unregister_inbound_handlers(conn, client);
@@ -826,12 +838,11 @@ az_iot_mqttv5_twin_client_init(az_iot_mqttv5_twin_client* client, az_iot_connect
   result = az_iot_connection_client__register_feature_client_bind(conn, client, bind_topics);
   if (result == AZ_IOT_OK)
   {
-    result
-        = az_iot_connection_client__register_session_end_handler(conn, twin_fail_pending, client);
-  }
-  if (result == AZ_IOT_OK)
-  {
-    result = az_iot_connection_client__add_state_observer(conn, on_connection_state, client);
+    result = az_iot_connection_client__add_feature_observer(
+        conn,
+        AZ_IOT_CONNECTION_FEATURE_EVENT_STATE | AZ_IOT_CONNECTION_FEATURE_EVENT_SESSION_END,
+        on_connection_event,
+        client);
   }
 
   if (result != AZ_IOT_OK)

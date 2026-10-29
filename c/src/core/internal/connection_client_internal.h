@@ -178,51 +178,42 @@ extern "C"
       az_iot_connection_client* client,
       void* user_ctx);
 
-  /* Register a callback invoked when the MQTT session ends -- a peer
-   * disconnect, a transport error, or a user close. A feature client that
-   * correlates a request against the session (a twin $rid, a certificate
-   * renewal) uses this to complete those requests with
-   * AZ_IOT_ERR_NOT_CONNECTED and release their slots, instead of holding them
-   * until the pool is exhausted. Registration is keyed on user_ctx: registering
-   * the same user_ctx twice replaces the callback rather than consuming a
-   * second slot. Returns ERR_NOT_SUPPORTED when the registry is full. */
-  az_iot_result az_iot_connection_client__register_session_end_handler(
-      az_iot_connection_client* client,
-      az_iot_session_end_callback cb,
-      void* user_ctx);
-
-  /* Remove the session-end handler registered for user_ctx, if any. Returns the
-   * number removed (0 or 1). */
-  size_t az_iot_connection_client__unregister_session_end_handler(
-      az_iot_connection_client* client,
-      void* user_ctx);
-
   /* True when the connection is in CONNECTED state. */
   bool az_iot_connection_client__is_connected(const az_iot_connection_client* client);
 
-  /* Feature-client seat in the connection-state observer registry.
+  /**
+   * @brief Observe @p events (az_iot_connection_feature_event_kind bits) with @p cb.
    *
-   * Same signature and same event as the application-facing
-   * az_iot_connection_client_add_state_observer(), but it lands in the
-   * feature-client pool: dispatched FIRST, and sized so an application that
-   * fills its own pool cannot leave a feature client unable to attach.
+   * STATE events reach feature observers before the application's. A feature client MUST
+   * withdraw before its storage goes away; a callback may withdraw itself or another observer.
+   * Adding the same @p cb and @p user_ctx again replaces @p events.
    *
-   * A feature client MUST withdraw in its deinit path. The connection client
-   * outlives nothing here -- the entry holds a raw pointer to the feature
-   * client -- so an entry left behind is a call into freed memory on the next
-   * transition.
-   *
-   * Adding answers AZ_IOT_ERR_BUSY from inside a dispatch; removing is allowed
-   * there, because a feature client torn down in reaction to a transition must
-   * be able to give its seat back before its storage goes away. */
-  az_iot_result az_iot_connection_client__add_state_observer(
+   * @retval AZ_IOT_ERR_INVALID_ARG @p client or @p cb is NULL, or @p events is 0.
+   * @retval AZ_IOT_ERR_BUSY Called from inside a state dispatch with STATE in @p events.
+   * @retval AZ_IOT_ERR_NOT_ENOUGH_SPACE limits.max_feature_observers entries are in use.
+   */
+  az_iot_result az_iot_connection_client__add_feature_observer(
       az_iot_connection_client* client,
-      az_iot_connection_state_callback cb,
+      uint8_t events,
+      az_iot_connection_feature_observer_callback cb,
       void* user_ctx);
-  az_iot_result az_iot_connection_client__remove_state_observer(
+
+  /** @brief Withdraw the observer added with @p cb and @p user_ctx; no-op when absent. */
+  void az_iot_connection_client__remove_feature_observer(
       az_iot_connection_client* client,
-      az_iot_connection_state_callback cb,
-      void* user_ctx);
+      az_iot_connection_feature_observer_callback cb,
+      const void* user_ctx);
+
+  /**
+   * @brief Whether an observer with @p cb and @p user_ctx is registered.
+   *
+   * Lets a feature client check, after calling application code, that it was not deinitialized
+   * meanwhile: its deinit withdraws its observer.
+   */
+  bool az_iot_connection_client__has_feature_observer(
+      const az_iot_connection_client* client,
+      az_iot_connection_feature_observer_callback cb,
+      const void* user_ctx);
 
   /** @brief Current opts.device_id: the caller's, or the adopted DPS one.
    * @return NULL when none is set (a DPS client before an assignment is
@@ -470,59 +461,6 @@ extern "C"
   void az_iot_connection_client__abandon_pubacks(
       az_iot_connection_client* client,
       const void* owner);
-
-  /**
-   * @brief Call @p cb after every hub PUBACK, once the publish's own callback has run.
-   *
-   * For a feature client holding messages until the adapter has room: a PUBACK for any publish
-   * frees in-flight capacity. Withdraw it before the feature client's storage goes away.
-   *
-   * @retval AZ_IOT_ERR_INVALID_ARG @p client or @p cb is NULL.
-   * @retval AZ_IOT_ERR_NOT_ENOUGH_SPACE Every observer entry is in use.
-   */
-  az_iot_result az_iot_connection_client__add_publish_completion_observer(
-      az_iot_connection_client* client,
-      void (*cb)(void* user_ctx),
-      void* user_ctx);
-
-  /** @brief Withdraw an observer added with the same @p cb and @p user_ctx. */
-  void az_iot_connection_client__remove_publish_completion_observer(
-      az_iot_connection_client* client,
-      void (*cb)(void* user_ctx),
-      void* user_ctx);
-
-  /**
-   * @brief Whether an observer with @p cb and @p user_ctx is registered.
-   *
-   * Lets a feature client check, after calling application code, that it was not deinitialized
-   * meanwhile: its observer is withdrawn by its deinit.
-   */
-  bool az_iot_connection_client__has_publish_completion_observer(
-      const az_iot_connection_client* client,
-      void (*cb)(void* user_ctx),
-      const void* user_ctx);
-
-  /**
-   * @brief Call @p cb once per az_iot_connection_client_do_work(), after the client's own timers.
-   *
-   * Called on every do_work() return path, connected or not. For a feature client that expires
-   * or resends without traffic. Withdraw it before the feature client's storage goes away; a
-   * callback may withdraw itself or another observer.
-   *
-   * @retval AZ_IOT_ERR_INVALID_ARG @p client or @p cb is NULL.
-   * @retval AZ_IOT_ERR_NOT_ENOUGH_SPACE All AZ_IOT_CONNECTION_CLIENT_TICK_OBSERVERS entries are in
-   * use.
-   */
-  az_iot_result az_iot_connection_client__add_tick_observer(
-      az_iot_connection_client* client,
-      void (*cb)(void* user_ctx),
-      void* user_ctx);
-
-  /** @brief Withdraw a tick observer added with the same @p cb and @p user_ctx. */
-  void az_iot_connection_client__remove_tick_observer(
-      az_iot_connection_client* client,
-      void (*cb)(void* user_ctx),
-      void* user_ctx);
 
   /**
    * @brief Whether a tracked QoS 1 publish by @p owner would get a pending-PUBACK slot now.

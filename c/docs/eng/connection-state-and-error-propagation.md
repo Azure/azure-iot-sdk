@@ -22,7 +22,7 @@ Feature clients register through an internal entry point into a separate pool.
 
 | Rule | Detail |
 | --- | --- |
-| Two pools | `limits.max_feature_state_observers` (6) for feature clients, `limits.max_application_state_observers` (4) for the application. Neither can starve the other, and the application cannot land in the feature pool. A full pool answers `AZ_IOT_ERR_NOT_ENOUGH_SPACE`. |
+| Two pools | `limits.max_feature_observers` (10, shared with the feature clients' other events) for feature clients, `limits.max_application_state_observers` (4) for the application. Neither can starve the other, and the application cannot land in the feature pool. A full pool answers `AZ_IOT_ERR_NOT_ENOUGH_SPACE`. |
 | Dispatch order | Two passes per transition: every feature-client observer in registration order, then every application observer. By the time the application runs, feature clients have already reacted. |
 | Identity | Registration is idempotent on the `(cb, user_ctx)` pair. Removal matches the same pair and answers `AZ_IOT_ERR_NOT_FOUND` when it is not registered. |
 | Adding during dispatch | Refused with `AZ_IOT_ERR_BUSY`: a subscriber added mid-pass would be handed a transition it was not watching for. |

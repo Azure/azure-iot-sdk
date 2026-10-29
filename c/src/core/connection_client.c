@@ -251,19 +251,44 @@ const char* az_iot_mqtt_role_to_string(az_iot_mqtt_role r)
  * the state, which dispatches again. Clearing on the way out of the inner
  * dispatch would drop the guard while the outer one is still walking its
  * arrays, and a later observer in the outer pass could then mutate them. */
+/**
+ * @brief Call every feature observer of @p event's kind.
+ *
+ * Each entry is copied before its call: a callback may withdraw itself or another observer, and
+ * nothing is compacted.
+ */
+static void notify_feature_observers(
+    az_iot_connection_client* c,
+    const az_iot_connection_feature_event* event)
+{
+  for (size_t i = 0; i < c->opts.limits.max_feature_observers; ++i)
+  {
+    az_iot_connection_feature_observer const observer = c->feature_observers[i];
+    if (observer.cb != NULL && (observer.events & (uint8_t)event->kind) != 0u)
+    {
+      observer.cb(event, observer.user_ctx);
+    }
+  }
+}
+
+/** @brief notify_feature_observers() for an event that carries no data. */
+static void notify_feature_observers_of(
+    az_iot_connection_client* c,
+    az_iot_connection_feature_event_kind kind)
+{
+  az_iot_connection_feature_event const event = { kind, NULL };
+  notify_feature_observers(c, &event);
+}
+
 static void dispatch_state_event(
     az_iot_connection_client* c,
     const az_iot_connection_state_event* event)
 {
   bool was_dispatching = c->dispatching_state;
   c->dispatching_state = true;
-  for (size_t i = 0; i < c->opts.limits.max_feature_state_observers; ++i)
-  {
-    if (c->feature_state_observers[i].cb)
-    {
-      c->feature_state_observers[i].cb(event, c->feature_state_observers[i].user_ctx);
-    }
-  }
+  az_iot_connection_feature_event const feature_event
+      = { AZ_IOT_CONNECTION_FEATURE_EVENT_STATE, event };
+  notify_feature_observers(c, &feature_event);
   for (size_t i = 0; i < c->opts.limits.max_application_state_observers; ++i)
   {
     if (c->app_state_observers[i].cb)
@@ -276,9 +301,10 @@ static void dispatch_state_event(
 
 static bool have_state_observers(const az_iot_connection_client* c)
 {
-  for (size_t i = 0; i < c->opts.limits.max_feature_state_observers; ++i)
+  for (size_t i = 0; i < c->opts.limits.max_feature_observers; ++i)
   {
-    if (c->feature_state_observers[i].cb)
+    if (c->feature_observers[i].cb
+        && (c->feature_observers[i].events & (uint8_t)AZ_IOT_CONNECTION_FEATURE_EVENT_STATE))
     {
       return true;
     }
@@ -1080,13 +1106,7 @@ static void teardown_active(az_iot_connection_client* c)
    * Runs last so a handler that immediately re-issues its request sees a fully
    * torn-down session and gets a clean NOT_CONNECTED rather than publishing
    * into a half-freed adapter. */
-  for (size_t i = 0; i < c->opts.limits.max_session_handlers; ++i)
-  {
-    if (c->session_handlers[i].in_use && c->session_handlers[i].cb)
-    {
-      c->session_handlers[i].cb(c->session_handlers[i].user_ctx);
-    }
-  }
+  notify_feature_observers_of(c, AZ_IOT_CONNECTION_FEATURE_EVENT_SESSION_END);
 }
 
 static void puback_abandon(az_iot_connection_client* c, const void* owner);
@@ -5221,14 +5241,7 @@ static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
         complete_publish(cb, result_cb, ctx, evt->status, evt);
       }
       /* Any PUBACK frees adapter capacity, whoever published. A callback may withdraw itself. */
-      for (size_t i = 0; i < AZ_IOT_CONNECTION_CLIENT_PUBLISH_COMPLETION_OBSERVERS; ++i)
-      {
-        void (*observer)(void*) = c->publish_completion_observers[i].cb;
-        if (observer != NULL)
-        {
-          observer(c->publish_completion_observers[i].user_ctx);
-        }
-      }
+      notify_feature_observers_of(c, AZ_IOT_CONNECTION_FEATURE_EVENT_PUBLISH_COMPLETED);
       break;
     }
 
@@ -6466,8 +6479,7 @@ static void sas_wipe(az_iot_connection_client* c)
 #define LIMIT_EMBEDDED_PENDING_PUBLISHES 16u
 #define LIMIT_EMBEDDED_PUBLISH_RESERVATIONS 2u
 #define LIMIT_EMBEDDED_PERSISTENT_SUBSCRIPTIONS 8u
-#define LIMIT_EMBEDDED_SESSION_HANDLERS 4u
-#define LIMIT_EMBEDDED_FEATURE_STATE_OBSERVERS 6u
+#define LIMIT_EMBEDDED_FEATURE_OBSERVERS 10u
 #define LIMIT_EMBEDDED_APPLICATION_STATE_OBSERVERS 4u
 #define LIMIT_EMBEDDED_FEATURE_CLIENTS 8u
 #define LIMIT_EMBEDDED_INBOUND_HANDLERS 8u
@@ -6477,8 +6489,7 @@ typedef char az_iot_connection_embedded_workspace_counts_agree
           LIMIT_EMBEDDED_PENDING_PUBLISHES,
           LIMIT_EMBEDDED_PUBLISH_RESERVATIONS,
           LIMIT_EMBEDDED_PERSISTENT_SUBSCRIPTIONS,
-          LIMIT_EMBEDDED_SESSION_HANDLERS,
-          LIMIT_EMBEDDED_FEATURE_STATE_OBSERVERS,
+          LIMIT_EMBEDDED_FEATURE_OBSERVERS,
           LIMIT_EMBEDDED_APPLICATION_STATE_OBSERVERS,
           LIMIT_EMBEDDED_FEATURE_CLIENTS,
           LIMIT_EMBEDDED_INBOUND_HANDLERS))
@@ -6497,17 +6508,19 @@ static bool limits_resolve(
 {
   *out = *limits;
   size_t* const value[] = {
-    &out->max_pending_publishes,        &out->max_publish_reservations,
-    &out->max_persistent_subscriptions, &out->max_session_handlers,
-    &out->max_feature_state_observers,  &out->max_application_state_observers,
-    &out->max_feature_clients,          &out->max_inbound_handlers,
+    &out->max_pending_publishes,
+    &out->max_publish_reservations,
+    &out->max_persistent_subscriptions,
+    &out->max_feature_observers,
+    &out->max_application_state_observers,
+    &out->max_feature_clients,
+    &out->max_inbound_handlers,
   };
   static const size_t fallback[] = {
     AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_PENDING_PUBLISHES,
     AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_PUBLISH_RESERVATIONS,
     AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_PERSISTENT_SUBSCRIPTIONS,
-    AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_SESSION_HANDLERS,
-    AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_FEATURE_STATE_OBSERVERS,
+    AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_FEATURE_OBSERVERS,
     AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_APPLICATION_STATE_OBSERVERS,
     AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_FEATURE_CLIENTS,
     AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_INBOUND_HANDLERS,
@@ -6534,8 +6547,7 @@ static bool limits_exceed_embedded_workspace(const az_iot_connection_client_limi
   return l->max_pending_publishes > LIMIT_EMBEDDED_PENDING_PUBLISHES
       || l->max_publish_reservations > LIMIT_EMBEDDED_PUBLISH_RESERVATIONS
       || l->max_persistent_subscriptions > LIMIT_EMBEDDED_PERSISTENT_SUBSCRIPTIONS
-      || l->max_session_handlers > LIMIT_EMBEDDED_SESSION_HANDLERS
-      || l->max_feature_state_observers > LIMIT_EMBEDDED_FEATURE_STATE_OBSERVERS
+      || l->max_feature_observers > LIMIT_EMBEDDED_FEATURE_OBSERVERS
       || l->max_application_state_observers > LIMIT_EMBEDDED_APPLICATION_STATE_OBSERVERS
       || l->max_feature_clients > LIMIT_EMBEDDED_FEATURE_CLIENTS
       || l->max_inbound_handlers > LIMIT_EMBEDDED_INBOUND_HANDLERS;
@@ -6548,8 +6560,7 @@ static size_t workspace_size_of(const az_iot_connection_client_limits* l)
       l->max_pending_publishes,
       l->max_publish_reservations,
       l->max_persistent_subscriptions,
-      l->max_session_handlers,
-      l->max_feature_state_observers,
+      l->max_feature_observers,
       l->max_application_state_observers,
       l->max_feature_clients,
       l->max_inbound_handlers);
@@ -6582,10 +6593,8 @@ static void workspace_assign(az_iot_connection_client* c, uint8_t* workspace)
       = workspace_take(&cursor, l->max_persistent_subscriptions, sizeof(*c->persistent_subs));
   c->subscription_acks
       = workspace_take(&cursor, l->max_persistent_subscriptions, sizeof(*c->subscription_acks));
-  c->session_handlers
-      = workspace_take(&cursor, l->max_session_handlers, sizeof(*c->session_handlers));
-  c->feature_state_observers = workspace_take(
-      &cursor, l->max_feature_state_observers, sizeof(*c->feature_state_observers));
+  c->feature_observers
+      = workspace_take(&cursor, l->max_feature_observers, sizeof(*c->feature_observers));
   c->app_state_observers = workspace_take(
       &cursor, l->max_application_state_observers, sizeof(*c->app_state_observers));
   c->feature_client_binds
@@ -6767,14 +6776,11 @@ void az_iot_connection_client_deinit(az_iot_connection_client* client)
     client->pending_pubacks[i].user_ctx = NULL;
     client->pending_pubacks[i].packet_id = 0;
   }
-  /* Same reasoning for the session-end handlers: on deinit() the feature
-   * clients are being torn down alongside this one, so calling into them is
-   * at best pointless and at worst a use-after-free. */
-  for (size_t i = 0; i < client->opts.limits.max_session_handlers; ++i)
+  /* Same reasoning for the feature observers: on deinit() the feature clients are being torn
+   * down alongside this one, so the teardown below must not call into them. */
+  for (size_t i = 0; i < client->opts.limits.max_feature_observers; ++i)
   {
-    client->session_handlers[i].in_use = false;
-    client->session_handlers[i].cb = NULL;
-    client->session_handlers[i].user_ctx = NULL;
+    memset(&client->feature_observers[i], 0, sizeof(client->feature_observers[i]));
   }
   release_material(client, AZ_IOT_CONN_SCOPE_DPS);
   release_material(client, AZ_IOT_CONN_SCOPE_HUB);
@@ -6819,16 +6825,10 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_register_mqtt_factory(
   return AZ_IOT_OK;
 }
 
-/* Shared by the public and internal registration entry points. The only
- * difference between an application observer and a feature-client one is which
- * pool it lands in -- and that is decided HERE, by which entry point was
- * called, never by an argument. An application cannot register itself into the
- * feature-client pool and take a slot a feature client needs. */
-static az_iot_result add_state_observer_to(
+az_iot_result az_iot_connection_client_add_state_observer(
     az_iot_connection_client* client,
     az_iot_connection_state_callback cb,
-    void* user_ctx,
-    bool feature_client)
+    void* user_ctx)
 {
   if (!client || !cb)
   {
@@ -6840,25 +6840,19 @@ static az_iot_result add_state_observer_to(
         AZ_IOT_LOG_COMPONENT_CONNECTION, "cannot add a state observer from inside one");
     return AZ_IOT_ERR_BUSY;
   }
-
-  size_t count = feature_client ? client->opts.limits.max_feature_state_observers
-                                : client->opts.limits.max_application_state_observers;
+  size_t const count = client->opts.limits.max_application_state_observers;
   size_t free_slot = count;
   for (size_t i = 0; i < count; ++i)
   {
-    az_iot_connection_state_callback slot_cb = feature_client
-        ? client->feature_state_observers[i].cb
-        : client->app_state_observers[i].cb;
-    void* slot_ctx = feature_client ? client->feature_state_observers[i].user_ctx
-                                    : client->app_state_observers[i].user_ctx;
     /* Idempotent on the (cb, user_ctx) PAIR, not on cb alone: one callback
      * shared by two owners is two distinct subscriptions and must be delivered
      * twice. */
-    if (slot_cb == cb && slot_ctx == user_ctx)
+    if (client->app_state_observers[i].cb == cb
+        && client->app_state_observers[i].user_ctx == user_ctx)
     {
       return AZ_IOT_OK;
     }
-    if (!slot_cb && free_slot == count)
+    if (!client->app_state_observers[i].cb && free_slot == count)
     {
       free_slot = i;
     }
@@ -6868,41 +6862,12 @@ static az_iot_result add_state_observer_to(
     AZ_IOT_LOG_ERROR(AZ_IOT_LOG_COMPONENT_CONNECTION, "no free state-observer slot");
     return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
   }
-  if (feature_client)
-  {
-    client->feature_state_observers[free_slot].cb = cb;
-    client->feature_state_observers[free_slot].user_ctx = user_ctx;
-  }
-  else
-  {
-    client->app_state_observers[free_slot].cb = cb;
-    client->app_state_observers[free_slot].user_ctx = user_ctx;
-  }
+  client->app_state_observers[free_slot].cb = cb;
+  client->app_state_observers[free_slot].user_ctx = user_ctx;
   return AZ_IOT_OK;
 }
 
-az_iot_result az_iot_connection_client_add_state_observer(
-    az_iot_connection_client* client,
-    az_iot_connection_state_callback cb,
-    void* user_ctx)
-{
-  return add_state_observer_to(client, cb, user_ctx, false);
-}
-
-az_iot_result az_iot_connection_client__add_state_observer(
-    az_iot_connection_client* client,
-    az_iot_connection_state_callback cb,
-    void* user_ctx)
-{
-  return add_state_observer_to(client, cb, user_ctx, true);
-}
-
-/* Withdraw from whichever pool holds the pair. Both are searched rather than
- * requiring the caller to say which, so a feature client's deinit path does not
- * have to name its own pool -- and an application cannot remove a feature
- * client's entry by guessing, because it would have to already hold that
- * client's exact (cb, user_ctx) pair. */
-static az_iot_result remove_state_observer_from(
+az_iot_result az_iot_connection_client_remove_state_observer(
     az_iot_connection_client* client,
     az_iot_connection_state_callback cb,
     void* user_ctx)
@@ -6911,31 +6876,9 @@ static az_iot_result remove_state_observer_from(
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
-  /* Deliberately NOT refused during a dispatch, unlike adding.
-   *
-   * The two directions are not symmetric. Adding from inside an observer would
-   * deliver the transition being dispatched to a subscriber that was not
-   * watching when it happened, so it is refused. Removing is the opposite: a
-   * feature client deinitialized from inside an observer -- which is a natural
-   * reaction to FAULTED -- MUST be able to withdraw, because the entry holds a
-   * raw pointer to storage its deinit path is about to release. Refusing here
-   * left the caller with no way to give the seat back, and the next transition
-   * called into freed memory.
-   *
-   * Safe against the walk in dispatch_state_event(): it re-reads each slot and
-   * skips a NULL callback, and nothing is compacted, so clearing a slot only
-   * means that observer is not called -- which is exactly what withdrawing
-   * asks for. An entry already visited in this pass is unaffected. */
-  for (size_t i = 0; i < client->opts.limits.max_feature_state_observers; ++i)
-  {
-    if (client->feature_state_observers[i].cb == cb
-        && client->feature_state_observers[i].user_ctx == user_ctx)
-    {
-      client->feature_state_observers[i].cb = NULL;
-      client->feature_state_observers[i].user_ctx = NULL;
-      return AZ_IOT_OK;
-    }
-  }
+  /* Allowed during a dispatch, unlike adding: an owner torn down in reaction to a
+   * transition must be able to withdraw before its storage goes away. The walk in
+   * dispatch_state_event() re-reads each slot and skips a NULL callback. */
   for (size_t i = 0; i < client->opts.limits.max_application_state_observers; ++i)
   {
     if (client->app_state_observers[i].cb == cb
@@ -6947,22 +6890,6 @@ static az_iot_result remove_state_observer_from(
     }
   }
   return AZ_IOT_ERR_NOT_FOUND;
-}
-
-az_iot_result az_iot_connection_client_remove_state_observer(
-    az_iot_connection_client* client,
-    az_iot_connection_state_callback cb,
-    void* user_ctx)
-{
-  return remove_state_observer_from(client, cb, user_ctx);
-}
-
-az_iot_result az_iot_connection_client__remove_state_observer(
-    az_iot_connection_client* client,
-    az_iot_connection_state_callback cb,
-    void* user_ctx)
-{
-  return remove_state_observer_from(client, cb, user_ctx);
 }
 
 az_iot_result az_iot_connection_client_set_operational_cert_callback(
@@ -7968,14 +7895,7 @@ az_iot_result az_iot_connection_client_do_work(
   }
   az_iot_result r = do_work_pass(client, timeout_ms);
   /* After every timer, on every path. A callback may withdraw itself or another observer. */
-  for (size_t i = 0; i < AZ_IOT_CONNECTION_CLIENT_TICK_OBSERVERS; ++i)
-  {
-    void (*observer)(void*) = client->tick_observers[i].cb;
-    if (observer != NULL)
-    {
-      observer(client->tick_observers[i].user_ctx);
-    }
-  }
+  notify_feature_observers_of(client, AZ_IOT_CONNECTION_FEATURE_EVENT_TICK);
   return r;
 }
 
@@ -8253,68 +8173,6 @@ size_t az_iot_connection_client__unregister_inbound_handlers(
     return 0;
   }
   return az_iot_dispatch_unregister_by_ctx(&client->dispatch, user_ctx);
-}
-
-az_iot_result az_iot_connection_client__register_session_end_handler(
-    az_iot_connection_client* client,
-    az_iot_session_end_callback cb,
-    void* user_ctx)
-{
-  if (!client || !cb)
-  {
-    return AZ_IOT_ERR_INVALID_ARG;
-  }
-
-  size_t free_slot = client->opts.limits.max_session_handlers;
-  for (size_t i = 0; i < client->opts.limits.max_session_handlers; ++i)
-  {
-    /* Keyed on user_ctx: a feature client that re-initializes over a live
-     * instance replaces its entry instead of consuming a second slot. */
-    if (client->session_handlers[i].in_use)
-    {
-      if (client->session_handlers[i].user_ctx == user_ctx)
-      {
-        client->session_handlers[i].cb = cb;
-        return AZ_IOT_OK;
-      }
-    }
-    else if (free_slot == client->opts.limits.max_session_handlers)
-    {
-      free_slot = i;
-    }
-  }
-
-  if (free_slot == client->opts.limits.max_session_handlers)
-  {
-    AZ_IOT_LOG_ERROR(AZ_IOT_LOG_COMPONENT_CONNECTION, "session-end handler registry is full");
-    return AZ_IOT_ERR_NOT_SUPPORTED;
-  }
-
-  client->session_handlers[free_slot].cb = cb;
-  client->session_handlers[free_slot].user_ctx = user_ctx;
-  client->session_handlers[free_slot].in_use = true;
-  return AZ_IOT_OK;
-}
-
-size_t az_iot_connection_client__unregister_session_end_handler(
-    az_iot_connection_client* client,
-    void* user_ctx)
-{
-  if (!client)
-  {
-    return 0;
-  }
-  for (size_t i = 0; i < client->opts.limits.max_session_handlers; ++i)
-  {
-    if (client->session_handlers[i].in_use && client->session_handlers[i].user_ctx == user_ctx)
-    {
-      client->session_handlers[i].in_use = false;
-      client->session_handlers[i].cb = NULL;
-      client->session_handlers[i].user_ctx = NULL;
-      return 1;
-    }
-  }
-  return 0;
 }
 
 az_iot_connection_state az_iot_connection_client_get_state(
@@ -9091,105 +8949,90 @@ void az_iot_connection_client__abandon_pubacks(az_iot_connection_client* client,
   puback_abandon(client, owner);
 }
 
-az_iot_result az_iot_connection_client__add_publish_completion_observer(
+az_iot_result az_iot_connection_client__add_feature_observer(
     az_iot_connection_client* client,
-    void (*cb)(void* user_ctx),
+    uint8_t events,
+    az_iot_connection_feature_observer_callback cb,
     void* user_ctx)
 {
-  if (client == NULL || cb == NULL)
+  if (client == NULL || cb == NULL || events == 0u)
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
-  for (size_t i = 0; i < AZ_IOT_CONNECTION_CLIENT_PUBLISH_COMPLETION_OBSERVERS; ++i)
+  /* A state observer added mid-dispatch would see the transition in flight. */
+  if (client->dispatching_state && (events & (uint8_t)AZ_IOT_CONNECTION_FEATURE_EVENT_STATE))
   {
-    if (client->publish_completion_observers[i].cb == NULL)
+    AZ_IOT_LOG_ERROR(
+        AZ_IOT_LOG_COMPONENT_CONNECTION, "cannot add a state observer from inside one");
+    return AZ_IOT_ERR_BUSY;
+  }
+  size_t const count = client->opts.limits.max_feature_observers;
+  size_t free_slot = count;
+  for (size_t i = 0; i < count; ++i)
+  {
+    az_iot_connection_feature_observer* observer = &client->feature_observers[i];
+    if (observer->cb == cb && observer->user_ctx == user_ctx)
     {
-      client->publish_completion_observers[i].cb = cb;
-      client->publish_completion_observers[i].user_ctx = user_ctx;
+      observer->events = events;
       return AZ_IOT_OK;
     }
-  }
-  return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
-}
-
-void az_iot_connection_client__remove_publish_completion_observer(
-    az_iot_connection_client* client,
-    void (*cb)(void* user_ctx),
-    void* user_ctx)
-{
-  if (client == NULL)
-  {
-    return;
-  }
-  for (size_t i = 0; i < AZ_IOT_CONNECTION_CLIENT_PUBLISH_COMPLETION_OBSERVERS; ++i)
-  {
-    if (client->publish_completion_observers[i].cb == cb
-        && client->publish_completion_observers[i].user_ctx == user_ctx)
+    if (observer->cb == NULL && free_slot == count)
     {
-      client->publish_completion_observers[i].cb = NULL;
-      client->publish_completion_observers[i].user_ctx = NULL;
+      free_slot = i;
     }
   }
+  if (free_slot == count)
+  {
+    AZ_IOT_LOG_ERROR(AZ_IOT_LOG_COMPONENT_CONNECTION, "no free feature-observer slot");
+    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+  }
+  client->feature_observers[free_slot].cb = cb;
+  client->feature_observers[free_slot].user_ctx = user_ctx;
+  client->feature_observers[free_slot].events = events;
+  return AZ_IOT_OK;
 }
 
-bool az_iot_connection_client__has_publish_completion_observer(
+/** @brief Index of the observer with @p cb and @p user_ctx; limits.max_feature_observers if none.
+ */
+static size_t find_feature_observer(
     const az_iot_connection_client* client,
-    void (*cb)(void* user_ctx),
+    az_iot_connection_feature_observer_callback cb,
+    const void* user_ctx)
+{
+  size_t i = 0;
+  while (i < client->opts.limits.max_feature_observers
+         && !(
+             client->feature_observers[i].cb == cb
+             && client->feature_observers[i].user_ctx == user_ctx))
+  {
+    ++i;
+  }
+  return i;
+}
+
+void az_iot_connection_client__remove_feature_observer(
+    az_iot_connection_client* client,
+    az_iot_connection_feature_observer_callback cb,
     const void* user_ctx)
 {
   if (client == NULL || cb == NULL)
   {
-    return false;
-  }
-  for (size_t i = 0; i < AZ_IOT_CONNECTION_CLIENT_PUBLISH_COMPLETION_OBSERVERS; ++i)
-  {
-    if (client->publish_completion_observers[i].cb == cb
-        && client->publish_completion_observers[i].user_ctx == user_ctx)
-    {
-      return true;
-    }
-  }
-  return false;
-}
-
-az_iot_result az_iot_connection_client__add_tick_observer(
-    az_iot_connection_client* client,
-    void (*cb)(void* user_ctx),
-    void* user_ctx)
-{
-  if (client == NULL || cb == NULL)
-  {
-    return AZ_IOT_ERR_INVALID_ARG;
-  }
-  for (size_t i = 0; i < AZ_IOT_CONNECTION_CLIENT_TICK_OBSERVERS; ++i)
-  {
-    if (client->tick_observers[i].cb == NULL)
-    {
-      client->tick_observers[i].cb = cb;
-      client->tick_observers[i].user_ctx = user_ctx;
-      return AZ_IOT_OK;
-    }
-  }
-  return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
-}
-
-void az_iot_connection_client__remove_tick_observer(
-    az_iot_connection_client* client,
-    void (*cb)(void* user_ctx),
-    void* user_ctx)
-{
-  if (client == NULL)
-  {
     return;
   }
-  for (size_t i = 0; i < AZ_IOT_CONNECTION_CLIENT_TICK_OBSERVERS; ++i)
+  size_t const i = find_feature_observer(client, cb, user_ctx);
+  if (i < client->opts.limits.max_feature_observers)
   {
-    if (client->tick_observers[i].cb == cb && client->tick_observers[i].user_ctx == user_ctx)
-    {
-      client->tick_observers[i].cb = NULL;
-      client->tick_observers[i].user_ctx = NULL;
-    }
+    memset(&client->feature_observers[i], 0, sizeof(client->feature_observers[i]));
   }
+}
+
+bool az_iot_connection_client__has_feature_observer(
+    const az_iot_connection_client* client,
+    az_iot_connection_feature_observer_callback cb,
+    const void* user_ctx)
+{
+  return client != NULL && cb != NULL
+      && find_feature_observer(client, cb, user_ctx) < client->opts.limits.max_feature_observers;
 }
 
 bool az_iot_connection_client__can_track_publish(
