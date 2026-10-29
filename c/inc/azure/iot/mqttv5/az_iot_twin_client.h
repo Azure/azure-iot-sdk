@@ -206,8 +206,7 @@ extern "C"
       /* Defensive wait for the twin-push the birth asks for. */
       struct
       {
-        bool armed;
-        uint64_t deadline_ms;
+        az_iot_deadline deadline; /* none while not waiting */
         /* Consecutive sessions ended because their twin-push did not arrive. */
         uint32_t missed_count;
         /* The wait expired and asked the connection to reconnect. */

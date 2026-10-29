@@ -6259,11 +6259,10 @@ static uint32_t limit_wait_to_connection_deadlines(
   {
     return 0;
   }
-  uint64_t deadline = c->requested_reconnect.disconnect_deadline_ms;
-  if (c->requested_reconnect.in_progress && deadline != 0)
+  if (c->requested_reconnect.in_progress)
   {
-    uint64_t now = az_iot_time_mono_ms();
-    uint64_t remaining = deadline > now ? deadline - now : 0;
+    uint64_t remaining = az_iot_deadline__remaining_ms(
+        &c->requested_reconnect.disconnect_deadline, az_iot_time_mono_ms());
     if ((uint64_t)timeout_ms > remaining)
     {
       timeout_ms = (uint32_t)remaining;
@@ -7959,8 +7958,10 @@ az_iot_result az_iot_connection_client_do_work(
       client->requested_reconnect.in_progress = true;
       if (client->active_client->iface->disconnect(client->active_client) == AZ_IOT_OK)
       {
-        client->requested_reconnect.disconnect_deadline_ms
-            = az_iot_time_mono_ms() + REQUESTED_RECONNECT_DISCONNECT_TIMEOUT_MS;
+        az_iot_deadline__arm_after_ms(
+            &client->requested_reconnect.disconnect_deadline,
+            az_iot_time_mono_ms(),
+            REQUESTED_RECONNECT_DISCONNECT_TIMEOUT_MS);
       }
       else
       {
@@ -7970,8 +7971,8 @@ az_iot_result az_iot_connection_client_do_work(
   }
   else if (
       client->requested_reconnect.in_progress
-      && client->requested_reconnect.disconnect_deadline_ms != 0
-      && az_iot_time_mono_ms() >= client->requested_reconnect.disconnect_deadline_ms)
+      && az_iot_deadline__has_passed(
+          &client->requested_reconnect.disconnect_deadline, az_iot_time_mono_ms()))
   {
     AZ_IOT_LOG_WARN(
         AZ_IOT_LOG_COMPONENT_CONNECTION,
@@ -8418,9 +8419,9 @@ bool az_iot_connection_client__session_ending_by_request(const az_iot_connection
 
 void az_iot_connection_client__requested_reconnect_force_timeout(az_iot_connection_client* client)
 {
-  if (client && client->requested_reconnect.disconnect_deadline_ms != 0)
+  if (client && az_iot_deadline__is_set(&client->requested_reconnect.disconnect_deadline))
   {
-    client->requested_reconnect.disconnect_deadline_ms = 1u;
+    az_iot_deadline__expire_now(&client->requested_reconnect.disconnect_deadline);
   }
 }
 

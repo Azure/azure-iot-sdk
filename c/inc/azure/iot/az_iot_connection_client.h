@@ -1933,8 +1933,8 @@ extern "C"
 
     /* A feature client asked to end the hub session and reconnect. `requested`
      * waits for do_work(), which sends DISCONNECT and sets `in_progress` until
-     * the session ends (bounded by `disconnect_deadline_ms`; 0: none). Both are
-     * cleared when the session ends. */
+     * the session ends (bounded by `disconnect_deadline`). Both are cleared when
+     * the session ends. */
     struct
     {
       bool requested;
@@ -1942,7 +1942,7 @@ extern "C"
       /* The session is ending by this request (not by another failure). */
       bool ending;
       az_iot_result reason;
-      uint64_t disconnect_deadline_ms;
+      az_iot_deadline disconnect_deadline;
     } requested_reconnect;
 
     /* Per scope: where init() put the decoded SAS keys in opts.sas_buffer

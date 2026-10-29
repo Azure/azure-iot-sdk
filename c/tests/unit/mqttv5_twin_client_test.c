@@ -2716,16 +2716,15 @@ static int setup_push_desired_no_policy(void** state)
 /* Asserts the wait is armed for @p attempt of the defensive-timeout schedule. */
 static void assert_twin_push_wait_for_attempt(fixture* fx, uint32_t attempt)
 {
-  uint64_t deadline = 0;
-  assert_true(az_iot_mqttv5_twin_client__twin_push_deadline(&fx->twin, &deadline));
+  uint64_t remaining = 0;
+  assert_true(az_iot_mqttv5_twin_client__twin_push_remaining(&fx->twin, &remaining));
   uint64_t expected = (attempt == 1) ? 5u * MINUTE_MS
       : (attempt == 2)               ? 6u * MINUTE_MS
       : (attempt == 3)               ? 8u * MINUTE_MS
                                      : 10u * MINUTE_MS;
   expected += TWIN_PUSH_TEST_JITTER_MS;
-  uint64_t now = az_iot_time_mono_ms();
-  assert_true(deadline <= now + expected);
-  assert_true(deadline + TWIN_PUSH_TEST_SLACK_MS >= now + expected);
+  assert_true(remaining <= expected);
+  assert_true(remaining + TWIN_PUSH_TEST_SLACK_MS >= expected);
 }
 
 static size_t count_states(az_iot_connection_state wanted, az_iot_result reason)
@@ -2748,7 +2747,7 @@ static void expire_twin_push_wait_to_disconnect(fixture* fx)
 {
   az_iot_mqttv5_twin_client__twin_push_force_timeout(&fx->twin);
   assert_int_equal(az_iot_mqttv5_twin_client_do_work(&fx->twin), AZ_IOT_OK);
-  assert_false(az_iot_mqttv5_twin_client__twin_push_deadline(&fx->twin, NULL));
+  assert_false(az_iot_mqttv5_twin_client__twin_push_remaining(&fx->twin, NULL));
   assert_int_equal(az_iot_mock_mqtt_client_count_of(fx->mock, AZ_IOT_MOCK_CALL_DISCONNECT), 0);
   assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
   assert_int_equal(az_iot_mock_mqtt_client_count_of(fx->mock, AZ_IOT_MOCK_CALL_DISCONNECT), 1);
@@ -2793,7 +2792,7 @@ static void without_twin_push_no_wait_is_armed(void** state)
 {
   fixture* fx = (fixture*)*state;
   open_to_connected(fx);
-  assert_false(az_iot_mqttv5_twin_client__twin_push_deadline(&fx->twin, NULL));
+  assert_false(az_iot_mqttv5_twin_client__twin_push_remaining(&fx->twin, NULL));
 }
 
 /* The wait starts at the birth-ack (hub CONNECTED), on the first step of the schedule. */
@@ -2801,7 +2800,7 @@ static void with_push_desired_the_twin_push_wait_is_armed_on_connected(void** st
 {
   fixture* fx = (fixture*)*state;
   open_to_birth(fx);
-  assert_false(az_iot_mqttv5_twin_client__twin_push_deadline(&fx->twin, NULL));
+  assert_false(az_iot_mqttv5_twin_client__twin_push_remaining(&fx->twin, NULL));
   ack_birth(fx, 0, 0);
   az_iot_test_ack_subscriptions(&fx->conn, fx->mock);
   assert_twin_push_wait_for_attempt(fx, 1);
@@ -2820,7 +2819,7 @@ static void a_twin_push_cancels_the_wait(void** state)
   fixture* fx = (fixture*)*state;
   open_to_connected(fx);
   push_twin(fx);
-  assert_false(az_iot_mqttv5_twin_client__twin_push_deadline(&fx->twin, NULL));
+  assert_false(az_iot_mqttv5_twin_client__twin_push_remaining(&fx->twin, NULL));
 
   az_iot_mqttv5_twin_client__twin_push_force_timeout(&fx->twin);
   assert_int_equal(az_iot_mqttv5_twin_client_do_work(&fx->twin), AZ_IOT_OK);
@@ -2838,7 +2837,7 @@ static void a_twin_push_before_the_birth_ack_leaves_the_wait_unarmed(void** stat
   push_twin(fx);
   ack_birth(fx, 0, 0);
   az_iot_test_ack_subscriptions(&fx->conn, fx->mock);
-  assert_false(az_iot_mqttv5_twin_client__twin_push_deadline(&fx->twin, NULL));
+  assert_false(az_iot_mqttv5_twin_client__twin_push_remaining(&fx->twin, NULL));
 }
 
 /* A twin-push for another connection does not cancel the wait. */
@@ -2851,7 +2850,7 @@ static void a_twin_push_from_another_connection_does_not_cancel_the_wait(void** 
   other[0] ^= 0xFFu;
   const uint8_t body[] = { 0x0A, 0x00 };
   inject_twin(fx, "twin-push:1", other, body, sizeof(body));
-  assert_true(az_iot_mqttv5_twin_client__twin_push_deadline(&fx->twin, NULL));
+  assert_true(az_iot_mqttv5_twin_client__twin_push_remaining(&fx->twin, NULL));
 }
 
 /* An overdue push ends the session and schedules a reconnect. */
@@ -3410,7 +3409,7 @@ static void consecutive_misses_follow_the_schedule_and_a_push_resets_it(void** s
   }
 
   push_twin(fx);
-  assert_false(az_iot_mqttv5_twin_client__twin_push_deadline(&fx->twin, NULL));
+  assert_false(az_iot_mqttv5_twin_client__twin_push_remaining(&fx->twin, NULL));
   /* Another cause ends this session; the next one starts the schedule over. */
   assert_true(az_iot_mock_mqtt_client_inject_disconnected(fx->mock));
   assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
@@ -3430,7 +3429,7 @@ static void a_new_connect_cycle_restarts_the_schedule(void** state)
   /* Lost for another reason: still the same cycle. */
   assert_true(az_iot_mock_mqtt_client_inject_disconnected(fx->mock));
   assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
-  assert_false(az_iot_mqttv5_twin_client__twin_push_deadline(&fx->twin, NULL));
+  assert_false(az_iot_mqttv5_twin_client__twin_push_remaining(&fx->twin, NULL));
   reconnect_to_connected(fx);
   assert_twin_push_wait_for_attempt(fx, 2);
 
@@ -3454,7 +3453,7 @@ static void a_twin_client_created_while_connected_does_not_wait(void** state)
   open_to_connected(fx);
   az_iot_mqttv5_twin_client_deinit(&fx->twin);
   assert_int_equal(az_iot_mqttv5_twin_client_init(&fx->twin, &fx->conn), AZ_IOT_OK);
-  assert_false(az_iot_mqttv5_twin_client__twin_push_deadline(&fx->twin, NULL));
+  assert_false(az_iot_mqttv5_twin_client__twin_push_remaining(&fx->twin, NULL));
 }
 
 /* A client attached between an early twin-push and the birth-ack does not wait for a second push.
@@ -3471,7 +3470,7 @@ static void a_twin_client_attached_after_the_birth_does_not_wait(void** state)
   assert_int_equal(
       az_iot_connection_client_get_state(&fx->conn, AZ_IOT_CONN_SCOPE_HUB),
       AZ_IOT_CONN_STATE_CONNECTED);
-  assert_false(az_iot_mqttv5_twin_client__twin_push_deadline(&fx->twin, NULL));
+  assert_false(az_iot_mqttv5_twin_client__twin_push_remaining(&fx->twin, NULL));
 }
 
 /* The request is served only for a CONNECTED hub scope. */
@@ -3485,7 +3484,7 @@ static void a_reconnect_request_needs_a_connected_session(void** state)
       az_iot_connection_client__request_reconnect(&fx->conn, AZ_IOT_ERR_TIMEOUT),
       AZ_IOT_ERR_NOT_CONNECTED);
   az_iot_mqttv5_twin_client__twin_push_force_timeout(NULL);
-  assert_false(az_iot_mqttv5_twin_client__twin_push_deadline(NULL, NULL));
+  assert_false(az_iot_mqttv5_twin_client__twin_push_remaining(NULL, NULL));
 }
 
 /* A request dropped by the session ending first does not end the next session. */

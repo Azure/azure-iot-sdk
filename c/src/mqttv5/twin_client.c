@@ -24,6 +24,7 @@
 #include "azure/iot/mqttv5/az_iot_twin_client.h"
 
 #include "internal/connection_client_internal.h"
+#include "internal/deadline.h"
 #include "internal/log_internal.h"
 #include "internal/proto3.h"
 #include "internal/mono_time.h"
@@ -186,7 +187,7 @@ static void twin_push_wait_on_push(az_iot_mqttv5_twin_client* t, const az_iot_mq
   memcpy(
       TI(t).twin_push_wait.settled_birth_nonce, msg->correlation_data, AZ_IOT_CORRELATION_UUID_LEN);
   TI(t).twin_push_wait.settled = true;
-  TI(t).twin_push_wait.armed = false;
+  az_iot_deadline__clear(&TI(t).twin_push_wait.deadline);
   TI(t).twin_push_wait.missed_count = 0;
   /* A request already queued no longer counts as a miss when it ends the session. */
   TI(t).twin_push_wait.reconnect_requested = false;
@@ -207,18 +208,17 @@ static void twin_push_wait_arm(az_iot_mqttv5_twin_client* t)
   }
   uint32_t timeout_ms = az_iot_connection_client__defensive_timeout_ms(
       TI(t).conn, TI(t).twin_push_wait.missed_count + 1u);
-  TI(t).twin_push_wait.armed = true;
-  TI(t).twin_push_wait.deadline_ms = az_iot_time_mono_ms() + timeout_ms;
+  az_iot_deadline__arm_after_ms(&TI(t).twin_push_wait.deadline, az_iot_time_mono_ms(), timeout_ms);
 }
 
 /** @brief End the session when its twin-push is overdue. The miss is counted when it ends. */
 static void twin_push_wait_check(az_iot_mqttv5_twin_client* t, uint64_t now)
 {
-  if (!TI(t).twin_push_wait.armed || now < TI(t).twin_push_wait.deadline_ms)
+  if (!az_iot_deadline__has_passed(&TI(t).twin_push_wait.deadline, now))
   {
     return;
   }
-  TI(t).twin_push_wait.armed = false;
+  az_iot_deadline__clear(&TI(t).twin_push_wait.deadline);
   AZ_IOT_LOG_WARN(
       AZ_IOT_LOG_COMPONENT_MQTTV5_TWIN, "the expected twin-push did not arrive; reconnecting");
   TI(t).twin_push_wait.reconnect_requested
@@ -235,7 +235,7 @@ static void twin_push_wait_on_session_end(az_iot_mqttv5_twin_client* t)
     TI(t).twin_push_wait.missed_count++;
   }
   TI(t).twin_push_wait.reconnect_requested = false;
-  TI(t).twin_push_wait.armed = false;
+  az_iot_deadline__clear(&TI(t).twin_push_wait.deadline);
   TI(t).twin_push_wait.settled = false;
 }
 
@@ -836,7 +836,7 @@ static void on_connection_state(const az_iot_connection_state_event* event, void
   }
   else if (event->state == AZ_IOT_CONN_STATE_IDLE || event->state == AZ_IOT_CONN_STATE_FAULTED)
   {
-    TI(t).twin_push_wait.armed = false;
+    az_iot_deadline__clear(&TI(t).twin_push_wait.deadline);
     TI(t).twin_push_wait.missed_count = 0;
     TI(t).twin_push_wait.reconnect_requested = false;
   }
@@ -1184,23 +1184,24 @@ az_iot_result az_iot_mqttv5_twin_client_do_work(az_iot_mqttv5_twin_client* twin)
 
 void az_iot_mqttv5_twin_client__twin_push_force_timeout(az_iot_mqttv5_twin_client* twin)
 {
-  if (twin && TI(twin).twin_push_wait.armed)
+  if (twin && az_iot_deadline__is_set(&TI(twin).twin_push_wait.deadline))
   {
-    TI(twin).twin_push_wait.deadline_ms = 0;
+    az_iot_deadline__expire_now(&TI(twin).twin_push_wait.deadline);
   }
 }
 
-bool az_iot_mqttv5_twin_client__twin_push_deadline(
+bool az_iot_mqttv5_twin_client__twin_push_remaining(
     const az_iot_mqttv5_twin_client* twin,
-    uint64_t* out_deadline_ms)
+    uint64_t* out_remaining_ms)
 {
-  if (!twin || !TI(twin).twin_push_wait.armed)
+  if (!twin || !az_iot_deadline__is_set(&TI(twin).twin_push_wait.deadline))
   {
     return false;
   }
-  if (out_deadline_ms)
+  if (out_remaining_ms)
   {
-    *out_deadline_ms = TI(twin).twin_push_wait.deadline_ms;
+    *out_remaining_ms
+        = az_iot_deadline__remaining_ms(&TI(twin).twin_push_wait.deadline, az_iot_time_mono_ms());
   }
   return true;
 }

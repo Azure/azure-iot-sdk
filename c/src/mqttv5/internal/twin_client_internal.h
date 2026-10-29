@@ -27,14 +27,14 @@ extern "C"
   void az_iot_mqttv5_twin_client__twin_push_force_timeout(az_iot_mqttv5_twin_client* twin);
 
   /**
-   * @brief Whether the twin-push wait is armed.
+   * @brief Whether the twin-push wait is set (armed or expired).
    *
-   * @param[out] out_deadline_ms Receives its monotonic deadline when armed; may be NULL.
-   * @return true when armed.
+   * @param[out] out_remaining_ms Receives the time left (0 once passed); may be NULL.
+   * @return true when set.
    */
-  bool az_iot_mqttv5_twin_client__twin_push_deadline(
+  bool az_iot_mqttv5_twin_client__twin_push_remaining(
       const az_iot_mqttv5_twin_client* twin,
-      uint64_t* out_deadline_ms);
+      uint64_t* out_remaining_ms);
 
 #ifdef __cplusplus
 }
