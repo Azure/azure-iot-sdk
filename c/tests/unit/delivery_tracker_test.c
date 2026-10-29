@@ -17,6 +17,7 @@
 
 #include "azure/iot/az_iot_connection_client.h"
 #include "internal/connection_client_internal.h"
+#include "internal/deadline.h"
 #include "internal/delivery_tracker.h"
 #include "internal/mono_time.h"
 
@@ -350,7 +351,7 @@ static void messages_expire_at_their_limit(void** state)
   size_t const unbounded = submit(fx, &k_resend, 1u, 0u);
   connect(fx);
   size_t const bounded = submit(fx, &k_fail, 2u, 10u);
-  az_iot_test_wait_ms(25u);
+  az_iot_test_wait_ms(50u);
   do_work(fx);
   assert_int_equal(fx->completion_count, 2);
   assert_completed(fx, 0, unbounded, AZ_IOT_DELIVERY_TRACKER_OUTCOME_EXPIRED);
@@ -361,8 +362,8 @@ static void messages_expire_at_their_limit(void** state)
 static void an_expired_message_is_not_sent(void** state)
 {
   fixture* fx = (fixture*)*state;
-  size_t const index = submit(fx, &k_resend, 1u, 5u);
-  az_iot_test_wait_ms(10u);
+  size_t const index = submit(fx, &k_resend, 1u, 60000u);
+  az_iot_deadline__expire_now(&fx->entries[index]._internal.deadline);
   connect(fx);
   assert_int_equal(publish_count(fx), 0);
   assert_completed(fx, 0, index, AZ_IOT_DELIVERY_TRACKER_OUTCOME_EXPIRED);
@@ -435,10 +436,9 @@ static void an_identity_change_discards_every_message(void** state)
 static void a_completion_may_unbind_the_tracker(void** state)
 {
   fixture* fx = (fixture*)*state;
-  (void)submit(fx, &k_resend, 1u, 5u);
-  (void)submit(fx, &k_resend, 2u, 5u);
+  az_iot_deadline__expire_now(&fx->entries[submit(fx, &k_resend, 1u, 60000u)]._internal.deadline);
+  az_iot_deadline__expire_now(&fx->entries[submit(fx, &k_resend, 2u, 60000u)]._internal.deadline);
   fx->unbind_on_complete = true;
-  az_iot_test_wait_ms(10u);
   do_work(fx);
   assert_int_equal(fx->completion_count, 1);
   assert_int_equal(fx->tracker._internal.tick_count, 0xA5A5A5A5u);
@@ -534,13 +534,13 @@ static void a_later_observer_submit_does_not_resend_a_requeued_message(void** st
   size_t index = 0;
   uint8_t const id = 1u;
   assert_int_equal(
-      az_iot_delivery_tracker__submit(&second, &k_second, &id, 1u, 10u, &index), AZ_IOT_OK);
+      az_iot_delivery_tracker__submit(&second, &k_second, &id, 1u, 60000u, &index), AZ_IOT_OK);
   connect(fx);
   (void)submit(fx, &k_resend, 1u, 0u);
   size_t const sent = publish_count(fx);
   assert_true(az_iot_mock_mqtt_client_inject_puback(
       fx->mock, last_publish(fx)->packet_id, AZ_IOT_ERR_MQTT));
-  az_iot_test_wait_ms(15u);
+  az_iot_deadline__expire_now(&second_entries[0]._internal.deadline);
   do_work(fx); /* The second tracker expires its message and submits t/1 to the first. */
   assert_int_equal(publish_count(fx), sent + 1u);
   assert_string_equal(last_publish(fx)->topic, "t/1");
