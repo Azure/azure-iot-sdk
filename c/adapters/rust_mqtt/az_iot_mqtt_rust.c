@@ -17,6 +17,7 @@
 
 #include "azure/iot/adapters/az_iot_adapter_rust_mqtt.h"
 #include "az_iot_mqtt_rust_ffi.h"
+#include "internal/mqtt_limits.h"
 
 /* Globally installed FFI table. NULL means "no Rust runtime present". */
 static az_iot_rust_mqtt_ffi g_ffi;
@@ -49,6 +50,8 @@ typedef struct rust_client
 {
   const az_iot_mqtt_iface* iface;
   az_iot_rust_mqtt_client* handle;
+  /* Factory client: the allocation destroy() frees. NULL: built in an application workspace. */
+  void* allocation;
 } rust_client;
 
 static az_iot_result rust_iface_connect(
@@ -131,7 +134,9 @@ static void rust_iface_destroy(az_iot_mqtt_client* self)
   {
     g_ffi.destroy(c->handle);
   }
-  free(c);
+  void* const allocation = c->allocation;
+  memset(c, 0, sizeof(*c));
+  free(allocation);
 }
 
 static const az_iot_mqtt_iface s_rust_iface_v5 = {
@@ -147,31 +152,84 @@ static const az_iot_mqtt_iface s_rust_iface_v5 = {
 };
 
 /* ------------------------------------------------------------------------- */
-/* Factory. */
+/* Adapter (application workspace) and factory. */
 
-static az_iot_mqtt_client* rust_factory_create(void* factory_ctx)
+/* AZ_IOT_RUST_MQTT_WORKSPACE_SIZE relies on this bound. */
+typedef char rust_client_fits_AZ_IOT_RUST_MQTT_WORKSPACE_SIZE
+    [sizeof(rust_client) + sizeof(void*) - 1u <= AZ_IOT_RUST_MQTT_WORKSPACE_SIZE ? 1 : -1];
+
+size_t az_iot_rust_mqtt_get_workspace_size(const az_iot_mqtt_limits* limits)
 {
-  (void)factory_ctx;
-  if (!g_ffi_installed)
+  return az_iot_mqtt__limits_are_valid(limits) ? sizeof(rust_client) + sizeof(void*) - 1u : 0;
+}
+
+/** @brief az_iot_mqtt_adapter::init: the wrapper in @p workspace; the Rust client allocates its
+ * own state. */
+static az_iot_result rust_adapter_init(
+    az_iot_mqtt_version mqtt_version,
+    const az_iot_mqtt_limits* limits,
+    uint8_t* workspace,
+    size_t workspace_size,
+    az_iot_mqtt_client** out_client)
+{
+  if (out_client == NULL)
   {
-    return NULL;
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  *out_client = NULL;
+  if (workspace == NULL || !az_iot_mqtt__limits_are_valid(limits))
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  if (mqtt_version != AZ_IOT_MQTT_VERSION_5 || !g_ffi_installed)
+  {
+    return AZ_IOT_ERR_NOT_SUPPORTED;
+  }
+  if (workspace_size < az_iot_rust_mqtt_get_workspace_size(limits))
+  {
+    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
   }
 
   az_iot_rust_mqtt_client* handle = g_ffi.create(AZ_IOT_MQTT_VERSION_5);
   if (handle == NULL)
   {
-    return NULL;
+    return AZ_IOT_ERR_OUT_OF_MEMORY;
   }
-
-  rust_client* c = (rust_client*)calloc(1, sizeof(*c));
-  if (c == NULL)
-  {
-    g_ffi.destroy(handle);
-    return NULL;
-  }
+  uintptr_t const align = sizeof(void*);
+  rust_client* c = (rust_client*)(void*)(((uintptr_t)workspace + align - 1u) & ~(align - 1u));
+  memset(c, 0, sizeof(*c));
   c->iface = &s_rust_iface_v5;
   c->handle = handle;
-  return (az_iot_mqtt_client*)c;
+  *out_client = (az_iot_mqtt_client*)c;
+  return AZ_IOT_OK;
+}
+
+static const az_iot_mqtt_adapter s_rust_adapter = {
+  .get_workspace_size = az_iot_rust_mqtt_get_workspace_size,
+  .init = rust_adapter_init,
+};
+
+const az_iot_mqtt_adapter* az_iot_rust_mqtt_get_adapter(void) { return &s_rust_adapter; }
+
+static az_iot_mqtt_client* rust_factory_create(void* factory_ctx)
+{
+  (void)factory_ctx;
+  static const az_iot_mqtt_limits limits = { 1, 1, 1, 0, 0 }; /* The Rust client sizes its own. */
+  size_t const size = az_iot_rust_mqtt_get_workspace_size(&limits);
+  if (size == 0)
+  {
+    return NULL;
+  }
+  uint8_t* allocation = (uint8_t*)malloc(size);
+  az_iot_mqtt_client* client = NULL;
+  if (allocation == NULL
+      || rust_adapter_init(AZ_IOT_MQTT_VERSION_5, &limits, allocation, size, &client) != AZ_IOT_OK)
+  {
+    free(allocation);
+    return NULL;
+  }
+  ((rust_client*)client)->allocation = allocation;
+  return client;
 }
 
 az_iot_mqtt_factory* az_iot_rust_mqtt_factory_create_v5(void)

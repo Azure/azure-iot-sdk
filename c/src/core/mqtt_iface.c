@@ -4,7 +4,9 @@
 
 /* SPDX-License-Identifier: MIT */
 #include "azure/iot/az_iot_mqtt_iface.h"
+#include "internal/mqtt_limits.h"
 
+#include <stdint.h>
 #include <string.h>
 
 AZ_NODISCARD az_iot_result az_iot_mqtt_user_properties_next(
@@ -320,4 +322,15 @@ AZ_NODISCARD az_iot_result az_iot_mqtt_puback_result(az_iot_mqtt_version version
    * failure. An unknown version cannot be interpreted; retrying is the safe
    * answer. */
   return AZ_IOT_ERR_MQTT;
+}
+
+bool az_iot_mqtt__limits_are_valid(const az_iot_mqtt_limits* limits)
+{
+  return limits != NULL && limits->send_buffer_size != 0 && limits->send_buffer_size <= INT32_MAX
+      && limits->receive_buffer_size != 0 && limits->receive_buffer_size <= INT32_MAX - 3
+      && limits->max_in_flight_messages != 0 && limits->max_in_flight_messages <= 32767
+      && limits->message_store_size <= INT32_MAX && limits->connect_strings_size <= INT32_MAX
+      && (limits->message_store_size == 0
+          || limits->message_store_size
+              >= limits->send_buffer_size + AZ_IOT_MQTT__MESSAGE_STORE_ENTRY_OVERHEAD);
 }

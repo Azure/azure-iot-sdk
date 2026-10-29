@@ -131,6 +131,13 @@ stack or heap), with no allocation by the adapter. The sizes above become run-ti
 - The client's `destroy()` wipes the whole workspace (credentials included) and frees nothing.
 - `AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX` stays a compile-time value.
 
+The Paho and Rust adapters have the same descriptor (`az_iot_paho_get_adapter()`,
+`az_iot_rust_mqtt_get_adapter()`; bounds `AZ_IOT_PAHO_WORKSPACE_SIZE`,
+`AZ_IOT_RUST_MQTT_WORKSPACE_SIZE`). Their workspace holds only the adapter's state: Paho and the
+Rust client allocate their own internals and size their own buffers, so the limits are only checked
+(the ranges az_mqtt accepts). The Rust adapter is MQTT 5 only; its `init()` returns
+`AZ_IOT_ERR_NOT_SUPPORTED` until an FFI table is installed.
+
 ### Limits in the public headers
 
 Buffer sizes, pool sizes and default timeouts are `#define`s that you can override at compile

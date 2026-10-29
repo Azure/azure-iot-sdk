@@ -62,6 +62,23 @@ extern "C"
    */
   void az_iot_rust_mqtt_factory_destroy(az_iot_mqtt_factory* factory);
 
+  /**
+   * @brief The Rust adapter for clients in application memory (a constant). MQTT 5 only. The
+   * workspace holds the wrapper; the Rust client allocates its own state. init() returns
+   * AZ_IOT_ERR_NOT_SUPPORTED until an FFI table is installed.
+   */
+  const az_iot_mqtt_adapter* az_iot_rust_mqtt_get_adapter(void);
+
+  /**
+   * @brief Workspace bytes for one Rust client; 0 when @p limits is invalid. The Rust client
+   * sizes its own buffers: the values of @p limits are only checked.
+   */
+  size_t az_iot_rust_mqtt_get_workspace_size(const az_iot_mqtt_limits* limits);
+
+/** @brief Upper bound of az_iot_rust_mqtt_get_workspace_size(), for static arrays; checked by the
+ * adapter at compile time. */
+#define AZ_IOT_RUST_MQTT_WORKSPACE_SIZE 64u
+
 #ifdef __cplusplus
 }
 #endif

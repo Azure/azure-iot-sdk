@@ -22,6 +22,7 @@
 
 #include "az_iot_mqtt_az_mqtt_internal.h"
 #include "internal/crypto.h" // az_iot_crypto__wipe()
+#include "internal/mqtt_limits.h"
 
 #include "azure/iot/adapters/az_iot_adapter_az_mqtt.h"
 #include "azure/iot/az_iot_log.h"
@@ -157,6 +158,10 @@ typedef struct
   az_iot_mqtt_event_callback callback;
   void* callback_context;
 } _azm_client;
+
+/* The limits every adapter accepts assume this store overhead. */
+typedef char _azm_store_overhead_is_AZ_IOT_MQTT__MESSAGE_STORE_ENTRY_OVERHEAD
+    [AZ_MQTT_INFLIGHT_MESSAGE_OVERHEAD == AZ_IOT_MQTT__MESSAGE_STORE_ENTRY_OVERHEAD ? 1 : -1];
 
 /* AZ_IOT_AZ_MQTT_WORKSPACE_SIZE() relies on these bounds. */
 typedef char _azm_client_state_fits_AZ_IOT_AZ_MQTT_CLIENT_STATE_SIZE
@@ -1278,13 +1283,7 @@ static bool _azm_layout_add(size_t* offset, size_t size)
 /** @brief The workspace parts for @p limits; false when they are invalid. */
 static bool _azm_layout_of(az_iot_mqtt_limits const* limits, _azm_layout* out)
 {
-  if (limits == NULL || limits->send_buffer_size == 0 || limits->send_buffer_size > INT32_MAX
-      || limits->receive_buffer_size == 0 || limits->receive_buffer_size > INT32_MAX - 3
-      || limits->max_in_flight_messages == 0 || limits->max_in_flight_messages > 32767
-      || limits->message_store_size > INT32_MAX || limits->connect_strings_size > INT32_MAX
-      || (limits->message_store_size != 0
-          && limits->message_store_size
-              < limits->send_buffer_size + AZ_MQTT_INFLIGHT_MESSAGE_OVERHEAD))
+  if (!az_iot_mqtt__limits_are_valid(limits))
   {
     return false;
   }

@@ -58,6 +58,12 @@
   `az_iot_az_mqtt_get_workspace_size()` gives the exact size; `AZ_IOT_AZ_MQTT_WORKSPACE_SIZE()` a
   constant-expression bound for static arrays. The client's `destroy()` wipes the workspace and
   frees nothing. The factories are unchanged; they now allocate one workspace per client.
+- Paho and Rust adapters in application memory: `az_iot_paho_get_adapter()` and
+  `az_iot_rust_mqtt_get_adapter()` return the same `az_iot_mqtt_adapter` descriptor. The workspace
+  holds the adapter's own state (`AZ_IOT_PAHO_WORKSPACE_SIZE`, `AZ_IOT_RUST_MQTT_WORKSPACE_SIZE`);
+  Paho and the Rust client still allocate their internals and size their own buffers, so the limits
+  are only checked. `destroy()` releases those internals, wipes the workspace and frees nothing
+  else. The factories are unchanged.
 - az_mqtt adapter: `AZ_IOT_AZ_MQTT_MESSAGE_STORAGE_SIZE` may be 0, for devices that only use clean
   sessions: no message store is allocated, and a connect whose session outlives the connection
   (`clean_start` false; MQTT 5: with `session_expiry_seconds` > 0) returns `AZ_IOT_ERR_NOT_SUPPORTED`.
