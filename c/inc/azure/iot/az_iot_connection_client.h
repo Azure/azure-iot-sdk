@@ -2058,6 +2058,15 @@ extern "C"
 
   const char* az_iot_connection_state_to_string(az_iot_connection_state s);
 
+  /**
+   * @brief Name of @p profile, for logging.
+   *
+   * @param[in] profile Connection profile.
+   * @return The enumerator's name, e.g. "AZ_IOT_CONNECTION_PROFILE_MQTT_V3"; "UNKNOWN"
+   * for a value outside the enum. Never NULL.
+   */
+  const char* az_iot_connection_profile_to_string(az_iot_connection_profile profile);
+
   /* Returns an options struct with optional fields defaulted (port derived from
    * the transport -- 8883 for TCP, 443 for WebSockets -- no proxy,
    * and the default reconnection policy from
