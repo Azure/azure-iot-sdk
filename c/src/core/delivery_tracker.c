@@ -314,6 +314,22 @@ static void discard(az_iot_delivery_tracker_entry* e)
   finish(e, AZ_IOT_DELIVERY_TRACKER_OUTCOME_DISCARDED, NULL);
 }
 
+/** @brief Lower @p remaining_ms to the time left before the earliest message time limit. */
+static void lower_remaining_to_earliest_deadline(
+    const az_iot_delivery_tracker* t,
+    uint64_t* remaining_ms)
+{
+  uint64_t const now = az_iot_time_mono_ms();
+  for (size_t i = 0; i < TI(t).capacity; ++i)
+  {
+    const az_iot_delivery_tracker_entry* e = &TI(t).entries[i];
+    uint64_t const left = EI(e).state == ENTRY_FREE
+        ? UINT64_MAX
+        : az_iot_deadline__remaining_ms(&EI(e).deadline, now);
+    *remaining_ms = left < *remaining_ms ? left : *remaining_ms;
+  }
+}
+
 static void on_connection_event(const az_iot_connection_feature_event* event, void* user_ctx)
 {
   az_iot_delivery_tracker* t = (az_iot_delivery_tracker*)user_ctx;
@@ -344,6 +360,9 @@ static void on_connection_event(const az_iot_connection_feature_event* event, vo
       break;
     case AZ_IOT_CONNECTION_FEATURE_EVENT_IDENTITY_CHANGED:
       for_each_entry(t, ENTRY_FREE, NULL, discard);
+      break;
+    case AZ_IOT_CONNECTION_FEATURE_EVENT_NEXT_DEADLINE:
+      lower_remaining_to_earliest_deadline(t, event->remaining_ms);
       break;
   }
 }
@@ -408,7 +427,8 @@ az_iot_result az_iot_delivery_tracker__bind(
         AZ_IOT_CONNECTION_FEATURE_EVENT_STATE | AZ_IOT_CONNECTION_FEATURE_EVENT_SESSION_END
             | AZ_IOT_CONNECTION_FEATURE_EVENT_PUBLISH_COMPLETED
             | AZ_IOT_CONNECTION_FEATURE_EVENT_TICK
-            | AZ_IOT_CONNECTION_FEATURE_EVENT_IDENTITY_CHANGED,
+            | AZ_IOT_CONNECTION_FEATURE_EVENT_IDENTITY_CHANGED
+            | AZ_IOT_CONNECTION_FEATURE_EVENT_NEXT_DEADLINE,
         on_connection_event,
         tracker);
     if (result != AZ_IOT_OK)

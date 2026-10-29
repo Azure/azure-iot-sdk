@@ -421,9 +421,9 @@ static void an_identity_change_discards_every_message(void** state)
   }
   assert_non_null(observer);
   assert_true(observer->events & AZ_IOT_CONNECTION_FEATURE_EVENT_IDENTITY_CHANGED);
-  az_iot_connection_feature_event const event = { AZ_IOT_CONNECTION_FEATURE_EVENT_IDENTITY_CHANGED,
-                                                  NULL,
-                                                  AZ_IOT_CONNECTION_SESSION_END_LOST };
+  az_iot_connection_feature_event const event = {
+    AZ_IOT_CONNECTION_FEATURE_EVENT_IDENTITY_CHANGED, NULL, AZ_IOT_CONNECTION_SESSION_END_LOST, NULL
+  };
   observer->cb(&event, observer->user_ctx);
   assert_int_equal(fx->completion_count, 2);
   assert_int_equal(fx->completions[0].outcome, AZ_IOT_DELIVERY_TRACKER_OUTCOME_DISCARDED);
@@ -565,6 +565,20 @@ static void a_message_send_error_does_not_block_the_queue(void** state)
   assert_string_equal(last_publish(fx)->topic, "t/0");
   assert_int_equal(fx->completion_count, 0);
 }
+
+/* do_work() waits no longer than the earliest message time limit. */
+static void the_wait_ends_by_the_earliest_time_limit(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  connect(fx);
+  az_iot_mock_mqtt_client_set_next_result(fx->mock, AZ_IOT_MOCK_CALL_PUBLISH, AZ_IOT_ERR_BUSY);
+  (void)submit(fx, &k_resend, 1u, 60000u);
+  (void)submit(fx, &k_fail, 2u, 5000u);
+  (void)az_iot_connection_client_do_work(&fx->connection, UINT32_MAX);
+  uint32_t const waited
+      = az_iot_mock_mqtt_client_last_of(fx->mock, AZ_IOT_MOCK_CALL_PROCESS_LOOP)->timeout_ms;
+  assert_true(waited <= 5000u && waited >= 4000u);
+}
 /* A send the adapter refuses does not hold back the message a PUBACK error requeued: it goes out
  * from the next do_work(). */
 static void a_busy_adapter_does_not_hold_back_a_requeued_message(void** state)
@@ -654,6 +668,7 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         a_later_observer_submit_does_not_resend_a_requeued_message, setup, teardown),
     cmocka_unit_test_setup_teardown(a_message_send_error_does_not_block_the_queue, setup, teardown),
+    cmocka_unit_test_setup_teardown(the_wait_ends_by_the_earliest_time_limit, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_busy_adapter_does_not_hold_back_a_requeued_message, setup, teardown),
     cmocka_unit_test_setup_teardown(arguments_capacity_and_binding, setup, teardown),
