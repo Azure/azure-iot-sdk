@@ -11,7 +11,7 @@ Scope: Azure IoT C SDK (`c/`). One table per feature area.
 | Status | `Done` = implemented and running in CI. `Pending` = not implemented. |
 | Code Location | Implementing function, deep-linked to its definition line on `main`. Pending rows name the file the test belongs in. |
 
-Types: **unit** = cmocka + fake MQTT adapter, no network (`c/tests/unit`); **conformance** = live MQTT broker via `AZ_IOT_MQTT_BROKER_HOST`, no Azure service (`c/tests/conformance`); **integration** = the genuine Paho + OpenSSL stack driven against the in-process test proxy (`c/tests/integration`); **e2e** = real DPS + IoT Hub with the Paho adapter (`c/tests/e2e`).
+Types: **unit** = cmocka + fake MQTT adapter, no network (`c/tests/unit`); **conformance** = live MQTT broker via `AZ_IOT_MQTT_BROKER_HOST`, no Azure service (`c/tests/conformance`); **integration** = the genuine Paho + OpenSSL stack driven against the in-process test proxy (`c/tests/integration`); **e2e** = real DPS + IoT Hub over both MQTT adapters (Paho, az_mqtt), on Linux and Windows except [End-to-end on Windows](#end-to-end-on-windows) (`c/tests/e2e`).
 
 Areas: [Connection](#connection) · [Telemetry](#telemetry-device-to-cloud) ·
 [Cloud-to-device](#cloud-to-device-messages) · [Direct methods](#direct-methods) ·
@@ -1961,6 +1961,17 @@ at all.
 | Reconnect restores feature clients | Depends entirely on the row above for a way to force the drop; the assertions themselves (twin/method/C2D after recovery) are straightforward once it exists. |
 | Long haul connection stability | Multi-hour runtime. This does not belong on a PR gate at all — it needs a scheduled job with its own timeout budget and leak/reconnect-counter reporting. |
 | Connect with wrong device id rejected | An identity provisioned in DPS but absent from (or disabled in) the hub, created and torn down by the provisioning step. The e2e resource provisioning is [downloaded at runtime from `Azure/iot-sdks-e2e-fx`](https://github.com/Azure/iot-sdks-e2e-fx), so the fixture change lands in that repository, not this one. |
+
+### End-to-end on Windows
+
+e2e rows run on Windows too, except these suites ([why](end-to-end-tests.md#not-run-on-windows)):
+
+| Suites | Reason |
+| --- | --- |
+| Custody (`e2e_custody_test.c`, `e2e_mqttv5_custody_test.c`) | Technical: no OpenSSL pkcs11 provider for MSVC; Schannel takes no key references. |
+| AMQP transport SIGPIPE (`e2e_amqp_transport_sigpipe_test.c`) | Technical: Windows has no SIGPIPE. |
+| CSR (`e2e_csr_test.c`, `e2e_csr_sas_test.c`) | Not wired up yet. |
+| Software updates (`e2e_su_test.c`, `e2e_su_offer_test.c`) | Not built on Windows yet. |
 
 
 ## Defects and limitations

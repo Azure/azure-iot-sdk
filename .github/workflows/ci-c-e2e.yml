@@ -382,27 +382,13 @@ jobs:
           New-Item -ItemType Directory -Path $dir -Force | Out-Null
           $certPath = Join-Path $dir "device-cert.pem"
           $keyPath  = Join-Path $dir "device-key.pem"
-          $caPath   = Join-Path $dir "trusted-ca.pem"
 
           [System.IO.File]::WriteAllText($certPath,
             [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($certB64)))
           [System.IO.File]::WriteAllText($keyPath,
             [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($keyB64)))
 
-          if ($IsLinux -and (Test-Path "/etc/ssl/certs/ca-certificates.crt")) {
-            Copy-Item "/etc/ssl/certs/ca-certificates.crt" $caPath
-          }
-          else {
-            # Export the machine + user Root stores as a PEM bundle.
-            $sb = New-Object System.Text.StringBuilder
-            foreach ($loc in @('LocalMachine', 'CurrentUser')) {
-              $store = New-Object System.Security.Cryptography.X509Certificates.X509Store('Root', $loc)
-              $store.Open('ReadOnly')
-              foreach ($c in $store.Certificates) { [void]$sb.AppendLine($c.ExportCertificatePem()) }
-              $store.Close()
-            }
-            [System.IO.File]::WriteAllText($caPath, $sb.ToString())
-          }
+          $caPath = ./c/eng/e2e-trusted-ca.ps1 -Path (Join-Path $dir "trusted-ca.pem")
 
           # Map the config's DPS vars onto the names the test consumes.
           $env:AZ_IOT_DPS_ID_SCOPE        = $env:IOT_DPS_ID_SCOPE
