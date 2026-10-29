@@ -261,7 +261,7 @@ int main(void)
    * DPS and an mqttv3 hub, "/mqtt" for an mqttv5 hub. The environment variable exists only so this
    * sample can also be pointed at a gateway that serves a different path. */
   copts.transport = AZ_IOT_MQTT_TRANSPORT_WEBSOCKET;
-  state.websocket_path = sample_env_dup("AZ_IOT_MQTT_WEBSOCKET_PATH", NULL);
+  state.websocket_path = sample_env_copy("AZ_IOT_MQTT_WEBSOCKET_PATH", NULL);
   copts.websocket_path = state.websocket_path;
 
   if (az_iot_connection_client_init(&state.connection_client, &copts) != AZ_IOT_OK)

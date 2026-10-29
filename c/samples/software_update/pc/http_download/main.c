@@ -237,7 +237,7 @@ static int32_t fetch_update_file(
     d->written = 0;
     d->too_large = 0;
     close_hash_reader(d);
-    d->file = sample_fopen_private(d->path, true);
+    d->file = sample_file_open_private(d->path, true);
     if (d->file == NULL)
     {
       return SAMPLE_ERR_FILE_OPEN;
@@ -346,7 +346,7 @@ static int32_t read_back_downloaded_file(
   }
   if (d->reader == NULL)
   {
-    d->reader = sample_fopen_read_nofollow(path);
+    d->reader = sample_file_open_read_no_follow(path);
     if (d->reader == NULL)
     {
       return SAMPLE_ERR_FILE_OPEN;
@@ -594,14 +594,14 @@ int main(void)
   az_iot_mqtt_factory* factory_v5 = NULL;
   int connection_ready = 0;
   int su_ready = 0;
-  char* manufacturer = sample_env_dup("AZ_IOT_SU_MANUFACTURER", "Contoso");
-  char* model = sample_env_dup("AZ_IOT_SU_MODEL", "SU-Sim");
-  char* proxy_host = sample_env_dup("AZ_IOT_PROXY_HOST", NULL);
-  char* proxy_port = sample_env_dup("AZ_IOT_PROXY_PORT", NULL);
-  char* proxy_username = sample_env_dup("AZ_IOT_PROXY_USERNAME", NULL);
-  char* proxy_password = sample_env_dup("AZ_IOT_PROXY_PASSWORD", NULL);
+  char* manufacturer = sample_env_copy("AZ_IOT_SU_MANUFACTURER", "Contoso");
+  char* model = sample_env_copy("AZ_IOT_SU_MODEL", "SU-Sim");
+  char* proxy_host = sample_env_copy("AZ_IOT_PROXY_HOST", NULL);
+  char* proxy_port = sample_env_copy("AZ_IOT_PROXY_PORT", NULL);
+  char* proxy_username = sample_env_copy("AZ_IOT_PROXY_USERNAME", NULL);
+  char* proxy_password = sample_env_copy("AZ_IOT_PROXY_PASSWORD", NULL);
 
-  dl.path_prefix = sample_env_dup("SAMPLE_DOWNLOAD_PREFIX", "./su_download_");
+  dl.path_prefix = sample_env_copy("SAMPLE_DOWNLOAD_PREFIX", "./su_download_");
   dl.install_chunks = su_sample_env_long("SAMPLE_INSTALL_CHUNKS", 4);
   if (dl.install_chunks < 1)
   {
@@ -611,14 +611,14 @@ int main(void)
   long poll_interval_s = su_sample_env_long("AZ_IOT_SU_POLL_INTERVAL_S", 14400);
   if (manufacturer == NULL || model == NULL || dl.path_prefix == NULL || dl.multi == NULL
       || poll_interval_s < 0
-      || !sample_env_to_buffer(
+      || !sample_env_copy_to_buffer(
           "AZ_IOT_SU_INSTALLED_PROVIDER",
           "Contoso",
           dl.installed_provider,
           sizeof(dl.installed_provider))
-      || !sample_env_to_buffer(
+      || !sample_env_copy_to_buffer(
           "AZ_IOT_SU_INSTALLED_NAME", "SU-Sim", dl.installed_name, sizeof(dl.installed_name))
-      || !sample_env_to_buffer(
+      || !sample_env_copy_to_buffer(
           "AZ_IOT_SU_INSTALLED_VERSION",
           "1.0.0",
           dl.installed_version,

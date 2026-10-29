@@ -31,7 +31,7 @@
 
 // Returns a heap copy of `s` (NUL-terminated), or NULL when `s` is NULL or on
 // allocation failure. Caller frees with free().
-static char* dup_cstr(const char* s)
+static char* copy_string(const char* s)
 {
   if (!s)
   {
@@ -143,7 +143,7 @@ az_iot_log_sink sample_log_sink(az_iot_log_level min_level)
   /* Static: the sink writes through this state for the life of the process. */
   static az_iot_log_file_sink s_file_sink;
   az_iot_log_sink sink;
-  char* enabled = sample_env_dup("AZ_IOT_SAMPLE_LOG_TO_FILE", NULL);
+  char* enabled = sample_env_copy("AZ_IOT_SAMPLE_LOG_TO_FILE", NULL);
   if (enabled == NULL)
   {
     return az_iot_log_stderr_sink(min_level);
@@ -163,7 +163,7 @@ az_iot_log_sink sample_log_sink(az_iot_log_level min_level)
   return sink;
 }
 
-char* sample_env_dup(const char* name, const char* fallback)
+char* sample_env_copy(const char* name, const char* fallback)
 {
 #ifdef _WIN32
   char* value = NULL;
@@ -173,18 +173,18 @@ char* sample_env_dup(const char* name, const char* fallback)
     return value; /* heap-owned by the CRT; caller frees */
   }
   free(value);
-  return dup_cstr(fallback);
+  return copy_string(fallback);
 #else
   const char* v = getenv(name);
   if (v && v[0])
   {
-    return dup_cstr(v);
+    return copy_string(v);
   }
-  return dup_cstr(fallback);
+  return copy_string(fallback);
 #endif
 }
 
-bool sample_copy_str(char* dst, size_t dst_size, const char* src)
+bool sample_string_copy(char* dst, size_t dst_size, const char* src)
 {
   size_t n = strlen(src);
   if (n >= dst_size)
@@ -195,10 +195,10 @@ bool sample_copy_str(char* dst, size_t dst_size, const char* src)
   return true;
 }
 
-bool sample_env_to_buffer(const char* name, const char* fallback, char* dst, size_t dst_size)
+bool sample_env_copy_to_buffer(const char* name, const char* fallback, char* dst, size_t dst_size)
 {
-  char* v = sample_env_dup(name, fallback);
-  bool ok = (v != NULL) && sample_copy_str(dst, dst_size, v);
+  char* v = sample_env_copy(name, fallback);
+  bool ok = (v != NULL) && sample_string_copy(dst, dst_size, v);
   if (v != NULL && !ok)
   {
     fprintf(stderr, "%s is too long (max %zu characters).\n", name, dst_size - 1);
@@ -250,7 +250,7 @@ static FILE* open_private(const char* path, bool exclusive)
   return f;
 }
 
-FILE* sample_fopen_private(const char* path, bool replace)
+FILE* sample_file_open_private(const char* path, bool replace)
 {
   if (!path || (replace && remove(path) != 0 && errno != ENOENT))
   {
@@ -264,7 +264,7 @@ FILE* sample_file_create_private(const char* path)
   return path != NULL ? open_private(path, true) : NULL;
 }
 
-FILE* sample_fopen_read_nofollow(const char* path)
+FILE* sample_file_open_read_no_follow(const char* path)
 {
   if (!path)
   {
@@ -318,7 +318,7 @@ static bool sync_parent_directory(const char* path)
   char* directory = NULL;
   if (last_slash == NULL)
   {
-    directory = dup_cstr(".");
+    directory = copy_string(".");
   }
   else
   {

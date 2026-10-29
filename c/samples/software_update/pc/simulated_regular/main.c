@@ -396,7 +396,7 @@ int main(void)
   state.simulation_control.reboot = su_sample_env_flag("SU_SIM_REBOOT");
   state.simulation_control.delay_ms = su_sample_env_long("SU_SIM_DELAY_MS", 0);
   state.simulation_control.state_file
-      = sample_env_dup("SU_SIM_STATE_FILE", "./su_sim_regular_state.blob");
+      = sample_env_copy("SU_SIM_STATE_FILE", "./su_sim_regular_state.blob");
   if (state.simulation_control.state_file == NULL)
   {
     return 1;
@@ -434,20 +434,20 @@ int main(void)
   }
 
   /* Device identity. */
-  state.su_device_properties.manufacturer = sample_env_dup("AZ_IOT_SU_MANUFACTURER", "Contoso");
-  state.su_device_properties.model = sample_env_dup("AZ_IOT_SU_MODEL", "SU-Sim");
+  state.su_device_properties.manufacturer = sample_env_copy("AZ_IOT_SU_MANUFACTURER", "Contoso");
+  state.su_device_properties.model = sample_env_copy("AZ_IOT_SU_MODEL", "SU-Sim");
   if (state.su_device_properties.manufacturer == NULL || state.su_device_properties.model == NULL
-      || !sample_env_to_buffer(
+      || !sample_env_copy_to_buffer(
           "AZ_IOT_SU_INSTALLED_PROVIDER",
           "Contoso",
           state.su_device_properties.installed_provider,
           sizeof(state.su_device_properties.installed_provider))
-      || !sample_env_to_buffer(
+      || !sample_env_copy_to_buffer(
           "AZ_IOT_SU_INSTALLED_NAME",
           "SU-Sim",
           state.su_device_properties.installed_name,
           sizeof(state.su_device_properties.installed_name))
-      || !sample_env_to_buffer(
+      || !sample_env_copy_to_buffer(
           "AZ_IOT_SU_INSTALLED_VERSION",
           "1.0.0",
           state.su_device_properties.installed_version,
@@ -588,15 +588,15 @@ int main(void)
         next.installed_update_id.version = state.simulation_control.applied_version;
         /* applied_* and installed_* have the same capacity, so the copies fit. */
         if (az_iot_su_client_update_device_properties(&state.su_client, &next) == AZ_IOT_OK
-            && sample_copy_str(
+            && sample_string_copy(
                 state.su_device_properties.installed_provider,
                 sizeof(state.su_device_properties.installed_provider),
                 state.simulation_control.applied_provider)
-            && sample_copy_str(
+            && sample_string_copy(
                 state.su_device_properties.installed_name,
                 sizeof(state.su_device_properties.installed_name),
                 state.simulation_control.applied_name)
-            && sample_copy_str(
+            && sample_string_copy(
                 state.su_device_properties.installed_version,
                 sizeof(state.su_device_properties.installed_version),
                 state.simulation_control.applied_version))

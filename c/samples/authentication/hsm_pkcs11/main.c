@@ -102,13 +102,13 @@ static void hsm_config_release(hsm_config* c)
 static int hsm_config_load(hsm_config* c)
 {
   memset(c, 0, sizeof(*c));
-  c->id_scope = sample_env_dup("AZ_IOT_DPS_ID_SCOPE", SAMPLE_ID_SCOPE);
-  c->reg_id = sample_env_dup("AZ_IOT_DPS_REGISTRATION_ID", SAMPLE_REGISTRATION_ID);
-  c->cert = sample_env_dup("AZ_IOT_CLIENT_CERT", SAMPLE_CLIENT_CERT);
-  c->key_uri = sample_env_dup("AZ_IOT_CLIENT_KEY_URI", SAMPLE_CLIENT_KEY_URI);
-  c->engine_id = sample_env_dup("AZ_IOT_CRYPTO_ENGINE_ID", SAMPLE_CRYPTO_ENGINE_ID);
-  c->ca = sample_env_dup("AZ_IOT_TRUSTED_CA", SAMPLE_TRUSTED_CA);
-  c->dps_global_endpoint = sample_env_dup("AZ_IOT_DPS_GLOBAL_ENDPOINT", NULL);
+  c->id_scope = sample_env_copy("AZ_IOT_DPS_ID_SCOPE", SAMPLE_ID_SCOPE);
+  c->reg_id = sample_env_copy("AZ_IOT_DPS_REGISTRATION_ID", SAMPLE_REGISTRATION_ID);
+  c->cert = sample_env_copy("AZ_IOT_CLIENT_CERT", SAMPLE_CLIENT_CERT);
+  c->key_uri = sample_env_copy("AZ_IOT_CLIENT_KEY_URI", SAMPLE_CLIENT_KEY_URI);
+  c->engine_id = sample_env_copy("AZ_IOT_CRYPTO_ENGINE_ID", SAMPLE_CRYPTO_ENGINE_ID);
+  c->ca = sample_env_copy("AZ_IOT_TRUSTED_CA", SAMPLE_TRUSTED_CA);
+  c->dps_global_endpoint = sample_env_copy("AZ_IOT_DPS_GLOBAL_ENDPOINT", NULL);
 
   return (is_set(c->id_scope) && is_set(c->reg_id) && is_set(c->cert) && is_set(c->key_uri)
           && is_set(c->engine_id))

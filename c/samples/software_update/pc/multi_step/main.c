@@ -412,9 +412,9 @@ int main(void)
   az_iot_mqtt_factory* factory_v5 = NULL;
   int connection_ready = 0;
   int su_ready = 0;
-  char* manufacturer = sample_env_dup("AZ_IOT_SU_MANUFACTURER", "Contoso");
-  char* model = sample_env_dup("AZ_IOT_SU_MODEL", "SU-MultiStep");
-  char* phase = sample_env_dup("SAMPLE_FAIL_PHASE", "install");
+  char* manufacturer = sample_env_copy("AZ_IOT_SU_MANUFACTURER", "Contoso");
+  char* model = sample_env_copy("AZ_IOT_SU_MODEL", "SU-MultiStep");
+  char* phase = sample_env_copy("SAMPLE_FAIL_PHASE", "install");
 
   steps.su = &su;
   steps.fail_step = su_sample_env_long("SAMPLE_FAIL_STEP", 0);
@@ -422,17 +422,17 @@ int main(void)
   int exit_after_workflow = su_sample_env_flag("AZ_IOT_SU_EXIT_AFTER_WORKFLOW");
   long poll_interval_s = su_sample_env_long("AZ_IOT_SU_POLL_INTERVAL_S", 14400);
   if (manufacturer == NULL || model == NULL || phase == NULL || poll_interval_s < 0
-      || !sample_env_to_buffer(
+      || !sample_env_copy_to_buffer(
           "AZ_IOT_SU_INSTALLED_PROVIDER",
           "Contoso",
           steps.installed_provider,
           sizeof(steps.installed_provider))
-      || !sample_env_to_buffer(
+      || !sample_env_copy_to_buffer(
           "AZ_IOT_SU_INSTALLED_NAME",
           "SU-MultiStep",
           steps.installed_name,
           sizeof(steps.installed_name))
-      || !sample_env_to_buffer(
+      || !sample_env_copy_to_buffer(
           "AZ_IOT_SU_INSTALLED_VERSION",
           "1.0.0",
           steps.installed_version,
