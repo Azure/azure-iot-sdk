@@ -56,7 +56,6 @@
  *   SU_SIM_DELAY_MS=<ms>     per-download delay so progress is observable
  *   SU_SIM_STATE_FILE=<path> resume blob path (default ./su_sim_state.blob)
  */
-#include <signal.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -99,13 +98,6 @@
  * az_iot_su_root_key array (kid + big-endian modulus/exponent) and pass it
  * to az_iot_su_client_init() in place of the Microsoft keys.
  */
-
-static volatile sig_atomic_t g_stop = 0;
-static void on_sigint(int signo)
-{
-  (void)signo;
-  g_stop = 1;
-}
 
 typedef struct
 {
@@ -385,7 +377,7 @@ int main(void)
   az_iot_log_sink log = sample_log_sink(su_sample_log_level_from_env());
   az_iot_log_set_global_sink(&log);
 
-  (void)signal(SIGINT, on_sigint); /* Ctrl+C handling is a convenience */
+  sample_install_stop_handler(); /* Ctrl+C or SIGTERM ends the loop below */
 
   sample_state state = { 0 };
 
@@ -573,7 +565,7 @@ int main(void)
    * are pumped -- the connection delivers, the software updates client advances -- and
    * everything this loop reacts to arrives through the two observers. */
   rc = 0; /* interrupted or asked to reboot is a normal exit */
-  while (!g_stop)
+  while (!sample_is_stop_requested())
   {
     (void)az_iot_connection_client_do_work(&state.connection_client, 50);
     (void)az_iot_su_client_do_work(&state.su_client);

@@ -19,6 +19,7 @@
 
 #include <cmocka.h>
 
+#include <signal.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
@@ -237,6 +238,20 @@ static void fopen_read_nofollow_refuses_a_link_and_a_missing_file(void** state)
 #endif
 }
 
+static void stop_handler_records_sigterm_and_sigint(void** state)
+{
+  (void)state;
+  sample_install_stop_handler();
+  assert_false(sample_is_stop_requested());
+
+  assert_int_equal(raise(SIGTERM), 0);
+  assert_true(sample_is_stop_requested());
+
+  /* Still handled, not the default action that ends the process. */
+  assert_int_equal(raise(SIGINT), 0);
+  assert_true(sample_is_stop_requested());
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -255,6 +270,7 @@ int main(void)
     cmocka_unit_test_setup_teardown(file_create_private_refuses_an_existing_name, setup, teardown),
     cmocka_unit_test_setup_teardown(
         fopen_read_nofollow_refuses_a_link_and_a_missing_file, setup, teardown),
+    cmocka_unit_test(stop_handler_records_sigterm_and_sigint),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }

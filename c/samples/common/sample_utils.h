@@ -128,6 +128,19 @@ bool sample_file_flush_to_storage(FILE* file);
  */
 bool sample_file_replace(const char* source_path, const char* destination_path);
 
+/**
+ * @brief Record SIGINT (Ctrl+C) and SIGTERM instead of ending the process, so a
+ * sample's loop can stop and release its clients. Call once, from main().
+ */
+void sample_install_stop_handler(void);
+
+/**
+ * @brief Whether SIGINT or SIGTERM arrived since sample_install_stop_handler().
+ *
+ * @return true once a stop was requested.
+ */
+bool sample_is_stop_requested(void);
+
 // Milliseconds from an unspecified origin, never moving backwards. Only
 // differences are meaningful. The SDK keeps its clock internal, so a sample
 // that has to measure elapsed time brings its own.

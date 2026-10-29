@@ -11,6 +11,7 @@
 #include "azure/iot/az_iot.h"
 
 #include <errno.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -373,6 +374,24 @@ bool sample_file_replace(const char* source_path, const char* destination_path)
   return true;
 #endif
 }
+
+/** @brief Set by on_stop_signal(); sig_atomic_t is the only type a handler may write. */
+static volatile sig_atomic_t s_stop_requested = 0;
+
+/** @brief SIGINT/SIGTERM handler: records the request only. */
+static void on_stop_signal(int signal_number)
+{
+  (void)signal_number;
+  s_stop_requested = 1;
+}
+
+void sample_install_stop_handler(void)
+{
+  (void)signal(SIGINT, on_stop_signal);
+  (void)signal(SIGTERM, on_stop_signal);
+}
+
+bool sample_is_stop_requested(void) { return s_stop_requested != 0; }
 
 uint64_t sample_now_ms(void)
 {
