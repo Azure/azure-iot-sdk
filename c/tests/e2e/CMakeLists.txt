@@ -218,7 +218,7 @@ set(_e2e_sample_common ${PROJECT_SOURCE_DIR}/samples/common)
 az_iot_add_e2e_suite(az_iot_tests_e2e_tpm
     SOURCES tests/e2e_tpm_test.c
             ${_e2e_sample_common}/sample_tpm_sim.c
-            ${_e2e_sample_common}/sample_dps_tpm.c
+            tests/e2e_dps_tpm.c
             ${_e2e_sample_common}/sample_utils.c
     LIBS az_iot_e2e_service az_iot_mqttv3 az_iot_crypto_openssl OpenSSL::Crypto)
 foreach(_t az_iot_tests_e2e_tpm az_iot_tests_e2e_tpm_az_mqtt)
