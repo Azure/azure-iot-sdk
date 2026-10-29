@@ -552,7 +552,7 @@ static az_iot_result publish_typed(
   }
 
   az_iot_result result = az_iot_connection_client__publish_with_result(
-      DI(dm).conn, dm, &out, (ticket != NULL) ? on_publish_result : NULL, ticket);
+      DI(dm).conn, dm, &out, (ticket != NULL) ? on_publish_result : NULL, ticket, NULL);
   if (result != AZ_IOT_OK)
   {
     if (ticket != NULL)
