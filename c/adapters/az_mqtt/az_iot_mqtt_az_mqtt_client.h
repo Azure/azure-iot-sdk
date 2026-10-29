@@ -33,7 +33,12 @@
 #include <azure/core/az_platform.h>
 
 #if defined(ESP_PLATFORM)
+#include "sdkconfig.h"
+#if defined(CONFIG_MBEDTLS_CERTIFICATE_BUNDLE)
 #include "esp_crt_bundle.h"
+// ESP-IDF has no system trust store: with no CA given, trust its certificate bundle.
+#define _AZM_ESP_CERTIFICATE_BUNDLE 1
+#endif
 #endif
 
 #if AZ_IOT_AZ_MQTT_V == 5
@@ -746,7 +751,7 @@ static az_iot_result _azm_check_options(az_iot_mqtt_connect_options const* o)
   return AZ_IOT_OK;
 }
 
-#if defined(ESP_PLATFORM)
+#if defined(_AZM_ESP_CERTIFICATE_BUNDLE)
 /** @brief az_mqtt_tls_configure_fn: trust the ESP-IDF certificate bundle. */
 static az_result _azm_attach_esp_certificate_bundle(void* native_config, void* context)
 {
@@ -774,8 +779,8 @@ static bool _azm_copy_options(
   ok = ok && _azm_own(m, t->client_key_path ? NULL : t->client_key_pem, &m->tls.client_key_pem);
   bool const tls = t->use_tls || t->trusted_ca_path || t->trusted_ca_pem || t->client_cert_path
       || t->client_cert_pem || t->client_key_path || t->client_key_pem || t->client_key_uri;
-#if defined(ESP_PLATFORM)
-  // ESP-IDF has no system trust store: with no CA given, trust its certificate bundle.
+#if defined(_AZM_ESP_CERTIFICATE_BUNDLE)
+  // Without the bundle (CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=n), az_mqtt refuses TLS with no CA.
   if (tls && az_span_size(m->tls.ca_cert_path) == 0 && az_span_size(m->tls.ca_cert_pem) == 0)
   {
     m->tls.configure = _azm_attach_esp_certificate_bundle;

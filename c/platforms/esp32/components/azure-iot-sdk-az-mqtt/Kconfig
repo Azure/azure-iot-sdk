@@ -1,0 +1,32 @@
+menu "Azure IoT SDK az_mqtt adapter"
+
+    config AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE
+        int "Largest outgoing MQTT packet (bytes)"
+        range 1024 268435455
+        default 8192
+        help
+            Each client also keeps one copy for QoS 1 redelivery. Must hold the largest
+            telemetry message and software updates report (limits.max_message_size).
+
+    config AZ_IOT_AZ_MQTT_RECEIVE_BUFFER_SIZE
+        int "Largest incoming MQTT packet (bytes)"
+        range 1024 268435455
+        default 12288
+        help
+            Each client holds it twice (packet and inbound strings). Must hold the largest
+            update the software updates client accepts (limits.max_update_size) plus its
+            topic, properties and envelope. MQTT 5: also the Maximum Packet Size advertised.
+
+    config AZ_IOT_AZ_MQTT_INFLIGHT_MAX
+        int "Requests in flight at once"
+        range 1 32767
+        default 8
+        help
+            MQTT 5: also the Receive Maximum advertised.
+
+    config AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX
+        int "MQTT 5 user properties on CONNECT"
+        range 1 32767
+        default 4
+
+endmenu

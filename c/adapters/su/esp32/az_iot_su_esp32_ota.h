@@ -7,7 +7,9 @@
  * @file az_iot_su_esp32_ota.h
  * @brief Software updates platform hooks over the ESP-IDF OTA stack.
  *
- * - download: streams the update file over HTTPS into the inactive OTA partition.
+ * - download: streams the update file over HTTPS into the inactive OTA partition, at most
+ *   16 KiB per call (IN_PROGRESS in between), so the application's do_work() loop keeps the
+ *   MQTT connection serviced.
  * - read_file: reads the written image back for the SHA-256 check against the manifest.
  * - install: validates the image, makes it the next boot partition and asks for a reboot.
  * - persist/load workflow state: NVS, so the workflow resumes after the reboot.
@@ -19,9 +21,11 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 #include "azure/iot/az_iot_su.h"
 
+#include "esp_http_client.h"
 #include "esp_ota_ops.h"
 
 #ifdef __cplusplus
@@ -45,6 +49,10 @@ extern "C"
     bool ota_in_progress;
     /** @brief Bytes written to #update_partition. Set by the hooks. */
     size_t bytes_written;
+    /** @brief Open download; NULL between downloads. Set by the hooks. */
+    esp_http_client_handle_t http_client;
+    /** @brief Hash of the URL #http_client downloads. Set by the hooks. */
+    uint32_t download_url_hash;
     /** @brief Set when an installed image waits for a reboot; the application reboots. */
     bool reboot_pending;
   } az_iot_su_esp32_ota_context;
