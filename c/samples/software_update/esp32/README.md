@@ -34,8 +34,8 @@ sequenceDiagram
 - Real download, install, reboot and automatic rollback; nothing simulated.
 - Asks on the onboarding route until it has connected to its hub, then on the
   regular route every `SU_POLL_INTERVAL_S`. See [Update-check route](#update-check-route).
-- Native ESP-IDF components: `esp-mqtt` (transport), mbedTLS PSA Crypto (manifest
-  verification), `esp_http_client` + `app_update` (OTA).
+- MQTT over the SDK's [az_mqtt adapter](../../../adapters/az_mqtt) (`c/deps/az_mqtt`, ESP-IDF's
+  mbedTLS); mbedTLS PSA Crypto (manifest verification); `esp_http_client` + `app_update` (OTA).
 - Optional [production security profile](#production-security-profile-optional),
   off by default.
 
@@ -143,8 +143,7 @@ production software updates roots compiled into the SDK. See
   git submodule update --init c/deps/azure-sdk-for-c
   ```
 
-`esp-mqtt` is fetched from the ESP Component Registry (`espressif/mqtt`, pinned
-to 1.1.0) on the first build.
+Nothing is fetched from the ESP Component Registry.
 
 ### Build and flash
 
@@ -345,7 +344,7 @@ The SDK logs at `INFO`; change the level in `app_main()` for more detail.
 | What | Code |
 |------|------|
 | Embedded certificates | `az_iot_cert_embedded_init()` |
-| esp-mqtt transports (3.1.1 + 5) | `az_iot_esp_mqtt_factory_create_v3_1_1()`, `az_iot_esp_mqtt_factory_create_v5()` |
+| az_mqtt adapter (MQTT 3.1.1 + 5) | `az_iot_az_mqtt_factory_create_v3_1_1()`, `az_iot_az_mqtt_factory_create_v5()` |
 | Crypto backend | `copts.crypto = az_iot_crypto_mbedtls()` |
 | OTA hooks, root keys | `az_iot_su_esp32_ota_get_platform_hooks()`, `az_iot_su_microsoft_root_keys()` |
 | Compatibility properties | `dp.manufacturer`, `dp.model` |
@@ -360,13 +359,12 @@ samples/software_update/esp32/
 ├── CMakeLists.txt                   ESP-IDF project
 ├── partitions.csv                   A/B OTA partition table (4 MB flash)
 ├── partitions_secure.csv            same, plus nvs_keys / efuse_em (security profile)
-├── sdkconfig.defaults               target, flash size, rollback, MQTT v5, mbedTLS
+├── sdkconfig.defaults               target, flash size, rollback, az_mqtt, mbedTLS
 ├── sdkconfig.secure[.<target>]      security profile (opt-in)
 ├── sdkconfig.secure_esp32_legacy    ESP32 below rev v3.0: Secure Boot v1
 ├── sdkconfig.secure_virtual_efuse   rehearse the profile without burning eFuses
 └── main/
     ├── app_main.c                   Wi-Fi → DPS → software updates loop
-    ├── az_iot_mqtt_esp.[ch]         esp-mqtt adapter (MQTT 3.1.1 + 5)
     ├── az_iot_cert_embedded.[ch]    in-memory X.509 certificate provider
     ├── wifi_connect.[ch]            station-mode Wi-Fi
     ├── su_version.h                 firmware version

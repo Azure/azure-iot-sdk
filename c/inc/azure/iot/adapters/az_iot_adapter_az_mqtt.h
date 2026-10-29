@@ -16,7 +16,9 @@
  * version (v3.1.1 for DPS and mqttv3, v5 for mqttv5). Each client the factory creates owns its
  * buffers, sized at build time (see the AZ_IOT_AZ_MQTT_* CMake cache variables).
  *
- * TLS backend: OpenSSL 3 or mbedTLS on Linux, Schannel on Windows. Non-extractable keys:
+ * TLS backend: OpenSSL 3 or mbedTLS on Linux, Schannel on Windows, ESP-IDF's mbedTLS on ESP32
+ * (platforms/esp32; with no trusted CA, the server is verified against the ESP-IDF certificate
+ * bundle). Non-extractable keys:
  * az_iot_mqtt_tls_options.client_key_uri + crypto_engine_id (an OpenSSL 3 provider), OpenSSL
  * builds only. Not supported (connect() returns AZ_IOT_ERR_NOT_SUPPORTED): the sign callback and
  * client_key_password. On Windows the client key (unencrypted PKCS#8, PKCS#1 RSA, or SEC1 EC on
