@@ -68,10 +68,11 @@ jobs:
             common:
               - 'common/**'
               - '!common/**/*.md'
-            # A change to this workflow decides what the build/test legs do,
-            # so it has to run them.
+            # A change to this workflow, or to the OpenSSL action it uses, decides
+            # what the build/test legs do, so it has to run them. One pattern:
+            # `every` would AND two.
             workflow:
-              - '.github/workflows/ci-c.yml'
+              - '.github/{workflows/ci-c.yml,actions/install-openssl/**}'
 
   # The Paho-OFF legs build the whole tree on az_mqtt. Every leg checks that
   # nothing depends on an adapter it was configured without
@@ -188,6 +189,98 @@ jobs:
           # push.
           AZ_IOT_CONFORMANCE_ALLOW_UNPROVEN: '1'
         run: ctest --preset ${{ matrix.preset }} ${{ runner.os == 'Windows' && format('-C {0}', matrix.build_type) || '' }} --output-on-failure
+
+  # The build legs above use OpenSSL 3.x: Linux the distribution's (3.0, the minimum supported),
+  # Windows the runner's. These legs build the same tree against OpenSSL 4.x, from source via
+  # .github/actions/install-openssl (cached per runner image), and run the unit and, on Linux,
+  # conformance suites. On Linux a SoftHSM token is provisioned so key custody is proven against
+  # 4.x rather than allowed unproven: the conformance suites and the real-token Paho custody test
+  # (AZ_IOT_BUILD_PKCS11_TESTS) sign through it. pkcs11-provider v0.6, the default of
+  # eng/setup-pkcs11-provider.sh, does not build against OpenSSL 4.x, hence the newer tag.
+  openssl-4:
+    name: ${{ matrix.preset }} / OpenSSL ${{ matrix.openssl }}
+    needs: changes
+    if: needs.changes.outputs.c == 'true' || github.event_name != 'pull_request'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            preset: linux-gcc-debug
+            openssl: '4.1.0'
+          - os: windows-latest
+            preset: windows-msvc-debug
+            openssl: '4.1.0'
+    runs-on: ${{ matrix.os }}
+    services:
+      mosquitto:
+        image: ${{ matrix.os == 'ubuntu-24.04' && 'eclipse-mosquitto:2' || '' }}
+        ports:
+          - 1883:1883
+        options: >-
+          --health-cmd="mosquitto_pub -h localhost -p 1883 -t healthcheck -m ok"
+          --health-interval=5s
+          --health-retries=10
+          --health-start-period=5s
+    env:
+      PKCS11_PROVIDER_TAG: v1.3.0
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Set up MSVC (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
+      - name: Install deps (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y ninja-build softhsm2 opensc meson pkg-config
+      - name: Install OpenSSL ${{ matrix.openssl }}
+        uses: ./.github/actions/install-openssl # zizmor: ignore[self-repository]
+        with:
+          version: ${{ matrix.openssl }}
+      - name: Provision a PKCS#11 token (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          eval "$(PKG_CONFIG_PATH="$OPENSSL_ROOT_DIR/lib/pkgconfig" eng/setup-pkcs11-provider.sh)"
+          echo "OPENSSL_MODULES=$OPENSSL_MODULES" >> "$GITHUB_ENV"
+          openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 \
+                          -out "$RUNNER_TEMP/custody-key.pem"
+          openssl req -new -x509 -key "$RUNNER_TEMP/custody-key.pem" \
+                      -out "$RUNNER_TEMP/custody-cert.pem" -days 2 \
+                      -subj "/CN=az-iot-conformance-custody" \
+                      -addext "basicConstraints=critical,CA:FALSE" \
+                      -addext "extendedKeyUsage=clientAuth"
+          eng/setup-softhsm.sh "$RUNNER_TEMP/custody-key.pem" > "$RUNNER_TEMP/softhsm-env.sh"
+          sed -E "s/^export ([A-Za-z0-9_]+)='(.*)'\$/\1=\2/" \
+              "$RUNNER_TEMP/softhsm-env.sh" >> "$GITHUB_ENV"
+          . "$RUNNER_TEMP/softhsm-env.sh"
+          openssl list -providers -provider pkcs11 > /dev/null
+          {
+            echo "AZ_IOT_TEST_PKCS11_KEY_URI=$AZ_IOT_CLIENT_KEY_URI"
+            echo "AZ_IOT_CONFORMANCE_KEY_URI=$AZ_IOT_CLIENT_KEY_URI"
+            echo "AZ_IOT_CONFORMANCE_KEY_ENGINE=$AZ_IOT_CRYPTO_ENGINE_ID"
+            echo "AZ_IOT_CONFORMANCE_CLIENT_CERT=$RUNNER_TEMP/custody-cert.pem"
+          } >> "$GITHUB_ENV"
+      - name: Configure
+        run: >
+          cmake --preset ${{ matrix.preset }} -DAZ_IOT_WITH_AZ_MQTT=ON
+          -DAZ_IOT_BUILD_PKCS11_TESTS=${{ runner.os == 'Linux' && 'ON' || 'OFF' }}
+      - name: Check the OpenSSL in use
+        shell: bash
+        # MSVC caches the import library as LIB_EAY_RELEASE/LIB_EAY_DEBUG.
+        run: |
+          set -euo pipefail
+          cache=build/${{ matrix.preset }}/CMakeCache.txt
+          grep -F "OPENSSL_INCLUDE_DIR:PATH=$OPENSSL_ROOT_DIR/include" "$cache"
+          grep -F -e "OPENSSL_CRYPTO_LIBRARY:FILEPATH=$OPENSSL_ROOT_DIR/" \
+                  -e "LIB_EAY_RELEASE:FILEPATH=$OPENSSL_ROOT_DIR/" "$cache"
+      - name: Build
+        run: cmake --build --preset ${{ matrix.preset }} --config Debug
+      - name: Test
+        env:
+          AZ_IOT_MQTT_BROKER_HOST: ${{ runner.os == 'Linux' && 'localhost' || '' }}
+          AZ_IOT_MQTT_BROKER_PORT: ${{ runner.os == 'Linux' && '1883' || '' }}
+        run: ctest --preset ${{ matrix.preset }} ${{ runner.os == 'Windows' && '-C Debug' || '' }} --output-on-failure --no-tests=error
 
   conventions:
     name: coding conventions (c/src)
@@ -786,6 +879,39 @@ jobs:
           "-DFORBID=paho;rust_mqtt;openssl;curl"
           -DEXPECT_SAMPLES=az_mqtt
           "-DEXPECT_SAMPLES_EXCEPT=custom_certificate_provider;dps_csr_managed;dps_persist_assignment;hub_renew;dps_sas_key_issued_cert;user_provided_sas_token;dps_tpm;http_download;hsm_pkcs11"
+          -P eng/check-dependencies.cmake
+
+  # The OpenSSL-free Windows build documented in samples/README.md: az_mqtt over Schannel, no
+  # Paho, no OpenSSL (the runner's is hidden from CMake) and no crypto backend. Not built: the
+  # samples deps-isolation lists, plus those that need a crypto backend (SAS key, software
+  # updates).
+  windows-no-openssl:
+    name: windows-msvc / az_mqtt + Schannel (no OpenSSL)
+    needs: changes
+    if: needs.changes.outputs.c == 'true' || github.event_name != 'pull_request'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
+      - name: Configure
+        run: >
+          cmake -DBUILD_DIR=build/windows-msvc-debug -DMODE=prepare -P eng/check-dependencies.cmake &&
+          cmake --preset windows-msvc-debug
+          -DCMAKE_DISABLE_FIND_PACKAGE_OpenSSL=ON
+          -DAZ_IOT_WITH_PAHO=OFF -DAZ_IOT_WITH_AZ_MQTT=ON
+          -DAZ_IOT_WITH_CRYPTO_OPENSSL=OFF -DAZ_IOT_WITH_CERT_PROVIDER_MANAGED=OFF
+      - name: Build
+        run: cmake --build --preset windows-msvc-debug --config Debug
+      - name: Test
+        run: ctest --preset windows-msvc-debug -C Debug --output-on-failure --no-tests=error
+      - name: Check dependencies
+        run: >
+          cmake -DBUILD_DIR=build/windows-msvc-debug -DCONFIG=Debug
+          "-DFORBID=paho;rust_mqtt;openssl"
+          -DEXPECT_SAMPLES=az_mqtt
+          "-DEXPECT_SAMPLES_EXCEPT=custom_certificate_provider;dps_csr_managed;dps_persist_assignment;hub_renew;dps_sas_key_issued_cert;user_provided_sas_token;dps_tpm;http_download;hsm_pkcs11;dps_sas_key;multi_step;reboot_resume;simulated_onboarding;simulated_regular"
           -P eng/check-dependencies.cmake
 
   # Optimized build (so _FORTIFY_SOURCE is active) checked by
