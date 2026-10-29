@@ -16,11 +16,11 @@ extern "C"
 
   /* Ensure an operational private key exists for key_path - loading it when
    * present, otherwise generating an EC P-256 key - and keep it as PEM at
-   * key_path; then produce a PKCS#10 CSR over that key with the given subject
-   * common name. Every call for the same key_path uses the same key. On success
-   * writes a heap-owned base64 DER CSR (no PEM header/newlines, matching the
-   * DPS/Hub wire format) to *out_csr (caller frees with free()) and returns 0.
-   * Returns non-zero on failure. */
+   * key_path (a present file that cannot be loaded is an error, not replaced); then produce a
+   * PKCS#10 CSR over that key with the given subject common name. Every call for the same key_path
+   * uses the same key. On success writes a heap-owned base64 DER CSR (no PEM header/newlines,
+   * matching the DPS/Hub wire format) to *out_csr (caller frees with free()) and returns 0. Returns
+   * non-zero on failure. */
   int sample_csr_backend_get_csr(const char* key_path, const char* subject_cn, char** out_csr);
 
   /* Returns 1 when @p cert_base64 (base64 of exactly one DER or PEM

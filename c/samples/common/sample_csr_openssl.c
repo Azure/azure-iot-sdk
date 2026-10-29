@@ -23,18 +23,14 @@ static EVP_PKEY* load_or_generate_key(const char* key_path)
   BIO* b = BIO_new_file(key_path, "rb");
   if (b)
   {
+    /* A file that is not a key is an error, never replaced: the issued
+     * certificate is bound to the key it held. */
     EVP_PKEY* k = PEM_read_bio_PrivateKey(b, NULL, NULL, NULL);
     BIO_free(b);
-    if (k)
-    {
-      return k;
-    }
     ERR_clear_error();
+    return k;
   }
-  else
-  {
-    ERR_clear_error();
-  }
+  ERR_clear_error();
 
   EVP_PKEY* key = EVP_PKEY_Q_keygen(NULL, NULL, "EC", "P-256");
   if (!key)
@@ -42,8 +38,9 @@ static EVP_PKEY* load_or_generate_key(const char* key_path)
     return NULL;
   }
 
-  /* PEM in memory, then written through sample_fopen_private() so the key file
-   * is owner-only (0600 on POSIX) rather than fopen()'s 0666 less umask. */
+  /* PEM in memory, then written to a new owner-only file (0600 on POSIX):
+   * creation fails if key_path exists but could not be read, so an existing
+   * key is never replaced. */
   BIO* pem = BIO_new(BIO_s_mem());
   char* pem_data = NULL;
   long pem_len = 0;
@@ -53,7 +50,7 @@ static EVP_PKEY* load_or_generate_key(const char* key_path)
     pem_len = BIO_get_mem_data(pem, &pem_data);
     ok = pem_len > 0;
   }
-  FILE* out = ok ? sample_fopen_private(key_path, true) : NULL;
+  FILE* out = ok ? sample_file_create_private(key_path) : NULL;
   ok = out != NULL && fwrite(pem_data, 1, (size_t)pem_len, out) == (size_t)pem_len;
   if (out != NULL && fclose(out) != 0)
   {

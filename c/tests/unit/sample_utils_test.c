@@ -201,6 +201,30 @@ static void fopen_private_replace_does_not_write_through_a_link(void** state)
 #endif
 }
 
+static void file_create_private_refuses_an_existing_name(void** state)
+{
+  (void)state;
+  write_text_file(DESTINATION_FILE, "kept");
+  assert_null(sample_file_create_private(DESTINATION_FILE));
+  assert_file_holds(DESTINATION_FILE, "kept");
+  assert_null(sample_file_create_private(NULL));
+
+  FILE* file = sample_file_create_private(SOURCE_FILE);
+  assert_non_null(file);
+  assert_int_equal(fputs("new", file) >= 0, 1);
+  assert_int_equal(fclose(file), 0);
+  assert_file_holds(SOURCE_FILE, "new");
+#if !defined(_WIN32)
+  struct stat st;
+  assert_int_equal(stat(SOURCE_FILE, &st), 0);
+  assert_int_equal(st.st_mode & 0777, 0600);
+  /* A link is an existing name too: its target is not written. */
+  assert_int_equal(symlink(DESTINATION_FILE, LINK_FILE), 0);
+  assert_null(sample_file_create_private(LINK_FILE));
+  assert_file_holds(DESTINATION_FILE, "kept");
+#endif
+}
+
 static void fopen_read_nofollow_refuses_a_link_and_a_missing_file(void** state)
 {
   (void)state;
@@ -228,6 +252,7 @@ int main(void)
     cmocka_unit_test_setup_teardown(fopen_private_creates_an_owner_only_file, setup, teardown),
     cmocka_unit_test_setup_teardown(
         fopen_private_replace_does_not_write_through_a_link, setup, teardown),
+    cmocka_unit_test_setup_teardown(file_create_private_refuses_an_existing_name, setup, teardown),
     cmocka_unit_test_setup_teardown(
         fopen_read_nofollow_refuses_a_link_and_a_missing_file, setup, teardown),
   };

@@ -84,6 +84,16 @@ bool sample_env_to_buffer(const char* name, const char* fallback, char* dst, siz
 FILE* sample_fopen_private(const char* path, bool replace);
 
 /**
+ * @brief Create @p path for binary writing with owner-only access (0600) on
+ * POSIX. Fails when @p path exists, so nothing already there is replaced or
+ * written through.
+ *
+ * @param[in] path File to create.
+ * @return Stream to close with fclose(), or NULL on failure.
+ */
+FILE* sample_file_create_private(const char* path);
+
+/**
  * @brief Open @p path for binary reading; on POSIX only a regular file, not
  * through a symbolic link, is opened.
  *

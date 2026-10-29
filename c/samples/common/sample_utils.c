@@ -206,16 +206,15 @@ bool sample_env_to_buffer(const char* name, const char* fallback, char* dst, siz
   return ok;
 }
 
-FILE* sample_fopen_private(const char* path, bool replace)
+/** @brief Open @p path for binary writing, owner-only (0600) on POSIX.
+ *  @p exclusive: create it, failing when the name exists (a link included);
+ *  otherwise create or truncate it. */
+static FILE* open_private(const char* path, bool exclusive)
 {
   FILE* f = NULL;
   int fd;
-  if (!path || (replace && remove(path) != 0 && errno != ENOENT))
-  {
-    return NULL;
-  }
 #ifdef _WIN32
-  int flags = _O_WRONLY | _O_CREAT | _O_BINARY | (replace ? _O_EXCL : _O_TRUNC);
+  int flags = _O_WRONLY | _O_CREAT | _O_BINARY | (exclusive ? _O_EXCL : _O_TRUNC);
   if (_sopen_s(&fd, path, flags, _SH_DENYWR, _S_IREAD | _S_IWRITE) != 0)
   {
     return NULL;
@@ -227,13 +226,13 @@ FILE* sample_fopen_private(const char* path, bool replace)
   }
 #else
   /* O_EXCL fails on any existing name, a symbolic link included. */
-  fd = open(path, O_WRONLY | O_CREAT | (replace ? O_EXCL : O_TRUNC), S_IRUSR | S_IWUSR);
+  fd = open(path, O_WRONLY | O_CREAT | (exclusive ? O_EXCL : O_TRUNC), S_IRUSR | S_IWUSR);
   if (fd < 0)
   {
     return NULL;
   }
   /* open() keeps the mode of a file that already exists. */
-  if (replace || fchmod(fd, S_IRUSR | S_IWUSR) == 0)
+  if (exclusive || fchmod(fd, S_IRUSR | S_IWUSR) == 0)
   {
     f = fdopen(fd, "wb");
   }
@@ -243,6 +242,20 @@ FILE* sample_fopen_private(const char* path, bool replace)
   }
 #endif
   return f;
+}
+
+FILE* sample_fopen_private(const char* path, bool replace)
+{
+  if (!path || (replace && remove(path) != 0 && errno != ENOENT))
+  {
+    return NULL;
+  }
+  return open_private(path, replace);
+}
+
+FILE* sample_file_create_private(const char* path)
+{
+  return path != NULL ? open_private(path, true) : NULL;
 }
 
 FILE* sample_fopen_read_nofollow(const char* path)
