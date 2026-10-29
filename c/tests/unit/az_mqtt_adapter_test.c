@@ -12,6 +12,7 @@
 #include <setjmp.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 
 #if defined(_WIN32)
@@ -529,13 +530,25 @@ static void record_session_end(const az_iot_mqtt_event* evt, void* ctx)
  */
 static void run_session_reason_string(bool refuse_connack, size_t length)
 {
-  az_iot_mqtt_factory* f = az_iot_az_mqtt_factory_create_v5();
-  assert_non_null(f);
+  /* Buffers sized for these packets, whatever this build's defaults. */
+  az_iot_mqtt_limits const limits = {
+    .send_buffer_size = 1024,
+    .receive_buffer_size = 1024,
+    .max_in_flight_messages = 1,
+    .message_store_size = 0,
+    .connect_strings_size = 1024,
+  };
+  size_t const workspace_size = az_iot_az_mqtt_get_workspace_size(&limits);
+  uint8_t* workspace = (uint8_t*)malloc(workspace_size);
+  assert_non_null(workspace);
   uint16_t port = 0;
   test_sock listener = listen_loopback(&port);
   session_end_recorder r = { 0 };
-  az_iot_mqtt_client* c = f->create(f->factory_ctx);
-  assert_non_null(c);
+  az_iot_mqtt_client* c = NULL;
+  assert_int_equal(
+      az_iot_az_mqtt_get_adapter()->init(
+          AZ_IOT_MQTT_VERSION_5, &limits, workspace, workspace_size, &c),
+      AZ_IOT_OK);
   c->iface->set_inbound_cb(c, record_session_end, &r);
   az_iot_mqtt_connect_options o = valid_connect();
   o.host = "127.0.0.1";
@@ -591,7 +604,7 @@ static void run_session_reason_string(bool refuse_connack, size_t length)
   c->iface->destroy(c);
   test_closesock(conn);
   test_closesock(listener);
-  az_iot_az_mqtt_factory_destroy(f);
+  free(workspace);
 }
 
 static void a_connack_reason_string_is_kept_up_to_its_bound(void** state)
