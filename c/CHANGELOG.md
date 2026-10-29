@@ -291,6 +291,9 @@
   decoded twin versions; the birth-ack timeout ends the session.
 - mqttv5: a presence SUBACK or birth-ack timeout now ends the session with a DISCONNECT, as a SAS
   token renewal does, instead of dropping the connection.
+- Builds with OpenSSL 4.0 and 4.1 without deprecation warnings, which failed the build (Windows
+  `/sdl`, Linux `-Werror`): the Paho key custody adapter uses `ASN1_STRING_set1_string()` on
+  OpenSSL 4.1+, and the tests no longer use deprecated or now-const X.509 name accessors.
 - az_mqtt adapter: the bundled az_mqtt is updated to main `3a2c61b` (was `58a0799` plus selected
   changes; see `deps/az_mqtt/VENDORED.md`). Invalid options are refused with `AZ_ERROR_ARG` before
   anything is sent: Will, SUBSCRIBE and PUBLISH QoS above 2; MQTT 5 Retain Handling above 2, No
