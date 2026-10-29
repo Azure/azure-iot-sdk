@@ -281,6 +281,8 @@
   after consecutive misses, as for the birth-ack) is now ended with a DISCONNECT and reconnected (or
   faulted with `AZ_IOT_ERR_TIMEOUT` without a reconnection policy). Before, no timeout was armed and
   a lost push left the device without desired patches until the next reconnect.
+- mqttv5: a malformed birth-ack is ignored instead of completing the handshake with partly
+  decoded twin versions; the birth-ack timeout ends the session.
 - mqttv5: a presence SUBACK or birth-ack timeout now ends the session with a DISCONNECT, as a SAS
   token renewal does, instead of dropping the connection.
 - az_mqtt adapter: the bundled az_mqtt is updated to main `3a2c61b` (was `58a0799` plus selected

@@ -1270,11 +1270,8 @@ static void hub_mqtt_v5_birth_ack_timeout_faults(void** state)
   assert_null(az_iot_mock_mqtt_factory_last_client(fx->factory));
 }
 
-/* Drive the handshake to CONNECTED with `payload` as the birth-ack body. */
-static void drive_to_connected_with_birth_ack(
-    fixture* fx,
-    const uint8_t* payload,
-    size_t payload_len)
+/* Publish the birth and deliver `payload` as its birth-ack body. */
+static void deliver_birth_ack_body(fixture* fx, const uint8_t* payload, size_t payload_len)
 {
   az_iot_mock_mqtt_client* m = NULL;
   const az_iot_mock_call* birth = drive_to_birth_published(fx, false, &m);
@@ -1296,8 +1293,26 @@ static void drive_to_connected_with_birth_ack(
   ack.message = &ack_msg;
   assert_true(az_iot_mock_mqtt_client_inject_event(m, &ack));
   (void)az_iot_connection_client_do_work(fx->client, 0);
+}
 
+/* Drive the handshake to CONNECTED with `payload` as the birth-ack body. */
+static void drive_to_connected_with_birth_ack(
+    fixture* fx,
+    const uint8_t* payload,
+    size_t payload_len)
+{
+  deliver_birth_ack_body(fx, payload, payload_len);
   assert_int_equal(fx->rec.states[fx->rec.count - 1], AZ_IOT_CONN_STATE_CONNECTED);
+}
+
+/* A malformed birth-ack is ignored: no CONNECTED, the birth stays unacknowledged. */
+static void assert_birth_ack_ignored(fixture* fx, const uint8_t* payload, size_t payload_len)
+{
+  deliver_birth_ack_body(fx, payload, payload_len);
+  assert_int_equal(
+      az_iot_connection_client_get_state(fx->client, AZ_IOT_CONN_SCOPE_HUB),
+      AZ_IOT_CONN_STATE_CONNECTING);
+  assert_int_equal(fx->client->presence.phase, AZ_IOT_PRESENCE_PHASE_BIRTH);
 }
 
 /* The birth-ack carries the authoritative twin versions as of birth admission.
@@ -1397,8 +1412,15 @@ static void hub_mqtt_v5_birth_ack_decodes_ten_byte_versions(void** state)
   assert_true(reported == (uint64_t)1 << 63);
 }
 
+/* A known field on the wrong wire type is malformed: the ack is ignored. */
+static void hub_mqtt_v5_birth_ack_with_a_mistyped_version_is_ignored(void** state)
+{
+  const uint8_t ack_body[] = { 0x52, 0x00 }; /* f10 desired_version as length-delimited */
+  assert_birth_ack_ignored((fixture*)*state, ack_body, sizeof(ack_body));
+}
+
 /* Eleven bytes cannot encode a uint64, so the value is corrupt and everything
- * after it is unparseable. Stop rather than accept a truncated interpretation. */
+ * after it is unparseable: the ack is ignored rather than partly trusted. */
 static void hub_mqtt_v5_birth_ack_rejects_over_long_varint(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -1407,13 +1429,7 @@ static void hub_mqtt_v5_birth_ack_rejects_over_long_varint(void** state)
     0x58, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, /* f11, 11-byte varint     */
     0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x01,
   };
-  drive_to_connected_with_birth_ack(fx, ack_body, sizeof(ack_body));
-
-  uint64_t desired = 0, reported = 99;
-  assert_int_equal(
-      az_iot_connection_client__presence_twin_versions(fx->client, &desired, &reported), AZ_IOT_OK);
-  assert_int_equal(desired, 7);
-  assert_int_equal(reported, 0);
+  assert_birth_ack_ignored(fx, ack_body, sizeof(ack_body));
 }
 
 /* A ten-byte varint whose last byte carries more than bit 63 encodes a value
@@ -1441,28 +1457,16 @@ static void hub_mqtt_v5_birth_ack_rejects_tenth_byte_overflow(void** state)
     0x80,
     0x03,
   };
-  drive_to_connected_with_birth_ack(fx, ack_body, sizeof(ack_body));
-
-  uint64_t desired = 0, reported = 99;
-  assert_int_equal(
-      az_iot_connection_client__presence_twin_versions(fx->client, &desired, &reported), AZ_IOT_OK);
-  assert_int_equal(desired, 7);
-  assert_int_equal(reported, 0);
+  assert_birth_ack_ignored(fx, ack_body, sizeof(ack_body));
 }
 
-/* A truncated body (varint with the continuation bit set at the end) must stop
- * the decode without reading past the buffer. */
+/* A truncated body (varint with the continuation bit set at the end) is malformed: the decode
+ * stops without reading past the buffer and the ack is ignored. */
 static void hub_mqtt_v5_birth_ack_truncated_payload_is_safe(void** state)
 {
   fixture* fx = (fixture*)*state;
   const uint8_t ack_body[] = { 0x50, 0x07, 0x58, 0xAC }; /* f11 varint cut short */
-  drive_to_connected_with_birth_ack(fx, ack_body, sizeof(ack_body));
-
-  uint64_t desired = 0, reported = 99;
-  assert_int_equal(
-      az_iot_connection_client__presence_twin_versions(fx->client, &desired, &reported), AZ_IOT_OK);
-  assert_int_equal(desired, 7);
-  assert_int_equal(reported, 0);
+  assert_birth_ack_ignored(fx, ack_body, sizeof(ack_body));
 }
 
 /* D2: request_operational_certificate requires a certificate_provider whose
@@ -4839,6 +4843,8 @@ int main(void)
         hub_mqtt_v5_birth_ack_decodes_ten_byte_versions, setup_mqtt_v5, teardown),
     cmocka_unit_test_setup_teardown(
         hub_mqtt_v5_birth_ack_rejects_over_long_varint, setup_mqtt_v5, teardown),
+    cmocka_unit_test_setup_teardown(
+        hub_mqtt_v5_birth_ack_with_a_mistyped_version_is_ignored, setup_mqtt_v5, teardown),
     cmocka_unit_test_setup_teardown(
         hub_mqtt_v5_birth_ack_rejects_tenth_byte_overflow, setup_mqtt_v5, teardown),
     cmocka_unit_test_setup_teardown(

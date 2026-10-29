@@ -4598,14 +4598,15 @@ static size_t presence_encode_birth(
  * (field 11), both varints. These are the authoritative versions as of birth
  * admission; the device adopts them as its view for this connection. Fields the
  * service omits keep the proto3 default of 0, and unknown fields are skipped so
- * a service-side schema addition does not break the handshake. */
-static void presence_decode_birth_ack(az_iot_connection_client* c, const uint8_t* buf, size_t len)
+ * a service-side schema addition does not break the handshake.
+ * @return false for a malformed ack (bad encoding, or a known field on the wrong wire type). */
+static bool presence_decode_birth_ack(az_iot_connection_client* c, const uint8_t* buf, size_t len)
 {
   c->presence.desired_version = 0;
   c->presence.reported_version = 0;
   if (!buf)
   {
-    return;
+    return true;
   }
 
   size_t pos = 0;
@@ -4615,17 +4616,21 @@ static void presence_decode_birth_ack(az_iot_connection_client* c, const uint8_t
     uint8_t wire = 0;
     if (!az_iot_proto3_read_tag(buf, len, &pos, &field, &wire))
     {
-      return;
+      return false;
+    }
+    bool const known = field == PRESENCE_BIRTH_ACK_FIELD_DESIRED_VERSION
+        || field == PRESENCE_BIRTH_ACK_FIELD_REPORTED_VERSION;
+    if (known && wire != AZ_IOT_PROTO3_WIRE_VARINT)
+    {
+      return false;
     }
 
-    if (wire == AZ_IOT_PROTO3_WIRE_VARINT
-        && (field == PRESENCE_BIRTH_ACK_FIELD_DESIRED_VERSION
-            || field == PRESENCE_BIRTH_ACK_FIELD_REPORTED_VERSION))
+    if (known)
     {
       uint64_t v = 0;
       if (!az_iot_proto3_read_varint(buf, len, &pos, &v))
       {
-        return;
+        return false;
       }
       if (field == PRESENCE_BIRTH_ACK_FIELD_DESIRED_VERSION)
       {
@@ -4638,9 +4643,10 @@ static void presence_decode_birth_ack(az_iot_connection_client* c, const uint8_t
     }
     else if (!az_iot_proto3_skip_field(buf, len, &pos, wire))
     {
-      return;
+      return false;
     }
   }
+  return true;
 }
 
 /* Announce CONNECTED once the session's persistent subscriptions are live.
@@ -5218,7 +5224,12 @@ static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
                 AZ_IOT_LOG_COMPONENT_CONNECTION, "birth-ack ignored: birth-ack timeout expired");
             break;
           }
-          presence_decode_birth_ack(c, evt->message->payload, evt->message->payload_len);
+          if (!presence_decode_birth_ack(c, evt->message->payload, evt->message->payload_len))
+          {
+            /* Its versions cannot be trusted; the birth-ack timeout ends the session. */
+            AZ_IOT_LOG_WARN(AZ_IOT_LOG_COMPONENT_CONNECTION, "malformed birth-ack ignored");
+            break;
+          }
           c->presence.phase = PRESENCE_PHASE_DONE;
           /* Arrived in time: the next birth starts the schedule over. */
           c->presence.consecutive_birth_ack_timeouts = 0;

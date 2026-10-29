@@ -211,9 +211,12 @@ extern "C"
         az_iot_deadline deadline; /* none while not waiting */
         /* Consecutive waits that expired; selects the next wait's attempt. */
         uint32_t missed_count;
-        /* Birth nonce of the twin-pushes decoded, and the sections they carried. */
+        /* Birth nonce of the twin-pushes decoded, the sections they carried and those sections'
+         * newest versions. */
         uint8_t received_birth_nonce[AZ_IOT_MQTTV5_TWIN_CORRELATION_ID_LEN];
         uint8_t received_sections;
+        uint64_t received_desired_version;
+        uint64_t received_reported_version;
       } twin_push_wait;
       /* The SDK's own desired-snapshot GET, kept out of `pending`. */
       struct

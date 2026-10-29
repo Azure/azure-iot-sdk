@@ -2811,8 +2811,8 @@ static void reconnect_to_connected(fixture* fx)
 
 static void push_twin(fixture* fx)
 {
-  /* TwinPush { 1: Section{ version=0 } } */
-  const uint8_t body[] = { 0x0A, 0x00 };
+  /* TwinPush { 1: Section{ version=1 } }: the birth-ack's desired version in these tests */
+  const uint8_t body[] = { 0x0A, 0x02, 0x08, 0x01 };
   inject_twin(fx, "twin-push:1", fx->nonce, body, sizeof(body));
 }
 
@@ -2951,6 +2951,19 @@ static void a_push_before_the_birth_ack_settles_the_wait(void** state)
   assert_false(az_iot_mqttv5_twin_client__twin_push_remaining(&fx->twin, NULL));
 }
 
+/* A push decoded before the birth-ack whose section predates the birth-ack's version does not
+ * count: the wait is armed. */
+static void a_stale_push_before_the_birth_ack_keeps_the_wait(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_birth(fx);
+  const uint8_t stale[] = { 0x0A, 0x00 }; /* desired, version 0 */
+  inject_twin(fx, "twin-push:1", fx->nonce, stale, sizeof(stale));
+  ack_birth(fx, 1, 1);
+  az_iot_test_ack_subscriptions(&fx->conn, fx->mock);
+  assert_twin_push_wait_for_attempt(fx, 1);
+}
+
 /* A client attached after the birth cannot tell whether its push came: it waits. */
 static void a_twin_client_attached_after_the_birth_waits(void** state)
 {
@@ -3001,10 +3014,10 @@ static void a_twin_push_without_the_requested_section_keeps_the_wait(void** stat
 {
   fixture* fx = (fixture*)*state;
   open_to_push_expected(fx);
-  const uint8_t desired_only[] = { 0x0A, 0x00 };
+  const uint8_t desired_only[] = { 0x0A, 0x02, 0x08, 0x01 };
   inject_twin(fx, "twin-push:1", fx->nonce, desired_only, sizeof(desired_only));
   assert_twin_push_wait_for_attempt(fx, 1);
-  const uint8_t reported[] = { 0x12, 0x00 };
+  const uint8_t reported[] = { 0x12, 0x02, 0x08, 0x01 };
   inject_twin(fx, "twin-push:1", fx->nonce, reported, sizeof(reported));
   assert_false(az_iot_mqttv5_twin_client__twin_push_remaining(&fx->twin, NULL));
 }
@@ -3251,7 +3264,7 @@ static void a_push_queued_when_the_deadline_passes_settles_the_wait(void** state
 {
   fixture* fx = (fixture*)*state;
   open_to_push_expected(fx);
-  const uint8_t body[] = { 0x0A, 0x00 };
+  const uint8_t body[] = { 0x0A, 0x02, 0x08, 0x01 };
   queue_twin_on(fx, TWIN_DEV_TOPIC, "twin-push:1", fx->nonce, 16u, body, sizeof(body));
   az_iot_mock_mqtt_client_set_process_loop_hook(fx->mock, expire_during_the_wait, &fx->twin);
   assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
@@ -3304,10 +3317,10 @@ static void the_wait_needs_every_out_of_sync_section(void** state)
 {
   fixture* fx = (fixture*)*state;
   open_to_connected_with_versions(fx, 1, 1);
-  const uint8_t desired[] = { 0x0A, 0x00 };
+  const uint8_t desired[] = { 0x0A, 0x02, 0x08, 0x01 };
   inject_twin(fx, "twin-push:1", fx->nonce, desired, sizeof(desired));
   assert_true(az_iot_mqttv5_twin_client__twin_push_remaining(&fx->twin, NULL));
-  const uint8_t reported[] = { 0x12, 0x00 };
+  const uint8_t reported[] = { 0x12, 0x02, 0x08, 0x01 };
   inject_twin(fx, "twin-push:1", fx->nonce, reported, sizeof(reported));
   assert_false(az_iot_mqttv5_twin_client__twin_push_remaining(&fx->twin, NULL));
 }
@@ -3316,7 +3329,7 @@ static void only_the_out_of_sync_section_is_waited_for(void** state)
 {
   fixture* fx = (fixture*)*state;
   open_to_connected_with_versions(fx, 1, 0);
-  const uint8_t desired[] = { 0x0A, 0x00 };
+  const uint8_t desired[] = { 0x0A, 0x02, 0x08, 0x01 };
   inject_twin(fx, "twin-push:1", fx->nonce, desired, sizeof(desired));
   assert_false(az_iot_mqttv5_twin_client__twin_push_remaining(&fx->twin, NULL));
 }
@@ -3402,6 +3415,8 @@ int main(void)
         a_close_during_the_disconnect_ends_idle, setup_push_desired_reconnect, teardown),
     cmocka_unit_test_setup_teardown(
         a_push_before_the_birth_ack_settles_the_wait, setup_push_desired_reconnect, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_stale_push_before_the_birth_ack_keeps_the_wait, setup_push_desired_reconnect, teardown),
     cmocka_unit_test_setup_teardown(
         a_twin_client_attached_after_the_birth_waits, setup_push_desired_reconnect, teardown),
     cmocka_unit_test_setup_teardown(

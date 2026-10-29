@@ -460,7 +460,7 @@ CONNACK; the `DPS` counter only when registration succeeds.
   feature client's `az_iot_connection_client__end_hub_session()`, e.g. the mqttv5 twin-push
   timeout) goes through `end_hub_session_with_failure()`: reconnect under the policy, else FAULTED.
   One planned end at a time: a renewal waits for one in progress (and its deadlines do not shorten
-  the wait), and a request during one is absorbed. Presence events after it starts are ignored. A presence SUBACK or birth-ack whose deadline passed before the `do_work()` pass dispatching it began is a miss, left to the timeout (`__deadline_passed_before_pass()`; the mqttv5 twin-push wait uses the same rule, so a miss is declared by the first pass begun past its deadline); the `process_loop()` wait ends by those deadlines until a planned end starts.
+  the wait), and a request during one is absorbed. Presence events after it starts are ignored. A malformed birth-ack is ignored (left to the timeout). A presence SUBACK or birth-ack whose deadline passed before the `do_work()` pass dispatching it began is a miss, left to the timeout (`__deadline_passed_before_pass()`; the mqttv5 twin-push wait uses the same rule, so a miss is declared by the first pass begun past its deadline); the `process_loop()` wait ends by those deadlines until a planned end starts.
   `close()` during one sends no other DISCONNECT; its completion, an ERROR, or its bound settles
   IDLE. An ERROR during a failure's end finishes it with that failure; an identity refusal in the
   same batch keeps its recovery path. A feature client calls `end_hub_session()` from its feature observer's TICK, outside
