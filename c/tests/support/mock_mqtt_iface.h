@@ -111,6 +111,7 @@ extern "C"
        * dropping them on the way to the adapter. */
       char client_key_uri[256];
       char crypto_engine_id[64];
+      uint32_t client_key_psa_id;
       bool has_sign;
       void* sign_ctx;
       az_iot_mqtt_sign_callback sign;

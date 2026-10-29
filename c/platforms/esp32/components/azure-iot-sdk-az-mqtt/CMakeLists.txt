@@ -19,6 +19,8 @@ idf_component_register(
     PRIV_REQUIRES az_mqtt mbedtls  # mbedtls: esp_crt_bundle_attach()
 )
 
+target_compile_definitions(${COMPONENT_LIB} PRIVATE AZ_IOT_AZ_MQTT_MBEDTLS)
+
 # Kconfig values are not set during ESP-IDF's requirement expansion.
 if(NOT CMAKE_BUILD_EARLY_EXPANSION)
     target_compile_definitions(${COMPONENT_LIB} PRIVATE

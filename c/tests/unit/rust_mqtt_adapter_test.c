@@ -329,6 +329,27 @@ static void test_connect_refuses_websockets(void** s)
   az_iot_rust_mqtt_factory_destroy(f);
 }
 
+/* The Rust runtime has no PSA key route: the connect is refused, not forwarded. */
+static void test_connect_refuses_a_psa_client_key(void** s)
+{
+  (void)s;
+  assert_int_equal(AZ_IOT_OK, az_iot_rust_mqtt_install(&k_fake_ffi));
+  az_iot_mqtt_factory* f = az_iot_rust_mqtt_factory_create_v5();
+  assert_non_null(f);
+  az_iot_mqtt_client* c = f->create(f->factory_ctx);
+  assert_non_null(c);
+
+  az_iot_mqtt_connect_options opts = { .host = "h", .port = 8883, .client_id = "id" };
+  opts.tls.client_cert_pem = "CERT";
+  opts.tls.client_key_psa_id = 0x7FFF0001u;
+
+  assert_int_equal(AZ_IOT_ERR_NOT_SUPPORTED, c->iface->connect(c, &opts));
+  assert_int_equal(g_last_client->connected, 0);
+
+  c->iface->destroy(c);
+  az_iot_rust_mqtt_factory_destroy(f);
+}
+
 /* An empty proxy host is not a proxy, so it must not trip the refusal: it is
  * what an unset environment variable copied into the options looks like. */
 static void test_connect_allows_an_empty_proxy_host(void** s)
@@ -361,6 +382,7 @@ int main(void)
     cmocka_unit_test_setup(test_adapter_rejects_invalid_limits, reset_fixture),
     cmocka_unit_test_setup(test_connect_refuses_a_proxy, reset_fixture),
     cmocka_unit_test_setup(test_connect_refuses_websockets, reset_fixture),
+    cmocka_unit_test_setup(test_connect_refuses_a_psa_client_key, reset_fixture),
     cmocka_unit_test_setup(test_connect_allows_an_empty_proxy_host, reset_fixture),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);

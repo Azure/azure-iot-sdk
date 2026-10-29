@@ -1376,6 +1376,11 @@ static az_iot_result paho_iface_connect(
     AZ_IOT_LOG_ERRORF(AZ_IOT_LOG_COMPONENT_PAHO, "unsupported transport %d", (int)opts->transport);
     return AZ_IOT_ERR_NOT_SUPPORTED;
   }
+  if (opts->tls.client_key_psa_id != 0)
+  {
+    AZ_IOT_LOG_ERROR(AZ_IOT_LOG_COMPONENT_PAHO, "a PSA client key is not supported");
+    return AZ_IOT_ERR_NOT_SUPPORTED;
+  }
   paho_client* m = paho_self(self);
 
   /* The DISCONNECT reason belongs to this session, so it is captured with the

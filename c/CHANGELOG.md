@@ -4,6 +4,11 @@
 
 ### Features Added
 
+- `az_iot_certificate_material::client_key_psa_id` and `az_iot_mqtt_tls_options::client_key_psa_id`
+  name a non-extractable client key by PSA Crypto key id (0: none), e.g. the ESP32 Digital
+  Signature peripheral on ESP-IDF v6. The az_mqtt adapter uses it with mbedTLS; with another TLS
+  backend, and in the Paho and rust_mqtt adapters, the connect fails with
+  `AZ_IOT_ERR_NOT_SUPPORTED`. Bring-your-own adapters must do the same unless they support it.
 - Breaking: `az_iot_connection_client_limits::max_session_handlers` and `max_feature_state_observers`
   are replaced by `max_feature_observers` (default 10,
   `AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_FEATURE_OBSERVERS`): feature clients observe connection

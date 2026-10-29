@@ -366,6 +366,40 @@ static void hub_connect_falls_back_to_bootstrap_material(void** state)
   assert_true(c->connect.has_sign);
 }
 
+/* A PSA key id is the whole key: no PEM, path, URI or sign() hook is needed. */
+static void use_only_a_psa_key(fixture* fx)
+{
+  fx->provider.base.vtable = &k_vtable_v2_without_sign;
+  fx->provider.material.client_key_uri = NULL;
+  fx->provider.material.crypto_engine_id = NULL;
+  fx->provider.material.client_key_psa_id = 0x7FFF0001u;
+}
+
+static void dps_connect_forwards_a_psa_key_id(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  use_only_a_psa_key(fx);
+  init_client(fx, true);
+  assert_int_equal(az_iot_connection_client_open(&fx->client), AZ_IOT_OK);
+  const az_iot_mock_call* c = last_connect(fx);
+  assert_non_null(c);
+  assert_int_equal(c->connect.client_key_psa_id, 0x7FFF0001u);
+  assert_false(c->connect.has_sign);
+  assert_false(c->connect.has_client_key_pem);
+  assert_string_equal(c->connect.client_key_uri, "");
+}
+
+static void hub_connect_forwards_a_psa_key_id(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  use_only_a_psa_key(fx);
+  init_client(fx, false);
+  assert_int_equal(az_iot_connection_client_open(&fx->client), AZ_IOT_OK);
+  const az_iot_mock_call* c = last_connect(fx);
+  assert_non_null(c);
+  assert_int_equal(c->connect.client_key_psa_id, 0x7FFF0001u);
+}
+
 /* The adapter-facing callback must actually reach the provider's sign() slot,
  * with the arguments intact and the signature coming back out. */
 static void the_forwarded_sign_hook_calls_the_provider(void** state)
@@ -834,6 +868,8 @@ int main(void)
     cmocka_unit_test_setup_teardown(the_key_uri_query_is_redacted_from_logs, setup, teardown),
     cmocka_unit_test_setup_teardown(hub_connect_forwards_the_key_reference, setup, teardown),
     cmocka_unit_test_setup_teardown(hub_connect_falls_back_to_bootstrap_material, setup, teardown),
+    cmocka_unit_test_setup_teardown(dps_connect_forwards_a_psa_key_id, setup, teardown),
+    cmocka_unit_test_setup_teardown(hub_connect_forwards_a_psa_key_id, setup, teardown),
     cmocka_unit_test_setup_teardown(the_forwarded_sign_hook_calls_the_provider, setup, teardown),
     cmocka_unit_test_setup_teardown(
         the_forwarded_sign_hook_preserves_out_len_on_failure, setup, teardown),

@@ -211,6 +211,7 @@ static az_iot_result mock_connect(az_iot_mqtt_client* self, const az_iot_mqtt_co
         c->connect.crypto_engine_id,
         sizeof(c->connect.crypto_engine_id),
         opts->tls.crypto_engine_id);
+    c->connect.client_key_psa_id = opts->tls.client_key_psa_id;
     c->connect.has_sign = (opts->tls.sign != NULL);
     c->connect.sign = opts->tls.sign;
     c->connect.sign_ctx = opts->tls.sign_ctx;
