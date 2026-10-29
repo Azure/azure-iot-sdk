@@ -1446,7 +1446,7 @@ Platform-specific code (Linux libcurl downloads, ESP32 OTA partition writes, etc
 | `src/features/su/` | Engine, software updates channel, wire codec, report assembly, Microsoft root keys | `az_iot_connection_client`, `azure-sdk-for-c` |
 | `adapters/crypto_mbedtls/` | `az_iot_crypto`: `verify_rs256`, `sha256_*` using mbedTLS | mbedTLS |
 | `adapters/crypto_openssl/` | `az_iot_crypto`: `verify_rs256`, `sha256_*` using OpenSSL | OpenSSL |
-| `adapters/su/esp32/` | ESP32 platform hooks (download, OTA install, persistence) | ESP-IDF |
+| `adapters/su/esp32/` | ESP32 platform hooks (download, OTA install, persistence); ESP-IDF component in `platforms/esp32/components` | ESP-IDF |
 | `samples/software_update/` | Samples that wire a crypto backend, platform hooks and the main loop | All of the above |
 
 There is no Linux platform adapter; the PC samples implement their own hooks.

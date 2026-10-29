@@ -2,13 +2,13 @@
 # Licensed under the MIT license. See LICENSE file in the project root for full license information.
 
 # ESP-IDF component that compiles the azure-iot-sdk SDK (core + features) straight
-# out of this repository, so the ESP32 sample links the very same sources the
+# out of this repository, so ESP32 applications link the very same sources the
 # desktop build uses. The azure-sdk-for-c dependency it needs (az_core, az_iot
 # hub/provisioning/su parsing) is built by the sibling `azure-sdk-for-c`
 # component from the in-repo git submodule (deps/azure-sdk-for-c).
 
-# Repo root, five levels up from samples/software_update/esp32/components/azure-iot-sdk/.
-get_filename_component(AZ_IOT_ROOT "${CMAKE_CURRENT_LIST_DIR}/../../../../.." ABSOLUTE)
+# c/, four levels up from platforms/esp32/components/azure-iot-sdk/.
+get_filename_component(AZ_IOT_ROOT "${CMAKE_CURRENT_LIST_DIR}/../../../.." ABSOLUTE)
 
 # Same source lists as src/CMakeLists.txt.
 include("${AZ_IOT_ROOT}/src/sources.cmake")

@@ -250,6 +250,10 @@
   `sign()` are called only on that thread. Sample
   [unified/multithreaded_telemetry](samples/unified/multithreaded_telemetry/README.md) hands
   readings from other threads to the SDK thread.
+- ESP-IDF components in [platforms/esp32](platforms/esp32/README.md): the SDK, azure-sdk-for-c,
+  the mbedTLS crypto backend and the software updates OTA platform hooks
+  (`az_iot_su_esp32_ota.h`: `az_iot_su_esp32_ota_context`,
+  `az_iot_su_esp32_ota_get_platform_hooks()`, `az_iot_su_esp32_ota_mark_running_image_valid()`).
 
 ### Bugs Fixed
 
