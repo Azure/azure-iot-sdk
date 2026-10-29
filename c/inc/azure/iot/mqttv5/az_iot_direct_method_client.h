@@ -484,7 +484,9 @@ extern "C"
    * at or after that deadline: a call at or past it publishes nothing,
    * releases the slot and returns AZ_IOT_ERR_TIMEOUT. For an exec that carries
    * no expiry, the deadline is its receipt time plus the connection's
-   * max_unconfirmed_delivery_timeout_ms, and its result is sent with no expiry.
+   * max_unconfirmed_delivery_timeout_ms, and its result is sent with no expiry;
+   * it is abandoned (insufficient time) unless that timeout exceeds the
+   * method's declared minimum.
    *
    * Before the connection is CONNECTED (for example between CONNACK and the
    * birth-ack, or while reconnecting) the result is held, with its slot, and

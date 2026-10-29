@@ -1275,20 +1275,28 @@ static void handle_exec(
    * and the declared minimum is what the method itself needs once started. */
   uint64_t admission_floor = (uint64_t)margin + RI(slot).minimum_execution_seconds;
 
+  uint32_t const max_unconfirmed_delivery_timeout_ms
+      = az_iot_connection_client__max_unconfirmed_delivery_timeout_ms(DI(dm).conn);
+  /* With no expiry the result deadline is the max unconfirmed delivery timeout (no margin), so
+   * only the declared minimum must fit in it. */
+  bool const too_short = (exec_budget > 0u) ? (uint64_t)exec_budget <= admission_floor
+                                            : (uint64_t)max_unconfirmed_delivery_timeout_ms
+          <= (uint64_t)RI(slot).minimum_execution_seconds * MS_PER_SECOND;
+
   /* Starting work that cannot finish in time burns the device's cycles and
    * still leaves the caller waiting; abandoning says so now. */
-  if (exec_budget > 0u && (uint64_t)exec_budget <= admission_floor)
+  if (too_short)
   {
     az_iot_mqttv5_direct_method_ready_slot abandoned = *slot;
     RI(slot).in_use = false;
     AZ_IOT_LOG_WARNF(
         AZ_IOT_LOG_COMPONENT_MQTTV5_DIRECT_METHOD,
-        "only %u second(s) of budget left for '%s', at or under the %u "
-        "second "
-        "admission floor; not starting it",
-        (unsigned)exec_budget,
+        "'%s' cannot finish in time (budget %u s, admission floor %u s, max unconfirmed "
+        "delivery timeout %lu ms); not starting it",
         RI(&abandoned).method_name,
-        (unsigned)admission_floor);
+        (unsigned)exec_budget,
+        (unsigned)admission_floor,
+        (unsigned long)max_unconfirmed_delivery_timeout_ms);
     publish_abandon(
         dm, &abandoned, AZ_IOT_DM_PROTO_ABANDON_INSUFFICIENT_TIME, exec_budget, received_at_ms);
     return;
@@ -1315,11 +1323,8 @@ static void handle_exec(
   RI(req_slot).correlation_data_len = AZ_IOT_MQTTV5_DM_REQUEST_ID_LEN;
   DI(dm).exec_budget_seconds[index] = exec_budget;
   DI(dm).exec_received_at_ms[index] = received_at_ms;
-  DI(dm).exec_deadline_ms[index] = exec_deadline_ms(
-      received_at_ms,
-      exec_budget,
-      margin,
-      az_iot_connection_client__max_unconfirmed_delivery_timeout_ms(DI(dm).conn));
+  DI(dm).exec_deadline_ms[index]
+      = exec_deadline_ms(received_at_ms, exec_budget, margin, max_unconfirmed_delivery_timeout_ms);
 
   /* The token is single-use: consumed here, so a redelivered exec cannot run
    * the method a second time. Its handler is read out first -- the slot is

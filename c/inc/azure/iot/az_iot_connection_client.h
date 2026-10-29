@@ -466,16 +466,6 @@ extern "C"
      * forever, which is the failure this bounds. Expiry is treated as transient
      * -- silence is not a refusal -- so it reconnects under the policy. */
     uint32_t subscription_ack_timeout_seconds;
-    /**
-     * @brief Longest an SDK message whose peer set no Message Expiry is kept
-     * for confirmation or resend, in milliseconds. 0 selects
-     * #AZ_IOT_DEFAULT_MAX_UNCONFIRMED_DELIVERY_TIMEOUT_MS.
-     *
-     * Cannot be disabled. Today it bounds mqttv5 direct method results for an
-     * exec with no Message Expiry, and queued abandon and probe-ack rejection
-     * notices with no budget. The Message Expiry sent is unchanged (none).
-     */
-    uint32_t max_unconfirmed_delivery_timeout_ms;
     const char* device_id; /* required with iothub_hostname */
     az_iot_connection_profile connection_profile; /* generation of the hub named by iothub_hostname:
                                                    * MQTT_V3 (v3.1.1, default) or MQTT_V5
@@ -926,6 +916,17 @@ extern "C"
      */
     uint8_t* workspace;
     size_t workspace_size; /**< Bytes in workspace. */
+    /**
+     * @brief Longest an SDK message whose peer set no Message Expiry is kept
+     * for confirmation or resend, in milliseconds. 0 selects
+     * #AZ_IOT_DEFAULT_MAX_UNCONFIRMED_DELIVERY_TIMEOUT_MS.
+     *
+     * Cannot be disabled. Today it bounds mqttv5 direct method results for an
+     * exec with no Message Expiry, and queued abandon and probe-ack rejection
+     * notices with no budget. The Message Expiry sent is unchanged (none).
+     * Appended so positional initializers keep their meaning.
+     */
+    uint32_t max_unconfirmed_delivery_timeout_ms;
   } az_iot_connection_client_options;
 
   typedef enum az_iot_connection_state

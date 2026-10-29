@@ -4001,6 +4001,40 @@ static void notices_without_budget_past_the_option_free_their_entries(void** sta
   assert_memory_equal(find_phase(fx->mock, "probe-ack:1")->correlation_data, request_id, 16);
 }
 
+static void an_exec_without_expiry_is_admitted_against_the_option(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  set_max_unconfirmed_delivery_timeout(fx, 5000u);
+  open_to_connected(fx);
+  invocation_record rec = { 0 };
+  fx->rec = &rec;
+  assert_int_equal(
+      az_iot_mqttv5_direct_method_client_register_method(&fx->dm, "long-job", 5, on_method, fx),
+      AZ_IOT_OK);
+
+  /* 5 s minimum does not fit in a 5 s window: abandoned, not started. */
+  uint8_t request_id[16];
+  make_request_id(request_id, 0xDA);
+  uint8_t ready_id[16];
+  probe_and_accept(fx, request_id, "long-job", 300, ready_id);
+  uint8_t exec[64];
+  size_t exec_len = build_exec(exec, ready_id, 16, NULL, 0);
+  az_iot_mock_mqtt_client_clear_calls(fx->mock);
+  inject_dm(fx, DEV_TOPIC, "exec:1", request_id, 16, exec, exec_len, 0);
+  assert_false(rec.fired);
+  const az_iot_mock_call* abandon = find_phase(fx->mock, "abandon:1");
+  assert_non_null(abandon);
+  assert_int_equal(abandon->payload[19], 2); /* INSUFFICIENT_TIME */
+
+  /* One millisecond more and it fits. */
+  set_max_unconfirmed_delivery_timeout(fx, 5001u);
+  make_request_id(request_id, 0xDB);
+  probe_and_accept(fx, request_id, "long-job", 300, ready_id);
+  exec_len = build_exec(exec, ready_id, 16, NULL, 0);
+  inject_dm(fx, DEV_TOPIC, "exec:1", request_id, 16, exec, exec_len, 0);
+  assert_true(rec.fired);
+}
+
 static void respond_just_before_the_result_deadline_publishes(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -4854,6 +4888,8 @@ int main(void)
         a_held_notice_without_budget_is_dropped_past_the_option, setup, teardown),
     cmocka_unit_test_setup_teardown(
         notices_without_budget_past_the_option_free_their_entries, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        an_exec_without_expiry_is_admitted_against_the_option, setup, teardown),
     cmocka_unit_test_setup_teardown(
         respond_just_before_the_result_deadline_publishes, setup, teardown),
     cmocka_unit_test_setup_teardown(respond_at_the_result_deadline_sends_nothing, setup, teardown),
