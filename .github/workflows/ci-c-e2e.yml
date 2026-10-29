@@ -28,6 +28,8 @@
 #   1. setup    : provision the resource group + emit the test-config script
 #                 ONCE (via the reusable provision-e2e-resources step), publish
 #                 it as an artifact, and expose the resource-group name.
+#      openssl  : in parallel, builds the OpenSSL the test legs use into the
+#                 cache, once per OS (.github/actions/install-openssl).
 #   2. test     : one job per OS (Windows, Linux) and test group (core,
 #                 transport per adapter, sas), each with its own device. Each
 #                 builds the native e2e tests, gets its test-config, materializes
@@ -166,11 +168,36 @@ jobs:
           retention-days: 1
           if-no-files-found: error
 
+  # Builds OpenSSL once per run and OS, so the test legs restore it from the
+  # cache instead of each building it on a cache miss.
+  openssl:
+    name: OpenSSL ${{ matrix.openssl }} (${{ matrix.os }})
+    permissions:
+      contents: read
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            openssl: '4.1.0'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Set up MSVC (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
+      - name: Install OpenSSL ${{ matrix.openssl }}
+        uses: ./.github/actions/install-openssl # zizmor: ignore[self-repository]
+        with:
+          version: ${{ matrix.openssl }}
+
   test:
     name: ${{ matrix.os }} / ${{ matrix.group }}
-    needs: setup
+    needs: [ setup, openssl ]
     # Runs after setup, or without it in shared mode (setup skipped).
-    if: ${{ !cancelled() && (needs.setup.result == 'success' || needs.setup.result == 'skipped') }}
+    if: ${{ !cancelled() && (needs.setup.result == 'success' || needs.setup.result == 'skipped') && needs.openssl.result == 'success' }}
     # Runs pull-request code: no Azure OIDC token.
     permissions:
       contents: read
@@ -215,8 +242,7 @@ jobs:
             group-index: 3
             tests: '^az_iot_tests_e2e_sas(_az_mqtt)?$'
     runs-on: ${{ matrix.os }}
-    # Windows: room for an OpenSSL build on a cache miss (see below).
-    timeout-minutes: ${{ matrix.os == 'windows-latest' && 60 || 30 }}
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -228,8 +254,8 @@ jobs:
 
       # Windows runs the Paho/OpenSSL device path on OpenSSL 4.x, the version the
       # Windows installers now ship; Linux keeps the distribution's 3.0, the
-      # minimum supported, so the e2e suites cover both majors. Built from source
-      # and cached per runner image (.github/actions/install-openssl).
+      # minimum supported, so the e2e suites cover both majors. Restored from
+      # the cache the openssl job filled (.github/actions/install-openssl).
       - name: Install OpenSSL 4.1.0 (Windows)
         if: runner.os == 'Windows'
         uses: ./.github/actions/install-openssl # zizmor: ignore[self-repository]
