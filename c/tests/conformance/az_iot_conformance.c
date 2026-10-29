@@ -3224,6 +3224,37 @@ static void a_sign_hook_is_never_silently_ignored(void** state)
   destroy_client(c);
 }
 
+/* The PSA key id route: an id naming no key the adapter can use. The connect
+ * must never succeed without it. */
+static void a_psa_key_id_is_never_silently_ignored(void** state)
+{
+  (void)state;
+  char cid[64];
+  unique_client_id(cid, sizeof(cid), "az-iot-conf-custody-psa");
+  conf_recorder rec = { 0 };
+  az_iot_mqtt_client* c = make_client();
+  c->iface->set_inbound_cb(c, on_event, &rec);
+
+  az_iot_mqtt_connect_options copts = { 0 };
+  copts.host = g_host;
+  copts.port = g_port;
+  copts.client_id = cid;
+  copts.keep_alive_seconds = 30;
+  copts.connect_timeout_seconds = k_step_timeout_seconds;
+  copts.tls.client_key_psa_id = 0x7FFFFFF0u;
+
+  az_iot_result r = c->iface->connect(c, &copts);
+  if (r == AZ_IOT_OK)
+  {
+    (void)wait_until(c, &rec, saw_connect_failure, k_step_timeout_ms);
+  }
+  assert_int_not_equal(r, AZ_IOT_OK);
+  assert_false(saw_connected_ok(&rec));
+
+  (void)c->iface->disconnect(c);
+  destroy_client(c);
+}
+
 #ifdef AZ_IOT_CONFORMANCE_WITH_TLS
 /* The end-to-end case, and the only one that proves the feature actually works:
  * complete a real TLS handshake using a private key the adapter cannot read.
@@ -4166,6 +4197,7 @@ static void a_proxy_that_refuses_the_tunnel_fails_the_connect(void** state)
       cmocka_unit_test(an_acknowledgement_for_an_unknown_packet_id_is_ignored),                  \
       cmocka_unit_test(a_key_reference_is_never_silently_ignored),                               \
       cmocka_unit_test(a_sign_hook_is_never_silently_ignored),                                   \
+      cmocka_unit_test(a_psa_key_id_is_never_silently_ignored),                                  \
       cmocka_unit_test(a_websocket_request_is_never_silently_downgraded),                        \
       cmocka_unit_test(an_unreachable_proxy_is_never_bypassed),                                  \
       cmocka_unit_test(connect_carries_the_clean_session_flag),                                  \

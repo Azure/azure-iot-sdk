@@ -289,6 +289,7 @@ The suite also holds every adapter to the safety half of the optional features, 
 
 - **`a_key_reference_is_never_silently_ignored`** — given a key URI naming a provider that cannot exist, your `connect` must fail. If you have not declared key custody it must fail with `AZ_IOT_ERR_NOT_SUPPORTED`, so the caller can tell "I cannot do this" from "I tried and it failed".
 - **`a_sign_hook_is_never_silently_ignored`** — the same for `tls.sign`.
+- **`a_psa_key_id_is_never_silently_ignored`** — the same for `tls.client_key_psa_id`: the connect must not succeed with an id that names no usable key.
 
 ### 4.5 — Declaring optional capabilities
 
