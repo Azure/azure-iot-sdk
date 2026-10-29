@@ -405,23 +405,23 @@ static int32_t ota_load(uint8_t* blob, size_t cap, size_t* out_len, void* user_c
 /* public                                                                    */
 /* ------------------------------------------------------------------------- */
 
+void az_iot_su_esp32_ota_release_download(az_iot_su_esp32_ota_context* context)
+{
+  if (context->http_client != NULL || context->ota_in_progress)
+  {
+    ESP_LOGW(TAG, "releasing an unfinished download");
+  }
+  ota_download_close(context, true);
+}
+
 void az_iot_su_esp32_ota_handle_event(const az_iot_su_event* event, void* context)
 {
-  az_iot_su_esp32_ota_context* c = (az_iot_su_esp32_ota_context*)context;
-  if (event->kind != AZ_IOT_SU_EVENT_WORKFLOW_STATE_CHANGED)
+  /* A workflow replaced or ended outside download_fn and restore_fn. */
+  if (event->kind == AZ_IOT_SU_EVENT_WORKFLOW_STATE_CHANGED
+      && (event->state == AZ_IOT_SU_STATE_MANIFEST_RECEIVED || event->state == AZ_IOT_SU_STATE_IDLE
+          || event->state == AZ_IOT_SU_STATE_FAILED))
   {
-    return;
-  }
-  /* A workflow replaced or ended outside download_fn and restore_fn: release its
-   * download and any OTA write not yet installed. */
-  if (event->state == AZ_IOT_SU_STATE_MANIFEST_RECEIVED || event->state == AZ_IOT_SU_STATE_IDLE
-      || event->state == AZ_IOT_SU_STATE_FAILED)
-  {
-    if (c->http_client != NULL || c->ota_in_progress)
-    {
-      ESP_LOGW(TAG, "releasing an unfinished download");
-    }
-    ota_download_close(c, true);
+    az_iot_su_esp32_ota_release_download((az_iot_su_esp32_ota_context*)context);
   }
 }
 

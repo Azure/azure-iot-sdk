@@ -78,6 +78,15 @@ extern "C"
   void az_iot_su_esp32_ota_handle_event(const az_iot_su_event* event, void* context);
 
   /**
+   * @brief Close an unfinished download and abort an OTA write not yet installed.
+   *
+   * Call after az_iot_su_client_deinit(), which raises no events and calls no hooks.
+   *
+   * @param[in] context The context given to az_iot_su_esp32_ota_get_platform_hooks().
+   */
+  void az_iot_su_esp32_ota_release_download(az_iot_su_esp32_ota_context* context);
+
+  /**
    * @brief Mark the running image valid, so the bootloader does not roll it back.
    *
    * No effect unless this boot is pending verification. Call once the image has proven
