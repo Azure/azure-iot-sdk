@@ -68,11 +68,11 @@ jobs:
             common:
               - 'common/**'
               - '!common/**/*.md'
-            # A change to this workflow decides what the build/test legs do,
-            # so it has to run them.
+            # A change to this workflow, or to the OpenSSL action it uses, decides
+            # what the build/test legs do, so it has to run them. One pattern:
+            # `every` would AND two.
             workflow:
-              - '.github/workflows/ci-c.yml'
-              - '.github/actions/install-openssl/**'
+              - '.github/{workflows/ci-c.yml,actions/install-openssl/**}'
 
   # The Paho-OFF legs build the whole tree on az_mqtt. Every leg checks that
   # nothing depends on an adapter it was configured without
