@@ -15,7 +15,8 @@ using System.Text.Json.Nodes;
 /// </summary>
 /// <remarks>
 /// The device applies each desired properties update and acknowledges it in its reported properties by reporting the
-/// version of the desired properties it has applied.
+/// version of the desired properties it has applied. The same code works whether DPS assigns the device to an IoT hub
+/// that uses MQTTv3 or one that uses MQTTv5.
 /// </remarks>
 internal class Program
 {
@@ -44,9 +45,10 @@ internal class Program
 
         using ConnectionClient connectionClient = new ConnectionClient();
 
-        // TwinClient orders desired updates and recovers ones it missed, retries reported patches across
-        // reconnects, and gets the full twin each time the device connects, raising TwinPushReceived with whichever
-        // sections changed since the persisted twin.
+        // TwinClient orders desired updates and recovers ones it missed, and retries reported patches across
+        // reconnects. Each time the device connects, it raises TwinPushReceived with whichever sections changed since
+        // the persisted twin: on an MQTTv3 IoT hub it gets the full twin, and on an MQTTv5 IoT hub it announces the
+        // versions it holds so IoT hub only pushes the sections that changed.
         using TwinClient twinClient = new TwinClient(connectionClient, persistedTwin);
 
         // Each change to this device's copy of its twin is raised one at a time, in order, so saving each one keeps the

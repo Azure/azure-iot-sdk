@@ -8,33 +8,33 @@ survives restarts. The sample:
 - Reports `lastStartedAt` each time it starts.
 - Saves the twin to `twin-{deviceId}.json` next to the sample's binaries, and restores it on the next run.
 
-## Why `ConcurrentTwinClient` rather than `TwinClient`
+## Which twin client to use
 
-The SDK offers two MQTTv5 twin clients. This sample uses `ConcurrentTwinClient`, and most devices should too.
+The SDK has two twin clients, and both keep the device's copy of its twin in sync with IoT Hub's:
 
-`TwinClient` just mirrors IoT Hub's twin API. It sends each request once and raises each message as it arrives. The
-application then has to do all of the following itself to keep its twin in sync:
+- `Microsoft.Azure.Iot.Device.MQTTv5.Twin.TwinClient`, used by this sample, only works with IoT Hubs that use MQTTv5.
+- `Microsoft.Azure.Iot.Device.Unified.Twin.TwinClient` works with IoT Hubs that use either MQTTv3 or MQTTv5, and picks
+  the protocol each time the device connects, so a device can be reprovisioned between the two kinds of hub without
+  losing its twin. See the [Unified twin sample](../../Unified/TwinClientSample/).
 
-- **Ordering.** Desired properties updates may be raised out of version order, more than once, or not at all if the
-  device was disconnected when IoT Hub sent them.
-- **Retries.** Requests aren't queued or retried, so a reported properties patch fails if the connection drops before
-  IoT Hub responds.
-- **Conditional patches.** Patches are only conditional on IoT Hub's version of the reported properties if the caller
-  supplies that version.
-- **Versions held.** It doesn't track which twin versions the device holds, so it can't tell IoT Hub upon connecting
-  to skip pushing sections that haven't changed.
-- **Persistence.** It keeps no copy of the twin to persist.
+Both clients:
 
-`ConcurrentTwinClient` implements the device-side behavior that the twin spec recommends, built on a `TwinClient` of
-its own. It:
+- Deliver desired updates in version order, and resync if one is missed.
+- Queue reported properties patches, sending them one at a time across reconnects and combining patches made while
+  one is in flight.
+- Raise a `TwinState` snapshot to persist each time the device's copy of its twin changes. Either client can start
+  from a `TwinState` the other persisted.
+- Are safe to use from multiple threads.
 
-- Announces the versions the device holds upon each connection.
-- Delivers desired updates in version order, and resyncs if one is missed.
-- Queues reported properties patches, sending them one at a time across reconnects, conditional on IoT Hub's version.
-- Raises a `TwinState` snapshot to persist each time the device's copy of its twin changes.
+On an IoT Hub that uses MQTTv5, both announce the versions the device holds upon each connection, so IoT Hub only
+pushes the twin sections that changed. The MQTTv5 client additionally:
 
-The persistence and best practices below all depend on that behavior. It is also safe to use from multiple threads.
-Use `TwinClient` only if your application implements this behavior itself, or just needs one-off twin requests.
+- Sends reported properties patches conditional on IoT Hub's version of the reported properties, and re-sends them
+  after a version mismatch. The Unified client sends them unconditionally, as it does on MQTTv3.
+- Lets `GetTwinAsync` skip sections whose versions match ones the caller already holds.
+
+Use the MQTTv5 client if the device only connects to IoT Hubs that use MQTTv5 and needs any of these. Otherwise, use
+the Unified client.
 
 ## Prerequisites
 
@@ -64,7 +64,7 @@ Delete `twin-{deviceId}.json` to start over. The device then holds no versions, 
 ## Persisted twin
 
 The SDK keeps the device's copy of its twin as a `TwinState`, but doesn't persist it. The sample saves each snapshot
-raised by `ConcurrentTwinClient.TwinStateChanged`, and passes the saved one to the `ConcurrentTwinClient` constructor on the next run:
+raised by `TwinClient.TwinStateChanged`, and passes the saved one to the `TwinClient` constructor on the next run:
 
 | Field | Meaning |
 | --- | --- |
@@ -82,7 +82,7 @@ twin. An unreadable file is ignored, which is always safe because IoT Hub then p
 
 - **Choose the push options once.** `ReceiveDesiredPropertyUpdates` and `ReceiveReportedPropertiesUponConnect` are
   set on `ConnectionClientOptions` and can't change while the connection client exists.
-- **Start from the persisted twin.** Passing it to the `ConcurrentTwinClient` constructor tells IoT Hub which versions the
+- **Start from the persisted twin.** Passing it to the `TwinClient` constructor tells IoT Hub which versions the
   device already holds, so IoT Hub only pushes the sections whose versions differ, rather than the device fetching the
   whole twin each time it starts. If a persisted version is newer than IoT Hub's (for example, because the device's
   twin was recreated), the SDK discards it.

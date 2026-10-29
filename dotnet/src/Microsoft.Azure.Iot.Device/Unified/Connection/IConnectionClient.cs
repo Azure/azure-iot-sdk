@@ -59,6 +59,56 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
         internal event Action? ConnectionReady { add { } remove { } }
 
         /// <summary>
+        /// The twin versions from the latest birth ack that an MQTTv5 IoT hub sent this connection client, or null if there
+        /// hasn't been one or this client is not connected to an MQTTv5 IoT hub.
+        /// </summary>
+        internal MQTTv5.Connection.BirthAckVersions? LatestBirthAck => null;
+
+        /// <summary>
+        /// Whether this connection client stopped waiting for the birth ack of the connection attempt with the given
+        /// connection nonce (and so is abandoning that connection).
+        /// </summary>
+        internal bool IsBirthAckTimedOut(Guid connectionNonce) => false;
+
+        /// <summary>
+        /// Raised when this connection client starts connecting as a different twin than before (for example, after being
+        /// re-provisioned to another IoT hub or device ID), whose twin versions aren't comparable with the ones it held.
+        /// </summary>
+        internal event Action? TwinIdentityChanged { add { } remove { } }
+
+        /// <summary>
+        /// The version of the desired properties that the device held when this connection client was constructed.
+        /// </summary>
+        internal ulong InitialDesiredPropertiesVersion => 0;
+
+        /// <summary>
+        /// The version of the reported properties that the device held when this connection client was constructed.
+        /// </summary>
+        internal ulong InitialReportedPropertiesVersion => 0;
+
+        /// <summary>
+        /// Record that the device now holds this version of the desired properties, so that it is announced to MQTTv5 IoT
+        /// hubs upon (re)connecting. Older versions than the one already recorded are ignored.
+        /// </summary>
+        internal void ObserveDesiredPropertiesVersion(ulong version) { }
+
+        /// <summary>
+        /// Record that the device now holds this version of the reported properties, so that it is announced to MQTTv5 IoT
+        /// hubs upon (re)connecting. Older versions than the one already recorded are ignored.
+        /// </summary>
+        internal void ObserveReportedPropertiesVersion(ulong version) { }
+
+        /// <summary>
+        /// Replace the recorded version of the desired properties that the device holds, even with an older one.
+        /// </summary>
+        internal void ReplaceDesiredPropertiesVersion(ulong version) { }
+
+        /// <summary>
+        /// Replace the recorded version of the reported properties that the device holds, even with an older one.
+        /// </summary>
+        internal void ReplaceReportedPropertiesVersion(ulong version) { }
+
+        /// <summary>
         /// Whether this connection client subscribes to twin topics. See <see cref="ConnectionClientOptions.EnableTwin"/>.
         /// </summary>
         bool IsTwinEnabled => true;

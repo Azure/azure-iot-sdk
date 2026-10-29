@@ -37,9 +37,15 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
             return _publishReceived.InvokeAsync(args);
         }
 
-        public void Dispose()
+        // Stops forwarding received publishes, without disposing the unified connection client.
+        internal void Detach()
         {
             _unifiedConnectionClient.PublishReceivedAsync -= ForwardPublishReceivedAsync;
+        }
+
+        public void Dispose()
+        {
+            Detach();
             _unifiedConnectionClient.Dispose();
         }
 
@@ -57,6 +63,28 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
             add => _unifiedConnectionClient.ConnectionLost += value;
             remove => _unifiedConnectionClient.ConnectionLost -= value;
         }
+
+        MQTTv5.Connection.BirthAckVersions? MQTTv5.Connection.IConnectionClient.LatestBirthAck => _unifiedConnectionClient.LatestBirthAck;
+
+        bool MQTTv5.Connection.IConnectionClient.IsBirthAckTimedOut(Guid connectionNonce) => _unifiedConnectionClient.IsBirthAckTimedOut(connectionNonce);
+
+        event Action? MQTTv5.Connection.IConnectionClient.TwinIdentityChanged
+        {
+            add => _unifiedConnectionClient.TwinIdentityChanged += value;
+            remove => _unifiedConnectionClient.TwinIdentityChanged -= value;
+        }
+
+        ulong MQTTv5.Connection.IConnectionClient.InitialDesiredPropertiesVersion => _unifiedConnectionClient.InitialDesiredPropertiesVersion;
+
+        ulong MQTTv5.Connection.IConnectionClient.InitialReportedPropertiesVersion => _unifiedConnectionClient.InitialReportedPropertiesVersion;
+
+        void MQTTv5.Connection.IConnectionClient.ObserveDesiredPropertiesVersion(ulong version) => _unifiedConnectionClient.ObserveDesiredPropertiesVersion(version);
+
+        void MQTTv5.Connection.IConnectionClient.ObserveReportedPropertiesVersion(ulong version) => _unifiedConnectionClient.ObserveReportedPropertiesVersion(version);
+
+        void MQTTv5.Connection.IConnectionClient.ReplaceDesiredPropertiesVersion(ulong version) => _unifiedConnectionClient.ReplaceDesiredPropertiesVersion(version);
+
+        void MQTTv5.Connection.IConnectionClient.ReplaceReportedPropertiesVersion(ulong version) => _unifiedConnectionClient.ReplaceReportedPropertiesVersion(version);
 
         public Task<MqttPublishAck> PublishAsync(MqttPublish publish, bool throwOnErrorReasonCode, CancellationToken cancellationToken = default)
         {

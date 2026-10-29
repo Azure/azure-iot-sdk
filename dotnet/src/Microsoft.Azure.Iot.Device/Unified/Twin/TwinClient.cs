@@ -4,22 +4,16 @@
 using Microsoft.Azure.Iot.Device.Exceptions;
 using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Models.Twin;
-using Microsoft.Azure.Iot.Device.Mqtt;
+using Microsoft.Azure.Iot.Device.Twin;
 using Microsoft.Azure.Iot.Device.Unified.Connection;
 using Microsoft.Azure.Iot.Device.Unified.Models;
-using System.Collections.Specialized;
-using System.Diagnostics;
-using System.Globalization;
-using System.Text.Json;
 using System.Text.Json.Nodes;
-using System.Text.RegularExpressions;
-using System.Web;
 
 namespace Microsoft.Azure.Iot.Device.Unified.Twin
 {
     /// <summary>
-    /// The feature client that keeps this device's copy of its twin in sync with an IoT hub that uses MQTTv3, as the device
-    /// twin specification recommends. Safe to use from multiple threads.
+    /// The feature client that keeps this device's copy of its twin in sync with IoT hub, whether that IoT hub uses MQTTv3 or
+    /// MQTTv5, as the device twin specification recommends. Safe to use from multiple threads.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -29,125 +23,62 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
     /// <see cref="TwinStateChanged"/>).
     /// </para>
     /// <para>
-    /// IoT hubs that use MQTTv3 don't push the twin to the device when it connects, so this client gets the twin each time the
-    /// device (re)connects, and raises <see cref="TwinPushReceived"/> with the sections of it that changed.
+    /// IoT hubs that use MQTTv3 don't push the twin to the device when it connects, so on those this client gets the twin
+    /// each time the device (re)connects, and raises <see cref="TwinPushReceived"/> with the sections of it that changed.
+    /// IoT hubs that use MQTTv5 learn the versions of the twin that this device holds when it connects, and push the sections
+    /// that changed themselves.
     /// </para>
     /// <para>
-    /// This client only works with IoT hubs that use MQTTv3. It ignores the twin messages of connections to IoT hubs that use MQTTv5.
+    /// This client behaves the same way on both kinds of IoT hub, including when re-provisioning moves the device from one
+    /// kind to the other: the device's copy of its twin and its pending reported properties patches carry over. Its reported
+    /// properties patches are always unconditional. See <see cref="MQTTv5.Twin.TwinClient"/> for a client of IoT hubs that use
+    /// MQTTv5 that makes them conditional.
     /// </para>
     /// </remarks>
     public class TwinClient : IDisposable
     {
-        private volatile bool _isDisposed;
-
         private readonly IConnectionClient _connection;
 
+        private readonly TwinEngine _engine;
+
         // Response topics to subscribe to
-        internal const string ClassicTwinResponseTopic = "$iothub/twin/res/";
-        internal const string ClassicTwinDesiredPropertiesPatchTopic = "$iothub/twin/PATCH/properties/desired/";
-        private const string ClassicTwinTopicPrefix = "$iothub/twin/";
-        private const string ClassicTwinResponseTopicPattern = @"\$iothub/twin/res/(\d+)/(\?.+)";
-        private static readonly Regex s_twinResponseTopicRegex = new(ClassicTwinResponseTopicPattern, RegexOptions.Compiled);
+        internal const string ClassicTwinResponseTopic = ClassicTwinTransport.ResponseTopic;
+        internal const string ClassicTwinDesiredPropertiesPatchTopic = ClassicTwinTransport.DesiredPropertiesPatchTopic;
 
-        // Topics to publish to
-        private const string ClassicTwinGetTopicFormat = "$iothub/twin/GET/?$rid={0}";
-        private const string ClassicTwinReportedPropertiesPatchTopicFormat = "$iothub/twin/PATCH/properties/reported/?$rid={0}";
-
-        private const string RequestIdTopicKey = "$rid";
-        internal const string VersionKey = "$version";
-
-        // Guards _getTwinExchangesByRequest and _getTwinExchangesById.
-        private readonly object _getTwinExchangesLock = new();
-
-        // The outstanding get twin exchange for each distinct get twin request. Identical concurrent requests share one exchange.
-        private readonly Dictionary<GetTwinRequest, GetTwinExchange> _getTwinExchangesByRequest = new();
-
-        // The outstanding get twin exchanges, keyed by the ID of their latest attempt. Responses to earlier attempts are dropped.
-        private readonly Dictionary<Guid, GetTwinExchange> _getTwinExchangesById = new();
-
-        // Guards the reported patch state below.
-        private readonly object _reportedPatchLock = new();
-
-        // The application's reported property patches that IoT hub hasn't applied yet, in the order they were made. These
-        // survive disconnects. The attempt in flight (if any) carries a prefix of them, combined into one patch.
-        private readonly List<PendingReportedPatch> _pendingReportedPatches = new();
-
-        // The one reported patch attempt in flight, if any.
-        private ReportedPatchAttempt? _reportedPatchAttempt;
-
-        // The defensive timeout attempt (starting at 1) for the next reported patch attempt. It escalates each time an attempt
-        // times out, and resets once a response arrives or the connection is lost.
-        private int _reportedPatchTimeoutAttempt = 1;
-
-        // Incremented each time the connection to IoT hub is lost. IoT hubs that use MQTTv3 don't identify their connections,
-        // so this tells the state of one connection from that of the next.
-        private long _connectionEpoch;
+        internal const string VersionKey = ClassicTwinTransport.VersionKey;
 
         // The maximum number of desired patches buffered while resyncing the desired properties.
-        internal const int DesiredResyncBufferCapacity = 8;
-
-        // Guards the device's view of the desired properties (the desired section state machine).
-        private readonly object _desiredStateLock = new();
-
-        // The version of the desired properties that this device has most recently observed. 0 means the device has not
-        // observed the desired properties yet. Unlike the resync state, this survives disconnects.
-        private ulong _localDesiredVersion;
-
-        // Guards _localReportedVersion.
-        private readonly object _reportedStateLock = new();
-
-        // The version of the reported properties that this device holds in full. 0 means the device does not hold them.
-        private ulong _localReportedVersion;
-
-        // Guards this device's copy of its twin, which TwinState snapshots are made from. Writes to _localDesiredVersion and
-        // _localReportedVersion also take it, so that each version always matches its properties. It is always taken last.
-        private readonly object _twinStateLock = new();
-
-        // The desired properties as of _localDesiredVersion.
-        private JsonObject _desiredProperties = new();
-
-        // The reported properties that IoT hub has applied, as of _localReportedVersion.
-        private JsonObject _reportedProperties = new();
-
-        // Whether _reportedProperties are the reported properties in full at _localReportedVersion.
-        private bool _isReportedPropertiesComplete = true;
-
-        // Whether this device's copy of its twin (including its pending reported patches) changed since TwinStateChanged was last raised.
-        private bool _isTwinStateChanged;
-
-        // Guarded by _reportedPatchLock. The ReportedPatchCompleted events that are yet to be raised, in order.
-        private readonly Queue<ReportedPatchCompletedEventArgs> _reportedPatchCompletions = new();
-
-        // Held while raising TwinStateChanged and ReportedPatchCompleted, so that they are raised one at a time, in order.
-        private readonly object _twinEventsLock = new();
-
-        // Non-null while this client is getting the twin to resync its desired properties (and reconcile its reported
-        // properties) with IoT hub.
-        private DesiredResync? _desiredResync;
-
-        // Guards _authoritativeVersions.
-        private readonly object _authoritativeVersionsLock = new();
-
-        // The latest versions of the twin sections that IoT hub has revealed on the current connection.
-        private AuthoritativeVersions? _authoritativeVersions;
+        internal const int DesiredResyncBufferCapacity = TwinEngine.DesiredResyncBufferCapacity;
 
         /// <summary>
         /// How long to wait for the response to the given attempt (starting at 1) of a get twin request that this client
         /// sends to resync the twin before sending it again.
         /// </summary>
-        internal Func<int, TimeSpan> DesiredResyncTimeoutSchedule { get; set; } = DefensiveTimeoutSchedule.GetTimeout;
+        internal Func<int, TimeSpan> DesiredResyncTimeoutSchedule
+        {
+            get => _engine.DesiredResyncTimeoutSchedule;
+            set => _engine.DesiredResyncTimeoutSchedule = value;
+        }
 
         /// <summary>
         /// How long to wait for the response to the given attempt (starting at 1) of an application's get twin request
         /// before sending it again.
         /// </summary>
-        internal Func<int, TimeSpan> GetTwinTimeoutSchedule { get; set; } = DefensiveTimeoutSchedule.GetTimeout;
+        internal Func<int, TimeSpan> GetTwinTimeoutSchedule
+        {
+            get => _engine.GetTwinTimeoutSchedule;
+            set => _engine.GetTwinTimeoutSchedule = value;
+        }
 
         /// <summary>
         /// How long to wait for the response to the given consecutive attempt (starting at 1) of a reported properties patch
         /// before sending it again.
         /// </summary>
-        internal Func<int, TimeSpan> ReportedPatchTimeoutSchedule { get; set; } = DefensiveTimeoutSchedule.GetTimeout;
+        internal Func<int, TimeSpan> ReportedPatchTimeoutSchedule
+        {
+            get => _engine.ReportedPatchTimeoutSchedule;
+            set => _engine.ReportedPatchTimeoutSchedule = value;
+        }
 
         /// <summary>
         /// An event that executes whenever this client receives a desired properties update from IoT hub.
@@ -157,18 +88,27 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
         /// last observed. If a patch is missed, this client gets the twin from IoT hub and raises
         /// <see cref="TwinPushReceived"/> with the desired properties instead, followed by any newer patches.
         /// </remarks>
-        public event Action<DesiredPatchReceivedEventArgs>? DesiredPatchReceived;
+        public event Action<DesiredPatchReceivedEventArgs>? DesiredPatchReceived
+        {
+            add => _engine.DesiredPatchReceived += value;
+            remove => _engine.DesiredPatchReceived -= value;
+        }
 
         /// <summary>
         /// An event that executes whenever this client gets a copy of the twin from IoT hub that changes this device's copy.
         /// </summary>
         /// <remarks>
-        /// IoT hubs that use MQTTv3 don't push the twin, so this client gets the twin each time the device (re)connects, and
-        /// whenever it misses a desired properties patch or learns that its copy of the reported properties is out of date.
-        /// The desired section is only included if it is newer than the desired properties this client last observed. The
+        /// IoT hubs that use MQTTv5 push the twin sections that changed when the device (re)connects. IoT hubs that use MQTTv3
+        /// don't push the twin, so on those this client gets the twin each time the device (re)connects, and whenever it misses
+        /// a desired properties patch or learns that its copy of the reported properties is out of date. This event is also
+        /// raised with the desired section whenever this client resyncs its desired properties with IoT hub. The desired section is only included if it is newer than the desired properties this client last observed. The
         /// reported section is only included if it differs from the version of the reported properties this client holds.
         /// </remarks>
-        public event Action<TwinPushReceivedEventArgs>? TwinPushReceived;
+        public event Action<TwinPushReceivedEventArgs>? TwinPushReceived
+        {
+            add => _engine.TwinPushReceived += value;
+            remove => _engine.TwinPushReceived -= value;
+        }
 
         /// <summary>
         /// An event that executes whenever this device's copy of its twin changes, with a snapshot of it to persist.
@@ -186,7 +126,11 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
         /// them has been raised. The snapshot belongs to the handler, which may keep it.
         /// </para>
         /// </remarks>
-        public event Action<TwinState>? TwinStateChanged;
+        public event Action<TwinState>? TwinStateChanged
+        {
+            add => _engine.TwinStateChanged += value;
+            remove => _engine.TwinStateChanged -= value;
+        }
 
         /// <summary>
         /// An event that executes whenever IoT hub responds to a reported properties patch that this client sent, or the patch
@@ -196,28 +140,35 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
         /// Unlike awaiting <see cref="UpdateReportedPropertiesAsync"/>, this is raised for every patch, including those made by
         /// <see cref="EnqueueReportedPropertiesUpdate"/> or restored from a <see cref="TwinState"/>.
         /// </remarks>
-        public event Action<ReportedPatchCompletedEventArgs>? ReportedPatchCompleted;
+        public event Action<ReportedPatchCompletedEventArgs>? ReportedPatchCompleted
+        {
+            add => _engine.ReportedPatchCompleted += value;
+            remove => _engine.ReportedPatchCompleted -= value;
+        }
 
         /// <summary>
         /// The latest version of the desired properties that IoT hub has revealed on the current connection, or null if it
         /// hasn't revealed one yet.
         /// </summary>
         /// <remarks>
-        /// IoT hub reveals its version of the desired properties in every desired properties patch and get twin response
-        /// (including the one this client gets after each connection). This value is reset whenever the connection is lost.
+        /// IoT hub reveals its version of the desired properties in every desired properties patch, twin push and get twin
+        /// response (including the one this client gets after each connection to an IoT hub that uses MQTTv3), and IoT hubs
+        /// that use MQTTv5 also reveal it when they acknowledge this device's presence upon each connection. This value is
+        /// reset whenever the connection is lost.
         /// </remarks>
-        public ulong? AuthoritativeDesiredPropertiesVersion => GetAuthoritativeVersion(desired: true);
+        public ulong? AuthoritativeDesiredPropertiesVersion => _engine.AuthoritativeDesiredPropertiesVersion;
 
         /// <summary>
         /// The latest version of the reported properties that IoT hub has revealed on the current connection, or null if it
         /// hasn't revealed one yet.
         /// </summary>
         /// <remarks>
-        /// IoT hub reveals its version of the reported properties in every get twin response (including the one this client
-        /// gets after each connection) and every successful reported properties update response. This value is reset whenever
-        /// the connection is lost.
+        /// IoT hub reveals its version of the reported properties in every twin push and get twin response (including the one
+        /// this client gets after each connection to an IoT hub that uses MQTTv3) and every successful reported properties
+        /// update response, and IoT hubs that use MQTTv5 also reveal it when they acknowledge this device's presence upon each
+        /// connection. This value is reset whenever the connection is lost.
         /// </remarks>
-        public ulong? AuthoritativeReportedPropertiesVersion => GetAuthoritativeVersion(desired: false);
+        public ulong? AuthoritativeReportedPropertiesVersion => _engine.AuthoritativeReportedPropertiesVersion;
 
         /// <summary>
         /// Construct a new <see cref="TwinClient"/> instance.
@@ -243,17 +194,8 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
         /// </example>
         /// <exception cref="InvalidOperationException">Thrown if <paramref name="connection"/> opted out of twins (see <see cref="ConnectionClientOptions.EnableTwin"/>).</exception>
         public TwinClient(IConnectionClient connection)
+            : this(connection, null)
         {
-            ArgumentNullException.ThrowIfNull(connection);
-            if (!connection.IsTwinEnabled)
-            {
-                throw new InvalidOperationException($"The provided connection client opted out of twins. Set {nameof(ConnectionClientOptions)}.{nameof(ConnectionClientOptions.EnableTwin)} to true to use a {nameof(TwinClient)}.");
-            }
-
-            _connection = connection;
-            _connection.PublishReceivedAsync += HandleReceivedMqttPublishAsync;
-            _connection.ConnectionLost += HandleConnectionLost;
-            _connection.ConnectionReady += HandleConnectionReady;
         }
 
         /// <summary>
@@ -265,43 +207,31 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
         /// device holds no copy of its twin.
         /// </param>
         /// <remarks>
-        /// The twin that this client gets once the device connects is compared against <paramref name="initialState"/>, so
-        /// that <see cref="TwinPushReceived"/> only includes the twin sections that changed. Its pending reported properties
+        /// The twin that this client gets (or IoT hub pushes) once the device connects is compared against
+        /// <paramref name="initialState"/>, so that <see cref="TwinPushReceived"/> only includes the twin sections that changed. Its pending reported properties
         /// patches are sent, in order, before any made afterwards. Their outcomes are raised by <see cref="ReportedPatchCompleted"/>.
         /// </remarks>
         /// <exception cref="InvalidOperationException">Thrown if <paramref name="connection"/> opted out of twins (see <see cref="ConnectionClientOptions.EnableTwin"/>).</exception>
         public TwinClient(IConnectionClient connection, TwinState? initialState)
-            : this(connection)
         {
-            if (initialState == null)
+            ArgumentNullException.ThrowIfNull(connection);
+            if (!connection.IsTwinEnabled)
             {
-                return;
+                throw new InvalidOperationException($"The provided connection client opted out of twins. Set {nameof(ConnectionClientOptions)}.{nameof(ConnectionClientOptions.EnableTwin)} to true to use a {nameof(TwinClient)}.");
             }
 
-            _localDesiredVersion = initialState.DesiredVersion;
-            _desiredProperties = initialState.Desired.DeepClone().AsObject();
-            _localReportedVersion = initialState.ReportedVersion;
-            _reportedProperties = initialState.Reported.DeepClone().AsObject();
-            _isReportedPropertiesComplete = true;
-            foreach (JsonObject patch in initialState.PendingReportedPatches)
-            {
-                _pendingReportedPatches.Add(new PendingReportedPatch(patch.DeepClone().AsObject(), hasWaiter: false, isReleased: true));
-            }
+            _connection = connection;
+            _engine = new TwinEngine(
+                new UnifiedTwinTransport(connection),
+                this,
+                new TwinEngineOptions { KeepAttemptOnRetryablePublishFailure = true },
+                initialState);
         }
 
         /// <summary>
         /// Get a snapshot of this device's copy of its twin, as last raised by <see cref="TwinStateChanged"/> (or changed since).
         /// </summary>
-        public TwinState GetTwinState()
-        {
-            lock (_reportedPatchLock)
-            {
-                lock (_twinStateLock)
-                {
-                    return CreateTwinState();
-                }
-            }
-        }
+        public TwinState GetTwinState() => _engine.GetTwinState();
 
         /// <summary>
         /// Get the full twin, or one of its sections.
@@ -312,8 +242,8 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
         /// <returns>The returned twin. Both versions are always set.</returns>
         /// <remarks>
         /// <para>
-        /// IoT hubs that use MQTTv3 always return the full twin and don't support conditional get twin requests, so the
-        /// sections that weren't requested are removed by this client.
+        /// IoT hubs that use MQTTv3 always return the full twin, so the sections that weren't requested are removed by this
+        /// client.
         /// </para>
         /// <para>
         /// Concurrent calls with identical arguments share a single request to IoT hub and all receive its response. If IoT hub
@@ -322,56 +252,14 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
         /// </para>
         /// </remarks>
         /// <exception cref="ArgumentException">Thrown when neither desired nor reported properties are requested.</exception>
-        /// <exception cref="NotSupportedException">Thrown if the device isn't connected to an IoT hub that uses MQTTv3.</exception>
+        /// <exception cref="NotSupportedException">Thrown if the device isn't connected.</exception>
         /// <exception cref="DeviceException">
         /// Thrown if IoT hub rejected this get twin request, or with <see cref="ErrorRetryability.Retryable"/> if the
         /// connection to IoT hub was lost before the response arrived. The request may be retried once reconnected.
         /// </exception>
-        public async Task<DeviceTwin> GetTwinAsync(bool getReported = true, bool getDesired = true, CancellationToken cancellationToken = default)
+        public Task<DeviceTwin> GetTwinAsync(bool getReported = true, bool getDesired = true, CancellationToken cancellationToken = default)
         {
-            ObjectDisposedException.ThrowIf(_isDisposed, this);
-            if (!getReported && !getDesired)
-            {
-                throw new ArgumentException("At least one twin section must be requested.");
-            }
-
-            EnsureConnected();
-
-            GetTwinRequest request = new(getDesired, getReported);
-            GetTwinExchange? exchange;
-            bool isNewExchange = false;
-            lock (_getTwinExchangesLock)
-            {
-                if (!_getTwinExchangesByRequest.TryGetValue(request, out exchange))
-                {
-                    exchange = new GetTwinExchange(request);
-                    _getTwinExchangesByRequest[request] = exchange;
-                    isNewExchange = true;
-                }
-
-                exchange.WaiterCount++;
-            }
-
-            try
-            {
-                if (isNewExchange)
-                {
-                    SendNextGetTwinAttempt(exchange);
-                }
-
-                return await exchange.Response.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
-            }
-            finally
-            {
-                lock (_getTwinExchangesLock)
-                {
-                    // Stop retrying the request once nobody is waiting for its response.
-                    if (--exchange.WaiterCount == 0)
-                    {
-                        EndGetTwinExchange(exchange);
-                    }
-                }
-            }
+            return _engine.GetTwinAsync(getReported, getDesired, ifNotMatchReported: 0, ifNotMatchDesired: 0, cancellationToken);
         }
 
         /// <summary>
@@ -384,22 +272,23 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
         /// </param>
         /// <returns>
         /// IoT hub's response to the patch that carried these changes: <see cref="Result.Ok"/> with the new version of the
-        /// reported properties, or the reason why IoT hub rejected the changes (<see cref="Result.PayloadInvalid"/> for status
-        /// 400, <see cref="Result.PayloadTooLarge"/> for status 413 and <see cref="Result.InternalError"/> for any other status
-        /// that isn't retried).
+        /// reported properties, or the reason why IoT hub rejected the changes. IoT hubs that use MQTTv3 respond with a status,
+        /// which is mapped to <see cref="Result.PayloadInvalid"/> for status 400, <see cref="Result.PayloadTooLarge"/> for
+        /// status 413 and <see cref="Result.InternalError"/> for any other status that isn't retried.
         /// </returns>
         /// <remarks>
         /// <para>
-        /// This client sends one reported properties patch at a time. IoT hubs that use MQTTv3 don't support conditional
-        /// patches, so each patch is applied unconditionally. Patches made while another patch is in flight (or while the device
+        /// This client sends one reported properties patch at a time, and each patch is applied unconditionally (IoT hubs that
+        /// use MQTTv3 don't support conditional patches, and this client behaves the same way on IoT hubs that use MQTTv5). Patches made while another patch is in flight (or while the device
         /// is reconnecting) are combined, in order, into the next patch that this client sends, so they share its response.
         /// Patches that can't be combined into one JSON merge patch (such as one that removes a property followed by one that
         /// sets some of that property's children) are sent one after another.
         /// </para>
         /// <para>
         /// If IoT hub doesn't respond within a defensive timeout (5 to 15 minutes, growing with each attempt), or responds that
-        /// it is throttling or failing (status 429 or 5xx), the patch is sent again once that timeout elapses. If the connection
-        /// is lost, the patch is sent again once the device has reconnected. Since these patches are unconditional, IoT hub may
+        /// it is throttling or failing (such as status 429 or 5xx), the patch is sent again once that timeout elapses. If the connection
+        /// is lost, the patch is sent again once the device has reconnected (and, on IoT hubs that use MQTTv5, IoT hub has
+        /// acknowledged its presence). Since these patches are unconditional, IoT hub may
         /// apply a patch that is sent again more than once.
         /// </para>
         /// <para>
@@ -412,35 +301,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
         public Task<ReportedPatchResponse> UpdateReportedPropertiesAsync(ReportedPatchRequest patch, CancellationToken cancellationToken = default)
         {
             ArgumentNullException.ThrowIfNull(patch);
-            return UpdateReportedPropertiesAsync(patch.ReportedProperties, cancellationToken);
-        }
-
-        private async Task<ReportedPatchResponse> UpdateReportedPropertiesAsync(JsonObject reportedProperties, CancellationToken cancellationToken)
-        {
-            ObjectDisposedException.ThrowIf(_isDisposed, this);
-            ArgumentNullException.ThrowIfNull(reportedProperties);
-            cancellationToken.ThrowIfCancellationRequested();
-
-            PendingReportedPatch pendingPatch = AddPendingReportedPatch(reportedProperties, hasWaiter: true);
-
-            try
-            {
-                return await pendingPatch.Response!.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-            {
-                lock (_reportedPatchLock)
-                {
-                    // A patch that was ever sent may already be applied, so it stays until IoT hub responds to it.
-                    if (!pendingPatch.HasBeenSent && _pendingReportedPatches.Remove(pendingPatch))
-                    {
-                        MarkTwinStateChanged();
-                    }
-                }
-
-                RaiseTwinEvents();
-                throw;
-            }
+            return _engine.UpdateReportedPropertiesAsync(patch.ReportedProperties, cancellationToken);
         }
 
         /// <summary>
@@ -458,1426 +319,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
         /// so an application that persists that state doesn't lose the patch if it stops before IoT hub applies it.
         /// </para>
         /// </remarks>
-        public void EnqueueReportedPropertiesUpdate(JsonObject reportedProperties)
-        {
-            ObjectDisposedException.ThrowIf(_isDisposed, this);
-            ArgumentNullException.ThrowIfNull(reportedProperties);
-            AddPendingReportedPatch(reportedProperties, hasWaiter: false);
-        }
-
-        private PendingReportedPatch AddPendingReportedPatch(JsonObject reportedProperties, bool hasWaiter)
-        {
-            // A patch made by a twin event handler is only sent once the outer call to RaiseTwinEvents has raised a snapshot
-            // containing it, so that it is persisted before being sent.
-            bool isReentrant = Monitor.IsEntered(_twinEventsLock);
-
-            // Copy the patch so that later changes the application makes to it don't affect what is sent.
-            PendingReportedPatch pendingPatch = new(reportedProperties.DeepClone().AsObject(), hasWaiter, isReleased: !isReentrant);
-            ReportedPatchAttempt? attempt;
-            lock (_reportedPatchLock)
-            {
-                ObjectDisposedException.ThrowIf(_isDisposed, this);
-                _pendingReportedPatches.Add(pendingPatch);
-                MarkTwinStateChanged();
-                attempt = TryStartReportedPatchAttempt();
-            }
-
-            RaiseTwinEvents();
-            SendReportedPatchAttempt(attempt);
-            return pendingPatch;
-        }
-
-        // Must be called while holding _reportedPatchLock. Starts the next reported patch attempt from the pending patches, unless
-        // one is already in flight, there are none, or the device isn't connected to an IoT hub that uses MQTTv3. Patches held
-        // while the device isn't connected are sent once the connection is ready.
-        private ReportedPatchAttempt? TryStartReportedPatchAttempt()
-        {
-            if (_isDisposed
-                || _reportedPatchAttempt != null
-                || _pendingReportedPatches.Count == 0
-                || !_pendingReportedPatches[0].IsReleased
-                || !IsReadyForTwinMessages())
-            {
-                return null;
-            }
-
-            JsonObject payload = _pendingReportedPatches[0].Patch.DeepClone().AsObject();
-            int patchCount = 1;
-            while (patchCount < _pendingReportedPatches.Count && _pendingReportedPatches[patchCount].IsReleased)
-            {
-                JsonObject combined = payload.DeepClone().AsObject();
-                if (!TryCombineMergePatches(combined, _pendingReportedPatches[patchCount].Patch))
-                {
-                    break;
-                }
-
-                payload = combined;
-                patchCount++;
-            }
-
-            List<PendingReportedPatch> patches = _pendingReportedPatches.GetRange(0, patchCount);
-            foreach (PendingReportedPatch pendingPatch in patches)
-            {
-                pendingPatch.HasBeenSent = true;
-            }
-
-            ReportedPatchAttempt attempt = new(Guid.NewGuid(), patches, JsonSerializer.SerializeToUtf8Bytes(payload));
-            attempt.Timer = new System.Threading.Timer(
-                _ => HandleReportedPatchTimeout(attempt),
-                null,
-                ReportedPatchTimeoutSchedule(_reportedPatchTimeoutAttempt),
-                Timeout.InfiniteTimeSpan);
-            _reportedPatchAttempt = attempt;
-            return attempt;
-        }
-
-        // Must be called while holding _reportedPatchLock. The patches it carried stay pending unless the caller removes them.
-        private void EndReportedPatchAttempt(ReportedPatchAttempt attempt)
-        {
-            _reportedPatchAttempt = null;
-            attempt.Timer?.Dispose();
-
-            // Callbacks registered on this token run asynchronously so that they never run while holding the lock.
-            _ = attempt.Cancellation.CancelAsync();
-        }
-
-        // Combines a JSON merge patch (RFC 7396) into another, in place, so that it has the same effect as applying both in order.
-        // Returns false if no single merge patch has that effect. The first patch may be partially modified in that case.
-        private static bool TryCombineMergePatches(JsonObject first, JsonObject second)
-        {
-            foreach (KeyValuePair<string, JsonNode?> property in second)
-            {
-                if (property.Value is JsonObject secondChild)
-                {
-                    if (!first.TryGetPropertyValue(property.Key, out JsonNode? firstValue))
-                    {
-                        first[property.Key] = secondChild.DeepClone();
-                    }
-                    else if (firstValue is JsonObject firstChild)
-                    {
-                        if (!TryCombineMergePatches(firstChild, secondChild))
-                        {
-                            return false;
-                        }
-                    }
-                    else
-                    {
-                        // The first patch replaces or removes this property, and the second merges into what the first left. If
-                        // the property was an object to begin with, a single merge patch would merge into that object instead.
-                        return false;
-                    }
-                }
-                else
-                {
-                    first[property.Key] = property.Value?.DeepClone();
-                }
-            }
-
-            return true;
-        }
-
-        private void SendReportedPatchAttempt(ReportedPatchAttempt? attempt)
-        {
-            if (attempt != null)
-            {
-                _ = PublishReportedPatchAttemptAsync(attempt);
-            }
-        }
-
-        private async Task PublishReportedPatchAttemptAsync(ReportedPatchAttempt attempt)
-        {
-            try
-            {
-                MqttPublish publish = new()
-                {
-                    Topic = string.Format(CultureInfo.InvariantCulture, ClassicTwinReportedPropertiesPatchTopicFormat, attempt.PatchId),
-                    QualityOfServiceLevel = MqttQualityOfServiceLevel.AtLeastOnce,
-                    Payload = attempt.Payload,
-                };
-
-                Trace.TraceInformation("Publishing 'PatchReported' request on topic " + publish.Topic);
-                await _connection.PublishAsync(publish, throwOnErrorReasonCode: true, attempt.Cancellation.Token).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException) when (attempt.Cancellation.IsCancellationRequested)
-            {
-                // The attempt already ended (for example, the connection was lost), so it must not be sent.
-            }
-            catch (DeviceException e) when (e.Retryability == ErrorRetryability.Retryable)
-            {
-                // The attempt stays in flight, so it is sent again once it times out or the device reconnects.
-                Trace.TraceWarning("Failed to publish a reported properties patch. It will be sent again: {0}", e);
-            }
-            catch (Exception e)
-            {
-                ReportedPatchAttempt? nextAttempt;
-                lock (_reportedPatchLock)
-                {
-                    if (_reportedPatchAttempt != attempt)
-                    {
-                        return;
-                    }
-
-                    EndReportedPatchAttempt(attempt);
-                    _pendingReportedPatches.RemoveRange(0, attempt.Patches.Count);
-                    MarkTwinStateChanged();
-                    _reportedPatchCompletions.Enqueue(new ReportedPatchCompletedEventArgs() { Patch = ParseAttemptPatch(attempt), Error = e });
-                    nextAttempt = TryStartReportedPatchAttempt();
-                }
-
-                foreach (PendingReportedPatch pendingPatch in attempt.Patches)
-                {
-                    pendingPatch.Response?.TrySetException(e);
-                }
-
-                RaiseTwinEvents();
-
-                SendReportedPatchAttempt(nextAttempt);
-            }
-        }
-
-        private void HandleReportedPatchTimeout(ReportedPatchAttempt attempt)
-        {
-            ReportedPatchAttempt? nextAttempt;
-            lock (_reportedPatchLock)
-            {
-                if (_isDisposed || _reportedPatchAttempt != attempt)
-                {
-                    return;
-                }
-
-                EndReportedPatchAttempt(attempt);
-                _reportedPatchTimeoutAttempt++;
-                nextAttempt = TryStartReportedPatchAttempt();
-            }
-
-            Trace.TraceWarning("Timed out waiting for the response to a reported properties patch. Sending it again.");
-            SendReportedPatchAttempt(nextAttempt);
-        }
-
-        // Returns false if the response isn't for the reported patch attempt in flight.
-        private async Task<bool> TryHandleReportedPatchResponseAsync(Guid patchId, int status, ulong version, long connectionEpoch)
-        {
-            ReportedPatchAttempt? nextAttempt;
-            ReportedPatchResponse response;
-            List<PendingReportedPatch> resolvedPatches;
-            bool isReportedStateStale = false;
-            lock (_reportedPatchLock)
-            {
-                ReportedPatchAttempt? attempt = _reportedPatchAttempt;
-                if (attempt == null || attempt.PatchId != patchId)
-                {
-                    return false;
-                }
-
-                if (IsTransientStatus(status))
-                {
-                    // Keep the attempt in flight, so that it is sent again once its defensive timeout elapses.
-                    Trace.TraceWarning("IoT hub responded to a reported properties patch with status {0}. Sending it again later.", status);
-                    attempt.Timer?.Change(ReportedPatchTimeoutSchedule(_reportedPatchTimeoutAttempt), Timeout.InfiniteTimeSpan);
-                    return true;
-                }
-
-                response = new ReportedPatchResponse()
-                {
-                    Result = MapReportedPatchStatus(status),
-                    Version = version,
-                };
-
-                if (response.Result == Result.Ok)
-                {
-                    RecordAuthoritativeVersions(connectionEpoch, 0, version);
-                }
-
-                EndReportedPatchAttempt(attempt);
-                _reportedPatchTimeoutAttempt = 1;
-                _pendingReportedPatches.RemoveRange(0, attempt.Patches.Count);
-                resolvedPatches = attempt.Patches;
-                if (response.Result == Result.Ok)
-                {
-                    lock (_reportedStateLock)
-                    {
-                        lock (_twinStateLock)
-                        {
-                            // IoT hub applied these patches in order, so this device's copy of the reported properties has them too.
-                            foreach (PendingReportedPatch pendingPatch in attempt.Patches)
-                            {
-                                ApplyMergePatch(_reportedProperties, pendingPatch.Patch);
-                            }
-                        }
-
-                        // If this device held the version before this patch, it now holds them at the patched version (in full, if it
-                        // held them in full before). Otherwise, it still doesn't hold them in full.
-                        if (_localReportedVersion != 0 && version == _localReportedVersion + 1)
-                        {
-                            AdvanceLocalReportedVersion(version);
-                        }
-                        else if (_localReportedVersion != 0 && version > _localReportedVersion + 1)
-                        {
-                            // Someone else changed the reported properties in between, so this device's copy lacks their changes.
-                            Trace.TraceWarning("This device held version {0} of the reported properties, but IoT hub applied its patch at version {1}. This device no longer considers itself to hold the reported properties, and gets the twin again.", _localReportedVersion, version);
-                            SetLocalReportedState(0, null);
-                            isReportedStateStale = true;
-                        }
-                    }
-                }
-                else
-                {
-                    Trace.TraceWarning("IoT hub rejected a reported properties patch with status {0}.", status);
-                }
-
-                MarkTwinStateChanged();
-                _reportedPatchCompletions.Enqueue(new ReportedPatchCompletedEventArgs() { Patch = ParseAttemptPatch(attempt), Response = response });
-                nextAttempt = TryStartReportedPatchAttempt();
-            }
-
-            foreach (PendingReportedPatch pendingPatch in resolvedPatches)
-            {
-                pendingPatch.Response?.TrySetResult(response);
-            }
-
-            RaiseTwinEvents();
-            SendReportedPatchAttempt(nextAttempt);
-
-            if (isReportedStateStale)
-            {
-                await StartTwinResyncAsync(connectionEpoch).ConfigureAwait(false);
-            }
-
-            return true;
-        }
-
-        private static JsonObject ParseAttemptPatch(ReportedPatchAttempt attempt)
-        {
-            return JsonNode.Parse(attempt.Payload)!.AsObject();
-        }
-
-        private static bool IsSuccessStatus(int status)
-        {
-            return status >= 200 && status < 300;
-        }
-
-        // IoT hub is throttling or failing, so the request may succeed if it is sent again later.
-        private static bool IsTransientStatus(int status)
-        {
-            return status == 429 || status >= 500;
-        }
-
-        private static Result MapReportedPatchStatus(int status)
-        {
-            return status switch
-            {
-                >= 200 and < 300 => Result.Ok,
-                400 => Result.PayloadInvalid,
-                413 => Result.PayloadTooLarge,
-                _ => Result.InternalError,
-            };
-        }
-
-        // Sends the first attempt of the exchange, or a new attempt (with a new ID, so that responses to earlier attempts are dropped).
-        private void SendNextGetTwinAttempt(GetTwinExchange exchange)
-        {
-            Guid getId = Guid.NewGuid();
-            lock (_getTwinExchangesLock)
-            {
-                if (exchange.IsEnded)
-                {
-                    return;
-                }
-
-                if (exchange.GetId is Guid previousGetId)
-                {
-                    _getTwinExchangesById.Remove(previousGetId);
-                }
-
-                exchange.GetId = getId;
-                _getTwinExchangesById[getId] = exchange;
-                exchange.Timer?.Dispose();
-                exchange.Timer = new System.Threading.Timer(
-                    _ => HandleGetTwinTimeout(exchange, getId),
-                    null,
-                    GetTwinTimeoutSchedule(exchange.Attempt),
-                    Timeout.InfiniteTimeSpan);
-            }
-
-            _ = PublishGetTwinAsync(exchange, getId);
-        }
-
-        private async Task PublishGetTwinAsync(GetTwinExchange exchange, Guid getId)
-        {
-            try
-            {
-                await PublishGetAsync(getId, exchange.Cancellation.Token).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException) when (exchange.Cancellation.IsCancellationRequested)
-            {
-                // The exchange already ended.
-            }
-            catch (Exception e)
-            {
-                lock (_getTwinExchangesLock)
-                {
-                    EndGetTwinExchange(exchange);
-                }
-
-                exchange.Response.TrySetException(e);
-            }
-        }
-
-        private async Task PublishGetAsync(Guid getId, CancellationToken cancellationToken)
-        {
-            MqttPublish publish = new()
-            {
-                Topic = string.Format(CultureInfo.InvariantCulture, ClassicTwinGetTopicFormat, getId),
-                QualityOfServiceLevel = MqttQualityOfServiceLevel.AtLeastOnce,
-            };
-
-            Trace.TraceInformation("Publishing 'GetTwin' request on topic " + publish.Topic);
-
-            // Puback is checked for non-success cases under this layer, so no need to check it here as well
-            await _connection.PublishAsync(publish, throwOnErrorReasonCode: true, cancellationToken).ConfigureAwait(false);
-        }
-
-        private void HandleGetTwinTimeout(GetTwinExchange exchange, Guid getId)
-        {
-            lock (_getTwinExchangesLock)
-            {
-                if (_isDisposed || exchange.IsEnded || exchange.GetId != getId)
-                {
-                    return;
-                }
-
-                exchange.Attempt++;
-            }
-
-            Trace.TraceWarning("Timed out waiting for the response to a get twin request. Sending it again.");
-            SendNextGetTwinAttempt(exchange);
-        }
-
-        // Must be called while holding _getTwinExchangesLock.
-        private void EndGetTwinExchange(GetTwinExchange exchange)
-        {
-            if (exchange.IsEnded)
-            {
-                return;
-            }
-
-            exchange.IsEnded = true;
-            if (_getTwinExchangesByRequest.TryGetValue(exchange.Request, out GetTwinExchange? current) && current == exchange)
-            {
-                _getTwinExchangesByRequest.Remove(exchange.Request);
-            }
-
-            if (exchange.GetId is Guid getId)
-            {
-                _getTwinExchangesById.Remove(getId);
-            }
-
-            exchange.Timer?.Dispose();
-
-            // Callbacks registered on this token run asynchronously so that they never run while holding the lock.
-            _ = exchange.Cancellation.CancelAsync();
-        }
-
-        // Returns false if the response isn't for the latest attempt of an application's get twin exchange.
-        private bool TryHandleGetTwinResponse(Guid getId, int status, byte[] payload, long connectionEpoch)
-        {
-            GetTwinExchange? exchange;
-            lock (_getTwinExchangesLock)
-            {
-                if (!_getTwinExchangesById.TryGetValue(getId, out exchange))
-                {
-                    return false;
-                }
-
-                if (IsTransientStatus(status))
-                {
-                    // Keep the exchange outstanding, so that it is sent again once its defensive timeout elapses.
-                    Trace.TraceWarning("IoT hub responded to a get twin request with status {0}. Sending it again later.", status);
-                    exchange.Timer?.Change(GetTwinTimeoutSchedule(exchange.Attempt), Timeout.InfiniteTimeSpan);
-                    return true;
-                }
-
-                EndGetTwinExchange(exchange);
-            }
-
-            if (!IsSuccessStatus(status))
-            {
-                exchange.Response.TrySetException(new DeviceException($"IoT hub rejected the get twin request with status {status}.")
-                {
-                    Retryability = ErrorRetryability.Terminal,
-                    IsContained = true,
-                });
-                return true;
-            }
-
-            TwinSnapshot snapshot;
-            try
-            {
-                snapshot = ParseGetTwinResponsePayload(payload);
-            }
-            catch (Exception e)
-            {
-                exchange.Response.TrySetException(e);
-                return true;
-            }
-
-            RecordAuthoritativeVersions(connectionEpoch, snapshot.DesiredVersion, snapshot.ReportedVersion);
-
-            GetTwinRequest request = exchange.Request;
-            DeviceTwin twin = new()
-            {
-                Desired = request.GetDesired ? snapshot.Desired : null,
-                Reported = request.GetReported ? snapshot.Reported : null,
-                DesiredVersion = snapshot.DesiredVersion,
-                ReportedVersion = snapshot.ReportedVersion,
-            };
-
-            if (request.GetDesired && snapshot.DesiredVersion != 0)
-            {
-                lock (_desiredStateLock)
-                {
-                    // The application fetched the desired properties, so this device's view of them is now at least this version.
-                    AdvanceLocalDesiredVersion(snapshot.DesiredVersion, snapshot.Desired, isPatch: false);
-                }
-            }
-
-            if (request.GetReported && snapshot.ReportedVersion != 0)
-            {
-                AdvanceLocalReportedVersion(snapshot.ReportedVersion, snapshot.Reported);
-            }
-
-            exchange.Response.TrySetResult(twin);
-            return true;
-        }
-
-        // Twin exchanges can't outlive the connection they were sent on, since IoT hub never sends their responses on a later one.
-        private void HandleConnectionLost()
-        {
-            Interlocked.Increment(ref _connectionEpoch);
-
-            AbandonGetTwinExchanges(() => new DeviceException("The connection to IoT hub was lost before the response to this twin request arrived. It may be retried once reconnected.")
-            {
-                Retryability = ErrorRetryability.Retryable,
-                IsContained = true,
-            });
-
-            // Reported patches are kept and sent again once the connection is ready again. IoT hub may have applied the attempt in
-            // flight, in which case it applies it again.
-            lock (_reportedPatchLock)
-            {
-                if (_reportedPatchAttempt != null)
-                {
-                    EndReportedPatchAttempt(_reportedPatchAttempt);
-                }
-
-                _reportedPatchTimeoutAttempt = 1;
-            }
-
-            lock (_desiredStateLock)
-            {
-                CancelDesiredResync();
-            }
-        }
-
-        // IoT hubs that use MQTTv3 don't push the twin when the device connects, so get it instead, and send the reported patches
-        // held while the device wasn't connected.
-        private void HandleConnectionReady()
-        {
-            if (_isDisposed || !IsReadyForTwinMessages())
-            {
-                return;
-            }
-
-            ReportedPatchAttempt? nextAttempt;
-            lock (_reportedPatchLock)
-            {
-                nextAttempt = TryStartReportedPatchAttempt();
-            }
-
-            SendReportedPatchAttempt(nextAttempt);
-
-            _ = StartTwinResyncAsync(Interlocked.Read(ref _connectionEpoch));
-        }
-
-        private void AbandonGetTwinExchanges(Func<Exception> createException)
-        {
-            List<GetTwinExchange> getTwinExchanges;
-            lock (_getTwinExchangesLock)
-            {
-                getTwinExchanges = _getTwinExchangesByRequest.Values.ToList();
-                foreach (GetTwinExchange exchange in getTwinExchanges)
-                {
-                    EndGetTwinExchange(exchange);
-                }
-            }
-
-            foreach (GetTwinExchange exchange in getTwinExchanges)
-            {
-                exchange.Response.TrySetException(createException());
-            }
-        }
-
-        private void EnsureConnected()
-        {
-            ConnectionContext? connectionContext = _connection.GetCurrentConnectionContext();
-            if (connectionContext == null || !_connection.IsConnectionTargetSet)
-            {
-                throw new NotSupportedException("Must be connected before calling this method.");
-            }
-
-            if (connectionContext.ConnectionProfile == IotHubConnectionType.Mqttv5)
-            {
-                throw new NotSupportedException($"{nameof(TwinClient)} only supports IoT hubs that use MQTTv3.");
-            }
-        }
-
-        private bool IsReadyForTwinMessages()
-        {
-            return _connection.IsConnectionReady
-                && _connection.GetCurrentConnectionContext()?.ConnectionProfile != IotHubConnectionType.Mqttv5;
-        }
-
-        private async Task HandleReceivedMqttPublishAsync(MqttPublishReceivedEventArgs args)
-        {
-            string topic = args.Publish.Topic;
-            if (!topic.StartsWith(ClassicTwinTopicPrefix, StringComparison.Ordinal))
-            {
-                // The publish is not relevant to this client, so ignore it. This check needs to happen prior to checking the deviceId within the topic b/c deviceId is
-                // not available until after provisioning finishes and this client may be setup prior to provisioning. This allows this client to ignore DPS
-                // publishes without needing to know the deviceId.
-                return;
-            }
-
-            if (_isDisposed)
-            {
-                return;
-            }
-
-            ConnectionContext? connectionContext = _connection.GetCurrentConnectionContext();
-            if (connectionContext == null)
-            {
-                Trace.TraceWarning("Cannot handle a received MQTT message while disconnected");
-                return;
-            }
-
-            if (connectionContext.ConnectionProfile == IotHubConnectionType.Mqttv5)
-            {
-                // This client only handles the twin messages of IoT hubs that use MQTTv3.
-                return;
-            }
-
-            long connectionEpoch = Interlocked.Read(ref _connectionEpoch);
-
-            // Note that all twin response and desired property update messages are QoS 0, so no need to ack the MQTT message here
-            try
-            {
-                if (topic.StartsWith(ClassicTwinResponseTopic, StringComparison.Ordinal))
-                {
-                    if (!TryParseResponseTopic(topic, out Guid requestId, out int status, out ulong version))
-                    {
-                        Trace.TraceWarning("Dropping a twin response with an unexpected topic: " + topic);
-                        return;
-                    }
-
-                    Trace.TraceInformation("Received twin response message on topic " + topic);
-                    if (!TryHandleGetTwinResponse(requestId, status, args.Publish.Payload, connectionEpoch)
-                        && !await TryHandleDesiredResyncGetResponseAsync(requestId, status, args.Publish.Payload, connectionEpoch).ConfigureAwait(false)
-                        && !await TryHandleReportedPatchResponseAsync(requestId, status, version, connectionEpoch).ConfigureAwait(false))
-                    {
-                        Trace.TraceInformation("Dropping a twin response that does not match any outstanding twin request.");
-                    }
-                }
-                else if (topic.StartsWith(ClassicTwinDesiredPropertiesPatchTopic, StringComparison.Ordinal))
-                {
-                    await HandleDesiredPatchAsync(topic, args.Publish.Payload, connectionEpoch).ConfigureAwait(false);
-                }
-            }
-            catch (Exception e) when (e is JsonException or InvalidOperationException or FormatException)
-            {
-                Trace.TraceWarning("Dropping a malformed twin message received on topic {0}: {1}", topic, e);
-            }
-            finally
-            {
-                RaiseTwinEvents();
-            }
-        }
-
-        private async Task HandleDesiredPatchAsync(string topic, byte[] payload, long connectionEpoch)
-        {
-            JsonObject desiredProperties = payload.Length == 0 ? new JsonObject() : JsonNode.Parse(payload)!.AsObject();
-            ulong version = TakeVersion(desiredProperties);
-            if (version == 0)
-            {
-                version = ParseVersionFromTopic(topic);
-            }
-
-            if (version == 0)
-            {
-                Trace.TraceWarning("Dropping a desired property patch without a version.");
-                return;
-            }
-
-            RecordAuthoritativeVersions(connectionEpoch, version, 0);
-
-            DesiredStateOutcome outcome = new();
-            lock (_desiredStateLock)
-            {
-                DiscardDesiredResyncFromPreviousConnection(connectionEpoch);
-                ProcessDesiredPatch(new DesiredPatch(version, desiredProperties), connectionEpoch, outcome);
-            }
-
-            await CompleteAsync(outcome).ConfigureAwait(false);
-        }
-
-        private void RecordAuthoritativeVersions(long connectionEpoch, ulong desiredVersion, ulong reportedVersion)
-        {
-            lock (_authoritativeVersionsLock)
-            {
-                if (_authoritativeVersions == null || _authoritativeVersions.ConnectionEpoch != connectionEpoch)
-                {
-                    _authoritativeVersions = new AuthoritativeVersions(connectionEpoch);
-                }
-
-                // IoT hub's versions never decrease, so an older one is from a message that IoT hub sent earlier.
-                _authoritativeVersions.Desired = Math.Max(_authoritativeVersions.Desired, desiredVersion);
-                _authoritativeVersions.Reported = Math.Max(_authoritativeVersions.Reported, reportedVersion);
-            }
-        }
-
-        private ulong? GetAuthoritativeVersion(bool desired)
-        {
-            lock (_authoritativeVersionsLock)
-            {
-                if (_authoritativeVersions == null || _authoritativeVersions.ConnectionEpoch != Interlocked.Read(ref _connectionEpoch))
-                {
-                    return null;
-                }
-
-                ulong version = desired ? _authoritativeVersions.Desired : _authoritativeVersions.Reported;
-
-                // IoT hub's versions are never 0, so 0 means IoT hub has not revealed this section's version yet.
-                return version == 0 ? null : version;
-            }
-        }
-
-        // Must be called while holding _desiredStateLock.
-        private void ProcessDesiredPatch(DesiredPatch patch, long connectionEpoch, DesiredStateOutcome outcome)
-        {
-            if (_desiredResync != null)
-            {
-                if (patch.Version <= _localDesiredVersion)
-                {
-                    return;
-                }
-
-                if (_desiredResync.Buffer.Count >= DesiredResyncBufferCapacity)
-                {
-                    // The response to a new GET will include every patch buffered so far (and this one), so they can be dropped.
-                    Trace.TraceWarning("Too many desired property patches were received while resyncing the desired properties. Requesting the twin again.");
-                    _desiredResync.Buffer.Clear();
-                    SendNewDesiredResyncGet(_desiredResync, outcome);
-                    return;
-                }
-
-                _desiredResync.Buffer.Add(patch);
-                return;
-            }
-
-            if (patch.Version <= _localDesiredVersion)
-            {
-                Trace.TraceInformation("Dropping desired property patch with version {0} because this device has already observed version {1}.", patch.Version, _localDesiredVersion);
-                return;
-            }
-
-            if (patch.Version > _localDesiredVersion + 1)
-            {
-                Trace.TraceInformation("Received desired property patch with version {0}, but this device has only observed version {1}. Resyncing the desired properties.", patch.Version, _localDesiredVersion);
-                StartDesiredResync(connectionEpoch, patch, outcome);
-                return;
-            }
-
-            AdvanceLocalDesiredVersion(patch.Version, patch.Properties, isPatch: true);
-            outcome.Deliveries.Add(new DesiredPatchReceivedEventArgs()
-            {
-                DesiredProperties = patch.Properties,
-                DesiredPropertiesVersion = patch.Version,
-            });
-        }
-
-        // Must be called while holding _desiredStateLock. Returns null if the snapshot is not newer than this device's view.
-        private TwinPushSection? TryApplyDesiredSnapshot(ulong version, JsonObject properties)
-        {
-            if (version <= _localDesiredVersion)
-            {
-                return null;
-            }
-
-            AdvanceLocalDesiredVersion(version, properties, isPatch: false);
-            return new TwinPushSection()
-            {
-                Properties = properties,
-                PropertiesVersion = version,
-            };
-        }
-
-        // Must be called while holding _desiredStateLock. The properties are either the desired properties in full at this version,
-        // or (if isPatch) the patch that takes them from the previous version to this one.
-        private void AdvanceLocalDesiredVersion(ulong version, JsonObject properties, bool isPatch)
-        {
-            if (version <= _localDesiredVersion)
-            {
-                return;
-            }
-
-            lock (_twinStateLock)
-            {
-                _localDesiredVersion = version;
-                if (isPatch)
-                {
-                    ApplyMergePatch(_desiredProperties, properties);
-                }
-                else
-                {
-                    _desiredProperties = properties.DeepClone().AsObject();
-                }
-
-                _isTwinStateChanged = true;
-            }
-        }
-
-        // The properties, if any, are the reported properties in full at this version. Otherwise, the caller already updated them.
-        private void AdvanceLocalReportedVersion(ulong version, JsonObject? properties = null)
-        {
-            lock (_reportedStateLock)
-            {
-                if (version > _localReportedVersion)
-                {
-                    SetLocalReportedState(version, properties);
-                }
-                else if (properties != null && version == _localReportedVersion && !_isReportedPropertiesComplete)
-                {
-                    // This device only knew the number of this version. Now it holds the reported properties in full at it.
-                    SetLocalReportedState(version, properties);
-                }
-            }
-        }
-
-        // Must be called while holding _desiredStateLock (so that the resync can't change). Reconciles this device's copy of the
-        // reported properties with the full reported properties from a resync GET response. Returns null if it didn't change.
-        private TwinPushSection? ReconcileReportedSnapshot(ulong version, JsonObject properties, ulong localVersionWhenSent)
-        {
-            if (version == 0)
-            {
-                return null;
-            }
-
-            lock (_reportedStateLock)
-            {
-                if (version == _localReportedVersion && _isReportedPropertiesComplete)
-                {
-                    return null;
-                }
-
-                if (version < _localReportedVersion)
-                {
-                    if (_localReportedVersion != localVersionWhenSent)
-                    {
-                        // This device's own patch was applied after IoT hub responded to the GET, so its copy is newer.
-                        return null;
-                    }
-
-                    // IoT hub's versions never decrease, so the version this device held is not valid (for example, the
-                    // application restored the wrong version, or the twin was recreated).
-                    Trace.TraceWarning("This device held version {0} of the reported properties, but IoT hub only has version {1}. Adopting version {1}.", _localReportedVersion, version);
-                }
-
-                SetLocalReportedState(version, properties);
-            }
-
-            return new TwinPushSection()
-            {
-                Properties = properties,
-                PropertiesVersion = version,
-            };
-        }
-
-        // Must be called while holding _reportedStateLock. The properties, if any, are the reported properties in full at this
-        // version. Otherwise, the caller already updated them, and they are complete only if they were before (and the version isn't 0).
-        private void SetLocalReportedState(ulong version, JsonObject? properties)
-        {
-            lock (_twinStateLock)
-            {
-                _localReportedVersion = version;
-                if (properties != null)
-                {
-                    _reportedProperties = properties.DeepClone().AsObject();
-                    _isReportedPropertiesComplete = true;
-                }
-                else if (version == 0)
-                {
-                    _isReportedPropertiesComplete = false;
-                }
-
-                _isTwinStateChanged = true;
-            }
-        }
-
-        private void MarkTwinStateChanged()
-        {
-            lock (_twinStateLock)
-            {
-                _isTwinStateChanged = true;
-            }
-        }
-
-        // Must be called while holding _reportedPatchLock and _twinStateLock, so that the pending patches and the properties match.
-        private TwinState CreateTwinState()
-        {
-            return new TwinState()
-            {
-                DesiredVersion = _localDesiredVersion,
-                Desired = _desiredProperties.DeepClone().AsObject(),
-                ReportedVersion = _isReportedPropertiesComplete ? _localReportedVersion : 0,
-                Reported = _reportedProperties.DeepClone().AsObject(),
-                PendingReportedPatches = _pendingReportedPatches.Select(pendingPatch => pendingPatch.Patch.DeepClone().AsObject()).ToList(),
-            };
-        }
-
-        // Applies a JSON merge patch (RFC 7396) to the target, in place.
-        private static void ApplyMergePatch(JsonObject target, JsonObject patch)
-        {
-            foreach (KeyValuePair<string, JsonNode?> property in patch)
-            {
-                if (property.Value == null)
-                {
-                    target.Remove(property.Key);
-                }
-                else if (property.Value is JsonObject patchObject)
-                {
-                    if (target[property.Key] is not JsonObject targetObject)
-                    {
-                        targetObject = new JsonObject();
-                        target[property.Key] = targetObject;
-                    }
-
-                    ApplyMergePatch(targetObject, patchObject);
-                }
-                else
-                {
-                    target[property.Key] = property.Value.DeepClone();
-                }
-            }
-        }
-
-        // Raises the twin events that are due, one at a time and in order. Must be called without holding any of this client's
-        // other locks, so that handlers can call back into this client. If called from a handler, the outer call raises them,
-        // and then sends the reported patches that the handlers made.
-        private void RaiseTwinEvents()
-        {
-            if (Monitor.IsEntered(_twinEventsLock))
-            {
-                return;
-            }
-
-            ReportedPatchAttempt? attempt = null;
-            lock (_twinEventsLock)
-            {
-                while (!_isDisposed)
-                {
-                    ReportedPatchCompletedEventArgs? completion = null;
-                    TwinState? state = null;
-                    lock (_reportedPatchLock)
-                    {
-                        if (!_reportedPatchCompletions.TryDequeue(out completion))
-                        {
-                            lock (_twinStateLock)
-                            {
-                                if (_isTwinStateChanged)
-                                {
-                                    _isTwinStateChanged = false;
-                                    state = CreateTwinState();
-                                }
-                            }
-                        }
-
-                        if (completion == null && state == null)
-                        {
-                            // Every pending patch was in a snapshot that was raised, so the ones made by handlers can be sent.
-                            foreach (PendingReportedPatch pendingPatch in _pendingReportedPatches)
-                            {
-                                pendingPatch.IsReleased = true;
-                            }
-
-                            attempt = TryStartReportedPatchAttempt();
-                            break;
-                        }
-                    }
-
-                    try
-                    {
-                        if (completion != null)
-                        {
-                            ReportedPatchCompleted?.Invoke(completion);
-                        }
-                        else
-                        {
-                            TwinStateChanged?.Invoke(state!);
-                        }
-                    }
-                    catch (Exception e)
-                    {
-                        Trace.TraceWarning("A twin event handler threw an exception: {0}", e);
-                    }
-                }
-            }
-
-            SendReportedPatchAttempt(attempt);
-        }
-
-        // Gets the twin to resync it with IoT hub, unless that is already in progress.
-        private async Task StartTwinResyncAsync(long connectionEpoch)
-        {
-            try
-            {
-                DesiredStateOutcome outcome = new();
-                lock (_desiredStateLock)
-                {
-                    if (_isDisposed)
-                    {
-                        return;
-                    }
-
-                    DiscardDesiredResyncFromPreviousConnection(connectionEpoch);
-                    if (_desiredResync == null)
-                    {
-                        StartDesiredResync(connectionEpoch, null, outcome);
-                    }
-                }
-
-                await CompleteAsync(outcome).ConfigureAwait(false);
-            }
-            finally
-            {
-                RaiseTwinEvents();
-            }
-        }
-
-        // Must be called while holding _desiredStateLock.
-        private void StartDesiredResync(long connectionEpoch, DesiredPatch? firstBufferedPatch, DesiredStateOutcome outcome)
-        {
-            _desiredResync = new DesiredResync(connectionEpoch);
-            if (firstBufferedPatch != null)
-            {
-                _desiredResync.Buffer.Add(firstBufferedPatch);
-            }
-
-            SendNewDesiredResyncGet(_desiredResync, outcome);
-        }
-
-        // Must be called while holding _desiredStateLock. Ends the resync (if any) and applies its buffered patches that are newer than this device's view.
-        private void ResolveDesiredResync(long connectionEpoch, DesiredStateOutcome outcome)
-        {
-            DesiredResync? resync = _desiredResync;
-            if (resync == null)
-            {
-                return;
-            }
-
-            CancelDesiredResync();
-
-            // If there is a gap in the buffered patches, this starts a new resync that buffers the rest of them.
-            foreach (DesiredPatch bufferedPatch in resync.Buffer.OrderBy(patch => patch.Version))
-            {
-                ProcessDesiredPatch(bufferedPatch, connectionEpoch, outcome);
-            }
-        }
-
-        // Must be called while holding _desiredStateLock.
-        private void SendNewDesiredResyncGet(DesiredResync resync, DesiredStateOutcome outcome)
-        {
-            Guid getId = Guid.NewGuid();
-            resync.GetId = getId;
-            resync.DesiredVersionWhenSent = _localDesiredVersion;
-            lock (_reportedStateLock)
-            {
-                resync.ReportedVersionWhenSent = _localReportedVersion;
-            }
-
-            resync.Timer?.Dispose();
-            resync.Timer = new System.Threading.Timer(
-                _ => HandleDesiredResyncTimeout(resync, getId),
-                null,
-                DesiredResyncTimeoutSchedule(resync.Attempt),
-                Timeout.InfiniteTimeSpan);
-            outcome.ResyncGet = new ResyncGet(getId, resync.Cancellation.Token);
-        }
-
-        // Must be called while holding _desiredStateLock.
-        private void CancelDesiredResync()
-        {
-            if (_desiredResync != null)
-            {
-                _desiredResync.Timer?.Dispose();
-
-                // Callbacks registered on this token run asynchronously so that they never run while holding the lock.
-                _ = _desiredResync.Cancellation.CancelAsync();
-                _desiredResync = null;
-            }
-        }
-
-        // Must be called while holding _desiredStateLock. A resync does not survive a disconnect, since its GET response cannot arrive on a later connection.
-        private void DiscardDesiredResyncFromPreviousConnection(long connectionEpoch)
-        {
-            if (_desiredResync != null && _desiredResync.ConnectionEpoch != connectionEpoch)
-            {
-                CancelDesiredResync();
-            }
-        }
-
-        private void HandleDesiredResyncTimeout(DesiredResync resync, Guid getId)
-        {
-            DesiredStateOutcome outcome = new();
-            lock (_desiredStateLock)
-            {
-                if (_isDisposed || _desiredResync != resync || resync.GetId != getId)
-                {
-                    return;
-                }
-
-                if (resync.ConnectionEpoch != Interlocked.Read(ref _connectionEpoch))
-                {
-                    CancelDesiredResync();
-                    return;
-                }
-
-                Trace.TraceWarning("Timed out waiting for the response to the get twin request for resyncing the twin. Sending it again.");
-                resync.Attempt++;
-                SendNewDesiredResyncGet(resync, outcome);
-            }
-
-            _ = CompleteAsync(outcome);
-        }
-
-        // Returns false if the response isn't for the latest GET of the resync in progress.
-        private async Task<bool> TryHandleDesiredResyncGetResponseAsync(Guid getId, int status, byte[] payload, long connectionEpoch)
-        {
-            DesiredStateOutcome outcome = new();
-            lock (_desiredStateLock)
-            {
-                DiscardDesiredResyncFromPreviousConnection(connectionEpoch);
-
-                DesiredResync? resync = _desiredResync;
-                if (resync == null || resync.GetId != getId)
-                {
-                    return false;
-                }
-
-                if (!IsSuccessStatus(status))
-                {
-                    // Keep the resync in progress, so that its GET is sent again once its defensive timeout elapses.
-                    Trace.TraceWarning("IoT hub responded to the get twin request for resyncing the twin with status {0}. Sending it again later.", status);
-                    if (IsTransientStatus(status))
-                    {
-                        resync.Timer?.Change(DesiredResyncTimeoutSchedule(resync.Attempt), Timeout.InfiniteTimeSpan);
-                    }
-
-                    return true;
-                }
-
-                TwinSnapshot snapshot;
-                try
-                {
-                    snapshot = ParseGetTwinResponsePayload(payload);
-                }
-                catch (Exception e) when (e is JsonException or InvalidOperationException or FormatException)
-                {
-                    Trace.TraceWarning("Received a malformed get twin response while resyncing the twin. Sending it again later: {0}", e);
-                    return true;
-                }
-
-                RecordAuthoritativeVersions(connectionEpoch, snapshot.DesiredVersion, snapshot.ReportedVersion);
-
-                TwinPushReceivedEventArgs twinPushArgs = new()
-                {
-                    Reported = ReconcileReportedSnapshot(snapshot.ReportedVersion, snapshot.Reported, resync.ReportedVersionWhenSent),
-                };
-
-                if (snapshot.DesiredVersion != 0)
-                {
-                    if (snapshot.DesiredVersion < _localDesiredVersion && _localDesiredVersion == resync.DesiredVersionWhenSent)
-                    {
-                        // IoT hub's versions never decrease, so the version this device held is not valid.
-                        Trace.TraceWarning("This device held version {0} of the desired properties, but IoT hub only has version {1}. Adopting version {1}.", _localDesiredVersion, snapshot.DesiredVersion);
-                        lock (_twinStateLock)
-                        {
-                            _localDesiredVersion = 0;
-                            _isTwinStateChanged = true;
-                        }
-                    }
-
-                    twinPushArgs.Desired = TryApplyDesiredSnapshot(snapshot.DesiredVersion, snapshot.Desired);
-                }
-
-                if (twinPushArgs.Desired != null || twinPushArgs.Reported != null)
-                {
-                    outcome.Deliveries.Add(twinPushArgs);
-                }
-
-                ResolveDesiredResync(connectionEpoch, outcome);
-            }
-
-            await CompleteAsync(outcome).ConfigureAwait(false);
-            return true;
-        }
-
-        // Raises the events and sends the GET request that the desired section state machine decided on, outside of _desiredStateLock.
-        private async Task CompleteAsync(DesiredStateOutcome outcome)
-        {
-            foreach (EventArgs delivery in outcome.Deliveries)
-            {
-                try
-                {
-                    if (delivery is DesiredPatchReceivedEventArgs desiredPatchArgs)
-                    {
-                        DesiredPatchReceived?.Invoke(desiredPatchArgs);
-                    }
-                    else if (delivery is TwinPushReceivedEventArgs twinPushArgs)
-                    {
-                        TwinPushReceived?.Invoke(twinPushArgs);
-                    }
-                }
-                catch (Exception e)
-                {
-                    Trace.TraceWarning("A twin event handler threw an exception: {0}", e);
-                }
-            }
-
-            if (outcome.ResyncGet is ResyncGet resyncGet)
-            {
-                await SendDesiredResyncGetAsync(resyncGet).ConfigureAwait(false);
-            }
-        }
-
-        private async Task SendDesiredResyncGetAsync(ResyncGet resyncGet)
-        {
-            try
-            {
-                Trace.TraceInformation("Sending a get twin request to resync the twin");
-                await PublishGetAsync(resyncGet.GetId, resyncGet.CancellationToken).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException) when (resyncGet.CancellationToken.IsCancellationRequested)
-            {
-                // The resync already ended.
-            }
-            catch (Exception e)
-            {
-                // The defensive timeout sends this request again later.
-                Trace.TraceWarning("Failed to publish the get twin request for resyncing the twin: {0}", e);
-            }
-        }
-
-        // The payload looks like {"desired":{...,"$version":n},"reported":{...,"$version":m}}.
-        private static TwinSnapshot ParseGetTwinResponsePayload(byte[] payload)
-        {
-            JsonObject twin = payload.Length == 0 ? new JsonObject() : JsonNode.Parse(payload)!.AsObject();
-            JsonObject desired = DetachSection(twin, "desired", out ulong desiredVersion);
-            JsonObject reported = DetachSection(twin, "reported", out ulong reportedVersion);
-            return new TwinSnapshot(desired, desiredVersion, reported, reportedVersion);
-        }
-
-        private static JsonObject DetachSection(JsonObject twin, string sectionName, out ulong version)
-        {
-            JsonObject section = twin.TryGetPropertyValue(sectionName, out JsonNode? node) && node is JsonObject sectionObject
-                ? sectionObject
-                : new JsonObject();
-            twin.Remove(sectionName);
-
-            // Remove the "$version" entry so that the twin object more closely mimics how it would in MQTTv5 scenario
-            version = TakeVersion(section);
-            return section;
-        }
-
-        // Removes the "$version" entry from the properties, and returns its value (or 0 if there isn't one).
-        private static ulong TakeVersion(JsonObject properties)
-        {
-            ulong version = 0;
-            if (properties.TryGetPropertyValue(VersionKey, out JsonNode? versionNode) && versionNode is JsonValue versionValue)
-            {
-                version = (ulong)versionValue;
-            }
-
-            properties.Remove(VersionKey);
-            return version;
-        }
-
-        private static ulong ParseVersionFromTopic(string topic)
-        {
-            int queryStart = topic.IndexOf('?', StringComparison.Ordinal);
-            if (queryStart < 0)
-            {
-                return 0;
-            }
-
-            NameValueCollection query = HttpUtility.ParseQueryString(topic.Substring(queryStart));
-            return ulong.TryParse(query.Get(VersionKey), NumberStyles.None, CultureInfo.InvariantCulture, out ulong version) ? version : 0;
-        }
-
-        private static bool TryParseResponseTopic(string topicName, out Guid requestId, out int status, out ulong version)
-        {
-            requestId = Guid.Empty;
-            status = 0;
-            version = 0;
-
-            // The topic here looks like
-            // "$iothub/twin/res/204/?$rid=efc34c73-79ce-4054-9985-0cdf40a3c794&$version=2"
-            // The regex matching splits it up into the status ("204") and the query string ("?$rid=...&$version=2"), which is
-            // then parsed for key value pairs. Get twin responses carry the twin versions in the payload instead.
-            Match match = s_twinResponseTopicRegex.Match(topicName);
-            if (!match.Success || !int.TryParse(match.Groups[1].Value, NumberStyles.None, CultureInfo.InvariantCulture, out status))
-            {
-                return false;
-            }
-
-            NameValueCollection queryStringKeyValuePairs = HttpUtility.ParseQueryString(match.Groups[2].Value);
-            if (!Guid.TryParse(queryStringKeyValuePairs.Get(RequestIdTopicKey), out requestId))
-            {
-                return false;
-            }
-
-            _ = ulong.TryParse(queryStringKeyValuePairs.Get(VersionKey), NumberStyles.None, CultureInfo.InvariantCulture, out version);
-            return true;
-        }
-
-        private sealed record DesiredPatch(ulong Version, JsonObject Properties);
-
-        private sealed record TwinSnapshot(JsonObject Desired, ulong DesiredVersion, JsonObject Reported, ulong ReportedVersion);
-
-        private readonly record struct ResyncGet(Guid GetId, CancellationToken CancellationToken);
-
-        // Gets the twin to resync the desired properties (and reconcile the reported properties) with IoT hub.
-        private sealed class DesiredResync(long connectionEpoch)
-        {
-            public long ConnectionEpoch { get; } = connectionEpoch;
-
-            public Guid GetId { get; set; }
-
-            public int Attempt { get; set; } = 1;
-
-            public List<DesiredPatch> Buffer { get; } = new();
-
-            // This device's versions of the twin sections when the latest GET was sent. A section that IoT hub responds with an
-            // older version of is only adopted if this device's version didn't change in the meantime.
-            public ulong DesiredVersionWhenSent { get; set; }
-
-            public ulong ReportedVersionWhenSent { get; set; }
-
-            // Cancelled when the resync ends, so that a GET still waiting to be sent is never sent.
-            public CancellationTokenSource Cancellation { get; } = new();
-
-            public System.Threading.Timer? Timer { get; set; }
-        }
-
-        private sealed class AuthoritativeVersions(long connectionEpoch)
-        {
-            public long ConnectionEpoch { get; } = connectionEpoch;
-
-            public ulong Desired { get; set; }
-
-            public ulong Reported { get; set; }
-        }
-
-        private sealed class DesiredStateOutcome
-        {
-            public List<EventArgs> Deliveries { get; } = new();
-
-            public ResyncGet? ResyncGet { get; set; }
-        }
-
-        private readonly record struct GetTwinRequest(bool GetDesired, bool GetReported);
-
-        // A get twin request that is outstanding until IoT hub responds, the connection is lost or nobody is waiting for it.
-        private sealed class GetTwinExchange(GetTwinRequest request)
-        {
-            public GetTwinRequest Request { get; } = request;
-
-            public TaskCompletionSource<DeviceTwin> Response { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-
-            // Cancelled when the exchange ends, so that an attempt still waiting to be sent is never sent.
-            public CancellationTokenSource Cancellation { get; } = new();
-
-            // The ID of the latest attempt.
-            public Guid? GetId { get; set; }
-
-            public int Attempt { get; set; } = 1;
-
-            public int WaiterCount { get; set; }
-
-            public bool IsEnded { get; set; }
-
-            public System.Threading.Timer? Timer { get; set; }
-        }
-
-        // A reported properties patch that the application made, which is pending until IoT hub responds to an attempt carrying it.
-        private sealed class PendingReportedPatch(JsonObject patch, bool hasWaiter, bool isReleased)
-        {
-            public JsonObject Patch { get; } = patch;
-
-            // Guarded by _reportedPatchLock. False until a TwinStateChanged snapshot containing this patch has been raised, if
-            // it was made by a twin event handler. It isn't sent until then.
-            public bool IsReleased { get; set; } = isReleased;
-
-            // Guarded by _reportedPatchLock. Whether an attempt carrying this patch was ever started, so IoT hub may apply it.
-            public bool HasBeenSent { get; set; }
-
-            // Null if nobody awaits this patch, so that its failure isn't an unobserved exception.
-            public TaskCompletionSource<ReportedPatchResponse>? Response { get; } = hasWaiter ? new(TaskCreationOptions.RunContinuationsAsynchronously) : null;
-        }
-
-        // One attempt to send a prefix of the pending reported patches, combined into one patch.
-        private sealed class ReportedPatchAttempt(Guid patchId, List<PendingReportedPatch> patches, byte[] payload)
-        {
-            public Guid PatchId { get; } = patchId;
-
-            public List<PendingReportedPatch> Patches { get; } = patches;
-
-            public byte[] Payload { get; } = payload;
-
-            // Cancelled when the attempt ends, so that an attempt still waiting to be sent is never sent.
-            public CancellationTokenSource Cancellation { get; } = new();
-
-            public System.Threading.Timer? Timer { get; set; }
-        }
-
-        private void ReleaseResources()
-        {
-            _isDisposed = true;
-            _connection.PublishReceivedAsync -= HandleReceivedMqttPublishAsync;
-            _connection.ConnectionLost -= HandleConnectionLost;
-            _connection.ConnectionReady -= HandleConnectionReady;
-            lock (_desiredStateLock)
-            {
-                CancelDesiredResync();
-            }
-
-            List<PendingReportedPatch> pendingPatches;
-            lock (_reportedPatchLock)
-            {
-                if (_reportedPatchAttempt != null)
-                {
-                    EndReportedPatchAttempt(_reportedPatchAttempt);
-                }
-
-                pendingPatches = new(_pendingReportedPatches);
-                _pendingReportedPatches.Clear();
-            }
-
-            foreach (PendingReportedPatch pendingPatch in pendingPatches)
-            {
-                pendingPatch.Response?.TrySetException(new ObjectDisposedException(nameof(TwinClient)));
-            }
-
-            AbandonGetTwinExchanges(() => new ObjectDisposedException(nameof(TwinClient)));
-        }
+        public void EnqueueReportedPropertiesUpdate(JsonObject reportedProperties) => _engine.EnqueueReportedPropertiesUpdate(reportedProperties);
 
         /// <summary>
         /// Releases the unmanaged resources used by this client and optionally disposes of the managed resources.
@@ -1889,7 +331,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
         /// </remarks>
         public void Dispose(bool disposing)
         {
-            ReleaseResources();
+            _engine.Dispose();
             if (disposing)
             {
                 _connection.Dispose();

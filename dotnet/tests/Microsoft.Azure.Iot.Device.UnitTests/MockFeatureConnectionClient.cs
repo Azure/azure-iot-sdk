@@ -135,6 +135,28 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             remove => ConnectionReady -= value;
         }
 
+        global::Microsoft.Azure.Iot.Device.MQTTv5.Connection.BirthAckVersions? global::Microsoft.Azure.Iot.Device.Unified.Connection.IConnectionClient.LatestBirthAck => LatestBirthAck;
+
+        bool global::Microsoft.Azure.Iot.Device.Unified.Connection.IConnectionClient.IsBirthAckTimedOut(Guid connectionNonce) => TimedOutBirthAckNonce == connectionNonce;
+
+        event Action? global::Microsoft.Azure.Iot.Device.Unified.Connection.IConnectionClient.TwinIdentityChanged
+        {
+            add => TwinIdentityChanged += value;
+            remove => TwinIdentityChanged -= value;
+        }
+
+        ulong global::Microsoft.Azure.Iot.Device.Unified.Connection.IConnectionClient.InitialDesiredPropertiesVersion => InitialDesiredPropertiesVersion;
+
+        ulong global::Microsoft.Azure.Iot.Device.Unified.Connection.IConnectionClient.InitialReportedPropertiesVersion => InitialReportedPropertiesVersion;
+
+        void global::Microsoft.Azure.Iot.Device.Unified.Connection.IConnectionClient.ObserveDesiredPropertiesVersion(ulong version) => ObservedDesiredPropertiesVersions.Add(version);
+
+        void global::Microsoft.Azure.Iot.Device.Unified.Connection.IConnectionClient.ObserveReportedPropertiesVersion(ulong version) => ObservedReportedPropertiesVersions.Add(version);
+
+        void global::Microsoft.Azure.Iot.Device.Unified.Connection.IConnectionClient.ReplaceDesiredPropertiesVersion(ulong version) => ReplacedDesiredPropertiesVersions.Add(version);
+
+        void global::Microsoft.Azure.Iot.Device.Unified.Connection.IConnectionClient.ReplaceReportedPropertiesVersion(ulong version) => ReplacedReportedPropertiesVersions.Add(version);
+
         /// <summary>Optional callback run whenever a feature client reads the current connection context.</summary>
         public Action? OnGetCurrentConnectionContext { get; set; }
 

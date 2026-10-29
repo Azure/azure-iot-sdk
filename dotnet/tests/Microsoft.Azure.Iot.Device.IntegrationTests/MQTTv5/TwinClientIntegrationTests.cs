@@ -15,7 +15,7 @@ using ServiceTwin = Microsoft.Azure.Devices.Shared.Twin;
 namespace Microsoft.Azure.Iot.Device.IntegrationTests.MQTTv5
 {
     [Trait(Setup.HubTrait, Setup.MQTTv5HubTraitValue)]
-    public class ConcurrentTwinClientIntegrationTests
+    public class TwinClientIntegrationTests
     {
         [Fact(Timeout = Setup.TestTimeoutMilliseconds)]
         public async Task TestTwin()
@@ -30,7 +30,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.MQTTv5
             string expectedInitialDesiredPropertyValue = Guid.NewGuid().ToString();
             initialTwin.Desired[expectedInitialDesiredPropertyKey] = expectedInitialDesiredPropertyValue;
 
-            // Want to defer connecting until ConcurrentTwinClient is set up to consume TwinPush
+            // Want to defer connecting until TwinClient is set up to consume TwinPush
             MQTTv5DeviceTestContext testDeviceContext = await Setup.CreateProvisionableMQTTv5DeviceAsync(initialTwin, null, TestContext.Current.CancellationToken);
 
             string deviceId = testDeviceContext.DeviceId;
@@ -39,7 +39,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.MQTTv5
 
             ProvisioningSettings provisioningSettings = Setup.CreateProvisioningSettings(testAgainstClassicHub: false);
 
-            ConcurrentTwinClient twinClient = new(testDeviceContext.ConnectionClient);
+            TwinClient twinClient = new(testDeviceContext.ConnectionClient);
             TaskCompletionSource<TwinPushReceivedEventArgs> twinPushTcs = new();
             twinClient.TwinPushReceived += (args) =>
             {
@@ -125,7 +125,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.MQTTv5
         {
             CancellationToken cancellationToken = TestContext.Current.CancellationToken;
             MQTTv5DeviceTestContext testDeviceContext = await Setup.CreateProvisionableMQTTv5DeviceAsync(null, cancellationToken: cancellationToken);
-            using ConcurrentTwinClient twinClient = new(testDeviceContext.ConnectionClient);
+            using TwinClient twinClient = new(testDeviceContext.ConnectionClient);
             await using (testDeviceContext)
             {
                 TaskCompletionSource<TwinPushReceivedEventArgs> twinPushTcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -169,7 +169,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.MQTTv5
         {
             CancellationToken cancellationToken = TestContext.Current.CancellationToken;
             MQTTv5DeviceTestContext testDeviceContext = await Setup.CreateConnectedMQTTv5ConnectionClientAsync(null, cancellationToken: cancellationToken);
-            using ConcurrentTwinClient twinClient = new(testDeviceContext.ConnectionClient);
+            using TwinClient twinClient = new(testDeviceContext.ConnectionClient);
             await using (testDeviceContext)
             {
                 // Each patch is made conditional on the version from the birth ack or the previous response, so sequential
@@ -209,7 +209,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.MQTTv5
             CancellationToken cancellationToken = TestContext.Current.CancellationToken;
             using RegistryManager registryManager = Setup.GetMQTTv5IotHubRegistryManager();
             MQTTv5DeviceTestContext testDeviceContext = await Setup.CreateProvisionableMQTTv5DeviceAsync(null, cancellationToken: cancellationToken);
-            using ConcurrentTwinClient twinClient = new(testDeviceContext.ConnectionClient);
+            using TwinClient twinClient = new(testDeviceContext.ConnectionClient);
             await using (testDeviceContext)
             {
                 TwinEventRecorder events = new(twinClient);
@@ -238,7 +238,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.MQTTv5
             CancellationToken cancellationToken = TestContext.Current.CancellationToken;
             using RegistryManager registryManager = Setup.GetMQTTv5IotHubRegistryManager();
             MQTTv5DeviceTestContext testDeviceContext = await Setup.CreateProvisionableMQTTv5DeviceAsync(null, cancellationToken: cancellationToken);
-            using ConcurrentTwinClient twinClient = new(testDeviceContext.ConnectionClient);
+            using TwinClient twinClient = new(testDeviceContext.ConnectionClient);
             await using (testDeviceContext)
             {
                 TwinEventRecorder events = new(twinClient);
@@ -247,7 +247,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.MQTTv5
 
                 // This twin client missed the twin push, so it has not observed any desired properties version yet. The next
                 // patch therefore skips versions from its point of view and makes it resync the desired properties.
-                ConcurrentTwinClient lateTwinClient = new(testDeviceContext.ConnectionClient);
+                TwinClient lateTwinClient = new(testDeviceContext.ConnectionClient);
                 try
                 {
                     TwinEventRecorder lateEvents = new(lateTwinClient);
@@ -284,7 +284,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.MQTTv5
             CancellationToken cancellationToken = TestContext.Current.CancellationToken;
             using RegistryManager registryManager = Setup.GetMQTTv5IotHubRegistryManager();
             MQTTv5DeviceTestContext testDeviceContext = await Setup.CreateProvisionableMQTTv5DeviceAsync(null, cancellationToken: cancellationToken);
-            using ConcurrentTwinClient twinClient = new(testDeviceContext.ConnectionClient);
+            using TwinClient twinClient = new(testDeviceContext.ConnectionClient);
             await using (testDeviceContext)
             {
                 TwinEventRecorder events = new(twinClient);
@@ -314,7 +314,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.MQTTv5
             CancellationToken cancellationToken = TestContext.Current.CancellationToken;
             using RegistryManager registryManager = Setup.GetMQTTv5IotHubRegistryManager();
             MQTTv5DeviceTestContext testDeviceContext = await Setup.CreateProvisionableMQTTv5DeviceAsync(null, cancellationToken: cancellationToken);
-            using ConcurrentTwinClient twinClient = new(testDeviceContext.ConnectionClient);
+            using TwinClient twinClient = new(testDeviceContext.ConnectionClient);
             await using (testDeviceContext)
             {
                 TwinEventRecorder events = new(twinClient);
@@ -347,7 +347,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.MQTTv5
                 null,
                 new Device.MQTTv5.Models.ConnectionClientOptions() { InitialDesiredPropertiesVersion = 1000 },
                 cancellationToken);
-            using ConcurrentTwinClient twinClient = new(testDeviceContext.ConnectionClient);
+            using TwinClient twinClient = new(testDeviceContext.ConnectionClient);
             await using (testDeviceContext)
             {
                 TwinEventRecorder events = new(twinClient);
@@ -372,7 +372,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.MQTTv5
             }
         }
 
-        private static async Task<ulong> WaitForAuthoritativeDesiredVersionAsync(ConcurrentTwinClient twinClient, CancellationToken cancellationToken)
+        private static async Task<ulong> WaitForAuthoritativeDesiredVersionAsync(TwinClient twinClient, CancellationToken cancellationToken)
         {
             // The twin client handles the birth ack independently of the connection client, so it may do so slightly later.
             ulong? version;
@@ -408,7 +408,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.MQTTv5
         {
             private readonly Channel<EventArgs> _events = Channel.CreateUnbounded<EventArgs>();
 
-            public TwinEventRecorder(ConcurrentTwinClient twinClient)
+            public TwinEventRecorder(TwinClient twinClient)
             {
                 twinClient.DesiredPatchReceived += args => _events.Writer.TryWrite(args);
                 twinClient.TwinPushReceived += args => _events.Writer.TryWrite(args);

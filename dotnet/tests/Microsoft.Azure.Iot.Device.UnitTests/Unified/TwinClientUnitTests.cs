@@ -1,6 +1,7 @@
-// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
+﻿// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
 // See LICENSE file in the project root for full license information.
 
+using Google.Protobuf;
 using Microsoft.Azure.Iot.Device.Exceptions;
 using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Models.Twin;
@@ -20,6 +21,8 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
         private const string DeviceId = "someDeviceId";
         private const string GetTopicPrefix = "$iothub/twin/GET/?$rid=";
         private const string PatchTopicPrefix = "$iothub/twin/PATCH/properties/reported/?$rid=";
+        private const string Mqttv5OutgoingTwinTopic = "ih/" + IConnectionClient.DeviceIdPlaceholder + "/srv/twin";
+        private const string Mqttv5IncomingTwinTopic = "ih/someDeviceId/dev/twin";
 
         [Fact]
         public async Task GetTwinAsync_PublishesGetAndReturnsResponseWithoutVersionKeys()
@@ -164,15 +167,11 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
         }
 
         [Fact]
-        public async Task GetTwinAsync_ThrowsWhenNotConnectedToMqttv3Hub()
+        public async Task GetTwinAsync_ThrowsWhenNotConnected()
         {
             MockFeatureConnectionClient disconnected = new();
             using TwinClient disconnectedClient = new(disconnected);
             await Assert.ThrowsAsync<NotSupportedException>(() => disconnectedClient.GetTwinAsync(cancellationToken: TestContext.Current.CancellationToken));
-
-            MockFeatureConnectionClient mqttv5 = CreateConnection(IotHubConnectionType.Mqttv5);
-            using TwinClient mqttv5Client = new(mqttv5);
-            await Assert.ThrowsAsync<NotSupportedException>(() => mqttv5Client.GetTwinAsync(cancellationToken: TestContext.Current.CancellationToken));
         }
 
         [Fact]
@@ -549,19 +548,117 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
         }
 
         [Fact]
-        public async Task Mqttv5Connection_TwinMessagesAndReadinessAreIgnored()
+        public async Task Mqttv5Hub_ReconcilesWithBirthAckAndTwinPushAndSendsUnconditionalPatches()
         {
+            Guid nonce = Guid.NewGuid();
             MockFeatureConnectionClient connection = CreateConnection(IotHubConnectionType.Mqttv5, isReady: false);
+            connection.ConnectionNonce = nonce;
             using TwinClient twinClient = new(connection);
-            bool raised = false;
-            twinClient.DesiredPatchReceived += _ => raised = true;
+            List<TwinPushReceivedEventArgs> pushes = new();
+            twinClient.TwinPushReceived += pushes.Add;
+            Task<ReportedPatchResponse> first = UpdateReportedAsync(twinClient, "{\"temperature\":1}");
 
-            twinClient.EnqueueReportedPropertiesUpdate(new JsonObject() { ["a"] = 1 });
+            // The patch waits for IoT hub to acknowledge this device's presence, and the twin isn't fetched.
             connection.SimulateConnectionReady();
-            await ReceiveDesiredPatchAsync(connection, 1, "{}");
-
-            Assert.False(raised);
             Assert.Empty(connection.GetPublishedMessages());
+            await ReceiveBirthAckAsync(connection, nonce, desiredVersion: 4, reportedVersion: 7);
+            MqttPublish firstPatch = Assert.Single(connection.GetPublishedMessages());
+            Assert.Equal(Mqttv5OutgoingTwinTopic, firstPatch.Topic);
+            Assert.Equal("reported-patch:1", GetMqttv5Type(firstPatch));
+            Assert.Equal(0ul, ReportedPatch.Parser.ParseFrom(firstPatch.Payload).IfMatch);
+            Assert.Equal(4ul, twinClient.AuthoritativeDesiredPropertiesVersion);
+            Assert.Equal(7ul, twinClient.AuthoritativeReportedPropertiesVersion);
+
+            // IoT hub pushes the twin sections that changed instead.
+            await ReceiveTwinPushAsync(connection, nonce, 4, "{\"fanSpeed\":4}");
+            Assert.Equal(4ul, Assert.Single(pushes).Desired!.PropertiesVersion);
+            Assert.Equal(4ul, twinClient.GetTwinState().DesiredVersion);
+
+            await RespondToMqttv5PatchAsync(connection, firstPatch, Result.Ok, 8);
+            Assert.Equal(8ul, (await first).Version);
+
+            // Patches stay unconditional once IoT hub's version of the reported properties is known.
+            _ = UpdateReportedAsync(twinClient, "{\"temperature\":2}");
+            Assert.Equal(0ul, ReportedPatch.Parser.ParseFrom(connection.GetPublishedMessages()[1].Payload).IfMatch);
+            Assert.DoesNotContain(connection.GetPublishedMessages(), publish => GetMqttv5Type(publish) == "get:1");
+        }
+
+        [Fact]
+        public async Task Mqttv5Hub_DesiredProbeAheadOfLocalVersion_ResyncsDesiredProperties()
+        {
+            Guid nonce = Guid.NewGuid();
+            MockFeatureConnectionClient connection = CreateConnection(IotHubConnectionType.Mqttv5);
+            connection.ConnectionNonce = nonce;
+            using TwinClient twinClient = new(connection);
+            await ReceiveBirthAckAsync(connection, nonce, desiredVersion: 5, reportedVersion: 1);
+            await ReceiveTwinPushAsync(connection, nonce, 5, "{\"fanSpeed\":50}");
+            List<TwinPushReceivedEventArgs> pushes = new();
+            twinClient.TwinPushReceived += pushes.Add;
+
+            // A probe for the version this device already holds is dropped.
+            await ReceiveMqttv5DesiredProbeAsync(connection, nonce, 5);
+            Assert.Empty(connection.GetPublishedMessages());
+
+            await ReceiveMqttv5DesiredProbeAsync(connection, nonce, 7);
+            MqttPublish getPublish = Assert.Single(connection.GetPublishedMessages());
+            Assert.Equal("get:1", GetMqttv5Type(getPublish));
+            Assert.Equal(Sections.Desired, TwinGet.Parser.ParseFrom(getPublish.Payload).Sections);
+
+            var response = new TwinGetResponse() { DesiredVersion = 7, DesiredPayload = ByteString.CopyFromUtf8("{\"fanSpeed\":70}") };
+            await connection.SimulateReceiveAsync(CreateMqttv5TwinPublish("get-response:1", getPublish.CorrelationData!, response.ToByteArray()));
+
+            TwinPushReceivedEventArgs push = Assert.Single(pushes);
+            Assert.Equal(7ul, push.Desired!.PropertiesVersion);
+            Assert.Equal(70, (int)push.Desired.Properties["fanSpeed"]!);
+            Assert.Equal(7ul, twinClient.GetTwinState().DesiredVersion);
+        }
+
+        [Fact]
+        public async Task ReconnectingToMqttv5Hub_KeepsTwinStateAndSendsPendingPatchAgain()
+        {
+            MockFeatureConnectionClient connection = CreateConnection(isReady: false);
+            using TwinClient twinClient = new(connection);
+            List<TwinPushReceivedEventArgs> pushes = new();
+            twinClient.TwinPushReceived += pushes.Add;
+            connection.SimulateConnectionReady();
+            await RespondToGetAsync(connection, Assert.Single(connection.GetPublishedMessages(), IsGet), 2, "{\"fanSpeed\":2}", 5, "{\"temperature\":20}");
+            Assert.Single(pushes);
+
+            Task<ReportedPatchResponse> patchTask = UpdateReportedAsync(twinClient, "{\"temperature\":30}");
+            MqttPublish classicPatch = Assert.Single(connection.GetPublishedMessages(), IsPatch);
+
+            // Re-provisioning moves the device (with the same identity) to an IoT hub that uses MQTTv5.
+            connection.SimulateConnectionLost();
+            Guid nonce = Guid.NewGuid();
+            connection.CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv5, DeviceId);
+            connection.ConnectionNonce = nonce;
+            int publishedBeforeReconnecting = connection.GetPublishedMessages().Count;
+
+            // The held versions are announced in the birth message, so IoT hub acknowledges them and pushes nothing.
+            Assert.Equal(2ul, connection.ObservedDesiredPropertiesVersions.Last());
+            Assert.Equal(5ul, connection.ObservedReportedPropertiesVersions.Last());
+            await ReceiveBirthAckAsync(connection, nonce, desiredVersion: 2, reportedVersion: 5);
+            connection.SimulateConnectionReady();
+
+            MqttPublish mqttv5Patch = Assert.Single(connection.GetPublishedMessages().Skip(publishedBeforeReconnecting));
+            Assert.Equal("reported-patch:1", GetMqttv5Type(mqttv5Patch));
+            ReportedPatch patch = ReportedPatch.Parser.ParseFrom(mqttv5Patch.Payload);
+            Assert.Equal(0ul, patch.IfMatch);
+            Assert.Equal(30, (int)JsonNode.Parse(patch.Payload.ToStringUtf8())!["temperature"]!);
+
+            // The response to the attempt sent over the lost connection is dropped.
+            await RespondAsync(connection, classicPatch, 204, 6);
+            Assert.False(patchTask.IsCompleted);
+            await RespondToMqttv5PatchAsync(connection, mqttv5Patch, Result.Ok, 6);
+            Assert.Equal(6ul, (await patchTask).Version);
+
+            Assert.Single(pushes);
+            TwinState state = twinClient.GetTwinState();
+            Assert.Equal(2ul, state.DesiredVersion);
+            Assert.Equal(2, (int)state.Desired["fanSpeed"]!);
+            Assert.Equal(6ul, state.ReportedVersion);
+            Assert.Equal(30, (int)state.Reported["temperature"]!);
+            Assert.Empty(state.PendingReportedPatches);
         }
 
         private static MockFeatureConnectionClient CreateConnection(IotHubConnectionType connectionProfile = IotHubConnectionType.Mqttv3, bool isReady = true)
@@ -634,6 +731,59 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
                 Payload = Encoding.UTF8.GetBytes(payload.ToJsonString()),
                 QualityOfServiceLevel = MqttQualityOfServiceLevel.AtMostOnce,
             });
+        }
+
+        private static Task ReceiveBirthAckAsync(MockFeatureConnectionClient connection, Guid nonce, ulong desiredVersion, ulong reportedVersion)
+        {
+            var publish = new MqttPublish()
+            {
+                Topic = "ih/someDeviceId/dev/presence",
+                Payload = new Microsoft.Azure.Iot.Device.MQTTv5.Connection.BirthAck() { DesiredVersion = desiredVersion, ReportedVersion = reportedVersion }.ToByteArray(),
+                CorrelationData = nonce.ToByteArray(bigEndian: true),
+                QualityOfServiceLevel = MqttQualityOfServiceLevel.AtMostOnce,
+            };
+            publish.UserProperties.Add(new("type", Encoding.UTF8.GetBytes("birth-ack:1")));
+            return connection.SimulateReceiveAsync(publish);
+        }
+
+        private static Task ReceiveTwinPushAsync(MockFeatureConnectionClient connection, Guid nonce, ulong desiredVersion, string desiredPayload)
+        {
+            var push = new TwinPush()
+            {
+                Desired = new Section { Version = desiredVersion, Payload = ByteString.CopyFromUtf8(desiredPayload) },
+            };
+
+            return connection.SimulateReceiveAsync(CreateMqttv5TwinPublish("twin-push:1", nonce.ToByteArray(bigEndian: true), push.ToByteArray()));
+        }
+
+        private static Task ReceiveMqttv5DesiredProbeAsync(MockFeatureConnectionClient connection, Guid nonce, ulong version)
+        {
+            var probe = new DesiredPatch() { Version = version };
+            return connection.SimulateReceiveAsync(CreateMqttv5TwinPublish("desired-patch:1", nonce.ToByteArray(bigEndian: true), probe.ToByteArray()));
+        }
+
+        private static Task RespondToMqttv5PatchAsync(MockFeatureConnectionClient connection, MqttPublish patchPublish, Result result, ulong version)
+        {
+            var response = new ReportedPatchResponse() { Result = result, Version = version };
+            return connection.SimulateReceiveAsync(CreateMqttv5TwinPublish("reported-patch-response:1", patchPublish.CorrelationData!, response.ToByteArray()));
+        }
+
+        private static MqttPublish CreateMqttv5TwinPublish(string type, byte[] correlationData, byte[] payload)
+        {
+            var publish = new MqttPublish()
+            {
+                Topic = Mqttv5IncomingTwinTopic,
+                Payload = payload,
+                CorrelationData = correlationData,
+                QualityOfServiceLevel = MqttQualityOfServiceLevel.AtMostOnce,
+            };
+            publish.UserProperties.Add(new("type", Encoding.UTF8.GetBytes(type)));
+            return publish;
+        }
+
+        private static string? GetMqttv5Type(MqttPublish publish)
+        {
+            return publish.UserProperties.SingleOrDefault(p => p.Name == "type")?.ReadValueAsString();
         }
     }
 }

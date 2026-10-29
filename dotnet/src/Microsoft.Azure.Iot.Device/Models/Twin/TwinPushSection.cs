@@ -3,7 +3,7 @@
 
 using System.Text.Json.Nodes;
 
-namespace Microsoft.Azure.Iot.Device.Unified.Twin
+namespace Microsoft.Azure.Iot.Device.Models.Twin
 {
     /// <summary>
     /// A full copy of one section of the twin.

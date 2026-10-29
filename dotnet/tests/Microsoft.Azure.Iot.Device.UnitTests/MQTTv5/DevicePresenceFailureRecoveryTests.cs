@@ -7,6 +7,7 @@ using Microsoft.Azure.Iot.Device.Exceptions;
 using Microsoft.Azure.Iot.Device.MQTTv5.Connection;
 using Microsoft.Azure.Iot.Device.MQTTv5.Twin;
 using Microsoft.Azure.Iot.Device.Models;
+using Microsoft.Azure.Iot.Device.Models.Twin;
 using Microsoft.Azure.Iot.Device.Mqtt;
 using Microsoft.Azure.Iot.Device.Retry;
 using System.Text;
@@ -114,7 +115,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
                 ConnectionRetryPolicy = new ExponentialBackoffRetryPolicy(uint.MaxValue, TimeSpan.Zero, useJitter: false),
             };
             using ConnectionClient connectionClient = new(options);
-            using ConcurrentTwinClient twinClient = new(connectionClient);
+            using TwinClient twinClient = new(connectionClient);
             using Device.MQTTv5.DirectMethods.DirectMethodClient directMethodClient = new(connectionClient);
             options.ReceiveDesiredPropertyUpdates = !pushDesired;
             options.ReceiveReportedPropertiesUponConnect = !pushReported;
@@ -160,7 +161,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
                 ConnectionRetryPolicy = new ExponentialBackoffRetryPolicy(uint.MaxValue, TimeSpan.Zero, useJitter: false),
             };
             using ConnectionClient connectionClient = new(options);
-            using ConcurrentTwinClient twinClient = new(connectionClient);
+            using TwinClient twinClient = new(connectionClient);
 
             await connectionClient.ConnectToHubAsync(GetMockConnectionContext(), TestContext.Current.CancellationToken)
                 .WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
@@ -213,7 +214,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
                 ConnectionRetryPolicy = new ExponentialBackoffRetryPolicy(uint.MaxValue, TimeSpan.Zero, useJitter: false),
             };
             using ConnectionClient connectionClient = new(options);
-            using ConcurrentTwinClient twinClient = new(connectionClient, new TwinState() { DesiredVersion = 5, ReportedVersion = 3 });
+            using TwinClient twinClient = new(connectionClient, new TwinState() { DesiredVersion = 5, ReportedVersion = 3 });
 
             await connectionClient.ConnectToHubAsync(GetMockConnectionContext(), TestContext.Current.CancellationToken)
                 .WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);

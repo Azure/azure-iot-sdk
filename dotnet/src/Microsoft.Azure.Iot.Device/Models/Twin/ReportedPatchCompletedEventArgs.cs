@@ -1,13 +1,12 @@
-﻿// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
+// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
 // See LICENSE file in the project root for full license information.
 
-using Microsoft.Azure.Iot.Device.Models.Twin;
 using System.Text.Json.Nodes;
 
-namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
+namespace Microsoft.Azure.Iot.Device.Models.Twin
 {
     /// <summary>
-    /// The outcome of a reported properties patch that <see cref="ConcurrentTwinClient"/> sent to IoT hub.
+    /// The outcome of a reported properties patch that <see cref="Unified.Twin.TwinClient"/> or <see cref="MQTTv5.Twin.TwinClient"/> sent to IoT hub.
     /// </summary>
     public class ReportedPatchCompletedEventArgs : EventArgs
     {

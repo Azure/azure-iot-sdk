@@ -3,11 +3,12 @@
 
 using System.Text.Json.Nodes;
 
-namespace Microsoft.Azure.Iot.Device.Unified.Twin
+namespace Microsoft.Azure.Iot.Device.Models.Twin
 {
     /// <summary>
-    /// A device's copy of its twin, as kept by <see cref="TwinClient"/>. Serializable with System.Text.Json, so that an
-    /// application can persist it and restore it the next time it starts.
+    /// A device's copy of its twin, as kept by <see cref="Unified.Twin.TwinClient"/> and <see cref="MQTTv5.Twin.TwinClient"/>.
+    /// Serializable with System.Text.Json, so that an application can persist it and restore it the next time it starts. A
+    /// snapshot raised by either client can be restored by either client.
     /// </summary>
     /// <remarks>
     /// <para>

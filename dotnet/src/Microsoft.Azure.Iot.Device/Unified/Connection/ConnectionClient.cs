@@ -58,6 +58,44 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
             remove => HubConnectionReady -= value;
         }
 
+        // The twin hooks of the nested MQTTv5 client, which announces the held twin versions to MQTTv5 IoT hubs.
+        private MQTTv5.Connection.IConnectionClient Mqttv5TwinHooks => _mqttv5ConnectionClient;
+
+        BirthAckVersions? IConnectionClient.LatestBirthAck =>
+            CurrentConnectionContext?.ConnectionProfile == IotHubConnectionType.Mqttv5
+                ? Mqttv5TwinHooks.LatestBirthAck
+                : null;
+
+        bool IConnectionClient.IsBirthAckTimedOut(Guid connectionNonce) =>
+            CurrentConnectionContext?.ConnectionProfile == IotHubConnectionType.Mqttv5
+                && Mqttv5TwinHooks.IsBirthAckTimedOut(connectionNonce);
+
+        ulong IConnectionClient.InitialDesiredPropertiesVersion => Mqttv5TwinHooks.InitialDesiredPropertiesVersion;
+
+        ulong IConnectionClient.InitialReportedPropertiesVersion => Mqttv5TwinHooks.InitialReportedPropertiesVersion;
+
+        void IConnectionClient.ObserveDesiredPropertiesVersion(ulong version) => Mqttv5TwinHooks.ObserveDesiredPropertiesVersion(version);
+
+        void IConnectionClient.ObserveReportedPropertiesVersion(ulong version) => Mqttv5TwinHooks.ObserveReportedPropertiesVersion(version);
+
+        void IConnectionClient.ReplaceDesiredPropertiesVersion(ulong version) => Mqttv5TwinHooks.ReplaceDesiredPropertiesVersion(version);
+
+        void IConnectionClient.ReplaceReportedPropertiesVersion(ulong version) => Mqttv5TwinHooks.ReplaceReportedPropertiesVersion(version);
+
+        // Guards _twinIdentity.
+        private readonly object _twinIdentityLock = new();
+
+        // The IoT hub and device ID of the twin that this client last connected as, whichever MQTT version that IoT hub uses.
+        private (string IotHubHostName, string DeviceId)? _twinIdentity;
+
+        private event Action? TwinIdentityChanged;
+
+        event Action? IConnectionClient.TwinIdentityChanged
+        {
+            add => TwinIdentityChanged += value;
+            remove => TwinIdentityChanged -= value;
+        }
+
         /// <summary>
         /// Construct a new <see cref="ConnectionClient"/>
         /// </summary>
@@ -97,6 +135,36 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
             ManagedMqttConnection.PublishReceivedAsync += HandleReceivedCertificateSigningPublish;
             _mqttv5ConnectionClient.DevicePresenceFlowCompletedAsync += HandleMQTTv5ClientConnectionReady;
             ManagedMqttConnection.DisconnectedAsync += HandleCertificateSigningDisconnectedAsync;
+
+            if (CurrentConnectionContext != null)
+            {
+                _twinIdentity = (CurrentConnectionContext.IotHubHostName, CurrentConnectionContext.DeviceId);
+            }
+        }
+
+        // Re-provisioning can assign the device a different IoT hub or device ID (possibly one using a different MQTT version),
+        // whose twin's versions aren't comparable with the held ones, so they are discarded.
+        private void AdoptTwinIdentity(string iotHubHostName, string deviceId)
+        {
+            bool isChanged;
+            lock (_twinIdentityLock)
+            {
+                isChanged = _twinIdentity is (string previousHubHostName, string previousDeviceId)
+                    && (!previousHubHostName.Equals(iotHubHostName, StringComparison.OrdinalIgnoreCase)
+                        || !previousDeviceId.Equals(deviceId, StringComparison.Ordinal));
+                _twinIdentity = (iotHubHostName, deviceId);
+                if (isChanged)
+                {
+                    Mqttv5TwinHooks.ReplaceDesiredPropertiesVersion(0);
+                    Mqttv5TwinHooks.ReplaceReportedPropertiesVersion(0);
+                }
+            }
+
+            if (isChanged)
+            {
+                Trace.TraceInformation("The device is now connected as device {0} on IoT hub {1}. Discarding the twin versions it held for its previous identity.", deviceId, iotHubHostName);
+                TwinIdentityChanged?.Invoke();
+            }
         }
 
         private async Task HandleMQTTv5ClientConnectionReady(DevicePresenceFlowCompletedArgs args)
@@ -134,6 +202,9 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
 
             // This callback should only be reached after provisioning, so their should always be a connection context to use
             Debug.Assert(CurrentConnectionContext != null);
+
+            // The held twin versions are of the twin that the device last connected as, so they are discarded if that changed.
+            AdoptTwinIdentity(CurrentConnectionContext.IotHubHostName, CurrentConnectionContext.DeviceId);
 
             if (CurrentConnectionContext.ConnectionProfile == IotHubConnectionType.Mqttv5)
             {
