@@ -1,0 +1,204 @@
+// Copyright (c) Microsoft. All rights reserved.
+// Licensed under the MIT license. See LICENSE file in the project root for full license
+// information.
+
+/* SPDX-License-Identifier: MIT */
+/**
+ * @file sample_utils_test.c
+ * @brief The samples' file helpers (samples/common/sample_utils.c). Files are
+ * created in the working directory and removed by each test.
+ */
+#if !defined(_WIN32)
+#define _POSIX_C_SOURCE 200809L /* symlink, lstat, umask */
+#endif
+
+#include <stdarg.h>
+#include <stddef.h>
+#include <setjmp.h>
+#include <stdint.h>
+
+#include <cmocka.h>
+
+#include <stdbool.h>
+#include <stdio.h>
+#include <string.h>
+
+#if !defined(_WIN32)
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
+
+#include "sample_utils.h"
+
+#define SOURCE_FILE "sample_utils_test_source.tmp"
+#define DESTINATION_FILE "sample_utils_test_destination.tmp"
+#define LINK_FILE "sample_utils_test_link.tmp"
+
+static void remove_test_files(void)
+{
+  (void)remove(SOURCE_FILE);
+  (void)remove(DESTINATION_FILE);
+  (void)remove(LINK_FILE);
+}
+
+static int setup(void** state)
+{
+  (void)state;
+  remove_test_files();
+  return 0;
+}
+
+static int teardown(void** state)
+{
+  (void)state;
+  remove_test_files();
+  return 0;
+}
+
+/** @brief Write @p text to @p path through sample_fopen_private(). */
+static void write_text_file(const char* path, const char* text)
+{
+  FILE* file = sample_fopen_private(path, false);
+  assert_non_null(file);
+  assert_int_equal(fputs(text, file) >= 0, 1);
+  assert_int_equal(fclose(file), 0);
+}
+
+/** @brief Assert that @p path holds exactly @p expected. */
+static void assert_file_holds(const char* path, const char* expected)
+{
+  char contents[64] = { 0 };
+  FILE* file = sample_fopen_read_nofollow(path);
+  assert_non_null(file);
+  size_t read = fread(contents, 1, sizeof(contents) - 1, file);
+  assert_int_equal(fclose(file), 0);
+  assert_int_equal(read, strlen(expected));
+  assert_string_equal(contents, expected);
+}
+
+static void file_replace_overwrites_the_destination(void** state)
+{
+  (void)state;
+  write_text_file(DESTINATION_FILE, "old");
+  write_text_file(SOURCE_FILE, "new");
+
+  assert_true(sample_file_replace(SOURCE_FILE, DESTINATION_FILE));
+
+  assert_file_holds(DESTINATION_FILE, "new");
+  assert_null(sample_fopen_read_nofollow(SOURCE_FILE));
+}
+
+static void file_replace_creates_a_missing_destination_given_with_a_directory(void** state)
+{
+  (void)state;
+  write_text_file(SOURCE_FILE, "new");
+
+  /* A path with a directory part: the directory is synced, not the working one. */
+  assert_true(sample_file_replace(SOURCE_FILE, "./" DESTINATION_FILE));
+
+  assert_file_holds(DESTINATION_FILE, "new");
+}
+
+static void file_replace_fails_without_a_source_and_keeps_the_destination(void** state)
+{
+  (void)state;
+  write_text_file(DESTINATION_FILE, "old");
+
+  assert_false(sample_file_replace(SOURCE_FILE, DESTINATION_FILE));
+  assert_false(sample_file_replace(NULL, DESTINATION_FILE));
+  assert_false(sample_file_replace(SOURCE_FILE, NULL));
+
+  assert_file_holds(DESTINATION_FILE, "old");
+}
+
+static void file_flush_to_storage_writes_through_the_buffer(void** state)
+{
+  (void)state;
+  FILE* file = sample_fopen_private(DESTINATION_FILE, false);
+  assert_non_null(file);
+  assert_int_equal(fputs("data", file) >= 0, 1);
+
+  assert_true(sample_file_flush_to_storage(file));
+  /* Visible to another reader before the writer closes. */
+  assert_file_holds(DESTINATION_FILE, "data");
+
+  assert_int_equal(fclose(file), 0);
+  assert_false(sample_file_flush_to_storage(NULL));
+}
+
+static void fopen_private_creates_an_owner_only_file(void** state)
+{
+  (void)state;
+#if !defined(_WIN32)
+  /* A umask that leaves fopen()'s files readable by everyone. */
+  mode_t previous_umask = umask(022);
+#endif
+  write_text_file(DESTINATION_FILE, "secret");
+#if !defined(_WIN32)
+  (void)umask(previous_umask);
+  struct stat st;
+  assert_int_equal(stat(DESTINATION_FILE, &st), 0);
+  assert_int_equal(st.st_mode & 0777, 0600);
+#endif
+  assert_file_holds(DESTINATION_FILE, "secret");
+}
+
+static void fopen_private_replace_does_not_write_through_a_link(void** state)
+{
+  (void)state;
+#if !defined(_WIN32)
+  write_text_file(DESTINATION_FILE, "target");
+  assert_int_equal(symlink(DESTINATION_FILE, LINK_FILE), 0);
+
+  FILE* file = sample_fopen_private(LINK_FILE, true);
+  assert_non_null(file);
+  assert_int_equal(fputs("written", file) >= 0, 1);
+  assert_int_equal(fclose(file), 0);
+
+  struct stat st;
+  assert_int_equal(lstat(LINK_FILE, &st), 0);
+  assert_true(S_ISREG(st.st_mode));
+  assert_file_holds(DESTINATION_FILE, "target");
+  assert_file_holds(LINK_FILE, "written");
+#else
+  /* Creating a symbolic link needs a privilege Windows test runs lack: check
+   * that an existing file is replaced, not appended to. */
+  write_text_file(LINK_FILE, "old contents");
+  FILE* file = sample_fopen_private(LINK_FILE, true);
+  assert_non_null(file);
+  assert_int_equal(fputs("written", file) >= 0, 1);
+  assert_int_equal(fclose(file), 0);
+  assert_file_holds(LINK_FILE, "written");
+#endif
+}
+
+static void fopen_read_nofollow_refuses_a_link_and_a_missing_file(void** state)
+{
+  (void)state;
+  assert_null(sample_fopen_read_nofollow(DESTINATION_FILE));
+  assert_null(sample_fopen_read_nofollow(NULL));
+#if !defined(_WIN32)
+  write_text_file(DESTINATION_FILE, "target");
+  assert_int_equal(symlink(DESTINATION_FILE, LINK_FILE), 0);
+  assert_null(sample_fopen_read_nofollow(LINK_FILE));
+#endif
+}
+
+int main(void)
+{
+  const struct CMUnitTest tests[] = {
+    cmocka_unit_test_setup_teardown(file_replace_overwrites_the_destination, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        file_replace_creates_a_missing_destination_given_with_a_directory, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        file_replace_fails_without_a_source_and_keeps_the_destination, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        file_flush_to_storage_writes_through_the_buffer, setup, teardown),
+    cmocka_unit_test_setup_teardown(fopen_private_creates_an_owner_only_file, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        fopen_private_replace_does_not_write_through_a_link, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        fopen_read_nofollow_refuses_a_link_and_a_missing_file, setup, teardown),
+  };
+  return cmocka_run_group_tests(tests, NULL, NULL);
+}

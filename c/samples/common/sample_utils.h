@@ -92,6 +92,28 @@ FILE* sample_fopen_private(const char* path, bool replace);
  */
 FILE* sample_fopen_read_nofollow(const char* path);
 
+/**
+ * @brief Flush @p file's buffered writes and the operating system's cache to
+ * storage, so they survive a power loss.
+ *
+ * @param[in] file Stream open for writing.
+ * @return true on success.
+ */
+bool sample_file_flush_to_storage(FILE* file);
+
+/**
+ * @brief Replace @p destination_path with @p source_path in one step, durably:
+ * a reader sees the old file or the new one, never a partial one, and the
+ * replacement survives a power loss. Flush @p source_path to storage first.
+ *
+ * @param[in] source_path      Complete file; renamed, so it is gone on success.
+ * @param[in] destination_path File to replace; created when absent. Same file
+ *                             system as @p source_path.
+ * @return true on success. false when the rename or, on POSIX, the directory
+ * sync fails; in the latter case the destination is already replaced.
+ */
+bool sample_file_replace(const char* source_path, const char* destination_path);
+
 // Milliseconds from an unspecified origin, never moving backwards. Only
 // differences are meaningful. The SDK keeps its clock internal, so a sample
 // that has to measure elapsed time brings its own.

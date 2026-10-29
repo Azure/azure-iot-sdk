@@ -7,6 +7,7 @@
  * generates an EC P-256 operational key (persisted as PEM) and produces a
  * PKCS#10 CSR over it. Uses only public OpenSSL 3.0 EVP/X509_REQ/BIO APIs. */
 #include "sample_csr_backend.h"
+#include "sample_utils.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -41,15 +42,25 @@ static EVP_PKEY* load_or_generate_key(const char* key_path)
     return NULL;
   }
 
-  BIO* out = BIO_new_file(key_path, "wb");
-  if (!out)
+  /* PEM in memory, then written through sample_fopen_private() so the key file
+   * is owner-only (0600 on POSIX) rather than fopen()'s 0666 less umask. */
+  BIO* pem = BIO_new(BIO_s_mem());
+  char* pem_data = NULL;
+  long pem_len = 0;
+  int ok = pem && PEM_write_bio_PrivateKey(pem, key, NULL, NULL, 0, NULL, NULL) == 1;
+  if (ok)
   {
-    EVP_PKEY_free(key);
-    return NULL;
+    pem_len = BIO_get_mem_data(pem, &pem_data);
+    ok = pem_len > 0;
   }
-  int ok = PEM_write_bio_PrivateKey(out, key, NULL, NULL, 0, NULL, NULL);
-  BIO_free(out);
-  if (ok != 1)
+  FILE* out = ok ? sample_fopen_private(key_path, true) : NULL;
+  ok = out != NULL && fwrite(pem_data, 1, (size_t)pem_len, out) == (size_t)pem_len;
+  if (out != NULL && fclose(out) != 0)
+  {
+    ok = 0;
+  }
+  BIO_free_all(pem);
+  if (!ok)
   {
     EVP_PKEY_free(key);
     return NULL;
