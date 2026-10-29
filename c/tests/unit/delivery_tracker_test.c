@@ -482,8 +482,69 @@ static void unbinding_forgets_shared_pool_publishes(void** state)
   assert_int_equal(fx->completion_count, 0);
 }
 
-/* A send the adapter refuses still clears the requeue marks at the end of do_work(): the
- * message a PUBACK error requeued goes out from the next one. */
+static az_iot_result encode_second(
+    void* owner_context,
+    size_t entry_index,
+    az_iot_mqtt_message* out)
+{
+  (void)owner_context;
+  (void)entry_index;
+  out->topic = "second";
+  out->qos = AZ_IOT_MQTT_QOS_1;
+  return AZ_IOT_OK;
+}
+
+static void submit_to_first_on_complete(
+    void* owner_context,
+    size_t entry_index,
+    az_iot_delivery_tracker_outcome outcome,
+    const az_iot_publish_result* detail)
+{
+  (void)entry_index;
+  (void)outcome;
+  (void)detail;
+  (void)submit((fixture*)owner_context, &k_resend, 9u, 0u);
+}
+
+static const az_iot_delivery_tracker_profile k_second = {
+  "second",
+  AZ_IOT_DELIVERY_TRACKER_CONFIRM_BY_PUBACK,
+  AZ_IOT_DELIVERY_TRACKER_ON_SESSION_LOSS_FAIL,
+  0u,
+  encode_second,
+  submit_to_first_on_complete,
+};
+
+/* A submit from a later observer's TICK does not resend, in the same do_work(), a message a
+ * PUBACK error requeued. */
+static void a_later_observer_submit_does_not_resend_a_requeued_message(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_delivery_tracker second;
+  az_iot_delivery_tracker_entry second_entries[1];
+  assert_int_equal(
+      az_iot_delivery_tracker__init(&second, second_entries, 1u, 0u, NULL, 0u, fx), AZ_IOT_OK);
+  assert_int_equal(az_iot_delivery_tracker__bind(&second, &fx->connection), AZ_IOT_OK);
+  size_t index = 0;
+  uint8_t const id = 1u;
+  assert_int_equal(
+      az_iot_delivery_tracker__submit(&second, &k_second, &id, 1u, 10u, &index), AZ_IOT_OK);
+  connect(fx);
+  (void)submit(fx, &k_resend, 1u, 0u);
+  size_t const sent = publish_count(fx);
+  assert_true(az_iot_mock_mqtt_client_inject_puback(
+      fx->mock, last_publish(fx)->packet_id, AZ_IOT_ERR_MQTT));
+  az_iot_test_wait_ms(15u);
+  do_work(fx); /* The second tracker expires its message and submits t/1 to the first. */
+  assert_int_equal(publish_count(fx), sent + 1u);
+  assert_string_equal(last_publish(fx)->topic, "t/1");
+  do_work(fx);
+  assert_int_equal(publish_count(fx), sent + 2u);
+  assert_string_equal(last_publish(fx)->topic, "t/0");
+  az_iot_delivery_tracker__unbind(&second);
+}
+/* A send the adapter refuses does not hold back the message a PUBACK error requeued: it goes out
+ * from the next do_work(). */
 static void a_busy_adapter_does_not_hold_back_a_requeued_message(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -529,6 +590,13 @@ static void arguments_capacity_and_binding(void** state)
       az_iot_delivery_tracker__submit(&fx->tracker, &k_resend, id, 1u, 0u, &index),
       AZ_IOT_ERR_NOT_ENOUGH_SPACE);
 
+  az_iot_connection_client other_connection;
+  memset(&other_connection, 0, sizeof(other_connection));
+  assert_int_equal(az_iot_delivery_tracker__bind(&fx->tracker, &fx->connection), AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_delivery_tracker__bind(&fx->tracker, &other_connection),
+      AZ_IOT_ERR_ALREADY_INITIALIZED);
+
   az_iot_delivery_tracker__unbind(&fx->tracker);
   assert_int_equal(
       az_iot_delivery_tracker__submit(&fx->tracker, &k_resend, id, 1u, 0u, &index),
@@ -561,6 +629,8 @@ int main(void)
     cmocka_unit_test_setup_teardown(a_completion_may_unbind_the_tracker, setup, teardown),
     cmocka_unit_test_setup_teardown(cancel_and_encode_failure, setup, teardown),
     cmocka_unit_test_setup_teardown(unbinding_forgets_shared_pool_publishes, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_later_observer_submit_does_not_resend_a_requeued_message, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_busy_adapter_does_not_hold_back_a_requeued_message, setup, teardown),
     cmocka_unit_test_setup_teardown(arguments_capacity_and_binding, setup, teardown),

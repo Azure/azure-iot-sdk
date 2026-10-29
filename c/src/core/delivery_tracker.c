@@ -77,6 +77,7 @@ static void lose(az_iot_delivery_tracker_entry* e, const az_iot_publish_result* 
   {
     EI(e).state = ENTRY_QUEUED;
     EI(e).requeued_by_completion = 1u;
+    EI(e).requeued_at_tick = TI(EI(e).tracker).tick_count;
     return;
   }
   finish(e, AZ_IOT_DELIVERY_TRACKER_OUTCOME_SESSION_LOST, detail);
@@ -178,6 +179,7 @@ static az_iot_result try_send(az_iot_delivery_tracker* t, az_iot_delivery_tracke
   if (track)
   {
     EI(e).state = ENTRY_IN_FLIGHT;
+    EI(e).requeued_by_completion = 0u;
     EI(e).publish_slot = handle.slot;
     EI(e).publish_id = handle.id;
   }
@@ -210,11 +212,20 @@ static bool sends_after(const az_iot_delivery_tracker_entry* e, uint8_t priority
 }
 
 /**
- * @brief Send queued messages by priority, then submit order, until the connection refuses.
- * @param skip_requeued Leave out messages a PUBACK error requeued in this do_work().
- * @param end_of_do_work Clear that mark: such messages go out from the following do_work().
+ * @brief Whether a message a PUBACK error requeued still waits: it goes out from the TICK of the
+ *        do_work() after the one that requeued it, never earlier, whatever observer runs later.
  */
-static void flush(az_iot_delivery_tracker* t, bool skip_requeued, bool end_of_do_work)
+static bool held_back(const az_iot_delivery_tracker* t, const az_iot_delivery_tracker_entry* e)
+{
+  return EI(e).requeued_by_completion != 0u
+      && (uint32_t)(TI(t).tick_count - EI(e).requeued_at_tick) < 2u;
+}
+
+/**
+ * @brief Send queued messages by priority, then submit order, until the connection refuses.
+ * @param skip_requeued Leave out the messages held_back() holds.
+ */
+static void flush(az_iot_delivery_tracker* t, bool skip_requeued)
 {
   az_iot_connection_client* const connection = TI(t).connection;
   uint8_t priority = 0;
@@ -238,7 +249,7 @@ static void flush(az_iot_delivery_tracker* t, bool skip_requeued, bool end_of_do
     }
     priority = EI(candidate).profile->priority;
     sequence = EI(candidate).sequence;
-    if (skip_requeued && EI(candidate).requeued_by_completion)
+    if (skip_requeued && held_back(t, candidate))
     {
       continue;
     }
@@ -259,10 +270,6 @@ static void flush(az_iot_delivery_tracker* t, bool skip_requeued, bool end_of_do
     {
       break; /* The connection refused; the rest waits for a later event. */
     }
-  }
-  for (size_t i = 0; end_of_do_work && i < TI(t).capacity; ++i)
-  {
-    EI(&TI(t).entries[i]).requeued_by_completion = 0u;
   }
 }
 
@@ -307,17 +314,18 @@ static void on_connection_event(const az_iot_connection_feature_event* event, vo
       if (event->state->scope == AZ_IOT_CONN_SCOPE_HUB
           && event->state->state == AZ_IOT_CONN_STATE_CONNECTED)
       {
-        flush(t, false, true);
+        flush(t, false);
       }
       break;
     case AZ_IOT_CONNECTION_FEATURE_EVENT_PUBLISH_COMPLETED:
-      flush(t, true, false);
+      flush(t, true);
       break;
     case AZ_IOT_CONNECTION_FEATURE_EVENT_TICK:
       for_each_entry(t, ENTRY_FREE, has_expired, expire);
+      ++TI(t).tick_count;
       if (still_bound(t, connection))
       {
-        flush(t, true, true);
+        flush(t, true);
       }
       break;
     case AZ_IOT_CONNECTION_FEATURE_EVENT_SESSION_END:
@@ -372,6 +380,10 @@ az_iot_result az_iot_delivery_tracker__bind(
   if (tracker == NULL || connection == NULL)
   {
     return AZ_IOT_ERR_INVALID_ARG;
+  }
+  if (TI(tracker).connection != NULL)
+  {
+    return TI(tracker).connection == connection ? AZ_IOT_OK : AZ_IOT_ERR_ALREADY_INITIALIZED;
   }
   az_iot_result result = AZ_IOT_OK;
   if (TI(tracker).reserved_pubacks != 0u)
@@ -464,7 +476,7 @@ az_iot_result az_iot_delivery_tracker__submit(
                        : TI(tracker).connection->opts.max_unconfirmed_delivery_timeout_ms);
   EI(e).state = ENTRY_QUEUED;
   *out_entry_index = index_of(tracker, e);
-  flush(tracker, true, false);
+  flush(tracker, true);
   return AZ_IOT_OK;
 }
 

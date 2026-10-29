@@ -100,7 +100,9 @@ extern "C"
 
   /**
    * @brief Reserve the PUBACK slots and observe @p connection.
-   * @return AZ_IOT_OK, or the error of the reservation or observer registration (nothing kept).
+   * @return AZ_IOT_OK (also when already bound to @p connection), AZ_IOT_ERR_ALREADY_INITIALIZED
+   *         when bound to another connection, or the error of the reservation or observer
+   *         registration (nothing kept).
    */
   az_iot_result az_iot_delivery_tracker__bind(
       az_iot_delivery_tracker* tracker,

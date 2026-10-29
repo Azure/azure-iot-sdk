@@ -42,7 +42,8 @@ extern "C"
       uint8_t correlation_id[AZ_IOT_DELIVERY_TRACKER_CORRELATION_ID_MAX];
       uint8_t correlation_id_length;
       uint8_t state;
-      uint8_t requeued_by_completion; /**< Not resent from the PUBACK event that requeued it. */
+      uint8_t requeued_by_completion; /**< Requeued by a PUBACK error or session loss. */
+      uint32_t requeued_at_tick; /**< tick_count when requeued; paces the resend. */
     } _internal;
   } az_iot_delivery_tracker_entry;
 
@@ -59,6 +60,7 @@ extern "C"
       size_t priority_levels;
       void* owner_context;
       uint64_t next_sequence;
+      uint32_t tick_count; /**< TICK events seen; paces resends. */
     } _internal;
   } az_iot_delivery_tracker;
 
