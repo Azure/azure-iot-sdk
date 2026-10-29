@@ -254,6 +254,9 @@
   the mbedTLS crypto backend and the software updates OTA platform hooks
   (`az_iot_su_esp32_ota.h`: `az_iot_su_esp32_ota_context`,
   `az_iot_su_esp32_ota_get_platform_hooks()`, `az_iot_su_esp32_ota_mark_running_image_valid()`).
+- az_mqtt adapter on ESP-IDF (`azure-iot-sdk-az-mqtt` component): with no trusted CA it verifies
+  the server against the ESP-IDF certificate bundle. The ESP32 software updates sample uses it
+  instead of its own esp-mqtt adapter, and no longer depends on `espressif/mqtt`.
 
 ### Bugs Fixed
 

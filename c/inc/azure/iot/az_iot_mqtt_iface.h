@@ -267,7 +267,7 @@ extern "C"
      * a CA or a key reference select TLS on that alone. */
     bool use_tls;
     /* In-memory PEM material. Adapters that load credentials from memory rather
-     * than from disk (e.g. esp-mqtt on a device with no filesystem) use these;
+     * than from disk (e.g. az_mqtt on an ESP32, which has no filesystem) use these;
      * file-path adapters (Paho + OpenSSL) ignore them. Any field may be NULL. */
     const char* trusted_ca_pem; /* CA chain PEM, or NULL */
     const char* client_cert_pem; /* client certificate PEM, or NULL */

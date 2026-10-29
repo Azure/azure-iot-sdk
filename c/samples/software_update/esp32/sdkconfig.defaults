@@ -15,10 +15,6 @@ CONFIG_PARTITION_TABLE_FILENAME="partitions.csv"
 # bootloader rolls back to the previous slot on the next reset.
 CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
 
-# --- esp-mqtt (native MQTT client used by the SDK adapter) ------------------
-CONFIG_MQTT_PROTOCOL_5=y
-CONFIG_MQTT_TRANSPORT_SSL=y
-
 # --- TLS / mbedTLS ----------------------------------------------------------
 # The Azure endpoints present 2048/4096-bit RSA chains; give the TLS handshake
 # and the software updates manifest-verification path enough RSA headroom.
@@ -30,10 +26,16 @@ CONFIG_MBEDTLS_DYNAMIC_BUFFER=y
 CONFIG_ESP_TLS_INSECURE=n
 CONFIG_ESP_HTTPS_OTA_ALLOW_HTTP=n
 # Trust the Azure blob/IoT roots via the built-in certificate bundle
-# (esp_crt_bundle_attach) used by the OTA download and the MQTT CA fallback.
+# (esp_crt_bundle_attach), used by the OTA download, and by MQTT when
+# certs/trusted_ca.pem holds no CA.
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
 
 # --- Main task stack --------------------------------------------------------
 # The single-threaded SDK pump plus the TLS handshake and OTA download all run
 # on the main task; give it a generous stack.
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=12288
+
+# --- az_mqtt (MQTT client) ----------------------------------------------------
+# azure-sdk-for-c is compiled once, by the azure-sdk-for-c component.
+CONFIG_AZ_MQTT_BUILD_AZ_CORE=n
+CONFIG_AZ_MQTT_AZ_CORE_COMPONENT="azure-sdk-for-c"

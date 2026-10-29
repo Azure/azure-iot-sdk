@@ -32,6 +32,10 @@
 
 #include <azure/core/az_platform.h>
 
+#if defined(ESP_PLATFORM)
+#include "esp_crt_bundle.h"
+#endif
+
 #if AZ_IOT_AZ_MQTT_V == 5
 #include <az_mqtt5/az_mqtt5_client.h>
 #include <az_mqtt5/az_mqtt5_codec.h>
@@ -742,6 +746,15 @@ static az_iot_result _azm_check_options(az_iot_mqtt_connect_options const* o)
   return AZ_IOT_OK;
 }
 
+#if defined(ESP_PLATFORM)
+/** @brief az_mqtt_tls_configure_fn: trust the ESP-IDF certificate bundle. */
+static az_result _azm_attach_esp_certificate_bundle(void* native_config, void* context)
+{
+  (void)context;
+  return esp_crt_bundle_attach(native_config) == ESP_OK ? AZ_OK : AZ_ERROR_NOT_SUPPORTED;
+}
+#endif
+
 /** @brief Copy what az_mqtt reads during the session into m (TLS, proxy, will, CONNECT). */
 static bool _azm_copy_options(
     _azm_client* m,
@@ -761,6 +774,13 @@ static bool _azm_copy_options(
   ok = ok && _azm_own(m, t->client_key_path ? NULL : t->client_key_pem, &m->tls.client_key_pem);
   bool const tls = t->use_tls || t->trusted_ca_path || t->trusted_ca_pem || t->client_cert_path
       || t->client_cert_pem || t->client_key_path || t->client_key_pem || t->client_key_uri;
+#if defined(ESP_PLATFORM)
+  // ESP-IDF has no system trust store: with no CA given, trust its certificate bundle.
+  if (tls && az_span_size(m->tls.ca_cert_path) == 0 && az_span_size(m->tls.ca_cert_pem) == 0)
+  {
+    m->tls.configure = _azm_attach_esp_certificate_bundle;
+  }
+#endif
   options->tls_options = tls ? &m->tls : NULL;
 
   bool const websocket = o->transport == AZ_IOT_MQTT_TRANSPORT_WEBSOCKET;
