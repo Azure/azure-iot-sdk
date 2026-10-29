@@ -122,7 +122,6 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
 
         [Theory]
         [InlineData(MqttDisconnectReason.NormalDisconnection, true)]
-        [InlineData(MqttDisconnectReason.ImplementationSpecificError, false)]
         [InlineData(MqttDisconnectReason.NotAuthorized, false)]
         public async Task DisconnectCancelsAndReleasesAllPendingCertificateSigningOperations(MqttDisconnectReason reason, bool clientInitiated)
         {
@@ -145,14 +144,18 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
                 await mockMqttClient.SimulateServerDisconnectAsync(reason);
             }
 
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => unacceptedOperation.Completed.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken));
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => acceptedOperation.Completed.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken));
             Assert.True(unacceptedOperation.Accepted.IsCanceled);
-            Assert.True(unacceptedOperation.Completed.IsCanceled);
             Assert.True(acceptedOperation.Accepted.IsCompletedSuccessfully);
             Assert.True(acceptedOperation.Completed.IsCanceled);
 
             if (clientInitiated || reason == MqttDisconnectReason.NotAuthorized)
             {
-                await client.ConnectToHubAsync(context, TestContext.Current.CancellationToken);
+                await client.ProvisionAndConnectAsync(
+                    new ProvisioningSettings("someIdScope"),
+                    context.AuthenticationProvider,
+                    cancellationToken: TestContext.Current.CancellationToken);
             }
             await ReceiveCertificateSigningResponseAsync(client, unacceptedRequest.RequestId, "202", AcceptedResponse);
             await ReceiveCertificateSigningResponseAsync(client, acceptedRequest.RequestId, "200", CompletedResponse);
@@ -163,21 +166,126 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
             await client.SendCertificateSigningRequestAsync(acceptedRequest, TestContext.Current.CancellationToken);
         }
 
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task CertificateSigningIsCanceledNotResentWhenFaultCallbackReconnects(bool acceptedFirst)
+        {
+            using MockConnectionMqttClient mockMqttClient = new();
+            ConnectionContext context = GetMockConnectionContext(false);
+            using ConnectionClient client = new(new() { MqttClient = mockMqttClient });
+            await client.ConnectToHubAsync(context, TestContext.Current.CancellationToken);
+            IotHubCertificateSigningRequest request = new(context.DeviceId, "csr");
+            CertificateSigningOperation operation = await client.SendCertificateSigningRequestAsync(request, TestContext.Current.CancellationToken);
+            if (acceptedFirst)
+            {
+                await ReceiveCertificateSigningResponseAsync(client, request.RequestId, "202", AcceptedResponse);
+            }
+
+            // The application reconnects straight from the fault callback, without disconnecting first, which clears
+            // the client-wide fault before the pending request resumes.
+            TaskCompletionSource reconnected = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            client.ConnectionFaultedAsync += async _ =>
+            {
+                try
+                {
+                    await client.ConnectToHubAsync(context, TestContext.Current.CancellationToken);
+                    await ReceiveCertificateSigningResponseAsync(client, request.RequestId, "200", CompletedResponse);
+                    reconnected.TrySetResult();
+                }
+                catch (Exception e)
+                {
+                    reconnected.TrySetException(e);
+                }
+            };
+            string requestTopic = "$iothub/credentials/POST/issueCertificate/?$rid=" + request.RequestId;
+            int sentRequestCount = mockMqttClient.SentMqttTrafficInOrder.Count(traffic => traffic.Publish?.Topic == requestTopic);
+
+            await mockMqttClient.SimulateServerDisconnectAsync(MqttDisconnectReason.NotAuthorized);
+            await reconnected.Task.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => operation.Completed.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken));
+            Assert.Equal(acceptedFirst, operation.Accepted.IsCompletedSuccessfully);
+            Assert.Equal(sentRequestCount, mockMqttClient.SentMqttTrafficInOrder.Count(traffic => traffic.Publish?.Topic == requestTopic));
+            Assert.Null(context.IssuedClientCertificates);
+        }
+
         [Fact]
-        public async Task DisconnectCancelsCertificateSigningWithoutWaitingForReconnection()
+        public async Task InterruptedSendIsCanceledNotResentWhenFaultCallbackReconnects()
+        {
+            using MockConnectionMqttClient mockMqttClient = new();
+            ConnectionContext context = GetMockConnectionContext(false);
+            using ConnectionClient client = new(new() { MqttClient = mockMqttClient });
+            await client.ConnectToHubAsync(context, TestContext.Current.CancellationToken);
+
+            // The application reconnects straight from the fault callback, without disconnecting first, which clears
+            // the client-wide fault while the interrupted send is still waiting for its acknowledgement.
+            TaskCompletionSource reconnected = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            client.ConnectionFaultedAsync += async _ =>
+            {
+                try
+                {
+                    await client.ConnectToHubAsync(context, TestContext.Current.CancellationToken);
+                    reconnected.TrySetResult();
+                }
+                catch (Exception e)
+                {
+                    reconnected.TrySetException(e);
+                }
+            };
+
+            const string requestTopic = "test/request";
+            TaskCompletionSource<string> response = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            int requestAttempts = 0;
+            mockMqttClient.OnPublish = async publish =>
+            {
+                if (publish.Topic == requestTopic && Interlocked.Increment(ref requestAttempts) == 1)
+                {
+                    // Hold the interrupted send until the fault callback has reconnected, then report it as interrupted.
+                    _ = mockMqttClient.SimulateServerDisconnectAsync(MqttDisconnectReason.NotAuthorized);
+                    await reconnected.Task.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+                    throw new MqttClientNotConnectedException("Connection lost while waiting for the acknowledgement.");
+                }
+
+                return new() { ReasonCode = MqttPublishAckReasonCode.Success };
+            };
+
+            Task<string> pending = ((IConnectionClient)client).PublishAndWaitForResponseAsync(
+                new MqttPublish() { Topic = requestTopic, QualityOfServiceLevel = MqttQualityOfServiceLevel.AtLeastOnce },
+                response.Task,
+                TestContext.Current.CancellationToken);
+
+            OperationCanceledException exception = await Assert.ThrowsAnyAsync<OperationCanceledException>(
+                () => pending.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken));
+            Assert.IsAssignableFrom<DeviceException>(exception.InnerException);
+            Assert.Equal(1, Volatile.Read(ref requestAttempts));
+        }
+
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task CertificateSigningResendsAfterReconnectionWhileWaitingForResponse(bool acceptedFirst)
         {
             using MockConnectionMqttClient mockMqttClient = new();
             using ConnectionClient client = new(new() { MqttClient = mockMqttClient });
             await client.ConnectToHubAsync(GetMockConnectionContext(false), TestContext.Current.CancellationToken);
-            CertificateSigningOperation operation = await client.SendCertificateSigningRequestAsync(
-                new("someDeviceId", "csr"), TestContext.Current.CancellationToken);
-            TaskCompletionSource<MqttConnectAck> reconnect = new(TaskCreationOptions.RunContinuationsAsynchronously);
-            TaskCompletionSource presenceCompleted = new(TaskCreationOptions.RunContinuationsAsynchronously);
-            mockMqttClient.OnConnect = _ => reconnect.Task;
-            client.DevicePresenceFlowCompletedAsync += _ =>
+            IotHubCertificateSigningRequest request = new("someDeviceId", "csr");
+            CertificateSigningOperation operation = await client.SendCertificateSigningRequestAsync(request, TestContext.Current.CancellationToken);
+            if (acceptedFirst)
             {
-                presenceCompleted.TrySetResult();
-                return Task.CompletedTask;
+                await ReceiveCertificateSigningResponseAsync(client, request.RequestId, "202", AcceptedResponse);
+            }
+            TaskCompletionSource<MqttConnectAck> reconnect = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            TaskCompletionSource resent = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            mockMqttClient.OnConnect = _ => reconnect.Task;
+            mockMqttClient.OnPublish = async publish =>
+            {
+                Assert.Equal("$iothub/credentials/POST/issueCertificate/?$rid=" + request.RequestId, publish.Topic);
+                Assert.Equal(JsonSerializer.SerializeToUtf8Bytes(request), publish.Payload);
+                await ReceiveCertificateSigningResponseAsync(client, request.RequestId, "202", AcceptedResponse);
+                await ReceiveCertificateSigningResponseAsync(client, request.RequestId, "200", CompletedResponse);
+                resent.TrySetResult();
+                return new() { ReasonCode = MqttPublishAckReasonCode.Success };
             };
 
             try
@@ -186,14 +294,122 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
                     .WaitAsync(TimeSpan.FromSeconds(1), TestContext.Current.CancellationToken);
 
                 Assert.False(mockMqttClient.IsConnected());
-                Assert.True(operation.Accepted.IsCanceled);
-                Assert.True(operation.Completed.IsCanceled);
+                Assert.Equal(acceptedFirst, operation.Accepted.IsCompletedSuccessfully);
+                Assert.False(operation.Completed.IsCompleted);
             }
             finally
             {
                 reconnect.TrySetResult(new() { ResultCode = MqttConnectReasonCode.Success });
-                await presenceCompleted.Task.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+                await resent.Task.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
             }
+            Assert.True(operation.Accepted.IsCompletedSuccessfully);
+            Assert.True(operation.Completed.IsCompletedSuccessfully);
+            Assert.Equal(2, mockMqttClient.SentMqttTrafficInOrder.Count(traffic => traffic.Subscribe?.TopicFilters.Any(filter => filter.Topic == "$iothub/credentials/res/#") == true));
+        }
+
+        [Fact]
+        public async Task RequestIsNotReplayedUsingStaleReadinessAfterRepeatedConnectionLosses()
+        {
+            using MockConnectionMqttClient mockMqttClient = new();
+            using ConnectionClient client = new(new()
+            {
+                MqttClient = mockMqttClient,
+                ConnectionRetryPolicy = new ExponentialBackoffRetryPolicy(uint.MaxValue, TimeSpan.Zero, useJitter: false),
+            });
+            await client.ConnectToHubAsync(GetMockConnectionContext(false), TestContext.Current.CancellationToken);
+
+            const string requestTopic = "test/request";
+            TaskCompletionSource<string> response = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            TaskCompletionSource restorationStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            TaskCompletionSource restoreSubscriptions = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            int requestAttempts = 0;
+            mockMqttClient.OnPublish = async publish =>
+            {
+                if (publish.Topic == requestTopic && Interlocked.Increment(ref requestAttempts) == 1)
+                {
+                    // The first connection drops and the second becomes ready while the request is being sent...
+                    await mockMqttClient.SimulateServerDisconnectAsync(MqttDisconnectReason.ImplementationSpecificError)
+                        .WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+
+                    // ...then the second connection drops too, and the third is slow to restore its subscriptions.
+                    mockMqttClient.OnSubscribe = async subscribe =>
+                    {
+                        restorationStarted.TrySetResult();
+                        await restoreSubscriptions.Task;
+                        return MqttObjectHelpers.CreateSuccessfulSuback(subscribe);
+                    };
+                    _ = mockMqttClient.SimulateServerDisconnectAsync(MqttDisconnectReason.ImplementationSpecificError);
+                    await restorationStarted.Task.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+                }
+                else if (publish.Topic == requestTopic)
+                {
+                    response.TrySetResult("response");
+                }
+
+                return new() { ReasonCode = MqttPublishAckReasonCode.Success };
+            };
+
+            Task<string> pending = ((IConnectionClient)client).PublishAndWaitForResponseAsync(
+                new MqttPublish() { Topic = requestTopic, QualityOfServiceLevel = MqttQualityOfServiceLevel.AtLeastOnce },
+                response.Task,
+                TestContext.Current.CancellationToken);
+
+            try
+            {
+                await restorationStarted.Task.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+                await Task.Delay(TimeSpan.FromMilliseconds(500), TestContext.Current.CancellationToken);
+
+                // The second connection's readiness is stale, so the request must wait for the third connection to be ready.
+                Assert.Equal(1, Volatile.Read(ref requestAttempts));
+                Assert.False(pending.IsCompleted);
+            }
+            finally
+            {
+                restoreSubscriptions.TrySetResult();
+            }
+
+            Assert.Equal("response", await pending.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken));
+            Assert.Equal(2, Volatile.Read(ref requestAttempts));
+        }
+
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task CertificateSigningCanceledDuringRecoveryIsNotResent(bool acceptedFirst)
+        {
+            using MockConnectionMqttClient mqttClient = new();
+            using ConnectionClient client = new(new() { MqttClient = mqttClient });
+            await client.ConnectToHubAsync(GetMockConnectionContext(false), TestContext.Current.CancellationToken);
+            using CancellationTokenSource cancellation = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+            IotHubCertificateSigningRequest request = new("someDeviceId", "csr");
+            CertificateSigningOperation operation = await client.SendCertificateSigningRequestAsync(request, cancellation.Token);
+            if (acceptedFirst)
+            {
+                await ReceiveCertificateSigningResponseAsync(client, request.RequestId, "202", AcceptedResponse);
+            }
+
+            TaskCompletionSource<MqttConnectAck> reconnect = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            TaskCompletionSource ready = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            mqttClient.OnConnect = _ => reconnect.Task;
+            client.DevicePresenceFlowCompletedAsync += _ =>
+            {
+                ready.TrySetResult();
+                return Task.CompletedTask;
+            };
+            try
+            {
+                await mqttClient.SimulateServerDisconnectAsync(MqttDisconnectReason.ImplementationSpecificError);
+                cancellation.Cancel();
+                await Assert.ThrowsAnyAsync<OperationCanceledException>(() => operation.Completed);
+            }
+            finally
+            {
+                reconnect.TrySetResult(new() { ResultCode = MqttConnectReasonCode.Success });
+                await ready.Task.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+            }
+
+            Assert.Single(mqttClient.SentMqttTrafficInOrder, traffic => traffic.Publish != null);
+            Assert.Equal(acceptedFirst, operation.Accepted.IsCompletedSuccessfully);
         }
 
         [Theory]
@@ -223,6 +439,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
                 client.Dispose();
             }
 
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => operation.Completed.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken));
             Assert.Equal(acceptedFirst, operation.Accepted.IsCompletedSuccessfully);
             Assert.True(operation.Completed.IsCanceled);
             if (!acceptedFirst)

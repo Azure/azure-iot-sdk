@@ -1,9 +1,10 @@
-// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
+﻿// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
 // See LICENSE file in the project root for full license information.
 
 using Microsoft.Azure.Iot.Device.Authentication;
 using Microsoft.Azure.Iot.Device.Exceptions;
 using Microsoft.Azure.Iot.Device.Models;
+using Microsoft.Azure.Iot.Device.Models.CertificateManagement;
 using Microsoft.Azure.Iot.Device.Models.Telemetry;
 using Microsoft.Azure.Iot.Device.Mqtt;
 using Microsoft.Azure.Iot.Device.Provisioning.Models;
@@ -89,6 +90,131 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
                     new[] { GlobalDeviceEndpoint, FirstAssignedHub, GlobalDeviceEndpoint, SecondAssignedHub },
                     connectedHostNames);
             }
+        }
+
+        [Fact]
+        public async Task ReprovisioningCancelsPendingCertificateSigningOperations()
+        {
+            using MockConnectionMqttClient mockMqttClient = new();
+            _ = new MockDeviceProvisioningService(mockMqttClient, _ => FirstAssignedHub);
+            using ConnectionClient connectionClient = new(new() { MqttClient = mockMqttClient });
+
+            ConnectionContext connectionContext = await connectionClient.ProvisionAndConnectAsync(
+                CreateProvisioningSettings(),
+                CreateAuthenticationProvider(),
+                cancellationToken: TestContext.Current.CancellationToken);
+            CertificateSigningOperation operation = await connectionClient.SendCertificateSigningRequestAsync(
+                new IotHubCertificateSigningRequest(DeviceId, "csr"),
+                TestContext.Current.CancellationToken);
+            TaskCompletionSource reprovisioningStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            connectionClient.ReprovisioningStartedAsync += _ =>
+            {
+                reprovisioningStarted.TrySetResult();
+                return Task.CompletedTask;
+            };
+
+            await mockMqttClient.SimulateServerDisconnectAsync(MqttDisconnectReason.NotAuthorized);
+            await reprovisioningStarted.Task.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => operation.Completed);
+            Assert.True(operation.Accepted.IsCanceled);
+            Assert.Null(connectionContext.IssuedClientCertificates);
+        }
+
+        [Theory]
+        [InlineData(true)]
+        [InlineData(false)]
+        public async Task ReprovisioningBeforeCertificateSigningAcknowledgementDoesNotSendRequestToNewHub(bool holdSubscribe)
+        {
+            const string certificateSigningRequestTopicPrefix = "$iothub/credentials/POST/issueCertificate/";
+            const string certificateSigningResponseTopicFilter = "$iothub/credentials/res/#";
+
+            using MockConnectionMqttClient mockMqttClient = new();
+            _ = new MockDeviceProvisioningService(mockMqttClient, registrationCount => registrationCount == 1 ? FirstAssignedHub : SecondAssignedHub);
+            Func<MqttPublish, Task<MqttPublishAck>> handleDpsPublish = mockMqttClient.OnPublish!;
+
+            string? currentHostName = null;
+            TaskCompletionSource connectedToSecondHub = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            mockMqttClient.OnConnect = connect =>
+            {
+                Volatile.Write(ref currentHostName, connect.HostName);
+                if (connect.HostName == SecondAssignedHub)
+                {
+                    connectedToSecondHub.TrySetResult();
+                }
+
+                return Task.FromResult(new MqttConnectAck() { ResultCode = MqttConnectReasonCode.Success });
+            };
+
+            using ConnectionClient connectionClient = new(new() { MqttClient = mockMqttClient });
+            TaskCompletionSource reprovisioningStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            connectionClient.ReprovisioningStartedAsync += _ =>
+            {
+                reprovisioningStarted.TrySetResult();
+                return Task.CompletedTask;
+            };
+
+            ConnectionContext connectionContext = await connectionClient.ProvisionAndConnectAsync(
+                CreateProvisioningSettings(),
+                CreateAuthenticationProvider(),
+                cancellationToken: TestContext.Current.CancellationToken);
+
+            // Re-provisioning starts while the acknowledgement is pending, and the send is then reported as interrupted, so
+            // a retry would wait for the newly assigned hub and publish the abandoned request there.
+            async Task InterruptAcknowledgementAsync()
+            {
+                _ = mockMqttClient.SimulateServerDisconnectAsync(MqttDisconnectReason.NotAuthorized);
+                await reprovisioningStarted.Task.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+                throw new MqttClientNotConnectedException("Connection lost while waiting for the acknowledgement.");
+            }
+
+            int heldAcknowledgements = 0;
+            List<string?> certificateSigningRequestHostNames = new();
+            mockMqttClient.OnSubscribe = async subscribe =>
+            {
+                if (holdSubscribe
+                    && subscribe.TopicFilters.Any(filter => filter.Topic == certificateSigningResponseTopicFilter)
+                    && Interlocked.Increment(ref heldAcknowledgements) == 1)
+                {
+                    await InterruptAcknowledgementAsync();
+                }
+
+                return MqttObjectHelpers.CreateSuccessfulSuback(subscribe);
+            };
+            mockMqttClient.OnPublish = async publish =>
+            {
+                if (publish.Topic.StartsWith(certificateSigningRequestTopicPrefix, StringComparison.Ordinal))
+                {
+                    lock (certificateSigningRequestHostNames)
+                    {
+                        certificateSigningRequestHostNames.Add(Volatile.Read(ref currentHostName));
+                    }
+
+                    if (!holdSubscribe && Interlocked.Increment(ref heldAcknowledgements) == 1)
+                    {
+                        await InterruptAcknowledgementAsync();
+                    }
+
+                    return new() { ReasonCode = MqttPublishAckReasonCode.Success };
+                }
+
+                return await handleDpsPublish(publish);
+            };
+
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(
+                () => connectionClient.SendCertificateSigningRequestAsync(
+                    new IotHubCertificateSigningRequest(DeviceId, "csr"),
+                    TestContext.Current.CancellationToken).WaitAsync(s_testTimeout, TestContext.Current.CancellationToken));
+
+            // Give an unwanted retry the chance to publish the abandoned request on the newly assigned hub.
+            await connectedToSecondHub.Task.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+            await Task.Delay(s_negativeTestTimeout, TestContext.Current.CancellationToken);
+
+            lock (certificateSigningRequestHostNames)
+            {
+                Assert.DoesNotContain(SecondAssignedHub, certificateSigningRequestHostNames);
+            }
+            Assert.Null(connectionContext.IssuedClientCertificates);
         }
 
         [Fact]

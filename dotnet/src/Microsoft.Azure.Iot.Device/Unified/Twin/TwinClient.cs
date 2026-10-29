@@ -95,6 +95,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
         /// </summary>
         /// <param name="cancellationToken">The cancellation token.</param>
         /// <returns>The returned twin.</returns>
+        /// <remarks>If the connection is lost while awaiting the service response, the request is sent again after reconnection.</remarks>
         /// <exception cref="PublishRejectedException">Thrown if this get twin request is rejected by IoT Hub for any reason.</exception>
         public async Task<DeviceTwin> GetTwinAsync(CancellationToken cancellationToken = default)
         {
@@ -125,13 +126,8 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
             {
                 Trace.TraceInformation("Publishing 'GetTwin' request on topic " + publish.Topic);
 
-                // Puback is checked for non-success cases under this layer, so no need to check it here as well
-                MqttPublishAck puback = await _connection.PublishAsync(publish, cancellationToken);
-
-                // Wait until IoT hub sends a message to this client with the response to this patch twin request.
-                var getTwinResponse = await pendingGetTwinRequest.TwinResponseTask.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
-
-                return getTwinResponse;
+                return await _connection.PublishAndWaitForResponseAsync(
+                    publish, pendingGetTwinRequest.TwinResponseTask.Task, cancellationToken).ConfigureAwait(false);
             }
             finally
             {

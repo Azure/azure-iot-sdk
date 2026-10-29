@@ -260,9 +260,10 @@ namespace Microsoft.Azure.Iot.Device
 
         /// <summary>
         /// Raised when <see cref="_unrecoverableFault"/> is set, so that operations waiting for the connection to come
-        /// back stop waiting for something that will never happen.
+        /// back stop waiting for something that will never happen. The fault is passed along so that a waiter can keep
+        /// it even after a later connection attempt clears <see cref="_unrecoverableFault"/>.
         /// </summary>
-        private event Action? UnrecoverablyFaulted;
+        private event Action<DeviceException>? UnrecoverablyFaulted;
 
         // Incremented each time the application deliberately disconnects this client. An operation that was waiting for
         // the connection to come back, or a re-provisioning attempt that was about to start, compares this against the
@@ -1271,14 +1272,14 @@ namespace Microsoft.Azure.Iot.Device
             // released, nor prevent the application notification below. Without this isolation a single misbehaving
             // waiter would suppress the application's connection-faulted callback entirely, leaving it unaware that the
             // connection is gone for good.
-            Action? unrecoverablyFaulted = UnrecoverablyFaulted;
+            Action<DeviceException>? unrecoverablyFaulted = UnrecoverablyFaulted;
             if (unrecoverablyFaulted != null)
             {
                 foreach (Delegate releaseWaiter in unrecoverablyFaulted.GetInvocationList())
                 {
                     try
                     {
-                        ((Action)releaseWaiter).Invoke();
+                        ((Action<DeviceException>)releaseWaiter).Invoke(fault);
                     }
                     catch (Exception e)
                     {
@@ -1306,8 +1307,11 @@ namespace Microsoft.Azure.Iot.Device
         /// </summary>
         private void ThrowIfUnrecoverablyFaulted()
         {
-            DeviceException? fault = _unrecoverableFault;
+            ThrowIfUnrecoverablyFaulted(_unrecoverableFault);
+        }
 
+        private static void ThrowIfUnrecoverablyFaulted(DeviceException? fault)
+        {
             if (fault != null)
             {
                 throw new OperationCanceledException("Operation canceled because this client hit a fault that it cannot recover from. See the inner exception for that fault.", fault);
@@ -1885,6 +1889,148 @@ namespace Microsoft.Azure.Iot.Device
             CurrentEndpoint = ConnectionEndpoint.None;
         }
 
+        internal async Task<T> SendRequestAndWaitForResponseAsync<T>(
+            Func<CancellationToken, Task> sendRequest,
+            Task<T> response,
+            CancellationToken cancellationToken)
+        {
+            CancellationToken operationLifetime = GetOperationLifetimeCancellationToken();
+            using CancellationTokenSource lifetime = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, operationLifetime);
+
+            // Keep the fault that ended this request's connection for the whole request, because a reconnection started
+            // from the application's fault callback clears the client-wide fault before this request resumes. Without
+            // this the request would be sent again in the new session instead of being canceled. The fault also cancels
+            // this request's token so that a send interrupted by it is not retried by the nested publish or subscribe
+            // retry loops, which only see the client-wide fault.
+            DeviceException? requestFault = null;
+            void CaptureFault(DeviceException fault)
+            {
+                Interlocked.CompareExchange(ref requestFault, fault, null);
+                try
+                {
+                    lifetime.Cancel();
+                }
+                catch (ObjectDisposedException)
+                {
+                    // This request already finished, so there is nothing left to cancel.
+                }
+            }
+            void ThrowIfRequestFaulted()
+            {
+                ThrowIfUnrecoverablyFaulted(Volatile.Read(ref requestFault));
+                ThrowIfUnrecoverablyFaulted();
+            }
+
+            UnrecoverablyFaulted += CaptureFault;
+            try
+            {
+                return await PerformWhileRespectingConnectionState(async token =>
+                {
+                    if (response.IsCompleted)
+                    {
+                        return await response.ConfigureAwait(false);
+                    }
+
+                    // Readiness is tracked per connection generation: a disconnect after a readiness signal starts a new
+                    // generation, so a signal from a connection that has since dropped is never mistaken for the current one.
+                    object readinessLock = new();
+                    bool isFaulted = false;
+                    TaskCompletionSource disconnected = new(TaskCreationOptions.RunContinuationsAsynchronously);
+                    TaskCompletionSource ready = new(TaskCreationOptions.RunContinuationsAsynchronously);
+                    Task HandleDisconnected(MqttClientDisconnectedEventArgs args)
+                    {
+                        lock (readinessLock)
+                        {
+                            disconnected.TrySetResult();
+                            if (!isFaulted && ready.Task.IsCompleted)
+                            {
+                                ready = new(TaskCreationOptions.RunContinuationsAsynchronously);
+                            }
+                        }
+                        return Task.CompletedTask;
+                    }
+                    Task HandleReady(DevicePresenceFlowCompletedArgs args)
+                    {
+                        if (args.IsSuccess && args.Exception == null)
+                        {
+                            lock (readinessLock)
+                            {
+                                ready.TrySetResult();
+                            }
+                        }
+                        return Task.CompletedTask;
+                    }
+                    void HandleFault(DeviceException fault)
+                    {
+                        lock (readinessLock)
+                        {
+                            isFaulted = true;
+                            disconnected.TrySetResult();
+                            ready.TrySetResult();
+                        }
+                    }
+
+                    ManagedMqttConnection.DisconnectedAsync += HandleDisconnected;
+                    DevicePresenceFlowCompletedAsync += HandleReady;
+                    UnrecoverablyFaulted += HandleFault;
+                    try
+                    {
+                        ThrowIfRequestFaulted();
+                        await sendRequest(token).ConfigureAwait(false);
+                        await Task.WhenAny(response, disconnected.Task).WaitAsync(token).ConfigureAwait(false);
+                        if (response.IsCompleted)
+                        {
+                            return await response.ConfigureAwait(false);
+                        }
+
+                        // A transport connection alone is not enough: response subscriptions must be restored first. Recheck
+                        // that the readiness observed is still the latest connection's before replaying the request.
+                        while (true)
+                        {
+                            Task readyTask;
+                            lock (readinessLock)
+                            {
+                                readyTask = ready.Task;
+                            }
+
+                            await Task.WhenAny(response, readyTask).WaitAsync(token).ConfigureAwait(false);
+                            if (response.IsCompleted)
+                            {
+                                return await response.ConfigureAwait(false);
+                            }
+
+                            lock (readinessLock)
+                            {
+                                if (readyTask == ready.Task)
+                                {
+                                    break;
+                                }
+                            }
+                        }
+
+                        ThrowIfRequestFaulted();
+                        throw new MqttClientNotConnectedException("Connection lost while waiting for the service response.");
+                    }
+                    finally
+                    {
+                        ManagedMqttConnection.DisconnectedAsync -= HandleDisconnected;
+                        DevicePresenceFlowCompletedAsync -= HandleReady;
+                        UnrecoverablyFaulted -= HandleFault;
+                    }
+                }, lifetime.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested && Volatile.Read(ref requestFault) != null)
+            {
+                // Report the cancellation caused by the fault with that fault, wherever the cancellation surfaced.
+                ThrowIfUnrecoverablyFaulted(Volatile.Read(ref requestFault));
+                throw;
+            }
+            finally
+            {
+                UnrecoverablyFaulted -= CaptureFault;
+            }
+        }
+
         private async Task<TResp> PerformWhileRespectingConnectionState<TResp>(Func<CancellationToken, Task<TResp>> funcToRetry, CancellationToken cancellationToken)
         {
             // Assume an open connection to start, but increment this by one if MqttClientNotConnectedException is thrown to counteract that assumption
@@ -1926,7 +2072,7 @@ namespace Microsoft.Azure.Iot.Device
             };
 
             DevicePresenceFlowCompletedAsync += HandleDevicePresenceFlowCompleted;
-            Action HandleUnrecoverableFault = () =>
+            Action<DeviceException> HandleUnrecoverableFault = _ =>
             {
                 // Stop waiting for a connection that is never coming back
                 Interlocked.Increment(ref connectionEventCount);
@@ -2035,7 +2181,7 @@ namespace Microsoft.Azure.Iot.Device
             }
         }
 
-        private CancellationToken GetOperationLifetimeCancellationToken()
+        protected CancellationToken GetOperationLifetimeCancellationToken()
         {
             lock (_operationLifetimeCancellationLock)
             {
