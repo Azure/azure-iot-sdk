@@ -38,19 +38,8 @@ internal class Program
         Console.WriteLine("Press 'Ctrl+C' to end the sample");
 
         // "{deviceId}" (IConnectionClient.DeviceIdPlaceholder) is replaced with this device's current ID each time the
-        // SDK sends an operation, so these topics keep working if the device is re-provisioned with a different device ID.
+        // SDK sends an operation, so this topic keeps working if the device is re-provisioned with a different device ID.
         string customPublishingTopic = $"foo/{IConnectionClient.DeviceIdPlaceholder}";
-        string customReceivingTopic = $"bar/{IConnectionClient.DeviceIdPlaceholder}";
-
-
-        var subackReasonCode = await customTopicsClient.SubscribeAsync(customReceivingTopic, MqttQualityOfServiceLevel.AtLeastOnce, cts.Token);
-        if (subackReasonCode != MqttClientSubscribeReasonCode.GrantedQoS0 && subackReasonCode != MqttClientSubscribeReasonCode.GrantedQoS1 && subackReasonCode != MqttClientSubscribeReasonCode.GrantedQoS2)
-        {
-            Console.WriteLine($"IoT Hub did not accept the custom topic subscription. Reason code: {subackReasonCode}");
-            return;
-        }
-
-        Console.WriteLine($"Device {deviceId} is now subscribed to topic {customReceivingTopic}.");
 
         while (!cts.Token.IsCancellationRequested)
         {
