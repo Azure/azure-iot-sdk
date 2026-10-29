@@ -2870,6 +2870,7 @@ typedef struct feature_event_log
 {
   int state;
   int session_end;
+  az_iot_connection_session_end_reason session_end_reason;
   int publish_completed;
   int tick;
 } feature_event_log;
@@ -2886,6 +2887,7 @@ static void log_feature_event(const az_iot_connection_feature_event* event, void
     case AZ_IOT_CONNECTION_FEATURE_EVENT_SESSION_END:
       assert_null(event->state);
       ++log->session_end;
+      log->session_end_reason = event->session_end_reason;
       break;
     case AZ_IOT_CONNECTION_FEATURE_EVENT_PUBLISH_COMPLETED:
       assert_null(event->state);
@@ -2893,6 +2895,9 @@ static void log_feature_event(const az_iot_connection_feature_event* event, void
       break;
     case AZ_IOT_CONNECTION_FEATURE_EVENT_TICK:
       ++log->tick;
+      break;
+    case AZ_IOT_CONNECTION_FEATURE_EVENT_IDENTITY_CHANGED:
+      fail_msg("unexpected IDENTITY_CHANGED");
       break;
   }
 }
@@ -2926,6 +2931,7 @@ static void a_feature_observer_gets_only_its_events(void** state)
   assert_true(az_iot_mock_mqtt_client_inject_disconnected(m));
   (void)az_iot_connection_client_do_work(fx->client, 0);
   assert_int_equal(log.session_end, 1);
+  assert_int_equal(log.session_end_reason, AZ_IOT_CONNECTION_SESSION_END_LOST);
   assert_int_equal(log.tick, 0);
 
   /* Now TICK only. */
@@ -2937,6 +2943,24 @@ static void a_feature_observer_gets_only_its_events(void** state)
   (void)az_iot_connection_client_do_work(fx->client, 0);
   assert_int_equal(log.tick, 1);
   assert_int_equal(log.state, states);
+  az_iot_connection_client__remove_feature_observer(fx->client, log_feature_event, &log);
+}
+
+/* A session ended by close() is reported as planned. */
+static void a_session_closed_by_the_application_ends_as_planned(void** state)
+{
+  fixture* fx = *state;
+  feature_event_log log = { 0 };
+  az_iot_mock_mqtt_client* m = connect_fixture(fx);
+  assert_int_equal(
+      az_iot_connection_client__add_feature_observer(
+          fx->client, AZ_IOT_CONNECTION_FEATURE_EVENT_SESSION_END, log_feature_event, &log),
+      AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client_close(fx->client), AZ_IOT_OK);
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(m));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_int_equal(log.session_end, 1);
+  assert_int_equal(log.session_end_reason, AZ_IOT_CONNECTION_SESSION_END_PLANNED);
   az_iot_connection_client__remove_feature_observer(fx->client, log_feature_event, &log);
 }
 
@@ -4690,6 +4714,8 @@ int main(void)
     cmocka_unit_test_setup_teardown(a_tick_observer_may_withdraw_observers, setup_csr, teardown),
     cmocka_unit_test_setup_teardown(feature_observer_registration_is_bounded, setup_csr, teardown),
     cmocka_unit_test_setup_teardown(a_feature_observer_gets_only_its_events, setup_csr, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_session_closed_by_the_application_ends_as_planned, setup_csr, teardown),
     cmocka_unit_test_setup_teardown(a_tracked_publish_has_a_handle, setup_csr, teardown),
     cmocka_unit_test_setup_teardown(a_forgotten_publish_is_not_completed, setup_csr, teardown),
     cmocka_unit_test_setup_teardown(

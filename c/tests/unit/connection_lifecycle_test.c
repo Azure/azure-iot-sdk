@@ -735,23 +735,42 @@ static void close_twice_is_idempotent(void** state)
   assert_int_equal(fx->log.count, transitions);
 }
 
+/** @brief Records the first two SESSION_END reasons into an int[2]. */
+static void record_session_end_reasons(const az_iot_connection_feature_event* event, void* user_ctx)
+{
+  int* reasons = (int*)user_ctx;
+  reasons[reasons[0] == -1 ? 0 : 1] = (int)event->session_end_reason;
+}
+
 /* After a fault the adapter is already gone, so there is nothing to
  * disconnect -- which is exactly why close() has to reach IDLE by itself here
  * rather than waiting for a transport event. */
 static void close_from_faulted_returns_to_idle(void** state)
 {
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  int reasons[2] = { -1, -1 };
+  assert_int_equal(
+      az_iot_connection_client__add_feature_observer(
+          fx->client,
+          AZ_IOT_CONNECTION_FEATURE_EVENT_SESSION_END,
+          record_session_end_reasons,
+          reasons),
+      AZ_IOT_OK);
   az_iot_mock_mqtt_client* m = open_to_connecting(fx);
 
   assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_ERR_MQTT));
   (void)az_iot_connection_client_do_work(fx->client, 0);
   (void)az_iot_connection_client_do_work(fx->client, 0);
   assert_true(az_iot_test_saw_state(&fx->log, AZ_IOT_CONN_STATE_FAULTED));
+  assert_int_equal(reasons[0], AZ_IOT_CONNECTION_SESSION_END_LOST);
 
   /* FAULTED is settled, not a trap: close() acknowledges it and the client is
    * IDLE by the time the call returns -- there is no adapter left to wait for. */
   assert_int_equal(az_iot_connection_client_close(fx->client), AZ_IOT_OK);
   assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_IDLE);
+  assert_int_equal(reasons[1], AZ_IOT_CONNECTION_SESSION_END_PLANNED);
+  az_iot_connection_client__remove_feature_observer(
+      fx->client, record_session_end_reasons, reasons);
 }
 
 /* The recovery this makes possible: retry without destroying the client (and

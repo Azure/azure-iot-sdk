@@ -1472,12 +1472,22 @@ extern "C"
     = 2, /**< The MQTT session ended. Not from deinit(). */
     AZ_IOT_CONNECTION_FEATURE_EVENT_PUBLISH_COMPLETED = 4, /**< A hub PUBACK, for any publish. */
     AZ_IOT_CONNECTION_FEATURE_EVENT_TICK = 8, /**< Once per do_work(), after its timers. */
+    /** DPS assigned a hub or device id other than the adopted one; before the assignment
+     *  callback and the hub connect. */
+    AZ_IOT_CONNECTION_FEATURE_EVENT_IDENTITY_CHANGED = 16,
   } az_iot_connection_feature_event_kind;
+  /** @brief Why an MQTT session ended. */
+  typedef enum az_iot_connection_session_end_reason
+  {
+    AZ_IOT_CONNECTION_SESSION_END_LOST = 0, /**< Link failure, refusal or timeout. */
+    AZ_IOT_CONNECTION_SESSION_END_PLANNED = 1, /**< close(), or a reconnect to renew a SAS token. */
+  } az_iot_connection_session_end_reason;
   /** @brief One event for a feature observer; valid only during the call. */
   typedef struct az_iot_connection_feature_event
   {
     az_iot_connection_feature_event_kind kind;
     const az_iot_connection_state_event* state; /**< STATE only; NULL otherwise. */
+    az_iot_connection_session_end_reason session_end_reason; /**< SESSION_END only. */
   } az_iot_connection_feature_event;
   typedef void (*az_iot_connection_feature_observer_callback)(
       const az_iot_connection_feature_event* event,

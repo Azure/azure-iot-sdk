@@ -276,7 +276,7 @@ static void notify_feature_observers_of(
     az_iot_connection_client* c,
     az_iot_connection_feature_event_kind kind)
 {
-  az_iot_connection_feature_event const event = { kind, NULL };
+  az_iot_connection_feature_event const event = { kind, NULL, AZ_IOT_CONNECTION_SESSION_END_LOST };
   notify_feature_observers(c, &event);
 }
 
@@ -287,7 +287,7 @@ static void dispatch_state_event(
   bool was_dispatching = c->dispatching_state;
   c->dispatching_state = true;
   az_iot_connection_feature_event const feature_event
-      = { AZ_IOT_CONNECTION_FEATURE_EVENT_STATE, event };
+      = { AZ_IOT_CONNECTION_FEATURE_EVENT_STATE, event, AZ_IOT_CONNECTION_SESSION_END_LOST };
   notify_feature_observers(c, &feature_event);
   for (size_t i = 0; i < c->opts.limits.max_application_state_observers; ++i)
   {
@@ -1048,7 +1048,9 @@ static void complete_publish(
   }
 }
 
-static void teardown_active(az_iot_connection_client* c)
+/** @brief Destroys the hub session, completes its pending PUBACKs and tells feature observers
+ * it ended for @p reason. */
+static void end_session(az_iot_connection_client* c, az_iot_connection_session_end_reason reason)
 {
   if (c->active_client && c->active_client->iface && c->active_client->iface->destroy)
   {
@@ -1106,7 +1108,17 @@ static void teardown_active(az_iot_connection_client* c)
    * Runs last so a handler that immediately re-issues its request sees a fully
    * torn-down session and gets a clean NOT_CONNECTED rather than publishing
    * into a half-freed adapter. */
-  notify_feature_observers_of(c, AZ_IOT_CONNECTION_FEATURE_EVENT_SESSION_END);
+  az_iot_connection_feature_event const event
+      = { AZ_IOT_CONNECTION_FEATURE_EVENT_SESSION_END, NULL, reason };
+  notify_feature_observers(c, &event);
+}
+
+/** @brief end_session(): planned after close(), lost otherwise. */
+static void teardown_active(az_iot_connection_client* c)
+{
+  end_session(
+      c,
+      c->user_close ? AZ_IOT_CONNECTION_SESSION_END_PLANNED : AZ_IOT_CONNECTION_SESSION_END_LOST);
 }
 
 static void puback_abandon(az_iot_connection_client* c, const void* owner);
@@ -4369,6 +4381,10 @@ static void dps_apply_deferred(az_iot_connection_client* c)
     return;
   }
 
+  /* Only a replaced identity has state to discard; the first assignment has none. */
+  bool const identity_changed = c->opts.iothub_hostname != NULL && c->opts.device_id != NULL
+      && (strcmp(c->opts.iothub_hostname, c->dps_assigned_hub) != 0
+          || strcmp(c->opts.device_id, c->dps_assigned_device_id) != 0);
   (void)replace_owned_string(
       c->provisioned_iot_hub_hostname,
       sizeof(c->provisioned_iot_hub_hostname),
@@ -4402,6 +4418,13 @@ static void dps_apply_deferred(az_iot_connection_client* c)
   /* The service answered, so it is reachable: a user session that failed
    * earlier should not still be serving out a backoff from that. */
   dps_user_retry_reset(c);
+
+  /* Before the application learns of the assignment and before the hub connect, so feature
+   * clients drop what belongs to the previous identity first. */
+  if (identity_changed)
+  {
+    notify_feature_observers_of(c, AZ_IOT_CONNECTION_FEATURE_EVENT_IDENTITY_CHANGED);
+  }
 
   if (c->assignment_cb)
   {
@@ -5558,7 +5581,7 @@ static void reconnect_for_sas_token_renewal(az_iot_connection_client* c)
   c->sas_token_renewal_disconnect_deadline_ms = 0;
   uint32_t closes = c->close_count;
   uint32_t seq = c->open_seq;
-  teardown_active(c);
+  end_session(c, AZ_IOT_CONNECTION_SESSION_END_PLANNED);
   /* Teardown runs PUBACK and session callbacks, which may close or reopen. */
   if (c->close_count != closes || c->open_seq != seq)
   {
@@ -7433,7 +7456,7 @@ az_iot_result az_iot_connection_client_close(az_iot_connection_client* client)
      * following open() reconnect to the very hub that faulted. */
     /* Defensive: no fault path leaves one behind today, but close() must not
      * depend on that to reach IDLE. */
-    teardown_active(client);
+    end_session(client, AZ_IOT_CONNECTION_SESSION_END_PLANNED);
     settle_all_scopes_to_idle(client);
     return AZ_IOT_OK;
   }

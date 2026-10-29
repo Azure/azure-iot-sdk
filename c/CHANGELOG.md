@@ -12,6 +12,10 @@
   `AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_SESSION_HANDLERS`,
   `AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_FEATURE_STATE_OBSERVERS` and `az_iot_session_end_callback`
   are removed.
+- Connection client (internal): feature observers learn why a session ended
+  (`AZ_IOT_CONNECTION_SESSION_END_PLANNED` after `close()` or a SAS-renewal reconnect,
+  `AZ_IOT_CONNECTION_SESSION_END_LOST` otherwise) and get `AZ_IOT_CONNECTION_FEATURE_EVENT_IDENTITY_CHANGED`
+  when a DPS assignment replaces a different hub or device id, before the assignment callback.
 - `az_iot_connection_client_options::max_unconfirmed_delivery_timeout_ms` bounds how long an SDK
   message whose peer set no Message Expiry is kept for confirmation or resend. 0 selects
   `AZ_IOT_DEFAULT_MAX_UNCONFIRMED_DELIVERY_TIMEOUT_MS` (300000); it cannot be disabled. It applies
