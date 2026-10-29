@@ -3371,12 +3371,13 @@ static void the_dps_ladder_does_not_inherit_the_hub_backoff(void** state)
   {
     az_iot_mock_mqtt_client* hub = az_iot_mock_mqtt_factory_last_client(fx->factory);
     assert_non_null(hub);
-    uint64_t before = az_iot_time_mono_ms();
     assert_true(az_iot_mock_mqtt_client_inject_connected(hub, AZ_IOT_ERR_MQTT));
     (void)az_iot_connection_client_do_work(fx->client, 0);
     (void)az_iot_connection_client_do_work(fx->client, 0);
     assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_RETRY_PENDING);
-    last_delay = fx->client->reconnect_due_ms - before;
+    size_t last = fx->log.count - 1u;
+    assert_true(fx->log.recovery_present[last]);
+    last_delay = fx->log.recovery[last].next_attempt_delay_ms;
     if (i < 2)
     {
       az_iot_test_wait_ms((unsigned)last_delay + 5u);
@@ -3386,7 +3387,7 @@ static void the_dps_ladder_does_not_inherit_the_hub_backoff(void** state)
 
   /* The hub ladder had reached 40 ms; the DPS one starts over at 10 ms. */
   assert_true(fx->client->needs_reprovision);
-  assert_true(last_delay <= (uint64_t)LADDER_INITIAL_MS + 2u);
+  assert_int_equal(last_delay, LADDER_INITIAL_MS);
   assert_int_equal(fx->client->retry_attempt[AZ_IOT_CONN_SCOPE_DPS], 1);
 
   /* And the attempt that deadline schedules really is a registration -- the
