@@ -43,7 +43,8 @@ typedef struct fixture
   char topics[ENTRY_COUNT][8];
   az_iot_mqtt_qos qos;
   az_iot_result encode_result;
-  int busy_sends; /* Sends the adapter refuses with AZ_IOT_ERR_BUSY. */
+  int failing_sends; /* Sends the adapter fails with failing_send_result. */
+  az_iot_result failing_send_result;
   completion completions[16];
   size_t completion_count;
   bool unbind_on_complete;
@@ -58,10 +59,11 @@ static az_iot_result encode(void* owner_context, size_t entry_index, az_iot_mqtt
       fx->topics[entry_index], sizeof(fx->topics[entry_index]), "t/%u", (unsigned)entry_index);
   out->topic = fx->topics[entry_index];
   out->qos = fx->qos;
-  if (fx->busy_sends > 0)
+  if (fx->failing_sends > 0)
   {
-    --fx->busy_sends;
-    az_iot_mock_mqtt_client_set_next_result(fx->mock, AZ_IOT_MOCK_CALL_PUBLISH, AZ_IOT_ERR_BUSY);
+    --fx->failing_sends;
+    az_iot_mock_mqtt_client_set_next_result(
+        fx->mock, AZ_IOT_MOCK_CALL_PUBLISH, fx->failing_send_result);
   }
   return fx->encode_result;
 }
@@ -81,6 +83,7 @@ static void on_complete(
   if (fx->unbind_on_complete)
   {
     az_iot_delivery_tracker__unbind(&fx->tracker);
+    memset(&fx->tracker, 0xA5, sizeof(fx->tracker)); /* The owner reuses the storage. */
   }
 }
 
@@ -190,6 +193,7 @@ static int setup(void** state)
   assert_int_equal(
       az_iot_connection_client_register_mqtt_factory(&fx->connection, fx->factory), AZ_IOT_OK);
   fx->qos = AZ_IOT_MQTT_QOS_1;
+  fx->failing_send_result = AZ_IOT_ERR_BUSY;
   assert_int_equal(
       az_iot_delivery_tracker__init(
           &fx->tracker, fx->entries, ENTRY_COUNT, RESERVED_PUBACKS, k_guaranteed, 1u, fx),
@@ -426,7 +430,8 @@ static void an_identity_change_discards_every_message(void** state)
   assert_int_equal(fx->completions[1].outcome, AZ_IOT_DELIVERY_TRACKER_OUTCOME_DISCARDED);
 }
 
-/* An on_complete that unbinds the tracker stops the walk: nothing else is completed. */
+/* An on_complete that unbinds the tracker stops the walk: nothing else is completed, and the
+ * tracker storage is not touched again. */
 static void a_completion_may_unbind_the_tracker(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -436,7 +441,8 @@ static void a_completion_may_unbind_the_tracker(void** state)
   az_iot_test_wait_ms(10u);
   do_work(fx);
   assert_int_equal(fx->completion_count, 1);
-  assert_null(fx->tracker._internal.connection);
+  assert_int_equal(fx->tracker._internal.tick_count, 0xA5A5A5A5u);
+  memset(&fx->tracker, 0, sizeof(fx->tracker));
   do_work(fx);
   assert_int_equal(fx->completion_count, 1);
 }
@@ -543,6 +549,22 @@ static void a_later_observer_submit_does_not_resend_a_requeued_message(void** st
   assert_string_equal(last_publish(fx)->topic, "t/0");
   az_iot_delivery_tracker__unbind(&second);
 }
+
+/* A send error of one message (not NOT_CONNECTED or BUSY) leaves it queued and does not hold
+ * back the messages after it. */
+static void a_message_send_error_does_not_block_the_queue(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  (void)submit(fx, &k_resend, 1u, 0u);
+  (void)submit(fx, &k_resend, 2u, 0u);
+  fx->failing_sends = 1;
+  fx->failing_send_result = AZ_IOT_ERR_INVALID_ARG;
+  connect(fx); /* The CONNECTED flush: t/0 fails, t/1 goes; the tick resends t/0. */
+  assert_int_equal(publish_count(fx), 3);
+  assert_non_null(find_publish(fx, "t/1"));
+  assert_string_equal(last_publish(fx)->topic, "t/0");
+  assert_int_equal(fx->completion_count, 0);
+}
 /* A send the adapter refuses does not hold back the message a PUBACK error requeued: it goes out
  * from the next do_work(). */
 static void a_busy_adapter_does_not_hold_back_a_requeued_message(void** state)
@@ -551,12 +573,12 @@ static void a_busy_adapter_does_not_hold_back_a_requeued_message(void** state)
   connect(fx);
   (void)submit(fx, &k_resend, 1u, 0u);
   uint16_t const packet_id = last_publish(fx)->packet_id;
-  fx->busy_sends = 1;
+  fx->failing_sends = 1;
   (void)submit(fx, &k_resend, 2u, 0u);
   assert_true(az_iot_mock_mqtt_client_inject_puback(fx->mock, packet_id, AZ_IOT_ERR_MQTT));
-  fx->busy_sends = 2; /* Both the PUBACK and the tick flush. */
+  fx->failing_sends = 2; /* Both the PUBACK and the tick flush. */
   do_work(fx);
-  assert_int_equal(fx->busy_sends, 0);
+  assert_int_equal(fx->failing_sends, 0);
   size_t const before = publish_count(fx);
   do_work(fx);
   assert_int_equal(publish_count(fx), before + 2u);
@@ -631,6 +653,7 @@ int main(void)
     cmocka_unit_test_setup_teardown(unbinding_forgets_shared_pool_publishes, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_later_observer_submit_does_not_resend_a_requeued_message, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_message_send_error_does_not_block_the_queue, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_busy_adapter_does_not_hold_back_a_requeued_message, setup, teardown),
     cmocka_unit_test_setup_teardown(arguments_capacity_and_binding, setup, teardown),

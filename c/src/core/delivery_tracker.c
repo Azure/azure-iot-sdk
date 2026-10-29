@@ -222,7 +222,8 @@ static bool held_back(const az_iot_delivery_tracker* t, const az_iot_delivery_tr
 }
 
 /**
- * @brief Send queued messages by priority, then submit order, until the connection refuses.
+ * @brief Send queued messages by priority, then submit order, until the connection refuses
+ *        (NOT_CONNECTED or BUSY). Any other send error leaves only that message queued.
  * @param skip_requeued Leave out the messages held_back() holds.
  */
 static void flush(az_iot_delivery_tracker* t, bool skip_requeued)
@@ -266,9 +267,18 @@ static void flush(az_iot_delivery_tracker* t, bool skip_requeued)
     {
       return;
     }
-    if (result != AZ_IOT_OK && result != NO_SLOT_FOR_PRIORITY)
+    if (result == AZ_IOT_ERR_NOT_CONNECTED || result == AZ_IOT_ERR_BUSY)
     {
       break; /* The connection refused; the rest waits for a later event. */
+    }
+    if (result != AZ_IOT_OK && result != NO_SLOT_FOR_PRIORITY)
+    {
+      /* This message only: it stays queued until a later flush sends it or it expires. */
+      AZ_IOT_LOG_DEBUGF(
+          AZ_IOT_LOG_COMPONENT_CONNECTION,
+          "could not send a '%s' message (%s)",
+          EI(candidate).profile->type,
+          az_iot_result_to_string(result));
     }
   }
 }
@@ -322,9 +332,9 @@ static void on_connection_event(const az_iot_connection_feature_event* event, vo
       break;
     case AZ_IOT_CONNECTION_FEATURE_EVENT_TICK:
       for_each_entry(t, ENTRY_FREE, has_expired, expire);
-      ++TI(t).tick_count;
       if (still_bound(t, connection))
       {
+        ++TI(t).tick_count;
         flush(t, true);
       }
       break;
