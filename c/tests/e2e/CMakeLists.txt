@@ -238,17 +238,8 @@ endforeach()
 # dependency. It requires the standard e2e device env, the service connection
 # strings, and a file-upload-capable hub. The `e2e` name matches the fast job's
 # `ctest -R e2e` filter.
-#
-# Runs on the Linux e2e legs. On Windows the harness's Schannel transport does
-# not present the self-signed device certificate on the CI runners, so it is not
-# registered as a test there -- but the executable is still built, so MSVC keeps
-# compiling it. The file-upload sample also builds and runs natively on Windows.
 # ---------------------------------------------------------------------------
-set(_e2e_fileupload_ctest "")
-if(WIN32)
-    set(_e2e_fileupload_ctest NO_CTEST)
-endif()
-az_iot_add_e2e_suite(az_iot_tests_e2e_fileupload ${_e2e_fileupload_ctest}
+az_iot_add_e2e_suite(az_iot_tests_e2e_fileupload
     SOURCES tests/e2e_fileupload_test.c tests/e2e_device.c tests/e2e_sas_device.c
     LIBS az_iot_e2e_service az_iot_mqttv3 az_iot_crypto_openssl)
 
@@ -341,12 +332,7 @@ if(AZ_IOT_BUILD_E2E_MQTTV5)
         LIBS az_iot_e2e_service az_iot_mqttv5)
 
     # mqttv5 direct methods: probe rejections, timeouts, result size, concurrency.
-    # Not run on Windows: concurrent REST calls would share the transport's one global TLS session.
-    set(_e2e_direct_method_ctest "")
-    if(WIN32)
-        set(_e2e_direct_method_ctest NO_CTEST)
-    endif()
-    az_iot_add_e2e_suite(az_iot_tests_e2e_mqttv5_direct_method ${_e2e_direct_method_ctest}
+    az_iot_add_e2e_suite(az_iot_tests_e2e_mqttv5_direct_method
         SOURCES tests/e2e_mqttv5_direct_method_test.c tests/e2e_device.c
         LIBS az_iot_e2e_service az_iot_mqttv5)
 

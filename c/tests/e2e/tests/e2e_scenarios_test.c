@@ -187,8 +187,7 @@ static int detach_feature_client(void** state)
       break;
   }
   fx->attached = E2E_FEATURE_CLIENT_NONE;
-  /* Releases the AMQP/TLS connection before the next scenario (the Windows
-   * reference transport allows only one TLS connection at a time). */
+  /* Releases the AMQP/TLS connection before the next scenario. */
   az_iot_e2e_service_telemetry_watch_end(fx->service);
   return 0;
 }
@@ -218,8 +217,7 @@ static void test_telemetry(void** state)
    * transiently (observed on the Windows leg: the peer closes the connection
    * during open), so retry with a short backoff up to E2E_CONNECT_TIMEOUT_S,
    * pumping the device in between to keep its MQTT connection warm. Each
-   * attempt opens a brand-new connection (a failed one frees itself and
-   * releases the transport's single TLS slot). */
+   * attempt opens a brand-new connection (a failed one frees itself). */
   bool watching = az_iot_e2e_service_telemetry_watch_begin(fx->service);
   for (time_t connect_start = time(NULL);
        !watching && (time(NULL) - connect_start) < E2E_CONNECT_TIMEOUT_S;)
@@ -348,7 +346,7 @@ static void c2d_send_and_receive(
    * handshake can be refused transiently (same Windows "peer closed the
    * connection" as telemetry). Retry with a short backoff up to
    * E2E_CONNECT_TIMEOUT_S, pumping the device in between; each attempt opens a
-   * fresh connection (a failed one tears itself down and releases the TLS slot). */
+   * fresh connection (a failed one tears itself down). */
   bool sent = az_iot_e2e_service_send_c2d_with_properties(
       fx->service,
       fx->dev.device_id,
