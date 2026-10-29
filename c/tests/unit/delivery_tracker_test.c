@@ -49,6 +49,8 @@ typedef struct fixture
   completion completions[16];
   size_t completion_count;
   bool unbind_on_complete;
+  /* Once, when set: unbind, bind again, submit two messages with this profile. */
+  const az_iot_delivery_tracker_profile* rebind_on_complete;
 } fixture;
 
 static const uint8_t k_guaranteed[] = { 1u }; /* One slot kept for priority 0. */
@@ -81,6 +83,19 @@ static void on_complete(
   fx->completions[fx->completion_count].entry_index = entry_index;
   fx->completions[fx->completion_count].outcome = outcome;
   fx->completion_count++;
+  if (fx->rebind_on_complete != NULL)
+  {
+    const az_iot_delivery_tracker_profile* profile = fx->rebind_on_complete;
+    fx->rebind_on_complete = NULL;
+    az_iot_delivery_tracker__unbind(&fx->tracker);
+    assert_int_equal(az_iot_delivery_tracker__bind(&fx->tracker, &fx->connection), AZ_IOT_OK);
+    for (uint8_t id = 7u; id <= 8u; ++id)
+    {
+      size_t index = 0;
+      assert_int_equal(
+          az_iot_delivery_tracker__submit(&fx->tracker, profile, &id, 1u, 0u, &index), AZ_IOT_OK);
+    }
+  }
   if (fx->unbind_on_complete)
   {
     az_iot_delivery_tracker__unbind(&fx->tracker);
@@ -308,7 +323,6 @@ static void a_lost_session_resends_or_fails_per_policy(void** state)
   assert_int_equal(publish_count(fx), 1);
   size_t const awaiting = submit(fx, &k_response, 3u, 0u);
   size_t const awaiting_resend = submit(fx, &k_response_resend, 4u, 0u);
-  (void)awaiting_resend;
   az_iot_mock_mqtt_client* m = fx->mock;
   for (size_t i = 0; i < az_iot_mock_mqtt_client_call_count(m); ++i)
   {
@@ -319,6 +333,11 @@ static void a_lost_session_resends_or_fails_per_policy(void** state)
     }
   }
   do_work(fx);
+  /* t/2 went out when t/1 freed its slot; its PUBACK leaves it awaiting the response. */
+  assert_string_equal(last_publish(fx)->topic, "t/2");
+  puback(fx, last_publish(fx)->packet_id, AZ_IOT_OK);
+  assert_int_equal(
+      fx->entries[awaiting_resend]._internal.state, fx->entries[awaiting]._internal.state);
   lose_session(fx);
   assert_completed(fx, 1, awaiting, AZ_IOT_DELIVERY_TRACKER_OUTCOME_SESSION_LOST);
   assert_int_equal(fx->completion_count, 2);
@@ -407,12 +426,9 @@ static void priority_zero_keeps_its_guaranteed_slot(void** state)
   assert_string_equal(last_publish(fx)->topic, "t/1");
 }
 
-/* An identity change discards every message. */
-static void an_identity_change_discards_every_message(void** state)
+/* Deliver IDENTITY_CHANGED to the tracker's observer, as dps_apply_deferred() does. */
+static void signal_identity_change(fixture* fx)
 {
-  fixture* fx = (fixture*)*state;
-  (void)submit(fx, &k_resend, 1u, 0u);
-  (void)submit(fx, &k_response, 2u, 0u);
   const az_iot_connection_feature_observer* observer = NULL;
   for (size_t i = 0; i < fx->connection.opts.limits.max_feature_observers; ++i)
   {
@@ -426,11 +442,33 @@ static void an_identity_change_discards_every_message(void** state)
     AZ_IOT_CONNECTION_FEATURE_EVENT_IDENTITY_CHANGED, NULL, AZ_IOT_CONNECTION_SESSION_END_LOST, NULL
   };
   observer->cb(&event, observer->user_ctx);
+}
+
+/* An identity change discards every message. */
+static void an_identity_change_discards_every_message(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  (void)submit(fx, &k_resend, 1u, 0u);
+  (void)submit(fx, &k_response, 2u, 0u);
+  signal_identity_change(fx);
   assert_int_equal(fx->completion_count, 2);
   assert_int_equal(fx->completions[0].outcome, AZ_IOT_DELIVERY_TRACKER_OUTCOME_DISCARDED);
   assert_int_equal(fx->completions[1].outcome, AZ_IOT_DELIVERY_TRACKER_OUTCOME_DISCARDED);
 }
 
+/* An on_complete that rebinds to the same connection stops the walk: the messages it submits
+ * are kept. */
+static void a_completion_may_rebind_the_tracker(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  (void)submit(fx, &k_resend, 1u, 0u);
+  (void)submit(fx, &k_resend, 2u, 0u);
+  fx->rebind_on_complete = &k_resend;
+  signal_identity_change(fx);
+  assert_int_equal(fx->completion_count, 1);
+  assert_non_null(fx->entries[0]._internal.profile);
+  assert_non_null(fx->entries[1]._internal.profile);
+}
 /* An on_complete that unbinds the tracker stops the walk: nothing else is completed, and the
  * tracker storage is not touched again. */
 static void a_completion_may_unbind_the_tracker(void** state)
@@ -703,6 +741,7 @@ int main(void)
     cmocka_unit_test_setup_teardown(priority_zero_keeps_its_guaranteed_slot, setup, teardown),
     cmocka_unit_test_setup_teardown(an_identity_change_discards_every_message, setup, teardown),
     cmocka_unit_test_setup_teardown(a_completion_may_unbind_the_tracker, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_completion_may_rebind_the_tracker, setup, teardown),
     cmocka_unit_test_setup_teardown(cancel_and_encode_failure, setup, teardown),
     cmocka_unit_test_setup_teardown(unbinding_forgets_shared_pool_publishes, setup, teardown),
     cmocka_unit_test_setup_teardown(

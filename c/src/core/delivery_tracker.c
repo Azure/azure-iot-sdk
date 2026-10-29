@@ -34,12 +34,27 @@ static size_t index_of(const az_iot_delivery_tracker* t, const az_iot_delivery_t
   return (size_t)(e - TI(t).entries);
 }
 
-/** @brief Whether @p t is still bound to @p connection; an on_complete may have unbound it. */
-static bool still_bound(
-    const az_iot_delivery_tracker* t,
-    const az_iot_connection_client* connection)
+/** @brief A tracker binding, as seen before a walk that calls on_complete. */
+typedef struct binding
 {
-  return az_iot_connection_client__has_feature_observer(connection, on_connection_event, t);
+  az_iot_connection_client* connection;
+  uint32_t id; /**< bind() count: tells a rebind to the same connection apart. */
+} binding;
+
+static binding binding_of(const az_iot_delivery_tracker* t)
+{
+  binding const b = { TI(t).connection, TI(t).binding_id };
+  return b;
+}
+
+/**
+ * @brief Whether @p t still has binding @p b; an on_complete may have unbound (and freed) or
+ *        rebound it. The observer check comes first: it does not read @p t.
+ */
+static bool still_bound(const az_iot_delivery_tracker* t, binding b)
+{
+  return az_iot_connection_client__has_feature_observer(b.connection, on_connection_event, t)
+      && TI(t).binding_id == b.id;
 }
 
 /** @brief Forget the entry's tracked publish, so its PUBACK reaches nobody. */
@@ -229,6 +244,7 @@ static bool held_back(const az_iot_delivery_tracker* t, const az_iot_delivery_tr
 static void flush(az_iot_delivery_tracker* t, bool skip_requeued)
 {
   az_iot_connection_client* const connection = TI(t).connection;
+  binding const bound = binding_of(t);
   uint8_t priority = 0;
   uint64_t sequence = 0; /* Sequences start at 1, so (0, 0) precedes every entry. */
   while (az_iot_connection_client__is_connected(connection))
@@ -263,7 +279,7 @@ static void flush(az_iot_delivery_tracker* t, bool skip_requeued)
     {
       result = try_send(t, candidate);
     }
-    if (!still_bound(t, connection))
+    if (!still_bound(t, bound))
     {
       return;
     }
@@ -291,7 +307,7 @@ static void for_each_entry(
     bool (*selected)(az_iot_delivery_tracker_entry* e),
     void (*apply)(az_iot_delivery_tracker_entry* e))
 {
-  az_iot_connection_client* const connection = TI(t).connection;
+  binding const bound = binding_of(t);
   for (size_t i = 0; i < TI(t).capacity; ++i)
   {
     az_iot_delivery_tracker_entry* e = &TI(t).entries[i];
@@ -299,7 +315,7 @@ static void for_each_entry(
         && (selected == NULL || selected(e)))
     {
       apply(e);
-      if (!still_bound(t, connection))
+      if (!still_bound(t, bound))
       {
         return;
       }
@@ -338,7 +354,7 @@ static void lower_remaining_to_next_action(const az_iot_delivery_tracker* t, uin
 static void on_connection_event(const az_iot_connection_feature_event* event, void* user_ctx)
 {
   az_iot_delivery_tracker* t = (az_iot_delivery_tracker*)user_ctx;
-  az_iot_connection_client* const connection = TI(t).connection;
+  binding const bound = binding_of(t);
   switch (event->kind)
   {
     case AZ_IOT_CONNECTION_FEATURE_EVENT_STATE:
@@ -353,7 +369,7 @@ static void on_connection_event(const az_iot_connection_feature_event* event, vo
       break;
     case AZ_IOT_CONNECTION_FEATURE_EVENT_TICK:
       for_each_entry(t, ENTRY_FREE, has_expired, expire);
-      if (still_bound(t, connection))
+      if (still_bound(t, bound))
       {
         ++TI(t).tick_count;
         flush(t, true);
@@ -444,6 +460,7 @@ az_iot_result az_iot_delivery_tracker__bind(
   if (result == AZ_IOT_OK)
   {
     TI(tracker).connection = connection;
+    ++TI(tracker).binding_id;
   }
   return result;
 }
@@ -515,13 +532,10 @@ az_iot_result az_iot_delivery_tracker__submit(
   return AZ_IOT_OK;
 }
 
-/** @brief Send what a freed entry or PUBACK slot now lets go, unless an on_complete unbound @p t.
- */
-static void flush_if_still_bound(
-    az_iot_delivery_tracker* t,
-    const az_iot_connection_client* connection)
+/** @brief Send what a freed entry or PUBACK slot now lets go, unless @p t lost binding @p b. */
+static void flush_if_still_bound(az_iot_delivery_tracker* t, binding b)
 {
-  if (still_bound(t, connection))
+  if (still_bound(t, b))
   {
     flush(t, true);
   }
@@ -536,7 +550,7 @@ az_iot_result az_iot_delivery_tracker__complete(
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
-  az_iot_connection_client* const connection = TI(tracker).connection;
+  binding const bound = binding_of(tracker);
   for (size_t i = 0; i < TI(tracker).capacity; ++i)
   {
     az_iot_delivery_tracker_entry* e = &TI(tracker).entries[i];
@@ -546,7 +560,7 @@ az_iot_result az_iot_delivery_tracker__complete(
         && memcmp(EI(e).correlation_id, correlation_id, correlation_id_length) == 0)
     {
       finish(e, AZ_IOT_DELIVERY_TRACKER_OUTCOME_DELIVERED, NULL);
-      flush_if_still_bound(tracker, connection);
+      flush_if_still_bound(tracker, bound);
       return AZ_IOT_OK;
     }
   }
@@ -564,6 +578,6 @@ void az_iot_delivery_tracker__cancel(az_iot_delivery_tracker* tracker, size_t en
   {
     forget_publish(e);
     memset(e, 0, sizeof(*e));
-    flush_if_still_bound(tracker, TI(tracker).connection);
+    flush_if_still_bound(tracker, binding_of(tracker));
   }
 }
