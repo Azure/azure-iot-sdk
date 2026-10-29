@@ -34,7 +34,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
     /// </remarks>
     public class TwinClient : IDisposable
     {
-        private bool _isDisposed = false;
+        private volatile bool _isDisposed = false;
 
         private const string ProtobufContentType = "application/protobuf";
 
@@ -46,8 +46,8 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
         private const string AzureEventGridIncomingTwinPublishTopic = "ih/" + IConnectionClient.DeviceIdPlaceholder + "/dev/twin";
         private const string AzureEventGridIncomingPresencePublishTopic = "ih/" + IConnectionClient.DeviceIdPlaceholder + "/dev/presence";
 
-        private readonly ConcurrentDictionary<Guid, TaskCompletionSource<TwinGetResponse>> _pendingGets = new();
-        private readonly ConcurrentDictionary<Guid, TaskCompletionSource<ReportedPatchResponse>> _pendingReportedPatches = new();
+        private readonly ConcurrentDictionary<Guid, PendingRequest<TwinGetResponse>> _pendingGets = new();
+        private readonly ConcurrentDictionary<Guid, PendingRequest<ReportedPatchResponse>> _pendingReportedPatches = new();
 
         /// <summary>
         /// An event that executes whenever this client receives a desired properties update from IoT hub.
@@ -141,13 +141,15 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
             EnsureConnected();
 
             Guid getId = Guid.NewGuid();
-            TaskCompletionSource<TwinGetResponse> response = new(TaskCreationOptions.RunContinuationsAsynchronously);
-            _pendingGets[getId] = response;
+            PendingRequest<TwinGetResponse> request = new(cancellationToken);
+            _pendingGets[getId] = request;
             TwinGetResponse twinGetResponse;
             try
             {
-                await PublishGetAsync(getId, getDesired, getReported, ifNotMatchDesired, ifNotMatchReported, cancellationToken);
-                twinGetResponse = await response.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+                ThrowIfDisposedAfterRegistering(request);
+                twinGetResponse = await request.SendAndWaitAsync(
+                    PublishGetAsync(getId, getDesired, getReported, ifNotMatchDesired, ifNotMatchReported, request.Cancellation.Token),
+                    cancellationToken).ConfigureAwait(false);
             }
             finally
             {
@@ -196,13 +198,15 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
             EnsureConnected();
 
             Guid patchId = Guid.NewGuid();
-            TaskCompletionSource<ReportedPatchResponse> response = new(TaskCreationOptions.RunContinuationsAsynchronously);
-            _pendingReportedPatches[patchId] = response;
+            PendingRequest<ReportedPatchResponse> request = new(cancellationToken);
+            _pendingReportedPatches[patchId] = request;
             try
             {
+                ThrowIfDisposedAfterRegistering(request);
                 byte[] payload = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(patch.ReportedProperties));
-                await PublishReportedPatchAsync(patchId, ifMatch, payload, cancellationToken);
-                return await response.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+                return await request.SendAndWaitAsync(
+                    PublishReportedPatchAsync(patchId, ifMatch, payload, request.Cancellation.Token),
+                    cancellationToken).ConfigureAwait(false);
             }
             finally
             {
@@ -273,18 +277,28 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
         {
             foreach (Guid getId in _pendingGets.Keys)
             {
-                if (_pendingGets.TryRemove(getId, out TaskCompletionSource<TwinGetResponse>? response))
+                if (_pendingGets.TryRemove(getId, out PendingRequest<TwinGetResponse>? request))
                 {
-                    response.TrySetException(createException());
+                    request.Fail(createException());
                 }
             }
 
             foreach (Guid patchId in _pendingReportedPatches.Keys)
             {
-                if (_pendingReportedPatches.TryRemove(patchId, out TaskCompletionSource<ReportedPatchResponse>? response))
+                if (_pendingReportedPatches.TryRemove(patchId, out PendingRequest<ReportedPatchResponse>? request))
                 {
-                    response.TrySetException(createException());
+                    request.Fail(createException());
                 }
+            }
+        }
+
+        // Called after registering a request, so that it is either failed by disposal or fails here.
+        private void ThrowIfDisposedAfterRegistering<TResponse>(PendingRequest<TResponse> request)
+        {
+            if (_isDisposed)
+            {
+                request.Cancellation.Dispose();
+                throw new ObjectDisposedException(nameof(TwinClient));
             }
         }
 
@@ -373,7 +387,8 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
                 return;
             }
 
-            _pendingGets.TryGetValue(getId.Value, out TaskCompletionSource<TwinGetResponse>? pendingGet);
+            _pendingGets.TryGetValue(getId.Value, out PendingRequest<TwinGetResponse>? pendingRequest);
+            TaskCompletionSource<TwinGetResponse>? pendingGet = pendingRequest?.Response;
 
             TwinGetResponse twinGetResponse;
             try
@@ -405,7 +420,8 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
                 return;
             }
 
-            _pendingReportedPatches.TryGetValue(patchId.Value, out TaskCompletionSource<ReportedPatchResponse>? pendingPatch);
+            _pendingReportedPatches.TryGetValue(patchId.Value, out PendingRequest<ReportedPatchResponse>? pendingRequest);
+            TaskCompletionSource<ReportedPatchResponse>? pendingPatch = pendingRequest?.Response;
 
             ReportedPatchResponse reportedPatchResponse;
             try
@@ -555,8 +571,60 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
             return payload.IsEmpty ? new JsonObject() : JsonObject.Parse(payload.Span)!.AsObject();
         }
 
+        // A request awaiting IoT hub's response. It fails if the connection is lost (or this client is disposed) before then,
+        // which also cancels sending it, so that it is never sent on a later connection.
+        private sealed class PendingRequest<TResponse>(CancellationToken callerCancellationToken)
+        {
+            public TaskCompletionSource<TResponse> Response { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+            public CancellationTokenSource Cancellation { get; } = CancellationTokenSource.CreateLinkedTokenSource(callerCancellationToken);
+
+            public void Fail(Exception exception)
+            {
+                Response.TrySetException(exception);
+                try
+                {
+                    Cancellation.Cancel();
+                }
+                catch (ObjectDisposedException)
+                {
+                    // The request was already sent.
+                }
+            }
+
+            public async Task<TResponse> SendAndWaitAsync(Task send, CancellationToken cancellationToken)
+            {
+                _ = send.ContinueWith(
+                    _ => Cancellation.Dispose(),
+                    CancellationToken.None,
+                    TaskContinuationOptions.ExecuteSynchronously,
+                    TaskScheduler.Default);
+
+                // If the request fails while it is still being sent (which may wait for the device to reconnect), its failure is
+                // thrown without waiting for the send to be cancelled.
+                await Task.WhenAny(send, Response.Task).ConfigureAwait(false);
+                if (!Response.Task.IsCompleted)
+                {
+                    await send.ConfigureAwait(false);
+                }
+                else if (!send.IsCompleted)
+                {
+                    // Observe the send's failure (if any), since nothing else awaits it.
+                    _ = send.ContinueWith(
+                        t => _ = t.Exception,
+                        CancellationToken.None,
+                        TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                        TaskScheduler.Default);
+                }
+
+                return await Response.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+            }
+        }
+
         private void ReleaseResources()
         {
+            // Set first, so that a request registered after the pending requests are failed below fails instead of waiting forever.
+            _isDisposed = true;
             _connection.PublishReceivedAsync -= HandleReceivedMqttPublish;
             _connection.ConnectionLost -= HandleConnectionLost;
             FailPendingRequests(() => new ObjectDisposedException(nameof(TwinClient)));

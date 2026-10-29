@@ -64,6 +64,17 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         /// <summary>Notify feature clients that the connection to IoT hub was lost.</summary>
         public void SimulateConnectionLost() => ConnectionLost?.Invoke();
 
+        public event Action? TwinIdentityChanged;
+
+        event Action? global::Microsoft.Azure.Iot.Device.MQTTv5.Connection.IConnectionClient.TwinIdentityChanged
+        {
+            add => TwinIdentityChanged += value;
+            remove => TwinIdentityChanged -= value;
+        }
+
+        /// <summary>Notify feature clients that the device is connecting as a different IoT hub or device ID.</summary>
+        public void SimulateTwinIdentityChanged() => TwinIdentityChanged?.Invoke();
+
         public ulong InitialDesiredPropertiesVersion { get; set; }
 
         public ulong InitialReportedPropertiesVersion { get; set; }

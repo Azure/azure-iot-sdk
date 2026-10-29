@@ -69,6 +69,16 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
         internal event Action? ConnectionLost { add { } remove { } }
 
         /// <summary>
+        /// Raised when the device connects with a different IoT hub or device ID than before (for example, after being
+        /// re-provisioned), before the birth for that connection is sent.
+        /// </summary>
+        /// <remarks>
+        /// Versions of different twins aren't comparable, so the connection client discards the twin versions that it held,
+        /// and feature clients use this to discard theirs.
+        /// </remarks>
+        internal event Action? TwinIdentityChanged { add { } remove { } }
+
+        /// <summary>
         /// The version of the desired properties that the device held when this connection client was constructed.
         /// </summary>
         internal ulong InitialDesiredPropertiesVersion => 0;

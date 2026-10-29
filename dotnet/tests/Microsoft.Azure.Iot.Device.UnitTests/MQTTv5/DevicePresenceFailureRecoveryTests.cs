@@ -202,6 +202,53 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
         }
 
         [Fact]
+        public async Task BirthDiscardsHeldTwinVersionsWhenDeviceIdentityChanges()
+        {
+            using MockConnectionMqttClient mockMqttClient = new() { AutoRespondToBirth = true };
+            MqttV5ConnectionClientOptions options = new()
+            {
+                MqttClient = mockMqttClient,
+                InitialDesiredPropertiesVersion = 5,
+                InitialReportedPropertiesVersion = 3,
+                ConnectionRetryPolicy = new ExponentialBackoffRetryPolicy(uint.MaxValue, TimeSpan.Zero, useJitter: false),
+            };
+            using ConnectionClient connectionClient = new(options);
+            using ConcurrentTwinClient twinClient = new(connectionClient, new TwinState() { DesiredVersion = 5, ReportedVersion = 3 });
+
+            await connectionClient.ConnectToHubAsync(GetMockConnectionContext(), TestContext.Current.CancellationToken)
+                .WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+            await connectionClient.DisconnectAsync(TestContext.Current.CancellationToken);
+
+            // For example, the device was re-provisioned to a different device ID.
+#pragma warning disable SYSLIB0026 // Type or member is obsolete (Mock certificate, don't need to load a real one using typical X509 certificate loader
+            ConnectionContext reprovisionedContext = new()
+            {
+                AuthenticationProvider = new X509AuthenticationProvider(new System.Security.Cryptography.X509Certificates.X509Certificate2(), null),
+                DeviceId = "otherDeviceId",
+                IotHubHostName = "someHostName",
+                ConnectionProfile = IotHubConnectionType.Mqttv5
+            };
+#pragma warning restore SYSLIB0026 // Type or member is obsolete
+            await connectionClient.ConnectToHubAsync(reprovisionedContext, TestContext.Current.CancellationToken)
+                .WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+
+            Birth[] births = mockMqttClient.SentMqttTrafficInOrder
+                .Select(traffic => traffic.Publish).OfType<MqttPublish>()
+                .Where(publish => publish.Topic.EndsWith("/srv/presence", StringComparison.Ordinal))
+                .Select(publish => Birth.Parser.ParseFrom(publish.Payload))
+                .ToArray();
+            Assert.Equal(2, births.Length);
+            Assert.Equal(5ul, births[0].DesiredVersion);
+            Assert.Equal(3ul, births[0].ReportedVersion);
+            Assert.Equal(0ul, births[1].DesiredVersion);
+            Assert.Equal(0ul, births[1].ReportedVersion);
+
+            TwinState state = twinClient.GetTwinState();
+            Assert.Equal(0ul, state.DesiredVersion);
+            Assert.Equal(0ul, state.ReportedVersion);
+        }
+
+        [Fact]
         public async Task MissingExpectedTwinPushReconnectsWithEscalatingTimeout()
         {
             using MockConnectionMqttClient mockMqttClient = new()
@@ -216,11 +263,16 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             };
             using ConnectionClient connectionClient = new(options);
             List<int> attempts = new();
+            TaskCompletionSource thirdAttemptScheduled = new(TaskCreationOptions.RunContinuationsAsynchronously);
             connectionClient.TwinPushTimeoutSchedule = attempt =>
             {
                 lock (attempts)
                 {
                     attempts.Add(attempt);
+                    if (attempts.Count == 3)
+                    {
+                        thirdAttemptScheduled.TrySetResult();
+                    }
                 }
 
                 return attempt < 3 ? TimeSpan.FromMilliseconds(50) : Timeout.InfiniteTimeSpan;
@@ -229,7 +281,8 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             await connectionClient.ConnectToHubAsync(GetMockConnectionContext(), TestContext.Current.CancellationToken)
                 .WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
 
-            await WaitForBirthCountAsync(mockMqttClient, 3);
+            // The third birth is sent before its twin push timeout is scheduled, so wait for the schedule itself.
+            await thirdAttemptScheduled.Task.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
             lock (attempts)
             {
                 Assert.Equal(new[] { 1, 2, 3 }, attempts);

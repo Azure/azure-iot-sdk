@@ -90,6 +90,44 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
 
         void IConnectionClient.ReplaceReportedPropertiesVersion(ulong version) => Interlocked.Exchange(ref _reportedPropertiesVersion, version);
 
+        // The IoT hub and device ID of the twin that the held versions are of, or null if the device hasn't connected yet.
+        // Guarded by _birthAckLock.
+        private (string IotHubHostName, string DeviceId)? _twinIdentity;
+
+        private event Action? TwinIdentityChanged;
+
+        event Action? IConnectionClient.TwinIdentityChanged
+        {
+            add => TwinIdentityChanged += value;
+            remove => TwinIdentityChanged -= value;
+        }
+
+        // Re-provisioning can assign the device a different IoT hub or device ID, whose twin's versions aren't comparable with
+        // the held ones. Announcing them could suppress the new twin's push, so they are discarded.
+        private void AdoptTwinIdentity(string iotHubHostName, string deviceId)
+        {
+            bool isChanged;
+            lock (_birthAckLock)
+            {
+                isChanged = _twinIdentity is (string previousHubHostName, string previousDeviceId)
+                    && (!previousHubHostName.Equals(iotHubHostName, StringComparison.OrdinalIgnoreCase)
+                        || !previousDeviceId.Equals(deviceId, StringComparison.Ordinal));
+                _twinIdentity = (iotHubHostName, deviceId);
+                if (isChanged)
+                {
+                    Interlocked.Exchange(ref _desiredPropertiesVersion, 0);
+                    Interlocked.Exchange(ref _reportedPropertiesVersion, 0);
+                    _latestBirthAck = null;
+                }
+            }
+
+            if (isChanged)
+            {
+                Trace.TraceInformation("The device is now connecting as device {0} on IoT hub {1}. Discarding the twin versions it held for its previous identity.", deviceId, iotHubHostName);
+                TwinIdentityChanged?.Invoke();
+            }
+        }
+
         private static void AdvanceTo(ref ulong location, ulong version)
         {
             ulong current = Interlocked.Read(ref location);
@@ -169,13 +207,18 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
             _initialReportedPropertiesVersion = options.InitialReportedPropertiesVersion;
             _desiredPropertiesVersion = options.InitialDesiredPropertiesVersion;
             _reportedPropertiesVersion = options.InitialReportedPropertiesVersion;
+            if (connectionContext != null)
+            {
+                // The initial versions are of the twin of the IoT hub assignment that the application restored.
+                _twinIdentity = (connectionContext.IotHubHostName, connectionContext.DeviceId);
+            }
         }
 
         public override Task HandleConnectedToHubAsync(MqttClientConnectedEventArgs args)
         {
             Debug.Assert(CurrentConnectionContext != null);
 
-            return AnnounceDevicePresenceAsync(ManagedMqttConnection, CurrentConnectionContext.DeviceId, args, this);
+            return AnnounceDevicePresenceAsync(ManagedMqttConnection, CurrentConnectionContext.IotHubHostName, CurrentConnectionContext.DeviceId, args, this);
         }
 
         internal override void ResetBirthAckTimeoutSchedule()
@@ -196,7 +239,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
         /// connected to a gen 2 hub. Likewise, <paramref name="subscriptionSourceOwner"/> is the client whose registered
         /// <see cref="IDevicePresenceSubscriptionSource"/>s are re-subscribed to alongside the devicebound topic.
         /// </remarks>
-        internal async Task AnnounceDevicePresenceAsync(MqttConnectionManager connection, string deviceId, MqttClientConnectedEventArgs args, AbstractConnectionClient subscriptionSourceOwner)
+        internal async Task AnnounceDevicePresenceAsync(MqttConnectionManager connection, string iotHubHostName, string deviceId, MqttClientConnectedEventArgs args, AbstractConnectionClient subscriptionSourceOwner)
         {
             // The unified client's nested MQTTv5 client runs this flow on its owner's connection and recovery lifetime.
             using CancellationTokenSource presenceCancellation = CancellationTokenSource.CreateLinkedTokenSource(
@@ -220,7 +263,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
             connection.DisconnectedAsync += HandleConnectionLostAsync;
             try
             {
-                await AnnounceDevicePresenceCoreAsync(connection, deviceId, args, subscriptionSourceOwner, presenceCancellation.Token);
+                await AnnounceDevicePresenceCoreAsync(connection, iotHubHostName, deviceId, args, subscriptionSourceOwner, presenceCancellation.Token);
             }
             catch (OperationCanceledException) when (presenceCancellation.IsCancellationRequested)
             {
@@ -232,7 +275,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
             }
         }
 
-        private async Task AnnounceDevicePresenceCoreAsync(MqttConnectionManager connection, string deviceId, MqttClientConnectedEventArgs args, AbstractConnectionClient subscriptionSourceOwner, CancellationToken cancellationToken)
+        private async Task AnnounceDevicePresenceCoreAsync(MqttConnectionManager connection, string iotHubHostName, string deviceId, MqttClientConnectedEventArgs args, AbstractConnectionClient subscriptionSourceOwner, CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
             var connack = args.ConnectAck;
@@ -304,6 +347,9 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
                     return;
                 }
             }
+
+            // The held versions are of the twin that the device last connected as, so they are discarded if that changed.
+            AdoptTwinIdentity(iotHubHostName, deviceId);
 
             // The latest versions of the twin's desired and reported properties that the device holds. IoT hub pushes a section upon
             // connecting (if requested) only if its version differs from the one announced here.

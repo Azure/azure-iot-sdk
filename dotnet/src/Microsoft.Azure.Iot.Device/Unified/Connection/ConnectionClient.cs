@@ -132,7 +132,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
                 // A gen 2 hub connection re-announces this device's birth instead of re-subscribing to the classic topics.
                 // The gen 2 client owns that flow, but it must run on this client's connection. It signals that the device
                 // is ready by raising its own device presence flow completed event, which this client relays.
-                await _mqttv5ConnectionClient.AnnounceDevicePresenceAsync(ManagedMqttConnection, CurrentConnectionContext.DeviceId, args, this);
+                await _mqttv5ConnectionClient.AnnounceDevicePresenceAsync(ManagedMqttConnection, CurrentConnectionContext.IotHubHostName, CurrentConnectionContext.DeviceId, args, this);
                 return;
             }
 
