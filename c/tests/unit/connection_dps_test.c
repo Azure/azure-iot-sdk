@@ -243,9 +243,9 @@ static az_iot_mock_mqtt_client* reprovision_with(
   {
     (void)az_iot_connection_client_do_work(fx->client, 0);
   }
-  az_iot_mock_mqtt_client* next_hub = az_iot_mock_mqtt_factory_last_client(fx->factory);
-  assert_non_null(next_hub);
-  return next_hub;
+  az_iot_mock_mqtt_client* reassigned_hub = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  assert_non_null(reassigned_hub);
+  return reassigned_hub;
 }
 
 /* In RETRY_HUB mode an identity rejection is retried against the cached hub: the
