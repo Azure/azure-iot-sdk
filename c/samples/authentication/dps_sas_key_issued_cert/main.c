@@ -135,11 +135,7 @@ static void pump(az_iot_connection_client* client)
 {
   uint64_t start = sample_now_ms();
   (void)az_iot_connection_client_do_work(client, SAMPLE_TICK_MS);
-  uint64_t spent = sample_now_ms() - start;
-  if (spent < SAMPLE_TICK_MS)
-  {
-    sample_sleep_ms((long)(SAMPLE_TICK_MS - spent));
-  }
+  sample_sleep_until_tick_end(start, SAMPLE_TICK_MS);
 }
 
 /** @brief Sends one message on the generation DPS assigned. */
@@ -189,7 +185,7 @@ static az_iot_result send_telemetry(az_iot_connection_client* client, sample_con
 
 int main(void)
 {
-  az_iot_log_sink log = az_iot_log_stderr_sink(AZ_IOT_LOG_LEVEL_INFO);
+  az_iot_log_sink log = sample_log_sink(AZ_IOT_LOG_LEVEL_INFO);
   az_iot_log_set_global_sink(&log);
 
   sas_config config = {

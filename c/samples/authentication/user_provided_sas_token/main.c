@@ -239,7 +239,7 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
 
 int main(void)
 {
-  az_iot_log_sink log = az_iot_log_stderr_sink(AZ_IOT_LOG_LEVEL_INFO);
+  az_iot_log_sink log = sample_log_sink(AZ_IOT_LOG_LEVEL_INFO);
   az_iot_log_set_global_sink(&log);
 
   char* id_scope = sample_env_dup("AZ_IOT_DPS_ID_SCOPE", NULL);

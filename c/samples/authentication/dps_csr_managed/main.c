@@ -165,11 +165,7 @@ static void pump(az_iot_connection_client* client)
 {
   uint64_t start = sample_now_ms();
   (void)az_iot_connection_client_do_work(client, SAMPLE_TICK_MS);
-  uint64_t spent = sample_now_ms() - start;
-  if (spent < SAMPLE_TICK_MS)
-  {
-    sample_sleep_ms((long)(SAMPLE_TICK_MS - spent));
-  }
+  sample_sleep_until_tick_end(start, SAMPLE_TICK_MS);
 }
 
 int main(void)

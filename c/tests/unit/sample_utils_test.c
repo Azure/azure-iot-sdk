@@ -252,6 +252,26 @@ static void stop_handler_records_sigterm_and_sigint(void** state)
   assert_true(sample_is_stop_requested());
 }
 
+static void sleep_until_tick_end_waits_out_the_rest_of_the_tick(void** state)
+{
+  (void)state;
+  uint64_t start = sample_now_ms();
+  sample_sleep_until_tick_end(start, 100u);
+  uint64_t elapsed = sample_now_ms() - start;
+  /* Clock granularity is ~16 ms on Windows; the upper bound only catches a hang. */
+  assert_true(elapsed >= 80u);
+  assert_true(elapsed < 2000u);
+}
+
+static void sleep_until_tick_end_returns_at_once_after_the_tick(void** state)
+{
+  (void)state;
+  uint64_t start = sample_now_ms();
+  sample_sleep_until_tick_end(start, 0u);
+  sample_sleep_until_tick_end(start > 1000u ? start - 1000u : 0u, 100u);
+  assert_true(sample_now_ms() - start < 50u);
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -271,6 +291,8 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         fopen_read_nofollow_refuses_a_link_and_a_missing_file, setup, teardown),
     cmocka_unit_test(stop_handler_records_sigterm_and_sigint),
+    cmocka_unit_test(sleep_until_tick_end_waits_out_the_rest_of_the_tick),
+    cmocka_unit_test(sleep_until_tick_end_returns_at_once_after_the_tick),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }

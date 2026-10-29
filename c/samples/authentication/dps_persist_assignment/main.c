@@ -178,17 +178,6 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
   }
 }
 
-/** @brief Sleeps out the rest of a SAMPLE_TICK_MS tick begun at @p start, so the
- *  do_work() loops cannot spin when there is no session to wait on. */
-static void finish_tick(uint64_t start)
-{
-  uint64_t spent = sample_now_ms() - start;
-  if (spent < SAMPLE_TICK_MS)
-  {
-    sample_sleep_ms((long)(SAMPLE_TICK_MS - spent));
-  }
-}
-
 int main(void)
 {
   az_iot_log_sink log = sample_log_sink(AZ_IOT_LOG_LEVEL_INFO);
@@ -299,7 +288,7 @@ int main(void)
   {
     uint64_t tick = sample_now_ms();
     (void)az_iot_connection_client_do_work(&client, SAMPLE_TICK_MS);
-    finish_tick(tick);
+    sample_sleep_until_tick_end(tick, SAMPLE_TICK_MS);
   }
 
   if (ctx.hub_state == AZ_IOT_CONN_STATE_CONNECTED)
@@ -330,7 +319,7 @@ int main(void)
   {
     uint64_t tick = sample_now_ms();
     (void)az_iot_connection_client_do_work(&client, SAMPLE_TICK_MS);
-    finish_tick(tick);
+    sample_sleep_until_tick_end(tick, SAMPLE_TICK_MS);
   }
 
 cleanup:

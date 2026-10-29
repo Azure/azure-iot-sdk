@@ -151,6 +151,16 @@ uint64_t sample_now_ms(void);
 // for its do_work loop.
 void sample_sleep_ms(long ms);
 
+/**
+ * @brief Sleep for what is left of a @p tick_ms tick that began at
+ * @p tick_start_ms (a sample_now_ms() value), so a do_work() loop cannot spin
+ * when do_work() returns early. Returns at once when the tick is over.
+ *
+ * @param[in] tick_start_ms sample_now_ms() when the tick began.
+ * @param[in] tick_ms       Tick length.
+ */
+void sample_sleep_until_tick_end(uint64_t tick_start_ms, uint32_t tick_ms);
+
 // Human-readable name for a connection state, for logging. Never NULL.
 const char* sample_connection_state_name(az_iot_connection_state state);
 

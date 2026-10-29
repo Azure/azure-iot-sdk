@@ -209,18 +209,17 @@ int main(void)
   {
     /* Built after CONNECTED, and again before every publish in a real device:
      * provisioning may assign a different device id. */
-    const char* topic_template = getenv("AZ_IOT_CUSTOM_TOPIC_TEMPLATE");
-    if (topic_template == NULL || topic_template[0] == '\0')
-    {
-      topic_template = "contoso/{deviceId}/telemetry";
-    }
+    char* topic_template
+        = sample_env_dup("AZ_IOT_CUSTOM_TOPIC_TEMPLATE", "contoso/{deviceId}/telemetry");
     char topic[AZ_IOT_MQTTV5_CUSTOM_TOPIC_MAX_LEN + 1];
     az_iot_result result = az_iot_mqttv5_custom_topic_client_format_topic(
         &state.custom, topic_template, topic, sizeof(topic), NULL);
     if (result != AZ_IOT_OK)
     {
       printf(
-          "Cannot build a topic from '%s': %s\n", topic_template, az_iot_result_to_string(result));
+          "Cannot build a topic from '%s': %s\n",
+          topic_template != NULL ? topic_template : "(out of memory)",
+          az_iot_result_to_string(result));
     }
     else
     {
@@ -273,6 +272,7 @@ int main(void)
         }
       }
     }
+    free(topic_template);
   }
 
   az_iot_connection_client_close(&state.connection_client);

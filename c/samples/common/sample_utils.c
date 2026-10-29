@@ -425,6 +425,15 @@ void sample_sleep_ms(long ms)
 #endif
 }
 
+void sample_sleep_until_tick_end(uint64_t tick_start_ms, uint32_t tick_ms)
+{
+  uint64_t spent_ms = sample_now_ms() - tick_start_ms;
+  if (spent_ms < tick_ms)
+  {
+    sample_sleep_ms((long)(tick_ms - spent_ms));
+  }
+}
+
 const char* sample_connection_state_name(az_iot_connection_state state)
 {
   switch (state)
