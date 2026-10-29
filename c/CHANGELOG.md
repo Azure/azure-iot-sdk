@@ -4,6 +4,14 @@
 
 ### Features Added
 
+- `az_iot_connection_client_options::max_unconfirmed_delivery_timeout_ms` bounds how long an SDK
+  message whose peer set no Message Expiry is kept for confirmation or resend. 0 selects
+  `AZ_IOT_DEFAULT_MAX_UNCONFIRMED_DELIVERY_TIMEOUT_MS` (300000); it cannot be disabled. It applies
+  to mqttv5 direct methods: a result for an exec with no Message Expiry now has a deadline (receipt
+  time plus this value), and a queued abandon or probe-ack rejection with no budget is dropped
+  after it. Both were kept and resent without limit. Such an exec is abandoned as insufficient time
+  unless the timeout exceeds the method's declared minimum. The Message Expiry sent is unchanged
+  (none).
 - Software updates: compatibility-property strings are no longer capped at 256 bytes; the only limit
   is `az_iot_su_limits::device_properties_size`. The installed update ID is capped at
   `AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE` (192 bytes, as before). A set that does not fit is refused with

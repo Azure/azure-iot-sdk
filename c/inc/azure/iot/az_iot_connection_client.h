@@ -916,6 +916,18 @@ extern "C"
      */
     uint8_t* workspace;
     size_t workspace_size; /**< Bytes in workspace. */
+    /**
+     * @brief Longest an SDK message whose peer set no Message Expiry is kept
+     * for confirmation or resend, in milliseconds.
+     * az_iot_connection_client_options_default() sets
+     * #AZ_IOT_DEFAULT_MAX_UNCONFIRMED_DELIVERY_TIMEOUT_MS; init() also turns 0 into it.
+     *
+     * Cannot be disabled. Today it bounds mqttv5 direct method results for an
+     * exec with no Message Expiry, and queued abandon and probe-ack rejection
+     * notices with no budget. The Message Expiry sent is unchanged (none).
+     * Appended so positional initializers keep their meaning.
+     */
+    uint32_t max_unconfirmed_delivery_timeout_ms;
   } az_iot_connection_client_options;
 
   typedef enum az_iot_connection_state
@@ -1295,6 +1307,10 @@ extern "C"
  * holding broker state for every absent device. */
 #ifndef AZ_IOT_DEFAULT_SESSION_EXPIRY_SECONDS
 #define AZ_IOT_DEFAULT_SESSION_EXPIRY_SECONDS 3600
+#endif
+/** @brief Default az_iot_connection_client_options::max_unconfirmed_delivery_timeout_ms (5 min). */
+#ifndef AZ_IOT_DEFAULT_MAX_UNCONFIRMED_DELIVERY_TIMEOUT_MS
+#define AZ_IOT_DEFAULT_MAX_UNCONFIRMED_DELIVERY_TIMEOUT_MS 300000u
 #endif
 /** @brief Default lifetime of a token the SDK signs from a key, in seconds. */
 #ifndef AZ_IOT_DEFAULT_SAS_TOKEN_LIFETIME_SECONDS

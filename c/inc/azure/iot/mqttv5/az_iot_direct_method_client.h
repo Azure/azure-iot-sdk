@@ -157,7 +157,8 @@ extern "C"
    *        acknowledges it.
    *
    * QoS 1 is at-least-once: a message whose PUBACK is lost with the connection is published
-   * again on the next CONNECTED, until its Message Expiry runs out.
+   * again on the next CONNECTED, until its Message Expiry runs out (with none, until the
+   * connection's max_unconfirmed_delivery_timeout_ms).
    */
   typedef enum
   {
@@ -236,7 +237,8 @@ extern "C"
       uint8_t request_id[AZ_IOT_MQTTV5_DM_REQUEST_ID_LEN];
       uint8_t frame[AZ_IOT_MQTTV5_DM_NOTICE_FRAME_MAX];
       size_t frame_len;
-      /** Message Expiry counted from budget_start_ms, in seconds; 0 means unbounded. */
+      /** Message Expiry counted from budget_start_ms, in seconds; 0 means none, and the notice
+       *  is kept at most the connection's max_unconfirmed_delivery_timeout_ms. */
       uint32_t budget_seconds;
       /** Monotonic milliseconds the budget is counted from. */
       uint64_t budget_start_ms;
@@ -300,7 +302,8 @@ extern "C"
       uint64_t exec_received_at_ms[AZ_IOT_MQTTV5_DM_MAX_CONCURRENT];
       /* Parallel to req_pool: monotonic milliseconds at and after which no
        * result is published -- receipt time plus the execution budget, less the
-       * safety margin. UINT64_MAX when the exec carried no expiry. */
+       * safety margin; receipt time plus the connection's
+       * max_unconfirmed_delivery_timeout_ms when the exec carried no expiry. */
       uint64_t exec_deadline_ms[AZ_IOT_MQTTV5_DM_MAX_CONCURRENT];
       /* Bumped on every acquire and copied into the request handed out, so a
        * request naming a slot that has since been reused no longer matches. */
@@ -479,8 +482,11 @@ extern "C"
    * expiry), less a safety margin for network transit -- a tenth of the
    * probe's response timeout, between 1 and 10 seconds. No result is published
    * at or after that deadline: a call at or past it publishes nothing,
-   * releases the slot and returns AZ_IOT_ERR_TIMEOUT. An exec that carries no
-   * expiry has no deadline.
+   * releases the slot and returns AZ_IOT_ERR_TIMEOUT. For an exec that carries
+   * no expiry, the deadline is its receipt time plus the connection's
+   * max_unconfirmed_delivery_timeout_ms, and its result is sent with no expiry;
+   * it is abandoned (insufficient time) unless that timeout exceeds the
+   * method's declared minimum.
    *
    * Before the connection is CONNECTED (for example between CONNACK and the
    * birth-ack, or while reconnecting) the result is held, with its slot, and
