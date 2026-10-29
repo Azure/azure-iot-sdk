@@ -190,6 +190,17 @@ extern "C"
       az_iot_mock_mqtt_client* m,
       const az_iot_mqtt_event* evt);
 
+  /* Deliver up to @p count queued events per process_loop() call, as a real adapter
+   * may (0 restores the default of one). */
+  void az_iot_mock_mqtt_client_set_events_per_loop(az_iot_mock_mqtt_client* m, size_t count);
+
+  /* Call @p hook as each process_loop() starts, before queued events are delivered (NULL clears).
+   */
+  void az_iot_mock_mqtt_client_set_process_loop_hook(
+      az_iot_mock_mqtt_client* m,
+      void (*hook)(az_iot_mock_mqtt_client* m, void* ctx),
+      void* ctx);
+
   /* Convenience: queue a CONNECTED event with the given status. */
   bool az_iot_mock_mqtt_client_inject_connected(az_iot_mock_mqtt_client* m, az_iot_result status);
 

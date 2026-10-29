@@ -55,6 +55,16 @@ extern "C"
   uint32_t az_iot_defensive_timeout__ms(uint32_t attempt, uint64_t random_value);
 
   /**
+   * @brief Attempt number of the wait that follows @p consecutive_misses expired ones.
+   *
+   * @return @p consecutive_misses + 1, saturated at UINT32_MAX.
+   */
+  uint32_t az_iot_defensive_timeout__next_attempt(uint32_t consecutive_misses);
+
+  /** @brief Count one more expired wait in @p consecutive_misses (saturates at UINT32_MAX). */
+  void az_iot_defensive_timeout__count_miss(uint32_t* consecutive_misses);
+
+  /**
    * @brief As az_iot_defensive_timeout__ms(), over a caller-supplied schedule.
    *
    * @param[in] base_ms_by_attempt Base of attempts 1..@p attempt_count; the last

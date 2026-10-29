@@ -49,3 +49,16 @@ uint32_t az_iot_defensive_timeout__schedule_ms(
   uint32_t jitter = (uint32_t)(random_value % ((uint64_t)jitter_max_ms + 1u));
   return jitter > UINT32_MAX - base ? UINT32_MAX : base + jitter;
 }
+
+uint32_t az_iot_defensive_timeout__next_attempt(uint32_t consecutive_misses)
+{
+  return consecutive_misses < UINT32_MAX ? consecutive_misses + 1u : UINT32_MAX;
+}
+
+void az_iot_defensive_timeout__count_miss(uint32_t* consecutive_misses)
+{
+  if (*consecutive_misses < UINT32_MAX)
+  {
+    ++*consecutive_misses;
+  }
+}

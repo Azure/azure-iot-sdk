@@ -272,6 +272,17 @@
 
 ### Bugs Fixed
 
+- Paho adapter: `process_loop()` returns as soon as an event is queued and dispatches it, instead
+  of sleeping its whole timeout and dispatching it on the next call.
+- mqttv5: the connection's `process_loop()` wait ends by the presence SUBACK and birth-ack
+  deadlines, so an ack that arrives in time is not taken for a timeout.
+- mqttv5 twin: with `twin_push.push_desired` or `push_reported` set, a session whose twin-push
+  does not arrive within the mqttv5 defensive timeout of hub CONNECTED (5 to 15 minutes, longer
+  after consecutive misses, as for the birth-ack) is now ended with a DISCONNECT and reconnected (or
+  faulted with `AZ_IOT_ERR_TIMEOUT` without a reconnection policy). Before, no timeout was armed and
+  a lost push left the device without desired patches until the next reconnect.
+- mqttv5: a presence SUBACK or birth-ack timeout now ends the session with a DISCONNECT, as a SAS
+  token renewal does, instead of dropping the connection.
 - az_mqtt adapter: the bundled az_mqtt is updated to main `3a2c61b` (was `58a0799` plus selected
   changes; see `deps/az_mqtt/VENDORED.md`). Invalid options are refused with `AZ_ERROR_ARG` before
   anything is sent: Will, SUBSCRIBE and PUBLISH QoS above 2; MQTT 5 Retain Handling above 2, No

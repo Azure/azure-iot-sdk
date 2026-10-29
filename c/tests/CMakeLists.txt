@@ -314,7 +314,8 @@ az_iot_add_cmocka_test(az_iot_tests_mqttv3_twin_client unit/mqttv3_twin_client_t
 target_link_libraries(az_iot_tests_mqttv3_twin_client PRIVATE az_iot_test_support az_iot_mqttv3)
 az_iot_add_cmocka_test(az_iot_tests_mqttv5_twin_client unit/mqttv5_twin_client_test.c)
 target_link_libraries(az_iot_tests_mqttv5_twin_client PRIVATE az_iot_test_support az_iot_mqttv5)
-target_include_directories(az_iot_tests_mqttv5_twin_client PRIVATE ${PROJECT_SOURCE_DIR}/src/core)
+target_include_directories(az_iot_tests_mqttv5_twin_client PRIVATE
+    ${PROJECT_SOURCE_DIR}/src/core ${PROJECT_SOURCE_DIR}/src/mqttv5)
 
 az_iot_add_cmocka_test(az_iot_tests_su_client unit/su_client_test.c)
 # An application built with a manifest limit that differs from az_iot_core:
@@ -515,6 +516,8 @@ if(AZ_IOT_WITH_PAHO)
         support/mock_paho_async.c
         support/fake_paho_key_custody.c
         ${PROJECT_SOURCE_DIR}/adapters/paho/az_iot_mqtt_paho.c)
+    target_compile_definitions(az_iot_tests_paho_event_queue_race PRIVATE
+        AZ_IOT_TEST_PAHO_WAIT_HOOK=1)
     target_include_directories(az_iot_tests_paho_event_queue_race PRIVATE
         ${PROJECT_SOURCE_DIR}/adapters/paho
         ${CMAKE_CURRENT_SOURCE_DIR}/support)
