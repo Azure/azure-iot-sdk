@@ -5,7 +5,6 @@ idf_component_register(
     SRCS
         "app_main.c"
         "wifi_connect.c"
-        "az_iot_mqtt_esp.c"
         "az_iot_cert_embedded.c"
     INCLUDE_DIRS
         "."
@@ -17,8 +16,7 @@ idf_component_register(
         azure-iot-sdk                      # SDK (core, mqttv3, mqttv5, software updates)
         azure-iot-sdk-crypto-mbedtls       # crypto backend
         azure-iot-sdk-software-update-ota  # OTA platform hooks
-        mqtt                               # esp-mqtt
-        esp-tls                            # crt bundle attach
+        azure-iot-sdk-az-mqtt              # MQTT adapter
         nvs_flash                          # Wi-Fi, update check route
         esp_wifi
         esp_netif
