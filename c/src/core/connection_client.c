@@ -10100,6 +10100,21 @@ const char* az_iot_connection_state_to_string(az_iot_connection_state s)
   }
 }
 
+const char* az_iot_connection_profile_to_string(az_iot_connection_profile profile)
+{
+  switch (profile)
+  {
+    case AZ_IOT_CONNECTION_PROFILE_MQTT_V3:
+      return "AZ_IOT_CONNECTION_PROFILE_MQTT_V3";
+    case AZ_IOT_CONNECTION_PROFILE_MQTT_V5:
+      return "AZ_IOT_CONNECTION_PROFILE_MQTT_V5";
+    case AZ_IOT_CONNECTION_PROFILE_UNKNOWN:
+      return "AZ_IOT_CONNECTION_PROFILE_UNKNOWN";
+    default:
+      return "UNKNOWN";
+  }
+}
+
 /** @brief Value of hex digit @p ch, or -1. */
 static int hex_digit_value(char ch)
 {
