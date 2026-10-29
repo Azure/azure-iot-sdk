@@ -447,11 +447,25 @@ CONNACK; the `DPS` counter only when registration succeeds.
 - An MQTTv5 presence step that does not complete in time. `presence.deadline_ms` is armed at CONNACK
   for the SUBACK (`subscription_ack_deadline()`: `subscription_ack_timeout_seconds`, default
   `AZ_IOT_DEFAULT_SUBSCRIPTION_ACK_TIMEOUT_SECONDS`) and re-armed after the birth PUBLISH for the
-  birth-ack, and checked in `do_work()`. The birth-ack timeout escalates with
+  birth-ack, and checked in `do_work()`. On expiry the session is ended with a DISCONNECT (a
+  planned hub session end, below), then reconnected. The birth-ack timeout escalates with
   `presence.consecutive_birth_ack_timeouts`: attempt N waits
   `az_iot_defensive_timeout__ms(N, random)` — a 5, 6, 8, then 10 min base plus a uniform 0–5 min
   jitter. The count grows in `teardown_active()` when a BIRTH wait ends at or past its deadline (timeout, or a DISCONNECTED or ERROR drained first; not a missed SUBACK) and is cleared by
   `open()` and by a birth-ack that arrives in time.
+- A planned hub session end: `start_planned_hub_session_end()` sends DISCONNECT and arms
+  `planned_hub_session_end.disconnect_deadline` (`PLANNED_DISCONNECT_TIMEOUT_MS`); the DISCONNECTED
+  event (unless an identity refusal) or the deadline calls `finish_planned_hub_session_end()`.
+  Reason `AZ_IOT_OK` (SAS token renewal) reconnects at once; a failure (a presence timeout, or a
+  feature client's `az_iot_connection_client__end_hub_session()`, e.g. the mqttv5 twin-push
+  timeout) goes through `end_hub_session_with_failure()`: reconnect under the policy, else FAULTED.
+  One planned end at a time: a renewal waits for one in progress (and its deadlines do not shorten
+  the wait), and a request during one is absorbed. Presence events after it starts are ignored. A malformed birth-ack is ignored (left to the timeout). A presence SUBACK or birth-ack whose deadline passed before the `do_work()` pass dispatching it began is a miss, left to the timeout (`__deadline_passed_before_pass()`; the mqttv5 twin-push wait uses the same rule, so a miss is declared by the first pass begun past its deadline); the `process_loop()` wait ends by those deadlines until a planned end starts.
+  `close()` during one sends no other DISCONNECT; its completion, an ERROR, or its bound settles
+  IDLE. An ERROR during a failure's end finishes it with that failure; an identity refusal in the
+  same batch keeps its recovery path. A feature client calls `end_hub_session()` from its feature observer's TICK, outside
+  adapter callbacks; one observing NEXT_DEADLINE also bounds the `process_loop()` wait by its
+  deadline.
 
 - **A failed registration, or one with no assignment.** `dps_apply_deferred()` sets
   `needs_reprovision` and calls `schedule_reconnect(AZ_IOT_CONN_SCOPE_DPS, status)`, so the retry is

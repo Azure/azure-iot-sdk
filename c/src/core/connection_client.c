@@ -63,11 +63,11 @@
 #define DEFER_RECONNECT AZ_IOT_CONN_DEFER_RECONNECT
 #define DEFER_IDLE AZ_IOT_CONN_DEFER_IDLE
 #define DEFER_FALLBACK AZ_IOT_CONN_DEFER_FALLBACK
-#define DEFER_SAS_TOKEN_RENEWAL AZ_IOT_CONN_DEFER_SAS_TOKEN_RENEWAL
+#define DEFER_PLANNED_END AZ_IOT_CONN_DEFER_PLANNED_END
 
 /** @brief How long a SAS renewal waits for its disconnect to complete before
  * reconnecting anyway. */
-#define SAS_TOKEN_RENEWAL_DISCONNECT_TIMEOUT_MS 5000u
+#define PLANNED_DISCONNECT_TIMEOUT_MS 5000u
 
 /** @brief When to ask again for a renewal token that could not be asked for. */
 #define SAS_TOKEN_RENEWAL_RETRY_MS 30000u
@@ -276,7 +276,8 @@ static void notify_feature_observers_of(
     az_iot_connection_client* c,
     az_iot_connection_feature_event_kind kind)
 {
-  az_iot_connection_feature_event const event = { kind, NULL, AZ_IOT_CONNECTION_SESSION_END_LOST };
+  az_iot_connection_feature_event const event
+      = { kind, NULL, AZ_IOT_CONNECTION_SESSION_END_LOST, NULL };
   notify_feature_observers(c, &event);
 }
 
@@ -287,7 +288,7 @@ static void dispatch_state_event(
   bool was_dispatching = c->dispatching_state;
   c->dispatching_state = true;
   az_iot_connection_feature_event const feature_event
-      = { AZ_IOT_CONNECTION_FEATURE_EVENT_STATE, event, AZ_IOT_CONNECTION_SESSION_END_LOST };
+      = { AZ_IOT_CONNECTION_FEATURE_EVENT_STATE, event, AZ_IOT_CONNECTION_SESSION_END_LOST, NULL };
   notify_feature_observers(c, &feature_event);
   for (size_t i = 0; i < c->opts.limits.max_application_state_observers; ++i)
   {
@@ -716,10 +717,13 @@ static void set_state_to(
   if (!is_token_renewal || new_state == AZ_IOT_CONN_STATE_CONNECTED)
   {
     c->sas_token_renewal_in_progress[scope] = false;
-    if (scope == AZ_IOT_CONN_SCOPE_HUB)
-    {
-      c->sas_token_renewal_disconnect_deadline_ms = 0;
-    }
+  }
+  /* A planned end lasts while its session is up or being closed; any other
+   * transition ends it. */
+  if (scope == AZ_IOT_CONN_SCOPE_HUB && new_state != AZ_IOT_CONN_STATE_CONNECTING
+      && new_state != AZ_IOT_CONN_STATE_CONNECTED && new_state != AZ_IOT_CONN_STATE_DISCONNECTING)
+  {
+    az_iot_deadline__clear(&c->planned_hub_session_end.disconnect_deadline);
   }
   /* Bookkeeping that belongs to the transition itself, not to any observer, so
    * it runs whether or not anyone is watching. A settled scope has no attempt
@@ -1060,10 +1064,9 @@ static void end_session(az_iot_connection_client* c, az_iot_connection_session_e
   /* A birth-ack wait torn down at or past its deadline is a miss, whatever
    * ended the session (timeout, DISCONNECTED or ERROR processed first). */
   if (c->presence.phase == PRESENCE_PHASE_BIRTH
-      && az_iot_deadline__has_passed(&c->presence.deadline, az_iot_time_mono_ms())
-      && c->presence.consecutive_birth_ack_timeouts < UINT32_MAX)
+      && az_iot_deadline__has_passed(&c->presence.deadline, az_iot_time_mono_ms()))
   {
-    c->presence.consecutive_birth_ack_timeouts++;
+    az_iot_defensive_timeout__count_miss(&c->presence.consecutive_birth_ack_timeouts);
   }
   /* Abandon any in-flight MQTTv5 presence (birth) handshake: it belonged to the
    * now-destroyed session and must restart from CONNACK on the next connect. */
@@ -1109,7 +1112,7 @@ static void end_session(az_iot_connection_client* c, az_iot_connection_session_e
    * torn-down session and gets a clean NOT_CONNECTED rather than publishing
    * into a half-freed adapter. */
   az_iot_connection_feature_event const event
-      = { AZ_IOT_CONNECTION_FEATURE_EVENT_SESSION_END, NULL, reason };
+      = { AZ_IOT_CONNECTION_FEATURE_EVENT_SESSION_END, NULL, reason, NULL };
   notify_feature_observers(c, &event);
 }
 
@@ -1125,6 +1128,7 @@ static void puback_abandon(az_iot_connection_client* c, const void* owner);
 
 /* Forward decl — used in on_mqtt_event via the deferred-action queue. */
 static az_iot_result start_connect_attempt(az_iot_connection_client* c);
+static bool planned_hub_session_end_in_progress(const az_iot_connection_client* c);
 static bool dps_configured(const az_iot_connection_client* c);
 static az_iot_result run_feature_client_binds(az_iot_connection_client* c);
 static void drop_subscriptions_from_other_generations(az_iot_connection_client* c);
@@ -4594,14 +4598,15 @@ static size_t presence_encode_birth(
  * (field 11), both varints. These are the authoritative versions as of birth
  * admission; the device adopts them as its view for this connection. Fields the
  * service omits keep the proto3 default of 0, and unknown fields are skipped so
- * a service-side schema addition does not break the handshake. */
-static void presence_decode_birth_ack(az_iot_connection_client* c, const uint8_t* buf, size_t len)
+ * a service-side schema addition does not break the handshake.
+ * @return false for a malformed ack (bad encoding, or a known field on the wrong wire type). */
+static bool presence_decode_birth_ack(az_iot_connection_client* c, const uint8_t* buf, size_t len)
 {
   c->presence.desired_version = 0;
   c->presence.reported_version = 0;
   if (!buf)
   {
-    return;
+    return true;
   }
 
   size_t pos = 0;
@@ -4611,17 +4616,21 @@ static void presence_decode_birth_ack(az_iot_connection_client* c, const uint8_t
     uint8_t wire = 0;
     if (!az_iot_proto3_read_tag(buf, len, &pos, &field, &wire))
     {
-      return;
+      return false;
+    }
+    bool const known = field == PRESENCE_BIRTH_ACK_FIELD_DESIRED_VERSION
+        || field == PRESENCE_BIRTH_ACK_FIELD_REPORTED_VERSION;
+    if (known && wire != AZ_IOT_PROTO3_WIRE_VARINT)
+    {
+      return false;
     }
 
-    if (wire == AZ_IOT_PROTO3_WIRE_VARINT
-        && (field == PRESENCE_BIRTH_ACK_FIELD_DESIRED_VERSION
-            || field == PRESENCE_BIRTH_ACK_FIELD_REPORTED_VERSION))
+    if (known)
     {
       uint64_t v = 0;
       if (!az_iot_proto3_read_varint(buf, len, &pos, &v))
       {
-        return;
+        return false;
       }
       if (field == PRESENCE_BIRTH_ACK_FIELD_DESIRED_VERSION)
       {
@@ -4634,9 +4643,10 @@ static void presence_decode_birth_ack(az_iot_connection_client* c, const uint8_t
     }
     else if (!az_iot_proto3_skip_field(buf, len, &pos, wire))
     {
-      return;
+      return false;
     }
   }
+  return true;
 }
 
 /* Announce CONNECTED once the session's persistent subscriptions are live.
@@ -4970,9 +4980,8 @@ static az_iot_result presence_publish_birth(az_iot_connection_client* c)
 
   /* The birth is on the wire: arm the escalating birth-ack timeout. Its attempt
    * is one past the birth-acks missed in a row. */
-  uint32_t attempt = c->presence.consecutive_birth_ack_timeouts < UINT32_MAX
-      ? c->presence.consecutive_birth_ack_timeouts + 1u
-      : UINT32_MAX;
+  uint32_t attempt
+      = az_iot_defensive_timeout__next_attempt(c->presence.consecutive_birth_ack_timeouts);
   c->presence.birth_ack_timeout_ms = az_iot_connection_client__defensive_timeout_ms(c, attempt);
   az_iot_deadline__arm_after_ms(
       &c->presence.deadline, az_iot_time_mono_ms(), c->presence.birth_ack_timeout_ms);
@@ -5027,6 +5036,20 @@ static bool presence_is_birth_ack(const az_iot_connection_client* c, const az_io
 }
 
 /* Inbound MQTT events are dispatched here (synchronously from process_loop). */
+/**
+ * @brief Defer finishing the planned hub session end with its own reason, unless this batch
+ * already deferred an identity refusal, which keeps its recovery path.
+ */
+static void defer_planned_hub_session_end_completion(az_iot_connection_client* c)
+{
+  if (c->deferred != DEFER_NONE && reason_is_identity_refusal(c->deferred_reason))
+  {
+    return;
+  }
+  c->deferred = DEFER_PLANNED_END;
+  c->deferred_reason = c->planned_hub_session_end.reason;
+}
+
 static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
 {
   az_iot_connection_client* c = (az_iot_connection_client*)user_ctx;
@@ -5121,14 +5144,10 @@ static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
         c->deferred = DEFER_IDLE;
         c->deferred_reason = evt->status;
       }
-      else if (
-          c->sas_token_renewal_in_progress[AZ_IOT_CONN_SCOPE_HUB]
-          && c->state[AZ_IOT_CONN_SCOPE_HUB] == AZ_IOT_CONN_STATE_CONNECTED
-          && !reason_is_identity_refusal(evt->status))
+      else if (planned_hub_session_end_in_progress(c) && !reason_is_identity_refusal(evt->status))
       {
-        /* The disconnect a token renewal asked for. */
-        c->deferred = DEFER_SAS_TOKEN_RENEWAL;
-        c->deferred_reason = AZ_IOT_OK;
+        /* The disconnect a planned session end sent. */
+        defer_planned_hub_session_end_completion(c);
       }
       else if (!az_iot_retry_policy_is_enabled(&c->opts.reconnection_policy))
       {
@@ -5146,6 +5165,21 @@ static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
     case AZ_IOT_MQTT_EVT_ERROR:
     {
       az_iot_result r = (evt->status != AZ_IOT_OK) ? evt->status : AZ_IOT_ERR_MQTT;
+      if (c->user_close && planned_hub_session_end_in_progress(c))
+      {
+        /* close() took over a planned end: it settles IDLE. */
+        c->deferred = DEFER_IDLE;
+        c->deferred_reason = AZ_IOT_OK;
+        break;
+      }
+      if (planned_hub_session_end_in_progress(c) && c->planned_hub_session_end.reason != AZ_IOT_OK
+          && !reason_is_identity_refusal(r))
+      {
+        /* A failure was already ending the session (e.g. a timeout): it ends with that reason.
+         * A SAS renewal's end (AZ_IOT_OK) takes the error like any other session. */
+        defer_planned_hub_session_end_completion(c);
+        break;
+      }
       c->deferred = (az_iot_retry_policy_is_enabled(&c->opts.reconnection_policy) && !c->user_close)
           ? DEFER_RECONNECT
           : DEFER_FAULT;
@@ -5163,6 +5197,11 @@ static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
          * complete the connection; everything else routes normally. */
         if (c->presence.phase == PRESENCE_PHASE_BIRTH && presence_is_birth_ack(c, evt->message))
         {
+          /* The session is already being ended (e.g. its handshake timed out). */
+          if (planned_hub_session_end_in_progress(c))
+          {
+            break;
+          }
           /* Same reasoning as the CONNACK case above. On the MQTTv5 path it
            * is the birth-ack, not the CONNACK, that completes the connection,
            * so suppressing only the CONNACK would leave this route able to
@@ -5176,15 +5215,21 @@ static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
                 AZ_IOT_LOG_COMPONENT_CONNECTION, "birth-ack ignored: close already requested");
             break;
           }
-          /* do_work() drains events before checking the deadline: an ack past
-           * it is a miss, left to the timeout path to reconnect and escalate. */
-          if (az_iot_deadline__has_passed(&c->presence.deadline, az_iot_time_mono_ms()))
+          /* An ack whose deadline had passed when this pass began is a miss, left
+           * to the timeout path to reconnect and escalate. A pass's waits end by
+           * the deadline, but one may dispatch late (e.g. after a DPS wait). */
+          if (az_iot_connection_client__deadline_passed_before_pass(c, &c->presence.deadline))
           {
             AZ_IOT_LOG_DEBUG(
                 AZ_IOT_LOG_COMPONENT_CONNECTION, "birth-ack ignored: birth-ack timeout expired");
             break;
           }
-          presence_decode_birth_ack(c, evt->message->payload, evt->message->payload_len);
+          if (!presence_decode_birth_ack(c, evt->message->payload, evt->message->payload_len))
+          {
+            /* Its versions cannot be trusted; the birth-ack timeout ends the session. */
+            AZ_IOT_LOG_WARN(AZ_IOT_LOG_COMPONENT_CONNECTION, "malformed birth-ack ignored");
+            break;
+          }
           c->presence.phase = PRESENCE_PHASE_DONE;
           /* Arrived in time: the next birth starts the schedule over. */
           c->presence.consecutive_birth_ack_timeouts = 0;
@@ -5273,8 +5318,15 @@ static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
      * absorbed (feature clients don't yet need SUBACK correlation). */
     case AZ_IOT_MQTT_EVT_SUBSCRIBE_ACK:
       if (c->presence.phase == PRESENCE_PHASE_SUBSCRIBING
-          && evt->packet_id == c->presence.sub_packet_id)
+          && evt->packet_id == c->presence.sub_packet_id && !planned_hub_session_end_in_progress(c))
       {
+        /* As for the birth-ack: late only if the deadline passed before this pass. */
+        if (az_iot_connection_client__deadline_passed_before_pass(c, &c->presence.deadline))
+        {
+          AZ_IOT_LOG_DEBUG(
+              AZ_IOT_LOG_COMPONENT_CONNECTION, "presence SUBACK ignored: its timeout expired");
+          break;
+        }
         az_iot_result pr = (evt->status == AZ_IOT_OK) ? presence_publish_birth(c) : evt->status;
         if (pr != AZ_IOT_OK)
         {
@@ -5573,12 +5625,48 @@ static az_iot_result start_connect_attempt(az_iot_connection_client* c)
   return AZ_IOT_OK;
 }
 
-/** @brief Ends the session a SAS renewal disconnected and reconnects at once
- * with a new token: RETRY_PENDING with reason AZ_IOT_OK, no policy delay or
- * attempt. */
-static void reconnect_for_sas_token_renewal(az_iot_connection_client* c)
+/** @brief Ends the hub session with @p reason: reconnects under the
+ * reconnection policy, or faults without one or once close() is requested. */
+static void end_hub_session_with_failure(az_iot_connection_client* c, az_iot_result reason)
 {
-  c->sas_token_renewal_disconnect_deadline_ms = 0;
+  if (az_iot_retry_policy_is_enabled(&c->opts.reconnection_policy) && !c->user_close)
+  {
+    schedule_reconnect(c, AZ_IOT_CONN_SCOPE_HUB, reason);
+  }
+  else
+  {
+    uint32_t closes = c->close_count;
+    uint32_t seq = c->open_seq;
+    teardown_active(c);
+    /* Teardown runs PUBACK and session callbacks, which may close or reopen. */
+    if (c->close_count == closes && c->open_seq == seq)
+    {
+      set_state_to(c, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_FAULTED, reason);
+    }
+  }
+}
+
+/** @brief Whether a planned hub session end awaits its disconnect. */
+static bool planned_hub_session_end_in_progress(const az_iot_connection_client* c)
+{
+  return az_iot_deadline__is_set(&c->planned_hub_session_end.disconnect_deadline);
+}
+
+/**
+ * @brief Ends the hub session a planned end disconnected. A failure reason ends
+ * it with end_hub_session_with_failure(); AZ_IOT_OK (SAS renewal) reconnects at
+ * once with a new token: RETRY_PENDING with reason AZ_IOT_OK, no policy delay
+ * or attempt.
+ */
+static void finish_planned_hub_session_end(az_iot_connection_client* c)
+{
+  az_iot_result reason = c->planned_hub_session_end.reason;
+  az_iot_deadline__clear(&c->planned_hub_session_end.disconnect_deadline);
+  if (reason != AZ_IOT_OK)
+  {
+    end_hub_session_with_failure(c, reason);
+    return;
+  }
   uint32_t closes = c->close_count;
   uint32_t seq = c->open_seq;
   end_session(c, AZ_IOT_CONNECTION_SESSION_END_PLANNED);
@@ -5594,22 +5682,32 @@ static void reconnect_for_sas_token_renewal(az_iot_connection_client* c)
 }
 
 /**
- * @brief Starts renewing the hub's SAS token. MQTT 3.1.1 cannot
- * re-authenticate a live session, so the session is disconnected, then
- * reconnected by reconnect_for_sas_token_renewal() when the adapter reports the
- * disconnect, or after SAS_TOKEN_RENEWAL_DISCONNECT_TIMEOUT_MS.
+ * @brief Ends the live hub session with a DISCONNECT. It is finished by
+ * finish_planned_hub_session_end() when the adapter reports the disconnect, or
+ * after PLANNED_DISCONNECT_TIMEOUT_MS.
  */
-static void start_sas_token_renewal(az_iot_connection_client* c, uint64_t now)
+static void start_planned_hub_session_end(az_iot_connection_client* c, az_iot_result reason)
+{
+  c->planned_hub_session_end.reason = reason;
+  az_iot_deadline__arm_after_ms(
+      &c->planned_hub_session_end.disconnect_deadline,
+      az_iot_time_mono_ms(),
+      PLANNED_DISCONNECT_TIMEOUT_MS);
+  if (c->active_client->iface->disconnect(c->active_client) != AZ_IOT_OK)
+  {
+    finish_planned_hub_session_end(c);
+  }
+}
+
+/** @brief Starts renewing the hub's SAS token. MQTT 3.1.1 cannot re-authenticate
+ * a live session, so the session is ended and reconnected with a new token. */
+static void start_sas_token_renewal(az_iot_connection_client* c)
 {
   AZ_IOT_LOG_INFO(AZ_IOT_LOG_COMPONENT_CONNECTION, "renewing the SAS token; reconnecting");
   c->sas_token_renewal_due_ms[AZ_IOT_CONN_SCOPE_HUB] = 0;
   c->sas_token_renewal_due_unix_seconds[AZ_IOT_CONN_SCOPE_HUB] = 0;
   c->sas_token_renewal_in_progress[AZ_IOT_CONN_SCOPE_HUB] = true;
-  c->sas_token_renewal_disconnect_deadline_ms = now + SAS_TOKEN_RENEWAL_DISCONNECT_TIMEOUT_MS;
-  if (c->active_client->iface->disconnect(c->active_client) != AZ_IOT_OK)
-  {
-    reconnect_for_sas_token_renewal(c);
-  }
+  start_planned_hub_session_end(c, AZ_IOT_OK);
 }
 
 /** @brief Whether @p source authenticates with a SAS token. */
@@ -5849,22 +5947,16 @@ static void process_sas_token_renewal(az_iot_connection_client* c)
     return;
   }
   uint64_t now = az_iot_time_mono_ms();
-  if (!c->sas_token_renewal_in_progress[hub] && sas_token_renewal_ready(c, hub))
+  /* A session already ending gets its new token on the reconnect. */
+  if (c->sas_token_renewal_in_progress[hub] || planned_hub_session_end_in_progress(c))
+  {
+    return;
+  }
+  if (sas_token_renewal_ready(c, hub))
   {
     if (!renewal_token_expired_before_use(c, hub, now))
     {
-      start_sas_token_renewal(c, now);
-    }
-    return;
-  }
-  if (c->sas_token_renewal_in_progress[hub])
-  {
-    if (c->sas_token_renewal_disconnect_deadline_ms != 0
-        && now >= c->sas_token_renewal_disconnect_deadline_ms)
-    {
-      AZ_IOT_LOG_WARN(
-          AZ_IOT_LOG_COMPONENT_CONNECTION, "SAS token renewal: no disconnect event; reconnecting");
-      reconnect_for_sas_token_renewal(c);
+      start_sas_token_renewal(c);
     }
     return;
   }
@@ -5874,7 +5966,7 @@ static void process_sas_token_renewal(az_iot_connection_client* c)
   {
     c->sas_token_expiry_ms[hub] = 0;
     c->sas_token_expiry_unix_seconds[hub] = 0;
-    start_sas_token_renewal(c, now);
+    start_sas_token_renewal(c);
     return;
   }
   if (sas_token_renewal_due(c, hub, now))
@@ -5885,7 +5977,7 @@ static void process_sas_token_renewal(az_iot_connection_client* c)
     }
     else
     {
-      start_sas_token_renewal(c, now);
+      start_sas_token_renewal(c);
     }
   }
 }
@@ -6131,14 +6223,13 @@ static void process_sas_token_request(az_iot_connection_client* c)
 }
 
 /**
- * @brief @p timeout_ms, capped so a process_loop() wait ends by the next SAS
- * token deadline: a token request's bound (none while one waits to be asked,
- * as do_work() asks it), a session's renewal, or the hub's renewal disconnect
- * bound.
+ * @brief @p timeout_ms, capped so a process_loop() wait ends by the next
+ * connection deadline: a SAS token request's bound (none while one waits to be
+ * asked, as do_work() asks it), a session's SAS token renewal, a planned hub
+ * session end's disconnect bound, the presence SUBACK or birth-ack timeout, or a
+ * feature observer's NEXT_DEADLINE.
  */
-static uint32_t limit_wait_to_sas_token_deadlines(
-    const az_iot_connection_client* c,
-    uint32_t timeout_ms)
+static uint32_t limit_wait_to_connection_deadlines(az_iot_connection_client* c, uint32_t timeout_ms)
 {
   uint64_t now = az_iot_time_mono_ms();
   uint64_t remaining = UINT64_MAX;
@@ -6167,9 +6258,10 @@ static uint32_t limit_wait_to_sas_token_deadlines(
     {
       continue;
     }
-    bool in_progress = c->sas_token_renewal_in_progress[scope];
-    uint64_t deadline = in_progress ? c->sas_token_renewal_disconnect_deadline_ms
-                                    : c->sas_token_renewal_due_ms[scope];
+    /* A planned end in progress holds the hub's renewal; its bound is counted below. */
+    bool in_progress = c->sas_token_renewal_in_progress[scope]
+        || (scope == AZ_IOT_CONN_SCOPE_HUB && planned_hub_session_end_in_progress(c));
+    uint64_t deadline = in_progress ? 0 : c->sas_token_renewal_due_ms[scope];
     if (!in_progress && c->sas_token_expiry_ms[scope] != 0
         && (deadline == 0 || c->sas_token_expiry_ms[scope] < deadline))
     {
@@ -6201,6 +6293,22 @@ static uint32_t limit_wait_to_sas_token_deadlines(
       }
     }
   }
+  uint64_t planned_end_left
+      = az_iot_deadline__remaining_ms(&c->planned_hub_session_end.disconnect_deadline, now);
+  remaining = planned_end_left < remaining ? planned_end_left : remaining;
+  /* Once a planned end is under way the presence deadline has done its job; its bound counts. */
+  if ((c->presence.phase == PRESENCE_PHASE_SUBSCRIBING || c->presence.phase == PRESENCE_PHASE_BIRTH)
+      && !planned_hub_session_end_in_progress(c))
+  {
+    uint64_t presence_left = az_iot_deadline__remaining_ms(&c->presence.deadline, now);
+    remaining = presence_left < remaining ? presence_left : remaining;
+  }
+  az_iot_connection_feature_event const deadline_query
+      = { AZ_IOT_CONNECTION_FEATURE_EVENT_NEXT_DEADLINE,
+          NULL,
+          AZ_IOT_CONNECTION_SESSION_END_LOST,
+          &remaining };
+  notify_feature_observers(c, &deadline_query);
   return (uint64_t)timeout_ms > remaining ? (uint32_t)remaining : timeout_ms;
 }
 
@@ -6214,6 +6322,12 @@ static void apply_deferred(az_iot_connection_client* c)
   az_iot_result reason = c->deferred_reason;
   c->deferred = DEFER_NONE;
   c->deferred_reason = AZ_IOT_OK;
+  /* close() took the planned end over (e.g. from a callback after DISCONNECTED was queued). */
+  if (action == DEFER_PLANNED_END && c->user_close)
+  {
+    action = DEFER_IDLE;
+    reason = AZ_IOT_OK;
+  }
 
   switch (action)
   {
@@ -6229,11 +6343,19 @@ static void apply_deferred(az_iot_connection_client* c)
       teardown_active(c);
       retry_with_next_source(c, AZ_IOT_CONN_SCOPE_HUB, reason);
       break;
-    case DEFER_SAS_TOKEN_RENEWAL:
-      reconnect_for_sas_token_renewal(c);
+    case DEFER_PLANNED_END:
+      finish_planned_hub_session_end(c);
       break;
     case DEFER_IDLE:
+    {
+      uint32_t closes = c->close_count;
+      uint32_t seq = c->open_seq;
       teardown_active(c);
+      /* Teardown runs PUBACK and session callbacks, which may close or reopen. */
+      if (c->close_count != closes || c->open_seq != seq)
+      {
+        break;
+      }
       c->user_close = false;
       c->retry_attempt[AZ_IOT_CONN_SCOPE_DPS] = 0;
       c->retry_attempt[AZ_IOT_CONN_SCOPE_HUB] = 0;
@@ -6241,9 +6363,18 @@ static void apply_deferred(az_iot_connection_client* c)
       reset_identity_recovery(c);
       set_state_to(c, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_IDLE, reason);
       break;
+    }
     default:
       break;
   }
+}
+
+/** @brief Ends a hub session close() is ending, without its DISCONNECTED event: IDLE. */
+static void settle_closed_hub_session(az_iot_connection_client* c)
+{
+  c->deferred = DEFER_IDLE;
+  c->deferred_reason = AZ_IOT_OK;
+  apply_deferred(c);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -7480,6 +7611,11 @@ az_iot_result az_iot_connection_client_close(az_iot_connection_client* client)
 
   client->user_close = true;
   set_state_to(client, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_DISCONNECTING, AZ_IOT_OK);
+  /* A planned end already sent DISCONNECT; its completion or bound settles IDLE. */
+  if (planned_hub_session_end_in_progress(client))
+  {
+    return AZ_IOT_OK;
+  }
   az_iot_result r = client->active_client->iface->disconnect(client->active_client);
   if (r != AZ_IOT_OK && r != AZ_IOT_ERR_NOT_CONNECTED)
   {
@@ -7538,6 +7674,7 @@ static void settle_spent_dps_retry(az_iot_connection_client* c)
 /** @brief One do_work() pass, without the tick observers. */
 static az_iot_result do_work_pass(az_iot_connection_client* client, uint32_t timeout_ms)
 {
+  client->do_work_pass_started_ms = az_iot_time_mono_ms();
   process_sas_token_request(client);
 
   /* --- DPS provisioning pump --- */
@@ -7659,7 +7796,7 @@ static az_iot_result do_work_pass(az_iot_connection_client* client, uint32_t tim
         }
       }
       /* A hub session beside it is pumped only after this wait. */
-      wait_ms = limit_wait_to_sas_token_deadlines(client, wait_ms);
+      wait_ms = limit_wait_to_connection_deadlines(client, wait_ms);
       r = client->dps_mqtt->iface->process_loop(client->dps_mqtt, wait_ms);
     }
 
@@ -7705,7 +7842,7 @@ static az_iot_result do_work_pass(az_iot_connection_client* client, uint32_t tim
   if (client->active_client)
   {
     r = client->active_client->iface->process_loop(
-        client->active_client, limit_wait_to_sas_token_deadlines(client, timeout_ms));
+        client->active_client, limit_wait_to_connection_deadlines(client, timeout_ms));
   }
 
   apply_deferred(client);
@@ -7729,11 +7866,12 @@ static az_iot_result do_work_pass(az_iot_connection_client* client, uint32_t tim
   }
 
   /* Fail a stalled MQTTv5 presence (birth) handshake so a missing SUBACK or
-   * birth-ack can't wedge the client in CONNECTING forever. Disconnect and
-   * reconnect when a policy is configured, otherwise fault. A missed birth-ack
-   * escalates the next birth's timeout. */
+   * birth-ack can't wedge the client in CONNECTING forever: end the session
+   * with a DISCONNECT, then reconnect when a policy is configured, otherwise
+   * fault. A missed birth-ack escalates the next birth's timeout. */
   if ((client->presence.phase == AZ_IOT_PRESENCE_PHASE_SUBSCRIBING
        || client->presence.phase == AZ_IOT_PRESENCE_PHASE_BIRTH)
+      && !planned_hub_session_end_in_progress(client)
       && az_iot_deadline__has_passed(&client->presence.deadline, az_iot_time_mono_ms()))
   {
     if (client->presence.phase == AZ_IOT_PRESENCE_PHASE_BIRTH)
@@ -7743,15 +7881,15 @@ static az_iot_result do_work_pass(az_iot_connection_client* client, uint32_t tim
           "no birth-ack within %lu ms; ending the session",
           (unsigned long)client->presence.birth_ack_timeout_ms);
     }
-    /* Both branches tear down, which counts the missed birth-ack. */
-    if (az_iot_retry_policy_is_enabled(&client->opts.reconnection_policy) && !client->user_close)
+    /* Both paths tear down, which counts the missed birth-ack. close() has
+     * already sent its DISCONNECT and decides how the session ends. */
+    if (client->user_close)
     {
-      schedule_reconnect(client, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_ERR_TIMEOUT);
+      settle_closed_hub_session(client);
     }
     else
     {
-      teardown_active(client);
-      set_state_to(client, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_FAULTED, AZ_IOT_ERR_TIMEOUT);
+      start_planned_hub_session_end(client, AZ_IOT_ERR_TIMEOUT);
     }
   }
 
@@ -7790,6 +7928,24 @@ static az_iot_result do_work_pass(az_iot_connection_client* client, uint32_t tim
     {
       teardown_active(client);
       set_state_to(client, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_FAULTED, AZ_IOT_ERR_TIMEOUT);
+    }
+  }
+
+  /* A planned end whose disconnect was not reported in time ends anyway; at
+   * IDLE once close() took it over. */
+  if (planned_hub_session_end_in_progress(client)
+      && az_iot_deadline__has_passed(
+          &client->planned_hub_session_end.disconnect_deadline, az_iot_time_mono_ms()))
+  {
+    AZ_IOT_LOG_WARN(
+        AZ_IOT_LOG_COMPONENT_CONNECTION, "planned session end: no disconnect event; ending it");
+    if (client->user_close)
+    {
+      settle_closed_hub_session(client);
+    }
+    else
+    {
+      finish_planned_hub_session_end(client);
     }
   }
 
@@ -8085,6 +8241,47 @@ uint32_t az_iot_connection_client__defensive_timeout_ms(
   return az_iot_defensive_timeout__ms(attempt, random_value);
 }
 
+az_iot_result az_iot_connection_client__end_hub_session(
+    az_iot_connection_client* client,
+    az_iot_result reason)
+{
+  if (!client || reason == AZ_IOT_OK)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  if (!client->active_client || client->user_close
+      || client->state[AZ_IOT_CONN_SCOPE_HUB] != AZ_IOT_CONN_STATE_CONNECTED)
+  {
+    return AZ_IOT_ERR_NOT_CONNECTED;
+  }
+  if (!planned_hub_session_end_in_progress(client))
+  {
+    start_planned_hub_session_end(client, reason);
+  }
+  return AZ_IOT_OK;
+}
+
+void az_iot_connection_client__planned_hub_session_end_force_timeout(
+    az_iot_connection_client* client)
+{
+  if (client && planned_hub_session_end_in_progress(client))
+  {
+    az_iot_deadline__expire_now(&client->planned_hub_session_end.disconnect_deadline);
+  }
+}
+
+bool az_iot_connection_client__twin_push_expected(const az_iot_connection_client* client)
+{
+  return client && (client->opts.twin_push.push_desired || client->opts.twin_push.push_reported);
+}
+
+bool az_iot_connection_client__deadline_passed_before_pass(
+    const az_iot_connection_client* client,
+    const az_iot_deadline* deadline)
+{
+  return az_iot_deadline__has_passed(deadline, client->do_work_pass_started_ms);
+}
+
 void az_iot_connection_client__presence_force_timeout(az_iot_connection_client* client)
 {
   if (!client)
@@ -8164,6 +8361,11 @@ az_iot_result az_iot_connection_client__birth_nonce(
 bool az_iot_connection_client__twin_push_desired(const az_iot_connection_client* client)
 {
   return client && client->opts.twin_push.push_desired;
+}
+
+bool az_iot_connection_client__twin_push_reported(const az_iot_connection_client* client)
+{
+  return client && client->opts.twin_push.push_reported;
 }
 
 void az_iot_connection_client__subscription_gate_force_timeout(az_iot_connection_client* client)
@@ -8328,10 +8530,14 @@ az_iot_result az_iot_connection_client__register_feature_client_bind(
   }
   client->feature_client_binds[free_slot].owner = owner;
   client->feature_client_binds[free_slot].on_bind = on_bind;
-  /* Already connected means the identity is settled and this session's binds
-   * have run, so this one has to catch up or it would sit idle until the next
-   * connect. Mirrors __add_subscription_on_connect subscribing immediately. */
-  if (client->state[AZ_IOT_CONN_SCOPE_HUB] == AZ_IOT_CONN_STATE_CONNECTED)
+  /* Connected, or an mqttv5 session connecting, means the identity is settled
+   * and this session's binds have run, so this one has to catch up or it would
+   * sit idle until the next connect. Mirrors __add_subscription_on_connect
+   * subscribing immediately. Not an mqttv3 session connecting: its binds subscribe,
+   * and a client withdrawn before CONNECTED would not unsubscribe. */
+  if (client->state[AZ_IOT_CONN_SCOPE_HUB] == AZ_IOT_CONN_STATE_CONNECTED
+      || (client->state[AZ_IOT_CONN_SCOPE_HUB] == AZ_IOT_CONN_STATE_CONNECTING
+          && client->connection_profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5))
   {
     return on_bind(owner, client);
   }

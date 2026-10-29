@@ -1409,7 +1409,7 @@ extern "C"
     AZ_IOT_CONN_DEFER_RECONNECT,
     AZ_IOT_CONN_DEFER_IDLE,
     AZ_IOT_CONN_DEFER_FALLBACK,
-    AZ_IOT_CONN_DEFER_SAS_TOKEN_RENEWAL
+    AZ_IOT_CONN_DEFER_PLANNED_END
   };
   enum
   {
@@ -1475,6 +1475,8 @@ extern "C"
     /** DPS assigned a hub or device id other than the adopted one; before the assignment
      *  callback and the hub connect. */
     AZ_IOT_CONNECTION_FEATURE_EVENT_IDENTITY_CHANGED = 16,
+    AZ_IOT_CONNECTION_FEATURE_EVENT_NEXT_DEADLINE
+    = 32, /**< Before do_work() waits; see remaining_ms. */
   } az_iot_connection_feature_event_kind;
   /** @brief Why an MQTT session ended. */
   typedef enum az_iot_connection_session_end_reason
@@ -1488,6 +1490,9 @@ extern "C"
     az_iot_connection_feature_event_kind kind;
     const az_iot_connection_state_event* state; /**< STATE only; NULL otherwise. */
     az_iot_connection_session_end_reason session_end_reason; /**< SESSION_END only. */
+    /** NEXT_DEADLINE only (NULL otherwise): lower it to the milliseconds to the observer's next
+     * deadline, so the adapter wait ends by then and the TICK after it acts on time. */
+    uint64_t* remaining_ms;
   } az_iot_connection_feature_event;
   typedef void (*az_iot_connection_feature_observer_callback)(
       const az_iot_connection_feature_event* event,
@@ -1928,6 +1933,9 @@ extern "C"
       uint64_t desired_version; /* authoritative twin versions carried by the */
       uint64_t reported_version; /* last birth-ack (0 when the service omits them) */
     } presence;
+    /* Start of the current do_work() pass. Its waits end by the connection's and feature
+     * clients' deadlines, so input it dispatches is late only if a deadline had passed by then. */
+    uint64_t do_work_pass_started_ms;
 
     /* Per scope: where init() put the decoded SAS keys in opts.sas_buffer
      * (NULL when unset), and the credential the last attempt used. */
@@ -1965,12 +1973,18 @@ extern "C"
     uint32_t dps_demand_epoch;
     /* SAS token renewal per scope: when the current token is due (monotonic
      * ms, and Unix seconds for a monotonic clock that stops in suspend; 0:
-     * none) and whether a renewal is in progress. The disconnect deadline is
-     * the hub's: the bound on the wait for its renewal disconnect (0: not
-     * waiting). */
+     * none) and whether a renewal is in progress. */
     uint64_t sas_token_renewal_due_ms[AZ_IOT_CONN_SCOPE_COUNT];
     uint64_t sas_token_renewal_due_unix_seconds[AZ_IOT_CONN_SCOPE_COUNT];
-    uint64_t sas_token_renewal_disconnect_deadline_ms;
+    /* A hub session being ended on purpose: DISCONNECT sent, its completion
+     * awaited until `disconnect_deadline` (none: no planned end). `reason`
+     * AZ_IOT_OK (SAS renewal) reconnects at once; a failure reconnects with it,
+     * or faults without a reconnection policy. */
+    struct
+    {
+      az_iot_deadline disconnect_deadline;
+      az_iot_result reason;
+    } planned_hub_session_end;
     bool sas_token_renewal_in_progress[AZ_IOT_CONN_SCOPE_COUNT];
     /* User-provided SAS token request per scope; request_id 0: none. The
      * callback is called from do_work() (asked); ready once the token is in
