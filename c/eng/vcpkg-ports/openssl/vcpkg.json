@@ -23,9 +23,6 @@
       "description": "Enable fips",
       "supports": "!static"
     },
-    "ssl3": {
-      "description": "Enable SSL3"
-    },
     "tools": {
       "description": "Install openssl executable and scripts",
       "supports": "!uwp"

@@ -58,11 +58,6 @@ if("weak-ssl-ciphers" IN_LIST FEATURES)
     vcpkg_list(APPEND CONFIGURE_OPTIONS enable-weak-ssl-ciphers)
 endif()
 
-if("ssl3" IN_LIST FEATURES)
-    vcpkg_list(APPEND CONFIGURE_OPTIONS enable-ssl3)
-    vcpkg_list(APPEND CONFIGURE_OPTIONS enable-ssl3-method)
-endif()
-
 if(DEFINED OPENSSL_USE_NOPINSHARED)
     vcpkg_list(APPEND CONFIGURE_OPTIONS no-pinshared)
 endif()

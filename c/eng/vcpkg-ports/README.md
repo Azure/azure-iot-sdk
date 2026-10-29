@@ -7,7 +7,8 @@
 - Version and source hash.
 - Patches rebased onto 4.1.0: `windows/install-layout.patch`, `windows/install-pdbs.patch`,
   `unix/no-empty-dirs.patch`, `unix/no-static-libs-for-shared.patch`.
-- Dropped: `script-prefix.patch` (4.x has no `c_rehash`) and the `enable-static-engine` and
+- Dropped: `script-prefix.patch` and the `c_rehash` install steps (4.x has no `c_rehash`), the
+  `ssl3` feature (4.x rejects `enable-ssl3`), and the `enable-static-engine` and
   `enable-capieng` options (4.x has no ENGINE).
 - Added: `configure-no-apps-out-of-source.patch`, openssl/openssl@6bef602005, which 4.1.0 lacks.
 
