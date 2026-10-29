@@ -58,7 +58,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
             Assert.Equal("", message.UserProperties["flag"]);
             Assert.Equal("a=b", message.UserProperties["equals"]);
             Assert.Equal("+", message.UserProperties["plus"]);
-            Assert.True(args.IsAcknowledged);
+            Assert.False(args.IsAcknowledged);
         }
 
         [Theory]
@@ -96,7 +96,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
             Assert.Equal(propertyBag.Length == 0 ? null : "text/plain", message.ContentType);
             Assert.Equal(propertyBag.Length == 0 ? null : "utf-8", message.ContentEncoding);
             Assert.Empty(message.UserProperties);
-            Assert.True(args.IsAcknowledged);
+            Assert.False(args.IsAcknowledged);
         }
 
         [Theory]
@@ -163,7 +163,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
         }
 
         [Fact]
-        public async Task CloudToDeviceTelemetryReceivedAsync_AcknowledgesOnlyAfterHandlerCompletes()
+        public async Task CloudToDeviceTelemetryReceivedAsync_AwaitsHandlerWithoutAcknowledging()
         {
             MockFeatureConnectionClient connection = new()
             {
@@ -199,11 +199,11 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
                 await receiveTask.WaitAsync(TestContext.Current.CancellationToken);
             }
 
-            Assert.True(args.IsAcknowledged);
+            Assert.False(args.IsAcknowledged);
         }
 
         [Fact]
-        public async Task CloudToDeviceTelemetryReceivedAsync_AwaitsEveryHandlerBeforeAcknowledging()
+        public async Task CloudToDeviceTelemetryReceivedAsync_AwaitsEveryHandlerWithoutAcknowledging()
         {
             MockFeatureConnectionClient connection = new()
             {
@@ -240,7 +240,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
             }
 
             Assert.True(secondHandlerRan);
-            Assert.True(args.IsAcknowledged);
+            Assert.False(args.IsAcknowledged);
         }
 
         [Fact]
@@ -288,6 +288,47 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
             await connection.SimulateReceiveAsync(args);
 
             Assert.False(args.IsAcknowledged);
+        }
+
+        [Theory]
+        [InlineData(false, false)]
+        [InlineData(true, false)]
+        [InlineData(true, true)]
+        public async Task CloudToDeviceMessagesAreAcknowledgedByConnectionRegardlessOfHandler(bool hasHandler, bool handlerThrows)
+        {
+            using MockConnectionMqttClient mqttClient = new();
+            using ConnectionClient connection = new(new() { MqttClient = mqttClient });
+            using TelemetryClient telemetryClient = new(connection);
+            await connection.ConnectToHubAsync(
+                MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv3, DeviceId),
+                TestContext.Current.CancellationToken);
+            MockMqttPublishReceivedEventArgs args = new()
+            {
+                Publish = new()
+                {
+                    Topic = $"devices/{DeviceId}/messages/devicebound/",
+                    QualityOfServiceLevel = MqttQualityOfServiceLevel.AtLeastOnce,
+                },
+            };
+            bool handlerRan = false;
+            int acknowledgementsAtHandlerStart = 0;
+            if (hasHandler)
+            {
+                telemetryClient.CloudToDeviceTelemetryReceivedAsync += _ =>
+                {
+                    handlerRan = true;
+                    acknowledgementsAtHandlerStart = args.AcknowledgeCount;
+                    return handlerThrows
+                        ? Task.FromException(new InvalidOperationException("Handler failed."))
+                        : Task.CompletedTask;
+                };
+            }
+
+            await mqttClient.SimulatePublishReceivedEventAsync(args);
+
+            Assert.Equal(hasHandler, handlerRan);
+            Assert.Equal(hasHandler ? 1 : 0, acknowledgementsAtHandlerStart);
+            Assert.Equal(1, args.AcknowledgeCount);
         }
 
         [Fact]

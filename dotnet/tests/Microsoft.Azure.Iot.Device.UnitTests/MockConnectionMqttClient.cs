@@ -139,11 +139,16 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             }
         }
 
-        public async Task SimulatePublishReceivedAsync(MqttPublish publish)
+        public Task SimulatePublishReceivedAsync(MqttPublish publish)
+        {
+            return SimulatePublishReceivedEventAsync(new MockMqttPublishReceivedEventArgs() { Publish = publish });
+        }
+
+        public async Task SimulatePublishReceivedEventAsync(MqttPublishReceivedEventArgs args)
         {
             if (PublishReceivedAsync != null)
             {
-                await PublishReceivedAsync.Invoke(new MockMqttPublishReceivedEventArgs() { Publish = publish });
+                await PublishReceivedAsync.Invoke(args);
             }
         }
 
