@@ -250,10 +250,6 @@ static void q_drain_all(paho_client* m)
   }
 }
 
-/* Bytes kept of a CONNACK or DISCONNECT Reason String: AZ_IOT_CONN_ERROR_MESSAGE_MAX, all the SDK
- * retains of it. Other Reason Strings are copied whole. */
-#define PAHO_SESSION_REASON_STRING_MAX 128u
-
 /* Copy at most @p maximum_length bytes of the MQTT 5 Reason String in @p properties (NULL: none) to
  * the node: Paho frees the properties when its callback returns. Absent, or out of memory:
  * evt.reason_string stays NULL. */
@@ -288,7 +284,7 @@ static void queued_event_copy_reason_string(
 
 /* Allocate + enqueue a simple status event (no message payload), carrying the
  * code that came off the wire and the MQTT 5 Reason String in @p properties
- * (NULL: none), kept to PAHO_SESSION_REASON_STRING_MAX bytes on CONNECTED and DISCONNECTED. */
+ * (NULL: none), kept to AZ_IOT_MQTT_SESSION_REASON_STRING_MAX bytes on CONNECTED and DISCONNECTED. */
 static void enqueue_status_codes_with_reason_string(
     paho_client* m,
     az_iot_mqtt_event_kind kind,
@@ -312,7 +308,7 @@ static void enqueue_status_codes_with_reason_string(
       n,
       properties,
       (kind == AZ_IOT_MQTT_EVT_CONNECTED || kind == AZ_IOT_MQTT_EVT_DISCONNECTED)
-          ? PAHO_SESSION_REASON_STRING_MAX
+          ? AZ_IOT_MQTT_SESSION_REASON_STRING_MAX
           : SIZE_MAX);
   q_push(m, n);
 }

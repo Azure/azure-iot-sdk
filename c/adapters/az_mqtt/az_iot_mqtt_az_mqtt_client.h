@@ -89,12 +89,6 @@
 /** @brief Span over the bytes of an array of any element type. */
 #define _AZM_SPAN_OF(ARRAY) az_span_create((uint8_t*)(ARRAY), (int32_t)sizeof(ARRAY))
 
-#if AZ_IOT_AZ_MQTT_V == 5
-/** @brief Bytes kept of a CONNACK or server DISCONNECT Reason String:
- * AZ_IOT_CONN_ERROR_MESSAGE_MAX, all the SDK retains. */
-#define _AZM_SESSION_REASON_STRING_SIZE 128
-#endif
-
 /** @brief Native errors kept for the current connect attempt. */
 #define _AZM_NATIVE_MAX 8
 
@@ -141,7 +135,7 @@ typedef struct
   int32_t server_disconnect_code; /* -1: none. */
   /* Reason String of the refused CONNACK or the server DISCONNECT that ends this session, copied:
    * the session-end event is raised after the receive buffer is reused. Length -1: none. */
-  char session_reason_string[_AZM_SESSION_REASON_STRING_SIZE];
+  char session_reason_string[AZ_IOT_MQTT_SESSION_REASON_STRING_MAX];
   int32_t session_reason_string_length;
   uint8_t disconnect_reason_code;
 #endif
@@ -273,13 +267,24 @@ static void _azm_emit_status(
   event.status = status;
   event.protocol_code = protocol_code;
   event.transport_code = transport_code;
+#if AZ_IOT_AZ_MQTT_V == 5
+  /* A refused CONNACK's or the server DISCONNECT's code: its Reason String goes with it. */
+  bool const from_session_end_packet = (kind == AZ_IOT_MQTT_EVT_CONNECTED && protocol_code != 0)
+      || (kind == AZ_IOT_MQTT_EVT_DISCONNECTED && m->server_disconnect_code >= 0
+          && protocol_code == m->server_disconnect_code);
+  if (from_session_end_packet && m->session_reason_string_length >= 0)
+  {
+    event.reason_string = m->session_reason_string;
+    event.reason_string_len = (size_t)m->session_reason_string_length;
+  }
+#endif
   _azm_emit(m, &event);
 }
 
 #if AZ_IOT_AZ_MQTT_V == 5
 /**
  * @brief Copy @p reason_string to session_reason_string, truncated to
- * _AZM_SESSION_REASON_STRING_SIZE bytes. az_span_ptr() NULL: the packet carried none.
+ * AZ_IOT_MQTT_SESSION_REASON_STRING_MAX bytes. az_span_ptr() NULL: the packet carried none.
  */
 static void _azm_keep_session_reason_string(_azm_client* m, az_span reason_string)
 {
@@ -300,26 +305,6 @@ static void _azm_keep_session_reason_string(_azm_client* m, az_span reason_strin
   m->session_reason_string_length = length;
 }
 
-/** @brief Emit the event ending a session refused by its CONNACK or ended by a server DISCONNECT,
- * with that packet's Reason String. */
-static void _azm_emit_session_end(
-    _azm_client* m,
-    az_iot_mqtt_event_kind kind,
-    az_iot_result status,
-    int32_t protocol_code)
-{
-  az_iot_mqtt_event event;
-  memset(&event, 0, sizeof(event));
-  event.kind = kind;
-  event.status = status;
-  event.protocol_code = protocol_code;
-  if (m->session_reason_string_length >= 0)
-  {
-    event.reason_string = m->session_reason_string;
-    event.reason_string_len = (size_t)m->session_reason_string_length;
-  }
-  _azm_emit(m, &event);
-}
 #endif
 
 // ──────────────────────── az_mqtt callbacks ──────────────────
@@ -395,20 +380,12 @@ static void _azm_on_connection_closed(_AZM(client) * client, az_result reason)
   {
     if (m->connack_received && m->connack_code != 0)
     {
-#if AZ_IOT_AZ_MQTT_V == 5
-      _azm_emit_session_end(
-          m,
-          AZ_IOT_MQTT_EVT_CONNECTED,
-          az_iot_mqtt_connack_result(_AZM_VERSION, (int)m->connack_code),
-          m->connack_code);
-#else
       _azm_emit_status(
           m,
           AZ_IOT_MQTT_EVT_CONNECTED,
           az_iot_mqtt_connack_result(_AZM_VERSION, (int)m->connack_code),
           m->connack_code,
           0);
-#endif
     }
     else
     {
@@ -427,11 +404,12 @@ static void _azm_on_connection_closed(_AZM(client) * client, az_result reason)
 #if AZ_IOT_AZ_MQTT_V == 5
     if (m->server_disconnect_code >= 0)
     {
-      _azm_emit_session_end(
+      _azm_emit_status(
           m,
           AZ_IOT_MQTT_EVT_DISCONNECTED,
           az_iot_mqtt_disconnect_result(_AZM_VERSION, (int)m->server_disconnect_code),
-          m->server_disconnect_code);
+          m->server_disconnect_code,
+          0);
       return;
     }
 #endif

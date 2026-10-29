@@ -12,6 +12,10 @@
 
 #include "az_iot_result.h"
 
+/** @brief Bytes an adapter keeps of a CONNACK or server DISCONNECT Reason String: all the SDK
+ * retains (AZ_IOT_CONN_ERROR_MESSAGE_MAX). */
+#define AZ_IOT_MQTT_SESSION_REASON_STRING_MAX 128
+
 #ifdef __cplusplus
 extern "C"
 {
@@ -436,8 +440,8 @@ extern "C"
      * - AZ_IOT_MQTT_EVT_CONNECTED reporting a refused CONNACK, when its MQTT library exposes it
      *   (Paho's does not).
      * NULL for other event kinds. For CONNECTED and DISCONNECTED only, an adapter that copies it
-     * may keep only its first 128 bytes (AZ_IOT_CONN_ERROR_MESSAGE_MAX), all the SDK retains;
-     * other kinds carry it whole. */
+     * may keep only its first AZ_IOT_MQTT_SESSION_REASON_STRING_MAX bytes; other kinds carry it
+     * whole. */
     const char* reason_string;
     size_t reason_string_len;
   } az_iot_mqtt_event;
