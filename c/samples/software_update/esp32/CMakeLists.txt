@@ -9,13 +9,12 @@
 #   idf.py set-target esp32
 #   idf.py build flash monitor
 #
-# The azure-iot-sdk SDK is pulled in as a local ESP-IDF component that lives in
-# components/azure-iot-sdk and compiles the SDK sources straight out of this repo.
+# The SDK, azure-sdk-for-c, the mbedTLS crypto backend and the OTA hooks are
+# ESP-IDF components in c/platforms/esp32/components, compiled from this repo.
 
 cmake_minimum_required(VERSION 3.16)
 
-# Make the in-repo SDK component visible to the IDF build system.
-set(EXTRA_COMPONENT_DIRS "${CMAKE_CURRENT_LIST_DIR}/components")
+set(EXTRA_COMPONENT_DIRS "${CMAKE_CURRENT_LIST_DIR}/../../../platforms/esp32/components")
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 
