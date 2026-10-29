@@ -61,6 +61,11 @@ extern "C"
      * key; the rust_mqtt adapter has no TLS credential handling at all. */
     const char* client_key_uri; /* may be NULL; e.g. "pkcs11:token=...;object=..." */
     const char* crypto_engine_id; /* may be NULL; OpenSSL ENGINE/provider id: "pkcs11", "tpm2" */
+    /** PSA Crypto key id of a non-extractable client key (mbedTLS), e.g. on ESP-IDF v6
+     * the Digital Signature peripheral; 0: none. With it, client_key_pem/path/uri are
+     * NULL. Honoured by the az_mqtt adapter with mbedTLS; other adapters fail the
+     * connect with AZ_IOT_ERR_NOT_SUPPORTED. */
+    uint32_t client_key_psa_id;
   } az_iot_certificate_material;
 
   /* PKCS#10 certificate signing request produced by the provider. Base64-encoded

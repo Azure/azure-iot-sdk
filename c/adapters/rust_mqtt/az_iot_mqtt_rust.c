@@ -67,7 +67,8 @@ static az_iot_result rust_iface_connect(
    * unconditional until one is added together with runtime support. */
   if (opts != NULL
       && (opts->transport != AZ_IOT_MQTT_TRANSPORT_TCP
-          || (opts->proxy.host != NULL && opts->proxy.host[0] != '\0')))
+          || (opts->proxy.host != NULL && opts->proxy.host[0] != '\0')
+          || opts->tls.client_key_psa_id != 0))
   {
     return AZ_IOT_ERR_NOT_SUPPORTED;
   }

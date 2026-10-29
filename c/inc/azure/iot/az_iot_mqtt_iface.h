@@ -291,6 +291,10 @@ extern "C"
     const char* crypto_engine_id; /* OpenSSL ENGINE/provider id: "pkcs11", "tpm2" */
     az_iot_mqtt_sign_callback sign; /* may be NULL */
     void* sign_ctx; /* opaque, passed back to sign() */
+    /* PSA Crypto key id of a non-extractable client key (mbedTLS); 0: none. A
+     * third custody route: an adapter that cannot use it fails the connect with
+     * AZ_IOT_ERR_NOT_SUPPORTED. */
+    uint32_t client_key_psa_id;
   } az_iot_mqtt_tls_options;
 
   /* Options for az_iot_mqtt_iface::connect(). This struct and every pointer in

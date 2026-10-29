@@ -123,6 +123,30 @@ static void connect_refuses_malformed_pointer_count_pairs(void** state)
   }
 }
 
+static void a_psa_client_key_is_refused_unless_alone_on_mbedtls(void** state)
+{
+  (void)state;
+  az_iot_mqtt_factory* f = az_iot_az_mqtt_factory_create_v5();
+  az_iot_mqtt_client* c = f->create(f->factory_ctx);
+  assert_non_null(c);
+  az_iot_mqtt_connect_options o = valid_connect();
+  o.tls.client_cert_pem = "CERT";
+  o.tls.client_key_psa_id = 0x7FFF0001u;
+  o.tls.client_key_pem = "KEY";
+#if defined(AZ_IOT_AZ_MQTT_MBEDTLS)
+  assert_int_equal(c->iface->connect(c, &o), AZ_IOT_ERR_INVALID_ARG);
+  o.tls.client_key_pem = NULL;
+  o.tls.client_key_uri = "pkcs11:object=k";
+  o.tls.crypto_engine_id = "pkcs11";
+  assert_int_equal(c->iface->connect(c, &o), AZ_IOT_ERR_INVALID_ARG);
+#else
+  o.tls.client_key_pem = NULL;
+  assert_int_equal(c->iface->connect(c, &o), AZ_IOT_ERR_NOT_SUPPORTED);
+#endif
+  c->iface->destroy(c);
+  az_iot_az_mqtt_factory_destroy(f);
+}
+
 static void invalid_qos_and_v3_password_without_user_are_refused(void** state)
 {
   (void)state;
@@ -849,6 +873,7 @@ int main(void)
     cmocka_unit_test(codec_refuses_a_reader_that_does_not_advance),
     cmocka_unit_test(a_registered_factory_is_destroyed_by_the_application_after_deinit),
     cmocka_unit_test(connect_refuses_malformed_pointer_count_pairs),
+    cmocka_unit_test(a_psa_client_key_is_refused_unless_alone_on_mbedtls),
     cmocka_unit_test(invalid_qos_and_v3_password_without_user_are_refused),
     cmocka_unit_test(a_connect_larger_than_the_send_buffer_fails_the_attempt),
     cmocka_unit_test(a_connect_the_encoder_refuses_fails_the_attempt),

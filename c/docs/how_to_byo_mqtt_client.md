@@ -148,7 +148,7 @@ Two obligations, and only one of them is a choice.
 
 **Copy TLS material during `connect()`.** Like `username` and `password`, the `tls` strings are valid only while `connect()` runs: the SDK then releases them to the certificate provider, which may wipe `client_key_pem` and `client_key_password`. `tls.sign` and `tls.sign_ctx` are the exception: they stay valid until the adapter client is destroyed, so the handshake may call `sign()` after `connect()` returns. Call `sign()` only from inside `connect()` or `process_loop()`, on the thread that drives the client; a client whose handshake runs on its own thread must not accept a `sign()`-only credential. Conformance: `mutual_tls_does_not_read_paths_after_returning`, and `mutual_tls_does_not_read_pem_after_returning` for `AZ_IOT_CONFORMANCE_CAP_TLS_PEM` (4.5).
 
-**Non-extractable keys.** If `tls.client_key_uri` or `tls.sign` is set, the caller is asking you to authenticate with a private key that cannot be read. Honour it, or fail the connect with `AZ_IOT_ERR_NOT_SUPPORTED`. What you must never do is connect *without* the credential you were asked to use — the conformance suite checks this whether or not you claim the feature. See 4.4.
+**Non-extractable keys.** If `tls.client_key_uri`, `tls.client_key_psa_id` or `tls.sign` is set, the caller is asking you to authenticate with a private key that cannot be read. Honour it, or fail the connect with `AZ_IOT_ERR_NOT_SUPPORTED`. What you must never do is connect *without* the credential you were asked to use — the conformance suite checks this whether or not you claim the feature. See 4.4.
 
 ## Step 2 — Implement the factory
 
