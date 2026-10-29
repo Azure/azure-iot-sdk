@@ -4427,6 +4427,7 @@ static void dps_apply_deferred(az_iot_connection_client* c)
    * clients drop what belongs to the previous identity first. */
   if (identity_changed)
   {
+    ++c->identity_changes;
     notify_feature_observers_of(c, AZ_IOT_CONNECTION_FEATURE_EVENT_IDENTITY_CHANGED);
   }
 

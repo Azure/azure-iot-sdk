@@ -337,6 +337,12 @@ static void for_each_entry(
   }
 }
 
+/** @brief Whether @p e was submitted before the latest identity change. */
+static bool is_for_a_previous_identity(az_iot_delivery_tracker_entry* e)
+{
+  return EI(e).identity != TI(EI(e).tracker).connection->identity_changes;
+}
+
 static void lose_without_detail(az_iot_delivery_tracker_entry* e) { lose(e, NULL); }
 
 static void discard(az_iot_delivery_tracker_entry* e)
@@ -399,7 +405,7 @@ static void on_connection_event(const az_iot_connection_feature_event* event, vo
       for_each_entry(t, ENTRY_AWAITING_RESPONSE, NULL, lose_without_detail);
       break;
     case AZ_IOT_CONNECTION_FEATURE_EVENT_IDENTITY_CHANGED:
-      for_each_entry(t, ENTRY_FREE, NULL, discard);
+      for_each_entry(t, ENTRY_FREE, is_for_a_previous_identity, discard);
       break;
     case AZ_IOT_CONNECTION_FEATURE_EVENT_NEXT_DEADLINE:
       lower_remaining_to_next_action(t, event->remaining_ms);
@@ -535,6 +541,7 @@ az_iot_result az_iot_delivery_tracker__submit(
   EI(e).tracker = tracker;
   EI(e).profile = profile;
   EI(e).sequence = TI(tracker).next_sequence++;
+  EI(e).identity = TI(tracker).connection->identity_changes;
   if (correlation_id_length != 0u)
   {
     memcpy(EI(e).correlation_id, correlation_id, correlation_id_length);

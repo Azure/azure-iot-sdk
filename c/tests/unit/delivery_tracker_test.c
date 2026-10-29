@@ -54,6 +54,7 @@ typedef struct fixture
   const az_iot_delivery_tracker_profile* submit_two_on_complete;
   bool rebind_first;
   bool refuse_sends_on_complete; /* With it: the adapter refuses both submits' sends (BUSY). */
+  az_iot_delivery_tracker* submit_target; /* Where submit_two_on_complete submits; NULL: tracker. */
 } fixture;
 
 static const uint8_t k_guaranteed[] = { 1u }; /* One slot kept for priority 0. */
@@ -108,7 +109,14 @@ static void on_complete(
     {
       size_t index = 0;
       assert_int_equal(
-          az_iot_delivery_tracker__submit(&fx->tracker, profile, &id, 1u, 0u, &index), AZ_IOT_OK);
+          az_iot_delivery_tracker__submit(
+              fx->submit_target != NULL ? fx->submit_target : &fx->tracker,
+              profile,
+              &id,
+              1u,
+              0u,
+              &index),
+          AZ_IOT_OK);
     }
   }
   if (fx->unbind_on_complete)
@@ -441,22 +449,23 @@ static void priority_zero_keeps_its_guaranteed_slot(void** state)
   assert_string_equal(last_publish(fx)->topic, "t/1");
 }
 
-/* Deliver IDENTITY_CHANGED to the tracker's observer, as dps_apply_deferred() does. */
+/* Count an identity change and tell the IDENTITY_CHANGED observers in registration order, as
+ * dps_apply_deferred() does. */
 static void signal_identity_change(fixture* fx)
 {
-  const az_iot_connection_feature_observer* observer = NULL;
-  for (size_t i = 0; i < fx->connection.opts.limits.max_feature_observers; ++i)
-  {
-    observer = fx->connection.feature_observers[i].user_ctx == &fx->tracker
-        ? &fx->connection.feature_observers[i]
-        : observer;
-  }
-  assert_non_null(observer);
-  assert_true(observer->events & AZ_IOT_CONNECTION_FEATURE_EVENT_IDENTITY_CHANGED);
+  ++fx->connection.identity_changes;
   az_iot_connection_feature_event const event = {
     AZ_IOT_CONNECTION_FEATURE_EVENT_IDENTITY_CHANGED, NULL, AZ_IOT_CONNECTION_SESSION_END_LOST, NULL
   };
-  observer->cb(&event, observer->user_ctx);
+  for (size_t i = 0; i < fx->connection.opts.limits.max_feature_observers; ++i)
+  {
+    const az_iot_connection_feature_observer* observer = &fx->connection.feature_observers[i];
+    if (observer->cb != NULL
+        && (observer->events & AZ_IOT_CONNECTION_FEATURE_EVENT_IDENTITY_CHANGED))
+    {
+      observer->cb(&event, observer->user_ctx);
+    }
+  }
 }
 
 /* An identity change discards every message. */
@@ -824,6 +833,26 @@ static void a_nested_refusal_ends_the_outer_flush(void** state)
   assert_int_equal(publish_count(fx), 3); /* t/0, then t/1 refused twice. */
   assert_int_equal(fx->completion_count, 1);
 }
+
+/* A replacement an on_complete submits to a tracker told of the identity change later is kept:
+ * the boundary is set before any observer runs. */
+static void an_identity_change_keeps_replacements_in_a_later_tracker(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_delivery_tracker later;
+  az_iot_delivery_tracker_entry later_entries[2];
+  assert_int_equal(
+      az_iot_delivery_tracker__init(&later, later_entries, 2u, 0u, NULL, 0u, fx), AZ_IOT_OK);
+  assert_int_equal(az_iot_delivery_tracker__bind(&later, &fx->connection), AZ_IOT_OK);
+  (void)submit(fx, &k_resend, 1u, 0u);
+  fx->submit_two_on_complete = &k_resend;
+  fx->submit_target = &later;
+  signal_identity_change(fx);
+  assert_int_equal(fx->completion_count, 1);
+  assert_non_null(later_entries[0]._internal.profile);
+  assert_non_null(later_entries[1]._internal.profile);
+  az_iot_delivery_tracker__unbind(&later);
+}
 /* A send the adapter refuses does not hold back the message a PUBACK error requeued: it goes out
  * from the next do_work(). */
 static void a_busy_adapter_does_not_hold_back_a_requeued_message(void** state)
@@ -924,6 +953,8 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         a_slot_freed_elsewhere_is_used_without_waiting, setup, teardown),
     cmocka_unit_test_setup_teardown(a_nested_refusal_ends_the_outer_flush, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        an_identity_change_keeps_replacements_in_a_later_tracker, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_busy_adapter_does_not_hold_back_a_requeued_message, setup, teardown),
     cmocka_unit_test_setup_teardown(arguments_capacity_and_binding, setup, teardown),

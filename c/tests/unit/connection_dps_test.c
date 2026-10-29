@@ -490,6 +490,7 @@ static void reprovisioning_connects_to_the_new_assignment(void** state)
 
 typedef struct identity_log
 {
+  const az_iot_connection_client* client;
   int identity_changes;
   int identity_changes_seen_by_assignment;
 } identity_log;
@@ -497,7 +498,10 @@ typedef struct identity_log
 static void count_identity_change(const az_iot_connection_feature_event* event, void* user_ctx)
 {
   assert_int_equal(event->kind, AZ_IOT_CONNECTION_FEATURE_EVENT_IDENTITY_CHANGED);
-  ++((identity_log*)user_ctx)->identity_changes;
+  identity_log* log = (identity_log*)user_ctx;
+  /* Counted before any observer runs. */
+  assert_int_equal(log->client->identity_changes, (uint32_t)log->identity_changes + 1u);
+  ++log->identity_changes;
 }
 
 static void note_assignment(const az_iot_dps_assignment* assignment, void* user_ctx)
@@ -514,6 +518,7 @@ static void a_different_assignment_reports_an_identity_change(void** state)
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
   use_reprovision_mode(fx);
   identity_log log = { 0 };
+  log.client = fx->client;
   assert_int_equal(
       az_iot_connection_client__add_feature_observer(
           fx->client,
