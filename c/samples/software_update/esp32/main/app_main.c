@@ -20,8 +20,9 @@
  * the regular route. After connecting it checks every SU_POLL_INTERVAL_S.
  *
  * Configure Wi-Fi + DPS via `idf.py menuconfig` (see Kconfig.projbuild). The
- * device certificate/key (and optionally the CA) are compiled into the firmware
- * from main/certs/ (EMBED_TXTFILES).
+ * device certificate and key come from the esp_secure_cert partition; on chips
+ * with the Digital Signature peripheral the key never leaves it. An optional
+ * server CA is compiled in from main/certs/trusted_ca.pem (EMBED_TXTFILES).
  */
 #include <stdbool.h>
 #include <stddef.h>
@@ -42,16 +43,14 @@
 
 #include "su_version.h"
 #include "wifi_connect.h"
-#include "az_iot_cert_embedded.h"
+#include "az_iot_certificate_provider_esp_secure_cert.h"
 #include "az_iot_crypto_mbedtls.h"
 #include "az_iot_su_esp32_ota.h"
 
 static const char* TAG = "su_esp32";
 
-/* PEM material compiled into the firmware (see main/CMakeLists.txt EMBED_TXTFILES).
- * Text embedding NUL-terminates each blob, so the *_start symbol is a C string. */
-extern const char device_cert_pem_start[] asm("_binary_device_cert_pem_start");
-extern const char device_key_pem_start[] asm("_binary_device_key_pem_start");
+/* Server CA compiled into the firmware (see main/CMakeLists.txt EMBED_TXTFILES).
+ * Text embedding NUL-terminates it, so the *_start symbol is a C string. */
 extern const char trusted_ca_pem_start[] asm("_binary_trusted_ca_pem_start");
 
 /* ------------------------------------------------------------------------- */
@@ -259,12 +258,17 @@ void app_main(void)
   az_iot_log_sink log = az_iot_log_stderr_sink(AZ_IOT_LOG_LEVEL_INFO);
   az_iot_log_set_global_sink(&log);
 
-  /* Certificate provider: hands the SDK the embedded PEM material. certs/trusted_ca.pem
-   * holds a CA only if it starts with "-----BEGIN"; with no CA, the MQTT adapter trusts the
-   * ESP-IDF certificate bundle. */
+  /* Certificate provider: the device certificate and key from the esp_secure_cert partition.
+   * certs/trusted_ca.pem holds a CA only if it starts with "-----BEGIN"; with no CA, the MQTT
+   * adapter trusts the ESP-IDF certificate bundle. Never deinitialized: conn uses it until the
+   * task ends, which it never does. */
   const char* trusted_ca_pem = trusted_ca_pem_start[0] == '-' ? trusted_ca_pem_start : NULL;
-  az_iot_cert_embedded certs;
-  az_iot_cert_embedded_init(&certs, trusted_ca_pem, device_cert_pem_start, device_key_pem_start);
+  static az_iot_certificate_provider_esp_secure_cert certs;
+  if (az_iot_certificate_provider_esp_secure_cert_init(&certs, trusted_ca_pem) != AZ_IOT_OK)
+  {
+    ESP_LOGE(TAG, "no device certificate in the esp_secure_cert partition; see README");
+    esp_restart();
+  }
 
   /* Connection client: DPS provisioning + X.509, mbedTLS crypto. */
   az_iot_connection_client_options copts = az_iot_connection_client_options_default();

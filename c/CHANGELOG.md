@@ -288,6 +288,13 @@
 - az_mqtt adapter on ESP-IDF (`azure-iot-sdk-az-mqtt` component): with no trusted CA it verifies
   the server against the ESP-IDF certificate bundle. The ESP32 software updates sample uses it
   instead of its own esp-mqtt adapter, and no longer depends on `espressif/mqtt`.
+- ESP-IDF certificate provider over the `esp_secure_cert` partition
+  (`azure-iot-sdk-certificate-provider-esp-secure-cert`, `espressif/esp_secure_cert_mgr` 2.9.3):
+  `az_iot_certificate_provider_esp_secure_cert_init()`. With the Digital Signature peripheral the
+  key is a PSA key (`client_key_psa_id`); otherwise the partition's PEM key, read per connection.
+  The ESP32 software updates sample uses it instead of a certificate and key compiled into the
+  image; its partition tables gain `esp_secure_cert` (0xD000; 0x11000 in the security profile),
+  so devices running an earlier build of the sample must be reflashed over serial.
 
 ### Bugs Fixed
 
