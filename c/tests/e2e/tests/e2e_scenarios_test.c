@@ -119,7 +119,15 @@ static void wait_for_subscription_acks(e2e_fixture* fx)
   {
     device_do_work(fx, E2E_PUMP_MS);
   }
-  assert_true(subscriptions_live(fx));
+  if (!subscriptions_live(fx))
+  {
+    fail_msg(
+        "subscriptions not live after %d s: hub %s, %zu SUBSCRIBE(s) unacknowledged",
+        E2E_SUBACK_TIMEOUT_S,
+        az_iot_connection_state_to_string(
+            az_iot_connection_client_get_state(&fx->dev.conn, AZ_IOT_CONN_SCOPE_HUB)),
+        fx->dev.conn.subscription_gate.pending_count);
+  }
 }
 
 /* ---- unique correlation markers ------------------------------------------- */
