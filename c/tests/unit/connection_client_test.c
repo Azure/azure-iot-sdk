@@ -2787,7 +2787,7 @@ static void a_tracked_publish_has_a_handle(void** state)
       az_iot_connection_client__publish_with_result(
           fx->client, NULL, &msg, count_publish_result, &completions, &handle),
       AZ_IOT_OK);
-  assert_int_not_equal(handle.generation, 0);
+  assert_int_not_equal(handle.id, 0);
   assert_true(handle.slot < AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_PENDING_PUBLISHES);
 
   msg.qos = AZ_IOT_MQTT_QOS_0;
@@ -2795,13 +2795,13 @@ static void a_tracked_publish_has_a_handle(void** state)
       az_iot_connection_client__publish_with_result(
           fx->client, NULL, &msg, count_publish_result, &completions, &handle),
       AZ_IOT_OK);
-  assert_int_equal(handle.generation, 0);
+  assert_int_equal(handle.id, 0);
 
   assert_int_equal(
       az_iot_connection_client__publish_with_result(
           fx->client, NULL, NULL, count_publish_result, &completions, &handle),
       AZ_IOT_ERR_INVALID_ARG);
-  assert_int_equal(handle.generation, 0);
+  assert_int_equal(handle.id, 0);
 }
 
 /* A forgotten publish frees its slot and its late PUBACK calls nothing. */
@@ -2854,7 +2854,7 @@ static void a_stale_handle_does_not_forget_a_reused_slot(void** state)
           fx->client, NULL, &msg, count_publish_result, &second, &current),
       AZ_IOT_OK);
   assert_int_equal(current.slot, stale.slot);
-  assert_int_not_equal(current.generation, stale.generation);
+  assert_int_not_equal(current.id, stale.id);
   pid = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_PUBLISH)->packet_id;
 
   az_iot_connection_client__forget_publish(fx->client, stale);
@@ -2869,8 +2869,8 @@ static void a_stale_handle_does_not_forget_a_reused_slot(void** state)
   az_iot_connection_client__forget_publish(NULL, current);
 }
 
-/* The 64-bit generation wraps to 1, never to 0 (no tracked publish). */
-static void the_publish_generation_skips_zero_when_it_wraps(void** state)
+/* The 64-bit publish id wraps to 1, never to 0 (no tracked publish). */
+static void the_publish_id_skips_zero_when_it_wraps(void** state)
 {
   fixture* fx = *state;
   (void)connect_fixture(fx);
@@ -2878,19 +2878,19 @@ static void the_publish_generation_skips_zero_when_it_wraps(void** state)
   az_iot_mqtt_message msg = { 0 };
   msg.topic = "t";
   msg.qos = AZ_IOT_MQTT_QOS_1;
-  fx->client->next_publish_generation = UINT64_MAX;
+  fx->client->next_publish_id = UINT64_MAX;
   az_iot_publish_handle last = { 0 };
   assert_int_equal(
       az_iot_connection_client__publish_with_result(
           fx->client, NULL, &msg, count_publish_result, &completions, &last),
       AZ_IOT_OK);
-  assert_true(last.generation == UINT64_MAX);
+  assert_true(last.id == UINT64_MAX);
   az_iot_publish_handle wrapped = { 0 };
   assert_int_equal(
       az_iot_connection_client__publish_with_result(
           fx->client, NULL, &msg, count_publish_result, &completions, &wrapped),
       AZ_IOT_OK);
-  assert_true(wrapped.generation == 1u);
+  assert_true(wrapped.id == 1u);
 }
 
 /* MQTTv5 requires MQTT v5. With only a v3.1.1 factory registered there is no
@@ -4493,8 +4493,7 @@ int main(void)
     cmocka_unit_test_setup_teardown(a_forgotten_publish_is_not_completed, setup_csr, teardown),
     cmocka_unit_test_setup_teardown(
         a_stale_handle_does_not_forget_a_reused_slot, setup_csr, teardown),
-    cmocka_unit_test_setup_teardown(
-        the_publish_generation_skips_zero_when_it_wraps, setup_csr, teardown),
+    cmocka_unit_test_setup_teardown(the_publish_id_skips_zero_when_it_wraps, setup_csr, teardown),
     cmocka_unit_test_setup_teardown(
         send_csr_subscribes_the_credentials_response_filter, setup_csr, teardown),
     cmocka_unit_test_setup_teardown(

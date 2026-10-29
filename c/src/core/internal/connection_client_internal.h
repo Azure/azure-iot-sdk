@@ -403,20 +403,20 @@ extern "C"
   /**
    * @brief One tracked publish awaiting its PUBACK.
    *
-   * Stale once the publish completes or is forgotten: a slot reused by a later publish gets a new
-   * generation, so a stale handle never names it.
+   * Stale once the publish completes or is forgotten: ids are unique per client (64-bit, never 0),
+   * so a stale handle never names a later publish that reuses the slot.
    */
   typedef struct az_iot_publish_handle
   {
     size_t slot; /**< Index into pending_pubacks. */
-    uint64_t generation; /**< 0: no tracked publish. */
+    uint64_t id; /**< 0: no tracked publish. */
   } az_iot_publish_handle;
 
   /**
    * @brief As az_iot_connection_client__publish(), completing through @p result_cb with the
    * PUBACK's reason code and Reason String.
    *
-   * @param[out] out_handle Optional. The tracked publish; generation 0 when the publish is not
+   * @param[out] out_handle Optional. The tracked publish; id 0 when the publish is not
    *             tracked (QoS 0, no @p result_cb) or failed.
    */
   az_iot_result az_iot_connection_client__publish_with_result(

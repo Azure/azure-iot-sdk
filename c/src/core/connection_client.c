@@ -6732,7 +6732,7 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_init(
   }
   /* Seed jitter PRNG; tests can overwrite via the internal seed entry point
    * if they need determinism. */
-  client->next_publish_generation = 1u;
+  client->next_publish_id = 1u;
   client->rng_state = az_iot_time_mono_ms() ^ 0xA5A5C3C3DEADBEEFull;
   if (client->rng_state == 0)
   {
@@ -8875,7 +8875,7 @@ static az_iot_result publish_tracked(
   if (out_handle)
   {
     out_handle->slot = 0;
-    out_handle->generation = 0;
+    out_handle->id = 0;
   }
   if (!client || !msg)
   {
@@ -8907,7 +8907,7 @@ static az_iot_result publish_tracked(
     client->pending_pubacks[slot].result_cb = NULL;
     client->pending_pubacks[slot].user_ctx = NULL;
     client->pending_pubacks[slot].reservation = pool;
-    client->pending_pubacks[slot].generation = 0;
+    client->pending_pubacks[slot].publish_id = 0;
     client->pending_pubacks[slot].in_use = true;
   }
 
@@ -8924,13 +8924,13 @@ static az_iot_result publish_tracked(
     client->pending_pubacks[slot].cb = ack_cb;
     client->pending_pubacks[slot].result_cb = result_cb;
     client->pending_pubacks[slot].user_ctx = user_ctx;
-    client->pending_pubacks[slot].generation = client->next_publish_generation;
-    client->next_publish_generation
-        = client->next_publish_generation == UINT64_MAX ? 1u : client->next_publish_generation + 1u;
+    client->pending_pubacks[slot].publish_id = client->next_publish_id;
+    client->next_publish_id
+        = client->next_publish_id == UINT64_MAX ? 1u : client->next_publish_id + 1u;
     if (out_handle)
     {
       out_handle->slot = slot;
-      out_handle->generation = client->pending_pubacks[slot].generation;
+      out_handle->id = client->pending_pubacks[slot].publish_id;
     }
     return AZ_IOT_OK;
   }
@@ -8973,13 +8973,12 @@ void az_iot_connection_client__forget_publish(
     az_iot_connection_client* client,
     az_iot_publish_handle handle)
 {
-  if (client == NULL || handle.generation == 0u
-      || handle.slot >= client->opts.limits.max_pending_publishes)
+  if (client == NULL || handle.id == 0u || handle.slot >= client->opts.limits.max_pending_publishes)
   {
     return;
   }
   az_iot_connection_pending_publish* p = &client->pending_pubacks[handle.slot];
-  if (p->in_use && p->generation == handle.generation)
+  if (p->in_use && p->publish_id == handle.id)
   {
     memset(p, 0, sizeof(*p));
   }
