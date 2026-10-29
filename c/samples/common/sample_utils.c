@@ -241,6 +241,11 @@ static FILE* open_private(const char* path, bool exclusive)
     (void)close(fd);
   }
 #endif
+  if (!f && exclusive)
+  {
+    /* Created by this call: an empty file would block later attempts. */
+    (void)remove(path);
+  }
   return f;
 }
 
