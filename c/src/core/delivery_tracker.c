@@ -193,7 +193,8 @@ static az_iot_result try_send(az_iot_delivery_tracker* t, az_iot_delivery_tracke
   az_iot_publish_handle handle = { 0 };
   result = az_iot_connection_client__publish_with_result(
       TI(t).connection, t, &message, track ? on_publish_result : NULL, track ? e : NULL, &handle);
-  if (result == AZ_IOT_ERR_INVALID_ARG)
+  /* INVALID_ARG, or NOT_ENOUGH_SPACE (az_mqtt: too large to send), is final for this message. */
+  if (result == AZ_IOT_ERR_INVALID_ARG || result == AZ_IOT_ERR_NOT_ENOUGH_SPACE)
   {
     AZ_IOT_LOG_ERRORF(
         AZ_IOT_LOG_COMPONENT_CONNECTION,
@@ -253,7 +254,7 @@ static bool held_back(const az_iot_delivery_tracker* t, const az_iot_delivery_tr
 
 /**
  * @brief Send queued messages by priority, then submit order, until the connection refuses
- *        one (any send error but AZ_IOT_ERR_INVALID_ARG, which discards only that message).
+ *        one (any send error but INVALID_ARG or NOT_ENOUGH_SPACE, which discard that message).
  * @param skip_requeued Leave out the messages held_back() holds.
  */
 static void flush(az_iot_delivery_tracker* t, bool skip_requeued)
@@ -354,10 +355,10 @@ static void lower_remaining_to_next_action(const az_iot_delivery_tracker* t, uin
     const az_iot_delivery_tracker_entry* e = &TI(t).entries[i];
     uint64_t left = EI(e).state == ENTRY_FREE ? UINT64_MAX
                                               : az_iot_deadline__remaining_ms(&EI(e).deadline, now);
-    if (EI(e).state == ENTRY_QUEUED
-        && (EI(e).held_for_resend != 0u
-                ? (uint32_t)(TI(t).tick_count - EI(e).held_at_tick) == 1u
-                : can_send_now && may_take_slot(t, EI(e).profile->priority)))
+    /* A held back message is sendable from the TICK where held_back() turns false. */
+    if (EI(e).state == ENTRY_QUEUED && can_send_now
+        && (EI(e).held_for_resend == 0u || TI(t).tick_count != EI(e).held_at_tick)
+        && may_take_slot(t, EI(e).profile->priority))
     {
       left = 0u;
     }

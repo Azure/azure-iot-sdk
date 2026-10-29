@@ -54,8 +54,8 @@ extern "C"
     AZ_IOT_DELIVERY_TRACKER_OUTCOME_REFUSED, /**< The hub refused the PUBLISH. */
     AZ_IOT_DELIVERY_TRACKER_OUTCOME_EXPIRED, /**< Its time limit passed. */
     AZ_IOT_DELIVERY_TRACKER_OUTCOME_SESSION_LOST, /**< Policy FAIL or DROP. */
-    /** Not sendable (encode() failed, or the adapter returned AZ_IOT_ERR_INVALID_ARG), or the
-     * device identity changed. */
+    /** Not sendable (encode() failed, or the adapter returned AZ_IOT_ERR_INVALID_ARG or
+     * AZ_IOT_ERR_NOT_ENOUGH_SPACE), or the device identity changed. */
     AZ_IOT_DELIVERY_TRACKER_OUTCOME_DISCARDED,
   } az_iot_delivery_tracker_outcome;
 

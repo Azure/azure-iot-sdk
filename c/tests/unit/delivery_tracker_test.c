@@ -598,8 +598,8 @@ static void a_later_observer_submit_does_not_resend_a_requeued_message(void** st
   az_iot_delivery_tracker__unbind(&second);
 }
 
-/* A message the adapter cannot send (AZ_IOT_ERR_INVALID_ARG) is discarded; the ones after it
- * still go. */
+/* A message the adapter cannot send (AZ_IOT_ERR_INVALID_ARG, or AZ_IOT_ERR_NOT_ENOUGH_SPACE when
+ * it is too large) is discarded; the ones after it still go, and the wait is not shortened. */
 static void an_unsendable_message_is_discarded(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -612,6 +612,14 @@ static void an_unsendable_message_is_discarded(void** state)
   assert_string_equal(last_publish(fx)->topic, "t/1");
   assert_int_equal(fx->completion_count, 1);
   assert_completed(fx, 0, unsendable, AZ_IOT_DELIVERY_TRACKER_OUTCOME_DISCARDED);
+
+  fx->failing_sends = 1;
+  fx->failing_send_result = AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+  size_t const too_large = submit(fx, &k_resend, 3u, 60000u);
+  assert_completed(fx, 1, too_large, AZ_IOT_DELIVERY_TRACKER_OUTCOME_DISCARDED);
+  (void)az_iot_connection_client_do_work(&fx->connection, UINT32_MAX);
+  assert_true(
+      az_iot_mock_mqtt_client_last_of(fx->mock, AZ_IOT_MOCK_CALL_PROCESS_LOOP)->timeout_ms > 1000u);
 }
 
 /* Any other send error refuses like BUSY: the wait is not shortened, and the TICK of the next
@@ -766,6 +774,25 @@ static void a_slot_freed_elsewhere_is_used_without_waiting(void** state)
   assert_int_equal(
       az_iot_mock_mqtt_client_last_of(fx->mock, AZ_IOT_MOCK_CALL_PROCESS_LOOP)->timeout_ms, 0u);
   assert_int_equal(publish_count(fx), sent + 1u);
+
+  /* A PUBACK error holds it back; another owner takes the slot, so it misses its first eligible
+   * TICK; when that slot frees again, the next do_work() does not wait. */
+  assert_true(az_iot_mock_mqtt_client_inject_puback(
+      fx->mock, last_publish(fx)->packet_id, AZ_IOT_ERR_MQTT));
+  do_work(fx);
+  assert_int_equal(
+      az_iot_delivery_tracker__submit(&other, &k_resend, &id, 1u, 0u, &index), AZ_IOT_OK);
+  assert_int_equal(publish_count(fx), sent + 2u);
+  do_work(fx);
+  (void)az_iot_connection_client_do_work(&fx->connection, UINT32_MAX);
+  assert_true(
+      az_iot_mock_mqtt_client_last_of(fx->mock, AZ_IOT_MOCK_CALL_PROCESS_LOOP)->timeout_ms > 1000u);
+  assert_int_equal(publish_count(fx), sent + 2u);
+  az_iot_delivery_tracker__cancel(&other, 0u);
+  (void)az_iot_connection_client_do_work(&fx->connection, UINT32_MAX);
+  assert_int_equal(
+      az_iot_mock_mqtt_client_last_of(fx->mock, AZ_IOT_MOCK_CALL_PROCESS_LOOP)->timeout_ms, 0u);
+  assert_int_equal(publish_count(fx), sent + 3u);
 
   az_iot_delivery_tracker__cancel(&shared, 0u);
   fx->failing_sends = 1;
