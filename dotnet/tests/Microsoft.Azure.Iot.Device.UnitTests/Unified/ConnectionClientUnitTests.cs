@@ -589,13 +589,14 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
                 .WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
             await reconnected.Task.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
 
-            // The first connection to a hub always starts clean since the subscriptions of any session left there are unknown.
-            Assert.Equal(new[] { (true, 0u), (useCleanSession, 0u) }, connectSettings);
+            // Resumption is always requested unless opted out, but the first connection subscribes because this process had
+            // not yet subscribed on any session, even though the broker reports one.
+            Assert.Equal(new[] { (useCleanSession, 0u), (useCleanSession, 0u) }, connectSettings);
             Assert.Equal(useCleanSession ? 2 : 1, mockMqttClient.SentMqttTrafficInOrder.Count(traffic => traffic.Subscribe != null));
         }
 
         [Fact]
-        public async Task ReconnectStartsCleanSessionAfterFailedResumeAttempt()
+        public async Task FailedConnectAttemptForcesResubscribeOnResumedSession()
         {
             using MockConnectionMqttClient mockMqttClient = new();
             using ConnectionClient connectionClient = new(new()
@@ -634,8 +635,91 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
                 .WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
             await reconnected.Task.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
 
-            Assert.Equal(new[] { false, true }, cleanSessionFlags);
+            // The broker resumed a session on the final attempt, but the failed attempt before it may have replaced the
+            // subscribed session with an empty one, so the subscriptions are sent again.
+            Assert.Equal(new[] { false, false }, cleanSessionFlags);
             Assert.Equal(2, mockMqttClient.SentMqttTrafficInOrder.Count(traffic => traffic.Subscribe != null));
+        }
+
+        [Theory]
+        [InlineData(true)]
+        [InlineData(false)]
+        public async Task FirstConnectionUnsubscribesDisabledFeaturesOnlyOnResumedSession(bool isSessionResumed)
+        {
+            using MockConnectionMqttClient mockMqttClient = new();
+            using ConnectionClient connectionClient = new(new()
+            {
+                MqttClient = mockMqttClient,
+                UseCleanSession = false,
+                EnableCloudToDeviceMessages = false,
+                EnableDirectMethods = false,
+            });
+
+            mockMqttClient.OnConnect = connect =>
+                Task.FromResult(new MqttConnectAck() { IsSessionPresent = isSessionResumed, ResultCode = MqttConnectReasonCode.Success });
+
+            await connectionClient.ConnectToHubAsync(GetMockConnectionContext(false), TestContext.Current.CancellationToken);
+
+            // A session left behind by a previous process may still hold subscriptions for the features that are now
+            // disabled, so they are removed before the enabled features are subscribed to.
+            List<MockMqttOutgoingTraffic> traffic = mockMqttClient.SentMqttTrafficInOrder;
+            if (isSessionResumed)
+            {
+                Assert.Equal(2, traffic.Count);
+                Assert.NotNull(traffic[0].Unsubscribe);
+                Assert.Equal(
+                    new[] { "devices/someDeviceId/messages/devicebound/#", Microsoft.Azure.Iot.Device.Unified.DirectMethods.DirectMethodClient.ClassicDirectMethodsRequestTopic + "#" },
+                    traffic[0].Unsubscribe!.TopicFilters);
+                Assert.NotNull(traffic[1].Subscribe);
+            }
+            else
+            {
+                Assert.Single(traffic);
+                Assert.NotNull(traffic[0].Subscribe);
+            }
+        }
+
+        [Fact]
+        public async Task FailedUnsubscribeOfDisabledFeaturesOnResumedSessionReconnects()
+        {
+            using MockConnectionMqttClient mockMqttClient = new();
+            using ConnectionClient connectionClient = new(new()
+            {
+                MqttClient = mockMqttClient,
+                UseCleanSession = false,
+                EnableCloudToDeviceMessages = false,
+                EnableDirectMethods = false,
+            });
+
+            mockMqttClient.OnConnect = connect =>
+                Task.FromResult(new MqttConnectAck() { IsSessionPresent = true, ResultCode = MqttConnectReasonCode.Success });
+
+            // The first UNSUBSCRIBE fails without the connection being lost, as on an UNSUBACK timeout.
+            int unsubscribeCount = 0;
+            mockMqttClient.OnUnsubscribe = unsubscribe =>
+            {
+                if (Interlocked.Increment(ref unsubscribeCount) == 1)
+                {
+                    throw new TimeoutException("mock UNSUBACK timeout");
+                }
+
+                return Task.FromResult(MqttObjectHelpers.CreateSuccessfulUnsuback(unsubscribe));
+            };
+
+            TaskCompletionSource subscribed = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            mockMqttClient.OnSubscribe = subscribe =>
+            {
+                subscribed.TrySetResult();
+                return Task.FromResult(MqttObjectHelpers.CreateSuccessfulSuback(subscribe));
+            };
+
+            await connectionClient.ConnectToHubAsync(GetMockConnectionContext(false), TestContext.Current.CancellationToken);
+            await subscribed.Task.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+
+            // The failed presence flow tore the connection down so that the next connection could finish it.
+            Assert.Single(mockMqttClient.DisconnectRequests);
+            Assert.Equal(2, mockMqttClient.ConnectAttemptCount);
+            Assert.Equal(2, Volatile.Read(ref unsubscribeCount));
         }
 
         [Theory]
