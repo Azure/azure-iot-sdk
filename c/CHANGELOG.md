@@ -4,6 +4,7 @@
 
 ### Features Added
 
+- `az_iot_connection_profile_to_string()` names an `az_iot_connection_profile`, for logging.
 - `az_iot_certificate_material::client_key_psa_id` and `az_iot_mqtt_tls_options::client_key_psa_id`
   name a non-extractable client key by PSA Crypto key id (0: none), e.g. the ESP32 Digital
   Signature peripheral on ESP-IDF v6. The az_mqtt adapter uses it with mbedTLS; with another TLS
