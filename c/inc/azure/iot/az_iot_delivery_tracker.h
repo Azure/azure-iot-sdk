@@ -61,7 +61,7 @@ extern "C"
       void* owner_context;
       uint64_t next_sequence;
       uint32_t tick_count; /**< TICK events seen; paces resends. */
-      uint32_t binding_id; /**< Counts bind() calls. */
+      uint32_t binding_id; /**< The connection's observer registration count at bind(). */
     } _internal;
   } az_iot_delivery_tracker;
 

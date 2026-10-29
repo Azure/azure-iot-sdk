@@ -38,7 +38,7 @@ static size_t index_of(const az_iot_delivery_tracker* t, const az_iot_delivery_t
 typedef struct binding
 {
   az_iot_connection_client* connection;
-  uint32_t id; /**< bind() count: tells a rebind to the same connection apart. */
+  uint32_t id; /**< Tells a rebind to the same connection apart, even after init(). */
 } binding;
 
 static binding binding_of(const az_iot_delivery_tracker* t)
@@ -460,7 +460,7 @@ az_iot_result az_iot_delivery_tracker__bind(
   if (result == AZ_IOT_OK)
   {
     TI(tracker).connection = connection;
-    ++TI(tracker).binding_id;
+    TI(tracker).binding_id = connection->feature_observer_registrations;
   }
   return result;
 }

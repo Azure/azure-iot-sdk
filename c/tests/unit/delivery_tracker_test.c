@@ -49,7 +49,7 @@ typedef struct fixture
   completion completions[16];
   size_t completion_count;
   bool unbind_on_complete;
-  /* Once, when set: unbind, bind again, submit two messages with this profile. */
+  /* Once, when set: unbind, init, bind again, submit two messages with this profile. */
   const az_iot_delivery_tracker_profile* rebind_on_complete;
 } fixture;
 
@@ -88,6 +88,10 @@ static void on_complete(
     const az_iot_delivery_tracker_profile* profile = fx->rebind_on_complete;
     fx->rebind_on_complete = NULL;
     az_iot_delivery_tracker__unbind(&fx->tracker);
+    assert_int_equal(
+        az_iot_delivery_tracker__init(
+            &fx->tracker, fx->entries, ENTRY_COUNT, RESERVED_PUBACKS, k_guaranteed, 1u, fx),
+        AZ_IOT_OK);
     assert_int_equal(az_iot_delivery_tracker__bind(&fx->tracker, &fx->connection), AZ_IOT_OK);
     for (uint8_t id = 7u; id <= 8u; ++id)
     {
@@ -456,8 +460,8 @@ static void an_identity_change_discards_every_message(void** state)
   assert_int_equal(fx->completions[1].outcome, AZ_IOT_DELIVERY_TRACKER_OUTCOME_DISCARDED);
 }
 
-/* An on_complete that rebinds to the same connection stops the walk: the messages it submits
- * are kept. */
+/* An on_complete that re-initializes and rebinds to the same connection stops the walk: the
+ * messages it submits are kept. */
 static void a_completion_may_rebind_the_tracker(void** state)
 {
   fixture* fx = (fixture*)*state;

@@ -9218,6 +9218,7 @@ az_iot_result az_iot_connection_client__add_feature_observer(
   client->feature_observers[free_slot].cb = cb;
   client->feature_observers[free_slot].user_ctx = user_ctx;
   client->feature_observers[free_slot].events = events;
+  ++client->feature_observer_registrations;
   return AZ_IOT_OK;
 }
 
