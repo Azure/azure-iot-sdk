@@ -1,0 +1,13 @@
+diff --git a/Configurations/unix-Makefile.tmpl b/Configurations/unix-Makefile.tmpl
+index f8a5b16..1e8f8ba 100644
+--- a/Configurations/unix-Makefile.tmpl
++++ b/Configurations/unix-Makefile.tmpl
+@@ -995,7 +995,7 @@ _install_modules_deps: install_runtime_libs build_modules
+ 
+ install_modules: _install_modules_deps
+ 	@[ -n "$(INSTALLTOP)" ] || (echo INSTALLTOP should not be empty; exit 1)
+-	@$(PERL) $(SRCDIR)/util/mkdir-p.pl "$(DESTDIR)$(MODULESDIR)/"
++	@[ -z "$(INSTALL_MODULES)" ] || $(PERL) $(SRCDIR)/util/mkdir-p.pl "$(DESTDIR)$(MODULESDIR)/"
+ 	@$(ECHO) "*** Installing modules"
+ 	@set -e; for e in dummy $(INSTALL_MODULES); do \
+ 		if [ "$$e" = "dummy" ]; then continue; fi; \

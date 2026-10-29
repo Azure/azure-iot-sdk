@@ -28,6 +28,13 @@ pkcs11-provider 0.6, the default of `eng/setup-pkcs11-provider.sh`, does not bui
 **Mitigation:** use pkcs11-provider 1.3.0 or later with OpenSSL 4.x
 (`PKCS11_PROVIDER_TAG=v1.3.0`), as CI does.
 
+### OpenSSL 4.x from vcpkg
+
+vcpkg has no OpenSSL 4.x port yet. `eng/vcpkg-ports/openssl` is one for 4.1.0, which CI uses
+next to the baseline's 3.6 (see [its README](../eng/vcpkg-ports/README.md)).
+
+**Mitigation:** add `-DVCPKG_OVERLAY_PORTS=<repo>/c/eng/vcpkg-ports` to the configure command.
+
 ## Eclipse Paho MQTT C
 
 Checked against v1.3.16. Re-check on every `PAHO_C_TAG` change.

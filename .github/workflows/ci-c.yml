@@ -1006,13 +1006,26 @@ jobs:
   # built, unit-tested, installed and consumed (c/tests/install).
   # VCPKG_APPLOCAL_DEPS=OFF: a static triplet has no DLLs to copy, and the
   # post-link copy step fails on locked files under parallel Ninja links.
+  # Two OpenSSL legs: the manifest baseline's 3.6, and 4.1 from the overlay
+  # port in eng/vcpkg-ports (vcpkg has no 4.x port yet).
   installed-deps-windows:
-    name: windows-msvc / installed deps
+    name: windows-msvc / installed deps${{ matrix.overlay != '' && format(' / OpenSSL {0}', matrix.openssl) || '' }}
     needs: changes
     if: needs.changes.outputs.c == 'true' || github.event_name != 'pull_request'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - openssl: '3.6'
+            overlay: ''
+          - openssl: '4.1'
+            overlay: eng/vcpkg-ports
     runs-on: windows-latest
     permissions:
       contents: read
+    env:
+      AZ_IOT_OPENSSL: ${{ matrix.openssl }}
+      AZ_IOT_OVERLAY: ${{ matrix.overlay }}
     defaults:
       run:
         shell: bash
@@ -1046,7 +1059,8 @@ jobs:
             echo "AZ_IOT_BUILD=$tmp/build"
             echo "AZ_IOT_TOOLCHAIN=$(cygpath -m "$AZ_IOT_VCPKG")/scripts/buildsystems/vcpkg.cmake"
             echo "VCPKG_DEFAULT_BINARY_CACHE=$tmp/vcpkg-archives"
-            echo "VCPKG_CACHE_PREFIX=vcpkg-x64-windows-static-$ImageOS-$ImageVersion-$(sha256sum vcpkg.json | cut -c1-16)-"
+            echo "VCPKG_CACHE_PREFIX=vcpkg-x64-windows-static-$ImageOS-$ImageVersion-$(sha256sum vcpkg.json | cut -c1-16)-openssl-$AZ_IOT_OPENSSL-"
+            [ -z "$AZ_IOT_OVERLAY" ] || echo "AZ_IOT_OVERLAY_PORTS=$(cygpath -m "$PWD/$AZ_IOT_OVERLAY")"
           } >> "$GITHUB_ENV"
           mkdir -p "$RUNNER_TEMP/vcpkg-archives"
       # vcpkg's binary cache. Without it every run builds OpenSSL from source
@@ -1069,12 +1083,15 @@ jobs:
           -DCMAKE_TOOLCHAIN_FILE="$AZ_IOT_TOOLCHAIN"
           -DVCPKG_TARGET_TRIPLET=x64-windows-static
           -DVCPKG_MANIFEST_FEATURES=installed-paho
+          ${AZ_IOT_OVERLAY_PORTS:+-DVCPKG_OVERLAY_PORTS="$AZ_IOT_OVERLAY_PORTS"}
           -DVCPKG_APPLOCAL_DEPS=OFF
           -DCMAKE_PREFIX_PATH="$AZ_IOT_DEPS"
           -DAZ_IOT_USE_INSTALLED_AZURE_SDK_FOR_C=ON
           -DAZ_IOT_USE_INSTALLED_PAHO=ON
           -DAZ_IOT_BUILD_TESTS=ON
           -DAZ_IOT_BUILD_SAMPLES=OFF
+      - name: Check the OpenSSL in use
+        run: grep -E "OPENSSL_VERSION_STR \"$AZ_IOT_OPENSSL\.[0-9]+\"" "$AZ_IOT_BUILD/vcpkg_installed/x64-windows-static/include/openssl/opensslv.h"
       - name: Build, test, install and consume
         run: |
           set -euo pipefail
