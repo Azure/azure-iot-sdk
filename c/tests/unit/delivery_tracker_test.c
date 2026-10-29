@@ -1,0 +1,491 @@
+// Copyright (c) Microsoft. All rights reserved.
+// Licensed under the MIT license. See LICENSE file in the project root for full license
+// information.
+
+/* SPDX-License-Identifier: MIT */
+/* az_iot_delivery_tracker: send, confirm, resend, expire, over a connection with a mock adapter. */
+#include <stdarg.h>
+#include <stddef.h>
+#include <setjmp.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include <cmocka.h>
+
+#include "azure/iot/az_iot_connection_client.h"
+#include "internal/connection_client_internal.h"
+#include "internal/delivery_tracker.h"
+#include "internal/mono_time.h"
+
+#include "support/connection_test_harness.h"
+#include "support/mock_mqtt_iface.h"
+#include "support/test_provider.h"
+
+#define ENTRY_COUNT 4u
+#define RESERVED_PUBACKS 2u
+
+typedef struct completion
+{
+  size_t entry_index;
+  az_iot_delivery_tracker_outcome outcome;
+} completion;
+
+typedef struct fixture
+{
+  az_iot_connection_client connection;
+  az_iot_mqtt_factory* factory;
+  az_iot_mock_mqtt_client* mock;
+  az_iot_delivery_tracker tracker;
+  az_iot_delivery_tracker_entry entries[ENTRY_COUNT];
+  char topics[ENTRY_COUNT][8];
+  az_iot_mqtt_qos qos;
+  az_iot_result encode_result;
+  completion completions[16];
+  size_t completion_count;
+  bool unbind_on_complete;
+} fixture;
+
+static const uint8_t k_guaranteed[] = { 1u }; /* One slot kept for priority 0. */
+
+static az_iot_result encode(void* owner_context, size_t entry_index, az_iot_mqtt_message* out)
+{
+  fixture* fx = (fixture*)owner_context;
+  (void)snprintf(fx->topics[entry_index], sizeof(fx->topics[entry_index]), "t/%u", (unsigned)entry_index);
+  out->topic = fx->topics[entry_index];
+  out->qos = fx->qos;
+  return fx->encode_result;
+}
+
+static void on_complete(
+    void* owner_context,
+    size_t entry_index,
+    az_iot_delivery_tracker_outcome outcome,
+    const az_iot_publish_result* detail)
+{
+  (void)detail;
+  fixture* fx = (fixture*)owner_context;
+  assert_true(fx->completion_count < sizeof(fx->completions) / sizeof(fx->completions[0]));
+  fx->completions[fx->completion_count].entry_index = entry_index;
+  fx->completions[fx->completion_count].outcome = outcome;
+  fx->completion_count++;
+  if (fx->unbind_on_complete)
+  {
+    az_iot_delivery_tracker__unbind(&fx->tracker);
+  }
+}
+
+#define PROFILE(name, confirm, policy, prio)                                   \
+  static const az_iot_delivery_tracker_profile name = {                       \
+    #name, AZ_IOT_DELIVERY_TRACKER_##confirm, AZ_IOT_DELIVERY_TRACKER_##policy, \
+    prio,  encode,                            on_complete,                     \
+  }
+PROFILE(k_resend, CONFIRM_BY_PUBACK, ON_SESSION_LOSS_RESEND, 0);
+PROFILE(k_fail, CONFIRM_BY_PUBACK, ON_SESSION_LOSS_FAIL, 0);
+PROFILE(k_response, CONFIRM_BY_RESPONSE, ON_SESSION_LOSS_FAIL, 0);
+PROFILE(k_response_resend, CONFIRM_BY_RESPONSE, ON_SESSION_LOSS_RESEND, 0);
+PROFILE(k_low_resend, CONFIRM_BY_PUBACK, ON_SESSION_LOSS_RESEND, 1);
+PROFILE(k_low_drop, CONFIRM_BY_PUBACK, ON_SESSION_LOSS_DROP, 1);
+
+static void do_work(fixture* fx) { (void)az_iot_connection_client_do_work(&fx->connection, 0); }
+
+/** @brief Open and reach CONNECTED on a new mock session. */
+static void connect(fixture* fx)
+{
+  assert_int_equal(az_iot_connection_client_open(&fx->connection), AZ_IOT_OK);
+  fx->mock = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  assert_non_null(fx->mock);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(fx->mock, AZ_IOT_OK));
+  do_work(fx);
+  assert_true(az_iot_connection_client__is_connected(&fx->connection));
+}
+
+/** @brief The link drops (FAULTED with no reconnection policy), then close() settles to IDLE. */
+static void lose_session(fixture* fx)
+{
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(fx->mock));
+  do_work(fx);
+  assert_int_equal(az_iot_connection_client_close(&fx->connection), AZ_IOT_OK);
+  fx->mock = NULL;
+}
+
+static size_t publish_count(const fixture* fx)
+{
+  return az_iot_mock_mqtt_client_count_of(fx->mock, AZ_IOT_MOCK_CALL_PUBLISH);
+}
+
+static const az_iot_mock_call* last_publish(const fixture* fx)
+{
+  const az_iot_mock_call* call = az_iot_mock_mqtt_client_last_of(fx->mock, AZ_IOT_MOCK_CALL_PUBLISH);
+  assert_non_null(call);
+  return call;
+}
+
+/** @brief The last PUBLISH to @p topic. */
+static const az_iot_mock_call* find_publish(const fixture* fx, const char* topic)
+{
+  const az_iot_mock_call* found = NULL;
+  for (size_t i = 0; i < az_iot_mock_mqtt_client_call_count(fx->mock); ++i)
+  {
+    const az_iot_mock_call* call = az_iot_mock_mqtt_client_call_at(fx->mock, i);
+    found = (call->kind == AZ_IOT_MOCK_CALL_PUBLISH && strcmp(call->topic, topic) == 0) ? call : found;
+  }
+  assert_non_null(found);
+  return found;
+}
+
+static void puback(fixture* fx, uint16_t packet_id, az_iot_result status)
+{
+  assert_true(az_iot_mock_mqtt_client_inject_puback(fx->mock, packet_id, status));
+  do_work(fx);
+}
+
+static size_t submit(fixture* fx, const az_iot_delivery_tracker_profile* profile, uint8_t id, uint32_t timeout_ms)
+{
+  size_t index = SIZE_MAX;
+  assert_int_equal(
+      az_iot_delivery_tracker__submit(&fx->tracker, profile, &id, 1u, timeout_ms, &index), AZ_IOT_OK);
+  return index;
+}
+
+static void assert_completed(const fixture* fx, size_t nth, size_t entry_index, az_iot_delivery_tracker_outcome outcome)
+{
+  assert_true(fx->completion_count > nth);
+  assert_int_equal(fx->completions[nth].entry_index, entry_index);
+  assert_int_equal(fx->completions[nth].outcome, outcome);
+}
+
+static int setup(void** state)
+{
+  fixture* fx = (fixture*)calloc(1, sizeof(*fx));
+  assert_non_null(fx);
+  az_iot_connection_client_options options = az_iot_test_mqtt_v3_options();
+  assert_int_equal(az_iot_test_connection_client_init(&fx->connection, &options), AZ_IOT_OK);
+  fx->factory = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
+  assert_int_equal(az_iot_connection_client_register_mqtt_factory(&fx->connection, fx->factory), AZ_IOT_OK);
+  fx->qos = AZ_IOT_MQTT_QOS_1;
+  assert_int_equal(
+      az_iot_delivery_tracker__init(
+          &fx->tracker, fx->entries, ENTRY_COUNT, RESERVED_PUBACKS, k_guaranteed, 1u, fx),
+      AZ_IOT_OK);
+  assert_int_equal(az_iot_delivery_tracker__bind(&fx->tracker, &fx->connection), AZ_IOT_OK);
+  *state = fx;
+  return 0;
+}
+
+static int teardown(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_delivery_tracker__unbind(&fx->tracker);
+  az_iot_connection_client_deinit(&fx->connection);
+  az_iot_mock_mqtt_factory_destroy(fx->factory);
+  free(fx);
+  return 0;
+}
+
+/* Sent at submit while CONNECTED; delivered once at its PUBACK. */
+static void a_message_is_delivered_at_its_puback(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  connect(fx);
+  size_t index = submit(fx, &k_resend, 1u, 0u);
+  assert_int_equal(publish_count(fx), 1);
+  assert_string_equal(last_publish(fx)->topic, "t/0");
+  assert_int_equal(fx->completion_count, 0);
+  puback(fx, last_publish(fx)->packet_id, AZ_IOT_OK);
+  assert_int_equal(fx->completion_count, 1);
+  assert_completed(fx, 0, index, AZ_IOT_DELIVERY_TRACKER_OUTCOME_DELIVERED);
+  do_work(fx);
+  assert_int_equal(publish_count(fx), 1);
+}
+
+/* Submitted before CONNECTED: held, then sent on CONNECTED. */
+static void a_message_submitted_offline_is_sent_on_connected(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  (void)submit(fx, &k_resend, 1u, 0u);
+  connect(fx);
+  assert_int_equal(publish_count(fx), 1);
+}
+
+/* QoS 0 confirmed by PUBACK is done at send; QoS 0 confirmed by response waits for it. */
+static void qos0_messages_are_untracked(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  fx->qos = AZ_IOT_MQTT_QOS_0;
+  connect(fx);
+  size_t index = submit(fx, &k_resend, 1u, 0u);
+  assert_completed(fx, 0, index, AZ_IOT_DELIVERY_TRACKER_OUTCOME_DELIVERED);
+  index = submit(fx, &k_response, 2u, 0u);
+  assert_int_equal(fx->completion_count, 1);
+  uint8_t const id = 2u;
+  assert_int_equal(az_iot_delivery_tracker__complete(&fx->tracker, &id, 1u), AZ_IOT_OK);
+  assert_completed(fx, 1, index, AZ_IOT_DELIVERY_TRACKER_OUTCOME_DELIVERED);
+}
+
+/* Confirmed by response: after the PUBACK, or before it (the late PUBACK is then ignored). */
+static void a_response_confirms_before_or_after_the_puback(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  connect(fx);
+  uint8_t const first = 1u;
+  uint8_t const second = 2u;
+  size_t index = submit(fx, &k_response, first, 0u);
+  puback(fx, last_publish(fx)->packet_id, AZ_IOT_OK);
+  assert_int_equal(fx->completion_count, 0);
+  assert_int_equal(az_iot_delivery_tracker__complete(&fx->tracker, &first, 1u), AZ_IOT_OK);
+  assert_completed(fx, 0, index, AZ_IOT_DELIVERY_TRACKER_OUTCOME_DELIVERED);
+
+  index = submit(fx, &k_response, second, 0u);
+  uint16_t const packet_id = last_publish(fx)->packet_id;
+  assert_int_equal(az_iot_delivery_tracker__complete(&fx->tracker, &second, 1u), AZ_IOT_OK);
+  assert_completed(fx, 1, index, AZ_IOT_DELIVERY_TRACKER_OUTCOME_DELIVERED);
+  puback(fx, packet_id, AZ_IOT_OK);
+  assert_int_equal(fx->completion_count, 2);
+
+  assert_int_equal(az_iot_delivery_tracker__complete(&fx->tracker, &second, 1u), AZ_IOT_ERR_NOT_FOUND);
+}
+
+/* A refused PUBLISH completes as REFUSED and is not resent. */
+static void a_refused_publish_is_not_resent(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  connect(fx);
+  size_t index = submit(fx, &k_resend, 1u, 0u);
+  puback(fx, last_publish(fx)->packet_id, AZ_IOT_ERR_PUBLISH_REFUSED);
+  assert_completed(fx, 0, index, AZ_IOT_DELIVERY_TRACKER_OUTCOME_REFUSED);
+  do_work(fx);
+  assert_int_equal(publish_count(fx), 1);
+}
+
+/* A lost session: RESEND publishes again on the next session; FAIL completes as SESSION_LOST,
+ * whether it was waiting for its PUBACK or for its response. */
+static void a_lost_session_resends_or_fails_per_policy(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  connect(fx);
+  size_t const resent = submit(fx, &k_resend, 1u, 0u);
+  size_t const failed = submit(fx, &k_fail, 2u, 0u);
+  (void)resent;
+  assert_int_equal(publish_count(fx), 2);
+  lose_session(fx);
+  assert_int_equal(fx->completion_count, 1);
+  assert_completed(fx, 0, failed, AZ_IOT_DELIVERY_TRACKER_OUTCOME_SESSION_LOST);
+
+  connect(fx);
+  assert_int_equal(publish_count(fx), 1);
+  size_t const awaiting = submit(fx, &k_response, 3u, 0u);
+  size_t const awaiting_resend = submit(fx, &k_response_resend, 4u, 0u);
+  (void)awaiting_resend;
+  az_iot_mock_mqtt_client* m = fx->mock;
+  for (size_t i = 0; i < az_iot_mock_mqtt_client_call_count(m); ++i)
+  {
+    const az_iot_mock_call* call = az_iot_mock_mqtt_client_call_at(m, i);
+    if (call->kind == AZ_IOT_MOCK_CALL_PUBLISH && strcmp(call->topic, "t/0") != 0)
+    {
+      assert_true(az_iot_mock_mqtt_client_inject_puback(m, call->packet_id, AZ_IOT_OK));
+    }
+  }
+  do_work(fx);
+  lose_session(fx);
+  assert_completed(fx, 1, awaiting, AZ_IOT_DELIVERY_TRACKER_OUTCOME_SESSION_LOST);
+  assert_int_equal(fx->completion_count, 2);
+  connect(fx);
+  assert_int_equal(publish_count(fx), 2); /* t/0 again, and the resent response request. */
+}
+
+/* A PUBACK error (not a refusal) requeues it; that same PUBACK event does not resend it, the
+ * next tick does. */
+static void a_failed_puback_is_resent_from_a_later_event(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  connect(fx);
+  (void)submit(fx, &k_resend, 1u, 0u);
+  assert_true(az_iot_mock_mqtt_client_inject_puback(fx->mock, last_publish(fx)->packet_id, AZ_IOT_ERR_MQTT));
+  do_work(fx);
+  assert_int_equal(publish_count(fx), 1);
+  do_work(fx);
+  assert_int_equal(publish_count(fx), 2);
+  assert_int_equal(fx->completion_count, 0);
+}
+
+/* The time limit expires a message on the tick, sent or not; 0 uses the connection's
+ * max_unconfirmed_delivery_timeout_ms. */
+static void messages_expire_at_their_limit(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  fx->connection.opts.max_unconfirmed_delivery_timeout_ms = 20u;
+  size_t const unbounded = submit(fx, &k_resend, 1u, 0u);
+  connect(fx);
+  size_t const bounded = submit(fx, &k_fail, 2u, 10u);
+  az_iot_test_wait_ms(25u);
+  do_work(fx);
+  assert_int_equal(fx->completion_count, 2);
+  assert_completed(fx, 0, unbounded, AZ_IOT_DELIVERY_TRACKER_OUTCOME_EXPIRED);
+  assert_completed(fx, 1, bounded, AZ_IOT_DELIVERY_TRACKER_OUTCOME_EXPIRED);
+}
+
+/* A message expired while offline is not sent on CONNECTED. */
+static void an_expired_message_is_not_sent(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  size_t const index = submit(fx, &k_resend, 1u, 5u);
+  az_iot_test_wait_ms(10u);
+  connect(fx);
+  assert_int_equal(publish_count(fx), 0);
+  assert_completed(fx, 0, index, AZ_IOT_DELIVERY_TRACKER_OUTCOME_EXPIRED);
+}
+
+/* Held messages go out by priority (0 first), then in submit order. */
+static void held_messages_go_out_by_priority_then_age(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  fx->qos = AZ_IOT_MQTT_QOS_0;
+  size_t const low = submit(fx, &k_low_resend, 1u, 0u);
+  size_t const high_first = submit(fx, &k_resend, 2u, 0u);
+  size_t const high_second = submit(fx, &k_resend, 3u, 0u);
+  connect(fx);
+  assert_int_equal(fx->completion_count, 3);
+  assert_completed(fx, 0, high_first, AZ_IOT_DELIVERY_TRACKER_OUTCOME_DELIVERED);
+  assert_completed(fx, 1, high_second, AZ_IOT_DELIVERY_TRACKER_OUTCOME_DELIVERED);
+  assert_completed(fx, 2, low, AZ_IOT_DELIVERY_TRACKER_OUTCOME_DELIVERED);
+}
+
+/* With 2 slots and 1 kept for priority 0, priority 1 holds at most one; priority 0 still gets
+ * one; a DROP message with no slot goes out untracked. */
+static void priority_zero_keeps_its_guaranteed_slot(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  connect(fx);
+  (void)submit(fx, &k_low_resend, 1u, 0u);
+  (void)submit(fx, &k_low_resend, 2u, 0u);
+  assert_int_equal(publish_count(fx), 1);
+  (void)submit(fx, &k_resend, 3u, 0u);
+  assert_int_equal(publish_count(fx), 2);
+  size_t const notice = submit(fx, &k_low_drop, 4u, 0u);
+  assert_int_equal(publish_count(fx), 3);
+  assert_completed(fx, 0, notice, AZ_IOT_DELIVERY_TRACKER_OUTCOME_DELIVERED);
+  /* Priority 0 freeing its slot does not admit the held priority-1 message (that slot stays
+   * kept); priority 1 freeing its own does. */
+  puback(fx, find_publish(fx, "t/2")->packet_id, AZ_IOT_OK);
+  assert_int_equal(publish_count(fx), 3);
+  puback(fx, find_publish(fx, "t/0")->packet_id, AZ_IOT_OK);
+  assert_int_equal(publish_count(fx), 4);
+  assert_string_equal(last_publish(fx)->topic, "t/1");
+}
+
+/* An identity change discards every message. */
+static void an_identity_change_discards_every_message(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  (void)submit(fx, &k_resend, 1u, 0u);
+  (void)submit(fx, &k_response, 2u, 0u);
+  const az_iot_connection_feature_observer* observer = NULL;
+  for (size_t i = 0; i < fx->connection.opts.limits.max_feature_observers; ++i)
+  {
+    observer = fx->connection.feature_observers[i].user_ctx == &fx->tracker
+        ? &fx->connection.feature_observers[i]
+        : observer;
+  }
+  assert_non_null(observer);
+  assert_true(observer->events & AZ_IOT_CONNECTION_FEATURE_EVENT_IDENTITY_CHANGED);
+  az_iot_connection_feature_event const event
+      = { AZ_IOT_CONNECTION_FEATURE_EVENT_IDENTITY_CHANGED, NULL, AZ_IOT_CONNECTION_SESSION_END_LOST };
+  observer->cb(&event, observer->user_ctx);
+  assert_int_equal(fx->completion_count, 2);
+  assert_int_equal(fx->completions[0].outcome, AZ_IOT_DELIVERY_TRACKER_OUTCOME_DISCARDED);
+  assert_int_equal(fx->completions[1].outcome, AZ_IOT_DELIVERY_TRACKER_OUTCOME_DISCARDED);
+}
+
+/* An on_complete that unbinds the tracker stops the walk: nothing else is completed. */
+static void a_completion_may_unbind_the_tracker(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  (void)submit(fx, &k_resend, 1u, 5u);
+  (void)submit(fx, &k_resend, 2u, 5u);
+  fx->unbind_on_complete = true;
+  az_iot_test_wait_ms(10u);
+  do_work(fx);
+  assert_int_equal(fx->completion_count, 1);
+  assert_null(fx->tracker._internal.connection);
+  do_work(fx);
+  assert_int_equal(fx->completion_count, 1);
+}
+
+/* Cancel drops a message silently; its late PUBACK reaches nobody. encode() failing discards. */
+static void cancel_and_encode_failure(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  connect(fx);
+  size_t index = submit(fx, &k_resend, 1u, 0u);
+  uint16_t const packet_id = last_publish(fx)->packet_id;
+  az_iot_delivery_tracker__cancel(&fx->tracker, index);
+  puback(fx, packet_id, AZ_IOT_OK);
+  assert_int_equal(fx->completion_count, 0);
+
+  fx->encode_result = AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+  index = submit(fx, &k_resend, 2u, 0u);
+  assert_completed(fx, 0, index, AZ_IOT_DELIVERY_TRACKER_OUTCOME_DISCARDED);
+  assert_int_equal(publish_count(fx), 1);
+}
+
+/* Arguments, a full tracker, an unbound one, and rebinding after unbind. */
+static void arguments_capacity_and_binding(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_delivery_tracker other;
+  assert_int_equal(
+      az_iot_delivery_tracker__init(&other, NULL, 1u, 0u, NULL, 0u, NULL), AZ_IOT_ERR_INVALID_ARG);
+  uint8_t const too_many[] = { 3u };
+  assert_int_equal(
+      az_iot_delivery_tracker__init(&other, fx->entries, 1u, 2u, too_many, 1u, NULL),
+      AZ_IOT_ERR_INVALID_ARG);
+  size_t index = 0;
+  uint8_t id[AZ_IOT_DELIVERY_TRACKER_CORRELATION_ID_MAX + 1u] = { 0 };
+  assert_int_equal(
+      az_iot_delivery_tracker__submit(&fx->tracker, &k_resend, id, sizeof(id), 0u, &index),
+      AZ_IOT_ERR_INVALID_ARG);
+
+  for (uint8_t i = 0; i < ENTRY_COUNT; ++i)
+  {
+    (void)submit(fx, &k_resend, i, 0u);
+  }
+  assert_int_equal(
+      az_iot_delivery_tracker__submit(&fx->tracker, &k_resend, id, 1u, 0u, &index),
+      AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+
+  az_iot_delivery_tracker__unbind(&fx->tracker);
+  assert_int_equal(
+      az_iot_delivery_tracker__submit(&fx->tracker, &k_resend, id, 1u, 0u, &index),
+      AZ_IOT_ERR_NOT_INITIALIZED);
+  for (size_t i = 0; i < fx->connection.opts.limits.max_publish_reservations; ++i)
+  {
+    assert_ptr_not_equal(fx->connection.puback_reservations[i].owner, &fx->tracker);
+  }
+  assert_int_equal(az_iot_delivery_tracker__bind(&fx->tracker, &fx->connection), AZ_IOT_OK);
+  assert_int_equal(fx->completion_count, 0);
+}
+
+int main(void)
+{
+  const struct CMUnitTest tests[] = {
+    cmocka_unit_test_setup_teardown(a_message_is_delivered_at_its_puback, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_message_submitted_offline_is_sent_on_connected, setup, teardown),
+    cmocka_unit_test_setup_teardown(qos0_messages_are_untracked, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_response_confirms_before_or_after_the_puback, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_refused_publish_is_not_resent, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_lost_session_resends_or_fails_per_policy, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_failed_puback_is_resent_from_a_later_event, setup, teardown),
+    cmocka_unit_test_setup_teardown(messages_expire_at_their_limit, setup, teardown),
+    cmocka_unit_test_setup_teardown(an_expired_message_is_not_sent, setup, teardown),
+    cmocka_unit_test_setup_teardown(held_messages_go_out_by_priority_then_age, setup, teardown),
+    cmocka_unit_test_setup_teardown(priority_zero_keeps_its_guaranteed_slot, setup, teardown),
+    cmocka_unit_test_setup_teardown(an_identity_change_discards_every_message, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_completion_may_unbind_the_tracker, setup, teardown),
+    cmocka_unit_test_setup_teardown(cancel_and_encode_failure, setup, teardown),
+    cmocka_unit_test_setup_teardown(arguments_capacity_and_binding, setup, teardown),
+  };
+  return cmocka_run_group_tests_name("delivery_tracker", tests, NULL, NULL);
+}
