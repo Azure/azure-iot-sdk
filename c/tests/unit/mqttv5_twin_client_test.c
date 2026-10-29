@@ -2676,6 +2676,10 @@ static uint64_t twin_push_test_random_value(void* context)
 /* Slack for the time between arming and reading the deadline. */
 #define TWIN_PUSH_TEST_SLACK_MS 5000u
 
+/* CONNECTED with both birth-ack versions 1, so the birth's requested sections (version 0) are out
+ * of sync and a twin-push is expected. */
+static void open_to_push_expected(fixture* fx) { open_to_connected_with_versions(fx, 1, 1); }
+
 static az_iot_test_state_log s_twin_push_states;
 
 /* A fixture whose birth asks for the given pushes; with @p reconnect, a 1 ms
@@ -2727,6 +2731,8 @@ static int setup_push_desired_no_policy(void** state)
 {
   return setup_twin_push(state, true, false, false);
 }
+
+static int setup_push_both(void** state) { return setup_twin_push(state, true, true, false); }
 
 /* Asserts the wait is armed for @p attempt of the defensive-timeout schedule. */
 static void assert_twin_push_wait_for_attempt(fixture* fx, uint32_t attempt)
@@ -2799,7 +2805,7 @@ static void reconnect_to_connected(fixture* fx)
     assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
   }
   fx->mock = az_iot_mock_mqtt_factory_last_client(fx->factory);
-  open_to_birth_ack_after_open(fx, 0, 0);
+  open_to_birth_ack_after_open(fx, 1, 1);
   az_iot_test_ack_subscriptions(&fx->conn, fx->mock);
 }
 
@@ -2814,7 +2820,7 @@ static void push_twin(fixture* fx)
 static void without_twin_push_no_wait_is_armed(void** state)
 {
   fixture* fx = (fixture*)*state;
-  open_to_connected(fx);
+  open_to_push_expected(fx);
   assert_false(az_iot_mqttv5_twin_client__twin_push_remaining(&fx->twin, NULL));
 }
 
@@ -2824,7 +2830,7 @@ static void with_push_desired_the_twin_push_wait_is_armed_on_connected(void** st
   fixture* fx = (fixture*)*state;
   open_to_birth(fx);
   assert_false(az_iot_mqttv5_twin_client__twin_push_remaining(&fx->twin, NULL));
-  ack_birth(fx, 0, 0);
+  ack_birth(fx, 1, 1);
   az_iot_test_ack_subscriptions(&fx->conn, fx->mock);
   assert_twin_push_wait_for_attempt(fx, 1);
 }
@@ -2832,7 +2838,7 @@ static void with_push_desired_the_twin_push_wait_is_armed_on_connected(void** st
 static void with_push_reported_the_twin_push_wait_is_armed(void** state)
 {
   fixture* fx = (fixture*)*state;
-  open_to_connected(fx);
+  open_to_push_expected(fx);
   assert_twin_push_wait_for_attempt(fx, 1);
 }
 
@@ -2840,7 +2846,7 @@ static void with_push_reported_the_twin_push_wait_is_armed(void** state)
 static void a_twin_push_cancels_the_wait(void** state)
 {
   fixture* fx = (fixture*)*state;
-  open_to_connected(fx);
+  open_to_push_expected(fx);
   push_twin(fx);
   assert_false(az_iot_mqttv5_twin_client__twin_push_remaining(&fx->twin, NULL));
   az_iot_mqttv5_twin_client__twin_push_force_timeout(&fx->twin);
@@ -2852,7 +2858,7 @@ static void a_twin_push_cancels_the_wait(void** state)
 static void an_overdue_twin_push_disconnects_and_reconnects(void** state)
 {
   fixture* fx = (fixture*)*state;
-  open_to_connected(fx);
+  open_to_push_expected(fx);
   expire_twin_push_wait(fx);
   assert_int_equal(count_states(AZ_IOT_CONN_STATE_RETRY_PENDING, AZ_IOT_ERR_TIMEOUT), 1);
 
@@ -2864,7 +2870,7 @@ static void an_overdue_twin_push_disconnects_and_reconnects(void** state)
 static void an_overdue_twin_push_without_a_policy_faults(void** state)
 {
   fixture* fx = (fixture*)*state;
-  open_to_connected(fx);
+  open_to_push_expected(fx);
   expire_twin_push_wait(fx);
   assert_int_equal(
       az_iot_connection_client_get_state(&fx->conn, AZ_IOT_CONN_SCOPE_HUB),
@@ -2876,7 +2882,7 @@ static void an_overdue_twin_push_without_a_policy_faults(void** state)
 static void an_unreported_disconnect_ends_the_session_at_its_bound(void** state)
 {
   fixture* fx = (fixture*)*state;
-  open_to_connected(fx);
+  open_to_push_expected(fx);
   expire_twin_push_wait_to_disconnect(fx);
   az_iot_connection_client__planned_hub_session_end_force_timeout(&fx->conn);
   assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
@@ -2887,7 +2893,7 @@ static void an_unreported_disconnect_ends_the_session_at_its_bound(void** state)
 static void misses_escalate_and_a_push_restarts_the_schedule(void** state)
 {
   fixture* fx = (fixture*)*state;
-  open_to_connected(fx);
+  open_to_push_expected(fx);
   expire_twin_push_wait(fx);
   reconnect_to_connected(fx);
   expire_twin_push_wait(fx);
@@ -2905,14 +2911,14 @@ static void misses_escalate_and_a_push_restarts_the_schedule(void** state)
 static void a_close_restarts_the_schedule(void** state)
 {
   fixture* fx = (fixture*)*state;
-  open_to_connected(fx);
+  open_to_push_expected(fx);
   expire_twin_push_wait(fx);
   reconnect_to_connected(fx);
   assert_twin_push_wait_for_attempt(fx, 2);
 
   close_to_idle(fx);
   assert_false(az_iot_mqttv5_twin_client__twin_push_remaining(&fx->twin, NULL));
-  open_to_connected(fx);
+  open_to_push_expected(fx);
   assert_twin_push_wait_for_attempt(fx, 1);
 }
 
@@ -2920,7 +2926,7 @@ static void a_close_restarts_the_schedule(void** state)
 static void a_close_during_the_disconnect_ends_idle(void** state)
 {
   fixture* fx = (fixture*)*state;
-  open_to_connected(fx);
+  open_to_push_expected(fx);
   expire_twin_push_wait_to_disconnect(fx);
   assert_int_equal(az_iot_connection_client_close(&fx->conn), AZ_IOT_OK);
   assert_true(az_iot_mock_mqtt_client_inject_disconnected(fx->mock));
@@ -2937,7 +2943,7 @@ static void a_push_before_the_birth_ack_settles_the_wait(void** state)
   fixture* fx = (fixture*)*state;
   open_to_birth(fx);
   push_twin(fx);
-  ack_birth(fx, 0, 0);
+  ack_birth(fx, 1, 1);
   az_iot_test_ack_subscriptions(&fx->conn, fx->mock);
   assert_int_equal(
       az_iot_connection_client_get_state(&fx->conn, AZ_IOT_CONN_SCOPE_HUB),
@@ -2953,7 +2959,7 @@ static void a_twin_client_attached_after_the_birth_waits(void** state)
   push_twin(fx);
   az_iot_mqttv5_twin_client_deinit(&fx->twin);
   assert_int_equal(az_iot_mqttv5_twin_client_init(&fx->twin, &fx->conn), AZ_IOT_OK);
-  ack_birth(fx, 0, 0);
+  ack_birth(fx, 1, 1);
   az_iot_test_ack_subscriptions(&fx->conn, fx->mock);
   assert_twin_push_wait_for_attempt(fx, 1);
 }
@@ -2962,7 +2968,7 @@ static void a_twin_client_attached_after_the_birth_waits(void** state)
 static void a_twin_client_attached_to_a_connected_session_waits(void** state)
 {
   fixture* fx = (fixture*)*state;
-  open_to_connected(fx);
+  open_to_push_expected(fx);
   az_iot_mqttv5_twin_client_deinit(&fx->twin);
   assert_int_equal(az_iot_mqttv5_twin_client_init(&fx->twin, &fx->conn), AZ_IOT_OK);
   assert_twin_push_wait_for_attempt(fx, 1);
@@ -2972,7 +2978,7 @@ static void a_twin_client_attached_to_a_connected_session_waits(void** state)
 static void a_malformed_twin_push_keeps_the_wait(void** state)
 {
   fixture* fx = (fixture*)*state;
-  open_to_connected(fx);
+  open_to_push_expected(fx);
   /* Section length past the payload. */
   const uint8_t body[] = { 0x0A, 0x05 };
   inject_twin(fx, "twin-push:1", fx->nonce, body, sizeof(body));
@@ -2983,7 +2989,7 @@ static void a_malformed_twin_push_keeps_the_wait(void** state)
 static void a_twin_push_with_a_mistyped_section_keeps_the_wait(void** state)
 {
   fixture* fx = (fixture*)*state;
-  open_to_connected(fx);
+  open_to_push_expected(fx);
   /* field 1 (desired) as varint 0: read as a length, it would be an empty section */
   const uint8_t body[] = { 0x08, 0x00 };
   inject_twin(fx, "twin-push:1", fx->nonce, body, sizeof(body));
@@ -2994,7 +3000,7 @@ static void a_twin_push_with_a_mistyped_section_keeps_the_wait(void** state)
 static void a_twin_push_without_the_requested_section_keeps_the_wait(void** state)
 {
   fixture* fx = (fixture*)*state;
-  open_to_connected(fx);
+  open_to_push_expected(fx);
   const uint8_t desired_only[] = { 0x0A, 0x00 };
   inject_twin(fx, "twin-push:1", fx->nonce, desired_only, sizeof(desired_only));
   assert_twin_push_wait_for_attempt(fx, 1);
@@ -3007,7 +3013,7 @@ static void a_twin_push_without_the_requested_section_keeps_the_wait(void** stat
 static void an_expired_wait_ended_by_a_drop_counts_a_miss(void** state)
 {
   fixture* fx = (fixture*)*state;
-  open_to_connected(fx);
+  open_to_push_expected(fx);
   az_iot_mqttv5_twin_client__twin_push_force_timeout(&fx->twin);
   assert_true(az_iot_mock_mqtt_client_inject_disconnected(fx->mock));
   assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
@@ -3019,7 +3025,7 @@ static void an_expired_wait_ended_by_a_drop_counts_a_miss(void** state)
 static void a_close_during_the_disconnect_settles_idle_at_its_bound(void** state)
 {
   fixture* fx = (fixture*)*state;
-  open_to_connected(fx);
+  open_to_push_expected(fx);
   expire_twin_push_wait_to_disconnect(fx);
   assert_int_equal(az_iot_connection_client_close(&fx->conn), AZ_IOT_OK);
   assert_int_equal(az_iot_mock_mqtt_client_count_of(fx->mock, AZ_IOT_MOCK_CALL_DISCONNECT), 1);
@@ -3040,7 +3046,7 @@ static void close_from_session_end(const az_iot_connection_feature_event* event,
 static void a_close_from_a_teardown_callback_is_kept(void** state)
 {
   fixture* fx = (fixture*)*state;
-  open_to_connected(fx);
+  open_to_push_expected(fx);
   assert_int_equal(
       az_iot_connection_client__add_feature_observer(
           &fx->conn,
@@ -3068,7 +3074,7 @@ static void reopen_from_session_end(const az_iot_connection_feature_event* event
 static void a_reopen_while_a_closed_planned_end_settles_is_kept(void** state)
 {
   fixture* fx = (fixture*)*state;
-  open_to_connected(fx);
+  open_to_push_expected(fx);
   expire_twin_push_wait_to_disconnect(fx);
   assert_int_equal(az_iot_connection_client_close(&fx->conn), AZ_IOT_OK);
   assert_int_equal(
@@ -3089,7 +3095,7 @@ static void a_reopen_while_a_closed_planned_end_settles_is_kept(void** state)
 static void a_reopen_while_a_closed_planned_end_completes_is_kept(void** state)
 {
   fixture* fx = (fixture*)*state;
-  open_to_connected(fx);
+  open_to_push_expected(fx);
   expire_twin_push_wait_to_disconnect(fx);
   assert_int_equal(az_iot_connection_client_close(&fx->conn), AZ_IOT_OK);
   assert_int_equal(
@@ -3111,7 +3117,7 @@ static void a_reopen_while_a_closed_planned_end_completes_is_kept(void** state)
 static void the_connection_wait_is_bounded_by_the_twin_push_wait(void** state)
 {
   fixture* fx = (fixture*)*state;
-  open_to_connected(fx);
+  open_to_push_expected(fx);
   assert_int_equal(az_iot_connection_client_do_work(&fx->conn, UINT32_MAX), AZ_IOT_OK);
   uint32_t waited
       = az_iot_mock_mqtt_client_last_of(fx->mock, AZ_IOT_MOCK_CALL_PROCESS_LOOP)->timeout_ms;
@@ -3123,7 +3129,7 @@ static void the_connection_wait_is_bounded_by_the_twin_push_wait(void** state)
 static void the_twin_do_work_does_not_end_the_session(void** state)
 {
   fixture* fx = (fixture*)*state;
-  open_to_connected(fx);
+  open_to_push_expected(fx);
   az_iot_mqttv5_twin_client__twin_push_force_timeout(&fx->twin);
   assert_int_equal(az_iot_mqttv5_twin_client_do_work(&fx->twin), AZ_IOT_OK);
   assert_int_equal(az_iot_mock_mqtt_client_count_of(fx->mock, AZ_IOT_MOCK_CALL_DISCONNECT), 0);
@@ -3143,7 +3149,7 @@ static void close_on_get_response(
 static void a_close_after_the_disconnect_in_one_batch_settles_idle(void** state)
 {
   fixture* fx = (fixture*)*state;
-  open_to_connected(fx);
+  open_to_push_expected(fx);
   assert_int_equal(
       az_iot_mqttv5_twin_client_get(&fx->twin, close_on_get_response, &fx->conn), AZ_IOT_OK);
   const az_iot_mock_call* pub = find_publish(fx->mock, TWIN_SRV_TOPIC);
@@ -3182,7 +3188,7 @@ static void a_close_after_the_disconnect_in_one_batch_settles_idle(void** state)
 static void an_error_after_close_takes_over_settles_idle(void** state)
 {
   fixture* fx = (fixture*)*state;
-  open_to_connected(fx);
+  open_to_push_expected(fx);
   expire_twin_push_wait_to_disconnect(fx);
   assert_int_equal(az_iot_connection_client_close(&fx->conn), AZ_IOT_OK);
   assert_true(az_iot_mock_mqtt_client_inject_error(fx->mock, AZ_IOT_ERR_MQTT));
@@ -3200,7 +3206,7 @@ static void a_push_after_a_late_attach_cancels_the_wait(void** state)
   az_iot_mqttv5_twin_client_deinit(&fx->twin);
   assert_int_equal(az_iot_mqttv5_twin_client_init(&fx->twin, &fx->conn), AZ_IOT_OK);
   push_twin(fx);
-  ack_birth(fx, 0, 0);
+  ack_birth(fx, 1, 1);
   az_iot_test_ack_subscriptions(&fx->conn, fx->mock);
   assert_false(az_iot_mqttv5_twin_client__twin_push_remaining(&fx->twin, NULL));
 }
@@ -3209,7 +3215,7 @@ static void a_push_after_a_late_attach_cancels_the_wait(void** state)
 static void a_push_after_the_wait_expired_does_not_cancel_the_miss(void** state)
 {
   fixture* fx = (fixture*)*state;
-  open_to_connected(fx);
+  open_to_push_expected(fx);
   az_iot_mqttv5_twin_client__twin_push_force_timeout(&fx->twin);
   push_twin(fx);
   assert_int_equal(az_iot_mock_mqtt_client_count_of(fx->mock, AZ_IOT_MOCK_CALL_DISCONNECT), 1);
@@ -3233,7 +3239,7 @@ static void expire_during_the_wait(az_iot_mock_mqtt_client* m, void* user_ctx)
 static void a_miss_waits_for_a_pass_begun_past_the_deadline(void** state)
 {
   fixture* fx = (fixture*)*state;
-  open_to_connected(fx);
+  open_to_push_expected(fx);
   az_iot_mock_mqtt_client_set_process_loop_hook(fx->mock, expire_during_the_wait, &fx->twin);
   assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
   assert_int_equal(az_iot_mock_mqtt_client_count_of(fx->mock, AZ_IOT_MOCK_CALL_DISCONNECT), 0);
@@ -3244,7 +3250,7 @@ static void a_miss_waits_for_a_pass_begun_past_the_deadline(void** state)
 static void a_push_queued_when_the_deadline_passes_settles_the_wait(void** state)
 {
   fixture* fx = (fixture*)*state;
-  open_to_connected(fx);
+  open_to_push_expected(fx);
   const uint8_t body[] = { 0x0A, 0x00 };
   queue_twin_on(fx, TWIN_DEV_TOPIC, "twin-push:1", fx->nonce, 16u, body, sizeof(body));
   az_iot_mock_mqtt_client_set_process_loop_hook(fx->mock, expire_during_the_wait, &fx->twin);
@@ -3258,7 +3264,7 @@ static void a_push_queued_when_the_deadline_passes_settles_the_wait(void** state
 static void an_error_during_the_timeout_disconnect_keeps_the_timeout(void** state)
 {
   fixture* fx = (fixture*)*state;
-  open_to_connected(fx);
+  open_to_push_expected(fx);
   expire_twin_push_wait_to_disconnect(fx);
   assert_true(az_iot_mock_mqtt_client_inject_error(fx->mock, AZ_IOT_ERR_MQTT));
   assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
@@ -3270,7 +3276,7 @@ static void an_error_during_the_timeout_disconnect_keeps_the_timeout(void** stat
 static void a_refusal_with_the_timeout_disconnect_keeps_the_refusal(void** state)
 {
   fixture* fx = (fixture*)*state;
-  open_to_connected(fx);
+  open_to_push_expected(fx);
   expire_twin_push_wait_to_disconnect(fx);
   az_iot_mock_mqtt_client_set_events_per_loop(fx->mock, 2);
   az_iot_mqtt_event refusal;
@@ -3284,6 +3290,62 @@ static void a_refusal_with_the_timeout_disconnect_keeps_the_refusal(void** state
   assert_int_equal(count_states(AZ_IOT_CONN_STATE_FAULTED, AZ_IOT_ERR_TIMEOUT), 0);
 }
 
+/* No requested section out of sync (birth-ack versions 0, as advertised): no push comes, so
+ * none is waited for. A version on an unrequested section does not count either. */
+static void no_wait_when_no_requested_section_is_out_of_sync(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected_with_versions(fx, 0, 5);
+  assert_false(az_iot_mqttv5_twin_client__twin_push_remaining(&fx->twin, NULL));
+}
+
+/* Only out-of-sync sections are expected; sections from several pushes accumulate. */
+static void the_wait_needs_every_out_of_sync_section(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected_with_versions(fx, 1, 1);
+  const uint8_t desired[] = { 0x0A, 0x00 };
+  inject_twin(fx, "twin-push:1", fx->nonce, desired, sizeof(desired));
+  assert_true(az_iot_mqttv5_twin_client__twin_push_remaining(&fx->twin, NULL));
+  const uint8_t reported[] = { 0x12, 0x00 };
+  inject_twin(fx, "twin-push:1", fx->nonce, reported, sizeof(reported));
+  assert_false(az_iot_mqttv5_twin_client__twin_push_remaining(&fx->twin, NULL));
+}
+
+static void only_the_out_of_sync_section_is_waited_for(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected_with_versions(fx, 1, 0);
+  const uint8_t desired[] = { 0x0A, 0x00 };
+  inject_twin(fx, "twin-push:1", fx->nonce, desired, sizeof(desired));
+  assert_false(az_iot_mqttv5_twin_client__twin_push_remaining(&fx->twin, NULL));
+}
+
+/* A push between the timeout's DISCONNECT and DISCONNECTED does not undo the miss: the next
+ * wait escalates. */
+static void a_push_during_the_timeout_disconnect_keeps_the_miss(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_push_expected(fx);
+  expire_twin_push_wait_to_disconnect(fx);
+  push_twin(fx);
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(fx->mock));
+  assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
+  reconnect_to_connected(fx);
+  assert_twin_push_wait_for_attempt(fx, 2);
+}
+
+/* A known field inside a section on the wrong wire type is malformed: the wait stays. */
+static void a_section_with_a_mistyped_field_keeps_the_wait(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_push_expected(fx);
+  /* desired { payload (field 2) as varint 0 } */
+  const uint8_t body[] = { 0x0A, 0x02, 0x10, 0x00 };
+  inject_twin(fx, "twin-push:1", fx->nonce, body, sizeof(body));
+  assert_twin_push_wait_for_attempt(fx, 1);
+}
+
 /* Ending the session needs a CONNECTED hub and a failure reason. */
 static void ending_the_hub_session_needs_a_connected_session(void** state)
 {
@@ -3293,7 +3355,7 @@ static void ending_the_hub_session_needs_a_connected_session(void** state)
   assert_int_equal(
       az_iot_connection_client__end_hub_session(&fx->conn, AZ_IOT_ERR_TIMEOUT),
       AZ_IOT_ERR_NOT_CONNECTED);
-  open_to_connected(fx);
+  open_to_push_expected(fx);
   assert_int_equal(
       az_iot_connection_client__end_hub_session(&fx->conn, AZ_IOT_OK), AZ_IOT_ERR_INVALID_ARG);
   assert_int_equal(
@@ -3374,6 +3436,18 @@ int main(void)
         a_close_after_the_disconnect_in_one_batch_settles_idle,
         setup_push_desired_no_policy,
         teardown),
+    cmocka_unit_test_setup_teardown(
+        no_wait_when_no_requested_section_is_out_of_sync, setup_push_desired_reconnect, teardown),
+    cmocka_unit_test_setup_teardown(
+        the_wait_needs_every_out_of_sync_section, setup_push_both, teardown),
+    cmocka_unit_test_setup_teardown(
+        only_the_out_of_sync_section_is_waited_for, setup_push_both, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_push_during_the_timeout_disconnect_keeps_the_miss,
+        setup_push_desired_reconnect,
+        teardown),
+    cmocka_unit_test_setup_teardown(
+        a_section_with_a_mistyped_field_keeps_the_wait, setup_push_desired_reconnect, teardown),
     cmocka_unit_test_setup_teardown(
         an_error_during_the_timeout_disconnect_keeps_the_timeout,
         setup_push_desired_no_policy,

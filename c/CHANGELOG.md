@@ -277,7 +277,7 @@
 - mqttv5: the connection's `process_loop()` wait ends by the presence SUBACK and birth-ack
   deadlines, so an ack that arrives in time is not taken for a timeout.
 - mqttv5 twin: with `twin_push.push_desired` or `push_reported` set, a session whose twin-push
-  does not arrive within the mqttv5 defensive timeout of hub CONNECTED (5 to 15 minutes, longer
+  (expected for the requested sections the birth-ack shows out of sync) does not arrive within the mqttv5 defensive timeout of hub CONNECTED (5 to 15 minutes, longer
   after consecutive misses, as for the birth-ack) is now ended with a DISCONNECT and reconnected (or
   faulted with `AZ_IOT_ERR_TIMEOUT` without a reconnection policy). Before, no timeout was armed and
   a lost push left the device without desired patches until the next reconnect.
