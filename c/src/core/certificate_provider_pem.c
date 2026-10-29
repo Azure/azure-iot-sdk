@@ -154,6 +154,7 @@ static az_iot_result pem_load(
   out->client_key_path = m->key_path;
   out->client_key_uri = NULL;
   out->crypto_engine_id = NULL;
+  out->client_key_psa_id = 0;
   return AZ_IOT_OK;
 }
 

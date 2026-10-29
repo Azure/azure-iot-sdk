@@ -293,7 +293,8 @@ extern "C"
     void* sign_ctx; /* opaque, passed back to sign() */
     /* PSA Crypto key id of a non-extractable client key (mbedTLS); 0: none. A
      * third custody route: an adapter that cannot use it fails the connect with
-     * AZ_IOT_ERR_NOT_SUPPORTED. */
+     * AZ_IOT_ERR_NOT_SUPPORTED. The key stays usable until the adapter client is
+     * destroyed, so the handshake may use it after connect() returns. */
     uint32_t client_key_psa_id;
   } az_iot_mqtt_tls_options;
 

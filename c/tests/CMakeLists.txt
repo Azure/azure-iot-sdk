@@ -890,6 +890,18 @@ if(AZ_IOT_WITH_AZ_MQTT)
         target_link_libraries(az_iot_tests_az_mqtt_adapter_ack PRIVATE ws2_32)
     endif()
 
+    # The adapter compiled in as for mbedTLS: a PSA-only credential reaches az_mqtt's TLS options.
+    az_iot_add_cmocka_test(az_iot_tests_az_mqtt_adapter_psa
+        unit/az_mqtt_adapter_psa_test.c
+        ${PROJECT_SOURCE_DIR}/adapters/az_mqtt/az_iot_mqtt_az_mqtt.c
+        ${PROJECT_SOURCE_DIR}/adapters/az_mqtt/az_iot_mqtt_az_mqtt_v3.c)
+    target_include_directories(az_iot_tests_az_mqtt_adapter_psa PRIVATE
+        ${PROJECT_SOURCE_DIR}/inc ${PROJECT_SOURCE_DIR}/adapters/az_mqtt ${PROJECT_SOURCE_DIR}/src/core)
+    target_link_libraries(az_iot_tests_az_mqtt_adapter_psa PRIVATE az_mqttv3 az_mqttv5)
+    if(WIN32)
+        target_link_libraries(az_iot_tests_az_mqtt_adapter_psa PRIVATE ws2_32)
+    endif()
+
     # The adapter building its clients in application memory.
     az_iot_add_cmocka_test(az_iot_tests_az_mqtt_adapter_workspace unit/az_mqtt_adapter_workspace_test.c)
     target_link_libraries(az_iot_tests_az_mqtt_adapter_workspace PRIVATE
