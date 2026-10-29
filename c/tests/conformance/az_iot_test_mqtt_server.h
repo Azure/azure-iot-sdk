@@ -152,10 +152,11 @@ extern "C"
    * property. Carries a packet id. len == 0 when it would not fit AZ_IOT_TEST_MQTT_PACKET_MAX. */
   az_iot_test_mqtt_packet az_iot_test_mqtt_puback_v5_raw(uint8_t code, const char* reason_string);
   /* MQTT 5 CONNACK, session present clear, with reason @p code and, unless @p reason_string is
-   * NULL, a Reason String property. len == 0 when the packet would not keep single-byte lengths. */
+   * NULL, a Reason String property. len == 0 when it would not fit AZ_IOT_TEST_MQTT_PACKET_MAX. */
   az_iot_test_mqtt_packet az_iot_test_mqtt_connack_v5_raw(uint8_t code, const char* reason_string);
-  /* MQTT 5 server DISCONNECT with reason @p code (at bytes[2]) and, unless @p reason_string is
-   * NULL, a Reason String property. len == 0 as for az_iot_test_mqtt_connack_v5_raw(). */
+  /* MQTT 5 server DISCONNECT with reason @p code (at bytes[2] while the Remaining Length is under
+   * 128) and, unless @p reason_string is NULL, a Reason String property. len == 0 as for
+   * az_iot_test_mqtt_connack_v5_raw(). */
   az_iot_test_mqtt_packet az_iot_test_mqtt_disconnect_v5_raw(
       uint8_t code,
       const char* reason_string);

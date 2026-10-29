@@ -698,7 +698,7 @@ static void on_event_record_disconnect(const az_iot_mqtt_event* evt, void* ctx)
 }
 
 /** @brief A server DISCONNECT with a Reason String of @p length bytes reaches the application with
- * its first 128 (AZ_IOT_CONN_ERROR_MESSAGE_MAX), all the SDK retains. */
+ * its first AZ_IOT_MQTT_SESSION_REASON_STRING_MAX bytes. */
 static void assert_disconnect_reason_string_is_kept(int length)
 {
   race_fixture f;
@@ -733,7 +733,9 @@ static void assert_disconnect_reason_string_is_kept(int length)
   assert_int_equal(f.client->iface->process_loop(f.client, 0), AZ_IOT_OK);
   assert_int_equal(record.disconnects, 1);
   assert_int_equal(record.protocol_code, MQTTREASONCODE_QUOTA_EXCEEDED);
-  int const kept = length < AZ_IOT_CONN_ERROR_MESSAGE_MAX ? length : AZ_IOT_CONN_ERROR_MESSAGE_MAX;
+  int const kept = length < AZ_IOT_MQTT_SESSION_REASON_STRING_MAX
+      ? length
+      : AZ_IOT_MQTT_SESSION_REASON_STRING_MAX;
   assert_int_equal(record.reason_string_length, kept);
   assert_memory_equal(record.reason_string, expected, (size_t)kept);
 
@@ -744,8 +746,8 @@ static void assert_disconnect_reason_string_is_kept(int length)
 static void a_disconnect_reason_string_is_kept_up_to_its_bound(void** state)
 {
   (void)state;
-  assert_disconnect_reason_string_is_kept(AZ_IOT_CONN_ERROR_MESSAGE_MAX);
-  assert_disconnect_reason_string_is_kept(AZ_IOT_CONN_ERROR_MESSAGE_MAX + 1);
+  assert_disconnect_reason_string_is_kept(AZ_IOT_MQTT_SESSION_REASON_STRING_MAX);
+  assert_disconnect_reason_string_is_kept(AZ_IOT_MQTT_SESSION_REASON_STRING_MAX + 1);
 }
 
 int main(void)

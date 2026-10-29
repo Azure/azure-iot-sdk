@@ -129,41 +129,11 @@ az_iot_test_mqtt_packet az_iot_test_mqtt_suback_raw(az_iot_test_mqtt_version ver
   return p;
 }
 
-/* A packet of type @p first_byte: @p head, then Properties holding only a Reason String unless
- * @p reason_string is NULL. Kept to single-byte lengths: len == 0 when longer. */
 static az_iot_test_mqtt_packet packet_with_reason_string(
     uint8_t first_byte,
     const uint8_t* head,
     size_t head_len,
-    const char* reason_string)
-{
-  az_iot_test_mqtt_packet p = packet_empty();
-  size_t const n = reason_string ? strlen(reason_string) : 0;
-  /* Property 0x1F, a 2-byte length, the string. */
-  size_t const props = reason_string ? 3 + n : 0;
-  size_t const remaining = head_len + 1 + props;
-  if (remaining > 127)
-  {
-    return p;
-  }
-
-  size_t pos = 0;
-  p.bytes[pos++] = first_byte;
-  p.bytes[pos++] = (uint8_t)remaining;
-  memcpy(&p.bytes[pos], head, head_len);
-  pos += head_len;
-  p.bytes[pos++] = (uint8_t)props;
-  if (reason_string)
-  {
-    p.bytes[pos++] = 0x1F;
-    p.bytes[pos++] = 0x00;
-    p.bytes[pos++] = (uint8_t)n;
-    memcpy(&p.bytes[pos], reason_string, n);
-    pos += n;
-  }
-  p.len = pos;
-  return p;
-}
+    const char* reason_string);
 
 az_iot_test_mqtt_packet az_iot_test_mqtt_puback_v5_raw(uint8_t code, const char* reason_string)
 {
@@ -173,7 +143,7 @@ az_iot_test_mqtt_packet az_iot_test_mqtt_puback_v5_raw(uint8_t code, const char*
       = packet_with_reason_string(MQTT_PUBACK, head, sizeof(head), reason_string);
   if (p.len != 0)
   {
-    p.packet_id_offset = 2;
+    p.packet_id_offset = (p.bytes[1] & 0x80u) ? 3 : 2; /* After a 1- or 2-byte Remaining Length. */
     p.echo_packet_id = 1;
   }
   return p;
@@ -287,6 +257,38 @@ static void write_lenstr(uint8_t* buf, size_t* pos, const char* s)
     memcpy(buf + *pos, s, n);
     *pos += n;
   }
+}
+
+/* A packet of type @p first_byte: @p head, then Properties holding only a Reason String unless
+ * @p reason_string is NULL. len == 0 when it would not fit AZ_IOT_TEST_MQTT_PACKET_MAX. */
+static az_iot_test_mqtt_packet packet_with_reason_string(
+    uint8_t first_byte,
+    const uint8_t* head,
+    size_t head_len,
+    const char* reason_string)
+{
+  az_iot_test_mqtt_packet p = packet_empty();
+  /* Property 0x1F, then the string with its 2-byte length. */
+  size_t const props = reason_string ? 3u + strlen(reason_string) : 0u;
+  size_t const remaining = head_len + vbi_len(props) + props;
+  if (1u + vbi_len(remaining) + remaining > sizeof(p.bytes))
+  {
+    return p;
+  }
+
+  size_t pos = 0;
+  p.bytes[pos++] = first_byte;
+  write_vbi(p.bytes, &pos, remaining);
+  memcpy(&p.bytes[pos], head, head_len);
+  pos += head_len;
+  write_vbi(p.bytes, &pos, props);
+  if (reason_string)
+  {
+    p.bytes[pos++] = 0x1F;
+    write_lenstr(p.bytes, &pos, reason_string);
+  }
+  p.len = pos;
+  return p;
 }
 
 az_iot_test_mqtt_packet az_iot_test_mqtt_publish_v5(

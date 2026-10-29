@@ -1824,6 +1824,43 @@ static void keep_alive_timeout_is_reported(void** state)
   az_iot_test_proxy_stop(proxy);
 }
 
+static az_iot_test_proxy* start_proxy(uint16_t* port_out);
+static void begin_connect_via_proxy(
+    az_iot_mqtt_client* c,
+    conf_recorder* rec,
+    const char* client_id,
+    uint16_t proxy_port);
+
+/* Connect through a synthetic broker answering with @p connack, then sending @p disconnect after
+ * 300 ms unless it is NULL; record events in @p rec. Returns the client and fills @p proxy_out. */
+static az_iot_mqtt_client* connect_to_synthetic_broker(
+    const az_iot_test_mqtt_packet* connack,
+    const az_iot_test_mqtt_packet* disconnect,
+    const char* client_id_prefix,
+    conf_recorder* rec,
+    az_iot_test_proxy** proxy_out)
+{
+  uint16_t proxy_port = 0;
+  *proxy_out = start_proxy(&proxy_port);
+  assert_int_not_equal(connack->len, 0);
+  assert_int_equal(
+      az_iot_test_proxy_set_synthetic_connack(*proxy_out, connack->bytes, connack->len), 0);
+  if (disconnect != NULL)
+  {
+    assert_int_not_equal(disconnect->len, 0);
+    assert_int_equal(
+        az_iot_test_proxy_set_synthetic_disconnect(
+            *proxy_out, disconnect->bytes, disconnect->len, 300),
+        0);
+  }
+
+  char cid[64];
+  unique_client_id(cid, sizeof(cid), client_id_prefix);
+  az_iot_mqtt_client* c = make_client();
+  begin_connect_via_proxy(c, rec, cid, proxy_port);
+  return c;
+}
+
 /* A v5 server DISCONNECT must be surfaced as a DISCONNECTED event. The proxy
  * sends a success CONNACK, then injects a DISCONNECT with a reason code.
  *
@@ -1835,33 +1872,12 @@ static void keep_alive_timeout_is_reported(void** state)
 static void server_disconnect_is_reported(void** state)
 {
   (void)state;
-
-  az_iot_test_proxy_options popts = az_iot_test_proxy_options_default();
-  popts.upstream_host = g_host;
-  popts.upstream_port = g_port;
-  az_iot_test_proxy* proxy = NULL;
-  uint16_t proxy_port = 0;
-  assert_int_equal(az_iot_test_proxy_start(&popts, &proxy, &proxy_port), 0);
-
-  az_iot_test_mqtt_packet connack = conf_connack(AZ_IOT_TEST_MQTT_REASON_SUCCESS);
-  assert_int_equal(az_iot_test_proxy_set_synthetic_connack(proxy, connack.bytes, connack.len), 0);
-  az_iot_test_mqtt_packet bye = conf_disconnect(AZ_IOT_TEST_MQTT_REASON_SERVER_SHUTTING_DOWN);
-  assert_int_equal(az_iot_test_proxy_set_synthetic_disconnect(proxy, bye.bytes, bye.len, 300), 0);
-
-  char cid[64];
-  unique_client_id(cid, sizeof(cid), "az-iot-conf-srvdisc");
+  az_iot_test_mqtt_packet const connack = conf_connack(AZ_IOT_TEST_MQTT_REASON_SUCCESS);
+  az_iot_test_mqtt_packet const bye = conf_disconnect(AZ_IOT_TEST_MQTT_REASON_SERVER_SHUTTING_DOWN);
   conf_recorder rec = { 0 };
-  az_iot_mqtt_client* c = make_client();
-  c->iface->set_inbound_cb(c, on_event, &rec);
-
-  az_iot_mqtt_connect_options copts = { 0 };
-  copts.host = "127.0.0.1";
-  copts.port = proxy_port;
-  copts.client_id = cid;
-  copts.keep_alive_seconds = 30;
-  copts.connect_timeout_seconds = k_step_timeout_seconds;
-
-  assert_int_equal(c->iface->connect(c, &copts), AZ_IOT_OK);
+  az_iot_test_proxy* proxy = NULL;
+  az_iot_mqtt_client* c
+      = connect_to_synthetic_broker(&connack, &bye, "az-iot-conf-srvdisc", &rec, &proxy);
   assert_true(wait_until(c, &rec, saw_connected_ok, k_step_timeout_ms));
   assert_true(wait_until(c, &rec, saw_disconnected, k_step_timeout_ms));
 
@@ -1881,46 +1897,6 @@ static void server_disconnect_is_reported(void** state)
   (void)c->iface->disconnect(c);
   destroy_client(c);
   az_iot_test_proxy_stop(proxy);
-}
-
-/* Connect through a synthetic broker answering with @p connack, then sending @p disconnect after
- * 300 ms unless it is NULL; record events in @p rec. Returns the client and fills @p proxy_out. */
-static az_iot_mqtt_client* connect_to_synthetic_broker(
-    const az_iot_test_mqtt_packet* connack,
-    const az_iot_test_mqtt_packet* disconnect,
-    const char* client_id_prefix,
-    conf_recorder* rec,
-    az_iot_test_proxy** proxy_out)
-{
-  az_iot_test_proxy_options popts = az_iot_test_proxy_options_default();
-  popts.upstream_host = g_host;
-  popts.upstream_port = g_port;
-  uint16_t proxy_port = 0;
-  assert_int_equal(az_iot_test_proxy_start(&popts, proxy_out, &proxy_port), 0);
-  assert_int_not_equal(connack->len, 0);
-  assert_int_equal(
-      az_iot_test_proxy_set_synthetic_connack(*proxy_out, connack->bytes, connack->len), 0);
-  if (disconnect != NULL)
-  {
-    assert_int_not_equal(disconnect->len, 0);
-    assert_int_equal(
-        az_iot_test_proxy_set_synthetic_disconnect(
-            *proxy_out, disconnect->bytes, disconnect->len, 300),
-        0);
-  }
-
-  char cid[64];
-  unique_client_id(cid, sizeof(cid), client_id_prefix);
-  az_iot_mqtt_client* c = make_client();
-  c->iface->set_inbound_cb(c, on_event, rec);
-  az_iot_mqtt_connect_options copts = { 0 };
-  copts.host = "127.0.0.1";
-  copts.port = proxy_port;
-  copts.client_id = cid;
-  copts.keep_alive_seconds = 30;
-  copts.connect_timeout_seconds = k_step_timeout_seconds;
-  assert_int_equal(c->iface->connect(c, &copts), AZ_IOT_OK);
-  return c;
 }
 
 /* A server DISCONNECT's Reason String is reported verbatim on the DISCONNECTED event: it is the
@@ -2031,7 +2007,8 @@ static az_iot_test_proxy* start_proxy(uint16_t* port_out)
   return proxy;
 }
 
-static void connect_via_proxy(
+/* Start @p c's connect through the proxy at @p proxy_port, recording its events in @p rec. */
+static void begin_connect_via_proxy(
     az_iot_mqtt_client* c,
     conf_recorder* rec,
     const char* client_id,
@@ -2045,6 +2022,15 @@ static void connect_via_proxy(
   copts.keep_alive_seconds = 30;
   copts.connect_timeout_seconds = k_step_timeout_seconds;
   assert_int_equal(c->iface->connect(c, &copts), AZ_IOT_OK);
+}
+
+static void connect_via_proxy(
+    az_iot_mqtt_client* c,
+    conf_recorder* rec,
+    const char* client_id,
+    uint16_t proxy_port)
+{
+  begin_connect_via_proxy(c, rec, client_id, proxy_port);
   assert_true(wait_until(c, rec, saw_connected_ok, k_step_timeout_ms));
 }
 

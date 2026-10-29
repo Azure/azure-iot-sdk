@@ -42,6 +42,7 @@ typedef socklen_t test_socklen;
 #include "azure/iot/adapters/az_iot_adapter_az_mqtt.h"
 #include "azure/iot/az_iot_connection_client.h"
 #include "azure/iot/az_iot_mqtt_iface.h"
+#include "az_iot_test_mqtt_server.h"
 
 #include <az_mqtt5/az_mqtt5_codec.h>
 #include <stdio.h>
@@ -487,9 +488,6 @@ static void puback_codes_are_classified_v5(void** state)
 
 // ──────────── CONNACK / DISCONNECT Reason Strings, against an in-process server ─────────────
 
-/** @brief Bytes the adapter keeps of a CONNACK or DISCONNECT Reason String. */
-#define SESSION_REASON_STRING_KEPT AZ_IOT_CONN_ERROR_MESSAGE_MAX
-
 typedef struct
 {
   int connected;
@@ -497,7 +495,7 @@ typedef struct
   az_iot_mqtt_event_kind kind;
   int32_t protocol_code;
   int reason_string_length; /**< -1: NULL. */
-  char reason_string[SESSION_REASON_STRING_KEPT + 16];
+  char reason_string[AZ_IOT_MQTT_SESSION_REASON_STRING_MAX + 16];
 } session_end_recorder;
 
 static void record_session_end(const az_iot_mqtt_event* evt, void* ctx)
@@ -525,54 +523,9 @@ static void record_session_end(const az_iot_mqtt_event* evt, void* ctx)
 }
 
 /**
- * @brief An MQTT 5 CONNACK (@p first_byte 0x20, @p head acknowledge flags + reason code) or
- * DISCONNECT (0xE0, reason code) whose Properties hold a Reason String of @p length bytes.
- */
-static size_t build_with_reason_string(
-    uint8_t* packet,
-    uint8_t first_byte,
-    const uint8_t* head,
-    size_t head_len,
-    const char* reason,
-    size_t length)
-{
-  size_t const properties = 3u + length;
-  size_t const properties_vbi = properties < 128u ? 1u : 2u;
-  size_t const remaining = head_len + properties_vbi + properties;
-  assert_true(remaining < 16384u);
-  size_t at = 0;
-  packet[at++] = first_byte;
-  if (remaining < 128u)
-  {
-    packet[at++] = (uint8_t)remaining;
-  }
-  else
-  {
-    packet[at++] = (uint8_t)(0x80u | (remaining & 0x7Fu));
-    packet[at++] = (uint8_t)(remaining >> 7);
-  }
-  memcpy(packet + at, head, head_len);
-  at += head_len;
-  if (properties < 128u)
-  {
-    packet[at++] = (uint8_t)properties;
-  }
-  else
-  {
-    packet[at++] = (uint8_t)(0x80u | (properties & 0x7Fu));
-    packet[at++] = (uint8_t)(properties >> 7);
-  }
-  packet[at++] = 0x1F; // Reason String.
-  packet[at++] = (uint8_t)(length >> 8);
-  packet[at++] = (uint8_t)(length & 0xFFu);
-  memcpy(packet + at, reason, length);
-  return at + length;
-}
-
-/**
  * @brief The adapter copies a CONNACK or DISCONNECT Reason String (its event is raised after the
- * receive buffer may be reused) and keeps SESSION_REASON_STRING_KEPT bytes of it: verbatim at that
- * length, truncated past it.
+ * receive buffer may be reused) and keeps AZ_IOT_MQTT_SESSION_REASON_STRING_MAX bytes of it:
+ * verbatim at that length, truncated past it.
  */
 static void run_session_reason_string(bool refuse_connack, size_t length)
 {
@@ -595,20 +548,15 @@ static void run_session_reason_string(bool refuse_connack, size_t length)
   (void)read_packet(c, conn, packet, sizeof(packet));
   assert_int_equal(packet[0], 0x10); // CONNECT.
 
-  char reason[SESSION_REASON_STRING_KEPT + 8];
-  assert_true(length <= sizeof(reason));
+  char reason[AZ_IOT_MQTT_SESSION_REASON_STRING_MAX + 8];
+  assert_true(length < sizeof(reason));
   for (size_t i = 0; i < length; i++)
   {
     reason[i] = (char)('a' + (i % 26));
   }
+  reason[length] = '\0';
   uint8_t const code = (uint8_t)(refuse_connack ? 0x87u : 0x97u);
-  size_t packet_len;
-  if (refuse_connack)
-  {
-    uint8_t const head[] = { 0x00, code };
-    packet_len = build_with_reason_string(packet, 0x20, head, sizeof(head), reason, length);
-  }
-  else
+  if (!refuse_connack)
   {
     static const uint8_t connack[] = { 0x20, 0x03, 0x00, 0x00, 0x00 };
     send_all(conn, connack, sizeof(connack));
@@ -617,10 +565,12 @@ static void run_session_reason_string(bool refuse_connack, size_t length)
       assert_int_equal(c->iface->process_loop(c, 10), AZ_IOT_OK);
     }
     assert_int_equal(r.connected, 1);
-    uint8_t const head[] = { code };
-    packet_len = build_with_reason_string(packet, 0xE0, head, sizeof(head), reason, length);
   }
-  send_all(conn, packet, packet_len);
+  az_iot_test_mqtt_packet const end = refuse_connack
+      ? az_iot_test_mqtt_connack_v5_raw(code, reason)
+      : az_iot_test_mqtt_disconnect_v5_raw(code, reason);
+  assert_int_not_equal(end.len, 0);
+  send_all(conn, end.bytes, end.len);
   for (int step = 0; step < STEPS && r.session_ends == 0; step++)
   {
     assert_int_equal(c->iface->process_loop(c, 10), AZ_IOT_OK);
@@ -630,7 +580,9 @@ static void run_session_reason_string(bool refuse_connack, size_t length)
   assert_int_equal(
       r.kind, refuse_connack ? AZ_IOT_MQTT_EVT_CONNECTED : AZ_IOT_MQTT_EVT_DISCONNECTED);
   assert_int_equal(r.protocol_code, code);
-  size_t const kept = length < SESSION_REASON_STRING_KEPT ? length : SESSION_REASON_STRING_KEPT;
+  size_t const kept = length < AZ_IOT_MQTT_SESSION_REASON_STRING_MAX
+      ? length
+      : AZ_IOT_MQTT_SESSION_REASON_STRING_MAX;
   assert_int_equal(r.reason_string_length, (int)kept);
   assert_memory_equal(r.reason_string, reason, kept);
 
@@ -645,15 +597,15 @@ static void run_session_reason_string(bool refuse_connack, size_t length)
 static void a_connack_reason_string_is_kept_up_to_its_bound(void** state)
 {
   (void)state;
-  run_session_reason_string(true, SESSION_REASON_STRING_KEPT);
-  run_session_reason_string(true, SESSION_REASON_STRING_KEPT + 1);
+  run_session_reason_string(true, AZ_IOT_MQTT_SESSION_REASON_STRING_MAX);
+  run_session_reason_string(true, AZ_IOT_MQTT_SESSION_REASON_STRING_MAX + 1);
 }
 
 static void a_disconnect_reason_string_is_kept_up_to_its_bound(void** state)
 {
   (void)state;
-  run_session_reason_string(false, SESSION_REASON_STRING_KEPT);
-  run_session_reason_string(false, SESSION_REASON_STRING_KEPT + 1);
+  run_session_reason_string(false, AZ_IOT_MQTT_SESSION_REASON_STRING_MAX);
+  run_session_reason_string(false, AZ_IOT_MQTT_SESSION_REASON_STRING_MAX + 1);
 }
 
 /** @brief Two properties at cursors 0 and 2^31, ending at SIZE_MAX: valid, and past INT32_MAX. */

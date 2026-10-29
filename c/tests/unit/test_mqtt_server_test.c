@@ -153,22 +153,26 @@ static void puback_v5_raw_tells_an_absent_reason_string_from_an_empty_one(void**
   assert_int_equal(p.echo_packet_id, 1);
 }
 
-/* Single-byte lengths only: 120 bytes is the longest Reason String (Remaining Length 127). */
-static void puback_v5_raw_refuses_a_reason_string_past_single_byte_lengths(void** state)
+/* Past Remaining Length 127 the lengths take two bytes and the packet id moves with them; a packet
+ * that would not fit AZ_IOT_TEST_MQTT_PACKET_MAX is not built. */
+static void puback_v5_raw_takes_two_byte_lengths_for_a_long_reason_string(void** state)
 {
   (void)state;
-  char reason[122];
+  char reason[AZ_IOT_TEST_MQTT_PACKET_MAX];
   memset(reason, 'r', sizeof(reason));
-  reason[120] = '\0';
-  az_iot_test_mqtt_packet p = az_iot_test_mqtt_puback_v5_raw(0x87, reason);
-  assert_int_equal(p.len, 129);
-  assert_int_equal(p.bytes[1], 127);
-  assert_int_equal(p.bytes[5], 123);
-  assert_int_equal(p.bytes[8], 120);
-  assert_memory_equal(&p.bytes[9], reason, 120);
-
-  reason[120] = 'r';
   reason[121] = '\0';
+  az_iot_test_mqtt_packet p = az_iot_test_mqtt_puback_v5_raw(0x87, reason);
+  assert_int_equal(p.len, 131);
+  assert_int_equal(p.bytes[1], 0x80); /* Remaining Length 128 */
+  assert_int_equal(p.bytes[2], 0x01);
+  assert_int_equal(p.packet_id_offset, 3);
+  assert_int_equal(p.bytes[5], 0x87);
+  assert_int_equal(p.bytes[6], 124); /* Property Length */
+  assert_int_equal(p.bytes[9], 121);
+  assert_memory_equal(&p.bytes[10], reason, 121);
+
+  reason[121] = 'r';
+  reason[sizeof(reason) - 1] = '\0';
   p = az_iot_test_mqtt_puback_v5_raw(0x87, reason);
   assert_int_equal(p.len, 0);
 }
@@ -206,22 +210,22 @@ static void disconnect_v5_raw_tells_an_absent_reason_string_from_an_empty_one(vo
   assert_int_equal(p.packet_id_offset, 0);
 }
 
-/* Single-byte lengths: 122 bytes is the longest DISCONNECT Reason String (Remaining Length 127). */
-static void disconnect_v5_raw_refuses_a_reason_string_past_single_byte_lengths(void** state)
+/* A 129-byte Reason String, as the adapters' truncation tests send: two-byte lengths. */
+static void disconnect_v5_raw_takes_two_byte_lengths_for_a_long_reason_string(void** state)
 {
   (void)state;
-  char reason[124];
+  char reason[130];
   memset(reason, 'r', sizeof(reason));
-  reason[122] = '\0';
-  az_iot_test_mqtt_packet p = az_iot_test_mqtt_disconnect_v5_raw(0x8B, reason);
-  assert_int_equal(p.len, 129);
-  assert_int_equal(p.bytes[1], 127);
-  assert_memory_equal(&p.bytes[7], reason, 122);
-
-  reason[122] = 'r';
-  reason[123] = '\0';
-  p = az_iot_test_mqtt_disconnect_v5_raw(0x8B, reason);
-  assert_int_equal(p.len, 0);
+  reason[129] = '\0';
+  az_iot_test_mqtt_packet p = az_iot_test_mqtt_disconnect_v5_raw(0x97, reason);
+  assert_int_equal(p.len, 138);
+  assert_int_equal(p.bytes[1], 0x87); /* Remaining Length 135 */
+  assert_int_equal(p.bytes[2], 0x01);
+  assert_int_equal(p.bytes[3], 0x97);
+  assert_int_equal(p.bytes[4], 0x84); /* Property Length 132 */
+  assert_int_equal(p.bytes[5], 0x01);
+  assert_int_equal(p.bytes[6], 0x1F);
+  assert_memory_equal(&p.bytes[9], reason, 129);
 }
 
 /* 3.1.1 has no field for it, so the builder reports "not expressible" rather
@@ -417,10 +421,10 @@ int main(void)
     cmocka_unit_test(puback_success_is_the_same_in_both_versions),
     cmocka_unit_test(puback_v5_omits_the_property_length_when_it_carries_a_reason),
     cmocka_unit_test(puback_v5_raw_tells_an_absent_reason_string_from_an_empty_one),
-    cmocka_unit_test(puback_v5_raw_refuses_a_reason_string_past_single_byte_lengths),
+    cmocka_unit_test(puback_v5_raw_takes_two_byte_lengths_for_a_long_reason_string),
     cmocka_unit_test(connack_v5_raw_tells_an_absent_reason_string_from_an_empty_one),
     cmocka_unit_test(disconnect_v5_raw_tells_an_absent_reason_string_from_an_empty_one),
-    cmocka_unit_test(disconnect_v5_raw_refuses_a_reason_string_past_single_byte_lengths),
+    cmocka_unit_test(disconnect_v5_raw_takes_two_byte_lengths_for_a_long_reason_string),
     cmocka_unit_test(a_refusal_a_version_cannot_express_yields_nothing),
     cmocka_unit_test(server_disconnect_carries_the_v5_reason),
     cmocka_unit_test(pingresp_is_a_bare_fixed_header),

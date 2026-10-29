@@ -284,7 +284,8 @@ static void queued_event_copy_reason_string(
 
 /* Allocate + enqueue a simple status event (no message payload), carrying the
  * code that came off the wire and the MQTT 5 Reason String in @p properties
- * (NULL: none), kept to AZ_IOT_MQTT_SESSION_REASON_STRING_MAX bytes on CONNECTED and DISCONNECTED. */
+ * (NULL: none), kept to AZ_IOT_MQTT_SESSION_REASON_STRING_MAX bytes on CONNECTED and DISCONNECTED.
+ */
 static void enqueue_status_codes_with_reason_string(
     paho_client* m,
     az_iot_mqtt_event_kind kind,
