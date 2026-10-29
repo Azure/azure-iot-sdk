@@ -24,6 +24,7 @@
 #include <openssl/encoder.h>
 #include <openssl/err.h>
 #include <openssl/evp.h>
+#include <openssl/opensslv.h>
 #include <openssl/pem.h>
 #include <openssl/provider.h>
 #include <openssl/store.h>
@@ -290,6 +291,16 @@ typedef struct az_iot_pk11_uri
   ASN1_UTF8STRING* uri;
 } az_iot_pk11_uri;
 
+/** @brief Copies NUL-terminated @p text into @p destination. Non-zero on success. */
+static int set_asn1_string_from_text(ASN1_STRING* destination, const char* text)
+{
+#if OPENSSL_VERSION_NUMBER >= 0x40100000L
+  return ASN1_STRING_set1_string(destination, text);
+#else
+  return ASN1_STRING_set(destination, text, -1);
+#endif
+}
+
 /* Only the allocator pair and the item template are generated: nothing here
  * ever DECODES this structure -- the provider's own decoder does that when
  * OpenSSL reads the file back -- so IMPLEMENT_ASN1_FUNCTIONS would emit a d2i
@@ -329,11 +340,8 @@ static BIO* encode_pk11_uri_reference(const char* uri)
   }
   unsigned char* der = NULL;
   int der_len = -1;
-  if (ASN1_STRING_set(
-          obj->description,
-          AZ_IOT_PK11_URI_DESCRIPTION,
-          (int)(sizeof(AZ_IOT_PK11_URI_DESCRIPTION) - 1))
-      && ASN1_STRING_set(obj->uri, uri, (int)strlen(uri)))
+  if (set_asn1_string_from_text(obj->description, AZ_IOT_PK11_URI_DESCRIPTION)
+      && set_asn1_string_from_text(obj->uri, uri))
   {
     der_len = ASN1_item_i2d((ASN1_VALUE*)obj, &der, ASN1_ITEM_rptr(az_iot_pk11_uri));
   }

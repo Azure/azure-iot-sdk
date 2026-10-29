@@ -265,7 +265,11 @@ static az_amqp_transport_status _tls_handshake(az_amqp_sample_transport* s)
       memcpy(host, az_span_ptr(sni), (size_t)hn);
       host[hn] = 0;
       (void)SSL_set_tlsext_host_name(ssl, host);
+#if OPENSSL_VERSION_NUMBER >= 0x40000000L
+      (void)SSL_set1_dnsname(ssl, host);
+#else
       (void)SSL_set1_host(ssl, host);
+#endif
     }
     s->tls_context = ctx;
     s->tls_session = ssl;
