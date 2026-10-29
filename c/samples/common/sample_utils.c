@@ -290,24 +290,12 @@ bool sample_file_flush_to_storage(FILE* file)
 #endif
 }
 
-bool sample_file_replace(const char* source_path, const char* destination_path)
+#ifndef _WIN32
+/** @brief Sync the directory holding @p path, so a rename into it is durable.
+ *  @return true on success. */
+static bool sync_parent_directory(const char* path)
 {
-  if (source_path == NULL || destination_path == NULL)
-  {
-    return false;
-  }
-#ifdef _WIN32
-  /* rename() does not replace an existing file on Windows. */
-  return MoveFileExA(
-             source_path, destination_path, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)
-      != 0;
-#else
-  if (rename(source_path, destination_path) != 0)
-  {
-    return false;
-  }
-  /* The rename is durable only once the directory holding it is. */
-  const char* last_slash = strrchr(destination_path, '/');
+  const char* last_slash = strrchr(path, '/');
   char* directory = NULL;
   if (last_slash == NULL)
   {
@@ -315,11 +303,11 @@ bool sample_file_replace(const char* source_path, const char* destination_path)
   }
   else
   {
-    size_t length = (last_slash == destination_path) ? 1u : (size_t)(last_slash - destination_path);
+    size_t length = (last_slash == path) ? 1u : (size_t)(last_slash - path);
     directory = (char*)malloc(length + 1u);
     if (directory != NULL)
     {
-      memcpy(directory, destination_path, length);
+      memcpy(directory, path, length);
       directory[length] = '\0';
     }
   }
@@ -336,6 +324,35 @@ bool sample_file_replace(const char* source_path, const char* destination_path)
   bool synced = fsync(directory_fd) == 0;
   (void)close(directory_fd);
   return synced;
+}
+#endif
+
+bool sample_file_replace(const char* source_path, const char* destination_path)
+{
+  if (source_path == NULL || destination_path == NULL)
+  {
+    return false;
+  }
+#ifdef _WIN32
+  /* rename() does not replace an existing file on Windows. */
+  return MoveFileExA(
+             source_path, destination_path, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)
+      != 0;
+#else
+  if (rename(source_path, destination_path) != 0)
+  {
+    return false;
+  }
+  /* Replaced: report true whatever follows, so callers never see a failure
+   * while the new file is already the one readers get. */
+  if (!sync_parent_directory(destination_path))
+  {
+    fprintf(
+        stderr,
+        "%s: replaced, but its directory could not be synced to storage\n",
+        destination_path);
+  }
+  return true;
 #endif
 }
 

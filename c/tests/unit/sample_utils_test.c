@@ -9,7 +9,7 @@
  * created in the working directory and removed by each test.
  */
 #if !defined(_WIN32)
-#define _POSIX_C_SOURCE 200809L /* symlink, lstat, umask */
+#define _POSIX_C_SOURCE 200809L /* symlink, lstat, umask, mkdir, chmod */
 #endif
 
 #include <stdarg.h>
@@ -33,12 +33,18 @@
 #define SOURCE_FILE "sample_utils_test_source.tmp"
 #define DESTINATION_FILE "sample_utils_test_destination.tmp"
 #define LINK_FILE "sample_utils_test_link.tmp"
+#define DIRECTORY "sample_utils_test_directory.tmp"
 
 static void remove_test_files(void)
 {
   (void)remove(SOURCE_FILE);
   (void)remove(DESTINATION_FILE);
   (void)remove(LINK_FILE);
+#if !defined(_WIN32)
+  (void)chmod(DIRECTORY, 0700);
+  (void)remove(DIRECTORY "/" DESTINATION_FILE);
+  (void)rmdir(DIRECTORY);
+#endif
 }
 
 static int setup(void** state)
@@ -109,6 +115,25 @@ static void file_replace_fails_without_a_source_and_keeps_the_destination(void**
   assert_false(sample_file_replace(SOURCE_FILE, NULL));
 
   assert_file_holds(DESTINATION_FILE, "old");
+}
+
+static void file_replace_reports_a_done_rename_when_the_directory_sync_fails(void** state)
+{
+  (void)state;
+  write_text_file(SOURCE_FILE, "new");
+#if !defined(_WIN32)
+  /* Write and search but no read: the rename succeeds, opening the directory
+   * for its sync does not (unless run as root). */
+  assert_int_equal(mkdir(DIRECTORY, 0700), 0);
+  assert_int_equal(chmod(DIRECTORY, 0300), 0);
+  bool replaced = sample_file_replace(SOURCE_FILE, DIRECTORY "/" DESTINATION_FILE);
+  assert_int_equal(chmod(DIRECTORY, 0700), 0);
+  assert_true(replaced);
+  assert_file_holds(DIRECTORY "/" DESTINATION_FILE, "new");
+#else
+  assert_true(sample_file_replace(SOURCE_FILE, DESTINATION_FILE));
+  assert_file_holds(DESTINATION_FILE, "new");
+#endif
 }
 
 static void file_flush_to_storage_writes_through_the_buffer(void** state)
@@ -196,6 +221,8 @@ int main(void)
         file_replace_creates_a_missing_destination_given_with_a_directory, setup, teardown),
     cmocka_unit_test_setup_teardown(
         file_replace_fails_without_a_source_and_keeps_the_destination, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        file_replace_reports_a_done_rename_when_the_directory_sync_fails, setup, teardown),
     cmocka_unit_test_setup_teardown(
         file_flush_to_storage_writes_through_the_buffer, setup, teardown),
     cmocka_unit_test_setup_teardown(fopen_private_creates_an_owner_only_file, setup, teardown),

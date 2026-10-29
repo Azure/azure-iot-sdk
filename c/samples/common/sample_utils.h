@@ -106,11 +106,15 @@ bool sample_file_flush_to_storage(FILE* file);
  * a reader sees the old file or the new one, never a partial one, and the
  * replacement survives a power loss. Flush @p source_path to storage first.
  *
+ * On POSIX the directory is synced after the rename; if that fails, a line is
+ * written to stderr and true is still returned, since the destination is
+ * already replaced.
+ *
  * @param[in] source_path      Complete file; renamed, so it is gone on success.
  * @param[in] destination_path File to replace; created when absent. Same file
  *                             system as @p source_path.
- * @return true on success. false when the rename or, on POSIX, the directory
- * sync fails; in the latter case the destination is already replaced.
+ * @return true when the destination was replaced; false when it was left as it
+ * was.
  */
 bool sample_file_replace(const char* source_path, const char* destination_path);
 
