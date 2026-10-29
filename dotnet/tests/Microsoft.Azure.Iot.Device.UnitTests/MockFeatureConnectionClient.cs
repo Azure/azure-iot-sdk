@@ -121,7 +121,14 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
         public bool IsDisposed { get; private set; }
 
-        public ConnectionContext? GetCurrentConnectionContext() => CurrentConnectionContext;
+        /// <summary>Optional callback run whenever a feature client reads the current connection context.</summary>
+        public Action? OnGetCurrentConnectionContext { get; set; }
+
+        public ConnectionContext? GetCurrentConnectionContext()
+        {
+            OnGetCurrentConnectionContext?.Invoke();
+            return CurrentConnectionContext;
+        }
 
         public async Task<MqttPublishAck> PublishAsync(MqttPublish publish, bool throwOnErrorReasonCode, CancellationToken cancellationToken = default)
         {

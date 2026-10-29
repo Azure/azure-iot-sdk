@@ -36,6 +36,10 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
     {
         private volatile bool _isDisposed = false;
 
+        // Incremented whenever the connection is lost, so that a request registered while the connection was being lost fails
+        // instead of being sent after reconnecting.
+        private long _connectionLossGeneration;
+
         private const string ProtobufContentType = "application/protobuf";
 
         private readonly IConnectionClient _connection;
@@ -138,6 +142,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
                 throw new ArgumentException("At least one twin section must be requested.");
             }
 
+            long connectionLossGeneration = Interlocked.Read(ref _connectionLossGeneration);
             EnsureConnected();
 
             Guid getId = Guid.NewGuid();
@@ -146,7 +151,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
             TwinGetResponse twinGetResponse;
             try
             {
-                ThrowIfDisposedAfterRegistering(request);
+                ThrowIfUnusableAfterRegistering(request, connectionLossGeneration);
                 twinGetResponse = await request.SendAndWaitAsync(
                     PublishGetAsync(getId, getDesired, getReported, ifNotMatchDesired, ifNotMatchReported, request.Cancellation.Token),
                     cancellationToken).ConfigureAwait(false);
@@ -195,6 +200,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
             ObjectDisposedException.ThrowIf(_isDisposed, this);
             ArgumentNullException.ThrowIfNull(patch);
             ArgumentNullException.ThrowIfNull(patch.ReportedProperties);
+            long connectionLossGeneration = Interlocked.Read(ref _connectionLossGeneration);
             EnsureConnected();
 
             Guid patchId = Guid.NewGuid();
@@ -202,7 +208,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
             _pendingReportedPatches[patchId] = request;
             try
             {
-                ThrowIfDisposedAfterRegistering(request);
+                ThrowIfUnusableAfterRegistering(request, connectionLossGeneration);
                 byte[] payload = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(patch.ReportedProperties));
                 return await request.SendAndWaitAsync(
                     PublishReportedPatchAsync(patchId, ifMatch, payload, request.Cancellation.Token),
@@ -266,11 +272,18 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
         // Twin requests can't outlive the connection they were sent on, since IoT hub never sends their responses on a later one.
         private void HandleConnectionLost()
         {
-            FailPendingRequests(() => new DeviceException("The connection to IoT hub was lost before the response to this twin request arrived. It may be retried once reconnected.")
+            // Incremented first, so that a request registered after the pending requests are failed below fails instead of being sent.
+            Interlocked.Increment(ref _connectionLossGeneration);
+            FailPendingRequests(CreateConnectionLostException);
+        }
+
+        private static DeviceException CreateConnectionLostException()
+        {
+            return new DeviceException("The connection to IoT hub was lost before the response to this twin request arrived. It may be retried once reconnected.")
             {
                 Retryability = ErrorRetryability.Retryable,
                 IsContained = true,
-            });
+            };
         }
 
         private void FailPendingRequests(Func<Exception> createException)
@@ -292,13 +305,19 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
             }
         }
 
-        // Called after registering a request, so that it is either failed by disposal or fails here.
-        private void ThrowIfDisposedAfterRegistering<TResponse>(PendingRequest<TResponse> request)
+        // Called after registering a request, so that it is either failed by disposal or a connection loss, or fails here.
+        private void ThrowIfUnusableAfterRegistering<TResponse>(PendingRequest<TResponse> request, long connectionLossGeneration)
         {
             if (_isDisposed)
             {
                 request.Cancellation.Dispose();
                 throw new ObjectDisposedException(nameof(TwinClient));
+            }
+
+            if (Interlocked.Read(ref _connectionLossGeneration) != connectionLossGeneration)
+            {
+                request.Cancellation.Dispose();
+                throw CreateConnectionLostException();
             }
         }
 

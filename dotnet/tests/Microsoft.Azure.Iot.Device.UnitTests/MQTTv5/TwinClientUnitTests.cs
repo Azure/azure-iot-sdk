@@ -90,6 +90,24 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
         }
 
         [Fact]
+        public async Task Requests_FailWithRetryableErrorWithoutSendingWhenConnectionIsLostWhileRegistering()
+        {
+            (MockFeatureConnectionClient connection, _) = CreateConnectionWithNonce();
+            using TwinClient twinClient = new(connection);
+
+            // The connection is lost after the request checks that it is connected, but before it is registered.
+            connection.OnGetCurrentConnectionContext = connection.SimulateConnectionLost;
+
+            DeviceException getError = await Assert.ThrowsAsync<DeviceException>(() => twinClient.GetTwinAsync(cancellationToken: TestContext.Current.CancellationToken));
+            Assert.Equal(ErrorRetryability.Retryable, getError.Retryability);
+            DeviceException patchError = await Assert.ThrowsAsync<DeviceException>(() => twinClient.UpdateReportedPropertiesAsync(
+                new() { ReportedProperties = new JsonObject() },
+                cancellationToken: TestContext.Current.CancellationToken));
+            Assert.Equal(ErrorRetryability.Retryable, patchError.Retryability);
+            Assert.Empty(connection.PublishedMessages);
+        }
+
+        [Fact]
         public async Task Requests_ThrowWhenNotConnected()
         {
             MockFeatureConnectionClient connection = new();
