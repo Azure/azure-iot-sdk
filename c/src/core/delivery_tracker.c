@@ -515,6 +515,18 @@ az_iot_result az_iot_delivery_tracker__submit(
   return AZ_IOT_OK;
 }
 
+/** @brief Send what a freed entry or PUBACK slot now lets go, unless an on_complete unbound @p t.
+ */
+static void flush_if_still_bound(
+    az_iot_delivery_tracker* t,
+    const az_iot_connection_client* connection)
+{
+  if (still_bound(t, connection))
+  {
+    flush(t, true);
+  }
+}
+
 az_iot_result az_iot_delivery_tracker__complete(
     az_iot_delivery_tracker* tracker,
     const uint8_t* correlation_id,
@@ -524,6 +536,7 @@ az_iot_result az_iot_delivery_tracker__complete(
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
+  az_iot_connection_client* const connection = TI(tracker).connection;
   for (size_t i = 0; i < TI(tracker).capacity; ++i)
   {
     az_iot_delivery_tracker_entry* e = &TI(tracker).entries[i];
@@ -533,6 +546,7 @@ az_iot_result az_iot_delivery_tracker__complete(
         && memcmp(EI(e).correlation_id, correlation_id, correlation_id_length) == 0)
     {
       finish(e, AZ_IOT_DELIVERY_TRACKER_OUTCOME_DELIVERED, NULL);
+      flush_if_still_bound(tracker, connection);
       return AZ_IOT_OK;
     }
   }
@@ -550,5 +564,6 @@ void az_iot_delivery_tracker__cancel(az_iot_delivery_tracker* tracker, size_t en
   {
     forget_publish(e);
     memset(e, 0, sizeof(*e));
+    flush_if_still_bound(tracker, TI(tracker).connection);
   }
 }

@@ -600,6 +600,25 @@ static void a_requeued_message_does_not_wait_out_the_adapter(void** state)
   assert_true(
       az_iot_mock_mqtt_client_last_of(fx->mock, AZ_IOT_MOCK_CALL_PROCESS_LOOP)->timeout_ms > 1000u);
 }
+
+/* Cancel and a response that free a PUBACK slot send the message queued behind them. */
+static void freed_capacity_sends_the_queued_message(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  connect(fx);
+  size_t const cancelled = submit(fx, &k_resend, 1u, 0u);
+  (void)submit(fx, &k_response, 2u, 0u);
+  (void)submit(fx, &k_resend, 3u, 0u);
+  (void)submit(fx, &k_resend, 4u, 0u);
+  assert_int_equal(publish_count(fx), RESERVED_PUBACKS);
+  az_iot_delivery_tracker__cancel(&fx->tracker, cancelled);
+  assert_int_equal(publish_count(fx), RESERVED_PUBACKS + 1u);
+  assert_string_equal(last_publish(fx)->topic, "t/2");
+  uint8_t const id = 2u;
+  assert_int_equal(az_iot_delivery_tracker__complete(&fx->tracker, &id, 1u), AZ_IOT_OK);
+  assert_int_equal(publish_count(fx), RESERVED_PUBACKS + 2u);
+  assert_string_equal(last_publish(fx)->topic, "t/3");
+}
 /* A send the adapter refuses does not hold back the message a PUBACK error requeued: it goes out
  * from the next do_work(). */
 static void a_busy_adapter_does_not_hold_back_a_requeued_message(void** state)
@@ -692,6 +711,7 @@ int main(void)
     cmocka_unit_test_setup_teardown(the_wait_ends_by_the_earliest_time_limit, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_requeued_message_does_not_wait_out_the_adapter, setup, teardown),
+    cmocka_unit_test_setup_teardown(freed_capacity_sends_the_queued_message, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_busy_adapter_does_not_hold_back_a_requeued_message, setup, teardown),
     cmocka_unit_test_setup_teardown(arguments_capacity_and_binding, setup, teardown),

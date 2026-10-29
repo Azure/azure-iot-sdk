@@ -134,7 +134,8 @@ extern "C"
       size_t* out_entry_index);
 
   /**
-   * @brief A response matched @p correlation_id: complete its message as DELIVERED.
+   * @brief A response matched @p correlation_id: complete its message as DELIVERED. Queued
+   *        messages the freed capacity lets go are sent.
    * @retval AZ_IOT_ERR_NOT_FOUND No tracked message has it.
    */
   az_iot_result az_iot_delivery_tracker__complete(
@@ -142,7 +143,10 @@ extern "C"
       const uint8_t* correlation_id,
       size_t correlation_id_length);
 
-  /** @brief Drop entry @p entry_index without completing it; its late PUBACK is ignored. */
+  /**
+   * @brief Drop entry @p entry_index without completing it; its late PUBACK is ignored. Queued
+   *        messages the freed capacity lets go are sent.
+   */
   void az_iot_delivery_tracker__cancel(az_iot_delivery_tracker* tracker, size_t entry_index);
 
 #ifdef __cplusplus
