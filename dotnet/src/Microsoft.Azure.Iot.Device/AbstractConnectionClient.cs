@@ -136,9 +136,51 @@ namespace Microsoft.Azure.Iot.Device
             {
                 // The current session now holds every subscription the presence flow needs, so the next reconnect may resume it.
                 Volatile.Write(ref _canResumeHubSession, 1);
+                Volatile.Write(ref _isHubConnectionReady, 1);
+                RaiseHubConnectionEvent(HubConnectionReady, "connection ready");
             }
 
             return _devicePresenceFlowCompleted.InvokeAsync(args);
+        }
+
+        /// <summary>
+        /// Raised whenever this client's connection to IoT hub is lost or closed (including deliberately), before this
+        /// client starts reconnecting. Handlers must return quickly; any exception they throw is logged and ignored.
+        /// </summary>
+        internal event Action? HubConnectionLost;
+
+        /// <summary>
+        /// Raised whenever the device presence flow completes successfully on a connection to IoT hub, before anything
+        /// waiting for that flow is released. Handlers must return quickly; any exception they throw is logged and ignored.
+        /// </summary>
+        internal event Action? HubConnectionReady;
+
+        // 1 from the moment the device presence flow completes on a connection to IoT hub until that connection is lost.
+        private int _isHubConnectionReady;
+
+        /// <summary>
+        /// Whether this client is connected to IoT hub and the device presence flow has completed on that connection.
+        /// </summary>
+        internal bool IsHubConnectionReady => Volatile.Read(ref _isHubConnectionReady) != 0 && CurrentEndpoint == ConnectionEndpoint.IotHub;
+
+        private static void RaiseHubConnectionEvent(Action? handlers, string eventName)
+        {
+            if (handlers == null)
+            {
+                return;
+            }
+
+            foreach (Action handler in handlers.GetInvocationList().Cast<Action>())
+            {
+                try
+                {
+                    handler();
+                }
+                catch (Exception e)
+                {
+                    Trace.TraceWarning("A {0} handler threw and was ignored. {1}", eventName, e);
+                }
+            }
         }
 
         internal bool _isDisposed = false;
@@ -936,11 +978,23 @@ namespace Microsoft.Azure.Iot.Device
 
         private Task HandleDisconnectedAsync(MqttClientDisconnectedEventArgs args)
         {
+            bool wasHubConnectionReady = Interlocked.Exchange(ref _isHubConnectionReady, 0) == 1;
             if (CurrentEndpoint == ConnectionEndpoint.DeviceProvisioningService)
             {
                 // Because DPS cannot persist sessions, any connection loss should be treated as a session loss. Abandon
                 // the in-progress flow so that it can be restarted from the beginning once the connection is re-established.
                 CancelCurrentProvisioningFlow();
+
+                if (wasHubConnectionReady)
+                {
+                    // The endpoint switched to DPS before the connection to IoT hub was closed.
+                    RaiseHubConnectionEvent(HubConnectionLost, "connection lost");
+                }
+            }
+            else if (wasHubConnectionReady || CurrentEndpoint == ConnectionEndpoint.IotHub)
+            {
+                // Disconnects while switching endpoints (when no IoT hub connection exists) don't lose any hub requests.
+                RaiseHubConnectionEvent(HubConnectionLost, "connection lost");
             }
 
             return Task.CompletedTask;

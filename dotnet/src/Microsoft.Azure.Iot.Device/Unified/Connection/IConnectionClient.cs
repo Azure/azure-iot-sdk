@@ -33,6 +33,25 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
         bool IsConnectionTargetSet => true;
 
         /// <summary>
+        /// Whether the current connection to IoT hub has completed its device presence flow (for example, subscribing to the
+        /// topics that feature clients receive responses on), so that requests sent now can be answered on this connection.
+        /// </summary>
+        /// <remarks>
+        /// Connection clients that don't report <see cref="ConnectionReady"/> are considered ready whenever they are connected.
+        /// </remarks>
+        internal bool IsConnectionReady => GetCurrentConnectionContext() != null && IsConnectionTargetSet;
+
+        /// <summary>
+        /// Raised whenever the connection to IoT hub is lost or closed, before any reconnection starts.
+        /// </summary>
+        internal event Action? ConnectionLost { add { } remove { } }
+
+        /// <summary>
+        /// Raised whenever a connection to IoT hub completes its device presence flow, so that <see cref="IsConnectionReady"/> is true.
+        /// </summary>
+        internal event Action? ConnectionReady { add { } remove { } }
+
+        /// <summary>
         /// Whether this connection client subscribes to twin topics. See <see cref="ConnectionClientOptions.EnableTwin"/>.
         /// </summary>
         bool IsTwinEnabled => true;

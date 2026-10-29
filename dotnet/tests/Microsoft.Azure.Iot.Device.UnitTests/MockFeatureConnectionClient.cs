@@ -38,11 +38,62 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
         public bool IsDisposed { get; private set; }
 
+        /// <summary>
+        /// Whether IoT hub is ready for twin requests on the current connection. Only effective while
+        /// <see cref="CurrentConnectionContext"/> is set.
+        /// </summary>
+        public bool IsConnectionReady { get; set; } = true;
+
+        public event Action? ConnectionLost;
+
+        public event Action? ConnectionReady;
+
+        bool global::Microsoft.Azure.Iot.Device.Unified.Connection.IConnectionClient.IsConnectionReady
+            => IsConnectionReady && CurrentConnectionContext != null;
+
+        event Action? global::Microsoft.Azure.Iot.Device.Unified.Connection.IConnectionClient.ConnectionLost
+        {
+            add => ConnectionLost += value;
+            remove => ConnectionLost -= value;
+        }
+
+        event Action? global::Microsoft.Azure.Iot.Device.Unified.Connection.IConnectionClient.ConnectionReady
+        {
+            add => ConnectionReady += value;
+            remove => ConnectionReady -= value;
+        }
+
         public ConnectionContext? GetCurrentConnectionContext() => CurrentConnectionContext;
+
+        /// <summary>Snapshot of <see cref="PublishedMessages"/>, safe to take while feature clients publish from other threads.</summary>
+        public List<MqttPublish> GetPublishedMessages()
+        {
+            lock (PublishedMessages)
+            {
+                return new List<MqttPublish>(PublishedMessages);
+            }
+        }
+
+        /// <summary>Simulate losing the connection to IoT hub.</summary>
+        public void SimulateConnectionLost()
+        {
+            IsConnectionReady = false;
+            ConnectionLost?.Invoke();
+        }
+
+        /// <summary>Simulate IoT hub completing the device presence flow on a (new) connection.</summary>
+        public void SimulateConnectionReady()
+        {
+            IsConnectionReady = true;
+            ConnectionReady?.Invoke();
+        }
 
         public async Task<MqttPublishAck> PublishAsync(MqttPublish publish, CancellationToken cancellationToken = default)
         {
-            PublishedMessages.Add(publish);
+            lock (PublishedMessages)
+            {
+                PublishedMessages.Add(publish);
+            }
 
             if (OnPublish != null)
             {

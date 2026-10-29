@@ -36,6 +36,20 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
         /// <inheritdoc/>
         public bool AreCloudToDeviceMessagesEnabled { get; }
 
+        bool IConnectionClient.IsConnectionReady => IsHubConnectionReady;
+
+        event Action? IConnectionClient.ConnectionLost
+        {
+            add => HubConnectionLost += value;
+            remove => HubConnectionLost -= value;
+        }
+
+        event Action? IConnectionClient.ConnectionReady
+        {
+            add => HubConnectionReady += value;
+            remove => HubConnectionReady -= value;
+        }
+
         /// <summary>
         /// Construct a new <see cref="ConnectionClient"/>
         /// </summary>
