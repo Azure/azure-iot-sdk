@@ -84,6 +84,13 @@ static void finish(
   profile->on_complete(TI(t).owner_context, index_of(t, e), outcome, detail);
 }
 
+/** @brief Keep @p e queued but unsent until the TICK after next (see held_back()). */
+static void hold_for_resend(az_iot_delivery_tracker_entry* e)
+{
+  EI(e).held_for_resend = 1u;
+  EI(e).held_at_tick = TI(EI(e).tracker).tick_count;
+}
+
 /** @brief A message not confirmed on the session that ended: requeue or complete per policy. */
 static void lose(az_iot_delivery_tracker_entry* e, const az_iot_publish_result* detail)
 {
@@ -91,8 +98,7 @@ static void lose(az_iot_delivery_tracker_entry* e, const az_iot_publish_result* 
   if (EI(e).profile->on_session_loss == AZ_IOT_DELIVERY_TRACKER_ON_SESSION_LOSS_RESEND)
   {
     EI(e).state = ENTRY_QUEUED;
-    EI(e).requeued_by_completion = 1u;
-    EI(e).requeued_at_tick = TI(EI(e).tracker).tick_count;
+    hold_for_resend(e);
     return;
   }
   finish(e, AZ_IOT_DELIVERY_TRACKER_OUTCOME_SESSION_LOST, detail);
@@ -194,7 +200,7 @@ static az_iot_result try_send(az_iot_delivery_tracker* t, az_iot_delivery_tracke
   if (track)
   {
     EI(e).state = ENTRY_IN_FLIGHT;
-    EI(e).requeued_by_completion = 0u;
+    EI(e).held_for_resend = 0u;
     EI(e).publish_slot = handle.slot;
     EI(e).publish_id = handle.id;
   }
@@ -232,8 +238,7 @@ static bool sends_after(const az_iot_delivery_tracker_entry* e, uint8_t priority
  */
 static bool held_back(const az_iot_delivery_tracker* t, const az_iot_delivery_tracker_entry* e)
 {
-  return EI(e).requeued_by_completion != 0u
-      && (uint32_t)(TI(t).tick_count - EI(e).requeued_at_tick) < 2u;
+  return EI(e).held_for_resend != 0u && (uint32_t)(TI(t).tick_count - EI(e).held_at_tick) < 2u;
 }
 
 /**
@@ -245,6 +250,7 @@ static void flush(az_iot_delivery_tracker* t, bool skip_requeued)
 {
   az_iot_connection_client* const connection = TI(t).connection;
   binding const bound = binding_of(t);
+  TI(t).send_refused = 0u;
   uint8_t priority = 0;
   uint64_t sequence = 0; /* Sequences start at 1, so (0, 0) precedes every entry. */
   while (az_iot_connection_client__is_connected(connection))
@@ -285,11 +291,13 @@ static void flush(az_iot_delivery_tracker* t, bool skip_requeued)
     }
     if (result == AZ_IOT_ERR_NOT_CONNECTED || result == AZ_IOT_ERR_BUSY)
     {
+      TI(t).send_refused = 1u;
       break; /* The connection refused; the rest waits for a later event. */
     }
     if (result != AZ_IOT_OK && result != NO_SLOT_FOR_PRIORITY)
     {
-      /* This message only: it stays queued until a later flush sends it or it expires. */
+      /* This message only: it stays queued, retried like a PUBACK error, until it expires. */
+      hold_for_resend(candidate);
       AZ_IOT_LOG_DEBUGF(
           AZ_IOT_LOG_COMPONENT_CONNECTION,
           "could not send a '%s' message (%s)",
@@ -308,11 +316,12 @@ static void for_each_entry(
     void (*apply)(az_iot_delivery_tracker_entry* e))
 {
   binding const bound = binding_of(t);
+  uint64_t const submitted_before = TI(t).next_sequence; /* Not what callbacks submit now. */
   for (size_t i = 0; i < TI(t).capacity; ++i)
   {
     az_iot_delivery_tracker_entry* e = &TI(t).entries[i];
-    if (EI(e).state != ENTRY_FREE && (state == ENTRY_FREE || EI(e).state == state)
-        && (selected == NULL || selected(e)))
+    if (EI(e).state != ENTRY_FREE && EI(e).sequence < submitted_before
+        && (state == ENTRY_FREE || EI(e).state == state) && (selected == NULL || selected(e)))
     {
       apply(e);
       if (!still_bound(t, bound))
@@ -331,19 +340,24 @@ static void discard(az_iot_delivery_tracker_entry* e)
 }
 
 /**
- * @brief Lower @p remaining_ms to the earliest message time limit, or to 0 when a held back
- *        message becomes sendable at this do_work()'s TICK.
+ * @brief Lower @p remaining_ms to the earliest message time limit, or to 0 when this
+ *        do_work()'s TICK can send a queued message: a held back one becomes sendable, or a
+ *        PUBACK slot freed since the last flush. Not after a refused flush: events resume it.
  */
 static void lower_remaining_to_next_action(const az_iot_delivery_tracker* t, uint64_t* remaining_ms)
 {
   uint64_t const now = az_iot_time_mono_ms();
+  bool const can_send_now
+      = TI(t).send_refused == 0u && az_iot_connection_client__is_connected(TI(t).connection);
   for (size_t i = 0; i < TI(t).capacity; ++i)
   {
     const az_iot_delivery_tracker_entry* e = &TI(t).entries[i];
     uint64_t left = EI(e).state == ENTRY_FREE ? UINT64_MAX
                                               : az_iot_deadline__remaining_ms(&EI(e).deadline, now);
-    if (EI(e).state == ENTRY_QUEUED && EI(e).requeued_by_completion != 0u
-        && (uint32_t)(TI(t).tick_count - EI(e).requeued_at_tick) == 1u)
+    if (EI(e).state == ENTRY_QUEUED
+        && (EI(e).held_for_resend != 0u
+                ? (uint32_t)(TI(t).tick_count - EI(e).held_at_tick) == 1u
+                : can_send_now && may_take_slot(t, EI(e).profile->priority)))
     {
       left = 0u;
     }

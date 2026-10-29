@@ -49,8 +49,10 @@ typedef struct fixture
   completion completions[16];
   size_t completion_count;
   bool unbind_on_complete;
-  /* Once, when set: unbind, init, bind again, submit two messages with this profile. */
-  const az_iot_delivery_tracker_profile* rebind_on_complete;
+  /* Once, when set: submit two messages with this profile (after unbind, init, bind when
+   * rebind_first). */
+  const az_iot_delivery_tracker_profile* submit_two_on_complete;
+  bool rebind_first;
 } fixture;
 
 static const uint8_t k_guaranteed[] = { 1u }; /* One slot kept for priority 0. */
@@ -83,16 +85,19 @@ static void on_complete(
   fx->completions[fx->completion_count].entry_index = entry_index;
   fx->completions[fx->completion_count].outcome = outcome;
   fx->completion_count++;
-  if (fx->rebind_on_complete != NULL)
+  if (fx->submit_two_on_complete != NULL)
   {
-    const az_iot_delivery_tracker_profile* profile = fx->rebind_on_complete;
-    fx->rebind_on_complete = NULL;
-    az_iot_delivery_tracker__unbind(&fx->tracker);
-    assert_int_equal(
-        az_iot_delivery_tracker__init(
-            &fx->tracker, fx->entries, ENTRY_COUNT, RESERVED_PUBACKS, k_guaranteed, 1u, fx),
-        AZ_IOT_OK);
-    assert_int_equal(az_iot_delivery_tracker__bind(&fx->tracker, &fx->connection), AZ_IOT_OK);
+    const az_iot_delivery_tracker_profile* profile = fx->submit_two_on_complete;
+    fx->submit_two_on_complete = NULL;
+    if (fx->rebind_first)
+    {
+      az_iot_delivery_tracker__unbind(&fx->tracker);
+      assert_int_equal(
+          az_iot_delivery_tracker__init(
+              &fx->tracker, fx->entries, ENTRY_COUNT, RESERVED_PUBACKS, k_guaranteed, 1u, fx),
+          AZ_IOT_OK);
+      assert_int_equal(az_iot_delivery_tracker__bind(&fx->tracker, &fx->connection), AZ_IOT_OK);
+    }
     for (uint8_t id = 7u; id <= 8u; ++id)
     {
       size_t index = 0;
@@ -467,7 +472,8 @@ static void a_completion_may_rebind_the_tracker(void** state)
   fixture* fx = (fixture*)*state;
   (void)submit(fx, &k_resend, 1u, 0u);
   (void)submit(fx, &k_resend, 2u, 0u);
-  fx->rebind_on_complete = &k_resend;
+  fx->submit_two_on_complete = &k_resend;
+  fx->rebind_first = true;
   signal_identity_change(fx);
   assert_int_equal(fx->completion_count, 1);
   assert_non_null(fx->entries[0]._internal.profile);
@@ -592,8 +598,8 @@ static void a_later_observer_submit_does_not_resend_a_requeued_message(void** st
   az_iot_delivery_tracker__unbind(&second);
 }
 
-/* A send error of one message (not NOT_CONNECTED or BUSY) leaves it queued and does not hold
- * back the messages after it. */
+/* A send error of one message (not NOT_CONNECTED or BUSY) does not hold back the messages
+ * after it; that message is retried like a PUBACK error, from the next do_work(). */
 static void a_message_send_error_does_not_block_the_queue(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -601,9 +607,11 @@ static void a_message_send_error_does_not_block_the_queue(void** state)
   (void)submit(fx, &k_resend, 2u, 0u);
   fx->failing_sends = 1;
   fx->failing_send_result = AZ_IOT_ERR_INVALID_ARG;
-  connect(fx); /* The CONNECTED flush: t/0 fails, t/1 goes; the tick resends t/0. */
+  connect(fx); /* Its CONNECTED flush: t/0 fails, t/1 goes; its TICK holds t/0 back. */
+  assert_int_equal(publish_count(fx), 2);
+  assert_string_equal(last_publish(fx)->topic, "t/1");
+  do_work(fx);
   assert_int_equal(publish_count(fx), 3);
-  assert_non_null(find_publish(fx, "t/1"));
   assert_string_equal(last_publish(fx)->topic, "t/0");
   assert_int_equal(fx->completion_count, 0);
 }
@@ -660,6 +668,90 @@ static void freed_capacity_sends_the_queued_message(void** state)
   assert_int_equal(az_iot_delivery_tracker__complete(&fx->tracker, &id, 1u), AZ_IOT_OK);
   assert_int_equal(publish_count(fx), RESERVED_PUBACKS + 2u);
   assert_string_equal(last_publish(fx)->topic, "t/3");
+}
+
+/* An identity change discards only the messages held when it came: those an on_complete
+ * submits for the new identity are kept, whatever entry they land in. */
+static void an_identity_change_keeps_messages_submitted_during_it(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  (void)submit(fx, &k_resend, 1u, 0u);
+  size_t const freed = submit(fx, &k_resend, 2u, 0u);
+  (void)submit(fx, &k_resend, 3u, 0u);
+  az_iot_delivery_tracker__cancel(&fx->tracker, freed);
+  fx->submit_two_on_complete = &k_resend; /* Into entry 0 (just freed) and entry 1. */
+  signal_identity_change(fx);
+  assert_int_equal(fx->completion_count, 2);
+  assert_non_null(fx->entries[0]._internal.profile);
+  assert_non_null(fx->entries[1]._internal.profile);
+  assert_null(fx->entries[2]._internal.profile);
+}
+
+static void ignore_publish_result(const az_iot_publish_result* result, void* user_ctx)
+{
+  (void)result;
+  (void)user_ctx;
+}
+
+/* A PUBACK slot another tracker frees makes the next do_work() not wait, and its TICK sends
+ * the message queued for it. After a refused send the wait is not shortened. */
+static void a_slot_freed_elsewhere_is_used_without_waiting(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_delivery_tracker other;
+  az_iot_delivery_tracker_entry other_entries[1];
+  az_iot_delivery_tracker shared;
+  az_iot_delivery_tracker_entry shared_entries[1];
+  assert_int_equal(
+      az_iot_delivery_tracker__init(&other, other_entries, 1u, 0u, NULL, 0u, fx), AZ_IOT_OK);
+  assert_int_equal(az_iot_delivery_tracker__bind(&other, &fx->connection), AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_delivery_tracker__init(&shared, shared_entries, 1u, 0u, NULL, 0u, fx), AZ_IOT_OK);
+  assert_int_equal(az_iot_delivery_tracker__bind(&shared, &fx->connection), AZ_IOT_OK);
+  connect(fx);
+  az_iot_mqtt_message filler = { 0 };
+  filler.topic = "filler";
+  filler.qos = AZ_IOT_MQTT_QOS_1;
+  while (az_iot_connection_client__can_track_publish(&fx->connection, &shared))
+  {
+    az_iot_publish_handle handle = { 0 };
+    assert_int_equal(
+        az_iot_connection_client__publish_with_result(
+            &fx->connection, fx, &filler, ignore_publish_result, NULL, &handle),
+        AZ_IOT_OK);
+    if (!az_iot_connection_client__can_track_publish(&fx->connection, &shared))
+    {
+      az_iot_connection_client__forget_publish(&fx->connection, handle); /* Leave one. */
+      break;
+    }
+  }
+  size_t index = 0;
+  uint8_t const id = 1u;
+  assert_int_equal(
+      az_iot_delivery_tracker__submit(&other, &k_resend, &id, 1u, 0u, &index), AZ_IOT_OK);
+  size_t const sent = publish_count(fx);
+  assert_int_equal(
+      az_iot_delivery_tracker__submit(&shared, &k_resend, &id, 1u, 0u, &index), AZ_IOT_OK);
+  assert_int_equal(publish_count(fx), sent); /* No slot left. */
+  (void)az_iot_connection_client_do_work(&fx->connection, UINT32_MAX);
+  assert_true(
+      az_iot_mock_mqtt_client_last_of(fx->mock, AZ_IOT_MOCK_CALL_PROCESS_LOOP)->timeout_ms > 1000u);
+
+  az_iot_delivery_tracker__cancel(&other, 0u);
+  (void)az_iot_connection_client_do_work(&fx->connection, UINT32_MAX);
+  assert_int_equal(
+      az_iot_mock_mqtt_client_last_of(fx->mock, AZ_IOT_MOCK_CALL_PROCESS_LOOP)->timeout_ms, 0u);
+  assert_int_equal(publish_count(fx), sent + 1u);
+
+  az_iot_delivery_tracker__cancel(&shared, 0u);
+  fx->failing_sends = 1;
+  fx->failing_send_result = AZ_IOT_ERR_BUSY;
+  (void)submit(fx, &k_low_resend, 2u, 0u);
+  (void)az_iot_connection_client_do_work(&fx->connection, UINT32_MAX);
+  assert_true(
+      az_iot_mock_mqtt_client_last_of(fx->mock, AZ_IOT_MOCK_CALL_PROCESS_LOOP)->timeout_ms > 1000u);
+  az_iot_delivery_tracker__unbind(&shared);
+  az_iot_delivery_tracker__unbind(&other);
 }
 /* A send the adapter refuses does not hold back the message a PUBACK error requeued: it goes out
  * from the next do_work(). */
@@ -755,6 +847,10 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         a_requeued_message_does_not_wait_out_the_adapter, setup, teardown),
     cmocka_unit_test_setup_teardown(freed_capacity_sends_the_queued_message, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        an_identity_change_keeps_messages_submitted_during_it, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_slot_freed_elsewhere_is_used_without_waiting, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_busy_adapter_does_not_hold_back_a_requeued_message, setup, teardown),
     cmocka_unit_test_setup_teardown(arguments_capacity_and_binding, setup, teardown),
