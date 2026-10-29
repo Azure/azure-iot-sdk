@@ -3236,6 +3236,28 @@ static void hub_mqtt_v5_birth_ack_in_time_resets_the_schedule(void** state)
   assert_birth_ack_timeout(fx, 300000u + (uint32_t)k_fixed_jitter);
 }
 
+/* max_unconfirmed_delivery_timeout_ms: options_default() sets the default, init() resolves 0 to
+ * it and keeps a set value. */
+static void max_unconfirmed_delivery_timeout_defaults_and_resolves_zero(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  assert_int_equal(
+      az_iot_connection_client_options_default().max_unconfirmed_delivery_timeout_ms,
+      AZ_IOT_DEFAULT_MAX_UNCONFIRMED_DELIVERY_TIMEOUT_MS);
+  /* The fixture initialized with 0. */
+  assert_int_equal(
+      fx->client->opts.max_unconfirmed_delivery_timeout_ms,
+      AZ_IOT_DEFAULT_MAX_UNCONFIRMED_DELIVERY_TIMEOUT_MS);
+
+  az_iot_connection_client_deinit(&fx->client_storage);
+  az_iot_connection_client_options opts = { 0 };
+  opts.iothub_hostname = "broker.example";
+  opts.device_id = "ut-device";
+  opts.max_unconfirmed_delivery_timeout_ms = 1u;
+  assert_int_equal(az_iot_test_connection_client_init(&fx->client_storage, &opts), AZ_IOT_OK);
+  assert_int_equal(fx->client->opts.max_unconfirmed_delivery_timeout_ms, 1u);
+}
+
 /* A replaced schedule arms the birth-ack with its own bases (the last repeats)
  * and jitter; NULL restores the spec's schedule at the same attempt. */
 static void hub_mqtt_v5_birth_ack_timeout_follows_a_replaced_schedule(void** state)
@@ -4435,6 +4457,8 @@ int main(void)
         hub_mqtt_v5_birth_ack_timeout_jitter_spans_five_minutes, setup_mqtt_v5, teardown),
     cmocka_unit_test_setup_teardown(
         hub_mqtt_v5_birth_ack_in_time_resets_the_schedule, setup_mqtt_v5_with_reconnect, teardown),
+    cmocka_unit_test_setup_teardown(
+        max_unconfirmed_delivery_timeout_defaults_and_resolves_zero, setup, teardown),
     cmocka_unit_test_setup_teardown(
         hub_mqtt_v5_birth_ack_timeout_follows_a_replaced_schedule,
         setup_mqtt_v5_with_reconnect,
