@@ -43,6 +43,7 @@ typedef struct fixture
   char topics[ENTRY_COUNT][8];
   az_iot_mqtt_qos qos;
   az_iot_result encode_result;
+  int busy_sends; /* Sends the adapter refuses with AZ_IOT_ERR_BUSY. */
   completion completions[16];
   size_t completion_count;
   bool unbind_on_complete;
@@ -53,9 +54,15 @@ static const uint8_t k_guaranteed[] = { 1u }; /* One slot kept for priority 0. *
 static az_iot_result encode(void* owner_context, size_t entry_index, az_iot_mqtt_message* out)
 {
   fixture* fx = (fixture*)owner_context;
-  (void)snprintf(fx->topics[entry_index], sizeof(fx->topics[entry_index]), "t/%u", (unsigned)entry_index);
+  (void)snprintf(
+      fx->topics[entry_index], sizeof(fx->topics[entry_index]), "t/%u", (unsigned)entry_index);
   out->topic = fx->topics[entry_index];
   out->qos = fx->qos;
+  if (fx->busy_sends > 0)
+  {
+    --fx->busy_sends;
+    az_iot_mock_mqtt_client_set_next_result(fx->mock, AZ_IOT_MOCK_CALL_PUBLISH, AZ_IOT_ERR_BUSY);
+  }
   return fx->encode_result;
 }
 
@@ -77,11 +84,16 @@ static void on_complete(
   }
 }
 
-#define PROFILE(name, confirm, policy, prio)                                   \
-  static const az_iot_delivery_tracker_profile name = {                       \
-    #name, AZ_IOT_DELIVERY_TRACKER_##confirm, AZ_IOT_DELIVERY_TRACKER_##policy, \
-    prio,  encode,                            on_complete,                     \
-  }
+#define PROFILE(name, confirm, policy, prio)        \
+  static const az_iot_delivery_tracker_profile name \
+      = {                                           \
+          #name,                                    \
+          AZ_IOT_DELIVERY_TRACKER_##confirm,        \
+          AZ_IOT_DELIVERY_TRACKER_##policy,         \
+          prio,                                     \
+          encode,                                   \
+          on_complete,                              \
+        }
 PROFILE(k_resend, CONFIRM_BY_PUBACK, ON_SESSION_LOSS_RESEND, 0);
 PROFILE(k_fail, CONFIRM_BY_PUBACK, ON_SESSION_LOSS_FAIL, 0);
 PROFILE(k_response, CONFIRM_BY_RESPONSE, ON_SESSION_LOSS_FAIL, 0);
@@ -118,7 +130,8 @@ static size_t publish_count(const fixture* fx)
 
 static const az_iot_mock_call* last_publish(const fixture* fx)
 {
-  const az_iot_mock_call* call = az_iot_mock_mqtt_client_last_of(fx->mock, AZ_IOT_MOCK_CALL_PUBLISH);
+  const az_iot_mock_call* call
+      = az_iot_mock_mqtt_client_last_of(fx->mock, AZ_IOT_MOCK_CALL_PUBLISH);
   assert_non_null(call);
   return call;
 }
@@ -130,7 +143,8 @@ static const az_iot_mock_call* find_publish(const fixture* fx, const char* topic
   for (size_t i = 0; i < az_iot_mock_mqtt_client_call_count(fx->mock); ++i)
   {
     const az_iot_mock_call* call = az_iot_mock_mqtt_client_call_at(fx->mock, i);
-    found = (call->kind == AZ_IOT_MOCK_CALL_PUBLISH && strcmp(call->topic, topic) == 0) ? call : found;
+    found = (call->kind == AZ_IOT_MOCK_CALL_PUBLISH && strcmp(call->topic, topic) == 0) ? call
+                                                                                        : found;
   }
   assert_non_null(found);
   return found;
@@ -142,15 +156,24 @@ static void puback(fixture* fx, uint16_t packet_id, az_iot_result status)
   do_work(fx);
 }
 
-static size_t submit(fixture* fx, const az_iot_delivery_tracker_profile* profile, uint8_t id, uint32_t timeout_ms)
+static size_t submit(
+    fixture* fx,
+    const az_iot_delivery_tracker_profile* profile,
+    uint8_t id,
+    uint32_t timeout_ms)
 {
   size_t index = SIZE_MAX;
   assert_int_equal(
-      az_iot_delivery_tracker__submit(&fx->tracker, profile, &id, 1u, timeout_ms, &index), AZ_IOT_OK);
+      az_iot_delivery_tracker__submit(&fx->tracker, profile, &id, 1u, timeout_ms, &index),
+      AZ_IOT_OK);
   return index;
 }
 
-static void assert_completed(const fixture* fx, size_t nth, size_t entry_index, az_iot_delivery_tracker_outcome outcome)
+static void assert_completed(
+    const fixture* fx,
+    size_t nth,
+    size_t entry_index,
+    az_iot_delivery_tracker_outcome outcome)
 {
   assert_true(fx->completion_count > nth);
   assert_int_equal(fx->completions[nth].entry_index, entry_index);
@@ -164,7 +187,8 @@ static int setup(void** state)
   az_iot_connection_client_options options = az_iot_test_mqtt_v3_options();
   assert_int_equal(az_iot_test_connection_client_init(&fx->connection, &options), AZ_IOT_OK);
   fx->factory = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
-  assert_int_equal(az_iot_connection_client_register_mqtt_factory(&fx->connection, fx->factory), AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_connection_client_register_mqtt_factory(&fx->connection, fx->factory), AZ_IOT_OK);
   fx->qos = AZ_IOT_MQTT_QOS_1;
   assert_int_equal(
       az_iot_delivery_tracker__init(
@@ -245,7 +269,8 @@ static void a_response_confirms_before_or_after_the_puback(void** state)
   puback(fx, packet_id, AZ_IOT_OK);
   assert_int_equal(fx->completion_count, 2);
 
-  assert_int_equal(az_iot_delivery_tracker__complete(&fx->tracker, &second, 1u), AZ_IOT_ERR_NOT_FOUND);
+  assert_int_equal(
+      az_iot_delivery_tracker__complete(&fx->tracker, &second, 1u), AZ_IOT_ERR_NOT_FOUND);
 }
 
 /* A refused PUBLISH completes as REFUSED and is not resent. */
@@ -303,7 +328,8 @@ static void a_failed_puback_is_resent_from_a_later_event(void** state)
   fixture* fx = (fixture*)*state;
   connect(fx);
   (void)submit(fx, &k_resend, 1u, 0u);
-  assert_true(az_iot_mock_mqtt_client_inject_puback(fx->mock, last_publish(fx)->packet_id, AZ_IOT_ERR_MQTT));
+  assert_true(az_iot_mock_mqtt_client_inject_puback(
+      fx->mock, last_publish(fx)->packet_id, AZ_IOT_ERR_MQTT));
   do_work(fx);
   assert_int_equal(publish_count(fx), 1);
   do_work(fx);
@@ -391,8 +417,9 @@ static void an_identity_change_discards_every_message(void** state)
   }
   assert_non_null(observer);
   assert_true(observer->events & AZ_IOT_CONNECTION_FEATURE_EVENT_IDENTITY_CHANGED);
-  az_iot_connection_feature_event const event
-      = { AZ_IOT_CONNECTION_FEATURE_EVENT_IDENTITY_CHANGED, NULL, AZ_IOT_CONNECTION_SESSION_END_LOST };
+  az_iot_connection_feature_event const event = { AZ_IOT_CONNECTION_FEATURE_EVENT_IDENTITY_CHANGED,
+                                                  NULL,
+                                                  AZ_IOT_CONNECTION_SESSION_END_LOST };
   observer->cb(&event, observer->user_ctx);
   assert_int_equal(fx->completion_count, 2);
   assert_int_equal(fx->completions[0].outcome, AZ_IOT_DELIVERY_TRACKER_OUTCOME_DISCARDED);
@@ -431,6 +458,49 @@ static void cancel_and_encode_failure(void** state)
   assert_int_equal(publish_count(fx), 1);
 }
 
+/* Unbinding forgets shared-pool publishes too: their PUBACK, or the session teardown, reaches
+ * nobody. */
+static void unbinding_forgets_shared_pool_publishes(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_delivery_tracker shared;
+  az_iot_delivery_tracker_entry shared_entries[1];
+  assert_int_equal(
+      az_iot_delivery_tracker__init(&shared, shared_entries, 1u, 0u, NULL, 0u, fx), AZ_IOT_OK);
+  assert_int_equal(az_iot_delivery_tracker__bind(&shared, &fx->connection), AZ_IOT_OK);
+  connect(fx);
+  size_t index = 0;
+  uint8_t const id = 1u;
+  assert_int_equal(
+      az_iot_delivery_tracker__submit(&shared, &k_resend, &id, 1u, 0u, &index), AZ_IOT_OK);
+  uint16_t const packet_id = last_publish(fx)->packet_id;
+  az_iot_delivery_tracker__unbind(&shared);
+  memset(shared_entries, 0xA5, sizeof(shared_entries)); /* The owner reuses the storage. */
+  puback(fx, packet_id, AZ_IOT_OK);
+  (void)submit(fx, &k_resend, 2u, 0u);
+  lose_session(fx);
+  assert_int_equal(fx->completion_count, 0);
+}
+
+/* A send the adapter refuses still clears the requeue marks at the end of do_work(): the
+ * message a PUBACK error requeued goes out from the next one. */
+static void a_busy_adapter_does_not_hold_back_a_requeued_message(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  connect(fx);
+  (void)submit(fx, &k_resend, 1u, 0u);
+  uint16_t const packet_id = last_publish(fx)->packet_id;
+  fx->busy_sends = 1;
+  (void)submit(fx, &k_resend, 2u, 0u);
+  assert_true(az_iot_mock_mqtt_client_inject_puback(fx->mock, packet_id, AZ_IOT_ERR_MQTT));
+  fx->busy_sends = 2; /* Both the PUBACK and the tick flush. */
+  do_work(fx);
+  assert_int_equal(fx->busy_sends, 0);
+  size_t const before = publish_count(fx);
+  do_work(fx);
+  assert_int_equal(publish_count(fx), before + 2u);
+  assert_int_equal(fx->completion_count, 0);
+}
 /* Arguments, a full tracker, an unbound one, and rebinding after unbind. */
 static void arguments_capacity_and_binding(void** state)
 {
@@ -446,6 +516,9 @@ static void arguments_capacity_and_binding(void** state)
   uint8_t id[AZ_IOT_DELIVERY_TRACKER_CORRELATION_ID_MAX + 1u] = { 0 };
   assert_int_equal(
       az_iot_delivery_tracker__submit(&fx->tracker, &k_resend, id, sizeof(id), 0u, &index),
+      AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(
+      az_iot_delivery_tracker__submit(&fx->tracker, &k_response, NULL, 0u, 0u, &index),
       AZ_IOT_ERR_INVALID_ARG);
 
   for (uint8_t i = 0; i < ENTRY_COUNT; ++i)
@@ -472,9 +545,11 @@ int main(void)
 {
   const struct CMUnitTest tests[] = {
     cmocka_unit_test_setup_teardown(a_message_is_delivered_at_its_puback, setup, teardown),
-    cmocka_unit_test_setup_teardown(a_message_submitted_offline_is_sent_on_connected, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_message_submitted_offline_is_sent_on_connected, setup, teardown),
     cmocka_unit_test_setup_teardown(qos0_messages_are_untracked, setup, teardown),
-    cmocka_unit_test_setup_teardown(a_response_confirms_before_or_after_the_puback, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_response_confirms_before_or_after_the_puback, setup, teardown),
     cmocka_unit_test_setup_teardown(a_refused_publish_is_not_resent, setup, teardown),
     cmocka_unit_test_setup_teardown(a_lost_session_resends_or_fails_per_policy, setup, teardown),
     cmocka_unit_test_setup_teardown(a_failed_puback_is_resent_from_a_later_event, setup, teardown),
@@ -485,6 +560,9 @@ int main(void)
     cmocka_unit_test_setup_teardown(an_identity_change_discards_every_message, setup, teardown),
     cmocka_unit_test_setup_teardown(a_completion_may_unbind_the_tracker, setup, teardown),
     cmocka_unit_test_setup_teardown(cancel_and_encode_failure, setup, teardown),
+    cmocka_unit_test_setup_teardown(unbinding_forgets_shared_pool_publishes, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_busy_adapter_does_not_hold_back_a_requeued_message, setup, teardown),
     cmocka_unit_test_setup_teardown(arguments_capacity_and_binding, setup, teardown),
   };
   return cmocka_run_group_tests_name("delivery_tracker", tests, NULL, NULL);

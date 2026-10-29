@@ -117,6 +117,8 @@ extern "C"
    *
    * @param timeout_ms Time limit from now; 0 uses the connection's
    *        max_unconfirmed_delivery_timeout_ms.
+   * @param correlation_id Required (1 to AZ_IOT_DELIVERY_TRACKER_CORRELATION_ID_MAX bytes) when
+   *        the profile confirms by response.
    * @param[out] out_entry_index The entry the message holds.
    * @retval AZ_IOT_ERR_NOT_INITIALIZED Not bound.
    * @retval AZ_IOT_ERR_NOT_ENOUGH_SPACE Every entry is in use.

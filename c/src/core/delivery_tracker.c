@@ -35,7 +35,9 @@ static size_t index_of(const az_iot_delivery_tracker* t, const az_iot_delivery_t
 }
 
 /** @brief Whether @p t is still bound to @p connection; an on_complete may have unbound it. */
-static bool still_bound(const az_iot_delivery_tracker* t, const az_iot_connection_client* connection)
+static bool still_bound(
+    const az_iot_delivery_tracker* t,
+    const az_iot_connection_client* connection)
 {
   return az_iot_connection_client__has_feature_observer(connection, on_connection_event, t);
 }
@@ -224,7 +226,8 @@ static void flush(az_iot_delivery_tracker* t, bool skip_requeued, bool end_of_do
     {
       az_iot_delivery_tracker_entry* e = &TI(t).entries[i];
       if (EI(e).state == ENTRY_QUEUED && sends_after(e, priority, sequence)
-          && (candidate == NULL || !sends_after(e, EI(candidate).profile->priority, EI(candidate).sequence)))
+          && (candidate == NULL
+              || !sends_after(e, EI(candidate).profile->priority, EI(candidate).sequence)))
       {
         candidate = e;
       }
@@ -248,10 +251,13 @@ static void flush(az_iot_delivery_tracker* t, bool skip_requeued, bool end_of_do
     {
       result = try_send(t, candidate);
     }
-    if (!still_bound(t, connection)
-        || (result != AZ_IOT_OK && result != NO_SLOT_FOR_PRIORITY))
+    if (!still_bound(t, connection))
     {
       return;
+    }
+    if (result != AZ_IOT_OK && result != NO_SLOT_FOR_PRIORITY)
+    {
+      break; /* The connection refused; the rest waits for a later event. */
     }
   }
   for (size_t i = 0; end_of_do_work && i < TI(t).capacity; ++i)
@@ -378,7 +384,8 @@ az_iot_result az_iot_delivery_tracker__bind(
     result = az_iot_connection_client__add_feature_observer(
         connection,
         AZ_IOT_CONNECTION_FEATURE_EVENT_STATE | AZ_IOT_CONNECTION_FEATURE_EVENT_SESSION_END
-            | AZ_IOT_CONNECTION_FEATURE_EVENT_PUBLISH_COMPLETED | AZ_IOT_CONNECTION_FEATURE_EVENT_TICK
+            | AZ_IOT_CONNECTION_FEATURE_EVENT_PUBLISH_COMPLETED
+            | AZ_IOT_CONNECTION_FEATURE_EVENT_TICK
             | AZ_IOT_CONNECTION_FEATURE_EVENT_IDENTITY_CHANGED,
         on_connection_event,
         tracker);
@@ -402,8 +409,11 @@ void az_iot_delivery_tracker__unbind(az_iot_delivery_tracker* tracker)
   }
   az_iot_connection_client* const connection = TI(tracker).connection;
   az_iot_connection_client__remove_feature_observer(connection, on_connection_event, tracker);
-  /* Pending PUBACK callbacks point into the entries. */
-  az_iot_connection_client__abandon_pubacks(connection, tracker);
+  /* Pending PUBACK callbacks point into the entries, reserved and shared-pool ones alike. */
+  for (size_t i = 0; i < TI(tracker).capacity; ++i)
+  {
+    forget_publish(&TI(tracker).entries[i]);
+  }
   az_iot_connection_client__release_pubacks(connection, tracker);
   memset(TI(tracker).entries, 0, TI(tracker).capacity * sizeof(*TI(tracker).entries));
   TI(tracker).connection = NULL;
@@ -418,8 +428,11 @@ az_iot_result az_iot_delivery_tracker__submit(
     size_t* out_entry_index)
 {
   if (tracker == NULL || profile == NULL || profile->encode == NULL || profile->on_complete == NULL
-      || out_entry_index == NULL || correlation_id_length > AZ_IOT_DELIVERY_TRACKER_CORRELATION_ID_MAX
-      || (correlation_id == NULL && correlation_id_length != 0u))
+      || out_entry_index == NULL
+      || correlation_id_length > AZ_IOT_DELIVERY_TRACKER_CORRELATION_ID_MAX
+      || (correlation_id == NULL && correlation_id_length != 0u)
+      || (profile->confirmation == AZ_IOT_DELIVERY_TRACKER_CONFIRM_BY_RESPONSE
+          && correlation_id_length == 0u))
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
