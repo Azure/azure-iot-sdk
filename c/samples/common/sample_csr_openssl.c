@@ -56,6 +56,11 @@ static EVP_PKEY* load_or_generate_key(const char* key_path)
   {
     ok = 0;
   }
+  if (out != NULL && !ok)
+  {
+    /* Created by this call: a partial key would block every later attempt. */
+    (void)remove(key_path);
+  }
   BIO_free_all(pem);
   if (!ok)
   {
