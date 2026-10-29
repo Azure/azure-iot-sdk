@@ -265,7 +265,17 @@ static az_amqp_transport_status _tls_handshake(az_amqp_sample_transport* s)
       memcpy(host, az_span_ptr(sni), (size_t)hn);
       host[hn] = 0;
       (void)SSL_set_tlsext_host_name(ssl, host);
-      (void)SSL_set1_host(ssl, host);
+      // An IP literal is checked against iPAddress SANs, anything else as a DNS name.
+      X509_VERIFY_PARAM* peer = SSL_get0_param(ssl);
+      unsigned char address[16];
+      if (inet_pton(AF_INET, host, address) == 1 || inet_pton(AF_INET6, host, address) == 1)
+      {
+        (void)X509_VERIFY_PARAM_set1_ip_asc(peer, host);
+      }
+      else
+      {
+        (void)X509_VERIFY_PARAM_set1_host(peer, host, 0);
+      }
     }
     s->tls_context = ctx;
     s->tls_session = ssl;

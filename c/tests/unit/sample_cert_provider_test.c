@@ -26,6 +26,8 @@
 #include <openssl/pem.h>
 #include <openssl/x509.h>
 
+#include "../support/test_x509.h"
+
 #define BOOT_CRT "az_iot_sample_test_boot.pem"
 #define BOOT_KEY "az_iot_sample_test_boot_key.pem"
 #define OP_KEY "az_iot_sample_test_op_key.pem"
@@ -82,12 +84,7 @@ static X509* make_cert(EVP_PKEY* subject_key, long serial)
   X509_gmtime_adj(X509_getm_notBefore(x), 0);
   X509_gmtime_adj(X509_getm_notAfter(x), 3600);
   assert_int_equal(1, X509_set_pubkey(x, subject_key));
-  X509_NAME* name = X509_NAME_new();
-  assert_non_null(name);
-  X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_UTF8, (const unsigned char*)"t", -1, -1, 0);
-  assert_int_equal(1, X509_set_subject_name(x, name));
-  assert_int_equal(1, X509_set_issuer_name(x, name));
-  X509_NAME_free(name);
+  assert_int_equal(1, test_x509_set_self_signed_name(x, "t"));
   assert_true(X509_sign(x, issuer, EVP_sha256()) > 0);
   EVP_PKEY_free(issuer);
   return x;
