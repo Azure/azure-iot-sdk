@@ -66,6 +66,7 @@
 #endif
 
 #include "azure/iot/adapters/az_iot_adapter_paho.h"
+#include "azure/iot/az_iot_connection_client.h"
 #include "azure/iot/az_iot_mqtt_iface.h"
 
 #include "mock_paho_async.h"
@@ -670,6 +671,83 @@ static void a_failed_property_add_fails_the_publish(void** state)
   fixture_teardown(&f);
 }
 
+/** @brief The DISCONNECTED event's Reason String, copied; length -1: NULL. */
+typedef struct
+{
+  int disconnects;
+  int32_t protocol_code;
+  int reason_string_length;
+  char reason_string[160];
+} disconnect_record;
+
+static void on_event_record_disconnect(const az_iot_mqtt_event* evt, void* ctx)
+{
+  disconnect_record* r = (disconnect_record*)ctx;
+  if (evt->kind != AZ_IOT_MQTT_EVT_DISCONNECTED)
+  {
+    return;
+  }
+  r->disconnects++;
+  r->protocol_code = evt->protocol_code;
+  r->reason_string_length = -1;
+  if (evt->reason_string != NULL && evt->reason_string_len <= sizeof(r->reason_string))
+  {
+    memcpy(r->reason_string, evt->reason_string, evt->reason_string_len);
+    r->reason_string_length = (int)evt->reason_string_len;
+  }
+}
+
+/** @brief A server DISCONNECT with a Reason String of @p length bytes reaches the application with
+ * its first 128 (AZ_IOT_CONN_ERROR_MESSAGE_MAX), all the SDK retains. */
+static void assert_disconnect_reason_string_is_kept(int length)
+{
+  race_fixture f;
+  fixture_setup(&f);
+  disconnect_record record = { 0 };
+  f.client->iface->set_inbound_cb(f.client, on_event_record_disconnect, &record);
+  MQTTAsync_disconnected* disconnected = mock_paho_disconnected();
+  assert_non_null(disconnected);
+
+  char reason[150];
+  assert_true(length <= (int)sizeof(reason));
+  for (int i = 0; i < length; ++i)
+  {
+    reason[i] = (char)('a' + (i % 26));
+  }
+  MQTTProperty property;
+  memset(&property, 0, sizeof(property));
+  property.identifier = MQTTPROPERTY_CODE_REASON_STRING;
+  property.value.data.data = reason;
+  property.value.data.len = length;
+  MQTTProperties properties = MQTTProperties_initializer;
+  properties.count = 1;
+  properties.max_count = 1;
+  properties.array = &property;
+  disconnected(mock_paho_disconnected_context(), &properties, MQTTREASONCODE_QUOTA_EXCEEDED);
+  /* Paho frees the properties when the callback returns: the event must carry a copy. */
+  char expected[sizeof(reason)];
+  memcpy(expected, reason, sizeof(reason));
+  memset(reason, 'Z', sizeof(reason));
+  memset(&property, 0, sizeof(property));
+
+  assert_int_equal(f.client->iface->process_loop(f.client, 0), AZ_IOT_OK);
+  assert_int_equal(record.disconnects, 1);
+  assert_int_equal(record.protocol_code, MQTTREASONCODE_QUOTA_EXCEEDED);
+  int const kept = length < AZ_IOT_CONN_ERROR_MESSAGE_MAX ? length : AZ_IOT_CONN_ERROR_MESSAGE_MAX;
+  assert_int_equal(record.reason_string_length, kept);
+  assert_memory_equal(record.reason_string, expected, (size_t)kept);
+
+  f.client->iface->set_inbound_cb(f.client, NULL, NULL);
+  fixture_teardown(&f);
+}
+
+static void a_disconnect_reason_string_is_kept_up_to_its_bound(void** state)
+{
+  (void)state;
+  assert_disconnect_reason_string_is_kept(AZ_IOT_CONN_ERROR_MESSAGE_MAX);
+  assert_disconnect_reason_string_is_kept(AZ_IOT_CONN_ERROR_MESSAGE_MAX + 1);
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -681,6 +759,7 @@ int main(void)
     cmocka_unit_test(a_failed_property_add_fails_the_publish),
     cmocka_unit_test(an_event_arriving_during_the_wait_is_dispatched_before_return),
     cmocka_unit_test(an_event_wakes_the_wait_before_its_timeout),
+    cmocka_unit_test(a_disconnect_reason_string_is_kept_up_to_its_bound),
   };
   return cmocka_run_group_tests_name("paho_event_queue_race_tests", tests, NULL, NULL);
 }

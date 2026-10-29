@@ -5,7 +5,8 @@
 /* SPDX-License-Identifier: MIT */
 /* Conformance harness: validates the az_mqtt adapter as an MQTT 3.1.1 client
  * (AZ_IOT_CONFORMANCE_AZ_MQTT_V=3) or an MQTT 5 client (5). Declares the proxy capability, the
- * WebSocket capability when AZ_IOT_CONFORMANCE_WS_PORT names a listener, and, in an OpenSSL build
+ * WebSocket capability when AZ_IOT_CONFORMANCE_WS_PORT names a listener, on MQTT 5 the CONNACK
+ * Reason String capability, and, in an OpenSSL build
  * (AZ_IOT_AZ_MQTT_OPENSSL), the key-reference custody route with the material from
  * AZ_IOT_CONFORMANCE_KEY_URI, _KEY_ENGINE and _CLIENT_CERT -- as the Paho harnesses do. In an
  * mbedTLS build with PSA keys (AZ_IOT_AZ_MQTT_MBEDTLS), the PSA custody route with the PEM key at
@@ -237,6 +238,9 @@ int main(void)
 #endif
   opts.capabilities |= (uint32_t)AZ_IOT_CONFORMANCE_CAP_PROXY;
   opts.capabilities |= (uint32_t)AZ_IOT_CONFORMANCE_CAP_TLS_PEM;
+#if AZ_IOT_CONFORMANCE_AZ_MQTT_V == 5
+  opts.capabilities |= (uint32_t)AZ_IOT_CONFORMANCE_CAP_CONNACK_REASON_STRING;
+#endif
   int rc = az_iot_conformance_run_with_options(suite, f, &opts);
   az_iot_az_mqtt_factory_destroy(f);
 #if defined(AZ_IOT_CONFORMANCE_PSA_KEYS)

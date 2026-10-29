@@ -129,36 +129,67 @@ az_iot_test_mqtt_packet az_iot_test_mqtt_suback_raw(az_iot_test_mqtt_version ver
   return p;
 }
 
-az_iot_test_mqtt_packet az_iot_test_mqtt_puback_v5_raw(uint8_t code, const char* reason_string)
+/* A packet of type @p first_byte: @p head, then Properties holding only a Reason String unless
+ * @p reason_string is NULL. Kept to single-byte lengths: len == 0 when longer. */
+static az_iot_test_mqtt_packet packet_with_reason_string(
+    uint8_t first_byte,
+    const uint8_t* head,
+    size_t head_len,
+    const char* reason_string)
 {
   az_iot_test_mqtt_packet p = packet_empty();
   size_t const n = reason_string ? strlen(reason_string) : 0;
   /* Property 0x1F, a 2-byte length, the string. */
   size_t const props = reason_string ? 3 + n : 0;
-  /* Packet id, reason code, property length, properties: kept single-byte lengths. */
-  size_t const remaining = 2 + 1 + 1 + props;
+  size_t const remaining = head_len + 1 + props;
   if (remaining > 127)
   {
     return p;
   }
 
-  p.bytes[0] = MQTT_PUBACK;
-  p.bytes[1] = (uint8_t)remaining;
-  p.bytes[2] = 0x00; /* packet id, patched by the proxy */
-  p.bytes[3] = 0x00;
-  p.bytes[4] = code;
-  p.bytes[5] = (uint8_t)props;
+  size_t pos = 0;
+  p.bytes[pos++] = first_byte;
+  p.bytes[pos++] = (uint8_t)remaining;
+  memcpy(&p.bytes[pos], head, head_len);
+  pos += head_len;
+  p.bytes[pos++] = (uint8_t)props;
   if (reason_string)
   {
-    p.bytes[6] = 0x1F;
-    p.bytes[7] = 0x00;
-    p.bytes[8] = (uint8_t)n;
-    memcpy(&p.bytes[9], reason_string, n);
+    p.bytes[pos++] = 0x1F;
+    p.bytes[pos++] = 0x00;
+    p.bytes[pos++] = (uint8_t)n;
+    memcpy(&p.bytes[pos], reason_string, n);
+    pos += n;
   }
-  p.len = 2 + remaining;
-  p.packet_id_offset = 2;
-  p.echo_packet_id = 1;
+  p.len = pos;
   return p;
+}
+
+az_iot_test_mqtt_packet az_iot_test_mqtt_puback_v5_raw(uint8_t code, const char* reason_string)
+{
+  /* Packet id, patched by the proxy; reason code. */
+  uint8_t const head[] = { 0x00, 0x00, code };
+  az_iot_test_mqtt_packet p
+      = packet_with_reason_string(MQTT_PUBACK, head, sizeof(head), reason_string);
+  if (p.len != 0)
+  {
+    p.packet_id_offset = 2;
+    p.echo_packet_id = 1;
+  }
+  return p;
+}
+
+az_iot_test_mqtt_packet az_iot_test_mqtt_connack_v5_raw(uint8_t code, const char* reason_string)
+{
+  /* Acknowledge flags (session present clear); reason code. */
+  uint8_t const head[] = { 0x00, code };
+  return packet_with_reason_string(MQTT_CONNACK, head, sizeof(head), reason_string);
+}
+
+az_iot_test_mqtt_packet az_iot_test_mqtt_disconnect_v5_raw(uint8_t code, const char* reason_string)
+{
+  uint8_t const head[] = { code };
+  return packet_with_reason_string(MQTT_DISCONNECT, head, sizeof(head), reason_string);
 }
 
 az_iot_test_mqtt_packet az_iot_test_mqtt_suback(

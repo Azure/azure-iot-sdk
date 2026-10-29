@@ -89,6 +89,11 @@ static bool adapter_claims_tls_pem(void)
   return (g_capabilities & (uint32_t)AZ_IOT_CONFORMANCE_CAP_TLS_PEM) != 0u;
 }
 
+static bool adapter_claims_connack_reason_string(void)
+{
+  return (g_capabilities & (uint32_t)AZ_IOT_CONFORMANCE_CAP_CONNACK_REASON_STRING) != 0u;
+}
+
 static bool adapter_claims_key_custody_uri(void)
 {
   return (g_capabilities & (uint32_t)AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY_URI) != 0u;
@@ -200,6 +205,15 @@ static const char* read_env(const char* name, char* buf, size_t cap)
   memcpy(buf, value, strlen(value) + 1);
   return buf;
 #endif
+}
+
+int az_iot_conformance_capabilities_fit_suite(
+    az_iot_conformance_suite suite_kind,
+    uint32_t capabilities)
+{
+  /* Exercised by the MQTT 5 suite only: declared for another suite, it would pass unproven. */
+  return (capabilities & (uint32_t)AZ_IOT_CONFORMANCE_CAP_CONNACK_REASON_STRING) == 0u
+      || suite_kind == AZ_IOT_CONFORMANCE_SUITE_V5;
 }
 
 /* A declared capability that was never exercised.
@@ -427,6 +441,21 @@ static void on_event(const az_iot_mqtt_event* evt, void* ctx)
     }
     r->payload_lens[i] = plen;
     conf_record_v5_properties(r, i, evt->message);
+  }
+}
+
+/* Event @p i carried @p expected verbatim as its Reason String; NULL: carried none. Present but
+ * empty is not absent. */
+static void assert_reason_string_recorded(const conf_recorder* r, size_t i, const char* expected)
+{
+  if (expected == NULL)
+  {
+    assert_int_equal(r->reason_string_lens[i], -1);
+  }
+  else
+  {
+    assert_int_equal(r->reason_string_lens[i], (int)strlen(expected));
+    assert_string_equal(r->reason_strings[i], expected);
   }
 }
 
@@ -1846,10 +1875,143 @@ static void server_disconnect_is_reported(void** state)
   assert_int_equal(rec.protocol_codes[i], bye.bytes[2]);
   assert_int_equal(
       rec.statuses[i], az_iot_mqtt_disconnect_result(AZ_IOT_MQTT_VERSION_5, bye.bytes[2]));
+  /* The packet carried no Reason String, so the event carries none. */
+  assert_reason_string_recorded(&rec, i, NULL);
 
   (void)c->iface->disconnect(c);
   destroy_client(c);
   az_iot_test_proxy_stop(proxy);
+}
+
+/* Connect through a synthetic broker answering with @p connack, then sending @p disconnect after
+ * 300 ms unless it is NULL; record events in @p rec. Returns the client and fills @p proxy_out. */
+static az_iot_mqtt_client* connect_to_synthetic_broker(
+    const az_iot_test_mqtt_packet* connack,
+    const az_iot_test_mqtt_packet* disconnect,
+    const char* client_id_prefix,
+    conf_recorder* rec,
+    az_iot_test_proxy** proxy_out)
+{
+  az_iot_test_proxy_options popts = az_iot_test_proxy_options_default();
+  popts.upstream_host = g_host;
+  popts.upstream_port = g_port;
+  uint16_t proxy_port = 0;
+  assert_int_equal(az_iot_test_proxy_start(&popts, proxy_out, &proxy_port), 0);
+  assert_int_not_equal(connack->len, 0);
+  assert_int_equal(
+      az_iot_test_proxy_set_synthetic_connack(*proxy_out, connack->bytes, connack->len), 0);
+  if (disconnect != NULL)
+  {
+    assert_int_not_equal(disconnect->len, 0);
+    assert_int_equal(
+        az_iot_test_proxy_set_synthetic_disconnect(
+            *proxy_out, disconnect->bytes, disconnect->len, 300),
+        0);
+  }
+
+  char cid[64];
+  unique_client_id(cid, sizeof(cid), client_id_prefix);
+  az_iot_mqtt_client* c = make_client();
+  c->iface->set_inbound_cb(c, on_event, rec);
+  az_iot_mqtt_connect_options copts = { 0 };
+  copts.host = "127.0.0.1";
+  copts.port = proxy_port;
+  copts.client_id = cid;
+  copts.keep_alive_seconds = 30;
+  copts.connect_timeout_seconds = k_step_timeout_seconds;
+  assert_int_equal(c->iface->connect(c, &copts), AZ_IOT_OK);
+  return c;
+}
+
+/* A server DISCONNECT's Reason String is reported verbatim on the DISCONNECTED event: it is the
+ * server's only explanation of why it ended the session. v5 only (see
+ * server_disconnect_is_reported). */
+static void assert_server_disconnect_reason_string_is_reported(const char* reason_string)
+{
+  az_iot_test_mqtt_packet const connack = conf_connack(AZ_IOT_TEST_MQTT_REASON_SUCCESS);
+  az_iot_test_mqtt_packet const bye = az_iot_test_mqtt_disconnect_v5_raw(0x97, reason_string);
+  conf_recorder rec = { 0 };
+  az_iot_test_proxy* proxy = NULL;
+  az_iot_mqtt_client* c
+      = connect_to_synthetic_broker(&connack, &bye, "az-iot-conf-srvdiscrs", &rec, &proxy);
+
+  assert_true(wait_until(c, &rec, saw_connected_ok, k_step_timeout_ms));
+  assert_true(wait_until(c, &rec, saw_disconnected, k_step_timeout_ms));
+
+  size_t i = 0;
+  while (i < rec.count && rec.kinds[i] != AZ_IOT_MQTT_EVT_DISCONNECTED)
+  {
+    ++i;
+  }
+  assert_true(i < rec.count);
+  assert_int_equal(rec.protocol_codes[i], 0x97);
+  assert_reason_string_recorded(&rec, i, reason_string);
+
+  (void)c->iface->disconnect(c);
+  destroy_client(c);
+  az_iot_test_proxy_stop(proxy);
+}
+
+static void a_server_disconnect_reason_string_is_reported(void** state)
+{
+  (void)state;
+  assert_server_disconnect_reason_string_is_reported("quota exceeded for this device");
+}
+
+/* A present but empty Reason String is reported as such, not as absent. */
+static void a_server_disconnect_empty_reason_string_is_reported(void** state)
+{
+  (void)state;
+  assert_server_disconnect_reason_string_is_reported("");
+}
+
+/* A refused CONNACK's Reason String is reported verbatim on the failed CONNECTED event by an
+ * adapter declaring AZ_IOT_CONFORMANCE_CAP_CONNACK_REASON_STRING; any other must report none
+ * rather than a wrong one. v5 only: MQTT 3.1.1 has no Reason String. */
+static void assert_refused_connack_reason_string_is_reported(const char* reason_string)
+{
+  az_iot_test_mqtt_packet const connack = az_iot_test_mqtt_connack_v5_raw(0x87, reason_string);
+  conf_recorder rec = { 0 };
+  az_iot_test_proxy* proxy = NULL;
+  az_iot_mqtt_client* c
+      = connect_to_synthetic_broker(&connack, NULL, "az-iot-conf-connackrs", &rec, &proxy);
+
+  assert_true(wait_until(c, &rec, saw_connack_error, k_step_timeout_ms));
+  assert_false(saw_connected_ok(&rec));
+
+  size_t i = 0;
+  while (i < rec.count
+         && !(rec.kinds[i] == AZ_IOT_MQTT_EVT_CONNECTED && rec.statuses[i] != AZ_IOT_OK))
+  {
+    ++i;
+  }
+  assert_true(i < rec.count);
+  assert_int_equal(rec.protocol_codes[i], 0x87);
+  assert_reason_string_recorded(
+      &rec, i, adapter_claims_connack_reason_string() ? reason_string : NULL);
+
+  (void)c->iface->disconnect(c);
+  destroy_client(c);
+  az_iot_test_proxy_stop(proxy);
+}
+
+static void a_refused_connack_reason_string_is_reported(void** state)
+{
+  (void)state;
+  assert_refused_connack_reason_string_is_reported("client certificate thumbprint mismatch");
+}
+
+/* A present but empty Reason String is reported as such, not as absent. */
+static void a_refused_connack_empty_reason_string_is_reported(void** state)
+{
+  (void)state;
+  assert_refused_connack_reason_string_is_reported("");
+}
+
+static void a_refused_connack_without_a_reason_string_reports_none(void** state)
+{
+  (void)state;
+  assert_refused_connack_reason_string_is_reported(NULL);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -2673,15 +2835,7 @@ static void assert_refused_publish_is_reported(uint8_t code, const char* reason_
     assert_int_equal(rec.packet_ids[i], pub_pid);
     assert_int_equal(rec.protocol_codes[i], code);
     assert_int_equal(rec.statuses[i], az_iot_mqtt_puback_result(AZ_IOT_MQTT_VERSION_5, code));
-    if (reason_string == NULL)
-    {
-      assert_int_equal(rec.reason_string_lens[i], -1);
-    }
-    else
-    {
-      assert_int_equal(rec.reason_string_lens[i], (int)strlen(reason_string));
-      assert_string_equal(rec.reason_strings[i], reason_string);
-    }
+    assert_reason_string_recorded(&rec, i, reason_string);
   }
   assert_int_equal(acks, 1);
 
@@ -4327,6 +4481,15 @@ int az_iot_conformance_run_with_options(
     return 1;
   }
 
+  if (!az_iot_conformance_capabilities_fit_suite(suite_kind, g_capabilities))
+  {
+    fprintf(
+        stderr,
+        "conformance: AZ_IOT_CONFORMANCE_CAP_CONNACK_REASON_STRING was declared for a suite "
+        "other than MQTTv5, which never exercises it\n");
+    return 1;
+  }
+
   /* Custody material is all-or-none PER ROUTE. A half-configured token is a
    * mistake, not an opt-out: the end-to-end case would be dropped and the run
    * would still say PASS.
@@ -4455,6 +4618,11 @@ int az_iot_conformance_run_with_options(
     const struct CMUnitTest v5_tests[]
         = { AZ_IOT_CONFORMANCE_COMMON_TESTS,
             cmocka_unit_test(server_disconnect_is_reported),
+            cmocka_unit_test(a_server_disconnect_reason_string_is_reported),
+            cmocka_unit_test(a_server_disconnect_empty_reason_string_is_reported),
+            cmocka_unit_test(a_refused_connack_reason_string_is_reported),
+            cmocka_unit_test(a_refused_connack_empty_reason_string_is_reported),
+            cmocka_unit_test(a_refused_connack_without_a_reason_string_reports_none),
             cmocka_unit_test(a_refused_publish_is_reported),
             cmocka_unit_test(a_refused_publish_with_an_empty_reason_string_is_reported),
             cmocka_unit_test(a_publish_over_quota_is_reported_as_busy),
