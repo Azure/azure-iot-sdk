@@ -918,8 +918,9 @@ extern "C"
     size_t workspace_size; /**< Bytes in workspace. */
     /**
      * @brief Longest an SDK message whose peer set no Message Expiry is kept
-     * for confirmation or resend, in milliseconds. 0 selects
-     * #AZ_IOT_DEFAULT_MAX_UNCONFIRMED_DELIVERY_TIMEOUT_MS.
+     * for confirmation or resend, in milliseconds.
+     * az_iot_connection_client_options_default() sets
+     * #AZ_IOT_DEFAULT_MAX_UNCONFIRMED_DELIVERY_TIMEOUT_MS; init() also turns 0 into it.
      *
      * Cannot be disabled. Today it bounds mqttv5 direct method results for an
      * exec with no Message Expiry, and queued abandon and probe-ack rejection

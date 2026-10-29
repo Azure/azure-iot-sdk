@@ -6237,6 +6237,7 @@ AZ_NODISCARD az_iot_connection_client_options az_iot_connection_client_options_d
       = AZ_IOT_DEFAULT_MAX_HUB_CONNECT_ATTEMPTS_BEFORE_REPROVISION;
   opts.identity_recovery.policy = az_iot_connection_client_get_default_identity_recovery_policy();
   opts.identity_recovery.mode = AZ_IOT_IDENTITY_RECOVERY_RETRY_HUB;
+  opts.max_unconfirmed_delivery_timeout_ms = AZ_IOT_DEFAULT_MAX_UNCONFIRMED_DELIVERY_TIMEOUT_MS;
   return opts;
 }
 
@@ -6674,6 +6675,11 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_init(
   }
   memset(client, 0, sizeof(*client));
   client->opts = *opts;
+  if (client->opts.max_unconfirmed_delivery_timeout_ms == 0u)
+  {
+    client->opts.max_unconfirmed_delivery_timeout_ms
+        = AZ_IOT_DEFAULT_MAX_UNCONFIRMED_DELIVERY_TIMEOUT_MS;
+  }
   client->opts.limits = limits;
   memset(workspace_of(client), 0, workspace_size);
   workspace_assign(client, workspace_of(client));
@@ -8052,16 +8058,6 @@ az_iot_result az_iot_connection_client__set_device_id(
       sizeof(client->provisioned_device_id),
       &client->opts.device_id,
       device_id);
-}
-
-uint32_t az_iot_connection_client__max_unconfirmed_delivery_timeout_ms(
-    const az_iot_connection_client* client)
-{
-  if (client == NULL || client->opts.max_unconfirmed_delivery_timeout_ms == 0u)
-  {
-    return AZ_IOT_DEFAULT_MAX_UNCONFIRMED_DELIVERY_TIMEOUT_MS;
-  }
-  return client->opts.max_unconfirmed_delivery_timeout_ms;
 }
 
 void az_iot_connection_client__seed_rng(az_iot_connection_client* client, uint64_t seed)
