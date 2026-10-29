@@ -93,8 +93,8 @@ static int env_or_null(const char* name, char* buf, size_t cap, const char** out
 }
 
 #if defined(AZ_IOT_CONFORMANCE_PSA_KEYS)
-/** @brief Imports the PEM private key at @p path into PSA, signing only; returns its id, 0 on
- * failure. */
+/** @brief Imports the PEM private key at @p path into PSA, signing only and not exportable;
+ * returns its id, 0 on failure. */
 static uint32_t import_psa_key(const char* path)
 {
   static unsigned char pem[16384];
@@ -122,11 +122,18 @@ static uint32_t import_psa_key(const char* path)
   psa_key_attributes_t attributes = PSA_KEY_ATTRIBUTES_INIT;
   mbedtls_svc_key_id_t id = MBEDTLS_SVC_KEY_ID_INIT;
   rc = rc == 0 ? mbedtls_pk_get_psa_attributes(&pk, PSA_KEY_USAGE_SIGN_HASH, &attributes) : rc;
+  // Those attributes also allow export and copy: an adapter could then read the key.
+  psa_set_key_usage_flags(&attributes, PSA_KEY_USAGE_SIGN_HASH);
   rc = rc == 0 ? mbedtls_pk_import_into_psa(&pk, &attributes, &id) : rc;
   mbedtls_pk_free(&pk);
-  if (rc != 0)
+  uint8_t exported[1];
+  size_t exported_length = 0;
+  if (rc != 0
+      || psa_export_key(id, exported, sizeof(exported), &exported_length)
+          != PSA_ERROR_NOT_PERMITTED)
   {
-    fprintf(stderr, "conformance: cannot import the PSA key from '%s' (%d)\n", path, rc);
+    fprintf(stderr, "conformance: cannot import '%s' as a non-exportable PSA key (%d)\n", path, rc);
+    (void)psa_destroy_key(id);
     return 0;
   }
   return (uint32_t)id;
