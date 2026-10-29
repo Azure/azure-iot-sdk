@@ -1,0 +1,45 @@
+# Copyright (c) Microsoft. All rights reserved.
+# Licensed under the MIT license. See LICENSE file in the project root for full license information.
+
+name: Install libcurl (Windows)
+description: >-
+  libcurl for MSVC (vcpkg curl:x64-windows, Schannel TLS) under RUNNER_TEMP, cached per runner
+  image. Put the `prefix` output in CMAKE_PREFIX_PATH for find_package(CURL), and its bin and
+  debug/bin directories on PATH to run what links it.
+
+outputs:
+  prefix:
+    description: The installed libcurl (include, lib, bin, debug/lib, debug/bin).
+    value: ${{ steps.export.outputs.prefix }}
+
+runs:
+  using: composite
+  steps:
+    # The runner image pins its vcpkg checkout, so the image version fixes the port versions.
+    - name: Cache key
+      id: key
+      shell: pwsh
+      run: '"key=curl-x64-windows-$env:ImageOS-$env:ImageVersion" | Add-Content -Path $env:GITHUB_OUTPUT'
+
+    - name: Restore libcurl
+      id: cache
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: ${{ runner.temp }}/curl
+        key: ${{ steps.key.outputs.key }}
+
+    - name: Build libcurl
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: pwsh
+      run: |
+        & (Join-Path $env:VCPKG_INSTALLATION_ROOT 'vcpkg') install curl:x64-windows `
+          "--x-install-root=$(Join-Path $env:RUNNER_TEMP 'curl')"
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+    - name: Export libcurl
+      id: export
+      shell: pwsh
+      run: |
+        $prefix = Join-Path $env:RUNNER_TEMP 'curl/x64-windows'
+        if (-not (Test-Path (Join-Path $prefix 'include/curl/curl.h'))) { throw "libcurl not found under $prefix" }
+        "prefix=$prefix" | Add-Content -Path $env:GITHUB_OUTPUT
