@@ -311,6 +311,9 @@
   `az_platform_sleep_msec()` with `esp_timer` and FreeRTOS, so the az_mqtt adapter's idle wait
   sleeps instead of returning at once. The software updates sample's connect loop waits out each
   50 ms tick, so a DPS retry backoff no longer spins it through its bound, starving the idle task.
+- Paho and az_mqtt adapters: `AZ_IOT_MQTT_EVT_DISCONNECTED` carries `AZ_IOT_OK` only for a
+  completed `disconnect()`. A lost connection (Paho) and a server DISCONNECT with reason 0x00
+  (`az_iot_mqtt_disconnect_result()`) now report `AZ_IOT_ERR_NOT_CONNECTED`.
 - Paho adapter: `process_loop()` returns as soon as an event is queued and dispatches it, instead
   of sleeping its whole timeout and dispatching it on the next call.
 - mqttv5: the connection's `process_loop()` wait ends by the presence SUBACK and birth-ack
