@@ -314,18 +314,23 @@ static void discard(az_iot_delivery_tracker_entry* e)
   finish(e, AZ_IOT_DELIVERY_TRACKER_OUTCOME_DISCARDED, NULL);
 }
 
-/** @brief Lower @p remaining_ms to the time left before the earliest message time limit. */
-static void lower_remaining_to_earliest_deadline(
-    const az_iot_delivery_tracker* t,
-    uint64_t* remaining_ms)
+/**
+ * @brief Lower @p remaining_ms to the earliest message time limit, or to 0 when a held back
+ *        message becomes sendable at this do_work()'s TICK.
+ */
+static void lower_remaining_to_next_action(const az_iot_delivery_tracker* t, uint64_t* remaining_ms)
 {
   uint64_t const now = az_iot_time_mono_ms();
   for (size_t i = 0; i < TI(t).capacity; ++i)
   {
     const az_iot_delivery_tracker_entry* e = &TI(t).entries[i];
-    uint64_t const left = EI(e).state == ENTRY_FREE
-        ? UINT64_MAX
-        : az_iot_deadline__remaining_ms(&EI(e).deadline, now);
+    uint64_t left = EI(e).state == ENTRY_FREE ? UINT64_MAX
+                                              : az_iot_deadline__remaining_ms(&EI(e).deadline, now);
+    if (EI(e).state == ENTRY_QUEUED && EI(e).requeued_by_completion != 0u
+        && (uint32_t)(TI(t).tick_count - EI(e).requeued_at_tick) == 1u)
+    {
+      left = 0u;
+    }
     *remaining_ms = left < *remaining_ms ? left : *remaining_ms;
   }
 }
@@ -362,7 +367,7 @@ static void on_connection_event(const az_iot_connection_feature_event* event, vo
       for_each_entry(t, ENTRY_FREE, NULL, discard);
       break;
     case AZ_IOT_CONNECTION_FEATURE_EVENT_NEXT_DEADLINE:
-      lower_remaining_to_earliest_deadline(t, event->remaining_ms);
+      lower_remaining_to_next_action(t, event->remaining_ms);
       break;
   }
 }

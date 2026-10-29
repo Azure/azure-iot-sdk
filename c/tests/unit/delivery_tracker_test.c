@@ -579,6 +579,27 @@ static void the_wait_ends_by_the_earliest_time_limit(void** state)
       = az_iot_mock_mqtt_client_last_of(fx->mock, AZ_IOT_MOCK_CALL_PROCESS_LOOP)->timeout_ms;
   assert_true(waited <= 5000u && waited >= 4000u);
 }
+
+/* The do_work() after a PUBACK error requeued a message does not wait: its TICK resends it. */
+static void a_requeued_message_does_not_wait_out_the_adapter(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  connect(fx);
+  (void)submit(fx, &k_resend, 1u, 60000u);
+  assert_true(az_iot_mock_mqtt_client_inject_puback(
+      fx->mock, last_publish(fx)->packet_id, AZ_IOT_ERR_MQTT));
+  (void)az_iot_connection_client_do_work(&fx->connection, UINT32_MAX);
+  assert_true(
+      az_iot_mock_mqtt_client_last_of(fx->mock, AZ_IOT_MOCK_CALL_PROCESS_LOOP)->timeout_ms > 1000u);
+  assert_int_equal(publish_count(fx), 1);
+  (void)az_iot_connection_client_do_work(&fx->connection, UINT32_MAX);
+  assert_int_equal(
+      az_iot_mock_mqtt_client_last_of(fx->mock, AZ_IOT_MOCK_CALL_PROCESS_LOOP)->timeout_ms, 0u);
+  assert_int_equal(publish_count(fx), 2);
+  (void)az_iot_connection_client_do_work(&fx->connection, UINT32_MAX);
+  assert_true(
+      az_iot_mock_mqtt_client_last_of(fx->mock, AZ_IOT_MOCK_CALL_PROCESS_LOOP)->timeout_ms > 1000u);
+}
 /* A send the adapter refuses does not hold back the message a PUBACK error requeued: it goes out
  * from the next do_work(). */
 static void a_busy_adapter_does_not_hold_back_a_requeued_message(void** state)
@@ -669,6 +690,8 @@ int main(void)
         a_later_observer_submit_does_not_resend_a_requeued_message, setup, teardown),
     cmocka_unit_test_setup_teardown(a_message_send_error_does_not_block_the_queue, setup, teardown),
     cmocka_unit_test_setup_teardown(the_wait_ends_by_the_earliest_time_limit, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_requeued_message_does_not_wait_out_the_adapter, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_busy_adapter_does_not_hold_back_a_requeued_message, setup, teardown),
     cmocka_unit_test_setup_teardown(arguments_capacity_and_binding, setup, teardown),
