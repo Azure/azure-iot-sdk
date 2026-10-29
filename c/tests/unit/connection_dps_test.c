@@ -1267,7 +1267,11 @@ static void close_from_a_faulted_hub_still_ends_the_held_session(void** state)
  * A session held across registration is still up when a hub failure sends the
  * device back to DPS. An unconditional dps_start() there overwrites dps_mqtt,
  * orphaning that socket and losing any exchange in flight on it. */
-static void count_dps_tick(void* user_ctx) { ++*(int*)user_ctx; }
+static void count_dps_tick(const az_iot_connection_feature_event* event, void* user_ctx)
+{
+  (void)event;
+  ++*(int*)user_ctx;
+}
 
 static void a_reprovision_adopts_the_session_its_users_hold(void** state)
 {
@@ -1301,11 +1305,13 @@ static void a_reprovision_adopts_the_session_its_users_hold(void** state)
   /* do_work() returns early while a registration runs; tick observers still run. */
   int ticks = 0;
   assert_int_equal(
-      az_iot_connection_client__add_tick_observer(fx->client, count_dps_tick, &ticks), AZ_IOT_OK);
+      az_iot_connection_client__add_feature_observer(
+          fx->client, AZ_IOT_CONNECTION_FEATURE_EVENT_TICK, count_dps_tick, &ticks),
+      AZ_IOT_OK);
   (void)az_iot_connection_client_do_work(fx->client, 0);
   assert_true(fx->client->dps_registration_ref);
   assert_int_equal(ticks, 1);
-  az_iot_connection_client__remove_tick_observer(fx->client, count_dps_tick, &ticks);
+  az_iot_connection_client__remove_feature_observer(fx->client, count_dps_tick, &ticks);
 
   az_iot_connection_client__dps_user_release(fx->client);
 }

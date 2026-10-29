@@ -4,6 +4,14 @@
 
 ### Features Added
 
+- Breaking: `az_iot_connection_client_limits::max_session_handlers` and `max_feature_state_observers`
+  are replaced by `max_feature_observers` (default 10,
+  `AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_FEATURE_OBSERVERS`): feature clients observe connection
+  state, session end, publish completion and the `do_work()` tick through one table.
+  `AZ_IOT_CONNECTION_CLIENT_WORKSPACE_SIZE()` takes 7 counts (was 8), and
+  `AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_SESSION_HANDLERS`,
+  `AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_FEATURE_STATE_OBSERVERS` and `az_iot_session_end_callback`
+  are removed.
 - `az_iot_connection_client_options::max_unconfirmed_delivery_timeout_ms` bounds how long an SDK
   message whose peer set no Message Expiry is kept for confirmation or resend. 0 selects
   `AZ_IOT_DEFAULT_MAX_UNCONFIRMED_DELIVERY_TIMEOUT_MS` (300000); it cannot be disabled. It applies

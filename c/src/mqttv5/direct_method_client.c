@@ -1336,7 +1336,7 @@ static void handle_exec(
 }
 
 static void flush_outbound_queue(az_iot_mqttv5_direct_method_client* dm);
-static void on_publish_completed(void* user_ctx);
+static void on_connection_event(const az_iot_connection_feature_event* event, void* user_ctx);
 
 /** @brief Validate and dispatch one message on the inbound methods topic. */
 static void dispatch_method_message(
@@ -1410,7 +1410,7 @@ static void on_method_message(void* user_ctx, const az_iot_mqtt_message* msg)
   /* Retries what a failed replay left queued, in case no PUBACK of this client is due. After
    * dispatch, so an exec has already ended its token and its probe-ack is not sent again. Only
    * while the client is still initialized: deinit withdraws its observer from the connection. */
-  if (az_iot_connection_client__has_publish_completion_observer(conn, on_publish_completed, dm))
+  if (az_iot_connection_client__has_feature_observer(conn, on_connection_event, dm))
   {
     flush_outbound_queue(dm);
   }
@@ -1522,6 +1522,19 @@ static void on_publish_completed(void* user_ctx)
     return;
   }
   flush_outbound_queue(dm);
+}
+
+/** @brief Feature observer: CONNECTED and any hub PUBACK can release queued messages. */
+static void on_connection_event(const az_iot_connection_feature_event* event, void* user_ctx)
+{
+  if (event->kind == AZ_IOT_CONNECTION_FEATURE_EVENT_STATE)
+  {
+    on_connection_state(event->state, user_ctx);
+  }
+  else
+  {
+    on_publish_completed(user_ctx);
+  }
 }
 
 /* ------------------------------------------------------------------------- */
@@ -1673,18 +1686,15 @@ AZ_NODISCARD az_iot_result az_iot_mqttv5_direct_method_client_init(
   }
   if (result == AZ_IOT_OK)
   {
-    result = az_iot_connection_client__add_state_observer(conn, on_connection_state, client);
-  }
-  if (result == AZ_IOT_OK)
-  {
-    result = az_iot_connection_client__add_publish_completion_observer(
-        conn, on_publish_completed, client);
+    result = az_iot_connection_client__add_feature_observer(
+        conn,
+        AZ_IOT_CONNECTION_FEATURE_EVENT_STATE | AZ_IOT_CONNECTION_FEATURE_EVENT_PUBLISH_COMPLETED,
+        on_connection_event,
+        client);
   }
   if (result != AZ_IOT_OK)
   {
-    az_iot_connection_client__remove_publish_completion_observer(
-        conn, on_publish_completed, client);
-    (void)az_iot_connection_client__remove_state_observer(conn, on_connection_state, client);
+    az_iot_connection_client__remove_feature_observer(conn, on_connection_event, client);
     az_iot_connection_client__release_pubacks(conn, client);
     az_iot_connection_client__release_profile(conn);
     (void)az_iot_connection_client__unregister_inbound_handlers(conn, client);
@@ -1702,10 +1712,7 @@ void az_iot_mqttv5_direct_method_client_deinit(az_iot_mqttv5_direct_method_clien
   {
     return;
   }
-  (void)az_iot_connection_client__remove_state_observer(
-      DI(client).conn, on_connection_state, client);
-  az_iot_connection_client__remove_publish_completion_observer(
-      DI(client).conn, on_publish_completed, client);
+  az_iot_connection_client__remove_feature_observer(DI(client).conn, on_connection_event, client);
   az_iot_connection_client__unregister_feature_client_bind(DI(client).conn, client);
   /* Pending PUBACK callbacks point into this client. */
   az_iot_connection_client__abandon_pubacks(DI(client).conn, client);

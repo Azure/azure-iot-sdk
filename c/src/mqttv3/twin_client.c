@@ -258,8 +258,9 @@ static void invoke_patch_cb(
  * for would have arrived on that session, so they can never come now; holding
  * the slots would leak one per outage until AZ_IOT_TWIN_MAX_PENDING is gone and
  * the client refuses every further request. */
-static void twin_fail_pending(void* user_ctx)
+static void twin_fail_pending(const az_iot_connection_feature_event* event, void* user_ctx)
 {
+  (void)event;
   az_iot_mqttv3_twin_client* t = (az_iot_mqttv3_twin_client*)user_ctx;
   if (!t)
   {
@@ -402,7 +403,7 @@ static void withdraw_registrations(
     az_iot_connection_client* conn,
     az_iot_mqttv3_twin_client* client)
 {
-  (void)az_iot_connection_client__unregister_session_end_handler(conn, client);
+  az_iot_connection_client__remove_feature_observer(conn, twin_fail_pending, client);
   (void)az_iot_connection_client__remove_subscriptions_for(conn, client);
   (void)az_iot_connection_client__unregister_inbound_handlers(conn, client);
 }
@@ -485,8 +486,8 @@ az_iot_mqttv3_twin_client_init(az_iot_mqttv3_twin_client* client, az_iot_connect
    * unwind, and this must not outlive a failed init. */
   if (result == AZ_IOT_OK)
   {
-    result
-        = az_iot_connection_client__register_session_end_handler(conn, twin_fail_pending, client);
+    result = az_iot_connection_client__add_feature_observer(
+        conn, AZ_IOT_CONNECTION_FEATURE_EVENT_SESSION_END, twin_fail_pending, client);
   }
 
   if (result != AZ_IOT_OK)

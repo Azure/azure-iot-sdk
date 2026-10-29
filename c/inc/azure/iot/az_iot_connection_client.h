@@ -390,10 +390,9 @@ extern "C"
     /** Topic filters re-subscribed on every session. A fully loaded mqttv3 device uses 5; mqttv5
      * feature clients use none. Default 8, at most 255. */
     size_t max_persistent_subscriptions;
-    /** Feature clients told when a session ends (twin, certificate renewal). Default 4. */
-    size_t max_session_handlers;
-    /** Connection-state observers for feature clients. Default 6. */
-    size_t max_feature_state_observers;
+    /** Feature-client observers of connection state, session end, publish completion and the
+     * do_work() tick. Default 10. */
+    size_t max_feature_observers;
     /** Connection-state observers the application registers. Default 4. */
     size_t max_application_state_observers;
     /** Feature clients attached to the connection client. Default 8. */
@@ -911,8 +910,8 @@ extern "C"
     /**
      * Memory for the entries, owned by the client from init() to deinit(), which wipes it.
      * At least az_iot_connection_client_get_workspace_size(&limits) bytes, any alignment.
-     * NULL: the client uses its own area, sized for the built-in defaults (16, 2, 8, 4, 6, 4, 8,
-     * 8 in field order); no limit may exceed those.
+     * NULL: the client uses its own area, sized for the built-in defaults (16, 2, 8, 10, 4, 8, 8
+     * in field order); no limit may exceed those.
      */
     uint8_t* workspace;
     size_t workspace_size; /**< Bytes in workspace. */
@@ -1126,17 +1125,6 @@ extern "C"
   typedef void (
       *az_iot_publish_result_callback)(const az_iot_publish_result* result, void* user_ctx);
 
-  /* Notified when an MQTT session ends -- peer disconnect, transport error, or a
-   * user close -- so a feature client can complete whatever it had correlated
-   * against that session instead of waiting forever for a response that can no
-   * longer arrive. Registered through the internal header; applications use
-   * az_iot_connection_client_add_state_observer() instead.
-   *
-   * Deliberately NOT invoked from deinit(), for the same reason pending QoS-1
-   * acknowledgements are not completed there: the application is tearing the
-   * client down and the context the callback closes over may already be gone. */
-  typedef void (*az_iot_session_end_callback)(void* user_ctx);
-
   /* ---- Runtime Hub-side certificate renewal (MQTTv3 hub) ------------------ */
   /* Device-initiated CSR to the connected hub. Two-phase: ACCEPTED (202) then
    * ISSUED (200) with the new chain, or FAILED. See docs/eng/certificate-management.md. */
@@ -1275,15 +1263,6 @@ extern "C"
 
 /* MQTT adapter factories one client can register. */
 #define AZ_IOT_MAX_MQTT_FACTORIES 4
-
-/* Feature clients told after each hub PUBACK, whichever publish it was for, so
- * one waiting for publish capacity can retry. Used by the mqttv5 direct method
- * client. */
-#define AZ_IOT_CONNECTION_CLIENT_PUBLISH_COMPLETION_OBSERVERS 2
-
-/* Feature clients told once per do_work(), after its own timers, so they can
- * expire and resend without traffic or a separate do_work() of their own. */
-#define AZ_IOT_CONNECTION_CLIENT_TICK_OBSERVERS 4
 
 /* Defaults applied when the corresponding option is left at 0. */
 #ifndef AZ_IOT_DEFAULT_KEEP_ALIVE_SECONDS
@@ -1485,6 +1464,30 @@ extern "C"
     az_iot_connection_state_callback cb;
     void* user_ctx;
   } az_iot_connection_state_observer;
+  /** @brief Connection events a feature client can observe (bitmask). */
+  typedef enum az_iot_connection_feature_event_kind
+  {
+    AZ_IOT_CONNECTION_FEATURE_EVENT_STATE = 1, /**< A state transition; see state. */
+    AZ_IOT_CONNECTION_FEATURE_EVENT_SESSION_END
+    = 2, /**< The MQTT session ended. Not from deinit(). */
+    AZ_IOT_CONNECTION_FEATURE_EVENT_PUBLISH_COMPLETED = 4, /**< A hub PUBACK, for any publish. */
+    AZ_IOT_CONNECTION_FEATURE_EVENT_TICK = 8, /**< Once per do_work(), after its timers. */
+  } az_iot_connection_feature_event_kind;
+  /** @brief One event for a feature observer; valid only during the call. */
+  typedef struct az_iot_connection_feature_event
+  {
+    az_iot_connection_feature_event_kind kind;
+    const az_iot_connection_state_event* state; /**< STATE only; NULL otherwise. */
+  } az_iot_connection_feature_event;
+  typedef void (*az_iot_connection_feature_observer_callback)(
+      const az_iot_connection_feature_event* event,
+      void* user_ctx);
+  typedef struct az_iot_connection_feature_observer
+  {
+    az_iot_connection_feature_observer_callback cb;
+    void* user_ctx;
+    uint8_t events; /* az_iot_connection_feature_event_kind bits */
+  } az_iot_connection_feature_observer;
   typedef struct az_iot_connection_pending_publish
   {
     uint16_t packet_id;
@@ -1523,12 +1526,6 @@ extern "C"
     uint8_t sub_index; /* into persistent_subs[] */
     bool gated;
   } az_iot_connection_subscription_ack;
-  typedef struct az_iot_connection_session_handler
-  {
-    az_iot_session_end_callback cb;
-    void* user_ctx;
-    bool in_use;
-  } az_iot_connection_session_handler;
   typedef struct az_iot_connection_feature_client_bind
   {
     void* owner;
@@ -1552,8 +1549,7 @@ extern "C"
     pending_publishes,                                                                 \
     publish_reservations,                                                              \
     persistent_subscriptions,                                                          \
-    session_handlers,                                                                  \
-    feature_state_observers,                                                           \
+    feature_observers,                                                                 \
     application_state_observers,                                                       \
     feature_clients,                                                                   \
     inbound_handlers)                                                                  \
@@ -1567,9 +1563,7 @@ extern "C"
    + AZ_IOT_CONNECTION_CLIENT_WORKSPACE_ALIGN(                                         \
        (persistent_subscriptions) * sizeof(az_iot_connection_subscription_ack))        \
    + AZ_IOT_CONNECTION_CLIENT_WORKSPACE_ALIGN(                                         \
-       (session_handlers) * sizeof(az_iot_connection_session_handler))                 \
-   + AZ_IOT_CONNECTION_CLIENT_WORKSPACE_ALIGN(                                         \
-       (feature_state_observers) * sizeof(az_iot_connection_state_observer))           \
+       (feature_observers) * sizeof(az_iot_connection_feature_observer))               \
    + AZ_IOT_CONNECTION_CLIENT_WORKSPACE_ALIGN(                                         \
        (application_state_observers) * sizeof(az_iot_connection_state_observer))       \
    + AZ_IOT_CONNECTION_CLIENT_WORKSPACE_ALIGN(                                         \
@@ -1585,16 +1579,15 @@ extern "C"
       AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_PENDING_PUBLISHES,           \
       AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_PUBLISH_RESERVATIONS,        \
       AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_PERSISTENT_SUBSCRIPTIONS,    \
-      AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_SESSION_HANDLERS,            \
-      AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_FEATURE_STATE_OBSERVERS,     \
+      AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_FEATURE_OBSERVERS,           \
       AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_APPLICATION_STATE_OBSERVERS, \
       AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_FEATURE_CLIENTS,             \
       AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_INBOUND_HANDLERS)
 
-/* Area used when the options give no workspace (internal). Fixed counts 16, 2, 8, 4, 6, 4, 8, 8,
+/* Area used when the options give no workspace (internal). Fixed counts 16, 2, 8, 10, 4, 8, 8,
  * not the overridable defaults, so the struct layout never depends on a macro. */
 #define _az_IOT_CONNECTION_CLIENT_EMBEDDED_WORKSPACE_SIZE \
-  AZ_IOT_CONNECTION_CLIENT_WORKSPACE_SIZE(16, 2, 8, 4, 6, 4, 8, 8)
+  AZ_IOT_CONNECTION_CLIENT_WORKSPACE_SIZE(16, 2, 8, 10, 4, 8, 8)
 
   struct az_iot_connection_client
   {
@@ -1611,25 +1604,11 @@ extern "C"
      * hub session, and a hub drop must not invalidate a provisioning session a
      * feature client is using. */
     az_iot_connection_state state[AZ_IOT_CONN_SCOPE_COUNT];
-    /* Connection-state observers, dispatched feature clients first (see
-     * az_iot_connection_client_add_state_observer). Two pools so neither kind
-     * of subscriber can starve the other. */
-    az_iot_connection_state_observer* feature_state_observers;
+    /* Feature-client observers (see az_iot_connection_client__add_feature_observer); their state
+     * events are dispatched before the application's. Two pools so neither kind of subscriber
+     * can starve the other. */
+    az_iot_connection_feature_observer* feature_observers;
     az_iot_connection_state_observer* app_state_observers;
-    /* Feature clients told after each hub PUBACK (see
-     * az_iot_connection_client__add_publish_completion_observer). */
-    struct
-    {
-      void (*cb)(void* user_ctx);
-      void* user_ctx;
-    } publish_completion_observers[AZ_IOT_CONNECTION_CLIENT_PUBLISH_COMPLETION_OBSERVERS];
-    /* Feature clients told once per do_work() (see
-     * az_iot_connection_client__add_tick_observer). */
-    struct
-    {
-      void (*cb)(void* user_ctx);
-      void* user_ctx;
-    } tick_observers[AZ_IOT_CONNECTION_CLIENT_TICK_OBSERVERS];
     /* Set while a transition is being dispatched. Registering an observer from
      * inside a callback would hand it the transition in flight, so adding is
      * refused with AZ_IOT_ERR_BUSY while this is set. Removing is allowed: the
@@ -1694,8 +1673,6 @@ extern "C"
     az_iot_connection_persistent_subscription* persistent_subs;
     /* SUBACKs outstanding for persistent filters; see subscription_gate. */
     az_iot_connection_subscription_ack* subscription_acks;
-
-    az_iot_connection_session_handler* session_handlers;
 
     /* Effective hub hostname / device id when not caller-provided (DPS-assigned,
      * mock, or runtime-set). Inline fixed buffers in this caller-allocated struct

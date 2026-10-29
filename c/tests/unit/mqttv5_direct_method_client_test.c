@@ -3601,17 +3601,13 @@ static void assert_nothing_left_registered(
   {
     assert_false(conn->dispatch.entries[i].in_use && conn->dispatch.entries[i].user_ctx == dm);
   }
-  for (size_t i = 0; i < AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_FEATURE_STATE_OBSERVERS; ++i)
+  for (size_t i = 0; i < AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_FEATURE_OBSERVERS; ++i)
   {
-    assert_ptr_not_equal(conn->feature_state_observers[i].user_ctx, dm);
-  }
-  for (size_t i = 0; i < AZ_IOT_CONNECTION_CLIENT_PUBLISH_COMPLETION_OBSERVERS; ++i)
-  {
-    assert_ptr_not_equal(conn->publish_completion_observers[i].user_ctx, dm);
+    assert_ptr_not_equal(conn->feature_observers[i].user_ctx, dm);
   }
 }
 
-static void ignore_state(const az_iot_connection_state_event* event, void* user_ctx)
+static void ignore_feature_event(const az_iot_connection_feature_event* event, void* user_ctx)
 {
   (void)event;
   (void)user_ctx;
@@ -3641,16 +3637,18 @@ static void assert_a_new_init_serves_invocations(fixture* fx, bool already_open)
   assert_non_null(find_phase(fx->mock, "result:1"));
 }
 
-static void init_without_a_free_state_observer_fails_and_cleans_up(void** state)
+static void init_without_a_free_feature_observer_fails_and_cleans_up(void** state)
 {
   fixture* fx = (fixture*)*state;
   az_iot_mqttv5_direct_method_client_deinit(&fx->dm);
 
-  static int owners[AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_FEATURE_STATE_OBSERVERS];
+  static int owners[AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_FEATURE_OBSERVERS];
   size_t taken = 0;
-  while (taken < AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_FEATURE_STATE_OBSERVERS
-         && az_iot_connection_client__add_state_observer(&fx->conn, ignore_state, &owners[taken])
-             == AZ_IOT_OK)
+  while (
+      taken < AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_FEATURE_OBSERVERS
+      && az_iot_connection_client__add_feature_observer(
+             &fx->conn, AZ_IOT_CONNECTION_FEATURE_EVENT_STATE, ignore_feature_event, &owners[taken])
+          == AZ_IOT_OK)
   {
     taken++;
   }
@@ -3660,49 +3658,13 @@ static void init_without_a_free_state_observer_fails_and_cleans_up(void** state)
       az_iot_mqttv5_direct_method_client_init(&fx->dm, &fx->conn), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
   assert_nothing_left_registered(&fx->conn, &fx->dm);
 
-  assert_int_equal(
-      az_iot_connection_client__remove_state_observer(&fx->conn, ignore_state, &owners[0]),
-      AZ_IOT_OK);
+  az_iot_connection_client__remove_feature_observer(&fx->conn, ignore_feature_event, &owners[0]);
   assert_int_equal(az_iot_mqttv5_direct_method_client_init(&fx->dm, &fx->conn), AZ_IOT_OK);
   assert_a_new_init_serves_invocations(fx, false);
 
   for (size_t i = 1; i < taken; ++i)
   {
-    (void)az_iot_connection_client__remove_state_observer(&fx->conn, ignore_state, &owners[i]);
-  }
-}
-
-static void ignore_publish_completed(void* user_ctx) { (void)user_ctx; }
-
-/* Fails at the last registration, after the bind, reservation and state
- * observer: each must be undone. */
-static void init_without_a_free_publish_completion_observer_fails_and_cleans_up(void** state)
-{
-  fixture* fx = (fixture*)*state;
-  az_iot_mqttv5_direct_method_client_deinit(&fx->dm);
-
-  static int owners[AZ_IOT_CONNECTION_CLIENT_PUBLISH_COMPLETION_OBSERVERS];
-  for (size_t i = 0; i < AZ_IOT_CONNECTION_CLIENT_PUBLISH_COMPLETION_OBSERVERS; ++i)
-  {
-    assert_int_equal(
-        az_iot_connection_client__add_publish_completion_observer(
-            &fx->conn, ignore_publish_completed, &owners[i]),
-        AZ_IOT_OK);
-  }
-
-  assert_int_equal(
-      az_iot_mqttv5_direct_method_client_init(&fx->dm, &fx->conn), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
-  assert_nothing_left_registered(&fx->conn, &fx->dm);
-
-  az_iot_connection_client__remove_publish_completion_observer(
-      &fx->conn, ignore_publish_completed, &owners[0]);
-  assert_int_equal(az_iot_mqttv5_direct_method_client_init(&fx->dm, &fx->conn), AZ_IOT_OK);
-  assert_a_new_init_serves_invocations(fx, false);
-
-  for (size_t i = 1; i < AZ_IOT_CONNECTION_CLIENT_PUBLISH_COMPLETION_OBSERVERS; ++i)
-  {
-    az_iot_connection_client__remove_publish_completion_observer(
-        &fx->conn, ignore_publish_completed, &owners[i]);
+    az_iot_connection_client__remove_feature_observer(&fx->conn, ignore_feature_event, &owners[i]);
   }
 }
 
@@ -4868,9 +4830,7 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         a_late_failure_does_not_requeue_a_reused_notice_entry, setup, teardown),
     cmocka_unit_test_setup_teardown(
-        init_without_a_free_publish_completion_observer_fails_and_cleans_up, setup, teardown),
-    cmocka_unit_test_setup_teardown(
-        init_without_a_free_state_observer_fails_and_cleans_up, setup, teardown),
+        init_without_a_free_feature_observer_fails_and_cleans_up, setup, teardown),
     cmocka_unit_test_setup_teardown(
         init_from_a_state_callback_is_busy_and_cleans_up, setup, teardown),
     cmocka_unit_test_setup_teardown(respond_names_the_argument_it_was_given_wrong, setup, teardown),

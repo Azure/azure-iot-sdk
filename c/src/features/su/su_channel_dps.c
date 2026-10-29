@@ -83,8 +83,11 @@ static bool rid_is_ours(const char* rid)
  * @param event    The transition.
  * @param user_ctx The channel.
  */
-static void on_connection_state(const az_iot_connection_state_event* event, void* user_ctx)
+static void on_connection_state(
+    const az_iot_connection_feature_event* feature_event,
+    void* user_ctx)
 {
+  const az_iot_connection_state_event* event = feature_event->state;
   az_iot_su_channel_dps* c = (az_iot_su_channel_dps*)user_ctx;
   if (c == NULL || event == NULL || (size_t)event->scope >= AZ_IOT_CONN_SCOPE_COUNT)
   {
@@ -132,8 +135,8 @@ static az_iot_result channel_observe(az_iot_su_channel_dps* c)
     c->conn_state[i]
         = az_iot_connection_client_get_state(c->connection, (az_iot_connection_scope)i);
   }
-  az_iot_result r
-      = az_iot_connection_client__add_state_observer(c->connection, on_connection_state, c);
+  az_iot_result r = az_iot_connection_client__add_feature_observer(
+      c->connection, AZ_IOT_CONNECTION_FEATURE_EVENT_STATE, on_connection_state, c);
   if (r == AZ_IOT_OK)
   {
     c->observes_state = true;
@@ -663,7 +666,7 @@ static az_iot_result channel_open(
     if (c->observes_state)
     {
       c->observes_state = false;
-      (void)az_iot_connection_client__remove_state_observer(c->connection, on_connection_state, c);
+      az_iot_connection_client__remove_feature_observer(c->connection, on_connection_state, c);
     }
     c->wants_hold = false;
     c->holds_user = false;
@@ -707,7 +710,7 @@ static void channel_close(void* ctx)
   if (c->observes_state)
   {
     c->observes_state = false;
-    (void)az_iot_connection_client__remove_state_observer(c->connection, on_connection_state, c);
+    az_iot_connection_client__remove_feature_observer(c->connection, on_connection_state, c);
   }
   if (c->holds_user)
   {
