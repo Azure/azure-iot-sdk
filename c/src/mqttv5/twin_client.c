@@ -219,15 +219,13 @@ static bool twin_push_received_for_current_birth(const az_iot_mqttv5_twin_client
   (void)az_iot_connection_client__presence_twin_versions(
       TI(t).conn, &desired_version, &reported_version);
   uint8_t expected = twin_push_sections_expected(t);
-  uint8_t current = TI(t).twin_push_wait.received_sections;
-  if (TI(t).twin_push_wait.received_desired_version < desired_version)
-  {
-    current &= (uint8_t)~TWIN_PUSH_SECTION_DESIRED;
-  }
-  if (TI(t).twin_push_wait.received_reported_version < reported_version)
-  {
-    current &= (uint8_t)~TWIN_PUSH_SECTION_REPORTED;
-  }
+  uint8_t const received = TI(t).twin_push_wait.received_sections;
+  bool const desired_current = (received & TWIN_PUSH_SECTION_DESIRED) != 0
+      && TI(t).twin_push_wait.received_desired_version >= desired_version;
+  bool const reported_current = (received & TWIN_PUSH_SECTION_REPORTED) != 0
+      && TI(t).twin_push_wait.received_reported_version >= reported_version;
+  uint8_t const current = (uint8_t)((desired_current ? TWIN_PUSH_SECTION_DESIRED : 0u)
+                                    | (reported_current ? TWIN_PUSH_SECTION_REPORTED : 0u));
   return az_iot_connection_client__birth_nonce(TI(t).conn, birth_nonce) == AZ_IOT_OK
       && memcmp(TI(t).twin_push_wait.received_birth_nonce, birth_nonce, AZ_IOT_CORRELATION_UUID_LEN)
       == 0
