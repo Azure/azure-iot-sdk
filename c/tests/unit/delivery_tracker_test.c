@@ -53,6 +53,7 @@ typedef struct fixture
    * rebind_first). */
   const az_iot_delivery_tracker_profile* submit_two_on_complete;
   bool rebind_first;
+  bool refuse_sends_on_complete; /* With it: the adapter refuses both submits' sends (BUSY). */
 } fixture;
 
 static const uint8_t k_guaranteed[] = { 1u }; /* One slot kept for priority 0. */
@@ -89,6 +90,11 @@ static void on_complete(
   {
     const az_iot_delivery_tracker_profile* profile = fx->submit_two_on_complete;
     fx->submit_two_on_complete = NULL;
+    if (fx->refuse_sends_on_complete)
+    {
+      fx->failing_sends = 2;
+      fx->failing_send_result = AZ_IOT_ERR_BUSY;
+    }
     if (fx->rebind_first)
     {
       az_iot_delivery_tracker__unbind(&fx->tracker);
@@ -804,6 +810,20 @@ static void a_slot_freed_elsewhere_is_used_without_waiting(void** state)
   az_iot_delivery_tracker__unbind(&shared);
   az_iot_delivery_tracker__unbind(&other);
 }
+
+/* A refusal met by a flush nested in an on_complete (a QoS 0 send completes at once) ends the
+ * outer flush too: it does not try the refused message again. */
+static void a_nested_refusal_ends_the_outer_flush(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  connect(fx);
+  fx->qos = AZ_IOT_MQTT_QOS_0;
+  fx->submit_two_on_complete = &k_resend;
+  fx->refuse_sends_on_complete = true;
+  (void)submit(fx, &k_resend, 1u, 0u);
+  assert_int_equal(publish_count(fx), 3); /* t/0, then t/1 refused twice. */
+  assert_int_equal(fx->completion_count, 1);
+}
 /* A send the adapter refuses does not hold back the message a PUBACK error requeued: it goes out
  * from the next do_work(). */
 static void a_busy_adapter_does_not_hold_back_a_requeued_message(void** state)
@@ -903,6 +923,7 @@ int main(void)
         an_identity_change_keeps_messages_submitted_during_it, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_slot_freed_elsewhere_is_used_without_waiting, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_nested_refusal_ends_the_outer_flush, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_busy_adapter_does_not_hold_back_a_requeued_message, setup, teardown),
     cmocka_unit_test_setup_teardown(arguments_capacity_and_binding, setup, teardown),

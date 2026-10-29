@@ -305,6 +305,10 @@ static void flush(az_iot_delivery_tracker* t, bool skip_requeued)
       TI(t).send_refused = 1u;
       break; /* The connection refused; the rest waits for a later event. */
     }
+    if (TI(t).send_refused != 0u)
+    {
+      break; /* A flush nested in an on_complete was refused. */
+    }
   }
 }
 
