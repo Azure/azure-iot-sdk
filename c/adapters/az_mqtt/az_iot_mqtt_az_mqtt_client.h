@@ -709,6 +709,21 @@ static az_iot_result _azm_check_options(az_iot_mqtt_connect_options const* o)
         AZ_IOT_LOG_COMPONENT_AZ_MQTT, "sign callback and key password are not supported");
     return AZ_IOT_ERR_NOT_SUPPORTED;
   }
+  if (o->tls.client_key_psa_id != 0)
+  {
+#if defined(AZ_IOT_AZ_MQTT_MBEDTLS)
+    // A PSA key replaces the key PEM, path and URI, and signs for a client certificate.
+    if (o->tls.client_key_path != NULL || o->tls.client_key_pem != NULL
+        || o->tls.client_key_uri != NULL
+        || (o->tls.client_cert_path == NULL && o->tls.client_cert_pem == NULL))
+    {
+      return AZ_IOT_ERR_INVALID_ARG;
+    }
+#else
+    AZ_IOT_LOG_ERROR(AZ_IOT_LOG_COMPONENT_AZ_MQTT, "PSA client keys need the mbedTLS backend");
+    return AZ_IOT_ERR_NOT_SUPPORTED;
+#endif
+  }
   if (o->tls.client_key_uri != NULL || o->tls.crypto_engine_id != NULL)
   {
     if (!az_iot_az_mqtt_has_text(o->tls.client_key_uri)
@@ -782,8 +797,10 @@ static bool _azm_copy_options(
   ok = ok && _azm_own(m, t->trusted_ca_path ? NULL : t->trusted_ca_pem, &m->tls.ca_cert_pem);
   ok = ok && _azm_own(m, t->client_cert_path ? NULL : t->client_cert_pem, &m->tls.client_cert_pem);
   ok = ok && _azm_own(m, t->client_key_path ? NULL : t->client_key_pem, &m->tls.client_key_pem);
+  m->tls.client_key_psa_id = t->client_key_psa_id;
   bool const tls = t->use_tls || t->trusted_ca_path || t->trusted_ca_pem || t->client_cert_path
-      || t->client_cert_pem || t->client_key_path || t->client_key_pem || t->client_key_uri;
+      || t->client_cert_pem || t->client_key_path || t->client_key_pem || t->client_key_uri
+      || t->client_key_psa_id != 0;
 #if defined(_AZM_ESP_CERTIFICATE_BUNDLE)
   // Without the bundle (CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=n), az_mqtt refuses TLS with no CA.
   if (tls && az_span_size(m->tls.ca_cert_path) == 0 && az_span_size(m->tls.ca_cert_pem) == 0)

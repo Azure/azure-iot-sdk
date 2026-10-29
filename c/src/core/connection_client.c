@@ -1227,13 +1227,13 @@ static az_iot_result validate_certificate_material(
     return AZ_IOT_OK;
   }
   bool has_key = mat->client_key_pem != NULL || mat->client_key_path != NULL
-      || mat->client_key_uri != NULL || has_sign;
+      || mat->client_key_uri != NULL || mat->client_key_psa_id != 0 || has_sign;
   if (!has_key)
   {
     AZ_IOT_LOG_ERROR(
         AZ_IOT_LOG_COMPONENT_CONNECTION,
         "certificate material carries a client certificate but no private "
-        "key (no PEM, no file, no key URI, no sign() hook)");
+        "key (no PEM, no file, no key URI, no PSA key, no sign() hook)");
     return AZ_IOT_ERR_CREDENTIAL_INCOMPLETE;
   }
   /* A key URI without an engine/provider id names a key nothing can resolve:
@@ -1275,6 +1275,7 @@ static az_iot_result apply_certificate_material(
   copts->tls.client_key_pem = mat->client_key_pem;
   copts->tls.client_key_uri = mat->client_key_uri;
   copts->tls.crypto_engine_id = mat->crypto_engine_id;
+  copts->tls.client_key_psa_id = mat->client_key_psa_id;
   copts->tls.sign = has_sign ? provider_sign_adapter : NULL;
   copts->tls.sign_ctx = has_sign ? (void*)prov : NULL;
   copts->tls.use_tls = true; /* this SDK always connects over TLS */

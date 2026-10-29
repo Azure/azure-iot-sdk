@@ -343,6 +343,23 @@ static void a_plain_credential_takes_no_custody(void** state)
   assert_null(fake_custody_reference_path());
 }
 
+/* Paho has no PSA key route: the connect fails before custody or a socket. */
+static void a_psa_client_key_is_not_supported(void** state)
+{
+  fixture* fx = (fixture*)*state;
+
+  az_iot_mqtt_connect_options opts;
+  memset(&opts, 0, sizeof(opts));
+  opts.host = "broker.invalid";
+  opts.port = 8883;
+  opts.client_id = "ut-device";
+  opts.tls.client_cert_path = "/dev/null/device.pem";
+  opts.tls.client_key_psa_id = 0x7FFF0001u;
+
+  assert_int_equal(fx->client->iface->connect(fx->client, &opts), AZ_IOT_ERR_NOT_SUPPORTED);
+  assert_int_equal(fake_custody_prepare_calls(), 0);
+}
+
 /* ------------------------------------------------------------------------- */
 /* server certificate validation                                              */
 /* ------------------------------------------------------------------------- */
@@ -627,6 +644,7 @@ int main(void)
     cmocka_unit_test_setup_teardown(reconnecting_replaces_the_key_reference, setup, teardown),
     cmocka_unit_test_setup_teardown(destroy_releases_the_key_reference, setup, teardown),
     cmocka_unit_test_setup_teardown(a_plain_credential_takes_no_custody, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_psa_client_key_is_not_supported, setup, teardown),
     cmocka_unit_test_setup_teardown(server_validation_cannot_be_switched_off, setup, teardown),
     cmocka_unit_test_setup_teardown(a_custody_connect_verifies_the_server, setup, teardown),
     cmocka_unit_test_setup_teardown(a_key_reference_alone_selects_tls, setup, teardown),

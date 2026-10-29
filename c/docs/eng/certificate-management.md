@@ -233,13 +233,14 @@ typedef struct az_iot_certificate_material
      * TLS adapter uses this reference instead. */
     const char* client_key_uri;    /* e.g. PKCS#11: "pkcs11:token=...;object=..." */
     const char* crypto_engine_id;  /* OpenSSL ENGINE/provider id: "pkcs11", "tpm2", ... */
+    uint32_t client_key_psa_id;    /* PSA Crypto key id (mbedTLS); 0: none */
 } az_iot_certificate_material;
 ```
 
 Adapter support:
 
 - **Key reference:** `az_iot_mqtt_tls_options` carries
-  `client_key_uri` / `crypto_engine_id` / `sign` / `sign_ctx`,
+  `client_key_uri` / `crypto_engine_id` / `sign` / `sign_ctx` / `client_key_psa_id`,
   `connection_client.c` fills them on both the DPS/bootstrap connect and the
   operational/reconnect connect, and
   [`az_iot_paho_key_custody.c`](../../adapters/paho/az_iot_paho_key_custody.c) loads the
@@ -253,6 +254,10 @@ Adapter support:
   where). **Paho cannot**: it accepts a client key only as a file path and exposes
   neither the `SSL_CTX` nor a key hook (upstream Paho has none either), so it fails such
   a credential with `AZ_IOT_ERR_NOT_SUPPORTED` instead of connecting without a key.
+- **PSA key id:** `client_key_psa_id` names a key in the PSA Crypto key store, which on
+  ESP-IDF v6 can be the Digital Signature peripheral. The az_mqtt adapter hands it to its
+  mbedTLS backend; with another backend, and in Paho and `rust_mqtt`, the connect fails
+  with `AZ_IOT_ERR_NOT_SUPPORTED`.
 
 Two guards stop a key-less credential from failing inside the handshake with no useful
 diagnostic:
