@@ -1678,6 +1678,33 @@ static void a_renewal_without_a_disconnect_event_reconnects(void** state)
   assert_true(fx->log[fx->log_count - 1].renewal);
 }
 
+static void record_session_end_reason(const az_iot_connection_feature_event* event, void* user_ctx)
+{
+  *(int*)user_ctx = (int)event->session_end_reason;
+}
+
+/* The session a SAS renewal ends is reported as planned. */
+static void a_renewal_ends_its_session_as_planned(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  uint64_t now = NOW;
+  open_renewable_hub(fx, &now, NULL);
+  int reason = -1;
+  assert_int_equal(
+      az_iot_connection_client__add_feature_observer(
+          &fx->client,
+          AZ_IOT_CONNECTION_FEATURE_EVENT_SESSION_END,
+          record_session_end_reason,
+          &reason),
+      AZ_IOT_OK);
+  az_iot_mock_mqtt_client* m = start_renewal(fx);
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(m));
+  pump(fx, 1);
+  assert_int_equal(reason, AZ_IOT_CONNECTION_SESSION_END_PLANNED);
+  az_iot_connection_client__remove_feature_observer(
+      &fx->client, record_session_end_reason, &reason);
+}
+
 /* A session authenticated with X.509 has no token to renew. */
 static void an_x509_session_is_not_renewed(void** state)
 {
@@ -4009,6 +4036,7 @@ int main(void)
     cmocka_unit_test_setup_teardown(the_hub_sas_token_is_renewed, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_renewal_without_a_disconnect_event_reconnects, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_renewal_ends_its_session_as_planned, setup, teardown),
     cmocka_unit_test_setup_teardown(an_x509_session_is_not_renewed, setup, teardown),
     cmocka_unit_test_setup_teardown(a_close_during_a_renewal_settles_idle, setup, teardown),
     cmocka_unit_test_setup_teardown(a_refused_renewal_falls_back, setup, teardown),
