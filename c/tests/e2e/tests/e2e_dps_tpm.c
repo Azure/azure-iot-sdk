@@ -4,7 +4,7 @@
 
 /* SPDX-License-Identifier: MIT */
 
-#include "sample_dps_tpm.h"
+#include "e2e_dps_tpm.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -17,15 +17,15 @@
 
 /** @brief Longest resource URI signed here: a hub host, `%2Fdevices%2F` and a
  * fully percent-encoded device ID (the DPS registration URI is shorter). */
-#define SAMPLE_URI_MAX (AZ_IOT_DPS_TPM_HOST_MAX + 13u + 3u * AZ_IOT_DPS_TPM_ID_MAX)
+#define E2E_URI_MAX (AZ_IOT_DPS_TPM_HOST_MAX + 13u + 3u * AZ_IOT_DPS_TPM_ID_MAX)
 
-az_iot_result sample_dps_tpm_register(
+az_iot_result e2e_dps_tpm_register(
     az_iot_dps_tpm_client* client,
     const char* host,
-    sample_https_send send,
+    e2e_https_send send,
     void* send_ctx,
     uint64_t timeout_ms,
-    sample_https_response* response)
+    e2e_https_response* response)
 {
   static char buffer[AZ_IOT_DPS_TPM_REQUEST_BUFFER_SIZE + 4096]; /* room for a CSR and payload */
   uint64_t deadline = sample_now_ms() + timeout_ms;
@@ -78,7 +78,7 @@ az_iot_result sample_dps_tpm_register(
   return AZ_IOT_ERR_TIMEOUT;
 }
 
-az_iot_result sample_dps_tpm_sign_token(
+az_iot_result e2e_dps_tpm_sign_token(
     sample_tpm_sim* tpm,
     const char* resource_uri,
     const char* key_name,
@@ -87,7 +87,7 @@ az_iot_result sample_dps_tpm_sign_token(
     size_t out_size,
     size_t* out_len)
 {
-  char to_sign[AZ_IOT_SAS_STRING_TO_SIGN_SIZE(SAMPLE_URI_MAX)];
+  char to_sign[AZ_IOT_SAS_STRING_TO_SIGN_SIZE(E2E_URI_MAX)];
   size_t to_sign_len = 0;
   az_iot_result r = az_iot_sas_token_string_to_sign(
       resource_uri, expiry_unix_seconds, to_sign, sizeof(to_sign), &to_sign_len);

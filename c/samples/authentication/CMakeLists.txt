@@ -96,7 +96,6 @@ if(TARGET az_iot_crypto_openssl)
         az_iot_add_adapter_sample(az_iot_sample_auth_dps_tpm
             SOURCES dps_tpm/main.c
                     ${_auth_common}/sample_tpm_sim.c
-                    ${_auth_common}/sample_dps_tpm.c
                     ${_auth_common}/sample_utils.c
             LIBS az_iot_mqttv3 az_iot_crypto_openssl OpenSSL::Crypto CURL::libcurl)
     else()
