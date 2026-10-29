@@ -1924,13 +1924,19 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             Assert.Equal(ConnectionEndpoint.None, connectionClient.CurrentEndpoint);
             Assert.True(connectionClient.IsConnectionTargetSet);
 
+            // The twin client gets the twin upon connecting to the first hub; only operations made from now on matter.
+            lock (hostsFeatureOperationsWereSentTo)
+            {
+                hostsFeatureOperationsWereSentTo.Clear();
+            }
+
             Task telemetry = Task.Run(
                 () => telemetryClient.SendTelemetryAsync(
                     new DeviceToCloudTelemetry() { Payload = Encoding.UTF8.GetBytes("hello") },
                     TestContext.Current.CancellationToken),
                 TestContext.Current.CancellationToken);
             Task twin = Task.Run(
-                () => twinClient.GetTwinAsync(TestContext.Current.CancellationToken),
+                () => twinClient.GetTwinAsync(cancellationToken: TestContext.Current.CancellationToken),
                 TestContext.Current.CancellationToken);
 
             await Task.Delay(TimeSpan.FromMilliseconds(100), TestContext.Current.CancellationToken);
@@ -1943,7 +1949,9 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             Assert.Equal(2, mockDps.RegistrationCount);
             lock (hostsFeatureOperationsWereSentTo)
             {
-                Assert.Equal(new[] { SecondAssignedHub, SecondAssignedHub }, hostsFeatureOperationsWereSentTo);
+                // The telemetry, the requested twin and possibly the twin that the twin client gets upon connecting to the second hub.
+                Assert.True(hostsFeatureOperationsWereSentTo.Count >= 2);
+                Assert.All(hostsFeatureOperationsWereSentTo, host => Assert.Equal(SecondAssignedHub, host));
             }
         }
 
@@ -1990,7 +1998,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
                     new DeviceToCloudTelemetry(),
                     TestContext.Current.CancellationToken));
             await Assert.ThrowsAsync<NotSupportedException>(
-                async () => await twinClient.GetTwinAsync(TestContext.Current.CancellationToken));
+                async () => await twinClient.GetTwinAsync(cancellationToken: TestContext.Current.CancellationToken));
         }
 
         [Fact]

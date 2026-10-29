@@ -1,13 +1,15 @@
 // Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
 // See LICENSE file in the project root for full license information.
 
-using Google.Protobuf;
+using Microsoft.Azure.Iot.Device.Exceptions;
+using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Models.Twin;
 using Microsoft.Azure.Iot.Device.Mqtt;
-using Microsoft.Azure.Iot.Device.Models;
+using Microsoft.Azure.Iot.Device.Provisioning.Models;
 using Microsoft.Azure.Iot.Device.Unified.Connection;
 using Microsoft.Azure.Iot.Device.Unified.Twin;
 using System.Text;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using Xunit;
 
@@ -16,143 +18,161 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
     public class TwinClientUnitTests
     {
         private const string DeviceId = "someDeviceId";
+        private const string GetTopicPrefix = "$iothub/twin/GET/?$rid=";
+        private const string PatchTopicPrefix = "$iothub/twin/PATCH/properties/reported/?$rid=";
 
         [Fact]
-        public async Task GetTwinAsync_Classic_PublishesGetAndReturnsResponse()
+        public async Task GetTwinAsync_PublishesGetAndReturnsResponseWithoutVersionKeys()
         {
-            MockFeatureConnectionClient connection = new()
-            {
-                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv3, DeviceId),
-            };
+            MockFeatureConnectionClient connection = CreateConnection();
             using TwinClient twinClient = new(connection);
 
-            connection.OnPublish += async (publish) =>
-            {
-                string rid = ExtractRid(publish.Topic);
-                string payload = "{\"desired\":{\"fanSpeed\":10,\"$version\":5},\"reported\":{\"temperature\":21,\"$version\":7}}";
-                await connection.SimulateReceiveAsync(new MqttPublish()
-                {
-                    Topic = $"$iothub/twin/res/200/?$rid={rid}",
-                    Payload = Encoding.UTF8.GetBytes(payload),
-                    QualityOfServiceLevel = MqttQualityOfServiceLevel.AtMostOnce,
-                });
-                return new MqttPublishAck() { ReasonCode = MqttPublishAckReasonCode.Success };
-            };
+            Task<DeviceTwin> getTask = twinClient.GetTwinAsync(cancellationToken: TestContext.Current.CancellationToken);
+            MqttPublish getPublish = Assert.Single(connection.GetPublishedMessages());
+            Assert.StartsWith(GetTopicPrefix, getPublish.Topic);
+            await RespondToGetAsync(connection, getPublish, 5, "{\"fanSpeed\":10}", 7, "{\"temperature\":21}");
 
-            DeviceTwin twin = await twinClient.GetTwinAsync(TestContext.Current.CancellationToken);
-
-            MqttPublish getPublish = Assert.Single(connection.PublishedMessages);
-            Assert.StartsWith("$iothub/twin/GET/?$rid=", getPublish.Topic);
-
+            DeviceTwin twin = await getTask;
             Assert.Equal(5ul, twin.DesiredVersion);
             Assert.Equal(7ul, twin.ReportedVersion);
             Assert.Equal(10, (int)twin.Desired!["fanSpeed"]!);
             Assert.Equal(21, (int)twin.Reported!["temperature"]!);
+            Assert.False(twin.Desired.ContainsKey(TwinClient.VersionKey));
+            Assert.False(twin.Reported.ContainsKey(TwinClient.VersionKey));
+
+            // The application fetched the twin, so this device now holds it.
+            TwinState state = twinClient.GetTwinState();
+            Assert.Equal(5ul, state.DesiredVersion);
+            Assert.Equal(7ul, state.ReportedVersion);
+            Assert.Equal(5ul, twinClient.AuthoritativeDesiredPropertiesVersion);
+            Assert.Equal(7ul, twinClient.AuthoritativeReportedPropertiesVersion);
         }
 
         [Fact]
-        public async Task UpdateReportedPropertiesAsync_Classic_PublishesPatchAndReturnsResponse()
+        public async Task GetTwinAsync_FiltersUnrequestedSectionAndRejectsRequestWithoutSections()
         {
-            MockFeatureConnectionClient connection = new()
-            {
-                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv3, DeviceId),
-            };
+            MockFeatureConnectionClient connection = CreateConnection();
             using TwinClient twinClient = new(connection);
 
-            connection.OnPublish += async (publish) =>
-            {
-                string rid = ExtractRid(publish.Topic);
-                await connection.SimulateReceiveAsync(new MqttPublish()
-                {
-                    Topic = $"$iothub/twin/res/204/?$rid={rid}&$version=12",
-                    QualityOfServiceLevel = MqttQualityOfServiceLevel.AtMostOnce,
-                });
-                return new MqttPublishAck() { ReasonCode = MqttPublishAckReasonCode.Success };
-            };
+            await Assert.ThrowsAsync<ArgumentException>(() => twinClient.GetTwinAsync(getReported: false, getDesired: false, cancellationToken: TestContext.Current.CancellationToken));
 
-            JsonObject reportedProperties = new() { ["temperature"] = 25 };
-            ReportedPatchResponse response = await twinClient.UpdateReportedPropertiesAsync(reportedProperties, TestContext.Current.CancellationToken);
+            Task<DeviceTwin> getTask = twinClient.GetTwinAsync(getReported: false, cancellationToken: TestContext.Current.CancellationToken);
+            await RespondToGetAsync(connection, Assert.Single(connection.GetPublishedMessages()), 5, "{\"fanSpeed\":10}", 7, "{\"temperature\":21}");
 
-            MqttPublish patchPublish = Assert.Single(connection.PublishedMessages);
-            Assert.StartsWith("$iothub/twin/PATCH/properties/reported/?$rid=", patchPublish.Topic);
-
-            Assert.Equal(Result.Ok, response.Result);
-            Assert.Equal(12ul, response.Version);
+            DeviceTwin twin = await getTask;
+            Assert.NotNull(twin.Desired);
+            Assert.Null(twin.Reported);
+            Assert.Equal(0ul, twinClient.GetTwinState().ReportedVersion);
         }
 
         [Fact]
-        public async Task DesiredPatchReceived_Classic_RaisedOnInboundPatch()
+        public async Task GetTwinAsync_IdenticalConcurrentCallsShareOneRequest()
         {
-            MockFeatureConnectionClient connection = new()
-            {
-                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv3, DeviceId),
-            };
+            MockFeatureConnectionClient connection = CreateConnection();
             using TwinClient twinClient = new(connection);
+            using CancellationTokenSource cancelledCaller = new();
 
-            DesiredPatchReceivedEventArgs? received = null;
-            twinClient.DesiredPatchReceived += (args) => received = args;
+            Task<DeviceTwin> first = twinClient.GetTwinAsync(cancellationToken: TestContext.Current.CancellationToken);
+            Task<DeviceTwin> cancelled = twinClient.GetTwinAsync(cancellationToken: cancelledCaller.Token);
+            Task<DeviceTwin> second = twinClient.GetTwinAsync(cancellationToken: TestContext.Current.CancellationToken);
+            Task<DeviceTwin> different = twinClient.GetTwinAsync(getReported: false, cancellationToken: TestContext.Current.CancellationToken);
+            Assert.Equal(2, connection.GetPublishedMessages().Count);
 
-            await connection.SimulateReceiveAsync(new MqttPublish()
-            {
-                Topic = "$iothub/twin/PATCH/properties/desired/?$version=3",
-                Payload = Encoding.UTF8.GetBytes("{\"fanSpeed\":40,\"$version\":3}"),
-                QualityOfServiceLevel = MqttQualityOfServiceLevel.AtMostOnce,
-            });
+            // One caller giving up doesn't abandon the request for the others.
+            cancelledCaller.Cancel();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => cancelled);
 
-            Assert.NotNull(received);
-            Assert.Equal(3ul, received!.DesiredPropertiesVersion);
-            Assert.Equal(40, (int)received.DesiredProperties["fanSpeed"]!);
-            Assert.Null(received.DesiredProperties[TwinClient.VersionKey]); // $version stripped
+            await RespondToGetAsync(connection, connection.GetPublishedMessages()[0], 3, "{}", 1, "{}");
+            Assert.Same(await first, await second);
+            Assert.False(different.IsCompleted);
+
+            await RespondToGetAsync(connection, connection.GetPublishedMessages()[1], 4, "{}", 1, "{}");
+            Assert.Equal(4ul, (await different).DesiredVersion);
         }
 
         [Fact]
-        public async Task GetTwinAsync_MqttV5_DelegatesToMqttv5Path()
+        public async Task GetTwinAsync_RetriesWithNewIdAfterTimeoutAndDropsStaleResponses()
         {
-            MockFeatureConnectionClient connection = new()
-            {
-                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv5, DeviceId),
-            };
+            MockFeatureConnectionClient connection = CreateConnection();
             using TwinClient twinClient = new(connection);
+            twinClient.GetTwinTimeoutSchedule = attempt => attempt == 1 ? TimeSpan.FromMilliseconds(50) : Timeout.InfiniteTimeSpan;
 
-            connection.OnPublish += async (publish) =>
-            {
-                var response = new TwinGetResponse()
-                {
-                    DesiredVersion = 1,
-                    ReportedVersion = 2,
-                    DesiredPayload = ByteString.CopyFromUtf8("{\"fanSpeed\":10}"),
-                    ReportedPayload = ByteString.CopyFromUtf8("{\"temperature\":21}"),
-                };
+            Task<DeviceTwin> getTask = twinClient.GetTwinAsync(cancellationToken: TestContext.Current.CancellationToken);
+            await WaitUntilAsync(() => connection.GetPublishedMessages().Count == 2);
 
-                var inbound = new MqttPublish()
-                {
-                    Topic = $"ih/{DeviceId}/dev/twin",
-                    Payload = response.ToByteArray(),
-                    CorrelationData = publish.CorrelationData,
-                    QualityOfServiceLevel = MqttQualityOfServiceLevel.AtMostOnce,
-                };
-                inbound.UserProperties.Add(new("type", Encoding.UTF8.GetBytes("get-response:1")));
-                await connection.SimulateReceiveAsync(inbound);
-                return new MqttPublishAck() { ReasonCode = MqttPublishAckReasonCode.Success };
-            };
+            MqttPublish firstAttempt = connection.GetPublishedMessages()[0];
+            MqttPublish secondAttempt = connection.GetPublishedMessages()[1];
+            Assert.NotEqual(GetRid(firstAttempt), GetRid(secondAttempt));
 
-            DeviceTwin twin = await twinClient.GetTwinAsync(TestContext.Current.CancellationToken);
+            await RespondToGetAsync(connection, firstAttempt, 1, "{}", 1, "{}");
+            Assert.False(getTask.IsCompleted);
+            await RespondToGetAsync(connection, secondAttempt, 2, "{}", 1, "{}");
+            Assert.Equal(2ul, (await getTask).DesiredVersion);
+        }
 
-            MqttPublish getPublish = Assert.Single(connection.PublishedMessages);
-            // The device ID is left for the connection client to fill in when it actually sends the publish.
-            Assert.Equal($"ih/{IConnectionClient.DeviceIdPlaceholder}/srv/twin", getPublish.Topic);
-            Assert.Equal(1ul, twin.DesiredVersion);
-            Assert.Equal(2ul, twin.ReportedVersion);
+        [Theory]
+        [InlineData(429)]
+        [InlineData(503)]
+        public async Task GetTwinAsync_TransientStatus_IsSentAgain(int status)
+        {
+            MockFeatureConnectionClient connection = CreateConnection();
+            using TwinClient twinClient = new(connection);
+            int scheduleCalls = 0;
+
+            // Only the timer restarted by the transient response elapses.
+            twinClient.GetTwinTimeoutSchedule = _ => Interlocked.Increment(ref scheduleCalls) == 2 ? TimeSpan.FromMilliseconds(50) : Timeout.InfiniteTimeSpan;
+
+            Task<DeviceTwin> getTask = twinClient.GetTwinAsync(cancellationToken: TestContext.Current.CancellationToken);
+            await RespondAsync(connection, connection.GetPublishedMessages()[0], status);
+            Assert.False(getTask.IsCompleted);
+
+            await WaitUntilAsync(() => connection.GetPublishedMessages().Count == 2);
+            await RespondToGetAsync(connection, connection.GetPublishedMessages()[1], 2, "{}", 1, "{}");
+            Assert.Equal(2ul, (await getTask).DesiredVersion);
         }
 
         [Fact]
-        public async Task GetTwinAsync_ThrowsWhenDisconnected()
+        public async Task GetTwinAsync_RejectedStatus_FailsWithTerminalError()
         {
-            MockFeatureConnectionClient connection = new();
+            MockFeatureConnectionClient connection = CreateConnection();
             using TwinClient twinClient = new(connection);
 
-            await Assert.ThrowsAsync<NotSupportedException>(
-                async () => await twinClient.GetTwinAsync(TestContext.Current.CancellationToken));
+            Task<DeviceTwin> getTask = twinClient.GetTwinAsync(cancellationToken: TestContext.Current.CancellationToken);
+            await RespondAsync(connection, connection.GetPublishedMessages()[0], 404);
+
+            DeviceException exception = await Assert.ThrowsAsync<DeviceException>(() => getTask);
+            Assert.Equal(ErrorRetryability.Terminal, exception.Retryability);
+        }
+
+        [Fact]
+        public async Task GetTwinAsync_ConnectionLostFailsWithRetryableErrorAndStopsRetrying()
+        {
+            MockFeatureConnectionClient connection = CreateConnection();
+            using TwinClient twinClient = new(connection);
+            twinClient.GetTwinTimeoutSchedule = _ => TimeSpan.FromMilliseconds(100);
+
+            Task<DeviceTwin> getTask = twinClient.GetTwinAsync(cancellationToken: TestContext.Current.CancellationToken);
+            connection.SimulateConnectionLost();
+
+            DeviceException exception = await Assert.ThrowsAsync<DeviceException>(() => getTask);
+            Assert.Equal(ErrorRetryability.Retryable, exception.Retryability);
+
+            // A late response is dropped, and the request is not sent again.
+            await RespondToGetAsync(connection, connection.GetPublishedMessages()[0], 1, "{}", 1, "{}");
+            await Task.Delay(300, TestContext.Current.CancellationToken);
+            Assert.Single(connection.GetPublishedMessages());
+        }
+
+        [Fact]
+        public async Task GetTwinAsync_ThrowsWhenNotConnectedToMqttv3Hub()
+        {
+            MockFeatureConnectionClient disconnected = new();
+            using TwinClient disconnectedClient = new(disconnected);
+            await Assert.ThrowsAsync<NotSupportedException>(() => disconnectedClient.GetTwinAsync(cancellationToken: TestContext.Current.CancellationToken));
+
+            MockFeatureConnectionClient mqttv5 = CreateConnection(IotHubConnectionType.Mqttv5);
+            using TwinClient mqttv5Client = new(mqttv5);
+            await Assert.ThrowsAsync<NotSupportedException>(() => mqttv5Client.GetTwinAsync(cancellationToken: TestContext.Current.CancellationToken));
         }
 
         [Fact]
@@ -167,30 +187,453 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
 
             await connection.DisconnectAsync(TestContext.Current.CancellationToken);
 
-            await Assert.ThrowsAsync<NotSupportedException>(
-                async () => await twinClient.GetTwinAsync(TestContext.Current.CancellationToken));
+            await Assert.ThrowsAsync<NotSupportedException>(() => twinClient.GetTwinAsync(cancellationToken: TestContext.Current.CancellationToken));
         }
 
         [Fact]
-        public async Task GetTwinAsync_ThrowsAfterDispose()
+        public async Task Dispose_FailsPendingOperationsAndDisposesConnection()
         {
-            MockFeatureConnectionClient connection = new()
-            {
-                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv3, DeviceId),
-            };
+            MockFeatureConnectionClient connection = CreateConnection(isReady: false);
             TwinClient twinClient = new(connection);
+            Task<DeviceTwin> getTask = twinClient.GetTwinAsync(cancellationToken: TestContext.Current.CancellationToken);
+            Task<ReportedPatchResponse> patchTask = UpdateReportedAsync(twinClient, "{\"temperature\":1}");
+
             twinClient.Dispose();
 
-            await Assert.ThrowsAsync<ObjectDisposedException>(
-                async () => await twinClient.GetTwinAsync(TestContext.Current.CancellationToken));
+            await Assert.ThrowsAsync<ObjectDisposedException>(() => getTask);
+            await Assert.ThrowsAsync<ObjectDisposedException>(() => patchTask);
+            Assert.True(connection.IsDisposed);
+            await Assert.ThrowsAsync<ObjectDisposedException>(() => twinClient.GetTwinAsync(cancellationToken: TestContext.Current.CancellationToken));
+            Assert.Throws<ObjectDisposedException>(() => twinClient.EnqueueReportedPropertiesUpdate(new JsonObject()));
         }
 
-        private static string ExtractRid(string topic)
+        [Fact]
+        public async Task UpdateReportedPropertiesAsync_PublishesUnconditionalPatchAndReturnsResponse()
         {
-            int index = topic.IndexOf("$rid=", StringComparison.Ordinal);
-            string rest = topic.Substring(index + "$rid=".Length);
+            MockFeatureConnectionClient connection = CreateConnection();
+            using TwinClient twinClient = new(connection);
+            List<ReportedPatchCompletedEventArgs> completions = new();
+            twinClient.ReportedPatchCompleted += completions.Add;
+
+            Task<ReportedPatchResponse> patchTask = UpdateReportedAsync(twinClient, "{\"temperature\":25}");
+            MqttPublish patchPublish = Assert.Single(connection.GetPublishedMessages());
+            Assert.StartsWith(PatchTopicPrefix, patchPublish.Topic);
+            Assert.Equal(25, (int)ParsePayload(patchPublish)["temperature"]!);
+
+            await RespondAsync(connection, patchPublish, 204, 12);
+
+            ReportedPatchResponse response = await patchTask;
+            Assert.Equal(Result.Ok, response.Result);
+            Assert.Equal(12ul, response.Version);
+            Assert.Equal(12ul, twinClient.AuthoritativeReportedPropertiesVersion);
+            Assert.Same(response, Assert.Single(completions).Response);
+            Assert.Empty(twinClient.GetTwinState().PendingReportedPatches);
+        }
+
+        [Fact]
+        public async Task UpdateReportedPropertiesAsync_CombinesPatchesMadeWhileOneIsInFlight()
+        {
+            MockFeatureConnectionClient connection = CreateConnection();
+            using TwinClient twinClient = new(connection);
+
+            Task<ReportedPatchResponse> first = UpdateReportedAsync(twinClient, "{\"a\":1}");
+            Task<ReportedPatchResponse> second = UpdateReportedAsync(twinClient, "{\"b\":{\"c\":1}}");
+            Task<ReportedPatchResponse> third = UpdateReportedAsync(twinClient, "{\"b\":{\"d\":2}}");
+            Assert.Single(connection.GetPublishedMessages());
+
+            await RespondAsync(connection, connection.GetPublishedMessages()[0], 204, 2);
+            Assert.Equal(2ul, (await first).Version);
+
+            MqttPublish combined = connection.GetPublishedMessages()[1];
+            Assert.True(JsonNode.DeepEquals(JsonNode.Parse("{\"b\":{\"c\":1,\"d\":2}}"), ParsePayload(combined)));
+            await RespondAsync(connection, combined, 204, 3);
+            Assert.Same(await second, await third);
+            Assert.Equal(2, connection.GetPublishedMessages().Count);
+        }
+
+        [Theory]
+        [InlineData(400, Result.PayloadInvalid)]
+        [InlineData(413, Result.PayloadTooLarge)]
+        [InlineData(404, Result.InternalError)]
+        public async Task UpdateReportedPropertiesAsync_RejectedStatus_IsMappedAndNextPatchIsSent(int status, Result expectedResult)
+        {
+            MockFeatureConnectionClient connection = CreateConnection();
+            using TwinClient twinClient = new(connection);
+
+            Task<ReportedPatchResponse> rejected = UpdateReportedAsync(twinClient, "{\"a\":1}");
+            Task<ReportedPatchResponse> next = UpdateReportedAsync(twinClient, "{\"b\":2}");
+            await RespondAsync(connection, connection.GetPublishedMessages()[0], status);
+
+            Assert.Equal(expectedResult, (await rejected).Result);
+            Assert.False(twinClient.GetTwinState().Reported.ContainsKey("a"));
+
+            MqttPublish nextPublish = connection.GetPublishedMessages()[1];
+            Assert.True(JsonNode.DeepEquals(JsonNode.Parse("{\"b\":2}"), ParsePayload(nextPublish)));
+            await RespondAsync(connection, nextPublish, 204, 2);
+            Assert.Equal(Result.Ok, (await next).Result);
+        }
+
+        [Theory]
+        [InlineData(429)]
+        [InlineData(500)]
+        public async Task UpdateReportedPropertiesAsync_TransientStatus_IsSentAgainWithNewIdAndDropsStaleResponse(int status)
+        {
+            MockFeatureConnectionClient connection = CreateConnection();
+            using TwinClient twinClient = new(connection);
+            List<int> attempts = new();
+            twinClient.ReportedPatchTimeoutSchedule = attempt =>
+            {
+                lock (attempts)
+                {
+                    attempts.Add(attempt);
+                }
+
+                // Only the timer restarted by the transient response elapses.
+                return attempts.Count == 2 ? TimeSpan.FromMilliseconds(50) : Timeout.InfiniteTimeSpan;
+            };
+
+            Task<ReportedPatchResponse> patchTask = UpdateReportedAsync(twinClient, "{\"a\":1}");
+            MqttPublish firstAttempt = connection.GetPublishedMessages()[0];
+            await RespondAsync(connection, firstAttempt, status);
+            await WaitUntilAsync(() => connection.GetPublishedMessages().Count == 2);
+
+            MqttPublish secondAttempt = connection.GetPublishedMessages()[1];
+            Assert.NotEqual(GetRid(firstAttempt), GetRid(secondAttempt));
+            Assert.True(JsonNode.DeepEquals(ParsePayload(firstAttempt), ParsePayload(secondAttempt)));
+
+            await RespondAsync(connection, firstAttempt, 204, 5);
+            Assert.False(patchTask.IsCompleted);
+            await RespondAsync(connection, secondAttempt, 204, 6);
+            Assert.Equal(6ul, (await patchTask).Version);
+            Assert.Equal(new[] { 1, 1, 2 }, attempts);
+        }
+
+        [Fact]
+        public async Task UpdateReportedPropertiesAsync_IsHeldUntilConnectionReadyAndSentAgainAfterConnectionLost()
+        {
+            MockFeatureConnectionClient connection = CreateConnection(isReady: false);
+            using TwinClient twinClient = new(connection);
+
+            Task<ReportedPatchResponse> patchTask = UpdateReportedAsync(twinClient, "{\"a\":1}");
+            Assert.Empty(connection.GetPublishedMessages());
+
+            connection.SimulateConnectionReady();
+            MqttPublish firstAttempt = Assert.Single(connection.GetPublishedMessages(), IsPatch);
+
+            connection.SimulateConnectionLost();
+            connection.SimulateConnectionReady();
+            List<MqttPublish> patches = connection.GetPublishedMessages().Where(IsPatch).ToList();
+            Assert.Equal(2, patches.Count);
+            Assert.NotEqual(GetRid(firstAttempt), GetRid(patches[1]));
+
+            await RespondAsync(connection, firstAttempt, 204, 2);
+            Assert.False(patchTask.IsCompleted);
+            await RespondAsync(connection, patches[1], 204, 2);
+            Assert.Equal(Result.Ok, (await patchTask).Result);
+        }
+
+        [Fact]
+        public async Task UpdateReportedPropertiesAsync_CancelledBeforeBeingSent_IsDiscarded()
+        {
+            MockFeatureConnectionClient connection = CreateConnection(isReady: false);
+            using TwinClient twinClient = new(connection);
+            using CancellationTokenSource cancellation = new();
+
+            Task<ReportedPatchResponse> patchTask = twinClient.UpdateReportedPropertiesAsync(
+                new ReportedPatchRequest() { ReportedProperties = new JsonObject() { ["a"] = 1 } },
+                cancellation.Token);
+            Assert.Single(twinClient.GetTwinState().PendingReportedPatches);
+
+            cancellation.Cancel();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => patchTask);
+            Assert.Empty(twinClient.GetTwinState().PendingReportedPatches);
+
+            connection.SimulateConnectionReady();
+            Assert.DoesNotContain(connection.GetPublishedMessages(), IsPatch);
+        }
+
+        [Fact]
+        public async Task ReportedPatchOk_SkippedVersion_MarksReportedPropertiesIncompleteAndGetsTwin()
+        {
+            MockFeatureConnectionClient connection = CreateConnection();
+            using TwinClient twinClient = new(connection, new TwinState() { ReportedVersion = 3, Reported = new JsonObject() { ["a"] = 1 } });
+            List<TwinPushReceivedEventArgs> pushes = new();
+            twinClient.TwinPushReceived += pushes.Add;
+
+            Task<ReportedPatchResponse> patchTask = UpdateReportedAsync(twinClient, "{\"b\":2}");
+            await RespondAsync(connection, connection.GetPublishedMessages()[0], 204, 5);
+            Assert.Equal(5ul, (await patchTask).Version);
+
+            // Someone else changed the reported properties at version 4, so this device no longer holds them in full.
+            Assert.Equal(0ul, twinClient.GetTwinState().ReportedVersion);
+            MqttPublish getPublish = Assert.Single(connection.GetPublishedMessages(), IsGet);
+
+            await RespondToGetAsync(connection, getPublish, 1, "{}", 5, "{\"a\":1,\"b\":2,\"c\":3}");
+            TwinPushReceivedEventArgs push = Assert.Single(pushes);
+            Assert.Equal(5ul, push.Reported!.PropertiesVersion);
+            TwinState state = twinClient.GetTwinState();
+            Assert.Equal(5ul, state.ReportedVersion);
+            Assert.Equal(3, (int)state.Reported["c"]!);
+        }
+
+        [Fact]
+        public async Task DesiredPatchReceived_RaisedInVersionOrderWithoutVersionKey()
+        {
+            MockFeatureConnectionClient connection = CreateConnection();
+            using TwinClient twinClient = new(connection);
+            List<DesiredPatchReceivedEventArgs> received = new();
+            twinClient.DesiredPatchReceived += received.Add;
+
+            await ReceiveDesiredPatchAsync(connection, 1, "{\"fanSpeed\":40}");
+            await ReceiveDesiredPatchAsync(connection, 1, "{\"fanSpeed\":41}");
+
+            DesiredPatchReceivedEventArgs patch = Assert.Single(received);
+            Assert.Equal(1ul, patch.DesiredPropertiesVersion);
+            Assert.Equal(40, (int)patch.DesiredProperties["fanSpeed"]!);
+            Assert.False(patch.DesiredProperties.ContainsKey(TwinClient.VersionKey));
+            Assert.Equal(1ul, twinClient.AuthoritativeDesiredPropertiesVersion);
+            Assert.Equal(40, (int)twinClient.GetTwinState().Desired["fanSpeed"]!);
+            Assert.Empty(connection.GetPublishedMessages());
+        }
+
+        [Fact]
+        public async Task DesiredPatchGap_GetsTwinAndDeliversSnapshotThenBufferedPatches()
+        {
+            MockFeatureConnectionClient connection = CreateConnection();
+            using TwinClient twinClient = new(connection);
+            List<string> deliveries = new();
+            twinClient.DesiredPatchReceived += args => deliveries.Add($"patch {args.DesiredPropertiesVersion}");
+            twinClient.TwinPushReceived += args => deliveries.Add($"push {args.Desired?.PropertiesVersion}");
+
+            await ReceiveDesiredPatchAsync(connection, 1, "{\"a\":1}");
+            await ReceiveDesiredPatchAsync(connection, 3, "{\"a\":3}");
+            MqttPublish getPublish = Assert.Single(connection.GetPublishedMessages(), IsGet);
+            await ReceiveDesiredPatchAsync(connection, 4, "{\"a\":4}");
+            Assert.Equal(new[] { "patch 1" }, deliveries);
+
+            await RespondToGetAsync(connection, getPublish, 3, "{\"a\":3}", 1, "{}");
+
+            Assert.Equal(new[] { "patch 1", "push 3", "patch 4" }, deliveries);
+            Assert.Equal(4ul, twinClient.GetTwinState().DesiredVersion);
+            Assert.Equal(4, (int)twinClient.GetTwinState().Desired["a"]!);
+        }
+
+        [Fact]
+        public async Task DesiredResyncBufferOverflow_GetsTwinAgain()
+        {
+            MockFeatureConnectionClient connection = CreateConnection();
+            using TwinClient twinClient = new(connection);
+            List<string> deliveries = new();
+            twinClient.DesiredPatchReceived += args => deliveries.Add($"patch {args.DesiredPropertiesVersion}");
+            twinClient.TwinPushReceived += args => deliveries.Add($"push {args.Desired?.PropertiesVersion}");
+
+            ulong version = 2;
+            for (; version <= TwinClient.DesiredResyncBufferCapacity + 1; version++)
+            {
+                await ReceiveDesiredPatchAsync(connection, version, "{}");
+            }
+
+            MqttPublish firstGet = Assert.Single(connection.GetPublishedMessages(), IsGet);
+            await ReceiveDesiredPatchAsync(connection, version, "{}");
+            List<MqttPublish> gets = connection.GetPublishedMessages().Where(IsGet).ToList();
+            Assert.Equal(2, gets.Count);
+
+            // The response to the first GET is stale.
+            await RespondToGetAsync(connection, firstGet, 3, "{}", 1, "{}");
+            Assert.Empty(deliveries);
+
+            await RespondToGetAsync(connection, gets[1], version, "{}", 1, "{}");
+            Assert.Equal(new[] { $"push {version}" }, deliveries);
+        }
+
+        [Fact]
+        public async Task ConnectionReady_GetsTwinAndRaisesTwinPushWithChangedSections()
+        {
+            MockFeatureConnectionClient connection = CreateConnection(isReady: false);
+            using TwinClient twinClient = new(connection);
+            List<TwinPushReceivedEventArgs> pushes = new();
+            twinClient.TwinPushReceived += pushes.Add;
+
+            connection.SimulateConnectionReady();
+            await RespondToGetAsync(connection, Assert.Single(connection.GetPublishedMessages(), IsGet), 4, "{\"fanSpeed\":4}", 7, "{\"temperature\":21}");
+
+            TwinPushReceivedEventArgs push = Assert.Single(pushes);
+            Assert.Equal(4ul, push.Desired!.PropertiesVersion);
+            Assert.Equal(4, (int)push.Desired.Properties["fanSpeed"]!);
+            Assert.Equal(7ul, push.Reported!.PropertiesVersion);
+            Assert.Equal(21, (int)push.Reported.Properties["temperature"]!);
+            Assert.Equal(4ul, twinClient.AuthoritativeDesiredPropertiesVersion);
+            Assert.Equal(7ul, twinClient.AuthoritativeReportedPropertiesVersion);
+
+            // The authoritative versions are per connection, and an unchanged twin isn't raised again.
+            connection.SimulateConnectionLost();
+            Assert.Null(twinClient.AuthoritativeDesiredPropertiesVersion);
+            connection.SimulateConnectionReady();
+            await RespondToGetAsync(connection, connection.GetPublishedMessages().Where(IsGet).Last(), 4, "{\"fanSpeed\":4}", 7, "{\"temperature\":21}");
+            Assert.Single(pushes);
+            Assert.Equal(4ul, twinClient.AuthoritativeDesiredPropertiesVersion);
+
+            // Only the section that changed while disconnected is raised.
+            connection.SimulateConnectionLost();
+            connection.SimulateConnectionReady();
+            await RespondToGetAsync(connection, connection.GetPublishedMessages().Where(IsGet).Last(), 5, "{\"fanSpeed\":5}", 7, "{\"temperature\":21}");
+            Assert.Equal(2, pushes.Count);
+            Assert.Equal(5ul, pushes[1].Desired!.PropertiesVersion);
+            Assert.Null(pushes[1].Reported);
+        }
+
+        [Fact]
+        public async Task TwinState_PersistedAndRestored_SendsPendingPatchesAndOnlyRaisesChanges()
+        {
+            MockFeatureConnectionClient firstConnection = CreateConnection(isReady: false);
+            TwinState? persisted = null;
+            using (TwinClient firstClient = new(firstConnection))
+            {
+                firstClient.TwinStateChanged += state => persisted = JsonSerializer.Deserialize<TwinState>(JsonSerializer.Serialize(state));
+                firstConnection.SimulateConnectionReady();
+                await RespondToGetAsync(firstConnection, Assert.Single(firstConnection.GetPublishedMessages(), IsGet), 2, "{\"fanSpeed\":2}", 5, "{\"temperature\":20}");
+
+                firstConnection.SimulateConnectionLost();
+                firstClient.EnqueueReportedPropertiesUpdate(new JsonObject() { ["temperature"] = 30 });
+            }
+
+            Assert.NotNull(persisted);
+            Assert.Equal(2ul, persisted!.DesiredVersion);
+            Assert.Equal(5ul, persisted.ReportedVersion);
+            Assert.Equal(30, (int)Assert.Single(persisted.PendingReportedPatches)["temperature"]!);
+
+            MockFeatureConnectionClient secondConnection = CreateConnection(isReady: false);
+            using TwinClient secondClient = new(secondConnection, persisted);
+            List<TwinPushReceivedEventArgs> pushes = new();
+            List<ReportedPatchCompletedEventArgs> completions = new();
+            secondClient.TwinPushReceived += pushes.Add;
+            secondClient.ReportedPatchCompleted += completions.Add;
+
+            secondConnection.SimulateConnectionReady();
+            MqttPublish patchPublish = Assert.Single(secondConnection.GetPublishedMessages(), IsPatch);
+            Assert.Equal(30, (int)ParsePayload(patchPublish)["temperature"]!);
+            await RespondAsync(secondConnection, patchPublish, 204, 6);
+            await RespondToGetAsync(secondConnection, Assert.Single(secondConnection.GetPublishedMessages(), IsGet), 2, "{\"fanSpeed\":2}", 6, "{\"temperature\":30}");
+
+            Assert.Empty(pushes);
+            Assert.Equal(Result.Ok, Assert.Single(completions).Response!.Result);
+            TwinState restored = secondClient.GetTwinState();
+            Assert.Equal(6ul, restored.ReportedVersion);
+            Assert.Equal(30, (int)restored.Reported["temperature"]!);
+            Assert.Empty(restored.PendingReportedPatches);
+        }
+
+        [Fact]
+        public async Task EnqueueReportedPropertiesUpdate_FromTwinStateChangedHandler_IsSentAfterSnapshotContainingIt()
+        {
+            MockFeatureConnectionClient connection = CreateConnection();
+            using TwinClient twinClient = new(connection);
+            List<TwinState> snapshots = new();
+            int publishedDuringHandler = -1;
+            twinClient.TwinStateChanged += state =>
+            {
+                snapshots.Add(state);
+                if (snapshots.Count == 1)
+                {
+                    twinClient.EnqueueReportedPropertiesUpdate(new JsonObject() { ["applied"] = 1 });
+                    publishedDuringHandler = connection.GetPublishedMessages().Count;
+                }
+            };
+
+            await ReceiveDesiredPatchAsync(connection, 1, "{\"a\":1}");
+
+            Assert.Equal(0, publishedDuringHandler);
+            Assert.Equal(2, snapshots.Count);
+            Assert.Single(snapshots[1].PendingReportedPatches);
+            Assert.Single(connection.GetPublishedMessages(), IsPatch);
+        }
+
+        [Fact]
+        public async Task Mqttv5Connection_TwinMessagesAndReadinessAreIgnored()
+        {
+            MockFeatureConnectionClient connection = CreateConnection(IotHubConnectionType.Mqttv5, isReady: false);
+            using TwinClient twinClient = new(connection);
+            bool raised = false;
+            twinClient.DesiredPatchReceived += _ => raised = true;
+
+            twinClient.EnqueueReportedPropertiesUpdate(new JsonObject() { ["a"] = 1 });
+            connection.SimulateConnectionReady();
+            await ReceiveDesiredPatchAsync(connection, 1, "{}");
+
+            Assert.False(raised);
+            Assert.Empty(connection.GetPublishedMessages());
+        }
+
+        private static MockFeatureConnectionClient CreateConnection(IotHubConnectionType connectionProfile = IotHubConnectionType.Mqttv3, bool isReady = true)
+        {
+            return new MockFeatureConnectionClient()
+            {
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(connectionProfile, DeviceId),
+                IsConnectionReady = isReady,
+            };
+        }
+
+        private static async Task WaitUntilAsync(Func<bool> condition)
+        {
+            using CancellationTokenSource timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+            timeout.CancelAfter(TimeSpan.FromSeconds(10));
+            while (!condition())
+            {
+                await Task.Delay(10, timeout.Token);
+            }
+        }
+
+        private static Task<ReportedPatchResponse> UpdateReportedAsync(TwinClient twinClient, string patch)
+        {
+            return twinClient.UpdateReportedPropertiesAsync(
+                new ReportedPatchRequest() { ReportedProperties = JsonNode.Parse(patch)!.AsObject() },
+                TestContext.Current.CancellationToken);
+        }
+
+        private static bool IsGet(MqttPublish publish) => publish.Topic.StartsWith(GetTopicPrefix, StringComparison.Ordinal);
+
+        private static bool IsPatch(MqttPublish publish) => publish.Topic.StartsWith(PatchTopicPrefix, StringComparison.Ordinal);
+
+        private static JsonObject ParsePayload(MqttPublish publish) => JsonNode.Parse(publish.Payload)!.AsObject();
+
+        private static string GetRid(MqttPublish request)
+        {
+            string rest = request.Topic.Substring(request.Topic.IndexOf("$rid=", StringComparison.Ordinal) + "$rid=".Length);
             int ampersand = rest.IndexOf('&');
             return ampersand >= 0 ? rest.Substring(0, ampersand) : rest;
+        }
+
+        private static Task RespondAsync(MockFeatureConnectionClient connection, MqttPublish request, int status, ulong? version = null, string? payload = null)
+        {
+            string topic = $"$iothub/twin/res/{status}/?$rid={GetRid(request)}" + (version == null ? "" : $"&$version={version}");
+            return connection.SimulateReceiveAsync(new MqttPublish()
+            {
+                Topic = topic,
+                Payload = payload == null ? Array.Empty<byte>() : Encoding.UTF8.GetBytes(payload),
+                QualityOfServiceLevel = MqttQualityOfServiceLevel.AtMostOnce,
+            });
+        }
+
+        private static Task RespondToGetAsync(MockFeatureConnectionClient connection, MqttPublish getPublish, ulong desiredVersion, string desired, ulong reportedVersion, string reported)
+        {
+            JsonObject desiredSection = JsonNode.Parse(desired)!.AsObject();
+            desiredSection[TwinClient.VersionKey] = desiredVersion;
+            JsonObject reportedSection = JsonNode.Parse(reported)!.AsObject();
+            reportedSection[TwinClient.VersionKey] = reportedVersion;
+            JsonObject twin = new() { ["desired"] = desiredSection, ["reported"] = reportedSection };
+            return RespondAsync(connection, getPublish, 200, payload: twin.ToJsonString());
+        }
+
+        private static Task ReceiveDesiredPatchAsync(MockFeatureConnectionClient connection, ulong version, string patch)
+        {
+            JsonObject payload = JsonNode.Parse(patch)!.AsObject();
+            payload[TwinClient.VersionKey] = version;
+            return connection.SimulateReceiveAsync(new MqttPublish()
+            {
+                Topic = $"$iothub/twin/PATCH/properties/desired/?$version={version}",
+                Payload = Encoding.UTF8.GetBytes(payload.ToJsonString()),
+                QualityOfServiceLevel = MqttQualityOfServiceLevel.AtMostOnce,
+            });
         }
     }
 }
