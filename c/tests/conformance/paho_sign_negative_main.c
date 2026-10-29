@@ -93,6 +93,8 @@
 #include <openssl/pem.h>
 #include <openssl/x509.h>
 
+#include "../support/test_x509.h"
+
 /* The temporary directory, spelled the way each platform spells it. Windows
  * sets TEMP/TMP and not TMPDIR, and this harness builds there. */
 static const char* temp_dir(void)
@@ -226,11 +228,8 @@ static int write_self_signed_cert(const char* path)
     goto done;
   }
 
-  X509_NAME* name = X509_get_subject_name(x509);
-  if (name == NULL
-      || !X509_NAME_add_entry_by_txt(
-          name, "CN", MBSTRING_ASC, (const unsigned char*)"az-iot-sign-negative", -1, -1, 0)
-      || !X509_set_issuer_name(x509, name) || !X509_sign(x509, pkey, EVP_sha256()))
+  if (!test_x509_set_self_signed_name(x509, "az-iot-sign-negative")
+      || !X509_sign(x509, pkey, EVP_sha256()))
   {
     goto done;
   }

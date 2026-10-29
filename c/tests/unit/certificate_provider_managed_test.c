@@ -39,6 +39,8 @@
 #include <openssl/pem.h>
 #include <openssl/x509.h>
 
+#include "../support/test_x509.h"
+
 /* Test-local file paths (created in the test working directory). */
 #define OP_KEY "az_iot_managed_test_op_key.pem"
 #define OP_CERT "az_iot_managed_test_op_cert.pem"
@@ -81,13 +83,7 @@ static char* make_cert_base64_with_trailing(EVP_PKEY* subject_key, long serial, 
   X509_gmtime_adj(X509_getm_notBefore(x), 0);
   X509_gmtime_adj(X509_getm_notAfter(x), 3600);
   assert_int_equal(1, X509_set_pubkey(x, subject_key));
-  X509_NAME* name = X509_NAME_new();
-  assert_non_null(name);
-  X509_NAME_add_entry_by_txt(
-      name, "CN", MBSTRING_UTF8, (const unsigned char*)"az-iot-test", -1, -1, 0);
-  assert_int_equal(1, X509_set_subject_name(x, name));
-  assert_int_equal(1, X509_set_issuer_name(x, name));
-  X509_NAME_free(name);
+  assert_int_equal(1, test_x509_set_self_signed_name(x, "az-iot-test"));
   assert_true(X509_sign(x, key, EVP_sha256()) > 0);
 
   unsigned char* der = NULL;
@@ -146,11 +142,10 @@ static void managed_init_generates_key_and_valid_csr(void** state)
   X509_REQ* req = decode_csr(csr.csr_base64);
   assert_non_null(req);
 
-  char cn[128] = { 0 };
-  int cn_len
-      = X509_NAME_get_text_by_NID(X509_REQ_get_subject_name(req), NID_commonName, cn, sizeof(cn));
-  assert_true(cn_len > 0);
-  assert_string_equal(cn, "my-device-id");
+  char* common_name = test_x509_request_common_name(req);
+  assert_non_null(common_name);
+  assert_string_equal("my-device-id", common_name);
+  OPENSSL_free(common_name);
 
   EVP_PKEY* pk = X509_REQ_get_pubkey(req);
   assert_non_null(pk);
