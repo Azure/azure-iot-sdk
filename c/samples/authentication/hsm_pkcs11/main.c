@@ -322,8 +322,11 @@ int main(void)
     fprintf(stderr, "[hsm_pkcs11] connected; the handshake signed inside the token\n");
 
     az_iot_result init_rc = AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED;
-    if (sample_get_hub_profile(&connection_client, &profile) == AZ_IOT_OK)
+    az_iot_hub_profile hub_profile;
+    if (az_iot_connection_client_get_hub_profile(&connection_client, &hub_profile) == AZ_IOT_OK)
     {
+      profile = hub_profile.connection_profile;
+      printf("Hub profile: %s\n", sample_connection_profile_name(profile));
       if (profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5)
       {
         init_rc = az_iot_mqttv5_telemetry_client_init(&mqttv5, &connection_client);

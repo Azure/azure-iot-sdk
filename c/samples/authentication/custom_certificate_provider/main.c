@@ -172,8 +172,11 @@ int main(void)
 
   if (user_ctx.conn_state == AZ_IOT_CONN_STATE_CONNECTED)
   {
-    az_iot_connection_profile profile = AZ_IOT_CONNECTION_PROFILE_UNKNOWN;
-    (void)sample_get_hub_profile(&connection_client, &profile);
+    az_iot_hub_profile hub_profile;
+    if (az_iot_connection_client_get_hub_profile(&connection_client, &hub_profile) == AZ_IOT_OK)
+    {
+      printf("Hub profile: %s\n", sample_connection_profile_name(hub_profile.connection_profile));
+    }
     fprintf(
         stderr,
         "[custom_cert] connected with %s identity\n",

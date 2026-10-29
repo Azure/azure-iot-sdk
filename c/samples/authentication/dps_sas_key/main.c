@@ -155,12 +155,16 @@ static void pump(az_iot_connection_client* client)
 /** @brief Sends one message on the generation DPS assigned. */
 static az_iot_result send_telemetry(az_iot_connection_client* client, sample_context* ctx)
 {
-  az_iot_connection_profile profile = AZ_IOT_CONNECTION_PROFILE_UNKNOWN;
-  az_iot_result r = sample_get_hub_profile(client, &profile);
+  /* The generation DPS assigned decides which telemetry client to use. */
+  az_iot_hub_profile hub_profile;
+  az_iot_result r = az_iot_connection_client_get_hub_profile(client, &hub_profile);
   if (r != AZ_IOT_OK)
   {
+    printf("Hub profile not available: %s\n", az_iot_result_to_string(r));
     return r;
   }
+  az_iot_connection_profile profile = hub_profile.connection_profile;
+  printf("Hub profile: %s\n", sample_connection_profile_name(profile));
   static const uint8_t payload[] = "{\"auth\":\"sas-key\"}";
   az_iot_telemetry_message msg = { 0 };
   msg.payload = payload;

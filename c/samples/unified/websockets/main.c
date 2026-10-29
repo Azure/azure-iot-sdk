@@ -150,8 +150,10 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
 
   /* Only record it: feature clients must not be destroyed from inside the
    * callback, which runs nested in do_work(). */
-  if (sample_event_is_profile_mismatch(event, &ctx->assigned_profile))
+  if (event->state == AZ_IOT_CONN_STATE_FAULTED
+      && event->reason == AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH && event->profile != NULL)
   {
+    ctx->assigned_profile = event->profile->connection_profile;
     ctx->rebuild = 1;
     return;
   }
@@ -159,7 +161,15 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
   if (event->state == AZ_IOT_CONN_STATE_FAULTED)
   {
     ctx->faulted = 1;
-    sample_report_unsupported_profile(event);
+    /* DPS assigned a hub generation newer than this SDK. */
+    if (event->reason == AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED && event->profile != NULL)
+    {
+      printf(
+          "Unsupported hub generation \"%s\"%s. Upgrade the SDK.\n",
+          event->profile->connection_profile_raw != NULL ? event->profile->connection_profile_raw
+                                                         : "(none)",
+          event->profile->connection_profile_raw_truncated ? " (truncated)" : "");
+    }
   }
 
   /* The provisioning lifecycle reports on its own scope; only the hub one says
@@ -286,7 +296,8 @@ int main(void)
     return 1;
   }
 
-  if (telemetry_build(&state, sample_initial_profile(&state.config)) != AZ_IOT_OK
+  /* Assume a generation until DPS says otherwise; see unified/telemetry. */
+  if (telemetry_build(&state, AZ_IOT_CONNECTION_PROFILE_MQTT_V3) != AZ_IOT_OK
       || az_iot_connection_client_open(&state.connection_client) != AZ_IOT_OK)
   {
     sample_state_destroy(&state);

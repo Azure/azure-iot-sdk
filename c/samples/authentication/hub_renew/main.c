@@ -196,10 +196,10 @@ int main(void)
     }
   }
 
-  az_iot_connection_profile profile = AZ_IOT_CONNECTION_PROFILE_UNKNOWN;
+  az_iot_hub_profile hub_profile = { 0 };
   if (user_ctx.conn_state == AZ_IOT_CONN_STATE_CONNECTED
-      && sample_get_hub_profile(&connection_client, &profile) == AZ_IOT_OK
-      && profile != AZ_IOT_CONNECTION_PROFILE_MQTT_V3)
+      && az_iot_connection_client_get_hub_profile(&connection_client, &hub_profile) == AZ_IOT_OK
+      && hub_profile.connection_profile != AZ_IOT_CONNECTION_PROFILE_MQTT_V3)
   {
     /* send_csr() is MQTTv3-only and returns AZ_IOT_ERR_NOT_SUPPORTED here. */
     fprintf(stderr, "[hub_renew] runtime renewal is not available on this hub generation\n");
