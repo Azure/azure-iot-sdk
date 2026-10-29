@@ -158,7 +158,7 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
       stderr,
       "[persist] %s: %s (%s)\n",
       event->scope == AZ_IOT_CONN_SCOPE_DPS ? "dps" : "hub",
-      sample_connection_state_name(event->state),
+      az_iot_connection_state_to_string(event->state),
       az_iot_result_to_string(event->reason));
   if (event->scope == AZ_IOT_CONN_SCOPE_HUB)
   {
@@ -247,7 +247,7 @@ int main(void)
         "[persist] restoring hub=%s device_id=%s profile=%s from %s\n",
         saved.hub,
         saved.device_id,
-        sample_connection_profile_name(saved.profile),
+        az_iot_connection_profile_to_string(saved.profile),
         SAMPLE_ASSIGNMENT_FILE);
   }
   else

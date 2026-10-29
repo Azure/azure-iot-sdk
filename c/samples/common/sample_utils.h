@@ -161,10 +161,4 @@ void sample_sleep_ms(long ms);
  */
 void sample_sleep_until_tick_end(uint64_t tick_start_ms, uint32_t tick_ms);
 
-// Human-readable name for a connection state, for logging. Never NULL.
-const char* sample_connection_state_name(az_iot_connection_state state);
-
-/** @brief Human-readable name for a connection profile, for logging. Never NULL. */
-const char* sample_connection_profile_name(az_iot_connection_profile profile);
-
 #endif // SAMPLE_UTILS_H

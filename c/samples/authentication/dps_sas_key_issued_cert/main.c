@@ -87,7 +87,7 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
       stderr,
       "[dps_sas_key_issued_cert] %s: %s (%s)\n",
       event->scope == AZ_IOT_CONN_SCOPE_DPS ? "dps" : "hub",
-      sample_connection_state_name(event->state),
+      az_iot_connection_state_to_string(event->state),
       az_iot_result_to_string(event->reason));
   if (event->scope == AZ_IOT_CONN_SCOPE_HUB)
   {
@@ -150,7 +150,7 @@ static az_iot_result send_telemetry(az_iot_connection_client* client, sample_con
     return r;
   }
   az_iot_connection_profile profile = hub_profile.connection_profile;
-  printf("Hub profile: %s\n", sample_connection_profile_name(profile));
+  printf("Hub profile: %s\n", az_iot_connection_profile_to_string(profile));
   static const uint8_t payload[] = "{\"auth\":\"sas-key,x509-issued\"}";
   az_iot_telemetry_message msg = { 0 };
   msg.payload = payload;

@@ -485,7 +485,7 @@ static void track_connection_state(const az_iot_connection_state_event* event, v
   printf(
       "%s: %s (%s)\n",
       event->scope == AZ_IOT_CONN_SCOPE_DPS ? "Provisioning" : "Hub",
-      sample_connection_state_name(event->state),
+      az_iot_connection_state_to_string(event->state),
       az_iot_result_to_string(event->reason));
   if (event->state == AZ_IOT_CONN_STATE_FAULTED)
   {

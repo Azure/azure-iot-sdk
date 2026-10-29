@@ -326,9 +326,9 @@ At startup, with the defaults (SDK log lines omitted):
 Matched against a deployed update: manufacturer=Contoso model=SU-Sim
 Installed: Contoso/SU-Sim/1.0.0
 Checking for updates every 60 s.
-Provisioning: Idle -> Setting up (AZ_IOT_OK)
+Provisioning: AZ_IOT_CONN_STATE_IDLE -> AZ_IOT_CONN_STATE_SETTING_UP (AZ_IOT_OK)
 ...
-Hub: Connecting -> Connected (AZ_IOT_OK)
+Hub: AZ_IOT_CONN_STATE_CONNECTING -> AZ_IOT_CONN_STATE_CONNECTED (AZ_IOT_OK)
 Hub connection up. Running (Ctrl-C to exit)...
 ```
 

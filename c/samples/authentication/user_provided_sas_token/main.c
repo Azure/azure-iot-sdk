@@ -214,7 +214,7 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
       stderr,
       "[user_provided_sas_token] %s: %s (%s)\n",
       event->scope == AZ_IOT_CONN_SCOPE_DPS ? "dps" : "hub",
-      sample_connection_state_name(event->state),
+      az_iot_connection_state_to_string(event->state),
       az_iot_result_to_string(event->reason));
   if (event->scope == AZ_IOT_CONN_SCOPE_HUB)
   {

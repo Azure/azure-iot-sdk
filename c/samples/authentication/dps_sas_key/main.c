@@ -112,7 +112,7 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
       stderr,
       "[dps_sas_key] %s: %s (%s), credential: %s%s\n",
       event->scope == AZ_IOT_CONN_SCOPE_DPS ? "dps" : "hub",
-      sample_connection_state_name(event->state),
+      az_iot_connection_state_to_string(event->state),
       az_iot_result_to_string(event->reason),
       auth_source_name(event->auth_source),
       event->is_credential_renewal ? " (token renewal)" : "");
@@ -164,7 +164,7 @@ static az_iot_result send_telemetry(az_iot_connection_client* client, sample_con
     return r;
   }
   az_iot_connection_profile profile = hub_profile.connection_profile;
-  printf("Hub profile: %s\n", sample_connection_profile_name(profile));
+  printf("Hub profile: %s\n", az_iot_connection_profile_to_string(profile));
   static const uint8_t payload[] = "{\"auth\":\"sas-key\"}";
   az_iot_telemetry_message msg = { 0 };
   msg.payload = payload;

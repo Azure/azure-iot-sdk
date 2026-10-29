@@ -273,7 +273,7 @@ int main(void)
       user_ctx.reopen = 0;
       printf(
           "DPS assigned %s; reopening without a telemetry client.\n",
-          sample_connection_profile_name(user_ctx.assigned_profile));
+          az_iot_connection_profile_to_string(user_ctx.assigned_profile));
       telemetry_destroy(&state);
       user_ctx.send_pending = 0; /* lost with the old client */
       az_iot_connection_client_close(&state.connection_client);

@@ -70,7 +70,7 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
       stderr,
       "[dps_csr] %s: %s (%s)\n",
       is_dps ? "dps" : "hub",
-      sample_connection_state_name(event->state),
+      az_iot_connection_state_to_string(event->state),
       az_iot_result_to_string(event->reason));
 
   /* Transport codes are adapter-defined, so they are not printed. */

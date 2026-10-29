@@ -240,7 +240,7 @@ int main(void)
   {
     printf(
         "DPS assigned %s. Cloud-to-device messages are not available on this hub generation.\n",
-        sample_connection_profile_name(user_ctx.assigned_profile));
+        az_iot_connection_profile_to_string(user_ctx.assigned_profile));
   }
 
   printf("Received %d message(s).\n", user_ctx.messages_received);

@@ -290,7 +290,7 @@ int main(void)
       user_ctx.rebuild = 0;
       printf(
           "DPS assigned %s; rebuilding the telemetry client.\n",
-          sample_connection_profile_name(user_ctx.assigned_profile));
+          az_iot_connection_profile_to_string(user_ctx.assigned_profile));
       telemetry_destroy(&state);
       user_ctx.send_pending = 0; /* lost with the old client */
       az_iot_connection_client_close(&state.connection_client);
@@ -317,7 +317,7 @@ int main(void)
   printf(
       "Sent %d message(s) on %s, %d failed.\n",
       user_ctx.sent_ok,
-      sample_connection_profile_name(state.profile),
+      az_iot_connection_profile_to_string(state.profile),
       user_ctx.send_failed);
 
   az_iot_connection_client_close(&state.connection_client);

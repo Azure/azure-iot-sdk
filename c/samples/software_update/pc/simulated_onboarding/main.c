@@ -182,8 +182,8 @@ static void on_connection_state_event_received(
     printf(
         "%s: %s -> %s (%s)\n",
         (scope == AZ_IOT_CONN_SCOPE_DPS) ? "Provisioning" : "Hub",
-        sample_connection_state_name(state->connection_state[scope]),
-        sample_connection_state_name(event->state),
+        az_iot_connection_state_to_string(state->connection_state[scope]),
+        az_iot_connection_state_to_string(event->state),
         az_iot_result_to_string(event->reason));
     state->connection_state[scope] = event->state;
 

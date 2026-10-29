@@ -152,7 +152,7 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
     fprintf(
         stderr,
         "[e2e_tpm] hub %s (%s)\n",
-        sample_connection_state_name(event->state),
+        az_iot_connection_state_to_string(event->state),
         az_iot_result_to_string(event->reason));
   }
 }
