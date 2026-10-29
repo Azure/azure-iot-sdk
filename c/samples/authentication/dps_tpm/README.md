@@ -14,7 +14,8 @@ TPM software stack instead.
 ## Sample features
 
 - DPS takes TPM attestation over HTTPS or AMQP, not MQTT. This sample uses HTTPS: it registers with
-  [`az_iot_dps_tpm_client.h`](../../../inc/azure/iot/az_iot_dps_tpm_client.h) over libcurl:
+  [`az_iot_dps_tpm_client.h`](../../../inc/azure/iot/az_iot_dps_tpm_client.h) over libcurl, in
+  `register_with_dps()`:
   1. A register request with the endorsement key (EK) and storage root key (SRK).
   2. DPS answers 401 with a key encrypted to the TPM. The simulated TPM imports it, as
      TPM2_ActivateCredential and TPM2_Import would.
@@ -22,7 +23,7 @@ TPM software stack instead.
   4. Polling until DPS assigns the device. The assignment carries the hub key, which the TPM
      imports in the same way.
 - The sample then connects `az_iot_connection_client` directly to the assigned hub. Hub SAS tokens
-  come from `on_sas_token_required`, signed by the TPM as in
+  come from `on_sas_token_required`, signed by the TPM in `sign_token_with_tpm()` as in
   [`user_provided_sas_token`](../user_provided_sas_token/README.md).
 - mqttv3 hubs only: mqttv5 hubs do not accept SAS.
 
