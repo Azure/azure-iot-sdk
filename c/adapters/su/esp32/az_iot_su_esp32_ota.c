@@ -3,7 +3,7 @@
 // information.
 
 /* SPDX-License-Identifier: MIT */
-#include "su_esp32_ota.h"
+#include "az_iot_su_esp32_ota.h"
 
 #include <inttypes.h>
 #include <string.h>
@@ -51,7 +51,7 @@ static int32_t ota_download(
     uint32_t file_count,
     void* user_ctx)
 {
-  su_ota_ctx* c = (su_ota_ctx*)user_ctx;
+  az_iot_su_esp32_ota_context* c = (az_iot_su_esp32_ota_context*)user_ctx;
 
   /* This sample treats the single payload as the new ESP32 app image and
    * flashes it whole; multi-file updates would loop a partition/file map. */
@@ -115,7 +115,7 @@ static int32_t ota_download(
     goto cleanup;
   }
   c->ota_in_progress = true;
-  c->written = 0;
+  c->bytes_written = 0;
 
   uint8_t buf[2048];
   for (;;)
@@ -140,13 +140,13 @@ static int32_t ota_download(
     }
     if (esp_ota_write(c->ota_handle, buf, (size_t)r) != ESP_OK)
     {
-      ESP_LOGE(TAG, "esp_ota_write failed at %zu", c->written);
+      ESP_LOGE(TAG, "esp_ota_write failed at %zu", c->bytes_written);
       goto cleanup;
     }
-    c->written += (size_t)r;
+    c->bytes_written += (size_t)r;
   }
 
-  ESP_LOGI(TAG, "download complete: %zu bytes written", c->written);
+  ESP_LOGI(TAG, "download complete: %zu bytes written", c->bytes_written);
   result = AZ_IOT_SU_RESULT_SUCCESS;
 
 cleanup:
@@ -174,15 +174,15 @@ static int32_t ota_read_file(
     void* user_ctx)
 {
   (void)file_index;
-  su_ota_ctx* c = (su_ota_ctx*)user_ctx;
+  az_iot_su_esp32_ota_context* c = (az_iot_su_esp32_ota_context*)user_ctx;
   if (!c->update_partition)
   {
     *out_read = 0;
     return AZ_IOT_SU_RESULT_FAILURE;
   }
 
-  size_t size
-      = c->written ? c->written : (file->size_in_bytes > 0 ? (size_t)file->size_in_bytes : 0);
+  size_t size = c->bytes_written ? c->bytes_written
+                                 : (file->size_in_bytes > 0 ? (size_t)file->size_in_bytes : 0);
   if (offset >= size)
   {
     *out_read = 0;
@@ -206,7 +206,7 @@ static int32_t ota_read_file(
 
 static int32_t ota_is_installed(const az_iot_su_client_update_manifest* manifest, void* user_ctx)
 {
-  su_ota_ctx* c = (su_ota_ctx*)user_ctx;
+  az_iot_su_esp32_ota_context* c = (az_iot_su_esp32_ota_context*)user_ctx;
   if (c->installed_version
       && az_span_is_content_equal(
           manifest->update_id.version, az_span_create_from_str((char*)c->installed_version)))
@@ -235,7 +235,7 @@ static int32_t ota_install(
     void* user_ctx)
 {
   (void)manifest;
-  su_ota_ctx* c = (su_ota_ctx*)user_ctx;
+  az_iot_su_esp32_ota_context* c = (az_iot_su_esp32_ota_context*)user_ctx;
   if (!c->ota_in_progress)
   {
     ESP_LOGE(TAG, "install step %u with no downloaded image", step);
@@ -282,7 +282,7 @@ static int32_t ota_restore(
     void* user_ctx)
 {
   (void)manifest;
-  su_ota_ctx* c = (su_ota_ctx*)user_ctx;
+  az_iot_su_esp32_ota_context* c = (az_iot_su_esp32_ota_context*)user_ctx;
   ESP_LOGW(TAG, "restore step %u (rollback to running partition)", step);
   if (c->ota_in_progress)
   {
@@ -357,7 +357,7 @@ static int32_t ota_load(uint8_t* blob, size_t cap, size_t* out_len, void* user_c
 /* public                                                                    */
 /* ------------------------------------------------------------------------- */
 
-void su_esp32_ota_mark_valid(void)
+void az_iot_su_esp32_ota_mark_running_image_valid(void)
 {
   const esp_partition_t* running = esp_ota_get_running_partition();
   esp_ota_img_states_t state;
@@ -371,7 +371,8 @@ void su_esp32_ota_mark_valid(void)
   }
 }
 
-az_iot_su_platform_hooks su_esp32_ota_hooks(su_ota_ctx* ctx)
+az_iot_su_platform_hooks az_iot_su_esp32_ota_get_platform_hooks(
+    az_iot_su_esp32_ota_context* context)
 {
   az_iot_su_platform_hooks h;
   memset(&h, 0, sizeof(h));
@@ -384,6 +385,6 @@ az_iot_su_platform_hooks su_esp32_ota_hooks(su_ota_ctx* ctx)
   h.is_installed_fn = ota_is_installed;
   h.persist_workflow_state_fn = ota_persist;
   h.load_workflow_state_fn = ota_load;
-  h.user_ctx = ctx;
+  h.user_ctx = context;
   return h;
 }

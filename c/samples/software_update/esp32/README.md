@@ -51,7 +51,7 @@ sequenceDiagram
 | `restore` | Rollback to the running partition |
 | `persist` / `load` state | NVS namespace `su_sample`, key `wf_state` (resume across the reboot). The 36 KB `nvs` partition holds two generations of the largest checkpoint; [main/app_main.c](main/app_main.c) sets `limits.max_update_size` to 8192 (`SU_MAX_UPDATE_SIZE`) to bound it. Erase the flash when moving from the earlier 24 KB layout. |
 
-Once connected to its hub, the new image calls `su_esp32_ota_mark_valid()`
+Once connected to its hub, the new image calls `az_iot_su_esp32_ota_mark_running_image_valid()`
 (`esp_ota_mark_app_valid_cancel_rollback`). If it crashes or never connects, the
 bootloader returns to the previous slot (`CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE`).
 
@@ -347,7 +347,7 @@ The SDK logs at `INFO`; change the level in `app_main()` for more detail.
 | Embedded certificates | `az_iot_cert_embedded_init()` |
 | esp-mqtt transports (3.1.1 + 5) | `az_iot_esp_mqtt_factory_create_v3_1_1()`, `az_iot_esp_mqtt_factory_create_v5()` |
 | Crypto backend | `copts.crypto = az_iot_crypto_mbedtls()` |
-| OTA hooks, root keys | `su_esp32_ota_hooks()`, `az_iot_su_microsoft_root_keys()` |
+| OTA hooks, root keys | `az_iot_su_esp32_ota_get_platform_hooks()`, `az_iot_su_microsoft_root_keys()` |
 | Compatibility properties | `dp.manufacturer`, `dp.model` |
 | Resume after the OTA reboot | `az_iot_su_client_resume()` |
 | Route selection | `app_request_check()`, `app_is_registered()` |
@@ -364,9 +364,6 @@ samples/software_update/esp32/
 ├── sdkconfig.secure[.<target>]      security profile (opt-in)
 ├── sdkconfig.secure_esp32_legacy    ESP32 below rev v3.0: Secure Boot v1
 ├── sdkconfig.secure_virtual_efuse   rehearse the profile without burning eFuses
-├── components/
-│   ├── azure-iot-sdk/               this repo's src/ as an ESP-IDF component
-│   └── azure-sdk-for-c/             az_core + az_iot from the submodule
 └── main/
     ├── app_main.c                   Wi-Fi → DPS → software updates loop
     ├── az_iot_mqtt_esp.[ch]         esp-mqtt adapter (MQTT 3.1.1 + 5)
@@ -377,8 +374,8 @@ samples/software_update/esp32/
     └── certs/                       embedded PEM files
 ```
 
-`main/CMakeLists.txt` also compiles two adapters from outside the sample:
-[`adapters/crypto_mbedtls`](../../../adapters/crypto_mbedtls/) (RS256 /
-SHA-256 over PSA Crypto) and [`adapters/su/esp32`](../../../adapters/su/esp32/)
-(OTA platform hooks).
+The SDK, azure-sdk-for-c, the crypto backend
+([`adapters/crypto_mbedtls`](../../../adapters/crypto_mbedtls/): RS256 / SHA-256 over PSA Crypto)
+and the OTA platform hooks ([`adapters/su/esp32`](../../../adapters/su/esp32/)) are the ESP-IDF
+components in [`platforms/esp32/components`](../../../platforms/esp32/README.md).
 

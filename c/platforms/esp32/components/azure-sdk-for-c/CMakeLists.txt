@@ -8,10 +8,9 @@
 # directly as an IDF component. Only the MQTT-stack-agnostic pieces our SDK
 # uses are compiled (no az_http transport, no curl).
 
-# deps/azure-sdk-for-c relative to this file: components/azure-sdk-for-c ->
-# esp32 -> software_update -> samples -> c (5 levels up).
-get_filename_component(AZ_SDK_C_ROOT
-    "${CMAKE_CURRENT_LIST_DIR}/../../../../../deps/azure-sdk-for-c" ABSOLUTE)
+# c/, four levels up from platforms/esp32/components/azure-sdk-for-c/.
+get_filename_component(AZ_IOT_ROOT "${CMAKE_CURRENT_LIST_DIR}/../../../.." ABSOLUTE)
+set(AZ_SDK_C_ROOT "${AZ_IOT_ROOT}/deps/azure-sdk-for-c")
 
 set(_az_src "${AZ_SDK_C_ROOT}/sdk/src/azure")
 
@@ -58,6 +57,6 @@ target_compile_options(${COMPONENT_LIB} PRIVATE -w)
 # Software updates manifest limits. PUBLIC: the SDK and the application must
 # compile az_iot_su.h with the values this parser is built with.
 if(NOT CMAKE_BUILD_EARLY_EXPANSION)
-    include("${CMAKE_CURRENT_LIST_DIR}/../../../../../cmake/az_iot_su_limits.cmake")
+    include("${AZ_IOT_ROOT}/cmake/az_iot_su_limits.cmake")
     target_compile_definitions(${COMPONENT_LIB} PUBLIC ${AZ_IOT_SU_LIMIT_DEFINITIONS})
 endif()
