@@ -386,6 +386,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
             _mqttv5HubTwinClient.DesiredPatchReceived -= HandleMQTTv5DesiredPatchReceivedAsync;
             _mqttv5HubTwinClient.TwinPushReceived -= HandleMQTTv5TwinPushReceived;
             _connection.PublishReceivedAsync -= HandleReceivedMqttPublish;
+            _mqttv5HubTwinClient.Dispose(false);
             if (disposing)
             {
                 _connection.Dispose();
@@ -401,6 +402,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
             _mqttv5HubTwinClient.DesiredPatchReceived -= HandleMQTTv5DesiredPatchReceivedAsync;
             _mqttv5HubTwinClient.TwinPushReceived -= HandleMQTTv5TwinPushReceived;
             _connection.PublishReceivedAsync -= HandleReceivedMqttPublish;
+            _mqttv5HubTwinClient.Dispose(false);
             _connection.Dispose();
             _isDisposed = true;
         }
