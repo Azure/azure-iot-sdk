@@ -71,6 +71,7 @@ on:
       # Azure/iot-sdks-e2e-fx and are pinned to a tag, so a change there only
       # reaches this repository when the pin below is moved.
       - '.github/workflows/ci-c-e2e.yml'
+      - '.github/actions/install-openssl/**'
   push:
     branches: [ main ]
     paths:
@@ -79,6 +80,7 @@ on:
       - 'common/**'
       - '!common/**/*.md'
       - '.github/workflows/ci-c-e2e.yml'
+      - '.github/actions/install-openssl/**'
   schedule:
     - cron: '0 11 * * *'  # Nightly at 4am PST
 
@@ -213,7 +215,8 @@ jobs:
             group-index: 3
             tests: '^az_iot_tests_e2e_sas(_az_mqtt)?$'
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    # Windows: room for an OpenSSL build on a cache miss (see below).
+    timeout-minutes: ${{ matrix.os == 'windows-latest' && 60 || 30 }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -222,6 +225,16 @@ jobs:
       - name: Set up MSVC (Windows)
         if: runner.os == 'Windows'
         uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
+
+      # Windows runs the Paho/OpenSSL device path on OpenSSL 4.x, the version the
+      # Windows installers now ship; Linux keeps the distribution's 3.0, the
+      # minimum supported, so the e2e suites cover both majors. Built from source
+      # and cached per runner image (.github/actions/install-openssl).
+      - name: Install OpenSSL 4.1.0 (Windows)
+        if: runner.os == 'Windows'
+        uses: ./.github/actions/install-openssl # zizmor: ignore[self-repository]
+        with:
+          version: '4.1.0'
 
       - name: Install ninja (Linux)
         if: runner.os == 'Linux'
