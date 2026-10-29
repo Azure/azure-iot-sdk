@@ -2358,7 +2358,8 @@ static void a_notice_past_the_full_queue_is_dropped_while_not_connected(void** s
   for (uint8_t i = 0; i < AZ_IOT_MQTTV5_DM_NOTICE_QUEUE_MAX; ++i)
   {
     make_request_id(held[i], (uint8_t)(0x31 + i));
-    /* The first carries no Message Expiry: unbounded, so never reclaimed as spent. */
+    /* The first carries no Message Expiry: kept for the max unconfirmed delivery timeout
+     * (300 s by default), so not reclaimed as spent here. */
     inject_dm(fx, DEV_TOPIC, "probe:1", held[i], 16, frame, frame_len, i == 0 ? 0u : 30u);
   }
 
@@ -3864,13 +3865,174 @@ static void the_result_deadline_is_the_budget_less_the_safety_margin(void** stat
       az_iot_mqttv5_direct_method_respond(&fx->dm, rec.request, 200, NULL, 0), AZ_IOT_OK);
   ack_last_phase(fx, "result:1");
 
-  /* No expiry on the exec: no deadline. */
+  /* No expiry on the exec: the max unconfirmed delivery timeout, 300 s by default. */
   rec.fired = false;
+  before = az_iot_time_mono_ms();
   start_invocation(fx, 0xD2, 300, 0);
+  after = az_iot_time_mono_ms();
   assert_true(rec.fired);
-  assert_true(*result_deadline_of(fx, rec.request) == UINT64_MAX);
+  deadline = *result_deadline_of(fx, rec.request);
+  assert_true(deadline >= before + AZ_IOT_DEFAULT_MAX_UNCONFIRMED_DELIVERY_TIMEOUT_MS);
+  assert_true(deadline <= after + AZ_IOT_DEFAULT_MAX_UNCONFIRMED_DELIVERY_TIMEOUT_MS);
   assert_int_equal(
       az_iot_mqttv5_direct_method_respond(&fx->dm, rec.request, 200, NULL, 0), AZ_IOT_OK);
+}
+
+/* Bounds what the connection keeps without a Message Expiry. Set after init:
+ * the client reads the option when it needs it. */
+static void set_max_unconfirmed_delivery_timeout(fixture* fx, uint32_t timeout_ms)
+{
+  fx->conn.opts.max_unconfirmed_delivery_timeout_ms = timeout_ms;
+}
+
+static void the_result_deadline_without_expiry_follows_the_option(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  set_max_unconfirmed_delivery_timeout(fx, 4000u);
+  open_to_connected(fx);
+  invocation_record rec = { 0 };
+  fx->rec = &rec;
+
+  uint64_t before = az_iot_time_mono_ms();
+  start_invocation(fx, 0xD3, 300, 0);
+  uint64_t after = az_iot_time_mono_ms();
+  assert_true(rec.fired);
+  uint64_t deadline = *result_deadline_of(fx, rec.request);
+  assert_true(deadline >= before + 4000u);
+  assert_true(deadline <= after + 4000u);
+}
+
+static void a_held_result_without_expiry_is_sent_with_none(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  invocation_record rec = { 0 };
+  fx->rec = &rec;
+
+  uint8_t request_id[16];
+  make_request_id(request_id, 0xD7);
+  uint8_t ready_id[16];
+  probe_and_accept(fx, request_id, "dump", 300, ready_id);
+  reconnect_to_connack(fx);
+  uint8_t exec[64];
+  size_t exec_len = build_exec(exec, ready_id, 16, NULL, 0);
+  inject_dm(fx, DEV_TOPIC, "exec:1", request_id, 16, exec, exec_len, 0);
+  assert_true(rec.fired);
+  assert_int_equal(
+      az_iot_mqttv5_direct_method_respond(&fx->dm, rec.request, 200, NULL, 0), AZ_IOT_OK);
+
+  finish_birth(fx);
+  assert_int_equal(count_phase(fx->mock, "result:1"), 1);
+  assert_int_equal(find_phase(fx->mock, "result:1")->message_expiry_seconds, 0);
+}
+
+static void a_held_result_without_expiry_is_dropped_past_the_option(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  set_max_unconfirmed_delivery_timeout(fx, 1000u);
+  open_to_connected(fx);
+  invocation_record rec = { 0 };
+  fx->rec = &rec;
+
+  uint8_t request_id[16];
+  make_request_id(request_id, 0xD8);
+  uint8_t ready_id[16];
+  probe_and_accept(fx, request_id, "dump", 300, ready_id);
+  reconnect_to_connack(fx);
+  uint8_t exec[64];
+  size_t exec_len = build_exec(exec, ready_id, 16, NULL, 0);
+  inject_dm(fx, DEV_TOPIC, "exec:1", request_id, 16, exec, exec_len, 0);
+  assert_true(rec.fired);
+  assert_int_equal(
+      az_iot_mqttv5_direct_method_respond(&fx->dm, rec.request, 200, NULL, 0), AZ_IOT_OK);
+
+  sleep_past_one_second();
+  log_capture cap;
+  install_capture(&cap, AZ_IOT_LOG_LEVEL_WARN);
+  finish_birth(fx);
+  az_iot_log_set_global_sink(NULL);
+  assert_int_equal(count_phase(fx->mock, "result:1"), 0);
+  assert_non_null(strstr(cap.all, "passed before its result was sent"));
+}
+
+static void a_held_notice_without_budget_is_dropped_past_the_option(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  set_max_unconfirmed_delivery_timeout(fx, 1000u);
+  open_conn(fx);
+
+  uint8_t request_id[16];
+  make_request_id(request_id, 0xD9);
+  uint8_t frame[128];
+  size_t frame_len = build_probe(frame, "not-declared", 300);
+  inject_dm(fx, DEV_TOPIC, "probe:1", request_id, 16, frame, frame_len, 0);
+
+  sleep_past_one_second();
+  finish_birth(fx);
+  assert_null(find_phase(fx->mock, "probe-ack:1"));
+}
+
+static void notices_without_budget_past_the_option_free_their_entries(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  set_max_unconfirmed_delivery_timeout(fx, 1000u);
+  open_conn(fx);
+
+  uint8_t frame[128];
+  size_t frame_len = build_probe(frame, "not-declared", 300);
+  for (uint8_t i = 0; i < AZ_IOT_MQTTV5_DM_NOTICE_QUEUE_MAX; ++i)
+  {
+    uint8_t held[16];
+    make_request_id(held, (uint8_t)(0xA1 + i));
+    inject_dm(fx, DEV_TOPIC, "probe:1", held, 16, frame, frame_len, 0);
+  }
+  sleep_past_one_second();
+
+  uint8_t request_id[16];
+  make_request_id(request_id, 0xAF);
+  log_capture cap;
+  install_capture(&cap, AZ_IOT_LOG_LEVEL_WARN);
+  inject_dm(fx, DEV_TOPIC, "probe:1", request_id, 16, frame, frame_len, 30);
+  az_iot_log_set_global_sink(NULL);
+  assert_null(strstr(cap.all, "notice-queue entries are in use"));
+
+  finish_birth(fx);
+  assert_int_equal(count_phase(fx->mock, "probe-ack:1"), 1);
+  assert_memory_equal(find_phase(fx->mock, "probe-ack:1")->correlation_data, request_id, 16);
+}
+
+static void an_exec_without_expiry_is_admitted_against_the_option(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  set_max_unconfirmed_delivery_timeout(fx, 5000u);
+  open_to_connected(fx);
+  invocation_record rec = { 0 };
+  fx->rec = &rec;
+  assert_int_equal(
+      az_iot_mqttv5_direct_method_client_register_method(&fx->dm, "long-job", 5, on_method, fx),
+      AZ_IOT_OK);
+
+  /* 5 s minimum does not fit in a 5 s window: abandoned, not started. */
+  uint8_t request_id[16];
+  make_request_id(request_id, 0xDA);
+  uint8_t ready_id[16];
+  probe_and_accept(fx, request_id, "long-job", 300, ready_id);
+  uint8_t exec[64];
+  size_t exec_len = build_exec(exec, ready_id, 16, NULL, 0);
+  az_iot_mock_mqtt_client_clear_calls(fx->mock);
+  inject_dm(fx, DEV_TOPIC, "exec:1", request_id, 16, exec, exec_len, 0);
+  assert_false(rec.fired);
+  const az_iot_mock_call* abandon = find_phase(fx->mock, "abandon:1");
+  assert_non_null(abandon);
+  assert_int_equal(abandon->payload[19], 2); /* INSUFFICIENT_TIME */
+
+  /* One millisecond more and it fits. */
+  set_max_unconfirmed_delivery_timeout(fx, 5001u);
+  make_request_id(request_id, 0xDB);
+  probe_and_accept(fx, request_id, "long-job", 300, ready_id);
+  exec_len = build_exec(exec, ready_id, 16, NULL, 0);
+  inject_dm(fx, DEV_TOPIC, "exec:1", request_id, 16, exec, exec_len, 0);
+  assert_true(rec.fired);
 }
 
 static void respond_just_before_the_result_deadline_publishes(void** state)
@@ -4716,6 +4878,18 @@ int main(void)
         respond_after_the_response_timeout_sends_nothing, setup, teardown),
     cmocka_unit_test_setup_teardown(
         the_result_deadline_is_the_budget_less_the_safety_margin, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        the_result_deadline_without_expiry_follows_the_option, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_held_result_without_expiry_is_sent_with_none, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_held_result_without_expiry_is_dropped_past_the_option, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_held_notice_without_budget_is_dropped_past_the_option, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        notices_without_budget_past_the_option_free_their_entries, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        an_exec_without_expiry_is_admitted_against_the_option, setup, teardown),
     cmocka_unit_test_setup_teardown(
         respond_just_before_the_result_deadline_publishes, setup, teardown),
     cmocka_unit_test_setup_teardown(respond_at_the_result_deadline_sends_nothing, setup, teardown),
