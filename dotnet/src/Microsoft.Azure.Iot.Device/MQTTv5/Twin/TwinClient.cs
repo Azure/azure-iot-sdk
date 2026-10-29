@@ -16,117 +16,217 @@ using System.Text.Json.Nodes;
 namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
 {
     /// <summary>
-    /// The feature client for interacting with a device's twin properties.
+    /// The feature client for sending twin requests to IoT hub and receiving twin messages from it, exactly as IoT hub's twin
+    /// API defines them.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Each request is sent once, and completes with IoT hub's response, or fails if it can't be sent or the connection is lost
+    /// before IoT hub responds. Requests are neither queued nor retried, and reported properties patches are only conditional
+    /// on IoT hub's version of the reported properties when the caller provides that version. Every desired properties update,
+    /// desired properties version probe and twin push is raised as received, so they may be raised out of version order, more
+    /// than once, or not at all if the device was disconnected when IoT hub sent them.
+    /// </para>
+    /// <para>
+    /// To keep this device's twin in sync with IoT hub as the device twin specification recommends, use
+    /// <see cref="ConcurrentTwinClient"/> instead.
+    /// </para>
+    /// </remarks>
     public class TwinClient : IDisposable
     {
-        private bool _isDisposed = false;
+        private volatile bool _isDisposed = false;
+
+        // Incremented whenever the connection is lost, so that a request registered while the connection was being lost fails
+        // instead of being sent after reconnecting.
+        private long _connectionLossGeneration;
 
         private const string ProtobufContentType = "application/protobuf";
 
-        private IConnectionClient _connection;
+        private readonly IConnectionClient _connection;
 
         // The connection client substitutes this device's current ID for the placeholder when it sends each request, so a
         // pending request still goes to the right topic if the device ID changes (for example, after re-provisioning).
         private const string AzureEventGridOutgoingTwinPublishTopic = "ih/" + IConnectionClient.DeviceIdPlaceholder + "/srv/twin";
         private const string AzureEventGridIncomingTwinPublishTopic = "ih/" + IConnectionClient.DeviceIdPlaceholder + "/dev/twin";
+        private const string AzureEventGridIncomingPresencePublishTopic = "ih/" + IConnectionClient.DeviceIdPlaceholder + "/dev/presence";
 
-        private readonly ConcurrentDictionary<Guid, PendingGetTwinRequest> _pendingGetTwinOperations = new();
-        private readonly ConcurrentDictionary<Guid, PendingReportedPropertiesUpdateRequest> _pendingReportedPropertyUpdateOperations = new();
+        private readonly ConcurrentDictionary<Guid, PendingRequest<TwinGetResponse>> _pendingGets = new();
+        private readonly ConcurrentDictionary<Guid, PendingRequest<ReportedPatchResponse>> _pendingReportedPatches = new();
 
         /// <summary>
         /// An event that executes whenever this client receives a desired properties update from IoT hub.
         /// </summary>
+        /// <remarks>
+        /// Updates are raised as received, so they may be raised out of version order, and any that IoT hub sent while the
+        /// device was disconnected are not raised at all.
+        /// </remarks>
         public event Action<DesiredPatchReceivedEventArgs>? DesiredPatchReceived;
 
         /// <summary>
-        /// An event that executes whenever this client receives a Twin push message from IoT hub.
+        /// An event that executes whenever IoT hub reveals its current version of the desired properties without the
+        /// properties themselves (for example, when an update was too large to send to the device).
         /// </summary>
         /// <remarks>
-        /// This feature is only supported by IoT hubs using MQTTv5. Older IoT hubs will never encounter this event.
+        /// If the device doesn't hold this version of the desired properties, it can fetch them with <see cref="GetTwinAsync"/>.
         /// </remarks>
+        public event Action<DesiredVersionProbeReceivedEventArgs>? DesiredVersionProbeReceived;
+
+        /// <summary>
+        /// An event that executes whenever this client receives a twin push message from IoT hub.
+        /// </summary>
         public event Action<TwinPushReceivedEventArgs>? TwinPushReceived;
+
+        // Hooks for ConcurrentTwinClient. Each is awaited as each message is received, before the next one is handled, so that
+        // the caller sees the messages in the order that they were received.
+
+        // Called with each get twin response that isn't for a request made by GetTwinAsync.
+        internal Func<Guid, TwinGetResponse, Task>? GetResponseHandler { get; set; }
+
+        // Called with each reported properties patch response that isn't for a patch sent by UpdateReportedPropertiesAsync.
+        internal Func<Guid, ReportedPatchResponse, Task>? ReportedPatchResponseHandler { get; set; }
+
+        // If set, called with each desired properties patch for the current connection instead of raising this client's events.
+        internal Func<Guid?, DesiredPatch, Task>? DesiredPatchHandler { get; set; }
+
+        // If set, called with each twin push for the current connection instead of raising TwinPushReceived.
+        internal Func<Guid?, TwinPush, Task>? TwinPushHandler { get; set; }
+
+        // Called with each message that IoT hub sends to this device's presence topic.
+        internal Func<MqttPublish, Task>? PresencePublishHandler { get; set; }
 
         /// <summary>
         /// Construct a new <see cref="TwinClient"/> instance.
         /// </summary>
         /// <param name="connection">The connection client this feature client will use.</param>
         /// <remarks>
-        /// The provided connection client does not need to be connected before this constructor is called. However, the provided connection client must be connected prior
-        /// to using this feature client to send/receive any twin messages.
+        /// The provided connection client does not need to be connected before this constructor is called. However, the provided
+        /// connection client must be connected prior to using this feature client to send/receive any twin messages.
         /// </remarks>
-        /// <example>
-        /// The recommended order to instantiate feature clients and the connection client is as follows:
-        /// <code>
-        /// // Construct all the clients your device will use
-        /// ConnectionClient connectionClient = new();
-        /// TwinClient twinClient = new(connectionClient);
-        /// 
-        /// //Set all handlers 
-        /// twinClient.DesiredPatchReceived += SomeDesiredPatchHandlingMethod;
-        /// 
-        /// // Open the connection (and start receiving desired patches)
-        /// await connectionClient.ProvisionAndConnectAsync();
-        /// </code>
-        /// </example>
         public TwinClient(IConnectionClient connection)
         {
             _connection = connection;
             _connection.PublishReceivedAsync += HandleReceivedMqttPublish;
+            _connection.ConnectionLost += HandleConnectionLost;
         }
 
-
         /// <summary>
-        /// Get the full twin, or some conditional set of the twin properties.
+        /// Get this device's twin from IoT hub.
         /// </summary>
-        /// <param name="getReported">Request the service to include the reported properties in the returned twin.</param>
-        /// <param name="getDesired">Request the service to include the desired properties in the returned twin.</param>
+        /// <param name="getReported">If true, the reported properties will be included in the returned twin.</param>
+        /// <param name="getDesired">If true, the desired properties will be included in the returned twin.</param>
         /// <param name="ifNotMatchReported">
-        /// If provided, and the version matches or exceeds the version of the reported properties held by the service, then the 
+        /// If provided, and the version matches or exceeds the version of the reported properties held by the service, then the
         /// service will not include the reported properties in the returned twin.
         /// </param>
         /// <param name="ifNotMatchDesired">
-        /// If provided, and the version matches or exceeds the version of the desired properties held by the service, then the 
+        /// If provided, and the version matches or exceeds the version of the desired properties held by the service, then the
         /// service will not include the desired properties in the returned twin.
         /// </param>
         /// <param name="cancellationToken">The cancellation token.</param>
         /// <returns>The returned twin.</returns>
         /// <remarks>
-        /// Only IoT hubs that use MQTTv5 will actually respond to the getReported/getDesired/ifNotMatch flags as this feature is unsupported in older IoT hubs. 
-        /// However, this SDK will parse the twin that the service returns to filter out unrequested sections to mimic the behavior of MQTTv5 IoT hubs.
+        /// The request is sent once. If IoT hub never responds, this method only returns once
+        /// <paramref name="cancellationToken"/> is cancelled or the connection is lost.
         /// </remarks>
         /// <exception cref="ArgumentException">Thrown when neither desired nor reported properties are requested.</exception>
-        /// <exception cref="PublishRejectedException">Thrown if this get twin request is rejected by IoT Hub for any reason.</exception>
+        /// <exception cref="NotSupportedException">Thrown when the device isn't connected.</exception>
+        /// <exception cref="DeviceException">
+        /// Thrown if this get twin request could not be sent, or with <see cref="ErrorRetryability.Retryable"/> if the
+        /// connection to IoT hub was lost before the response arrived. The request may be retried once reconnected.
+        /// </exception>
         public async Task<DeviceTwin> GetTwinAsync(bool getReported = true, bool getDesired = true, ulong ifNotMatchReported = 0, ulong ifNotMatchDesired = 0, CancellationToken cancellationToken = default)
         {
-            //TODO need to handle case where get twin request is successfully published, but connection + session is lost before receiving response.
-            // Would need to re-send the get twin request upon device ready
             ObjectDisposedException.ThrowIf(_isDisposed, this);
             if (!getReported && !getDesired)
             {
                 throw new ArgumentException("At least one twin section must be requested.");
             }
 
+            long connectionLossGeneration = Interlocked.Read(ref _connectionLossGeneration);
             EnsureConnected();
 
-            Guid requestId = Guid.NewGuid();
-
-            // Note the request as "in progress" before actually sending it so that no matter how quickly the service
-            // responds, this layer can correlate the request.
-            var pendingGetTwinRequest = new PendingGetTwinRequest()
+            Guid getId = Guid.NewGuid();
+            PendingRequest<TwinGetResponse> request = new(cancellationToken);
+            _pendingGets[getId] = request;
+            TwinGetResponse twinGetResponse;
+            try
             {
-                GetDesired = getDesired,
-                GetReported = getReported,
-                IfNotMatchDesired = ifNotMatchDesired,
-                IfNotMatchReported = ifNotMatchReported,
-            };
-            _pendingGetTwinOperations[requestId] = pendingGetTwinRequest;
+                ThrowIfUnusableAfterRegistering(request, connectionLossGeneration);
+                twinGetResponse = await request.SendAndWaitAsync(
+                    PublishGetAsync(getId, getDesired, getReported, ifNotMatchDesired, ifNotMatchReported, request.Cancellation.Token),
+                    cancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                _pendingGets.TryRemove(getId, out _);
+            }
 
+            return new DeviceTwin()
+            {
+                Desired = getDesired && twinGetResponse.HasDesiredPayload
+                    ? JsonObject.Parse(twinGetResponse.DesiredPayload.Span)!.AsObject()
+                    : null,
+                Reported = getReported && twinGetResponse.HasReportedPayload
+                    ? JsonObject.Parse(twinGetResponse.ReportedPayload.Span)!.AsObject()
+                    : null,
+                DesiredVersion = twinGetResponse.DesiredVersion,
+                ReportedVersion = twinGetResponse.ReportedVersion,
+            };
+        }
+
+        /// <summary>
+        /// Update this device's reported properties.
+        /// </summary>
+        /// <param name="patch">The patch of the reported properties to send to IoT hub.</param>
+        /// <param name="ifMatch">
+        /// If not 0, IoT hub only applies the patch if this is its current version of the reported properties, and otherwise
+        /// responds with <see cref="Result.VersionMismatch"/> and its current version. If 0, IoT hub applies the patch
+        /// unconditionally.
+        /// </param>
+        /// <param name="cancellationToken">The cancellation token.</param>
+        /// <returns>IoT hub's response.</returns>
+        /// <remarks>
+        /// The patch is sent once. If IoT hub never responds, this method only returns once
+        /// <paramref name="cancellationToken"/> is cancelled or the connection is lost, in which case IoT hub may or may not have
+        /// applied the patch.
+        /// </remarks>
+        /// <exception cref="NotSupportedException">Thrown when the device isn't connected.</exception>
+        /// <exception cref="DeviceException">
+        /// Thrown if the patch could not be sent, or with <see cref="ErrorRetryability.Retryable"/> if the connection to IoT hub
+        /// was lost before the response arrived.
+        /// </exception>
+        public async Task<ReportedPatchResponse> UpdateReportedPropertiesAsync(ReportedPatchRequest patch, ulong ifMatch = 0, CancellationToken cancellationToken = default)
+        {
+            ObjectDisposedException.ThrowIf(_isDisposed, this);
+            ArgumentNullException.ThrowIfNull(patch);
+            ArgumentNullException.ThrowIfNull(patch.ReportedProperties);
+            long connectionLossGeneration = Interlocked.Read(ref _connectionLossGeneration);
+            EnsureConnected();
+
+            Guid patchId = Guid.NewGuid();
+            PendingRequest<ReportedPatchResponse> request = new(cancellationToken);
+            _pendingReportedPatches[patchId] = request;
+            try
+            {
+                ThrowIfUnusableAfterRegistering(request, connectionLossGeneration);
+                byte[] payload = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(patch.ReportedProperties));
+                return await request.SendAndWaitAsync(
+                    PublishReportedPatchAsync(patchId, ifMatch, payload, request.Cancellation.Token),
+                    cancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                _pendingReportedPatches.TryRemove(patchId, out _);
+            }
+        }
+
+        internal async Task PublishGetAsync(Guid getId, bool getDesired, bool getReported, ulong ifNotMatchDesired, ulong ifNotMatchReported, CancellationToken cancellationToken)
+        {
             MqttPublish publish = new MqttPublish()
             {
                 Topic = AzureEventGridOutgoingTwinPublishTopic,
                 QualityOfServiceLevel = MqttQualityOfServiceLevel.AtMostOnce,
-                CorrelationData = requestId.ToByteArray(bigEndian: true),
+                CorrelationData = getId.ToByteArray(bigEndian: true),
                 Payload = new TwinGet()
                 {
                     Sections = getReported
@@ -140,75 +240,84 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
 
             publish.UserProperties.Add(new("type", Encoding.UTF8.GetBytes("get:1")));
 
-            try
-            {
-                Trace.TraceInformation("Publishing 'GetTwin' request on topic " + publish.Topic);
+            Trace.TraceInformation("Publishing 'GetTwin' request on topic " + publish.Topic);
 
-                // Puback is checked for non-success cases under this layer, so no need to check it here as well
-                MqttPublishAck puback = await _connection.PublishAsync(publish, throwOnErrorReasonCode: true, cancellationToken);
-
-                // Wait until IoT hub sends a message to this client with the response to this patch twin request.
-                var getTwinResponse = await pendingGetTwinRequest.TwinResponseTask.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
-                return getTwinResponse;
-            }
-            finally
-            {
-                // This may already be removed during happy path, but this removal covers scenarios where the response is never received
-                _ = _pendingGetTwinOperations.Remove(requestId, out _);
-            }
+            // Puback is checked for non-success cases under this layer, so no need to check it here as well
+            await _connection.PublishAsync(publish, throwOnErrorReasonCode: true, cancellationToken);
         }
 
-        /// <summary>
-        /// Update this device's reported properties.
-        /// </summary>
-        /// <param name="patch">The patch of the reported properties to send to IoT hub</param>
-        /// <param name="cancellationToken">The cancellation token.</param>
-        /// <returns>Whether IoT hub accepted this patch.</returns>
-        /// <exception cref="PublishRejectedException">Thrown if this reported property update message is rejected by IoT Hub for any reason.</exception>
-        public async Task<ReportedPatchResponse> UpdateReportedPropertiesAsync(ReportedPatchRequest patch, CancellationToken cancellationToken = default)
+        internal async Task PublishReportedPatchAsync(Guid patchId, ulong ifMatch, byte[] payload, CancellationToken cancellationToken)
         {
-            ObjectDisposedException.ThrowIf(_isDisposed, this);
-
-            EnsureConnected();
-
-            Guid requestId = Guid.NewGuid();
-
-            // Note the request as "in progress" before actually sending it so that no matter how quickly the service
-            // responds, this layer can correlate the request.
-            var pendingReportedPropertiesUpdateRequest = new PendingReportedPropertiesUpdateRequest();
-            _pendingReportedPropertyUpdateOperations[requestId] = pendingReportedPropertiesUpdateRequest;
-
             MqttPublish publish = new MqttPublish()
             {
                 Topic = AzureEventGridOutgoingTwinPublishTopic,
                 QualityOfServiceLevel = MqttQualityOfServiceLevel.AtMostOnce,
-                CorrelationData = requestId.ToByteArray(bigEndian: true),
+                CorrelationData = patchId.ToByteArray(bigEndian: true),
                 Payload = new ReportedPatch()
                 {
-                    IfMatch = patch.IfMatch, // If this value is 0, the if-match field will not be included in the serialized payload and the request is treated as unconditional
-                    Payload = ByteString.CopyFromUtf8(JsonSerializer.Serialize(patch.ReportedProperties))
+                    IfMatch = ifMatch, // If this value is 0, the if-match field will not be included in the serialized payload and the request is treated as unconditional
+                    Payload = ByteString.CopyFrom(payload),
                 }.ToByteArray(),
                 ContentType = ProtobufContentType,
             };
 
             publish.UserProperties.Add(new("type", Encoding.UTF8.GetBytes("reported-patch:1")));
 
-            try
+            Trace.TraceInformation("Publishing 'PatchReported' request on topic " + publish.Topic);
+
+            // Puback is checked for non-success cases under this layer, so no need to check it here as well
+            await _connection.PublishAsync(publish, throwOnErrorReasonCode: true, cancellationToken);
+        }
+
+        // Twin requests can't outlive the connection they were sent on, since IoT hub never sends their responses on a later one.
+        private void HandleConnectionLost()
+        {
+            // Incremented first, so that a request registered after the pending requests are failed below fails instead of being sent.
+            Interlocked.Increment(ref _connectionLossGeneration);
+            FailPendingRequests(CreateConnectionLostException);
+        }
+
+        private static DeviceException CreateConnectionLostException()
+        {
+            return new DeviceException("The connection to IoT hub was lost before the response to this twin request arrived. It may be retried once reconnected.")
             {
-                Trace.TraceInformation("Publishing 'PatchReported' request on topic " + publish.Topic);
+                Retryability = ErrorRetryability.Retryable,
+                IsContained = true,
+            };
+        }
 
-                // Puback is checked for non-success cases under this layer, so no need to check it here as well
-                MqttPublishAck puback = await _connection.PublishAsync(publish, throwOnErrorReasonCode: true, cancellationToken);
-
-                // Wait until IoT hub sends a message to this client with the response to this patch twin request.
-                var updateReportedPropertiesResponse = await pendingReportedPropertiesUpdateRequest.ReportedPropertyUpdateResponse.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
-
-                return updateReportedPropertiesResponse;
+        private void FailPendingRequests(Func<Exception> createException)
+        {
+            foreach (Guid getId in _pendingGets.Keys)
+            {
+                if (_pendingGets.TryRemove(getId, out PendingRequest<TwinGetResponse>? request))
+                {
+                    request.Fail(createException());
+                }
             }
-            finally
+
+            foreach (Guid patchId in _pendingReportedPatches.Keys)
             {
-                // This may already be removed during happy path, but this removal covers scenarios where the response is never received
-                _ = _pendingReportedPropertyUpdateOperations.Remove(requestId, out _);
+                if (_pendingReportedPatches.TryRemove(patchId, out PendingRequest<ReportedPatchResponse>? request))
+                {
+                    request.Fail(createException());
+                }
+            }
+        }
+
+        // Called after registering a request, so that it is either failed by disposal or a connection loss, or fails here.
+        private void ThrowIfUnusableAfterRegistering<TResponse>(PendingRequest<TResponse> request, long connectionLossGeneration)
+        {
+            if (_isDisposed)
+            {
+                request.Cancellation.Dispose();
+                throw new ObjectDisposedException(nameof(TwinClient));
+            }
+
+            if (Interlocked.Read(ref _connectionLossGeneration) != connectionLossGeneration)
+            {
+                request.Cancellation.Dispose();
+                throw CreateConnectionLostException();
             }
         }
 
@@ -222,7 +331,9 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
 
         private async Task HandleReceivedMqttPublish(MqttPublishReceivedEventArgs args)
         {
-            if (!args.Publish.Topic.StartsWith("ih/") || !args.Publish.Topic.EndsWith("/dev/twin"))
+            bool isTwinTopic = args.Publish.Topic.EndsWith("/dev/twin");
+            bool isPresenceTopic = args.Publish.Topic.EndsWith("/dev/presence");
+            if (!args.Publish.Topic.StartsWith("ih/") || !(isTwinTopic || isPresenceTopic))
             {
                 // The publish is not relevant to this client, so ignore it. This check needs to happen prior to checking the deviceId within the topic b/c deviceId is
                 // not available until after provisioning finishes and this client may be setup prior to provisioning. This allows this client to ignore DPS
@@ -239,9 +350,20 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
                 return;
             }
 
-            if (!args.Publish.Topic.Equals(AzureEventGridIncomingTwinPublishTopic.Replace(IConnectionClient.DeviceIdPlaceholder, connectionContext.DeviceId, StringComparison.Ordinal)))
+            string expectedTopic = isTwinTopic ? AzureEventGridIncomingTwinPublishTopic : AzureEventGridIncomingPresencePublishTopic;
+            if (!args.Publish.Topic.Equals(expectedTopic.Replace(IConnectionClient.DeviceIdPlaceholder, connectionContext.DeviceId, StringComparison.Ordinal)))
             {
                 // This message wasn't for this device so ignore it
+                return;
+            }
+
+            if (isPresenceTopic)
+            {
+                if (PresencePublishHandler != null)
+                {
+                    await PresencePublishHandler(args.Publish);
+                }
+
                 return;
             }
 
@@ -258,68 +380,273 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
                 return;
             }
 
-            if (type.Equals("get-response")
-                && GuidExtensions.TryParseBytes(args.Publish.CorrelationData, out Guid? getResponseCorrelationData)
-                && _pendingGetTwinOperations.TryRemove(getResponseCorrelationData.Value, out PendingGetTwinRequest? pendingGetTwinRequest))
+            if (type.Equals("get-response"))
             {
-                TwinGetResponse twinGetResponse = TwinGetResponse.Parser.ParseFrom(args.Publish.PayloadAsReadOnlySequence);
-
-                pendingGetTwinRequest.TwinResponseTask.TrySetResult(new()
-                {
-                    Desired = pendingGetTwinRequest.GetDesired
-                        && twinGetResponse.HasDesiredPayload
-                        ? JsonObject.Parse(twinGetResponse.DesiredPayload.Span)!.AsObject()
-                        : null,
-                    Reported = pendingGetTwinRequest.GetReported
-                        && twinGetResponse.HasReportedPayload
-                        ? JsonObject.Parse(twinGetResponse.ReportedPayload.Span)!.AsObject()
-                        : null,
-                    DesiredVersion = twinGetResponse.DesiredVersion,
-                    ReportedVersion = twinGetResponse.ReportedVersion,
-                });
+                await HandleReceivedGetResponseAsync(args.Publish);
             }
-            else if (type.Equals("reported-patch-response")
-                && GuidExtensions.TryParseBytes(args.Publish.CorrelationData, out Guid? patchResponseCorrelationData)
-                && _pendingReportedPropertyUpdateOperations.TryRemove(patchResponseCorrelationData.Value, out PendingReportedPropertiesUpdateRequest? pendingReportedPropertiesUpdateRequest))
+            else if (type.Equals("reported-patch-response"))
             {
-                ReportedPatchResponse reportedPatchResponse = ReportedPatchResponse.Parser.ParseFrom(args.Publish.PayloadAsReadOnlySequence);
-                pendingReportedPropertiesUpdateRequest.ReportedPropertyUpdateResponse.TrySetResult(reportedPatchResponse);
+                await HandleReceivedReportedPatchResponseAsync(args.Publish);
             }
-            else if (type.Equals("desired-patch") && typeVersion == 1)
+            else if (type.Equals("desired-patch"))
             {
-                DesiredPatch receivedDesiredPatch = DesiredPatch.Parser.ParseFrom(args.Publish.PayloadAsReadOnlySequence);
-
-                var desiredPatchArgs = new DesiredPatchReceivedEventArgs()
-                {
-                    DesiredProperties = JsonObject.Parse(receivedDesiredPatch.Payload.Span)!.AsObject(),
-                    DesiredPropertiesVersion = receivedDesiredPatch.Version,
-                };
-
-                DesiredPatchReceived?.Invoke(desiredPatchArgs);
+                await HandleReceivedDesiredPatchAsync(args.Publish, type);
             }
             else if (type.Equals("twin-push"))
             {
-                TwinPush receivedTwinPush = TwinPush.Parser.ParseFrom(args.Publish.PayloadAsReadOnlySequence);
-                var twinPushArgs = new TwinPushReceivedEventArgs();
-                if (receivedTwinPush.Desired != null)
+                await HandleReceivedTwinPushAsync(args.Publish, type);
+            }
+        }
+
+        private async Task HandleReceivedGetResponseAsync(MqttPublish publish)
+        {
+            if (!GuidExtensions.TryParseBytes(publish.CorrelationData, out Guid? getId))
+            {
+                Trace.TraceWarning("Received a get twin response with missing or malformed correlation data. Ignoring it.");
+                return;
+            }
+
+            _pendingGets.TryGetValue(getId.Value, out PendingRequest<TwinGetResponse>? pendingRequest);
+            TaskCompletionSource<TwinGetResponse>? pendingGet = pendingRequest?.Response;
+
+            TwinGetResponse twinGetResponse;
+            try
+            {
+                twinGetResponse = TwinGetResponse.Parser.ParseFrom(publish.PayloadAsReadOnlySequence);
+            }
+            catch (InvalidProtocolBufferException e)
+            {
+                Trace.TraceWarning("Received a malformed get twin response: {0}", e);
+                pendingGet?.TrySetException(e);
+                return;
+            }
+
+            if (pendingGet != null)
+            {
+                pendingGet.TrySetResult(twinGetResponse);
+            }
+            else if (GetResponseHandler != null)
+            {
+                await GetResponseHandler(getId.Value, twinGetResponse);
+            }
+        }
+
+        private async Task HandleReceivedReportedPatchResponseAsync(MqttPublish publish)
+        {
+            if (!GuidExtensions.TryParseBytes(publish.CorrelationData, out Guid? patchId))
+            {
+                Trace.TraceWarning("Dropping a reported properties patch response without a valid correlation ID.");
+                return;
+            }
+
+            _pendingReportedPatches.TryGetValue(patchId.Value, out PendingRequest<ReportedPatchResponse>? pendingRequest);
+            TaskCompletionSource<ReportedPatchResponse>? pendingPatch = pendingRequest?.Response;
+
+            ReportedPatchResponse reportedPatchResponse;
+            try
+            {
+                reportedPatchResponse = ReportedPatchResponse.Parser.ParseFrom(publish.PayloadAsReadOnlySequence);
+            }
+            catch (InvalidProtocolBufferException e)
+            {
+                Trace.TraceWarning("Received a malformed reported properties patch response: {0}", e);
+                pendingPatch?.TrySetException(e);
+                return;
+            }
+
+            if (pendingPatch != null)
+            {
+                pendingPatch.TrySetResult(reportedPatchResponse);
+            }
+            else if (ReportedPatchResponseHandler != null)
+            {
+                await ReportedPatchResponseHandler(patchId.Value, reportedPatchResponse);
+            }
+        }
+
+        private async Task HandleReceivedDesiredPatchAsync(MqttPublish publish, string type)
+        {
+            if (!IsFromCurrentConnection(publish, type, out Guid? connectionNonce))
+            {
+                return;
+            }
+
+            DesiredPatch desiredPatch;
+            try
+            {
+                desiredPatch = DesiredPatch.Parser.ParseFrom(publish.PayloadAsReadOnlySequence);
+            }
+            catch (InvalidProtocolBufferException e)
+            {
+                Trace.TraceWarning("Dropping a malformed desired properties patch: {0}", e);
+                return;
+            }
+
+            if (DesiredPatchHandler != null)
+            {
+                await DesiredPatchHandler(connectionNonce, desiredPatch);
+                return;
+            }
+
+            if (!desiredPatch.HasPayload)
+            {
+                DesiredVersionProbeReceived?.Invoke(new DesiredVersionProbeReceivedEventArgs() { DesiredPropertiesVersion = desiredPatch.Version });
+                return;
+            }
+
+            JsonObject desiredProperties;
+            try
+            {
+                desiredProperties = ParseSectionPayload(desiredPatch.Payload);
+            }
+            catch (JsonException e)
+            {
+                Trace.TraceWarning("Dropping a desired properties patch whose payload is not a JSON object: {0}", e);
+                return;
+            }
+
+            DesiredPatchReceived?.Invoke(new DesiredPatchReceivedEventArgs()
+            {
+                DesiredProperties = desiredProperties,
+                DesiredPropertiesVersion = desiredPatch.Version,
+            });
+        }
+
+        private async Task HandleReceivedTwinPushAsync(MqttPublish publish, string type)
+        {
+            if (!IsFromCurrentConnection(publish, type, out Guid? connectionNonce))
+            {
+                return;
+            }
+
+            TwinPush twinPush;
+            try
+            {
+                twinPush = TwinPush.Parser.ParseFrom(publish.PayloadAsReadOnlySequence);
+            }
+            catch (InvalidProtocolBufferException e)
+            {
+                Trace.TraceWarning("Dropping a malformed twin push: {0}", e);
+                return;
+            }
+
+            if (TwinPushHandler != null)
+            {
+                await TwinPushHandler(connectionNonce, twinPush);
+                return;
+            }
+
+            TwinPushReceivedEventArgs twinPushArgs = new();
+            try
+            {
+                if (twinPush.Desired != null)
                 {
                     twinPushArgs.Desired = new()
                     {
-                        Properties = JsonObject.Parse(receivedTwinPush.Desired.Payload.Span)!.AsObject(),
-                        PropertiesVersion = receivedTwinPush.Desired.Version
+                        Properties = ParseSectionPayload(twinPush.Desired.Payload),
+                        PropertiesVersion = twinPush.Desired.Version,
                     };
                 }
 
-                if (receivedTwinPush.Reported != null)
+                if (twinPush.Reported != null)
                 {
                     twinPushArgs.Reported = new()
                     {
-                        Properties = JsonObject.Parse(receivedTwinPush.Reported.Payload.Span)!.AsObject(),
-                        PropertiesVersion = receivedTwinPush.Reported.Version
+                        Properties = ParseSectionPayload(twinPush.Reported.Payload),
+                        PropertiesVersion = twinPush.Reported.Version,
                     };
                 }
-                TwinPushReceived?.Invoke(twinPushArgs);
             }
+            catch (JsonException e)
+            {
+                Trace.TraceWarning("Dropping a twin push whose payload is not a JSON object: {0}", e);
+                return;
+            }
+
+            TwinPushReceived?.Invoke(twinPushArgs);
+        }
+
+        // Returns false if the publish is a connection scoped message (a twin push or desired patch) for a different connection than the current one.
+        private bool IsFromCurrentConnection(MqttPublish publish, string messageType, out Guid? connectionNonce)
+        {
+            connectionNonce = _connection.ConnectionNonce;
+            if (connectionNonce == null)
+            {
+                // The connection client does not expose its connection nonce, so this cannot be checked.
+                return true;
+            }
+
+            if (GuidExtensions.TryParseBytes(publish.CorrelationData, out Guid? receivedNonce) && receivedNonce.Value == connectionNonce.Value)
+            {
+                return true;
+            }
+
+            Trace.TraceInformation("Dropping a received '{0}' twin message because it was not sent for this device's current connection.", messageType);
+            return false;
+        }
+
+        private static JsonObject ParseSectionPayload(ByteString payload)
+        {
+            return payload.IsEmpty ? new JsonObject() : JsonObject.Parse(payload.Span)!.AsObject();
+        }
+
+        // A request awaiting IoT hub's response. It fails if the connection is lost (or this client is disposed) before then,
+        // which also cancels sending it, so that it is never sent on a later connection.
+        private sealed class PendingRequest<TResponse>(CancellationToken callerCancellationToken)
+        {
+            public TaskCompletionSource<TResponse> Response { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+            public CancellationTokenSource Cancellation { get; } = CancellationTokenSource.CreateLinkedTokenSource(callerCancellationToken);
+
+            public void Fail(Exception exception)
+            {
+                Response.TrySetException(exception);
+                try
+                {
+                    Cancellation.Cancel();
+                }
+                catch (ObjectDisposedException)
+                {
+                    // The request was already sent.
+                }
+            }
+
+            public async Task<TResponse> SendAndWaitAsync(Task send, CancellationToken cancellationToken)
+            {
+                _ = send.ContinueWith(
+                    _ => Cancellation.Dispose(),
+                    CancellationToken.None,
+                    TaskContinuationOptions.ExecuteSynchronously,
+                    TaskScheduler.Default);
+
+                // If the request fails while it is still being sent (which may wait for the device to reconnect), its failure is
+                // thrown without waiting for the send to be cancelled.
+                await Task.WhenAny(send, Response.Task).ConfigureAwait(false);
+                if (!Response.Task.IsCompleted)
+                {
+                    await send.ConfigureAwait(false);
+                }
+                else if (!send.IsCompleted)
+                {
+                    // Observe the send's failure (if any), since nothing else awaits it.
+                    _ = send.ContinueWith(
+                        t => _ = t.Exception,
+                        CancellationToken.None,
+                        TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                        TaskScheduler.Default);
+                }
+
+                return await Response.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+            }
+        }
+
+        private void ReleaseResources()
+        {
+            // Set first, so that a request registered after the pending requests are failed below fails instead of waiting forever.
+            _isDisposed = true;
+            _connection.PublishReceivedAsync -= HandleReceivedMqttPublish;
+            _connection.ConnectionLost -= HandleConnectionLost;
+            FailPendingRequests(() => new ObjectDisposedException(nameof(TwinClient)));
         }
 
         /// <summary>
@@ -328,7 +655,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
         /// <param name="disposing">true to release both managed and unmanaged resources; false to releases only unmanaged resources.</param>
         public void Dispose(bool disposing)
         {
-            _connection.PublishReceivedAsync -= HandleReceivedMqttPublish;
+            ReleaseResources();
             if (disposing)
             {
                 _connection.Dispose();
@@ -341,7 +668,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
         /// </summary>
         public void Dispose()
         {
-            _connection.PublishReceivedAsync -= HandleReceivedMqttPublish;
+            ReleaseResources();
             _connection.Dispose();
             _isDisposed = true;
         }

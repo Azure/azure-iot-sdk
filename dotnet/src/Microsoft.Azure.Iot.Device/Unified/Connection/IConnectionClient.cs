@@ -43,6 +43,12 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
         internal bool IsConnectionReady => GetCurrentConnectionContext() != null && IsConnectionTargetSet;
 
         /// <summary>
+        /// The connection nonce sent in the birth message of the current (or most recent) connection attempt to an
+        /// MQTTv5 IoT hub, or null if it is not known or this client is not connected to an MQTTv5 IoT hub.
+        /// </summary>
+        internal Guid? ConnectionNonce => null;
+
+        /// <summary>
         /// Raised whenever the connection to IoT hub is lost or closed, before any reconnection starts.
         /// </summary>
         internal event Action? ConnectionLost { add { } remove { } }

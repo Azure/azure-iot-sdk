@@ -40,3 +40,6 @@ To see each way a device can authenticate with DPS and IoT Hub (X.509 certificat
 
 To capture SDK diagnostics and optional MQTTnet logs to the console and a file, see the
 [LoggingSample](./Unified/LoggingSample/).
+
+To keep a device's twin in sync with an MQTTv5 IoT Hub and persist it between runs, see the
+[TwinClientSample](./MQTTv5/TwinClientSample/).

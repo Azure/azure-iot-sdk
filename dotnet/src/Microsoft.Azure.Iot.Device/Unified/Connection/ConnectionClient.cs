@@ -30,6 +30,17 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
 
         private MQTTv5.Connection.ConnectionClient _mqttv5ConnectionClient;
 
+        Guid? IConnectionClient.ConnectionNonce =>
+            CurrentConnectionContext?.ConnectionProfile == IotHubConnectionType.Mqttv5
+                ? _mqttv5ConnectionClient.CurrentConnectionNonce
+                : null;
+
+        event Action? IConnectionClient.ConnectionLost
+        {
+            add => HubConnectionLost += value;
+            remove => HubConnectionLost -= value;
+        }
+
         /// <inheritdoc/>
         public bool IsTwinEnabled { get; }
 
@@ -40,12 +51,6 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
         public bool AreCloudToDeviceMessagesEnabled { get; }
 
         bool IConnectionClient.IsConnectionReady => IsHubConnectionReady;
-
-        event Action? IConnectionClient.ConnectionLost
-        {
-            add => HubConnectionLost += value;
-            remove => HubConnectionLost -= value;
-        }
 
         event Action? IConnectionClient.ConnectionReady
         {
@@ -135,7 +140,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
                 // A gen 2 hub connection re-announces this device's birth instead of re-subscribing to the classic topics.
                 // The gen 2 client owns that flow, but it must run on this client's connection. It signals that the device
                 // is ready by raising its own device presence flow completed event, which this client relays.
-                await _mqttv5ConnectionClient.AnnounceDevicePresenceAsync(ManagedMqttConnection, CurrentConnectionContext.DeviceId, args, this);
+                await _mqttv5ConnectionClient.AnnounceDevicePresenceAsync(ManagedMqttConnection, CurrentConnectionContext.IotHubHostName, CurrentConnectionContext.DeviceId, args, this);
                 return;
             }
 

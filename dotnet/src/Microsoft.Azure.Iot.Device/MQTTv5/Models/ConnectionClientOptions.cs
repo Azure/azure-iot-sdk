@@ -57,6 +57,37 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Models
         /// </remarks>
         public bool ReceiveReportedPropertiesUponConnect { get; set; } = true;
 
+        /// <summary>
+        /// The version of the desired properties that this device already holds, for example from a copy of the twin that
+        /// the application persisted. Zero (the default) means this device holds no desired properties.
+        /// </summary>
+        /// <remarks>
+        /// This SDK does not persist the twin. Applications that do can restore the version of the desired properties they
+        /// persisted here, so that IoT hub only pushes the desired properties upon connecting if they have changed since.
+        /// The desired properties version is included in each <see cref="Models.Twin.DesiredPatchReceivedEventArgs"/> and
+        /// <see cref="Twin.TwinPushReceivedEventArgs"/>.
+        /// This value is read once when the connection client is constructed. Afterwards, the connection client tells
+        /// IoT hub the latest desired properties version that the device has received.
+        /// If this version is newer than IoT hub's version of the desired properties, the twin client discards it upon
+        /// connecting and fetches the desired properties from IoT hub instead.
+        /// </remarks>
+        public ulong InitialDesiredPropertiesVersion { get; set; }
+
+        /// <summary>
+        /// The version of the reported properties that this device already holds, for example from a copy of the twin that
+        /// the application persisted. Zero (the default) means this device holds no reported properties.
+        /// </summary>
+        /// <remarks>
+        /// This SDK does not persist the twin. Applications that do can restore the version of the reported properties they
+        /// persisted here, so that IoT hub only pushes the reported properties upon connecting (see
+        /// <see cref="ReceiveReportedPropertiesUponConnect"/>) if they have changed since.
+        /// This value is read once when the connection client is constructed. Afterwards, the connection client tells
+        /// IoT hub the latest reported properties version that the device has received in full.
+        /// If this version is newer than IoT hub's version of the reported properties, the twin client discards it upon
+        /// connecting.
+        /// </remarks>
+        public ulong InitialReportedPropertiesVersion { get; set; }
+
         internal Unified.Models.ConnectionClientOptions ToCommonOptions()
         {
             return new()
