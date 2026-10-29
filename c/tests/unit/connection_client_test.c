@@ -4777,9 +4777,194 @@ static void an_mqttv3_client_attached_while_connecting_is_not_bound(void** state
   assert_int_equal(binds_run_when_attached_while_connecting((fixture*)*state), 0);
 }
 
+/* A session-end callback that calls close(), or close() then open(), once. */
+typedef struct
+{
+  az_iot_connection_client* client;
+  bool reopen;
+  int calls;
+} lifecycle_callback_ctx;
+
+static void close_from_session_end(const az_iot_connection_feature_event* event, void* user_ctx)
+{
+  (void)event;
+  lifecycle_callback_ctx* ctx = (lifecycle_callback_ctx*)user_ctx;
+  if (ctx->calls++ > 0)
+  {
+    return;
+  }
+  (void)az_iot_connection_client_close(ctx->client);
+  if (ctx->reopen)
+  {
+    assert_int_equal(az_iot_connection_client_open(ctx->client), AZ_IOT_OK);
+  }
+}
+
+/* Open, CONNECTED, with close_from_session_end() registered. */
+static az_iot_mock_mqtt_client* connect_with_lifecycle_callback(
+    fixture* fx,
+    lifecycle_callback_ctx* ctx)
+{
+  ctx->client = fx->client;
+  assert_int_equal(
+      az_iot_connection_client_register_mqtt_factory(fx->client, fx->factory), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_OK));
+  assert_int_equal(az_iot_connection_client_do_work(fx->client, 0), AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_connection_client__add_feature_observer(
+          fx->client, AZ_IOT_CONNECTION_FEATURE_EVENT_SESSION_END, close_from_session_end, ctx),
+      AZ_IOT_OK);
+  return m;
+}
+
+/* A close() from a session-end callback during a reconnect's teardown wins: IDLE, no retry. */
+static void a_close_during_a_reconnect_teardown_is_kept(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  lifecycle_callback_ctx ctx = { 0 };
+  az_iot_mock_mqtt_client* m = connect_with_lifecycle_callback(fx, &ctx);
+  assert_true(az_iot_mock_mqtt_client_inject_error(m, AZ_IOT_ERR_MQTT));
+  assert_int_equal(az_iot_connection_client_do_work(fx->client, 0), AZ_IOT_OK);
+  assert_int_equal(ctx.calls, 1);
+  assert_int_equal(fx->rec.states[fx->rec.count - 1], AZ_IOT_CONN_STATE_IDLE);
+  assert_int_equal(fx->client->reconnect_due_ms, 0);
+}
+
+/* A close() from a session-end callback during a fault's teardown wins: IDLE, not FAULTED. */
+static void a_close_during_a_fault_teardown_is_kept(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  lifecycle_callback_ctx ctx = { 0 };
+  az_iot_mock_mqtt_client* m = connect_with_lifecycle_callback(fx, &ctx);
+  assert_true(az_iot_mock_mqtt_client_inject_error(m, AZ_IOT_ERR_MQTT));
+  assert_int_equal(az_iot_connection_client_do_work(fx->client, 0), AZ_IOT_OK);
+  assert_int_equal(ctx.calls, 1);
+  assert_int_equal(fx->rec.states[fx->rec.count - 1], AZ_IOT_CONN_STATE_IDLE);
+}
+
+/* A reopen from a session-end callback during close()'s teardown is kept: the new attempt is not
+ * overwritten with IDLE. */
+static void a_reopen_during_a_close_teardown_is_kept(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  lifecycle_callback_ctx ctx = { 0 };
+  ctx.reopen = true;
+  az_iot_mock_mqtt_client* m = connect_with_lifecycle_callback(fx, &ctx);
+  assert_int_equal(az_iot_connection_client_close(fx->client), AZ_IOT_OK);
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(m));
+  assert_int_equal(az_iot_connection_client_do_work(fx->client, 0), AZ_IOT_OK);
+  assert_int_equal(ctx.calls, 1);
+  assert_int_equal(fx->rec.states[fx->rec.count - 1], AZ_IOT_CONN_STATE_CONNECTING);
+  assert_non_null(az_iot_mock_mqtt_factory_last_client(fx->factory));
+}
+
+/* Opens, delivers CONNACK, registers close_from_session_end(); the hub is still CONNECTING. */
+static void connect_to_connecting_with_lifecycle_callback(fixture* fx, lifecycle_callback_ctx* ctx)
+{
+  ctx->client = fx->client;
+  assert_int_equal(
+      az_iot_connection_client_register_mqtt_factory(fx->client, fx->factory), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_OK));
+  assert_int_equal(az_iot_connection_client_do_work(fx->client, 0), AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_connection_client_get_state(fx->client, AZ_IOT_CONN_SCOPE_HUB),
+      AZ_IOT_CONN_STATE_CONNECTING);
+  assert_int_equal(
+      az_iot_connection_client__add_feature_observer(
+          fx->client, AZ_IOT_CONNECTION_FEATURE_EVENT_SESSION_END, close_from_session_end, ctx),
+      AZ_IOT_OK);
+}
+
+/* After a timeout teardown with no retry: a callback's close() leaves IDLE, not FAULTED; its
+ * close() + open() keeps the new CONNECTING attempt. */
+static void assert_timeout_teardown_kept_the_callback(
+    fixture* fx,
+    const lifecycle_callback_ctx* ctx)
+{
+  assert_int_equal(ctx->calls, 1);
+  assert_int_equal(
+      fx->rec.states[fx->rec.count - 1],
+      ctx->reopen ? AZ_IOT_CONN_STATE_CONNECTING : AZ_IOT_CONN_STATE_IDLE);
+  for (size_t i = 0; i < fx->rec.count; ++i)
+  {
+    assert_int_not_equal(fx->rec.states[i], AZ_IOT_CONN_STATE_FAULTED);
+  }
+}
+
+static void presence_timeout_teardown_keeps_a_callback_close_or_reopen(fixture* fx, bool reopen)
+{
+  lifecycle_callback_ctx ctx = { 0 };
+  ctx.reopen = reopen;
+  connect_to_connecting_with_lifecycle_callback(fx, &ctx);
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  az_iot_connection_client__presence_force_timeout(fx->client);
+  assert_int_equal(az_iot_connection_client_do_work(fx->client, 0), AZ_IOT_OK);
+  /* The timeout ends the session with a DISCONNECT; its completion tears it down. */
+  assert_int_equal(az_iot_mock_mqtt_client_count_of(m, AZ_IOT_MOCK_CALL_DISCONNECT), 1);
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(m));
+  assert_int_equal(az_iot_connection_client_do_work(fx->client, 0), AZ_IOT_OK);
+  assert_timeout_teardown_kept_the_callback(fx, &ctx);
+}
+
+static void hub_mqtt_v5_a_close_during_a_presence_timeout_teardown_is_kept(void** state)
+{
+  presence_timeout_teardown_keeps_a_callback_close_or_reopen((fixture*)*state, false);
+}
+
+static void hub_mqtt_v5_a_reopen_during_a_presence_timeout_teardown_is_kept(void** state)
+{
+  presence_timeout_teardown_keeps_a_callback_close_or_reopen((fixture*)*state, true);
+}
+
+static void gate_timeout_teardown_keeps_a_callback_close_or_reopen(fixture* fx, bool reopen)
+{
+  static int owner;
+  assert_int_equal(
+      az_iot_connection_client__add_subscription_on_connect(
+          fx->client,
+          "gated/#",
+          AZ_IOT_MQTT_QOS_0,
+          &owner,
+          AZ_IOT_SUBSCRIPTION_FAILS_SESSION,
+          NULL),
+      AZ_IOT_OK);
+  lifecycle_callback_ctx ctx = { 0 };
+  ctx.reopen = reopen;
+  connect_to_connecting_with_lifecycle_callback(fx, &ctx);
+  az_iot_connection_client__subscription_gate_force_timeout(fx->client);
+  assert_int_equal(az_iot_connection_client_do_work(fx->client, 0), AZ_IOT_OK);
+  assert_timeout_teardown_kept_the_callback(fx, &ctx);
+}
+
+static void a_close_during_a_subscription_gate_timeout_teardown_is_kept(void** state)
+{
+  gate_timeout_teardown_keeps_a_callback_close_or_reopen((fixture*)*state, false);
+}
+
+static void a_reopen_during_a_subscription_gate_timeout_teardown_is_kept(void** state)
+{
+  gate_timeout_teardown_keeps_a_callback_close_or_reopen((fixture*)*state, true);
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
+    cmocka_unit_test_setup_teardown(
+        a_close_during_a_reconnect_teardown_is_kept, setup_with_reconnect, teardown),
+    cmocka_unit_test_setup_teardown(a_close_during_a_fault_teardown_is_kept, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_reopen_during_a_close_teardown_is_kept, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        hub_mqtt_v5_a_close_during_a_presence_timeout_teardown_is_kept, setup_mqtt_v5, teardown),
+    cmocka_unit_test_setup_teardown(
+        hub_mqtt_v5_a_reopen_during_a_presence_timeout_teardown_is_kept, setup_mqtt_v5, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_close_during_a_subscription_gate_timeout_teardown_is_kept, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_reopen_during_a_subscription_gate_timeout_teardown_is_kept, setup, teardown),
     cmocka_unit_test_setup_teardown(
         hub_mqtt_v5_late_presence_suback_publishes_no_birth, setup_mqtt_v5, teardown),
     cmocka_unit_test_setup_teardown(

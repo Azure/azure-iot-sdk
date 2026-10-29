@@ -1124,6 +1124,36 @@ static void teardown_active(az_iot_connection_client* c)
       c->user_close ? AZ_IOT_CONNECTION_SESSION_END_PLANNED : AZ_IOT_CONNECTION_SESSION_END_LOST);
 }
 
+/** @brief The client's close() and open() counts, to tell whether a callback closed or reopened it.
+ */
+typedef struct
+{
+  uint32_t close_count;
+  uint32_t open_seq;
+} lifecycle_mark;
+
+/** @brief Marks the client's lifecycle before running callbacks. */
+static lifecycle_mark mark_lifecycle(const az_iot_connection_client* c)
+{
+  lifecycle_mark mark = { c->close_count, c->open_seq };
+  return mark;
+}
+
+/** @brief Whether close() or open() was called since @p mark. */
+static bool lifecycle_changed(const az_iot_connection_client* c, lifecycle_mark mark)
+{
+  return c->close_count != mark.close_count || c->open_seq != mark.open_seq;
+}
+
+/** @brief teardown_active(); false when its PUBACK or session-end callbacks closed or reopened the
+ * client, which then decides how the session ends. */
+static bool teardown_active_kept_lifecycle(az_iot_connection_client* c)
+{
+  lifecycle_mark mark = mark_lifecycle(c);
+  teardown_active(c);
+  return !lifecycle_changed(c, mark);
+}
+
 static void puback_abandon(az_iot_connection_client* c, const void* owner);
 
 /* Forward decl — used in on_mqtt_event via the deferred-action queue. */
@@ -1737,7 +1767,10 @@ static void schedule_reconnect(
     az_iot_connection_scope failure_scope,
     az_iot_result reason)
 {
-  teardown_active(c);
+  if (!teardown_active_kept_lifecycle(c))
+  {
+    return;
+  }
 
   if (failure_scope == AZ_IOT_CONN_SCOPE_HUB && reason_is_identity_refusal(reason))
   {
@@ -2396,8 +2429,7 @@ static user_token_outcome ask_user_token(
     .key_name = scope == AZ_IOT_CONN_SCOPE_DPS ? DPS_SAS_KEY_NAME : "",
     .is_renewal = c->sas_token_request[scope].for_renewal,
   };
-  uint32_t closes = c->close_count;
-  uint32_t seq = c->open_seq;
+  lifecycle_mark mark = mark_lifecycle(c);
   /* A token supplied meanwhile goes before the URI: its own terminator and the URI's. */
   c->sas_token_capacity = c->sas_token_size - uri_len - 2u;
   c->sas_token_asking = (uint8_t)(scope + 1);
@@ -2405,8 +2437,7 @@ static user_token_outcome ask_user_token(
   c->sas_token_asking = 0;
   memset((char*)(uintptr_t)uri, 0, uri_len + 1u);
   c->sas_token_capacity = c->sas_token_size - 1u;
-  if (c->close_count != closes || c->open_seq != seq
-      || c->sas_token_request[scope].request_id != id)
+  if (lifecycle_changed(c, mark) || c->sas_token_request[scope].request_id != id)
   {
     sas_wipe_token(c);
     return USER_TOKEN_ABANDONED;
@@ -5636,11 +5667,7 @@ static void end_hub_session_with_failure(az_iot_connection_client* c, az_iot_res
   }
   else
   {
-    uint32_t closes = c->close_count;
-    uint32_t seq = c->open_seq;
-    teardown_active(c);
-    /* Teardown runs PUBACK and session callbacks, which may close or reopen. */
-    if (c->close_count == closes && c->open_seq == seq)
+    if (teardown_active_kept_lifecycle(c))
     {
       set_state_to(c, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_FAULTED, reason);
     }
@@ -5668,11 +5695,10 @@ static void finish_planned_hub_session_end(az_iot_connection_client* c)
     end_hub_session_with_failure(c, reason);
     return;
   }
-  uint32_t closes = c->close_count;
-  uint32_t seq = c->open_seq;
+  lifecycle_mark mark = mark_lifecycle(c);
   end_session(c, AZ_IOT_CONNECTION_SESSION_END_PLANNED);
   /* Teardown runs PUBACK and session callbacks, which may close or reopen. */
-  if (c->close_count != closes || c->open_seq != seq)
+  if (lifecycle_changed(c, mark))
   {
     c->sas_token_renewal_in_progress[AZ_IOT_CONN_SCOPE_HUB] = false;
     return;
@@ -6029,8 +6055,7 @@ static void fail_sas_token_attempt(
  */
 static void resume_sas_token_attempt(az_iot_connection_client* c, az_iot_connection_scope scope)
 {
-  uint32_t closes = c->close_count;
-  uint32_t seq = c->open_seq;
+  lifecycle_mark mark = mark_lifecycle(c);
   az_iot_result r;
   if (scope == AZ_IOT_CONN_SCOPE_HUB)
   {
@@ -6046,7 +6071,7 @@ static void resume_sas_token_attempt(az_iot_connection_client* c, az_iot_connect
       return;
     }
     r = start_connect_attempt(c);
-    if (r != AZ_IOT_OK && c->close_count == closes && c->open_seq == seq)
+    if (r != AZ_IOT_OK && !lifecycle_changed(c, mark))
     {
       schedule_reconnect(c, AZ_IOT_CONN_SCOPE_HUB, r);
     }
@@ -6075,7 +6100,7 @@ static void resume_sas_token_attempt(az_iot_connection_client* c, az_iot_connect
     }
     return;
   }
-  if (c->dps_start_cancelled || c->close_count != closes || c->open_seq != seq)
+  if (c->dps_start_cancelled || lifecycle_changed(c, mark))
   {
     return;
   }
@@ -6333,27 +6358,27 @@ static void apply_deferred(az_iot_connection_client* c)
   switch (action)
   {
     case DEFER_FAULT:
-      teardown_active(c);
-      set_state_to(c, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_FAULTED, reason);
+      if (teardown_active_kept_lifecycle(c))
+      {
+        set_state_to(c, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_FAULTED, reason);
+      }
       break;
     case DEFER_RECONNECT:
       /* Reached from on_mqtt_event, which serves the HUB session only. */
       schedule_reconnect(c, AZ_IOT_CONN_SCOPE_HUB, reason);
       break;
     case DEFER_FALLBACK:
-      teardown_active(c);
-      retry_with_next_source(c, AZ_IOT_CONN_SCOPE_HUB, reason);
+      if (teardown_active_kept_lifecycle(c))
+      {
+        retry_with_next_source(c, AZ_IOT_CONN_SCOPE_HUB, reason);
+      }
       break;
     case DEFER_PLANNED_END:
       finish_planned_hub_session_end(c);
       break;
     case DEFER_IDLE:
     {
-      uint32_t closes = c->close_count;
-      uint32_t seq = c->open_seq;
-      teardown_active(c);
-      /* Teardown runs PUBACK and session callbacks, which may close or reopen. */
-      if (c->close_count != closes || c->open_seq != seq)
+      if (!teardown_active_kept_lifecycle(c))
       {
         break;
       }
@@ -7927,8 +7952,10 @@ static az_iot_result do_work_pass(az_iot_connection_client* client, uint32_t tim
     }
     else
     {
-      teardown_active(client);
-      set_state_to(client, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_FAULTED, AZ_IOT_ERR_TIMEOUT);
+      if (teardown_active_kept_lifecycle(client))
+      {
+        set_state_to(client, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_FAULTED, AZ_IOT_ERR_TIMEOUT);
+      }
     }
   }
 

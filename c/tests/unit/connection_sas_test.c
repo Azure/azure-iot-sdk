@@ -982,6 +982,73 @@ static void fallback_does_not_need_a_reconnection_policy(void** state)
   assert_int_equal(fx->last_source, AZ_IOT_AUTH_SOURCE_SECONDARY_KEY);
 }
 
+/* A session-end callback that calls close(), or close() then open(), once. */
+typedef struct
+{
+  az_iot_connection_client* client;
+  bool reopen;
+  int calls;
+} fallback_teardown_ctx;
+
+static void close_from_fallback_teardown(
+    const az_iot_connection_feature_event* event,
+    void* user_ctx)
+{
+  (void)event;
+  fallback_teardown_ctx* ctx = (fallback_teardown_ctx*)user_ctx;
+  if (ctx->calls++ > 0)
+  {
+    return;
+  }
+  (void)az_iot_connection_client_close(ctx->client);
+  if (ctx->reopen)
+  {
+    assert_int_equal(az_iot_connection_client_open(ctx->client), AZ_IOT_OK);
+  }
+}
+
+/* A hub refusal with another credential left: a teardown callback's close() cancels the
+ * fallback, and its close() + open() keeps the new attempt on the first source. */
+static void fallback_to_the_next_source_keeps_a_teardown_close_or_reopen(fixture* fx, bool reopen)
+{
+  az_iot_connection_client_options opts = hub_sas_options();
+  opts.hub_auth.sas.secondary_key_base64 = KEY2_B64;
+  init_and_open(fx, &opts);
+  fallback_teardown_ctx ctx = { &fx->client, reopen, 0 };
+  assert_int_equal(
+      az_iot_connection_client__add_feature_observer(
+          &fx->client,
+          AZ_IOT_CONNECTION_FEATURE_EVENT_SESSION_END,
+          close_from_fallback_teardown,
+          &ctx),
+      AZ_IOT_OK);
+
+  connack(fx, AZ_IOT_ERR_IDENTITY_REJECTED);
+  assert_int_equal(ctx.calls, 1);
+  if (reopen)
+  {
+    assert_int_equal(fx->client.state[AZ_IOT_CONN_SCOPE_HUB], AZ_IOT_CONN_STATE_CONNECTING);
+    assert_string_equal(last_connect(fx)->password, HUB_TOKEN);
+  }
+  else
+  {
+    assert_int_equal(fx->client.state[AZ_IOT_CONN_SCOPE_HUB], AZ_IOT_CONN_STATE_IDLE);
+    assert_true(no_connect_pending(fx));
+  }
+  az_iot_connection_client__remove_feature_observer(
+      &fx->client, close_from_fallback_teardown, &ctx);
+}
+
+static void a_close_during_a_fallback_teardown_cancels_the_fallback(void** state)
+{
+  fallback_to_the_next_source_keeps_a_teardown_close_or_reopen((fixture*)*state, false);
+}
+
+static void a_reopen_during_a_fallback_teardown_is_kept(void** state)
+{
+  fallback_to_the_next_source_keeps_a_teardown_close_or_reopen((fixture*)*state, true);
+}
+
 static void open_starts_again_at_the_first_source(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -4084,6 +4151,9 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         a_fully_rejected_pass_goes_to_identity_recovery_then_restarts, setup, teardown),
     cmocka_unit_test_setup_teardown(fallback_does_not_need_a_reconnection_policy, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_close_during_a_fallback_teardown_cancels_the_fallback, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_reopen_during_a_fallback_teardown_is_kept, setup, teardown),
     cmocka_unit_test_setup_teardown(open_starts_again_at_the_first_source, setup, teardown),
     cmocka_unit_test_setup_teardown(
         dps_x509_rejected_falls_back_to_the_primary_key, setup, teardown),

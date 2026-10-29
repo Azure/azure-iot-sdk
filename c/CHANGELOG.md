@@ -284,6 +284,9 @@
 
 ### Bugs Fixed
 
+- Connection client: a `close()` or `close()` + `open()` made by a PUBACK or session-end callback
+  while a session is torn down is kept. Before, the reconnect, fault, credential fallback or IDLE
+  that started the teardown overwrote it.
 - Paho adapter: `process_loop()` returns as soon as an event is queued and dispatches it, instead
   of sleeping its whole timeout and dispatching it on the next call.
 - mqttv5: the connection's `process_loop()` wait ends by the presence SUBACK and birth-ack
