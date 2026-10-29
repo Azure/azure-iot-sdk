@@ -1635,6 +1635,49 @@ static void close_after_a_coded_refusal_reports_a_server_disconnect_after_a_clea
       (az_iot_test_conn*)*state, false, 0x87, true);
 }
 
+/* An identity refusal reported without codes after the local end is still acted on, though codes
+ * cannot tell it from a local end: IDLE carries it. */
+static void close_after_a_local_failure_reports_an_identity_refusal_after_the_local_end(
+    void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  az_iot_mqtt_event refusal;
+  memset(&refusal, 0, sizeof(refusal));
+  refusal.kind = AZ_IOT_MQTT_EVT_DISCONNECTED;
+  refusal.status = AZ_IOT_ERR_AUTH;
+  close_on_puback_probe probe;
+  memset(&probe, 0, sizeof(probe));
+  probe.report_refused_disconnect = true;
+  probe.server_end_after_local_end = &refusal;
+  (void)close_after_a_refused_gated_filter(fx, &probe, AZ_IOT_ERR_MQTT, NULL);
+
+  size_t const last = fx->log.count - 1;
+  assert_int_equal(fx->log.states[last], AZ_IOT_CONN_STATE_IDLE);
+  assert_int_equal(fx->log.reasons[last], AZ_IOT_ERR_AUTH);
+}
+
+/* An accepted close() replaces the refused gated filter's failure: a code-less failed DISCONNECTED
+ * then settles IDLE without the refusal's code as its cause. */
+static void close_after_a_local_failure_drops_the_replaced_failure_detail(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  close_on_puback_probe probe;
+  memset(&probe, 0, sizeof(probe));
+  probe.suback_protocol_code = 0x87;
+  az_iot_mock_mqtt_client* m = close_after_a_refused_gated_filter(fx, &probe, AZ_IOT_OK, NULL);
+
+  az_iot_mqtt_event end;
+  memset(&end, 0, sizeof(end));
+  end.kind = AZ_IOT_MQTT_EVT_DISCONNECTED;
+  end.status = AZ_IOT_ERR_MQTT;
+  assert_true(az_iot_mock_mqtt_client_inject_event(m, &end));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+
+  size_t const last = fx->log.count - 1;
+  assert_int_equal(fx->log.states[last], AZ_IOT_CONN_STATE_IDLE);
+  assert_false(fx->log.error_present[last]);
+}
+
 /* While close() disconnects the session, a gated SUBACK does not announce CONNECTED and a new
  * filter is kept for the next session without a SUBSCRIBE on the closing one. */
 static void close_while_the_subscription_gate_is_open_ignores_the_closing_session(void** state)
@@ -2173,6 +2216,14 @@ int main(void)
         teardown),
     cmocka_unit_test_setup_teardown(
         close_after_a_coded_refusal_reports_a_server_disconnect_after_a_clean_local_end,
+        setup_no_reconnect,
+        teardown),
+    cmocka_unit_test_setup_teardown(
+        close_after_a_local_failure_reports_an_identity_refusal_after_the_local_end,
+        setup_no_reconnect,
+        teardown),
+    cmocka_unit_test_setup_teardown(
+        close_after_a_local_failure_drops_the_replaced_failure_detail,
         setup_no_reconnect,
         teardown),
     cmocka_unit_test_setup_teardown(

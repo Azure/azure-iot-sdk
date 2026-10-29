@@ -5056,8 +5056,8 @@ static bool is_server_disconnect(const az_iot_mqtt_event* evt)
 
 /**
  * @brief Whether @p evt ends a hub session that already reported its end (e.g. the adapter's own
- * report of a refused redundant DISCONNECT). The server's DISCONNECT after a local end is not
- * redundant: its code and Reason String are reported, whichever end came first.
+ * report of a refused redundant DISCONNECT). The server's DISCONNECT after a local end, and an
+ * identity refusal, are not redundant: they are reported whichever end came first.
  */
 static bool is_redundant_hub_session_end(
     const az_iot_connection_client* c,
@@ -5065,6 +5065,12 @@ static bool is_redundant_hub_session_end(
 {
   if (!c->hub_session_ended
       || (evt->kind != AZ_IOT_MQTT_EVT_DISCONNECTED && evt->kind != AZ_IOT_MQTT_EVT_ERROR))
+  {
+    return false;
+  }
+  /* An identity refusal is acted on whatever came first: codes are optional, so they cannot tell it
+   * from a local end. */
+  if (reason_is_identity_refusal(evt->status))
   {
     return false;
   }
@@ -7635,6 +7641,11 @@ az_iot_result az_iot_connection_client_close(az_iot_connection_client* client)
      * it: the session settles on its DISCONNECTED event, once the adapter has sent it. Otherwise
      * nothing will end the session, so it settles at IDLE now. */
     client->deferred = (r == AZ_IOT_OK) ? DEFER_NONE : DEFER_IDLE;
+    if (r == AZ_IOT_OK)
+    {
+      /* The failure it replaces is not this session's end: its DISCONNECTED stages its own. */
+      clear_staged_error(client);
+    }
   }
   if (r != AZ_IOT_OK && r != AZ_IOT_ERR_NOT_CONNECTED)
   {
