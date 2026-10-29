@@ -1,5 +1,12 @@
 menu "Azure IoT SDK az_mqtt adapter"
 
+    # The adapter always builds both protocol versions.
+    config AZ_IOT_AZ_MQTT_ADAPTER
+        bool
+        default y
+        select AZ_MQTT_ENABLE_MQTTV3
+        select AZ_MQTT_ENABLE_MQTTV5
+
     config AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE
         int "Largest outgoing MQTT packet (bytes)"
         range 1024 268435455

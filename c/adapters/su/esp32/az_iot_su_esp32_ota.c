@@ -9,6 +9,7 @@
 #include <string.h>
 
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "esp_http_client.h"
 #include "esp_crt_bundle.h"
 #include "nvs.h"
@@ -44,9 +45,13 @@ static bool span_to_cstr(az_span s, char* out, size_t cap)
 /* download                                                                  */
 /* ------------------------------------------------------------------------- */
 
-/* Bytes read per download_fn call: bounds how long do_work() is held, so the MQTT
- * connection is serviced between calls. */
+/* Per download_fn call: at most this many bytes, and no new read once this much
+ * time has passed. With OTA_HTTP_READ_TIMEOUT_MS, a call holds do_work() for at
+ * most about 11 s, well inside the MQTT keep-alive. */
 #define OTA_DOWNLOAD_BYTES_PER_CALL (16 * 1024)
+#define OTA_DOWNLOAD_TIME_PER_CALL_US (1000 * 1000)
+/* Longest a single read waits for data. */
+#define OTA_HTTP_READ_TIMEOUT_MS 10000
 
 /** @brief FNV-1a hash of a download URL: tells a new download from the one in progress. */
 static uint32_t ota_download_url_hash(az_span url)
@@ -105,7 +110,7 @@ static int32_t ota_download_open(
   esp_http_client_config_t http = {
     .url = url,
     .crt_bundle_attach = esp_crt_bundle_attach,
-    .timeout_ms = 10000,
+    .timeout_ms = OTA_HTTP_READ_TIMEOUT_MS,
     .keep_alive_enable = true,
     .buffer_size = 2048,
   };
@@ -140,12 +145,17 @@ static int32_t ota_download_open(
   return AZ_IOT_SU_RESULT_IN_PROGRESS;
 }
 
-/** @brief Write up to OTA_DOWNLOAD_BYTES_PER_CALL. Returns IN_PROGRESS, SUCCESS or FAILURE. */
+/**
+ * @brief Write up to OTA_DOWNLOAD_BYTES_PER_CALL, starting no read after
+ * OTA_DOWNLOAD_TIME_PER_CALL_US. Returns IN_PROGRESS, SUCCESS or FAILURE.
+ */
 static int32_t ota_download_continue(az_iot_su_esp32_ota_context* c)
 {
   uint8_t buf[2048];
   size_t read_this_call = 0;
-  while (read_this_call < OTA_DOWNLOAD_BYTES_PER_CALL)
+  int64_t const started_us = esp_timer_get_time();
+  while (read_this_call < OTA_DOWNLOAD_BYTES_PER_CALL
+         && esp_timer_get_time() - started_us < OTA_DOWNLOAD_TIME_PER_CALL_US)
   {
     int r = esp_http_client_read(c->http_client, (char*)buf, sizeof(buf));
     if (r < 0)
@@ -394,6 +404,26 @@ static int32_t ota_load(uint8_t* blob, size_t cap, size_t* out_len, void* user_c
 /* ------------------------------------------------------------------------- */
 /* public                                                                    */
 /* ------------------------------------------------------------------------- */
+
+void az_iot_su_esp32_ota_handle_event(const az_iot_su_event* event, void* context)
+{
+  az_iot_su_esp32_ota_context* c = (az_iot_su_esp32_ota_context*)context;
+  if (event->kind != AZ_IOT_SU_EVENT_WORKFLOW_STATE_CHANGED)
+  {
+    return;
+  }
+  /* A workflow replaced or ended outside download_fn and restore_fn: release its
+   * download and any OTA write not yet installed. */
+  if (event->state == AZ_IOT_SU_STATE_MANIFEST_RECEIVED || event->state == AZ_IOT_SU_STATE_IDLE
+      || event->state == AZ_IOT_SU_STATE_FAILED)
+  {
+    if (c->http_client != NULL || c->ota_in_progress)
+    {
+      ESP_LOGW(TAG, "releasing an unfinished download");
+    }
+    ota_download_close(c, true);
+  }
+}
 
 void az_iot_su_esp32_ota_mark_running_image_valid(void)
 {

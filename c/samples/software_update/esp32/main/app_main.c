@@ -338,8 +338,10 @@ void app_main(void)
     esp_restart();
   }
 
-  /* Registered before resume(), which replays a persisted state to observers. */
-  if (az_iot_su_client_add_observer(&su, on_su_event, NULL) != AZ_IOT_OK)
+  /* Registered before resume(), which replays a persisted state to observers.
+   * The OTA hooks' observer releases a download the client abandons. */
+  if (az_iot_su_client_add_observer(&su, on_su_event, NULL) != AZ_IOT_OK
+      || az_iot_su_client_add_observer(&su, az_iot_su_esp32_ota_handle_event, &ota) != AZ_IOT_OK)
   {
     ESP_LOGE(TAG, "su_client_add_observer failed");
     esp_restart();

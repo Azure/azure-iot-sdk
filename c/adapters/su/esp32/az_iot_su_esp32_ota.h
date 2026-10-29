@@ -8,8 +8,8 @@
  * @brief Software updates platform hooks over the ESP-IDF OTA stack.
  *
  * - download: streams the update file over HTTPS into the inactive OTA partition, at most
- *   16 KiB per call (IN_PROGRESS in between), so the application's do_work() loop keeps the
- *   MQTT connection serviced.
+ *   16 KiB and about 11 s per call (IN_PROGRESS in between), so the application's do_work()
+ *   loop keeps the MQTT connection serviced.
  * - read_file: reads the written image back for the SHA-256 check against the manifest.
  * - install: validates the image, makes it the next boot partition and asks for a reboot.
  * - persist/load workflow state: NVS, so the workflow resumes after the reboot.
@@ -65,6 +65,17 @@ extern "C"
    */
   az_iot_su_platform_hooks az_iot_su_esp32_ota_get_platform_hooks(
       az_iot_su_esp32_ota_context* context);
+
+  /**
+   * @brief Software updates observer: releases a download, or an OTA write not yet
+   * installed, that the software updates client abandoned without calling restore_fn
+   * (a workflow replaced mid-download). Register it with az_iot_su_client_add_observer(),
+   * with the same context as az_iot_su_esp32_ota_get_platform_hooks().
+   *
+   * @param[in] event   The event.
+   * @param[in] context An #az_iot_su_esp32_ota_context.
+   */
+  void az_iot_su_esp32_ota_handle_event(const az_iot_su_event* event, void* context);
 
   /**
    * @brief Mark the running image valid, so the bootloader does not roll it back.

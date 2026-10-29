@@ -11,5 +11,5 @@ idf_component_register(
     SRCS "${AZ_IOT_ROOT}/adapters/su/esp32/az_iot_su_esp32_ota.c"
     INCLUDE_DIRS "${AZ_IOT_ROOT}/adapters/su/esp32"
     REQUIRES azure-iot-sdk app_update esp_http_client
-    PRIV_REQUIRES esp-tls nvs_flash spi_flash
+    PRIV_REQUIRES esp-tls esp_timer nvs_flash spi_flash
 )
