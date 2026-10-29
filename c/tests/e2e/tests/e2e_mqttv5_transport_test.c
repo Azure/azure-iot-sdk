@@ -26,6 +26,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#ifdef _MSC_VER
+#include <share.h>
+#endif
 
 #include "azure/iot/az_iot.h"
 
@@ -116,12 +119,13 @@ static void set_egress(const char* transport, const char* proxy_host, const char
   set_env("AZ_IOT_PROXY_PORT", proxy_port);
 }
 
-/** @brief Opens @p path for binary reading; NULL on failure. */
+/** @brief Opens @p path for binary reading, shared with a writer (the proxy keeps its log open);
+ * NULL on failure. */
 static FILE* open_read(const char* path)
 {
 #ifdef _MSC_VER
-  FILE* f = NULL;
-  return fopen_s(&f, path, "rb") == 0 ? f : NULL;
+  /* fopen_s denies sharing with a writer. */
+  return _fsopen(path, "rb", _SH_DENYNO);
 #else
   return fopen(path, "rb");
 #endif
