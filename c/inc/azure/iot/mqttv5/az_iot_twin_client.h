@@ -20,6 +20,15 @@
  * GET and reported patches are requests: each completes exactly once, with the
  * service's answer, AZ_IOT_ERR_TIMEOUT, or AZ_IOT_ERR_NOT_CONNECTED. The SDK
  * never retries them.
+ *
+ * With `options.twin_push.push_desired` or `push_reported` set, the birth asks
+ * for a twin-push. The service sends one only for requested sections the
+ * birth-ack shows out of sync. If those sections do not arrive within the
+ * mqttv5 defensive timeout of hub CONNECTED (5 to 15 minutes, longer after
+ * consecutive misses), the client
+ * ends the session with a DISCONNECT and the connection reconnects (or faults
+ * without a reconnection policy), since a session without it receives no
+ * desired patches. az_iot_connection_client_do_work() checks it.
  */
 #ifndef AZ_IOT_MQTTV5_TWIN_CLIENT_H
 #define AZ_IOT_MQTTV5_TWIN_CLIENT_H
@@ -196,6 +205,19 @@ extern "C"
       uint64_t reported_properties_service_version;
       az_span encode_buffer;
       uint32_t request_timeout_ms;
+      /* Defensive wait for the twin-push the birth asks for. */
+      struct
+      {
+        az_iot_deadline deadline; /* none while not waiting */
+        /* Consecutive waits that expired; selects the next wait's attempt. */
+        uint32_t missed_count;
+        /* Birth nonce of the twin-pushes decoded, the sections they carried and those sections'
+         * newest versions. */
+        uint8_t received_birth_nonce[AZ_IOT_MQTTV5_TWIN_CORRELATION_ID_LEN];
+        uint8_t received_sections;
+        uint64_t received_desired_version;
+        uint64_t received_reported_version;
+      } twin_push_wait;
       /* The SDK's own desired-snapshot GET, kept out of `pending`. */
       struct
       {

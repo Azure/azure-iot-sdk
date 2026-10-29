@@ -158,6 +158,40 @@ extern "C"
   /** @brief Whether options.twin_push.push_desired asks the service to push desired state. */
   bool az_iot_connection_client__twin_push_desired(const az_iot_connection_client* client);
 
+  /** @brief Whether options.twin_push.push_reported asks the service to push reported state. */
+  bool az_iot_connection_client__twin_push_reported(const az_iot_connection_client* client);
+
+  /** @brief Whether options.twin_push asks the service for a twin-push on each connect. */
+  bool az_iot_connection_client__twin_push_expected(const az_iot_connection_client* client);
+
+  /**
+   * @brief Whether @p deadline had passed when the current do_work() pass began. Input that pass
+   * dispatches arrived by then or during its waits, which end by the deadline, so it is in time
+   * unless this is true.
+   */
+  bool az_iot_connection_client__deadline_passed_before_pass(
+      const az_iot_connection_client* client,
+      const az_iot_deadline* deadline);
+
+  /**
+   * @brief End the CONNECTED hub session on a feature client's behalf: send
+   * DISCONNECT, then reconnect with @p reason, or fault with it without a
+   * reconnection policy. Not from inside an MQTT adapter callback (e.g. from a
+   * feature observer's TICK).
+   *
+   * @param[in] reason The failure to report; not AZ_IOT_OK.
+   * @return AZ_IOT_OK, also when the session is already being ended;
+   *         AZ_IOT_ERR_NOT_CONNECTED when the hub is not CONNECTED or close() was
+   *         requested; AZ_IOT_ERR_INVALID_ARG for a NULL @p client or AZ_IOT_OK.
+   */
+  az_iot_result az_iot_connection_client__end_hub_session(
+      az_iot_connection_client* client,
+      az_iot_result reason);
+
+  /** @brief Test seam: make a planned hub session end's disconnect bound pass. */
+  void az_iot_connection_client__planned_hub_session_end_force_timeout(
+      az_iot_connection_client* client);
+
   /* Test seam: force a pending subscription gate to expire on the next
    * do_work(). No-op when no gate is armed. Lets unit tests exercise the
    * never-acked path without waiting out the configured timeout. */

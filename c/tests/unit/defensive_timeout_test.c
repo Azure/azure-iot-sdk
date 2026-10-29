@@ -109,6 +109,20 @@ static void a_schedule_saturates(void** state)
   assert_int_equal(
       az_iot_defensive_timeout__schedule_ms(base_ms, 1u, 100u, 1u, 9u), UINT32_MAX - 1u);
 }
+/* The attempt after N misses is N + 1; both saturate at UINT32_MAX. */
+static void misses_select_the_next_attempt(void** state)
+{
+  (void)state;
+  assert_int_equal(az_iot_defensive_timeout__next_attempt(0u), 1u);
+  assert_int_equal(az_iot_defensive_timeout__next_attempt(3u), 4u);
+  assert_int_equal(az_iot_defensive_timeout__next_attempt(UINT32_MAX), UINT32_MAX);
+  uint32_t misses = UINT32_MAX - 1u;
+  az_iot_defensive_timeout__count_miss(&misses);
+  assert_int_equal(misses, UINT32_MAX);
+  az_iot_defensive_timeout__count_miss(&misses);
+  assert_int_equal(misses, UINT32_MAX);
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -119,6 +133,7 @@ int main(void)
     cmocka_unit_test(a_schedule_uses_its_own_bases),
     cmocka_unit_test(a_schedule_uses_its_own_jitter),
     cmocka_unit_test(a_schedule_saturates),
+    cmocka_unit_test(misses_select_the_next_attempt),
   };
   return cmocka_run_group_tests_name("defensive_timeout", tests, NULL, NULL);
 }

@@ -18,6 +18,10 @@
  *   phase; until then, connect() succeeds against tcp:// brokers only.
  */
 
+#if defined(__APPLE__)
+/* pthread_cond_timedwait_relative_np() is hidden by _POSIX_C_SOURCE alone. */
+#define _DARWIN_C_SOURCE
+#endif
 #if !defined(_WIN32)
 #define _POSIX_C_SOURCE 200809L
 #endif
@@ -45,6 +49,15 @@ static void paho_mutex_init(paho_mutex* m) { InitializeCriticalSection(m); }
 static void paho_mutex_destroy(paho_mutex* m) { DeleteCriticalSection(m); }
 static void paho_mutex_lock(paho_mutex* m) { EnterCriticalSection(m); }
 static void paho_mutex_unlock(paho_mutex* m) { LeaveCriticalSection(m); }
+typedef CONDITION_VARIABLE paho_cond;
+static void paho_cond_init(paho_cond* c) { InitializeConditionVariable(c); }
+static void paho_cond_destroy(paho_cond* c) { (void)c; }
+static void paho_cond_signal(paho_cond* c) { WakeConditionVariable(c); }
+/* Waits up to @p timeout_ms, or less (signal or spurious wake-up). @p m is held. */
+static void paho_cond_wait_ms(paho_cond* c, paho_mutex* m, uint32_t timeout_ms)
+{
+  (void)SleepConditionVariableCS(c, m, timeout_ms);
+}
 #else
 #include <pthread.h>
 #include <time.h>
@@ -53,6 +66,41 @@ static void paho_mutex_init(paho_mutex* m) { pthread_mutex_init(m, NULL); }
 static void paho_mutex_destroy(paho_mutex* m) { pthread_mutex_destroy(m); }
 static void paho_mutex_lock(paho_mutex* m) { pthread_mutex_lock(m); }
 static void paho_mutex_unlock(paho_mutex* m) { pthread_mutex_unlock(m); }
+typedef pthread_cond_t paho_cond;
+static void paho_cond_init(paho_cond* c)
+{
+#if defined(__APPLE__)
+  pthread_cond_init(c, NULL);
+#else
+  pthread_condattr_t attr;
+  pthread_condattr_init(&attr);
+  pthread_condattr_setclock(&attr, CLOCK_MONOTONIC);
+  pthread_cond_init(c, &attr);
+  pthread_condattr_destroy(&attr);
+#endif
+}
+static void paho_cond_destroy(paho_cond* c) { pthread_cond_destroy(c); }
+static void paho_cond_signal(paho_cond* c) { pthread_cond_signal(c); }
+/* Waits up to @p timeout_ms, or less (signal or spurious wake-up). @p m is held. */
+static void paho_cond_wait_ms(paho_cond* c, paho_mutex* m, uint32_t timeout_ms)
+{
+  struct timespec ts;
+#if defined(__APPLE__)
+  ts.tv_sec = (time_t)(timeout_ms / 1000u);
+  ts.tv_nsec = (long)(timeout_ms % 1000u) * 1000000L;
+  (void)pthread_cond_timedwait_relative_np(c, m, &ts);
+#else
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  ts.tv_sec += (time_t)(timeout_ms / 1000u);
+  ts.tv_nsec += (long)(timeout_ms % 1000u) * 1000000L;
+  if (ts.tv_nsec >= 1000000000L)
+  {
+    ts.tv_sec += 1;
+    ts.tv_nsec -= 1000000000L;
+  }
+  (void)pthread_cond_timedwait(c, m, &ts);
+#endif
+}
 #endif
 
 /* ------------------------------------------------------------------------- */
@@ -102,6 +150,8 @@ typedef struct paho_client
   /* Thread-safe event queue. Producer = Paho callback threads. Consumer =
    * process_loop() on the user thread. */
   paho_mutex q_mutex;
+  /* Signalled by q_push(): wakes process_loop() waiting on an empty queue. */
+  paho_cond q_cond;
   queued_event* q_head;
   queued_event* q_tail;
 
@@ -143,6 +193,7 @@ static void q_push(paho_client* m, queued_event* node)
     m->q_head = node;
   }
   m->q_tail = node;
+  paho_cond_signal(&m->q_cond);
   paho_mutex_unlock(&m->q_mutex);
 }
 
@@ -1827,16 +1878,28 @@ static az_iot_result paho_iface_publish(
   return (rc == MQTTASYNC_SUCCESS) ? AZ_IOT_OK : AZ_IOT_ERR_MQTT;
 }
 
-static az_iot_result paho_iface_process_loop(az_iot_mqtt_client* self, uint32_t timeout_ms)
-{
-  if (!self)
-  {
-    return AZ_IOT_ERR_INVALID_ARG;
-  }
-  paho_client* m = paho_self(self);
+#if defined(AZ_IOT_TEST_PAHO_WAIT_HOOK)
+/* Test seam: called as process_loop() starts waiting, before the queue is checked. */
+void az_iot_test_paho_wait_hook(uint32_t timeout_ms);
+#endif
 
-  /* Drain the queue. We dispatch in FIFO order; the inbound callback runs on
-   * the caller's thread, satisfying the SDK's single-thread contract. */
+/** @brief Waits up to @p timeout_ms for an event to be queued; returns early once one is. */
+static void paho_wait_for_event(paho_client* m, uint32_t timeout_ms)
+{
+#if defined(AZ_IOT_TEST_PAHO_WAIT_HOOK)
+  az_iot_test_paho_wait_hook(timeout_ms);
+#endif
+  paho_mutex_lock(&m->q_mutex);
+  if (m->q_head == NULL)
+  {
+    paho_cond_wait_ms(&m->q_cond, &m->q_mutex, timeout_ms);
+  }
+  paho_mutex_unlock(&m->q_mutex);
+}
+
+/** @brief Dispatches queued events in FIFO order on the caller's thread; true if any. */
+static bool paho_dispatch_queued_events(paho_client* m)
+{
   queued_event* n;
   bool dispatched = false;
   while ((n = q_pop(m)) != NULL)
@@ -1848,18 +1911,25 @@ static az_iot_result paho_iface_process_loop(az_iot_mqtt_client* self, uint32_t 
     }
     q_free(n);
   }
+  return dispatched;
+}
 
-  /* If nothing was dispatched, sleep for the requested timeout so the caller's
-   * do_work loop doesn't spin-wait while Paho's background thread handles I/O. */
-  if (!dispatched && timeout_ms > 0)
+static az_iot_result paho_iface_process_loop(az_iot_mqtt_client* self, uint32_t timeout_ms)
+{
+  if (!self)
   {
-#if defined(_WIN32)
-    Sleep(timeout_ms);
-#else
-    struct timespec ts
-        = { .tv_sec = timeout_ms / 1000, .tv_nsec = (long)(timeout_ms % 1000) * 1000000L };
-    nanosleep(&ts, NULL);
-#endif
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  paho_client* m = paho_self(self);
+
+  /* The inbound callback runs on the caller's thread, satisfying the SDK's single-thread
+   * contract. With nothing queued, wait up to the requested timeout for an event, so the caller's
+   * do_work loop does not spin while Paho's background thread handles I/O, then dispatch it at
+   * once: the caller checks its deadlines after this returns. */
+  if (!paho_dispatch_queued_events(m) && timeout_ms > 0)
+  {
+    paho_wait_for_event(m, timeout_ms);
+    (void)paho_dispatch_queued_events(m);
   }
   return AZ_IOT_OK;
 }
@@ -1898,6 +1968,7 @@ static void paho_iface_destroy(az_iot_mqtt_client* self)
   }
   az_iot_paho_key_custody_release(&m->key_custody);
   q_drain_all(m);
+  paho_cond_destroy(&m->q_cond);
   paho_mutex_destroy(&m->q_mutex);
   free(m->server_uri);
   free(m->proxy_uri);
@@ -1939,6 +2010,7 @@ static az_iot_mqtt_client* paho_factory_create(void* factory_ctx)
       = (st->public_.version == AZ_IOT_MQTT_VERSION_5) ? s_iface_template_v5 : s_iface_template_v3;
   m->base.iface = &m->iface_storage;
   paho_mutex_init(&m->q_mutex);
+  paho_cond_init(&m->q_cond);
   return &m->base;
 }
 
