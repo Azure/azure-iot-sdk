@@ -1646,6 +1646,10 @@ extern "C"
     void* reg_payload_cb_ctx;
 
     bool user_close;
+    /* The hub session ended (a DISCONNECTED event) and its transition is still pending. */
+    bool hub_session_ended;
+    /* That ending session also carried the server's DISCONNECT. */
+    bool hub_server_disconnect_seen;
 
     /* Set when the next reconnect attempt must re-provision through DPS rather
      * than reconnect to the cached assignment -- because the hub refused this

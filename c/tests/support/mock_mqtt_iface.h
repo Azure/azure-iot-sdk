@@ -208,6 +208,13 @@ extern "C"
   /* Convenience: queue a DISCONNECTED event (peer- or transport-initiated). */
   bool az_iot_mock_mqtt_client_inject_disconnected(az_iot_mock_mqtt_client* m);
 
+  /* Convenience: queue an MQTT 5 server DISCONNECT with @p reason_code and, unless NULL,
+   * @p reason_string. */
+  bool az_iot_mock_mqtt_client_inject_server_disconnect(
+      az_iot_mock_mqtt_client* m,
+      int32_t reason_code,
+      const char* reason_string);
+
   /* Convenience: queue an adapter ERROR event (socket/TLS/library failure). */
   bool az_iot_mock_mqtt_client_inject_error(az_iot_mock_mqtt_client* m, az_iot_result status);
 
@@ -220,6 +227,11 @@ extern "C"
       az_iot_mock_mqtt_client* m,
       uint16_t packet_id,
       az_iot_result status);
+  /* Convenience: queue a SUBACK refusing @p packet_id with wire code @p reason_code. */
+  bool az_iot_mock_mqtt_client_inject_suback_refusal(
+      az_iot_mock_mqtt_client* m,
+      uint16_t packet_id,
+      int32_t reason_code);
 
   /* Number of calls of the given kind currently in the history. */
   size_t az_iot_mock_mqtt_client_count_of(
