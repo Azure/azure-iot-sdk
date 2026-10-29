@@ -119,10 +119,14 @@ static void file_flush_to_storage_writes_through_the_buffer(void** state)
   assert_int_equal(fputs("data", file) >= 0, 1);
 
   assert_true(sample_file_flush_to_storage(file));
-  /* Visible to another reader before the writer closes. */
+#if !defined(_WIN32)
+  /* Visible to another reader before the writer closes. Windows refuses a
+   * reader while the writer holds the file open with _SH_DENYWR. */
   assert_file_holds(DESTINATION_FILE, "data");
+#endif
 
   assert_int_equal(fclose(file), 0);
+  assert_file_holds(DESTINATION_FILE, "data");
   assert_false(sample_file_flush_to_storage(NULL));
 }
 
