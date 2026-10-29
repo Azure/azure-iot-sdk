@@ -3243,12 +3243,11 @@ static void a_psa_key_id_is_never_silently_ignored(void** state)
   copts.connect_timeout_seconds = k_step_timeout_seconds;
   copts.tls.client_key_psa_id = 0x7FFFFFF0u;
 
-  az_iot_result r = c->iface->connect(c, &copts);
-  if (r == AZ_IOT_OK)
+  // A PSA-capable adapter may accept connect() and fail the handshake later.
+  if (c->iface->connect(c, &copts) == AZ_IOT_OK)
   {
-    (void)wait_until(c, &rec, saw_connect_failure, k_step_timeout_ms);
+    assert_true(wait_until(c, &rec, saw_connect_failure, k_step_timeout_ms));
   }
-  assert_int_not_equal(r, AZ_IOT_OK);
   assert_false(saw_connected_ok(&rec));
 
   (void)c->iface->disconnect(c);
