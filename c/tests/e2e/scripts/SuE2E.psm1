@@ -479,7 +479,8 @@ function Export-SuE2EOfferVariables {
 .DESCRIPTION
     With -Reuse, offers already staged under -RunId are kept: an existing
     update is not imported again, an existing job is not recreated, and a job
-    with an Active run gets no new run. Only new runs are waited for. An offer
+    with an Active run gets no new run. A run another stager scheduled first
+    is waited for like a new one. Only new runs are waited for. An offer
     reaches each device once, so reused offers serve any number of new devices.
 #>
 function New-SuE2EOffers {
@@ -556,22 +557,35 @@ function New-SuE2EOffers {
         & $save
         $jobUri = "$(Get-SuE2EJobsUri $config)/$($n.Job)?api-version=$script:ApiVersion"
         $job = if ($Reuse) { Get-SuE2EResource $jobUri $script:ArmScope } else { $null }
-        if ($job -and $job.properties.provisioningState -eq 'Succeeded') {
-            $active = Get-SuE2EActiveRun $config $n.Job
-            if ($active) {
-                $offer.Run = $active.name
-                Write-Host "$scenario`: job $($n.Job) kept, run $($offer.Run) Active"
-                # Another run may have just created it: wait out what is left of its grace.
-                $started = Get-SuE2ERunProperty $active 'startTime'
-                if ($started) {
-                    $until = ([datetime]$started).ToUniversalTime().AddSeconds($GraceSeconds)
-                    if ($until -gt $graceUntil) { $graceUntil = $until }
+        try {
+            if ($job -and $job.properties.provisioningState -eq 'Succeeded') {
+                $active = Get-SuE2EActiveRun $config $n.Job
+                if ($active) {
+                    $offer.Run = $active.name
+                    Write-Host "$scenario`: job $($n.Job) kept, run $($offer.Run) Active"
+                    # Another run may have just created it: wait out what is left of its grace.
+                    $started = Get-SuE2ERunProperty $active 'startTime'
+                    if ($started) {
+                        $until = ([datetime]$started).ToUniversalTime().AddSeconds($GraceSeconds)
+                        if ($until -gt $graceUntil) { $graceUntil = $until }
+                    }
                 }
+                else { $offer.Run = New-SuE2EJobRun -Config $config -JobName $n.Job; $runs += @{ Job = $n.Job; Run = $offer.Run } }
             }
-            else { $offer.Run = New-SuE2EJobRun -Config $config -JobName $n.Job; $runs += @{ Job = $n.Job; Run = $offer.Run } }
+            else {
+                $offer.Run = New-SuE2EOnboardingJob -Config $config -JobName $n.Job -UpdateResourceId $n.Update
+                $runs += @{ Job = $n.Job; Run = $offer.Run }
+            }
         }
-        else {
-            $offer.Run = New-SuE2EOnboardingJob -Config $config -JobName $n.Job -UpdateResourceId $n.Update
+        catch {
+            # A concurrent stager of the same job scheduled a run after our lookup: wait for that run.
+            if (-not $Reuse -or "$_" -notmatch 'JobRunAlreadyActive') { throw }
+            $other = Get-SuE2EJobRuns $config $n.Job |
+                Where-Object { (Get-SuE2ERunProperty $_ 'status') -notin 'Failed', 'Canceled', 'Completed' } |
+                Select-Object -First 1
+            if (-not $other) { throw }
+            $offer.Run = $other.name
+            Write-Host "$scenario`: job $($n.Job) run $($offer.Run) scheduled by another run"
             $runs += @{ Job = $n.Job; Run = $offer.Run }
         }
         & $save
