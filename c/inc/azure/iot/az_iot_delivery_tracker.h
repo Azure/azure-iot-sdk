@@ -42,7 +42,7 @@ extern "C"
       uint8_t correlation_id[AZ_IOT_DELIVERY_TRACKER_CORRELATION_ID_MAX];
       uint8_t correlation_id_length;
       uint8_t state;
-      uint8_t held_for_resend; /**< Requeued by a PUBACK error, session loss or send error. */
+      uint8_t held_for_resend; /**< Requeued by a PUBACK error or session loss. */
       uint32_t held_at_tick; /**< tick_count when held; paces the resend. */
     } _internal;
   } az_iot_delivery_tracker_entry;

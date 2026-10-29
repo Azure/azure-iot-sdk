@@ -193,6 +193,16 @@ static az_iot_result try_send(az_iot_delivery_tracker* t, az_iot_delivery_tracke
   az_iot_publish_handle handle = { 0 };
   result = az_iot_connection_client__publish_with_result(
       TI(t).connection, t, &message, track ? on_publish_result : NULL, track ? e : NULL, &handle);
+  if (result == AZ_IOT_ERR_INVALID_ARG)
+  {
+    AZ_IOT_LOG_ERRORF(
+        AZ_IOT_LOG_COMPONENT_CONNECTION,
+        "the adapter cannot send a '%s' message (%s); dropping it",
+        profile->type,
+        az_iot_result_to_string(result));
+    finish(e, AZ_IOT_DELIVERY_TRACKER_OUTCOME_DISCARDED, NULL);
+    return AZ_IOT_OK;
+  }
   if (result != AZ_IOT_OK)
   {
     return result;
@@ -243,7 +253,7 @@ static bool held_back(const az_iot_delivery_tracker* t, const az_iot_delivery_tr
 
 /**
  * @brief Send queued messages by priority, then submit order, until the connection refuses
- *        (NOT_CONNECTED or BUSY). Any other send error leaves only that message queued.
+ *        one (any send error but AZ_IOT_ERR_INVALID_ARG, which discards only that message).
  * @param skip_requeued Leave out the messages held_back() holds.
  */
 static void flush(az_iot_delivery_tracker* t, bool skip_requeued)
@@ -289,20 +299,10 @@ static void flush(az_iot_delivery_tracker* t, bool skip_requeued)
     {
       return;
     }
-    if (result == AZ_IOT_ERR_NOT_CONNECTED || result == AZ_IOT_ERR_BUSY)
+    if (result != AZ_IOT_OK && result != NO_SLOT_FOR_PRIORITY)
     {
       TI(t).send_refused = 1u;
       break; /* The connection refused; the rest waits for a later event. */
-    }
-    if (result != AZ_IOT_OK && result != NO_SLOT_FOR_PRIORITY)
-    {
-      /* This message only: it stays queued, retried like a PUBACK error, until it expires. */
-      hold_for_resend(candidate);
-      AZ_IOT_LOG_DEBUGF(
-          AZ_IOT_LOG_COMPONENT_CONNECTION,
-          "could not send a '%s' message (%s)",
-          EI(candidate).profile->type,
-          az_iot_result_to_string(result));
     }
   }
 }

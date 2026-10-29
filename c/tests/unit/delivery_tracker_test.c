@@ -598,21 +598,45 @@ static void a_later_observer_submit_does_not_resend_a_requeued_message(void** st
   az_iot_delivery_tracker__unbind(&second);
 }
 
-/* A send error of one message (not NOT_CONNECTED or BUSY) does not hold back the messages
- * after it; that message is retried like a PUBACK error, from the next do_work(). */
-static void a_message_send_error_does_not_block_the_queue(void** state)
+/* A message the adapter cannot send (AZ_IOT_ERR_INVALID_ARG) is discarded; the ones after it
+ * still go. */
+static void an_unsendable_message_is_discarded(void** state)
 {
   fixture* fx = (fixture*)*state;
-  (void)submit(fx, &k_resend, 1u, 0u);
+  size_t const unsendable = submit(fx, &k_resend, 1u, 0u);
   (void)submit(fx, &k_resend, 2u, 0u);
   fx->failing_sends = 1;
   fx->failing_send_result = AZ_IOT_ERR_INVALID_ARG;
-  connect(fx); /* Its CONNECTED flush: t/0 fails, t/1 goes; its TICK holds t/0 back. */
+  connect(fx);
   assert_int_equal(publish_count(fx), 2);
   assert_string_equal(last_publish(fx)->topic, "t/1");
+  assert_int_equal(fx->completion_count, 1);
+  assert_completed(fx, 0, unsendable, AZ_IOT_DELIVERY_TRACKER_OUTCOME_DISCARDED);
+}
+
+/* Any other send error refuses like BUSY: the wait is not shortened, and the TICK of the next
+ * do_work() sends again, whether the error came at submit or at a TICK-time resend. */
+static void a_send_error_is_retried_by_the_next_do_work(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  connect(fx);
+  fx->failing_send_result = AZ_IOT_ERR_MQTT;
+  fx->failing_sends = 1;
+  (void)submit(fx, &k_resend, 1u, 60000u);
+  assert_int_equal(publish_count(fx), 1);
+  (void)az_iot_connection_client_do_work(&fx->connection, UINT32_MAX);
+  assert_true(
+      az_iot_mock_mqtt_client_last_of(fx->mock, AZ_IOT_MOCK_CALL_PROCESS_LOOP)->timeout_ms > 1000u);
+  assert_int_equal(publish_count(fx), 2);
+
+  assert_true(az_iot_mock_mqtt_client_inject_puback(
+      fx->mock, last_publish(fx)->packet_id, AZ_IOT_ERR_MQTT));
+  do_work(fx);
+  fx->failing_sends = 1; /* The TICK-time resend fails. */
   do_work(fx);
   assert_int_equal(publish_count(fx), 3);
-  assert_string_equal(last_publish(fx)->topic, "t/0");
+  do_work(fx);
+  assert_int_equal(publish_count(fx), 4);
   assert_int_equal(fx->completion_count, 0);
 }
 
@@ -842,7 +866,8 @@ int main(void)
     cmocka_unit_test_setup_teardown(unbinding_forgets_shared_pool_publishes, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_later_observer_submit_does_not_resend_a_requeued_message, setup, teardown),
-    cmocka_unit_test_setup_teardown(a_message_send_error_does_not_block_the_queue, setup, teardown),
+    cmocka_unit_test_setup_teardown(an_unsendable_message_is_discarded, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_send_error_is_retried_by_the_next_do_work, setup, teardown),
     cmocka_unit_test_setup_teardown(the_wait_ends_by_the_earliest_time_limit, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_requeued_message_does_not_wait_out_the_adapter, setup, teardown),
