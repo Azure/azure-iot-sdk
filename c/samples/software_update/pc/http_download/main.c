@@ -32,7 +32,6 @@
  *   AZ_IOT_SU_LOG_LEVEL            trace|debug|info|warn|error|off
  */
 #include <limits.h>
-#include <signal.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -75,13 +74,6 @@
 
 /** @brief A transfer slower than 1 byte/s for this long fails (CURLE_OPERATION_TIMEDOUT). */
 #define SAMPLE_DOWNLOAD_STALL_S 60L
-
-static volatile sig_atomic_t g_stop = 0;
-static void request_stop_on_sigint(int signo)
-{
-  (void)signo;
-  g_stop = 1;
-}
 
 /** @brief What the hooks share; passed to them as user_ctx. */
 typedef struct
@@ -576,7 +568,7 @@ int main(void)
 {
   az_iot_log_sink log = sample_log_sink(su_sample_log_level_from_env());
   az_iot_log_set_global_sink(&log);
-  (void)signal(SIGINT, request_stop_on_sigint);
+  sample_install_stop_handler(); /* Ctrl+C or SIGTERM ends the loop below */
 
   if (curl_global_init(CURL_GLOBAL_DEFAULT) != CURLE_OK)
   {
@@ -761,7 +753,7 @@ int main(void)
   printf("Running (Ctrl-C to exit). Checking every %ld s.\n", poll_interval_s);
   uint64_t next_check_ms = sample_now_ms() + (uint64_t)poll_interval_s * 1000u;
   rc = 0;
-  while (!g_stop)
+  while (!sample_is_stop_requested())
   {
     (void)az_iot_connection_client_do_work(&connection, 20);
     (void)az_iot_su_client_do_work(&su);
