@@ -101,17 +101,25 @@ static e2e_fixture g_fixture;
 /* Advance the device MQTT stack for a single slice. */
 static void device_do_work(e2e_fixture* fx, int ms) { e2e_device_do_work(&fx->dev, ms); }
 
-/* Pump until every SUBSCRIBE the device issued is acknowledged, so a message the cloud sends next
- * reaches a live subscription. Feature clients subscribe at init on a CONNECTED session. */
+/* Whether the hub session is CONNECTED with every SUBSCRIBE acknowledged. A teardown or a SUBACK
+ * timeout also clears the pending count, so CONNECTED is checked too. */
+static bool subscriptions_live(e2e_fixture* fx)
+{
+  return az_iot_connection_client_get_state(&fx->dev.conn, AZ_IOT_CONN_SCOPE_HUB)
+      == AZ_IOT_CONN_STATE_CONNECTED
+      && fx->dev.conn.subscription_gate.pending_count == 0;
+}
+
+/* Pump until the device's subscriptions are live, so a message the cloud sends next reaches one.
+ * Feature clients subscribe at init on a CONNECTED session. */
 static void wait_for_subscription_acks(e2e_fixture* fx)
 {
   time_t start = time(NULL);
-  while (fx->dev.conn.subscription_gate.pending_count != 0
-         && (time(NULL) - start) < E2E_SUBACK_TIMEOUT_S)
+  while (!subscriptions_live(fx) && (time(NULL) - start) < E2E_SUBACK_TIMEOUT_S)
   {
     device_do_work(fx, E2E_PUMP_MS);
   }
-  assert_int_equal(fx->dev.conn.subscription_gate.pending_count, 0);
+  assert_true(subscriptions_live(fx));
 }
 
 /* ---- unique correlation markers ------------------------------------------- */
