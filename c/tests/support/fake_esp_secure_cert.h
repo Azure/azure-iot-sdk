@@ -22,9 +22,6 @@ typedef struct fake_esp_secure_cert_state
   const char* device_cert; /**< NULL: not in the partition. */
   const char* private_key; /**< NULL: not in the partition. */
   bool has_ds_context;
-  /** The read allocates a zeroed buffer holding part of the data, then fails, as the legacy
-   * NVS format can. */
-  bool reads_fail_after_allocating;
   psa_status_t import_status;
   int device_cert_reads, device_cert_frees;
   int private_key_reads, private_key_frees;

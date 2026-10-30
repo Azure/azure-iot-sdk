@@ -13,10 +13,10 @@
 #include "esp_secure_cert_read.h"
 #include "internal/crypto.h" // az_iot_crypto__wipe()
 
-#if defined(CONFIG_ESP_SECURE_CERT_DS_PERIPHERAL) \
-    && defined(CONFIG_ESP_SECURE_CERT_SUPPORT_LEGACY_FORMATS)
-// esp_secure_cert_mgr 2.9.3 frees a TLV partition's DS context twice in this configuration.
-#error "esp_secure_cert provider: disable CONFIG_ESP_SECURE_CERT_SUPPORT_LEGACY_FORMATS with DS"
+#if defined(CONFIG_ESP_SECURE_CERT_SUPPORT_LEGACY_FORMATS)
+// With legacy formats, esp_secure_cert_mgr 2.9.3 frees a TLV partition's DS context twice and never
+// frees a heap (HMAC-decrypted) TLV key.
+#error "esp_secure_cert provider: disable CONFIG_ESP_SECURE_CERT_SUPPORT_LEGACY_FORMATS"
 #endif
 
 #if defined(CONFIG_ESP_SECURE_CERT_DS_PERIPHERAL)
@@ -46,10 +46,6 @@ static az_iot_result read_device_certificate(az_iot_certificate_provider_esp_sec
   if (esp_secure_cert_get_device_cert(&data, &length) != ESP_OK || data == NULL || length == 0)
   {
     AZ_IOT_LOG_ERROR(AZ_IOT_LOG_COMPONENT_CERT, "esp_secure_cert: no device certificate");
-    if (data != NULL) // The legacy NVS format allocates before a read that can fail.
-    {
-      (void)esp_secure_cert_free_device_cert(data);
-    }
     return AZ_IOT_ERR_NOT_FOUND;
   }
   size_t size = 0;
@@ -109,20 +105,6 @@ static void wipe_key_source(char* data, uint32_t length)
   az_iot_crypto__wipe(data, length);
 }
 
-/** @brief Wipes the RAM buffer of a failed key read, whose length output is not reliable.
- * The manager allocates such a buffer zeroed, one byte longer than the key: it is
- * NUL-terminated within its allocation. */
-static void wipe_failed_key_read(char* data)
-{
-#if defined(ESP_PLATFORM)
-  if (!esp_ptr_in_dram(data) && !esp_ptr_external_ram(data))
-  {
-    return;
-  }
-#endif
-  az_iot_crypto__wipe(data, strlen(data));
-}
-
 /** @brief Copies the partition's PEM private key into @p p. */
 static az_iot_result read_client_key(az_iot_certificate_provider_esp_secure_cert* p)
 {
@@ -131,11 +113,6 @@ static az_iot_result read_client_key(az_iot_certificate_provider_esp_secure_cert
   if (esp_secure_cert_get_priv_key(&data, &length) != ESP_OK || data == NULL || length == 0)
   {
     AZ_IOT_LOG_ERROR(AZ_IOT_LOG_COMPONENT_CERT, "esp_secure_cert: no private key");
-    if (data != NULL) // The legacy NVS format allocates before a read that can fail.
-    {
-      wipe_failed_key_read(data);
-      (void)esp_secure_cert_free_priv_key(data);
-    }
     return AZ_IOT_ERR_NOT_FOUND;
   }
   p->client_key_pem = copy_text(data, length, &p->client_key_size);

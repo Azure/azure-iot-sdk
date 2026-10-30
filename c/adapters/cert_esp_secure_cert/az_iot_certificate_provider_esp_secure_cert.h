@@ -12,9 +12,9 @@
  * (CONFIG_ESP_SECURE_CERT_DS_PERIPHERAL) the private key never leaves it: init() imports the
  * partition's DS context into PSA and load() returns its id as client_key_psa_id, for the az_mqtt
  * adapter. Otherwise load() reads the PEM key and the last release() wipes it. One certificate
- * (index 0), the same for every role; no CSR enrollment. The DS peripheral with
- * CONFIG_ESP_SECURE_CERT_SUPPORT_LEGACY_FORMATS does not build (the dependency frees the DS context
- * twice).
+ * (index 0), the same for every role; no CSR enrollment. Does not build with
+ * CONFIG_ESP_SECURE_CERT_SUPPORT_LEGACY_FORMATS, whose 2.9.3 code frees a DS context twice and
+ * leaks HMAC-decrypted keys.
  *
  * ESP-IDF component: platforms/esp32/components/azure-iot-sdk-certificate-provider-esp-secure-cert.
  */
