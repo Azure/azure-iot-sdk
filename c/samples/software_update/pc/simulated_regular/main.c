@@ -160,14 +160,16 @@ static void sample_state_destroy(sample_state* s)
   free(s->su_device_properties.model);
 }
 
-static void fill_device_properties(const sample_state* s, az_iot_su_device_properties* dp)
+static void fill_device_properties(
+    const sample_state* s,
+    az_iot_su_device_properties* device_properties)
 {
-  memset(dp, 0, sizeof(*dp));
-  dp->manufacturer = s->su_device_properties.manufacturer;
-  dp->model = s->su_device_properties.model;
-  dp->installed_update_id.provider = s->su_device_properties.installed_provider;
-  dp->installed_update_id.name = s->su_device_properties.installed_name;
-  dp->installed_update_id.version = s->su_device_properties.installed_version;
+  memset(device_properties, 0, sizeof(*device_properties));
+  device_properties->manufacturer = s->su_device_properties.manufacturer;
+  device_properties->model = s->su_device_properties.model;
+  device_properties->installed_update_id.provider = s->su_device_properties.installed_provider;
+  device_properties->installed_update_id.name = s->su_device_properties.installed_name;
+  device_properties->installed_update_id.version = s->su_device_properties.installed_version;
 }
 
 /* Both lifecycles report here. `state` is meaningless without `scope`. */
@@ -463,11 +465,12 @@ int main(void)
       = state.su_device_properties.installed_version;
   state.simulation_control.installed = &state.su_device_properties.installed_update_id;
 
-  az_iot_su_device_properties dp;
-  fill_device_properties(&state, &dp);
+  az_iot_su_device_properties device_properties;
+  fill_device_properties(&state, &device_properties);
 
-  size_t dp_needed = az_iot_su_device_properties_buffer_size(&dp);
-  if (dp_needed == 0 || dp_needed > AZ_IOT_SU_DEVICE_PROPERTIES_BUFFER_SIZE)
+  size_t device_properties_needed = az_iot_su_device_properties_buffer_size(&device_properties);
+  if (device_properties_needed == 0
+      || device_properties_needed > AZ_IOT_SU_DEVICE_PROPERTIES_BUFFER_SIZE)
   {
     fprintf(
         stderr,
@@ -500,7 +503,7 @@ int main(void)
   su_opts.hooks = &hooks;
   su_opts.root_keys = root_keys;
   su_opts.root_key_count = root_key_count;
-  su_opts.device_properties = &dp;
+  su_opts.device_properties = &device_properties;
   /* Limits, each the SDK default; the workspace is sized for them. */
   su_opts.limits.max_update_size = AZ_IOT_SU_DEFAULT_MAX_UPDATE_SIZE;
   su_opts.limits.scratch_size = AZ_IOT_SU_VERIFY_SCRATCH_SIZE;
