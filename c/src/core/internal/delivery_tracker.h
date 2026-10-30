@@ -31,6 +31,9 @@ extern "C"
 {
 #endif
 
+/** @brief After a refused send (BUSY, a transport error), do_work() waits at most this long. */
+#define AZ_IOT_DELIVERY_TRACKER_REFUSED_SEND_RETRY_MS 1000u
+
   /** @brief How a message is confirmed. */
   typedef enum az_iot_delivery_tracker_confirmation
   {

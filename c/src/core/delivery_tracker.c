@@ -357,24 +357,28 @@ static void discard(az_iot_delivery_tracker_entry* e)
 /**
  * @brief Lower @p remaining_ms to the earliest message time limit, or to 0 when this
  *        do_work()'s TICK can send a queued message: a held back one becomes sendable, or a
- *        PUBACK slot freed since the last flush. Not after a refused flush: events resume it.
+ *        PUBACK slot freed since the last flush (or it may go untracked). After a refused flush,
+ *        to AZ_IOT_DELIVERY_TRACKER_REFUSED_SEND_RETRY_MS.
  */
 static void lower_remaining_to_next_action(const az_iot_delivery_tracker* t, uint64_t* remaining_ms)
 {
   uint64_t const now = az_iot_time_mono_ms();
-  bool const can_send_now
-      = TI(t).send_refused == 0u && az_iot_connection_client__is_connected(TI(t).connection);
+  bool const connected = az_iot_connection_client__is_connected(TI(t).connection);
+  /* After a refused send, not at once (no busy loop) but soon (not at the time limit). */
+  uint64_t const sendable_in_ms
+      = (TI(t).send_refused != 0u) ? AZ_IOT_DELIVERY_TRACKER_REFUSED_SEND_RETRY_MS : 0u;
   for (size_t i = 0; i < TI(t).capacity; ++i)
   {
     const az_iot_delivery_tracker_entry* e = &TI(t).entries[i];
     uint64_t left = EI(e).state == ENTRY_FREE ? UINT64_MAX
                                               : az_iot_deadline__remaining_ms(&EI(e).deadline, now);
     /* A held back message is sendable from the TICK where held_back() turns false. */
-    if (EI(e).state == ENTRY_QUEUED && can_send_now
+    if (EI(e).state == ENTRY_QUEUED && connected
         && (EI(e).held_for_resend == 0u || TI(t).tick_count != EI(e).held_at_tick)
-        && may_take_slot(t, EI(e).profile->priority))
+        && (EI(e).profile->send_untracked_without_slot || may_take_slot(t, EI(e).profile->priority))
+        && sendable_in_ms < left)
     {
-      left = 0u;
+      left = sendable_in_ms;
     }
     *remaining_ms = left < *remaining_ms ? left : *remaining_ms;
   }

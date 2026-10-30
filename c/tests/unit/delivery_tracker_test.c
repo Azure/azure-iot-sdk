@@ -641,8 +641,8 @@ static void an_unsendable_message_is_discarded(void** state)
       az_iot_mock_mqtt_client_last_of(fx->mock, AZ_IOT_MOCK_CALL_PROCESS_LOOP)->timeout_ms > 1000u);
 }
 
-/* Any other send error refuses like BUSY: the wait is not shortened, and the TICK of the next
- * do_work() sends again, whether the error came at submit or at a TICK-time resend. */
+/* Any other send error refuses like BUSY: the next do_work() waits at most the retry interval,
+ * and its TICK sends again, whether the error came at submit or at a TICK-time resend. */
 static void a_send_error_is_retried_by_the_next_do_work(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -653,7 +653,8 @@ static void a_send_error_is_retried_by_the_next_do_work(void** state)
   assert_int_equal(publish_count(fx), 1);
   (void)az_iot_connection_client_do_work(&fx->connection, UINT32_MAX);
   assert_true(
-      az_iot_mock_mqtt_client_last_of(fx->mock, AZ_IOT_MOCK_CALL_PROCESS_LOOP)->timeout_ms > 1000u);
+      az_iot_mock_mqtt_client_last_of(fx->mock, AZ_IOT_MOCK_CALL_PROCESS_LOOP)->timeout_ms
+      == AZ_IOT_DELIVERY_TRACKER_REFUSED_SEND_RETRY_MS);
   assert_int_equal(publish_count(fx), 2);
 
   assert_true(az_iot_mock_mqtt_client_inject_puback(
@@ -745,7 +746,7 @@ static void ignore_publish_result(const az_iot_publish_result* result, void* use
 }
 
 /* A PUBACK slot another tracker frees makes the next do_work() not wait, and its TICK sends
- * the message queued for it. After a refused send the wait is not shortened. */
+ * the message queued for it. After a refused send it waits the retry interval. */
 static void a_slot_freed_elsewhere_is_used_without_waiting(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -819,7 +820,8 @@ static void a_slot_freed_elsewhere_is_used_without_waiting(void** state)
   (void)submit(fx, &k_low_resend, 2u, 0u);
   (void)az_iot_connection_client_do_work(&fx->connection, UINT32_MAX);
   assert_true(
-      az_iot_mock_mqtt_client_last_of(fx->mock, AZ_IOT_MOCK_CALL_PROCESS_LOOP)->timeout_ms > 1000u);
+      az_iot_mock_mqtt_client_last_of(fx->mock, AZ_IOT_MOCK_CALL_PROCESS_LOOP)->timeout_ms
+      == AZ_IOT_DELIVERY_TRACKER_REFUSED_SEND_RETRY_MS);
   az_iot_delivery_tracker__unbind(&shared);
   az_iot_delivery_tracker__unbind(&other);
 }
@@ -899,6 +901,27 @@ static void expire_overdue_completes_expired_messages_now(void** state)
   assert_int_equal(fx->completion_count, 1);
   assert_completed(fx, 0, expired, AZ_IOT_DELIVERY_TRACKER_OUTCOME_EXPIRED);
   az_iot_delivery_tracker__expire_overdue(NULL);
+}
+
+/* A message that may go untracked does not wait for a PUBACK slot: after a PUBACK error, with its
+ * slot taken by another, the next do_work() does not wait, and its TICK sends it untracked. */
+static void an_untracked_capable_message_does_not_wait_for_a_slot(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  connect(fx);
+  size_t const first = submit(fx, &k_low_untracked, 1u, 60000u);
+  assert_int_equal(publish_count(fx), 1);
+  assert_true(az_iot_mock_mqtt_client_inject_puback(
+      fx->mock, last_publish(fx)->packet_id, AZ_IOT_ERR_MQTT));
+  do_work(fx); /* Requeued and held back; the slot is free again. */
+  (void)submit(fx, &k_low_untracked, 2u, 60000u); /* Takes priority 1's slot. */
+  assert_int_equal(publish_count(fx), 2);
+
+  (void)az_iot_connection_client_do_work(&fx->connection, UINT32_MAX);
+  assert_int_equal(
+      az_iot_mock_mqtt_client_last_of(fx->mock, AZ_IOT_MOCK_CALL_PROCESS_LOOP)->timeout_ms, 0u);
+  assert_int_equal(publish_count(fx), 3);
+  assert_completed(fx, 0, first, AZ_IOT_DELIVERY_TRACKER_OUTCOME_DELIVERED);
 }
 /* A send the adapter refuses does not hold back the message a PUBACK error requeued: it goes out
  * from the next do_work(). */
@@ -1004,6 +1027,8 @@ int main(void)
         an_identity_change_keeps_replacements_in_a_later_tracker, setup, teardown),
     cmocka_unit_test_setup_teardown(on_sent_reports_each_publish, setup, teardown),
     cmocka_unit_test_setup_teardown(expire_overdue_completes_expired_messages_now, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        an_untracked_capable_message_does_not_wait_for_a_slot, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_busy_adapter_does_not_hold_back_a_requeued_message, setup, teardown),
     cmocka_unit_test_setup_teardown(arguments_capacity_and_binding, setup, teardown),
