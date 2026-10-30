@@ -495,12 +495,12 @@ int main(void)
   hooks.restore_fn = restore_update_step;
   hooks.user_ctx = &steps;
 
-  az_iot_su_device_properties dp = { 0 };
-  dp.manufacturer = manufacturer;
-  dp.model = model;
-  dp.installed_update_id.provider = steps.installed_provider;
-  dp.installed_update_id.name = steps.installed_name;
-  dp.installed_update_id.version = steps.installed_version;
+  az_iot_su_device_properties device_properties = { 0 };
+  device_properties.manufacturer = manufacturer;
+  device_properties.model = model;
+  device_properties.installed_update_id.provider = steps.installed_provider;
+  device_properties.installed_update_id.name = steps.installed_name;
+  device_properties.installed_update_id.version = steps.installed_version;
 
   size_t root_key_count = 0;
   const az_iot_su_root_key* root_keys = az_iot_su_microsoft_root_keys(&root_key_count);
@@ -508,7 +508,7 @@ int main(void)
   su_opts.hooks = &hooks;
   su_opts.root_keys = root_keys;
   su_opts.root_key_count = root_key_count;
-  su_opts.device_properties = &dp;
+  su_opts.device_properties = &device_properties;
   /* Limits, each the SDK default; the workspace is sized for them. */
   su_opts.limits.max_update_size = AZ_IOT_SU_DEFAULT_MAX_UPDATE_SIZE;
   su_opts.limits.scratch_size = AZ_IOT_SU_VERIFY_SCRATCH_SIZE;
@@ -563,7 +563,7 @@ int main(void)
     if (flags.workflow_succeeded)
     {
       flags.workflow_succeeded = 0;
-      if (az_iot_su_client_update_device_properties(&su, &dp) != AZ_IOT_OK)
+      if (az_iot_su_client_update_device_properties(&su, &device_properties) != AZ_IOT_OK)
       {
         fprintf(stderr, "Could not record the applied update as installed.\n");
       }
