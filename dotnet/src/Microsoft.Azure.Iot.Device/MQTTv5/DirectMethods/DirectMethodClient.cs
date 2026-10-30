@@ -236,6 +236,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods
 
                 uint responseTimeoutInSeconds = publish.MessageExpiryInterval;
                 Stopwatch stopwatch = Stopwatch.StartNew();
+                using CancellationTokenSource responseTimeoutCts = new(TimeSpan.FromSeconds(responseTimeoutInSeconds));
 
                 // Parse before removing the pending request so that a malformed exec leaves this client ready to receive a well-formed
                 // exec for the same request.
@@ -273,10 +274,20 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods
                 DirectMethodRequestReceivedEventArgs directMethodInvokedArgs = new()
                 {
                     MethodName = methodName,
-                    Payload = exec.Params.Span.ToArray()
+                    Payload = exec.Params.Span.ToArray(),
+                    CancellationToken = responseTimeoutCts.Token
                 };
 
-                DirectMethodResponse methodResponse = await methodHandler.Invoke(directMethodInvokedArgs);
+                DirectMethodResponse methodResponse;
+                try
+                {
+                    methodResponse = await methodHandler.Invoke(directMethodInvokedArgs);
+                }
+                catch (OperationCanceledException) when (responseTimeoutCts.IsCancellationRequested)
+                {
+                    Trace.TraceWarning("The direct method with name {0} took longer than the remaining direct method response timeout, so no result message will be sent.", methodName);
+                    return;
+                }
 
                 stopwatch.Stop();
 
