@@ -445,17 +445,17 @@ int main(void)
     return 1;
   }
 
-  az_iot_su_device_properties dp = { 0 };
-  dp.manufacturer = state.su_device_properties.manufacturer;
-  dp.model = state.su_device_properties.model;
-  dp.installed_update_id.provider = state.su_device_properties.installed_provider;
-  dp.installed_update_id.name = state.su_device_properties.installed_name;
-  dp.installed_update_id.version = state.su_device_properties.installed_version;
+  az_iot_su_device_properties device_properties = { 0 };
+  device_properties.manufacturer = state.su_device_properties.manufacturer;
+  device_properties.model = state.su_device_properties.model;
+  device_properties.installed_update_id.provider = state.su_device_properties.installed_provider;
+  device_properties.installed_update_id.name = state.su_device_properties.installed_name;
+  device_properties.installed_update_id.version = state.su_device_properties.installed_version;
 
   /* Named, rather than a bare error out of init(): the cache is fixed
    * and these values now come from the environment. */
-  size_t dp_needed = az_iot_su_device_properties_buffer_size(&dp);
-  if (dp_needed == 0)
+  size_t device_properties_needed = az_iot_su_device_properties_buffer_size(&device_properties);
+  if (device_properties_needed == 0)
   {
     fprintf(
         stderr,
@@ -467,13 +467,13 @@ int main(void)
     sample_state_destroy(&state);
     return 1;
   }
-  if (dp_needed > AZ_IOT_SU_DEVICE_PROPERTIES_BUFFER_SIZE)
+  if (device_properties_needed > AZ_IOT_SU_DEVICE_PROPERTIES_BUFFER_SIZE)
   {
     fprintf(
         stderr,
         "Device properties need %zu bytes of cache; this sample has %zu. Shorten "
         "them or raise limits.device_properties_size.\n",
-        dp_needed,
+        device_properties_needed,
         (size_t)AZ_IOT_SU_DEVICE_PROPERTIES_BUFFER_SIZE);
     sample_state_destroy(&state);
     return 1;
@@ -483,7 +483,7 @@ int main(void)
   su_opts.hooks = &hooks;
   su_opts.root_keys = root_keys;
   su_opts.root_key_count = root_key_count;
-  su_opts.device_properties = &dp;
+  su_opts.device_properties = &device_properties;
   /* Limits, each the SDK default; the workspace is sized for them. */
   su_opts.limits.max_update_size = AZ_IOT_SU_DEFAULT_MAX_UPDATE_SIZE;
   su_opts.limits.scratch_size = AZ_IOT_SU_VERIFY_SCRATCH_SIZE;

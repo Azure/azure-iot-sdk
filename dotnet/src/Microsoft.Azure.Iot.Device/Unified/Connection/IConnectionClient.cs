@@ -34,6 +34,37 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
         bool IsConnectionTargetSet => true;
 
         /// <summary>
+        /// An ID that the connection client generates for each connection to IoT hub, which IoT hub never sees, or null if it
+        /// is not known.
+        /// </summary>
+        /// <remarks>
+        /// The twin client uses this to tell responses and held reported properties patches of one connection apart from
+        /// those of the next.
+        /// </remarks>
+        internal Guid? ConnectionNonce => null;
+
+        /// <summary>
+        /// Raised whenever the connection to IoT hub is lost or closed, before any reconnection starts.
+        /// </summary>
+        internal event Action? ConnectionLost { add { } remove { } }
+
+        /// <summary>
+        /// Raised whenever the device presence flow completes on a connection to IoT hub, which means that the twin topics
+        /// are subscribed to, so that IoT hub delivers the responses to twin requests.
+        /// </summary>
+        /// <remarks>
+        /// IoT hub neither acknowledges a device's presence nor pushes its twin upon connecting, so the twin client uses this
+        /// to fetch the twin instead.
+        /// </remarks>
+        internal event Action? ClassicDevicePresenceEstablished { add { } remove { } }
+
+        /// <summary>
+        /// Whether the device presence flow has completed on the current connection to IoT hub. See
+        /// <see cref="ClassicDevicePresenceEstablished"/>.
+        /// </summary>
+        internal bool IsClassicDevicePresenceEstablished => false;
+
+        /// <summary>
         /// Whether this connection client subscribes to twin topics. See <see cref="ConnectionClientOptions.EnableTwin"/>.
         /// </summary>
         bool IsTwinEnabled => true;
