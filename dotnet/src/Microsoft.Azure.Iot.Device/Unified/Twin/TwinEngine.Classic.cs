@@ -86,7 +86,10 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
             }
 
             Trace.TraceInformation("Connected to IoT hub, so getting the twin before sending any reported properties patches.");
-            _ = CompleteAsync(outcome);
+
+            // The connection client raises this while it holds the lock that reconnecting needs, so the GET must not be sent
+            // (which may wait for a reconnection if the connection is lost meanwhile) on this thread.
+            _ = Task.Run(() => CompleteAsync(outcome));
         }
 
         // Must be called while holding _desiredStateLock. IoT hub's versions never decrease, so if this device held a newer version
@@ -108,8 +111,8 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
             }
         }
 
-        // Adopts the reported section of the connect sync's response, if it differs from this device's copy, and starts sending
-        // reported properties patches on this connection. The connect sync's twin push (if raised) carries the adopted section.
+        // Adopts the reported section of the connect sync's response, if it differs from this device's copy. The connect sync's
+        // twin push (if raised) carries the adopted section. Reported properties patches are sent once its events are raised.
         private void CompleteClassicConnectSync(DesiredResync connectSync, TwinGetResponse response, TwinPushReceivedEventArgs push, DesiredStateOutcome outcome)
         {
             if (response.HasReportedPayload)
@@ -146,7 +149,12 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
                 }
             }
 
-            // IoT hub's version of the reported properties is now known, and this device's copy is up to date, so patches can be sent.
+            outcome.CompletedConnectSync = connectSync;
+        }
+
+        // IoT hub's version of the reported properties is now known, and this device's copy is up to date, so patches can be sent.
+        private void StartSendingReportedPatchesAfterConnectSync(DesiredResync connectSync)
+        {
             ReportedPatchAttempt? nextAttempt = null;
             lock (_reportedPatchLock)
             {

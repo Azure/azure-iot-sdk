@@ -25,7 +25,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
 
         private IConnectionClient _connection;
 
-        // Guards _getTwinExchangesByRequest and _getTwinExchangesById.
+        // Guards _getTwinExchangesByRequest, _getTwinExchangesById and _getTwinLostConnectionNonce.
         private readonly object _getTwinExchangesLock = new();
 
         // The outstanding get twin exchange for each distinct get twin request. Identical concurrent requests share one exchange.
@@ -33,6 +33,9 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
 
         // The outstanding get twin exchanges, keyed by the ID of their latest attempt. Responses to earlier attempts are dropped.
         private readonly Dictionary<Guid, GetTwinExchange> _getTwinExchangesById = new();
+
+        // The connection nonce of the latest connection that was lost, as far as get twin exchanges know.
+        private Guid? _getTwinLostConnectionNonce;
 
         // Guards the reported patch state below.
         private readonly object _reportedPatchLock = new();
@@ -521,6 +524,13 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
             {
                 // The attempt already ended (for example, the connection was lost), so it must not be sent.
             }
+            catch (Exception e) when (IsTransientPublishFailure(e))
+            {
+                // For example, the connection dropped while this QoS 0 request was being written, possibly before this client
+                // learns that the connection was lost. Like a request that IoT hub never received, the attempt stays in flight:
+                // it is sent again after the next connect sync once the connection loss arrives, or when it times out otherwise.
+                Trace.TraceWarning("Failed to publish a reported properties patch. It will be sent again: {0}", e);
+            }
             catch (Exception e)
             {
                 ReportedPatchAttempt? nextAttempt;
@@ -547,6 +557,12 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
 
                 SendReportedPatchAttempt(nextAttempt);
             }
+        }
+
+        private static bool IsTransientPublishFailure(Exception e)
+        {
+            return e is MqttClientNotConnectedException or OperationCanceledException
+                || (e is DeviceException deviceException && deviceException.Retryability == ErrorRetryability.Retryable);
         }
 
         private void HandleReportedPatchTimeout(ReportedPatchAttempt attempt)
@@ -601,10 +617,17 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
                         }
 
                         // Only the device writes its reported properties, so if it held the version before this patch, it now holds
-                        // them in full at the patched version. Otherwise, it still doesn't hold them in full.
+                        // them in full at the patched version. If it already holds this version or a newer one (for example, from a
+                        // get twin response that arrived first), its copy already has this patch. Otherwise (for example, IoT hub
+                        // also applied an earlier attempt whose response was lost), it can't tell which version its copy matches, so
+                        // it no longer holds them in full. The next connect sync or get twin request brings its copy up to date.
                         if (_localReportedVersion != 0 && response.Version == _localReportedVersion + 1)
                         {
                             AdvanceLocalReportedVersion(response.Version);
+                        }
+                        else if (_localReportedVersion != 0 && (response.Version == 0 || response.Version > _localReportedVersion + 1))
+                        {
+                            SetLocalReportedState(0, null);
                         }
                     }
                 }
@@ -671,8 +694,24 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
                 MqttAckValidator.ThrowIfPubackHasErrorCode(puback);
                 lock (_getTwinExchangesLock)
                 {
-                    exchange.SentGetId = getId;
+                    // The request went out on the current connection or an earlier one. If the current one was already lost,
+                    // HandleConnectionLost may have run before this attempt counted as sent, so its response can never arrive.
+                    Guid? connectionNonce = _connection.ConnectionNonce;
+                    if (connectionNonce == null || connectionNonce != _getTwinLostConnectionNonce)
+                    {
+                        exchange.SentGetId = getId;
+                        return;
+                    }
+
+                    if (exchange.GetId != getId)
+                    {
+                        return;
+                    }
+
+                    EndGetTwinExchange(exchange);
                 }
+
+                exchange.Response.TrySetException(CreateGetTwinConnectionLostException());
             }
             catch (OperationCanceledException) when (exchange.Cancellation.IsCancellationRequested)
             {
@@ -733,15 +772,16 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
         // Twin exchanges can't outlive the connection they were sent on, since IoT hub never sends their responses on a later one.
         private void HandleConnectionLost()
         {
+            lock (_getTwinExchangesLock)
+            {
+                _getTwinLostConnectionNonce = _connection.ConnectionNonce;
+            }
+
             // A request that is still waiting to be sent (for example, one made while reconnecting) is sent on the next
             // connection instead.
             AbandonGetTwinExchanges(
                 exchange => exchange.GetId != null && exchange.SentGetId == exchange.GetId,
-                () => new DeviceException("The connection to IoT hub was lost before the response to this twin request arrived. It may be retried once reconnected.")
-                {
-                    Retryability = ErrorRetryability.Retryable,
-                    IsContained = true,
-                });
+                CreateGetTwinConnectionLostException);
 
             // Reported patches are kept and sent again on the next connection. IoT hub may have applied the attempt in flight,
             // in which case it is applied again, since IoT hub doesn't support conditional patches.
@@ -764,6 +804,15 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
             {
                 CancelDesiredResync();
             }
+        }
+
+        private static DeviceException CreateGetTwinConnectionLostException()
+        {
+            return new DeviceException("The connection to IoT hub was lost before the response to this twin request arrived. It may be retried once reconnected.")
+            {
+                Retryability = ErrorRetryability.Retryable,
+                IsContained = true,
+            };
         }
 
         private void AbandonGetTwinExchanges(Func<GetTwinExchange, bool> shouldAbandon, Func<Exception> createException)
@@ -1132,13 +1181,20 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
                 DesiredResyncTimeoutSchedule(resync.Attempt),
                 Timeout.InfiniteTimeSpan);
             outcome.ResyncGetId = getId;
+            outcome.ResyncCancellation = resync.Cancellation.Token;
         }
 
         // Must be called while holding _desiredStateLock.
         private void CancelDesiredResync()
         {
-            _desiredResync?.Timer?.Dispose();
-            _desiredResync = null;
+            if (_desiredResync != null)
+            {
+                _desiredResync.Timer?.Dispose();
+
+                // Callbacks registered on this token run asynchronously so that they never run while holding the lock.
+                _ = _desiredResync.Cancellation.CancelAsync();
+                _desiredResync = null;
+            }
         }
 
         // Must be called while holding _desiredStateLock. A resync does not survive a disconnect, since its GET response cannot arrive on a later connection.
@@ -1222,31 +1278,48 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
         {
             foreach (EventArgs delivery in outcome.Deliveries)
             {
-                if (delivery is DesiredPatchReceivedEventArgs desiredPatchArgs)
+                try
                 {
-                    DesiredPatchReceived?.Invoke(desiredPatchArgs);
+                    if (delivery is DesiredPatchReceivedEventArgs desiredPatchArgs)
+                    {
+                        DesiredPatchReceived?.Invoke(desiredPatchArgs);
+                    }
+                    else if (delivery is TwinPushReceivedEventArgs twinPushArgs)
+                    {
+                        TwinPushReceived?.Invoke(twinPushArgs);
+                    }
                 }
-                else if (delivery is TwinPushReceivedEventArgs twinPushArgs)
+                catch (Exception e)
                 {
-                    TwinPushReceived?.Invoke(twinPushArgs);
+                    Trace.TraceWarning("A twin event handler threw an exception: {0}", e);
                 }
+            }
+
+            // Only after the connect sync's events, so that the patches their handlers make are coalesced with the held ones.
+            if (outcome.CompletedConnectSync != null)
+            {
+                StartSendingReportedPatchesAfterConnectSync(outcome.CompletedConnectSync);
             }
 
             if (outcome.ResyncGetId is Guid getId)
             {
-                await SendDesiredResyncGetAsync(getId);
+                await SendDesiredResyncGetAsync(getId, outcome.ResyncCancellation);
             }
         }
 
-        private async Task SendDesiredResyncGetAsync(Guid getId)
+        private async Task SendDesiredResyncGetAsync(Guid getId, CancellationToken cancellationToken)
         {
             MqttPublish publish = CreateClassicGetTwinPublish(getId);
 
             try
             {
                 Trace.TraceInformation("Publishing 'GetTwin' request on topic " + publish.Topic + " to resync the desired properties");
-                MqttPublishAck puback = await _connection.PublishAsync(publish);
+                MqttPublishAck puback = await _connection.PublishAsync(publish, cancellationToken);
                 MqttAckValidator.ThrowIfPubackHasErrorCode(puback);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                // The resync ended (for example, the connection was lost), so this request must not be sent.
             }
             catch (Exception e)
             {
@@ -1299,6 +1372,9 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
             public ulong DesiredVersionAtStart { get; set; }
 
             public ulong ReportedVersionAtStart { get; set; }
+
+            // Cancelled when the resync ends, so that a GET request still waiting to be sent is never sent.
+            public CancellationTokenSource Cancellation { get; } = new();
         }
 
         private sealed class DesiredStateOutcome
@@ -1306,6 +1382,11 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
             public List<EventArgs> Deliveries { get; } = new();
 
             public Guid? ResyncGetId { get; set; }
+
+            public CancellationToken ResyncCancellation { get; set; }
+
+            // The connect sync that completed, after whose deliveries this client starts sending reported properties patches.
+            public DesiredResync? CompletedConnectSync { get; set; }
         }
 
         private readonly record struct GetTwinRequest(bool GetDesired, bool GetReported, ulong IfNotMatchDesired, ulong IfNotMatchReported);

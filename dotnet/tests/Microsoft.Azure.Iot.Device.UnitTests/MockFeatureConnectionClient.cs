@@ -73,6 +73,9 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         /// <summary>Every publish, subscribe and unsubscribe the feature clients sent, in order.</summary>
         public List<MqttPublish> PublishedMessages { get; } = new();
 
+        /// <summary>The cancellation token passed with each publish in <see cref="PublishedMessages"/>, in the same order.</summary>
+        public List<CancellationToken> PublishCancellationTokens { get; } = new();
+
         public List<MqttSubscribe> SubscribedMessages { get; } = new();
 
         public List<MqttUnsubscribe> UnsubscribedMessages { get; } = new();
@@ -92,7 +95,11 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
         public async Task<MqttPublishAck> PublishAsync(MqttPublish publish, CancellationToken cancellationToken = default)
         {
-            PublishedMessages.Add(publish);
+            lock (PublishedMessages)
+            {
+                PublishedMessages.Add(publish);
+                PublishCancellationTokens.Add(cancellationToken);
+            }
 
             if (OnPublish != null)
             {
@@ -100,6 +107,27 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             }
 
             return new MqttPublishAck() { ReasonCode = MqttPublishAckReasonCode.Success };
+        }
+
+        /// <summary>
+        /// Wait until at least <paramref name="count"/> publishes were sent, for publishes that feature clients send from a
+        /// background thread, and return the publish at index <paramref name="count"/> - 1.
+        /// </summary>
+        public async Task<MqttPublish> WaitForPublishedMessagesAsync(int count)
+        {
+            using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(10));
+            while (true)
+            {
+                lock (PublishedMessages)
+                {
+                    if (PublishedMessages.Count >= count)
+                    {
+                        return PublishedMessages[count - 1];
+                    }
+                }
+
+                await Task.Delay(10, timeout.Token);
+            }
         }
 
         public async Task<MqttSubscribeAck> SubscribeAsync(MqttSubscribe subscribe, CancellationToken cancellationToken = default)
