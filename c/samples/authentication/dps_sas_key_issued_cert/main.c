@@ -193,14 +193,14 @@ int main(void)
   az_iot_log_set_global_sink(&log);
 
   sas_config config = {
-    .id_scope = sample_env_dup("AZ_IOT_DPS_ID_SCOPE", NULL),
-    .reg_id = sample_env_dup("AZ_IOT_DPS_REGISTRATION_ID", NULL),
-    .key = sample_env_dup("AZ_IOT_DPS_SYMMETRIC_KEY", NULL),
-    .group_key = sample_env_dup("AZ_IOT_DPS_ENROLLMENT_GROUP_KEY", NULL),
-    .ca = sample_env_dup("AZ_IOT_TRUSTED_CA", NULL),
-    .endpoint = sample_env_dup("AZ_IOT_DPS_GLOBAL_ENDPOINT", NULL),
-    .op_key = sample_env_dup("AZ_IOT_OPERATIONAL_KEY", "operational_key.pem"),
-    .op_cert = sample_env_dup("AZ_IOT_OPERATIONAL_CERT", "operational_cert.pem"),
+    .id_scope = sample_env_copy("AZ_IOT_DPS_ID_SCOPE", NULL),
+    .reg_id = sample_env_copy("AZ_IOT_DPS_REGISTRATION_ID", NULL),
+    .key = sample_env_copy("AZ_IOT_DPS_SYMMETRIC_KEY", NULL),
+    .group_key = sample_env_copy("AZ_IOT_DPS_ENROLLMENT_GROUP_KEY", NULL),
+    .ca = sample_env_copy("AZ_IOT_TRUSTED_CA", NULL),
+    .endpoint = sample_env_copy("AZ_IOT_DPS_GLOBAL_ENDPOINT", NULL),
+    .op_key = sample_env_copy("AZ_IOT_OPERATIONAL_KEY", "operational_key.pem"),
+    .op_cert = sample_env_copy("AZ_IOT_OPERATIONAL_CERT", "operational_cert.pem"),
   };
   if (!is_set(config.id_scope) || !is_set(config.reg_id)
       || is_set(config.key) == is_set(config.group_key))

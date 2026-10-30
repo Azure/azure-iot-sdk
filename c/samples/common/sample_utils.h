@@ -44,7 +44,7 @@ void sample_config_release(sample_config* config);
 // Returns a heap copy of environment variable `name`, or a heap copy of
 // `fallback` when the variable is unset/empty (fallback may be NULL). Caller
 // frees with free(). Avoids getenv()/strdup() to stay clean under MSVC /WX.
-char* sample_env_dup(const char* name, const char* fallback);
+char* sample_env_copy(const char* name, const char* fallback);
 
 /**
  * @brief Copy @p src into @p dst, NUL included. Portable stand-in for C11
@@ -55,7 +55,7 @@ char* sample_env_dup(const char* name, const char* fallback);
  * @param[in] src       NUL-terminated source.
  * @return true if copied; false if @p src does not fit.
  */
-bool sample_copy_str(char* dst, size_t dst_size, const char* src);
+bool sample_string_copy(char* dst, size_t dst_size, const char* src);
 
 /**
  * @brief Read environment variable @p name, or @p fallback when unset/empty,
@@ -68,7 +68,7 @@ bool sample_copy_str(char* dst, size_t dst_size, const char* src);
  * @return true if copied; false when unset with no fallback, out of memory or
  * too long.
  */
-bool sample_env_to_buffer(const char* name, const char* fallback, char* dst, size_t dst_size);
+bool sample_env_copy_to_buffer(const char* name, const char* fallback, char* dst, size_t dst_size);
 
 /**
  * @brief Open @p path for binary writing with owner-only access (0600) on
@@ -81,7 +81,7 @@ bool sample_env_to_buffer(const char* name, const char* fallback, char* dst, siz
  * @return Stream to close with fclose(), or NULL on failure (with @p replace,
  * including when @p path cannot be removed).
  */
-FILE* sample_fopen_private(const char* path, bool replace);
+FILE* sample_file_open_private(const char* path, bool replace);
 
 /**
  * @brief Create @p path for binary writing with owner-only access (0600) on
@@ -100,7 +100,7 @@ FILE* sample_file_create_private(const char* path);
  * @param[in] path File to read.
  * @return Stream to close with fclose(), or NULL on failure.
  */
-FILE* sample_fopen_read_nofollow(const char* path);
+FILE* sample_file_open_read_no_follow(const char* path);
 
 /**
  * @brief Flush @p file's buffered writes and the operating system's cache to

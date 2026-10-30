@@ -104,8 +104,8 @@ static bool https_send(
 static void on_token_required(const az_iot_sas_token_request* request, void* user_ctx)
 {
   e2e_tpm_ctx* ctx = (e2e_tpm_ctx*)user_ctx;
-  if (sample_copy_str(ctx->resource_uri, sizeof(ctx->resource_uri), request->resource_uri)
-      && sample_copy_str(ctx->key_name, sizeof(ctx->key_name), request->key_name))
+  if (sample_string_copy(ctx->resource_uri, sizeof(ctx->resource_uri), request->resource_uri)
+      && sample_string_copy(ctx->key_name, sizeof(ctx->key_name), request->key_name))
   {
     ctx->token_pending = true;
   }
@@ -236,7 +236,7 @@ static void test_dps_tpm_registration_and_hub_sas(void** state)
   if (assigned)
   {
     fprintf(stderr, "[e2e_tpm] assigned to %s as %s\n", a->assigned_hub, a->device_id);
-    (void)sample_copy_str(device_id, sizeof(device_id), a->device_id);
+    (void)sample_string_copy(device_id, sizeof(device_id), a->device_id);
   }
 
   /* The assigned hub with TPM-signed SAS tokens. */

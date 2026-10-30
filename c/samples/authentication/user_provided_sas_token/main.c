@@ -242,11 +242,11 @@ int main(void)
   az_iot_log_sink log = sample_log_sink(AZ_IOT_LOG_LEVEL_INFO);
   az_iot_log_set_global_sink(&log);
 
-  char* id_scope = sample_env_dup("AZ_IOT_DPS_ID_SCOPE", NULL);
-  char* reg_id = sample_env_dup("AZ_IOT_DPS_REGISTRATION_ID", NULL);
-  char* key_b64 = sample_env_dup("AZ_IOT_DPS_SYMMETRIC_KEY", NULL);
-  char* ca = sample_env_dup("AZ_IOT_TRUSTED_CA", NULL);
-  char* endpoint = sample_env_dup("AZ_IOT_DPS_GLOBAL_ENDPOINT", NULL);
+  char* id_scope = sample_env_copy("AZ_IOT_DPS_ID_SCOPE", NULL);
+  char* reg_id = sample_env_copy("AZ_IOT_DPS_REGISTRATION_ID", NULL);
+  char* key_b64 = sample_env_copy("AZ_IOT_DPS_SYMMETRIC_KEY", NULL);
+  char* ca = sample_env_copy("AZ_IOT_TRUSTED_CA", NULL);
+  char* endpoint = sample_env_copy("AZ_IOT_DPS_GLOBAL_ENDPOINT", NULL);
   int rc = 1;
   sample_context ctx = { 0 };
   az_iot_connection_client client = { 0 };

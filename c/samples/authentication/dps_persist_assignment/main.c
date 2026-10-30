@@ -87,7 +87,7 @@ static bool read_line(FILE* f, char* dst, size_t dst_size)
 /** @brief Loads a saved assignment. False when there is none or it is invalid. */
 static bool load_assignment(const char* path, saved_assignment* out)
 {
-  FILE* f = sample_fopen_read_nofollow(path);
+  FILE* f = sample_file_open_read_no_follow(path);
   if (f == NULL)
   {
     return false;
@@ -125,7 +125,7 @@ static void on_assignment(const az_iot_dps_assignment* assignment, void* user_ct
   const char* profile = assignment->profile->connection_profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5
       ? SAMPLE_PROFILE_MQTTV5
       : SAMPLE_PROFILE_MQTTV3;
-  FILE* f = sample_fopen_private(SAMPLE_ASSIGNMENT_TMP_FILE, true);
+  FILE* f = sample_file_open_private(SAMPLE_ASSIGNMENT_TMP_FILE, true);
   bool ok = f != NULL
       && fprintf(f, "%s\n%s\n%s\n", assignment->hub_hostname, assignment->device_id, profile) > 0
       && sample_file_flush_to_storage(f);
@@ -190,8 +190,8 @@ int main(void)
   }
 
   /* Every string cleanup frees is assigned before the first goto. */
-  char* op_key = sample_env_dup("AZ_IOT_OPERATIONAL_KEY", "operational_key.pem");
-  char* op_cert = sample_env_dup("AZ_IOT_OPERATIONAL_CERT", "operational_cert.pem");
+  char* op_key = sample_env_copy("AZ_IOT_OPERATIONAL_KEY", "operational_key.pem");
+  char* op_cert = sample_env_copy("AZ_IOT_OPERATIONAL_CERT", "operational_cert.pem");
 
   int rc = 1;
   sample_context ctx = { 0 };
