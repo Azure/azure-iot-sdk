@@ -13,18 +13,28 @@ using Microsoft.Azure.Devices;
 using System.Text.Json;
 using Xunit;
 using Microsoft.Azure.Iot.Device.Authentication;
+using Microsoft.Azure.Iot.Device.Unified.Models;
 
 namespace Microsoft.Azure.Iot.Device.IntegrationTests
 {
     public class Setup
     {
-        public static string MQTTv3IotHubConnectionString { get; set; } = Environment.GetEnvironmentVariable("IOTHUB_CONNECTION_STRING") ?? throw new ArgumentException("Missing env var");
+        // Read on use rather than at type initialization so that a missing variable fails only the tests that need it.
+        public static string MQTTv3IotHubConnectionString => GetRequiredEnvironmentVariable("IOTHUB_CONNECTION_STRING");
 
-        public static string DpsConnectionString { get; set; } = Environment.GetEnvironmentVariable("IOT_DPS_CONNECTION_STRING") ?? throw new ArgumentException("Missing env var");
+        public static string DpsConnectionString => GetRequiredEnvironmentVariable("IOT_DPS_CONNECTION_STRING");
 
-        public static string DpsIdScope { get; set; } = Environment.GetEnvironmentVariable("IOT_DPS_ID_SCOPE") ?? throw new ArgumentException("Missing env var");
+        public static string DpsIdScope => GetRequiredEnvironmentVariable("IOT_DPS_ID_SCOPE");
 
         public const string TestCertificatesPassword = "some fake password";
+
+        private static string GetRequiredEnvironmentVariable(string name)
+        {
+            string? value = Environment.GetEnvironmentVariable(name);
+            return string.IsNullOrWhiteSpace(value)
+                ? throw new InvalidOperationException($"Missing required environment variable '{name}'.")
+                : value;
+        }
 
         public static ServiceClient GetMQTTv3IotHubServiceClient() => ServiceClient.CreateFromConnectionString(MQTTv3IotHubConnectionString);
 
@@ -57,7 +67,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
                 Assert.Skip("No MQTTv5 hub to test against yet");
             }
 
-            ProvisioningServiceClient provisioningServiceClient = ProvisioningServiceClient.CreateFromConnectionString(DpsConnectionString);
+            using ProvisioningServiceClient provisioningServiceClient = GetDpsHubServiceClient();
 
             string deviceId = Guid.NewGuid().ToString();
             string registrationId = deviceId;
@@ -84,17 +94,26 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
             ConnectionClient connectionClient = new(options);
             ProvisioningSettings provisioningSettings = new(DpsIdScope);
 
-            ConnectionContext connectionContext = await RetryAroundAuthorizationAsync<ConnectionContext>(
-                async () => await connectionClient.ProvisionAndConnectAsync(provisioningSettings, x509AuthenticationProvider, cancellationToken: cancellationToken),
-                cancellationToken);
-
-            return new UnifiedDeviceTestContext()
+            try
             {
-                ConnectionClient = connectionClient,
-                ConnectionContext = connectionContext!,
-                AuthenticationProvider = x509AuthenticationProvider,
-                IndividualEnrollment = individualEnrollment,
-            };
+                ConnectionContext connectionContext = await RetryAroundAuthorizationAsync<ConnectionContext>(
+                    async () => await connectionClient.ProvisionAndConnectAsync(provisioningSettings, x509AuthenticationProvider, cancellationToken: cancellationToken),
+                    cancellationToken);
+
+                return new UnifiedDeviceTestContext()
+                {
+                    ConnectionClient = connectionClient,
+                    ConnectionContext = connectionContext!,
+                    AuthenticationProvider = x509AuthenticationProvider,
+                    IndividualEnrollment = individualEnrollment,
+                };
+            }
+            catch
+            {
+                await UnifiedDeviceTestContext.CleanupAsync(
+                    connectionClient, connectionClient.GetCurrentConnectionContext(), individualEnrollment);
+                throw;
+            }
         }
 
         public static async Task<UnifiedDeviceTestContext> CreateConnectedUnifiedConnectionClientWithCertificateSigningAsync(bool testAgainstClassicHub, ConnectionClientOptions? options = null, CancellationToken cancellationToken = default)
@@ -104,7 +123,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
                 Assert.Skip("No MQTTv5 hub to test against yet");
             }
 
-            ProvisioningServiceClient provisioningServiceClient = ProvisioningServiceClient.CreateFromConnectionString(DpsConnectionString);
+            using ProvisioningServiceClient provisioningServiceClient = GetDpsHubServiceClient();
 
             string registrationId = Environment.GetEnvironmentVariable("IOT_DPS_INDIVIDUAL_REGISTRATION_ID") ?? throw new Exception("TODO");
             string deviceId = registrationId;
@@ -284,6 +303,38 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
                         throw;
                     }
                 }
+            }
+        }
+
+        // Polls a condition until it becomes true or the timeout elapses.
+        public static async Task<bool> WaitUntilAsync(Func<Task<bool>> condition, TimeSpan timeout, CancellationToken cancellationToken)
+        {
+            DateTime deadline = DateTime.UtcNow + timeout;
+            while (DateTime.UtcNow < deadline)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                if (await condition())
+                {
+                    return true;
+                }
+
+                await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken);
+            }
+
+            return false;
+        }
+
+        public static async Task<bool> DeviceExistsAsync(RegistryManager registryManager, string deviceId, CancellationToken cancellationToken)
+        {
+            try
+            {
+                return await registryManager.GetDeviceAsync(deviceId, cancellationToken) != null;
+            }
+            catch
+            {
+                // Treat any failure to read the device (including a not-found response) as the device not being present.
+                return false;
             }
         }
     }

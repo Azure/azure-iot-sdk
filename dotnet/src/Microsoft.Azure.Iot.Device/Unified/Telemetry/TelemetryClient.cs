@@ -3,10 +3,10 @@
 
 using Microsoft.Azure.Iot.Device.Events;
 using Microsoft.Azure.Iot.Device.Exceptions;
-using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Models.Telemetry;
 using Microsoft.Azure.Iot.Device.Mqtt;
 using Microsoft.Azure.Iot.Device.Unified.Connection;
+using Microsoft.Azure.Iot.Device.Unified.Models;
 using System.Diagnostics;
 using System.Globalization;
 
@@ -131,8 +131,9 @@ namespace Microsoft.Azure.Iot.Device.Unified.Telemetry
                 mqttMessage.Topic += $"&{Uri.EscapeDataString(customUserPropertyKey)}={Uri.EscapeDataString(message.UserProperties[customUserPropertyKey])}";
             }
 
-            // Puback is checked for non-success cases under this layer, so no need to check it here as well
+            // The connection client returns the PUBACK as-is, so a rejected request must be surfaced here.
             MqttPublishAck puback = await _connection.PublishAsync(mqttMessage, cancellationToken);
+            MqttAckValidator.ThrowIfPubackHasErrorCode(puback);
         }
 
         private async Task HandleReceivedMqttPublish(MqttPublishReceivedEventArgs args)

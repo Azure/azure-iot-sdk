@@ -3,6 +3,7 @@
 
 using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Mqtt;
+using Microsoft.Azure.Iot.Device.Unified.Models;
 
 namespace Microsoft.Azure.Iot.Device.Unified.Connection
 {
@@ -58,6 +59,12 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
         /// reconnected to IoT hub (including after re-provisioning, in which case it is sent to the newly assigned hub
         /// with the newly assigned device ID), so IoT hub may receive it more than once.
         /// </remarks>
+        /// <param name="publish">The publish to send.</param>
+        /// <param name="cancellationToken">The cancellation token.</param>
+        /// <returns>
+        /// The PUBACK as received from IoT hub. This method does not throw if the PUBACK reports an error, so check its
+        /// reason code(s) to see whether IoT hub accepted the request.
+        /// </returns>
         Task<MqttPublishAck> PublishAsync(MqttPublish publish, CancellationToken cancellationToken = default);
 
         /// <summary>
@@ -68,6 +75,12 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
         /// If the connection is lost before the SUBACK arrives, the SUBSCRIBE is sent again once the device is reconnected
         /// to IoT hub, including after re-provisioning.
         /// </remarks>
+        /// <param name="subscribe">The subscribe to send.</param>
+        /// <param name="cancellationToken">The cancellation token.</param>
+        /// <returns>
+        /// The SUBACK as received from IoT hub. This method does not throw if the SUBACK reports an error, so check its
+        /// reason code(s) to see whether IoT hub accepted the request.
+        /// </returns>
         Task<MqttSubscribeAck> SubscribeAsync(MqttSubscribe subscribe, CancellationToken cancellationToken = default);
 
         /// <summary>
@@ -78,6 +91,12 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
         /// If the connection is lost before the UNSUBACK arrives, the UNSUBSCRIBE is sent again once the device is
         /// reconnected to IoT hub, including after re-provisioning.
         /// </remarks>
+        /// <param name="unsubscribe">The unsubscribe to send.</param>
+        /// <param name="cancellationToken">The cancellation token.</param>
+        /// <returns>
+        /// The UNSUBACK as received from IoT hub. This method does not throw if the UNSUBACK reports an error, so check its
+        /// reason code(s) to see whether IoT hub accepted the request.
+        /// </returns>
         Task<MqttUnsubscribeAck> UnsubscribeAsync(MqttUnsubscribe unsubscribe, CancellationToken cancellationToken = default);
 
         event Func<MqttPublishReceivedEventArgs, Task> PublishReceivedAsync;
