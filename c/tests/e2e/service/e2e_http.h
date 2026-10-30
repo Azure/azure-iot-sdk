@@ -99,9 +99,9 @@ extern "C"
       const char* client_cert_pem,
       const char* client_key_pem);
 
-  /* Parse the status line, Content-Length and Retry-After from r->response once the
-   * header block is complete; no-op before that or once parsed. Called by
-   * e2e_http_poll; exposed for tests. */
+  /* Parse the status line from r->response once it is complete, then Content-Length and
+   * Retry-After once the header block is; no-op once parsed. Called by e2e_http_poll;
+   * exposed for tests. */
   void e2e_http_parse_headers(e2e_http_request* r);
 
   /* True once the parsed headers and the bytes received make a complete response:
@@ -109,10 +109,11 @@ extern "C"
   bool e2e_http_response_complete(const e2e_http_request* r);
 
   /* Advance the request state machine a little without blocking on the device.
-   * Returns 0 while pending, 1 when the response is complete, -1 on error. */
+   * Returns 0 while pending, 1 when the response is complete, -1 on error, including a
+   * connection closed before the end of the response headers. */
   int e2e_http_poll(e2e_http_request* r);
 
-  /* Valid once e2e_http_poll returns 1: the parsed HTTP status code. */
+  /* The status code from the response's status line; 0 until that line has arrived. */
   int e2e_http_status(const e2e_http_request* r);
 
   /* Valid once e2e_http_poll returns 1: Retry-After in seconds, 0 when absent or
@@ -131,8 +132,8 @@ extern "C"
   /**
    * @brief Whether an unfinished request may be sent again on a new connection.
    *
-   * @return true when no response status arrived and either none of the request was sent
-   * or the request is @p idempotent.
+   * @return true when no status line arrived and either none of the request was sent or
+   * the request is @p idempotent.
    */
   bool e2e_http_retry_is_safe(const e2e_http_request* r, bool idempotent);
 

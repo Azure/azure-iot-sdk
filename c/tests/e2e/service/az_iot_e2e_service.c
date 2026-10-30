@@ -882,8 +882,8 @@ static void log_failed_attempt(
  * request is abandoned after #E2E_HTTPS_IDEMPOTENT_TIMEOUT_S rather than
  * #E2E_HTTPS_TIMEOUT_S, as it can be retried whatever stage it reached.
  *
- * @return true when a complete response arrived. @p out_status and the other outputs are
- * set whenever a status line arrived, even with an incomplete body.
+ * @return true when a complete response arrived. @p out_status is set once a status line
+ * arrived; the other outputs once the header block did, even with an incomplete body.
  */
 static bool https_request(
     const char* host,
@@ -964,12 +964,12 @@ static bool https_request(
     e2e_http_end(r);
   }
 
+  if (out_status != NULL && e2e_http_status(r) != 0)
+  {
+    *out_status = e2e_http_status(r);
+  }
   if (r->headers_done)
   {
-    if (out_status != NULL)
-    {
-      *out_status = e2e_http_status(r);
-    }
     if (out_retry_after != NULL)
     {
       *out_retry_after = e2e_http_retry_after(r);
