@@ -1125,6 +1125,8 @@ jobs:
   # -installed-deps uses azure-sdk-for-c and Paho from a prefix (AZ_IOT_USE_INSTALLED_*).
   # -no-paho builds without Paho: neither the build nor the package may reference
   # it, and asking the package for adapter_paho must fail.
+  # -openssl-4.1-static links a static OpenSSL 4.1.0 built from source
+  # (.github/actions/install-openssl), in the SDK, Paho and the consumer.
   # ---------------------------------------------------------------------------
   install:
     name: install / ${{ matrix.name }}
@@ -1158,6 +1160,12 @@ jobs:
             name: windows-msvc-shared
             shared: 'ON'
             mbedtls: ''
+            components: core;mqttv3;mqttv5;adapter_paho;adapter_az_mqtt;crypto_openssl;certificate_provider_managed
+          - os: windows-latest
+            name: windows-msvc-openssl-4.1-static
+            shared: 'OFF'
+            mbedtls: ''
+            openssl: '4.1.0'
             components: core;mqttv3;mqttv5;adapter_paho;adapter_az_mqtt;crypto_openssl;certificate_provider_managed
           - os: ubuntu-24.04
             name: linux-gcc-no-paho
@@ -1209,6 +1217,13 @@ jobs:
         if: matrix.mbedtls != ''
         run: bash eng/install-mbedtls.sh ${{ matrix.mbedtls }} "$AZ_IOT_MBEDTLS"
 
+      - name: Install OpenSSL ${{ matrix.openssl }} (static)
+        if: matrix.openssl != ''
+        uses: ./.github/actions/install-openssl # zizmor: ignore[self-repository]
+        with:
+          version: ${{ matrix.openssl }}
+          static: 'true'
+
       - name: Install azure-sdk-for-c and Paho
         if: matrix.installed_deps == 'ON'
         run: bash eng/install-deps.sh "$AZ_IOT_DEPS"
@@ -1227,6 +1242,11 @@ jobs:
           -DAZ_IOT_BUILD_SAMPLES=OFF
           -DAZ_IOT_WITH_AZ_MQTT=ON
           -DBUILD_SHARED_LIBS=${{ matrix.shared }}
+          ${{ matrix.openssl != '' && '-DOPENSSL_USE_STATIC_LIBS=TRUE' || '' }}
+      - name: Check the OpenSSL in use
+        if: matrix.openssl != ''
+        # A static build has no import library: libcrypto.lib under the root is the static library.
+        run: grep -F "LIB_EAY_RELEASE:FILEPATH=$OPENSSL_ROOT_DIR/lib/libcrypto.lib" build/install/CMakeCache.txt
       - name: Build
         run: cmake --build build/install
       - name: Unit tests
@@ -1275,6 +1295,7 @@ jobs:
           -DCMAKE_BUILD_TYPE=Release
           -DCMAKE_PREFIX_PATH="$AZ_IOT_PREFIX;$AZ_IOT_MBEDTLS;$AZ_IOT_DEPS"
           -DAZ_IOT_EXPECTED_COMPONENTS="${{ matrix.components }}"
+          ${{ matrix.openssl != '' && '-DOPENSSL_USE_STATIC_LIBS=TRUE' || '' }}
       - name: Build the consumer
         run: cmake --build "$AZ_IOT_CONSUMER"
       - name: Put the installed DLLs on PATH (Windows, shared)

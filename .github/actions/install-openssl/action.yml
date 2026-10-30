@@ -11,6 +11,10 @@ inputs:
   version:
     description: OpenSSL version pinned in c/eng/install-openssl.sh.
     required: true
+  static:
+    description: "'true': static libraries only; configure with -DOPENSSL_USE_STATIC_LIBS=TRUE."
+    required: false
+    default: 'false'
 runs:
   using: composite
   steps:
@@ -19,34 +23,41 @@ runs:
       shell: bash
       env:
         VERSION: ${{ inputs.version }}
+        STATIC: ${{ inputs.static }}
         SCRIPT_HASH: ${{ hashFiles('c/eng/install-openssl.sh') }}
-      run: echo "key=openssl-${VERSION}-${RUNNER_OS}-${RUNNER_ARCH}-${ImageOS}-${SCRIPT_HASH}" >> "$GITHUB_OUTPUT"
+      run: |
+        dir="openssl-${VERSION}$([ "$STATIC" = true ] && echo -static || true)"
+        echo "dir=$dir" >> "$GITHUB_OUTPUT"
+        echo "key=${dir}-${RUNNER_OS}-${RUNNER_ARCH}-${ImageOS}-${SCRIPT_HASH}" >> "$GITHUB_OUTPUT"
     - name: Restore OpenSSL
       id: restore
       uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
       with:
-        path: ${{ runner.temp }}/openssl-${{ inputs.version }}
+        path: ${{ runner.temp }}/${{ steps.key.outputs.dir }}
         key: ${{ steps.key.outputs.key }}
     - name: Build OpenSSL
       if: steps.restore.outputs.cache-hit != 'true'
       shell: bash
       env:
         VERSION: ${{ inputs.version }}
-      run: bash "$GITHUB_WORKSPACE/c/eng/install-openssl.sh" "$VERSION" "$RUNNER_TEMP/openssl-$VERSION"
+        DIR: ${{ steps.key.outputs.dir }}
+        STATIC: ${{ inputs.static }}
+      run: bash "$GITHUB_WORKSPACE/c/eng/install-openssl.sh" "$VERSION" "$RUNNER_TEMP/$DIR" $([ "$STATIC" = true ] && echo static || true)
     - name: Save OpenSSL
       if: steps.restore.outputs.cache-hit != 'true'
       uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
       with:
-        path: ${{ runner.temp }}/openssl-${{ inputs.version }}
+        path: ${{ runner.temp }}/${{ steps.key.outputs.dir }}
         key: ${{ steps.key.outputs.key }}
     - name: Select OpenSSL
       shell: bash
       env:
         VERSION: ${{ inputs.version }}
+        DIR: ${{ steps.key.outputs.dir }}
       # Writes only RUNNER_TEMP-derived paths and the caller's literal version to GITHUB_ENV/PATH.
       run: | # zizmor: ignore[github-env]
         set -euo pipefail
-        root="$RUNNER_TEMP/openssl-$VERSION"
+        root="$RUNNER_TEMP/$DIR"
         if [ "$RUNNER_OS" = Windows ]; then root="$(cygpath -m "$root")"; fi
         "$root/bin/openssl" version | grep -F "OpenSSL $VERSION "
         echo "OPENSSL_ROOT_DIR=$root" >> "$GITHUB_ENV"
