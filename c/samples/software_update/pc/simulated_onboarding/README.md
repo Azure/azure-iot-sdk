@@ -314,9 +314,9 @@ At startup, with the defaults (SDK log lines omitted):
 ```
 Matched against a deployed update: manufacturer=Contoso model=SU-Sim
 Reported only (not matched): installedUpdateId=Contoso/SU-Sim/1.0.0
-Provisioning: Idle -> Setting up (AZ_IOT_OK)
+Provisioning: AZ_IOT_CONN_STATE_IDLE -> AZ_IOT_CONN_STATE_SETTING_UP (AZ_IOT_OK)
 ...
-Provisioning: Connecting -> Connected (AZ_IOT_OK)
+Provisioning: AZ_IOT_CONN_STATE_CONNECTING -> AZ_IOT_CONN_STATE_CONNECTED (AZ_IOT_OK)
 Provisioning session up. Running (Ctrl-C to exit)...
 ```
 

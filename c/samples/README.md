@@ -65,6 +65,13 @@ the assigned profile. The `unified/` samples respond in one of three ways:
 
 See [Architecture](../docs/architecture.md#hub-generations-mqttv3-and-mqttv5).
 
+## Shared code
+
+[`common/`](common/) holds platform plumbing only: environment variables, clock and sleep,
+owner-only and atomic file writes, the Ctrl+C/SIGTERM stop flag, the log sink, and the simulated
+TPM. What a sample demonstrates (options, certificate providers, callbacks, `do_work()` loops,
+teardown) is in its `main.c`.
+
 ## Prerequisites
 
 ### Azure

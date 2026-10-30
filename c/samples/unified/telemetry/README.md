@@ -88,11 +88,11 @@ Runs about 60 seconds. Exit code 0 when at least one message was sent and the co
 The sample prints a summary line at the end; SDK warnings and errors go to stderr.
 
 ```
-Sent 11 message(s) on MQTTv3 (MQTT v3.1.1), 0 failed.
+Sent 11 message(s) on AZ_IOT_CONNECTION_PROFILE_MQTT_V3, 0 failed.
 ```
 
 The count depends on how long connecting took. When DPS assigns the other generation, the
-sample first prints `DPS assigned MQTTv5 (MQTT v5); rebuilding the telemetry client.`
+sample first prints `DPS assigned AZ_IOT_CONNECTION_PROFILE_MQTT_V5; rebuilding the telemetry client.`
 
 ## Troubleshooting
 
@@ -108,7 +108,7 @@ sample first prints `DPS assigned MQTTv5 (MQTT v5); rebuilding the telemetry cli
 | What | Code |
 | --- | --- |
 | Register both MQTT adapters (DPS always uses MQTT 3.1.1) | `az_iot_paho_factory_create_v3_1_1()`, `az_iot_paho_factory_create_v5()`; az_mqtt: `az_iot_az_mqtt_factory_create_v3_1_1()`, `az_iot_az_mqtt_factory_create_v5()` |
-| Build the client for an assumed generation before `open()` | `telemetry_build()` with `sample_initial_profile()` |
-| Detect that DPS assigned the other generation | `on_conn_state()` → `sample_event_is_profile_mismatch()` |
+| Build the client for an assumed generation before `open()` | `telemetry_build()` with `AZ_IOT_CONNECTION_PROFILE_MQTT_V3` |
+| Detect that DPS assigned the other generation | `on_conn_state()`: `AZ_IOT_CONN_STATE_FAULTED` with `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH`; `event->profile` holds the assigned one |
 | Rebuild and reconnect | main loop: `telemetry_destroy()`, `az_iot_connection_client_close()`, `telemetry_build()`, `az_iot_connection_client_open()` |
 | Send | `az_iot_mqttv3_telemetry_client_send()` / `az_iot_mqttv5_telemetry_client_send()`, completion in `on_send_done()` |

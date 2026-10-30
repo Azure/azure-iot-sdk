@@ -112,7 +112,7 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
       stderr,
       "[dps_sas_key] %s: %s (%s), credential: %s%s\n",
       event->scope == AZ_IOT_CONN_SCOPE_DPS ? "dps" : "hub",
-      sample_connection_state_name(event->state),
+      az_iot_connection_state_to_string(event->state),
       az_iot_result_to_string(event->reason),
       auth_source_name(event->auth_source),
       event->is_credential_renewal ? " (token renewal)" : "");
@@ -155,12 +155,16 @@ static void pump(az_iot_connection_client* client)
 /** @brief Sends one message on the generation DPS assigned. */
 static az_iot_result send_telemetry(az_iot_connection_client* client, sample_context* ctx)
 {
-  az_iot_connection_profile profile = AZ_IOT_CONNECTION_PROFILE_UNKNOWN;
-  az_iot_result r = sample_get_hub_profile(client, &profile);
+  /* The generation DPS assigned decides which telemetry client to use. */
+  az_iot_hub_profile hub_profile;
+  az_iot_result r = az_iot_connection_client_get_hub_profile(client, &hub_profile);
   if (r != AZ_IOT_OK)
   {
+    printf("Hub profile not available: %s\n", az_iot_result_to_string(r));
     return r;
   }
+  az_iot_connection_profile profile = hub_profile.connection_profile;
+  printf("Hub profile: %s\n", az_iot_connection_profile_to_string(profile));
   static const uint8_t payload[] = "{\"auth\":\"sas-key\"}";
   az_iot_telemetry_message msg = { 0 };
   msg.payload = payload;
@@ -203,14 +207,14 @@ int main(void)
   az_iot_log_set_global_sink(&log);
 
   sas_config config = {
-    .id_scope = sample_env_dup("AZ_IOT_DPS_ID_SCOPE", NULL),
-    .reg_id = sample_env_dup("AZ_IOT_DPS_REGISTRATION_ID", NULL),
-    .key = sample_env_dup("AZ_IOT_DPS_SYMMETRIC_KEY", NULL),
-    .group_key = sample_env_dup("AZ_IOT_DPS_ENROLLMENT_GROUP_KEY", NULL),
-    .secondary_key = sample_env_dup("AZ_IOT_DPS_SECONDARY_KEY", NULL),
-    .renewal_percent = sample_env_dup("AZ_IOT_SAS_TOKEN_RENEWAL_PERCENT", NULL),
-    .ca = sample_env_dup("AZ_IOT_TRUSTED_CA", NULL),
-    .endpoint = sample_env_dup("AZ_IOT_DPS_GLOBAL_ENDPOINT", NULL),
+    .id_scope = sample_env_copy("AZ_IOT_DPS_ID_SCOPE", NULL),
+    .reg_id = sample_env_copy("AZ_IOT_DPS_REGISTRATION_ID", NULL),
+    .key = sample_env_copy("AZ_IOT_DPS_SYMMETRIC_KEY", NULL),
+    .group_key = sample_env_copy("AZ_IOT_DPS_ENROLLMENT_GROUP_KEY", NULL),
+    .secondary_key = sample_env_copy("AZ_IOT_DPS_SECONDARY_KEY", NULL),
+    .renewal_percent = sample_env_copy("AZ_IOT_SAS_TOKEN_RENEWAL_PERCENT", NULL),
+    .ca = sample_env_copy("AZ_IOT_TRUSTED_CA", NULL),
+    .endpoint = sample_env_copy("AZ_IOT_DPS_GLOBAL_ENDPOINT", NULL),
   };
   if (!is_set(config.id_scope) || !is_set(config.reg_id)
       || is_set(config.key) == is_set(config.group_key))

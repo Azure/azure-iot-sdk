@@ -70,7 +70,7 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
       stderr,
       "[dps_csr] %s: %s (%s)\n",
       is_dps ? "dps" : "hub",
-      sample_connection_state_name(event->state),
+      az_iot_connection_state_to_string(event->state),
       az_iot_result_to_string(event->reason));
 
   /* Transport codes are adapter-defined, so they are not printed. */
@@ -180,9 +180,9 @@ int main(void)
   }
 
   /* Every string cleanup frees is assigned before the first goto. */
-  char* op_key = sample_env_dup("AZ_IOT_OPERATIONAL_KEY", "operational_key.pem");
-  char* op_cert = sample_env_dup("AZ_IOT_OPERATIONAL_CERT", "operational_cert.pem");
-  char* registration_payload = sample_env_dup("AZ_IOT_DPS_REGISTRATION_PAYLOAD", NULL);
+  char* op_key = sample_env_copy("AZ_IOT_OPERATIONAL_KEY", "operational_key.pem");
+  char* op_cert = sample_env_copy("AZ_IOT_OPERATIONAL_CERT", "operational_cert.pem");
+  char* registration_payload = sample_env_copy("AZ_IOT_DPS_REGISTRATION_PAYLOAD", NULL);
 
   int rc = 1;
   sample_context ctx = { 0 };

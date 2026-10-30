@@ -210,7 +210,7 @@ int main(void)
     /* Built after CONNECTED, and again before every publish in a real device:
      * provisioning may assign a different device id. */
     char* topic_template
-        = sample_env_dup("AZ_IOT_CUSTOM_TOPIC_TEMPLATE", "contoso/{deviceId}/telemetry");
+        = sample_env_copy("AZ_IOT_CUSTOM_TOPIC_TEMPLATE", "contoso/{deviceId}/telemetry");
     char topic[AZ_IOT_MQTTV5_CUSTOM_TOPIC_MAX_LEN + 1];
     az_iot_result result = az_iot_mqttv5_custom_topic_client_format_topic(
         &state.custom, topic_template, topic, sizeof(topic), NULL);
