@@ -271,6 +271,9 @@ extern "C"
        * safety margin; receipt time plus the connection's
        * max_unconfirmed_delivery_timeout_ms when the exec carried no expiry. */
       uint64_t exec_deadline_ms[AZ_IOT_MQTTV5_DM_MAX_CONCURRENT];
+      /* Parallel to req_pool: seq of the last unanswered invocation reclaimed at its result
+       * deadline, so respond() on it still returns AZ_IOT_ERR_TIMEOUT. */
+      uint32_t expired_request_seq[AZ_IOT_MQTTV5_DM_MAX_CONCURRENT];
       /* Bumped on every acquire and copied into the request handed out, so a
        * request naming a slot that has since been reused no longer matches. */
       uint32_t next_seq;
@@ -479,8 +482,8 @@ extern "C"
    *         @p payload_len exceeds AZ_IOT_MQTTV5_DM_RESULT_BODY_MAX,
    *         AZ_IOT_ERR_TIMEOUT if the result deadline has been reached -- nothing
    *         is sent in that case, because the service has given up or would
-   *         before the result arrived. A request whose slot was already
-   *         reclaimed past its deadline returns AZ_IOT_ERR_INVALID_ARG.
+   *         before the result arrived; also when its slot was already
+   *         reclaimed at that deadline.
    */
   az_iot_result az_iot_mqttv5_direct_method_respond(
       az_iot_mqttv5_direct_method_client* client,

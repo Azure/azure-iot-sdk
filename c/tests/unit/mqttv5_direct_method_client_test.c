@@ -4112,6 +4112,119 @@ static void an_exec_budget_smaller_than_the_safety_margin_never_runs(void** stat
   assert_null(find_phase(fx->mock, "result:1"));
 }
 
+/* A TICK reclaims an unanswered invocation at its result deadline; answering it after that still
+ * says AZ_IOT_ERR_TIMEOUT, as before the reclaim. */
+static void an_invocation_reclaimed_at_its_deadline_is_answered_with_timeout(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  invocation_record rec = { 0 };
+  fx->rec = &rec;
+  start_invocation(fx, 0xE1, 300, 300);
+  assert_true(rec.fired);
+  *result_deadline_of(fx, rec.request) = az_iot_time_mono_ms();
+  (void)az_iot_connection_client_do_work(&fx->conn, 0);
+  assert_false(fx->dm._internal.req_pool[rec.request._internal.slot]._internal.in_use);
+
+  az_iot_mock_mqtt_client_clear_calls(fx->mock);
+  assert_int_equal(
+      az_iot_mqttv5_direct_method_respond(&fx->dm, rec.request, 200, NULL, 0), AZ_IOT_ERR_TIMEOUT);
+  assert_null(find_phase(fx->mock, "result:1"));
+}
+
+/* A result queued past its result deadline is not sent, even though the tracker counts its own
+ * time limit from respond(). */
+static void a_result_past_its_deadline_is_not_sent_by_a_replay(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  invocation_record rec = { 0 };
+  fx->rec = &rec;
+  start_invocation(fx, 0xE2, 300, 300);
+  reconnect_to_connack(fx);
+  assert_int_equal(
+      az_iot_mqttv5_direct_method_respond(&fx->dm, rec.request, 200, NULL, 0), AZ_IOT_OK);
+  *result_deadline_of(fx, rec.request) = az_iot_time_mono_ms();
+  finish_birth(fx);
+  assert_int_equal(count_phase(fx->mock, "result:1"), 0);
+  assert_false(fx->dm._internal.req_pool[rec.request._internal.slot]._internal.in_use);
+}
+
+/* While not connected, every notice spent and a token's ready wait ending in the same TICK: the
+ * spent notices are reclaimed first, so the Abandon is held and sent on CONNECTED. */
+static void an_abandon_is_held_when_spent_notices_fill_the_queue(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  uint8_t token_id[16];
+  make_request_id(token_id, 0xE3);
+  uint8_t ready_id[16];
+  probe_and_accept(fx, token_id, "reboot", 300, ready_id);
+  ack_last_phase(fx, "probe-ack:1");
+
+  reconnect_to_connack(fx);
+  uint8_t frame[128];
+  size_t frame_len = build_probe(frame, "not-declared", 300);
+  for (uint8_t i = 0; i < AZ_IOT_MQTTV5_DM_NOTICE_QUEUE_MAX; ++i)
+  {
+    uint8_t held[16];
+    make_request_id(held, (uint8_t)(0xE4 + i));
+    inject_dm(fx, DEV_TOPIC, "probe:1", held, 16, frame, frame_len, 1);
+  }
+  sleep_past_one_second();
+  for (size_t i = 0; i < AZ_IOT_MQTTV5_DM_MAX_CONCURRENT; ++i)
+  {
+    if (fx->dm._internal.ready_pool[i]._internal.in_use)
+    {
+      fx->dm._internal.ready_pool[i]._internal.expires_at_ms = az_iot_time_mono_ms();
+    }
+  }
+  (void)az_iot_connection_client_do_work(&fx->conn, 0);
+
+  finish_birth(fx);
+  const az_iot_mock_call* abandon = find_phase(fx->mock, "abandon:1");
+  assert_non_null(abandon);
+  assert_memory_equal(abandon->correlation_data, token_id, 16);
+}
+
+/* A blocking do_work() waits no longer than the earliest ready wait or unanswered result
+ * deadline, which have no message in flight to bound it. */
+static void the_wait_ends_by_the_next_token_or_request_deadline(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  uint8_t token_id[16];
+  make_request_id(token_id, 0xEA);
+  uint8_t ready_id[16];
+  probe_and_accept(fx, token_id, "reboot", 300, ready_id);
+  ack_last_phase(fx, "probe-ack:1");
+  for (size_t i = 0; i < AZ_IOT_MQTTV5_DM_MAX_CONCURRENT; ++i)
+  {
+    if (fx->dm._internal.ready_pool[i]._internal.in_use)
+    {
+      fx->dm._internal.ready_pool[i]._internal.expires_at_ms = az_iot_time_mono_ms() + 5000u;
+    }
+  }
+  (void)az_iot_connection_client_do_work(&fx->conn, UINT32_MAX);
+  uint32_t waited
+      = az_iot_mock_mqtt_client_last_of(fx->mock, AZ_IOT_MOCK_CALL_PROCESS_LOOP)->timeout_ms;
+  assert_true(waited <= 5000u && waited >= 4000u);
+
+  invocation_record rec = { 0 };
+  fx->rec = &rec;
+  uint8_t exec[64];
+  size_t exec_len = build_exec(exec, ready_id, 16, NULL, 0);
+  inject_dm(fx, DEV_TOPIC, "exec:1", token_id, 16, exec, exec_len, 300);
+  assert_true(rec.fired);
+  *result_deadline_of(fx, rec.request) = az_iot_time_mono_ms() + 3000u;
+  (void)az_iot_connection_client_do_work(&fx->conn, UINT32_MAX);
+  waited = az_iot_mock_mqtt_client_last_of(fx->mock, AZ_IOT_MOCK_CALL_PROCESS_LOOP)->timeout_ms;
+  assert_true(waited <= 3000u && waited >= 2000u);
+}
 static void a_held_result_is_dropped_once_its_deadline_passes(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -4865,6 +4978,14 @@ int main(void)
         a_held_result_without_expiry_is_sent_with_none, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_held_result_without_expiry_is_dropped_past_the_option, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        an_invocation_reclaimed_at_its_deadline_is_answered_with_timeout, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_result_past_its_deadline_is_not_sent_by_a_replay, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        an_abandon_is_held_when_spent_notices_fill_the_queue, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        the_wait_ends_by_the_next_token_or_request_deadline, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_held_notice_without_budget_is_dropped_past_the_option, setup, teardown),
     cmocka_unit_test_setup_teardown(

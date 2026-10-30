@@ -560,6 +560,8 @@ static void on_probe_ack_complete(
   }
 }
 
+static bool exec_budget_is_spent(const az_iot_mqttv5_direct_method_client* dm, size_t index);
+
 static az_iot_result encode_result(void* owner, size_t entry_index, az_iot_mqtt_message* out)
 {
   az_iot_mqttv5_direct_method_client* dm = (az_iot_mqttv5_direct_method_client*)owner;
@@ -567,6 +569,11 @@ static az_iot_result encode_result(void* owner, size_t entry_index, az_iot_mqtt_
   if (index >= AZ_IOT_MQTTV5_DM_MAX_CONCURRENT)
   {
     return AZ_IOT_ERR_INTERNAL;
+  }
+  /* The tracker counts its time limit from submit(), so check the absolute deadline too. */
+  if (exec_budget_is_spent(dm, index))
+  {
+    return AZ_IOT_ERR_TIMEOUT;
   }
   /* The result deadline reserves the safety margin (at least 1 s) before the budget ends, so the
    * expiry is never 0 for a finite budget while the entry is live. */
@@ -904,6 +911,7 @@ static void requests_expire_stale(az_iot_mqttv5_direct_method_client* dm)
         "'%s' was never answered and its response budget has run out; "
         "reclaiming its slot",
         RI(s).method_name);
+    DI(dm).expired_request_seq[i] = RI(s).seq;
     RI(s).in_use = false;
   }
 }
@@ -1329,18 +1337,54 @@ static void discard_previous_identity_state(az_iot_mqttv5_direct_method_client* 
   }
 }
 
-/** @brief Feature observer: expiry on every TICK, and an identity change ends every reply. */
+/**
+ * @brief Lower @p remaining_ms to the earliest ready-wait end or unanswered result deadline: they
+ *        have no tracker entry to bound the adapter wait.
+ */
+static void lower_remaining_to_next_expiry(
+    const az_iot_mqttv5_direct_method_client* dm,
+    uint64_t* remaining_ms)
+{
+  uint64_t earliest = UINT64_MAX;
+  for (size_t i = 0; i < AZ_IOT_MQTTV5_DM_MAX_CONCURRENT; ++i)
+  {
+    const az_iot_mqttv5_direct_method_ready_slot* slot = &DI(dm).ready_pool[i];
+    if (RI(slot).in_use && RI(slot).expires_at_ms < earliest)
+    {
+      earliest = RI(slot).expires_at_ms;
+    }
+    if (DI(dm).req_pool[i]._internal.in_use && DI(dm).result_entry[i] == DM_NO_ENTRY
+        && DI(dm).exec_deadline_ms[i] < earliest)
+    {
+      earliest = DI(dm).exec_deadline_ms[i];
+    }
+  }
+  uint64_t const now = az_iot_time_mono_ms();
+  uint64_t const left = (earliest > now) ? earliest - now : 0u;
+  *remaining_ms = (left < *remaining_ms) ? left : *remaining_ms;
+}
+
+/**
+ * @brief Feature observer: expiry on every TICK, the adapter wait bounded by it, and an identity
+ *        change ends every reply.
+ */
 static void on_connection_event(const az_iot_connection_feature_event* event, void* user_ctx)
 {
   az_iot_mqttv5_direct_method_client* dm = (az_iot_mqttv5_direct_method_client*)user_ctx;
   if (event->kind == AZ_IOT_CONNECTION_FEATURE_EVENT_TICK)
   {
+    /* First, so notices the tracker would expire in this TICK make room for an Abandon. */
+    az_iot_delivery_tracker__expire_due(&DI(dm).tracker);
     ready_expire_stale(dm);
     requests_expire_stale(dm);
   }
   else if (event->kind == AZ_IOT_CONNECTION_FEATURE_EVENT_IDENTITY_CHANGED)
   {
     discard_previous_identity_state(dm);
+  }
+  else if (event->kind == AZ_IOT_CONNECTION_FEATURE_EVENT_NEXT_DEADLINE)
+  {
+    lower_remaining_to_next_expiry(dm, event->remaining_ms);
   }
 }
 
@@ -1419,7 +1463,8 @@ AZ_NODISCARD az_iot_result az_iot_mqttv5_direct_method_client_init(
   {
     result = az_iot_connection_client__add_feature_observer(
         conn,
-        AZ_IOT_CONNECTION_FEATURE_EVENT_TICK | AZ_IOT_CONNECTION_FEATURE_EVENT_IDENTITY_CHANGED,
+        AZ_IOT_CONNECTION_FEATURE_EVENT_TICK | AZ_IOT_CONNECTION_FEATURE_EVENT_IDENTITY_CHANGED
+            | AZ_IOT_CONNECTION_FEATURE_EVENT_NEXT_DEADLINE,
         on_connection_event,
         client);
   }
@@ -1586,6 +1631,15 @@ az_iot_result az_iot_mqttv5_direct_method_respond(
   az_iot_direct_method_slot* slot = request_resolve(dm, request, &index);
   if (slot == NULL)
   {
+    if (request._internal.owner == dm && request._internal.slot < AZ_IOT_MQTTV5_DM_MAX_CONCURRENT
+        && request._internal.seq != 0u
+        && DI(dm).expired_request_seq[request._internal.slot] == request._internal.seq)
+    {
+      AZ_IOT_LOG_WARN(
+          AZ_IOT_LOG_COMPONENT_MQTTV5_DIRECT_METHOD,
+          "respond() called after the result deadline reclaimed the invocation; sending no result");
+      return AZ_IOT_ERR_TIMEOUT;
+    }
     AZ_IOT_LOG_ERROR(
         AZ_IOT_LOG_COMPONENT_MQTTV5_DIRECT_METHOD,
         "respond() called on a request that is no longer live -- "
