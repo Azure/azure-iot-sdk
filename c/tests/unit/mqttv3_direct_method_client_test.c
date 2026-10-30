@@ -1143,10 +1143,16 @@ static void an_init_failing_after_its_observer_returns_it(void** state)
   fixture* fx = (fixture*)*state;
   az_iot_mqttv3_direct_method_client_deinit(&fx->dm);
 
-  static int owners[64];
-  char filters[64][32];
+  /* One more than the table holds, so the last registration is the one refused. */
+  enum
+  {
+    FILLERS = AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_PERSISTENT_SUBSCRIPTIONS + 1
+  };
+  assert_true(fx->conn.opts.limits.max_persistent_subscriptions < (size_t)FILLERS);
+  static int owners[FILLERS];
+  static char filters[FILLERS][32];
   size_t taken = 0;
-  while (taken < 64)
+  while (taken < (size_t)FILLERS)
   {
     snprintf(filters[taken], sizeof(filters[taken]), "filler/%u", (unsigned)taken);
     if (az_iot_connection_client__add_subscription_on_connect(
@@ -1162,7 +1168,7 @@ static void an_init_failing_after_its_observer_returns_it(void** state)
     }
     taken++;
   }
-  assert_true(taken < 64);
+  assert_true(taken < (size_t)FILLERS);
   assert_int_not_equal(az_iot_mqttv3_direct_method_client_init(&fx->dm, &fx->conn), AZ_IOT_OK);
   for (size_t i = 0; i < fx->conn.opts.limits.max_feature_observers; ++i)
   {
