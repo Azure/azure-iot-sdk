@@ -11,6 +11,8 @@ using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Text;
 using Xunit;
+using UnifiedConnectionClient = Microsoft.Azure.Iot.Device.Unified.Connection.ConnectionClient;
+using UnifiedDirectMethodClient = Microsoft.Azure.Iot.Device.Unified.DirectMethods.DirectMethodClient;
 
 namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
 {
@@ -110,7 +112,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
         [InlineData(false, false)]
         [InlineData(true, false)]
         [InlineData(false, true)]
-        public async Task Probe_WithoutBothHandlers_AcknowledgesAndRejectsAsMethodNotFound(bool registerProbeHandler, bool registerMethodHandler)
+        public async Task Probe_WithoutBothHandlers_RejectsAsMethodNotFound(bool registerProbeHandler, bool registerMethodHandler)
         {
             MockFeatureConnectionClient connection = new()
             {
@@ -137,7 +139,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             var probe = new Probe() { MethodName = "reboot", ResponseTimeoutSeconds = 30 };
             MockMqttPublishReceivedEventArgs args = await connection.SimulateReceiveAsync(CreateInboundMethodPublish("probe:1", correlationData, probe.ToByteArray()));
 
-            Assert.Equal(1, args.AcknowledgeCount);
+            Assert.Equal(0, args.AcknowledgeCount);
             Assert.False(probeHandlerInvoked);
 
             MqttPublish probeAckPublish = Assert.Single(connection.PublishedMessages);
@@ -148,6 +150,57 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             ProbeAck sentProbeAck = ProbeAck.Parser.ParseFrom(probeAckPublish.Payload);
             Assert.Equal(ProbeAck.ResultOneofCase.Rejected, sentProbeAck.ResultCase);
             Assert.Equal(RejectedReason.MethodNotFound, sentProbeAck.Rejected.Reason);
+        }
+
+        [Fact]
+        public async Task DirectMethodTrafficIsAcknowledgedByTheConnectionManager()
+        {
+            using MockConnectionMqttClient mqttClient = new() { AutoRespondToBirth = true };
+            using UnifiedConnectionClient connectionClient = new(new() { MqttClient = mqttClient });
+            UnifiedDirectMethodClient directMethodClient = new(connectionClient);
+            try
+            {
+                bool methodInvoked = false;
+                directMethodClient.DirectMethodInvokedAsync += _ =>
+                {
+                    methodInvoked = true;
+                    return Task.FromResult(new DirectMethodResponse() { Status = 200 });
+                };
+
+                await connectionClient.ConnectToHubAsync(
+                    MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv5, DeviceId),
+                    TestContext.Current.CancellationToken);
+
+                byte[] correlationData = Guid.NewGuid().ToByteArray();
+                var probe = new Probe() { MethodName = "reboot", ResponseTimeoutSeconds = 30 };
+                MockMqttPublishReceivedEventArgs probeArgs = new()
+                {
+                    RejectRepeatedAcknowledgements = true,
+                    Publish = CreateInboundMethodPublish("probe:1", correlationData, probe.ToByteArray()),
+                };
+                await mqttClient.SimulatePublishReceivedEventAsync(probeArgs);
+
+                MqttPublish probeAckPublish = Assert.Single(mqttClient.SentMqttTrafficInOrder
+                    .Where(traffic => traffic.Publish?.Topic == "ih/" + DeviceId + "/srv/methods")
+                    .Select(traffic => traffic.Publish!));
+                ByteString readyId = ProbeAck.Parser.ParseFrom(probeAckPublish.Payload).Ready.ReadyId;
+                Assert.Equal(1, probeArgs.AcknowledgeCount);
+
+                var exec = new Exec() { ReadyId = readyId };
+                MockMqttPublishReceivedEventArgs execArgs = new()
+                {
+                    RejectRepeatedAcknowledgements = true,
+                    Publish = CreateInboundMethodPublish("exec:1", correlationData, exec.ToByteArray()),
+                };
+                await mqttClient.SimulatePublishReceivedEventAsync(execArgs);
+
+                Assert.True(methodInvoked);
+                Assert.Equal(1, execArgs.AcknowledgeCount);
+            }
+            finally
+            {
+                directMethodClient.Dispose(false);
+            }
         }
 
         [Fact]
