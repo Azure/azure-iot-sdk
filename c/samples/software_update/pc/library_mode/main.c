@@ -209,13 +209,12 @@ static int load_installed_update_id(sample_state* s)
 static bool save_applied_update_id_as_installed(sample_state* s)
 {
   const su_simulation_control* applied = &s->simulation_control;
-  char temporary_path[1024];
-  int length = snprintf(temporary_path, sizeof(temporary_path), "%s.tmp", s->installed_file);
-  if (!applied->applied_valid || length < 0 || (size_t)length >= sizeof(temporary_path))
+  if (!applied->applied_valid)
   {
     return false;
   }
-  FILE* file = sample_file_open_private(temporary_path, true);
+  char* temporary_path = NULL;
+  FILE* file = sample_file_create_private_unique(s->installed_file, &temporary_path);
   if (file == NULL)
   {
     return false;
@@ -228,9 +227,15 @@ static bool save_applied_update_id_as_installed(sample_state* s)
                      applied->applied_version)
           > 0
       && sample_file_flush_to_storage(file);
-  if (fclose(file) != 0 || !written || !sample_file_replace(temporary_path, s->installed_file))
+  bool replaced
+      = fclose(file) == 0 && written && sample_file_replace(temporary_path, s->installed_file);
+  if (!replaced)
   {
     (void)remove(temporary_path);
+  }
+  free(temporary_path);
+  if (!replaced)
+  {
     return false;
   }
   /* applied_* and installed_* have the same capacity, so the copies fit. */
@@ -525,6 +530,21 @@ static bool is_update_check_verdict(const az_iot_su_event* event)
   return false;
 }
 
+/**
+ * @brief Ask for no update check for @p delay_ms from now; a longer hold stays.
+ *
+ * @param[in,out] state    The sample state.
+ * @param[in]      delay_ms Milliseconds to hold checks for.
+ */
+static void hold_update_checks_for(sample_state* state, uint32_t delay_ms)
+{
+  uint64_t until_ms = sample_now_ms() + delay_ms;
+  if (state->check_not_before_ms < until_ms)
+  {
+    state->check_not_before_ms = until_ms;
+  }
+}
+
 static void on_su_event(const az_iot_su_event* event, void* user_ctx)
 {
   sample_state* state = (sample_state*)user_ctx;
@@ -592,15 +612,12 @@ static void on_su_event(const az_iot_su_event* event, void* user_ctx)
           (int)event->service_error.code,
           event->service_error.message,
           event->service_error.tracking_id);
+      hold_update_checks_for(state, event->service_error.retry_after_ms);
       if (event->operation == AZ_IOT_SU_OP_GET_UPDATE)
       {
         /* A device that has never registered has no device record yet: check
          * again once registration creates it. */
         state->check_once_registered = state->check_once_registered || !state->device_registered;
-        if (event->service_error.retry_after_ms > 0)
-        {
-          state->check_not_before_ms = sample_now_ms() + event->service_error.retry_after_ms;
-        }
       }
       else if (
           event->operation == AZ_IOT_SU_OP_REPORT_STATUS
@@ -620,11 +637,7 @@ static void on_su_event(const az_iot_su_event* event, void* user_ctx)
         /* The service rejected the report. On a conflict the SDK checks by
          * itself, which ends within AZ_IOT_SU_REQUEST_DEFAULT_TIMEOUT_MS: ask
          * for none before then, so the two checks do not overlap. */
-        uint64_t sdk_check_ends_ms = sample_now_ms() + AZ_IOT_SU_REQUEST_DEFAULT_TIMEOUT_MS;
-        if (state->check_not_before_ms < sdk_check_ends_ms)
-        {
-          state->check_not_before_ms = sdk_check_ends_ms;
-        }
+        hold_update_checks_for(state, AZ_IOT_SU_REQUEST_DEFAULT_TIMEOUT_MS);
       }
       break;
     case AZ_IOT_SU_EVENT_UPDATE_REFUSED:
