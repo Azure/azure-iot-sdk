@@ -745,17 +745,17 @@ static void fixture_open(fixture* fx, const fixture_options* o)
   assert_int_equal(
       az_iot_connection_client_register_mqtt_factory(&fx->conn, fx->factory), AZ_IOT_OK);
 
-  az_iot_su_device_properties dp = { 0 };
-  dp.manufacturer = o->manufacturer;
-  dp.model = o->model;
-  dp.installed_update_id.provider = "e2e";
-  dp.installed_update_id.name = "e2e";
-  dp.installed_update_id.version = "0.0.0";
+  az_iot_su_device_properties device_properties = { 0 };
+  device_properties.manufacturer = o->manufacturer;
+  device_properties.model = o->model;
+  device_properties.installed_update_id.provider = "e2e";
+  device_properties.installed_update_id.name = "e2e";
+  device_properties.installed_update_id.version = "0.0.0";
   assert_int_equal(
       az_iot_su_channel_dps_init(
           &fx->channel_state,
           &fx->conn,
-          &dp,
+          &device_properties,
           fx->channel_body,
           sizeof(fx->channel_body),
           fx->channel_device_properties,
@@ -780,7 +780,7 @@ static void fixture_open(fixture* fx, const fixture_options* o)
   su.library_mode = o->library_mode;
   su.root_keys = o->roots;
   su.root_key_count = o->root_count;
-  su.device_properties = &dp;
+  su.device_properties = &device_properties;
   su.workspace = fx->su_workspace;
   su.workspace_size = sizeof(fx->su_workspace);
   az_iot_su_channel spy = { .vtable = &k_spy_vtable, .ctx = &fx->spy };
