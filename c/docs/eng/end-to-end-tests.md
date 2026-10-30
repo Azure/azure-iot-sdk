@@ -468,10 +468,14 @@ multi-step updates, and reboot/resume.
 ## Adding a new scenario
 
 1. **Device side:** in [`e2e_scenarios_test.c`](../../tests/e2e/tests/e2e_scenarios_test.c)
-   add a `test_*` function (and register it in the cmocka table). Reuse the
+   add a `test_*` function and register it with
+   `cmocka_unit_test_teardown(test_*, detach_feature_clients)`. Reuse the
    already-connected device from the shared fixture; interleave
    `az_iot_connection_client_do_work` with the service pump until the assertion
-   holds or a bounded deadline expires.
+   holds or a bounded deadline expires. Attach feature clients through the
+   fixture's fields and set their `*_attached` flag: a failed assertion leaves
+   the test early, and the teardown must deinitialize them, or the shared
+   connection keeps pointers into the failed test's stack.
 2. **Service side:** if the scenario needs a new cloud operation, add it to the
    [`az_iot_e2e_service`](../../tests/e2e/service/az_iot_e2e_service.h) facade
    (keep all `az_amqp` / HTTP usage inside the `service/*.c` files so tests stay

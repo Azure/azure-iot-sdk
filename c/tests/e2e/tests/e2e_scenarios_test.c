@@ -63,6 +63,16 @@ typedef struct
 {
   e2e_device dev;
   az_iot_e2e_service* service;
+  /* Feature clients the running test attached to dev.conn. A failed assertion
+   * leaves the test early, so detach_feature_clients() deinitializes them. */
+  az_iot_mqttv3_telemetry_client telemetry;
+  az_iot_mqttv3_c2d_client c2d;
+  az_iot_mqttv3_direct_method_client direct_method;
+  az_iot_mqttv3_twin_client twin;
+  bool telemetry_attached;
+  bool c2d_attached;
+  bool direct_method_attached;
+  bool twin_attached;
 } e2e_fixture;
 
 static e2e_fixture g_fixture;
@@ -130,6 +140,40 @@ static int group_teardown(void** state)
   return 0;
 }
 
+/**
+ * @brief Per-test teardown: deinitializes the feature clients the test attached
+ * and ends the telemetry watch, whether the test passed or failed. Otherwise the
+ * connection would keep pointers to the failed test's clients and contexts.
+ */
+static int detach_feature_clients(void** state)
+{
+  e2e_fixture* fx = (e2e_fixture*)*state;
+  if (fx->telemetry_attached)
+  {
+    az_iot_mqttv3_telemetry_client_deinit(&fx->telemetry);
+    fx->telemetry_attached = false;
+  }
+  if (fx->c2d_attached)
+  {
+    az_iot_mqttv3_c2d_client_deinit(&fx->c2d);
+    fx->c2d_attached = false;
+  }
+  if (fx->direct_method_attached)
+  {
+    az_iot_mqttv3_direct_method_client_deinit(&fx->direct_method);
+    fx->direct_method_attached = false;
+  }
+  if (fx->twin_attached)
+  {
+    az_iot_mqttv3_twin_client_deinit(&fx->twin);
+    fx->twin_attached = false;
+  }
+  /* Releases the AMQP/TLS connection before the next scenario (the Windows
+   * reference transport allows only one TLS connection at a time). */
+  az_iot_e2e_service_telemetry_watch_end(fx->service);
+  return 0;
+}
+
 /* ---- telemetry ------------------------------------------------------------ */
 
 typedef struct
@@ -180,9 +224,8 @@ static void test_telemetry(void** state)
   }
   assert_true(watching);
 
-  az_iot_mqttv3_telemetry_client telemetry_client;
-  assert_int_equal(
-      az_iot_mqttv3_telemetry_client_init(&telemetry_client, &fx->dev.conn), AZ_IOT_OK);
+  assert_int_equal(az_iot_mqttv3_telemetry_client_init(&fx->telemetry, &fx->dev.conn), AZ_IOT_OK);
+  fx->telemetry_attached = true;
 
   az_iot_telemetry_property props[] = {
     { AZ_IOT_MSG_PROP_CONTENT_TYPE, "application/json" },
@@ -195,7 +238,7 @@ static void test_telemetry(void** state)
 
   send_ctx sc = { 0 };
   assert_int_equal(
-      az_iot_mqttv3_telemetry_client_send(&telemetry_client, &msg, on_send_done, &sc), AZ_IOT_OK);
+      az_iot_mqttv3_telemetry_client_send(&fx->telemetry, &msg, on_send_done, &sc), AZ_IOT_OK);
 
   bool seen = false;
   time_t start = time(NULL);
@@ -217,11 +260,6 @@ static void test_telemetry(void** state)
   {
     device_do_work(fx, E2E_PUMP_MS);
   }
-
-  az_iot_mqttv3_telemetry_client_deinit(&telemetry_client);
-  /* Release the AMQP/TLS connection before the next scenario (the Windows
-   * reference transport allows only one TLS connection at a time). */
-  az_iot_e2e_service_telemetry_watch_end(fx->service);
 
   assert_true(sc.done);
   assert_int_equal(sc.status, AZ_IOT_OK);
@@ -280,9 +318,9 @@ static void c2d_send_and_receive(
     c2d_ctx* cctx,
     const az_iot_e2e_c2d_properties* properties)
 {
-  az_iot_mqttv3_c2d_client c2d;
-  assert_int_equal(az_iot_mqttv3_c2d_client_init(&c2d, &fx->dev.conn), AZ_IOT_OK);
-  assert_int_equal(az_iot_mqttv3_c2d_client_set_handler(&c2d, on_c2d, cctx), AZ_IOT_OK);
+  assert_int_equal(az_iot_mqttv3_c2d_client_init(&fx->c2d, &fx->dev.conn), AZ_IOT_OK);
+  fx->c2d_attached = true;
+  assert_int_equal(az_iot_mqttv3_c2d_client_set_handler(&fx->c2d, on_c2d, cctx), AZ_IOT_OK);
 
   /* Give the subscription a few work slices to settle before the cloud sends. */
   for (int i = 0; i < 20; ++i)
@@ -326,8 +364,6 @@ static void c2d_send_and_receive(
   {
     device_do_work(fx, E2E_PUMP_MS);
   }
-
-  az_iot_mqttv3_c2d_client_deinit(&c2d);
 }
 
 static void test_c2d(void** state)
@@ -398,9 +434,13 @@ static void test_direct_method(void** state)
 {
   e2e_fixture* fx = (e2e_fixture*)*state;
 
-  az_iot_mqttv3_direct_method_client dm;
-  assert_int_equal(az_iot_mqttv3_direct_method_client_init(&dm, &fx->dev.conn), AZ_IOT_OK);
-  assert_int_equal(az_iot_mqttv3_direct_method_client_set_handler(&dm, on_method, &dm), AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_mqttv3_direct_method_client_init(&fx->direct_method, &fx->dev.conn), AZ_IOT_OK);
+  fx->direct_method_attached = true;
+  assert_int_equal(
+      az_iot_mqttv3_direct_method_client_set_handler(
+          &fx->direct_method, on_method, &fx->direct_method),
+      AZ_IOT_OK);
 
   for (int i = 0; i < 20; ++i)
   {
@@ -423,8 +463,6 @@ static void test_direct_method(void** state)
       break;
     }
   }
-
-  az_iot_mqttv3_direct_method_client_deinit(&dm);
 
   if (rc != 1)
   {
@@ -501,14 +539,14 @@ static void test_twin(void** state)
 {
   e2e_fixture* fx = (e2e_fixture*)*state;
 
-  az_iot_mqttv3_twin_client twin;
-  assert_int_equal(az_iot_mqttv3_twin_client_init(&twin, &fx->dev.conn), AZ_IOT_OK);
+  assert_int_equal(az_iot_mqttv3_twin_client_init(&fx->twin, &fx->dev.conn), AZ_IOT_OK);
+  fx->twin_attached = true;
 
   /* --- desired: cloud patches, device observes ------------------------- */
   desired_ctx dctx = { 0 };
   make_marker(dctx.expected, sizeof(dctx.expected), "desired");
   assert_int_equal(
-      az_iot_mqttv3_twin_client_set_desired_handler(&twin, on_desired, &dctx), AZ_IOT_OK);
+      az_iot_mqttv3_twin_client_set_desired_handler(&fx->twin, on_desired, &dctx), AZ_IOT_OK);
 
   for (int i = 0; i < 20; ++i)
   {
@@ -555,7 +593,7 @@ static void test_twin(void** state)
   patch_ack_ctx pack = { 0 };
   assert_int_equal(
       az_iot_mqttv3_twin_client_patch_reported(
-          &twin, (const uint8_t*)reported_json, strlen(reported_json), on_patch_ack, &pack),
+          &fx->twin, (const uint8_t*)reported_json, strlen(reported_json), on_patch_ack, &pack),
       AZ_IOT_OK);
 
   start = time(NULL);
@@ -600,18 +638,16 @@ static void test_twin(void** state)
     }
   }
   assert_true(reported_seen);
-
-  az_iot_mqttv3_twin_client_deinit(&twin);
 }
 
 int main(void)
 {
   const struct CMUnitTest tests[] = {
-    cmocka_unit_test(test_telemetry),
-    cmocka_unit_test(test_c2d),
-    cmocka_unit_test(test_c2d_system_properties),
-    cmocka_unit_test(test_direct_method),
-    cmocka_unit_test(test_twin),
+    cmocka_unit_test_teardown(test_telemetry, detach_feature_clients),
+    cmocka_unit_test_teardown(test_c2d, detach_feature_clients),
+    cmocka_unit_test_teardown(test_c2d_system_properties, detach_feature_clients),
+    cmocka_unit_test_teardown(test_direct_method, detach_feature_clients),
+    cmocka_unit_test_teardown(test_twin, detach_feature_clients),
   };
   return cmocka_run_group_tests(tests, group_setup, group_teardown);
 }
