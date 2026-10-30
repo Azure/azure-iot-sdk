@@ -462,6 +462,8 @@ extern "C"
      * the proxy's own issuer would make such a key untestable for the one
      * property that matters. The handshake completing IS the proof.
      *
+     * Sessions are never resumed, so each connect signs again.
+     *
      * Ignored when require_client_cert is set. */
     int accept_any_client_cert;
   } az_iot_test_proxy_tls_options;

@@ -976,6 +976,10 @@ if(AZ_IOT_WITH_AZ_MQTT)
     unset(_case)
     unset(_az_mqtt_size_defs)
 
+    if("AZ_IOT_AZ_MQTT_MBEDTLS" IN_LIST _az_mqtt_adapter_defs)
+        # The harness imports its PSA key with the mbedTLS install az_mqtt found.
+        find_package(MbedTLS CONFIG QUIET)
+    endif()
     foreach(_v 3 5)
         set(_t az_iot_conformance_az_mqtt_v${_v})
         add_executable(${_t} conformance/az_mqtt_main.c)
@@ -984,6 +988,17 @@ if(AZ_IOT_WITH_AZ_MQTT)
         # The key-reference capability is declared only where the adapter honours it.
         if("AZ_IOT_AZ_MQTT_OPENSSL" IN_LIST _az_mqtt_adapter_defs)
             target_compile_definitions(${_t} PRIVATE AZ_IOT_AZ_MQTT_OPENSSL)
+        endif()
+        # And the PSA key route where the adapter's backend is mbedTLS.
+        if("AZ_IOT_AZ_MQTT_MBEDTLS" IN_LIST _az_mqtt_adapter_defs)
+            target_compile_definitions(${_t} PRIVATE AZ_IOT_AZ_MQTT_MBEDTLS)
+            if(TARGET MbedTLS::mbedtls)
+                target_link_libraries(${_t} PRIVATE MbedTLS::mbedtls)
+            else()
+                target_include_directories(${_t} SYSTEM PRIVATE ${MBEDTLS_INCLUDE_DIR})
+                target_link_libraries(${_t} PRIVATE
+                    ${MBEDTLS_SSL_LIB} ${MBEDTLS_X509_LIB} ${MBEDTLS_CRYPTO_LIB})
+            endif()
         endif()
         az_iot_apply_warnings(${_t})
         if(AZ_IOT_BUILD_CONFORMANCE_TESTS)
