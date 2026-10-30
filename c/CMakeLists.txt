@@ -183,10 +183,6 @@ if(AZ_IOT_WITH_AZ_MQTT)
     add_subdirectory(adapters/az_mqtt)
 endif()
 
-if(AZ_IOT_WITH_RUST_MQTT)
-    add_subdirectory(adapters/rust_mqtt)
-endif()
-
 if(AZ_IOT_WITH_CRYPTO_OPENSSL)
     add_subdirectory(adapters/crypto_openssl)
 endif()

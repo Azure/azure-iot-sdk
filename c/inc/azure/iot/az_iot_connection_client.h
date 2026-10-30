@@ -2109,7 +2109,7 @@ extern "C"
    *
    * Ownership: the application owns the factory. The struct is copied and need not outlive this
    * call; factory_ctx is borrowed and must stay valid until az_iot_connection_client_deinit()
-   * returns. Adapter factories (Paho, az_mqtt, Rust) are their own factory_ctx, so destroy them
+   * returns. Adapter factories (Paho, az_mqtt) are their own factory_ctx, so destroy them
    * (e.g. az_iot_paho_factory_destroy()) only after deinit(). Registering the same factory again
    * returns AZ_IOT_OK and changes nothing. On any other result nothing is borrowed; the application
    * may release the factory at once.
