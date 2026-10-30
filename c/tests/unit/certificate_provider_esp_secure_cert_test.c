@@ -72,6 +72,17 @@ static void init_rejects_null(void** state)
   az_iot_certificate_provider_esp_secure_cert_deinit(NULL);
 }
 
+/* A read that allocates and then fails (legacy NVS format) leaves no buffer behind. */
+static void a_failed_certificate_read_frees_its_buffer(void** state)
+{
+  (void)state;
+  g_fake_esp_secure_cert.reads_fail_after_allocating = true;
+  az_iot_certificate_provider_esp_secure_cert p;
+  assert_int_equal(
+      AZ_IOT_ERR_NOT_FOUND, az_iot_certificate_provider_esp_secure_cert_init(&p, NULL));
+  assert_int_equal(1, g_fake_esp_secure_cert.device_cert_frees);
+}
+
 static void a_partition_without_a_device_certificate_fails_init(void** state)
 {
   (void)state;
@@ -205,6 +216,21 @@ static void the_key_is_in_memory_only_while_loaned(void** state)
   az_iot_certificate_provider_esp_secure_cert_deinit(&p); // Drops the outstanding loan.
 }
 
+/* A key read that allocates and then fails is wiped and freed. */
+static void a_failed_key_read_wipes_and_frees_its_buffer(void** state)
+{
+  (void)state;
+  az_iot_certificate_provider_esp_secure_cert p;
+  assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_esp_secure_cert_init(&p, NULL));
+  g_fake_esp_secure_cert.reads_fail_after_allocating = true;
+  az_iot_certificate_material m;
+  assert_int_equal(
+      AZ_IOT_ERR_NOT_FOUND, p.base.vtable->load(&p.base, AZ_IOT_CRED_BOOTSTRAP, 0, &m));
+  assert_int_equal(1, g_fake_esp_secure_cert.private_key_frees);
+  assert_int_equal(0, g_fake_esp_secure_cert.private_keys_freed_unwiped);
+  az_iot_certificate_provider_esp_secure_cert_deinit(&p);
+}
+
 static void a_partition_without_a_key_fails_the_load(void** state)
 {
   (void)state;
@@ -241,6 +267,7 @@ int main(void)
   const struct CMUnitTest tests[] = {
     cmocka_unit_test_setup(init_rejects_null, setup),
     cmocka_unit_test_setup(a_partition_without_a_device_certificate_fails_init, setup),
+    cmocka_unit_test_setup(a_failed_certificate_read_frees_its_buffer, setup),
     cmocka_unit_test_setup(load_returns_the_certificate_for_every_role, setup),
     cmocka_unit_test_setup(load_after_deinit_is_refused, setup),
 #if defined(CONFIG_ESP_SECURE_CERT_DS_PERIPHERAL)
@@ -249,6 +276,7 @@ int main(void)
     cmocka_unit_test_setup(a_partition_without_a_ds_context_fails_init, setup),
 #else
     cmocka_unit_test_setup(the_key_is_in_memory_only_while_loaned, setup),
+    cmocka_unit_test_setup(a_failed_key_read_wipes_and_frees_its_buffer, setup),
     cmocka_unit_test_setup(a_partition_without_a_key_fails_the_load, setup),
 #endif
   };

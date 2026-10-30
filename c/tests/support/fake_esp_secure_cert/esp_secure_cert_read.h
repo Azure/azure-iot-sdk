@@ -24,7 +24,8 @@ typedef struct esp_ds_data_ctx_t
   uint16_t rsa_length_bits;
 } esp_ds_data_ctx_t;
 
-#define PSA_KEY_LIFETIME_ESP_RSA_DS ((psa_key_lifetime_t)0x80000301u)
+/** Volatile persistence (0), location 0x800003, as in ESP-IDF v6.0. */
+#define PSA_KEY_LIFETIME_ESP_RSA_DS ((psa_key_lifetime_t)0x80000300u)
 
 esp_err_t esp_secure_cert_get_device_cert(char** buffer, uint32_t* len);
 esp_err_t esp_secure_cert_free_device_cert(char* buffer);

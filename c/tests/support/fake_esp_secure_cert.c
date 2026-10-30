@@ -30,6 +30,16 @@ static esp_err_t hand_out(const char* text, char** buffer, uint32_t* len)
     return ESP_FAIL;
   }
   size_t const n = strlen(text);
+  if (g_fake_esp_secure_cert.reads_fail_after_allocating)
+  {
+    *buffer = (char*)calloc(1, n + 1);
+    if (*buffer != NULL)
+    {
+      memcpy(*buffer, text, n / 2);
+    }
+    *len = UINT32_MAX; // Not the allocation's length.
+    return ESP_FAIL;
+  }
   *buffer = (char*)malloc(n);
   if (*buffer == NULL)
   {
