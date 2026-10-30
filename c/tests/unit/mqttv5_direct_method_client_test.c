@@ -3552,7 +3552,7 @@ static void late_puback_after_notice_entry_reuse(fixture* fx, bool old_succeeds)
   uint8_t replacement[16];
   make_request_id(replacement, 0x2B);
   inject_dm(fx, DEV_TOPIC, "probe:1", replacement, 16, frame, frame_len, 30);
-  assert_int_not_equal(fx->dm._internal.notices[0]._internal.entry, 0);
+  assert_int_not_equal(fx->dm._internal.notices[0]._internal.tracker_entry, 0);
   assert_memory_equal(fx->dm._internal.notices[0]._internal.request_id, replacement, 16);
 
   assert_a_late_completion_leaves_the_replacement_alone(
@@ -3810,9 +3810,9 @@ static uint64_t* result_deadline_of(fixture* fx, az_iot_direct_method_request re
 static void expire_held_result(fixture* fx, az_iot_direct_method_request request)
 {
   *result_deadline_of(fx, request) = az_iot_time_mono_ms();
-  size_t const entry = fx->dm._internal.result_entry[request._internal.slot];
+  size_t const entry = fx->dm._internal.result_tracker_entry[request._internal.slot];
   assert_int_not_equal(entry, 0);
-  az_iot_deadline__expire_now(&fx->dm._internal.tracked[entry - 1u]._internal.deadline);
+  az_iot_deadline__expire_now(&fx->dm._internal.tracker_entries[entry - 1u]._internal.deadline);
 }
 
 static void the_result_deadline_is_the_budget_less_the_safety_margin(void** state)

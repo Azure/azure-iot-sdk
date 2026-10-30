@@ -612,7 +612,7 @@ void az_iot_delivery_tracker__cancel(az_iot_delivery_tracker* tracker, size_t en
   }
 }
 
-void az_iot_delivery_tracker__expire_due(az_iot_delivery_tracker* tracker)
+void az_iot_delivery_tracker__expire_overdue(az_iot_delivery_tracker* tracker)
 {
   if (tracker != NULL && TI(tracker).connection != NULL)
   {

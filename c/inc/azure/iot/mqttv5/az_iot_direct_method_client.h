@@ -196,7 +196,7 @@ extern "C"
       uint8_t probe_ack_frame[AZ_IOT_MQTTV5_DM_NOTICE_FRAME_MAX];
       size_t probe_ack_frame_len;
       /** Delivery tracker entry of the probe-ack, plus one; 0: none. */
-      size_t probe_ack_entry;
+      size_t probe_ack_tracker_entry;
       /** The probe-ack was published at least once, so the service may know this token. */
       bool probe_ack_published;
       /** Connect budget of the probe, in seconds; 0 means unbounded. */
@@ -213,7 +213,7 @@ extern "C"
     struct
     {
       /** Delivery tracker entry, plus one; 0: the notice is free. */
-      size_t entry;
+      size_t tracker_entry;
       /** Its `type` property ("probe-ack:1" or "abandon:1"); static. */
       const az_iot_mqtt_user_property* type;
       uint8_t request_id[AZ_IOT_MQTTV5_DM_REQUEST_ID_LEN];
@@ -302,12 +302,12 @@ extern "C"
                       [AZ_IOT_MQTTV5_DM_RESULT_BODY_MAX + AZ_IOT_MQTTV5_DM_RESULT_FRAME_OVERHEAD];
       size_t result_frame_len[AZ_IOT_MQTTV5_DM_MAX_CONCURRENT];
       /** Delivery tracker entry of each result, plus one; 0: not answered yet. */
-      size_t result_entry[AZ_IOT_MQTTV5_DM_MAX_CONCURRENT];
+      size_t result_tracker_entry[AZ_IOT_MQTTV5_DM_MAX_CONCURRENT];
       /* Probe rejections and abandons kept until their PUBACK. */
       az_iot_mqttv5_direct_method_notice notices[AZ_IOT_MQTTV5_DM_NOTICE_QUEUE_MAX];
       /* Sends, resends and expires the probe-acks, results and notices. */
       az_iot_delivery_tracker tracker;
-      az_iot_delivery_tracker_entry tracked[AZ_IOT_MQTTV5_DM_TRACKED_MESSAGES];
+      az_iot_delivery_tracker_entry tracker_entries[AZ_IOT_MQTTV5_DM_TRACKED_MESSAGES];
     } _internal;
   } az_iot_mqttv5_direct_method_client;
 

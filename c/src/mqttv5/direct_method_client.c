@@ -56,9 +56,10 @@
 #define DM_MIN_USEFUL_BUDGET_SECONDS 1u
 
 /* A pool element's tracker entry is stored plus one, so 0 means none. */
-#define DM_NO_ENTRY 0u
-/* Being submitted: claims the entry the tracker first asks about (see holds_entry()). */
-#define DM_ENTRY_PENDING SIZE_MAX
+#define DM_NO_TRACKER_ENTRY 0u
+/* Being submitted: claims the entry the tracker first asks about (see
+ * element_holds_tracker_entry()). */
+#define DM_TRACKER_ENTRY_PENDING SIZE_MAX
 
 #define DM_TYPE_PROBE_ACK "probe-ack:" DM_TYPE_VERSION
 #define DM_TYPE_ABANDON "abandon:" DM_TYPE_VERSION
@@ -254,7 +255,7 @@ static bool request_acquire(
       memset(s, 0, sizeof(*s));
       s->_internal.seq = next_sequence(dm);
       s->_internal.in_use = true;
-      DI(dm).result_entry[i] = DM_NO_ENTRY;
+      DI(dm).result_tracker_entry[i] = DM_NO_TRACKER_ENTRY;
       *out_index = i;
       DI(dm).next_slot = (i + 1u) % AZ_IOT_MQTTV5_DM_MAX_CONCURRENT;
 
@@ -299,7 +300,7 @@ static az_iot_direct_method_slot* request_resolve(
   az_iot_direct_method_slot* s = &DI(dm).req_pool[i];
   /* A result being delivered has already answered the request. */
   if (!s->_internal.in_use || s->_internal.seq != request._internal.seq
-      || DI(dm).result_entry[i] != DM_NO_ENTRY)
+      || DI(dm).result_tracker_entry[i] != DM_NO_TRACKER_ENTRY)
   {
     return NULL;
   }
@@ -345,7 +346,7 @@ static const az_iot_mqtt_user_property k_abandon_type = { "type", DM_TYPE_ABANDO
 static const az_iot_mqtt_user_property k_result_type = { "type", DM_TYPE_RESULT };
 
 /** @brief Fill @p out with a device-to-service message; every phase shares this envelope. */
-static az_iot_result build_message(
+static az_iot_result build_reply_message(
     const az_iot_mqttv5_direct_method_client* dm,
     const az_iot_mqtt_user_property* type,
     const uint8_t* payload,
@@ -373,12 +374,12 @@ static az_iot_result build_message(
 
 /**
  * @brief Whether pool element entry @p held names tracker entry @p entry_index.
- * @param claim_pending Also claim a DM_ENTRY_PENDING element: the one being submitted, asked
- *        about only after every element with a known entry.
+ * @param claim_pending Also claim a DM_TRACKER_ENTRY_PENDING element: the one being submitted,
+ * asked about only after every element with a known entry.
  */
-static bool holds_entry(size_t* held, size_t entry_index, bool claim_pending)
+static bool element_holds_tracker_entry(size_t* held, size_t entry_index, bool claim_pending)
 {
-  if (claim_pending && *held == DM_ENTRY_PENDING)
+  if (claim_pending && *held == DM_TRACKER_ENTRY_PENDING)
   {
     *held = entry_index + 1u;
   }
@@ -386,7 +387,7 @@ static bool holds_entry(size_t* held, size_t entry_index, bool claim_pending)
 }
 
 /** @brief The ready slot whose probe-ack is tracker entry @p entry_index, or NULL. */
-static az_iot_mqttv5_direct_method_ready_slot* ready_slot_of_entry(
+static az_iot_mqttv5_direct_method_ready_slot* find_ready_slot_by_tracker_entry(
     az_iot_mqttv5_direct_method_client* dm,
     size_t entry_index)
 {
@@ -395,7 +396,8 @@ static az_iot_mqttv5_direct_method_ready_slot* ready_slot_of_entry(
     for (size_t i = 0; i < AZ_IOT_MQTTV5_DM_MAX_CONCURRENT; ++i)
     {
       az_iot_mqttv5_direct_method_ready_slot* slot = &DI(dm).ready_pool[i];
-      if (RI(slot).in_use && holds_entry(&RI(slot).probe_ack_entry, entry_index, pass == 1))
+      if (RI(slot).in_use
+          && element_holds_tracker_entry(&RI(slot).probe_ack_tracker_entry, entry_index, pass == 1))
       {
         return slot;
       }
@@ -405,14 +407,16 @@ static az_iot_mqttv5_direct_method_ready_slot* ready_slot_of_entry(
 }
 
 /** @brief The req_pool index whose result is tracker entry @p entry_index, or MAX_CONCURRENT. */
-static size_t request_of_entry(az_iot_mqttv5_direct_method_client* dm, size_t entry_index)
+static size_t find_request_by_tracker_entry(
+    az_iot_mqttv5_direct_method_client* dm,
+    size_t entry_index)
 {
   for (int pass = 0; pass < 2; ++pass)
   {
     for (size_t i = 0; i < AZ_IOT_MQTTV5_DM_MAX_CONCURRENT; ++i)
     {
       if (DI(dm).req_pool[i]._internal.in_use
-          && holds_entry(&DI(dm).result_entry[i], entry_index, pass == 1))
+          && element_holds_tracker_entry(&DI(dm).result_tracker_entry[i], entry_index, pass == 1))
       {
         return i;
       }
@@ -422,7 +426,7 @@ static size_t request_of_entry(az_iot_mqttv5_direct_method_client* dm, size_t en
 }
 
 /** @brief The notice that is tracker entry @p entry_index, or NULL. */
-static az_iot_mqttv5_direct_method_notice* notice_of_entry(
+static az_iot_mqttv5_direct_method_notice* find_notice_by_tracker_entry(
     az_iot_mqttv5_direct_method_client* dm,
     size_t entry_index)
 {
@@ -430,7 +434,8 @@ static az_iot_mqttv5_direct_method_notice* notice_of_entry(
   {
     for (size_t i = 0; i < AZ_IOT_MQTTV5_DM_NOTICE_QUEUE_MAX; ++i)
     {
-      if (holds_entry(&DI(dm).notices[i]._internal.entry, entry_index, pass == 1))
+      if (element_holds_tracker_entry(
+              &DI(dm).notices[i]._internal.tracker_entry, entry_index, pass == 1))
       {
         return &DI(dm).notices[i];
       }
@@ -440,17 +445,17 @@ static az_iot_mqttv5_direct_method_notice* notice_of_entry(
 }
 
 /** @brief Stop tracking @p *entry, if any; its late PUBACK is ignored. */
-static void forget_entry(az_iot_mqttv5_direct_method_client* dm, size_t* entry)
+static void cancel_tracked_reply(az_iot_mqttv5_direct_method_client* dm, size_t* entry)
 {
   size_t const held = *entry;
-  *entry = DM_NO_ENTRY;
-  if (held != DM_NO_ENTRY && held != DM_ENTRY_PENDING)
+  *entry = DM_NO_TRACKER_ENTRY;
+  if (held != DM_NO_TRACKER_ENTRY && held != DM_TRACKER_ENTRY_PENDING)
   {
     az_iot_delivery_tracker__cancel(&DI(dm).tracker, held - 1u);
   }
 }
 
-static void log_refusal(const char* type_value, const az_iot_publish_result* detail)
+static void log_broker_refusal(const char* type_value, const az_iot_publish_result* detail)
 {
   AZ_IOT_LOG_ERRORF(
       AZ_IOT_LOG_COMPONENT_MQTTV5_DIRECT_METHOD,
@@ -465,7 +470,7 @@ static void log_refusal(const char* type_value, const az_iot_publish_result* det
  *        max_unconfirmed_delivery_timeout_ms.
  * @return As az_iot_delivery_tracker__submit(); its first send may already have ended it.
  */
-static az_iot_result track(
+static az_iot_result submit_reply_for_delivery(
     az_iot_mqttv5_direct_method_client* dm,
     const az_iot_delivery_tracker_profile* profile,
     size_t* held,
@@ -479,25 +484,28 @@ static az_iot_result track(
     uint64_t const left = (deadline_ms > now) ? deadline_ms - now : 1u;
     timeout_ms = (left > UINT32_MAX) ? UINT32_MAX : (uint32_t)left;
   }
-  *held = DM_ENTRY_PENDING;
+  *held = DM_TRACKER_ENTRY_PENDING;
   size_t entry = 0;
   az_iot_result const result = az_iot_delivery_tracker__submit(
       &DI(dm).tracker, profile, request_id, AZ_IOT_MQTTV5_DM_REQUEST_ID_LEN, timeout_ms, &entry);
   if (result != AZ_IOT_OK)
   {
-    *held = DM_NO_ENTRY;
+    *held = DM_NO_TRACKER_ENTRY;
   }
-  else if (*held == DM_ENTRY_PENDING)
+  else if (*held == DM_TRACKER_ENTRY_PENDING)
   {
     *held = entry + 1u; /* Not sent yet. */
   }
   return result;
 }
 
-static az_iot_result encode_probe_ack(void* owner, size_t entry_index, az_iot_mqtt_message* out)
+static az_iot_result encode_probe_ack_message(
+    void* owner,
+    size_t entry_index,
+    az_iot_mqtt_message* out)
 {
   az_iot_mqttv5_direct_method_client* dm = (az_iot_mqttv5_direct_method_client*)owner;
-  az_iot_mqttv5_direct_method_ready_slot* slot = ready_slot_of_entry(dm, entry_index);
+  az_iot_mqttv5_direct_method_ready_slot* slot = find_ready_slot_by_tracker_entry(dm, entry_index);
   if (slot == NULL)
   {
     return AZ_IOT_ERR_INTERNAL;
@@ -509,7 +517,7 @@ static az_iot_result encode_probe_ack(void* owner, size_t entry_index, az_iot_mq
   {
     return AZ_IOT_ERR_TIMEOUT;
   }
-  return build_message(
+  return build_reply_message(
       dm,
       &k_probe_ack_type,
       RI(slot).probe_ack_frame,
@@ -522,7 +530,7 @@ static az_iot_result encode_probe_ack(void* owner, size_t entry_index, az_iot_mq
 static void on_probe_ack_sent(void* owner, size_t entry_index)
 {
   az_iot_mqttv5_direct_method_ready_slot* slot
-      = ready_slot_of_entry((az_iot_mqttv5_direct_method_client*)owner, entry_index);
+      = find_ready_slot_by_tracker_entry((az_iot_mqttv5_direct_method_client*)owner, entry_index);
   if (slot != NULL)
   {
     RI(slot).probe_ack_published = true;
@@ -540,15 +548,15 @@ static void on_probe_ack_complete(
     const az_iot_publish_result* detail)
 {
   az_iot_mqttv5_direct_method_ready_slot* slot
-      = ready_slot_of_entry((az_iot_mqttv5_direct_method_client*)owner, entry_index);
+      = find_ready_slot_by_tracker_entry((az_iot_mqttv5_direct_method_client*)owner, entry_index);
   if (slot == NULL)
   {
     return;
   }
-  RI(slot).probe_ack_entry = DM_NO_ENTRY;
+  RI(slot).probe_ack_tracker_entry = DM_NO_TRACKER_ENTRY;
   if (outcome == AZ_IOT_DELIVERY_TRACKER_OUTCOME_REFUSED)
   {
-    log_refusal(DM_TYPE_PROBE_ACK, detail);
+    log_broker_refusal(DM_TYPE_PROBE_ACK, detail);
   }
   else if (outcome != AZ_IOT_DELIVERY_TRACKER_OUTCOME_DELIVERED && !RI(slot).probe_ack_published)
   {
@@ -562,10 +570,13 @@ static void on_probe_ack_complete(
 
 static bool exec_budget_is_spent(const az_iot_mqttv5_direct_method_client* dm, size_t index);
 
-static az_iot_result encode_result(void* owner, size_t entry_index, az_iot_mqtt_message* out)
+static az_iot_result encode_result_message(
+    void* owner,
+    size_t entry_index,
+    az_iot_mqtt_message* out)
 {
   az_iot_mqttv5_direct_method_client* dm = (az_iot_mqttv5_direct_method_client*)owner;
-  size_t const index = request_of_entry(dm, entry_index);
+  size_t const index = find_request_by_tracker_entry(dm, entry_index);
   if (index >= AZ_IOT_MQTTV5_DM_MAX_CONCURRENT)
   {
     return AZ_IOT_ERR_INTERNAL;
@@ -577,7 +588,7 @@ static az_iot_result encode_result(void* owner, size_t entry_index, az_iot_mqtt_
   }
   /* The result deadline reserves the safety margin (at least 1 s) before the budget ends, so the
    * expiry is never 0 for a finite budget while the entry is live. */
-  return build_message(
+  return build_reply_message(
       dm,
       &k_result_type,
       DI(dm).result_frame[index],
@@ -596,7 +607,7 @@ static void on_result_complete(
     const az_iot_publish_result* detail)
 {
   az_iot_mqttv5_direct_method_client* dm = (az_iot_mqttv5_direct_method_client*)owner;
-  size_t const index = request_of_entry(dm, entry_index);
+  size_t const index = find_request_by_tracker_entry(dm, entry_index);
   if (index >= AZ_IOT_MQTTV5_DM_MAX_CONCURRENT)
   {
     return;
@@ -604,7 +615,7 @@ static void on_result_complete(
   az_iot_direct_method_slot* s = &DI(dm).req_pool[index];
   if (outcome == AZ_IOT_DELIVERY_TRACKER_OUTCOME_REFUSED)
   {
-    log_refusal(DM_TYPE_RESULT, detail);
+    log_broker_refusal(DM_TYPE_RESULT, detail);
   }
   else if (outcome == AZ_IOT_DELIVERY_TRACKER_OUTCOME_EXPIRED)
   {
@@ -614,14 +625,17 @@ static void on_result_complete(
         "reclaiming its slot",
         RI(s).method_name);
   }
-  DI(dm).result_entry[index] = DM_NO_ENTRY;
+  DI(dm).result_tracker_entry[index] = DM_NO_TRACKER_ENTRY;
   RI(s).in_use = false;
 }
 
-static az_iot_result encode_notice(void* owner, size_t entry_index, az_iot_mqtt_message* out)
+static az_iot_result encode_notice_message(
+    void* owner,
+    size_t entry_index,
+    az_iot_mqtt_message* out)
 {
   az_iot_mqttv5_direct_method_client* dm = (az_iot_mqttv5_direct_method_client*)owner;
-  az_iot_mqttv5_direct_method_notice* n = notice_of_entry(dm, entry_index);
+  az_iot_mqttv5_direct_method_notice* n = find_notice_by_tracker_entry(dm, entry_index);
   if (n == NULL)
   {
     return AZ_IOT_ERR_INTERNAL;
@@ -632,7 +646,8 @@ static az_iot_result encode_notice(void* owner, size_t entry_index, az_iot_mqtt_
   {
     expiry = DM_MIN_USEFUL_BUDGET_SECONDS;
   }
-  return build_message(dm, RI(n).type, RI(n).frame, RI(n).frame_len, RI(n).request_id, expiry, out);
+  return build_reply_message(
+      dm, RI(n).type, RI(n).frame, RI(n).frame_len, RI(n).request_id, expiry, out);
 }
 
 static void on_notice_complete(
@@ -642,16 +657,16 @@ static void on_notice_complete(
     const az_iot_publish_result* detail)
 {
   az_iot_mqttv5_direct_method_notice* n
-      = notice_of_entry((az_iot_mqttv5_direct_method_client*)owner, entry_index);
+      = find_notice_by_tracker_entry((az_iot_mqttv5_direct_method_client*)owner, entry_index);
   if (n == NULL)
   {
     return;
   }
   if (outcome == AZ_IOT_DELIVERY_TRACKER_OUTCOME_REFUSED)
   {
-    log_refusal(RI(n).type->value, detail);
+    log_broker_refusal(RI(n).type->value, detail);
   }
-  RI(n).entry = DM_NO_ENTRY;
+  RI(n).tracker_entry = DM_NO_TRACKER_ENTRY;
 }
 
 /* Probe-acks and results first; notices are advisory, so they are sent untracked rather than take
@@ -662,7 +677,7 @@ static const az_iot_delivery_tracker_profile k_probe_ack_profile = {
   AZ_IOT_DELIVERY_TRACKER_ON_SESSION_LOSS_RESEND,
   0u,
   false,
-  encode_probe_ack,
+  encode_probe_ack_message,
   on_probe_ack_complete,
   on_probe_ack_sent,
 };
@@ -673,7 +688,7 @@ static const az_iot_delivery_tracker_profile k_result_profile = {
   AZ_IOT_DELIVERY_TRACKER_ON_SESSION_LOSS_RESEND,
   0u,
   false,
-  encode_result,
+  encode_result_message,
   on_result_complete,
   NULL,
 };
@@ -684,7 +699,7 @@ static const az_iot_delivery_tracker_profile k_notice_profile = {
   AZ_IOT_DELIVERY_TRACKER_ON_SESSION_LOSS_RESEND,
   1u,
   true,
-  encode_notice,
+  encode_notice_message,
   on_notice_complete,
   NULL,
 };
@@ -713,7 +728,8 @@ static void send_notice(
   az_iot_mqttv5_direct_method_notice* n = NULL;
   for (size_t i = 0; i < AZ_IOT_MQTTV5_DM_NOTICE_QUEUE_MAX && n == NULL; ++i)
   {
-    n = (DI(dm).notices[i]._internal.entry == DM_NO_ENTRY) ? &DI(dm).notices[i] : NULL;
+    n = (DI(dm).notices[i]._internal.tracker_entry == DM_NO_TRACKER_ENTRY) ? &DI(dm).notices[i]
+                                                                           : NULL;
   }
   if (n != NULL)
   {
@@ -725,7 +741,9 @@ static void send_notice(
     RI(n).budget_start_ms = start_ms;
     uint64_t const deadline_ms
         = (budget_seconds > 0u) ? start_ms + (uint64_t)budget_seconds * MS_PER_SECOND : 0u;
-    if (track(dm, &k_notice_profile, &RI(n).entry, request_id, deadline_ms) == AZ_IOT_OK
+    if (submit_reply_for_delivery(
+            dm, &k_notice_profile, &RI(n).tracker_entry, request_id, deadline_ms)
+            == AZ_IOT_OK
         && !az_iot_connection_client__is_connected(DI(dm).conn))
     {
       AZ_IOT_LOG_INFOF(
@@ -742,7 +760,8 @@ static void send_notice(
     expiry = DM_MIN_USEFUL_BUDGET_SECONDS;
   }
   az_iot_mqtt_message message;
-  az_iot_result result = build_message(dm, type, frame, frame_len, request_id, expiry, &message);
+  az_iot_result result
+      = build_reply_message(dm, type, frame, frame_len, request_id, expiry, &message);
   if (result == AZ_IOT_OK)
   {
     result = az_iot_connection_client__publish_with_result(
@@ -814,12 +833,12 @@ static void publish_abandon(
 }
 
 /** @brief End ready token @p slot: it is no longer usable, and its probe-ack is not sent again. */
-static void ready_release(
+static void end_ready_token(
     az_iot_mqttv5_direct_method_client* dm,
     az_iot_mqttv5_direct_method_ready_slot* slot)
 {
   RI(slot).in_use = false;
-  forget_entry(dm, &RI(slot).probe_ack_entry);
+  cancel_tracked_reply(dm, &RI(slot).probe_ack_tracker_entry);
 }
 
 /* Release every ready token whose wait has run out. Runs on every TICK, and before each method
@@ -837,7 +856,7 @@ static void ready_expire_stale(az_iot_mqttv5_direct_method_client* dm)
     /* Committed out of the ready state before the advisory goes out, so the
      * message can never claim a token that might still run. */
     az_iot_mqttv5_direct_method_ready_slot expired = *slot;
-    ready_release(dm, slot);
+    end_ready_token(dm, slot);
     if (!RI(&expired).probe_ack_published)
     {
       /* The service never saw this ready id, so nothing is abandoned. */
@@ -902,7 +921,8 @@ static void requests_expire_stale(az_iot_mqttv5_direct_method_client* dm)
   for (size_t i = 0; i < AZ_IOT_MQTTV5_DM_MAX_CONCURRENT; ++i)
   {
     az_iot_direct_method_slot* s = &DI(dm).req_pool[i];
-    if (!RI(s).in_use || DI(dm).result_entry[i] != DM_NO_ENTRY || !exec_budget_is_spent(dm, i))
+    if (!RI(s).in_use || DI(dm).result_tracker_entry[i] != DM_NO_TRACKER_ENTRY
+        || !exec_budget_is_spent(dm, i))
     {
       continue;
     }
@@ -1079,7 +1099,8 @@ static void handle_probe(
     }
     if (sent == AZ_IOT_OK)
     {
-      sent = track(dm, &k_probe_ack_profile, &RI(slot).probe_ack_entry, request_id, deadline_ms);
+      sent = submit_reply_for_delivery(
+          dm, &k_probe_ack_profile, &RI(slot).probe_ack_tracker_entry, request_id, deadline_ms);
     }
     if (sent != AZ_IOT_OK)
     {
@@ -1176,7 +1197,7 @@ static void handle_exec(
   if (too_short)
   {
     az_iot_mqttv5_direct_method_ready_slot abandoned = *slot;
-    ready_release(dm, slot);
+    end_ready_token(dm, slot);
     AZ_IOT_LOG_WARNF(
         AZ_IOT_LOG_COMPONENT_MQTTV5_DIRECT_METHOD,
         "'%s' cannot finish in time (budget %u s, admission floor %u s, max unconfirmed "
@@ -1200,7 +1221,7 @@ static void handle_exec(
      * for its whole response timeout; no reason code fits, and the service only
      * needs to learn that execution did not begin. */
     az_iot_mqttv5_direct_method_ready_slot abandoned = *slot;
-    ready_release(dm, slot);
+    end_ready_token(dm, slot);
     publish_abandon(
         dm, &abandoned, AZ_IOT_DM_PROTO_ABANDON_UNSPECIFIED, exec_budget, received_at_ms);
     return;
@@ -1219,7 +1240,7 @@ static void handle_exec(
    * free for the next probe the moment it is released. */
   az_iot_direct_method_handler_callback handler = RI(slot).handler;
   void* handler_ctx = RI(slot).handler_ctx;
-  ready_release(dm, slot);
+  end_ready_token(dm, slot);
 
   handler(req, RI(req_slot).method_name, exec.params, exec.params_len, handler_ctx);
 }
@@ -1289,7 +1310,7 @@ static void on_method_message(void* user_ctx, const az_iot_mqtt_message* msg)
   }
 
   /* Frees the capacity that ran out before this message needs it. */
-  az_iot_delivery_tracker__expire_due(&DI(dm).tracker);
+  az_iot_delivery_tracker__expire_overdue(&DI(dm).tracker);
   ready_expire_stale(dm);
   requests_expire_stale(dm);
   dispatch_method_message(dm, msg);
@@ -1315,17 +1336,17 @@ static void discard_previous_identity_state(az_iot_mqttv5_direct_method_client* 
     {
       dropped++;
     }
-    ready_release(dm, &DI(dm).ready_pool[i]);
+    end_ready_token(dm, &DI(dm).ready_pool[i]);
     DI(dm).req_pool[i]._internal.in_use = false;
-    forget_entry(dm, &DI(dm).result_entry[i]);
+    cancel_tracked_reply(dm, &DI(dm).result_tracker_entry[i]);
   }
   for (size_t i = 0; i < AZ_IOT_MQTTV5_DM_NOTICE_QUEUE_MAX; ++i)
   {
-    if (DI(dm).notices[i]._internal.entry != DM_NO_ENTRY)
+    if (DI(dm).notices[i]._internal.tracker_entry != DM_NO_TRACKER_ENTRY)
     {
       dropped++;
     }
-    forget_entry(dm, &DI(dm).notices[i]._internal.entry);
+    cancel_tracked_reply(dm, &DI(dm).notices[i]._internal.tracker_entry);
   }
   if (dropped > 0u)
   {
@@ -1341,7 +1362,7 @@ static void discard_previous_identity_state(az_iot_mqttv5_direct_method_client* 
  * @brief Lower @p remaining_ms to the earliest ready-wait end or unanswered result deadline: they
  *        have no tracker entry to bound the adapter wait.
  */
-static void lower_remaining_to_next_expiry(
+static void lower_wait_to_next_token_or_request_deadline(
     const az_iot_mqttv5_direct_method_client* dm,
     uint64_t* remaining_ms)
 {
@@ -1353,7 +1374,7 @@ static void lower_remaining_to_next_expiry(
     {
       earliest = RI(slot).expires_at_ms;
     }
-    if (DI(dm).req_pool[i]._internal.in_use && DI(dm).result_entry[i] == DM_NO_ENTRY
+    if (DI(dm).req_pool[i]._internal.in_use && DI(dm).result_tracker_entry[i] == DM_NO_TRACKER_ENTRY
         && DI(dm).exec_deadline_ms[i] < earliest)
     {
       earliest = DI(dm).exec_deadline_ms[i];
@@ -1374,7 +1395,7 @@ static void on_connection_event(const az_iot_connection_feature_event* event, vo
   if (event->kind == AZ_IOT_CONNECTION_FEATURE_EVENT_TICK)
   {
     /* First, so notices the tracker would expire in this TICK make room for an Abandon. */
-    az_iot_delivery_tracker__expire_due(&DI(dm).tracker);
+    az_iot_delivery_tracker__expire_overdue(&DI(dm).tracker);
     ready_expire_stale(dm);
     requests_expire_stale(dm);
   }
@@ -1384,7 +1405,7 @@ static void on_connection_event(const az_iot_connection_feature_event* event, vo
   }
   else if (event->kind == AZ_IOT_CONNECTION_FEATURE_EVENT_NEXT_DEADLINE)
   {
-    lower_remaining_to_next_expiry(dm, event->remaining_ms);
+    lower_wait_to_next_token_or_request_deadline(dm, event->remaining_ms);
   }
 }
 
@@ -1472,7 +1493,7 @@ AZ_NODISCARD az_iot_result az_iot_mqttv5_direct_method_client_init(
   {
     result = az_iot_delivery_tracker__init(
         &DI(client).tracker,
-        DI(client).tracked,
+        DI(client).tracker_entries,
         AZ_IOT_MQTTV5_DM_TRACKED_MESSAGES,
         AZ_IOT_MQTTV5_DM_RESERVED_PUBACKS,
         k_slots_kept_for_replies,
@@ -1697,10 +1718,10 @@ az_iot_result az_iot_mqttv5_direct_method_respond(
   }
 
   DI(dm).result_frame_len[index] = frame_len;
-  result = track(
+  result = submit_reply_for_delivery(
       dm,
       &k_result_profile,
-      &DI(dm).result_entry[index],
+      &DI(dm).result_tracker_entry[index],
       RI(slot).correlation_data,
       DI(dm).exec_deadline_ms[index]);
   if (result != AZ_IOT_OK)

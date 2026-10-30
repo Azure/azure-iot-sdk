@@ -43,7 +43,7 @@ typedef struct fixture
   az_iot_delivery_tracker_entry entries[ENTRY_COUNT];
   char topics[ENTRY_COUNT][8];
   az_iot_mqtt_qos qos;
-  az_iot_result encode_result;
+  az_iot_result encode_result_message;
   int failing_sends; /* Sends the adapter fails with failing_send_result. */
   az_iot_result failing_send_result;
   completion completions[16];
@@ -73,7 +73,7 @@ static az_iot_result encode(void* owner_context, size_t entry_index, az_iot_mqtt
     az_iot_mock_mqtt_client_set_next_result(
         fx->mock, AZ_IOT_MOCK_CALL_PUBLISH, fx->failing_send_result);
   }
-  return fx->encode_result;
+  return fx->encode_result_message;
 }
 
 static void on_complete(
@@ -523,7 +523,7 @@ static void cancel_and_encode_failure(void** state)
   puback(fx, packet_id, AZ_IOT_OK);
   assert_int_equal(fx->completion_count, 0);
 
-  fx->encode_result = AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+  fx->encode_result_message = AZ_IOT_ERR_NOT_ENOUGH_SPACE;
   index = submit(fx, &k_resend, 2u, 0u);
   assert_completed(fx, 0, index, AZ_IOT_DELIVERY_TRACKER_OUTCOME_DISCARDED);
   assert_int_equal(publish_count(fx), 1);
@@ -889,16 +889,16 @@ static void on_sent_reports_each_publish(void** state)
 }
 
 /* expire_due() completes what has expired without waiting for a TICK. */
-static void expire_due_completes_expired_messages_now(void** state)
+static void expire_overdue_completes_expired_messages_now(void** state)
 {
   fixture* fx = (fixture*)*state;
   size_t const expired = submit(fx, &k_resend, 1u, 60000u);
   (void)submit(fx, &k_resend, 2u, 60000u);
   az_iot_deadline__expire_now(&fx->entries[expired]._internal.deadline);
-  az_iot_delivery_tracker__expire_due(&fx->tracker);
+  az_iot_delivery_tracker__expire_overdue(&fx->tracker);
   assert_int_equal(fx->completion_count, 1);
   assert_completed(fx, 0, expired, AZ_IOT_DELIVERY_TRACKER_OUTCOME_EXPIRED);
-  az_iot_delivery_tracker__expire_due(NULL);
+  az_iot_delivery_tracker__expire_overdue(NULL);
 }
 /* A send the adapter refuses does not hold back the message a PUBACK error requeued: it goes out
  * from the next do_work(). */
@@ -1003,7 +1003,7 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         an_identity_change_keeps_replacements_in_a_later_tracker, setup, teardown),
     cmocka_unit_test_setup_teardown(on_sent_reports_each_publish, setup, teardown),
-    cmocka_unit_test_setup_teardown(expire_due_completes_expired_messages_now, setup, teardown),
+    cmocka_unit_test_setup_teardown(expire_overdue_completes_expired_messages_now, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_busy_adapter_does_not_hold_back_a_requeued_message, setup, teardown),
     cmocka_unit_test_setup_teardown(arguments_capacity_and_binding, setup, teardown),

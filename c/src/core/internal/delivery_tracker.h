@@ -160,7 +160,7 @@ extern "C"
    * @brief Complete as EXPIRED every message whose time limit has passed, as the next TICK would.
    *        For an owner about to need the entries back.
    */
-  void az_iot_delivery_tracker__expire_due(az_iot_delivery_tracker* tracker);
+  void az_iot_delivery_tracker__expire_overdue(az_iot_delivery_tracker* tracker);
 
 #ifdef __cplusplus
 }
