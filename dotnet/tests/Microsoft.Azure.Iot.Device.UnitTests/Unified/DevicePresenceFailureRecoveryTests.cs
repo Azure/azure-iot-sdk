@@ -10,11 +10,11 @@ using Microsoft.Azure.Iot.Device.Authentication;
 namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
 {
     /// <summary>
-    /// Tests for the failure path of the classic (MQTTv3) device presence flow that the unified
+    /// Tests for the failure path of the device presence flow that the unified
     /// <see cref="ConnectionClient"/> runs in <c>HandleConnectedToHubAsync</c> during the initial connect.
     /// </summary>
     /// <remarks>
-    /// On an MQTTv3 hub the device presence flow re-subscribes to the classic twin, desired-property and direct-method
+    /// The device presence flow re-subscribes to the classic twin, desired-property and direct-method
     /// topics. If the broker grants any of them a QoS other than the requested QoS 0, the flow treats the subscribe as
     /// failed and tears the connection down with <c>DisconnectAsync(desireReconnection: true)</c>. The
     /// <c>MqttConnectionManager</c> then reconnects on its own and runs the flow again, so a single failed grant is
@@ -33,7 +33,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
         [Fact]
         public async Task AnnounceDevicePresenceAcceptsDeviceBoundMessagesQos1Grant()
         {
-            using MockConnectionMqttClient mockMqttClient = new() { AutoRespondToBirth = true };
+            using MockConnectionMqttClient mockMqttClient = new();
             ConnectionClient connectionClient = new(new()
             {
                 MqttClient = mockMqttClient
@@ -68,7 +68,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
         [InlineData(true, true, false)]
         public async Task PresenceFlowSkipsTopicsOfOptedOutFeatures(bool enableTwin, bool enableDirectMethods, bool enableCloudToDeviceMessages)
         {
-            using MockConnectionMqttClient mockMqttClient = new() { AutoRespondToBirth = true };
+            using MockConnectionMqttClient mockMqttClient = new();
             ConnectionClient connectionClient = new(new()
             {
                 MqttClient = mockMqttClient,
@@ -91,7 +91,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
         [Fact]
         public async Task PresenceFlowSendsNoSubscribeWhenAllFeaturesOptedOut()
         {
-            using MockConnectionMqttClient mockMqttClient = new() { AutoRespondToBirth = true };
+            using MockConnectionMqttClient mockMqttClient = new();
             ConnectionClient connectionClient = new(new()
             {
                 MqttClient = mockMqttClient,
@@ -150,7 +150,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
         [InlineData(-1)] // -1 fails every topic in the presence subscribe
         public async Task AnnounceDevicePresenceRecoversWhenClassicPresenceSubscribeGrantIsUnsuccessful(int failingTopicIndex)
         {
-            using MockConnectionMqttClient mockMqttClient = new() { AutoRespondToBirth = true };
+            using MockConnectionMqttClient mockMqttClient = new();
             ConnectionClient connectionClient = new(new()
             {
                 MqttClient = mockMqttClient

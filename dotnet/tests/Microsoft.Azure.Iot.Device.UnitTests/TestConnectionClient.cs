@@ -1,7 +1,6 @@
 // Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
 // See LICENSE file in the project root for full license information.
 
-using Microsoft.Azure.Iot.Device.MQTTv5.Connection;
 using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Mqtt;
 using Microsoft.Azure.Iot.Device.Provisioning.Models;
@@ -34,7 +33,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
         public override async Task HandleConnectedToHubAsync(MqttClientConnectedEventArgs args)
         {
-            // This client has no birth message or topics to subscribe to, so it is present as soon as it is connected.
+            // This client has no topics to subscribe to, so it is present as soon as it is connected.
             await RaiseDevicePresenceFlowCompletedAsync(new DevicePresenceFlowCompletedArgs() { IsSuccess = true });
         }
 

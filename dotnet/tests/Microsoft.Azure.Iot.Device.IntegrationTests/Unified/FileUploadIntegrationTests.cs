@@ -15,32 +15,19 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
     public class FileUploadIntegrationTests
     {
         [Theory(Timeout = Setup.TestTimeoutMilliseconds)]
-        [InlineData(true, false)]
-        [InlineData(true, true)]
-        [InlineData(false, false, Traits = new[] { Setup.HubTrait, Setup.MQTTv5HubTraitValue })]
-        public async Task TestFileUpload(bool testAgainstClassicHub, bool withProvidedHttpClient)
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task TestFileUpload(bool withProvidedHttpClient)
         {
-            if (!testAgainstClassicHub)
-            {
-                Assert.Skip("file upload is not supported for MQTTv5 hubs yet");
-            }
-
-            UnifiedDeviceTestContext testDeviceContext = await Setup.CreateConnectedUnifiedConnectionClientAsync(testAgainstClassicHub, null, TestContext.Current.CancellationToken);
+            UnifiedDeviceTestContext testDeviceContext = await Setup.CreateConnectedUnifiedConnectionClientAsync(null, TestContext.Current.CancellationToken);
 
             FileUploadClient fileUploadClient;
-            if (testAgainstClassicHub)
+            if (withProvidedHttpClient)
             {
-                if (withProvidedHttpClient)
-                {
-                    var handler = new HttpClientHandler();
-                    handler.ClientCertificates.Add(Assert.IsType<X509AuthenticationProvider>(testDeviceContext.AuthenticationProvider).PrimaryClientCertificate);
-                    HttpClient userProvidedHttpClient = new(handler);
-                    fileUploadClient = new FileUploadClient(testDeviceContext.ConnectionClient, userProvidedHttpClient);
-                }
-                else
-                {
-                    fileUploadClient = new FileUploadClient(testDeviceContext.ConnectionClient);
-                }
+                var handler = new HttpClientHandler();
+                handler.ClientCertificates.Add(Assert.IsType<X509AuthenticationProvider>(testDeviceContext.AuthenticationProvider).PrimaryClientCertificate);
+                HttpClient userProvidedHttpClient = new(handler);
+                fileUploadClient = new FileUploadClient(testDeviceContext.ConnectionClient, userProvidedHttpClient);
             }
             else
             {
@@ -101,17 +88,10 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
             await fileUploadClient.CompleteFileUploadSasUriAsync(completionNotification, cancellationToken);
         }
 
-        [Theory(Timeout = Setup.TestTimeoutMilliseconds)]
-        [InlineData(true)]
-        [InlineData(false, Traits = new[] { Setup.HubTrait, Setup.MQTTv5HubTraitValue })]
-        public async Task TestFileUpload_BadFormat(bool testAgainstClassicHub)
+        [Fact(Timeout = Setup.TestTimeoutMilliseconds)]
+        public async Task TestFileUpload_BadFormat()
         {
-            if (!testAgainstClassicHub)
-            {
-                Assert.Skip("file upload is not supported for MQTTv5 hubs yet");
-            }
-
-            UnifiedDeviceTestContext testDeviceContext = await Setup.CreateConnectedUnifiedConnectionClientAsync(testAgainstClassicHub, null, TestContext.Current.CancellationToken);
+            UnifiedDeviceTestContext testDeviceContext = await Setup.CreateConnectedUnifiedConnectionClientAsync(null, TestContext.Current.CancellationToken);
 
             FileUploadClient fileUploadClient;
             fileUploadClient = new FileUploadClient(testDeviceContext.ConnectionClient);

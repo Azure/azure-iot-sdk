@@ -6,7 +6,7 @@ using System;
 using System.Collections.Generic;
 using System.Text;
 
-namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
+namespace Microsoft.Azure.Iot.Device.Models
 {
     public class DevicePresenceFlowCompletedArgs : EventArgs
     {

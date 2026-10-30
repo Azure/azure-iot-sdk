@@ -3,7 +3,6 @@
 
 using Microsoft.Azure.Iot.Device.Events;
 using Microsoft.Azure.Iot.Device.Exceptions;
-using Microsoft.Azure.Iot.Device.MQTTv5.Twin;
 using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Models.CertificateManagement;
 using Microsoft.Azure.Iot.Device.Mqtt;
@@ -18,7 +17,6 @@ using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
-using Microsoft.Azure.Iot.Device.MQTTv5.Connection;
 using Microsoft.Azure.Iot.Device.Unified.Connection;
 using Microsoft.Azure.Iot.Device.Authentication;
 using Microsoft.Azure.Iot.Device.Unified.Models;
@@ -114,11 +112,10 @@ namespace Microsoft.Azure.Iot.Device
 
         private const string ProvisioningUsernameFormat = "{0}/registrations/{1}/api-version={2}&ClientVersion={3}";
 
-        // WebSocket settings mirror the C SDK (AZ_IOT_MQTT_DEFAULT_WEBSOCKET_PATH / AZ_IOT_MQTT_HUB_V5_WEBSOCKET_PATH):
-        // DPS and the MQTTv3 hub use "/$iothub/websocket"; the MQTTv5 hub uses "/mqtt". Both use port 443 and the "mqtt" subprotocol.
+        // WebSocket settings mirror the C SDK (AZ_IOT_MQTT_DEFAULT_WEBSOCKET_PATH): DPS and IoT hub use
+        // "/$iothub/websocket" on port 443 with the "mqtt" subprotocol.
         internal const int WebSocketPort = 443;
         internal const string DefaultWebSocketPath = "/$iothub/websocket";
-        internal const string MqttV5HubWebSocketPath = "/mqtt";
 
         internal static string BuildWebSocketUri(string hostName, int port, string path) => $"wss://{hostName}:{port}{path}";
 
@@ -133,11 +130,11 @@ namespace Microsoft.Azure.Iot.Device
 
         private static readonly TimeSpan s_defaultOperationPollingInterval = TimeSpan.FromSeconds(2);
 
-        // The abstract methods cover all the differences between an MQTTv5 client and a unified client.
+        // The abstract methods cover the IoT hub specific connection needs of each inheriting client.
         internal abstract MqttConnect IotHubMqttConnectOverride(MqttConnect connect);
 
-        // In MQTTv5 case, SUB to devicebound, send birth message, wait for birth ack. In MQTTv3 case, send all DM/Twin/Telem SUBs.
-        // In both cases, this method should trigger the "OnDevicePresenceFlowCompleted" callback
+        // Send all the direct method/twin/cloud-to-device SUBs that this client needs. This method should trigger the
+        // "OnDevicePresenceFlowCompleted" callback.
         public abstract Task HandleConnectedToHubAsync(MqttClientConnectedEventArgs args);
 
         // Workaround so that inheriting classes can invoke the "DevicePresenceFlowCompletedAsync" event.
@@ -181,13 +178,6 @@ namespace Microsoft.Azure.Iot.Device
         internal void ClearDevicePresenceSubscribed()
         {
             Volatile.Write(ref _isDevicePresenceSubscribed, 0);
-        }
-
-        /// <summary>
-        /// Restart the birth-ack timeout schedule from its first row. Only clients that run the MQTTv5 presence flow have one.
-        /// </summary>
-        internal virtual void ResetBirthAckTimeoutSchedule()
-        {
         }
 
         internal bool _isDisposed = false;
@@ -835,9 +825,6 @@ namespace Microsoft.Azure.Iot.Device
 
             // Any session left on this IoT hub was not set up by this connection's presence flow, so its subscriptions are unknown.
             ClearDevicePresenceSubscribed();
-
-            // This is a fresh CONNECT cycle, so the birth-ack timeout schedule starts again from its first row.
-            ResetBirthAckTimeoutSchedule();
 
             string deviceId = CurrentConnectionContext.DeviceId;
             string hostname = CurrentConnectionContext.IotHubHostName;
@@ -2071,7 +2058,7 @@ namespace Microsoft.Azure.Iot.Device
 
                         try
                         {
-                            latch.Wait(connectionLifetimeCancellation.Token); // Wait for device birth flow to finish before resuming this feature client-level traffic
+                            latch.Wait(connectionLifetimeCancellation.Token); // Wait for device presence flow to finish before resuming this feature client-level traffic
                         }
                         catch (OperationCanceledException)
                         {

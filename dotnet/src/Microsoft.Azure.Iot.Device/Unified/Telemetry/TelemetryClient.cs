@@ -23,7 +23,6 @@ namespace Microsoft.Azure.Iot.Device.Unified.Telemetry
         internal const string DeviceBoundMessagesTopicFormat = "devices/" + IConnectionClient.DeviceIdPlaceholder + "/messages/devicebound/";
 
         private IConnectionClient _connection;
-        private MQTTv5.Telemetry.TelemetryClient _mqttv5TelemetryClient;
 
         public const string MessagePropertyCorrelationId = "$.cid";
         public const string MessagePropertyMessageId = "$.mid";
@@ -38,7 +37,6 @@ namespace Microsoft.Azure.Iot.Device.Unified.Telemetry
         /// <remarks>
         /// Every handler is invoked and awaited in the order it was added. The connection layer acknowledges the MQTT
         /// message before dispatching it, independently of whether a handler completes successfully.
-        /// This feature currently only works with MQTTv3 IoT Hubs.
         /// </remarks>
         /// <exception cref="InvalidOperationException">Thrown when adding a handler if the connection client opted out of cloud-to-device messages (see <see cref="ConnectionClientOptions.EnableCloudToDeviceMessages"/>).</exception>
         public event Func<CloudToDeviceTelemetry, Task>? CloudToDeviceTelemetryReceivedAsync
@@ -69,7 +67,6 @@ namespace Microsoft.Azure.Iot.Device.Unified.Telemetry
         public TelemetryClient(IConnectionClient connection)
         {
             _connection = connection;
-            _mqttv5TelemetryClient = new(new Stub(_connection));
             _connection.PublishReceivedAsync += HandleReceivedMqttPublish;
         }
 
@@ -91,12 +88,6 @@ namespace Microsoft.Azure.Iot.Device.Unified.Telemetry
                 throw new NotSupportedException("Must be connected before calling this method.");
             }
 
-            if (currentConnectionContext.ConnectionProfile == Device.Models.IotHubConnectionType.Mqttv5)
-            {
-                await _mqttv5TelemetryClient.SendTelemetryAsync(message, cancellationToken);
-                return;
-            }
-
             if (message.Payload != null && message.Payload.Length > 255000) //Leaving some buffer b/c classic hub message size calc is not strictly about payload size
             {
                 throw new MessageTooLargeException("This telemetry message is too large to be accepted by IoT Hub. It will not be sent.");
@@ -112,7 +103,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Telemetry
                 QualityOfServiceLevel = MqttQualityOfServiceLevel.AtLeastOnce,
             };
 
-            // When publishing to MQTTv3 Hub, the topic string includes all the system properties (correlation id, message id, etc.)
+            // When publishing to IoT Hub, the topic string includes all the system properties (correlation id, message id, etc.)
             // and all the custom user properties. The values of all these properties must be URL encoded. The user property keys should
             // also be URL encoded, but the system properties' keys should not be URL encoded.
             if (message.MessageId != null)

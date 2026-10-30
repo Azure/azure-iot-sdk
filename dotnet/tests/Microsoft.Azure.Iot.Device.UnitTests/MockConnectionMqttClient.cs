@@ -1,10 +1,7 @@
 // Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
 // See LICENSE file in the project root for full license information.
 
-using Google.Protobuf;
-using Microsoft.Azure.Iot.Device.MQTTv5.Connection;
 using Microsoft.Azure.Iot.Device.Mqtt;
-using System.Text;
 
 namespace Microsoft.Azure.Iot.Device.UnitTests
 {
@@ -36,12 +33,6 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
         /// <summary>Invoked on every client-initiated DISCONNECT, after it has been recorded.</summary>
         public Func<MqttDisconnect, Task>? OnDisconnect { get; set; }
-
-        /// <summary>
-        /// When set, a publish to an MQTTv5 birth topic (<c>ih/{deviceId}/srv/presence</c>) is answered with a simulated
-        /// birth-ack.
-        /// </summary>
-        public bool AutoRespondToBirth { get; set; }
 
         /// <summary>How many CONNECTs have been attempted, including the ones the server refused.</summary>
         public int ConnectAttemptCount => Volatile.Read(ref _connectAttemptCount);
@@ -156,11 +147,6 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            if (AutoRespondToBirth)
-            {
-                SimulateBirthAckIfBirthPublish(publish);
-            }
-
             MqttPublishAck puback = OnPublish != null
                 ? await OnPublish.Invoke(publish).WaitAsync(cancellationToken)
                 : new MqttPublishAck() { ReasonCode = MqttPublishAckReasonCode.Success };
@@ -197,24 +183,6 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             {
                 SentMqttTrafficInOrder.Add(traffic);
             }
-        }
-
-        private void SimulateBirthAckIfBirthPublish(MqttPublish publish)
-        {
-            if (!publish.Topic.StartsWith("ih/") || !publish.Topic.EndsWith("/srv/presence"))
-            {
-                return;
-            }
-
-            string deviceId = publish.Topic.Split('/')[1];
-            MqttPublish birthAck = new()
-            {
-                Topic = $"ih/{deviceId}/dev/presence",
-                Payload = new BirthAck().ToByteArray(),
-                CorrelationData = publish.CorrelationData,
-            };
-            birthAck.UserProperties.Add(new("type", Encoding.UTF8.GetBytes("birth-ack:1")));
-            _ = SimulatePublishReceivedAsync(birthAck);
         }
 
         public void Dispose()

@@ -18,9 +18,6 @@ namespace Microsoft.Azure.Iot.Device.Authentication
     /// DPS always uses a SAS token. IoT Hub uses a SAS token until a certificate is issued and this provider has
     /// a private key or callback to prepare it. Issued certificates are prepared and cached as with
     /// <see cref="X509AuthenticationProvider"/>.
-    /// 
-    /// WARNING - MQTTv5 IoT Hubs do not currently support using SAS tokens to authenticate devices. Users of this class must 
-    /// rely on issued certificates for authentication against MQTTv5 IoT Hubs as of now.
     /// </remarks>
     public class SymmetricKeyAuthenticationProvider : AuthenticationProvider
     {

@@ -83,7 +83,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTnetAdapter
         {
             ObjectDisposedException.ThrowIf(_isDisposed, this);
 
-            connect = await _connecting.InvokeAsync(connect, cancellationToken); // Allow MQTTv5 connection client to inject a fresh connect nonce each time a connect happens
+            connect = await _connecting.InvokeAsync(connect, cancellationToken); // Allow the connection client to customize each CONNECT (for example, with fresh credentials)
 
             MqttClientOptionsBuilder optionsBuilder;
             if (connect.ProtocolVersion == MqttProtocolVersion.V500)
