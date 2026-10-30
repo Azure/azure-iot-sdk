@@ -289,6 +289,8 @@ endif()
 az_iot_add_cmocka_test(az_iot_tests_mqttv5_direct_method_client_tuned
     unit/mqttv5_direct_method_client_test.c
     ${PROJECT_SOURCE_DIR}/src/mqttv5/direct_method_client.c
+    ${PROJECT_SOURCE_DIR}/src/mqttv5/direct_method_budget.c
+    ${PROJECT_SOURCE_DIR}/src/mqttv5/direct_method_delivery.c
     ${PROJECT_SOURCE_DIR}/src/mqttv5/direct_method_codec.c)
 target_link_libraries(az_iot_tests_mqttv5_direct_method_client_tuned PRIVATE az_iot_test_support)
 target_include_directories(az_iot_tests_mqttv5_direct_method_client_tuned PRIVATE
