@@ -528,7 +528,11 @@ int main(int argc, char** argv)
   az_iot_auth hub_auth = { 0 };
   hub_auth.sas.on_sas_token_required = on_token_required;
   hub_auth.sas.user_ctx = &ctx;
+  /* Memory for the connection client's entries, sized for the default limits. */
+  static uint8_t connection_workspace[AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE];
   az_iot_connection_client_options opts = az_iot_connection_client_options_default();
+  opts.workspace = connection_workspace;
+  opts.workspace_size = sizeof(connection_workspace);
   opts.iothub_hostname = a->assigned_hub;
   opts.device_id = a->device_id;
   opts.connection_profile = a->connection_profile;
