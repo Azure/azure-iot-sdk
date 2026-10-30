@@ -1160,14 +1160,17 @@ static void library_mode_hands_over_the_offer_and_reports_the_applications_resul
       E2E_SU_VERDICT_BUDGET_S);
   size_t before = fx->spy.report_count;
   assert_int_equal(az_iot_su_client_report_status(&fx->su, &progress, NULL, 0), AZ_IOT_OK);
+  /* A retryable verdict leaves its attempt without one: the resend, newest, gets it. */
   PUMP_UNTIL(
       fx,
-      fx->spy.report_count > before && fx->spy.reports[before].has_verdict,
+      fx->spy.report_count > before && fx->spy.reports[fx->spy.report_count - 1].has_verdict,
       E2E_SU_VERDICT_BUDGET_S);
   assert_false(fx->faulted);
-  assert_true(fx->spy.report_count > before && fx->spy.reports[before].has_verdict);
-  assert_int_equal(fx->spy.reports[before].outcome, AZ_IOT_SU_OUTCOME_IN_PROGRESS);
-  assert_int_equal(fx->spy.reports[before].result, AZ_IOT_OK);
+  assert_true(fx->spy.report_count > before);
+  const spy_report* reported = &fx->spy.reports[fx->spy.report_count - 1];
+  assert_true(reported->has_verdict);
+  assert_int_equal(reported->outcome, AZ_IOT_SU_OUTCOME_IN_PROGRESS);
+  assert_int_equal(reported->result, AZ_IOT_OK);
   assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_DELEGATED);
 
   /* The hand-off's request and manifest are invalid once the terminal report is in. */
