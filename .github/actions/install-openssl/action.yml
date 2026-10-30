@@ -2,7 +2,8 @@
 # Licensed under the MIT license. See LICENSE file in the project root for full license information.
 
 # Builds a pinned OpenSSL release with c/eng/install-openssl.sh, cached per runner image, and points
-# CMake (OPENSSL_ROOT_DIR) and PATH at it. On Windows, run it after the MSVC environment is set up.
+# CMake (OPENSSL_ROOT_DIR), PATH and, on Linux, pkg-config (PKG_CONFIG_PATH) and the distribution's
+# CA bundle (SSL_CERT_FILE) at it. On Windows, run it after the MSVC environment is set up.
 # A cache miss costs a few minutes on Linux and considerably more on Windows (nmake is serial).
 name: Install OpenSSL
 description: Build a pinned OpenSSL release from source (cached) and select it for CMake.
@@ -60,4 +61,12 @@ runs:
         if [ "$RUNNER_OS" = Windows ]; then root="$(cygpath -m "$root")"; fi
         "$root/bin/openssl" version | grep -F "OpenSSL $VERSION "
         echo "OPENSSL_ROOT_DIR=$root" >> "$GITHUB_ENV"
+        if [ "$RUNNER_OS" != Windows ]; then
+          echo "PKG_CONFIG_PATH=$root/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}" >> "$GITHUB_ENV"
+          # The build's own OPENSSLDIR holds no CA certificates, so default verify paths
+          # (SSL_CTX_set_default_verify_paths) would trust nothing: use the distribution's.
+          if [ -z "${SSL_CERT_FILE:-}" ] && [ -f /etc/ssl/certs/ca-certificates.crt ]; then
+            echo "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt" >> "$GITHUB_ENV"
+          fi
+        fi
         echo "$root/bin" >> "$GITHUB_PATH"
