@@ -1049,8 +1049,9 @@ az_iot_su_state az_iot_su_client_get_state(const az_iot_su_client* client);
 
 /**
  * The update being worked on, in either mode: the request (workflowId, unescaped
- * manifest text, signature, file URLs) from MANIFEST_RECEIVED until Idle, and the
- * parsed manifest once verified (not in FAILED). NOT_FOUND when Idle.
+ * manifest text, signature, file URLs) from MANIFEST_RECEIVED until Idle or a
+ * replacing workflow, and the parsed manifest once verified (not in FAILED).
+ * NOT_FOUND when Idle.
  */
 az_iot_result az_iot_su_client_get_current_update(
     const az_iot_su_client* client,

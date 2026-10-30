@@ -9441,6 +9441,34 @@ static void current_update_of_a_failed_workflow_has_no_manifest(void** state)
   assert_string_equal(probe.workflow_id, "wf-unverified");
 }
 
+static void current_update_with_an_undecodable_manifest_fails_before_verification(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  /* A lone high surrogate in the escaped manifest: staged, but not decodable. */
+  static char patch[SU_TEST_PATCH_SIZE];
+  copy_str(patch, sizeof(patch), build_patch("wf-undecodable"));
+  char* at = strstr(patch, "manifestVersion");
+  assert_non_null(at);
+  assert_true(strlen(patch) + 6 < sizeof(patch));
+  memmove(at + 6, at, strlen(at) + 1);
+  memcpy(at, "\\ud800", 6);
+
+  current_update_probe probe = { .su = &fx->su, .at = AZ_IOT_SU_STATE_MANIFEST_RECEIVED };
+  assert_int_equal(
+      az_iot_su_client_add_observer(&fx->su, read_current_update_on_state, &probe), AZ_IOT_OK);
+  inject_patch(fx, patch);
+  assert_true(probe.seen);
+  assert_false(probe.had_manifest);
+  assert_string_equal(probe.workflow_id, "wf-undecodable");
+  assert_string_equal(probe.manifest_text, "");
+
+  pump(fx, 8);
+  assert_int_equal(fx->log.verify_calls, 0);
+  assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_IDLE);
+  assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_FAILED);
+  assert_string_equal(fx->chan.last_workflow_id, "wf-undecodable");
+}
+
 static void current_update_in_library_mode_is_the_delegated_one(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -10170,6 +10198,8 @@ int main(void)
         current_update_is_readable_from_manifest_received_until_idle, setup, teardown),
     cmocka_unit_test_setup_teardown(
         current_update_of_a_failed_workflow_has_no_manifest, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        current_update_with_an_undecodable_manifest_fails_before_verification, setup, teardown),
     cmocka_unit_test_setup_teardown(
         current_update_in_library_mode_is_the_delegated_one, setup_library, teardown),
     cmocka_unit_test_setup_teardown(

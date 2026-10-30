@@ -1474,9 +1474,10 @@ extern "C"
    * not in AZ_IOT_SU_STATE_FAILED. In library mode both are the ones
    * AZ_IOT_SU_EVENT_UPDATE_AVAILABLE carries.
    *
-   * Both are owned by the client and valid until it returns to Idle or is
-   * deinitialized. Call on the do_work() thread, or serialize with it; legal
-   * from an observer.
+   * Both are owned by the client and valid until it returns to Idle, a new
+   * workflow replaces this one (managed client only; see
+   * AZ_IOT_SU_EVENT_WORKFLOW_STATE_CHANGED), or it is deinitialized. Call on the
+   * do_work() thread, or serialize with it; legal from an observer.
    *
    * @param[in] client The client.
    * @param[out] out_request The current request; NULL on error.
