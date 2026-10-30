@@ -21,8 +21,9 @@
 #include <string.h>
 
 #if defined(AZ_IOT_AZ_MQTT_MBEDTLS)
-#include <mbedtls/build_info.h>
-#if MBEDTLS_VERSION_MAJOR >= 4 || defined(MBEDTLS_USE_PSA_CRYPTO)
+#include <mbedtls/version.h> // In every mbedTLS version, unlike build_info.h (3.0+).
+#if MBEDTLS_VERSION_NUMBER >= 0x04000000 \
+    || (MBEDTLS_VERSION_NUMBER >= 0x03060000 && defined(MBEDTLS_USE_PSA_CRYPTO))
 #define AZ_IOT_CONFORMANCE_PSA_KEYS
 #include <mbedtls/pk.h>
 #include <mbedtls/psa_util.h>

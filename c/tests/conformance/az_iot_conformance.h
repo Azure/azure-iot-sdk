@@ -186,7 +186,6 @@ extern "C"
     const char* client_cert_path;
     az_iot_mqtt_sign_callback sign;
     void* sign_ctx;
-    uint32_t client_key_psa_id;
 
     /* Material for the transport capabilities above. Each is needed only by the
      * capability that names it, and supplying it without declaring that
@@ -203,6 +202,10 @@ extern "C"
 
     /* AZ_IOT_CONFORMANCE_CAP_PROXY needs nothing here: the suite starts its own
      * in-process CONNECT proxy, including for the authenticated cases. */
+
+    /* AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY_PSA: see the custody material above.
+     * Last, so positional initializers of the fields above keep compiling. */
+    uint32_t client_key_psa_id;
   } az_iot_conformance_options;
 
   /* Run the conformance suite for `suite_kind` against the given factory.
