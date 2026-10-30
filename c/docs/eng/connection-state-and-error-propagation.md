@@ -93,8 +93,7 @@ does **not** run its normal reconnect path, because that tears down the active h
   `AZ_IOT_ERR_NOT_SUPPORTED` instead of retrying on every pump tick.
 - The refusal clears when a session comes up, a registration succeeds, on `open()` or `close()`,
   or when the last holder releases its reference.
-- A synchronous session-start failure is paced at the call site. A `close()` from inside the
-  `DPS:CONNECTING` announcement is a cancellation and is not paced.
+- A synchronous session-start failure is paced at the call site.
 
 The core paces the transport. Whether an operation is still worth re-issuing is the feature
 client's decision.
@@ -179,6 +178,9 @@ settle.
 - **`FAULTED` is settled, not terminal.** `close()` is legal from it and returns the client to
   `IDLE`; `open()` then starts a fresh attempt.
 - **`open()` is legal only from `IDLE`**; otherwise it answers `AZ_IOT_ERR_ALREADY_INITIALIZED`.
+- **`open()` and `close()` are not callable from a callback the client runs** (state, PUBACK,
+  SAS token, DPS, inbound message): both return `AZ_IOT_ERR_BUSY`. Record the decision and call
+  them after `do_work()` returns.
 - **Teardown order:** `deinit()` every feature client first, then the connection client.
 
 ---

@@ -247,10 +247,17 @@ const char* az_iot_mqtt_role_to_string(az_iot_mqtt_role r)
  * would walk into.
  *
  * The prior value is SAVED and RESTORED rather than simply cleared, because
- * this can nest: close() is legal from inside an observer, and it transitions
- * the state, which dispatches again. Clearing on the way out of the inner
+ * this can nest: an observer can start a transition (a feature client starting
+ * its session), which dispatches again. Clearing on the way out of the inner
  * dispatch would drop the guard while the outer one is still walking its
  * arrays, and a later observer in the outer pass could then mutate them. */
+/** @brief Marks the start of a call into application or feature-client code; open() and
+ * close() return AZ_IOT_ERR_BUSY until the matching leave_callback(). */
+static void enter_callback(az_iot_connection_client* c) { c->callback_depth++; }
+
+/** @brief Marks the end of the call enter_callback() started. */
+static void leave_callback(az_iot_connection_client* c) { c->callback_depth--; }
+
 /**
  * @brief Call every feature observer of @p event's kind.
  *
@@ -266,7 +273,9 @@ static void notify_feature_observers(
     az_iot_connection_feature_observer const observer = c->feature_observers[i];
     if (observer.cb != NULL && (observer.events & (uint8_t)event->kind) != 0u)
     {
+      enter_callback(c);
       observer.cb(event, observer.user_ctx);
+      leave_callback(c);
     }
   }
 }
@@ -294,7 +303,9 @@ static void dispatch_state_event(
   {
     if (c->app_state_observers[i].cb)
     {
+      enter_callback(c);
       c->app_state_observers[i].cb(event, c->app_state_observers[i].user_ctx);
+      leave_callback(c);
     }
   }
   c->dispatching_state = was_dispatching;
@@ -817,17 +828,11 @@ static bool client_is_fully_idle(const az_iot_connection_client* c)
  * is observable, and set_state_to() suppresses the ones that did not move. */
 static void settle_all_scopes_to_idle(az_iot_connection_client* c)
 {
-  uint32_t seq = c->open_seq;
   /* Callers have torn the provisioning session down, so one that exists now
-   * was started from a callback (open() or a feature client): not IDLE. */
+   * was started from a callback by a feature client: not IDLE. */
   if (c->dps_mqtt == NULL)
   {
     set_state_to(c, AZ_IOT_CONN_SCOPE_DPS, AZ_IOT_CONN_STATE_IDLE, AZ_IOT_OK);
-  }
-  /* An observer may have reopened the client from that callback. */
-  if (c->open_seq != seq)
-  {
-    return;
   }
   set_state_to(c, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_IDLE, AZ_IOT_OK);
 }
@@ -1028,6 +1033,7 @@ static void resolve_session_options(
  * @param ack The PUBLISH_ACK event, for its reason code and string; NULL when none arrived.
  */
 static void complete_publish(
+    az_iot_connection_client* c,
     az_iot_publish_ack_callback cb,
     az_iot_publish_result_callback result_cb,
     void* user_ctx,
@@ -1044,11 +1050,15 @@ static void complete_publish(
       result.reason_string = ack->reason_string;
       result.reason_string_len = ack->reason_string != NULL ? ack->reason_string_len : 0;
     }
+    enter_callback(c);
     result_cb(&result, user_ctx);
+    leave_callback(c);
   }
   else if (cb)
   {
+    enter_callback(c);
     cb(status, user_ctx);
+    leave_callback(c);
   }
 }
 
@@ -1098,7 +1108,7 @@ static void end_session(az_iot_connection_client* c, az_iot_connection_session_e
 
     if (was_awaiting_puback)
     {
-      complete_publish(cb, result_cb, user_ctx, AZ_IOT_ERR_NOT_CONNECTED, NULL);
+      complete_publish(c, cb, result_cb, user_ctx, AZ_IOT_ERR_NOT_CONNECTED, NULL);
     }
   }
 
@@ -1314,8 +1324,7 @@ static void hold_material(
 /**
  * @brief Releases the material @p scope holds, if any. Called once the
  * adapter's connect() has copied it, when the attempt ends first, and from
- * close() and deinit(): an observer may close() and deinit the provider from
- * the CONNECTING announcement, before the attempt resumes.
+ * close() and deinit().
  */
 static void release_material(az_iot_connection_client* c, az_iot_connection_scope scope)
 {
@@ -2284,7 +2293,7 @@ typedef enum
 {
   USER_TOKEN_READY, /**< Supplied from the callback; held in the token area. */
   USER_TOKEN_PENDING, /**< Awaiting az_iot_connection_client_update_sas_token(). */
-  USER_TOKEN_ABANDONED, /**< close() from the callback ended the request. */
+  USER_TOKEN_ABANDONED, /**< The request ended while the callback ran. */
   USER_TOKEN_FAILED /**< See the returned error. */
 } user_token_outcome;
 
@@ -2396,17 +2405,16 @@ static user_token_outcome ask_user_token(
     .key_name = scope == AZ_IOT_CONN_SCOPE_DPS ? DPS_SAS_KEY_NAME : "",
     .is_renewal = c->sas_token_request[scope].for_renewal,
   };
-  uint32_t closes = c->close_count;
-  uint32_t seq = c->open_seq;
   /* A token supplied meanwhile goes before the URI: its own terminator and the URI's. */
   c->sas_token_capacity = c->sas_token_size - uri_len - 2u;
   c->sas_token_asking = (uint8_t)(scope + 1);
+  enter_callback(c);
   auth->sas.on_sas_token_required(&request, auth->sas.user_ctx);
+  leave_callback(c);
   c->sas_token_asking = 0;
   memset((char*)(uintptr_t)uri, 0, uri_len + 1u);
   c->sas_token_capacity = c->sas_token_size - 1u;
-  if (c->close_count != closes || c->open_seq != seq
-      || c->sas_token_request[scope].request_id != id)
+  if (c->sas_token_request[scope].request_id != id)
   {
     sas_wipe_token(c);
     return USER_TOKEN_ABANDONED;
@@ -3344,7 +3352,9 @@ static az_iot_result dps_store_issued_cert(az_iot_connection_client* c, az_span 
   }
   if (c->op_cert_cb)
   {
+    enter_callback(c);
     c->op_cert_cb(&issued, rc, c->op_cert_cb_ctx);
+    leave_callback(c);
   }
   return rc;
 }
@@ -3406,9 +3416,8 @@ static void on_dps_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
       c->dps_subscription_confirmed = true;
 
       /* The SUBACK is what makes the session usable, so it is DPS:CONNECTED.
-       * Only RECORDED here: announcing runs observers, close() is legal from
-       * one, and it would free this adapter while its process_loop is still on
-       * the stack. The pump announces it once process_loop has returned. */
+       * Only RECORDED here, so observers do not run inside this adapter's
+       * process_loop. The pump announces it once process_loop has returned. */
       c->dps_pending_ready_announce = true;
 
       /* Registration is a task, and it runs only while the registration ref is
@@ -3457,11 +3466,14 @@ static void on_dps_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
        * responses and fault the attempt. */
       if (c->dps_message_observer != NULL)
       {
-        if (c->dps_message_observer(
-                evt->message->topic,
-                evt->message->payload,
-                evt->message->payload_len,
-                c->dps_message_observer_ctx))
+        enter_callback(c);
+        bool consumed = c->dps_message_observer(
+            evt->message->topic,
+            evt->message->payload,
+            evt->message->payload_len,
+            c->dps_message_observer_ctx);
+        leave_callback(c);
+        if (consumed)
         {
           break;
         }
@@ -3600,7 +3612,9 @@ static void on_dps_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
               profile_name(c->dps_assigned_profile));
           if (c->reg_payload_cb && az_span_size(resp.registration_state.payload) > 0)
           {
+            enter_callback(c);
             c->reg_payload_cb(resp.registration_state.payload, c->reg_payload_cb_ctx);
+            leave_callback(c);
           }
           dps_finalize(c, AZ_IOT_OK, true);
           return;
@@ -3947,29 +3961,7 @@ static az_iot_result dps_connect_session(az_iot_connection_client* c)
   c->dps_pending_retry_after_secs = 0;
   c->dps_enrolling = c->opts.dps.request_operational_certificate;
 
-  uint32_t start_seq = ++c->dps_start_seq;
   set_state_to(c, AZ_IOT_CONN_SCOPE_DPS, AZ_IOT_CONN_STATE_CONNECTING, AZ_IOT_OK);
-
-  /* That announcement ran the application's state callback synchronously, and
-   * close() is legal from inside it -- including the branch that cancels a
-   * provisioning session, which destroys `mc` and clears dps_mqtt. Touching
-   * `mc` afterwards would be a use-after-free, so detect the cancellation and
-   * leave: the session the caller asked for no longer exists, and the client
-   * is already back in IDLE. */
-  if (c->dps_mqtt != mc || c->dps_start_seq != start_seq)
-  {
-    AZ_IOT_LOG_DEBUG(
-        AZ_IOT_LOG_COMPONENT_DPS,
-        "the session was closed from the state callback; abandoning the start");
-    /* Cancellation, not failure -- and it returns the same code as a genuine
-     * start failure, so callers that treat a failure as something to retry
-     * need to be told which happened. close() has just reset the retry
-     * bookkeeping; recreating it here would undo the caller's own close. */
-    c->dps_start_cancelled = true;
-    sas_wipe_token(c);
-    release_material(c, AZ_IOT_CONN_SCOPE_DPS);
-    return AZ_IOT_ERR_NOT_CONNECTED;
-  }
 
   az_iot_result r = mc->iface->connect(mc, &copts);
   sas_wipe_token(c);
@@ -3992,8 +3984,8 @@ static az_iot_result dps_connect_session(az_iot_connection_client* c)
     {
       set_state_to(c, AZ_IOT_CONN_SCOPE_DPS, AZ_IOT_CONN_STATE_IDLE, r);
     }
-    /* Those callbacks may close() + open() and start a newer session: report
-     * this start as replaced, so no caller settles or paces over it. */
+    /* A feature client may have started a newer session from those callbacks:
+     * report this start as replaced, so no caller settles or paces over it. */
     if (c->dps_mqtt != NULL)
     {
       c->dps_start_cancelled = true;
@@ -4010,8 +4002,8 @@ static az_iot_result dps_connect_session(az_iot_connection_client* c)
  * RETRY_PENDING or FAULTED from a retry, IDLE otherwise.
  *
  * @return AZ_IOT_OK when the session is connecting. AZ_IOT_ERR_NOT_CONNECTED
- * with dps_start_cancelled set when close() from inside an announcement
- * cancelled it. Otherwise the failed step's result.
+ * with dps_start_cancelled set when a feature client started a session from
+ * the announcement. Otherwise the failed step's result.
  */
 static az_iot_result dps_start(az_iot_connection_client* c)
 {
@@ -4020,11 +4012,11 @@ static az_iot_result dps_start(az_iot_connection_client* c)
   c->auth[AZ_IOT_CONN_SCOPE_DPS].source = AZ_IOT_AUTH_SOURCE_NONE;
   c->auth[AZ_IOT_CONN_SCOPE_DPS].x509_index = 0;
   set_state_to(c, AZ_IOT_CONN_SCOPE_DPS, AZ_IOT_CONN_STATE_SETTING_UP, AZ_IOT_OK);
-  /* close() is legal from the state callback; close() + open() there leaves a
-   * newer session in place. Either way this start is no longer wanted. */
-  if (c->state[AZ_IOT_CONN_SCOPE_DPS] != AZ_IOT_CONN_STATE_SETTING_UP || c->dps_mqtt != NULL)
+  /* A feature client may have started a session from the state callback. */
+  if (c->dps_mqtt != NULL)
   {
-    AZ_IOT_LOG_DEBUG(AZ_IOT_LOG_COMPONENT_DPS, "start closed from the state callback; abandoned");
+    AZ_IOT_LOG_DEBUG(
+        AZ_IOT_LOG_COMPONENT_DPS, "session started from the state callback; abandoned");
     c->dps_start_cancelled = true;
     return AZ_IOT_ERR_NOT_CONNECTED;
   }
@@ -4045,21 +4037,12 @@ static az_iot_result dps_start(az_iot_connection_client* c)
  * registration attempt moves the scope, including one retried on a session a
  * feature client keeps up.
  *
- * @return As dps_do_register_publish(); AZ_IOT_ERR_NOT_CONNECTED with
- * dps_start_cancelled set when close() from inside SETTING_UP ended it.
+ * @return As dps_do_register_publish().
  */
 static az_iot_result dps_register_on_ready_session(az_iot_connection_client* c)
 {
   c->dps_start_cancelled = false;
   set_state_to(c, AZ_IOT_CONN_SCOPE_DPS, AZ_IOT_CONN_STATE_SETTING_UP, AZ_IOT_OK);
-  if (c->state[AZ_IOT_CONN_SCOPE_DPS] != AZ_IOT_CONN_STATE_SETTING_UP
-      || !az_iot_connection_client__dps_session_ready(c))
-  {
-    AZ_IOT_LOG_DEBUG(
-        AZ_IOT_LOG_COMPONENT_DPS, "registration closed from the state callback; abandoned");
-    c->dps_start_cancelled = true;
-    return AZ_IOT_ERR_NOT_CONNECTED;
-  }
   /* The registration's pass starts from the source the session connected with. */
   if (c->auth[AZ_IOT_CONN_SCOPE_DPS].pass_from == AZ_IOT_AUTH_SOURCE_NONE)
   {
@@ -4085,8 +4068,8 @@ static az_iot_result dps_register_on_ready_session(az_iot_connection_client* c)
  * rejected for.
  *
  * The flag is raised BEFORE the transition because set_state_to() runs the
- * application's state callback synchronously, and close() + open() from inside
- * that callback must already see the demand to re-provision.
+ * application's state callback synchronously, and that callback must already
+ * see the demand to re-provision.
  *
  * A hub waiting on this registration as its retry is faulted too: nothing else
  * would retry it. */
@@ -4142,12 +4125,9 @@ static void dps_apply_deferred(az_iot_connection_client* c)
   bool device_provisioned = (status == AZ_IOT_OK) && have_assignment;
   /* Read before the transitions below run callbacks. */
   bool credential_rejected = !device_provisioned && dps_rejected_credential(c, status);
-  /* The transitions below run state callbacks, which may close() the client. */
-  uint32_t closes = c->close_count;
+  /* The transitions below run state callbacks, in which feature clients may
+   * release or acquire their demand for the session. */
   uint32_t demand_epoch = c->dps_demand_epoch;
-  /* A close() and open() from those callbacks starts a new attempt, which this
-   * finalizer must not touch. */
-  uint32_t seq = c->open_seq;
   if (device_provisioned)
   {
     c->auth[AZ_IOT_CONN_SCOPE_DPS].pass_from = AZ_IOT_AUTH_SOURCE_NONE;
@@ -4169,15 +4149,7 @@ static void dps_apply_deferred(az_iot_connection_client* c)
      * overwrites this with RETRY_PENDING or FAULTED, which is right: "closed,
      * then failed" is two facts. */
     set_state_to(c, AZ_IOT_CONN_SCOPE_DPS, AZ_IOT_CONN_STATE_DISCONNECTING, status);
-    if (c->open_seq != seq)
-    {
-      return;
-    }
     set_state_to(c, AZ_IOT_CONN_SCOPE_DPS, AZ_IOT_CONN_STATE_IDLE, status);
-    if (c->open_seq != seq)
-    {
-      return;
-    }
   }
   c->dps_phase = DPS_PHASE_DONE;
 
@@ -4190,9 +4162,8 @@ static void dps_apply_deferred(az_iot_connection_client* c)
     /* A rejected credential: the next ensure() reopens at once with the next
      * source, policy or not; no pacing, as for a registration. */
     /* Demand released (and maybe re-acquired) in the callbacks above is new
-     * demand: it starts at the first source, unpaced. A close() there cancels
-     * both fallback and pacing. */
-    if (c->dps_demand_epoch != demand_epoch || c->close_count != closes)
+     * demand: it starts at the first source, unpaced. */
+    if (c->dps_demand_epoch != demand_epoch)
     {
       return;
     }
@@ -4226,11 +4197,6 @@ static void dps_apply_deferred(az_iot_connection_client* c)
 
   if (status != AZ_IOT_OK || !have_assignment)
   {
-    /* A state callback closed the client: no retry of any kind follows. */
-    if (c->close_count != closes)
-    {
-      return;
-    }
     /* A rejected credential moves to the next source at once, policy or not. */
     if (credential_rejected && !c->user_close && auth_next_source(c, AZ_IOT_CONN_SCOPE_DPS))
     {
@@ -4288,11 +4254,6 @@ static void dps_apply_deferred(az_iot_connection_client* c)
   }
 
   /* Apply the assigned hub + device_id and connect to the hub. */
-  /* close() from a teardown event above cancels the assignment. */
-  if (c->close_count != closes)
-  {
-    return;
-  }
   dps_assigned_profile_commit(c);
   /* The assigned profile picks the wire protocol for the hub session. An
    * unrecognised value fails the connection instead of guessing an MQTT version
@@ -4443,15 +4404,10 @@ static void dps_apply_deferred(az_iot_connection_client* c)
       .device_id = c->opts.device_id,
       .profile = &assigned_profile,
     };
+    enter_callback(c);
     c->assignment_cb(&assignment, c->assignment_cb_ctx);
+    leave_callback(c);
   }
-  /* A state callback above, or the assignment callback, closed or reopened the
-   * client: the assignment stays adopted, but no hub connect starts for it. */
-  if (c->close_count != closes || c->open_seq != seq)
-  {
-    return;
-  }
-
   /* The assignment is kept, but no hub attempt starts past the bound. */
   if (identity_recovery_expired(c))
   {
@@ -5237,7 +5193,9 @@ static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
           begin_feature_subscriptions(c);
           break;
         }
+        enter_callback(c);
         (void)az_iot_dispatch_route(&c->dispatch, evt->message);
+        leave_callback(c);
       }
       break;
 
@@ -5307,7 +5265,7 @@ static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
       }
       if (matched)
       {
-        complete_publish(cb, result_cb, ctx, evt->status, evt);
+        complete_publish(c, cb, result_cb, ctx, evt->status, evt);
       }
       /* Any PUBACK frees adapter capacity, whoever published. A callback may withdraw itself. */
       notify_feature_observers_of(c, AZ_IOT_CONNECTION_FEATURE_EVENT_PUBLISH_COMPLETED);
@@ -5383,14 +5341,6 @@ static az_iot_result start_connect_attempt(az_iot_connection_client* c)
   c->auth[AZ_IOT_CONN_SCOPE_HUB].source = AZ_IOT_AUTH_SOURCE_NONE;
   c->auth[AZ_IOT_CONN_SCOPE_HUB].x509_index = 0;
   set_state_to(c, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_SETTING_UP, AZ_IOT_OK);
-  /* close() is legal from the state callback; close() + open() there leaves a
-   * newer attempt in place. Either way this one is no longer wanted. */
-  if (c->state[AZ_IOT_CONN_SCOPE_HUB] != AZ_IOT_CONN_STATE_SETTING_UP || c->active_client != NULL)
-  {
-    AZ_IOT_LOG_DEBUG(
-        AZ_IOT_LOG_COMPONENT_CONNECTION, "attempt closed from the state callback; abandoned");
-    return AZ_IOT_OK;
-  }
 
   az_iot_result br = run_feature_client_binds(c);
   if (br != AZ_IOT_OK)
@@ -5636,14 +5586,8 @@ static void end_hub_session_with_failure(az_iot_connection_client* c, az_iot_res
   }
   else
   {
-    uint32_t closes = c->close_count;
-    uint32_t seq = c->open_seq;
     teardown_active(c);
-    /* Teardown runs PUBACK and session callbacks, which may close or reopen. */
-    if (c->close_count == closes && c->open_seq == seq)
-    {
-      set_state_to(c, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_FAULTED, reason);
-    }
+    set_state_to(c, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_FAULTED, reason);
   }
 }
 
@@ -5668,15 +5612,7 @@ static void finish_planned_hub_session_end(az_iot_connection_client* c)
     end_hub_session_with_failure(c, reason);
     return;
   }
-  uint32_t closes = c->close_count;
-  uint32_t seq = c->open_seq;
   end_session(c, AZ_IOT_CONNECTION_SESSION_END_PLANNED);
-  /* Teardown runs PUBACK and session callbacks, which may close or reopen. */
-  if (c->close_count != closes || c->open_seq != seq)
-  {
-    c->sas_token_renewal_in_progress[AZ_IOT_CONN_SCOPE_HUB] = false;
-    return;
-  }
   uint64_t now = az_iot_time_mono_ms();
   c->reconnect_due_ms = now != 0 ? now : 1u;
   set_state_to(c, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_RETRY_PENDING, AZ_IOT_OK);
@@ -5867,13 +5803,7 @@ static void renew_dps_session(az_iot_connection_client* c)
   dps_teardown_mqtt(c);
   /* As dps_close_session(): a session asked for from the callback starts anew. */
   c->dps_phase = DPS_PHASE_NONE;
-  uint32_t closes = c->close_count;
   set_state_to(c, dps, AZ_IOT_CONN_STATE_DISCONNECTING, AZ_IOT_OK);
-  if (c->close_count != closes)
-  {
-    c->sas_token_renewal_in_progress[dps] = false;
-    return;
-  }
   /* A session the callback started continues the renewal (set_state_to()
    * keeps the flag through CONNECTED). */
   if (c->state[dps] != AZ_IOT_CONN_STATE_DISCONNECTING)
@@ -6024,13 +5954,10 @@ static void fail_sas_token_attempt(
 
 /**
  * @brief Resumes @p scope's attempt with its delivered user-provided token. A
- * failure to start is retried as in do_work(); one caused by close() or
- * close() + open() from a state callback is not this attempt's to report.
+ * failure to start is retried as in do_work().
  */
 static void resume_sas_token_attempt(az_iot_connection_client* c, az_iot_connection_scope scope)
 {
-  uint32_t closes = c->close_count;
-  uint32_t seq = c->open_seq;
   az_iot_result r;
   if (scope == AZ_IOT_CONN_SCOPE_HUB)
   {
@@ -6046,7 +5973,7 @@ static void resume_sas_token_attempt(az_iot_connection_client* c, az_iot_connect
       return;
     }
     r = start_connect_attempt(c);
-    if (r != AZ_IOT_OK && c->close_count == closes && c->open_seq == seq)
+    if (r != AZ_IOT_OK)
     {
       schedule_reconnect(c, AZ_IOT_CONN_SCOPE_HUB, r);
     }
@@ -6075,7 +6002,7 @@ static void resume_sas_token_attempt(az_iot_connection_client* c, az_iot_connect
     }
     return;
   }
-  if (c->dps_start_cancelled || c->close_count != closes || c->open_seq != seq)
+  if (c->dps_start_cancelled)
   {
     return;
   }
@@ -6323,7 +6250,7 @@ static void apply_deferred(az_iot_connection_client* c)
   az_iot_result reason = c->deferred_reason;
   c->deferred = DEFER_NONE;
   c->deferred_reason = AZ_IOT_OK;
-  /* close() took the planned end over (e.g. from a callback after DISCONNECTED was queued). */
+  /* close() took the planned end over before its DISCONNECTED arrived. */
   if (action == DEFER_PLANNED_END && c->user_close)
   {
     action = DEFER_IDLE;
@@ -6349,14 +6276,7 @@ static void apply_deferred(az_iot_connection_client* c)
       break;
     case DEFER_IDLE:
     {
-      uint32_t closes = c->close_count;
-      uint32_t seq = c->open_seq;
       teardown_active(c);
-      /* Teardown runs PUBACK and session callbacks, which may close or reopen. */
-      if (c->close_count != closes || c->open_seq != seq)
-      {
-        break;
-      }
       c->user_close = false;
       c->retry_attempt[AZ_IOT_CONN_SCOPE_DPS] = 0;
       c->retry_attempt[AZ_IOT_CONN_SCOPE_HUB] = 0;
@@ -7132,6 +7052,13 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_open(az_iot_connection_clien
     AZ_IOT_LOG_ERROR(AZ_IOT_LOG_COMPONENT_CONNECTION, "open: NULL client");
     return AZ_IOT_ERR_INVALID_ARG;
   }
+  if (client->callback_depth > 0)
+  {
+    AZ_IOT_LOG_ERROR(
+        AZ_IOT_LOG_COMPONENT_CONNECTION,
+        "open: not callable from a callback; call after do_work()");
+    return AZ_IOT_ERR_BUSY;
+  }
   /* What "already open" means, now that there are two lifecycles.
    *
    * Any non-IDLE HUB value is a refusal. The DPS scope is the application's
@@ -7309,7 +7236,6 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_open(az_iot_connection_clien
     }
   }
 
-  client->open_seq++;
   client->user_close = false;
   client->retry_attempt[AZ_IOT_CONN_SCOPE_DPS] = 0;
   client->retry_attempt[AZ_IOT_CONN_SCOPE_HUB] = 0;
@@ -7332,8 +7258,7 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_open(az_iot_connection_clien
    * close() + open() reconnect to the hub that was given up on, because the
    * cached host is still set. It is consumed by the DPS route below. */
 
-  /* As in close(): an open() from a teardown observer abandons the stored
-   * chain's assignment. */
+  /* As in close(): a reopen abandons the stored chain's assignment. */
   if (client->dps_cert_awaits_adoption)
   {
     client->needs_reprovision = true;
@@ -7358,8 +7283,8 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_open(az_iot_connection_clien
     {
       return AZ_IOT_OK;
     }
-    /* close() + open() from the start's announcement left a newer session
-     * that owns the ref now. */
+    /* A feature client started a newer session from the start's announcement;
+     * it serves the standing ref. */
     if (client->dps_start_cancelled && client->dps_mqtt != NULL)
     {
       return r;
@@ -7394,14 +7319,10 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_open(az_iot_connection_clien
       r = dps_start(client);
     }
 
+    /* A feature client started a newer session from an announcement; the
+     * registration ref rides on it. */
     if (r != AZ_IOT_OK && client->dps_start_cancelled)
     {
-      /* close() from an announcement already settled the client; a close() +
-       * open() there owns the ref now. */
-      if (client->dps_mqtt == NULL)
-      {
-        client->dps_registration_ref = false;
-      }
       return r;
     }
     if (r != AZ_IOT_OK)
@@ -7485,7 +7406,13 @@ az_iot_result az_iot_connection_client_close(az_iot_connection_client* client)
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
-  client->close_count++;
+  if (client->callback_depth > 0)
+  {
+    AZ_IOT_LOG_ERROR(
+        AZ_IOT_LOG_COMPONENT_CONNECTION,
+        "close: not callable from a callback; call after do_work()");
+    return AZ_IOT_ERR_BUSY;
+  }
   release_material(client, AZ_IOT_CONN_SCOPE_DPS);
   release_material(client, AZ_IOT_CONN_SCOPE_HUB);
   /* A stored chain whose assignment was never adopted: the cached hub no
@@ -7522,19 +7449,12 @@ az_iot_result az_iot_connection_client_close(az_iot_connection_client* client)
     return AZ_IOT_OK; /* idempotent */
   }
 
-  uint32_t seq = client->open_seq;
   /* Before every branch below, because a provisioning session can be live in
    * ALL of them: a session its users hold outlives registration, so a hub
    * retry, a fault, or an ordinary close can each find one still up. Each
    * branch used to return without touching it, and the pump would not collect
    * it either while a ref was held -- so close() left a connection running. */
   dps_close_session(client);
-  /* An observer may have reopened the client from one of those callbacks;
-   * the newer attempt is not this close()'s to settle. */
-  if (client->open_seq != seq)
-  {
-    return AZ_IOT_OK;
-  }
 
   /* close() is the documented exit from a settled refusal, so it clears the
    * user-session ladder too -- including the blocked latch. Here rather than in
@@ -7801,8 +7721,8 @@ static az_iot_result do_work_pass(az_iot_connection_client* client, uint32_t tim
       r = client->dps_mqtt->iface->process_loop(client->dps_mqtt, wait_ms);
     }
 
-    /* Deferred out of the SUBACK handler: observers may close() the client,
-     * which frees the adapter whose process_loop has only just returned.
+    /* Deferred out of the SUBACK handler, so observers do not run inside the
+     * adapter's process_loop.
      *
      * Before dps_apply_deferred() so that a registration answered in the same
      * batch still reports CONNECTED before DISCONNECTING. */
@@ -8028,16 +7948,9 @@ static az_iot_result do_work_pass(az_iot_connection_client* client, uint32_t tim
         settle_spent_dps_retry(client);
       }
     }
-    if (attempted == AZ_IOT_CONN_SCOPE_DPS && cr != AZ_IOT_OK && client->dps_start_cancelled)
-    {
-      /* close() from an announcement: not a failure, and the client is
-       * settled. A close() + open() there owns the ref now. */
-      if (client->dps_mqtt == NULL)
-      {
-        client->dps_registration_ref = false;
-      }
-    }
-    else if (cr != AZ_IOT_OK)
+    /* A start a feature client replaced from an announcement is not a failure:
+     * the registration ref rides on the newer session. */
+    if (cr != AZ_IOT_OK && !(attempted == AZ_IOT_CONN_SCOPE_DPS && client->dps_start_cancelled))
     {
       /* The failure belongs to whichever attempt was just made. Which ladder
        * its retry climbs is decided inside schedule_reconnect(), from the
@@ -8052,8 +7965,7 @@ static az_iot_result do_work_pass(az_iot_connection_client* client, uint32_t tim
       }
       schedule_reconnect(client, attempted, cr);
       /* A failed hub fallback also spends the DPS retry it replaced; the next
-       * retry is scheduled above. Settled after scheduling, so a close() from
-       * this callback finds HUB:RETRY_PENDING and settles the client. */
+       * retry is scheduled above. */
       if (attempted == AZ_IOT_CONN_SCOPE_HUB
           && client->state[AZ_IOT_CONN_SCOPE_HUB] == AZ_IOT_CONN_STATE_RETRY_PENDING)
       {
@@ -8735,25 +8647,16 @@ az_iot_result az_iot_connection_client__dps_session_ensure(az_iot_connection_cli
      * immediately. That is the same hot loop, on the path where the adapter
      * cannot even be created -- which is the one least likely to fix itself.
      *
-     * But NOT every error here is a failure. dps_start() announces
-     * DPS:CONNECTING synchronously, and close() is legal from inside that
-     * callback; the cancellation it detects returns the same
-     * AZ_IOT_ERR_NOT_CONNECTED as a genuine start failure. close() has just
-     * RESET this ladder -- it is the documented escape from a settled refusal
-     * -- so pacing that case would recreate the deadline, or the blocked latch,
-     * immediately after the caller cleared it, and the escape would not work.
-     *
-     * dps_start() sets dps_start_cancelled for exactly that case. user_close
-     * does NOT work here: close() with no hub adapter -- which is this case,
-     * closing during provisioning -- clears it before returning. */
+     * But a start a feature client replaced from an announcement
+     * (dps_start_cancelled) is not a failure: the newer session is up. */
     if (!client->dps_start_cancelled)
     {
       dps_user_retry_schedule(client, 0);
       /* A failure before the session existed leaves DPS:SETTING_UP; a held
        * session's failure settles at IDLE, as dps_apply_deferred() does. */
       set_state_to(client, AZ_IOT_CONN_SCOPE_DPS, AZ_IOT_CONN_STATE_IDLE, r);
-      /* That callback may close() + open() and start a newer session; report
-       * it as replaced so callers keep its refs. */
+      /* A feature client may have started a newer session from that callback;
+       * report it as replaced so callers keep its refs. */
       if (client->dps_mqtt != NULL)
       {
         client->dps_start_cancelled = true;
@@ -9052,7 +8955,7 @@ static az_iot_result publish_tracked(
    * without a callback: the future PUBACK is silently absorbed. */
   if (msg->qos == AZ_IOT_MQTT_QOS_0)
   {
-    complete_publish(ack_cb, result_cb, user_ctx, AZ_IOT_OK, NULL);
+    complete_publish(client, ack_cb, result_cb, user_ctx, AZ_IOT_OK, NULL);
   }
   return AZ_IOT_OK;
 }

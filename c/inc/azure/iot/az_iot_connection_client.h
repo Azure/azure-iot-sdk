@@ -1630,6 +1630,9 @@ extern "C"
      * walk re-reads each slot and skips a NULL callback, and an owner being
      * torn down must be able to withdraw. */
     bool dispatching_state;
+    /* Depth of application and feature-client callbacks in progress; open() and close() return
+     * AZ_IOT_ERR_BUSY while it is non-zero. */
+    uint32_t callback_depth;
     az_iot_operational_cert_callback op_cert_cb;
     void* op_cert_cb_ctx;
     az_iot_registration_payload_callback reg_payload_cb;
@@ -1768,21 +1771,11 @@ extern "C"
     az_iot_retry_state dps_user_retry;
     bool dps_user_retry_blocked;
 
-    /* Set when an observer closed the client from inside a synchronous DPS
-     * announcement that starts an attempt (SETTING_UP or CONNECTING). That
-     * cancellation returns the same result code as a genuine start failure,
-     * and the two need opposite treatment: a failure is paced or retried, a
-     * close is the caller's documented escape and has already reset the
-     * pacing. Cleared at the start of every such attempt. */
+    /* Set when a feature client started a newer provisioning session from a
+     * synchronous DPS announcement of an attempt. That attempt then returns the
+     * same result code as a genuine start failure, but is not retried or paced:
+     * the newer session serves its refs. Cleared at the start of every attempt. */
     bool dps_start_cancelled;
-    /* Bumped by every provisioning session start. A start compares it after
-     * its CONNECTING announcement: a close() + open() there may reuse the freed
-     * adapter's address, so the pointer alone cannot tell the sessions apart. */
-    uint32_t dps_start_seq;
-    /* Bumped by every open() that starts an attempt. close() compares it after
-     * each step that runs callbacks, so it does not settle over a client an
-     * observer reopened from one of them. */
-    uint32_t open_seq;
 
     char dps_operation_id[AZ_IOT_DPS_OPERATION_ID_MAX];
     size_t dps_operation_id_len;
@@ -1964,9 +1957,6 @@ extern "C"
     /* Token area of opts.sas_buffer: after the scratch and key slots. */
     char* sas_token;
     size_t sas_token_size;
-    /* close() calls, counted even when it has nothing to do: lets a path that
-     * ran state callbacks tell that one of them closed the client. */
-    uint32_t close_count;
     /* Times the provisioning session lost its last holder (no user,
      * registration or standing ref left): lets a path that ran state callbacks
      * tell that its demand was replaced. */
@@ -2214,13 +2204,18 @@ extern "C"
       az_iot_dps_assignment_callback cb,
       void* user_ctx);
 
-  /* Open a session to the configured host. Non-blocking; observe state via callback
+  /**
+   * @brief Opens a session to the configured host. Non-blocking; observe state via callback
    * and drive progress with do_work().
    *
-   * Legal only from AZ_IOT_CONN_STATE_IDLE; any other state returns
-   * AZ_IOT_ERR_ALREADY_INITIALIZED. After a fault, call
+   * Legal only from AZ_IOT_CONN_STATE_IDLE. After a fault, call
    * az_iot_connection_client_close() first: that returns the client to IDLE and
-   * makes this a supported retry. */
+   * makes this a supported retry. Not callable from a callback the client runs: call it
+   * after do_work() returns.
+   *
+   * @return AZ_IOT_OK; AZ_IOT_ERR_ALREADY_INITIALIZED outside IDLE; AZ_IOT_ERR_BUSY from
+   * inside a callback.
+   */
   AZ_NODISCARD az_iot_result az_iot_connection_client_open(az_iot_connection_client* client);
 
   /**
@@ -2280,6 +2275,10 @@ extern "C"
    * The client's configuration and its attached feature clients survive, so
    * close() + open() is the ordinary way to retry after a fault; deinit() is
    * only needed when the client itself is going away.
+   *
+   * Not callable from a callback the client runs (state, session-end, PUBACK, SAS token,
+   * DPS, inbound message): it returns AZ_IOT_ERR_BUSY there. Record the decision and call
+   * it after do_work() returns.
    *
    * Not AZ_NODISCARD: teardown/lifecycle op commonly called fire-and-forget. */
   az_iot_result az_iot_connection_client_close(az_iot_connection_client* client);
