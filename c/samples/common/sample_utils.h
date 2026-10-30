@@ -84,6 +84,16 @@ bool sample_env_to_buffer(const char* name, const char* fallback, char* dst, siz
 FILE* sample_fopen_private(const char* path, bool replace);
 
 /**
+ * @brief Create @p path for binary writing with owner-only access (0600) on
+ * POSIX. Fails when @p path exists, so nothing already there is replaced or
+ * written through.
+ *
+ * @param[in] path File to create.
+ * @return Stream to close with fclose(), or NULL on failure.
+ */
+FILE* sample_file_create_private(const char* path);
+
+/**
  * @brief Open @p path for binary reading; on POSIX only a regular file, not
  * through a symbolic link, is opened.
  *
@@ -91,6 +101,32 @@ FILE* sample_fopen_private(const char* path, bool replace);
  * @return Stream to close with fclose(), or NULL on failure.
  */
 FILE* sample_fopen_read_nofollow(const char* path);
+
+/**
+ * @brief Flush @p file's buffered writes and the operating system's cache to
+ * storage, so they survive a power loss.
+ *
+ * @param[in] file Stream open for writing.
+ * @return true on success.
+ */
+bool sample_file_flush_to_storage(FILE* file);
+
+/**
+ * @brief Replace @p destination_path with @p source_path in one step, durably:
+ * a reader sees the old file or the new one, never a partial one, and the
+ * replacement survives a power loss. Flush @p source_path to storage first.
+ *
+ * On POSIX the directory is synced after the rename; if that fails, a line is
+ * written to stderr and true is still returned, since the destination is
+ * already replaced.
+ *
+ * @param[in] source_path      Complete file; renamed, so it is gone on success.
+ * @param[in] destination_path File to replace; created when absent. Same file
+ *                             system as @p source_path.
+ * @return true when the destination was replaced; false when it was left as it
+ * was.
+ */
+bool sample_file_replace(const char* source_path, const char* destination_path);
 
 // Milliseconds from an unspecified origin, never moving backwards. Only
 // differences are meaningful. The SDK keeps its clock internal, so a sample

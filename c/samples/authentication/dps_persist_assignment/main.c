@@ -3,9 +3,6 @@
 // information.
 
 /* SPDX-License-Identifier: MIT */
-#if !defined(_WIN32) && !defined(_POSIX_C_SOURCE)
-#define _POSIX_C_SOURCE 200809L /* fileno, fsync */
-#endif
 /**
  * @file main.c
  * @brief Persists the DPS assignment and restores it on the next run.
@@ -27,17 +24,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-#ifdef _WIN32
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#include <io.h>
-#include <windows.h>
-#else
-#include <fcntl.h>
-#include <unistd.h>
-#endif
 
 #include "azure/iot/az_iot.h"
 /* The MQTT adapter this build of the sample uses (see samples/CMakeLists.txt). */
@@ -87,17 +73,6 @@ typedef struct
   bool assignment_saved; /**< This run saved it. */
 } sample_context;
 
-/** @brief Opens @p path for reading; NULL if it cannot be opened. */
-static FILE* open_for_read(const char* path)
-{
-#ifdef _WIN32
-  FILE* f = NULL;
-  return fopen_s(&f, path, "rb") == 0 ? f : NULL;
-#else
-  return fopen(path, "rb");
-#endif
-}
-
 /** @brief Reads one non-empty line into @p dst without its line ending. */
 static bool read_line(FILE* f, char* dst, size_t dst_size)
 {
@@ -112,7 +87,7 @@ static bool read_line(FILE* f, char* dst, size_t dst_size)
 /** @brief Loads a saved assignment. False when there is none or it is invalid. */
 static bool load_assignment(const char* path, saved_assignment* out)
 {
-  FILE* f = open_for_read(path);
+  FILE* f = sample_fopen_read_nofollow(path);
   if (f == NULL)
   {
     return false;
@@ -141,43 +116,6 @@ static bool load_assignment(const char* path, saved_assignment* out)
   return true;
 }
 
-/** @brief Flushes @p f to storage. True on success. */
-static bool sync_file(FILE* f)
-{
-  if (fflush(f) != 0)
-  {
-    return false;
-  }
-#ifdef _WIN32
-  return _commit(_fileno(f)) == 0;
-#else
-  return fsync(fileno(f)) == 0;
-#endif
-}
-
-/** @brief Atomically and durably replaces @p to with @p from, both in the
- *  working directory. True on success. */
-static bool replace_file(const char* from, const char* to)
-{
-#ifdef _WIN32
-  return MoveFileExA(from, to, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
-#else
-  if (rename(from, to) != 0)
-  {
-    return false;
-  }
-  /* The rename is durable only once the directory is. */
-  int dir = open(".", O_RDONLY);
-  if (dir < 0)
-  {
-    return false;
-  }
-  bool ok = fsync(dir) == 0;
-  (void)close(dir);
-  return ok;
-#endif
-}
-
 /** @brief Saves the adopted assignment, replacing any earlier one. Written to a
  *  temporary file and renamed, so the record file always holds one complete
  *  record, the previous or the new one. */
@@ -187,15 +125,15 @@ static void on_assignment(const az_iot_dps_assignment* assignment, void* user_ct
   const char* profile = assignment->profile->connection_profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5
       ? SAMPLE_PROFILE_MQTTV5
       : SAMPLE_PROFILE_MQTTV3;
-  FILE* f = sample_fopen_private(SAMPLE_ASSIGNMENT_TMP_FILE, false);
+  FILE* f = sample_fopen_private(SAMPLE_ASSIGNMENT_TMP_FILE, true);
   bool ok = f != NULL
       && fprintf(f, "%s\n%s\n%s\n", assignment->hub_hostname, assignment->device_id, profile) > 0
-      && sync_file(f);
+      && sample_file_flush_to_storage(f);
   if (f != NULL && fclose(f) != 0)
   {
     ok = false;
   }
-  ok = ok && replace_file(SAMPLE_ASSIGNMENT_TMP_FILE, ctx->assignment_path);
+  ok = ok && sample_file_replace(SAMPLE_ASSIGNMENT_TMP_FILE, ctx->assignment_path);
   if (!ok)
   {
     (void)remove(SAMPLE_ASSIGNMENT_TMP_FILE);
