@@ -451,6 +451,12 @@ multi-step updates, and reboot/resume.
   missed birth-ack recovers inside the connect windows. It uses the internal
   `az_iot_connection_client__set_defensive_timeout_schedule()`; clients that
   do not call it keep the spec's schedule.
+- **HTTPS calls without a response are retried when safe.** A connection can
+  stall with no response at all. The service facade sends a request again on a
+  new connection (3 attempts, 2 s apart) when none of it was sent, or when it is
+  idempotent (the DPS and device DELETEs; 20 s per attempt instead of 60 s).
+  Each failed attempt is logged with its phase, bytes sent and received, and the
+  transport's error.
 
 ---
 
