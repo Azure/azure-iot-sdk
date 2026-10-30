@@ -932,7 +932,11 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
         {
             if (_desiredResync != null)
             {
-                if (patch.Version <= _localDesiredVersion)
+                // Until the connect sync's response arrives, this device's version may not be valid (see
+                // ResetLocalDesiredVersionIfInvalid), so patches that look obsolete are buffered too. Those that are still obsolete
+                // once the response is adopted are dropped then.
+                bool mayResetLocalVersion = _desiredResync.IsConnectSync && _localDesiredVersion == _desiredResync.DesiredVersionAtStart;
+                if (patch.Version <= _localDesiredVersion && !mayResetLocalVersion)
                 {
                     return;
                 }
@@ -1249,7 +1253,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
                 if (_desiredResync.IsConnectSync)
                 {
                     connectSync = _desiredResync;
-                    ResetLocalDesiredVersionIfNewerThanHub(connectSync, response);
+                    ResetLocalDesiredVersionIfInvalid(connectSync, response);
                 }
 
                 TwinPushSection? snapshot = response.HasDesiredPayload

@@ -457,6 +457,61 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
         }
 
         [Fact]
+        public async Task ConnectSync_Classic_AdoptsIoTHubsTwinWhenTheRestoredStateHasTheSameVersionsButDifferentProperties()
+        {
+            // For example, the device was re-provisioned to another hub, where its new twin happens to have the same versions.
+            MockFeatureConnectionClient connection = CreateClassicConnection();
+            TwinState initialState = new()
+            {
+                DesiredVersion = 2,
+                Desired = new JsonObject() { ["fanSpeed"] = 9 },
+                ReportedVersion = 2,
+                Reported = new JsonObject() { ["x"] = 9 },
+            };
+            using TwinClient twinClient = new(connection, initialState);
+            List<TwinPushReceivedEventArgs> pushes = new();
+            twinClient.TwinPushReceived += pushes.Add;
+
+            await CompleteConnectSyncAsync(connection, desiredVersion: 2, desiredPayload: "{\"fanSpeed\":2}", reportedVersion: 2, reportedPayload: "{\"x\":2}");
+
+            TwinPushReceivedEventArgs push = Assert.Single(pushes);
+            Assert.Equal("{\"fanSpeed\":2}", push.Desired!.Properties.ToJsonString());
+            Assert.Equal("{\"x\":2}", push.Reported!.Properties.ToJsonString());
+            TwinState state = twinClient.GetTwinState();
+            Assert.Equal(2ul, state.DesiredVersion);
+            Assert.Equal("{\"fanSpeed\":2}", state.Desired.ToJsonString());
+            Assert.Equal(2ul, state.ReportedVersion);
+            Assert.Equal("{\"x\":2}", state.Reported.ToJsonString());
+        }
+
+        [Fact]
+        public async Task ConnectSync_Classic_AppliesPatchesReceivedBeforeTheResponseWhenTheRestoredVersionIsNewer()
+        {
+            MockFeatureConnectionClient connection = CreateClassicConnection();
+            TwinState initialState = new()
+            {
+                DesiredVersion = 9,
+                Desired = new JsonObject() { ["fanSpeed"] = 9 },
+            };
+            using TwinClient twinClient = new(connection, initialState);
+            List<string> events = new();
+            twinClient.TwinPushReceived += args => events.Add($"push:{args.Desired?.PropertiesVersion}");
+            twinClient.DesiredPatchReceived += args => events.Add($"patch:{args.DesiredPropertiesVersion}");
+
+            connection.SimulateClassicDevicePresenceEstablished();
+            MqttPublish getPublish = await connection.WaitForPublishedMessagesAsync(1);
+
+            // Patch 3 looks obsolete next to the restored version 9, until IoT hub's twin shows that version 9 isn't valid.
+            await ReceiveClassicDesiredPatchAsync(connection, 3, "{\"mode\":\"eco\"}");
+            await RespondClassicAsync(connection, getPublish, 200, payload: ClassicTwin(2, "{\"fanSpeed\":2}", 1, "{}"));
+
+            Assert.Equal(new[] { "push:2", "patch:3" }, events);
+            TwinState state = twinClient.GetTwinState();
+            Assert.Equal(3ul, state.DesiredVersion);
+            Assert.Equal("{\"fanSpeed\":2,\"mode\":\"eco\"}", state.Desired.ToJsonString());
+        }
+
+        [Fact]
         public async Task GetTwinAsync_ThrowsWhenDisconnected()
         {
             MockFeatureConnectionClient connection = new();

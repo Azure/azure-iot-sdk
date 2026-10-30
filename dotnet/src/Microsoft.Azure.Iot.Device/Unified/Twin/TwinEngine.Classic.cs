@@ -93,16 +93,20 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
         }
 
         // Must be called while holding _desiredStateLock. IoT hub's versions never decrease, so if this device held a newer version
-        // of the desired properties than IoT hub when connecting, the version it holds is not valid (for example, the application
-        // restored the wrong version, or the twin was recreated). This device then adopts IoT hub's desired properties instead. If
-        // this device's version changed since connecting, it came from IoT hub on this connection, so it is kept.
-        private void ResetLocalDesiredVersionIfNewerThanHub(DesiredResync connectSync, TwinGetResponse response)
+        // of the desired properties than IoT hub when connecting, or the same version with different properties, the copy it holds
+        // is not valid (for example, the application restored the wrong version, the twin was recreated, or the device was
+        // re-provisioned to another hub or device ID). This device then adopts IoT hub's desired properties instead. If this
+        // device's version changed since connecting, it came from IoT hub on this connection, so it is kept.
+        private void ResetLocalDesiredVersionIfInvalid(DesiredResync connectSync, TwinGetResponse response)
         {
             if (response.HasDesiredPayload
-                && response.DesiredVersion < _localDesiredVersion
-                && _localDesiredVersion == connectSync.DesiredVersionAtStart)
+                && _localDesiredVersion != 0
+                && _localDesiredVersion == connectSync.DesiredVersionAtStart
+                && (response.DesiredVersion < _localDesiredVersion
+                    || (response.DesiredVersion == _localDesiredVersion
+                        && !JsonNode.DeepEquals(ParseSectionPayload(response.DesiredPayload), _desiredProperties))))
             {
-                Trace.TraceWarning("This device held version {0} of the desired properties, but IoT hub only has version {1}. Adopting version {1}.", _localDesiredVersion, response.DesiredVersion);
+                Trace.TraceWarning("This device held version {0} of the desired properties, which doesn't match IoT hub's version {1}. Adopting version {1}.", _localDesiredVersion, response.DesiredVersion);
                 lock (_twinStateLock)
                 {
                     _localDesiredVersion = 0;
@@ -126,9 +130,12 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
                         AdvanceLocalReportedVersion(response.ReportedVersion, reportedProperties);
                         isAdopted = true;
                     }
-                    else if (response.ReportedVersion < _localReportedVersion && _localReportedVersion == connectSync.ReportedVersionAtStart)
+                    else if (_localReportedVersion == connectSync.ReportedVersionAtStart
+                        && (response.ReportedVersion < _localReportedVersion
+                            || (response.ReportedVersion == _localReportedVersion && !JsonNode.DeepEquals(reportedProperties, _reportedProperties))))
                     {
-                        Trace.TraceWarning("This device held version {0} of the reported properties, but IoT hub only has version {1}. Adopting version {1}.", _localReportedVersion, response.ReportedVersion);
+                        // As for the desired properties, this device's copy is not valid (see ResetLocalDesiredVersionIfInvalid).
+                        Trace.TraceWarning("This device held version {0} of the reported properties, which doesn't match IoT hub's version {1}. Adopting version {1}.", _localReportedVersion, response.ReportedVersion);
                         SetLocalReportedState(response.ReportedVersion, reportedProperties);
                         isAdopted = true;
                     }
