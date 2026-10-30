@@ -44,7 +44,6 @@
  *   SU_SIM_DELAY_MS=<ms>              per-download delay
  */
 #include <errno.h>
-#include <signal.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -73,13 +72,6 @@
 
 #include "sample_utils.h"
 #include "su_sim.h"
-
-static volatile sig_atomic_t g_stop = 0;
-static void on_sigint(int signo)
-{
-  (void)signo;
-  g_stop = 1;
-}
 
 /** @brief Where the application is in the update handed to it. */
 typedef enum
@@ -181,7 +173,7 @@ static bool read_installed_update_id_line(FILE* file, char* dst, size_t dst_size
 static int load_installed_update_id(sample_state* s)
 {
   errno = 0;
-  FILE* file = sample_fopen_read_nofollow(s->installed_file);
+  FILE* file = sample_file_open_read_no_follow(s->installed_file);
   if (file == NULL)
   {
     return (errno == ENOENT) ? 0 : -1;
@@ -207,7 +199,7 @@ static bool save_applied_update_id_as_installed(sample_state* s)
   {
     return false;
   }
-  FILE* file = sample_fopen_private(temporary_path, true);
+  FILE* file = sample_file_open_private(temporary_path, true);
   if (file == NULL)
   {
     return false;
@@ -226,10 +218,10 @@ static bool save_applied_update_id_as_installed(sample_state* s)
     return false;
   }
   /* applied_* and installed_* have the same capacity, so the copies fit. */
-  return sample_copy_str(
+  return sample_string_copy(
              s->installed_provider, sizeof(s->installed_provider), applied->applied_provider)
-      && sample_copy_str(s->installed_name, sizeof(s->installed_name), applied->applied_name)
-      && sample_copy_str(
+      && sample_string_copy(s->installed_name, sizeof(s->installed_name), applied->applied_name)
+      && sample_string_copy(
              s->installed_version, sizeof(s->installed_version), applied->applied_version);
 }
 
@@ -471,8 +463,8 @@ static void on_connection_state_event_received(
     printf(
         "%s: %s -> %s (%s)\n",
         (scope == AZ_IOT_CONN_SCOPE_DPS) ? "Provisioning" : "Hub",
-        sample_connection_state_name(state->connection_state[scope]),
-        sample_connection_state_name(event->state),
+        az_iot_connection_state_to_string(state->connection_state[scope]),
+        az_iot_connection_state_to_string(event->state),
         az_iot_result_to_string(event->reason));
     state->connection_state[scope] = event->state;
 
@@ -658,9 +650,9 @@ static int initialize_connection_client(sample_state* state)
  */
 static int load_device_identity(sample_state* s)
 {
-  s->manufacturer = sample_env_dup("AZ_IOT_SU_MANUFACTURER", "Contoso");
-  s->model = sample_env_dup("AZ_IOT_SU_MODEL", "SU-Sim");
-  s->installed_file = sample_env_dup("AZ_IOT_SU_INSTALLED_FILE", "./su_library_installed.txt");
+  s->manufacturer = sample_env_copy("AZ_IOT_SU_MANUFACTURER", "Contoso");
+  s->model = sample_env_copy("AZ_IOT_SU_MODEL", "SU-Sim");
+  s->installed_file = sample_env_copy("AZ_IOT_SU_INSTALLED_FILE", "./su_library_installed.txt");
   if (s->manufacturer == NULL || s->model == NULL || s->installed_file == NULL)
   {
     return 1;
@@ -672,14 +664,14 @@ static int load_device_identity(sample_state* s)
     return 1;
   }
   if (loaded == 0
-      && (!sample_env_to_buffer(
+      && (!sample_env_copy_to_buffer(
               "AZ_IOT_SU_INSTALLED_PROVIDER",
               "Contoso",
               s->installed_provider,
               sizeof(s->installed_provider))
-          || !sample_env_to_buffer(
+          || !sample_env_copy_to_buffer(
               "AZ_IOT_SU_INSTALLED_NAME", "SU-Sim", s->installed_name, sizeof(s->installed_name))
-          || !sample_env_to_buffer(
+          || !sample_env_copy_to_buffer(
               "AZ_IOT_SU_INSTALLED_VERSION",
               "1.0.0",
               s->installed_version,
@@ -703,7 +695,7 @@ int main(void)
   az_iot_log_sink log = sample_log_sink(su_sample_log_level_from_env());
   az_iot_log_set_global_sink(&log);
 
-  (void)signal(SIGINT, on_sigint); /* Ctrl+C handling is a convenience */
+  sample_install_stop_handler(); /* Ctrl+C or SIGTERM ends the loop below */
 
   sample_state state = { 0 };
   state.simulation_control.fail_step = (int)su_sample_env_long("SU_SIM_FAIL_STEP", 0);
@@ -734,14 +726,15 @@ int main(void)
     return 1;
   }
 
-  az_iot_su_device_properties dp = { 0 };
-  dp.manufacturer = state.manufacturer;
-  dp.model = state.model;
-  dp.installed_update_id.provider = state.installed_provider;
-  dp.installed_update_id.name = state.installed_name;
-  dp.installed_update_id.version = state.installed_version;
-  size_t dp_needed = az_iot_su_device_properties_buffer_size(&dp);
-  if (dp_needed == 0 || dp_needed > AZ_IOT_SU_DEVICE_PROPERTIES_BUFFER_SIZE)
+  az_iot_su_device_properties device_properties = { 0 };
+  device_properties.manufacturer = state.manufacturer;
+  device_properties.model = state.model;
+  device_properties.installed_update_id.provider = state.installed_provider;
+  device_properties.installed_update_id.name = state.installed_name;
+  device_properties.installed_update_id.version = state.installed_version;
+  size_t device_properties_needed = az_iot_su_device_properties_buffer_size(&device_properties);
+  if (device_properties_needed == 0
+      || device_properties_needed > AZ_IOT_SU_DEVICE_PROPERTIES_BUFFER_SIZE)
   {
     fprintf(stderr, "Device properties are invalid or too long.\n");
     sample_state_destroy(&state);
@@ -755,7 +748,7 @@ int main(void)
   su_opts.library_mode = true;
   su_opts.root_keys = az_iot_su_microsoft_root_keys(&root_key_count);
   su_opts.root_key_count = root_key_count;
-  su_opts.device_properties = &dp;
+  su_opts.device_properties = &device_properties;
   su_opts.workspace = g_su_workspace;
   su_opts.workspace_size = sizeof(g_su_workspace);
   if (az_iot_su_client_init(&state.su_client, &state.connection_client, &su_opts) != AZ_IOT_OK
@@ -791,7 +784,7 @@ int main(void)
 
   uint64_t next_check_ms = sample_now_ms() + (uint64_t)poll_interval_s * 1000u;
   int rc = 0;
-  while (!g_stop)
+  while (!sample_is_stop_requested())
   {
     (void)az_iot_connection_client_do_work(&state.connection_client, 50);
     (void)az_iot_su_client_do_work(&state.su_client);
