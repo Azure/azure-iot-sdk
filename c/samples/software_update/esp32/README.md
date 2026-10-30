@@ -95,7 +95,7 @@ Write the partition with Espressif's `configure_esp_secure_cert.py`
 # ESP32-S3/C3/C6: --configure_ds burns the eFuse key block --efuse_key_id (irreversible).
 configure_esp_secure_cert.py -p PORT --target_chip esp32c3 --secure_cert_type cust_flash_tlv \
     --device-cert device_cert.pem --private-key device_key.pem \
-    --configure_ds --priv_key_algo RSA 2048 --efuse_key_id 1
+    --configure_ds --priv_key_algo RSA 2048 --efuse_key_id 3
 # ESP32:
 configure_esp_secure_cert.py -p PORT --target_chip esp32 --secure_cert_type cust_flash_tlv \
     --device-cert device_cert.pem --private-key device_key.pem
@@ -107,7 +107,7 @@ the chip. For production, read-protect it right after provisioning and check tha
 `espefuse.py -p PORT summary` reports the block as read-protected:
 
 ```sh
-espefuse.py --chip esp32c3 -p PORT read_protect_efuse BLOCK_KEY1
+espefuse.py --chip esp32c3 -p PORT read_protect_efuse BLOCK_KEY3
 ```
 
 With the [security profile](#production-security-profile-optional), provision **before the
@@ -117,8 +117,12 @@ Per device:
 
 1. Provision as above with `--sec_cert_part_offset 0x11000`. The partition is written in
    plaintext; the first secure boot encrypts it with the app (`encrypted` flag in
-   [`partitions_secure.csv`](partitions_secure.csv)). On ESP32-S3/C3/C6 use a key block the
-   profile does not (it uses block 2 for NVS encryption), and read-protect it.
+   [`partitions_secure.csv`](partitions_secure.csv)). On ESP32-S3/C3/C6 keep the DS key in
+   block 3 and read-protect it: the first secure boot puts its Secure Boot and flash encryption
+   keys in the first free blocks (0 and 1), and NVS encryption creates its key in block 2.
+   The [virtual eFuse rehearsal](#production-security-profile-optional) burns nothing, but
+   `--configure_ds` and `read_protect_efuse` burn real eFuses: for it, provision as on ESP32
+   (no `--configure_ds`, no read protection); its profile turns DS off and uses the PEM key.
 2. Flash and boot the secure build.
 
 For production key custody, see [Production keys](../../../docs/connecting.md#production-keys).

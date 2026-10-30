@@ -34,7 +34,9 @@ typedef struct psa_key_attributes_t
   psa_key_lifetime_t lifetime;
 } psa_key_attributes_t;
 
+// clang-format off
 #define PSA_KEY_ATTRIBUTES_INIT { 0 }
+// clang-format on
 
 #define psa_set_key_type(a, t) ((a)->type = (t))
 #define psa_set_key_bits(a, b) ((a)->bits = (b))
