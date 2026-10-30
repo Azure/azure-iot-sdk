@@ -9,6 +9,7 @@ using Microsoft.Azure.Iot.Device.Mqtt;
 using Microsoft.Azure.Iot.Device.Provisioning.Models;
 using Microsoft.Azure.Iot.Device.Retry;
 using Microsoft.Azure.Iot.Device.Unified.Connection;
+using Microsoft.Azure.Iot.Device.Unified.Models;
 using Microsoft.Azure.Iot.Device.Unified.Telemetry;
 using Microsoft.Azure.Iot.Device.Unified.Twin;
 using System.Security.Cryptography;
@@ -91,6 +92,80 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             }
         }
 
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task MqttV5SessionSettingsKeepDpsCleanAndResubscribeOnNewHub(bool useUnifiedClient)
+        {
+            using MockConnectionMqttClient mockMqttClient = new() { AutoRespondToBirth = true };
+            _ = new MockDeviceProvisioningService(mockMqttClient, registrationCount => registrationCount == 1 ? FirstAssignedHub : SecondAssignedHub)
+            {
+                TerminalRegistrationResultSelector = registrationCount => new()
+                {
+                    RegistrationId = RegistrationId,
+                    DeviceId = DeviceId,
+                    AssignedHub = registrationCount == 1 ? FirstAssignedHub : SecondAssignedHub,
+                    Status = ProvisioningRegistrationStatus.Assigned,
+                    ConnectionProfile = IotHubConnectionType.Mqttv5,
+                },
+            };
+
+            List<(string HostName, bool CleanStart, uint SessionExpiryInterval, MqttProtocolVersion ProtocolVersion)> connectSettings = new();
+            mockMqttClient.OnConnect = connect =>
+            {
+                lock (connectSettings)
+                {
+                    connectSettings.Add((connect.HostName, connect.CleanStart, connect.SessionExpiryInterval, connect.ProtocolVersion));
+                }
+
+                return Task.FromResult(new MqttConnectAck() { IsSessionPresent = !connect.CleanStart, ResultCode = MqttConnectReasonCode.Success });
+            };
+
+            ConnectionClientOptions options = new()
+            {
+                MqttClient = mockMqttClient,
+                ConnectionRetryPolicy = new ImmediateRetryPolicy(),
+            };
+            AbstractConnectionClient connectionClient = useUnifiedClient
+                ? new ConnectionClient(options)
+                : new Device.MQTTv5.Connection.ConnectionClient(new()
+                {
+                    MqttClient = mockMqttClient,
+                    ConnectionRetryPolicy = options.ConnectionRetryPolicy,
+                });
+            using IDisposable connectionClientLifetime = (IDisposable)connectionClient;
+
+            await connectionClient.ProvisionAndConnectAsync(
+                CreateProvisioningSettings(),
+                CreateAuthenticationProvider(),
+                cancellationToken: TestContext.Current.CancellationToken);
+
+            TaskCompletionSource reconnected = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            connectionClient.DevicePresenceFlowCompletedAsync += _ =>
+            {
+                reconnected.TrySetResult();
+                return Task.CompletedTask;
+            };
+
+            await mockMqttClient.SimulateServerDisconnectAsync(MqttDisconnectReason.NotAuthorized)
+                .WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+            await reconnected.Task.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+
+            // Hub connections always ask to resume, but a session left on a hub this process had not subscribed on (here
+            // the broker claims every hub session is resumed) is re-subscribed. DPS never persists sessions.
+            Assert.Equal(
+                new[]
+                {
+                    (GlobalDeviceEndpoint, true, 0u, MqttProtocolVersion.V311),
+                    (FirstAssignedHub, false, 3600u, MqttProtocolVersion.V500),
+                    (GlobalDeviceEndpoint, true, 0u, MqttProtocolVersion.V311),
+                    (SecondAssignedHub, false, 3600u, MqttProtocolVersion.V500),
+                },
+                connectSettings);
+            Assert.Equal(2, mockMqttClient.SentMqttTrafficInOrder.Count(traffic =>
+                traffic.Subscribe?.TopicFilters.Any(filter => filter.Topic == $"ih/{DeviceId}/dev/#") == true));
+            Assert.Equal(SecondAssignedHub, connectionClient.GetCurrentConnectionContext()!.IotHubHostName);
+        }
 
         [Fact]
         public async Task ConnectToHubAsyncDoesNotProvisionWhenAReprovisionIsStanding()
@@ -382,9 +457,11 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         }
 
         [Theory]
-        [InlineData(IotHubConnectionType.Mqttv3)]
+        [InlineData(IotHubConnectionType.Mqttv3, false)]
+        [InlineData(IotHubConnectionType.Mqttv5, false)]
+        [InlineData(IotHubConnectionType.Mqttv5, true)]
         public async Task RejectedPrimaryCredentialsAreRetriedWithSecondaryCredentialsWithoutReprovisioning(
-            IotHubConnectionType connectionProfile)
+            IotHubConnectionType connectionProfile, bool useNativeClient)
         {
             using MockConnectionMqttClient mockMqttClient = new() { AutoRespondToBirth = true };
             MockDeviceProvisioningService mockDps = new(mockMqttClient, _ => FirstAssignedHub, connectionProfile);
@@ -403,7 +480,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
                 return Task.FromResult(new MqttConnectAck() { ResultCode = primary ? MqttConnectReasonCode.NotAuthorized : MqttConnectReasonCode.Success });
             };
 
-            AbstractConnectionClient connectionClient = CreateCredentialFallbackClient(mockMqttClient);
+            AbstractConnectionClient connectionClient = CreateCredentialFallbackClient(mockMqttClient, useNativeClient);
             using IDisposable connectionClientLifetime = (IDisposable)connectionClient;
 
             ConnectionContext connectionContext = await connectionClient.ProvisionAndConnectAsync(
@@ -428,10 +505,14 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         }
 
         [Theory]
-        [InlineData(IotHubConnectionType.Mqttv3, false)]
-        [InlineData(IotHubConnectionType.Mqttv3, true)]
+        [InlineData(IotHubConnectionType.Mqttv3, false, false)]
+        [InlineData(IotHubConnectionType.Mqttv3, false, true)]
+        [InlineData(IotHubConnectionType.Mqttv5, false, false)]
+        [InlineData(IotHubConnectionType.Mqttv5, false, true)]
+        [InlineData(IotHubConnectionType.Mqttv5, true, false)]
+        [InlineData(IotHubConnectionType.Mqttv5, true, true)]
         public async Task RegistrationRejectedAsUnauthorizedIsRetriedWithSecondaryBootCredentials(
-            IotHubConnectionType connectionProfile, bool dpsRejectsSecondary)
+            IotHubConnectionType connectionProfile, bool useNativeClient, bool dpsRejectsSecondary)
         {
             using MockConnectionMqttClient mockMqttClient = new() { AutoRespondToBirth = true };
             MockDeviceProvisioningService mockDps = new(mockMqttClient, _ => FirstAssignedHub, connectionProfile);
@@ -456,7 +537,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             mockDps.RejectRegistrationAsUnauthorized = () =>
                 Volatile.Read(ref lastDpsPassword) == "primary-boot" || dpsRejectsSecondary;
 
-            AbstractConnectionClient connectionClient = CreateCredentialFallbackClient(mockMqttClient);
+            AbstractConnectionClient connectionClient = CreateCredentialFallbackClient(mockMqttClient, useNativeClient);
             using IDisposable connectionClientLifetime = (IDisposable)connectionClient;
 
             Task<ConnectionContext> provisioning = connectionClient.ProvisionAndConnectAsync(
@@ -548,10 +629,14 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         }
 
         [Theory]
-        [InlineData(IotHubConnectionType.Mqttv3, false)]
-        [InlineData(IotHubConnectionType.Mqttv3, true)]
+        [InlineData(IotHubConnectionType.Mqttv3, false, false)]
+        [InlineData(IotHubConnectionType.Mqttv3, false, true)]
+        [InlineData(IotHubConnectionType.Mqttv5, false, false)]
+        [InlineData(IotHubConnectionType.Mqttv5, false, true)]
+        [InlineData(IotHubConnectionType.Mqttv5, true, false)]
+        [InlineData(IotHubConnectionType.Mqttv5, true, true)]
         public async Task MidSessionIdentityFaultTriesSecondaryCredentialsBeforeReprovisioning(
-            IotHubConnectionType connectionProfile, bool hubRejectsSecondary)
+            IotHubConnectionType connectionProfile, bool useNativeClient, bool hubRejectsSecondary)
         {
             using MockConnectionMqttClient mockMqttClient = new() { AutoRespondToBirth = true };
             MockDeviceProvisioningService mockDps = new(mockMqttClient, registrationCount => registrationCount == 1 ? FirstAssignedHub : SecondAssignedHub, connectionProfile);
@@ -572,7 +657,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
                 return Task.FromResult(new MqttConnectAck() { ResultCode = rejected ? MqttConnectReasonCode.NotAuthorized : MqttConnectReasonCode.Success });
             };
 
-            AbstractConnectionClient connectionClient = CreateCredentialFallbackClient(mockMqttClient);
+            AbstractConnectionClient connectionClient = CreateCredentialFallbackClient(mockMqttClient, useNativeClient);
             using IDisposable connectionClientLifetime = (IDisposable)connectionClient;
 
             await connectionClient.ProvisionAndConnectAsync(
@@ -617,10 +702,14 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         }
 
         [Theory]
-        [InlineData(IotHubConnectionType.Mqttv3, false)]
-        [InlineData(IotHubConnectionType.Mqttv3, true)]
+        [InlineData(IotHubConnectionType.Mqttv3, false, false)]
+        [InlineData(IotHubConnectionType.Mqttv3, false, true)]
+        [InlineData(IotHubConnectionType.Mqttv5, false, false)]
+        [InlineData(IotHubConnectionType.Mqttv5, false, true)]
+        [InlineData(IotHubConnectionType.Mqttv5, true, false)]
+        [InlineData(IotHubConnectionType.Mqttv5, true, true)]
         public async Task SecondaryCredentialsRejectedLaterFallBackToPrimaryWithoutReprovisioning(
-            IotHubConnectionType connectionProfile, bool rejectedMidSession)
+            IotHubConnectionType connectionProfile, bool useNativeClient, bool rejectedMidSession)
         {
             using MockConnectionMqttClient mockMqttClient = new() { AutoRespondToBirth = true };
             MockDeviceProvisioningService mockDps = new(mockMqttClient, _ => FirstAssignedHub, connectionProfile);
@@ -648,7 +737,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
                 return Task.FromResult(new MqttConnectAck() { ResultCode = accepted ? MqttConnectReasonCode.Success : MqttConnectReasonCode.NotAuthorized });
             };
 
-            AbstractConnectionClient connectionClient = CreateCredentialFallbackClient(mockMqttClient);
+            AbstractConnectionClient connectionClient = CreateCredentialFallbackClient(mockMqttClient, useNativeClient);
             using IDisposable connectionClientLifetime = (IDisposable)connectionClient;
 
             await connectionClient.ProvisionAndConnectAsync(
@@ -1388,13 +1477,19 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         /// is connected to its newly assigned hub and then sent again there.
         /// </summary>
         [Theory]
-        [InlineData("publish", "identityFault")]
-        [InlineData("subscribe", "identityFault")]
-        [InlineData("unsubscribe", "identityFault")]
-        [InlineData("publish", "hubUnreachable")]
-        [InlineData("subscribe", "hubUnreachable")]
-        [InlineData("unsubscribe", "hubUnreachable")]
-        public async Task OperationInterruptedBeforeAckIsHeldUntilReprovisionedAndResentToNewHub(string operation, string trigger)
+        [InlineData("publish", "identityFault", false)]
+        [InlineData("subscribe", "identityFault", false)]
+        [InlineData("unsubscribe", "identityFault", false)]
+        [InlineData("publish", "hubUnreachable", false)]
+        [InlineData("subscribe", "hubUnreachable", false)]
+        [InlineData("unsubscribe", "hubUnreachable", false)]
+        [InlineData("publish", "identityFault", true)]
+        [InlineData("subscribe", "identityFault", true)]
+        [InlineData("unsubscribe", "identityFault", true)]
+        [InlineData("publish", "hubUnreachable", true)]
+        [InlineData("subscribe", "hubUnreachable", true)]
+        [InlineData("unsubscribe", "hubUnreachable", true)]
+        public async Task OperationInterruptedBeforeAckIsHeldUntilReprovisionedAndResentToNewHub(string operation, string trigger, bool isMQTTv5)
         {
             const string FirstDeviceId = "firstDeviceId";
             const string SecondDeviceId = "secondDeviceId";
@@ -1411,7 +1506,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
                     DeviceId = registrationCount == 1 ? FirstDeviceId : SecondDeviceId,
                     AssignedHub = registrationCount == 1 ? FirstAssignedHub : SecondAssignedHub,
                     Status = ProvisioningRegistrationStatus.Assigned,
-                    ConnectionProfile = IotHubConnectionType.Mqttv3,
+                    ConnectionProfile = isMQTTv5 ? IotHubConnectionType.Mqttv5 : IotHubConnectionType.Mqttv3,
                 },
             };
 
@@ -2016,8 +2111,10 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             Assert.Equal(ConnectionEndpoint.None, connectionClient.CurrentEndpoint);
         }
 
-        [Fact]
-        public async Task ExplicitDisconnectWhileRecoveryHubSubscriptionIsPendingStopsReprovisioning()
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task ExplicitDisconnectWhileRecoveryHubSubscriptionIsPendingStopsReprovisioning(bool isMQTTv5)
         {
             using MockConnectionMqttClient mockMqttClient = new() { AutoRespondToBirth = true };
             _ = new MockDeviceProvisioningService(mockMqttClient, _ => FirstAssignedHub)
@@ -2028,7 +2125,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
                     DeviceId = DeviceId,
                     AssignedHub = FirstAssignedHub,
                     Status = ProvisioningRegistrationStatus.Assigned,
-                    ConnectionProfile = IotHubConnectionType.Mqttv3,
+                    ConnectionProfile = isMQTTv5 ? IotHubConnectionType.Mqttv5 : IotHubConnectionType.Mqttv3,
                 },
             };
             TaskCompletionSource recoveryHubSubscriptionStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -2045,7 +2142,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             int hubSubscriptionCount = 0;
             mockMqttClient.OnSubscribe = async subscribe =>
             {
-                if (subscribe.TopicFilters.Any(filter => filter.Topic.StartsWith("devices/", StringComparison.Ordinal))
+                if (subscribe.TopicFilters.Any(filter => filter.Topic.StartsWith(isMQTTv5 ? "ih/" : "devices/", StringComparison.Ordinal))
                     && Interlocked.Increment(ref hubSubscriptionCount) == 1)
                 {
                     recoveryHubSubscriptionStarted.TrySetResult();
@@ -2950,13 +3047,19 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             Assert.Equal(ConnectionEndpoint.IotHub, connectionClient.CurrentEndpoint);
         }
 
-        private static AbstractConnectionClient CreateCredentialFallbackClient(MockConnectionMqttClient mqttClient)
+        private static AbstractConnectionClient CreateCredentialFallbackClient(MockConnectionMqttClient mqttClient, bool useNativeClient)
         {
-            return new ConnectionClient(new()
-            {
-                MqttClient = mqttClient,
-                ConnectionRetryPolicy = new ImmediateRetryPolicy(),
-            });
+            return useNativeClient
+                ? new Device.MQTTv5.Connection.ConnectionClient(new()
+                {
+                    MqttClient = mqttClient,
+                    ConnectionRetryPolicy = new ImmediateRetryPolicy(),
+                })
+                : new ConnectionClient(new()
+                {
+                    MqttClient = mqttClient,
+                    ConnectionRetryPolicy = new ImmediateRetryPolicy(),
+                });
         }
 
         private static ProvisioningSettings CreateProvisioningSettings()

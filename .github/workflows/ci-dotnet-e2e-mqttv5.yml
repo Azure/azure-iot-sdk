@@ -1,0 +1,131 @@
+# Copyright (c) Microsoft. All rights reserved.
+# Licensed under the MIT license. See LICENSE file in the project root for full license information.
+
+# .NET e2e tests on an mqttv5 IoT Hub.
+#
+# Runs the integration tests labeled Hub=MQTTv5 (the MQTTv5 API set, plus the
+# unified API set's mqttv5 cases) against the shared, long-lived mqttv5
+# environment (hub, DPS linked through an ADR namespace); nothing is
+# provisioned per run. Each test creates and deletes its own DPS individual
+# enrollment and device identity. All other e2e tests run in ci-dotnet;
+# certificate management tests run in ci-dotnet-e2e-csr.
+#
+#   vars:    E2E_MQTTV5_SHARED_ID_SCOPE (unset: the workflow skips),
+#            E2E_MQTTV5_SHARED_DPS_HOST (optional DPS device endpoint), plus
+#            those of ci-c-e2e-mqttv5-adr-namespace.yml
+#   secrets: E2E_MQTTV5_SHARED_IOTHUB_CS  IoT Hub connection string; the tests
+#              need RegistryRead, RegistryWrite and ServiceConnect (device
+#              identities, twins, direct methods, cloud-to-device messages)
+#            E2E_MQTTV5_SHARED_DPS_CS  DPS service connection string with
+#              EnrollmentRead and EnrollmentWrite (individual enrollments)
+#            AZURE_CLIENT_ID, AZURE_TENANT_ID (ADR namespace repair)
+#
+# Pull requests from forks and from Dependabot get no secrets, so they skip.
+
+name: ci-dotnet-e2e-mqttv5
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'dotnet/**'
+      - '!dotnet/**/*.md'
+      - 'common/**'
+      - '!common/**/*.md'
+      - '.github/workflows/ci-dotnet-e2e-mqttv5.yml'
+      - '.github/workflows/ci-c-e2e-mqttv5-adr-namespace.yml'
+  schedule:
+    - cron: '45 11 * * *'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # The namespace can drop out of Azure; DPS registrations fail until it is back.
+  # Not on pull requests: the repair logs in to Azure and runs the checked-out
+  # script, so it only runs trusted code (schedule, manual). Pull requests rely
+  # on the scheduled repair (every 10 minutes) in ci-c-e2e-mqttv5-adr-namespace.yml.
+  adr-namespace:
+    name: ADR namespace
+    if: ${{ vars.E2E_MQTTV5_SHARED_ID_SCOPE != '' && github.event_name != 'pull_request' }}
+    permissions:
+      contents: read
+      id-token: write
+    # actionlint 1.7.12 does not accept the $/ self-repository form yet.
+    uses: ./.github/workflows/ci-c-e2e-mqttv5-adr-namespace.yml # zizmor: ignore[self-repository]
+    secrets:
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+
+  test:
+    name: ${{ matrix.os }}
+    needs: adr-namespace
+    if: >-
+      ${{ !cancelled() && vars.E2E_MQTTV5_SHARED_ID_SCOPE != '' &&
+          (needs.adr-namespace.result == 'success' || needs.adr-namespace.result == 'skipped') &&
+          (github.event_name != 'pull_request' ||
+           (github.event.pull_request.head.repo.full_name == github.repository &&
+            github.actor != 'dependabot[bot]')) }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ ubuntu-24.04, windows-latest ]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Build e2e tests
+        working-directory: dotnet
+        run: |
+          dotnet build ./Project.slnx
+
+      - name: Run e2e
+        shell: pwsh
+        env:
+          IOTHUB_CONNECTION_STRING_MQTTV5: ${{ secrets.E2E_MQTTV5_SHARED_IOTHUB_CS }}
+          IOT_DPS_CONNECTION_STRING_MQTTV5: ${{ secrets.E2E_MQTTV5_SHARED_DPS_CS }}
+          IOT_DPS_ID_SCOPE_MQTTV5: ${{ vars.E2E_MQTTV5_SHARED_ID_SCOPE }}
+          IOT_DPS_GLOBAL_ENDPOINT_MQTTV5: ${{ vars.E2E_MQTTV5_SHARED_DPS_HOST }}
+        run: |
+          $missing = 'IOTHUB_CONNECTION_STRING_MQTTV5', 'IOT_DPS_CONNECTION_STRING_MQTTV5', 'IOT_DPS_ID_SCOPE_MQTTV5' |
+            Where-Object { [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($_)) }
+          if ($missing) { throw "Shared mqttv5 e2e environment not configured; missing: $($missing -join ', ')." }
+
+          # Only tests labeled Hub=MQTTv5 run here. Certificate management tests
+          # run in ci-dotnet-e2e-csr; all other tests run in ci-dotnet.
+          dotnet test ./dotnet/Project.slnx `
+            --no-build `
+            --filter "Hub=MQTTv5&Category!=CertificateManagement" `
+            --logger:"trx;LogFileName=test-results.trx" `
+            --results-directory ./test-results `
+            -- xunit.parallelizeAssembly=true
+
+      - name: Upload Test Report Artifact
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: test-report-mqttv5-${{ matrix.os }}
+          path: ./test-results/*
+          if-no-files-found: error
+
+      - uses: dorny/test-reporter@a43b3a5f7366b97d083190328d2c652e1a8b6aa2 # v3.0.0
+        id: test-reporter
+        if: always()
+        with:
+          name: dotnet mqttv5 test report (${{ matrix.os }})
+          path: '**/test-results.trx'
+          reporter: dotnet-trx
+
+      - name: Annotate Test Report
+        if: always()
+        env:
+          REPORT_URL: ${{ steps.test-reporter.outputs.url_html }}
+        shell: bash
+        run: echo "Test Report $REPORT_URL" >> "$GITHUB_STEP_SUMMARY"

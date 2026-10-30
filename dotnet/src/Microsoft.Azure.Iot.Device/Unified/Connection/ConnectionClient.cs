@@ -1,4 +1,4 @@
-// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
+﻿// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
 // See LICENSE file in the project root for full license information.
 
 using Microsoft.Azure.Iot.Device.Exceptions;
@@ -28,6 +28,8 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
 
         private readonly ConcurrentDictionary<string, CertificateSigningOperation> _pendingCertificateSigningOperations = new();
 
+        private MQTTv5.Connection.ConnectionClient _mqttv5ConnectionClient;
+
         /// <inheritdoc/>
         public bool IsTwinEnabled { get; }
 
@@ -52,6 +54,21 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
         {
             options ??= new ConnectionClientOptions();
 
+            // The nested gen 2 client only lends this client its connect packet logic and its device presence flow, both of
+            // which it runs on the connection that this client owns. It never establishes a connection of its own, so it must
+            // not be handed the application-supplied MQTT client. Doing so would attach a second MqttConnectionManager to that
+            // same client, and that manager's "connecting" handler would rewrite every CONNECT this client sends (including the
+            // one sent to DPS) with gen 2 hub credentials and MQTT 5.
+            _mqttv5ConnectionClient = new(new MQTTv5.Models.ConnectionClientOptions()
+            {
+                ConnectionRetryPolicy = options.ConnectionRetryPolicy,
+                ConnectionAttemptTimeout = options.ConnectionAttemptTimeout,
+                EnableMqttLogging = options.EnableMqttLogging,
+                ReceiveDesiredPropertyUpdates = options.EnableTwin,
+                ReceiveReportedPropertiesUponConnect = options.EnableTwin,
+                // MqttClient = options.MqttClient, //TODO See above for why this isn't passed to the MQTTv5 client, but this design feels a bit off, but needs testing of websocket + proxy support when using unified client to connect to MQTTv5 hub
+            });
+
             // Snapshot the opt-outs so that later changes to the options object cannot change which topics the
             // presence flow subscribes to out from under feature clients that already checked them.
             IsTwinEnabled = options.EnableTwin;
@@ -59,6 +76,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
             AreCloudToDeviceMessagesEnabled = options.EnableCloudToDeviceMessages;
 
             ManagedMqttConnection.PublishReceivedAsync += HandleReceivedCertificateSigningPublish;
+            _mqttv5ConnectionClient.DevicePresenceFlowCompletedAsync += HandleMQTTv5ClientConnectionReady;
             ManagedMqttConnection.DisconnectedAsync += HandleCertificateSigningDisconnectedAsync;
         }
 
@@ -71,6 +89,10 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
         internal override MqttConnect IotHubMqttConnectOverride(MqttConnect connect)
         {
             Debug.Assert(CurrentConnectionContext != null);
+            if (CurrentConnectionContext.ConnectionProfile == IotHubConnectionType.Mqttv5)
+            {
+                return _mqttv5ConnectionClient.IotHubMqttConnectOverride(connect);
+            }
 
             connect.WebsocketUri = BuildWebSocketUri(connect.HostName, connect.WebsocketPort, DefaultWebSocketPath);
             connect.ProtocolVersion = CurrentConnectionContext.ConnectionProfile == IotHubConnectionType.Mqttv5 ? MqttProtocolVersion.V500 : MqttProtocolVersion.V311;
@@ -81,12 +103,27 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
             return connect;
         }
 
+        internal override void ResetBirthAckTimeoutSchedule()
+        {
+            // The nested gen 2 client runs the presence flow for MQTTv5 hubs, so it owns the schedule.
+            _mqttv5ConnectionClient.ResetBirthAckTimeoutSchedule();
+        }
+
         public override async Task HandleConnectedToHubAsync(MqttClientConnectedEventArgs args)
         {
             // Note that this callback handler is only set after provisioning has completed. It is only to respond to IoT Hub connection events, not DPS connection events.
 
             // This callback should only be reached after provisioning, so their should always be a connection context to use
             Debug.Assert(CurrentConnectionContext != null);
+
+            if (CurrentConnectionContext.ConnectionProfile == IotHubConnectionType.Mqttv5)
+            {
+                // A gen 2 hub connection re-announces this device's birth instead of re-subscribing to the classic topics.
+                // The gen 2 client owns that flow, but it must run on this client's connection. It signals that the device
+                // is ready by raising its own device presence flow completed event, which this client relays.
+                await _mqttv5ConnectionClient.AnnounceDevicePresenceAsync(ManagedMqttConnection, CurrentConnectionContext.DeviceId, args, this);
+                return;
+            }
 
             // Upon an MQTT connection being established, re-subscribe to the enabled twin/cloud-to-device/direct methods
             // topics unless the resumed session is known to still hold them.
@@ -288,46 +325,53 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
 
             CertificateSigningOperation operation = new();
 
-            if (!_pendingCertificateSigningOperations.TryAdd(request.RequestId, operation))
+            if (CurrentConnectionContext.ConnectionProfile == IotHubConnectionType.Mqttv5)
             {
-                throw new InvalidOperationException($"A certificate signing request with request ID '{request.RequestId}' is already pending.");
+                return await _mqttv5ConnectionClient.SendCertificateSigningRequestAsync(request, cancellationToken);
             }
-
-            CancellationTokenRegistration cancellationRegistration = default;
-            try
+            else
             {
-                if (cancellationToken.CanBeCanceled)
+                if (!_pendingCertificateSigningOperations.TryAdd(request.RequestId, operation))
                 {
-                    cancellationRegistration = cancellationToken.Register(() =>
-                    {
-                        if (_pendingCertificateSigningOperations.TryRemove(new KeyValuePair<string, CertificateSigningOperation>(request.RequestId, operation)))
-                        {
-                            operation.SetCanceled(cancellationToken);
-                        }
-                    });
-                    _ = operation.Completed.ContinueWith(
-                        _ => cancellationRegistration.Dispose(),
-                        CancellationToken.None,
-                        TaskContinuationOptions.ExecuteSynchronously,
-                        TaskScheduler.Default);
+                    throw new InvalidOperationException($"A certificate signing request with request ID '{request.RequestId}' is already pending.");
                 }
 
-                await ManagedMqttConnection.SubscribeAsync(ConnectionEndpoint.IotHub, new(CertificateSigningResponseTopicFilter, MqttQualityOfServiceLevel.AtLeastOnce), cancellationToken); // TODO QoS correct?
-
-                MqttPublish certificateSigningRequestPublish = new()
+                CancellationTokenRegistration cancellationRegistration = default;
+                try
                 {
-                    Topic = CertificateSigningRequestTopic + request.RequestId,
-                    Payload = JsonSerializer.SerializeToUtf8Bytes(request),
-                };
+                    if (cancellationToken.CanBeCanceled)
+                    {
+                        cancellationRegistration = cancellationToken.Register(() =>
+                        {
+                            if (_pendingCertificateSigningOperations.TryRemove(new KeyValuePair<string, CertificateSigningOperation>(request.RequestId, operation)))
+                            {
+                                operation.SetCanceled(cancellationToken);
+                            }
+                        });
+                        _ = operation.Completed.ContinueWith(
+                            _ => cancellationRegistration.Dispose(),
+                            CancellationToken.None,
+                            TaskContinuationOptions.ExecuteSynchronously,
+                            TaskScheduler.Default);
+                    }
 
-                // Puback is checked for non-success cases under this layer, so no need to check it here as well
-                await ManagedMqttConnection.PublishAsync(ConnectionEndpoint.IotHub, certificateSigningRequestPublish, cancellationToken: cancellationToken);
-            }
-            catch
-            {
-                _pendingCertificateSigningOperations.TryRemove(new KeyValuePair<string, CertificateSigningOperation>(request.RequestId, operation));
-                cancellationRegistration.Dispose();
-                throw;
+                    await ManagedMqttConnection.SubscribeAsync(ConnectionEndpoint.IotHub, new(CertificateSigningResponseTopicFilter, MqttQualityOfServiceLevel.AtLeastOnce), cancellationToken); // TODO QoS correct?
+
+                    MqttPublish certificateSigningRequestPublish = new()
+                    {
+                        Topic = CertificateSigningRequestTopic + request.RequestId,
+                        Payload = JsonSerializer.SerializeToUtf8Bytes(request),
+                    };
+
+                    // Puback is checked for non-success cases under this layer, so no need to check it here as well
+                    await ManagedMqttConnection.PublishAsync(ConnectionEndpoint.IotHub, certificateSigningRequestPublish, cancellationToken: cancellationToken);
+                }
+                catch
+                {
+                    _pendingCertificateSigningOperations.TryRemove(new KeyValuePair<string, CertificateSigningOperation>(request.RequestId, operation));
+                    cancellationRegistration.Dispose();
+                    throw;
+                }
             }
 
             return operation;
@@ -451,6 +495,8 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
         {
             CancelPendingCertificateSigningOperations();
             ManagedMqttConnection.PublishReceivedAsync -= HandleReceivedCertificateSigningPublish;
+            _mqttv5ConnectionClient.DevicePresenceFlowCompletedAsync -= HandleMQTTv5ClientConnectionReady;
+            _mqttv5ConnectionClient.Dispose(disposing);
             ManagedMqttConnection.DisconnectedAsync -= HandleCertificateSigningDisconnectedAsync;
             base.Dispose(disposing);
         }
@@ -462,6 +508,8 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
         {
             CancelPendingCertificateSigningOperations();
             ManagedMqttConnection.PublishReceivedAsync -= HandleReceivedCertificateSigningPublish;
+            _mqttv5ConnectionClient.DevicePresenceFlowCompletedAsync -= HandleMQTTv5ClientConnectionReady;
+            _mqttv5ConnectionClient.Dispose();
             ManagedMqttConnection.DisconnectedAsync -= HandleCertificateSigningDisconnectedAsync;
             base.Dispose();
         }
@@ -486,7 +534,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
 
         internal override bool DoesClientSupportHubType(ConnectionProfile connectionProfile)
         {
-            return connectionProfile == ConnectionProfile.Classic;
+            return connectionProfile == ConnectionProfile.MqttV5 || connectionProfile == ConnectionProfile.Classic;
         }
     }
 }
