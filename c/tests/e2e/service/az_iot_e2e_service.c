@@ -14,11 +14,23 @@
 #include <string.h>
 #include <time.h>
 
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#endif
+
 #define E2E_SAS_TTL_SECONDS 3600
 #define E2E_API_VERSION "2021-04-12"
 /* Telemetry enqueued this long before the watch starts is still delivered, so a
  * runner clock ahead of the service cannot filter out the message under test. */
 #define E2E_TELEMETRY_CLOCK_SKEW_S 300
+/* Limits of one HTTPS request. An idempotent one is abandoned sooner, as it is retried. */
+#define E2E_HTTPS_TIMEOUT_S 60
+#define E2E_HTTPS_IDEMPOTENT_TIMEOUT_S 20
+#define E2E_HTTPS_ATTEMPTS 3
+#define E2E_HTTPS_RETRY_PAUSE_MS 2000u
 
 struct az_iot_e2e_service
 {
@@ -817,6 +829,62 @@ static char* read_file_alloc(const char* path)
   return buf;
 }
 
+/** @brief Waits @p ms milliseconds between two attempts of a request. */
+static void pause_between_attempts(unsigned ms)
+{
+#ifdef _WIN32
+  Sleep(ms);
+#else
+  struct timespec delay = { (time_t)(ms / 1000u), (long)(ms % 1000u) * 1000000L };
+  (void)nanosleep(&delay, NULL);
+#endif
+}
+
+/**
+ * @brief Logs why an attempt of @p method on @p host @p path failed, without the query
+ * string (it can hold a SAS token).
+ */
+static void log_failed_attempt(
+    const e2e_http_request* r,
+    const char* host,
+    const char* method,
+    const char* path,
+    int attempt,
+    long elapsed_s)
+{
+  const char* err = e2e_http_error(r);
+  const char* native = (const char*)r->transport_storage.last_error_message;
+  (void)fprintf(
+      stderr,
+      "[e2e] HTTPS %s %s%.*s, attempt %d of %d, after %lds: %s%s; %d of %d request bytes sent, "
+      "%d response bytes received%s%s\n",
+      method,
+      host,
+      (int)strcspn(path, "?"),
+      path,
+      attempt,
+      E2E_HTTPS_ATTEMPTS,
+      elapsed_s,
+      err != NULL ? err : "no complete response while ",
+      err != NULL ? "" : e2e_http_phase_name(r->phase),
+      r->request_sent,
+      r->request_len,
+      r->response_len,
+      native[0] != '\0' ? "; transport: " : "",
+      native);
+}
+
+/**
+ * @brief Sends one HTTPS request and waits for its response.
+ *
+ * A request with no response yet is sent again on a new connection, up to
+ * #E2E_HTTPS_ATTEMPTS times, when e2e_http_retry_is_safe() allows it. An @p idempotent
+ * request is abandoned after #E2E_HTTPS_IDEMPOTENT_TIMEOUT_S rather than
+ * #E2E_HTTPS_TIMEOUT_S, as it can be retried whatever stage it reached.
+ *
+ * @return true when a complete response arrived. @p out_status and the other outputs are
+ * set whenever a status line arrived, even with an incomplete body.
+ */
 static bool https_request(
     const char* host,
     const char* method,
@@ -828,6 +896,7 @@ static bool https_request(
     const char* extra_header,
     const void* body,
     size_t body_len,
+    bool idempotent,
     int* out_status,
     char* resp_buf,
     size_t resp_buf_size,
@@ -852,58 +921,74 @@ static bool https_request(
     return false;
   }
 
-  bool ok = e2e_http_begin_ex(
-      r,
-      host,
-      method,
-      path,
-      authorization,
-      content_type,
-      extra_header,
-      body,
-      body_len,
-      cert_pem,
-      key_pem);
-
-  if (ok)
+  const long timeout_s = idempotent ? E2E_HTTPS_IDEMPOTENT_TIMEOUT_S : E2E_HTTPS_TIMEOUT_S;
+  bool ok = false;
+  for (int attempt = 1; attempt <= E2E_HTTPS_ATTEMPTS; attempt++)
   {
-    int rc;
-    time_t start = time(NULL);
-    do
+    if (attempt > 1)
     {
-      rc = e2e_http_poll(r);
-    } while (rc == 0 && (time(NULL) - start) < 60);
-
-    if (rc == 1)
-    {
-      if (out_status != NULL)
-      {
-        *out_status = e2e_http_status(r);
-      }
-      if (out_retry_after != NULL)
-      {
-        *out_retry_after = e2e_http_retry_after(r);
-      }
-      int b_len = 0;
-      const uint8_t* b = e2e_http_body(r, &b_len);
-      size_t copy = (size_t)b_len;
-      if (resp_buf != NULL && resp_buf_size > 0)
-      {
-        if (copy > resp_buf_size - 1)
-        {
-          copy = resp_buf_size - 1;
-        }
-        memcpy(resp_buf, b, copy);
-        resp_buf[copy] = '\0';
-      }
-      if (out_resp_len != NULL)
-      {
-        *out_resp_len = copy;
-      }
+      pause_between_attempts(E2E_HTTPS_RETRY_PAUSE_MS);
     }
-    else
+
+    time_t start = time(NULL);
+    bool begun = e2e_http_begin_ex(
+        r,
+        host,
+        method,
+        path,
+        authorization,
+        content_type,
+        extra_header,
+        body,
+        body_len,
+        cert_pem,
+        key_pem);
+    int rc = -1;
+    if (begun)
     {
-      ok = false;
+      do
+      {
+        rc = e2e_http_poll(r);
+      } while (rc == 0 && (time(NULL) - start) < timeout_s);
+    }
+    ok = rc == 1;
+    if (!ok)
+    {
+      log_failed_attempt(r, host, method, path, attempt, (long)(time(NULL) - start));
+    }
+    bool retry = !ok && begun && e2e_http_retry_is_safe(r, idempotent);
+    if (!retry)
+    {
+      break;
+    }
+    e2e_http_end(r);
+  }
+
+  if (r->headers_done)
+  {
+    if (out_status != NULL)
+    {
+      *out_status = e2e_http_status(r);
+    }
+    if (out_retry_after != NULL)
+    {
+      *out_retry_after = e2e_http_retry_after(r);
+    }
+    int b_len = 0;
+    const uint8_t* b = e2e_http_body(r, &b_len);
+    size_t copy = (size_t)b_len;
+    if (resp_buf != NULL && resp_buf_size > 0)
+    {
+      if (copy > resp_buf_size - 1)
+      {
+        copy = resp_buf_size - 1;
+      }
+      memcpy(resp_buf, b, copy);
+      resp_buf[copy] = '\0';
+    }
+    if (out_resp_len != NULL)
+    {
+      *out_resp_len = copy;
     }
   }
 
@@ -940,6 +1025,7 @@ bool az_iot_e2e_https_request(
       extra_header,
       body,
       body_len,
+      false,
       out_status,
       resp_buf,
       resp_buf_size,
@@ -972,6 +1058,7 @@ bool az_iot_e2e_https_request_auth(
       NULL,
       body,
       body_len,
+      false,
       out_status,
       resp_buf,
       resp_buf_size,
@@ -1014,6 +1101,7 @@ static bool dps_service_call(const char* method, const char* path, const char* b
       strcmp(method, "DELETE") == 0 ? "If-Match: *" : NULL,
       body,
       body != NULL ? strlen(body) : 0,
+      strcmp(method, "DELETE") == 0,
       &status,
       resp,
       sizeof(resp),
@@ -1098,6 +1186,7 @@ bool az_iot_e2e_service_device_delete(az_iot_e2e_service* svc, const char* devic
       "If-Match: \"*\"",
       NULL,
       0,
+      true,
       &status,
       resp,
       sizeof(resp),

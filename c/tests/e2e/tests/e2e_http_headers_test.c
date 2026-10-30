@@ -3,8 +3,9 @@
 // information.
 
 /* SPDX-License-Identifier: MIT */
-/* Response header parsing of the e2e HTTPS client: status, Content-Length and
- * Retry-After, wherever they appear in the header block. No network is used. */
+/* Response header parsing of the e2e HTTPS client (status, Content-Length and
+ * Retry-After, wherever they appear in the header block) and its retry decision.
+ * No network is used. */
 
 #include <stdarg.h>
 #include <stddef.h>
@@ -104,6 +105,48 @@ static void test_incomplete_headers_are_not_parsed(void** state)
   free(r);
 }
 
+static void test_retry_is_safe_only_before_a_response(void** state)
+{
+  (void)state;
+  e2e_http_request* r = (e2e_http_request*)calloc(1, sizeof(*r));
+  assert_non_null(r);
+  r->request_len = 100;
+
+  /* Nothing sent: any method may be sent again. */
+  r->phase = E2E_HTTP_PHASE_CONNECTING;
+  assert_true(e2e_http_retry_is_safe(r, false));
+  r->phase = E2E_HTTP_PHASE_FAILED;
+  assert_true(e2e_http_retry_is_safe(r, false));
+
+  /* Partly or fully sent without a response: only an idempotent request. */
+  r->request_sent = 40;
+  assert_false(e2e_http_retry_is_safe(r, false));
+  assert_true(e2e_http_retry_is_safe(r, true));
+  r->phase = E2E_HTTP_PHASE_READING;
+  r->request_sent = 100;
+  assert_false(e2e_http_retry_is_safe(r, false));
+  assert_true(e2e_http_retry_is_safe(r, true));
+
+  /* A status line arrived, or the response is complete: never. */
+  r->headers_done = true;
+  assert_false(e2e_http_retry_is_safe(r, true));
+  r->headers_done = false;
+  r->phase = E2E_HTTP_PHASE_DONE;
+  assert_false(e2e_http_retry_is_safe(r, true));
+  free(r);
+}
+
+static void test_phase_names(void** state)
+{
+  (void)state;
+  assert_string_equal("connecting", e2e_http_phase_name(E2E_HTTP_PHASE_CONNECTING));
+  assert_string_equal("sending", e2e_http_phase_name(E2E_HTTP_PHASE_WRITING));
+  assert_string_equal("reading", e2e_http_phase_name(E2E_HTTP_PHASE_READING));
+  assert_string_equal("done", e2e_http_phase_name(E2E_HTTP_PHASE_DONE));
+  assert_string_equal("failed", e2e_http_phase_name(E2E_HTTP_PHASE_FAILED));
+  assert_string_equal("failed", e2e_http_phase_name((e2e_http_phase)99));
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -111,6 +154,8 @@ int main(void)
     cmocka_unit_test(test_unusable_retry_after_is_zero),
     cmocka_unit_test(test_no_body_statuses_complete_at_the_headers),
     cmocka_unit_test(test_incomplete_headers_are_not_parsed),
+    cmocka_unit_test(test_retry_is_safe_only_before_a_response),
+    cmocka_unit_test(test_phase_names),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }

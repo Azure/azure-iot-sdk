@@ -125,6 +125,17 @@ extern "C"
   /* A static description of the last failure, or NULL. */
   const char* e2e_http_error(const e2e_http_request* r);
 
+  /** @brief The name of @p phase, for logging. Never NULL. */
+  const char* e2e_http_phase_name(e2e_http_phase phase);
+
+  /**
+   * @brief Whether an unfinished request may be sent again on a new connection.
+   *
+   * @return true when no response status arrived and either none of the request was sent
+   * or the request is @p idempotent.
+   */
+  bool e2e_http_retry_is_safe(const e2e_http_request* r, bool idempotent);
+
   /* Close the underlying transport (best-effort). */
   void e2e_http_end(e2e_http_request* r);
 

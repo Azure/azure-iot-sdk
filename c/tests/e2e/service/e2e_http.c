@@ -471,6 +471,30 @@ const uint8_t* e2e_http_body(const e2e_http_request* r, int* out_len)
 
 const char* e2e_http_error(const e2e_http_request* r) { return r->err; }
 
+const char* e2e_http_phase_name(e2e_http_phase phase)
+{
+  switch (phase)
+  {
+    case E2E_HTTP_PHASE_CONNECTING:
+      return "connecting";
+    case E2E_HTTP_PHASE_WRITING:
+      return "sending";
+    case E2E_HTTP_PHASE_READING:
+      return "reading";
+    case E2E_HTTP_PHASE_DONE:
+      return "done";
+    case E2E_HTTP_PHASE_FAILED:
+    default:
+      return "failed";
+  }
+}
+
+bool e2e_http_retry_is_safe(const e2e_http_request* r, bool idempotent)
+{
+  return r->phase != E2E_HTTP_PHASE_DONE && !r->headers_done
+      && (r->request_sent == 0 || idempotent);
+}
+
 void e2e_http_end(e2e_http_request* r)
 {
   if (r->transport.vtable == NULL || r->transport.vtable->close == NULL)
