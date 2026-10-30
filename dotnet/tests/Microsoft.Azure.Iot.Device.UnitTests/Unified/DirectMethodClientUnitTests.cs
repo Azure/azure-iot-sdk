@@ -5,7 +5,6 @@ using Google.Protobuf;
 using Microsoft.Azure.Iot.Device.Models.DirectMethods;
 using Microsoft.Azure.Iot.Device.Mqtt;
 using Microsoft.Azure.Iot.Device.Models;
-using Microsoft.Azure.Iot.Device.Provisioning.Models;
 using Microsoft.Azure.Iot.Device.Unified.DirectMethods;
 using System.Text;
 using Xunit;
@@ -74,6 +73,88 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
 
             Assert.False(invoked);
             Assert.Empty(connection.PublishedMessages);
+        }
+
+        [Fact]
+        public async Task MqttV5_AutoAcceptsProbeThenInvokesHandlerAndPublishesResult()
+        {
+            MockFeatureConnectionClient connection = new()
+            {
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv5, DeviceId),
+            };
+            using DirectMethodClient directMethodClient = new(connection);
+
+            byte[] responseBody = Encoding.UTF8.GetBytes("done");
+            directMethodClient.DirectMethodInvokedAsync += (_) =>
+                Task.FromResult(new DirectMethodResponse() { Status = 200, Payload = responseBody });
+
+            byte[] correlationData = Guid.NewGuid().ToByteArray();
+
+            // The unified client auto-accepts any probe on an MQTT 5 hub since classic hubs have no probe concept.
+            var probe = new Probe() { MethodName = "reboot", ResponseTimeoutSeconds = 30 };
+            await connection.SimulateReceiveAsync(CreateMqttv5MethodPublish("probe:1", correlationData, probe.ToByteArray()));
+
+            MqttPublish probeAckPublish = Assert.Single(connection.PublishedMessages);
+            // The device ID is left for the connection client to fill in when it actually sends the publish.
+            Assert.Equal($"ih/{Microsoft.Azure.Iot.Device.Unified.Connection.IConnectionClient.DeviceIdPlaceholder}/srv/methods", probeAckPublish.Topic);
+            Assert.Equal("probe-ack:1", GetType(probeAckPublish));
+
+            ProbeAck sentProbeAck = ProbeAck.Parser.ParseFrom(probeAckPublish.Payload);
+            ByteString readyId = sentProbeAck.Ready.ReadyId;
+
+            var exec = new Exec() { ReadyId = readyId, Params = ByteString.CopyFromUtf8("{}") };
+            await connection.SimulateReceiveAsync(CreateMqttv5MethodPublish("exec:1", correlationData, exec.ToByteArray()));
+
+            Assert.Equal(2, connection.PublishedMessages.Count);
+            MqttPublish resultPublish = connection.PublishedMessages[1];
+            Assert.Equal("result:1", GetType(resultPublish));
+            Result result = Result.Parser.ParseFrom(resultPublish.Payload);
+            Assert.Equal(200, result.Status);
+            Assert.Equal(responseBody, result.Body.ToByteArray());
+        }
+
+        [Fact]
+        public async Task MqttV5_RejectsProbeAsMethodNotFoundWhenNoHandlerIsSet()
+        {
+            MockFeatureConnectionClient connection = new()
+            {
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv5, DeviceId),
+            };
+            using DirectMethodClient directMethodClient = new(connection);
+
+            var probe = new Probe() { MethodName = "reboot", ResponseTimeoutSeconds = 30 };
+            MockMqttPublishReceivedEventArgs args = await connection.SimulateReceiveAsync(CreateMqttv5MethodPublish("probe:1", Guid.NewGuid().ToByteArray(), probe.ToByteArray()));
+
+            Assert.Equal(0, args.AcknowledgeCount);
+            MqttPublish probeAckPublish = Assert.Single(connection.PublishedMessages);
+            Assert.Equal("probe-ack:1", GetType(probeAckPublish));
+            ProbeAck sentProbeAck = ProbeAck.Parser.ParseFrom(probeAckPublish.Payload);
+            Assert.Equal(ProbeAck.ResultOneofCase.Rejected, sentProbeAck.ResultCase);
+            Assert.Equal(RejectedReason.MethodNotFound, sentProbeAck.Rejected.Reason);
+        }
+
+        [Fact]
+        public async Task MqttV5_DisposeAndReplace_DetachesPreviousClientFromSharedConnection()
+        {
+            MockFeatureConnectionClient connection = new()
+            {
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv5, DeviceId),
+            };
+            DirectMethodClient previousClient = new(connection);
+
+            previousClient.Dispose(false);
+
+            using DirectMethodClient replacementClient = new(connection);
+            replacementClient.DirectMethodInvokedAsync += _ =>
+                Task.FromResult(new DirectMethodResponse() { Status = 200 });
+
+            var probe = new Probe() { MethodName = "reboot", ResponseTimeoutSeconds = 30 };
+            await connection.SimulateReceiveAsync(CreateMqttv5MethodPublish("probe:1", Guid.NewGuid().ToByteArray(), probe.ToByteArray()));
+
+            Assert.False(connection.IsDisposed);
+            MqttPublish probeAckPublish = Assert.Single(connection.PublishedMessages);
+            ProbeAck sentProbeAck = ProbeAck.Parser.ParseFrom(probeAckPublish.Payload);
+            Assert.Equal(ProbeAck.ResultOneofCase.Ready, sentProbeAck.ResultCase);
         }
 
         [Fact]

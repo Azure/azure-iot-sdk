@@ -476,9 +476,13 @@ namespace Microsoft.Azure.Iot.Device
         /// Send a DISCONNECT to the server.
         /// </summary>
         /// <param name="desireReconnection">
-        /// When true, this is a deliberate session reset: the connection is torn down but this layer keeps maintaining
-        /// it and will reconnect. When false, the caller is closing for good: any in-progress retry loop is cancelled
-        /// and this layer stops maintaining the connection.
+        /// When true, the connection is torn down but this layer keeps maintaining it and will reconnect. When false, the
+        /// caller is closing for good: any in-progress retry loop is cancelled and this layer stops maintaining the connection.
+        /// </param>
+        /// <param name="options">
+        /// The DISCONNECT to send. Its <see cref="MqttDisconnect.SessionExpiryInterval"/> of 0 is omitted from the packet by
+        /// MQTTnet, so the broker keeps the session for the interval requested at CONNECT. This is what lets an SDK-initiated
+        /// reconnect resume the session; MQTT 5 forbids a DISCONNECT from raising the interval when the CONNECT's was 0.
         /// </param>
         public async Task DisconnectAsync(bool desireReconnection, MqttDisconnect? options = null, CancellationToken cancellationToken = default)
         {
@@ -486,7 +490,6 @@ namespace Microsoft.Azure.Iot.Device
             cancellationToken.ThrowIfCancellationRequested();
 
             options ??= new MqttDisconnect();
-            options.SessionExpiryInterval = 0;
 
             if (!desireReconnection)
             {
@@ -1276,12 +1279,21 @@ namespace Microsoft.Azure.Iot.Device
         /// </remarks>
         public Task<MqttPublishAck> BuildAndPublishAsync(ConnectionEndpoint endpoint, Func<MqttPublish> buildPublish, CancellationToken cancellationToken = default)
         {
+            return BuildAndPublishAsync(endpoint, buildPublish, throwOnPubackErrorCode: true, cancellationToken);
+        }
+
+        /// <inheritdoc cref="BuildAndPublishAsync(ConnectionEndpoint, Func{MqttPublish}, CancellationToken)"/>
+        /// <param name="throwOnPubackErrorCode">
+        /// False to return the PUBACK as-is even if it reports an error, for callers that hand MQTT-level results to the user.
+        /// </param>
+        internal Task<MqttPublishAck> BuildAndPublishAsync(ConnectionEndpoint endpoint, Func<MqttPublish> buildPublish, bool throwOnPubackErrorCode, CancellationToken cancellationToken = default)
+        {
             return SendAndSettleAsync(
                 endpoint,
                 buildPublish,
                 _underlyingMqttClient.PublishAsync,
                 publish => publish.QualityOfServiceLevel == MqttQualityOfServiceLevel.AtLeastOnce,
-                ThrowIfPubackHasErrorCode,
+                throwOnPubackErrorCode ? ThrowIfPubackHasErrorCode : null,
                 "publishing",
                 cancellationToken);
         }
@@ -1312,12 +1324,21 @@ namespace Microsoft.Azure.Iot.Device
         /// </remarks>
         public Task<MqttSubscribeAck> BuildAndSubscribeAsync(ConnectionEndpoint endpoint, Func<MqttSubscribe> buildSubscribe, CancellationToken cancellationToken = default)
         {
+            return BuildAndSubscribeAsync(endpoint, buildSubscribe, throwOnSubackErrorCode: true, cancellationToken);
+        }
+
+        /// <inheritdoc cref="BuildAndSubscribeAsync(ConnectionEndpoint, Func{MqttSubscribe}, CancellationToken)"/>
+        /// <param name="throwOnSubackErrorCode">
+        /// False to return the SUBACK as-is even if it rejects some topic filters, for callers that judge each item themselves.
+        /// </param>
+        internal Task<MqttSubscribeAck> BuildAndSubscribeAsync(ConnectionEndpoint endpoint, Func<MqttSubscribe> buildSubscribe, bool throwOnSubackErrorCode, CancellationToken cancellationToken = default)
+        {
             return SendAndSettleAsync(
                 endpoint,
                 buildSubscribe,
                 _underlyingMqttClient.SubscribeAsync,
                 _ => true,
-                ThrowIfSubackHasErrorCode,
+                throwOnSubackErrorCode ? ThrowIfSubackHasErrorCode : null,
                 "subscribing",
                 cancellationToken);
         }
@@ -1348,12 +1369,22 @@ namespace Microsoft.Azure.Iot.Device
         /// </remarks>
         public Task<MqttUnsubscribeAck> BuildAndUnsubscribeAsync(ConnectionEndpoint endpoint, Func<MqttUnsubscribe> buildUnsubscribe, CancellationToken cancellationToken = default)
         {
+            return BuildAndUnsubscribeAsync(endpoint, buildUnsubscribe, throwOnUnsubackErrorCode: true, cancellationToken);
+        }
+
+        /// <inheritdoc cref="BuildAndUnsubscribeAsync(ConnectionEndpoint, Func{MqttUnsubscribe}, CancellationToken)"/>
+        /// <param name="throwOnUnsubackErrorCode">
+        /// False to return the UNSUBACK as-is even if it rejects some topic filters, for callers that hand MQTT-level
+        /// results to the user.
+        /// </param>
+        internal Task<MqttUnsubscribeAck> BuildAndUnsubscribeAsync(ConnectionEndpoint endpoint, Func<MqttUnsubscribe> buildUnsubscribe, bool throwOnUnsubackErrorCode, CancellationToken cancellationToken = default)
+        {
             return SendAndSettleAsync(
                 endpoint,
                 buildUnsubscribe,
                 _underlyingMqttClient.UnsubscribeAsync,
                 _ => true,
-                ThrowIfUnsubackHasErrorCode,
+                throwOnUnsubackErrorCode ? ThrowIfUnsubackHasErrorCode : null,
                 "unsubscribing",
                 cancellationToken);
         }
@@ -1372,7 +1403,7 @@ namespace Microsoft.Azure.Iot.Device
             Func<TPacket> buildPacket,
             Func<TPacket, CancellationToken, Task<TAck>> send,
             Func<TPacket, bool> isAcknowledged,
-            Action<TAck> throwIfAckHasErrorCode,
+            Action<TAck>? throwIfAckHasErrorCode,
             string operationDescription,
             CancellationToken cancellationToken)
         {
@@ -1395,7 +1426,7 @@ namespace Microsoft.Azure.Iot.Device
                         $"The connection was lost while {operationDescription}, before the acknowledgement arrived.", e);
                 }
 
-                throwIfAckHasErrorCode(ack);
+                throwIfAckHasErrorCode?.Invoke(ack);
                 return ack;
             }
             catch (Exception e) when (e is not DeviceException and not MqttClientNotConnectedException and not OperationCanceledException)

@@ -122,10 +122,11 @@ jobs:
           $env:AZ_IOT_DPS_ID_SCOPE        = $env:IOT_DPS_ID_SCOPE
           if ($env:IOT_DPS_GLOBAL_ENDPOINT) { $env:AZ_IOT_DPS_GLOBAL_ENDPOINT = $env:IOT_DPS_GLOBAL_ENDPOINT }
 
-          # Tests labeled Category=CertificateManagement run in ci-dotnet-e2e-csr;
-          # all other tests, including those without a category, run here.
+          # Tests labeled Category=CertificateManagement run in ci-dotnet-e2e-csr
+          # and tests labeled Hub=MQTTv5 run in ci-dotnet-e2e-mqttv5; all other
+          # tests, including those without a category, run here.
           dotnet test ./dotnet/Project.slnx `
-            --filter "Category!=CertificateManagement" `
+            --filter "Category!=CertificateManagement&Hub!=MQTTv5" `
             --collect:"XPlat Code Coverage" `
             --logger:"trx;LogFileName=test-results.trx" `
             --environment IOTHUB_CONNECTION_STRING=$env:IOTHUB_CONNECTION_STRING `

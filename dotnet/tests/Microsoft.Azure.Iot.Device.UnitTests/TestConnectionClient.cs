@@ -5,6 +5,7 @@ using Microsoft.Azure.Iot.Device.MQTTv5.Connection;
 using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Mqtt;
 using Microsoft.Azure.Iot.Device.Provisioning.Models;
+using Microsoft.Azure.Iot.Device.Unified.Models;
 
 namespace Microsoft.Azure.Iot.Device.UnitTests
 {

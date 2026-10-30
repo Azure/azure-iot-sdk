@@ -13,6 +13,7 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Azure.Iot.Device.Provisioning.Models;
+using Microsoft.Azure.Iot.Device.Unified.Models;
 
 namespace Microsoft.Azure.Iot.Device.Unified.Connection
 {
@@ -26,6 +27,8 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
         private const string RequestId = "?$rid=";
 
         private readonly ConcurrentDictionary<string, CertificateSigningOperation> _pendingCertificateSigningOperations = new();
+
+        private MQTTv5.Connection.ConnectionClient _mqttv5ConnectionClient;
 
         /// <inheritdoc/>
         public bool IsTwinEnabled { get; }
@@ -51,6 +54,21 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
         {
             options ??= new ConnectionClientOptions();
 
+            // The nested gen 2 client only lends this client its connect packet logic and its device presence flow, both of
+            // which it runs on the connection that this client owns. It never establishes a connection of its own, so it must
+            // not be handed the application-supplied MQTT client. Doing so would attach a second MqttConnectionManager to that
+            // same client, and that manager's "connecting" handler would rewrite every CONNECT this client sends (including the
+            // one sent to DPS) with gen 2 hub credentials and MQTT 5.
+            _mqttv5ConnectionClient = new(new MQTTv5.Models.ConnectionClientOptions()
+            {
+                ConnectionRetryPolicy = options.ConnectionRetryPolicy,
+                ConnectionAttemptTimeout = options.ConnectionAttemptTimeout,
+                EnableMqttLogging = options.EnableMqttLogging,
+                ReceiveDesiredPropertyUpdates = options.EnableTwin,
+                ReceiveReportedPropertiesUponConnect = options.EnableTwin,
+                // MqttClient = options.MqttClient, //TODO See above for why this isn't passed to the MQTTv5 client, but this design feels a bit off, but needs testing of websocket + proxy support when using unified client to connect to MQTTv5 hub
+            });
+
             // Snapshot the opt-outs so that later changes to the options object cannot change which topics the
             // presence flow subscribes to out from under feature clients that already checked them.
             IsTwinEnabled = options.EnableTwin;
@@ -58,6 +76,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
             AreCloudToDeviceMessagesEnabled = options.EnableCloudToDeviceMessages;
 
             ManagedMqttConnection.PublishReceivedAsync += HandleReceivedCertificateSigningPublish;
+            _mqttv5ConnectionClient.DevicePresenceFlowCompletedAsync += HandleMQTTv5ClientConnectionReady;
             ManagedMqttConnection.DisconnectedAsync += HandleCertificateSigningDisconnectedAsync;
         }
 
@@ -70,14 +89,24 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
         internal override MqttConnect IotHubMqttConnectOverride(MqttConnect connect)
         {
             Debug.Assert(CurrentConnectionContext != null);
+            if (CurrentConnectionContext.ConnectionProfile == IotHubConnectionType.Mqttv5)
+            {
+                return _mqttv5ConnectionClient.IotHubMqttConnectOverride(connect);
+            }
 
-            connect.WebsocketUri = $"wss://{connect.HostName}/$iothub/websocket";
+            connect.WebsocketUri = BuildWebSocketUri(connect.HostName, connect.WebsocketPort, DefaultWebSocketPath);
             connect.ProtocolVersion = CurrentConnectionContext.ConnectionProfile == IotHubConnectionType.Mqttv5 ? MqttProtocolVersion.V500 : MqttProtocolVersion.V311;
 
             connect.Username = $"{connect.HostName}/{connect.ClientId}/?api-version={ClassicHubApiVersion}&DeviceClientType={Uri.EscapeDataString(GetUserAgentString())}";
 
             // MQTTv3 flow does not need to insert anything unique per connect attempt
             return connect;
+        }
+
+        internal override void ResetBirthAckTimeoutSchedule()
+        {
+            // The nested gen 2 client runs the presence flow for MQTTv5 hubs, so it owns the schedule.
+            _mqttv5ConnectionClient.ResetBirthAckTimeoutSchedule();
         }
 
         public override async Task HandleConnectedToHubAsync(MqttClientConnectedEventArgs args)
@@ -87,18 +116,36 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
             // This callback should only be reached after provisioning, so their should always be a connection context to use
             Debug.Assert(CurrentConnectionContext != null);
 
-            // Upon an MQTT connection being established, immediately re-subscribe to the enabled twin/cloud-to-device/direct methods topics if there is no session present.
-            if (args.ConnectAck.IsSessionPresent)
+            if (CurrentConnectionContext.ConnectionProfile == IotHubConnectionType.Mqttv5)
+            {
+                // A gen 2 hub connection re-announces this device's birth instead of re-subscribing to the classic topics.
+                // The gen 2 client owns that flow, but it must run on this client's connection. It signals that the device
+                // is ready by raising its own device presence flow completed event, which this client relays.
+                await _mqttv5ConnectionClient.AnnounceDevicePresenceAsync(ManagedMqttConnection, CurrentConnectionContext.DeviceId, args, this);
+                return;
+            }
+
+            // Upon an MQTT connection being established, re-subscribe to the enabled twin/cloud-to-device/direct methods
+            // topics unless the resumed session is known to still hold them.
+            if (TryElideDevicePresenceSubscribe(args.ConnectAck))
             {
                 await RaiseDevicePresenceFlowCompletedAsync(new DevicePresenceFlowCompletedArgs() { IsSuccess = true });
 
                 return;
             }
 
+            // A resumed session whose subscriptions this process has not observed (for example one left behind by a previous
+            // process that had other features enabled) may still hold subscriptions for features that are now disabled.
+            // Nothing would handle or acknowledge their messages, so those subscriptions are removed.
             MqttSubscribe mqttSubscribe = new();
+            MqttUnsubscribe mqttUnsubscribe = new();
             if (AreCloudToDeviceMessagesEnabled)
             {
                 mqttSubscribe.TopicFilters.Add(new(Telemetry.TelemetryClient.DeviceBoundMessagesTopicFormat + "#", MqttQualityOfServiceLevel.AtLeastOnce));
+            }
+            else
+            {
+                mqttUnsubscribe.TopicFilters.Add(Telemetry.TelemetryClient.DeviceBoundMessagesTopicFormat + "#");
             }
 
             if (IsTwinEnabled)
@@ -106,15 +153,31 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
                 mqttSubscribe.TopicFilters.Add(new(Twin.TwinClient.ClassicTwinResponseTopic + "#", MqttQualityOfServiceLevel.AtMostOnce));
                 mqttSubscribe.TopicFilters.Add(new(Twin.TwinClient.ClassicTwinDesiredPropertiesPatchTopic + "#", MqttQualityOfServiceLevel.AtMostOnce));
             }
+            else
+            {
+                mqttUnsubscribe.TopicFilters.Add(Twin.TwinClient.ClassicTwinResponseTopic + "#");
+                mqttUnsubscribe.TopicFilters.Add(Twin.TwinClient.ClassicTwinDesiredPropertiesPatchTopic + "#");
+            }
 
             if (AreDirectMethodsEnabled)
             {
                 mqttSubscribe.TopicFilters.Add(new(DirectMethods.DirectMethodClient.ClassicDirectMethodsRequestTopic + "#", MqttQualityOfServiceLevel.AtMostOnce));
             }
+            else
+            {
+                mqttUnsubscribe.TopicFilters.Add(DirectMethods.DirectMethodClient.ClassicDirectMethodsRequestTopic + "#");
+            }
+
+            if (args.ConnectAck.IsSessionPresent && mqttUnsubscribe.TopicFilters.Count > 0
+                && !await TryUnsubscribeDisabledFeaturesAsync(mqttUnsubscribe))
+            {
+                return;
+            }
 
             if (mqttSubscribe.TopicFilters.Count == 0)
             {
                 // A SUBSCRIBE with no topic filters is a protocol error, and there is nothing to wait for.
+                MarkDevicePresenceSubscribed();
                 await RaiseDevicePresenceFlowCompletedAsync(new DevicePresenceFlowCompletedArgs() { IsSuccess = true });
 
                 return;
@@ -151,13 +214,93 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
             if (anySubscribeFailed)
             {
                 // Signal to the underlying MQTT connection manager that, even though we are manually disconnecting, we still want to reconnect.
-                await ManagedMqttConnection.DisconnectAsync(true, new MqttDisconnect() { Reason = MqttDisconnectReasonCode.NormalDisconnection, SessionExpiryInterval = 0 });
+                await ManagedMqttConnection.DisconnectAsync(true, new MqttDisconnect() { Reason = MqttDisconnectReasonCode.NormalDisconnection });
 
                 Trace.TraceError("Device failed to subscribe to one or more necessary MQTT topics upon connecting to IoT Hub. Disconnecting the MQTT client and trying again.");
             }
             else
             {
+                MarkDevicePresenceSubscribed();
                 await RaiseDevicePresenceFlowCompletedAsync(new DevicePresenceFlowCompletedArgs() { IsSuccess = true });
+            }
+        }
+
+        /// <summary>
+        /// Remove a resumed session's subscriptions for disabled features.
+        /// </summary>
+        /// <returns>
+        /// True if the presence flow can continue; false if it was abandoned because the connection was lost, or if the
+        /// connection was torn down so that it is retried.
+        /// </returns>
+        private async Task<bool> TryUnsubscribeDisabledFeaturesAsync(MqttUnsubscribe mqttUnsubscribe)
+        {
+            // Abandon the UNSUBSCRIBE once this connection is lost, so that a failure on it can never tear down a newer one.
+            using CancellationTokenSource presenceCancellation = CancellationTokenSource.CreateLinkedTokenSource(
+                ManagedMqttConnection.ConnectionLifetimeCancellationToken,
+                CurrentReprovisioningCancellationToken);
+
+            Task HandleConnectionLostAsync(MqttClientDisconnectedEventArgs _)
+            {
+                try
+                {
+                    presenceCancellation.Cancel();
+                }
+                catch (ObjectDisposedException)
+                {
+                    // A disconnect dispatch may have captured this handler before the UNSUBSCRIBE completed.
+                }
+
+                return Task.CompletedTask;
+            }
+
+            ManagedMqttConnection.DisconnectedAsync += HandleConnectionLostAsync;
+            try
+            {
+                var unsuback = await ManagedMqttConnection.BuildAndUnsubscribeAsync(ConnectionEndpoint.IotHub, () =>
+                {
+                    string deviceId = GetDeviceIdForTopics();
+                    return mqttUnsubscribe.WithTopicFilters(mqttUnsubscribe.TopicFilters
+                        .Select(topicFilter => topicFilter.Replace(IConnectionClient.DeviceIdPlaceholder, deviceId, StringComparison.Ordinal))
+                        .ToList());
+                }, throwOnUnsubackErrorCode: false, presenceCancellation.Token);
+
+                presenceCancellation.Token.ThrowIfCancellationRequested();
+
+                if (unsuback.Items.Any(item => item.ReasonCode != MqttClientUnsubscribeReasonCode.Success
+                    && item.ReasonCode != MqttClientUnsubscribeReasonCode.NoSubscriptionExisted))
+                {
+                    Trace.TraceError("Device failed to unsubscribe from the MQTT topics of disabled features upon resuming a session with IoT Hub. Disconnecting the MQTT client and trying again.");
+
+                    // Signal to the underlying MQTT connection manager that, even though we are manually disconnecting, we still want to reconnect.
+                    await ManagedMqttConnection.DisconnectAsync(true, new MqttDisconnect() { Reason = MqttDisconnectReasonCode.NormalDisconnection }, presenceCancellation.Token);
+                    return false;
+                }
+
+                return true;
+            }
+            catch (OperationCanceledException) when (presenceCancellation.IsCancellationRequested)
+            {
+                // The connection layer owns recovery; an abandoned presence flow must not restart it.
+                return false;
+            }
+            catch (Exception e) when (!presenceCancellation.IsCancellationRequested)
+            {
+                // Without this, nothing would reconnect or complete the presence flow while the connection stays up.
+                Trace.TraceError("Exception thrown while unsubscribing from the MQTT topics of disabled features upon resuming a session with IoT Hub. Disconnecting the MQTT client and trying again. {0}", e);
+                try
+                {
+                    await ManagedMqttConnection.DisconnectAsync(true, new MqttDisconnect() { Reason = MqttDisconnectReasonCode.NormalDisconnection }, presenceCancellation.Token);
+                }
+                catch (OperationCanceledException) when (presenceCancellation.IsCancellationRequested)
+                {
+                    // The connection was lost or closed meanwhile, so the connection layer owns recovery.
+                }
+
+                return false;
+            }
+            finally
+            {
+                ManagedMqttConnection.DisconnectedAsync -= HandleConnectionLostAsync;
             }
         }
 
@@ -182,46 +325,53 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
 
             CertificateSigningOperation operation = new();
 
-            if (!_pendingCertificateSigningOperations.TryAdd(request.RequestId, operation))
+            if (CurrentConnectionContext.ConnectionProfile == IotHubConnectionType.Mqttv5)
             {
-                throw new InvalidOperationException($"A certificate signing request with request ID '{request.RequestId}' is already pending.");
+                return await _mqttv5ConnectionClient.SendCertificateSigningRequestAsync(request, cancellationToken);
             }
-
-            CancellationTokenRegistration cancellationRegistration = default;
-            try
+            else
             {
-                if (cancellationToken.CanBeCanceled)
+                if (!_pendingCertificateSigningOperations.TryAdd(request.RequestId, operation))
                 {
-                    cancellationRegistration = cancellationToken.Register(() =>
-                    {
-                        if (_pendingCertificateSigningOperations.TryRemove(new KeyValuePair<string, CertificateSigningOperation>(request.RequestId, operation)))
-                        {
-                            operation.SetCanceled(cancellationToken);
-                        }
-                    });
-                    _ = operation.Completed.ContinueWith(
-                        _ => cancellationRegistration.Dispose(),
-                        CancellationToken.None,
-                        TaskContinuationOptions.ExecuteSynchronously,
-                        TaskScheduler.Default);
+                    throw new InvalidOperationException($"A certificate signing request with request ID '{request.RequestId}' is already pending.");
                 }
 
-                await ManagedMqttConnection.SubscribeAsync(ConnectionEndpoint.IotHub, new(CertificateSigningResponseTopicFilter, MqttQualityOfServiceLevel.AtLeastOnce), cancellationToken); // TODO QoS correct?
-
-                MqttPublish certificateSigningRequestPublish = new()
+                CancellationTokenRegistration cancellationRegistration = default;
+                try
                 {
-                    Topic = CertificateSigningRequestTopic + request.RequestId,
-                    Payload = JsonSerializer.SerializeToUtf8Bytes(request),
-                };
+                    if (cancellationToken.CanBeCanceled)
+                    {
+                        cancellationRegistration = cancellationToken.Register(() =>
+                        {
+                            if (_pendingCertificateSigningOperations.TryRemove(new KeyValuePair<string, CertificateSigningOperation>(request.RequestId, operation)))
+                            {
+                                operation.SetCanceled(cancellationToken);
+                            }
+                        });
+                        _ = operation.Completed.ContinueWith(
+                            _ => cancellationRegistration.Dispose(),
+                            CancellationToken.None,
+                            TaskContinuationOptions.ExecuteSynchronously,
+                            TaskScheduler.Default);
+                    }
 
-                // Puback is checked for non-success cases under this layer, so no need to check it here as well
-                await ManagedMqttConnection.PublishAsync(ConnectionEndpoint.IotHub, certificateSigningRequestPublish, cancellationToken: cancellationToken);
-            }
-            catch
-            {
-                _pendingCertificateSigningOperations.TryRemove(new KeyValuePair<string, CertificateSigningOperation>(request.RequestId, operation));
-                cancellationRegistration.Dispose();
-                throw;
+                    await ManagedMqttConnection.SubscribeAsync(ConnectionEndpoint.IotHub, new(CertificateSigningResponseTopicFilter, MqttQualityOfServiceLevel.AtLeastOnce), cancellationToken); // TODO QoS correct?
+
+                    MqttPublish certificateSigningRequestPublish = new()
+                    {
+                        Topic = CertificateSigningRequestTopic + request.RequestId,
+                        Payload = JsonSerializer.SerializeToUtf8Bytes(request),
+                    };
+
+                    // Puback is checked for non-success cases under this layer, so no need to check it here as well
+                    await ManagedMqttConnection.PublishAsync(ConnectionEndpoint.IotHub, certificateSigningRequestPublish, cancellationToken: cancellationToken);
+                }
+                catch
+                {
+                    _pendingCertificateSigningOperations.TryRemove(new KeyValuePair<string, CertificateSigningOperation>(request.RequestId, operation));
+                    cancellationRegistration.Dispose();
+                    throw;
+                }
             }
 
             return operation;
@@ -345,6 +495,8 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
         {
             CancelPendingCertificateSigningOperations();
             ManagedMqttConnection.PublishReceivedAsync -= HandleReceivedCertificateSigningPublish;
+            _mqttv5ConnectionClient.DevicePresenceFlowCompletedAsync -= HandleMQTTv5ClientConnectionReady;
+            _mqttv5ConnectionClient.Dispose(disposing);
             ManagedMqttConnection.DisconnectedAsync -= HandleCertificateSigningDisconnectedAsync;
             base.Dispose(disposing);
         }
@@ -356,6 +508,8 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
         {
             CancelPendingCertificateSigningOperations();
             ManagedMqttConnection.PublishReceivedAsync -= HandleReceivedCertificateSigningPublish;
+            _mqttv5ConnectionClient.DevicePresenceFlowCompletedAsync -= HandleMQTTv5ClientConnectionReady;
+            _mqttv5ConnectionClient.Dispose();
             ManagedMqttConnection.DisconnectedAsync -= HandleCertificateSigningDisconnectedAsync;
             base.Dispose();
         }
@@ -380,7 +534,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
 
         internal override bool DoesClientSupportHubType(ConnectionProfile connectionProfile)
         {
-            return connectionProfile == ConnectionProfile.Classic;
+            return connectionProfile == ConnectionProfile.MqttV5 || connectionProfile == ConnectionProfile.Classic;
         }
     }
 }

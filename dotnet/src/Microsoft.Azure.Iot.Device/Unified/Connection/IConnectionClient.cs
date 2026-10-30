@@ -3,6 +3,7 @@
 
 using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Mqtt;
+using Microsoft.Azure.Iot.Device.Unified.Models;
 
 namespace Microsoft.Azure.Iot.Device.Unified.Connection
 {
@@ -58,7 +59,14 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
         /// reconnected to IoT hub (including after re-provisioning, in which case it is sent to the newly assigned hub
         /// with the newly assigned device ID), so IoT hub may receive it more than once.
         /// </remarks>
-        Task<MqttPublishAck> PublishAsync(MqttPublish publish, CancellationToken cancellationToken = default);
+        /// <param name="publish">The publish to send.</param>
+        /// <param name="throwOnErrorReasonCode">
+        /// True to throw a <see cref="DeviceException"/> if the PUBACK reports an error. False to return the PUBACK as-is
+        /// whatever its reason code. Either way, an operation interrupted by a connection-level failure is re-sent once
+        /// the device is connected again.
+        /// </param>
+        /// <param name="cancellationToken">The cancellation token.</param>
+        Task<MqttPublishAck> PublishAsync(MqttPublish publish, bool throwOnErrorReasonCode, CancellationToken cancellationToken = default);
 
         /// <summary>
         /// Send a SUBSCRIBE to IoT hub. Any <see cref="DeviceIdPlaceholder"/> in a topic filter is replaced with the
@@ -68,7 +76,14 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
         /// If the connection is lost before the SUBACK arrives, the SUBSCRIBE is sent again once the device is reconnected
         /// to IoT hub, including after re-provisioning.
         /// </remarks>
-        Task<MqttSubscribeAck> SubscribeAsync(MqttSubscribe subscribe, CancellationToken cancellationToken = default);
+        /// <param name="subscribe">The subscribe to send.</param>
+        /// <param name="throwOnErrorReasonCode">
+        /// True to throw a <see cref="DeviceException"/> if the SUBACK rejects a topic filter. False to return the SUBACK
+        /// as-is whatever its reason codes. Either way, an operation interrupted by a connection-level failure is re-sent
+        /// once the device is connected again.
+        /// </param>
+        /// <param name="cancellationToken">The cancellation token.</param>
+        Task<MqttSubscribeAck> SubscribeAsync(MqttSubscribe subscribe, bool throwOnErrorReasonCode, CancellationToken cancellationToken = default);
 
         /// <summary>
         /// Send an UNSUBSCRIBE to IoT hub. Any <see cref="DeviceIdPlaceholder"/> in a topic filter is replaced with the
@@ -78,7 +93,14 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
         /// If the connection is lost before the UNSUBACK arrives, the UNSUBSCRIBE is sent again once the device is
         /// reconnected to IoT hub, including after re-provisioning.
         /// </remarks>
-        Task<MqttUnsubscribeAck> UnsubscribeAsync(MqttUnsubscribe unsubscribe, CancellationToken cancellationToken = default);
+        /// <param name="unsubscribe">The unsubscribe to send.</param>
+        /// <param name="throwOnErrorReasonCode">
+        /// True to throw a <see cref="DeviceException"/> if the UNSUBACK rejects a topic filter. False to return the
+        /// UNSUBACK as-is whatever its reason codes. Either way, an operation interrupted by a connection-level failure is
+        /// re-sent once the device is connected again.
+        /// </param>
+        /// <param name="cancellationToken">The cancellation token.</param>
+        Task<MqttUnsubscribeAck> UnsubscribeAsync(MqttUnsubscribe unsubscribe, bool throwOnErrorReasonCode, CancellationToken cancellationToken = default);
 
         event Func<MqttPublishReceivedEventArgs, Task> PublishReceivedAsync;
     }

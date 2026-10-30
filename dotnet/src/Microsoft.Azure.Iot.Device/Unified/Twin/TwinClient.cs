@@ -1,6 +1,8 @@
 ﻿// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
 // See LICENSE file in the project root for full license information.
 
+using Microsoft.Azure.Iot.Device.Exceptions;
+using Microsoft.Azure.Iot.Device.MQTTv5.Twin;
 using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Models.Twin;
 using Microsoft.Azure.Iot.Device.Mqtt;
@@ -13,6 +15,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using System.Web;
+using Microsoft.Azure.Iot.Device.Unified.Models;
 
 namespace Microsoft.Azure.Iot.Device.Unified.Twin
 {
@@ -48,6 +51,8 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
         /// </summary>
         public event Action<DesiredPatchReceivedEventArgs>? DesiredPatchReceived;
 
+        private MQTTv5.Twin.TwinClient _mqttv5HubTwinClient;
+
         /// <summary>
         /// Construct a new <see cref="TwinClient"/> instance.
         /// </summary>
@@ -79,6 +84,8 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
             }
 
             _connection = connection;
+            _mqttv5HubTwinClient = new MQTTv5.Twin.TwinClient(new Stub(connection));
+            _mqttv5HubTwinClient.DesiredPatchReceived += HandleMQTTv5DesiredPatchReceivedAsync;
             _connection.PublishReceivedAsync += HandleReceivedMqttPublish;
         }
 
@@ -102,41 +109,49 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
 
             var currentConnectionContext = EnsureCorrectConnectionContext();
 
-            Guid requestId = Guid.NewGuid();
-
-            // Note the request as "in progress" before actually sending it so that no matter how quickly the service
-            // responds, this layer can correlate the request.
-            var pendingGetTwinRequest = new PendingGetTwinRequest()
+            if (currentConnectionContext.ConnectionProfile == IotHubConnectionType.Mqttv5)
             {
-                GetDesired = true,
-                GetReported = true,
-                IfNotMatchDesired = 0,
-                IfNotMatchReported = 0,
-            };
-            _pendingGetTwinOperations[requestId] = pendingGetTwinRequest;
-
-            MqttPublish publish = new MqttPublish()
-            {
-                Topic = string.Format(ClassicTwinGetTopicFormat, requestId.ToString()),
-                QualityOfServiceLevel = MqttQualityOfServiceLevel.AtLeastOnce,
-            };
-
-            try
-            {
-                Trace.TraceInformation("Publishing 'GetTwin' request on topic " + publish.Topic);
-
-                // Puback is checked for non-success cases under this layer, so no need to check it here as well
-                MqttPublishAck puback = await _connection.PublishAsync(publish, cancellationToken);
-
-                // Wait until IoT hub sends a message to this client with the response to this patch twin request.
-                var getTwinResponse = await pendingGetTwinRequest.TwinResponseTask.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
-
-                return getTwinResponse;
+                // Unconditionally return the full twin since classic Hub cannot mimic any of the filtering that MQTTv5 Hub allows.
+                return await _mqttv5HubTwinClient.GetTwinAsync(true, true, 0, 0, cancellationToken);
             }
-            finally
+            else
             {
-                // This may already be removed during happy path, but this removal covers scenarios where the response is never received
-                _ = _pendingGetTwinOperations.Remove(requestId, out _);
+                Guid requestId = Guid.NewGuid();
+
+                // Note the request as "in progress" before actually sending it so that no matter how quickly the service
+                // responds, this layer can correlate the request.
+                var pendingGetTwinRequest = new PendingGetTwinRequest()
+                {
+                    GetDesired = true,
+                    GetReported = true,
+                    IfNotMatchDesired = 0,
+                    IfNotMatchReported = 0,
+                };
+                _pendingGetTwinOperations[requestId] = pendingGetTwinRequest;
+
+                MqttPublish publish = new MqttPublish()
+                {
+                    Topic = string.Format(ClassicTwinGetTopicFormat, requestId.ToString()),
+                    QualityOfServiceLevel = MqttQualityOfServiceLevel.AtLeastOnce,
+                };
+
+                try
+                {
+                    Trace.TraceInformation("Publishing 'GetTwin' request on topic " + publish.Topic);
+
+                    // Puback is checked for non-success cases under this layer, so no need to check it here as well
+                    MqttPublishAck puback = await _connection.PublishAsync(publish, throwOnErrorReasonCode: true, cancellationToken);
+
+                    // Wait until IoT hub sends a message to this client with the response to this patch twin request.
+                    var getTwinResponse = await pendingGetTwinRequest.TwinResponseTask.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+
+                    return getTwinResponse;
+                }
+                finally
+                {
+                    // This may already be removed during happy path, but this removal covers scenarios where the response is never received
+                    _ = _pendingGetTwinOperations.Remove(requestId, out _);
+                }
             }
         }
 
@@ -147,6 +162,11 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
         /// <param name="cancellationToken">The cancellation token.</param>
         /// <returns>Whether IoT hub accepted this patch.</returns>
         /// <exception cref="PublishRejectedException">Thrown if this reported property update message is rejected by IoT Hub for any reason.</exception>
+        /// <remarks>
+        /// Note that the MQTTv5 IoT Hub supports using an If-Match property when reporting properties that allows you to have IoT Hub reject 
+        /// a reported properties update if it is out-of-date. However, MQTTv3 IoT Hubs do not support this flow. As a result, this unified client 
+        /// does not support sending If-Match values and will always send "unconditional" as the If-Match value when connected to an MQTTv5 IoT Hub.
+        /// </remarks>
         public async Task<ReportedPatchResponse> UpdateReportedPropertiesAsync(JsonObject reportedProperties, CancellationToken cancellationToken = default)
         {
             ObjectDisposedException.ThrowIf(_isDisposed, this);
@@ -154,38 +174,50 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
             var currentConnectionContext = EnsureCorrectConnectionContext();
 
             MqttPublish publish;
-            Guid requestId = Guid.NewGuid();
-
-            // Note the request as "in progress" before actually sending it so that no matter how quickly the service
-            // responds, this layer can correlate the request.
-            var pendingReportedPropertiesUpdateRequest = new PendingReportedPropertiesUpdateRequest();
-            _pendingReportedPropertyUpdateOperations[requestId] = pendingReportedPropertiesUpdateRequest;
-
-            string topic = string.Format(CultureInfo.InvariantCulture, ClassicTwinReportedPropertiesPatchTopicFormat, requestId);
-
-            publish = new MqttPublish()
+            if (currentConnectionContext.ConnectionProfile == IotHubConnectionType.Mqttv5)
             {
-                Topic = topic,
-                QualityOfServiceLevel = MqttQualityOfServiceLevel.AtLeastOnce,
-                Payload = JsonSerializer.SerializeToUtf8Bytes(reportedProperties),
-            };
-
-            try
-            {
-                Trace.TraceInformation("Publishing 'PatchReported' request on topic " + publish.Topic);
-
-                // Puback is checked for non-success cases under this layer, so no need to check it here as well
-                MqttPublishAck puback = await _connection.PublishAsync(publish, cancellationToken);
-
-                // Wait until IoT hub sends a message to this client with the response to this patch twin request.
-                var updateReportedPropertiesResponse = await pendingReportedPropertiesUpdateRequest.ReportedPropertyUpdateResponse.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
-
-                return updateReportedPropertiesResponse;
+                ReportedPatchRequest mqttv5Request = new()
+                {
+                    ReportedProperties = reportedProperties,
+                    IfMatch = 0 // MQTTv5 IoT hub treats this as unconditional which matches the behavior when updating reported properties for an MQTTv3 IoT Hub
+                };
+                return await _mqttv5HubTwinClient.UpdateReportedPropertiesAsync(mqttv5Request, cancellationToken);
             }
-            finally
+            else
             {
-                // This may already be removed during happy path, but this removal covers scenarios where the response is never received
-                _ = _pendingReportedPropertyUpdateOperations.Remove(requestId, out _);
+                Guid requestId = Guid.NewGuid();
+
+                // Note the request as "in progress" before actually sending it so that no matter how quickly the service
+                // responds, this layer can correlate the request.
+                var pendingReportedPropertiesUpdateRequest = new PendingReportedPropertiesUpdateRequest();
+                _pendingReportedPropertyUpdateOperations[requestId] = pendingReportedPropertiesUpdateRequest;
+
+                string topic = string.Format(CultureInfo.InvariantCulture, ClassicTwinReportedPropertiesPatchTopicFormat, requestId);
+
+                publish = new MqttPublish()
+                {
+                    Topic = topic,
+                    QualityOfServiceLevel = MqttQualityOfServiceLevel.AtLeastOnce,
+                    Payload = JsonSerializer.SerializeToUtf8Bytes(reportedProperties),
+                };
+
+                try
+                {
+                    Trace.TraceInformation("Publishing 'PatchReported' request on topic " + publish.Topic);
+
+                    // Puback is checked for non-success cases under this layer, so no need to check it here as well
+                    MqttPublishAck puback = await _connection.PublishAsync(publish, throwOnErrorReasonCode: true, cancellationToken);
+
+                    // Wait until IoT hub sends a message to this client with the response to this patch twin request.
+                    var updateReportedPropertiesResponse = await pendingReportedPropertiesUpdateRequest.ReportedPropertyUpdateResponse.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+
+                    return updateReportedPropertiesResponse;
+                }
+                finally
+                {
+                    // This may already be removed during happy path, but this removal covers scenarios where the response is never received
+                    _ = _pendingReportedPropertyUpdateOperations.Remove(requestId, out _);
+                }
             }
         }
 
@@ -341,6 +373,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
         /// <param name="disposing">true to release both managed and unmanaged resources; false to releases only unmanaged resources.</param>
         public void Dispose(bool disposing)
         {
+            _mqttv5HubTwinClient.DesiredPatchReceived -= HandleMQTTv5DesiredPatchReceivedAsync;
             _connection.PublishReceivedAsync -= HandleReceivedMqttPublish;
             if (disposing)
             {
@@ -354,6 +387,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
         /// </summary>
         public void Dispose()
         {
+            _mqttv5HubTwinClient.DesiredPatchReceived -= HandleMQTTv5DesiredPatchReceivedAsync;
             _connection.PublishReceivedAsync -= HandleReceivedMqttPublish;
             _connection.Dispose();
             _isDisposed = true;

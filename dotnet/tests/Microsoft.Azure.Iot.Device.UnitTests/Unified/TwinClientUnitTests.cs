@@ -5,7 +5,6 @@ using Google.Protobuf;
 using Microsoft.Azure.Iot.Device.Models.Twin;
 using Microsoft.Azure.Iot.Device.Mqtt;
 using Microsoft.Azure.Iot.Device.Models;
-using Microsoft.Azure.Iot.Device.Provisioning.Models;
 using Microsoft.Azure.Iot.Device.Unified.Connection;
 using Microsoft.Azure.Iot.Device.Unified.Twin;
 using System.Text;
@@ -104,6 +103,46 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
             Assert.Equal(3ul, received!.DesiredPropertiesVersion);
             Assert.Equal(40, (int)received.DesiredProperties["fanSpeed"]!);
             Assert.Null(received.DesiredProperties[TwinClient.VersionKey]); // $version stripped
+        }
+
+        [Fact]
+        public async Task GetTwinAsync_MqttV5_DelegatesToMqttv5Path()
+        {
+            MockFeatureConnectionClient connection = new()
+            {
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv5, DeviceId),
+            };
+            using TwinClient twinClient = new(connection);
+
+            connection.OnPublish += async (publish) =>
+            {
+                var response = new TwinGetResponse()
+                {
+                    DesiredVersion = 1,
+                    ReportedVersion = 2,
+                    DesiredPayload = ByteString.CopyFromUtf8("{\"fanSpeed\":10}"),
+                    ReportedPayload = ByteString.CopyFromUtf8("{\"temperature\":21}"),
+                };
+
+                var inbound = new MqttPublish()
+                {
+                    Topic = $"ih/{DeviceId}/dev/twin",
+                    Payload = response.ToByteArray(),
+                    CorrelationData = publish.CorrelationData,
+                    QualityOfServiceLevel = MqttQualityOfServiceLevel.AtMostOnce,
+                };
+                inbound.UserProperties.Add(new("type", Encoding.UTF8.GetBytes("get-response:1")));
+                await connection.SimulateReceiveAsync(inbound);
+                return new MqttPublishAck() { ReasonCode = MqttPublishAckReasonCode.Success };
+            };
+
+            DeviceTwin twin = await twinClient.GetTwinAsync(TestContext.Current.CancellationToken);
+
+            MqttPublish getPublish = Assert.Single(connection.PublishedMessages);
+            // The device ID is left for the connection client to fill in when it actually sends the publish.
+            Assert.Equal($"ih/{IConnectionClient.DeviceIdPlaceholder}/srv/twin", getPublish.Topic);
+            Assert.Equal(1ul, twin.DesiredVersion);
+            Assert.Equal(2ul, twin.ReportedVersion);
         }
 
         [Fact]
