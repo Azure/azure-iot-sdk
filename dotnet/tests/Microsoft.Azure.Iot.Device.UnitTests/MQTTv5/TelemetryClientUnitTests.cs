@@ -51,6 +51,22 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
         }
 
         [Fact]
+        public async Task SendTelemetryAsync_ThrowsWhenPubackRejectsTelemetry()
+        {
+            MockFeatureConnectionClient connection = new()
+            {
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv5, DeviceId),
+                OnPublish = _ => Task.FromResult(new MqttPublishAck() { ReasonCode = MqttPublishAckReasonCode.QuotaExceeded }),
+            };
+            using TelemetryClient telemetryClient = new(connection);
+
+            DeviceException exception = await Assert.ThrowsAsync<DeviceException>(
+                () => telemetryClient.SendTelemetryAsync(new DeviceToCloudTelemetry() { Payload = Encoding.UTF8.GetBytes("hello") }, TestContext.Current.CancellationToken));
+
+            Assert.Equal(ErrorRetryability.Retryable, exception.Retryability);
+        }
+
+        [Fact]
         public async Task SendTelemetryAsync_ThrowsWhenDisconnected()
         {
             MockFeatureConnectionClient connection = new(); // Never connected -> null context

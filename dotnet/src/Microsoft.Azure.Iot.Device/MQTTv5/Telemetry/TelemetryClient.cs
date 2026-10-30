@@ -106,8 +106,9 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Telemetry
                 mqttMessage.UserProperties.Add(new MqttUserProperty(customUserPropertyKey, message.UserProperties[customUserPropertyKey]));
             }
 
-            // Puback is checked for non-success cases under this layer, so no need to check it here as well
-            MqttPublishAck puback = await _connection.PublishAsync(mqttMessage, throwOnErrorReasonCode: true, cancellationToken);
+            // The connection client returns the PUBACK as-is, so a rejected request must be surfaced here.
+            MqttPublishAck puback = await _connection.PublishAsync(mqttMessage, cancellationToken);
+            MqttAckValidator.ThrowIfPubackHasErrorCode(puback);
         }
 
         /// <summary>

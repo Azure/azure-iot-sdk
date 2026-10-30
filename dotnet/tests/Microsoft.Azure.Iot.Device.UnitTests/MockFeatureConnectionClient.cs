@@ -50,7 +50,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
         public ConnectionContext? GetCurrentConnectionContext() => CurrentConnectionContext;
 
-        public async Task<MqttPublishAck> PublishAsync(MqttPublish publish, bool throwOnErrorReasonCode, CancellationToken cancellationToken = default)
+        public async Task<MqttPublishAck> PublishAsync(MqttPublish publish, CancellationToken cancellationToken = default)
         {
             PublishedMessages.Add(publish);
 
@@ -62,7 +62,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             return new MqttPublishAck() { ReasonCode = MqttPublishAckReasonCode.Success };
         }
 
-        public async Task<MqttSubscribeAck> SubscribeAsync(MqttSubscribe subscribe, bool throwOnErrorReasonCode, CancellationToken cancellationToken = default)
+        public async Task<MqttSubscribeAck> SubscribeAsync(MqttSubscribe subscribe, CancellationToken cancellationToken = default)
         {
             SubscribedMessages.Add(subscribe);
 
@@ -74,7 +74,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             return MqttObjectHelpers.CreateSuccessfulSuback(subscribe);
         }
 
-        public async Task<MqttUnsubscribeAck> UnsubscribeAsync(MqttUnsubscribe unsubscribe, bool throwOnErrorReasonCode, CancellationToken cancellationToken = default)
+        public async Task<MqttUnsubscribeAck> UnsubscribeAsync(MqttUnsubscribe unsubscribe, CancellationToken cancellationToken = default)
         {
             UnsubscribedMessages.Add(unsubscribe);
 

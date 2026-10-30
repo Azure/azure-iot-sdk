@@ -21,6 +21,37 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
         private const string IncomingTwinTopic = "ih/someDeviceId/dev/twin";
 
         [Fact]
+        public async Task GetTwinAsync_ThrowsWhenPubackRejectsRequest()
+        {
+            MockFeatureConnectionClient connection = new()
+            {
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv5, DeviceId),
+                OnPublish = _ => Task.FromResult(new MqttPublishAck() { ReasonCode = MqttPublishAckReasonCode.NotAuthorized }),
+            };
+            using TwinClient twinClient = new(connection);
+
+            // No twin response ever arrives, so without the PUBACK check this would wait until the timeout.
+            await Assert.ThrowsAsync<Exceptions.DeviceException>(
+                () => twinClient.GetTwinAsync(cancellationToken: TestContext.Current.CancellationToken).WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
+        }
+
+        [Fact]
+        public async Task UpdateReportedPropertiesAsync_ThrowsWhenPubackRejectsRequest()
+        {
+            MockFeatureConnectionClient connection = new()
+            {
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv5, DeviceId),
+                OnPublish = _ => Task.FromResult(new MqttPublishAck() { ReasonCode = MqttPublishAckReasonCode.NotAuthorized }),
+            };
+            using TwinClient twinClient = new(connection);
+
+            ReportedPatchRequest patch = new() { ReportedProperties = new JsonObject() { ["temperature"] = 25 } };
+
+            await Assert.ThrowsAsync<Exceptions.DeviceException>(
+                () => twinClient.UpdateReportedPropertiesAsync(patch, TestContext.Current.CancellationToken).WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
+        }
+
+        [Fact]
         public async Task GetTwinAsync_PublishesGetRequestAndReturnsResponse()
         {
             MockFeatureConnectionClient connection = new()
