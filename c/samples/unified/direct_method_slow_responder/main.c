@@ -443,7 +443,7 @@ int main(void)
       user_ctx.rebuild = 0;
       printf(
           "DPS assigned %s; rebuilding the feature client.\n",
-          sample_connection_profile_name(user_ctx.assigned_profile));
+          az_iot_connection_profile_to_string(user_ctx.assigned_profile));
       clients_destroy(&state, &user_ctx);
       az_iot_connection_client_close(&state.connection_client);
       if (clients_build(&state, user_ctx.assigned_profile, &user_ctx) != AZ_IOT_OK

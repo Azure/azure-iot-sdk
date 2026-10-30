@@ -90,7 +90,7 @@ Sent 11 message(s), 0 failed.
 ```
 
 After a move to the other generation it first prints
-`DPS assigned MQTTv5 (MQTT v5); reopening without a telemetry client.`
+`DPS assigned AZ_IOT_CONNECTION_PROFILE_MQTT_V5; reopening without a telemetry client.`
 
 ## Troubleshooting
 

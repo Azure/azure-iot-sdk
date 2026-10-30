@@ -274,16 +274,16 @@ int main(void)
    * Required rather than optional here, so that a run which appears to succeed
    * cannot silently have gone direct -- that is the property this sample is
    * meant to demonstrate. */
-  state.proxy_host = sample_env_dup("AZ_IOT_PROXY_HOST", NULL);
+  state.proxy_host = sample_env_copy("AZ_IOT_PROXY_HOST", NULL);
   if (state.proxy_host == NULL)
   {
     printf("AZ_IOT_PROXY_HOST is not set; nothing to demonstrate.\n");
     sample_state_destroy(&state);
     return 1;
   }
-  state.proxy_port = sample_env_dup("AZ_IOT_PROXY_PORT", NULL);
-  state.proxy_username = sample_env_dup("AZ_IOT_PROXY_USERNAME", NULL);
-  state.proxy_password = sample_env_dup("AZ_IOT_PROXY_PASSWORD", NULL);
+  state.proxy_port = sample_env_copy("AZ_IOT_PROXY_PORT", NULL);
+  state.proxy_username = sample_env_copy("AZ_IOT_PROXY_USERNAME", NULL);
+  state.proxy_password = sample_env_copy("AZ_IOT_PROXY_PASSWORD", NULL);
 
   copts.proxy.host = state.proxy_host;
   /* 0 selects AZ_IOT_MQTT_DEFAULT_PROXY_PORT (8080). */
@@ -347,7 +347,7 @@ int main(void)
       user_ctx.rebuild = 0;
       printf(
           "DPS assigned %s; rebuilding the telemetry client.\n",
-          sample_connection_profile_name(user_ctx.assigned_profile));
+          az_iot_connection_profile_to_string(user_ctx.assigned_profile));
       telemetry_destroy(&state);
       user_ctx.send_pending = 0; /* lost with the old client */
       az_iot_connection_client_close(&state.connection_client);
@@ -374,7 +374,7 @@ int main(void)
   printf(
       "Sent %d message(s) on %s, %d failed.\n",
       user_ctx.sent_ok,
-      sample_connection_profile_name(state.profile),
+      az_iot_connection_profile_to_string(state.profile),
       user_ctx.send_failed);
 
   az_iot_connection_client_close(&state.connection_client);

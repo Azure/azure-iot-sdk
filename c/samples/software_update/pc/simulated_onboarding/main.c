@@ -182,8 +182,8 @@ static void on_connection_state_event_received(
     printf(
         "%s: %s -> %s (%s)\n",
         (scope == AZ_IOT_CONN_SCOPE_DPS) ? "Provisioning" : "Hub",
-        sample_connection_state_name(state->connection_state[scope]),
-        sample_connection_state_name(event->state),
+        az_iot_connection_state_to_string(state->connection_state[scope]),
+        az_iot_connection_state_to_string(event->state),
         az_iot_result_to_string(event->reason));
     state->connection_state[scope] = event->state;
 
@@ -386,7 +386,7 @@ int main(void)
   state.simulation_control.hash_mismatch = su_sample_env_flag("SU_SIM_HASH_MISMATCH");
   state.simulation_control.reboot = su_sample_env_flag("SU_SIM_REBOOT");
   state.simulation_control.delay_ms = su_sample_env_long("SU_SIM_DELAY_MS", 0);
-  state.simulation_control.state_file = sample_env_dup("SU_SIM_STATE_FILE", "./su_sim_state.blob");
+  state.simulation_control.state_file = sample_env_copy("SU_SIM_STATE_FILE", "./su_sim_state.blob");
   if (state.simulation_control.state_file == NULL)
   {
     return 1;
@@ -429,13 +429,13 @@ int main(void)
    * against. Configurable because a hard-coded value that does not match the
    * imported update is answered "nothing to do" -- indistinguishable from
    * "nothing deployed" unless the device says what it asked with. */
-  state.su_device_properties.manufacturer = sample_env_dup("AZ_IOT_SU_MANUFACTURER", "Contoso");
-  state.su_device_properties.model = sample_env_dup("AZ_IOT_SU_MODEL", "SU-Sim");
+  state.su_device_properties.manufacturer = sample_env_copy("AZ_IOT_SU_MANUFACTURER", "Contoso");
+  state.su_device_properties.model = sample_env_copy("AZ_IOT_SU_MODEL", "SU-Sim");
   state.su_device_properties.installed_provider
-      = sample_env_dup("AZ_IOT_SU_INSTALLED_PROVIDER", "Contoso");
-  state.su_device_properties.installed_name = sample_env_dup("AZ_IOT_SU_INSTALLED_NAME", "SU-Sim");
+      = sample_env_copy("AZ_IOT_SU_INSTALLED_PROVIDER", "Contoso");
+  state.su_device_properties.installed_name = sample_env_copy("AZ_IOT_SU_INSTALLED_NAME", "SU-Sim");
   state.su_device_properties.installed_version
-      = sample_env_dup("AZ_IOT_SU_INSTALLED_VERSION", "1.0.0");
+      = sample_env_copy("AZ_IOT_SU_INSTALLED_VERSION", "1.0.0");
   if (state.su_device_properties.manufacturer == NULL || state.su_device_properties.model == NULL
       || state.su_device_properties.installed_provider == NULL
       || state.su_device_properties.installed_name == NULL

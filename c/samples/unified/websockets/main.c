@@ -261,7 +261,7 @@ int main(void)
    * DPS and an mqttv3 hub, "/mqtt" for an mqttv5 hub. The environment variable exists only so this
    * sample can also be pointed at a gateway that serves a different path. */
   copts.transport = AZ_IOT_MQTT_TRANSPORT_WEBSOCKET;
-  state.websocket_path = sample_env_dup("AZ_IOT_MQTT_WEBSOCKET_PATH", NULL);
+  state.websocket_path = sample_env_copy("AZ_IOT_MQTT_WEBSOCKET_PATH", NULL);
   copts.websocket_path = state.websocket_path;
 
   if (az_iot_connection_client_init(&state.connection_client, &copts) != AZ_IOT_OK)
@@ -315,7 +315,7 @@ int main(void)
       user_ctx.rebuild = 0;
       printf(
           "DPS assigned %s; rebuilding the telemetry client.\n",
-          sample_connection_profile_name(user_ctx.assigned_profile));
+          az_iot_connection_profile_to_string(user_ctx.assigned_profile));
       telemetry_destroy(&state);
       user_ctx.send_pending = 0; /* lost with the old client */
       az_iot_connection_client_close(&state.connection_client);
@@ -342,7 +342,7 @@ int main(void)
   printf(
       "Sent %d message(s) on %s, %d failed.\n",
       user_ctx.sent_ok,
-      sample_connection_profile_name(state.profile),
+      az_iot_connection_profile_to_string(state.profile),
       user_ctx.send_failed);
 
   az_iot_connection_client_close(&state.connection_client);

@@ -421,7 +421,7 @@ int main(void)
       user_ctx.rebuild = 0;
       printf(
           "DPS assigned %s; rebuilding the feature client.\n",
-          sample_connection_profile_name(user_ctx.assigned_profile));
+          az_iot_connection_profile_to_string(user_ctx.assigned_profile));
       clients_destroy(&state);
       round_active = 0; /* lost with the old client */
       az_iot_connection_client_close(&state.connection_client);

@@ -95,8 +95,8 @@ int main(void)
     return 1;
   }
 
-  char* op_key = sample_env_dup("AZ_IOT_OPERATIONAL_KEY", "operational_key.pem");
-  char* op_cert = sample_env_dup("AZ_IOT_OPERATIONAL_CERT", "operational_cert.pem");
+  char* op_key = sample_env_copy("AZ_IOT_OPERATIONAL_KEY", "operational_key.pem");
+  char* op_cert = sample_env_copy("AZ_IOT_OPERATIONAL_CERT", "operational_cert.pem");
 
   int rc = 1;
   user_context user_ctx = { 0 };
@@ -175,7 +175,8 @@ int main(void)
     az_iot_hub_profile hub_profile;
     if (az_iot_connection_client_get_hub_profile(&connection_client, &hub_profile) == AZ_IOT_OK)
     {
-      printf("Hub profile: %s\n", sample_connection_profile_name(hub_profile.connection_profile));
+      printf(
+          "Hub profile: %s\n", az_iot_connection_profile_to_string(hub_profile.connection_profile));
     }
     fprintf(
         stderr,
