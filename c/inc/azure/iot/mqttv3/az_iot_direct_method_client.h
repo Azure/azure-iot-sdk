@@ -139,6 +139,9 @@ extern "C"
    *         is sent, as the call already failed service-side. Kept even after its
    *         slot is reused, until the slot ends another invocation the same way;
    *         after that, AZ_IOT_ERR_INVALID_ARG;
+   *         AZ_IOT_ERR_BUSY if the connection is still setting up (a method can
+   *         arrive before every subscription is acknowledged) -- nothing is sent
+   *         and the request stays answerable: answer it again once connected;
    *         AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH if @p request came from a
    *         mqttv5 client; AZ_IOT_ERR_INVALID_ARG if it was already answered, if
    *         its slot was reclaimed on timeout and reused, or if it never came from

@@ -436,6 +436,17 @@ az_iot_result az_iot_mqttv3_direct_method_respond(
   out.retain = false;
 
   az_iot_result r = az_iot_connection_client__publish(DI(dm).conn, dm, &out, NULL, NULL);
+  if (r == AZ_IOT_ERR_NOT_CONNECTED
+      && az_iot_connection_client_get_state(DI(dm).conn, AZ_IOT_CONN_SCOPE_HUB)
+          == AZ_IOT_CONN_STATE_CONNECTING)
+  {
+    /* Dispatched while other subscriptions are still pending: the session is live. */
+    AZ_IOT_LOG_WARNF(
+        AZ_IOT_LOG_COMPONENT_MQTTV3_DIRECT_METHOD,
+        "'%s' answered before the connection finished setting up; answer it again once connected",
+        slot->_internal.method_name);
+    return AZ_IOT_ERR_BUSY;
+  }
   if (r == AZ_IOT_ERR_NOT_CONNECTED)
   {
     /* Closing, or the link dropped ahead of its SESSION_END: answering again says so too. */

@@ -1052,6 +1052,63 @@ static void a_close_and_reopen_ends_unanswered_invocations(void** state)
   assert_int_equal(az_iot_mock_mqtt_client_count_of(fx->mock, AZ_IOT_MOCK_CALL_PUBLISH), 1);
 }
 
+/* A method dispatched before every SUBACK is answered BUSY, stays answerable once connected,
+ * and leaves every slot's earlier ended request at NOT_CONNECTED. */
+static void an_answer_while_connecting_is_refused_busy_and_kept(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  invocation_record rec = { 0 };
+  assert_int_equal(
+      az_iot_mqttv3_direct_method_client_set_handler(&fx->dm, on_method, &rec), AZ_IOT_OK);
+  az_iot_direct_method_request ended[AZ_IOT_DM_MAX_INFLIGHT];
+  for (int i = 0; i < AZ_IOT_DM_MAX_INFLIGHT; ++i)
+  {
+    rec.fired = false;
+    inject_invocation(fx, 10 + i);
+    assert_true(rec.fired);
+    ended[i] = rec.request;
+  }
+
+  (void)az_iot_connection_client_close(&fx->conn);
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(fx->mock));
+  (void)az_iot_connection_client_do_work(&fx->conn, 0);
+  assert_int_equal(az_iot_connection_client_open(&fx->conn), AZ_IOT_OK);
+  fx->mock = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(fx->mock, AZ_IOT_OK));
+  assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_connection_client_get_state(&fx->conn, AZ_IOT_CONN_SCOPE_HUB),
+      AZ_IOT_CONN_STATE_CONNECTING);
+
+  rec.fired = false;
+  inject_invocation(fx, 2);
+  assert_true(rec.fired);
+  assert_int_equal(
+      az_iot_mqttv3_direct_method_respond(&fx->dm, rec.request, 200, NULL, 0), AZ_IOT_ERR_BUSY);
+  assert_int_equal(az_iot_mock_mqtt_client_count_of(fx->mock, AZ_IOT_MOCK_CALL_PUBLISH), 0);
+  for (int i = 0; i < AZ_IOT_DM_MAX_INFLIGHT; ++i)
+  {
+    assert_int_equal(
+        az_iot_mqttv3_direct_method_respond(&fx->dm, ended[i], 200, NULL, 0),
+        AZ_IOT_ERR_NOT_CONNECTED);
+  }
+
+  az_iot_test_ack_subscriptions(&fx->conn, fx->mock);
+  assert_int_equal(
+      az_iot_mqttv3_direct_method_respond(&fx->dm, rec.request, 200, NULL, 0), AZ_IOT_OK);
+  const az_iot_mock_call* answer
+      = az_iot_mock_mqtt_client_last_of(fx->mock, AZ_IOT_MOCK_CALL_PUBLISH);
+  assert_non_null(answer);
+  assert_string_equal(answer->topic, "$iothub/methods/res/200/?$rid=2");
+  for (int i = 0; i < AZ_IOT_DM_MAX_INFLIGHT; ++i)
+  {
+    assert_int_equal(
+        az_iot_mqttv3_direct_method_respond(&fx->dm, ended[i], 200, NULL, 0),
+        AZ_IOT_ERR_NOT_CONNECTED);
+  }
+}
+
 /* An init that fails for want of a feature observer, while connected, sends no SUBSCRIBE. */
 static void an_init_without_a_feature_observer_subscribes_nothing(void** state)
 {
@@ -1694,6 +1751,8 @@ int main(void)
         init_needs_a_feature_observer_and_deinit_returns_it, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_close_and_reopen_ends_unanswered_invocations, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        an_answer_while_connecting_is_refused_busy_and_kept, setup, teardown),
     cmocka_unit_test_setup_teardown(
         an_init_without_a_feature_observer_subscribes_nothing, setup, teardown),
     cmocka_unit_test_setup_teardown(a_response_while_closing_stays_not_connected, setup, teardown),
