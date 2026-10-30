@@ -17,14 +17,17 @@
 #include "azure/iot/az_iot_log.h"
 #include "internal/su_manifest_internal.h"
 
+/** @brief Output of the last parse(). */
 static az_iot_su_client_update_manifest g_manifest;
 
+/** @brief Parse @p text into g_manifest. */
 static az_iot_result parse(const char* text)
 {
   return az_iot_su__parse_update_manifest(
       az_span_create((uint8_t*)(uintptr_t)text, (int32_t)strlen(text)), &g_manifest);
 }
 
+/** @brief Assert @p actual holds @p expected. */
 static void assert_span_equal(az_span actual, const char* expected)
 {
   assert_true(az_span_is_content_equal(
@@ -168,8 +171,12 @@ static void malformed_manifests_are_rejected(void** state)
   }
 }
 
-/* Build a manifest with the given counts: step 0 lists first_step_file_count files, the
- * others one; each file has hash_count hashes. Returns a static buffer. */
+/**
+ * @brief Build a manifest: step 0 lists @p first_step_file_count files, the others one; each file
+ * has @p hash_count hashes; @p extra_step, when not NULL, is appended as one more step.
+ *
+ * @return A static buffer, valid until the next call.
+ */
 static const char* build_manifest(
     int step_count,
     int file_count,
@@ -237,12 +244,14 @@ static void a_manifest_at_the_limits_is_parsed(void** state)
   assert_span_equal(g_manifest.create_date_time, "end");
 }
 
+/** @brief Counts log messages containing a needle. */
 typedef struct
 {
   const char* needle;
   int count;
 } log_capture;
 
+/** @brief Log sink counting messages that contain the capture's needle. */
 static void capture_log(
     void* user_ctx,
     az_iot_log_level level,
