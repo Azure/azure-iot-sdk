@@ -271,7 +271,13 @@ Examples: [`samples/unified/websockets`](../samples/unified/websockets/main.c),
 | `session_expiry_seconds` | mqttv5 only. How long the broker keeps the session after a disconnect. Default 1 hour. |
 | `lwt` | Optional Last Will. The SDK sets none of its own. |
 | `keep_alive_seconds`, `connect_timeout_seconds` | Default 30 s each. |
-| `twin_push` | mqttv5 only. Fixed for the client's lifetime. `push_desired` (default `false`): the service pushes the desired snapshot on connect and each desired patch while connected. When `false`, no desired patches are sent; the twin client fetches the snapshot on connect when behind, and later changes are seen only on reconnect or after `az_iot_mqttv5_twin_client_get()`. `push_reported` (default `false`): the service pushes the reported section on connect. |
+| `twin_push` | mqttv5 only. Fixed for the client's lifetime. `push_desired` (default `false`): the service pushes the desired snapshot on connect and each desired patch while connected. When `false`, no desired patches are sent; the twin client fetches the snapshot on connect when behind, and later changes are seen only on reconnect or after `az_iot_mqttv5_twin_client_get()`. `push_reported` (default `false`): the service pushes the reported section on connect. With either set, a twin-push is expected after each connect for the requested sections the birth-ack shows out of sync (none when both are in sync); if none arrives within 5 to 15 minutes (longer after consecutive misses), the twin client ends the session with a DISCONNECT and the connection reconnects, or faults with `AZ_IOT_ERR_TIMEOUT` without a reconnection policy. `az_iot_connection_client_do_work()` checks it. |
+
+A device that does not use twin initializes no twin client and leaves both `twin_push` bits `false`.
+On an mqttv5 hub its birth then requests no twin session and the service sends it no twin traffic;
+`ih/{device_id}/dev/#` covers the twin topic, but nothing is published there. On an mqttv3 hub, only
+an initialized twin client subscribes to twin topics. A `twin_push` bit set without a twin client
+makes the service push sections that the device drops.
 
 ## Certificates
 
@@ -322,6 +328,7 @@ storage still yields the key.
 | The key | The provider returns | Adapter | Sample |
 | --- | --- | --- | --- |
 | Can be named (PKCS#11 URI, TPM 2.0 object) and has an OpenSSL 3.x provider | `client_key_uri` + `crypto_engine_id` | Paho (`AZ_IOT_PAHO_KEY_CUSTODY`); az_mqtt with OpenSSL TLS | [`hsm_pkcs11`](../samples/authentication/hsm_pkcs11/README.md) |
+| Is a PSA Crypto key (e.g. the ESP32 Digital Signature peripheral) | `client_key_psa_id` | az_mqtt with mbedTLS TLS (ESP-IDF); others refuse it with `AZ_IOT_ERR_NOT_SUPPORTED` | — |
 | Can only be asked to sign | A `sign()` hook | Your own ([Bring your own MQTT client](how_to_byo_mqtt_client.md)); Paho and az_mqtt refuse it with `AZ_IOT_ERR_NOT_SUPPORTED` | [`hsm_sign_callback`](../samples/authentication/hsm_sign_callback/README.md) |
 
 - **Bootstrap keys** authenticate to DPS; keep them in hardware too.

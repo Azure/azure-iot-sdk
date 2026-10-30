@@ -445,8 +445,27 @@ CONNACK; the `DPS` counter only when registration succeeds.
   after CONNACK, the presence SUBACK arriving with a failure status, and `presence_publish_birth()`
   failing all clear the phase and reconnect.
 - An MQTTv5 presence step that does not complete in time. `presence.deadline_ms` is armed at CONNACK
-  for the SUBACK and re-armed after the birth PUBLISH for the birth-ack, each
-  `AZ_IOT_PRESENCE_BIRTH_ACK_TIMEOUT_MS` (60 s), and checked in `do_work()`.
+  for the SUBACK (`subscription_ack_deadline()`: `subscription_ack_timeout_seconds`, default
+  `AZ_IOT_DEFAULT_SUBSCRIPTION_ACK_TIMEOUT_SECONDS`) and re-armed after the birth PUBLISH for the
+  birth-ack, and checked in `do_work()`. On expiry the session is ended with a DISCONNECT (a
+  planned hub session end, below), then reconnected. The birth-ack timeout escalates with
+  `presence.consecutive_birth_ack_timeouts`: attempt N waits
+  `az_iot_defensive_timeout__ms(N, random)` — a 5, 6, 8, then 10 min base plus a uniform 0–5 min
+  jitter. The count grows in `teardown_active()` when a BIRTH wait ends at or past its deadline (timeout, or a DISCONNECTED or ERROR drained first; not a missed SUBACK) and is cleared by
+  `open()` and by a birth-ack that arrives in time.
+- A planned hub session end: `start_planned_hub_session_end()` sends DISCONNECT and arms
+  `planned_hub_session_end.disconnect_deadline` (`PLANNED_DISCONNECT_TIMEOUT_MS`); the DISCONNECTED
+  event (unless an identity refusal) or the deadline calls `finish_planned_hub_session_end()`.
+  Reason `AZ_IOT_OK` (SAS token renewal) reconnects at once; a failure (a presence timeout, or a
+  feature client's `az_iot_connection_client__end_hub_session()`, e.g. the mqttv5 twin-push
+  timeout) goes through `end_hub_session_with_failure()`: reconnect under the policy, else FAULTED.
+  One planned end at a time: a renewal waits for one in progress (and its deadlines do not shorten
+  the wait), and a request during one is absorbed. Presence events after it starts are ignored. A malformed birth-ack is ignored (left to the timeout). A presence SUBACK or birth-ack whose deadline passed before the `do_work()` pass dispatching it began is a miss, left to the timeout (`__deadline_passed_before_pass()`; the mqttv5 twin-push wait uses the same rule, so a miss is declared by the first pass begun past its deadline); the `process_loop()` wait ends by those deadlines until a planned end starts.
+  `close()` during one sends no other DISCONNECT; its completion, an ERROR, or its bound settles
+  IDLE. An ERROR during a failure's end finishes it with that failure; an identity refusal in the
+  same batch keeps its recovery path. A feature client calls `end_hub_session()` from its feature observer's TICK, outside
+  adapter callbacks; one observing NEXT_DEADLINE also bounds the `process_loop()` wait by its
+  deadline.
 
 - **A failed registration, or one with no assignment.** `dps_apply_deferred()` sets
   `needs_reprovision` and calls `schedule_reconnect(AZ_IOT_CONN_SCOPE_DPS, status)`, so the retry is
@@ -903,11 +922,11 @@ a slow path. Constants are `#ifndef`-guarded and can be raised at build time, ex
 | Constant | Value | What it bounds | Result when exceeded |
 | --- | --- | --- | --- |
 | `AZ_IOT_MAX_MQTT_FACTORIES` | 4 | Registered adapter factories | `AZ_IOT_ERR_NOT_SUPPORTED` |
-| `AZ_IOT_MAX_PENDING_PUBACKS` | 16 | QoS-1 publishes awaiting a PUBACK **with an ack callback**: per-feature-client reservations plus a shared pool | `AZ_IOT_ERR_BUSY` when the caller's pool is full — nothing is sent; a reservation that does not fit fails with `AZ_IOT_ERR_NOT_ENOUGH_SPACE`, one whose slots publishes in flight occupy with `AZ_IOT_ERR_BUSY` |
-| `AZ_IOT_MAX_PERSISTENT_SUBS` | 8 | Persistent subscription registry | `AZ_IOT_ERR_NOT_ENOUGH_SPACE` |
+| `limits.max_pending_publishes` | 16 | QoS-1 publishes awaiting a PUBACK **with an ack callback**: per-feature-client reservations plus a shared pool | `AZ_IOT_ERR_BUSY` when the caller's pool is full — nothing is sent; a reservation that does not fit fails with `AZ_IOT_ERR_NOT_ENOUGH_SPACE`, one whose slots publishes in flight occupy with `AZ_IOT_ERR_BUSY` |
+| `limits.max_persistent_subscriptions` | 8 | Persistent subscription registry | `AZ_IOT_ERR_NOT_ENOUGH_SPACE` |
 | `AZ_IOT_PERSISTENT_SUB_TOPIC_MAX` | 128 | Persistent topic-filter string | `AZ_IOT_ERR_INVALID_ARG` |
-| `AZ_IOT_MAX_SESSION_HANDLERS` | 4 | Session-end handlers (re-registering the same context upserts) | `AZ_IOT_ERR_NOT_SUPPORTED` |
-| `AZ_IOT_MAX_INBOUND_HANDLERS` | 8 | Inbound dispatch table ([az_iot_dispatch.h](../../inc/azure/iot/az_iot_dispatch.h)) | `AZ_IOT_ERR_NOT_SUPPORTED` |
+| `limits.max_feature_observers` | 10 | Feature-client observers: state, session end, publish completion, tick (re-adding the same `(cb, user_ctx)` replaces its events) | `AZ_IOT_ERR_NOT_ENOUGH_SPACE` |
+| `limits.max_inbound_handlers` | 8 | Inbound dispatch table ([az_iot_dispatch.h](../../inc/azure/iot/az_iot_dispatch.h)) | `AZ_IOT_ERR_NOT_SUPPORTED` |
 | `AZ_IOT_DISPATCH_PREFIX_MAX` | 128 | Dispatch topic prefix | `AZ_IOT_ERR_NOT_SUPPORTED` |
 | `AZ_IOT_DPS_HOST_BUF` | 128 | Assigned hub hostname | `AZ_IOT_ERR_NOT_SUPPORTED` |
 | `AZ_IOT_DPS_DEVICE_ID_BUF` | 128 | Assigned device id | as above |
@@ -917,8 +936,8 @@ a slow path. Constants are `#ifndef`-guarded and can be raised at build time, ex
 | `AZ_IOT_CONNECTION_PROFILE_RAW_BUF` | 64 | Raw `connectionProfile` string, NUL included (63 bytes of payload) | Truncated, resolves to UNKNOWN, then `AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED` |
 | `AZ_IOT_CSR_PAYLOAD_BUFFER_MIN` | 8448 | Recommended size for the caller-supplied CSR payload buffer; smaller works for small keys | `AZ_IOT_ERR_NOT_ENOUGH_SPACE` when the CSR does not fit; an empty buffer is refused at `open()` |
 | `CSR_MAX_BASE64` | 8192 | Base64 CSR body ([connection_client.c](../../src/core/connection_client.c)) | `AZ_IOT_ERR_INVALID_ARG` |
-| `AZ_IOT_MAX_FEATURE_CLIENT_BINDS` | 8 | Feature clients bound to one connection | `AZ_IOT_ERR_NOT_ENOUGH_SPACE` |
-| `AZ_IOT_MAX_PUBACK_RESERVATIONS` | 2 | Feature clients holding a pending-PUBACK reservation | `AZ_IOT_ERR_NOT_ENOUGH_SPACE` |
+| `limits.max_feature_clients` | 8 | Feature clients bound to one connection | `AZ_IOT_ERR_NOT_ENOUGH_SPACE` |
+| `limits.max_publish_reservations` | 2 | Feature clients holding a pending-PUBACK reservation | `AZ_IOT_ERR_NOT_ENOUGH_SPACE` |
 | `AZ_IOT_DPS_OPERATION_ID_MAX` | 64 | DPS `operation_id` from the assigning response | `AZ_IOT_ERR_NOT_SUPPORTED` |
 | `AZ_IOT_DPS_REGISTRATION_PAYLOAD_MAX` | 512 | Caller-supplied DPS registration payload | `AZ_IOT_ERR_NOT_ENOUGH_SPACE` |
 | `AZ_IOT_TWIN_MAX_PENDING` | 8 | Pending twin requests, per generation ([MQTTv3](../../inc/azure/iot/mqttv3/az_iot_twin_client.h), [MQTTv5](../../inc/azure/iot/mqttv5/az_iot_twin_client.h)) | `AZ_IOT_ERR_NOT_SUPPORTED` |
@@ -927,8 +946,8 @@ a slow path. Constants are `#ifndef`-guarded and can be raised at build time, ex
 | CSR slot | 1 | In-flight hub CSR renewals | `AZ_IOT_ERR_BUSY` |
 | `AZ_IOT_DEFAULT_CONNECT_TIMEOUT_SECONDS` | 30 | Connect attempt, hub and DPS alike | Adapter-reported failure → `AZ_IOT_ERR_MQTT` |
 | `AZ_IOT_DEFAULT_KEEP_ALIVE_SECONDS` | 30 | MQTT keep-alive in CONNECT | — |
-| `AZ_IOT_DEFAULT_SUBSCRIPTION_ACK_TIMEOUT_SECONDS` | 60 | The subscription gate: how long the SUBACKs of one batch may take | `AZ_IOT_ERR_TIMEOUT` |
-| `AZ_IOT_PRESENCE_BIRTH_ACK_TIMEOUT_MS` | 60000 | Each presence handshake step | `AZ_IOT_ERR_TIMEOUT` |
+| `AZ_IOT_DEFAULT_SUBSCRIPTION_ACK_TIMEOUT_SECONDS` | 60 | The subscription gate and the MQTTv5 presence SUBACK: how long the SUBACKs of one batch may take | `AZ_IOT_ERR_TIMEOUT` |
+| `az_iot_defensive_timeout__ms()` | 5–15 min | MQTTv5 birth-ack: 5, 6, 8, then 10 min base per consecutive miss, plus 0–5 min jitter | `AZ_IOT_ERR_TIMEOUT` |
 | `AZ_IOT_DPS_HOLD_TIMEOUT_MS` | 60000 | How long registration may be held for a pre-registration exchange | the hold expires and registration proceeds |
 | `AZ_IOT_DEFAULT_MAX_HUB_CONNECT_ATTEMPTS_BEFORE_REPROVISION` | 50 | Consecutive hub connect failures before the client re-provisions | `needs_reprovision` set; not an error |
 | `CSR_OP_TIMEOUT_MS` | 120000 | Hub CSR renewal, re-armed on each `202 Accepted` | `AZ_IOT_ERR_TIMEOUT` |
@@ -1005,7 +1024,8 @@ connection client itself, or a feature client.
 | Subscribing | Presence SUBACK carries a failure | `AZ_IOT_ERR_SUBSCRIPTION_REFUSED` or `AZ_IOT_ERR_MQTT` | `az_iot_mqtt_suback_result()` | clear the phase, then `DEFER_RECONNECT` if a policy is configured, else `DEFER_FAULT` | The presence path branches on `reconnect_enabled()`; `AZ_IOT_ERR_SUBSCRIPTION_REFUSED` is not treated as terminal here. |
 | Subscribing | `presence_start()` fails after CONNACK | its own result | connection client | clear the phase, reconnect | |
 | Birth | `presence_publish_birth()` fails | its own result | connection client | clear the phase, reconnect | |
-| Birth | No birth-ack within 60 s | `AZ_IOT_ERR_TIMEOUT` | `_do_work()` | reconnect, or `FAULTED` with no policy | The deadline is armed at CONNACK and re-armed after the birth publish, so each step gets its own 60 s. |
+| Subscribing | No presence SUBACK within `subscription_ack_timeout_seconds` (default 60 s) | `AZ_IOT_ERR_TIMEOUT` | `_do_work()` | reconnect, or `FAULTED` with no policy | Does not escalate the birth-ack schedule. |
+| Birth | No birth-ack within the escalating timeout | `AZ_IOT_ERR_TIMEOUT` | `_do_work()` | disconnect and reconnect, or `FAULTED` with no policy | Armed after the birth publish: 5–10, 6–11, 8–13, then 10–15 min for consecutive misses. Reset by `open()` and by a birth-ack in time. A birth-ack drained after the deadline is ignored; any teardown at or past the deadline counts as a miss. |
 | Birth | Birth-ack arrives while still subscribing | ignored as a birth-ack | connection client | falls through to `az_iot_dispatch_route()`, and is dropped if no prefix matches | The interception is guarded on `presence.phase == PRESENCE_PHASE_BIRTH`. Correct. |
 | Birth | Birth-ack carries a correlation value from an earlier attempt | ignored as a birth-ack | `presence_is_birth_ack()` | routed to dispatch, then dropped | A fresh 16-byte nonce is generated per attempt and compared with `memcmp`. This is the epoch guard; there is no separate generation counter. |
 | Birth | Birth-ack arrives after `close()` | ignored | connection client | logged at debug, `break` | Same guard as the late CONNACK. |
@@ -1055,7 +1075,7 @@ registry carries MQTTv3 feature filters and application custom topics.
 | Twin | Service status `404` | `AZ_IOT_ERR_NOT_FOUND` | as above | as above | Contained. |
 | Twin | Service status `429` | `AZ_IOT_ERR_BUSY` | as above | as above | Deliberately **not** `AZ_IOT_ERR_NOT_SUPPORTED`, which is what a full pending table returns: a caller must be able to tell "the service is throttling me" from "I have too many requests in flight locally". |
 | Twin | `5xx` or an unrecognised status | `AZ_IOT_ERR_MQTT` | as above | as above | |
-| Any feature | The MQTT session ends with requests pending | the session-end result | session-end handlers | every pending request is completed with an error and its slot released | Without this the slots would leak one per outage until the pool is exhausted and every later request is refused. |
+| Any feature | The MQTT session ends with requests pending | the session-end result | feature observers (session end) | every pending request is completed with an error and its slot released | Without this the slots would leak one per outage until the pool is exhausted and every later request is refused. |
 
 #### 9.5.8 Phase 8 — framework, resource and programming errors
 

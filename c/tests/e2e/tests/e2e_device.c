@@ -4,6 +4,7 @@
 
 /* SPDX-License-Identifier: MIT */
 #include "e2e_device.h"
+#include "e2e_defensive_timeout.h"
 #include "support/test_env.h"
 
 /* The MQTT adapter this build of the suite uses (see tests/e2e/CMakeLists.txt). */
@@ -222,6 +223,11 @@ int e2e_device_connect_with(e2e_device* dev, const e2e_device_connect_options* o
     return 1;
   }
   dev->conn_ok = true;
+  if (e2e_use_short_defensive_timeouts(&dev->conn) != AZ_IOT_OK)
+  {
+    fprintf(stderr, "[e2e] defensive-timeout schedule rejected\n");
+    return 1;
+  }
   az_iot_connection_client_add_state_observer(&dev->conn, on_conn_state, dev);
 
 #if defined(AZ_IOT_E2E_ADAPTER_PAHO)

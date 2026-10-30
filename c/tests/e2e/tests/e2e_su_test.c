@@ -83,6 +83,8 @@ typedef struct
 
   az_iot_su_channel_dps channel_state;
   uint8_t channel_body[AZ_IOT_SU_DEFAULT_MAX_MESSAGE_SIZE];
+  char channel_device_properties
+      [AZ_IOT_SU_DEVICE_PROPERTIES_BUFFER_SIZE + AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE];
   az_iot_su_channel channel;
 
   /* what the channel reported back */
@@ -172,6 +174,8 @@ static void fixture_open(e2e_fixture* fx)
           &dp,
           fx->channel_body,
           sizeof(fx->channel_body),
+          fx->channel_device_properties,
+          sizeof(fx->channel_device_properties),
           &fx->channel),
       AZ_IOT_OK);
   assert_int_equal(fx->channel.vtable->open(fx->channel.ctx, on_update, on_result, fx), AZ_IOT_OK);

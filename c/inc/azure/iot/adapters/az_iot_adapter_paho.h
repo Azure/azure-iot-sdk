@@ -63,6 +63,22 @@ extern "C"
    */
   void az_iot_paho_factory_destroy(az_iot_mqtt_factory* factory);
 
+  /**
+   * @brief The Paho adapter for clients in application memory (a constant). The workspace holds
+   * the adapter's own state; Paho still allocates its internals, as with the factories.
+   */
+  const az_iot_mqtt_adapter* az_iot_paho_get_adapter(void);
+
+  /**
+   * @brief Workspace bytes for one Paho client; 0 when @p limits is invalid. Paho sizes its own
+   * buffers: the values of @p limits are only checked.
+   */
+  size_t az_iot_paho_get_workspace_size(const az_iot_mqtt_limits* limits);
+
+/** @brief Upper bound of az_iot_paho_get_workspace_size(), for static arrays; checked by the
+ * adapter at compile time. */
+#define AZ_IOT_PAHO_WORKSPACE_SIZE 512u
+
 #ifdef __cplusplus
 }
 #endif

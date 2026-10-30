@@ -24,10 +24,13 @@
 #include "azure/iot/mqttv5/az_iot_twin_client.h"
 
 #include "internal/connection_client_internal.h"
+#include "internal/deadline.h"
+#include "internal/defensive_timeout.h"
 #include "internal/log_internal.h"
 #include "internal/proto3.h"
 #include "internal/mono_time.h"
 #include "internal/span_writer.h"
+#include "internal/twin_client_internal.h"
 
 #define AZ_IOT_TWIN_TOPIC_MAX 192
 
@@ -165,6 +168,166 @@ static void note_desired_service_version(az_iot_mqttv5_twin_client* t, uint64_t 
 static uint64_t deadline_from_now(const az_iot_mqttv5_twin_client* t)
 {
   return az_iot_time_mono_ms() + TI(t).request_timeout_ms;
+}
+
+/* ------------------------------------------------------------------------- */
+/* twin-push defensive timeout                                               */
+/*                                                                           */
+/* A birth with push_desired or push_reported is answered by a twin-push; a  */
+/* session that never gets it gets no desired patches either. The wait is    */
+/* armed on hub CONNECTED and timed like the birth-ack (defensive_timeout.h);*/
+/* on expiry the session is ended with a DISCONNECT. Attempt N is the wait   */
+/* after N-1 consecutive expired waits; it restarts at 1 once a push arrives */
+/* or the hub scope goes IDLE or FAULTED (the next open() is a fresh cycle). */
+/* ------------------------------------------------------------------------- */
+
+#define TWIN_PUSH_SECTION_DESIRED 1u
+#define TWIN_PUSH_SECTION_REPORTED 2u
+
+/**
+ * @brief Sections this birth's twin-push carries: the requested ones whose birth-ack version
+ * differs from the birth's, which is 0. twin.proto omits a section already in sync, and sends no
+ * push when none is out of sync.
+ */
+static uint8_t twin_push_sections_expected(const az_iot_mqttv5_twin_client* t)
+{
+  uint64_t desired_version = 0;
+  uint64_t reported_version = 0;
+  (void)az_iot_connection_client__presence_twin_versions(
+      TI(t).conn, &desired_version, &reported_version);
+  uint8_t expected = 0;
+  if (az_iot_connection_client__twin_push_desired(TI(t).conn) && desired_version != 0)
+  {
+    expected |= TWIN_PUSH_SECTION_DESIRED;
+  }
+  if (az_iot_connection_client__twin_push_reported(TI(t).conn) && reported_version != 0)
+  {
+    expected |= TWIN_PUSH_SECTION_REPORTED;
+  }
+  return expected;
+}
+
+/**
+ * @brief Whether the pushes decoded for the current birth carried every expected section, each
+ * at least at its birth-ack version (a push decoded before the birth-ack may predate it).
+ */
+static bool twin_push_received_for_current_birth(const az_iot_mqttv5_twin_client* t)
+{
+  uint8_t birth_nonce[AZ_IOT_CORRELATION_UUID_LEN];
+  uint64_t desired_version = 0;
+  uint64_t reported_version = 0;
+  (void)az_iot_connection_client__presence_twin_versions(
+      TI(t).conn, &desired_version, &reported_version);
+  uint8_t expected = twin_push_sections_expected(t);
+  uint8_t const received = TI(t).twin_push_wait.received_sections;
+  bool const desired_current = (received & TWIN_PUSH_SECTION_DESIRED) != 0
+      && TI(t).twin_push_wait.received_desired_version >= desired_version;
+  bool const reported_current = (received & TWIN_PUSH_SECTION_REPORTED) != 0
+      && TI(t).twin_push_wait.received_reported_version >= reported_version;
+  uint8_t const current = (uint8_t)((desired_current ? TWIN_PUSH_SECTION_DESIRED : 0u)
+                                    | (reported_current ? TWIN_PUSH_SECTION_REPORTED : 0u));
+  return az_iot_connection_client__birth_nonce(TI(t).conn, birth_nonce) == AZ_IOT_OK
+      && memcmp(TI(t).twin_push_wait.received_birth_nonce, birth_nonce, AZ_IOT_CORRELATION_UUID_LEN)
+      == 0
+      && (current & expected) == expected;
+}
+
+/**
+ * @brief Record a decoded twin-push @p twin carrying @p sections (TWIN_PUSH_SECTION_* bits); once
+ * every expected section arrived, cancel the wait and restart the schedule. A push after the wait
+ * expired, or was overdue when this do_work() pass began, finds no wait: that miss stands.
+ */
+static void twin_push_wait_on_push(
+    az_iot_mqttv5_twin_client* t,
+    const az_iot_mqtt_message* msg,
+    uint8_t sections,
+    const az_iot_mqttv5_twin_state* twin)
+{
+  if (az_iot_connection_client__deadline_passed_before_pass(
+          TI(t).conn, &TI(t).twin_push_wait.deadline))
+  {
+    return;
+  }
+  if (memcmp(
+          TI(t).twin_push_wait.received_birth_nonce,
+          msg->correlation_data,
+          AZ_IOT_CORRELATION_UUID_LEN)
+      != 0)
+  {
+    memcpy(
+        TI(t).twin_push_wait.received_birth_nonce,
+        msg->correlation_data,
+        AZ_IOT_CORRELATION_UUID_LEN);
+    TI(t).twin_push_wait.received_sections = 0;
+    TI(t).twin_push_wait.received_desired_version = 0;
+    TI(t).twin_push_wait.received_reported_version = 0;
+  }
+  TI(t).twin_push_wait.received_sections |= sections;
+  if ((sections & TWIN_PUSH_SECTION_DESIRED) != 0
+      && twin->desired.version > TI(t).twin_push_wait.received_desired_version)
+  {
+    TI(t).twin_push_wait.received_desired_version = twin->desired.version;
+  }
+  if ((sections & TWIN_PUSH_SECTION_REPORTED) != 0
+      && twin->reported.version > TI(t).twin_push_wait.received_reported_version)
+  {
+    TI(t).twin_push_wait.received_reported_version = twin->reported.version;
+  }
+  if (az_iot_deadline__is_set(&TI(t).twin_push_wait.deadline)
+      && twin_push_received_for_current_birth(t))
+  {
+    az_iot_deadline__clear(&TI(t).twin_push_wait.deadline);
+    TI(t).twin_push_wait.missed_count = 0;
+  }
+}
+
+/** @brief At CONNECTED: arm the wait unless no section is expected or every one already
+ * arrived (a push decoded before the birth-ack). */
+static void twin_push_wait_arm(az_iot_mqttv5_twin_client* t)
+{
+  if (twin_push_sections_expected(t) == 0)
+  {
+    return;
+  }
+  if (twin_push_received_for_current_birth(t))
+  {
+    TI(t).twin_push_wait.missed_count = 0;
+    return;
+  }
+  uint32_t attempt = az_iot_defensive_timeout__next_attempt(TI(t).twin_push_wait.missed_count);
+  uint32_t timeout_ms = az_iot_connection_client__defensive_timeout_ms(TI(t).conn, attempt);
+  az_iot_deadline__arm_after_ms(&TI(t).twin_push_wait.deadline, az_iot_time_mono_ms(), timeout_ms);
+}
+
+/** @brief TICK: end the session when its twin-push is overdue; the miss escalates the
+ * next wait. Runs from the connection's do_work(), outside adapter callbacks. Overdue once a
+ * whole pass began past the deadline, so input queued by then has had a pass to be dispatched. */
+static void twin_push_wait_check(void* user_ctx)
+{
+  az_iot_mqttv5_twin_client* t = (az_iot_mqttv5_twin_client*)user_ctx;
+  if (!az_iot_connection_client__deadline_passed_before_pass(
+          TI(t).conn, &TI(t).twin_push_wait.deadline))
+  {
+    return;
+  }
+  az_iot_deadline__clear(&TI(t).twin_push_wait.deadline);
+  az_iot_defensive_timeout__count_miss(&TI(t).twin_push_wait.missed_count);
+  AZ_IOT_LOG_WARN(
+      AZ_IOT_LOG_COMPONENT_MQTTV5_TWIN, "the expected twin-push did not arrive; reconnecting");
+  (void)az_iot_connection_client__end_hub_session(TI(t).conn, AZ_IOT_ERR_TIMEOUT);
+}
+
+/** @brief NEXT_DEADLINE: lower @p remaining_ms to the twin-push deadline, so the connection wakes
+ * for it. */
+static void twin_push_wait_lower_remaining(void* user_ctx, uint64_t* remaining_ms)
+{
+  az_iot_mqttv5_twin_client* t = (az_iot_mqttv5_twin_client*)user_ctx;
+  uint64_t left
+      = az_iot_deadline__remaining_ms(&TI(t).twin_push_wait.deadline, az_iot_time_mono_ms());
+  if (left < *remaining_ms)
+  {
+    *remaining_ms = left;
+  }
 }
 
 /* ------------------------------------------------------------------------- */
@@ -329,6 +492,13 @@ static void twin_fail_pending(void* user_ctx)
     return;
   }
   TI(t).snapshot.in_flight = false;
+  /* A wait already past its deadline is a miss, whatever ended the session;
+   * IDLE or FAULTED reset the count afterwards. */
+  if (az_iot_deadline__has_passed(&TI(t).twin_push_wait.deadline, az_iot_time_mono_ms()))
+  {
+    az_iot_defensive_timeout__count_miss(&TI(t).twin_push_wait.missed_count);
+  }
+  az_iot_deadline__clear(&TI(t).twin_push_wait.deadline);
   for (int i = 0; i < AZ_IOT_TWIN_MAX_PENDING; ++i)
   {
     if (TI(t).pending[i].in_use)
@@ -388,6 +558,10 @@ static bool decode_section(const uint8_t* buf, size_t len, az_iot_mqttv5_twin_se
     else if (field == TWIN_F_SECTION_PAYLOAD && wire == AZ_IOT_PROTO3_WIRE_LEN)
     {
       ok = az_iot_proto3_read_bytes(buf, len, &pos, &out->payload, &out->payload_len);
+    }
+    else if (field == TWIN_F_SECTION_VERSION || field == TWIN_F_SECTION_PAYLOAD)
+    {
+      ok = false; /* a known field on the wrong wire type */
     }
     else
     {
@@ -461,6 +635,7 @@ static void on_twin_push(az_iot_mqttv5_twin_client* t, const az_iot_mqtt_message
   size_t len = msg->payload_len;
   size_t pos = 0;
   bool ok = true;
+  bool desired_present = false;
   bool reported_present = false;
   while (ok && buf && pos < len)
   {
@@ -470,14 +645,15 @@ static void on_twin_push(az_iot_mqttv5_twin_client* t, const az_iot_mqtt_message
     {
       ok = false;
     }
-    else if (
-        wire == AZ_IOT_PROTO3_WIRE_LEN
-        && (field == TWIN_F_PUSH_DESIRED || field == TWIN_F_PUSH_REPORTED))
+    else if (field == TWIN_F_PUSH_DESIRED || field == TWIN_F_PUSH_REPORTED)
     {
       const uint8_t* sec = NULL;
       size_t sec_len = 0;
+      desired_present |= (field == TWIN_F_PUSH_DESIRED);
       reported_present |= (field == TWIN_F_PUSH_REPORTED);
-      ok = az_iot_proto3_read_bytes(buf, len, &pos, &sec, &sec_len)
+      /* A known section on any other wire type is malformed. */
+      ok = wire == AZ_IOT_PROTO3_WIRE_LEN
+          && az_iot_proto3_read_bytes(buf, len, &pos, &sec, &sec_len)
           && decode_section(
                sec, sec_len, (field == TWIN_F_PUSH_DESIRED) ? &twin.desired : &twin.reported);
     }
@@ -491,6 +667,12 @@ static void on_twin_push(az_iot_mqttv5_twin_client* t, const az_iot_mqtt_message
     AZ_IOT_LOG_WARN(AZ_IOT_LOG_COMPONENT_MQTTV5_TWIN, "dropping a malformed twin-push");
     return;
   }
+  twin_push_wait_on_push(
+      t,
+      msg,
+      (uint8_t)((desired_present ? TWIN_PUSH_SECTION_DESIRED : 0u)
+                | (reported_present ? TWIN_PUSH_SECTION_REPORTED : 0u)),
+      &twin);
 
   if (reported_present)
   {
@@ -750,10 +932,44 @@ static void on_hub_connected(az_iot_mqttv5_twin_client* t)
 static void on_connection_state(const az_iot_connection_state_event* event, void* user_ctx)
 {
   az_iot_mqttv5_twin_client* t = (az_iot_mqttv5_twin_client*)user_ctx;
-  if (t && event && event->scope == AZ_IOT_CONN_SCOPE_HUB
-      && event->state == AZ_IOT_CONN_STATE_CONNECTED)
+  if (!t || !event || event->scope != AZ_IOT_CONN_SCOPE_HUB)
+  {
+    return;
+  }
+  if (event->state == AZ_IOT_CONN_STATE_CONNECTED)
   {
     on_hub_connected(t);
+    /* Armed only here, not by init on a session already up: its push may be gone. */
+    twin_push_wait_arm(t);
+  }
+  else if (event->state == AZ_IOT_CONN_STATE_IDLE || event->state == AZ_IOT_CONN_STATE_FAULTED)
+  {
+    az_iot_deadline__clear(&TI(t).twin_push_wait.deadline);
+    TI(t).twin_push_wait.missed_count = 0;
+  }
+}
+
+/** @brief Feature observer: fail pending requests at session end; act on state transitions. */
+static void on_connection_event(const az_iot_connection_feature_event* event, void* user_ctx)
+{
+  switch (event->kind)
+  {
+    case AZ_IOT_CONNECTION_FEATURE_EVENT_SESSION_END:
+      twin_fail_pending(user_ctx);
+      break;
+    case AZ_IOT_CONNECTION_FEATURE_EVENT_TICK:
+      twin_push_wait_check(user_ctx);
+      break;
+    case AZ_IOT_CONNECTION_FEATURE_EVENT_NEXT_DEADLINE:
+      twin_push_wait_lower_remaining(user_ctx, event->remaining_ms);
+      break;
+    case AZ_IOT_CONNECTION_FEATURE_EVENT_STATE:
+      on_connection_state(event->state, user_ctx);
+      break;
+    case AZ_IOT_CONNECTION_FEATURE_EVENT_PUBLISH_COMPLETED:
+    case AZ_IOT_CONNECTION_FEATURE_EVENT_IDENTITY_CHANGED:
+    default:
+      break;
   }
 }
 
@@ -793,8 +1009,7 @@ static void withdraw_registrations(
     az_iot_connection_client* conn,
     az_iot_mqttv5_twin_client* client)
 {
-  (void)az_iot_connection_client__remove_state_observer(conn, on_connection_state, client);
-  (void)az_iot_connection_client__unregister_session_end_handler(conn, client);
+  az_iot_connection_client__remove_feature_observer(conn, on_connection_event, client);
   az_iot_connection_client__unregister_feature_client_bind(conn, client);
   (void)az_iot_connection_client__remove_subscriptions_for(conn, client);
   (void)az_iot_connection_client__unregister_inbound_handlers(conn, client);
@@ -826,12 +1041,12 @@ az_iot_mqttv5_twin_client_init(az_iot_mqttv5_twin_client* client, az_iot_connect
   result = az_iot_connection_client__register_feature_client_bind(conn, client, bind_topics);
   if (result == AZ_IOT_OK)
   {
-    result
-        = az_iot_connection_client__register_session_end_handler(conn, twin_fail_pending, client);
-  }
-  if (result == AZ_IOT_OK)
-  {
-    result = az_iot_connection_client__add_state_observer(conn, on_connection_state, client);
+    result = az_iot_connection_client__add_feature_observer(
+        conn,
+        AZ_IOT_CONNECTION_FEATURE_EVENT_STATE | AZ_IOT_CONNECTION_FEATURE_EVENT_SESSION_END
+            | AZ_IOT_CONNECTION_FEATURE_EVENT_TICK | AZ_IOT_CONNECTION_FEATURE_EVENT_NEXT_DEADLINE,
+        on_connection_event,
+        client);
   }
 
   if (result != AZ_IOT_OK)
@@ -846,10 +1061,13 @@ az_iot_mqttv5_twin_client_init(az_iot_mqttv5_twin_client* client, az_iot_connect
     return result;
   }
 
-  /* Observers are not told about a session already up; catch up on it. */
+  /* Observers are not told about a session already up; catch up on it. Its
+   * push may have come before this client existed: waiting costs at most one
+   * reconnect, not waiting could leave the session without desired patches. */
   if (az_iot_connection_client__is_connected(conn))
   {
     on_hub_connected(client);
+    twin_push_wait_arm(client);
   }
   return AZ_IOT_OK;
 }
@@ -1087,4 +1305,28 @@ az_iot_result az_iot_mqttv5_twin_client_do_work(az_iot_mqttv5_twin_client* twin)
     }
   }
   return AZ_IOT_OK;
+}
+
+void az_iot_mqttv5_twin_client__twin_push_force_timeout(az_iot_mqttv5_twin_client* twin)
+{
+  if (twin && az_iot_deadline__is_set(&TI(twin).twin_push_wait.deadline))
+  {
+    az_iot_deadline__expire_now(&TI(twin).twin_push_wait.deadline);
+  }
+}
+
+bool az_iot_mqttv5_twin_client__twin_push_remaining(
+    const az_iot_mqttv5_twin_client* twin,
+    uint64_t* out_remaining_ms)
+{
+  if (!twin || !az_iot_deadline__is_set(&TI(twin).twin_push_wait.deadline))
+  {
+    return false;
+  }
+  if (out_remaining_ms)
+  {
+    *out_remaining_ms
+        = az_iot_deadline__remaining_ms(&TI(twin).twin_push_wait.deadline, az_iot_time_mono_ms());
+  }
+  return true;
 }

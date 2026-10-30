@@ -26,6 +26,8 @@
 
 #include <cmocka.h>
 
+#include "support/test_shard.h"
+
 #include "azure/iot/az_iot_result.h"
 #include "azure/iot/az_iot_mqtt_iface.h"
 
@@ -33,8 +35,11 @@
 #include <windows.h>
 static void conf_sleep_ms(unsigned ms) { Sleep(ms); }
 static unsigned long conf_now_ms(void) { return (unsigned long)GetTickCount64(); }
+static unsigned long conf_process_id(void) { return (unsigned long)GetCurrentProcessId(); }
 #else
 #include <time.h>
+#include <unistd.h>
+static unsigned long conf_process_id(void) { return (unsigned long)getpid(); }
 static void conf_sleep_ms(unsigned ms)
 {
   struct timespec ts;
@@ -439,6 +444,31 @@ static int wait_until(
   return p(r);
 }
 
+/** @brief Poll until the proxy has made more than @p minimum writes in @p dir.
+ *
+ * The proxy publishes its write count after a pass of its pump, so a client can
+ * see the last byte before the count includes it.
+ *
+ * @return 1 once more than @p minimum, 0 on timeout.
+ */
+static int wait_proxy_writes_above(
+    az_iot_test_proxy* proxy,
+    az_iot_test_proxy_direction dir,
+    uint64_t minimum,
+    unsigned timeout_ms)
+{
+  unsigned long deadline = conf_now_ms() + timeout_ms;
+  while (az_iot_test_proxy_writes(proxy, dir) <= minimum)
+  {
+    if (conf_now_ms() >= deadline)
+    {
+      return 0;
+    }
+    conf_sleep_ms(10);
+  }
+  return 1;
+}
+
 /** @brief Poll the proxy for the client DISCONNECT reason.
  *
  * The adapter reports DISCONNECTED once the packet is written; the proxy relays
@@ -643,8 +673,8 @@ static void inject_packet(
 
 static void unique_client_id(char* buf, size_t cap, const char* prefix)
 {
-  /* Cheap uniqueness: prefix + monotonic ticks + pid-ish. */
-  snprintf(buf, cap, "%s-%lu", prefix, conf_now_ms());
+  /* Unique across the processes sharing a broker (AZ_IOT_TEST_SHARD runs them in parallel). */
+  snprintf(buf, cap, "%s-%lu-%lu", prefix, conf_process_id(), conf_now_ms());
 }
 
 static az_iot_mqtt_client* make_client(void)
@@ -689,9 +719,11 @@ static int write_temp_pem(const char* pem, char* path_out, size_t cap)
   /* A millisecond stamp alone is not unique: writing a CA and a client
    * certificate back to back can land both in the same millisecond, and the
    * second silently overwrites the first -- which presents as a handshake that
-   * fails for no visible reason. */
+   * fails for no visible reason. The process id keeps parallel processes
+   * (AZ_IOT_TEST_SHARD) sharing this directory apart. */
   static unsigned long seq = 0;
-  int written = snprintf(path_out, cap, "az_iot_conf_pem_%lu_%lu.pem", conf_now_ms(), seq++);
+  int written = snprintf(
+      path_out, cap, "az_iot_conf_pem_%lu_%lu_%lu.pem", conf_process_id(), conf_now_ms(), seq++);
   if (written < 0 || (size_t)written >= cap)
   {
     return 0; /* a truncated path is how the collision above happens again */
@@ -1906,7 +1938,7 @@ static void roundtrip_survives_broker_to_client_fragmentation(void** state)
    * silently ignored -- which is exactly the bug it exists to catch. An
    * unfragmented session needs a handful of writes to reach this point; one
    * byte at a time needs one per byte. */
-  assert_true(az_iot_test_proxy_writes(proxy, AZ_IOT_TEST_PROXY_B2C) > 50);
+  assert_true(wait_proxy_writes_above(proxy, AZ_IOT_TEST_PROXY_B2C, 50, k_step_timeout_ms));
 
   (void)c->iface->disconnect(c);
   destroy_client(c);
@@ -3192,6 +3224,36 @@ static void a_sign_hook_is_never_silently_ignored(void** state)
   destroy_client(c);
 }
 
+/* The PSA key id route: an id naming no key the adapter can use. The connect
+ * must never succeed without it. */
+static void a_psa_key_id_is_never_silently_ignored(void** state)
+{
+  (void)state;
+  char cid[64];
+  unique_client_id(cid, sizeof(cid), "az-iot-conf-custody-psa");
+  conf_recorder rec = { 0 };
+  az_iot_mqtt_client* c = make_client();
+  c->iface->set_inbound_cb(c, on_event, &rec);
+
+  az_iot_mqtt_connect_options copts = { 0 };
+  copts.host = g_host;
+  copts.port = g_port;
+  copts.client_id = cid;
+  copts.keep_alive_seconds = 30;
+  copts.connect_timeout_seconds = k_step_timeout_seconds;
+  copts.tls.client_key_psa_id = 0x7FFFFFF0u;
+
+  // A PSA-capable adapter may accept connect() and fail the handshake later.
+  if (c->iface->connect(c, &copts) == AZ_IOT_OK)
+  {
+    assert_true(wait_until(c, &rec, saw_connect_failure, k_step_timeout_ms));
+  }
+  assert_false(saw_connected_ok(&rec));
+
+  (void)c->iface->disconnect(c);
+  destroy_client(c);
+}
+
 #ifdef AZ_IOT_CONFORMANCE_WITH_TLS
 /* The end-to-end case, and the only one that proves the feature actually works:
  * complete a real TLS handshake using a private key the adapter cannot read.
@@ -3545,7 +3607,7 @@ static void a_websocket_session_survives_fragmentation(void** state)
   /* The shaping was actually applied, not silently ignored: one write per byte
    * means far more writes than packets. Without this the case would pass just
    * as well against a proxy that forwarded whole buffers. */
-  assert_true(az_iot_test_proxy_writes(proxy, AZ_IOT_TEST_PROXY_B2C) > 10);
+  assert_true(wait_proxy_writes_above(proxy, AZ_IOT_TEST_PROXY_B2C, 10, k_step_timeout_ms));
 
   (void)c->iface->disconnect(c);
   destroy_client(c);
@@ -4134,6 +4196,7 @@ static void a_proxy_that_refuses_the_tunnel_fails_the_connect(void** state)
       cmocka_unit_test(an_acknowledgement_for_an_unknown_packet_id_is_ignored),                  \
       cmocka_unit_test(a_key_reference_is_never_silently_ignored),                               \
       cmocka_unit_test(a_sign_hook_is_never_silently_ignored),                                   \
+      cmocka_unit_test(a_psa_key_id_is_never_silently_ignored),                                  \
       cmocka_unit_test(a_websocket_request_is_never_silently_downgraded),                        \
       cmocka_unit_test(an_unreachable_proxy_is_never_bypassed),                                  \
       cmocka_unit_test(connect_carries_the_clean_session_flag),                                  \
@@ -4325,14 +4388,14 @@ int az_iot_conformance_run_with_options(
             cmocka_unit_test(v5_many_properties_survive_a_roundtrip),
             cmocka_unit_test(v5_many_properties_from_the_server_are_all_surfaced),
             cmocka_unit_test(v5_session_present_from_connack_is_reported) };
-    failed = cmocka_run_group_tests(v5_tests, NULL, NULL);
+    failed = az_iot_test_shard_run_group_tests(v5_tests, NULL, NULL);
   }
   else
   {
     const struct CMUnitTest v3_tests[]
         = { AZ_IOT_CONFORMANCE_COMMON_TESTS,
             cmocka_unit_test(v3_1_1_publish_ignores_the_v5_only_fields) };
-    failed = cmocka_run_group_tests(v3_tests, NULL, NULL);
+    failed = az_iot_test_shard_run_group_tests(v3_tests, NULL, NULL);
   }
 
   /* Before the custody groups: they load the key's provider process-wide, after
@@ -4342,7 +4405,7 @@ int az_iot_conformance_run_with_options(
 #ifdef AZ_IOT_CONFORMANCE_WITH_TLS
     const struct CMUnitTest pem_tests[]
         = { cmocka_unit_test(mutual_tls_does_not_read_pem_after_returning) };
-    failed += cmocka_run_group_tests(pem_tests, NULL, NULL);
+    failed += az_iot_test_shard_run_group_tests(pem_tests, NULL, NULL);
 #else
     char allow[16];
     failed += az_iot_conformance_report_unproven_capability(
@@ -4370,7 +4433,7 @@ int az_iot_conformance_run_with_options(
     {
       const struct CMUnitTest custody_tests[]
           = { cmocka_unit_test(key_custody_completes_a_tls_handshake) };
-      failed += cmocka_run_group_tests(custody_tests, NULL, NULL);
+      failed += az_iot_test_shard_run_group_tests(custody_tests, NULL, NULL);
     }
     else
     {
@@ -4401,7 +4464,7 @@ int az_iot_conformance_run_with_options(
     {
       const struct CMUnitTest sign_tests[]
           = { cmocka_unit_test(key_custody_sign_hook_completes_a_tls_handshake) };
-      failed += cmocka_run_group_tests(sign_tests, NULL, NULL);
+      failed += az_iot_test_shard_run_group_tests(sign_tests, NULL, NULL);
     }
     else
     {
@@ -4444,7 +4507,7 @@ int az_iot_conformance_run_with_options(
       (void)(a_websocket_session_carries_a_large_payload);
       const struct CMUnitTest ws_tests[]
           = { cmocka_unit_test(a_websocket_session_completes_a_roundtrip) };
-      failed += cmocka_run_group_tests(ws_tests, NULL, NULL);
+      failed += az_iot_test_shard_run_group_tests(ws_tests, NULL, NULL);
     }
     else
     {
@@ -4472,7 +4535,7 @@ int az_iot_conformance_run_with_options(
             cmocka_unit_test(a_proxy_rejects_a_missing_credential),
             cmocka_unit_test(a_tunnel_dropped_mid_session_is_reported),
             cmocka_unit_test(a_proxy_that_refuses_the_tunnel_fails_the_connect) };
-    failed += cmocka_run_group_tests(proxy_tests, NULL, NULL);
+    failed += az_iot_test_shard_run_group_tests(proxy_tests, NULL, NULL);
   }
 
   return (failed == 0) ? 0 : 1;

@@ -46,6 +46,11 @@ struct az_iot_mock_mqtt_client
   queued_event pending[AZ_IOT_MOCK_EVENT_QUEUE_MAX];
   size_t pending_head;
   size_t pending_count;
+  /* Events delivered per process_loop() call; 0 means 1. */
+  size_t events_per_loop;
+  /* Called as process_loop() starts, before queued events are delivered. */
+  void (*process_loop_hook)(az_iot_mock_mqtt_client* m, void* ctx);
+  void* process_loop_hook_ctx;
 
   /* Back-link to the factory so factory can null its last_client when we are
    * destroyed. */
@@ -206,6 +211,7 @@ static az_iot_result mock_connect(az_iot_mqtt_client* self, const az_iot_mqtt_co
         c->connect.crypto_engine_id,
         sizeof(c->connect.crypto_engine_id),
         opts->tls.crypto_engine_id);
+    c->connect.client_key_psa_id = opts->tls.client_key_psa_id;
     c->connect.has_sign = (opts->tls.sign != NULL);
     c->connect.sign = opts->tls.sign;
     c->connect.sign_ctx = opts->tls.sign_ctx;
@@ -348,9 +354,15 @@ static az_iot_result mock_process_loop(az_iot_mqtt_client* self, uint32_t timeou
   az_iot_mock_mqtt_client* m = mock_self(self);
   az_iot_mock_call* c = push_call(m, AZ_IOT_MOCK_CALL_PROCESS_LOOP);
   c->timeout_ms = timeout_ms;
+  if (m->process_loop_hook)
+  {
+    m->process_loop_hook(m, m->process_loop_hook_ctx);
+  }
 
-  /* deliver at most one queued event per call so the test can step deterministically. */
-  if (m->pending_count > 0 && m->inbound_cb)
+  /* Deliver at most events_per_loop (default one) queued events per call so the
+   * test can step deterministically. */
+  size_t budget = m->events_per_loop ? m->events_per_loop : 1u;
+  while (budget-- > 0 && m->pending_count > 0 && m->inbound_cb)
   {
     queued_event* q = &m->pending[m->pending_head];
 
@@ -717,4 +729,24 @@ size_t az_iot_mock_mqtt_factory_disconnected_destroyed(const az_iot_mqtt_factory
     return 0;
   }
   return ((const az_iot_mock_mqtt_factory_state*)factory->factory_ctx)->disconnected_destroyed;
+}
+
+void az_iot_mock_mqtt_client_set_events_per_loop(az_iot_mock_mqtt_client* m, size_t count)
+{
+  if (m)
+  {
+    m->events_per_loop = count;
+  }
+}
+
+void az_iot_mock_mqtt_client_set_process_loop_hook(
+    az_iot_mock_mqtt_client* m,
+    void (*hook)(az_iot_mock_mqtt_client* m, void* ctx),
+    void* ctx)
+{
+  if (m)
+  {
+    m->process_loop_hook = hook;
+    m->process_loop_hook_ctx = ctx;
+  }
 }

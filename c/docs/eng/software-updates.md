@@ -869,9 +869,9 @@ typedef struct az_iot_su_client
         az_iot_su_channel channel;   /* software updates channel bound to the connection client */
         az_iot_su_platform_hooks hooks;
         const az_iot_crypto* crypto; /* the connection client's backend */
-        /* Root-key store (core-owned). Pointers reference caller arrays; see §7.
-         * Capacity is compile-time (AZ_IOT_SU_MAX_ROOT_KEYS). */
-        az_iot_su_root_key root_keys[AZ_IOT_SU_MAX_ROOT_KEYS];
+        /* Root-key store, in the workspace (limits.max_root_keys entries). Key bytes
+         * reference caller arrays; see §7. */
+        az_iot_su_root_key* root_keys;
         size_t root_key_count;
         az_iot_su_state state;
         az_iot_su_client_update_request current_request;
@@ -900,7 +900,7 @@ typedef struct az_iot_su_client
  *   root_keys / root_key_count: caller-owned RSA root public keys that anchor
  *     manifest trust (see §7). Core copies the small descriptor array into its
  *     fixed store (the key BYTES are referenced, not copied, so they MUST
- *     outlive the client), capped at AZ_IOT_SU_MAX_ROOT_KEYS. For
+ *     outlive the client), capped at limits.max_root_keys. For
  *     Microsoft-signed updates, pass az_iot_su_microsoft_root_keys().
  *   device_properties: caller-owned device properties, DEEP-COPIED into the cache.
  *     May be mutated/freed by the caller after init returns.
@@ -993,10 +993,14 @@ az_iot_result az_iot_su_client_remove_observer(
  * AZ_IOT_ERR_INVALID_ARG if a required field is NULL or replacement_policy is
  * not an az_iot_su_replacement_policy value, AZ_IOT_ERR_NOT_SUPPORTED if
  * replacement_policy is AZ_IOT_SU_REPLACEMENT_ROLLBACK, or
- * AZ_IOT_ERR_NOT_ENOUGH_SPACE if root_key_count > AZ_IOT_SU_MAX_ROOT_KEYS or
- * the buffer is too small for device_properties.
+ * AZ_IOT_ERR_NOT_ENOUGH_SPACE if root_key_count > limits.max_root_keys or
+ * the buffer is too small for device_properties. Inline: it passes the
+ * application's az_iot_su_client_layout (sizeof(az_iot_su_client) and the
+ * manifest limits that size it) to
+ * az_iot_su_client_init_checked(), which returns AZ_IOT_ERR_INVALID_ARG
+ * without touching the client if any field differs from the SDK build.
  */
-az_iot_result az_iot_su_client_init(
+static inline az_iot_result az_iot_su_client_init(
     az_iot_su_client* client,
     az_iot_connection_client* connection,
     const az_iot_su_client_config_options* options);
@@ -1392,17 +1396,11 @@ crypto->sha256_final(crypto, &hash_ctx, computed); /* also releases hash_ctx */
 ### Our Approach: Compiled-in + Runtime-loadable (Both), Core-owned Store
 
 The root-key store lives in **Software updates core**, not in the crypto backend (see §6). Its
-capacity is compile-time configurable:
-
-```c
-#ifndef AZ_IOT_SU_MAX_ROOT_KEYS
-#define AZ_IOT_SU_MAX_ROOT_KEYS 8
-#endif
-```
+capacity is the run-time limit `az_iot_su_limits::max_root_keys` (default
+`AZ_IOT_SU_DEFAULT_MAX_ROOT_KEYS`, 8).
 
 `az_iot_su_client_init` accepts an `az_iot_su_root_key[]` and copies the
-descriptors into the fixed `root_keys[AZ_IOT_SU_MAX_ROOT_KEYS]` array (key bytes
-are referenced, not copied). `init` returns `AZ_IOT_ERR_NOT_ENOUGH_SPACE` if more
+descriptors into the workspace (key bytes are referenced, not copied). `init` returns `AZ_IOT_ERR_NOT_ENOUGH_SPACE` if more
 keys are supplied than the store can hold.
 
 **Compiled-in keys:**
@@ -1448,7 +1446,7 @@ Platform-specific code (Linux libcurl downloads, ESP32 OTA partition writes, etc
 | `src/features/su/` | Engine, software updates channel, wire codec, report assembly, Microsoft root keys | `az_iot_connection_client`, `azure-sdk-for-c` |
 | `adapters/crypto_mbedtls/` | `az_iot_crypto`: `verify_rs256`, `sha256_*` using mbedTLS | mbedTLS |
 | `adapters/crypto_openssl/` | `az_iot_crypto`: `verify_rs256`, `sha256_*` using OpenSSL | OpenSSL |
-| `adapters/su/esp32/` | ESP32 platform hooks (download, OTA install, persistence) | ESP-IDF |
+| `adapters/su/esp32/` | ESP32 platform hooks (download, OTA install, persistence); ESP-IDF component in `platforms/esp32/components` | ESP-IDF |
 | `samples/software_update/` | Samples that wire a crypto backend, platform hooks and the main loop | All of the above |
 
 There is no Linux platform adapter; the PC samples implement their own hooks.
@@ -1653,8 +1651,9 @@ A file `mimeType` that is not a string is rejected the same way as malformed JSO
 advances past it without skipping its members, which it would then read as file properties.
 
 The largest status report grows 117 bytes per step, so `AZ_IOT_SU_MIN_MESSAGE_SIZE` is
-1792 + 128 × `AZ_IOT_SU_MAX_STEP_COUNT` (3072 by default). Memory cost of the default limits against
-2/2 on 64-bit: `az_iot_su_client` 8584 bytes (4616), default workspace 85640 (78920), parsed manifest
+2176 + 128 × `AZ_IOT_SU_MAX_STEP_COUNT` (3456 by default; the base fits a 128-byte workflow id, fully
+escaped). Memory cost of the default limits against 2/2 on 64-bit: `az_iot_su_client` 7920 bytes
+(3952), default workspace 87311 (80591), parsed manifest
 3216 (464). See [client-configuration.md](../client-configuration.md#software-updates-manifest-limits).
 
 ### Known limitation: strict step parsing
@@ -1703,7 +1702,8 @@ Every external effect is a hook, so the engine is tested on the host with no net
 | End to end | `tests/e2e/tests/e2e_su_test.c`, `tests/e2e/tests/e2e_su_offer_test.c` | The DPS channel and offered updates against the real service. Built with `-DAZ_IOT_BUILD_E2E_SU=ON`. See [end-to-end-tests.md](end-to-end-tests.md#software-updates-e2e). |
 
 Unit and crypto-adapter tests run on every CI build. The end-to-end suites run in their own
-workflow ([`ci-c-e2e-adu.yml`](../../../.github/workflows/ci-c-e2e-adu.yml)), started manually.
+workflow ([`ci-c-e2e-adu.yml`](../../../.github/workflows/ci-c-e2e-adu.yml)): on pull requests,
+nightly and manually.
 
 Suites never skip themselves at run time: a missing prerequisite fails the suite, and an optional
 suite is excluded at build time.

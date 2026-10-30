@@ -136,9 +136,6 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods
                 return;
             }
 
-            // All MQTTv5 Hub direct method messages are QoS 1, so ack immediately upon recognizing the message as one
-            await args.AcknowledgeAsync(CancellationToken.None);
-
             Func<DirectMethodRequestReceivedEventArgs, Task<DirectMethodResponse>>? methodHandler = _directMethodInvoked.Handler;
             Func<DirectMethodRequestProbeReceivedEventArgs, Task<DirectMethodProbeAck>>? probeHandler = _directMethodProbeReceived.Handler;
 

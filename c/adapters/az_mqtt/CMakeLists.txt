@@ -68,6 +68,7 @@ add_library(az_iot_adapter_az_mqtt STATIC
     az_iot_mqtt_az_mqtt.c
     az_iot_mqtt_az_mqtt_v3.c
     az_iot_mqtt_az_mqtt_v5.c
+    az_iot_mqtt_az_mqtt_adapter.c
 )
 add_library(azure::iot::adapter_az_mqtt ALIAS az_iot_adapter_az_mqtt)
 
@@ -109,6 +110,9 @@ if(_az_mqtt_tls STREQUAL "openssl")
     find_package(OpenSSL 3.0 REQUIRED)
     target_compile_definitions(az_iot_adapter_az_mqtt PRIVATE AZ_IOT_AZ_MQTT_OPENSSL)
     target_link_libraries(az_iot_adapter_az_mqtt PRIVATE OpenSSL::Crypto)
+elseif(_az_mqtt_tls STREQUAL "mbedtls")
+    # PSA key ids (client_key_psa_id) need the mbedTLS backend.
+    target_compile_definitions(az_iot_adapter_az_mqtt PRIVATE AZ_IOT_AZ_MQTT_MBEDTLS)
 endif()
 az_iot_apply_warnings(az_iot_adapter_az_mqtt)
 az_iot_apply_coverage(az_iot_adapter_az_mqtt)

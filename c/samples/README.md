@@ -86,7 +86,8 @@ sudo apt-get install -y git build-essential cmake ninja-build libssl-dev ca-cert
 ```
 
 - A C99 compiler (GCC or Clang), CMake 3.21+, Ninja.
-- OpenSSL 3.0+ development files (`libssl-dev`), for TLS and for the samples that need OpenSSL.
+- OpenSSL 3.0 to 4.1 development files (`libssl-dev`), for TLS and for the samples that need
+  OpenSSL.
 - `/etc/ssl/certs/ca-certificates.crt` (from `ca-certificates`) works as `AZ_IOT_TRUSTED_CA`.
 
 **Windows:**
@@ -95,14 +96,41 @@ sudo apt-get install -y git build-essential cmake ninja-build libssl-dev ca-cert
   C++* workload, or the
   [Build Tools for Visual Studio 2022](https://visualstudio.microsoft.com/downloads/#build-tools-for-visual-studio-2022).
 - [CMake 3.21+](https://cmake.org/download/) (bundled with Visual Studio).
-- OpenSSL 3.0+ visible to CMake, either:
-  - the Win64 installer from [OpenSSL for Windows](https://slproweb.com/products/Win32OpenSSL.html)
-    (CMake finds its default install folder; otherwise add `-DOPENSSL_ROOT_DIR=<folder>`), or
+- OpenSSL 3.0 to 4.1 visible to CMake, either:
+  - the full Win64 installer (not *Light*, which has no headers or libraries) from
+    [OpenSSL for Windows](https://slproweb.com/products/Win32OpenSSL.html). CMake finds its default
+    install folder; otherwise add `-DOPENSSL_ROOT_DIR=<folder>`. If the installer put the DLLs in
+    `<folder>\bin`, add that folder to `PATH` before running the samples. Or
   - vcpkg, through the manifest in `c/vcpkg.json`: add
     `-DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" -DVCPKG_MANIFEST_FEATURES=paho`
     to the configure command. vcpkg then builds OpenSSL itself; `vcpkg install` alone is not
     enough.
+
+  Or build without OpenSSL: see [Windows without OpenSSL](#windows-without-openssl).
 - Run the build from a *Developer PowerShell for VS 2022*.
+
+### Windows without OpenSSL
+
+The az_mqtt adapter uses Schannel on Windows. Built alone, it needs no OpenSSL:
+
+```powershell
+cmake --preset windows-msvc-debug -DAZ_IOT_WITH_PAHO=OFF -DAZ_IOT_WITH_AZ_MQTT=ON -DCMAKE_DISABLE_FIND_PACKAGE_OpenSSL=ON
+```
+
+`CMAKE_DISABLE_FIND_PACKAGE_OpenSSL=ON` keeps an installed OpenSSL out of the build. Devices
+authenticate with X.509 PEM files (`AZ_IOT_CLIENT_CERT`, `AZ_IOT_CLIENT_KEY`); with a client
+certificate, Schannel connects with TLS 1.2. Not available, because they need OpenSSL:
+
+- The Paho adapter, whose TLS is OpenSSL.
+- Key references (`tls.client_key_uri`, e.g. `pkcs11:`), refused with `AZ_IOT_ERR_NOT_SUPPORTED`;
+  the `hsm_pkcs11` sample is not built. The sign callback (`tls.sign`) and encrypted keys
+  (`tls.client_key_password`) are Paho-only.
+- The OpenSSL crypto backend. SAS tokens and Software Update signature checks need a crypto
+  backend: the mbedTLS one (`AZ_IOT_WITH_CRYPTO_MBEDTLS`, built when mbedTLS is found) or your own.
+  Without one, `dps_sas_key` and the Software Update samples are not built.
+- The managed certificate provider and the samples' OpenSSL certificate, CSR, token and TPM code:
+  `custom_certificate_provider`, `dps_csr_managed`, `dps_persist_assignment`,
+  `dps_sas_key_issued_cert`, `hub_renew`, `user_provided_sas_token` and `dps_tpm` are not built.
 
 ## Configuration
 

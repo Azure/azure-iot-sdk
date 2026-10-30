@@ -395,7 +395,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
             }
         }
 
-        private async Task HandleReceivedCertificateSigningPublish(MqttPublishReceivedEventArgs args)
+        private Task HandleReceivedCertificateSigningPublish(MqttPublishReceivedEventArgs args)
         {
             if (args.Publish.Topic.StartsWith(CertificateSigningResponseTopic))
             {
@@ -405,71 +405,64 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
 
                 try
                 {
-                    try
+                    string[] topicTokens = args.Publish.Topic.Split("/");
+                    if (topicTokens.Length != 5 || !topicTokens[4].StartsWith(RequestId, StringComparison.Ordinal))
                     {
-                        string[] topicTokens = args.Publish.Topic.Split("/");
-                        if (topicTokens.Length != 5 || !topicTokens[4].StartsWith(RequestId, StringComparison.Ordinal))
-                        {
-                            Trace.TraceWarning("Received a certificate signing response with an invalid topic: {0}", args.Publish.Topic);
-                            return;
-                        }
-
-                        status = topicTokens[3];
-                        requestId = topicTokens[4][RequestId.Length..].Split('&')[0];
-
-                        if (!_pendingCertificateSigningOperations.TryGetValue(requestId, out pendingCertificateSigningOperation))
-                        {
-                            return;
-                        }
-
-                        if (status.Equals("202"))
-                        {
-                            CertificateSigningRequestAccepted accepted = JsonSerializer.Deserialize<CertificateSigningRequestAccepted>(args.Publish.Payload)
-                                ?? throw new JsonException("The certificate signing acceptance response was null.");
-                            if (accepted.CorrelationId == null)
-                            {
-                                throw new JsonException("The certificate signing acceptance response had a null correlation ID.");
-                            }
-
-                            pendingCertificateSigningOperation.SetAccepted(accepted);
-                        }
-                        else if (status.Equals("200"))
-                        {
-                            CertificateSigningResponse response = JsonSerializer.Deserialize<CertificateSigningResponse>(args.Publish.Payload)
-                                ?? throw new JsonException("The certificate signing completion response was null.");
-                            if (response.Certificates == null || response.CorrelationId == null)
-                            {
-                                throw new JsonException("The certificate signing completion response had null certificates or correlation ID.");
-                            }
-
-                            if (!_pendingCertificateSigningOperations.TryRemove(new KeyValuePair<string, CertificateSigningOperation>(requestId, pendingCertificateSigningOperation)))
-                            {
-                                return;
-                            }
-
-                            // The authentication provider receives these on the next connection attempt to IoT hub.
-                            if (CurrentConnectionContext != null)
-                            {
-                                CurrentConnectionContext.IssuedClientCertificates = response.Certificates;
-                            }
-
-                            pendingCertificateSigningOperation.SetCompleted(response);
-                        }
-                        else
-                        {
-                            CertificateSigningRequestErrorResponse error = JsonSerializer.Deserialize<CertificateSigningRequestErrorResponse>(args.Publish.Payload)
-                                ?? throw new JsonException("The certificate signing error response was null.");
-                            _pendingCertificateSigningOperations.TryRemove(new KeyValuePair<string, CertificateSigningOperation>(requestId, pendingCertificateSigningOperation));
-                            pendingCertificateSigningOperation.SetFailed(new CertificateSigningRequestFailedException()
-                            {
-                                Error = error,
-                                RequestId = requestId,
-                            });
-                        }
+                        Trace.TraceWarning("Received a certificate signing response with an invalid topic: {0}", args.Publish.Topic);
+                        return Task.CompletedTask;
                     }
-                    finally
+
+                    status = topicTokens[3];
+                    requestId = topicTokens[4][RequestId.Length..].Split('&')[0];
+
+                    if (!_pendingCertificateSigningOperations.TryGetValue(requestId, out pendingCertificateSigningOperation))
                     {
-                        await args.AcknowledgeAsync(CancellationToken.None);
+                        return Task.CompletedTask;
+                    }
+
+                    if (status.Equals("202"))
+                    {
+                        CertificateSigningRequestAccepted accepted = JsonSerializer.Deserialize<CertificateSigningRequestAccepted>(args.Publish.Payload)
+                            ?? throw new JsonException("The certificate signing acceptance response was null.");
+                        if (accepted.CorrelationId == null)
+                        {
+                            throw new JsonException("The certificate signing acceptance response had a null correlation ID.");
+                        }
+
+                        pendingCertificateSigningOperation.SetAccepted(accepted);
+                    }
+                    else if (status.Equals("200"))
+                    {
+                        CertificateSigningResponse response = JsonSerializer.Deserialize<CertificateSigningResponse>(args.Publish.Payload)
+                            ?? throw new JsonException("The certificate signing completion response was null.");
+                        if (response.Certificates == null || response.CorrelationId == null)
+                        {
+                            throw new JsonException("The certificate signing completion response had null certificates or correlation ID.");
+                        }
+
+                        if (!_pendingCertificateSigningOperations.TryRemove(new KeyValuePair<string, CertificateSigningOperation>(requestId, pendingCertificateSigningOperation)))
+                        {
+                            return Task.CompletedTask;
+                        }
+
+                        // The authentication provider receives these on the next connection attempt to IoT hub.
+                        if (CurrentConnectionContext != null)
+                        {
+                            CurrentConnectionContext.IssuedClientCertificates = response.Certificates;
+                        }
+
+                        pendingCertificateSigningOperation.SetCompleted(response);
+                    }
+                    else
+                    {
+                        CertificateSigningRequestErrorResponse error = JsonSerializer.Deserialize<CertificateSigningRequestErrorResponse>(args.Publish.Payload)
+                            ?? throw new JsonException("The certificate signing error response was null.");
+                        _pendingCertificateSigningOperations.TryRemove(new KeyValuePair<string, CertificateSigningOperation>(requestId, pendingCertificateSigningOperation));
+                        pendingCertificateSigningOperation.SetFailed(new CertificateSigningRequestFailedException()
+                        {
+                            Error = error,
+                            RequestId = requestId,
+                        });
                     }
                 }
                 catch (Exception ex)
@@ -490,6 +483,8 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
                     Trace.TraceError("Failed to handle a certificate signing response. {0}", failure);
                 }
             }
+
+            return Task.CompletedTask;
         }
 
         /// <summary>

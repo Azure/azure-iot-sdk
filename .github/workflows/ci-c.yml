@@ -15,8 +15,22 @@ on:
   pull_request:
   workflow_dispatch:
 
+# A new push to a pull request cancels that pull request's older run. Other
+# events get a group of their own (the run id), so every push to main and dev/c
+# keeps its result: a shared group would cancel a pending run even without
+# cancel-in-progress.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
+
+# ctest runs this many tests at once (GitHub-hosted runners have 4 vCPUs). No
+# two tests share a file, port or broker client id. The e2e workflows stay
+# serial: their tests share one device per job.
+env:
+  CTEST_PARALLEL_LEVEL: '4'
 
 # All run steps execute from the c/ project directory (where CMakePresets.json
 # lives). Path-based fields (paths filters, working-directory overrides, artifact
@@ -54,10 +68,11 @@ jobs:
             common:
               - 'common/**'
               - '!common/**/*.md'
-            # A change to this workflow decides what the build/test legs do,
-            # so it has to run them.
+            # A change to this workflow, or to the OpenSSL action it uses, decides
+            # what the build/test legs do, so it has to run them. One pattern:
+            # `every` would AND two.
             workflow:
-              - '.github/workflows/ci-c.yml'
+              - '.github/{workflows/ci-c.yml,actions/install-openssl/**}'
 
   # The Paho-OFF legs build the whole tree on az_mqtt. Every leg checks that
   # nothing depends on an adapter it was configured without
@@ -174,6 +189,98 @@ jobs:
           # push.
           AZ_IOT_CONFORMANCE_ALLOW_UNPROVEN: '1'
         run: ctest --preset ${{ matrix.preset }} ${{ runner.os == 'Windows' && format('-C {0}', matrix.build_type) || '' }} --output-on-failure
+
+  # The build legs above use OpenSSL 3.x: Linux the distribution's (3.0, the minimum supported),
+  # Windows the runner's. These legs build the same tree against OpenSSL 4.x, from source via
+  # .github/actions/install-openssl (cached per runner image), and run the unit and, on Linux,
+  # conformance suites. On Linux a SoftHSM token is provisioned so key custody is proven against
+  # 4.x rather than allowed unproven: the conformance suites and the real-token Paho custody test
+  # (AZ_IOT_BUILD_PKCS11_TESTS) sign through it. pkcs11-provider v0.6, the default of
+  # eng/setup-pkcs11-provider.sh, does not build against OpenSSL 4.x, hence the newer tag.
+  openssl-4:
+    name: ${{ matrix.preset }} / OpenSSL ${{ matrix.openssl }}
+    needs: changes
+    if: needs.changes.outputs.c == 'true' || github.event_name != 'pull_request'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            preset: linux-gcc-debug
+            openssl: '4.1.0'
+          - os: windows-latest
+            preset: windows-msvc-debug
+            openssl: '4.1.0'
+    runs-on: ${{ matrix.os }}
+    services:
+      mosquitto:
+        image: ${{ matrix.os == 'ubuntu-24.04' && 'eclipse-mosquitto:2' || '' }}
+        ports:
+          - 1883:1883
+        options: >-
+          --health-cmd="mosquitto_pub -h localhost -p 1883 -t healthcheck -m ok"
+          --health-interval=5s
+          --health-retries=10
+          --health-start-period=5s
+    env:
+      PKCS11_PROVIDER_TAG: v1.3.0
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Set up MSVC (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
+      - name: Install deps (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y ninja-build softhsm2 opensc meson pkg-config
+      - name: Install OpenSSL ${{ matrix.openssl }}
+        uses: ./.github/actions/install-openssl # zizmor: ignore[self-repository]
+        with:
+          version: ${{ matrix.openssl }}
+      - name: Provision a PKCS#11 token (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          eval "$(PKG_CONFIG_PATH="$OPENSSL_ROOT_DIR/lib/pkgconfig" eng/setup-pkcs11-provider.sh)"
+          echo "OPENSSL_MODULES=$OPENSSL_MODULES" >> "$GITHUB_ENV"
+          openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 \
+                          -out "$RUNNER_TEMP/custody-key.pem"
+          openssl req -new -x509 -key "$RUNNER_TEMP/custody-key.pem" \
+                      -out "$RUNNER_TEMP/custody-cert.pem" -days 2 \
+                      -subj "/CN=az-iot-conformance-custody" \
+                      -addext "basicConstraints=critical,CA:FALSE" \
+                      -addext "extendedKeyUsage=clientAuth"
+          eng/setup-softhsm.sh "$RUNNER_TEMP/custody-key.pem" > "$RUNNER_TEMP/softhsm-env.sh"
+          sed -E "s/^export ([A-Za-z0-9_]+)='(.*)'\$/\1=\2/" \
+              "$RUNNER_TEMP/softhsm-env.sh" >> "$GITHUB_ENV"
+          . "$RUNNER_TEMP/softhsm-env.sh"
+          openssl list -providers -provider pkcs11 > /dev/null
+          {
+            echo "AZ_IOT_TEST_PKCS11_KEY_URI=$AZ_IOT_CLIENT_KEY_URI"
+            echo "AZ_IOT_CONFORMANCE_KEY_URI=$AZ_IOT_CLIENT_KEY_URI"
+            echo "AZ_IOT_CONFORMANCE_KEY_ENGINE=$AZ_IOT_CRYPTO_ENGINE_ID"
+            echo "AZ_IOT_CONFORMANCE_CLIENT_CERT=$RUNNER_TEMP/custody-cert.pem"
+          } >> "$GITHUB_ENV"
+      - name: Configure
+        run: >
+          cmake --preset ${{ matrix.preset }} -DAZ_IOT_WITH_AZ_MQTT=ON
+          -DAZ_IOT_BUILD_PKCS11_TESTS=${{ runner.os == 'Linux' && 'ON' || 'OFF' }}
+      - name: Check the OpenSSL in use
+        shell: bash
+        # MSVC caches the import library as LIB_EAY_RELEASE/LIB_EAY_DEBUG.
+        run: |
+          set -euo pipefail
+          cache=build/${{ matrix.preset }}/CMakeCache.txt
+          grep -F "OPENSSL_INCLUDE_DIR:PATH=$OPENSSL_ROOT_DIR/include" "$cache"
+          grep -F -e "OPENSSL_CRYPTO_LIBRARY:FILEPATH=$OPENSSL_ROOT_DIR/" \
+                  -e "LIB_EAY_RELEASE:FILEPATH=$OPENSSL_ROOT_DIR/" "$cache"
+      - name: Build
+        run: cmake --build --preset ${{ matrix.preset }} --config Debug
+      - name: Test
+        env:
+          AZ_IOT_MQTT_BROKER_HOST: ${{ runner.os == 'Linux' && 'localhost' || '' }}
+          AZ_IOT_MQTT_BROKER_PORT: ${{ runner.os == 'Linux' && '1883' || '' }}
+        run: ctest --preset ${{ matrix.preset }} ${{ runner.os == 'Windows' && '-C Debug' || '' }} --output-on-failure --no-tests=error
 
   conventions:
     name: coding conventions (c/src)
@@ -384,7 +491,9 @@ jobs:
   # Runs every ctest test labelled "race" (az_iot_add_cmocka_test(... RACE
   # ...)) through eng/run-race-detectors.sh, which fails on a reported error,
   # a failed test, or a run that ended without an ERROR SUMMARY. A new
-  # threaded test joins by carrying the label.
+  # threaded test joins by carrying the label. The script runs one process per
+  # CPU at a time and splits tests also labelled "shardable" (the Paho
+  # conformance suites) into 4 processes each: serially, DRD took ~20 min.
   #
   # One leg per tool; either reporting an error fails the job. They implement
   # happens-before differently and DRD also reports lock-order and mutex
@@ -772,6 +881,39 @@ jobs:
           "-DEXPECT_SAMPLES_EXCEPT=custom_certificate_provider;dps_csr_managed;dps_persist_assignment;hub_renew;dps_sas_key_issued_cert;user_provided_sas_token;dps_tpm;http_download;hsm_pkcs11"
           -P eng/check-dependencies.cmake
 
+  # The OpenSSL-free Windows build documented in samples/README.md: az_mqtt over Schannel, no
+  # Paho, no OpenSSL (the runner's is hidden from CMake) and no crypto backend. Not built: the
+  # samples deps-isolation lists, plus those that need a crypto backend (SAS key, software
+  # updates).
+  windows-no-openssl:
+    name: windows-msvc / az_mqtt + Schannel (no OpenSSL)
+    needs: changes
+    if: needs.changes.outputs.c == 'true' || github.event_name != 'pull_request'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
+      - name: Configure
+        run: >
+          cmake -DBUILD_DIR=build/windows-msvc-debug -DMODE=prepare -P eng/check-dependencies.cmake &&
+          cmake --preset windows-msvc-debug
+          -DCMAKE_DISABLE_FIND_PACKAGE_OpenSSL=ON
+          -DAZ_IOT_WITH_PAHO=OFF -DAZ_IOT_WITH_AZ_MQTT=ON
+          -DAZ_IOT_WITH_CRYPTO_OPENSSL=OFF -DAZ_IOT_WITH_CERT_PROVIDER_MANAGED=OFF
+      - name: Build
+        run: cmake --build --preset windows-msvc-debug --config Debug
+      - name: Test
+        run: ctest --preset windows-msvc-debug -C Debug --output-on-failure --no-tests=error
+      - name: Check dependencies
+        run: >
+          cmake -DBUILD_DIR=build/windows-msvc-debug -DCONFIG=Debug
+          "-DFORBID=paho;rust_mqtt;openssl"
+          -DEXPECT_SAMPLES=az_mqtt
+          "-DEXPECT_SAMPLES_EXCEPT=custom_certificate_provider;dps_csr_managed;dps_persist_assignment;hub_renew;dps_sas_key_issued_cert;user_provided_sas_token;dps_tpm;http_download;hsm_pkcs11;dps_sas_key;multi_step;reboot_resume;simulated_onboarding;simulated_regular"
+          -P eng/check-dependencies.cmake
+
   # Optimized build (so _FORTIFY_SOURCE is active) checked by
   # eng/check-hardening.sh, then the unit tests run against it. Both compilers,
   # static and shared: flags are probed per toolchain, and FORTIFY differs
@@ -903,7 +1045,22 @@ jobs:
             echo "AZ_IOT_DEPS=$tmp/deps"
             echo "AZ_IOT_BUILD=$tmp/build"
             echo "AZ_IOT_TOOLCHAIN=$(cygpath -m "$AZ_IOT_VCPKG")/scripts/buildsystems/vcpkg.cmake"
+            echo "VCPKG_DEFAULT_BINARY_CACHE=$tmp/vcpkg-archives"
+            echo "VCPKG_CACHE_PREFIX=vcpkg-x64-windows-static-$ImageOS-$ImageVersion-$(sha256sum vcpkg.json | cut -c1-16)-"
           } >> "$GITHUB_ENV"
+          mkdir -p "$RUNNER_TEMP/vcpkg-archives"
+      # vcpkg's binary cache. Without it every run builds OpenSSL from source
+      # (~6 min). vcpkg names each archive by its ABI hash, so a stale archive is
+      # never used, only ignored. The image version is in the key: a new image
+      # starts a new entry instead of growing the old one.
+      - name: Restore vcpkg binary cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ runner.temp }}/vcpkg-archives
+          key: ${{ env.VCPKG_CACHE_PREFIX }}${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: ${{ env.VCPKG_CACHE_PREFIX }}
+      - name: Count restored vcpkg archives
+        run: find "$RUNNER_TEMP/vcpkg-archives" -type f | wc -l > "$RUNNER_TEMP/vcpkg-archives-before"
       - name: Install azure-sdk-for-c
         run: bash eng/install-deps.sh "$AZ_IOT_DEPS" azure-sdk-for-c
       - name: Configure
@@ -941,6 +1098,22 @@ jobs:
             cmake --build "$AZ_IOT_BUILD-$cfg-consumer"
             ctest --test-dir "$AZ_IOT_BUILD-$cfg-consumer" --output-on-failure --no-tests=error
           done
+      # Saved only when vcpkg built something new. Also after a failure: the
+      # packages built before it are still valid.
+      - name: Check for new vcpkg archives
+        id: vcpkg-archives
+        if: always()
+        run: |
+          before="$(cat "$RUNNER_TEMP/vcpkg-archives-before" 2>/dev/null || echo 0)"
+          after="$(find "$RUNNER_TEMP/vcpkg-archives" -type f | wc -l)"
+          echo "vcpkg archives: $before restored, $after now"
+          echo "save=$([ "$after" -gt "$before" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+      - name: Save vcpkg binary cache
+        if: always() && steps.vcpkg-archives.outputs.save == 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ runner.temp }}/vcpkg-archives
+          key: ${{ env.VCPKG_CACHE_PREFIX }}${{ github.run_id }}-${{ github.run_attempt }}
 
   # ---------------------------------------------------------------------------
   # The installed package (cmake --install, find_package(azure-iot-sdk)).
@@ -1247,7 +1420,7 @@ jobs:
       # actually had -- coverage computed over fewer tests than anyone thought.
       # Now that no suite decides at run time whether to participate, the count
       # is deterministic, so assert it exactly. Bump this when adding a suite.
-      EXPECTED_TESTS: '63'
+      EXPECTED_TESTS: '71'
     services:
       mosquitto:
         image: eclipse-mosquitto:2

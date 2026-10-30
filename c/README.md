@@ -103,6 +103,8 @@ in its header.
 
 - CI builds and tests the SDK on Linux (GCC, Clang) and Windows (MSVC), and builds it in strict
   C99, C11, C17 and C23 modes.
+- [ESP-IDF components](platforms/esp32/README.md) build the SDK for ESP32; CI builds them for
+  esp32, esp32c3, esp32s3 and esp32c6.
 - A [Yocto layer](platforms/yocto/meta-azure-iot-sdk/README.md) (scarthgap) builds the libraries,
   headers, CMake package and pkg-config files.
 - To port to another platform, supply an MQTT adapter

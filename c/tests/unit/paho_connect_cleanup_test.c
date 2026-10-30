@@ -47,6 +47,7 @@
 /* ------------------------------------------------------------------------- */
 #if defined(AZ_IOT_TEST_WRAP_MALLOC)
 
+static void track_block(void* p, size_t size);
 void* __real_malloc(size_t size);
 void* __wrap_malloc(size_t size);
 
@@ -65,9 +66,60 @@ void* __wrap_malloc(size_t size)
     }
     --s_malloc_countdown;
   }
-  return __real_malloc(size);
+  void* const p = __real_malloc(size);
+  track_block(p, size);
+  return p;
 }
 
+/* Freed proxy credentials: malloc records each block while tracking is on; free
+ * reports a block that still holds s_secret. */
+void __real_free(void* p);
+void __wrap_free(void* p);
+
+#define TRACKED_MAX 64
+static struct
+{
+  void* p;
+  size_t size;
+} s_tracked[TRACKED_MAX];
+static bool s_tracking;
+static const char* s_secret;
+static int s_secret_freed;
+
+static void track_block(void* p, size_t size)
+{
+  for (size_t i = 0; s_tracking && p != NULL && i < TRACKED_MAX; i++)
+  {
+    if (s_tracked[i].p == NULL)
+    {
+      s_tracked[i].p = p;
+      s_tracked[i].size = size;
+      return;
+    }
+  }
+}
+
+void __wrap_free(void* p)
+{
+  for (size_t i = 0; p != NULL && i < TRACKED_MAX; i++)
+  {
+    if (s_tracked[i].p == p)
+    {
+      size_t const n = strlen(s_secret);
+      for (size_t off = 0; off + n <= s_tracked[i].size; off++)
+      {
+        if (memcmp((const char*)p + off, s_secret, n) == 0)
+        {
+          s_secret_freed++;
+          break;
+        }
+      }
+      s_tracked[i].p = NULL;
+      break;
+    }
+  }
+  __real_free(p);
+}
 static void fail_malloc_after(int allowed) { s_malloc_countdown = allowed; }
 static void stop_failing_malloc(void) { s_malloc_countdown = -1; }
 
@@ -289,6 +341,23 @@ static void a_plain_credential_takes_no_custody(void** state)
   assert_int_equal(fx->client->iface->connect(fx->client, &opts), AZ_IOT_OK);
   assert_int_equal(fake_custody_prepare_calls(), 1);
   assert_null(fake_custody_reference_path());
+}
+
+/* Paho has no PSA key route: the connect fails before custody or a socket. */
+static void a_psa_client_key_is_not_supported(void** state)
+{
+  fixture* fx = (fixture*)*state;
+
+  az_iot_mqtt_connect_options opts;
+  memset(&opts, 0, sizeof(opts));
+  opts.host = "broker.invalid";
+  opts.port = 8883;
+  opts.client_id = "ut-device";
+  opts.tls.client_cert_path = "/dev/null/device.pem";
+  opts.tls.client_key_psa_id = 0x7FFF0001u;
+
+  assert_int_equal(fx->client->iface->connect(fx->client, &opts), AZ_IOT_ERR_NOT_SUPPORTED);
+  assert_int_equal(fake_custody_prepare_calls(), 0);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -525,6 +594,36 @@ static void a_refused_disconnect_still_reports_disconnected(void** state)
   assert_int_equal(sink.last_status, AZ_IOT_ERR_MQTT);
 }
 
+#if defined(AZ_IOT_TEST_WRAP_MALLOC)
+/* The proxy URI holds the Basic credential: a reconnect that replaces it and the
+ * destroy that releases it free it only after wiping it. */
+static void proxy_credentials_are_wiped_before_they_are_freed(void** state)
+{
+  fixture* fx = (fixture*)*state;
+
+  az_iot_mqtt_connect_options opts;
+  memset(&opts, 0, sizeof(opts));
+  opts.host = "broker.invalid";
+  opts.port = 8883;
+  opts.client_id = "ut-device";
+  opts.proxy.host = "proxy.invalid";
+  opts.proxy.username = "proxy-user";
+  opts.proxy.password = "proxy-secret-pw";
+
+  memset(s_tracked, 0, sizeof(s_tracked));
+  s_secret = opts.proxy.password;
+  s_secret_freed = 0;
+  s_tracking = true;
+  assert_int_equal(fx->client->iface->connect(fx->client, &opts), AZ_IOT_OK);
+  assert_int_equal(fx->client->iface->connect(fx->client, &opts), AZ_IOT_OK);
+  fx->client->iface->destroy(fx->client);
+  fx->client = NULL;
+  s_tracking = false;
+
+  assert_int_equal(s_secret_freed, 0);
+}
+#endif
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -538,11 +637,14 @@ int main(void)
 #if defined(AZ_IOT_TEST_WRAP_MALLOC)
     cmocka_unit_test_setup_teardown(
         an_allocation_failure_releases_the_key_reference, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        proxy_credentials_are_wiped_before_they_are_freed, setup, teardown),
 #endif
     cmocka_unit_test_setup_teardown(an_accepted_connect_keeps_the_key_reference, setup, teardown),
     cmocka_unit_test_setup_teardown(reconnecting_replaces_the_key_reference, setup, teardown),
     cmocka_unit_test_setup_teardown(destroy_releases_the_key_reference, setup, teardown),
     cmocka_unit_test_setup_teardown(a_plain_credential_takes_no_custody, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_psa_client_key_is_not_supported, setup, teardown),
     cmocka_unit_test_setup_teardown(server_validation_cannot_be_switched_off, setup, teardown),
     cmocka_unit_test_setup_teardown(a_custody_connect_verifies_the_server, setup, teardown),
     cmocka_unit_test_setup_teardown(a_key_reference_alone_selects_tls, setup, teardown),
