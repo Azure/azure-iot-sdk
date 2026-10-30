@@ -612,6 +612,13 @@ if(TARGET az_iot_certificate_provider_managed)
     endif()
 endif()
 
+# The samples' platform helpers (samples/common/sample_utils.c).
+az_iot_add_cmocka_test(az_iot_tests_sample_utils
+    unit/sample_utils_test.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../samples/common/sample_utils.c)
+target_include_directories(az_iot_tests_sample_utils PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../samples/common)
+
 # The hand-off queue of samples/unified/multithreaded_telemetry: application
 # code that must itself be race-free. RACE: also run under helgrind and DRD.
 set(_mt_sample ${CMAKE_CURRENT_SOURCE_DIR}/../samples/unified/multithreaded_telemetry)
@@ -630,7 +637,8 @@ if(OPENSSL_FOUND)
     az_iot_add_cmocka_test(az_iot_tests_sample_cert_provider
         unit/sample_cert_provider_test.c
         ${_sample_common}/sample_cert_provider.c
-        ${_sample_common}/sample_csr_openssl.c)
+        ${_sample_common}/sample_csr_openssl.c
+        ${_sample_common}/sample_utils.c)
     target_include_directories(az_iot_tests_sample_cert_provider PRIVATE ${_sample_common})
     target_link_libraries(az_iot_tests_sample_cert_provider PRIVATE OpenSSL::Crypto)
 
@@ -640,7 +648,8 @@ if(OPENSSL_FOUND)
         unit/certificate_provider_contract_test.c
         support/cert_provider_contract.c
         ${_sample_common}/sample_cert_provider.c
-        ${_sample_common}/sample_csr_openssl.c)
+        ${_sample_common}/sample_csr_openssl.c
+        ${_sample_common}/sample_utils.c)
     target_include_directories(az_iot_tests_certificate_provider_contract PRIVATE
         ${_sample_common})
     target_link_libraries(az_iot_tests_certificate_provider_contract PRIVATE OpenSSL::Crypto)

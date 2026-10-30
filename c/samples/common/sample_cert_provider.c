@@ -5,9 +5,6 @@
 /* SPDX-License-Identifier: MIT */
 /* sample_cert_provider - vtable glue and cert persistence. CSR issuance lives
  * in sample_csr_openssl.c. */
-#ifndef _CRT_SECURE_NO_WARNINGS
-#define _CRT_SECURE_NO_WARNINGS /* this sample uses fopen for cert persistence */
-#endif
 #if !defined(_WIN32)
 #define _POSIX_C_SOURCE 200809L /* mkstemp, fdopen, fchmod */
 #endif
@@ -110,16 +107,6 @@ static FILE* sample_create_unique(const char* path, char** out_tmp)
   }
   *out_tmp = tmp;
   return f;
-}
-
-/* Replace @p to with @p from in one step. Returns nonzero on success. */
-static int sample_replace_file(const char* from, const char* to)
-{
-#ifdef _WIN32
-  return MoveFileExA(from, to, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
-#else
-  return rename(from, to) == 0;
-#endif
 }
 
 static char* dup_str(const char* s)
@@ -303,7 +290,7 @@ static az_iot_result provider_store(
       break;
     }
   }
-  if (fflush(f) != 0)
+  if (!sample_file_flush_to_storage(f))
   {
     rc = AZ_IOT_ERR_INTERNAL;
   }
@@ -311,7 +298,7 @@ static az_iot_result provider_store(
   {
     rc = AZ_IOT_ERR_INTERNAL;
   }
-  if (rc == AZ_IOT_OK && !sample_replace_file(tmp, p->operational_cert_path))
+  if (rc == AZ_IOT_OK && !sample_file_replace(tmp, p->operational_cert_path))
   {
     rc = AZ_IOT_ERR_INTERNAL;
   }

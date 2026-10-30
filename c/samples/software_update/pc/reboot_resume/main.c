@@ -38,9 +38,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#ifdef _WIN32
-#include <windows.h>
-#endif
 
 #include "azure/iot/az_iot.h"
 #include "azure/iot/az_iot_su.h"
@@ -198,18 +195,14 @@ static int32_t save_update_workflow(const uint8_t* blob, size_t len, void* user_
     return AZ_IOT_SU_RESULT_FAILURE;
   }
   size_t written = fwrite(blob, 1, len, f);
+  bool flushed = written == len && sample_file_flush_to_storage(f);
   int closed = fclose(f); /* reports a delayed write failure */
-  if (written != len || closed != 0)
+  if (!flushed || closed != 0)
   {
     (void)remove(tmp);
     return AZ_IOT_SU_RESULT_FAILURE;
   }
-#ifdef _WIN32
-  /* rename() does not replace on Windows. */
-  if (!MoveFileExA(tmp, context->state_file, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
-#else
-  if (rename(tmp, context->state_file) != 0)
-#endif
+  if (!sample_file_replace(tmp, context->state_file))
   {
     (void)remove(tmp);
     return AZ_IOT_SU_RESULT_FAILURE;
