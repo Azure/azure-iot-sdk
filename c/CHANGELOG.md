@@ -14,6 +14,9 @@
   Signature peripheral on ESP-IDF v6. The az_mqtt adapter uses it with mbedTLS; with another TLS
   backend, and in the Paho adapter, the connect fails with
   `AZ_IOT_ERR_NOT_SUPPORTED`. Bring-your-own adapters must do the same unless they support it.
+- Conformance: `AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY_PSA` and `az_iot_conformance_options::client_key_psa_id`
+  prove the PSA key route with a TLS handshake and a reconnect. The az_mqtt harness declares it on
+  mbedTLS with PSA keys and imports the PEM key at `AZ_IOT_CONFORMANCE_PSA_KEY`.
 - Breaking: `az_iot_connection_client_open()` and `az_iot_connection_client_close()` return
   `AZ_IOT_ERR_BUSY` when called from a callback the connection client runs (state, publish
   completion, SAS token, DPS, CSR, subscription failure, inbound message, feature observer). Call

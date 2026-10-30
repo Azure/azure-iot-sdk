@@ -295,12 +295,13 @@ The suite also holds every adapter to the safety half of the optional features, 
 
 If your adapter implements an optional feature, say so, or the suite can only check that you refuse it cleanly.
 
-Non-extractable key custody has **two independent routes**, and `az_iot_mqtt_tls_options` says you may implement either, both or neither. They are separate capabilities, so declare only what you implement:
+Non-extractable key custody has **three independent routes**, and `az_iot_mqtt_tls_options` says you may implement any of them, or none. They are separate capabilities, so declare only what you implement:
 
 | capability | route | material to supply |
 |---|---|---|
 | `AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY_URI` | `client_key_uri` + `crypto_engine_id` — your stack has an engine/provider abstraction | `key_uri`, `crypto_engine_id`, `client_cert_path` |
 | `AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY_SIGN` | `sign` + `sign_ctx` — no such abstraction; you drive the handshake signature through a callback | `sign`, `sign_ctx` (may be NULL), `client_cert_path` |
+| `AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY_PSA` | `client_key_psa_id` — your stack is mbedTLS and signs with a key in the PSA Crypto key store; proved by a handshake and a reconnect | `client_key_psa_id` (usable for the whole run), `client_cert_path` |
 
 ```c
 az_iot_conformance_options opts = { 0 };
@@ -314,6 +315,10 @@ opts.crypto_engine_id = "pkcs11";
 opts.capabilities |= (uint32_t)AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY_SIGN;
 opts.sign     = my_sign_with_hsm;
 opts.sign_ctx = my_hsm_handle;
+
+/* PSA route, for an mbedTLS stack: a key already in the PSA key store. */
+opts.capabilities |= (uint32_t)AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY_PSA;
+opts.client_key_psa_id = my_psa_key_id;
 
 /* Shared: a certificate carrying the PUBLIC key behind each route. */
 opts.client_cert_path = "/path/to/device-cert.pem";
