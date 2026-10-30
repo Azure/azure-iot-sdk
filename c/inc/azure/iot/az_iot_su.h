@@ -1461,6 +1461,36 @@ extern "C"
   az_iot_su_state az_iot_su_client_get_state(const az_iot_su_client* client);
 
   /**
+   * @brief Get the update the client is working on, in either mode.
+   *
+   * The request (`workflowId`, the manifest text, its signature, the file URLs)
+   * is available from AZ_IOT_SU_STATE_MANIFEST_RECEIVED until the client returns
+   * to Idle; `request->update_manifest` is always the unescaped text the
+   * signature covers. It is not verified before the state leaves
+   * AZ_IOT_SU_STATE_VERIFYING_MANIFEST. After az_iot_su_client_resume() the
+   * signature and retry timestamp are empty.
+   *
+   * The parsed manifest is available once verified, until the workflow ends;
+   * not in AZ_IOT_SU_STATE_FAILED. In library mode both are the ones
+   * AZ_IOT_SU_EVENT_UPDATE_AVAILABLE carries.
+   *
+   * Both are owned by the client and valid until it returns to Idle or is
+   * deinitialized. Call on the do_work() thread, or serialize with it; legal
+   * from an observer.
+   *
+   * @param[in] client The client.
+   * @param[out] out_request The current request; NULL on error.
+   * @param[out] out_manifest The verified manifest, or NULL when there is none yet.
+   * @return AZ_IOT_OK when a workflow is in progress.
+   * @retval AZ_IOT_ERR_INVALID_ARG A NULL argument.
+   * @retval AZ_IOT_ERR_NOT_FOUND No workflow is in progress.
+   */
+  AZ_NODISCARD az_iot_result az_iot_su_client_get_current_update(
+      const az_iot_su_client* client,
+      const az_iot_su_client_update_request** out_request,
+      const az_iot_su_client_update_manifest** out_manifest);
+
+  /**
    * @brief Library mode: report the application's progress or outcome for the
    *        delegated update.
    *

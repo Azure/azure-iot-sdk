@@ -1048,6 +1048,16 @@ az_iot_result az_iot_su_client_do_work(az_iot_su_client* client);
 az_iot_su_state az_iot_su_client_get_state(const az_iot_su_client* client);
 
 /**
+ * The update being worked on, in either mode: the request (workflowId, unescaped
+ * manifest text, signature, file URLs) from MANIFEST_RECEIVED until Idle, and the
+ * parsed manifest once verified (not in FAILED). NOT_FOUND when Idle.
+ */
+az_iot_result az_iot_su_client_get_current_update(
+    const az_iot_su_client* client,
+    const az_iot_su_client_update_request** out_request,
+    const az_iot_su_client_update_manifest** out_manifest);
+
+/**
  * Library mode: report the delegated update's progress or end. Terminal
  * outcomes carry one step result per manifest step. Validated, then copied;
  * sent like any report and retried when refused. See §5.3.
