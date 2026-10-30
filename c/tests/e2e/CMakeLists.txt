@@ -132,7 +132,8 @@ az_iot_add_cmocka_test(az_iot_tests_e2e_notify_time
 target_include_directories(az_iot_tests_e2e_notify_time PRIVATE service)
 
 # Response header parsing of the e2e HTTPS client (status, Content-Length,
-# Retry-After). Pure parsing; named `e2e` so the e2e job's filter runs it.
+# Retry-After) and its retry decision. No network; named `e2e` so the e2e job's
+# filter runs it.
 az_iot_add_cmocka_test(az_iot_tests_e2e_http_headers tests/e2e_http_headers_test.c)
 target_include_directories(az_iot_tests_e2e_http_headers PRIVATE service)
 target_link_libraries(az_iot_tests_e2e_http_headers PRIVATE

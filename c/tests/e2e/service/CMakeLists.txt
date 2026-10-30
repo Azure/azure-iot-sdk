@@ -24,6 +24,10 @@ target_include_directories(az_iot_e2e_service PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}
 
 # Transport + protocol: kept PRIVATE so az_amqp headers never leak to tests.
 target_link_libraries(az_iot_e2e_service PRIVATE az_amqp az_amqp_transport)
+if(NOT WIN32)
+    # nanosleep() between attempts of a retried HTTPS request.
+    target_compile_definitions(az_iot_e2e_service PRIVATE _POSIX_C_SOURCE=200809L)
+endif()
 
 # SAS token crypto (HMAC-SHA256 + base64). OpenSSL is available on both Linux and
 # Windows in the e2e build (Paho already requires it), so we use it on all
