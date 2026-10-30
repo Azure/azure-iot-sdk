@@ -29,6 +29,47 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         /// <summary>Whether the connection client is connected or reconnecting. False simulates an explicit disconnect.</summary>
         public bool IsConnectionTargetSet { get; set; } = true;
 
+        /// <summary>The connection nonce returned to feature clients. Null simulates a connection client that does not expose it.</summary>
+        public Guid? ConnectionNonce { get; set; }
+
+        Guid? global::Microsoft.Azure.Iot.Device.Unified.Connection.IConnectionClient.ConnectionNonce => ConnectionNonce;
+
+        public event Action? ConnectionLost;
+
+        event Action? global::Microsoft.Azure.Iot.Device.Unified.Connection.IConnectionClient.ConnectionLost
+        {
+            add => ConnectionLost += value;
+            remove => ConnectionLost -= value;
+        }
+
+        /// <summary>Notify feature clients that the connection to IoT hub was lost.</summary>
+        public void SimulateConnectionLost()
+        {
+            IsClassicDevicePresenceEstablished = false;
+            ConnectionLost?.Invoke();
+        }
+
+        public event Action? ClassicDevicePresenceEstablished;
+
+        /// <summary>Whether the device presence flow completed on the current connection to IoT hub.</summary>
+        public bool IsClassicDevicePresenceEstablished { get; set; }
+
+        event Action? global::Microsoft.Azure.Iot.Device.Unified.Connection.IConnectionClient.ClassicDevicePresenceEstablished
+        {
+            add => ClassicDevicePresenceEstablished += value;
+            remove => ClassicDevicePresenceEstablished -= value;
+        }
+
+        bool global::Microsoft.Azure.Iot.Device.Unified.Connection.IConnectionClient.IsClassicDevicePresenceEstablished => IsClassicDevicePresenceEstablished;
+
+        /// <summary>Notify feature clients that the device presence flow completed on a new connection to IoT hub.</summary>
+        public void SimulateClassicDevicePresenceEstablished(Guid? connectionNonce = null)
+        {
+            ConnectionNonce = connectionNonce ?? Guid.NewGuid();
+            IsClassicDevicePresenceEstablished = true;
+            ClassicDevicePresenceEstablished?.Invoke();
+        }
+
         /// <summary>Every publish, subscribe and unsubscribe the feature clients sent, in order.</summary>
         public List<MqttPublish> PublishedMessages { get; } = new();
 
