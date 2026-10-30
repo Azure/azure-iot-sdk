@@ -50,7 +50,7 @@ extern "C"
     const char* trusted_ca_path; /* may be NULL */
     const char* client_cert_path; /* may be NULL */
     const char* client_key_path; /* may be NULL */
-    /* Non-extractable key backends (HSM / TPM / secure element; D8). When set,
+    /** @brief Non-extractable key backends (HSM / TPM / secure element; D8). When set,
      * client_key_pem/path are NULL and the TLS adapter signs the handshake
      * through this reference instead of reading a private key.
      *
@@ -58,7 +58,7 @@ extern "C"
      * through the OpenSSL 3.x provider named by crypto_engine_id
      * (pkcs11-provider, tpm2-openssl). An adapter that cannot honour a
      * reference must fail the connect rather than proceed without a client
-     * key; the rust_mqtt adapter has no TLS credential handling at all. */
+     * key. */
     const char* client_key_uri; /* may be NULL; e.g. "pkcs11:token=...;object=..." */
     const char* crypto_engine_id; /* may be NULL; OpenSSL ENGINE/provider id: "pkcs11", "tpm2" */
     /** PSA Crypto key id of a non-extractable client key (mbedTLS), e.g. on ESP-IDF v6

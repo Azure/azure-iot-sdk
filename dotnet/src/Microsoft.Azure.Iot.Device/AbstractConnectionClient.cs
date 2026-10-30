@@ -112,6 +112,12 @@ namespace Microsoft.Azure.Iot.Device
             remove => _provisioningFlowCompleted.Remove(value);
         }
 
+        /// <summary>
+        /// Raised whenever this client's connection to IoT hub is lost or closed (including deliberately), before this
+        /// client starts reconnecting. Handlers must return quickly; any exception they throw is logged and ignored.
+        /// </summary>
+        internal event Action? HubConnectionLost;
+
         private const string ProvisioningUsernameFormat = "{0}/registrations/{1}/api-version={2}&ClientVersion={3}";
 
         // WebSocket settings mirror the C SDK (AZ_IOT_MQTT_DEFAULT_WEBSOCKET_PATH / AZ_IOT_MQTT_HUB_V5_WEBSOCKET_PATH):
@@ -1008,8 +1014,33 @@ namespace Microsoft.Azure.Iot.Device
                 // the in-progress flow so that it can be restarted from the beginning once the connection is re-established.
                 CancelCurrentProvisioningFlow();
             }
+            else
+            {
+                RaiseHubConnectionLost();
+            }
 
             return Task.CompletedTask;
+        }
+
+        private void RaiseHubConnectionLost()
+        {
+            Action? handlers = HubConnectionLost;
+            if (handlers == null)
+            {
+                return;
+            }
+
+            foreach (Action handler in handlers.GetInvocationList().Cast<Action>())
+            {
+                try
+                {
+                    handler();
+                }
+                catch (Exception e)
+                {
+                    Trace.TraceWarning("A connection lost handler threw and was ignored. {0}", e);
+                }
+            }
         }
 
         /// <summary>

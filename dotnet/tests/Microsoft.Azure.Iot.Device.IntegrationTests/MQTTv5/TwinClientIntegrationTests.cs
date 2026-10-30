@@ -3,6 +3,7 @@
 
 using Microsoft.Azure.Iot.Device.MQTTv5.Connection;
 using Microsoft.Azure.Iot.Device.MQTTv5.Twin;
+using TwinPushReceivedEventArgs = Microsoft.Azure.Iot.Device.MQTTv5.Twin.TwinPushReceivedEventArgs;
 using Microsoft.Azure.Iot.Device.IntegrationTests.MQTTv5;
 using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Models.Twin;

@@ -94,7 +94,7 @@ Received 1 message(s).
 ```
 
 On an mqttv5 hub it prints
-`DPS assigned MQTTv5 (MQTT v5). Cloud-to-device messages are not available on this hub generation.`
+`DPS assigned AZ_IOT_CONNECTION_PROFILE_MQTT_V5. Cloud-to-device messages are not available on this hub generation.`
 
 ## Troubleshooting
 

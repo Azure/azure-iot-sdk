@@ -87,7 +87,7 @@ static bool read_line(FILE* f, char* dst, size_t dst_size)
 /** @brief Loads a saved assignment. False when there is none or it is invalid. */
 static bool load_assignment(const char* path, saved_assignment* out)
 {
-  FILE* f = sample_fopen_read_nofollow(path);
+  FILE* f = sample_file_open_read_no_follow(path);
   if (f == NULL)
   {
     return false;
@@ -125,7 +125,7 @@ static void on_assignment(const az_iot_dps_assignment* assignment, void* user_ct
   const char* profile = assignment->profile->connection_profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5
       ? SAMPLE_PROFILE_MQTTV5
       : SAMPLE_PROFILE_MQTTV3;
-  FILE* f = sample_fopen_private(SAMPLE_ASSIGNMENT_TMP_FILE, true);
+  FILE* f = sample_file_open_private(SAMPLE_ASSIGNMENT_TMP_FILE, true);
   bool ok = f != NULL
       && fprintf(f, "%s\n%s\n%s\n", assignment->hub_hostname, assignment->device_id, profile) > 0
       && sample_file_flush_to_storage(f);
@@ -158,7 +158,7 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
       stderr,
       "[persist] %s: %s (%s)\n",
       event->scope == AZ_IOT_CONN_SCOPE_DPS ? "dps" : "hub",
-      sample_connection_state_name(event->state),
+      az_iot_connection_state_to_string(event->state),
       az_iot_result_to_string(event->reason));
   if (event->scope == AZ_IOT_CONN_SCOPE_HUB)
   {
@@ -178,17 +178,6 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
   }
 }
 
-/** @brief Sleeps out the rest of a SAMPLE_TICK_MS tick begun at @p start, so the
- *  do_work() loops cannot spin when there is no session to wait on. */
-static void finish_tick(uint64_t start)
-{
-  uint64_t spent = sample_now_ms() - start;
-  if (spent < SAMPLE_TICK_MS)
-  {
-    sample_sleep_ms((long)(SAMPLE_TICK_MS - spent));
-  }
-}
-
 int main(void)
 {
   az_iot_log_sink log = sample_log_sink(AZ_IOT_LOG_LEVEL_INFO);
@@ -201,8 +190,8 @@ int main(void)
   }
 
   /* Every string cleanup frees is assigned before the first goto. */
-  char* op_key = sample_env_dup("AZ_IOT_OPERATIONAL_KEY", "operational_key.pem");
-  char* op_cert = sample_env_dup("AZ_IOT_OPERATIONAL_CERT", "operational_cert.pem");
+  char* op_key = sample_env_copy("AZ_IOT_OPERATIONAL_KEY", "operational_key.pem");
+  char* op_cert = sample_env_copy("AZ_IOT_OPERATIONAL_CERT", "operational_cert.pem");
 
   int rc = 1;
   sample_context ctx = { 0 };
@@ -258,7 +247,7 @@ int main(void)
         "[persist] restoring hub=%s device_id=%s profile=%s from %s\n",
         saved.hub,
         saved.device_id,
-        sample_connection_profile_name(saved.profile),
+        az_iot_connection_profile_to_string(saved.profile),
         SAMPLE_ASSIGNMENT_FILE);
   }
   else
@@ -299,7 +288,7 @@ int main(void)
   {
     uint64_t tick = sample_now_ms();
     (void)az_iot_connection_client_do_work(&client, SAMPLE_TICK_MS);
-    finish_tick(tick);
+    sample_sleep_until_tick_end(tick, SAMPLE_TICK_MS);
   }
 
   if (ctx.hub_state == AZ_IOT_CONN_STATE_CONNECTED)
@@ -330,7 +319,7 @@ int main(void)
   {
     uint64_t tick = sample_now_ms();
     (void)az_iot_connection_client_do_work(&client, SAMPLE_TICK_MS);
-    finish_tick(tick);
+    sample_sleep_until_tick_end(tick, SAMPLE_TICK_MS);
   }
 
 cleanup:

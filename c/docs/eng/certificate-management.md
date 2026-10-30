@@ -26,8 +26,7 @@ through the named OpenSSL 3.x provider so the TLS handshake signs inside the
 hardware. The `sign()` hook is carried to the adapter but has no Paho
 implementation: Paho takes its client key as a file path and exposes no
 `SSL_CTX` and no key callback, so it refuses a `sign()`-only credential rather
-than connecting without a client key. That route is for BYO adapters. The
-`rust_mqtt` adapter has no TLS credential handling at all and is not covered.
+than connecting without a client key. That route is for BYO adapters.
 
 ## Abstract
 
@@ -247,7 +246,7 @@ Adapter support:
   named OpenSSL 3.x provider, resolves the URI through it, and hands Paho a key
   *reference* (the provider's own PEM form, or the standard `PKCS#11 PROVIDER URI`
   block) rather than key bytes — it refuses outright to write anything that turns out to
-  be extractable. `rust_mqtt` is **not** covered: it has no TLS credential handling.
+  be extractable.
 - **`sign()` callback:** where no engine abstraction exists, the fallback is a **`sign()` callback** on the
   provider vtable that the TLS layer invokes. The SDK carries it end to end and any BYO
   adapter can consume it (`samples/authentication/hsm_sign_callback` shows exactly
@@ -256,7 +255,7 @@ Adapter support:
   a credential with `AZ_IOT_ERR_NOT_SUPPORTED` instead of connecting without a key.
 - **PSA key id:** `client_key_psa_id` names a key in the PSA Crypto key store, which on
   ESP-IDF v6 can be the Digital Signature peripheral. The az_mqtt adapter hands it to its
-  mbedTLS backend; with another backend, and in Paho and `rust_mqtt`, the connect fails
+  mbedTLS backend; with another backend, and in Paho, the connect fails
   with `AZ_IOT_ERR_NOT_SUPPORTED`.
 
 Two guards stop a key-less credential from failing inside the handshake with no useful
@@ -334,8 +333,7 @@ model (D9).
    **Adapter status.** `paho`: (a) implemented — the URI is resolved through the OpenSSL
    3.x provider named by `crypto_engine_id` and the handshake signs in hardware; (b) not
    implementable on stock Paho, which exposes no `SSL_CTX` and no key callback, so it is
-   refused with a diagnostic rather than silently ignored. `rust_mqtt`: neither, and no
-   TLS credential handling to add them to. A BYO adapter gets both through
+   refused with a diagnostic rather than silently ignored. A BYO adapter gets both through
    `az_iot_mqtt_tls_options` with no dependency on the certificate-provider ABI.
 
    The provider must also register a DECODER for its own key-reference PEM, since that is

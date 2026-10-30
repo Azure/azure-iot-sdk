@@ -6,7 +6,7 @@
 The same flow as [`dps_csr_managed`](../dps_csr_managed/README.md): authenticate to DPS with the
 bootstrap certificate, send a CSR with the registration, save the issued operational chain, and
 connect to the assigned hub with it. The difference is who owns the crypto: here the certificate
-provider is sample application code in [`samples/common`](../../common/sample_cert_provider.c),
+provider is sample application code next to `main.c` ([`sample_cert_provider.c`](sample_cert_provider.c)),
 showing how an application implements the provider interface. It is sample code, not a production
 component.
 
@@ -108,8 +108,8 @@ Exit code 0 when the hub connection was reached; the last line says with which i
 
 | What | Code |
 | --- | --- |
-| The provider | [`sample_cert_provider.c`](../../common/sample_cert_provider.c), `sample_cert_provider_init()` |
-| CSR code | [`sample_csr_openssl.c`](../../common/sample_csr_openssl.c) |
+| The provider | [`sample_cert_provider.c`](sample_cert_provider.c), `sample_cert_provider_init()` |
+| CSR code | [`sample_csr_openssl.c`](sample_csr_openssl.c) |
 | Opt in to issuance | `copts.dps.request_operational_certificate = true` and `copts.csr_payload_buffer` |
 | Issuance notification | `az_iot_connection_client_set_operational_cert_callback()`, `on_operational_cert()` |
 

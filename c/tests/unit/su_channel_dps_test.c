@@ -207,17 +207,17 @@ static int setup(void** state)
   fx->factory = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
   assert_non_null(fx->factory);
 
-  az_iot_su_device_properties dp = { 0 };
-  dp.manufacturer = "Contoso";
-  dp.model = "Foobar";
-  dp.installed_update_id.provider = "Contoso";
-  dp.installed_update_id.name = "Foobar";
-  dp.installed_update_id.version = "1.0";
+  az_iot_su_device_properties device_properties = { 0 };
+  device_properties.manufacturer = "Contoso";
+  device_properties.model = "Foobar";
+  device_properties.installed_update_id.provider = "Contoso";
+  device_properties.installed_update_id.name = "Foobar";
+  device_properties.installed_update_id.version = "1.0";
   assert_int_equal(
       az_iot_su_channel_dps_init(
           &fx->channel_state,
           &fx->client,
-          &dp,
+          &device_properties,
           fx->body,
           sizeof(fx->body),
           fx->device_properties_strings,
@@ -619,13 +619,14 @@ static void updated_device_properties_change_what_is_sent(void** state)
 
   assert_non_null(fx->channel.vtable->set_device_properties);
 
-  az_iot_su_device_properties dp = { 0 };
-  dp.manufacturer = "Fabrikam";
-  dp.model = "Gizmo";
-  dp.installed_update_id.provider = "Fabrikam";
-  dp.installed_update_id.name = "Gizmo";
-  dp.installed_update_id.version = "2.0";
-  assert_int_equal(fx->channel.vtable->set_device_properties(fx->channel.ctx, &dp), AZ_IOT_OK);
+  az_iot_su_device_properties device_properties = { 0 };
+  device_properties.manufacturer = "Fabrikam";
+  device_properties.model = "Gizmo";
+  device_properties.installed_update_id.provider = "Fabrikam";
+  device_properties.installed_update_id.name = "Gizmo";
+  device_properties.installed_update_id.version = "2.0";
+  assert_int_equal(
+      fx->channel.vtable->set_device_properties(fx->channel.ctx, &device_properties), AZ_IOT_OK);
 
   assert_int_equal(
       fx->channel.vtable->request_update(fx->channel.ctx, AZ_IOT_SU_OP_GET_ONBOARDING_UPDATE),
@@ -680,8 +681,9 @@ static void assert_route_omits_the_installed_id_when_nothing_is_installed(
     fixture* fx,
     az_iot_su_operation operation)
 {
-  az_iot_su_device_properties dp = { .manufacturer = "Contoso", .model = "Foobar" };
-  assert_int_equal(fx->channel.vtable->set_device_properties(fx->channel.ctx, &dp), AZ_IOT_OK);
+  az_iot_su_device_properties device_properties = { .manufacturer = "Contoso", .model = "Foobar" };
+  assert_int_equal(
+      fx->channel.vtable->set_device_properties(fx->channel.ctx, &device_properties), AZ_IOT_OK);
   az_iot_mock_mqtt_client* m = open_and_bind(fx);
 
   assert_int_equal(fx->channel.vtable->request_update(fx->channel.ctx, operation), AZ_IOT_OK);
@@ -1886,14 +1888,14 @@ static void a_zero_hold_timeout_selects_the_default(void** state)
   fx->factory = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
   assert_non_null(fx->factory);
 
-  az_iot_su_device_properties dp = { 0 };
-  dp.manufacturer = "Contoso";
-  dp.model = "Foobar";
+  az_iot_su_device_properties device_properties = { 0 };
+  device_properties.manufacturer = "Contoso";
+  device_properties.model = "Foobar";
   assert_int_equal(
       az_iot_su_channel_dps_init(
           &fx->channel_state,
           &fx->client,
-          &dp,
+          &device_properties,
           fx->body,
           sizeof(fx->body),
           fx->device_properties_strings,

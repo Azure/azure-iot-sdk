@@ -32,7 +32,6 @@
  *   AZ_IOT_SU_LOG_LEVEL            trace|debug|info|warn|error|off
  */
 #include <limits.h>
-#include <signal.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -75,13 +74,6 @@
 
 /** @brief A transfer slower than 1 byte/s for this long fails (CURLE_OPERATION_TIMEDOUT). */
 #define SAMPLE_DOWNLOAD_STALL_S 60L
-
-static volatile sig_atomic_t g_stop = 0;
-static void request_stop_on_sigint(int signo)
-{
-  (void)signo;
-  g_stop = 1;
-}
 
 /** @brief What the hooks share; passed to them as user_ctx. */
 typedef struct
@@ -245,7 +237,7 @@ static int32_t fetch_update_file(
     d->written = 0;
     d->too_large = 0;
     close_hash_reader(d);
-    d->file = sample_fopen_private(d->path, true);
+    d->file = sample_file_open_private(d->path, true);
     if (d->file == NULL)
     {
       return SAMPLE_ERR_FILE_OPEN;
@@ -354,7 +346,7 @@ static int32_t read_back_downloaded_file(
   }
   if (d->reader == NULL)
   {
-    d->reader = sample_fopen_read_nofollow(path);
+    d->reader = sample_file_open_read_no_follow(path);
     if (d->reader == NULL)
     {
       return SAMPLE_ERR_FILE_OPEN;
@@ -493,7 +485,7 @@ static void track_connection_state(const az_iot_connection_state_event* event, v
   printf(
       "%s: %s (%s)\n",
       event->scope == AZ_IOT_CONN_SCOPE_DPS ? "Provisioning" : "Hub",
-      sample_connection_state_name(event->state),
+      az_iot_connection_state_to_string(event->state),
       az_iot_result_to_string(event->reason));
   if (event->state == AZ_IOT_CONN_STATE_FAULTED)
   {
@@ -576,7 +568,7 @@ int main(void)
 {
   az_iot_log_sink log = sample_log_sink(su_sample_log_level_from_env());
   az_iot_log_set_global_sink(&log);
-  (void)signal(SIGINT, request_stop_on_sigint);
+  sample_install_stop_handler(); /* Ctrl+C or SIGTERM ends the loop below */
 
   if (curl_global_init(CURL_GLOBAL_DEFAULT) != CURLE_OK)
   {
@@ -602,14 +594,14 @@ int main(void)
   az_iot_mqtt_factory* factory_v5 = NULL;
   int connection_ready = 0;
   int su_ready = 0;
-  char* manufacturer = sample_env_dup("AZ_IOT_SU_MANUFACTURER", "Contoso");
-  char* model = sample_env_dup("AZ_IOT_SU_MODEL", "SU-Sim");
-  char* proxy_host = sample_env_dup("AZ_IOT_PROXY_HOST", NULL);
-  char* proxy_port = sample_env_dup("AZ_IOT_PROXY_PORT", NULL);
-  char* proxy_username = sample_env_dup("AZ_IOT_PROXY_USERNAME", NULL);
-  char* proxy_password = sample_env_dup("AZ_IOT_PROXY_PASSWORD", NULL);
+  char* manufacturer = sample_env_copy("AZ_IOT_SU_MANUFACTURER", "Contoso");
+  char* model = sample_env_copy("AZ_IOT_SU_MODEL", "SU-Sim");
+  char* proxy_host = sample_env_copy("AZ_IOT_PROXY_HOST", NULL);
+  char* proxy_port = sample_env_copy("AZ_IOT_PROXY_PORT", NULL);
+  char* proxy_username = sample_env_copy("AZ_IOT_PROXY_USERNAME", NULL);
+  char* proxy_password = sample_env_copy("AZ_IOT_PROXY_PASSWORD", NULL);
 
-  dl.path_prefix = sample_env_dup("SAMPLE_DOWNLOAD_PREFIX", "./su_download_");
+  dl.path_prefix = sample_env_copy("SAMPLE_DOWNLOAD_PREFIX", "./su_download_");
   dl.install_chunks = su_sample_env_long("SAMPLE_INSTALL_CHUNKS", 4);
   if (dl.install_chunks < 1)
   {
@@ -619,14 +611,14 @@ int main(void)
   long poll_interval_s = su_sample_env_long("AZ_IOT_SU_POLL_INTERVAL_S", 14400);
   if (manufacturer == NULL || model == NULL || dl.path_prefix == NULL || dl.multi == NULL
       || poll_interval_s < 0
-      || !sample_env_to_buffer(
+      || !sample_env_copy_to_buffer(
           "AZ_IOT_SU_INSTALLED_PROVIDER",
           "Contoso",
           dl.installed_provider,
           sizeof(dl.installed_provider))
-      || !sample_env_to_buffer(
+      || !sample_env_copy_to_buffer(
           "AZ_IOT_SU_INSTALLED_NAME", "SU-Sim", dl.installed_name, sizeof(dl.installed_name))
-      || !sample_env_to_buffer(
+      || !sample_env_copy_to_buffer(
           "AZ_IOT_SU_INSTALLED_VERSION",
           "1.0.0",
           dl.installed_version,
@@ -715,12 +707,12 @@ int main(void)
   hooks.apply_fn = apply_update_step;
   hooks.user_ctx = &dl;
 
-  az_iot_su_device_properties dp = { 0 };
-  dp.manufacturer = manufacturer;
-  dp.model = model;
-  dp.installed_update_id.provider = dl.installed_provider;
-  dp.installed_update_id.name = dl.installed_name;
-  dp.installed_update_id.version = dl.installed_version;
+  az_iot_su_device_properties device_properties = { 0 };
+  device_properties.manufacturer = manufacturer;
+  device_properties.model = model;
+  device_properties.installed_update_id.provider = dl.installed_provider;
+  device_properties.installed_update_id.name = dl.installed_name;
+  device_properties.installed_update_id.version = dl.installed_version;
 
   size_t root_key_count = 0;
   const az_iot_su_root_key* root_keys = az_iot_su_microsoft_root_keys(&root_key_count);
@@ -728,7 +720,7 @@ int main(void)
   su_opts.hooks = &hooks;
   su_opts.root_keys = root_keys;
   su_opts.root_key_count = root_key_count;
-  su_opts.device_properties = &dp;
+  su_opts.device_properties = &device_properties;
   /* Limits, each the SDK default; the workspace is sized for them. */
   su_opts.limits.max_update_size = AZ_IOT_SU_DEFAULT_MAX_UPDATE_SIZE;
   su_opts.limits.scratch_size = AZ_IOT_SU_VERIFY_SCRATCH_SIZE;
@@ -761,7 +753,7 @@ int main(void)
   printf("Running (Ctrl-C to exit). Checking every %ld s.\n", poll_interval_s);
   uint64_t next_check_ms = sample_now_ms() + (uint64_t)poll_interval_s * 1000u;
   rc = 0;
-  while (!g_stop)
+  while (!sample_is_stop_requested())
   {
     (void)az_iot_connection_client_do_work(&connection, 20);
     (void)az_iot_su_client_do_work(&su);
@@ -773,7 +765,7 @@ int main(void)
       flags.workflow_succeeded = 0;
       if (dl.applied)
       {
-        if (az_iot_su_client_update_device_properties(&su, &dp) != AZ_IOT_OK)
+        if (az_iot_su_client_update_device_properties(&su, &device_properties) != AZ_IOT_OK)
         {
           /* The client would keep reporting the old update as installed. */
           fprintf(stderr, "Could not update the installed update ID.\n");

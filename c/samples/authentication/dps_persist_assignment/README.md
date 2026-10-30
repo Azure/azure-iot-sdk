@@ -67,14 +67,14 @@ SDK log lines omitted. First run:
 ```
 [persist] no saved assignment in dps_assignment.txt; registering with DPS
 [persist] assigned hub=<hub>.azure-devices.net device_id=<id> profile=mqttv3; save to dps_assignment.txt: ok
-[persist] hub: Connected (AZ_IOT_OK)
+[persist] hub: AZ_IOT_CONN_STATE_CONNECTED (AZ_IOT_OK)
 [persist] connected to <hub>.azure-devices.net (new assignment)
 ```
 
 Later runs:
 
 ```
-[persist] restoring hub=<hub>.azure-devices.net device_id=<id> profile=MQTTv3 (MQTT v3.1.1) from dps_assignment.txt
-[persist] hub: Connected (AZ_IOT_OK)
+[persist] restoring hub=<hub>.azure-devices.net device_id=<id> profile=AZ_IOT_CONNECTION_PROFILE_MQTT_V3 from dps_assignment.txt
+[persist] hub: AZ_IOT_CONN_STATE_CONNECTED (AZ_IOT_OK)
 [persist] connected to <hub>.azure-devices.net (restored assignment)
 ```
