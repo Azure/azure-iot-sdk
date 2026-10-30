@@ -668,6 +668,23 @@ static void a_send_error_is_retried_by_the_next_do_work(void** state)
   assert_int_equal(fx->completion_count, 0);
 }
 
+/* After a refused send, a message with under the retry interval left is retried before it expires.
+ */
+static void a_refused_message_near_its_time_limit_is_retried_before_it(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  connect(fx);
+  fx->failing_send_result = AZ_IOT_ERR_MQTT;
+  fx->failing_sends = 1;
+  (void)submit(fx, &k_resend, 1u, 800u);
+  assert_int_equal(publish_count(fx), 1);
+  (void)az_iot_connection_client_do_work(&fx->connection, UINT32_MAX);
+  assert_true(
+      az_iot_mock_mqtt_client_last_of(fx->mock, AZ_IOT_MOCK_CALL_PROCESS_LOOP)->timeout_ms <= 400u);
+  assert_int_equal(publish_count(fx), 2);
+  assert_int_equal(fx->completion_count, 0);
+}
+
 /* do_work() waits no longer than the earliest message time limit. */
 static void the_wait_ends_by_the_earliest_time_limit(void** state)
 {
@@ -1026,6 +1043,8 @@ int main(void)
         a_later_observer_submit_does_not_resend_a_requeued_message, setup, teardown),
     cmocka_unit_test_setup_teardown(an_unsendable_message_is_discarded, setup, teardown),
     cmocka_unit_test_setup_teardown(a_send_error_is_retried_by_the_next_do_work, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_refused_message_near_its_time_limit_is_retried_before_it, setup, teardown),
     cmocka_unit_test_setup_teardown(the_wait_ends_by_the_earliest_time_limit, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_requeued_message_does_not_wait_out_the_adapter, setup, teardown),

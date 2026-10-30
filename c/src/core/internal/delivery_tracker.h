@@ -31,7 +31,10 @@ extern "C"
 {
 #endif
 
-/** @brief After a refused send (BUSY, a transport error), do_work() waits at most this long. */
+/**
+ * @brief After a refused send (BUSY, a transport error), do_work() waits at most this long, or
+ *        half a queued message's remaining time limit if that is shorter.
+ */
 #define AZ_IOT_DELIVERY_TRACKER_REFUSED_SEND_RETRY_MS 1000u
 
   /** @brief How a message is confirmed. */
