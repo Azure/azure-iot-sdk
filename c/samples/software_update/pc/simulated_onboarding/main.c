@@ -56,7 +56,6 @@
  *   SU_SIM_DELAY_MS=<ms>     per-download delay so progress is observable
  *   SU_SIM_STATE_FILE=<path> resume blob path (default ./su_sim_state.blob)
  */
-#include <signal.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -99,13 +98,6 @@
  * az_iot_su_root_key array (kid + big-endian modulus/exponent) and pass it
  * to az_iot_su_client_init() in place of the Microsoft keys.
  */
-
-static volatile sig_atomic_t g_stop = 0;
-static void on_sigint(int signo)
-{
-  (void)signo;
-  g_stop = 1;
-}
 
 typedef struct
 {
@@ -190,8 +182,8 @@ static void on_connection_state_event_received(
     printf(
         "%s: %s -> %s (%s)\n",
         (scope == AZ_IOT_CONN_SCOPE_DPS) ? "Provisioning" : "Hub",
-        sample_connection_state_name(state->connection_state[scope]),
-        sample_connection_state_name(event->state),
+        az_iot_connection_state_to_string(state->connection_state[scope]),
+        az_iot_connection_state_to_string(event->state),
         az_iot_result_to_string(event->reason));
     state->connection_state[scope] = event->state;
 
@@ -385,7 +377,7 @@ int main(void)
   az_iot_log_sink log = sample_log_sink(su_sample_log_level_from_env());
   az_iot_log_set_global_sink(&log);
 
-  (void)signal(SIGINT, on_sigint); /* Ctrl+C handling is a convenience */
+  sample_install_stop_handler(); /* Ctrl+C or SIGTERM ends the loop below */
 
   sample_state state = { 0 };
 
@@ -394,7 +386,7 @@ int main(void)
   state.simulation_control.hash_mismatch = su_sample_env_flag("SU_SIM_HASH_MISMATCH");
   state.simulation_control.reboot = su_sample_env_flag("SU_SIM_REBOOT");
   state.simulation_control.delay_ms = su_sample_env_long("SU_SIM_DELAY_MS", 0);
-  state.simulation_control.state_file = sample_env_dup("SU_SIM_STATE_FILE", "./su_sim_state.blob");
+  state.simulation_control.state_file = sample_env_copy("SU_SIM_STATE_FILE", "./su_sim_state.blob");
   if (state.simulation_control.state_file == NULL)
   {
     return 1;
@@ -437,13 +429,13 @@ int main(void)
    * against. Configurable because a hard-coded value that does not match the
    * imported update is answered "nothing to do" -- indistinguishable from
    * "nothing deployed" unless the device says what it asked with. */
-  state.su_device_properties.manufacturer = sample_env_dup("AZ_IOT_SU_MANUFACTURER", "Contoso");
-  state.su_device_properties.model = sample_env_dup("AZ_IOT_SU_MODEL", "SU-Sim");
+  state.su_device_properties.manufacturer = sample_env_copy("AZ_IOT_SU_MANUFACTURER", "Contoso");
+  state.su_device_properties.model = sample_env_copy("AZ_IOT_SU_MODEL", "SU-Sim");
   state.su_device_properties.installed_provider
-      = sample_env_dup("AZ_IOT_SU_INSTALLED_PROVIDER", "Contoso");
-  state.su_device_properties.installed_name = sample_env_dup("AZ_IOT_SU_INSTALLED_NAME", "SU-Sim");
+      = sample_env_copy("AZ_IOT_SU_INSTALLED_PROVIDER", "Contoso");
+  state.su_device_properties.installed_name = sample_env_copy("AZ_IOT_SU_INSTALLED_NAME", "SU-Sim");
   state.su_device_properties.installed_version
-      = sample_env_dup("AZ_IOT_SU_INSTALLED_VERSION", "1.0.0");
+      = sample_env_copy("AZ_IOT_SU_INSTALLED_VERSION", "1.0.0");
   if (state.su_device_properties.manufacturer == NULL || state.su_device_properties.model == NULL
       || state.su_device_properties.installed_provider == NULL
       || state.su_device_properties.installed_name == NULL
@@ -573,7 +565,7 @@ int main(void)
    * are pumped -- the connection delivers, the software updates client advances -- and
    * everything this loop reacts to arrives through the two observers. */
   rc = 0; /* interrupted or asked to reboot is a normal exit */
-  while (!g_stop)
+  while (!sample_is_stop_requested())
   {
     (void)az_iot_connection_client_do_work(&state.connection_client, 50);
     (void)az_iot_su_client_do_work(&state.su_client);
