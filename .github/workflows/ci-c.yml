@@ -448,7 +448,6 @@ jobs:
         run: >
           cmake --preset linux-gcc-debug
           -DAZ_IOT_WITH_PAHO=ON
-          -DAZ_IOT_WITH_RUST_MQTT=ON
       - name: Build
         run: cmake --build --preset linux-gcc-debug
       - name: Test under valgrind
@@ -571,9 +570,8 @@ jobs:
       - name: Configure (MSVC AddressSanitizer)
         # Disable Paho here: pulling it in through FetchContent forces the
         # /MD[d] runtime which conflicts with /fsanitize=address's internal
-        # runtime selection on some toolchain builds. The first-party suites,
-        # the az_mqtt adapter (Schannel) and the rust_mqtt shell are what ASan
-        # vets here.
+        # runtime selection on some toolchain builds. The first-party suites
+        # and the az_mqtt adapter (Schannel) are what ASan vets here.
         #
         # NOTE: until this commit these were AZ_IOT_AEG_* -- names no option
         # ever declared -- so Paho was in fact ON here, contradicting the
@@ -583,7 +581,6 @@ jobs:
           cmake --preset windows-msvc-debug
           -DAZ_IOT_WITH_PAHO=OFF
           -DAZ_IOT_WITH_AZ_MQTT=ON
-          -DAZ_IOT_WITH_RUST_MQTT=ON
           -DCMAKE_C_FLAGS="/fsanitize=address /Zi"
       - name: Build
         run: cmake --build --preset windows-msvc-debug --config Debug
@@ -625,7 +622,6 @@ jobs:
         run: >
           cmake --preset linux-clang-debug
           -DAZ_IOT_WITH_PAHO=ON
-          -DAZ_IOT_WITH_RUST_MQTT=ON
           -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer"
           -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
           -DCMAKE_SHARED_LINKER_FLAGS="-fsanitize=address,undefined"
@@ -945,7 +941,6 @@ jobs:
           -DBUILD_SHARED_LIBS=${{ matrix.shared }}
           -DAZ_IOT_BUILD_TESTS=ON
           -DAZ_IOT_WITH_PAHO=ON
-          -DAZ_IOT_WITH_RUST_MQTT=ON
       - name: Build
         run: cmake --build build/hardening
       - name: Check binaries
@@ -989,7 +984,6 @@ jobs:
           -DAZ_IOT_BUILD_SAMPLES=${{ matrix.shared == 'ON' && 'OFF' || 'ON' }}
           -DAZ_IOT_BUILD_TESTS=ON
           -DAZ_IOT_WITH_PAHO=ON
-          -DAZ_IOT_WITH_RUST_MQTT=ON
       - name: Build
         run: cmake --build build/hardening
       - name: Check binaries
@@ -1125,6 +1119,8 @@ jobs:
   # the package fails the job. mbedTLS is Linux-only, as in crypto-mbedtls.
   # Configured with one prefix and installed with `--prefix` to another: the
   # installed files must use the install-time prefix.
+  # Every PR and main build checks that the removed Rust MQTT adapter is absent
+  # from both the build and the installed package.
   # The -shared variants build core, mqttv3 and mqttv5 as shared libraries.
   # -installed-deps uses azure-sdk-for-c and Paho from a prefix (AZ_IOT_USE_INSTALLED_*).
   # -no-paho builds without Paho: neither the build nor the package may reference
@@ -1132,8 +1128,6 @@ jobs:
   # ---------------------------------------------------------------------------
   install:
     name: install / ${{ matrix.name }}
-    needs: changes
-    if: needs.changes.outputs.c == 'true' || github.event_name != 'pull_request'
     strategy:
       fail-fast: false
       matrix:
@@ -1142,41 +1136,41 @@ jobs:
             name: linux-gcc
             shared: 'OFF'
             mbedtls: '3.6.7'
-            components: core;mqttv3;mqttv5;adapter_paho;adapter_az_mqtt;adapter_rust_mqtt;crypto_openssl;crypto_mbedtls;certificate_provider_managed
+            components: core;mqttv3;mqttv5;adapter_paho;adapter_az_mqtt;crypto_openssl;crypto_mbedtls;certificate_provider_managed
           - os: ubuntu-24.04
             name: linux-gcc-shared
             shared: 'ON'
             mbedtls: '3.6.7'
-            components: core;mqttv3;mqttv5;adapter_paho;adapter_az_mqtt;adapter_rust_mqtt;crypto_openssl;crypto_mbedtls;certificate_provider_managed
+            components: core;mqttv3;mqttv5;adapter_paho;adapter_az_mqtt;crypto_openssl;crypto_mbedtls;certificate_provider_managed
           # azure-sdk-for-c and Paho from an install prefix (eng/install-deps.sh), not fetched.
           - os: ubuntu-24.04
             name: linux-gcc-installed-deps
             shared: 'OFF'
             mbedtls: '3.6.7'
             installed_deps: 'ON'
-            components: core;mqttv3;mqttv5;adapter_paho;adapter_az_mqtt;adapter_rust_mqtt;crypto_openssl;crypto_mbedtls;certificate_provider_managed
+            components: core;mqttv3;mqttv5;adapter_paho;adapter_az_mqtt;crypto_openssl;crypto_mbedtls;certificate_provider_managed
           - os: windows-latest
             name: windows-msvc
             shared: 'OFF'
             mbedtls: ''
-            components: core;mqttv3;mqttv5;adapter_paho;adapter_az_mqtt;adapter_rust_mqtt;crypto_openssl;certificate_provider_managed
+            components: core;mqttv3;mqttv5;adapter_paho;adapter_az_mqtt;crypto_openssl;certificate_provider_managed
           - os: windows-latest
             name: windows-msvc-shared
             shared: 'ON'
             mbedtls: ''
-            components: core;mqttv3;mqttv5;adapter_paho;adapter_az_mqtt;adapter_rust_mqtt;crypto_openssl;certificate_provider_managed
+            components: core;mqttv3;mqttv5;adapter_paho;adapter_az_mqtt;crypto_openssl;certificate_provider_managed
           - os: ubuntu-24.04
             name: linux-gcc-no-paho
             shared: 'OFF'
             mbedtls: '3.6.7'
             with_paho: 'OFF'
-            components: core;mqttv3;mqttv5;adapter_az_mqtt;adapter_rust_mqtt;crypto_openssl;crypto_mbedtls;certificate_provider_managed
+            components: core;mqttv3;mqttv5;adapter_az_mqtt;crypto_openssl;crypto_mbedtls;certificate_provider_managed
           - os: windows-latest
             name: windows-msvc-no-paho
             shared: 'OFF'
             mbedtls: ''
             with_paho: 'OFF'
-            components: core;mqttv3;mqttv5;adapter_az_mqtt;adapter_rust_mqtt;crypto_openssl;certificate_provider_managed
+            components: core;mqttv3;mqttv5;adapter_az_mqtt;crypto_openssl;certificate_provider_managed
     runs-on: ${{ matrix.os }}
     defaults:
       run:
@@ -1231,7 +1225,6 @@ jobs:
           -DAZ_IOT_WITH_PAHO=${{ matrix.with_paho || 'ON' }}
           -DAZ_IOT_BUILD_TESTS=ON
           -DAZ_IOT_BUILD_SAMPLES=OFF
-          -DAZ_IOT_WITH_RUST_MQTT=ON
           -DAZ_IOT_WITH_AZ_MQTT=ON
           -DBUILD_SHARED_LIBS=${{ matrix.shared }}
       - name: Build
@@ -1241,11 +1234,11 @@ jobs:
 
       - name: Install
         run: cmake --install build/install --prefix "$AZ_IOT_PREFIX"
-      - name: Check dependencies (no Paho)
-        if: matrix.with_paho == 'OFF'
+      - name: Check dependencies
         run: >
           cmake -DBUILD_DIR=build/install -DINSTALL_PREFIX="$AZ_IOT_PREFIX"
-          -DFORBID=paho -P eng/check-dependencies.cmake
+          "-DFORBID=rust_mqtt${{ matrix.with_paho == 'OFF' && ';paho' || '' }}"
+          -P eng/check-dependencies.cmake
       - name: Check the installed tree
         run: |
           test -f "$AZ_IOT_PREFIX/lib/cmake/azure-iot-sdk/azure-iot-sdk-config.cmake"
@@ -1289,6 +1282,16 @@ jobs:
         run: cygpath -w "$AZ_IOT_PREFIX/bin" >> "$GITHUB_PATH"
       - name: Test the consumer
         run: ctest --test-dir "$AZ_IOT_CONSUMER" --output-on-failure --no-tests=error
+      - name: The package has no adapter_rust_mqtt
+        run: |
+          if cmake -S tests/install -B "$RUNNER_TEMP/no-rust-mqtt-consumer" -G Ninja \
+               -DCMAKE_PREFIX_PATH="$AZ_IOT_PREFIX;$AZ_IOT_MBEDTLS;$AZ_IOT_DEPS" \
+               -DAZ_IOT_EXPECTED_COMPONENTS="core;adapter_rust_mqtt" > "$RUNNER_TEMP/no-rust-mqtt.log" 2>&1; then
+            echo "::error::find_package(azure-iot-sdk COMPONENTS adapter_rust_mqtt) succeeded"
+            exit 1
+          fi
+          # Refused by the component check, not by a missing dependency or tool.
+          grep -q 'set azure-iot-sdk_FOUND to FALSE' "$RUNNER_TEMP/no-rust-mqtt.log"
       - name: The package has no adapter_paho (no Paho)
         if: matrix.with_paho == 'OFF'
         run: |
@@ -1388,7 +1391,6 @@ jobs:
           cmake -S tests/subproject -B build/subproject -G Ninja
           -DCMAKE_BUILD_TYPE=Debug
           -DAZ_IOT_BUILD_TESTS=ON
-          -DAZ_IOT_WITH_RUST_MQTT=ON
           -DAZ_IOT_WITH_AZ_MQTT=ON
       - name: Build
         run: cmake --build build/subproject
@@ -1719,4 +1721,3 @@ jobs:
           fi
           echo "::error::coverage gate failed (coverage-c: $coverage_result)"
           exit 1
-

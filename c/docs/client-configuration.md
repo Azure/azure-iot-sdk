@@ -23,7 +23,6 @@ it adds `c/`.
 | `AZ_IOT_WITH_AZ_MQTT` | `OFF` | Build the az_mqtt MQTT adapter (`az_iot_adapter_az_mqtt.h`) and the bundled `deps/az_mqtt` client. |
 | `AZ_IOT_AZ_MQTT_TLS` | `openssl` | TLS backend of the az_mqtt adapter: `openssl` (3.0+, with key references) or `mbedtls`. Windows uses Schannel. |
 | `AZ_IOT_AZ_MQTT_FOOTPRINT`, `AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE`, `AZ_IOT_AZ_MQTT_RECEIVE_BUFFER_SIZE`, `AZ_IOT_AZ_MQTT_INFLIGHT_MAX`, `AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX`, `AZ_IOT_AZ_MQTT_CONFIG_FILE` | empty | Per-client sizes of the az_mqtt adapter. Empty: the value of the footprint (`DEFAULT` or `CONSTRAINED`). Each is also a compile-time macro, so builds without CMake can set them. See [az_mqtt adapter sizes](#az_mqtt-adapter-sizes). |
-| `AZ_IOT_WITH_RUST_MQTT` | `OFF` | Build the Rust MQTT adapter shell: a C adapter that forwards to a Rust MQTT client the application installs at run time. |
 | `AZ_IOT_BUILD_SAMPLES` | `ON` | Build the samples. |
 | `AZ_IOT_BUILD_TESTS` | `OFF` | Build the unit tests (the presets turn it on). |
 | `AZ_IOT_INSTALL` | `ON` when `c/` is the top-level project | Generate install rules and the `azure-iot-sdk` CMake package. |
@@ -131,12 +130,9 @@ stack or heap), with no allocation by the adapter. The sizes above become run-ti
 - The client's `destroy()` wipes the whole workspace (credentials included) and frees nothing.
 - `AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX` stays a compile-time value.
 
-The Paho and Rust adapters have the same descriptor (`az_iot_paho_get_adapter()`,
-`az_iot_rust_mqtt_get_adapter()`; bounds `AZ_IOT_PAHO_WORKSPACE_SIZE`,
-`AZ_IOT_RUST_MQTT_WORKSPACE_SIZE`). Their workspace holds only the adapter's state: Paho and the
-Rust client allocate their own internals and size their own buffers, so the limits are only checked
-(the ranges az_mqtt accepts). The Rust adapter is MQTT 5 only; its `init()` returns
-`AZ_IOT_ERR_NOT_SUPPORTED` until an FFI table is installed.
+The Paho adapter has the same descriptor (`az_iot_paho_get_adapter()`; bound
+`AZ_IOT_PAHO_WORKSPACE_SIZE`). Its workspace holds only the adapter's state: Paho allocates its
+own internals and sizes its own buffers, so the limits are only checked (the ranges az_mqtt accepts).
 
 ### Limits in the public headers
 

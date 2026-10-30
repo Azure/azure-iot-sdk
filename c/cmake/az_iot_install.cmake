@@ -39,7 +39,6 @@ set(_az_iot_export_names
     az_iot_mqttv5                        mqttv5
     az_iot_adapter_paho                  adapter_paho
     az_iot_adapter_az_mqtt               adapter_az_mqtt
-    az_iot_adapter_rust_mqtt             adapter_rust_mqtt
     az_iot_crypto_openssl                crypto_openssl
     az_iot_crypto_mbedtls                crypto_mbedtls
     az_iot_certificate_provider_managed  certificate_provider_managed
@@ -111,7 +110,7 @@ install(TARGETS ${_az_iot_targets} ${_az_iot_sdk_for_c_targets} ${_az_iot_az_mqt
 
 # An adapter's public header ships only with the adapter.
 set(_az_iot_absent_headers)
-foreach(_adapter paho az_mqtt rust_mqtt)
+foreach(_adapter paho az_mqtt)
     if(NOT TARGET az_iot_adapter_${_adapter})
         list(APPEND _az_iot_absent_headers PATTERN "az_iot_adapter_${_adapter}.h" EXCLUDE)
     endif()
@@ -134,7 +133,6 @@ endif()
 # bare #include "<header>.h" spelling.
 set(_az_iot_adapter_inc "${CMAKE_INSTALL_INCLUDEDIR}/azure/iot/adapters")
 set(_az_iot_adapter_headers
-    az_iot_adapter_rust_mqtt             adapters/rust_mqtt/az_iot_mqtt_rust_ffi.h
     az_iot_crypto_openssl                adapters/crypto_openssl/az_iot_crypto_openssl.h
     az_iot_crypto_mbedtls                adapters/crypto_mbedtls/az_iot_crypto_mbedtls.h
     az_iot_certificate_provider_managed  adapters/cert_openssl/az_iot_certificate_provider_managed.h

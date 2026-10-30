@@ -1429,7 +1429,7 @@ Platform-specific code (Linux libcurl downloads, ESP32 OTA partition writes, etc
 
 **Rationale:**
 
-1. **Consistency with existing pattern** — MQTT adapters live in `adapters/paho/` and `adapters/rust_mqtt/`, not in `src/core/`. Platform-specific software updates code MUST follow the same convention.
+1. **Consistency with existing pattern** — MQTT adapters live in `adapters/paho/` and `adapters/az_mqtt/`, not in `src/core/`. Platform-specific software updates code MUST follow the same convention.
 
 2. **Clean dependency graph** — `src/features/su/` MUST depend only on `az_iot_connection_client` (through the software updates channel), `azure-sdk-for-c` (for parsing), and the hooks vtable. It MUST NOT depend on libcurl, ESP-IDF, or OS-specific headers. This makes it compilable and testable on any platform including host-only unit tests.
 

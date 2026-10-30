@@ -88,7 +88,6 @@ jobs:
           -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/mbedtls"
           -DAZ_IOT_BUILD_TESTS=OFF
           -DAZ_IOT_WITH_PAHO=ON
-          -DAZ_IOT_WITH_RUST_MQTT=ON
 
       - name: clang-tidy
         run: bash eng/clang-tidy.sh build/clang-tidy
@@ -119,14 +118,13 @@ jobs:
           -DAZ_IOT_ENABLE_MSVC_ANALYZE=ON
           -DAZ_IOT_BUILD_TESTS=OFF
           -DAZ_IOT_WITH_PAHO=ON
-          -DAZ_IOT_WITH_RUST_MQTT=ON
 
       - name: Check the analyzed targets
         # Optional adapters are skipped silently when a dependency is missing; fail instead.
         run: |
           targets="$(cmake --build build/msvc-analyze --target help)"
           for t in az_iot_core az_iot_mqttv3 az_iot_mqttv5 az_iot_adapter_paho \
-                   az_iot_adapter_rust_mqtt az_iot_crypto_openssl \
+                   az_iot_crypto_openssl \
                    az_iot_certificate_provider_managed; do
             grep -q "^${t}:" <<<"$targets" || { echo "::error::target ${t} not configured"; exit 1; }
           done
