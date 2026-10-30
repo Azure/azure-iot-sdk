@@ -106,6 +106,50 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             Assert.False(invokedArgs.CancellationToken.IsCancellationRequested);
         }
 
+        [Theory]
+        [InlineData(false, false)]
+        [InlineData(true, false)]
+        [InlineData(false, true)]
+        public async Task Probe_WithoutBothHandlers_AcknowledgesAndRejectsAsMethodNotFound(bool registerProbeHandler, bool registerMethodHandler)
+        {
+            MockFeatureConnectionClient connection = new()
+            {
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv5, DeviceId),
+            };
+            using DirectMethodClient directMethodClient = new(connection);
+
+            bool probeHandlerInvoked = false;
+            if (registerProbeHandler)
+            {
+                directMethodClient.DirectMethodProbeReceivedAsync += (_) =>
+                {
+                    probeHandlerInvoked = true;
+                    return Task.FromResult(DirectMethodProbeAck.Accepted());
+                };
+            }
+
+            if (registerMethodHandler)
+            {
+                directMethodClient.DirectMethodInvokedAsync += (_) => Task.FromResult(new DirectMethodResponse() { Status = 200 });
+            }
+
+            byte[] correlationData = Guid.NewGuid().ToByteArray();
+            var probe = new Probe() { MethodName = "reboot", ResponseTimeoutSeconds = 30 };
+            MockMqttPublishReceivedEventArgs args = await connection.SimulateReceiveAsync(CreateInboundMethodPublish("probe:1", correlationData, probe.ToByteArray()));
+
+            Assert.Equal(1, args.AcknowledgeCount);
+            Assert.False(probeHandlerInvoked);
+
+            MqttPublish probeAckPublish = Assert.Single(connection.PublishedMessages);
+            Assert.Equal(OutgoingMethodsTopic, probeAckPublish.Topic);
+            Assert.Equal("probe-ack:1", GetType(probeAckPublish));
+            Assert.Equal(correlationData, probeAckPublish.CorrelationData);
+
+            ProbeAck sentProbeAck = ProbeAck.Parser.ParseFrom(probeAckPublish.Payload);
+            Assert.Equal(ProbeAck.ResultOneofCase.Rejected, sentProbeAck.ResultCase);
+            Assert.Equal(RejectedReason.MethodNotFound, sentProbeAck.Rejected.Reason);
+        }
+
         [Fact]
         public async Task Exec_WithUnknownRequestId_IsIgnored()
         {
