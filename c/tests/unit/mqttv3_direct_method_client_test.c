@@ -34,6 +34,8 @@
 #include "azure/iot/az_iot_result.h"
 #include "azure/iot/mqttv3/az_iot_direct_method_client.h"
 
+#include "internal/connection_client_internal.h"
+
 #include "support/mock_mqtt_iface.h"
 #include "support/test_provider.h"
 #include "support/subscription_ack.h"
@@ -894,6 +896,99 @@ static void deinit_tolerates_null(void** state)
   az_iot_mqttv3_direct_method_client_deinit(NULL);
 }
 
+/* ---- session end ------------------------------------------------------------ */
+
+/* IoT Hub fails a pending call when the device disconnects: the session end frees every slot,
+ * and answering such an invocation says NOT_CONNECTED and sends nothing. */
+static void a_session_end_ends_unanswered_invocations(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  invocation_record rec = { 0 };
+  assert_int_equal(
+      az_iot_mqttv3_direct_method_client_set_handler(&fx->dm, on_method, &rec), AZ_IOT_OK);
+  for (int i = 0; i < AZ_IOT_DM_MAX_INFLIGHT; ++i)
+  {
+    rec.fired = false;
+    inject_invocation(fx, i);
+    assert_true(rec.fired);
+  }
+
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(fx->mock));
+  (void)az_iot_connection_client_do_work(&fx->conn, 0);
+  for (size_t i = 0; i < AZ_IOT_DM_MAX_INFLIGHT; ++i)
+  {
+    assert_false(fx->dm._internal.req_pool[i]._internal.in_use);
+  }
+
+  /* The session end destroyed the adapter: nothing can be published, and nothing is tried. */
+  assert_int_equal(
+      az_iot_mqttv3_direct_method_respond(&fx->dm, rec.request, 200, NULL, 0),
+      AZ_IOT_ERR_NOT_CONNECTED);
+}
+
+/* A request from another client naming the same slot and sequence is still refused as foreign. */
+static void a_session_end_does_not_vouch_for_a_foreign_request(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  invocation_record rec = { 0 };
+  assert_int_equal(
+      az_iot_mqttv3_direct_method_client_set_handler(&fx->dm, on_method, &rec), AZ_IOT_OK);
+  inject_invocation(fx, 1);
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(fx->mock));
+  (void)az_iot_connection_client_do_work(&fx->conn, 0);
+
+  az_iot_direct_method_request foreign = rec.request;
+  foreign._internal.owner = &rec;
+  assert_int_equal(
+      az_iot_mqttv3_direct_method_respond(&fx->dm, foreign, 200, NULL, 0), AZ_IOT_ERR_INVALID_ARG);
+}
+
+static void ignore_feature_event(const az_iot_connection_feature_event* event, void* user_ctx)
+{
+  (void)event;
+  (void)user_ctx;
+}
+
+/* With no feature observer free, init fails and leaves nothing behind; deinit withdraws the
+ * observer it took. */
+static void init_needs_a_feature_observer_and_deinit_returns_it(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_mqttv3_direct_method_client_deinit(&fx->dm);
+
+  static int owners[AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_FEATURE_OBSERVERS];
+  size_t taken = 0;
+  while (taken < AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_FEATURE_OBSERVERS
+         && az_iot_connection_client__add_feature_observer(
+                &fx->conn,
+                AZ_IOT_CONNECTION_FEATURE_EVENT_SESSION_END,
+                ignore_feature_event,
+                &owners[taken])
+             == AZ_IOT_OK)
+  {
+    taken++;
+  }
+  assert_int_equal(
+      az_iot_mqttv3_direct_method_client_init(&fx->dm, &fx->conn), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+  assert_int_equal(fx->conn.required_profile_refs, 0);
+  az_iot_connection_client__remove_feature_observer(&fx->conn, ignore_feature_event, &owners[0]);
+
+  assert_int_equal(az_iot_mqttv3_direct_method_client_init(&fx->dm, &fx->conn), AZ_IOT_OK);
+  az_iot_mqttv3_direct_method_client_deinit(&fx->dm);
+  assert_int_equal(
+      az_iot_connection_client__add_feature_observer(
+          &fx->conn, AZ_IOT_CONNECTION_FEATURE_EVENT_SESSION_END, ignore_feature_event, &owners[0]),
+      AZ_IOT_OK);
+  for (size_t i = 0; i < taken; ++i)
+  {
+    az_iot_connection_client__remove_feature_observer(&fx->conn, ignore_feature_event, &owners[i]);
+  }
+  assert_int_equal(az_iot_mqttv3_direct_method_client_init(&fx->dm, &fx->conn), AZ_IOT_OK);
+}
 static void deinit_zeroes_the_client(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -1392,6 +1487,11 @@ int main(void)
     cmocka_unit_test(init_against_an_mqtt_v5_connection_is_rejected),
     cmocka_unit_test_setup_teardown(the_subscription_uses_qos_0, setup, teardown),
     cmocka_unit_test(deinit_tolerates_null),
+    cmocka_unit_test_setup_teardown(a_session_end_ends_unanswered_invocations, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_session_end_does_not_vouch_for_a_foreign_request, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        init_needs_a_feature_observer_and_deinit_returns_it, setup, teardown),
     cmocka_unit_test_setup_teardown(deinit_zeroes_the_client, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_second_client_on_the_same_connection_is_refused, setup, teardown),

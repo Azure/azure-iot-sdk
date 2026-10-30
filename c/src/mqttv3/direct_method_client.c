@@ -73,6 +73,29 @@ static void requests_expire_stale(az_iot_mqttv3_direct_method_client* dm)
   }
 }
 
+/** @brief Session end: every invocation not answered yet ends with it, freeing its slot. */
+static void on_connection_event(const az_iot_connection_feature_event* event, void* user_ctx)
+{
+  az_iot_mqttv3_direct_method_client* dm = (az_iot_mqttv3_direct_method_client*)user_ctx;
+  if (event->kind != AZ_IOT_CONNECTION_FEATURE_EVENT_SESSION_END)
+  {
+    return;
+  }
+  for (size_t i = 0; i < AZ_IOT_DM_MAX_INFLIGHT; ++i)
+  {
+    az_iot_direct_method_slot* s = &DI(dm).req_pool[i];
+    if (s->_internal.in_use)
+    {
+      AZ_IOT_LOG_WARNF(
+          AZ_IOT_LOG_COMPONENT_MQTTV3_DIRECT_METHOD,
+          "the session ended before '%s' was answered; IoT Hub fails the call",
+          s->_internal.method_name);
+      DI(dm).ended_by_session_seq[i] = s->_internal.seq;
+      s->_internal.in_use = false;
+    }
+  }
+}
+
 /* Resolve a request to the slot it names, or NULL when it no longer refers to a
  * live invocation of this client.
  *
@@ -274,8 +297,14 @@ AZ_NODISCARD az_iot_result az_iot_mqttv3_direct_method_client_init(
         AZ_IOT_SUBSCRIPTION_FAILS_SESSION,
         NULL);
   }
+  if (result == AZ_IOT_OK)
+  {
+    result = az_iot_connection_client__add_feature_observer(
+        conn, AZ_IOT_CONNECTION_FEATURE_EVENT_SESSION_END, on_connection_event, client);
+  }
   if (result != AZ_IOT_OK)
   {
+    az_iot_connection_client__remove_feature_observer(conn, on_connection_event, client);
     (void)az_iot_connection_client__remove_subscriptions_for(conn, client);
     (void)az_iot_connection_client__unregister_inbound_handlers(conn, client);
     az_iot_connection_client__release_profile(conn);
@@ -292,6 +321,7 @@ void az_iot_mqttv3_direct_method_client_deinit(az_iot_mqttv3_direct_method_clien
   {
     return;
   }
+  az_iot_connection_client__remove_feature_observer(DI(client).conn, on_connection_event, client);
   az_iot_connection_client__release_profile(DI(client).conn);
   (void)az_iot_connection_client__remove_subscriptions_for(DI(client).conn, client);
   (void)az_iot_connection_client__unregister_inbound_handlers(DI(client).conn, client);
@@ -353,6 +383,15 @@ az_iot_result az_iot_mqttv3_direct_method_respond(
   az_iot_direct_method_slot* slot = request_resolve(dm, request, &index);
   if (slot == NULL)
   {
+    if (request._internal.owner == dm && request._internal.slot < AZ_IOT_DM_MAX_INFLIGHT
+        && request._internal.seq != 0u
+        && DI(dm).ended_by_session_seq[request._internal.slot] == request._internal.seq)
+    {
+      AZ_IOT_LOG_WARN(
+          AZ_IOT_LOG_COMPONENT_MQTTV3_DIRECT_METHOD,
+          "respond() called after the session the invocation arrived on ended; sending nothing");
+      return AZ_IOT_ERR_NOT_CONNECTED;
+    }
     AZ_IOT_LOG_ERROR(
         AZ_IOT_LOG_COMPONENT_MQTTV3_DIRECT_METHOD,
         "respond() called on a request that is no longer live -- "
