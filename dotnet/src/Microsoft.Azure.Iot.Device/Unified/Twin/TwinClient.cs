@@ -23,8 +23,10 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
     /// <see cref="TwinStateChanged"/>).
     /// </para>
     /// <para>
-    /// IoT hubs that use MQTTv3 don't push the twin to the device when it connects, so on those this client gets the twin
-    /// each time the device (re)connects, and raises <see cref="TwinPushReceived"/> with the sections of it that changed.
+    /// IoT hubs that use MQTTv3 don't push the twin to the device when it connects, so on those the connection client gets
+    /// the twin as part of each (re)connection, before the connection is ready. This client reconciles its copy with that twin
+    /// (getting the twin itself if the connection client couldn't) before sending any held reported properties patches, and
+    /// raises <see cref="TwinPushReceived"/> with the sections of it that changed.
     /// IoT hubs that use MQTTv5 learn the versions of the twin that this device holds when it connects, and push the sections
     /// that changed themselves.
     /// </para>
@@ -99,8 +101,8 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
         /// </summary>
         /// <remarks>
         /// IoT hubs that use MQTTv5 push the twin sections that changed when the device (re)connects. IoT hubs that use MQTTv3
-        /// don't push the twin, so on those this client gets the twin each time the device (re)connects, and whenever it misses
-        /// a desired properties patch or learns that its copy of the reported properties is out of date. This event is also
+        /// don't push the twin, so on those the twin is fetched each time the device (re)connects, and whenever this client
+        /// misses a desired properties patch or learns that its copy of the reported properties is out of date. This event is also
         /// raised with the desired section whenever this client resyncs its desired properties with IoT hub. The desired section is only included if it is newer than the desired properties this client last observed. The
         /// reported section is only included if it differs from the version of the reported properties this client holds.
         /// </remarks>
@@ -152,7 +154,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
         /// </summary>
         /// <remarks>
         /// IoT hub reveals its version of the desired properties in every desired properties patch, twin push and get twin
-        /// response (including the one this client gets after each connection to an IoT hub that uses MQTTv3), and IoT hubs
+        /// response (including the one fetched upon each connection to an IoT hub that uses MQTTv3), and IoT hubs
         /// that use MQTTv5 also reveal it when they acknowledge this device's presence upon each connection. This value is
         /// reset whenever the connection is lost.
         /// </remarks>
@@ -164,7 +166,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
         /// </summary>
         /// <remarks>
         /// IoT hub reveals its version of the reported properties in every twin push and get twin response (including the one
-        /// this client gets after each connection to an IoT hub that uses MQTTv3) and every successful reported properties
+        /// fetched upon each connection to an IoT hub that uses MQTTv3) and every successful reported properties
         /// update response, and IoT hubs that use MQTTv5 also reveal it when they acknowledge this device's presence upon each
         /// connection. This value is reset whenever the connection is lost.
         /// </remarks>
@@ -177,6 +179,9 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
         /// <remarks>
         /// The provided connection client does not need to be connected before this constructor is called. However, the provided connection client must be connected prior
         /// to using this feature client to send/receive any twin messages, except for reported properties patches, which are held until the device connects.
+        /// If the connection to an IoT hub that uses MQTTv3 is already ready when this client is constructed and the connection
+        /// client got the twin when it connected, this client applies that twin right away, before any event handler can be
+        /// added; use <see cref="GetTwinState"/> to read it.
         /// </remarks>
         /// <example>
         /// The recommended order to instantiate feature clients and the connection client is as follows:

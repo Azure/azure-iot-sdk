@@ -18,7 +18,9 @@ using IUnifiedConnectionClient = Microsoft.Azure.Iot.Device.Unified.Connection.I
 namespace Microsoft.Azure.Iot.Device.Twin
 {
     // The twin transport of IoT hubs that use MQTTv3. IoT hub neither acknowledges this device's presence nor pushes the twin,
-    // and its twin requests can't be conditional, so the engine gets the full twin each time the connection is ready.
+    // and its twin requests can't be conditional, so the connection client gets the full twin as part of each connection's
+    // device presence flow instead, which this transport offers to the engine in place of a birth ack and twin push (or the
+    // engine gets the full twin itself, if the connection client couldn't).
     internal sealed class ClassicTwinTransport : ITwinTransport
     {
         internal const string ResponseTopic = "$iothub/twin/res/";
@@ -29,7 +31,7 @@ namespace Microsoft.Azure.Iot.Device.Twin
         private static readonly Regex s_responseTopicRegex = new(ResponseTopicPattern, RegexOptions.Compiled);
 
         // Each request carries its ID as the request ID ($rid), which IoT hub echoes in the topic of the response.
-        private const string GetTopicFormat = "$iothub/twin/GET/?$rid={0}";
+        internal const string GetTopicFormat = "$iothub/twin/GET/?$rid={0}";
         private const string ReportedPropertiesPatchTopicFormat = "$iothub/twin/PATCH/properties/reported/?$rid={0}";
 
         private const string RequestIdTopicKey = "$rid";
@@ -48,6 +50,21 @@ namespace Microsoft.Azure.Iot.Device.Twin
         }
 
         public bool AnnouncesTwinVersions => false;
+
+        public TwinSnapshot? ConnectTwinSnapshot
+        {
+            get
+            {
+                Unified.Connection.ConnectTwinSnapshot? snapshot = _connection.LatestConnectTwinSnapshot;
+                if (snapshot == null || snapshot.ConnectionId != _connection.HubConnectionId)
+                {
+                    // The connection client didn't get the twin on the current connection.
+                    return null;
+                }
+
+                return new TwinSnapshot(snapshot.Desired, snapshot.DesiredVersion, snapshot.Reported, snapshot.ReportedVersion);
+            }
+        }
 
         public Guid? ConnectionNonce => _connectionNonce;
 
@@ -165,7 +182,7 @@ namespace Microsoft.Azure.Iot.Device.Twin
                     {
                         Status = status == 429 || status >= 500
                             ? TwinResponseStatus.Transient
-                            : status >= 200 && status < 300 ? TwinResponseStatus.Success : TwinResponseStatus.Rejected,
+                            : IsSuccessStatus(status) ? TwinResponseStatus.Success : TwinResponseStatus.Rejected,
                         StatusCode = status,
                         ParseSnapshot = () => ParseGetTwinResponsePayload(payload),
                         PatchResponse = new ReportedPatchResponse()
@@ -214,7 +231,7 @@ namespace Microsoft.Azure.Iot.Device.Twin
         }
 
         // The payload looks like {"desired":{...,"$version":n},"reported":{...,"$version":m}}.
-        private static TwinSnapshot ParseGetTwinResponsePayload(byte[] payload)
+        internal static TwinSnapshot ParseGetTwinResponsePayload(byte[] payload)
         {
             JsonObject twin = payload.Length == 0 ? new JsonObject() : JsonNode.Parse(payload)!.AsObject();
             JsonObject desired = DetachSection(twin, "desired", out ulong desiredVersion);
@@ -259,7 +276,12 @@ namespace Microsoft.Azure.Iot.Device.Twin
             return ulong.TryParse(query.Get(VersionKey), NumberStyles.None, CultureInfo.InvariantCulture, out ulong version) ? version : 0;
         }
 
-        private static bool TryParseResponseTopic(string topicName, out Guid requestId, out int status, out ulong version)
+        internal static bool IsSuccessStatus(int status)
+        {
+            return status >= 200 && status < 300;
+        }
+
+        internal static bool TryParseResponseTopic(string topicName, out Guid requestId, out int status, out ulong version)
         {
             requestId = Guid.Empty;
             status = 0;

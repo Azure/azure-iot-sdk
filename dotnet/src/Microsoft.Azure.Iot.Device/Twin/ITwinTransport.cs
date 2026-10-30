@@ -13,9 +13,16 @@ namespace Microsoft.Azure.Iot.Device.Twin
     {
         // Whether the current connection announces this device's twin versions in its birth message, and IoT hub reveals its
         // own versions in the birth ack and pushes the twin sections that changed. If false, IoT hub never pushes the twin
-        // or acknowledges the device's presence, so the engine gets the full twin each time the connection is ready instead.
+        // or acknowledges the device's presence, so the engine reconciles with the twin that the connection got as it connected
+        // (see ConnectTwinSnapshot) each time the connection is ready instead, or gets the full twin itself if there is none.
         // Reported properties patches are only sent after the current connection's birth ack if this is true.
         bool AnnouncesTwinVersions { get; }
+
+        // The full twin that the current connection got from IoT hub as part of its device presence flow (before it was ready),
+        // or null if it didn't get one. Only a transport that doesn't announce twin versions offers one, as its counterpart of
+        // the birth ack and twin push. Reported properties patches are only sent on the current connection once the engine
+        // has reconciled with it.
+        TwinSnapshot? ConnectTwinSnapshot { get; }
 
         // Identifies the current (or most recent) connection, so that the engine tells the state of one connection from that
         // of the next. Null if it can't tell them apart.

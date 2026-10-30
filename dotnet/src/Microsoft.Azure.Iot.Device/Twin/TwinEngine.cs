@@ -62,6 +62,10 @@ namespace Microsoft.Azure.Iot.Device.Twin
         // The connection nonce of the latest birth ack that this engine processed.
         private Guid? _birthAckConnectionNonce;
 
+        // Guarded by _reportedPatchLock. The connection nonce of the latest connection whose connect twin snapshot (see
+        // ITwinTransport.ConnectTwinSnapshot) this engine reconciled with. Like the birth ack, it gates reported patches.
+        private Guid? _connectTwinReconciledNonce;
+
         // The connection nonce of the latest connection that was lost. Reported patches must not be sent on it again, since they
         // would carry if-match versions from before the connection was lost.
         private Guid? _lostConnectionNonce;
@@ -75,6 +79,13 @@ namespace Microsoft.Azure.Iot.Device.Twin
         // The version of the desired properties that this device has most recently observed. 0 means the device has not
         // observed the desired properties yet. Unlike the resync state, this survives disconnects.
         private ulong _localDesiredVersion;
+
+        // Guarded by _desiredStateLock. This device's versions of the twin sections when the current connection started, which
+        // is before the connection got its connect twin snapshot (see ApplyConnectTwinSnapshotAsync), and the connection nonce
+        // of the latest connection whose connect twin snapshot this engine applied.
+        private ulong _desiredVersionAtConnectionStart;
+        private ulong _reportedVersionAtConnectionStart;
+        private Guid? _connectTwinAppliedNonce;
 
         // Guards _localReportedVersion.
         private readonly object _reportedStateLock = new();
@@ -168,6 +179,9 @@ namespace Microsoft.Azure.Iot.Device.Twin
                 }
             }
 
+            _desiredVersionAtConnectionStart = _localDesiredVersion;
+            _reportedVersionAtConnectionStart = _localReportedVersion;
+
             _transport.Start(this);
 
             // This engine may be created after the current connection's birth ack arrived, in which case it checks the
@@ -180,6 +194,13 @@ namespace Microsoft.Azure.Iot.Device.Twin
                 {
                     _ = CompleteAsync(ReconcileHeldVersions(connectionNonce, latestBirthAck.DesiredVersion, latestBirthAck.ReportedVersion));
                 }
+            }
+            else if (_transport.IsReady && _transport.ConnectTwinSnapshot != null)
+            {
+                // The connection became ready (with the twin it got as it connected) before this engine was created, so this
+                // engine reconciles with that twin now (before the owner can add any event handler) rather than waiting for
+                // the next connection.
+                ((ITwinTransportHandler)this).HandleConnectionReady();
             }
         }
 
@@ -316,6 +337,16 @@ namespace Microsoft.Azure.Iot.Device.Twin
             // Transports that don't expose a connection nonce don't announce this device's presence at all.
             Guid? connectionNonce = _transport.ConnectionNonce;
             if (_transport.AnnouncesTwinVersions && connectionNonce != null && !HasBirthAck(connectionNonce.Value))
+            {
+                return null;
+            }
+
+            // Likewise, the twin that a connection got as it connected reveals IoT hub's reported properties, so wait until
+            // this engine has reconciled with it.
+            if (!_transport.AnnouncesTwinVersions
+                && connectionNonce != null
+                && _connectTwinReconciledNonce != connectionNonce
+                && _transport.ConnectTwinSnapshot != null)
             {
                 return null;
             }
@@ -793,11 +824,17 @@ namespace Microsoft.Azure.Iot.Device.Twin
             lock (_desiredStateLock)
             {
                 CancelDesiredResync();
+
+                _desiredVersionAtConnectionStart = _localDesiredVersion;
+                lock (_reportedStateLock)
+                {
+                    _reportedVersionAtConnectionStart = _localReportedVersion;
+                }
             }
         }
 
         // Sends the reported patches held while the device wasn't connected. If IoT hub doesn't push the twin when the device
-        // connects, gets it instead.
+        // connects, first reconciles with the twin that the connection got as it connected, or gets the twin if there is none.
         void ITwinTransportHandler.HandleConnectionReady()
         {
             if (_isDisposed || !_transport.IsReady)
@@ -821,6 +858,16 @@ namespace Microsoft.Azure.Iot.Device.Twin
                 if (isBirthAckUnprocessed)
                 {
                     _ = ((ITwinTransportHandler)this).HandleBirthAckAsync(connectionNonce, latestBirthAck!.DesiredVersion, latestBirthAck.ReportedVersion);
+                    return;
+                }
+            }
+            else
+            {
+                TwinSnapshot? connectTwin = _transport.ConnectTwinSnapshot;
+                if (connectTwin != null)
+                {
+                    // Like a birth ack and twin push, this reconciles the twin and then sends the held reported patches.
+                    _ = ApplyConnectTwinSnapshotAsync(_transport.ConnectionNonce, connectTwin);
                     return;
                 }
             }
@@ -1034,6 +1081,8 @@ namespace Microsoft.Azure.Iot.Device.Twin
             lock (_desiredStateLock)
             {
                 CancelDesiredResync();
+                _desiredVersionAtConnectionStart = 0;
+                _reportedVersionAtConnectionStart = 0;
                 lock (_twinStateLock)
                 {
                     _localDesiredVersion = 0;
@@ -1601,49 +1650,106 @@ namespace Microsoft.Azure.Iot.Device.Twin
                     return true;
                 }
 
-                RecordAuthoritativeVersions(connectionNonce, snapshot.DesiredVersion, snapshot.ReportedVersion);
-
-                TwinPushReceivedEventArgs twinPushArgs = new()
-                {
-                    // Only a transport that doesn't push the twin gets the reported properties when resyncing.
-                    Reported = snapshot.Reported != null && !_transport.AnnouncesTwinVersions
-                        ? ReconcileReportedSnapshot(snapshot.ReportedVersion, snapshot.Reported, resync.ReportedVersionWhenSent)
-                        : null,
-                };
-
-                if (snapshot.Desired != null && (snapshot.DesiredVersion != 0 || _transport.AnnouncesTwinVersions))
-                {
-                    if (!_transport.AnnouncesTwinVersions
-                        && snapshot.DesiredVersion != 0
-                        && snapshot.DesiredVersion < _localDesiredVersion
-                        && _localDesiredVersion == resync.DesiredVersionWhenSent)
-                    {
-                        // IoT hub's versions never decrease, so the version this device held is not valid. A transport that
-                        // announces twin versions finds this out from the birth ack instead.
-                        Trace.TraceWarning("This device held version {0} of the desired properties, but IoT hub only has version {1}. Adopting version {1}.", _localDesiredVersion, snapshot.DesiredVersion);
-                        lock (_twinStateLock)
-                        {
-                            _localDesiredVersion = 0;
-                            _isDesiredPropertiesComplete = false;
-                            _isTwinStateChanged = true;
-                        }
-
-                        _transport.ReplaceDesiredPropertiesVersion(0);
-                    }
-
-                    twinPushArgs.Desired = TryApplyDesiredSnapshot(snapshot.DesiredVersion, snapshot.Desired);
-                }
-
-                if (twinPushArgs.Desired != null || twinPushArgs.Reported != null)
-                {
-                    outcome.Deliveries.Add(twinPushArgs);
-                }
-
-                ResolveDesiredResync(connectionNonce, outcome);
+                ApplyTwinSnapshot(snapshot, resync.DesiredVersionWhenSent, resync.ReportedVersionWhenSent, connectionNonce, outcome);
             }
 
             await CompleteAsync(outcome).ConfigureAwait(false);
             return true;
+        }
+
+        // Reconciles with the twin that the connection got from IoT hub as it connected, exactly like the response to a resync
+        // GET, delivers the resulting events, and then sends the reported patches held while the device wasn't connected.
+        private async Task ApplyConnectTwinSnapshotAsync(Guid? connectionNonce, TwinSnapshot connectTwin)
+        {
+            try
+            {
+                // The connection's twin is shared with any other feature client of the connection, so this engine works on its own copy.
+                TwinSnapshot snapshot = new(
+                    connectTwin.Desired?.DeepClone().AsObject(),
+                    connectTwin.DesiredVersion,
+                    connectTwin.Reported?.DeepClone().AsObject(),
+                    connectTwin.ReportedVersion);
+
+                DesiredStateOutcome outcome = new();
+                lock (_desiredStateLock)
+                {
+                    if (_isDisposed || connectionNonce != _transport.ConnectionNonce || _connectTwinAppliedNonce == connectionNonce)
+                    {
+                        return;
+                    }
+
+                    _connectTwinAppliedNonce = connectionNonce;
+                    DiscardDesiredResyncFromPreviousConnection(connectionNonce);
+
+                    // The connection got this twin after it started, so a section whose version changed since then was changed by
+                    // IoT hub on this connection (for example, by a desired patch that arrived before the connection was ready),
+                    // and an older version in the snapshot doesn't invalidate it.
+                    ApplyTwinSnapshot(snapshot, _desiredVersionAtConnectionStart, _reportedVersionAtConnectionStart, connectionNonce, outcome);
+                }
+
+                // The application sees the reconciled twin before any held reported patch is sent, like with a GET on ready.
+                await CompleteAsync(outcome).ConfigureAwait(false);
+
+                // IoT hub's reported properties are now reconciled, so the held reported patches can be sent.
+                ReportedPatchAttempt? nextAttempt;
+                lock (_reportedPatchLock)
+                {
+                    _connectTwinReconciledNonce = connectionNonce;
+                    nextAttempt = TryStartReportedPatchAttempt();
+                }
+
+                SendReportedPatchAttempt(nextAttempt);
+            }
+            finally
+            {
+                RaiseTwinEvents();
+            }
+        }
+
+        // Must be called while holding _desiredStateLock. Reconciles this device's copy of its twin with a full twin from IoT hub
+        // (the response to a GET), given this device's versions of the twin sections when that GET was sent, then ends the
+        // resync (if any).
+        private void ApplyTwinSnapshot(TwinSnapshot snapshot, ulong desiredVersionWhenSent, ulong reportedVersionWhenSent, Guid? connectionNonce, DesiredStateOutcome outcome)
+        {
+            RecordAuthoritativeVersions(connectionNonce, snapshot.DesiredVersion, snapshot.ReportedVersion);
+
+            TwinPushReceivedEventArgs twinPushArgs = new()
+            {
+                // Only a transport that doesn't push the twin gets the reported properties when resyncing.
+                Reported = snapshot.Reported != null && !_transport.AnnouncesTwinVersions
+                    ? ReconcileReportedSnapshot(snapshot.ReportedVersion, snapshot.Reported, reportedVersionWhenSent)
+                    : null,
+            };
+
+            if (snapshot.Desired != null && (snapshot.DesiredVersion != 0 || _transport.AnnouncesTwinVersions))
+            {
+                if (!_transport.AnnouncesTwinVersions
+                    && snapshot.DesiredVersion != 0
+                    && snapshot.DesiredVersion < _localDesiredVersion
+                    && _localDesiredVersion == desiredVersionWhenSent)
+                {
+                    // IoT hub's versions never decrease, so the version this device held is not valid. A transport that
+                    // announces twin versions finds this out from the birth ack instead.
+                    Trace.TraceWarning("This device held version {0} of the desired properties, but IoT hub only has version {1}. Adopting version {1}.", _localDesiredVersion, snapshot.DesiredVersion);
+                    lock (_twinStateLock)
+                    {
+                        _localDesiredVersion = 0;
+                        _isDesiredPropertiesComplete = false;
+                        _isTwinStateChanged = true;
+                    }
+
+                    _transport.ReplaceDesiredPropertiesVersion(0);
+                }
+
+                twinPushArgs.Desired = TryApplyDesiredSnapshot(snapshot.DesiredVersion, snapshot.Desired);
+            }
+
+            if (twinPushArgs.Desired != null || twinPushArgs.Reported != null)
+            {
+                outcome.Deliveries.Add(twinPushArgs);
+            }
+
+            ResolveDesiredResync(connectionNonce, outcome);
         }
 
         // Raises the events and sends the GET request that the desired section state machine decided on, outside of _desiredStateLock.

@@ -1799,6 +1799,12 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
                     throw new MqttClientNotConnectedException("mock client not connected exception");
                 }
 
+                // The device presence flow gets the twin; only the telemetry matters here.
+                if (publish.Topic.StartsWith("$iothub/twin/GET/"))
+                {
+                    return Task.FromResult(new MqttPublishAck() { ReasonCode = MqttPublishAckReasonCode.Success });
+                }
+
                 lock (hostsTheTelemetryWasSentTo)
                 {
                     hostsTheTelemetryWasSentTo.Add(currentHostName);

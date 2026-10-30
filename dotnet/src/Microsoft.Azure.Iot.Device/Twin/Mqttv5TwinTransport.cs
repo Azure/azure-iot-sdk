@@ -42,6 +42,9 @@ namespace Microsoft.Azure.Iot.Device.Twin
 
         public bool AnnouncesTwinVersions => true;
 
+        // IoT hub pushes the twin sections that changed instead.
+        public TwinSnapshot? ConnectTwinSnapshot => null;
+
         public Guid? ConnectionNonce => _connection.ConnectionNonce;
 
         public bool IsConnected => _connection.GetCurrentConnectionContext() != null && _connection.IsConnectionTargetSet;

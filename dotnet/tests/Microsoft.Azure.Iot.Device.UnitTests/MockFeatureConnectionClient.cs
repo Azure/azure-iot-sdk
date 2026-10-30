@@ -166,6 +166,17 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             return CurrentConnectionContext;
         }
 
+        /// <summary>Identifies the current connection. Incremented by <see cref="SimulateConnectionReady"/>.</summary>
+        public long HubConnectionId { get; set; }
+
+        /// <summary>The twin that this "connection client" got on the current connection. Null by default.</summary>
+        public global::Microsoft.Azure.Iot.Device.Unified.Connection.ConnectTwinSnapshot? LatestConnectTwinSnapshot { get; set; }
+
+        long global::Microsoft.Azure.Iot.Device.Unified.Connection.IConnectionClient.HubConnectionId => HubConnectionId;
+
+        global::Microsoft.Azure.Iot.Device.Unified.Connection.ConnectTwinSnapshot? global::Microsoft.Azure.Iot.Device.Unified.Connection.IConnectionClient.LatestConnectTwinSnapshot
+            => LatestConnectTwinSnapshot;
+
         /// <summary>Snapshot of <see cref="PublishedMessages"/>, safe to take while feature clients publish from other threads.</summary>
         public List<MqttPublish> GetPublishedMessages()
         {
@@ -179,12 +190,19 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         public void SimulateConnectionLost()
         {
             IsConnectionReady = false;
+            LatestConnectTwinSnapshot = null;
             ConnectionLost?.Invoke();
         }
 
-        /// <summary>Simulate IoT hub completing the device presence flow on a (new) connection.</summary>
-        public void SimulateConnectionReady()
+        /// <summary>
+        /// Simulate IoT hub completing the device presence flow on a new connection, during which the "connection client"
+        /// got the given twin (if any). The snapshot is used as given, so a test can give one with the ID of a previous
+        /// connection; use <see cref="CreateConnectTwinSnapshot"/> to create one for the new connection.
+        /// </summary>
+        public void SimulateConnectionReady(global::Microsoft.Azure.Iot.Device.Unified.Connection.ConnectTwinSnapshot? snapshot = null)
         {
+            HubConnectionId++;
+            LatestConnectTwinSnapshot = snapshot;
             IsConnectionReady = true;
             ConnectionReady?.Invoke();
         }
@@ -251,6 +269,17 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         public void Dispose()
         {
             IsDisposed = true;
+        }
+
+        /// <summary>Create the twin that the "connection client" got on the connection that the next <see cref="SimulateConnectionReady"/> simulates.</summary>
+        public global::Microsoft.Azure.Iot.Device.Unified.Connection.ConnectTwinSnapshot CreateConnectTwinSnapshot(ulong desiredVersion, string desired, ulong reportedVersion, string reported)
+        {
+            return new(
+                HubConnectionId + 1,
+                System.Text.Json.Nodes.JsonNode.Parse(desired)!.AsObject(),
+                desiredVersion,
+                System.Text.Json.Nodes.JsonNode.Parse(reported)!.AsObject(),
+                reportedVersion);
         }
 
         /// <summary>Build a connection context for the given hub generation.</summary>

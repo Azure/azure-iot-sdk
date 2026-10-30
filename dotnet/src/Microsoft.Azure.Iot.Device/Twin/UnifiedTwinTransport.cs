@@ -39,6 +39,8 @@ namespace Microsoft.Azure.Iot.Device.Twin
 
         public bool AnnouncesTwinVersions => Active.AnnouncesTwinVersions;
 
+        public TwinSnapshot? ConnectTwinSnapshot => Active.ConnectTwinSnapshot;
+
         public Guid? ConnectionNonce => Active.ConnectionNonce;
 
         public bool IsConnected => Active.IsConnected;

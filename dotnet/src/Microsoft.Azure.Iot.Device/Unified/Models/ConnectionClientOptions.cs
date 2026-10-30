@@ -52,7 +52,10 @@ namespace Microsoft.Azure.Iot.Device.Unified.Models
         /// <remarks>
         /// When false, the device presence flow does not subscribe to MQTTv3 twin topics or request automatic MQTTv5 twin
         /// pushes, and constructing a <see cref="Twin.TwinClient"/> with
-        /// this connection client throws an <see cref="InvalidOperationException"/>.
+        /// this connection client throws an <see cref="InvalidOperationException"/>. When true, the device presence flow on
+        /// an IoT hub that uses MQTTv3 also gets the twin before the connection is ready (like IoT hubs that use MQTTv5 push
+        /// it upon connecting), so that the twin client can reconcile with it before sending any reported properties patches;
+        /// failing to get it doesn't fail the connection.
         /// This value is read once when the connection client is constructed.
         /// </remarks>
         public bool EnableTwin { get; set; } = true;
