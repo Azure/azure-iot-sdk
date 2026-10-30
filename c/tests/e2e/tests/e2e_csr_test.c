@@ -59,6 +59,7 @@
 #endif
 #include "az_iot_certificate_provider_managed.h"
 
+#include "e2e_connect_clock.h"
 #include "e2e_log.h"
 
 #define E2E_CONNECT_TIMEOUT_S 120
@@ -444,9 +445,10 @@ static void run_csr_enrollment(
 
   assert_int_equal(AZ_IOT_OK, az_iot_connection_client_open(&conn));
 
-  time_t start = time(NULL);
+  e2e_connect_clock clock;
+  e2e_connect_clock_start(&clock);
   while (ctx.conn_state != AZ_IOT_CONN_STATE_CONNECTED
-         && (time(NULL) - start) < E2E_CONNECT_TIMEOUT_S)
+         && e2e_connect_clock_running(&clock, &conn, E2E_CONNECT_TIMEOUT_S))
   {
     (void)az_iot_connection_client_do_work(&conn, 50);
     if (ctx.conn_state == AZ_IOT_CONN_STATE_FAULTED)
@@ -454,6 +456,7 @@ static void run_csr_enrollment(
       break;
     }
   }
+  e2e_connect_clock_log(&clock, "CSR device");
 
   /* Connected with the DPS-issued operational identity: */
   assert_int_equal(ctx.conn_state, AZ_IOT_CONN_STATE_CONNECTED);
@@ -477,7 +480,7 @@ static void run_csr_enrollment(
   message.payload_len = sizeof(payload) - 1;
   assert_int_equal(
       AZ_IOT_OK, az_iot_mqttv3_telemetry_client_send(&telemetry, &message, on_send_done, &ctx));
-  start = time(NULL);
+  time_t start = time(NULL);
   while (!ctx.send_done && ctx.conn_state == AZ_IOT_CONN_STATE_CONNECTED
          && (time(NULL) - start) < 30)
   {
