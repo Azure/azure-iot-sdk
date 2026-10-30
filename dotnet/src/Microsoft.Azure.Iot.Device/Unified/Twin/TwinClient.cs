@@ -193,8 +193,8 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
         /// </summary>
         /// <param name="reportedProperties">The patch of the reported properties to send to IoT hub.</param>
         /// <param name="cancellationToken">
-        /// The cancellation token. Cancelling stops waiting for the response. The patch is discarded if it hasn't been sent
-        /// yet. Otherwise, IoT hub may still apply it.
+        /// The cancellation token. Cancelling stops waiting for the response. The patch is discarded if this client hasn't
+        /// started sending it yet. Otherwise, IoT hub may already have applied it, so it stays pending until IoT hub responds.
         /// </param>
         /// <returns>
         /// IoT hub's response to the patch that carried these changes: <see cref="Result.Ok"/> with the new version of the
@@ -203,8 +203,8 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
         /// <remarks>
         /// <para>
         /// This client sends one reported properties patch at a time. Patches made while another patch is in flight (or while the
-        /// device is disconnected) are combined, in order, into the next patch that this client sends, so they share its
-        /// response. If IoT hub doesn't respond within a defensive timeout (5 to 15 minutes, growing with each attempt), or the
+        /// device is disconnected) are combined, in order, into the next patch that this client sends (up to 32 KiB), so they
+        /// share its response. If IoT hub doesn't respond within a defensive timeout (5 to 15 minutes, growing with each attempt), or the
         /// connection is lost, the patch is sent again once the device has (re)connected.
         /// </para>
         /// <para>

@@ -7,7 +7,6 @@ using Microsoft.Azure.Iot.Device.Models.Twin;
 using Microsoft.Azure.Iot.Device.Mqtt;
 using Microsoft.Azure.Iot.Device.Unified.Connection;
 using System.Diagnostics;
-using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 
@@ -60,6 +59,10 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
 
         // The maximum number of desired patches buffered while resyncing the desired properties.
         internal const int DesiredResyncBufferCapacity = 8;
+
+        // The largest reported properties patch that combining patches can produce. IoT hub limits the reported properties to
+        // 32 KiB, so a larger patch may be rejected even if each patch it combines would be accepted on its own.
+        internal const int MaxCoalescedReportedPatchSize = 32 * 1024;
 
         // Guards the device's view of the desired properties (the desired section state machine).
         private readonly object _desiredStateLock = new();
@@ -301,8 +304,8 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
         /// </summary>
         /// <param name="reportedProperties">The patch of the reported properties to send to IoT hub</param>
         /// <param name="cancellationToken">
-        /// The cancellation token. Cancelling stops waiting for the response. The patch is discarded if it hasn't been sent
-        /// yet. Otherwise, IoT hub may still apply it.
+        /// The cancellation token. Cancelling stops waiting for the response. The patch is discarded if this client hasn't
+        /// started sending it yet. Otherwise, IoT hub may already have applied it, so it stays pending until IoT hub responds.
         /// </param>
         /// <returns>
         /// IoT hub's response to the patch that carried these changes: <see cref="Result.Ok"/> with the new version of the
@@ -313,7 +316,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
         /// This client sends one reported properties patch at a time. Patches made while another patch is in flight (or while
         /// the device is reconnecting) are combined, in order, into the next patch that this client sends, so they share its
         /// response. Patches that can't be combined into one JSON merge patch (such as one that removes a property followed by
-        /// one that sets some of that property's children) are sent one after another.
+        /// one that sets some of that property's children), or whose combination would exceed 32 KiB, are sent one after another.
         /// </para>
         /// <para>
         /// If IoT hub doesn't respond within a defensive timeout (5 to 15 minutes, growing with each attempt), the patch is
@@ -323,7 +326,8 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
         /// <para>
         /// The device doesn't need to be connected to call this method. Patches made before the device connects (or while it is
         /// disconnected) are held, in order, and sent once the device has connected and this client has fetched the twin.
-        /// Patches are only discarded if <paramref name="cancellationToken"/> is cancelled before they are sent, or if this
+        /// Patches are only discarded if <paramref name="cancellationToken"/> is cancelled before this client starts sending
+        /// them, or if this
         /// client is disposed.
         /// </para>
         /// </remarks>
@@ -345,9 +349,9 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
             {
                 lock (_reportedPatchLock)
                 {
-                    // A patch in the attempt in flight may already be applied, so it stays until IoT hub responds to it.
-                    if ((_reportedPatchAttempt == null || !_reportedPatchAttempt.Patches.Contains(pendingPatch))
-                        && _pendingReportedPatches.Remove(pendingPatch))
+                    // A patch that any attempt carried may already be applied, even if that attempt ended (for example, the
+                    // connection was lost before its response arrived), so it stays until IoT hub responds to it.
+                    if (!pendingPatch.IsSendStarted && _pendingReportedPatches.Remove(pendingPatch))
                     {
                         MarkTwinStateChanged();
                     }
@@ -418,6 +422,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
             }
 
             JsonObject payload = _pendingReportedPatches[0].Patch.DeepClone().AsObject();
+            byte[] payloadBytes = JsonSerializer.SerializeToUtf8Bytes(payload);
             int patchCount = 1;
             while (patchCount < _pendingReportedPatches.Count)
             {
@@ -427,14 +432,27 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
                     break;
                 }
 
+                // Patches that IoT hub would accept one at a time could be rejected as one that is too large, so the rest are
+                // sent separately.
+                byte[] combinedBytes = JsonSerializer.SerializeToUtf8Bytes(combined);
+                if (combinedBytes.Length > MaxCoalescedReportedPatchSize)
+                {
+                    break;
+                }
+
                 payload = combined;
+                payloadBytes = combinedBytes;
                 patchCount++;
             }
 
             ReportedPatchAttempt attempt = new(
                 Guid.NewGuid(),
                 _pendingReportedPatches.GetRange(0, patchCount),
-                Encoding.UTF8.GetBytes(JsonSerializer.Serialize(payload)));
+                payloadBytes);
+            foreach (PendingReportedPatch pendingPatch in attempt.Patches)
+            {
+                pendingPatch.IsSendStarted = true;
+            }
             attempt.Timer = new System.Threading.Timer(
                 _ => HandleReportedPatchTimeout(attempt),
                 null,
@@ -671,14 +689,12 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
                 exchange.GetId = getId;
                 _getTwinExchangesById[getId] = exchange;
                 exchange.Timer?.Dispose();
-                exchange.Timer = new System.Threading.Timer(
-                    _ => HandleGetTwinTimeout(exchange, getId),
-                    null,
-                    GetTwinTimeoutSchedule(exchange.Attempt),
-                    Timeout.InfiniteTimeSpan);
+                exchange.Timer = null;
             }
 
-            _ = PublishGetTwinAsync(exchange, getId);
+            // The connection client may hold the publish until the device has reconnected, so it is sent off this thread. That
+            // way, a caller can stop waiting for the response.
+            _ = Task.Run(() => PublishGetTwinAsync(exchange, getId));
         }
 
         private async Task PublishGetTwinAsync(GetTwinExchange exchange, Guid getId)
@@ -694,17 +710,25 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
                 MqttAckValidator.ThrowIfPubackHasErrorCode(puback);
                 lock (_getTwinExchangesLock)
                 {
+                    // For example, the response already arrived.
+                    if (exchange.IsEnded || exchange.GetId != getId)
+                    {
+                        return;
+                    }
+
                     // The request went out on the current connection or an earlier one. If the current one was already lost,
                     // HandleConnectionLost may have run before this attempt counted as sent, so its response can never arrive.
                     Guid? connectionNonce = _connection.ConnectionNonce;
                     if (connectionNonce == null || connectionNonce != _getTwinLostConnectionNonce)
                     {
                         exchange.SentGetId = getId;
-                        return;
-                    }
 
-                    if (exchange.GetId != getId)
-                    {
+                        // Only once sent, so that a request that is waiting for the device to reconnect isn't sent again.
+                        exchange.Timer = new System.Threading.Timer(
+                            _ => HandleGetTwinTimeout(exchange, getId),
+                            null,
+                            GetTwinTimeoutSchedule(exchange.Attempt),
+                            Timeout.InfiniteTimeSpan);
                         return;
                     }
 
@@ -721,6 +745,11 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
             {
                 lock (_getTwinExchangesLock)
                 {
+                    if (exchange.IsEnded || exchange.GetId != getId)
+                    {
+                        return;
+                    }
+
                     EndGetTwinExchange(exchange);
                 }
 
@@ -1424,6 +1453,9 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
         private sealed class PendingReportedPatch(JsonObject patch, bool hasWaiter)
         {
             public JsonObject Patch { get; } = patch;
+
+            // Guarded by _reportedPatchLock. Whether any attempt carried this patch, in which case IoT hub may have applied it.
+            public bool IsSendStarted { get; set; }
 
             // Null if nobody awaits this patch, so that its failure isn't an unobserved exception.
             public TaskCompletionSource<ReportedPatchResponse>? Response { get; } = hasWaiter ? new(TaskCreationOptions.RunContinuationsAsynchronously) : null;
