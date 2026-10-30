@@ -1,6 +1,7 @@
 ﻿// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
 // See LICENSE file in the project root for full license information.
 
+using Microsoft.Azure.Iot.Device.Exceptions;
 using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Models.Twin;
 using Microsoft.Azure.Iot.Device.Mqtt;
@@ -13,6 +14,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using System.Web;
+using Microsoft.Azure.Iot.Device.Unified.Models;
 
 namespace Microsoft.Azure.Iot.Device.Unified.Twin
 {
@@ -125,8 +127,9 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
             {
                 Trace.TraceInformation("Publishing 'GetTwin' request on topic " + publish.Topic);
 
-                // Puback is checked for non-success cases under this layer, so no need to check it here as well
+                // The connection client returns the PUBACK as-is, so a rejected request must be surfaced here.
                 MqttPublishAck puback = await _connection.PublishAsync(publish, cancellationToken);
+                MqttAckValidator.ThrowIfPubackHasErrorCode(puback);
 
                 // Wait until IoT hub sends a message to this client with the response to this patch twin request.
                 var getTwinResponse = await pendingGetTwinRequest.TwinResponseTask.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -174,8 +177,9 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
             {
                 Trace.TraceInformation("Publishing 'PatchReported' request on topic " + publish.Topic);
 
-                // Puback is checked for non-success cases under this layer, so no need to check it here as well
+                // The connection client returns the PUBACK as-is, so a rejected request must be surfaced here.
                 MqttPublishAck puback = await _connection.PublishAsync(publish, cancellationToken);
+                MqttAckValidator.ThrowIfPubackHasErrorCode(puback);
 
                 // Wait until IoT hub sends a message to this client with the response to this patch twin request.
                 var updateReportedPropertiesResponse = await pendingReportedPropertiesUpdateRequest.ReportedPropertyUpdateResponse.Task.WaitAsync(cancellationToken).ConfigureAwait(false);

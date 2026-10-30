@@ -1,11 +1,9 @@
 // Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
 // See LICENSE file in the project root for full license information.
 
-using Google.Protobuf;
 using Microsoft.Azure.Iot.Device.Models.DirectMethods;
 using Microsoft.Azure.Iot.Device.Mqtt;
 using Microsoft.Azure.Iot.Device.Models;
-using Microsoft.Azure.Iot.Device.Provisioning.Models;
 using Microsoft.Azure.Iot.Device.Unified.DirectMethods;
 using System.Text;
 using Xunit;
@@ -93,25 +91,6 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
 
             directMethodClient.DirectMethodInvokedAsync -= handler;
             directMethodClient.DirectMethodInvokedAsync += handler;
-        }
-
-        private static MqttPublish CreateMqttv5MethodPublish(string type, byte[] correlationData, byte[] payload)
-        {
-            var publish = new MqttPublish()
-            {
-                Topic = $"ih/{DeviceId}/dev/methods",
-                Payload = payload,
-                CorrelationData = correlationData,
-                MessageExpiryInterval = 30,
-                QualityOfServiceLevel = MqttQualityOfServiceLevel.AtLeastOnce,
-            };
-            publish.UserProperties.Add(new("type", Encoding.UTF8.GetBytes(type)));
-            return publish;
-        }
-
-        private static string GetType(MqttPublish publish)
-        {
-            return Assert.Single(publish.UserProperties, p => p.Name == "type").ReadValueAsString();
         }
     }
 }

@@ -42,18 +42,25 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
 
             using TelemetryClient telemetryClient = new TelemetryClient(testDeviceContext.ConnectionClient);
 
-            DeviceToCloudTelemetry outgoingTelemetryMessage = new()
+            try
             {
-                Payload = JsonSerializer.SerializeToUtf8Bytes(new SimpleTelemetryObject() { SomeString = "SomeValue" }),
-                ContentEncoding = "utf-8",
-                ContentType = "application/json",
-                MessageId = Guid.NewGuid().ToString(),
-                CorrelationId = Guid.NewGuid().ToString(),
-            };
+                DeviceToCloudTelemetry outgoingTelemetryMessage = new()
+                {
+                    Payload = JsonSerializer.SerializeToUtf8Bytes(new SimpleTelemetryObject() { SomeString = "SomeValue" }),
+                    ContentEncoding = "utf-8",
+                    ContentType = "application/json",
+                    MessageId = Guid.NewGuid().ToString(),
+                    CorrelationId = Guid.NewGuid().ToString(),
+                };
 
-            outgoingTelemetryMessage.UserProperties.Add("SomeUserPropertyKey", "SomeUserPropertyValue");
+                outgoingTelemetryMessage.UserProperties.Add("SomeUserPropertyKey", "SomeUserPropertyValue");
 
-            await telemetryClient.SendTelemetryAsync(outgoingTelemetryMessage, TestContext.Current.CancellationToken);
+                await telemetryClient.SendTelemetryAsync(outgoingTelemetryMessage, TestContext.Current.CancellationToken);
+            }
+            finally
+            {
+                await testDeviceContext.DisposeAsync(); // Dispose this before any feature clients so that the test device identity can be cleaned up and the MQTT client disconnected gracefully
+            }
         }
 
         [Theory(Timeout = Setup.TestTimeoutMilliseconds)]

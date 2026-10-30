@@ -6,6 +6,7 @@ using Microsoft.Azure.Devices.Provisioning.Service;
 using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Retry;
 using Microsoft.Azure.Iot.Device.Unified.Connection;
+using Microsoft.Azure.Iot.Device.Unified.Models;
 using Microsoft.Azure.Iot.Device.Unified.Telemetry;
 using System;
 using Xunit;
@@ -46,7 +47,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
 
             // The device provisioned and connected, so it should be present in the hub's device registry.
             Assert.True(
-                await WaitUntilAsync(() => DeviceExistsAsync(registryManager, deviceId, cancellationToken), TimeSpan.FromSeconds(10), cancellationToken),
+                await Setup.WaitUntilAsync(() => Setup.DeviceExistsAsync(registryManager, deviceId, cancellationToken), TimeSpan.FromSeconds(10), cancellationToken),
                 "The test device was never registered in the IoT hub after provisioning.");
 
             // Deleting the device from the registry drops its connection and makes every subsequent reconnect attempt
@@ -56,7 +57,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
             // Re-provisioning re-registers the device in the hub's registry, so its reappearance is the signal that the
             // device recovered by re-provisioning rather than just reconnecting to the hub it had been removed from.
             Assert.True(
-                await WaitUntilAsync(() => DeviceExistsAsync(registryManager, deviceId, cancellationToken), TimeSpan.FromSeconds(45), cancellationToken),
+                await Setup.WaitUntilAsync(() => Setup.DeviceExistsAsync(registryManager, deviceId, cancellationToken), TimeSpan.FromSeconds(45), cancellationToken),
                 "The device did not re-provision and reappear in the IoT hub registry after being deleted.");
 
             // Since the device should be provisioned to the Hub again, it should be capable of doing basic operations like sending telemetry
@@ -98,7 +99,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
 
             // The device provisioned and connected, so it should be present in the hub's device registry.
             Assert.True(
-                await WaitUntilAsync(() => DeviceExistsAsync(registryManager, deviceId, cancellationToken), TimeSpan.FromSeconds(10), cancellationToken),
+                await Setup.WaitUntilAsync(() => Setup.DeviceExistsAsync(registryManager, deviceId, cancellationToken), TimeSpan.FromSeconds(10), cancellationToken),
                 "The test device was never registered in the IoT hub after provisioning.");
 
             // Disconnect the device deliberately, then delete its identity from the registry. The device now holds valid
@@ -119,7 +120,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
             // Re-provisioning re-registers the device in the hub's registry, so its reappearance is the signal that the
             // device recovered by re-provisioning rather than by reconnecting to the hub it had been removed from.
             Assert.True(
-                await WaitUntilAsync(() => DeviceExistsAsync(registryManager, deviceId, cancellationToken), TimeSpan.FromSeconds(15), cancellationToken),
+                await Setup.WaitUntilAsync(() => Setup.DeviceExistsAsync(registryManager, deviceId, cancellationToken), TimeSpan.FromSeconds(15), cancellationToken),
                 "The device did not reappear in the IoT hub registry, so it did not re-provision after the hub became unreachable.");
 
             // Since the device should be provisioned to the hub again, it should be capable of doing basic operations like sending telemetry.
@@ -163,7 +164,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
 
             // The device provisioned and connected, so it should be present in the hub's device registry.
             Assert.True(
-                await WaitUntilAsync(() => DeviceExistsAsync(registryManager, deviceId, cancellationToken), TimeSpan.FromSeconds(10), cancellationToken),
+                await Setup.WaitUntilAsync(() => Setup.DeviceExistsAsync(registryManager, deviceId, cancellationToken), TimeSpan.FromSeconds(10), cancellationToken),
                 "The test device was never registered in the IoT hub after provisioning.");
 
             // Remove both the device's enrollment and its registry entry. Losing the registry entry drops the hub
@@ -178,7 +179,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
             // retrying provisioning, which is what lets restoring the enrollment recover it.
             const int requiredDpsConsultations = 2;
             Assert.True(
-                await WaitUntilAsync(
+                await Setup.WaitUntilAsync(
                     () => Task.FromResult(retryPolicy.DeviceProvisioningServiceConsultations >= requiredDpsConsultations),
                     TimeSpan.FromSeconds(45),
                     cancellationToken),
@@ -187,7 +188,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
             // Re-provisioning cannot succeed while the enrollment is gone, so the device must not have reappeared in the
             // registry during that wait.
             Assert.False(
-                await DeviceExistsAsync(registryManager, deviceId, cancellationToken),
+                await Setup.DeviceExistsAsync(registryManager, deviceId, cancellationToken),
                 "The device reappeared in the registry even though its DPS enrollment had been deleted.");
 
             // Restore the enrollment this device originally provisioned from so that its ongoing re-provisioning
@@ -200,45 +201,13 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
 
             // With the enrollment back in place, the device should re-provision and reappear in the hub's registry.
             Assert.True(
-                await WaitUntilAsync(() => DeviceExistsAsync(registryManager, deviceId, cancellationToken), TimeSpan.FromSeconds(60), cancellationToken),
+                await Setup.WaitUntilAsync(() => Setup.DeviceExistsAsync(registryManager, deviceId, cancellationToken), TimeSpan.FromSeconds(60), cancellationToken),
                 "The device did not re-provision after its enrollment was restored.");
 
             // Since the device should be provisioned to the Hub again, it should be capable of doing basic operations like sending telemetry
             TelemetryClient telemetryClient = new(device.ConnectionClient);
             await telemetryClient.SendTelemetryAsync(new Device.Models.Telemetry.DeviceToCloudTelemetry(), cancellationToken);
             telemetryClient.Dispose(false);
-        }
-
-        // Polls a condition until it becomes true or the timeout elapses.
-        private static async Task<bool> WaitUntilAsync(Func<Task<bool>> condition, TimeSpan timeout, CancellationToken cancellationToken)
-        {
-            DateTime deadline = DateTime.UtcNow + timeout;
-            while (DateTime.UtcNow < deadline)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-
-                if (await condition())
-                {
-                    return true;
-                }
-
-                await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken);
-            }
-
-            return false;
-        }
-
-        private static async Task<bool> DeviceExistsAsync(RegistryManager registryManager, string deviceId, CancellationToken cancellationToken)
-        {
-            try
-            {
-                return await registryManager.GetDeviceAsync(deviceId, cancellationToken) != null;
-            }
-            catch
-            {
-                // Treat any failure to read the device (including a not-found response) as the device not being present.
-                return false;
-            }
         }
 
         /// <summary>

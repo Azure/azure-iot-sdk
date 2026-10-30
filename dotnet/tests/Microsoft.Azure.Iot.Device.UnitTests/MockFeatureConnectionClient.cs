@@ -1,4 +1,4 @@
-// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
+﻿// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
 // See LICENSE file in the project root for full license information.
 
 using Microsoft.Azure.Iot.Device.Authentication;
@@ -26,6 +26,9 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         /// <summary>The context returned to feature clients. Null simulates a client that has never connected.</summary>
         public ConnectionContext? CurrentConnectionContext { get; set; }
 
+        /// <summary>Whether the connection client is connected or reconnecting. False simulates an explicit disconnect.</summary>
+        public bool IsConnectionTargetSet { get; set; } = true;
+
         /// <summary>Every publish, subscribe and unsubscribe the feature clients sent, in order.</summary>
         public List<MqttPublish> PublishedMessages { get; } = new();
 
@@ -35,6 +38,12 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
         /// <summary>Optional override for how the "service" answers a publish. Defaults to a successful PUBACK.</summary>
         public Func<MqttPublish, Task<MqttPublishAck>>? OnPublish { get; set; }
+
+        /// <summary>Optional override for how the "service" answers a subscribe. Defaults to granting every topic filter.</summary>
+        public Func<MqttSubscribe, Task<MqttSubscribeAck>>? OnSubscribe { get; set; }
+
+        /// <summary>Optional override for how the "service" answers an unsubscribe. Defaults to succeeding for every topic filter.</summary>
+        public Func<MqttUnsubscribe, Task<MqttUnsubscribeAck>>? OnUnsubscribe { get; set; }
 
         public bool IsDisposed { get; private set; }
 
@@ -52,22 +61,42 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             return new MqttPublishAck() { ReasonCode = MqttPublishAckReasonCode.Success };
         }
 
-        public Task<MqttSubscribeAck> SubscribeAsync(MqttSubscribe subscribe, CancellationToken cancellationToken = default)
+        public async Task<MqttSubscribeAck> SubscribeAsync(MqttSubscribe subscribe, CancellationToken cancellationToken = default)
         {
             SubscribedMessages.Add(subscribe);
-            return Task.FromResult(MqttObjectHelpers.CreateSuccessfulSuback(subscribe));
+
+            if (OnSubscribe != null)
+            {
+                return await OnSubscribe.Invoke(subscribe);
+            }
+
+            return MqttObjectHelpers.CreateSuccessfulSuback(subscribe);
         }
 
-        public Task<MqttUnsubscribeAck> UnsubscribeAsync(MqttUnsubscribe unsubscribe, CancellationToken cancellationToken = default)
+        public async Task<MqttUnsubscribeAck> UnsubscribeAsync(MqttUnsubscribe unsubscribe, CancellationToken cancellationToken = default)
         {
             UnsubscribedMessages.Add(unsubscribe);
-            return Task.FromResult(MqttObjectHelpers.CreateSuccessfulUnsuback(unsubscribe));
+
+            if (OnUnsubscribe != null)
+            {
+                return await OnUnsubscribe.Invoke(unsubscribe);
+            }
+
+            return MqttObjectHelpers.CreateSuccessfulUnsuback(unsubscribe);
         }
 
-        /// <summary>Deliver an inbound publish to whatever feature clients have subscribed to this connection.</summary>
-        public Task SimulateReceiveAsync(MqttPublish publish)
-            => SimulateReceiveAsync(new MockMqttPublishReceivedEventArgs() { Publish = publish });
+        /// <summary>
+        /// Deliver an inbound publish to whatever feature clients have subscribed to this connection. Returns the event
+        /// args that were delivered so tests can inspect how the publish was acknowledged.
+        /// </summary>
+        public async Task<MockMqttPublishReceivedEventArgs> SimulateReceiveAsync(MqttPublish publish)
+        {
+            MockMqttPublishReceivedEventArgs args = new() { Publish = publish };
+            await SimulateReceiveAsync(args);
+            return args;
+        }
 
+        /// <summary>Deliver the given inbound publish event args to whatever feature clients have subscribed to this connection.</summary>
         public async Task SimulateReceiveAsync(MqttPublishReceivedEventArgs args)
         {
             if (PublishReceivedAsync != null)
