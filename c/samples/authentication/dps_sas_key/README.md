@@ -91,7 +91,7 @@ retrying cannot fix, no hub connection within 60 s, or no send completion within
 SDK log lines and earlier state lines omitted:
 
 ```
-[dps_sas_key] hub: Connected (AZ_IOT_OK), credential: primary key
+[dps_sas_key] hub: AZ_IOT_CONN_STATE_CONNECTED (AZ_IOT_OK), credential: primary key
 [dps_sas_key] telemetry: AZ_IOT_OK
 ```
 

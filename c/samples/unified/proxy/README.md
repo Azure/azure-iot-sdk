@@ -95,11 +95,11 @@ Runs about 60 seconds. Exit code 0 when at least one message was sent and the co
 The sample prints a summary line at the end; SDK warnings and errors go to stderr.
 
 ```
-Sent 11 message(s) on MQTTv3 (MQTT v3.1.1), 0 failed.
+Sent 11 message(s) on AZ_IOT_CONNECTION_PROFILE_MQTT_V3, 0 failed.
 ```
 
 The count depends on how long connecting took. When DPS assigns the other generation, the
-sample first prints `DPS assigned MQTTv5 (MQTT v5); rebuilding the telemetry client.`
+sample first prints `DPS assigned AZ_IOT_CONNECTION_PROFILE_MQTT_V5; rebuilding the telemetry client.`
 
 ## Troubleshooting
 

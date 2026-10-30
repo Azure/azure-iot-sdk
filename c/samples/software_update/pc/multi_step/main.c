@@ -37,7 +37,6 @@
  *   AZ_IOT_SU_POLL_INTERVAL_S      seconds between checks (default 14400)
  *   AZ_IOT_SU_LOG_LEVEL            trace|debug|info|warn|error|off
  */
-#include <signal.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -76,13 +75,6 @@
 
 /** @brief Steps this sample keeps a backup record for: every step the SDK accepts. */
 #define SAMPLE_MAX_STEPS AZ_IOT_SU_MAX_STEP_COUNT
-
-static volatile sig_atomic_t g_stop = 0;
-static void on_sigint(int signo)
-{
-  (void)signo;
-  g_stop = 1;
-}
 
 /** @brief Which phase SAMPLE_FAIL_STEP fails in. */
 typedef enum
@@ -327,7 +319,7 @@ static void on_connection_state(const az_iot_connection_state_event* event, void
   printf(
       "%s: %s (%s)\n",
       event->scope == AZ_IOT_CONN_SCOPE_DPS ? "Provisioning" : "Hub",
-      sample_connection_state_name(event->state),
+      az_iot_connection_state_to_string(event->state),
       az_iot_result_to_string(event->reason));
   if (event->state == AZ_IOT_CONN_STATE_FAULTED)
   {
@@ -407,7 +399,7 @@ int main(void)
 {
   az_iot_log_sink log = sample_log_sink(su_sample_log_level_from_env());
   az_iot_log_set_global_sink(&log);
-  (void)signal(SIGINT, on_sigint);
+  sample_install_stop_handler(); /* Ctrl+C or SIGTERM ends the loop below */
 
   int rc = 1;
   sample_config config = { 0 };
@@ -420,9 +412,9 @@ int main(void)
   az_iot_mqtt_factory* factory_v5 = NULL;
   int connection_ready = 0;
   int su_ready = 0;
-  char* manufacturer = sample_env_dup("AZ_IOT_SU_MANUFACTURER", "Contoso");
-  char* model = sample_env_dup("AZ_IOT_SU_MODEL", "SU-MultiStep");
-  char* phase = sample_env_dup("SAMPLE_FAIL_PHASE", "install");
+  char* manufacturer = sample_env_copy("AZ_IOT_SU_MANUFACTURER", "Contoso");
+  char* model = sample_env_copy("AZ_IOT_SU_MODEL", "SU-MultiStep");
+  char* phase = sample_env_copy("SAMPLE_FAIL_PHASE", "install");
 
   steps.su = &su;
   steps.fail_step = su_sample_env_long("SAMPLE_FAIL_STEP", 0);
@@ -430,17 +422,17 @@ int main(void)
   int exit_after_workflow = su_sample_env_flag("AZ_IOT_SU_EXIT_AFTER_WORKFLOW");
   long poll_interval_s = su_sample_env_long("AZ_IOT_SU_POLL_INTERVAL_S", 14400);
   if (manufacturer == NULL || model == NULL || phase == NULL || poll_interval_s < 0
-      || !sample_env_to_buffer(
+      || !sample_env_copy_to_buffer(
           "AZ_IOT_SU_INSTALLED_PROVIDER",
           "Contoso",
           steps.installed_provider,
           sizeof(steps.installed_provider))
-      || !sample_env_to_buffer(
+      || !sample_env_copy_to_buffer(
           "AZ_IOT_SU_INSTALLED_NAME",
           "SU-MultiStep",
           steps.installed_name,
           sizeof(steps.installed_name))
-      || !sample_env_to_buffer(
+      || !sample_env_copy_to_buffer(
           "AZ_IOT_SU_INSTALLED_VERSION",
           "1.0.0",
           steps.installed_version,
@@ -555,7 +547,7 @@ int main(void)
       steps.installed_version);
   uint64_t next_check_ms = sample_now_ms() + (uint64_t)poll_interval_s * 1000u;
   rc = 0;
-  while (!g_stop)
+  while (!sample_is_stop_requested())
   {
     (void)az_iot_connection_client_do_work(&connection, 20);
     (void)az_iot_su_client_do_work(&su);

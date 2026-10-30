@@ -496,16 +496,17 @@ int main(void)
     }
   }
 
-  az_iot_connection_profile profile = AZ_IOT_CONNECTION_PROFILE_UNKNOWN;
+  az_iot_hub_profile hub_profile = { 0 };
   if (user_ctx.conn_state != AZ_IOT_CONN_STATE_CONNECTED)
   {
     printf("Failed to reach CONNECTED (state=%d).\n", (int)user_ctx.conn_state);
   }
-  else if (sample_get_hub_profile(&state.connection_client, &profile) != AZ_IOT_OK)
+  else if (
+      az_iot_connection_client_get_hub_profile(&state.connection_client, &hub_profile) != AZ_IOT_OK)
   {
-    /* Already reported. */
+    printf("Hub profile not available.\n");
   }
-  else if (profile != AZ_IOT_CONNECTION_PROFILE_MQTT_V3)
+  else if (hub_profile.connection_profile != AZ_IOT_CONNECTION_PROFILE_MQTT_V3)
   {
     /* No mqttv5 file upload client exists; the mqttv3 one would refuse this
      * connection at init(). */
