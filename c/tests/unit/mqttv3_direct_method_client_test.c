@@ -1041,6 +1041,15 @@ static void a_close_and_reopen_ends_unanswered_invocations(void** state)
       = az_iot_mock_mqtt_client_last_of(fx->mock, AZ_IOT_MOCK_CALL_PUBLISH);
   assert_non_null(answer);
   assert_string_equal(answer->topic, "$iothub/methods/res/200/?$rid=7");
+
+  /* Reusing and answering a slot keeps its ended request's NOT_CONNECTED. */
+  for (int i = 0; i < AZ_IOT_DM_MAX_INFLIGHT; ++i)
+  {
+    assert_int_equal(
+        az_iot_mqttv3_direct_method_respond(&fx->dm, held[i], 200, NULL, 0),
+        AZ_IOT_ERR_NOT_CONNECTED);
+  }
+  assert_int_equal(az_iot_mock_mqtt_client_count_of(fx->mock, AZ_IOT_MOCK_CALL_PUBLISH), 1);
 }
 
 /* An init that fails for want of a feature observer, while connected, sends no SUBSCRIBE. */

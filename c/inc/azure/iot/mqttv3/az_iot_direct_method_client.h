@@ -136,12 +136,13 @@ extern "C"
    * @return AZ_IOT_ERR_TIMEOUT if @p request has passed its response timeout --
    *         nothing is sent and the slot is released;
    *         AZ_IOT_ERR_NOT_CONNECTED if the session it arrived on has ended -- nothing
-   *         is sent, as the call already failed service-side. Kept until its slot
-   *         ends another invocation the same way; after that, AZ_IOT_ERR_INVALID_ARG;
+   *         is sent, as the call already failed service-side. Kept even after its
+   *         slot is reused, until the slot ends another invocation the same way;
+   *         after that, AZ_IOT_ERR_INVALID_ARG;
    *         AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH if @p request came from a
    *         mqttv5 client; AZ_IOT_ERR_INVALID_ARG if it was already answered, if
-   *         its slot was reclaimed and reused, or if it never came from this
-   *         client.
+   *         its slot was reclaimed on timeout and reused, or if it never came from
+   *         this client.
    */
   az_iot_result az_iot_mqttv3_direct_method_respond(
       az_iot_mqttv3_direct_method_client* client,
