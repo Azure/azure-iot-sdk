@@ -43,6 +43,7 @@
  *   SU_SIM_HASH_MISMATCH=1            corrupt the payload (hash check fails)
  *   SU_SIM_DELAY_MS=<ms>              per-download delay
  */
+#include <errno.h>
 #include <signal.h>
 #include <stdbool.h>
 #include <stddef.h>
@@ -123,7 +124,7 @@ typedef struct
 
   su_simulation_control simulation_control;
   delegated_update update;
-  bool check_now; /* an update was applied: ask at once for what comes after it */
+  bool check_now; /* an applied update's report settled: ask at once for what comes after it */
 
   /* Set by the observers. */
   az_iot_connection_state connection_state[AZ_IOT_CONN_SCOPE_COUNT];
@@ -172,20 +173,25 @@ static bool read_installed_update_id_line(FILE* file, char* dst, size_t dst_size
   return length > 0;
 }
 
-/** @brief Load the installed update id from the installed file, if it has one. */
-static bool load_installed_update_id(sample_state* s)
+/**
+ * @brief Load the installed update id from the installed file.
+ * @return 1 when loaded; 0 when the file does not exist (first run); -1 when it
+ * cannot be read or is malformed.
+ */
+static int load_installed_update_id(sample_state* s)
 {
+  errno = 0;
   FILE* file = sample_fopen_read_nofollow(s->installed_file);
   if (file == NULL)
   {
-    return false;
+    return (errno == ENOENT) ? 0 : -1;
   }
   bool loaded
       = read_installed_update_id_line(file, s->installed_provider, sizeof(s->installed_provider))
       && read_installed_update_id_line(file, s->installed_name, sizeof(s->installed_name))
       && read_installed_update_id_line(file, s->installed_version, sizeof(s->installed_version));
   (void)fclose(file);
-  return loaded;
+  return loaded ? 1 : -1;
 }
 
 /**
@@ -305,9 +311,7 @@ static void finish_delegated_update(sample_state* s, az_iot_su_step_result resul
      * until the client is deinitialized. */
     fprintf(stderr, "Could not report the outcome: %s\n", az_iot_result_to_string(reported));
     u->phase = DELEGATED_UPDATE_PHASE_NONE;
-    return;
   }
-  s->check_now = (result.outcome == AZ_IOT_SU_OUTCOME_SUCCEEDED);
 }
 
 /**
@@ -576,6 +580,10 @@ static void on_su_event(const az_iot_su_event* event, void* user_ctx)
       printf(
           "Workflow completed; final report %s.\n",
           event->reason == AZ_IOT_OK ? "accepted" : "rejected by the service");
+      /* The client is Idle before its final report settles: check only now, so
+       * the check's timeout does not run while the report is still owed. */
+      state->check_now
+          = (event->report != NULL && event->report->outcome == AZ_IOT_SU_OUTCOME_SUCCEEDED);
       break;
     case AZ_IOT_SU_EVENT_PERSIST_FAILED:
     case AZ_IOT_SU_EVENT_PERSIST_RECOVERED:
@@ -657,7 +665,13 @@ static int load_device_identity(sample_state* s)
   {
     return 1;
   }
-  if (!load_installed_update_id(s)
+  int loaded = load_installed_update_id(s);
+  if (loaded < 0)
+  {
+    fprintf(stderr, "%s cannot be read or is malformed; fix or remove it.\n", s->installed_file);
+    return 1;
+  }
+  if (loaded == 0
       && (!sample_env_to_buffer(
               "AZ_IOT_SU_INSTALLED_PROVIDER",
               "Contoso",

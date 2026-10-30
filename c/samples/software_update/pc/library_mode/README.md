@@ -45,7 +45,7 @@ Deploy an update as for [simulated_regular](../simulated_regular/README.md), wit
 | `AZ_IOT_DPS_GLOBAL_ENDPOINT` | no | DPS endpoint; default global |
 | `AZ_IOT_SU_MANUFACTURER`, `AZ_IOT_SU_MODEL` | no | Compatibility properties; default `Contoso`/`SU-Sim` |
 | `AZ_IOT_SU_INSTALLED_PROVIDER` / `_NAME` / `_VERSION` | no | Installed update id when `AZ_IOT_SU_INSTALLED_FILE` does not exist; default `Contoso/SU-Sim/1.0.0` |
-| `AZ_IOT_SU_INSTALLED_FILE` | no | Where the installed update id is kept; default `./su_library_installed.txt` |
+| `AZ_IOT_SU_INSTALLED_FILE` | no | Where the installed update id is kept; default `./su_library_installed.txt`. The sample stops if it exists but cannot be read |
 | `SU_SIM_FAIL_STEP=<n>` | no | 1-based step whose install fails; `0` (default) none |
 | `SU_SIM_HASH_MISMATCH=1` | no | Corrupt the payload, so the hash check fails |
 | `SU_SIM_DELAY_MS` | no | Per-download delay |
