@@ -130,8 +130,10 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
 
   /* Only record it: feature clients must not be destroyed from inside the
    * callback, which runs nested in do_work(). */
-  if (sample_event_is_profile_mismatch(event, &ctx->assigned_profile))
+  if (event->state == AZ_IOT_CONN_STATE_FAULTED
+      && event->reason == AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH && event->profile != NULL)
   {
+    ctx->assigned_profile = event->profile->connection_profile;
     ctx->reopen = 1;
     return;
   }
@@ -139,7 +141,15 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
   if (event->state == AZ_IOT_CONN_STATE_FAULTED)
   {
     ctx->faulted = 1;
-    sample_report_unsupported_profile(event);
+    /* DPS assigned a hub generation newer than this SDK. */
+    if (event->reason == AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED && event->profile != NULL)
+    {
+      printf(
+          "Unsupported hub generation \"%s\"%s. Upgrade the SDK.\n",
+          event->profile->connection_profile_raw != NULL ? event->profile->connection_profile_raw
+                                                         : "(none)",
+          event->profile->connection_profile_raw_truncated ? " (truncated)" : "");
+    }
   }
 
   if (event->scope == AZ_IOT_CONN_SCOPE_HUB)
@@ -263,7 +273,7 @@ int main(void)
       user_ctx.reopen = 0;
       printf(
           "DPS assigned %s; reopening without a telemetry client.\n",
-          sample_connection_profile_name(user_ctx.assigned_profile));
+          az_iot_connection_profile_to_string(user_ctx.assigned_profile));
       telemetry_destroy(&state);
       user_ctx.send_pending = 0; /* lost with the old client */
       az_iot_connection_client_close(&state.connection_client);
@@ -284,9 +294,11 @@ int main(void)
      * it ask what it reached and build to match. */
     if (!state.telemetry_initialized)
     {
-      az_iot_connection_profile profile = AZ_IOT_CONNECTION_PROFILE_UNKNOWN;
-      if (sample_get_hub_profile(&state.connection_client, &profile) != AZ_IOT_OK
-          || telemetry_build(&state, profile) != AZ_IOT_OK)
+      /* The generation DPS assigned, read once CONNECTED. */
+      az_iot_hub_profile hub_profile;
+      if (az_iot_connection_client_get_hub_profile(&state.connection_client, &hub_profile)
+              != AZ_IOT_OK
+          || telemetry_build(&state, hub_profile.connection_profile) != AZ_IOT_OK)
       {
         user_ctx.faulted = 1;
         break;
