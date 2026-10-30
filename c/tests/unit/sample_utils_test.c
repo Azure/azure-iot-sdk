@@ -62,10 +62,10 @@ static int teardown(void** state)
   return 0;
 }
 
-/** @brief Write @p text to @p path through sample_fopen_private(). */
+/** @brief Write @p text to @p path through sample_file_open_private(). */
 static void write_text_file(const char* path, const char* text)
 {
-  FILE* file = sample_fopen_private(path, false);
+  FILE* file = sample_file_open_private(path, false);
   assert_non_null(file);
   assert_int_equal(fputs(text, file) >= 0, 1);
   assert_int_equal(fclose(file), 0);
@@ -75,7 +75,7 @@ static void write_text_file(const char* path, const char* text)
 static void assert_file_holds(const char* path, const char* expected)
 {
   char contents[64] = { 0 };
-  FILE* file = sample_fopen_read_nofollow(path);
+  FILE* file = sample_file_open_read_no_follow(path);
   assert_non_null(file);
   size_t read = fread(contents, 1, sizeof(contents) - 1, file);
   assert_int_equal(fclose(file), 0);
@@ -92,7 +92,7 @@ static void file_replace_overwrites_the_destination(void** state)
   assert_true(sample_file_replace(SOURCE_FILE, DESTINATION_FILE));
 
   assert_file_holds(DESTINATION_FILE, "new");
-  assert_null(sample_fopen_read_nofollow(SOURCE_FILE));
+  assert_null(sample_file_open_read_no_follow(SOURCE_FILE));
 }
 
 static void file_replace_creates_a_missing_destination_given_with_a_directory(void** state)
@@ -140,7 +140,7 @@ static void file_replace_reports_a_done_rename_when_the_directory_sync_fails(voi
 static void file_flush_to_storage_writes_through_the_buffer(void** state)
 {
   (void)state;
-  FILE* file = sample_fopen_private(DESTINATION_FILE, false);
+  FILE* file = sample_file_open_private(DESTINATION_FILE, false);
   assert_non_null(file);
   assert_int_equal(fputs("data", file) >= 0, 1);
 
@@ -156,7 +156,7 @@ static void file_flush_to_storage_writes_through_the_buffer(void** state)
   assert_false(sample_file_flush_to_storage(NULL));
 }
 
-static void fopen_private_creates_an_owner_only_file(void** state)
+static void file_open_private_creates_an_owner_only_file(void** state)
 {
   (void)state;
 #if !defined(_WIN32)
@@ -173,14 +173,14 @@ static void fopen_private_creates_an_owner_only_file(void** state)
   assert_file_holds(DESTINATION_FILE, "secret");
 }
 
-static void fopen_private_replace_does_not_write_through_a_link(void** state)
+static void file_open_private_replace_does_not_write_through_a_link(void** state)
 {
   (void)state;
 #if !defined(_WIN32)
   write_text_file(DESTINATION_FILE, "target");
   assert_int_equal(symlink(DESTINATION_FILE, LINK_FILE), 0);
 
-  FILE* file = sample_fopen_private(LINK_FILE, true);
+  FILE* file = sample_file_open_private(LINK_FILE, true);
   assert_non_null(file);
   assert_int_equal(fputs("written", file) >= 0, 1);
   assert_int_equal(fclose(file), 0);
@@ -194,7 +194,7 @@ static void fopen_private_replace_does_not_write_through_a_link(void** state)
   /* Creating a symbolic link needs a privilege Windows test runs lack: check
    * that an existing file is replaced, not appended to. */
   write_text_file(LINK_FILE, "old contents");
-  FILE* file = sample_fopen_private(LINK_FILE, true);
+  FILE* file = sample_file_open_private(LINK_FILE, true);
   assert_non_null(file);
   assert_int_equal(fputs("written", file) >= 0, 1);
   assert_int_equal(fclose(file), 0);
@@ -226,15 +226,15 @@ static void file_create_private_refuses_an_existing_name(void** state)
 #endif
 }
 
-static void fopen_read_nofollow_refuses_a_link_and_a_missing_file(void** state)
+static void file_open_read_no_follow_refuses_a_link_and_a_missing_file(void** state)
 {
   (void)state;
-  assert_null(sample_fopen_read_nofollow(DESTINATION_FILE));
-  assert_null(sample_fopen_read_nofollow(NULL));
+  assert_null(sample_file_open_read_no_follow(DESTINATION_FILE));
+  assert_null(sample_file_open_read_no_follow(NULL));
 #if !defined(_WIN32)
   write_text_file(DESTINATION_FILE, "target");
   assert_int_equal(symlink(DESTINATION_FILE, LINK_FILE), 0);
-  assert_null(sample_fopen_read_nofollow(LINK_FILE));
+  assert_null(sample_file_open_read_no_follow(LINK_FILE));
 #endif
 }
 
@@ -252,6 +252,26 @@ static void stop_handler_records_sigterm_and_sigint(void** state)
   assert_true(sample_is_stop_requested());
 }
 
+static void sleep_until_tick_end_waits_out_the_rest_of_the_tick(void** state)
+{
+  (void)state;
+  uint64_t start = sample_now_ms();
+  sample_sleep_until_tick_end(start, 100u);
+  uint64_t elapsed = sample_now_ms() - start;
+  /* Clock granularity is ~16 ms on Windows; the upper bound only catches a hang. */
+  assert_true(elapsed >= 80u);
+  assert_true(elapsed < 2000u);
+}
+
+static void sleep_until_tick_end_returns_at_once_after_the_tick(void** state)
+{
+  (void)state;
+  uint64_t start = sample_now_ms();
+  sample_sleep_until_tick_end(start, 0u);
+  sample_sleep_until_tick_end(start > 1000u ? start - 1000u : 0u, 100u);
+  assert_true(sample_now_ms() - start < 50u);
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -264,13 +284,15 @@ int main(void)
         file_replace_reports_a_done_rename_when_the_directory_sync_fails, setup, teardown),
     cmocka_unit_test_setup_teardown(
         file_flush_to_storage_writes_through_the_buffer, setup, teardown),
-    cmocka_unit_test_setup_teardown(fopen_private_creates_an_owner_only_file, setup, teardown),
+    cmocka_unit_test_setup_teardown(file_open_private_creates_an_owner_only_file, setup, teardown),
     cmocka_unit_test_setup_teardown(
-        fopen_private_replace_does_not_write_through_a_link, setup, teardown),
+        file_open_private_replace_does_not_write_through_a_link, setup, teardown),
     cmocka_unit_test_setup_teardown(file_create_private_refuses_an_existing_name, setup, teardown),
     cmocka_unit_test_setup_teardown(
-        fopen_read_nofollow_refuses_a_link_and_a_missing_file, setup, teardown),
+        file_open_read_no_follow_refuses_a_link_and_a_missing_file, setup, teardown),
     cmocka_unit_test(stop_handler_records_sigterm_and_sigint),
+    cmocka_unit_test(sleep_until_tick_end_waits_out_the_rest_of_the_tick),
+    cmocka_unit_test(sleep_until_tick_end_returns_at_once_after_the_tick),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }

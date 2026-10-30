@@ -181,7 +181,7 @@ static int32_t save_update_workflow(const uint8_t* blob, size_t len, void* user_
   {
     return AZ_IOT_SU_RESULT_FAILURE; /* the old record stays */
   }
-  FILE* f = sample_fopen_private(tmp, true);
+  FILE* f = sample_file_open_private(tmp, true);
   if (f == NULL)
   {
     return AZ_IOT_SU_RESULT_FAILURE;
@@ -211,7 +211,7 @@ static int32_t load_saved_update_workflow(
     void* user_ctx)
 {
   update_hooks_context* context = (update_hooks_context*)user_ctx;
-  FILE* f = sample_fopen_read_nofollow(context->state_file);
+  FILE* f = sample_file_open_read_no_follow(context->state_file);
   if (f == NULL)
   {
     return 1;
@@ -245,7 +245,7 @@ static void on_connection_state(const az_iot_connection_state_event* event, void
   printf(
       "%s: %s (%s)\n",
       event->scope == AZ_IOT_CONN_SCOPE_DPS ? "Provisioning" : "Hub",
-      sample_connection_state_name(event->state),
+      az_iot_connection_state_to_string(event->state),
       az_iot_result_to_string(event->reason));
   if (event->state == AZ_IOT_CONN_STATE_FAULTED)
   {
@@ -355,21 +355,21 @@ int main(void)
   char installed_provider[SU_SIM_ID_PART_SIZE];
   char installed_name[SU_SIM_ID_PART_SIZE];
   char installed_version[SU_SIM_ID_PART_SIZE];
-  char* manufacturer = sample_env_dup("AZ_IOT_SU_MANUFACTURER", "Contoso");
-  char* model = sample_env_dup("AZ_IOT_SU_MODEL", "SU-Reboot");
-  char* reboot_at = sample_env_dup("SAMPLE_REBOOT_AT", "install:1");
+  char* manufacturer = sample_env_copy("AZ_IOT_SU_MANUFACTURER", "Contoso");
+  char* model = sample_env_copy("AZ_IOT_SU_MODEL", "SU-Reboot");
+  char* reboot_at = sample_env_copy("SAMPLE_REBOOT_AT", "install:1");
 
   hooks_context.su = &su;
-  hooks_context.state_file = sample_env_dup("SAMPLE_STATE_FILE", "./su_reboot_state.bin");
+  hooks_context.state_file = sample_env_copy("SAMPLE_STATE_FILE", "./su_reboot_state.bin");
   int exit_after_workflow = su_sample_env_flag("AZ_IOT_SU_EXIT_AFTER_WORKFLOW");
   long poll_interval_s = su_sample_env_long("AZ_IOT_SU_POLL_INTERVAL_S", 14400);
   if (manufacturer == NULL || model == NULL || reboot_at == NULL || hooks_context.state_file == NULL
       || poll_interval_s < 0
-      || !sample_env_to_buffer(
+      || !sample_env_copy_to_buffer(
           "AZ_IOT_SU_INSTALLED_PROVIDER", "Contoso", installed_provider, sizeof(installed_provider))
-      || !sample_env_to_buffer(
+      || !sample_env_copy_to_buffer(
           "AZ_IOT_SU_INSTALLED_NAME", "SU-Reboot", installed_name, sizeof(installed_name))
-      || !sample_env_to_buffer(
+      || !sample_env_copy_to_buffer(
           "AZ_IOT_SU_INSTALLED_VERSION", "1.0.0", installed_version, sizeof(installed_version))
       || sample_config_load(&config) != 0)
   {

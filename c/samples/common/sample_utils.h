@@ -44,7 +44,7 @@ void sample_config_release(sample_config* config);
 // Returns a heap copy of environment variable `name`, or a heap copy of
 // `fallback` when the variable is unset/empty (fallback may be NULL). Caller
 // frees with free(). Avoids getenv()/strdup() to stay clean under MSVC /WX.
-char* sample_env_dup(const char* name, const char* fallback);
+char* sample_env_copy(const char* name, const char* fallback);
 
 /**
  * @brief Copy @p src into @p dst, NUL included. Portable stand-in for C11
@@ -55,7 +55,7 @@ char* sample_env_dup(const char* name, const char* fallback);
  * @param[in] src       NUL-terminated source.
  * @return true if copied; false if @p src does not fit.
  */
-bool sample_copy_str(char* dst, size_t dst_size, const char* src);
+bool sample_string_copy(char* dst, size_t dst_size, const char* src);
 
 /**
  * @brief Read environment variable @p name, or @p fallback when unset/empty,
@@ -68,7 +68,7 @@ bool sample_copy_str(char* dst, size_t dst_size, const char* src);
  * @return true if copied; false when unset with no fallback, out of memory or
  * too long.
  */
-bool sample_env_to_buffer(const char* name, const char* fallback, char* dst, size_t dst_size);
+bool sample_env_copy_to_buffer(const char* name, const char* fallback, char* dst, size_t dst_size);
 
 /**
  * @brief Open @p path for binary writing with owner-only access (0600) on
@@ -81,7 +81,7 @@ bool sample_env_to_buffer(const char* name, const char* fallback, char* dst, siz
  * @return Stream to close with fclose(), or NULL on failure (with @p replace,
  * including when @p path cannot be removed).
  */
-FILE* sample_fopen_private(const char* path, bool replace);
+FILE* sample_file_open_private(const char* path, bool replace);
 
 /**
  * @brief Create @p path for binary writing with owner-only access (0600) on
@@ -100,7 +100,7 @@ FILE* sample_file_create_private(const char* path);
  * @param[in] path File to read.
  * @return Stream to close with fclose(), or NULL on failure.
  */
-FILE* sample_fopen_read_nofollow(const char* path);
+FILE* sample_file_open_read_no_follow(const char* path);
 
 /**
  * @brief Flush @p file's buffered writes and the operating system's cache to
@@ -151,60 +151,14 @@ uint64_t sample_now_ms(void);
 // for its do_work loop.
 void sample_sleep_ms(long ms);
 
-// Human-readable name for a connection state, for logging. Never NULL.
-const char* sample_connection_state_name(az_iot_connection_state state);
-
-/** @brief Human-readable name for a connection profile, for logging. Never NULL. */
-const char* sample_connection_profile_name(az_iot_connection_profile profile);
-
 /**
- * @brief Reads and prints the hub generation a CONNECTED client reached.
+ * @brief Sleep for what is left of a @p tick_ms tick that began at
+ * @p tick_start_ms (a sample_now_ms() value), so a do_work() loop cannot spin
+ * when do_work() returns early. Returns at once when the tick is over.
  *
- * @param[in] client Client whose hub lifecycle is CONNECTED.
- * @param[out] out_profile Resolved profile; written only on AZ_IOT_OK.
- * @return The az_iot_connection_client_get_hub_profile() result.
+ * @param[in] tick_start_ms sample_now_ms() when the tick began.
+ * @param[in] tick_ms       Tick length.
  */
-az_iot_result sample_get_hub_profile(
-    const az_iot_connection_client* client,
-    az_iot_connection_profile* out_profile);
-
-/**
- * @brief Whether @p event reports that DPS assigned the device to the other hub
- * generation than the attached feature clients were built for.
- *
- * The connection is then stopped (AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH): the
- * application destroys those clients, builds the ones for @p out_profile, and
- * calls az_iot_connection_client_close() then az_iot_connection_client_open().
- * This happens on the first connect and whenever a running device is moved to a
- * hub of the other generation.
- *
- * @param[in] event Connection state event.
- * @param[out] out_profile Assigned profile; written only when true is returned.
- * @return true on a profile mismatch, false otherwise.
- */
-bool sample_event_is_profile_mismatch(
-    const az_iot_connection_state_event* event,
-    az_iot_connection_profile* out_profile);
-
-/**
- * @brief Generation to build feature clients for before open().
- *
- * MQTTv3, which DPS assigns when it names no connectionProfile. A different
- * assignment is reported as AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH.
- *
- * @param[in] config Loaded sample configuration.
- * @return The profile to assume.
- */
-az_iot_connection_profile sample_initial_profile(const sample_config* config);
-
-/**
- * @brief Prints the service's profile value when @p event failed with
- * AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED (a generation newer than this SDK).
- *
- * The value is marked when truncated to AZ_IOT_CONNECTION_PROFILE_RAW_BUF.
- *
- * @param[in] event Connection state event; other events are ignored.
- */
-void sample_report_unsupported_profile(const az_iot_connection_state_event* event);
+void sample_sleep_until_tick_end(uint64_t tick_start_ms, uint32_t tick_ms);
 
 #endif // SAMPLE_UTILS_H
