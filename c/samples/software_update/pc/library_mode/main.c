@@ -121,15 +121,15 @@ typedef struct
   delegated_update update;
   bool check_now; /* ask for an update at the next loop pass */
   uint64_t owed_report_resend_ms; /* when to resend a final report that lost its session; 0: no */
-  bool resend_check_outstanding; /* the check resending that report has not settled */
-  bool check_once_registered; /* the first check was rejected before the device registered */
+  bool check_outstanding; /* an update check was asked and has no verdict yet */
+  bool check_once_registered; /* the first check was abandoned before the device registered */
+  uint64_t check_not_before_ms; /* the service asked to wait until then before asking again */
 
   /* Set by the observers. */
   az_iot_connection_state connection_state[AZ_IOT_CONN_SCOPE_COUNT];
   int connection_is_faulted; /* a lifecycle settled at FAULTED: unrecoverable here */
   bool device_registered; /* the hub connected at least once, so a device record exists */
   int su_workflow_active; /* a deployment is in flight */
-  uint32_t su_retry_after_ms; /* the service asked to wait before asking again */
 } sample_state;
 
 /* The software updates client's memory, sized for the default limits; static,
@@ -183,7 +183,7 @@ static bool read_installed_update_id_line(FILE* file, char* dst, size_t dst_size
 /**
  * @brief Load the installed update id from the installed file.
  * @return 1 when loaded; 0 when the file does not exist (first run); -1 when it
- * cannot be read or is malformed.
+ * cannot be read or is malformed (anything but exactly three lines).
  */
 static int load_installed_update_id(sample_state* s)
 {
@@ -196,7 +196,8 @@ static int load_installed_update_id(sample_state* s)
   bool loaded
       = read_installed_update_id_line(file, s->installed_provider, sizeof(s->installed_provider))
       && read_installed_update_id_line(file, s->installed_name, sizeof(s->installed_name))
-      && read_installed_update_id_line(file, s->installed_version, sizeof(s->installed_version));
+      && read_installed_update_id_line(file, s->installed_version, sizeof(s->installed_version))
+      && fgetc(file) == EOF && !ferror(file);
   (void)fclose(file);
   return loaded ? 1 : -1;
 }
@@ -498,9 +499,39 @@ static void on_connection_state_event_received(
   }
 }
 
+/** @brief Whether @p event is the verdict of an update check. */
+static bool is_update_check_verdict(const az_iot_su_event* event)
+{
+  switch (event->kind)
+  {
+    case AZ_IOT_SU_EVENT_NO_UPDATE:
+    case AZ_IOT_SU_EVENT_UPDATE_REFUSED:
+    case AZ_IOT_SU_EVENT_UPDATE_DEFERRED:
+    case AZ_IOT_SU_EVENT_UPDATE_DUPLICATE:
+    case AZ_IOT_SU_EVENT_UPDATE_RETRY_WAIT:
+      return true;
+    case AZ_IOT_SU_EVENT_OPERATION_ABANDONED:
+      return event->operation != AZ_IOT_SU_OP_REPORT_STATUS;
+    case AZ_IOT_SU_EVENT_WORKFLOW_STATE_CHANGED:
+      /* A delivered update started a workflow. */
+      return event->previous_state == AZ_IOT_SU_STATE_IDLE;
+    case AZ_IOT_SU_EVENT_PERSIST_FAILED:
+    case AZ_IOT_SU_EVENT_PERSIST_RECOVERED:
+    case AZ_IOT_SU_EVENT_REPORT_ACCEPTED:
+    case AZ_IOT_SU_EVENT_WORKFLOW_COMPLETED:
+    case AZ_IOT_SU_EVENT_UPDATE_AVAILABLE:
+      return false;
+  }
+  return false;
+}
+
 static void on_su_event(const az_iot_su_event* event, void* user_ctx)
 {
   sample_state* state = (sample_state*)user_ctx;
+  if (is_update_check_verdict(event))
+  {
+    state->check_outstanding = false;
+  }
 
   switch (event->kind)
   {
@@ -565,12 +596,11 @@ static void on_su_event(const az_iot_su_event* event, void* user_ctx)
       {
         /* A device that has never registered has no device record yet: check
          * again once registration creates it. */
-        if (!state->device_registered && event->reason != AZ_IOT_ERR_TIMEOUT)
+        state->check_once_registered = state->check_once_registered || !state->device_registered;
+        if (event->service_error.retry_after_ms > 0)
         {
-          state->check_once_registered = true;
+          state->check_not_before_ms = sample_now_ms() + event->service_error.retry_after_ms;
         }
-        state->resend_check_outstanding = false;
-        state->su_retry_after_ms = event->service_error.retry_after_ms;
       }
       else if (
           event->operation == AZ_IOT_SU_OP_REPORT_STATUS
@@ -610,12 +640,13 @@ static void on_su_event(const az_iot_su_event* event, void* user_ctx)
           event->reason == AZ_IOT_OK ? "accepted" : "rejected by the service");
       /* The client is Idle before its final report settles: check only now, so
        * the check's timeout does not run while the report is still owed. A
-       * check that resent this report already asks for what comes next. */
-      state->check_now
-          = (event->report != NULL && event->report->outcome == AZ_IOT_SU_OUTCOME_SUCCEEDED
-             && !state->resend_check_outstanding);
+       * check held behind the report already asks for what comes next, and a
+       * rejected report is rechecked by the SDK or at the next poll. */
+      state->check_now = state->check_now
+          || (event->reason == AZ_IOT_OK && event->report != NULL
+              && event->report->outcome == AZ_IOT_SU_OUTCOME_SUCCEEDED
+              && !state->check_outstanding);
       state->owed_report_resend_ms = 0;
-      state->resend_check_outstanding = false;
       break;
     case AZ_IOT_SU_EVENT_PERSIST_FAILED:
     case AZ_IOT_SU_EVENT_PERSIST_RECOVERED:
@@ -806,6 +837,7 @@ int main(void)
     sample_state_destroy(&state);
     return 1;
   }
+  state.check_outstanding = true;
 
   printf(
       "Library mode. Matched against a deployed update: manufacturer=%s model=%s\n"
@@ -840,31 +872,30 @@ int main(void)
       break;
     }
 
-    /* The service's requested delay, when longer, pushes the next check. */
-    if (state.su_retry_after_ms > 0)
-    {
-      uint64_t earliest = sample_now_ms() + state.su_retry_after_ms;
-      if (earliest > next_check_ms)
-      {
-        next_check_ms = earliest;
-      }
-      state.su_retry_after_ms = 0;
-    }
-
-    /* A check opens a new provisioning session and resends the owed final report. */
-    if (state.owed_report_resend_ms != 0 && sample_now_ms() >= state.owed_report_resend_ms)
+    /* A check opens a new provisioning session and resends the owed final
+     * report. Held while a check is outstanding: if that one resends it, the
+     * report settles and WORKFLOW_COMPLETED disarms this. */
+    if (state.owed_report_resend_ms != 0 && !state.check_outstanding
+        && sample_now_ms() >= state.owed_report_resend_ms)
     {
       state.owed_report_resend_ms = 0;
-      state.resend_check_outstanding = true;
       state.check_now = true;
     }
 
-    if (!state.su_workflow_active
+    /* One check at a time, none during a workflow, and none before the
+     * service's requested delay. An outstanding check also resends an owed
+     * report and asks for what follows it. */
+    if (!state.su_workflow_active && !state.check_outstanding
+        && sample_now_ms() >= state.check_not_before_ms
         && (state.check_now || (poll_interval_s > 0 && sample_now_ms() >= next_check_ms)))
     {
       state.check_now = false;
       next_check_ms = sample_now_ms() + (uint64_t)poll_interval_s * 1000u;
-      if (az_iot_su_client_request_update(&state.su_client, request_timeout_ms) != AZ_IOT_OK)
+      if (az_iot_su_client_request_update(&state.su_client, request_timeout_ms) == AZ_IOT_OK)
+      {
+        state.check_outstanding = true;
+      }
+      else
       {
         fprintf(stderr, "Could not request an update check.\n");
       }

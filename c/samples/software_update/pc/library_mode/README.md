@@ -33,6 +33,7 @@ zero-filled payloads of the declared size; install and apply only log. The hash 
   `AZ_IOT_SU_POLL_INTERVAL_S` (default 4 hours). On a device that has never registered, the
   startup check is rejected (no device record yet), so the sample checks again once the hub
   connects. A final report that lost its provisioning session is resent by a check 30 s later.
+  One check runs at a time, and none before a delay the service asked for.
 - Requires Azure Device Provisioning service, an Azure IoT Hub and Azure Device Update.
 
 Deploy an update as for [simulated_regular](../simulated_regular/README.md), with compatibility
@@ -47,7 +48,7 @@ Deploy an update as for [simulated_regular](../simulated_regular/README.md), wit
 | `AZ_IOT_DPS_GLOBAL_ENDPOINT` | no | DPS endpoint; default global |
 | `AZ_IOT_SU_MANUFACTURER`, `AZ_IOT_SU_MODEL` | no | Compatibility properties; default `Contoso`/`SU-Sim` |
 | `AZ_IOT_SU_INSTALLED_PROVIDER` / `_NAME` / `_VERSION` | no | Installed update id when `AZ_IOT_SU_INSTALLED_FILE` does not exist; default `Contoso/SU-Sim/1.0.0` |
-| `AZ_IOT_SU_INSTALLED_FILE` | no | Where the installed update id is kept; default `./su_library_installed.txt`. The sample stops if it exists but cannot be read or is malformed |
+| `AZ_IOT_SU_INSTALLED_FILE` | no | Where the installed update id is kept; default `./su_library_installed.txt`. The sample stops if it exists but cannot be read or is not exactly three lines |
 | `SU_SIM_FAIL_STEP=<n>` | no | 1-based step whose install fails; `0` (default) none |
 | `SU_SIM_HASH_MISMATCH=1` | no | Corrupt the payload, so the hash check fails |
 | `SU_SIM_DELAY_MS` | no | Per-download delay |
