@@ -119,12 +119,15 @@ typedef struct
 
   su_simulation_control simulation_control;
   delegated_update update;
-  bool check_now; /* an applied update's report settled: ask at once for what comes after it */
+  bool check_now; /* ask for an update at the next loop pass */
   uint64_t owed_report_resend_ms; /* when to resend a final report that lost its session; 0: no */
+  bool resend_check_outstanding; /* the check resending that report has not settled */
+  bool check_once_registered; /* the first check was rejected before the device registered */
 
   /* Set by the observers. */
   az_iot_connection_state connection_state[AZ_IOT_CONN_SCOPE_COUNT];
   int connection_is_faulted; /* a lifecycle settled at FAULTED: unrecoverable here */
+  bool device_registered; /* the hub connected at least once, so a device record exists */
   int su_workflow_active; /* a deployment is in flight */
   uint32_t su_retry_after_ms; /* the service asked to wait before asking again */
 } sample_state;
@@ -157,16 +160,24 @@ static void sample_state_destroy(sample_state* s)
 /* installed update id, kept across runs                                     */
 /* ------------------------------------------------------------------------- */
 
-/** @brief Read one nonempty line of @p file into @p dst, without its newline. */
+/**
+ * @brief Read one nonempty, newline-terminated line of @p file into @p dst,
+ * without its newline.
+ * @return false for a truncated, overlong or empty line, or one with a NUL.
+ */
 static bool read_installed_update_id_line(FILE* file, char* dst, size_t dst_size)
 {
   if (fgets(dst, (int)dst_size, file) == NULL)
   {
     return false;
   }
-  size_t length = strcspn(dst, "\r\n");
-  dst[length] = '\0';
-  return length > 0;
+  size_t length = strlen(dst);
+  if (length < 2 || dst[length - 1] != '\n')
+  {
+    return false;
+  }
+  dst[length - 1] = '\0';
+  return true;
 }
 
 /**
@@ -474,6 +485,9 @@ static void on_connection_state_event_received(
 
     if (scope == AZ_IOT_CONN_SCOPE_HUB && event->state == AZ_IOT_CONN_STATE_CONNECTED)
     {
+      state->device_registered = true;
+      state->check_now = state->check_now || state->check_once_registered;
+      state->check_once_registered = false;
       printf("Hub connection up. Running (Ctrl-C to exit)...\n");
     }
   }
@@ -549,14 +563,24 @@ static void on_su_event(const az_iot_su_event* event, void* user_ctx)
           event->service_error.tracking_id);
       if (event->operation == AZ_IOT_SU_OP_GET_UPDATE)
       {
+        /* A device that has never registered has no device record yet: check
+         * again once registration creates it. */
+        if (!state->device_registered && event->reason != AZ_IOT_ERR_TIMEOUT)
+        {
+          state->check_once_registered = true;
+        }
+        state->resend_check_outstanding = false;
         state->su_retry_after_ms = event->service_error.retry_after_ms;
       }
       else if (
           event->operation == AZ_IOT_SU_OP_REPORT_STATUS
-          && event->reason == AZ_IOT_ERR_NOT_CONNECTED && !state->su_workflow_active
+          && event->reason == AZ_IOT_ERR_NOT_CONNECTED
+          && state->update.phase == DELEGATED_UPDATE_PHASE_NONE
           && state->owed_report_resend_ms == 0)
       {
-        /* The final report stays owed with no resend queued: only a check sends it. */
+        /* No delegated work in flight, so this was a final report (failed before
+         * delegation, or after it). It stays owed with no resend queued: only a
+         * check sends it. */
         state->owed_report_resend_ms = sample_now_ms() + OWED_REPORT_RESEND_DELAY_MS;
       }
       break;
@@ -585,10 +609,13 @@ static void on_su_event(const az_iot_su_event* event, void* user_ctx)
           "Workflow completed; final report %s.\n",
           event->reason == AZ_IOT_OK ? "accepted" : "rejected by the service");
       /* The client is Idle before its final report settles: check only now, so
-       * the check's timeout does not run while the report is still owed. */
+       * the check's timeout does not run while the report is still owed. A
+       * check that resent this report already asks for what comes next. */
       state->check_now
-          = (event->report != NULL && event->report->outcome == AZ_IOT_SU_OUTCOME_SUCCEEDED);
+          = (event->report != NULL && event->report->outcome == AZ_IOT_SU_OUTCOME_SUCCEEDED
+             && !state->resend_check_outstanding);
       state->owed_report_resend_ms = 0;
+      state->resend_check_outstanding = false;
       break;
     case AZ_IOT_SU_EVENT_PERSIST_FAILED:
     case AZ_IOT_SU_EVENT_PERSIST_RECOVERED:
@@ -803,8 +830,10 @@ int main(void)
     (void)az_iot_su_client_do_work(&state.su_client);
     advance_delegated_update(&state);
 
-    /* FAULTED is settled: the SDK does not retry out of it. */
-    if (state.connection_is_faulted && !state.su_workflow_active)
+    /* FAULTED is settled: the SDK does not retry out of it. Delegated work in
+     * flight is finished first; the SDK's own cannot progress without a
+     * connection. */
+    if (state.connection_is_faulted && state.update.phase == DELEGATED_UPDATE_PHASE_NONE)
     {
       fprintf(stderr, "The connection faulted and will not recover on its own.\n");
       rc = 1;
@@ -826,6 +855,7 @@ int main(void)
     if (state.owed_report_resend_ms != 0 && sample_now_ms() >= state.owed_report_resend_ms)
     {
       state.owed_report_resend_ms = 0;
+      state.resend_check_outstanding = true;
       state.check_now = true;
     }
 
