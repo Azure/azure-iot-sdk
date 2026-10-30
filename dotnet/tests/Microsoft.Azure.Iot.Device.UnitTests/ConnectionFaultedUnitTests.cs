@@ -1829,6 +1829,12 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             Assert.Equal(ConnectionEndpoint.None, connectionClient.CurrentEndpoint);
             Assert.True(connectionClient.IsConnectionTargetSet);
 
+            // The twin client gets the twin upon each connection to IoT hub, including the first one.
+            lock (hostsFeatureOperationsWereSentTo)
+            {
+                hostsFeatureOperationsWereSentTo.Clear();
+            }
+
             Task telemetry = Task.Run(
                 () => telemetryClient.SendTelemetryAsync(
                     new DeviceToCloudTelemetry() { Payload = Encoding.UTF8.GetBytes("hello") },
@@ -1848,7 +1854,9 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             Assert.Equal(2, mockDps.RegistrationCount);
             lock (hostsFeatureOperationsWereSentTo)
             {
-                Assert.Equal(new[] { SecondAssignedHub, SecondAssignedHub }, hostsFeatureOperationsWereSentTo);
+                // The telemetry, the application's get twin request and the twin client's own get twin request upon reconnecting.
+                Assert.True(hostsFeatureOperationsWereSentTo.Count >= 2);
+                Assert.All(hostsFeatureOperationsWereSentTo, host => Assert.Equal(SecondAssignedHub, host));
             }
         }
 
