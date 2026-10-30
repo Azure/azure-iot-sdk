@@ -26,6 +26,7 @@
 
 #if !defined(_WIN32)
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #endif
 
@@ -238,18 +239,47 @@ static void file_open_read_no_follow_refuses_a_link_and_a_missing_file(void** st
 #endif
 }
 
+#if !defined(_WIN32)
+/**
+ * @brief Whether @p signal_number, raised in a new child process after
+ * sample_install_stop_handler(), moves the stop request from false to true without
+ * ending the process.
+ */
+static bool signal_requests_stop_in_new_process(int signal_number)
+{
+  pid_t child = fork();
+  if (child == 0)
+  {
+    sample_install_stop_handler();
+    bool before = sample_is_stop_requested();
+    bool raised = raise(signal_number) == 0;
+    _exit(!before && raised && sample_is_stop_requested() ? 0 : 1);
+  }
+  int status = 0;
+  return child > 0 && waitpid(child, &status, 0) == child && WIFEXITED(status)
+      && WEXITSTATUS(status) == 0;
+}
+#endif
+
 static void stop_handler_records_sigterm_and_sigint(void** state)
 {
   (void)state;
+#if !defined(_WIN32)
+  /* One process per signal, so each must set the flag on its own. */
+  assert_true(signal_requests_stop_in_new_process(SIGINT));
+  assert_true(signal_requests_stop_in_new_process(SIGTERM));
+#else
+  /* No fork(): both signals must reach the same installed handler, which sets the flag. */
+  sample_install_stop_handler();
+  void (*on_sigint)(int) = signal(SIGINT, SIG_DFL);
+  void (*on_sigterm)(int) = signal(SIGTERM, SIG_DFL);
+  assert_true(on_sigint != SIG_DFL && on_sigint != SIG_IGN && on_sigint != SIG_ERR);
+  assert_true(on_sigint == on_sigterm);
   sample_install_stop_handler();
   assert_false(sample_is_stop_requested());
-
-  assert_int_equal(raise(SIGTERM), 0);
-  assert_true(sample_is_stop_requested());
-
-  /* Still handled, not the default action that ends the process. */
   assert_int_equal(raise(SIGINT), 0);
   assert_true(sample_is_stop_requested());
+#endif
 }
 
 static void sleep_until_tick_end_waits_out_the_rest_of_the_tick(void** state)
