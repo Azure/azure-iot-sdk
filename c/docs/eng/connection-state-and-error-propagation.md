@@ -93,8 +93,7 @@ does **not** run its normal reconnect path, because that tears down the active h
   `AZ_IOT_ERR_NOT_SUPPORTED` instead of retrying on every pump tick.
 - The refusal clears when a session comes up, a registration succeeds, on `open()` or `close()`,
   or when the last holder releases its reference.
-- A synchronous session-start failure is paced at the call site. A `close()` from inside the
-  `DPS:CONNECTING` announcement is a cancellation and is not paced.
+- A synchronous session-start failure is paced at the call site.
 
 The core paces the transport. Whether an operation is still worth re-issuing is the feature
 client's decision.

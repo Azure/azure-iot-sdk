@@ -2,7 +2,6 @@
 # Licensed under the MIT license. See LICENSE file in the project root for full license information.
 
 option(AZ_IOT_WITH_PAHO        "Build the Paho-C MQTT adapter (default)"      ON)
-option(AZ_IOT_WITH_RUST_MQTT   "Build the Rust MQTT adapter shell"             OFF)
 option(AZ_IOT_WITH_AZ_MQTT     "Build the az_mqtt MQTT adapter (deps/az_mqtt)"  OFF)
 # TLS backend of the az_mqtt adapter on Linux/macOS (Windows: Schannel).
 set(AZ_IOT_AZ_MQTT_TLS "openssl" CACHE STRING "az_mqtt adapter TLS backend: openssl | mbedtls")

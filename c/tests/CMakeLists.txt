@@ -547,11 +547,6 @@ if(AZ_IOT_WITH_PAHO)
     az_iot_apply_coverage(az_iot_tests_paho_event_queue_race)
 endif()
 
-if(AZ_IOT_WITH_RUST_MQTT)
-    az_iot_add_cmocka_test(az_iot_tests_rust_mqtt_adapter unit/rust_mqtt_adapter_test.c)
-    target_link_libraries(az_iot_tests_rust_mqtt_adapter PRIVATE az_iot_adapter_rust_mqtt)
-endif()
-
 # Crypto backends: the shared known-answer contract suite
 # (support/crypto_contract.c), once per backend target that was built. It also
 # drives the SDK's composed SHA-256 and HMAC-SHA256 (src/core/crypto.c).

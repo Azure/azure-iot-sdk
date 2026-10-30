@@ -60,7 +60,7 @@ reconnection disabled.
 - A factory that was never registered, or whose registration failed, can be destroyed at any time.
 - Registering the same factory twice returns `AZ_IOT_OK` and keeps one registration.
 
-The same rules apply to the az_mqtt and Rust adapter factories, and match the certificate providers:
+The same rules apply to the az_mqtt adapter factories, and match the certificate providers:
 the application creates them, and destroys them after the connection client.
 Each sample that connects is also built on az_mqtt, from the same `main.c`
 ([samples](../samples/README.md#build)).
@@ -91,7 +91,7 @@ Values of `az_iot_connection_state` (`AZ_IOT_CONN_STATE_*`):
 | --- | --- |
 | `IDLE` | Not connected. `open()` is legal only here. |
 | `SETTING_UP` | A connection or registration attempt's local steps: feature-client binds, adapter creation, credential load or SAS signing, registration body. Entered by every attempt, including each retry. |
-| `CONNECTING` | The network connect is starting: announced just before it is issued, then held while the handshake is in flight. `close()` from this announcement cancels the attempt. |
+| `CONNECTING` | The network connect is starting: announced just before it is issued, then held while the handshake is in flight. |
 | `CONNECTED` | Ready. Every required subscription is in place. |
 | `RETRY_PENDING` | A retry is scheduled; nothing is in flight. The next attempt starts in `SETTING_UP`. |
 | `DISCONNECTING` | A session is closing: `close()` was called, or the provisioning session ends after registration. |
@@ -114,6 +114,47 @@ as `code`, and the step as `message`, for example `certificate provider load() f
 `open()` first validates the configuration (credential shape, CSR support, registration payload
 and its buffer); a refusal there starts no attempt, raises no event, and is reported only by
 `open()`'s return value.
+
+## Opening and closing
+
+- `open()` starts a connection from `IDLE`. `close()` returns the client to `IDLE` from any state;
+  from a live session the disconnect completes in `do_work()`.
+- `close()` then `open()` reconnects after `FAULTED`. Feature clients and observers survive it.
+- `open()` and `close()` cannot be called from a callback the client runs: state observers,
+  publish completion callbacks, the SAS token callback, the DPS operational-certificate,
+  registration-payload and assignment callbacks, CSR callbacks, subscription-failure callbacks,
+  and feature clients' message and response handlers. There they return `AZ_IOT_ERR_BUSY` and
+  change nothing. Record the decision in the callback and call them after `do_work()` returns.
+- The client reconnects by itself under `reconnection_policy`. To decide yourself, use
+  `az_iot_connection_client_get_disabled_retry_policy()`: a failure then ends in `FAULTED`.
+
+```c
+static bool g_restart;
+
+static void on_state(const az_iot_connection_state_event* event, void* user_ctx)
+{
+  (void)user_ctx;
+  if (event->scope == AZ_IOT_CONN_SCOPE_HUB && event->state == AZ_IOT_CONN_STATE_FAULTED)
+  {
+    g_restart = true; /* close() here would return AZ_IOT_ERR_BUSY. */
+  }
+}
+
+/* Application loop. */
+for (;;)
+{
+  (void)az_iot_connection_client_do_work(&client, 100);
+  if (g_restart)
+  {
+    g_restart = false;
+    (void)az_iot_connection_client_close(&client);
+    if (az_iot_connection_client_open(&client) != AZ_IOT_OK)
+    {
+      break;
+    }
+  }
+}
+```
 
 ## Provisioning and the hub profile
 

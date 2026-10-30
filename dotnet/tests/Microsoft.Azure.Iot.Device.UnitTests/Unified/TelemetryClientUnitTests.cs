@@ -5,7 +5,6 @@ using Microsoft.Azure.Iot.Device.Exceptions;
 using Microsoft.Azure.Iot.Device.Models.Telemetry;
 using Microsoft.Azure.Iot.Device.Mqtt;
 using Microsoft.Azure.Iot.Device.Models;
-using Microsoft.Azure.Iot.Device.Provisioning.Models;
 using Microsoft.Azure.Iot.Device.Unified.Connection;
 using Microsoft.Azure.Iot.Device.Unified.Telemetry;
 using System.Text;

@@ -457,6 +457,15 @@ static const char* failure_origin_name(az_iot_su_failure_origin origin)
   }
 }
 
+bool az_iot_su__outcome_is_valid(az_iot_su_outcome outcome, az_iot_su_failure_origin origin)
+{
+  /* The contract ties these together: NOT_APPLICABLE unless the outcome is a
+   * failure, and a real origin when it is. */
+  return outcome_name(outcome) != NULL && failure_origin_name(origin) != NULL
+      && ((outcome == AZ_IOT_SU_OUTCOME_FAILED)
+          != (origin == AZ_IOT_SU_FAILURE_ORIGIN_NOT_APPLICABLE));
+}
+
 /* Render extendedResultCodes.
  *
  * Contract: comma-separated UNSIGNED hex int32, NO "0x" prefix, no fixed width,
@@ -575,34 +584,35 @@ az_iot_result az_iot_su__build_report_request(
     size_t out_size,
     size_t* out_len)
 {
+  if (out_len != NULL)
+  {
+    *out_len = 0;
+  }
   if (report == NULL || report->workflow_id == NULL || report->workflow_id[0] == '\0' || out == NULL
       || out_size == 0)
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
+  if (out_size > INT32_MAX)
+  {
+    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+  }
 
+  /* An invalid outcome pair is kept off the wire rather than left for the
+   * service to reject. */
+  if (!az_iot_su__outcome_is_valid(report->outcome, report->failure_origin)
+      || report->extended_result_codes == NULL)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
   const char* outcome = outcome_name(report->outcome);
   const char* origin = failure_origin_name(report->failure_origin);
-  if (outcome == NULL || origin == NULL || report->extended_result_codes == NULL)
+  /* A triple must be complete and nonempty, or absent: the same rule as on a
+   * fetch. */
+  az_iot_result id_valid = az_iot_su__validate_installed_update_id(report->installed_update_id);
+  if (id_valid != AZ_IOT_OK)
   {
-    return AZ_IOT_ERR_INVALID_ARG;
-  }
-  /* A triple must be complete or absent. Passing a NULL member through to the
-   * writer would trip an upstream precondition rather than returning an error
-   * to the caller. */
-  if (report->installed_update_id != NULL
-      && (report->installed_update_id->provider == NULL || report->installed_update_id->name == NULL
-          || report->installed_update_id->version == NULL))
-  {
-    return AZ_IOT_ERR_INVALID_ARG;
-  }
-  /* The contract ties these together: NOT_APPLICABLE unless the outcome is a
-   * failure, and a real origin when it is. Catching it here keeps an invalid
-   * pair off the wire rather than having the service reject it. */
-  if ((report->outcome == AZ_IOT_SU_OUTCOME_FAILED)
-      == (report->failure_origin == AZ_IOT_SU_FAILURE_ORIGIN_NOT_APPLICABLE))
-  {
-    return AZ_IOT_ERR_INVALID_ARG;
+    return id_valid;
   }
   if (report->step_results_count < 0
       || report->step_results_count > _az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS
@@ -615,10 +625,8 @@ az_iot_result az_iot_su__build_report_request(
     for (int32_t i = 0; i < report->step_results_count; ++i)
     {
       const az_iot_su_step_result* step = &report->step_results[i];
-      if (step->outcome == AZ_IOT_SU_OUTCOME_IN_PROGRESS || outcome_name(step->outcome) == NULL
-          || failure_origin_name(step->failure_origin) == NULL
-          || ((step->outcome == AZ_IOT_SU_OUTCOME_FAILED)
-              == (step->failure_origin == AZ_IOT_SU_FAILURE_ORIGIN_NOT_APPLICABLE)))
+      if (step->outcome == AZ_IOT_SU_OUTCOME_IN_PROGRESS
+          || !az_iot_su__outcome_is_valid(step->outcome, step->failure_origin))
       {
         return AZ_IOT_ERR_INVALID_ARG;
       }
@@ -737,6 +745,11 @@ az_iot_result az_iot_su__build_report_request(
       }
       if (az_result_succeeded(r) && az_span_size(step->result_details) > 0)
       {
+        /* Past the writer's input limit its precondition fires instead of failing. */
+        if (az_span_size(step->result_details) > AZ_IOT_SU_MAX_JSON_STRING_SIZE)
+        {
+          return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+        }
         r = az_json_writer_append_property_name(&jw, AZ_SPAN_FROM_STR("resultDetails"));
         if (az_result_succeeded(r))
         {

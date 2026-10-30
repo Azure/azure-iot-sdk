@@ -7,6 +7,7 @@ using Microsoft.Azure.Iot.Device.Mqtt;
 using Microsoft.Azure.Iot.Device.MqttNetAdapter;
 using Microsoft.Azure.Iot.Device.MQTTnetAdapter;
 using Microsoft.Azure.Iot.Device.Unified.Connection;
+using Microsoft.Azure.Iot.Device.Unified.Models;
 using SetupSampleDevice;
 
 internal class Program

@@ -14,7 +14,7 @@ namespace Microsoft.Azure.Iot.Device.Mqtt
 
         }
 
-        public MqttSubscribe(string topic, MqttQualityOfServiceLevel qos)
+        public MqttSubscribe(string topic, MqttQualityOfServiceLevel qos = MqttQualityOfServiceLevel.AtLeastOnce)
         {
             TopicFilters.Add(new(topic, qos));
         }

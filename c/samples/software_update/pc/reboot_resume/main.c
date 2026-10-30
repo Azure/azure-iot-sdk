@@ -334,6 +334,7 @@ static void on_su_event(const az_iot_su_event* event, void* user_ctx)
     case AZ_IOT_SU_EVENT_REPORT_ACCEPTED:
     case AZ_IOT_SU_EVENT_UPDATE_REFUSED:
     case AZ_IOT_SU_EVENT_UPDATE_DUPLICATE:
+    case AZ_IOT_SU_EVENT_UPDATE_AVAILABLE: /* Library mode only. */
       break;
   }
 }

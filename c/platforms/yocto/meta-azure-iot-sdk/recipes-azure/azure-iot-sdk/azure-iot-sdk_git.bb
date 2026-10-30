@@ -39,7 +39,6 @@ DEPENDS = "openssl"
 
 PACKAGECONFIG ??= "paho crypto-openssl certificate-provider-managed"
 PACKAGECONFIG[paho] = "-DAZ_IOT_WITH_PAHO=ON,-DAZ_IOT_WITH_PAHO=OFF"
-PACKAGECONFIG[rust-mqtt] = "-DAZ_IOT_WITH_RUST_MQTT=ON,-DAZ_IOT_WITH_RUST_MQTT=OFF"
 PACKAGECONFIG[crypto-openssl] = "-DAZ_IOT_WITH_CRYPTO_OPENSSL=ON,-DAZ_IOT_WITH_CRYPTO_OPENSSL=OFF"
 # mbedTLS 3.6 LTS or 4.1+ (meta-oe).
 PACKAGECONFIG[mbedtls] = "-DAZ_IOT_WITH_CRYPTO_MBEDTLS=ON,-DAZ_IOT_WITH_CRYPTO_MBEDTLS=OFF,mbedtls"
@@ -66,7 +65,6 @@ DEBUG_PREFIX_MAP:append = " \
 # dependency is not found is otherwise skipped by CMake without an error.
 AZ_IOT_SDK_COMPONENTS = "core mqttv3 mqttv5 \
     ${@bb.utils.contains('PACKAGECONFIG', 'paho', 'adapter_paho', '', d)} \
-    ${@bb.utils.contains('PACKAGECONFIG', 'rust-mqtt', 'adapter_rust_mqtt', '', d)} \
     ${@bb.utils.contains('PACKAGECONFIG', 'crypto-openssl', 'crypto_openssl', '', d)} \
     ${@bb.utils.contains('PACKAGECONFIG', 'mbedtls', 'crypto_mbedtls', '', d)} \
     ${@bb.utils.contains('PACKAGECONFIG', 'certificate-provider-managed', 'certificate_provider_managed', '', d)} \

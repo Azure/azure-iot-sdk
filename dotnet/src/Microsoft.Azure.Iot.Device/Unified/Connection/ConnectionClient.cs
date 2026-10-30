@@ -1,4 +1,4 @@
-﻿// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
+// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
 // See LICENSE file in the project root for full license information.
 
 using Microsoft.Azure.Iot.Device.Exceptions;
@@ -13,6 +13,7 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Azure.Iot.Device.Provisioning.Models;
+using Microsoft.Azure.Iot.Device.Unified.Models;
 
 namespace Microsoft.Azure.Iot.Device.Unified.Connection
 {
@@ -71,7 +72,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
         {
             Debug.Assert(CurrentConnectionContext != null);
 
-            connect.WebsocketUri = $"wss://{connect.HostName}/$iothub/websocket";
+            connect.WebsocketUri = BuildWebSocketUri(connect.HostName, connect.WebsocketPort, DefaultWebSocketPath);
             connect.ProtocolVersion = CurrentConnectionContext.ConnectionProfile == IotHubConnectionType.Mqttv5 ? MqttProtocolVersion.V500 : MqttProtocolVersion.V311;
 
             connect.Username = $"{connect.HostName}/{connect.ClientId}/?api-version={ClassicHubApiVersion}&DeviceClientType={Uri.EscapeDataString(GetUserAgentString())}";
@@ -87,18 +88,27 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
             // This callback should only be reached after provisioning, so their should always be a connection context to use
             Debug.Assert(CurrentConnectionContext != null);
 
-            // Upon an MQTT connection being established, immediately re-subscribe to the enabled twin/cloud-to-device/direct methods topics if there is no session present.
-            if (args.ConnectAck.IsSessionPresent)
+            // Upon an MQTT connection being established, re-subscribe to the enabled twin/cloud-to-device/direct methods
+            // topics unless the resumed session is known to still hold them.
+            if (TryElideDevicePresenceSubscribe(args.ConnectAck))
             {
                 await RaiseDevicePresenceFlowCompletedAsync(new DevicePresenceFlowCompletedArgs() { IsSuccess = true });
 
                 return;
             }
 
+            // A resumed session whose subscriptions this process has not observed (for example one left behind by a previous
+            // process that had other features enabled) may still hold subscriptions for features that are now disabled.
+            // Nothing would handle or acknowledge their messages, so those subscriptions are removed.
             MqttSubscribe mqttSubscribe = new();
+            MqttUnsubscribe mqttUnsubscribe = new();
             if (AreCloudToDeviceMessagesEnabled)
             {
                 mqttSubscribe.TopicFilters.Add(new(Telemetry.TelemetryClient.DeviceBoundMessagesTopicFormat + "#", MqttQualityOfServiceLevel.AtLeastOnce));
+            }
+            else
+            {
+                mqttUnsubscribe.TopicFilters.Add(Telemetry.TelemetryClient.DeviceBoundMessagesTopicFormat + "#");
             }
 
             if (IsTwinEnabled)
@@ -106,15 +116,31 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
                 mqttSubscribe.TopicFilters.Add(new(Twin.TwinClient.ClassicTwinResponseTopic + "#", MqttQualityOfServiceLevel.AtMostOnce));
                 mqttSubscribe.TopicFilters.Add(new(Twin.TwinClient.ClassicTwinDesiredPropertiesPatchTopic + "#", MqttQualityOfServiceLevel.AtMostOnce));
             }
+            else
+            {
+                mqttUnsubscribe.TopicFilters.Add(Twin.TwinClient.ClassicTwinResponseTopic + "#");
+                mqttUnsubscribe.TopicFilters.Add(Twin.TwinClient.ClassicTwinDesiredPropertiesPatchTopic + "#");
+            }
 
             if (AreDirectMethodsEnabled)
             {
                 mqttSubscribe.TopicFilters.Add(new(DirectMethods.DirectMethodClient.ClassicDirectMethodsRequestTopic + "#", MqttQualityOfServiceLevel.AtMostOnce));
             }
+            else
+            {
+                mqttUnsubscribe.TopicFilters.Add(DirectMethods.DirectMethodClient.ClassicDirectMethodsRequestTopic + "#");
+            }
+
+            if (args.ConnectAck.IsSessionPresent && mqttUnsubscribe.TopicFilters.Count > 0
+                && !await TryUnsubscribeDisabledFeaturesAsync(mqttUnsubscribe))
+            {
+                return;
+            }
 
             if (mqttSubscribe.TopicFilters.Count == 0)
             {
                 // A SUBSCRIBE with no topic filters is a protocol error, and there is nothing to wait for.
+                MarkDevicePresenceSubscribed();
                 await RaiseDevicePresenceFlowCompletedAsync(new DevicePresenceFlowCompletedArgs() { IsSuccess = true });
 
                 return;
@@ -151,13 +177,93 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
             if (anySubscribeFailed)
             {
                 // Signal to the underlying MQTT connection manager that, even though we are manually disconnecting, we still want to reconnect.
-                await ManagedMqttConnection.DisconnectAsync(true, new MqttDisconnect() { Reason = MqttDisconnectReasonCode.NormalDisconnection, SessionExpiryInterval = 0 });
+                await ManagedMqttConnection.DisconnectAsync(true, new MqttDisconnect() { Reason = MqttDisconnectReasonCode.NormalDisconnection });
 
                 Trace.TraceError("Device failed to subscribe to one or more necessary MQTT topics upon connecting to IoT Hub. Disconnecting the MQTT client and trying again.");
             }
             else
             {
+                MarkDevicePresenceSubscribed();
                 await RaiseDevicePresenceFlowCompletedAsync(new DevicePresenceFlowCompletedArgs() { IsSuccess = true });
+            }
+        }
+
+        /// <summary>
+        /// Remove a resumed session's subscriptions for disabled features.
+        /// </summary>
+        /// <returns>
+        /// True if the presence flow can continue; false if it was abandoned because the connection was lost, or if the
+        /// connection was torn down so that it is retried.
+        /// </returns>
+        private async Task<bool> TryUnsubscribeDisabledFeaturesAsync(MqttUnsubscribe mqttUnsubscribe)
+        {
+            // Abandon the UNSUBSCRIBE once this connection is lost, so that a failure on it can never tear down a newer one.
+            using CancellationTokenSource presenceCancellation = CancellationTokenSource.CreateLinkedTokenSource(
+                ManagedMqttConnection.ConnectionLifetimeCancellationToken,
+                CurrentReprovisioningCancellationToken);
+
+            Task HandleConnectionLostAsync(MqttClientDisconnectedEventArgs _)
+            {
+                try
+                {
+                    presenceCancellation.Cancel();
+                }
+                catch (ObjectDisposedException)
+                {
+                    // A disconnect dispatch may have captured this handler before the UNSUBSCRIBE completed.
+                }
+
+                return Task.CompletedTask;
+            }
+
+            ManagedMqttConnection.DisconnectedAsync += HandleConnectionLostAsync;
+            try
+            {
+                var unsuback = await ManagedMqttConnection.BuildAndUnsubscribeAsync(ConnectionEndpoint.IotHub, () =>
+                {
+                    string deviceId = GetDeviceIdForTopics();
+                    return mqttUnsubscribe.WithTopicFilters(mqttUnsubscribe.TopicFilters
+                        .Select(topicFilter => topicFilter.Replace(IConnectionClient.DeviceIdPlaceholder, deviceId, StringComparison.Ordinal))
+                        .ToList());
+                }, throwOnUnsubackErrorCode: false, presenceCancellation.Token);
+
+                presenceCancellation.Token.ThrowIfCancellationRequested();
+
+                if (unsuback.Items.Any(item => item.ReasonCode != MqttClientUnsubscribeReasonCode.Success
+                    && item.ReasonCode != MqttClientUnsubscribeReasonCode.NoSubscriptionExisted))
+                {
+                    Trace.TraceError("Device failed to unsubscribe from the MQTT topics of disabled features upon resuming a session with IoT Hub. Disconnecting the MQTT client and trying again.");
+
+                    // Signal to the underlying MQTT connection manager that, even though we are manually disconnecting, we still want to reconnect.
+                    await ManagedMqttConnection.DisconnectAsync(true, new MqttDisconnect() { Reason = MqttDisconnectReasonCode.NormalDisconnection }, presenceCancellation.Token);
+                    return false;
+                }
+
+                return true;
+            }
+            catch (OperationCanceledException) when (presenceCancellation.IsCancellationRequested)
+            {
+                // The connection layer owns recovery; an abandoned presence flow must not restart it.
+                return false;
+            }
+            catch (Exception e) when (!presenceCancellation.IsCancellationRequested)
+            {
+                // Without this, nothing would reconnect or complete the presence flow while the connection stays up.
+                Trace.TraceError("Exception thrown while unsubscribing from the MQTT topics of disabled features upon resuming a session with IoT Hub. Disconnecting the MQTT client and trying again. {0}", e);
+                try
+                {
+                    await ManagedMqttConnection.DisconnectAsync(true, new MqttDisconnect() { Reason = MqttDisconnectReasonCode.NormalDisconnection }, presenceCancellation.Token);
+                }
+                catch (OperationCanceledException) when (presenceCancellation.IsCancellationRequested)
+                {
+                    // The connection was lost or closed meanwhile, so the connection layer owns recovery.
+                }
+
+                return false;
+            }
+            finally
+            {
+                ManagedMqttConnection.DisconnectedAsync -= HandleConnectionLostAsync;
             }
         }
 

@@ -24,11 +24,10 @@ The `su_client` is a **feature client** in the azure-iot-sdk SDK that implements
 - The implementation MUST remain C99, single-threaded (callback-driven via `do_work()`), with no hidden allocations on the hot path — consistent with the existing SDK philosophy.
 - The software updates client MUST report update state and results to the cloud. The wire shape is channel-specific: `reportUpdateStatus` (§2). The engine emits a structured result; the channel serializes it.
 - The software updates client MUST support multi-step (composite) updates — the manifest MAY contain multiple instruction steps, each with its own handler type and file set.
-- The SDK SHOULD be usable as an **agent core library**: in addition to the managed client, it SHOULD expose transport-free primitives to *validate + parse* a manifest into a filled struct and to *build* the result report, so consumers can implement their own software updates agent and state machine on top of the SDK's vetted trust code. (See §5.3.)
+- The SDK MUST be usable as an **agent core library**: in **library mode** the client keeps the channel (checks, retries, reporting) and the verification, and hands each verified update to the application, which downloads, installs and reports on its own and needs no platform hooks (§5.3). Transport-free primitives MUST expose the same verified parse and report builder without a client.
 
 ### Non-goals
 
-- Delta/differential downloads.
 - Diagnostics/log-upload interface.
 - Peer-to-peer download acceleration (Delivery Optimization).
 - adu-shell or privilege escalation (we assume the application has sufficient privileges).
@@ -205,7 +204,8 @@ status alone -- 429 throttled,
 **The device is the only retrier**: DPS makes one attempt per hop. A retryable failure with no
 `Retry-After` is retried after a jittered exponential backoff (1 s doubling to 60 s, ±20%), reset by
 any accepted operation; it counts against the request timeout. A report is retried until the
-service accepts it or rejects it permanently; a rejected report is dropped. A lost DPS
+service accepts it or rejects it permanently; a rejected report is dropped. While that backoff
+runs, a newer report waits for it and the latest state is sent when it ends. A lost DPS
 session is retried up to `AZ_IOT_SU_CHANNEL_MAX_SESSION_RETRIES` (4) times; the next consecutive
 loss abandons the report for this process (`AZ_IOT_SU_EVENT_OPERATION_ABANDONED`). A terminal
 report stays owed (and stored, with persistence) and is re-sent on the next
@@ -280,6 +280,9 @@ stateDiagram-v2
     Failed --> Idle : error reported to cloud
     Idle --> ManifestReceived : same workflowId after FAILED, retry wait elapsed
 
+    VerifyingManifest --> Delegated : library_mode, manifest valid (UPDATE_AVAILABLE)
+    Delegated --> Idle : terminal az_iot_su_client_report_status()
+
     DownloadStarted --> ManifestReceived : new workflowId (replacement, before the first install_fn call)
     InstallStarted --> ManifestReceived : new workflowId (replacement, before the first install_fn call)
 ```
@@ -347,7 +350,7 @@ The design (full API in [§5.2](#52-device-properties-api)):
    **deep-copies** every string into the cache; after `init` returns the
    application MAY mutate or free its own struct.
 2. **No exposure of azure-sdk-for-c types.** The library MUST NOT expose
-   `az_iot_su_client_device_properties`.
+   azure-sdk-for-c's device-properties type.
 3. **Cache reused for every request.** Every update check and status report
    reads from the cache; the application MUST NOT be invoked mid-`do_work`.
 4. **Runtime update.** `az_iot_su_client_update_device_properties()`
@@ -457,7 +460,7 @@ manifest is verified (`is_installed_fn` included) and until the workflow ends. T
 result. A change made while the workflow waits for a reboot rewrites the saved record from a later
 `do_work()`, which holds the workflow until the write succeeds. A failed write raises
 `AZ_IOT_SU_EVENT_PERSIST_FAILED` and is retried; until `AZ_IOT_SU_EVENT_PERSIST_RECOVERED`, a reboot
-restores the previous details. A report that does not fit `max_message_size` is sent without step details. The terminal
+restores the previous details. A report that does not fit `max_message_size` is sent without step or overall details. The terminal
 `AZ_IOT_SU_EVENT_REPORT_ACCEPTED` carries a copy of the report as sent, kept when it was handed to
 the channel. The client sets no details itself.
 
@@ -708,6 +711,7 @@ typedef enum az_iot_su_state
     AZ_IOT_SU_STATE_APPLY_STARTED,
     AZ_IOT_SU_STATE_RESTORE_STARTED,
     AZ_IOT_SU_STATE_FAILED,
+    AZ_IOT_SU_STATE_DELEGATED,      /* library mode: the application owns the update */
 } az_iot_su_state;
 
 /* --- Platform hooks (vtable) --------------------------------------------- */
@@ -897,6 +901,11 @@ typedef struct az_iot_su_client
  * Configuration for az_iot_su_client_init(). Zero-initialize via
  * az_iot_su_client_config_options_default() and set the required fields:
  *   hooks:   platform operations (download/install/apply/...). See §6.
+ *     Required unless library_mode.
+ *   library_mode: hand each verified update to the application
+ *     (UPDATE_AVAILABLE) instead of installing it; it reports with
+ *     az_iot_su_client_report_status(). No hook is called, nothing is
+ *     persisted, root_keys is required. See §5.3.
  *   root_keys / root_key_count: caller-owned RSA root public keys that anchor
  *     manifest trust (see §7). Core copies the small descriptor array into its
  *     fixed store (the key BYTES are referenced, not copied, so they MUST
@@ -915,6 +924,7 @@ typedef struct az_iot_su_client
 typedef struct az_iot_su_client_config_options
 {
     const az_iot_su_platform_hooks*    hooks;
+    bool                                library_mode;
     const az_iot_su_root_key*          root_keys;
     size_t                              root_key_count;
     const az_iot_su_device_properties* device_properties;
@@ -958,6 +968,9 @@ az_iot_su_client_config_options az_iot_su_client_config_options_default(void);
  *   WORKFLOW_COMPLETED     -- the terminal report is settled (accepted, or
  *     retired by the service); raised once, after that verdict's event, with
  *     `report` and `reason`. Not for a report kept after a lost session.
+ *   UPDATE_AVAILABLE       -- library mode: a verified update is with the
+ *     application (state DELEGATED). `request` and `manifest` stay valid until
+ *     the workflow ends.
  *
  * Abandonment is raised from on_channel_result()'s no-re-arm branch, which IS
  * the definition of "the client will not retry this". Deriving both from one
@@ -1032,6 +1045,17 @@ az_iot_result az_iot_su_client_do_work(az_iot_su_client* client);
  * Get the current software updates agent state.
  */
 az_iot_su_state az_iot_su_client_get_state(const az_iot_su_client* client);
+
+/**
+ * Library mode: report the delegated update's progress or end. Terminal
+ * outcomes carry one step result per manifest step. Validated, then copied;
+ * sent like any report and retried when refused. See §5.3.
+ */
+az_iot_result az_iot_su_client_report_status(
+    az_iot_su_client* client,
+    const az_iot_su_step_result* overall_result,
+    const az_iot_su_step_result* step_results,
+    int32_t step_results_count);
 
 /**
  * PENDING while storage is behind what resume() needs (a write failing or
@@ -1178,19 +1202,80 @@ sequenceDiagram
     SU->>Ch: set_device_properties (next update check carries it)
 ```
 
-### 5.3 Agent Core-Library API (parse-only / BYO state machine)
+### 5.3 Library mode and transport-free primitives
 
-> This API lets a consumer build their **own** software updates agent (in the spirit of
+> Lets a consumer run its **own** software updates agent (in the spirit of
 > [Azure/iot-hub-device-update](https://github.com/Azure/iot-hub-device-update))
-> on top of our vetted parse + trust + report code, without adopting our state
-> machine or any transport.
+> on the SDK's channel, parse, trust and report code, without the SDK's install
+> state machine.
 
-These functions are **transport-free**. They take spans/structs
-only, perform no hidden allocation, and (where they return a struct) populate the
-output **only after** trust verification passes (fail-closed). After the §10
-engine extraction, the managed `az_iot_su_client` is implemented in terms of
-these same primitives so there is a single verified copy of the security-critical
-path.
+**Library mode (`az_iot_su_client_config_options.library_mode`).** The client keeps the
+channel: update checks, ETags, retries, `Retry-After`, request timeouts and report delivery are
+unchanged. It stops after verification:
+
+```mermaid
+sequenceDiagram
+    participant App
+    participant SU as su_client (library mode)
+    participant Ch as software updates channel
+
+    App->>SU: request_update() / request_onboarding_update()
+    SU->>Ch: fetch
+    Ch-->>SU: updateMetadata
+    Note over SU: parse + JWS/RS256 verification
+    SU-->>App: WORKFLOW_STATE_CHANGED (DELEGATED), UPDATE_AVAILABLE {request, manifest}
+    loop application-owned download / install / apply
+        App->>SU: report_status(IN_PROGRESS)
+        SU->>Ch: reportUpdateStatus
+    end
+    App->>SU: report_status(SUCCEEDED | FAILED | SKIPPED, steps)
+    SU->>Ch: reportUpdateStatus
+    Note over SU: back to Idle
+```
+
+- `hooks` is optional and never called. `crypto` and `root_keys` are required: nothing is handed
+  over unverified. A verification failure is reported FAILED by the SDK and not handed over.
+- It reuses the managed engine: the same `do_work()` path, duplicate / replacement / retry
+  detection, report pacing and resend. The only additions are the `DELEGATED` state, the
+  `UPDATE_AVAILABLE` event and `az_iot_su_client_report_status()`.
+- `request` / `manifest` are client-owned and valid until the workflow ends. While one is
+  delegated, a different workflow id raises `UPDATE_DEFERRED`; the same id is a duplicate. A
+  workflow id longer than `AZ_IOT_SU_WORKFLOW_ID_SIZE` is refused, as in the managed client.
+- `az_iot_su_client_report_status()` validates before it changes anything, copies the result, and
+  returns to Idle on a terminal outcome. A terminal report carries exactly one step result per
+  manifest step; a FAILED result code is never positive (a positive code reads as success to the
+  service); `CANCELED` is the service's and is refused; details are bounded by
+  `result_details_size`. On SUCCEEDED the manifest's update id
+  becomes the installed one. Step details go through the same path as
+  `az_iot_su_client_set_step_result_details()`.
+- Overall `result_details` are sent with the report they come with; the engine's terminal record
+  keeps no overall details, so a resent terminal report and `WORKFLOW_COMPLETED` do not carry them.
+- No persistence: a restart forgets a delegated update and the service offers it again; an
+  application that reboots mid-update owns its resume. The service's own limits still apply: an
+  update that outlives the DPS session hold (§2) is reported after the session renews.
+- Delta updates are not handled by the SDK. azure-sdk-for-c is archived and its parser skips
+  `relatedFiles`, refuses unknown file members and caps `fileUrls` at the file count (§14), so a
+  delta offer does not reach the application yet. Once the SDK owns the manifest parser, the
+  manifest handed to the application carries the related files and the application's own handler
+  applies the delta; the report contract does not change.
+
+```c
+az_iot_su_client_config_options opts = az_iot_su_client_config_options_default();
+opts.library_mode = true;          /* hooks may stay NULL */
+opts.root_keys = az_iot_su_microsoft_root_keys(&opts.root_key_count);
+/* ... crypto, device properties, workspace ... */
+az_iot_su_client_init(&su, &connection, &opts);
+az_iot_su_client_add_observer(&su, on_su_event, app);
+
+/* on AZ_IOT_SU_EVENT_UPDATE_AVAILABLE: download event->request->file_urls,
+ * check each with az_iot_su_verify_file_hash(), install, then: */
+az_iot_su_step_result done = { .outcome = AZ_IOT_SU_OUTCOME_SUCCEEDED };
+az_iot_su_client_report_status(&su, &done, steps, steps_count);
+```
+
+**Transport-free primitives.** No client, channel or transport: spans and structs only, no hidden
+allocation, fail-closed. Both modes share their cores, so there is a single verified copy of the
+security-critical path.
 
 ```c
 /* --- Library mode: validate + parse → filled struct ---------------------- */
@@ -1232,25 +1317,22 @@ az_iot_result az_iot_su_verify_file_hash(
     void* read_ctx);
 
 /**
- * Build the report payload from the consumer's own outcome data, without the
- * state machine. Emits the upstream agent-state JSON today; the software updates
- * reportUpdateStatus body is built by the channel (see §2).
+ * Build the reportUpdateStatus request body for a report, without a client or
+ * a channel: the body the managed client and library mode send. Invalid reports
+ * (empty workflow id, incomplete installed update id, outcome / failure-origin
+ * mismatch) are INVALID_ARG; a body that does not fit is NOT_ENOUGH_SPACE.
  */
 az_iot_result az_iot_su_build_report(
-    const az_iot_su_device_properties* device_properties,
-    const az_iot_su_client_install_result* result,
-    const az_iot_su_client_update_request* request,
-    az_iot_su_state state,
+    const az_iot_su_report* report,
     uint8_t* out_json,
     size_t out_size,
     size_t* out_len);
 ```
 
-**Boundaries (consumer-owned in library mode).** Core provides parse, trust,
-integrity, and report formatting only. Step/content-handler dispatch (switch on
-the manifest `handler` string), component enumeration, delta/`relatedFiles`
-download handlers, diagnostics/log upload, and privilege separation
-(`adu-shell`) remain the agent author's responsibility.
+**Boundaries (consumer-owned in library mode).** Core provides channel, parse, trust, integrity
+and report formatting only. Step/content-handler dispatch (switch on the manifest `handler`
+string), component enumeration, delta/`relatedFiles` download handlers, diagnostics/log upload,
+and privilege separation (`adu-shell`) remain the agent author's responsibility.
 
 ---
 
@@ -1429,7 +1511,7 @@ Platform-specific code (Linux libcurl downloads, ESP32 OTA partition writes, etc
 
 **Rationale:**
 
-1. **Consistency with existing pattern** — MQTT adapters live in `adapters/paho/` and `adapters/rust_mqtt/`, not in `src/core/`. Platform-specific software updates code MUST follow the same convention.
+1. **Consistency with existing pattern** — MQTT adapters live in `adapters/paho/` and `adapters/az_mqtt/`, not in `src/core/`. Platform-specific software updates code MUST follow the same convention.
 
 2. **Clean dependency graph** — `src/features/su/` MUST depend only on `az_iot_connection_client` (through the software updates channel), `azure-sdk-for-c` (for parsing), and the hooks vtable. It MUST NOT depend on libcurl, ESP-IDF, or OS-specific headers. This makes it compilable and testable on any platform including host-only unit tests.
 
@@ -1548,6 +1630,10 @@ Operations MUST NOT be long-blocking. Each `do_work` invocation MUST process at 
   check after a conflicting report (§2).
 - **An operational channel over the IoT Hub connection.** Both routes run over DPS.
 - **A reusable conformance suite** for customer platform hooks and crypto backends.
+- **Delta updates.** Needs `relatedFiles` from an SDK-owned manifest parser (azure-sdk-for-c is
+  archived, §14); library mode is the route for an application-owned delta handler.
+- **Library-mode persistence and a received-offer accessor.** A delegated update is not stored,
+  and `UPDATE_AVAILABLE` is the only way to see the offer.
 
 ---
 
@@ -1588,7 +1674,7 @@ Operations MUST NOT be long-blocking. Each `do_work` invocation MUST process at 
 | Parse update manifest JSON | `az_iot_adu_client_parse_update_manifest()` |
 | Structs for manifest, workflow, file info, step results | `az_iot_su_client_update_manifest`, `az_iot_su_client_update_request`, etc. |
 
-Its device-twin helpers (service-property parsing, agent-state and acknowledgement formatting, component check) are not used by the engine. `az_iot_su_build_report()` still emits the upstream agent-state JSON; the software updates `reportUpdateStatus` body is built by the channel.
+Its device-twin helpers (service-property parsing, agent-state and acknowledgement formatting, component check) are not used by the engine; `az_iot_su_build_report()` builds the same `reportUpdateStatus` body the channel sends.
 
 **What azure-sdk-for-c does NOT provide:**
 - State machine / workflow orchestration.
@@ -1613,7 +1699,7 @@ This avoids duplicating the well-tested JSON parsing logic and keeps us aligned 
 | Capability | Assessment |
 |-----------|------------|
 | Manifest v5 JSON parsing (inline steps, files, hashes) | ✅ Sufficient |
-| Reported-property JSON formatting (agent state + per-step results) | Used only by `az_iot_su_build_report()`; the channel builds the software updates report |
+| Reported-property JSON formatting (agent state + per-step results) | Not used; `az_iot_su_build_report()` and the channel build the `reportUpdateStatus` body |
 | Service property acknowledgement formatting (ACCEPT/REJECT) | Not used (device twin only) |
 | Component name check (`az_iot_adu_client_is_component_device_update`) | Not used (device twin only) |
 | Workflow struct with `action`, `id`, `retry_timestamp` | Only `id` is used (from `workflowId`) |
@@ -1652,8 +1738,8 @@ advances past it without skipping its members, which it would then read as file 
 
 The largest status report grows 117 bytes per step, so `AZ_IOT_SU_MIN_MESSAGE_SIZE` is
 2176 + 128 × `AZ_IOT_SU_MAX_STEP_COUNT` (3456 by default; the base fits a 128-byte workflow id, fully
-escaped). Memory cost of the default limits against 2/2 on 64-bit: `az_iot_su_client` 7920 bytes
-(3952), default workspace 87311 (80591), parsed manifest
+escaped). Memory cost of the default limits against 2/2 on 64-bit: `az_iot_su_client` 7936 bytes
+(3968), default workspace 87440 (80720), parsed manifest
 3216 (464). See [client-configuration.md](../client-configuration.md#software-updates-manifest-limits).
 
 ### Known limitation: strict step parsing
@@ -1664,13 +1750,13 @@ top-level parser skips unknown properties. A service-side addition to a step wou
 manifest parsing. The fix belongs upstream (skip unknown properties, as the top-level parser does),
 consumed through a normal `AZ_SDK_C_TAG` bump; this repo carries no patch of the dependency.
 
-### Not Supported in azure-sdk-for-c (Matches Our Non-Goals)
+### Not Supported in azure-sdk-for-c
 
 | Feature | Status in azure-sdk-for-c | Our Position |
 |---------|--------------------------|---------------|
 | Reference steps (`"type": "reference"`) | Field name defined but not parsed | Non-Goal |
 | Detached manifest file ID | Field name defined but not parsed | Non-Goal |
-| Delta updates (`relatedFiles`, `downloadHandler`) | Explicitly skipped in parser | Non-Goal |
+| Delta updates (`relatedFiles`, `downloadHandler`) | Explicitly skipped in parser | Planned: needs an SDK-owned manifest parser (upstream is archived); library mode hands the files to the application's own handler |
 | `mimeType` field | Skipped in parser | Non-Goal |
 
 ### Additional Functionality We Build (Not in azure-sdk-for-c)
