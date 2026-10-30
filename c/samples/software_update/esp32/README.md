@@ -390,7 +390,7 @@ The SDK logs at `INFO`; change the level in `app_main()` for more detail.
 | az_mqtt adapter (MQTT 3.1.1 + 5) | `az_iot_az_mqtt_factory_create_v3_1_1()`, `az_iot_az_mqtt_factory_create_v5()` |
 | Crypto backend | `copts.crypto = az_iot_crypto_mbedtls()` |
 | OTA hooks, root keys | `az_iot_su_esp32_ota_get_platform_hooks()`, `az_iot_su_microsoft_root_keys()` |
-| Compatibility properties | `dp.manufacturer`, `dp.model` |
+| Compatibility properties | `device_properties.manufacturer`, `device_properties.model` |
 | Resume after the OTA reboot | `az_iot_su_client_resume()` |
 | Route selection | `app_request_check()`, `app_is_registered()` |
 | Poll loop and reboot | the `for (;;)` loop at the end of `app_main()` |

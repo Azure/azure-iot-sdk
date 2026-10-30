@@ -304,12 +304,12 @@ void app_main(void)
   size_t root_key_count = 0;
   const az_iot_su_root_key* root_keys = az_iot_su_microsoft_root_keys(&root_key_count);
 
-  az_iot_su_device_properties dp = { 0 };
-  dp.manufacturer = "Espressif";
-  dp.model = "ESP32-WROOM";
-  dp.installed_update_id.provider = SU_UPDATE_PROVIDER;
-  dp.installed_update_id.name = SU_UPDATE_NAME;
-  dp.installed_update_id.version = SU_UPDATE_VERSION;
+  az_iot_su_device_properties device_properties = { 0 };
+  device_properties.manufacturer = "Espressif";
+  device_properties.model = "ESP32-WROOM";
+  device_properties.installed_update_id.provider = SU_UPDATE_PROVIDER;
+  device_properties.installed_update_id.name = SU_UPDATE_NAME;
+  device_properties.installed_update_id.version = SU_UPDATE_VERSION;
 
   /* Largest update accepted. A one-file offer is about 5 KiB, and NVS
    * (partitions*.csv) must hold two generations of the largest checkpoint
@@ -330,7 +330,7 @@ void app_main(void)
   su_opts.hooks = &hooks;
   su_opts.root_keys = root_keys;
   su_opts.root_key_count = root_key_count;
-  su_opts.device_properties = &dp;
+  su_opts.device_properties = &device_properties;
   su_opts.limits.max_update_size = SU_MAX_UPDATE_SIZE;
   su_opts.limits.scratch_size = AZ_IOT_SU_VERIFY_SCRATCH_SIZE;
   su_opts.limits.max_message_size = AZ_IOT_SU_DEFAULT_MAX_MESSAGE_SIZE;
