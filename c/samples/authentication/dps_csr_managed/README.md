@@ -174,11 +174,11 @@ anything else is retried until the 60 s timeout, which prints the last error per
 SDK log lines omitted:
 
 ```
-[dps_csr] dps: Connecting (AZ_IOT_OK)
-[dps_csr] dps: Connected (AZ_IOT_OK)
+[dps_csr] dps: AZ_IOT_CONN_STATE_CONNECTING (AZ_IOT_OK)
+[dps_csr] dps: AZ_IOT_CONN_STATE_CONNECTED (AZ_IOT_OK)
 [dps_csr] operational certificate issued (2 cert(s) in chain), saved to operational_cert.pem
 ...
-[dps_csr] hub: Connected (AZ_IOT_OK)
+[dps_csr] hub: AZ_IOT_CONN_STATE_CONNECTED (AZ_IOT_OK)
 [dps_csr] connected to <hub>.azure-devices.net with the operational certificate
 [dps_csr] telemetry sent with operational certificate
 ```
