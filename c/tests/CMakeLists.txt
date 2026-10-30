@@ -189,6 +189,10 @@ target_include_directories(az_iot_tests_defensive_timeout PRIVATE
 az_iot_add_cmocka_test(az_iot_tests_deadline unit/deadline_test.c)
 target_include_directories(az_iot_tests_deadline PRIVATE
     ${PROJECT_SOURCE_DIR}/src/core)
+az_iot_add_cmocka_test(az_iot_tests_delivery_tracker unit/delivery_tracker_test.c)
+target_link_libraries(az_iot_tests_delivery_tracker PRIVATE az_iot_test_support)
+target_include_directories(az_iot_tests_delivery_tracker PRIVATE
+    ${PROJECT_SOURCE_DIR}/src/core)
 az_iot_add_cmocka_test(az_iot_tests_span_writer unit/span_writer_test.c)
 target_include_directories(az_iot_tests_span_writer PRIVATE
     ${PROJECT_SOURCE_DIR}/src/core)

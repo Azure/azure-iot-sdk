@@ -1626,6 +1626,10 @@ extern "C"
      * events are dispatched before the application's. Two pools so neither kind of subscriber
      * can starve the other. */
     az_iot_connection_feature_observer* feature_observers;
+    /* New feature-observer registrations so far; never reset, so it tells registrations apart. */
+    uint32_t feature_observer_registrations;
+    /* Identity changes so far; counted before IDENTITY_CHANGED observers run. */
+    uint32_t identity_changes;
     az_iot_connection_state_observer* app_state_observers;
     /* Set while a transition is being dispatched. Registering an observer from
      * inside a callback would hand it the transition in flight, so adding is
