@@ -264,6 +264,68 @@ FILE* sample_file_create_private(const char* path)
   return path != NULL ? open_private(path, true) : NULL;
 }
 
+/** @brief Attempts at a name not yet taken (Windows), and room for the suffix: ".XXXXXX"
+ *  (POSIX) or ".<8 hex>.tmp" (Windows), plus NUL. */
+#define SAMPLE_UNIQUE_NAME_ATTEMPTS 16
+#define SAMPLE_UNIQUE_SUFFIX_MAX 16
+
+FILE* sample_file_create_private_unique(const char* path, char** out_unique_path)
+{
+  if (out_unique_path == NULL)
+  {
+    return NULL;
+  }
+  *out_unique_path = NULL;
+  if (path == NULL)
+  {
+    return NULL;
+  }
+  size_t size = strlen(path) + SAMPLE_UNIQUE_SUFFIX_MAX;
+  char* unique_path = (char*)malloc(size);
+  if (unique_path == NULL)
+  {
+    return NULL;
+  }
+  FILE* f = NULL;
+#ifdef _WIN32
+  unsigned long seed
+      = (unsigned long)GetTickCount64() ^ ((unsigned long)GetCurrentProcessId() << 16);
+  for (int i = 0; i < SAMPLE_UNIQUE_NAME_ATTEMPTS && f == NULL; ++i)
+  {
+    seed = seed * 1103515245UL + 12345UL;
+    (void)snprintf(unique_path, size, "%s.%08lx.tmp", path, seed & 0xFFFFFFFFUL);
+    errno = 0;
+    f = open_private(unique_path, true);
+    if (f == NULL && errno != EEXIST)
+    {
+      break;
+    }
+  }
+#else
+  (void)snprintf(unique_path, size, "%s.XXXXXX", path);
+  int fd = mkstemp(unique_path); /* O_CREAT | O_EXCL */
+  if (fd >= 0)
+  {
+    if (fchmod(fd, S_IRUSR | S_IWUSR) == 0)
+    {
+      f = fdopen(fd, "wb");
+    }
+    if (f == NULL)
+    {
+      (void)close(fd);
+      (void)unlink(unique_path);
+    }
+  }
+#endif
+  if (f == NULL)
+  {
+    free(unique_path);
+    return NULL;
+  }
+  *out_unique_path = unique_path;
+  return f;
+}
+
 FILE* sample_file_open_read_no_follow(const char* path)
 {
   if (!path)
