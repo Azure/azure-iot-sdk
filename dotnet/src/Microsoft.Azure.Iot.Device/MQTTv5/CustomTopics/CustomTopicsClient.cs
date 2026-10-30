@@ -116,7 +116,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.CustomTopics
             EnsureConnected();
 
             // Unlike other feature clients, this client hands MQTT-level results to the user as-is
-            return await _connection.PublishAsync(publish, throwOnErrorReasonCode: false, cancellationToken);
+            return await _connection.PublishAsync(publish, cancellationToken);
         }
 
         // The connection context survives a disconnect, so IsConnectionTargetSet is what says whether the connection client

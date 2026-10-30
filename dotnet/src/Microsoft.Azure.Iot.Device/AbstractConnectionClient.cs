@@ -479,8 +479,8 @@ namespace Microsoft.Azure.Iot.Device
             return await ProvisionThenConnectAsync(provisioningSettings, authentication, cancellationToken);
         }
 
-        /// <inheritdoc cref="Unified.Connection.IConnectionClient.PublishAsync(MqttPublish, bool, CancellationToken)"/>
-        public async Task<MqttPublishAck> PublishAsync(MqttPublish publish, bool throwOnErrorReasonCode, CancellationToken cancellationToken = default)
+        /// <inheritdoc cref="Unified.Connection.IConnectionClient.PublishAsync(MqttPublish, CancellationToken)"/>
+        public async Task<MqttPublishAck> PublishAsync(MqttPublish publish, CancellationToken cancellationToken = default)
         {
             // The device ID is resolved on every attempt rather than once up front, because this operation may wait out a
             // re-provisioning that assigns this device a different ID. The caller's publish is left untouched so that
@@ -494,15 +494,15 @@ namespace Microsoft.Azure.Iot.Device
                     () => ContainsDeviceIdPlaceholder(publish.Topic)
                         ? publish.WithTopic(ResolveDeviceIdPlaceholder(publish.Topic, GetDeviceIdForTopics()))
                         : publish,
-                    throwOnErrorReasonCode,
+                    throwOnPubackErrorCode: false,
                     cancellationToken);
             };
 
             return await PerformWhileRespectingConnectionState(funcToRetry, cancellationToken);
         }
 
-        /// <inheritdoc cref="Unified.Connection.IConnectionClient.SubscribeAsync(MqttSubscribe, bool, CancellationToken)"/>
-        public async Task<MqttSubscribeAck> SubscribeAsync(MqttSubscribe subscribe, bool throwOnErrorReasonCode, CancellationToken cancellationToken = default)
+        /// <inheritdoc cref="Unified.Connection.IConnectionClient.SubscribeAsync(MqttSubscribe, CancellationToken)"/>
+        public async Task<MqttSubscribeAck> SubscribeAsync(MqttSubscribe subscribe, CancellationToken cancellationToken = default)
         {
             // See PublishAsync for why the device ID is resolved on every attempt, and only once it has been admitted.
             Func<CancellationToken, Task<MqttSubscribeAck>> funcToRetry = async (args) =>
@@ -523,15 +523,15 @@ namespace Microsoft.Azure.Iot.Device
                                 : topicFilter)
                             .ToList());
                     },
-                    throwOnErrorReasonCode,
+                    throwOnSubackErrorCode: false,
                     cancellationToken);
             };
 
             return await PerformWhileRespectingConnectionState(funcToRetry, cancellationToken);
         }
 
-        /// <inheritdoc cref="Unified.Connection.IConnectionClient.UnsubscribeAsync(MqttUnsubscribe, bool, CancellationToken)"/>
-        public async Task<MqttUnsubscribeAck> UnsubscribeAsync(MqttUnsubscribe unsubscribe, bool throwOnErrorReasonCode, CancellationToken cancellationToken = default)
+        /// <inheritdoc cref="Unified.Connection.IConnectionClient.UnsubscribeAsync(MqttUnsubscribe, CancellationToken)"/>
+        public async Task<MqttUnsubscribeAck> UnsubscribeAsync(MqttUnsubscribe unsubscribe, CancellationToken cancellationToken = default)
         {
             // See PublishAsync for why the device ID is resolved on every attempt, and only once it has been admitted.
             Func<CancellationToken, Task<MqttUnsubscribeAck>> funcToRetry = async (args) =>
@@ -550,7 +550,7 @@ namespace Microsoft.Azure.Iot.Device
                             .Select(topicFilter => ResolveDeviceIdPlaceholder(topicFilter, deviceId))
                             .ToList());
                     },
-                    throwOnErrorReasonCode,
+                    throwOnUnsubackErrorCode: false,
                     cancellationToken);
             };
 
