@@ -35,6 +35,12 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods
         // request. An entry may be stale (its request was removed, replaced, or its deadline was extended), so it is re-validated when dequeued.
         private readonly PriorityQueue<(Guid RequestId, DirectMethodRequestState State), long> _consumedDirectMethodRequestExpirations = new();
 
+        // A probe's expiry doesn't bound QoS 1 redelivery once its delivery has started (for example, a probe whose PUBACK was lost can be
+        // redelivered when the MQTT session resumes after its expiry), so the most recently consumed requests are kept even after their probe
+        // deadline. Older consumed requests are forgotten once their probe deadline elapses, which bounds this client's memory use.
+        internal const int RecentlyConsumedDirectMethodRequestsToRetain = 10;
+        private readonly Queue<(Guid RequestId, DirectMethodRequestState State)> _recentlyConsumedDirectMethodRequests = new();
+
         private sealed class DirectMethodRequestState
         {
             private readonly TaskCompletionSource<ProbeAck?> _decision = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -56,22 +62,29 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods
 
             public void SetDecision(ProbeAck? decision) => _decision.TrySetResult(decision);
 
+            // Set once a probe has been acknowledged and has taken responsibility for invoking the application's probe handler.
+            public bool DecisionStarted { get; set; }
+
             // Set once a probe ack that signals readiness is about to be sent. An Exec message for this request must reference this ready Id.
             public ByteString? ReadyId { get; set; }
 
-            // Set once an Exec message claims this request. A consumed request is kept until ProbeDeadlineTimestamp elapses so that late or
-            // waiting duplicate probes cannot make its ready Id valid again.
+            // Set once an Exec message claims this request. A consumed request is kept until ProbeDeadlineTimestamp elapses (and while it is one
+            // of the most recently consumed requests) so that late or waiting duplicate probes cannot make its ready Id valid again.
             public bool Consumed { get; set; }
+
+            // Set while this consumed request is one of the most recently consumed requests, so it is kept even after its probe deadline.
+            public bool RetainedAsRecentlyConsumed { get; set; }
 
             // The Stopwatch timestamp after which no probe for this request can still be delivered.
             public long ProbeDeadlineTimestamp { get; set; }
 
-            // The number of received probes for this request that are still being handled. The request stays registered while any of them are,
-            // so that they all share this request's decision and no probe can replace this request with a new one.
+            // The number of received probes for this request that are still being handled, including while they are being acknowledged. The
+            // request stays registered while any of them are, so that they all share this request's decision and no probe can replace this
+            // request with a new one.
             public int InFlightProbes { get; set; }
         }
 
-        private sealed record ProbeRegistration(Guid RequestId, Probe Probe, DirectMethodRequestState State, bool IsOwner, long DeadlineTimestamp);
+        private sealed record ProbeRegistration(Guid RequestId, Probe Probe, DirectMethodRequestState State, bool ConsumedWhenReceived, long DeadlineTimestamp);
 
         private IConnectionClient _connection;
 
@@ -272,10 +285,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods
                     // Keep the consumed request until its probes can no longer arrive so that a duplicate probe cannot make its ready Id valid again.
                     pendingRequest.Consumed = true;
                     pendingMethodName = pendingRequest.MethodName;
-                    if (pendingRequest.InFlightProbes == 0)
-                    {
-                        _consumedDirectMethodRequestExpirations.Enqueue((requestId.Value, pendingRequest), pendingRequest.ProbeDeadlineTimestamp);
-                    }
+                    RetainAsRecentlyConsumed(requestId.Value, pendingRequest);
                 }
 
                 DirectMethodRequestReceivedEventArgs directMethodInvokedArgs = new()
@@ -397,14 +407,10 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods
                     // This duplicate may still be redelivered until its own expiry, so keep the request (even if consumed) at least that long.
                     existingRequest.ProbeDeadlineTimestamp = Math.Max(existingRequest.ProbeDeadlineTimestamp, deadlineTimestamp);
 
-                    if (existingRequest.Consumed)
-                    {
-                        Trace.TraceWarning("Received direct method probe for request Id {0} whose exec message was already received. Ignoring it.", requestId.Value);
-                        return null;
-                    }
-
+                    // Count this probe as in flight even if the request was already consumed, so that the request can't be forgotten (and then
+                    // registered as new by a later probe) while this probe is still being acknowledged. HandleProbeAsync then ignores it.
                     existingRequest.InFlightProbes++;
-                    return new ProbeRegistration(requestId.Value, probe, existingRequest, IsOwner: false, deadlineTimestamp);
+                    return new ProbeRegistration(requestId.Value, probe, existingRequest, ConsumedWhenReceived: existingRequest.Consumed, deadlineTimestamp);
                 }
 
                 var requestState = new DirectMethodRequestState(probe.MethodName, probe.ResponseTimeoutSeconds, deadlineTimestamp)
@@ -412,7 +418,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods
                     InFlightProbes = 1,
                 };
                 _directMethodRequests.Add(requestId.Value, requestState);
-                return new ProbeRegistration(requestId.Value, probe, requestState, IsOwner: true, deadlineTimestamp);
+                return new ProbeRegistration(requestId.Value, probe, requestState, ConsumedWhenReceived: false, deadlineTimestamp);
             }
         }
 
@@ -426,7 +432,26 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods
             Guid requestId = registration.RequestId;
             try
             {
-                if (registration.IsOwner)
+                if (registration.ConsumedWhenReceived)
+                {
+                    Trace.TraceWarning("Received direct method probe for request Id {0} whose exec message was already received. Ignoring it.", requestId);
+                    return;
+                }
+
+                // The first acknowledged probe that is still live invokes the application's probe handler. Choosing it only after acknowledgment
+                // means a probe whose acknowledgment failed can't leave the others waiting for a decision that never starts, and a probe that
+                // expired while being acknowledged doesn't reserve application capacity for a request the service has already given up on.
+                bool startDecision = false;
+                lock (_directMethodRequestsLock)
+                {
+                    if (!requestState.DecisionStarted && Stopwatch.GetTimestamp() < registration.DeadlineTimestamp)
+                    {
+                        requestState.DecisionStarted = true;
+                        startDecision = true;
+                    }
+                }
+
+                if (startDecision)
                 {
                     Task<DirectMethodProbeAck> handlerTask;
                     if (methodHandler == null || probeHandler == null)
@@ -454,10 +479,22 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods
                         TaskContinuationOptions.ExecuteSynchronously,
                         TaskScheduler.Default);
 
-                    if (await CompletesBeforeDeadlineAsync(handlerTask, registration.DeadlineTimestamp) && !handlerTask.IsCompletedSuccessfully)
+                    if (await CompletesBeforeDeadlineAsync(handlerTask, registration.DeadlineTimestamp))
                     {
-                        // Surface the application's exception to the caller.
-                        await handlerTask;
+                        if (!handlerTask.IsCompletedSuccessfully)
+                        {
+                            // Surface the application's exception to the caller.
+                            await handlerTask;
+                        }
+                    }
+                    else
+                    {
+                        // Nothing awaits the handler any more, so observe and log a late failure here.
+                        _ = handlerTask.ContinueWith(
+                            t => Trace.TraceError("The 'DirectMethodProbeReceivedAsync' callback for request Id {0} failed after its probe expired: {1}", requestId, t.Exception),
+                            CancellationToken.None,
+                            TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                            TaskScheduler.Default);
                     }
                 }
 
@@ -543,10 +580,25 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods
                     // for the same request (for example, after a not-ready response or a timed out handler) ask the application again.
                     _directMethodRequests.Remove(registration.RequestId);
                 }
-                else if (requestState.Consumed)
+                else if (requestState.Consumed && !requestState.RetainedAsRecentlyConsumed)
                 {
                     _consumedDirectMethodRequestExpirations.Enqueue((registration.RequestId, requestState), requestState.ProbeDeadlineTimestamp);
                 }
+            }
+        }
+
+        // Must be called while holding _directMethodRequestsLock.
+        private void RetainAsRecentlyConsumed(Guid requestId, DirectMethodRequestState requestState)
+        {
+            requestState.RetainedAsRecentlyConsumed = true;
+            _recentlyConsumedDirectMethodRequests.Enqueue((requestId, requestState));
+
+            if (_recentlyConsumedDirectMethodRequests.Count > RecentlyConsumedDirectMethodRequestsToRetain)
+            {
+                // The oldest retained request is now only kept until its probe deadline elapses.
+                (Guid RequestId, DirectMethodRequestState State) evicted = _recentlyConsumedDirectMethodRequests.Dequeue();
+                evicted.State.RetainedAsRecentlyConsumed = false;
+                _consumedDirectMethodRequestExpirations.Enqueue(evicted, evicted.State.ProbeDeadlineTimestamp);
             }
         }
 
@@ -584,9 +636,11 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods
 
                 if (!_directMethodRequests.TryGetValue(entry.RequestId, out DirectMethodRequestState? currentRequest)
                     || !ReferenceEquals(currentRequest, entry.State)
-                    || entry.State.InFlightProbes > 0)
+                    || entry.State.InFlightProbes > 0
+                    || entry.State.RetainedAsRecentlyConsumed)
                 {
-                    // Stale entry. A request with probes in flight is re-scheduled when its last probe is released.
+                    // Stale entry. A request with probes in flight is re-scheduled when its last probe is released, and a recently consumed
+                    // request is re-scheduled when it stops being one of the most recently consumed requests.
                     continue;
                 }
 
