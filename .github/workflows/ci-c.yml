@@ -922,7 +922,7 @@ jobs:
           cmake -DBUILD_DIR=build/windows-msvc-debug -DCONFIG=Debug
           "-DFORBID=paho;rust_mqtt;openssl"
           -DEXPECT_SAMPLES=az_mqtt
-          "-DEXPECT_SAMPLES_EXCEPT=custom_certificate_provider;dps_csr_managed;dps_persist_assignment;hub_renew;dps_sas_key_issued_cert;user_provided_sas_token;dps_tpm;http_download;hsm_pkcs11;dps_sas_key;multi_step;reboot_resume;simulated_onboarding;simulated_regular"
+          "-DEXPECT_SAMPLES_EXCEPT=custom_certificate_provider;dps_csr_managed;dps_persist_assignment;hub_renew;dps_sas_key_issued_cert;user_provided_sas_token;dps_tpm;http_download;hsm_pkcs11;dps_sas_key;multi_step;reboot_resume;simulated_onboarding;simulated_regular;library_mode"
           -P eng/check-dependencies.cmake
 
   # Optimized build (so _FORTIFY_SOURCE is active) checked by

@@ -1250,9 +1250,13 @@ sequenceDiagram
   `az_iot_su_client_set_step_result_details()`.
 - Overall `result_details` are sent with the report they come with; the engine's terminal record
   keeps no overall details, so a resent terminal report and `WORKFLOW_COMPLETED` do not carry them.
+- No `is_installed_fn`: the application checks whether an offered update is already installed
+  and reports it `SKIPPED`.
 - No persistence: a restart forgets a delegated update and the service offers it again; an
   application that reboots mid-update owns its resume. The service's own limits still apply: an
-  update that outlives the DPS session hold (§2) is reported after the session renews.
+  update that outlives the DPS session hold (§2) is reported after the session renews. The
+  application keeps the installed update id across restarts and passes it in
+  `device_properties` at init.
 - Delta updates are not handled by the SDK. azure-sdk-for-c is archived and its parser skips
   `relatedFiles`, refuses unknown file members and caps `fileUrls` at the file count (§14), so a
   delta offer does not reach the application yet. Once the SDK owns the manifest parser, the
@@ -1272,6 +1276,9 @@ az_iot_su_client_add_observer(&su, on_su_event, app);
 az_iot_su_step_result done = { .outcome = AZ_IOT_SU_OUTCOME_SUCCEEDED };
 az_iot_su_client_report_status(&su, &done, steps, steps_count);
 ```
+
+The [library_mode sample](../../samples/software_update/pc/library_mode/README.md) runs this flow
+end to end.
 
 **Transport-free primitives.** No client, channel or transport: spans and structs only, no hidden
 allocation, fail-closed. Both modes share their cores, so there is a single verified copy of the
