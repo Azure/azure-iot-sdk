@@ -484,6 +484,191 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
             }
         }
 
+        private const string TwinGetTopicPrefix = "$iothub/twin/GET/?$rid=";
+
+        /// <summary>
+        /// Like IoT hubs that use MQTTv5 push the twin upon connecting, the MQTTv3 device presence flow gets the twin
+        /// once its subscriptions are in place (or resumed), and only completes once IoT hub responds.
+        /// </summary>
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task PresenceFlowGetsTwinBeforeConnectionIsReady(bool isSessionPresent)
+        {
+            using MockConnectionMqttClient mockMqttClient = new() { AutoRespondToTwinGet = false };
+            using ConnectionClient connectionClient = new(new() { MqttClient = mockMqttClient });
+            IConnectionClient featureView = connectionClient;
+            mockMqttClient.OnConnect = _ => Task.FromResult(new MqttConnectAck() { IsSessionPresent = isSessionPresent, ResultCode = MqttConnectReasonCode.Success });
+            TaskCompletionSource<MqttPublish> twinGetSent = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            mockMqttClient.OnPublish = publish =>
+            {
+                if (publish.Topic.StartsWith(TwinGetTopicPrefix, StringComparison.Ordinal))
+                {
+                    twinGetSent.TrySetResult(publish);
+                }
+
+                return Task.FromResult(new MqttPublishAck() { ReasonCode = MqttPublishAckReasonCode.Success });
+            };
+
+            Task connecting = connectionClient.ConnectToHubAsync(GetMockConnectionContext(false), TestContext.Current.CancellationToken);
+            MqttPublish twinGet = await twinGetSent.Task.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+
+            Assert.Equal(isSessionPresent ? 0 : 1, mockMqttClient.SentMqttTrafficInOrder.Count(traffic => traffic.Subscribe != null));
+            await Task.Delay(100, TestContext.Current.CancellationToken);
+            Assert.False(connecting.IsCompleted, "The connection must not be ready before IoT hub responds with the twin.");
+            Assert.False(featureView.IsConnectionReady);
+
+            string rid = twinGet.Topic.Substring(TwinGetTopicPrefix.Length);
+            await mockMqttClient.SimulatePublishReceivedAsync(new MqttPublish()
+            {
+                Topic = $"$iothub/twin/res/200/?$rid={rid}",
+                Payload = Encoding.UTF8.GetBytes("""{"desired":{"a":1,"$version":5},"reported":{"b":2,"$version":3}}"""),
+            });
+            await connecting.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+
+            Assert.True(featureView.IsConnectionReady);
+            ConnectTwinSnapshot snapshot = Assert.IsType<ConnectTwinSnapshot>(featureView.LatestConnectTwinSnapshot);
+            Assert.Equal(featureView.HubConnectionId, snapshot.ConnectionId);
+            Assert.Equal(5UL, snapshot.DesiredVersion);
+            Assert.Equal(3UL, snapshot.ReportedVersion);
+            Assert.Equal("""{"a":1}""", snapshot.Desired.ToJsonString());
+            Assert.Equal("""{"b":2}""", snapshot.Reported.ToJsonString());
+        }
+
+        [Fact]
+        public async Task PresenceFlowDoesNotGetTwinWhenTwinIsDisabled()
+        {
+            using MockConnectionMqttClient mockMqttClient = new();
+            using ConnectionClient connectionClient = new(new() { MqttClient = mockMqttClient, EnableTwin = false });
+
+            await connectionClient.ConnectToHubAsync(GetMockConnectionContext(false), TestContext.Current.CancellationToken);
+
+            Assert.DoesNotContain(mockMqttClient.SentMqttTrafficInOrder, traffic => traffic.Publish != null);
+            Assert.Null(((IConnectionClient)connectionClient).LatestConnectTwinSnapshot);
+        }
+
+        /// <summary>
+        /// Failing to get the twin doesn't fail the connection; the twin client gets the twin itself instead.
+        /// </summary>
+        [Theory]
+        [InlineData("error status")]
+        [InlineData("timeout")]
+        [InlineData("malformed")]
+        public async Task PresenceFlowCompletesWithoutTwinWhenGettingTwinFails(string failure)
+        {
+            using MockConnectionMqttClient mockMqttClient = new();
+            using ConnectionClient connectionClient = new(new() { MqttClient = mockMqttClient });
+            switch (failure)
+            {
+                case "error status":
+                    mockMqttClient.TwinGetResponseStatus = 500;
+                    break;
+                case "timeout":
+                    mockMqttClient.AutoRespondToTwinGet = false;
+                    connectionClient.ConnectTwinGetTimeout = TimeSpan.FromMilliseconds(100);
+                    break;
+                default:
+                    mockMqttClient.TwinGetResponsePayload = "not json";
+                    break;
+            }
+
+            int disconnectCount = 0;
+            mockMqttClient.OnDisconnect = _ =>
+            {
+                Interlocked.Increment(ref disconnectCount);
+                return Task.CompletedTask;
+            };
+
+            await connectionClient.ConnectToHubAsync(GetMockConnectionContext(false), TestContext.Current.CancellationToken)
+                .WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+
+            IConnectionClient featureView = connectionClient;
+            Assert.True(featureView.IsConnectionReady);
+            Assert.Null(featureView.LatestConnectTwinSnapshot);
+            Assert.Equal(0, disconnectCount);
+            Assert.Equal(1, mockMqttClient.ConnectAttemptCount);
+        }
+
+        /// <summary>
+        /// Losing the connection while waiting for the twin abandons that presence flow; the next connection gets the twin
+        /// again, and the twin got on a connection is cleared once it is lost.
+        /// </summary>
+        [Fact]
+        public async Task ConnectionLostWhileGettingTwinIsAbandonedAndRetriedOnNextConnection()
+        {
+            using MockConnectionMqttClient mockMqttClient = new() { AutoRespondToTwinGet = false };
+            using ConnectionClient connectionClient = new(new()
+            {
+                MqttClient = mockMqttClient,
+                ConnectionRetryPolicy = new ExponentialBackoffRetryPolicy(uint.MaxValue, TimeSpan.Zero, useJitter: false),
+            });
+            IConnectionClient featureView = connectionClient;
+
+            int presenceCompletionCount = 0;
+            connectionClient.DevicePresenceFlowCompletedAsync += _ =>
+            {
+                Interlocked.Increment(ref presenceCompletionCount);
+                return Task.CompletedTask;
+            };
+
+            int twinGetCount = 0;
+            mockMqttClient.OnPublish = publish =>
+            {
+                if (publish.Topic.StartsWith(TwinGetTopicPrefix, StringComparison.Ordinal))
+                {
+                    if (Interlocked.Increment(ref twinGetCount) == 1)
+                    {
+                        _ = mockMqttClient.SimulateServerDisconnectAsync(MqttDisconnectReason.ImplementationSpecificError, new IOException("mock connection reset"));
+                    }
+                    else
+                    {
+                        _ = mockMqttClient.SimulatePublishReceivedAsync(new MqttPublish()
+                        {
+                            Topic = $"$iothub/twin/res/200/?$rid={publish.Topic.Substring(TwinGetTopicPrefix.Length)}",
+                            Payload = Encoding.UTF8.GetBytes("""{"desired":{"$version":2},"reported":{"$version":1}}"""),
+                        });
+                    }
+                }
+
+                return Task.FromResult(new MqttPublishAck() { ReasonCode = MqttPublishAckReasonCode.Success });
+            };
+
+            await connectionClient.ConnectToHubAsync(GetMockConnectionContext(false), TestContext.Current.CancellationToken)
+                .WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+
+            Assert.Equal(2, twinGetCount);
+            Assert.Equal(1, presenceCompletionCount);
+            ConnectTwinSnapshot snapshot = Assert.IsType<ConnectTwinSnapshot>(featureView.LatestConnectTwinSnapshot);
+            Assert.Equal(featureView.HubConnectionId, snapshot.ConnectionId);
+            Assert.Equal(2UL, snapshot.DesiredVersion);
+
+            mockMqttClient.OnPublish = null;
+            mockMqttClient.AutoRespondToTwinGet = true;
+            TaskCompletionSource reconnected = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            connectionClient.DevicePresenceFlowCompletedAsync += _ =>
+            {
+                reconnected.TrySetResult();
+                return Task.CompletedTask;
+            };
+            ConnectTwinSnapshot? snapshotWhenReconnecting = snapshot;
+            mockMqttClient.OnConnect = _ =>
+            {
+                snapshotWhenReconnecting = featureView.LatestConnectTwinSnapshot;
+                return Task.FromResult(new MqttConnectAck() { ResultCode = MqttConnectReasonCode.Success });
+            };
+
+            await mockMqttClient.SimulateServerDisconnectAsync(MqttDisconnectReason.ImplementationSpecificError, new IOException("mock connection reset"))
+                .WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+            await reconnected.Task.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+
+            // The twin got on the lost connection is cleared before the next connection is made.
+            Assert.Null(snapshotWhenReconnecting);
+
+            snapshot = Assert.IsType<ConnectTwinSnapshot>(featureView.LatestConnectTwinSnapshot);
+            Assert.Equal(featureView.HubConnectionId, snapshot.ConnectionId);
+            Assert.Equal(1UL, snapshot.DesiredVersion);
+        }
+
         private static ConnectionContext GetMockConnectionContext(bool isMQTTv5)
         {
 #pragma warning disable SYSLIB0026 // Type or member is obsolete (Mock certificate, don't need to load a real one using typical X509 certificate loader
@@ -638,14 +823,15 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
 
             await telemetryClient.SendTelemetryAsync(new Models.Telemetry.DeviceToCloudTelemetry(), TestContext.Current.CancellationToken);
 
+            // Each device presence flow also gets the twin.
             if (isSessionResumed)
             {
                 // With session resumed, the reconnect flow doesn't need to send the subscribe on the direct methods/telemetry/twin topics
-                Assert.Equal(2, mockMqttClient.SentMqttTrafficInOrder.Count);
+                Assert.Equal(4, mockMqttClient.SentMqttTrafficInOrder.Count);
             }
             else
             {
-                Assert.Equal(3, mockMqttClient.SentMqttTrafficInOrder.Count);
+                Assert.Equal(5, mockMqttClient.SentMqttTrafficInOrder.Count);
             }
 
             var lastTraffic = mockMqttClient.SentMqttTrafficInOrder.Last();
@@ -754,15 +940,16 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
             MqttSubscribe featureClientLevelSubscribeRequest = new(expectedTopicString, MqttQualityOfServiceLevel.AtLeastOnce);
             await connectionClient.SubscribeAsync(featureClientLevelSubscribeRequest, TestContext.Current.CancellationToken);
 
+            // Each device presence flow also gets the twin.
             if (isSessionResumed)
             {
                 // With session resumed, the reconnect flow doesn't need to send the subscribe on the direct methods/telemetry/twin topics
-                Assert.Equal(2, mockMqttClient.SentMqttTrafficInOrder.Count);
+                Assert.Equal(4, mockMqttClient.SentMqttTrafficInOrder.Count);
 
             }
             else
             {
-                Assert.Equal(3, mockMqttClient.SentMqttTrafficInOrder.Count);
+                Assert.Equal(5, mockMqttClient.SentMqttTrafficInOrder.Count);
             }
 
             var lastTraffic = mockMqttClient.SentMqttTrafficInOrder.Last();
@@ -810,15 +997,16 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
             MqttUnsubscribe featureClientLevelUnsubscribeRequest = new(expectedTopicString);
             await connectionClient.UnsubscribeAsync(featureClientLevelUnsubscribeRequest, TestContext.Current.CancellationToken);
 
+            // Each device presence flow also gets the twin.
             if (isSessionResumed)
             {
                 // With session resumed, the reconnect flow doesn't need to send the subscribe on the direct methods/telemetry/twin topics
-                Assert.Equal(2, mockMqttClient.SentMqttTrafficInOrder.Count);
+                Assert.Equal(4, mockMqttClient.SentMqttTrafficInOrder.Count);
 
             }
             else
             {
-                Assert.Equal(3, mockMqttClient.SentMqttTrafficInOrder.Count);
+                Assert.Equal(5, mockMqttClient.SentMqttTrafficInOrder.Count);
             }
 
             var lastTraffic = mockMqttClient.SentMqttTrafficInOrder.Last();
@@ -865,7 +1053,11 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
 
             mockMqttClient.OnPublish = publish =>
             {
-                LoseConnectionOnFirstAttempt();
+                if (publish.Topic == topic)
+                {
+                    LoseConnectionOnFirstAttempt();
+                }
+
                 return Task.FromResult(new MqttPublishAck() { ReasonCode = MqttPublishAckReasonCode.Success });
             };
             mockMqttClient.OnSubscribe = subscribe =>
@@ -1193,6 +1385,11 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
             Task? disconnection = null;
             mockMqttClient.OnPublish = publish =>
             {
+                if (publish.Topic != "test/topic")
+                {
+                    return Task.FromResult(new MqttPublishAck() { ReasonCode = MqttPublishAckReasonCode.Success });
+                }
+
                 Interlocked.Increment(ref attemptCount);
                 disconnection = mockMqttClient.SimulateServerDisconnectAsync(MqttDisconnectReason.ImplementationSpecificError, new IOException("mock connection reset"));
                 throw new IOException("mock connection reset");

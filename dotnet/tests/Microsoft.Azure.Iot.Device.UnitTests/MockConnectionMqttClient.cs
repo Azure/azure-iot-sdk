@@ -43,6 +43,16 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         /// </summary>
         public bool AutoRespondToBirth { get; set; }
 
+        /// <summary>
+        /// When set (the default), a successful publish to the MQTTv3 twin GET topic (<c>$iothub/twin/GET/?$rid={rid}</c>) is
+        /// answered with a simulated response with <see cref="TwinGetResponseStatus"/> and <see cref="TwinGetResponsePayload"/>.
+        /// </summary>
+        public bool AutoRespondToTwinGet { get; set; } = true;
+
+        public int TwinGetResponseStatus { get; set; } = 200;
+
+        public string TwinGetResponsePayload { get; set; } = "{\"desired\":{\"$version\":1},\"reported\":{\"$version\":1}}";
+
         /// <summary>How many CONNECTs have been attempted, including the ones the server refused.</summary>
         public int ConnectAttemptCount => Volatile.Read(ref _connectAttemptCount);
 
@@ -159,6 +169,12 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
                 : new MqttPublishAck() { ReasonCode = MqttPublishAckReasonCode.Success };
 
             RecordSentTraffic(new(publish));
+
+            if (AutoRespondToTwinGet)
+            {
+                SimulateTwinGetResponseIfTwinGetPublish(publish);
+            }
+
             return puback;
         }
 
@@ -190,6 +206,22 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             {
                 SentMqttTrafficInOrder.Add(traffic);
             }
+        }
+
+        private void SimulateTwinGetResponseIfTwinGetPublish(MqttPublish publish)
+        {
+            const string twinGetTopicPrefix = "$iothub/twin/GET/?$rid=";
+            if (!publish.Topic.StartsWith(twinGetTopicPrefix, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            string rid = publish.Topic.Substring(twinGetTopicPrefix.Length);
+            _ = SimulatePublishReceivedAsync(new MqttPublish()
+            {
+                Topic = $"$iothub/twin/res/{TwinGetResponseStatus}/?$rid={rid}",
+                Payload = Encoding.UTF8.GetBytes(TwinGetResponsePayload),
+            });
         }
 
         private void SimulateBirthAckIfBirthPublish(MqttPublish publish)

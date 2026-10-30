@@ -52,6 +52,24 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
         internal event Action? ConnectionReady { add { } remove { } }
 
         /// <summary>
+        /// Identifies the current (or most recent) connection to IoT hub. It changes each time a connection to IoT hub starts
+        /// its device presence flow.
+        /// </summary>
+        internal long HubConnectionId => 0;
+
+        /// <summary>
+        /// The twin that this connection client got from IoT hub during the device presence flow of the current connection,
+        /// or null if it didn't get one (for example, because the request failed or timed out, or because this connection
+        /// client doesn't get the twin when it connects).
+        /// </summary>
+        /// <remarks>
+        /// This is set before <see cref="ConnectionReady"/> is raised and stays set until the connection is lost, so a feature
+        /// client created while the connection is ready can use it too. Compare its
+        /// <see cref="ConnectTwinSnapshot.ConnectionId"/> with <see cref="HubConnectionId"/> before using it.
+        /// </remarks>
+        internal ConnectTwinSnapshot? LatestConnectTwinSnapshot => null;
+
+        /// <summary>
         /// Whether this connection client subscribes to twin topics. See <see cref="ConnectionClientOptions.EnableTwin"/>.
         /// </summary>
         bool IsTwinEnabled => true;

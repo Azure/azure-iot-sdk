@@ -1,4 +1,4 @@
-﻿// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
+// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
 // See LICENSE file in the project root for full license information.
 
 using Microsoft.Azure.Iot.Device.Exceptions;
@@ -8,6 +8,7 @@ using Microsoft.Azure.Iot.Device.Models.CertificateManagement;
 using Microsoft.Azure.Iot.Device.Mqtt;
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Globalization;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -26,6 +27,32 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
         private const string RequestId = "?$rid=";
 
         private readonly ConcurrentDictionary<string, CertificateSigningOperation> _pendingCertificateSigningOperations = new();
+
+        // Guards _hubConnectionId, _hubConnectionLifetime and _latestConnectTwinSnapshot.
+        private readonly object _hubConnectionLock = new();
+
+        // Incremented each time the device presence flow starts on a new connection to IoT hub.
+        private long _hubConnectionId;
+
+        // Cancelled when the connection that the current device presence flow runs on is lost.
+        private CancellationTokenSource? _hubConnectionLifetime;
+
+        private volatile ConnectTwinSnapshot? _latestConnectTwinSnapshot;
+
+        // The get twin request that the device presence flow is waiting for the response to, if any.
+        private ConnectTwinGet? _pendingConnectTwinGet;
+
+        /// <summary>
+        /// How long the device presence flow waits for IoT hub to respond to the get twin request it sends once it has
+        /// subscribed to the twin topics. If no response arrives in time, the flow completes without the twin, and the twin
+        /// client gets the twin itself.
+        /// </summary>
+        /// <remarks>
+        /// Feature clients can't use the connection until the device presence flow completes, so this is much shorter than
+        /// the defensive timeouts that the twin client uses for its own requests (which retry rather than give up). A healthy
+        /// IoT hub responds within a few seconds.
+        /// </remarks>
+        internal TimeSpan ConnectTwinGetTimeout { get; set; } = TimeSpan.FromSeconds(30);
 
         /// <inheritdoc/>
         public bool IsTwinEnabled { get; }
@@ -50,6 +77,10 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
             remove => HubConnectionReady -= value;
         }
 
+        long IConnectionClient.HubConnectionId => Interlocked.Read(ref _hubConnectionId);
+
+        ConnectTwinSnapshot? IConnectionClient.LatestConnectTwinSnapshot => _latestConnectTwinSnapshot;
+
         /// <summary>
         /// Construct a new <see cref="ConnectionClient"/>
         /// </summary>
@@ -73,6 +104,8 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
 
             ManagedMqttConnection.PublishReceivedAsync += HandleReceivedCertificateSigningPublish;
             ManagedMqttConnection.DisconnectedAsync += HandleCertificateSigningDisconnectedAsync;
+            ManagedMqttConnection.PublishReceivedAsync += HandleReceivedConnectTwinGetResponseAsync;
+            ManagedMqttConnection.DisconnectedAsync += HandleHubConnectionLostAsync;
         }
 
         private async Task HandleMQTTv5ClientConnectionReady(DevicePresenceFlowCompletedArgs args)
@@ -101,10 +134,12 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
             // This callback should only be reached after provisioning, so their should always be a connection context to use
             Debug.Assert(CurrentConnectionContext != null);
 
+            CancellationToken connectionLifetime = BeginHubConnection(out long connectionId);
+
             // Upon an MQTT connection being established, immediately re-subscribe to the enabled twin/cloud-to-device/direct methods topics if there is no session present.
             if (args.ConnectAck.IsSessionPresent)
             {
-                await RaiseDevicePresenceFlowCompletedAsync(new DevicePresenceFlowCompletedArgs() { IsSuccess = true });
+                await CompleteDevicePresenceFlowAsync(connectionId, connectionLifetime);
 
                 return;
             }
@@ -171,8 +206,172 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
             }
             else
             {
-                await RaiseDevicePresenceFlowCompletedAsync(new DevicePresenceFlowCompletedArgs() { IsSuccess = true });
+                await CompleteDevicePresenceFlowAsync(connectionId, connectionLifetime);
             }
+        }
+
+        // Starts tracking a new connection to IoT hub, and returns a token that is cancelled once it is lost.
+        private CancellationToken BeginHubConnection(out long connectionId)
+        {
+            CancellationTokenSource? previousLifetime;
+            CancellationTokenSource lifetime = new();
+            lock (_hubConnectionLock)
+            {
+                previousLifetime = _hubConnectionLifetime;
+                _hubConnectionLifetime = lifetime;
+                _latestConnectTwinSnapshot = null;
+                connectionId = Interlocked.Increment(ref _hubConnectionId);
+            }
+
+            // Callbacks registered on this token run asynchronously so that they never run on this flow.
+            _ = previousLifetime?.CancelAsync();
+            return lifetime.Token;
+        }
+
+        private Task HandleHubConnectionLostAsync(MqttClientDisconnectedEventArgs args)
+        {
+            AbandonHubConnection();
+            return Task.CompletedTask;
+        }
+
+        // Clears the twin got on the connection, and abandons the get twin request that the device presence flow may be
+        // waiting for.
+        private void AbandonHubConnection()
+        {
+            CancellationTokenSource? lifetime;
+            lock (_hubConnectionLock)
+            {
+                lifetime = _hubConnectionLifetime;
+                _latestConnectTwinSnapshot = null;
+            }
+
+            // Callbacks registered on this token run asynchronously so that the flow doesn't resume on this thread.
+            _ = lifetime?.CancelAsync();
+        }
+
+        /// <summary>
+        /// Complete the device presence flow once the subscriptions it needs are in place. If the device uses twins, this
+        /// first gets the twin, like IoT hubs that use MQTTv5 push it to the device when it connects, so that it is
+        /// available to feature clients through <see cref="IConnectionClient.LatestConnectTwinSnapshot"/> once the
+        /// connection is ready.
+        /// </summary>
+        /// <remarks>
+        /// Failing to get the twin doesn't fail the flow, since the twin client gets the twin itself when none is
+        /// available. If the connection is lost first, the flow is abandoned, and the next connection runs it again.
+        /// </remarks>
+        private async Task CompleteDevicePresenceFlowAsync(long connectionId, CancellationToken connectionLifetime)
+        {
+            if (IsTwinEnabled)
+            {
+                ConnectTwinSnapshot? snapshot = await TryGetConnectTwinSnapshotAsync(connectionId, connectionLifetime);
+                if (connectionLifetime.IsCancellationRequested)
+                {
+                    Trace.TraceInformation("The connection to IoT hub was lost while getting the twin. The device presence flow runs again on the next connection.");
+                    return;
+                }
+
+                if (snapshot != null)
+                {
+                    lock (_hubConnectionLock)
+                    {
+                        if (Interlocked.Read(ref _hubConnectionId) == connectionId)
+                        {
+                            _latestConnectTwinSnapshot = snapshot;
+                        }
+                    }
+                }
+            }
+
+            await RaiseDevicePresenceFlowCompletedAsync(new DevicePresenceFlowCompletedArgs() { IsSuccess = true });
+        }
+
+        // Returns null if IoT hub didn't respond with the twin in time, or the connection was lost.
+        private async Task<ConnectTwinSnapshot?> TryGetConnectTwinSnapshotAsync(long connectionId, CancellationToken connectionLifetime)
+        {
+            CancellationToken reprovisioningCancellation = CurrentReprovisioningCancellationToken;
+            ConnectTwinGet pending = new(Guid.NewGuid());
+
+            // Registered before the request is sent, so that a response that arrives right away isn't missed.
+            Volatile.Write(ref _pendingConnectTwinGet, pending);
+            try
+            {
+                using CancellationTokenSource timeout = CancellationTokenSource.CreateLinkedTokenSource(connectionLifetime, reprovisioningCancellation);
+                timeout.CancelAfter(ConnectTwinGetTimeout);
+
+                ConnectTwinGetResponse response;
+                try
+                {
+                    MqttPublish getTwin = new()
+                    {
+                        Topic = string.Format(CultureInfo.InvariantCulture, Twin.TwinClient.ClassicTwinGetTopicFormat, pending.RequestId),
+                        QualityOfServiceLevel = MqttQualityOfServiceLevel.AtMostOnce,
+                    };
+
+                    Trace.TraceInformation("Getting the twin as part of the device presence flow on topic {0}", getTwin.Topic);
+                    await ManagedMqttConnection.PublishAsync(ConnectionEndpoint.IotHub, getTwin, timeout.Token);
+                    response = await pending.Response.Task.WaitAsync(timeout.Token);
+                }
+                catch (Exception) when (connectionLifetime.IsCancellationRequested || reprovisioningCancellation.IsCancellationRequested)
+                {
+                    return null;
+                }
+                catch (OperationCanceledException) when (timeout.IsCancellationRequested)
+                {
+                    Trace.TraceWarning("Timed out waiting for the response to the get twin request sent upon connecting to IoT hub. The twin client gets the twin itself.");
+                    return null;
+                }
+                catch (Exception e)
+                {
+                    Trace.TraceWarning("Failed to get the twin upon connecting to IoT hub. The twin client gets the twin itself. {0}", e);
+                    return null;
+                }
+
+                if (!Twin.TwinClient.IsSuccessStatus(response.Status))
+                {
+                    Trace.TraceWarning("IoT hub responded to the get twin request sent upon connecting with status {0}. The twin client gets the twin itself.", response.Status);
+                    return null;
+                }
+
+                try
+                {
+                    Twin.TwinClient.TwinSnapshot twin = Twin.TwinClient.ParseGetTwinResponsePayload(response.Payload);
+                    return new ConnectTwinSnapshot(connectionId, twin.Desired, twin.DesiredVersion, twin.Reported, twin.ReportedVersion);
+                }
+                catch (Exception e) when (e is JsonException or InvalidOperationException or FormatException)
+                {
+                    Trace.TraceWarning("Received a malformed response to the get twin request sent upon connecting to IoT hub. The twin client gets the twin itself. {0}", e);
+                    return null;
+                }
+            }
+            finally
+            {
+                Interlocked.CompareExchange(ref _pendingConnectTwinGet, null, pending);
+            }
+        }
+
+        private Task HandleReceivedConnectTwinGetResponseAsync(MqttPublishReceivedEventArgs args)
+        {
+            ConnectTwinGet? pending = Volatile.Read(ref _pendingConnectTwinGet);
+            if (pending != null
+                && args.Publish.Topic.StartsWith(Twin.TwinClient.ClassicTwinResponseTopic, StringComparison.Ordinal)
+                && Twin.TwinClient.TryParseResponseTopic(args.Publish.Topic, out Guid requestId, out int status, out _)
+                && requestId == pending.RequestId)
+            {
+                // Twin responses are QoS 0, so there is nothing to acknowledge.
+                pending.Response.TrySetResult(new ConnectTwinGetResponse(status, args.Publish.Payload));
+            }
+
+            return Task.CompletedTask;
+        }
+
+        private readonly record struct ConnectTwinGetResponse(int Status, byte[] Payload);
+
+        private sealed class ConnectTwinGet(Guid requestId)
+        {
+            // A GUID, like the request IDs of the twin client, which drops responses to requests it didn't send.
+            public Guid RequestId { get; } = requestId;
+
+            public TaskCompletionSource<ConnectTwinGetResponse> Response { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         }
 
         /// <summary>
@@ -365,6 +564,9 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
             CancelPendingCertificateSigningOperations();
             ManagedMqttConnection.PublishReceivedAsync -= HandleReceivedCertificateSigningPublish;
             ManagedMqttConnection.DisconnectedAsync -= HandleCertificateSigningDisconnectedAsync;
+            ManagedMqttConnection.PublishReceivedAsync -= HandleReceivedConnectTwinGetResponseAsync;
+            ManagedMqttConnection.DisconnectedAsync -= HandleHubConnectionLostAsync;
+            AbandonHubConnection();
             base.Dispose(disposing);
         }
 
@@ -376,6 +578,9 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
             CancelPendingCertificateSigningOperations();
             ManagedMqttConnection.PublishReceivedAsync -= HandleReceivedCertificateSigningPublish;
             ManagedMqttConnection.DisconnectedAsync -= HandleCertificateSigningDisconnectedAsync;
+            ManagedMqttConnection.PublishReceivedAsync -= HandleReceivedConnectTwinGetResponseAsync;
+            ManagedMqttConnection.DisconnectedAsync -= HandleHubConnectionLostAsync;
+            AbandonHubConnection();
             base.Dispose();
         }
 

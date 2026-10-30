@@ -483,6 +483,99 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
         }
 
         [Fact]
+        public async Task ConnectionReady_WithConnectTwinSnapshot_AppliesItWithoutGettingTwinThenSendsPendingPatches()
+        {
+            MockFeatureConnectionClient connection = CreateConnection(isReady: false);
+            using TwinClient twinClient = new(connection);
+            List<TwinPushReceivedEventArgs> pushes = new();
+            twinClient.TwinPushReceived += pushes.Add;
+            int pushesWhenPatchSent = -1;
+            connection.OnPublish = publish =>
+            {
+                if (IsPatch(publish))
+                {
+                    pushesWhenPatchSent = pushes.Count;
+                }
+
+                return Task.FromResult(new MqttPublishAck() { ReasonCode = MqttPublishAckReasonCode.Success });
+            };
+            twinClient.EnqueueReportedPropertiesUpdate(new JsonObject() { ["temperature"] = 30 });
+
+            connection.SimulateConnectionReady(connection.CreateConnectTwinSnapshot(4, "{\"fanSpeed\":4}", 7, "{\"temperature\":21}"));
+            await WaitUntilAsync(() => connection.GetPublishedMessages().Any(IsPatch));
+
+            Assert.DoesNotContain(connection.GetPublishedMessages(), IsGet);
+            TwinPushReceivedEventArgs push = Assert.Single(pushes);
+            Assert.Equal(4ul, push.Desired!.PropertiesVersion);
+            Assert.Equal(4, (int)push.Desired.Properties["fanSpeed"]!);
+            Assert.Equal(7ul, push.Reported!.PropertiesVersion);
+            Assert.Equal(1, pushesWhenPatchSent);
+            Assert.Equal(4ul, twinClient.AuthoritativeDesiredPropertiesVersion);
+            Assert.Equal(7ul, twinClient.AuthoritativeReportedPropertiesVersion);
+        }
+
+        [Fact]
+        public async Task ConnectionReady_WithConnectTwinSnapshotFromPreviousConnection_GetsTwin()
+        {
+            MockFeatureConnectionClient connection = CreateConnection(isReady: false);
+            using TwinClient twinClient = new(connection);
+            List<TwinPushReceivedEventArgs> pushes = new();
+            twinClient.TwinPushReceived += pushes.Add;
+
+            ConnectTwinSnapshot staleSnapshot = new(connection.HubConnectionId, new JsonObject(), 4, new JsonObject(), 7);
+            connection.SimulateConnectionReady(staleSnapshot);
+
+            Assert.Empty(pushes);
+            await RespondToGetAsync(connection, Assert.Single(connection.GetPublishedMessages(), IsGet), 5, "{}", 7, "{}");
+            Assert.Equal(5ul, Assert.Single(pushes).Desired!.PropertiesVersion);
+        }
+
+        [Fact]
+        public void Constructor_WhenConnectionIsReadyWithConnectTwinSnapshot_AppliesIt()
+        {
+            MockFeatureConnectionClient connection = CreateConnection(isReady: false);
+            connection.SimulateConnectionReady(connection.CreateConnectTwinSnapshot(4, "{\"fanSpeed\":4}", 7, "{}"));
+
+            using TwinClient twinClient = new(connection);
+
+            Assert.Equal(4ul, twinClient.GetTwinState().DesiredVersion);
+            Assert.Equal(4ul, twinClient.AuthoritativeDesiredPropertiesVersion);
+            Assert.Empty(connection.GetPublishedMessages());
+        }
+
+        /// <summary>
+        /// IoT hub may send a desired properties patch after responding to the connection client's get twin request, but
+        /// before this client handles the connection becoming ready. That patch is newer than the twin, so the twin must not
+        /// undo it, while later patches still apply on top of it.
+        /// </summary>
+        [Fact]
+        public async Task ConnectTwinSnapshot_OlderThanDesiredPatchReceivedBeforeReady_DoesNotUndoIt()
+        {
+            MockFeatureConnectionClient connection = CreateConnection(isReady: false);
+            using TwinClient twinClient = new(connection, new TwinState()
+            {
+                DesiredVersion = 4,
+                Desired = new JsonObject() { ["a"] = 4 },
+                ReportedVersion = 2,
+                Reported = new JsonObject() { ["r"] = 2 },
+            });
+            List<string> deliveries = new();
+            twinClient.DesiredPatchReceived += args => deliveries.Add($"patch {args.DesiredPropertiesVersion}");
+            twinClient.TwinPushReceived += args => deliveries.Add($"push {args.Desired?.PropertiesVersion}");
+
+            ConnectTwinSnapshot snapshot = connection.CreateConnectTwinSnapshot(4, "{\"a\":4}", 2, "{\"r\":2}");
+            await ReceiveDesiredPatchAsync(connection, 5, "{\"a\":5}");
+            connection.SimulateConnectionReady(snapshot);
+            await ReceiveDesiredPatchAsync(connection, 6, "{\"a\":6}");
+
+            Assert.Equal(new[] { "patch 5", "patch 6" }, deliveries);
+            TwinState state = twinClient.GetTwinState();
+            Assert.Equal(6ul, state.DesiredVersion);
+            Assert.Equal(6, (int)state.Desired["a"]!);
+            Assert.DoesNotContain(connection.GetPublishedMessages(), IsGet);
+        }
+
+        [Fact]
         public async Task TwinState_PersistedAndRestored_SendsPendingPatchesAndOnlyRaisesChanges()
         {
             MockFeatureConnectionClient firstConnection = CreateConnection(isReady: false);
