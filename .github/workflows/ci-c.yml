@@ -734,9 +734,10 @@ jobs:
 
   # ---------------------------------------------------------------------------
   # az_mqtt adapter conformance, every capability it implements: proxy (the
-  # suite's own), WebSockets (a Mosquitto WebSocket listener) and, on OpenSSL,
-  # the key-reference custody route (a SoftHSM token, as in coverage-c). The
-  # build job also runs these suites, without WebSockets or a token.
+  # suite's own), WebSockets (a Mosquitto WebSocket listener), on OpenSSL the
+  # key-reference custody route (a SoftHSM token, as in coverage-c) and on
+  # mbedTLS the PSA key route (a key imported into PSA). The build job also
+  # runs these suites, without WebSockets or a key.
   # ---------------------------------------------------------------------------
   az-mqtt:
     name: az_mqtt adapter / ${{ matrix.tls }}
@@ -795,6 +796,20 @@ jobs:
           {
             echo "AZ_IOT_CONFORMANCE_KEY_URI=$AZ_IOT_CLIENT_KEY_URI"
             echo "AZ_IOT_CONFORMANCE_KEY_ENGINE=$AZ_IOT_CRYPTO_ENGINE_ID"
+            echo "AZ_IOT_CONFORMANCE_CLIENT_CERT=$RUNNER_TEMP/custody-cert.pem"
+          } >> "$GITHUB_ENV"
+      - name: Generate a PSA custody key
+        if: matrix.tls == 'mbedtls'
+        run: |
+          openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 \
+                          -out "$RUNNER_TEMP/custody-key.pem"
+          openssl req -new -x509 -key "$RUNNER_TEMP/custody-key.pem" \
+                      -out "$RUNNER_TEMP/custody-cert.pem" -days 2 \
+                      -subj "/CN=az-iot-conformance-custody" \
+                      -addext "basicConstraints=critical,CA:FALSE" \
+                      -addext "extendedKeyUsage=clientAuth"
+          {
+            echo "AZ_IOT_CONFORMANCE_PSA_KEY=$RUNNER_TEMP/custody-key.pem"
             echo "AZ_IOT_CONFORMANCE_CLIENT_CERT=$RUNNER_TEMP/custody-cert.pem"
           } >> "$GITHUB_ENV"
       - name: Configure

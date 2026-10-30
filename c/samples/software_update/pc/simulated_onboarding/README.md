@@ -355,7 +355,7 @@ startup lines are all it prints.
 | What | Code |
 | --- | --- |
 | Provisioning-only connection client | `initialize_connection_client()`, `copts.dps.provision_only = true` |
-| Device properties and root keys | `dp` in `main()`, `az_iot_su_microsoft_root_keys()`, `az_iot_su_client_init()` |
+| Device properties and root keys | `device_properties` in `main()`, `az_iot_su_microsoft_root_keys()`, `az_iot_su_client_init()` |
 | Simulated platform hooks | `hooks.*_fn` in `main()`, implemented in [`su_sim.c`](../common/su_sim.c) |
 | The single update check | `az_iot_su_client_request_onboarding_update()` |
 | Workflow and abandoned-operation events | `on_su_event()` |

@@ -428,12 +428,12 @@ int main(void)
   hooks.load_workflow_state_fn = load_saved_update_workflow;
   hooks.user_ctx = &hooks_context;
 
-  az_iot_su_device_properties dp = { 0 };
-  dp.manufacturer = manufacturer;
-  dp.model = model;
-  dp.installed_update_id.provider = installed_provider;
-  dp.installed_update_id.name = installed_name;
-  dp.installed_update_id.version = installed_version;
+  az_iot_su_device_properties device_properties = { 0 };
+  device_properties.manufacturer = manufacturer;
+  device_properties.model = model;
+  device_properties.installed_update_id.provider = installed_provider;
+  device_properties.installed_update_id.name = installed_name;
+  device_properties.installed_update_id.version = installed_version;
 
   size_t root_key_count = 0;
   const az_iot_su_root_key* root_keys = az_iot_su_microsoft_root_keys(&root_key_count);
@@ -441,7 +441,7 @@ int main(void)
   su_opts.hooks = &hooks;
   su_opts.root_keys = root_keys;
   su_opts.root_key_count = root_key_count;
-  su_opts.device_properties = &dp;
+  su_opts.device_properties = &device_properties;
   /* Limits, each the SDK default; the saved workflow is at most
    * AZ_IOT_SU_STATE_BLOB_MAX_SIZE(max_update_size, result_details_size) bytes. */
   su_opts.limits.max_update_size = AZ_IOT_SU_DEFAULT_MAX_UPDATE_SIZE;

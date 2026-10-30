@@ -2519,6 +2519,13 @@ int az_iot_test_proxy_enable_tls(az_iot_test_proxy* m, const az_iot_test_proxy_t
      * certificate is deliberately not examined. See the header. */
     SSL_CTX_set_verify(
         ctx, SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT, proxy_accept_any_cert_cb);
+    /* No resumption: every connect must sign a CertificateVerify again. */
+    SSL_CTX_set_session_cache_mode(ctx, SSL_SESS_CACHE_OFF);
+    SSL_CTX_set_options(ctx, SSL_OP_NO_TICKET);
+    if (SSL_CTX_set_num_tickets(ctx, 0) != 1)
+    {
+      goto done;
+    }
   }
 
   if (SSL_CTX_use_PrivateKey(ctx, leaf_key) != 1)
