@@ -30,7 +30,8 @@ zero-filled payloads of the declared size; install and apply only log. The hash 
   mode persists nothing, so the sample keeps the id in a file (`AZ_IOT_SU_INSTALLED_FILE`),
   written before the success report, and passes it to `az_iot_su_client_init()` on the next run.
 - The regular route: checks at startup, again after each applied update, and every
-  `AZ_IOT_SU_POLL_INTERVAL_S` (default 4 hours).
+  `AZ_IOT_SU_POLL_INTERVAL_S` (default 4 hours). A final report that lost its provisioning
+  session is resent by a check 30 s later.
 - Requires Azure Device Provisioning service, an Azure IoT Hub and Azure Device Update.
 
 Deploy an update as for [simulated_regular](../simulated_regular/README.md), with compatibility

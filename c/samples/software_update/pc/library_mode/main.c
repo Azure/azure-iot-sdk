@@ -73,6 +73,9 @@
 #include "sample_utils.h"
 #include "su_sim.h"
 
+/** @brief Minimum wait before a check resends a final report that lost its session. */
+#define OWED_REPORT_RESEND_DELAY_MS 30000u
+
 /** @brief Where the application is in the update handed to it. */
 typedef enum
 {
@@ -117,6 +120,7 @@ typedef struct
   su_simulation_control simulation_control;
   delegated_update update;
   bool check_now; /* an applied update's report settled: ask at once for what comes after it */
+  uint64_t owed_report_resend_ms; /* when to resend a final report that lost its session; 0: no */
 
   /* Set by the observers. */
   az_iot_connection_state connection_state[AZ_IOT_CONN_SCOPE_COUNT];
@@ -547,6 +551,14 @@ static void on_su_event(const az_iot_su_event* event, void* user_ctx)
       {
         state->su_retry_after_ms = event->service_error.retry_after_ms;
       }
+      else if (
+          event->operation == AZ_IOT_SU_OP_REPORT_STATUS
+          && event->reason == AZ_IOT_ERR_NOT_CONNECTED && !state->su_workflow_active
+          && state->owed_report_resend_ms == 0)
+      {
+        /* The final report stays owed with no resend queued: only a check sends it. */
+        state->owed_report_resend_ms = sample_now_ms() + OWED_REPORT_RESEND_DELAY_MS;
+      }
       break;
     case AZ_IOT_SU_EVENT_UPDATE_REFUSED:
       fprintf(stderr, "Update refused: %s\n", az_iot_result_to_string(event->reason));
@@ -576,6 +588,7 @@ static void on_su_event(const az_iot_su_event* event, void* user_ctx)
        * the check's timeout does not run while the report is still owed. */
       state->check_now
           = (event->report != NULL && event->report->outcome == AZ_IOT_SU_OUTCOME_SUCCEEDED);
+      state->owed_report_resend_ms = 0;
       break;
     case AZ_IOT_SU_EVENT_PERSIST_FAILED:
     case AZ_IOT_SU_EVENT_PERSIST_RECOVERED:
@@ -807,6 +820,13 @@ int main(void)
         next_check_ms = earliest;
       }
       state.su_retry_after_ms = 0;
+    }
+
+    /* A check opens a new provisioning session and resends the owed final report. */
+    if (state.owed_report_resend_ms != 0 && sample_now_ms() >= state.owed_report_resend_ms)
+    {
+      state.owed_report_resend_ms = 0;
+      state.check_now = true;
     }
 
     if (!state.su_workflow_active
