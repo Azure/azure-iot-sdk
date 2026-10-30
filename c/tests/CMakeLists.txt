@@ -677,6 +677,8 @@ if(OPENSSL_FOUND)
         if(_keys STREQUAL "ds")
             target_compile_definitions(${_t} PRIVATE CONFIG_ESP_SECURE_CERT_DS_PERIPHERAL)
         endif()
+        # Instrumented: the provider source is shipped; gcovr excludes tests/ (the fakes).
+        az_iot_apply_coverage(${_t})
     endforeach()
     unset(_t)
     unset(_keys)
