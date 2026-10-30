@@ -16,7 +16,7 @@ The `azure-sdk-for-c` component needs the `c/deps/azure-sdk-for-c` submodule.
 | `azure-iot-sdk-crypto-mbedtls` | [adapters/crypto_mbedtls](../../adapters/crypto_mbedtls) | `az_iot_crypto_mbedtls.h` |
 | `azure-iot-sdk-az-mqtt` | [adapters/az_mqtt](../../adapters/az_mqtt): the MQTT adapter, over `c/deps/az_mqtt` and ESP-IDF's mbedTLS. With no CA, the server is verified against the ESP-IDF certificate bundle | `azure/iot/adapters/az_iot_adapter_az_mqtt.h` |
 | `azure-iot-sdk-software-update-ota` | [adapters/su/esp32](../../adapters/su/esp32): software updates platform hooks over the ESP-IDF OTA stack | `az_iot_su_esp32_ota.h` |
-| `azure-iot-sdk-certificate-provider-esp-secure-cert` | [adapters/cert_esp_secure_cert](../../adapters/cert_esp_secure_cert): certificate provider over the `esp_secure_cert` partition (`espressif/esp_secure_cert_mgr` 2.9.3). With the Digital Signature peripheral, the key is a PSA key (`client_key_psa_id`) | `az_iot_certificate_provider_esp_secure_cert.h` |
+| `azure-iot-sdk-certificate-provider-esp-secure-cert` | [adapters/cert_esp_secure_cert](../../adapters/cert_esp_secure_cert): certificate provider over the `esp_secure_cert` partition (`espressif/esp_secure_cert_mgr` 2.9.3). With the Digital Signature peripheral, the key is a PSA key (`client_key_psa_id`); not with `CONFIG_ESP_SECURE_CERT_SUPPORT_LEGACY_FORMATS` (the dependency frees the DS context twice) | `az_iot_certificate_provider_esp_secure_cert.h` |
 
 Used by the [ESP32 software updates sample](../../samples/software_update/esp32/README.md), which
 CI builds for esp32, esp32c3, esp32s3 and esp32c6.

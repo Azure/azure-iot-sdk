@@ -13,6 +13,12 @@
 #include "esp_secure_cert_read.h"
 #include "internal/crypto.h" // az_iot_crypto__wipe()
 
+#if defined(CONFIG_ESP_SECURE_CERT_DS_PERIPHERAL) \
+    && defined(CONFIG_ESP_SECURE_CERT_SUPPORT_LEGACY_FORMATS)
+// esp_secure_cert_mgr 2.9.3 frees a TLV partition's DS context twice in this configuration.
+#error "esp_secure_cert provider: disable CONFIG_ESP_SECURE_CERT_SUPPORT_LEGACY_FORMATS with DS"
+#endif
+
 #if defined(CONFIG_ESP_SECURE_CERT_DS_PERIPHERAL)
 #include <psa/crypto.h>
 #elif defined(ESP_PLATFORM)
