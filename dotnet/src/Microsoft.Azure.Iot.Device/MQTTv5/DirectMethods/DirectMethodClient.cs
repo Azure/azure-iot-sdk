@@ -181,15 +181,21 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods
                 }
 
                 // Only one delivery of a request is admitted at a time, so overlapping redeliveries can't send conflicting probe acks.
-                if (_readyTokens.ContainsKey(requestId.Value) || !_probesInProgress.TryAdd(requestId.Value, 0))
+                if (!_probesInProgress.TryAdd(requestId.Value, 0))
                 {
-                    // A redelivery of a probe this client already accepted or is still answering. The original probe ack has its own
-                    // QoS 1 delivery lifecycle.
+                    // A redelivery of a probe this client is still answering.
                     return;
                 }
 
                 try
                 {
+                    // Checked only while holding the gate, so the lookup can't be stale relative to a delivery that just accepted it.
+                    if (_readyTokens.ContainsKey(requestId.Value))
+                    {
+                        // A redelivery of a probe this client already accepted. The original probe ack has its own QoS 1 delivery lifecycle.
+                        return;
+                    }
+
                     await HandleProbeAsync(publish, requestId.Value, methodHandler, probeHandler);
                 }
                 finally
