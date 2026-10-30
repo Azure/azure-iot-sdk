@@ -174,6 +174,7 @@ static bool request_acquire(
       s->_internal.seq = next_sequence(dm);
       s->_internal.in_use = true;
       DI(dm).result_tracker_entry[i] = AZ_IOT_MQTTV5_DM_NO_TRACKER_ENTRY;
+      DI(dm).expired_request_seq[i] = 0u; /* A request it held before is reused, not timed out. */
       *out_index = i;
       DI(dm).next_slot = (i + 1u) % AZ_IOT_MQTTV5_DM_MAX_CONCURRENT;
 

@@ -220,6 +220,12 @@ static az_iot_result encode_probe_ack_message(
   {
     return AZ_IOT_ERR_INTERNAL;
   }
+  /* The tracker counts its time limit from submit(), so check the absolute ready wait too: a ready
+   * id offered past it names a token that can no longer run. */
+  if (az_iot_time_mono_ms() >= RI(slot).expires_at_ms)
+  {
+    return AZ_IOT_ERR_TIMEOUT;
+  }
   /* Read once: the value checked is the value sent, so a finite budget never goes out as 0. */
   uint32_t const expiry = az_iot_mqttv5_direct_method_client__remaining_budget_seconds(
       RI(slot).connect_budget_seconds, RI(slot).probe_received_at_ms);
@@ -350,10 +356,11 @@ static az_iot_result encode_notice_message(
   }
   uint32_t expiry = az_iot_mqttv5_direct_method_client__remaining_budget_seconds(
       RI(n).budget_seconds, RI(n).budget_start_ms);
-  /* 0 on the wire means no expiry at all, not an exhausted one. */
+  /* A spent budget ends the notice: the caller has stopped waiting. 0 on the wire means no
+   * expiry at all, so it is never sent for a finite budget. */
   if (RI(n).budget_seconds > 0u && expiry < AZ_IOT_MQTTV5_DM_MIN_USEFUL_BUDGET_SECONDS)
   {
-    expiry = AZ_IOT_MQTTV5_DM_MIN_USEFUL_BUDGET_SECONDS;
+    return AZ_IOT_ERR_TIMEOUT;
   }
   return build_reply_message(
       dm, RI(n).type, RI(n).frame, RI(n).frame_len, RI(n).request_id, expiry, out);
@@ -464,11 +471,11 @@ static void send_notice(
     return;
   }
 
-  uint32_t expiry
+  uint32_t const expiry
       = az_iot_mqttv5_direct_method_client__remaining_budget_seconds(budget_seconds, start_ms);
   if (budget_seconds > 0u && expiry < AZ_IOT_MQTTV5_DM_MIN_USEFUL_BUDGET_SECONDS)
   {
-    expiry = AZ_IOT_MQTTV5_DM_MIN_USEFUL_BUDGET_SECONDS;
+    return; /* The caller has stopped waiting. */
   }
   az_iot_mqtt_message message;
   az_iot_result result

@@ -43,7 +43,7 @@ typedef struct fixture
   az_iot_delivery_tracker_entry entries[ENTRY_COUNT];
   char topics[ENTRY_COUNT][8];
   az_iot_mqtt_qos qos;
-  az_iot_result encode_result_message;
+  az_iot_result encode_result;
   int failing_sends; /* Sends the adapter fails with failing_send_result. */
   az_iot_result failing_send_result;
   completion completions[16];
@@ -73,7 +73,7 @@ static az_iot_result encode(void* owner_context, size_t entry_index, az_iot_mqtt
     az_iot_mock_mqtt_client_set_next_result(
         fx->mock, AZ_IOT_MOCK_CALL_PUBLISH, fx->failing_send_result);
   }
-  return fx->encode_result_message;
+  return fx->encode_result;
 }
 
 static void on_complete(
@@ -523,7 +523,7 @@ static void cancel_and_encode_failure(void** state)
   puback(fx, packet_id, AZ_IOT_OK);
   assert_int_equal(fx->completion_count, 0);
 
-  fx->encode_result_message = AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+  fx->encode_result = AZ_IOT_ERR_NOT_ENOUGH_SPACE;
   index = submit(fx, &k_resend, 2u, 0u);
   assert_completed(fx, 0, index, AZ_IOT_DELIVERY_TRACKER_OUTCOME_DISCARDED);
   assert_int_equal(publish_count(fx), 1);
@@ -923,6 +923,18 @@ static void an_untracked_capable_message_does_not_wait_for_a_slot(void** state)
   assert_int_equal(publish_count(fx), 3);
   assert_completed(fx, 0, first, AZ_IOT_DELIVERY_TRACKER_OUTCOME_DELIVERED);
 }
+
+/* An encode() reporting AZ_IOT_ERR_TIMEOUT (the owner's own deadline passed) completes the message
+ * as EXPIRED, not DISCARDED, and sends nothing. */
+static void an_encode_timeout_expires_the_message(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  connect(fx);
+  fx->encode_result = AZ_IOT_ERR_TIMEOUT;
+  size_t const index = submit(fx, &k_resend, 1u, 0u);
+  assert_int_equal(publish_count(fx), 0);
+  assert_completed(fx, 0, index, AZ_IOT_DELIVERY_TRACKER_OUTCOME_EXPIRED);
+}
 /* A send the adapter refuses does not hold back the message a PUBACK error requeued: it goes out
  * from the next do_work(). */
 static void a_busy_adapter_does_not_hold_back_a_requeued_message(void** state)
@@ -1029,6 +1041,7 @@ int main(void)
     cmocka_unit_test_setup_teardown(expire_overdue_completes_expired_messages_now, setup, teardown),
     cmocka_unit_test_setup_teardown(
         an_untracked_capable_message_does_not_wait_for_a_slot, setup, teardown),
+    cmocka_unit_test_setup_teardown(an_encode_timeout_expires_the_message, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_busy_adapter_does_not_hold_back_a_requeued_message, setup, teardown),
     cmocka_unit_test_setup_teardown(arguments_capacity_and_binding, setup, teardown),

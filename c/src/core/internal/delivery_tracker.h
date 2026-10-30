@@ -72,7 +72,8 @@ extern "C"
     bool send_untracked_without_slot;
     /**
      * @brief Fill @p out for entry @p entry_index; called at each send.
-     * @return AZ_IOT_OK, or an error that discards the message.
+     * @return AZ_IOT_OK; AZ_IOT_ERR_TIMEOUT when the owner's own deadline has passed (the message
+     *         completes as EXPIRED); any other error discards the message.
      */
     az_iot_result (*encode)(void* owner_context, size_t entry_index, az_iot_mqtt_message* out);
     /**

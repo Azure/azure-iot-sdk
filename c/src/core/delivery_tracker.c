@@ -166,11 +166,18 @@ static bool may_take_slot(const az_iot_delivery_tracker* t, uint8_t priority)
  * @retval NO_SLOT_FOR_PRIORITY No PUBACK slot it may take; stays queued.
  * @return Otherwise the publish result; any failure leaves it queued.
  */
+static void expire(az_iot_delivery_tracker_entry* e);
+
 static az_iot_result try_send(az_iot_delivery_tracker* t, az_iot_delivery_tracker_entry* e)
 {
   const az_iot_delivery_tracker_profile* profile = EI(e).profile;
   az_iot_mqtt_message message = { 0 };
   az_iot_result result = profile->encode(TI(t).owner_context, index_of(t, e), &message);
+  if (result == AZ_IOT_ERR_TIMEOUT)
+  {
+    expire(e); /* The owner's own deadline passed. */
+    return AZ_IOT_OK;
+  }
   if (result != AZ_IOT_OK)
   {
     AZ_IOT_LOG_ERRORF(

@@ -4112,6 +4112,79 @@ static void an_exec_budget_smaller_than_the_safety_margin_never_runs(void** stat
   assert_null(find_phase(fx->mock, "result:1"));
 }
 
+/* A probe-ack held past its ready wait is not sent on CONNECTED, even before a TICK has ended
+ * the token: the ready id would name a token that can no longer run. */
+static void a_held_probe_ack_is_not_sent_past_its_ready_wait_on_connected(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_conn(fx);
+
+  uint8_t request_id[16];
+  make_request_id(request_id, 0xF4);
+  uint8_t frame[128];
+  size_t frame_len = build_probe(frame, "reboot", 300);
+  inject_dm(fx, DEV_TOPIC, "probe:1", request_id, 16, frame, frame_len, 0);
+  ack_presence_subscription(fx);
+  for (size_t i = 0; i < AZ_IOT_MQTTV5_DM_MAX_CONCURRENT; ++i)
+  {
+    if (fx->dm._internal.ready_pool[i]._internal.in_use)
+    {
+      fx->dm._internal.ready_pool[i]._internal.expires_at_ms = az_iot_time_mono_ms();
+    }
+  }
+  send_birth_ack(fx);
+  assert_null(find_phase(fx->mock, "probe-ack:1"));
+}
+
+/* A held rejection whose budget is spent is not sent on CONNECTED, even before its tracker time
+ * limit, which counts from when it was queued. */
+static void a_held_notice_past_its_budget_is_not_sent_on_connected(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_conn(fx);
+
+  uint8_t request_id[16];
+  make_request_id(request_id, 0xF5);
+  uint8_t frame[128];
+  size_t frame_len = build_probe(frame, "not-declared", 300);
+  inject_dm(fx, DEV_TOPIC, "probe:1", request_id, 16, frame, frame_len, 30);
+  ack_presence_subscription(fx);
+  for (size_t i = 0; i < AZ_IOT_MQTTV5_DM_NOTICE_QUEUE_MAX; ++i)
+  {
+    fx->dm._internal.notices[i]._internal.budget_start_ms -= 31000u;
+  }
+  send_birth_ack(fx);
+  assert_null(find_phase(fx->mock, "probe-ack:1"));
+}
+
+/* An invocation reclaimed at its deadline, then its slot reused: answering the old request is
+ * refused as stale, not reported as a timeout. */
+static void a_reclaimed_then_reused_slot_refuses_the_old_request(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  invocation_record old = { 0 };
+  fx->rec = &old;
+  start_invocation(fx, 0xF6, 300, 300);
+  assert_true(old.fired);
+  *result_deadline_of(fx, old.request) = az_iot_time_mono_ms();
+  (void)az_iot_connection_client_do_work(&fx->conn, 0);
+
+  invocation_record rec = { 0 };
+  fx->rec = &rec;
+  for (uint8_t i = 0; i < AZ_IOT_MQTTV5_DM_MAX_CONCURRENT; ++i)
+  {
+    run_one_invocation(fx, &rec, (uint8_t)(0xF7 + i));
+    assert_int_equal(
+        az_iot_mqttv5_direct_method_respond(&fx->dm, rec.request, 200, NULL, 0), AZ_IOT_OK);
+    ack_last_phase(fx, "result:1");
+  }
+  assert_int_equal(rec.request._internal.slot, old.request._internal.slot);
+  assert_int_equal(
+      az_iot_mqttv5_direct_method_respond(&fx->dm, old.request, 200, NULL, 0),
+      AZ_IOT_ERR_INVALID_ARG);
+}
 /* A TICK reclaims an unanswered invocation at its result deadline; answering it after that still
  * says AZ_IOT_ERR_TIMEOUT, as before the reclaim. */
 static void an_invocation_reclaimed_at_its_deadline_is_answered_with_timeout(void** state)
@@ -4980,6 +5053,12 @@ int main(void)
         a_held_result_without_expiry_is_dropped_past_the_option, setup, teardown),
     cmocka_unit_test_setup_teardown(
         an_invocation_reclaimed_at_its_deadline_is_answered_with_timeout, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_held_probe_ack_is_not_sent_past_its_ready_wait_on_connected, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_held_notice_past_its_budget_is_not_sent_on_connected, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_reclaimed_then_reused_slot_refuses_the_old_request, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_result_past_its_deadline_is_not_sent_by_a_replay, setup, teardown),
     cmocka_unit_test_setup_teardown(

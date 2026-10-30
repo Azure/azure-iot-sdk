@@ -18,7 +18,7 @@
 #include "azure/iot/az_iot_connection_client.h"
 #include "azure/iot/mqttv5/az_iot_direct_method_client.h"
 
-#include "internal/direct_method_codec.h"
+#include "direct_method_codec.h"
 
 #ifdef __cplusplus
 extern "C"
