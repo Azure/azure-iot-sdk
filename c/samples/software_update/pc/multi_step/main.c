@@ -382,6 +382,9 @@ static void on_su_event(const az_iot_su_event* event, void* user_ctx)
     case AZ_IOT_SU_EVENT_NO_UPDATE:
       printf("No update available.\n");
       break;
+    case AZ_IOT_SU_EVENT_UPDATE_AVAILABLE:
+      /* Library mode only; this sample runs the managed client. */
+      break;
     case AZ_IOT_SU_EVENT_PERSIST_FAILED:
     case AZ_IOT_SU_EVENT_PERSIST_RECOVERED:
     case AZ_IOT_SU_EVENT_UPDATE_REFUSED:
