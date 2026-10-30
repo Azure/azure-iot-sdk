@@ -1,4 +1,4 @@
-// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
+﻿// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
 // See LICENSE file in the project root for full license information.
 
 using Google.Protobuf;
@@ -151,6 +151,592 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
         }
 
         [Fact]
+        public async Task DuplicateProbe_ResendsOriginalReadyId()
+        {
+            MockFeatureConnectionClient connection = new()
+            {
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv5, DeviceId),
+            };
+            using DirectMethodClient directMethodClient = new(connection);
+
+            int probeHandlerInvocations = 0;
+            bool methodInvoked = false;
+            directMethodClient.DirectMethodProbeReceivedAsync += (_) =>
+            {
+                probeHandlerInvocations++;
+                return Task.FromResult(DirectMethodProbeAck.Accepted());
+            };
+            directMethodClient.DirectMethodInvokedAsync += (_) =>
+            {
+                methodInvoked = true;
+                return Task.FromResult(new DirectMethodResponse() { Status = 200 });
+            };
+
+            byte[] correlationData = Guid.NewGuid().ToByteArray();
+            byte[] probePayload = new Probe() { MethodName = "reboot", ResponseTimeoutSeconds = 30 }.ToByteArray();
+
+            await connection.SimulateReceiveAsync(CreateInboundMethodPublish("probe:1", correlationData, probePayload));
+            await connection.SimulateReceiveAsync(CreateInboundMethodPublish("probe:1", correlationData, probePayload));
+
+            Assert.Equal(2, connection.PublishedMessages.Count);
+            ByteString firstReadyId = ProbeAck.Parser.ParseFrom(connection.PublishedMessages[0].Payload).Ready.ReadyId;
+            ByteString secondReadyId = ProbeAck.Parser.ParseFrom(connection.PublishedMessages[1].Payload).Ready.ReadyId;
+            Assert.Equal(firstReadyId, secondReadyId);
+            Assert.Equal(correlationData, connection.PublishedMessages[1].CorrelationData);
+            Assert.Equal(1, probeHandlerInvocations);
+
+            var exec = new Exec() { ReadyId = firstReadyId };
+            await connection.SimulateReceiveAsync(CreateInboundMethodPublish("exec:1", correlationData, exec.ToByteArray()));
+
+            Assert.True(methodInvoked);
+            Assert.Equal("result:1", GetType(connection.PublishedMessages[2]));
+        }
+
+        [Fact]
+        public async Task DuplicateProbe_WhileHandlerInFlight_SharesDecision()
+        {
+            MockFeatureConnectionClient connection = new()
+            {
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv5, DeviceId),
+            };
+            using DirectMethodClient directMethodClient = new(connection);
+
+            int probeHandlerInvocations = 0;
+            TaskCompletionSource probeHandlerEntered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            TaskCompletionSource releaseProbeHandler = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            bool methodInvoked = false;
+            directMethodClient.DirectMethodProbeReceivedAsync += async (_) =>
+            {
+                Interlocked.Increment(ref probeHandlerInvocations);
+                probeHandlerEntered.TrySetResult();
+                await releaseProbeHandler.Task;
+                return DirectMethodProbeAck.Accepted();
+            };
+            directMethodClient.DirectMethodInvokedAsync += (_) =>
+            {
+                methodInvoked = true;
+                return Task.FromResult(new DirectMethodResponse() { Status = 200 });
+            };
+
+            byte[] correlationData = Guid.NewGuid().ToByteArray();
+            byte[] probePayload = new Probe() { MethodName = "reboot", ResponseTimeoutSeconds = 30 }.ToByteArray();
+
+            Task firstProbe = connection.SimulateReceiveAsync(CreateInboundMethodPublish("probe:1", correlationData, probePayload));
+            await probeHandlerEntered.Task.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+            Task secondProbe = connection.SimulateReceiveAsync(CreateInboundMethodPublish("probe:1", correlationData, probePayload));
+            Assert.False(secondProbe.IsCompleted);
+
+            releaseProbeHandler.SetResult();
+            await Task.WhenAll(firstProbe, secondProbe).WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+
+            Assert.Equal(1, probeHandlerInvocations);
+            Assert.Equal(2, connection.PublishedMessages.Count);
+            ByteString firstReadyId = ProbeAck.Parser.ParseFrom(connection.PublishedMessages[0].Payload).Ready.ReadyId;
+            ByteString secondReadyId = ProbeAck.Parser.ParseFrom(connection.PublishedMessages[1].Payload).Ready.ReadyId;
+            Assert.Equal(firstReadyId, secondReadyId);
+
+            var exec = new Exec() { ReadyId = firstReadyId };
+            await connection.SimulateReceiveAsync(CreateInboundMethodPublish("exec:1", correlationData, exec.ToByteArray()));
+
+            Assert.True(methodInvoked);
+            Assert.Equal("result:1", GetType(connection.PublishedMessages[2]));
+        }
+
+        [Fact]
+        public async Task DuplicateProbe_AfterExecConsumedRequest_DoesNotRestoreReadyId()
+        {
+            MockFeatureConnectionClient connection = new()
+            {
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv5, DeviceId),
+            };
+            using DirectMethodClient directMethodClient = new(connection);
+
+            int probeHandlerInvocations = 0;
+            int methodInvocations = 0;
+            directMethodClient.DirectMethodProbeReceivedAsync += (_) =>
+            {
+                Interlocked.Increment(ref probeHandlerInvocations);
+                return Task.FromResult(DirectMethodProbeAck.Accepted());
+            };
+            directMethodClient.DirectMethodInvokedAsync += (_) =>
+            {
+                Interlocked.Increment(ref methodInvocations);
+                return Task.FromResult(new DirectMethodResponse() { Status = 200 });
+            };
+
+            // Hold the PUBACK of the first probe ack so that the original probe is still in flight while the exec and duplicate probe arrive.
+            TaskCompletionSource<MqttPublishAck> firstProbeAckPuback = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            TaskCompletionSource firstProbeAckPublished = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            int probeAcksPublished = 0;
+            connection.OnPublish = (publish) =>
+            {
+                if (GetType(publish) == "probe-ack:1" && Interlocked.Increment(ref probeAcksPublished) == 1)
+                {
+                    firstProbeAckPublished.TrySetResult();
+                    return firstProbeAckPuback.Task;
+                }
+
+                return Task.FromResult(new MqttPublishAck() { ReasonCode = MqttPublishAckReasonCode.Success });
+            };
+
+            byte[] correlationData = Guid.NewGuid().ToByteArray();
+            byte[] probePayload = new Probe() { MethodName = "reboot", ResponseTimeoutSeconds = 30 }.ToByteArray();
+
+            Task firstProbe = connection.SimulateReceiveAsync(CreateInboundMethodPublish("probe:1", correlationData, probePayload));
+            await firstProbeAckPublished.Task.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+            ByteString readyId = ProbeAck.Parser.ParseFrom(Assert.Single(connection.PublishedMessages).Payload).Ready.ReadyId;
+
+            byte[] execPayload = new Exec() { ReadyId = readyId }.ToByteArray();
+            await connection.SimulateReceiveAsync(CreateInboundMethodPublish("exec:1", correlationData, execPayload));
+            Assert.Equal(1, methodInvocations);
+
+            // A duplicate probe that arrives after the exec must not make the consumed ready Id valid again.
+            await connection.SimulateReceiveAsync(CreateInboundMethodPublish("probe:1", correlationData, probePayload));
+
+            firstProbeAckPuback.SetResult(new MqttPublishAck() { ReasonCode = MqttPublishAckReasonCode.Success });
+            await firstProbe;
+
+            // A redelivered exec must not invoke the method again.
+            await connection.SimulateReceiveAsync(CreateInboundMethodPublish("exec:1", correlationData, execPayload));
+
+            Assert.Equal(1, probeHandlerInvocations);
+            Assert.Equal(1, methodInvocations);
+            Assert.Equal(1, probeAcksPublished);
+            Assert.Equal(2, connection.PublishedMessages.Count);
+            Assert.Equal("result:1", GetType(connection.PublishedMessages[1]));
+        }
+
+        [Fact]
+        public async Task DuplicateProbe_WithDifferentMethodName_IsIgnored()
+        {
+            MockFeatureConnectionClient connection = new()
+            {
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv5, DeviceId),
+            };
+            using DirectMethodClient directMethodClient = new(connection);
+
+            int probeHandlerInvocations = 0;
+            string? invokedMethodName = null;
+            directMethodClient.DirectMethodProbeReceivedAsync += (_) =>
+            {
+                probeHandlerInvocations++;
+                return Task.FromResult(DirectMethodProbeAck.Accepted());
+            };
+            directMethodClient.DirectMethodInvokedAsync += (args) =>
+            {
+                invokedMethodName = args.MethodName;
+                return Task.FromResult(new DirectMethodResponse() { Status = 200 });
+            };
+
+            byte[] correlationData = Guid.NewGuid().ToByteArray();
+            await connection.SimulateReceiveAsync(CreateInboundMethodPublish("probe:1", correlationData, new Probe() { MethodName = "reboot", ResponseTimeoutSeconds = 30 }.ToByteArray()));
+            await connection.SimulateReceiveAsync(CreateInboundMethodPublish("probe:1", correlationData, new Probe() { MethodName = "factoryReset", ResponseTimeoutSeconds = 30 }.ToByteArray()));
+
+            Assert.Equal(1, probeHandlerInvocations);
+            ByteString readyId = ProbeAck.Parser.ParseFrom(Assert.Single(connection.PublishedMessages).Payload).Ready.ReadyId;
+
+            var exec = new Exec() { ReadyId = readyId };
+            await connection.SimulateReceiveAsync(CreateInboundMethodPublish("exec:1", correlationData, exec.ToByteArray()));
+
+            Assert.Equal("reboot", invokedMethodName);
+            Assert.Equal(2, connection.PublishedMessages.Count);
+            Assert.Equal("result:1", GetType(connection.PublishedMessages[1]));
+        }
+
+        [Fact]
+        public async Task ProbeThatTimesOut_DoesNotCacheRequest()
+        {
+            MockFeatureConnectionClient connection = new()
+            {
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv5, DeviceId),
+            };
+            using DirectMethodClient directMethodClient = new(connection);
+
+            int probeHandlerInvocations = 0;
+            bool methodInvoked = false;
+            directMethodClient.DirectMethodProbeReceivedAsync += async (_) =>
+            {
+                if (++probeHandlerInvocations == 1)
+                {
+                    await Task.Delay(TimeSpan.FromMilliseconds(2100));
+                }
+
+                return DirectMethodProbeAck.Accepted();
+            };
+            directMethodClient.DirectMethodInvokedAsync += (_) =>
+            {
+                methodInvoked = true;
+                return Task.FromResult(new DirectMethodResponse() { Status = 200 });
+            };
+
+            byte[] correlationData = Guid.NewGuid().ToByteArray();
+            byte[] probePayload = new Probe() { MethodName = "reboot", ResponseTimeoutSeconds = 30 }.ToByteArray();
+
+            await connection.SimulateReceiveAsync(CreateInboundMethodPublish("probe:1", correlationData, probePayload, messageExpiryInterval: 1));
+            Assert.Empty(connection.PublishedMessages);
+
+            await connection.SimulateReceiveAsync(CreateInboundMethodPublish("probe:1", correlationData, probePayload));
+
+            Assert.Equal(2, probeHandlerInvocations);
+            MqttPublish probeAckPublish = Assert.Single(connection.PublishedMessages);
+            ByteString readyId = ProbeAck.Parser.ParseFrom(probeAckPublish.Payload).Ready.ReadyId;
+
+            var exec = new Exec() { ReadyId = readyId };
+            await connection.SimulateReceiveAsync(CreateInboundMethodPublish("exec:1", correlationData, exec.ToByteArray()));
+
+            Assert.True(methodInvoked);
+            Assert.Equal(2, connection.PublishedMessages.Count);
+            Assert.Equal("result:1", GetType(connection.PublishedMessages[1]));
+        }
+
+        [Fact]
+        public async Task DuplicateProbe_AfterExec_ExtendsConsumedRequestDeadline()
+        {
+            MockFeatureConnectionClient connection = new()
+            {
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv5, DeviceId),
+            };
+            using DirectMethodClient directMethodClient = new(connection);
+
+            int probeHandlerInvocations = 0;
+            directMethodClient.DirectMethodProbeReceivedAsync += (args) =>
+            {
+                if (args.MethodName == "reboot")
+                {
+                    Interlocked.Increment(ref probeHandlerInvocations);
+                }
+
+                return Task.FromResult(DirectMethodProbeAck.Accepted());
+            };
+            directMethodClient.DirectMethodInvokedAsync += (_) => Task.FromResult(new DirectMethodResponse() { Status = 200 });
+
+            byte[] correlationData = Guid.NewGuid().ToByteArray();
+            byte[] probePayload = new Probe() { MethodName = "reboot", ResponseTimeoutSeconds = 30 }.ToByteArray();
+
+            await connection.SimulateReceiveAsync(CreateInboundMethodPublish("probe:1", correlationData, probePayload, messageExpiryInterval: 1));
+            ByteString readyId = ProbeAck.Parser.ParseFrom(Assert.Single(connection.PublishedMessages).Payload).Ready.ReadyId;
+            await connection.SimulateReceiveAsync(CreateInboundMethodPublish("exec:1", correlationData, new Exec() { ReadyId = readyId }.ToByteArray()));
+
+            // Push the request out of the most recently consumed requests so that only its probe deadline keeps it.
+            await ConsumeOtherRequestsAsync(connection, DirectMethodClient.RecentlyConsumedDirectMethodRequestsToRetain);
+
+            // A duplicate with a longer expiry arrives after the exec, so the consumed request must outlive the original probe's expiry.
+            await connection.SimulateReceiveAsync(CreateInboundMethodPublish("probe:1", correlationData, probePayload, messageExpiryInterval: 30));
+            await Task.Delay(TimeSpan.FromMilliseconds(1500), TestContext.Current.CancellationToken);
+            await connection.SimulateReceiveAsync(CreateInboundMethodPublish("probe:1", correlationData, probePayload, messageExpiryInterval: 30));
+
+            Assert.Equal(1, probeHandlerInvocations);
+            Assert.Equal(2, CountPublishes(connection, correlationData));
+        }
+
+        [Fact]
+        public async Task DuplicateProbe_StillAcknowledgingWhenConsumedRequestExpires_IsIgnored()
+        {
+            MockFeatureConnectionClient connection = new()
+            {
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv5, DeviceId),
+            };
+            using DirectMethodClient directMethodClient = new(connection);
+
+            int probeHandlerInvocations = 0;
+            directMethodClient.DirectMethodProbeReceivedAsync += (_) =>
+            {
+                Interlocked.Increment(ref probeHandlerInvocations);
+                return Task.FromResult(DirectMethodProbeAck.Accepted());
+            };
+            directMethodClient.DirectMethodInvokedAsync += (_) => Task.FromResult(new DirectMethodResponse() { Status = 200 });
+
+            byte[] correlationData = Guid.NewGuid().ToByteArray();
+            byte[] probePayload = new Probe() { MethodName = "reboot", ResponseTimeoutSeconds = 30 }.ToByteArray();
+
+            await connection.SimulateReceiveAsync(CreateInboundMethodPublish("probe:1", correlationData, probePayload, messageExpiryInterval: 1));
+            ByteString readyId = ProbeAck.Parser.ParseFrom(Assert.Single(connection.PublishedMessages).Payload).Ready.ReadyId;
+            await connection.SimulateReceiveAsync(CreateInboundMethodPublish("exec:1", correlationData, new Exec() { ReadyId = readyId }.ToByteArray()));
+
+            // Hold the duplicate's acknowledgment until the consumed request has expired and a later message has pruned expired requests.
+            TaskCompletionSource releaseAcknowledgment = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            MockMqttPublishReceivedEventArgs duplicateArgs = new()
+            {
+                Publish = CreateInboundMethodPublish("probe:1", correlationData, probePayload, messageExpiryInterval: 1),
+                AcknowledgeResult = releaseAcknowledgment.Task,
+            };
+            Task duplicateProbe = connection.SimulateReceiveAsync(duplicateArgs);
+
+            await Task.Delay(TimeSpan.FromMilliseconds(1500), TestContext.Current.CancellationToken);
+            await connection.SimulateReceiveAsync(CreateInboundMethodPublish("exec:1", Guid.NewGuid().ToByteArray(), new Exec() { ReadyId = readyId }.ToByteArray()));
+
+            releaseAcknowledgment.SetResult();
+            await duplicateProbe.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+
+            // A later redelivery must also still find the consumed request.
+            await connection.SimulateReceiveAsync(CreateInboundMethodPublish("probe:1", correlationData, probePayload, messageExpiryInterval: 1));
+
+            Assert.Equal(1, probeHandlerInvocations);
+            Assert.Equal(2, CountPublishes(connection, correlationData));
+        }
+
+        [Fact]
+        public async Task DuplicateProbe_OutlivingTimedOutOwner_KeepsSharingItsDecision()
+        {
+            MockFeatureConnectionClient connection = new()
+            {
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv5, DeviceId),
+            };
+            using DirectMethodClient directMethodClient = new(connection);
+
+            int probeHandlerInvocations = 0;
+            TaskCompletionSource probeHandlerEntered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            TaskCompletionSource releaseProbeHandler = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            directMethodClient.DirectMethodProbeReceivedAsync += async (_) =>
+            {
+                Interlocked.Increment(ref probeHandlerInvocations);
+                probeHandlerEntered.TrySetResult();
+                await releaseProbeHandler.Task;
+                return DirectMethodProbeAck.Accepted();
+            };
+            bool methodInvoked = false;
+            directMethodClient.DirectMethodInvokedAsync += (_) =>
+            {
+                methodInvoked = true;
+                return Task.FromResult(new DirectMethodResponse() { Status = 200 });
+            };
+
+            byte[] correlationData = Guid.NewGuid().ToByteArray();
+            byte[] probePayload = new Probe() { MethodName = "reboot", ResponseTimeoutSeconds = 30 }.ToByteArray();
+
+            Task owner = connection.SimulateReceiveAsync(CreateInboundMethodPublish("probe:1", correlationData, probePayload, messageExpiryInterval: 1));
+            await probeHandlerEntered.Task.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+            Task duplicate = connection.SimulateReceiveAsync(CreateInboundMethodPublish("probe:1", correlationData, probePayload));
+
+            // The owner gives up at its own expiry, but the live duplicate keeps the request registered.
+            Assert.Same(owner, await Task.WhenAny(owner, Task.Delay(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken)));
+            Task thirdProbe = connection.SimulateReceiveAsync(CreateInboundMethodPublish("probe:1", correlationData, probePayload));
+
+            releaseProbeHandler.SetResult();
+            await Task.WhenAll(duplicate, thirdProbe).WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+
+            Assert.Equal(1, probeHandlerInvocations);
+            Assert.Equal(2, connection.PublishedMessages.Count);
+            ProbeAck firstAck = ProbeAck.Parser.ParseFrom(connection.PublishedMessages[0].Payload);
+            ProbeAck secondAck = ProbeAck.Parser.ParseFrom(connection.PublishedMessages[1].Payload);
+            Assert.Equal(ProbeAck.ResultOneofCase.Ready, firstAck.ResultCase);
+            Assert.Equal(firstAck.Ready.ReadyId, secondAck.Ready.ReadyId);
+
+            await connection.SimulateReceiveAsync(CreateInboundMethodPublish("exec:1", correlationData, new Exec() { ReadyId = firstAck.Ready.ReadyId }.ToByteArray()));
+            Assert.True(methodInvoked);
+        }
+
+        [Fact]
+        public async Task DuplicateProbe_WhenHandlerNeverCompletes_StopsWaitingAtItsExpiry()
+        {
+            MockFeatureConnectionClient connection = new()
+            {
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv5, DeviceId),
+            };
+            using DirectMethodClient directMethodClient = new(connection);
+
+            int probeHandlerInvocations = 0;
+            TaskCompletionSource<DirectMethodProbeAck> neverCompletes = new();
+            directMethodClient.DirectMethodProbeReceivedAsync += (_) =>
+                Interlocked.Increment(ref probeHandlerInvocations) == 1
+                    ? neverCompletes.Task
+                    : Task.FromResult(DirectMethodProbeAck.Accepted());
+            bool methodInvoked = false;
+            directMethodClient.DirectMethodInvokedAsync += (_) =>
+            {
+                methodInvoked = true;
+                return Task.FromResult(new DirectMethodResponse() { Status = 200 });
+            };
+
+            byte[] correlationData = Guid.NewGuid().ToByteArray();
+            byte[] probePayload = new Probe() { MethodName = "reboot", ResponseTimeoutSeconds = 30 }.ToByteArray();
+
+            Task probes = Task.WhenAll(
+                connection.SimulateReceiveAsync(CreateInboundMethodPublish("probe:1", correlationData, probePayload, messageExpiryInterval: 1)),
+                connection.SimulateReceiveAsync(CreateInboundMethodPublish("probe:1", correlationData, probePayload, messageExpiryInterval: 2)));
+            Assert.Same(probes, await Task.WhenAny(probes, Task.Delay(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken)));
+            Assert.Empty(connection.PublishedMessages);
+
+            // Once every live probe has expired, a retry asks the application again.
+            await connection.SimulateReceiveAsync(CreateInboundMethodPublish("probe:1", correlationData, probePayload));
+
+            Assert.Equal(2, probeHandlerInvocations);
+            ByteString readyId = ProbeAck.Parser.ParseFrom(Assert.Single(connection.PublishedMessages).Payload).Ready.ReadyId;
+            await connection.SimulateReceiveAsync(CreateInboundMethodPublish("exec:1", correlationData, new Exec() { ReadyId = readyId }.ToByteArray()));
+            Assert.True(methodInvoked);
+        }
+
+        [Fact]
+        public async Task DuplicateProbe_WithDifferentResponseTimeout_IsIgnored()
+        {
+            MockFeatureConnectionClient connection = new()
+            {
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv5, DeviceId),
+            };
+            using DirectMethodClient directMethodClient = new(connection);
+
+            int probeHandlerInvocations = 0;
+            directMethodClient.DirectMethodProbeReceivedAsync += (_) =>
+            {
+                probeHandlerInvocations++;
+                return Task.FromResult(DirectMethodProbeAck.Accepted());
+            };
+            directMethodClient.DirectMethodInvokedAsync += (_) => Task.FromResult(new DirectMethodResponse() { Status = 200 });
+
+            byte[] correlationData = Guid.NewGuid().ToByteArray();
+            await connection.SimulateReceiveAsync(CreateInboundMethodPublish("probe:1", correlationData, new Probe() { MethodName = "reboot", ResponseTimeoutSeconds = 30 }.ToByteArray()));
+            await connection.SimulateReceiveAsync(CreateInboundMethodPublish("probe:1", correlationData, new Probe() { MethodName = "reboot", ResponseTimeoutSeconds = 5 }.ToByteArray()));
+
+            Assert.Equal(1, probeHandlerInvocations);
+            Assert.Single(connection.PublishedMessages);
+        }
+
+        [Fact]
+        public async Task DuplicateProbe_AfterConsumedRequestExpires_IsIgnoredWhileRecentlyConsumed()
+        {
+            MockFeatureConnectionClient connection = new()
+            {
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv5, DeviceId),
+            };
+            using DirectMethodClient directMethodClient = new(connection);
+
+            int probeHandlerInvocations = 0;
+            directMethodClient.DirectMethodProbeReceivedAsync += (_) =>
+            {
+                Interlocked.Increment(ref probeHandlerInvocations);
+                return Task.FromResult(DirectMethodProbeAck.Accepted());
+            };
+            directMethodClient.DirectMethodInvokedAsync += (_) => Task.FromResult(new DirectMethodResponse() { Status = 200 });
+
+            byte[] correlationData = Guid.NewGuid().ToByteArray();
+            byte[] probePayload = new Probe() { MethodName = "reboot", ResponseTimeoutSeconds = 30 }.ToByteArray();
+
+            await connection.SimulateReceiveAsync(CreateInboundMethodPublish("probe:1", correlationData, probePayload, messageExpiryInterval: 1));
+            ByteString readyId = ProbeAck.Parser.ParseFrom(Assert.Single(connection.PublishedMessages).Payload).Ready.ReadyId;
+            await connection.SimulateReceiveAsync(CreateInboundMethodPublish("exec:1", correlationData, new Exec() { ReadyId = readyId }.ToByteArray()));
+
+            // A redelivery after the probe's expiry (for example from a resumed session) must not execute the method twice.
+            await Task.Delay(TimeSpan.FromMilliseconds(1500), TestContext.Current.CancellationToken);
+            await connection.SimulateReceiveAsync(CreateInboundMethodPublish("exec:1", Guid.NewGuid().ToByteArray(), new Exec() { ReadyId = readyId }.ToByteArray()));
+            await connection.SimulateReceiveAsync(CreateInboundMethodPublish("probe:1", correlationData, probePayload, messageExpiryInterval: 1));
+
+            Assert.Equal(1, probeHandlerInvocations);
+            Assert.Equal(2, CountPublishes(connection, correlationData));
+        }
+
+        [Fact]
+        public async Task DuplicateProbe_WhenFirstAcknowledgmentFails_InvokesHandler()
+        {
+            MockFeatureConnectionClient connection = new()
+            {
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv5, DeviceId),
+            };
+            using DirectMethodClient directMethodClient = new(connection);
+
+            int probeHandlerInvocations = 0;
+            directMethodClient.DirectMethodProbeReceivedAsync += (_) =>
+            {
+                Interlocked.Increment(ref probeHandlerInvocations);
+                return Task.FromResult(DirectMethodProbeAck.Accepted());
+            };
+            directMethodClient.DirectMethodInvokedAsync += (_) => Task.FromResult(new DirectMethodResponse() { Status = 200 });
+
+            byte[] correlationData = Guid.NewGuid().ToByteArray();
+            byte[] probePayload = new Probe() { MethodName = "reboot", ResponseTimeoutSeconds = 30 }.ToByteArray();
+
+            // The first delivery is registered, then its acknowledgment fails after the duplicate has also been registered.
+            TaskCompletionSource failAcknowledgment = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            Task firstProbe = connection.SimulateReceiveAsync(new MockMqttPublishReceivedEventArgs()
+            {
+                Publish = CreateInboundMethodPublish("probe:1", correlationData, probePayload),
+                AcknowledgeResult = failAcknowledgment.Task,
+            });
+            TaskCompletionSource releaseDuplicateAcknowledgment = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            Task duplicateProbe = connection.SimulateReceiveAsync(new MockMqttPublishReceivedEventArgs()
+            {
+                Publish = CreateInboundMethodPublish("probe:1", correlationData, probePayload),
+                AcknowledgeResult = releaseDuplicateAcknowledgment.Task,
+            });
+
+            failAcknowledgment.SetException(new InvalidOperationException("Simulated acknowledgment failure"));
+            await Assert.ThrowsAnyAsync<Exception>(() => firstProbe.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
+
+            releaseDuplicateAcknowledgment.SetResult();
+            await duplicateProbe.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+
+            Assert.Equal(1, probeHandlerInvocations);
+            MqttPublish probeAck = Assert.Single(connection.PublishedMessages);
+            Assert.Equal("probe-ack:1", GetType(probeAck));
+            Assert.Equal(ProbeAck.ResultOneofCase.Ready, ProbeAck.Parser.ParseFrom(probeAck.Payload).ResultCase);
+        }
+
+        [Fact]
+        public async Task Probe_ThatExpiresWhileBeingAcknowledged_DoesNotInvokeHandler()
+        {
+            MockFeatureConnectionClient connection = new()
+            {
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv5, DeviceId),
+            };
+            using DirectMethodClient directMethodClient = new(connection);
+
+            int probeHandlerInvocations = 0;
+            directMethodClient.DirectMethodProbeReceivedAsync += (_) =>
+            {
+                Interlocked.Increment(ref probeHandlerInvocations);
+                return Task.FromResult(DirectMethodProbeAck.Accepted());
+            };
+            directMethodClient.DirectMethodInvokedAsync += (_) => Task.FromResult(new DirectMethodResponse() { Status = 200 });
+
+            TaskCompletionSource releaseAcknowledgment = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            Task probe = connection.SimulateReceiveAsync(new MockMqttPublishReceivedEventArgs()
+            {
+                Publish = CreateInboundMethodPublish(
+                    "probe:1",
+                    Guid.NewGuid().ToByteArray(),
+                    new Probe() { MethodName = "reboot", ResponseTimeoutSeconds = 30 }.ToByteArray(),
+                    messageExpiryInterval: 1),
+                AcknowledgeResult = releaseAcknowledgment.Task,
+            });
+
+            await Task.Delay(TimeSpan.FromMilliseconds(1500), TestContext.Current.CancellationToken);
+            releaseAcknowledgment.SetResult();
+            await probe.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+
+            Assert.Equal(0, probeHandlerInvocations);
+            Assert.Empty(connection.PublishedMessages);
+        }
+
+        [Fact]
+        public async Task Exec_WithWrongReadyId_DoesNotConsumeRequest()
+        {
+            MockFeatureConnectionClient connection = new()
+            {
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv5, DeviceId),
+            };
+            using DirectMethodClient directMethodClient = new(connection);
+
+            int methodInvocations = 0;
+            directMethodClient.DirectMethodProbeReceivedAsync += (_) => Task.FromResult(DirectMethodProbeAck.Accepted());
+            directMethodClient.DirectMethodInvokedAsync += (_) =>
+            {
+                methodInvocations++;
+                return Task.FromResult(new DirectMethodResponse() { Status = 200 });
+            };
+
+            byte[] correlationData = Guid.NewGuid().ToByteArray();
+            await connection.SimulateReceiveAsync(CreateInboundMethodPublish("probe:1", correlationData, new Probe() { MethodName = "reboot", ResponseTimeoutSeconds = 30 }.ToByteArray()));
+            ByteString readyId = ProbeAck.Parser.ParseFrom(Assert.Single(connection.PublishedMessages).Payload).Ready.ReadyId;
+
+            var wrongExec = new Exec() { ReadyId = ByteString.CopyFrom(Guid.NewGuid().ToByteArray()) };
+            await connection.SimulateReceiveAsync(CreateInboundMethodPublish("exec:1", correlationData, wrongExec.ToByteArray()));
+            Assert.Equal(0, methodInvocations);
+
+            await connection.SimulateReceiveAsync(CreateInboundMethodPublish("exec:1", correlationData, new Exec() { ReadyId = readyId }.ToByteArray()));
+            Assert.Equal(1, methodInvocations);
+            Assert.Equal("result:1", GetType(connection.PublishedMessages[1]));
+        }
+
+        [Fact]
         public async Task Exec_WithUnknownRequestId_IsIgnored()
         {
             MockFeatureConnectionClient connection = new()
@@ -195,7 +781,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             Assert.False(invoked);
             Assert.Empty(connection.PublishedMessages);
         }
-
+      
         [Fact]
         public async Task Exec_WithMalformedPayload_LogsErrorAndKeepsRequestPending()
         {
@@ -277,6 +863,24 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
 
             Assert.True(handlerToken.IsCancellationRequested);
             Assert.Single(connection.PublishedMessages);
+        }
+
+        private static async Task ConsumeOtherRequestsAsync(MockFeatureConnectionClient connection, int count)
+        {
+            byte[] probePayload = new Probe() { MethodName = "other", ResponseTimeoutSeconds = 30 }.ToByteArray();
+            for (int i = 0; i < count; i++)
+            {
+                byte[] correlationData = Guid.NewGuid().ToByteArray();
+                await connection.SimulateReceiveAsync(CreateInboundMethodPublish("probe:1", correlationData, probePayload, messageExpiryInterval: 1));
+                MqttPublish probeAck = connection.PublishedMessages.Last(p => p.CorrelationData != null && p.CorrelationData.SequenceEqual(correlationData));
+                ByteString readyId = ProbeAck.Parser.ParseFrom(probeAck.Payload).Ready.ReadyId;
+                await connection.SimulateReceiveAsync(CreateInboundMethodPublish("exec:1", correlationData, new Exec() { ReadyId = readyId }.ToByteArray()));
+            }
+        }
+
+        private static int CountPublishes(MockFeatureConnectionClient connection, byte[] correlationData)
+        {
+            return connection.PublishedMessages.Count(p => p.CorrelationData != null && p.CorrelationData.SequenceEqual(correlationData));
         }
 
         private static MqttPublish CreateInboundMethodPublish(string type, byte[] correlationData, byte[] payload, uint messageExpiryInterval = 30)
