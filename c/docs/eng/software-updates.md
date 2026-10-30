@@ -204,7 +204,8 @@ status alone -- 429 throttled,
 **The device is the only retrier**: DPS makes one attempt per hop. A retryable failure with no
 `Retry-After` is retried after a jittered exponential backoff (1 s doubling to 60 s, ±20%), reset by
 any accepted operation; it counts against the request timeout. A report is retried until the
-service accepts it or rejects it permanently; a rejected report is dropped. A lost DPS
+service accepts it or rejects it permanently; a rejected report is dropped. While that backoff
+runs, a newer report waits for it and the latest state is sent when it ends. A lost DPS
 session is retried up to `AZ_IOT_SU_CHANNEL_MAX_SESSION_RETRIES` (4) times; the next consecutive
 loss abandons the report for this process (`AZ_IOT_SU_EVENT_OPERATION_ABANDONED`). A terminal
 report stays owed (and stored, with persistence) and is re-sent on the next
@@ -349,7 +350,7 @@ The design (full API in [§5.2](#52-device-properties-api)):
    **deep-copies** every string into the cache; after `init` returns the
    application MAY mutate or free its own struct.
 2. **No exposure of azure-sdk-for-c types.** The library MUST NOT expose
-   `az_iot_su_client_device_properties`.
+   azure-sdk-for-c's device-properties type.
 3. **Cache reused for every request.** Every update check and status report
    reads from the cache; the application MUST NOT be invoked mid-`do_work`.
 4. **Runtime update.** `az_iot_su_client_update_device_properties()`
@@ -459,7 +460,7 @@ manifest is verified (`is_installed_fn` included) and until the workflow ends. T
 result. A change made while the workflow waits for a reboot rewrites the saved record from a later
 `do_work()`, which holds the workflow until the write succeeds. A failed write raises
 `AZ_IOT_SU_EVENT_PERSIST_FAILED` and is retried; until `AZ_IOT_SU_EVENT_PERSIST_RECOVERED`, a reboot
-restores the previous details. A report that does not fit `max_message_size` is sent without step details. The terminal
+restores the previous details. A report that does not fit `max_message_size` is sent without step or overall details. The terminal
 `AZ_IOT_SU_EVENT_REPORT_ACCEPTED` carries a copy of the report as sent, kept when it was handed to
 the channel. The client sets no details itself.
 
@@ -1227,7 +1228,7 @@ sequenceDiagram
         App->>SU: report_status(IN_PROGRESS)
         SU->>Ch: reportUpdateStatus
     end
-    App->>SU: report_status(SUCCEEDED | FAILED | CANCELED | SKIPPED, steps)
+    App->>SU: report_status(SUCCEEDED | FAILED | SKIPPED, steps)
     SU->>Ch: reportUpdateStatus
     Note over SU: back to Idle
 ```
@@ -1243,7 +1244,8 @@ sequenceDiagram
 - `az_iot_su_client_report_status()` validates before it changes anything, copies the result, and
   returns to Idle on a terminal outcome. A terminal report carries exactly one step result per
   manifest step; a FAILED result code is never positive (a positive code reads as success to the
-  service); details are bounded by `result_details_size`. On SUCCEEDED the manifest's update id
+  service); `CANCELED` is the service's and is refused; details are bounded by
+  `result_details_size`. On SUCCEEDED the manifest's update id
   becomes the installed one. Step details go through the same path as
   `az_iot_su_client_set_step_result_details()`.
 - Overall `result_details` are sent with the report they come with; the engine's terminal record
@@ -1251,9 +1253,11 @@ sequenceDiagram
 - No persistence: a restart forgets a delegated update and the service offers it again; an
   application that reboots mid-update owns its resume. The service's own limits still apply: an
   update that outlives the DPS session hold (§2) is reported after the session renews.
-- Delta updates are not handled by the SDK. When the pinned azure-sdk-for-c parser exposes
-  `relatedFiles` (§14), the manifest handed to the application will carry them, and the
-  application's own handler applies the delta; the report contract does not change.
+- Delta updates are not handled by the SDK. azure-sdk-for-c is archived and its parser skips
+  `relatedFiles`, refuses unknown file members and caps `fileUrls` at the file count (§14), so a
+  delta offer does not reach the application yet. Once the SDK owns the manifest parser, the
+  manifest handed to the application carries the related files and the application's own handler
+  applies the delta; the report contract does not change.
 
 ```c
 az_iot_su_client_config_options opts = az_iot_su_client_config_options_default();
@@ -1626,8 +1630,8 @@ Operations MUST NOT be long-blocking. Each `do_work` invocation MUST process at 
   check after a conflicting report (§2).
 - **An operational channel over the IoT Hub connection.** Both routes run over DPS.
 - **A reusable conformance suite** for customer platform hooks and crypto backends.
-- **Delta updates.** Needs `relatedFiles` from the azure-sdk-for-c parser (§14); library mode is
-  the route for an application-owned delta handler.
+- **Delta updates.** Needs `relatedFiles` from an SDK-owned manifest parser (azure-sdk-for-c is
+  archived, §14); library mode is the route for an application-owned delta handler.
 - **Library-mode persistence and a received-offer accessor.** A delegated update is not stored,
   and `UPDATE_AVAILABLE` is the only way to see the offer.
 
@@ -1752,7 +1756,7 @@ consumed through a normal `AZ_SDK_C_TAG` bump; this repo carries no patch of the
 |---------|--------------------------|---------------|
 | Reference steps (`"type": "reference"`) | Field name defined but not parsed | Non-Goal |
 | Detached manifest file ID | Field name defined but not parsed | Non-Goal |
-| Delta updates (`relatedFiles`, `downloadHandler`) | Explicitly skipped in parser | Planned: needs upstream parser support (`AZ_SDK_C_TAG` bump); library mode hands the files to the application's own handler |
+| Delta updates (`relatedFiles`, `downloadHandler`) | Explicitly skipped in parser | Planned: needs an SDK-owned manifest parser (upstream is archived); library mode hands the files to the application's own handler |
 | `mimeType` field | Skipped in parser | Non-Goal |
 
 ### Additional Functionality We Build (Not in azure-sdk-for-c)

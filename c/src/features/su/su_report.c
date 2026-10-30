@@ -12,6 +12,7 @@
 #include "azure/iot/az_iot_su.h"
 
 #include "internal/log_internal.h"
+#include "internal/retry_policy.h"
 #include "internal/span_writer.h"
 #include "internal/su_internal.h"
 #include "internal/su_protocol_internal.h"
@@ -256,6 +257,14 @@ az_iot_result az_iot_su__report_state(az_iot_su_client* client)
   }
   az_iot_su_outcome outcome = v.report.outcome;
 
+  /* A retryable refusal armed the backoff: do_work() sends the then-current
+   * report once it is due, so callers cannot outpace the service. */
+  if (SU_I(client).report_paced && !az_iot_retry_state__due(&SU_I(client).retry))
+  {
+    SU_I(client).device_properties_report_pending = true;
+    return AZ_IOT_ERR_BUSY;
+  }
+
   /* Consumed by on_channel_result(), which may run inside report(). A refused
    * call restores the previous value: it may belong to an earlier accepted
    * report still awaiting its verdict. */
@@ -273,9 +282,10 @@ az_iot_result az_iot_su__report_state(az_iot_su_client* client)
     keep_sent_terminal(client, SU_I(client).sent_terminal_slot, &v.report);
   }
   az_iot_result sent = SU_I(client).channel.vtable->report(SU_I(client).channel.ctx, &v.report);
-  if (sent == AZ_IOT_ERR_NOT_ENOUGH_SPACE && v.report.step_results_count > 0)
+  if (sent == AZ_IOT_ERR_NOT_ENOUGH_SPACE
+      && (v.report.step_results_count > 0 || v.report.result_details != NULL))
   {
-    /* The step details do not fit az_iot_su_limits::max_message_size: send the
+    /* The details do not fit az_iot_su_limits::max_message_size: send the
      * result without them rather than not at all. */
     az_iot_su_step_result plain[_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS];
     for (int32_t i = 0; i < v.report.step_results_count; ++i)
@@ -285,8 +295,9 @@ az_iot_result az_iot_su__report_state(az_iot_su_client* client)
     }
     AZ_IOT_LOG_WARN(
         AZ_IOT_LOG_COMPONENT_SU,
-        "report does not fit az_iot_su_limits::max_message_size; sent without step details");
-    v.report.step_results = plain;
+        "report does not fit az_iot_su_limits::max_message_size; sent without result details");
+    v.report.step_results = (v.report.step_results_count > 0) ? plain : NULL;
+    v.report.result_details = NULL;
     if (terminal)
     {
       keep_sent_terminal(client, SU_I(client).sent_terminal_slot, &v.report);

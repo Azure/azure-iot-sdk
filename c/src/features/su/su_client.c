@@ -4648,14 +4648,16 @@ az_iot_result az_iot_su_client_set_step_result_details(
 }
 
 /**
- * @brief Whether @p result may be reported: a valid outcome pair, details that fit and no
- *        positive failure code (a positive resultCode reads as success).
+ * @brief Whether @p result may be reported: a valid outcome pair other than the service's
+ *        CANCELED, details that fit and no positive failure code (a positive resultCode reads
+ *        as success).
  */
 static az_iot_result check_reported_result(
     const az_iot_su_client* client,
     const az_iot_su_step_result* result)
 {
   if (!az_iot_su__outcome_is_valid(result->outcome, result->failure_origin)
+      || result->outcome == AZ_IOT_SU_OUTCOME_CANCELED
       || (result->outcome == AZ_IOT_SU_OUTCOME_FAILED && result->result_code > 0))
   {
     return AZ_IOT_ERR_INVALID_ARG;
@@ -4668,7 +4670,7 @@ static az_iot_result check_reported_result(
   return AZ_IOT_OK;
 }
 
-az_iot_result az_iot_su_client_report_status(
+AZ_NODISCARD az_iot_result az_iot_su_client_report_status(
     az_iot_su_client* client,
     const az_iot_su_step_result* result,
     const az_iot_su_step_result* step_results,

@@ -719,6 +719,10 @@ static az_iot_result fake_channel_report(void* ctx, const az_iot_su_report* repo
   fake_channel* fc = (fake_channel*)ctx;
   if (fc->report_details_do_not_fit)
   {
+    if (report->result_details != NULL)
+    {
+      return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+    }
     for (int32_t i = 0; i < report->step_results_count; ++i)
     {
       if (az_span_size(report->step_results[i].result_details) > 0)
@@ -9424,6 +9428,13 @@ static void report_status_rejects_what_it_cannot_send(void** state)
   bad.outcome = (az_iot_su_outcome)(AZ_IOT_SU_OUTCOME_SKIPPED + 1);
   assert_int_equal(az_iot_su_client_report_status(&fx->su, &bad, steps, 2), AZ_IOT_ERR_INVALID_ARG);
 
+  /* CANCELED is the service's: neither the overall result nor a step may carry it. */
+  bad = lib_result(AZ_IOT_SU_OUTCOME_CANCELED);
+  assert_int_equal(az_iot_su_client_report_status(&fx->su, &bad, steps, 2), AZ_IOT_ERR_INVALID_ARG);
+  steps[1] = bad;
+  assert_int_equal(az_iot_su_client_report_status(&fx->su, &ok, steps, 2), AZ_IOT_ERR_INVALID_ARG);
+  steps[1] = ok;
+
   /* A positive code reads as success, so it cannot carry a failure. */
   bad = lib_result(AZ_IOT_SU_OUTCOME_FAILED);
   bad.result_code = 5;
@@ -9494,6 +9505,61 @@ static void a_refused_status_report_is_resent(void** state)
   assert_int_equal(fx->chan.report_count, refused + 1);
   assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_SUCCEEDED);
   assert_string_equal(fx->chan.last_workflow_id, "wf-retry");
+  assert_false(fx->su._internal.device_properties_report_pending);
+}
+
+/* A report whose details do not fit the message goes out without them, the
+ * overall details included, rather than staying owed for ever. */
+static void an_oversized_status_report_is_sent_without_details(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  delegate(fx, build_patch("wf-big"));
+
+  fx->chan.report_details_do_not_fit = true;
+  az_iot_su_step_result progress = lib_result(AZ_IOT_SU_OUTCOME_IN_PROGRESS);
+  progress.result_details = AZ_SPAN_FROM_STR("too big");
+  assert_int_equal(az_iot_su_client_report_status(&fx->su, &progress, NULL, 0), AZ_IOT_OK);
+  assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_IN_PROGRESS);
+  assert_null(fx->chan.last_report.result_details);
+
+  az_iot_su_step_result done = lib_result(AZ_IOT_SU_OUTCOME_FAILED);
+  done.result_details = AZ_SPAN_FROM_STR("too big");
+  az_iot_su_step_result step = done;
+  assert_int_equal(az_iot_su_client_report_status(&fx->su, &done, &step, 1), AZ_IOT_OK);
+  assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_FAILED);
+  assert_null(fx->chan.last_report.result_details);
+  assert_int_equal(az_span_size(fx->chan.last_step_results[0].result_details), 0);
+  assert_false(fx->su._internal.device_properties_report_pending);
+  assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_IDLE);
+}
+
+/* After a retryable refusal with no service delay, a newer report waits for
+ * the backoff; the latest one goes out when it is due. */
+static void a_status_report_waits_for_the_backoff(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  delegate(fx, build_patch("wf-paced"));
+
+  fx->chan.report_verdict_deferred = true;
+  az_iot_su_step_result progress = lib_result(AZ_IOT_SU_OUTCOME_IN_PROGRESS);
+  assert_int_equal(az_iot_su_client_report_status(&fx->su, &progress, NULL, 0), AZ_IOT_OK);
+  int sent = fx->chan.report_count;
+  deliver_no_hint_retry(fx, AZ_IOT_SU_OP_REPORT_STATUS);
+  assert_true(fx->su._internal.report_paced);
+
+  fx->chan.report_verdict_deferred = false;
+  assert_int_equal(az_iot_su_client_report_status(&fx->su, &progress, NULL, 0), AZ_IOT_OK);
+  az_iot_su_step_result done = lib_result(AZ_IOT_SU_OUTCOME_SUCCEEDED);
+  assert_int_equal(az_iot_su_client_report_status(&fx->su, &done, &done, 1), AZ_IOT_OK);
+  assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  assert_int_equal(fx->chan.report_count, sent);
+  assert_true(fx->su._internal.device_properties_report_pending);
+
+  fx->su._internal.retry._internal.due_ms = az_iot_time_mono_ms();
+  assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  assert_int_equal(fx->chan.report_count, sent + 1);
+  assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_SUCCEEDED);
+  assert_string_equal(fx->chan.last_workflow_id, "wf-paced");
   assert_false(fx->su._internal.device_properties_report_pending);
 }
 
@@ -9944,6 +10010,9 @@ int main(void)
         report_status_rejects_what_it_cannot_send, setup_library, teardown),
     cmocka_unit_test_setup_teardown(report_status_is_not_for_the_managed_client, setup, teardown),
     cmocka_unit_test_setup_teardown(a_refused_status_report_is_resent, setup_library, teardown),
+    cmocka_unit_test_setup_teardown(
+        an_oversized_status_report_is_sent_without_details, setup_library, teardown),
+    cmocka_unit_test_setup_teardown(a_status_report_waits_for_the_backoff, setup_library, teardown),
     cmocka_unit_test_setup_teardown(
         report_status_is_legal_from_the_observer, setup_library, teardown),
     cmocka_unit_test_setup_teardown(

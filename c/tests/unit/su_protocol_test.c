@@ -608,6 +608,13 @@ static void oversized_step_details_are_refused(void** state)
 
   step.result_details = az_span_create(tiny, 1);
   assert_int_equal(az_iot_su__build_report_request(&report, buf, sizeof(buf), NULL), AZ_IOT_OK);
+
+  /* A capacity past INT32_MAX cannot become a span. */
+  len = 1;
+  assert_int_equal(
+      az_iot_su_build_report(&report, buf, (size_t)INT32_MAX + 1, &len),
+      AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+  assert_int_equal(len, 0);
 }
 
 static void report_without_a_workflow_id_is_rejected(void** state)

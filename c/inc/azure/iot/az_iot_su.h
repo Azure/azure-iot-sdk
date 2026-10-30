@@ -77,15 +77,7 @@ extern "C"
   typedef az_iot_adu_client_update_request az_iot_su_client_update_request;
   typedef az_iot_adu_client_file_url az_iot_su_client_file_url;
   typedef az_iot_adu_client_install_result az_iot_su_client_install_result;
-  typedef az_iot_adu_client_workflow az_iot_su_client_workflow;
-  typedef az_iot_adu_client_agent_state az_iot_su_client_agent_state;
-  typedef az_iot_adu_client_device_properties az_iot_su_client_device_properties;
-  typedef az_iot_adu_device_custom_properties az_iot_su_device_custom_properties;
 
-#define AZ_IOT_SU_CLIENT_AGENT_STATE_IDLE AZ_IOT_ADU_CLIENT_AGENT_STATE_IDLE
-#define AZ_IOT_SU_CLIENT_AGENT_STATE_DEPLOYMENT_IN_PROGRESS \
-  AZ_IOT_ADU_CLIENT_AGENT_STATE_DEPLOYMENT_IN_PROGRESS
-#define AZ_IOT_SU_CLIENT_AGENT_STATE_FAILED AZ_IOT_ADU_CLIENT_AGENT_STATE_FAILED
 #define AZ_IOT_SU_CLIENT_SERVICE_ACTION_APPLY_DEPLOYMENT \
   AZ_IOT_ADU_CLIENT_SERVICE_ACTION_APPLY_DEPLOYMENT
 #define AZ_IOT_SU_CLIENT_AGENT_VERSION AZ_IOT_ADU_CLIENT_AGENT_VERSION
@@ -1400,13 +1392,16 @@ extern "C"
    * The wire result code is 1 for IN_PROGRESS and 700 for SUCCEEDED; otherwise
    * `result->result_code`, or -1 when it is 0. `failure_origin` MUST be
    * NOT_APPLICABLE unless the outcome is FAILED, and then it MUST NOT be. A FAILED
-   * result code must not be positive. Step results are ignored for IN_PROGRESS;
+   * result code must not be positive, and CANCELED (the service's) is refused.
+   * Step results are ignored for IN_PROGRESS;
    * otherwise there is exactly one per manifest step, none IN_PROGRESS. On
    * SUCCEEDED the manifest's update ID is reported as installed; otherwise the
    * cached installed update ID.
    *
    * Overall `result_details` are sent with this report only; the workflow's
    * step details can be set earlier with az_iot_su_client_set_step_result_details().
+   * A report that does not fit az_iot_su_limits::max_message_size is sent
+   * without either.
    *
    * Call on the do_work() thread, or serialize with it. Legal from an
    * observer; a terminal report made during the hand-off events takes effect

@@ -593,6 +593,10 @@ az_iot_result az_iot_su__build_report_request(
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
+  if (out_size > INT32_MAX)
+  {
+    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+  }
 
   /* An invalid outcome pair is kept off the wire rather than left for the
    * service to reject. */
