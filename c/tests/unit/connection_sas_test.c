@@ -1141,94 +1141,6 @@ static void a_release_during_the_rejection_does_not_advance(void** state)
   assert_int_equal(fx->client.auth[AZ_IOT_CONN_SCOPE_DPS].pass_from, AZ_IOT_AUTH_SOURCE_NONE);
 }
 
-/* close() from the IDLE callback that reports a DPS rejection: no fallback
- * attempt follows. */
-static void close_on_dps_idle(const az_iot_connection_state_event* event, void* user_ctx)
-{
-  fixture* fx = (fixture*)user_ctx;
-  if (event->scope == AZ_IOT_CONN_SCOPE_DPS && event->state == AZ_IOT_CONN_STATE_IDLE
-      && event->reason != AZ_IOT_OK)
-  {
-    (void)az_iot_connection_client_close(&fx->client);
-  }
-}
-
-static void a_close_during_the_dps_rejection_stops_the_fallback(void** state)
-{
-  fixture* fx = (fixture*)*state;
-  az_iot_connection_client_options opts = dps_sas_options(KEY_B64);
-  opts.dps_auth.sas.secondary_key_base64 = KEY2_B64;
-  with_policies(&opts);
-  assert_int_equal(az_iot_connection_client_init(&fx->client, &opts), AZ_IOT_OK);
-  fx->initialized = true;
-  assert_int_equal(
-      az_iot_connection_client_add_state_observer(&fx->client, on_state, fx), AZ_IOT_OK);
-  assert_int_equal(
-      az_iot_connection_client_add_state_observer(&fx->client, close_on_dps_idle, fx), AZ_IOT_OK);
-  assert_int_equal(
-      az_iot_connection_client_register_mqtt_factory(&fx->client, fx->factory), AZ_IOT_OK);
-  assert_int_equal(az_iot_connection_client_open(&fx->client), AZ_IOT_OK);
-  assert_string_equal(last_connect(fx)->password, DPS_TOKEN);
-
-  connack(fx, AZ_IOT_ERR_IDENTITY_REJECTED);
-  assert_true(no_connect_pending(fx));
-  assert_int_equal(fx->client.reconnect_due_ms, 0);
-  assert_int_equal(fx->client.auth[AZ_IOT_CONN_SCOPE_DPS].first, AZ_IOT_AUTH_SOURCE_NONE);
-  for (size_t i = 0; i < fx->log_count; ++i)
-  {
-    assert_int_not_equal(fx->log[i].state, AZ_IOT_CONN_STATE_RETRY_PENDING);
-  }
-}
-
-/* close() and open() from the DISCONNECTING callback of a rejected
- * registration: the old attempt's finalizer leaves the new one alone. */
-static int reopens;
-static void reopen_on_dps_disconnecting(const az_iot_connection_state_event* event, void* user_ctx)
-{
-  fixture* fx = (fixture*)user_ctx;
-  if (event->scope == AZ_IOT_CONN_SCOPE_DPS && event->state == AZ_IOT_CONN_STATE_DISCONNECTING
-      && event->reason != AZ_IOT_OK && reopens++ == 0)
-  {
-    (void)az_iot_connection_client_close(&fx->client);
-    assert_int_equal(az_iot_connection_client_open(&fx->client), AZ_IOT_OK);
-  }
-}
-
-static void a_reopen_during_the_dps_finalizer_keeps_the_new_attempt(void** state)
-{
-  fixture* fx = (fixture*)*state;
-  reopens = 0;
-  az_iot_connection_client_options opts = dps_sas_options(KEY_B64);
-  opts.dps_auth.sas.secondary_key_base64 = KEY2_B64;
-  with_policies(&opts);
-  assert_int_equal(az_iot_connection_client_init(&fx->client, &opts), AZ_IOT_OK);
-  fx->initialized = true;
-  assert_int_equal(
-      az_iot_connection_client_add_state_observer(&fx->client, on_state, fx), AZ_IOT_OK);
-  assert_int_equal(
-      az_iot_connection_client_add_state_observer(&fx->client, reopen_on_dps_disconnecting, fx),
-      AZ_IOT_OK);
-  assert_int_equal(
-      az_iot_connection_client_register_mqtt_factory(&fx->client, fx->factory), AZ_IOT_OK);
-  assert_int_equal(az_iot_connection_client_open(&fx->client), AZ_IOT_OK);
-
-  connack(fx, AZ_IOT_ERR_IDENTITY_REJECTED);
-  assert_int_equal(reopens, 1);
-  assert_non_null(fx->client.dps_mqtt);
-  assert_int_equal(fx->client.state[AZ_IOT_CONN_SCOPE_DPS], AZ_IOT_CONN_STATE_CONNECTING);
-  assert_int_not_equal(fx->client.dps_phase, AZ_IOT_DPS_PHASE_DONE);
-  size_t last = fx->log_count;
-  while (last > 0 && fx->log[last - 1].scope != AZ_IOT_CONN_SCOPE_DPS)
-  {
-    --last;
-  }
-  assert_true(last > 0);
-  assert_int_equal(fx->log[last - 1].state, AZ_IOT_CONN_STATE_CONNECTING);
-  /* A fresh open() starts at the primary key; the old attempt's fallback is not applied. */
-  assert_string_equal(last_connect(fx)->password, DPS_TOKEN);
-  assert_int_equal(fx->client.reconnect_due_ms, 0);
-}
-
 /* Released and re-acquired from the IDLE callback that reports the rejection:
  * the new demand starts at the first source, without the old session's pacing. */
 static void release_and_reacquire_on_idle(
@@ -1266,28 +1178,6 @@ static void replaced_demand_starts_a_fresh_pass(void** state)
   /* Not paced: the next ensure() opens at once, with the primary key. */
   assert_int_equal(az_iot_connection_client__dps_session_ensure(&fx->client), AZ_IOT_ERR_BUSY);
   assert_string_equal(last_connect(fx)->password, DPS_TOKEN);
-  az_iot_connection_client__dps_user_release(&fx->client);
-}
-
-/* close() from the IDLE callback of a feature-held session's rejection: no
- * fallback and no pacing; with retries disabled nothing latches. */
-static void a_close_during_a_session_rejection_leaves_no_pacing(void** state)
-{
-  fixture* fx = (fixture*)*state;
-  az_iot_connection_client_options opts = dps_sas_options(KEY_B64);
-  opts.dps_auth.sas.secondary_key_base64 = KEY2_B64;
-  assert_int_equal(az_iot_connection_client_init(&fx->client, &opts), AZ_IOT_OK);
-  fx->initialized = true;
-  assert_int_equal(
-      az_iot_connection_client_add_state_observer(&fx->client, close_on_dps_idle, fx), AZ_IOT_OK);
-  assert_int_equal(
-      az_iot_connection_client_register_mqtt_factory(&fx->client, fx->factory), AZ_IOT_OK);
-  assert_int_equal(az_iot_connection_client__dps_user_acquire(&fx->client), AZ_IOT_OK);
-  assert_int_equal(az_iot_connection_client__dps_session_ensure(&fx->client), AZ_IOT_ERR_BUSY);
-  connack(fx, AZ_IOT_ERR_IDENTITY_REJECTED);
-
-  assert_false(fx->client.dps_user_retry_blocked);
-  assert_int_equal(fx->client.auth[AZ_IOT_CONN_SCOPE_DPS].first, AZ_IOT_AUTH_SOURCE_NONE);
   az_iot_connection_client__dps_user_release(&fx->client);
 }
 
@@ -1803,36 +1693,6 @@ static void a_close_during_a_renewal_settles_idle(void** state)
   }
 }
 
-/* A PUBACK callback run by the renewal's teardown closes the client: the
- * renewal does not reconnect. */
-static void close_on_puback(az_iot_result status, void* user_ctx)
-{
-  (void)status;
-  (void)az_iot_connection_client_close((az_iot_connection_client*)user_ctx);
-}
-
-static void a_close_from_a_renewal_teardown_callback_stops_it(void** state)
-{
-  fixture* fx = (fixture*)*state;
-  uint64_t now = NOW;
-  open_renewable_hub(fx, &now, NULL);
-  az_iot_mqtt_message msg = { 0 };
-  msg.topic = "devices/ut-device/messages/events/";
-  msg.payload = (const uint8_t*)"x";
-  msg.payload_len = 1;
-  msg.qos = AZ_IOT_MQTT_QOS_1;
-  assert_int_equal(
-      az_iot_connection_client__publish(&fx->client, NULL, &msg, close_on_puback, &fx->client),
-      AZ_IOT_OK);
-  az_iot_mock_mqtt_client* m = start_renewal(fx);
-  assert_true(az_iot_mock_mqtt_client_inject_disconnected(m));
-  pump(fx, 2);
-  assert_int_equal(fx->client.state[AZ_IOT_CONN_SCOPE_HUB], AZ_IOT_CONN_STATE_IDLE);
-  assert_true(no_connect_pending(fx));
-  assert_int_equal(fx->client.reconnect_due_ms, 0);
-  assert_false(fx->client.sas_token_renewal_in_progress[AZ_IOT_CONN_SCOPE_HUB]);
-}
-
 /* The hub's process_loop() wait ends by the renewal time, then by the
  * disconnect bound. */
 static void the_hub_wait_is_capped_by_the_renewal(void** state)
@@ -1992,7 +1852,7 @@ typedef enum
 {
   FAKE_TOKEN_SUPPLY, /* update_sas_token() from the callback */
   FAKE_TOKEN_LATER, /* notify only; the test supplies the token */
-  FAKE_TOKEN_CLOSE_INSIDE /* update_sas_token(), then close(), from the callback */
+  FAKE_TOKEN_CLOSE_INSIDE /* update_sas_token(), then close() and open(), from the callback */
 } fake_token_mode;
 
 static struct
@@ -2007,6 +1867,8 @@ static struct
   char key_name[32];
   char token[256];
   az_iot_connection_client* client;
+  az_iot_result close_result;
+  az_iot_result open_result;
 } g_fake;
 
 static void fake_token_callback(const az_iot_sas_token_request* request, void* user_ctx)
@@ -2039,7 +1901,8 @@ static void fake_token_callback(const az_iot_sas_token_request* request, void* u
       AZ_IOT_OK);
   if (g_fake.mode == FAKE_TOKEN_CLOSE_INSIDE)
   {
-    (void)az_iot_connection_client_close(g_fake.client);
+    g_fake.close_result = az_iot_connection_client_close(g_fake.client);
+    g_fake.open_result = az_iot_connection_client_open(g_fake.client);
   }
 }
 
@@ -2109,6 +1972,21 @@ static void a_ready_user_token_connects_the_hub(void** state)
   assert_true(fx->client.sas_token_renewal_due_ms[AZ_IOT_CONN_SCOPE_HUB] >= before + 80000u);
   assert_true(
       fx->client.sas_token_renewal_due_ms[AZ_IOT_CONN_SCOPE_HUB] <= az_iot_time_mono_ms() + 80000u);
+}
+
+/* close() and open() from the token callback are refused; the attempt connects with the token. */
+static void close_and_open_from_the_token_callback_are_refused(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_connection_client_options opts = user_token_hub_options(fx, FAKE_TOKEN_CLOSE_INSIDE);
+  init_and_open(fx, &opts);
+  pump(fx, 1);
+  assert_int_equal(g_fake.calls, 1);
+  assert_int_equal(g_fake.close_result, AZ_IOT_ERR_BUSY);
+  assert_int_equal(g_fake.open_result, AZ_IOT_ERR_BUSY);
+  assert_string_equal(last_connect(fx)->password, USER_TOKEN);
+  connack(fx, AZ_IOT_OK);
+  assert_int_equal(fx->client.state[AZ_IOT_CONN_SCOPE_HUB], AZ_IOT_CONN_STATE_CONNECTED);
 }
 
 /* An mqttv5 hub: the request carries its profile, and the supplied token is
@@ -2316,20 +2194,6 @@ static void close_cancels_a_pending_user_token(void** state)
   pump(fx, 1);
   assert_string_equal(last_connect(fx)->password, USER_TOKEN);
   assert_int_equal(g_fake.calls, 1);
-}
-
-/* close() from inside the callback, after supplying a token: nothing
- * connects, and the token is wiped. */
-static void close_from_the_token_callback_ends_the_attempt(void** state)
-{
-  fixture* fx = (fixture*)*state;
-  az_iot_connection_client_options opts = user_token_hub_options(fx, FAKE_TOKEN_CLOSE_INSIDE);
-  init_and_open(fx, &opts);
-  pump(fx, 2);
-  assert_int_equal(g_fake.calls, 1);
-  assert_int_equal(fx->client.state[AZ_IOT_CONN_SCOPE_HUB], AZ_IOT_CONN_STATE_IDLE);
-  assert_true(no_connect_pending(fx));
-  assert_false(user_token_left(fx));
 }
 
 /* A rejected key falls back to the user-provided token at once. */
@@ -2682,42 +2546,6 @@ static void a_failed_dps_connect_after_a_user_token_is_retried(void** state)
   assert_int_equal(fx->client.state[AZ_IOT_CONN_SCOPE_DPS], AZ_IOT_CONN_STATE_RETRY_PENDING);
   assert_int_not_equal(fx->client.reconnect_due_ms, 0);
   assert_false(fx->client.dps_registration_ref);
-}
-
-/* close() + open() from DPS:CONNECTING of a resumed attempt: the new attempt
- * waits for its own token; the old one does not fail it. */
-static int g_reopens;
-static void reopen_on_dps_connecting(const az_iot_connection_state_event* event, void* user_ctx)
-{
-  fixture* fx = (fixture*)user_ctx;
-  if (event->scope == AZ_IOT_CONN_SCOPE_DPS && event->state == AZ_IOT_CONN_STATE_CONNECTING
-      && g_reopens++ == 0)
-  {
-    (void)az_iot_connection_client_close(&fx->client);
-    assert_int_equal(az_iot_connection_client_open(&fx->client), AZ_IOT_OK);
-  }
-}
-
-static void a_reopen_from_a_resumed_dps_attempt_keeps_the_new_one(void** state)
-{
-  fixture* fx = (fixture*)*state;
-  g_reopens = 0;
-  az_iot_connection_client_options opts = user_token_hub_options(fx, FAKE_TOKEN_SUPPLY);
-  opts.iothub_hostname = NULL;
-  opts.dps.id_scope = "0ne00000001";
-  opts.dps.registration_id = "ut-device";
-  opts.dps_auth.sas.on_sas_token_required = fake_token_callback;
-  with_policies(&opts);
-  init_and_open(fx, &opts);
-  assert_int_equal(
-      az_iot_connection_client_add_state_observer(&fx->client, reopen_on_dps_connecting, fx),
-      AZ_IOT_OK);
-  pump(fx, 1);
-  assert_int_equal(g_reopens, 1);
-  assert_int_equal(fx->client.state[AZ_IOT_CONN_SCOPE_DPS], AZ_IOT_CONN_STATE_SETTING_UP);
-  assert_true(fx->client.dps_registration_ref);
-  assert_int_not_equal(fx->client.sas_token_request[AZ_IOT_CONN_SCOPE_DPS].request_id, 0);
-  assert_int_equal(fx->client.reconnect_due_ms, 0);
 }
 
 /* From inside a callback, the other role's token cannot be supplied. */
@@ -3250,36 +3078,6 @@ static void a_session_reopened_from_disconnecting_is_still_a_renewal(void** stat
   assert_true(fx->client.sas_token_renewal_in_progress[AZ_IOT_CONN_SCOPE_DPS]);
   (void)ready_dps(fx);
   assert_dps_renewal_events(fx, from, true);
-}
-
-/* close() from DISCONNECTING: the renewal ends at IDLE, unflagged; no reopen. */
-static void close_on_dps_disconnecting(const az_iot_connection_state_event* event, void* user_ctx)
-{
-  fixture* fx = (fixture*)user_ctx;
-  if (event->scope == AZ_IOT_CONN_SCOPE_DPS && event->state == AZ_IOT_CONN_STATE_DISCONNECTING)
-  {
-    (void)az_iot_connection_client_close(&fx->client);
-  }
-}
-
-static void a_close_during_the_dps_renewal_settles_idle(void** state)
-{
-  fixture* fx = (fixture*)*state;
-  uint64_t now = NOW;
-  (void)open_renewable_dps(fx, &now);
-  assert_int_equal(
-      az_iot_connection_client_add_state_observer(&fx->client, close_on_dps_disconnecting, fx),
-      AZ_IOT_OK);
-  size_t from = fx->log_count;
-  fx->client.sas_token_renewal_due_ms[AZ_IOT_CONN_SCOPE_DPS] = az_iot_time_mono_ms();
-  pump(fx, 3);
-  assert_null(fx->client.dps_mqtt);
-  assert_int_equal(fx->client.state[AZ_IOT_CONN_SCOPE_DPS], AZ_IOT_CONN_STATE_IDLE);
-  assert_false(fx->client.sas_token_renewal_in_progress[AZ_IOT_CONN_SCOPE_DPS]);
-  assert_int_equal(fx->log_count - from, 2);
-  assert_int_equal(fx->log[from].state, AZ_IOT_CONN_STATE_DISCONNECTING);
-  assert_int_equal(fx->log[from + 1].state, AZ_IOT_CONN_STATE_IDLE);
-  assert_false(fx->log[from + 1].renewal);
 }
 
 /* A held session's process_loop() wait ends by its renewal. */
@@ -3983,6 +3781,8 @@ int main(void)
     cmocka_unit_test_setup_teardown(init_rejects_invalid_sas_options, setup, teardown),
     cmocka_unit_test_setup_teardown(init_accepts_a_token_callback_without_keys, setup, teardown),
     cmocka_unit_test_setup_teardown(a_ready_user_token_connects_the_hub, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        close_and_open_from_the_token_callback_are_refused, setup, teardown),
     cmocka_unit_test_setup_teardown(a_user_token_connects_an_mqttv5_hub, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_pending_user_token_connects_dps_once_delivered, setup, teardown),
@@ -3990,8 +3790,6 @@ int main(void)
     cmocka_unit_test_setup_teardown(a_dps_token_supplied_before_open_is_used, setup, teardown),
     cmocka_unit_test_setup_teardown(an_undelivered_user_token_times_out, setup, teardown),
     cmocka_unit_test_setup_teardown(close_cancels_a_pending_user_token, setup, teardown),
-    cmocka_unit_test_setup_teardown(
-        close_from_the_token_callback_ends_the_attempt, setup, teardown),
     cmocka_unit_test_setup_teardown(a_rejected_key_falls_back_to_the_user_token, setup, teardown),
     cmocka_unit_test_setup_teardown(x509_rejected_then_a_key_releases_every_load, setup, teardown),
     cmocka_unit_test_setup_teardown(
@@ -4009,8 +3807,6 @@ int main(void)
         a_failed_connect_after_a_user_token_is_retried, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_failed_dps_connect_after_a_user_token_is_retried, setup, teardown),
-    cmocka_unit_test_setup_teardown(
-        a_reopen_from_a_resumed_dps_attempt_keeps_the_new_one, setup, teardown),
     cmocka_unit_test_setup_teardown(the_other_roles_token_waits_for_the_callback, setup, teardown),
     cmocka_unit_test_setup_teardown(a_faulted_hub_drops_its_held_token, setup, teardown),
     cmocka_unit_test_setup_teardown(a_token_deadline_caps_the_other_sessions_wait, setup, teardown),
@@ -4037,7 +3833,6 @@ int main(void)
     cmocka_unit_test_setup_teardown(a_release_during_the_dps_renewal_settles_idle, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_session_reopened_from_disconnecting_is_still_a_renewal, setup, teardown),
-    cmocka_unit_test_setup_teardown(a_close_during_the_dps_renewal_settles_idle, setup, teardown),
     cmocka_unit_test_setup_teardown(the_dps_wait_is_capped_by_its_renewal, setup, teardown),
     cmocka_unit_test_setup_teardown(a_dps_user_token_renewal_waits_for_the_token, setup, teardown),
     cmocka_unit_test_setup_teardown(
@@ -4102,8 +3897,6 @@ int main(void)
     cmocka_unit_test_setup_teardown(an_x509_session_is_not_renewed, setup, teardown),
     cmocka_unit_test_setup_teardown(a_close_during_a_renewal_settles_idle, setup, teardown),
     cmocka_unit_test_setup_teardown(a_refused_renewal_falls_back, setup, teardown),
-    cmocka_unit_test_setup_teardown(
-        a_close_from_a_renewal_teardown_callback_stops_it, setup, teardown),
     cmocka_unit_test_setup_teardown(the_hub_wait_is_capped_by_the_renewal, setup, teardown),
     cmocka_unit_test_setup_teardown(a_held_dps_wait_is_capped_by_the_hub_renewal, setup, teardown),
     cmocka_unit_test_setup_teardown(a_suspended_monotonic_clock_still_renews, setup, teardown),
@@ -4124,14 +3917,8 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         a_retry_from_the_first_source_starts_a_new_pass, setup, teardown),
     cmocka_unit_test_setup_teardown(
-        a_close_during_the_dps_rejection_stops_the_fallback, setup, teardown),
-    cmocka_unit_test_setup_teardown(
-        a_reopen_during_the_dps_finalizer_keeps_the_new_attempt, setup, teardown),
-    cmocka_unit_test_setup_teardown(
         a_failed_fallback_start_without_a_policy_faults, setup, teardown),
     cmocka_unit_test_setup_teardown(a_vanished_fallback_certificate_ends_the_pass, setup, teardown),
-    cmocka_unit_test_setup_teardown(
-        a_close_during_a_session_rejection_leaves_no_pacing, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_release_during_the_rejection_does_not_advance, setup, teardown),
     cmocka_unit_test_setup_teardown(

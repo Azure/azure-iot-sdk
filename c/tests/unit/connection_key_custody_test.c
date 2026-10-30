@@ -715,52 +715,6 @@ static void hub_material_is_released_when_the_adapter_connect_fails(void** state
   material_is_released_when_the_adapter_connect_fails(false, state);
 }
 
-/** @brief State observer that close()s the client on CONNECTING, then deinits
- * the provider, as az_iot_certificate_provider.h allows once closed. */
-static void close_on_connecting(const az_iot_connection_state_event* e, void* ctx)
-{
-  fixture* fx = (fixture*)ctx;
-  if (e->state == AZ_IOT_CONN_STATE_CONNECTING)
-  {
-    (void)az_iot_connection_client_close(&fx->client);
-    fx->provider.deinitialized = true;
-  }
-}
-
-/* close() from the CONNECTING announcement abandons the attempt before
- * connect(); close() releases its material, before the provider can go. */
-static void material_is_released_when_closed_before_connect(bool with_dps, void** state)
-{
-  fixture* fx = (fixture*)*state;
-  init_wiping_provider(fx, with_dps);
-  assert_int_equal(
-      az_iot_connection_client_add_state_observer(&fx->client, close_on_connecting, fx), AZ_IOT_OK);
-  /* DPS reports the cancelled start; the hub attempt is simply abandoned. */
-  assert_int_equal(
-      az_iot_connection_client_open(&fx->client), with_dps ? AZ_IOT_ERR_NOT_CONNECTED : AZ_IOT_OK);
-
-  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
-  if (m != NULL)
-  {
-    for (size_t i = 0; i < az_iot_mock_mqtt_client_call_count(m); ++i)
-    {
-      assert_int_not_equal(az_iot_mock_mqtt_client_call_at(m, i)->kind, AZ_IOT_MOCK_CALL_CONNECT);
-    }
-  }
-  assert_all_material_released(fx);
-  assert_int_equal(fx->provider.releases_after_deinit, 0);
-}
-
-static void dps_material_is_released_when_closed_before_connect(void** state)
-{
-  material_is_released_when_closed_before_connect(true, state);
-}
-
-static void hub_material_is_released_when_closed_before_connect(void** state)
-{
-  material_is_released_when_closed_before_connect(false, state);
-}
-
 /* A provider that holds no material yet is not a configuration error: it may
  * have one by the time the connect attempt runs. open() proceeds. */
 static void a_provider_with_no_material_yet_is_not_refused(void** state)
@@ -895,10 +849,6 @@ int main(void)
         dps_material_is_released_when_the_adapter_connect_fails, setup, teardown),
     cmocka_unit_test_setup_teardown(
         hub_material_is_released_when_the_adapter_connect_fails, setup, teardown),
-    cmocka_unit_test_setup_teardown(
-        dps_material_is_released_when_closed_before_connect, setup, teardown),
-    cmocka_unit_test_setup_teardown(
-        hub_material_is_released_when_closed_before_connect, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_provider_with_no_material_yet_is_not_refused, setup, teardown),
     cmocka_unit_test_setup_teardown(a_provider_without_load_is_rejected, setup, teardown),

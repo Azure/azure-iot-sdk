@@ -934,8 +934,9 @@ extern "C"
     AZ_IOT_CONN_STATE_IDLE = 0,
     /** @brief The network connect is starting: announced just before the
      * adapter's connect(), then held while the handshake is in flight (on the
-     * hub, until subscriptions or the birth-ack complete). close() from this
-     * announcement cancels the attempt before connect() is called. */
+     * hub, until subscriptions or the birth-ack complete). To cancel the
+     * attempt, call close() after the do_work() or open() that announced it
+     * returns. */
     AZ_IOT_CONN_STATE_CONNECTING,
     AZ_IOT_CONN_STATE_CONNECTED,
     /** @brief A retry is scheduled; nothing is in flight. The next attempt
@@ -1167,7 +1168,8 @@ extern "C"
    * chain is stored. On failure the registration fails.
    *
    * Runs while the provisioning message is being processed: do not call
-   * az_iot_connection_client_close() or _deinit() from it.
+   * _deinit() from it; az_iot_connection_client_close() and _open() return
+   * AZ_IOT_ERR_BUSY there.
    */
   typedef void (*az_iot_operational_cert_callback)(
       const az_iot_issued_certificate* issued,
@@ -1210,8 +1212,9 @@ extern "C"
    * With dps.request_operational_certificate, the issued chain is already
    * stored in the certificate provider.
    *
-   * Runs from az_iot_connection_client_do_work(). It may call
-   * az_iot_connection_client_close(), and then no hub connect follows; it must
+   * Runs from az_iot_connection_client_do_work(), and the hub connect starts
+   * after it. To stop that connect, call az_iot_connection_client_close() after
+   * do_work() returns; from the callback it returns AZ_IOT_ERR_BUSY. It must
    * not call az_iot_connection_client_deinit().
    *
    * @param assignment The adopted assignment; valid only during the call.
@@ -1630,6 +1633,9 @@ extern "C"
      * walk re-reads each slot and skips a NULL callback, and an owner being
      * torn down must be able to withdraw. */
     bool dispatching_state;
+    /* Depth of application and feature-client callbacks in progress; open() and close() return
+     * AZ_IOT_ERR_BUSY while it is non-zero. */
+    uint32_t callback_depth;
     az_iot_operational_cert_callback op_cert_cb;
     void* op_cert_cb_ctx;
     az_iot_registration_payload_callback reg_payload_cb;
@@ -1730,9 +1736,9 @@ extern "C"
     bool dps_registration_ref;
     uint8_t dps_user_count;
 
-    /* SUBACK seen; DPS:CONNECTED still to be announced. Announcing from the
-     * adapter callback would let an observer's close() free that adapter
-     * mid-dispatch, so the pump does it. */
+    /* SUBACK seen; DPS:CONNECTED still to be announced. The pump announces it
+     * after the adapter's process_loop returns, so observers do not run inside
+     * it. */
     bool dps_pending_ready_announce;
 
     /* The client's own demand for a provisioning session, held for the whole
@@ -1768,21 +1774,11 @@ extern "C"
     az_iot_retry_state dps_user_retry;
     bool dps_user_retry_blocked;
 
-    /* Set when an observer closed the client from inside a synchronous DPS
-     * announcement that starts an attempt (SETTING_UP or CONNECTING). That
-     * cancellation returns the same result code as a genuine start failure,
-     * and the two need opposite treatment: a failure is paced or retried, a
-     * close is the caller's documented escape and has already reset the
-     * pacing. Cleared at the start of every such attempt. */
+    /* Set when a feature client started a newer provisioning session from a
+     * synchronous DPS announcement of an attempt. That attempt then returns the
+     * same result code as a genuine start failure, but is not retried or paced:
+     * the newer session serves its refs. Cleared at the start of every attempt. */
     bool dps_start_cancelled;
-    /* Bumped by every provisioning session start. A start compares it after
-     * its CONNECTING announcement: a close() + open() there may reuse the freed
-     * adapter's address, so the pointer alone cannot tell the sessions apart. */
-    uint32_t dps_start_seq;
-    /* Bumped by every open() that starts an attempt. close() compares it after
-     * each step that runs callbacks, so it does not settle over a client an
-     * observer reopened from one of them. */
-    uint32_t open_seq;
 
     char dps_operation_id[AZ_IOT_DPS_OPERATION_ID_MAX];
     size_t dps_operation_id_len;
@@ -1964,9 +1960,6 @@ extern "C"
     /* Token area of opts.sas_buffer: after the scratch and key slots. */
     char* sas_token;
     size_t sas_token_size;
-    /* close() calls, counted even when it has nothing to do: lets a path that
-     * ran state callbacks tell that one of them closed the client. */
-    uint32_t close_count;
     /* Times the provisioning session lost its last holder (no user,
      * registration or standing ref left): lets a path that ran state callbacks
      * tell that its demand was replaced. */
@@ -2150,8 +2143,9 @@ extern "C"
    * subscriber added mid-pass would be handed a transition it was not watching
    * for, so it answers AZ_IOT_ERR_BUSY while a dispatch is in progress.
    * REMOVING from inside an observer IS supported -- a feature client torn down
-   * in reaction to a transition has to be able to give its seat back. Calling
-   * close() from an observer IS supported.
+   * in reaction to a transition has to be able to give its seat back.
+   * close() and open() from an observer return AZ_IOT_ERR_BUSY: call them after
+   * the do_work(), open() or close() that ran the observer returns.
    *
    * Returns AZ_IOT_ERR_NOT_ENOUGH_SPACE when the application pool
    * (limits.max_application_state_observers) is full. */
@@ -2214,13 +2208,18 @@ extern "C"
       az_iot_dps_assignment_callback cb,
       void* user_ctx);
 
-  /* Open a session to the configured host. Non-blocking; observe state via callback
+  /**
+   * @brief Opens a session to the configured host. Non-blocking; observe state via callback
    * and drive progress with do_work().
    *
-   * Legal only from AZ_IOT_CONN_STATE_IDLE; any other state returns
-   * AZ_IOT_ERR_ALREADY_INITIALIZED. After a fault, call
+   * Legal only from AZ_IOT_CONN_STATE_IDLE. After a fault, call
    * az_iot_connection_client_close() first: that returns the client to IDLE and
-   * makes this a supported retry. */
+   * makes this a supported retry. Not callable from a callback the client runs: call it
+   * after do_work() returns.
+   *
+   * @return AZ_IOT_OK; AZ_IOT_ERR_ALREADY_INITIALIZED outside IDLE; AZ_IOT_ERR_BUSY from
+   * inside a callback.
+   */
   AZ_NODISCARD az_iot_result az_iot_connection_client_open(az_iot_connection_client* client);
 
   /**
@@ -2280,6 +2279,10 @@ extern "C"
    * The client's configuration and its attached feature clients survive, so
    * close() + open() is the ordinary way to retry after a fault; deinit() is
    * only needed when the client itself is going away.
+   *
+   * Not callable from a callback the client runs (state, publish completion, SAS token,
+   * DPS, CSR, subscription failure, inbound message): it returns AZ_IOT_ERR_BUSY there. Record the
+   * decision and call it after do_work() returns.
    *
    * Not AZ_NODISCARD: teardown/lifecycle op commonly called fire-and-forget. */
   az_iot_result az_iot_connection_client_close(az_iot_connection_client* client);
