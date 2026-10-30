@@ -25,6 +25,26 @@
 /** @brief Events raised outside process_loop() and held until it runs. */
 #define AZ_IOT_AZ_MQTT_PENDING_EVENTS_MAX 4
 
+/** @brief Workspace bytes for one MQTT 3.1.1 client with @p limits; 0 when they are invalid. */
+size_t az_iot_az_mqtt__get_workspace_size_v3_1_1(az_iot_mqtt_limits const* limits);
+
+/** @brief Workspace bytes for one MQTT 5 client with @p limits; 0 when they are invalid. */
+size_t az_iot_az_mqtt__get_workspace_size_v5(az_iot_mqtt_limits const* limits);
+
+/** @brief Builds an MQTT 3.1.1 client in @p workspace. See az_iot_mqtt_adapter::init. */
+az_iot_result az_iot_az_mqtt__init_v3_1_1(
+    az_iot_mqtt_limits const* limits,
+    uint8_t* workspace,
+    size_t workspace_size,
+    az_iot_mqtt_client** out_client);
+
+/** @brief Builds an MQTT 5 client in @p workspace. See az_iot_mqtt_adapter::init. */
+az_iot_result az_iot_az_mqtt__init_v5(
+    az_iot_mqtt_limits const* limits,
+    uint8_t* workspace,
+    size_t workspace_size,
+    az_iot_mqtt_client** out_client);
+
 /** @brief Copy of @p s (NUL-terminated), or NULL when out of memory. NULL in, NULL out. */
 char* az_iot_az_mqtt_strdup(const char* s);
 

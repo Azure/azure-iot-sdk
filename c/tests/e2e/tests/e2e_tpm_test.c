@@ -42,7 +42,7 @@
 #include "az_iot_crypto_openssl.h"
 #include "az_iot_e2e_service.h"
 #include "e2e_log.h"
-#include "sample_dps_tpm.h"
+#include "e2e_dps_tpm.h"
 #include "sample_tpm_sim.h"
 #include "sample_utils.h"
 #include "support/test_env.h"
@@ -66,15 +66,15 @@ typedef struct
   az_iot_result send_status;
 } e2e_tpm_ctx;
 
-/** @brief sample_https_send over the harness's TLS transport. */
+/** @brief e2e_https_send over the harness's TLS transport. */
 static bool https_send(
     void* ctx,
     const char* host,
     const az_iot_dps_tpm_request* request,
-    sample_https_response* response)
+    e2e_https_response* response)
 {
   (void)ctx;
-  static char body[SAMPLE_DPS_TPM_RESPONSE_MAX + 1];
+  static char body[E2E_DPS_TPM_RESPONSE_MAX + 1];
   int status = 0;
   size_t len = 0;
   unsigned retry_after = 0;
@@ -120,7 +120,7 @@ static void issue_token(az_iot_connection_client* client, e2e_tpm_ctx* ctx)
   ctx->token_pending = false;
   char token[AZ_IOT_SAS_TOKEN_SIZE(256)];
   size_t len = 0;
-  if (sample_dps_tpm_sign_token(
+  if (e2e_dps_tpm_sign_token(
           ctx->tpm,
           ctx->resource_uri,
           ctx->key_name,
@@ -215,11 +215,11 @@ static void test_dps_tpm_registration_and_hub_sas(void** state)
   dps_opts.tpm = sample_tpm_sim_ops(ctx.tpm);
   /* From here on nothing asserts until cleanup has run. */
   az_iot_dps_tpm_client dps;
-  static sample_https_response response;
+  static e2e_https_response response;
   az_iot_result reg = az_iot_dps_tpm_client_init(&dps, &dps_opts);
   if (reg == AZ_IOT_OK)
   {
-    reg = sample_dps_tpm_register(
+    reg = e2e_dps_tpm_register(
         &dps,
         endpoint != NULL ? endpoint : E2E_TPM_DEFAULT_ENDPOINT,
         https_send,

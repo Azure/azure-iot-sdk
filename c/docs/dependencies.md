@@ -6,7 +6,7 @@ Libraries the C SDK builds against, and the known issues of each.
 | --- | --- | --- | --- |
 | [azure-sdk-for-c](https://github.com/Azure/azure-sdk-for-c) | 1.5.0 (`AZ_SDK_C_TAG`) | Core, mqttv3 and mqttv5 clients | Always |
 | [Eclipse Paho MQTT C](https://github.com/eclipse-paho/paho.mqtt.c) | v1.3.16 (`PAHO_C_TAG`) with [two upstream fixes](#races-on-the-command-queue-and-client-state); installed: 1.3.14+ | Paho adapter | `AZ_IOT_WITH_PAHO` |
-| [OpenSSL](https://www.openssl.org/) | Any Paho supports for Paho TLS; 3.0+ for Paho key custody, az_mqtt TLS (`AZ_IOT_AZ_MQTT_TLS=openssl`), the OpenSSL crypto backend and the managed certificate provider | Those components | Only for the components listed; az_mqtt can use Mbed TLS, or Schannel on Windows |
+| [OpenSSL](https://www.openssl.org/) | 3.0 to 4.1, [tested](#openssl) (Paho TLS alone: any Paho supports) | Paho TLS and key custody, az_mqtt TLS (`AZ_IOT_AZ_MQTT_TLS=openssl`), the OpenSSL crypto backend, the managed certificate provider | Only for the components listed; az_mqtt can use Mbed TLS, or Schannel on Windows ([Windows without OpenSSL](../samples/README.md#windows-without-openssl)) |
 | [Mbed TLS](https://github.com/Mbed-TLS/mbedtls) | 3.6 LTS or 4.1+ | mbedTLS crypto backend, az_mqtt TLS (`AZ_IOT_AZ_MQTT_TLS=mbedtls`) | Optional |
 | az_mqtt | Published from this repository: [deps/az_mqtt](../deps/az_mqtt/README.md) | az_mqtt adapter | `AZ_IOT_WITH_AZ_MQTT` |
 | [cmocka](https://gitlab.com/cmocka/cmocka) | 1.1.7 (`CMOCKA_TAG`) | Tests only | `AZ_IOT_BUILD_TESTS` |
@@ -14,6 +14,19 @@ Libraries the C SDK builds against, and the known issues of each.
 
 Exact commits are in [cgmanifest.json](../cgmanifest.json). How to use installed copies instead of
 the fetched ones: [Installed dependencies](client-configuration.md#installed-dependencies).
+
+## OpenSSL
+
+CI builds and tests 3.0 (Linux distribution) and 3.6 (Windows runner, vcpkg), and 4.1 on Linux
+and Windows, including the Windows e2e suites. `find_package(OpenSSL 3.0)` sets no upper bound.
+
+### PKCS#11 provider on OpenSSL 4.x
+
+pkcs11-provider 0.6, the default of `eng/setup-pkcs11-provider.sh`, does not build against OpenSSL
+4.x, which makes `ASN1_STRING` opaque.
+
+**Mitigation:** use pkcs11-provider 1.3.0 or later with OpenSSL 4.x
+(`PKCS11_PROVIDER_TAG=v1.3.0`), as CI does.
 
 ## Eclipse Paho MQTT C
 

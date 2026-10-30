@@ -15,14 +15,15 @@ adapters/           MQTT adapters (Paho, az_mqtt, Rust shell), OpenSSL certifica
                     crypto backends (OpenSSL, mbedTLS), software updates platform adapters
 samples/            samples, one README each
 tests/              unit, conformance, end-to-end and install tests
+platforms/esp32/    ESP-IDF components
 platforms/yocto/    Yocto layer
 docs/               customer documentation; docs/eng for engineering documentation
 cmake/, eng/        build helpers and CI scripts
 ```
 
-`src/sources.cmake` lists the library sources. `src/CMakeLists.txt` and the ESP-IDF
-component of the [ESP32 sample](../../samples/software_update/esp32/README.md#ci-builds)
-both include it, so a source added there is built by both.
+`src/sources.cmake` lists the library sources. `src/CMakeLists.txt` and the
+[ESP-IDF component](../../platforms/esp32/README.md) `azure-iot-sdk` both include it, so a
+source added there is built by both.
 
 ## Install and consume
 
@@ -181,8 +182,15 @@ runs each of them under valgrind's helgrind or DRD:
 bash eng/run-race-detectors.sh helgrind   # or drd; optional second argument: build directory
 ```
 
+Tests run in parallel, `AZ_IOT_RACE_JOBS` (default: CPU count) at a time; valgrind runs a
+process's threads one at a time, so each process uses one CPU. Tests also labelled `shardable`
+(the Paho conformance suites) are split into `AZ_IOT_RACE_SHARDS` (default 4) processes through
+`AZ_IOT_TEST_SHARD=<index>/<count>` ([`tests/support/test_shard.h`](../../tests/support/test_shard.h)),
+which runs every `<count>`-th test of the executable starting at `<index>`.
+`AZ_IOT_RACE_SHARDS=1 AZ_IOT_RACE_JOBS=1` runs one whole test at a time.
+
 A test fails on any reported error, on its own failure, or when valgrind ends without an
-`ERROR SUMMARY`. Logs are written to `<build-dir>/race-logs/<tool>/`. Each log lists every
+`ERROR SUMMARY`. Logs are written to `<build-dir>/race-logs/<tool>/`, one per process. Each log lists every
 suppression used (`-s`). Suppressions live in `eng/sanitizers/{helgrind,drd}.supp`. They may
 name third-party code only, and each needs a comment giving its upstream reference;
 [`eng/check-race-suppressions.sh`](../../eng/check-race-suppressions.sh) enforces this.

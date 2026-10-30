@@ -19,6 +19,8 @@ target_include_directories(az_iot_adapter_rust_mqtt
     PUBLIC
         $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/inc>
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/src/core # internal/mqtt_limits.h
 )
 target_link_libraries(az_iot_adapter_rust_mqtt
     PUBLIC

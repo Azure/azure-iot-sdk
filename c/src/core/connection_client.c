@@ -43,6 +43,8 @@
 #include "internal/cert_util.h"
 #include "internal/connection_client_internal.h"
 #include "internal/crypto.h"
+#include "internal/deadline.h"
+#include "internal/defensive_timeout.h"
 #include "internal/dispatch.h"
 #include "internal/log_internal.h"
 #include "internal/proto3.h"
@@ -61,11 +63,11 @@
 #define DEFER_RECONNECT AZ_IOT_CONN_DEFER_RECONNECT
 #define DEFER_IDLE AZ_IOT_CONN_DEFER_IDLE
 #define DEFER_FALLBACK AZ_IOT_CONN_DEFER_FALLBACK
-#define DEFER_SAS_TOKEN_RENEWAL AZ_IOT_CONN_DEFER_SAS_TOKEN_RENEWAL
+#define DEFER_PLANNED_END AZ_IOT_CONN_DEFER_PLANNED_END
 
 /** @brief How long a SAS renewal waits for its disconnect to complete before
  * reconnecting anyway. */
-#define SAS_TOKEN_RENEWAL_DISCONNECT_TIMEOUT_MS 5000u
+#define PLANNED_DISCONNECT_TIMEOUT_MS 5000u
 
 /** @brief When to ask again for a renewal token that could not be asked for. */
 #define SAS_TOKEN_RENEWAL_RETRY_MS 30000u
@@ -249,20 +251,46 @@ const char* az_iot_mqtt_role_to_string(az_iot_mqtt_role r)
  * the state, which dispatches again. Clearing on the way out of the inner
  * dispatch would drop the guard while the outer one is still walking its
  * arrays, and a later observer in the outer pass could then mutate them. */
+/**
+ * @brief Call every feature observer of @p event's kind.
+ *
+ * Each entry is copied before its call: a callback may withdraw itself or another observer, and
+ * nothing is compacted.
+ */
+static void notify_feature_observers(
+    az_iot_connection_client* c,
+    const az_iot_connection_feature_event* event)
+{
+  for (size_t i = 0; i < c->opts.limits.max_feature_observers; ++i)
+  {
+    az_iot_connection_feature_observer const observer = c->feature_observers[i];
+    if (observer.cb != NULL && (observer.events & (uint8_t)event->kind) != 0u)
+    {
+      observer.cb(event, observer.user_ctx);
+    }
+  }
+}
+
+/** @brief notify_feature_observers() for an event that carries no data. */
+static void notify_feature_observers_of(
+    az_iot_connection_client* c,
+    az_iot_connection_feature_event_kind kind)
+{
+  az_iot_connection_feature_event const event
+      = { kind, NULL, AZ_IOT_CONNECTION_SESSION_END_LOST, NULL };
+  notify_feature_observers(c, &event);
+}
+
 static void dispatch_state_event(
     az_iot_connection_client* c,
     const az_iot_connection_state_event* event)
 {
   bool was_dispatching = c->dispatching_state;
   c->dispatching_state = true;
-  for (size_t i = 0; i < AZ_IOT_MAX_FEATURE_STATE_OBSERVERS; ++i)
-  {
-    if (c->feature_state_observers[i].cb)
-    {
-      c->feature_state_observers[i].cb(event, c->feature_state_observers[i].user_ctx);
-    }
-  }
-  for (size_t i = 0; i < AZ_IOT_MAX_APP_STATE_OBSERVERS; ++i)
+  az_iot_connection_feature_event const feature_event
+      = { AZ_IOT_CONNECTION_FEATURE_EVENT_STATE, event, AZ_IOT_CONNECTION_SESSION_END_LOST, NULL };
+  notify_feature_observers(c, &feature_event);
+  for (size_t i = 0; i < c->opts.limits.max_application_state_observers; ++i)
   {
     if (c->app_state_observers[i].cb)
     {
@@ -274,14 +302,15 @@ static void dispatch_state_event(
 
 static bool have_state_observers(const az_iot_connection_client* c)
 {
-  for (size_t i = 0; i < AZ_IOT_MAX_FEATURE_STATE_OBSERVERS; ++i)
+  for (size_t i = 0; i < c->opts.limits.max_feature_observers; ++i)
   {
-    if (c->feature_state_observers[i].cb)
+    if (c->feature_observers[i].cb
+        && (c->feature_observers[i].events & (uint8_t)AZ_IOT_CONNECTION_FEATURE_EVENT_STATE))
     {
       return true;
     }
   }
-  for (size_t i = 0; i < AZ_IOT_MAX_APP_STATE_OBSERVERS; ++i)
+  for (size_t i = 0; i < c->opts.limits.max_application_state_observers; ++i)
   {
     if (c->app_state_observers[i].cb)
     {
@@ -688,10 +717,13 @@ static void set_state_to(
   if (!is_token_renewal || new_state == AZ_IOT_CONN_STATE_CONNECTED)
   {
     c->sas_token_renewal_in_progress[scope] = false;
-    if (scope == AZ_IOT_CONN_SCOPE_HUB)
-    {
-      c->sas_token_renewal_disconnect_deadline_ms = 0;
-    }
+  }
+  /* A planned end lasts while its session is up or being closed; any other
+   * transition ends it. */
+  if (scope == AZ_IOT_CONN_SCOPE_HUB && new_state != AZ_IOT_CONN_STATE_CONNECTING
+      && new_state != AZ_IOT_CONN_STATE_CONNECTED && new_state != AZ_IOT_CONN_STATE_DISCONNECTING)
+  {
+    az_iot_deadline__clear(&c->planned_hub_session_end.disconnect_deadline);
   }
   /* Bookkeeping that belongs to the transition itself, not to any observer, so
    * it runs whether or not anyone is watching. A settled scope has no attempt
@@ -1020,13 +1052,22 @@ static void complete_publish(
   }
 }
 
-static void teardown_active(az_iot_connection_client* c)
+/** @brief Destroys the hub session, completes its pending PUBACKs and tells feature observers
+ * it ended for @p reason. */
+static void end_session(az_iot_connection_client* c, az_iot_connection_session_end_reason reason)
 {
   if (c->active_client && c->active_client->iface && c->active_client->iface->destroy)
   {
     c->active_client->iface->destroy(c->active_client);
   }
   c->active_client = NULL;
+  /* A birth-ack wait torn down at or past its deadline is a miss, whatever
+   * ended the session (timeout, DISCONNECTED or ERROR processed first). */
+  if (c->presence.phase == PRESENCE_PHASE_BIRTH
+      && az_iot_deadline__has_passed(&c->presence.deadline, az_iot_time_mono_ms()))
+  {
+    az_iot_defensive_timeout__count_miss(&c->presence.consecutive_birth_ack_timeouts);
+  }
   /* Abandon any in-flight MQTTv5 presence (birth) handshake: it belonged to the
    * now-destroyed session and must restart from CONNACK on the next connect. */
   c->presence.phase = PRESENCE_PHASE_NONE;
@@ -1042,7 +1083,7 @@ static void teardown_active(az_iot_connection_client* c)
    *
    * The slot is released BEFORE the callback runs so a callback that
    * republishes immediately can claim it. */
-  for (size_t i = 0; i < AZ_IOT_MAX_PENDING_PUBACKS; ++i)
+  for (size_t i = 0; i < c->opts.limits.max_pending_publishes; ++i)
   {
     az_iot_publish_ack_callback cb = c->pending_pubacks[i].cb;
     az_iot_publish_result_callback result_cb = c->pending_pubacks[i].result_cb;
@@ -1070,19 +1111,24 @@ static void teardown_active(az_iot_connection_client* c)
    * Runs last so a handler that immediately re-issues its request sees a fully
    * torn-down session and gets a clean NOT_CONNECTED rather than publishing
    * into a half-freed adapter. */
-  for (size_t i = 0; i < AZ_IOT_MAX_SESSION_HANDLERS; ++i)
-  {
-    if (c->session_handlers[i].in_use && c->session_handlers[i].cb)
-    {
-      c->session_handlers[i].cb(c->session_handlers[i].user_ctx);
-    }
-  }
+  az_iot_connection_feature_event const event
+      = { AZ_IOT_CONNECTION_FEATURE_EVENT_SESSION_END, NULL, reason, NULL };
+  notify_feature_observers(c, &event);
+}
+
+/** @brief end_session(): planned after close(), lost otherwise. */
+static void teardown_active(az_iot_connection_client* c)
+{
+  end_session(
+      c,
+      c->user_close ? AZ_IOT_CONNECTION_SESSION_END_PLANNED : AZ_IOT_CONNECTION_SESSION_END_LOST);
 }
 
 static void puback_abandon(az_iot_connection_client* c, const void* owner);
 
 /* Forward decl — used in on_mqtt_event via the deferred-action queue. */
 static az_iot_result start_connect_attempt(az_iot_connection_client* c);
+static bool planned_hub_session_end_in_progress(const az_iot_connection_client* c);
 static bool dps_configured(const az_iot_connection_client* c);
 static az_iot_result run_feature_client_binds(az_iot_connection_client* c);
 static void drop_subscriptions_from_other_generations(az_iot_connection_client* c);
@@ -1181,13 +1227,13 @@ static az_iot_result validate_certificate_material(
     return AZ_IOT_OK;
   }
   bool has_key = mat->client_key_pem != NULL || mat->client_key_path != NULL
-      || mat->client_key_uri != NULL || has_sign;
+      || mat->client_key_uri != NULL || mat->client_key_psa_id != 0 || has_sign;
   if (!has_key)
   {
     AZ_IOT_LOG_ERROR(
         AZ_IOT_LOG_COMPONENT_CONNECTION,
         "certificate material carries a client certificate but no private "
-        "key (no PEM, no file, no key URI, no sign() hook)");
+        "key (no PEM, no file, no key URI, no PSA key, no sign() hook)");
     return AZ_IOT_ERR_CREDENTIAL_INCOMPLETE;
   }
   /* A key URI without an engine/provider id names a key nothing can resolve:
@@ -1229,6 +1275,7 @@ static az_iot_result apply_certificate_material(
   copts->tls.client_key_pem = mat->client_key_pem;
   copts->tls.client_key_uri = mat->client_key_uri;
   copts->tls.crypto_engine_id = mat->crypto_engine_id;
+  copts->tls.client_key_psa_id = mat->client_key_psa_id;
   copts->tls.sign = has_sign ? provider_sign_adapter : NULL;
   copts->tls.sign_ctx = has_sign ? (void*)prov : NULL;
   copts->tls.use_tls = true; /* this SDK always connects over TLS */
@@ -4339,6 +4386,10 @@ static void dps_apply_deferred(az_iot_connection_client* c)
     return;
   }
 
+  /* Only a replaced identity has state to discard; the first assignment has none. */
+  bool const identity_changed = c->opts.iothub_hostname != NULL && c->opts.device_id != NULL
+      && (strcmp(c->opts.iothub_hostname, c->dps_assigned_hub) != 0
+          || strcmp(c->opts.device_id, c->dps_assigned_device_id) != 0);
   (void)replace_owned_string(
       c->provisioned_iot_hub_hostname,
       sizeof(c->provisioned_iot_hub_hostname),
@@ -4372,6 +4423,13 @@ static void dps_apply_deferred(az_iot_connection_client* c)
   /* The service answered, so it is reachable: a user session that failed
    * earlier should not still be serving out a backoff from that. */
   dps_user_retry_reset(c);
+
+  /* Before the application learns of the assignment and before the hub connect, so feature
+   * clients drop what belongs to the previous identity first. */
+  if (identity_changed)
+  {
+    notify_feature_observers_of(c, AZ_IOT_CONNECTION_FEATURE_EVENT_IDENTITY_CHANGED);
+  }
 
   if (c->assignment_cb)
   {
@@ -4541,14 +4599,15 @@ static size_t presence_encode_birth(
  * (field 11), both varints. These are the authoritative versions as of birth
  * admission; the device adopts them as its view for this connection. Fields the
  * service omits keep the proto3 default of 0, and unknown fields are skipped so
- * a service-side schema addition does not break the handshake. */
-static void presence_decode_birth_ack(az_iot_connection_client* c, const uint8_t* buf, size_t len)
+ * a service-side schema addition does not break the handshake.
+ * @return false for a malformed ack (bad encoding, or a known field on the wrong wire type). */
+static bool presence_decode_birth_ack(az_iot_connection_client* c, const uint8_t* buf, size_t len)
 {
   c->presence.desired_version = 0;
   c->presence.reported_version = 0;
   if (!buf)
   {
-    return;
+    return true;
   }
 
   size_t pos = 0;
@@ -4558,17 +4617,21 @@ static void presence_decode_birth_ack(az_iot_connection_client* c, const uint8_t
     uint8_t wire = 0;
     if (!az_iot_proto3_read_tag(buf, len, &pos, &field, &wire))
     {
-      return;
+      return false;
+    }
+    bool const known = field == PRESENCE_BIRTH_ACK_FIELD_DESIRED_VERSION
+        || field == PRESENCE_BIRTH_ACK_FIELD_REPORTED_VERSION;
+    if (known && wire != AZ_IOT_PROTO3_WIRE_VARINT)
+    {
+      return false;
     }
 
-    if (wire == AZ_IOT_PROTO3_WIRE_VARINT
-        && (field == PRESENCE_BIRTH_ACK_FIELD_DESIRED_VERSION
-            || field == PRESENCE_BIRTH_ACK_FIELD_REPORTED_VERSION))
+    if (known)
     {
       uint64_t v = 0;
       if (!az_iot_proto3_read_varint(buf, len, &pos, &v))
       {
-        return;
+        return false;
       }
       if (field == PRESENCE_BIRTH_ACK_FIELD_DESIRED_VERSION)
       {
@@ -4581,9 +4644,10 @@ static void presence_decode_birth_ack(az_iot_connection_client* c, const uint8_t
     }
     else if (!az_iot_proto3_skip_field(buf, len, &pos, wire))
     {
-      return;
+      return false;
     }
   }
+  return true;
 }
 
 /* Announce CONNECTED once the session's persistent subscriptions are live.
@@ -4656,12 +4720,15 @@ static void report_and_drop_subscription(
 }
 
 /* Deadline for the SUBACKs of the filters just handed to the adapter. */
+static uint32_t subscription_ack_timeout_seconds(const az_iot_connection_client* c)
+{
+  return c->opts.subscription_ack_timeout_seconds ? c->opts.subscription_ack_timeout_seconds
+                                                  : AZ_IOT_DEFAULT_SUBSCRIPTION_ACK_TIMEOUT_SECONDS;
+}
+
 static uint64_t subscription_ack_deadline(const az_iot_connection_client* c)
 {
-  uint32_t secs = c->opts.subscription_ack_timeout_seconds
-      ? c->opts.subscription_ack_timeout_seconds
-      : AZ_IOT_DEFAULT_SUBSCRIPTION_ACK_TIMEOUT_SECONDS;
-  return az_iot_time_mono_ms() + (uint64_t)secs * 1000u;
+  return az_iot_time_mono_ms() + (uint64_t)subscription_ack_timeout_seconds(c) * 1000u;
 }
 
 /* Record a SUBSCRIBE that is waiting for its ack. Gated entries hold CONNECTED;
@@ -4672,14 +4739,14 @@ static void subscription_gate_track(
     size_t sub_index,
     bool gated)
 {
-  if (c->subscription_gate.pending_count >= AZ_IOT_MAX_PERSISTENT_SUBS)
+  if (c->subscription_gate.pending_count >= c->opts.limits.max_persistent_subscriptions)
   {
     return;
   }
   size_t p = c->subscription_gate.pending_count++;
-  c->subscription_gate.pending[p].packet_id = packet_id;
-  c->subscription_gate.pending[p].sub_index = (uint8_t)sub_index;
-  c->subscription_gate.pending[p].gated = gated;
+  c->subscription_acks[p].packet_id = packet_id;
+  c->subscription_acks[p].sub_index = (uint8_t)sub_index;
+  c->subscription_acks[p].gated = gated;
   if (gated)
   {
     c->subscription_gate.gated_outstanding++;
@@ -4697,16 +4764,15 @@ static void subscription_gate_forget(az_iot_connection_client* c, size_t sub_ind
 {
   for (size_t i = 0; i < c->subscription_gate.pending_count; ++i)
   {
-    if (c->subscription_gate.pending[i].sub_index != sub_index)
+    if (c->subscription_acks[i].sub_index != sub_index)
     {
       continue;
     }
-    if (c->subscription_gate.pending[i].gated && c->subscription_gate.gated_outstanding > 0)
+    if (c->subscription_acks[i].gated && c->subscription_gate.gated_outstanding > 0)
     {
       c->subscription_gate.gated_outstanding--;
     }
-    c->subscription_gate.pending[i]
-        = c->subscription_gate.pending[c->subscription_gate.pending_count - 1];
+    c->subscription_acks[i] = c->subscription_acks[c->subscription_gate.pending_count - 1];
     c->subscription_gate.pending_count--;
     return;
   }
@@ -4726,7 +4792,7 @@ static void begin_feature_subscriptions(az_iot_connection_client* c)
     return;
   }
 
-  for (size_t i = 0; i < AZ_IOT_MAX_PERSISTENT_SUBS; ++i)
+  for (size_t i = 0; i < c->opts.limits.max_persistent_subscriptions; ++i)
   {
     if (!c->persistent_subs[i].in_use)
     {
@@ -4782,15 +4848,14 @@ static bool subscription_gate_settle(
   }
   for (size_t i = 0; i < c->subscription_gate.pending_count; ++i)
   {
-    if (c->subscription_gate.pending[i].packet_id != packet_id)
+    if (c->subscription_acks[i].packet_id != packet_id)
     {
       continue;
     }
-    const bool gated = c->subscription_gate.pending[i].gated;
-    const size_t sub_index = c->subscription_gate.pending[i].sub_index;
+    const bool gated = c->subscription_acks[i].gated;
+    const size_t sub_index = c->subscription_acks[i].sub_index;
 
-    c->subscription_gate.pending[i]
-        = c->subscription_gate.pending[c->subscription_gate.pending_count - 1];
+    c->subscription_acks[i] = c->subscription_acks[c->subscription_gate.pending_count - 1];
     c->subscription_gate.pending_count--;
 
     if (status != AZ_IOT_OK)
@@ -4847,8 +4912,10 @@ static az_iot_result presence_start(az_iot_connection_client* c, bool session_pr
    * so it could ride the CONNECT username as correlationId; reuse it here as
    * the birth Correlation Data. Do NOT regenerate it, or the username's
    * correlationId and the birth would diverge and the service could not
-   * correlate them. */
-  c->presence.deadline_ms = az_iot_time_mono_ms() + AZ_IOT_PRESENCE_BIRTH_ACK_TIMEOUT_MS;
+   * correlate them. The broker answers the SUBSCRIBE, so it gets the SUBACK
+   * window; the birth-ack timeout is armed once the birth is published. */
+  az_iot_deadline__arm_after_seconds(
+      &c->presence.deadline, az_iot_time_mono_ms(), subscription_ack_timeout_seconds(c));
 
   uint16_t pid = 0;
   az_iot_result r
@@ -4912,9 +4979,19 @@ static az_iot_result presence_publish_birth(az_iot_connection_client* c)
     return r;
   }
 
-  /* Give the birth-ack its own full window now that the birth is on the wire. */
-  c->presence.deadline_ms = az_iot_time_mono_ms() + AZ_IOT_PRESENCE_BIRTH_ACK_TIMEOUT_MS;
+  /* The birth is on the wire: arm the escalating birth-ack timeout. Its attempt
+   * is one past the birth-acks missed in a row. */
+  uint32_t attempt
+      = az_iot_defensive_timeout__next_attempt(c->presence.consecutive_birth_ack_timeouts);
+  c->presence.birth_ack_timeout_ms = az_iot_connection_client__defensive_timeout_ms(c, attempt);
+  az_iot_deadline__arm_after_ms(
+      &c->presence.deadline, az_iot_time_mono_ms(), c->presence.birth_ack_timeout_ms);
   c->presence.phase = PRESENCE_PHASE_BIRTH;
+  AZ_IOT_LOG_DEBUGF(
+      AZ_IOT_LOG_COMPONENT_CONNECTION,
+      "birth published; birth-ack timeout %lu ms (attempt %lu)",
+      (unsigned long)c->presence.birth_ack_timeout_ms,
+      (unsigned long)attempt);
   return AZ_IOT_OK;
 }
 
@@ -4960,6 +5037,20 @@ static bool presence_is_birth_ack(const az_iot_connection_client* c, const az_io
 }
 
 /* Inbound MQTT events are dispatched here (synchronously from process_loop). */
+/**
+ * @brief Defer finishing the planned hub session end with its own reason, unless this batch
+ * already deferred an identity refusal, which keeps its recovery path.
+ */
+static void defer_planned_hub_session_end_completion(az_iot_connection_client* c)
+{
+  if (c->deferred != DEFER_NONE && reason_is_identity_refusal(c->deferred_reason))
+  {
+    return;
+  }
+  c->deferred = DEFER_PLANNED_END;
+  c->deferred_reason = c->planned_hub_session_end.reason;
+}
+
 static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
 {
   az_iot_connection_client* c = (az_iot_connection_client*)user_ctx;
@@ -5054,14 +5145,10 @@ static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
         c->deferred = DEFER_IDLE;
         c->deferred_reason = evt->status;
       }
-      else if (
-          c->sas_token_renewal_in_progress[AZ_IOT_CONN_SCOPE_HUB]
-          && c->state[AZ_IOT_CONN_SCOPE_HUB] == AZ_IOT_CONN_STATE_CONNECTED
-          && !reason_is_identity_refusal(evt->status))
+      else if (planned_hub_session_end_in_progress(c) && !reason_is_identity_refusal(evt->status))
       {
-        /* The disconnect a token renewal asked for. */
-        c->deferred = DEFER_SAS_TOKEN_RENEWAL;
-        c->deferred_reason = AZ_IOT_OK;
+        /* The disconnect a planned session end sent. */
+        defer_planned_hub_session_end_completion(c);
       }
       else if (!az_iot_retry_policy_is_enabled(&c->opts.reconnection_policy))
       {
@@ -5079,6 +5166,21 @@ static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
     case AZ_IOT_MQTT_EVT_ERROR:
     {
       az_iot_result r = (evt->status != AZ_IOT_OK) ? evt->status : AZ_IOT_ERR_MQTT;
+      if (c->user_close && planned_hub_session_end_in_progress(c))
+      {
+        /* close() took over a planned end: it settles IDLE. */
+        c->deferred = DEFER_IDLE;
+        c->deferred_reason = AZ_IOT_OK;
+        break;
+      }
+      if (planned_hub_session_end_in_progress(c) && c->planned_hub_session_end.reason != AZ_IOT_OK
+          && !reason_is_identity_refusal(r))
+      {
+        /* A failure was already ending the session (e.g. a timeout): it ends with that reason.
+         * A SAS renewal's end (AZ_IOT_OK) takes the error like any other session. */
+        defer_planned_hub_session_end_completion(c);
+        break;
+      }
       c->deferred = (az_iot_retry_policy_is_enabled(&c->opts.reconnection_policy) && !c->user_close)
           ? DEFER_RECONNECT
           : DEFER_FAULT;
@@ -5096,6 +5198,11 @@ static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
          * complete the connection; everything else routes normally. */
         if (c->presence.phase == PRESENCE_PHASE_BIRTH && presence_is_birth_ack(c, evt->message))
         {
+          /* The session is already being ended (e.g. its handshake timed out). */
+          if (planned_hub_session_end_in_progress(c))
+          {
+            break;
+          }
           /* Same reasoning as the CONNACK case above. On the MQTTv5 path it
            * is the birth-ack, not the CONNACK, that completes the connection,
            * so suppressing only the CONNACK would leave this route able to
@@ -5109,8 +5216,24 @@ static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
                 AZ_IOT_LOG_COMPONENT_CONNECTION, "birth-ack ignored: close already requested");
             break;
           }
-          presence_decode_birth_ack(c, evt->message->payload, evt->message->payload_len);
+          /* An ack whose deadline had passed when this pass began is a miss, left
+           * to the timeout path to reconnect and escalate. A pass's waits end by
+           * the deadline, but one may dispatch late (e.g. after a DPS wait). */
+          if (az_iot_connection_client__deadline_passed_before_pass(c, &c->presence.deadline))
+          {
+            AZ_IOT_LOG_DEBUG(
+                AZ_IOT_LOG_COMPONENT_CONNECTION, "birth-ack ignored: birth-ack timeout expired");
+            break;
+          }
+          if (!presence_decode_birth_ack(c, evt->message->payload, evt->message->payload_len))
+          {
+            /* Its versions cannot be trusted; the birth-ack timeout ends the session. */
+            AZ_IOT_LOG_WARN(AZ_IOT_LOG_COMPONENT_CONNECTION, "malformed birth-ack ignored");
+            break;
+          }
           c->presence.phase = PRESENCE_PHASE_DONE;
+          /* Arrived in time: the next birth starts the schedule over. */
+          c->presence.consecutive_birth_ack_timeouts = 0;
           begin_feature_subscriptions(c);
           break;
         }
@@ -5128,7 +5251,7 @@ static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
       az_iot_publish_ack_callback cb = NULL;
       az_iot_publish_result_callback result_cb = NULL;
       void* ctx = NULL;
-      for (size_t i = 0; i < AZ_IOT_MAX_PENDING_PUBACKS; ++i)
+      for (size_t i = 0; i < c->opts.limits.max_pending_publishes; ++i)
       {
         /* No callback yet: reserved by a publish still in progress; not yet matchable. */
         if (c->pending_pubacks[i].in_use
@@ -5186,6 +5309,8 @@ static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
       {
         complete_publish(cb, result_cb, ctx, evt->status, evt);
       }
+      /* Any PUBACK frees adapter capacity, whoever published. A callback may withdraw itself. */
+      notify_feature_observers_of(c, AZ_IOT_CONNECTION_FEATURE_EVENT_PUBLISH_COMPLETED);
       break;
     }
 
@@ -5194,8 +5319,15 @@ static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
      * absorbed (feature clients don't yet need SUBACK correlation). */
     case AZ_IOT_MQTT_EVT_SUBSCRIBE_ACK:
       if (c->presence.phase == PRESENCE_PHASE_SUBSCRIBING
-          && evt->packet_id == c->presence.sub_packet_id)
+          && evt->packet_id == c->presence.sub_packet_id && !planned_hub_session_end_in_progress(c))
       {
+        /* As for the birth-ack: late only if the deadline passed before this pass. */
+        if (az_iot_connection_client__deadline_passed_before_pass(c, &c->presence.deadline))
+        {
+          AZ_IOT_LOG_DEBUG(
+              AZ_IOT_LOG_COMPONENT_CONNECTION, "presence SUBACK ignored: its timeout expired");
+          break;
+        }
         az_iot_result pr = (evt->status == AZ_IOT_OK) ? presence_publish_birth(c) : evt->status;
         if (pr != AZ_IOT_OK)
         {
@@ -5494,15 +5626,51 @@ static az_iot_result start_connect_attempt(az_iot_connection_client* c)
   return AZ_IOT_OK;
 }
 
-/** @brief Ends the session a SAS renewal disconnected and reconnects at once
- * with a new token: RETRY_PENDING with reason AZ_IOT_OK, no policy delay or
- * attempt. */
-static void reconnect_for_sas_token_renewal(az_iot_connection_client* c)
+/** @brief Ends the hub session with @p reason: reconnects under the
+ * reconnection policy, or faults without one or once close() is requested. */
+static void end_hub_session_with_failure(az_iot_connection_client* c, az_iot_result reason)
 {
-  c->sas_token_renewal_disconnect_deadline_ms = 0;
+  if (az_iot_retry_policy_is_enabled(&c->opts.reconnection_policy) && !c->user_close)
+  {
+    schedule_reconnect(c, AZ_IOT_CONN_SCOPE_HUB, reason);
+  }
+  else
+  {
+    uint32_t closes = c->close_count;
+    uint32_t seq = c->open_seq;
+    teardown_active(c);
+    /* Teardown runs PUBACK and session callbacks, which may close or reopen. */
+    if (c->close_count == closes && c->open_seq == seq)
+    {
+      set_state_to(c, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_FAULTED, reason);
+    }
+  }
+}
+
+/** @brief Whether a planned hub session end awaits its disconnect. */
+static bool planned_hub_session_end_in_progress(const az_iot_connection_client* c)
+{
+  return az_iot_deadline__is_set(&c->planned_hub_session_end.disconnect_deadline);
+}
+
+/**
+ * @brief Ends the hub session a planned end disconnected. A failure reason ends
+ * it with end_hub_session_with_failure(); AZ_IOT_OK (SAS renewal) reconnects at
+ * once with a new token: RETRY_PENDING with reason AZ_IOT_OK, no policy delay
+ * or attempt.
+ */
+static void finish_planned_hub_session_end(az_iot_connection_client* c)
+{
+  az_iot_result reason = c->planned_hub_session_end.reason;
+  az_iot_deadline__clear(&c->planned_hub_session_end.disconnect_deadline);
+  if (reason != AZ_IOT_OK)
+  {
+    end_hub_session_with_failure(c, reason);
+    return;
+  }
   uint32_t closes = c->close_count;
   uint32_t seq = c->open_seq;
-  teardown_active(c);
+  end_session(c, AZ_IOT_CONNECTION_SESSION_END_PLANNED);
   /* Teardown runs PUBACK and session callbacks, which may close or reopen. */
   if (c->close_count != closes || c->open_seq != seq)
   {
@@ -5515,22 +5683,32 @@ static void reconnect_for_sas_token_renewal(az_iot_connection_client* c)
 }
 
 /**
- * @brief Starts renewing the hub's SAS token. MQTT 3.1.1 cannot
- * re-authenticate a live session, so the session is disconnected, then
- * reconnected by reconnect_for_sas_token_renewal() when the adapter reports the
- * disconnect, or after SAS_TOKEN_RENEWAL_DISCONNECT_TIMEOUT_MS.
+ * @brief Ends the live hub session with a DISCONNECT. It is finished by
+ * finish_planned_hub_session_end() when the adapter reports the disconnect, or
+ * after PLANNED_DISCONNECT_TIMEOUT_MS.
  */
-static void start_sas_token_renewal(az_iot_connection_client* c, uint64_t now)
+static void start_planned_hub_session_end(az_iot_connection_client* c, az_iot_result reason)
+{
+  c->planned_hub_session_end.reason = reason;
+  az_iot_deadline__arm_after_ms(
+      &c->planned_hub_session_end.disconnect_deadline,
+      az_iot_time_mono_ms(),
+      PLANNED_DISCONNECT_TIMEOUT_MS);
+  if (c->active_client->iface->disconnect(c->active_client) != AZ_IOT_OK)
+  {
+    finish_planned_hub_session_end(c);
+  }
+}
+
+/** @brief Starts renewing the hub's SAS token. MQTT 3.1.1 cannot re-authenticate
+ * a live session, so the session is ended and reconnected with a new token. */
+static void start_sas_token_renewal(az_iot_connection_client* c)
 {
   AZ_IOT_LOG_INFO(AZ_IOT_LOG_COMPONENT_CONNECTION, "renewing the SAS token; reconnecting");
   c->sas_token_renewal_due_ms[AZ_IOT_CONN_SCOPE_HUB] = 0;
   c->sas_token_renewal_due_unix_seconds[AZ_IOT_CONN_SCOPE_HUB] = 0;
   c->sas_token_renewal_in_progress[AZ_IOT_CONN_SCOPE_HUB] = true;
-  c->sas_token_renewal_disconnect_deadline_ms = now + SAS_TOKEN_RENEWAL_DISCONNECT_TIMEOUT_MS;
-  if (c->active_client->iface->disconnect(c->active_client) != AZ_IOT_OK)
-  {
-    reconnect_for_sas_token_renewal(c);
-  }
+  start_planned_hub_session_end(c, AZ_IOT_OK);
 }
 
 /** @brief Whether @p source authenticates with a SAS token. */
@@ -5770,22 +5948,16 @@ static void process_sas_token_renewal(az_iot_connection_client* c)
     return;
   }
   uint64_t now = az_iot_time_mono_ms();
-  if (!c->sas_token_renewal_in_progress[hub] && sas_token_renewal_ready(c, hub))
+  /* A session already ending gets its new token on the reconnect. */
+  if (c->sas_token_renewal_in_progress[hub] || planned_hub_session_end_in_progress(c))
+  {
+    return;
+  }
+  if (sas_token_renewal_ready(c, hub))
   {
     if (!renewal_token_expired_before_use(c, hub, now))
     {
-      start_sas_token_renewal(c, now);
-    }
-    return;
-  }
-  if (c->sas_token_renewal_in_progress[hub])
-  {
-    if (c->sas_token_renewal_disconnect_deadline_ms != 0
-        && now >= c->sas_token_renewal_disconnect_deadline_ms)
-    {
-      AZ_IOT_LOG_WARN(
-          AZ_IOT_LOG_COMPONENT_CONNECTION, "SAS token renewal: no disconnect event; reconnecting");
-      reconnect_for_sas_token_renewal(c);
+      start_sas_token_renewal(c);
     }
     return;
   }
@@ -5795,7 +5967,7 @@ static void process_sas_token_renewal(az_iot_connection_client* c)
   {
     c->sas_token_expiry_ms[hub] = 0;
     c->sas_token_expiry_unix_seconds[hub] = 0;
-    start_sas_token_renewal(c, now);
+    start_sas_token_renewal(c);
     return;
   }
   if (sas_token_renewal_due(c, hub, now))
@@ -5806,7 +5978,7 @@ static void process_sas_token_renewal(az_iot_connection_client* c)
     }
     else
     {
-      start_sas_token_renewal(c, now);
+      start_sas_token_renewal(c);
     }
   }
 }
@@ -6052,14 +6224,13 @@ static void process_sas_token_request(az_iot_connection_client* c)
 }
 
 /**
- * @brief @p timeout_ms, capped so a process_loop() wait ends by the next SAS
- * token deadline: a token request's bound (none while one waits to be asked,
- * as do_work() asks it), a session's renewal, or the hub's renewal disconnect
- * bound.
+ * @brief @p timeout_ms, capped so a process_loop() wait ends by the next
+ * connection deadline: a SAS token request's bound (none while one waits to be
+ * asked, as do_work() asks it), a session's SAS token renewal, a planned hub
+ * session end's disconnect bound, the presence SUBACK or birth-ack timeout, or a
+ * feature observer's NEXT_DEADLINE.
  */
-static uint32_t limit_wait_to_sas_token_deadlines(
-    const az_iot_connection_client* c,
-    uint32_t timeout_ms)
+static uint32_t limit_wait_to_connection_deadlines(az_iot_connection_client* c, uint32_t timeout_ms)
 {
   uint64_t now = az_iot_time_mono_ms();
   uint64_t remaining = UINT64_MAX;
@@ -6088,9 +6259,10 @@ static uint32_t limit_wait_to_sas_token_deadlines(
     {
       continue;
     }
-    bool in_progress = c->sas_token_renewal_in_progress[scope];
-    uint64_t deadline = in_progress ? c->sas_token_renewal_disconnect_deadline_ms
-                                    : c->sas_token_renewal_due_ms[scope];
+    /* A planned end in progress holds the hub's renewal; its bound is counted below. */
+    bool in_progress = c->sas_token_renewal_in_progress[scope]
+        || (scope == AZ_IOT_CONN_SCOPE_HUB && planned_hub_session_end_in_progress(c));
+    uint64_t deadline = in_progress ? 0 : c->sas_token_renewal_due_ms[scope];
     if (!in_progress && c->sas_token_expiry_ms[scope] != 0
         && (deadline == 0 || c->sas_token_expiry_ms[scope] < deadline))
     {
@@ -6122,6 +6294,22 @@ static uint32_t limit_wait_to_sas_token_deadlines(
       }
     }
   }
+  uint64_t planned_end_left
+      = az_iot_deadline__remaining_ms(&c->planned_hub_session_end.disconnect_deadline, now);
+  remaining = planned_end_left < remaining ? planned_end_left : remaining;
+  /* Once a planned end is under way the presence deadline has done its job; its bound counts. */
+  if ((c->presence.phase == PRESENCE_PHASE_SUBSCRIBING || c->presence.phase == PRESENCE_PHASE_BIRTH)
+      && !planned_hub_session_end_in_progress(c))
+  {
+    uint64_t presence_left = az_iot_deadline__remaining_ms(&c->presence.deadline, now);
+    remaining = presence_left < remaining ? presence_left : remaining;
+  }
+  az_iot_connection_feature_event const deadline_query
+      = { AZ_IOT_CONNECTION_FEATURE_EVENT_NEXT_DEADLINE,
+          NULL,
+          AZ_IOT_CONNECTION_SESSION_END_LOST,
+          &remaining };
+  notify_feature_observers(c, &deadline_query);
   return (uint64_t)timeout_ms > remaining ? (uint32_t)remaining : timeout_ms;
 }
 
@@ -6135,6 +6323,12 @@ static void apply_deferred(az_iot_connection_client* c)
   az_iot_result reason = c->deferred_reason;
   c->deferred = DEFER_NONE;
   c->deferred_reason = AZ_IOT_OK;
+  /* close() took the planned end over (e.g. from a callback after DISCONNECTED was queued). */
+  if (action == DEFER_PLANNED_END && c->user_close)
+  {
+    action = DEFER_IDLE;
+    reason = AZ_IOT_OK;
+  }
 
   switch (action)
   {
@@ -6150,11 +6344,19 @@ static void apply_deferred(az_iot_connection_client* c)
       teardown_active(c);
       retry_with_next_source(c, AZ_IOT_CONN_SCOPE_HUB, reason);
       break;
-    case DEFER_SAS_TOKEN_RENEWAL:
-      reconnect_for_sas_token_renewal(c);
+    case DEFER_PLANNED_END:
+      finish_planned_hub_session_end(c);
       break;
     case DEFER_IDLE:
+    {
+      uint32_t closes = c->close_count;
+      uint32_t seq = c->open_seq;
       teardown_active(c);
+      /* Teardown runs PUBACK and session callbacks, which may close or reopen. */
+      if (c->close_count != closes || c->open_seq != seq)
+      {
+        break;
+      }
       c->user_close = false;
       c->retry_attempt[AZ_IOT_CONN_SCOPE_DPS] = 0;
       c->retry_attempt[AZ_IOT_CONN_SCOPE_HUB] = 0;
@@ -6162,9 +6364,18 @@ static void apply_deferred(az_iot_connection_client* c)
       reset_identity_recovery(c);
       set_state_to(c, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_IDLE, reason);
       break;
+    }
     default:
       break;
   }
+}
+
+/** @brief Ends a hub session close() is ending, without its DISCONNECTED event: IDLE. */
+static void settle_closed_hub_session(az_iot_connection_client* c)
+{
+  c->deferred = DEFER_IDLE;
+  c->deferred_reason = AZ_IOT_OK;
+  apply_deferred(c);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -6194,6 +6405,7 @@ AZ_NODISCARD az_iot_connection_client_options az_iot_connection_client_options_d
       = AZ_IOT_DEFAULT_MAX_HUB_CONNECT_ATTEMPTS_BEFORE_REPROVISION;
   opts.identity_recovery.policy = az_iot_connection_client_get_default_identity_recovery_policy();
   opts.identity_recovery.mode = AZ_IOT_IDENTITY_RECOVERY_RETRY_HUB;
+  opts.max_unconfirmed_delivery_timeout_ms = AZ_IOT_DEFAULT_MAX_UNCONFIRMED_DELIVERY_TIMEOUT_MS;
   return opts;
 }
 
@@ -6418,6 +6630,148 @@ static void sas_wipe(az_iot_connection_client* c)
   az_iot_crypto__wipe(c->auth, sizeof(c->auth));
 }
 
+/* Counts the embedded area holds: _az_IOT_CONNECTION_CLIENT_EMBEDDED_WORKSPACE_SIZE. */
+#define LIMIT_EMBEDDED_PENDING_PUBLISHES 16u
+#define LIMIT_EMBEDDED_PUBLISH_RESERVATIONS 2u
+#define LIMIT_EMBEDDED_PERSISTENT_SUBSCRIPTIONS 8u
+#define LIMIT_EMBEDDED_FEATURE_OBSERVERS 10u
+#define LIMIT_EMBEDDED_APPLICATION_STATE_OBSERVERS 4u
+#define LIMIT_EMBEDDED_FEATURE_CLIENTS 8u
+#define LIMIT_EMBEDDED_INBOUND_HANDLERS 8u
+typedef char az_iot_connection_embedded_workspace_counts_agree
+    [(_az_IOT_CONNECTION_CLIENT_EMBEDDED_WORKSPACE_SIZE
+      == AZ_IOT_CONNECTION_CLIENT_WORKSPACE_SIZE(
+          LIMIT_EMBEDDED_PENDING_PUBLISHES,
+          LIMIT_EMBEDDED_PUBLISH_RESERVATIONS,
+          LIMIT_EMBEDDED_PERSISTENT_SUBSCRIPTIONS,
+          LIMIT_EMBEDDED_FEATURE_OBSERVERS,
+          LIMIT_EMBEDDED_APPLICATION_STATE_OBSERVERS,
+          LIMIT_EMBEDDED_FEATURE_CLIENTS,
+          LIMIT_EMBEDDED_INBOUND_HANDLERS))
+         ? 1
+         : -1];
+/* Bound on the counts with no tighter maximum, so the size arithmetic cannot overflow. */
+#define LIMIT_MAX_ENTRIES 65535u
+
+/**
+ * @brief Writes @p limits with every 0 replaced by its default to @p out.
+ * @return false when a value is above its maximum.
+ */
+static bool limits_resolve(
+    const az_iot_connection_client_limits* limits,
+    az_iot_connection_client_limits* out)
+{
+  *out = *limits;
+  size_t* const value[] = {
+    &out->max_pending_publishes,
+    &out->max_publish_reservations,
+    &out->max_persistent_subscriptions,
+    &out->max_feature_observers,
+    &out->max_application_state_observers,
+    &out->max_feature_clients,
+    &out->max_inbound_handlers,
+  };
+  static const size_t fallback[] = {
+    AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_PENDING_PUBLISHES,
+    AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_PUBLISH_RESERVATIONS,
+    AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_PERSISTENT_SUBSCRIPTIONS,
+    AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_FEATURE_OBSERVERS,
+    AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_APPLICATION_STATE_OBSERVERS,
+    AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_FEATURE_CLIENTS,
+    AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_INBOUND_HANDLERS,
+  };
+  for (size_t i = 0; i < sizeof(fallback) / sizeof(fallback[0]); ++i)
+  {
+    if (*value[i] == 0)
+    {
+      *value[i] = fallback[i];
+    }
+    if (*value[i] > LIMIT_MAX_ENTRIES)
+    {
+      return false;
+    }
+  }
+  /* Reservation and subscription indexes are stored in a uint8_t. */
+  return out->max_publish_reservations < UINT8_MAX
+      && out->max_persistent_subscriptions <= UINT8_MAX;
+}
+
+/** @brief Whether any resolved count in @p l is above what the embedded area holds. */
+static bool limits_exceed_embedded_workspace(const az_iot_connection_client_limits* l)
+{
+  return l->max_pending_publishes > LIMIT_EMBEDDED_PENDING_PUBLISHES
+      || l->max_publish_reservations > LIMIT_EMBEDDED_PUBLISH_RESERVATIONS
+      || l->max_persistent_subscriptions > LIMIT_EMBEDDED_PERSISTENT_SUBSCRIPTIONS
+      || l->max_feature_observers > LIMIT_EMBEDDED_FEATURE_OBSERVERS
+      || l->max_application_state_observers > LIMIT_EMBEDDED_APPLICATION_STATE_OBSERVERS
+      || l->max_feature_clients > LIMIT_EMBEDDED_FEATURE_CLIENTS
+      || l->max_inbound_handlers > LIMIT_EMBEDDED_INBOUND_HANDLERS;
+}
+
+/** @brief Workspace bytes for resolved @p l. */
+static size_t workspace_size_of(const az_iot_connection_client_limits* l)
+{
+  return AZ_IOT_CONNECTION_CLIENT_WORKSPACE_SIZE(
+      l->max_pending_publishes,
+      l->max_publish_reservations,
+      l->max_persistent_subscriptions,
+      l->max_feature_observers,
+      l->max_application_state_observers,
+      l->max_feature_clients,
+      l->max_inbound_handlers);
+}
+
+size_t az_iot_connection_client_get_workspace_size(const az_iot_connection_client_limits* limits)
+{
+  az_iot_connection_client_limits resolved;
+  return limits != NULL && limits_resolve(limits, &resolved) ? workspace_size_of(&resolved) : 0;
+}
+
+/** @brief Takes @p count entries of @p entry_size at @p *cursor, which moves past them. */
+static void* workspace_take(uint8_t** cursor, size_t count, size_t entry_size)
+{
+  void* const entries = *cursor;
+  *cursor += AZ_IOT_CONNECTION_CLIENT_WORKSPACE_ALIGN(count * entry_size);
+  return entries;
+}
+
+/** @brief Points @p c's entries into its cleared workspace, laid out as workspace_size_of(). */
+static void workspace_assign(az_iot_connection_client* c, uint8_t* workspace)
+{
+  const az_iot_connection_client_limits* l = &c->opts.limits;
+  uint8_t* cursor = (uint8_t*)(((uintptr_t)workspace + 15u) & ~(uintptr_t)15u);
+  c->pending_pubacks
+      = workspace_take(&cursor, l->max_pending_publishes, sizeof(*c->pending_pubacks));
+  c->puback_reservations
+      = workspace_take(&cursor, l->max_publish_reservations, sizeof(*c->puback_reservations));
+  c->persistent_subs
+      = workspace_take(&cursor, l->max_persistent_subscriptions, sizeof(*c->persistent_subs));
+  c->subscription_acks
+      = workspace_take(&cursor, l->max_persistent_subscriptions, sizeof(*c->subscription_acks));
+  c->feature_observers
+      = workspace_take(&cursor, l->max_feature_observers, sizeof(*c->feature_observers));
+  c->app_state_observers = workspace_take(
+      &cursor, l->max_application_state_observers, sizeof(*c->app_state_observers));
+  c->feature_client_binds
+      = workspace_take(&cursor, l->max_feature_clients, sizeof(*c->feature_client_binds));
+  az_iot_dispatch_init(
+      &c->dispatch,
+      workspace_take(&cursor, l->max_inbound_handlers, sizeof(az_iot_dispatch_entry)),
+      l->max_inbound_handlers);
+}
+
+/** @brief The workspace @p c uses: the application's, or its own default one. */
+static uint8_t* workspace_of(az_iot_connection_client* c)
+{
+  return c->opts.workspace != NULL ? c->opts.workspace : c->default_workspace;
+}
+
+/** @brief Bytes of @p c's workspace: all of the application's, or the whole embedded area. */
+static size_t workspace_capacity_of(const az_iot_connection_client* c)
+{
+  return c->opts.workspace != NULL ? c->opts.workspace_size : sizeof(c->default_workspace);
+}
+
 AZ_NODISCARD az_iot_result az_iot_connection_client_init(
     az_iot_connection_client* client,
     const az_iot_connection_client_options* opts)
@@ -6460,8 +6814,39 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_init(
   {
     return sv;
   }
+  az_iot_connection_client_limits limits;
+  if (!limits_resolve(&opts->limits, &limits))
+  {
+    AZ_IOT_LOG_ERROR(AZ_IOT_LOG_COMPONENT_CONNECTION, "init: a limit is above its maximum");
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  const size_t workspace_size = workspace_size_of(&limits);
+  if (opts->workspace == NULL && limits_exceed_embedded_workspace(&limits))
+  {
+    AZ_IOT_LOG_ERROR(
+        AZ_IOT_LOG_COMPONENT_CONNECTION,
+        "init: limits above the built-in defaults need a workspace");
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  if (opts->workspace != NULL && opts->workspace_size < workspace_size)
+  {
+    AZ_IOT_LOG_ERRORF(
+        AZ_IOT_LOG_COMPONENT_CONNECTION,
+        "init: the workspace has %lu bytes; %lu needed",
+        (unsigned long)opts->workspace_size,
+        (unsigned long)workspace_size);
+    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+  }
   memset(client, 0, sizeof(*client));
   client->opts = *opts;
+  if (client->opts.max_unconfirmed_delivery_timeout_ms == 0u)
+  {
+    client->opts.max_unconfirmed_delivery_timeout_ms
+        = AZ_IOT_DEFAULT_MAX_UNCONFIRMED_DELIVERY_TIMEOUT_MS;
+  }
+  client->opts.limits = limits;
+  memset(workspace_of(client), 0, workspace_size);
+  workspace_assign(client, workspace_of(client));
   sv = sas_load_keys(client);
   if (sv != AZ_IOT_OK)
   {
@@ -6517,6 +6902,7 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_init(
   }
   /* Seed jitter PRNG; tests can overwrite via the internal seed entry point
    * if they need determinism. */
+  client->next_publish_id = 1u;
   client->rng_state = az_iot_time_mono_ms() ^ 0xA5A5C3C3DEADBEEFull;
   if (client->rng_state == 0)
   {
@@ -6537,7 +6923,7 @@ void az_iot_connection_client_deinit(az_iot_connection_client* client)
    * client down, and the context those callbacks close over may already be
    * gone. Calling back into it here would turn cleanup into a use-after-free.
    * Cleared before teardown_active() so it has nothing left to complete. */
-  for (size_t i = 0; i < AZ_IOT_MAX_PENDING_PUBACKS; ++i)
+  for (size_t i = 0; i < client->opts.limits.max_pending_publishes; ++i)
   {
     client->pending_pubacks[i].in_use = false;
     client->pending_pubacks[i].cb = NULL;
@@ -6545,22 +6931,19 @@ void az_iot_connection_client_deinit(az_iot_connection_client* client)
     client->pending_pubacks[i].user_ctx = NULL;
     client->pending_pubacks[i].packet_id = 0;
   }
-  /* Same reasoning for the session-end handlers: on deinit() the feature
-   * clients are being torn down alongside this one, so calling into them is
-   * at best pointless and at worst a use-after-free. */
-  for (size_t i = 0; i < AZ_IOT_MAX_SESSION_HANDLERS; ++i)
+  /* Same reasoning for the feature observers: on deinit() the feature clients are being torn
+   * down alongside this one, so the teardown below must not call into them. */
+  for (size_t i = 0; i < client->opts.limits.max_feature_observers; ++i)
   {
-    client->session_handlers[i].in_use = false;
-    client->session_handlers[i].cb = NULL;
-    client->session_handlers[i].user_ctx = NULL;
+    memset(&client->feature_observers[i], 0, sizeof(client->feature_observers[i]));
   }
   release_material(client, AZ_IOT_CONN_SCOPE_DPS);
   release_material(client, AZ_IOT_CONN_SCOPE_HUB);
   teardown_active(client);
   dps_teardown_mqtt(client);
   sas_wipe(client);
-  /* dispatch is embedded; nothing to free. Registered factories are borrowed;
-   * the application destroys them after this returns. */
+  /* Registered factories are borrowed; the application destroys them after this returns. */
+  az_iot_crypto__wipe(workspace_of(client), workspace_capacity_of(client));
   /* provisioned_iot_hub_hostname / provisioned_device_id are inline fixed buffers; nothing to free.
    */
 }
@@ -6597,16 +6980,10 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_register_mqtt_factory(
   return AZ_IOT_OK;
 }
 
-/* Shared by the public and internal registration entry points. The only
- * difference between an application observer and a feature-client one is which
- * pool it lands in -- and that is decided HERE, by which entry point was
- * called, never by an argument. An application cannot register itself into the
- * feature-client pool and take a slot a feature client needs. */
-static az_iot_result add_state_observer_to(
+az_iot_result az_iot_connection_client_add_state_observer(
     az_iot_connection_client* client,
     az_iot_connection_state_callback cb,
-    void* user_ctx,
-    bool feature_client)
+    void* user_ctx)
 {
   if (!client || !cb)
   {
@@ -6618,25 +6995,19 @@ static az_iot_result add_state_observer_to(
         AZ_IOT_LOG_COMPONENT_CONNECTION, "cannot add a state observer from inside one");
     return AZ_IOT_ERR_BUSY;
   }
-
-  size_t count
-      = feature_client ? AZ_IOT_MAX_FEATURE_STATE_OBSERVERS : AZ_IOT_MAX_APP_STATE_OBSERVERS;
+  size_t const count = client->opts.limits.max_application_state_observers;
   size_t free_slot = count;
   for (size_t i = 0; i < count; ++i)
   {
-    az_iot_connection_state_callback slot_cb = feature_client
-        ? client->feature_state_observers[i].cb
-        : client->app_state_observers[i].cb;
-    void* slot_ctx = feature_client ? client->feature_state_observers[i].user_ctx
-                                    : client->app_state_observers[i].user_ctx;
     /* Idempotent on the (cb, user_ctx) PAIR, not on cb alone: one callback
      * shared by two owners is two distinct subscriptions and must be delivered
      * twice. */
-    if (slot_cb == cb && slot_ctx == user_ctx)
+    if (client->app_state_observers[i].cb == cb
+        && client->app_state_observers[i].user_ctx == user_ctx)
     {
       return AZ_IOT_OK;
     }
-    if (!slot_cb && free_slot == count)
+    if (!client->app_state_observers[i].cb && free_slot == count)
     {
       free_slot = i;
     }
@@ -6646,41 +7017,12 @@ static az_iot_result add_state_observer_to(
     AZ_IOT_LOG_ERROR(AZ_IOT_LOG_COMPONENT_CONNECTION, "no free state-observer slot");
     return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
   }
-  if (feature_client)
-  {
-    client->feature_state_observers[free_slot].cb = cb;
-    client->feature_state_observers[free_slot].user_ctx = user_ctx;
-  }
-  else
-  {
-    client->app_state_observers[free_slot].cb = cb;
-    client->app_state_observers[free_slot].user_ctx = user_ctx;
-  }
+  client->app_state_observers[free_slot].cb = cb;
+  client->app_state_observers[free_slot].user_ctx = user_ctx;
   return AZ_IOT_OK;
 }
 
-az_iot_result az_iot_connection_client_add_state_observer(
-    az_iot_connection_client* client,
-    az_iot_connection_state_callback cb,
-    void* user_ctx)
-{
-  return add_state_observer_to(client, cb, user_ctx, false);
-}
-
-az_iot_result az_iot_connection_client__add_state_observer(
-    az_iot_connection_client* client,
-    az_iot_connection_state_callback cb,
-    void* user_ctx)
-{
-  return add_state_observer_to(client, cb, user_ctx, true);
-}
-
-/* Withdraw from whichever pool holds the pair. Both are searched rather than
- * requiring the caller to say which, so a feature client's deinit path does not
- * have to name its own pool -- and an application cannot remove a feature
- * client's entry by guessing, because it would have to already hold that
- * client's exact (cb, user_ctx) pair. */
-static az_iot_result remove_state_observer_from(
+az_iot_result az_iot_connection_client_remove_state_observer(
     az_iot_connection_client* client,
     az_iot_connection_state_callback cb,
     void* user_ctx)
@@ -6689,32 +7031,10 @@ static az_iot_result remove_state_observer_from(
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
-  /* Deliberately NOT refused during a dispatch, unlike adding.
-   *
-   * The two directions are not symmetric. Adding from inside an observer would
-   * deliver the transition being dispatched to a subscriber that was not
-   * watching when it happened, so it is refused. Removing is the opposite: a
-   * feature client deinitialized from inside an observer -- which is a natural
-   * reaction to FAULTED -- MUST be able to withdraw, because the entry holds a
-   * raw pointer to storage its deinit path is about to release. Refusing here
-   * left the caller with no way to give the seat back, and the next transition
-   * called into freed memory.
-   *
-   * Safe against the walk in dispatch_state_event(): it re-reads each slot and
-   * skips a NULL callback, and nothing is compacted, so clearing a slot only
-   * means that observer is not called -- which is exactly what withdrawing
-   * asks for. An entry already visited in this pass is unaffected. */
-  for (size_t i = 0; i < AZ_IOT_MAX_FEATURE_STATE_OBSERVERS; ++i)
-  {
-    if (client->feature_state_observers[i].cb == cb
-        && client->feature_state_observers[i].user_ctx == user_ctx)
-    {
-      client->feature_state_observers[i].cb = NULL;
-      client->feature_state_observers[i].user_ctx = NULL;
-      return AZ_IOT_OK;
-    }
-  }
-  for (size_t i = 0; i < AZ_IOT_MAX_APP_STATE_OBSERVERS; ++i)
+  /* Allowed during a dispatch, unlike adding: an owner torn down in reaction to a
+   * transition must be able to withdraw before its storage goes away. The walk in
+   * dispatch_state_event() re-reads each slot and skips a NULL callback. */
+  for (size_t i = 0; i < client->opts.limits.max_application_state_observers; ++i)
   {
     if (client->app_state_observers[i].cb == cb
         && client->app_state_observers[i].user_ctx == user_ctx)
@@ -6725,22 +7045,6 @@ static az_iot_result remove_state_observer_from(
     }
   }
   return AZ_IOT_ERR_NOT_FOUND;
-}
-
-az_iot_result az_iot_connection_client_remove_state_observer(
-    az_iot_connection_client* client,
-    az_iot_connection_state_callback cb,
-    void* user_ctx)
-{
-  return remove_state_observer_from(client, cb, user_ctx);
-}
-
-az_iot_result az_iot_connection_client__remove_state_observer(
-    az_iot_connection_client* client,
-    az_iot_connection_state_callback cb,
-    void* user_ctx)
-{
-  return remove_state_observer_from(client, cb, user_ctx);
 }
 
 az_iot_result az_iot_connection_client_set_operational_cert_callback(
@@ -7010,6 +7314,8 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_open(az_iot_connection_clien
   client->retry_attempt[AZ_IOT_CONN_SCOPE_DPS] = 0;
   client->retry_attempt[AZ_IOT_CONN_SCOPE_HUB] = 0;
   client->reconnect_due_ms = 0;
+  /* A fresh connect cycle starts the birth-ack timeout schedule over. */
+  client->presence.consecutive_birth_ack_timeouts = 0;
   reset_identity_recovery(client);
   dps_user_retry_reset(client);
   /* open() starts again at the first credential source. */
@@ -7282,7 +7588,7 @@ az_iot_result az_iot_connection_client_close(az_iot_connection_client* client)
      * following open() reconnect to the very hub that faulted. */
     /* Defensive: no fault path leaves one behind today, but close() must not
      * depend on that to reach IDLE. */
-    teardown_active(client);
+    end_session(client, AZ_IOT_CONNECTION_SESSION_END_PLANNED);
     settle_all_scopes_to_idle(client);
     return AZ_IOT_OK;
   }
@@ -7306,6 +7612,11 @@ az_iot_result az_iot_connection_client_close(az_iot_connection_client* client)
 
   client->user_close = true;
   set_state_to(client, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_DISCONNECTING, AZ_IOT_OK);
+  /* A planned end already sent DISCONNECT; its completion or bound settles IDLE. */
+  if (planned_hub_session_end_in_progress(client))
+  {
+    return AZ_IOT_OK;
+  }
   az_iot_result r = client->active_client->iface->disconnect(client->active_client);
   if (r != AZ_IOT_OK && r != AZ_IOT_ERR_NOT_CONNECTED)
   {
@@ -7361,15 +7672,10 @@ static void settle_spent_dps_retry(az_iot_connection_client* c)
   set_state_to(c, AZ_IOT_CONN_SCOPE_DPS, now, AZ_IOT_OK);
 }
 
-az_iot_result az_iot_connection_client_do_work(
-    az_iot_connection_client* client,
-    uint32_t timeout_ms)
+/** @brief One do_work() pass, without the tick observers. */
+static az_iot_result do_work_pass(az_iot_connection_client* client, uint32_t timeout_ms)
 {
-  if (!client)
-  {
-    return AZ_IOT_ERR_INVALID_ARG;
-  }
-
+  client->do_work_pass_started_ms = az_iot_time_mono_ms();
   process_sas_token_request(client);
 
   /* --- DPS provisioning pump --- */
@@ -7491,7 +7797,7 @@ az_iot_result az_iot_connection_client_do_work(
         }
       }
       /* A hub session beside it is pumped only after this wait. */
-      wait_ms = limit_wait_to_sas_token_deadlines(client, wait_ms);
+      wait_ms = limit_wait_to_connection_deadlines(client, wait_ms);
       r = client->dps_mqtt->iface->process_loop(client->dps_mqtt, wait_ms);
     }
 
@@ -7537,7 +7843,7 @@ az_iot_result az_iot_connection_client_do_work(
   if (client->active_client)
   {
     r = client->active_client->iface->process_loop(
-        client->active_client, limit_wait_to_sas_token_deadlines(client, timeout_ms));
+        client->active_client, limit_wait_to_connection_deadlines(client, timeout_ms));
   }
 
   apply_deferred(client);
@@ -7561,22 +7867,30 @@ az_iot_result az_iot_connection_client_do_work(
   }
 
   /* Fail a stalled MQTTv5 presence (birth) handshake so a missing SUBACK or
-   * birth-ack can't wedge the client in CONNECTING forever. Reconnect when a
-   * policy is configured (mirrors the .NET SDK, which disconnects and
-   * retries), otherwise fault. */
+   * birth-ack can't wedge the client in CONNECTING forever: end the session
+   * with a DISCONNECT, then reconnect when a policy is configured, otherwise
+   * fault. A missed birth-ack escalates the next birth's timeout. */
   if ((client->presence.phase == AZ_IOT_PRESENCE_PHASE_SUBSCRIBING
        || client->presence.phase == AZ_IOT_PRESENCE_PHASE_BIRTH)
-      && az_iot_time_mono_ms() >= client->presence.deadline_ms)
+      && !planned_hub_session_end_in_progress(client)
+      && az_iot_deadline__has_passed(&client->presence.deadline, az_iot_time_mono_ms()))
   {
-    client->presence.phase = AZ_IOT_PRESENCE_PHASE_NONE;
-    if (az_iot_retry_policy_is_enabled(&client->opts.reconnection_policy) && !client->user_close)
+    if (client->presence.phase == AZ_IOT_PRESENCE_PHASE_BIRTH)
     {
-      schedule_reconnect(client, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_ERR_TIMEOUT);
+      AZ_IOT_LOG_WARNF(
+          AZ_IOT_LOG_COMPONENT_CONNECTION,
+          "no birth-ack within %lu ms; ending the session",
+          (unsigned long)client->presence.birth_ack_timeout_ms);
+    }
+    /* Both paths tear down, which counts the missed birth-ack. close() has
+     * already sent its DISCONNECT and decides how the session ends. */
+    if (client->user_close)
+    {
+      settle_closed_hub_session(client);
     }
     else
     {
-      teardown_active(client);
-      set_state_to(client, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_FAULTED, AZ_IOT_ERR_TIMEOUT);
+      start_planned_hub_session_end(client, AZ_IOT_ERR_TIMEOUT);
     }
   }
 
@@ -7615,6 +7929,24 @@ az_iot_result az_iot_connection_client_do_work(
     {
       teardown_active(client);
       set_state_to(client, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_FAULTED, AZ_IOT_ERR_TIMEOUT);
+    }
+  }
+
+  /* A planned end whose disconnect was not reported in time ends anyway; at
+   * IDLE once close() took it over. */
+  if (planned_hub_session_end_in_progress(client)
+      && az_iot_deadline__has_passed(
+          &client->planned_hub_session_end.disconnect_deadline, az_iot_time_mono_ms()))
+  {
+    AZ_IOT_LOG_WARN(
+        AZ_IOT_LOG_COMPONENT_CONNECTION, "planned session end: no disconnect event; ending it");
+    if (client->user_close)
+    {
+      settle_closed_hub_session(client);
+    }
+    else
+    {
+      finish_planned_hub_session_end(client);
     }
   }
 
@@ -7733,6 +8065,20 @@ az_iot_result az_iot_connection_client_do_work(
   return r;
 }
 
+az_iot_result az_iot_connection_client_do_work(
+    az_iot_connection_client* client,
+    uint32_t timeout_ms)
+{
+  if (!client)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  az_iot_result r = do_work_pass(client, timeout_ms);
+  /* After every timer, on every path. A callback may withdraw itself or another observer. */
+  notify_feature_observers_of(client, AZ_IOT_CONNECTION_FEATURE_EVENT_TICK);
+  return r;
+}
+
 /* ------------------------------------------------------------------------- */
 /* internal API                                                              */
 /* ------------------------------------------------------------------------- */
@@ -7839,6 +8185,104 @@ void az_iot_connection_client__seed_rng(az_iot_connection_client* client, uint64
   client->rng_state = seed ? seed : 1ull;
 }
 
+void az_iot_connection_client__set_defensive_timeout_random_source(
+    az_iot_connection_client* client,
+    uint64_t (*source)(void* context),
+    void* context)
+{
+  if (!client)
+  {
+    return;
+  }
+  client->defensive_timeout_random_source = source;
+  client->defensive_timeout_random_context = source ? context : NULL;
+}
+
+az_iot_result az_iot_connection_client__set_defensive_timeout_schedule(
+    az_iot_connection_client* client,
+    const uint32_t* base_ms_by_attempt,
+    size_t attempt_count,
+    uint32_t jitter_max_ms)
+{
+  if (!client || (base_ms_by_attempt == NULL) != (attempt_count == 0u))
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  client->defensive_timeout_base_ms_by_attempt = base_ms_by_attempt;
+  client->defensive_timeout_attempt_count = attempt_count;
+  client->defensive_timeout_jitter_max_ms = base_ms_by_attempt ? jitter_max_ms : 0u;
+  return AZ_IOT_OK;
+}
+
+uint32_t az_iot_connection_client__defensive_timeout_ms(
+    az_iot_connection_client* client,
+    uint32_t attempt)
+{
+  uint64_t random_value = 0;
+  if (client && client->defensive_timeout_random_source)
+  {
+    random_value
+        = client->defensive_timeout_random_source(client->defensive_timeout_random_context);
+  }
+  else if (client)
+  {
+    /* Same LCG as gen_uuid_v4(); the high half is the well-mixed part. */
+    client->rng_state = client->rng_state * 6364136223846793005ull + 1442695040888963407ull;
+    random_value = client->rng_state >> 32;
+  }
+  if (client && client->defensive_timeout_base_ms_by_attempt)
+  {
+    return az_iot_defensive_timeout__schedule_ms(
+        client->defensive_timeout_base_ms_by_attempt,
+        client->defensive_timeout_attempt_count,
+        client->defensive_timeout_jitter_max_ms,
+        attempt,
+        random_value);
+  }
+  return az_iot_defensive_timeout__ms(attempt, random_value);
+}
+
+az_iot_result az_iot_connection_client__end_hub_session(
+    az_iot_connection_client* client,
+    az_iot_result reason)
+{
+  if (!client || reason == AZ_IOT_OK)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  if (!client->active_client || client->user_close
+      || client->state[AZ_IOT_CONN_SCOPE_HUB] != AZ_IOT_CONN_STATE_CONNECTED)
+  {
+    return AZ_IOT_ERR_NOT_CONNECTED;
+  }
+  if (!planned_hub_session_end_in_progress(client))
+  {
+    start_planned_hub_session_end(client, reason);
+  }
+  return AZ_IOT_OK;
+}
+
+void az_iot_connection_client__planned_hub_session_end_force_timeout(
+    az_iot_connection_client* client)
+{
+  if (client && planned_hub_session_end_in_progress(client))
+  {
+    az_iot_deadline__expire_now(&client->planned_hub_session_end.disconnect_deadline);
+  }
+}
+
+bool az_iot_connection_client__twin_push_expected(const az_iot_connection_client* client)
+{
+  return client && (client->opts.twin_push.push_desired || client->opts.twin_push.push_reported);
+}
+
+bool az_iot_connection_client__deadline_passed_before_pass(
+    const az_iot_connection_client* client,
+    const az_iot_deadline* deadline)
+{
+  return az_iot_deadline__has_passed(deadline, client->do_work_pass_started_ms);
+}
+
 void az_iot_connection_client__presence_force_timeout(az_iot_connection_client* client)
 {
   if (!client)
@@ -7848,7 +8292,7 @@ void az_iot_connection_client__presence_force_timeout(az_iot_connection_client* 
   if (client->presence.phase == AZ_IOT_PRESENCE_PHASE_SUBSCRIBING
       || client->presence.phase == AZ_IOT_PRESENCE_PHASE_BIRTH)
   {
-    client->presence.deadline_ms = 0;
+    az_iot_deadline__expire_now(&client->presence.deadline);
   }
 }
 
@@ -7920,6 +8364,11 @@ bool az_iot_connection_client__twin_push_desired(const az_iot_connection_client*
   return client && client->opts.twin_push.push_desired;
 }
 
+bool az_iot_connection_client__twin_push_reported(const az_iot_connection_client* client)
+{
+  return client && client->opts.twin_push.push_reported;
+}
+
 void az_iot_connection_client__subscription_gate_force_timeout(az_iot_connection_client* client)
 {
   if (client && client->subscription_gate.active)
@@ -7950,68 +8399,6 @@ size_t az_iot_connection_client__unregister_inbound_handlers(
     return 0;
   }
   return az_iot_dispatch_unregister_by_ctx(&client->dispatch, user_ctx);
-}
-
-az_iot_result az_iot_connection_client__register_session_end_handler(
-    az_iot_connection_client* client,
-    az_iot_session_end_callback cb,
-    void* user_ctx)
-{
-  if (!client || !cb)
-  {
-    return AZ_IOT_ERR_INVALID_ARG;
-  }
-
-  size_t free_slot = AZ_IOT_MAX_SESSION_HANDLERS;
-  for (size_t i = 0; i < AZ_IOT_MAX_SESSION_HANDLERS; ++i)
-  {
-    /* Keyed on user_ctx: a feature client that re-initializes over a live
-     * instance replaces its entry instead of consuming a second slot. */
-    if (client->session_handlers[i].in_use)
-    {
-      if (client->session_handlers[i].user_ctx == user_ctx)
-      {
-        client->session_handlers[i].cb = cb;
-        return AZ_IOT_OK;
-      }
-    }
-    else if (free_slot == AZ_IOT_MAX_SESSION_HANDLERS)
-    {
-      free_slot = i;
-    }
-  }
-
-  if (free_slot == AZ_IOT_MAX_SESSION_HANDLERS)
-  {
-    AZ_IOT_LOG_ERROR(AZ_IOT_LOG_COMPONENT_CONNECTION, "session-end handler registry is full");
-    return AZ_IOT_ERR_NOT_SUPPORTED;
-  }
-
-  client->session_handlers[free_slot].cb = cb;
-  client->session_handlers[free_slot].user_ctx = user_ctx;
-  client->session_handlers[free_slot].in_use = true;
-  return AZ_IOT_OK;
-}
-
-size_t az_iot_connection_client__unregister_session_end_handler(
-    az_iot_connection_client* client,
-    void* user_ctx)
-{
-  if (!client)
-  {
-    return 0;
-  }
-  for (size_t i = 0; i < AZ_IOT_MAX_SESSION_HANDLERS; ++i)
-  {
-    if (client->session_handlers[i].in_use && client->session_handlers[i].user_ctx == user_ctx)
-    {
-      client->session_handlers[i].in_use = false;
-      client->session_handlers[i].cb = NULL;
-      client->session_handlers[i].user_ctx = NULL;
-      return 1;
-    }
-  }
-  return 0;
 }
 
 az_iot_connection_state az_iot_connection_client_get_state(
@@ -8124,29 +8511,34 @@ az_iot_result az_iot_connection_client__register_feature_client_bind(
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
-  size_t free_slot = AZ_IOT_MAX_FEATURE_CLIENT_BINDS;
-  for (size_t i = 0; i < AZ_IOT_MAX_FEATURE_CLIENT_BINDS; ++i)
+  size_t free_slot = client->opts.limits.max_feature_clients;
+  for (size_t i = 0; i < client->opts.limits.max_feature_clients; ++i)
   {
     if (client->feature_client_binds[i].owner == owner)
     {
       client->feature_client_binds[i].on_bind = on_bind;
       return AZ_IOT_OK;
     }
-    if (!client->feature_client_binds[i].owner && free_slot == AZ_IOT_MAX_FEATURE_CLIENT_BINDS)
+    if (!client->feature_client_binds[i].owner
+        && free_slot == client->opts.limits.max_feature_clients)
     {
       free_slot = i;
     }
   }
-  if (free_slot == AZ_IOT_MAX_FEATURE_CLIENT_BINDS)
+  if (free_slot == client->opts.limits.max_feature_clients)
   {
     return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
   }
   client->feature_client_binds[free_slot].owner = owner;
   client->feature_client_binds[free_slot].on_bind = on_bind;
-  /* Already connected means the identity is settled and this session's binds
-   * have run, so this one has to catch up or it would sit idle until the next
-   * connect. Mirrors __add_subscription_on_connect subscribing immediately. */
-  if (client->state[AZ_IOT_CONN_SCOPE_HUB] == AZ_IOT_CONN_STATE_CONNECTED)
+  /* Connected, or an mqttv5 session connecting, means the identity is settled
+   * and this session's binds have run, so this one has to catch up or it would
+   * sit idle until the next connect. Mirrors __add_subscription_on_connect
+   * subscribing immediately. Not an mqttv3 session connecting: its binds subscribe,
+   * and a client withdrawn before CONNECTED would not unsubscribe. */
+  if (client->state[AZ_IOT_CONN_SCOPE_HUB] == AZ_IOT_CONN_STATE_CONNECTED
+      || (client->state[AZ_IOT_CONN_SCOPE_HUB] == AZ_IOT_CONN_STATE_CONNECTING
+          && client->connection_profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5))
   {
     return on_bind(owner, client);
   }
@@ -8161,7 +8553,7 @@ void az_iot_connection_client__unregister_feature_client_bind(
   {
     return;
   }
-  for (size_t i = 0; i < AZ_IOT_MAX_FEATURE_CLIENT_BINDS; ++i)
+  for (size_t i = 0; i < client->opts.limits.max_feature_clients; ++i)
   {
     if (client->feature_client_binds[i].owner == owner)
     {
@@ -8177,7 +8569,7 @@ void az_iot_connection_client__unregister_feature_client_bind(
  * a filter behind that the new hub would refuse. */
 static az_iot_result run_feature_client_binds(az_iot_connection_client* c)
 {
-  for (size_t i = 0; i < AZ_IOT_MAX_FEATURE_CLIENT_BINDS; ++i)
+  for (size_t i = 0; i < c->opts.limits.max_feature_clients; ++i)
   {
     void* owner = c->feature_client_binds[i].owner;
     az_iot_result (*on_bind)(void*, az_iot_connection_client*) = c->feature_client_binds[i].on_bind;
@@ -8476,13 +8868,6 @@ void az_iot_connection_client__set_dps_message_observer(
   client->dps_message_observer_ctx = user_ctx;
 }
 
-#if AZ_IOT_MAX_PENDING_PUBACKS > UINT16_MAX
-#error "AZ_IOT_MAX_PENDING_PUBACKS must be at most 65535"
-#endif
-#if AZ_IOT_MAX_PUBACK_RESERVATIONS >= UINT8_MAX
-#error "AZ_IOT_MAX_PUBACK_RESERVATIONS must be at most 254"
-#endif
-
 #define PUBACK_POOL_SHARED UINT8_MAX
 
 /** @brief puback_reservations[] index held by @p owner, or PUBACK_POOL_SHARED if none. */
@@ -8490,11 +8875,11 @@ static uint8_t puback_pool_of(const az_iot_connection_client* c, const void* own
 {
   if (owner != NULL)
   {
-    for (uint8_t i = 0; i < AZ_IOT_MAX_PUBACK_RESERVATIONS; ++i)
+    for (size_t i = 0; i < c->opts.limits.max_publish_reservations; ++i)
     {
       if (c->puback_reservations[i].owner == owner)
       {
-        return i;
+        return (uint8_t)i;
       }
     }
   }
@@ -8505,7 +8890,7 @@ static uint8_t puback_pool_of(const az_iot_connection_client* c, const void* own
 static size_t puback_reserved_except(const az_iot_connection_client* c, uint8_t skip)
 {
   size_t reserved = 0;
-  for (uint8_t i = 0; i < AZ_IOT_MAX_PUBACK_RESERVATIONS; ++i)
+  for (size_t i = 0; i < c->opts.limits.max_publish_reservations; ++i)
   {
     if (i != skip)
     {
@@ -8520,14 +8905,14 @@ static size_t puback_pool_capacity(const az_iot_connection_client* c, uint8_t po
 {
   return pool != PUBACK_POOL_SHARED
       ? c->puback_reservations[pool].count
-      : AZ_IOT_MAX_PENDING_PUBACKS - puback_reserved_except(c, PUBACK_POOL_SHARED);
+      : c->opts.limits.max_pending_publishes - puback_reserved_except(c, PUBACK_POOL_SHARED);
 }
 
 /** @brief Slots in use that count against @p pool. */
 static size_t puback_pool_used(const az_iot_connection_client* c, uint8_t pool)
 {
   size_t used = 0;
-  for (size_t i = 0; i < AZ_IOT_MAX_PENDING_PUBACKS; ++i)
+  for (size_t i = 0; i < c->opts.limits.max_pending_publishes; ++i)
   {
     if (c->pending_pubacks[i].in_use && c->pending_pubacks[i].reservation == pool)
     {
@@ -8538,7 +8923,7 @@ static size_t puback_pool_used(const az_iot_connection_client* c, uint8_t pool)
 }
 
 /**
- * @brief A free pending_pubacks[] index @p pool may take, or AZ_IOT_MAX_PENDING_PUBACKS if the
+ * @brief A free pending_pubacks[] index @p pool may take, or limits.max_pending_publishes if the
  *        pool is at capacity.
  *
  * Every pool's in-flight count stays within its capacity (reserve_pubacks() refuses a change that
@@ -8549,16 +8934,16 @@ static size_t puback_free_slot(const az_iot_connection_client* c, uint8_t pool)
 {
   if (puback_pool_used(c, pool) >= puback_pool_capacity(c, pool))
   {
-    return AZ_IOT_MAX_PENDING_PUBACKS;
+    return c->opts.limits.max_pending_publishes;
   }
-  for (size_t i = 0; i < AZ_IOT_MAX_PENDING_PUBACKS; ++i)
+  for (size_t i = 0; i < c->opts.limits.max_pending_publishes; ++i)
   {
     if (!c->pending_pubacks[i].in_use)
     {
       return i;
     }
   }
-  return AZ_IOT_MAX_PENDING_PUBACKS;
+  return c->opts.limits.max_pending_publishes;
 }
 
 /**
@@ -8574,7 +8959,7 @@ static void puback_abandon(az_iot_connection_client* c, const void* owner)
   {
     return;
   }
-  for (size_t i = 0; i < AZ_IOT_MAX_PENDING_PUBACKS; ++i)
+  for (size_t i = 0; i < c->opts.limits.max_pending_publishes; ++i)
   {
     if (c->pending_pubacks[i].in_use && c->pending_pubacks[i].reservation == pool)
     {
@@ -8593,8 +8978,14 @@ static az_iot_result publish_tracked(
     const az_iot_mqtt_message* msg,
     az_iot_publish_ack_callback ack_cb,
     az_iot_publish_result_callback result_cb,
-    void* user_ctx)
+    void* user_ctx,
+    az_iot_publish_handle* out_handle)
 {
+  if (out_handle)
+  {
+    out_handle->slot = 0;
+    out_handle->id = 0;
+  }
   if (!client || !msg)
   {
     return AZ_IOT_ERR_INVALID_ARG;
@@ -8611,12 +9002,12 @@ static az_iot_result publish_tracked(
    * nor teardown_active() acts on it. Adapters deliver events only from
    * process_loop() (az_iot_mqtt_iface), so no PUBACK can arrive before the
    * packet id is filled in below. */
-  size_t slot = AZ_IOT_MAX_PENDING_PUBACKS;
+  size_t slot = client->opts.limits.max_pending_publishes;
   if (msg->qos != AZ_IOT_MQTT_QOS_0 && has_cb)
   {
     uint8_t pool = puback_pool_of(client, owner);
     slot = puback_free_slot(client, pool);
-    if (slot == AZ_IOT_MAX_PENDING_PUBACKS)
+    if (slot == client->opts.limits.max_pending_publishes)
     {
       return AZ_IOT_ERR_BUSY;
     }
@@ -8625,12 +9016,13 @@ static az_iot_result publish_tracked(
     client->pending_pubacks[slot].result_cb = NULL;
     client->pending_pubacks[slot].user_ctx = NULL;
     client->pending_pubacks[slot].reservation = pool;
+    client->pending_pubacks[slot].publish_id = 0;
     client->pending_pubacks[slot].in_use = true;
   }
 
   uint16_t pid = 0;
   az_iot_result r = client->active_client->iface->publish(client->active_client, msg, &pid);
-  if (slot < AZ_IOT_MAX_PENDING_PUBACKS)
+  if (slot < client->opts.limits.max_pending_publishes)
   {
     if (r != AZ_IOT_OK)
     {
@@ -8641,6 +9033,14 @@ static az_iot_result publish_tracked(
     client->pending_pubacks[slot].cb = ack_cb;
     client->pending_pubacks[slot].result_cb = result_cb;
     client->pending_pubacks[slot].user_ctx = user_ctx;
+    client->pending_pubacks[slot].publish_id = client->next_publish_id;
+    client->next_publish_id
+        = client->next_publish_id == UINT64_MAX ? 1u : client->next_publish_id + 1u;
+    if (out_handle)
+    {
+      out_handle->slot = slot;
+      out_handle->id = client->pending_pubacks[slot].publish_id;
+    }
     return AZ_IOT_OK;
   }
   if (r != AZ_IOT_OK)
@@ -8664,7 +9064,7 @@ az_iot_result az_iot_connection_client__publish(
     az_iot_publish_ack_callback ack_cb,
     void* ack_user_ctx)
 {
-  return publish_tracked(client, owner, msg, ack_cb, NULL, ack_user_ctx);
+  return publish_tracked(client, owner, msg, ack_cb, NULL, ack_user_ctx, NULL);
 }
 
 az_iot_result az_iot_connection_client__publish_with_result(
@@ -8672,9 +9072,25 @@ az_iot_result az_iot_connection_client__publish_with_result(
     const void* owner,
     const az_iot_mqtt_message* msg,
     az_iot_publish_result_callback result_cb,
-    void* user_ctx)
+    void* user_ctx,
+    az_iot_publish_handle* out_handle)
 {
-  return publish_tracked(client, owner, msg, NULL, result_cb, user_ctx);
+  return publish_tracked(client, owner, msg, NULL, result_cb, user_ctx, out_handle);
+}
+
+void az_iot_connection_client__forget_publish(
+    az_iot_connection_client* client,
+    az_iot_publish_handle handle)
+{
+  if (client == NULL || handle.id == 0u || handle.slot >= client->opts.limits.max_pending_publishes)
+  {
+    return;
+  }
+  az_iot_connection_pending_publish* p = &client->pending_pubacks[handle.slot];
+  if (p->in_use && p->publish_id == handle.id)
+  {
+    memset(p, 0, sizeof(*p));
+  }
 }
 
 az_iot_result az_iot_connection_client__reserve_pubacks(
@@ -8695,30 +9111,31 @@ az_iot_result az_iot_connection_client__reserve_pubacks(
   uint8_t entry = puback_pool_of(client, owner);
   if (entry == PUBACK_POOL_SHARED)
   {
-    for (uint8_t i = 0; i < AZ_IOT_MAX_PUBACK_RESERVATIONS; ++i)
+    for (size_t i = 0; i < client->opts.limits.max_publish_reservations; ++i)
     {
       if (client->puback_reservations[i].owner == NULL)
       {
-        entry = i;
+        entry = (uint8_t)i;
         break;
       }
     }
   }
   size_t others = puback_reserved_except(client, entry);
-  if (entry == PUBACK_POOL_SHARED || count > AZ_IOT_MAX_PENDING_PUBACKS - others)
+  if (entry == PUBACK_POOL_SHARED || count > client->opts.limits.max_pending_publishes - others)
   {
     AZ_IOT_LOG_ERRORF(
         AZ_IOT_LOG_COMPONENT_CONNECTION,
         "cannot reserve %lu pending-PUBACK slots: %lu of %u reserved by others, %u holders at most",
         (unsigned long)count,
         (unsigned long)others,
-        (unsigned)AZ_IOT_MAX_PENDING_PUBACKS,
-        (unsigned)AZ_IOT_MAX_PUBACK_RESERVATIONS);
+        (unsigned)client->opts.limits.max_pending_publishes,
+        (unsigned)client->opts.limits.max_publish_reservations);
     return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
   }
   /* Keep every pool within its capacity, so a granted reservation is usable at once instead of
    * waiting for shared publishes already in flight to be acknowledged. */
-  if (puback_pool_used(client, PUBACK_POOL_SHARED) > AZ_IOT_MAX_PENDING_PUBACKS - others - count
+  if (puback_pool_used(client, PUBACK_POOL_SHARED)
+          > client->opts.limits.max_pending_publishes - others - count
       || (client->puback_reservations[entry].owner == owner
           && puback_pool_used(client, entry) > count))
   {
@@ -8742,7 +9159,7 @@ void az_iot_connection_client__release_pubacks(az_iot_connection_client* client,
   }
   /* In-flight publishes keep their callbacks and move to the shared pool, whose capacity grows by
    * at least as much, so the entry can be reused at once. */
-  for (size_t i = 0; i < AZ_IOT_MAX_PENDING_PUBACKS; ++i)
+  for (size_t i = 0; i < client->opts.limits.max_pending_publishes; ++i)
   {
     if (client->pending_pubacks[i].in_use && client->pending_pubacks[i].reservation == entry)
     {
@@ -8753,12 +9170,108 @@ void az_iot_connection_client__release_pubacks(az_iot_connection_client* client,
   client->puback_reservations[entry].count = 0;
 }
 
+void az_iot_connection_client__abandon_pubacks(az_iot_connection_client* client, const void* owner)
+{
+  if (client == NULL || owner == NULL)
+  {
+    return;
+  }
+  puback_abandon(client, owner);
+}
+
+az_iot_result az_iot_connection_client__add_feature_observer(
+    az_iot_connection_client* client,
+    uint8_t events,
+    az_iot_connection_feature_observer_callback cb,
+    void* user_ctx)
+{
+  if (client == NULL || cb == NULL || events == 0u)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  /* A state observer added mid-dispatch would see the transition in flight. */
+  if (client->dispatching_state && (events & (uint8_t)AZ_IOT_CONNECTION_FEATURE_EVENT_STATE))
+  {
+    AZ_IOT_LOG_ERROR(
+        AZ_IOT_LOG_COMPONENT_CONNECTION, "cannot add a state observer from inside one");
+    return AZ_IOT_ERR_BUSY;
+  }
+  size_t const count = client->opts.limits.max_feature_observers;
+  size_t free_slot = count;
+  for (size_t i = 0; i < count; ++i)
+  {
+    az_iot_connection_feature_observer* observer = &client->feature_observers[i];
+    if (observer->cb == cb && observer->user_ctx == user_ctx)
+    {
+      observer->events = events;
+      return AZ_IOT_OK;
+    }
+    if (observer->cb == NULL && free_slot == count)
+    {
+      free_slot = i;
+    }
+  }
+  if (free_slot == count)
+  {
+    AZ_IOT_LOG_ERROR(AZ_IOT_LOG_COMPONENT_CONNECTION, "no free feature-observer slot");
+    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+  }
+  client->feature_observers[free_slot].cb = cb;
+  client->feature_observers[free_slot].user_ctx = user_ctx;
+  client->feature_observers[free_slot].events = events;
+  return AZ_IOT_OK;
+}
+
+/** @brief Index of the observer with @p cb and @p user_ctx; limits.max_feature_observers if none.
+ */
+static size_t find_feature_observer(
+    const az_iot_connection_client* client,
+    az_iot_connection_feature_observer_callback cb,
+    const void* user_ctx)
+{
+  size_t i = 0;
+  while (i < client->opts.limits.max_feature_observers
+         && !(
+             client->feature_observers[i].cb == cb
+             && client->feature_observers[i].user_ctx == user_ctx))
+  {
+    ++i;
+  }
+  return i;
+}
+
+void az_iot_connection_client__remove_feature_observer(
+    az_iot_connection_client* client,
+    az_iot_connection_feature_observer_callback cb,
+    const void* user_ctx)
+{
+  if (client == NULL || cb == NULL)
+  {
+    return;
+  }
+  size_t const i = find_feature_observer(client, cb, user_ctx);
+  if (i < client->opts.limits.max_feature_observers)
+  {
+    memset(&client->feature_observers[i], 0, sizeof(client->feature_observers[i]));
+  }
+}
+
+bool az_iot_connection_client__has_feature_observer(
+    const az_iot_connection_client* client,
+    az_iot_connection_feature_observer_callback cb,
+    const void* user_ctx)
+{
+  return client != NULL && cb != NULL
+      && find_feature_observer(client, cb, user_ctx) < client->opts.limits.max_feature_observers;
+}
+
 bool az_iot_connection_client__can_track_publish(
     const az_iot_connection_client* client,
     const void* owner)
 {
   return client != NULL
-      && puback_free_slot(client, puback_pool_of(client, owner)) < AZ_IOT_MAX_PENDING_PUBACKS;
+      && puback_free_slot(client, puback_pool_of(client, owner))
+      < client->opts.limits.max_pending_publishes;
 }
 
 az_iot_result az_iot_connection_client__subscribe(
@@ -8798,8 +9311,8 @@ az_iot_result az_iot_connection_client__add_subscription_on_connect(
   }
   /* Find a free slot. Duplicates are allowed but pointless; callers are
    * expected to register each filter once. */
-  size_t slot = AZ_IOT_MAX_PERSISTENT_SUBS;
-  for (size_t i = 0; i < AZ_IOT_MAX_PERSISTENT_SUBS; ++i)
+  size_t slot = client->opts.limits.max_persistent_subscriptions;
+  for (size_t i = 0; i < client->opts.limits.max_persistent_subscriptions; ++i)
   {
     if (!client->persistent_subs[i].in_use)
     {
@@ -8807,7 +9320,7 @@ az_iot_result az_iot_connection_client__add_subscription_on_connect(
       break;
     }
   }
-  if (slot == AZ_IOT_MAX_PERSISTENT_SUBS)
+  if (slot == client->opts.limits.max_persistent_subscriptions)
   {
     /* A fixed array -- c/src does not allocate -- so running out is a capacity
      * failure, not an unsupported operation. NOT_SUPPORTED was too vague to act
@@ -8821,9 +9334,9 @@ az_iot_result az_iot_connection_client__add_subscription_on_connect(
     AZ_IOT_LOG_ERRORF(
         AZ_IOT_LOG_COMPONENT_CONNECTION,
         "cannot register '%s': all %d persistent subscription slots are in use "
-        "(raise AZ_IOT_MAX_PERSISTENT_SUBS)",
+        "(raise limits.max_persistent_subscriptions)",
         topic_filter,
-        (int)AZ_IOT_MAX_PERSISTENT_SUBS);
+        (int)client->opts.limits.max_persistent_subscriptions);
     return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
   }
   memcpy(client->persistent_subs[slot].topic_filter, topic_filter, n + 1);
@@ -8884,7 +9397,7 @@ size_t az_iot_connection_client__remove_subscriptions_for(
       && client->state[AZ_IOT_CONN_SCOPE_HUB] == AZ_IOT_CONN_STATE_CONNECTED;
 
   size_t removed = 0;
-  for (size_t i = 0; i < AZ_IOT_MAX_PERSISTENT_SUBS; ++i)
+  for (size_t i = 0; i < client->opts.limits.max_persistent_subscriptions; ++i)
   {
     if (!client->persistent_subs[i].in_use || client->persistent_subs[i].owner != owner)
     {
@@ -8911,7 +9424,7 @@ size_t az_iot_connection_client__remove_subscriptions_for(
  * removed them. See docs/eng/connection-c.md section 5.3. */
 static void drop_subscriptions_from_other_generations(az_iot_connection_client* c)
 {
-  for (size_t i = 0; i < AZ_IOT_MAX_PERSISTENT_SUBS; ++i)
+  for (size_t i = 0; i < c->opts.limits.max_persistent_subscriptions; ++i)
   {
     if (!c->persistent_subs[i].in_use || c->persistent_subs[i].profile == c->connection_profile)
     {
@@ -9582,6 +10095,21 @@ const char* az_iot_connection_state_to_string(az_iot_connection_state s)
       return "AZ_IOT_CONN_STATE_FAULTED";
     case AZ_IOT_CONN_STATE_SETTING_UP:
       return "AZ_IOT_CONN_STATE_SETTING_UP";
+    default:
+      return "UNKNOWN";
+  }
+}
+
+const char* az_iot_connection_profile_to_string(az_iot_connection_profile profile)
+{
+  switch (profile)
+  {
+    case AZ_IOT_CONNECTION_PROFILE_MQTT_V3:
+      return "AZ_IOT_CONNECTION_PROFILE_MQTT_V3";
+    case AZ_IOT_CONNECTION_PROFILE_MQTT_V5:
+      return "AZ_IOT_CONNECTION_PROFILE_MQTT_V5";
+    case AZ_IOT_CONNECTION_PROFILE_UNKNOWN:
+      return "AZ_IOT_CONNECTION_PROFILE_UNKNOWN";
     default:
       return "UNKNOWN";
   }

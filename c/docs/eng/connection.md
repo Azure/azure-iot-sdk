@@ -403,7 +403,9 @@ successful CONNACK.
 - CONNACK with a non-success status.
 - Unexpected transport disconnect or adapter error while `CONNECTING` or `CONNECTED`.
 - Any failure during a DPS phase (a reconnect restarts provisioning from the beginning).
-- MQTTv5 birth-ack timeout (60 s per handshake step).
+- MQTTv5 presence timeouts: the `dev/#` SUBACK (`subscription_ack_timeout_seconds`, default 60 s)
+  and the birth-ack (escalating: 5–10, 6–11, 8–13, then 10–15 min, reset by `open()` and by a
+  birth-ack in time).
 
 A user-initiated `close()` never triggers a reconnect: it sets an internal `user_close` flag that is
 checked before backoff is scheduled.

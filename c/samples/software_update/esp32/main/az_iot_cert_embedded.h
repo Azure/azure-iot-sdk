@@ -5,7 +5,7 @@
 /* SPDX-License-Identifier: MIT */
 /* In-memory az_iot_certificate_provider for ESP32: hands the SDK PEM material
  * that is compiled into the firmware (EMBED_TXTFILES), so the device needs no
- * filesystem. The esp-mqtt adapter consumes the client_cert_pem/client_key_pem/
+ * filesystem. The MQTT adapter consumes the client_cert_pem/client_key_pem/
  * trusted_ca_pem fields it returns. */
 #ifndef AZ_IOT_CERT_EMBEDDED_H
 #define AZ_IOT_CERT_EMBEDDED_H

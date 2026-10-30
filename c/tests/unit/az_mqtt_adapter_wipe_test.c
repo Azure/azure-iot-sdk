@@ -71,7 +71,7 @@ static void copies_and_send_buffer_are_wiped_at_destroy(void** state)
 
   reset_hooks("LAST-SECRET");
   c->iface->destroy(c);
-  assert_true(az_mqtt_wipe_test_frees >= 6); // 4 copies, the buffers' block, the client
+  assert_true(az_mqtt_wipe_test_frees >= 5); // 4 copies, the workspace
   assert_int_equal(az_mqtt_wipe_test_leaks, 0);
 
   az_iot_az_mqtt_factory_destroy(f);

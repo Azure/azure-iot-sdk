@@ -1617,6 +1617,65 @@ static az_iot_mock_mqtt_client* start_renewal(fixture* fx)
   return m;
 }
 
+/* A renewal due while a planned end (a feature client's timeout) is in progress
+ * waits: no second DISCONNECT, and the session ends with the timeout. */
+static void a_renewal_waits_for_a_planned_end_in_progress(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  uint64_t now = NOW;
+  open_renewable_hub(fx, &now, NULL);
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  assert_int_equal(
+      az_iot_connection_client__end_hub_session(&fx->client, AZ_IOT_ERR_TIMEOUT), AZ_IOT_OK);
+  assert_int_equal(az_iot_mock_mqtt_client_count_of(m, AZ_IOT_MOCK_CALL_DISCONNECT), 1);
+
+  fx->client.sas_token_renewal_due_ms[AZ_IOT_CONN_SCOPE_HUB] = az_iot_time_mono_ms();
+  pump(fx, 1);
+  assert_int_equal(az_iot_mock_mqtt_client_count_of(m, AZ_IOT_MOCK_CALL_DISCONNECT), 1);
+  assert_false(fx->client.sas_token_renewal_in_progress[AZ_IOT_CONN_SCOPE_HUB]);
+
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(m));
+  pump(fx, 1);
+  assert_int_equal(fx->client.state[AZ_IOT_CONN_SCOPE_HUB], AZ_IOT_CONN_STATE_FAULTED);
+  assert_non_null(last_event(fx, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_FAULTED));
+}
+
+/* A renewal held by another planned end does not shorten the hub wait to zero. */
+static void a_held_renewal_does_not_spin_the_hub_wait(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  uint64_t now = NOW;
+  open_renewable_hub(fx, &now, NULL);
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  assert_int_equal(
+      az_iot_connection_client__end_hub_session(&fx->client, AZ_IOT_ERR_TIMEOUT), AZ_IOT_OK);
+  fx->client.sas_token_renewal_due_ms[AZ_IOT_CONN_SCOPE_HUB] = az_iot_time_mono_ms();
+  (void)az_iot_connection_client_do_work(&fx->client, 60000u);
+  uint32_t waited = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_PROCESS_LOOP)->timeout_ms;
+  assert_true(waited > 1000u);
+  assert_true(waited <= 5000u);
+}
+
+/* A planned end requested during a renewal's disconnect is absorbed: the
+ * renewal reconnects as usual. */
+static void a_planned_end_during_a_renewal_is_absorbed(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  uint64_t now = NOW;
+  open_renewable_hub(fx, &now, NULL);
+  az_iot_mock_mqtt_client* m = start_renewal(fx);
+  assert_int_equal(
+      az_iot_connection_client__end_hub_session(&fx->client, AZ_IOT_ERR_TIMEOUT), AZ_IOT_OK);
+  assert_int_equal(az_iot_mock_mqtt_client_count_of(m, AZ_IOT_MOCK_CALL_DISCONNECT), 1);
+
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(m));
+  pump(fx, 1);
+  const recorded_event* e = last_event(fx, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_RETRY_PENDING);
+  assert_non_null(e);
+  assert_true(e->renewal);
+  assert_int_not_equal(fx->client.state[AZ_IOT_CONN_SCOPE_HUB], AZ_IOT_CONN_STATE_FAULTED);
+}
+
 /* The hub session is disconnected and reconnected with a new token, with no
  * reconnection policy: RETRY_PENDING to CONNECTED, all flagged, reason OK. */
 static void the_hub_sas_token_is_renewed(void** state)
@@ -1668,7 +1727,7 @@ static void a_renewal_without_a_disconnect_event_reconnects(void** state)
   assert_int_equal(fx->client.state[AZ_IOT_CONN_SCOPE_HUB], AZ_IOT_CONN_STATE_CONNECTED);
   assert_int_equal(fx->log[fx->log_count - 1].state, AZ_IOT_CONN_STATE_CONNECTED);
 
-  fx->client.sas_token_renewal_disconnect_deadline_ms = az_iot_time_mono_ms();
+  az_iot_connection_client__planned_hub_session_end_force_timeout(&fx->client);
   pump(fx, 1);
   assert_int_equal(fx->client.state[AZ_IOT_CONN_SCOPE_HUB], AZ_IOT_CONN_STATE_CONNECTING);
   const recorded_event* e = last_event(fx, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_RETRY_PENDING);
@@ -1676,6 +1735,33 @@ static void a_renewal_without_a_disconnect_event_reconnects(void** state)
   assert_true(e->renewal);
   connack(fx, AZ_IOT_OK);
   assert_true(fx->log[fx->log_count - 1].renewal);
+}
+
+static void record_session_end_reason(const az_iot_connection_feature_event* event, void* user_ctx)
+{
+  *(int*)user_ctx = (int)event->session_end_reason;
+}
+
+/* The session a SAS renewal ends is reported as planned. */
+static void a_renewal_ends_its_session_as_planned(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  uint64_t now = NOW;
+  open_renewable_hub(fx, &now, NULL);
+  int reason = -1;
+  assert_int_equal(
+      az_iot_connection_client__add_feature_observer(
+          &fx->client,
+          AZ_IOT_CONNECTION_FEATURE_EVENT_SESSION_END,
+          record_session_end_reason,
+          &reason),
+      AZ_IOT_OK);
+  az_iot_mock_mqtt_client* m = start_renewal(fx);
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(m));
+  pump(fx, 1);
+  assert_int_equal(reason, AZ_IOT_CONNECTION_SESSION_END_PLANNED);
+  az_iot_connection_client__remove_feature_observer(
+      &fx->client, record_session_end_reason, &reason);
 }
 
 /* A session authenticated with X.509 has no token to renew. */
@@ -4009,6 +4095,10 @@ int main(void)
     cmocka_unit_test_setup_teardown(the_hub_sas_token_is_renewed, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_renewal_without_a_disconnect_event_reconnects, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_renewal_ends_its_session_as_planned, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_renewal_waits_for_a_planned_end_in_progress, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_planned_end_during_a_renewal_is_absorbed, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_held_renewal_does_not_spin_the_hub_wait, setup, teardown),
     cmocka_unit_test_setup_teardown(an_x509_session_is_not_renewed, setup, teardown),
     cmocka_unit_test_setup_teardown(a_close_during_a_renewal_settles_idle, setup, teardown),
     cmocka_unit_test_setup_teardown(a_refused_renewal_falls_back, setup, teardown),

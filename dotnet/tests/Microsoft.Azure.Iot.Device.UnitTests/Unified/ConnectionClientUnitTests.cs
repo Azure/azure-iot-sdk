@@ -448,7 +448,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
         }
 
         [Fact]
-        public async Task CertificateSigningAcknowledgmentFailureFaultsPendingOperation()
+        public async Task CertificateSigningAcknowledgmentFailureDoesNotFaultPendingOperation()
         {
             using MockConnectionMqttClient mockMqttClient = new();
             using ConnectionClient client = new(new() { MqttClient = mockMqttClient });
@@ -456,13 +456,23 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
             IotHubCertificateSigningRequest request = new("someDeviceId", "csr");
             CertificateSigningOperation operation = await client.SendCertificateSigningRequestAsync(request, TestContext.Current.CancellationToken);
 
-            await ReceiveCertificateSigningResponseAsync(client, request.RequestId, "202", AcceptedResponse, acknowledgeFails: true);
+            MockMqttPublishReceivedEventArgs args = new()
+            {
+                Publish = new()
+                {
+                    Topic = $"$iothub/credentials/res/202/?$rid={request.RequestId}",
+                    Payload = Encoding.UTF8.GetBytes(AcceptedResponse),
+                    QualityOfServiceLevel = MqttQualityOfServiceLevel.AtLeastOnce,
+                },
+                AcknowledgeFails = true,
+            };
+            await mockMqttClient.SimulatePublishReceivedEventAsync(args);
 
+            Assert.Equal(1, args.AcknowledgeCount);
             Assert.True(operation.Accepted.IsCompletedSuccessfully);
-            DeviceException failure = await Assert.ThrowsAsync<DeviceException>(
-                () => operation.Completed.WaitAsync(TimeSpan.FromSeconds(1), TestContext.Current.CancellationToken));
-            Assert.IsType<InvalidOperationException>(failure.InnerException);
-            await client.SendCertificateSigningRequestAsync(request, TestContext.Current.CancellationToken);
+            Assert.False(operation.Completed.IsCompleted);
+            await ReceiveCertificateSigningResponseAsync(client, request.RequestId, "200", CompletedResponse);
+            Assert.True(operation.Completed.IsCompletedSuccessfully);
         }
 
         [Theory]
@@ -476,8 +486,18 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
             IotHubCertificateSigningRequest request = new("someDeviceId", "csr");
             CertificateSigningOperation operation = await client.SendCertificateSigningRequestAsync(request, TestContext.Current.CancellationToken);
 
-            await ReceiveCertificateSigningResponseAsync(client, requestId, status, "{");
+            MockMqttPublishReceivedEventArgs args = new()
+            {
+                Publish = new()
+                {
+                    Topic = $"$iothub/credentials/res/{status}/?$rid={requestId}",
+                    Payload = Encoding.UTF8.GetBytes("{"),
+                    QualityOfServiceLevel = MqttQualityOfServiceLevel.AtLeastOnce,
+                },
+            };
+            await mockMqttClient.SimulatePublishReceivedEventAsync(args);
 
+            Assert.Equal(1, args.AcknowledgeCount);
             Assert.False(operation.Accepted.IsCompleted);
             Assert.False(operation.Completed.IsCompleted);
             await ReceiveCertificateSigningResponseAsync(client, request.RequestId, "202", AcceptedResponse);
@@ -486,37 +506,23 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
         }
 
         private static async Task ReceiveCertificateSigningResponseAsync(
-            ConnectionClient client, string requestId, string status, string payload, bool acknowledgeFails = false)
+            ConnectionClient client, string requestId, string status, string payload)
         {
             // Invoke directly so a receive-handler exception cannot be hidden by the MQTT manager's event dispatch.
             var handler = typeof(ConnectionClient)
                 .GetMethod("HandleReceivedCertificateSigningPublish", BindingFlags.NonPublic | BindingFlags.Instance)!
                 .CreateDelegate<Func<MqttPublishReceivedEventArgs, Task>>(client);
-            CertificateSigningPublishEventArgs args = new()
+            MockMqttPublishReceivedEventArgs args = new()
             {
                 Publish = new()
                 {
                     Topic = $"$iothub/credentials/res/{status}/?$rid={requestId}",
                     Payload = Encoding.UTF8.GetBytes(payload),
+                    QualityOfServiceLevel = MqttQualityOfServiceLevel.AtLeastOnce,
                 },
-                AcknowledgeFails = acknowledgeFails,
             };
             await handler(args).WaitAsync(TimeSpan.FromSeconds(1), TestContext.Current.CancellationToken);
-            Assert.True(args.IsAcknowledged);
-        }
-
-        private sealed class CertificateSigningPublishEventArgs : MqttPublishReceivedEventArgs
-        {
-            public bool IsAcknowledged { get; private set; }
-            public bool AcknowledgeFails { get; init; }
-
-            public override Task AcknowledgeAsync(CancellationToken cancellationToken)
-            {
-                IsAcknowledged = true;
-                return AcknowledgeFails
-                    ? Task.FromException(new InvalidOperationException("Acknowledgment failed."))
-                    : Task.CompletedTask;
-            }
+            Assert.False(args.IsAcknowledged);
         }
 
         private static ConnectionContext GetMockConnectionContext(bool isMQTTv5)

@@ -18,6 +18,10 @@
  *   phase; until then, connect() succeeds against tcp:// brokers only.
  */
 
+#if defined(__APPLE__)
+/* pthread_cond_timedwait_relative_np() is hidden by _POSIX_C_SOURCE alone. */
+#define _DARWIN_C_SOURCE
+#endif
 #if !defined(_WIN32)
 #define _POSIX_C_SOURCE 200809L
 #endif
@@ -29,6 +33,8 @@
 #include "azure/iot/az_iot_mqtt_iface.h"
 
 #include "az_iot_paho_key_custody.h"
+#include "internal/crypto.h"
+#include "internal/mqtt_limits.h"
 
 #include <MQTTAsync.h>
 
@@ -45,6 +51,15 @@ static void paho_mutex_init(paho_mutex* m) { InitializeCriticalSection(m); }
 static void paho_mutex_destroy(paho_mutex* m) { DeleteCriticalSection(m); }
 static void paho_mutex_lock(paho_mutex* m) { EnterCriticalSection(m); }
 static void paho_mutex_unlock(paho_mutex* m) { LeaveCriticalSection(m); }
+typedef CONDITION_VARIABLE paho_cond;
+static void paho_cond_init(paho_cond* c) { InitializeConditionVariable(c); }
+static void paho_cond_destroy(paho_cond* c) { (void)c; }
+static void paho_cond_signal(paho_cond* c) { WakeConditionVariable(c); }
+/* Waits up to @p timeout_ms, or less (signal or spurious wake-up). @p m is held. */
+static void paho_cond_wait_ms(paho_cond* c, paho_mutex* m, uint32_t timeout_ms)
+{
+  (void)SleepConditionVariableCS(c, m, timeout_ms);
+}
 #else
 #include <pthread.h>
 #include <time.h>
@@ -53,6 +68,41 @@ static void paho_mutex_init(paho_mutex* m) { pthread_mutex_init(m, NULL); }
 static void paho_mutex_destroy(paho_mutex* m) { pthread_mutex_destroy(m); }
 static void paho_mutex_lock(paho_mutex* m) { pthread_mutex_lock(m); }
 static void paho_mutex_unlock(paho_mutex* m) { pthread_mutex_unlock(m); }
+typedef pthread_cond_t paho_cond;
+static void paho_cond_init(paho_cond* c)
+{
+#if defined(__APPLE__)
+  pthread_cond_init(c, NULL);
+#else
+  pthread_condattr_t attr;
+  pthread_condattr_init(&attr);
+  pthread_condattr_setclock(&attr, CLOCK_MONOTONIC);
+  pthread_cond_init(c, &attr);
+  pthread_condattr_destroy(&attr);
+#endif
+}
+static void paho_cond_destroy(paho_cond* c) { pthread_cond_destroy(c); }
+static void paho_cond_signal(paho_cond* c) { pthread_cond_signal(c); }
+/* Waits up to @p timeout_ms, or less (signal or spurious wake-up). @p m is held. */
+static void paho_cond_wait_ms(paho_cond* c, paho_mutex* m, uint32_t timeout_ms)
+{
+  struct timespec ts;
+#if defined(__APPLE__)
+  ts.tv_sec = (time_t)(timeout_ms / 1000u);
+  ts.tv_nsec = (long)(timeout_ms % 1000u) * 1000000L;
+  (void)pthread_cond_timedwait_relative_np(c, m, &ts);
+#else
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  ts.tv_sec += (time_t)(timeout_ms / 1000u);
+  ts.tv_nsec += (long)(timeout_ms % 1000u) * 1000000L;
+  if (ts.tv_nsec >= 1000000000L)
+  {
+    ts.tv_sec += 1;
+    ts.tv_nsec -= 1000000000L;
+  }
+  (void)pthread_cond_timedwait(c, m, &ts);
+#endif
+}
 #endif
 
 /* ------------------------------------------------------------------------- */
@@ -102,6 +152,8 @@ typedef struct paho_client
   /* Thread-safe event queue. Producer = Paho callback threads. Consumer =
    * process_loop() on the user thread. */
   paho_mutex q_mutex;
+  /* Signalled by q_push(): wakes process_loop() waiting on an empty queue. */
+  paho_cond q_cond;
   queued_event* q_head;
   queued_event* q_tail;
 
@@ -116,6 +168,9 @@ typedef struct paho_client
    * the session that asked for it. Unused on v3.1.1, which has no reason
    * codes. */
   uint8_t disconnect_reason_code;
+
+  /* Factory client: the allocation destroy() frees. NULL: built in an application workspace. */
+  void* allocation;
 } paho_client;
 
 static paho_client* paho_self(az_iot_mqtt_client* c) { return (paho_client*)c; }
@@ -143,6 +198,7 @@ static void q_push(paho_client* m, queued_event* node)
     m->q_head = node;
   }
   m->q_tail = node;
+  paho_cond_signal(&m->q_cond);
   paho_mutex_unlock(&m->q_mutex);
 }
 
@@ -1188,6 +1244,17 @@ static char* proxy_cred_encode(char* dst, const char* s)
 /* Render the proxy as the "http://[user:password@]host:port" string Paho expects.
  *
  * *out_uri is NULL when no proxy is configured, which is not an error. */
+/** @brief Wipes and frees @p *uri (a proxy URI may hold the Basic credential); sets it to NULL. */
+static void proxy_uri_release(char** uri)
+{
+  if (*uri != NULL)
+  {
+    az_iot_crypto__wipe(*uri, strlen(*uri));
+    free(*uri);
+    *uri = NULL;
+  }
+}
+
 static az_iot_result build_proxy_uri(const az_iot_mqtt_proxy_options* proxy, char** out_uri)
 {
   *out_uri = NULL;
@@ -1251,6 +1318,7 @@ static az_iot_result build_proxy_uri(const az_iot_mqtt_proxy_options* proxy, cha
   int written = snprintf(p, n - used, "%s:%u", proxy->host, port);
   if (written < 0 || (size_t)written >= n - used)
   {
+    az_iot_crypto__wipe(uri, n);
     free(uri);
     return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
   }
@@ -1308,6 +1376,11 @@ static az_iot_result paho_iface_connect(
     AZ_IOT_LOG_ERRORF(AZ_IOT_LOG_COMPONENT_PAHO, "unsupported transport %d", (int)opts->transport);
     return AZ_IOT_ERR_NOT_SUPPORTED;
   }
+  if (opts->tls.client_key_psa_id != 0)
+  {
+    AZ_IOT_LOG_ERROR(AZ_IOT_LOG_COMPONENT_PAHO, "a PSA client key is not supported");
+    return AZ_IOT_ERR_NOT_SUPPORTED;
+  }
   paho_client* m = paho_self(self);
 
   /* The DISCONNECT reason belongs to this session, so it is captured with the
@@ -1350,8 +1423,7 @@ static az_iot_result paho_iface_connect(
   }
   free(m->server_uri);
   m->server_uri = NULL;
-  free(m->proxy_uri);
-  m->proxy_uri = NULL;
+  proxy_uri_release(&m->proxy_uri);
   free(m->client_id);
   m->client_id = NULL;
 
@@ -1827,16 +1899,28 @@ static az_iot_result paho_iface_publish(
   return (rc == MQTTASYNC_SUCCESS) ? AZ_IOT_OK : AZ_IOT_ERR_MQTT;
 }
 
-static az_iot_result paho_iface_process_loop(az_iot_mqtt_client* self, uint32_t timeout_ms)
-{
-  if (!self)
-  {
-    return AZ_IOT_ERR_INVALID_ARG;
-  }
-  paho_client* m = paho_self(self);
+#if defined(AZ_IOT_TEST_PAHO_WAIT_HOOK)
+/* Test seam: called as process_loop() starts waiting, before the queue is checked. */
+void az_iot_test_paho_wait_hook(uint32_t timeout_ms);
+#endif
 
-  /* Drain the queue. We dispatch in FIFO order; the inbound callback runs on
-   * the caller's thread, satisfying the SDK's single-thread contract. */
+/** @brief Waits up to @p timeout_ms for an event to be queued; returns early once one is. */
+static void paho_wait_for_event(paho_client* m, uint32_t timeout_ms)
+{
+#if defined(AZ_IOT_TEST_PAHO_WAIT_HOOK)
+  az_iot_test_paho_wait_hook(timeout_ms);
+#endif
+  paho_mutex_lock(&m->q_mutex);
+  if (m->q_head == NULL)
+  {
+    paho_cond_wait_ms(&m->q_cond, &m->q_mutex, timeout_ms);
+  }
+  paho_mutex_unlock(&m->q_mutex);
+}
+
+/** @brief Dispatches queued events in FIFO order on the caller's thread; true if any. */
+static bool paho_dispatch_queued_events(paho_client* m)
+{
   queued_event* n;
   bool dispatched = false;
   while ((n = q_pop(m)) != NULL)
@@ -1848,18 +1932,25 @@ static az_iot_result paho_iface_process_loop(az_iot_mqtt_client* self, uint32_t 
     }
     q_free(n);
   }
+  return dispatched;
+}
 
-  /* If nothing was dispatched, sleep for the requested timeout so the caller's
-   * do_work loop doesn't spin-wait while Paho's background thread handles I/O. */
-  if (!dispatched && timeout_ms > 0)
+static az_iot_result paho_iface_process_loop(az_iot_mqtt_client* self, uint32_t timeout_ms)
+{
+  if (!self)
   {
-#if defined(_WIN32)
-    Sleep(timeout_ms);
-#else
-    struct timespec ts
-        = { .tv_sec = timeout_ms / 1000, .tv_nsec = (long)(timeout_ms % 1000) * 1000000L };
-    nanosleep(&ts, NULL);
-#endif
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  paho_client* m = paho_self(self);
+
+  /* The inbound callback runs on the caller's thread, satisfying the SDK's single-thread
+   * contract. With nothing queued, wait up to the requested timeout for an event, so the caller's
+   * do_work loop does not spin while Paho's background thread handles I/O, then dispatch it at
+   * once: the caller checks its deadlines after this returns. */
+  if (!paho_dispatch_queued_events(m) && timeout_ms > 0)
+  {
+    paho_wait_for_event(m, timeout_ms);
+    (void)paho_dispatch_queued_events(m);
   }
   return AZ_IOT_OK;
 }
@@ -1898,11 +1989,14 @@ static void paho_iface_destroy(az_iot_mqtt_client* self)
   }
   az_iot_paho_key_custody_release(&m->key_custody);
   q_drain_all(m);
+  paho_cond_destroy(&m->q_cond);
   paho_mutex_destroy(&m->q_mutex);
   free(m->server_uri);
-  free(m->proxy_uri);
+  proxy_uri_release(&m->proxy_uri);
   free(m->client_id);
-  free(m);
+  void* const allocation = m->allocation;
+  memset(m, 0, sizeof(*m));
+  free(allocation); /* NULL for a client in an application workspace. */
 }
 
 static const az_iot_mqtt_iface s_iface_template_v3
@@ -1916,8 +2010,66 @@ static const az_iot_mqtt_iface s_iface_template_v5
         paho_iface_process_loop, paho_iface_set_inbound_cb, paho_iface_destroy };
 
 /* ------------------------------------------------------------------------- */
-/* factory                                                                   */
+/* adapter (application workspace) and factory                               */
 /* ------------------------------------------------------------------------- */
+
+/* AZ_IOT_PAHO_WORKSPACE_SIZE relies on this bound. */
+typedef char paho_client_fits_AZ_IOT_PAHO_WORKSPACE_SIZE
+    [sizeof(paho_client) + 15u <= AZ_IOT_PAHO_WORKSPACE_SIZE ? 1 : -1];
+
+size_t az_iot_paho_get_workspace_size(const az_iot_mqtt_limits* limits)
+{
+  return az_iot_mqtt__limits_are_valid(limits) ? sizeof(paho_client) + 15u : 0;
+}
+
+/** @brief az_iot_mqtt_adapter::init: the client's state in @p workspace; Paho allocates its own. */
+static az_iot_result paho_adapter_init(
+    az_iot_mqtt_version mqtt_version,
+    const az_iot_mqtt_limits* limits,
+    uint8_t* workspace,
+    size_t workspace_size,
+    az_iot_mqtt_client** out_client)
+{
+  if (out_client == NULL)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  *out_client = NULL;
+  if (workspace == NULL || !az_iot_mqtt__limits_are_valid(limits))
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  if (mqtt_version != AZ_IOT_MQTT_VERSION_3_1_1 && mqtt_version != AZ_IOT_MQTT_VERSION_5)
+  {
+    return AZ_IOT_ERR_NOT_SUPPORTED;
+  }
+  if (workspace_size < az_iot_paho_get_workspace_size(limits))
+  {
+    AZ_IOT_LOG_ERRORF(
+        AZ_IOT_LOG_COMPONENT_PAHO,
+        "init: the workspace has %lu bytes; %lu needed",
+        (unsigned long)workspace_size,
+        (unsigned long)az_iot_paho_get_workspace_size(limits));
+    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+  }
+  paho_client* m = (paho_client*)(void*)(((uintptr_t)workspace + 15u) & ~(uintptr_t)15u);
+  memset(m, 0, sizeof(*m));
+  m->version = mqtt_version;
+  m->iface_storage
+      = (mqtt_version == AZ_IOT_MQTT_VERSION_5) ? s_iface_template_v5 : s_iface_template_v3;
+  m->base.iface = &m->iface_storage;
+  paho_mutex_init(&m->q_mutex);
+  paho_cond_init(&m->q_cond);
+  *out_client = &m->base;
+  return AZ_IOT_OK;
+}
+
+static const az_iot_mqtt_adapter s_paho_adapter = {
+  .get_workspace_size = az_iot_paho_get_workspace_size,
+  .init = paho_adapter_init,
+};
+
+const az_iot_mqtt_adapter* az_iot_paho_get_adapter(void) { return &s_paho_adapter; }
 
 typedef struct paho_factory_state
 {
@@ -1927,19 +2079,22 @@ typedef struct paho_factory_state
 static az_iot_mqtt_client* paho_factory_create(void* factory_ctx)
 {
   paho_factory_state* st = (paho_factory_state*)factory_ctx;
-
-  paho_client* m = (paho_client*)calloc(1, sizeof(*m));
-  if (!m)
+  static const az_iot_mqtt_limits limits = { 1, 1, 1, 0, 0 }; /* Paho sizes its own buffers. */
+  size_t const size = az_iot_paho_get_workspace_size(&limits);
+  if (size == 0)
   {
     return NULL;
   }
-
-  m->version = st->public_.version;
-  m->iface_storage
-      = (st->public_.version == AZ_IOT_MQTT_VERSION_5) ? s_iface_template_v5 : s_iface_template_v3;
-  m->base.iface = &m->iface_storage;
-  paho_mutex_init(&m->q_mutex);
-  return &m->base;
+  uint8_t* allocation = (uint8_t*)malloc(size);
+  az_iot_mqtt_client* client = NULL;
+  if (allocation == NULL
+      || paho_adapter_init(st->public_.version, &limits, allocation, size, &client) != AZ_IOT_OK)
+  {
+    free(allocation);
+    return NULL;
+  }
+  paho_self(client)->allocation = allocation;
+  return client;
 }
 
 static az_iot_mqtt_factory* build_factory(az_iot_mqtt_version v)

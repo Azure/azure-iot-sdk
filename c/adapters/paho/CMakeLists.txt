@@ -235,6 +235,8 @@ add_library(azure::iot::adapter_paho ALIAS az_iot_adapter_paho)
 target_include_directories(az_iot_adapter_paho
     PUBLIC
         $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/inc>
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/src/core # internal/mqtt_limits.h
 )
 target_link_libraries(az_iot_adapter_paho
     PUBLIC

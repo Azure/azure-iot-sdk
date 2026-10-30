@@ -36,7 +36,8 @@ namespace Microsoft.Azure.Iot.Device.Unified.Telemetry
         /// An event that executes whenever this device receives a cloud-to-device message from IoT hub.
         /// </summary>
         /// <remarks>
-        /// Every handler is invoked and awaited in the order it was added. The message is acknowledged only if no handler throws.
+        /// Every handler is invoked and awaited in the order it was added. The connection layer acknowledges the MQTT
+        /// message before dispatching it, independently of whether a handler completes successfully.
         /// This feature currently only works with MQTTv3 IoT Hubs.
         /// </remarks>
         /// <exception cref="InvalidOperationException">Thrown when adding a handler if the connection client opted out of cloud-to-device messages (see <see cref="ConnectionClientOptions.EnableCloudToDeviceMessages"/>).</exception>
@@ -212,8 +213,6 @@ namespace Microsoft.Azure.Iot.Device.Unified.Telemetry
                     }
 
                     await _cloudToDeviceTelemetryReceived.InvokeAsync(receivedCloudToDeviceMessage);
-
-                    await args.AcknowledgeAsync(CancellationToken.None);
                 }
             }
         }

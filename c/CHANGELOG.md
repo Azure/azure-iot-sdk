@@ -4,8 +4,72 @@
 
 ### Features Added
 
+- `az_iot_connection_profile_to_string()` names an `az_iot_connection_profile`, for logging.
+- `az_iot_certificate_material::client_key_psa_id` and `az_iot_mqtt_tls_options::client_key_psa_id`
+  name a non-extractable client key by PSA Crypto key id (0: none), e.g. the ESP32 Digital
+  Signature peripheral on ESP-IDF v6. The az_mqtt adapter uses it with mbedTLS; with another TLS
+  backend, and in the Paho and rust_mqtt adapters, the connect fails with
+  `AZ_IOT_ERR_NOT_SUPPORTED`. Bring-your-own adapters must do the same unless they support it.
+- Breaking: `az_iot_connection_client_limits::max_session_handlers` and `max_feature_state_observers`
+  are replaced by `max_feature_observers` (default 10,
+  `AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_FEATURE_OBSERVERS`): feature clients observe connection
+  state, session end, publish completion and the `do_work()` tick through one table.
+  `AZ_IOT_CONNECTION_CLIENT_WORKSPACE_SIZE()` takes 7 counts (was 8), and
+  `AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_SESSION_HANDLERS`,
+  `AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_FEATURE_STATE_OBSERVERS` and `az_iot_session_end_callback`
+  are removed.
+- Connection client (internal): feature observers learn why a session ended
+  (`AZ_IOT_CONNECTION_SESSION_END_PLANNED` after `close()` or a SAS-renewal reconnect,
+  `AZ_IOT_CONNECTION_SESSION_END_LOST` otherwise) and get `AZ_IOT_CONNECTION_FEATURE_EVENT_IDENTITY_CHANGED`
+  when a DPS assignment replaces a different hub or device id, before the assignment callback.
+- `az_iot_connection_client_options::max_unconfirmed_delivery_timeout_ms` bounds how long an SDK
+  message whose peer set no Message Expiry is kept for confirmation or resend. 0 selects
+  `AZ_IOT_DEFAULT_MAX_UNCONFIRMED_DELIVERY_TIMEOUT_MS` (300000); it cannot be disabled. It applies
+  to mqttv5 direct methods: a result for an exec with no Message Expiry now has a deadline (receipt
+  time plus this value), and a queued abandon or probe-ack rejection with no budget is dropped
+  after it. Both were kept and resent without limit. Such an exec is abandoned as insufficient time
+  unless the timeout exceeds the method's declared minimum. The Message Expiry sent is unchanged
+  (none).
+- Software updates: compatibility-property strings are no longer capped at 256 bytes; the only limit
+  is `az_iot_su_limits::device_properties_size`. The installed update ID is capped at
+  `AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE` (192 bytes, as before). A set that does not fit is refused with
+  `AZ_IOT_ERR_NOT_ENOUGH_SPACE` and an `ERROR` log of the bytes needed; properties whose strings
+  point into the client's copy are refused with `AZ_IOT_ERR_INVALID_ARG`. The update-check body
+  is sized with the longest installed ID, fully escaped, so the applied ID adopted after a
+  successful update always fits `max_message_size`. The update check's copy
+  moves from `az_iot_su_client` (432 bytes smaller on 64-bit) into the workspace, which now
+  counts `device_properties_size` twice plus `AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE` (default: 1216
+  bytes, was 512).
+- Breaking: connection client entry counts are run-time limits
+  (`az_iot_connection_client_options::limits`, 0 = default) instead of compile-time macros. The
+  entries live in `options.workspace`, sized by `az_iot_connection_client_get_workspace_size()` or
+  `AZ_IOT_CONNECTION_CLIENT_WORKSPACE_SIZE()`; with no workspace the client uses its own, sized for
+  the defaults. `AZ_IOT_MAX_PENDING_PUBACKS`, `AZ_IOT_MAX_PUBACK_RESERVATIONS`,
+  `AZ_IOT_MAX_PERSISTENT_SUBS`, `AZ_IOT_MAX_SESSION_HANDLERS`, `AZ_IOT_MAX_FEATURE_STATE_OBSERVERS`,
+  `AZ_IOT_MAX_APP_STATE_OBSERVERS`, `AZ_IOT_MAX_FEATURE_CLIENT_BINDS` and
+  `AZ_IOT_MAX_INBOUND_HANDLERS` are removed. `AZ_IOT_MAX_MQTT_FACTORIES`, `AZ_IOT_DPS_HOST_BUF`,
+  `AZ_IOT_DPS_DEVICE_ID_BUF`, `AZ_IOT_DPS_OPERATION_ID_MAX`, `AZ_IOT_CONNECTION_PROFILE_RAW_BUF`,
+  `AZ_IOT_MQTT_USERNAME_BUF`, `AZ_IOT_PERSISTENT_SUB_TOPIC_MAX` and `AZ_IOT_DISPATCH_PREFIX_MAX` are
+  fixed. Defining any of them before including the headers is a compile error, so no build of the
+  application can lay out the client differently from the SDK. The defaults are compile-time
+  values (`AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_*`, `AZ_IOT_CONNECTION_CLIENT_CONFIG_FILE`, or the
+  CMake options of the same names); `AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE` sizes a static
+  workspace for them.
 - Breaking: `az_iot_su_platform_hooks` fields `persist_state_fn` and `load_state_fn` are renamed
   `persist_workflow_state_fn` and `load_workflow_state_fn`.
+- az_mqtt adapter in application memory: `az_iot_az_mqtt_get_adapter()` returns an
+  `az_iot_mqtt_adapter` whose `init()` builds an MQTT 3.1.1 or MQTT 5 client in a workspace the
+  application provides, with no allocation. Sizes are run-time values (`az_iot_mqtt_limits`): send
+  and receive buffers, in-flight messages, message store and connect-string copies.
+  `az_iot_az_mqtt_get_workspace_size()` gives the exact size; `AZ_IOT_AZ_MQTT_WORKSPACE_SIZE()` a
+  constant-expression bound for static arrays. The client's `destroy()` wipes the workspace and
+  frees nothing. The factories are unchanged; they now allocate one workspace per client.
+- Paho and Rust adapters in application memory: `az_iot_paho_get_adapter()` and
+  `az_iot_rust_mqtt_get_adapter()` return the same `az_iot_mqtt_adapter` descriptor. The workspace
+  holds the adapter's own state (`AZ_IOT_PAHO_WORKSPACE_SIZE`, `AZ_IOT_RUST_MQTT_WORKSPACE_SIZE`);
+  Paho and the Rust client still allocate their internals and size their own buffers, so the limits
+  are only checked. `destroy()` releases those internals, wipes the workspace and frees nothing
+  else. The factories are unchanged.
 - az_mqtt adapter: `AZ_IOT_AZ_MQTT_MESSAGE_STORAGE_SIZE` may be 0, for devices that only use clean
   sessions: no message store is allocated, and a connect whose session outlives the connection
   (`clean_start` false; MQTT 5: with `session_expiry_seconds` > 0) returns `AZ_IOT_ERR_NOT_SUPPORTED`.
@@ -138,6 +202,20 @@
   (`az_iot_su_client_request_onboarding_update()`) now sends `installedUpdateId` when the device
   properties set one, as the regular check does, so the service does not offer an update that is
   already installed. It is still omitted when nothing is installed.
+- Breaking: software updates root keys and observers are run-time limits in the workspace:
+  `az_iot_su_limits::max_root_keys` and `max_observers` (defaults
+  `AZ_IOT_SU_DEFAULT_MAX_ROOT_KEYS` 8 and `AZ_IOT_SU_DEFAULT_MAX_OBSERVERS` 4, at most
+  `AZ_IOT_SU_MAX_LIMIT_COUNT`). `AZ_IOT_SU_WORKSPACE_SIZE()` takes them as two more arguments.
+  `AZ_IOT_SU_MAX_ROOT_KEYS`, `AZ_IOT_MAX_SU_OBSERVERS` and the unused `AZ_IOT_SU_MAX_WORKFLOW_ID_LEN`
+  are removed; `AZ_IOT_SU_WORKFLOW_ID_SIZE` (now 128, the service's maximum; was 64) and
+  `AZ_IOT_SU_RETRY_TIMESTAMP_SIZE` (64) are fixed. Defining any of the five is a compile error.
+  `AZ_IOT_SU_MIN_MESSAGE_SIZE` and the default `max_message_size` grow to 2176 + 128 per step (3456)
+  so the largest status report still fits.
+- Software updates: `az_iot_su_client_init()` is now inline and returns `AZ_IOT_ERR_INVALID_ARG`,
+  with an `ERROR` log and the client untouched, when `sizeof(az_iot_su_client)` or any of
+  `AZ_IOT_SU_MAX_STEP_COUNT`, `AZ_IOT_SU_MAX_FILE_COUNT` or `AZ_IOT_SU_MAX_FILE_COUNT_PER_STEP`
+  differs between the application and SDK builds. The exported symbol is
+  `az_iot_su_client_init_checked()`, taking an `az_iot_su_client_layout`.
 - Breaking: the connection client no longer reads `AZ_IOT_HUB_MQTT_V5_MOCK_ENDPOINT`,
   `AZ_IOT_DEVICE_ID` or `AZ_IOT_DPS_CONNECTION_PROFILE_OVERRIDE`. DPS now returns
   `connectionProfile`; to connect to an mqttv5 hub without DPS, set `opts.iothub_hostname`,
@@ -196,9 +274,35 @@
   `sign()` are called only on that thread. Sample
   [unified/multithreaded_telemetry](samples/unified/multithreaded_telemetry/README.md) hands
   readings from other threads to the SDK thread.
+- ESP-IDF components in [platforms/esp32](platforms/esp32/README.md): the SDK, azure-sdk-for-c,
+  the mbedTLS crypto backend and the software updates OTA platform hooks
+  (`az_iot_su_esp32_ota.h`: `az_iot_su_esp32_ota_context`,
+  `az_iot_su_esp32_ota_get_platform_hooks()`, `az_iot_su_esp32_ota_mark_running_image_valid()`).
+- az_mqtt adapter on ESP-IDF (`azure-iot-sdk-az-mqtt` component): with no trusted CA it verifies
+  the server against the ESP-IDF certificate bundle. The ESP32 software updates sample uses it
+  instead of its own esp-mqtt adapter, and no longer depends on `espressif/mqtt`.
 
 ### Bugs Fixed
 
+- Paho adapter: `process_loop()` returns as soon as an event is queued and dispatches it, instead
+  of sleeping its whole timeout and dispatching it on the next call.
+- mqttv5: the connection's `process_loop()` wait ends by the presence SUBACK and birth-ack
+  deadlines, so an ack that arrives in time is not taken for a timeout.
+- mqttv5 twin: with `twin_push.push_desired` or `push_reported` set, a session whose twin-push
+  (expected for the requested sections the birth-ack shows out of sync) does not arrive within the mqttv5 defensive timeout of hub CONNECTED (5 to 15 minutes, longer
+  after consecutive misses, as for the birth-ack) is now ended with a DISCONNECT and reconnected (or
+  faulted with `AZ_IOT_ERR_TIMEOUT` without a reconnection policy). Before, no timeout was armed and
+  a lost push left the device without desired patches until the next reconnect.
+- mqttv5: a malformed birth-ack is ignored instead of completing the handshake with partly
+  decoded twin versions; the birth-ack timeout ends the session.
+- mqttv5: a presence SUBACK or birth-ack timeout now ends the session with a DISCONNECT, as a SAS
+  token renewal does, instead of dropping the connection.
+- Builds with OpenSSL 4.0 and 4.1 without deprecation warnings, which failed the build (Windows
+  `/sdl`, Linux `-Werror`): the Paho key custody adapter uses `ASN1_STRING_set1_string()` on
+  OpenSSL 4.1+, and the tests no longer use deprecated or now-const X.509 name accessors.
+- Samples README: the documented OpenSSL range is 3.0 to 4.1 (the Windows installer it links
+  installs 4.x), with the full (not Light) installer and its `bin` folder on `PATH`. New: building
+  on Windows without OpenSSL (az_mqtt over Schannel) and what that leaves out.
 - az_mqtt adapter: the bundled az_mqtt is updated to main `3a2c61b` (was `58a0799` plus selected
   changes; see `deps/az_mqtt/VENDORED.md`). Invalid options are refused with `AZ_ERROR_ARG` before
   anything is sent: Will, SUBSCRIBE and PUBLISH QoS above 2; MQTT 5 Retain Handling above 2, No
@@ -228,6 +332,16 @@
   command queue (eclipse-paho/paho.mqtt.c#1709), and `MQTTAsync_connect()` against the timeout and
   retry checks on the client's state (#1714). An installed Paho is not patched. See
   [docs/dependencies.md](docs/dependencies.md#races-on-the-command-queue-and-client-state).
+- mqttv5 direct methods: a result is no longer published at or after its deadline -- the exec's
+  receipt time plus its budget, less the safety margin. `az_iot_mqttv5_direct_method_respond()`
+  past it publishes nothing, releases the slot and returns `AZ_IOT_ERR_TIMEOUT`; a held result is
+  dropped. Results were sent while a whole second of budget was left, ignoring the margin.
+- mqttv5: the birth-ack timeout follows the presence schedule instead of a fixed 60 s. Armed after
+  the birth PUBLISH, it waits 5–10 min, then 6–11, 8–13 and 10–15 min for consecutive misses (base
+  plus uniform 0–5 min jitter); on expiry the client disconnects and reconnects. `open()` and a
+  birth-ack in time reset it. `AZ_IOT_PRESENCE_BIRTH_ACK_TIMEOUT_MS` is removed; the presence
+  `dev/#` SUBACK now uses `subscription_ack_timeout_seconds`
+  (`AZ_IOT_DEFAULT_SUBSCRIPTION_ACK_TIMEOUT_SECONDS`, 60 s).
 - az_mqtt adapter: the copies `connect()` makes of credentials (password or SAS token, PEM key and
   certificate, proxy credentials) are zeroed before they are freed, and `destroy()` zeroes the send
   buffer, which holds the CONNECT, before freeing it.
@@ -250,6 +364,16 @@
   slot and published on the next `CONNECTED`, instead of being dropped. `respond()` returns
   `AZ_IOT_OK` for a held result. The client now holds one result buffer per
   `AZ_IOT_MQTTV5_DM_MAX_CONCURRENT` slot.
+- mqttv5 direct methods: a probe-ack, result or abandon that ends without a PUBACK (for example,
+  the connection closed) is published again on the next `CONNECTED`, until its Message Expiry runs
+  out (for a result, until its result deadline); one the broker refuses
+  (`AZ_IOT_ERR_PUBLISH_REFUSED`) is not. A failed re-publish stays queued and is retried on the
+  next `CONNECTED`, hub PUBACK or method message, never from the PUBACK that reported its own
+  failure. A result keeps its slot until its PUBACK, and a probe-ack or
+  result waits for a free pending-PUBACK slot instead of being sent untracked. Probe rejections and
+  abandons are kept in a queue of `AZ_IOT_MQTTV5_DM_NOTICE_QUEUE_MAX` entries (default
+  `AZ_IOT_MQTTV5_DM_MAX_CONCURRENT`). All are dropped when the hub or device id changes (for
+  example after DPS re-provisioning).
 - Software updates: a failed workflow or step now reports a non-positive `resultCode` (`-facility`,
   e.g. `-5` for an install failure), as the service contract requires; it was `700 - facility`.
 - Software updates error handling: `UPDATE_ACCOUNT_ACCESS_DENIED` is handled like

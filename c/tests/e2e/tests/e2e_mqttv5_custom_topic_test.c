@@ -28,6 +28,7 @@
 #include "e2e_device.h"
 #include "e2e_log.h"
 #include "support/test_env.h"
+#include "support/test_shard.h"
 
 #define E2E_ROUTE_TIMEOUT_S 90
 #define E2E_ACK_TIMEOUT_S 30
@@ -682,5 +683,6 @@ int main(void)
     cmocka_unit_test(user_properties_are_routed),
     cmocka_unit_test(a_topic_rebuilt_after_a_reprovision_is_accepted),
   };
-  return cmocka_run_group_tests_name("e2e_mqttv5_custom_topic", tests, group_setup, group_teardown);
+  return az_iot_test_shard_run_group_tests_name(
+      "e2e_mqttv5_custom_topic", tests, group_setup, group_teardown);
 }

@@ -500,6 +500,104 @@ static void inbound_user_properties_are_not_capped(void** state)
   mock_paho_set_inbound_user_properties(k_props, K_PROPS_COUNT);
 }
 
+/* Messages the wait hook delivers as process_loop() starts waiting, and how often it ran. */
+static int g_messages_to_deliver_on_wait;
+static int g_wait_hook_calls;
+/* When set, the wait hook starts this producer thread, so it runs only once the wait began. */
+static race_thread* g_producer_to_start_on_wait;
+static race_thread_fn g_producer_main;
+
+void az_iot_test_paho_wait_hook(uint32_t timeout_ms);
+void az_iot_test_paho_wait_hook(uint32_t timeout_ms)
+{
+  (void)timeout_ms;
+  g_wait_hook_calls++;
+  if (g_producer_to_start_on_wait != NULL)
+  {
+    race_thread_start(g_producer_to_start_on_wait, g_producer_main, NULL);
+    g_producer_to_start_on_wait = NULL;
+  }
+  for (; g_messages_to_deliver_on_wait > 0; --g_messages_to_deliver_on_wait)
+  {
+    deliver_one_message();
+  }
+}
+
+/* An event that arrives while process_loop() waits is dispatched before it returns, so the
+ * caller's deadline checks after it see the event. */
+static void an_event_arriving_during_the_wait_is_dispatched_before_return(void** state)
+{
+  (void)state;
+  race_fixture f;
+  fixture_setup(&f);
+  g_wait_hook_calls = 0;
+  g_messages_to_deliver_on_wait = 1;
+
+  assert_int_equal(f.client->iface->process_loop(f.client, 1000), AZ_IOT_OK);
+
+  assert_int_equal(g_wait_hook_calls, 1);
+  assert_int_equal(f.messages_seen, 1);
+  assert_int_equal(f.malformed, 0);
+  fixture_teardown(&f);
+}
+
+static uint64_t monotonic_ms(void)
+{
+#if defined(_WIN32)
+  return (uint64_t)GetTickCount64();
+#else
+  struct timespec ts;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return (uint64_t)ts.tv_sec * 1000u + (uint64_t)ts.tv_nsec / 1000000u;
+#endif
+}
+
+#if defined(_WIN32)
+static DWORD WINAPI delayed_message_producer_main(LPVOID arg)
+#else
+static void* delayed_message_producer_main(void* arg)
+#endif
+{
+  (void)arg;
+#if defined(_WIN32)
+  Sleep(20);
+#else
+  struct timespec ts = { 0, 20L * 1000000L };
+  nanosleep(&ts, NULL);
+#endif
+  deliver_one_message();
+#if defined(_WIN32)
+  return 0;
+#else
+  return NULL;
+#endif
+}
+
+/* An event queued by another thread, started as the wait begins and delayed 20 ms, wakes
+ * process_loop() at once instead of after its whole timeout. */
+static void an_event_wakes_the_wait_before_its_timeout(void** state)
+{
+  (void)state;
+  race_fixture f;
+  fixture_setup(&f);
+  g_messages_to_deliver_on_wait = 0;
+
+  race_thread producer;
+  g_producer_main = delayed_message_producer_main;
+  g_producer_to_start_on_wait = &producer;
+  uint64_t start = monotonic_ms();
+  while (f.messages_seen == 0 && monotonic_ms() - start < 30000u)
+  {
+    assert_int_equal(f.client->iface->process_loop(f.client, 30000), AZ_IOT_OK);
+  }
+  uint64_t elapsed = monotonic_ms() - start;
+  race_thread_join(producer);
+
+  assert_int_equal(f.messages_seen, 1);
+  assert_true(elapsed < 10000u);
+  fixture_teardown(&f);
+}
+
 /* A property set claiming entries it does not have is reported, not read as empty. */
 static void malformed_inbound_properties_are_reported(void** state)
 {
@@ -581,6 +679,8 @@ int main(void)
     cmocka_unit_test(inbound_user_properties_are_not_capped),
     cmocka_unit_test(malformed_inbound_properties_are_reported),
     cmocka_unit_test(a_failed_property_add_fails_the_publish),
+    cmocka_unit_test(an_event_arriving_during_the_wait_is_dispatched_before_return),
+    cmocka_unit_test(an_event_wakes_the_wait_before_its_timeout),
   };
   return cmocka_run_group_tests_name("paho_event_queue_race_tests", tests, NULL, NULL);
 }

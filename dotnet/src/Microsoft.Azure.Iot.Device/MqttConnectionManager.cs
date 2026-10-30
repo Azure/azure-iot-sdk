@@ -234,6 +234,18 @@ namespace Microsoft.Azure.Iot.Device
 
         private async Task DelegatePublishReceivedAsync(MqttPublishReceivedEventArgs args)
         {
+            if (args.Publish.QualityOfServiceLevel != MqttQualityOfServiceLevel.AtMostOnce)
+            {
+                try
+                {
+                    await args.AcknowledgeAsync(CancellationToken.None);
+                }
+                catch (Exception e)
+                {
+                    Trace.TraceError("Failed to acknowledge a received MQTT publish. {0}", e);
+                }
+            }
+
             try
             {
                 await _publishReceived.InvokeAsync(args);

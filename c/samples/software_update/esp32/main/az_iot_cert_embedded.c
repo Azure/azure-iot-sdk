@@ -30,6 +30,7 @@ static az_iot_result embedded_load(
   /* No HSM key reference: memory-only provider. */
   out->client_key_uri = NULL;
   out->crypto_engine_id = NULL;
+  out->client_key_psa_id = 0;
   return (p->cert_pem && p->key_pem) ? AZ_IOT_OK : AZ_IOT_ERR_INVALID_ARG;
 }
 

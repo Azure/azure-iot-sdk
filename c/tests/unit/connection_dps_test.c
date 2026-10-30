@@ -218,6 +218,36 @@ static az_iot_mock_mqtt_client* provision_to_hub_connecting(az_iot_test_conn* fx
   return hub;
 }
 
+/** @brief Rejects the identity on @p hub, re-registers with @p body; returns the new hub adapter.
+ */
+static az_iot_mock_mqtt_client* reprovision_with(
+    az_iot_test_conn* fx,
+    az_iot_mock_mqtt_client* hub,
+    const char* body)
+{
+  assert_true(az_iot_mock_mqtt_client_inject_connected(hub, AZ_IOT_ERR_IDENTITY_REJECTED));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  az_iot_test_wait_ms(REPROVISION_DELAY_MS + 5u);
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+
+  az_iot_mock_mqtt_client* dps = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(dps, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  const az_iot_mock_call* sub = az_iot_mock_mqtt_client_last_of(dps, AZ_IOT_MOCK_CALL_SUBSCRIBE);
+  assert_non_null(sub);
+  assert_true(az_iot_mock_mqtt_client_inject_suback(dps, sub->packet_id, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_true(inject_dps_response(dps, DPS_RESPONSE_TOPIC_ASSIGNED, body));
+  for (int i = 0; i < 5; ++i)
+  {
+    (void)az_iot_connection_client_do_work(fx->client, 0);
+  }
+  az_iot_mock_mqtt_client* reassigned_hub = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  assert_non_null(reassigned_hub);
+  return reassigned_hub;
+}
+
 /* In RETRY_HUB mode an identity rejection is retried against the cached hub: the
  * refusal does not say the assignment is stale, so DPS is not contacted. */
 static void hub_identity_rejection_retries_the_cached_hub(void** state)
@@ -443,32 +473,11 @@ static void reprovisioning_connects_to_the_new_assignment(void** state)
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
   use_reprovision_mode(fx);
   az_iot_mock_mqtt_client* hub = provision_to_hub_connecting(fx);
-
-  assert_true(az_iot_mock_mqtt_client_inject_connected(hub, AZ_IOT_ERR_IDENTITY_REJECTED));
-  (void)az_iot_connection_client_do_work(fx->client, 0);
-  (void)az_iot_connection_client_do_work(fx->client, 0);
-  az_iot_test_wait_ms(REPROVISION_DELAY_MS + 5u);
-  (void)az_iot_connection_client_do_work(fx->client, 0);
-
-  az_iot_mock_mqtt_client* dps2 = az_iot_mock_mqtt_factory_last_client(fx->factory);
-  assert_true(az_iot_mock_mqtt_client_inject_connected(dps2, AZ_IOT_OK));
-  (void)az_iot_connection_client_do_work(fx->client, 0);
-  const az_iot_mock_call* sub = az_iot_mock_mqtt_client_last_of(dps2, AZ_IOT_MOCK_CALL_SUBSCRIBE);
-  assert_non_null(sub);
-  assert_true(az_iot_mock_mqtt_client_inject_suback(dps2, sub->packet_id, AZ_IOT_OK));
-  (void)az_iot_connection_client_do_work(fx->client, 0);
-
   static const char k_reassigned[]
       = "{\"operationId\":\"op-2\",\"status\":\"assigned\","
         "\"registrationState\":{\"registrationId\":\"ut-device\","
         "\"assignedHub\":\"otherhub.azure-devices.net\",\"deviceId\":\"assigned-device\"}}";
-  assert_true(inject_dps_response(dps2, DPS_RESPONSE_TOPIC_ASSIGNED, k_reassigned));
-  for (int i = 0; i < 5; ++i)
-  {
-    (void)az_iot_connection_client_do_work(fx->client, 0);
-  }
-
-  az_iot_mock_mqtt_client* hub2 = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  az_iot_mock_mqtt_client* hub2 = reprovision_with(fx, hub, k_reassigned);
   assert_non_null(hub2);
   const az_iot_mock_call* c = az_iot_mock_mqtt_client_last_of(hub2, AZ_IOT_MOCK_CALL_CONNECT);
   assert_non_null(c);
@@ -477,6 +486,71 @@ static void reprovisioning_connects_to_the_new_assignment(void** state)
   assert_true(az_iot_mock_mqtt_client_inject_connected(hub2, AZ_IOT_OK));
   (void)az_iot_connection_client_do_work(fx->client, 0);
   assert_true(az_iot_connection_client__is_connected(fx->client));
+}
+
+typedef struct identity_log
+{
+  int identity_changes;
+  int identity_changes_seen_by_assignment;
+} identity_log;
+
+static void count_identity_change(const az_iot_connection_feature_event* event, void* user_ctx)
+{
+  assert_int_equal(event->kind, AZ_IOT_CONNECTION_FEATURE_EVENT_IDENTITY_CHANGED);
+  ++((identity_log*)user_ctx)->identity_changes;
+}
+
+static void note_assignment(const az_iot_dps_assignment* assignment, void* user_ctx)
+{
+  (void)assignment;
+  identity_log* log = (identity_log*)user_ctx;
+  log->identity_changes_seen_by_assignment = log->identity_changes;
+}
+
+/* IDENTITY_CHANGED fires only when an assignment replaces a different hub or device id, and
+ * before the assignment callback. */
+static void a_different_assignment_reports_an_identity_change(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  use_reprovision_mode(fx);
+  identity_log log = { 0 };
+  assert_int_equal(
+      az_iot_connection_client__add_feature_observer(
+          fx->client,
+          AZ_IOT_CONNECTION_FEATURE_EVENT_IDENTITY_CHANGED,
+          count_identity_change,
+          &log),
+      AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_connection_client_set_dps_assignment_callback(fx->client, note_assignment, &log),
+      AZ_IOT_OK);
+
+  /* First assignment: nothing to replace. */
+  az_iot_mock_mqtt_client* hub = provision_to_hub_connecting(fx);
+  assert_int_equal(log.identity_changes, 0);
+
+  /* Same hub and device id. */
+  hub = reprovision_with(fx, hub, k_assigned_body);
+  assert_int_equal(log.identity_changes, 0);
+
+  /* Another device id on the same hub. */
+  static const char k_other_device[]
+      = "{\"operationId\":\"op-3\",\"status\":\"assigned\","
+        "\"registrationState\":{\"registrationId\":\"ut-device\","
+        "\"assignedHub\":\"myhub.azure-devices.net\",\"deviceId\":\"other-device\"}}";
+  hub = reprovision_with(fx, hub, k_other_device);
+  assert_int_equal(log.identity_changes, 1);
+  assert_int_equal(log.identity_changes_seen_by_assignment, 1);
+
+  /* Another hub. */
+  static const char k_other_hub[]
+      = "{\"operationId\":\"op-4\",\"status\":\"assigned\","
+        "\"registrationState\":{\"registrationId\":\"ut-device\","
+        "\"assignedHub\":\"otherhub.azure-devices.net\",\"deviceId\":\"other-device\"}}";
+  (void)reprovision_with(fx, hub, k_other_hub);
+  assert_int_equal(log.identity_changes, 2);
+  assert_int_equal(log.identity_changes_seen_by_assignment, 2);
+  az_iot_connection_client__remove_feature_observer(fx->client, count_identity_change, &log);
 }
 
 /* Re-provisioning runs through the reconnection policy, so a device whose
@@ -1267,6 +1341,12 @@ static void close_from_a_faulted_hub_still_ends_the_held_session(void** state)
  * A session held across registration is still up when a hub failure sends the
  * device back to DPS. An unconditional dps_start() there overwrites dps_mqtt,
  * orphaning that socket and losing any exchange in flight on it. */
+static void count_dps_tick(const az_iot_connection_feature_event* event, void* user_ctx)
+{
+  (void)event;
+  ++*(int*)user_ctx;
+}
+
 static void a_reprovision_adopts_the_session_its_users_hold(void** state)
 {
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
@@ -1295,6 +1375,17 @@ static void a_reprovision_adopts_the_session_its_users_hold(void** state)
   assert_ptr_equal(fx->client->dps_mqtt, held);
   /* And the registration really is running on it. */
   assert_true(fx->client->dps_registration_ref);
+
+  /* do_work() returns early while a registration runs; tick observers still run. */
+  int ticks = 0;
+  assert_int_equal(
+      az_iot_connection_client__add_feature_observer(
+          fx->client, AZ_IOT_CONNECTION_FEATURE_EVENT_TICK, count_dps_tick, &ticks),
+      AZ_IOT_OK);
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_true(fx->client->dps_registration_ref);
+  assert_int_equal(ticks, 1);
+  az_iot_connection_client__remove_feature_observer(fx->client, count_dps_tick, &ticks);
 
   az_iot_connection_client__dps_user_release(fx->client);
 }
@@ -6017,6 +6108,8 @@ int main(void)
         teardown),
     cmocka_unit_test_setup_teardown(
         reprovisioning_connects_to_the_new_assignment, setup_with_reconnect, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_different_assignment_reports_an_identity_change, setup_with_reconnect, teardown),
     cmocka_unit_test_setup_teardown(
         repeated_identity_rejection_still_honors_max_attempts, setup_with_reconnect, teardown),
     cmocka_unit_test_setup_teardown(identity_rejection_without_a_policy_faults, setup, teardown),

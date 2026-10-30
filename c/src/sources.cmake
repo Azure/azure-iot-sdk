@@ -2,8 +2,8 @@
 # Licensed under the MIT license. See LICENSE file in the project root for full license information.
 
 # Library source lists, relative to this directory. Shared by src/CMakeLists.txt
-# and the ESP-IDF component (samples/software_update/esp32/components/azure-iot-sdk),
-# so both builds compile the same files.
+# and the ESP-IDF component (platforms/esp32/components/azure-iot-sdk), so both
+# builds compile the same files.
 
 set(AZ_IOT_CORE_SOURCES
     core/log.c
@@ -15,6 +15,8 @@ set(AZ_IOT_CORE_SOURCES
     core/cert_util.c
     core/mono_time.c
     core/retry_policy.c
+    core/defensive_timeout.c
+    core/deadline.c
     core/env.c
     core/dispatch.c
     core/proto3.c

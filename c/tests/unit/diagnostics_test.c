@@ -183,6 +183,37 @@ static void connection_state_to_string_reports_unknown_for_an_unmapped_state(voi
   assert_string_equal(az_iot_connection_state_to_string((az_iot_connection_state)123), "UNKNOWN");
 }
 
+static void connection_profile_to_string_covers_every_profile(void** state)
+{
+  (void)state;
+  const struct
+  {
+    az_iot_connection_profile profile;
+    const char* text;
+  } all[] = {
+    { AZ_IOT_CONNECTION_PROFILE_MQTT_V3, "AZ_IOT_CONNECTION_PROFILE_MQTT_V3" },
+    { AZ_IOT_CONNECTION_PROFILE_MQTT_V5, "AZ_IOT_CONNECTION_PROFILE_MQTT_V5" },
+    { AZ_IOT_CONNECTION_PROFILE_UNKNOWN, "AZ_IOT_CONNECTION_PROFILE_UNKNOWN" },
+  };
+  const size_t n = sizeof(all) / sizeof(all[0]);
+  const char* got[sizeof(all) / sizeof(all[0])];
+
+  for (size_t i = 0; i < n; ++i)
+  {
+    got[i] = az_iot_connection_profile_to_string(all[i].profile);
+    assert_mapped(got[i], "UNKNOWN", all[i].text);
+    assert_string_equal(got[i], all[i].text);
+  }
+  assert_all_distinct(got, n);
+}
+
+static void connection_profile_to_string_reports_unknown_for_an_unmapped_profile(void** state)
+{
+  (void)state;
+  assert_string_equal(
+      az_iot_connection_profile_to_string((az_iot_connection_profile)42), "UNKNOWN");
+}
+
 /* ---- mqtt version and role ------------------------------------------------ */
 
 static void mqtt_version_to_string_covers_every_version(void** state)
@@ -439,6 +470,8 @@ int main(void)
     cmocka_unit_test(result_to_string_reports_unknown_for_an_unmapped_code),
     cmocka_unit_test(connection_state_to_string_covers_every_state),
     cmocka_unit_test(connection_state_to_string_reports_unknown_for_an_unmapped_state),
+    cmocka_unit_test(connection_profile_to_string_covers_every_profile),
+    cmocka_unit_test(connection_profile_to_string_reports_unknown_for_an_unmapped_profile),
     cmocka_unit_test(mqtt_version_to_string_covers_every_version),
     cmocka_unit_test(mqtt_version_to_string_reports_unknown_for_an_unmapped_version),
     cmocka_unit_test(mqtt_role_to_string_covers_every_role),

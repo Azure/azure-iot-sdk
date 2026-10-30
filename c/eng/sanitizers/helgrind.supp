@@ -28,6 +28,14 @@
    fun:MQTTAsync_sendThread
 }
 
+# Paho MQTTAsyncUtils.c:2392 (v1.3.16): the receive thread reads sendThread_state
+# after releasing mqttasync_mutex; the send thread writes it.
+{
+   paho-receive-thread-send-state
+   Helgrind:Race
+   fun:MQTTAsync_receiveThread
+}
+
 # Paho MQTTAsync.c:1013 (v1.3.16): receiveThread_id and sendThread_id read
 # without a lock; the receive thread writes them (MQTTAsyncUtils.c:2080).
 {
@@ -36,18 +44,28 @@
    fun:MQTTAsync_inCallback
 }
 
-# Paho Thread.c:338 (v1.3.16): helgrind intercepts a condvar signal made inside
-# glibc's pthread_cond_timedwait (pthread_cond_wait.c:516) after the mutex was
-# released, and reports it as "dubious". The wait is the send thread's own; no
-# SDK frame is involved. Seen intermittently. Valgrind 3.21+ reports it as kind
-# Dubious (helgrind/hg_main.c), so older valgrind rejects this entry.
+# glibc pthread_cond_wait.c:516: a timed-out pthread_cond_timedwait() may pass on
+# a signal it consumed, after releasing the mutex. helgrind intercepts that
+# glibc-internal signal and reports it, as Dubious when no thread holds the
+# mutex or as Misc when another thread does. Seen from Paho's send thread
+# (Thread.c:338, Thread_wait_evt, v1.3.16) and from any adapter timed wait; no
+# caller frame signals. Valgrind 3.21+ reports kind Dubious
+# (helgrind/hg_main.c), so older valgrind rejects the first entry.
 {
-   paho-wait-evt-glibc-internal-signal
+   glibc-cond-timedwait-internal-signal-dubious
    Helgrind:Dubious
    obj:*/vgpreload_helgrind-*.so
    fun:__pthread_cond_wait_common
    fun:pthread_cond_timedwait*
    obj:*/vgpreload_helgrind-*.so
-   fun:Thread_wait_evt
-   fun:MQTTAsync_sendThread
+}
+
+# glibc pthread_cond_wait.c:516: the same signal, reported as Misc.
+{
+   glibc-cond-timedwait-internal-signal-misc
+   Helgrind:Misc
+   obj:*/vgpreload_helgrind-*.so
+   fun:__pthread_cond_wait_common
+   fun:pthread_cond_timedwait*
+   obj:*/vgpreload_helgrind-*.so
 }
