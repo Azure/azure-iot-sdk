@@ -289,19 +289,11 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods
                     return;
                 }
 
-                uint secondsSinceReceivingExec;
-                try
-                {
-                    secondsSinceReceivingExec = (uint)stopwatch.Elapsed.TotalSeconds;
-                }
-                catch (InvalidCastException)
-                {
-                    // Should only happen if the double grows so large that a uint can't contain it.
-                    Trace.TraceError("Could not calculate time since exec message was received. This likely means the 'DirectMethodInvokedAsync' callback took too long. Cannot send result, so discarding this probe message");
-                    return;
-                }
+                double secondsSinceReceivingExec = Math.Floor(stopwatch.Elapsed.TotalSeconds);
 
-                uint remainingResponseTimeoutInSeconds = responseTimeoutInSeconds - secondsSinceReceivingExec;
+                uint remainingResponseTimeoutInSeconds = secondsSinceReceivingExec >= responseTimeoutInSeconds
+                    ? 0
+                    : responseTimeoutInSeconds - (uint)secondsSinceReceivingExec;
 
                 if (remainingResponseTimeoutInSeconds < 1)
                 {

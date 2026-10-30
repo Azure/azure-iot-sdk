@@ -333,6 +333,36 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             Assert.Single(connection.PublishedMessages);
         }
 
+        [Theory]
+        [InlineData(0)]
+        [InlineData(1100)]
+        public async Task Exec_HandlerReturnsAfterResponseTimeout_DoesNotPublishResult(int handlerDelayMilliseconds)
+        {
+            MockFeatureConnectionClient connection = new()
+            {
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv5, DeviceId),
+            };
+            using DirectMethodClient directMethodClient = new(connection);
+
+            bool methodInvoked = false;
+            directMethodClient.DirectMethodProbeReceivedAsync += (_) => Task.FromResult(DirectMethodProbeAck.Accepted());
+            directMethodClient.DirectMethodInvokedAsync += async (_) =>
+            {
+                methodInvoked = true;
+                await Task.Delay(handlerDelayMilliseconds, TestContext.Current.CancellationToken);
+                return new DirectMethodResponse() { Status = 200 };
+            };
+
+            byte[] correlationData = Guid.NewGuid().ToByteArray();
+            ByteString readyId = await AssertProbeAcceptedAsync(connection, correlationData);
+
+            var exec = new Exec() { ReadyId = readyId };
+            await connection.SimulateReceiveAsync(CreateInboundMethodPublish("exec:1", correlationData, exec.ToByteArray(), messageExpiryInterval: 0));
+
+            Assert.True(methodInvoked);
+            Assert.Single(connection.PublishedMessages);
+        }
+
         [Fact]
         public void Constructor_RejectsANonPositiveCapacityLimit()
         {
