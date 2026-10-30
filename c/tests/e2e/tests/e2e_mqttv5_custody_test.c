@@ -41,6 +41,7 @@
 #include "azure/iot/az_iot.h"
 
 #include "az_iot_e2e_service.h"
+#include "e2e_connect_clock.h"
 #include "e2e_defensive_timeout.h"
 #include "e2e_log.h"
 
@@ -187,12 +188,15 @@ static void pump_both(fixture* fx)
 /** @brief Pumps until the hub state is CONNECTED or FAULTED, or the deadline passes. */
 static bool wait_connected(fixture* fx)
 {
-  for (time_t start = time(NULL); fx->conn_state != AZ_IOT_CONN_STATE_CONNECTED
-       && fx->conn_state != AZ_IOT_CONN_STATE_FAULTED
-       && (time(NULL) - start) < E2E_CONNECT_TIMEOUT_S;)
+  e2e_connect_clock clock;
+  e2e_connect_clock_start(&clock);
+  while (fx->conn_state != AZ_IOT_CONN_STATE_CONNECTED
+         && fx->conn_state != AZ_IOT_CONN_STATE_FAULTED
+         && e2e_connect_clock_running(&clock, &fx->conn, E2E_CONNECT_TIMEOUT_S))
   {
     pump(fx);
   }
+  e2e_connect_clock_log(&clock, "mqttv5 custody device");
   if (fx->conn_state != AZ_IOT_CONN_STATE_CONNECTED)
   {
     fprintf(

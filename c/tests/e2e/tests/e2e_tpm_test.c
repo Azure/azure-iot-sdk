@@ -41,6 +41,7 @@
 #include "azure/iot/az_iot.h"
 #include "az_iot_crypto_openssl.h"
 #include "az_iot_e2e_service.h"
+#include "e2e_connect_clock.h"
 #include "e2e_log.h"
 #include "e2e_dps_tpm.h"
 #include "sample_tpm_sim.h"
@@ -219,13 +220,20 @@ static void test_dps_tpm_registration_and_hub_sas(void** state)
   az_iot_result reg = az_iot_dps_tpm_client_init(&dps, &dps_opts);
   if (reg == AZ_IOT_OK)
   {
+    uint64_t registration_start_ms = sample_now_ms();
     reg = e2e_dps_tpm_register(
         &dps,
         endpoint != NULL ? endpoint : E2E_TPM_DEFAULT_ENDPOINT,
         https_send,
         NULL,
-        E2E_TPM_TIMEOUT_MS,
+        (uint64_t)E2E_DPS_PROVISIONING_TIMEOUT_S * 1000u,
         &response);
+    fprintf(
+        stderr,
+        "[e2e_tpm] DPS registration: %s after %lus (budget %ds)\n",
+        az_iot_result_to_string(reg),
+        (unsigned long)((sample_now_ms() - registration_start_ms) / 1000u),
+        E2E_DPS_PROVISIONING_TIMEOUT_S);
   }
   const az_iot_dps_tpm_assignment* a
       = reg == AZ_IOT_OK ? az_iot_dps_tpm_client_get_assignment(&dps) : NULL;
