@@ -3049,15 +3049,6 @@ static void a_close_during_the_disconnect_settles_idle_at_its_bound(void** state
   assert_int_equal(count_states(AZ_IOT_CONN_STATE_FAULTED, AZ_IOT_ERR_TIMEOUT), 0);
 }
 
-static void reopen_from_session_end(const az_iot_connection_feature_event* event, void* user_ctx)
-{
-  (void)event;
-  az_iot_connection_client* conn = (az_iot_connection_client*)user_ctx;
-  az_iot_connection_client__remove_feature_observer(conn, reopen_from_session_end, conn);
-  (void)az_iot_connection_client_close(conn);
-  assert_int_equal(az_iot_connection_client_open(conn), AZ_IOT_OK);
-}
-
 /* The connection's do_work() wakes for the twin-push deadline: its adapter wait is bounded by it.
  */
 static void the_connection_wait_is_bounded_by_the_twin_push_wait(void** state)

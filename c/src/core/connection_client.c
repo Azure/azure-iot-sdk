@@ -1143,6 +1143,11 @@ static bool dps_configured(const az_iot_connection_client* c);
 static az_iot_result run_feature_client_binds(az_iot_connection_client* c);
 static void drop_subscriptions_from_other_generations(az_iot_connection_client* c);
 static void csr_event_init(az_iot_csr_event* evt, az_iot_csr_event_kind kind);
+static void report_csr_event(
+    az_iot_connection_client* c,
+    az_iot_csr_callback cb,
+    const az_iot_csr_event* evt,
+    void* user_ctx);
 
 /* Forward decls — used in dps_apply_deferred(). */
 static az_iot_result check_owned_string(size_t buf_cap, const char* s);
@@ -4671,7 +4676,9 @@ static void report_and_drop_subscription(
   memset(&c->persistent_subs[index], 0, sizeof(c->persistent_subs[index]));
   if (cb)
   {
+    enter_callback(c);
     cb(topic, reason, protocol_code, owner);
+    leave_callback(c);
   }
 }
 
@@ -7780,10 +7787,7 @@ static az_iot_result do_work_pass(az_iot_connection_client* client, uint32_t tim
     az_iot_csr_event evt;
     csr_event_init(&evt, AZ_IOT_CSR_FAILED);
     evt.status = AZ_IOT_ERR_TIMEOUT;
-    if (cb)
-    {
-      cb(&evt, uc);
-    }
+    report_csr_event(client, cb, &evt, uc);
   }
 
   /* Fail a stalled MQTTv5 presence (birth) handshake so a missing SUBACK or
@@ -9388,6 +9392,21 @@ static void csr_event_init(az_iot_csr_event* evt, az_iot_csr_event_kind kind)
   evt->tracking_id = "";
 }
 
+/** @brief Hands @p evt to the CSR callback @p cb, if any, as a tracked callback. */
+static void report_csr_event(
+    az_iot_connection_client* c,
+    az_iot_csr_callback cb,
+    const az_iot_csr_event* evt,
+    void* user_ctx)
+{
+  if (cb)
+  {
+    enter_callback(c);
+    cb(evt, user_ctx);
+    leave_callback(c);
+  }
+}
+
 /**
  * @brief Copy the string at the reader's token into @p dst with JSON escapes decoded, except
  *        `\` `u` + 4 hex digits, kept as received. Left "" when the token is not a string or
@@ -9582,10 +9601,7 @@ static void on_csr_puback(az_iot_result status, void* user_ctx)
   az_iot_csr_event evt;
   csr_event_init(&evt, AZ_IOT_CSR_FAILED);
   evt.status = status;
-  if (cb)
-  {
-    cb(&evt, uc);
-  }
+  report_csr_event(c, cb, &evt, uc);
 }
 
 /**
@@ -9682,10 +9698,7 @@ static void on_csr_response(void* user_ctx, const az_iot_mqtt_message* msg)
     c->csr_op.deadline_ms = az_iot_time_mono_ms() + CSR_OP_TIMEOUT_MS;
     evt.kind = AZ_IOT_CSR_ACCEPTED;
     evt.status = AZ_IOT_OK;
-    if (cb)
-    {
-      cb(&evt, uc);
-    }
+    report_csr_event(c, cb, &evt, uc);
     return;
   }
 
@@ -9748,19 +9761,13 @@ static void on_csr_response(void* user_ctx, const az_iot_mqtt_message* msg)
       evt.status = AZ_IOT_OK;
       evt.issued = &issued;
       evt.store_status = csr_store_issued(c, &issued);
-      if (cb)
-      {
-        cb(&evt, uc);
-      }
+      report_csr_event(c, cb, &evt, uc);
     }
     else
     {
       evt.kind = AZ_IOT_CSR_FAILED;
       evt.status = (rc == AZ_IOT_OK) ? AZ_IOT_ERR_PROTOCOL : rc;
-      if (cb)
-      {
-        cb(&evt, uc);
-      }
+      report_csr_event(c, cb, &evt, uc);
     }
     return;
   }
@@ -9783,10 +9790,7 @@ static void on_csr_response(void* user_ctx, const az_iot_mqtt_message* msg)
         (int)err.code,
         err.credential_error[0] != '\0' ? err.credential_error : "-",
         err.tracking_id[0] != '\0' ? err.tracking_id : "-");
-    if (cb)
-    {
-      cb(&evt, uc);
-    }
+    report_csr_event(c, cb, &evt, uc);
   }
 }
 

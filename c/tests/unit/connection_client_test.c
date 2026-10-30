@@ -2778,6 +2778,28 @@ static void send_csr_timeout_before_puback_frees_the_slot(void** state)
       az_iot_connection_client_send_csr(fx->client, "req-next", NULL, on_csr_evt, &tc), AZ_IOT_OK);
 }
 
+static void close_and_open_on_csr_event(const az_iot_csr_event* evt, void* user_ctx)
+{
+  (void)evt;
+  call_close_and_open((lifecycle_call_record*)user_ctx);
+}
+
+/* close() and open() from the CSR callback of a timed-out renewal are refused. */
+static void close_and_open_from_a_csr_timeout_callback_are_refused(void** state)
+{
+  fixture* fx = *state;
+  (void)connect_fixture(fx);
+  lifecycle_call_record r = { fx->client, 0, AZ_IOT_OK, AZ_IOT_OK };
+  assert_int_equal(
+      az_iot_connection_client_send_csr(
+          fx->client, "req-slow", NULL, close_and_open_on_csr_event, &r),
+      AZ_IOT_OK);
+  fx->client->csr_op.deadline_ms = az_iot_time_mono_ms();
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_int_equal(r.calls, 1);
+  assert_refused_from_the_callback(fx, &r);
+}
+
 /* A renewal request the broker rejects completes the operation at once, with
  * the PUBACK status, instead of waiting out the response timeout. */
 static void send_csr_rejected_puback_fails_the_operation(void** state)
@@ -4986,6 +5008,8 @@ int main(void)
     cmocka_unit_test_setup_teardown(send_csr_cancel_frees_slot, setup_csr, teardown),
     cmocka_unit_test_setup_teardown(
         send_csr_timeout_before_puback_frees_the_slot, setup_csr, teardown),
+    cmocka_unit_test_setup_teardown(
+        close_and_open_from_a_csr_timeout_callback_are_refused, setup_csr, teardown),
     cmocka_unit_test_setup_teardown(
         send_csr_response_before_puback_frees_the_slot, setup_csr, teardown),
     cmocka_unit_test_setup_teardown(
