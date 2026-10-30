@@ -4,6 +4,7 @@
 using Google.Protobuf;
 using Microsoft.Azure.Iot.Device.MQTTv5.Connection;
 using Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods;
+using Microsoft.Azure.Iot.Device.MQTTv5.Models;
 using Microsoft.Azure.Iot.Device.Models.DirectMethods;
 using Microsoft.Azure.Iot.Device.Mqtt;
 using Microsoft.Azure.Iot.Device.Models;
@@ -332,6 +333,126 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             Assert.Single(connection.PublishedMessages);
         }
 
+        [Fact]
+        public void Constructor_RejectsANonPositiveCapacityLimit()
+        {
+            MockFeatureConnectionClient connection = new();
+
+            Assert.Throws<ArgumentOutOfRangeException>(() => new DirectMethodClient(connection, new DirectMethodClientOptions() { MaxConcurrentDirectMethods = 0 }));
+            Assert.Throws<ArgumentNullException>(() => new DirectMethodClient(connection, null!));
+        }
+
+        [Fact]
+        public async Task Probe_AtCapacity_IsRejectedAsDeviceBusyUntilAnExecutingHandlerReturns()
+        {
+            MockFeatureConnectionClient connection = new()
+            {
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv5, DeviceId),
+            };
+            using DirectMethodClient directMethodClient = new(connection, new DirectMethodClientOptions() { MaxConcurrentDirectMethods = 2 });
+
+            TaskCompletionSource handlerCanFinish = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            directMethodClient.DirectMethodProbeReceivedAsync += (_) => Task.FromResult(DirectMethodProbeAck.Accepted());
+            directMethodClient.DirectMethodInvokedAsync += async (_) =>
+            {
+                await handlerCanFinish.Task;
+                return new DirectMethodResponse() { Status = 200 };
+            };
+
+            // Fill the limit with one executing invocation and one ready token.
+            byte[] executingRequest = Guid.NewGuid().ToByteArray();
+            ByteString executingReadyId = await AssertProbeAcceptedAsync(connection, executingRequest);
+            Task executing = connection.SimulateReceiveAsync(
+                CreateInboundMethodPublish("exec:1", executingRequest, new Exec() { ReadyId = executingReadyId }.ToByteArray()));
+            Assert.False(executing.IsCompleted);
+            await AssertProbeAcceptedAsync(connection, Guid.NewGuid().ToByteArray());
+
+            byte[] busyRequest = Guid.NewGuid().ToByteArray();
+            Assert.Equal(RejectedReason.DeviceBusy, await SendProbeAsync(connection, busyRequest));
+            // A rejection creates no ready token, so a redelivered probe for it is evaluated again rather than ignored as a duplicate.
+            Assert.Equal(RejectedReason.DeviceBusy, await SendProbeAsync(connection, busyRequest));
+
+            // The executing invocation stops counting once its handler returns.
+            handlerCanFinish.SetResult();
+            await executing;
+            await AssertProbeAcceptedAsync(connection, busyRequest);
+        }
+
+        [Fact]
+        public async Task ReadyToken_ReleasesCapacityWhenItsReadyWaitExpires()
+        {
+            MockFeatureConnectionClient connection = new()
+            {
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv5, DeviceId),
+            };
+            ManualTimeProvider timeProvider = new();
+            using DirectMethodClient directMethodClient = new(connection, new DirectMethodClientOptions() { MaxConcurrentDirectMethods = 1 }, timeProvider);
+
+            bool methodInvoked = false;
+            directMethodClient.DirectMethodProbeReceivedAsync += (_) => Task.FromResult(DirectMethodProbeAck.Accepted());
+            directMethodClient.DirectMethodInvokedAsync += (_) =>
+            {
+                methodInvoked = true;
+                return Task.FromResult(new DirectMethodResponse() { Status = 200 });
+            };
+
+            byte[] expiringRequest = Guid.NewGuid().ToByteArray();
+            ByteString expiringReadyId = await AssertProbeAcceptedAsync(connection, expiringRequest, responseTimeoutSeconds: 40);
+
+            // Remaining connect budget (30 s) + response timeout (40 s) + safety margin (4 s).
+            ManualTimer readyWaitTimer = Assert.Single(timeProvider.Timers);
+            Assert.Equal(TimeSpan.FromSeconds(74), readyWaitTimer.DueTime);
+            Assert.Equal(RejectedReason.DeviceBusy, await SendProbeAsync(connection, Guid.NewGuid().ToByteArray()));
+
+            readyWaitTimer.Fire();
+
+            await AssertProbeAcceptedAsync(connection, Guid.NewGuid().ToByteArray());
+
+            // The abandoned token can no longer be executed.
+            int publishedBeforeExec = connection.PublishedMessages.Count;
+            await connection.SimulateReceiveAsync(
+                CreateInboundMethodPublish("exec:1", expiringRequest, new Exec() { ReadyId = expiringReadyId }.ToByteArray()));
+            Assert.False(methodInvoked);
+            Assert.Equal(publishedBeforeExec, connection.PublishedMessages.Count);
+        }
+
+        [Fact]
+        public async Task ReadyToken_ReleasesCapacityWhenTheBrokerRejectsItsProbeAck()
+        {
+            MockFeatureConnectionClient connection = new()
+            {
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv5, DeviceId),
+            };
+            using DirectMethodClient directMethodClient = new(connection, new DirectMethodClientOptions() { MaxConcurrentDirectMethods = 1 });
+            directMethodClient.DirectMethodProbeReceivedAsync += (_) => Task.FromResult(DirectMethodProbeAck.Accepted());
+            directMethodClient.DirectMethodInvokedAsync += (_) => Task.FromResult(new DirectMethodResponse() { Status = 200 });
+
+            connection.OnPublish = _ => Task.FromResult(new MqttPublishAck() { ReasonCode = MqttPublishAckReasonCode.UnspecifiedError });
+            await SendProbeAsync(connection, Guid.NewGuid().ToByteArray());
+
+            connection.OnPublish = null;
+            await AssertProbeAcceptedAsync(connection, Guid.NewGuid().ToByteArray());
+        }
+
+        // Sends a probe and returns its rejection reason, or null if it was accepted.
+        private static async Task<RejectedReason?> SendProbeAsync(MockFeatureConnectionClient connection, byte[] correlationData, uint responseTimeoutSeconds = 30)
+        {
+            var probe = new Probe() { MethodName = "reboot", ResponseTimeoutSeconds = responseTimeoutSeconds };
+            await connection.SimulateReceiveAsync(CreateInboundMethodPublish("probe:1", correlationData, probe.ToByteArray()));
+
+            MqttPublish probeAckPublish = connection.PublishedMessages[^1];
+            Assert.Equal("probe-ack:1", GetType(probeAckPublish));
+            Assert.Equal(correlationData, probeAckPublish.CorrelationData);
+            ProbeAck probeAck = ProbeAck.Parser.ParseFrom(probeAckPublish.Payload);
+            return probeAck.ResultCase == ProbeAck.ResultOneofCase.Rejected ? probeAck.Rejected.Reason : null;
+        }
+
+        private static async Task<ByteString> AssertProbeAcceptedAsync(MockFeatureConnectionClient connection, byte[] correlationData, uint responseTimeoutSeconds = 30)
+        {
+            Assert.Null(await SendProbeAsync(connection, correlationData, responseTimeoutSeconds));
+            return ProbeAck.Parser.ParseFrom(connection.PublishedMessages[^1].Payload).Ready.ReadyId;
+        }
+
         private static MqttPublish CreateInboundMethodPublish(string type, byte[] correlationData, byte[] payload, uint messageExpiryInterval = 30)
         {
             var publish = new MqttPublish()
@@ -349,6 +470,53 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
         private static string GetType(MqttPublish publish)
         {
             return Assert.Single(publish.UserProperties, p => p.Name == "type").ReadValueAsString();
+        }
+
+        // Timers created through this provider only fire when the test says so.
+        private sealed class ManualTimeProvider : TimeProvider
+        {
+            public ConcurrentQueue<ManualTimer> Timers { get; } = new();
+
+            public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
+            {
+                ManualTimer timer = new(callback, state, dueTime);
+                Timers.Enqueue(timer);
+                return timer;
+            }
+        }
+
+        private sealed class ManualTimer : ITimer
+        {
+            private readonly TimerCallback _callback;
+            private readonly object? _state;
+            private bool _disposed;
+
+            public ManualTimer(TimerCallback callback, object? state, TimeSpan dueTime)
+            {
+                _callback = callback;
+                _state = state;
+                DueTime = dueTime;
+            }
+
+            public TimeSpan DueTime { get; }
+
+            public void Fire()
+            {
+                if (!_disposed)
+                {
+                    _callback(_state);
+                }
+            }
+
+            public bool Change(TimeSpan dueTime, TimeSpan period) => !_disposed;
+
+            public void Dispose() => _disposed = true;
+
+            public ValueTask DisposeAsync()
+            {
+                Dispose();
+                return ValueTask.CompletedTask;
+            }
         }
 
         // Trace listeners are process-wide, so only keep messages that mention this test's request Id.

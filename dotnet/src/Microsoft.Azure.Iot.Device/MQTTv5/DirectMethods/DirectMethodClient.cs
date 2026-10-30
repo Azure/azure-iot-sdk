@@ -4,6 +4,7 @@
 using Google.Protobuf;
 using Microsoft.Azure.Iot.Device.Events;
 using Microsoft.Azure.Iot.Device.MQTTv5.Connection;
+using Microsoft.Azure.Iot.Device.MQTTv5.Models;
 using Microsoft.Azure.Iot.Device.Models.DirectMethods;
 using Microsoft.Azure.Iot.Device.Mqtt;
 using System.Collections.Concurrent;
@@ -25,12 +26,15 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods
         private const string DirectMethodsResponseTopic = "ih/" + IConnectionClient.DeviceIdPlaceholder + "/srv/methods";
         private const string DirectMethodsRequestTopic = "ih/" + IConnectionClient.DeviceIdPlaceholder + "/dev/methods";
 
-        // Only applicable for MQTTv5 Hub scenario. Maps from request Id (GUID) to ready Id (also GUID). When this client receives an Exec message, it should only notify the user about it
-        // if this map contains the exec's request Id and it maps to the ready Id in the Exec message.
-        private ConcurrentDictionary<Guid, ByteString> _pendingExpectedDirectMethodReadyIds = new();
+        // Maps from request Id to the ready token this client sent for it. When this client receives an Exec message, it should only notify the user about it
+        // if this map contains the exec's request Id and its token has the ready Id in the Exec message. Whoever removes a token from this map owns its
+        // capacity slot: the exec handler keeps it until the method handler returns, and every other path releases it.
+        private readonly ConcurrentDictionary<Guid, ReadyToken> _readyTokens = new();
 
-        // Only applicable for MQTTv5 Hub scenario. Maps from request Id (GUID) to method name.
-        private ConcurrentDictionary<Guid, string> _pendingExpectedDirectMethodNames = new();
+        // Ready tokens plus executing method handlers. Never exceeds _maxConcurrentDirectMethods.
+        private int _activeDirectMethods;
+        private readonly int _maxConcurrentDirectMethods;
+        private readonly TimeProvider _timeProvider;
 
         private IConnectionClient _connection;
 
@@ -60,6 +64,8 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods
         /// <remarks>
         /// This feature is only supported by IoT hubs that use MQTTv5. Older IoT hubs will never send this probe.
         /// Only one handler can be added at a time because only one probe response can be sent per request.
+        /// If the handler accepts a probe while this client already holds <see cref="DirectMethodClientOptions.MaxConcurrentDirectMethods"/>
+        /// invocations, this client sends a <see cref="RejectedReason.DeviceBusy"/> rejection instead.
         /// </remarks>
         /// <exception cref="InvalidOperationException">Thrown when adding a handler while another handler is already added, or adding a multicast delegate.</exception>
         public event Func<DirectMethodRequestProbeReceivedEventArgs, Task<DirectMethodProbeAck>>? DirectMethodProbeReceivedAsync
@@ -92,7 +98,29 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods
         /// </code>
         /// </example>
         public DirectMethodClient(IConnectionClient connection)
+            : this(connection, new DirectMethodClientOptions())
         {
+        }
+
+        /// <summary>
+        /// Construct a new <see cref="DirectMethodClient"/> instance.
+        /// </summary>
+        /// <param name="connection">The connection client this feature client will use.</param>
+        /// <param name="options">The options for this client, such as how many direct method invocations it holds at once.</param>
+        /// <exception cref="ArgumentNullException">Thrown if <paramref name="options"/> is null.</exception>
+        /// <exception cref="ArgumentOutOfRangeException">Thrown if <see cref="DirectMethodClientOptions.MaxConcurrentDirectMethods"/> is less than 1.</exception>
+        public DirectMethodClient(IConnectionClient connection, DirectMethodClientOptions options)
+            : this(connection, options, TimeProvider.System)
+        {
+        }
+
+        internal DirectMethodClient(IConnectionClient connection, DirectMethodClientOptions options, TimeProvider timeProvider)
+        {
+            ArgumentNullException.ThrowIfNull(options);
+            ArgumentOutOfRangeException.ThrowIfLessThan(options.MaxConcurrentDirectMethods, 1, $"{nameof(options)}.{nameof(options.MaxConcurrentDirectMethods)}");
+
+            _maxConcurrentDirectMethods = options.MaxConcurrentDirectMethods;
+            _timeProvider = timeProvider;
             _connection = connection;
             _connection.PublishReceivedAsync += HandleReceivedMqttPublish;
         }
@@ -146,6 +174,12 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods
                     return; // Malformed request. Discard it silently
                 }
 
+                if (_readyTokens.ContainsKey(requestId.Value))
+                {
+                    // A redelivery of a probe this client already accepted. The original probe ack has its own QoS 1 delivery lifecycle.
+                    return;
+                }
+
                 uint connectTimeoutRemainingUponReceivingProbe = publish.MessageExpiryInterval;
                 Stopwatch stopwatch = Stopwatch.StartNew();
 
@@ -185,6 +219,36 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods
                     return;
                 }
 
+                ReadyToken? readyToken = null;
+                if (probeAck.ProbeAck.Ready != default)
+                {
+                    if (TryReserveCapacity())
+                    {
+                        // The user signalled that the device was ready for the direct method, so locally save the ready Id and request Id
+                        // until the matching exec arrives or the ready wait budget expires.
+                        readyToken = new ReadyToken(requestId.Value, probeAck.ProbeAck.Ready.ReadyId, probe.MethodName);
+                        TimeSpan readyWait = TimeSpan.FromSeconds(
+                            (double)remainingConnectTimeoutInSeconds + probe.ResponseTimeoutSeconds + SafetyMarginSeconds(probe.ResponseTimeoutSeconds));
+                        readyToken.ReadyWaitTimer = _timeProvider.CreateTimer(OnReadyWaitExpired, readyToken, readyWait, Timeout.InfiniteTimeSpan);
+
+                        if (!_readyTokens.TryAdd(requestId.Value, readyToken))
+                        {
+                            // A concurrently handled redelivery of this probe already accepted it and sent its own probe ack.
+                            readyToken.Dispose();
+                            ReleaseCapacity();
+                            return;
+                        }
+                    }
+                    else
+                    {
+                        Trace.TraceWarning(
+                            "Rejecting a direct method probe for method {0} as device busy because this client already holds its maximum of {1} concurrent direct methods.",
+                            probe.MethodName,
+                            _maxConcurrentDirectMethods);
+                        probeAck = DirectMethodProbeAck.Rejected(RejectedReason.DeviceBusy);
+                    }
+                }
+
                 MqttPublish probeAckPublish = new()
                 {
                     Topic = DirectMethodsResponseTopic,
@@ -197,18 +261,17 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods
 
                 probeAckPublish.UserProperties.Add(new("type", Encoding.UTF8.GetBytes("probe-ack:1")));
 
-                if (probeAck.ProbeAck.Ready != default)
-                {
-                    // The user signalled that the device was ready for the direct method, so locally save the ready Id and request Id
-                    _pendingExpectedDirectMethodReadyIds.TryAdd(requestId.Value, probeAck.ProbeAck.Ready.ReadyId);
-                    _pendingExpectedDirectMethodNames.TryAdd(requestId.Value, probe.MethodName);
-                }
-
                 MqttPublishAck puback = await _connection.PublishAsync(probeAckPublish);
 
                 if (puback.ReasonCode != MqttPublishAckReasonCode.Success)
                 {
                     Trace.TraceError("Failed to send the response to a direct method probe because the MQTT broker rejected the publish with reason code {0} and reason string {1}", puback.ReasonCode, puback.ReasonString);
+
+                    // The service never got this ready token, so don't hold capacity for it.
+                    if (readyToken != null)
+                    {
+                        TryReleaseReadyToken(readyToken);
+                    }
                 }
             }
             else if (directMethodMessageType.Equals("exec"))
@@ -225,7 +288,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods
                     return;
                 }
 
-                if (!_pendingExpectedDirectMethodReadyIds.ContainsKey(requestId.Value))
+                if (!_readyTokens.ContainsKey(requestId.Value))
                 {
                     Trace.TraceWarning("Received direct method exec message with unknown request Id. Ignoring it.");
                     return;
@@ -248,22 +311,20 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods
                     return;
                 }
 
-                if (!_pendingExpectedDirectMethodReadyIds.TryRemove(requestId.Value, out ByteString? expectedReadyId))
+                if (!_readyTokens.TryRemove(requestId.Value, out ReadyToken? readyToken))
                 {
-                    // A concurrently handled exec for the same request already claimed it.
+                    // A concurrently handled exec for the same request, or the ready wait timer, already claimed it.
                     Trace.TraceWarning("Received direct method exec message with unknown request Id. Ignoring it.");
                     return;
                 }
 
-                if (!_pendingExpectedDirectMethodNames.TryRemove(requestId.Value, out string? methodName))
-                {
-                    // This should never happen since _pendingExpectedDirectMethodReadyIds and _pendingExpectedDirectMethodNames should have the same set of keys.
-                    Trace.TraceWarning("Received direct method exec message, but could not correlate its method name to a previously received probe message. Ignoring it.");
-                    return;
-                }
+                // This exec now owns the token's capacity slot, which it releases once the method handler returns.
+                readyToken.Dispose();
+                string methodName = readyToken.MethodName;
 
-                if (!expectedReadyId.Equals(exec.ReadyId))
+                if (!readyToken.ReadyId.Equals(exec.ReadyId))
                 {
+                    ReleaseCapacity();
                     Trace.TraceWarning("Received direct method exec message with unexpected ready Id. Ignoring it.");
                     return;
                 }
@@ -284,6 +345,11 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods
                 {
                     Trace.TraceWarning("The direct method with name {0} took longer than the remaining direct method response timeout, so no result message will be sent.", methodName);
                     return;
+                }
+                finally
+                {
+                    // The invocation stops counting against the capacity limit once the handler returns control, even if it ran past its deadline.
+                    ReleaseCapacity();
                 }
 
                 stopwatch.Stop();
@@ -343,6 +409,66 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods
             }
         }
 
+        private bool TryReserveCapacity()
+        {
+            while (true)
+            {
+                int active = Volatile.Read(ref _activeDirectMethods);
+                if (active >= _maxConcurrentDirectMethods)
+                {
+                    return false;
+                }
+
+                if (Interlocked.CompareExchange(ref _activeDirectMethods, active + 1, active) == active)
+                {
+                    return true;
+                }
+            }
+        }
+
+        private void ReleaseCapacity()
+        {
+            Interlocked.Decrement(ref _activeDirectMethods);
+        }
+
+        // Releases the token's capacity slot unless an exec or the ready wait timer already claimed it.
+        private bool TryReleaseReadyToken(ReadyToken readyToken)
+        {
+            if (!_readyTokens.TryRemove(new KeyValuePair<Guid, ReadyToken>(readyToken.RequestId, readyToken)))
+            {
+                return false;
+            }
+
+            readyToken.Dispose();
+            ReleaseCapacity();
+            return true;
+        }
+
+        private void OnReadyWaitExpired(object? state)
+        {
+            ReadyToken readyToken = (ReadyToken)state!;
+            if (TryReleaseReadyToken(readyToken))
+            {
+                Trace.TraceWarning(
+                    "No direct method exec message arrived for method {0} (request Id {1}) within its ready wait budget, so this client abandoned it.",
+                    readyToken.MethodName,
+                    readyToken.RequestId);
+            }
+        }
+
+        private static uint SafetyMarginSeconds(uint responseTimeoutSeconds)
+        {
+            return Math.Clamp(responseTimeoutSeconds / 10, 1u, 10u);
+        }
+
+        private void ReleaseAllReadyTokens()
+        {
+            foreach (ReadyToken readyToken in _readyTokens.Values)
+            {
+                TryReleaseReadyToken(readyToken);
+            }
+        }
+
         /// <summary>
         /// Releases the unmanaged resources used by this client and optionally disposes of the managed resources.
         /// </summary>
@@ -350,6 +476,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods
         public void Dispose(bool disposing)
         {
             _connection.PublishReceivedAsync -= HandleReceivedMqttPublish;
+            ReleaseAllReadyTokens();
             if (disposing)
             {
                 _connection.Dispose();
@@ -362,7 +489,32 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods
         public void Dispose()
         {
             _connection.PublishReceivedAsync -= HandleReceivedMqttPublish;
+            ReleaseAllReadyTokens();
             _connection.Dispose();
+        }
+
+        // A probe this client accepted, awaiting its exec. Holds one capacity slot while it is in _readyTokens.
+        private sealed class ReadyToken : IDisposable
+        {
+            internal ReadyToken(Guid requestId, ByteString readyId, string methodName)
+            {
+                RequestId = requestId;
+                ReadyId = readyId;
+                MethodName = methodName;
+            }
+
+            internal Guid RequestId { get; }
+
+            internal ByteString ReadyId { get; }
+
+            internal string MethodName { get; }
+
+            internal ITimer? ReadyWaitTimer { get; set; }
+
+            public void Dispose()
+            {
+                ReadyWaitTimer?.Dispose();
+            }
         }
     }
 }
