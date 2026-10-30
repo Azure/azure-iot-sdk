@@ -21,41 +21,6 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
         private const string AcceptedResponse = """{"correlationId":"correlation-id","operationExpires":"2026-10-20T00:00:00Z"}""";
         private const string CompletedResponse = """{"certificates":["issued-certificate"],"correlationId":"correlation-id"}""";
 
-        [Fact]
-        public async Task MqttV5ForwardingStubAwaitsEveryPublishHandlerEvenWhenOneThrows()
-        {
-            MockFeatureConnectionClient connection = new();
-            using Stub stub = new(connection);
-            TaskCompletionSource firstHandlerCanFinish = new(TaskCreationOptions.RunContinuationsAsynchronously);
-            InvalidOperationException failure = new("first handler failed");
-            bool secondHandlerRan = false;
-            Func<MqttPublishReceivedEventArgs, Task> first = async _ =>
-            {
-                await firstHandlerCanFinish.Task;
-                throw failure;
-            };
-            Func<MqttPublishReceivedEventArgs, Task> second = _ =>
-            {
-                secondHandlerRan = true;
-                return Task.CompletedTask;
-            };
-            stub.PublishReceivedAsync += first + second;
-
-            Task delivery = connection.SimulateReceiveAsync(new MqttPublish() { Topic = "topic" });
-            try
-            {
-                Assert.False(delivery.IsCompleted);
-                Assert.False(secondHandlerRan);
-            }
-            finally
-            {
-                firstHandlerCanFinish.TrySetResult();
-            }
-
-            Assert.Same(failure, await Assert.ThrowsAsync<InvalidOperationException>(() => delivery));
-            Assert.True(secondHandlerRan);
-        }
-
         [Theory]
         [InlineData(false)]
         [InlineData(true)]
@@ -729,11 +694,9 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
         }
 
         [Theory]
-        [InlineData(true, true)]
-        [InlineData(true, false)]
-        [InlineData(false, true)]
-        [InlineData(false, false)]
-        public async Task ConnectionClientReannouncesBirthBeforeContinuingPublish(bool isMQTTv5, bool isSessionResumed)
+        [InlineData(true)]
+        [InlineData(false)]
+        public async Task ConnectionClientReannouncesBirthBeforeContinuingPublish(bool isSessionResumed)
         {
             using MockConnectionMqttClient mockMqttClient = new() { AutoRespondToBirth = true };
             ConnectionClient connectionClient = new(new()
@@ -743,7 +706,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
 
             TelemetryClient telemetryClient = new(connectionClient);
 
-            await connectionClient.ConnectToHubAsync(GetMockConnectionContext(isMQTTv5), cancellationToken: TestContext.Current.CancellationToken);
+            await connectionClient.ConnectToHubAsync(GetMockConnectionContext(false), cancellationToken: TestContext.Current.CancellationToken);
 
             // Setup mock MQTT layer to lose connection when telemetry client sends a publish for the first time (subsequent retries will work normally)
             int retryCount = 0;
@@ -765,45 +728,22 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
 
             await telemetryClient.SendTelemetryAsync(new Models.Telemetry.DeviceToCloudTelemetry(), TestContext.Current.CancellationToken);
 
-            if (isMQTTv5)
+            if (isSessionResumed)
             {
-                if (isSessionResumed)
-                {
-                    // With session resumed, the birth flow doesn't need to send the subscribe on the presence topic again
-                    Assert.Equal(4, mockMqttClient.SentMqttTrafficInOrder.Count);
-                }
-                else
-                {
-                    Assert.Equal(5, mockMqttClient.SentMqttTrafficInOrder.Count);
-                }
+                // With session resumed, the reconnect flow doesn't need to send the subscribe on the direct methods/telemetry/twin topics
+                Assert.Equal(2, mockMqttClient.SentMqttTrafficInOrder.Count);
             }
             else
             {
-                if (isSessionResumed)
-                {
-                    // With session resumed, the reconnect flow doesn't need to send the subscribe on the direct methods/telemetry/twin topics
-                    Assert.Equal(2, mockMqttClient.SentMqttTrafficInOrder.Count);
-                }
-                else
-                {
-                    Assert.Equal(3, mockMqttClient.SentMqttTrafficInOrder.Count);
-                }
+                Assert.Equal(3, mockMqttClient.SentMqttTrafficInOrder.Count);
             }
 
             var lastTraffic = mockMqttClient.SentMqttTrafficInOrder.Last();
 
             // Verify that the telemetry sent by the telemetry client is the last piece of traffic "sent" in this test. It must be preceded by the intial device presence flow traffic and by the reconnection device presence flow traffic
             Assert.NotNull(lastTraffic.Publish);
-            if (isMQTTv5)
-            {
-                Assert.StartsWith("ih/", lastTraffic.Publish.Topic);
-                Assert.EndsWith("/srv/telemetry", lastTraffic.Publish.Topic);
-            }
-            else
-            {
-                Assert.StartsWith("devices/", lastTraffic.Publish.Topic);
-                Assert.EndsWith("/messages/events/", lastTraffic.Publish.Topic);
-            }
+            Assert.StartsWith("devices/", lastTraffic.Publish.Topic);
+            Assert.EndsWith("/messages/events/", lastTraffic.Publish.Topic);
         }
 
         [Fact]
@@ -868,11 +808,9 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
         }
 
         [Theory]
-        [InlineData(true, true)]
-        [InlineData(true, false)]
-        [InlineData(false, true)]
-        [InlineData(false, false)]
-        public async Task ConnectionClientReannouncesBirthBeforeContinuingSubscribe(bool isMQTTv5, bool isSessionResumed)
+        [InlineData(true)]
+        [InlineData(false)]
+        public async Task ConnectionClientReannouncesBirthBeforeContinuingSubscribe(bool isSessionResumed)
         {
             using MockConnectionMqttClient mockMqttClient = new() { AutoRespondToBirth = true };
             ConnectionClient connectionClient = new(new()
@@ -880,7 +818,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
                 MqttClient = mockMqttClient
             });
 
-            await connectionClient.ConnectToHubAsync(GetMockConnectionContext(isMQTTv5), cancellationToken: TestContext.Current.CancellationToken);
+            await connectionClient.ConnectToHubAsync(GetMockConnectionContext(false), cancellationToken: TestContext.Current.CancellationToken);
 
             // Setup mock MQTT layer to lose connection when telemetry client sends a publish for the first time (subsequent retries will work normally)
             int retryCount = 0;
@@ -906,31 +844,15 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
             MqttSubscribe featureClientLevelSubscribeRequest = new(expectedTopicString, MqttQualityOfServiceLevel.AtLeastOnce);
             await connectionClient.SubscribeAsync(featureClientLevelSubscribeRequest, TestContext.Current.CancellationToken);
 
-
-            if (isMQTTv5)
+            if (isSessionResumed)
             {
-                if (isSessionResumed)
-                {
-                    // With session resumed, the birth flow doesn't need to send the subscribe on the presence topic again
-                    Assert.Equal(4, mockMqttClient.SentMqttTrafficInOrder.Count);
-                }
-                else
-                {
-                    Assert.Equal(5, mockMqttClient.SentMqttTrafficInOrder.Count);
-                }
+                // With session resumed, the reconnect flow doesn't need to send the subscribe on the direct methods/telemetry/twin topics
+                Assert.Equal(2, mockMqttClient.SentMqttTrafficInOrder.Count);
+
             }
             else
             {
-                if (isSessionResumed)
-                {
-                    // With session resumed, the reconnect flow doesn't need to send the subscribe on the direct methods/telemetry/twin topics
-                    Assert.Equal(2, mockMqttClient.SentMqttTrafficInOrder.Count);
-
-                }
-                else
-                {
-                    Assert.Equal(3, mockMqttClient.SentMqttTrafficInOrder.Count);
-                }
+                Assert.Equal(3, mockMqttClient.SentMqttTrafficInOrder.Count);
             }
 
             var lastTraffic = mockMqttClient.SentMqttTrafficInOrder.Last();
@@ -942,11 +864,9 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
         }
 
         [Theory]
-        [InlineData(true, true)]
-        [InlineData(true, false)]
-        [InlineData(false, true)]
-        [InlineData(false, false)]
-        public async Task ConnectionClientReannouncesBirthBeforeContinuingUnsubscribe(bool isMQTTv5, bool isSessionResumed)
+        [InlineData(true)]
+        [InlineData(false)]
+        public async Task ConnectionClientReannouncesBirthBeforeContinuingUnsubscribe(bool isSessionResumed)
         {
             using MockConnectionMqttClient mockMqttClient = new() { AutoRespondToBirth = true };
             ConnectionClient connectionClient = new(new()
@@ -954,7 +874,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
                 MqttClient = mockMqttClient
             });
 
-            await connectionClient.ConnectToHubAsync(GetMockConnectionContext(isMQTTv5), cancellationToken: TestContext.Current.CancellationToken);
+            await connectionClient.ConnectToHubAsync(GetMockConnectionContext(false), cancellationToken: TestContext.Current.CancellationToken);
 
             // Setup mock MQTT layer to lose connection when telemetry client sends a publish for the first time (subsequent retries will work normally)
             int retryCount = 0;
@@ -980,31 +900,15 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
             MqttUnsubscribe featureClientLevelUnsubscribeRequest = new(expectedTopicString);
             await connectionClient.UnsubscribeAsync(featureClientLevelUnsubscribeRequest, TestContext.Current.CancellationToken);
 
-
-            if (isMQTTv5)
+            if (isSessionResumed)
             {
-                if (isSessionResumed)
-                {
-                    // With session resumed, the birth flow doesn't need to send the subscribe on the presence topic again
-                    Assert.Equal(4, mockMqttClient.SentMqttTrafficInOrder.Count);
-                }
-                else
-                {
-                    Assert.Equal(5, mockMqttClient.SentMqttTrafficInOrder.Count);
-                }
+                // With session resumed, the reconnect flow doesn't need to send the subscribe on the direct methods/telemetry/twin topics
+                Assert.Equal(2, mockMqttClient.SentMqttTrafficInOrder.Count);
+
             }
             else
             {
-                if (isSessionResumed)
-                {
-                    // With session resumed, the reconnect flow doesn't need to send the subscribe on the direct methods/telemetry/twin topics
-                    Assert.Equal(2, mockMqttClient.SentMqttTrafficInOrder.Count);
-
-                }
-                else
-                {
-                    Assert.Equal(3, mockMqttClient.SentMqttTrafficInOrder.Count);
-                }
+                Assert.Equal(3, mockMqttClient.SentMqttTrafficInOrder.Count);
             }
 
             var lastTraffic = mockMqttClient.SentMqttTrafficInOrder.Last();
@@ -1020,13 +924,10 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
         /// sent again once the device is reconnected, rather than failing.
         /// </summary>
         [Theory]
-        [InlineData("publish", false)]
-        [InlineData("subscribe", false)]
-        [InlineData("unsubscribe", false)]
-        [InlineData("publish", true)]
-        [InlineData("subscribe", true)]
-        [InlineData("unsubscribe", true)]
-        public async Task OperationInterruptedByConnectionLossBeforeAckIsResentAfterReconnecting(string operation, bool isMQTTv5)
+        [InlineData("publish")]
+        [InlineData("subscribe")]
+        [InlineData("unsubscribe")]
+        public async Task OperationInterruptedByConnectionLossBeforeAckIsResentAfterReconnecting(string operation)
         {
             using MockConnectionMqttClient mockMqttClient = new() { AutoRespondToBirth = true };
             using ConnectionClient connectionClient = new(new()
@@ -1035,7 +936,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
                 ConnectionRetryPolicy = new ExponentialBackoffRetryPolicy(uint.MaxValue, TimeSpan.Zero, useJitter: false),
             });
 
-            await connectionClient.ConnectToHubAsync(GetMockConnectionContext(isMQTTv5), TestContext.Current.CancellationToken);
+            await connectionClient.ConnectToHubAsync(GetMockConnectionContext(false), TestContext.Current.CancellationToken);
 
             string topic = Guid.NewGuid().ToString();
             int attemptCount = 0;
@@ -1370,10 +1271,8 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
         /// A QoS 0 PUBLISH is never acknowledged, so losing the connection while sending it is reported to the caller
         /// rather than being sent again.
         /// </summary>
-        [Theory]
-        [InlineData(false)]
-        [InlineData(true)]
-        public async Task QoS0PublishInterruptedByConnectionLossIsNotResent(bool isMQTTv5)
+        [Fact]
+        public async Task QoS0PublishInterruptedByConnectionLossIsNotResent()
         {
             using MockConnectionMqttClient mockMqttClient = new() { AutoRespondToBirth = true };
             using ConnectionClient connectionClient = new(new()
@@ -1382,7 +1281,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
                 ConnectionRetryPolicy = new ExponentialBackoffRetryPolicy(uint.MaxValue, TimeSpan.Zero, useJitter: false),
             });
 
-            await connectionClient.ConnectToHubAsync(GetMockConnectionContext(isMQTTv5), TestContext.Current.CancellationToken);
+            await connectionClient.ConnectToHubAsync(GetMockConnectionContext(false), TestContext.Current.CancellationToken);
 
             TaskCompletionSource recoveryCompleted = new(TaskCreationOptions.RunContinuationsAsynchronously);
             connectionClient.DevicePresenceFlowCompletedAsync += _ =>

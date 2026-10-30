@@ -15,8 +15,6 @@ namespace Microsoft.Azure.Iot.Device.Unified.FileUpload
 {
     /// <summary>
     /// Retrieve and complete SAS URIs that allow you to upload files to Azure Storage accounts associated with your IoT Hub.
-    /// 
-    /// WARNING - This feature is currently only supported for MQTTv3 IoT Hubs.
     /// </summary>
     /// <remarks>
     /// This client does not directly support uploading files to Azure Storage. See the file upload sample for how to use this client
@@ -242,8 +240,6 @@ namespace Microsoft.Azure.Iot.Device.Unified.FileUpload
 
         /// <summary>
         /// Request a SAS URI that can be used to upload a file to a configured Azure Storage account.
-        /// 
-        /// WARNING - This feature is currently only supported for MQTTv3 IoT Hubs.
         /// </summary>
         /// <param name="request">The request for the SAS URI.</param>
         /// <param name="cancellationToken">The cancellation token.</param>
@@ -253,11 +249,6 @@ namespace Microsoft.Azure.Iot.Device.Unified.FileUpload
             ObjectDisposedException.ThrowIf(_isDisposed, this);
 
             ConnectionContext currentConnectionContext = GetRequiredConnectionContext();
-
-            if (currentConnectionContext.ConnectionProfile == IotHubConnectionType.Mqttv5)
-            {
-                throw new NotSupportedException("File upload feature is not supported on MQTTv5 IoT Hubs currently");
-            }
 
             string requestUri = $"https://{currentConnectionContext.IotHubHostName}/devices/{Uri.EscapeDataString(currentConnectionContext.DeviceId)}/files?api-version={Unified.Connection.ConnectionClient.ClassicHubApiVersion}";
 
@@ -283,8 +274,6 @@ namespace Microsoft.Azure.Iot.Device.Unified.FileUpload
         /// <summary>
         /// Signal to IoT hub that the SAS URI retrieved with <see cref="GetFileUploadSasUri(FileUploadSasUriRequest, CancellationToken)"/> is no longer needed 
         /// and should be released.
-        /// 
-        /// WARNING - This feature is currently only supported for MQTTv3 IoT Hubs.
         /// </summary>
         /// <param name="completion">The notification that includes the SAS URI from <see cref="FileUploadSasUriResponse"/>.</param>
         /// <param name="cancellationToken">the cancellation token</param>
@@ -297,11 +286,6 @@ namespace Microsoft.Azure.Iot.Device.Unified.FileUpload
             ObjectDisposedException.ThrowIf(_isDisposed, this);
 
             ConnectionContext currentConnectionContext = GetRequiredConnectionContext();
-
-            if (currentConnectionContext.ConnectionProfile == IotHubConnectionType.Mqttv5)
-            {
-                throw new NotSupportedException("File upload feature is not supported on MQTTv5 IoT Hubs currently");
-            }
 
             string requestUri = $"https://{currentConnectionContext.IotHubHostName}/devices/{Uri.EscapeDataString(currentConnectionContext.DeviceId)}/files/notifications?api-version={ConnectionClient.ClassicHubApiVersion}";
 

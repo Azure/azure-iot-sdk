@@ -1,7 +1,6 @@
 ﻿// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
 // See LICENSE file in the project root for full license information.
 
-using Microsoft.Azure.Iot.Device.IntegrationTests.MQTTv5;
 using Microsoft.Azure.Iot.Device.IntegrationTests.Unified;
 using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Models.Twin;
@@ -20,27 +19,12 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
 {
     public class Setup
     {
-        // Test trait marking tests that run against the MQTTv5 IoT hub and its DPS. CI runs these in
-        // ci-dotnet-e2e-mqttv5 and all other e2e tests in ci-dotnet, so each pipeline only needs its own hub's config.
-        public const string HubTrait = "Hub";
-
-        public const string MQTTv5HubTraitValue = "MQTTv5";
-
-        // Read on use rather than at type initialization so that a run targeting one hub does not need the other's config.
+        // Read on use rather than at type initialization so that a missing variable fails only the tests that need it.
         public static string MQTTv3IotHubConnectionString => GetRequiredEnvironmentVariable("IOTHUB_CONNECTION_STRING");
-
-        public static string MQTTv5IotHubConnectionString => GetRequiredEnvironmentVariable("IOTHUB_CONNECTION_STRING_MQTTV5");
 
         public static string DpsConnectionString => GetRequiredEnvironmentVariable("IOT_DPS_CONNECTION_STRING");
 
         public static string DpsIdScope => GetRequiredEnvironmentVariable("IOT_DPS_ID_SCOPE");
-
-        public static string MQTTv5DpsConnectionString => GetRequiredEnvironmentVariable("IOT_DPS_CONNECTION_STRING_MQTTV5");
-
-        public static string MQTTv5DpsIdScope => GetRequiredEnvironmentVariable("IOT_DPS_ID_SCOPE_MQTTV5");
-
-        // Optional; the MQTTv5 DPS instance may not be reachable through the public global endpoint.
-        public static string? MQTTv5DpsGlobalEndpoint => Environment.GetEnvironmentVariable("IOT_DPS_GLOBAL_ENDPOINT_MQTTV5");
 
         public const string TestCertificatesPassword = "some fake password";
 
@@ -56,25 +40,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
 
         public static RegistryManager GetMQTTv3IotHubRegistryManager() => RegistryManager.CreateFromConnectionString(MQTTv3IotHubConnectionString);
 
-        public static ServiceClient GetMQTTv5IotHubServiceClient() => ServiceClient.CreateFromConnectionString(MQTTv5IotHubConnectionString);
-
-        public static RegistryManager GetMQTTv5IotHubRegistryManager() => RegistryManager.CreateFromConnectionString(MQTTv5IotHubConnectionString);
-
-        public static ProvisioningServiceClient GetDpsHubServiceClient(bool testAgainstClassicHub = true) =>
-            ProvisioningServiceClient.CreateFromConnectionString(testAgainstClassicHub ? DpsConnectionString : MQTTv5DpsConnectionString);
-
-        public static string GetDpsIdScope(bool testAgainstClassicHub) => testAgainstClassicHub ? DpsIdScope : MQTTv5DpsIdScope;
-
-        public static ProvisioningSettings CreateProvisioningSettings(bool testAgainstClassicHub)
-        {
-            ProvisioningSettings provisioningSettings = new(GetDpsIdScope(testAgainstClassicHub));
-            if (!testAgainstClassicHub && !string.IsNullOrWhiteSpace(MQTTv5DpsGlobalEndpoint))
-            {
-                provisioningSettings.GlobalEndpointAddress = MQTTv5DpsGlobalEndpoint;
-            }
-
-            return provisioningSettings;
-        }
+        public static ProvisioningServiceClient GetDpsHubServiceClient() => ProvisioningServiceClient.CreateFromConnectionString(DpsConnectionString);
 
         public static string GetMQTTv3IotHubHostName()
         {
@@ -92,143 +58,16 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
         }
 
 
-        public static string GetMQTTv5IotHubHostName()
-        {
-            string[] connectionStringKeyValuePairs = MQTTv5IotHubConnectionString.Split(";");
-            foreach (string connectionStringKeyValuePair in connectionStringKeyValuePairs)
-            {
-                string[] keyAndValue = connectionStringKeyValuePair.Split("=");
-                if (keyAndValue[0].Equals("HostName"))
-                {
-                    return keyAndValue[1];
-                }
-            }
-
-            throw new Exception("Malformed IoT hub connection string");
-        }
-
         public const int TestTimeoutMilliseconds = 60 * 1000;
-
-        public static async Task<MQTTv5DeviceTestContext> CreateProvisionableMQTTv5DeviceAsync(DeviceTwin? initialTwin, Device.MQTTv5.Models.ConnectionClientOptions? options = null, CancellationToken cancellationToken = default)
-        {
-            using ProvisioningServiceClient provisioningServiceClient = GetDpsHubServiceClient(testAgainstClassicHub: false);
-
-            string deviceId = Guid.NewGuid().ToString();
-            string registrationId = deviceId;
-            string certId = Guid.NewGuid().ToString();
-            string certPath = $"./{certId}.cer";
-            string pfxPath = $"./{certId}.pfx";
-            CreateTestCertificates(pfxPath, certPath, deviceId);
-
-            X509Certificate2 certificate = X509CertificateLoader.LoadCertificateFromFile(certPath);
-            X509Certificate2 pfx = X509CertificateLoader.LoadPkcs12FromFile(pfxPath, TestCertificatesPassword);
-
-            // Create individual enrollment for the test device to provision from
-            Attestation attestation = X509Attestation.CreateFromClientCertificates(certificate);
-            TwinCollection initialDesiredProperties = initialTwin == null
-                ? new()
-                : new(JsonSerializer.Serialize(initialTwin.Desired));
-            IndividualEnrollment individualEnrollment = new(registrationId, attestation)
-            {
-                InitialTwinState = new(new(), initialDesiredProperties)
-            };
-            // Cache the client-side object; the service response carries certificate metadata only.
-            await provisioningServiceClient.CreateOrUpdateIndividualEnrollmentAsync(individualEnrollment, cancellationToken);
-
-            X509AuthenticationProvider x509AuthenticationProvider = new(pfx, null);
-
-            Device.MQTTv5.Connection.ConnectionClient connectionClient = new(options);
-
-            return new MQTTv5DeviceTestContext()
-            {
-                ConnectionClient = connectionClient,
-                DeviceId = deviceId,
-                ConnectionProfile = IotHubConnectionType.Mqttv5,
-                AuthenticationProvider = x509AuthenticationProvider,
-                IndividualEnrollment = individualEnrollment,
-            };
-        }
-
-        // Skip DPS registration + provisioning. Just create a device identity on the IoT hub
-        public static async Task<MQTTv5DeviceTestContext> CreateMQTTv5DeviceOnDirectlyOnHubAsync(Device.MQTTv5.Models.ConnectionClientOptions? options = null, CancellationToken cancellationToken = default)
-        {
-            string deviceId = Guid.NewGuid().ToString();
-            string registrationId = deviceId;
-            string certId = Guid.NewGuid().ToString();
-            string certPath = $"./{certId}.cer";
-            string pfxPath = $"./{certId}.pfx";
-            CreateTestCertificates(pfxPath, certPath, deviceId);
-
-            X509Certificate2 certificate = X509CertificateLoader.LoadCertificateFromFile(certPath);
-            X509Certificate2 pfx = X509CertificateLoader.LoadPkcs12FromFile(pfxPath, TestCertificatesPassword);
-
-            Devices.Device device = new(deviceId)
-            {
-                Authentication = new AuthenticationMechanism()
-                {
-                    X509Thumbprint = new()
-                    {
-                        PrimaryThumbprint = certificate.Thumbprint
-                    }
-                }
-            };
-
-            await GetMQTTv5IotHubRegistryManager().AddDeviceAsync(device);
-
-            X509AuthenticationProvider x509AuthenticationProvider = new(pfx, null);
-
-            Device.MQTTv5.Connection.ConnectionClient connectionClient = new(options);
-
-            return new MQTTv5DeviceTestContext()
-            {
-                ConnectionClient = connectionClient,
-                DeviceId = deviceId,
-                ConnectionProfile = IotHubConnectionType.Mqttv5,
-                AuthenticationProvider = x509AuthenticationProvider,
-            };
-        }
-
-        public static async Task<MQTTv5DeviceTestContext> CreateConnectedMQTTv5ConnectionClientAsync(DeviceTwin? initialTwin, Device.MQTTv5.Models.ConnectionClientOptions? options = null, CancellationToken cancellationToken = default)
-        {
-            using ProvisioningServiceClient provisioningServiceClient = GetDpsHubServiceClient(testAgainstClassicHub: false);
-
-            string deviceId = Guid.NewGuid().ToString();
-            string registrationId = deviceId;
-            string certId = Guid.NewGuid().ToString();
-            string certPath = $"./{certId}.cer";
-            string pfxPath = $"./{certId}.pfx";
-            CreateTestCertificates(pfxPath, certPath, deviceId);
-
-            X509Certificate2 certificate = X509CertificateLoader.LoadCertificateFromFile(certPath);
-            X509Certificate2 pfx = X509CertificateLoader.LoadPkcs12FromFile(pfxPath, TestCertificatesPassword);
-
-            // Create individual enrollment for the test device to provision from
-            Attestation attestation = X509Attestation.CreateFromClientCertificates(certificate);
-            IndividualEnrollment individualEnrollment = new(registrationId, attestation);
-            await provisioningServiceClient.CreateOrUpdateIndividualEnrollmentAsync(individualEnrollment, cancellationToken);
-
-            X509AuthenticationProvider x509AuthenticationProvider = new(pfx, null);
-
-            Device.MQTTv5.Connection.ConnectionClient connectionClient = new(options);
-            ProvisioningSettings provisioningSettings = CreateProvisioningSettings(testAgainstClassicHub: false);
-
-            ConnectionContext connectionContext = await RetryAroundAuthorizationAsync<ConnectionContext>(
-                async () => await connectionClient.ProvisionAndConnectAsync(provisioningSettings, x509AuthenticationProvider, cancellationToken: cancellationToken),
-                cancellationToken);
-
-            return new MQTTv5DeviceTestContext()
-            {
-                ConnectionClient = connectionClient,
-                DeviceId = connectionContext!.DeviceId,
-                ConnectionProfile = connectionContext!.ConnectionProfile,
-                AuthenticationProvider = x509AuthenticationProvider,
-                IndividualEnrollment = individualEnrollment,
-            };
-        }
 
         public static async Task<UnifiedDeviceTestContext> CreateConnectedUnifiedConnectionClientAsync(bool testAgainstClassicHub, ConnectionClientOptions? options = null, CancellationToken cancellationToken = default)
         {
-            using ProvisioningServiceClient provisioningServiceClient = GetDpsHubServiceClient(testAgainstClassicHub);
+            if (!testAgainstClassicHub)
+            {
+                Assert.Skip("No MQTTv5 hub to test against yet");
+            }
+
+            using ProvisioningServiceClient provisioningServiceClient = GetDpsHubServiceClient();
 
             string deviceId = Guid.NewGuid().ToString();
             string registrationId = deviceId;
@@ -253,7 +92,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
             X509AuthenticationProvider x509AuthenticationProvider = new(pfx, null);
 
             ConnectionClient connectionClient = new(options);
-            ProvisioningSettings provisioningSettings = CreateProvisioningSettings(testAgainstClassicHub);
+            ProvisioningSettings provisioningSettings = new(DpsIdScope);
 
             try
             {
@@ -265,7 +104,6 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
                 {
                     ConnectionClient = connectionClient,
                     ConnectionContext = connectionContext!,
-                    TestAgainstClassicHub = testAgainstClassicHub,
                     AuthenticationProvider = x509AuthenticationProvider,
                     IndividualEnrollment = individualEnrollment,
                 };
@@ -273,14 +111,19 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
             catch
             {
                 await UnifiedDeviceTestContext.CleanupAsync(
-                    connectionClient, connectionClient.GetCurrentConnectionContext(), individualEnrollment, testAgainstClassicHub);
+                    connectionClient, connectionClient.GetCurrentConnectionContext(), individualEnrollment);
                 throw;
             }
         }
 
         public static async Task<UnifiedDeviceTestContext> CreateConnectedUnifiedConnectionClientWithCertificateSigningAsync(bool testAgainstClassicHub, ConnectionClientOptions? options = null, CancellationToken cancellationToken = default)
         {
-            using ProvisioningServiceClient provisioningServiceClient = GetDpsHubServiceClient(testAgainstClassicHub);
+            if (!testAgainstClassicHub)
+            {
+                Assert.Skip("No MQTTv5 hub to test against yet");
+            }
+
+            using ProvisioningServiceClient provisioningServiceClient = GetDpsHubServiceClient();
 
             string registrationId = Environment.GetEnvironmentVariable("IOT_DPS_INDIVIDUAL_REGISTRATION_ID") ?? throw new Exception("TODO");
             string deviceId = registrationId;
@@ -308,8 +151,10 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
             var (csrBase64, privateKey) = CertificateUtilities.GenerateCsrAndPrivateKey(registrationId, CertificateUtilities.CsrAlgorithm.RSA);
 
             ConnectionClient connectionClient = new(options);
-            ProvisioningSettings provisioningSettings = CreateProvisioningSettings(testAgainstClassicHub);
-            provisioningSettings.CertificateSigningRequest = new(privateKey, csrBase64);
+            ProvisioningSettings provisioningSettings = new(DpsIdScope)
+            {
+                CertificateSigningRequest = new(privateKey, csrBase64)
+            };
 
             ConnectionContext connectionContext = await RetryAroundAuthorizationAsync<ConnectionContext>(
                 async () => await connectionClient.ProvisionAndConnectAsync(provisioningSettings, x509AuthenticationProvider, cancellationToken: cancellationToken),
@@ -319,7 +164,6 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
             {
                 ConnectionClient = connectionClient,
                 ConnectionContext = connectionContext!,
-                TestAgainstClassicHub = testAgainstClassicHub,
                 PrivateKeyPem = pfxPem,
                 AuthenticationProvider = x509AuthenticationProvider,
                 IndividualEnrollment = individualEnrollment,
@@ -331,7 +175,6 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
         /// enrollment group when a CSR private key is supplied. The caller owns the private key.
         /// </summary>
         public static async Task<UnifiedDeviceTestContext> CreateConnectedUnifiedConnectionClientWithSymmetricKeyAsync(
-            bool testAgainstClassicHub = true,
             ConnectionClientOptions? options = null,
             CancellationToken cancellationToken = default,
             AsymmetricAlgorithm? issuedCertificatePrivateKey = null)
@@ -341,13 +184,10 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
             IndividualEnrollment? individualEnrollment = null;
             if (issuedCertificatePrivateKey != null)
             {
-                string groupKeyVariable = testAgainstClassicHub
-                    ? "IOT_DPS_SYMM_KEY_GROUP_PRIMARY_KEY"
-                    : "IOT_DPS_SYMM_KEY_GROUP_PRIMARY_KEY_MQTTV5";
-                string? groupKey = Environment.GetEnvironmentVariable(groupKeyVariable);
+                string? groupKey = Environment.GetEnvironmentVariable("IOT_DPS_SYMM_KEY_GROUP_PRIMARY_KEY");
                 if (string.IsNullOrWhiteSpace(groupKey))
                 {
-                    Assert.Skip($"{groupKeyVariable} is not set; certificate signing needs a symmetric-key enrollment group linked to a certificate policy.");
+                    Assert.Skip("IOT_DPS_SYMM_KEY_GROUP_PRIMARY_KEY is not set; certificate signing needs a symmetric-key enrollment group linked to a certificate policy.");
                 }
 
                 using HMACSHA256 hmac = new(Convert.FromBase64String(groupKey));
@@ -355,7 +195,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
             }
             else
             {
-                using ProvisioningServiceClient provisioningServiceClient = GetDpsHubServiceClient(testAgainstClassicHub);
+                using ProvisioningServiceClient provisioningServiceClient = GetDpsHubServiceClient();
                 symmetricKey = RandomNumberGenerator.GetBytes(32);
                 string encodedSymmetricKey = Convert.ToBase64String(symmetricKey);
                 Attestation attestation = new SymmetricKeyAttestation(encodedSymmetricKey, encodedSymmetricKey);
@@ -363,16 +203,17 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
                 await provisioningServiceClient.CreateOrUpdateIndividualEnrollmentAsync(individualEnrollment, cancellationToken);
             }
 
-            string idScope = GetDpsIdScope(testAgainstClassicHub);
             SymmetricKeyAuthenticationProvider authentication = issuedCertificatePrivateKey == null
-                ? new(registrationId, idScope, symmetricKey, null)
-                : new(registrationId, idScope, symmetricKey, null, issuedCertificatePrivateKey);
+                ? new(registrationId, DpsIdScope, symmetricKey, null)
+                : new(registrationId, DpsIdScope, symmetricKey, null, issuedCertificatePrivateKey);
 
             ConnectionClient connectionClient = new(options);
-            ProvisioningSettings provisioningSettings = CreateProvisioningSettings(testAgainstClassicHub);
-            provisioningSettings.CertificateSigningRequest = issuedCertificatePrivateKey == null
-                ? null
-                : new(issuedCertificatePrivateKey, CertificateUtilities.GenerateCsrWithPrivateKey(registrationId, issuedCertificatePrivateKey));
+            ProvisioningSettings provisioningSettings = new(DpsIdScope)
+            {
+                CertificateSigningRequest = issuedCertificatePrivateKey == null
+                    ? null
+                    : new(issuedCertificatePrivateKey, CertificateUtilities.GenerateCsrWithPrivateKey(registrationId, issuedCertificatePrivateKey)),
+            };
 
             try
             {
@@ -384,7 +225,6 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
                 {
                     ConnectionClient = connectionClient,
                     ConnectionContext = connectionContext,
-                    TestAgainstClassicHub = testAgainstClassicHub,
                     AuthenticationProvider = authentication,
                     IndividualEnrollment = individualEnrollment,
                 };
@@ -392,7 +232,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
             catch
             {
                 await UnifiedDeviceTestContext.CleanupAsync(
-                    connectionClient, connectionClient.GetCurrentConnectionContext(), individualEnrollment, testAgainstClassicHub);
+                    connectionClient, connectionClient.GetCurrentConnectionContext(), individualEnrollment);
                 throw;
             }
         }

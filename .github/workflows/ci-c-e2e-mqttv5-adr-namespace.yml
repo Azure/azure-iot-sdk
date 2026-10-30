@@ -9,8 +9,8 @@
 #
 # Runs every 10 minutes (the namespace can drop about an hour after each
 # rebuild; an hourly check left CI failing for up to an hour), on demand, and
-# as the first job of the mqttv5 e2e workflows (ci-c-e2e-mqttv5,
-# ci-dotnet-e2e-mqttv5; workflow_call), so tests start against a linked namespace.
+# as the first job of the mqttv5 e2e workflow
+# (workflow_call), so tests start against a linked namespace.
 #
 #   vars:    E2E_MQTTV5_SHARED_SUBSCRIPTION_ID, E2E_MQTTV5_SHARED_RESOURCE_GROUP,
 #            E2E_MQTTV5_SHARED_HUB_NAME, E2E_MQTTV5_SHARED_DPS_NAME,
