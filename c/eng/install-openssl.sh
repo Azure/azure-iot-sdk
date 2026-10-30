@@ -2,14 +2,15 @@
 # Copyright (c) Microsoft. All rights reserved.
 # Licensed under the MIT license. See LICENSE file in the project root for full license information.
 #
-# Build and install an OpenSSL release (shared libraries, headers, CLI, openssl.cnf) from its source
+# Build and install an OpenSSL release (libraries, headers, CLI, openssl.cnf) from its source
 # tarball, for the OpenSSL 4.x CI legs. No distribution or runner image ships 4.x yet.
 #
-#   eng/install-openssl.sh <version> <prefix>
+#   eng/install-openssl.sh <version> <prefix> [static]
 #
-# Then configure with -DOPENSSL_ROOT_DIR=<prefix> (or the OPENSSL_ROOT_DIR environment variable)
-# and, on Windows, put <prefix>/bin on PATH for the DLLs. Linux libraries carry an RPATH to
-# <prefix>/lib. Only the versions pinned below are accepted; add a line (with the release's
+# Then configure with -DOPENSSL_ROOT_DIR=<prefix> (or the OPENSSL_ROOT_DIR environment variable).
+# Shared (default): on Windows, put <prefix>/bin on PATH for the DLLs; Linux libraries carry an
+# RPATH to <prefix>/lib. static: static libraries only (no-shared); also configure with
+# -DOPENSSL_USE_STATIC_LIBS=TRUE. On Windows they are built /MT /Zl, so they link with either CRT. Only the versions pinned below are accepted; add a line (with the release's
 # published SHA-256) to test another.
 #
 # Linux: a C compiler, make and perl. Windows (Git Bash): an MSVC developer environment (cl, nmake)
@@ -19,13 +20,15 @@
 set -euo pipefail
 
 usage() {
-    echo "usage: ${0##*/} <version> <prefix>" 1>&2
+    echo "usage: ${0##*/} <version> <prefix> [static]" 1>&2
     exit 1
 }
 
-[ "$#" -eq 2 ] || usage
+[ "$#" -eq 2 ] || { [ "$#" -eq 3 ] && [ "$3" = static ]; } || usage
 version="$1"
 prefix="$2"
+linkage=()
+[ "$#" -eq 3 ] && linkage=(no-shared)
 
 case "${version}" in
     4.0.3) sha256="325b5c806167c13b40b1ffeadfe0248197c00eccc4cf123ec1e28d2d2fd216d9" ;;
@@ -51,7 +54,7 @@ case "$(uname -s)" in
         # MSVC's link.exe must win over Git's /usr/bin/link, which nmake would otherwise run.
         PATH="$(dirname "$(command -v cl)"):${PATH}"
         win_prefix="$(cygpath -w "${prefix}")"
-        "${perl}" Configure VC-WIN64A no-asm no-docs no-tests \
+        "${perl}" Configure VC-WIN64A no-asm no-docs no-tests "${linkage[@]}" \
             --prefix="${win_prefix}" --openssldir="${win_prefix}\\ssl"
         nmake
         nmake install_sw install_ssldirs
@@ -59,7 +62,7 @@ case "$(uname -s)" in
     *)
         # $(LIBRPATH) is expanded by OpenSSL's Makefile to <prefix>/lib.
         # shellcheck disable=SC2016
-        ./Configure no-docs no-tests --prefix="${prefix}" --libdir=lib '-Wl,-rpath,$(LIBRPATH)'
+        ./Configure no-docs no-tests "${linkage[@]}" --prefix="${prefix}" --libdir=lib '-Wl,-rpath,$(LIBRPATH)'
         make -j"$(nproc 2>/dev/null || echo 2)"
         make install_sw install_ssldirs
         ;;
