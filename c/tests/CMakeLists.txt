@@ -628,16 +628,20 @@ if(UNIX)
     target_link_libraries(az_iot_tests_sample_reading_queue PRIVATE pthread)
 endif()
 
-# The samples' app-owned certificate provider (samples/common), OpenSSL 3.0+.
+# The samples' app-owned certificate provider
+# (samples/authentication/custom_certificate_provider), OpenSSL 3.0+.
 find_package(OpenSSL 3.0 QUIET)
 if(OPENSSL_FOUND)
     set(_sample_common ${CMAKE_CURRENT_SOURCE_DIR}/../samples/common)
+    set(_sample_provider
+        ${CMAKE_CURRENT_SOURCE_DIR}/../samples/authentication/custom_certificate_provider)
     az_iot_add_cmocka_test(az_iot_tests_sample_cert_provider
         unit/sample_cert_provider_test.c
-        ${_sample_common}/sample_cert_provider.c
-        ${_sample_common}/sample_csr_openssl.c
+        ${_sample_provider}/sample_cert_provider.c
+        ${_sample_provider}/sample_csr_openssl.c
         ${_sample_common}/sample_utils.c)
-    target_include_directories(az_iot_tests_sample_cert_provider PRIVATE ${_sample_common})
+    target_include_directories(az_iot_tests_sample_cert_provider PRIVATE
+        ${_sample_common} ${_sample_provider})
     target_link_libraries(az_iot_tests_sample_cert_provider PRIVATE OpenSSL::Crypto)
 
     # Certificate provider contract suite (support/cert_provider_contract.c), run
@@ -645,11 +649,11 @@ if(OPENSSL_FOUND)
     az_iot_add_cmocka_test(az_iot_tests_certificate_provider_contract
         unit/certificate_provider_contract_test.c
         support/cert_provider_contract.c
-        ${_sample_common}/sample_cert_provider.c
-        ${_sample_common}/sample_csr_openssl.c
+        ${_sample_provider}/sample_cert_provider.c
+        ${_sample_provider}/sample_csr_openssl.c
         ${_sample_common}/sample_utils.c)
     target_include_directories(az_iot_tests_certificate_provider_contract PRIVATE
-        ${_sample_common})
+        ${_sample_common} ${_sample_provider})
     target_link_libraries(az_iot_tests_certificate_provider_contract PRIVATE OpenSSL::Crypto)
     if(TARGET az_iot_certificate_provider_managed)
         target_link_libraries(az_iot_tests_certificate_provider_contract PRIVATE
