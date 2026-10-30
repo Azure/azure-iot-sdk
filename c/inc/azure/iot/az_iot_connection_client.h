@@ -1167,8 +1167,8 @@ extern "C"
    * @param store_result Result of store_issued_certificate(): AZ_IOT_OK if the
    * chain is stored. On failure the registration fails.
    *
-   * Runs while the provisioning message is being processed: do not call
-   * _deinit() from it; az_iot_connection_client_close() and _open() return
+   * Runs while the provisioning message is being processed:
+   * az_iot_connection_client_close(), _open() and _deinit() return
    * AZ_IOT_ERR_BUSY there.
    */
   typedef void (*az_iot_operational_cert_callback)(
@@ -1214,8 +1214,8 @@ extern "C"
    *
    * Runs from az_iot_connection_client_do_work(), and the hub connect starts
    * after it. To stop that connect, call az_iot_connection_client_close() after
-   * do_work() returns; from the callback it returns AZ_IOT_ERR_BUSY. It must
-   * not call az_iot_connection_client_deinit().
+   * do_work() returns; from the callback it, like az_iot_connection_client_deinit(),
+   * returns AZ_IOT_ERR_BUSY.
    *
    * @param assignment The adopted assignment; valid only during the call.
    * @param user_ctx   As registered.
@@ -2097,9 +2097,15 @@ extern "C"
    * @brief Deinitialize the client.
    *
    * Does not destroy factories registered with az_iot_connection_client_register_mqtt_factory():
-   * the application owns them and destroys them after this returns.
+   * the application owns them and destroys them after this returns. Not callable from a callback
+   * the client runs: call it after do_work() returns.
+   *
+   * Not AZ_NODISCARD: teardown op commonly called fire-and-forget.
+   *
+   * @return AZ_IOT_OK; AZ_IOT_ERR_INVALID_ARG for a NULL client; AZ_IOT_ERR_BUSY from inside a
+   * callback, with nothing released.
    */
-  void az_iot_connection_client_deinit(az_iot_connection_client* client);
+  az_iot_result az_iot_connection_client_deinit(az_iot_connection_client* client);
 
   /**
    * @brief Register an MQTT factory in the client's adapter registry.

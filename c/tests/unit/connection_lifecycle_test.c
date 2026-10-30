@@ -1232,6 +1232,7 @@ typedef struct nested_dispatch_probe
   az_iot_result ensure_result;
   az_iot_result add_after_inner;
   az_iot_result close_after_inner;
+  az_iot_result deinit_after_inner;
   az_iot_result late_add;
 } nested_dispatch_probe;
 
@@ -1256,6 +1257,7 @@ static void nested_starting_observer(const az_iot_connection_state_event* event,
     g_nested.add_after_inner = az_iot_connection_client_add_state_observer(
         g_nested.client, late_mutating_observer, (void*)(uintptr_t)9);
     g_nested.close_after_inner = az_iot_connection_client_close(g_nested.client);
+    g_nested.deinit_after_inner = az_iot_connection_client_deinit(g_nested.client);
     g_nested.in_outer = false;
   }
 }
@@ -1304,6 +1306,7 @@ static void the_dispatch_guard_survives_nesting(void** state)
   assert_non_null(c.dps_mqtt);
   assert_int_equal(g_nested.add_after_inner, AZ_IOT_ERR_BUSY);
   assert_int_equal(g_nested.close_after_inner, AZ_IOT_ERR_BUSY);
+  assert_int_equal(g_nested.deinit_after_inner, AZ_IOT_ERR_BUSY);
   assert_int_equal(g_nested.late_add, AZ_IOT_ERR_BUSY);
   assert_int_equal(c.callback_depth, 0);
   assert_false(c.dispatching_state);

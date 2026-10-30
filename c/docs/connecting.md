@@ -120,11 +120,12 @@ and its buffer); a refusal there starts no attempt, raises no event, and is repo
 - `open()` starts a connection from `IDLE`. `close()` returns the client to `IDLE` from any state;
   from a live session the disconnect completes in `do_work()`.
 - `close()` then `open()` reconnects after `FAULTED`. Feature clients and observers survive it.
-- `open()` and `close()` cannot be called from a callback the client runs: state observers,
-  publish completion callbacks, the SAS token callback, the DPS operational-certificate,
+- `open()`, `close()` and `deinit()` cannot be called from a callback the client runs: state
+  observers, publish completion callbacks, the SAS token callback, the DPS operational-certificate,
   registration-payload and assignment callbacks, CSR callbacks, subscription-failure callbacks,
   and feature clients' message and response handlers. There they return `AZ_IOT_ERR_BUSY` and
   change nothing. Record the decision in the callback and call them after `do_work()` returns.
+  Feature clients' own `deinit()` stays callable from callbacks.
 - The client reconnects by itself under `reconnection_policy`. To decide yourself, use
   `az_iot_connection_client_get_disabled_retry_policy()`: a failure then ends in `FAULTED`.
 

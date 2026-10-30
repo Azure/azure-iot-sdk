@@ -873,9 +873,10 @@ typedef struct sub_failure_lifecycle_calls
   int calls;
   az_iot_result close_result;
   az_iot_result open_result;
+  az_iot_result deinit_result;
 } sub_failure_lifecycle_calls;
 
-static void close_and_open_on_sub_failed(
+static void close_open_and_deinit_on_sub_failed(
     const char* topic_filter,
     az_iot_result reason,
     int32_t protocol_code,
@@ -888,14 +889,15 @@ static void close_and_open_on_sub_failed(
   r->calls++;
   r->close_result = az_iot_connection_client_close(r->client);
   r->open_result = az_iot_connection_client_open(r->client);
+  r->deinit_result = az_iot_connection_client_deinit(r->client);
 }
 
-/* close() and open() from a self-scoped filter's failure callback, run on a synchronous SUBSCRIBE
- * failure at CONNECTED, are refused; the session reaches CONNECTED. */
-static void close_and_open_from_a_subscription_failure_callback_are_refused(void** state)
+/* close(), open() and deinit() from a self-scoped filter's failure callback, run on a synchronous
+ * SUBSCRIBE failure at CONNECTED, are refused; the session reaches CONNECTED. */
+static void close_open_and_deinit_from_a_subscription_failure_callback_are_refused(void** state)
 {
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
-  sub_failure_lifecycle_calls r = { fx->client, 0, AZ_IOT_OK, AZ_IOT_OK };
+  sub_failure_lifecycle_calls r = { fx->client, 0, AZ_IOT_OK, AZ_IOT_OK, AZ_IOT_OK };
   assert_int_equal(
       az_iot_connection_client_register_mqtt_factory(fx->client, fx->factory), AZ_IOT_OK);
   assert_int_equal(
@@ -905,7 +907,7 @@ static void close_and_open_from_a_subscription_failure_callback_are_refused(void
           AZ_IOT_MQTT_QOS_1,
           &r,
           AZ_IOT_SUBSCRIPTION_FAILS_SELF,
-          close_and_open_on_sub_failed),
+          close_open_and_deinit_on_sub_failed),
       AZ_IOT_OK);
   assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
   az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
@@ -916,6 +918,7 @@ static void close_and_open_from_a_subscription_failure_callback_are_refused(void
   assert_int_equal(r.calls, 1);
   assert_int_equal(r.close_result, AZ_IOT_ERR_BUSY);
   assert_int_equal(r.open_result, AZ_IOT_ERR_BUSY);
+  assert_int_equal(r.deinit_result, AZ_IOT_ERR_BUSY);
   assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_CONNECTED);
   assert_true(az_iot_connection_client__is_connected(fx->client));
 }
@@ -1719,7 +1722,7 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         a_refused_self_scoped_filter_keeps_the_connection, setup_two_attempts, teardown),
     cmocka_unit_test_setup_teardown(
-        close_and_open_from_a_subscription_failure_callback_are_refused,
+        close_open_and_deinit_from_a_subscription_failure_callback_are_refused,
         setup_two_attempts,
         teardown),
     cmocka_unit_test_setup_teardown(

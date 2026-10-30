@@ -6838,11 +6838,18 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_init(
   return AZ_IOT_OK;
 }
 
-void az_iot_connection_client_deinit(az_iot_connection_client* client)
+az_iot_result az_iot_connection_client_deinit(az_iot_connection_client* client)
 {
   if (!client)
   {
-    return;
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  if (client->callback_depth > 0)
+  {
+    AZ_IOT_LOG_ERROR(
+        AZ_IOT_LOG_COMPONENT_CONNECTION,
+        "deinit: not callable from a callback; call after do_work()");
+    return AZ_IOT_ERR_BUSY;
   }
   /* Abandon pending QoS-1 acknowledgements WITHOUT completing them. On a
    * dropped session the callback is useful -- it tells the caller the publish
@@ -6873,6 +6880,7 @@ void az_iot_connection_client_deinit(az_iot_connection_client* client)
   az_iot_crypto__wipe(workspace_of(client), workspace_capacity_of(client));
   /* provisioned_iot_hub_hostname / provisioned_device_id are inline fixed buffers; nothing to free.
    */
+  return AZ_IOT_OK;
 }
 
 AZ_NODISCARD az_iot_result az_iot_connection_client_register_mqtt_factory(
