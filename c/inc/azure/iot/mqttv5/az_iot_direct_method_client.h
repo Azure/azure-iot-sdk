@@ -331,8 +331,11 @@ extern "C"
    *
    * Probe-acks, results and abandons are QoS 1 and kept until their PUBACK:
    * one that ends without a PUBACK (the connection closed, or the adapter lost
-   * it) is published again on the next CONNECTED until its Message Expiry runs
-   * out (with none, until the connection's max_unconfirmed_delivery_timeout_ms);
+   * it) is published again on the next CONNECTED until its deadline: a probe-ack
+   * until its connect budget (the probe's Message Expiry) or its token's ready wait
+   * ends, whichever is first; a result until its result deadline (with no exec
+   * expiry, max_unconfirmed_delivery_timeout_ms after the exec); an abandon or
+   * rejection until its budget ends (with none, max_unconfirmed_delivery_timeout_ms);
    * one the broker refuses (AZ_IOT_ERR_PUBLISH_REFUSED) is not. A send the
    * adapter refuses (BUSY, NOT_CONNECTED, a transport error) leaves it queued for
    * a later CONNECTED, hub PUBACK (of any publish) or do_work(); one it can never
