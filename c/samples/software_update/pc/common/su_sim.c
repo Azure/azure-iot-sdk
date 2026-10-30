@@ -65,7 +65,7 @@ az_iot_log_level su_sample_log_level_from_env(void)
 static const char* const k_su_state_names[] = {
   "Idle",           "ManifestReceived", "VerifyingManifest", "DownloadStarted", "DownloadComplete",
   "BackupStarted",  "BackupComplete",   "InstallStarted",    "InstallComplete", "ApplyStarted",
-  "RestoreStarted", "Failed",
+  "RestoreStarted", "Failed",           "Delegated",
 };
 static const char* const k_su_operation_names[] = {
   "onboarding update check",
