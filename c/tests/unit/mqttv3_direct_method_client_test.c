@@ -989,6 +989,89 @@ static void init_needs_a_feature_observer_and_deinit_returns_it(void** state)
   }
   assert_int_equal(az_iot_mqttv3_direct_method_client_init(&fx->dm, &fx->conn), AZ_IOT_OK);
 }
+
+/* A planned close ends the session too: every unanswered request is freed and answered with
+ * NOT_CONNECTED, nothing reaches the replacement adapter, and a new invocation is answered. */
+static void a_close_and_reopen_ends_unanswered_invocations(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  invocation_record rec = { 0 };
+  assert_int_equal(
+      az_iot_mqttv3_direct_method_client_set_handler(&fx->dm, on_method, &rec), AZ_IOT_OK);
+  az_iot_direct_method_request held[AZ_IOT_DM_MAX_INFLIGHT];
+  for (int i = 0; i < AZ_IOT_DM_MAX_INFLIGHT; ++i)
+  {
+    rec.fired = false;
+    inject_invocation(fx, i);
+    assert_true(rec.fired);
+    held[i] = rec.request;
+  }
+
+  (void)az_iot_connection_client_close(&fx->conn);
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(fx->mock));
+  (void)az_iot_connection_client_do_work(&fx->conn, 0);
+  for (size_t i = 0; i < AZ_IOT_DM_MAX_INFLIGHT; ++i)
+  {
+    assert_false(fx->dm._internal.req_pool[i]._internal.in_use);
+  }
+
+  assert_int_equal(az_iot_connection_client_open(&fx->conn), AZ_IOT_OK);
+  fx->mock = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(fx->mock, AZ_IOT_OK));
+  assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
+  az_iot_test_ack_subscriptions(&fx->conn, fx->mock);
+  az_iot_mock_mqtt_client_clear_calls(fx->mock);
+
+  for (int i = 0; i < AZ_IOT_DM_MAX_INFLIGHT; ++i)
+  {
+    assert_int_equal(
+        az_iot_mqttv3_direct_method_respond(&fx->dm, held[i], 200, NULL, 0),
+        AZ_IOT_ERR_NOT_CONNECTED);
+  }
+  assert_int_equal(az_iot_mock_mqtt_client_count_of(fx->mock, AZ_IOT_MOCK_CALL_PUBLISH), 0);
+
+  rec.fired = false;
+  inject_invocation(fx, 7);
+  assert_true(rec.fired);
+  assert_int_equal(
+      az_iot_mqttv3_direct_method_respond(&fx->dm, rec.request, 200, NULL, 0), AZ_IOT_OK);
+  const az_iot_mock_call* answer
+      = az_iot_mock_mqtt_client_last_of(fx->mock, AZ_IOT_MOCK_CALL_PUBLISH);
+  assert_non_null(answer);
+  assert_string_equal(answer->topic, "$iothub/methods/res/200/?$rid=7");
+}
+
+/* An init that fails for want of a feature observer, while connected, sends no SUBSCRIBE. */
+static void an_init_without_a_feature_observer_subscribes_nothing(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  az_iot_mqttv3_direct_method_client_deinit(&fx->dm);
+
+  static int owners[AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_FEATURE_OBSERVERS];
+  size_t taken = 0;
+  while (taken < AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_FEATURE_OBSERVERS
+         && az_iot_connection_client__add_feature_observer(
+                &fx->conn,
+                AZ_IOT_CONNECTION_FEATURE_EVENT_SESSION_END,
+                ignore_feature_event,
+                &owners[taken])
+             == AZ_IOT_OK)
+  {
+    taken++;
+  }
+  az_iot_mock_mqtt_client_clear_calls(fx->mock);
+  assert_int_equal(
+      az_iot_mqttv3_direct_method_client_init(&fx->dm, &fx->conn), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+  assert_int_equal(az_iot_mock_mqtt_client_count_of(fx->mock, AZ_IOT_MOCK_CALL_SUBSCRIBE), 0);
+  for (size_t i = 0; i < taken; ++i)
+  {
+    az_iot_connection_client__remove_feature_observer(&fx->conn, ignore_feature_event, &owners[i]);
+  }
+  assert_int_equal(az_iot_mqttv3_direct_method_client_init(&fx->dm, &fx->conn), AZ_IOT_OK);
+}
 static void deinit_zeroes_the_client(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -1492,6 +1575,10 @@ int main(void)
         a_session_end_does_not_vouch_for_a_foreign_request, setup, teardown),
     cmocka_unit_test_setup_teardown(
         init_needs_a_feature_observer_and_deinit_returns_it, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_close_and_reopen_ends_unanswered_invocations, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        an_init_without_a_feature_observer_subscribes_nothing, setup, teardown),
     cmocka_unit_test_setup_teardown(deinit_zeroes_the_client, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_second_client_on_the_same_connection_is_refused, setup, teardown),

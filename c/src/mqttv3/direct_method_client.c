@@ -287,6 +287,12 @@ AZ_NODISCARD az_iot_result az_iot_mqttv3_direct_method_client_init(
    * are known before the connection resolves. */
   result = az_iot_connection_client__register_inbound_handler(
       conn, METHODS_REQUEST_PREFIX, on_method_invocation, client);
+  /* Before the subscription: one may be sent at once, and a later failure cannot withdraw it. */
+  if (result == AZ_IOT_OK)
+  {
+    result = az_iot_connection_client__add_feature_observer(
+        conn, AZ_IOT_CONNECTION_FEATURE_EVENT_SESSION_END, on_connection_event, client);
+  }
   if (result == AZ_IOT_OK)
   {
     result = az_iot_connection_client__add_subscription_on_connect(
@@ -296,11 +302,6 @@ AZ_NODISCARD az_iot_result az_iot_mqttv3_direct_method_client_init(
         client,
         AZ_IOT_SUBSCRIPTION_FAILS_SESSION,
         NULL);
-  }
-  if (result == AZ_IOT_OK)
-  {
-    result = az_iot_connection_client__add_feature_observer(
-        conn, AZ_IOT_CONNECTION_FEATURE_EVENT_SESSION_END, on_connection_event, client);
   }
   if (result != AZ_IOT_OK)
   {
