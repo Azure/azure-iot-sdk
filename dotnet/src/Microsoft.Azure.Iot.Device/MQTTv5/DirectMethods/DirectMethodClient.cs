@@ -36,6 +36,12 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods
         private readonly int _maxConcurrentDirectMethods;
         private readonly TimeProvider _timeProvider;
 
+        // Request Ids of probes currently being answered, so only one delivery of a request is admitted at a time.
+        private readonly ConcurrentDictionary<Guid, byte> _probesInProgress = new();
+
+        // The longest due time System.Threading.Timer accepts.
+        private const double MaxTimerDueTimeMilliseconds = uint.MaxValue - 1.0;
+
         private IConnectionClient _connection;
 
         private readonly SingleHandlerEvent<Func<DirectMethodRequestReceivedEventArgs, Task<DirectMethodResponse>>> _directMethodInvoked =
@@ -174,104 +180,21 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods
                     return; // Malformed request. Discard it silently
                 }
 
-                if (_readyTokens.ContainsKey(requestId.Value))
+                // Only one delivery of a request is admitted at a time, so overlapping redeliveries can't send conflicting probe acks.
+                if (_readyTokens.ContainsKey(requestId.Value) || !_probesInProgress.TryAdd(requestId.Value, 0))
                 {
-                    // A redelivery of a probe this client already accepted. The original probe ack has its own QoS 1 delivery lifecycle.
+                    // A redelivery of a probe this client already accepted or is still answering. The original probe ack has its own
+                    // QoS 1 delivery lifecycle.
                     return;
                 }
 
-                uint connectTimeoutRemainingUponReceivingProbe = publish.MessageExpiryInterval;
-                Stopwatch stopwatch = Stopwatch.StartNew();
-
-                Probe probe = Probe.Parser.ParseFrom(publish.Payload);
-
-                DirectMethodProbeAck probeAck;
-                if (methodHandler == null || probeHandler == null)
-                {
-                    // Without both callbacks this client can't execute the method, so tell the service rather than letting the probe time out.
-                    Trace.TraceError("Received a direct method probe, but this client has not registered both callbacks, so it is rejecting the probe as method not found.");
-                    probeAck = DirectMethodProbeAck.Rejected(RejectedReason.MethodNotFound);
-                }
-                else
-                {
-                    probeAck = await probeHandler.Invoke(new() { MethodName = probe.MethodName, ResponseTimeoutSeconds = probe.ResponseTimeoutSeconds });
-                }
-
-                stopwatch.Stop();
-
-                uint secondsSinceReceivingProbe;
                 try
                 {
-                    secondsSinceReceivingProbe = (uint)stopwatch.Elapsed.TotalSeconds;
+                    await HandleProbeAsync(publish, requestId.Value, methodHandler, probeHandler);
                 }
-                catch (InvalidCastException)
+                finally
                 {
-                    // Should only happen if the double grows so large that a uint can't contain it.
-                    Trace.TraceError("Could not calculate time since probe message was received. This likely means the 'DirectMethodProbeReceivedAsync' callback took too long. Cannot send probe ack, so discarding this probe message");
-                    return;
-                }
-
-                uint remainingConnectTimeoutInSeconds = connectTimeoutRemainingUponReceivingProbe - secondsSinceReceivingProbe;
-
-                if (remainingConnectTimeoutInSeconds < 1)
-                {
-                    Trace.TraceWarning("Application did not respond to direct method probe message before the connect timeout elapsed, so no probe ack message will be sent.");
-                    return;
-                }
-
-                ReadyToken? readyToken = null;
-                if (probeAck.ProbeAck.Ready != default)
-                {
-                    if (TryReserveCapacity())
-                    {
-                        // The user signalled that the device was ready for the direct method, so locally save the ready Id and request Id
-                        // until the matching exec arrives or the ready wait budget expires.
-                        readyToken = new ReadyToken(requestId.Value, probeAck.ProbeAck.Ready.ReadyId, probe.MethodName);
-                        TimeSpan readyWait = TimeSpan.FromSeconds(
-                            (double)remainingConnectTimeoutInSeconds + probe.ResponseTimeoutSeconds + SafetyMarginSeconds(probe.ResponseTimeoutSeconds));
-                        readyToken.ReadyWaitTimer = _timeProvider.CreateTimer(OnReadyWaitExpired, readyToken, readyWait, Timeout.InfiniteTimeSpan);
-
-                        if (!_readyTokens.TryAdd(requestId.Value, readyToken))
-                        {
-                            // A concurrently handled redelivery of this probe already accepted it and sent its own probe ack.
-                            readyToken.Dispose();
-                            ReleaseCapacity();
-                            return;
-                        }
-                    }
-                    else
-                    {
-                        Trace.TraceWarning(
-                            "Rejecting a direct method probe for method {0} as device busy because this client already holds its maximum of {1} concurrent direct methods.",
-                            probe.MethodName,
-                            _maxConcurrentDirectMethods);
-                        probeAck = DirectMethodProbeAck.Rejected(RejectedReason.DeviceBusy);
-                    }
-                }
-
-                MqttPublish probeAckPublish = new()
-                {
-                    Topic = DirectMethodsResponseTopic,
-                    QualityOfServiceLevel = MqttQualityOfServiceLevel.AtLeastOnce,
-                    Payload = probeAck.ProbeAck.ToByteArray(),
-                    CorrelationData = publish.CorrelationData,
-                    MessageExpiryInterval = remainingConnectTimeoutInSeconds,
-                    ContentType = ProtobufContentType
-                };
-
-                probeAckPublish.UserProperties.Add(new("type", Encoding.UTF8.GetBytes("probe-ack:1")));
-
-                MqttPublishAck puback = await _connection.PublishAsync(probeAckPublish);
-
-                if (puback.ReasonCode != MqttPublishAckReasonCode.Success)
-                {
-                    Trace.TraceError("Failed to send the response to a direct method probe because the MQTT broker rejected the publish with reason code {0} and reason string {1}", puback.ReasonCode, puback.ReasonString);
-
-                    // The service never got this ready token, so don't hold capacity for it.
-                    if (readyToken != null)
-                    {
-                        TryReleaseReadyToken(readyToken);
-                    }
+                    _probesInProgress.TryRemove(requestId.Value, out _);
                 }
             }
             else if (directMethodMessageType.Equals("exec"))
@@ -406,6 +329,122 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods
                 {
                     Trace.TraceError("Failed to send the response to a direct method exec because the MQTT broker rejected the publish with reason code {0} and reason string {1}", puback.ReasonCode, puback.ReasonString);
                 }
+            }
+        }
+
+        private async Task HandleProbeAsync(
+            MqttPublish publish,
+            Guid requestId,
+            Func<DirectMethodRequestReceivedEventArgs, Task<DirectMethodResponse>>? methodHandler,
+            Func<DirectMethodRequestProbeReceivedEventArgs, Task<DirectMethodProbeAck>>? probeHandler)
+        {
+            uint connectTimeoutRemainingUponReceivingProbe = publish.MessageExpiryInterval;
+            Stopwatch stopwatch = Stopwatch.StartNew();
+
+            Probe probe = Probe.Parser.ParseFrom(publish.Payload);
+
+            DirectMethodProbeAck probeAck;
+            if (methodHandler == null || probeHandler == null)
+            {
+                // Without both callbacks this client can't execute the method, so tell the service rather than letting the probe time out.
+                Trace.TraceError("Received a direct method probe, but this client has not registered both callbacks, so it is rejecting the probe as method not found.");
+                probeAck = DirectMethodProbeAck.Rejected(RejectedReason.MethodNotFound);
+            }
+            else
+            {
+                probeAck = await probeHandler.Invoke(new() { MethodName = probe.MethodName, ResponseTimeoutSeconds = probe.ResponseTimeoutSeconds });
+            }
+
+            stopwatch.Stop();
+
+            double secondsSinceReceivingProbe = Math.Floor(stopwatch.Elapsed.TotalSeconds);
+
+            // Saturate at zero: a probe handler that outlived the connect budget must not wrap the unsigned remainder.
+            uint remainingConnectTimeoutInSeconds = secondsSinceReceivingProbe >= connectTimeoutRemainingUponReceivingProbe
+                ? 0
+                : connectTimeoutRemainingUponReceivingProbe - (uint)secondsSinceReceivingProbe;
+
+            if (remainingConnectTimeoutInSeconds < 1)
+            {
+                Trace.TraceWarning("Application did not respond to direct method probe message before the connect timeout elapsed, so no probe ack message will be sent.");
+                return;
+            }
+
+            ReadyToken? readyToken = null;
+            if (probeAck.ProbeAck.Ready != default)
+            {
+                if (TryReserveCapacity())
+                {
+                    // The user signalled that the device was ready for the direct method, so locally save the ready Id and request Id
+                    // until the matching exec arrives or the ready wait budget expires.
+                    readyToken = new ReadyToken(requestId, probeAck.ProbeAck.Ready.ReadyId, probe.MethodName);
+
+                    // Create the timer disarmed and arm it only once the token is registered, so it can't fire before there is a token
+                    // for it to release.
+                    readyToken.ReadyWaitTimer = _timeProvider.CreateTimer(OnReadyWaitExpired, readyToken, Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
+
+                    if (!_readyTokens.TryAdd(requestId, readyToken))
+                    {
+                        // Unreachable while _probesInProgress admits one delivery per request, but never leak the slot.
+                        readyToken.Dispose();
+                        ReleaseCapacity();
+                        return;
+                    }
+
+                    ArmReadyWaitTimer(readyToken, ReadyWaitBudget(remainingConnectTimeoutInSeconds, probe.ResponseTimeoutSeconds));
+                }
+                else
+                {
+                    Trace.TraceWarning(
+                        "Rejecting a direct method probe for method {0} as device busy because this client already holds its maximum of {1} concurrent direct methods.",
+                        probe.MethodName,
+                        _maxConcurrentDirectMethods);
+                    probeAck = DirectMethodProbeAck.Rejected(RejectedReason.DeviceBusy);
+                }
+            }
+
+            MqttPublish probeAckPublish = new()
+            {
+                Topic = DirectMethodsResponseTopic,
+                QualityOfServiceLevel = MqttQualityOfServiceLevel.AtLeastOnce,
+                Payload = probeAck.ProbeAck.ToByteArray(),
+                CorrelationData = publish.CorrelationData,
+                MessageExpiryInterval = remainingConnectTimeoutInSeconds,
+                ContentType = ProtobufContentType
+            };
+
+            probeAckPublish.UserProperties.Add(new("type", Encoding.UTF8.GetBytes("probe-ack:1")));
+
+            MqttPublishAck puback = await _connection.PublishAsync(probeAckPublish);
+
+            if (puback.ReasonCode != MqttPublishAckReasonCode.Success)
+            {
+                Trace.TraceError("Failed to send the response to a direct method probe because the MQTT broker rejected the publish with reason code {0} and reason string {1}", puback.ReasonCode, puback.ReasonString);
+
+                // The service never got this ready token, so don't hold capacity for it.
+                if (readyToken != null)
+                {
+                    TryReleaseReadyToken(readyToken);
+                }
+            }
+        }
+
+        // ready_wait_budget = remaining connect budget + response timeout + safety margin, capped at the longest due time a timer supports.
+        private static TimeSpan ReadyWaitBudget(uint remainingConnectTimeoutInSeconds, uint responseTimeoutSeconds)
+        {
+            double seconds = (double)remainingConnectTimeoutInSeconds + responseTimeoutSeconds + SafetyMarginSeconds(responseTimeoutSeconds);
+            return TimeSpan.FromMilliseconds(Math.Min(seconds * 1000, MaxTimerDueTimeMilliseconds));
+        }
+
+        private static void ArmReadyWaitTimer(ReadyToken readyToken, TimeSpan readyWait)
+        {
+            try
+            {
+                readyToken.ReadyWaitTimer!.Change(readyWait, Timeout.InfiniteTimeSpan);
+            }
+            catch (ObjectDisposedException)
+            {
+                // An exec already claimed the token and disposed its timer, so there is nothing left to expire.
             }
         }
 

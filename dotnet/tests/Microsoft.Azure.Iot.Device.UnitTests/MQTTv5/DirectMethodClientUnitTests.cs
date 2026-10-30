@@ -434,6 +434,65 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             await AssertProbeAcceptedAsync(connection, Guid.NewGuid().ToByteArray());
         }
 
+        [Fact]
+        public async Task Probe_OverlappingRedeliveries_AreAnsweredOnce()
+        {
+            MockFeatureConnectionClient connection = new()
+            {
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv5, DeviceId),
+            };
+            using DirectMethodClient directMethodClient = new(connection, new DirectMethodClientOptions() { MaxConcurrentDirectMethods = 1 });
+
+            int probeHandlerInvocations = 0;
+            TaskCompletionSource probeHandlerCanFinish = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            directMethodClient.DirectMethodProbeReceivedAsync += async (_) =>
+            {
+                Interlocked.Increment(ref probeHandlerInvocations);
+                await probeHandlerCanFinish.Task;
+                return DirectMethodProbeAck.Accepted();
+            };
+            directMethodClient.DirectMethodInvokedAsync += (_) => Task.FromResult(new DirectMethodResponse() { Status = 200 });
+
+            byte[] request = Guid.NewGuid().ToByteArray();
+            byte[] probe = new Probe() { MethodName = "reboot", ResponseTimeoutSeconds = 30 }.ToByteArray();
+            Task first = connection.SimulateReceiveAsync(CreateInboundMethodPublish("probe:1", request, probe));
+            Task redelivery = connection.SimulateReceiveAsync(CreateInboundMethodPublish("probe:1", request, probe));
+
+            probeHandlerCanFinish.SetResult();
+            await Task.WhenAll(first, redelivery);
+
+            Assert.Equal(1, probeHandlerInvocations);
+            MqttPublish probeAckPublish = Assert.Single(connection.PublishedMessages);
+            Assert.Equal(ProbeAck.ResultOneofCase.Ready, ProbeAck.Parser.ParseFrom(probeAckPublish.Payload).ResultCase);
+        }
+
+        [Fact]
+        public async Task Probe_WhoseHandlerOutlivesTheConnectBudget_IsDroppedWithoutHoldingCapacity()
+        {
+            MockFeatureConnectionClient connection = new()
+            {
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv5, DeviceId),
+            };
+            using DirectMethodClient directMethodClient = new(connection, new DirectMethodClientOptions() { MaxConcurrentDirectMethods = 1 });
+
+            TimeSpan probeHandlerDelay = TimeSpan.Zero;
+            directMethodClient.DirectMethodProbeReceivedAsync += async (_) =>
+            {
+                await Task.Delay(probeHandlerDelay);
+                return DirectMethodProbeAck.Accepted();
+            };
+            directMethodClient.DirectMethodInvokedAsync += (_) => Task.FromResult(new DirectMethodResponse() { Status = 200 });
+
+            // The probe handler takes longer than the 2 s budget, which used to wrap the unsigned remaining budget.
+            probeHandlerDelay = TimeSpan.FromSeconds(2.2);
+            byte[] probe = new Probe() { MethodName = "reboot", ResponseTimeoutSeconds = 30 }.ToByteArray();
+            await connection.SimulateReceiveAsync(CreateInboundMethodPublish("probe:1", Guid.NewGuid().ToByteArray(), probe, messageExpiryInterval: 2));
+            Assert.Empty(connection.PublishedMessages);
+
+            probeHandlerDelay = TimeSpan.Zero;
+            await AssertProbeAcceptedAsync(connection, Guid.NewGuid().ToByteArray());
+        }
+
         // Sends a probe and returns its rejection reason, or null if it was accepted.
         private static async Task<RejectedReason?> SendProbeAsync(MockFeatureConnectionClient connection, byte[] correlationData, uint responseTimeoutSeconds = 30)
         {
@@ -498,7 +557,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
                 DueTime = dueTime;
             }
 
-            public TimeSpan DueTime { get; }
+            public TimeSpan DueTime { get; private set; }
 
             public void Fire()
             {
@@ -508,7 +567,16 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
                 }
             }
 
-            public bool Change(TimeSpan dueTime, TimeSpan period) => !_disposed;
+            public bool Change(TimeSpan dueTime, TimeSpan period)
+            {
+                if (_disposed)
+                {
+                    return false;
+                }
+
+                DueTime = dueTime;
+                return true;
+            }
 
             public void Dispose() => _disposed = true;
 
