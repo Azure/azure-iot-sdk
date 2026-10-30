@@ -15,6 +15,8 @@
 
 #if defined(CONFIG_ESP_SECURE_CERT_DS_PERIPHERAL)
 #include <psa/crypto.h>
+#elif defined(ESP_PLATFORM)
+#include "esp_memory_utils.h"
 #endif
 
 /** @brief A NUL-terminated copy of @p length bytes at @p data; NULL when out of memory. */
@@ -85,6 +87,18 @@ static az_iot_result import_ds_key(az_iot_certificate_provider_esp_secure_cert* 
   return AZ_IOT_OK;
 }
 #else
+/** @brief Wipes @p data if it is in RAM (NVS or HMAC-decrypted keys), not mapped flash. */
+static void wipe_key_source(char* data, uint32_t length)
+{
+#if defined(ESP_PLATFORM)
+  if (!esp_ptr_in_dram(data) && !esp_ptr_external_ram(data))
+  {
+    return;
+  }
+#endif
+  az_iot_crypto__wipe(data, length);
+}
+
 /** @brief Copies the partition's PEM private key into @p p. */
 static az_iot_result read_client_key(az_iot_certificate_provider_esp_secure_cert* p)
 {
@@ -96,6 +110,7 @@ static az_iot_result read_client_key(az_iot_certificate_provider_esp_secure_cert
     return AZ_IOT_ERR_NOT_FOUND;
   }
   p->client_key_pem = copy_text(data, length, &p->client_key_size);
+  wipe_key_source(data, length); // esp_secure_cert_free_priv_key() frees without wiping.
   (void)esp_secure_cert_free_priv_key(data);
   return p->client_key_pem != NULL ? AZ_IOT_OK : AZ_IOT_ERR_OUT_OF_MEMORY;
 }

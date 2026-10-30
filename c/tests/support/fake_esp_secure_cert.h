@@ -25,6 +25,7 @@ typedef struct fake_esp_secure_cert_state
   psa_status_t import_status;
   int device_cert_reads, device_cert_frees;
   int private_key_reads, private_key_frees;
+  int private_keys_freed_unwiped; /**< Freed with a non-zero byte left. */
   int ds_context_reads, ds_context_frees;
   int imports, destroys;
   psa_key_attributes_t imported_attributes;

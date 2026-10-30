@@ -84,27 +84,44 @@ read by the [esp_secure_cert certificate provider](../../../adapters/cert_esp_se
 
 | Chip | Key |
 |---|---|
-| ESP32-S3, ESP32-C3, ESP32-C6 | Digital Signature (DS) peripheral: an RSA key, encrypted with an eFuse key, used only inside the chip. TLS signs with it as a PSA key. |
+| ESP32-S3, ESP32-C3, ESP32-C6 | Digital Signature (DS) peripheral: an RSA key, encrypted with an eFuse key that only the peripheral uses once read-protected (below). TLS signs with it as a PSA key. |
 | ESP32 | PEM key in the partition, read into RAM for each connection and wiped after. Flash encryption (security profile) protects it at rest. |
 
 Write the partition with Espressif's `configure_esp_secure_cert.py`
 (`pip install esp-secure-cert-tool`) after `idf.py flash`; `idf.py flash` leaves it in place,
-`idf.py erase-flash` erases it.
+`idf.py erase-flash` erases it. These commands are for development:
 
 ```sh
 # ESP32-S3/C3/C6: --configure_ds burns the eFuse key block --efuse_key_id (irreversible).
 configure_esp_secure_cert.py -p PORT --target_chip esp32c3 --secure_cert_type cust_flash_tlv \
-    --device-cert device_cert.pem --private-key device_key.pem --configure_ds --efuse_key_id 1
+    --device-cert device_cert.pem --private-key device_key.pem \
+    --configure_ds --priv_key_algo RSA 2048 --efuse_key_id 1
 # ESP32:
 configure_esp_secure_cert.py -p PORT --target_chip esp32 --secure_cert_type cust_flash_tlv \
     --device-cert device_cert.pem --private-key device_key.pem
 ```
 
-For the security profile add `--sec_cert_part_offset 0x11000`; with flash encryption on, add
-`--skip_flash` and write `esp_secure_cert_data/esp_secure_cert.bin` encrypted, as the
-[tool's README](https://github.com/espressif/esp_secure_cert_mgr/tree/main/tools#readme)
-describes. For production key custody, see
-[Production keys](../../../docs/connecting.md#production-keys).
+`--priv_key_algo` must match the key (RSA and its size). The tool burns the DS key block
+**without read protection**, so its key can still be read and used to decrypt the DS data off
+the chip. For production, read-protect it right after provisioning and check that
+`espefuse.py -p PORT summary` reports the block as read-protected:
+
+```sh
+espefuse.py --chip esp32c3 -p PORT read_protect_efuse BLOCK_KEY1
+```
+
+With the [security profile](#production-security-profile-optional), provision **before the
+first boot of the secure build**: its first boot enables release-mode flash encryption and, on
+ESP32 rev v3.0+, disables serial download, after which the partition can no longer be written.
+Per device:
+
+1. Provision as above with `--sec_cert_part_offset 0x11000`. The partition is written in
+   plaintext; the first secure boot encrypts it with the app (`encrypted` flag in
+   [`partitions_secure.csv`](partitions_secure.csv)). On ESP32-S3/C3/C6 use a key block the
+   profile does not (it uses block 2 for NVS encryption), and read-protect it.
+2. Flash and boot the secure build.
+
+For production key custody, see [Production keys](../../../docs/connecting.md#production-keys).
 
 `main/certs/trusted_ca.pem` (optional, compiled in) is the CA for the DPS and hub **server**
 certificates. Leave the placeholder to use the ESP-IDF certificate bundle, which trusts the
@@ -264,6 +281,7 @@ revision. For production, layer these opt-in overlays on top of
    idf.py "${SECURE[@]}" menuconfig
    grep -E '^CONFIG_(SECURE_BOOT|SECURE_FLASH_ENC_ENABLED|NVS_ENCRYPTION)=y' sdkconfig.production   # 3 lines
    idf.py "${SECURE[@]}" -p <PORT> erase-flash
+   # Provision the identity at 0x11000 here (see Device identity): the first boot locks flash.
    idf.py "${SECURE[@]}" -p <PORT> build flash monitor
    ```
 
@@ -276,6 +294,7 @@ revision. For production, layer these opt-in overlays on top of
    idf.py @secure menuconfig
    Select-String '^CONFIG_(SECURE_BOOT|SECURE_FLASH_ENC_ENABLED|NVS_ENCRYPTION)=y' sdkconfig.production   # 3 lines
    idf.py @secure -p <PORT> erase-flash
+   # Provision the identity at 0x11000 here (see Device identity): the first boot locks flash.
    idf.py @secure -p <PORT> build flash monitor
    ```
 

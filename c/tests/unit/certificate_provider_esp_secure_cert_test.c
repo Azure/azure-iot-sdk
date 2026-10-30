@@ -178,7 +178,8 @@ static void a_partition_without_a_ds_context_fails_init(void** state)
   assert_int_equal(0, g_fake_esp_secure_cert.imports);
 }
 #else
-/* The PEM key is read once for overlapping loans and freed by the last release(). */
+/* The PEM key is read once for overlapping loans and freed by the last release(); the
+ * partition's buffer is wiped before it is handed back, as a RAM copy is freed unwiped. */
 static void the_key_is_in_memory_only_while_loaned(void** state)
 {
   (void)state;
@@ -191,6 +192,7 @@ static void the_key_is_in_memory_only_while_loaned(void** state)
   assert_int_equal(AZ_IOT_OK, p.base.vtable->load(&p.base, AZ_IOT_CRED_OPERATIONAL, 0, &b));
   assert_int_equal(1, g_fake_esp_secure_cert.private_key_reads);
   assert_int_equal(1, g_fake_esp_secure_cert.private_key_frees);
+  assert_int_equal(0, g_fake_esp_secure_cert.private_keys_freed_unwiped);
   assert_string_equal(g_key_pem, a.client_key_pem);
   assert_ptr_equal(a.client_key_pem, b.client_key_pem);
   assert_int_equal(0, a.client_key_psa_id);

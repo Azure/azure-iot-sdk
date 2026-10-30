@@ -62,6 +62,16 @@ esp_err_t esp_secure_cert_get_priv_key(char** buffer, uint32_t* len)
 esp_err_t esp_secure_cert_free_priv_key(char* buffer)
 {
   g_fake_esp_secure_cert.private_key_frees++;
+  size_t const n
+      = g_fake_esp_secure_cert.private_key ? strlen(g_fake_esp_secure_cert.private_key) : 0;
+  for (size_t i = 0; i < n; ++i)
+  {
+    if (buffer[i] != 0)
+    {
+      g_fake_esp_secure_cert.private_keys_freed_unwiped++;
+      break;
+    }
+  }
   free(buffer);
   return ESP_OK;
 }

@@ -12,5 +12,5 @@ idf_component_register(
     INCLUDE_DIRS "${AZ_IOT_ROOT}/adapters/cert_esp_secure_cert"
     PRIV_INCLUDE_DIRS "${AZ_IOT_ROOT}/src/core"
     REQUIRES azure-iot-sdk
-    PRIV_REQUIRES mbedtls  # psa_import_key() for the DS key
+    PRIV_REQUIRES mbedtls esp_hw_support  # psa_import_key(); esp_ptr_in_dram()
 )

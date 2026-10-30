@@ -36,20 +36,11 @@ typedef struct psa_key_attributes_t
 
 #define PSA_KEY_ATTRIBUTES_INIT { 0 }
 
-static inline void psa_set_key_type(psa_key_attributes_t* a, psa_key_type_t t) { a->type = t; }
-static inline void psa_set_key_bits(psa_key_attributes_t* a, size_t b) { a->bits = b; }
-static inline void psa_set_key_usage_flags(psa_key_attributes_t* a, psa_key_usage_t u)
-{
-  a->usage = u;
-}
-static inline void psa_set_key_algorithm(psa_key_attributes_t* a, psa_algorithm_t alg)
-{
-  a->algorithm = alg;
-}
-static inline void psa_set_key_lifetime(psa_key_attributes_t* a, psa_key_lifetime_t l)
-{
-  a->lifetime = l;
-}
+#define psa_set_key_type(a, t) ((a)->type = (t))
+#define psa_set_key_bits(a, b) ((a)->bits = (b))
+#define psa_set_key_usage_flags(a, u) ((a)->usage = (u))
+#define psa_set_key_algorithm(a, alg) ((a)->algorithm = (alg))
+#define psa_set_key_lifetime(a, l) ((a)->lifetime = (l))
 
 psa_status_t psa_crypto_init(void);
 psa_status_t psa_import_key(
