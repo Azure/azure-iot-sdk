@@ -318,7 +318,7 @@ static void result_overall_success(az_iot_su_client* client)
  * the SJWK header (alg, kid), the manifest signature or the JWS payload; the
  * SJWK signature, payload and signing key are decoded in place within the
  * header. The managed client uses its az_iot_su_limits::scratch_size workspace
- * scratch; az_iot_su_parse_update_request() uses AZ_IOT_SU_VERIFY_SCRATCH_SIZE
+ * scratch; az_iot_su_verify_manifest() uses AZ_IOT_SU_VERIFY_SCRATCH_SIZE
  * bytes of stack. Values that do not fit are logged as too large, not as
  * invalid.
  */
@@ -4933,6 +4933,49 @@ AZ_NODISCARD az_iot_result az_iot_su_client_update_device_properties(
 /* agent core-library API (library mode / bring-your-own state machine)      */
 /* ------------------------------------------------------------------------- */
 
+AZ_NODISCARD az_iot_result az_iot_su_verify_manifest(
+    az_span manifest,
+    az_span signature,
+    const az_iot_crypto* crypto,
+    const az_iot_su_root_key* root_keys,
+    size_t root_key_count,
+    uint32_t* out_error)
+{
+  if (out_error != NULL)
+  {
+    *out_error = 0;
+  }
+  if (az_iot_crypto__validate(crypto) != AZ_IOT_OK || (root_keys == NULL && root_key_count > 0))
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  if (crypto->verify_rs256 == NULL)
+  {
+    return AZ_IOT_ERR_NOT_SUPPORTED;
+  }
+
+  uint8_t scratch[AZ_IOT_SU_VERIFY_SCRATCH_SIZE];
+  uint32_t verify_error = 0;
+  if (verify_manifest_core(
+          crypto,
+          root_keys,
+          root_key_count,
+          manifest,
+          signature,
+          scratch,
+          sizeof(scratch),
+          &verify_error)
+      == AZ_IOT_SU_RESULT_SUCCESS)
+  {
+    return AZ_IOT_OK;
+  }
+  if (out_error != NULL)
+  {
+    *out_error = verify_error;
+  }
+  return verify_error == AZ_IOT_SU_MANIFEST_ERROR_CRYPTO ? AZ_IOT_ERR_INTERNAL : AZ_IOT_ERR_AUTH;
+}
+
 AZ_NODISCARD az_iot_result az_iot_su_parse_update_request(
     az_span request_json,
     const az_iot_crypto* crypto,
@@ -4989,20 +5032,11 @@ AZ_NODISCARD az_iot_result az_iot_su_parse_update_request(
   req.update_manifest = manifest_text;
 
   /* Trust gate before the manifest is parsed. */
-  uint8_t scratch[AZ_IOT_SU_VERIFY_SCRATCH_SIZE];
-  uint32_t verify_error = 0;
-  if (verify_manifest_core(
-          crypto,
-          root_keys,
-          root_key_count,
-          manifest_text,
-          req.update_manifest_signature,
-          scratch,
-          sizeof(scratch),
-          &verify_error)
-      != AZ_IOT_SU_RESULT_SUCCESS)
+  r = az_iot_su_verify_manifest(
+      manifest_text, req.update_manifest_signature, crypto, root_keys, root_key_count, NULL);
+  if (r != AZ_IOT_OK)
   {
-    return AZ_IOT_ERR_AUTH;
+    return r;
   }
 
   az_iot_su_client_update_manifest manifest;
