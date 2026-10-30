@@ -31,6 +31,7 @@ set(AZ_IOT_CORE_SOURCES
     core/dps_tpm_client.c
     features/su/su_client.c
     features/su/su_device_properties.c
+    features/su/su_manifest.c
     features/su/su_root_keys_microsoft.c
     features/su/su_report.c
     features/su/su_channel_dps.c
