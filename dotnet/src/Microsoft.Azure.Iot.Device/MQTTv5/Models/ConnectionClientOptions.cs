@@ -28,14 +28,16 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Models
 
         /// <summary>
         /// How many seconds an IoT hub session should persist after the connection is lost.
-        /// Zero (the default) expires the session immediately; <see cref="uint.MaxValue"/> requests that it never expire.
+        /// Defaults to 3600 (one hour). Zero expires the session immediately; <see cref="uint.MaxValue"/> requests that it never expire.
         /// </summary>
         /// <remarks>
-        /// The broker may override the requested interval in its CONNACK. Explicit disconnections and session resets
-        /// still expire the session immediately. Session resumption also requires <see cref="UseCleanSession"/> to be false.
+        /// A persisted session lets IoT hub redeliver unacknowledged QoS 1 messages after a transient disconnection, and
+        /// lets the device presence flow skip re-subscribing when this process already subscribed on the resumed session.
+        /// The broker may override the requested interval in its CONNACK. The interval also applies after this client
+        /// disconnects, including when it is closed. Session resumption also requires <see cref="UseCleanSession"/> to be false.
         /// This value is read once when the connection client is constructed.
         /// </remarks>
-        public uint SessionExpiryInterval { get; set; }
+        public uint SessionExpiryInterval { get; set; } = 3600;
 
         /// <summary>
         /// True (the default) to request desired properties upon connecting and subsequent desired property updates.

@@ -147,14 +147,6 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods
                 return;
             }
 
-            Func<DirectMethodRequestReceivedEventArgs, Task<DirectMethodResponse>>? methodHandler = _directMethodInvoked.Handler;
-            Func<DirectMethodRequestProbeReceivedEventArgs, Task<DirectMethodProbeAck>>? probeHandler = _directMethodProbeReceived.Handler;
-            if (methodHandler == null || probeHandler == null)
-            {
-                Trace.TraceError("Received a direct method message, but this client has not registered both callbacks, so it cannot be handled.");
-                return;
-            }
-
             MqttPublish publish = args.Publish;
             if (!publish.UserProperties.TryGetType(out string? directMethodMessageType, out int? directMethodMessageTypeValue))
             {
@@ -171,6 +163,9 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods
 
             // All MQTTv5 Hub direct method messages are QoS 1, so ack immediately upon recognizing the message as one
             await args.AcknowledgeAsync(CancellationToken.None);
+
+            Func<DirectMethodRequestReceivedEventArgs, Task<DirectMethodResponse>>? methodHandler = _directMethodInvoked.Handler;
+            Func<DirectMethodRequestProbeReceivedEventArgs, Task<DirectMethodProbeAck>>? probeHandler = _directMethodProbeReceived.Handler;
 
             if (directMethodMessageType!.Equals("probe"))
             {
@@ -233,7 +228,18 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods
                 {
                     try
                     {
-                        DirectMethodProbeAck probeAck = await probeHandler.Invoke(new() { MethodName = probe.MethodName, ResponseTimeoutSeconds = probe.ResponseTimeoutSeconds });
+                        DirectMethodProbeAck probeAck;
+                        if (methodHandler == null || probeHandler == null)
+                        {
+                            // Without both callbacks this client can't execute the method, so tell the service rather than letting the probe time out.
+                            Trace.TraceError("Received a direct method probe, but this client has not registered both callbacks, so it is rejecting the probe as method not found.");
+                            probeAck = DirectMethodProbeAck.Rejected(RejectedReason.MethodNotFound);
+                        }
+                        else
+                        {
+                            probeAck = await probeHandler.Invoke(new() { MethodName = probe.MethodName, ResponseTimeoutSeconds = probe.ResponseTimeoutSeconds });
+                        }
+
                         probeAckToSend = probeAck.ProbeAck;
                     }
                     catch
@@ -343,6 +349,12 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods
             }
             else if (directMethodMessageType.Equals("exec"))
             {
+                if (methodHandler == null)
+                {
+                    Trace.TraceError("Received a direct method exec message, but this client has no direct method callback registered, so it cannot be handled.");
+                    return;
+                }
+
                 if (!GuidExtensions.TryParseBytes(publish.CorrelationData, out Guid? requestId))
                 {
                     Trace.TraceWarning("Received direct method exec message with malformed request Id. Ignoring it.");
@@ -362,6 +374,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods
 
                 uint responseTimeoutInSeconds = publish.MessageExpiryInterval;
                 Stopwatch stopwatch = Stopwatch.StartNew();
+                using CancellationTokenSource responseTimeoutCts = new(TimeSpan.FromSeconds(responseTimeoutInSeconds));
 
                 // Parse before consuming the pending request so that a malformed exec leaves this client ready to receive a well-formed
                 // exec for the same request.
@@ -402,10 +415,20 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods
                 DirectMethodRequestReceivedEventArgs directMethodInvokedArgs = new()
                 {
                     MethodName = pendingMethodName,
-                    Payload = exec.Params.Span.ToArray()
+                    Payload = exec.Params.Span.ToArray(),
+                    CancellationToken = responseTimeoutCts.Token
                 };
 
-                DirectMethodResponse methodResponse = await methodHandler.Invoke(directMethodInvokedArgs);
+                DirectMethodResponse methodResponse;
+                try
+                {
+                    methodResponse = await methodHandler.Invoke(directMethodInvokedArgs);
+                }
+                catch (OperationCanceledException) when (responseTimeoutCts.IsCancellationRequested)
+                {
+                    Trace.TraceWarning("The direct method with name {0} took longer than the remaining direct method response timeout, so no result message will be sent.", pendingMethodName);
+                    return;
+                }
 
                 stopwatch.Stop();
 

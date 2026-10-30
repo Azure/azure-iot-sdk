@@ -85,12 +85,12 @@ namespace Microsoft.Azure.Iot.Device.Unified.Models
         /// True to start a new session each time this client connects to IoT hub.
         /// </summary>
         /// <remarks>
-        /// When IoT hub reports that it resumed the session, the subscriptions made by the device presence flow are still
-        /// active, so they are not sent again. To guarantee that a resumed session holds those subscriptions, resumption
-        /// is only requested on the first reconnect attempt after a presence flow completed on the same IoT hub; the first
-        /// connection to an IoT hub and any further reconnect attempts start a new session. This only applies to IoT hub
-        /// connections because Device Provisioning Service does not support persistent sessions. This value is read once
-        /// when the connection client is constructed.
+        /// Resuming a session preserves IoT hub's redelivery of unacknowledged QoS 1 messages across transient disconnections.
+        /// The device presence flow skips re-sending its SUBSCRIBE only when IoT hub reports that it resumed the session and
+        /// this process already received a SUBACK for those subscriptions on that session, with no failed connection attempt
+        /// or birth-ack timeout since. Otherwise it subscribes again, so the first connection made by each process always
+        /// subscribes. This only applies to IoT hub connections because Device Provisioning Service does not support
+        /// persistent sessions. This value is read once when the connection client is constructed.
         /// </remarks>
         public bool UseCleanSession { get; set; }
     }
