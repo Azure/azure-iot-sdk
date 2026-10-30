@@ -123,7 +123,7 @@ typedef struct
   uint64_t owed_report_resend_ms; /* when to resend a final report that lost its session; 0: no */
   bool check_outstanding; /* an update check was asked and has no verdict yet */
   bool check_once_registered; /* the first check was abandoned before the device registered */
-  uint64_t check_not_before_ms; /* the service asked to wait until then before asking again */
+  uint64_t check_not_before_ms; /* no check before then: retry-after, or the SDK's own check */
 
   /* Set by the observers. */
   az_iot_connection_state connection_state[AZ_IOT_CONN_SCOPE_COUNT];
@@ -612,6 +612,19 @@ static void on_su_event(const az_iot_su_event* event, void* user_ctx)
          * delegation, or after it). It stays owed with no resend queued: only a
          * check sends it. */
         state->owed_report_resend_ms = sample_now_ms() + OWED_REPORT_RESEND_DELAY_MS;
+      }
+      else if (
+          event->operation == AZ_IOT_SU_OP_REPORT_STATUS
+          && event->reason != AZ_IOT_ERR_NOT_CONNECTED && !state->check_outstanding)
+      {
+        /* The service rejected the report. On a conflict the SDK checks by
+         * itself, which ends within AZ_IOT_SU_REQUEST_DEFAULT_TIMEOUT_MS: ask
+         * for none before then, so the two checks do not overlap. */
+        uint64_t sdk_check_ends_ms = sample_now_ms() + AZ_IOT_SU_REQUEST_DEFAULT_TIMEOUT_MS;
+        if (state->check_not_before_ms < sdk_check_ends_ms)
+        {
+          state->check_not_before_ms = sdk_check_ends_ms;
+        }
       }
       break;
     case AZ_IOT_SU_EVENT_UPDATE_REFUSED:

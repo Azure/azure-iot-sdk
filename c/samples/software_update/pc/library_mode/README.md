@@ -33,7 +33,8 @@ zero-filled payloads of the declared size; install and apply only log. The hash 
   `AZ_IOT_SU_POLL_INTERVAL_S` (default 4 hours). On a device that has never registered, the
   startup check is rejected (no device record yet), so the sample checks again once the hub
   connects. A final report that lost its provisioning session is resent by a check 30 s later.
-  One check runs at a time, and none before a delay the service asked for.
+  One check runs at a time, and none before a delay the service asked for, nor for 60 s after
+  a rejected report (on a conflict the SDK checks by itself).
 - Requires Azure Device Provisioning service, an Azure IoT Hub and Azure Device Update.
 
 Deploy an update as for [simulated_regular](../simulated_regular/README.md), with compatibility
