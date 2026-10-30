@@ -21,6 +21,7 @@
 #include <cmocka.h>
 
 #include "azure/iot/az_iot_connection_client.h"
+#include "support/test_provider.h"
 #include "azure/iot/az_iot_mqtt_iface.h"
 #include "azure/iot/az_iot_result.h"
 
@@ -37,8 +38,8 @@ static int setup(void** state)
   az_iot_test_conn* fx = (az_iot_test_conn*)calloc(1, sizeof(*fx));
   assert_non_null(fx);
 
-  az_iot_connection_client_options opts = az_iot_test_classic_options();
-  assert_int_equal(az_iot_connection_client_init(&fx->client_storage, &opts), AZ_IOT_OK);
+  az_iot_connection_client_options opts = az_iot_test_mqtt_v3_options();
+  assert_int_equal(az_iot_test_connection_client_init(&fx->client_storage, &opts), AZ_IOT_OK);
   fx->client = &fx->client_storage;
   assert_int_equal(
       az_iot_connection_client_add_state_observer(fx->client, az_iot_test_on_state, &fx->log),
@@ -56,14 +57,8 @@ static int teardown(void** state)
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
   if (fx)
   {
-    /* A registered factory is adopted by the client and freed from deinit();
-     * an unregistered one is still ours. */
-    bool adopted = (fx->client->factory_count > 0);
     az_iot_connection_client_deinit(&fx->client_storage);
-    if (!adopted)
-    {
-      az_iot_mock_mqtt_factory_destroy(fx->factory);
-    }
+    az_iot_mock_mqtt_factory_destroy(fx->factory);
     free(fx);
   }
   return 0;
@@ -104,10 +99,10 @@ static void open_without_host_or_dps_is_rejected(void** state)
 {
   (void)state;
   az_iot_connection_client_options opts = { 0 };
-  opts.client_id = "ut-device";
+  opts.device_id = "ut-device";
   /* No host, no dps.id_scope: there is nothing to connect to. */
   az_iot_connection_client c;
-  assert_int_equal(az_iot_connection_client_init(&c, &opts), AZ_IOT_OK);
+  assert_int_equal(az_iot_test_connection_client_init(&c, &opts), AZ_IOT_OK);
   assert_int_equal(az_iot_connection_client_open(&c), AZ_IOT_ERR_INVALID_ARG);
   az_iot_connection_client_deinit(&c);
 }
@@ -116,10 +111,10 @@ static void open_without_client_id_is_rejected(void** state)
 {
   (void)state;
   az_iot_connection_client_options opts = { 0 };
-  opts.host = "broker.example";
+  opts.iothub_hostname = "broker.example";
   /* A direct hub connect needs an identity as well as an endpoint. */
   az_iot_connection_client c;
-  assert_int_equal(az_iot_connection_client_init(&c, &opts), AZ_IOT_OK);
+  assert_int_equal(az_iot_test_connection_client_init(&c, &opts), AZ_IOT_OK);
   assert_int_equal(az_iot_connection_client_open(&c), AZ_IOT_ERR_INVALID_ARG);
   az_iot_connection_client_deinit(&c);
 }
@@ -155,14 +150,14 @@ static void open_from_faulted_is_rejected(void** state)
   assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_ERR_ALREADY_INITIALIZED);
 }
 
-/* The adapter registry is keyed by MQTT version; a Classic (v3.1.1) session
+/* The adapter registry is keyed by MQTT version; an MQTTv3 (v3.1.1) session
  * cannot borrow a v5 factory. */
 static void open_rejects_factory_of_the_wrong_version(void** state)
 {
   (void)state;
-  az_iot_connection_client_options opts = az_iot_test_classic_options();
+  az_iot_connection_client_options opts = az_iot_test_mqtt_v3_options();
   az_iot_connection_client c;
-  assert_int_equal(az_iot_connection_client_init(&c, &opts), AZ_IOT_OK);
+  assert_int_equal(az_iot_test_connection_client_init(&c, &opts), AZ_IOT_OK);
 
   az_iot_mqtt_factory* v5 = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_5);
   assert_non_null(v5);
@@ -170,6 +165,7 @@ static void open_rejects_factory_of_the_wrong_version(void** state)
 
   assert_int_equal(az_iot_connection_client_open(&c), AZ_IOT_ERR_NOT_SUPPORTED);
   az_iot_connection_client_deinit(&c);
+  az_iot_mock_mqtt_factory_destroy(v5);
 }
 
 static void open_connects_to_the_configured_endpoint(void** state)
@@ -191,13 +187,14 @@ static void open_connects_to_the_configured_endpoint(void** state)
 /* Open a throwaway client with the given options and hand back the CONNECT the
  * adapter recorded. The record is copied out by value before deinit(), which
  * frees the mock the call history lives in. */
-static void connect_call_for(
+static void connect_call_for_version(
     const az_iot_connection_client_options* opts,
+    az_iot_mqtt_version version,
     az_iot_mock_call* out_connect)
 {
   az_iot_connection_client c;
-  assert_int_equal(az_iot_connection_client_init(&c, opts), AZ_IOT_OK);
-  az_iot_mqtt_factory* f = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
+  assert_int_equal(az_iot_test_connection_client_init(&c, opts), AZ_IOT_OK);
+  az_iot_mqtt_factory* f = az_iot_mock_mqtt_factory_create(version);
   assert_non_null(f);
   assert_int_equal(az_iot_connection_client_register_mqtt_factory(&c, f), AZ_IOT_OK);
   assert_int_equal(az_iot_connection_client_open(&c), AZ_IOT_OK);
@@ -209,12 +206,20 @@ static void connect_call_for(
   *out_connect = *rec;
 
   az_iot_connection_client_deinit(&c);
+  az_iot_mock_mqtt_factory_destroy(f);
+}
+
+static void connect_call_for(
+    const az_iot_connection_client_options* opts,
+    az_iot_mock_call* out_connect)
+{
+  connect_call_for_version(opts, AZ_IOT_MQTT_VERSION_3_1_1, out_connect);
 }
 
 static void keep_alive_defaults_when_unset(void** state)
 {
   (void)state;
-  az_iot_connection_client_options opts = az_iot_test_classic_options();
+  az_iot_connection_client_options opts = az_iot_test_mqtt_v3_options();
   az_iot_mock_call c;
   connect_call_for(&opts, &c);
   assert_int_equal(c.connect.keep_alive_seconds, AZ_IOT_DEFAULT_KEEP_ALIVE_SECONDS);
@@ -226,7 +231,7 @@ static void keep_alive_is_configurable(void** state)
   /* IoT Hub derives its own timeout from this value (1.5x, capped at 1767 s),
    * so a device on a metered link has a real reason to raise it and a device
    * on a lossy one has a real reason to lower it. It used to be hardcoded. */
-  az_iot_connection_client_options opts = az_iot_test_classic_options();
+  az_iot_connection_client_options opts = az_iot_test_mqtt_v3_options();
   opts.keep_alive_seconds = 120;
   az_iot_mock_call c;
   connect_call_for(&opts, &c);
@@ -239,7 +244,7 @@ static void the_largest_useful_keep_alive_reaches_the_adapter(void** state)
   /* 1177 s is the largest value IoT Hub does not clamp (1177 * 1.5 = 1765.5,
    * under the 1767 s server cap). The SDK must pass it through rather than
    * truncating it into a uint8 or its own smaller bound. */
-  az_iot_connection_client_options opts = az_iot_test_classic_options();
+  az_iot_connection_client_options opts = az_iot_test_mqtt_v3_options();
   opts.keep_alive_seconds = 1177;
   az_iot_mock_call c;
   connect_call_for(&opts, &c);
@@ -249,7 +254,7 @@ static void the_largest_useful_keep_alive_reaches_the_adapter(void** state)
 static void connect_timeout_defaults_when_unset(void** state)
 {
   (void)state;
-  az_iot_connection_client_options opts = az_iot_test_classic_options();
+  az_iot_connection_client_options opts = az_iot_test_mqtt_v3_options();
   az_iot_mock_call c;
   connect_call_for(&opts, &c);
   assert_int_equal(c.connect.connect_timeout_seconds, AZ_IOT_DEFAULT_CONNECT_TIMEOUT_SECONDS);
@@ -258,7 +263,7 @@ static void connect_timeout_defaults_when_unset(void** state)
 static void connect_timeout_is_configurable(void** state)
 {
   (void)state;
-  az_iot_connection_client_options opts = az_iot_test_classic_options();
+  az_iot_connection_client_options opts = az_iot_test_mqtt_v3_options();
   opts.connect_timeout_seconds = 5;
   az_iot_mock_call c;
   connect_call_for(&opts, &c);
@@ -274,7 +279,7 @@ static void connect_timeout_is_configurable(void** state)
 static void transport_defaults_to_tcp_on_8883_with_no_proxy(void** state)
 {
   (void)state;
-  az_iot_connection_client_options opts = az_iot_test_classic_options();
+  az_iot_connection_client_options opts = az_iot_test_mqtt_v3_options();
   opts.port = 0; /* derive */
   az_iot_mock_call c;
   connect_call_for(&opts, &c);
@@ -289,7 +294,7 @@ static void transport_defaults_to_tcp_on_8883_with_no_proxy(void** state)
 static void websockets_derive_port_443(void** state)
 {
   (void)state;
-  az_iot_connection_client_options opts = az_iot_test_classic_options();
+  az_iot_connection_client_options opts = az_iot_test_mqtt_v3_options();
   opts.port = 0;
   opts.transport = AZ_IOT_MQTT_TRANSPORT_WEBSOCKET;
   az_iot_mock_call c;
@@ -301,7 +306,7 @@ static void websockets_derive_port_443(void** state)
 static void an_explicit_port_survives_the_transport_default(void** state)
 {
   (void)state;
-  az_iot_connection_client_options opts = az_iot_test_classic_options();
+  az_iot_connection_client_options opts = az_iot_test_mqtt_v3_options();
   opts.transport = AZ_IOT_MQTT_TRANSPORT_WEBSOCKET;
   opts.port = 8443;
   az_iot_mock_call c;
@@ -312,7 +317,7 @@ static void an_explicit_port_survives_the_transport_default(void** state)
 static void the_proxy_reaches_the_adapter_whole(void** state)
 {
   (void)state;
-  az_iot_connection_client_options opts = az_iot_test_classic_options();
+  az_iot_connection_client_options opts = az_iot_test_mqtt_v3_options();
   opts.proxy.host = "proxy.corp.example";
   opts.proxy.port = 3128;
   opts.proxy.username = "device";
@@ -330,12 +335,48 @@ static void the_proxy_reaches_the_adapter_whole(void** state)
 static void the_websocket_path_reaches_the_adapter(void** state)
 {
   (void)state;
-  az_iot_connection_client_options opts = az_iot_test_classic_options();
+  az_iot_connection_client_options opts = az_iot_test_mqtt_v3_options();
   opts.transport = AZ_IOT_MQTT_TRANSPORT_WEBSOCKET;
   opts.websocket_path = "/mqtt";
   az_iot_mock_call c;
   connect_call_for(&opts, &c);
   assert_string_equal(c.connect.websocket_path, "/mqtt");
+}
+
+/* NULL leaves the adapter default (/$iothub/websocket) on an mqttv3 hub. */
+static void an_mqttv3_hub_keeps_the_default_websocket_path(void** state)
+{
+  (void)state;
+  az_iot_connection_client_options opts = az_iot_test_mqtt_v3_options();
+  opts.transport = AZ_IOT_MQTT_TRANSPORT_WEBSOCKET;
+  az_iot_mock_call c;
+  connect_call_for(&opts, &c);
+  assert_string_equal(c.connect.websocket_path, "");
+}
+
+/* The mqttv5 hub refuses /$iothub/websocket; NULL selects its own path. */
+static void an_mqttv5_hub_gets_the_mqttv5_websocket_path(void** state)
+{
+  (void)state;
+  az_iot_connection_client_options opts = az_iot_test_mqtt_v3_options();
+  opts.connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5;
+  opts.transport = AZ_IOT_MQTT_TRANSPORT_WEBSOCKET;
+  az_iot_mock_call c;
+  connect_call_for_version(&opts, AZ_IOT_MQTT_VERSION_5, &c);
+  assert_string_equal(c.connect.websocket_path, AZ_IOT_MQTT_HUB_V5_WEBSOCKET_PATH);
+}
+
+/* An explicit path is used on an mqttv5 hub too. */
+static void an_explicit_websocket_path_wins_on_an_mqttv5_hub(void** state)
+{
+  (void)state;
+  az_iot_connection_client_options opts = az_iot_test_mqtt_v3_options();
+  opts.connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5;
+  opts.transport = AZ_IOT_MQTT_TRANSPORT_WEBSOCKET;
+  opts.websocket_path = "/gateway/ws";
+  az_iot_mock_call c;
+  connect_call_for_version(&opts, AZ_IOT_MQTT_VERSION_5, &c);
+  assert_string_equal(c.connect.websocket_path, "/gateway/ws");
 }
 
 /* Stock options retry. A zeroed struct does not -- that is the caller's
@@ -345,7 +386,7 @@ static void the_default_options_enable_reconnection(void** state)
 {
   (void)state;
   az_iot_connection_client_options opts = az_iot_connection_client_options_default();
-  az_iot_reconnection_policy expected = az_iot_reconnection_policy_get_default();
+  az_iot_retry_policy expected = az_iot_connection_client_get_default_retry_policy();
 
   assert_true(opts.reconnection_policy.initial_delay_ms > 0);
   assert_int_equal(opts.reconnection_policy.initial_delay_ms, expected.initial_delay_ms);
@@ -362,8 +403,8 @@ static void the_default_options_retry_a_refused_connack(void** state)
 {
   (void)state;
   az_iot_connection_client_options opts = az_iot_connection_client_options_default();
-  opts.host = "broker.example";
-  opts.client_id = "ut-device";
+  opts.iothub_hostname = "broker.example";
+  opts.device_id = "ut-device";
   /* initial_delay_ms is deliberately NOT overridden: it is the field that
    * decides whether reconnection happens at all, so the test has to depend on
    * the default supplying it. Only the cap is shortened, which bounds the
@@ -373,7 +414,7 @@ static void the_default_options_retry_a_refused_connack(void** state)
   opts.reconnection_policy.jitter_pct = 0;
 
   az_iot_connection_client c;
-  assert_int_equal(az_iot_connection_client_init(&c, &opts), AZ_IOT_OK);
+  assert_int_equal(az_iot_test_connection_client_init(&c, &opts), AZ_IOT_OK);
   az_iot_test_state_log log;
   memset(&log, 0, sizeof(log));
   assert_int_equal(
@@ -391,7 +432,7 @@ static void the_default_options_retry_a_refused_connack(void** state)
   (void)az_iot_connection_client_do_work(&c, 0);
 
   /* Retrying, not terminal. */
-  assert_int_equal(az_iot_test_last_state(&log), AZ_IOT_CONN_STATE_RECONNECTING);
+  assert_int_equal(az_iot_test_last_state(&log), AZ_IOT_CONN_STATE_RETRY_PENDING);
   assert_false(az_iot_test_saw_state(&log, AZ_IOT_CONN_STATE_FAULTED));
 
   /* And the retry is really issued once the backoff elapses. */
@@ -404,6 +445,7 @@ static void the_default_options_retry_a_refused_connack(void** state)
   assert_true(az_iot_connection_client__is_connected(&c));
 
   az_iot_connection_client_deinit(&c);
+  az_iot_mock_mqtt_factory_destroy(f);
 }
 
 /* Opting out stays possible, and a zeroed struct keeps meaning "no retry". */
@@ -415,11 +457,11 @@ static void reconnection_can_still_be_disabled(void** state)
 
   az_iot_connection_client_options opts = az_iot_connection_client_options_default();
   opts.reconnection_policy.initial_delay_ms = 0;
-  opts.host = "broker.example";
-  opts.client_id = "ut-device";
+  opts.iothub_hostname = "broker.example";
+  opts.device_id = "ut-device";
 
   az_iot_connection_client c;
-  assert_int_equal(az_iot_connection_client_init(&c, &opts), AZ_IOT_OK);
+  assert_int_equal(az_iot_test_connection_client_init(&c, &opts), AZ_IOT_OK);
   az_iot_test_state_log log;
   memset(&log, 0, sizeof(log));
   assert_int_equal(
@@ -438,6 +480,7 @@ static void reconnection_can_still_be_disabled(void** state)
 
   assert_int_equal(az_iot_test_last_state(&log), AZ_IOT_CONN_STATE_FAULTED);
   az_iot_connection_client_deinit(&c);
+  az_iot_mock_mqtt_factory_destroy(f);
 }
 
 /* ...but a clean peer DISCONNECT with retrying disabled is NOT a fault. It is
@@ -448,12 +491,12 @@ static void a_peer_disconnect_without_retrying_settles_in_idle(void** state)
 {
   (void)state;
   az_iot_connection_client_options opts = az_iot_connection_client_options_default();
-  opts.reconnection_policy = az_iot_reconnection_policy_get_retry_disabled();
-  opts.host = "broker.example";
-  opts.client_id = "ut-device";
+  opts.reconnection_policy = az_iot_connection_client_get_disabled_retry_policy();
+  opts.iothub_hostname = "broker.example";
+  opts.device_id = "ut-device";
 
   az_iot_connection_client c;
-  assert_int_equal(az_iot_connection_client_init(&c, &opts), AZ_IOT_OK);
+  assert_int_equal(az_iot_test_connection_client_init(&c, &opts), AZ_IOT_OK);
   az_iot_test_state_log log;
   memset(&log, 0, sizeof(log));
   assert_int_equal(
@@ -481,6 +524,7 @@ static void a_peer_disconnect_without_retrying_settles_in_idle(void** state)
   /* IDLE means reopenable, which is the point of the distinction. */
   assert_int_equal(az_iot_connection_client_open(&c), AZ_IOT_OK);
   az_iot_connection_client_deinit(&c);
+  az_iot_mock_mqtt_factory_destroy(f);
 }
 
 /* The default options must not pin a port, or selecting WebSockets on top of
@@ -495,7 +539,7 @@ static void the_default_options_leave_the_port_to_the_transport(void** state)
 }
 
 /* ------------------------------------------------------------------------- */
-/* Classic CONNECT packet shape                                              */
+/* MQTTv3 CONNECT packet shape                                              */
 /*                                                                           */
 /* These pin what IoT Hub actually requires of the CONNECT. They all passed  */
 /* the day they were written -- the point is that nothing would have noticed */
@@ -511,7 +555,7 @@ static void the_username_carries_the_host_and_device_id(void** state)
    * and the "/?" is what separates the identity from the query string -- a
    * username missing it is malformed, so the check has to include it. */
   static const char k_expected_prefix[] = "broker.example/ut-device/?";
-  az_iot_connection_client_options opts = az_iot_test_classic_options();
+  az_iot_connection_client_options opts = az_iot_test_mqtt_v3_options();
   az_iot_mock_call c;
   connect_call_for(&opts, &c);
   assert_int_equal(strncmp(c.username, k_expected_prefix, sizeof(k_expected_prefix) - 1), 0);
@@ -520,32 +564,78 @@ static void the_username_carries_the_host_and_device_id(void** state)
 static void the_username_carries_an_api_version(void** state)
 {
   (void)state;
-  /* The service documents omitting api-version as a source of "unexpected
-   * behaviour", and the SDK gets it from azure-sdk-for-c rather than building
-   * it here -- so a dependency bump could drop it without anything failing. */
-  az_iot_connection_client_options opts = az_iot_test_classic_options();
+  /* Hub certificate renewal ($iothub/credentials) is refused on an older
+   * api-version (errorCode 400001), so the exact value is pinned. */
+  az_iot_connection_client_options opts = az_iot_test_mqtt_v3_options();
   az_iot_mock_call c;
   connect_call_for(&opts, &c);
-  assert_non_null(strstr(c.username, "api-version="));
+  assert_string_equal(
+      c.username,
+      "broker.example/ut-device/?api-version=2025-08-01-preview"
+      "&DeviceClientType=azsdk-c%2F" AZ_SDK_VERSION_STRING);
+}
+
+/** @brief Fills @p id (capacity AZ_IOT_MQTT_USERNAME_BUF) with a client id
+ * that makes the MQTTv3 username plus NUL exceed AZ_IOT_MQTT_USERNAME_BUF by
+ * @p excess bytes. */
+static void client_id_for_username_excess(char* id, size_t excess)
+{
+  static const char k_fixed[] = "broker.example/"
+                                "/?api-version=2025-08-01-preview"
+                                "&DeviceClientType=azsdk-c%2F" AZ_SDK_VERSION_STRING;
+  size_t id_len = AZ_IOT_MQTT_USERNAME_BUF - sizeof(k_fixed) + excess;
+  memset(id, 'd', id_len);
+  id[id_len] = '\0';
+}
+
+static void a_username_that_exactly_fills_the_buffer_connects(void** state)
+{
+  (void)state;
+  static char id[AZ_IOT_MQTT_USERNAME_BUF];
+  client_id_for_username_excess(id, 0);
+  az_iot_connection_client_options opts = az_iot_test_mqtt_v3_options();
+  opts.device_id = id;
+  az_iot_mock_call c;
+  connect_call_for(&opts, &c);
+  assert_int_equal(strlen(c.username), AZ_IOT_MQTT_USERNAME_BUF - 1u);
+}
+
+static void a_username_one_byte_too_long_fails_the_open(void** state)
+{
+  (void)state;
+  static char id[AZ_IOT_MQTT_USERNAME_BUF];
+  client_id_for_username_excess(id, 1);
+  az_iot_connection_client_options opts = az_iot_test_mqtt_v3_options();
+  opts.device_id = id;
+  az_iot_connection_client c;
+  assert_int_equal(az_iot_test_connection_client_init(&c, &opts), AZ_IOT_OK);
+  az_iot_mqtt_factory* f = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
+  assert_non_null(f);
+  assert_int_equal(az_iot_connection_client_register_mqtt_factory(&c, f), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client_open(&c), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+  az_iot_connection_client_deinit(&c);
+  az_iot_mock_mqtt_factory_destroy(f);
 }
 
 static void the_model_id_is_announced_in_the_username(void** state)
 {
   (void)state;
-  /* Plug and Play model announcement. Device Update discovers a device by this
-   * value, so losing it silently disables software updates on every device. */
-  az_iot_connection_client_options opts = az_iot_test_classic_options();
+  /* Plug and Play model announcement, percent-encoded. */
+  az_iot_connection_client_options opts = az_iot_test_mqtt_v3_options();
   opts.model_id = "dtmi:azure:iot:deviceUpdateContractModel;2";
   az_iot_mock_call c;
   connect_call_for(&opts, &c);
-  assert_non_null(strstr(c.username, "model-id="));
-  assert_non_null(strstr(c.username, "deviceUpdateContractModel"));
+  assert_string_equal(
+      c.username,
+      "broker.example/ut-device/?api-version=2025-08-01-preview"
+      "&DeviceClientType=azsdk-c%2F" AZ_SDK_VERSION_STRING
+      "&model-id=dtmi%3Aazure%3Aiot%3AdeviceUpdateContractModel%3B2");
 }
 
 static void no_model_id_means_none_in_the_username(void** state)
 {
   (void)state;
-  az_iot_connection_client_options opts = az_iot_test_classic_options();
+  az_iot_connection_client_options opts = az_iot_test_mqtt_v3_options();
   az_iot_mock_call c;
   connect_call_for(&opts, &c);
   assert_null(strstr(c.username, "model-id="));
@@ -554,7 +644,7 @@ static void no_model_id_means_none_in_the_username(void** state)
 static void an_empty_model_id_is_treated_as_none(void** state)
 {
   (void)state;
-  az_iot_connection_client_options opts = az_iot_test_classic_options();
+  az_iot_connection_client_options opts = az_iot_test_mqtt_v3_options();
   opts.model_id = "";
   az_iot_mock_call c;
   connect_call_for(&opts, &c);
@@ -567,7 +657,7 @@ static void the_connect_does_not_request_a_clean_session(void** state)
   /* CleanSession 0 is what makes the C2D subscription survive a reconnect and
    * lets the hub deliver messages queued while the device was away. Asking for
    * a clean session would drop them, and the loss would be invisible. */
-  az_iot_connection_client_options opts = az_iot_test_classic_options();
+  az_iot_connection_client_options opts = az_iot_test_mqtt_v3_options();
   az_iot_mock_call c;
   connect_call_for(&opts, &c);
   assert_false(c.connect.clean_start);
@@ -645,23 +735,42 @@ static void close_twice_is_idempotent(void** state)
   assert_int_equal(fx->log.count, transitions);
 }
 
+/** @brief Records the first two SESSION_END reasons into an int[2]. */
+static void record_session_end_reasons(const az_iot_connection_feature_event* event, void* user_ctx)
+{
+  int* reasons = (int*)user_ctx;
+  reasons[reasons[0] == -1 ? 0 : 1] = (int)event->session_end_reason;
+}
+
 /* After a fault the adapter is already gone, so there is nothing to
  * disconnect -- which is exactly why close() has to reach IDLE by itself here
  * rather than waiting for a transport event. */
 static void close_from_faulted_returns_to_idle(void** state)
 {
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  int reasons[2] = { -1, -1 };
+  assert_int_equal(
+      az_iot_connection_client__add_feature_observer(
+          fx->client,
+          AZ_IOT_CONNECTION_FEATURE_EVENT_SESSION_END,
+          record_session_end_reasons,
+          reasons),
+      AZ_IOT_OK);
   az_iot_mock_mqtt_client* m = open_to_connecting(fx);
 
   assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_ERR_MQTT));
   (void)az_iot_connection_client_do_work(fx->client, 0);
   (void)az_iot_connection_client_do_work(fx->client, 0);
   assert_true(az_iot_test_saw_state(&fx->log, AZ_IOT_CONN_STATE_FAULTED));
+  assert_int_equal(reasons[0], AZ_IOT_CONNECTION_SESSION_END_LOST);
 
   /* FAULTED is settled, not a trap: close() acknowledges it and the client is
    * IDLE by the time the call returns -- there is no adapter left to wait for. */
   assert_int_equal(az_iot_connection_client_close(fx->client), AZ_IOT_OK);
   assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_IDLE);
+  assert_int_equal(reasons[1], AZ_IOT_CONNECTION_SESSION_END_PLANNED);
+  az_iot_connection_client__remove_feature_observer(
+      fx->client, record_session_end_reasons, reasons);
 }
 
 /* The recovery this makes possible: retry without destroying the client (and
@@ -706,33 +815,16 @@ static void close_from_faulted_twice_is_idempotent(void** state)
 /* deinit()                                                                 */
 /* ------------------------------------------------------------------------- */
 
-/* Register a factory the client will NOT free.
- *
- * deinit() calls every registered factory's destroy hook, and the mock's hook
- * frees the factory itself -- so a test that inspects the factory AFTER
- * deinit() would be reading freed memory. glibc happens to leave the bytes
- * looking like the values the assertions want, which is why this passes on a
- * plain Linux build; valgrind reports an invalid read, and the MSVC debug CRT
- * fills freed blocks with 0xDD so the assertion fails outright. The client
- * copies the struct, so detaching the hook on a local copy leaves the real
- * factory alive and owned by the test. */
-static void register_without_adopting(az_iot_connection_client* c, az_iot_mqtt_factory* factory)
-{
-  az_iot_mqtt_factory borrowed = *factory;
-  borrowed.destroy = NULL;
-  assert_int_equal(az_iot_connection_client_register_mqtt_factory(c, &borrowed), AZ_IOT_OK);
-}
-
 static void deinit_while_connected_destroys_the_adapter(void** state)
 {
   (void)state;
-  az_iot_connection_client_options opts = az_iot_test_classic_options();
+  az_iot_connection_client_options opts = az_iot_test_mqtt_v3_options();
   az_iot_connection_client c;
-  assert_int_equal(az_iot_connection_client_init(&c, &opts), AZ_IOT_OK);
+  assert_int_equal(az_iot_test_connection_client_init(&c, &opts), AZ_IOT_OK);
 
   az_iot_mqtt_factory* factory = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
   assert_non_null(factory);
-  register_without_adopting(&c, factory);
+  assert_int_equal(az_iot_connection_client_register_mqtt_factory(&c, factory), AZ_IOT_OK);
   assert_int_equal(az_iot_connection_client_open(&c), AZ_IOT_OK);
   az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(factory);
   assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_OK));
@@ -749,13 +841,13 @@ static void deinit_while_connected_destroys_the_adapter(void** state)
 static void deinit_while_connecting_destroys_the_adapter(void** state)
 {
   (void)state;
-  az_iot_connection_client_options opts = az_iot_test_classic_options();
+  az_iot_connection_client_options opts = az_iot_test_mqtt_v3_options();
   az_iot_connection_client c;
-  assert_int_equal(az_iot_connection_client_init(&c, &opts), AZ_IOT_OK);
+  assert_int_equal(az_iot_test_connection_client_init(&c, &opts), AZ_IOT_OK);
 
   az_iot_mqtt_factory* factory = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
   assert_non_null(factory);
-  register_without_adopting(&c, factory);
+  assert_int_equal(az_iot_connection_client_register_mqtt_factory(&c, factory), AZ_IOT_OK);
   assert_int_equal(az_iot_connection_client_open(&c), AZ_IOT_OK);
   assert_non_null(az_iot_mock_mqtt_factory_last_client(factory));
 
@@ -774,10 +866,9 @@ static void deinit_is_silent_on_the_state_callback(void** state)
   az_iot_connection_client_deinit(fx->client);
   assert_int_equal(fx->log.count, transitions);
 
-  /* Neutralize the fixture teardown: the client is already destroyed and the
-   * factory was adopted (and freed) by it. */
+  /* Neutralize the fixture teardown's deinit(): the client is already
+   * destroyed. The teardown still destroys the factory. */
   memset(&fx->client_storage, 0, sizeof(fx->client_storage));
-  fx->factory = NULL;
 }
 
 static void deinit_tolerates_null(void** state)
@@ -1008,10 +1099,10 @@ static void removing_an_unregistered_observer_reports_not_found(void** state)
 static void a_full_application_pool_is_reported(void** state)
 {
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
-  az_iot_test_state_log logs[AZ_IOT_MAX_APP_STATE_OBSERVERS];
+  az_iot_test_state_log logs[AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_APPLICATION_STATE_OBSERVERS];
   memset(logs, 0, sizeof(logs));
 
-  for (size_t i = 0; i + 1 < AZ_IOT_MAX_APP_STATE_OBSERVERS; ++i)
+  for (size_t i = 0; i + 1 < AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_APPLICATION_STATE_OBSERVERS; ++i)
   {
     assert_int_equal(
         az_iot_connection_client_add_state_observer(fx->client, az_iot_test_on_state, &logs[i]),
@@ -1019,7 +1110,9 @@ static void a_full_application_pool_is_reported(void** state)
   }
   assert_int_equal(
       az_iot_connection_client_add_state_observer(
-          fx->client, az_iot_test_on_state, &logs[AZ_IOT_MAX_APP_STATE_OBSERVERS - 1]),
+          fx->client,
+          az_iot_test_on_state,
+          &logs[AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_APPLICATION_STATE_OBSERVERS - 1]),
       AZ_IOT_ERR_NOT_ENOUGH_SPACE);
 }
 
@@ -1039,7 +1132,7 @@ static void record_order(char tag)
   }
 }
 
-static void feature_observer(const az_iot_connection_state_event* event, void* user_ctx)
+static void feature_observer(const az_iot_connection_feature_event* event, void* user_ctx)
 {
   (void)event;
   (void)user_ctx;
@@ -1065,7 +1158,9 @@ static void feature_observers_are_dispatched_before_application_ones(void** stat
   assert_int_equal(
       az_iot_connection_client_add_state_observer(fx->client, app_observer, NULL), AZ_IOT_OK);
   assert_int_equal(
-      az_iot_connection_client__add_state_observer(fx->client, feature_observer, NULL), AZ_IOT_OK);
+      az_iot_connection_client__add_feature_observer(
+          fx->client, AZ_IOT_CONNECTION_FEATURE_EVENT_STATE, feature_observer, NULL),
+      AZ_IOT_OK);
 
   (void)open_to_connecting(fx);
 
@@ -1079,10 +1174,10 @@ static void feature_observers_are_dispatched_before_application_ones(void** stat
 static void a_full_application_pool_does_not_block_a_feature_client(void** state)
 {
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
-  az_iot_test_state_log logs[AZ_IOT_MAX_APP_STATE_OBSERVERS];
+  az_iot_test_state_log logs[AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_APPLICATION_STATE_OBSERVERS];
   memset(logs, 0, sizeof(logs));
 
-  for (size_t i = 0; i + 1 < AZ_IOT_MAX_APP_STATE_OBSERVERS; ++i)
+  for (size_t i = 0; i + 1 < AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_APPLICATION_STATE_OBSERVERS; ++i)
   {
     assert_int_equal(
         az_iot_connection_client_add_state_observer(fx->client, az_iot_test_on_state, &logs[i]),
@@ -1090,11 +1185,15 @@ static void a_full_application_pool_does_not_block_a_feature_client(void** state
   }
   assert_int_equal(
       az_iot_connection_client_add_state_observer(
-          fx->client, az_iot_test_on_state, &logs[AZ_IOT_MAX_APP_STATE_OBSERVERS - 1]),
+          fx->client,
+          az_iot_test_on_state,
+          &logs[AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_APPLICATION_STATE_OBSERVERS - 1]),
       AZ_IOT_ERR_NOT_ENOUGH_SPACE);
 
   assert_int_equal(
-      az_iot_connection_client__add_state_observer(fx->client, feature_observer, NULL), AZ_IOT_OK);
+      az_iot_connection_client__add_feature_observer(
+          fx->client, AZ_IOT_CONNECTION_FEATURE_EVENT_STATE, feature_observer, NULL),
+      AZ_IOT_OK);
 }
 
 /* ADDING from inside a dispatch would hand the new subscriber the transition
@@ -1115,68 +1214,105 @@ static void reentrant_observer(const az_iot_connection_state_event* event, void*
       g_reentrant_client, reentrant_observer, NULL);
 }
 
-/* The guard must survive NESTING. close() is legal from inside an observer and
- * transitions the state, which dispatches again; if the inner dispatch cleared
- * the flag on its way out, the outer pass would resume unguarded and a later
- * observer could mutate the arrays still being walked.
+/* The guard must survive NESTING. A feature client may start a provisioning
+ * session from inside an observer, and that start dispatches DPS transitions
+ * from within the outer pass; if the inner dispatch cleared the flag on its way
+ * out, the outer pass would resume unguarded and a later observer could mutate
+ * the arrays still being walked.
  *
- * Ordered deliberately: the first observer closes (nesting a dispatch), and a
- * second, registered afterwards, then tries to mutate the registry. With a
- * plain boolean it would succeed. */
-static az_iot_connection_client* g_nested_client;
-static az_iot_result g_nested_add_result;
-static bool g_nested_closed;
+ * The first observer starts the session at HUB:CONNECTED (nesting a dispatch),
+ * then checks that adding an observer and close() are still refused; a second,
+ * registered afterwards, then tries to mutate the registry. */
+typedef struct nested_dispatch_probe
+{
+  az_iot_connection_client* client;
+  bool in_outer;
+  bool started;
+  int inner_events;
+  az_iot_result ensure_result;
+  az_iot_result add_after_inner;
+  az_iot_result close_after_inner;
+  az_iot_result late_add;
+} nested_dispatch_probe;
 
-static void nested_closing_observer(const az_iot_connection_state_event* event, void* user_ctx)
+static nested_dispatch_probe g_nested;
+
+static void late_mutating_observer(const az_iot_connection_state_event* event, void* user_ctx);
+
+static void nested_starting_observer(const az_iot_connection_state_event* event, void* user_ctx)
 {
   (void)user_ctx;
-  /* CONNECTED specifically: close() only transitions -- and so only nests a
-   * dispatch -- once there is a live session to disconnect. During the
-   * CONNECTING event open() has not yet adopted the adapter, so close() there
-   * returns NOT_INITIALIZED and nests nothing. */
-  if (event->state == AZ_IOT_CONN_STATE_CONNECTED && !g_nested_closed)
+  if (event->scope == AZ_IOT_CONN_SCOPE_DPS && g_nested.in_outer)
   {
-    g_nested_closed = true;
-    (void)az_iot_connection_client_close(g_nested_client);
+    g_nested.inner_events++;
+    return;
+  }
+  if (event->scope == AZ_IOT_CONN_SCOPE_HUB && event->state == AZ_IOT_CONN_STATE_CONNECTED
+      && !g_nested.started)
+  {
+    g_nested.started = true;
+    g_nested.in_outer = true;
+    g_nested.ensure_result = az_iot_connection_client__dps_session_ensure(g_nested.client);
+    g_nested.add_after_inner = az_iot_connection_client_add_state_observer(
+        g_nested.client, late_mutating_observer, (void*)(uintptr_t)9);
+    g_nested.close_after_inner = az_iot_connection_client_close(g_nested.client);
+    g_nested.in_outer = false;
   }
 }
 
 static void late_mutating_observer(const az_iot_connection_state_event* event, void* user_ctx)
 {
-  (void)event;
   (void)user_ctx;
-  /* Recorded only once the nesting has actually happened, so the assertion is
-   * about the OUTER pass resuming, not about the first event. */
-  if (g_nested_closed)
+  /* Recorded only for the outer HUB:CONNECTED pass, after the nesting. */
+  if (g_nested.started && event->scope == AZ_IOT_CONN_SCOPE_HUB
+      && event->state == AZ_IOT_CONN_STATE_CONNECTED)
   {
-    g_nested_add_result = az_iot_connection_client_add_state_observer(
-        g_nested_client, late_mutating_observer, (void*)(uintptr_t)7);
+    g_nested.late_add = az_iot_connection_client_add_state_observer(
+        g_nested.client, late_mutating_observer, (void*)(uintptr_t)7);
   }
 }
 
 static void the_dispatch_guard_survives_nesting(void** state)
 {
-  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
-  g_nested_client = fx->client;
-  g_nested_add_result = AZ_IOT_OK;
-  g_nested_closed = false;
-
+  (void)state;
+  az_iot_connection_client_options opts = az_iot_test_mqtt_v3_options();
+  opts.dps.id_scope = "0ne00000000";
+  opts.dps.registration_id = "ut-device";
+  az_iot_connection_client c;
+  assert_int_equal(az_iot_test_connection_client_init(&c, &opts), AZ_IOT_OK);
+  az_iot_mqtt_factory* f = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
+  assert_int_equal(az_iot_connection_client_register_mqtt_factory(&c, f), AZ_IOT_OK);
+  memset(&g_nested, 0, sizeof(g_nested));
+  g_nested.client = &c;
+  g_nested.late_add = AZ_IOT_OK;
   assert_int_equal(
-      az_iot_connection_client_add_state_observer(fx->client, nested_closing_observer, NULL),
-      AZ_IOT_OK);
+      az_iot_connection_client_add_state_observer(&c, nested_starting_observer, NULL), AZ_IOT_OK);
   assert_int_equal(
-      az_iot_connection_client_add_state_observer(fx->client, late_mutating_observer, NULL),
-      AZ_IOT_OK);
+      az_iot_connection_client_add_state_observer(&c, late_mutating_observer, NULL), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client__dps_user_acquire(&c), AZ_IOT_OK);
 
-  /* Driven manually rather than via open_to_connected(): that helper asserts
-   * the client is still connected afterwards, and this test closes it from
-   * inside the CONNECTED dispatch on purpose. */
-  az_iot_mock_mqtt_client* m = open_to_connecting(fx);
-  assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_OK));
-  (void)az_iot_connection_client_do_work(fx->client, 0);
+  /* The saved hub connects first; the feature session starts from its CONNECTED. */
+  assert_int_equal(az_iot_connection_client_open(&c), AZ_IOT_OK);
+  az_iot_mock_mqtt_client* hub = az_iot_mock_mqtt_factory_last_client(f);
+  assert_non_null(hub);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(hub, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(&c, 0);
 
-  assert_true(g_nested_closed);
-  assert_int_equal(g_nested_add_result, AZ_IOT_ERR_BUSY);
+  assert_true(g_nested.started);
+  assert_int_equal(g_nested.ensure_result, AZ_IOT_ERR_BUSY);
+  assert_true(g_nested.inner_events > 0);
+  assert_non_null(c.dps_mqtt);
+  assert_int_equal(g_nested.add_after_inner, AZ_IOT_ERR_BUSY);
+  assert_int_equal(g_nested.close_after_inner, AZ_IOT_ERR_BUSY);
+  assert_int_equal(g_nested.late_add, AZ_IOT_ERR_BUSY);
+  assert_int_equal(c.callback_depth, 0);
+  assert_false(c.dispatching_state);
+  assert_int_equal(
+      az_iot_connection_client_get_state(&c, AZ_IOT_CONN_SCOPE_HUB), AZ_IOT_CONN_STATE_CONNECTED);
+
+  az_iot_connection_client__dps_user_release(&c);
+  az_iot_connection_client_deinit(&c);
+  az_iot_mock_mqtt_factory_destroy(f);
 }
 
 static void adding_is_refused_from_inside_an_observer_but_removing_is_not(void** state)
@@ -1264,7 +1400,8 @@ static void publish_before_connected_is_rejected(void** state)
   msg.topic = "devices/ut-device/messages/events/";
   msg.qos = AZ_IOT_MQTT_QOS_1;
   assert_int_equal(
-      az_iot_connection_client__publish(fx->client, &msg, NULL, NULL), AZ_IOT_ERR_NOT_CONNECTED);
+      az_iot_connection_client__publish(fx->client, NULL, &msg, NULL, NULL),
+      AZ_IOT_ERR_NOT_CONNECTED);
 }
 
 static void subscribe_before_connected_is_rejected(void** state)
@@ -1293,7 +1430,8 @@ static void publish_after_disconnect_is_rejected(void** state)
   msg.topic = "devices/ut-device/messages/events/";
   msg.qos = AZ_IOT_MQTT_QOS_1;
   assert_int_equal(
-      az_iot_connection_client__publish(fx->client, &msg, NULL, NULL), AZ_IOT_ERR_NOT_CONNECTED);
+      az_iot_connection_client__publish(fx->client, NULL, &msg, NULL, NULL),
+      AZ_IOT_ERR_NOT_CONNECTED);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -1305,7 +1443,7 @@ static void publish_after_disconnect_is_rejected(void** state)
  * The core does NOT act on it today: it is retried like any other CONNACK
  * failure. These two tests pin the SHIPPING behaviour so that implementing
  * re-provisioning is a deliberate, test-visible change rather than a silent
- * one. See docs/test-coverage.md ("known gaps"). */
+ * one. */
 static void identity_rejection_faults_when_reconnect_is_disabled(void** state)
 {
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
@@ -1352,6 +1490,8 @@ int main(void)
     cmocka_unit_test(connect_timeout_is_configurable),
     cmocka_unit_test(the_username_carries_the_host_and_device_id),
     cmocka_unit_test(the_username_carries_an_api_version),
+    cmocka_unit_test(a_username_that_exactly_fills_the_buffer_connects),
+    cmocka_unit_test(a_username_one_byte_too_long_fails_the_open),
     cmocka_unit_test(the_model_id_is_announced_in_the_username),
     cmocka_unit_test(no_model_id_means_none_in_the_username),
     cmocka_unit_test(an_empty_model_id_is_treated_as_none),
@@ -1418,6 +1558,9 @@ int main(void)
     cmocka_unit_test(an_explicit_port_survives_the_transport_default),
     cmocka_unit_test(the_proxy_reaches_the_adapter_whole),
     cmocka_unit_test(the_websocket_path_reaches_the_adapter),
+    cmocka_unit_test(an_mqttv3_hub_keeps_the_default_websocket_path),
+    cmocka_unit_test(an_mqttv5_hub_gets_the_mqttv5_websocket_path),
+    cmocka_unit_test(an_explicit_websocket_path_wins_on_an_mqttv5_hub),
     cmocka_unit_test(the_default_options_leave_the_port_to_the_transport),
     cmocka_unit_test(the_default_options_enable_reconnection),
     cmocka_unit_test(the_default_options_retry_a_refused_connack),

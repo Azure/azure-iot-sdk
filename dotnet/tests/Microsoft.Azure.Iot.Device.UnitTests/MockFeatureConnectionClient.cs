@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
 // See LICENSE file in the project root for full license information.
 
+using Microsoft.Azure.Iot.Device.Authentication;
 using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Mqtt;
 using Microsoft.Azure.Iot.Device.Provisioning.Models;
@@ -18,8 +19,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
     /// with <see cref="SimulateReceiveAsync"/>.
     /// </remarks>
     internal sealed class MockFeatureConnectionClient
-        : global::Microsoft.Azure.Iot.Device.MQTTv5.Connection.IConnectionClient,
-          global::Microsoft.Azure.Iot.Device.Unified.Connection.IConnectionClient
+        : global::Microsoft.Azure.Iot.Device.Unified.Connection.IConnectionClient
     {
         public event Func<MqttPublishReceivedEventArgs, Task>? PublishReceivedAsync;
 
@@ -65,11 +65,14 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         }
 
         /// <summary>Deliver an inbound publish to whatever feature clients have subscribed to this connection.</summary>
-        public async Task SimulateReceiveAsync(MqttPublish publish)
+        public Task SimulateReceiveAsync(MqttPublish publish)
+            => SimulateReceiveAsync(new MockMqttPublishReceivedEventArgs() { Publish = publish });
+
+        public async Task SimulateReceiveAsync(MqttPublishReceivedEventArgs args)
         {
             if (PublishReceivedAsync != null)
             {
-                await PublishReceivedAsync.Invoke(new MockMqttPublishReceivedEventArgs() { Publish = publish });
+                await PublishReceivedAsync.Invoke(args);
             }
         }
 
@@ -80,14 +83,14 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
         /// <summary>Build a connection context for the given hub generation.</summary>
         public static ConnectionContext CreateConnectionContext(
-            ConnectionProfile connectionProfile,
+            IotHubConnectionType connectionProfile,
             string deviceId = "someDeviceId",
             string iotHubHostName = "someHostName")
         {
 #pragma warning disable SYSLIB0026 // Mock certificate; no need to load a real one.
             return new ConnectionContext()
             {
-                AuthenticationProvider = new X509AuthenticationProvider(new System.Security.Cryptography.X509Certificates.X509Certificate2()),
+                AuthenticationProvider = new X509AuthenticationProvider(new System.Security.Cryptography.X509Certificates.X509Certificate2(), null),
                 DeviceId = deviceId,
                 IotHubHostName = iotHubHostName,
                 ConnectionProfile = connectionProfile,

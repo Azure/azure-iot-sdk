@@ -35,6 +35,7 @@
 
 #include "azure/iot/az_iot_connection_client.h"
 #include "azure/iot/az_iot_log.h"
+#include "azure/iot/az_iot_log_components.h"
 #include "azure/iot/az_iot_mqtt_iface.h"
 #include "azure/iot/az_iot_result.h"
 #include "azure/iot/az_iot_version.h"
@@ -111,6 +112,7 @@ static void result_to_string_covers_every_code(void** state)
     { AZ_IOT_ERR_SUBSCRIPTION_REFUSED, "AZ_IOT_ERR_SUBSCRIPTION_REFUSED" },
     { AZ_IOT_ERR_CREDENTIAL_INCOMPLETE, "AZ_IOT_ERR_CREDENTIAL_INCOMPLETE" },
     { AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH, "AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH" },
+    { AZ_IOT_ERR_PUBLISH_REFUSED, "AZ_IOT_ERR_PUBLISH_REFUSED" },
   };
   const size_t n = sizeof(all) / sizeof(all[0]);
   const char* got[sizeof(all) / sizeof(all[0])];
@@ -120,7 +122,7 @@ static void result_to_string_covers_every_code(void** state)
    * appended to, so "last enumerator + 1" is how many codes exist -- appending
    * one without extending this table now fails here, instead of silently
    * falling back to AZ_IOT_ERR_UNKNOWN at runtime. */
-  assert_int_equal(n, (size_t)AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH + 1);
+  assert_int_equal(n, (size_t)AZ_IOT_ERR_PUBLISH_REFUSED + 1);
 
   for (size_t i = 0; i < n; ++i)
   {
@@ -154,8 +156,9 @@ static void connection_state_to_string_covers_every_state(void** state)
     { AZ_IOT_CONN_STATE_CONNECTING, "AZ_IOT_CONN_STATE_CONNECTING" },
     { AZ_IOT_CONN_STATE_CONNECTED, "AZ_IOT_CONN_STATE_CONNECTED" },
     { AZ_IOT_CONN_STATE_DISCONNECTING, "AZ_IOT_CONN_STATE_DISCONNECTING" },
-    { AZ_IOT_CONN_STATE_RECONNECTING, "AZ_IOT_CONN_STATE_RECONNECTING" },
+    { AZ_IOT_CONN_STATE_RETRY_PENDING, "AZ_IOT_CONN_STATE_RETRY_PENDING" },
     { AZ_IOT_CONN_STATE_FAULTED, "AZ_IOT_CONN_STATE_FAULTED" },
+    { AZ_IOT_CONN_STATE_SETTING_UP, "AZ_IOT_CONN_STATE_SETTING_UP" },
   };
   const size_t n = sizeof(all) / sizeof(all[0]);
   const char* got[sizeof(all) / sizeof(all[0])];
@@ -178,6 +181,37 @@ static void connection_state_to_string_reports_unknown_for_an_unmapped_state(voi
   /* The default arm is unreachable from any named enumerator, so it needs a
    * value from outside the enum to be exercised at all. */
   assert_string_equal(az_iot_connection_state_to_string((az_iot_connection_state)123), "UNKNOWN");
+}
+
+static void connection_profile_to_string_covers_every_profile(void** state)
+{
+  (void)state;
+  const struct
+  {
+    az_iot_connection_profile profile;
+    const char* text;
+  } all[] = {
+    { AZ_IOT_CONNECTION_PROFILE_MQTT_V3, "AZ_IOT_CONNECTION_PROFILE_MQTT_V3" },
+    { AZ_IOT_CONNECTION_PROFILE_MQTT_V5, "AZ_IOT_CONNECTION_PROFILE_MQTT_V5" },
+    { AZ_IOT_CONNECTION_PROFILE_UNKNOWN, "AZ_IOT_CONNECTION_PROFILE_UNKNOWN" },
+  };
+  const size_t n = sizeof(all) / sizeof(all[0]);
+  const char* got[sizeof(all) / sizeof(all[0])];
+
+  for (size_t i = 0; i < n; ++i)
+  {
+    got[i] = az_iot_connection_profile_to_string(all[i].profile);
+    assert_mapped(got[i], "UNKNOWN", all[i].text);
+    assert_string_equal(got[i], all[i].text);
+  }
+  assert_all_distinct(got, n);
+}
+
+static void connection_profile_to_string_reports_unknown_for_an_unmapped_profile(void** state)
+{
+  (void)state;
+  assert_string_equal(
+      az_iot_connection_profile_to_string((az_iot_connection_profile)42), "UNKNOWN");
 }
 
 /* ---- mqtt version and role ------------------------------------------------ */
@@ -211,8 +245,8 @@ static void mqtt_role_to_string_covers_every_role(void** state)
     const char* text;
   } all[] = {
     { AZ_IOT_MQTT_ROLE_DPS, "DPS" },
-    { AZ_IOT_MQTT_ROLE_HUB_CLASSIC, "HUB_CLASSIC" },
-    { AZ_IOT_MQTT_ROLE_HUB_NEXT, "HUB_NEXT" },
+    { AZ_IOT_MQTT_ROLE_HUB_MQTT_V3, "HUB_MQTT_V3" },
+    { AZ_IOT_MQTT_ROLE_HUB_MQTT_V5, "HUB_MQTT_V5" },
   };
   const size_t n = sizeof(all) / sizeof(all[0]);
   const char* got[sizeof(all) / sizeof(all[0])];
@@ -245,7 +279,17 @@ static void version_string_matches_the_header_macros(void** state)
   assert_non_null(az_iot_version_string());
   assert_string_equal(az_iot_version_string(), AZ_IOT_VERSION_STRING);
 
-  char expected[32];
+  char expected[64];
+#ifdef AZ_IOT_VERSION_PRERELEASE
+  snprintf(
+      expected,
+      sizeof(expected),
+      "%d.%d.%d-%s",
+      AZ_IOT_VERSION_MAJOR,
+      AZ_IOT_VERSION_MINOR,
+      AZ_IOT_VERSION_PATCH,
+      AZ_IOT_VERSION_PRERELEASE);
+#else
   snprintf(
       expected,
       sizeof(expected),
@@ -253,6 +297,7 @@ static void version_string_matches_the_header_macros(void** state)
       AZ_IOT_VERSION_MAJOR,
       AZ_IOT_VERSION_MINOR,
       AZ_IOT_VERSION_PATCH);
+#endif
   assert_string_equal(az_iot_version_string(), expected);
 }
 
@@ -261,7 +306,7 @@ static void version_string_matches_the_header_macros(void** state)
 static void reconnection_policy_default_is_usable_as_supplied(void** state)
 {
   (void)state;
-  az_iot_reconnection_policy p = az_iot_reconnection_policy_get_default();
+  az_iot_retry_policy p = az_iot_connection_client_get_default_retry_policy();
 
   /* These are documented in az_iot_connection_client.h ("1s initial delay, 60s
    * max backoff, infinite attempts, 20% jitter"), which makes them part of the
@@ -281,11 +326,11 @@ static void reconnection_policy_default_is_usable_as_supplied(void** state)
 
 /* Never retry. The bytes are the same as a zeroed struct -- the value of the
  * getter is that the call site says so. The behaviour that follows from
- * initial_delay_ms == 0 is asserted in reconnect_policy_test.c. */
+ * initial_delay_ms == 0 is asserted in retry_policy_test.c. */
 static void retry_disabled_policy_disables_retrying(void** state)
 {
   (void)state;
-  az_iot_reconnection_policy p = az_iot_reconnection_policy_get_retry_disabled();
+  az_iot_retry_policy p = az_iot_connection_client_get_disabled_retry_policy();
   assert_int_equal(p.initial_delay_ms, 0u);
   assert_int_equal(p.max_attempts, 0u);
   assert_int_equal(p.jitter_pct, 0u);
@@ -296,7 +341,7 @@ static void retry_disabled_policy_disables_retrying(void** state)
 static void fixed_interval_policy_pins_the_cap_to_the_interval(void** state)
 {
   (void)state;
-  az_iot_reconnection_policy p = az_iot_reconnection_policy_get_fixed_interval(5000u, 360u);
+  az_iot_retry_policy p = az_iot_connection_client_get_fixed_interval_retry_policy(5000u, 360u);
   assert_int_equal(p.initial_delay_ms, 5000u);
   assert_int_equal(p.max_delay_ms, 5000u);
   assert_int_equal(p.max_attempts, 360u);
@@ -307,7 +352,7 @@ static void fixed_interval_policy_pins_the_cap_to_the_interval(void** state)
 static void fixed_interval_policy_can_retry_forever(void** state)
 {
   (void)state;
-  az_iot_reconnection_policy p = az_iot_reconnection_policy_get_fixed_interval(1000u, 0u);
+  az_iot_retry_policy p = az_iot_connection_client_get_fixed_interval_retry_policy(1000u, 0u);
   assert_int_equal(p.max_attempts, 0u);
   assert_int_equal(p.initial_delay_ms, p.max_delay_ms);
 }
@@ -320,7 +365,7 @@ static void fixed_interval_policy_can_retry_forever(void** state)
 static void a_zero_fixed_interval_does_not_disable_retrying(void** state)
 {
   (void)state;
-  az_iot_reconnection_policy p = az_iot_reconnection_policy_get_fixed_interval(0u, 5u);
+  az_iot_retry_policy p = az_iot_connection_client_get_fixed_interval_retry_policy(0u, 5u);
 
   assert_int_not_equal(p.initial_delay_ms, 0u); /* not the disable sentinel */
   assert_int_equal(p.initial_delay_ms, 1u);
@@ -347,12 +392,12 @@ static void stderr_sink_is_installable_and_emits(void** state)
   assert_int_equal(sink.min_level, AZ_IOT_LOG_LEVEL_TRACE);
 
   az_iot_log_set_global_sink(&sink);
-  AZ_IOT_LOG_TRACE("diagnostics_test: trace");
-  AZ_IOT_LOG_DEBUG("diagnostics_test: debug");
-  AZ_IOT_LOG_INFO("diagnostics_test: info");
-  AZ_IOT_LOG_WARN("diagnostics_test: warn");
-  AZ_IOT_LOG_ERROR("diagnostics_test: error");
-  AZ_IOT_LOG_ERRORF("diagnostics_test: %s %d", "formatted", 42);
+  AZ_IOT_LOG_TRACE(AZ_IOT_LOG_COMPONENT_APP, "trace");
+  AZ_IOT_LOG_DEBUG(AZ_IOT_LOG_COMPONENT_APP, "debug");
+  AZ_IOT_LOG_INFO(AZ_IOT_LOG_COMPONENT_APP, "info");
+  AZ_IOT_LOG_WARN(AZ_IOT_LOG_COMPONENT_APP, "warn");
+  AZ_IOT_LOG_ERROR(AZ_IOT_LOG_COMPONENT_APP, "error");
+  AZ_IOT_LOG_ERRORF(AZ_IOT_LOG_COMPONENT_APP, "%s %d", "formatted", 42);
   az_iot_log_set_global_sink(NULL);
 }
 
@@ -425,6 +470,8 @@ int main(void)
     cmocka_unit_test(result_to_string_reports_unknown_for_an_unmapped_code),
     cmocka_unit_test(connection_state_to_string_covers_every_state),
     cmocka_unit_test(connection_state_to_string_reports_unknown_for_an_unmapped_state),
+    cmocka_unit_test(connection_profile_to_string_covers_every_profile),
+    cmocka_unit_test(connection_profile_to_string_reports_unknown_for_an_unmapped_profile),
     cmocka_unit_test(mqtt_version_to_string_covers_every_version),
     cmocka_unit_test(mqtt_version_to_string_reports_unknown_for_an_unmapped_version),
     cmocka_unit_test(mqtt_role_to_string_covers_every_role),

@@ -6,7 +6,7 @@
 /* software_update/esp32 - real Azure software updates over-the-air firmware update on an
  * ESP32-WROOM, end to end:
  *
- *   Wi-Fi -> DPS provisioning (X.509, esp-mqtt) -> software update check ->
+ *   Wi-Fi -> DPS provisioning (X.509, az_mqtt) -> software update check ->
  *   manifest JWS verification (mbedTLS) -> HTTPS download straight into the
  *   inactive OTA partition -> per-file SHA-256 check -> set boot partition ->
  *   reboot -> resume the workflow in the new image -> report the new version.
@@ -38,13 +38,13 @@
 
 #include "azure/iot/az_iot.h"
 #include "azure/iot/az_iot_su.h"
+#include "azure/iot/adapters/az_iot_adapter_az_mqtt.h"
 
 #include "su_version.h"
 #include "wifi_connect.h"
-#include "az_iot_mqtt_esp.h"
 #include "az_iot_cert_embedded.h"
-#include "az_iot_su_crypto_mbedtls.h"
-#include "su_esp32_ota.h"
+#include "az_iot_crypto_mbedtls.h"
+#include "az_iot_su_esp32_ota.h"
 
 static const char* TAG = "su_esp32";
 
@@ -189,18 +189,14 @@ static az_iot_result app_request_check(az_iot_su_client* su, bool registered, ui
 
 /* Service-requested delay before the next check, set by on_su_event. */
 static uint32_t g_retry_after_ms;
+/* persist_workflow_state_fn is failing: the checkpoint a reboot needs is not stored. */
+static bool g_persist_failing;
 
-/** @brief Logs an abandoned operation; the poll loop asks again later. */
+/** @brief Logs abandoned operations (the poll loop asks again later) and tracks persist failures.
+ */
 static void on_su_event(const az_iot_su_event* event, void* ctx)
 {
   (void)ctx;
-  /* `service_error` is the last field read; an older library's shorter event
-   * is ignored rather than read past its end. */
-  if (event->_internal_size
-      < offsetof(az_iot_su_event, service_error) + sizeof(event->service_error))
-  {
-    return;
-  }
   if (event->kind == AZ_IOT_SU_EVENT_OPERATION_ABANDONED)
   {
     ESP_LOGW(
@@ -215,6 +211,26 @@ static void on_su_event(const az_iot_su_event* event, void* ctx)
     {
       g_retry_after_ms = event->service_error.retry_after_ms;
     }
+  }
+  else if (event->kind == AZ_IOT_SU_EVENT_PERSIST_FAILED)
+  {
+    ESP_LOGE(TAG, "NVS write failing; update reboot deferred");
+    g_persist_failing = true;
+  }
+  else if (event->kind == AZ_IOT_SU_EVENT_PERSIST_RECOVERED)
+  {
+    g_persist_failing = false;
+  }
+  else if (event->kind == AZ_IOT_SU_EVENT_UPDATE_REFUSED)
+  {
+    ESP_LOGE(TAG, "update refused: reason=0x%08x", (unsigned)event->reason);
+  }
+  else if (event->kind == AZ_IOT_SU_EVENT_UPDATE_DEFERRED)
+  {
+    ESP_LOGI(
+        TAG,
+        "new update deferred until %s",
+        event->state == AZ_IOT_SU_STATE_IDLE ? "the device reboots" : "the current one ends");
   }
 }
 
@@ -243,16 +259,19 @@ void app_main(void)
   az_iot_log_sink log = az_iot_log_stderr_sink(AZ_IOT_LOG_LEVEL_INFO);
   az_iot_log_set_global_sink(&log);
 
-  /* Certificate provider: hands the SDK the embedded PEM material. */
+  /* Certificate provider: hands the SDK the embedded PEM material. certs/trusted_ca.pem
+   * holds a CA only if it starts with "-----BEGIN"; with no CA, the MQTT adapter trusts the
+   * ESP-IDF certificate bundle. */
+  const char* trusted_ca_pem = trusted_ca_pem_start[0] == '-' ? trusted_ca_pem_start : NULL;
   az_iot_cert_embedded certs;
-  az_iot_cert_embedded_init(
-      &certs, trusted_ca_pem_start, device_cert_pem_start, device_key_pem_start);
+  az_iot_cert_embedded_init(&certs, trusted_ca_pem, device_cert_pem_start, device_key_pem_start);
 
-  /* Connection client: DPS provisioning + X.509. */
+  /* Connection client: DPS provisioning + X.509, mbedTLS crypto. */
   az_iot_connection_client_options copts = az_iot_connection_client_options_default();
   copts.dps.id_scope = CONFIG_SU_DPS_ID_SCOPE;
   copts.dps.registration_id = CONFIG_SU_DPS_REGISTRATION_ID;
   copts.certificate_provider = &certs.base;
+  copts.crypto = az_iot_crypto_mbedtls();
 
   az_iot_connection_client conn;
   if (az_iot_connection_client_init(&conn, &copts) != AZ_IOT_OK)
@@ -262,20 +281,21 @@ void app_main(void)
   }
   az_iot_connection_client_add_state_observer(&conn, on_conn_state, NULL);
 
-  if (az_iot_connection_client_register_mqtt_factory(&conn, az_iot_esp_mqtt_factory_create_v3_1_1())
-          != AZ_IOT_OK
-      || az_iot_connection_client_register_mqtt_factory(&conn, az_iot_esp_mqtt_factory_create_v5())
-          != AZ_IOT_OK)
+  /* az_mqtt adapter: MQTT 3.1.1 for DPS and an mqttv3 hub, MQTT 5 for an mqttv5 hub.
+   * The factories must outlive conn. This task never returns, so they are never destroyed. */
+  az_iot_mqtt_factory* factory_v3 = az_iot_az_mqtt_factory_create_v3_1_1();
+  az_iot_mqtt_factory* factory_v5 = az_iot_az_mqtt_factory_create_v5();
+  if (az_iot_connection_client_register_mqtt_factory(&conn, factory_v3) != AZ_IOT_OK
+      || az_iot_connection_client_register_mqtt_factory(&conn, factory_v5) != AZ_IOT_OK)
   {
     ESP_LOGE(TAG, "register mqtt factory failed");
     esp_restart();
   }
 
-  /* Real OTA platform hooks + mbedTLS crypto + Microsoft root keys. */
-  su_ota_ctx ota = { 0 };
+  /* Real OTA platform hooks + Microsoft root keys. */
+  az_iot_su_esp32_ota_context ota = { 0 };
   ota.installed_version = SU_UPDATE_VERSION;
-  az_iot_su_platform_hooks hooks = su_esp32_ota_hooks(&ota);
-  az_iot_su_crypto_hooks crypto = az_iot_su_crypto_mbedtls_hooks();
+  az_iot_su_platform_hooks hooks = az_iot_su_esp32_ota_get_platform_hooks(&ota);
 
   size_t root_key_count = 0;
   const az_iot_su_root_key* root_keys = az_iot_su_microsoft_root_keys(&root_key_count);
@@ -287,25 +307,43 @@ void app_main(void)
   dp.installed_update_id.name = SU_UPDATE_NAME;
   dp.installed_update_id.version = SU_UPDATE_VERSION;
 
-  static AZ_IOT_SU_DEVICE_PROPERTIES_STORAGE(dp_buffer);
-  /* ~14 KB: too large for the 12 KB main task stack. */
+  /* Largest update accepted. A one-file offer is about 5 KiB, and NVS
+   * (partitions*.csv) must hold two generations of the largest checkpoint
+   * (AZ_IOT_SU_STATE_BLOB_MAX_SIZE(), about 9 KiB) while one
+   * replaces the other. */
+#define SU_MAX_UPDATE_SIZE 8192
+  /* The client's memory, about 20 KB: too large for the 12 KB main task stack. */
+  static uint8_t su_workspace[AZ_IOT_SU_WORKSPACE_SIZE(
+      SU_MAX_UPDATE_SIZE,
+      AZ_IOT_SU_VERIFY_SCRATCH_SIZE,
+      AZ_IOT_SU_DEFAULT_MAX_MESSAGE_SIZE,
+      AZ_IOT_SU_DEVICE_PROPERTIES_BUFFER_SIZE,
+      AZ_IOT_SU_DEFAULT_RESULT_DETAILS_SIZE,
+      AZ_IOT_SU_DEFAULT_MAX_ROOT_KEYS,
+      AZ_IOT_SU_DEFAULT_MAX_OBSERVERS)];
   static az_iot_su_client su;
   az_iot_su_client_config_options su_opts = az_iot_su_client_config_options_default();
   su_opts.hooks = &hooks;
-  su_opts.crypto = &crypto;
   su_opts.root_keys = root_keys;
   su_opts.root_key_count = root_key_count;
   su_opts.device_properties = &dp;
-  su_opts.device_properties_buffer = dp_buffer;
-  su_opts.device_properties_buffer_size = sizeof(dp_buffer);
+  su_opts.limits.max_update_size = SU_MAX_UPDATE_SIZE;
+  su_opts.limits.scratch_size = AZ_IOT_SU_VERIFY_SCRATCH_SIZE;
+  su_opts.limits.max_message_size = AZ_IOT_SU_DEFAULT_MAX_MESSAGE_SIZE;
+  su_opts.limits.device_properties_size = AZ_IOT_SU_DEVICE_PROPERTIES_BUFFER_SIZE;
+  su_opts.limits.result_details_size = AZ_IOT_SU_DEFAULT_RESULT_DETAILS_SIZE;
+  su_opts.workspace = su_workspace;
+  su_opts.workspace_size = sizeof(su_workspace);
   if (az_iot_su_client_init(&su, &conn, &su_opts) != AZ_IOT_OK)
   {
     ESP_LOGE(TAG, "az_iot_su_client_init failed");
     esp_restart();
   }
 
-  /* Registered before resume(), which replays a persisted state to observers. */
-  if (az_iot_su_client_add_observer(&su, on_su_event, NULL) != AZ_IOT_OK)
+  /* Registered before resume(), which replays a persisted state to observers.
+   * The OTA hooks' observer releases a download the client abandons. */
+  if (az_iot_su_client_add_observer(&su, on_su_event, NULL) != AZ_IOT_OK
+      || az_iot_su_client_add_observer(&su, az_iot_su_esp32_ota_handle_event, &ota) != AZ_IOT_OK)
   {
     ESP_LOGE(TAG, "su_client_add_observer failed");
     esp_restart();
@@ -396,7 +434,7 @@ void app_main(void)
   }
 
   /* Connected to IoT Hub: this image works, so cancel any pending rollback. */
-  su_esp32_ota_mark_valid();
+  az_iot_su_esp32_ota_mark_running_image_valid();
 
   /* Registration created the device record: later checks use the regular route. */
   if (!registered)
@@ -458,10 +496,10 @@ void app_main(void)
       }
     }
 
-    /* install_fn asked for a reboot to boot the freshly flashed image. The
-     * Software updates core has already persisted the workflow blob to NVS, so resume()
-     * picks it up after the restart. */
-    if (ota.reboot_pending)
+    /* install_fn asked for a reboot to boot the freshly flashed image. Wait
+     * while the NVS write is failing: resume() needs that record. If the client
+     * gives up, the rollback clears reboot_pending. */
+    if (ota.reboot_pending && !g_persist_failing)
     {
       ESP_LOGI(TAG, "rebooting into the new firmware to apply the update");
       vTaskDelay(pdMS_TO_TICKS(500));

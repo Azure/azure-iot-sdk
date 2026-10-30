@@ -42,5 +42,50 @@ namespace Microsoft.Azure.Iot.Device.Models
         /// <see cref="MqttNetClient"/> will be created for you.
         /// </remarks>
         public IMqttClient? MqttClient { get; set; }
+
+        /// <summary>
+        /// True (the default) if this device uses twins. False to opt out of twins.
+        /// </summary>
+        /// <remarks>
+        /// When false, the device presence flow does not subscribe to the twin response or desired property update
+        /// topics, and constructing a <see cref="Unified.Twin.TwinClient"/> with this connection client throws an
+        /// <see cref="InvalidOperationException"/>. This value is read once when the connection client is constructed.
+        /// </remarks>
+        public bool EnableTwin { get; set; } = true;
+
+        /// <summary>
+        /// True (the default) if this device receives direct methods. False to opt out of direct methods.
+        /// </summary>
+        /// <remarks>
+        /// When false, the device presence flow does not subscribe to the direct method request topic, and constructing a
+        /// <see cref="Unified.DirectMethods.DirectMethodClient"/> with this connection client throws an
+        /// <see cref="InvalidOperationException"/>. This value is read once when the connection client is constructed.
+        /// </remarks>
+        public bool EnableDirectMethods { get; set; } = true;
+
+        /// <summary>
+        /// True (the default) if this device receives cloud-to-device messages. False to opt out of cloud-to-device messages.
+        /// </summary>
+        /// <remarks>
+        /// When false, the device presence flow does not subscribe to the cloud-to-device message topic, and adding a handler
+        /// to <see cref="Unified.Telemetry.TelemetryClient.CloudToDeviceTelemetryReceivedAsync"/> on a telemetry client that
+        /// uses this connection client throws an <see cref="InvalidOperationException"/>. Sending device-to-cloud telemetry
+        /// is unaffected. This value is read once when the connection client is constructed.
+        /// </remarks>
+        public bool EnableCloudToDeviceMessages { get; set; } = true;
+
+        /// <summary>
+        /// False (the default) to ask IoT hub to resume the previous MQTT session when the connection is re-established.
+        /// True to start a new session each time this client connects to IoT hub.
+        /// </summary>
+        /// <remarks>
+        /// When IoT hub reports that it resumed the session, the subscriptions made by the device presence flow are still
+        /// active, so they are not sent again. To guarantee that a resumed session holds those subscriptions, resumption
+        /// is only requested on the first reconnect attempt after a presence flow completed on the same IoT hub; the first
+        /// connection to an IoT hub and any further reconnect attempts start a new session. This only applies to IoT hub
+        /// connections because Device Provisioning Service does not support persistent sessions. This value is read once
+        /// when the connection client is constructed.
+        /// </remarks>
+        public bool UseCleanSession { get; set; }
     }
 }

@@ -1,18 +1,43 @@
 ﻿// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
 // See LICENSE file in the project root for full license information.
 
+using Microsoft.Azure.Iot.Device.Authentication;
 using Microsoft.Azure.Iot.Device;
+using Microsoft.Azure.Iot.Device.Models;
+using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 
 namespace SetupSampleDevice
 {
     public class SampleConstants
     {
-        public const string CertificatePath = outputPath + $"certificate.cer";
-        public const string PfxPath = outputPath + $"certificate.pfx";
+        // Every sample resolves the credential files against the samples root rather than the working directory, so the
+        // files that SetupSampleDevice saves are the same ones the other samples load, however each is launched.
+        private static readonly string outputPath = FindSamplesRoot();
+
+        public static readonly string CertificatePath = outputPath + "certificate.cer";
+        public static readonly string PfxPath = outputPath + "certificate.pfx";
         public const string TestCertificatesPassword = "Some dummy certificate password";
 
-        private const string outputPath = "../../../../../../";
+        private static string FindSamplesRoot()
+        {
+            foreach (string start in new[] { AppContext.BaseDirectory, Directory.GetCurrentDirectory() })
+            {
+                DirectoryInfo? directory = new(start);
+                while (directory != null)
+                {
+                    if (File.Exists(Path.Combine(directory.FullName, "SetupSampleDevice", "SetupSampleDevice.csproj")))
+                    {
+                        return directory.FullName + Path.DirectorySeparatorChar;
+                    }
+
+                    directory = directory.Parent;
+                }
+            }
+
+            throw new InvalidOperationException(
+                "Could not locate the samples root directory (the one containing the SetupSampleDevice project).");
+        }
 
         public static void ClearSavedCredentials()
         {
@@ -20,8 +45,13 @@ namespace SetupSampleDevice
             {
                 File.Delete(outputPath + "deviceId.txt");
                 File.Delete(outputPath + "idscope.txt");
+                File.Delete(outputPath + "iothubhostname.txt");
+                File.Delete(outputPath + "connectionprofile.txt");
                 File.Delete(outputPath + "certificate.cer");
                 File.Delete(outputPath + "certificate.pfx");
+                File.Delete(outputPath + "symmetrickeyregistrationid.txt");
+                File.Delete(outputPath + "symmetrickey.txt");
+                File.Delete(outputPath + "issuedcertificate.pem");
             }
             catch (DirectoryNotFoundException)
             {
@@ -39,10 +69,83 @@ namespace SetupSampleDevice
             File.WriteAllText(outputPath + "idscope.txt", idScope);
         }
 
+        public static void SaveIotHubHostName(string iotHubHostName)
+        {
+            File.WriteAllText(outputPath + "iothubhostname.txt", iotHubHostName);
+        }
+
+        public static void SaveConnectionProfile(IotHubConnectionType connectionProfile)
+        {
+            File.WriteAllText(outputPath + "connectionprofile.txt", connectionProfile.ToString());
+        }
+
         public static void SaveX509(byte[] pfx, byte[] certificate)
         {
             File.WriteAllBytes(outputPath + "certificate.pfx", pfx);
             File.WriteAllBytes(outputPath + "certificate.cer", certificate);
+        }
+
+        public static void SaveSymmetricKeyRegistrationId(string registrationId)
+        {
+            File.WriteAllText(outputPath + "symmetrickeyregistrationid.txt", registrationId);
+        }
+
+        // Saved Base64-encoded, the same form the device provisioning service shows for the enrollment's keys
+        public static void SaveSymmetricKey(byte[] symmetricKey)
+        {
+            File.WriteAllText(outputPath + "symmetrickey.txt", Convert.ToBase64String(symmetricKey));
+        }
+
+        public static void SaveIssuedCertificateChain(string pem)
+        {
+            File.WriteAllText(outputPath + "issuedcertificate.pem", pem);
+        }
+
+        public static string LoadSymmetricKeyRegistrationId()
+        {
+            string? registrationId = System.Environment.GetEnvironmentVariable("SAMPLE_SYMMETRIC_KEY_REGISTRATION_ID");
+            if (!string.IsNullOrEmpty(registrationId))
+            {
+                return registrationId;
+            }
+
+            if (!File.Exists(outputPath + "symmetrickeyregistrationid.txt"))
+            {
+                throw new Exception("Run the SetupSampleDevice sample first to generate a symmetric key test device + credentials");
+            }
+
+            return File.ReadAllText(outputPath + "symmetrickeyregistrationid.txt");
+        }
+
+        /// <summary>
+        /// Loads the raw symmetric key bytes of the symmetric key sample device.
+        /// </summary>
+        /// <remarks>
+        /// When SAMPLE_SYMMETRIC_KEY_ENROLLMENT_GROUP_KEY is set, the device key is derived from that enrollment group
+        /// key and the registration Id, as a device in a symmetric key enrollment group would do. Otherwise
+        /// SAMPLE_SYMMETRIC_KEY or the key saved by the SetupSampleDevice sample is used. All values are Base64-encoded.
+        /// </remarks>
+        public static byte[] LoadSymmetricKey()
+        {
+            string? enrollmentGroupKey = System.Environment.GetEnvironmentVariable("SAMPLE_SYMMETRIC_KEY_ENROLLMENT_GROUP_KEY");
+            if (!string.IsNullOrEmpty(enrollmentGroupKey))
+            {
+                using HMACSHA256 hmac = new(Convert.FromBase64String(enrollmentGroupKey));
+                return hmac.ComputeHash(System.Text.Encoding.UTF8.GetBytes(LoadSymmetricKeyRegistrationId()));
+            }
+
+            string? symmetricKey = System.Environment.GetEnvironmentVariable("SAMPLE_SYMMETRIC_KEY");
+            if (string.IsNullOrEmpty(symmetricKey))
+            {
+                if (!File.Exists(outputPath + "symmetrickey.txt"))
+                {
+                    throw new Exception("Run the SetupSampleDevice sample first to generate a symmetric key test device + credentials");
+                }
+
+                symmetricKey = File.ReadAllText(outputPath + "symmetrickey.txt");
+            }
+
+            return Convert.FromBase64String(symmetricKey.Trim());
         }
 
         public static string LoadDeviceId()
@@ -77,6 +180,39 @@ namespace SetupSampleDevice
             return File.ReadAllText(outputPath + "idscope.txt");
         }
 
+        public static string? LoadIotHubHostName()
+        {
+            string? iotHubHostName = System.Environment.GetEnvironmentVariable("IOT_HUB_HOST_NAME");
+            if (iotHubHostName != null)
+            {
+                return iotHubHostName;
+            }
+
+            if (!File.Exists(outputPath + "iothubhostname.txt"))
+            {
+                return null;
+            }
+
+            return File.ReadAllText(outputPath + "iothubhostname.txt");
+        }
+
+        public static IotHubConnectionType LoadConnectionProfile()
+        {
+            string? connectionProfile = System.Environment.GetEnvironmentVariable("IOT_HUB_CONNECTION_PROFILE");
+            if (string.IsNullOrEmpty(connectionProfile) && File.Exists(outputPath + "connectionprofile.txt"))
+            {
+                connectionProfile = File.ReadAllText(outputPath + "connectionprofile.txt");
+            }
+
+            // Default to the MQTT 3.x profile when no profile was persisted, matching the enum's default.
+            if (string.IsNullOrEmpty(connectionProfile))
+            {
+                return IotHubConnectionType.Mqttv3;
+            }
+
+            return Enum.Parse<IotHubConnectionType>(connectionProfile, ignoreCase: true);
+        }
+
         public static byte[] LoadPfx()
         {
             if (!File.Exists(outputPath + "certificate.pfx"))
@@ -87,7 +223,20 @@ namespace SetupSampleDevice
             return File.ReadAllBytes(outputPath + "certificate.pfx");
         }
 
-        public static X509AuthenticationProvider LoadAuthenticationProvider()
+        public static X509AuthenticationProvider LoadAuthenticationProvider(AsymmetricAlgorithm? issuedCertificatePrivateKey = null)
+        {
+            X509Certificate2 certificate = LoadBootCertificate();
+
+            return issuedCertificatePrivateKey == null
+                ? new(certificate, null)
+                : new(certificate, null, issuedCertificatePrivateKey);
+        }
+
+        /// <summary>
+        /// Loads the X.509 sample device's certificate, with its private key, that it authenticates with the device
+        /// provisioning service with.
+        /// </summary>
+        public static X509Certificate2 LoadBootCertificate()
         {
             X509Certificate2 certificate;
             string? certPassword = System.Environment.GetEnvironmentVariable("_PASSWORD");
@@ -107,7 +256,7 @@ namespace SetupSampleDevice
                 certificate = X509CertificateLoader.LoadPkcs12(SampleConstants.LoadPfx(), certPassword);
             }
 
-            return new(certificate);
+            return certificate;
         }
     }
 }

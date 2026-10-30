@@ -1,7 +1,7 @@
 # Copyright (c) Microsoft. All rights reserved.
 # Licensed under the MIT license. See LICENSE file in the project root for full license information.
 
-# Each serves a Classic or an AEG hub, whichever DPS assigns, so each links
+# Each serves an MQTTv3 or an MQTTv5 hub, whichever DPS assigns, so each links
 # both generations.
 foreach(sample
         telemetry
@@ -19,15 +19,30 @@ endforeach()
 # C2D and file upload exist on MQTTv3 IoT Hub only; on an MQTTv5 hub each sample says so.
 az_iot_add_sample(unified c2d_receiver az_iot_mqttv3)
 az_iot_add_sample(unified file_upload az_iot_mqttv3)
+set(_file_upload_targets ${AZ_IOT_SAMPLE_TARGETS})
 # File upload is HTTPS-only and the SDK ships no HTTP client, so the sample
 # uses libcurl (when available) to perform the SAS-URI request, the blob PUT
 # to Azure Storage, and the completion notification. Optional: without curl
 # the sample still provisions, connects, and prints the request it built.
 find_package(CURL QUIET)
 if(CURL_FOUND)
-    target_compile_definitions(az_iot_sample_unified_file_upload PRIVATE AZ_IOT_SAMPLE_WITH_CURL)
-    target_link_libraries(az_iot_sample_unified_file_upload PRIVATE CURL::libcurl)
+    foreach(_t IN LISTS _file_upload_targets)
+        target_compile_definitions(${_t} PRIVATE AZ_IOT_SAMPLE_WITH_CURL)
+        target_link_libraries(${_t} PRIVATE CURL::libcurl)
+    endforeach()
 else()
     message(STATUS "az_iot_sample_unified_file_upload: libcurl not found; building without the "
                    "HTTPS upload path. Install libcurl (e.g. 'vcpkg install curl') to enable it.")
 endif()
+
+# unified/telemetry with readings produced on other threads: the application's
+# hand-off to the one thread that calls the SDK. reading_queue.c is the
+# application's own code; tests/unit/sample_reading_queue_race_test.c checks it.
+find_package(Threads REQUIRED)
+az_iot_add_adapter_sample(az_iot_sample_unified_multithreaded_telemetry
+    OUTPUT_NAME az_iot_sample_multithreaded_telemetry
+    SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/multithreaded_telemetry/main.c
+            ${CMAKE_CURRENT_SOURCE_DIR}/multithreaded_telemetry/reading_queue.c
+            ${AZ_IOT_SAMPLES_COMMON_DIR}/sample_utils.c
+    INCLUDES ${CMAKE_CURRENT_SOURCE_DIR}/multithreaded_telemetry
+    LIBS az_iot_mqttv3 az_iot_mqttv5 Threads::Threads)

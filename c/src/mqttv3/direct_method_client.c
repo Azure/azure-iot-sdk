@@ -3,7 +3,7 @@
 // information.
 
 /* SPDX-License-Identifier: MIT */
-/* IoT Hub Classic direct methods (MQTT v3.1.1).
+/* MQTTv3 hub direct methods (MQTT v3.1.1).
  *
  *   Subscribe  "$iothub/methods/POST/#"
  *   Inbound    "$iothub/methods/POST/{methodName}/?$rid={rid}"
@@ -18,7 +18,7 @@
 
 #include "internal/connection_client_internal.h"
 #include "internal/log_internal.h"
-#include "internal/reconnect.h"
+#include "internal/mono_time.h"
 #include "internal/span_writer.h"
 
 #define METHODS_RESPONSE_PREFIX "$iothub/methods/res/"
@@ -52,7 +52,7 @@
  *
  * Feature clients get no periodic tick, so this runs whenever a method message
  * arrives, which is exactly when the capacity it frees is about to be needed.
- * Nothing goes on the wire: Classic has no abandon message, and by here the
+ * Nothing goes on the wire: MQTTv3 has no abandon message, and by here the
  * service has stopped waiting for an answer anyway. */
 static void requests_expire_stale(az_iot_mqttv3_direct_method_client* dm)
 {
@@ -65,7 +65,8 @@ static void requests_expire_stale(az_iot_mqttv3_direct_method_client* dm)
       continue;
     }
     AZ_IOT_LOG_WARNF(
-        "mqttv3_direct_method: '%s' was never answered within its response timeout; reclaiming its "
+        AZ_IOT_LOG_COMPONENT_MQTTV3_DIRECT_METHOD,
+        "'%s' was never answered within its response timeout; reclaiming its "
         "slot",
         s->_internal.method_name);
     s->_internal.in_use = false;
@@ -138,13 +139,14 @@ static bool request_acquire(
       out_request->_internal.owner = dm;
       out_request->_internal.slot = (uint32_t)i;
       out_request->_internal.seq = s->_internal.seq;
-      out_request->_internal.profile = AZ_IOT_CONNECTION_PROFILE_CLASSIC;
+      out_request->_internal.profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V3;
       *out_slot = s;
       return true;
     }
   }
   AZ_IOT_LOG_WARNF(
-      "mqttv3_direct_method: dropping an invocation, all %d in-flight slots are held by requests "
+      AZ_IOT_LOG_COMPONENT_MQTTV3_DIRECT_METHOD,
+      "dropping an invocation, all %d in-flight slots are held by requests "
       "that have not been answered and have not yet timed out. Answer them with "
       "az_iot_mqttv3_direct_method_respond(), or raise AZ_IOT_DM_MAX_INFLIGHT.",
       (int)AZ_IOT_DM_MAX_INFLIGHT);
@@ -214,7 +216,10 @@ static void on_method_invocation(void* user_ctx, const az_iot_mqtt_message* msg)
   char rid[AZ_IOT_DM_RID_MAX];
   if (!parse_method_topic(msg->topic, method_name, sizeof(method_name), rid, sizeof(rid)))
   {
-    AZ_IOT_LOG_WARNF("mqttv3_direct_method: dropping an unparsable request topic: %s", msg->topic);
+    AZ_IOT_LOG_WARNF(
+        AZ_IOT_LOG_COMPONENT_MQTTV3_DIRECT_METHOD,
+        "dropping an unparsable request topic: %s",
+        msg->topic);
     return;
   }
 
@@ -230,7 +235,7 @@ static void on_method_invocation(void* user_ctx, const az_iot_mqtt_message* msg)
   DI(dm).handler(req, method_name, msg->payload, msg->payload_len, DI(dm).handler_ctx);
 }
 
-az_iot_result az_iot_mqttv3_direct_method_client_init(
+AZ_NODISCARD az_iot_result az_iot_mqttv3_direct_method_client_init(
     az_iot_mqttv3_direct_method_client* client,
     az_iot_connection_client* conn)
 {
@@ -240,7 +245,7 @@ az_iot_result az_iot_mqttv3_direct_method_client_init(
   }
 
   az_iot_result result
-      = az_iot_connection_client__require_profile(conn, AZ_IOT_CONNECTION_PROFILE_CLASSIC);
+      = az_iot_connection_client__require_profile(conn, AZ_IOT_CONNECTION_PROFILE_MQTT_V3);
   if (result != AZ_IOT_OK)
   {
     memset(client, 0, sizeof(*client));
@@ -331,9 +336,11 @@ az_iot_result az_iot_mqttv3_direct_method_respond(
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
-  if (request._internal.profile != AZ_IOT_CONNECTION_PROFILE_CLASSIC)
+  if (request._internal.profile != AZ_IOT_CONNECTION_PROFILE_MQTT_V3)
   {
-    AZ_IOT_LOG_ERROR("mqttv3_direct_method: this request was delivered by the mqttv5 client");
+    AZ_IOT_LOG_ERROR(
+        AZ_IOT_LOG_COMPONENT_MQTTV3_DIRECT_METHOD,
+        "this request was delivered by the mqttv5 client");
     return AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH;
   }
 
@@ -347,7 +354,8 @@ az_iot_result az_iot_mqttv3_direct_method_respond(
   if (slot == NULL)
   {
     AZ_IOT_LOG_ERROR(
-        "mqttv3_direct_method: respond() called on a request that is no longer live -- "
+        AZ_IOT_LOG_COMPONENT_MQTTV3_DIRECT_METHOD,
+        "respond() called on a request that is no longer live -- "
         "it was already "
         "answered, or its slot was reclaimed when the response timeout passed");
     return AZ_IOT_ERR_INVALID_ARG;
@@ -357,7 +365,8 @@ az_iot_result az_iot_mqttv3_direct_method_respond(
   if (az_iot_time_mono_ms() >= DI(dm).req_expires_at_ms[index])
   {
     AZ_IOT_LOG_WARNF(
-        "mqttv3_direct_method: '%s' was answered after its response timeout; sending nothing",
+        AZ_IOT_LOG_COMPONENT_MQTTV3_DIRECT_METHOD,
+        "'%s' was answered after its response timeout; sending nothing",
         slot->_internal.method_name);
     slot->_internal.in_use = false;
     return AZ_IOT_ERR_TIMEOUT;
@@ -386,7 +395,7 @@ az_iot_result az_iot_mqttv3_direct_method_respond(
   out.qos = AZ_IOT_MQTT_QOS_0;
   out.retain = false;
 
-  az_iot_result r = az_iot_connection_client__publish(DI(dm).conn, &out, NULL, NULL);
+  az_iot_result r = az_iot_connection_client__publish(DI(dm).conn, dm, &out, NULL, NULL);
   slot->_internal.in_use = false;
   return r;
 }

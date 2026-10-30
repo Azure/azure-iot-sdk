@@ -10,8 +10,13 @@
 static az_iot_result embedded_load(
     az_iot_certificate_provider* self,
     az_iot_cert_role role,
+    uint8_t index,
     az_iot_certificate_material* out)
 {
+  if (index != 0)
+  {
+    return AZ_IOT_ERR_NOT_FOUND;
+  }
   az_iot_cert_embedded* p = (az_iot_cert_embedded*)self;
   (void)role; /* static-cert provider: same material for bootstrap and operational */
   out->trusted_ca_pem = p->ca_pem;
@@ -25,6 +30,7 @@ static az_iot_result embedded_load(
   /* No HSM key reference: memory-only provider. */
   out->client_key_uri = NULL;
   out->crypto_engine_id = NULL;
+  out->client_key_psa_id = 0;
   return (p->cert_pem && p->key_pem) ? AZ_IOT_OK : AZ_IOT_ERR_INVALID_ARG;
 }
 

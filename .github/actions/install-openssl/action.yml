@@ -1,0 +1,52 @@
+# Copyright (c) Microsoft. All rights reserved.
+# Licensed under the MIT license. See LICENSE file in the project root for full license information.
+
+# Builds a pinned OpenSSL release with c/eng/install-openssl.sh, cached per runner image, and points
+# CMake (OPENSSL_ROOT_DIR) and PATH at it. On Windows, run it after the MSVC environment is set up.
+# A cache miss costs a few minutes on Linux and considerably more on Windows (nmake is serial).
+name: Install OpenSSL
+description: Build a pinned OpenSSL release from source (cached) and select it for CMake.
+inputs:
+  version:
+    description: OpenSSL version pinned in c/eng/install-openssl.sh.
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Compute cache key
+      id: key
+      shell: bash
+      env:
+        VERSION: ${{ inputs.version }}
+        SCRIPT_HASH: ${{ hashFiles('c/eng/install-openssl.sh') }}
+      run: echo "key=openssl-${VERSION}-${RUNNER_OS}-${RUNNER_ARCH}-${ImageOS}-${SCRIPT_HASH}" >> "$GITHUB_OUTPUT"
+    - name: Restore OpenSSL
+      id: restore
+      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: ${{ runner.temp }}/openssl-${{ inputs.version }}
+        key: ${{ steps.key.outputs.key }}
+    - name: Build OpenSSL
+      if: steps.restore.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        VERSION: ${{ inputs.version }}
+      run: bash "$GITHUB_WORKSPACE/c/eng/install-openssl.sh" "$VERSION" "$RUNNER_TEMP/openssl-$VERSION"
+    - name: Save OpenSSL
+      if: steps.restore.outputs.cache-hit != 'true'
+      uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: ${{ runner.temp }}/openssl-${{ inputs.version }}
+        key: ${{ steps.key.outputs.key }}
+    - name: Select OpenSSL
+      shell: bash
+      env:
+        VERSION: ${{ inputs.version }}
+      # Writes only RUNNER_TEMP-derived paths and the caller's literal version to GITHUB_ENV/PATH.
+      run: | # zizmor: ignore[github-env]
+        set -euo pipefail
+        root="$RUNNER_TEMP/openssl-$VERSION"
+        if [ "$RUNNER_OS" = Windows ]; then root="$(cygpath -m "$root")"; fi
+        "$root/bin/openssl" version | grep -F "OpenSSL $VERSION "
+        echo "OPENSSL_ROOT_DIR=$root" >> "$GITHUB_ENV"
+        echo "$root/bin" >> "$GITHUB_PATH"

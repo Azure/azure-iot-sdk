@@ -17,6 +17,7 @@
  *   IOTHUB_EVENTHUB_CONNECTION_STRING   Event Hub-compatible endpoint connection string
  *   IOTHUB_EVENTHUB_LISTEN_NAME         Event Hub entity name (optional; else from the CS)
  *   IOTHUB_EVENTHUB_PARTITION_COUNT     partition count to watch (optional; default 4)
+ *   IOTHUB_EVENTHUB_CONSUMER_GROUP      consumer group to read (optional; default $Default)
  */
 #ifndef AZ_IOT_E2E_SERVICE_H
 #define AZ_IOT_E2E_SERVICE_H
@@ -57,6 +58,55 @@ extern "C"
   /* Returns true once a telemetry body containing @p needle has been received. */
   bool az_iot_e2e_service_telemetry_seen(const az_iot_e2e_service* svc, const char* needle);
 
+  /** @brief Latches every later telemetry body (full body, all partitions) containing @p needle,
+   * independent of the 64-message capture ring. Up to 4 needles of under 192 bytes; cleared by
+   * az_iot_e2e_service_telemetry_watch_begin() and az_iot_e2e_service_telemetry_watch_end().
+   * @return false when not watching, the table is full or @p needle is empty or too long. */
+  bool az_iot_e2e_service_telemetry_watch_needle(az_iot_e2e_service* svc, const char* needle);
+
+  /** @brief True once a body containing the watched @p needle has been received since it was
+   * registered; false when it was not registered or the watcher has ended. */
+  bool az_iot_e2e_service_telemetry_needle_seen(const az_iot_e2e_service* svc, const char* needle);
+
+  /* The lookups below read the earliest received message whose body contains @p needle, among
+   * the most recent 64; call them before az_iot_e2e_service_telemetry_watch_end(). */
+
+  /* Arrival order (from 0, across partitions, since watch_begin) of the message, or -1 when
+   * none has arrived. */
+  int az_iot_e2e_service_telemetry_index(const az_iot_e2e_service* svc, const char* needle);
+
+  /* Sets @p size to the full body size of the message. Returns false when none has arrived. */
+  bool az_iot_e2e_service_telemetry_body_size(
+      const az_iot_e2e_service* svc,
+      const char* needle,
+      size_t* size);
+
+  /* Copies property @p name of the message into @p out (NUL-terminated, truncated to fit).
+   * @p name names the section: "amqp:<field>" for an AMQP properties field ("amqp:message-id",
+   * "amqp:content-type", ...), "app:<key>" for an application property, "annotation:<key>" for a
+   * message annotation. Non-string values are given in a printable form; "amqp:creation-time" is
+   * decimal epoch milliseconds. On a miss, prints every property captured for the message.
+   * Returns false on a miss. */
+  bool az_iot_e2e_service_telemetry_property(
+      const az_iot_e2e_service* svc,
+      const char* needle,
+      const char* name,
+      char* out,
+      size_t out_size);
+
+  /* Copies into @p name_out the section-qualified name (as above) of the first property of the
+   * message whose value is exactly @p value. Returns false if there is none. */
+  bool az_iot_e2e_service_telemetry_find_value(
+      const az_iot_e2e_service* svc,
+      const char* needle,
+      const char* value,
+      char* name_out,
+      size_t name_out_size);
+
+  /* Prints every property captured for the message, with its section-qualified name (or that
+   * none arrived), to stdout. */
+  void az_iot_e2e_service_telemetry_dump(const az_iot_e2e_service* svc, const char* needle);
+
   /* Stop watching telemetry and release the underlying connection. Safe to call
    * when not watching. */
   void az_iot_e2e_service_telemetry_watch_end(az_iot_e2e_service* svc);
@@ -96,6 +146,7 @@ extern "C"
       int* out_delivered,
       int* out_captured,
       int* out_released,
+      int* out_stale,
       int* out_unparsed);
 
   /* Stop watching file-upload notifications. Safe to call when not watching. */
@@ -111,16 +162,98 @@ extern "C"
       const uint8_t* payload,
       size_t payload_len);
 
+  /* AMQP system properties of a C2D message; NULL / 0 leaves one unset, except
+   * content_type, which defaults to "application/octet-stream". */
+  typedef struct az_iot_e2e_c2d_properties
+  {
+    const char* message_id;
+    const char* correlation_id;
+    const char* content_type;
+    const char* content_encoding;
+    int64_t absolute_expiry_time_ms; /* ms since the Unix epoch */
+  } az_iot_e2e_c2d_properties;
+
+  /* As az_iot_e2e_service_send_c2d(), with @p properties (may be NULL). */
+  bool az_iot_e2e_service_send_c2d_with_properties(
+      az_iot_e2e_service* svc,
+      const char* device_id,
+      const uint8_t* payload,
+      size_t payload_len,
+      const az_iot_e2e_c2d_properties* properties);
+
   /* ---- Direct methods & twin (HTTPS REST, non-blocking / pumpable) ---------- */
 
+  /**
+   * @brief REST requests in flight at once. One slot backs the single-request
+   *        functions (the *_begin calls and az_iot_e2e_service_request_poll);
+   *        the rest are handles from az_iot_e2e_service_method_invoke_start.
+   *
+   * Each request is its own TLS connection. OpenSSL (Linux/macOS) keeps state
+   * per connection; the Windows reference transport (Schannel) keeps ONE global
+   * TLS session, so on Windows only one request -- handle or not -- may be in
+   * flight at a time. Suites that use handles are Linux-only.
+   */
+#define AZ_IOT_E2E_SERVICE_MAX_REQUESTS 8
+
   /* Begin a direct-method invocation on @p device_id. @p json_payload is the raw
-   * JSON value to deliver as the method payload (e.g. "\"ping\"" or "{\"a\":1}").
-   * Drive to completion with az_iot_e2e_service_request_poll. */
+   * JSON value to deliver as the method payload (e.g. "\"ping\"" or "{\"a\":1}"),
+   * or NULL for a JSON null. Both timeouts are 30 seconds. Drive to completion
+   * with az_iot_e2e_service_request_poll. */
   bool az_iot_e2e_service_method_invoke_begin(
       az_iot_e2e_service* svc,
       const char* device_id,
       const char* method_name,
       const char* json_payload);
+
+  /**
+   * @brief As az_iot_e2e_service_method_invoke_begin(), with the request's
+   *        responseTimeoutInSeconds and connectTimeoutInSeconds.
+   */
+  bool az_iot_e2e_service_method_invoke_with_timeout_begin(
+      az_iot_e2e_service* svc,
+      const char* device_id,
+      const char* method_name,
+      const char* json_payload,
+      int response_timeout_s,
+      int connect_timeout_s);
+
+  /**
+   * @brief As az_iot_e2e_service_method_invoke_with_timeout_begin(), on a free
+   *        slot of its own so several invocations can be in flight together (see
+   *        AZ_IOT_E2E_SERVICE_MAX_REQUESTS for the platform limit).
+   *
+   * @return A handle (> 0) for az_iot_e2e_service_request_poll_handle, or -1
+   *         when no slot is free or the request cannot be built.
+   */
+  int az_iot_e2e_service_method_invoke_start(
+      az_iot_e2e_service* svc,
+      const char* device_id,
+      const char* method_name,
+      const char* json_payload,
+      int response_timeout_s,
+      int connect_timeout_s);
+
+  /**
+   * @brief As az_iot_e2e_service_request_poll(), for the request named by
+   *        @p handle. The handle is released once this returns 1 or -1.
+   */
+  int az_iot_e2e_service_request_poll_handle(
+      az_iot_e2e_service* svc,
+      int handle,
+      int* out_http_status,
+      char* resp_buf,
+      size_t resp_buf_size);
+
+  /**
+   * @brief Whether the request named by @p handle has been written in full to the
+   *        service; advanced only by az_iot_e2e_service_request_poll_handle().
+   *
+   * @return false for an invalid handle or a request that already completed.
+   */
+  bool az_iot_e2e_service_request_is_sent(const az_iot_e2e_service* svc, int handle);
+
+  /** @brief Abandon the request named by @p handle; safe once it completed. */
+  void az_iot_e2e_service_request_cancel(az_iot_e2e_service* svc, int handle);
 
   /* Begin a twin GET for @p device_id. Drive with az_iot_e2e_service_request_poll. */
   bool az_iot_e2e_service_twin_get_begin(az_iot_e2e_service* svc, const char* device_id);
@@ -170,6 +303,41 @@ extern "C"
       char* resp_buf,
       size_t resp_buf_size,
       size_t* out_resp_len);
+
+  /* As az_iot_e2e_https_request(), anonymous TLS, with an Authorization header
+   * (@p authorization NULL: none), for device requests authenticated by SAS.
+   * @p out_retry_after (optional) receives Retry-After in seconds, 0 when absent. */
+  bool az_iot_e2e_https_request_auth(
+      const char* host,
+      const char* method,
+      const char* path,
+      const char* authorization,
+      const char* content_type,
+      const void* body,
+      size_t body_len,
+      int* out_status,
+      char* resp_buf,
+      size_t resp_buf_size,
+      size_t* out_resp_len,
+      unsigned* out_retry_after);
+
+  /* ---- DPS service (IOT_DPS_CONNECTION_STRING) ------------------------------- */
+
+  /* Creates or replaces an individual enrollment with TPM attestation for
+   * @p endorsement_key_base64 (base64 TPM2B_PUBLIC). Returns true on a 2xx. */
+  bool az_iot_e2e_dps_tpm_enrollment_create(
+      const char* registration_id,
+      const char* endorsement_key_base64);
+
+  /* Deletes the registration record and the individual enrollment; a missing one
+   * counts as deleted. */
+  bool az_iot_e2e_dps_enrollment_delete(const char* registration_id);
+
+  /* Deletes a device identity from the hub; a missing one counts as deleted.
+   * Signs with the policy of IOTHUB_REGISTRY_CONNECTION_STRING when set (one with
+   * RegistryWrite), else with that of the service's hub connection string; the
+   * request goes to the service's hub host either way. */
+  bool az_iot_e2e_service_device_delete(az_iot_e2e_service* svc, const char* device_id);
 
 #ifdef __cplusplus
 }

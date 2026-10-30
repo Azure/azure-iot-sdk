@@ -7,7 +7,7 @@ namespace Microsoft.Azure.Iot.Device.Provisioning
 {
     /// <summary>
     /// The result of a single provisioning flow. This is the provisioning analog of
-    /// <see cref="MQTTv5.Connection.DevicePresenceFlowCompletedArgs"/>: it is raised once the flow that runs upon
+    /// <see cref="Device.Models.DevicePresenceFlowCompletedArgs"/>: it is raised once the flow that runs upon
     /// connecting to Device Provisioning Service has either produced a registration result or failed.
     /// </summary>
     internal sealed class ProvisioningFlowCompletedArgs : EventArgs

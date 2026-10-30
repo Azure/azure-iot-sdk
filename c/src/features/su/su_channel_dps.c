@@ -18,10 +18,8 @@
  * arrive on the provisioning subscription the connection client already
  * establishes, which is why this channel adds no subscription of its own.
  *
- * STATUS: the bootstrap (pre-registration) path is wired. The operational poll
- * runs after the provisioning session has been torn down and needs session
- * lifetime work in the connection client that is not done yet; until then
- * request_update() reports AZ_IOT_ERR_NOT_CONNECTED rather than pretending.
+ * Both routes are implemented. After registration the channel keeps, or opens
+ * on demand, a provisioning session for the operational route.
  */
 
 #include <string.h>
@@ -31,7 +29,7 @@
 #include "internal/su_channel_internal.h"
 #include "internal/su_protocol_internal.h"
 #include "internal/connection_client_internal.h"
-#include "internal/reconnect.h" /* az_iot_time_mono_ms */
+#include "internal/mono_time.h"
 #include "internal/span_writer.h"
 #include "internal/log_internal.h"
 
@@ -85,8 +83,11 @@ static bool rid_is_ours(const char* rid)
  * @param event    The transition.
  * @param user_ctx The channel.
  */
-static void on_connection_state(const az_iot_connection_state_event* event, void* user_ctx)
+static void on_connection_state(
+    const az_iot_connection_feature_event* feature_event,
+    void* user_ctx)
 {
+  const az_iot_connection_state_event* event = feature_event->state;
   az_iot_su_channel_dps* c = (az_iot_su_channel_dps*)user_ctx;
   if (c == NULL || event == NULL || (size_t)event->scope >= AZ_IOT_CONN_SCOPE_COUNT)
   {
@@ -134,8 +135,8 @@ static az_iot_result channel_observe(az_iot_su_channel_dps* c)
     c->conn_state[i]
         = az_iot_connection_client_get_state(c->connection, (az_iot_connection_scope)i);
   }
-  az_iot_result r
-      = az_iot_connection_client__add_state_observer(c->connection, on_connection_state, c);
+  az_iot_result r = az_iot_connection_client__add_feature_observer(
+      c->connection, AZ_IOT_CONNECTION_FEATURE_EVENT_STATE, on_connection_state, c);
   if (r == AZ_IOT_OK)
   {
     c->observes_state = true;
@@ -305,11 +306,17 @@ static az_iot_result publish_operation(
 /* inbound                                                                   */
 /* ------------------------------------------------------------------------- */
 
-/* Apply a failure to the channel's state. Returns the action so the caller can
- * decide whether the operation may be retried. */
+/**
+ * @brief Apply a failure to the channel's state.
+ *
+ * @param status  Response status from the topic. Classifies the failure when
+ *                the body carries no numeric code; never reported as one.
+ * @return The action, so the caller can decide whether to retry.
+ */
 static az_iot_su_error_action handle_failure(
     az_iot_su_channel_dps* c,
     az_iot_su_operation operation,
+    int32_t status,
     const uint8_t* payload,
     size_t payload_len,
     char* code,
@@ -325,7 +332,11 @@ static az_iot_su_error_action handle_failure(
   (void)az_iot_su__parse_tracking_id(payload, payload_len, tracking_id, tracking_id_size);
   *out_numeric = numeric;
 
-  az_iot_su_error_action action = az_iot_su__classify_error(code, numeric, operation);
+  /* A bodyless or unparseable failure still has its status; without it a
+   * transient 429/503 would classify as FATAL. A bare status only ever maps to
+   * RETRY, RETRY_AFTER or FATAL. */
+  az_iot_su_error_action action
+      = az_iot_su__classify_error(code, (numeric != 0) ? numeric : status, operation);
 
   switch (action)
   {
@@ -336,16 +347,12 @@ static az_iot_su_error_action handle_failure(
       c->service_config_etag[0] = '\0';
       break;
 
-    case AZ_IOT_SU_ERROR_ACTION_DROP_SERVICE_CONFIG_ETAG:
-      c->service_config_etag[0] = '\0';
-      break;
-
     case AZ_IOT_SU_ERROR_ACTION_NONE:
     case AZ_IOT_SU_ERROR_ACTION_PROCEED:
     case AZ_IOT_SU_ERROR_ACTION_RETRY_AFTER:
     case AZ_IOT_SU_ERROR_ACTION_RETRY:
-    case AZ_IOT_SU_ERROR_ACTION_ALREADY_REPORTED:
     case AZ_IOT_SU_ERROR_ACTION_FATAL:
+    case AZ_IOT_SU_ERROR_ACTION_RECHECK:
     default:
       /* Nothing cached to invalidate; the caller decides whether to retry. */
       break;
@@ -444,7 +451,7 @@ static bool on_dps_message(
   }
   if (!rid_matches(c, rid))
   {
-    AZ_IOT_LOG_DEBUG("su: dropping a response we are no longer waiting for");
+    AZ_IOT_LOG_DEBUG(AZ_IOT_LOG_COMPONENT_SU, "dropping a response we are no longer waiting for");
     return true;
   }
 
@@ -464,6 +471,7 @@ static bool on_dps_message(
     az_iot_su_error_action action = handle_failure(
         c,
         operation,
+        status,
         payload,
         payload_len,
         code,
@@ -483,14 +491,16 @@ static bool on_dps_message(
     if (retry_after_s > 0)
     {
       c->retry_after_deadline_ms = az_iot_time_mono_ms() + (uint64_t)retry_after_ms;
-      AZ_IOT_LOG_DEBUGF("su: service asked for a %u second delay", (unsigned)retry_after_s);
+      AZ_IOT_LOG_DEBUGF(
+          AZ_IOT_LOG_COMPONENT_SU, "service asked for a %u second delay", (unsigned)retry_after_s);
     }
     az_iot_su_service_error service_error = {
       .code = numeric, .message = code, .tracking_id = tracking_id, .retry_after_ms = retry_after_ms
     };
-    AZ_IOT_LOG_ERRORF("su: operation failed with status %d", (int)status);
+    AZ_IOT_LOG_ERRORF(AZ_IOT_LOG_COMPONENT_SU, "operation failed with status %d", (int)status);
     AZ_IOT_LOG_ERRORF(
-        "su: service error %d (%s) trackingId=%s",
+        AZ_IOT_LOG_COMPONENT_SU,
+        "service error %d (%s) trackingId=%s",
         (int)numeric,
         code[0] != '\0' ? code : "-",
         tracking_id[0] != '\0' ? tracking_id : "-");
@@ -508,7 +518,7 @@ static bool on_dps_message(
   az_iot_su_fetch_response resp;
   if (az_iot_su__parse_fetch_response(payload, payload_len, &resp) != AZ_IOT_OK)
   {
-    AZ_IOT_LOG_ERROR("su: could not parse the update-check response");
+    AZ_IOT_LOG_ERROR(AZ_IOT_LOG_COMPONENT_SU, "could not parse the update-check response");
     emit_result(c, operation, AZ_IOT_ERR_PROTOCOL, AZ_IOT_SU_ERROR_ACTION_FATAL, NULL);
     return true;
   }
@@ -520,7 +530,7 @@ static bool on_dps_message(
    * service answered that there is nothing to do. */
   if (!resp.has_update)
   {
-    AZ_IOT_LOG_DEBUG("su: no update available");
+    AZ_IOT_LOG_DEBUG(AZ_IOT_LOG_COMPONENT_SU, "no update available");
     emit_result(c, operation, AZ_IOT_OK, AZ_IOT_SU_ERROR_ACTION_NONE, NULL);
     return true;
   }
@@ -547,7 +557,8 @@ static bool channel_forget_pending_if_session_gone(az_iot_su_channel_dps* c)
       && (c->pending_epoch != c->session_epoch
           || !az_iot_connection_client__dps_session_ready(c->connection)))
   {
-    AZ_IOT_LOG_DEBUG("su: provisioning session ended with a request outstanding");
+    AZ_IOT_LOG_DEBUG(
+        AZ_IOT_LOG_COMPONENT_SU, "provisioning session ended with a request outstanding");
     az_iot_su_operation operation = c->pending_operation;
     c->request_pending = false;
 
@@ -569,7 +580,8 @@ static bool channel_forget_pending_if_session_gone(az_iot_su_channel_dps* c)
     if (c->session_loss_attempts > AZ_IOT_SU_CHANNEL_MAX_SESSION_RETRIES)
     {
       AZ_IOT_LOG_ERRORF(
-          "su: giving up on the operation after %u consecutive provisioning-session losses",
+          AZ_IOT_LOG_COMPONENT_SU,
+          "giving up on the operation after %u consecutive provisioning-session losses",
           (unsigned)c->session_loss_attempts);
       c->session_loss_attempts = 0;
       c->wants_session = false;
@@ -623,7 +635,8 @@ static az_iot_result channel_open(
   {
     /* Reported rather than swallowed: without the interest every operation
      * after registration would fail with no indication why. */
-    AZ_IOT_LOG_ERROR("su: could not register interest in the provisioning session");
+    AZ_IOT_LOG_ERROR(
+        AZ_IOT_LOG_COMPONENT_SU, "could not register interest in the provisioning session");
     az_iot_connection_client__set_dps_message_observer(c->connection, NULL, NULL);
     return ur;
   }
@@ -635,7 +648,7 @@ static az_iot_result channel_open(
   az_iot_result sr = channel_observe(c);
   if (sr != AZ_IOT_OK && sr != AZ_IOT_ERR_BUSY)
   {
-    AZ_IOT_LOG_ERROR("su: could not observe the connection state");
+    AZ_IOT_LOG_ERROR(AZ_IOT_LOG_COMPONENT_SU, "could not observe the connection state");
     c->wants_hold = false;
     c->holds_user = false;
     az_iot_connection_client__dps_user_release(c->connection);
@@ -653,7 +666,7 @@ static az_iot_result channel_open(
     if (c->observes_state)
     {
       c->observes_state = false;
-      (void)az_iot_connection_client__remove_state_observer(c->connection, on_connection_state, c);
+      az_iot_connection_client__remove_feature_observer(c->connection, on_connection_state, c);
     }
     c->wants_hold = false;
     c->holds_user = false;
@@ -697,7 +710,7 @@ static void channel_close(void* ctx)
   if (c->observes_state)
   {
     c->observes_state = false;
-    (void)az_iot_connection_client__remove_state_observer(c->connection, on_connection_state, c);
+    az_iot_connection_client__remove_feature_observer(c->connection, on_connection_state, c);
   }
   if (c->holds_user)
   {
@@ -772,13 +785,11 @@ static az_iot_result channel_request_update(void* ctx, az_iot_su_operation opera
    * record" and "malformed request" share one error code, so a probe-and-fall-
    * back would fire on genuinely bad requests too. */
 
-  /* The onboarding route omits installedUpdateId by contract: a day-0 device
-   * has nothing installed. The operational route sends it, which is how the
-   * service knows what to offer next. */
+  /* Both routes send installedUpdateId when one is known: an unprovisioned
+   * device may already hold an update, and the service uses it to withhold an
+   * offer for what is installed. Omitted when nothing is installed. */
   const az_iot_su_report_update_id* installed
-      = (operation == AZ_IOT_SU_OP_GET_ONBOARDING_UPDATE || !c->has_installed_update_id)
-      ? NULL
-      : &c->installed_update_id;
+      = c->has_installed_update_id ? &c->installed_update_id : NULL;
 
   size_t body_len = 0;
   az_iot_result r = az_iot_su__build_fetch_request(
@@ -787,18 +798,19 @@ static az_iot_result channel_request_update(void* ctx, az_iot_su_operation opera
       (c->agent_info_etag[0] != '\0') ? c->agent_info_etag : NULL,
       (c->service_config_etag[0] != '\0') ? c->service_config_etag : NULL,
       c->body,
-      sizeof(c->body),
+      c->body_size,
       &body_len);
   if (r == AZ_IOT_ERR_NOT_ENOUGH_SPACE
       && (c->agent_info_etag[0] != '\0' || c->service_config_etag[0] != '\0'))
   {
     /* ETags are optional; property validation sized the request without them.
      * Drop them rather than fail every later request. */
-    AZ_IOT_LOG_ERROR("su: cached ETags do not fit the request; sending without them");
+    AZ_IOT_LOG_ERROR(
+        AZ_IOT_LOG_COMPONENT_SU, "cached ETags do not fit the request; sending without them");
     c->agent_info_etag[0] = '\0';
     c->service_config_etag[0] = '\0';
     r = az_iot_su__build_fetch_request(
-        &agent, installed, NULL, NULL, c->body, sizeof(c->body), &body_len);
+        &agent, installed, NULL, NULL, c->body, c->body_size, &body_len);
   }
   if (r != AZ_IOT_OK)
   {
@@ -834,13 +846,53 @@ static az_iot_result channel_report(void* ctx, const az_iot_su_report* report)
   }
 
   size_t body_len = 0;
-  az_iot_result r = az_iot_su__build_report_request(report, c->body, sizeof(c->body), &body_len);
+  az_iot_result r = az_iot_su__build_report_request(report, c->body, c->body_size, &body_len);
   if (r != AZ_IOT_OK)
   {
     return r;
   }
 
   return publish_operation(c, AZ_IOT_SU_OP_REPORT_STATUS, c->body, body_len);
+}
+
+/**
+ * @brief Smallest body capacity that holds the update-check request.
+ *
+ * @details The JSON writer needs headroom past the serialized bytes, so this can exceed the
+ *   serialized length. Diagnostic only.
+ *
+ * @param[in] agent Agent information to send.
+ * @param[in] installed_update_id Installed update ID to send.
+ * @param[in] rejected_capacity A capacity known to be too small.
+ * @return The smallest accepted capacity, or 0 if none up to INT32_MAX is accepted.
+ */
+static size_t minimum_update_check_capacity(
+    const az_iot_su_agent_info* agent,
+    const az_iot_su_report_update_id* installed_update_id,
+    size_t rejected_capacity)
+{
+  size_t too_small = rejected_capacity;
+  size_t fits = (size_t)INT32_MAX;
+  if (too_small >= fits
+      || az_iot_su__fetch_request_size(agent, installed_update_id, NULL, NULL, fits, NULL)
+          != AZ_IOT_OK)
+  {
+    return 0;
+  }
+  while (fits - too_small > 1u)
+  {
+    size_t middle = too_small + (fits - too_small) / 2u;
+    if (az_iot_su__fetch_request_size(agent, installed_update_id, NULL, NULL, middle, NULL)
+        == AZ_IOT_OK)
+    {
+      fits = middle;
+    }
+    else
+    {
+      too_small = middle;
+    }
+  }
+  return fits;
 }
 
 static az_iot_result channel_set_device_properties(
@@ -852,11 +904,27 @@ static az_iot_result channel_set_device_properties(
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
-  az_iot_su_device_properties_snapshot snapshot;
-  az_iot_result r = az_iot_su__prepare_device_properties(properties, &snapshot);
+  size_t strings_size = 0;
+  az_iot_result r = az_iot_su__measure_device_properties(properties, &strings_size);
   if (r != AZ_IOT_OK)
   {
     return r;
+  }
+  if (az_iot_su__device_properties_overlap(
+          properties, c->device_properties_strings, c->device_properties_strings_size))
+  {
+    AZ_IOT_LOG_ERROR(
+        AZ_IOT_LOG_COMPONENT_SU, "device properties must not point into the channel's copy");
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  if (strings_size > c->device_properties_strings_size)
+  {
+    AZ_IOT_LOG_ERRORF(
+        AZ_IOT_LOG_COMPONENT_SU,
+        "device properties need %lu bytes; the update-check copy holds %lu",
+        (unsigned long)strings_size,
+        (unsigned long)c->device_properties_strings_size);
+    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
   }
 
   az_iot_su_custom_property compatibility[AZ_IOT_SU_MAX_COMPATIBILITY_PROPERTIES];
@@ -866,29 +934,38 @@ static az_iot_result channel_set_device_properties(
   agent.agent_profile = c->agent_profile;
   agent.compatibility_properties = compatibility;
   agent.compatibility_properties_count
-      = az_iot_su__compatibility_properties(&snapshot.properties, compatibility);
-  az_iot_su_report_update_id installed = { snapshot.properties.installed_update_id.provider,
-                                           snapshot.properties.installed_update_id.name,
-                                           snapshot.properties.installed_update_id.version };
-  /* Size only: c->body may hold an outstanding operation. Check the
-   * operational shape too, even when this session uses onboarding. ETags are
-   * left out: they are optional, and a request that cannot fit them drops them. */
-  r = az_iot_su__fetch_request_size(
-      &agent, installed.provider != NULL ? &installed : NULL, NULL, NULL, sizeof(c->body), NULL);
+      = az_iot_su__compatibility_properties(properties, compatibility);
+  /* Size only: c->body may hold an outstanding operation. Both routes send the
+   * same body. It is sized with the longest installed ID, fully escaped, so the
+   * applied ID adopted after a successful update always fits. ETags are left
+   * out: they are optional, and a request that cannot fit them drops them. */
+  /* Three parts that, with their terminators, fill AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE, in a
+   * character JSON escapes to 6 bytes. */
+  char longest_part[AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE / 3u];
+  memset(longest_part, 0x01, sizeof(longest_part) - 1u);
+  longest_part[sizeof(longest_part) - 1u] = '\0';
+  az_iot_su_report_update_id longest_installed = { longest_part, longest_part, longest_part };
+  r = az_iot_su__fetch_request_size(&agent, &longest_installed, NULL, NULL, c->body_size, NULL);
+  if (r == AZ_IOT_ERR_NOT_ENOUGH_SPACE)
+  {
+    size_t body_size = minimum_update_check_capacity(&agent, &longest_installed, c->body_size);
+    AZ_IOT_LOG_ERRORF(
+        AZ_IOT_LOG_COMPONENT_SU,
+        "an update check with these device properties needs a body capacity of %lu bytes; "
+        "az_iot_su_limits::max_message_size is %lu",
+        (unsigned long)body_size,
+        (unsigned long)c->body_size);
+    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+  }
   if (r != AZ_IOT_OK)
   {
     return r;
   }
 
-  az_iot_su__commit_device_properties(
-      &snapshot,
-      &c->device_properties.properties,
-      c->device_properties.custom_properties,
-      c->device_properties.strings);
-  c->device_properties.strings_size = snapshot.strings_size;
-  c->compat_count
-      = az_iot_su__compatibility_properties(&c->device_properties.properties, c->compat);
-  const az_iot_su_update_id_info* id = &c->device_properties.properties.installed_update_id;
+  az_iot_su__copy_device_properties(
+      properties, c->device_properties_strings, &c->device_properties, c->device_properties_custom);
+  c->compat_count = az_iot_su__compatibility_properties(&c->device_properties, c->compat);
+  const az_iot_su_update_id_info* id = &c->device_properties.installed_update_id;
   c->installed_update_id = (az_iot_su_report_update_id){ id->provider, id->name, id->version };
   c->has_installed_update_id = id->provider != NULL;
   return AZ_IOT_OK;
@@ -969,7 +1046,8 @@ static az_iot_result channel_do_work(void* ctx)
       if (!c->ensure_error_logged)
       {
         c->ensure_error_logged = true;
-        AZ_IOT_LOG_ERRORF("su: could not obtain a provisioning session (%d)", (int)er);
+        AZ_IOT_LOG_ERRORF(
+            AZ_IOT_LOG_COMPONENT_SU, "could not obtain a provisioning session (%d)", (int)er);
       }
     }
   }
@@ -1001,6 +1079,89 @@ static az_iot_result channel_do_work(void* ctx)
   return sr;
 }
 
+/* Persisted layout: u8 agent_len, agent ETag, u8 config_len, config ETag. */
+typedef char az_iot_su_channel_dps_state_fits
+    [(2u + (sizeof(((az_iot_su_channel_dps*)0)->agent_info_etag) - 1u)
+          + (sizeof(((az_iot_su_channel_dps*)0)->service_config_etag) - 1u)
+      <= AZ_IOT_SU_CHANNEL_STATE_MAX_SIZE)
+         ? 1
+         : -1];
+
+/* Each length is one byte. */
+typedef char az_iot_su_channel_dps_etag_len_fits
+    [(sizeof(((az_iot_su_channel_dps*)0)->agent_info_etag) - 1u <= UINT8_MAX
+      && sizeof(((az_iot_su_channel_dps*)0)->service_config_etag) - 1u <= UINT8_MAX)
+         ? 1
+         : -1];
+
+/** @brief Write one length-prefixed ETag at @p p. @return Bytes written. */
+static size_t put_etag(uint8_t* p, const char* etag)
+{
+  size_t n = strlen(etag);
+  p[0] = (uint8_t)n;
+  /* NOLINTNEXTLINE(bugprone-not-null-terminated-result): length-prefixed, not NUL-terminated. */
+  memcpy(p + 1, etag, n);
+  return n + 1u;
+}
+
+/**
+ * @brief Serialize the cached ETags into the client's persisted record.
+ *
+ * They survive a reboot only while a workflow, terminal or retry record is
+ * retained.
+ */
+static az_iot_result channel_save_state(void* ctx, uint8_t* buf, size_t cap, size_t* out_len)
+{
+  az_iot_su_channel_dps* c = (az_iot_su_channel_dps*)ctx;
+  if (c == NULL || buf == NULL || out_len == NULL)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  *out_len = 0;
+  if (c->agent_info_etag[0] == '\0' && c->service_config_etag[0] == '\0')
+  {
+    return AZ_IOT_OK;
+  }
+  if (2u + strlen(c->agent_info_etag) + strlen(c->service_config_etag) > cap)
+  {
+    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+  }
+  size_t n = put_etag(buf, c->agent_info_etag);
+  n += put_etag(buf + n, c->service_config_etag);
+  *out_len = n;
+  return AZ_IOT_OK;
+}
+
+/** @brief Restore ETags written by channel_save_state(); rejects any other shape. */
+static az_iot_result channel_restore_state(void* ctx, const uint8_t* buf, size_t len)
+{
+  az_iot_su_channel_dps* c = (az_iot_su_channel_dps*)ctx;
+  if (c == NULL || buf == NULL || len < 2u)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  size_t a = buf[0];
+  if (a >= sizeof(c->agent_info_etag) || 1u + a + 1u > len)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  size_t s = buf[1u + a];
+  /* save_state() writes nothing when both are empty, so {0, 0} is malformed. */
+  if (s >= sizeof(c->service_config_etag) || 2u + a + s != len || a + s == 0u)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  if (memchr(buf + 1, '\0', a) != NULL || memchr(buf + 2u + a, '\0', s) != NULL)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  memcpy(c->agent_info_etag, buf + 1, a);
+  c->agent_info_etag[a] = '\0';
+  memcpy(c->service_config_etag, buf + 2u + a, s);
+  c->service_config_etag[s] = '\0';
+  return AZ_IOT_OK;
+}
+
 /* When the SERVICE asked us to wait until. Distinct from an operation already
  * being outstanding, which also answers BUSY but IS a request going unserved
  * and must stay bounded.
@@ -1025,7 +1186,8 @@ static void channel_cancel_update(void* ctx, az_iot_su_operation operation)
   {
     return;
   }
-  AZ_IOT_LOG_DEBUG("su: no longer waiting for the answer to an abandoned update check");
+  AZ_IOT_LOG_DEBUG(
+      AZ_IOT_LOG_COMPONENT_SU, "no longer waiting for the answer to an abandoned update check");
   c->request_pending = false;
   channel_release_hold(c);
 }
@@ -1038,21 +1200,32 @@ static const az_iot_su_channel_vtable k_channel_vtable = {
   .set_device_properties = channel_set_device_properties,
   .do_work = channel_do_work,
   .cancel_update = channel_cancel_update,
+  .save_state = channel_save_state,
+  .restore_state = channel_restore_state,
 };
 
 az_iot_result az_iot_su_channel_dps_init(
     az_iot_su_channel_dps* channel_state,
     az_iot_connection_client* connection,
     const az_iot_su_device_properties* device_properties,
+    uint8_t* body,
+    size_t body_size,
+    char* device_properties_strings,
+    size_t device_properties_strings_size,
     az_iot_su_channel* out_channel)
 {
-  if (channel_state == NULL || connection == NULL || out_channel == NULL)
+  if (channel_state == NULL || connection == NULL || body == NULL || body_size == 0
+      || device_properties_strings == NULL || out_channel == NULL)
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
 
   memset(channel_state, 0, sizeof(*channel_state));
   channel_state->connection = connection;
+  channel_state->body = body;
+  channel_state->body_size = body_size;
+  channel_state->device_properties_strings = device_properties_strings;
+  channel_state->device_properties_strings_size = device_properties_strings_size;
   /* The profile the device reports for compatibility matching. */
   channel_state->agent_profile = 1;
 

@@ -1,0 +1,6 @@
+# obj: naming a statically linked test binary
+{
+   obj
+   drd:ConflictingAccess
+   obj:*/az_iot_tests_*
+}

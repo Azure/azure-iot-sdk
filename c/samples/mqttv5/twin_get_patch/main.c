@@ -5,7 +5,7 @@
 /* SPDX-License-Identifier: MIT */
 /* mqttv5/twin_get_patch - sample.
  *
- * Issue a twin GET and a reported-properties PATCH against an AEG (Hub-Next)
+ * Issue a twin GET and a reported-properties PATCH against an MQTTv5
  * hub over MQTT v5. An application that must serve either hub generation picks
  * at runtime -- see unified/twin_get_patch.
  *
@@ -16,12 +16,12 @@
  * profile, and only then build the right client -- and rebuild it whenever a
  * reconnect landed on the other generation.
  *
- * Two adapters are registered, which a Classic-only app would not need: the hub
+ * Two adapters are registered, which an MQTTv3-only app would not need: the hub
  * leg is MQTT v5, but the DPS leg is still v3.1.1. Registering only the v5
  * factory makes provisioning fail with AZ_IOT_ERR_NOT_SUPPORTED before the hub
  * is ever reached.
  *
- * Two things differ from Classic beyond the client type, and both are protocol
+ * Two things differ from MQTTv3 beyond the client type, and both are protocol
  * rather than API taste:
  *
  *   - GET returns the desired and reported sections separately, each with its
@@ -38,7 +38,14 @@
 #include <string.h>
 
 #include "azure/iot/az_iot.h"
+/* The MQTT adapter this build of the sample uses (see samples/CMakeLists.txt). */
+#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
 #include "azure/iot/adapters/az_iot_adapter_paho.h"
+#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
+#include "azure/iot/adapters/az_iot_adapter_az_mqtt.h"
+#else
+#error "Define AZ_IOT_SAMPLE_ADAPTER_PAHO or AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT"
+#endif
 
 #include "sample_utils.h"
 
@@ -47,6 +54,8 @@ typedef struct
   sample_config config;
   az_iot_certificate_provider_pem certs;
   az_iot_connection_client connection_client;
+  az_iot_mqtt_factory* factory_v3;
+  az_iot_mqtt_factory* factory_v5;
   az_iot_mqttv5_twin_client twin;
   int twin_initialized;
 } sample_state;
@@ -59,6 +68,13 @@ static void sample_state_destroy(sample_state* s)
     s->twin_initialized = 0;
   }
   az_iot_connection_client_deinit(&s->connection_client);
+#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
+  az_iot_paho_factory_destroy(s->factory_v3);
+  az_iot_paho_factory_destroy(s->factory_v5);
+#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
+  az_iot_az_mqtt_factory_destroy(s->factory_v3);
+  az_iot_az_mqtt_factory_destroy(s->factory_v5);
+#endif
   az_iot_certificate_provider_pem_deinit(&s->certs);
   sample_config_release(&s->config);
 }
@@ -101,7 +117,7 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
       ctx->provisioning_faulted = 1;
       if (event->reason == AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH)
       {
-        printf("Provisioned to a Classic hub; this AEG-only sample cannot serve it. "
+        printf("Provisioned to an MQTTv3 hub; this MQTTv5-only sample cannot serve it. "
                "Use the unified twin_get_patch sample.\n");
       }
     }
@@ -175,7 +191,7 @@ static void on_patch(
 
 int main(void)
 {
-  az_iot_log_sink log = az_iot_log_stderr_sink(AZ_IOT_LOG_LEVEL_INFO);
+  az_iot_log_sink log = sample_log_sink(AZ_IOT_LOG_LEVEL_INFO);
   az_iot_log_set_global_sink(&log);
 
   sample_state state = { 0 };
@@ -201,7 +217,9 @@ int main(void)
 
   /* Connection client (DPS provisioning is internal) */
   az_iot_connection_client_options copts = az_iot_connection_client_options_default();
-  sample_apply_dps_options(&copts, &state.config);
+  copts.dps.id_scope = state.config.id_scope;
+  copts.dps.registration_id = state.config.reg_id;
+  copts.dps.global_endpoint = state.config.dps_global_endpoint; /* NULL: the global default */
   copts.certificate_provider = &state.certs.base;
 
   if (az_iot_connection_client_init(&state.connection_client, &copts) != AZ_IOT_OK)
@@ -212,15 +230,23 @@ int main(void)
   az_iot_connection_client_add_state_observer(&state.connection_client, on_conn_state, &user_ctx);
 
   /* Both legs: the hub is v5, but DPS is still v3.1.1. */
-  if (az_iot_connection_client_register_mqtt_factory(
-          &state.connection_client, az_iot_paho_factory_create_v3_1_1())
+#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
+  state.factory_v3 = az_iot_paho_factory_create_v3_1_1();
+#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
+  state.factory_v3 = az_iot_az_mqtt_factory_create_v3_1_1();
+#endif
+  if (az_iot_connection_client_register_mqtt_factory(&state.connection_client, state.factory_v3)
       != AZ_IOT_OK)
   {
     sample_state_destroy(&state);
     return 1;
   }
-  if (az_iot_connection_client_register_mqtt_factory(
-          &state.connection_client, az_iot_paho_factory_create_v5())
+#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
+  state.factory_v5 = az_iot_paho_factory_create_v5();
+#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
+  state.factory_v5 = az_iot_az_mqtt_factory_create_v5();
+#endif
+  if (az_iot_connection_client_register_mqtt_factory(&state.connection_client, state.factory_v5)
       != AZ_IOT_OK)
   {
     sample_state_destroy(&state);

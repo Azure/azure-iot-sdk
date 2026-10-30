@@ -42,6 +42,38 @@ The tree was reformatted wholesale in one commit, which is listed in
 once with `git config blame.ignoreRevsFile .git-blame-ignore-revs`; GitHub
 honours it automatically.
 
+## 0.1. clang-tidy must be clean
+
+```bash
+cmake -S c -B c/build/clang-tidy -DCMAKE_EXPORT_COMPILE_COMMANDS=ON   # configure only
+bash c/eng/clang-tidy.sh c/build/clang-tidy                            # what CI runs
+```
+
+Checks and the reason for each exclusion are in [`c/.clang-tidy`](../../.clang-tidy);
+every finding is an error in `src`, `adapters` and `samples`. CI pins clang-tidy
+18.1.8 (`pipx install clang-tidy==18.1.8`).
+
+- `cert-err33-c` (ignored libc result): cast to `(void)` when ignoring it is
+  deliberate. This does not work for `AZ_NODISCARD` functions: gcc still warns
+  (see §5), so handle their result.
+- False positive: `/* NOLINTNEXTLINE(<check>): <reason> */` on the line
+  immediately before the one diagnosed.
+
+## 0.2. MSVC `/analyze` must be clean
+
+```pwsh
+cmake -S c -B c/build/msvc-analyze -G Ninja -DCMAKE_BUILD_TYPE=Debug `
+  -DAZ_IOT_ENABLE_MSVC_ANALYZE=ON -DAZ_IOT_BUILD_TESTS=OFF `
+  -DAZ_IOT_WITH_PAHO=ON -DAZ_IOT_WITH_RUST_MQTT=ON
+cmake --build c/build/msvc-analyze -- -k 0   # what CI runs (ci-c-static-analysis.yml, msvc-analyze)
+```
+
+From a Visual Studio developer shell. Findings (`C6xxx`) are errors in `src`,
+`adapters` and `samples`; `-k 0` reports every failing file. CI does not analyze the
+mbedTLS crypto backend or the file upload sample's libcurl HTTPS path
+(no mbedTLS or libcurl on its Windows runners); clang-tidy covers both on Linux. Suppress a false positive on the line before it with
+`#pragma warning(suppress : <number>) /* <reason> */`, inside `#ifdef _MSC_VER`.
+
 ## 1. Build strings with `az_iot_span_writer`, not the C library
 
 `snprintf`, `sprintf`, `vsnprintf`, `vsprintf`, `strcpy`, `strcat`, `strncpy`,
@@ -97,9 +129,13 @@ If you must call one of them, bounds-check with `az_span_size()` first.
 ## 3. Trace through the logging facade, never to a stream
 
 `printf`, `fprintf`, `puts` and `fputs` are banned in `c/src`. Use
-`AZ_IOT_LOG_{TRACE,DEBUG,INFO,WARN,ERROR}` for a ready-made message and the
-`...F` variants for a formatted one, from
-[`az_iot_log.h`](../../inc/azure/iot/az_iot_log.h).
+`AZ_IOT_LOG_{TRACE,DEBUG,INFO,WARN,ERROR}(component, msg)` for a ready-made message and the
+`...F(component, fmt, ...)` variants for a formatted one, from
+[`az_iot_log.h`](../../inc/azure/iot/az_iot_log.h). `component` is the
+`AZ_IOT_LOG_COMPONENT_*` macro for the area, from
+[`az_iot_log_components.h`](../../inc/azure/iot/az_iot_log_components.h) (add new
+areas there); CI (`eng/check-log-components.sh`)
+rejects any other value. Do not repeat the component in the message.
 
 The application chooses where diagnostics go. A library that writes to `stderr`
 overrides that choice, cannot be switched off, and - as this SDK did until
@@ -117,8 +153,12 @@ cause, while a shortened topic is a correctness bug.
 caller-provided (`az_span` or a sized array) or live inside the caller-allocated
 client struct.
 
-Two documented exceptions remain, both waived in-file: the reference filesystem
-PEM loader, and the Windows `_dupenv_s` used by the dev-only mock bypass.
+One documented exception remains, waived in-file: the reference filesystem PEM
+loader.
+
+Read environment variables with `az_iot_env_read()` (`internal/env.h`), never
+`getenv`: on Windows, a shared build with the static CRT gives each DLL its own
+copy of the environment.
 
 ## 5. Follow azure-sdk-for-c naming and shapes
 

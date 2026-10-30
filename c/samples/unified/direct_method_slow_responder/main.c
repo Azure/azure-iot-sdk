@@ -6,9 +6,9 @@
 /* unified/direct_method_slow_responder - sample.
  *
  * Answer a direct method AFTER the handler returned, for work that does not fit
- * inside a callback, on whichever hub DPS assigns: Classic (mqttv3) or AEG
+ * inside a callback, on whichever hub DPS assigns: MQTTv3 (mqttv3) or MQTTv5
  * (mqttv5). Read unified/direct_method_responder first: it answers inline, which
- * is all a fast method needs. The AEG-only route is
+ * is all a fast method needs. The MQTTv5-only route is
  * mqttv5/direct_method_slow_responder.
  *
  * The handler keeps the request and returns; the pump loop answers it a couple
@@ -19,24 +19,31 @@
  *
  * The deadline for that late answer is where the generations differ:
  *
- *   - Classic never learns the caller's timeout. The device sets its own with
+ *   - MQTTv3 never learns the caller's timeout. The device sets its own with
  *     set_response_timeout(), and a caller who cannot wait is only told 429
  *     after its arguments arrived.
- *   - AEG carries the caller's budget. The method is declared WITH THE TIME IT
+ *   - MQTTv5 carries the caller's budget. The method is declared WITH THE TIME IT
  *     NEEDS, so a caller whose timeout cannot cover it is refused at the probe;
  *     and while one invocation is held, the probe answers DEVICE_BUSY -- both
  *     before the arguments are sent.
  *
- * Runs ~60 seconds and, like every unified sample (see unified/telemetry),
- * builds for an assumed generation before open() and rebuilds when DPS assigns
- * the other one -- including after the device is moved while it runs.
+ * Runs ~60 seconds and, like unified/telemetry, builds for an assumed
+ * generation before open() and rebuilds when DPS assigns the other one --
+ * including after the device is moved while it runs.
  */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "azure/iot/az_iot.h"
+/* The MQTT adapter this build of the sample uses (see samples/CMakeLists.txt). */
+#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
 #include "azure/iot/adapters/az_iot_adapter_paho.h"
+#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
+#include "azure/iot/adapters/az_iot_adapter_az_mqtt.h"
+#else
+#error "Define AZ_IOT_SAMPLE_ADAPTER_PAHO or AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT"
+#endif
 
 #include "sample_utils.h"
 
@@ -49,12 +56,12 @@
 #define STATUS_TRY_AGAIN_LATER 429
 #define STATUS_PAYLOAD_TOO_LARGE 413
 
-/* How long the pretend work takes, and the floor declared to AEG so the two
+/* How long the pretend work takes, and the floor declared to MQTTv5 so the two
  * cannot drift apart. */
 #define SLOW_ECHO_WORK_MS 2000u
 #define SLOW_ECHO_SECONDS 3u
 
-/* Classic only: comfortably longer than the work, and well under the 300 s
+/* MQTTv3 only: comfortably longer than the work, and well under the 300 s
  * service maximum. */
 #define RESPONSE_TIMEOUT_SECONDS 60u
 
@@ -87,6 +94,8 @@ typedef struct
   sample_config config;
   az_iot_certificate_provider_pem certs;
   az_iot_connection_client connection_client;
+  az_iot_mqtt_factory* factory_v3;
+  az_iot_mqtt_factory* factory_v5;
   /* Only the one matching `profile` is ever initialized. */
   az_iot_mqttv3_direct_method_client mqttv3;
   az_iot_mqttv5_direct_method_client mqttv5;
@@ -131,6 +140,13 @@ static void sample_state_destroy(sample_state* s)
 {
   clients_destroy(s, NULL);
   az_iot_connection_client_deinit(&s->connection_client);
+#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
+  az_iot_paho_factory_destroy(s->factory_v3);
+  az_iot_paho_factory_destroy(s->factory_v5);
+#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
+  az_iot_az_mqtt_factory_destroy(s->factory_v3);
+  az_iot_az_mqtt_factory_destroy(s->factory_v5);
+#endif
   az_iot_certificate_provider_pem_deinit(&s->certs);
   sample_config_release(&s->config);
 }
@@ -178,8 +194,8 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
   }
 }
 
-/* Serves both generations: on Classic it is reached through on_method_mqttv3, on
- * AEG it is the handler registered for SLOW_ECHO_METHOD. */
+/* Serves both generations: on MQTTv3 it is reached through on_method_mqttv3, on
+ * MQTTv5 it is the handler registered for SLOW_ECHO_METHOD. */
 static void on_slow_echo(
     az_iot_direct_method_request request,
     const char* method_name,
@@ -193,7 +209,7 @@ static void on_slow_echo(
       method_name ? method_name : "(null)",
       (unsigned)SLOW_ECHO_WORK_MS);
 
-  /* This sample holds one at a time. The AEG probe declines while one is held,
+  /* This sample holds one at a time. The MQTTv5 probe declines while one is held,
    * but two probes can both be accepted before either execute arrives, so this
    * branch is needed on both generations. */
   if (ctx->deferred.pending)
@@ -217,7 +233,7 @@ static void on_slow_echo(
   ctx->deferred.pending = 1;
 }
 
-/* Classic routes nothing for you: this handler receives every name the service
+/* MQTTv3 routes nothing for you: this handler receives every name the service
  * sends, so it dispatches and turns down the rest. */
 static void on_method_mqttv3(
     az_iot_direct_method_request request,
@@ -239,7 +255,7 @@ static void on_method_mqttv3(
       &ctx->state->mqttv3, request, STATUS_NOT_FOUND, NULL, 0);
 }
 
-/* AEG only: saying busy at the probe spares the caller a wasted argument
+/* MQTTv5 only: saying busy at the probe spares the caller a wasted argument
  * transfer. */
 static az_iot_mqttv5_direct_method_probe_result on_probe_mqttv5(
     const az_iot_mqttv5_direct_method_probe* probe,
@@ -266,7 +282,7 @@ static void deferred_pump(user_context* ctx)
   }
   ctx->deferred.pending = 0;
 
-  /* Past the deadline -- the device's own on Classic, the caller's on AEG --
+  /* Past the deadline -- the device's own on MQTTv3, the caller's on MQTTv5 --
    * the request is refused and nothing is sent. */
   az_iot_result result = respond(
       ctx->state,
@@ -308,7 +324,7 @@ static az_iot_result clients_build(
             &s->mqttv5, on_probe_mqttv5, ctx);
       }
       return result;
-    case AZ_IOT_CONNECTION_PROFILE_CLASSIC:
+    case AZ_IOT_CONNECTION_PROFILE_MQTT_V3:
       result = az_iot_mqttv3_direct_method_client_init(&s->mqttv3, &s->connection_client);
       if (result != AZ_IOT_OK)
       {
@@ -337,7 +353,7 @@ static void pump(sample_state* s, uint32_t timeout_ms)
 
 int main(void)
 {
-  az_iot_log_sink log = az_iot_log_stderr_sink(AZ_IOT_LOG_LEVEL_INFO);
+  az_iot_log_sink log = sample_log_sink(AZ_IOT_LOG_LEVEL_INFO);
   az_iot_log_set_global_sink(&log);
 
   sample_state state = { 0 };
@@ -361,9 +377,11 @@ int main(void)
   }
 
   /* Connection client (DPS provisioning is internal). The default reconnection
-   * policy is what re-provisions a device its hub no longer accepts. */
+   * and identity recovery policies keep the device reconnecting on its own. */
   az_iot_connection_client_options copts = az_iot_connection_client_options_default();
-  sample_apply_dps_options(&copts, &state.config);
+  copts.dps.id_scope = state.config.id_scope;
+  copts.dps.registration_id = state.config.reg_id;
+  copts.dps.global_endpoint = state.config.dps_global_endpoint; /* NULL: the global default */
   copts.certificate_provider = &state.certs.base;
 
   if (az_iot_connection_client_init(&state.connection_client, &copts) != AZ_IOT_OK)
@@ -373,16 +391,24 @@ int main(void)
   }
   az_iot_connection_client_add_state_observer(&state.connection_client, on_conn_state, &user_ctx);
 
-  /* Both adapters: v3.1.1 serves DPS and a Classic hub, v5 serves an AEG hub. */
-  if (az_iot_connection_client_register_mqtt_factory(
-          &state.connection_client, az_iot_paho_factory_create_v3_1_1())
+  /* Both adapters: v3.1.1 serves DPS and an MQTTv3 hub, v5 serves an MQTTv5 hub. */
+#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
+  state.factory_v3 = az_iot_paho_factory_create_v3_1_1();
+#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
+  state.factory_v3 = az_iot_az_mqtt_factory_create_v3_1_1();
+#endif
+  if (az_iot_connection_client_register_mqtt_factory(&state.connection_client, state.factory_v3)
       != AZ_IOT_OK)
   {
     sample_state_destroy(&state);
     return 1;
   }
-  if (az_iot_connection_client_register_mqtt_factory(
-          &state.connection_client, az_iot_paho_factory_create_v5())
+#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
+  state.factory_v5 = az_iot_paho_factory_create_v5();
+#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
+  state.factory_v5 = az_iot_az_mqtt_factory_create_v5();
+#endif
+  if (az_iot_connection_client_register_mqtt_factory(&state.connection_client, state.factory_v5)
       != AZ_IOT_OK)
   {
     sample_state_destroy(&state);

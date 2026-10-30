@@ -1,0 +1,230 @@
+// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
+// See LICENSE file in the project root for full license information.
+
+using Microsoft.Azure.Iot.Device.Unified.Connection;
+using Microsoft.Azure.Iot.Device.Models;
+using Microsoft.Azure.Iot.Device.Mqtt;
+using Xunit;
+using Microsoft.Azure.Iot.Device.Authentication;
+
+namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
+{
+    /// <summary>
+    /// Tests for the failure path of the classic (MQTTv3) device presence flow that the unified
+    /// <see cref="ConnectionClient"/> runs in <c>HandleConnectedToHubAsync</c> during the initial connect.
+    /// </summary>
+    /// <remarks>
+    /// On an MQTTv3 hub the device presence flow re-subscribes to the classic twin, desired-property and direct-method
+    /// topics. If the broker grants any of them a QoS other than the requested QoS 0, the flow treats the subscribe as
+    /// failed and tears the connection down with <c>DisconnectAsync(desireReconnection: true)</c>. The
+    /// <c>MqttConnectionManager</c> then reconnects on its own and runs the flow again, so a single failed grant is
+    /// expected to eventually recover into a successful subscribe.
+    ///
+    /// These tests exercise that recovery on the very first connect attempt. The presence flow runs fire-and-forget as
+    /// soon as the broker accepts the CONNECT, and the connection layer now marks the connection as desired before that
+    /// first attempt, so a failure there disconnects and reconnects just like it would on an already-established
+    /// connection. Because the connection client's <c>ConnectAsync</c> does not complete until the presence flow has
+    /// finished successfully, awaiting it is enough to prove that the client recovered from the injected failure.
+    /// </remarks>
+    public class DevicePresenceFailureRecoveryTests
+    {
+        private const string ClassicTwinResponseTopicFilter = "$iothub/twin/res/#";
+
+        [Fact]
+        public async Task AnnounceDevicePresenceAcceptsDeviceBoundMessagesQos1Grant()
+        {
+            using MockConnectionMqttClient mockMqttClient = new() { AutoRespondToBirth = true };
+            ConnectionClient connectionClient = new(new()
+            {
+                MqttClient = mockMqttClient
+            });
+
+            int disconnectCount = 0;
+            mockMqttClient.OnConnect = _ => Task.FromResult(new MqttConnectAck()
+            {
+                IsSessionPresent = false,
+                ResultCode = MqttConnectReasonCode.Success
+            });
+            mockMqttClient.OnDisconnect = _ =>
+            {
+                Interlocked.Increment(ref disconnectCount);
+                return Task.CompletedTask;
+            };
+
+            await connectionClient.ConnectToHubAsync(GetMockConnectionContext(), cancellationToken: TestContext.Current.CancellationToken)
+                .WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+
+            Assert.Equal(0, disconnectCount);
+            var presenceSubscribe = mockMqttClient.SentMqttTrafficInOrder.Last().Subscribe;
+            Assert.NotNull(presenceSubscribe);
+            Assert.Contains(presenceSubscribe.TopicFilters, topicFilter =>
+                topicFilter.Topic == "devices/someDeviceId/messages/devicebound/#"
+                && topicFilter.QualityOfServiceLevel == MqttQualityOfServiceLevel.AtLeastOnce);
+        }
+
+        [Theory]
+        [InlineData(false, true, true)]
+        [InlineData(true, false, true)]
+        [InlineData(true, true, false)]
+        public async Task PresenceFlowSkipsTopicsOfOptedOutFeatures(bool enableTwin, bool enableDirectMethods, bool enableCloudToDeviceMessages)
+        {
+            using MockConnectionMqttClient mockMqttClient = new() { AutoRespondToBirth = true };
+            ConnectionClient connectionClient = new(new()
+            {
+                MqttClient = mockMqttClient,
+                EnableTwin = enableTwin,
+                EnableDirectMethods = enableDirectMethods,
+                EnableCloudToDeviceMessages = enableCloudToDeviceMessages,
+            });
+            mockMqttClient.OnConnect = _ => Task.FromResult(new MqttConnectAck() { IsSessionPresent = false, ResultCode = MqttConnectReasonCode.Success });
+
+            await connectionClient.ConnectToHubAsync(GetMockConnectionContext(), cancellationToken: TestContext.Current.CancellationToken)
+                .WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+
+            var topics = mockMqttClient.SentMqttTrafficInOrder.Last().Subscribe!.TopicFilters.Select(topicFilter => topicFilter.Topic).ToList();
+            Assert.Equal(enableCloudToDeviceMessages, topics.Contains("devices/someDeviceId/messages/devicebound/#"));
+            Assert.Equal(enableTwin, topics.Contains(ClassicTwinResponseTopicFilter));
+            Assert.Equal(enableTwin, topics.Contains("$iothub/twin/PATCH/properties/desired/#"));
+            Assert.Equal(enableDirectMethods, topics.Contains("$iothub/methods/POST/#"));
+        }
+
+        [Fact]
+        public async Task PresenceFlowSendsNoSubscribeWhenAllFeaturesOptedOut()
+        {
+            using MockConnectionMqttClient mockMqttClient = new() { AutoRespondToBirth = true };
+            ConnectionClient connectionClient = new(new()
+            {
+                MqttClient = mockMqttClient,
+                EnableTwin = false,
+                EnableDirectMethods = false,
+                EnableCloudToDeviceMessages = false,
+            });
+            mockMqttClient.OnConnect = _ => Task.FromResult(new MqttConnectAck() { IsSessionPresent = false, ResultCode = MqttConnectReasonCode.Success });
+
+            await connectionClient.ConnectToHubAsync(GetMockConnectionContext(), cancellationToken: TestContext.Current.CancellationToken)
+                .WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+
+            Assert.DoesNotContain(mockMqttClient.SentMqttTrafficInOrder, traffic => traffic.Subscribe != null);
+        }
+
+        [Fact]
+        public void FeatureClientsRejectOptedOutConnectionClient()
+        {
+            using MockConnectionMqttClient mockMqttClient = new();
+            using ConnectionClient connectionClient = new(new()
+            {
+                MqttClient = mockMqttClient,
+                EnableTwin = false,
+                EnableDirectMethods = false,
+                EnableCloudToDeviceMessages = false,
+            });
+
+            Assert.Throws<InvalidOperationException>(() => new Device.Unified.Twin.TwinClient(connectionClient));
+            Assert.Throws<InvalidOperationException>(() => new Device.Unified.DirectMethods.DirectMethodClient(connectionClient));
+
+            using Device.Unified.Telemetry.TelemetryClient telemetryClient = new(connectionClient);
+            Assert.Throws<InvalidOperationException>(() => telemetryClient.CloudToDeviceTelemetryReceivedAsync += _ => Task.CompletedTask);
+        }
+
+        private static ConnectionContext GetMockConnectionContext()
+        {
+#pragma warning disable SYSLIB0026 // Type or member is obsolete (Mock certificate, don't need to load a real one using typical X509 certificate loader
+            return new ConnectionContext()
+            {
+                AuthenticationProvider = new X509AuthenticationProvider(new System.Security.Cryptography.X509Certificates.X509Certificate2(), null),
+                DeviceId = "someDeviceId",
+                IotHubHostName = "someHostName",
+                ConnectionProfile = IotHubConnectionType.Mqttv3,
+            };
+#pragma warning restore SYSLIB0026 // Type or member is obsolete
+        }
+
+        // The presence flow subscribes to the device-bound messages topic (0), twin response (1), desired-property
+        // patch (2) and direct-method request (3) topics in a single SUBSCRIBE. A failed grant on any classic topic,
+        // or on all topics, must trigger recovery.
+        [Theory]
+        [InlineData(0)]
+        [InlineData(1)]
+        [InlineData(2)]
+        [InlineData(3)]
+        [InlineData(-1)] // -1 fails every topic in the presence subscribe
+        public async Task AnnounceDevicePresenceRecoversWhenClassicPresenceSubscribeGrantIsUnsuccessful(int failingTopicIndex)
+        {
+            using MockConnectionMqttClient mockMqttClient = new() { AutoRespondToBirth = true };
+            ConnectionClient connectionClient = new(new()
+            {
+                MqttClient = mockMqttClient
+            });
+
+            int connectCount = 0;
+            int disconnectCount = 0;
+            int presenceSubscribeCount = 0;
+
+            // Sessions never resume, so every connect's presence flow re-sends the classic topic SUBSCRIBE that the
+            // failure case targets.
+            mockMqttClient.OnConnect = connect =>
+            {
+                Interlocked.Increment(ref connectCount);
+                return Task.FromResult(new MqttConnectAck() { IsSessionPresent = false, ResultCode = MqttConnectReasonCode.Success });
+            };
+
+            mockMqttClient.OnDisconnect = disconnect =>
+            {
+                Interlocked.Increment(ref disconnectCount);
+                return Task.CompletedTask;
+            };
+
+            mockMqttClient.OnSubscribe = async (subscribe) =>
+            {
+                // Only the presence flow subscribes in this test, so every subscribe here is the classic topic SUBSCRIBE.
+                if (Interlocked.Increment(ref presenceSubscribeCount) == 1)
+                {
+                    // Grant a QoS other than the requested QoS on the targeted topic(s). These reason codes are not
+                    // rejected by the connection manager on their own, so the presence flow's topic-specific check
+                    // is what detects the failure and disconnects.
+                    List<MqttSubscribeAckItem> items = new();
+                    int topicIndex = 0;
+                    foreach (var topicFilter in subscribe.TopicFilters)
+                    {
+                        bool failThisTopic = failingTopicIndex < 0 || topicIndex == failingTopicIndex;
+                        MqttClientSubscribeReasonCode successfulGrant = topicFilter.QualityOfServiceLevel == MqttQualityOfServiceLevel.AtLeastOnce
+                            ? MqttClientSubscribeReasonCode.GrantedQoS1
+                            : MqttClientSubscribeReasonCode.GrantedQoS0;
+                        MqttClientSubscribeReasonCode failedGrant = topicFilter.QualityOfServiceLevel == MqttQualityOfServiceLevel.AtLeastOnce
+                            ? MqttClientSubscribeReasonCode.GrantedQoS0
+                            : MqttClientSubscribeReasonCode.GrantedQoS1;
+                        items.Add(new MqttSubscribeAckItem()
+                        {
+                            ReasonCode = failThisTopic ? failedGrant : successfulGrant,
+                            TopicFilter = new(topicFilter.Topic, topicFilter.QualityOfServiceLevel),
+                        });
+                        topicIndex++;
+                    }
+
+                    return new MqttSubscribeAck() { Items = items };
+                }
+
+                return MqttObjectHelpers.CreateSuccessfulSuback(subscribe);
+            };
+
+            // ConnectToHubAsync only completes once the presence flow has successfully subscribed to the classic topics,
+            // which requires recovering from the injected failure on the first attempt. A timeout guards against a
+            // regression where the failure is not retried (which would hang forever).
+            await connectionClient.ConnectToHubAsync(GetMockConnectionContext(), cancellationToken: TestContext.Current.CancellationToken)
+                .WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+
+            // The presence flow's failure handling must have disconnected at least once...
+            Assert.True(disconnectCount >= 1, $"Expected at least one disconnect from the failed presence subscribe, but saw {disconnectCount}.");
+
+            // ...and the manager must have reconnected on its own for the initial connect to eventually succeed.
+            Assert.True(connectCount >= 2, $"Expected at least two connects (the initial attempt plus a reconnect after the failed presence subscribe), but saw {connectCount}.");
+
+            // A successful classic presence flow ends by subscribing to the twin/desired/direct-method topics, so that
+            // SUBSCRIBE must be the last traffic on the wire once the presence flow has completed.
+            var lastTraffic = mockMqttClient.SentMqttTrafficInOrder.Last();
+            Assert.NotNull(lastTraffic.Subscribe);
+            Assert.Contains(lastTraffic.Subscribe.TopicFilters, topicFilter => topicFilter.Topic == "devices/someDeviceId/messages/devicebound/#");
+            Assert.Contains(lastTraffic.Subscribe.TopicFilters, topicFilter => topicFilter.Topic == ClassicTwinResponseTopicFilter);
+        }
+    }
+}

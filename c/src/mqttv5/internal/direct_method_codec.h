@@ -3,7 +3,7 @@
 // information.
 
 /* SPDX-License-Identifier: MIT */
-/* Bounded proto3 codec for the AEG direct-method messages defined in
+/* Bounded proto3 codec for the MQTTv5 direct-method messages defined in
  * common/Protos/directmethods.proto.
  *
  * Why hand-rolled rather than nanopb

@@ -61,6 +61,7 @@ extern "C"
     int body_start;
     int content_length; /* -1 until parsed / unknown */
     int http_status;
+    unsigned retry_after_s; /* Retry-After in delay-seconds form; 0 when absent */
 
     const char* err;
   } e2e_http_request;
@@ -98,18 +99,43 @@ extern "C"
       const char* client_cert_pem,
       const char* client_key_pem);
 
+  /* Parse the status line from r->response once it is complete, then Content-Length and
+   * Retry-After once the header block is; no-op once parsed. Called by e2e_http_poll;
+   * exposed for tests. */
+  void e2e_http_parse_headers(e2e_http_request* r);
+
+  /* True once the parsed headers and the bytes received make a complete response:
+   * a 204 or 304 at the end of its headers, otherwise Content-Length bytes of body. */
+  bool e2e_http_response_complete(const e2e_http_request* r);
+
   /* Advance the request state machine a little without blocking on the device.
-   * Returns 0 while pending, 1 when the response is complete, -1 on error. */
+   * Returns 0 while pending, 1 when the response is complete, -1 on error, including a
+   * connection closed before the end of the response headers. */
   int e2e_http_poll(e2e_http_request* r);
 
-  /* Valid once e2e_http_poll returns 1: the parsed HTTP status code. */
+  /* The status code from the response's status line; 0 until that line has arrived. */
   int e2e_http_status(const e2e_http_request* r);
+
+  /* Valid once e2e_http_poll returns 1: Retry-After in seconds, 0 when absent or
+   * not in delay-seconds form. */
+  unsigned e2e_http_retry_after(const e2e_http_request* r);
 
   /* Valid once e2e_http_poll returns 1: the response body bytes and length. */
   const uint8_t* e2e_http_body(const e2e_http_request* r, int* out_len);
 
   /* A static description of the last failure, or NULL. */
   const char* e2e_http_error(const e2e_http_request* r);
+
+  /** @brief The name of @p phase, for logging. Never NULL. */
+  const char* e2e_http_phase_name(e2e_http_phase phase);
+
+  /**
+   * @brief Whether an unfinished request may be sent again on a new connection.
+   *
+   * @return true when no status line arrived and either none of the request was sent or
+   * the request is @p idempotent.
+   */
+  bool e2e_http_retry_is_safe(const e2e_http_request* r, bool idempotent);
 
   /* Close the underlying transport (best-effort). */
   void e2e_http_end(e2e_http_request* r);

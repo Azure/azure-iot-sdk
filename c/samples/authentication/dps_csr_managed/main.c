@@ -10,11 +10,11 @@
  * 1. Authenticates to DPS with an X.509 bootstrap identity.
  * 2. Sends a CSR over the operational key in the register request.
  * 3. The managed provider persists the issued chain.
- * 4. Connects to the assigned Classic IoT Hub with the operational identity.
+ * 4. Connects to the assigned MQTTv3 IoT Hub with the operational identity.
  * 5. Sends telemetry over that connection and waits for send completion.
  *
  * AZ_IOT_DPS_REGISTRATION_PAYLOAD, if set, is sent alongside the CSR as the
- * custom registration payload. Requires OpenSSL 3.0+ and the Paho adapter.
+ * custom registration payload. Requires OpenSSL 3.0+ and the Paho or az_mqtt adapter.
  * See README.md for setup and environment variables.
  */
 #include <stdbool.h>
@@ -25,7 +25,14 @@
 #include <string.h>
 
 #include "azure/iot/az_iot.h"
+/* The MQTT adapter this build of the sample uses (see samples/CMakeLists.txt). */
+#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
 #include "azure/iot/adapters/az_iot_adapter_paho.h"
+#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
+#include "azure/iot/adapters/az_iot_adapter_az_mqtt.h"
+#else
+#error "Define AZ_IOT_SAMPLE_ADAPTER_PAHO or AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT"
+#endif
 #include "az_iot_certificate_provider_managed.h"
 
 #include "sample_utils.h"
@@ -38,10 +45,6 @@
 #define SAMPLE_CLOSE_TIMEOUT_MS 5000u
 /** @brief Duration of one do_work() tick. */
 #define SAMPLE_TICK_MS 50u
-
-/** @brief True when the SDK-stamped @p ev is long enough to carry @p field. */
-#define SAMPLE_EVENT_HAS(ev, field) \
-  ((ev)->_internal_size >= offsetof(az_iot_connection_state_event, field) + sizeof((ev)->field))
 
 /** @brief State shared with the client callbacks. */
 typedef struct
@@ -70,17 +73,19 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
       sample_connection_state_name(event->state),
       az_iot_result_to_string(event->reason));
 
-  /* Service verdicts only; transport codes are adapter-defined. */
-  const az_iot_connection_error_detail* error
-      = SAMPLE_EVENT_HAS(event, error) ? event->error : NULL;
+  /* Transport codes are adapter-defined, so they are not printed. */
+  const az_iot_connection_error_detail* error = event->error;
   if (error != NULL
-      && (error->source == AZ_IOT_CONN_ERR_SRC_DPS || error->source == AZ_IOT_CONN_ERR_SRC_MQTT))
+      && (error->source == AZ_IOT_CONN_ERR_SRC_DPS || error->source == AZ_IOT_CONN_ERR_SRC_MQTT
+          || error->source == AZ_IOT_CONN_ERR_SRC_LOCAL))
   {
     int32_t message_len = az_span_size(error->message);
     fprintf(
         stderr,
         "[dps_csr]   %s code %ld%s%.*s\n",
-        error->source == AZ_IOT_CONN_ERR_SRC_DPS ? "DPS" : "MQTT",
+        error->source == AZ_IOT_CONN_ERR_SRC_DPS
+            ? "DPS"
+            : (error->source == AZ_IOT_CONN_ERR_SRC_MQTT ? "MQTT" : "local"),
         (long)error->code,
         message_len > 0 ? ": " : "",
         (int)message_len,
@@ -104,7 +109,7 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
   /* The default policy retries forever, including failures that retrying
    * cannot fix (e.g. no issued certificate, a rejected bootstrap identity);
    * those end the wait instead of running into the timeout. */
-  bool permanent = SAMPLE_EVENT_HAS(event, is_retriable) && !event->is_retriable;
+  bool permanent = !event->is_retriable;
   if (!ctx->failed && (event->state == AZ_IOT_CONN_STATE_FAULTED || permanent))
   {
     ctx->failed = true;
@@ -125,16 +130,20 @@ static void on_registration_payload(az_span payload, void* user_ctx)
       (const char*)az_span_ptr(payload));
 }
 
-/** @brief Called after the provider has persisted the issued chain. */
-static void on_operational_cert(const az_iot_issued_certificate* issued, void* user_ctx)
+/** @brief Called after the provider tried to persist the issued chain. */
+static void on_operational_cert(
+    const az_iot_issued_certificate* issued,
+    az_iot_result store_result,
+    void* user_ctx)
 {
   sample_context* ctx = (sample_context*)user_ctx;
-  ctx->issued = true;
+  ctx->issued = (store_result == AZ_IOT_OK);
   fprintf(
       stderr,
-      "[dps_csr] operational certificate issued (%zu cert(s) in chain), saved to %s\n",
+      "[dps_csr] operational certificate issued (%zu cert(s) in chain), store to %s: %s\n",
       issued != NULL ? issued->count : (size_t)0,
-      ctx->operational_cert_path);
+      ctx->operational_cert_path,
+      az_iot_result_to_string(store_result));
 }
 
 static void on_send_done(az_iot_result status, void* user_ctx)
@@ -165,7 +174,7 @@ static void pump(az_iot_connection_client* client)
 
 int main(void)
 {
-  az_iot_log_sink log = az_iot_log_stderr_sink(AZ_IOT_LOG_LEVEL_INFO);
+  az_iot_log_sink log = sample_log_sink(AZ_IOT_LOG_LEVEL_INFO);
   az_iot_log_set_global_sink(&log);
 
   sample_config config = { 0 };
@@ -184,6 +193,7 @@ int main(void)
   ctx.operational_cert_path = op_cert;
   az_iot_certificate_provider_managed provider = { 0 };
   az_iot_connection_client connection_client = { 0 };
+  az_iot_mqtt_factory* factory_v3 = NULL;
   az_iot_mqttv3_telemetry_client telemetry = { 0 };
   bool telemetry_initialized = false;
 
@@ -195,14 +205,14 @@ int main(void)
 
   /* Loads the operational key, or generates and saves one on first run. The
    * key type applies only when a key is generated. */
-  az_iot_certificate_provider_managed_options provider_opts = {
-    .bootstrap_cert_pem_path = config.cert,
-    .bootstrap_key_pem_path = config.key,
-    .trusted_ca_pem_path = config.ca,
-    .operational_key_pem_path = op_key,
-    .operational_cert_pem_path = op_cert,
-    .key_type = AZ_IOT_MANAGED_KEY_EC_P256,
-  };
+  az_iot_certificate_provider_managed_options provider_opts
+      = az_iot_certificate_provider_managed_options_default();
+  provider_opts.bootstrap_cert_pem_path = config.cert;
+  provider_opts.bootstrap_key_pem_path = config.key;
+  provider_opts.trusted_ca_pem_path = config.ca;
+  provider_opts.operational_key_pem_path = op_key;
+  provider_opts.operational_cert_pem_path = op_cert;
+  provider_opts.key_type = AZ_IOT_MANAGED_KEY_EC_P256;
   if (az_iot_certificate_provider_managed_init(&provider, &provider_opts) != AZ_IOT_OK)
   {
     fprintf(stderr, "[dps_csr] managed certificate provider init failed\n");
@@ -210,7 +220,9 @@ int main(void)
   }
 
   az_iot_connection_client_options opts = az_iot_connection_client_options_default();
-  sample_apply_dps_options(&opts, &config);
+  opts.dps.id_scope = config.id_scope;
+  opts.dps.registration_id = config.reg_id;
+  opts.dps.global_endpoint = config.dps_global_endpoint; /* NULL: the global default */
   opts.certificate_provider = &provider.base;
   AZ_IOT_CSR_PAYLOAD_STORAGE(csr_payload_buf);
   opts.csr_payload_buffer = az_span_create(csr_payload_buf, sizeof(csr_payload_buf));
@@ -227,6 +239,11 @@ int main(void)
         = az_span_create(registration_body_buf, sizeof(registration_body_buf));
   }
 
+#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
+  factory_v3 = az_iot_paho_factory_create_v3_1_1();
+#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
+  factory_v3 = az_iot_az_mqtt_factory_create_v3_1_1();
+#endif
   if (az_iot_connection_client_init(&connection_client, &opts) != AZ_IOT_OK
       || az_iot_connection_client_add_state_observer(&connection_client, on_conn_state, &ctx)
           != AZ_IOT_OK
@@ -236,9 +253,8 @@ int main(void)
       || az_iot_connection_client_set_registration_payload_callback(
              &connection_client, on_registration_payload, &ctx)
           != AZ_IOT_OK
-      /* DPS and Classic IoT Hub both use MQTT 3.1.1. */
-      || az_iot_connection_client_register_mqtt_factory(
-             &connection_client, az_iot_paho_factory_create_v3_1_1())
+      /* DPS and MQTTv3 IoT Hub both use MQTT 3.1.1. */
+      || az_iot_connection_client_register_mqtt_factory(&connection_client, factory_v3)
           != AZ_IOT_OK)
   {
     fprintf(stderr, "[dps_csr] connection client setup failed\n");
@@ -247,7 +263,7 @@ int main(void)
 
   if (az_iot_mqttv3_telemetry_client_init(&telemetry, &connection_client) != AZ_IOT_OK)
   {
-    fprintf(stderr, "[dps_csr] Classic hub telemetry client setup failed\n");
+    fprintf(stderr, "[dps_csr] MQTTv3 hub telemetry client setup failed\n");
     goto cleanup;
   }
   telemetry_initialized = true;
@@ -353,6 +369,11 @@ cleanup:
     az_iot_mqttv3_telemetry_client_deinit(&telemetry);
   }
   az_iot_connection_client_deinit(&connection_client);
+#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
+  az_iot_paho_factory_destroy(factory_v3);
+#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
+  az_iot_az_mqtt_factory_destroy(factory_v3);
+#endif
   az_iot_certificate_provider_managed_deinit(&provider);
   free(op_key);
   free(op_cert);

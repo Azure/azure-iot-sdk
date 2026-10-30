@@ -1,7 +1,6 @@
 ﻿// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
 // See LICENSE file in the project root for full license information.
 
-using Microsoft.Azure.Iot.Device.IntegrationTests.MQTTv5;
 using Microsoft.Azure.Iot.Device.IntegrationTests.Unified;
 using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Models.Twin;
@@ -13,15 +12,13 @@ using System.Security.Cryptography.X509Certificates;
 using Microsoft.Azure.Devices;
 using System.Text.Json;
 using Xunit;
-using Microsoft.Azure.Devices;
+using Microsoft.Azure.Iot.Device.Authentication;
 
 namespace Microsoft.Azure.Iot.Device.IntegrationTests
 {
     public class Setup
     {
         public static string MQTTv3IotHubConnectionString { get; set; } = Environment.GetEnvironmentVariable("IOTHUB_CONNECTION_STRING") ?? throw new ArgumentException("Missing env var");
-
-        public static string MQTTv5IotHubConnectionString { get; set; } = Environment.GetEnvironmentVariable("IOTHUB_CONNECTION_STRING_MQTTV5") ?? "No test infrastructure setup for this yet";
 
         public static string DpsConnectionString { get; set; } = Environment.GetEnvironmentVariable("IOT_DPS_CONNECTION_STRING") ?? throw new ArgumentException("Missing env var");
 
@@ -32,10 +29,6 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
         public static ServiceClient GetMQTTv3IotHubServiceClient() => ServiceClient.CreateFromConnectionString(MQTTv3IotHubConnectionString);
 
         public static RegistryManager GetMQTTv3IotHubRegistryManager() => RegistryManager.CreateFromConnectionString(MQTTv3IotHubConnectionString);
-
-        public static ServiceClient GetMQTTv5IotHubServiceClient() => ServiceClient.CreateFromConnectionString(MQTTv5IotHubConnectionString);
-
-        public static RegistryManager GetMQTTv5IotHubRegistryManager() => RegistryManager.CreateFromConnectionString(MQTTv5IotHubConnectionString);
 
         public static ProvisioningServiceClient GetDpsHubServiceClient() => ProvisioningServiceClient.CreateFromConnectionString(DpsConnectionString);
 
@@ -55,142 +48,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
         }
 
 
-        public static string GetMQTTv5IotHubHostName()
-        {
-            string[] connectionStringKeyValuePairs = MQTTv5IotHubConnectionString.Split(";");
-            foreach (string connectionStringKeyValuePair in connectionStringKeyValuePairs)
-            {
-                string[] keyAndValue = connectionStringKeyValuePair.Split("=");
-                if (keyAndValue[0].Equals("HostName"))
-                {
-                    return keyAndValue[1];
-                }
-            }
-
-            throw new Exception("Malformed IoT hub connection string");
-        }
-
         public const int TestTimeoutMilliseconds = 60 * 1000;
-
-        public static async Task<MQTTv5DeviceTestContext> CreateProvisionableMQTTv5DeviceAsync(DeviceTwin? initialTwin, ConnectionClientOptions? options = null, CancellationToken cancellationToken = default)
-        {
-            Assert.Skip("No test infrastructure setup for MQTTv5 client testing yet.");
-
-            ServiceClient iotHubServiceClient = ServiceClient.CreateFromConnectionString(MQTTv3IotHubConnectionString);
-            ProvisioningServiceClient provisioningServiceClient = ProvisioningServiceClient.CreateFromConnectionString(DpsConnectionString);
-
-            string deviceId = Guid.NewGuid().ToString();
-            string registrationId = deviceId;
-            string certId = Guid.NewGuid().ToString();
-            string certPath = $"./{certId}.cer";
-            string pfxPath = $"./{certId}.pfx";
-            CreateTestCertificates(pfxPath, certPath, deviceId);
-
-            X509Certificate2 certificate = X509CertificateLoader.LoadCertificateFromFile(certPath);
-            X509Certificate2 pfx = X509CertificateLoader.LoadPkcs12FromFile(pfxPath, TestCertificatesPassword);
-
-            // Create individual enrollment for the test device to provision from
-            Attestation attestation = X509Attestation.CreateFromClientCertificates(certificate);
-            TwinCollection initialDesiredProperties = new(JsonSerializer.Serialize(initialTwin.Desired));
-            IndividualEnrollment individualEnrollment = new(registrationId, attestation)
-            {
-                InitialTwinState = new(new(), initialDesiredProperties)
-            };
-            individualEnrollment = await provisioningServiceClient.CreateOrUpdateIndividualEnrollmentAsync(individualEnrollment, cancellationToken);
-
-            X509AuthenticationProvider x509AuthenticationProvider = new(pfx);
-
-            Device.MQTTv5.Connection.ConnectionClient connectionClient = new(options);
-
-            return new MQTTv5DeviceTestContext()
-            {
-                ConnectionClient = connectionClient,
-                DeviceId = deviceId,
-                ConnectionProfile = Provisioning.Models.ConnectionProfile.MqttV5,
-                AuthenticationProvider = x509AuthenticationProvider,
-            };
-        }
-
-        // Skip DPS registration + provisioning. Just create a device identity on the IoT hub
-        public static async Task<MQTTv5DeviceTestContext> CreateMQTTv5DeviceOnDirectlyOnHubAsync(ConnectionClientOptions? options = null, CancellationToken cancellationToken = default)
-        {
-            Assert.Skip("No test infrastructure setup for MQTTv5 client testing yet.");
-
-            string deviceId = Guid.NewGuid().ToString();
-            string registrationId = deviceId;
-            string certId = Guid.NewGuid().ToString();
-            string certPath = $"./{certId}.cer";
-            string pfxPath = $"./{certId}.pfx";
-            CreateTestCertificates(pfxPath, certPath, deviceId);
-
-            X509Certificate2 certificate = X509CertificateLoader.LoadCertificateFromFile(certPath);
-            X509Certificate2 pfx = X509CertificateLoader.LoadPkcs12FromFile(pfxPath, TestCertificatesPassword);
-
-            Devices.Device device = new(deviceId)
-            {
-                Authentication = new AuthenticationMechanism()
-                {
-                    X509Thumbprint = new()
-                    {
-                        PrimaryThumbprint = certificate.Thumbprint
-                    }
-                }
-            };
-
-            await GetMQTTv5IotHubRegistryManager().AddDeviceAsync(device);
-
-            X509AuthenticationProvider x509AuthenticationProvider = new(pfx);
-
-            Device.MQTTv5.Connection.ConnectionClient connectionClient = new(options);
-            ProvisioningSettings provisioningSettings = new(DpsIdScope);
-
-            return new MQTTv5DeviceTestContext()
-            {
-                ConnectionClient = connectionClient,
-                DeviceId = deviceId,
-                ConnectionProfile = Provisioning.Models.ConnectionProfile.MqttV5,
-                AuthenticationProvider = x509AuthenticationProvider,
-            };
-        }
-
-        public static async Task<MQTTv5DeviceTestContext> CreateConnectedMQTTv5ConnectionClientAsync(DeviceTwin? initialTwin, ConnectionClientOptions? options = null, CancellationToken cancellationToken = default)
-        {
-            Assert.Skip("No test infrastructure setup for MQTTv5 client testing yet.");
-
-            ProvisioningServiceClient provisioningServiceClient = ProvisioningServiceClient.CreateFromConnectionString(DpsConnectionString);
-
-            string deviceId = Guid.NewGuid().ToString();
-            string registrationId = deviceId;
-            string certId = Guid.NewGuid().ToString();
-            string certPath = $"./{certId}.cer";
-            string pfxPath = $"./{certId}.pfx";
-            CreateTestCertificates(pfxPath, certPath, deviceId);
-
-            X509Certificate2 certificate = X509CertificateLoader.LoadCertificateFromFile(certPath);
-            X509Certificate2 pfx = X509CertificateLoader.LoadPkcs12FromFile(pfxPath, TestCertificatesPassword);
-
-            // Create individual enrollment for the test device to provision from
-            Attestation attestation = X509Attestation.CreateFromClientCertificates(certificate);
-            IndividualEnrollment individualEnrollment = new(registrationId, attestation);
-            individualEnrollment = await provisioningServiceClient.CreateOrUpdateIndividualEnrollmentAsync(individualEnrollment, cancellationToken);
-
-            X509AuthenticationProvider x509AuthenticationProvider = new(pfx);
-
-            Device.MQTTv5.Connection.ConnectionClient connectionClient = new(options);
-            ProvisioningSettings provisioningSettings = new(DpsIdScope);
-
-            ConnectionContext connectionContext = await RetryAroundAuthorizationAsync<ConnectionContext>(
-                async () => await connectionClient.ProvisionAndConnectAsync(provisioningSettings, x509AuthenticationProvider, cancellationToken: cancellationToken),
-                cancellationToken);
-
-            return new MQTTv5DeviceTestContext()
-            {
-                ConnectionClient = connectionClient,
-                DeviceId = connectionContext!.DeviceId,
-                ConnectionProfile = connectionContext!.ConnectionProfile,
-                AuthenticationProvider = x509AuthenticationProvider,
-            };
-        }
 
         public static async Task<UnifiedDeviceTestContext> CreateConnectedUnifiedConnectionClientAsync(bool testAgainstClassicHub, ConnectionClientOptions? options = null, CancellationToken cancellationToken = default)
         {
@@ -211,12 +69,17 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
             X509Certificate2 certificate = X509CertificateLoader.LoadCertificateFromFile(certPath);
             X509Certificate2 pfx = X509CertificateLoader.LoadPkcs12FromFile(pfxPath, TestCertificatesPassword);
 
-            // Create individual enrollment for the test device to provision from
+            // Create individual enrollment for the test device to provision from. The object built here is cached
+            // (rather than the one the service returns from the create call) because the service response carries only
+            // the certificate's metadata (thumbprint/subject), not the certificate body. Re-creating an enrollment from
+            // that metadata-only object would register an enrollment that rejects this device's certificate with a 401
+            // "Invalid certificate", so a test that deletes and restores the enrollment must restore this full-certificate
+            // copy instead.
             Attestation attestation = X509Attestation.CreateFromClientCertificates(certificate);
             IndividualEnrollment individualEnrollment = new(registrationId, attestation);
-            individualEnrollment = await provisioningServiceClient.CreateOrUpdateIndividualEnrollmentAsync(individualEnrollment, cancellationToken);
+            await provisioningServiceClient.CreateOrUpdateIndividualEnrollmentAsync(individualEnrollment, cancellationToken);
 
-            X509AuthenticationProvider x509AuthenticationProvider = new(pfx);
+            X509AuthenticationProvider x509AuthenticationProvider = new(pfx, null);
 
             ConnectionClient connectionClient = new(options);
             ProvisioningSettings provisioningSettings = new(DpsIdScope);
@@ -230,6 +93,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
                 ConnectionClient = connectionClient,
                 ConnectionContext = connectionContext!,
                 AuthenticationProvider = x509AuthenticationProvider,
+                IndividualEnrollment = individualEnrollment,
             };
         }
 
@@ -256,12 +120,14 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
             X509Certificate2 certificate = X509CertificateLoader.LoadCertificate(certificateBytes);
             X509Certificate2 pfx = X509CertificateLoader.LoadPkcs12(pfxBytes, null);
 
-            // Create individual enrollment for the test device to provision from
+            // Create individual enrollment for the test device to provision from. See the note in
+            // CreateConnectedUnifiedConnectionClientAsync: the cached enrollment must hold the full certificate body,
+            // which the object the create call returns does not, so the client-side object is cached instead.
             Attestation attestation = X509Attestation.CreateFromClientCertificates(certificate);
             IndividualEnrollment individualEnrollment = new(registrationId, attestation);
-            individualEnrollment = await provisioningServiceClient.CreateOrUpdateIndividualEnrollmentAsync(individualEnrollment, cancellationToken);
+            await provisioningServiceClient.CreateOrUpdateIndividualEnrollmentAsync(individualEnrollment, cancellationToken);
 
-            X509AuthenticationProvider x509AuthenticationProvider = new(pfx);
+            X509AuthenticationProvider x509AuthenticationProvider = new(pfx, null);
 
             var (csrBase64, privateKey) = CertificateUtilities.GenerateCsrAndPrivateKey(registrationId, CertificateUtilities.CsrAlgorithm.RSA);
 
@@ -281,7 +147,75 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
                 ConnectionContext = connectionContext!,
                 PrivateKeyPem = pfxPem,
                 AuthenticationProvider = x509AuthenticationProvider,
+                IndividualEnrollment = individualEnrollment,
             };
+        }
+
+        /// <summary>
+        /// Creates a symmetric-key device using an individual enrollment, or the configured certificate-management
+        /// enrollment group when a CSR private key is supplied. The caller owns the private key.
+        /// </summary>
+        public static async Task<UnifiedDeviceTestContext> CreateConnectedUnifiedConnectionClientWithSymmetricKeyAsync(
+            ConnectionClientOptions? options = null,
+            CancellationToken cancellationToken = default,
+            AsymmetricAlgorithm? issuedCertificatePrivateKey = null)
+        {
+            string registrationId = Guid.NewGuid().ToString();
+            byte[] symmetricKey;
+            IndividualEnrollment? individualEnrollment = null;
+            if (issuedCertificatePrivateKey != null)
+            {
+                string? groupKey = Environment.GetEnvironmentVariable("IOT_DPS_SYMM_KEY_GROUP_PRIMARY_KEY");
+                if (string.IsNullOrWhiteSpace(groupKey))
+                {
+                    Assert.Skip("IOT_DPS_SYMM_KEY_GROUP_PRIMARY_KEY is not set; certificate signing needs a symmetric-key enrollment group linked to a certificate policy.");
+                }
+
+                using HMACSHA256 hmac = new(Convert.FromBase64String(groupKey));
+                symmetricKey = hmac.ComputeHash(System.Text.Encoding.UTF8.GetBytes(registrationId));
+            }
+            else
+            {
+                using ProvisioningServiceClient provisioningServiceClient = GetDpsHubServiceClient();
+                symmetricKey = RandomNumberGenerator.GetBytes(32);
+                string encodedSymmetricKey = Convert.ToBase64String(symmetricKey);
+                Attestation attestation = new SymmetricKeyAttestation(encodedSymmetricKey, encodedSymmetricKey);
+                individualEnrollment = new(registrationId, attestation);
+                await provisioningServiceClient.CreateOrUpdateIndividualEnrollmentAsync(individualEnrollment, cancellationToken);
+            }
+
+            SymmetricKeyAuthenticationProvider authentication = issuedCertificatePrivateKey == null
+                ? new(registrationId, DpsIdScope, symmetricKey, null)
+                : new(registrationId, DpsIdScope, symmetricKey, null, issuedCertificatePrivateKey);
+
+            ConnectionClient connectionClient = new(options);
+            ProvisioningSettings provisioningSettings = new(DpsIdScope)
+            {
+                CertificateSigningRequest = issuedCertificatePrivateKey == null
+                    ? null
+                    : new(issuedCertificatePrivateKey, CertificateUtilities.GenerateCsrWithPrivateKey(registrationId, issuedCertificatePrivateKey)),
+            };
+
+            try
+            {
+                ConnectionContext connectionContext = await RetryAroundAuthorizationAsync<ConnectionContext>(
+                    async () => await connectionClient.ProvisionAndConnectAsync(provisioningSettings, authentication, cancellationToken: cancellationToken),
+                    cancellationToken);
+
+                return new UnifiedDeviceTestContext()
+                {
+                    ConnectionClient = connectionClient,
+                    ConnectionContext = connectionContext,
+                    AuthenticationProvider = authentication,
+                    IndividualEnrollment = individualEnrollment,
+                };
+            }
+            catch
+            {
+                await UnifiedDeviceTestContext.CleanupAsync(
+                    connectionClient, connectionClient.GetCurrentConnectionContext(), individualEnrollment);
+                throw;
+            }
         }
 
         public static void CreateTestCertificates(string pfxPath, string certPath, string deviceId)

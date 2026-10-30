@@ -17,8 +17,8 @@ extern "C"
 {
 #endif
 
-  /* MQTT protocol versions supported by adapters. DPS + IoTHub-Classic require v3.1.1;
-   * IoTHub-Next requires v5. A single adapter binary may register factories for both,
+  /* MQTT protocol versions supported by adapters. DPS + MQTTv3 hub require v3.1.1;
+   * MQTTv5 hub requires v5. A single adapter binary may register factories for both,
    * but each instance speaks exactly one version. */
   typedef enum az_iot_mqtt_version
   {
@@ -33,13 +33,109 @@ extern "C"
     AZ_IOT_MQTT_QOS_2 = 2
   } az_iot_mqtt_qos;
 
-  /* MQTT v5 User Property (key-value pair). Carried on PUBLISH and CONNECT.
-   * Ignored by v3.1.1 adapters. */
+  /* MQTT v5 User Property (key-value pair), NUL-terminated. Used in arrays: CONNECT, custom
+   * topic messages, and az_iot_mqtt_user_properties_from_array(). Ignored by v3.1.1 adapters. */
   typedef struct az_iot_mqtt_user_property
   {
     const char* key;
     const char* value;
   } az_iot_mqtt_user_property;
+
+  /**
+   * @brief One MQTT v5 User Property read from an #az_iot_mqtt_user_properties.
+   *
+   * UTF-8, NOT NUL-terminated: use the lengths. Neither pointer is NULL; either length may be 0.
+   */
+  typedef struct az_iot_mqtt_user_property_view
+  {
+    const char* key;
+    size_t key_len;
+    const char* value;
+    size_t value_len;
+  } az_iot_mqtt_user_property_view;
+
+  /**
+   * @brief Reads the User Property at @p *cursor from @p source and advances @p *cursor.
+   *
+   * Implemented by whoever owns the properties (an adapter, or the SDK for outbound messages).
+   * Restarting from cursor 0 must yield the same sequence. A property returned must increase
+   * @p *cursor. Called only through az_iot_mqtt_user_properties_next(), which validates the
+   * arguments and reports a property returned without increasing it as AZ_IOT_ERR_PROTOCOL.
+   *
+   * @retval AZ_IOT_OK            @p out holds the property.
+   * @retval AZ_IOT_ERR_NOT_FOUND No more properties.
+   * @retval AZ_IOT_ERR_PROTOCOL  @p source is malformed at @p *cursor; stop iterating.
+   */
+  typedef az_iot_result (*az_iot_mqtt_user_properties_next_fn)(
+      const void* source,
+      size_t source_len,
+      size_t* cursor,
+      az_iot_mqtt_user_property_view* out);
+
+  /**
+   * @brief Read-only view of the MQTT v5 User Properties of one PUBLISH.
+   *
+   * Nothing is copied and there is no limit on the number of properties. Read it with
+   * az_iot_mqtt_user_properties_next() or az_iot_mqtt_user_properties_find().
+   *
+   * Zero-initialized: no properties. Inbound (AZ_IOT_MQTT_EVT_MESSAGE): valid only during the
+   * event callback. Outbound (publish()): valid only during the call.
+   */
+  typedef struct az_iot_mqtt_user_properties
+  {
+    az_iot_mqtt_user_properties_next_fn next; /**< NULL: no properties. */
+    const void* source; /**< Passed to @p next; owned by the producer. */
+    size_t source_len; /**< Passed to @p next. */
+  } az_iot_mqtt_user_properties;
+
+  /**
+   * @brief Reads the next User Property.
+   *
+   * @param[in] props      Properties to read.
+   * @param[in,out] cursor Start at 0; opaque afterwards.
+   * @param[out] out       The property, on AZ_IOT_OK.
+   *
+   * @retval AZ_IOT_OK               @p out holds the property.
+   * @retval AZ_IOT_ERR_NOT_FOUND    No more properties.
+   * @retval AZ_IOT_ERR_PROTOCOL     Malformed properties; stop iterating.
+   * @retval AZ_IOT_ERR_INVALID_ARG  A NULL argument.
+   */
+  AZ_NODISCARD az_iot_result az_iot_mqtt_user_properties_next(
+      const az_iot_mqtt_user_properties* props,
+      size_t* cursor,
+      az_iot_mqtt_user_property_view* out);
+
+  /**
+   * @brief Finds the first User Property whose key equals @p key, byte for byte.
+   *
+   * @param[in] props Properties to search.
+   * @param[in] key   NUL-terminated key.
+   * @param[out] out  The property, on AZ_IOT_OK.
+   *
+   * @retval AZ_IOT_OK               @p out holds the property.
+   * @retval AZ_IOT_ERR_NOT_FOUND    No such property.
+   * @retval AZ_IOT_ERR_PROTOCOL     Malformed properties before a match.
+   * @retval AZ_IOT_ERR_INVALID_ARG  A NULL argument.
+   */
+  AZ_NODISCARD az_iot_result az_iot_mqtt_user_properties_find(
+      const az_iot_mqtt_user_properties* props,
+      const char* key,
+      az_iot_mqtt_user_property_view* out);
+
+  /**
+   * @brief View over an array of NUL-terminated pairs.
+   *
+   * An entry with a NULL key is skipped; a NULL value reads as empty. The array must outlive the
+   * view.
+   *
+   * @param[in] array May be NULL: no properties, whatever @p count.
+   * @param[in] count Entries in @p array.
+   *
+   * @return The view; no properties when @p array is NULL or @p count is 0.
+   */
+  az_iot_mqtt_user_properties az_iot_mqtt_user_properties_from_array(
+      const az_iot_mqtt_user_property* array,
+      size_t count);
 
   typedef struct az_iot_mqtt_message
   {
@@ -49,8 +145,7 @@ extern "C"
     az_iot_mqtt_qos qos;
     bool retain;
     /* MQTTv5-only fields; ignored by v3.1.1 adapters. */
-    const az_iot_mqtt_user_property* user_properties; /* typed array */
-    size_t user_properties_count; /* number of entries */
+    az_iot_mqtt_user_properties user_properties; /* view; see its lifetime */
     uint16_t topic_alias; /* 0 = none */
     uint32_t message_expiry_seconds; /* 0 = none */
     const char* content_type;
@@ -69,6 +164,10 @@ extern "C"
    * the signature is written to `out_sig` (at most `out_sig_cap` bytes) and its
    * length reported through `out_sig_len`. Returns AZ_IOT_ERR_NOT_ENOUGH_SPACE
    * when the buffer is too small, and leaves *out_sig_len untouched on failure.
+   *
+   * Called only from inside the adapter's connect() or process_loop(), so on the
+   * thread that drives the client. An adapter whose TLS handshake runs on its own
+   * thread must not accept this route.
    *
    * Deliberately a plain function pointer rather than the certificate-provider
    * type: this header is the standalone BYO-MQTT-client seam (see
@@ -96,9 +195,14 @@ extern "C"
     AZ_IOT_MQTT_TRANSPORT_WEBSOCKET = 1
   } az_iot_mqtt_transport;
 
-  /* Default WebSocket resource path for Azure IoT Hub and DPS. Used when
+  /* Default WebSocket resource path for DPS and the mqttv3 IoT Hub. Used when
    * `websocket_path` is NULL. */
 #define AZ_IOT_MQTT_DEFAULT_WEBSOCKET_PATH "/$iothub/websocket"
+
+  /* WebSocket resource path of the mqttv5 IoT Hub. The connection client selects
+   * it for an mqttv5 hub session when az_iot_connection_client_options::websocket_path
+   * is NULL. */
+#define AZ_IOT_MQTT_HUB_V5_WEBSOCKET_PATH "/mqtt"
 
 /* Default broker ports, by transport and by whether the session is TLS. Named
  * rather than spelled out at each use: the same four numbers are needed by the
@@ -134,12 +238,14 @@ extern "C"
 
   /* TLS credentials handed to an adapter on connect.
    *
-   * Fields are only ever APPENDED, never reordered or removed: the struct is
-   * populated by the SDK and read by the adapter, so an adapter compiled
-   * against an older copy of this header simply never reads the tail. New
-   * fields must therefore mean "not requested" when zero, which is what
-   * az_iot_mqtt_connect_options zero-initialization already yields (see
-   * docs/struct_versioning.md). */
+   * Populated by the SDK and read by the adapter. Every string, PEM buffer and
+   * path is valid only while connect() runs: the SDK then releases it to the
+   * certificate provider, which may wipe the private key and its password. An
+   * adapter copies what it needs during the call. sign and sign_ctx are the
+   * exception: they stay valid until the adapter client is destroyed, so the
+   * handshake may call sign() after connect() returns. A new field must mean "not
+   * requested" when zero, so an adapter written before it keeps working once
+   * rebuilt (see docs/struct_versioning.md). */
   typedef struct az_iot_mqtt_tls_options
   {
     const char* trusted_ca_path; /* file or NULL for system store */
@@ -161,7 +267,7 @@ extern "C"
      * a CA or a key reference select TLS on that alone. */
     bool use_tls;
     /* In-memory PEM material. Adapters that load credentials from memory rather
-     * than from disk (e.g. esp-mqtt on a device with no filesystem) use these;
+     * than from disk (e.g. az_mqtt on an ESP32, which has no filesystem) use these;
      * file-path adapters (Paho + OpenSSL) ignore them. Any field may be NULL. */
     const char* trusted_ca_pem; /* CA chain PEM, or NULL */
     const char* client_cert_pem; /* client certificate PEM, or NULL */
@@ -185,8 +291,19 @@ extern "C"
     const char* crypto_engine_id; /* OpenSSL ENGINE/provider id: "pkcs11", "tpm2" */
     az_iot_mqtt_sign_callback sign; /* may be NULL */
     void* sign_ctx; /* opaque, passed back to sign() */
+    /* PSA Crypto key id of a non-extractable client key (mbedTLS); 0: none. A
+     * third custody route: an adapter that cannot use it fails the connect with
+     * AZ_IOT_ERR_NOT_SUPPORTED. The key stays usable until the adapter client is
+     * destroyed, so the handshake may use it after connect() returns. */
+    uint32_t client_key_psa_id;
   } az_iot_mqtt_tls_options;
 
+  /* Options for az_iot_mqtt_iface::connect(). This struct and every pointer in
+   * it (strings, TLS material, Will, user properties) are valid only while
+   * connect() runs; the adapter copies what it uses afterwards, e.g. from
+   * process_loop(). The SDK wipes the SAS password and releases TLS material to
+   * the certificate provider, which may wipe the private key, once it returns.
+   * Exception: tls.sign and tls.sign_ctx (see az_iot_mqtt_tls_options). */
   typedef struct az_iot_mqtt_connect_options
   {
     const char* host;
@@ -207,7 +324,7 @@ extern "C"
     /* Last Will and Testament (v3.1.1 + v5). */
     struct
     {
-      const char* topic; /* NULL = no LWT */
+      const char* topic; /* NULL or "" = no LWT */
       const uint8_t* payload;
       size_t payload_len;
       az_iot_mqtt_qos qos;
@@ -224,8 +341,9 @@ extern "C"
      * would be blocked by the firewall the caller was working around. */
     az_iot_mqtt_transport transport;
     /* WebSocket resource path, used only when transport is WEBSOCKET. NULL
-     * selects AZ_IOT_MQTT_DEFAULT_WEBSOCKET_PATH, which is what Azure IoT Hub
-     * and DPS expect. Must start with '/'. */
+     * selects AZ_IOT_MQTT_DEFAULT_WEBSOCKET_PATH. The connection client sets
+     * AZ_IOT_MQTT_HUB_V5_WEBSOCKET_PATH for an mqttv5 hub session. Must start
+     * with '/'. */
     const char* websocket_path;
     az_iot_mqtt_proxy_options proxy;
     /* Reason code the adapter puts in the MQTT 5 DISCONNECT packet it sends
@@ -233,11 +351,9 @@ extern "C"
      *
      * It belongs to the connect options rather than to disconnect() because the
      * vtable is a published seam: adding a parameter to disconnect(), or a slot
-     * to az_iot_mqtt_iface, changes the ABI every bring-your-own adapter is
-     * compiled against, while a field appended here is the evolution this
-     * struct already documents -- an adapter built against an older header
-     * simply never reads it, and a zero leaves the behaviour that predates the
-     * field (see docs/struct_versioning.md).
+     * to az_iot_mqtt_iface, changes every bring-your-own adapter's source, while
+     * an adapter written before this field never reads it, and a zero leaves
+     * the behaviour that predates it (see docs/struct_versioning.md).
      *
      * 0 is AZ_IOT_MQTT_DISCONNECT_NORMAL, which is also what an MQTT 5
      * DISCONNECT with no reason code means, so zero-initialization keeps the
@@ -285,9 +401,11 @@ extern "C"
      * event kind. */
     bool session_present;
     /* The code that came off the wire, verbatim, for the ack this event carries
-     * (a CONNACK return/reason code, a SUBACK return/reason code). A non-zero
+     * (a CONNACK return/reason code, a SUBACK return/reason code, a PUBACK reason code). A non-zero
      * value is always that code, including the granted QoS on a SUBACK that
-     * succeeded -- a grant is diagnostic too. Only 0 is ambiguous: it means
+     * succeeded -- a grant is diagnostic too. Exception: for a publish the client
+     * dropped unacknowledged, no PUBACK arrived and the code is the client's own
+     * (az_mqtt: 0x80, or 0x95 over the server's Maximum Packet Size). Only 0 is ambiguous: it means
      * either "no code applies here" or "a producer that does not populate this
      * field", and nothing can tell those apart, which is the reason no decision
      * may rest on it.
@@ -306,6 +424,14 @@ extern "C"
      * only; an adapter that has nothing to report leaves it 0 and stays
      * conformant. */
     int32_t transport_code;
+    /* AZ_IOT_MQTT_EVT_PUBLISH_ACK, MQTT 5: the PUBACK's Reason String, verbatim. UTF-8, not
+     * NUL-terminated, valid only during the callback. NULL: the PUBACK carried none; non-NULL with
+     * length 0: present and empty. Unused for other event kinds. An adapter must report it for a
+     * PUBACK reason code of 0x80 or above, except for an ack it holds past the receive buffer's
+     * lifetime; below 0x80 it may omit it (Paho's API does not expose it). Diagnostics: never
+     * branch on it. */
+    const char* reason_string;
+    size_t reason_string_len;
   } az_iot_mqtt_event;
 
   typedef void (*az_iot_mqtt_event_callback)(const az_iot_mqtt_event* evt, void* user_ctx);
@@ -318,6 +444,9 @@ extern "C"
   {
     az_iot_mqtt_version version;
 
+    /* @p opts and every pointer it holds are valid only during this call, except
+     * tls.sign and tls.sign_ctx (see az_iot_mqtt_tls_options); copy what is
+     * needed later. */
     az_iot_result (*connect)(az_iot_mqtt_client* self, const az_iot_mqtt_connect_options* opts);
     /* Orderly close of the session. On MQTT 5 the DISCONNECT carries the reason
      * code the session was connected with
@@ -329,6 +458,8 @@ extern "C"
         const char* topic_filter,
         az_iot_mqtt_qos qos,
         uint16_t* out_packet_id);
+    /* An accepted unsubscribe ends in one AZ_IOT_MQTT_EVT_UNSUBSCRIBE_ACK carrying
+     * *out_packet_id, unless the session ends first. */
     az_iot_result (
         *unsubscribe)(az_iot_mqtt_client* self, const char* topic_filter, uint16_t* out_packet_id);
     az_iot_result (*publish)(
@@ -348,18 +479,81 @@ extern "C"
     /* adapter-specific state follows */
   };
 
-  /* Factory: produces a client that speaks a specific MQTT version. The SDK
-   * selects a factory by version at connection time based on the service being
-   * targeted (DPS/Classic require v3.1.1, Hub-Next requires v5). */
+  /**
+   * @brief Factory: produces a client that speaks a specific MQTT version. The SDK selects a
+   * factory by version at connection time based on the service being targeted (DPS and mqttv3
+   * require v3.1.1, mqttv5 requires v5).
+   *
+   * az_iot_connection_client_register_mqtt_factory() copies this struct, so the struct itself need
+   * not outlive the call. factory_ctx is borrowed: the application keeps it valid until
+   * az_iot_connection_client_deinit() returns, then releases it. Adapter factories (Paho, az_mqtt,
+   * Rust) are their own factory_ctx: destroy them with the adapter's destroy function after
+   * deinit().
+   */
   typedef struct az_iot_mqtt_factory
   {
     az_iot_mqtt_version version;
     az_iot_mqtt_client* (*create)(void* factory_ctx);
     void* factory_ctx;
-    /* Called by az_iot_connection_client_deinit() to free factory resources.
-     * NULL means no cleanup needed (e.g. stack-allocated factory). */
-    void (*destroy)(void* factory_ctx);
   } az_iot_mqtt_factory;
+
+  /**
+   * @brief Sizes of one MQTT client, chosen by the application. An adapter turns them into the
+   * workspace it needs (az_iot_mqtt_adapter::get_workspace_size).
+   */
+  typedef struct az_iot_mqtt_limits
+  {
+    /** @brief Largest outgoing packet, in bytes. */
+    size_t send_buffer_size;
+    /** @brief Largest incoming packet, in bytes. MQTT 5: the Maximum Packet Size advertised. */
+    size_t receive_buffer_size;
+    /** @brief QoS 1/2 exchanges at once, 1-32767. MQTT 5: also the Receive Maximum advertised. */
+    uint16_t max_in_flight_messages;
+    /**
+     * @brief Bytes for copies of unacknowledged QoS 1/2 PUBLISH, resent on a resumed session. 0:
+     * clean sessions only (a connect whose session outlives the connection is refused); otherwise
+     * at least one packet of send_buffer_size plus the adapter's per-message overhead.
+     */
+    size_t message_store_size;
+    /**
+     * @brief Bytes for the copies a connect makes of its strings (host, credentials, TLS paths or
+     * PEM, proxy, will, user properties), each with a NUL. A connect whose copies do not fit
+     * returns AZ_IOT_ERR_NOT_ENOUGH_SPACE.
+     */
+    size_t connect_strings_size;
+  } az_iot_mqtt_limits;
+
+  /**
+   * @brief An MQTT implementation that builds its clients in application memory.
+   *
+   * A client built by init() is released with its iface destroy(): that wipes what the client
+   * copied (credentials included) and frees nothing; the application then owns the workspace again.
+   */
+  typedef struct az_iot_mqtt_adapter
+  {
+    /**
+     * @brief Workspace bytes for the largest client this adapter builds with @p limits, over the
+     * MQTT versions compiled in. 0 when @p limits is invalid.
+     */
+    size_t (*get_workspace_size)(const az_iot_mqtt_limits* limits);
+    /**
+     * @brief Build a client of @p mqtt_version in @p workspace.
+     *
+     * @param[in] workspace At least get_workspace_size(limits) bytes, valid until the client is
+     * destroyed. Any alignment.
+     * @param[out] out_client The client, which lives in @p workspace.
+     * @retval AZ_IOT_OK Built.
+     * @retval AZ_IOT_ERR_INVALID_ARG NULL argument or invalid @p limits.
+     * @retval AZ_IOT_ERR_NOT_SUPPORTED @p mqtt_version not compiled in.
+     * @retval AZ_IOT_ERR_NOT_ENOUGH_SPACE @p workspace_size is smaller than needed.
+     */
+    az_iot_result (*init)(
+        az_iot_mqtt_version mqtt_version,
+        const az_iot_mqtt_limits* limits,
+        uint8_t* workspace,
+        size_t workspace_size,
+        az_iot_mqtt_client** out_client);
+  } az_iot_mqtt_adapter;
 
   const char* az_iot_mqtt_version_to_string(az_iot_mqtt_version v);
 
@@ -370,9 +564,9 @@ extern "C"
    *
    * The distinction that matters to the core is identity-versus-transport: codes
    * that mean "this client id / credential / authorization is not acceptable"
-   * become AZ_IOT_ERR_IDENTITY_REJECTED, which is what makes the SDK
-   * re-provision through DPS instead of retrying an identity the broker has
-   * already refused. Everything else stays AZ_IOT_ERR_MQTT and is retried.
+   * become AZ_IOT_ERR_IDENTITY_REJECTED, which the SDK recovers from on
+   * opts.identity_recovery instead of on the ordinary reconnection policy.
+   * Everything else stays AZ_IOT_ERR_MQTT and is retried.
    *
    * `connack_code` is the value carried in the CONNACK packet: a v3.1.1 return
    * code (1..5) or a v5 reason code (>= 0x80). 0 means success. A negative value
@@ -424,6 +618,23 @@ extern "C"
    * v3.1.1 has no DISCONNECT reason code; pass 0. */
   AZ_NODISCARD az_iot_result
   az_iot_mqtt_disconnect_result(az_iot_mqtt_version version, int disconnect_code);
+
+  /**
+   * @brief Map a PUBACK code onto the status an adapter reports with
+   * AZ_IOT_MQTT_EVT_PUBLISH_ACK. Adapters must route every PUBACK through it.
+   *
+   * @param version Selects the code scheme.
+   * @param puback_code MQTT 5 reason code; MQTT 3.1.1: 0. Negative: the adapter's own failure.
+   *
+   * @retval AZ_IOT_OK 0; MQTT 5: any code below 0x80 (0x10 included).
+   * @retval AZ_IOT_ERR_PUBLISH_REFUSED MQTT 5: 0x87, 0x90, 0x99, which the broker repeats; 0x95,
+   *         which a client reports for a publish over the server's Maximum Packet Size (not a
+   *         PUBACK code on the wire).
+   * @retval AZ_IOT_ERR_BUSY MQTT 5: 0x97 (quota exceeded).
+   * @retval AZ_IOT_ERR_MQTT Any other code, or a non-zero code with an unknown @p version.
+   */
+  AZ_NODISCARD az_iot_result
+  az_iot_mqtt_puback_result(az_iot_mqtt_version version, int puback_code);
 
 #ifdef __cplusplus
 }

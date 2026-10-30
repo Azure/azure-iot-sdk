@@ -69,10 +69,12 @@ static char g_last_error[1024];
 static void capture_sink(
     void* user_ctx,
     az_iot_log_level level,
+    const char* component,
     const char* file,
     int line,
     const char* msg)
 {
+  (void)component;
   (void)user_ctx;
   (void)file;
   (void)line;

@@ -6,7 +6,7 @@
 #include "internal/cert_util.h"
 
 #include "internal/log_internal.h"
-#include "internal/reconnect.h" /* az_iot_time_mono_ms */
+#include "internal/mono_time.h"
 #include "internal/span_writer.h"
 
 /* LCG mixing constants for the request-id nonce generator. */
@@ -48,6 +48,38 @@ void az_iot_cert_util_gen_request_id(uint64_t* rng_state, char* buf, size_t cap)
   (void)result;
 }
 
+bool az_iot_cert_util_json_is_complete(az_span payload)
+{
+  /* az_json_reader_init() precondition-checks the span, and the default
+   * handler spins forever: an empty MQTT payload must not reach it. */
+  if (az_span_ptr(payload) == NULL || az_span_size(payload) <= 0)
+  {
+    return false;
+  }
+  az_json_reader jr;
+  if (az_result_failed(az_json_reader_init(&jr, payload, NULL))
+      || az_result_failed(az_json_reader_next_token(&jr))
+      || (jr.token.kind != AZ_JSON_TOKEN_BEGIN_OBJECT && jr.token.kind != AZ_JSON_TOKEN_BEGIN_ARRAY)
+      || az_result_failed(az_json_reader_skip_children(&jr)))
+  {
+    return false;
+  }
+  /* The reader does not tell "document ended" from "another value follows":
+   * only whitespace may follow the root. */
+  az_span end = jr.token.slice;
+  uint8_t* begin = az_span_ptr(payload);
+  int32_t i = (int32_t)(az_span_ptr(end) - begin) + az_span_size(end);
+  for (; i < az_span_size(payload); ++i)
+  {
+    uint8_t ch = begin[i];
+    if (ch != ' ' && ch != '\t' && ch != '\r' && ch != '\n')
+    {
+      return false;
+    }
+  }
+  return true;
+}
+
 az_iot_result az_iot_cert_util_collect_chain_spans(
     az_json_reader* jr,
     az_span* certs,
@@ -55,16 +87,24 @@ az_iot_result az_iot_cert_util_collect_chain_spans(
     size_t* out_count)
 {
   size_t count = 0;
-  while (az_result_succeeded(az_json_reader_next_token(jr))
-         && jr->token.kind != AZ_JSON_TOKEN_END_ARRAY)
+  for (;;)
   {
+    if (az_result_failed(az_json_reader_next_token(jr)))
+    {
+      return AZ_IOT_ERR_PROTOCOL; /* the array never closed */
+    }
+    if (jr->token.kind == AZ_JSON_TOKEN_END_ARRAY)
+    {
+      break;
+    }
     if (jr->token.kind != AZ_JSON_TOKEN_STRING)
     {
       return AZ_IOT_ERR_PROTOCOL;
     }
     if (count >= max)
     {
-      AZ_IOT_LOG_ERROR("issued cert chain: more certificates than the supported maximum");
+      AZ_IOT_LOG_ERROR(
+          AZ_IOT_LOG_COMPONENT_CERT, "issued chain: more certificates than the supported maximum");
       return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
     }
     certs[count++] = jr->token.slice;

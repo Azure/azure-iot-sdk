@@ -10,5 +10,7 @@ namespace Microsoft.Azure.Iot.Device.Models.CertificateManagement
     public class CertificateSigningRequestFailedException : Exception
     {
         public required CertificateSigningRequestErrorResponse Error { get; set; }
+
+        public string? RequestId { get; set; }
     }
 }

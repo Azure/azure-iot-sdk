@@ -5,7 +5,7 @@
 /* SPDX-License-Identifier: MIT */
 /* unified/file_upload - sample.
  *
- * File upload is an IoT Hub Classic feature:
+ * File upload is an MQTTv3 hub feature:
  *   1. az_iot_mqttv3_file_upload_client_get_sas_uri()   -> SAS URI + correlation id
  *   2. the app PUTs the file to that SAS URI on Azure Storage (HTTPS)
  *   3. az_iot_mqttv3_file_upload_client_notify_complete()
@@ -16,10 +16,10 @@
  * own HTTPS call.
  *
  * There is no MQTT v5 counterpart: file upload is not carried on that hub, and
- * this client pins Classic, so init() on an MQTT v5 connection is refused with
+ * this client pins MQTTv3, so init() on an MQTT v5 connection is refused with
  * AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH. init() also needs the assigned hub,
  * so this sample builds its client the way unified/connect_first does: once
- * CONNECTED, after reading the profile. On an AEG hub it reports that and
+ * CONNECTED, after reading the profile. On an MQTTv5 hub it reports that and
  * exits non-zero. One-shot: it does not wait for the device to be moved.
  *
  * This sample uses libcurl (compiled in when CMake's find_package(CURL) succeeds
@@ -28,15 +28,24 @@
  * unavailable and the sample explains how to enable them.
  *
  * Authentication: the hub REST calls use the X.509 device certificate (mutual
- * TLS) -- the same cert/key used for MQTT. The Storage PUT is authenticated by
- * the SAS token embedded in the blob URI.
+ * TLS) -- the same cert/key used for MQTT. For a SAS-key device the SDK passes a
+ * hub SAS token as `authorization`, which the hook sends as the Authorization
+ * header. The Storage PUT is authenticated by the SAS token embedded in the blob
+ * URI.
  */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "azure/iot/az_iot.h"
+/* The MQTT adapter this build of the sample uses (see samples/CMakeLists.txt). */
+#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
 #include "azure/iot/adapters/az_iot_adapter_paho.h"
+#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
+#include "azure/iot/adapters/az_iot_adapter_az_mqtt.h"
+#else
+#error "Define AZ_IOT_SAMPLE_ADAPTER_PAHO or AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT"
+#endif
 
 #include "sample_utils.h"
 
@@ -53,6 +62,8 @@ typedef struct
   sample_config config;
   az_iot_certificate_provider_pem certs;
   az_iot_connection_client connection_client;
+  az_iot_mqtt_factory* factory_v3;
+  az_iot_mqtt_factory* factory_v5;
   az_iot_mqttv3_file_upload_client file_upload_client;
 } sample_state;
 
@@ -60,6 +71,13 @@ static void sample_state_destroy(sample_state* s)
 {
   az_iot_mqttv3_file_upload_client_deinit(&s->file_upload_client);
   az_iot_connection_client_deinit(&s->connection_client);
+#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
+  az_iot_paho_factory_destroy(s->factory_v3);
+  az_iot_paho_factory_destroy(s->factory_v5);
+#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
+  az_iot_az_mqtt_factory_destroy(s->factory_v3);
+  az_iot_az_mqtt_factory_destroy(s->factory_v5);
+#endif
   az_iot_certificate_provider_pem_deinit(&s->certs);
   sample_config_release(&s->config);
 }
@@ -124,6 +142,27 @@ static size_t on_curl_write(char* ptr, size_t size, size_t nmemb, void* userdata
   return chunk; /* report full consumption so curl does not abort the transfer */
 }
 
+/* Append "name: value" (or value alone when name is NULL) to *list. On failure *list
+ * is unchanged and still owned by the caller. Returns false if the header does not
+ * fit or curl cannot allocate. */
+static bool append_header(struct curl_slist** list, const char* name, const char* value)
+{
+  char h[576];
+  int n = (name != NULL) ? snprintf(h, sizeof(h), "%s: %s", name, value)
+                         : snprintf(h, sizeof(h), "%s", value);
+  if (n < 0 || (size_t)n >= sizeof(h))
+  {
+    return false;
+  }
+  struct curl_slist* appended = curl_slist_append(*list, h);
+  if (appended == NULL)
+  {
+    return false;
+  }
+  *list = appended;
+  return true;
+}
+
 /* Perform one HTTPS request with libcurl. Returns the HTTP status code, or -1 on
  * a transport failure. When client_cert/client_key are non-NULL, mutual-TLS auth
  * is used (required for the IoT Hub REST calls). */
@@ -148,21 +187,14 @@ static long https_request(
   }
 
   struct curl_slist* headers = NULL;
-  if (content_type && content_type[0])
+  if ((content_type && content_type[0] && !append_header(&headers, "Content-Type", content_type))
+      || (authorization && authorization[0]
+          && !append_header(&headers, "Authorization", authorization))
+      || (extra_header && extra_header[0] && !append_header(&headers, NULL, extra_header)))
   {
-    char h[128];
-    snprintf(h, sizeof(h), "Content-Type: %s", content_type);
-    headers = curl_slist_append(headers, h);
-  }
-  if (authorization && authorization[0])
-  {
-    char h[576];
-    snprintf(h, sizeof(h), "Authorization: %s", authorization);
-    headers = curl_slist_append(headers, h);
-  }
-  if (extra_header && extra_header[0])
-  {
-    headers = curl_slist_append(headers, extra_header);
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+    return -1;
   }
 
   response_sink sink = { resp, resp_cap, 0 };
@@ -217,16 +249,16 @@ static long https_request(
 
 #endif /* AZ_IOT_SAMPLE_WITH_CURL */
 
-/* Paths used by the HTTP hook to authenticate the Classic hub REST calls (mTLS). */
+/* Paths used by the HTTP hook to authenticate the MQTTv3 hub REST calls (mTLS). */
 typedef struct
 {
   const char* cert;
   const char* key;
 } hub_http_ctx;
 
-/* HTTP transport hook the SDK calls for the Classic control plane (SAS-URI
+/* HTTP transport hook the SDK calls for the MQTTv3 control plane (SAS-URI
  * request + completion notification). Always defined so the file upload client
- * can be initialized on Classic even in a build without libcurl. */
+ * can be initialized on MQTTv3 even in a build without libcurl. */
 static az_iot_result curl_http_send(
     const char* method,
     const char* url,
@@ -292,8 +324,13 @@ static void on_sas(
   u->sas_status = status;
   if (status == AZ_IOT_OK && blob_sas_uri && correlation_id)
   {
-    snprintf(u->sas_uri, sizeof(u->sas_uri), "%s", blob_sas_uri);
-    snprintf(u->correlation_id, sizeof(u->correlation_id), "%s", correlation_id);
+    int n1 = snprintf(u->sas_uri, sizeof(u->sas_uri), "%s", blob_sas_uri);
+    int n2 = snprintf(u->correlation_id, sizeof(u->correlation_id), "%s", correlation_id);
+    if (n1 < 0 || (size_t)n1 >= sizeof(u->sas_uri) || n2 < 0
+        || (size_t)n2 >= sizeof(u->correlation_id))
+    {
+      u->sas_status = AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+    }
   }
 }
 
@@ -381,7 +418,7 @@ static int run_file_upload(sample_state* state)
 
 int main(void)
 {
-  az_iot_log_sink log = az_iot_log_stderr_sink(AZ_IOT_LOG_LEVEL_INFO);
+  az_iot_log_sink log = sample_log_sink(AZ_IOT_LOG_LEVEL_INFO);
   az_iot_log_set_global_sink(&log);
 
   sample_state state = { 0 };
@@ -407,7 +444,9 @@ int main(void)
 
   /* Connection client (DPS provisioning is internal). */
   az_iot_connection_client_options copts = az_iot_connection_client_options_default();
-  sample_apply_dps_options(&copts, &state.config);
+  copts.dps.id_scope = state.config.id_scope;
+  copts.dps.registration_id = state.config.reg_id;
+  copts.dps.global_endpoint = state.config.dps_global_endpoint; /* NULL: the global default */
   copts.certificate_provider = &state.certs.base;
 
   if (az_iot_connection_client_init(&state.connection_client, &copts) != AZ_IOT_OK)
@@ -417,16 +456,24 @@ int main(void)
   }
   az_iot_connection_client_add_state_observer(&state.connection_client, on_conn_state, &user_ctx);
 
-  /* Both adapters: v3.1.1 serves DPS and a Classic hub, v5 serves an AEG hub. */
-  if (az_iot_connection_client_register_mqtt_factory(
-          &state.connection_client, az_iot_paho_factory_create_v3_1_1())
+  /* Both adapters: v3.1.1 serves DPS and an MQTTv3 hub, v5 serves an MQTTv5 hub. */
+#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
+  state.factory_v3 = az_iot_paho_factory_create_v3_1_1();
+#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
+  state.factory_v3 = az_iot_az_mqtt_factory_create_v3_1_1();
+#endif
+  if (az_iot_connection_client_register_mqtt_factory(&state.connection_client, state.factory_v3)
       != AZ_IOT_OK)
   {
     sample_state_destroy(&state);
     return 1;
   }
-  if (az_iot_connection_client_register_mqtt_factory(
-          &state.connection_client, az_iot_paho_factory_create_v5())
+#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
+  state.factory_v5 = az_iot_paho_factory_create_v5();
+#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
+  state.factory_v5 = az_iot_az_mqtt_factory_create_v5();
+#endif
+  if (az_iot_connection_client_register_mqtt_factory(&state.connection_client, state.factory_v5)
       != AZ_IOT_OK)
   {
     sample_state_destroy(&state);
@@ -454,16 +501,11 @@ int main(void)
   {
     printf("Failed to reach CONNECTED (state=%d).\n", (int)user_ctx.conn_state);
   }
-  else if (state.config.mock_endpoint != NULL)
-  {
-    /* The mock bypass is MQTT v5 only. */
-    printf("File upload is not available on this hub generation.\n");
-  }
   else if (sample_get_hub_profile(&state.connection_client, &profile) != AZ_IOT_OK)
   {
     /* Already reported. */
   }
-  else if (profile != AZ_IOT_CONNECTION_PROFILE_CLASSIC)
+  else if (profile != AZ_IOT_CONNECTION_PROFILE_MQTT_V3)
   {
     /* No mqttv5 file upload client exists; the mqttv3 one would refuse this
      * connection at init(). */

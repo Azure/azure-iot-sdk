@@ -45,12 +45,13 @@ extern "C"
     AZ_IOT_MOCK_CALL_DESTROY
   } az_iot_mock_call_kind;
 
-#define AZ_IOT_MOCK_TOPIC_MAX 256
-/* Must be at least the largest number any feature client can send on one
- * PUBLISH (telemetry forwards up to AZ_IOT_TELEMETRY_MAX_USER_PROPS = 16),
- * otherwise the mock silently truncates and a test asserting on the tail
- * stops checking anything. */
-#define AZ_IOT_MOCK_MAX_USER_PROPS 20
+/* Covers an mqttv3 C2D topic whose property bag overruns the SDK's decode
+ * buffers, which tests must be able to inject without the mock truncating it. */
+#define AZ_IOT_MOCK_TOPIC_MAX 1024
+/* User Properties recorded per PUBLISH. Feature clients have no limit, so a
+ * call also records how many were offered (user_properties_offered): a test
+ * sending more than this asserts on that count. */
+#define AZ_IOT_MOCK_MAX_USER_PROPS 40
 #define AZ_IOT_MOCK_PAYLOAD_MAX 4096
 #define AZ_IOT_MOCK_HISTORY_MAX 64
 
@@ -67,6 +68,7 @@ extern "C"
     /* MQTT v5 PUBLISH extras, captured for presence/birth tests. */
     uint8_t correlation_data[64];
     size_t correlation_data_len;
+    size_t correlation_data_offered_len; /* before truncation to correlation_data */
     char user_type[64]; /* value of the "type" User Property, "" if none */
     /* Every User Property in order, so a test can assert what a feature client
      * actually forwarded rather than only the "type" marker. Properties past
@@ -77,9 +79,12 @@ extern "C"
       char value[128];
     } user_properties[AZ_IOT_MOCK_MAX_USER_PROPS];
     size_t user_properties_count;
+    size_t user_properties_offered; /* every property the view yielded */
+    az_iot_result user_properties_end; /* what ended the iteration: AZ_IOT_ERR_NOT_FOUND */
     char content_type[64]; /* PUBLISH Content Type, "" if none */
     uint32_t message_expiry_seconds; /* PUBLISH Message Expiry Interval, 0 if none */
     char username[256]; /* CONNECT username, "" if none */
+    char password[1024]; /* CONNECT password, "" if none */
     /* CONNECT options, captured so tests can assert which endpoint/identity the
      * core targeted. `topic` also carries the host for backwards compatibility. */
     struct
@@ -97,11 +102,16 @@ extern "C"
       bool has_trusted_ca_pem;
       bool has_client_cert_pem;
       bool has_client_key_pem;
+      /* Key PEM and password as read during connect(), so a test can tell they
+       * were still intact then (truncated to the buffer). */
+      char client_key_pem[256];
+      char client_key_password[64];
       /* Non-extractable key custody (D8), captured so a test can assert the
        * core forwarded the key reference and the sign() hook rather than
        * dropping them on the way to the adapter. */
       char client_key_uri[256];
       char crypto_engine_id[64];
+      uint32_t client_key_psa_id;
       bool has_sign;
       void* sign_ctx;
       az_iot_mqtt_sign_callback sign;
@@ -141,6 +151,9 @@ extern "C"
   /* The most-recently-created client from this factory, or NULL if none. */
   az_iot_mock_mqtt_client* az_iot_mock_mqtt_factory_last_client(const az_iot_mqtt_factory* factory);
 
+  /* Clients of this factory destroyed after a disconnect() call. */
+  size_t az_iot_mock_mqtt_factory_disconnected_destroyed(const az_iot_mqtt_factory* factory);
+
   /* Cast an az_iot_mqtt_client to its mock backing if it came from this factory. */
   az_iot_mock_mqtt_client* az_iot_mock_mqtt_client_from(az_iot_mqtt_client* c);
 
@@ -177,6 +190,17 @@ extern "C"
   bool az_iot_mock_mqtt_client_inject_event(
       az_iot_mock_mqtt_client* m,
       const az_iot_mqtt_event* evt);
+
+  /* Deliver up to @p count queued events per process_loop() call, as a real adapter
+   * may (0 restores the default of one). */
+  void az_iot_mock_mqtt_client_set_events_per_loop(az_iot_mock_mqtt_client* m, size_t count);
+
+  /* Call @p hook as each process_loop() starts, before queued events are delivered (NULL clears).
+   */
+  void az_iot_mock_mqtt_client_set_process_loop_hook(
+      az_iot_mock_mqtt_client* m,
+      void (*hook)(az_iot_mock_mqtt_client* m, void* ctx),
+      void* ctx);
 
   /* Convenience: queue a CONNECTED event with the given status. */
   bool az_iot_mock_mqtt_client_inject_connected(az_iot_mock_mqtt_client* m, az_iot_result status);

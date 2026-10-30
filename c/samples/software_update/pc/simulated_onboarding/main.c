@@ -8,7 +8,7 @@
  * Portable PC sample (Linux + Windows). Runs the ENTIRE software updates workflow end to end
  * against a real Device Update instance, but with SIMULATED download/install
  * hooks so it is safe to run on a dev box (it never touches real firmware).
- * See the companion README.md and docs/eng/su-client-design.md.
+ * See the companion README.md and docs/eng/software-updates.md.
  *
  * ONBOARDING ROUTE ONLY: a day-0 device, with no device record yet, asks with
  * az_iot_su_client_request_onboarding_update(). A device that has already
@@ -20,7 +20,7 @@
  * hub.
  *
  * Real:      connection, update request/response, manifest receipt, JWS
- *            verification (OpenSSL), per-file SHA-256 hash check, status
+ *            verification (OpenSSL or mbedTLS), per-file SHA-256 hash check, status
  *            reporting.
  * Simulated: download_fn (synthesizes deterministic payload bytes),
  *            install/apply/backup/restore (log only, optional forced failure
@@ -37,8 +37,9 @@
  *   AZ_IOT_SU_MODEL=<s>               default "SU-Sim"
  *
  * REPORTED, NOT MATCHED: the installed update id says what is on the device
- * now. It takes no part in matching, and the onboarding route this sample uses
- * omits it entirely -- changing it cannot make an update eligible.
+ * now. It is sent on the update check but takes no part in matching --
+ * changing it cannot make an update eligible. The service only uses it to
+ * withhold an offer for the update already installed.
  *   AZ_IOT_SU_INSTALLED_PROVIDER=<s>  default "Contoso"
  *   AZ_IOT_SU_INSTALLED_NAME=<s>      default "SU-Sim"
  *   AZ_IOT_SU_INSTALLED_VERSION=<s>   default "1.0.0"
@@ -64,8 +65,22 @@
 
 #include "azure/iot/az_iot.h"
 #include "azure/iot/az_iot_su.h"
+/* The MQTT adapter this build of the sample uses (see samples/CMakeLists.txt). */
+#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
 #include "azure/iot/adapters/az_iot_adapter_paho.h"
-#include "az_iot_su_crypto_openssl.h"
+#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
+#include "azure/iot/adapters/az_iot_adapter_az_mqtt.h"
+#else
+#error "Define AZ_IOT_SAMPLE_ADAPTER_PAHO or AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT"
+#endif
+/* The crypto backend this build of the sample uses (see samples/CMakeLists.txt). */
+#if defined(AZ_IOT_SAMPLE_CRYPTO_OPENSSL)
+#include "az_iot_crypto_openssl.h"
+#elif defined(AZ_IOT_SAMPLE_CRYPTO_MBEDTLS)
+#include "az_iot_crypto_mbedtls.h"
+#else
+#error "Define AZ_IOT_SAMPLE_CRYPTO_OPENSSL or AZ_IOT_SAMPLE_CRYPTO_MBEDTLS"
+#endif
 
 #include "sample_utils.h"
 #include "su_sim.h"
@@ -98,6 +113,8 @@ typedef struct
 
   az_iot_certificate_provider_pem certs;
   az_iot_connection_client connection_client;
+  az_iot_mqtt_factory* factory_v3;
+  az_iot_mqtt_factory* factory_v5;
   az_iot_su_client su_client;
 
   /* Device identity, kept past init() only so it can be printed. */
@@ -119,17 +136,27 @@ typedef struct
   int check_su_request_abandoned; /* the update check gave up; see on_su_event */
   int su_workflow_active; /* a deployment is in flight */
   int su_workflow_completed; /* one finished and returned to Idle */
+  int su_workflow_succeeded; /* ...and it was applied successfully */
 
-  /* Sized by the SDK's own default so raising it really does grow this cache;
-   * the values it holds come from the environment. */
-  AZ_IOT_SU_DEVICE_PROPERTIES_STORAGE(dp_buffer);
 } sample_state;
+
+/* The software updates client's memory: update copy, persisted-state record,
+ * scratch, message body and device-property strings. Sized for the limits
+ * main() sets; static, as it is too large for a stack frame. */
+static uint8_t g_su_workspace[AZ_IOT_SU_WORKSPACE_DEFAULT_SIZE];
 
 static void sample_state_destroy(sample_state* s)
 {
   az_iot_su_client_deinit(&s->su_client);
 
   az_iot_connection_client_deinit(&s->connection_client);
+#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
+  az_iot_paho_factory_destroy(s->factory_v3);
+  az_iot_paho_factory_destroy(s->factory_v5);
+#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
+  az_iot_az_mqtt_factory_destroy(s->factory_v3);
+  az_iot_az_mqtt_factory_destroy(s->factory_v5);
+#endif
   az_iot_certificate_provider_pem_deinit(&s->certs);
   sample_config_release(&s->config);
 
@@ -150,11 +177,8 @@ static void on_connection_state_event_received(
 {
   sample_state* state = (sample_state*)user_ctx;
 
-  /* `reason` is the last field read here, and `scope` indexes an array -- so an
-   * event too short to carry them, or naming a scope this build does not know,
-   * is ignored rather than read. */
-  if (!SU_SAMPLE_EVENT_HAS(event, az_iot_connection_state_event, reason)
-      || (unsigned)event->scope >= AZ_IOT_CONN_SCOPE_COUNT)
+  /* `scope` indexes an array: ignore one this build does not know. */
+  if ((unsigned)event->scope >= AZ_IOT_CONN_SCOPE_COUNT)
   {
     return;
   }
@@ -171,10 +195,8 @@ static void on_connection_state_event_received(
         az_iot_result_to_string(event->reason));
     state->connection_state[scope] = event->state;
 
-    /* Says only that the provisioning session came up, never whether the
-     * update check has been answered. The SDK raises no event for a
-     * successful "no update available", so the sample cannot tell pending
-     * from answered and does not claim to. */
+    /* Says only that the provisioning session came up. The check's answer is
+     * an update or AZ_IOT_SU_EVENT_NO_UPDATE. */
     if (scope == AZ_IOT_CONN_SCOPE_DPS && event->state == AZ_IOT_CONN_STATE_CONNECTED)
     {
       printf("Provisioning session up. Running (Ctrl-C to exit)...\n");
@@ -191,12 +213,6 @@ static void on_su_event(const az_iot_su_event* event, void* user_ctx)
 {
   sample_state* state = (sample_state*)user_ctx;
 
-  /* `service_error` is the last field read here. */
-  if (!SU_SAMPLE_EVENT_HAS(event, az_iot_su_event, service_error))
-  {
-    return;
-  }
-
   switch (event->kind)
   {
     case AZ_IOT_SU_EVENT_WORKFLOW_STATE_CHANGED:
@@ -204,10 +220,20 @@ static void on_su_event(const az_iot_su_event* event, void* user_ctx)
           "Update workflow: %s -> %s\n",
           su_sample_state_name(event->previous_state),
           su_sample_state_name(event->state));
+      if (event->state == AZ_IOT_SU_STATE_FAILED)
+      {
+        fprintf(
+            stderr,
+            "Update failed: %s, extended result 0x%08x\n",
+            az_iot_result_to_string(event->reason),
+            (unsigned)event->extended_result_code);
+      }
       state->su_workflow_active = (event->state != AZ_IOT_SU_STATE_IDLE);
       if (!state->su_workflow_active && event->previous_state != AZ_IOT_SU_STATE_IDLE)
       {
         state->su_workflow_completed = 1;
+        /* Idle from ApplyStarted only when the last step applied. */
+        state->su_workflow_succeeded = (event->previous_state == AZ_IOT_SU_STATE_APPLY_STARTED);
       }
       break;
 
@@ -229,7 +255,49 @@ static void on_su_event(const az_iot_su_event* event, void* user_ctx)
         state->check_su_request_abandoned = 1;
       }
       break;
-
+    case AZ_IOT_SU_EVENT_PERSIST_FAILED:
+    case AZ_IOT_SU_EVENT_PERSIST_RECOVERED:
+      /* While a write is failing the workflow is held: do not reboot. */
+      fprintf(
+          stderr,
+          "Update state storage %s after %u failed write(s)%s\n",
+          event->kind == AZ_IOT_SU_EVENT_PERSIST_FAILED ? "failing" : "recovered",
+          (unsigned)event->persist_attempts,
+          (event->kind == AZ_IOT_SU_EVENT_PERSIST_FAILED && !event->persist_retrying)
+              ? "; giving up"
+              : "");
+      break;
+    case AZ_IOT_SU_EVENT_UPDATE_REFUSED:
+      /* Nothing was installed or reported; raise the limit named in the log. */
+      fprintf(stderr, "Update refused: %s\n", az_iot_result_to_string(event->reason));
+      break;
+    case AZ_IOT_SU_EVENT_UPDATE_DEFERRED:
+      /* A later update check offers it again. Raised in Idle, the last apply
+       * asked for a reboot: the deferral lasts until the reboot. */
+      printf(
+          "New update deferred until %s.\n",
+          event->state == AZ_IOT_SU_STATE_IDLE ? "the device reboots" : "the current one ends");
+      break;
+    case AZ_IOT_SU_EVENT_NO_UPDATE:
+      printf("%s: no update available.\n", su_sample_operation_name(event->operation));
+      break;
+    case AZ_IOT_SU_EVENT_UPDATE_DUPLICATE:
+      printf("Update ignored: it repeats the current workflow.\n");
+      break;
+    case AZ_IOT_SU_EVENT_REPORT_ACCEPTED:
+      printf("Status report accepted%s.\n", event->report_terminal ? " (final)" : "");
+      break;
+    case AZ_IOT_SU_EVENT_UPDATE_RETRY_WAIT:
+      /* A later update check offers it again; it is retried once the wait elapses. */
+      printf(
+          "Failed update offered again; retry in %u s.\n",
+          (unsigned)(event->retry_after_ms / 1000u));
+      break;
+    case AZ_IOT_SU_EVENT_WORKFLOW_COMPLETED:
+      printf(
+          "Workflow completed; final report %s.\n",
+          event->reason == AZ_IOT_OK ? "accepted" : "rejected by the service");
+      break;
     case AZ_IOT_SU_EVENT_UPDATE_AVAILABLE:
       /* Library mode only; this sample runs the managed client. */
       break;
@@ -261,7 +329,9 @@ static int initialize_connection_client(sample_state* state)
 
   /* Connection client. */
   az_iot_connection_client_options copts = az_iot_connection_client_options_default();
-  sample_apply_dps_options(&copts, &state->config);
+  copts.dps.id_scope = state->config.id_scope;
+  copts.dps.registration_id = state->config.reg_id;
+  copts.dps.global_endpoint = state->config.dps_global_endpoint; /* NULL: the global default */
   copts.certificate_provider = &state->certs.base;
   /* Every device-update operation runs on the provisioning session, before the
    * device registers, so this device declares it has no hub: the session is
@@ -270,6 +340,12 @@ static int initialize_connection_client(sample_state* state)
    * one both fail registration the same way, so inferring it would hide real
    * misconfiguration. */
   copts.dps.provision_only = true;
+  /* Verifies update manifests and hashes downloaded files. */
+#if defined(AZ_IOT_SAMPLE_CRYPTO_OPENSSL)
+  copts.crypto = az_iot_crypto_openssl();
+#elif defined(AZ_IOT_SAMPLE_CRYPTO_MBEDTLS)
+  copts.crypto = az_iot_crypto_mbedtls();
+#endif
   if (az_iot_connection_client_init(&state->connection_client, &copts) != AZ_IOT_OK)
   {
     return 1;
@@ -281,11 +357,17 @@ static int initialize_connection_client(sample_state* state)
     return 1;
   }
 
-  if (az_iot_connection_client_register_mqtt_factory(
-          &state->connection_client, az_iot_paho_factory_create_v3_1_1())
+#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
+  state->factory_v3 = az_iot_paho_factory_create_v3_1_1();
+  state->factory_v5 = az_iot_paho_factory_create_v5();
+#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
+  state->factory_v3 = az_iot_az_mqtt_factory_create_v3_1_1();
+  state->factory_v5 = az_iot_az_mqtt_factory_create_v5();
+#endif
+  if (az_iot_connection_client_register_mqtt_factory(&state->connection_client, state->factory_v3)
           != AZ_IOT_OK
       || az_iot_connection_client_register_mqtt_factory(
-             &state->connection_client, az_iot_paho_factory_create_v5())
+             &state->connection_client, state->factory_v5)
           != AZ_IOT_OK)
   {
     return 1;
@@ -300,10 +382,10 @@ static int initialize_connection_client(sample_state* state)
 
 int main(void)
 {
-  az_iot_log_sink log = az_iot_log_stderr_sink(su_sample_log_level_from_env());
+  az_iot_log_sink log = sample_log_sink(su_sample_log_level_from_env());
   az_iot_log_set_global_sink(&log);
 
-  signal(SIGINT, on_sigint);
+  (void)signal(SIGINT, on_sigint); /* Ctrl+C handling is a convenience */
 
   sample_state state = { 0 };
 
@@ -335,18 +417,16 @@ int main(void)
   /* Software updates client. The platform hooks do the device-side work of a
    * deployment; here each one is simulated (see ../common/su_sim.c). */
   az_iot_su_platform_hooks hooks = { 0 };
-  hooks.download_fn = su_download;
-  hooks.read_file_fn = su_read_file;
-  hooks.is_installed_fn = su_is_installed;
-  hooks.backup_fn = su_backup;
-  hooks.install_fn = su_install;
-  hooks.apply_fn = su_apply;
-  hooks.restore_fn = su_restore;
-  hooks.persist_state_fn = su_persist_state;
-  hooks.load_state_fn = su_load_state;
+  hooks.download_fn = simulate_update_file_download;
+  hooks.read_file_fn = read_back_simulated_update_file;
+  hooks.is_installed_fn = is_offered_update_already_installed;
+  hooks.backup_fn = simulate_update_step_backup;
+  hooks.install_fn = simulate_update_step_install;
+  hooks.apply_fn = simulate_update_step_apply;
+  hooks.restore_fn = simulate_update_step_restore;
+  hooks.persist_workflow_state_fn = save_update_workflow_to_file;
+  hooks.load_workflow_state_fn = load_update_workflow_from_file;
   hooks.user_ctx = &state.simulation_control;
-
-  az_iot_su_crypto_hooks crypto = az_iot_su_crypto_openssl_hooks();
 
   /* Microsoft's compiled-in software updates production root keys: anchors the trust chain
    * for updates signed by the real Device Update service. */
@@ -395,26 +475,31 @@ int main(void)
     sample_state_destroy(&state);
     return 1;
   }
-  if (dp_needed > sizeof(state.dp_buffer))
+  if (dp_needed > AZ_IOT_SU_DEVICE_PROPERTIES_BUFFER_SIZE)
   {
     fprintf(
         stderr,
         "Device properties need %zu bytes of cache; this sample has %zu. Shorten "
-        "them or raise AZ_IOT_SU_DEVICE_PROPERTIES_BUFFER_SIZE.\n",
+        "them or raise limits.device_properties_size.\n",
         dp_needed,
-        sizeof(state.dp_buffer));
+        (size_t)AZ_IOT_SU_DEVICE_PROPERTIES_BUFFER_SIZE);
     sample_state_destroy(&state);
     return 1;
   }
 
   az_iot_su_client_config_options su_opts = az_iot_su_client_config_options_default();
   su_opts.hooks = &hooks;
-  su_opts.crypto = &crypto;
   su_opts.root_keys = root_keys;
   su_opts.root_key_count = root_key_count;
   su_opts.device_properties = &dp;
-  su_opts.device_properties_buffer = state.dp_buffer;
-  su_opts.device_properties_buffer_size = sizeof(state.dp_buffer);
+  /* Limits, each the SDK default; the workspace is sized for them. */
+  su_opts.limits.max_update_size = AZ_IOT_SU_DEFAULT_MAX_UPDATE_SIZE;
+  su_opts.limits.scratch_size = AZ_IOT_SU_VERIFY_SCRATCH_SIZE;
+  su_opts.limits.max_message_size = AZ_IOT_SU_DEFAULT_MAX_MESSAGE_SIZE;
+  su_opts.limits.device_properties_size = AZ_IOT_SU_DEVICE_PROPERTIES_BUFFER_SIZE;
+  su_opts.limits.result_details_size = AZ_IOT_SU_DEFAULT_RESULT_DETAILS_SIZE;
+  su_opts.workspace = g_su_workspace;
+  su_opts.workspace_size = sizeof(g_su_workspace);
   if (az_iot_su_client_init(&state.su_client, &state.connection_client, &su_opts) != AZ_IOT_OK)
   {
     fprintf(stderr, "az_iot_su_client_init failed\n");
@@ -465,7 +550,7 @@ int main(void)
 
   printf(
       "Matched against a deployed update: manufacturer=%s model=%s\n"
-      "Reported only (not matched, and omitted on the onboarding route): "
+      "Reported only (not matched): "
       "installedUpdateId=%s/%s/%s\n",
       state.su_device_properties.manufacturer,
       state.su_device_properties.model,
@@ -493,27 +578,48 @@ int main(void)
     (void)az_iot_connection_client_do_work(&state.connection_client, 50);
     (void)az_iot_su_client_do_work(&state.su_client);
 
-    /* A workflow ran to completion and returned to Idle. The process stays
-     * alive, but it asked once: nothing further arrives on this run. */
+    /* A workflow ran to completion and returned to Idle. After an applied
+     * update, report it as installed and ask again: another update may follow
+     * it. Otherwise nothing further arrives on this run. */
     if (state.su_workflow_completed)
     {
       state.su_workflow_completed = 0;
-      printf("Deployment workflow complete. Restart the sample to ask again.\n");
-      remove(state.simulation_control.state_file); /* clear the resume blob */
+      if (state.su_workflow_succeeded && state.simulation_control.applied_valid)
+      {
+        az_iot_su_device_properties next = { 0 };
+        next.manufacturer = state.su_device_properties.manufacturer;
+        next.model = state.su_device_properties.model;
+        next.installed_update_id.provider = state.simulation_control.applied_provider;
+        next.installed_update_id.name = state.simulation_control.applied_name;
+        next.installed_update_id.version = state.simulation_control.applied_version;
+        if (az_iot_su_client_update_device_properties(&state.su_client, &next) == AZ_IOT_OK
+            && az_iot_su_client_request_onboarding_update(
+                   &state.su_client, AZ_IOT_SU_REQUEST_DEFAULT_TIMEOUT_MS)
+                == AZ_IOT_OK)
+        {
+          printf(
+              "Update applied. Installed: %s/%s/%s. Checking for the next one.\n",
+              next.installed_update_id.provider,
+              next.installed_update_id.name,
+              next.installed_update_id.version);
+        }
+        else
+        {
+          fprintf(stderr, "Could not record the applied update or ask again.\n");
+        }
+      }
+      else
+      {
+        printf("Deployment workflow complete. Restart the sample to ask again.\n");
+      }
+      state.su_workflow_succeeded = 0;
     }
 
-    /* A (simulated) reboot was requested: state is persisted; exit so the
-     * operator can "reboot" and re-run to resume. */
-    if (state.simulation_control.reboot_signalled && state.simulation_control.persist_failed)
-    {
-      fprintf(
-          stderr,
-          "Reboot required, but the workflow state could not be persisted to %s.\n",
-          state.simulation_control.state_file);
-      rc = 1;
-      break;
-    }
-    if (state.simulation_control.reboot_signalled)
+    /* A (simulated) reboot was requested. Exit so the operator can "reboot"
+     * and re-run to resume, but only once the state is persisted: while the
+     * write fails the client retries it, and if it gives up it rolls the
+     * update back (clearing reboot_pending) and reports the failure. */
+    if (state.simulation_control.reboot_pending && !state.simulation_control.persist_failed)
     {
       printf(
           "Reboot required. Workflow state persisted to %s.\n"

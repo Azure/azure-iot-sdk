@@ -1,0 +1,4 @@
+# NVS encryption keys derived with the HMAC peripheral (eFuse key block 2), as in
+# ESP-IDF's examples/security/security_features_app.
+CONFIG_NVS_SEC_KEY_PROTECT_USING_HMAC=y
+CONFIG_NVS_SEC_HMAC_EFUSE_KEY_ID=2

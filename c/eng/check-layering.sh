@@ -2,8 +2,8 @@
 # Copyright (c) Microsoft. All rights reserved.
 # Licensed under the MIT license. See LICENSE file in the project root for full license information.
 #
-# Enforces the generation-client boundaries specified in
-# docs/eng/client-separation.md. Keep this dependency-free so it can run in the
+# Enforces the generation-client boundaries listed in docs/architecture.md
+# ("Library boundaries"). Keep this dependency-free so it can run in the
 # conventions job before the project is configured.
 
 set -euo pipefail
@@ -79,7 +79,7 @@ destroy_hits="$(grep -rnoE '\baz_iot_[a-z0-9_]*_destroy\b' \
     --include='*.c' --include='*.h' \
     "${root_dir}/inc" "${root_dir}/src" "${root_dir}/adapters" \
     "${root_dir}/tests" "${root_dir}/samples" 2>/dev/null \
-    | grep -vxE '.*:az_iot_(mock_mqtt|paho|rust_mqtt|esp_mqtt|mymqtt)_factory_destroy|.*:az_iot_e2e_service_destroy' \
+    | grep -vxE '.*:az_iot_(mock_mqtt|paho|az_mqtt|rust_mqtt|esp_mqtt|mymqtt)_factory_destroy|.*:az_iot_e2e_service_destroy' \
     || true)"
 if [ -n "${destroy_hits}" ]; then
     if [ "${violations}" -eq 0 ]; then
@@ -94,6 +94,42 @@ if [ -n "${destroy_hits}" ]; then
     echo
 fi
 
+# Generation vocabulary, over every tracked text file under the trees listed
+# below -- not just C sources, because the PowerShell test-env scripts, CMake,
+# READMEs, JSON and .gitignore carry the same names. gen1/gen2/aeg/classic are
+# matched anywhere, including inside an identifier, since none of them has a
+# legitimate use here. `next` is an ordinary English word, so only the forms
+# that pair it with a generation word are banned -- with the separator optional,
+# so hub_next, hub-next, next_hub and HubNext all match.
+#
+# c/docs is deliberately NOT scanned: it records decisions, external RFC paths
+# and past defects that legitimately name the old vocabulary.
+#
+# One exemption, blanked per-occurrence rather than per-line, so a line
+# carrying the exempt string AND a banned name is still reported: the DPS
+# `connectionProfile` wire value, the literal string classic, quoted or
+# backticked.
+banned_re='gen1|gen2|aeg|classic|(hub|mock|profile|setup|flavor|assigned|gen)_next|_is_next|hub[-_ ]?next|next[-_ ]?hub|iothub[a-z]*-?next'
+banned_hits="$(git -C "${root_dir}/.." ls-files \
+        'c/inc/*' 'c/src/*' 'c/adapters/*' 'c/tests/*' 'c/samples/*' 2>/dev/null \
+    | grep -vE '\.(pem|der|crt|key|png|jpg|bin)$' \
+    | (cd "${root_dir}/.." && xargs -r grep -niIE "${banned_re}" 2>/dev/null) \
+    | sed -e 's/\\\{0,1\}"classic\\\{0,1\}"/"@wire@"/g' \
+          -e 's/`classic`/`@wire@`/g' \
+    | grep -iE "${banned_re}" \
+    || true)"
+if [ -n "${banned_hits}" ]; then
+    if [ "${violations}" -eq 0 ]; then
+        echo "Generation layering violations found:"
+        echo
+    fi
+    violations=$((violations + 1))
+    echo "  generation naming must use mqttv3/mqttv5, not gen1/gen2/classic/next/aeg"
+    while IFS= read -r hit; do
+        [ -n "${hit}" ] && echo "    ${hit#${root_dir}/}"
+    done <<< "${banned_hits}"
+    echo
+fi
 if [ "${violations}" -gt 0 ]; then
     echo "${violations} generation layering rule(s) violated."
     exit 1

@@ -5,7 +5,7 @@
 /* SPDX-License-Identifier: MIT */
 /* Minimal proto3 wire-format reader/writer.
  *
- * The AEG/Hub-Next protocols (presence Birth/BirthAck, twin TwinPush,
+ * The MQTTv5 protocols (presence Birth/BirthAck, twin TwinPush,
  * DesiredPatch, TwinGet, ...) carry protobuf payloads. The SDK does not link a
  * protobuf runtime: the messages are small and flat, so they are encoded and
  * decoded field by field with the helpers below. Everything is bounds-checked

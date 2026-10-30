@@ -4,7 +4,9 @@
 using Google.Protobuf;
 using Microsoft.Azure.Iot.Device.Models.Twin;
 using Microsoft.Azure.Iot.Device.Mqtt;
+using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Provisioning.Models;
+using Microsoft.Azure.Iot.Device.Unified.Connection;
 using Microsoft.Azure.Iot.Device.Unified.Twin;
 using System.Text;
 using System.Text.Json.Nodes;
@@ -21,7 +23,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
         {
             MockFeatureConnectionClient connection = new()
             {
-                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(ConnectionProfile.Classic, DeviceId),
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv3, DeviceId),
             };
             using TwinClient twinClient = new(connection);
 
@@ -54,7 +56,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
         {
             MockFeatureConnectionClient connection = new()
             {
-                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(ConnectionProfile.Classic, DeviceId),
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv3, DeviceId),
             };
             using TwinClient twinClient = new(connection);
 
@@ -84,7 +86,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
         {
             MockFeatureConnectionClient connection = new()
             {
-                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(ConnectionProfile.Classic, DeviceId),
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv3, DeviceId),
             };
             using TwinClient twinClient = new(connection);
 
@@ -105,45 +107,6 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
         }
 
         [Fact]
-        public async Task GetTwinAsync_MqttV5_DelegatesToMqttv5Path()
-        {
-            MockFeatureConnectionClient connection = new()
-            {
-                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(ConnectionProfile.MqttV5, DeviceId),
-            };
-            using TwinClient twinClient = new(connection);
-
-            connection.OnPublish += async (publish) =>
-            {
-                var response = new TwinGetResponse()
-                {
-                    DesiredVersion = 1,
-                    ReportedVersion = 2,
-                    DesiredPayload = ByteString.CopyFromUtf8("{\"fanSpeed\":10}"),
-                    ReportedPayload = ByteString.CopyFromUtf8("{\"temperature\":21}"),
-                };
-
-                var inbound = new MqttPublish()
-                {
-                    Topic = $"ih/{DeviceId}/dev/twin",
-                    Payload = response.ToByteArray(),
-                    CorrelationData = publish.CorrelationData,
-                    QualityOfServiceLevel = MqttQualityOfServiceLevel.AtMostOnce,
-                };
-                inbound.UserProperties.Add(new("type", Encoding.UTF8.GetBytes("get-response:1")));
-                await connection.SimulateReceiveAsync(inbound);
-                return new MqttPublishAck() { ReasonCode = MqttPublishAckReasonCode.Success };
-            };
-
-            DeviceTwin twin = await twinClient.GetTwinAsync(TestContext.Current.CancellationToken);
-
-            MqttPublish getPublish = Assert.Single(connection.PublishedMessages);
-            Assert.Equal($"ih/{DeviceId}/srv/twin", getPublish.Topic);
-            Assert.Equal(1ul, twin.DesiredVersion);
-            Assert.Equal(2ul, twin.ReportedVersion);
-        }
-
-        [Fact]
         public async Task GetTwinAsync_ThrowsWhenDisconnected()
         {
             MockFeatureConnectionClient connection = new();
@@ -154,11 +117,27 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
         }
 
         [Fact]
+        public async Task GetTwinAsync_ThrowsAfterDisconnect()
+        {
+            using MockConnectionMqttClient mqttClient = new();
+            using ConnectionClient connection = new(new() { MqttClient = mqttClient });
+            await connection.ConnectToHubAsync(
+                MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv3, DeviceId),
+                TestContext.Current.CancellationToken);
+            using TwinClient twinClient = new(connection);
+
+            await connection.DisconnectAsync(TestContext.Current.CancellationToken);
+
+            await Assert.ThrowsAsync<NotSupportedException>(
+                async () => await twinClient.GetTwinAsync(TestContext.Current.CancellationToken));
+        }
+
+        [Fact]
         public async Task GetTwinAsync_ThrowsAfterDispose()
         {
             MockFeatureConnectionClient connection = new()
             {
-                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(ConnectionProfile.Classic, DeviceId),
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv3, DeviceId),
             };
             TwinClient twinClient = new(connection);
             twinClient.Dispose();

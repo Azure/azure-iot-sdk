@@ -43,14 +43,14 @@ extern "C"
   } az_iot_mqttv3_twin_client;
 
   /**
-   * @brief Initialize the IoT Hub Classic twin client.
+   * @brief Initialize the MQTTv3 hub twin client.
    *
    * Subscribes `$iothub/twin/res/#` for GET and patch acknowledgements, and
    * `$iothub/twin/PATCH/properties/desired/#` for service-pushed desired
    * updates. Requests correlate on the `$rid` carried in the topic.
    *
    * The connection need not be open: this records that it must resolve to the
-   * Classic profile. Unlike C2D, these topics carry no device id, so they are
+   * MQTTv3 profile. Unlike C2D, these topics carry no device id, so they are
    * known before the connection resolves and no connect-time bind is needed.
    * A connection already known to be MQTT_V5 -- a direct connection, or a DPS
    * one past assignment -- is rejected here with

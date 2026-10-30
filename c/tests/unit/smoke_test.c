@@ -21,10 +21,10 @@ static void mqtt_role_to_required_version(void** state)
   assert_int_equal(
       az_iot_mqtt_required_version_for_role(AZ_IOT_MQTT_ROLE_DPS), AZ_IOT_MQTT_VERSION_3_1_1);
   assert_int_equal(
-      az_iot_mqtt_required_version_for_role(AZ_IOT_MQTT_ROLE_HUB_CLASSIC),
+      az_iot_mqtt_required_version_for_role(AZ_IOT_MQTT_ROLE_HUB_MQTT_V3),
       AZ_IOT_MQTT_VERSION_3_1_1);
   assert_int_equal(
-      az_iot_mqtt_required_version_for_role(AZ_IOT_MQTT_ROLE_HUB_NEXT), AZ_IOT_MQTT_VERSION_5);
+      az_iot_mqtt_required_version_for_role(AZ_IOT_MQTT_ROLE_HUB_MQTT_V5), AZ_IOT_MQTT_VERSION_5);
 }
 
 static void result_to_string_known_codes(void** state)
@@ -49,7 +49,7 @@ static void connection_client_init_deinit_roundtrip(void** state)
 {
   (void)state;
   az_iot_connection_client_options opts = { 0 };
-  opts.client_id = "ut-device";
+  opts.device_id = "ut-device";
   az_iot_connection_client c;
   assert_int_equal(az_iot_connection_client_init(&c, &opts), AZ_IOT_OK);
   az_iot_connection_client_deinit(&c);
