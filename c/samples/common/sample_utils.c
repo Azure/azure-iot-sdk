@@ -1,8 +1,8 @@
-/* Must precede every system header: glibc gates clock_gettime and
- * CLOCK_MONOTONIC on it, and the first header included fixes the choice. */
+/* Must precede every system header: glibc gates clock_gettime, CLOCK_MONOTONIC,
+ * O_NOFOLLOW and fsync on it, and the first header included fixes the choice. */
 #ifndef _WIN32
 #ifndef _POSIX_C_SOURCE
-#define _POSIX_C_SOURCE 200112L
+#define _POSIX_C_SOURCE 200809L
 #endif
 #endif
 
@@ -206,16 +206,15 @@ bool sample_env_to_buffer(const char* name, const char* fallback, char* dst, siz
   return ok;
 }
 
-FILE* sample_fopen_private(const char* path, bool replace)
+/** @brief Open @p path for binary writing, owner-only (0600) on POSIX.
+ *  @p exclusive: create it, failing when the name exists (a link included);
+ *  otherwise create or truncate it. */
+static FILE* open_private(const char* path, bool exclusive)
 {
   FILE* f = NULL;
   int fd;
-  if (!path || (replace && remove(path) != 0 && errno != ENOENT))
-  {
-    return NULL;
-  }
 #ifdef _WIN32
-  int flags = _O_WRONLY | _O_CREAT | _O_BINARY | (replace ? _O_EXCL : _O_TRUNC);
+  int flags = _O_WRONLY | _O_CREAT | _O_BINARY | (exclusive ? _O_EXCL : _O_TRUNC);
   if (_sopen_s(&fd, path, flags, _SH_DENYWR, _S_IREAD | _S_IWRITE) != 0)
   {
     return NULL;
@@ -227,13 +226,13 @@ FILE* sample_fopen_private(const char* path, bool replace)
   }
 #else
   /* O_EXCL fails on any existing name, a symbolic link included. */
-  fd = open(path, O_WRONLY | O_CREAT | (replace ? O_EXCL : O_TRUNC), S_IRUSR | S_IWUSR);
+  fd = open(path, O_WRONLY | O_CREAT | (exclusive ? O_EXCL : O_TRUNC), S_IRUSR | S_IWUSR);
   if (fd < 0)
   {
     return NULL;
   }
   /* open() keeps the mode of a file that already exists. */
-  if (replace || fchmod(fd, S_IRUSR | S_IWUSR) == 0)
+  if (exclusive || fchmod(fd, S_IRUSR | S_IWUSR) == 0)
   {
     f = fdopen(fd, "wb");
   }
@@ -242,7 +241,26 @@ FILE* sample_fopen_private(const char* path, bool replace)
     (void)close(fd);
   }
 #endif
+  if (!f && exclusive)
+  {
+    /* Created by this call: an empty file would block later attempts. */
+    (void)remove(path);
+  }
   return f;
+}
+
+FILE* sample_fopen_private(const char* path, bool replace)
+{
+  if (!path || (replace && remove(path) != 0 && errno != ENOENT))
+  {
+    return NULL;
+  }
+  return open_private(path, replace);
+}
+
+FILE* sample_file_create_private(const char* path)
+{
+  return path != NULL ? open_private(path, true) : NULL;
 }
 
 FILE* sample_fopen_read_nofollow(const char* path)
@@ -274,6 +292,85 @@ FILE* sample_fopen_read_nofollow(const char* path)
     (void)close(fd);
   }
   return f;
+#endif
+}
+
+bool sample_file_flush_to_storage(FILE* file)
+{
+  if (file == NULL || fflush(file) != 0)
+  {
+    return false;
+  }
+#ifdef _WIN32
+  return _commit(_fileno(file)) == 0;
+#else
+  return fsync(fileno(file)) == 0;
+#endif
+}
+
+#ifndef _WIN32
+/** @brief Sync the directory holding @p path, so a rename into it is durable.
+ *  @return true on success. */
+static bool sync_parent_directory(const char* path)
+{
+  const char* last_slash = strrchr(path, '/');
+  char* directory = NULL;
+  if (last_slash == NULL)
+  {
+    directory = dup_cstr(".");
+  }
+  else
+  {
+    size_t length = (last_slash == path) ? 1u : (size_t)(last_slash - path);
+    directory = (char*)malloc(length + 1u);
+    if (directory != NULL)
+    {
+      memcpy(directory, path, length);
+      directory[length] = '\0';
+    }
+  }
+  if (directory == NULL)
+  {
+    return false;
+  }
+  int directory_fd = open(directory, O_RDONLY);
+  free(directory);
+  if (directory_fd < 0)
+  {
+    return false;
+  }
+  bool synced = fsync(directory_fd) == 0;
+  (void)close(directory_fd);
+  return synced;
+}
+#endif
+
+bool sample_file_replace(const char* source_path, const char* destination_path)
+{
+  if (source_path == NULL || destination_path == NULL)
+  {
+    return false;
+  }
+#ifdef _WIN32
+  /* rename() does not replace an existing file on Windows. */
+  return MoveFileExA(
+             source_path, destination_path, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)
+      != 0;
+#else
+  if (rename(source_path, destination_path) != 0)
+  {
+    return false;
+  }
+  /* Replaced: report true whatever follows, so callers never see a failure
+   * while the new file is already the one readers get. */
+  if (!sync_parent_directory(destination_path))
+  {
+    fprintf(
+        stderr,
+        "%s: replaced, but its directory could not be synced to storage\n",
+        destination_path);
+  }
+  return true;
 #endif
 }
 

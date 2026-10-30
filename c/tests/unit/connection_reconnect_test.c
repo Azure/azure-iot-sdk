@@ -867,6 +867,59 @@ static void a_refused_self_scoped_filter_keeps_the_connection(void** state)
   assert_int_equal(az_iot_mock_mqtt_client_count_of(m2, AZ_IOT_MOCK_CALL_SUBSCRIBE), 0);
 }
 
+typedef struct sub_failure_lifecycle_calls
+{
+  az_iot_connection_client* client;
+  int calls;
+  az_iot_result close_result;
+  az_iot_result open_result;
+} sub_failure_lifecycle_calls;
+
+static void close_and_open_on_sub_failed(
+    const char* topic_filter,
+    az_iot_result reason,
+    int32_t protocol_code,
+    const void* owner)
+{
+  (void)topic_filter;
+  (void)reason;
+  (void)protocol_code;
+  sub_failure_lifecycle_calls* r = (sub_failure_lifecycle_calls*)(uintptr_t)owner;
+  r->calls++;
+  r->close_result = az_iot_connection_client_close(r->client);
+  r->open_result = az_iot_connection_client_open(r->client);
+}
+
+/* close() and open() from a self-scoped filter's failure callback, run on a synchronous SUBSCRIBE
+ * failure at CONNECTED, are refused; the session reaches CONNECTED. */
+static void close_and_open_from_a_subscription_failure_callback_are_refused(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  sub_failure_lifecycle_calls r = { fx->client, 0, AZ_IOT_OK, AZ_IOT_OK };
+  assert_int_equal(
+      az_iot_connection_client_register_mqtt_factory(fx->client, fx->factory), AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_connection_client__add_subscription_on_connect(
+          fx->client,
+          "custom/topic/#",
+          AZ_IOT_MQTT_QOS_1,
+          &r,
+          AZ_IOT_SUBSCRIPTION_FAILS_SELF,
+          close_and_open_on_sub_failed),
+      AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  az_iot_mock_mqtt_client_set_next_result(m, AZ_IOT_MOCK_CALL_SUBSCRIBE, AZ_IOT_ERR_MQTT);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+
+  assert_int_equal(r.calls, 1);
+  assert_int_equal(r.close_result, AZ_IOT_ERR_BUSY);
+  assert_int_equal(r.open_result, AZ_IOT_ERR_BUSY);
+  assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_CONNECTED);
+  assert_true(az_iot_connection_client__is_connected(fx->client));
+}
+
 /* A broker that accepts the connection and then never answers the SUBSCRIBE
  * cannot be caught by keep-alive, because the link is alive. Silence is not a
  * refusal, so the deadline retries rather than faulting terminally. */
@@ -1665,6 +1718,10 @@ int main(void)
         a_failed_subscribe_call_reconnects, setup_two_attempts, teardown),
     cmocka_unit_test_setup_teardown(
         a_refused_self_scoped_filter_keeps_the_connection, setup_two_attempts, teardown),
+    cmocka_unit_test_setup_teardown(
+        close_and_open_from_a_subscription_failure_callback_are_refused,
+        setup_two_attempts,
+        teardown),
     cmocka_unit_test_setup_teardown(
         a_gate_that_is_never_acked_times_out, setup_two_attempts, teardown),
     cmocka_unit_test_setup_teardown(

@@ -51,13 +51,45 @@ static bool ci_starts_with(const uint8_t* line, int line_len, const char* prefix
   return true;
 }
 
-/* Parse the status line, Content-Length and Retry-After once the header terminator is present. */
+/** @brief Parses the status code of "HTTP/1.1 <code> <reason>" once its line has arrived. */
+static void parse_status_line(e2e_http_request* r)
+{
+  if (r->http_status != 0)
+  {
+    return;
+  }
+  int line_end = -1;
+  for (int i = 0; i + 1 < r->response_len; i++)
+  {
+    if (r->response[i] == '\r' && r->response[i + 1] == '\n')
+    {
+      line_end = i;
+      break;
+    }
+  }
+  for (int i = 0; i < line_end && i < 16; i++)
+  {
+    if (r->response[i] == ' ')
+    {
+      if (i + 3 < line_end)
+      {
+        r->http_status = (r->response[i + 1] - '0') * 100 + (r->response[i + 2] - '0') * 10
+            + (r->response[i + 3] - '0');
+      }
+      break;
+    }
+  }
+}
+
+/* Parse the status line once it is present, then Content-Length and Retry-After once
+ * the header terminator is. */
 void e2e_http_parse_headers(e2e_http_request* r)
 {
   if (r->headers_done)
   {
     return;
   }
+  parse_status_line(r);
 
   int header_end = -1;
   for (int i = 0; i + 3 < r->response_len; i++)
@@ -75,17 +107,6 @@ void e2e_http_parse_headers(e2e_http_request* r)
   }
   r->headers_done = true;
   r->body_start = header_end + 4;
-
-  /* Status line: "HTTP/1.1 <code> <reason>". */
-  for (int i = 0; i < r->response_len && i < 16; i++)
-  {
-    if (r->response[i] == ' ' && i + 3 < r->response_len)
-    {
-      r->http_status = (r->response[i + 1] - '0') * 100 + (r->response[i + 2] - '0') * 10
-          + (r->response[i + 3] - '0');
-      break;
-    }
-  }
 
   /* Header lines, the last one ending with the CRLF at header_end. */
   int line_start = 0;
@@ -416,6 +437,12 @@ int e2e_http_poll(e2e_http_request* r)
       if (status == AZ_AMQP_TRANSPORT_STATUS_CLOSED)
       {
         e2e_http_parse_headers(r);
+        if (!r->headers_done)
+        {
+          r->phase = E2E_HTTP_PHASE_FAILED;
+          r->err = "http: connection closed before the response headers";
+          return -1;
+        }
         r->phase = E2E_HTTP_PHASE_DONE;
         return 1;
       }
@@ -470,6 +497,30 @@ const uint8_t* e2e_http_body(const e2e_http_request* r, int* out_len)
 }
 
 const char* e2e_http_error(const e2e_http_request* r) { return r->err; }
+
+const char* e2e_http_phase_name(e2e_http_phase phase)
+{
+  switch (phase)
+  {
+    case E2E_HTTP_PHASE_CONNECTING:
+      return "connecting";
+    case E2E_HTTP_PHASE_WRITING:
+      return "sending";
+    case E2E_HTTP_PHASE_READING:
+      return "reading";
+    case E2E_HTTP_PHASE_DONE:
+      return "done";
+    case E2E_HTTP_PHASE_FAILED:
+    default:
+      return "failed";
+  }
+}
+
+bool e2e_http_retry_is_safe(const e2e_http_request* r, bool idempotent)
+{
+  return r->phase != E2E_HTTP_PHASE_DONE && r->http_status == 0
+      && (r->request_sent == 0 || idempotent);
+}
 
 void e2e_http_end(e2e_http_request* r)
 {

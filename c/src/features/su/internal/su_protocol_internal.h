@@ -172,6 +172,14 @@ extern "C"
       size_t* out_len);
 
   /**
+   * @brief Whether @p outcome and @p origin are a pair the contract allows.
+   *
+   * Both must be defined values, and @p origin is NOT_APPLICABLE exactly when
+   * @p outcome is not FAILED.
+   */
+  bool az_iot_su__outcome_is_valid(az_iot_su_outcome outcome, az_iot_su_failure_origin origin);
+
+  /**
    * Build a status report body.
    *
    * workflowId is the sole correlation key. installedUpdateId is dropped from the

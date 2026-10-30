@@ -65,7 +65,7 @@ az_iot_log_level su_sample_log_level_from_env(void)
 static const char* const k_su_state_names[] = {
   "Idle",           "ManifestReceived", "VerifyingManifest", "DownloadStarted", "DownloadComplete",
   "BackupStarted",  "BackupComplete",   "InstallStarted",    "InstallComplete", "ApplyStarted",
-  "RestoreStarted", "Failed",
+  "RestoreStarted", "Failed",           "Delegated",
 };
 static const char* const k_su_operation_names[] = {
   "onboarding update check",
@@ -265,7 +265,7 @@ int32_t save_update_workflow_to_file(const uint8_t* blob, size_t len, void* user
 int32_t load_update_workflow_from_file(uint8_t* blob, size_t cap, size_t* out_len, void* user_ctx)
 {
   su_simulation_control* s = (su_simulation_control*)user_ctx;
-  FILE* f = fopen(s->state_file, "rb");
+  FILE* f = sample_fopen_read_nofollow(s->state_file);
   if (f == NULL)
   {
     return 1; /* nothing persisted */

@@ -15,3 +15,7 @@ vcpkg_installed/
 /tests/manual/.certs/
 /tests/manual/.env-mqttv5/
 /tests/manual/.client-env.ps1
+
+# Written by unit tests run from c/ instead of the build tree.
+/az_iot_sample_test_*.pem
+/sample_utils_test_*.tmp

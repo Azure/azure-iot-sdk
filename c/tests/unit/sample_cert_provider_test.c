@@ -8,6 +8,9 @@
 #ifndef _CRT_SECURE_NO_WARNINGS
 #define _CRT_SECURE_NO_WARNINGS
 #endif
+#if !defined(_WIN32) && !defined(_POSIX_C_SOURCE)
+#define _POSIX_C_SOURCE 200809L /* umask, chmod, geteuid, setrlimit */
+#endif
 
 #include "sample_cert_provider.h"
 #include "sample_csr_backend.h"
@@ -21,6 +24,13 @@
 #include <string.h>
 
 #include <cmocka.h>
+
+#if !defined(_WIN32)
+#include <signal.h>
+#include <sys/resource.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
 
 #include <openssl/evp.h>
 #include <openssl/pem.h>
@@ -384,6 +394,96 @@ static void sample_init_uses_a_stored_chain_only_for_its_key(void** state)
   remove_test_files();
 }
 
+static void sample_csr_generates_an_owner_only_key(void** state)
+{
+  (void)state;
+  remove_test_files();
+  char* csr = NULL;
+#if !defined(_WIN32)
+  /* A umask that leaves fopen()'s files readable by everyone. */
+  mode_t previous_umask = umask(022);
+#endif
+  assert_int_equal(0, sample_csr_backend_get_csr(OP_KEY, "device", &csr));
+  assert_non_null(csr);
+  free(csr);
+#if !defined(_WIN32)
+  (void)umask(previous_umask);
+  struct stat st;
+  assert_int_equal(0, stat(OP_KEY, &st));
+  assert_int_equal(0600, st.st_mode & 0777);
+#endif
+  EVP_PKEY* key = read_key(OP_KEY);
+  /* The same key is loaded, not generated again, on the next call. */
+  assert_int_equal(0, sample_csr_backend_get_csr(OP_KEY, "device", &csr));
+  free(csr);
+  EVP_PKEY* again = read_key(OP_KEY);
+  assert_int_equal(1, EVP_PKEY_eq(key, again));
+  EVP_PKEY_free(again);
+  EVP_PKEY_free(key);
+  remove_test_files();
+}
+
+static void sample_csr_does_not_replace_a_key_it_cannot_load(void** state)
+{
+  (void)state;
+  remove_test_files();
+  char* csr = NULL;
+  /* Present but not a key: an error, and the file is left as it was. */
+  write_text(OP_KEY, "not a key");
+  assert_int_not_equal(0, sample_csr_backend_get_csr(OP_KEY, "device", &csr));
+  FILE* f = fopen(OP_KEY, "rb");
+  assert_non_null(f);
+  char contents[16] = { 0 };
+  assert_int_equal(9, fread(contents, 1, sizeof(contents) - 1, f));
+  assert_int_equal(0, fclose(f));
+  assert_string_equal("not a key", contents);
+#if !defined(_WIN32)
+  /* A real key the process cannot read (mode 0000; root reads it anyway). */
+  if (geteuid() != 0)
+  {
+    EVP_PKEY* key = new_key();
+    remove_test_files();
+    write_key(OP_KEY, key);
+    assert_int_equal(0, chmod(OP_KEY, 0));
+    assert_int_not_equal(0, sample_csr_backend_get_csr(OP_KEY, "device", &csr));
+    assert_int_equal(0, chmod(OP_KEY, 0600));
+    EVP_PKEY* kept = read_key(OP_KEY);
+    assert_int_equal(1, EVP_PKEY_eq(key, kept));
+    EVP_PKEY_free(kept);
+    EVP_PKEY_free(key);
+  }
+#endif
+  remove_test_files();
+}
+
+static void sample_csr_removes_a_key_it_failed_to_write(void** state)
+{
+  (void)state;
+#if !defined(_WIN32)
+  remove_test_files();
+  char* csr = NULL;
+  /* Files may not exceed 16 bytes: the PEM write fails part way. */
+  struct rlimit previous;
+  assert_int_equal(0, getrlimit(RLIMIT_FSIZE, &previous));
+  struct rlimit limited = previous;
+  limited.rlim_cur = 16;
+  void (*previous_handler)(int) = signal(SIGXFSZ, SIG_IGN);
+  assert_int_equal(0, setrlimit(RLIMIT_FSIZE, &limited));
+  int rc = sample_csr_backend_get_csr(OP_KEY, "device", &csr);
+  assert_int_equal(0, setrlimit(RLIMIT_FSIZE, &previous));
+  (void)signal(SIGXFSZ, previous_handler);
+  assert_int_not_equal(0, rc);
+
+  /* Nothing left behind, so the next attempt can create the key. */
+  FILE* f = fopen(OP_KEY, "rb");
+  assert_null(f);
+  assert_int_equal(0, sample_csr_backend_get_csr(OP_KEY, "device", &csr));
+  free(csr);
+  remove_test_files();
+#endif
+  /* Windows has no portable way to cut a write short; the POSIX runs cover it. */
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -393,6 +493,9 @@ int main(void)
     cmocka_unit_test(sample_cert_entry_bound_is_64_kib),
     cmocka_unit_test(sample_store_checks_the_key_and_writes_both_forms),
     cmocka_unit_test(sample_init_uses_a_stored_chain_only_for_its_key),
+    cmocka_unit_test(sample_csr_generates_an_owner_only_key),
+    cmocka_unit_test(sample_csr_does_not_replace_a_key_it_cannot_load),
+    cmocka_unit_test(sample_csr_removes_a_key_it_failed_to_write),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }

@@ -3049,82 +3049,6 @@ static void a_close_during_the_disconnect_settles_idle_at_its_bound(void** state
   assert_int_equal(count_states(AZ_IOT_CONN_STATE_FAULTED, AZ_IOT_ERR_TIMEOUT), 0);
 }
 
-static void close_from_session_end(const az_iot_connection_feature_event* event, void* user_ctx)
-{
-  (void)event;
-  (void)az_iot_connection_client_close((az_iot_connection_client*)user_ctx);
-}
-
-/* A close() from a session-end callback during the timeout's fault teardown is kept: IDLE. */
-static void a_close_from_a_teardown_callback_is_kept(void** state)
-{
-  fixture* fx = (fixture*)*state;
-  open_to_push_expected(fx);
-  assert_int_equal(
-      az_iot_connection_client__add_feature_observer(
-          &fx->conn,
-          AZ_IOT_CONNECTION_FEATURE_EVENT_SESSION_END,
-          close_from_session_end,
-          &fx->conn),
-      AZ_IOT_OK);
-  expire_twin_push_wait(fx);
-  assert_int_equal(
-      az_iot_connection_client_get_state(&fx->conn, AZ_IOT_CONN_SCOPE_HUB), AZ_IOT_CONN_STATE_IDLE);
-  assert_int_equal(count_states(AZ_IOT_CONN_STATE_FAULTED, AZ_IOT_ERR_TIMEOUT), 0);
-}
-
-static void reopen_from_session_end(const az_iot_connection_feature_event* event, void* user_ctx)
-{
-  (void)event;
-  az_iot_connection_client* conn = (az_iot_connection_client*)user_ctx;
-  az_iot_connection_client__remove_feature_observer(conn, reopen_from_session_end, conn);
-  (void)az_iot_connection_client_close(conn);
-  assert_int_equal(az_iot_connection_client_open(conn), AZ_IOT_OK);
-}
-
-/* A reopen from a session-end callback while close() settles a planned end at its bound is kept:
- * the new attempt is not overwritten with IDLE. */
-static void a_reopen_while_a_closed_planned_end_settles_is_kept(void** state)
-{
-  fixture* fx = (fixture*)*state;
-  open_to_push_expected(fx);
-  expire_twin_push_wait_to_disconnect(fx);
-  assert_int_equal(az_iot_connection_client_close(&fx->conn), AZ_IOT_OK);
-  assert_int_equal(
-      az_iot_connection_client__add_feature_observer(
-          &fx->conn,
-          AZ_IOT_CONNECTION_FEATURE_EVENT_SESSION_END,
-          reopen_from_session_end,
-          &fx->conn),
-      AZ_IOT_OK);
-  az_iot_connection_client__planned_hub_session_end_force_timeout(&fx->conn);
-  assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
-  assert_int_equal(
-      az_iot_connection_client_get_state(&fx->conn, AZ_IOT_CONN_SCOPE_HUB),
-      AZ_IOT_CONN_STATE_CONNECTING);
-}
-
-/* As above, when the planned end's DISCONNECTED completes it after close(). */
-static void a_reopen_while_a_closed_planned_end_completes_is_kept(void** state)
-{
-  fixture* fx = (fixture*)*state;
-  open_to_push_expected(fx);
-  expire_twin_push_wait_to_disconnect(fx);
-  assert_int_equal(az_iot_connection_client_close(&fx->conn), AZ_IOT_OK);
-  assert_int_equal(
-      az_iot_connection_client__add_feature_observer(
-          &fx->conn,
-          AZ_IOT_CONNECTION_FEATURE_EVENT_SESSION_END,
-          reopen_from_session_end,
-          &fx->conn),
-      AZ_IOT_OK);
-  assert_true(az_iot_mock_mqtt_client_inject_disconnected(fx->mock));
-  assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
-  assert_int_equal(
-      az_iot_connection_client_get_state(&fx->conn, AZ_IOT_CONN_SCOPE_HUB),
-      AZ_IOT_CONN_STATE_CONNECTING);
-}
-
 /* The connection's do_work() wakes for the twin-push deadline: its adapter wait is bounded by it.
  */
 static void the_connection_wait_is_bounded_by_the_twin_push_wait(void** state)
@@ -3146,55 +3070,6 @@ static void the_twin_do_work_does_not_end_the_session(void** state)
   az_iot_mqttv5_twin_client__twin_push_force_timeout(&fx->twin);
   assert_int_equal(az_iot_mqttv5_twin_client_do_work(&fx->twin), AZ_IOT_OK);
   assert_int_equal(az_iot_mock_mqtt_client_count_of(fx->mock, AZ_IOT_MOCK_CALL_DISCONNECT), 0);
-}
-
-static void close_on_get_response(
-    az_iot_result status,
-    const az_iot_mqttv5_twin_state* twin,
-    void* user_ctx)
-{
-  (void)status;
-  (void)twin;
-  (void)az_iot_connection_client_close((az_iot_connection_client*)user_ctx);
-}
-
-/* A close() from a callback in the same batch as the DISCONNECTED settles IDLE, not the timeout. */
-static void a_close_after_the_disconnect_in_one_batch_settles_idle(void** state)
-{
-  fixture* fx = (fixture*)*state;
-  open_to_push_expected(fx);
-  assert_int_equal(
-      az_iot_mqttv5_twin_client_get(&fx->twin, close_on_get_response, &fx->conn), AZ_IOT_OK);
-  const az_iot_mock_call* pub = find_publish(fx->mock, TWIN_SRV_TOPIC);
-  assert_non_null(pub);
-  uint8_t corr[16];
-  memcpy(corr, pub->correlation_data, sizeof(corr));
-  expire_twin_push_wait_to_disconnect(fx);
-
-  az_iot_mock_mqtt_client_set_events_per_loop(fx->mock, 2);
-  assert_true(az_iot_mock_mqtt_client_inject_disconnected(fx->mock));
-  az_iot_mqtt_user_property type = { "type", "get-response:1" };
-  const uint8_t body[] = { 0x08, 0x01, 0x10, 0x01 };
-  az_iot_mqtt_message msg;
-  memset(&msg, 0, sizeof(msg));
-  msg.topic = TWIN_DEV_TOPIC;
-  msg.payload = body;
-  msg.payload_len = sizeof(body);
-  msg.correlation_data = corr;
-  msg.correlation_data_len = sizeof(corr);
-  msg.content_type = "application/protobuf";
-  msg.user_properties = az_iot_mqtt_user_properties_from_array(&type, 1);
-  az_iot_mqtt_event evt;
-  memset(&evt, 0, sizeof(evt));
-  evt.kind = AZ_IOT_MQTT_EVT_MESSAGE;
-  evt.message = &msg;
-  assert_true(az_iot_mock_mqtt_client_inject_event(fx->mock, &evt));
-  assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
-
-  assert_int_equal(
-      az_iot_connection_client_get_state(&fx->conn, AZ_IOT_CONN_SCOPE_HUB), AZ_IOT_CONN_STATE_IDLE);
-  assert_int_equal(count_states(AZ_IOT_CONN_STATE_FAULTED, AZ_IOT_ERR_TIMEOUT), 0);
-  assert_int_equal(count_states(AZ_IOT_CONN_STATE_IDLE, AZ_IOT_OK), 1);
 }
 
 /* An adapter ERROR after close() took over the DISCONNECT settles IDLE, not FAULTED. */
@@ -3432,25 +3307,11 @@ int main(void)
         setup_push_desired_reconnect,
         teardown),
     cmocka_unit_test_setup_teardown(
-        a_close_from_a_teardown_callback_is_kept, setup_push_desired_no_policy, teardown),
-    cmocka_unit_test_setup_teardown(
-        a_reopen_while_a_closed_planned_end_settles_is_kept,
-        setup_push_desired_reconnect,
-        teardown),
-    cmocka_unit_test_setup_teardown(
-        a_reopen_while_a_closed_planned_end_completes_is_kept,
-        setup_push_desired_reconnect,
-        teardown),
-    cmocka_unit_test_setup_teardown(
         the_connection_wait_is_bounded_by_the_twin_push_wait,
         setup_push_desired_reconnect,
         teardown),
     cmocka_unit_test_setup_teardown(
         the_twin_do_work_does_not_end_the_session, setup_push_desired_reconnect, teardown),
-    cmocka_unit_test_setup_teardown(
-        a_close_after_the_disconnect_in_one_batch_settles_idle,
-        setup_push_desired_no_policy,
-        teardown),
     cmocka_unit_test_setup_teardown(
         no_wait_when_no_requested_section_is_out_of_sync, setup_push_desired_reconnect, teardown),
     cmocka_unit_test_setup_teardown(

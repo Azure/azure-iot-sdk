@@ -298,6 +298,9 @@ static void on_su_event(const az_iot_su_event* event, void* user_ctx)
           "Workflow completed; final report %s.\n",
           event->reason == AZ_IOT_OK ? "accepted" : "rejected by the service");
       break;
+    case AZ_IOT_SU_EVENT_UPDATE_AVAILABLE:
+      /* Library mode only; this sample runs the managed client. */
+      break;
   }
 }
 
