@@ -184,7 +184,7 @@ static az_iot_result try_send(az_iot_delivery_tracker* t, az_iot_delivery_tracke
   bool track = message.qos != AZ_IOT_MQTT_QOS_0;
   if (track && !may_take_slot(t, profile->priority))
   {
-    if (profile->on_session_loss != AZ_IOT_DELIVERY_TRACKER_ON_SESSION_LOSS_DROP)
+    if (!profile->send_untracked_without_slot)
     {
       return NO_SLOT_FOR_PRIORITY;
     }
@@ -207,6 +207,10 @@ static az_iot_result try_send(az_iot_delivery_tracker* t, az_iot_delivery_tracke
   if (result != AZ_IOT_OK)
   {
     return result;
+  }
+  if (profile->on_sent != NULL)
+  {
+    profile->on_sent(TI(t).owner_context, index_of(t, e));
   }
   if (track)
   {
@@ -605,5 +609,13 @@ void az_iot_delivery_tracker__cancel(az_iot_delivery_tracker* tracker, size_t en
     forget_publish(e);
     memset(e, 0, sizeof(*e));
     flush_if_still_bound(tracker, binding_of(tracker));
+  }
+}
+
+void az_iot_delivery_tracker__expire_due(az_iot_delivery_tracker* tracker)
+{
+  if (tracker != NULL && TI(tracker).connection != NULL)
+  {
+    for_each_entry(tracker, ENTRY_FREE, has_expired, expire);
   }
 }

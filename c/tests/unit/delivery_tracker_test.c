@@ -48,6 +48,7 @@ typedef struct fixture
   az_iot_result failing_send_result;
   completion completions[16];
   size_t completion_count;
+  int sent_count;
   bool unbind_on_complete;
   /* Once, when set: submit two messages with this profile (after unbind, init, bind when
    * rebind_first). */
@@ -126,22 +127,23 @@ static void on_complete(
   }
 }
 
-#define PROFILE(name, confirm, policy, prio)        \
-  static const az_iot_delivery_tracker_profile name \
-      = {                                           \
-          #name,                                    \
-          AZ_IOT_DELIVERY_TRACKER_##confirm,        \
-          AZ_IOT_DELIVERY_TRACKER_##policy,         \
-          prio,                                     \
-          encode,                                   \
-          on_complete,                              \
-        }
-PROFILE(k_resend, CONFIRM_BY_PUBACK, ON_SESSION_LOSS_RESEND, 0);
-PROFILE(k_fail, CONFIRM_BY_PUBACK, ON_SESSION_LOSS_FAIL, 0);
-PROFILE(k_response, CONFIRM_BY_RESPONSE, ON_SESSION_LOSS_FAIL, 0);
-PROFILE(k_response_resend, CONFIRM_BY_RESPONSE, ON_SESSION_LOSS_RESEND, 0);
-PROFILE(k_low_resend, CONFIRM_BY_PUBACK, ON_SESSION_LOSS_RESEND, 1);
-PROFILE(k_low_drop, CONFIRM_BY_PUBACK, ON_SESSION_LOSS_DROP, 1);
+#define PROFILE(name, confirm, policy, prio, untracked) \
+  static const az_iot_delivery_tracker_profile name = { \
+    #name,                                              \
+    AZ_IOT_DELIVERY_TRACKER_##confirm,                  \
+    AZ_IOT_DELIVERY_TRACKER_##policy,                   \
+    prio,                                               \
+    untracked,                                          \
+    encode,                                             \
+    on_complete,                                        \
+    NULL,                                               \
+  }
+PROFILE(k_resend, CONFIRM_BY_PUBACK, ON_SESSION_LOSS_RESEND, 0, false);
+PROFILE(k_fail, CONFIRM_BY_PUBACK, ON_SESSION_LOSS_FAIL, 0, false);
+PROFILE(k_response, CONFIRM_BY_RESPONSE, ON_SESSION_LOSS_FAIL, 0, false);
+PROFILE(k_response_resend, CONFIRM_BY_RESPONSE, ON_SESSION_LOSS_RESEND, 0, false);
+PROFILE(k_low_resend, CONFIRM_BY_PUBACK, ON_SESSION_LOSS_RESEND, 1, false);
+PROFILE(k_low_untracked, CONFIRM_BY_PUBACK, ON_SESSION_LOSS_RESEND, 1, true);
 
 static void do_work(fixture* fx) { (void)az_iot_connection_client_do_work(&fx->connection, 0); }
 
@@ -427,7 +429,7 @@ static void held_messages_go_out_by_priority_then_age(void** state)
 }
 
 /* With 2 slots and 1 kept for priority 0, priority 1 holds at most one; priority 0 still gets
- * one; a DROP message with no slot goes out untracked. */
+ * one; a send_untracked_without_slot message with no slot goes out untracked. */
 static void priority_zero_keeps_its_guaranteed_slot(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -437,7 +439,7 @@ static void priority_zero_keeps_its_guaranteed_slot(void** state)
   assert_int_equal(publish_count(fx), 1);
   (void)submit(fx, &k_resend, 3u, 0u);
   assert_int_equal(publish_count(fx), 2);
-  size_t const notice = submit(fx, &k_low_drop, 4u, 0u);
+  size_t const notice = submit(fx, &k_low_untracked, 4u, 0u);
   assert_int_equal(publish_count(fx), 3);
   assert_completed(fx, 0, notice, AZ_IOT_DELIVERY_TRACKER_OUTCOME_DELIVERED);
   /* Priority 0 freeing its slot does not admit the held priority-1 message (that slot stays
@@ -580,8 +582,10 @@ static const az_iot_delivery_tracker_profile k_second = {
   AZ_IOT_DELIVERY_TRACKER_CONFIRM_BY_PUBACK,
   AZ_IOT_DELIVERY_TRACKER_ON_SESSION_LOSS_FAIL,
   0u,
+  false,
   encode_second,
   submit_to_first_on_complete,
+  NULL,
 };
 
 /* A submit from a later observer's TICK does not resend, in the same do_work(), a message a
@@ -853,6 +857,49 @@ static void an_identity_change_keeps_replacements_in_a_later_tracker(void** stat
   assert_non_null(later_entries[1]._internal.profile);
   az_iot_delivery_tracker__unbind(&later);
 }
+
+static void count_sent(void* owner_context, size_t entry_index)
+{
+  (void)entry_index;
+  ++((fixture*)owner_context)->sent_count;
+}
+
+static const az_iot_delivery_tracker_profile k_counted = {
+  "counted",
+  AZ_IOT_DELIVERY_TRACKER_CONFIRM_BY_PUBACK,
+  AZ_IOT_DELIVERY_TRACKER_ON_SESSION_LOSS_RESEND,
+  0u,
+  false,
+  encode,
+  on_complete,
+  count_sent,
+};
+
+/* on_sent reports each publish of a message, and nothing while it waits. */
+static void on_sent_reports_each_publish(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  (void)submit(fx, &k_counted, 1u, 0u);
+  assert_int_equal(fx->sent_count, 0);
+  connect(fx);
+  assert_int_equal(fx->sent_count, 1);
+  lose_session(fx);
+  connect(fx);
+  assert_int_equal(fx->sent_count, 2);
+}
+
+/* expire_due() completes what has expired without waiting for a TICK. */
+static void expire_due_completes_expired_messages_now(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  size_t const expired = submit(fx, &k_resend, 1u, 60000u);
+  (void)submit(fx, &k_resend, 2u, 60000u);
+  az_iot_deadline__expire_now(&fx->entries[expired]._internal.deadline);
+  az_iot_delivery_tracker__expire_due(&fx->tracker);
+  assert_int_equal(fx->completion_count, 1);
+  assert_completed(fx, 0, expired, AZ_IOT_DELIVERY_TRACKER_OUTCOME_EXPIRED);
+  az_iot_delivery_tracker__expire_due(NULL);
+}
 /* A send the adapter refuses does not hold back the message a PUBACK error requeued: it goes out
  * from the next do_work(). */
 static void a_busy_adapter_does_not_hold_back_a_requeued_message(void** state)
@@ -955,6 +1002,8 @@ int main(void)
     cmocka_unit_test_setup_teardown(a_nested_refusal_ends_the_outer_flush, setup, teardown),
     cmocka_unit_test_setup_teardown(
         an_identity_change_keeps_replacements_in_a_later_tracker, setup, teardown),
+    cmocka_unit_test_setup_teardown(on_sent_reports_each_publish, setup, teardown),
+    cmocka_unit_test_setup_teardown(expire_due_completes_expired_messages_now, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_busy_adapter_does_not_hold_back_a_requeued_message, setup, teardown),
     cmocka_unit_test_setup_teardown(arguments_capacity_and_binding, setup, teardown),

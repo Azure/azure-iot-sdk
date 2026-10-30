@@ -18,6 +18,7 @@
 #ifndef AZ_IOT_DELIVERY_TRACKER_INTERNAL_H
 #define AZ_IOT_DELIVERY_TRACKER_INTERNAL_H
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -43,8 +44,6 @@ extern "C"
   {
     AZ_IOT_DELIVERY_TRACKER_ON_SESSION_LOSS_FAIL = 1, /**< Completes as SESSION_LOST. */
     AZ_IOT_DELIVERY_TRACKER_ON_SESSION_LOSS_RESEND = 2, /**< Sent again on a later session. */
-    /** Completes as SESSION_LOST; sent untracked when no PUBACK slot is free. */
-    AZ_IOT_DELIVERY_TRACKER_ON_SESSION_LOSS_DROP = 3,
   } az_iot_delivery_tracker_session_loss_policy;
 
   /** @brief Final outcome of a tracked message. */
@@ -66,6 +65,8 @@ extern "C"
     az_iot_delivery_tracker_confirmation confirmation;
     az_iot_delivery_tracker_session_loss_policy on_session_loss;
     uint8_t priority; /**< 0 first: orders sends and PUBACK slots. */
+    /** With no PUBACK slot for it, sent once untracked (completes as DELIVERED) instead of held. */
+    bool send_untracked_without_slot;
     /**
      * @brief Fill @p out for entry @p entry_index; called at each send.
      * @return AZ_IOT_OK, or an error that discards the message.
@@ -80,6 +81,11 @@ extern "C"
         size_t entry_index,
         az_iot_delivery_tracker_outcome outcome,
         const az_iot_publish_result* detail);
+    /**
+     * @brief Optional: entry @p entry_index was just published (it may be sent again). Only record
+     *        it: no tracker call.
+     */
+    void (*on_sent)(void* owner_context, size_t entry_index);
   } az_iot_delivery_tracker_profile;
 
   /**
@@ -149,6 +155,12 @@ extern "C"
    *        messages the freed capacity lets go are sent.
    */
   void az_iot_delivery_tracker__cancel(az_iot_delivery_tracker* tracker, size_t entry_index);
+
+  /**
+   * @brief Complete as EXPIRED every message whose time limit has passed, as the next TICK would.
+   *        For an owner about to need the entries back.
+   */
+  void az_iot_delivery_tracker__expire_due(az_iot_delivery_tracker* tracker);
 
 #ifdef __cplusplus
 }

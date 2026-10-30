@@ -295,7 +295,8 @@ target_include_directories(az_iot_tests_mqttv5_direct_method_client_tuned PRIVAT
     ${PROJECT_SOURCE_DIR}/src/core
     ${PROJECT_SOURCE_DIR}/src/mqttv5)
 target_compile_definitions(az_iot_tests_mqttv5_direct_method_client_tuned PRIVATE
-    AZ_IOT_MQTTV5_DM_MAX_CONCURRENT=2)
+    AZ_IOT_MQTTV5_DM_MAX_CONCURRENT=2
+    AZ_IOT_MQTTV5_DM_NOTICE_QUEUE_MAX=4)
 if(UNIX)
     target_compile_definitions(az_iot_tests_mqttv5_direct_method_client_tuned PRIVATE
         _POSIX_C_SOURCE=200809L)
