@@ -44,8 +44,9 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
         /// <param name="publish">The publish to send.</param>
         /// <param name="cancellationToken">The cancellation token.</param>
         /// <returns>
-        /// The PUBACK as received from IoT hub. This method does not throw if the PUBACK reports an error, so check its
-        /// reason code(s) to see whether IoT hub accepted the request.
+        /// For QoS 1, the PUBACK received from IoT hub. Error reason codes are returned without throwing and must
+        /// be checked by the caller. For QoS 0, no PUBACK is received, and the returned result does not confirm
+        /// that IoT hub accepted the request.
         /// </returns>
         Task<MqttPublishAck> PublishAsync(MqttPublish publish, CancellationToken cancellationToken = default);
 
