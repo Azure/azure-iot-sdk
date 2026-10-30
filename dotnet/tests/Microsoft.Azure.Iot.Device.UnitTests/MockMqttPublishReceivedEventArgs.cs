@@ -14,10 +14,13 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
         public int AcknowledgeCount { get; private set; }
 
+        /// <summary>The task returned by <see cref="AcknowledgeAsync"/>, so tests can hold an acknowledgment in flight.</summary>
+        public Task AcknowledgeResult { get; set; } = Task.CompletedTask;
+
         public override Task AcknowledgeAsync(CancellationToken cancellationToken)
         {
             AcknowledgeCount++;
-            return Task.CompletedTask;
+            return AcknowledgeResult;
         }
     }
 }

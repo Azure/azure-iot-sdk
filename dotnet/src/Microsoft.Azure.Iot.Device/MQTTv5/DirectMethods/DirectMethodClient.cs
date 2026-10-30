@@ -31,20 +31,30 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods
         private readonly Dictionary<Guid, DirectMethodRequestState> _directMethodRequests = new();
         private readonly object _directMethodRequestsLock = new();
 
+        // Consumed requests ordered by the probe deadline at which they may be forgotten, so that expiring them doesn't require scanning every
+        // request. An entry may be stale (its request was removed, replaced, or its deadline was extended), so it is re-validated when dequeued.
+        private readonly PriorityQueue<(Guid RequestId, DirectMethodRequestState State), long> _consumedDirectMethodRequestExpirations = new();
+
         private sealed class DirectMethodRequestState
         {
-            public DirectMethodRequestState(string methodName, Task<ProbeAck?> decision, long probeDeadlineTimestamp)
+            private readonly TaskCompletionSource<ProbeAck?> _decision = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+            public DirectMethodRequestState(string methodName, uint responseTimeoutSeconds, long probeDeadlineTimestamp)
             {
                 MethodName = methodName;
-                Decision = decision;
+                ResponseTimeoutSeconds = responseTimeoutSeconds;
                 ProbeDeadlineTimestamp = probeDeadlineTimestamp;
             }
 
             public string MethodName { get; }
 
+            public uint ResponseTimeoutSeconds { get; }
+
             // The decision of the application's probe handler. Duplicate probes share this decision rather than invoking the application again.
-            // The decision is null if the handler threw.
-            public Task<ProbeAck?> Decision { get; }
+            // The decision is null if the handler threw or returned no probe ack.
+            public Task<ProbeAck?> Decision => _decision.Task;
+
+            public void SetDecision(ProbeAck? decision) => _decision.TrySetResult(decision);
 
             // Set once a probe ack that signals readiness is about to be sent. An Exec message for this request must reference this ready Id.
             public ByteString? ReadyId { get; set; }
@@ -55,7 +65,13 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods
 
             // The Stopwatch timestamp after which no probe for this request can still be delivered.
             public long ProbeDeadlineTimestamp { get; set; }
+
+            // The number of received probes for this request that are still being handled. The request stays registered while any of them are,
+            // so that they all share this request's decision and no probe can replace this request with a new one.
+            public int InFlightProbes { get; set; }
         }
+
+        private sealed record ProbeRegistration(Guid RequestId, Probe Probe, DirectMethodRequestState State, bool IsOwner, long DeadlineTimestamp);
 
         private IConnectionClient _connection;
 
@@ -161,190 +177,37 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods
                 return;
             }
 
-            // All MQTTv5 Hub direct method messages are QoS 1, so ack immediately upon recognizing the message as one
-            await args.AcknowledgeAsync(CancellationToken.None);
+            ProbeRegistration? probeRegistration = null;
+            if (directMethodMessageType!.Equals("probe"))
+            {
+                // Register the probe before acknowledging it, so that a consumed request whose duplicate probe is still being acknowledged is
+                // not forgotten, and so that the probe's expiry is measured from when it was received.
+                probeRegistration = RegisterProbe(publish);
+            }
+
+            try
+            {
+                // All MQTTv5 Hub direct method messages are QoS 1, so ack immediately upon recognizing the message as one
+                await args.AcknowledgeAsync(CancellationToken.None);
+            }
+            catch
+            {
+                if (probeRegistration != null)
+                {
+                    ReleaseProbe(probeRegistration);
+                }
+
+                throw;
+            }
 
             Func<DirectMethodRequestReceivedEventArgs, Task<DirectMethodResponse>>? methodHandler = _directMethodInvoked.Handler;
             Func<DirectMethodRequestProbeReceivedEventArgs, Task<DirectMethodProbeAck>>? probeHandler = _directMethodProbeReceived.Handler;
 
-            if (directMethodMessageType!.Equals("probe"))
+            if (directMethodMessageType.Equals("probe"))
             {
-                if (!GuidExtensions.TryParseBytes(publish.CorrelationData, out Guid? requestId))
+                if (probeRegistration != null)
                 {
-                    return; // Malformed request. Discard it silently
-                }
-
-                uint connectTimeoutRemainingUponReceivingProbe = publish.MessageExpiryInterval;
-                Stopwatch stopwatch = Stopwatch.StartNew();
-                long probeDeadlineTimestamp = GetDeadlineTimestamp(connectTimeoutRemainingUponReceivingProbe);
-
-                Probe probe = Probe.Parser.ParseFrom(publish.Payload);
-
-                DirectMethodRequestState requestState;
-                TaskCompletionSource<ProbeAck?>? ownedDecision = null;
-                lock (_directMethodRequestsLock)
-                {
-                    PruneExpiredDirectMethodRequests();
-
-                    if (_directMethodRequests.TryGetValue(requestId.Value, out DirectMethodRequestState? existingRequest))
-                    {
-                        if (!string.Equals(existingRequest.MethodName, probe.MethodName, StringComparison.Ordinal))
-                        {
-                            Trace.TraceWarning("Received direct method probe for request Id {0} whose method name does not match the pending request with that Id. Ignoring it.", requestId.Value);
-                            return;
-                        }
-
-                        if (existingRequest.Consumed)
-                        {
-                            Trace.TraceWarning("Received direct method probe for request Id {0} whose exec message was already received. Ignoring it.", requestId.Value);
-                            return;
-                        }
-
-                        existingRequest.ProbeDeadlineTimestamp = Math.Max(existingRequest.ProbeDeadlineTimestamp, probeDeadlineTimestamp);
-                        requestState = existingRequest;
-                    }
-                    else
-                    {
-                        ownedDecision = new(TaskCreationOptions.RunContinuationsAsynchronously);
-                        requestState = new DirectMethodRequestState(probe.MethodName, ownedDecision.Task, probeDeadlineTimestamp);
-                        _directMethodRequests.Add(requestId.Value, requestState);
-                    }
-                }
-
-                ProbeAck probeAckToSend;
-                if (ownedDecision == null)
-                {
-                    // Duplicate of a probe that this client already received. Share its decision rather than invoking the application again so that
-                    // the eventual exec message still correlates with the ready Id this client expects.
-                    ProbeAck? sharedDecision = await requestState.Decision;
-                    if (sharedDecision == null)
-                    {
-                        return;
-                    }
-
-                    probeAckToSend = sharedDecision;
-                }
-                else
-                {
-                    try
-                    {
-                        DirectMethodProbeAck probeAck;
-                        if (methodHandler == null || probeHandler == null)
-                        {
-                            // Without both callbacks this client can't execute the method, so tell the service rather than letting the probe time out.
-                            Trace.TraceError("Received a direct method probe, but this client has not registered both callbacks, so it is rejecting the probe as method not found.");
-                            probeAck = DirectMethodProbeAck.Rejected(RejectedReason.MethodNotFound);
-                        }
-                        else
-                        {
-                            probeAck = await probeHandler.Invoke(new() { MethodName = probe.MethodName, ResponseTimeoutSeconds = probe.ResponseTimeoutSeconds });
-                        }
-
-                        probeAckToSend = probeAck.ProbeAck;
-                    }
-                    catch
-                    {
-                        RemoveUnadmittedDirectMethodRequest(requestId.Value, requestState);
-                        ownedDecision.SetResult(null);
-                        throw;
-                    }
-
-                    ownedDecision.SetResult(probeAckToSend);
-                }
-
-                try
-                {
-                    stopwatch.Stop();
-
-                    uint secondsSinceReceivingProbe;
-                    try
-                    {
-                        secondsSinceReceivingProbe = (uint)stopwatch.Elapsed.TotalSeconds;
-                    }
-                    catch (InvalidCastException)
-                    {
-                        // Should only happen if the double grows so large that a uint can't contain it.
-                        Trace.TraceError("Could not calculate time since probe message was received. This likely means the 'DirectMethodProbeReceivedAsync' callback took too long. Cannot send probe ack, so discarding this probe message");
-                        return;
-                    }
-
-                    if (secondsSinceReceivingProbe >= connectTimeoutRemainingUponReceivingProbe)
-                    {
-                        Trace.TraceWarning("Application did not respond to direct method probe message before the connect timeout elapsed, so no probe ack message will be sent.");
-                        return;
-                    }
-
-                    uint remainingConnectTimeoutInSeconds = connectTimeoutRemainingUponReceivingProbe - secondsSinceReceivingProbe;
-
-                    if (probeAckToSend.Ready != default)
-                    {
-                        // The user signalled that the device was ready for the direct method, so locally save the ready Id. If this request was
-                        // already admitted, re-send the ready Id that was saved first. If its exec message was already received, the ready Id
-                        // must not become valid again, so don't acknowledge this probe.
-                        lock (_directMethodRequestsLock)
-                        {
-                            if (requestState.Consumed)
-                            {
-                                Trace.TraceWarning("Received direct method probe for request Id {0} whose exec message was already received. Ignoring it.", requestId.Value);
-                                return;
-                            }
-
-                            if (!_directMethodRequests.TryGetValue(requestId.Value, out DirectMethodRequestState? currentRequest))
-                            {
-                                // The probe that first received this request did not admit it (for example, because it timed out), so it was removed.
-                                _directMethodRequests.Add(requestId.Value, requestState);
-                                currentRequest = requestState;
-                            }
-                            else if (!ReferenceEquals(currentRequest, requestState))
-                            {
-                                if (!string.Equals(currentRequest.MethodName, probe.MethodName, StringComparison.Ordinal))
-                                {
-                                    Trace.TraceWarning("Received direct method probe for request Id {0} whose method name does not match the pending request with that Id. Ignoring it.", requestId.Value);
-                                    return;
-                                }
-
-                                if (currentRequest.Consumed)
-                                {
-                                    Trace.TraceWarning("Received direct method probe for request Id {0} whose exec message was already received. Ignoring it.", requestId.Value);
-                                    return;
-                                }
-                            }
-
-                            currentRequest.ReadyId ??= probeAckToSend.Ready.ReadyId;
-                            if (!currentRequest.ReadyId.Equals(probeAckToSend.Ready.ReadyId))
-                            {
-                                probeAckToSend = new() { Ready = new() { ReadyId = currentRequest.ReadyId } };
-                            }
-                        }
-                    }
-
-                    MqttPublish probeAckPublish = new()
-                    {
-                        Topic = DirectMethodsResponseTopic,
-                        QualityOfServiceLevel = MqttQualityOfServiceLevel.AtLeastOnce,
-                        Payload = probeAckToSend.ToByteArray(),
-                        CorrelationData = publish.CorrelationData,
-                        MessageExpiryInterval = remainingConnectTimeoutInSeconds,
-                        ContentType = ProtobufContentType
-                    };
-
-                    probeAckPublish.UserProperties.Add(new("type", Encoding.UTF8.GetBytes("probe-ack:1")));
-
-                    MqttPublishAck puback = await _connection.PublishAsync(probeAckPublish, throwOnErrorReasonCode: true);
-
-                    if (puback.ReasonCode != MqttPublishAckReasonCode.Success)
-                    {
-                        Trace.TraceError("Failed to send the response to a direct method probe because the MQTT broker rejected the publish with reason code {0} and reason string {1}", puback.ReasonCode, puback.ReasonString);
-                    }
-                }
-                finally
-                {
-                    if (ownedDecision != null)
-                    {
-                        // A request that was never admitted has no ready Id for an exec message to consume, so forget it. This lets a later probe
-                        // for the same request (for example, after a not-ready response) ask the application again.
-                        RemoveUnadmittedDirectMethodRequest(requestId.Value, requestState);
-                    }
+                    await HandleProbeAsync(probeRegistration, publish, methodHandler, probeHandler);
                 }
             }
             else if (directMethodMessageType.Equals("exec"))
@@ -389,7 +252,6 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods
                     return;
                 }
 
-                ByteString pendingReadyId;
                 string pendingMethodName;
                 lock (_directMethodRequestsLock)
                 {
@@ -400,16 +262,20 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods
                         return;
                     }
 
+                    // Only an exec with the matching ready Id may claim the request, so that a mismatched exec doesn't block a later valid one.
+                    if (!pendingRequest.ReadyId.Equals(exec.ReadyId))
+                    {
+                        Trace.TraceWarning("Received direct method exec message with unexpected ready Id. Ignoring it.");
+                        return;
+                    }
+
                     // Keep the consumed request until its probes can no longer arrive so that a duplicate probe cannot make its ready Id valid again.
                     pendingRequest.Consumed = true;
-                    pendingReadyId = pendingRequest.ReadyId;
                     pendingMethodName = pendingRequest.MethodName;
-                }
-
-                if (!pendingReadyId.Equals(exec.ReadyId))
-                {
-                    Trace.TraceWarning("Received direct method exec message with unexpected ready Id. Ignoring it.");
-                    return;
+                    if (pendingRequest.InFlightProbes == 0)
+                    {
+                        _consumedDirectMethodRequestExpirations.Enqueue((requestId.Value, pendingRequest), pendingRequest.ProbeDeadlineTimestamp);
+                    }
                 }
 
                 DirectMethodRequestReceivedEventArgs directMethodInvokedArgs = new()
@@ -495,29 +361,243 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods
                 : long.MaxValue;
         }
 
-        private void RemoveUnadmittedDirectMethodRequest(Guid requestId, DirectMethodRequestState requestState)
+        private ProbeRegistration? RegisterProbe(MqttPublish publish)
         {
+            long deadlineTimestamp = GetDeadlineTimestamp(publish.MessageExpiryInterval);
+
+            if (!GuidExtensions.TryParseBytes(publish.CorrelationData, out Guid? requestId))
+            {
+                return null; // Malformed request. Discard it silently
+            }
+
+            Probe probe;
+            try
+            {
+                probe = Probe.Parser.ParseFrom(publish.Payload);
+            }
+            catch (InvalidProtocolBufferException ex)
+            {
+                Trace.TraceError("Received direct method probe message for request Id {0} with a malformed payload. Ignoring it. Error: {1}", requestId.Value, ex.Message);
+                return null;
+            }
+
             lock (_directMethodRequestsLock)
             {
-                if (requestState.ReadyId == null
-                    && _directMethodRequests.TryGetValue(requestId, out DirectMethodRequestState? currentRequest)
-                    && ReferenceEquals(currentRequest, requestState))
+                PruneExpiredDirectMethodRequests();
+
+                if (_directMethodRequests.TryGetValue(requestId.Value, out DirectMethodRequestState? existingRequest))
                 {
-                    _directMethodRequests.Remove(requestId);
+                    if (!string.Equals(existingRequest.MethodName, probe.MethodName, StringComparison.Ordinal)
+                        || existingRequest.ResponseTimeoutSeconds != probe.ResponseTimeoutSeconds)
+                    {
+                        Trace.TraceWarning("Received direct method probe for request Id {0} whose method name or response timeout does not match the pending request with that Id. Ignoring it.", requestId.Value);
+                        return null;
+                    }
+
+                    // This duplicate may still be redelivered until its own expiry, so keep the request (even if consumed) at least that long.
+                    existingRequest.ProbeDeadlineTimestamp = Math.Max(existingRequest.ProbeDeadlineTimestamp, deadlineTimestamp);
+
+                    if (existingRequest.Consumed)
+                    {
+                        Trace.TraceWarning("Received direct method probe for request Id {0} whose exec message was already received. Ignoring it.", requestId.Value);
+                        return null;
+                    }
+
+                    existingRequest.InFlightProbes++;
+                    return new ProbeRegistration(requestId.Value, probe, existingRequest, IsOwner: false, deadlineTimestamp);
+                }
+
+                var requestState = new DirectMethodRequestState(probe.MethodName, probe.ResponseTimeoutSeconds, deadlineTimestamp)
+                {
+                    InFlightProbes = 1,
+                };
+                _directMethodRequests.Add(requestId.Value, requestState);
+                return new ProbeRegistration(requestId.Value, probe, requestState, IsOwner: true, deadlineTimestamp);
+            }
+        }
+
+        private async Task HandleProbeAsync(
+            ProbeRegistration registration,
+            MqttPublish publish,
+            Func<DirectMethodRequestReceivedEventArgs, Task<DirectMethodResponse>>? methodHandler,
+            Func<DirectMethodRequestProbeReceivedEventArgs, Task<DirectMethodProbeAck>>? probeHandler)
+        {
+            DirectMethodRequestState requestState = registration.State;
+            Guid requestId = registration.RequestId;
+            try
+            {
+                if (registration.IsOwner)
+                {
+                    Task<DirectMethodProbeAck> handlerTask;
+                    if (methodHandler == null || probeHandler == null)
+                    {
+                        // Without both callbacks this client can't execute the method, so tell the service rather than letting the probe time out.
+                        Trace.TraceError("Received a direct method probe, but this client has not registered both callbacks, so it is rejecting the probe as method not found.");
+                        handlerTask = Task.FromResult(DirectMethodProbeAck.Rejected(RejectedReason.MethodNotFound));
+                    }
+                    else
+                    {
+                        try
+                        {
+                            handlerTask = probeHandler.Invoke(new() { MethodName = registration.Probe.MethodName, ResponseTimeoutSeconds = registration.Probe.ResponseTimeoutSeconds });
+                        }
+                        catch (Exception ex)
+                        {
+                            handlerTask = Task.FromException<DirectMethodProbeAck>(ex);
+                        }
+                    }
+
+                    // Publish the decision to duplicate probes whenever the handler finishes, even if this probe stops waiting for it.
+                    _ = handlerTask.ContinueWith(
+                        t => requestState.SetDecision(t.IsCompletedSuccessfully ? t.Result?.ProbeAck : null),
+                        CancellationToken.None,
+                        TaskContinuationOptions.ExecuteSynchronously,
+                        TaskScheduler.Default);
+
+                    if (await CompletesBeforeDeadlineAsync(handlerTask, registration.DeadlineTimestamp) && !handlerTask.IsCompletedSuccessfully)
+                    {
+                        // Surface the application's exception to the caller.
+                        await handlerTask;
+                    }
+                }
+
+                // Each probe waits for the shared decision no longer than its own expiry, even if the handler never completes.
+                if (!await CompletesBeforeDeadlineAsync(requestState.Decision, registration.DeadlineTimestamp))
+                {
+                    Trace.TraceWarning("Application did not respond to direct method probe message before the connect timeout elapsed, so no probe ack message will be sent.");
+                    return;
+                }
+
+                ProbeAck? probeAckToSend = await requestState.Decision;
+                if (probeAckToSend == null)
+                {
+                    return;
+                }
+
+                long remainingTicks = registration.DeadlineTimestamp - Stopwatch.GetTimestamp();
+                if (remainingTicks <= 0)
+                {
+                    Trace.TraceWarning("Application did not respond to direct method probe message before the connect timeout elapsed, so no probe ack message will be sent.");
+                    return;
+                }
+
+                uint remainingConnectTimeoutInSeconds = (uint)Math.Min(uint.MaxValue, Math.Ceiling((double)remainingTicks / Stopwatch.Frequency));
+
+                if (probeAckToSend.Ready != default)
+                {
+                    // The user signalled that the device was ready for the direct method, so locally save the ready Id. If its exec message was
+                    // already received, the ready Id must not become valid again, so don't acknowledge this probe.
+                    lock (_directMethodRequestsLock)
+                    {
+                        if (requestState.Consumed)
+                        {
+                            Trace.TraceWarning("Received direct method probe for request Id {0} whose exec message was already received. Ignoring it.", requestId);
+                            return;
+                        }
+
+                        requestState.ReadyId ??= probeAckToSend.Ready.ReadyId;
+                    }
+                }
+
+                MqttPublish probeAckPublish = new()
+                {
+                    Topic = DirectMethodsResponseTopic,
+                    QualityOfServiceLevel = MqttQualityOfServiceLevel.AtLeastOnce,
+                    Payload = probeAckToSend.ToByteArray(),
+                    CorrelationData = publish.CorrelationData,
+                    MessageExpiryInterval = remainingConnectTimeoutInSeconds,
+                    ContentType = ProtobufContentType
+                };
+
+                probeAckPublish.UserProperties.Add(new("type", Encoding.UTF8.GetBytes("probe-ack:1")));
+
+                MqttPublishAck puback = await _connection.PublishAsync(probeAckPublish, throwOnErrorReasonCode: true);
+
+                if (puback.ReasonCode != MqttPublishAckReasonCode.Success)
+                {
+                    Trace.TraceError("Failed to send the response to a direct method probe because the MQTT broker rejected the publish with reason code {0} and reason string {1}", puback.ReasonCode, puback.ReasonString);
                 }
             }
+            finally
+            {
+                ReleaseProbe(registration);
+            }
+        }
+
+        private void ReleaseProbe(ProbeRegistration registration)
+        {
+            DirectMethodRequestState requestState = registration.State;
+            lock (_directMethodRequestsLock)
+            {
+                requestState.InFlightProbes--;
+                if (requestState.InFlightProbes > 0
+                    || !_directMethodRequests.TryGetValue(registration.RequestId, out DirectMethodRequestState? currentRequest)
+                    || !ReferenceEquals(currentRequest, requestState))
+                {
+                    return;
+                }
+
+                if (requestState.ReadyId == null)
+                {
+                    // A request that was never admitted has no ready Id for an exec message to consume, so forget it. This lets a later probe
+                    // for the same request (for example, after a not-ready response or a timed out handler) ask the application again.
+                    _directMethodRequests.Remove(registration.RequestId);
+                }
+                else if (requestState.Consumed)
+                {
+                    _consumedDirectMethodRequestExpirations.Enqueue((registration.RequestId, requestState), requestState.ProbeDeadlineTimestamp);
+                }
+            }
+        }
+
+        private static async Task<bool> CompletesBeforeDeadlineAsync(Task task, long deadlineTimestamp)
+        {
+            if (task.IsCompleted)
+            {
+                return true;
+            }
+
+            long remainingTicks = deadlineTimestamp - Stopwatch.GetTimestamp();
+            if (remainingTicks <= 0)
+            {
+                return false;
+            }
+
+            double remainingMilliseconds = Math.Ceiling(remainingTicks * 1000.0 / Stopwatch.Frequency);
+            using CancellationTokenSource delayCts = new();
+            Task delay = remainingMilliseconds >= int.MaxValue
+                ? Task.Delay(Timeout.Infinite, delayCts.Token)
+                : Task.Delay(TimeSpan.FromMilliseconds(remainingMilliseconds), delayCts.Token);
+
+            Task completed = await Task.WhenAny(task, delay);
+            delayCts.Cancel();
+            return completed == task;
         }
 
         // Must be called while holding _directMethodRequestsLock.
         private void PruneExpiredDirectMethodRequests()
         {
             long now = Stopwatch.GetTimestamp();
-            foreach (KeyValuePair<Guid, DirectMethodRequestState> request in _directMethodRequests)
+            while (_consumedDirectMethodRequestExpirations.TryPeek(out (Guid RequestId, DirectMethodRequestState State) entry, out long deadline) && deadline <= now)
             {
-                if (request.Value.Consumed && now >= request.Value.ProbeDeadlineTimestamp)
+                _consumedDirectMethodRequestExpirations.Dequeue();
+
+                if (!_directMethodRequests.TryGetValue(entry.RequestId, out DirectMethodRequestState? currentRequest)
+                    || !ReferenceEquals(currentRequest, entry.State)
+                    || entry.State.InFlightProbes > 0)
                 {
-                    _directMethodRequests.Remove(request.Key);
+                    // Stale entry. A request with probes in flight is re-scheduled when its last probe is released.
+                    continue;
                 }
+
+                if (entry.State.ProbeDeadlineTimestamp > now)
+                {
+                    // A later duplicate extended this request's deadline.
+                    _consumedDirectMethodRequestExpirations.Enqueue(entry, entry.State.ProbeDeadlineTimestamp);
+                    continue;
+                }
+
+                _directMethodRequests.Remove(entry.RequestId);
             }
         }
 
