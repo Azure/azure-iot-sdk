@@ -4,6 +4,7 @@
 
 /* SPDX-License-Identifier: MIT */
 #include "e2e_device.h"
+#include "e2e_connect_clock.h"
 #include "e2e_defensive_timeout.h"
 #include "support/test_env.h"
 
@@ -21,7 +22,7 @@
 #include <string.h>
 #include <time.h>
 
-/* DPS provision + MQTT connect can take a while on a cold hub. */
+/* The hub connect; DPS provisioning has its own budget (e2e_connect_clock.h). */
 #define E2E_DEVICE_CONNECT_TIMEOUT_S 90
 
 /* Read the egress configuration: which transport carries MQTT, and whether it
@@ -259,8 +260,10 @@ int e2e_device_connect_with(e2e_device* dev, const e2e_device_connect_options* o
 
   const int timeout_s = opts != NULL && opts->connect_timeout_s > 0 ? opts->connect_timeout_s
                                                                     : E2E_DEVICE_CONNECT_TIMEOUT_S;
-  time_t start = time(NULL);
-  while (dev->conn_state != AZ_IOT_CONN_STATE_CONNECTED && (time(NULL) - start) < timeout_s)
+  e2e_connect_clock clock;
+  e2e_connect_clock_start(&clock);
+  while (dev->conn_state != AZ_IOT_CONN_STATE_CONNECTED
+         && e2e_connect_clock_running(&clock, &dev->conn, timeout_s))
   {
     e2e_device_do_work(dev, 50);
     if (opts != NULL && opts->during_connect != NULL)
@@ -273,6 +276,7 @@ int e2e_device_connect_with(e2e_device* dev, const e2e_device_connect_options* o
     }
   }
 
+  e2e_connect_clock_log(&clock, dev->device_id);
   if (dev->conn_state != AZ_IOT_CONN_STATE_CONNECTED)
   {
     fprintf(stderr, "[e2e] device did not reach CONNECTED (state=%d)\n", (int)dev->conn_state);

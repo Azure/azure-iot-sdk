@@ -457,6 +457,11 @@ multi-step updates, and reboot/resume.
   idempotent (the DPS and device DELETEs; 20 s per attempt instead of 60 s).
   Each failed attempt is logged with its phase, bytes sent and received, and the
   transport's error.
+- **DPS provisioning has its own time budget.** DPS assignment intermittently
+  takes from tens of seconds to over 90 s. Connect waits charge time to DPS
+  while the client's DPS scope is active, with a budget of 180 s
+  (`tests/e2e_connect_clock.h`), and to the hub otherwise, with the suite's
+  connect timeout. Each connect logs both times.
 
 ---
 

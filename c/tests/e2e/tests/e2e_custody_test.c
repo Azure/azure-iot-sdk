@@ -47,6 +47,7 @@
 #include "azure/iot/az_iot.h"
 
 #include "az_iot_e2e_service.h"
+#include "e2e_connect_clock.h"
 #include "e2e_defensive_timeout.h"
 #include "e2e_log.h"
 
@@ -253,9 +254,10 @@ static int device_connect(custody_fixture* fx)
     return 1;
   }
 
-  time_t start = time(NULL);
+  e2e_connect_clock clock;
+  e2e_connect_clock_start(&clock);
   while (fx->conn_state != AZ_IOT_CONN_STATE_CONNECTED
-         && (time(NULL) - start) < E2E_CONNECT_TIMEOUT_S)
+         && e2e_connect_clock_running(&clock, &fx->conn, E2E_CONNECT_TIMEOUT_S))
   {
     (void)az_iot_connection_client_do_work(&fx->conn, 50);
     if (fx->conn_state == AZ_IOT_CONN_STATE_FAULTED)
@@ -263,6 +265,7 @@ static int device_connect(custody_fixture* fx)
       break;
     }
   }
+  e2e_connect_clock_log(&clock, "custody device");
   if (fx->conn_state != AZ_IOT_CONN_STATE_CONNECTED)
   {
     fprintf(
@@ -458,9 +461,10 @@ static void a_reconnect_resolves_the_token_key_again(void** state)
   assert_int_equal(g_fixture.conn_state, AZ_IOT_CONN_STATE_IDLE);
 
   assert_int_equal(az_iot_connection_client_open(&g_fixture.conn), AZ_IOT_OK);
-  time_t start = time(NULL);
+  e2e_connect_clock clock;
+  e2e_connect_clock_start(&clock);
   while (g_fixture.conn_state != AZ_IOT_CONN_STATE_CONNECTED
-         && (time(NULL) - start) < E2E_CONNECT_TIMEOUT_S)
+         && e2e_connect_clock_running(&clock, &g_fixture.conn, E2E_CONNECT_TIMEOUT_S))
   {
     (void)az_iot_connection_client_do_work(&g_fixture.conn, 50);
     if (g_fixture.conn_state == AZ_IOT_CONN_STATE_FAULTED)
@@ -468,6 +472,7 @@ static void a_reconnect_resolves_the_token_key_again(void** state)
       break;
     }
   }
+  e2e_connect_clock_log(&clock, "custody device");
   assert_int_equal(g_fixture.conn_state, AZ_IOT_CONN_STATE_CONNECTED);
   assert_true(g_fixture.provider.load_calls > loads_before);
 }

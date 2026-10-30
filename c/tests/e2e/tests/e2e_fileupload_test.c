@@ -68,6 +68,7 @@
 #endif
 
 #include "az_iot_e2e_service.h"
+#include "e2e_connect_clock.h"
 #include "e2e_device.h"
 #include "e2e_log.h"
 #include "e2e_sas_device.h"
@@ -185,7 +186,7 @@ static az_iot_result e2e_http_send(
           response->body_capacity,
           &resp_len))
   {
-    return AZ_IOT_ERR_MQTT;
+    return AZ_IOT_ERR_NOT_CONNECTED; /* No HTTP response; the e2e HTTPS client logged why. */
   }
   response->status_code = status;
   response->body_len = resp_len;
@@ -719,7 +720,7 @@ static az_iot_result e2e_http_send_sas(
   memset(header, 0, sizeof(header));
   if (!ok)
   {
-    return AZ_IOT_ERR_MQTT;
+    return AZ_IOT_ERR_NOT_CONNECTED; /* No HTTP response; the e2e HTTPS client logged why. */
   }
   response->status_code = status;
   response->body_len = resp_len;
@@ -765,12 +766,14 @@ static void test_sas_key_device_uploads_a_file(void** state)
 #endif
   assert_int_equal(az_iot_connection_client_register_mqtt_factory(&conn, factory), AZ_IOT_OK);
   assert_int_equal(az_iot_connection_client_open(&conn), AZ_IOT_OK);
-  time_t start = time(NULL);
+  e2e_connect_clock clock;
+  e2e_connect_clock_start(&clock);
   while (hub_state != AZ_IOT_CONN_STATE_CONNECTED && hub_state != AZ_IOT_CONN_STATE_FAULTED
-         && (time(NULL) - start) < E2E_SAS_FU_CONNECT_TIMEOUT_S)
+         && e2e_connect_clock_running(&clock, &conn, E2E_SAS_FU_CONNECT_TIMEOUT_S))
   {
     (void)az_iot_connection_client_do_work(&conn, 50);
   }
+  e2e_connect_clock_log(&clock, "SAS file-upload device");
   assert_int_equal(hub_state, AZ_IOT_CONN_STATE_CONNECTED);
 
   int authorized = 0;
@@ -816,7 +819,7 @@ static void test_sas_key_device_uploads_a_file(void** state)
 
   az_iot_mqttv3_file_upload_client_deinit(&fu);
   assert_int_equal(az_iot_connection_client_close(&conn), AZ_IOT_OK);
-  start = time(NULL);
+  time_t start = time(NULL);
   while (hub_state != AZ_IOT_CONN_STATE_IDLE && (time(NULL) - start) < E2E_SAS_FU_CLOSE_TIMEOUT_S)
   {
     (void)az_iot_connection_client_do_work(&conn, 50);
