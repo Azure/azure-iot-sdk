@@ -34,11 +34,13 @@
 #define DM_TYPE_RESULT "result:" AZ_IOT_MQTTV5_DM_TYPE_VERSION
 
 #define DM_NO_TRACKER_ENTRY AZ_IOT_MQTTV5_DM_NO_TRACKER_ENTRY
-/* Being submitted: claims the entry the tracker first asks about (see element_holds_tracker_entry()). */
+/* Being submitted: claims the entry the tracker first asks about (see
+ * element_holds_tracker_entry()). */
 #define DM_TRACKER_ENTRY_PENDING SIZE_MAX
 
 /* k_slots_kept_for_replies holds the limit in a byte. */
-typedef char az_iot_dm_concurrency_fits_a_byte[(AZ_IOT_MQTTV5_DM_MAX_CONCURRENT <= UINT8_MAX) ? 1 : -1];
+typedef char
+    az_iot_dm_concurrency_fits_a_byte[(AZ_IOT_MQTTV5_DM_MAX_CONCURRENT <= UINT8_MAX) ? 1 : -1];
 
 /* A held notice stores the encoded frame; the public header sizes it without seeing the codec. */
 typedef char az_iot_dm_notice_frame_fits
@@ -219,8 +221,8 @@ static az_iot_result encode_probe_ack_message(
     return AZ_IOT_ERR_INTERNAL;
   }
   /* Read once: the value checked is the value sent, so a finite budget never goes out as 0. */
-  uint32_t const expiry
-      = az_iot_mqttv5_direct_method_client__remaining_budget_seconds(RI(slot).connect_budget_seconds, RI(slot).probe_received_at_ms);
+  uint32_t const expiry = az_iot_mqttv5_direct_method_client__remaining_budget_seconds(
+      RI(slot).connect_budget_seconds, RI(slot).probe_received_at_ms);
   if (RI(slot).connect_budget_seconds > 0u && expiry < AZ_IOT_MQTTV5_DM_MIN_USEFUL_BUDGET_SECONDS)
   {
     return AZ_IOT_ERR_TIMEOUT;
@@ -346,7 +348,8 @@ static az_iot_result encode_notice_message(
   {
     return AZ_IOT_ERR_INTERNAL;
   }
-  uint32_t expiry = az_iot_mqttv5_direct_method_client__remaining_budget_seconds(RI(n).budget_seconds, RI(n).budget_start_ms);
+  uint32_t expiry = az_iot_mqttv5_direct_method_client__remaining_budget_seconds(
+      RI(n).budget_seconds, RI(n).budget_start_ms);
   /* 0 on the wire means no expiry at all, not an exhausted one. */
   if (RI(n).budget_seconds > 0u && expiry < AZ_IOT_MQTTV5_DM_MIN_USEFUL_BUDGET_SECONDS)
   {
@@ -445,8 +448,9 @@ static void send_notice(
     RI(n).frame_len = frame_len;
     RI(n).budget_seconds = budget_seconds;
     RI(n).budget_start_ms = start_ms;
-    uint64_t const deadline_ms
-        = (budget_seconds > 0u) ? start_ms + (uint64_t)budget_seconds * AZ_IOT_MQTTV5_DM_MS_PER_SECOND : 0u;
+    uint64_t const deadline_ms = (budget_seconds > 0u)
+        ? start_ms + (uint64_t)budget_seconds * AZ_IOT_MQTTV5_DM_MS_PER_SECOND
+        : 0u;
     if (submit_reply_for_delivery(
             dm, &k_notice_profile, &RI(n).tracker_entry, request_id, deadline_ms)
             == AZ_IOT_OK
@@ -460,7 +464,8 @@ static void send_notice(
     return;
   }
 
-  uint32_t expiry = az_iot_mqttv5_direct_method_client__remaining_budget_seconds(budget_seconds, start_ms);
+  uint32_t expiry
+      = az_iot_mqttv5_direct_method_client__remaining_budget_seconds(budget_seconds, start_ms);
   if (budget_seconds > 0u && expiry < AZ_IOT_MQTTV5_DM_MIN_USEFUL_BUDGET_SECONDS)
   {
     expiry = AZ_IOT_MQTTV5_DM_MIN_USEFUL_BUDGET_SECONDS;
@@ -537,7 +542,6 @@ void az_iot_mqttv5_direct_method_client__send_abandon(
   }
   send_notice(dm, &k_abandon_type, frame, frame_len, RI(slot).request_id, budget_seconds, start_ms);
 }
-
 
 az_iot_result az_iot_mqttv5_direct_method_client__start_reply_delivery(
     az_iot_mqttv5_direct_method_client* client,

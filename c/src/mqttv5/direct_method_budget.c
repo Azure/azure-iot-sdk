@@ -17,7 +17,8 @@
 #define DM_SAFETY_MARGIN_MIN_SECONDS 1u
 #define DM_SAFETY_MARGIN_MAX_SECONDS 10u
 
-uint32_t az_iot_mqttv5_direct_method_client__safety_margin_seconds(uint32_t response_timeout_seconds)
+uint32_t az_iot_mqttv5_direct_method_client__safety_margin_seconds(
+    uint32_t response_timeout_seconds)
 {
   uint32_t margin = response_timeout_seconds / DM_SAFETY_MARGIN_DIVISOR;
   if (margin < DM_SAFETY_MARGIN_MIN_SECONDS)
