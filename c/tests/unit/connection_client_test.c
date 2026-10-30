@@ -64,6 +64,8 @@ typedef struct fixture
   uint8_t csr_buf[AZ_IOT_CSR_PAYLOAD_BUFFER_MIN];
 } fixture;
 
+static uint8_t g_connection_workspace[AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE];
+
 static int setup(void** state)
 {
   fixture* fx = (fixture*)calloc(1, sizeof(*fx));
@@ -1480,6 +1482,8 @@ static void open_rejects_operational_cert_without_csr_provider(void** state)
   opts.dps.id_scope = "0ne00000000";
   opts.dps.registration_id = "ut-device";
   opts.dps.request_operational_certificate = true;
+  opts.workspace = g_connection_workspace;
+  opts.workspace_size = sizeof(g_connection_workspace);
 
   /* Case 1: no certificate_provider at all: refused as missing, before the CSR
    * capability is considered. */
@@ -2090,6 +2094,8 @@ static void open_rejects_operational_cert_without_release_or_store(void** state)
     opts.dps.request_operational_certificate = true;
     opts.certificate_provider = &prov.base;
     opts.csr_payload_buffer = az_span_create(csr_buf, sizeof(csr_buf));
+    opts.workspace = g_connection_workspace;
+    opts.workspace_size = sizeof(g_connection_workspace);
     az_iot_connection_client client;
     assert_int_equal(az_iot_connection_client_init(&client, &opts), AZ_IOT_OK);
     az_iot_mqtt_factory* factory = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
@@ -2236,6 +2242,8 @@ static int setup_csr(void** state)
   opts.device_id = "ut-device";
   opts.certificate_provider = &g_csr_prov.base;
   opts.csr_payload_buffer = az_span_create(fx->csr_buf, sizeof(fx->csr_buf));
+  opts.workspace = g_connection_workspace;
+  opts.workspace_size = sizeof(g_connection_workspace);
   assert_int_equal(az_iot_connection_client_init(&fx->client_storage, &opts), AZ_IOT_OK);
   fx->client = &fx->client_storage;
   assert_int_equal(
@@ -4313,6 +4321,8 @@ static az_iot_mqtt_factory* tls_client_init(
   }
   opts.device_id = "ut-device";
   opts.certificate_provider = prov ? &prov->base : NULL;
+  opts.workspace = g_connection_workspace;
+  opts.workspace_size = sizeof(g_connection_workspace);
   assert_int_equal(az_iot_connection_client_init(client, &opts), AZ_IOT_OK);
   az_iot_mqtt_factory* factory = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
   assert_non_null(factory);
@@ -4387,6 +4397,8 @@ static void a_dps_session_rejects_operational_cert_without_release_or_store(void
     opts.dps.request_operational_certificate = true;
     opts.certificate_provider = &prov.base;
     opts.csr_payload_buffer = az_span_create(csr_buf, sizeof(csr_buf));
+    opts.workspace = g_connection_workspace;
+    opts.workspace_size = sizeof(g_connection_workspace);
     az_iot_connection_client client;
     assert_int_equal(az_iot_connection_client_init(&client, &opts), AZ_IOT_OK);
     az_iot_mqtt_factory* factory = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
