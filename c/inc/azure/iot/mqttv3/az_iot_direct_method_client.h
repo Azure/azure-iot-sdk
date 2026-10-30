@@ -48,8 +48,9 @@ extern "C"
        * which shares that type, does not carry storage for a timeout it derives
        * from the exec budget instead. */
       uint64_t req_expires_at_ms[AZ_IOT_DM_MAX_INFLIGHT];
-      /* Parallel to req_pool: seq of the invocation the last session end took from each slot,
-       * so respond() on it can say NOT_CONNECTED rather than INVALID_ARG. */
+      /* Parallel to req_pool: seq of the last invocation of each slot that a session end (or a
+       * respond() refused NOT_CONNECTED) took, so respond() on it says NOT_CONNECTED rather
+       * than INVALID_ARG. One per slot: a later one replaces it. */
       uint32_t ended_by_session_seq[AZ_IOT_DM_MAX_INFLIGHT];
       uint32_t response_timeout_seconds;
       /* Bumped on every acquire and copied into the request handed out, so a
@@ -135,7 +136,8 @@ extern "C"
    * @return AZ_IOT_ERR_TIMEOUT if @p request has passed its response timeout --
    *         nothing is sent and the slot is released;
    *         AZ_IOT_ERR_NOT_CONNECTED if the session it arrived on has ended -- nothing
-   *         is sent, as the call already failed service-side;
+   *         is sent, as the call already failed service-side. Kept until its slot
+   *         ends another invocation the same way; after that, AZ_IOT_ERR_INVALID_ARG;
    *         AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH if @p request came from a
    *         mqttv5 client; AZ_IOT_ERR_INVALID_ARG if it was already answered, if
    *         its slot was reclaimed and reused, or if it never came from this

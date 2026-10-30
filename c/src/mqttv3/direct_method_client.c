@@ -436,6 +436,11 @@ az_iot_result az_iot_mqttv3_direct_method_respond(
   out.retain = false;
 
   az_iot_result r = az_iot_connection_client__publish(DI(dm).conn, dm, &out, NULL, NULL);
+  if (r == AZ_IOT_ERR_NOT_CONNECTED)
+  {
+    /* Closing, or the link dropped ahead of its SESSION_END: answering again says so too. */
+    DI(dm).ended_by_session_seq[index] = slot->_internal.seq;
+  }
   slot->_internal.in_use = false;
   return r;
 }

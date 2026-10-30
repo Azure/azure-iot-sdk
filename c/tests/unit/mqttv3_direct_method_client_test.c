@@ -1072,6 +1072,108 @@ static void an_init_without_a_feature_observer_subscribes_nothing(void** state)
   }
   assert_int_equal(az_iot_mqttv3_direct_method_client_init(&fx->dm, &fx->conn), AZ_IOT_OK);
 }
+
+/* Close, then reopen up to CONNECTED on a new adapter. */
+static void close_and_reopen(fixture* fx)
+{
+  (void)az_iot_connection_client_close(&fx->conn);
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(fx->mock));
+  (void)az_iot_connection_client_do_work(&fx->conn, 0);
+  assert_int_equal(az_iot_connection_client_open(&fx->conn), AZ_IOT_OK);
+  fx->mock = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(fx->mock, AZ_IOT_OK));
+  assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
+  az_iot_test_ack_subscriptions(&fx->conn, fx->mock);
+  az_iot_mock_mqtt_client_clear_calls(fx->mock);
+}
+
+/* Answered while closing, before the session end: refused NOT_CONNECTED, and still so after it. */
+static void a_response_while_closing_stays_not_connected(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  invocation_record rec = { 0 };
+  assert_int_equal(
+      az_iot_mqttv3_direct_method_client_set_handler(&fx->dm, on_method, &rec), AZ_IOT_OK);
+  inject_invocation(fx, 1);
+  assert_true(rec.fired);
+
+  (void)az_iot_connection_client_close(&fx->conn);
+  assert_int_equal(
+      az_iot_mqttv3_direct_method_respond(&fx->dm, rec.request, 200, NULL, 0),
+      AZ_IOT_ERR_NOT_CONNECTED);
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(fx->mock));
+  (void)az_iot_connection_client_do_work(&fx->conn, 0);
+  assert_int_equal(
+      az_iot_mqttv3_direct_method_respond(&fx->dm, rec.request, 200, NULL, 0),
+      AZ_IOT_ERR_NOT_CONNECTED);
+}
+
+/* One ended request is kept per slot: once its slot ends another invocation, the older request is
+ * refused as stale, and the newer one says NOT_CONNECTED. */
+static void a_later_session_end_on_the_same_slot_replaces_the_ended_request(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  invocation_record rec = { 0 };
+  assert_int_equal(
+      az_iot_mqttv3_direct_method_client_set_handler(&fx->dm, on_method, &rec), AZ_IOT_OK);
+  inject_invocation(fx, 1);
+  az_iot_direct_method_request const first = rec.request;
+  close_and_reopen(fx);
+
+  for (int i = 0; i < AZ_IOT_DM_MAX_INFLIGHT; ++i)
+  {
+    inject_invocation(fx, 10 + i);
+  }
+  assert_int_equal(rec.request._internal.slot, first._internal.slot);
+  az_iot_direct_method_request const second = rec.request;
+  close_and_reopen(fx);
+
+  assert_int_equal(
+      az_iot_mqttv3_direct_method_respond(&fx->dm, first, 200, NULL, 0), AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(
+      az_iot_mqttv3_direct_method_respond(&fx->dm, second, 200, NULL, 0), AZ_IOT_ERR_NOT_CONNECTED);
+}
+
+/* Init failing after it took its feature observer (no subscription left) gives the observer back.
+ */
+static void an_init_failing_after_its_observer_returns_it(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_mqttv3_direct_method_client_deinit(&fx->dm);
+
+  static int owners[64];
+  char filters[64][32];
+  size_t taken = 0;
+  while (taken < 64)
+  {
+    snprintf(filters[taken], sizeof(filters[taken]), "filler/%u", (unsigned)taken);
+    if (az_iot_connection_client__add_subscription_on_connect(
+            &fx->conn,
+            filters[taken],
+            AZ_IOT_MQTT_QOS_0,
+            &owners[taken],
+            AZ_IOT_SUBSCRIPTION_FAILS_SESSION,
+            NULL)
+        != AZ_IOT_OK)
+    {
+      break;
+    }
+    taken++;
+  }
+  assert_true(taken < 64);
+  assert_int_not_equal(az_iot_mqttv3_direct_method_client_init(&fx->dm, &fx->conn), AZ_IOT_OK);
+  for (size_t i = 0; i < fx->conn.opts.limits.max_feature_observers; ++i)
+  {
+    assert_ptr_not_equal(fx->conn.feature_observers[i].user_ctx, &fx->dm);
+  }
+  for (size_t i = 0; i < taken; ++i)
+  {
+    (void)az_iot_connection_client__remove_subscriptions_for(&fx->conn, &owners[i]);
+  }
+  assert_int_equal(az_iot_mqttv3_direct_method_client_init(&fx->dm, &fx->conn), AZ_IOT_OK);
+}
 static void deinit_zeroes_the_client(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -1579,6 +1681,10 @@ int main(void)
         a_close_and_reopen_ends_unanswered_invocations, setup, teardown),
     cmocka_unit_test_setup_teardown(
         an_init_without_a_feature_observer_subscribes_nothing, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_response_while_closing_stays_not_connected, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_later_session_end_on_the_same_slot_replaces_the_ended_request, setup, teardown),
+    cmocka_unit_test_setup_teardown(an_init_failing_after_its_observer_returns_it, setup, teardown),
     cmocka_unit_test_setup_teardown(deinit_zeroes_the_client, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_second_client_on_the_same_connection_is_refused, setup, teardown),
