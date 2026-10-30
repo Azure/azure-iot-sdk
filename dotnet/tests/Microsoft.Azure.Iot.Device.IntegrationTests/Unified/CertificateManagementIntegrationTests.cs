@@ -19,11 +19,14 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
     [Trait("Category", "CertificateManagement")]
     public class CertificateManagementIntegrationTests
     {
-        [Fact(Timeout = Setup.TestTimeoutMilliseconds)]
-        public async Task CanProvisionWithSymmetricKeyAndCertificateSigningThenConnectWithIssuedCertificate()
+        [Theory(Timeout = Setup.TestTimeoutMilliseconds)]
+        [InlineData(true)]
+        [InlineData(false, Traits = new[] { Setup.HubTrait, Setup.MQTTv5HubTraitValue })]
+        public async Task CanProvisionWithSymmetricKeyAndCertificateSigningThenConnectWithIssuedCertificate(bool testAgainstClassicHub)
         {
             using RSA privateKey = RSA.Create(2048);
             await using UnifiedDeviceTestContext device = await CreateConnectedUnifiedConnectionClientWithSymmetricKeyAsync(
+                testAgainstClassicHub,
                 cancellationToken: TestContext.Current.CancellationToken,
                 issuedCertificatePrivateKey: privateKey);
 
@@ -38,7 +41,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
             await device.ConnectionClient.DisconnectAsync(TestContext.Current.CancellationToken);
             Assert.Same(connectionContext, device.ConnectionClient.GetCurrentConnectionContext());
 
-            ProvisioningSettings provisioningSettings = new(DpsIdScope)
+            ProvisioningSettings provisioningSettings = new(GetDpsIdScope(testAgainstClassicHub))
             {
                 CertificateSigningRequest = new(privateKey, CertificateUtilities.GenerateCsrWithPrivateKey(device.RegistrationId, privateKey)),
             };
@@ -109,16 +112,16 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
 
         [Theory(Timeout = Setup.TestTimeoutMilliseconds)]
         [InlineData(true)]
-        [InlineData(false)]
+        [InlineData(false, Traits = new[] { Setup.HubTrait, Setup.MQTTv5HubTraitValue })]
         public async Task CanProvisionWithX509AndCertificateSigningThenConnectWithIssuedCertificate(bool testAgainstClassicHub)
         {
-            using CancellationTokenSource cts = new();
-            cts.CancelAfter(Setup.TestTimeoutMilliseconds - 1000);
-
             if (!testAgainstClassicHub)
             {
-                Assert.Skip("No MQTTv5 hub to test against yet");
+                Assert.Skip("MQTTv5 hub certificate renewal is not implemented.");
             }
+
+            using CancellationTokenSource cts = new();
+            cts.CancelAfter(Setup.TestTimeoutMilliseconds - 1000);
 
             string registrationId = Environment.GetEnvironmentVariable("IOT_DPS_GROUP_X509_REGISTRATION_ID")
                 ?? throw new InvalidOperationException("Missing IOT_DPS_GROUP_X509_REGISTRATION_ID environment variable.");
@@ -133,15 +136,14 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
 
             ConnectionClient connectionClient = new();
 
-            ProvisioningSettings provisioningSettings = new(DpsIdScope)
-            {
-                CertificateSigningRequest = new(privateKey, csrBase64),
-            };
+            ProvisioningSettings provisioningSettings = CreateProvisioningSettings(testAgainstClassicHub);
+            provisioningSettings.CertificateSigningRequest = new(privateKey, csrBase64);
 
             ConnectionContext connectionContext = await RetryAroundAuthorizationAsync<ConnectionContext>(
                 async () => await connectionClient.ProvisionAndConnectAsync(provisioningSettings, x509AuthenticationProvider, cancellationToken: TestContext.Current.CancellationToken),
                 TestContext.Current.CancellationToken);
 
+            Assert.Equal(testAgainstClassicHub ? IotHubConnectionType.Mqttv3 : IotHubConnectionType.Mqttv5, connectionContext.ConnectionProfile);
             Assert.NotNull(connectionContext.IssuedClientCertificates);
             Assert.NotEmpty(connectionContext.IssuedClientCertificates);
 

@@ -13,6 +13,9 @@ certificate signing request (CSR) to IoT Hub and reconnects with the certificate
 | `sas-issued` | SAS token + CSR | Certificate DPS issued, paired with the CSR key by the SDK | Yes | `SymmetricKeyAuthenticationProvider(registrationId, idScope, key, secondaryKey, privateKey)` |
 | `sas-issued-callback` | SAS token + CSR | Certificate DPS issued, prepared by an application callback | Yes, with a new key | `SymmetricKeyAuthenticationProvider(registrationId, idScope, key, secondaryKey, callback)` |
 
+> **Note:** Symmetric key authentication only works with MQTTv3 IoT Hubs; MQTTv5 IoT Hubs only accept X.509
+> authentication. The `sas*` scenarios need a symmetric key enrollment that assigns the device to an MQTTv3 IoT Hub.
+
 ### Pairing with a private key or a callback
 
 - **Private key**: the SDK pairs each issued certificate with the key you pass to the provider. Every CSR the device
@@ -31,7 +34,8 @@ context.
 
 1. Run [SetupSampleDevice](../../SetupSampleDevice/) as described in the [samples README](../../README.md). It creates
    two DPS individual enrollments: an X.509 one (for the `x509*` scenarios) and a symmetric key one (for the `sas*`
-   scenarios), and saves their credentials in the samples directory.
+   scenarios), and saves their credentials in the samples directory. The symmetric key enrollment must assign the
+   device to an MQTTv3 IoT Hub.
 2. For the `*-issued*` scenarios only, DPS must issue certificates. That needs DPS and IoT Hub set up with
    [certificate management (preview)](https://learn.microsoft.com/azure/iot-hub/iot-hub-device-registry-setup), and the
    enrollment linked to a credential policy. Link the enrollments that SetupSampleDevice created to your policy (for

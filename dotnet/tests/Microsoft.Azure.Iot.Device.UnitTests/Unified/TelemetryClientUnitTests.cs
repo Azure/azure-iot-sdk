@@ -5,7 +5,6 @@ using Microsoft.Azure.Iot.Device.Exceptions;
 using Microsoft.Azure.Iot.Device.Models.Telemetry;
 using Microsoft.Azure.Iot.Device.Mqtt;
 using Microsoft.Azure.Iot.Device.Models;
-using Microsoft.Azure.Iot.Device.Provisioning.Models;
 using Microsoft.Azure.Iot.Device.Unified.Connection;
 using Microsoft.Azure.Iot.Device.Unified.Telemetry;
 using System.Text;
@@ -390,6 +389,30 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
             Assert.Contains($"&{TelemetryClient.MessagePropertyContentType}={Uri.EscapeDataString("application/json")}", publish.Topic);
             Assert.Contains($"&{TelemetryClient.MessagePropertyContentEncoding}=utf-8", publish.Topic);
             Assert.Contains($"&customKey={Uri.EscapeDataString("custom value")}", publish.Topic);
+        }
+
+        [Fact]
+        public async Task SendTelemetryAsync_MqttV5_PublishesToMqttv5Topic()
+        {
+            MockFeatureConnectionClient connection = new()
+            {
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv5, DeviceId),
+            };
+            using TelemetryClient telemetryClient = new(connection);
+
+            DeviceToCloudTelemetry message = new()
+            {
+                Payload = Encoding.UTF8.GetBytes("hello"),
+                MessageId = "message-1",
+            };
+
+            await telemetryClient.SendTelemetryAsync(message, TestContext.Current.CancellationToken);
+
+            MqttPublish publish = Assert.Single(connection.PublishedMessages);
+            // The device ID is left for the connection client to fill in when it actually sends the publish.
+            Assert.Equal($"ih/{IConnectionClient.DeviceIdPlaceholder}/srv/telemetry", publish.Topic);
+            Assert.Equal(Encoding.UTF8.GetBytes("hello"), publish.Payload);
+            Assert.Contains(publish.UserProperties, p => p.Name == TelemetryClient.MessagePropertyMessageId && p.ReadValueAsString() == "message-1");
         }
 
         [Fact]
