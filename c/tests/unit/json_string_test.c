@@ -3,11 +3,12 @@
 // information.
 
 /* SPDX-License-Identifier: MIT */
-/* Unit tests for az_iot_json_string_decode(): every escape form, each UTF-8
- * width, surrogate pairs, truncation, and destination bounds. */
+/* Unit tests for az_iot_json_string_decode() and az_iot_json_string_equals(): every escape form,
+ * each UTF-8 width, surrogate pairs, truncation, and destination bounds. */
 #include <stdarg.h>
 #include <stddef.h>
 #include <setjmp.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <string.h>
 
@@ -147,6 +148,32 @@ static void a_null_output_is_rejected(void** state)
       AZ_IOT_ERR_INVALID_ARG);
 }
 
+static bool equals(const char* escaped, const char* plain)
+{
+  return az_iot_json_string_equals(
+      az_span_create((uint8_t*)(uintptr_t)escaped, (int32_t)strlen(escaped)),
+      az_span_create((uint8_t*)(uintptr_t)plain, (int32_t)strlen(plain)));
+}
+
+/* Escaped text equals its decoded form; any other text, a prefix or a
+ * malformed escape does not. */
+static void escaped_text_equals_its_decoded_form(void** state)
+{
+  (void)state;
+  assert_true(equals("", ""));
+  assert_true(equals("patch0", "patch0"));
+  assert_true(equals("microsoft\\/delta:1", "microsoft/delta:1"));
+  assert_true(equals("patch\\u0030", "patch0"));
+  assert_true(equals("\\u00e9\\ud83d\\ude00", "\xC3\xA9\xF0\x9F\x98\x80"));
+  assert_false(equals("microsoft\\/delta:1", "microsoft\\/delta:1"));
+  assert_false(equals("patch\\u0030", "patch"));
+  assert_false(equals("patch", "patch0"));
+  assert_false(equals("patch\\u0031", "patch0"));
+  assert_false(equals("patch\\x", "patch\\x"));
+  assert_false(equals("patch\\u00", "patch\\u00"));
+  assert_false(equals("\\ud83d", "\\ud83d"));
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -158,6 +185,7 @@ int main(void)
     cmocka_unit_test(a_destination_too_small_is_reported),
     cmocka_unit_test(decoding_in_place_is_supported),
     cmocka_unit_test(a_null_output_is_rejected),
+    cmocka_unit_test(escaped_text_equals_its_decoded_form),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }
