@@ -107,6 +107,9 @@ void* mock_paho_callback_context(void);
 
 MQTTAsync_messageArrived* mock_paho_message_arrived(void);
 MQTTAsync_connectionLost* mock_paho_connection_lost(void);
+/* The MQTT 5 server-DISCONNECT callback and its context, from MQTTAsync_setDisconnected(). */
+MQTTAsync_disconnected* mock_paho_disconnected(void);
+void* mock_paho_disconnected_context(void);
 
 /* Script the MQTT v5 User Properties that mock_paho_inbound_properties() returns
  * for an inbound message, so a test can drive the adapter's inbound property
