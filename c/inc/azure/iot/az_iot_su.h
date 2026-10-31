@@ -16,10 +16,11 @@
 /**
  * @brief Most steps an update manifest may have. Device Update allows 10.
  *
- * With AZ_IOT_SU_MAX_FILE_COUNT and AZ_IOT_SU_MAX_FILE_COUNT_PER_STEP, sizes the manifest
- * structures azure-sdk-for-c parses into and az_iot_su_client embeds. A manifest over any of
- * them fails parsing, so its workflow fails. Set them with the CMake options of the same names:
- * azure-sdk-for-c, the SDK and the application must all be built with the same values.
+ * With AZ_IOT_SU_MAX_FILE_COUNT and AZ_IOT_SU_MAX_FILE_COUNT_PER_STEP, sizes the parsed manifest
+ * az_iot_su_client embeds, and the azure-sdk-for-c request and install-result structures. A
+ * manifest over any of them fails parsing, so its workflow fails. Set them with the CMake options
+ * of the same names: azure-sdk-for-c, the SDK and the application must all be built with the same
+ * values.
  */
 #ifndef AZ_IOT_SU_MAX_STEP_COUNT
 #define AZ_IOT_SU_MAX_STEP_COUNT 10
@@ -53,7 +54,8 @@
 #define _az_IOT_ADU_CLIENT_MAX_FILE_COUNT_PER_STEP AZ_IOT_SU_MAX_FILE_COUNT_PER_STEP
 #endif
 
-/* azure-sdk-for-c manifest parsing types, re-exported below under software updates names. */
+/* azure-sdk-for-c request and install-result types, re-exported below under software updates
+ * names. */
 #include <azure/iot/az_iot_adu_client.h>
 
 #if _az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS != AZ_IOT_SU_MAX_STEP_COUNT  \
@@ -68,12 +70,94 @@ extern "C"
 {
 #endif
 
-  /* --- Upstream parsing types and limits (azure-sdk-for-c) ----------------- */
+  /* --- Update manifest (parsed by the SDK) --------------------------------- */
 
-  typedef az_iot_adu_client_update_manifest az_iot_su_client_update_manifest;
-  typedef az_iot_adu_client_update_manifest_file az_iot_su_client_update_manifest_file;
-  typedef az_iot_adu_client_update_manifest_instructions_step
-      az_iot_su_client_update_manifest_instructions_step;
+/** @brief Most hashes kept per manifest file; a file with more fails parsing. */
+#define AZ_IOT_SU_MAX_FILE_HASH_COUNT 2
+
+  /** @brief Identity of the update a manifest describes. */
+  typedef struct az_iot_su_client_update_manifest_update_id
+  {
+    az_span provider; /**< Update provider. */
+    az_span name; /**< Update name. */
+    az_span version; /**< Update version. */
+  } az_iot_su_client_update_manifest_update_id;
+
+  /** @brief Properties of a manifest step for its handler. */
+  typedef struct az_iot_su_client_update_manifest_instructions_step_handler_properties
+  {
+    /** Defines a successful installation of the step. */
+    az_span installed_criteria;
+  } az_iot_su_client_update_manifest_instructions_step_handler_properties;
+
+  /** @brief A step of the manifest instructions. */
+  typedef struct az_iot_su_client_update_manifest_instructions_step
+  {
+    /** Update handler of the step, e.g. `microsoft/swupdate:1`. */
+    az_span handler;
+    /** Ids of the files the step uses; see az_iot_su_client_update_manifest.files. */
+    az_span files[AZ_IOT_SU_MAX_FILE_COUNT_PER_STEP];
+    /** Number of items in `files`. */
+    uint32_t files_count;
+    /** Properties for the handler. */
+    az_iot_su_client_update_manifest_instructions_step_handler_properties handler_properties;
+  } az_iot_su_client_update_manifest_instructions_step;
+
+  /** @brief Instructions of an update manifest. */
+  typedef struct az_iot_su_client_update_manifest_instructions
+  {
+    /** Steps, in order. */
+    az_iot_su_client_update_manifest_instructions_step steps[AZ_IOT_SU_MAX_STEP_COUNT];
+    /** Number of items in `steps`. */
+    uint32_t steps_count;
+  } az_iot_su_client_update_manifest_instructions;
+
+  /** @brief A hash of a manifest file. */
+  typedef struct az_iot_su_client_update_manifest_file_hash
+  {
+    az_span hash_type; /**< Hash algorithm, e.g. `sha256`. */
+    az_span hash_value; /**< Base64 hash value. */
+  } az_iot_su_client_update_manifest_file_hash;
+
+  /** @brief A file of an update manifest. */
+  typedef struct az_iot_su_client_update_manifest_file
+  {
+    /** File id, as in step `files` and the request's `fileUrls`. */
+    az_span id;
+    /** File name. */
+    az_span file_name;
+    /** File size in bytes. */
+    int64_t size_in_bytes;
+    /** Hashes of the file. */
+    az_iot_su_client_update_manifest_file_hash hashes[AZ_IOT_SU_MAX_FILE_HASH_COUNT];
+    /** Number of items in `hashes`. */
+    uint32_t hashes_count;
+  } az_iot_su_client_update_manifest_file;
+
+  /**
+   * @brief A parsed update manifest. Spans point into the manifest text.
+   *
+   * Members the SDK does not use, such as `compatibility`, file `relatedFiles`,
+   * `downloadHandler`, `mimeType` and `properties`, are skipped.
+   */
+  typedef struct az_iot_su_client_update_manifest
+  {
+    /** Manifest schema version. */
+    az_span manifest_version;
+    /** Identity of the update. */
+    az_iot_su_client_update_manifest_update_id update_id;
+    /** Steps to run. */
+    az_iot_su_client_update_manifest_instructions instructions;
+    /** Files the steps use. */
+    az_iot_su_client_update_manifest_file files[AZ_IOT_SU_MAX_FILE_COUNT];
+    /** Number of items in `files`. */
+    uint32_t files_count;
+    /** Creation date and time. */
+    az_span create_date_time;
+  } az_iot_su_client_update_manifest;
+
+  /* --- Upstream types (azure-sdk-for-c) ------------------------------------ */
+
   typedef az_iot_adu_client_update_request az_iot_su_client_update_request;
   typedef az_iot_adu_client_file_url az_iot_su_client_file_url;
   typedef az_iot_adu_client_install_result az_iot_su_client_install_result;
@@ -898,9 +982,6 @@ extern "C"
       } channel_storage;
       az_iot_su_platform_hooks hooks;
       const az_iot_crypto* crypto;
-
-      /* Upstream parser/formatter handle. */
-      az_iot_adu_client az;
 
       /* Root-key store, in the workspace (az_iot_su_limits::max_root_keys entries). The
        * descriptors' key bytes reference caller arrays. */

@@ -5949,9 +5949,7 @@ static void update_at_the_manifest_limits_installs_every_step(void** state)
 }
 
 /* A manifest one over any limit fails before anything is downloaded, is reported failed, and
- * logs the limit; the public parser refuses it with AZ_IOT_ERR_NOT_ENOUGH_SPACE. The step and
- * hash counts are not bounded by the azure-sdk-for-c parser, so this also keeps it from
- * writing past its arrays. */
+ * logs the limit; the public parser refuses it with AZ_IOT_ERR_NOT_ENOUGH_SPACE. */
 static void update_over_a_manifest_limit_fails_before_download(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -5967,7 +5965,7 @@ static void update_over_a_manifest_limit_fails_before_download(void** state)
     { { 1, AZ_IOT_SU_MAX_FILE_COUNT + 1, 1, 1, NULL }, "AZ_IOT_SU_MAX_FILE_COUNT is" },
     { { 1, AZ_IOT_SU_MAX_FILE_COUNT, AZ_IOT_SU_MAX_FILE_COUNT_PER_STEP + 1, 1, NULL },
       "AZ_IOT_SU_MAX_FILE_COUNT_PER_STEP" },
-    { { 1, 1, 1, _az_IOT_ADU_CLIENT_MAX_FILE_HASH_COUNT + 1, NULL }, "hashes" },
+    { { 1, 1, 1, AZ_IOT_SU_MAX_FILE_HASH_COUNT + 1, NULL }, "hashes" },
   };
   for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i)
   {
@@ -6004,8 +6002,8 @@ static void update_over_a_manifest_limit_fails_before_download(void** state)
   }
 }
 
-/* A file mimeType that is not a string is refused before parsing: the azure-sdk-for-c parser
- * would read its members as file properties, past the hash count checked here. */
+/* A file mimeType that is not a string makes the manifest malformed: it fails before
+ * download. */
 static void manifest_with_a_non_string_mime_type_fails_before_download(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -6036,6 +6034,29 @@ static void manifest_with_a_non_string_mime_type_fails_before_download(void** st
           &request,
           &manifest),
       AZ_IOT_ERR_INVALID_ARG);
+}
+
+/* A file carrying delta members (properties, relatedFiles, downloadHandler) installs. */
+static void manifest_with_delta_file_members_installs(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  const manifest_shape shape
+      = { .step_count = 1,
+          .file_count = 1,
+          .first_step_file_count = 1,
+          .hash_count = 1,
+          .file_extra = ",\"properties\":{\"k\":\"v\"},\"relatedFiles\":{\"d\":{\"fileName\":"
+                        "\"d.delta\",\"sizeInBytes\":8,\"hashes\":{\"sha256\":\"AAAA\"},"
+                        "\"properties\":{\"microsoft.sourceFileHash\":\"AAAA\"}}},"
+                        "\"downloadHandler\":{\"id\":\"microsoft/delta:1\"}" };
+
+  inject_patch(fx, manifest_limits_patch("delta-file-members", shape));
+  pump(fx, 60);
+
+  assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_IDLE);
+  assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_SUCCEEDED);
+  assert_int_equal(fx->log.download_calls, 1);
 }
 /* The update body carries service-issued download URLs; DEBUG logs only its
  * size, TRACE the body. */
@@ -9755,6 +9776,7 @@ int main(void)
         update_over_a_manifest_limit_fails_before_download, setup, teardown),
     cmocka_unit_test_setup_teardown(
         manifest_with_a_non_string_mime_type_fails_before_download, setup, teardown),
+    cmocka_unit_test_setup_teardown(manifest_with_delta_file_members_installs, setup, teardown),
     cmocka_unit_test_setup_teardown(update_metadata_drives_full_workflow, setup, teardown),
     cmocka_unit_test_setup_teardown(escaped_file_url_is_decoded, setup, teardown),
     cmocka_unit_test_setup_teardown(escaped_workflow_id_is_decoded, setup, teardown),
