@@ -120,10 +120,26 @@ eng/esp-idf-qemu.sh /tmp/hub/unified-esp32-esp32-qemu/build esp32 "Got IPv4 even
 ```
 
 Without an identity partition in the flash image, the sample stops at
-`no device certificate in the esp_secure_cert partition`.
+`no device certificate in the esp_secure_cert partition`. To give it one, from a device
+certificate and key:
 
-## CI builds
+```sh
+eng/esp-idf-qemu-identity.sh /tmp/hub/unified-esp32-esp32-qemu/build esp32 cert.pem key.pem /tmp/id
+QEMU_FLASH_EXTRA="0xd000 /tmp/id/esp_secure_cert.bin" \
+  eng/esp-idf-qemu.sh /tmp/hub/unified-esp32-esp32-qemu/build esp32 "ready on"
+```
+
+esp32c3 and esp32s3 builds use the Digital Signature peripheral by default
+(`CONFIG_ESP_SECURE_CERT_DS_PERIPHERAL`). For esp32c3 the script burns the key into an emulated
+eFuse: add `QEMU_EFUSE=/tmp/id/qemu_efuse.bin`. DS takes RSA keys of at most 3072 bits. The
+script does not write DS identities for esp32s3.
+
+## CI
 
 CI (`ci-c`, job `esp-idf`) builds this sample for esp32, esp32c3, esp32s3 and esp32c6, and the
 `qemu` profile for esp32, esp32s3 and esp32c3, which it boots in QEMU until it gets an IPv4
 address. Any compiler warning fails the build.
+
+`ci-c-e2e` (job `esp32-qemu`) runs it in QEMU on esp32 and esp32c3 (key in DS) against an IoT
+Hub: telemetry, the `echo` method and a desired-version acknowledgement
+([ESP32 in QEMU](../../../docs/eng/end-to-end-tests.md#esp32-in-qemu)).

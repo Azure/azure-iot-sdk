@@ -348,6 +348,11 @@
   `esp_secure_cert` identity, then telemetry, the `echo` direct method and desired-twin
   acknowledgements on the assigned hub (mqttv3 or mqttv5). CI builds it for esp32, esp32c3,
   esp32s3 and esp32c6, and boots its QEMU build on esp32, esp32s3 and esp32c3.
+- ESP32 end-to-end test: `ci-c-e2e` runs the ESP32 IoT Hub sample in QEMU on esp32 and esp32c3
+  against an IoT Hub (telemetry, the `echo` method, a desired-version acknowledgement), with
+  the esp32c3 key in the emulated Digital Signature peripheral. `eng/esp-idf-qemu-e2e.sh` runs it
+  locally; `eng/esp-idf-qemu-identity.sh` writes a QEMU device identity
+  ([docs](docs/eng/end-to-end-tests.md#esp32-in-qemu)).
 
 ### Bugs Fixed
 
