@@ -155,12 +155,10 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             MqttV5ConnectionClientOptions options = new()
             {
                 MqttClient = mockMqttClient,
-                InitialDesiredPropertiesVersion = 5,
-                InitialReportedPropertiesVersion = 3,
                 ConnectionRetryPolicy = new ExponentialBackoffRetryPolicy(uint.MaxValue, TimeSpan.Zero, useJitter: false),
             };
             using ConnectionClient connectionClient = new(options);
-            using TwinClient twinClient = new(connectionClient);
+            using TwinClient twinClient = new(connectionClient, new Device.Models.Twin.TwinState() { DesiredVersion = 5, ReportedVersion = 3 });
 
             await connectionClient.ConnectToHubAsync(GetMockConnectionContext(), TestContext.Current.CancellationToken)
                 .WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
@@ -199,6 +197,48 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             Assert.Equal(3ul, births[0].ReportedVersion);
             Assert.Equal(7ul, births[1].DesiredVersion);
             Assert.Equal(4ul, births[1].ReportedVersion);
+        }
+
+        [Fact]
+        public async Task BirthAsDifferentIdentityAnnouncesNoTwinVersions()
+        {
+            using MockConnectionMqttClient mockMqttClient = new() { AutoRespondToBirth = true };
+            MqttV5ConnectionClientOptions options = new()
+            {
+                MqttClient = mockMqttClient,
+                ConnectionRetryPolicy = new ExponentialBackoffRetryPolicy(uint.MaxValue, TimeSpan.Zero, useJitter: false),
+            };
+            using ConnectionClient connectionClient = new(options);
+            using TwinClient twinClient = new(connectionClient, new Device.Models.Twin.TwinState() { DesiredVersion = 5, ReportedVersion = 3 });
+
+            await connectionClient.ConnectToHubAsync(GetMockConnectionContext(), TestContext.Current.CancellationToken)
+                .WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+            await connectionClient.DisconnectAsync(TestContext.Current.CancellationToken);
+
+#pragma warning disable SYSLIB0026 // Mock certificate
+            ConnectionContext otherIdentity = new()
+            {
+                AuthenticationProvider = new X509AuthenticationProvider(new System.Security.Cryptography.X509Certificates.X509Certificate2(), null),
+                DeviceId = "someOtherDeviceId",
+                IotHubHostName = "someHostName",
+                ConnectionProfile = IotHubConnectionType.Mqttv5,
+            };
+#pragma warning restore SYSLIB0026
+            await connectionClient.ConnectToHubAsync(otherIdentity, TestContext.Current.CancellationToken)
+                .WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+
+            Birth[] births = mockMqttClient.SentMqttTrafficInOrder
+                .Select(traffic => traffic.Publish).OfType<MqttPublish>()
+                .Where(publish => publish.Topic.EndsWith("/srv/presence", StringComparison.Ordinal))
+                .Select(publish => Birth.Parser.ParseFrom(publish.Payload))
+                .ToArray();
+            Assert.Equal(2, births.Length);
+            Assert.Equal(5ul, births[0].DesiredVersion);
+            Assert.Equal(3ul, births[0].ReportedVersion);
+            Assert.Equal(0ul, births[1].DesiredVersion);
+            Assert.Equal(0ul, births[1].ReportedVersion);
+            Assert.Equal(0ul, twinClient.GetTwinState().DesiredVersion);
+            Assert.Equal(0ul, twinClient.GetTwinState().ReportedVersion);
         }
 
         [Fact]
@@ -302,11 +342,10 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             MqttV5ConnectionClientOptions options = new()
             {
                 MqttClient = mockMqttClient,
-                InitialDesiredPropertiesVersion = 3,
-                InitialReportedPropertiesVersion = 2,
                 ConnectionRetryPolicy = new ExponentialBackoffRetryPolicy(uint.MaxValue, TimeSpan.Zero, useJitter: false),
             };
             using ConnectionClient connectionClient = new(options);
+            using TwinClient twinClient = new(connectionClient, new Device.Models.Twin.TwinState() { DesiredVersion = 3, ReportedVersion = 2 });
             bool scheduleRequested = false;
             connectionClient.TwinPushTimeoutSchedule = _ =>
             {

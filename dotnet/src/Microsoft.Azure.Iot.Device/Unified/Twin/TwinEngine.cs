@@ -216,15 +216,15 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
         /// </param>
         /// <remarks>
         /// Reported properties patches are held until the device connects. The versions in <paramref name="initialState"/>
-        /// replace any initial versions in the connection client's options, so that IoT hub only pushes (or, for MQTTv3, the
-        /// connect sync only raises) the twin sections that changed. Its pending reported properties patches are sent, in order,
-        /// before any made afterwards. Their outcomes are raised by <see cref="ReportedPatchCompleted"/>.
+        /// are announced to IoT hub upon connecting, so that IoT hub only pushes (or, for MQTTv3, the connect sync only raises)
+        /// the twin sections that changed. Its pending reported properties patches are sent, in order, before any made
+        /// afterwards. Their outcomes are raised by <see cref="ReportedPatchCompleted"/>. If the device later connects as a
+        /// different IoT hub or device ID than the one it last connected as (or that the connection client was constructed
+        /// with), the desired and reported properties are discarded, since they belong to the previous identity.
         /// </remarks>
         public TwinEngine(IConnectionClient connection, TwinState? initialState)
         {
             _connection = connection;
-            _localDesiredVersion = connection.InitialDesiredPropertiesVersion;
-            _localReportedVersion = connection.InitialReportedPropertiesVersion;
             if (initialState != null)
             {
                 _localDesiredVersion = initialState.DesiredVersion;
@@ -242,6 +242,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
             _connection.PublishReceivedAsync += HandleReceivedMqttPublish;
             _connection.ConnectionLost += HandleConnectionLost;
             _connection.ClassicDevicePresenceEstablished += HandleClassicDevicePresenceEstablished;
+            _connection.HubIdentityChanged += HandleHubIdentityChanged;
 
             if (_connection.IsClassicDevicePresenceEstablished)
             {
@@ -925,6 +926,36 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
             {
                 CancelDesiredResync();
             }
+        }
+
+        // The device's copy of its twin belongs to the identity it came from, so it is discarded before the device announces
+        // its presence as a different identity. IoT hub then pushes (or, for MQTTv3, the connect sync fetches) the new
+        // identity's twin in full. Pending reported properties patches are kept and sent to the new identity.
+        private void HandleHubIdentityChanged()
+        {
+            if (_isDisposed)
+            {
+                return;
+            }
+
+            Trace.TraceInformation("This device is connecting as a different identity, so discarding its copy of the twin.");
+            lock (_desiredStateLock)
+            {
+                CancelDesiredResync();
+                lock (_twinStateLock)
+                {
+                    _localDesiredVersion = 0;
+                    _desiredProperties = new JsonObject();
+                    _isTwinStateChanged = true;
+                }
+            }
+
+            lock (_reportedStateLock)
+            {
+                SetLocalReportedState(0, new JsonObject());
+            }
+
+            RaiseTwinEvents();
         }
 
         private static DeviceException CreateGetTwinConnectionLostException()
@@ -1928,6 +1959,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
             _connection.PublishReceivedAsync -= HandleReceivedMqttPublish;
             _connection.ConnectionLost -= HandleConnectionLost;
             _connection.ClassicDevicePresenceEstablished -= HandleClassicDevicePresenceEstablished;
+            _connection.HubIdentityChanged -= HandleHubIdentityChanged;
             lock (_desiredStateLock)
             {
                 CancelDesiredResync();

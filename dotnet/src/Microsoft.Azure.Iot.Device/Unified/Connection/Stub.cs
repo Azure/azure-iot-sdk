@@ -64,6 +64,12 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
             remove => _unifiedConnectionClient.ClassicDevicePresenceEstablished -= value;
         }
 
+        event Action? MQTTv5.Connection.IConnectionClient.HubIdentityChanged
+        {
+            add => _unifiedConnectionClient.HubIdentityChanged += value;
+            remove => _unifiedConnectionClient.HubIdentityChanged -= value;
+        }
+
         bool MQTTv5.Connection.IConnectionClient.IsClassicDevicePresenceEstablished => _unifiedConnectionClient.IsClassicDevicePresenceEstablished;
 
         MQTTv5.Connection.BirthAckVersions? MQTTv5.Connection.IConnectionClient.LatestBirthAck => _unifiedConnectionClient.LatestBirthAck;

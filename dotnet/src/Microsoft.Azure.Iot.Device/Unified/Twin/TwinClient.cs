@@ -91,7 +91,9 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
         /// Its pending reported properties patches are sent, in order, before any made afterwards. Their outcomes are raised by
         /// <see cref="ReportedPatchCompleted"/>. MQTTv5 IoT hubs only push the twin sections that changed since this snapshot.
         /// MQTTv3 IoT hubs always return the full twin, but <see cref="TwinPushReceived"/> is still only raised with the
-        /// sections that changed.
+        /// sections that changed. If the device later connects as a different IoT hub or device ID than the one it last
+        /// connected as (or that the connection client was constructed with), the desired and reported properties are
+        /// discarded, since they belong to the previous identity.
         /// </remarks>
         /// <exception cref="InvalidOperationException">Thrown if <paramref name="connection"/> opted out of twins (see <see cref="ConnectionClientOptions.EnableTwin"/>).</exception>
         public TwinClient(IConnectionClient connection, TwinState? initialState)

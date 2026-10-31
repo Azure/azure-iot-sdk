@@ -49,6 +49,20 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
 
         private event Action? ClassicDevicePresenceEstablished;
 
+        private event Action? HubIdentityChanged;
+
+        event Action? IConnectionClient.HubIdentityChanged
+        {
+            add => HubIdentityChanged += value;
+            remove => HubIdentityChanged -= value;
+        }
+
+        internal override void HandleHubIdentityChanged()
+        {
+            _mqttv5ConnectionClient.ForgetTwinVersions();
+            HubIdentityChanged?.Invoke();
+        }
+
         event Action? IConnectionClient.ClassicDevicePresenceEstablished
         {
             add => ClassicDevicePresenceEstablished += value;

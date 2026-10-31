@@ -94,19 +94,31 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             ClassicDevicePresenceEstablished?.Invoke();
         }
 
-        public ulong InitialDesiredPropertiesVersion { get; set; }
-
-        public ulong InitialReportedPropertiesVersion { get; set; }
-
         /// <summary>Every desired properties version a feature client reported that the device now holds, in order.</summary>
         public List<ulong> ObservedDesiredPropertiesVersions { get; } = new();
 
         /// <summary>Every reported properties version a feature client reported that the device now holds, in order.</summary>
         public List<ulong> ObservedReportedPropertiesVersions { get; } = new();
 
-        ulong global::Microsoft.Azure.Iot.Device.MQTTv5.Connection.IConnectionClient.InitialDesiredPropertiesVersion => InitialDesiredPropertiesVersion;
+        public event Action? HubIdentityChanged;
 
-        ulong global::Microsoft.Azure.Iot.Device.MQTTv5.Connection.IConnectionClient.InitialReportedPropertiesVersion => InitialReportedPropertiesVersion;
+        event Action? global::Microsoft.Azure.Iot.Device.MQTTv5.Connection.IConnectionClient.HubIdentityChanged
+        {
+            add => HubIdentityChanged += value;
+            remove => HubIdentityChanged -= value;
+        }
+
+        event Action? global::Microsoft.Azure.Iot.Device.Unified.Connection.IConnectionClient.HubIdentityChanged
+        {
+            add => HubIdentityChanged += value;
+            remove => HubIdentityChanged -= value;
+        }
+
+        /// <summary>Notify feature clients that the device is about to connect as a different IoT hub or device ID.</summary>
+        public void SimulateHubIdentityChanged()
+        {
+            HubIdentityChanged?.Invoke();
+        }
 
         void global::Microsoft.Azure.Iot.Device.MQTTv5.Connection.IConnectionClient.ObserveDesiredPropertiesVersion(ulong version) => ObservedDesiredPropertiesVersions.Add(version);
 

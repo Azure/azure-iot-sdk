@@ -218,6 +218,28 @@ namespace Microsoft.Azure.Iot.Device
 
         public ConnectionContext? GetCurrentConnectionContext() => CurrentConnectionContext;
 
+        // The IoT hub and device ID of the most recent connection to IoT hub (or of the assignment the application restored
+        // into this client), so that state tied to that identity, such as the device's copy of its twin, can be discarded
+        // once the device connects as a different one.
+        private volatile HubIdentity? _hubIdentity;
+
+        private sealed record HubIdentity(string IotHubHostName, string DeviceId)
+        {
+            public bool Matches(ConnectionContext connectionContext)
+            {
+                return string.Equals(IotHubHostName, connectionContext.IotHubHostName, StringComparison.OrdinalIgnoreCase)
+                    && string.Equals(DeviceId, connectionContext.DeviceId, StringComparison.Ordinal);
+            }
+        }
+
+        /// <summary>
+        /// Called when this client is about to connect to IoT hub as a different identity (IoT hub or device ID) than on its
+        /// previous connection, before the device presence flow runs for the new identity.
+        /// </summary>
+        internal virtual void HandleHubIdentityChanged()
+        {
+        }
+
         // Backing field for CurrentEndpoint. Volatile because it is written on a caller thread (as a connection is
         // established) and read on the connection layer's callback threads (which dispatch the provisioning vs. device
         // presence flow on it), so every thread must observe the latest value.
@@ -379,6 +401,10 @@ namespace Microsoft.Azure.Iot.Device
             // Seed any assignment the application restored so that ProvisionAndConnectAsync can try connecting directly
             // to it before falling back to provisioning for a fresh one.
             CurrentConnectionContext = connectionContext;
+            if (connectionContext != null)
+            {
+                _hubIdentity = new HubIdentity(connectionContext.IotHubHostName, connectionContext.DeviceId);
+            }
 
             _connectionRetryPolicy = options.ConnectionRetryPolicy;
             _useCleanSession = options.UseCleanSession;
@@ -838,6 +864,20 @@ namespace Microsoft.Azure.Iot.Device
             // Every connection to a hub starts again with the primary credentials, mirroring the C client's open().
             connectionContext.UsesSecondaryCredentials = false;
             CurrentConnectionContext = connectionContext;
+
+            HubIdentity? previousIdentity = _hubIdentity;
+            if (previousIdentity != null && !previousIdentity.Matches(connectionContext))
+            {
+                Trace.TraceInformation(
+                    "Connecting as device {0} on IoT hub {1} instead of device {2} on IoT hub {3}, so discarding state tied to the previous identity.",
+                    connectionContext.DeviceId,
+                    connectionContext.IotHubHostName,
+                    previousIdentity.DeviceId,
+                    previousIdentity.IotHubHostName);
+                HandleHubIdentityChanged();
+            }
+
+            _hubIdentity = new HubIdentity(connectionContext.IotHubHostName, connectionContext.DeviceId);
 
             // Any session left on this IoT hub was not set up by this connection's presence flow, so its subscriptions are unknown.
             ClearDevicePresenceSubscribed();

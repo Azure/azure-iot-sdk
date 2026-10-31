@@ -339,15 +339,15 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.MQTTv5
         }
 
         [Fact(Timeout = Setup.TestTimeoutMilliseconds)]
-        public async Task TestInitialDesiredVersionNewerThanHubResyncsDesiredProperties()
+        public async Task TestRestoredDesiredVersionNewerThanHubResyncsDesiredProperties()
         {
             CancellationToken cancellationToken = TestContext.Current.CancellationToken;
             using RegistryManager registryManager = Setup.GetMQTTv5IotHubRegistryManager();
             MQTTv5DeviceTestContext testDeviceContext = await Setup.CreateProvisionableMQTTv5DeviceAsync(
                 null,
-                new Device.MQTTv5.Models.ConnectionClientOptions() { InitialDesiredPropertiesVersion = 1000 },
+                new Device.MQTTv5.Models.ConnectionClientOptions(),
                 cancellationToken);
-            using TwinClient twinClient = new(testDeviceContext.ConnectionClient);
+            using TwinClient twinClient = new(testDeviceContext.ConnectionClient, new TwinState() { DesiredVersion = 1000 });
             await using (testDeviceContext)
             {
                 TwinEventRecorder events = new(twinClient);

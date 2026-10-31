@@ -45,6 +45,9 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
         /// </summary>
         internal event Action? ConnectionLost { add { } remove { } }
 
+        /// <inheritdoc cref="MQTTv5.Connection.IConnectionClient.HubIdentityChanged"/>
+        internal event Action? HubIdentityChanged { add { } remove { } }
+
         /// <inheritdoc cref="MQTTv5.Connection.IConnectionClient.ClassicDevicePresenceEstablished"/>
         internal event Action? ClassicDevicePresenceEstablished { add { } remove { } }
 

@@ -1010,11 +1010,10 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
         }
 
         [Fact]
-        public async Task InitialDesiredVersion_NextPatchIsDeliveredWithoutResync()
+        public async Task RestoredDesiredVersion_NextPatchIsDeliveredWithoutResync()
         {
             (MockFeatureConnectionClient connection, Guid nonce) = CreateConnectionWithNonce();
-            connection.InitialDesiredPropertiesVersion = 5;
-            using TwinClient twinClient = new(connection);
+            using TwinClient twinClient = new(connection, new TwinState() { DesiredVersion = 5 });
 
             DesiredPatchReceivedEventArgs? received = null;
             twinClient.DesiredPatchReceived += args => received = args;
@@ -1031,8 +1030,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
         public async Task ReportedPatchOk_RecordsReportedVersionOnlyWhenDeviceHeldPreviousVersion()
         {
             (MockFeatureConnectionClient connection, _) = CreateConnectionWithNonce();
-            connection.InitialReportedPropertiesVersion = 3;
-            using TwinClient twinClient = new(connection);
+            using TwinClient twinClient = new(connection, new TwinState() { ReportedVersion = 3 });
             await ReceiveBirthAckAsync(connection, connection.ConnectionNonce!.Value, desiredVersion: 1, reportedVersion: 3);
 
             ulong nextResponseVersion = 0;
@@ -1090,8 +1088,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
         public async Task BirthAck_OlderDesiredVersionThanHeld_DiscardsHeldVersionAndResyncs()
         {
             (MockFeatureConnectionClient connection, Guid nonce) = CreateConnectionWithNonce();
-            connection.InitialDesiredPropertiesVersion = 10;
-            using TwinClient twinClient = new(connection);
+            using TwinClient twinClient = new(connection, new TwinState() { DesiredVersion = 10 });
 
             TwinPushReceivedEventArgs? snapshot = null;
             twinClient.TwinPushReceived += args => snapshot = args;
@@ -1104,7 +1101,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
 
             await ReceiveBirthAckAsync(connection, nonce, desiredVersion: 5, reportedVersion: 1);
 
-            Assert.Equal(new[] { 0ul }, connection.ReplacedDesiredPropertiesVersions);
+            Assert.Equal(new[] { 10ul, 0ul }, connection.ReplacedDesiredPropertiesVersions);
             MqttPublish get = Assert.Single(connection.PublishedMessages);
             Assert.Equal("get:1", GetType(get));
 
@@ -1119,12 +1116,11 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
         public async Task BirthAck_OlderReportedVersionThanHeld_DiscardsHeldVersion()
         {
             (MockFeatureConnectionClient connection, Guid nonce) = CreateConnectionWithNonce();
-            connection.InitialReportedPropertiesVersion = 10;
-            using TwinClient twinClient = new(connection);
+            using TwinClient twinClient = new(connection, new TwinState() { ReportedVersion = 10 });
 
             await ReceiveBirthAckAsync(connection, nonce, desiredVersion: 1, reportedVersion: 5);
 
-            Assert.Equal(new[] { 0ul }, connection.ReplacedReportedPropertiesVersions);
+            Assert.Equal(new[] { 10ul, 0ul }, connection.ReplacedReportedPropertiesVersions);
             Assert.Empty(connection.PublishedMessages);
         }
 
@@ -1132,14 +1128,44 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
         public async Task TwinPush_OlderReportedVersionThanHeld_AdoptsPushedVersion()
         {
             (MockFeatureConnectionClient connection, Guid nonce) = CreateConnectionWithNonce();
-            connection.InitialReportedPropertiesVersion = 10;
-            using TwinClient twinClient = new(connection);
+            using TwinClient twinClient = new(connection, new TwinState() { ReportedVersion = 10 });
 
             var push = new TwinPush() { Reported = new Section { Version = 5, Payload = ByteString.CopyFromUtf8("{}") } };
             await connection.SimulateReceiveAsync(CreateInboundTwinPublish("twin-push:1", nonce.ToByteArray(bigEndian: true), push.ToByteArray()));
             await ReceiveBirthAckAsync(connection, nonce, desiredVersion: 1, reportedVersion: 5);
 
-            Assert.Equal(new[] { 5ul }, connection.ReplacedReportedPropertiesVersions);
+            Assert.Equal(new[] { 10ul, 5ul }, connection.ReplacedReportedPropertiesVersions);
+        }
+
+        [Fact]
+        public async Task HubIdentityChanged_DiscardsCopyOfTwinAndKeepsPendingPatches()
+        {
+            (MockFeatureConnectionClient connection, _) = CreateConnectionWithNonce();
+            TwinState restored = new()
+            {
+                DesiredVersion = 5,
+                Desired = new JsonObject() { ["mode"] = "eco" },
+                ReportedVersion = 3,
+                Reported = new JsonObject() { ["temperature"] = 20 },
+                PendingReportedPatches = [new JsonObject() { ["temperature"] = 21 }],
+            };
+            using TwinClient twinClient = new(connection, restored);
+            TwinState? raised = null;
+            twinClient.TwinStateChanged += state => raised = state;
+
+            connection.SimulateHubIdentityChanged();
+
+            TwinState state = twinClient.GetTwinState();
+            Assert.Equal(0ul, state.DesiredVersion);
+            Assert.Empty(state.Desired);
+            Assert.Equal(0ul, state.ReportedVersion);
+            Assert.Empty(state.Reported);
+            Assert.Equal(21, (int)Assert.Single(state.PendingReportedPatches)["temperature"]!);
+            Assert.Equal(0ul, raised!.DesiredVersion);
+
+            // The new identity's twin is delivered in full, without a resync.
+            await ReceiveTwinPushAsync(connection, connection.ConnectionNonce!.Value, 5, "{\"mode\":\"cool\"}");
+            Assert.Equal("cool", (string)twinClient.GetTwinState().Desired["mode"]!);
         }
 
         [Fact]

@@ -60,9 +60,11 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
         /// device holds no copy of its twin.
         /// </param>
         /// <remarks>
-        /// The versions in <paramref name="initialState"/> replace any initial versions in the connection client's options, so
-        /// that IoT hub only pushes the twin sections that changed. Its pending reported properties patches are sent, in order,
-        /// before any made afterwards. Their outcomes are raised by <see cref="ReportedPatchCompleted"/>.
+        /// The versions in <paramref name="initialState"/> are announced to IoT hub upon connecting, so that IoT hub only pushes
+        /// the twin sections that changed. Its pending reported properties patches are sent, in order, before any made
+        /// afterwards. Their outcomes are raised by <see cref="ReportedPatchCompleted"/>. If the device later connects as a
+        /// different IoT hub or device ID than the one it last connected as (or that the connection client was constructed
+        /// with), the desired and reported properties are discarded, since they belong to the previous identity.
         /// </remarks>
         public TwinClient(IConnectionClient connection, TwinState? initialState)
         {

@@ -50,8 +50,13 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
             remove => HubConnectionLost -= value;
         }
 
-        private readonly ulong _initialDesiredPropertiesVersion;
-        private readonly ulong _initialReportedPropertiesVersion;
+        private event Action? HubIdentityChanged;
+
+        event Action? IConnectionClient.HubIdentityChanged
+        {
+            add => HubIdentityChanged += value;
+            remove => HubIdentityChanged -= value;
+        }
 
         // The latest twin section versions that the device holds, which are announced in each birth.
         private ulong _desiredPropertiesVersion;
@@ -66,10 +71,6 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
         /// before reconnecting so that IoT hub sends it again.
         /// </summary>
         internal Func<int, TimeSpan> TwinPushTimeoutSchedule { get; set; } = DefensiveTimeoutSchedule.GetTimeout;
-
-        ulong IConnectionClient.InitialDesiredPropertiesVersion => _initialDesiredPropertiesVersion;
-
-        ulong IConnectionClient.InitialReportedPropertiesVersion => _initialReportedPropertiesVersion;
 
         void IConnectionClient.ObserveDesiredPropertiesVersion(ulong version) => AdvanceTo(ref _desiredPropertiesVersion, version);
 
@@ -154,10 +155,21 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
             _receiveDesiredPropertyUpdates = options.ReceiveDesiredPropertyUpdates;
             _receiveReportedPropertiesUponConnect = options.ReceiveReportedPropertiesUponConnect;
             _sessionExpiryInterval = options.SessionExpiryInterval;
-            _initialDesiredPropertiesVersion = options.InitialDesiredPropertiesVersion;
-            _initialReportedPropertiesVersion = options.InitialReportedPropertiesVersion;
-            _desiredPropertiesVersion = options.InitialDesiredPropertiesVersion;
-            _reportedPropertiesVersion = options.InitialReportedPropertiesVersion;
+        }
+
+        internal override void HandleHubIdentityChanged()
+        {
+            ForgetTwinVersions();
+            HubIdentityChanged?.Invoke();
+        }
+
+        // The recorded twin versions belong to the previous identity, so announcing them in the next birth could stop
+        // IoT hub from pushing the new identity's twin.
+        internal void ForgetTwinVersions()
+        {
+            Interlocked.Exchange(ref _desiredPropertiesVersion, 0);
+            Interlocked.Exchange(ref _reportedPropertiesVersion, 0);
+            _latestBirthAck = null;
         }
 
         public override Task HandleConnectedToHubAsync(MqttClientConnectedEventArgs args)
