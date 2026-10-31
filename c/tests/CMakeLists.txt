@@ -335,6 +335,8 @@ target_compile_definitions(az_iot_tests_su_client_layout_mismatch PRIVATE
     AZ_IOT_TEST_SU_MAX_STEP_COUNT=${_az_iot_test_su_other_step_count}
     AZ_IOT_TEST_SU_EXPECTED_MISMATCH="AZ_IOT_SU_MAX_STEP_COUNT")
 az_iot_add_cmocka_test(az_iot_tests_su_protocol unit/su_protocol_test.c)
+az_iot_add_cmocka_test(az_iot_tests_su_manifest unit/su_manifest_test.c)
+target_include_directories(az_iot_tests_su_manifest PRIVATE ${PROJECT_SOURCE_DIR}/src/features/su)
 target_link_libraries(az_iot_tests_su_client PRIVATE az_iot_test_support)
 # For az_iot_time_mono_ms: the request deadline is a monotonic instant, so a
 # test that exercises it has to speak the same clock.
