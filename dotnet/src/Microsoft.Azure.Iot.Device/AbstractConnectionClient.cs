@@ -245,6 +245,11 @@ namespace Microsoft.Azure.Iot.Device
         // presence flow on it), so every thread must observe the latest value.
         private volatile ConnectionEndpoint _currentEndpoint = ConnectionEndpoint.None;
 
+        // The endpoint that the most recently established connection was established for, or None once its loss has been
+        // handled. The connection layer reports a connection's loss before the next connection is reported as established,
+        // so this identifies which endpoint a reported loss belongs to even after CurrentEndpoint has moved on.
+        private volatile ConnectionEndpoint _connectedEndpoint = ConnectionEndpoint.None;
+
         /// <summary>
         /// The endpoint that this client is currently connecting to, or connected to.
         /// </summary>
@@ -1032,7 +1037,10 @@ namespace Microsoft.Azure.Iot.Device
         /// </summary>
         private async Task HandleConnectedAsync(MqttClientConnectedEventArgs args)
         {
-            switch (CurrentEndpoint)
+            ConnectionEndpoint endpoint = CurrentEndpoint;
+            _connectedEndpoint = endpoint;
+
+            switch (endpoint)
             {
                 case ConnectionEndpoint.DeviceProvisioningService:
                     await HandleConnectedToDpsAsync(args);
@@ -1048,6 +1056,25 @@ namespace Microsoft.Azure.Iot.Device
 
         private Task HandleDisconnectedAsync(MqttClientDisconnectedEventArgs args)
         {
+            // A connection whose connected notification never ran (because it was lost first) was established for the
+            // current endpoint.
+            ConnectionEndpoint lostEndpoint = _connectedEndpoint;
+            _connectedEndpoint = ConnectionEndpoint.None;
+            if (lostEndpoint == ConnectionEndpoint.None)
+            {
+                lostEndpoint = CurrentEndpoint;
+            }
+
+            if (lostEndpoint == ConnectionEndpoint.DeviceProvisioningService
+                && CurrentEndpoint != ConnectionEndpoint.DeviceProvisioningService)
+            {
+                // The underlying client may report the loss of the Device Provisioning Service connection after this
+                // client has already moved on to connecting to the IoT hub. That loss says nothing about the IoT hub
+                // connection, so it must not abandon that connection's work.
+                Trace.TraceInformation("Ignoring the loss of a Device Provisioning Service connection that this client already moved on from.");
+                return Task.CompletedTask;
+            }
+
             if (CurrentEndpoint == ConnectionEndpoint.DeviceProvisioningService)
             {
                 // Because DPS cannot persist sessions, any connection loss should be treated as a session loss. Abandon

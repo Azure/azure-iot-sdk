@@ -43,6 +43,12 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         /// </summary>
         public bool AutoRespondToBirth { get; set; }
 
+        /// <summary>
+        /// When cleared, a client-initiated DISCONNECT does not raise the disconnect callback, so that a test can raise it
+        /// later (see <see cref="SimulateSpuriousDisconnectCallbackAsync"/>) to reproduce MQTTnet raising it late.
+        /// </summary>
+        public bool RaiseDisconnectCallbackOnClientDisconnect { get; set; } = true;
+
         /// <summary>The birth-ack that <see cref="AutoRespondToBirth"/> answers each birth with.</summary>
         public BirthAck AutoBirthAck { get; set; } = new();
 
@@ -105,7 +111,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
                 await OnDisconnect.Invoke(disconnect);
             }
 
-            if (wasConnected && DisconnectedAsync != null)
+            if (wasConnected && RaiseDisconnectCallbackOnClientDisconnect && DisconnectedAsync != null)
             {
                 // The real client raises this from its own I/O loop rather than inline with the caller.
                 _ = DisconnectedAsync.Invoke(new() { Reason = MqttDisconnectReason.NormalDisconnection });
