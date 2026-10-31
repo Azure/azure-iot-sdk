@@ -451,27 +451,6 @@ static void priority_zero_keeps_its_guaranteed_slot(void** state)
   assert_string_equal(last_publish(fx)->topic, "t/1");
 }
 
-/* Ask the UNSETTLED_QUERY observers, as a settling SAS renewal does. */
-static bool query_unsettled(fixture* fx)
-{
-  bool unsettled = false;
-  az_iot_connection_feature_event const event = { AZ_IOT_CONNECTION_FEATURE_EVENT_UNSETTLED_QUERY,
-                                                  NULL,
-                                                  AZ_IOT_CONNECTION_SESSION_END_PLANNED,
-                                                  NULL,
-                                                  &unsettled };
-  for (size_t i = 0; i < fx->connection.opts.limits.max_feature_observers; ++i)
-  {
-    const az_iot_connection_feature_observer* observer = &fx->connection.feature_observers[i];
-    if (observer->cb != NULL
-        && (observer->events & AZ_IOT_CONNECTION_FEATURE_EVENT_UNSETTLED_QUERY))
-    {
-      observer->cb(&event, observer->user_ctx);
-    }
-  }
-  return unsettled;
-}
-
 /* While a SAS renewal settles, queued messages wait and the wait does not spin; a sent message
  * awaiting its PUBACK is reported unsettled. */
 static void sends_wait_while_a_renewal_settles_and_sent_messages_are_unsettled(void** state)
@@ -481,7 +460,7 @@ static void sends_wait_while_a_renewal_settles_and_sent_messages_are_unsettled(v
   (void)submit(fx, &k_resend, 1u, 60000u);
   assert_int_equal(publish_count(fx), 1);
   uint16_t const first = last_publish(fx)->packet_id;
-  assert_true(query_unsettled(fx));
+  assert_true(az_iot_test_has_unsettled_deliveries(&fx->connection));
 
   az_iot_deadline__arm_after_ms(
       &fx->connection.planned_hub_session_end.drain_deadline, az_iot_time_mono_ms(), 60000u);
@@ -498,7 +477,7 @@ static void sends_wait_while_a_renewal_settles_and_sent_messages_are_unsettled(v
   assert_true(
       az_iot_mock_mqtt_client_inject_puback(fx->mock, last_publish(fx)->packet_id, AZ_IOT_OK));
   do_work(fx);
-  assert_false(query_unsettled(fx));
+  assert_false(az_iot_test_has_unsettled_deliveries(&fx->connection));
 }
 
 /* Count an identity change and tell the IDENTITY_CHANGED observers in registration order, as

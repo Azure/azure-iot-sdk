@@ -5,9 +5,10 @@
 ### Features Added
 
 - SAS token renewal lets the session's deliveries settle before its DISCONNECT: publishes
-  awaiting a PUBACK and SDK requests awaiting a response, for up to 5 s (not past the token's
-  expiry), while the SDK holds its own new sends. A renewal now takes up to that plus the
-  disconnect bound.
+  awaiting a PUBACK and SDK requests awaiting a response (twin), for up to 5 s (not past the
+  token's expiry). Meanwhile a new QoS 1 publish returns `AZ_IOT_ERR_BUSY`; once the DISCONNECT
+  is sent, any publish returns `AZ_IOT_ERR_NOT_CONNECTED`. A renewal now takes up to that plus
+  the disconnect bound.
 - mqttv3 twin: requests go through the delivery tracker and time out:
   `az_iot_mqttv3_twin_client_set_request_timeout()` (default
   `AZ_IOT_MQTTV3_TWIN_REQUEST_TIMEOUT_MS_DEFAULT`, 60 s, from the call). A GET waits for a

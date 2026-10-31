@@ -421,9 +421,11 @@ extern "C"
    * @param ack_cb QoS 1: called from do_work() with the PUBLISH_ACK result; without one, a
    *               failed PUBLISH_ACK is only logged. QoS 0: called here with AZ_IOT_OK.
    *
-   * @retval AZ_IOT_ERR_NOT_CONNECTED Not in CONNECTED state.
+   * @retval AZ_IOT_ERR_NOT_CONNECTED Not in CONNECTED state, or the session is being ended on
+   *         purpose (DISCONNECT sent).
    * @retval AZ_IOT_ERR_BUSY QoS 1 with @p ack_cb and every slot of the pool it draws from is in
-   *         use. Nothing was sent.
+   *         use, or any QoS 1 while a SAS renewal lets the session's deliveries settle (at most
+   *         5 s). Nothing was sent.
    * @return Otherwise the adapter's result.
    */
   az_iot_result az_iot_connection_client__publish(

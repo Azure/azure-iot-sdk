@@ -1038,6 +1038,23 @@ static void a_refused_get_is_retried_soon_when_puback_slots_are_full(void** stat
       <= 1000u);
 }
 
+/* A GET awaiting its answer is an unsettled delivery, so a SAS renewal waits for it. */
+static void a_get_awaiting_its_answer_is_unsettled(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  assert_false(az_iot_test_has_unsettled_deliveries(&fx->conn));
+  get_record rec = { 0 };
+  assert_int_equal(az_iot_mqttv3_twin_client_get(&fx->twin, on_get, &rec), AZ_IOT_OK);
+  assert_true(az_iot_test_has_unsettled_deliveries(&fx->conn));
+  static const uint8_t body[] = "{}";
+  assert_true(az_iot_mock_mqtt_client_inject_message(
+      fx->mock, "$iothub/twin/res/200/?$rid=1", body, sizeof(body) - 1, AZ_IOT_MQTT_QOS_0));
+  assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
+  assert_true(rec.fired);
+  assert_false(az_iot_test_has_unsettled_deliveries(&fx->conn));
+}
+
 /* ------------------------------------------------------------------------- */
 /* patch reported                                                            */
 /* ------------------------------------------------------------------------- */
@@ -1409,6 +1426,7 @@ int main(void)
         a_client_deinitialized_by_a_callback_during_an_answer, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_refused_get_is_retried_soon_when_puback_slots_are_full, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_get_awaiting_its_answer_is_unsettled, setup, teardown),
     cmocka_unit_test_setup_teardown(patch_rejects_a_null_client, setup, teardown),
     cmocka_unit_test_setup_teardown(patch_rejects_a_null_patch_with_a_length, setup, teardown),
     cmocka_unit_test_setup_teardown(an_empty_patch_is_publishable, setup, teardown),

@@ -480,9 +480,10 @@ copts.trusted_ca.path = "ca.pem";         /* server trust, any credential */
   ends it and reconnects at once, with or without a `reconnection_policy`: `RETRY_PENDING`,
   `SETTING_UP`, `CONNECTING`, `CONNECTED`, each with `is_credential_renewal` and reason
   `AZ_IOT_OK`. Before its DISCONNECT, the session's deliveries settle for up to 5 s (not past the
-  token's expiry): publishes awaiting a PUBACK, and SDK requests awaiting a response, while the
-  SDK holds its own new sends. Publishes still awaiting a PUBACK then complete with
-  `AZ_IOT_ERR_NOT_CONNECTED`. A failed
+  token's expiry by either clock): publishes awaiting a PUBACK, and SDK requests awaiting a
+  response. Meanwhile a new QoS 1 publish returns `AZ_IOT_ERR_BUSY` (QoS 0 is sent), and once the
+  DISCONNECT is sent any publish returns `AZ_IOT_ERR_NOT_CONNECTED`. Publishes still awaiting a
+  PUBACK then complete with `AZ_IOT_ERR_NOT_CONNECTED`. A failed
   reconnect is an ordinary failure (fallback, policy). A provisioning session kept open without a
   registration (`provision_only`, or held by a feature client) is renewed the same way, reporting
   `DISCONNECTING`, `SETTING_UP`, `CONNECTING`, `CONNECTED`, each flagged; its feature clients see

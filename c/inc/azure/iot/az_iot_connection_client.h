@@ -2029,6 +2029,10 @@ extern "C"
      * seconds for a monotonic clock that stops in suspend; 0: none. */
     uint64_t sas_token_expiry_ms[AZ_IOT_CONN_SCOPE_COUNT];
     uint64_t sas_token_expiry_unix_seconds[AZ_IOT_CONN_SCOPE_COUNT];
+    /* Expiry of the token the hub session connected with, by each clock (0: unknown). Bounds a
+     * SAS renewal's settle. */
+    uint64_t hub_session_token_expiry_ms;
+    uint64_t hub_session_token_expiry_unix_seconds;
     /* Each scope's next token request is not asked before this (monotonic
      * ms): a renewal request that could not be asked. 0: none. */
     uint64_t sas_token_ask_after_ms[AZ_IOT_CONN_SCOPE_COUNT];

@@ -2719,6 +2719,22 @@ static void a_refused_get_is_retried_soon_when_puback_slots_are_full(void** stat
       <= 1000u);
 }
 
+/* A GET awaiting its answer is an unsettled delivery, so a SAS renewal waits for it. */
+static void a_get_awaiting_its_answer_is_unsettled(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  assert_false(az_iot_test_has_unsettled_deliveries(&fx->conn));
+  get_record rec = { 0 };
+  uint8_t corr[16];
+  issue_get(fx, &rec, corr);
+  assert_true(az_iot_test_has_unsettled_deliveries(&fx->conn));
+  const uint8_t body[] = { 0x08, 0x01 };
+  inject_twin(fx, "get-response:1", corr, body, sizeof(body));
+  assert_true(rec.fired);
+  assert_false(az_iot_test_has_unsettled_deliveries(&fx->conn));
+}
+
 /* A pending patch is failed too, and reports no verdict: the exchange never
  * completed, so there is nothing the service decided. */
 static void a_pending_patch_is_failed_with_no_verdict(void** state)
@@ -3717,6 +3733,7 @@ int main(void)
         a_client_deinitialized_by_a_callback_during_an_answer, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_refused_get_is_retried_soon_when_puback_slots_are_full, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_get_awaiting_its_answer_is_unsettled, setup, teardown),
     cmocka_unit_test_setup_teardown(a_pending_patch_is_failed_with_no_verdict, setup, teardown),
     cmocka_unit_test_setup_teardown(init_rejects_a_null_client, setup, teardown),
     cmocka_unit_test_setup_teardown(init_rejects_a_null_connection, setup, teardown),

@@ -1873,6 +1873,83 @@ static void a_close_ends_a_settling_renewal(void** state)
   assert_true(no_connect_pending(fx));
 }
 
+/* The settle is bounded by the session token's expiry: a key-signed token records it at signing,
+ * and a token close to expiry settles only for what is left. */
+static void a_renewal_settles_no_longer_than_the_token_lives(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  uint64_t now = NOW;
+  uint64_t const before = az_iot_time_mono_ms();
+  open_renewable_hub(fx, &now, NULL);
+  assert_true(fx->client.hub_session_token_expiry_ms >= before + 100000u);
+  assert_true(fx->client.hub_session_token_expiry_ms <= az_iot_time_mono_ms() + 100000u);
+  assert_int_equal(fx->client.hub_session_token_expiry_unix_seconds, NOW + 100u);
+
+  int acks = 0;
+  (void)publish_awaiting_puback(fx, &acks);
+  fx->client.hub_session_token_expiry_ms = az_iot_time_mono_ms() + 300u;
+  (void)start_settling_renewal(fx);
+  assert_true(
+      az_iot_deadline__remaining_ms(
+          &fx->client.planned_hub_session_end.drain_deadline, az_iot_time_mono_ms())
+      <= 300u);
+}
+
+/* A token already expired by either clock does not settle: the renewal disconnects at once. */
+static void a_renewal_of_an_expired_token_does_not_settle(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  uint64_t now = NOW;
+  open_renewable_hub(fx, &now, NULL);
+  int acks = 0;
+  (void)publish_awaiting_puback(fx, &acks);
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  fx->client.hub_session_token_expiry_ms = az_iot_time_mono_ms() - 1u;
+  fx->client.sas_token_renewal_due_ms[AZ_IOT_CONN_SCOPE_HUB] = az_iot_time_mono_ms();
+  pump(fx, 1);
+  assert_int_equal(az_iot_mock_mqtt_client_count_of(m, AZ_IOT_MOCK_CALL_DISCONNECT), 1);
+}
+
+static void a_renewal_of_a_token_expired_by_unix_time_does_not_settle(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  uint64_t now = NOW;
+  open_renewable_hub(fx, &now, NULL);
+  int acks = 0;
+  (void)publish_awaiting_puback(fx, &acks);
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  now = NOW + 101u;
+  pump(fx, 1);
+  assert_int_equal(az_iot_mock_mqtt_client_count_of(m, AZ_IOT_MOCK_CALL_DISCONNECT), 1);
+}
+
+/* While a renewal settles, a QoS 1 publish is refused BUSY and a QoS 0 one is sent; once the
+ * DISCONNECT is sent, any publish is refused NOT_CONNECTED. */
+static void publishes_are_admitted_as_a_renewal_settles_and_disconnects(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  uint64_t now = NOW;
+  open_renewable_hub(fx, &now, NULL);
+  int acks = 0;
+  uint16_t const packet_id = publish_awaiting_puback(fx, &acks);
+  az_iot_mock_mqtt_client* m = start_settling_renewal(fx);
+  az_iot_mqtt_message msg = { 0 };
+  msg.topic = "devices/ut-device/messages/events/";
+  msg.qos = AZ_IOT_MQTT_QOS_1;
+  assert_int_equal(
+      az_iot_connection_client__publish(&fx->client, fx, &msg, count_puback, &acks),
+      AZ_IOT_ERR_BUSY);
+  msg.qos = AZ_IOT_MQTT_QOS_0;
+  assert_int_equal(az_iot_connection_client__publish(&fx->client, fx, &msg, NULL, NULL), AZ_IOT_OK);
+
+  assert_true(az_iot_mock_mqtt_client_inject_puback(m, packet_id, AZ_IOT_OK));
+  pump(fx, 1);
+  assert_int_equal(az_iot_mock_mqtt_client_count_of(m, AZ_IOT_MOCK_CALL_DISCONNECT), 1);
+  assert_int_equal(
+      az_iot_connection_client__publish(&fx->client, fx, &msg, NULL, NULL),
+      AZ_IOT_ERR_NOT_CONNECTED);
+}
+
 /* A provisioning session a feature client holds beside the hub: its wait,
  * which comes first, also ends by the renewal time. */
 static void a_held_dps_wait_is_capped_by_the_hub_renewal(void** state)
@@ -4067,6 +4144,13 @@ int main(void)
     cmocka_unit_test_setup_teardown(a_failure_end_takes_over_a_settling_renewal, setup, teardown),
     cmocka_unit_test_setup_teardown(a_lost_session_ends_a_settling_renewal, setup, teardown),
     cmocka_unit_test_setup_teardown(a_close_ends_a_settling_renewal, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_renewal_settles_no_longer_than_the_token_lives, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_renewal_of_an_expired_token_does_not_settle, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_renewal_of_a_token_expired_by_unix_time_does_not_settle, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        publishes_are_admitted_as_a_renewal_settles_and_disconnects, setup, teardown),
     cmocka_unit_test_setup_teardown(a_held_dps_wait_is_capped_by_the_hub_renewal, setup, teardown),
     cmocka_unit_test_setup_teardown(a_suspended_monotonic_clock_still_renews, setup, teardown),
     cmocka_unit_test_setup_teardown(

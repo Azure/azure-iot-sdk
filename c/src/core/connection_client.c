@@ -1637,6 +1637,11 @@ static az_iot_result apply_sas_key(
   c->sas_token_expiry_unix_seconds[scope] = 0;
   /* Rounded up: a truncated deadline would renew at once, every time. */
   c->sas_token_renewal_due_unix_seconds[scope] = now + (delay_ms + 999u) / 1000u;
+  if (scope == AZ_IOT_CONN_SCOPE_HUB)
+  {
+    c->hub_session_token_expiry_ms = az_iot_time_mono_ms() + (uint64_t)lifetime * 1000u;
+    c->hub_session_token_expiry_unix_seconds = expiry;
+  }
   apply_trusted_ca(c, copts);
   return AZ_IOT_OK;
 }
@@ -2573,6 +2578,11 @@ static void apply_user_token(
     /* Rounded down: never later than the token's real expiry. */
     c->sas_token_expiry_unix_seconds[scope]
         = unix_deadline_seconds(unix_seconds, (expiry_ms - now_ms) / 1000u);
+    if (scope == AZ_IOT_CONN_SCOPE_HUB)
+    {
+      c->hub_session_token_expiry_ms = expiry_ms;
+      c->hub_session_token_expiry_unix_seconds = c->sas_token_expiry_unix_seconds[scope];
+    }
     /* The transport takes the token; it is wiped after connect(). */
     memset(&c->sas_token_request[scope], 0, sizeof(c->sas_token_request[scope]));
     c->sas_token_holder = 0;
@@ -5809,11 +5819,12 @@ static void end_settled_session_for_sas_renewal(az_iot_connection_client* c)
   }
   bool const bound_passed = az_iot_deadline__has_passed(
       &c->planned_hub_session_end.drain_deadline, az_iot_time_mono_ms());
-  if (!bound_passed && hub_session_has_unsettled_deliveries(c))
+  bool const unsettled = hub_session_has_unsettled_deliveries(c);
+  if (!bound_passed && unsettled)
   {
     return;
   }
-  if (bound_passed)
+  if (unsettled)
   {
     AZ_IOT_LOG_WARN(
         AZ_IOT_LOG_COMPONENT_CONNECTION,
@@ -5822,23 +5833,43 @@ static void end_settled_session_for_sas_renewal(az_iot_connection_client* c)
   start_planned_hub_session_end(c, AZ_IOT_OK);
 }
 
+/**
+ * @brief How long a SAS renewal may let deliveries settle: SAS_RENEWAL_SETTLE_TIMEOUT_MS, but not
+ *        past the session token's expiry by either clock (0 once it expired).
+ */
+static uint64_t sas_renewal_settle_ms(const az_iot_connection_client* c)
+{
+  uint64_t settle_ms = SAS_RENEWAL_SETTLE_TIMEOUT_MS;
+  uint64_t const now_ms = az_iot_time_mono_ms();
+  uint64_t const expiry_ms = c->hub_session_token_expiry_ms;
+  if (expiry_ms != 0u)
+  {
+    uint64_t const left_ms = expiry_ms > now_ms ? expiry_ms - now_ms : 0u;
+    settle_ms = left_ms < settle_ms ? left_ms : settle_ms;
+  }
+  uint64_t const expiry_unix_seconds = c->hub_session_token_expiry_unix_seconds;
+  uint64_t const now_unix_seconds = unix_now(c);
+  if (expiry_unix_seconds != 0u && now_unix_seconds != 0u)
+  {
+    uint64_t const left_ms = expiry_unix_seconds > now_unix_seconds
+        ? (expiry_unix_seconds - now_unix_seconds) * 1000u
+        : 0u;
+    settle_ms = left_ms < settle_ms ? left_ms : settle_ms;
+  }
+  return settle_ms;
+}
+
 /** @brief Starts renewing the hub's SAS token. MQTT 3.1.1 cannot re-authenticate
  * a live session, so the session is ended and reconnected with a new token, once its
- * deliveries settle (at most SAS_RENEWAL_SETTLE_TIMEOUT_MS, and not past the token's expiry). */
+ * deliveries settle (sas_renewal_settle_ms()). */
 static void start_sas_token_renewal(az_iot_connection_client* c)
 {
   AZ_IOT_LOG_INFO(AZ_IOT_LOG_COMPONENT_CONNECTION, "renewing the SAS token; reconnecting");
   c->sas_token_renewal_due_ms[AZ_IOT_CONN_SCOPE_HUB] = 0;
   c->sas_token_renewal_due_unix_seconds[AZ_IOT_CONN_SCOPE_HUB] = 0;
   c->sas_token_renewal_in_progress[AZ_IOT_CONN_SCOPE_HUB] = true;
-  uint64_t const now = az_iot_time_mono_ms();
-  uint64_t settle_ms = SAS_RENEWAL_SETTLE_TIMEOUT_MS;
-  uint64_t const expiry_ms = c->sas_token_expiry_ms[AZ_IOT_CONN_SCOPE_HUB];
-  if (expiry_ms != 0u && expiry_ms - now < settle_ms)
-  {
-    settle_ms = expiry_ms > now ? expiry_ms - now : 0u;
-  }
-  az_iot_deadline__arm_after_ms(&c->planned_hub_session_end.drain_deadline, now, settle_ms);
+  az_iot_deadline__arm_after_ms(
+      &c->planned_hub_session_end.drain_deadline, az_iot_time_mono_ms(), sas_renewal_settle_ms(c));
   end_settled_session_for_sas_renewal(c);
 }
 
@@ -9070,6 +9101,17 @@ static az_iot_result publish_tracked(
   if (!client->active_client || client->state[AZ_IOT_CONN_SCOPE_HUB] != AZ_IOT_CONN_STATE_CONNECTED)
   {
     return AZ_IOT_ERR_NOT_CONNECTED;
+  }
+  /* A session being ended on purpose takes nothing more once its DISCONNECT is sent, and no new
+   * QoS 1 publish while a SAS renewal lets its deliveries settle. */
+  if (planned_hub_session_end_in_progress(client))
+  {
+    return AZ_IOT_ERR_NOT_CONNECTED;
+  }
+  if (msg->qos != AZ_IOT_MQTT_QOS_0
+      && az_iot_deadline__is_set(&client->planned_hub_session_end.drain_deadline))
+  {
+    return AZ_IOT_ERR_BUSY;
   }
   bool const has_cb = ack_cb != NULL || result_cb != NULL;
 
