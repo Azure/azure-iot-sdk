@@ -5783,10 +5783,28 @@ static void start_planned_hub_session_end(az_iot_connection_client* c, az_iot_re
   }
 }
 
-/** @brief Whether a delivery on the hub session awaits its PUBACK, or a feature client's
- *         its response. */
+/** @brief Milliseconds left on the session token by Unix time: UINT64_MAX when unknown, 0 once it
+ *         expired. A monotonic clock that stops in suspend misses that expiry. */
+static uint64_t hub_session_token_unix_left_ms(const az_iot_connection_client* c)
+{
+  uint64_t const expiry_unix_seconds = c->hub_session_token_expiry_unix_seconds;
+  uint64_t const now_unix_seconds = unix_now(c);
+  if (expiry_unix_seconds == 0u || now_unix_seconds == 0u)
+  {
+    return UINT64_MAX;
+  }
+  return expiry_unix_seconds > now_unix_seconds ? (expiry_unix_seconds - now_unix_seconds) * 1000u
+                                                : 0u;
+}
+
+/** @brief Whether a delivery on the hub session awaits its PUBACK, a certificate renewal its
+ *         terminal response, or a feature client its response. */
 static bool hub_session_has_unsettled_deliveries(az_iot_connection_client* c)
 {
+  if (c->csr_op.in_use)
+  {
+    return true; /* Awaiting its terminal response. */
+  }
   for (size_t i = 0; i < c->opts.limits.max_pending_publishes; ++i)
   {
     if (c->pending_pubacks[i].in_use)
@@ -5818,7 +5836,8 @@ static void end_settled_session_for_sas_renewal(az_iot_connection_client* c)
     return;
   }
   bool const bound_passed = az_iot_deadline__has_passed(
-      &c->planned_hub_session_end.drain_deadline, az_iot_time_mono_ms());
+                                &c->planned_hub_session_end.drain_deadline, az_iot_time_mono_ms())
+      || hub_session_token_unix_left_ms(c) == 0u;
   bool const unsettled = hub_session_has_unsettled_deliveries(c);
   if (!bound_passed && unsettled)
   {
@@ -5847,16 +5866,8 @@ static uint64_t sas_renewal_settle_ms(const az_iot_connection_client* c)
     uint64_t const left_ms = expiry_ms > now_ms ? expiry_ms - now_ms : 0u;
     settle_ms = left_ms < settle_ms ? left_ms : settle_ms;
   }
-  uint64_t const expiry_unix_seconds = c->hub_session_token_expiry_unix_seconds;
-  uint64_t const now_unix_seconds = unix_now(c);
-  if (expiry_unix_seconds != 0u && now_unix_seconds != 0u)
-  {
-    uint64_t const left_ms = expiry_unix_seconds > now_unix_seconds
-        ? (expiry_unix_seconds - now_unix_seconds) * 1000u
-        : 0u;
-    settle_ms = left_ms < settle_ms ? left_ms : settle_ms;
-  }
-  return settle_ms;
+  uint64_t const unix_left_ms = hub_session_token_unix_left_ms(c);
+  return unix_left_ms < settle_ms ? unix_left_ms : settle_ms;
 }
 
 /** @brief Starts renewing the hub's SAS token. MQTT 3.1.1 cannot re-authenticate
@@ -6452,6 +6463,11 @@ static uint32_t limit_wait_to_connection_deadlines(az_iot_connection_client* c, 
   uint64_t const settle_left
       = az_iot_deadline__remaining_ms(&c->planned_hub_session_end.drain_deadline, now);
   remaining = settle_left < remaining ? settle_left : remaining;
+  if (az_iot_deadline__is_set(&c->planned_hub_session_end.drain_deadline))
+  {
+    uint64_t const unix_left = hub_session_token_unix_left_ms(c);
+    remaining = unix_left < remaining ? unix_left : remaining;
+  }
   remaining = planned_end_left < remaining ? planned_end_left : remaining;
   /* Once a planned end is under way the presence deadline has done its job; its bound counts. */
   if ((c->presence.phase == PRESENCE_PHASE_SUBSCRIBING || c->presence.phase == PRESENCE_PHASE_BIRTH)

@@ -1950,6 +1950,42 @@ static void publishes_are_admitted_as_a_renewal_settles_and_disconnects(void** s
       AZ_IOT_ERR_NOT_CONNECTED);
 }
 
+/* A certificate renewal awaiting its terminal response counts as unsettled. */
+static void a_renewal_waits_for_an_open_certificate_renewal(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  uint64_t now = NOW;
+  open_renewable_hub(fx, &now, NULL);
+  fx->client.csr_op.in_use = true; /* PUBACK in, terminal response awaited */
+  fx->client.csr_op.deadline_ms = az_iot_time_mono_ms() + 60000u;
+  az_iot_mock_mqtt_client* m = start_settling_renewal(fx);
+  pump(fx, 1);
+  assert_int_equal(az_iot_mock_mqtt_client_count_of(m, AZ_IOT_MOCK_CALL_DISCONNECT), 0);
+  fx->client.csr_op.in_use = false;
+  pump(fx, 1);
+  assert_int_equal(az_iot_mock_mqtt_client_count_of(m, AZ_IOT_MOCK_CALL_DISCONNECT), 1);
+}
+
+/* A suspend that stops the monotonic clock during the settle: the wait is capped by the token's
+ * Unix-time expiry, and its passing ends the settle. */
+static void a_settle_ends_when_the_token_expires_by_unix_time(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  uint64_t now = NOW;
+  open_renewable_hub(fx, &now, NULL);
+  int acks = 0;
+  (void)publish_awaiting_puback(fx, &acks);
+  az_iot_mock_mqtt_client* m = start_settling_renewal(fx);
+  now = NOW + 98u;
+  (void)az_iot_connection_client_do_work(&fx->client, 60000u);
+  assert_true(
+      az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_PROCESS_LOOP)->timeout_ms <= 2000u);
+  assert_int_equal(az_iot_mock_mqtt_client_count_of(m, AZ_IOT_MOCK_CALL_DISCONNECT), 0);
+  now = NOW + 100u;
+  pump(fx, 1);
+  assert_int_equal(az_iot_mock_mqtt_client_count_of(m, AZ_IOT_MOCK_CALL_DISCONNECT), 1);
+}
+
 /* A provisioning session a feature client holds beside the hub: its wait,
  * which comes first, also ends by the renewal time. */
 static void a_held_dps_wait_is_capped_by_the_hub_renewal(void** state)
@@ -4151,6 +4187,10 @@ int main(void)
         a_renewal_of_a_token_expired_by_unix_time_does_not_settle, setup, teardown),
     cmocka_unit_test_setup_teardown(
         publishes_are_admitted_as_a_renewal_settles_and_disconnects, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_renewal_waits_for_an_open_certificate_renewal, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_settle_ends_when_the_token_expires_by_unix_time, setup, teardown),
     cmocka_unit_test_setup_teardown(a_held_dps_wait_is_capped_by_the_hub_renewal, setup, teardown),
     cmocka_unit_test_setup_teardown(a_suspended_monotonic_clock_still_renews, setup, teardown),
     cmocka_unit_test_setup_teardown(
