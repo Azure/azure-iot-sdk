@@ -188,10 +188,7 @@ extern "C"
    *        functions (the *_begin calls and az_iot_e2e_service_request_poll);
    *        the rest are handles from az_iot_e2e_service_method_invoke_start.
    *
-   * Each request is its own TLS connection. OpenSSL (Linux/macOS) keeps state
-   * per connection; the Windows reference transport (Schannel) keeps ONE global
-   * TLS session, so on Windows only one request -- handle or not -- may be in
-   * flight at a time. Suites that use handles are Linux-only.
+   * Each request is its own TLS connection.
    */
 #define AZ_IOT_E2E_SERVICE_MAX_REQUESTS 8
 
