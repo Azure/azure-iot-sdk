@@ -159,6 +159,7 @@ set(_az_iot_pc_descriptions
     crypto_openssl                "OpenSSL crypto backend"
     crypto_mbedtls                "mbedTLS crypto backend"
     certificate_provider_managed  "OpenSSL managed certificate provider"
+    su_delta                      "software updates microsoft/delta:1 download handler"
 )
 
 set(_az_iot_pc_dir "${PROJECT_BINARY_DIR}/pkgconfig")
