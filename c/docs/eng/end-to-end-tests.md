@@ -54,13 +54,14 @@ single-threaded and non-blocking.
 
 The device is the public SDK over an MQTT adapter, connected exactly like a
 real device: **DPS provisioning with an X.509 individual enrollment**
-(`dps.id_scope` set → the connection client provisions internally, then connects to the assigned hub). Both the MQTT v3.1.1 and v5
-factories are registered. Each suite that connects is built once per adapter in the build:
+(`dps.id_scope` set → the connection client provisions internally, then connects to the assigned hub). The connection
+client builds its MQTT 3.1.1 and v5 clients with the adapter's descriptor (`mqtt_adapter`) in a heap workspace, sized in
+[`e2e_mqtt_adapter.h`](../../tests/e2e/tests/e2e_mqtt_adapter.h); the software updates suites, whose DPS channel
+holds the provisioning session beside the hub session, register the v3.1.1 factory instead. Each suite that connects is built once per adapter in the build:
 `<suite>` over Paho and `<suite>_az_mqtt` over az_mqtt, selected in the sources with
 `AZ_IOT_E2E_ADAPTER_PAHO` or `AZ_IOT_E2E_ADAPTER_AZ_MQTT`. The workflows enable both, and their
-`ctest -R` filters run both. The custody suites run over az_mqtt only with OpenSSL TLS. With
-az_mqtt, `AZ_IOT_BUILD_E2E_MQTTV5` needs `-DAZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE=1114112` or more: the telemetry size cases publish just
-over 1 MiB. The connect flow + all four scenarios live in
+`ctest -R` filters run both. The custody suites run over az_mqtt only with OpenSSL TLS. The send
+buffer in those sizes is 1 MiB + 4 KiB: the telemetry size cases publish just over 1 MiB. The connect flow + all four scenarios live in
 [`e2e_scenarios_test.c`](../../tests/e2e/tests/e2e_scenarios_test.c); the connect
 is done once for the whole suite via cmocka's group setup.
 

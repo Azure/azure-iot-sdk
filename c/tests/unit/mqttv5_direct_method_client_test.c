@@ -166,7 +166,6 @@ typedef struct fixture
 {
   az_iot_connection_client conn;
   az_iot_mqttv5_direct_method_client dm;
-  az_iot_mqtt_factory* factory;
   az_iot_mock_mqtt_client* mock;
   /* Where the registered handler records what it was given. */
   invocation_record* rec;
@@ -233,10 +232,8 @@ static int setup(void** state)
   opts.port = 8883;
   opts.device_id = "ut-device";
   opts.connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5;
+  opts.mqtt_adapter = az_iot_mock_mqtt_get_adapter_for_version(AZ_IOT_MQTT_VERSION_5);
   assert_int_equal(az_iot_test_connection_client_init(&fx->conn, &opts), AZ_IOT_OK);
-
-  fx->factory = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_5);
-  assert_non_null(fx->factory);
 
   assert_int_equal(az_iot_mqttv5_direct_method_client_init(&fx->dm, &fx->conn), AZ_IOT_OK);
 
@@ -261,7 +258,6 @@ static int teardown(void** state)
   {
     az_iot_mqttv5_direct_method_client_deinit(&fx->dm);
     az_iot_test_connection_client_deinit(&fx->conn);
-    az_iot_mock_mqtt_factory_destroy(fx->factory);
     free(fx);
   }
   return 0;
@@ -328,14 +324,12 @@ static int probe_ack_rejected_reason(const az_iot_mock_call* c)
   return c->payload[3];
 }
 
-/* Register the factory, open, and deliver CONNACK. On MQTTv5 this leaves the
+/* Open and deliver CONNACK. On MQTTv5 this leaves the
  * session CONNECTING with only the presence filter subscribed. */
 static void open_conn(fixture* fx)
 {
-  assert_int_equal(
-      az_iot_connection_client_register_mqtt_factory(&fx->conn, fx->factory), AZ_IOT_OK);
   assert_int_equal(az_iot_connection_client_open(&fx->conn), AZ_IOT_OK);
-  fx->mock = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  fx->mock = az_iot_mock_mqtt_adapter_last_client();
   assert_non_null(fx->mock);
 
   az_iot_mqtt_event connack;
@@ -632,14 +626,11 @@ static void a_device_id_too_long_for_the_topics_says_so(void** state)
   opts.port = 8883;
   opts.device_id = long_id;
   opts.connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5;
+  opts.mqtt_adapter = az_iot_mock_mqtt_get_adapter_for_version(AZ_IOT_MQTT_VERSION_5);
   assert_int_equal(az_iot_test_connection_client_init(&conn, &opts), AZ_IOT_OK);
 
   az_iot_mqttv5_direct_method_client dm;
   assert_int_equal(az_iot_mqttv5_direct_method_client_init(&dm, &conn), AZ_IOT_OK);
-
-  az_iot_mqtt_factory* factory = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_5);
-  assert_non_null(factory);
-  assert_int_equal(az_iot_connection_client_register_mqtt_factory(&conn, factory), AZ_IOT_OK);
 
   /* Binding a truncated topic would listen on another device's name and answer
    * where the service is not reading, so the connect attempt fails instead --
@@ -655,7 +646,6 @@ static void a_device_id_too_long_for_the_topics_says_so(void** state)
 
   az_iot_mqttv5_direct_method_client_deinit(&dm);
   az_iot_test_connection_client_deinit(&conn);
-  az_iot_mock_mqtt_factory_destroy(factory);
 }
 
 static void init_does_not_subscribe_a_redundant_methods_filter(void** state)

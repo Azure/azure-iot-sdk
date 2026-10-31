@@ -179,7 +179,6 @@ typedef struct fixture
 {
   az_iot_connection_client conn;
   az_iot_mqttv5_twin_client twin;
-  az_iot_mqtt_factory* factory;
   az_iot_mock_mqtt_client* mock;
   /* The birth nonce of the current connection, which backend-initiated
    * messages must carry to be accepted. */
@@ -195,6 +194,7 @@ static void init_connection_ex(az_iot_connection_client* conn, bool push_desired
   opts.device_id = "ut-device";
   opts.connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5;
   opts.twin_push.push_desired = push_desired;
+  opts.mqtt_adapter = az_iot_mock_mqtt_get_adapter_for_version(AZ_IOT_MQTT_VERSION_5);
   assert_int_equal(az_iot_test_connection_client_init(conn, &opts), AZ_IOT_OK);
 }
 
@@ -206,9 +206,6 @@ static int setup_ex(void** state, bool push_desired)
   assert_non_null(fx);
 
   init_connection_ex(&fx->conn, push_desired);
-
-  fx->factory = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_5);
-  assert_non_null(fx->factory);
 
   assert_int_equal(az_iot_mqttv5_twin_client_init(&fx->twin, &fx->conn), AZ_IOT_OK);
   assert_int_equal(
@@ -233,7 +230,6 @@ static int teardown(void** state)
   {
     az_iot_mqttv5_twin_client_deinit(&fx->twin);
     az_iot_test_connection_client_deinit(&fx->conn);
-    az_iot_mock_mqtt_factory_destroy(fx->factory);
     free(fx);
   }
   return 0;
@@ -373,10 +369,8 @@ static void open_to_birth_ack_after_open(fixture* fx, uint64_t desired, uint64_t
 
 static void open_to_birth_ack_with_versions(fixture* fx, uint64_t desired, uint64_t reported)
 {
-  assert_int_equal(
-      az_iot_connection_client_register_mqtt_factory(&fx->conn, fx->factory), AZ_IOT_OK);
   assert_int_equal(az_iot_connection_client_open(&fx->conn), AZ_IOT_OK);
-  fx->mock = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  fx->mock = az_iot_mock_mqtt_adapter_last_client();
   open_to_birth_ack_after_open(fx, desired, reported);
 }
 
@@ -406,7 +400,7 @@ static void reopen_with_versions_hooked(
     void (*before_birth_ack)(fixture* fx))
 {
   assert_int_equal(az_iot_connection_client_open(&fx->conn), AZ_IOT_OK);
-  fx->mock = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  fx->mock = az_iot_mock_mqtt_adapter_last_client();
   assert_non_null(fx->mock);
 
   az_iot_mqtt_event connack;
@@ -1470,10 +1464,8 @@ static void with_push_desired_connecting_does_not_fetch(void** state)
 
 static void open_to_birth(fixture* fx)
 {
-  assert_int_equal(
-      az_iot_connection_client_register_mqtt_factory(&fx->conn, fx->factory), AZ_IOT_OK);
   assert_int_equal(az_iot_connection_client_open(&fx->conn), AZ_IOT_OK);
-  fx->mock = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  fx->mock = az_iot_mock_mqtt_adapter_last_client();
   open_to_birth_after_open(fx);
 }
 
@@ -1555,10 +1547,8 @@ static void a_push_before_the_birth_is_dropped(void** state)
   fixture* fx = (fixture*)*state;
   desired_record rec = { 0 };
   set_desired(fx, &rec);
-  assert_int_equal(
-      az_iot_connection_client_register_mqtt_factory(&fx->conn, fx->factory), AZ_IOT_OK);
   assert_int_equal(az_iot_connection_client_open(&fx->conn), AZ_IOT_OK);
-  fx->mock = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  fx->mock = az_iot_mock_mqtt_adapter_last_client();
   az_iot_mqtt_event connack;
   memset(&connack, 0, sizeof(connack));
   connack.kind = AZ_IOT_MQTT_EVT_CONNECTED;
@@ -1827,7 +1817,7 @@ static void with_push_desired_a_replaced_twin_is_settled_by_a_push(void** state)
   assert_true(az_iot_mock_mqtt_client_inject_disconnected(fx->mock));
   assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
   assert_int_equal(az_iot_connection_client_open(&fx->conn), AZ_IOT_OK);
-  fx->mock = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  fx->mock = az_iot_mock_mqtt_adapter_last_client();
   open_to_birth_ack_after_open(fx, 2, 0);
   assert_false(az_iot_connection_client__is_connected(&fx->conn));
   const uint8_t push2[] = { 0x0A, 0x06, 0x08, 0x02, 0x12, 0x02, 0x7B, 0x7D };
@@ -2460,7 +2450,7 @@ static void a_reconnect_reseeds_the_versions_from_the_new_birth_ack(void** state
   assert_true(az_iot_mock_mqtt_client_inject_disconnected(fx->mock));
   assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
   assert_int_equal(az_iot_connection_client_open(&fx->conn), AZ_IOT_OK);
-  fx->mock = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  fx->mock = az_iot_mock_mqtt_adapter_last_client();
   assert_non_null(fx->mock);
 
   az_iot_mqtt_event connack;
@@ -3099,6 +3089,7 @@ static int setup_twin_push(void** state, bool push_desired, bool push_reported, 
   opts.connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5;
   opts.twin_push.push_desired = push_desired;
   opts.twin_push.push_reported = push_reported;
+  opts.mqtt_adapter = az_iot_mock_mqtt_get_adapter_for_version(AZ_IOT_MQTT_VERSION_5);
   if (reconnect)
   {
     opts.reconnection_policy.initial_delay_ms = 1;
@@ -3113,8 +3104,6 @@ static int setup_twin_push(void** state, bool push_desired, bool push_reported, 
           &fx->conn, az_iot_test_on_state, &s_twin_push_states),
       AZ_IOT_OK);
 
-  fx->factory = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_5);
-  assert_non_null(fx->factory);
   assert_int_equal(az_iot_mqttv5_twin_client_init(&fx->twin, &fx->conn), AZ_IOT_OK);
   *state = fx;
   return 0;
@@ -3200,14 +3189,14 @@ static void expire_twin_push_wait(fixture* fx)
 static void reconnect_to_connected(fixture* fx)
 {
   uint64_t give_up = az_iot_time_mono_ms() + 5000u;
-  /* Destroying the old adapter cleared the factory's last client; a non-NULL one
-   * is its replacement. */
-  while (az_iot_mock_mqtt_factory_last_client(fx->factory) == NULL)
+  /* Destroying the old MQTT client cleared the adapter's last client; a non-NULL
+   * one is its replacement. */
+  while (az_iot_mock_mqtt_adapter_last_client() == NULL)
   {
     assert_true(az_iot_time_mono_ms() < give_up);
     assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
   }
-  fx->mock = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  fx->mock = az_iot_mock_mqtt_adapter_last_client();
   open_to_birth_ack_after_open(fx, 1, 1);
   az_iot_test_ack_subscriptions(&fx->conn, fx->mock);
 }

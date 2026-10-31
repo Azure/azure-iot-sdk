@@ -208,7 +208,7 @@ This is how you verify your adapter is plug-compatible. The suite lives in [test
 
 ### 4.1 — Add a harness exe
 
-For each MQTT version your adapter supports, add a tiny harness that hands your factory to `az_iot_conformance_run()`:
+For each MQTT version your adapter supports, add a tiny harness that hands your `az_iot_mqtt_adapter` (its `get_workspace_size()` and `init()`, see [az_iot_mqtt_iface.h](../inc/azure/iot/az_iot_mqtt_iface.h)) to `az_iot_conformance_run()`. The suite builds each client of the suite's MQTT version with `init()`, in a heap workspace it frees after `destroy()`:
 
 ```c
 /* tests/conformance/mymqtt_v3_main.c */
@@ -216,10 +216,7 @@ For each MQTT version your adapter supports, add a tiny harness that hands your 
 #include "azure/iot/adapters/az_iot_adapter_mymqtt.h"
 
 int main(void) {
-    az_iot_mqtt_factory* f = az_iot_mymqtt_factory_create_v3_1_1();
-    int rc = az_iot_conformance_run(AZ_IOT_CONFORMANCE_SUITE_V3_1_1, f);
-    az_iot_mymqtt_factory_destroy(f);
-    return rc;
+    return az_iot_conformance_run(AZ_IOT_CONFORMANCE_SUITE_V3_1_1, az_iot_mymqtt_get_adapter());
 }
 ```
 
@@ -327,7 +324,8 @@ opts.client_key_psa_id = my_psa_key_id;
 /* Shared: a certificate carrying the PUBLIC key behind each route. */
 opts.client_cert_path = "/path/to/device-cert.pem";
 
-return az_iot_conformance_run_with_options(AZ_IOT_CONFORMANCE_SUITE_V3_1_1, f, &opts);
+return az_iot_conformance_run_with_options(
+    AZ_IOT_CONFORMANCE_SUITE_V3_1_1, az_iot_mymqtt_get_adapter(), &opts);
 ```
 
 If your adapter loads TLS credentials from in-memory PEM (`trusted_ca_pem`, `client_cert_pem`, `client_key_pem`), declare `AZ_IOT_CONFORMANCE_CAP_TLS_PEM`. It needs no material: the suite issues a client certificate, connects with PEM only, and wipes the buffers as soon as `connect()` returns; the handshake must still succeed. It needs a TLS build (`-DAZ_IOT_BUILD_CONFORMANCE_TESTS_TLS=ON`).

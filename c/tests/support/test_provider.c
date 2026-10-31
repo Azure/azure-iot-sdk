@@ -5,7 +5,10 @@
 /* SPDX-License-Identifier: MIT */
 #include "support/test_provider.h"
 
+#include <stdlib.h>
 #include <string.h>
+
+#include "support/mock_mqtt_iface.h"
 
 static az_iot_result test_provider_load(
     az_iot_certificate_provider* self,
@@ -54,11 +57,15 @@ void az_iot_test_provider_init(az_iot_test_provider* provider, const char* trust
 /** @brief Clients alive at once that az_iot_test_connection_client_init() gives a workspace. */
 #define TEST_CONNECTION_WORKSPACE_COUNT 32
 
-/** @brief A default-size workspace and the client it is lent to; NULL client: free. */
+/**
+ * @brief A default-size workspace, an MQTT workspace allocated for the client when it needs one,
+ * and the client they are lent to; NULL client: free.
+ */
 typedef struct test_connection_workspace
 {
   const az_iot_connection_client* client;
   uint8_t workspace[AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE];
+  uint8_t* mqtt_workspace;
 } test_connection_workspace;
 
 static test_connection_workspace s_connection_workspaces[TEST_CONNECTION_WORKSPACE_COUNT];
@@ -96,6 +103,14 @@ static test_connection_workspace* test_connection_workspace_lend(
   return lent;
 }
 
+/** @brief Takes @p lent back: frees its MQTT workspace and makes it free. */
+static void test_connection_workspace_return(test_connection_workspace* lent)
+{
+  free(lent->mqtt_workspace);
+  lent->mqtt_workspace = NULL;
+  lent->client = NULL;
+}
+
 az_iot_result az_iot_test_connection_client_init(
     az_iot_connection_client* client,
     const az_iot_connection_client_options* opts)
@@ -111,23 +126,52 @@ az_iot_result az_iot_test_connection_client_init(
   {
     with_defaults.certificate_provider = &s_provider.base;
   }
-  test_connection_workspace* lent = NULL;
-  if (with_defaults.workspace == NULL
+  bool const lend_workspace = with_defaults.workspace == NULL
       && az_iot_connection_client_get_workspace_size(&opts->limits)
-          <= AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE)
+          <= AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE;
+  const az_iot_mqtt_limits* mqtt_limits = &with_defaults.mqtt_limits;
+  if (with_defaults.mqtt_adapter != NULL && mqtt_limits->send_buffer_size == 0
+      && mqtt_limits->receive_buffer_size == 0 && mqtt_limits->max_in_flight_messages == 0
+      && mqtt_limits->message_store_size == 0 && mqtt_limits->connect_strings_size == 0)
+  {
+    with_defaults.mqtt_limits = az_iot_mock_mqtt_limits;
+  }
+  /* 0 when the adapter or limits are invalid: init() reports that. */
+  size_t const mqtt_workspace_size = with_defaults.mqtt_adapter != NULL
+          && with_defaults.mqtt_workspace == NULL
+          && with_defaults.mqtt_adapter->get_workspace_size != NULL
+      ? with_defaults.mqtt_adapter->get_workspace_size(&with_defaults.mqtt_limits)
+      : 0;
+  test_connection_workspace* lent = NULL;
+  if (lend_workspace || mqtt_workspace_size > 0)
   {
     lent = test_connection_workspace_lend(client);
     if (lent == NULL)
     {
       return AZ_IOT_ERR_OUT_OF_MEMORY;
     }
+  }
+  if (lend_workspace)
+  {
     with_defaults.workspace = lent->workspace;
     with_defaults.workspace_size = sizeof(lent->workspace);
+  }
+  if (mqtt_workspace_size > 0)
+  {
+    free(lent->mqtt_workspace);
+    lent->mqtt_workspace = (uint8_t*)malloc(mqtt_workspace_size);
+    if (lent->mqtt_workspace == NULL)
+    {
+      test_connection_workspace_return(lent);
+      return AZ_IOT_ERR_OUT_OF_MEMORY;
+    }
+    with_defaults.mqtt_workspace = lent->mqtt_workspace;
+    with_defaults.mqtt_workspace_size = mqtt_workspace_size;
   }
   az_iot_result result = az_iot_connection_client_init(client, &with_defaults);
   if (result != AZ_IOT_OK && lent != NULL)
   {
-    lent->client = NULL;
+    test_connection_workspace_return(lent);
   }
   return result;
 }
@@ -139,7 +183,7 @@ az_iot_result az_iot_test_connection_client_deinit(az_iot_connection_client* cli
       = result == AZ_IOT_OK ? test_connection_workspace_lent_to(client) : NULL;
   if (lent != NULL)
   {
-    lent->client = NULL;
+    test_connection_workspace_return(lent);
   }
   return result;
 }

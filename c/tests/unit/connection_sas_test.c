@@ -240,6 +240,7 @@ static int setup(void** state)
 {
   fixture* fx = (fixture*)calloc(1, sizeof(*fx));
   assert_non_null(fx);
+  az_iot_mock_mqtt_adapter_reset();
   fx->factory = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
   assert_non_null(fx->factory);
   *state = fx;
@@ -262,6 +263,27 @@ static int teardown(void** state)
 /* Room for two distinct keys and a token for IDs up to 256 characters. */
 static uint8_t g_sas_buffer[AZ_IOT_SAS_BUFFER_SIZE(2, AZ_IOT_SAS_TOKEN_SIZE(256))];
 static uint8_t g_connection_workspace[AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE];
+static uint8_t g_mqtt_workspace[AZ_IOT_MOCK_MQTT_WORKSPACE_SIZE];
+
+/** @brief Has @p opts build its MQTT clients with the mock adapter, in g_mqtt_workspace. */
+static void build_mqtt_clients_with_the_mock_adapter(az_iot_connection_client_options* opts)
+{
+  opts->mqtt_adapter = az_iot_mock_mqtt_get_adapter_for_version(AZ_IOT_MQTT_VERSION_3_1_1);
+  opts->mqtt_limits = az_iot_mock_mqtt_limits;
+  opts->mqtt_workspace = g_mqtt_workspace;
+  opts->mqtt_workspace_size = sizeof(g_mqtt_workspace);
+}
+
+/**
+ * @brief Has @p opts take its MQTT clients from the fixture's factory instead: for the cases that
+ * need the provisioning and hub sessions alive at once, which one MQTT workspace cannot hold.
+ */
+static void build_mqtt_clients_with_the_factory(az_iot_connection_client_options* opts)
+{
+  opts->mqtt_adapter = NULL;
+  opts->mqtt_workspace = NULL;
+  opts->mqtt_workspace_size = 0;
+}
 
 static bool all_zero(const void* p, size_t n)
 {
@@ -288,6 +310,7 @@ static az_iot_connection_client_options hub_sas_options(void)
   opts.sas_buffer.size = sizeof(g_sas_buffer);
   opts.workspace = g_connection_workspace;
   opts.workspace_size = sizeof(g_connection_workspace);
+  build_mqtt_clients_with_the_mock_adapter(&opts);
   return opts;
 }
 
@@ -306,6 +329,7 @@ static az_iot_connection_client_options dps_sas_options(const char* key)
   opts.sas_buffer.size = sizeof(g_sas_buffer);
   opts.workspace = g_connection_workspace;
   opts.workspace_size = sizeof(g_connection_workspace);
+  build_mqtt_clients_with_the_mock_adapter(&opts);
   return opts;
 }
 
@@ -315,14 +339,33 @@ static void init_and_open(fixture* fx, const az_iot_connection_client_options* o
   fx->initialized = true;
   assert_int_equal(
       az_iot_connection_client_add_state_observer(&fx->client, on_state, fx), AZ_IOT_OK);
-  assert_int_equal(
-      az_iot_connection_client_register_mqtt_factory(&fx->client, fx->factory), AZ_IOT_OK);
+  if (opts->mqtt_adapter == NULL)
+  {
+    assert_int_equal(
+        az_iot_connection_client_register_mqtt_factory(&fx->client, fx->factory), AZ_IOT_OK);
+  }
   assert_int_equal(az_iot_connection_client_open(&fx->client), AZ_IOT_OK);
+}
+
+/** @brief The newest live mock client of @p fx's connection client: its adapter's, or its
+ * factory's. */
+static az_iot_mock_mqtt_client* newest_mock_client(const fixture* fx)
+{
+  return fx->client.opts.mqtt_adapter != NULL ? az_iot_mock_mqtt_adapter_last_client()
+                                              : az_iot_mock_mqtt_factory_last_client(fx->factory);
+}
+
+/** @brief Mock clients of @p fx's connection client destroyed after a disconnect() call. */
+static size_t mock_clients_destroyed_after_disconnect(const fixture* fx)
+{
+  return fx->client.opts.mqtt_adapter != NULL
+      ? az_iot_mock_mqtt_adapter_get_stats().disconnected_destroyed
+      : az_iot_mock_mqtt_factory_disconnected_destroyed(fx->factory);
 }
 
 static const az_iot_mock_call* last_connect(const fixture* fx)
 {
-  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  az_iot_mock_mqtt_client* m = newest_mock_client(fx);
   assert_non_null(m);
   const az_iot_mock_call* call = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_CONNECT);
   assert_non_null(call);
@@ -403,7 +446,7 @@ static void hub_connects_with_a_sas_token_when_only_a_key_is_set(void** state)
   assert_string_equal(call->connect.client_cert_path, "");
   assert_false(call->connect.has_client_cert_pem);
 
-  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  az_iot_mock_mqtt_client* m = newest_mock_client(fx);
   assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_OK));
   assert_int_equal(az_iot_connection_client_do_work(&fx->client, 0), AZ_IOT_OK);
   assert_int_equal(fx->last_state, AZ_IOT_CONN_STATE_CONNECTED);
@@ -420,13 +463,13 @@ static void a_changed_hub_identity_is_used_on_the_next_connect(void** state)
   init_and_open(fx, &opts);
   assert_non_null(strstr(last_connect(fx)->password, "sr=broker.example%2Fdevices%2Fut-device&"));
 
-  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  az_iot_mock_mqtt_client* m = newest_mock_client(fx);
   assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_OK));
   assert_int_equal(az_iot_connection_client_do_work(&fx->client, 0), AZ_IOT_OK);
   az_iot_connection_client_close(&fx->client);
   for (int i = 0; i < 10 && fx->last_state != AZ_IOT_CONN_STATE_IDLE; ++i)
   {
-    m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+    m = newest_mock_client(fx);
     if (m != NULL)
     {
       (void)az_iot_mock_mqtt_client_inject_disconnected(m);
@@ -480,8 +523,6 @@ static void a_provider_that_cannot_load_does_not_fall_back_to_sas(void** state)
   opts.certificate_provider = &provider;
   assert_int_equal(az_iot_connection_client_init(&fx->client, &opts), AZ_IOT_OK);
   fx->initialized = true;
-  assert_int_equal(
-      az_iot_connection_client_register_mqtt_factory(&fx->client, fx->factory), AZ_IOT_OK);
   assert_int_equal(az_iot_connection_client_open(&fx->client), AZ_IOT_ERR_NOT_INITIALIZED);
 }
 
@@ -493,8 +534,6 @@ static void an_operational_error_is_not_hidden_by_a_missing_bootstrap(void** sta
   opts.certificate_provider = &provider;
   assert_int_equal(az_iot_connection_client_init(&fx->client, &opts), AZ_IOT_OK);
   fx->initialized = true;
-  assert_int_equal(
-      az_iot_connection_client_register_mqtt_factory(&fx->client, fx->factory), AZ_IOT_OK);
   assert_int_equal(az_iot_connection_client_open(&fx->client), AZ_IOT_ERR_NOT_INITIALIZED);
 }
 
@@ -558,7 +597,6 @@ static void the_token_size_macro_is_enough_for_the_worst_case(void** state)
     {
       static uint8_t buf[AZ_IOT_SAS_BUFFER_SIZE(1, AZ_IOT_SAS_TOKEN_SIZE(ids))];
       az_iot_connection_client client;
-      az_iot_mqtt_factory* factory = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
       az_iot_connection_client_options opts = { 0 };
       opts.crypto = TEST_CRYPTO();
       opts.unix_time.get_time = max_time;
@@ -566,6 +604,7 @@ static void the_token_size_macro_is_enough_for_the_worst_case(void** state)
       opts.sas_buffer.size = sizeof(buf) - (size_t)shrink;
       opts.workspace = g_connection_workspace;
       opts.workspace_size = sizeof(g_connection_workspace);
+      build_mqtt_clients_with_the_mock_adapter(&opts);
       if (dps)
       {
         opts.device_id = k_second;
@@ -581,7 +620,6 @@ static void the_token_size_macro_is_enough_for_the_worst_case(void** state)
         opts.hub_auth.sas.primary_key_base64 = KEY_B64;
       }
       assert_int_equal(az_iot_connection_client_init(&client, &opts), AZ_IOT_OK);
-      assert_int_equal(az_iot_connection_client_register_mqtt_factory(&client, factory), AZ_IOT_OK);
       az_iot_result r = az_iot_connection_client_open(&client);
       if (shrink)
       {
@@ -591,7 +629,7 @@ static void the_token_size_macro_is_enough_for_the_worst_case(void** state)
       {
         assert_int_equal(r, AZ_IOT_OK);
         const az_iot_mock_call* call = az_iot_mock_mqtt_client_last_of(
-            az_iot_mock_mqtt_factory_last_client(factory), AZ_IOT_MOCK_CALL_CONNECT);
+            az_iot_mock_mqtt_adapter_last_client(), AZ_IOT_MOCK_CALL_CONNECT);
         assert_non_null(call);
         size_t used = strlen(call->password) + 1u;
         assert_true(used <= AZ_IOT_SAS_TOKEN_SIZE(ids));
@@ -613,7 +651,6 @@ static void the_token_size_macro_is_enough_for_the_worst_case(void** state)
         }
       }
       az_iot_connection_client_deinit(&client);
-      az_iot_mock_mqtt_factory_destroy(factory);
     }
   }
 }
@@ -625,8 +662,6 @@ static void a_token_that_does_not_fit_fails_and_is_wiped(void** state)
   opts.sas_buffer.size = AZ_IOT_SAS_BUFFER_SIZE(1, AZ_IOT_SAS_KEY_MAX); /* smallest token area */
   assert_int_equal(az_iot_connection_client_init(&fx->client, &opts), AZ_IOT_OK);
   fx->initialized = true;
-  assert_int_equal(
-      az_iot_connection_client_register_mqtt_factory(&fx->client, fx->factory), AZ_IOT_OK);
   assert_int_equal(az_iot_connection_client_open(&fx->client), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
   assert_true(all_zero(fx->client.sas_token, fx->client.sas_token_size));
 }
@@ -645,8 +680,6 @@ static void a_username_that_does_not_fit_fails_the_attempt(void** state)
   opts.device_id = long_id;
   assert_int_equal(az_iot_connection_client_init(&fx->client, &opts), AZ_IOT_OK);
   fx->initialized = true;
-  assert_int_equal(
-      az_iot_connection_client_register_mqtt_factory(&fx->client, fx->factory), AZ_IOT_OK);
   assert_int_equal(az_iot_connection_client_open(&fx->client), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
 }
 
@@ -735,8 +768,6 @@ static void a_time_that_would_overflow_the_expiry_fails_with_busy(void** state)
   opts.unix_time.get_time = overflowing_time;
   assert_int_equal(az_iot_connection_client_init(&fx->client, &opts), AZ_IOT_OK);
   fx->initialized = true;
-  assert_int_equal(
-      az_iot_connection_client_register_mqtt_factory(&fx->client, fx->factory), AZ_IOT_OK);
   assert_int_equal(az_iot_connection_client_open(&fx->client), AZ_IOT_ERR_BUSY);
 }
 
@@ -747,8 +778,6 @@ static void no_unix_time_fails_the_attempt_with_busy(void** state)
   opts.unix_time.get_time = no_time;
   assert_int_equal(az_iot_connection_client_init(&fx->client, &opts), AZ_IOT_OK);
   fx->initialized = true;
-  assert_int_equal(
-      az_iot_connection_client_register_mqtt_factory(&fx->client, fx->factory), AZ_IOT_OK);
   assert_int_equal(az_iot_connection_client_open(&fx->client), AZ_IOT_ERR_BUSY);
 }
 
@@ -771,7 +800,7 @@ static void each_retry_without_unix_time_is_reported(void** state)
   assert_int_equal(
       az_iot_connection_client_add_state_observer(&fx->client, az_iot_test_on_state, &log),
       AZ_IOT_OK);
-  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  az_iot_mock_mqtt_client* m = newest_mock_client(fx);
   assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_OK));
   (void)az_iot_connection_client_do_work(&fx->client, 0);
   assert_true(az_iot_mock_mqtt_client_inject_disconnected(m));
@@ -823,8 +852,6 @@ static void no_provider_and_no_key_is_credential_incomplete(void** state)
   opts.hub_auth.sas.primary_key_base64 = NULL;
   assert_int_equal(az_iot_connection_client_init(&fx->client, &opts), AZ_IOT_OK);
   fx->initialized = true;
-  assert_int_equal(
-      az_iot_connection_client_register_mqtt_factory(&fx->client, fx->factory), AZ_IOT_OK);
   assert_int_equal(az_iot_connection_client_open(&fx->client), AZ_IOT_ERR_CREDENTIAL_INCOMPLETE);
 }
 
@@ -852,7 +879,7 @@ static void pump(fixture* fx, int n)
 
 static void connack(fixture* fx, az_iot_result status)
 {
-  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  az_iot_mock_mqtt_client* m = newest_mock_client(fx);
   assert_non_null(m);
   assert_true(az_iot_mock_mqtt_client_inject_connected(m, status));
   pump(fx, 3);
@@ -886,10 +913,7 @@ static const recorded_event* last_event(
 }
 
 /** @brief No attempt is in flight: the rejected one was torn down and none followed. */
-static bool no_connect_pending(const fixture* fx)
-{
-  return az_iot_mock_mqtt_factory_last_client(fx->factory) == NULL;
-}
+static bool no_connect_pending(const fixture* fx) { return newest_mock_client(fx) == NULL; }
 
 static void hub_x509_rejected_falls_back_to_the_primary_key(void** state)
 {
@@ -934,8 +958,7 @@ static void a_kept_secondary_key_wraps_to_the_primary_when_rejected(void** state
   assert_int_equal(fx->last_source, AZ_IOT_AUTH_SOURCE_SECONDARY_KEY);
 
   /* A drop is not a rejection: the secondary key is kept. */
-  assert_true(az_iot_mock_mqtt_client_inject_disconnected(
-      az_iot_mock_mqtt_factory_last_client(fx->factory)));
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(newest_mock_client(fx)));
   pump(fx, 2);
   wait_and_fire_retry(fx);
   assert_string_equal(last_connect(fx)->password, SECONDARY_HUB_TOKEN);
@@ -1003,8 +1026,7 @@ static void open_starts_again_at_the_first_source(void** state)
   assert_int_equal(fx->last_source, AZ_IOT_AUTH_SOURCE_SECONDARY_KEY);
 
   assert_int_equal(az_iot_connection_client_close(&fx->client), AZ_IOT_OK);
-  assert_true(az_iot_mock_mqtt_client_inject_disconnected(
-      az_iot_mock_mqtt_factory_last_client(fx->factory)));
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(newest_mock_client(fx)));
   pump(fx, 2);
   assert_int_equal(az_iot_connection_client_open(&fx->client), AZ_IOT_OK);
   assert_string_equal(last_connect(fx)->password, HUB_TOKEN);
@@ -1070,6 +1092,7 @@ static void a_feature_held_session_falls_back_to_the_secondary_key(void** state)
   az_iot_connection_client_options opts = dps_sas_options(KEY_B64);
   opts.dps_auth.sas.secondary_key_base64 = KEY2_B64;
   with_policies(&opts);
+  build_mqtt_clients_with_the_factory(&opts);
   assert_int_equal(az_iot_connection_client_init(&fx->client, &opts), AZ_IOT_OK);
   fx->initialized = true;
   assert_int_equal(
@@ -1100,6 +1123,7 @@ static void a_released_session_starts_a_new_pass(void** state)
   az_iot_connection_client_options opts = dps_sas_options(KEY_B64);
   opts.dps_auth.sas.secondary_key_base64 = KEY2_B64;
   with_policies(&opts);
+  build_mqtt_clients_with_the_factory(&opts);
   assert_int_equal(az_iot_connection_client_init(&fx->client, &opts), AZ_IOT_OK);
   fx->initialized = true;
   assert_int_equal(
@@ -1137,6 +1161,7 @@ static void a_release_during_the_rejection_does_not_advance(void** state)
   az_iot_connection_client_options opts = dps_sas_options(KEY_B64);
   opts.dps_auth.sas.secondary_key_base64 = KEY2_B64;
   with_policies(&opts);
+  build_mqtt_clients_with_the_factory(&opts);
   assert_int_equal(az_iot_connection_client_init(&fx->client, &opts), AZ_IOT_OK);
   fx->initialized = true;
   assert_int_equal(
@@ -1171,6 +1196,7 @@ static void replaced_demand_starts_a_fresh_pass(void** state)
   fixture* fx = (fixture*)*state;
   az_iot_connection_client_options opts = dps_sas_options(KEY_B64);
   with_policies(&opts);
+  build_mqtt_clients_with_the_factory(&opts);
   assert_int_equal(az_iot_connection_client_init(&fx->client, &opts), AZ_IOT_OK);
   fx->initialized = true;
   assert_int_equal(
@@ -1199,6 +1225,7 @@ static void a_feature_release_keeps_provision_only_fallback(void** state)
   az_iot_connection_client_options opts = dps_sas_options(KEY_B64);
   opts.dps_auth.sas.secondary_key_base64 = KEY2_B64;
   opts.dps.provision_only = true;
+  build_mqtt_clients_with_the_factory(&opts);
   assert_int_equal(az_iot_connection_client_init(&fx->client, &opts), AZ_IOT_OK);
   fx->initialized = true;
   assert_int_equal(
@@ -1323,6 +1350,7 @@ static void a_reacquired_in_flight_session_keeps_its_pass(void** state)
   az_iot_connection_client_options opts = dps_sas_options(KEY_B64);
   opts.dps_auth.sas.secondary_key_base64 = KEY2_B64;
   with_policies(&opts);
+  build_mqtt_clients_with_the_factory(&opts);
   assert_int_equal(az_iot_connection_client_init(&fx->client, &opts), AZ_IOT_OK);
   fx->initialized = true;
   assert_int_equal(
@@ -1352,7 +1380,7 @@ static az_iot_mock_mqtt_client* dps_registering_with_two_keys(fixture* fx, bool 
   }
   init_and_open(fx, &opts);
   assert_string_equal(last_connect(fx)->password, DPS_TOKEN);
-  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  az_iot_mock_mqtt_client* m = newest_mock_client(fx);
   assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_OK));
   pump(fx, 1);
   const az_iot_mock_call* sub = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_SUBSCRIBE);
@@ -1416,6 +1444,7 @@ static void a_registration_on_a_held_session_falls_back(void** state)
   az_iot_connection_client_options opts = dps_sas_options(KEY_B64);
   opts.dps_auth.sas.secondary_key_base64 = KEY2_B64;
   with_policies(&opts);
+  build_mqtt_clients_with_the_factory(&opts);
   assert_int_equal(az_iot_connection_client_init(&fx->client, &opts), AZ_IOT_OK);
   fx->initialized = true;
   assert_int_equal(
@@ -1425,7 +1454,7 @@ static void a_registration_on_a_held_session_falls_back(void** state)
   assert_int_equal(az_iot_connection_client__dps_user_acquire(&fx->client), AZ_IOT_OK);
   assert_int_equal(az_iot_connection_client__dps_session_ensure(&fx->client), AZ_IOT_ERR_BUSY);
   assert_string_equal(last_connect(fx)->password, DPS_TOKEN);
-  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  az_iot_mock_mqtt_client* m = newest_mock_client(fx);
   assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_OK));
   pump(fx, 1);
   const az_iot_mock_call* sub = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_SUBSCRIBE);
@@ -1508,7 +1537,7 @@ static void open_renewable_hub(fixture* fx, uint64_t* now, const char* secondary
  * requested, the session is still CONNECTED. Returns the old adapter. */
 static az_iot_mock_mqtt_client* start_renewal(fixture* fx)
 {
-  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  az_iot_mock_mqtt_client* m = newest_mock_client(fx);
   fx->client.sas_token_renewal_due_ms[AZ_IOT_CONN_SCOPE_HUB] = az_iot_time_mono_ms();
   pump(fx, 1);
   assert_int_equal(az_iot_mock_mqtt_client_count_of(m, AZ_IOT_MOCK_CALL_DISCONNECT), 1);
@@ -1524,7 +1553,7 @@ static void a_renewal_waits_for_a_planned_end_in_progress(void** state)
   fixture* fx = (fixture*)*state;
   uint64_t now = NOW;
   open_renewable_hub(fx, &now, NULL);
-  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  az_iot_mock_mqtt_client* m = newest_mock_client(fx);
   assert_int_equal(
       az_iot_connection_client__end_hub_session(&fx->client, AZ_IOT_ERR_TIMEOUT), AZ_IOT_OK);
   assert_int_equal(az_iot_mock_mqtt_client_count_of(m, AZ_IOT_MOCK_CALL_DISCONNECT), 1);
@@ -1546,7 +1575,7 @@ static void a_held_renewal_does_not_spin_the_hub_wait(void** state)
   fixture* fx = (fixture*)*state;
   uint64_t now = NOW;
   open_renewable_hub(fx, &now, NULL);
-  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  az_iot_mock_mqtt_client* m = newest_mock_client(fx);
   assert_int_equal(
       az_iot_connection_client__end_hub_session(&fx->client, AZ_IOT_ERR_TIMEOUT), AZ_IOT_OK);
   fx->client.sas_token_renewal_due_ms[AZ_IOT_CONN_SCOPE_HUB] = az_iot_time_mono_ms();
@@ -1675,7 +1704,7 @@ static void an_x509_session_is_not_renewed(void** state)
   init_and_open(fx, &opts);
   connack(fx, AZ_IOT_OK);
   assert_int_equal(fx->client.auth[AZ_IOT_CONN_SCOPE_HUB].source, AZ_IOT_AUTH_SOURCE_X509);
-  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  az_iot_mock_mqtt_client* m = newest_mock_client(fx);
   fx->client.sas_token_renewal_due_ms[AZ_IOT_CONN_SCOPE_HUB] = az_iot_time_mono_ms();
   pump(fx, 2);
   assert_int_equal(az_iot_mock_mqtt_client_count_of(m, AZ_IOT_MOCK_CALL_DISCONNECT), 0);
@@ -1710,7 +1739,7 @@ static void the_hub_wait_is_capped_by_the_renewal(void** state)
   fixture* fx = (fixture*)*state;
   uint64_t now = NOW;
   open_renewable_hub(fx, &now, NULL);
-  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  az_iot_mock_mqtt_client* m = newest_mock_client(fx);
   fx->client.sas_token_renewal_due_ms[AZ_IOT_CONN_SCOPE_HUB] = az_iot_time_mono_ms() + 1000u;
   (void)az_iot_connection_client_do_work(&fx->client, 60000u);
   assert_true(
@@ -2060,13 +2089,14 @@ static void a_held_dps_wait_is_capped_by_the_hub_renewal(void** state)
   opts.dps.id_scope = "0ne00000001";
   opts.dps.registration_id = "ut-device";
   opts.dps_auth.sas.primary_key_base64 = KEY_B64;
+  build_mqtt_clients_with_the_factory(&opts);
   init_and_open(fx, &opts);
   connack(fx, AZ_IOT_OK);
   assert_int_equal(fx->client.state[AZ_IOT_CONN_SCOPE_HUB], AZ_IOT_CONN_STATE_CONNECTED);
 
   assert_int_equal(az_iot_connection_client__dps_user_acquire(&fx->client), AZ_IOT_OK);
   assert_int_equal(az_iot_connection_client__dps_session_ensure(&fx->client), AZ_IOT_ERR_BUSY);
-  az_iot_mock_mqtt_client* dps = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  az_iot_mock_mqtt_client* dps = newest_mock_client(fx);
   assert_string_equal(last_connect(fx)->password, DPS_TOKEN);
   assert_non_null(fx->client.dps_mqtt);
 
@@ -2085,7 +2115,7 @@ static void a_suspended_monotonic_clock_still_renews(void** state)
   uint64_t now = NOW;
   open_renewable_hub(fx, &now, NULL);
   assert_int_equal(fx->client.sas_token_renewal_due_unix_seconds[AZ_IOT_CONN_SCOPE_HUB], NOW + 50u);
-  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  az_iot_mock_mqtt_client* m = newest_mock_client(fx);
   pump(fx, 1);
   assert_int_equal(az_iot_mock_mqtt_client_count_of(m, AZ_IOT_MOCK_CALL_DISCONNECT), 0);
 
@@ -2144,7 +2174,7 @@ static void a_sub_second_renewal_delay_does_not_renew_at_once(void** state)
   connack(fx, AZ_IOT_OK);
   assert_int_equal(fx->client.sas_token_renewal_due_unix_seconds[AZ_IOT_CONN_SCOPE_HUB], NOW + 1u);
   fx->client.sas_token_renewal_due_ms[AZ_IOT_CONN_SCOPE_HUB] = az_iot_time_mono_ms() + 60000u;
-  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  az_iot_mock_mqtt_client* m = newest_mock_client(fx);
   pump(fx, 1);
   assert_int_equal(az_iot_mock_mqtt_client_count_of(m, AZ_IOT_MOCK_CALL_DISCONNECT), 0);
 }
@@ -2275,6 +2305,7 @@ static az_iot_connection_client_options user_token_hub_options(fixture* fx, fake
   opts.sas_buffer.size = sizeof(g_sas_buffer);
   opts.workspace = g_connection_workspace;
   opts.workspace_size = sizeof(g_connection_workspace);
+  build_mqtt_clients_with_the_mock_adapter(&opts);
   return opts;
 }
 
@@ -2339,9 +2370,7 @@ static void a_user_token_connects_an_mqttv5_hub(void** state)
   fixture* fx = (fixture*)*state;
   az_iot_connection_client_options opts = user_token_hub_options(fx, FAKE_TOKEN_SUPPLY);
   opts.connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5;
-  az_iot_mock_mqtt_factory_destroy(fx->factory);
-  fx->factory = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_5);
-  assert_non_null(fx->factory);
+  opts.mqtt_adapter = az_iot_mock_mqtt_get_adapter_for_version(AZ_IOT_MQTT_VERSION_5);
   init_and_open(fx, &opts);
   pump(fx, 1);
   assert_int_equal(g_fake.calls, 1);
@@ -2402,8 +2431,6 @@ static void a_dps_token_supplied_before_open_is_used(void** state)
   opts.dps_auth.sas.on_sas_token_required = fake_token_callback;
   assert_int_equal(az_iot_connection_client_init(&fx->client, &opts), AZ_IOT_OK);
   fx->initialized = true;
-  assert_int_equal(
-      az_iot_connection_client_register_mqtt_factory(&fx->client, fx->factory), AZ_IOT_OK);
   assert_int_equal(supply_user_token(fx, AZ_IOT_CONN_SCOPE_DPS), AZ_IOT_OK);
   assert_int_equal(az_iot_connection_client_open(&fx->client), AZ_IOT_OK);
   pump(fx, 1);
@@ -2672,7 +2699,7 @@ static void a_user_token_renewal_waits_for_the_token_connected(void** state)
   init_and_open(fx, &opts);
   pump(fx, 1);
   connack(fx, AZ_IOT_OK);
-  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  az_iot_mock_mqtt_client* m = newest_mock_client(fx);
 
   g_fake.mode = FAKE_TOKEN_LATER;
   fx->client.sas_token_renewal_due_ms[AZ_IOT_CONN_SCOPE_HUB] = az_iot_time_mono_ms();
@@ -2754,7 +2781,7 @@ static void an_expired_renewal_token_is_asked_again(void** state)
   init_and_open(fx, &opts);
   pump(fx, 1);
   connack(fx, AZ_IOT_OK);
-  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  az_iot_mock_mqtt_client* m = newest_mock_client(fx);
   g_fake.mode = FAKE_TOKEN_LATER;
   fx->client.sas_token_renewal_due_ms[AZ_IOT_CONN_SCOPE_HUB] = az_iot_time_mono_ms();
   pump(fx, 2);
@@ -2779,7 +2806,7 @@ static void an_unasked_token_renews_the_connected_hub(void** state)
   init_and_open(fx, &opts);
   pump(fx, 1);
   connack(fx, AZ_IOT_OK);
-  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  az_iot_mock_mqtt_client* m = newest_mock_client(fx);
   static const char k_new[]
       = "SharedAccessSignature sr=broker.example%2Fdevices%2Fut-device&sig=new&se=2";
   assert_int_equal(update_hub(fx, k_new), AZ_IOT_OK);
@@ -2807,7 +2834,7 @@ static void an_unasked_token_does_not_renew_a_key_session(void** state)
   init_and_open(fx, &opts);
   connack(fx, AZ_IOT_OK);
   assert_int_equal(fx->last_source, AZ_IOT_AUTH_SOURCE_PRIMARY_KEY);
-  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  az_iot_mock_mqtt_client* m = newest_mock_client(fx);
   assert_int_equal(supply_user_token(fx, AZ_IOT_CONN_SCOPE_HUB), AZ_IOT_OK);
   pump(fx, 3);
   assert_int_equal(az_iot_mock_mqtt_client_count_of(m, AZ_IOT_MOCK_CALL_DISCONNECT), 0);
@@ -2833,7 +2860,7 @@ static void a_loss_queued_before_a_renewal_token_is_a_loss(void** state)
   init_and_open(fx, &opts);
   pump(fx, 1);
   connack(fx, AZ_IOT_OK);
-  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  az_iot_mock_mqtt_client* m = newest_mock_client(fx);
 
   g_fake.mode = FAKE_TOKEN_LATER;
   fx->client.sas_token_renewal_due_ms[AZ_IOT_CONN_SCOPE_HUB] = az_iot_time_mono_ms();
@@ -2871,7 +2898,7 @@ static void a_new_assignment_asks_for_a_new_hub_token(void** state)
   init_and_open(fx, &opts);
   pump(fx, 1);
   connack(fx, AZ_IOT_OK);
-  az_iot_mock_mqtt_client* hub = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  az_iot_mock_mqtt_client* hub = newest_mock_client(fx);
 
   g_fake.mode = FAKE_TOKEN_LATER;
   fx->client.sas_token_renewal_due_ms[AZ_IOT_CONN_SCOPE_HUB] = az_iot_time_mono_ms();
@@ -2886,7 +2913,7 @@ static void a_new_assignment_asks_for_a_new_hub_token(void** state)
   pump(fx, 1);
   assert_true(fx->client.needs_reprovision);
   wait_and_fire_retry(fx);
-  az_iot_mock_mqtt_client* dps = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  az_iot_mock_mqtt_client* dps = newest_mock_client(fx);
   assert_string_equal(last_connect(fx)->password, DPS_TOKEN);
   assert_true(az_iot_mock_mqtt_client_inject_connected(dps, AZ_IOT_OK));
   pump(fx, 1);
@@ -2920,7 +2947,7 @@ static void a_failed_connect_after_a_user_token_is_retried(void** state)
   az_iot_connection_client_options opts = user_token_hub_options(fx, FAKE_TOKEN_SUPPLY);
   with_policies(&opts);
   init_and_open(fx, &opts);
-  az_iot_mock_mqtt_factory_fail_next_connect(fx->factory, AZ_IOT_ERR_MQTT);
+  az_iot_mock_mqtt_adapter_fail_next_connect(AZ_IOT_ERR_MQTT);
   pump(fx, 1);
   assert_int_equal(fx->client.state[AZ_IOT_CONN_SCOPE_HUB], AZ_IOT_CONN_STATE_RETRY_PENDING);
   assert_int_not_equal(fx->client.reconnect_due_ms, 0);
@@ -2936,7 +2963,7 @@ static void a_failed_dps_connect_after_a_user_token_is_retried(void** state)
   opts.dps_auth.sas.on_sas_token_required = fake_token_callback;
   with_policies(&opts);
   init_and_open(fx, &opts);
-  az_iot_mock_mqtt_factory_fail_next_connect(fx->factory, AZ_IOT_ERR_MQTT);
+  az_iot_mock_mqtt_adapter_fail_next_connect(AZ_IOT_ERR_MQTT);
   pump(fx, 1);
   assert_int_equal(fx->client.state[AZ_IOT_CONN_SCOPE_DPS], AZ_IOT_CONN_STATE_RETRY_PENDING);
   assert_int_not_equal(fx->client.reconnect_due_ms, 0);
@@ -2968,6 +2995,7 @@ static void the_other_roles_token_waits_for_the_callback(void** state)
   opts.dps_auth.sas.user_ctx = fx;
   opts.hub_auth.sas.on_sas_token_required = supply_other_then_own;
   opts.hub_auth.sas.user_ctx = fx;
+  build_mqtt_clients_with_the_factory(&opts);
   init_and_open(fx, &opts);
   assert_int_equal(az_iot_connection_client__dps_user_acquire(&fx->client), AZ_IOT_OK);
   assert_int_equal(az_iot_connection_client__dps_session_ensure(&fx->client), AZ_IOT_ERR_BUSY);
@@ -2986,7 +3014,7 @@ static void a_faulted_hub_drops_its_held_token(void** state)
   init_and_open(fx, &opts);
   pump(fx, 1);
   connack(fx, AZ_IOT_OK);
-  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  az_iot_mock_mqtt_client* m = newest_mock_client(fx);
   fx->client.sas_token_renewal_due_ms[AZ_IOT_CONN_SCOPE_HUB] = az_iot_time_mono_ms();
   pump(fx, 2);
   assert_true(fx->client.sas_token_renewal_in_progress[AZ_IOT_CONN_SCOPE_HUB]);
@@ -3009,10 +3037,11 @@ static void a_token_deadline_caps_the_other_sessions_wait(void** state)
   opts.dps.id_scope = "0ne00000001";
   opts.dps.registration_id = "ut-device";
   opts.dps_auth.sas.primary_key_base64 = KEY_B64;
+  build_mqtt_clients_with_the_factory(&opts);
   init_and_open(fx, &opts);
   assert_int_equal(az_iot_connection_client__dps_user_acquire(&fx->client), AZ_IOT_OK);
   assert_int_equal(az_iot_connection_client__dps_session_ensure(&fx->client), AZ_IOT_ERR_BUSY);
-  az_iot_mock_mqtt_client* dps = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  az_iot_mock_mqtt_client* dps = newest_mock_client(fx);
   assert_string_equal(last_connect(fx)->password, DPS_TOKEN);
   pump(fx, 1);
   assert_int_equal(g_fake.calls, 1);
@@ -3032,6 +3061,7 @@ static void a_late_token_for_a_held_dps_session_is_dropped(void** state)
   opts.dps.id_scope = "0ne00000001";
   opts.dps.registration_id = "ut-device";
   opts.dps_auth.sas.on_sas_token_required = fake_token_callback;
+  build_mqtt_clients_with_the_factory(&opts);
   init_and_open(fx, &opts);
   assert_int_equal(az_iot_connection_client__dps_user_acquire(&fx->client), AZ_IOT_OK);
   assert_int_equal(az_iot_connection_client__dps_session_ensure(&fx->client), AZ_IOT_ERR_BUSY);
@@ -3091,7 +3121,7 @@ static void a_pending_renewal_past_expiry_ends_the_session(void** state)
   init_and_open(fx, &opts);
   pump(fx, 1);
   connack(fx, AZ_IOT_OK);
-  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  az_iot_mock_mqtt_client* m = newest_mock_client(fx);
   assert_true(
       fx->client.sas_token_expiry_ms[AZ_IOT_CONN_SCOPE_HUB] > az_iot_time_mono_ms() + 90000u);
   g_fake.mode = FAKE_TOKEN_LATER;
@@ -3172,6 +3202,7 @@ static void a_token_is_kept_until_its_connect(void** state)
   opts.dps.id_scope = "0ne00000001";
   opts.dps.registration_id = "ut-device";
   opts.dps_auth.sas.on_sas_token_required = fake_token_callback;
+  build_mqtt_clients_with_the_factory(&opts);
   init_and_open(fx, &opts);
   assert_int_equal(az_iot_connection_client__dps_user_acquire(&fx->client), AZ_IOT_OK);
   assert_int_equal(az_iot_connection_client__dps_session_ensure(&fx->client), AZ_IOT_ERR_BUSY);
@@ -3200,7 +3231,7 @@ static void a_suspended_clock_ends_an_expired_user_token_session(void** state)
   init_and_open(fx, &opts);
   pump(fx, 1);
   connack(fx, AZ_IOT_OK);
-  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  az_iot_mock_mqtt_client* m = newest_mock_client(fx);
   assert_true(fx->client.sas_token_expiry_unix_seconds[AZ_IOT_CONN_SCOPE_HUB] >= NOW + 99u);
   assert_true(fx->client.sas_token_expiry_unix_seconds[AZ_IOT_CONN_SCOPE_HUB] <= NOW + 100u);
   g_fake.mode = FAKE_TOKEN_LATER;
@@ -3281,7 +3312,7 @@ static void a_unix_time_near_its_maximum_does_not_wrap_deadlines(void** state)
   connack(fx, AZ_IOT_OK);
   assert_int_equal(fx->client.sas_token_renewal_due_unix_seconds[AZ_IOT_CONN_SCOPE_HUB], 0);
   assert_int_equal(fx->client.sas_token_expiry_unix_seconds[AZ_IOT_CONN_SCOPE_HUB], 0);
-  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  az_iot_mock_mqtt_client* m = newest_mock_client(fx);
   pump(fx, 2);
   assert_int_equal(g_fake.calls, 1);
   assert_int_equal(az_iot_mock_mqtt_client_count_of(m, AZ_IOT_MOCK_CALL_DISCONNECT), 0);
@@ -3295,7 +3326,7 @@ static void a_unix_time_near_its_maximum_does_not_wrap_deadlines(void** state)
  * is ready. Returns that adapter. */
 static az_iot_mock_mqtt_client* ready_dps(fixture* fx)
 {
-  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  az_iot_mock_mqtt_client* m = newest_mock_client(fx);
   assert_non_null(m);
   assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_OK));
   pump(fx, 1);
@@ -3364,7 +3395,7 @@ static void the_dps_sas_token_is_renewed(void** state)
   now = NOW + 50u;
   fx->client.sas_token_renewal_due_ms[AZ_IOT_CONN_SCOPE_DPS] = az_iot_time_mono_ms();
   pump(fx, 1);
-  assert_int_equal(az_iot_mock_mqtt_factory_disconnected_destroyed(fx->factory), 1);
+  assert_int_equal(mock_clients_destroyed_after_disconnect(fx), 1);
   assert_string_not_equal(last_connect(fx)->password, old_token);
   assert_int_equal(last_connect(fx)->password[0], 'S');
   assert_true(fx->client.sas_token_renewal_in_progress[AZ_IOT_CONN_SCOPE_DPS]);
@@ -3386,7 +3417,7 @@ static void a_suspended_clock_still_renews_the_dps_session(void** state)
   (void)open_renewable_dps(fx, &now);
   now = NOW + 50u;
   pump(fx, 1);
-  assert_int_equal(az_iot_mock_mqtt_factory_disconnected_destroyed(fx->factory), 1);
+  assert_int_equal(mock_clients_destroyed_after_disconnect(fx), 1);
   assert_int_equal(fx->client.state[AZ_IOT_CONN_SCOPE_DPS], AZ_IOT_CONN_STATE_CONNECTING);
 }
 
@@ -3401,8 +3432,8 @@ static void a_registering_dps_session_is_not_renewed(void** state)
   assert_true(fx->client.dps_registration_ref);
   fx->client.sas_token_renewal_due_ms[AZ_IOT_CONN_SCOPE_DPS] = az_iot_time_mono_ms();
   pump(fx, 2);
-  assert_int_equal(az_iot_mock_mqtt_factory_disconnected_destroyed(fx->factory), 0);
-  assert_ptr_equal(az_iot_mock_mqtt_factory_last_client(fx->factory), m);
+  assert_int_equal(mock_clients_destroyed_after_disconnect(fx), 0);
+  assert_ptr_equal(newest_mock_client(fx), m);
 }
 
 /* The last holder released from the DISCONNECTING callback: the session
@@ -3420,6 +3451,7 @@ static void a_release_during_the_dps_renewal_settles_idle(void** state)
 {
   fixture* fx = (fixture*)*state;
   az_iot_connection_client_options opts = dps_sas_options(KEY_B64);
+  build_mqtt_clients_with_the_factory(&opts);
   assert_int_equal(az_iot_connection_client_init(&fx->client, &opts), AZ_IOT_OK);
   fx->initialized = true;
   assert_int_equal(
@@ -3436,7 +3468,7 @@ static void a_release_during_the_dps_renewal_settles_idle(void** state)
 
   fx->client.sas_token_renewal_due_ms[AZ_IOT_CONN_SCOPE_DPS] = az_iot_time_mono_ms();
   pump(fx, 2);
-  assert_int_equal(az_iot_mock_mqtt_factory_disconnected_destroyed(fx->factory), 1);
+  assert_int_equal(mock_clients_destroyed_after_disconnect(fx), 1);
   assert_null(fx->client.dps_mqtt);
   assert_int_equal(fx->log_count - from, 2);
   assert_int_equal(fx->log[from].state, AZ_IOT_CONN_STATE_DISCONNECTING);
@@ -3469,7 +3501,7 @@ static void a_session_reopened_from_disconnecting_is_still_a_renewal(void** stat
   size_t from = fx->log_count;
   fx->client.sas_token_renewal_due_ms[AZ_IOT_CONN_SCOPE_DPS] = az_iot_time_mono_ms();
   pump(fx, 1);
-  assert_int_equal(az_iot_mock_mqtt_factory_disconnected_destroyed(fx->factory), 1);
+  assert_int_equal(mock_clients_destroyed_after_disconnect(fx), 1);
   assert_true(fx->client.sas_token_renewal_in_progress[AZ_IOT_CONN_SCOPE_DPS]);
   (void)ready_dps(fx);
   assert_dps_renewal_events(fx, from, true);
@@ -3517,13 +3549,13 @@ static void a_dps_user_token_renewal_waits_for_the_token(void** state)
   assert_int_equal(g_fake.calls, 2);
   assert_int_equal(g_fake.scope, AZ_IOT_CONN_SCOPE_DPS);
   assert_true(g_fake.is_renewal);
-  assert_int_equal(az_iot_mock_mqtt_factory_disconnected_destroyed(fx->factory), 0);
+  assert_int_equal(mock_clients_destroyed_after_disconnect(fx), 0);
   assert_int_equal(fx->client.state[AZ_IOT_CONN_SCOPE_DPS], AZ_IOT_CONN_STATE_CONNECTED);
   size_t from = fx->log_count;
 
   assert_int_equal(supply_user_token(fx, AZ_IOT_CONN_SCOPE_DPS), AZ_IOT_OK);
   pump(fx, 1);
-  assert_int_equal(az_iot_mock_mqtt_factory_disconnected_destroyed(fx->factory), 1);
+  assert_int_equal(mock_clients_destroyed_after_disconnect(fx), 1);
   assert_string_equal(last_connect(fx)->password, DPS_USER_TOKEN);
   (void)ready_dps(fx);
   assert_dps_renewal_events(fx, from, true);
@@ -3545,7 +3577,7 @@ static void a_pending_dps_renewal_past_expiry_ends_the_session(void** state)
 
   fx->client.sas_token_expiry_ms[AZ_IOT_CONN_SCOPE_DPS] = az_iot_time_mono_ms();
   pump(fx, 1);
-  assert_int_equal(az_iot_mock_mqtt_factory_disconnected_destroyed(fx->factory), 1);
+  assert_int_equal(mock_clients_destroyed_after_disconnect(fx), 1);
   assert_true(no_connect_pending(fx));
   assert_int_equal(fx->client.state[AZ_IOT_CONN_SCOPE_DPS], AZ_IOT_CONN_STATE_SETTING_UP);
   assert_int_not_equal(fx->client.sas_token_request[AZ_IOT_CONN_SCOPE_DPS].deadline_ms, 0);
@@ -3572,7 +3604,7 @@ static void a_held_dps_token_is_used_for_the_renewal(void** state)
 
   fx->client.sas_token_renewal_due_ms[AZ_IOT_CONN_SCOPE_DPS] = az_iot_time_mono_ms();
   pump(fx, 2);
-  assert_int_equal(az_iot_mock_mqtt_factory_disconnected_destroyed(fx->factory), 1);
+  assert_int_equal(mock_clients_destroyed_after_disconnect(fx), 1);
   assert_string_equal(last_connect(fx)->password, DPS_USER_TOKEN);
   (void)ready_dps(fx);
   assert_dps_renewal_events(fx, from, true);
@@ -3587,7 +3619,7 @@ static void an_unasked_token_renews_the_dps_session(void** state)
   size_t from = fx->log_count;
   assert_int_equal(supply_user_token(fx, AZ_IOT_CONN_SCOPE_DPS), AZ_IOT_OK);
   pump(fx, 1);
-  assert_int_equal(az_iot_mock_mqtt_factory_disconnected_destroyed(fx->factory), 1);
+  assert_int_equal(mock_clients_destroyed_after_disconnect(fx), 1);
   assert_string_equal(last_connect(fx)->password, DPS_USER_TOKEN);
   assert_dps_renewal_events(fx, from, false);
   assert_int_equal(g_fake.calls, 1);
@@ -3702,8 +3734,7 @@ static void the_certificate_that_connected_is_kept(void** state)
   assert_int_equal(e->source, AZ_IOT_AUTH_SOURCE_X509);
   assert_int_equal(e->x509_index, 1);
 
-  assert_true(az_iot_mock_mqtt_client_inject_disconnected(
-      az_iot_mock_mqtt_factory_last_client(fx->factory)));
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(newest_mock_client(fx)));
   pump(fx, 2);
   wait_and_fire_retry(fx);
   assert_string_equal(last_connect(fx)->connect.client_cert_path, "boot-1.pem");
@@ -3764,8 +3795,7 @@ static void a_new_operational_certificate_replaces_a_kept_bootstrap_one(void** s
   connack(fx, AZ_IOT_OK);
 
   g_multi.count[1] = 1;
-  assert_true(az_iot_mock_mqtt_client_inject_disconnected(
-      az_iot_mock_mqtt_factory_last_client(fx->factory)));
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(newest_mock_client(fx)));
   pump(fx, 2);
   wait_and_fire_retry(fx);
   assert_string_equal(last_connect(fx)->connect.client_cert_path, "op-0.pem");
@@ -3802,8 +3832,7 @@ static void a_kept_certificate_is_dropped_when_index_0_is_gone(void** state)
   connack(fx, AZ_IOT_OK);
 
   g_multi.no_index_0 = true;
-  assert_true(az_iot_mock_mqtt_client_inject_disconnected(
-      az_iot_mock_mqtt_factory_last_client(fx->factory)));
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(newest_mock_client(fx)));
   pump(fx, 2);
   wait_and_fire_retry(fx);
   assert_string_equal(last_connect(fx)->connect.client_cert_path, "");
@@ -3827,8 +3856,7 @@ static void a_kept_dps_certificate_is_dropped_when_index_0_is_gone(void** state)
   connack(fx, AZ_IOT_OK);
 
   g_multi.no_index_0 = true;
-  assert_true(az_iot_mock_mqtt_client_inject_disconnected(
-      az_iot_mock_mqtt_factory_last_client(fx->factory)));
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(newest_mock_client(fx)));
   pump(fx, 2);
   wait_and_fire_retry(fx);
   assert_string_equal(last_connect(fx)->connect.client_cert_path, "");
@@ -3889,8 +3917,6 @@ static void an_https_hub_token_is_signed_with_the_primary_key(void** state)
   assert_string_equal(out, HUB_TOKEN);
   assert_true(all_zero(fx->client.sas_token, fx->client.sas_token_size));
 
-  assert_int_equal(
-      az_iot_connection_client_register_mqtt_factory(&fx->client, fx->factory), AZ_IOT_OK);
   assert_int_equal(az_iot_connection_client_open(&fx->client), AZ_IOT_OK);
   assert_string_equal(last_connect(fx)->password, HUB_TOKEN);
   connack(fx, AZ_IOT_OK);
@@ -3944,8 +3970,6 @@ static void no_https_hub_token_for_an_x509_session(void** state)
       AZ_IOT_ERR_NOT_FOUND);
   assert_string_equal(out, "");
 
-  assert_int_equal(
-      az_iot_connection_client_register_mqtt_factory(&fx->client, fx->factory), AZ_IOT_OK);
   assert_int_equal(az_iot_connection_client_open(&fx->client), AZ_IOT_OK);
   connack(fx, AZ_IOT_OK);
   assert_int_equal(fx->client.auth[AZ_IOT_CONN_SCOPE_HUB].source, AZ_IOT_AUTH_SOURCE_X509);
@@ -4133,8 +4157,7 @@ static void an_https_hub_token_keeps_the_secondary_key_while_reconnecting(void**
   assert_int_equal(
       az_iot_connection_client_add_state_observer(&fx->client, sign_on_hub_state, &fx->client),
       AZ_IOT_OK);
-  assert_true(az_iot_mock_mqtt_client_inject_disconnected(
-      az_iot_mock_mqtt_factory_last_client(fx->factory)));
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(newest_mock_client(fx)));
   pump(fx, 2);
   wait_and_fire_retry(fx);
   assert_int_equal(g_signed_result, AZ_IOT_OK);
@@ -4161,8 +4184,7 @@ static void an_https_hub_token_keeps_the_primary_key_with_a_ca_only_provider(voi
   assert_int_equal(
       az_iot_connection_client_add_state_observer(&fx->client, sign_on_hub_state, &fx->client),
       AZ_IOT_OK);
-  assert_true(az_iot_mock_mqtt_client_inject_disconnected(
-      az_iot_mock_mqtt_factory_last_client(fx->factory)));
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(newest_mock_client(fx)));
   pump(fx, 2);
   wait_and_fire_retry(fx);
   assert_int_equal(g_signed_result, AZ_IOT_OK);
