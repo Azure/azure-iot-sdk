@@ -1935,31 +1935,47 @@ static void dps_connack_failure_faults(void** state)
       az_iot_test_reason_for(&fx->log, AZ_IOT_CONN_STATE_FAULTED), AZ_IOT_ERR_IDENTITY_REJECTED);
 }
 
-/** @brief Observer that, on the first FAULTED event, closes and reopens the client with the next
- * connect failing synchronously, so new detail is staged while that event is still dispatched. */
+/** @brief Provision, then return the hub session's mock client before its CONNACK. */
+static az_iot_mock_mqtt_client* hub_open_after_assignment(az_iot_test_conn* fx)
+{
+  az_iot_mock_mqtt_client* dps = dps_open_to_registering(fx);
+  assert_true(inject_dps_response(dps, DPS_RESPONSE_TOPIC_ASSIGNED, k_assigned_body));
+  for (int i = 0; i < 3; ++i)
+  {
+    (void)az_iot_connection_client_do_work(fx->client, 0);
+  }
+  az_iot_mock_mqtt_client* hub = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  assert_non_null(hub);
+  return hub;
+}
+
+/** @brief Observer that, on the first hub IDLE carrying error detail, has a feature holder start
+ * its provisioning session with a connect that fails, so new detail is staged while that event is
+ * still dispatched. */
 typedef struct
 {
   az_iot_connection_client* client;
   az_iot_mqtt_factory* factory;
-  bool reopened;
-  az_iot_result open_result;
-} reopening_observer;
+  bool started;
+  az_iot_result ensure_result;
+} dps_starting_observer;
 
-static void reopen_on_fault(const az_iot_connection_state_event* event, void* user_ctx)
+static void start_dps_on_hub_failure(const az_iot_connection_state_event* event, void* user_ctx)
 {
-  reopening_observer* o = (reopening_observer*)user_ctx;
-  if (event->state != AZ_IOT_CONN_STATE_FAULTED || o->reopened)
+  dps_starting_observer* o = (dps_starting_observer*)user_ctx;
+  if (event->scope != AZ_IOT_CONN_SCOPE_HUB || event->state != AZ_IOT_CONN_STATE_IDLE
+      || event->error == NULL || o->started)
   {
     return;
   }
-  o->reopened = true;
-  assert_int_equal(az_iot_connection_client_close(o->client), AZ_IOT_OK);
+  o->started = true;
   az_iot_mock_mqtt_factory_fail_next_connect(o->factory, AZ_IOT_ERR_MQTT);
-  o->open_result = az_iot_connection_client_open(o->client);
+  o->ensure_result = az_iot_connection_client__dps_session_ensure(o->client);
 }
 
 /* An event's error message is the one staged for it, even when an earlier observer stages new
- * detail (close() then a failing open()) before later observers see the event. */
+ * detail (a feature holder starting its provisioning session, whose connect fails) before later
+ * observers see the event. */
 static void the_error_message_is_stable_while_an_event_is_dispatched(void** state)
 {
   (void)state;
@@ -1970,44 +1986,42 @@ static void the_error_message_is_stable_while_an_event_is_dispatched(void** stat
   fx.client = &fx.client_storage;
   fx.factory = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
   assert_non_null(fx.factory);
-  reopening_observer reopen = { fx.client, fx.factory, false, AZ_IOT_OK };
+  dps_starting_observer starter = { fx.client, fx.factory, false, AZ_IOT_OK };
   /* Before the recording observer, so the event is altered before it is recorded. */
   assert_int_equal(
-      az_iot_connection_client_add_state_observer(fx.client, reopen_on_fault, &reopen), AZ_IOT_OK);
+      az_iot_connection_client_add_state_observer(fx.client, start_dps_on_hub_failure, &starter),
+      AZ_IOT_OK);
   assert_int_equal(
       az_iot_connection_client_add_state_observer(fx.client, az_iot_test_on_state, &fx.log),
       AZ_IOT_OK);
-  az_iot_mock_mqtt_client* m = dps_open(&fx);
+  az_iot_mock_mqtt_client* hub = hub_open_after_assignment(&fx);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(hub, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(fx.client, 0);
+  assert_int_equal(az_iot_connection_client__dps_user_acquire(fx.client), AZ_IOT_OK);
 
-  static const char reason[] = "registration not allowed";
-  az_iot_mqtt_event connack;
-  memset(&connack, 0, sizeof(connack));
-  connack.kind = AZ_IOT_MQTT_EVT_CONNECTED;
-  connack.status = AZ_IOT_ERR_IDENTITY_REJECTED;
-  connack.protocol_code = 0x87;
-  connack.reason_string = reason;
-  connack.reason_string_len = sizeof(reason) - 1;
-  assert_true(az_iot_mock_mqtt_client_inject_event(m, &connack));
+  static const char reason[] = "server shutting down";
+  assert_true(az_iot_mock_mqtt_client_inject_server_disconnect(hub, 0x8B, reason));
   for (int i = 0; i < 3; ++i)
   {
     (void)az_iot_connection_client_do_work(fx.client, 0);
   }
 
-  assert_true(reopen.reopened);
+  assert_true(starter.started);
   size_t found = SIZE_MAX;
   for (size_t i = 0; i < fx.log.count && found == SIZE_MAX; ++i)
   {
-    if (fx.log.states[i] == AZ_IOT_CONN_STATE_FAULTED && fx.log.error_present[i]
-        && fx.log.error_codes[i] == 0x87)
+    if (fx.log.scopes[i] == AZ_IOT_CONN_SCOPE_HUB && fx.log.states[i] == AZ_IOT_CONN_STATE_IDLE
+        && fx.log.error_present[i])
     {
       found = i;
     }
   }
   assert_int_not_equal(found, SIZE_MAX);
-  assert_int_equal(fx.log.error_sources[found], AZ_IOT_CONN_ERR_SRC_MQTT);
+  assert_int_equal(fx.log.error_codes[found], 0x8B);
   assert_string_equal(fx.log.error_message[found], reason);
 
-  az_iot_connection_client_deinit(&fx.client_storage);
+  az_iot_connection_client__dps_user_release(fx.client);
+  az_iot_test_connection_client_deinit(&fx.client_storage);
   az_iot_mock_mqtt_factory_destroy(fx.factory);
 }
 
@@ -4010,20 +4024,6 @@ static void a_refused_connack_carries_the_wire_code_as_mqtt(void** state)
   assert_int_equal(fx->log.error_message_lengths[i_evt], 0);
   /* A refused credential is not worth retrying with the same inputs. */
   assert_false(fx->log.is_retriable[i_evt]);
-}
-
-/** @brief Provision, then return the hub session's mock client before its CONNACK. */
-static az_iot_mock_mqtt_client* hub_open_after_assignment(az_iot_test_conn* fx)
-{
-  az_iot_mock_mqtt_client* dps = dps_open_to_registering(fx);
-  assert_true(inject_dps_response(dps, DPS_RESPONSE_TOPIC_ASSIGNED, k_assigned_body));
-  for (int i = 0; i < 3; ++i)
-  {
-    (void)az_iot_connection_client_do_work(fx->client, 0);
-  }
-  az_iot_mock_mqtt_client* hub = az_iot_mock_mqtt_factory_last_client(fx->factory);
-  assert_non_null(hub);
-  return hub;
 }
 
 /** @brief Run the client on what was injected; return the index of the first hub state event
