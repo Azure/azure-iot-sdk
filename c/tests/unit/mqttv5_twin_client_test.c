@@ -2584,6 +2584,141 @@ static void a_patch_while_disconnected_is_refused(void** state)
   assert_false(rec.fired);
 }
 
+/* Queue a GET whose first send is refused, and end its time limit: the next flush expires it. */
+static void queue_an_expired_get(fixture* fx, az_iot_mqttv5_twin_get_callback cb, void* ctx)
+{
+  az_iot_mock_mqtt_client_set_next_result(fx->mock, AZ_IOT_MOCK_CALL_PUBLISH, AZ_IOT_ERR_BUSY);
+  assert_int_equal(az_iot_mqttv5_twin_client_get(&fx->twin, cb, ctx), AZ_IOT_OK);
+  for (size_t i = 0; i < AZ_IOT_MQTTV5_TWIN_TRACKED_MESSAGES; ++i)
+  {
+    if (fx->twin._internal.requests[i].kind != 0)
+    {
+      az_iot_deadline__expire_now(&fx->twin._internal.tracker_entries[i]._internal.deadline);
+    }
+  }
+}
+
+typedef struct nested_call
+{
+  fixture* fx;
+  bool fired;
+  az_iot_result nested_result;
+} nested_call;
+
+static void patch_from_get_callback(
+    az_iot_result status,
+    const az_iot_mqttv5_twin_state* twin,
+    void* user_ctx)
+{
+  (void)status;
+  (void)twin;
+  nested_call* call = (nested_call*)user_ctx;
+  call->fired = true;
+  static const uint8_t nested[] = "{\"nested\":1}";
+  patch_record rec = { 0 };
+  call->nested_result = az_iot_mqttv5_twin_client_patch_reported(
+      &call->fx->twin, nested, sizeof(nested) - 1, on_patch, &rec);
+}
+
+/* A patch made from a callback the patch call runs is refused BUSY before it touches the encode
+ * buffer, so the outer patch sends its own bytes. */
+static void a_patch_from_a_callback_of_a_patch_call_keeps_the_outer_patch(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  nested_call call = { fx, false, AZ_IOT_OK };
+  queue_an_expired_get(fx, patch_from_get_callback, &call);
+
+  static const uint8_t outer[] = "{\"outer\":1}";
+  patch_record rec = { 0 };
+  assert_int_equal(
+      az_iot_mqttv5_twin_client_patch_reported(&fx->twin, outer, sizeof(outer) - 1, on_patch, &rec),
+      AZ_IOT_OK);
+  assert_true(call.fired);
+  assert_int_equal(call.nested_result, AZ_IOT_ERR_BUSY);
+  const az_iot_mock_call* sent
+      = az_iot_mock_mqtt_client_last_of(fx->mock, AZ_IOT_MOCK_CALL_PUBLISH);
+  assert_non_null(sent);
+  assert_string_equal(sent->user_type, "reported-patch:1");
+  assert_int_equal(sent->payload_len, 2u + (sizeof(outer) - 1));
+  assert_memory_equal(sent->payload + 2, outer, sizeof(outer) - 1);
+}
+
+static void deinit_from_get_callback(
+    az_iot_result status,
+    const az_iot_mqttv5_twin_state* twin,
+    void* user_ctx)
+{
+  (void)status;
+  (void)twin;
+  nested_call* call = (nested_call*)user_ctx;
+  call->fired = true;
+  az_iot_mqttv5_twin_client_deinit(&call->fx->twin);
+}
+
+/* A callback that deinitializes the client during a request call: the call returns
+ * AZ_IOT_ERR_NOT_INITIALIZED without touching the client again. */
+static void a_client_deinitialized_by_a_callback_during_a_request_call(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  nested_call call = { fx, false, AZ_IOT_OK };
+  queue_an_expired_get(fx, deinit_from_get_callback, &call);
+
+  get_record rec = { 0 };
+  assert_int_equal(
+      az_iot_mqttv5_twin_client_get(&fx->twin, on_get, &rec), AZ_IOT_ERR_NOT_INITIALIZED);
+  assert_true(call.fired);
+  assert_false(rec.fired);
+}
+
+/* A callback that deinitializes the client while an answered request is released: the answer is
+ * not reported to a deinitialized client. */
+static void a_client_deinitialized_by_a_callback_during_an_answer(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  get_record answered = { 0 };
+  uint8_t corr[16];
+  issue_get(fx, &answered, corr);
+  nested_call call = { fx, false, AZ_IOT_OK };
+  queue_an_expired_get(fx, deinit_from_get_callback, &call);
+
+  const uint8_t body[] = { 0x08, 0x01 };
+  queue_twin_on(fx, TWIN_DEV_TOPIC, "get-response:1", corr, 16u, body, sizeof(body));
+  (void)az_iot_connection_client_do_work(&fx->conn, 0);
+  assert_true(call.fired);
+  assert_false(answered.fired);
+}
+
+static void count_puback(az_iot_result status, void* user_ctx)
+{
+  (void)status;
+  ++*(int*)user_ctx;
+}
+
+/* With every shared PUBACK slot taken, a refused GET (QoS 0, needing none) still bounds the
+ * connection's wait to the retry interval. */
+static void a_refused_get_is_retried_soon_when_puback_slots_are_full(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  int acks = 0;
+  az_iot_mqtt_message msg = { 0 };
+  msg.topic = "ih/ut-device/srv/telemetry";
+  msg.qos = AZ_IOT_MQTT_QOS_1;
+  while (az_iot_connection_client__publish(&fx->conn, fx, &msg, count_puback, &acks) == AZ_IOT_OK)
+  {
+  }
+  az_iot_mock_mqtt_client_set_next_result(fx->mock, AZ_IOT_MOCK_CALL_PUBLISH, AZ_IOT_ERR_BUSY);
+  get_record rec = { 0 };
+  assert_int_equal(az_iot_mqttv5_twin_client_get(&fx->twin, on_get, &rec), AZ_IOT_OK);
+  (void)az_iot_connection_client_do_work(&fx->conn, 60000u);
+  assert_true(
+      az_iot_mock_mqtt_client_last_of(fx->mock, AZ_IOT_MOCK_CALL_PROCESS_LOOP)->timeout_ms
+      <= 1000u);
+}
+
 /* A pending patch is failed too, and reports no verdict: the exchange never
  * completed, so there is nothing the service decided. */
 static void a_pending_patch_is_failed_with_no_verdict(void** state)
@@ -3574,6 +3709,14 @@ int main(void)
         a_get_made_while_disconnected_is_sent_once_connected, setup, teardown),
     cmocka_unit_test_setup_teardown(a_request_times_out_without_the_twin_do_work, setup, teardown),
     cmocka_unit_test_setup_teardown(a_patch_while_disconnected_is_refused, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_patch_from_a_callback_of_a_patch_call_keeps_the_outer_patch, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_client_deinitialized_by_a_callback_during_a_request_call, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_client_deinitialized_by_a_callback_during_an_answer, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_refused_get_is_retried_soon_when_puback_slots_are_full, setup, teardown),
     cmocka_unit_test_setup_teardown(a_pending_patch_is_failed_with_no_verdict, setup, teardown),
     cmocka_unit_test_setup_teardown(init_rejects_a_null_client, setup, teardown),
     cmocka_unit_test_setup_teardown(init_rejects_a_null_connection, setup, teardown),

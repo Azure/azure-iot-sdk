@@ -125,6 +125,25 @@ extern "C"
   /** @brief Withdraw from the connection and drop every entry without completing it. */
   void az_iot_delivery_tracker__unbind(az_iot_delivery_tracker* tracker);
 
+  /** @brief A tracker's binding, taken before a call whose callbacks may unbind (or free) it. */
+  typedef struct az_iot_delivery_tracker_binding
+  {
+    az_iot_connection_client* connection;
+    uint32_t id; /**< Tells a rebind to the same connection apart, even after init(). */
+  } az_iot_delivery_tracker_binding;
+
+  /** @brief The binding of @p tracker now. */
+  az_iot_delivery_tracker_binding az_iot_delivery_tracker__binding(
+      const az_iot_delivery_tracker* tracker);
+
+  /**
+   * @brief Whether @p tracker still has binding @p binding. Asks the connection first, so it
+   *        reads @p tracker only while it is still bound: safe after a callback freed it.
+   */
+  bool az_iot_delivery_tracker__has_binding(
+      const az_iot_delivery_tracker* tracker,
+      az_iot_delivery_tracker_binding binding);
+
   /**
    * @brief Track a message and send it as soon as it can be.
    *
