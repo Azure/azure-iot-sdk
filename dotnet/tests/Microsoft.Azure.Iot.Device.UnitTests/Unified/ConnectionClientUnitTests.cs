@@ -22,6 +22,55 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
         private const string CompletedResponse = """{"certificates":["issued-certificate"],"correlationId":"correlation-id"}""";
 
         [Theory]
+        [InlineData(0u)]
+        [InlineData(300u)]
+        [InlineData(uint.MaxValue)]
+        public async Task DisconnectWithOptionsForwardsSessionExpiryInterval(uint sessionExpiryInterval)
+        {
+            using MockConnectionMqttClient mockMqttClient = new();
+            using ConnectionClient connectionClient = new(new() { MqttClient = mockMqttClient });
+            await connectionClient.ConnectToHubAsync(GetMockConnectionContext(false), TestContext.Current.CancellationToken);
+
+            await connectionClient.DisconnectAsync(
+                new DisconnectOptions() { SessionExpiryInterval = sessionExpiryInterval },
+                TestContext.Current.CancellationToken);
+
+            MqttDisconnect disconnect = Assert.Single(mockMqttClient.DisconnectRequests);
+            Assert.Equal(sessionExpiryInterval, disconnect.SessionExpiryInterval);
+            Assert.Equal(MqttDisconnectReasonCode.NormalDisconnection, disconnect.Reason);
+            Assert.False(mockMqttClient.IsConnected());
+            Assert.False(connectionClient.IsConnectionTargetSet);
+        }
+
+        [Theory]
+        [InlineData(0)]
+        [InlineData(1)]
+        [InlineData(2)]
+        public async Task DisconnectWithDefaultOptionsUsesCSDKSessionExpiryInterval(int optionsKind)
+        {
+            using MockConnectionMqttClient mockMqttClient = new();
+            using ConnectionClient connectionClient = new(new() { MqttClient = mockMqttClient });
+            await connectionClient.ConnectToHubAsync(GetMockConnectionContext(false), TestContext.Current.CancellationToken);
+
+            if (optionsKind == 1)
+            {
+                await connectionClient.DisconnectAsync(null, TestContext.Current.CancellationToken);
+            }
+            else if (optionsKind == 2)
+            {
+                await connectionClient.DisconnectAsync(new DisconnectOptions(), TestContext.Current.CancellationToken);
+            }
+            else
+            {
+                await connectionClient.DisconnectAsync(TestContext.Current.CancellationToken);
+            }
+
+            MqttDisconnect disconnect = Assert.Single(mockMqttClient.DisconnectRequests);
+            Assert.Equal(3600u, disconnect.SessionExpiryInterval);
+            Assert.Equal(MqttDisconnectReasonCode.NormalDisconnection, disconnect.Reason);
+        }
+
+        [Theory]
         [InlineData(false)]
         [InlineData(true)]
         public async Task CancellationCancelsAndReleasesOnlyTheMatchingCertificateSigningOperation(bool acceptedFirst)
@@ -1008,8 +1057,10 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
         /// <summary>
         /// An operation waiting for a reconnection is canceled when the caller deliberately disconnects.
         /// </summary>
-        [Fact]
-        public async Task DisconnectCancelsOperationWaitingForReconnection()
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task DisconnectCancelsOperationWaitingForReconnection(bool withOptions)
         {
             using MockConnectionMqttClient mockMqttClient = new();
             using ConnectionClient connectionClient = new(new()
@@ -1052,7 +1103,16 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
                 await Task.Delay(TimeSpan.FromMilliseconds(100), TestContext.Current.CancellationToken);
                 Assert.False(pendingOperation.IsCompleted);
 
-                await connectionClient.DisconnectAsync(TestContext.Current.CancellationToken);
+                if (withOptions)
+                {
+                    await connectionClient.DisconnectAsync(
+                        new DisconnectOptions() { SessionExpiryInterval = 300 },
+                        TestContext.Current.CancellationToken);
+                }
+                else
+                {
+                    await connectionClient.DisconnectAsync(TestContext.Current.CancellationToken);
+                }
 
                 await Assert.ThrowsAnyAsync<OperationCanceledException>(
                     () => pendingOperation.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken));
@@ -1067,8 +1127,10 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
             }
         }
 
-        [Fact]
-        public async Task AlreadyCanceledDisconnectDoesNotCancelOperationsWaitingForRecovery()
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task AlreadyCanceledDisconnectDoesNotCancelOperationsWaitingForRecovery(bool withOptions)
         {
             using MockConnectionMqttClient mockMqttClient = new();
             using ConnectionClient connectionClient = new(new()
@@ -1081,8 +1143,10 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
 
             using CancellationTokenSource canceledDisconnect = new();
             canceledDisconnect.Cancel();
-            await Assert.ThrowsAnyAsync<OperationCanceledException>(
-                () => connectionClient.DisconnectAsync(canceledDisconnect.Token));
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => withOptions
+                ? connectionClient.DisconnectAsync(new DisconnectOptions() { SessionExpiryInterval = 300 }, canceledDisconnect.Token)
+                : connectionClient.DisconnectAsync(canceledDisconnect.Token));
+            Assert.Empty(mockMqttClient.DisconnectRequests);
 
             int attemptCount = 0;
             Task? disconnection = null;
