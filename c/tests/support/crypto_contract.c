@@ -636,6 +636,9 @@ static az_iot_su_root_key chain_root(bool disabled)
 
 /** @brief Writable copy of a request; the parser decodes strings in place. */
 static char g_request[8192];
+static az_iot_su_client_file_url
+    g_file_urls[AZ_IOT_SU_FILE_URL_CAPACITY(AZ_IOT_SU_DEFAULT_MAX_RELATED_FILES)];
+static az_iot_su_client_update_manifest_file g_related_files[AZ_IOT_SU_DEFAULT_MAX_RELATED_FILES];
 
 static az_iot_result parse_chain(
     const char* request,
@@ -649,8 +652,16 @@ static az_iot_result parse_chain(
   memcpy(g_request, request, len);
   memset(out_req, 0, sizeof(*out_req));
   memset(out_manifest, 0, sizeof(*out_manifest));
+  az_iot_su_update_request_storage storage
+      = { g_file_urls, g_related_files, AZ_IOT_SU_DEFAULT_MAX_RELATED_FILES };
   return az_iot_su_parse_update_request(
-      az_span_create((uint8_t*)g_request, (int32_t)len), crypto, root, 1, out_req, out_manifest);
+      az_span_create((uint8_t*)g_request, (int32_t)len),
+      crypto,
+      root,
+      1,
+      &storage,
+      out_req,
+      out_manifest);
 }
 
 static void chain_verifies_and_backend_sees_only_primitive_inputs(void** state)

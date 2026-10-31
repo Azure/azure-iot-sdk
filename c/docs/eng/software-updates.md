@@ -568,7 +568,7 @@ blob** that the core serializes and the platform merely stores verbatim (file,
 NVS partition, EEPROM, …). The platform MUST NOT interpret it; the format is
 internal and may change between SDK versions.
 
-- **Size** — at most `AZ_IOT_SU_STATE_BLOB_MAX_SIZE(max_update_size)` bytes; size storage for it.
+- **Size** — at most `AZ_IOT_SU_STATE_BLOB_MAX_SIZE(max_update_size, result_details_size, max_related_files)` bytes; size storage for it.
 - **In place** — a workflow record is serialized around the update copy in the workspace: its
   header just before it, its trailer just after. A terminal record has no request and is built
   in a separate workspace part, so a newer update copy is never overwritten. `resume()` loads
@@ -1305,11 +1305,10 @@ sequenceDiagram
   update that outlives the DPS session hold (§2) is reported after the session renews. The
   application keeps the installed update id across restarts and passes it in
   `device_properties` at init.
-- Delta updates are not handled by the SDK. azure-sdk-for-c is archived and its parser skips
-  `relatedFiles`, refuses unknown file members and caps `fileUrls` at the file count (§14), so a
-  delta offer does not reach the application yet. Once the SDK owns the manifest parser, the
-  manifest handed to the application carries the related files and the application's own handler
-  applies the delta; the report contract does not change.
+- Delta updates: the manifest handed to the application carries each file's related files
+  (`related_files`, up to `az_iot_su_limits::max_related_files`), `download_handler_id` and
+  `properties`, and the request carries their `fileUrls`. The application's own handler applies the
+  delta; the report contract does not change.
 
 ```c
 az_iot_su_client_config_options opts = az_iot_su_client_config_options_default();
@@ -1358,6 +1357,7 @@ az_iot_result az_iot_su_parse_update_request(
     const az_iot_crypto* crypto,
     const az_iot_su_root_key* root_keys,
     size_t root_key_count,
+    const az_iot_su_update_request_storage* storage, /* file URL and related file arrays */
     az_iot_su_client_update_request* out_request,
     az_iot_su_client_update_manifest* out_manifest);
 
@@ -1700,8 +1700,9 @@ Operations MUST NOT be long-blocking. Each `do_work` invocation MUST process at 
   check after a conflicting report (§2).
 - **An operational channel over the IoT Hub connection.** Both routes run over DPS.
 - **A reusable conformance suite** for customer platform hooks and crypto backends.
-- **Delta updates.** The manifest parser (§14) accepts `relatedFiles` and `downloadHandler` but
-  does not expose them yet; library mode is the route for an application-owned delta handler.
+- **Delta updates in the managed client.** The manifest parser (§14) exposes related files,
+  `downloadHandler` and `properties`, but the managed client downloads full files; library mode is
+  the route for an application-owned delta handler.
   Download handlers (`az_iot_su_download_handler`) can be registered and are validated at init,
   but are not called yet.
 - **Library-mode persistence and a received-offer accessor.** A delegated update is not stored,
@@ -1760,7 +1761,10 @@ the service sends without an upstream release:
 
 - unknown members are skipped at every level (top level, `updateId`, `instructions`, steps,
   `handlerProperties`, files), so a service-side addition does not fail parsing;
-- file `properties`, `relatedFiles` and `downloadHandler` (delta updates) are accepted;
+- file `mimeType`, `properties` (unparsed object text), `downloadHandler` id and `relatedFiles`
+  (delta updates) are kept. Up to `az_iot_su_limits::max_related_files` related files are kept;
+  more are left out with a `WARNING` log, and a related file keeps at most
+  `AZ_IOT_SU_MAX_FILE_HASH_COUNT` hashes, so neither refuses the update;
 - a known member of the wrong type, or malformed JSON, fails with `AZ_IOT_ERR_INVALID_ARG`.
 
 We own:
@@ -1787,22 +1791,24 @@ We own:
 Device Update allows 10 files and 10 steps per update. The manifest arrays are sized by
 `AZ_IOT_SU_MAX_STEP_COUNT`, `AZ_IOT_SU_MAX_FILE_COUNT` and `AZ_IOT_SU_MAX_FILE_COUNT_PER_STEP`
 (default 10, 10 and the file count; `cmake/az_iot_su_limits.cmake`), and the hashes of a file by
-`AZ_IOT_SU_MAX_FILE_HASH_COUNT` (2; manifests carry one `sha256`). They also size the
-request's `file_urls`. They are set as public definitions on `az_iot_core`, its installed CMake
-package and its pkg-config file; `az_iot_su_client_init()` refuses an application built with other
-values.
+`AZ_IOT_SU_MAX_FILE_HASH_COUNT` (2; manifests carry one `sha256`). They are set as public
+definitions on `az_iot_core`, its installed CMake package and its pkg-config file;
+`az_iot_su_client_init()` refuses an application built with other values.
+
+The request's `file_urls` hold `AZ_IOT_SU_FILE_URL_CAPACITY(max_related_files)` entries, one per file
+and per related file, in the workspace (or the caller's `az_iot_su_update_request_storage`).
 
 The parser counts steps, files, files of a step and hashes of a file past their limits (entries
 past a limit are still type-checked but not stored), logs each exceeded limit, and fails the
 workflow (reported) or returns `AZ_IOT_ERR_NOT_ENOUGH_SPACE` from
-`az_iot_su_parse_update_request()`. More `fileUrls` than `AZ_IOT_SU_MAX_FILE_COUNT` refuses the
+`az_iot_su_parse_update_request()`. More `fileUrls` than `AZ_IOT_SU_FILE_URL_CAPACITY()` refuses the
 update before processing (`AZ_IOT_SU_EVENT_UPDATE_REFUSED`, `AZ_IOT_ERR_NOT_ENOUGH_SPACE`).
 
 The largest status report grows 117 bytes per step, so `AZ_IOT_SU_MIN_MESSAGE_SIZE` is
 2176 + 128 × `AZ_IOT_SU_MAX_STEP_COUNT` (3456 by default; the base fits a 128-byte workflow id, fully
-escaped). Memory cost of the default limits against 2/2 on 64-bit: `az_iot_su_client` 7688 bytes
-(3912), default workspace 87440 (80720), parsed manifest
-3216 (464). See [client-configuration.md](../client-configuration.md#software-updates-manifest-limits).
+escaped). Memory cost of the default limits against 2/2 on 64-bit: `az_iot_su_client` 7976 bytes
+(4008), default workspace 96400 (89424), parsed manifest
+3792 (592). See [client-configuration.md](../client-configuration.md#software-updates-manifest-limits).
 
 ### Not Parsed (Matches Our Non-Goals)
 
@@ -1810,8 +1816,8 @@ escaped). Memory cost of the default limits against 2/2 on 64-bit: `az_iot_su_cl
 |---------|--------|---------------|
 | Reference steps (`"type": "reference"`) | Not recognized (`type` skipped) | Non-Goal |
 | Detached manifest file ID | Not recognized (skipped) | Non-Goal |
-| Delta updates (`relatedFiles`, `downloadHandler`) | Accepted and skipped | Planned; until then the full file is downloaded, and library mode hands the files to the application's own handler |
-| `mimeType` field | Must be a string; not stored | Non-Goal |
+| Delta updates (`relatedFiles`, `downloadHandler`) | Kept (`related_files`, `download_handler_id`, `properties`) | Planned in the managed client, which downloads the full file until then; library mode hands them to the application's own handler |
+| `mimeType` field | Must be a string; kept as `mime_type` | Not used by the SDK |
 
 ### Additional Functionality We Build (Not in azure-sdk-for-c)
 

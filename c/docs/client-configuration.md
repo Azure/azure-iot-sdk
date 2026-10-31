@@ -277,6 +277,7 @@ error.
 | --- | --- | --- |
 | `AZ_IOT_SU_DEFAULT_MAX_ROOT_KEYS` | 8 | Default `az_iot_su_limits::max_root_keys`. |
 | `AZ_IOT_SU_DEFAULT_MAX_OBSERVERS` | 4 | Default `az_iot_su_limits::max_observers`. |
+| `AZ_IOT_SU_DEFAULT_MAX_RELATED_FILES` | 40 | Default `az_iot_su_limits::max_related_files`: four for each of ten files. |
 | `AZ_IOT_SU_DEFAULT_MAX_UPDATE_SIZE` | 65536 | Default `az_iot_su_limits::max_update_size`. |
 | `AZ_IOT_SU_DEFAULT_MAX_MESSAGE_SIZE` | `AZ_IOT_SU_MIN_MESSAGE_SIZE` (3456) | Default `az_iot_su_limits::max_message_size`. |
 | `AZ_IOT_SU_DEFAULT_RESULT_DETAILS_SIZE` | 128 | Default `az_iot_su_limits::result_details_size`. |
@@ -293,27 +294,29 @@ The software updates client's variable-size memory is not set by macros. The app
 
 | Limit | Default | Bounds |
 | --- | --- | --- |
-| `max_update_size` | 65536 | Copy of the update metadata (manifest, signature and file URLs); a one-file offer is about 5 KiB. A larger one is refused: `AZ_IOT_SU_EVENT_UPDATE_REFUSED` with `AZ_IOT_ERR_NOT_ENOUGH_SPACE`. Also bounds the persisted state, `AZ_IOT_SU_STATE_BLOB_MAX_SIZE(max_update_size)`. |
+| `max_update_size` | 65536 | Copy of the update metadata (manifest, signature and file URLs); a one-file offer is about 5 KiB. A larger one is refused: `AZ_IOT_SU_EVENT_UPDATE_REFUSED` with `AZ_IOT_ERR_NOT_ENOUGH_SPACE`. Also bounds the persisted state, `AZ_IOT_SU_STATE_BLOB_MAX_SIZE(max_update_size, result_details_size, max_related_files)`. |
 | `scratch_size` | 8192 | Signature verification and string decoding. A signature part that does not fit fails verification; a file URL that does not fit is refused with `AZ_IOT_ERR_NOT_ENOUGH_SPACE`. |
 | `max_message_size` | 3456 | Update-check and status-report bodies. At least `AZ_IOT_SU_MIN_MESSAGE_SIZE` (2176 plus 128 per `AZ_IOT_SU_MAX_STEP_COUNT`; 3456 by default), which fits the largest status report the client builds, so no report is refused for its size. |
 | `device_properties_size` | 512 | Device-property strings (UTF-8 bytes, NUL terminators included), the only limit on compatibility properties besides their count. Size it with `az_iot_su_device_properties_buffer_size()` of the largest set the application will pass, including later `az_iot_su_client_update_device_properties()` calls; a set that does not fit is refused with `AZ_IOT_ERR_NOT_ENOUGH_SPACE` and an `ERROR` log of the bytes needed. Counted twice, plus `AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE`: the client's copy and the update check's, which may also carry the applied update ID. |
 | `max_root_keys` | 8 | Root keys `root_keys` may hold; more fail `az_iot_su_client_init()` with `AZ_IOT_ERR_NOT_ENOUGH_SPACE`. At most `AZ_IOT_SU_MAX_LIMIT_COUNT` (1024). |
 | `max_observers` | 4 | Observers `az_iot_su_client_add_observer()` can register; one more returns `AZ_IOT_ERR_NOT_ENOUGH_SPACE`. At most `AZ_IOT_SU_MAX_LIMIT_COUNT` (1024). |
+| `max_related_files` | 40 | Related files (`relatedFiles`, e.g. delta updates) kept from a manifest, across all its files; more are left out with a `WARNING` log, so their files are downloaded in full. Also allows as many more `fileUrls`: the request holds `AZ_IOT_SU_FILE_URL_CAPACITY(max_related_files)` (`AZ_IOT_SU_MAX_FILE_COUNT` plus this). Each costs `sizeof(az_iot_su_client_update_manifest_file)` + `sizeof(az_iot_su_client_file_url)` + 16 persisted bytes (216 on 64-bit). 0 keeps none. At most `AZ_IOT_SU_MAX_LIMIT_COUNT` (1024). |
 | `result_details_size` | 128 | `resultDetails` kept per step (`az_iot_su_client_set_step_result_details()`); at most 1024. Counted five times per step: the details, both persisted records and two copies of the reports sent. |
 
-The workspace also holds `2 * AZ_IOT_SU_PERSIST_OVERHEAD` bytes for the persisted-state records and
-up to `sizeof(az_iot_su_workspace_alignment) - 1` bytes to align the root keys and observers. These
-values do not change the layout of `az_iot_su_client`.
+The workspace also holds `2 * AZ_IOT_SU_PERSIST_OVERHEAD` bytes for the persisted-state records,
+`AZ_IOT_SU_MAX_FILE_COUNT` file URLs, and up to `sizeof(az_iot_su_workspace_alignment) - 1` bytes to
+align the root keys, observers, related files and file URLs. These values do not change the layout
+of `az_iot_su_client`.
 
 #### Software updates manifest limits
 
 `AZ_IOT_SU_MAX_STEP_COUNT`, `AZ_IOT_SU_MAX_FILE_COUNT` and `AZ_IOT_SU_MAX_FILE_COUNT_PER_STEP` bound
-an update: steps in its manifest, files in its manifest and `fileUrls`, and files one step
-references. The defaults (10, 10, 10) are the Device Update limits, so no update it accepts is
-refused for its step or file count. An update over a limit is not installed and the limit is named
-in an `ERROR` log:
+an update: steps in its manifest, files in its manifest and (with `max_related_files`) `fileUrls`,
+and files one step references. The defaults (10, 10, 10) are the Device Update limits, so no update
+it accepts is refused for its step or file count. An update over a limit is not installed and the
+limit is named in an `ERROR` log:
 
-- more `fileUrls` than `AZ_IOT_SU_MAX_FILE_COUNT`: refused, nothing reported,
+- more `fileUrls` than `AZ_IOT_SU_FILE_URL_CAPACITY(max_related_files)`: refused, nothing reported,
   `AZ_IOT_SU_EVENT_UPDATE_REFUSED` with `AZ_IOT_ERR_NOT_ENOUGH_SPACE`;
 - a manifest over a limit, or with more than 2 hashes for a file: the workflow fails after
   manifest verification and is reported failed. `az_iot_su_parse_update_request()` returns
@@ -330,9 +333,9 @@ Smaller values save memory on constrained devices, for example
 
 | | 2 steps, 2 files | 10 steps, 10 files (default) |
 | --- | --- | --- |
-| `az_iot_su_client` | 3912 | 7688 |
-| Default workspace (`AZ_IOT_SU_WORKSPACE_DEFAULT_SIZE`) | 80720 | 87440 |
-| `az_iot_su_client_update_manifest` (also on the stack of `az_iot_su_parse_update_request()`) | 464 | 3216 |
+| `az_iot_su_client` | 4008 | 7976 |
+| Default workspace (`AZ_IOT_SU_WORKSPACE_DEFAULT_SIZE`) | 89424 | 96400 |
+| `az_iot_su_client_update_manifest` (also on the stack of `az_iot_su_parse_update_request()`) | 592 | 3792 |
 | `AZ_IOT_SU_MIN_MESSAGE_SIZE` | 2432 | 3456 |
 
 #### Dispatch and logging

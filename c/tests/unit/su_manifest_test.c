@@ -20,11 +20,20 @@
 /** @brief Output of the last parse(). */
 static az_iot_su_client_update_manifest g_manifest;
 
+/** @brief Related files of the last parse(). */
+static az_iot_su_client_update_manifest_file g_related_files[4];
+
+/** @brief Related files parse() keeps; at most the size of g_related_files. */
+static size_t g_related_capacity = 4;
+
 /** @brief Parse @p text into g_manifest. */
 static az_iot_result parse(const char* text)
 {
   return az_iot_su__parse_update_manifest(
-      az_span_create((uint8_t*)(uintptr_t)text, (int32_t)strlen(text)), &g_manifest);
+      az_span_create((uint8_t*)(uintptr_t)text, (int32_t)strlen(text)),
+      g_related_files,
+      g_related_capacity,
+      &g_manifest);
 }
 
 /** @brief Assert @p actual holds @p expected. */
@@ -125,10 +134,71 @@ static void delta_file_members_are_accepted(void** state)
             "\"properties\":{\"k\":\"v\"}}},\"createdDateTime\":\"t\"}"),
       AZ_IOT_OK);
   assert_int_equal(g_manifest.files_count, 1);
-  assert_span_equal(g_manifest.files[0].file_name, "full.swu");
-  assert_int_equal(g_manifest.files[0].size_in_bytes, 100);
-  assert_int_equal(g_manifest.files[0].hashes_count, 1);
-  assert_span_equal(g_manifest.files[0].hashes[0].hash_value, "FULL");
+  const az_iot_su_client_update_manifest_file* full = &g_manifest.files[0];
+  assert_span_equal(full->file_name, "full.swu");
+  assert_int_equal(full->size_in_bytes, 100);
+  assert_int_equal(full->hashes_count, 1);
+  assert_span_equal(full->hashes[0].hash_value, "FULL");
+  assert_span_equal(full->download_handler_id, "microsoft/delta:1");
+  assert_span_equal(full->properties, "{\"k\":\"v\"}");
+  assert_int_equal(full->related_files_index, 0);
+  assert_int_equal(full->related_files_count, 1);
+
+  /* The related file keeps AZ_IOT_SU_MAX_FILE_HASH_COUNT hashes: it is optional, so more do
+   * not refuse the update. */
+  assert_ptr_equal(g_manifest.related_files, g_related_files);
+  assert_int_equal(g_manifest.related_files_count, 1);
+  const az_iot_su_client_update_manifest_file* delta = &g_manifest.related_files[0];
+  assert_span_equal(delta->id, "delta");
+  assert_span_equal(delta->file_name, "d.delta");
+  assert_int_equal(delta->size_in_bytes, 10);
+  assert_int_equal(delta->hashes_count, AZ_IOT_SU_MAX_FILE_HASH_COUNT);
+  assert_span_equal(delta->hashes[0].hash_value, "D1");
+  assert_span_equal(
+      delta->properties,
+      "{\"microsoft.sourceFileHashAlgorithm\":\"sha256\",\"microsoft.sourceFileHash\":\"SRC\"}");
+  assert_int_equal(delta->related_files_count, 0);
+  assert_int_equal(az_span_size(delta->download_handler_id), 0);
+}
+
+/* Related files are kept in order, each file pointing at its own; those past the storage are
+ * left out, and a related file's own relatedFiles and downloadHandler are skipped. */
+static void related_files_past_the_storage_are_left_out(void** state)
+{
+  (void)state;
+  static const char manifest[]
+      = "{\"files\":{"
+        "\"a\":{\"fileName\":\"a\",\"mimeType\":\"application/octet-stream\",\"relatedFiles\":{"
+        "\"a1\":{\"fileName\":\"a1\",\"relatedFiles\":{\"x\":{}},\"downloadHandler\":{\"id\":\"y\"}"
+        "},"
+        "\"a2\":{\"fileName\":\"a2\"}}},"
+        "\"b\":{\"fileName\":\"b\"},"
+        "\"c\":{\"fileName\":\"c\",\"relatedFiles\":{\"c1\":{\"fileName\":\"c1\"},"
+        "\"c2\":{\"fileName\":\"c2\"},\"c3\":{\"fileName\":\"c3\"}}}}}";
+
+  g_related_capacity = 4;
+  assert_int_equal(parse(manifest), AZ_IOT_OK);
+  assert_int_equal(g_manifest.files_count, 3);
+  assert_span_equal(g_manifest.files[0].mime_type, "application/octet-stream");
+  assert_int_equal(g_manifest.related_files_count, 4);
+  assert_int_equal(g_manifest.files[0].related_files_index, 0);
+  assert_int_equal(g_manifest.files[0].related_files_count, 2);
+  assert_int_equal(g_manifest.files[1].related_files_count, 0);
+  assert_int_equal(g_manifest.files[2].related_files_index, 2);
+  assert_int_equal(g_manifest.files[2].related_files_count, 2);
+  assert_span_equal(g_manifest.related_files[0].id, "a1");
+  assert_int_equal(g_manifest.related_files[0].related_files_count, 0);
+  assert_int_equal(az_span_size(g_manifest.related_files[0].download_handler_id), 0);
+  assert_span_equal(g_manifest.related_files[1].file_name, "a2");
+  assert_span_equal(g_manifest.related_files[3].id, "c2");
+
+  /* No storage keeps none; the files still parse. */
+  g_related_capacity = 0;
+  assert_int_equal(parse(manifest), AZ_IOT_OK);
+  assert_int_equal(g_manifest.files_count, 3);
+  assert_int_equal(g_manifest.related_files_count, 0);
+  assert_int_equal(g_manifest.files[2].related_files_count, 0);
+  g_related_capacity = sizeof(g_related_files) / sizeof(g_related_files[0]);
 }
 
 /* A known member of the wrong type, malformed JSON or data after the root object is refused. */
@@ -160,6 +230,11 @@ static void malformed_manifests_are_rejected(void** state)
     "{\"files\":{\"f\":{\"hashes\":[]}}}",
     "{\"files\":{\"f\":{\"hashes\":{\"sha256\":1}}}}",
     "{\"files\":{\"f\":{\"mimeType\":{\"hashes\":{\"sha256\":\"a\"}}}}}",
+    "{\"files\":{\"f\":{\"properties\":[]}}}",
+    "{\"files\":{\"f\":{\"relatedFiles\":[]}}}",
+    "{\"files\":{\"f\":{\"relatedFiles\":{\"r\":{\"fileName\":1}}}}}",
+    "{\"files\":{\"f\":{\"downloadHandler\":\"h\"}}}",
+    "{\"files\":{\"f\":{\"downloadHandler\":{\"id\":1}}}}",
     "{\"createdDateTime\":1}",
     "{\"files\":{\"f\":{\"fileName\":\"x\"}}",
     "{}x",
@@ -326,6 +401,7 @@ int main(void)
     cmocka_unit_test(every_field_is_parsed),
     cmocka_unit_test(unknown_members_are_skipped_at_every_level),
     cmocka_unit_test(delta_file_members_are_accepted),
+    cmocka_unit_test(related_files_past_the_storage_are_left_out),
     cmocka_unit_test(malformed_manifests_are_rejected),
     cmocka_unit_test(a_manifest_at_the_limits_is_parsed),
     cmocka_unit_test(a_manifest_over_a_limit_is_refused),

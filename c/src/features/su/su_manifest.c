@@ -24,7 +24,15 @@ typedef struct
   uint32_t file_count;
   uint32_t largest_step_file_count;
   uint32_t largest_file_hash_count;
+  uint32_t related_file_count;
 } manifest_counts;
+
+/** @brief Caller storage for related files and how many it holds. */
+typedef struct
+{
+  az_iot_su_client_update_manifest_file* files;
+  uint32_t capacity;
+} related_file_storage;
 
 /**
  * @brief Move to the next property of the object being read.
@@ -274,16 +282,75 @@ static void parse_instructions(
 }
 
 /**
- * @brief Parse one file of `files`.
+ * @brief Parse `downloadHandler`: an object whose `id` is the handler id.
+ *
+ * @param jr       Reader on the value; left on its end.
+ * @param id       Set to the id.
+ * @param is_error Set when malformed.
+ */
+static void parse_download_handler(az_json_reader* jr, az_span* id, bool* is_error)
+{
+  az_json_token name;
+  if (!json_token_is_kind(jr, AZ_JSON_TOKEN_BEGIN_OBJECT, is_error))
+  {
+    return;
+  }
+  while (!*is_error && json_next_property(jr, &name, is_error))
+  {
+    if (az_json_token_is_text_equal(&name, AZ_SPAN_FROM_STR("id")))
+    {
+      json_read_string(jr, id, is_error);
+    }
+    else
+    {
+      json_skip_value(jr, is_error);
+    }
+  }
+}
+
+/**
+ * @brief Read the current object, unparsed, into @p out; sets @p is_error when not an object.
+ *
+ * @param jr       Reader on the object; left on its end.
+ * @param out      Set to the object text, braces included.
+ * @param is_error Set when malformed.
+ */
+static void json_read_object_text(az_json_reader* jr, az_span* out, bool* is_error)
+{
+  if (!json_token_is_kind(jr, AZ_JSON_TOKEN_BEGIN_OBJECT, is_error))
+  {
+    return;
+  }
+  uint8_t* begin = az_span_ptr(jr->token.slice);
+  json_skip_value(jr, is_error);
+  if (!*is_error)
+  {
+    uint8_t* end = az_span_ptr(jr->token.slice) + az_span_size(jr->token.slice);
+    *out = az_span_create(begin, (int32_t)(end - begin));
+  }
+}
+
+static void parse_related_files(
+    az_json_reader* jr,
+    az_iot_su_client_update_manifest_file* file,
+    const related_file_storage* related,
+    manifest_counts* counts,
+    bool* is_error);
+
+/**
+ * @brief Parse one file of `files`, or one related file.
  *
  * @param jr       Reader on the file object; left on its end.
  * @param file     Filled with at most AZ_IOT_SU_MAX_FILE_HASH_COUNT hashes.
- * @param counts   Largest file hash count updated.
+ * @param related  Storage for its related files; NULL for a related file, whose
+ *                 `relatedFiles` and `downloadHandler` are skipped.
+ * @param counts   Largest file hash count (files only) and related file count updated.
  * @param is_error Set when malformed.
  */
 static void parse_file(
     az_json_reader* jr,
     az_iot_su_client_update_manifest_file* file,
+    const related_file_storage* related,
     manifest_counts* counts,
     bool* is_error)
 {
@@ -330,14 +397,29 @@ static void parse_file(
       file->hashes_count = hash_count < (uint32_t)AZ_IOT_SU_MAX_FILE_HASH_COUNT
           ? hash_count
           : (uint32_t)AZ_IOT_SU_MAX_FILE_HASH_COUNT;
-      if (hash_count > counts->largest_file_hash_count)
+      /* A related file is optional: past the limit, its extra hashes are dropped instead. */
+      if (related != NULL && hash_count > counts->largest_file_hash_count)
       {
         counts->largest_file_hash_count = hash_count;
       }
     }
     else if (az_json_token_is_text_equal(&name, AZ_SPAN_FROM_STR("mimeType")))
     {
-      (void)json_token_is_kind(jr, AZ_JSON_TOKEN_STRING, is_error);
+      json_read_string(jr, &file->mime_type, is_error);
+    }
+    else if (az_json_token_is_text_equal(&name, AZ_SPAN_FROM_STR("properties")))
+    {
+      json_read_object_text(jr, &file->properties, is_error);
+    }
+    else if (
+        related != NULL && az_json_token_is_text_equal(&name, AZ_SPAN_FROM_STR("downloadHandler")))
+    {
+      parse_download_handler(jr, &file->download_handler_id, is_error);
+    }
+    else if (
+        related != NULL && az_json_token_is_text_equal(&name, AZ_SPAN_FROM_STR("relatedFiles")))
+    {
+      parse_related_files(jr, file, related, counts, is_error);
     }
     else
     {
@@ -347,16 +429,60 @@ static void parse_file(
 }
 
 /**
+ * @brief Parse a file's `relatedFiles`: an object keyed by related file id.
+ *
+ * @param jr       Reader on the value; left on its end.
+ * @param file     Its related_files_index and related_files_count set.
+ * @param related  Filled while it has room; later related files are counted only.
+ * @param counts   Related file count updated, including those past the capacity.
+ * @param is_error Set when malformed.
+ */
+static void parse_related_files(
+    az_json_reader* jr,
+    az_iot_su_client_update_manifest_file* file,
+    const related_file_storage* related,
+    manifest_counts* counts,
+    bool* is_error)
+{
+  az_json_token related_id;
+  if (!json_token_is_kind(jr, AZ_JSON_TOKEN_BEGIN_OBJECT, is_error))
+  {
+    return;
+  }
+  file->related_files_index = counts->related_file_count < related->capacity
+      ? counts->related_file_count
+      : related->capacity;
+  file->related_files_count = 0;
+  while (!*is_error && json_next_property(jr, &related_id, is_error))
+  {
+    az_iot_su_client_update_manifest_file past_capacity;
+    memset(&past_capacity, 0, sizeof(past_capacity));
+    az_iot_su_client_update_manifest_file* related_file = &past_capacity;
+    if (counts->related_file_count < related->capacity)
+    {
+      related_file = &related->files[counts->related_file_count];
+      memset(related_file, 0, sizeof(*related_file));
+      file->related_files_count++;
+    }
+    related_file->id = related_id.slice;
+    parse_file(jr, related_file, NULL, counts, is_error);
+    counts->related_file_count++;
+  }
+}
+
+/**
  * @brief Parse `files`.
  *
  * @param jr       Reader on the value; left on its end.
  * @param manifest Filled with at most AZ_IOT_SU_MAX_FILE_COUNT files.
+ * @param related  Storage for related files.
  * @param counts   File counts updated, including files past the limit.
  * @param is_error Set when malformed.
  */
 static void parse_files(
     az_json_reader* jr,
     az_iot_su_client_update_manifest* manifest,
+    const related_file_storage* related,
     manifest_counts* counts,
     bool* is_error)
 {
@@ -375,7 +501,7 @@ static void parse_files(
         ? &manifest->files[counts->file_count]
         : &past_limit;
     file->id = file_id.slice;
-    parse_file(jr, file, counts, is_error);
+    parse_file(jr, file, related, counts, is_error);
     counts->file_count++;
   }
   manifest->files_count = counts->file_count < (uint32_t)AZ_IOT_SU_MAX_FILE_COUNT
@@ -432,9 +558,13 @@ static az_iot_result check_manifest_counts(const manifest_counts* counts)
 
 az_iot_result az_iot_su__parse_update_manifest(
     az_span manifest_text,
+    az_iot_su_client_update_manifest_file* related_files,
+    size_t related_files_capacity,
     az_iot_su_client_update_manifest* out_manifest)
 {
   memset(out_manifest, 0, sizeof(*out_manifest));
+  related_file_storage related
+      = { related_files, related_files == NULL ? 0u : (uint32_t)related_files_capacity };
   az_json_reader jr;
   if (az_span_size(manifest_text) <= 0
       || az_result_failed(az_json_reader_init(&jr, manifest_text, NULL))
@@ -463,7 +593,7 @@ az_iot_result az_iot_su__parse_update_manifest(
     }
     else if (az_json_token_is_text_equal(&name, AZ_SPAN_FROM_STR("files")))
     {
-      parse_files(&jr, out_manifest, &counts, &is_error);
+      parse_files(&jr, out_manifest, &related, &counts, &is_error);
     }
     else if (az_json_token_is_text_equal(&name, AZ_SPAN_FROM_STR("createdDateTime")))
     {
@@ -478,6 +608,17 @@ az_iot_result az_iot_su__parse_update_manifest(
   if (is_error || az_json_reader_next_token(&jr) != AZ_ERROR_JSON_READER_DONE)
   {
     return AZ_IOT_ERR_INVALID_ARG;
+  }
+  out_manifest->related_files = related.files;
+  out_manifest->related_files_count
+      = counts.related_file_count < related.capacity ? counts.related_file_count : related.capacity;
+  if (counts.related_file_count > related.capacity)
+  {
+    AZ_IOT_LOG_WARNF(
+        AZ_IOT_LOG_COMPONENT_SU,
+        "manifest has %u related files; kept %u (max_related_files)",
+        (unsigned)counts.related_file_count,
+        (unsigned)related.capacity);
   }
   return check_manifest_counts(&counts);
 }

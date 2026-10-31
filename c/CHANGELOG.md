@@ -13,6 +13,14 @@
 - Software updates: `az_iot_su_download_handler` and `az_iot_su_client_config_options::download_handlers`
   register handlers that build a file from a related file (e.g. a delta), matched by the manifest's
   `downloadHandler` id. `az_iot_su_client_init()` validates them; the client does not call them yet.
+- Software updates: the parsed manifest keeps each file's `mimeType`, `properties`,
+  `downloadHandler` id and related files (`relatedFiles`, delta updates), and the request accepts
+  their `fileUrls`. New `az_iot_su_limits::max_related_files` (default
+  `AZ_IOT_SU_DEFAULT_MAX_RELATED_FILES`, 40) bounds the related files kept; more are left out with
+  a warning. Breaking: `az_iot_su_client_update_request::file_urls` is a pointer to
+  `AZ_IOT_SU_FILE_URL_CAPACITY()` entries, `az_iot_su_parse_update_request()` takes an
+  `az_iot_su_update_request_storage`, and `AZ_IOT_SU_WORKSPACE_SIZE()` and
+  `AZ_IOT_SU_STATE_BLOB_MAX_SIZE()` take `max_related_files`.
 - Breaking: removed the Rust MQTT adapter shell, its `az_iot_rust_mqtt_*` APIs and FFI contract,
   `AZ_IOT_RUST_MQTT_WORKSPACE_SIZE`, `AZ_IOT_WITH_RUST_MQTT`, the `adapter_rust_mqtt` CMake and
   pkg-config component, and Yocto's `rust-mqtt` option. Use Paho or az_mqtt instead; the generic
