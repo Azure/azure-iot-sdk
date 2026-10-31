@@ -3012,7 +3012,26 @@ static void send_csr_waits_csr_response_timeout_ms(void** state)
             az_iot_mock_mqtt_factory_last_client(fx->factory), AZ_IOT_MOCK_CALL_PROCESS_LOOP)
             ->timeout_ms;
   assert_true(waited <= 5000u && waited >= 4000u);
+
+  /* A 202 restarts the wait with the configured value, and the renewal stays open. */
+  fx->client->csr_op.deadline_ms = az_iot_time_mono_ms() + 100u;
+  const char* r202 = "{}";
+  assert_true(az_iot_mock_mqtt_client_inject_message(
+      az_iot_mock_mqtt_factory_last_client(fx->factory),
+      "$iothub/credentials/res/202/?$rid=req-short",
+      (const uint8_t*)r202,
+      strlen(r202),
+      AZ_IOT_MQTT_QOS_1));
+  uint64_t const before_202 = az_iot_time_mono_ms();
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  uint64_t const after_202 = az_iot_time_mono_ms();
+  assert_int_equal(tc.accepted, 1);
+  assert_int_equal(tc.failed, 0);
+  assert_true(fx->client->csr_op.in_use);
+  assert_true(fx->client->csr_op.deadline_ms >= before_202 + 5000u);
+  assert_true(fx->client->csr_op.deadline_ms <= after_202 + 5000u);
 }
+
 /* The renewal's slot is reserved at init, so shared publishes filling the
  * table cannot push a renewal out of tracking. */
 static void send_csr_is_tracked_when_the_shared_pool_is_full(void** state)
