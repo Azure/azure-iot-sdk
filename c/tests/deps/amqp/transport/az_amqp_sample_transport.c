@@ -448,6 +448,49 @@ static bool _sch_queue(_sch_state* sch, uint8_t const* p, int n)
   return true;
 }
 
+/**
+ * @brief Adds the certificates after the first in @p cert_pem (the leaf's issuers) to @p store.
+ *
+ * @details Schannel builds the presented chain from the client certificate's own store, so the
+ * intermediates must be there, as OpenSSL sends them with SSL_CTX_add_extra_chain_cert().
+ */
+static bool _sch_add_issuer_certificates(HCERTSTORE store, az_span cert_pem)
+{
+  static char const begin[] = "-----BEGIN CERTIFICATE-----";
+  int32_t const begin_len = (int32_t)(sizeof(begin) - 1);
+  int32_t offset = az_span_find(cert_pem, az_span_create((uint8_t*)begin, begin_len));
+  if (offset < 0)
+  {
+    return true;
+  }
+  az_span rest = az_span_slice_to_end(cert_pem, offset + begin_len); // past the leaf
+  for (;;)
+  {
+    offset = az_span_find(rest, az_span_create((uint8_t*)begin, begin_len));
+    if (offset < 0)
+    {
+      return true;
+    }
+    rest = az_span_slice_to_end(rest, offset);
+    BYTE der[8192];
+    DWORD der_len = sizeof(der);
+    if (!CryptStringToBinaryA(
+            (LPCSTR)az_span_ptr(rest),
+            (DWORD)az_span_size(rest),
+            CRYPT_STRING_BASE64HEADER,
+            der,
+            &der_len,
+            NULL,
+            NULL)
+        || !CertAddEncodedCertificateToStore(
+            store, X509_ASN_ENCODING, der, der_len, CERT_STORE_ADD_USE_EXISTING, NULL))
+    {
+      return false;
+    }
+    rest = az_span_slice_to_end(rest, begin_len);
+  }
+}
+
 // Builds a certificate context with an associated private key for mutual TLS
 // from PEM material, storing the handles in the connection's state for reuse
 // across the handshake and for teardown in _sch_close. The device authenticates its IoT Hub file-upload
@@ -625,10 +668,11 @@ static bool _sch_build_client_cert(az_amqp_sample_transport* s, az_span cert_pem
     }
   }
 
-  // Assemble an in-memory PKCS#12 (PFX) from the certificate + its private key.
+  // Assemble an in-memory PKCS#12 (PFX) from the certificate, its issuers and its private key.
   mem_store = CertOpenStore(CERT_STORE_PROV_MEMORY, 0, 0, CERT_STORE_CREATE_NEW_FLAG, NULL);
   if (mem_store == NULL
-      || !CertAddCertificateContextToStore(mem_store, tmp_cert, CERT_STORE_ADD_ALWAYS, NULL))
+      || !CertAddCertificateContextToStore(mem_store, tmp_cert, CERT_STORE_ADD_ALWAYS, NULL)
+      || !_sch_add_issuer_certificates(mem_store, cert_pem))
   {
     goto cleanup;
   }
