@@ -399,7 +399,11 @@ static void drop_session(fixture* fx)
 }
 
 /* Bring up a new session whose birth-ack carries @p desired and @p reported. */
-static void reopen_with_versions(fixture* fx, uint8_t desired, uint8_t reported)
+static void reopen_with_versions_hooked(
+    fixture* fx,
+    uint8_t desired,
+    uint8_t reported,
+    void (*before_birth_ack)(fixture* fx))
 {
   assert_int_equal(az_iot_connection_client_open(&fx->conn), AZ_IOT_OK);
   fx->mock = az_iot_mock_mqtt_factory_last_client(fx->factory);
@@ -459,6 +463,10 @@ static void reopen_with_versions(fixture* fx, uint8_t desired, uint8_t reported)
   ack_msg.user_properties = az_iot_mqtt_user_properties_from_array(&ack_type, 1);
   ack_msg.payload = ack_len ? ack_body : NULL;
   ack_msg.payload_len = ack_len;
+  if (before_birth_ack != NULL)
+  {
+    before_birth_ack(fx);
+  }
   az_iot_mqtt_event ack;
   memset(&ack, 0, sizeof(ack));
   ack.kind = AZ_IOT_MQTT_EVT_MESSAGE;
@@ -466,6 +474,11 @@ static void reopen_with_versions(fixture* fx, uint8_t desired, uint8_t reported)
   assert_true(az_iot_mock_mqtt_client_inject_event(fx->mock, &ack));
   assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
   az_iot_test_ack_subscriptions(&fx->conn, fx->mock);
+}
+
+static void reopen_with_versions(fixture* fx, uint8_t desired, uint8_t reported)
+{
+  reopen_with_versions_hooked(fx, desired, reported, NULL);
 }
 
 /* Drop the session and bring up a new one whose birth-ack carries @p desired and @p reported. */
@@ -2735,6 +2748,126 @@ static void a_get_awaiting_its_answer_is_unsettled(void** state)
   assert_false(az_iot_test_has_unsettled_deliveries(&fx->conn));
 }
 
+static uint8_t g_replacement_encode_buffer[64];
+
+typedef struct buffer_swap_call
+{
+  fixture* fx;
+  az_iot_result result;
+} buffer_swap_call;
+
+static void replace_encode_buffer_from_get_callback(
+    az_iot_result status,
+    const az_iot_mqttv5_twin_state* twin,
+    void* user_ctx)
+{
+  (void)status;
+  (void)twin;
+  buffer_swap_call* call = (buffer_swap_call*)user_ctx;
+  memset(g_replacement_encode_buffer, 'x', sizeof(g_replacement_encode_buffer));
+  call->result = az_iot_mqttv5_twin_client_set_encode_buffer(
+      &call->fx->twin, AZ_SPAN_FROM_BUFFER(g_replacement_encode_buffer));
+}
+
+/* The encode buffer cannot be replaced from a callback a patch call runs: the outer patch still
+ * sends its own bytes. */
+static void the_encode_buffer_cannot_be_replaced_during_a_patch_call(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  buffer_swap_call call = { fx, AZ_IOT_OK };
+  queue_an_expired_get(fx, replace_encode_buffer_from_get_callback, &call);
+
+  static const uint8_t outer[] = "{\"outer\":1}";
+  patch_record rec = { 0 };
+  assert_int_equal(
+      az_iot_mqttv5_twin_client_patch_reported(&fx->twin, outer, sizeof(outer) - 1, on_patch, &rec),
+      AZ_IOT_OK);
+  assert_int_equal(call.result, AZ_IOT_ERR_BUSY);
+  const az_iot_mock_call* sent
+      = az_iot_mock_mqtt_client_last_of(fx->mock, AZ_IOT_MOCK_CALL_PUBLISH);
+  assert_non_null(sent);
+  assert_memory_equal(sent->payload + 2, outer, sizeof(outer) - 1);
+}
+
+static void deinit_and_poison_from_get_callback(
+    az_iot_result status,
+    const az_iot_mqttv5_twin_state* twin,
+    void* user_ctx)
+{
+  (void)status;
+  (void)twin;
+  nested_call* call = (nested_call*)user_ctx;
+  call->fired = true;
+  az_iot_mqttv5_twin_client_deinit(&call->fx->twin);
+  memset(&call->fx->twin, 0xA5, sizeof(call->fx->twin)); /* As if freed. */
+}
+
+static void refuse_the_next_publish_as_invalid(fixture* fx)
+{
+  az_iot_mock_mqtt_client_set_next_result(
+      fx->mock, AZ_IOT_MOCK_CALL_PUBLISH, AZ_IOT_ERR_INVALID_ARG);
+}
+
+/* A callback run by the catch-up snapshot at hub CONNECTED (a queued GET the adapter refuses,
+ * sent first) that deinitializes and frees the client: the CONNECTED handling stops there. */
+static void a_client_deinitialized_by_a_callback_at_hub_connected(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  desired_record rec = { 0 };
+  set_desired(fx, &rec);
+  drop_session(fx);
+  nested_call call = { fx, false, AZ_IOT_OK };
+  assert_int_equal(
+      az_iot_mqttv5_twin_client_get(&fx->twin, deinit_and_poison_from_get_callback, &call),
+      AZ_IOT_OK);
+
+  reopen_with_versions_hooked(fx, 3, 0, refuse_the_next_publish_as_invalid);
+  assert_true(call.fired);
+  memset(&fx->twin, 0, sizeof(fx->twin)); /* Nothing left for teardown. */
+}
+
+typedef struct desired_call
+{
+  fixture* fx;
+  desired_record* rec;
+} desired_call;
+
+static void set_desired_from_get_callback(
+    az_iot_result status,
+    const az_iot_mqttv5_twin_state* twin,
+    void* user_ctx)
+{
+  (void)status;
+  (void)twin;
+  desired_call* call = (desired_call*)user_ctx;
+  set_desired(call->fx, call->rec);
+}
+
+/* A desired handler set from a callback a patch call runs gets its snapshot on a later TICK. */
+static void a_snapshot_refused_during_another_call_is_issued_on_a_later_tick(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected_with_versions(fx, 3, 0);
+  desired_record rec = { 0 };
+  desired_call call = { fx, &rec };
+  queue_an_expired_get(fx, set_desired_from_get_callback, &call);
+
+  static const uint8_t patch[] = "{}";
+  patch_record patched = { 0 };
+  assert_int_equal(
+      az_iot_mqttv5_twin_client_patch_reported(
+          &fx->twin, patch, sizeof(patch) - 1, on_patch, &patched),
+      AZ_IOT_OK);
+  size_t const before = count_gets(fx);
+  assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
+  assert_int_equal(count_gets(fx), before + 1u);
+  answer_last_get(fx, 3, "{\"s\":3}");
+  assert_int_equal(rec.kind, AZ_IOT_MQTTV5_TWIN_DESIRED_SNAPSHOT);
+  assert_int_equal(rec.version, 3);
+}
+
 /* A pending patch is failed too, and reports no verdict: the exchange never
  * completed, so there is nothing the service decided. */
 static void a_pending_patch_is_failed_with_no_verdict(void** state)
@@ -3734,6 +3867,12 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         a_refused_get_is_retried_soon_when_puback_slots_are_full, setup, teardown),
     cmocka_unit_test_setup_teardown(a_get_awaiting_its_answer_is_unsettled, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        the_encode_buffer_cannot_be_replaced_during_a_patch_call, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_client_deinitialized_by_a_callback_at_hub_connected, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_snapshot_refused_during_another_call_is_issued_on_a_later_tick, setup, teardown),
     cmocka_unit_test_setup_teardown(a_pending_patch_is_failed_with_no_verdict, setup, teardown),
     cmocka_unit_test_setup_teardown(init_rejects_a_null_client, setup, teardown),
     cmocka_unit_test_setup_teardown(init_rejects_a_null_connection, setup, teardown),
