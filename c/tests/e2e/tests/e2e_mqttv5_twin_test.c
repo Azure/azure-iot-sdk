@@ -36,7 +36,7 @@
 #include "e2e_log.h"
 #include "support/test_shard.h"
 
-#define E2E_REQUEST_TIMEOUT_S 60
+#define E2E_REQUEST_TIMEOUT_S 70 /* Above the service's twin GET/PATCH retries (64 s). */
 #define E2E_DELIVERY_TIMEOUT_S 60
 /* How long pull mode must stay without a patch after a desired change. */
 #define E2E_NO_PATCH_WINDOW_S 30
@@ -145,10 +145,11 @@ typedef struct
   int in_flight;
   bool stopped;
   int drops_at_start;
+  int in_flight_at_drop; /**< GETs unanswered when the session dropped; -1 before. */
   int submitted;
   int answered;
   int failed;
-  az_iot_result failure; /**< First unexpected status, else the last. */
+  az_iot_result failure; /**< First failure. */
   az_iot_result refusal;
 } get_race;
 
@@ -291,6 +292,10 @@ static void on_state(const az_iot_connection_state_event* event, void* user_ctx)
   if (fx->hub_connected && !connected)
   {
     fx->hub_drops++;
+    if (fx->race.active && fx->race.in_flight_at_drop < 0)
+    {
+      fx->race.in_flight_at_drop = fx->race.in_flight;
+    }
     printf("[e2e] hub left CONNECTED (state=%d)\n", (int)event->state);
   }
   fx->hub_connected = connected;
@@ -851,12 +856,29 @@ static bool wait_connected(fixture* fx)
   return fx->dev.conn_state == AZ_IOT_CONN_STATE_CONNECTED;
 }
 
+/**
+ * @brief Wait for the desired snapshot delivered on connect: the twin-push with push_desired,
+ * else the answer to the client's own GET. A desired change made before it arrives can be in it.
+ */
+static void wait_connect_snapshot(fixture* fx)
+{
+  for (time_t start = time(NULL);
+       fx->desired.deliveries == 0 && (time(NULL) - start) < E2E_DELIVERY_TIMEOUT_S;)
+  {
+    pump(fx);
+  }
+  if (fx->desired.deliveries == 0)
+  {
+    fail_msg("no desired snapshot on connect");
+  }
+}
+
 /* Without push_desired the service sends no desired patches while connected; a GET finds the
  * change and the client delivers it as a snapshot. */
 static void pull_mode_sees_a_desired_change_only_after_a_get(void** state)
 {
   fixture* fx = (fixture*)*state;
-  pump_for(fx, E2E_SETTLE_S);
+  wait_connect_snapshot(fx);
 
   service_patch_desired(fx, "e2ePull");
   pump_for(fx, E2E_NO_PATCH_WINDOW_S);
@@ -891,7 +913,7 @@ static void push_mode_pushes_a_snapshot_on_connect(void** state)
 static void push_mode_delivers_each_desired_patch(void** state)
 {
   fixture* fx = (fixture*)*state;
-  pump_for(fx, E2E_SETTLE_S);
+  wait_connect_snapshot(fx);
   for (int i = 0; i < 2; ++i)
   {
     service_patch_desired(fx, "e2ePush");
@@ -1262,12 +1284,6 @@ static void on_request_get(
   r->done = true;
 }
 
-/** @brief True for the statuses a GET may complete with when the session drops. */
-static bool drop_status_expected(az_iot_result status)
-{
-  return status == AZ_IOT_ERR_NOT_CONNECTED || status == AZ_IOT_ERR_TIMEOUT;
-}
-
 static void on_race_get(az_iot_result status, const az_iot_mqttv5_twin_state* twin, void* user_ctx)
 {
   (void)twin;
@@ -1280,8 +1296,7 @@ static void on_race_get(az_iot_result status, const az_iot_mqttv5_twin_state* tw
   else
   {
     r->failed++;
-    /* Keep the first unexpected status; a later NOT_CONNECTED must not hide it. */
-    if (r->failed == 1 || drop_status_expected(r->failure))
+    if (r->failed == 1)
     {
       r->failure = status;
     }
@@ -1369,11 +1384,11 @@ static void evict(fixture* fx)
   }
 }
 
-/* A GET in flight when the session drops completes with an error instead of waiting for an answer
- * that died with the session; after the automatic reconnect a new GET succeeds. E2E_RACE_DEPTH GETs
- * are kept in flight during the eviction, each answer replaced at once, so the drop finds one
- * unanswered unless all answers are drained together with the drop; hence the retries. */
-static void request_in_flight_when_session_drops_completes(void** state)
+/* A GET in flight when the session drops is sent again after the automatic reconnect and answered.
+ * E2E_RACE_DEPTH GETs are kept in flight during the eviction, each answer replaced at once, so the
+ * drop finds one unanswered unless all answers are drained together with the drop; hence the
+ * retries. */
+static void request_in_flight_when_session_drops_is_answered_after_reconnect(void** state)
 {
   fixture* fx = (fixture*)*state;
   pump_for(fx, E2E_SETTLE_S);
@@ -1382,8 +1397,12 @@ static void request_in_flight_when_session_drops_completes(void** state)
   {
     assert_true(wait_connected(fx));
     memset(&fx->race, 0, sizeof(fx->race));
+    fx->race.in_flight_at_drop = -1;
     fx->race.active = true;
     fx->race.drops_at_start = fx->hub_drops;
+    /* In flight before the evicting connection starts: on a fast hub the drop can arrive before
+     * its connect hook first pumps the device, which would leave nothing to test. */
+    race_tick(fx);
     evict(fx);
     const time_t dropped = time(NULL);
     while (fx->race.in_flight > 0 && (time(NULL) - dropped) < E2E_DEVICE_REQUEST_WAIT_S)
@@ -1392,10 +1411,11 @@ static void request_in_flight_when_session_drops_completes(void** state)
     }
     fx->race.active = false;
     printf(
-        "[e2e] attempt %d: %d GETs submitted, %d answered, %d failed (kept %s), refusal %s; "
-        "in flight %d, %lds after the drop\n",
+        "[e2e] attempt %d: %d GETs submitted, %d unanswered at the drop, %d answered, %d failed "
+        "(first %s), refusal %s; in flight %d, %lds after the drop\n",
         attempt,
         fx->race.submitted,
+        fx->race.in_flight_at_drop,
         fx->race.answered,
         fx->race.failed,
         fx->race.failed ? az_iot_result_to_string(fx->race.failure) : "-",
@@ -1408,14 +1428,11 @@ static void request_in_flight_when_session_drops_completes(void** state)
     }
     if (fx->race.failed != 0)
     {
-      if (!drop_status_expected(fx->race.failure))
-      {
-        fail_msg(
-            "a GET at the drop completed %s, not NOT_CONNECTED or TIMEOUT",
-            az_iot_result_to_string(fx->race.failure));
-      }
-      caught = true;
+      fail_msg(
+          "a GET completed %s instead of being answered after the reconnect",
+          az_iot_result_to_string(fx->race.failure));
     }
+    caught = fx->race.in_flight_at_drop > 0;
   }
   if (!caught)
   {
@@ -1600,7 +1617,9 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         late_desired_handler_gets_snapshot, setup_push_no_desired_handler, teardown),
     cmocka_unit_test_setup_teardown(
-        request_in_flight_when_session_drops_completes, setup_pull_reconnect, teardown),
+        request_in_flight_when_session_drops_is_answered_after_reconnect,
+        setup_pull_reconnect,
+        teardown),
     cmocka_unit_test_setup_teardown(
         desired_change_during_outage_is_fetched_on_reconnect, setup_push_reconnect, teardown),
     cmocka_unit_test_setup_teardown(

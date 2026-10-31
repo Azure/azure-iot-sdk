@@ -11,6 +11,7 @@
 #include <stdint.h>
 
 #include "azure/iot/az_iot_connection_client.h"
+#include "azure/iot/az_iot_delivery_tracker.h"
 #include "azure/iot/az_iot_message.h"
 #include "azure/iot/az_iot_result.h"
 
@@ -18,6 +19,28 @@
 extern "C"
 {
 #endif
+
+/** @brief Default for az_iot_mqttv3_twin_client_set_request_timeout(). */
+#define AZ_IOT_MQTTV3_TWIN_REQUEST_TIMEOUT_MS_DEFAULT 60000u
+
+/** @brief Longest twin request topic, with its terminator. */
+#define AZ_IOT_MQTTV3_TWIN_TOPIC_MAX 64u
+
+  /** @brief A twin request held for its tracker entry. Internal; treat as opaque. */
+  typedef struct az_iot_mqttv3_twin_request
+  {
+    int kind; /* internal enum; 0: none */
+    uint32_t rid;
+    const uint8_t* patch; /* Reported patch: the caller's, during the call only. */
+    size_t patch_len;
+    bool sent;
+    union
+    {
+      az_iot_twin_get_callback get_cb;
+      az_iot_twin_patch_complete_callback patch_cb;
+    } cb;
+    void* user_ctx;
+  } az_iot_mqttv3_twin_request;
 
   typedef struct az_iot_mqttv3_twin_client
   {
@@ -27,18 +50,17 @@ extern "C"
       az_iot_twin_desired_callback desired_handler;
       void* desired_handler_ctx;
       uint32_t next_rid;
-      struct
-      {
-        bool in_use;
-        uint32_t rid;
-        int kind; /* internal enum */
-        union
-        {
-          az_iot_twin_get_callback get_cb;
-          az_iot_twin_patch_complete_callback patch_cb;
-        } cb;
-        void* user_ctx;
-      } pending[AZ_IOT_TWIN_MAX_PENDING];
+      uint32_t request_timeout_ms;
+      /* The request each tracker entry holds (index = entry). Kind 0: none. */
+      az_iot_mqttv3_twin_request requests[AZ_IOT_TWIN_MAX_PENDING];
+      size_t submitting_entry; /* The entry being submitted, while submit_in_progress. */
+      bool submit_in_progress;
+      az_iot_result
+          submit_failure; /* How the submitted request ended during submit; OK: it did not. */
+      /* Where encode() builds the topic the tracker sends next. */
+      char outbound_topic[AZ_IOT_MQTTV3_TWIN_TOPIC_MAX];
+      az_iot_delivery_tracker tracker;
+      az_iot_delivery_tracker_entry tracker_entries[AZ_IOT_TWIN_MAX_PENDING];
     } _internal;
   } az_iot_mqttv3_twin_client;
 
@@ -66,16 +88,33 @@ extern "C"
   /**
    * @brief Request the full twin document.
    *
+   * Sent now, or once connected; sent again on the next session if its session ends
+   * unanswered. @p cb gets the answer, or AZ_IOT_ERR_TIMEOUT once the request timeout
+   * from this call passes.
+   *
    * @return AZ_IOT_ERR_NOT_SUPPORTED when AZ_IOT_TWIN_MAX_PENDING requests are
    *         already in flight. The service reporting a throttle returns
    *         AZ_IOT_ERR_BUSY to @p cb instead, so the two are distinguishable.
+   *         AZ_IOT_ERR_BUSY from a twin callback run by another request call.
    */
   AZ_NODISCARD az_iot_result az_iot_mqttv3_twin_client_get(
       az_iot_mqttv3_twin_client* twin,
       az_iot_twin_get_callback cb,
       void* user_ctx);
 
-  /** @brief Merge @p patch into the reported-properties section. */
+  /**
+   * @brief Merge @p patch into the reported-properties section.
+   *
+   * Sent now or refused: @p patch is read during the call only. @p cb gets the answer,
+   * AZ_IOT_ERR_TIMEOUT once the request timeout from this call passes, or
+   * AZ_IOT_ERR_NOT_CONNECTED if its session ends first (it may have been applied).
+   *
+   * @return AZ_IOT_ERR_NOT_SUPPORTED when AZ_IOT_TWIN_MAX_PENDING requests are in
+   *         flight; AZ_IOT_ERR_NOT_CONNECTED when not connected; AZ_IOT_ERR_BUSY when the
+   *         connection could not send it now, or from a twin callback run by another
+   *         request call; AZ_IOT_ERR_NOT_ENOUGH_SPACE when the adapter cannot send it.
+   *         Nothing is sent on an error.
+   */
   AZ_NODISCARD az_iot_result az_iot_mqttv3_twin_client_patch_reported(
       az_iot_mqttv3_twin_client* twin,
       const uint8_t* patch,
@@ -98,6 +137,16 @@ extern "C"
       az_iot_mqttv3_twin_client* twin,
       az_iot_twin_desired_callback cb,
       void* user_ctx);
+
+  /**
+   * @brief How long a request made after this call waits for its response, from the call,
+   *        before completing with AZ_IOT_ERR_TIMEOUT. 0 selects
+   *        AZ_IOT_MQTTV3_TWIN_REQUEST_TIMEOUT_MS_DEFAULT. az_iot_connection_client_do_work()
+   *        times requests out.
+   */
+  az_iot_result az_iot_mqttv3_twin_client_set_request_timeout(
+      az_iot_mqttv3_twin_client* twin,
+      uint32_t timeout_ms);
 
 #ifdef __cplusplus
 }

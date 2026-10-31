@@ -218,11 +218,12 @@ static int group_teardown(void** state)
   return 0;
 }
 
-/* Restarts the watcher, so a test that failed before ending its own leaves nothing behind. */
+/* Restarts the watcher, so a test that failed before ending its own leaves nothing behind. It
+ * captures only this device's messages: every marker contains the device id. */
 static void watch_begin(fixture* fx)
 {
   az_iot_e2e_service_telemetry_watch_end(fx->service);
-  bool watching = az_iot_e2e_service_telemetry_watch_begin(fx->service);
+  bool watching = az_iot_e2e_service_telemetry_watch_begin(fx->service, fx->device_id);
   for (time_t start = time(NULL);
        !watching && (time(NULL) - start) < E2E_SERVICE_CONNECT_TIMEOUT_S;)
   {
@@ -230,7 +231,7 @@ static void watch_begin(fixture* fx)
     {
       pump(fx);
     }
-    watching = az_iot_e2e_service_telemetry_watch_begin(fx->service);
+    watching = az_iot_e2e_service_telemetry_watch_begin(fx->service, fx->device_id);
   }
   if (!watching)
   {

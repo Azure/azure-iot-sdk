@@ -541,12 +541,12 @@ checked before backoff is scheduled.
 | Software updates workflow state | Yes | Owned by the software updates engine and persisted, so an install survives a reconnect and a reboot. |
 | Reconnect attempt counter | Reset on success | Incremented per failed attempt. |
 | In-flight QoS 1 PUBACKs | No | Packet ids belong to the destroyed adapter; callers must re-send. |
-| Twin GET/PATCH, method responses, telemetry in flight | No | Feature clients must re-issue. |
+| Twin GET/PATCH, method responses, telemetry in flight | No | Feature clients must re-issue; the twin clients send an unanswered GET again on the next session and fail a reported patch with `AZ_IOT_ERR_NOT_CONNECTED`. |
 | MQTTv3 desired-property patches sent while disconnected | No | IoT Hub does not queue them, and the SDK does not fetch the twin on reconnect. The application calls `az_iot_mqttv3_twin_client_get()` if it needs the current desired state. |
 | Software updates status report not yet acked | Terminal: yes | Retried until the service accepts or permanently rejects it; idempotent on `workflowId`. After repeated DPS session loss it is abandoned for the process. A terminal report stays owed (in durable storage when persistence is configured) and is re-sent later (next device-properties update, or after restart and resume); an in-progress report is not replayed, the next reporting point sends current state. |
 | Presence (birth) phase | No | Restarted with a freshly generated nonce. |
 | DPS phase | No | Not re-run on an ordinary reconnect: the cached assignment is reused. It is re-run only when `needs_reprovision` is set — a CONNACK identity rejection in `REPROVISION` mode, `az_iot_connection_client_request_reprovision()`, the `max_hub_connect_attempts_before_reprovision` threshold, or `reject_assignment()`. When it does re-run it restarts from `DPS_CONNECTING`. |
-| In-flight CSR operation | Yes | `teardown_active()` does not touch `csr_op`, so a response on the next session completes it. `AZ_IOT_ERR_TIMEOUT` fires only at `CSR_OP_TIMEOUT_MS` (120 s, re-armed on each `202`); `az_iot_connection_client_cancel_csr()` ends it early. The request is published from a reserved PUBACK slot; a rejected PUBACK fails the operation at once, a session end before the PUBACK does not. |
+| In-flight CSR operation | No | The session end fails it with `AZ_IOT_ERR_NOT_CONNECTED`: its response would have come on that session. Resubmit with the same request id once reconnected. `AZ_IOT_ERR_TIMEOUT` fires at `opts.csr_response_timeout_ms` (120 s by default, re-armed on each `202`); `az_iot_connection_client_cancel_csr()` ends it early. The request is published from a reserved PUBACK slot; a rejected PUBACK fails the operation at once. |
 
 ### 5.4 The first attempt
 
@@ -922,7 +922,7 @@ be refused again, and leave the device cycling forever without saying why.
 
 Buffers are fixed-size struct members, not allocations, so exceeding one is a hard failure rather than
 a slow path. Constants are `#ifndef`-guarded and can be raised at build time, except
-`AZ_IOT_CSR_PAYLOAD_BUFFER_MIN` (a sizing recommendation) and `CSR_MAX_BASE64` / `CSR_OP_TIMEOUT_MS`
+`AZ_IOT_CSR_PAYLOAD_BUFFER_MIN` (a sizing recommendation) and `CSR_MAX_BASE64`
 (fixed in `connection_client.c`). From
 [az_iot_connection_client.h](../../inc/azure/iot/az_iot_connection_client.h) unless noted.
 
@@ -957,7 +957,7 @@ a slow path. Constants are `#ifndef`-guarded and can be raised at build time, ex
 | `az_iot_defensive_timeout__ms()` | 5–15 min | MQTTv5 birth-ack: 5, 6, 8, then 10 min base per consecutive miss, plus 0–5 min jitter | `AZ_IOT_ERR_TIMEOUT` |
 | `AZ_IOT_DPS_HOLD_TIMEOUT_MS` | 60000 | How long registration may be held for a pre-registration exchange | the hold expires and registration proceeds |
 | `AZ_IOT_DEFAULT_MAX_HUB_CONNECT_ATTEMPTS_BEFORE_REPROVISION` | 50 | Consecutive hub connect failures before the client re-provisions | `needs_reprovision` set; not an error |
-| `CSR_OP_TIMEOUT_MS` | 120000 | Hub CSR renewal, re-armed on each `202 Accepted` | `AZ_IOT_ERR_TIMEOUT` |
+| `AZ_IOT_DEFAULT_CSR_RESPONSE_TIMEOUT_MS` | 120000 | Default `opts.csr_response_timeout_ms`: hub CSR renewal, re-armed on each `202 Accepted` | `AZ_IOT_ERR_TIMEOUT` |
 
 Every one of these is a *silent* limit until it is crossed, and the result that surfaces is the
 result of whatever call happened to be last — `AZ_IOT_ERR_NOT_ENOUGH_SPACE` does not say which pool
@@ -1059,7 +1059,8 @@ registry carries MQTTv3 feature filters and application custom topics.
 | SUBACK | Granted, at or below the requested QoS | `AZ_IOT_OK` | `az_iot_mqtt_suback_result()` | the gate entry settles; `CONNECTED` once none are outstanding | `0x00`–`0x02` is a grant in both versions. This SDK never requests QoS 2, so a downgrade does not arise. |
 | SUBACK | Refused on a `FAILS_SESSION` filter, code the broker will repeat | `AZ_IOT_ERR_SUBSCRIPTION_REFUSED` | `az_iot_mqtt_suback_result()` | `fail_subscription_restore()` → **`DEFER_FAULT`, even with a policy configured** | The one failure that is terminal regardless of policy. Reconnecting would re-issue the same filter and be refused again. |
 | SUBACK | Refused on a `FAILS_SESSION` filter, transient code (`0x80`, `0x83`, `0x97`) | `AZ_IOT_ERR_MQTT` | `az_iot_mqtt_suback_result()` | `DEFER_RECONNECT`, or `DEFER_FAULT` with no policy | Correctly separated from the row above. |
-| SUBACK | Refused on a `FAILS_SELF` filter | `AZ_IOT_ERR_SUBSCRIPTION_REFUSED` or `AZ_IOT_ERR_MQTT` | `report_and_drop_subscription()` | the entry is dropped, `on_failed(topic, reason, protocol_code, owner)` fires, the connection stays up | The entry is released *before* the callback, so a callback that re-registers immediately claims the slot and goes live in the same session. |
+| SUBACK | v5 refusal on a `FAILS_SESSION` filter carrying a Reason String | as for its code | adapter | as for its code; the Reason String becomes `error->message` (source `MQTT`), truncated to 128 bytes | Both adapters report it, except az_mqtt for an ack it holds past the receive buffer. |
+| SUBACK | Refused on a `FAILS_SELF` filter | `AZ_IOT_ERR_SUBSCRIPTION_REFUSED` or `AZ_IOT_ERR_MQTT` | `report_and_drop_subscription()` | the entry is dropped, `on_failed(topic, reason, protocol_code, reason_string, reason_string_len, owner)` fires with the SUBACK's Reason String, the connection stays up | The entry is released *before* the callback, so a callback that re-registers immediately claims the slot and goes live in the same session. |
 | SUBSCRIBE | The subscribe call fails synchronously | the adapter's result | connection client | scoped the same way its refusal would be | A SUBSCRIBE that could not be written is not treated more leniently than one the broker refused. |
 | SUBACK | No SUBACK within `subscription_ack_timeout_seconds` (default 60) | `AZ_IOT_ERR_TIMEOUT` | connection client | `DEFER_RECONNECT` — transient, so a policy retries it | The gate is cleared first, so the next attempt starts a fresh batch. |
 | Registry | Persistent-subscription registry full (9th filter) | `AZ_IOT_ERR_NOT_ENOUGH_SPACE` | connection client | the registration call fails; the connection is unaffected | Correctly Contained. |

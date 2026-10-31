@@ -614,6 +614,14 @@ static void _azm_on_suback(_AZM(client) * client, _AZM(suback_data) const* subac
   event.packet_id = suback->packet_id;
   event.protocol_code = code;
   event.status = az_iot_mqtt_suback_result(_AZM_VERSION, (int)code);
+#if AZ_IOT_AZ_MQTT_V == 5
+  // NULL: no Reason String. Non-NULL with length 0: present and empty.
+  if (az_span_ptr(suback->reason_string) != NULL)
+  {
+    event.reason_string = (char const*)az_span_ptr(suback->reason_string);
+    event.reason_string_len = (size_t)az_span_size(suback->reason_string);
+  }
+#endif
   _azm_emit(m, &event);
 }
 

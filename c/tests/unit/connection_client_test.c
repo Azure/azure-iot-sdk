@@ -2390,53 +2390,56 @@ typedef struct lifecycle_call_record
   int calls;
   az_iot_result close_result;
   az_iot_result open_result;
+  az_iot_result deinit_result;
 } lifecycle_call_record;
 
-/** @brief Calls close() and open() from inside a callback and records their results. */
-static void call_close_and_open(lifecycle_call_record* r)
+/** @brief Calls close(), open() and deinit() from inside a callback and records their results. */
+static void call_close_open_and_deinit(lifecycle_call_record* r)
 {
   r->calls++;
   r->close_result = az_iot_connection_client_close(r->client);
   r->open_result = az_iot_connection_client_open(r->client);
+  r->deinit_result = az_iot_connection_client_deinit(r->client);
 }
 
-static void close_and_open_on_hub_connected(
+static void close_open_and_deinit_on_hub_connected(
     const az_iot_connection_state_event* event,
     void* user_ctx)
 {
   if (event->scope == AZ_IOT_CONN_SCOPE_HUB && event->state == AZ_IOT_CONN_STATE_CONNECTED)
   {
-    call_close_and_open((lifecycle_call_record*)user_ctx);
+    call_close_open_and_deinit((lifecycle_call_record*)user_ctx);
   }
 }
 
-static void close_and_open_on_message(void* user_ctx, const az_iot_mqtt_message* msg)
+static void close_open_and_deinit_on_message(void* user_ctx, const az_iot_mqtt_message* msg)
 {
   (void)msg;
-  call_close_and_open((lifecycle_call_record*)user_ctx);
+  call_close_open_and_deinit((lifecycle_call_record*)user_ctx);
 }
 
-static void close_and_open_on_puback(az_iot_result status, void* user_ctx)
+static void close_open_and_deinit_on_puback(az_iot_result status, void* user_ctx)
 {
   (void)status;
-  call_close_and_open((lifecycle_call_record*)user_ctx);
+  call_close_open_and_deinit((lifecycle_call_record*)user_ctx);
 }
 
-static void close_and_open_on_feature_event(
+static void close_open_and_deinit_on_feature_event(
     const az_iot_connection_feature_event* event,
     void* user_ctx)
 {
   (void)event;
-  call_close_and_open((lifecycle_call_record*)user_ctx);
+  call_close_open_and_deinit((lifecycle_call_record*)user_ctx);
 }
 
-/** @brief Both calls were refused, the session is untouched, and close() works once the callback
- * has returned. */
+/** @brief All three calls were refused, the session is untouched, and close() works once the
+ * callback has returned. */
 static void assert_refused_from_the_callback(fixture* fx, const lifecycle_call_record* r)
 {
   assert_true(r->calls >= 1);
   assert_int_equal(r->close_result, AZ_IOT_ERR_BUSY);
   assert_int_equal(r->open_result, AZ_IOT_ERR_BUSY);
+  assert_int_equal(r->deinit_result, AZ_IOT_ERR_BUSY);
   assert_int_equal(
       az_iot_connection_client_get_state(fx->client, AZ_IOT_CONN_SCOPE_HUB),
       AZ_IOT_CONN_STATE_CONNECTED);
@@ -2447,25 +2450,26 @@ static void assert_refused_from_the_callback(fixture* fx, const lifecycle_call_r
       AZ_IOT_CONN_STATE_DISCONNECTING);
 }
 
-static void close_and_open_from_a_state_callback_are_refused(void** state)
+static void close_open_and_deinit_from_a_state_callback_are_refused(void** state)
 {
   fixture* fx = (fixture*)*state;
-  lifecycle_call_record r = { fx->client, 0, AZ_IOT_OK, AZ_IOT_OK };
+  lifecycle_call_record r = { fx->client, 0, AZ_IOT_OK, AZ_IOT_OK, AZ_IOT_OK };
   assert_int_equal(
-      az_iot_connection_client_add_state_observer(fx->client, close_and_open_on_hub_connected, &r),
+      az_iot_connection_client_add_state_observer(
+          fx->client, close_open_and_deinit_on_hub_connected, &r),
       AZ_IOT_OK);
   (void)connect_fixture(fx);
   assert_int_equal(r.calls, 1);
   assert_refused_from_the_callback(fx, &r);
 }
 
-static void close_and_open_from_an_inbound_message_handler_are_refused(void** state)
+static void close_open_and_deinit_from_an_inbound_message_handler_are_refused(void** state)
 {
   fixture* fx = (fixture*)*state;
-  lifecycle_call_record r = { fx->client, 0, AZ_IOT_OK, AZ_IOT_OK };
+  lifecycle_call_record r = { fx->client, 0, AZ_IOT_OK, AZ_IOT_OK, AZ_IOT_OK };
   assert_int_equal(
       az_iot_connection_client__register_inbound_handler(
-          fx->client, "inbound/", close_and_open_on_message, &r),
+          fx->client, "inbound/", close_open_and_deinit_on_message, &r),
       AZ_IOT_OK);
   az_iot_mock_mqtt_client* m = connect_fixture(fx);
   assert_true(az_iot_mock_mqtt_client_inject_message(
@@ -2475,16 +2479,17 @@ static void close_and_open_from_an_inbound_message_handler_are_refused(void** st
   assert_refused_from_the_callback(fx, &r);
 }
 
-static void close_and_open_from_a_puback_callback_are_refused(void** state)
+static void close_open_and_deinit_from_a_puback_callback_are_refused(void** state)
 {
   fixture* fx = (fixture*)*state;
-  lifecycle_call_record r = { fx->client, 0, AZ_IOT_OK, AZ_IOT_OK };
+  lifecycle_call_record r = { fx->client, 0, AZ_IOT_OK, AZ_IOT_OK, AZ_IOT_OK };
   az_iot_mock_mqtt_client* m = connect_fixture(fx);
   az_iot_mqtt_message msg = { 0 };
   msg.topic = "telemetry";
   msg.qos = AZ_IOT_MQTT_QOS_1;
   assert_int_equal(
-      az_iot_connection_client__publish(fx->client, NULL, &msg, close_and_open_on_puback, &r),
+      az_iot_connection_client__publish(
+          fx->client, NULL, &msg, close_open_and_deinit_on_puback, &r),
       AZ_IOT_OK);
   uint16_t pid = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_PUBLISH)->packet_id;
   assert_true(az_iot_mock_mqtt_client_inject_puback(m, pid, AZ_IOT_OK));
@@ -2493,18 +2498,21 @@ static void close_and_open_from_a_puback_callback_are_refused(void** state)
   assert_refused_from_the_callback(fx, &r);
 }
 
-static void close_and_open_from_a_feature_observer_are_refused(void** state)
+static void close_open_and_deinit_from_a_feature_observer_are_refused(void** state)
 {
   fixture* fx = (fixture*)*state;
-  lifecycle_call_record r = { fx->client, 0, AZ_IOT_OK, AZ_IOT_OK };
+  lifecycle_call_record r = { fx->client, 0, AZ_IOT_OK, AZ_IOT_OK, AZ_IOT_OK };
   (void)connect_fixture(fx);
   assert_int_equal(
       az_iot_connection_client__add_feature_observer(
-          fx->client, AZ_IOT_CONNECTION_FEATURE_EVENT_TICK, close_and_open_on_feature_event, &r),
+          fx->client,
+          AZ_IOT_CONNECTION_FEATURE_EVENT_TICK,
+          close_open_and_deinit_on_feature_event,
+          &r),
       AZ_IOT_OK);
   (void)az_iot_connection_client_do_work(fx->client, 0);
   az_iot_connection_client__remove_feature_observer(
-      fx->client, close_and_open_on_feature_event, &r);
+      fx->client, close_open_and_deinit_on_feature_event, &r);
   assert_refused_from_the_callback(fx, &r);
 }
 
@@ -2841,21 +2849,21 @@ static void send_csr_timeout_before_puback_frees_the_slot(void** state)
       az_iot_connection_client_send_csr(fx->client, "req-next", NULL, on_csr_evt, &tc), AZ_IOT_OK);
 }
 
-static void close_and_open_on_csr_event(const az_iot_csr_event* evt, void* user_ctx)
+static void close_open_and_deinit_on_csr_event(const az_iot_csr_event* evt, void* user_ctx)
 {
   (void)evt;
-  call_close_and_open((lifecycle_call_record*)user_ctx);
+  call_close_open_and_deinit((lifecycle_call_record*)user_ctx);
 }
 
-/* close() and open() from the CSR callback of a timed-out renewal are refused. */
-static void close_and_open_from_a_csr_timeout_callback_are_refused(void** state)
+/* close(), open() and deinit() from the CSR callback of a timed-out renewal are refused. */
+static void close_open_and_deinit_from_a_csr_timeout_callback_are_refused(void** state)
 {
   fixture* fx = *state;
   (void)connect_fixture(fx);
-  lifecycle_call_record r = { fx->client, 0, AZ_IOT_OK, AZ_IOT_OK };
+  lifecycle_call_record r = { fx->client, 0, AZ_IOT_OK, AZ_IOT_OK, AZ_IOT_OK };
   assert_int_equal(
       az_iot_connection_client_send_csr(
-          fx->client, "req-slow", NULL, close_and_open_on_csr_event, &r),
+          fx->client, "req-slow", NULL, close_open_and_deinit_on_csr_event, &r),
       AZ_IOT_OK);
   fx->client->csr_op.deadline_ms = az_iot_time_mono_ms();
   (void)az_iot_connection_client_do_work(fx->client, 0);
@@ -2903,9 +2911,9 @@ static void send_csr_accepted_puback_keeps_the_operation_open(void** state)
       AZ_IOT_ERR_BUSY);
 }
 
-/* A session that ends before the PUBACK leaves the operation open: its
- * response may still arrive on the next session. The slot is released. */
-static void send_csr_unacknowledged_at_disconnect_stays_open(void** state)
+/* A session that ends before the renewal's PUBACK fails it once with NOT_CONNECTED and frees
+ * the slot. */
+static void send_csr_open_at_session_end_fails_not_connected(void** state)
 {
   fixture* fx = *state;
   az_iot_mock_mqtt_client* m = connect_fixture(fx);
@@ -2915,9 +2923,121 @@ static void send_csr_unacknowledged_at_disconnect_stays_open(void** state)
       az_iot_connection_client_send_csr(fx->client, "req-drop", NULL, on_csr_evt, &tc), AZ_IOT_OK);
   assert_true(az_iot_mock_mqtt_client_inject_disconnected(m));
   (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_int_equal(tc.failed, 1);
+  assert_int_equal(tc.last_status, AZ_IOT_ERR_NOT_CONNECTED);
+  assert_int_equal(az_iot_connection_client_cancel_csr(fx->client), AZ_IOT_ERR_NOT_FOUND);
+}
 
+/* Same after a 202: the issued chain would have come on the session that ended. */
+static void send_csr_accepted_at_session_end_fails_not_connected(void** state)
+{
+  fixture* fx = *state;
+  az_iot_mock_mqtt_client* m = connect_fixture(fx);
+
+  csr_test_ctx tc = { 0 };
+  assert_int_equal(
+      az_iot_connection_client_send_csr(fx->client, "req-drop", NULL, on_csr_evt, &tc), AZ_IOT_OK);
+  const char* r202 = "{}";
+  assert_true(az_iot_mock_mqtt_client_inject_message(
+      m,
+      "$iothub/credentials/res/202/?$rid=req-drop",
+      (const uint8_t*)r202,
+      strlen(r202),
+      AZ_IOT_MQTT_QOS_1));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_int_equal(tc.accepted, 1);
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(m));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_int_equal(tc.failed, 1);
+  assert_int_equal(tc.last_status, AZ_IOT_ERR_NOT_CONNECTED);
+  assert_int_equal(tc.issued, 0);
+}
+
+/* close() ends the session, so an open renewal fails with NOT_CONNECTED. */
+static void send_csr_open_at_close_fails_not_connected(void** state)
+{
+  fixture* fx = *state;
+  (void)connect_fixture(fx);
+
+  csr_test_ctx tc = { 0 };
+  assert_int_equal(
+      az_iot_connection_client_send_csr(fx->client, "req-close", NULL, on_csr_evt, &tc), AZ_IOT_OK);
+  (void)az_iot_connection_client_close(fx->client);
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(
+      az_iot_mock_mqtt_factory_last_client(fx->factory)));
+  for (int i = 0; i < 3 && tc.failed == 0; ++i)
+  {
+    (void)az_iot_connection_client_do_work(fx->client, 0);
+  }
+  assert_int_equal(tc.failed, 1);
+  assert_int_equal(tc.last_status, AZ_IOT_ERR_NOT_CONNECTED);
+}
+
+/* deinit() calls no renewal callback: the application is tearing the client down. */
+static void send_csr_open_at_deinit_calls_no_callback(void** state)
+{
+  fixture* fx = *state;
+  (void)connect_fixture(fx);
+
+  csr_test_ctx tc = { 0 };
+  assert_int_equal(
+      az_iot_connection_client_send_csr(fx->client, "req-deinit", NULL, on_csr_evt, &tc),
+      AZ_IOT_OK);
+  az_iot_connection_client_deinit(fx->client);
   assert_int_equal(tc.accepted + tc.issued + tc.failed, 0);
-  assert_int_equal(az_iot_connection_client_cancel_csr(fx->client), AZ_IOT_OK);
+}
+
+/* opts.csr_response_timeout_ms bounds the wait; 0 and the defaults give
+ * AZ_IOT_DEFAULT_CSR_RESPONSE_TIMEOUT_MS. */
+static void send_csr_waits_csr_response_timeout_ms(void** state)
+{
+  fixture* fx = *state;
+  assert_int_equal(
+      fx->client->opts.csr_response_timeout_ms, AZ_IOT_DEFAULT_CSR_RESPONSE_TIMEOUT_MS);
+  assert_int_equal(
+      az_iot_connection_client_options_default().csr_response_timeout_ms,
+      AZ_IOT_DEFAULT_CSR_RESPONSE_TIMEOUT_MS);
+
+  az_iot_connection_client_options opts = fx->client->opts;
+  az_iot_connection_client_deinit(fx->client);
+  opts.csr_response_timeout_ms = 5000u;
+  opts.limits = (az_iot_connection_client_limits){ 0 };
+  assert_int_equal(az_iot_connection_client_init(&fx->client_storage, &opts), AZ_IOT_OK);
+  (void)connect_fixture(fx);
+
+  csr_test_ctx tc = { 0 };
+  uint64_t const before = az_iot_time_mono_ms();
+  assert_int_equal(
+      az_iot_connection_client_send_csr(fx->client, "req-short", NULL, on_csr_evt, &tc), AZ_IOT_OK);
+  uint64_t const after = az_iot_time_mono_ms();
+  assert_true(fx->client->csr_op.deadline_ms >= before + 5000u);
+  assert_true(fx->client->csr_op.deadline_ms <= after + 5000u);
+
+  /* A long do_work() wait ends by the renewal's deadline. */
+  (void)az_iot_connection_client_do_work(fx->client, 60000u);
+  uint32_t const waited
+      = az_iot_mock_mqtt_client_last_of(
+            az_iot_mock_mqtt_factory_last_client(fx->factory), AZ_IOT_MOCK_CALL_PROCESS_LOOP)
+            ->timeout_ms;
+  assert_true(waited <= 5000u && waited >= 4000u);
+
+  /* A 202 restarts the wait with the configured value, and the renewal stays open. */
+  fx->client->csr_op.deadline_ms = az_iot_time_mono_ms() + 100u;
+  const char* r202 = "{}";
+  assert_true(az_iot_mock_mqtt_client_inject_message(
+      az_iot_mock_mqtt_factory_last_client(fx->factory),
+      "$iothub/credentials/res/202/?$rid=req-short",
+      (const uint8_t*)r202,
+      strlen(r202),
+      AZ_IOT_MQTT_QOS_1));
+  uint64_t const before_202 = az_iot_time_mono_ms();
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  uint64_t const after_202 = az_iot_time_mono_ms();
+  assert_int_equal(tc.accepted, 1);
+  assert_int_equal(tc.failed, 0);
+  assert_true(fx->client->csr_op.in_use);
+  assert_true(fx->client->csr_op.deadline_ms >= before_202 + 5000u);
+  assert_true(fx->client->csr_op.deadline_ms <= after_202 + 5000u);
 }
 
 /* The renewal's slot is reserved at init, so shared publishes filling the
@@ -4962,13 +5082,13 @@ int main(void)
     cmocka_unit_test_setup_teardown(close_disconnect_returns_to_idle, setup, teardown),
     cmocka_unit_test_setup_teardown(close_when_idle_is_noop, setup, teardown),
     cmocka_unit_test_setup_teardown(
-        close_and_open_from_a_state_callback_are_refused, setup, teardown),
+        close_open_and_deinit_from_a_state_callback_are_refused, setup, teardown),
     cmocka_unit_test_setup_teardown(
-        close_and_open_from_an_inbound_message_handler_are_refused, setup, teardown),
+        close_open_and_deinit_from_an_inbound_message_handler_are_refused, setup, teardown),
     cmocka_unit_test_setup_teardown(
-        close_and_open_from_a_puback_callback_are_refused, setup, teardown),
+        close_open_and_deinit_from_a_puback_callback_are_refused, setup, teardown),
     cmocka_unit_test_setup_teardown(
-        close_and_open_from_a_feature_observer_are_refused, setup, teardown),
+        close_open_and_deinit_from_a_feature_observer_are_refused, setup, teardown),
     cmocka_unit_test_setup_teardown(open_twice_is_rejected, setup, teardown),
     cmocka_unit_test_setup_teardown(
         connack_fail_with_reconnect_schedules_retry, setup_with_reconnect, teardown),
@@ -5107,7 +5227,7 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         send_csr_timeout_before_puback_frees_the_slot, setup_csr, teardown),
     cmocka_unit_test_setup_teardown(
-        close_and_open_from_a_csr_timeout_callback_are_refused, setup_csr, teardown),
+        close_open_and_deinit_from_a_csr_timeout_callback_are_refused, setup_csr, teardown),
     cmocka_unit_test_setup_teardown(
         send_csr_response_before_puback_frees_the_slot, setup_csr, teardown),
     cmocka_unit_test_setup_teardown(
@@ -5115,7 +5235,13 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         send_csr_accepted_puback_keeps_the_operation_open, setup_csr, teardown),
     cmocka_unit_test_setup_teardown(
-        send_csr_unacknowledged_at_disconnect_stays_open, setup_csr, teardown),
+        send_csr_open_at_session_end_fails_not_connected, setup_csr, teardown),
+    cmocka_unit_test_setup_teardown(
+        send_csr_accepted_at_session_end_fails_not_connected, setup_csr, teardown),
+    cmocka_unit_test_setup_teardown(
+        send_csr_open_at_close_fails_not_connected, setup_csr, teardown),
+    cmocka_unit_test_setup_teardown(send_csr_open_at_deinit_calls_no_callback, setup_csr, teardown),
+    cmocka_unit_test_setup_teardown(send_csr_waits_csr_response_timeout_ms, setup_csr, teardown),
     cmocka_unit_test_setup_teardown(
         send_csr_is_tracked_when_the_shared_pool_is_full, setup_csr, teardown),
     cmocka_unit_test_setup_teardown(tick_observers_run_once_per_do_work, setup_csr, teardown),

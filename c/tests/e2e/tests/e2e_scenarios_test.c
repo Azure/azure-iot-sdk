@@ -52,7 +52,7 @@
 #define E2E_TELEMETRY_TIMEOUT_S 90 /* publish + EH-side receive               */
 #define E2E_C2D_TIMEOUT_S 60
 #define E2E_METHOD_TIMEOUT_S 60
-#define E2E_TWIN_TIMEOUT_S 60 /* per REST-request drive                  */
+#define E2E_TWIN_TIMEOUT_S 70 /* per REST-request drive, above its 64 s of retries */
 #define E2E_TWIN_PROP_TIMEOUT_S 90 /* reported-property propagation poll      */
 #define E2E_CONNECT_TIMEOUT_S 45 /* cold service-AMQP connect retry budget  */
 #define E2E_SUBACK_TIMEOUT_S 30 /* feature-client SUBSCRIBEs acknowledged  */
@@ -251,7 +251,7 @@ static void test_telemetry(void** state)
    * during open), so retry with a short backoff up to E2E_CONNECT_TIMEOUT_S,
    * pumping the device in between to keep its MQTT connection warm. Each
    * attempt opens a brand-new connection (a failed one frees itself). */
-  bool watching = az_iot_e2e_service_telemetry_watch_begin(fx->service);
+  bool watching = az_iot_e2e_service_telemetry_watch_begin(fx->service, marker);
   for (time_t connect_start = time(NULL);
        !watching && (time(NULL) - connect_start) < E2E_CONNECT_TIMEOUT_S;)
   {
@@ -259,7 +259,7 @@ static void test_telemetry(void** state)
     {
       device_do_work(fx, E2E_PUMP_MS);
     }
-    watching = az_iot_e2e_service_telemetry_watch_begin(fx->service);
+    watching = az_iot_e2e_service_telemetry_watch_begin(fx->service, marker);
   }
   if (!watching)
   {

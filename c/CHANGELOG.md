@@ -4,6 +4,27 @@
 
 ### Features Added
 
+- mqttv3 twin: requests go through the delivery tracker and time out:
+  `az_iot_mqttv3_twin_client_set_request_timeout()` (default
+  `AZ_IOT_MQTTV3_TWIN_REQUEST_TIMEOUT_MS_DEFAULT`, 60 s, from the call). A GET waits for a
+  connection and is sent again on the next session when its session ends unanswered; a reported
+  patch is sent at once or refused (`AZ_IOT_ERR_BUSY` or `AZ_IOT_ERR_NOT_CONNECTED`) and fails
+  with `AZ_IOT_ERR_NOT_CONNECTED` at a session end.
+- mqttv5 twin: requests go through the delivery tracker. A GET waits for a connection and is sent
+  again on the next session when its session ends unanswered; a reported patch is still sent at
+  once or refused (now `AZ_IOT_ERR_BUSY` when the connection cannot send it now) and fails with
+  `AZ_IOT_ERR_NOT_CONNECTED` at a session end. `az_iot_connection_client_do_work()` times requests
+  out, so `az_iot_mqttv5_twin_client_do_work()` is optional. The client uses two feature observers.
+- Breaking: `az_iot_subscription_failed_callback` takes the refused SUBACK's MQTT 5 Reason String
+  (`reason_string`, `reason_string_len`, after `protocol_code`). On a session-scoped filter the
+  Reason String is reported as `az_iot_connection_state_event.error->message`. Both adapters report
+  it on `AZ_IOT_MQTT_EVT_SUBSCRIBE_ACK`.
+- Certificate renewal: `az_iot_connection_client_options::csr_response_timeout_ms` sets how long
+  `az_iot_connection_client_send_csr()` waits for a terminal response (0: 120 s,
+  `AZ_IOT_DEFAULT_CSR_RESPONSE_TIMEOUT_MS`). A renewal open when the session ends (a drop or
+  `close()`) now fails with `AZ_IOT_CSR_FAILED` / `AZ_IOT_ERR_NOT_CONNECTED` instead of staying
+  open; resubmit it with the same request id once reconnected. `deinit()` calls no renewal
+  callback.
 - Connection client: on MQTT 5, the Reason String of a refused CONNACK or of a server DISCONNECT
   with a nonzero reason code is reported as `az_iot_connection_state_event.error->message` (source
   `AZ_IOT_CONN_ERR_SRC_MQTT`), truncated to `AZ_IOT_CONN_ERROR_MESSAGE_MAX` bytes.
@@ -50,6 +71,8 @@
   `AZ_IOT_ERR_BUSY` when called from a callback the connection client runs (state, publish
   completion, SAS token, DPS, CSR, subscription failure, inbound message, feature observer). Call
   them after `do_work()` returns. See [Opening and closing](docs/connecting.md#opening-and-closing).
+- Breaking: `az_iot_connection_client_deinit()` returns `az_iot_result`: `AZ_IOT_ERR_BUSY` from
+  the same callbacks, where it releases nothing, and `AZ_IOT_ERR_INVALID_ARG` for a NULL client.
 - Breaking: `az_iot_connection_client_limits::max_session_handlers` and `max_feature_state_observers`
   are replaced by `max_feature_observers` (default 10,
   `AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_FEATURE_OBSERVERS`): feature clients observe connection
@@ -337,6 +360,11 @@
   `esp_secure_cert` identity, then telemetry, the `echo` direct method and desired-twin
   acknowledgements on the assigned hub (mqttv3 or mqttv5). CI builds it for esp32, esp32c3,
   esp32s3 and esp32c6, and boots its QEMU build on esp32, esp32s3 and esp32c3.
+- ESP32 end-to-end test: `ci-c-e2e` runs the ESP32 IoT Hub sample in QEMU on esp32 and esp32c3
+  against an IoT Hub (telemetry, the `echo` method, a desired-version acknowledgement), with
+  the esp32c3 key in the emulated Digital Signature peripheral. `eng/esp-idf-qemu-e2e.sh` runs it
+  locally; `eng/esp-idf-qemu-identity.sh` writes a QEMU device identity
+  ([docs](docs/eng/end-to-end-tests.md#esp32-in-qemu)).
 
 ### Bugs Fixed
 
@@ -347,6 +375,12 @@
   and an identity refusal is acted on whatever came first. While `close()` disconnects, a late
   SUBACK neither announces CONNECTED nor publishes the birth, and a new filter waits for the next
   session.
+- Software updates: a verified update whose step names a file missing from the manifest `files`, or
+  from `fileUrls`, is refused before any step runs, instead of failing at that step's download
+  after earlier steps were installed and rolled back (or passing an empty URL to `download_fn`).
+  Library mode does not offer it to the application, and `az_iot_su_parse_update_request()`
+  returns `AZ_IOT_ERR_INVALID_ARG`. File ids are matched decoded, so a JSON-escaped id (`f\u0031`)
+  finds its file and URL (`f1`).
 - ESP32: the `azure-sdk-for-c` component implements `az_platform_clock_msec()` and
   `az_platform_sleep_msec()` with `esp_timer` and FreeRTOS, so the az_mqtt adapter's idle wait
   sleeps instead of returning at once. The software updates sample's connect loop waits out each
