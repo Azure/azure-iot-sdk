@@ -59,9 +59,9 @@ static const char* TAG = "hub_esp32";
 #define OFFLINE_RESTART_S 900u
 /** @brief Wait before retrying a failed twin GET or reported patch. */
 #define TWIN_RETRY_MS 5000u
-/** @brief Longest wait for an mqttv3 twin response: the mqttv3 twin client ends a request only with
- * its session, so the sample reconnects after this. */
-#define TWIN_RESPONSE_TIMEOUT_S 60u
+/** @brief Longest wait for a telemetry acknowledgement or an mqttv3 twin response: those requests
+ * end only on their answer or with the session, so the sample reconnects after this. */
+#define RESPONSE_TIMEOUT_S 60u
 /** @brief Largest echoed mqttv3 payload: the response must fit the adapter's send buffer, with
  * room for its topic. */
 #define MQTTV3_ECHO_PAYLOAD_MAX (CONFIG_AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE - 256u)
@@ -121,6 +121,7 @@ typedef struct
   bool rebuild;
   az_iot_connection_profile assigned_profile;
   bool telemetry_pending;
+  TickType_t telemetry_sent_at;
   uint32_t telemetry_sent;
   pending_method_answer method_answer;
   bool twin_get_due; /* mqttv3: read the desired version once connected */
@@ -250,6 +251,7 @@ static void send_telemetry(hub_device* d)
       ? az_iot_mqttv5_telemetry_client_send(&d->mqttv5_telemetry, &message, on_telemetry_sent, d)
       : az_iot_mqttv3_telemetry_client_send(&d->mqttv3_telemetry, &message, on_telemetry_sent, d);
   d->telemetry_pending = result == AZ_IOT_OK;
+  d->telemetry_sent_at = xTaskGetTickCount();
 }
 
 /* ---- Twin ----------------------------------------------------------------- */
@@ -658,7 +660,7 @@ void app_main(void)
   // Seconds to ticks directly: pdMS_TO_TICKS would overflow its 32-bit product for long intervals.
   TickType_t const interval = (TickType_t)CONFIG_HUB_TELEMETRY_INTERVAL_S * configTICK_RATE_HZ;
   TickType_t const offline_limit = (TickType_t)OFFLINE_RESTART_S * configTICK_RATE_HZ;
-  TickType_t const twin_response_limit = (TickType_t)TWIN_RESPONSE_TIMEOUT_S * configTICK_RATE_HZ;
+  TickType_t const response_limit = (TickType_t)RESPONSE_TIMEOUT_S * configTICK_RATE_HZ;
   TickType_t next_telemetry = xTaskGetTickCount();
   TickType_t tick_start = xTaskGetTickCount();
   d->offline_since = tick_start;
@@ -715,12 +717,15 @@ void app_main(void)
     }
 
     TickType_t const now = xTaskGetTickCount();
-    if (!d->reconnecting && d->profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V3
-        && ((d->twin_get_in_flight && now - d->twin_get_sent >= twin_response_limit)
-            || (d->report_pending && now - d->report_sent >= twin_response_limit)))
+    bool const mqttv3 = d->profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V3;
+    if (!d->reconnecting
+        && ((d->telemetry_pending && now - d->telemetry_sent_at >= response_limit)
+            || (mqttv3 && d->twin_get_in_flight && now - d->twin_get_sent >= response_limit)
+            || (mqttv3 && d->report_pending && now - d->report_sent >= response_limit)))
     {
       // close() fails the outstanding requests (AZ_IOT_ERR_NOT_CONNECTED); they retry after.
-      ESP_LOGW(TAG, "no twin response for %u s; reconnecting", TWIN_RESPONSE_TIMEOUT_S);
+      ESP_LOGW(
+          TAG, "no acknowledgement or twin response for %u s; reconnecting", RESPONSE_TIMEOUT_S);
       d->reconnecting = true;
       (void)az_iot_connection_client_close(&d->connection);
       continue;
