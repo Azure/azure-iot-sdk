@@ -381,6 +381,37 @@ static void step_files_must_be_described_and_have_urls(void** state)
   const char* const other_case[] = { "F1" };
   assert_int_equal(check_references(one_file, 0, longer, 1), AZ_IOT_ERR_INVALID_ARG);
   assert_int_equal(check_references(one_file, 0, other_case, 1), AZ_IOT_ERR_INVALID_ARG);
+
+  /* Ids are compared decoded: `f\u0031` is "f1" in a step, a `files` key, or both. */
+  assert_int_equal(
+      check_references(
+          "{\"instructions\":{\"steps\":[{\"files\":[\"f\\u0031\"]}]},\"files\":{\"f1\":{}}}",
+          0,
+          only_f1,
+          1),
+      AZ_IOT_OK);
+  assert_int_equal(
+      check_references(
+          "{\"instructions\":{\"steps\":[{\"files\":[\"f1\"]}]},\"files\":{\"f\\u0031\":{}}}",
+          0,
+          only_f1,
+          1),
+      AZ_IOT_OK);
+  assert_int_equal(
+      check_references(
+          "{\"instructions\":{\"steps\":[{\"files\":[\"\\u0066\\u0031\"]}]},"
+          "\"files\":{\"f\\u0031\":{}}}",
+          0,
+          only_f1,
+          1),
+      AZ_IOT_OK);
+  assert_int_equal(
+      check_references(
+          "{\"instructions\":{\"steps\":[{\"files\":[\"f\\u0032\"]}]},\"files\":{\"f1\":{}}}",
+          0,
+          both,
+          2),
+      AZ_IOT_ERR_INVALID_ARG);
 }
 
 /* Steps before first_step are not checked; steps without files, or none at all, always pass. */

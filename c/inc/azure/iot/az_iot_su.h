@@ -73,7 +73,8 @@ extern "C"
   {
     /** Update handler of the step, e.g. `microsoft/swupdate:1`. */
     az_span handler;
-    /** Ids of the files the step uses; see az_iot_su_client_update_manifest.files. */
+    /** Ids of the files the step uses; see az_iot_su_client_update_manifest.files. Raw JSON
+     * string bodies: escapes are kept, so `f\u0031` is the id `f1`. */
     az_span files[AZ_IOT_SU_MAX_FILE_COUNT_PER_STEP];
     /** Number of items in `files`. */
     uint32_t files_count;
@@ -100,7 +101,8 @@ extern "C"
   /** @brief A file of an update manifest. */
   typedef struct az_iot_su_client_update_manifest_file
   {
-    /** File id, as in step `files` and the request's `fileUrls`. */
+    /** File id, as in step `files` and the request's `fileUrls`. A raw JSON string body: escapes
+     * are kept, so compare ids decoded. */
     az_span id;
     /** File name. */
     az_span file_name;
@@ -160,7 +162,7 @@ extern "C"
   /** @brief Download URL of an update file. */
   typedef struct az_iot_su_client_file_url
   {
-    /** File id, as in the manifest `files`. */
+    /** File id, as in the manifest `files`. Decoded, unlike the manifest's ids. */
     az_span id;
     /** Download URL. */
     az_span url;

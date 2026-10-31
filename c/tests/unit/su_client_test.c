@@ -3715,6 +3715,50 @@ static char* with_first_file_url_renamed(const char* patch)
   return writable;
 }
 
+/* Replace the first @p from in @p text with @p to. */
+static void replace_first(char* text, size_t capacity, const char* from, const char* to)
+{
+  char* at = strstr(text, from);
+  assert_non_null(at);
+  size_t from_len = strlen(from);
+  size_t to_len = strlen(to);
+  size_t tail_len = strlen(at + from_len) + 1;
+  assert_true((size_t)(at - text) + to_len + tail_len <= capacity);
+  memmove(at + to_len, at + from_len, tail_len);
+  memcpy(at, to, to_len);
+}
+
+/* distinct_files_patch() with the file ids spelled with JSON escapes: step 0's file id
+ * (`\u0066b...`), the manifest `files` key of step 1's file (`f\u0061...`) and a `fileUrls` id. */
+static const char* escaped_file_ids_patch(void)
+{
+  static char patch[4096];
+  copy_str(patch, sizeof(patch), distinct_files_patch());
+  replace_first(
+      patch, sizeof(patch), "[\\\"fb00000000000002\\\"]", "[\\\"\\\\u0066b00000000000002\\\"]");
+  replace_first(
+      patch, sizeof(patch), "\\\"fa00000000000001\\\":{", "\\\"f\\\\u006100000000000001\\\":{");
+  replace_first(patch, sizeof(patch), "\"fileUrls\":{\"fa", "\"fileUrls\":{\"\\u0066a");
+  return patch;
+}
+
+/* File ids are compared decoded, so ids spelled with JSON escapes still resolve and download
+ * from their own URL. */
+static void escaped_file_ids_resolve_to_their_files_and_urls(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  inject_patch(fx, escaped_file_ids_patch());
+  pump(fx, 60);
+
+  assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_IDLE);
+  assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_SUCCEEDED);
+  assert_int_equal(fx->log.download_calls, 2);
+  assert_string_equal(fx->log.download_urls[0], "http://example.com/payload-b.bin");
+  assert_string_equal(fx->log.download_urls[1], "http://example.com/payload-a.bin");
+}
+
 /* Assert that the offer was refused before any step ran. */
 static void assert_nothing_downloaded_or_installed(fixture* fx)
 {
@@ -9575,6 +9619,14 @@ static void library_mode_does_not_hand_over_an_update_with_an_unresolved_file(vo
   assert_string_equal(fx->chan.last_workflow_id, "wf-unresolved");
 }
 
+/* An update whose file ids are spelled with JSON escapes is offered to the application. */
+static void library_mode_hands_over_an_update_with_escaped_file_ids(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  delegate(fx, escaped_file_ids_patch());
+  assert_int_equal(fx->last_manifest->instructions.steps_count, 2);
+}
+
 /* az_iot_su_parse_update_request() refuses a verified update with an unresolved step file, and
  * leaves its outputs zeroed. */
 static void parsing_an_update_request_rejects_an_unresolved_step_file(void** state)
@@ -9583,9 +9635,12 @@ static void parsing_an_update_request_rejects_an_unresolved_step_file(void** sta
   az_iot_su_client_update_request req;
   az_iot_su_client_update_manifest manifest;
 
-  /* The same update resolves when its URLs are intact. */
+  /* The same update resolves when its URLs are intact, also with escaped ids. */
   assert_int_equal(
       parse_with_roots(&fx->log, distinct_files_patch(), k_root_keys, 1, &req, &manifest),
+      AZ_IOT_OK);
+  assert_int_equal(
+      parse_with_roots(&fx->log, escaped_file_ids_patch(), k_root_keys, 1, &req, &manifest),
       AZ_IOT_OK);
 
   /* No URL for a step file. */
@@ -10307,6 +10362,8 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         a_step_file_without_a_url_is_rejected_before_any_download, setup, teardown),
     cmocka_unit_test_setup_teardown(
+        escaped_file_ids_resolve_to_their_files_and_urls, setup, teardown),
+    cmocka_unit_test_setup_teardown(
         earlier_step_results_survive_a_later_checkpoint, setup, teardown),
     cmocka_unit_test_setup_teardown(
         resume_before_last_step_downloads_the_next_step_file, setup, teardown),
@@ -10481,6 +10538,8 @@ int main(void)
         library_mode_does_not_hand_over_an_unverified_update, setup_library, teardown),
     cmocka_unit_test_setup_teardown(
         library_mode_does_not_hand_over_an_update_with_an_unresolved_file, setup_library, teardown),
+    cmocka_unit_test_setup_teardown(
+        library_mode_hands_over_an_update_with_escaped_file_ids, setup_library, teardown),
     cmocka_unit_test_setup_teardown(
         parsing_an_update_request_rejects_an_unresolved_step_file, setup, teardown),
     cmocka_unit_test_setup_teardown(

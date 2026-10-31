@@ -3849,14 +3849,7 @@ static const az_iot_su_client_update_manifest_file* step_file_entry(
     return NULL;
   }
   az_span id = m->instructions.steps[step].files[file_slot];
-  for (uint32_t i = 0; i < m->files_count; ++i)
-  {
-    if (az_span_is_content_equal(m->files[i].id, id))
-    {
-      return &m->files[i];
-    }
-  }
-  return NULL;
+  return az_iot_su__find_manifest_file(m, id);
 }
 
 /* Begin a best-effort reverse-order rollback and finish in Failed/Idle.
@@ -4149,15 +4142,11 @@ az_iot_result az_iot_su_client_do_work(az_iot_su_client* client)
         (void)az_iot_su__report_state(client);
         break;
       }
-      az_span url = AZ_SPAN_EMPTY;
-      for (uint32_t i = 0; i < SU_I(client).current_request.file_urls_count; ++i)
-      {
-        if (az_span_is_content_equal(SU_I(client).current_request.file_urls[i].id, file->id))
-        {
-          url = SU_I(client).current_request.file_urls[i].url;
-          break;
-        }
-      }
+      const az_iot_su_client_file_url* file_url = az_iot_su__find_file_url(
+          SU_I(client).current_request.file_urls,
+          SU_I(client).current_request.file_urls_count,
+          file->id);
+      az_span url = (file_url != NULL) ? file_url->url : AZ_SPAN_EMPTY;
       int32_t dr = (h->download_fn != NULL) ? h->download_fn(file, url, fidx, fcount, h->user_ctx)
                                             : AZ_IOT_SU_RESULT_FAILURE;
       if (dr == AZ_IOT_SU_RESULT_IN_PROGRESS)
