@@ -22,6 +22,7 @@
 #include "azure/iot/az_iot_result.h"
 #ifdef AZ_IOT_TEST_WITH_AZ_MQTT_ADAPTER
 #include "azure/iot/adapters/az_iot_adapter_az_mqtt.h"
+#include <az_mqtt/az_mqtt_transport.h>
 #endif
 
 #include "internal/connection_client_internal.h"
@@ -450,13 +451,15 @@ static void adapter_init_errors_fail_the_start(void** state)
 static void init_sizes_the_mqtt_workspace_for_the_az_mqtt_adapter(void** state)
 {
   adapter_fixture* fx = (adapter_fixture*)*state;
-  /* The example in docs/client-configuration.md and docs/connecting.md. */
+  /* The limits of the example in docs/client-configuration.md and docs/connecting.md. */
   const az_iot_mqtt_limits limits = { 4096, 4096, 8, 8192, 4096 };
   const az_iot_mqtt_adapter* adapter = az_iot_az_mqtt_get_adapter();
   const size_t needed = az_iot_az_mqtt_get_workspace_size(&limits);
   assert_true(needed > 0);
   assert_int_equal(adapter->get_workspace_size(&limits), needed);
-  assert_true(AZ_IOT_AZ_MQTT_WORKSPACE_SIZE(4096, 4096, 8, 8192, 4096, 8192) >= needed);
+  /* The macro's TLS bound depends on the backend (Schannel: about 197 KB). */
+  size_t const tls_state = (size_t)az_mqtt_transport_sizeof();
+  assert_true(AZ_IOT_AZ_MQTT_WORKSPACE_SIZE(4096, 4096, 8, 8192, 4096, tls_state) >= needed);
   uint8_t* workspace = (uint8_t*)malloc(needed);
   assert_non_null(workspace);
 

@@ -967,8 +967,9 @@ if(AZ_IOT_WITH_AZ_MQTT)
     if(WIN32)
         target_link_libraries(az_iot_tests_az_mqtt_adapter_workspace PRIVATE ws2_32)
     endif()
-    # The connection client sized for the az_mqtt adapter.
-    target_link_libraries(az_iot_tests_connection_client_mqtt_adapter PRIVATE az_iot_adapter_az_mqtt)
+    # The connection client sized for the az_mqtt adapter and its transport (az_mqtt_core).
+    target_link_libraries(az_iot_tests_connection_client_mqtt_adapter PRIVATE
+        az_iot_adapter_az_mqtt az_mqtt_core)
     target_compile_definitions(az_iot_tests_connection_client_mqtt_adapter PRIVATE
         AZ_IOT_TEST_WITH_AZ_MQTT_ADAPTER)
     if(WIN32)

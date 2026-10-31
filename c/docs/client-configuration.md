@@ -198,7 +198,8 @@ factories.
   provisioning session beside the hub session.
 
 ```c
-/* The last argument bounds the TLS backend's state: 8 KB covers OpenSSL and mbedTLS. */
+/* The last argument bounds the TLS backend's state: 8 KB covers OpenSSL and mbedTLS; Schannel
+ * (Windows) needs about 197 KB. */
 static uint8_t mqtt_workspace[AZ_IOT_AZ_MQTT_WORKSPACE_SIZE(4096, 4096, 8, 8192, 4096, 8192)];
 opts.mqtt_adapter = az_iot_az_mqtt_get_adapter();
 opts.mqtt_limits = (az_iot_mqtt_limits){ .send_buffer_size = 4096,

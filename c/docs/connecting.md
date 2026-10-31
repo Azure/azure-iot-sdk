@@ -61,6 +61,7 @@ MQTT client there, with no factory to create, register or destroy and, with az_m
 allocation. Sizing and rules: [client configuration](client-configuration.md#connection-client-az_iot_connection_clienth).
 
 ```c
+/* Last argument: TLS state bound, 8 KB for OpenSSL or mbedTLS; about 197 KB for Schannel. */
 static uint8_t mqtt_workspace[AZ_IOT_AZ_MQTT_WORKSPACE_SIZE(4096, 4096, 8, 8192, 4096, 8192)];
 opts.mqtt_adapter = az_iot_az_mqtt_get_adapter(); /* or az_iot_paho_get_adapter() */
 opts.mqtt_limits = (az_iot_mqtt_limits){ .send_buffer_size = 4096,
