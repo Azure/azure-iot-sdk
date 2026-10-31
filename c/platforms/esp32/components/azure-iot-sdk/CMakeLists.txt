@@ -4,7 +4,7 @@
 # ESP-IDF component that compiles the azure-iot-sdk SDK (core + features) straight
 # out of this repository, so ESP32 applications link the very same sources the
 # desktop build uses. The azure-sdk-for-c dependency it needs (az_core, az_iot
-# hub/provisioning/su parsing) is built by the sibling `azure-sdk-for-c`
+# hub/provisioning) is built by the sibling `azure-sdk-for-c`
 # component from the in-repo git submodule (deps/azure-sdk-for-c).
 
 # c/, four levels up from platforms/esp32/components/azure-iot-sdk/.

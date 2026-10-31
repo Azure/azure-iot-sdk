@@ -392,7 +392,7 @@ returns `AZ_IOT_ERR_NOT_SUPPORTED`.
 
 The state mapping above tells the service *what phase* the agent is in; the
 **result codes** tell it *how the last action ended*. Every report carries an
-`az_iot_su_client_install_result` (and per-step `step_results[]`), each with a
+`az_iot_su_client_install_result` (and per-step `az_iot_su_step_result`), each with a
 `result_code` (high-level) and `extended_result_code` (diagnostic). The client
 MUST populate them as follows.
 
@@ -682,7 +682,6 @@ The byte layout is documented next to the serializer in
 #include <stdbool.h>
 #include "az_iot_result.h"
 #include "az_iot_connection_client.h"
-#include <azure/iot/az_iot_adu_client.h>  /* azure-sdk-for-c: request, install-result structs */
 
 #ifdef __cplusplus
 extern "C" {
@@ -1687,11 +1686,8 @@ Operations MUST NOT be long-blocking. Each `do_work` invocation MUST process at 
 ## 14. The azure-sdk-for-c dependency
 
 `azure-sdk-for-c` (fetched at a pinned tag) provides the JSON reader and base64 decoder the engine
-builds on, and a Device Update client module whose request and install-result types
-`az_iot_su.h` re-exports (`az_iot_su_client_update_request`, `az_iot_su_client_install_result`,
-etc.).
-
-Its device-twin helpers (service-property parsing, agent-state and acknowledgement formatting, component check) are not used by the engine; `az_iot_su_build_report()` builds the same `reportUpdateStatus` body the channel sends.
+builds on. The request, manifest and install-result types are the SDK's own (`az_iot_su.h`);
+nothing of its Device Update client module is used.
 
 azure-sdk-for-c is archived at 1.5.0: it takes no fixes, so the SDK owns what it needs to change.
 
@@ -1728,8 +1724,6 @@ We own:
 | `az_json_reader` | Used by the manifest parser and the wire codec |
 | Reported-property JSON formatting (agent state + per-step results) | Not used; `az_iot_su_build_report()` and the channel build the `reportUpdateStatus` body |
 | Service property acknowledgement formatting (ACCEPT/REJECT) | Not used (device twin only) |
-| Component name check (`az_iot_adu_client_is_component_device_update`) | Not used (device twin only) |
-| Workflow struct with `action`, `id`, `retry_timestamp` | Only `id` is used (from `workflowId`) |
 | `az_json_string_unescape()` for manifest string unescaping | Not used: it stops at `\u` escapes. The SDK decodes JSON strings with `az_iot_json_string_decode()` (`src/core/json_string.c`) |
 | `az_base64_url_decode()` / `az_base64_decode()` for JWS segments | Used through `az_iot_base64_decode()` (`src/core/base64.c`), which first rejects characters outside the alphabet (az_core left-shifts a negative value on them), misplaced padding and nonzero trailing bits, and decodes in blocks so the output may overwrite the input |
 | `az_iot_hub_client_properties_writer_*` for PnP component wrapping | Not used (device twin only) |
@@ -1739,20 +1733,10 @@ We own:
 Device Update allows 10 files and 10 steps per update. The manifest arrays are sized by
 `AZ_IOT_SU_MAX_STEP_COUNT`, `AZ_IOT_SU_MAX_FILE_COUNT` and `AZ_IOT_SU_MAX_FILE_COUNT_PER_STEP`
 (default 10, 10 and the file count; `cmake/az_iot_su_limits.cmake`), and the hashes of a file by
-`AZ_IOT_SU_MAX_FILE_HASH_COUNT` (2; manifests carry one `sha256`). The upstream request and
-install-result types size their arrays with the `_az_IOT_ADU_CLIENT_MAX_*` macros of
-`az_iot_adu_internal.h` (default 2), and are shared by
-`az_iot_core`, the application (`az_iot_su.h`) and azure-sdk-for-c's Device Update module, so:
-
-- the CMake options of those names set them as public definitions on azure-sdk-for-c
-  (`az_iot_hub`, fetched or installed) and on `az_iot_core`, its installed CMake package and
-  its pkg-config file;
-- an installed azure-sdk-for-c is checked at configure time by parsing a manifest at the limits
-  with its own parser, which sizes its arrays with the same macros
-  (`cmake/az_iot_su_limits_check.c`); [eng/install-deps.sh](../../eng/install-deps.sh) builds it
-  with them;
-- `az_iot_su.h` maps `AZ_IOT_SU_MAX_*` to the `_az_IOT_ADU_CLIENT_MAX_*` macros and fails to
-  compile when they differ.
+`AZ_IOT_SU_MAX_FILE_HASH_COUNT` (2; manifests carry one `sha256`). They also size the
+request's `file_urls`. They are set as public definitions on `az_iot_core`, its installed CMake
+package and its pkg-config file; `az_iot_su_client_init()` refuses an application built with other
+values.
 
 The parser counts steps, files, files of a step and hashes of a file past their limits (entries
 past a limit are still type-checked but not stored), logs each exceeded limit, and fails the
@@ -1762,8 +1746,8 @@ update before processing (`AZ_IOT_SU_EVENT_UPDATE_REFUSED`, `AZ_IOT_ERR_NOT_ENOU
 
 The largest status report grows 117 bytes per step, so `AZ_IOT_SU_MIN_MESSAGE_SIZE` is
 2176 + 128 × `AZ_IOT_SU_MAX_STEP_COUNT` (3456 by default; the base fits a 128-byte workflow id, fully
-escaped). Memory cost of the default limits against 2/2 on 64-bit: `az_iot_su_client` 7920 bytes
-(3952), default workspace 87440 (80720), parsed manifest
+escaped). Memory cost of the default limits against 2/2 on 64-bit: `az_iot_su_client` 7672 bytes
+(3896), default workspace 87440 (80720), parsed manifest
 3216 (464). See [client-configuration.md](../client-configuration.md#software-updates-manifest-limits).
 
 ### Not Parsed (Matches Our Non-Goals)
