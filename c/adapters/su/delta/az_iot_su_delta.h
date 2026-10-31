@@ -83,8 +83,8 @@ extern "C"
    *
    * @param[in] source_path Source file, in the source cache.
    * @param[in] delta_path Downloaded delta file.
-   * @param[in] target_path File to write: a private file in the source cache directory, which the
-   * handler then moves to the path #az_iot_su_delta_get_file_path_fn gives.
+   * @param[in] target_path File to write: an empty file created for this build in the source cache
+   * directory, which the handler then moves to the path #az_iot_su_delta_get_file_path_fn gives.
    * @param[in] user_ctx az_iot_su_delta_handler_options::user_ctx.
    * @return AZ_IOT_SU_RESULT_SUCCESS; AZ_IOT_SU_RESULT_IN_PROGRESS to be called again with the
    * same paths on the next do_work(); anything else is a failure, after which the handler removes
@@ -126,6 +126,10 @@ extern "C"
       char provider_directory[AZ_IOT_SU_DELTA_MAX_PROVIDER_SIZE];
       /** The delta processor returned IN_PROGRESS for the file being built. */
       bool build_in_progress;
+      /** File the delta processor writes for the current build, or empty. */
+      char build_path[AZ_IOT_SU_DELTA_MAX_PATH_SIZE];
+      /** Descriptor holding the lock on build_path while it is not empty. */
+      int build_descriptor;
       /** The default processor's library (dlopen()) and functions, or NULL. */
       void* library;
       void* create_session;

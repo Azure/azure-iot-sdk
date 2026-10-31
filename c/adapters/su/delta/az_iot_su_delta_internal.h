@@ -13,7 +13,8 @@
 #include <stdbool.h>
 
 /**
- * @brief Copy @p source_path to @p target_path through `<target_path>.tmp`, renamed when complete.
+ * @brief Copy @p source_path to @p target_path through a new `<target_path>.XXXXXX` file,
+ * renamed when complete; no existing file is replaced but @p target_path.
  *
  * @return true when copied; false otherwise, with @p source_path kept and the temporary file
  * removed.
