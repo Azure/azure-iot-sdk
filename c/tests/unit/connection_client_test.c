@@ -3004,6 +3004,14 @@ static void send_csr_waits_csr_response_timeout_ms(void** state)
   uint64_t const after = az_iot_time_mono_ms();
   assert_true(fx->client->csr_op.deadline_ms >= before + 5000u);
   assert_true(fx->client->csr_op.deadline_ms <= after + 5000u);
+
+  /* A long do_work() wait ends by the renewal's deadline. */
+  (void)az_iot_connection_client_do_work(fx->client, 60000u);
+  uint32_t const waited
+      = az_iot_mock_mqtt_client_last_of(
+            az_iot_mock_mqtt_factory_last_client(fx->factory), AZ_IOT_MOCK_CALL_PROCESS_LOOP)
+            ->timeout_ms;
+  assert_true(waited <= 5000u && waited >= 4000u);
 }
 /* The renewal's slot is reserved at init, so shared publishes filling the
  * table cannot push a renewal out of tracking. */

@@ -6272,8 +6272,8 @@ static void process_sas_token_request(az_iot_connection_client* c)
  * @brief @p timeout_ms, capped so a process_loop() wait ends by the next
  * connection deadline: a SAS token request's bound (none while one waits to be
  * asked, as do_work() asks it), a session's SAS token renewal, a planned hub
- * session end's disconnect bound, the presence SUBACK or birth-ack timeout, or a
- * feature observer's NEXT_DEADLINE.
+ * session end's disconnect bound, the presence SUBACK or birth-ack timeout, an open
+ * certificate renewal's response timeout, or a feature observer's NEXT_DEADLINE.
  */
 static uint32_t limit_wait_to_connection_deadlines(az_iot_connection_client* c, uint32_t timeout_ms)
 {
@@ -6348,6 +6348,11 @@ static uint32_t limit_wait_to_connection_deadlines(az_iot_connection_client* c, 
   {
     uint64_t presence_left = az_iot_deadline__remaining_ms(&c->presence.deadline, now);
     remaining = presence_left < remaining ? presence_left : remaining;
+  }
+  if (c->csr_op.in_use)
+  {
+    uint64_t const csr_left = c->csr_op.deadline_ms > now ? c->csr_op.deadline_ms - now : 0;
+    remaining = csr_left < remaining ? csr_left : remaining;
   }
   az_iot_connection_feature_event const deadline_query
       = { AZ_IOT_CONNECTION_FEATURE_EVENT_NEXT_DEADLINE,
