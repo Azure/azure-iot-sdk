@@ -330,7 +330,8 @@ keyed on `E2E_CSR_SHARED_ID_SCOPE`. It needs its own certificate-management envi
 (ADR-linked hub and DPS; a DPS without a managed identity cannot be linked), so it
 cannot reuse the one above. Each run issues a bootstrap device with
 `e2e-shared-device.ps1 -Csr` from secret `E2E_CSR_SHARED_GROUP_CA` (the group's issuing
-CA certificate and key, then its root). `E2E_CSR_SHARED_DPS_HOST` optionally sets the DPS
+CA certificate and key, then its root); its Linux and Windows legs each issue their own. A
+provisioned run has one bootstrap device, so its legs run one after the other. `E2E_CSR_SHARED_DPS_HOST` optionally sets the DPS
 device endpoint. `E2E_CSR_SHARED_SAS_GROUP_KEY` is the key of a symmetric-key group linked
 to the same certificate policy.
 
@@ -494,7 +495,6 @@ Schannel), on every pull request and main run of its workflow.
 | --- | --- |
 | `az_iot_tests_e2e_custody`, `az_iot_tests_e2e_mqttv5_custody` | The device key is in a PKCS#11 token (SoftHSM2) reached through the OpenSSL pkcs11 provider. The provider has no MSVC build (it needs a POSIX `dl` library) and the runner's OpenSSL is an MSVC build. az_mqtt on Windows uses Schannel, which takes no key references. |
 | `az_iot_tests_e2e_amqp_transport_sigpipe` | Tests SIGPIPE, which Windows does not have. |
-| `az_iot_tests_e2e_csr`, `az_iot_tests_e2e_csr_sas` (`ci-c-e2e-csr`) | Not wired up on Windows yet. |
 | `az_iot_tests_e2e_su`, `az_iot_tests_e2e_su_offer` (`ci-c-e2e-adu`) | Not built on Windows yet. |
 
 ---
