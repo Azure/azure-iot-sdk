@@ -112,7 +112,7 @@ int32_t su_sim_get_update_file_path(
 /* Writes @p size zero bytes to @p path. */
 static int32_t write_zero_filled_file(const char* path, int64_t size)
 {
-  FILE* f = sample_file_open_private(path, false);
+  FILE* f = sample_file_open_private(path, true);
   if (f == NULL)
   {
     return AZ_IOT_SU_RESULT_FAILURE;
@@ -177,7 +177,7 @@ int32_t simulate_delta_apply(
   {
     return AZ_IOT_SU_RESULT_FAILURE;
   }
-  FILE* out = sample_file_open_private(target_path, false);
+  FILE* out = sample_file_open_private(target_path, true);
   int ok = out != NULL;
   uint8_t buffer[4096];
   size_t n = 0;

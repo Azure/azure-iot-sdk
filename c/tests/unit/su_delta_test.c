@@ -961,6 +961,149 @@ static void test_copy_file_failures_remove_temporary_target(void** state)
   assert_true(file_exists(FILES_DIRECTORY "/source"));
 }
 
+/* A file or link planted at the temporary path is replaced, never followed. */
+static void test_copy_file_does_not_follow_a_planted_link(void** state)
+{
+  (void)state;
+  write_file(FILES_DIRECTORY "/source", "SOURCE", 6);
+  write_file(WORK_DIRECTORY "/outside", "OUTSIDE", 7);
+  assert_int_equal(symlink(WORK_DIRECTORY "/outside", WORK_DIRECTORY "/target.tmp"), 0);
+
+  assert_true(az_iot_su_delta__copy_file(FILES_DIRECTORY "/source", WORK_DIRECTORY "/target"));
+
+  char content[16] = { 0 };
+  assert_int_equal(read_file(WORK_DIRECTORY "/outside", content, sizeof(content)), 7);
+  assert_string_equal(content, "OUTSIDE");
+  struct stat info;
+  assert_int_equal(lstat(WORK_DIRECTORY "/target", &info), 0);
+  assert_true(S_ISREG(info.st_mode));
+  memset(content, 0, sizeof(content));
+  assert_int_equal(read_file(WORK_DIRECTORY "/target", content, sizeof(content)), 6);
+  assert_string_equal(content, "SOURCE");
+  assert_int_equal(lstat(WORK_DIRECTORY "/target.tmp", &info), -1);
+}
+
+/* A step may name its file with escapes ("t\u0061rget" for "target"): the file is still found
+ * at its slot and cached. */
+static void test_workflow_succeeded_finds_escaped_step_file_ids(void** state)
+{
+  (void)state;
+  fake_processor fake = { 0 };
+  az_iot_su_delta_handler handler;
+  init_handler(&handler, &fake);
+  az_iot_su_download_handler download_handler
+      = az_iot_su_delta_handler_get_download_handler(&handler);
+
+  az_iot_su_client_update_manifest manifest;
+  make_manifest(&manifest, NULL, 0);
+  manifest.instructions.steps[0].files[0] = AZ_SPAN_FROM_STR("t\\u0061rget");
+  write_file(FILES_DIRECTORY "/0-target", "TARGET", 6);
+
+  download_handler.workflow_succeeded_fn(&manifest, download_handler.user_ctx);
+  assert_true(file_exists(TARGET_CACHE_FILE));
+  assert_false(file_exists(FILES_DIRECTORY "/0-target"));
+}
+
+/* Writes the cached source under the provider directory @p directory_name. */
+static void seed_source_of_provider(const char* directory_name)
+{
+  char path[AZ_IOT_SU_DELTA_MAX_PATH_SIZE];
+  int written = snprintf(path, sizeof(path), CACHE_DIRECTORY "/%s", directory_name);
+  assert_true(written > 0 && (size_t)written < sizeof(path));
+  assert_int_equal(mkdir(path, 0700), 0);
+  written = snprintf(
+      path,
+      sizeof(path),
+      CACHE_DIRECTORY "/%s/sha256-nuDNVz6kcEmOtefngw1gEGmcGB5L5ZRaBB0qbMbe90E_3D",
+      directory_name);
+  assert_true(written > 0 && (size_t)written < sizeof(path));
+  write_file(path, "SOURCE", 6);
+}
+
+/* The provider is decoded before it names the cache directory: an update stored under
+ * "Contoso\u002eLtd" is the source of one from "Contoso.Ltd" or another spelling, and the
+ * application finds it under the decoded name. */
+static void test_provider_spellings_share_a_cache_directory(void** state)
+{
+  (void)state;
+  fake_processor fake = { 0 };
+  az_iot_su_delta_handler handler;
+  init_handler(&handler, &fake);
+  az_iot_su_download_handler download_handler
+      = az_iot_su_delta_handler_get_download_handler(&handler);
+
+  az_iot_su_client_update_manifest first;
+  make_manifest(&first, NULL, 0);
+  first.update_id.provider = AZ_SPAN_FROM_STR("Contoso\\u002eLtd");
+  first.files[0] = make_file("image", SOURCE_HASH, 6, NULL);
+  list_files_in_one_step(&first);
+  write_file(FILES_DIRECTORY "/0-image", "SOURCE", 6);
+  download_handler.workflow_succeeded_fn(&first, download_handler.user_ctx);
+  assert_true(file_exists(SOURCE_CACHE_FILE));
+
+  char path[AZ_IOT_SU_DELTA_MAX_PATH_SIZE];
+  assert_int_equal(
+      az_iot_su_delta_handler_get_source_cache_path(
+          &handler,
+          AZ_SPAN_FROM_STR(PROVIDER),
+          AZ_SPAN_FROM_STR("sha256"),
+          AZ_SPAN_FROM_STR(SOURCE_HASH),
+          path,
+          sizeof(path)),
+      AZ_IOT_OK);
+  assert_string_equal(path, SOURCE_CACHE_FILE);
+
+  az_iot_su_client_update_manifest_file related_files[1];
+  related_files[0] = make_file("delta", "AA==", 5, SOURCE_PROPERTIES(SOURCE_HASH));
+  az_iot_su_client_update_manifest second;
+  make_manifest(&second, related_files, 1);
+  choose(&download_handler, &second);
+  second.update_id.provider = AZ_SPAN_FROM_STR("Contoso\\u002E\\u004ctd");
+  choose(&download_handler, &second);
+}
+
+/* The provider length limit applies to the decoded name; a malformed escape names nothing. */
+static void test_provider_length_limit_applies_to_decoded_name(void** state)
+{
+  (void)state;
+  fake_processor fake = { 0 };
+  az_iot_su_delta_handler handler;
+  init_handler(&handler, &fake);
+  az_iot_su_download_handler download_handler
+      = az_iot_su_delta_handler_get_download_handler(&handler);
+  assert_int_equal(mkdir(CACHE_DIRECTORY, 0700), 0);
+
+  /* 64 bytes decoded (84 escaped) fit; 65 do not. */
+  const char longest[] = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaabbbb";
+  const char too_long[] = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaabbbbc";
+  assert_int_equal(sizeof(longest), AZ_IOT_SU_DELTA_MAX_PROVIDER_SIZE);
+  seed_source_of_provider(longest);
+  seed_source_of_provider(too_long);
+
+  az_iot_su_client_update_manifest_file related_files[1];
+  related_files[0] = make_file("delta", "AA==", 5, SOURCE_PROPERTIES(SOURCE_HASH));
+  az_iot_su_client_update_manifest manifest;
+  make_manifest(&manifest, related_files, 1);
+  manifest.update_id.provider = AZ_SPAN_FROM_STR(
+      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\\u0062\\u0062\\u0062\\u0062");
+  choose(&download_handler, &manifest);
+
+  uint32_t chosen = 99;
+  manifest.update_id.provider = AZ_SPAN_FROM_STR(
+      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\\u0062\\u0062\\u0062\\u0062c");
+  assert_int_equal(
+      download_handler.choose_related_file_fn(
+          &manifest, &manifest.files[0], &chosen, download_handler.user_ctx),
+      AZ_IOT_SU_RESULT_FAILURE);
+
+  seed_source_of_provider("Contoso_x");
+  manifest.update_id.provider = AZ_SPAN_FROM_STR("Contoso\\x");
+  assert_int_equal(
+      download_handler.choose_related_file_fn(
+          &manifest, &manifest.files[0], &chosen, download_handler.user_ctx),
+      AZ_IOT_SU_RESULT_FAILURE);
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -1010,6 +1153,22 @@ int main(void)
         test_copy_file_keeps_source, setup_work_directory, teardown_work_directory),
     cmocka_unit_test_setup_teardown(
         test_copy_file_failures_remove_temporary_target,
+        setup_work_directory,
+        teardown_work_directory),
+    cmocka_unit_test_setup_teardown(
+        test_copy_file_does_not_follow_a_planted_link,
+        setup_work_directory,
+        teardown_work_directory),
+    cmocka_unit_test_setup_teardown(
+        test_workflow_succeeded_finds_escaped_step_file_ids,
+        setup_work_directory,
+        teardown_work_directory),
+    cmocka_unit_test_setup_teardown(
+        test_provider_spellings_share_a_cache_directory,
+        setup_work_directory,
+        teardown_work_directory),
+    cmocka_unit_test_setup_teardown(
+        test_provider_length_limit_applies_to_decoded_name,
         setup_work_directory,
         teardown_work_directory),
   };

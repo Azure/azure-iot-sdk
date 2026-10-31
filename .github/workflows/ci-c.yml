@@ -72,7 +72,7 @@ jobs:
             # what the build/test legs do, so it has to run them. One pattern:
             # `every` would AND two.
             workflow:
-              - '.github/{workflows/ci-c.yml,actions/install-openssl/**,actions/install-curl-windows/**}'
+              - '.github/{workflows/ci-c.yml,actions/install-openssl/**,actions/install-curl-windows/**,actions/install-su-delta-processor/**}'
 
   # The Paho-OFF legs build the whole tree on az_mqtt. Every leg checks that
   # nothing depends on an adapter it was configured without

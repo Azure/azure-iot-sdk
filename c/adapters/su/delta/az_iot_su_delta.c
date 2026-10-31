@@ -15,6 +15,7 @@
 
 #include "azure/iot/az_iot_log.h"
 #include "azure/iot/az_iot_log_components.h"
+#include "internal/json_string.h"
 
 #include <azure/core/az_json.h>
 
@@ -73,6 +74,21 @@ static bool su_delta_sanitize_directory_name(az_span name, char* out, size_t out
   }
   out[size] = '\0';
   return true;
+}
+
+/**
+ * @brief Write the cache directory name of a manifest's provider: @p json_provider decoded
+ * (`Contoso\u002eLtd` is `Contoso.Ltd`), then sanitized.
+ *
+ * @return false when the provider is empty, malformed, or does not fit @p out.
+ */
+static bool su_delta_get_provider_directory(az_span json_provider, char* out, size_t out_size)
+{
+  uint8_t decoded[AZ_IOT_SU_DELTA_MAX_PROVIDER_SIZE];
+  az_span provider;
+  return az_iot_json_string_decode(json_provider, AZ_SPAN_FROM_BUFFER(decoded), &provider)
+      == AZ_IOT_OK
+      && su_delta_sanitize_directory_name(provider, out, out_size);
 }
 
 /** @brief Write the cache file name `<algorithm>-<encoded hash>` of a file. */
@@ -379,7 +395,7 @@ static int32_t su_delta_choose_related_file(
     return AZ_IOT_SU_RESULT_FAILURE;
   }
   handler->_internal.build_in_progress = false;
-  if (!su_delta_sanitize_directory_name(
+  if (!su_delta_get_provider_directory(
           manifest->update_id.provider,
           handler->_internal.provider_directory,
           sizeof(handler->_internal.provider_directory)))
@@ -520,8 +536,10 @@ bool az_iot_su_delta__copy_file(const char* source_path, const char* target_path
   {
     return false;
   }
+  /* Created exclusively: a file or link planted at the temporary path is never opened. */
+  (void)unlink(temporary_path);
   int target
-      = open(temporary_path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, (mode_t)SU_DELTA_FILE_MODE);
+      = open(temporary_path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, (mode_t)SU_DELTA_FILE_MODE);
   if (target < 0)
   {
     (void)close(source);
@@ -614,7 +632,7 @@ static bool su_delta_find_file_slot(
         = &manifest->instructions.steps[step];
     for (uint32_t slot = 0; slot < instructions->files_count; slot++)
     {
-      if (az_span_is_content_equal(instructions->files[slot], file->id))
+      if (az_iot_json_string_equals(instructions->files[slot], file->id, true))
       {
         *out_file_slot = slot;
         found = true;
@@ -688,7 +706,7 @@ static void su_delta_workflow_succeeded(
   const az_iot_su_delta_handler_options* options = &handler->_internal.options;
   char provider_directory[AZ_IOT_SU_DELTA_MAX_PROVIDER_SIZE];
   char directory[AZ_IOT_SU_DELTA_MAX_PATH_SIZE];
-  if (!su_delta_sanitize_directory_name(
+  if (!su_delta_get_provider_directory(
           manifest->update_id.provider, provider_directory, sizeof(provider_directory))
       || su_delta_join_cache_path(handler, provider_directory, NULL, directory, sizeof(directory))
           != AZ_IOT_OK

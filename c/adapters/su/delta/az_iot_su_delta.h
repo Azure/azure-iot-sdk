@@ -171,7 +171,7 @@ extern "C"
    * image.
    *
    * @param[in] handler An initialized handler.
-   * @param[in] provider Update provider.
+   * @param[in] provider Update provider, as decoded text (`Contoso.Ltd`, not JSON-escaped).
    * @param[in] hash_algorithm Hash algorithm, e.g. `sha256`.
    * @param[in] hash Base64 hash of the file.
    * @param[out] path Buffer for the NUL-terminated path.
