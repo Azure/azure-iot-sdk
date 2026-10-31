@@ -369,7 +369,8 @@ static void stage_error(
 }
 
 /**
- * @brief Stage the codes @p evt carried, for @p scope, whatever the event kind.
+ * @brief Stage the codes @p evt carried, for @p scope, with the MQTT 5 Reason
+ * String explaining a wire code, whatever the event kind.
  *
  * transport_code wins when both are present: a failure below MQTT is the more
  * specific fact, and a wire code alongside it would be describing the session
@@ -445,7 +446,12 @@ static void stage_error_codes_from_event(
   }
   else if (evt->protocol_code != 0)
   {
-    stage_error(c, scope, AZ_IOT_CONN_ERR_SRC_MQTT, evt->protocol_code, AZ_SPAN_EMPTY);
+    /* The MQTT 5 Reason String explains that code; stage_error() copies it. */
+    az_span const reason_string = (evt->reason_string != NULL && evt->reason_string_len > 0
+                                   && evt->reason_string_len <= INT32_MAX)
+        ? az_span_create((uint8_t*)(uintptr_t)evt->reason_string, (int32_t)evt->reason_string_len)
+        : AZ_SPAN_EMPTY;
+    stage_error(c, scope, AZ_IOT_CONN_ERR_SRC_MQTT, evt->protocol_code, reason_string);
   }
 }
 
@@ -780,6 +786,9 @@ static void set_state_to(
     .connection_profile_raw = NULL,
     .connection_profile_raw_truncated = false,
   };
+  /* A copy: an observer may stage new detail (close() then open(), say) while this event is
+   * still being delivered. */
+  char error_message[AZ_IOT_CONN_ERROR_MESSAGE_MAX];
   az_iot_connection_error_detail detail = {
     .source = AZ_IOT_CONN_ERR_SRC_NONE,
     .code = 0,
@@ -813,9 +822,11 @@ static void set_state_to(
   {
     detail.source = c->error_source;
     detail.code = c->error_code;
-    detail.message = (c->error_message_len > 0)
-        ? az_span_create((uint8_t*)c->error_message, (int32_t)c->error_message_len)
-        : AZ_SPAN_EMPTY;
+    if (c->error_message_len > 0)
+    {
+      memcpy(error_message, c->error_message, c->error_message_len);
+      detail.message = az_span_create((uint8_t*)error_message, (int32_t)c->error_message_len);
+    }
     event.error = &detail;
   }
   /* The profile rides the events that settle "which hub generation is this?":

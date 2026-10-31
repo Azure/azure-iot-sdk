@@ -933,7 +933,7 @@ static void hub_mqtt_v5_connect_nonce_is_uuid_v4(void** state)
 }
 
 /* A failed dev/presence SUBACK drained after a server DISCONNECT in the same process_loop belongs
- * to the ending session: the DISCONNECT's transition and code stand. */
+ * to the ending session: the DISCONNECT's transition, code and Reason String stand. */
 static void hub_mqtt_v5_suback_failure_after_a_server_disconnect_is_ignored(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -951,11 +951,14 @@ static void hub_mqtt_v5_suback_failure_after_a_server_disconnect_is_ignored(void
   const az_iot_mock_call* sub = last_call_of_kind(m, AZ_IOT_MOCK_CALL_SUBSCRIBE);
   assert_non_null(sub);
 
+  static const char reason[] = "quota exceeded";
   az_iot_mqtt_event disconnect;
   memset(&disconnect, 0, sizeof(disconnect));
   disconnect.kind = AZ_IOT_MQTT_EVT_DISCONNECTED;
   disconnect.status = az_iot_mqtt_disconnect_result(AZ_IOT_MQTT_VERSION_5, 0x97);
   disconnect.protocol_code = 0x97;
+  disconnect.reason_string = reason;
+  disconnect.reason_string_len = sizeof(reason) - 1;
   az_iot_mock_mqtt_client_set_events_per_loop(m, SIZE_MAX);
   assert_true(az_iot_mock_mqtt_client_inject_event(m, &disconnect));
   assert_true(az_iot_mock_mqtt_client_inject_suback_refusal(m, sub->packet_id, 0x87));
@@ -966,6 +969,7 @@ static void hub_mqtt_v5_suback_failure_after_a_server_disconnect_is_ignored(void
   assert_int_equal(fx->rec.states[last], AZ_IOT_CONN_STATE_IDLE);
   assert_int_equal(fx->rec.reasons[last], disconnect.status);
   assert_int_equal(fx->rec.error_codes[last], 0x97);
+  assert_string_equal(fx->rec.error_messages[last], reason);
 }
 
 /* A dev/presence SUBACK that fails (e.g. the broker refused the subscription)

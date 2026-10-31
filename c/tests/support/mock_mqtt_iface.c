@@ -20,6 +20,8 @@ typedef struct queued_event
   uint8_t payload[AZ_IOT_MOCK_PAYLOAD_MAX];
   size_t payload_len;
   bool has_message;
+  /* Copy of evt.reason_string, scrubbed after delivery like the payload. */
+  char reason_string[AZ_IOT_MOCK_PAYLOAD_MAX];
 } queued_event;
 
 struct az_iot_mock_mqtt_client
@@ -377,6 +379,8 @@ static az_iot_result mock_process_loop(az_iot_mqtt_client* self, uint32_t timeou
     }
 
     m->inbound_cb(&q->evt, m->inbound_ctx);
+    /* The Reason String too: an adapter's is callback-lifetime only. */
+    memset(q->reason_string, 0, sizeof(q->reason_string));
 
     /* Scrub the backing storage the moment the callback returns, because that
      * is exactly what a real adapter does: Paho frees the message, and the core
@@ -592,6 +596,15 @@ bool az_iot_mock_mqtt_client_inject_event(az_iot_mock_mqtt_client* m, const az_i
   q->evt = *evt;
   q->evt.message = NULL;
   q->has_message = false;
+  if (evt->reason_string != NULL)
+  {
+    if (evt->reason_string_len > sizeof(q->reason_string))
+    {
+      return false;
+    }
+    memcpy(q->reason_string, evt->reason_string, evt->reason_string_len);
+    q->evt.reason_string = q->reason_string;
+  }
 
   if (evt->kind == AZ_IOT_MQTT_EVT_MESSAGE && evt->message)
   {
