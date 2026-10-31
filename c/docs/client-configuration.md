@@ -299,6 +299,10 @@ Defaults used when the matching option is left at 0:
 | `AZ_IOT_DEFAULT_IDENTITY_RECOVERY_INITIAL_DELAY_MS` | 300000 | `identity_recovery.policy.initial_delay_ms`, set by `az_iot_connection_client_options_default()` |
 | `AZ_IOT_DEFAULT_IDENTITY_RECOVERY_MAX_DELAY_MS` | 3600000 | `identity_recovery.policy.max_delay_ms`, set by `az_iot_connection_client_options_default()` |
 | `AZ_IOT_DEFAULT_IDENTITY_RECOVERY_JITTER_PCT` | 25 | `identity_recovery.policy.jitter_pct`, set by `az_iot_connection_client_options_default()` |
+| `AZ_IOT_DEFAULT_IDENTITY_RECOVERY_AFTER_ASSIGNMENT_INITIAL_DELAY_MS` | 5000 | `identity_recovery.after_assignment_policy.initial_delay_ms`, set by `az_iot_connection_client_options_default()` |
+| `AZ_IOT_DEFAULT_IDENTITY_RECOVERY_AFTER_ASSIGNMENT_MAX_DELAY_MS` | 15000 | `identity_recovery.after_assignment_policy.max_delay_ms`, set by `az_iot_connection_client_options_default()` |
+| `AZ_IOT_DEFAULT_IDENTITY_RECOVERY_AFTER_ASSIGNMENT_MAX_ATTEMPTS` | 4 | `identity_recovery.after_assignment_policy.max_attempts`, set by `az_iot_connection_client_options_default()` |
+| `AZ_IOT_DEFAULT_IDENTITY_RECOVERY_AFTER_ASSIGNMENT_JITTER_PCT` | 20 | `identity_recovery.after_assignment_policy.jitter_pct`, set by `az_iot_connection_client_options_default()` |
 
 #### Feature clients ([az_iot_message.h](../inc/azure/iot/az_iot_message.h) and the client headers)
 

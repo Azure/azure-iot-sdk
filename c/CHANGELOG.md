@@ -31,6 +31,12 @@
   `az_iot_mqtt_event.reason_string` now also carries it on `AZ_IOT_MQTT_EVT_DISCONNECTED` (both
   adapters) and on a failed `AZ_IOT_MQTT_EVT_CONNECTED` (az_mqtt adapter; Paho does not expose it).
   The Paho adapter keeps 128 bytes of a DISCONNECT Reason String.
+- Connection client: a hub that refuses the device right after a DPS assignment, before the new
+  registration reaches it, is retried soon: `identity_recovery.after_assignment_policy` (default
+  `az_iot_connection_client_get_default_identity_recovery_after_assignment_policy()`: 5 s doubling
+  to 15 s, ±20%, 4 attempts) paces those refusals until `HUB:CONNECTED`, before the 5-minute
+  identity recovery policy. Zeroed, every refusal waits on `policy` as before. See
+  [Identity recovery](docs/connecting.md#identity-recovery).
 - Software updates: the update request, file URL, workflow and install-result types are the SDK's
   own; `az_iot_su.h` no longer includes azure-sdk-for-c's `az_iot_adu_client.h`, and an installed
   azure-sdk-for-c no longer needs the `AZ_IOT_SU_MAX_*` limits. Breaking:
