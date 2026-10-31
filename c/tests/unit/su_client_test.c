@@ -8551,10 +8551,59 @@ static void a_superseded_in_flight_request_is_cancelled_with_the_newer_one(void*
 
   assert_int_equal(fx->abandoned_count, 1);
   assert_int_equal(fx->last_abandoned_operation, AZ_IOT_SU_OP_GET_ONBOARDING_UPDATE);
-  assert_int_equal(fx->chan.cancel_count, 1);
-  assert_int_equal(fx->chan.last_cancel_operation, AZ_IOT_SU_OP_GET_UPDATE);
+  /* The accepted one is cancelled, and the abandoned one's demand dropped. */
+  assert_int_equal(fx->chan.cancel_count, 2);
+  assert_int_equal(fx->chan.last_cancel_operation, AZ_IOT_SU_OP_GET_ONBOARDING_UPDATE);
   assert_int_equal(fx->su._internal.pending_fetch, 0);
   assert_int_equal(fx->su._internal.fetch_in_flight, 0);
+}
+
+/* A check the channel never accepted (no session) and the deadline ends is
+ * cancelled on the channel too, so it stops asking for a session for it. */
+static void an_unaccepted_check_abandoned_at_its_deadline_is_cancelled(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  fx->chan.request_update_result = AZ_IOT_ERR_NOT_CONNECTED;
+  fx->abandoned_count = 0;
+  assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
+
+  assert_int_equal(az_iot_su_client_request_update(&fx->su, UT_TIMEOUT_MS), AZ_IOT_OK);
+  (void)az_iot_su_client_do_work(&fx->su);
+  assert_int_not_equal(fx->su._internal.pending_fetch, 0);
+  assert_int_equal(fx->su._internal.fetch_in_flight, 0);
+  assert_int_equal(fx->chan.cancel_count, 0);
+
+  fx->su._internal.pending_fetch_deadline_ms = 1;
+  (void)az_iot_su_client_do_work(&fx->su);
+
+  assert_int_equal(fx->abandoned_count, 1);
+  assert_int_equal(fx->last_abandoned_operation, AZ_IOT_SU_OP_GET_UPDATE);
+  assert_int_equal(fx->chan.cancel_count, 1);
+  assert_int_equal(fx->chan.last_cancel_operation, AZ_IOT_SU_OP_GET_UPDATE);
+}
+
+/* A report the channel stopped awaiting (AZ_IOT_ERR_TIMEOUT) stays owed and is
+ * sent again on the engine's backoff, not on the next tick. */
+static void a_report_left_unanswered_is_retried_on_the_backoff(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  finish_with_report_unacknowledged(fx);
+  int sent = fx->chan.report_count;
+
+  fx->chan.result_cb(
+      AZ_IOT_SU_OP_REPORT_STATUS,
+      AZ_IOT_ERR_TIMEOUT,
+      AZ_IOT_SU_ERROR_ACTION_RETRY,
+      NULL,
+      fx->chan.engine_ctx);
+  assert_true(fx->su._internal.device_properties_report_pending);
+  assert_true(fx->su._internal.report_paced);
+  assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  assert_int_equal(fx->chan.report_count, sent);
+
+  fx->su._internal.retry._internal.due_ms = az_iot_time_mono_ms();
+  assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  assert_int_equal(fx->chan.report_count, sent + 1);
 }
 
 /* AZ_IOT_SU_REQUEST_NO_TIMEOUT waits for the answer indefinitely too. */
@@ -10817,6 +10866,10 @@ int main(void)
         a_retryable_verdict_after_the_deadline_abandons, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_superseded_in_flight_request_is_cancelled_with_the_newer_one, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        an_unaccepted_check_abandoned_at_its_deadline_is_cancelled, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_report_left_unanswered_is_retried_on_the_backoff, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_disabled_timeout_waits_for_an_answer_indefinitely, setup, teardown),
     cmocka_unit_test_setup_teardown(each_request_carries_its_own_timeout, setup, teardown),

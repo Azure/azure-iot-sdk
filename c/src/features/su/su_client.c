@@ -2217,9 +2217,10 @@ static void settle_terminal_report(az_iot_su_client* client, az_iot_result resul
 /**
  * @brief Pace the next fetch/report after a retryable verdict that named no delay.
  *
- * Exponential backoff with jitter. Service verdicts only: a lost session is
- * paced by the connection client, and a service-named delay by the channel.
- * Never moves a fetch deadline.
+ * Exponential backoff with jitter. Service verdicts, and a report the channel
+ * stopped awaiting (AZ_IOT_ERR_TIMEOUT), only: a lost session is paced by the
+ * connection client, and a service-named delay by the channel. Never moves a
+ * fetch deadline.
  *
  * @return true if this verdict armed the backoff.
  */
@@ -2229,7 +2230,7 @@ static bool arm_retry_backoff(
     az_iot_su_error_action action,
     const az_iot_su_service_error* service_error)
 {
-  if (result != AZ_IOT_ERR_DPS
+  if ((result != AZ_IOT_ERR_DPS && result != AZ_IOT_ERR_TIMEOUT)
       || (action != AZ_IOT_SU_ERROR_ACTION_RETRY && action != AZ_IOT_SU_ERROR_ACTION_RETRY_AFTER)
       || (service_error != NULL && service_error->retry_after_ms != 0))
   {
@@ -2603,6 +2604,13 @@ static void drive_pending_fetch(az_iot_su_client* client)
     {
       SU_I(client).channel.vtable->cancel_update(
           SU_I(client).channel.ctx, fetch_operation(in_flight));
+    }
+    /* The channel stops asking for a session for the abandoned request too. */
+    if ((in_flight == SU_FETCH_NONE || fetch_operation(in_flight) != operation)
+        && SU_I(client).channel.vtable != NULL
+        && SU_I(client).channel.vtable->cancel_update != NULL)
+    {
+      SU_I(client).channel.vtable->cancel_update(SU_I(client).channel.ctx, operation);
     }
     raise_abandoned(client, operation, AZ_IOT_ERR_TIMEOUT, &k_no_service_error);
     return;

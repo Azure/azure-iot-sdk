@@ -169,13 +169,14 @@ extern "C"
     az_iot_result (*do_work)(void* ctx);
 
     /**
-     * @brief REQUIRED. Stop waiting for the verdict of an accepted fetch.
+     * @brief REQUIRED. Stop waiting for the verdict of a fetch, and stop asking
+     * for a session for it.
      *
-     * Called when the engine abandons @p operation on its deadline. The channel
-     * drops the outstanding request if it is that fetch, so a later request is
-     * not refused as busy and a late answer is never delivered; no verdict is
-     * reported for it. Required because verdicts carry no request identity: a
-     * late one would otherwise be taken for a newer request's.
+     * Called when the engine abandons @p operation on its deadline, accepted or
+     * not. The channel drops the outstanding request if it is that fetch, so a
+     * later request is not refused as busy and a late answer is never delivered;
+     * no verdict is reported for it. Required because verdicts carry no request
+     * identity: a late one would otherwise be taken for a newer request's.
      *
      * @param ctx       The channel's context.
      * @param operation The fetch being abandoned; never AZ_IOT_SU_OP_REPORT_STATUS.
@@ -239,6 +240,18 @@ extern "C"
  * silently disappears. Fail the build instead. */
 #if AZ_IOT_SU_CHANNEL_MAX_SESSION_RETRIES < 1 || AZ_IOT_SU_CHANNEL_MAX_SESSION_RETRIES > 254
 #error "AZ_IOT_SU_CHANNEL_MAX_SESSION_RETRIES must be between 1 and 254"
+#endif
+
+/**
+ * @brief Longest wait for the answer to a status report, in milliseconds.
+ *
+ * The hub session waits while a report is outstanding, so an answer lost on a
+ * live session must not keep it waiting: past this the report is retried on the
+ * engine's pacing and the session released meanwhile. Defaults to
+ * AZ_IOT_SU_REQUEST_DEFAULT_TIMEOUT_MS, the bound an update check gets by default.
+ */
+#ifndef AZ_IOT_SU_CHANNEL_REPORT_RESPONSE_TIMEOUT_MS
+#define AZ_IOT_SU_CHANNEL_REPORT_RESPONSE_TIMEOUT_MS AZ_IOT_SU_REQUEST_DEFAULT_TIMEOUT_MS
 #endif
 
   typedef struct az_iot_su_channel_dps
@@ -307,6 +320,13 @@ extern "C"
      * to know a session is actually wanted -- opening one speculatively would
      * just linger and close again. */
     bool wants_session;
+
+    /** Operations (bit 1 << az_iot_su_operation) refused for want of a session;
+     * an abandoned fetch drops its own bit, and wants_session goes with the last. */
+    uint8_t session_demand;
+
+    /** When an outstanding status report stops being awaited (monotonic ms). */
+    uint64_t report_response_deadline_ms;
 
     /* Set once a dps_session_ensure() failure has been logged, so a refusal
      * that persists does not emit one line per pump tick. Cleared as soon as

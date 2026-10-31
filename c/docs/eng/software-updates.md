@@ -119,6 +119,14 @@ overlap. After registration, each check or status report made while the hub is c
    assignment without registering again. Feature clients resume as after any reconnect.
 
 These ends count toward no reconnection backoff or `max_hub_connect_attempts_before_reprovision`.
+How long the hub waits is bounded. An update check waits at most its request timeout (default
+`AZ_IOT_SU_REQUEST_DEFAULT_TIMEOUT_MS`, 60 s; `AZ_IOT_SU_REQUEST_NO_TIMEOUT` sets no bound); when
+it ends unanswered or unaccepted, the channel stops asking for a session for it. A status report
+waits at most `AZ_IOT_SU_CHANNEL_REPORT_RESPONSE_TIMEOUT_MS` (default 60 s, the same value) for
+its answer; past it the session is released and the report, still owed, is sent again on the retry
+backoff (1 s doubling to 60 s, ±20%). A request lost with its session keeps the channel's interest
+while the engine retries it, so the connection client's pacing of provisioning sessions still
+applies.
 An application that must not lose the hub during a check schedules checks when that is acceptable.
 
 ### Request (both fetches)
