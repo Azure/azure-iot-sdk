@@ -12,6 +12,10 @@
 
 #include "az_iot_result.h"
 
+/** @brief Bytes an adapter keeps of a CONNACK or server DISCONNECT Reason String: all the SDK
+ * retains (AZ_IOT_CONN_ERROR_MESSAGE_MAX). */
+#define AZ_IOT_MQTT_SESSION_REASON_STRING_MAX 128
+
 #ifdef __cplusplus
 extern "C"
 {
@@ -426,12 +430,18 @@ extern "C"
      * only; an adapter that has nothing to report leaves it 0 and stays
      * conformant. */
     int32_t transport_code;
-    /* AZ_IOT_MQTT_EVT_PUBLISH_ACK, MQTT 5: the PUBACK's Reason String, verbatim. UTF-8, not
-     * NUL-terminated, valid only during the callback. NULL: the PUBACK carried none; non-NULL with
-     * length 0: present and empty. Unused for other event kinds. An adapter must report it for a
-     * PUBACK reason code of 0x80 or above, except for an ack it holds past the receive buffer's
-     * lifetime; below 0x80 it may omit it (Paho's API does not expose it). Diagnostics: never
-     * branch on it. */
+    /* MQTT 5: the Reason String of the packet behind this event, verbatim. UTF-8, not
+     * NUL-terminated, valid only during the callback. NULL: the packet carried none; non-NULL with
+     * length 0: present and empty. Diagnostics: never branch on it. An adapter must report it for:
+     * - AZ_IOT_MQTT_EVT_PUBLISH_ACK with a PUBACK reason code of 0x80 or above, except for an ack
+     *   it holds past the receive buffer's lifetime; below 0x80 it may omit it (Paho's API does
+     *   not expose it).
+     * - AZ_IOT_MQTT_EVT_DISCONNECTED reporting a server DISCONNECT.
+     * - AZ_IOT_MQTT_EVT_CONNECTED reporting a refused CONNACK, when its MQTT library exposes it
+     *   (Paho's does not).
+     * NULL for other event kinds. For CONNECTED and DISCONNECTED only, an adapter that copies it
+     * may keep only its first AZ_IOT_MQTT_SESSION_REASON_STRING_MAX bytes; other kinds carry it
+     * whole. */
     const char* reason_string;
     size_t reason_string_len;
   } az_iot_mqtt_event;
