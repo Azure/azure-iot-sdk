@@ -48,6 +48,8 @@ set(AZ_IOT_MQTTV3_SOURCES
 set(AZ_IOT_MQTTV5_SOURCES
     mqttv5/telemetry_client.c
     mqttv5/direct_method_client.c
+    mqttv5/direct_method_budget.c
+    mqttv5/direct_method_delivery.c
     mqttv5/direct_method_codec.c
     mqttv5/twin_client.c
     mqttv5/custom_topic_client.c

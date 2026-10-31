@@ -48,6 +48,7 @@ typedef struct fixture
   az_iot_result failing_send_result;
   completion completions[16];
   size_t completion_count;
+  int sent_count;
   bool unbind_on_complete;
   /* Once, when set: submit two messages with this profile (after unbind, init, bind when
    * rebind_first). */
@@ -126,22 +127,23 @@ static void on_complete(
   }
 }
 
-#define PROFILE(name, confirm, policy, prio)        \
-  static const az_iot_delivery_tracker_profile name \
-      = {                                           \
-          #name,                                    \
-          AZ_IOT_DELIVERY_TRACKER_##confirm,        \
-          AZ_IOT_DELIVERY_TRACKER_##policy,         \
-          prio,                                     \
-          encode,                                   \
-          on_complete,                              \
-        }
-PROFILE(k_resend, CONFIRM_BY_PUBACK, ON_SESSION_LOSS_RESEND, 0);
-PROFILE(k_fail, CONFIRM_BY_PUBACK, ON_SESSION_LOSS_FAIL, 0);
-PROFILE(k_response, CONFIRM_BY_RESPONSE, ON_SESSION_LOSS_FAIL, 0);
-PROFILE(k_response_resend, CONFIRM_BY_RESPONSE, ON_SESSION_LOSS_RESEND, 0);
-PROFILE(k_low_resend, CONFIRM_BY_PUBACK, ON_SESSION_LOSS_RESEND, 1);
-PROFILE(k_low_drop, CONFIRM_BY_PUBACK, ON_SESSION_LOSS_DROP, 1);
+#define PROFILE(name, confirm, policy, prio, untracked) \
+  static const az_iot_delivery_tracker_profile name = { \
+    #name,                                              \
+    AZ_IOT_DELIVERY_TRACKER_##confirm,                  \
+    AZ_IOT_DELIVERY_TRACKER_##policy,                   \
+    prio,                                               \
+    untracked,                                          \
+    encode,                                             \
+    on_complete,                                        \
+    NULL,                                               \
+  }
+PROFILE(k_resend, CONFIRM_BY_PUBACK, ON_SESSION_LOSS_RESEND, 0, false);
+PROFILE(k_fail, CONFIRM_BY_PUBACK, ON_SESSION_LOSS_FAIL, 0, false);
+PROFILE(k_response, CONFIRM_BY_RESPONSE, ON_SESSION_LOSS_FAIL, 0, false);
+PROFILE(k_response_resend, CONFIRM_BY_RESPONSE, ON_SESSION_LOSS_RESEND, 0, false);
+PROFILE(k_low_resend, CONFIRM_BY_PUBACK, ON_SESSION_LOSS_RESEND, 1, false);
+PROFILE(k_low_untracked, CONFIRM_BY_PUBACK, ON_SESSION_LOSS_RESEND, 1, true);
 
 static void do_work(fixture* fx) { (void)az_iot_connection_client_do_work(&fx->connection, 0); }
 
@@ -202,7 +204,7 @@ static size_t submit(
     fixture* fx,
     const az_iot_delivery_tracker_profile* profile,
     uint8_t id,
-    uint32_t timeout_ms)
+    uint64_t timeout_ms)
 {
   size_t index = SIZE_MAX;
   assert_int_equal(
@@ -427,7 +429,7 @@ static void held_messages_go_out_by_priority_then_age(void** state)
 }
 
 /* With 2 slots and 1 kept for priority 0, priority 1 holds at most one; priority 0 still gets
- * one; a DROP message with no slot goes out untracked. */
+ * one; a send_untracked_without_slot message with no slot goes out untracked. */
 static void priority_zero_keeps_its_guaranteed_slot(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -437,7 +439,7 @@ static void priority_zero_keeps_its_guaranteed_slot(void** state)
   assert_int_equal(publish_count(fx), 1);
   (void)submit(fx, &k_resend, 3u, 0u);
   assert_int_equal(publish_count(fx), 2);
-  size_t const notice = submit(fx, &k_low_drop, 4u, 0u);
+  size_t const notice = submit(fx, &k_low_untracked, 4u, 0u);
   assert_int_equal(publish_count(fx), 3);
   assert_completed(fx, 0, notice, AZ_IOT_DELIVERY_TRACKER_OUTCOME_DELIVERED);
   /* Priority 0 freeing its slot does not admit the held priority-1 message (that slot stays
@@ -580,8 +582,10 @@ static const az_iot_delivery_tracker_profile k_second = {
   AZ_IOT_DELIVERY_TRACKER_CONFIRM_BY_PUBACK,
   AZ_IOT_DELIVERY_TRACKER_ON_SESSION_LOSS_FAIL,
   0u,
+  false,
   encode_second,
   submit_to_first_on_complete,
+  NULL,
 };
 
 /* A submit from a later observer's TICK does not resend, in the same do_work(), a message a
@@ -637,8 +641,8 @@ static void an_unsendable_message_is_discarded(void** state)
       az_iot_mock_mqtt_client_last_of(fx->mock, AZ_IOT_MOCK_CALL_PROCESS_LOOP)->timeout_ms > 1000u);
 }
 
-/* Any other send error refuses like BUSY: the wait is not shortened, and the TICK of the next
- * do_work() sends again, whether the error came at submit or at a TICK-time resend. */
+/* Any other send error refuses like BUSY: the next do_work() waits at most the retry interval,
+ * and its TICK sends again, whether the error came at submit or at a TICK-time resend. */
 static void a_send_error_is_retried_by_the_next_do_work(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -649,7 +653,8 @@ static void a_send_error_is_retried_by_the_next_do_work(void** state)
   assert_int_equal(publish_count(fx), 1);
   (void)az_iot_connection_client_do_work(&fx->connection, UINT32_MAX);
   assert_true(
-      az_iot_mock_mqtt_client_last_of(fx->mock, AZ_IOT_MOCK_CALL_PROCESS_LOOP)->timeout_ms > 1000u);
+      az_iot_mock_mqtt_client_last_of(fx->mock, AZ_IOT_MOCK_CALL_PROCESS_LOOP)->timeout_ms
+      == AZ_IOT_DELIVERY_TRACKER_REFUSED_SEND_RETRY_MS);
   assert_int_equal(publish_count(fx), 2);
 
   assert_true(az_iot_mock_mqtt_client_inject_puback(
@@ -660,6 +665,23 @@ static void a_send_error_is_retried_by_the_next_do_work(void** state)
   assert_int_equal(publish_count(fx), 3);
   do_work(fx);
   assert_int_equal(publish_count(fx), 4);
+  assert_int_equal(fx->completion_count, 0);
+}
+
+/* After a refused send, a message with under the retry interval left is retried before it expires.
+ */
+static void a_refused_message_near_its_time_limit_is_retried_before_it(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  connect(fx);
+  fx->failing_send_result = AZ_IOT_ERR_MQTT;
+  fx->failing_sends = 1;
+  (void)submit(fx, &k_resend, 1u, 800u);
+  assert_int_equal(publish_count(fx), 1);
+  (void)az_iot_connection_client_do_work(&fx->connection, UINT32_MAX);
+  assert_true(
+      az_iot_mock_mqtt_client_last_of(fx->mock, AZ_IOT_MOCK_CALL_PROCESS_LOOP)->timeout_ms <= 400u);
+  assert_int_equal(publish_count(fx), 2);
   assert_int_equal(fx->completion_count, 0);
 }
 
@@ -675,6 +697,18 @@ static void the_wait_ends_by_the_earliest_time_limit(void** state)
   uint32_t const waited
       = az_iot_mock_mqtt_client_last_of(fx->mock, AZ_IOT_MOCK_CALL_PROCESS_LOOP)->timeout_ms;
   assert_true(waited <= 5000u && waited >= 4000u);
+}
+
+/* A time limit past UINT32_MAX ms is kept in full. */
+static void a_time_limit_past_32_bit_milliseconds_is_kept(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  connect(fx);
+  uint64_t const limit_ms = (uint64_t)UINT32_MAX + 60000u;
+  size_t const index = submit(fx, &k_resend, 1u, limit_ms);
+  assert_true(
+      az_iot_deadline__remaining_ms(&fx->entries[index]._internal.deadline, az_iot_time_mono_ms())
+      > UINT32_MAX);
 }
 
 /* The do_work() after a PUBACK error requeued a message does not wait: its TICK resends it. */
@@ -741,7 +775,7 @@ static void ignore_publish_result(const az_iot_publish_result* result, void* use
 }
 
 /* A PUBACK slot another tracker frees makes the next do_work() not wait, and its TICK sends
- * the message queued for it. After a refused send the wait is not shortened. */
+ * the message queued for it. After a refused send it waits the retry interval. */
 static void a_slot_freed_elsewhere_is_used_without_waiting(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -815,7 +849,8 @@ static void a_slot_freed_elsewhere_is_used_without_waiting(void** state)
   (void)submit(fx, &k_low_resend, 2u, 0u);
   (void)az_iot_connection_client_do_work(&fx->connection, UINT32_MAX);
   assert_true(
-      az_iot_mock_mqtt_client_last_of(fx->mock, AZ_IOT_MOCK_CALL_PROCESS_LOOP)->timeout_ms > 1000u);
+      az_iot_mock_mqtt_client_last_of(fx->mock, AZ_IOT_MOCK_CALL_PROCESS_LOOP)->timeout_ms
+      == AZ_IOT_DELIVERY_TRACKER_REFUSED_SEND_RETRY_MS);
   az_iot_delivery_tracker__unbind(&shared);
   az_iot_delivery_tracker__unbind(&other);
 }
@@ -852,6 +887,82 @@ static void an_identity_change_keeps_replacements_in_a_later_tracker(void** stat
   assert_non_null(later_entries[0]._internal.profile);
   assert_non_null(later_entries[1]._internal.profile);
   az_iot_delivery_tracker__unbind(&later);
+}
+
+static void count_sent(void* owner_context, size_t entry_index)
+{
+  (void)entry_index;
+  ++((fixture*)owner_context)->sent_count;
+}
+
+static const az_iot_delivery_tracker_profile k_counted = {
+  "counted",
+  AZ_IOT_DELIVERY_TRACKER_CONFIRM_BY_PUBACK,
+  AZ_IOT_DELIVERY_TRACKER_ON_SESSION_LOSS_RESEND,
+  0u,
+  false,
+  encode,
+  on_complete,
+  count_sent,
+};
+
+/* on_sent reports each publish of a message, and nothing while it waits. */
+static void on_sent_reports_each_publish(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  (void)submit(fx, &k_counted, 1u, 0u);
+  assert_int_equal(fx->sent_count, 0);
+  connect(fx);
+  assert_int_equal(fx->sent_count, 1);
+  lose_session(fx);
+  connect(fx);
+  assert_int_equal(fx->sent_count, 2);
+}
+
+/* expire_due() completes what has expired without waiting for a TICK. */
+static void expire_overdue_completes_expired_messages_now(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  size_t const expired = submit(fx, &k_resend, 1u, 60000u);
+  (void)submit(fx, &k_resend, 2u, 60000u);
+  az_iot_deadline__expire_now(&fx->entries[expired]._internal.deadline);
+  az_iot_delivery_tracker__expire_overdue(&fx->tracker);
+  assert_int_equal(fx->completion_count, 1);
+  assert_completed(fx, 0, expired, AZ_IOT_DELIVERY_TRACKER_OUTCOME_EXPIRED);
+  az_iot_delivery_tracker__expire_overdue(NULL);
+}
+
+/* A message that may go untracked does not wait for a PUBACK slot: after a PUBACK error, with its
+ * slot taken by another, the next do_work() does not wait, and its TICK sends it untracked. */
+static void an_untracked_capable_message_does_not_wait_for_a_slot(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  connect(fx);
+  size_t const first = submit(fx, &k_low_untracked, 1u, 60000u);
+  assert_int_equal(publish_count(fx), 1);
+  assert_true(az_iot_mock_mqtt_client_inject_puback(
+      fx->mock, last_publish(fx)->packet_id, AZ_IOT_ERR_MQTT));
+  do_work(fx); /* Requeued and held back; the slot is free again. */
+  (void)submit(fx, &k_low_untracked, 2u, 60000u); /* Takes priority 1's slot. */
+  assert_int_equal(publish_count(fx), 2);
+
+  (void)az_iot_connection_client_do_work(&fx->connection, UINT32_MAX);
+  assert_int_equal(
+      az_iot_mock_mqtt_client_last_of(fx->mock, AZ_IOT_MOCK_CALL_PROCESS_LOOP)->timeout_ms, 0u);
+  assert_int_equal(publish_count(fx), 3);
+  assert_completed(fx, 0, first, AZ_IOT_DELIVERY_TRACKER_OUTCOME_DELIVERED);
+}
+
+/* An encode() reporting AZ_IOT_ERR_TIMEOUT (the owner's own deadline passed) completes the message
+ * as EXPIRED, not DISCARDED, and sends nothing. */
+static void an_encode_timeout_expires_the_message(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  connect(fx);
+  fx->encode_result = AZ_IOT_ERR_TIMEOUT;
+  size_t const index = submit(fx, &k_resend, 1u, 0u);
+  assert_int_equal(publish_count(fx), 0);
+  assert_completed(fx, 0, index, AZ_IOT_DELIVERY_TRACKER_OUTCOME_EXPIRED);
 }
 /* A send the adapter refuses does not hold back the message a PUBACK error requeued: it goes out
  * from the next do_work(). */
@@ -944,7 +1055,10 @@ int main(void)
         a_later_observer_submit_does_not_resend_a_requeued_message, setup, teardown),
     cmocka_unit_test_setup_teardown(an_unsendable_message_is_discarded, setup, teardown),
     cmocka_unit_test_setup_teardown(a_send_error_is_retried_by_the_next_do_work, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_refused_message_near_its_time_limit_is_retried_before_it, setup, teardown),
     cmocka_unit_test_setup_teardown(the_wait_ends_by_the_earliest_time_limit, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_time_limit_past_32_bit_milliseconds_is_kept, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_requeued_message_does_not_wait_out_the_adapter, setup, teardown),
     cmocka_unit_test_setup_teardown(freed_capacity_sends_the_queued_message, setup, teardown),
@@ -955,6 +1069,11 @@ int main(void)
     cmocka_unit_test_setup_teardown(a_nested_refusal_ends_the_outer_flush, setup, teardown),
     cmocka_unit_test_setup_teardown(
         an_identity_change_keeps_replacements_in_a_later_tracker, setup, teardown),
+    cmocka_unit_test_setup_teardown(on_sent_reports_each_publish, setup, teardown),
+    cmocka_unit_test_setup_teardown(expire_overdue_completes_expired_messages_now, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        an_untracked_capable_message_does_not_wait_for_a_slot, setup, teardown),
+    cmocka_unit_test_setup_teardown(an_encode_timeout_expires_the_message, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_busy_adapter_does_not_hold_back_a_requeued_message, setup, teardown),
     cmocka_unit_test_setup_teardown(arguments_capacity_and_binding, setup, teardown),
