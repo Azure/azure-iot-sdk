@@ -4111,6 +4111,54 @@ static void a_download_handler_builds_a_file_from_a_related_file(void** state)
   assert_int_equal(fx->failed_count, 0);
 }
 
+/* A manifest may escape the handler id ("microsoft\/delta:1"): it still selects the registered
+ * handler, which hears of the success once. */
+static void an_escaped_download_handler_id_selects_its_handler(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  use_test_download_handler(fx, SU_TEST_DELTA_HANDLER_ID);
+  open_to_connected(fx);
+
+  inject_patch(fx, delta_steps_patch("delta-escaped-handler", 1, 1, "microsoft\\\\/delta:1", 1));
+  pump(fx, 40);
+
+  assert_succeeded_with_delta_code(fx, 0, 0, "");
+  assert_downloads(fx, "s0f0r0");
+  assert_int_equal(fx->delta.build_calls, 1);
+  assert_int_equal(fx->delta.succeeded_calls, 1);
+}
+
+/* A related file id escaped in the manifest ("s0f0r\u0031") finds its decoded fileUrls id. */
+static void an_escaped_related_file_id_finds_its_url(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  use_test_download_handler(fx, SU_TEST_DELTA_HANDLER_ID);
+  open_to_connected(fx);
+  fx->delta.chosen_index = 1;
+
+  static const char plain[] = "\\\"s0f0r1\\\":{";
+  static char doc[SU_TEST_PATCH_SIZE];
+  const char* base = delta_steps_patch("delta-escaped-related", 1, 1, SU_TEST_DELTA_HANDLER_ID, 2);
+  const char* at = strstr(base, plain);
+  assert_non_null(at);
+  int n = snprintf(
+      doc,
+      sizeof(doc),
+      "%.*s\\\"s0f0r\\\\u0031\\\":{%s",
+      (int)(at - base),
+      base,
+      at + sizeof(plain) - 1);
+  assert_true(n > 0 && (size_t)n < sizeof(doc));
+
+  inject_patch(fx, doc);
+  pump(fx, 40);
+
+  assert_succeeded_with_delta_code(fx, 0, 0, "");
+  assert_string_equal(fx->log.download_urls[0], "http://example.com/s0f0r1");
+  assert_string_equal(fx->delta.built_from_id, "s0f0r\\u0031");
+  assert_int_equal(fx->delta.succeeded_calls, 1);
+}
+
 /** @brief How a delta fallback case is provoked. */
 typedef enum
 {
@@ -11154,6 +11202,9 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         a_failed_full_download_after_a_fallback_fails_the_workflow, setup, teardown),
     cmocka_unit_test_setup_teardown(download_handler_phases_may_be_in_progress, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        an_escaped_download_handler_id_selects_its_handler, setup, teardown),
+    cmocka_unit_test_setup_teardown(an_escaped_related_file_id_finds_its_url, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_full_download_after_a_fallback_may_be_in_progress, setup, teardown),
     cmocka_unit_test_setup_teardown(

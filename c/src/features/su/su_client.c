@@ -2830,23 +2830,23 @@ static az_iot_result su_workspace_lay_out(
 }
 
 /**
- * @brief Finds the entry whose id is @p id in an array of handler structs.
+ * @brief Finds the entry whose id is manifest id @p json_id in an array of handler structs.
  *
  * @param[in] entries Structs of @p entry_size bytes whose first member is `const char* id`.
+ * @param json_id The id as manifest JSON text, escapes included.
  * @return The entry, or NULL if none matches.
  */
 static const void* su_find_handler_by_id(
     const void* entries,
     size_t entry_count,
     size_t entry_size,
-    az_span id)
+    az_span json_id)
 {
   const uint8_t* entry = (const uint8_t*)entries;
   for (size_t i = 0; i < entry_count; ++i, entry += entry_size)
   {
     const char* entry_id = *(const char* const*)(const void*)entry;
-    size_t length = strlen(entry_id);
-    if (length == (size_t)az_span_size(id) && memcmp(entry_id, az_span_ptr(id), length) == 0)
+    if (az_iot_json_string_equals(json_id, az_span_create_from_str((char*)(uintptr_t)entry_id)))
     {
       return entry;
     }
@@ -2895,12 +2895,12 @@ static az_iot_result su_check_download_handlers(const az_iot_su_client_config_op
       AZ_IOT_LOG_ERRORF(AZ_IOT_LOG_COMPONENT_SU, "download handler %u: invalid id", (unsigned)i);
       return AZ_IOT_ERR_INVALID_ARG;
     }
-    if (su_find_handler_by_id(
-            options->download_handlers,
-            i,
-            sizeof(*handler),
-            az_span_create((uint8_t*)(uintptr_t)handler->id, (int32_t)length))
-        != NULL)
+    bool duplicate = false;
+    for (size_t j = 0; j < i; ++j)
+    {
+      duplicate = duplicate || strcmp(options->download_handlers[j].id, handler->id) == 0;
+    }
+    if (duplicate)
     {
       AZ_IOT_LOG_ERRORF(
           AZ_IOT_LOG_COMPONENT_SU,
@@ -3968,13 +3968,17 @@ static const az_iot_su_client_update_manifest_file* step_file_entry(
   return NULL;
 }
 
-/** @brief The download URL of file @p id in the request; empty when it has none. */
-static az_span file_download_url(const az_iot_su_client* client, az_span id)
+/**
+ * @brief The download URL of manifest file @p json_id in the request; empty when it has none.
+ *
+ * @param json_id The file id as manifest JSON text, escapes included; `fileUrls` ids are decoded.
+ */
+static az_span file_download_url(const az_iot_su_client* client, az_span json_id)
 {
   const az_iot_su_client_update_request* request = &SU_I(client).current_request;
   for (uint32_t i = 0; i < request->file_urls_count; ++i)
   {
-    if (az_span_is_content_equal(request->file_urls[i].id, id))
+    if (az_iot_json_string_equals(json_id, request->file_urls[i].id))
     {
       return request->file_urls[i].url;
     }
