@@ -1,0 +1,12 @@
+# QEMU overlay: OpenCores Ethernet instead of Wi-Fi, which QEMU does not emulate. Append after
+# sdkconfig.defaults:
+#
+#   idf.py -D "SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.qemu" set-target <esp32|esp32c3|esp32s3>
+#
+# Run with -nic user,model=open_eth (see README.md, "Run in QEMU"). Never flash it to a chip.
+CONFIG_EXAMPLE_CONNECT_WIFI=n
+CONFIG_EXAMPLE_CONNECT_ETHERNET=y
+CONFIG_ETHERNET_OPENETH_SUPPORT=y
+CONFIG_ETH_USE_OPENETH=y
+CONFIG_ETHERNET_INTERNAL_SUPPORT=n
+CONFIG_ETHERNET_SPI_SUPPORT=n

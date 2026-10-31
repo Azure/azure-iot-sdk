@@ -1,0 +1,29 @@
+menu "IoT Hub ESP32 Sample Configuration"
+
+    config HUB_DPS_ID_SCOPE
+        string "DPS ID scope"
+        default "0ne00000000"
+        help
+            Device Provisioning Service ID scope.
+
+    config HUB_DPS_REGISTRATION_ID
+        string "DPS registration id (device id)"
+        default "hub-esp32-device"
+        help
+            DPS registration id. Must match the CN of the device certificate in the
+            esp_secure_cert partition and the device's X.509 enrollment.
+
+    config HUB_DPS_GLOBAL_ENDPOINT
+        string "DPS global endpoint"
+        default ""
+        help
+            DPS global device endpoint host name. Empty: global.azure-devices-provisioning.net.
+
+    config HUB_TELEMETRY_INTERVAL_S
+        int "Telemetry interval (seconds)"
+        range 1 86400
+        default 10
+        help
+            Seconds between two telemetry messages while connected to the hub.
+
+endmenu

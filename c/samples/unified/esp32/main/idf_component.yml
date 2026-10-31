@@ -1,0 +1,5 @@
+## Managed-component dependencies for the ESP32 IoT Hub sample's main component.
+dependencies:
+  idf: ">=6.0"
+  # Required by ESP-IDF's protocol_examples_common (~1.2.0); pinned exactly here.
+  espressif/ethernet_init: "==1.2.0"
