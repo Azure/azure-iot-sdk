@@ -369,12 +369,21 @@ static void stage_error(
 }
 
 /**
- * @brief Stage whatever codes an adapter event carried, for @p scope.
+ * @brief Stage the codes @p evt carried, for @p scope, whatever the event kind.
  *
  * transport_code wins when both are present: a failure below MQTT is the more
  * specific fact, and a wire code alongside it would be describing the session
  * that never formed. Neither present stages nothing, which is correct -- an
  * adapter that reports no codes is conformant.
+ */
+static void stage_error_codes_from_event(
+    az_iot_connection_client* c,
+    az_iot_connection_scope scope,
+    const az_iot_mqtt_event* evt);
+
+/**
+ * @brief As stage_error_codes_from_event(), for a failed session event (not an
+ * acknowledgement) on @p scope; anything else stages nothing.
  */
 static void stage_error_from_event(
     az_iot_connection_client* c,
@@ -425,6 +434,21 @@ static void clear_staged_error(az_iot_connection_client* c)
  * toward retriable: a wrong "do not retry" strands a device that would have
  * recovered, while a wrong "retriable" costs one more attempt.
  */
+static void stage_error_codes_from_event(
+    az_iot_connection_client* c,
+    az_iot_connection_scope scope,
+    const az_iot_mqtt_event* evt)
+{
+  if (evt->transport_code != 0)
+  {
+    stage_error(c, scope, AZ_IOT_CONN_ERR_SRC_TRANSPORT, evt->transport_code, AZ_SPAN_EMPTY);
+  }
+  else if (evt->protocol_code != 0)
+  {
+    stage_error(c, scope, AZ_IOT_CONN_ERR_SRC_MQTT, evt->protocol_code, AZ_SPAN_EMPTY);
+  }
+}
+
 static void stage_error_from_event(
     az_iot_connection_client* c,
     az_iot_connection_scope scope,
@@ -434,25 +458,23 @@ static void stage_error_from_event(
   {
     return;
   }
-  /* Only a failure-bearing event stages. A SUBACK that SUCCEEDED also carries a
-   * protocol_code -- the granted QoS -- and staging that would hand a later
-   * failure a code describing something that worked. A server-sent MQTT 5
+  /* Only a failure-bearing session event stages. A server-sent MQTT 5
    * DISCONNECT is the exception that is not flagged by status: the session
    * ended cleanly as far as the transport is concerned, and the reason code is
-   * the whole point of the event. */
-  bool bears_failure = (evt->status != AZ_IOT_OK)
+   * the whole point of the event.
+   *
+   * Acknowledgements do not stage here: most failures among them (a refused
+   * PUBACK, a FAILS_SELF SUBACK, any UNSUBACK) do not end the session, and
+   * staging them would overwrite, or stand in for, the detail of the failure
+   * that does. The handlers that fail the connection on an ack stage it with
+   * stage_error_codes_from_event(). */
+  bool const is_acknowledgement = evt->kind == AZ_IOT_MQTT_EVT_PUBLISH_ACK
+      || evt->kind == AZ_IOT_MQTT_EVT_SUBSCRIBE_ACK || evt->kind == AZ_IOT_MQTT_EVT_UNSUBSCRIBE_ACK;
+  bool const bears_failure = (!is_acknowledgement && evt->status != AZ_IOT_OK)
       || (evt->kind == AZ_IOT_MQTT_EVT_DISCONNECTED && evt->protocol_code != 0);
-  if (!bears_failure)
+  if (bears_failure)
   {
-    return;
-  }
-  if (evt->transport_code != 0)
-  {
-    stage_error(c, scope, AZ_IOT_CONN_ERR_SRC_TRANSPORT, evt->transport_code, AZ_SPAN_EMPTY);
-  }
-  else if (evt->protocol_code != 0)
-  {
-    stage_error(c, scope, AZ_IOT_CONN_ERR_SRC_MQTT, evt->protocol_code, AZ_SPAN_EMPTY);
+    stage_error_codes_from_event(c, scope, evt);
   }
 }
 
@@ -1066,6 +1088,8 @@ static void complete_publish(
  * it ended for @p reason. */
 static void end_session(az_iot_connection_client* c, az_iot_connection_session_end_reason reason)
 {
+  c->hub_session_ended = false;
+  c->hub_server_disconnect_seen = false;
   if (c->active_client && c->active_client->iface && c->active_client->iface->destroy)
   {
     c->active_client->iface->destroy(c->active_client);
@@ -3409,12 +3433,15 @@ static void on_dps_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
       break;
 
     case AZ_IOT_MQTT_EVT_SUBSCRIBE_ACK:
-      if (c->dps_phase != DPS_PHASE_SUBSCRIBING)
+      /* After a finalize (a DISCONNECT drained in the same process_loop, say) the SUBACK belongs
+       * to the ending session: it must not replace the finalize's detail. */
+      if (c->dps_phase != DPS_PHASE_SUBSCRIBING || c->dps_pending_finalize)
       {
         break;
       }
       if (evt->status != AZ_IOT_OK)
       {
+        stage_error_codes_from_event(c, AZ_IOT_CONN_SCOPE_DPS, evt);
         dps_finalize(c, evt->status, false);
         return;
       }
@@ -4799,12 +4826,8 @@ static void begin_feature_subscriptions(az_iot_connection_client* c)
   }
 }
 
-/* Returns true when `packet_id` was one this gate was waiting on. */
-static bool subscription_gate_settle(
-    az_iot_connection_client* c,
-    uint16_t packet_id,
-    az_iot_result status,
-    int32_t protocol_code)
+/* Returns true when @p ack's packet id was one this gate was waiting on. */
+static bool subscription_gate_settle(az_iot_connection_client* c, const az_iot_mqtt_event* ack)
 {
   if (!c->subscription_gate.active)
   {
@@ -4812,34 +4835,43 @@ static bool subscription_gate_settle(
   }
   for (size_t i = 0; i < c->subscription_gate.pending_count; ++i)
   {
-    if (c->subscription_acks[i].packet_id != packet_id)
+    if (c->subscription_acks[i].packet_id != ack->packet_id)
     {
       continue;
     }
     const bool gated = c->subscription_acks[i].gated;
     const size_t sub_index = c->subscription_acks[i].sub_index;
+    /* A session-ending transition is pending, or close() is disconnecting: a gated ack belongs to
+     * the ending session and must neither replace that transition nor its detail, nor announce
+     * CONNECTED. A self-scoped refusal is still reported, so its entry is not reissued. */
+    const bool session_ending = c->deferred != DEFER_NONE || c->user_close;
 
     c->subscription_acks[i] = c->subscription_acks[c->subscription_gate.pending_count - 1];
     c->subscription_gate.pending_count--;
 
-    if (status != AZ_IOT_OK)
+    if (ack->status != AZ_IOT_OK)
     {
       if (!gated)
       {
-        report_and_drop_subscription(c, sub_index, status, protocol_code);
+        report_and_drop_subscription(c, sub_index, ack->status, ack->protocol_code);
+        return true;
+      }
+      if (session_ending)
+      {
         return true;
       }
       AZ_IOT_LOG_ERRORF(
           AZ_IOT_LOG_COMPONENT_CONNECTION,
           "broker refused '%s' on connect (reason_code=%d)",
           c->persistent_subs[sub_index].topic_filter,
-          (int)protocol_code);
-      fail_subscription_restore(c, status);
+          (int)ack->protocol_code);
+      stage_error_codes_from_event(c, AZ_IOT_CONN_SCOPE_HUB, ack);
+      fail_subscription_restore(c, ack->status);
       return true;
     }
 
     if (gated && c->subscription_gate.gated_outstanding > 0
-        && --c->subscription_gate.gated_outstanding == 0)
+        && --c->subscription_gate.gated_outstanding == 0 && !session_ending)
     {
       announce_connected(c);
     }
@@ -5015,12 +5047,58 @@ static void defer_planned_hub_session_end_completion(az_iot_connection_client* c
   c->deferred_reason = c->planned_hub_session_end.reason;
 }
 
+/** @brief Whether @p evt is a DISCONNECT the server sent (a wire code, no transport failure). */
+static bool is_server_disconnect(const az_iot_mqtt_event* evt)
+{
+  return evt->kind == AZ_IOT_MQTT_EVT_DISCONNECTED && evt->transport_code == 0
+      && evt->protocol_code != 0;
+}
+
+/**
+ * @brief Whether @p evt ends a hub session that already reported its end (e.g. the adapter's own
+ * report of a refused redundant DISCONNECT). The server's DISCONNECT after a local end, and an
+ * identity refusal, are not redundant: they are reported whichever end came first. Once an identity
+ * refusal ended the session, nothing else replaces it.
+ */
+static bool is_redundant_hub_session_end(
+    const az_iot_connection_client* c,
+    const az_iot_mqtt_event* evt)
+{
+  if (evt->kind != AZ_IOT_MQTT_EVT_DISCONNECTED && evt->kind != AZ_IOT_MQTT_EVT_ERROR)
+  {
+    return false;
+  }
+  /* An identity refusal is acted on whatever came first: codes are optional, so they cannot tell it
+   * from a local end. */
+  if (reason_is_identity_refusal(evt->status))
+  {
+    return false;
+  }
+  /* One already ending the session (by DISCONNECTED or ERROR) is not replaced. */
+  if (c->deferred != DEFER_NONE && reason_is_identity_refusal(c->deferred_reason))
+  {
+    return true;
+  }
+  return c->hub_session_ended && (!is_server_disconnect(evt) || c->hub_server_disconnect_seen);
+}
+
 static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
 {
   az_iot_connection_client* c = (az_iot_connection_client*)user_ctx;
   if (!c || !evt)
   {
     return;
+  }
+  if (is_redundant_hub_session_end(c, evt))
+  {
+    AZ_IOT_LOG_DEBUG(AZ_IOT_LOG_COMPONENT_CONNECTION, "end event after the session ended; ignored");
+    return;
+  }
+  /* An identity refusal replacing a pending end: that end's detail is not its cause. */
+  if (c->deferred != DEFER_NONE && reason_is_identity_refusal(evt->status)
+      && (evt->kind == AZ_IOT_MQTT_EVT_DISCONNECTED || evt->kind == AZ_IOT_MQTT_EVT_ERROR))
+  {
+    clear_staged_error(c);
   }
 
   /* See the DPS handler: staged here so every failure route below inherits it. */
@@ -5103,6 +5181,8 @@ static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
 
     case AZ_IOT_MQTT_EVT_DISCONNECTED:
       /* An mqttv5 Not authorized DISCONNECT is an identity refusal too. */
+      c->hub_session_ended = true;
+      c->hub_server_disconnect_seen = c->hub_server_disconnect_seen || is_server_disconnect(evt);
       note_identity_refusal(c, evt->status);
       if (c->user_close)
       {
@@ -5294,7 +5374,18 @@ static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
               AZ_IOT_LOG_COMPONENT_CONNECTION, "presence SUBACK ignored: its timeout expired");
           break;
         }
+        /* A session-ending transition is pending (a server DISCONNECT drained in the
+         * same process_loop, say), or close() is disconnecting: the handshake of the ending session
+         * must neither replace that transition nor its detail. */
+        if (c->deferred != DEFER_NONE || c->user_close)
+        {
+          break;
+        }
         az_iot_result pr = (evt->status == AZ_IOT_OK) ? presence_publish_birth(c) : evt->status;
+        if (evt->status != AZ_IOT_OK)
+        {
+          stage_error_codes_from_event(c, AZ_IOT_CONN_SCOPE_HUB, evt);
+        }
         if (pr != AZ_IOT_OK)
         {
           c->presence.phase = PRESENCE_PHASE_NONE;
@@ -5306,7 +5397,7 @@ static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
         }
         break;
       }
-      if (!subscription_gate_settle(c, evt->packet_id, evt->status, evt->protocol_code))
+      if (!subscription_gate_settle(c, evt))
       {
         /* Not one this connection correlated: an ack for a SUBSCRIBE it never
          * issued, or one left over from a session that has already gone. There
@@ -6256,6 +6347,8 @@ static void apply_deferred(az_iot_connection_client* c)
   }
   int action = c->deferred;
   az_iot_result reason = c->deferred_reason;
+  c->hub_session_ended = false;
+  c->hub_server_disconnect_seen = false;
   c->deferred = DEFER_NONE;
   c->deferred_reason = AZ_IOT_OK;
   /* close() took the planned end over before its DISCONNECTED arrived. */
@@ -9217,8 +9310,11 @@ az_iot_result az_iot_connection_client__add_subscription_on_connect(
    * connection is up, or a connect batch is still in flight and this filter can
    * join it. Feature clients rebuilt from the CONNECTED callback take this
    * path, so the ack is correlated like any other -- otherwise a refusal would
-   * leave the session reporting CONNECTED with a filter that is dead. */
-  if (client->active_client && client->active_client->iface
+   * leave the session reporting CONNECTED with a filter that is dead. A session already
+   * ending (a transition pending, or close() disconnecting) cannot carry it: the entry waits for
+   * the next session. */
+  if (client->active_client && client->active_client->iface && client->deferred == DEFER_NONE
+      && !client->user_close
       && (client->state[AZ_IOT_CONN_SCOPE_HUB] == AZ_IOT_CONN_STATE_CONNECTED
           || client->subscription_gate.active))
   {
