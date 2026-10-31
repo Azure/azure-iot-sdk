@@ -663,10 +663,12 @@ static const char* dps_endpoint(const az_iot_connection_client* c)
                                                        : DPS_DEFAULT_GLOBAL_ENDPOINT;
 }
 
-/** @brief Restart the identity recovery ladder and its duration clock. */
+/** @brief Restart the identity recovery ladders and their duration clock. */
 static void reset_identity_recovery(az_iot_connection_client* c)
 {
   c->identity_retry_attempt = 0;
+  c->identity_retry_attempt_after_assignment = 0;
+  c->hub_newly_assigned = false;
   c->identity_recovery_started_ms = 0;
   c->identity_recovery_active = false;
 }
@@ -1918,6 +1920,19 @@ static void stop_identity_recovery(az_iot_connection_client* c, az_iot_connectio
   fault_retry_scopes(c, scope, c->identity_recovery_reason);
 }
 
+/** @brief Schedules the next identity recovery attempt on the
+ * after_assignment_policy ladder while the hub is newly assigned and that
+ * ladder has attempts left.
+ *
+ * @return Whether a retry was scheduled, with its delay in @p delay. */
+static bool schedule_identity_retry_after_assignment(az_iot_connection_client* c, uint32_t* delay)
+{
+  const az_iot_retry_policy* policy = &c->opts.identity_recovery.after_assignment_policy;
+  return c->hub_newly_assigned && az_iot_retry_policy_is_enabled(policy)
+      && az_iot_retry_policy__next(
+             policy, &c->identity_retry_attempt_after_assignment, &c->rng_state, delay);
+}
+
 /* Retry after the hub refused the identity.
  *
  * A refusal does not say whether the device is disabled, its credential
@@ -1926,7 +1941,11 @@ static void stop_identity_recovery(az_iot_connection_client* c, az_iot_connectio
  * on_mqtt_event() has already raised needs_reprovision for a CONNACK refusal,
  * and the same ladder paces the registrations. The ladder is not reset by a
  * successful registration, so DPS-accept / hub-reject cycles stay bounded by
- * max_attempts and max_duration_seconds. */
+ * max_attempts and max_duration_seconds.
+ *
+ * A hub DPS has just assigned may not know the new registration yet, so
+ * refusals until HUB:CONNECTED first climb the short after_assignment_policy
+ * ladder. It is not reset by a registration either. */
 static void schedule_identity_recovery(az_iot_connection_client* c, az_iot_result reason)
 {
   uint64_t now = az_iot_time_mono_ms();
@@ -1944,12 +1963,15 @@ static void schedule_identity_recovery(az_iot_connection_client* c, az_iot_resul
   bool retry = !c->user_close && az_iot_retry_policy_is_enabled(&c->opts.reconnection_policy)
       && c->opts.identity_recovery.mode != AZ_IOT_IDENTITY_RECOVERY_NONE;
   uint64_t deadline = identity_recovery_deadline_ms(c);
-  if (retry
+  bool after_assignment = retry && schedule_identity_retry_after_assignment(c, &delay);
+  if (retry && !after_assignment
       && !az_iot_retry_policy__next(
           identity_recovery_policy(c), &c->identity_retry_attempt, &c->rng_state, &delay))
   {
     retry = false;
   }
+  uint32_t attempt
+      = after_assignment ? c->identity_retry_attempt_after_assignment : c->identity_retry_attempt;
   /* No attempt is scheduled to start at or past the deadline. */
   if (retry && deadline != 0 && now + delay >= deadline)
   {
@@ -1958,7 +1980,7 @@ static void schedule_identity_recovery(az_iot_connection_client* c, az_iot_resul
   }
 
   c->recovery_report.classification = AZ_IOT_CONN_FAILURE_IDENTITY;
-  c->recovery_report.attempt = c->identity_retry_attempt;
+  c->recovery_report.attempt = attempt;
   c->recovery_report.delay_ms = retry ? delay : 0u;
   c->recovery_report.reprovisions = retry && c->needs_reprovision;
   c->recovery_report.staged = true;
@@ -1968,17 +1990,18 @@ static void schedule_identity_recovery(az_iot_connection_client* c, az_iot_resul
         AZ_IOT_LOG_COMPONENT_CONNECTION,
         "hub refused the identity (%s); identity recovery stopped after %u attempt(s)",
         az_iot_result_to_string(reason),
-        (unsigned)c->identity_retry_attempt);
+        (unsigned)attempt);
     fault_retry_scopes(c, AZ_IOT_CONN_SCOPE_HUB, reason);
     return;
   }
   AZ_IOT_LOG_WARNF(
       AZ_IOT_LOG_COMPONENT_CONNECTION,
-      "hub refused the identity (%s); %s in %u ms (attempt %u)",
+      "hub refused the identity (%s)%s; %s in %u ms (attempt %u)",
       az_iot_result_to_string(reason),
+      after_assignment ? " after its DPS assignment" : "",
       c->needs_reprovision ? "re-provisioning" : "retrying the hub",
       (unsigned)delay,
-      (unsigned)c->identity_retry_attempt);
+      (unsigned)attempt);
   c->reconnect_due_ms = now + delay;
   set_state_to(c, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_RETRY_PENDING, reason);
 }
@@ -4419,10 +4442,12 @@ static void dps_apply_deferred(az_iot_connection_client* c)
    * one just handed to us, and making the first connect to it wait at the
    * old ladder's cap would be backoff for a failure that never happened.
    *
-   * The identity recovery ladder is NOT reset: a hub that keeps refusing the
-   * device after every registration must still exhaust it. */
+   * The identity recovery ladders are NOT reset: a hub that keeps refusing the
+   * device after every registration must still exhaust them. A refusal before
+   * HUB:CONNECTED may only mean the registration has not reached the hub yet. */
   c->retry_attempt[AZ_IOT_CONN_SCOPE_DPS] = 0;
   c->retry_attempt[AZ_IOT_CONN_SCOPE_HUB] = 0;
+  c->hub_newly_assigned = true;
 
   /* The service answered, so it is reachable: a user session that failed
    * earlier should not still be serving out a backoff from that. */
@@ -6437,6 +6462,8 @@ AZ_NODISCARD az_iot_connection_client_options az_iot_connection_client_options_d
       = AZ_IOT_DEFAULT_MAX_HUB_CONNECT_ATTEMPTS_BEFORE_REPROVISION;
   opts.identity_recovery.policy = az_iot_connection_client_get_default_identity_recovery_policy();
   opts.identity_recovery.mode = AZ_IOT_IDENTITY_RECOVERY_RETRY_HUB;
+  opts.identity_recovery.after_assignment_policy
+      = az_iot_connection_client_get_default_identity_recovery_after_assignment_policy();
   opts.max_unconfirmed_delivery_timeout_ms = AZ_IOT_DEFAULT_MAX_UNCONFIRMED_DELIVERY_TIMEOUT_MS;
   return opts;
 }
