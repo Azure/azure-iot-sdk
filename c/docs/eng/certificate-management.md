@@ -159,8 +159,8 @@ support it.
 - **Body:** `{ "id": "<deviceId>", "csr": "<base64 DER>", "replace": "*"|<request id>|null }`.
   The device id is taken from the connected client id.
 - **Two-phase:** `202 Accepted` (signing in progress), then `200` with the issued chain.
-- **Recovery:** pass a prior `request_id` to resubmit after a dropped connection; `replace`
-  supersedes an active hub-side operation.
+- **Recovery:** a renewal open when the session ends fails with `AZ_IOT_ERR_NOT_CONNECTED`; pass
+  its `request_id` to resubmit once reconnected. `replace` supersedes an active hub-side operation.
 - **Errors:** routed on the response status (`202`/`200`/other). The JSON body's `errorCode`
   is surfaced as `service_code`, `retryAfter` as `retry_after_s`, `info.credentialError` as
   `credential_error`, `info.credentialMessage` as `credential_message` and `trackingId` as
@@ -191,11 +191,13 @@ The CSR always comes from the provider's `get_csr()` (subject: the device id), r
 receives `az_iot_csr_event`: `AZ_IOT_CSR_ACCEPTED`, then `AZ_IOT_CSR_ISSUED` with the chain and
 `store_status`, or `AZ_IOT_CSR_FAILED` with `status`, `service_code`, `retry_after_s`,
 `credential_error`, `credential_message` and `tracking_id`. One
-renewal may be in flight (`AZ_IOT_ERR_BUSY` otherwise); with no terminal response within an
-internal timeout the callback fires once with `AZ_IOT_CSR_FAILED` / `AZ_IOT_ERR_TIMEOUT`.
+renewal may be in flight (`AZ_IOT_ERR_BUSY` otherwise); with no terminal response within
+`opts.csr_response_timeout_ms` (120 s by default, restarted by a `202`) the callback fires once with
+`AZ_IOT_CSR_FAILED` / `AZ_IOT_ERR_TIMEOUT`, and a session end fails it with
+`AZ_IOT_ERR_NOT_CONNECTED`.
 Requests are tracked from a pending-PUBACK slot reserved when `opts.csr_payload_buffer` is set: a
-broker rejection fires `AZ_IOT_CSR_FAILED` with the PUBACK status at once. Cancel, timeout and a
-terminal response free the slot, so the next request is never held by an acknowledgement that does not come.
+broker rejection fires `AZ_IOT_CSR_FAILED` with the PUBACK status at once. Cancel, timeout, a
+session end and a terminal response free the slot, so the next request is never held by an acknowledgement that does not come.
 
 **Storing, then reconnecting.** On a complete `200` the SDK stores the chain with the
 provider's `store_issued_certificate()` before `AZ_IOT_CSR_ISSUED`, and reports the result in
