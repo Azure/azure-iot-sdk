@@ -443,6 +443,21 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
 
                 // The birth ack was accepted, possibly racing with the timeout, so the task has already completed with it.
                 BirthAck birthAck = await birthAckReceivedTaskCompletionSource.Task;
+                if (TryForgetTwinVersionsNewerThanHub(birth, birthAck))
+                {
+                    // IoT hub's versions never decrease, so it never issued a version newer than its own. It treats such a
+                    // version as current, so it doesn't push that section, and it doesn't send this connection the desired
+                    // properties patches up to that version. Only a birth with valid versions makes it do so, so reconnect.
+                    Trace.TraceWarning(
+                        "This device announced twin versions (desired {0}, reported {1}) newer than IoT hub's (desired {2}, reported {3}). Reconnecting to announce valid versions.",
+                        birth.DesiredVersion,
+                        birth.ReportedVersion,
+                        birthAck.DesiredVersion,
+                        birthAck.ReportedVersion);
+                    await connection.DisconnectAsync(true, new MqttDisconnect() { Reason = MqttDisconnectReasonCode.NormalDisconnection }, cancellationToken);
+                    return;
+                }
+
                 if (twinPushWatch != null && IsTwinPushExpected(birth, birthAck))
                 {
                     _ = WaitForExpectedTwinPushAsync(connection, presenceOwner, connectNonce, twinPushWatch);
@@ -466,6 +481,26 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
             // IoT hub's versions are never 0, so a 0 means the birth ack didn't include that section's version.
             return (birth.PushDesired && birthAck.DesiredVersion != 0 && birthAck.DesiredVersion != birth.DesiredVersion)
                 || (birth.PushReported && birthAck.ReportedVersion != 0 && birthAck.ReportedVersion != birth.ReportedVersion);
+        }
+
+        // Stops announcing each twin version that the given birth announced but that is newer than IoT hub's, and returns
+        // whether there was any. A version the twin client recorded since the birth was sent is kept.
+        private bool TryForgetTwinVersionsNewerThanHub(Birth birth, BirthAck birthAck)
+        {
+            // IoT hub's versions are never 0, so a 0 means the birth ack didn't include that section's version.
+            bool isDesiredNewer = birthAck.DesiredVersion != 0 && birth.DesiredVersion > birthAck.DesiredVersion;
+            bool isReportedNewer = birthAck.ReportedVersion != 0 && birth.ReportedVersion > birthAck.ReportedVersion;
+            if (isDesiredNewer)
+            {
+                Interlocked.CompareExchange(ref _desiredPropertiesVersion, 0, birth.DesiredVersion);
+            }
+
+            if (isReportedNewer)
+            {
+                Interlocked.CompareExchange(ref _reportedPropertiesVersion, 0, birth.ReportedVersion);
+            }
+
+            return isDesiredNewer || isReportedNewer;
         }
 
         // Wait for the twin push that IoT hub should send for the given connection's birth. If it doesn't arrive in time, IoT hub

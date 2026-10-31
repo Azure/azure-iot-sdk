@@ -353,8 +353,9 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.MQTTv5
                 TwinEventRecorder events = new(twinClient);
                 await ConnectAsync(testDeviceContext, cancellationToken);
 
-                // IoT hub's push may look stale (and so carry no desired section) until the birth ack reveals that this
-                // device's version is not valid, at which point the twin client fetches the desired properties instead.
+                // IoT hub treats the restored version as current, so its first push carries no desired section. Once the birth
+                // ack reveals that this version is not valid, the client reconnects to announce a valid one, and gets the
+                // desired properties from IoT hub's push or the GET it sends to resync them.
                 TwinPushSection? desired;
                 do
                 {

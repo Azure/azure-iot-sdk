@@ -361,6 +361,40 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             Assert.Empty(mockMqttClient.DisconnectRequests);
         }
 
+        [Fact]
+        public async Task BirthAckWithOlderTwinVersionThanAnnouncedReconnectsToAnnounceValidVersions()
+        {
+            using MockConnectionMqttClient mockMqttClient = new()
+            {
+                AutoRespondToBirth = true,
+                AutoBirthAck = new BirthAck() { DesiredVersion = 2, ReportedVersion = 3 },
+            };
+            MqttV5ConnectionClientOptions options = new()
+            {
+                MqttClient = mockMqttClient,
+                ConnectionRetryPolicy = new ExponentialBackoffRetryPolicy(uint.MaxValue, TimeSpan.Zero, useJitter: false),
+            };
+            using ConnectionClient connectionClient = new(options);
+            using TwinClient twinClient = new(connectionClient, new Device.Models.Twin.TwinState() { DesiredVersion = 5, ReportedVersion = 3 });
+            connectionClient.TwinPushTimeoutSchedule = _ => Timeout.InfiniteTimeSpan;
+
+            // Connecting completes only once IoT hub acknowledges a birth with valid versions.
+            await connectionClient.ConnectToHubAsync(GetMockConnectionContext(), TestContext.Current.CancellationToken)
+                .WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+
+            Birth[] births = mockMqttClient.SentMqttTrafficInOrder
+                .Select(traffic => traffic.Publish).OfType<MqttPublish>()
+                .Where(publish => publish.Topic.EndsWith("/srv/presence", StringComparison.Ordinal))
+                .Select(publish => Birth.Parser.ParseFrom(publish.Payload))
+                .ToArray();
+            Assert.Equal(2, births.Length);
+            Assert.Equal(5ul, births[0].DesiredVersion);
+            Assert.Equal(3ul, births[0].ReportedVersion);
+            Assert.Equal(0ul, births[1].DesiredVersion);
+            Assert.Equal(3ul, births[1].ReportedVersion);
+            Assert.Single(mockMqttClient.DisconnectRequests);
+        }
+
         private static async Task WaitForBirthCountAsync(MockConnectionMqttClient mockMqttClient, int count)
         {
             using CancellationTokenSource timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
