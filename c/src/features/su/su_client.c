@@ -44,6 +44,19 @@
 /** @brief Bytes of the persisted-record header, which precedes the request. */
 #define AZ_IOT_SU_PERSIST_HEADER_SIZE 40u
 
+/** @brief How far the current file has got (az_iot_su_client::file_download_phase). */
+typedef enum
+{
+  /** The file starts: a download handler, if the file names one, chooses a related file. */
+  SU_FILE_PHASE_CHOOSE = 0,
+  /** The chosen related file is downloaded, then its hash is checked. */
+  SU_FILE_PHASE_DOWNLOAD_RELATED,
+  /** The handler builds the file from the related file, then the file's hash is checked. */
+  SU_FILE_PHASE_BUILD,
+  /** The file is downloaded in full, then its hash is checked. */
+  SU_FILE_PHASE_FULL_DOWNLOAD,
+} su_file_download_phase;
+
 /* The public header reserves opaque storage for the SDK-built channel so the
  * client struct stays caller-allocated with no hidden allocation. If the
  * channel ever outgrows that reservation this fails the build rather than
@@ -220,7 +233,12 @@ static void result_step_success(az_iot_su_client* client, uint32_t step)
     SU_I(client).step_results[step].outcome = AZ_IOT_SU_OUTCOME_SUCCEEDED;
     SU_I(client).step_results[step].failure_origin = AZ_IOT_SU_FAILURE_ORIGIN_NOT_APPLICABLE;
     SU_I(client).step_results[step].result_code = AZ_IOT_SU_AGENT_RESULT_CODE_SUCCESS;
-    SU_I(client).step_results[step].extended_result_code = 0;
+    /* A delta fallback recorded while the step's files were downloaded is kept. */
+    int32_t* extended = &SU_I(client).step_results[step].extended_result_code;
+    if (((uint32_t)*extended >> 28) != AZ_IOT_SU_FACILITY_DELTA)
+    {
+      *extended = 0;
+    }
   }
 }
 
@@ -256,6 +274,15 @@ static void result_overall_success(az_iot_su_client* client)
   az_iot_su_client_install_result* r = &SU_I(client).install_result;
   r->result_code = AZ_IOT_SU_AGENT_RESULT_CODE_SUCCESS;
   r->extended_result_code = 0;
+  /* The first step's delta fallback, as a failure carries the first failed step's code. */
+  for (int32_t i = 0; i < SU_I(client).step_results_count && r->extended_result_code == 0; ++i)
+  {
+    if (((uint32_t)SU_I(client).step_results[i].extended_result_code >> 28)
+        == AZ_IOT_SU_FACILITY_DELTA)
+    {
+      r->extended_result_code = SU_I(client).step_results[i].extended_result_code;
+    }
+  }
 
   /* Latch the outcome and the applied update id while the manifest is still
    * live: reset_to_idle() clears it before the report is emitted. */
@@ -2162,6 +2189,7 @@ static void set_su_state(az_iot_su_client* client, az_iot_su_state next)
     return;
   }
   SU_I(client).state = next;
+  SU_I(client).file_download_phase = (uint8_t)SU_FILE_PHASE_CHOOSE;
   if (next == AZ_IOT_SU_STATE_FAILED)
   {
     SU_I(client).reboot_requested = false; /* nothing left to activate */
@@ -2850,23 +2878,24 @@ static az_iot_result su_workspace_lay_out(
 }
 
 /**
- * @brief Finds the entry whose id is @p id in an array of handler structs.
+ * @brief Finds the entry whose id is manifest id @p json_id in an array of handler structs.
  *
  * @param[in] entries Structs of @p entry_size bytes whose first member is `const char* id`.
+ * @param json_id The id as manifest JSON text, escapes included.
  * @return The entry, or NULL if none matches.
  */
 static const void* su_find_handler_by_id(
     const void* entries,
     size_t entry_count,
     size_t entry_size,
-    az_span id)
+    az_span json_id)
 {
   const uint8_t* entry = (const uint8_t*)entries;
   for (size_t i = 0; i < entry_count; ++i, entry += entry_size)
   {
     const char* entry_id = *(const char* const*)(const void*)entry;
-    size_t length = strlen(entry_id);
-    if (length == (size_t)az_span_size(id) && memcmp(entry_id, az_span_ptr(id), length) == 0)
+    if (az_iot_json_string_equals(
+            json_id, az_span_create_from_str((char*)(uintptr_t)entry_id), false))
     {
       return entry;
     }
@@ -2915,12 +2944,12 @@ static az_iot_result su_check_download_handlers(const az_iot_su_client_config_op
       AZ_IOT_LOG_ERRORF(AZ_IOT_LOG_COMPONENT_SU, "download handler %u: invalid id", (unsigned)i);
       return AZ_IOT_ERR_INVALID_ARG;
     }
-    if (su_find_handler_by_id(
-            options->download_handlers,
-            i,
-            sizeof(*handler),
-            az_span_create((uint8_t*)(uintptr_t)handler->id, (int32_t)length))
-        != NULL)
+    bool duplicate = false;
+    for (size_t j = 0; j < i; ++j)
+    {
+      duplicate = duplicate || strcmp(options->download_handlers[j].id, handler->id) == 0;
+    }
+    if (duplicate)
     {
       AZ_IOT_LOG_ERRORF(
           AZ_IOT_LOG_COMPONENT_SU,
@@ -3957,6 +3986,212 @@ static const az_iot_su_client_update_manifest_file* step_file_entry(
   return az_iot_su__find_manifest_file(m, id);
 }
 
+/**
+ * @brief The download URL of manifest file @p json_id in the request; empty when it has none.
+ *
+ * @param json_id The file id as manifest JSON text, escapes included; `fileUrls` ids are decoded.
+ */
+static az_span file_download_url(const az_iot_su_client* client, az_span json_id)
+{
+  const az_iot_su_client_file_url* file_url = az_iot_su__find_file_url(
+      SU_I(client).current_request.file_urls,
+      SU_I(client).current_request.file_urls_count,
+      json_id);
+  return (file_url != NULL) ? file_url->url : AZ_SPAN_EMPTY;
+}
+
+/**
+ * @brief Copy @p details into step @p step_index's details slot.
+ *
+ * The caller has checked the step exists and @p details fits.
+ */
+static void store_step_details(az_iot_su_client* client, uint32_t step_index, az_span details)
+{
+  int32_t len = az_span_size(details);
+  uint8_t* slot = SU_I(client).step_details + (size_t)step_index * SU_I(client).step_details_size;
+  if (len > 0)
+  {
+    memmove(slot, az_span_ptr(details), (size_t)len);
+  }
+  SU_I(client).step_results[step_index].result_details = az_span_create(slot, len);
+}
+
+/** @brief Result details of a delta fallback, indexed by AZ_IOT_SU_DELTA_ERROR_* sub-code. */
+static const char* const k_delta_fallback_details[] = {
+  "",
+  "full download: no download handler",
+  "full download: no source",
+  "full download: related file download failed",
+  "full download: related file hash mismatch",
+  "full download: build from related file failed",
+  "full download: built file hash mismatch",
+};
+
+/**
+ * @brief Give up building @p file from a related file: it is downloaded in full.
+ *
+ * Step @p step keeps its first AZ_IOT_SU_FACILITY_DELTA code and, when it has no details yet and
+ * they fit, a short text naming the cause.
+ *
+ * @param sub_code An AZ_IOT_SU_DELTA_ERROR_* sub-code.
+ * @return AZ_IOT_SU_RESULT_FAILURE.
+ */
+static int32_t fall_back_to_full_download(
+    az_iot_su_client* client,
+    uint32_t step,
+    const az_iot_su_client_update_manifest_file* file,
+    uint32_t sub_code)
+{
+  const char* details = k_delta_fallback_details[sub_code];
+  AZ_IOT_LOG_WARNF(
+      AZ_IOT_LOG_COMPONENT_SU,
+      "file %.*s: %s",
+      (int)az_span_size(file->id),
+      (const char*)az_span_ptr(file->id),
+      details);
+  SU_I(client).file_download_phase = (uint8_t)SU_FILE_PHASE_FULL_DOWNLOAD;
+  if ((int32_t)step >= SU_I(client).step_results_count)
+  {
+    return AZ_IOT_SU_RESULT_FAILURE;
+  }
+  az_iot_su_step_result* result = &SU_I(client).step_results[step];
+  if (result->extended_result_code == 0)
+  {
+    result->extended_result_code = AZ_IOT_SU_EXTENDED_RESULT(AZ_IOT_SU_FACILITY_DELTA, sub_code);
+    size_t length = strlen(details);
+    if (az_span_size(result->result_details) == 0 && length <= SU_I(client).step_details_size)
+    {
+      store_step_details(
+          client, step, az_span_create((uint8_t*)(uintptr_t)details, (int32_t)length));
+    }
+  }
+  return AZ_IOT_SU_RESULT_FAILURE;
+}
+
+/**
+ * @brief Drive @p file through the download handler its manifest entry names: choose a related
+ * file, download it and check its hash, build @p file from it and check @p file's hash.
+ *
+ * One phase follows another in the same call until a hook returns IN_PROGRESS.
+ *
+ * @param file_slot @p file's position in step @p step, as download_fn gets it.
+ * @param file_count Number of files of step @p step.
+ * @return AZ_IOT_SU_RESULT_SUCCESS when @p file is built and verified, IN_PROGRESS to be called
+ * again, or AZ_IOT_SU_RESULT_FAILURE after a fallback: @p file is then downloaded in full.
+ */
+static int32_t build_file_with_download_handler(
+    az_iot_su_client* client,
+    uint32_t step,
+    uint32_t file_slot,
+    uint32_t file_count,
+    const az_iot_su_client_update_manifest_file* file)
+{
+  const az_iot_su_platform_hooks* hooks = &SU_I(client).hooks;
+  const az_iot_su_client_update_manifest* manifest = &SU_I(client).current_manifest;
+  const az_iot_su_download_handler* handler
+      = (const az_iot_su_download_handler*)su_find_handler_by_id(
+          SU_I(client).download_handlers,
+          SU_I(client).download_handler_count,
+          sizeof(az_iot_su_download_handler),
+          file->download_handler_id);
+  if (handler == NULL)
+  {
+    return fall_back_to_full_download(client, step, file, AZ_IOT_SU_DELTA_ERROR_NO_HANDLER);
+  }
+
+  if (SU_I(client).file_download_phase == (uint8_t)SU_FILE_PHASE_CHOOSE)
+  {
+    uint32_t chosen = 0;
+    int32_t chose = (file->related_files_count > 0)
+        ? handler->choose_related_file_fn(manifest, file, &chosen, handler->user_ctx)
+        : AZ_IOT_SU_RESULT_FAILURE;
+    if (chose == AZ_IOT_SU_RESULT_IN_PROGRESS)
+    {
+      return AZ_IOT_SU_RESULT_IN_PROGRESS;
+    }
+    if (chose != AZ_IOT_SU_RESULT_SUCCESS || chosen >= file->related_files_count
+        || file->related_files_index + chosen >= manifest->related_files_count)
+    {
+      return fall_back_to_full_download(client, step, file, AZ_IOT_SU_DELTA_ERROR_NO_SOURCE);
+    }
+    SU_I(client).chosen_related_file_index = chosen;
+    SU_I(client).file_download_phase = (uint8_t)SU_FILE_PHASE_DOWNLOAD_RELATED;
+  }
+  const az_iot_su_client_update_manifest_file* related
+      = &manifest
+             ->related_files[file->related_files_index + SU_I(client).chosen_related_file_index];
+
+  if (SU_I(client).file_download_phase == (uint8_t)SU_FILE_PHASE_DOWNLOAD_RELATED)
+  {
+    az_span url = file_download_url(client, related->id);
+    int32_t downloaded = (hooks->download_fn != NULL && az_span_size(url) > 0)
+        ? hooks->download_fn(related, url, file_slot, file_count, hooks->user_ctx)
+        : AZ_IOT_SU_RESULT_FAILURE;
+    if (downloaded == AZ_IOT_SU_RESULT_IN_PROGRESS)
+    {
+      return AZ_IOT_SU_RESULT_IN_PROGRESS;
+    }
+    if (downloaded != AZ_IOT_SU_RESULT_SUCCESS)
+    {
+      return fall_back_to_full_download(client, step, file, AZ_IOT_SU_DELTA_ERROR_RELATED_DOWNLOAD);
+    }
+    if (verify_file_hash(client, related, file_slot) != AZ_IOT_SU_RESULT_SUCCESS)
+    {
+      return fall_back_to_full_download(client, step, file, AZ_IOT_SU_DELTA_ERROR_RELATED_HASH);
+    }
+    SU_I(client).file_download_phase = (uint8_t)SU_FILE_PHASE_BUILD;
+  }
+
+  int32_t built = handler->build_file_from_related_fn(file, related, file_slot, handler->user_ctx);
+  if (built == AZ_IOT_SU_RESULT_IN_PROGRESS)
+  {
+    return AZ_IOT_SU_RESULT_IN_PROGRESS;
+  }
+  if (built != AZ_IOT_SU_RESULT_SUCCESS)
+  {
+    return fall_back_to_full_download(client, step, file, AZ_IOT_SU_DELTA_ERROR_BUILD);
+  }
+  if (verify_file_hash(client, file, file_slot) != AZ_IOT_SU_RESULT_SUCCESS)
+  {
+    return fall_back_to_full_download(client, step, file, AZ_IOT_SU_DELTA_ERROR_BUILT_HASH);
+  }
+  AZ_IOT_LOG_INFOF(
+      AZ_IOT_LOG_COMPONENT_SU,
+      "file %.*s built from related file %.*s",
+      (int)az_span_size(file->id),
+      (const char*)az_span_ptr(file->id),
+      (int)az_span_size(related->id),
+      (const char*)az_span_ptr(related->id));
+  return AZ_IOT_SU_RESULT_SUCCESS;
+}
+
+/**
+ * @brief Call workflow_succeeded_fn of each download handler a file of the manifest names, once,
+ * in registration order.
+ */
+static void notify_download_handlers_of_success(az_iot_su_client* client)
+{
+  const az_iot_su_client_update_manifest* manifest = &SU_I(client).current_manifest;
+  for (size_t h = 0; h < SU_I(client).download_handler_count; ++h)
+  {
+    const az_iot_su_download_handler* handler = &SU_I(client).download_handlers[h];
+    if (handler->workflow_succeeded_fn == NULL)
+    {
+      continue;
+    }
+    for (uint32_t i = 0; i < manifest->files_count; ++i)
+    {
+      if (su_find_handler_by_id(
+              handler, 1, sizeof(*handler), manifest->files[i].download_handler_id)
+          != NULL)
+      {
+        handler->workflow_succeeded_fn(manifest, handler->user_ctx);
+        break;
+      }
+    }
+  }
+}
+
 /* Begin a best-effort reverse-order rollback and finish in Failed/Idle.
  * restore_count is the number of leading steps that have a backup to undo;
  * steps [restore_count-1 .. 0] are restored in reverse order. A failure during
@@ -4251,11 +4486,22 @@ az_iot_result az_iot_su_client_do_work(az_iot_su_client* client)
         (void)az_iot_su__report_state(client);
         break;
       }
-      const az_iot_su_client_file_url* file_url = az_iot_su__find_file_url(
-          SU_I(client).current_request.file_urls,
-          SU_I(client).current_request.file_urls_count,
-          file->id);
-      az_span url = (file_url != NULL) ? file_url->url : AZ_SPAN_EMPTY;
+      /* With handlers registered, a file naming one is built from a related file first. */
+      if (SU_I(client).download_handler_count > 0 && az_span_size(file->download_handler_id) > 0
+          && SU_I(client).file_download_phase != (uint8_t)SU_FILE_PHASE_FULL_DOWNLOAD)
+      {
+        int32_t built = build_file_with_download_handler(client, step, fidx, fcount, file);
+        if (built == AZ_IOT_SU_RESULT_SUCCESS)
+        {
+          SU_I(client).file_download_phase = (uint8_t)SU_FILE_PHASE_CHOOSE;
+          SU_I(client).current_file++;
+        }
+        /* After a fallback the full download starts on the next do_work(), so download_fn is
+         * called at most once per call. */
+        break;
+      }
+      SU_I(client).file_download_phase = (uint8_t)SU_FILE_PHASE_FULL_DOWNLOAD;
+      az_span url = file_download_url(client, file->id);
       int32_t dr = (h->download_fn != NULL) ? h->download_fn(file, url, fidx, fcount, h->user_ctx)
                                             : AZ_IOT_SU_RESULT_FAILURE;
       if (dr == AZ_IOT_SU_RESULT_IN_PROGRESS)
@@ -4282,6 +4528,7 @@ az_iot_result az_iot_su_client_do_work(az_iot_su_client* client)
           break;
         }
       }
+      SU_I(client).file_download_phase = (uint8_t)SU_FILE_PHASE_CHOOSE;
       SU_I(client).current_file++;
       break;
     }
@@ -4400,6 +4647,7 @@ az_iot_result az_iot_su_client_do_work(az_iot_su_client* client)
       result_overall_success(client);
       latch_terminal(client, AZ_IOT_SU_OUTCOME_SUCCEEDED);
       SU_I(client).reboot_owed = (ar == AZ_IOT_SU_RESULT_REBOOT_REQUIRED);
+      notify_download_handlers_of_success(client);
       reset_to_idle(client);
       (void)az_iot_su__report_state(client);
       break;
@@ -4437,13 +4685,7 @@ static void write_step_details(az_iot_su_client* client, uint32_t step_index, az
   {
     return;
   }
-  int32_t len = az_span_size(details);
-  uint8_t* slot = SU_I(client).step_details + (size_t)step_index * SU_I(client).step_details_size;
-  if (len > 0)
-  {
-    memmove(slot, az_span_ptr(details), (size_t)len);
-  }
-  SU_I(client).step_results[step_index].result_details = az_span_create(slot, len);
+  store_step_details(client, step_index, details);
   /* Held at a stored resume point (an install awaiting its reboot, or the next
    * step after an apply that asked for one), no later write would carry the
    * change: rewrite the record on the next do_work(), before the workflow goes on. */

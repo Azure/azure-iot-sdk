@@ -248,7 +248,10 @@ typedef enum
   OP_BACKUP,
   OP_INSTALL,
   OP_APPLY,
-  OP_RESTORE
+  OP_RESTORE,
+  OP_CHOOSE_RELATED_FILE,
+  OP_BUILD_FILE_FROM_RELATED,
+  OP_WORKFLOW_SUCCEEDED
 } op_kind;
 
 #define MAX_OPS 96
@@ -302,6 +305,12 @@ typedef struct
   char download_file_ids[MAX_OPS][32];
   char download_urls[MAX_OPS][64];
 
+  /* Download handlers: per-file faults, by file id. */
+  int download_in_progress; /* download_fn returns IN_PROGRESS this many times first */
+  char download_fail_id[32]; /* download_fn fails for this file */
+  char corrupt_file_id[32]; /* read_file_fn serves content that does not match its hash... */
+  int corrupt_reads; /* ...this many times */
+
   /* Key, exponent and signature of the last verify_rs256 call. */
   const uint8_t* first_verify_modulus; /* modulus of the first RS256 verify (the root key) */
   uint8_t verify_mod[8];
@@ -311,11 +320,29 @@ typedef struct
   uint8_t verify_sig[8];
   size_t verify_sig_len;
 
-  /* When set, is_installed sets these details on step 0 of su_client. */
+  /* When set, is_installed sets these details on step is_installed_details_step of su_client. */
   az_iot_su_client* su_client;
   const char* is_installed_details;
+  uint32_t is_installed_details_step;
   az_iot_result is_installed_details_result;
 } hook_log;
+
+/** @brief What the test download handler does and was asked. */
+typedef struct
+{
+  hook_log* log;
+  int choose_in_progress; /* choose returns IN_PROGRESS this many times first */
+  int32_t choose_result;
+  uint32_t chosen_index;
+  int build_in_progress; /* build returns IN_PROGRESS this many times first */
+  char build_fail_id[32]; /* build fails for this file */
+  int choose_calls;
+  int build_calls;
+  int succeeded_calls;
+  char built_file_id[32];
+  char built_from_id[32];
+  uint32_t built_file_index;
+} delta_handler_log;
 
 static void span_to_cstr(az_span s, char* out, size_t cap)
 {
@@ -368,6 +395,15 @@ static int32_t mock_download(
   }
   l->last_download_url[n] = '\0';
   log_op(l, OP_DOWNLOAD, file_index);
+  if (l->download_in_progress > 0)
+  {
+    l->download_in_progress--;
+    return AZ_IOT_SU_RESULT_IN_PROGRESS;
+  }
+  if (az_span_is_content_equal(file->id, az_span_create_from_str(l->download_fail_id)))
+  {
+    return AZ_IOT_SU_RESULT_FAILURE;
+  }
   return l->download_result;
 }
 
@@ -416,7 +452,9 @@ static int32_t mock_is_installed(const az_iot_su_client_update_manifest* m, void
   if (l->su_client != NULL && l->is_installed_details != NULL)
   {
     l->is_installed_details_result = az_iot_su_client_set_step_result_details(
-        l->su_client, 0, az_span_create_from_str((char*)(uintptr_t)l->is_installed_details));
+        l->su_client,
+        l->is_installed_details_step,
+        az_span_create_from_str((char*)(uintptr_t)l->is_installed_details));
   }
   return l->is_installed_result;
 }
@@ -476,7 +514,6 @@ static int32_t mock_read_file(
     size_t* out_read,
     void* ctx)
 {
-  (void)file;
   (void)file_index;
   hook_log* l = (hook_log*)ctx;
   if (offset >= l->file_len)
@@ -487,6 +524,13 @@ static int32_t mock_read_file(
   size_t remain = l->file_len - offset;
   size_t n = remain < buffer_size ? remain : buffer_size;
   memset(buffer, 0x55, n);
+  if (offset == 0 && l->corrupt_reads > 0
+      && az_span_is_content_equal(file->id, az_span_create_from_str(l->corrupt_file_id)))
+  {
+    /* The mock SHA-256 hashes a file by its first byte. */
+    l->corrupt_reads--;
+    buffer[0] = 0x00;
+  }
   *out_read = n;
   return AZ_IOT_SU_RESULT_SUCCESS;
 }
@@ -901,6 +945,11 @@ typedef struct
 
   hook_log log;
   mock_crypto crypto; /**< Outlives su: the client keeps a pointer. */
+  delta_handler_log delta;
+  az_iot_su_download_handler download_handler; /**< See use_test_download_handler(). */
+  /* Registered at each init, reboot_client() included. */
+  const az_iot_su_download_handler* download_handlers;
+  size_t download_handler_count;
   uint8_t workspace[AZ_IOT_SU_WORKSPACE_DEFAULT_SIZE];
 
   /* What the application would have been told. */
@@ -1191,6 +1240,8 @@ static void init_fixture_client_with_limits(
   }
   su_opts.workspace = fx->workspace;
   su_opts.workspace_size = sizeof(fx->workspace);
+  su_opts.download_handlers = fx->download_handlers;
+  su_opts.download_handler_count = fx->download_handler_count;
   assert_int_equal(
       az_iot_su_client__initialize_with_channel(&fx->su, &fx->channel, &fx->crypto.base, &su_opts),
       AZ_IOT_OK);
@@ -3799,6 +3850,812 @@ static const char* delta_patch(const char* workflow_id, int related_count)
       urls);
   assert_true(n > 0 && (size_t)n < sizeof(patch));
   return patch;
+}
+
+/* ------------------------------------------------------------------------- */
+/* Download handlers                                                         */
+/* ------------------------------------------------------------------------- */
+
+#define SU_TEST_DELTA_HANDLER_ID "microsoft/delta:1"
+
+static int32_t test_choose_related_file(
+    const az_iot_su_client_update_manifest* manifest,
+    const az_iot_su_client_update_manifest_file* file,
+    uint32_t* out_related_file_index,
+    void* user_ctx)
+{
+  delta_handler_log* d = (delta_handler_log*)user_ctx;
+  assert_non_null(manifest);
+  assert_true(file->related_files_count > 0);
+  log_op(d->log, OP_CHOOSE_RELATED_FILE, 0);
+  d->choose_calls++;
+  if (d->choose_in_progress > 0)
+  {
+    d->choose_in_progress--;
+    return AZ_IOT_SU_RESULT_IN_PROGRESS;
+  }
+  *out_related_file_index = d->chosen_index;
+  return d->choose_result;
+}
+
+static int32_t test_build_file_from_related(
+    const az_iot_su_client_update_manifest_file* file,
+    const az_iot_su_client_update_manifest_file* related_file,
+    uint32_t file_index,
+    void* user_ctx)
+{
+  delta_handler_log* d = (delta_handler_log*)user_ctx;
+  log_op(d->log, OP_BUILD_FILE_FROM_RELATED, file_index);
+  d->build_calls++;
+  span_to_cstr(file->id, d->built_file_id, sizeof(d->built_file_id));
+  span_to_cstr(related_file->id, d->built_from_id, sizeof(d->built_from_id));
+  d->built_file_index = file_index;
+  if (d->build_in_progress > 0)
+  {
+    d->build_in_progress--;
+    return AZ_IOT_SU_RESULT_IN_PROGRESS;
+  }
+  return az_span_is_content_equal(file->id, az_span_create_from_str(d->build_fail_id))
+      ? AZ_IOT_SU_RESULT_FAILURE
+      : AZ_IOT_SU_RESULT_SUCCESS;
+}
+
+static void test_workflow_succeeded(
+    const az_iot_su_client_update_manifest* manifest,
+    void* user_ctx)
+{
+  delta_handler_log* d = (delta_handler_log*)user_ctx;
+  assert_true(manifest->files_count > 0);
+  log_op(d->log, OP_WORKFLOW_SUCCEEDED, 0);
+  d->succeeded_calls++;
+}
+
+/** @brief Re-initialize fx->su with one test download handler of id @p id. */
+static void use_test_download_handler(fixture* fx, const char* id)
+{
+  memset(&fx->delta, 0, sizeof(fx->delta));
+  fx->delta.log = &fx->log;
+  fx->delta.choose_result = AZ_IOT_SU_RESULT_SUCCESS;
+  fx->download_handler = (az_iot_su_download_handler){
+    id, test_choose_related_file, test_build_file_from_related, test_workflow_succeeded, &fx->delta,
+  };
+  fx->download_handlers = &fx->download_handler;
+  fx->download_handler_count = 1;
+  reboot_client(fx);
+}
+
+#define SU_TEST_APPEND(buffer, used, ...)                                             \
+  do                                                                                  \
+  {                                                                                   \
+    int written_ = snprintf((buffer) + (used), sizeof(buffer) - (used), __VA_ARGS__); \
+    assert_true(written_ >= 0 && (size_t)written_ < sizeof(buffer) - (used));         \
+    (used) += (size_t)written_;                                                       \
+  } while (0)
+
+/* Escaped quote inside the updateManifest string. */
+#define Q "\\\""
+
+/* An update of @p step_count steps of @p files_per_step files. File "s<S>f<F>" names download
+ * handler @p handler_id (none when NULL) and has @p related_count related files
+ * "s<S>f<F>r<R>"; every file has a URL "http://example.com/<id>". Returns a static buffer,
+ * valid until the next call. */
+static const char* delta_steps_patch(
+    const char* workflow_id,
+    int step_count,
+    int files_per_step,
+    const char* handler_id,
+    int related_count)
+{
+  static char steps[1024];
+  static char files[4096];
+  static char urls[2048];
+  size_t s_used = 0;
+  size_t f_used = 0;
+  size_t u_used = 0;
+  for (int s = 0; s < step_count; ++s)
+  {
+    SU_TEST_APPEND(
+        steps,
+        s_used,
+        "%s{" Q "handler" Q ":" Q "microsoft/swupdate:1" Q "," Q "files" Q ":[",
+        s ? "," : "");
+    for (int f = 0; f < files_per_step; ++f)
+    {
+      SU_TEST_APPEND(steps, s_used, "%s" Q "s%df%d" Q, f ? "," : "", s, f);
+      SU_TEST_APPEND(
+          files,
+          f_used,
+          "%s" Q "s%df%d" Q ":{" Q "fileName" Q ":" Q "s%df%d.bin" Q "," Q "sizeInBytes" Q
+          ":844976," Q "hashes" Q ":{" Q "sha256" Q ":" Q SU_TEST_FILE_HASH_B64 Q "}",
+          (s || f) ? "," : "",
+          s,
+          f,
+          s,
+          f);
+      SU_TEST_APPEND(urls, u_used, ",\"s%df%d\":\"http://example.com/s%df%d\"", s, f, s, f);
+      if (handler_id != NULL)
+      {
+        SU_TEST_APPEND(
+            files, f_used, "," Q "downloadHandler" Q ":{" Q "id" Q ":" Q "%s" Q "}", handler_id);
+      }
+      if (related_count > 0)
+      {
+        SU_TEST_APPEND(files, f_used, "," Q "relatedFiles" Q ":{");
+        for (int r = 0; r < related_count; ++r)
+        {
+          SU_TEST_APPEND(
+              files,
+              f_used,
+              "%s" Q "s%df%dr%d" Q ":{" Q "fileName" Q ":" Q "s%df%dr%d.delta" Q "," Q
+              "sizeInBytes" Q ":1," Q "hashes" Q ":{" Q "sha256" Q ":" Q SU_TEST_FILE_HASH_B64 Q
+              "}}",
+              r ? "," : "",
+              s,
+              f,
+              r,
+              s,
+              f,
+              r);
+          SU_TEST_APPEND(
+              urls, u_used, ",\"s%df%dr%d\":\"http://example.com/s%df%dr%d\"", s, f, r, s, f, r);
+        }
+        SU_TEST_APPEND(files, f_used, "}");
+      }
+      SU_TEST_APPEND(files, f_used, "}");
+    }
+    SU_TEST_APPEND(
+        steps,
+        s_used,
+        "]," Q "handlerProperties" Q ":{" Q "installedCriteria" Q ":" Q "1.%d" Q "}}",
+        s);
+  }
+
+  static char patch[SU_TEST_PATCH_SIZE];
+  char jws[2048];
+  build_jws(jws, (int32_t)sizeof(jws));
+  size_t used = 0;
+  SU_TEST_APPEND(
+      patch,
+      used,
+      "{\"workflowId\":\"%s\","
+      "\"updateManifest\":\"{" Q "manifestVersion" Q ":" Q "5" Q "," Q "updateId" Q ":{" Q
+      "provider" Q ":" Q "Contoso" Q "," Q "name" Q ":" Q "Foobar" Q "," Q "version" Q ":" Q "1.1" Q
+      "}," Q "instructions" Q ":{" Q "steps" Q ":[%s]}," Q "files" Q ":{%s}," Q "createdDateTime" Q
+      ":" Q "2022-07-07T03:02:48.8449038Z" Q "}\","
+      "\"updateManifestSignature\":\"%s\",\"fileUrls\":{%s}}",
+      workflow_id,
+      steps,
+      files,
+      jws,
+      urls + 1);
+  return patch;
+}
+
+#undef Q
+
+/** @brief The file ids download_fn got, in order, joined by spaces. */
+static void downloaded_file_ids(const fixture* fx, char* out, size_t out_size)
+{
+  size_t used = 0;
+  out[0] = '\0';
+  for (int i = 0; i < fx->log.download_calls && i < MAX_OPS; ++i)
+  {
+    int written
+        = snprintf(out + used, out_size - used, "%s%s", i ? " " : "", fx->log.download_file_ids[i]);
+    assert_true(written >= 0 && (size_t)written < out_size - used);
+    used += (size_t)written;
+  }
+}
+
+static void assert_downloads(const fixture* fx, const char* expected)
+{
+  char ids[512];
+  downloaded_file_ids(fx, ids, sizeof(ids));
+  assert_string_equal(ids, expected);
+}
+
+/** @brief The workflow is reported SUCCEEDED; step @p step carries @p sub_code
+ * (0: none), as does the overall result. */
+static void assert_succeeded_with_delta_code(
+    const fixture* fx,
+    int32_t step,
+    uint32_t sub_code,
+    const char* details)
+{
+  assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_IDLE);
+  assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_SUCCEEDED);
+  assert_int_equal(fx->chan.last_report.result_code, AZ_IOT_SU_AGENT_RESULT_CODE_SUCCESS);
+  assert_int_equal(fx->chan.last_report.failure_origin, AZ_IOT_SU_FAILURE_ORIGIN_NOT_APPLICABLE);
+  assert_true(step < fx->chan.last_report.step_results_count);
+  const az_iot_su_step_result* result = &fx->chan.last_report.step_results[step];
+  assert_int_equal(result->outcome, AZ_IOT_SU_OUTCOME_SUCCEEDED);
+  assert_int_equal(result->failure_origin, AZ_IOT_SU_FAILURE_ORIGIN_NOT_APPLICABLE);
+  assert_int_equal(result->result_code, AZ_IOT_SU_AGENT_RESULT_CODE_SUCCESS);
+  int32_t extended
+      = sub_code == 0 ? 0 : AZ_IOT_SU_EXTENDED_RESULT(AZ_IOT_SU_FACILITY_DELTA, sub_code);
+  assert_int_equal(result->extended_result_code, extended);
+  char text[64];
+  span_to_cstr(result->result_details, text, sizeof(text));
+  assert_string_equal(text, details);
+  char overall[16];
+  (void)snprintf(overall, sizeof(overall), "%x", (unsigned)extended);
+  assert_string_equal(fx->chan.last_extended, overall);
+}
+
+/* A file naming a registered handler is built from the related file the handler chose: only
+ * that related file is downloaded and verified, then the built file is verified. The step
+ * reports success with no extended code, and the handler hears of it. */
+static void a_download_handler_builds_a_file_from_a_related_file(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  use_test_download_handler(fx, SU_TEST_DELTA_HANDLER_ID);
+  open_to_connected(fx);
+  assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
+  fx->delta.chosen_index = 1;
+
+  inject_patch(fx, delta_steps_patch("delta-built", 1, 1, SU_TEST_DELTA_HANDLER_ID, 2));
+  pump(fx, 40);
+
+  assert_succeeded_with_delta_code(fx, 0, 0, "");
+  assert_downloads(fx, "s0f0r1");
+  assert_string_equal(fx->log.download_urls[0], "http://example.com/s0f0r1");
+  assert_int_equal(fx->delta.choose_calls, 1);
+  assert_int_equal(fx->delta.build_calls, 1);
+  assert_string_equal(fx->delta.built_file_id, "s0f0");
+  assert_string_equal(fx->delta.built_from_id, "s0f0r1");
+  assert_int_equal(fx->delta.built_file_index, 0);
+  assert_int_equal(fx->delta.succeeded_calls, 1);
+  static const op_kind expect[] = {
+    OP_IS_INSTALLED, OP_CHOOSE_RELATED_FILE,
+    OP_DOWNLOAD,     OP_BUILD_FILE_FROM_RELATED,
+    OP_BACKUP,       OP_INSTALL,
+    OP_APPLY,        OP_WORKFLOW_SUCCEEDED,
+  };
+  assert_true(ops_contain_sequence(&fx->log, expect, sizeof(expect) / sizeof(expect[0])));
+  assert_int_equal(fx->failed_count, 0);
+}
+
+/* A manifest may escape the handler id ("microsoft\/delta:1"): it still selects the registered
+ * handler, which hears of the success once. */
+static void an_escaped_download_handler_id_selects_its_handler(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  use_test_download_handler(fx, SU_TEST_DELTA_HANDLER_ID);
+  open_to_connected(fx);
+
+  inject_patch(fx, delta_steps_patch("delta-escaped-handler", 1, 1, "microsoft\\\\/delta:1", 1));
+  pump(fx, 40);
+
+  assert_succeeded_with_delta_code(fx, 0, 0, "");
+  assert_downloads(fx, "s0f0r0");
+  assert_int_equal(fx->delta.build_calls, 1);
+  assert_int_equal(fx->delta.succeeded_calls, 1);
+}
+
+/* A related file id escaped in the manifest ("s0f0r\u0031") finds its decoded fileUrls id. */
+static void an_escaped_related_file_id_finds_its_url(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  use_test_download_handler(fx, SU_TEST_DELTA_HANDLER_ID);
+  open_to_connected(fx);
+  fx->delta.chosen_index = 1;
+
+  static const char plain[] = "\\\"s0f0r1\\\":{";
+  static char doc[SU_TEST_PATCH_SIZE];
+  const char* base = delta_steps_patch("delta-escaped-related", 1, 1, SU_TEST_DELTA_HANDLER_ID, 2);
+  const char* at = strstr(base, plain);
+  assert_non_null(at);
+  int n = snprintf(
+      doc,
+      sizeof(doc),
+      "%.*s\\\"s0f0r\\\\u0031\\\":{%s",
+      (int)(at - base),
+      base,
+      at + sizeof(plain) - 1);
+  assert_true(n > 0 && (size_t)n < sizeof(doc));
+
+  inject_patch(fx, doc);
+  pump(fx, 40);
+
+  assert_succeeded_with_delta_code(fx, 0, 0, "");
+  assert_string_equal(fx->log.download_urls[0], "http://example.com/s0f0r1");
+  assert_string_equal(fx->delta.built_from_id, "s0f0r\\u0031");
+  assert_int_equal(fx->delta.succeeded_calls, 1);
+}
+
+/** @brief How a delta fallback case is provoked. */
+typedef enum
+{
+  DELTA_FAULT_HANDLER_ID,
+  DELTA_FAULT_NO_RELATED_FILE,
+  DELTA_FAULT_CHOOSE_FAILS,
+  DELTA_FAULT_CHOSEN_OUT_OF_RANGE,
+  DELTA_FAULT_RELATED_DOWNLOAD,
+  DELTA_FAULT_RELATED_HASH,
+  DELTA_FAULT_BUILD,
+  DELTA_FAULT_BUILT_HASH,
+} delta_fault;
+
+/* A delta step that fails is logged and the file is downloaded in full; the workflow
+ * succeeds with the fallback's AZ_IOT_SU_FACILITY_DELTA code and details. */
+static void run_delta_fallback_case(
+    void** state,
+    delta_fault fault,
+    uint32_t sub_code,
+    const char* details,
+    const char* downloads)
+{
+  fixture* fx = (fixture*)*state;
+  use_test_download_handler(
+      fx, fault == DELTA_FAULT_HANDLER_ID ? "contoso/delta:1" : SU_TEST_DELTA_HANDLER_ID);
+  open_to_connected(fx);
+  assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
+  switch (fault)
+  {
+    case DELTA_FAULT_CHOOSE_FAILS:
+      fx->delta.choose_result = AZ_IOT_SU_RESULT_FAILURE;
+      break;
+    case DELTA_FAULT_CHOSEN_OUT_OF_RANGE:
+      fx->delta.chosen_index = 1;
+      break;
+    case DELTA_FAULT_RELATED_DOWNLOAD:
+      (void)snprintf(fx->log.download_fail_id, sizeof(fx->log.download_fail_id), "s0f0r0");
+      break;
+    case DELTA_FAULT_RELATED_HASH:
+      (void)snprintf(fx->log.corrupt_file_id, sizeof(fx->log.corrupt_file_id), "s0f0r0");
+      fx->log.corrupt_reads = 1;
+      break;
+    case DELTA_FAULT_BUILD:
+      (void)snprintf(fx->delta.build_fail_id, sizeof(fx->delta.build_fail_id), "s0f0");
+      break;
+    case DELTA_FAULT_BUILT_HASH:
+      (void)snprintf(fx->log.corrupt_file_id, sizeof(fx->log.corrupt_file_id), "s0f0");
+      fx->log.corrupt_reads = 1;
+      break;
+    case DELTA_FAULT_HANDLER_ID:
+    case DELTA_FAULT_NO_RELATED_FILE:
+      break;
+  }
+
+  int related_count = fault == DELTA_FAULT_NO_RELATED_FILE ? 0 : 1;
+  inject_patch(
+      fx, delta_steps_patch("delta-fallback", 1, 1, SU_TEST_DELTA_HANDLER_ID, related_count));
+  pump(fx, 40);
+
+  assert_succeeded_with_delta_code(fx, 0, sub_code, details);
+  assert_downloads(fx, downloads);
+  bool chooses = fault != DELTA_FAULT_HANDLER_ID && fault != DELTA_FAULT_NO_RELATED_FILE;
+  assert_int_equal(fx->delta.choose_calls, chooses ? 1 : 0);
+  assert_int_equal(
+      fx->delta.build_calls,
+      (fault == DELTA_FAULT_BUILD || fault == DELTA_FAULT_BUILT_HASH) ? 1 : 0);
+  assert_int_equal(fx->log.corrupt_reads, 0);
+  /* The handler hears of a success of an update naming it, built or not. */
+  assert_int_equal(fx->delta.succeeded_calls, fault == DELTA_FAULT_HANDLER_ID ? 0 : 1);
+  assert_int_equal(fx->failed_count, 0);
+}
+
+static void a_file_naming_no_registered_handler_is_downloaded_in_full(void** state)
+{
+  run_delta_fallback_case(
+      state,
+      DELTA_FAULT_HANDLER_ID,
+      AZ_IOT_SU_DELTA_ERROR_NO_HANDLER,
+      "full download: no download handler",
+      "s0f0");
+}
+
+static void a_file_with_no_related_file_is_downloaded_in_full(void** state)
+{
+  run_delta_fallback_case(
+      state,
+      DELTA_FAULT_NO_RELATED_FILE,
+      AZ_IOT_SU_DELTA_ERROR_NO_SOURCE,
+      "full download: no source",
+      "s0f0");
+}
+
+static void a_file_whose_handler_chooses_no_source_is_downloaded_in_full(void** state)
+{
+  run_delta_fallback_case(
+      state,
+      DELTA_FAULT_CHOOSE_FAILS,
+      AZ_IOT_SU_DELTA_ERROR_NO_SOURCE,
+      "full download: no source",
+      "s0f0");
+}
+
+static void a_file_whose_handler_chooses_out_of_range_is_downloaded_in_full(void** state)
+{
+  run_delta_fallback_case(
+      state,
+      DELTA_FAULT_CHOSEN_OUT_OF_RANGE,
+      AZ_IOT_SU_DELTA_ERROR_NO_SOURCE,
+      "full download: no source",
+      "s0f0");
+}
+
+static void a_failed_related_file_download_falls_back_to_a_full_download(void** state)
+{
+  run_delta_fallback_case(
+      state,
+      DELTA_FAULT_RELATED_DOWNLOAD,
+      AZ_IOT_SU_DELTA_ERROR_RELATED_DOWNLOAD,
+      "full download: related file download failed",
+      "s0f0r0 s0f0");
+}
+
+static void a_related_file_hash_mismatch_falls_back_to_a_full_download(void** state)
+{
+  run_delta_fallback_case(
+      state,
+      DELTA_FAULT_RELATED_HASH,
+      AZ_IOT_SU_DELTA_ERROR_RELATED_HASH,
+      "full download: related file hash mismatch",
+      "s0f0r0 s0f0");
+}
+
+static void a_failed_build_falls_back_to_a_full_download(void** state)
+{
+  run_delta_fallback_case(
+      state,
+      DELTA_FAULT_BUILD,
+      AZ_IOT_SU_DELTA_ERROR_BUILD,
+      "full download: build from related file failed",
+      "s0f0r0 s0f0");
+}
+
+static void a_built_file_hash_mismatch_falls_back_to_a_full_download(void** state)
+{
+  run_delta_fallback_case(
+      state,
+      DELTA_FAULT_BUILT_HASH,
+      AZ_IOT_SU_DELTA_ERROR_BUILT_HASH,
+      "full download: built file hash mismatch",
+      "s0f0r0 s0f0");
+}
+
+/* A full download that fails after a fallback fails the workflow as any download does, and
+ * the handler does not hear of it. */
+static void a_failed_full_download_after_a_fallback_fails_the_workflow(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  use_test_download_handler(fx, SU_TEST_DELTA_HANDLER_ID);
+  open_to_connected(fx);
+  assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
+  fx->log.download_result = AZ_IOT_SU_RESULT_FAILURE;
+
+  inject_patch(fx, delta_steps_patch("delta-failed", 1, 1, SU_TEST_DELTA_HANDLER_ID, 1));
+  pump(fx, 40);
+
+  int32_t extended
+      = AZ_IOT_SU_EXTENDED_RESULT(AZ_IOT_SU_FACILITY_DOWNLOAD, (uint32_t)AZ_IOT_SU_RESULT_FAILURE);
+  assert_downloads(fx, "s0f0r0 s0f0");
+  assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_FAILED);
+  assert_int_equal(fx->chan.last_report.step_results[0].outcome, AZ_IOT_SU_OUTCOME_FAILED);
+  assert_int_equal(fx->chan.last_report.step_results[0].extended_result_code, extended);
+  assert_int_equal(fx->last_failed_extended, extended);
+  assert_int_equal(fx->delta.build_calls, 0);
+  assert_int_equal(fx->delta.succeeded_calls, 0);
+  assert_int_equal((int)count_ops(&fx->log, OP_INSTALL), 0);
+}
+
+/* Each handler hook and download_fn may return IN_PROGRESS: do_work() returns and calls it
+ * again, without repeating an earlier phase. */
+static void download_handler_phases_may_be_in_progress(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  use_test_download_handler(fx, SU_TEST_DELTA_HANDLER_ID);
+  open_to_connected(fx);
+  fx->delta.choose_in_progress = 2;
+  fx->log.download_in_progress = 2;
+  fx->delta.build_in_progress = 2;
+
+  inject_patch(fx, delta_steps_patch("delta-in-progress", 1, 1, SU_TEST_DELTA_HANDLER_ID, 1));
+  pump_to_state(fx, AZ_IOT_SU_STATE_DOWNLOAD_STARTED, 20);
+  for (int i = 0; i < 2; ++i)
+  {
+    assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+    assert_int_equal(fx->delta.choose_calls, i + 1);
+    assert_int_equal(fx->log.download_calls, 0);
+  }
+  for (int i = 0; i < 2; ++i)
+  {
+    assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+    assert_int_equal(fx->delta.choose_calls, 3);
+    assert_int_equal(fx->log.download_calls, i + 1);
+    assert_int_equal(fx->delta.build_calls, 0);
+  }
+  for (int i = 0; i < 2; ++i)
+  {
+    assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+    assert_int_equal(fx->log.download_calls, 3);
+    assert_int_equal(fx->delta.build_calls, i + 1);
+    assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_DOWNLOAD_STARTED);
+  }
+  pump(fx, 40);
+
+  assert_succeeded_with_delta_code(fx, 0, 0, "");
+  assert_int_equal(fx->delta.choose_calls, 3);
+  assert_int_equal(fx->log.download_calls, 3);
+  assert_int_equal(fx->delta.build_calls, 3);
+  assert_int_equal(fx->delta.succeeded_calls, 1);
+}
+
+/* A full download after a fallback may be in progress too; the handler is not asked again. */
+static void a_full_download_after_a_fallback_may_be_in_progress(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  use_test_download_handler(fx, SU_TEST_DELTA_HANDLER_ID);
+  open_to_connected(fx);
+  fx->delta.choose_result = AZ_IOT_SU_RESULT_FAILURE;
+  fx->log.download_in_progress = 3;
+
+  inject_patch(fx, delta_steps_patch("delta-full-in-progress", 1, 1, SU_TEST_DELTA_HANDLER_ID, 1));
+  pump(fx, 40);
+
+  assert_succeeded_with_delta_code(
+      fx, 0, AZ_IOT_SU_DELTA_ERROR_NO_SOURCE, "full download: no source");
+  assert_int_equal(fx->delta.choose_calls, 1);
+  assert_downloads(fx, "s0f0 s0f0 s0f0 s0f0");
+}
+
+/* After a fallback the full download starts on the next do_work(): download_fn is called at
+ * most once per call. */
+static void a_full_download_after_a_fallback_starts_on_the_next_do_work(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  use_test_download_handler(fx, SU_TEST_DELTA_HANDLER_ID);
+  open_to_connected(fx);
+  (void)snprintf(fx->log.download_fail_id, sizeof(fx->log.download_fail_id), "s0f0r0");
+
+  inject_patch(fx, delta_steps_patch("delta-next-call", 1, 1, SU_TEST_DELTA_HANDLER_ID, 1));
+  pump_to_state(fx, AZ_IOT_SU_STATE_DOWNLOAD_STARTED, 20);
+  assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  assert_downloads(fx, "s0f0r0");
+  assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  assert_downloads(fx, "s0f0r0 s0f0");
+  pump(fx, 40);
+
+  assert_succeeded_with_delta_code(
+      fx, 0, AZ_IOT_SU_DELTA_ERROR_RELATED_DOWNLOAD, "full download: related file download failed");
+  assert_int_equal(fx->delta.choose_calls, 1);
+}
+
+/* Every file of a step goes through the handler, with its own position in the step; a step
+ * keeps the code of its first fallback. */
+static void download_handlers_build_every_file_of_a_step(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  use_test_download_handler(fx, SU_TEST_DELTA_HANDLER_ID);
+  open_to_connected(fx);
+  (void)snprintf(fx->log.corrupt_file_id, sizeof(fx->log.corrupt_file_id), "s0f0r0");
+  fx->log.corrupt_reads = 1;
+  (void)snprintf(fx->delta.build_fail_id, sizeof(fx->delta.build_fail_id), "s0f1");
+
+  inject_patch(fx, delta_steps_patch("delta-files", 1, 2, SU_TEST_DELTA_HANDLER_ID, 1));
+  pump(fx, 60);
+
+  assert_succeeded_with_delta_code(
+      fx, 0, AZ_IOT_SU_DELTA_ERROR_RELATED_HASH, "full download: related file hash mismatch");
+  assert_downloads(fx, "s0f0r0 s0f0 s0f1r0 s0f1");
+  assert_int_equal(fx->delta.choose_calls, 2);
+  assert_int_equal(fx->delta.build_calls, 1);
+  assert_string_equal(fx->delta.built_file_id, "s0f1");
+  assert_string_equal(fx->delta.built_from_id, "s0f1r0");
+  assert_int_equal(fx->delta.built_file_index, 1);
+  assert_int_equal(fx->delta.succeeded_calls, 1);
+}
+
+/* Each step's files go through the handler; a fallback is reported on its step only, and the
+ * overall result carries the first. The handler hears once of the whole workflow. */
+static void download_handlers_build_files_of_every_step(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  use_test_download_handler(fx, SU_TEST_DELTA_HANDLER_ID);
+  open_to_connected(fx);
+  (void)snprintf(fx->delta.build_fail_id, sizeof(fx->delta.build_fail_id), "s1f0");
+
+  inject_patch(fx, delta_steps_patch("delta-steps", 2, 1, SU_TEST_DELTA_HANDLER_ID, 1));
+  pump(fx, 80);
+
+  assert_succeeded_with_delta_code(
+      fx, 1, AZ_IOT_SU_DELTA_ERROR_BUILD, "full download: build from related file failed");
+  assert_int_equal(fx->chan.last_report.step_results_count, 2);
+  assert_int_equal(fx->chan.last_report.step_results[0].outcome, AZ_IOT_SU_OUTCOME_SUCCEEDED);
+  assert_int_equal(fx->chan.last_report.step_results[0].extended_result_code, 0);
+  assert_int_equal(az_span_size(fx->chan.last_report.step_results[0].result_details), 0);
+  assert_downloads(fx, "s0f0r0 s1f0r0 s1f0");
+  assert_int_equal(fx->delta.choose_calls, 2);
+  assert_int_equal(fx->delta.build_calls, 2);
+  assert_int_equal(fx->delta.succeeded_calls, 1);
+}
+
+/** @brief Details of the fallback in run_fallback_details_case(). */
+#define SU_TEST_BUILD_FALLBACK_DETAILS "full download: build from related file failed"
+
+/**
+ * @brief Step 0 of a two-step update falls back to a full download, with every step's details
+ * slot @p details_size bytes. is_installed_fn sets @p app_details (none when NULL) on step
+ * @p app_details_step. Step 0 keeps its delta code and reports @p step0_details; step 1 reports
+ * no code and its own details.
+ */
+static void run_fallback_details_case(
+    void** state,
+    size_t details_size,
+    const char* app_details,
+    uint32_t app_details_step,
+    const char* step0_details)
+{
+  fixture* fx = (fixture*)*state;
+  use_test_download_handler(fx, SU_TEST_DELTA_HANDLER_ID);
+  az_iot_su_platform_hooks hooks = fx->su._internal.hooks;
+  az_iot_su_client_deinit(&fx->su);
+  az_iot_su_limits limits = az_iot_su_limits_default();
+  limits.result_details_size = details_size;
+  init_fixture_client_with_limits(fx, &hooks, &limits);
+  open_to_connected(fx);
+  (void)snprintf(fx->delta.build_fail_id, sizeof(fx->delta.build_fail_id), "s0f0");
+  fx->log.su_client = &fx->su;
+  fx->log.is_installed_details = app_details;
+  fx->log.is_installed_details_step = app_details_step;
+
+  inject_patch(fx, delta_steps_patch("delta-details", 2, 1, SU_TEST_DELTA_HANDLER_ID, 1));
+  pump(fx, 80);
+
+  if (app_details != NULL)
+  {
+    assert_int_equal(fx->log.is_installed_details_result, AZ_IOT_OK);
+  }
+  assert_succeeded_with_delta_code(fx, 0, AZ_IOT_SU_DELTA_ERROR_BUILD, step0_details);
+  assert_int_equal(fx->chan.last_report.step_results_count, 2);
+  const az_iot_su_step_result* neighbor = &fx->chan.last_report.step_results[1];
+  assert_int_equal(neighbor->outcome, AZ_IOT_SU_OUTCOME_SUCCEEDED);
+  assert_int_equal(neighbor->extended_result_code, 0);
+  char text[64];
+  span_to_cstr(neighbor->result_details, text, sizeof(text));
+  assert_string_equal(text, (app_details != NULL && app_details_step == 1) ? app_details : "");
+  assert_int_equal(fx->delta.build_calls, 2);
+}
+
+/* With no room for details, a fallback reports its code alone. */
+static void a_fallback_with_no_details_room_reports_its_code_alone(void** state)
+{
+  run_fallback_details_case(state, 0, NULL, 0, "");
+}
+
+/* Fallback details one byte too long are left out; the next step's details are intact. */
+static void fallback_details_one_byte_too_long_are_left_out(void** state)
+{
+  run_fallback_details_case(state, sizeof(SU_TEST_BUILD_FALLBACK_DETAILS) - 2, "next step", 1, "");
+}
+
+/* Fallback details that fill their slot exactly are reported, and the next step's details
+ * are intact. */
+static void fallback_details_filling_their_slot_are_reported(void** state)
+{
+  run_fallback_details_case(
+      state,
+      sizeof(SU_TEST_BUILD_FALLBACK_DETAILS) - 1,
+      "next step",
+      1,
+      SU_TEST_BUILD_FALLBACK_DETAILS);
+}
+
+/* Details the application set on the step are kept: a fallback adds only its code. */
+static void a_fallback_keeps_the_application_details(void** state)
+{
+  run_fallback_details_case(
+      state, AZ_IOT_SU_DEFAULT_RESULT_DETAILS_SIZE, "app details", 0, "app details");
+}
+
+/* With handlers registered, a file naming none is downloaded in full as usual, with no code;
+ * the handlers do not hear of the workflow. */
+static void a_file_naming_no_download_handler_is_downloaded_as_usual(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  use_test_download_handler(fx, SU_TEST_DELTA_HANDLER_ID);
+  open_to_connected(fx);
+
+  inject_patch(fx, delta_steps_patch("no-delta", 1, 1, NULL, 1));
+  pump(fx, 40);
+
+  assert_succeeded_with_delta_code(fx, 0, 0, "");
+  assert_downloads(fx, "s0f0");
+  assert_int_equal(fx->delta.choose_calls, 0);
+  assert_int_equal(fx->delta.succeeded_calls, 0);
+}
+
+/* workflow_succeeded_fn is not called for an update already installed (SKIPPED) or one that
+ * fails after its files were built. */
+static void workflow_succeeded_fn_is_called_only_for_a_succeeded_workflow(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  use_test_download_handler(fx, SU_TEST_DELTA_HANDLER_ID);
+  open_to_connected(fx);
+  fx->log.is_installed_result = AZ_IOT_SU_RESULT_ALREADY_INSTALLED;
+  inject_patch(fx, delta_steps_patch("delta-skipped", 1, 1, SU_TEST_DELTA_HANDLER_ID, 1));
+  pump(fx, 40);
+  assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_SKIPPED);
+  assert_int_equal(fx->delta.choose_calls, 0);
+  assert_int_equal(fx->delta.succeeded_calls, 0);
+
+  use_test_download_handler(fx, SU_TEST_DELTA_HANDLER_ID);
+  fx->log.is_installed_result = AZ_IOT_SU_RESULT_SUCCESS;
+  fx->log.install_result = AZ_IOT_SU_RESULT_FAILURE;
+  inject_patch(fx, delta_steps_patch("delta-install-fails", 1, 1, SU_TEST_DELTA_HANDLER_ID, 1));
+  pump(fx, 40);
+  assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_FAILED);
+  assert_int_equal(fx->delta.build_calls, 1);
+  assert_int_equal(fx->delta.succeeded_calls, 0);
+}
+
+/* A new workflow arriving while a file is being built cancels it as it would a download: the
+ * new workflow starts its files from the handler's choice. */
+static void a_new_workflow_cancels_a_file_being_built(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  use_test_download_handler(fx, SU_TEST_DELTA_HANDLER_ID);
+  open_to_connected(fx);
+  fx->delta.build_in_progress = 1000;
+
+  inject_patch(fx, delta_steps_patch("delta-replaced", 1, 1, SU_TEST_DELTA_HANDLER_ID, 1));
+  pump_to_state(fx, AZ_IOT_SU_STATE_DOWNLOAD_STARTED, 20);
+  for (int i = 0; i < 3; ++i)
+  {
+    assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  }
+  assert_int_equal(fx->delta.build_calls, 3);
+
+  inject_patch(fx, delta_steps_patch("delta-replacement", 1, 1, SU_TEST_DELTA_HANDLER_ID, 1));
+  assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_MANIFEST_RECEIVED);
+  fx->delta.build_in_progress = 0;
+  pump(fx, 40);
+
+  assert_string_equal(fx->chan.last_workflow_id, "delta-replacement");
+  assert_succeeded_with_delta_code(fx, 0, 0, "");
+  assert_int_equal(fx->delta.choose_calls, 2);
+  assert_int_equal(fx->delta.build_calls, 4);
+  assert_downloads(fx, "s0f0r0 s0f0r0");
+  assert_int_equal(fx->delta.succeeded_calls, 1);
+}
+
+/* A file being built is not resumed after a reboot: the step resumed from its record starts
+ * the file again with the handler's choice. */
+static void a_file_being_built_restarts_after_a_reboot(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  use_test_download_handler(fx, SU_TEST_DELTA_HANDLER_ID);
+  open_to_connected(fx);
+  fx->log.apply_result = AZ_IOT_SU_RESULT_REBOOT_REQUIRED;
+  inject_patch(fx, delta_steps_patch("delta-reboot", 2, 1, SU_TEST_DELTA_HANDLER_ID, 1));
+  for (int i = 0; i < 40 && fx->su._internal.current_step == 0; ++i)
+  {
+    assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  }
+  assert_int_equal(fx->su._internal.current_step, 1);
+  assert_true(fx->log.have_persist);
+  fx->log.apply_result = AZ_IOT_SU_RESULT_SUCCESS;
+  fx->delta.build_in_progress = 1;
+  for (int i = 0; i < 20 && fx->delta.build_calls < 2; ++i)
+  {
+    assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  }
+  assert_int_equal(fx->delta.build_calls, 2);
+  assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_DOWNLOAD_STARTED);
+
+  reboot_client(fx);
+  assert_int_equal(az_iot_su_client_resume(&fx->su), AZ_IOT_OK);
+  assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_DOWNLOAD_STARTED);
+  assert_int_equal(fx->su._internal.current_step, 1);
+  pump(fx, 40);
+
+  assert_succeeded_with_delta_code(fx, 1, 0, "");
+  assert_int_equal(fx->chan.last_report.step_results[0].extended_result_code, 0);
+  assert_int_equal(fx->delta.choose_calls, 3);
+  assert_int_equal(fx->delta.build_calls, 3);
+  assert_downloads(fx, "s0f0r0 s1f0r0 s1f0r0");
+  assert_int_equal(fx->delta.succeeded_calls, 1);
 }
 
 /* A delta update keeps its related files and more URLs than AZ_IOT_SU_MAX_FILE_COUNT, in the
@@ -10695,6 +11552,48 @@ int main(void)
     cmocka_unit_test_setup_teardown(reboot_required_persists_and_resumes, setup, teardown),
     cmocka_unit_test_setup_teardown(
         delta_update_keeps_related_files_across_a_reboot, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_download_handler_builds_a_file_from_a_related_file, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_file_naming_no_registered_handler_is_downloaded_in_full, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_file_with_no_related_file_is_downloaded_in_full, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_file_whose_handler_chooses_no_source_is_downloaded_in_full, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_file_whose_handler_chooses_out_of_range_is_downloaded_in_full, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_failed_related_file_download_falls_back_to_a_full_download, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_related_file_hash_mismatch_falls_back_to_a_full_download, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_failed_build_falls_back_to_a_full_download, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_built_file_hash_mismatch_falls_back_to_a_full_download, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_failed_full_download_after_a_fallback_fails_the_workflow, setup, teardown),
+    cmocka_unit_test_setup_teardown(download_handler_phases_may_be_in_progress, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        an_escaped_download_handler_id_selects_its_handler, setup, teardown),
+    cmocka_unit_test_setup_teardown(an_escaped_related_file_id_finds_its_url, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_full_download_after_a_fallback_may_be_in_progress, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_full_download_after_a_fallback_starts_on_the_next_do_work, setup, teardown),
+    cmocka_unit_test_setup_teardown(download_handlers_build_every_file_of_a_step, setup, teardown),
+    cmocka_unit_test_setup_teardown(download_handlers_build_files_of_every_step, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_fallback_with_no_details_room_reports_its_code_alone, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        fallback_details_one_byte_too_long_are_left_out, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        fallback_details_filling_their_slot_are_reported, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_fallback_keeps_the_application_details, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_file_naming_no_download_handler_is_downloaded_as_usual, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        workflow_succeeded_fn_is_called_only_for_a_succeeded_workflow, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_new_workflow_cancels_a_file_being_built, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_file_being_built_restarts_after_a_reboot, setup, teardown),
     cmocka_unit_test_setup_teardown(
         resuming_a_fresh_client_reports_the_restored_state, setup, teardown),
     cmocka_unit_test_setup_teardown(resume_with_no_persisted_state_stays_idle, setup, teardown),
