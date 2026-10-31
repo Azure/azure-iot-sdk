@@ -1,0 +1,71 @@
+# helgrind suppressions for eng/run-race-detectors.sh. Policy (enforced by
+# eng/check-race-suppressions.sh):
+# - Third-party code only (Paho, OpenSSL, glibc, ld.so). Never SDK code.
+# - Each entry follows a comment giving the upstream file:line and, for Paho,
+#   the PAHO_C_TAG it was checked against. Re-check on every tag bump.
+# - The first frame is a concrete fun: or obj: line, never "...".
+
+# Paho MQTTAsync.c:684,687 (v1.3.16): MQTTAsync_tostop and sendThread_state
+# written without mqttasync_mutex; read by the send thread.
+{
+   paho-connect-thread-flags
+   Helgrind:Race
+   fun:MQTTAsync_connect
+}
+
+# Paho MQTTAsyncUtils.c:2438 (v1.3.16): MQTTAsync_tostop written without a lock.
+{
+   paho-stop-tostop
+   Helgrind:Race
+   fun:MQTTAsync_stop
+}
+
+# Paho MQTTAsyncUtils.c:1839-1865 (v1.3.16): sendThread_state and
+# MQTTAsync_tostop accessed by the send thread without a lock.
+{
+   paho-send-thread-flags
+   Helgrind:Race
+   fun:MQTTAsync_sendThread
+}
+
+# Paho MQTTAsyncUtils.c:2392 (v1.3.16): the receive thread reads sendThread_state
+# after releasing mqttasync_mutex; the send thread writes it.
+{
+   paho-receive-thread-send-state
+   Helgrind:Race
+   fun:MQTTAsync_receiveThread
+}
+
+# Paho MQTTAsync.c:1013 (v1.3.16): receiveThread_id and sendThread_id read
+# without a lock; the receive thread writes them (MQTTAsyncUtils.c:2080).
+{
+   paho-incallback-thread-ids
+   Helgrind:Race
+   fun:MQTTAsync_inCallback
+}
+
+# glibc pthread_cond_wait.c:516: a timed-out pthread_cond_timedwait() may pass on
+# a signal it consumed, after releasing the mutex. helgrind intercepts that
+# glibc-internal signal and reports it, as Dubious when no thread holds the
+# mutex or as Misc when another thread does. Seen from Paho's send thread
+# (Thread.c:338, Thread_wait_evt, v1.3.16) and from any adapter timed wait; no
+# caller frame signals. Valgrind 3.21+ reports kind Dubious
+# (helgrind/hg_main.c), so older valgrind rejects the first entry.
+{
+   glibc-cond-timedwait-internal-signal-dubious
+   Helgrind:Dubious
+   obj:*/vgpreload_helgrind-*.so
+   fun:__pthread_cond_wait_common
+   fun:pthread_cond_timedwait*
+   obj:*/vgpreload_helgrind-*.so
+}
+
+# glibc pthread_cond_wait.c:516: the same signal, reported as Misc.
+{
+   glibc-cond-timedwait-internal-signal-misc
+   Helgrind:Misc
+   obj:*/vgpreload_helgrind-*.so
+   fun:__pthread_cond_wait_common
+   fun:pthread_cond_timedwait*
+   obj:*/vgpreload_helgrind-*.so
+}

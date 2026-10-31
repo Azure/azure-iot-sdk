@@ -129,6 +129,55 @@ az_iot_test_mqtt_packet az_iot_test_mqtt_suback_raw(az_iot_test_mqtt_version ver
   return p;
 }
 
+static az_iot_test_mqtt_packet packet_with_reason_string(
+    uint8_t first_byte,
+    const uint8_t* head,
+    size_t head_len,
+    const char* reason_string,
+    const uint8_t* tail,
+    size_t tail_len);
+
+az_iot_test_mqtt_packet az_iot_test_mqtt_puback_v5_raw(uint8_t code, const char* reason_string)
+{
+  /* Packet id, patched by the proxy; reason code. */
+  uint8_t const head[] = { 0x00, 0x00, code };
+  az_iot_test_mqtt_packet p
+      = packet_with_reason_string(MQTT_PUBACK, head, sizeof(head), reason_string, NULL, 0);
+  if (p.len != 0)
+  {
+    p.packet_id_offset = (p.bytes[1] & 0x80u) ? 3 : 2; /* After a 1- or 2-byte Remaining Length. */
+    p.echo_packet_id = 1;
+  }
+  return p;
+}
+
+az_iot_test_mqtt_packet az_iot_test_mqtt_connack_v5_raw(uint8_t code, const char* reason_string)
+{
+  /* Acknowledge flags (session present clear); reason code. */
+  uint8_t const head[] = { 0x00, code };
+  return packet_with_reason_string(MQTT_CONNACK, head, sizeof(head), reason_string, NULL, 0);
+}
+
+az_iot_test_mqtt_packet az_iot_test_mqtt_disconnect_v5_raw(uint8_t code, const char* reason_string)
+{
+  uint8_t const head[] = { code };
+  return packet_with_reason_string(MQTT_DISCONNECT, head, sizeof(head), reason_string, NULL, 0);
+}
+
+az_iot_test_mqtt_packet az_iot_test_mqtt_suback_v5_raw(uint8_t code, const char* reason_string)
+{
+  /* Packet id, patched by the proxy. The reason code is the payload, after the Properties. */
+  uint8_t const head[] = { 0x00, 0x00 };
+  az_iot_test_mqtt_packet p
+      = packet_with_reason_string(MQTT_SUBACK, head, sizeof(head), reason_string, &code, 1);
+  if (p.len != 0)
+  {
+    p.packet_id_offset = (p.bytes[1] & 0x80u) ? 3 : 2; /* After a 1- or 2-byte Remaining Length. */
+    p.echo_packet_id = 1;
+  }
+  return p;
+}
+
 az_iot_test_mqtt_packet az_iot_test_mqtt_suback(
     az_iot_test_mqtt_version version,
     az_iot_test_mqtt_reason reason)
@@ -198,6 +247,20 @@ az_iot_test_mqtt_packet az_iot_test_mqtt_pingresp(void)
 /* Length of a length-delimited MQTT UTF-8 string, counting NULL as empty. */
 static size_t lenstr_len(const char* s) { return s ? strlen(s) : 0u; }
 
+/* Bytes a Variable Byte Integer of @p v takes (v < 2^21: every packet built here is far smaller).
+ */
+static size_t vbi_len(size_t v) { return v < 128u ? 1u : (v < 16384u ? 2u : 3u); }
+
+static void write_vbi(uint8_t* buf, size_t* pos, size_t v)
+{
+  do
+  {
+    uint8_t b = (uint8_t)(v % 128u);
+    v /= 128u;
+    buf[(*pos)++] = v > 0 ? (uint8_t)(b | 0x80u) : b;
+  } while (v > 0);
+}
+
 /* Append a two-byte length followed by the bytes themselves. `pos` is advanced;
  * the caller has already proved the result fits. */
 static void write_lenstr(uint8_t* buf, size_t* pos, const char* s)
@@ -210,6 +273,46 @@ static void write_lenstr(uint8_t* buf, size_t* pos, const char* s)
     memcpy(buf + *pos, s, n);
     *pos += n;
   }
+}
+
+/* A packet of type @p first_byte: @p head, then Properties holding only a Reason String unless
+ * @p reason_string is NULL, then @p tail. len == 0 when it would not fit
+ * AZ_IOT_TEST_MQTT_PACKET_MAX. */
+static az_iot_test_mqtt_packet packet_with_reason_string(
+    uint8_t first_byte,
+    const uint8_t* head,
+    size_t head_len,
+    const char* reason_string,
+    const uint8_t* tail,
+    size_t tail_len)
+{
+  az_iot_test_mqtt_packet p = packet_empty();
+  /* Property 0x1F, then the string with its 2-byte length. */
+  size_t const props = reason_string ? 3u + strlen(reason_string) : 0u;
+  size_t const remaining = head_len + vbi_len(props) + props + tail_len;
+  if (1u + vbi_len(remaining) + remaining > sizeof(p.bytes))
+  {
+    return p;
+  }
+
+  size_t pos = 0;
+  p.bytes[pos++] = first_byte;
+  write_vbi(p.bytes, &pos, remaining);
+  memcpy(&p.bytes[pos], head, head_len);
+  pos += head_len;
+  write_vbi(p.bytes, &pos, props);
+  if (reason_string)
+  {
+    p.bytes[pos++] = 0x1F;
+    write_lenstr(p.bytes, &pos, reason_string);
+  }
+  if (tail_len > 0)
+  {
+    memcpy(&p.bytes[pos], tail, tail_len);
+    pos += tail_len;
+  }
+  p.len = pos;
+  return p;
 }
 
 az_iot_test_mqtt_packet az_iot_test_mqtt_publish_v5(
@@ -231,28 +334,49 @@ az_iot_test_mqtt_packet az_iot_test_mqtt_publish_v5(
 
   /* Size it before writing any of it: a packet that does not fit must come back
    * empty rather than truncated, because a truncated one still looks like a
-   * packet to whatever injects it. */
+   * packet to whatever injects it. Every term is bounded by the buffer before
+   * it is added, so the sums cannot wrap. */
+  const size_t max = sizeof(p.bytes);
+  size_t topic_len = strlen(topic);
+  if (topic_len > max || payload_len > max)
+  {
+    return p;
+  }
   size_t props_len = 0;
   if (content_type != NULL)
   {
-    props_len += 1u + 2u + lenstr_len(content_type);
+    size_t ct_len = lenstr_len(content_type);
+    if (ct_len > max)
+    {
+      return p;
+    }
+    props_len += 1u + 2u + ct_len;
   }
   for (i = 0; i < user_properties_count; ++i)
   {
-    props_len
-        += 1u + 2u + lenstr_len(user_properties[i].key) + 2u + lenstr_len(user_properties[i].value);
+    size_t key_len = lenstr_len(user_properties[i].key);
+    size_t value_len = lenstr_len(user_properties[i].value);
+    if (key_len > max || value_len > max)
+    {
+      return p;
+    }
+    props_len += 1u + 2u + key_len + 2u + value_len;
+    if (props_len > max)
+    {
+      return p;
+    }
   }
-  size_t remaining = 2u + strlen(topic) + 1u + props_len + payload_len;
-  if (props_len > 127u || remaining > 127u || remaining + 2u > sizeof(p.bytes))
+  size_t remaining = 2u + topic_len + vbi_len(props_len) + props_len + payload_len;
+  if (1u + vbi_len(remaining) + remaining > sizeof(p.bytes))
   {
     return p;
   }
 
   size_t pos = 0;
   p.bytes[pos++] = 0x30u; /* PUBLISH, QoS 0, no DUP, no RETAIN */
-  p.bytes[pos++] = (uint8_t)remaining;
+  write_vbi(p.bytes, &pos, remaining);
   write_lenstr(p.bytes, &pos, topic);
-  p.bytes[pos++] = (uint8_t)props_len;
+  write_vbi(p.bytes, &pos, props_len);
   if (content_type != NULL)
   {
     p.bytes[pos++] = 0x03u; /* Content Type */

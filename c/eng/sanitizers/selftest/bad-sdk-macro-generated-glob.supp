@@ -1,0 +1,6 @@
+# glob over the names a macro generates
+{
+   macro-generated-glob
+   drd:ConflictingAccess
+   fun:az_iot_pk11_uri_*
+}

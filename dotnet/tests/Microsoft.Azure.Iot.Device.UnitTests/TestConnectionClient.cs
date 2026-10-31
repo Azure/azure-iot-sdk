@@ -4,6 +4,8 @@
 using Microsoft.Azure.Iot.Device.MQTTv5.Connection;
 using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Mqtt;
+using Microsoft.Azure.Iot.Device.Provisioning.Models;
+using Microsoft.Azure.Iot.Device.Unified.Models;
 
 namespace Microsoft.Azure.Iot.Device.UnitTests
 {
@@ -13,14 +15,14 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
     /// </summary>
     internal sealed class TestConnectionClient : AbstractConnectionClient, IDisposable
     {
-        public TestConnectionClient(ConnectionClientOptions? options = null) : base(options)
+        public TestConnectionClient(ConnectionClientOptions? options = null, ConnectionContext? connectionContext = null) : base(options, connectionContext)
         {
         }
 
         /// <summary>The CONNECTs that this client was asked to patch before they were sent to IoT hub.</summary>
         public List<MqttConnect> PatchedConnects { get; } = new();
 
-        public override MqttConnect MqttConnectOverride(MqttConnect connect)
+        internal override MqttConnect IotHubMqttConnectOverride(MqttConnect connect)
         {
             lock (PatchedConnects)
             {
@@ -34,6 +36,23 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         {
             // This client has no birth message or topics to subscribe to, so it is present as soon as it is connected.
             await RaiseDevicePresenceFlowCompletedAsync(new DevicePresenceFlowCompletedArgs() { IsSuccess = true });
+        }
+
+        /// <summary>
+        /// Invoked each time this client is about to read the device ID that it substitutes into a feature operation's
+        /// topic, letting a test pause an operation at that point.
+        /// </summary>
+        public Action? BeforeDeviceIdForTopicsRead { get; set; }
+
+        internal override string GetDeviceIdForTopics()
+        {
+            BeforeDeviceIdForTopicsRead?.Invoke();
+            return base.GetDeviceIdForTopics();
+        }
+
+        internal override bool DoesClientSupportHubType(ConnectionProfile connectionProfile)
+        {
+            return connectionProfile == ConnectionProfile.Classic;
         }
     }
 }

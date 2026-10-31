@@ -214,11 +214,6 @@ extern "C"
    * connection client. Lives inside az_iot_su_client, so it is caller
    * allocated and needs no heap.
    */
-  /* Bound on a request/response body. A compliant update-check response fits
-   * every transport the service offers; this is sized for that. */
-#ifndef AZ_IOT_SU_CHANNEL_BODY_MAX_SIZE
-#define AZ_IOT_SU_CHANNEL_BODY_MAX_SIZE 2048
-#endif
 
 /** @brief Compatibility properties the channel sends; the service's limit. */
 #define AZ_IOT_SU_CHANNEL_MAX_COMPATIBILITY_PROPERTIES AZ_IOT_SU_MAX_COMPATIBILITY_PROPERTIES
@@ -261,8 +256,9 @@ extern "C"
     bool request_pending;
     uint32_t next_rid;
 
-    /* Caller-allocated so the channel performs no allocation of its own. */
-    uint8_t body[AZ_IOT_SU_CHANNEL_BODY_MAX_SIZE];
+    /** Request body buffer, from the client's workspace (az_iot_su_limits::max_message_size). */
+    uint8_t* body;
+    size_t body_size; /**< Size of body. */
 
     /* What the device reports about itself on a fetch. Copied at init: the
      * caller's device-properties struct may be freed once initialize returns. */
@@ -273,7 +269,11 @@ extern "C"
      * a fetch: they are how the service picks the right update. */
     az_iot_su_custom_property compat[AZ_IOT_SU_CHANNEL_MAX_COMPATIBILITY_PROPERTIES];
     size_t compat_count;
-    az_iot_su_device_properties_snapshot device_properties;
+    az_iot_su_device_properties device_properties; /**< Strings in device_properties_strings. */
+    az_iot_su_custom_property device_properties_custom[AZ_IOT_SU_MAX_COMPATIBILITY_PROPERTIES];
+    /** Device-property strings, from the client's workspace. */
+    char* device_properties_strings;
+    size_t device_properties_strings_size; /**< Size of device_properties_strings. */
 
     az_iot_su_report_update_id installed_update_id;
     bool has_installed_update_id;
@@ -349,12 +349,29 @@ extern "C"
     uint32_t pending_epoch;
   } az_iot_su_channel_dps;
 
-  /* Bind the channel to a connection and an HTTPS transport and emit the vtable
-   * pair the engine binds to. */
+  /**
+   * @brief Bind the channel to a connection and emit the vtable pair the engine binds to.
+   *
+   * @param[out] channel_state Channel storage.
+   * @param[in] connection Connection client.
+   * @param[in] device_properties Initial device properties; copied.
+   * @param[in] body Request body buffer; must outlive the channel.
+   * @param[in] body_size Size of @p body.
+   * @param[in] device_properties_strings Storage for the copied property strings; must outlive
+   *   the channel.
+   * @param[in] device_properties_strings_size Size of @p device_properties_strings.
+   * @param[out] out_channel The vtable pair.
+   * @return AZ_IOT_OK; AZ_IOT_ERR_INVALID_ARG on a NULL argument or empty @p body;
+   *   an error of channel_set_device_properties().
+   */
   az_iot_result az_iot_su_channel_dps_init(
       az_iot_su_channel_dps* channel_state,
       az_iot_connection_client* connection,
       const az_iot_su_device_properties* device_properties,
+      uint8_t* body,
+      size_t body_size,
+      char* device_properties_strings,
+      size_t device_properties_strings_size,
       az_iot_su_channel* out_channel);
 
 #ifdef __cplusplus

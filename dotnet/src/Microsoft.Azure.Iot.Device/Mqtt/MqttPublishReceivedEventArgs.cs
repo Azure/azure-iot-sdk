@@ -9,7 +9,8 @@ namespace Microsoft.Azure.Iot.Device.Mqtt
         /// The MQTT publish that was received by this client.
         /// </summary>
         /// <remarks>
-        /// If this publish is QoS 1 or higher, then it must be acknowledged by calling <see cref="AcknowledgeAsync(CancellationToken)"/>.
+        /// The connection layer acknowledges QoS 1 or higher publishes before dispatching them to receive handlers.
+        /// Receive handlers must not acknowledge the publish themselves.
         /// </remarks>
         public required MqttPublish Publish { get; set; }
 
@@ -28,7 +29,9 @@ namespace Microsoft.Azure.Iot.Device.Mqtt
         /// </summary>
         public List<MqttUserProperty> ResponseUserProperties { get; } = new();
 
-        // To be implemented by underlying MQTT client library
+        /// <summary>
+        /// Acknowledges this publish using the underlying MQTT client. Called by the connection layer, not receive handlers.
+        /// </summary>
         public abstract Task AcknowledgeAsync(CancellationToken cancellationToken);
     }
 }

@@ -14,7 +14,7 @@ namespace Microsoft.Azure.Iot.Device.Mqtt
 
         }
 
-        public MqttSubscribe(string topic, MqttQualityOfServiceLevel qos)
+        public MqttSubscribe(string topic, MqttQualityOfServiceLevel qos = MqttQualityOfServiceLevel.AtLeastOnce)
         {
             TopicFilters.Add(new(topic, qos));
         }
@@ -27,6 +27,16 @@ namespace Microsoft.Azure.Iot.Device.Mqtt
         {
             UserProperties ??= [];
             UserProperties.Add(new MqttUserProperty(key, value));
+        }
+
+        /// <summary>
+        /// Make a copy of this subscribe with different topic filters. Everything else is shared with this subscribe.
+        /// </summary>
+        internal MqttSubscribe WithTopicFilters(List<MqttTopicFilter> topicFilters)
+        {
+            var copy = (MqttSubscribe)MemberwiseClone();
+            copy.TopicFilters = topicFilters;
+            return copy;
         }
 
         /// <summary>

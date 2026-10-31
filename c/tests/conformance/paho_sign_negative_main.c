@@ -93,6 +93,8 @@
 #include <openssl/pem.h>
 #include <openssl/x509.h>
 
+#include "../support/test_x509.h"
+
 /* The temporary directory, spelled the way each platform spells it. Windows
  * sets TEMP/TMP and not TMPDIR, and this harness builds there. */
 static const char* temp_dir(void)
@@ -226,11 +228,8 @@ static int write_self_signed_cert(const char* path)
     goto done;
   }
 
-  X509_NAME* name = X509_get_subject_name(x509);
-  if (name == NULL
-      || !X509_NAME_add_entry_by_txt(
-          name, "CN", MBSTRING_ASC, (const unsigned char*)"az-iot-sign-negative", -1, -1, 0)
-      || !X509_set_issuer_name(x509, name) || !X509_sign(x509, pkey, EVP_sha256()))
+  if (!test_x509_set_self_signed_name(x509, "az-iot-sign-negative")
+      || !X509_sign(x509, pkey, EVP_sha256()))
   {
     goto done;
   }
@@ -250,6 +249,65 @@ done:
   X509_free(x509);
   EVP_PKEY_free(pkey);
   return ok ? 0 : -1;
+}
+
+/**
+ * @brief Copies the sanitizer reports in the captured suite output to stderr.
+ *
+ * The log is deleted after the verdict, and a sanitizer then fails the run
+ * only through its exit code, so without this its report would be lost.
+ * Copies each block from a "WARNING:"/"ERROR:" line naming a sanitizer, or a
+ * UBSan "runtime error:" line, through its "SUMMARY:" line.
+ *
+ * @param[in] path The captured output.
+ * @param[in] label The suite label, for the heading.
+ */
+static void print_sanitizer_reports_from_log(const char* path, const char* label)
+{
+  FILE* log = fopen(path, "r");
+  if (log == NULL)
+  {
+    return;
+  }
+  char line[1024];
+  int in_report = 0;
+  int heading_printed = 0;
+  while (fgets(line, sizeof(line), log) != NULL)
+  {
+    if (!in_report
+        && ((strstr(line, "Sanitizer") != NULL
+             && (strstr(line, "WARNING:") != NULL || strstr(line, "ERROR:") != NULL))
+            || strstr(line, "runtime error:") != NULL))
+    {
+      in_report = 1;
+      if (!heading_printed)
+      {
+        fprintf(stderr, "sign-negative[%s]: sanitizer report(s) in the suite's output:\n", label);
+        heading_printed = 1;
+      }
+    }
+    if (in_report)
+    {
+      fputs(line, stderr);
+      if (strncmp(line, "SUMMARY: ", 9) == 0)
+      {
+        in_report = 0;
+      }
+    }
+  }
+  fclose(log);
+}
+
+/**
+ * @brief Writes the name of the file that captures a suite's output.
+ *
+ * @param[out] path Receives the name.
+ * @param[in] size Size of @p path.
+ * @param[in] label The suite label.
+ */
+static void format_suite_log_path(char* path, size_t size, const char* label)
+{
+  snprintf(path, size, "suite-%s.log", label);
 }
 
 /* Count of "[  FAILED  ] <name>" lines, and whether the expected case is among
@@ -406,7 +464,7 @@ static int run_control(
   opts.client_cert_path = cert_path;
 
   char log_path[64];
-  snprintf(log_path, sizeof(log_path), "suite-%s.log", label);
+  format_suite_log_path(log_path, sizeof(log_path), label);
 
   g_sign_called = 0;
   remove(SIGN_CALLED_MARKER);
@@ -479,6 +537,7 @@ static int run_control(
   az_iot_close(saved_err);
   const int close_failed = (fclose(log) != 0);
   az_iot_paho_factory_destroy(f);
+  print_sanitizer_reports_from_log(log_path, label);
 
   if (flush_failed || close_failed)
   {
@@ -629,10 +688,25 @@ static int run_control_isolated(
       fprintf(stderr, "sign-negative[%s]: could not wait for the isolated run\n", label);
       return 1;
     }
+    /* The child deletes the log after replaying it, so a log still here means
+     * the child ended early, e.g. aborted by a sanitizer while its output was
+     * redirected. */
+    char log_path[64];
+    format_suite_log_path(log_path, sizeof(log_path), label);
+    print_sanitizer_reports_from_log(log_path, label);
+    remove(log_path);
     if (!WIFEXITED(status))
     {
       fprintf(stderr, "sign-negative[%s]: the isolated run did not exit normally\n", label);
       return 1;
+    }
+    if (WEXITSTATUS(status) != 0)
+    {
+      fprintf(
+          stderr,
+          "sign-negative[%s]: the isolated run exited with status %d\n",
+          label,
+          WEXITSTATUS(status));
     }
     return (WEXITSTATUS(status) == 0) ? 0 : 1;
   }

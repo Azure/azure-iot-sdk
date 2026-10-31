@@ -22,10 +22,9 @@
 #include "azure/iot/mqttv3/az_iot_twin_client.h"
 
 #include "internal/connection_client_internal.h"
+#include "internal/delivery_tracker.h"
 #include "internal/log_internal.h"
 #include "internal/span_writer.h"
-
-#define AZ_IOT_TWIN_TOPIC_MAX 192
 
 #define TWIN_RESPONSE_PREFIX "$iothub/twin/res/"
 #define TWIN_DESIRED_PREFIX "$iothub/twin/PATCH/properties/desired/"
@@ -36,7 +35,7 @@
 #define TWIN_QUERY_RID "$rid"
 #define TWIN_QUERY_VERSION "$version"
 
-/* The pending slot kind values stored in _internal.pending[].kind */
+/* Request kinds, held in _internal.requests[].kind. */
 #define TWIN_PENDING_NONE 0
 #define TWIN_PENDING_GET 1
 #define TWIN_PENDING_PATCH 2
@@ -59,25 +58,12 @@
 /* helpers                                                                   */
 /* ------------------------------------------------------------------------- */
 
-/* Find the pending slot matching a given request-id. Returns slot index or -1. */
-static int find_pending_by_rid(az_iot_mqttv3_twin_client* t, uint32_t rid)
+/* Tracker entry of the request carrying @p rid, or -1. */
+static int find_request_by_rid(const az_iot_mqttv3_twin_client* t, uint32_t rid)
 {
   for (int i = 0; i < AZ_IOT_TWIN_MAX_PENDING; ++i)
   {
-    if (TI(t).pending[i].in_use && TI(t).pending[i].rid == rid)
-    {
-      return i;
-    }
-  }
-  return -1;
-}
-
-/* Allocate an unused pending slot. Returns slot index or -1 if full. */
-static int alloc_pending(az_iot_mqttv3_twin_client* t)
-{
-  for (int i = 0; i < AZ_IOT_TWIN_MAX_PENDING; ++i)
-  {
-    if (!TI(t).pending[i].in_use)
+    if (TI(t).requests[i].kind != TWIN_PENDING_NONE && TI(t).requests[i].rid == rid)
     {
       return i;
     }
@@ -202,84 +188,30 @@ static az_iot_result status_to_result(int status)
 }
 
 /* ------------------------------------------------------------------------- */
-/* completing a pending request                                              */
+/* completing a request                                                      */
 /* ------------------------------------------------------------------------- */
 
-/* Release slot @p idx and hand the GET outcome to its callback.
+/* Hand @p request's outcome to its callback; the request is already released, so a callback
+ * that re-issues it can take its entry.
  *
- * The slot is released BEFORE the callback runs so a callback that re-issues
- * its request immediately can claim it.
- *
- * The payload is withheld on failure: az_iot_twin_get_callback documents
- * twin_payload as NULL when status is not AZ_IOT_OK, and a rejected GET carries
- * a service error description rather than a twin document. */
-static void invoke_get_cb(
-    az_iot_mqttv3_twin_client* t,
-    int idx,
+ * The GET payload is withheld on failure: az_iot_twin_get_callback documents twin_payload as NULL
+ * when status is not AZ_IOT_OK, and a rejected GET carries a service error description rather
+ * than a twin document. A patch version only means something when the update was applied. */
+static void report_twin_request(
+    const az_iot_mqttv3_twin_request* request,
     az_iot_result status,
     const uint8_t* payload,
-    size_t payload_len)
-{
-  az_iot_twin_get_callback cb = TI(t).pending[idx].cb.get_cb;
-  void* ctx = TI(t).pending[idx].user_ctx;
-  TI(t).pending[idx].in_use = false;
-  TI(t).pending[idx].kind = TWIN_PENDING_NONE;
-  if (cb)
-  {
-    bool ok = (status == AZ_IOT_OK);
-    cb(status, ok ? payload : NULL, ok ? payload_len : 0, ctx);
-  }
-}
-
-/* Release slot @p idx and hand the patch outcome to its callback.
- *
- * A version only means something when the update was applied. If the service
- * ever attached one to a non-2xx response, reporting it would let a caller
- * record a version for a patch that was rejected. */
-static void invoke_patch_cb(
-    az_iot_mqttv3_twin_client* t,
-    int idx,
-    az_iot_result status,
+    size_t payload_len,
     uint64_t version)
 {
-  az_iot_twin_patch_complete_callback cb = TI(t).pending[idx].cb.patch_cb;
-  void* ctx = TI(t).pending[idx].user_ctx;
-  TI(t).pending[idx].in_use = false;
-  TI(t).pending[idx].kind = TWIN_PENDING_NONE;
-  if (cb)
+  bool const ok = (status == AZ_IOT_OK);
+  if (request->kind == TWIN_PENDING_GET && request->cb.get_cb)
   {
-    cb(status, (status == AZ_IOT_OK) ? version : 0, ctx);
+    request->cb.get_cb(status, ok ? payload : NULL, ok ? payload_len : 0, request->user_ctx);
   }
-}
-
-/* Complete every pending request with an error and release its slot.
- *
- * Called when the MQTT session ends. The responses these requests were waiting
- * for would have arrived on that session, so they can never come now; holding
- * the slots would leak one per outage until AZ_IOT_TWIN_MAX_PENDING is gone and
- * the client refuses every further request. */
-static void twin_fail_pending(void* user_ctx)
-{
-  az_iot_mqttv3_twin_client* t = (az_iot_mqttv3_twin_client*)user_ctx;
-  if (!t)
+  else if (request->kind == TWIN_PENDING_PATCH && request->cb.patch_cb)
   {
-    return;
-  }
-
-  for (int i = 0; i < AZ_IOT_TWIN_MAX_PENDING; ++i)
-  {
-    if (!TI(t).pending[i].in_use)
-    {
-      continue;
-    }
-    if (TI(t).pending[i].kind == TWIN_PENDING_GET)
-    {
-      invoke_get_cb(t, i, AZ_IOT_ERR_NOT_CONNECTED, NULL, 0);
-    }
-    else
-    {
-      invoke_patch_cb(t, i, AZ_IOT_ERR_NOT_CONNECTED, 0);
-    }
+    request->cb.patch_cb(status, ok ? version : 0, request->user_ctx);
   }
 }
 
@@ -303,14 +235,20 @@ static void on_twin_response(void* user_ctx, const az_iot_mqtt_message* msg)
   const char* qmark = strchr(msg->topic, '?');
   if (!qmark)
   {
-    AZ_IOT_LOG_WARNF("mqttv3_twin: dropping a response topic with no query string: %s", msg->topic);
+    AZ_IOT_LOG_WARNF(
+        AZ_IOT_LOG_COMPONENT_MQTTV3_TWIN,
+        "dropping a response topic with no query string: %s",
+        msg->topic);
     return;
   }
 
   int status = 0;
   if (!parse_status(msg->topic, qmark, &status))
   {
-    AZ_IOT_LOG_WARNF("mqttv3_twin: dropping a response with an unreadable status: %s", msg->topic);
+    AZ_IOT_LOG_WARNF(
+        AZ_IOT_LOG_COMPONENT_MQTTV3_TWIN,
+        "dropping a response with an unreadable status: %s",
+        msg->topic);
     return;
   }
 
@@ -319,7 +257,8 @@ static void on_twin_response(void* user_ctx, const az_iot_mqtt_message* msg)
   if (!query_value(qmark, TWIN_QUERY_RID, &rid_text) || !span_to_u32(rid_text, &rid))
   {
     AZ_IOT_LOG_WARNF(
-        "mqttv3_twin: dropping a response whose request id is missing or not a number: %s",
+        AZ_IOT_LOG_COMPONENT_MQTTV3_TWIN,
+        "dropping a response whose request id is missing or not a number: %s",
         msg->topic);
     return;
   }
@@ -334,21 +273,24 @@ static void on_twin_response(void* user_ctx, const az_iot_mqtt_message* msg)
     (void)span_to_u64(version_text, &version);
   }
 
-  int idx = find_pending_by_rid(t, rid);
+  int idx = find_request_by_rid(t, rid);
   if (idx < 0)
   {
     return; /* stale or unknown rid */
   }
 
-  az_iot_result r = status_to_result(status);
-  if (TI(t).pending[idx].kind == TWIN_PENDING_GET)
+  /* Answered: released before its callback, so the callback may make a new request. */
+  az_iot_mqttv3_twin_request const request = TI(t).requests[idx];
+  memset(&TI(t).requests[idx], 0, sizeof(TI(t).requests[idx]));
+  az_iot_delivery_tracker_binding const bound = az_iot_delivery_tracker__binding(&TI(t).tracker);
+  az_iot_delivery_tracker__cancel(&TI(t).tracker, (size_t)idx);
+  /* The cancel sends what the freed entry lets go; a callback there may deinitialize this client.
+   */
+  if (!az_iot_delivery_tracker__has_binding(&TI(t).tracker, bound))
   {
-    invoke_get_cb(t, idx, r, msg->payload, msg->payload_len);
+    return;
   }
-  else
-  {
-    invoke_patch_cb(t, idx, r, version);
-  }
+  report_twin_request(&request, status_to_result(status), msg->payload, msg->payload_len, version);
 }
 
 static void on_twin_desired(void* user_ctx, const az_iot_mqtt_message* msg)
@@ -395,7 +337,7 @@ static void withdraw_registrations(
     az_iot_connection_client* conn,
     az_iot_mqttv3_twin_client* client)
 {
-  (void)az_iot_connection_client__unregister_session_end_handler(conn, client);
+  az_iot_delivery_tracker__unbind(&TI(client).tracker);
   (void)az_iot_connection_client__remove_subscriptions_for(conn, client);
   (void)az_iot_connection_client__unregister_inbound_handlers(conn, client);
 }
@@ -404,7 +346,7 @@ static void withdraw_registrations(
 static az_iot_result build_request_topic(
     const char* prefix,
     uint32_t rid,
-    char (*topic)[AZ_IOT_TWIN_TOPIC_MAX])
+    char (*topic)[AZ_IOT_MQTTV3_TWIN_TOPIC_MAX])
 {
   az_iot_span_writer writer;
   az_iot_span_writer_init(&writer, AZ_SPAN_FROM_BUFFER(*topic));
@@ -412,8 +354,183 @@ static az_iot_result build_request_topic(
   az_iot_span_writer_append_u32(&writer, rid);
   if (az_iot_span_writer_end_str(&writer, NULL) != AZ_IOT_OK)
   {
-    AZ_IOT_LOG_ERRORF("mqttv3_twin: '%s<rid>' did not fit AZ_IOT_TWIN_TOPIC_MAX bytes", prefix);
+    AZ_IOT_LOG_ERRORF(
+        AZ_IOT_LOG_COMPONENT_MQTTV3_TWIN,
+        "'%s<rid>' did not fit AZ_IOT_MQTTV3_TWIN_TOPIC_MAX bytes",
+        prefix);
     return AZ_IOT_ERR_NOT_SUPPORTED;
+  }
+  return AZ_IOT_OK;
+}
+
+/* The request tracker entry @p entry_index holds, or NULL. */
+static az_iot_mqttv3_twin_request* request_of_entry(
+    az_iot_mqttv3_twin_client* t,
+    size_t entry_index)
+{
+  if (entry_index >= AZ_IOT_TWIN_MAX_PENDING
+      || TI(t).requests[entry_index].kind == TWIN_PENDING_NONE)
+  {
+    return NULL;
+  }
+  return &TI(t).requests[entry_index];
+}
+
+/* Tracker encode(): the request tracker entry @p entry_index holds, built at each send. Any
+ * error discards it. */
+static az_iot_result encode_twin_request(void* owner, size_t entry_index, az_iot_mqtt_message* out)
+{
+  az_iot_mqttv3_twin_client* t = (az_iot_mqttv3_twin_client*)owner;
+  const az_iot_mqttv3_twin_request* request = request_of_entry(t, entry_index);
+  if (request == NULL)
+  {
+    return AZ_IOT_ERR_INTERNAL;
+  }
+  bool const patch = request->kind == TWIN_PENDING_PATCH;
+  /* The patch is the caller's only during the patch call. */
+  if (patch && (!TI(t).submit_in_progress || entry_index != TI(t).submitting_entry))
+  {
+    return AZ_IOT_ERR_INTERNAL;
+  }
+  az_iot_result const r = build_request_topic(
+      patch ? TWIN_PATCH_TOPIC_PREFIX : TWIN_GET_TOPIC_PREFIX, request->rid, &TI(t).outbound_topic);
+  if (r != AZ_IOT_OK)
+  {
+    return r;
+  }
+  memset(out, 0, sizeof(*out));
+  out->topic = TI(t).outbound_topic;
+  out->payload = patch ? request->patch : NULL;
+  out->payload_len = patch ? request->patch_len : 0;
+  out->qos = AZ_IOT_MQTT_QOS_0;
+  return AZ_IOT_OK;
+}
+
+/* Tracker on_sent(): a reported patch must be sent within its call. */
+static void note_twin_request_sent(void* owner, size_t entry_index)
+{
+  az_iot_mqttv3_twin_request* request
+      = request_of_entry((az_iot_mqttv3_twin_client*)owner, entry_index);
+  if (request != NULL)
+  {
+    request->sent = true;
+  }
+}
+
+/* Tracker on_complete(): the request ended unanswered. Expired is AZ_IOT_ERR_TIMEOUT; a lost
+ * session or a request that cannot be sent is AZ_IOT_ERR_NOT_CONNECTED. The one being submitted
+ * is reported by the submitting call instead. */
+static void complete_twin_request(
+    void* owner,
+    size_t entry_index,
+    az_iot_delivery_tracker_outcome outcome,
+    const az_iot_publish_result* detail)
+{
+  (void)detail;
+  az_iot_mqttv3_twin_client* t = (az_iot_mqttv3_twin_client*)owner;
+  az_iot_mqttv3_twin_request* held = request_of_entry(t, entry_index);
+  if (held == NULL)
+  {
+    return;
+  }
+  az_iot_mqttv3_twin_request const request = *held;
+  memset(held, 0, sizeof(*held));
+  bool const expired = outcome == AZ_IOT_DELIVERY_TRACKER_OUTCOME_EXPIRED;
+  if (TI(t).submit_in_progress && entry_index == TI(t).submitting_entry)
+  {
+    TI(t).submit_failure = expired ? AZ_IOT_ERR_TIMEOUT : AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+    return;
+  }
+  report_twin_request(
+      &request, expired ? AZ_IOT_ERR_TIMEOUT : AZ_IOT_ERR_NOT_CONNECTED, NULL, 0, 0);
+}
+
+static const az_iot_delivery_tracker_profile k_twin_get_profile = {
+  .type = "twin GET",
+  .confirmation = AZ_IOT_DELIVERY_TRACKER_CONFIRM_BY_RESPONSE,
+  .on_session_loss = AZ_IOT_DELIVERY_TRACKER_ON_SESSION_LOSS_RESEND,
+  .priority = 0,
+  .send_untracked_without_slot = true, /* QoS 0: never needs a PUBACK slot. */
+  .encode = encode_twin_request,
+  .on_complete = complete_twin_request,
+  .on_sent = note_twin_request_sent,
+};
+
+/* Not resent: the service may have applied it. */
+static const az_iot_delivery_tracker_profile k_twin_reported_patch_profile = {
+  .type = "twin reported patch",
+  .confirmation = AZ_IOT_DELIVERY_TRACKER_CONFIRM_BY_RESPONSE,
+  .on_session_loss = AZ_IOT_DELIVERY_TRACKER_ON_SESSION_LOSS_FAIL,
+  .priority = 0,
+  .send_untracked_without_slot = true, /* QoS 0: never needs a PUBACK slot. */
+  .encode = encode_twin_request,
+  .on_complete = complete_twin_request,
+  .on_sent = note_twin_request_sent,
+};
+
+/* Track @p request under a fresh request id in a free entry. A reported patch must be sent now:
+ * one still queued is withdrawn. Returns as az_iot_mqttv3_twin_client_patch_reported(). */
+static az_iot_result submit_twin_request(
+    az_iot_mqttv3_twin_client* t,
+    const az_iot_mqttv3_twin_request* request)
+{
+  if (TI(t).submit_in_progress)
+  {
+    return AZ_IOT_ERR_BUSY;
+  }
+  size_t entry = 0;
+  while (entry < AZ_IOT_TWIN_MAX_PENDING && TI(t).requests[entry].kind != TWIN_PENDING_NONE)
+  {
+    ++entry;
+  }
+  if (entry == AZ_IOT_TWIN_MAX_PENDING)
+  {
+    AZ_IOT_LOG_WARN(
+        AZ_IOT_LOG_COMPONENT_MQTTV3_TWIN,
+        "refusing a request -- AZ_IOT_TWIN_MAX_PENDING requests are in flight");
+    return AZ_IOT_ERR_NOT_SUPPORTED;
+  }
+  az_iot_mqttv3_twin_request* held = &TI(t).requests[entry];
+  *held = *request;
+  held->rid = next_rid(t);
+  uint8_t correlation_id[sizeof(held->rid)];
+  memcpy(correlation_id, &held->rid, sizeof(correlation_id));
+  TI(t).submitting_entry = entry;
+  TI(t).submit_failure = AZ_IOT_OK;
+  TI(t).submit_in_progress = true;
+  int const kind = request->kind;
+  az_iot_connection_client* const conn = TI(t).conn;
+  az_iot_delivery_tracker_binding const bound = az_iot_delivery_tracker__binding(&TI(t).tracker);
+  az_iot_result const r = az_iot_delivery_tracker__submit_at(
+      &TI(t).tracker,
+      entry,
+      kind == TWIN_PENDING_PATCH ? &k_twin_reported_patch_profile : &k_twin_get_profile,
+      correlation_id,
+      sizeof(correlation_id),
+      TI(t).request_timeout_ms);
+  /* A callback of an older request may have deinitialized (or freed) this client. */
+  if (!az_iot_delivery_tracker__has_binding(&TI(t).tracker, bound))
+  {
+    return AZ_IOT_ERR_NOT_INITIALIZED;
+  }
+  TI(t).submit_in_progress = false;
+  if (r != AZ_IOT_OK)
+  {
+    memset(held, 0, sizeof(*held));
+    return r;
+  }
+  if (TI(t).submit_failure != AZ_IOT_OK)
+  {
+    return TI(t).submit_failure; /* Already released. */
+  }
+  held->patch = NULL;
+  held->patch_len = 0;
+  if (kind == TWIN_PENDING_PATCH && !held->sent)
+  {
+    memset(held, 0, sizeof(*held));
+    az_iot_delivery_tracker__cancel(&TI(t).tracker, entry);
+    return az_iot_connection_client__is_connected(conn) ? AZ_IOT_ERR_BUSY
+                                                        : AZ_IOT_ERR_NOT_CONNECTED;
   }
   return AZ_IOT_OK;
 }
@@ -422,9 +539,8 @@ static az_iot_result build_request_topic(
 /* public API                                                                 */
 /* ------------------------------------------------------------------------- */
 
-az_iot_result az_iot_mqttv3_twin_client_init(
-    az_iot_mqttv3_twin_client* client,
-    az_iot_connection_client* conn)
+AZ_NODISCARD az_iot_result
+az_iot_mqttv3_twin_client_init(az_iot_mqttv3_twin_client* client, az_iot_connection_client* conn)
 {
   if (client == NULL || conn == NULL)
   {
@@ -442,6 +558,7 @@ az_iot_result az_iot_mqttv3_twin_client_init(
   memset(client, 0, sizeof(*client));
   TI(client).conn = conn;
   TI(client).next_rid = 1;
+  TI(client).request_timeout_ms = AZ_IOT_MQTTV3_TWIN_REQUEST_TIMEOUT_MS_DEFAULT;
 
   result = az_iot_connection_client__register_inbound_handler(
       conn, TWIN_RESPONSE_PREFIX, on_twin_response, client);
@@ -470,20 +587,29 @@ az_iot_result az_iot_mqttv3_twin_client_init(
         AZ_IOT_SUBSCRIPTION_FAILS_SESSION,
         NULL);
   }
-  /* Be told when the session ends so pending GET/PATCH requests are completed
-   * and their slots released, rather than waiting for a response that died
-   * with the session. Registered last: everything above can still fail and
-   * unwind, and this must not outlive a failed init. */
+  /* Requests go through the tracker: a GET is sent again after a lost session, a patch fails,
+   * and both time out. Bound last: it must not outlive a failed init. */
   if (result == AZ_IOT_OK)
   {
-    result
-        = az_iot_connection_client__register_session_end_handler(conn, twin_fail_pending, client);
+    result = az_iot_delivery_tracker__init(
+        &TI(client).tracker,
+        TI(client).tracker_entries,
+        AZ_IOT_TWIN_MAX_PENDING,
+        0,
+        NULL,
+        0,
+        client);
+  }
+  if (result == AZ_IOT_OK)
+  {
+    result = az_iot_delivery_tracker__bind(&TI(client).tracker, conn);
   }
 
   if (result != AZ_IOT_OK)
   {
     AZ_IOT_LOG_ERRORF(
-        "mqttv3_twin: init failed (%s); withdrawing partial registrations",
+        AZ_IOT_LOG_COMPONENT_MQTTV3_TWIN,
+        "init failed (%s); withdrawing partial registrations",
         az_iot_result_to_string(result));
     withdraw_registrations(conn, client);
     az_iot_connection_client__release_profile(conn);
@@ -505,7 +631,7 @@ void az_iot_mqttv3_twin_client_deinit(az_iot_mqttv3_twin_client* client)
   memset(client, 0, sizeof(*client));
 }
 
-az_iot_result az_iot_mqttv3_twin_client_get(
+AZ_NODISCARD az_iot_result az_iot_mqttv3_twin_client_get(
     az_iot_mqttv3_twin_client* twin,
     az_iot_twin_get_callback cb,
     void* user_ctx)
@@ -514,48 +640,15 @@ az_iot_result az_iot_mqttv3_twin_client_get(
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
-
-  int idx = alloc_pending(twin);
-  if (idx < 0)
-  {
-    AZ_IOT_LOG_WARN(
-        "mqttv3_twin: refusing a GET -- AZ_IOT_TWIN_MAX_PENDING requests are in flight");
-    return AZ_IOT_ERR_NOT_SUPPORTED;
-  }
-
-  uint32_t rid = next_rid(twin);
-
-  char topic[AZ_IOT_TWIN_TOPIC_MAX];
-  az_iot_result r = build_request_topic(TWIN_GET_TOPIC_PREFIX, rid, &topic);
-  if (r != AZ_IOT_OK)
-  {
-    return r;
-  }
-
-  /* Reserve the slot before publish. */
-  TI(twin).pending[idx].in_use = true;
-  TI(twin).pending[idx].rid = rid;
-  TI(twin).pending[idx].kind = TWIN_PENDING_GET;
-  TI(twin).pending[idx].cb.get_cb = cb;
-  TI(twin).pending[idx].user_ctx = user_ctx;
-
-  az_iot_mqtt_message out = { 0 };
-  out.topic = topic;
-  out.qos = AZ_IOT_MQTT_QOS_0;
-
-  r = az_iot_connection_client__publish(TI(twin).conn, &out, NULL, NULL);
-  if (r != AZ_IOT_OK)
-  {
-    AZ_IOT_LOG_WARNF(
-        "mqttv3_twin: the GET publish was refused (%s); releasing its pending slot",
-        az_iot_result_to_string(r));
-    TI(twin).pending[idx].in_use = false;
-    TI(twin).pending[idx].kind = TWIN_PENDING_NONE;
-  }
-  return r;
+  az_iot_mqttv3_twin_request request;
+  memset(&request, 0, sizeof(request));
+  request.kind = TWIN_PENDING_GET;
+  request.cb.get_cb = cb;
+  request.user_ctx = user_ctx;
+  return submit_twin_request(twin, &request);
 }
 
-az_iot_result az_iot_mqttv3_twin_client_patch_reported(
+AZ_NODISCARD az_iot_result az_iot_mqttv3_twin_client_patch_reported(
     az_iot_mqttv3_twin_client* twin,
     const uint8_t* patch,
     size_t patch_len,
@@ -570,46 +663,27 @@ az_iot_result az_iot_mqttv3_twin_client_patch_reported(
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
+  az_iot_mqttv3_twin_request request;
+  memset(&request, 0, sizeof(request));
+  request.kind = TWIN_PENDING_PATCH;
+  request.patch = patch;
+  request.patch_len = patch_len;
+  request.cb.patch_cb = cb;
+  request.user_ctx = user_ctx;
+  return submit_twin_request(twin, &request);
+}
 
-  int idx = alloc_pending(twin);
-  if (idx < 0)
+az_iot_result az_iot_mqttv3_twin_client_set_request_timeout(
+    az_iot_mqttv3_twin_client* twin,
+    uint32_t timeout_ms)
+{
+  if (!twin)
   {
-    AZ_IOT_LOG_WARN(
-        "mqttv3_twin: refusing a patch -- AZ_IOT_TWIN_MAX_PENDING requests are in flight");
-    return AZ_IOT_ERR_NOT_SUPPORTED;
+    return AZ_IOT_ERR_INVALID_ARG;
   }
-
-  uint32_t rid = next_rid(twin);
-
-  char topic[AZ_IOT_TWIN_TOPIC_MAX];
-  az_iot_result r = build_request_topic(TWIN_PATCH_TOPIC_PREFIX, rid, &topic);
-  if (r != AZ_IOT_OK)
-  {
-    return r;
-  }
-
-  TI(twin).pending[idx].in_use = true;
-  TI(twin).pending[idx].rid = rid;
-  TI(twin).pending[idx].kind = TWIN_PENDING_PATCH;
-  TI(twin).pending[idx].cb.patch_cb = cb;
-  TI(twin).pending[idx].user_ctx = user_ctx;
-
-  az_iot_mqtt_message out = { 0 };
-  out.topic = topic;
-  out.payload = patch;
-  out.payload_len = patch_len;
-  out.qos = AZ_IOT_MQTT_QOS_0;
-
-  r = az_iot_connection_client__publish(TI(twin).conn, &out, NULL, NULL);
-  if (r != AZ_IOT_OK)
-  {
-    AZ_IOT_LOG_WARNF(
-        "mqttv3_twin: the patch publish was refused (%s); releasing its pending slot",
-        az_iot_result_to_string(r));
-    TI(twin).pending[idx].in_use = false;
-    TI(twin).pending[idx].kind = TWIN_PENDING_NONE;
-  }
-  return r;
+  TI(twin).request_timeout_ms
+      = timeout_ms ? timeout_ms : AZ_IOT_MQTTV3_TWIN_REQUEST_TIMEOUT_MS_DEFAULT;
+  return AZ_IOT_OK;
 }
 
 az_iot_result az_iot_mqttv3_twin_client_set_desired_handler(

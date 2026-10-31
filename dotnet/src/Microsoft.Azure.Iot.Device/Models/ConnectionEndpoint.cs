@@ -11,7 +11,7 @@ namespace Microsoft.Azure.Iot.Device.Models
     /// Each endpoint has its own flow to run upon connecting, so the client tracks which endpoint the current connection
     /// targets in order to run the right one.
     /// </remarks>
-    internal enum ConnectionEndpoint
+    public enum ConnectionEndpoint
     {
         /// <summary>
         /// The client is not connecting to, or connected to, any endpoint.

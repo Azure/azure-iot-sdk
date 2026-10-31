@@ -51,13 +51,45 @@ static bool ci_starts_with(const uint8_t* line, int line_len, const char* prefix
   return true;
 }
 
-/* Parse the status line and Content-Length once the header terminator is present. */
-static void http_parse_headers(e2e_http_request* r)
+/** @brief Parses the status code of "HTTP/1.1 <code> <reason>" once its line has arrived. */
+static void parse_status_line(e2e_http_request* r)
+{
+  if (r->http_status != 0)
+  {
+    return;
+  }
+  int line_end = -1;
+  for (int i = 0; i + 1 < r->response_len; i++)
+  {
+    if (r->response[i] == '\r' && r->response[i + 1] == '\n')
+    {
+      line_end = i;
+      break;
+    }
+  }
+  for (int i = 0; i < line_end && i < 16; i++)
+  {
+    if (r->response[i] == ' ')
+    {
+      if (i + 3 < line_end)
+      {
+        r->http_status = (r->response[i + 1] - '0') * 100 + (r->response[i + 2] - '0') * 10
+            + (r->response[i + 3] - '0');
+      }
+      break;
+    }
+  }
+}
+
+/* Parse the status line once it is present, then Content-Length and Retry-After once
+ * the header terminator is. */
+void e2e_http_parse_headers(e2e_http_request* r)
 {
   if (r->headers_done)
   {
     return;
   }
+  parse_status_line(r);
 
   int header_end = -1;
   for (int i = 0; i + 3 < r->response_len; i++)
@@ -76,20 +108,9 @@ static void http_parse_headers(e2e_http_request* r)
   r->headers_done = true;
   r->body_start = header_end + 4;
 
-  /* Status line: "HTTP/1.1 <code> <reason>". */
-  for (int i = 0; i < r->response_len && i < 16; i++)
-  {
-    if (r->response[i] == ' ' && i + 3 < r->response_len)
-    {
-      r->http_status = (r->response[i + 1] - '0') * 100 + (r->response[i + 2] - '0') * 10
-          + (r->response[i + 3] - '0');
-      break;
-    }
-  }
-
-  /* Header lines up to header_end. */
+  /* Header lines, the last one ending with the CRLF at header_end. */
   int line_start = 0;
-  for (int i = 0; i + 1 <= header_end; i++)
+  for (int i = 0; i <= header_end; i++)
   {
     if (r->response[i] == '\r' && r->response[i + 1] == '\n')
     {
@@ -113,6 +134,31 @@ static void http_parse_headers(e2e_http_request* r)
         if (any)
         {
           r->content_length = value;
+        }
+      }
+      else if (ci_starts_with(line, line_len, "retry-after:"))
+      {
+        int p = (int)strlen("retry-after:");
+        while (p < line_len && (line[p] == ' ' || line[p] == '\t'))
+        {
+          p++;
+        }
+        unsigned long value = 0;
+        int digits = 0;
+        while (p < line_len && line[p] >= '0' && line[p] <= '9' && value <= 86400ul)
+        {
+          value = value * 10ul + (unsigned long)(line[p] - '0');
+          digits++;
+          p++;
+        }
+        while (p < line_len && (line[p] == ' ' || line[p] == '\t'))
+        {
+          p++;
+        }
+        /* Delay-seconds only, capped at a day; an HTTP-date leaves it 0. */
+        if (digits > 0 && p == line_len && value <= 86400ul)
+        {
+          r->retry_after_s = (unsigned)value;
         }
       }
       line_start = i + 2;
@@ -364,7 +410,7 @@ int e2e_http_poll(e2e_http_request* r)
       int cap = E2E_HTTP_RESPONSE_MAX - r->response_len;
       if (cap <= 0)
       {
-        http_parse_headers(r);
+        e2e_http_parse_headers(r);
         r->phase = E2E_HTTP_PHASE_DONE;
         return 1;
       }
@@ -374,9 +420,8 @@ int e2e_http_poll(e2e_http_request* r)
       if (status == AZ_AMQP_TRANSPORT_STATUS_OK)
       {
         r->response_len += (int)got;
-        http_parse_headers(r);
-        if (r->headers_done && r->content_length >= 0
-            && (r->response_len - r->body_start) >= r->content_length)
+        e2e_http_parse_headers(r);
+        if (e2e_http_response_complete(r))
         {
           r->phase = E2E_HTTP_PHASE_DONE;
           return 1;
@@ -391,7 +436,13 @@ int e2e_http_poll(e2e_http_request* r)
       }
       if (status == AZ_AMQP_TRANSPORT_STATUS_CLOSED)
       {
-        http_parse_headers(r);
+        e2e_http_parse_headers(r);
+        if (!r->headers_done)
+        {
+          r->phase = E2E_HTTP_PHASE_FAILED;
+          r->err = "http: connection closed before the response headers";
+          return -1;
+        }
         r->phase = E2E_HTTP_PHASE_DONE;
         return 1;
       }
@@ -409,7 +460,23 @@ int e2e_http_poll(e2e_http_request* r)
   }
 }
 
+bool e2e_http_response_complete(const e2e_http_request* r)
+{
+  if (!r->headers_done)
+  {
+    return false;
+  }
+  /* 204 and 304 carry no body (RFC 9110), whatever the headers say. */
+  if (r->http_status == 204 || r->http_status == 304)
+  {
+    return true;
+  }
+  return r->content_length >= 0 && (r->response_len - r->body_start) >= r->content_length;
+}
+
 int e2e_http_status(const e2e_http_request* r) { return r->http_status; }
+
+unsigned e2e_http_retry_after(const e2e_http_request* r) { return r->retry_after_s; }
 
 const uint8_t* e2e_http_body(const e2e_http_request* r, int* out_len)
 {
@@ -430,6 +497,30 @@ const uint8_t* e2e_http_body(const e2e_http_request* r, int* out_len)
 }
 
 const char* e2e_http_error(const e2e_http_request* r) { return r->err; }
+
+const char* e2e_http_phase_name(e2e_http_phase phase)
+{
+  switch (phase)
+  {
+    case E2E_HTTP_PHASE_CONNECTING:
+      return "connecting";
+    case E2E_HTTP_PHASE_WRITING:
+      return "sending";
+    case E2E_HTTP_PHASE_READING:
+      return "reading";
+    case E2E_HTTP_PHASE_DONE:
+      return "done";
+    case E2E_HTTP_PHASE_FAILED:
+    default:
+      return "failed";
+  }
+}
+
+bool e2e_http_retry_is_safe(const e2e_http_request* r, bool idempotent)
+{
+  return r->phase != E2E_HTTP_PHASE_DONE && r->http_status == 0
+      && (r->request_sent == 0 || idempotent);
+}
 
 void e2e_http_end(e2e_http_request* r)
 {

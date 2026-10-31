@@ -76,8 +76,9 @@ extern "C"
    *
    * Shape: $dps/registrations/res/{status}/?$rid={request_id}
    *
-   * The status is the transport-level code; the machine-readable error code in
-   * the body is what drives behaviour (see az_iot_su__classify_error).
+   * The status is the transport-level code. The body's error code takes
+   * precedence; the status classifies a failure whose body carries none (see
+   * az_iot_su__classify_error).
    */
   az_iot_result az_iot_su__parse_response_topic(
       const char* topic,
@@ -117,9 +118,9 @@ extern "C"
   /**
    * Build a fetch request body.
    *
-   * agentInfo is always emitted. installed_update_id is omitted entirely when
-   * NULL, which is the day-0 onboarding case -- a device with nothing installed
-   * must not send a null or an empty triple. The ETags are omitted when NULL, and
+   * Used by both fetch routes. agentInfo is always emitted. installed_update_id
+   * is omitted entirely when NULL (nothing installed), never sent as a null or
+   * an empty triple. The ETags are omitted when NULL, and
    * are echoed back so the service can tell us our view is stale.
    * Requires 1-5 unique, nonempty compatibility keys and non-NULL values.
    * A supplied installed_update_id must be a complete nonempty triple.
@@ -171,6 +172,14 @@ extern "C"
       size_t* out_len);
 
   /**
+   * @brief Whether @p outcome and @p origin are a pair the contract allows.
+   *
+   * Both must be defined values, and @p origin is NOT_APPLICABLE exactly when
+   * @p outcome is not FAILED.
+   */
+  bool az_iot_su__outcome_is_valid(az_iot_su_outcome outcome, az_iot_su_failure_origin origin);
+
+  /**
    * Build a status report body.
    *
    * workflowId is the sole correlation key. installedUpdateId is dropped from the
@@ -218,22 +227,21 @@ extern "C"
   {
     /* Not an error. */
     AZ_IOT_SU_ERROR_ACTION_NONE = 0,
-    /* No update service is configured for this device. Carry on; do not retry. */
+    /* The update service cannot serve this device (not linked, or no access to
+     * its namespace). Needs operator action; carry on, do not retry. */
     AZ_IOT_SU_ERROR_ACTION_PROCEED,
-    /* Our agentInfo or service config is stale: resend it in full and retry. */
+    /* Our agentInfo is stale or unknown: resend it in full and retry. */
     AZ_IOT_SU_ERROR_ACTION_RESEND_AGENT_INFO,
-    /* Our service-config ETag is stale: re-request without it. */
-    AZ_IOT_SU_ERROR_ACTION_DROP_SERVICE_CONFIG_ETAG,
     /* Throttled: wait for the advertised delay, then retry. */
     AZ_IOT_SU_ERROR_ACTION_RETRY_AFTER,
     /* Transient upstream failure: retry. A fetch may proceed meanwhile; a report
      * must not be dropped. */
     AZ_IOT_SU_ERROR_ACTION_RETRY,
-    /* A terminal report already exists for this workflow. Treat as delivered:
-     * reporting is idempotent on workflowId. */
-    AZ_IOT_SU_ERROR_ACTION_ALREADY_REPORTED,
     /* The request or our credentials are wrong. Do not retry unchanged. */
     AZ_IOT_SU_ERROR_ACTION_FATAL,
+    /* A report conflicts with the service's state: drop it like FATAL, then
+     * check for updates again to learn that state. Reports only. */
+    AZ_IOT_SU_ERROR_ACTION_RECHECK,
   } az_iot_su_error_action;
 
   /* --- Service numeric error codes ----------------------------------------- */
@@ -255,7 +263,8 @@ extern "C"
 #define AZ_IOT_SU_ERR_UNAUTHORIZED 401000
 #define AZ_IOT_SU_ERR_FORBIDDEN 403000
 #define AZ_IOT_SU_ERR_FORBIDDEN_DEVICE_DISABLED 403001
-/* Shared by "account not linked" (fetch) and "report conflict" (report). */
+/* Shared by every 409: account not linked or denied, device not provisioned,
+ * report conflict. */
 #define AZ_IOT_SU_ERR_GENERIC_CONFLICT 409000
 #define AZ_IOT_SU_ERR_ENTITY_TOO_LARGE 413000
 #define AZ_IOT_SU_ERR_THROTTLED 429000
@@ -320,13 +329,13 @@ extern "C"
    * string it does not recognize.
    *
    * @param out_code          Receives info.aduErrorCode, else `message`, else
-   *                          "". A value too long for out_code_size is dropped
-   *                          rather than truncated -- a truncated token must
-   *                          never be compared -- leaving "" with the numeric
-   *                          code still reported.
+   *                          "". A value too long for out_code_size is never
+   *                          truncated; it is skipped and the next source used.
+   *                          The numeric code is still reported.
    * @param out_numeric_code  Receives errorCode, or 0 when absent. May be NULL.
    * @return AZ_IOT_OK when ANY signal was found; AZ_IOT_ERR_NOT_FOUND when the
-   *         body carried none.
+   *         body carried none or is malformed or truncated. On any result but
+   *         AZ_IOT_OK, out_code is "" and out_numeric_code is 0.
    */
   az_iot_result az_iot_su__parse_error_code(
       const uint8_t* payload,

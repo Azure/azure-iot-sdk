@@ -38,6 +38,7 @@ typedef int proxy_socklen;
 #include <netdb.h>
 #include <netinet/in.h>
 #include <pthread.h>
+#include <signal.h>
 #include <sys/select.h>
 #include <sys/socket.h>
 #include <sys/time.h>
@@ -379,9 +380,16 @@ static proxy_sock proxy_accept_timeout(proxy_sock listen_sock, unsigned timeout_
   return accept(listen_sock, NULL, NULL);
 }
 
-/* Dial host:port (both as strings), returning a connected socket or
- * PROXY_INVALID_SOCK. Shared by the passthrough upstream and by CONNECT mode,
- * which dials whatever authority the client named. */
+/**
+ * @brief Dial host:port (both as strings).
+ *
+ * Tries every resolved address in order, so a name such as "localhost" that
+ * resolves to ::1 first still reaches a broker listening only on 127.0.0.1.
+ * Shared by the passthrough upstream and by CONNECT mode, which dials whatever
+ * authority the client named.
+ *
+ * @return A connected socket, or PROXY_INVALID_SOCK if no address connects.
+ */
 static proxy_sock proxy_dial(const char* host, const char* port)
 {
   struct addrinfo hints;
@@ -395,19 +403,22 @@ static proxy_sock proxy_dial(const char* host, const char* port)
     return PROXY_INVALID_SOCK;
   }
 
-  proxy_sock s = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
-  if (s == PROXY_INVALID_SOCK)
+  proxy_sock s = PROXY_INVALID_SOCK;
+  for (const struct addrinfo* ai = res; ai != NULL; ai = ai->ai_next)
   {
-    freeaddrinfo(res);
-    return PROXY_INVALID_SOCK;
-  }
-  int rc = connect(s, res->ai_addr, (int)res->ai_addrlen);
-  freeaddrinfo(res);
-  if (rc != 0)
-  {
+    s = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+    if (s == PROXY_INVALID_SOCK)
+    {
+      continue;
+    }
+    if (connect(s, ai->ai_addr, (int)ai->ai_addrlen) == 0)
+    {
+      break;
+    }
     proxy_closesock(s);
-    return PROXY_INVALID_SOCK;
+    s = PROXY_INVALID_SOCK;
   }
+  freeaddrinfo(res);
   return s;
 }
 
@@ -569,6 +580,43 @@ static const char* proxy_find_header(const char* head, const char* name)
   return NULL;
 }
 
+/**
+ * @brief Whether @p host is in the RFC 6761 ".invalid" TLD (case-insensitive,
+ * optional trailing dot).
+ *
+ * Such names are refused without a lookup: the outcome is fixed by the RFC, and
+ * getaddrinfo() can still block for a full resolver timeout on search-domain
+ * expansions, delaying the 502 past a test's step timeout.
+ */
+static int proxy_host_is_invalid_tld(const char* host)
+{
+  static const char k_tld[] = ".invalid";
+  const size_t tld_len = sizeof(k_tld) - 1;
+  size_t len = strlen(host);
+  if (len > 0 && host[len - 1] == '.')
+  {
+    --len;
+  }
+  if (len < tld_len)
+  {
+    return 0;
+  }
+  const char* tail = host + len - tld_len;
+  for (size_t i = 0; i < tld_len; ++i)
+  {
+    char ch = tail[i];
+    if (ch >= 'A' && ch <= 'Z')
+    {
+      ch = (char)(ch - 'A' + 'a');
+    }
+    if (ch != k_tld[i])
+    {
+      return 0;
+    }
+  }
+  return 1;
+}
+
 /* Perform the CONNECT exchange. On success returns a connected upstream socket
  * and the tunnel is open; on any refusal the client has been answered and the
  * caller closes it. */
@@ -670,7 +718,8 @@ static proxy_sock proxy_http_connect_accept(struct az_iot_test_proxy* m, proxy_s
   memcpy(host, target, host_len);
   host[host_len] = '\0';
 
-  proxy_sock upstream = proxy_dial(host, colon + 1);
+  proxy_sock upstream
+      = proxy_host_is_invalid_tld(host) ? PROXY_INVALID_SOCK : proxy_dial(host, colon + 1);
   if (upstream == PROXY_INVALID_SOCK)
   {
     static const char k_502[] = "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n";
@@ -1160,7 +1209,8 @@ static int proxy_packet_id(const uint8_t* pkt, size_t len, uint8_t out[2])
 /* --- session-setup inspection: decode the FIELDS of the client's CONNECT and
  * DISCONNECT. Nothing is retained but the scalars in
  * az_iot_test_proxy_connect_fields; no PUBLISH is examined and no payload is
- * copied (a Will is reported by topic and length only). --- */
+ * copied (a Will is reported by topic and length only; credentials by length
+ * and digest only). --- */
 
 /* Read an MQTT variable byte integer at *at. Returns 0 on a truncated or
  * over-long encoding, which ends decoding of the packet. */
@@ -1323,6 +1373,45 @@ static void proxy_mqtt_scan_properties(
 
 /* Decode the client's CONNECT into `out`. Silently leaves `out->seen` at 0 for
  * anything that does not decode: this is observation, not validation. */
+uint64_t az_iot_test_proxy_digest(const void* bytes, size_t len)
+{
+  const uint8_t* b = (const uint8_t*)bytes;
+  uint64_t h = 0xcbf29ce484222325ull;
+  for (size_t i = 0; i < len; ++i)
+  {
+    h ^= b[i];
+    h *= 0x100000001b3ull;
+  }
+  return h;
+}
+
+/* Reads a length-prefixed CONNECT string field at `*at` into presence, length
+ * and digest. Returns 0 when it runs past the packet. */
+static int proxy_connect_string_digest(
+    const uint8_t* pkt,
+    size_t len,
+    size_t* at,
+    int* has,
+    size_t* out_len,
+    uint64_t* out_digest)
+{
+  if (*at + 2 > len)
+  {
+    return 0;
+  }
+  size_t n = ((size_t)pkt[*at] << 8) | (size_t)pkt[*at + 1];
+  *at += 2;
+  if (*at + n > len)
+  {
+    return 0;
+  }
+  *has = 1;
+  *out_len = n;
+  *out_digest = az_iot_test_proxy_digest(pkt + *at, n);
+  *at += n;
+  return 1;
+}
+
 static void proxy_decode_connect(
     const uint8_t* pkt,
     size_t len,
@@ -1401,6 +1490,20 @@ static void proxy_decode_connect(
       return;
     }
     f.will_payload_len = ((size_t)pkt[at] << 8) | (size_t)pkt[at + 1];
+    at += 2 + f.will_payload_len;
+  }
+
+  if ((flags & 0x80u)
+      && !proxy_connect_string_digest(
+          pkt, len, &at, &f.has_username, &f.username_len, &f.username_digest))
+  {
+    return;
+  }
+  if ((flags & 0x40u)
+      && !proxy_connect_string_digest(
+          pkt, len, &at, &f.has_password, &f.password_len, &f.password_digest))
+  {
+    return;
   }
 
   f.seen = 1;
@@ -2206,6 +2309,13 @@ static DWORD WINAPI proxy_thread_entry(LPVOID arg)
 #else
 static void* proxy_thread_entry(void* arg)
 {
+  /* A peer that closes mid-write makes send()/SSL_write raise SIGPIPE in this
+   * thread. Block it here so EPIPE is returned instead and the harness does not
+   * depend on the adapter under test ignoring SIGPIPE process-wide. */
+  sigset_t pipe_set;
+  sigemptyset(&pipe_set);
+  sigaddset(&pipe_set, SIGPIPE);
+  (void)pthread_sigmask(SIG_BLOCK, &pipe_set, NULL);
   proxy_run((struct az_iot_test_proxy*)arg);
   return NULL;
 }
@@ -2409,6 +2519,13 @@ int az_iot_test_proxy_enable_tls(az_iot_test_proxy* m, const az_iot_test_proxy_t
      * certificate is deliberately not examined. See the header. */
     SSL_CTX_set_verify(
         ctx, SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT, proxy_accept_any_cert_cb);
+    /* No resumption: every connect must sign a CertificateVerify again. */
+    SSL_CTX_set_session_cache_mode(ctx, SSL_SESS_CACHE_OFF);
+    SSL_CTX_set_options(ctx, SSL_OP_NO_TICKET);
+    if (SSL_CTX_set_num_tickets(ctx, 0) != 1)
+    {
+      goto done;
+    }
   }
 
   if (SSL_CTX_use_PrivateKey(ctx, leaf_key) != 1)

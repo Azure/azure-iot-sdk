@@ -45,11 +45,15 @@ static void connection_client_init_rejects_null(void** state)
   assert_int_equal(az_iot_connection_client_init(&c, NULL), AZ_IOT_ERR_INVALID_ARG);
 }
 
+static uint8_t g_connection_workspace[AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE];
+
 static void connection_client_init_deinit_roundtrip(void** state)
 {
   (void)state;
   az_iot_connection_client_options opts = { 0 };
-  opts.client_id = "ut-device";
+  opts.device_id = "ut-device";
+  opts.workspace = g_connection_workspace;
+  opts.workspace_size = sizeof(g_connection_workspace);
   az_iot_connection_client c;
   assert_int_equal(az_iot_connection_client_init(&c, &opts), AZ_IOT_OK);
   az_iot_connection_client_deinit(&c);

@@ -3,17 +3,34 @@
 // information.
 
 /* SPDX-License-Identifier: MIT */
-/* Public entry points for the Paho-C MQTT adapter.
+/**
+ * @file az_iot_adapter_paho.h
+ * @brief Public entry points for the Paho-C MQTT adapter.
  *
  * Construct one or both factories and register them with the connection
  * client. The SDK selects the appropriate factory by MQTT version at
- * connection time (v3.1.1 for DPS/MQTTv3, v5 for MQTTv5). Each factory
+ * connection time (v3.1.1 for DPS and mqttv3, v5 for mqttv5). Each factory
  * creates a fresh Paho client per session.
  *
- * Lifetime: the returned factory pointer remains valid until
- * az_iot_paho_factory_destroy() is called by the application. The
- * factory does NOT own any clients it produced - those follow the iface
- * destroy() contract.
+ * Factory ownership: the application owns every factory it creates.
+ * az_iot_connection_client_register_mqtt_factory() lends it to the connection
+ * client, so it must stay alive until az_iot_connection_client_deinit()
+ * returns. Destroy it with az_iot_paho_factory_destroy() after deinit(), or
+ * at any time if it was never registered or registration failed.
+ *
+ * A factory does not own the clients it produced; those follow the
+ * az_iot_mqtt_iface destroy() contract.
+ *
+ * @code
+ * az_iot_mqtt_factory* v3 = az_iot_paho_factory_create_v3_1_1();
+ * if (az_iot_connection_client_register_mqtt_factory(&client, v3) != AZ_IOT_OK)
+ * {
+ *   // handle the error
+ * }
+ * // ... use the client ...
+ * az_iot_connection_client_deinit(&client);
+ * az_iot_paho_factory_destroy(v3); // NULL: no-op
+ * @endcode
  */
 #ifndef AZ_IOT_ADAPTER_PAHO_H
 #define AZ_IOT_ADAPTER_PAHO_H
@@ -25,15 +42,42 @@ extern "C"
 {
 #endif
 
-  /* Build a factory that produces MQTTv3.1.1 Paho clients. */
+  /**
+   * @brief Create a factory of MQTT 3.1.1 Paho clients.
+   * @return The factory, or NULL when out of memory. Owned by the caller.
+   */
   az_iot_mqtt_factory* az_iot_paho_factory_create_v3_1_1(void);
 
-  /* Build a factory that produces MQTTv5 Paho clients. */
+  /**
+   * @brief Create a factory of MQTT 5 Paho clients.
+   * @return The factory, or NULL when out of memory. Owned by the caller.
+   */
   az_iot_mqtt_factory* az_iot_paho_factory_create_v5(void);
 
-  /* Destroy a factory produced by either constructor above. Does not destroy
-   * clients the factory has handed out. */
+  /**
+   * @brief Destroy a factory from either function above (NULL: no-op). Clients it created are
+   * not destroyed.
+   *
+   * A registered factory must outlive the connection client: destroy it only after
+   * az_iot_connection_client_deinit() returns.
+   */
   void az_iot_paho_factory_destroy(az_iot_mqtt_factory* factory);
+
+  /**
+   * @brief The Paho adapter for clients in application memory (a constant). The workspace holds
+   * the adapter's own state; Paho still allocates its internals, as with the factories.
+   */
+  const az_iot_mqtt_adapter* az_iot_paho_get_adapter(void);
+
+  /**
+   * @brief Workspace bytes for one Paho client; 0 when @p limits is invalid. Paho sizes its own
+   * buffers: the values of @p limits are only checked.
+   */
+  size_t az_iot_paho_get_workspace_size(const az_iot_mqtt_limits* limits);
+
+/** @brief Upper bound of az_iot_paho_get_workspace_size(), for static arrays; checked by the
+ * adapter at compile time. */
+#define AZ_IOT_PAHO_WORKSPACE_SIZE 512u
 
 #ifdef __cplusplus
 }

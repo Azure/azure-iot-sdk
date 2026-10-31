@@ -11,6 +11,7 @@
 #include <stdint.h>
 
 #include "azure/iot/az_iot_connection_client.h"
+#include "azure/iot/az_iot_delivery_tracker.h"
 #include "azure/iot/az_iot_message.h"
 #include "azure/iot/az_iot_result.h"
 
@@ -25,9 +26,10 @@ extern "C"
 #endif
 
 /* Bytes of a result body this client can frame into a protobuf Result. The
- * frame is built in a buffer inside the client rather than on the heap, so this
- * is the hard limit on what az_iot_mqttv5_direct_method_respond() will send; a
- * larger body is refused with AZ_IOT_ERR_NOT_ENOUGH_SPACE. */
+ * frame is built in a buffer inside the client rather than on the heap, one per
+ * AZ_IOT_MQTTV5_DM_MAX_CONCURRENT slot so a result can be held until the
+ * connection is CONNECTED, so this is the hard limit on what az_iot_mqttv5_direct_method_respond()
+ * will send; a larger body is refused with AZ_IOT_ERR_NOT_ENOUGH_SPACE. */
 #ifndef AZ_IOT_MQTTV5_DM_RESULT_BODY_MAX
 #define AZ_IOT_MQTTV5_DM_RESULT_BODY_MAX 512
 #endif
@@ -58,6 +60,19 @@ extern "C"
  * is what the limit caps. */
 #ifndef AZ_IOT_MQTTV5_DM_MAX_CONCURRENT
 #define AZ_IOT_MQTTV5_DM_MAX_CONCURRENT AZ_IOT_DM_MAX_INFLIGHT
+#endif
+
+/* Probe rejections and abandons the client keeps until their PUBACK, to publish
+ * again after a reconnect. Accepted probe-acks and results are kept with their
+ * ready token or slot instead, so they never compete for these. When all are in
+ * use, a new one is still published untracked while CONNECTED, and dropped while
+ * not; with no PUBACK slot left beyond those kept for probe-acks and results, it
+ * is published untracked. Both are advisory:
+ * losing one leaves the caller to time out. Sizes
+ * az_iot_mqttv5_direct_method_client, so set it on the whole build, as
+ * AZ_IOT_MQTTV5_DM_MAX_CONCURRENT. */
+#ifndef AZ_IOT_MQTTV5_DM_NOTICE_QUEUE_MAX
+#define AZ_IOT_MQTTV5_DM_NOTICE_QUEUE_MAX AZ_IOT_MQTTV5_DM_MAX_CONCURRENT
 #endif
 
 /* Distinct method names one client can declare. The protocol answers a probe
@@ -152,6 +167,9 @@ extern "C"
     } _internal;
   } az_iot_mqttv5_direct_method_registration;
 
+/* Bytes of the largest ProbeAck or Abandon frame. */
+#define AZ_IOT_MQTTV5_DM_NOTICE_FRAME_MAX 20u
+
   /* One accepted probe waiting for its execute authorization. Opaque -- do NOT
    * read _internal. Lives inside the client so the ready state costs no
    * allocation. */
@@ -174,8 +192,48 @@ extern "C"
       void* handler_ctx;
       /** Monotonic milliseconds after which the token is abandoned. */
       uint64_t expires_at_ms;
+      /** Encoded ProbeAck{ready}. */
+      uint8_t probe_ack_frame[AZ_IOT_MQTTV5_DM_NOTICE_FRAME_MAX];
+      size_t probe_ack_frame_len;
+      /** Delivery tracker entry of the probe-ack, plus one; 0: none. */
+      size_t probe_ack_tracker_entry;
+      /** The probe-ack was published at least once, so the service may know this token. */
+      bool probe_ack_published;
+      /** Connect budget of the probe, in seconds; 0 means unbounded. */
+      uint32_t connect_budget_seconds;
+      /** Monotonic milliseconds when the probe arrived. */
+      uint64_t probe_received_at_ms;
     } _internal;
   } az_iot_mqttv5_direct_method_ready_slot;
+
+  /* A ProbeAck{rejected} or Abandon kept until its PUBACK. Opaque -- do NOT
+   * read _internal. */
+  typedef struct az_iot_mqttv5_direct_method_notice
+  {
+    struct
+    {
+      /** Delivery tracker entry, plus one; 0: the notice is free. */
+      size_t tracker_entry;
+      /** Its `type` property ("probe-ack:1" or "abandon:1"); static. */
+      const az_iot_mqtt_user_property* type;
+      uint8_t request_id[AZ_IOT_MQTTV5_DM_REQUEST_ID_LEN];
+      uint8_t frame[AZ_IOT_MQTTV5_DM_NOTICE_FRAME_MAX];
+      size_t frame_len;
+      /** Message Expiry counted from budget_start_ms, in seconds; 0 means none, and the notice
+       *  is kept at most the connection's max_unconfirmed_delivery_timeout_ms. */
+      uint32_t budget_seconds;
+      /** Monotonic milliseconds the budget is counted from. */
+      uint64_t budget_start_ms;
+    } _internal;
+  } az_iot_mqttv5_direct_method_notice;
+
+/* limits.max_pending_publishes slots one client reserves: a probe-ack and a result or abandon
+ * per invocation. */
+#define AZ_IOT_MQTTV5_DM_RESERVED_PUBACKS (2u * (size_t)AZ_IOT_MQTTV5_DM_MAX_CONCURRENT)
+
+/* Messages one client tracks at once: a probe-ack or result per invocation, and the notices. */
+#define AZ_IOT_MQTTV5_DM_TRACKED_MESSAGES \
+  ((size_t)AZ_IOT_MQTTV5_DM_MAX_CONCURRENT + (size_t)AZ_IOT_MQTTV5_DM_NOTICE_QUEUE_MAX)
 
   /* MQTTv5 direct methods (MQTT v5).
    *
@@ -208,6 +266,14 @@ extern "C"
        * locally configured one -- so neither belongs on the shared type. */
       uint32_t exec_budget_seconds[AZ_IOT_MQTTV5_DM_MAX_CONCURRENT];
       uint64_t exec_received_at_ms[AZ_IOT_MQTTV5_DM_MAX_CONCURRENT];
+      /* Parallel to req_pool: monotonic milliseconds at and after which no
+       * result is published -- receipt time plus the execution budget, less the
+       * safety margin; receipt time plus the connection's
+       * max_unconfirmed_delivery_timeout_ms when the exec carried no expiry. */
+      uint64_t exec_deadline_ms[AZ_IOT_MQTTV5_DM_MAX_CONCURRENT];
+      /* Parallel to req_pool: seq of the last unanswered invocation reclaimed at its result
+       * deadline, so respond() on it still returns AZ_IOT_ERR_TIMEOUT. */
+      uint32_t expired_request_seq[AZ_IOT_MQTTV5_DM_MAX_CONCURRENT];
       /* Bumped on every acquire and copied into the request handed out, so a
        * request naming a slot that has since been reused no longer matches. */
       uint32_t next_seq;
@@ -227,8 +293,21 @@ extern "C"
       /* Ready-id generator state. Uniqueness, not unpredictability: the token
        * is single-use and the service only knows it because we sent it. */
       uint64_t rng_state;
+      /* Parallel to req_pool: each invocation's encoded result and its delivery
+       * tracker entry. The slot stays taken until the result is acknowledged by
+       * the broker or its result deadline passes, so a result whose PUBACK is
+       * lost with the connection is published again on the next CONNECTED. */
       uint8_t
-          result_frame[AZ_IOT_MQTTV5_DM_RESULT_BODY_MAX + AZ_IOT_MQTTV5_DM_RESULT_FRAME_OVERHEAD];
+          result_frame[AZ_IOT_MQTTV5_DM_MAX_CONCURRENT]
+                      [AZ_IOT_MQTTV5_DM_RESULT_BODY_MAX + AZ_IOT_MQTTV5_DM_RESULT_FRAME_OVERHEAD];
+      size_t result_frame_len[AZ_IOT_MQTTV5_DM_MAX_CONCURRENT];
+      /** Delivery tracker entry of each result, plus one; 0: not answered yet. */
+      size_t result_tracker_entry[AZ_IOT_MQTTV5_DM_MAX_CONCURRENT];
+      /* Probe rejections and abandons kept until their PUBACK. */
+      az_iot_mqttv5_direct_method_notice notices[AZ_IOT_MQTTV5_DM_NOTICE_QUEUE_MAX];
+      /* Sends, resends and expires the probe-acks, results and notices. */
+      az_iot_delivery_tracker tracker;
+      az_iot_delivery_tracker_entry tracker_entries[AZ_IOT_MQTTV5_DM_TRACKED_MESSAGES];
     } _internal;
   } az_iot_mqttv5_direct_method_client;
 
@@ -242,6 +321,28 @@ extern "C"
    * AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH; otherwise a conflict surfaces when
    * the connection resolves, which fails it before it reports CONNECTED. The
    * same error is returned when an mqttv3 client is already attached.
+   *
+   * Reserves AZ_IOT_MQTTV5_DM_RESERVED_PUBACKS (2 * AZ_IOT_MQTTV5_DM_MAX_CONCURRENT) of the
+   * connection's limits.max_pending_publishes slots until deinit. Returns
+   * AZ_IOT_ERR_NOT_ENOUGH_SPACE if they do not fit, or AZ_IOT_ERR_BUSY if
+   * tracked publishes in flight still occupy them (retry once acknowledged).
+   * Also observes the connection state, to publish held messages on CONNECTED:
+   * returns AZ_IOT_ERR_BUSY when called from a connection state callback.
+   *
+   * Probe-acks, results and abandons are QoS 1 and kept until their PUBACK:
+   * one that ends without a PUBACK (the connection closed, or the adapter lost
+   * it) is published again on the next CONNECTED until its deadline: a probe-ack
+   * until its connect budget (the probe's Message Expiry) or its token's ready wait
+   * ends, whichever is first; a result until its result deadline (with no exec
+   * expiry, max_unconfirmed_delivery_timeout_ms after the exec); an abandon or
+   * rejection until its budget ends (with none, max_unconfirmed_delivery_timeout_ms);
+   * one the broker refuses (AZ_IOT_ERR_PUBLISH_REFUSED) is not. A send the
+   * adapter refuses (BUSY, NOT_CONNECTED, a transport error) leaves it queued for
+   * a later CONNECTED, hub PUBACK (of any publish) or do_work(); one it can never
+   * send (AZ_IOT_ERR_INVALID_ARG) is dropped. A probe-ack or result is never sent
+   * untracked: with every pending-PUBACK slot in use it waits for one. They are
+   * kept in memory only, so a device restart loses them; they are dropped when
+   * the hub or device id changes.
    */
   AZ_NODISCARD az_iot_result az_iot_mqttv5_direct_method_client_init(
       az_iot_mqttv5_direct_method_client* client,
@@ -335,14 +436,38 @@ extern "C"
       void* user_ctx);
 
   /**
-   * @brief Answer an invocation, releasing its pool slot.
+   * @brief Answer an invocation, releasing its pool slot once the broker has the result.
    *
    * Not AZ_NODISCARD: best-effort response send, commonly fire-and-forget.
    *
-   * The slot is released on every outcome except the ones that reject the call
-   * before it takes effect: invalid arguments, a handle this client did not
+   * The request is consumed on every outcome except the ones that reject the
+   * call before it takes effect: invalid arguments, a handle this client did not
    * hand out, and a body that does not fit. That last one is worth answering
    * again with a shorter body; the others are programming errors.
+   *
+   * **Result deadline.** When the exec arrives, the client fixes a deadline:
+   * its receipt time plus its execution budget (the exec's MQTT message
+   * expiry), less a safety margin for network transit -- a tenth of the
+   * probe's response timeout, between 1 and 10 seconds. No result is published
+   * at or after that deadline: a call at or past it publishes nothing,
+   * releases the slot and returns AZ_IOT_ERR_TIMEOUT. For an exec that carries
+   * no expiry, the deadline is its receipt time plus the connection's
+   * max_unconfirmed_delivery_timeout_ms, and its result is sent with no expiry;
+   * it is abandoned (insufficient time) unless that timeout exceeds the
+   * method's declared minimum.
+   *
+   * Before the connection is CONNECTED (for example between CONNACK and the
+   * birth-ack, or while reconnecting) the result is held, with its slot, and
+   * published on the next CONNECTED; it is dropped if the deadline passes
+   * first. A send the adapter refuses (BUSY, a transport error) is retried the
+   * same way. AZ_IOT_OK covers all these cases.
+   *
+   * The slot stays taken until the broker acknowledges the result. If the
+   * publish ends without a PUBACK, for example because the connection closed,
+   * the result is published again on the next CONNECTED, with the remaining
+   * response budget as its Message Expiry, until it is acknowledged or its
+   * result deadline passes. The service may therefore receive a result twice; the
+   * request id identifies it.
    *
    * Nothing is sent to the service on any failure. It reports the invocation as
    * timed out, which is the truthful outcome -- the handler may already have
@@ -358,9 +483,10 @@ extern "C"
    *         its slot was reclaimed and reused, or if it never came from this
    *         client, AZ_IOT_ERR_NOT_ENOUGH_SPACE if
    *         @p payload_len exceeds AZ_IOT_MQTTV5_DM_RESULT_BODY_MAX,
-   *         AZ_IOT_ERR_TIMEOUT if the caller's response timeout ran out while
-   *         the handler worked -- nothing is sent in that case, because the
-   *         service has already given up.
+   *         AZ_IOT_ERR_TIMEOUT if the result deadline has been reached -- nothing
+   *         is sent in that case, because the service has given up or would
+   *         before the result arrived; also when its slot was already
+   *         reclaimed at that deadline.
    */
   az_iot_result az_iot_mqttv5_direct_method_respond(
       az_iot_mqttv5_direct_method_client* client,

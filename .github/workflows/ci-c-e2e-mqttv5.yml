@@ -1,0 +1,844 @@
+# Copyright (c) Microsoft. All rights reserved.
+# Licensed under the MIT license. See LICENSE file in the project root for full license information.
+
+# C e2e tests on an mqttv5 IoT Hub.
+#
+# Runs against the shared, long-lived mqttv5 environment (hub, DPS linked through
+# an ADR namespace); nothing is provisioned per run. Each job issues its own
+# device certificate from the DPS X.509 enrollment group's CA
+# (c/eng/e2e-shared-device.ps1 -Prefix E2E_MQTTV5_SHARED) and reads the events
+# endpoint through its own consumer group. Add a job per mqttv5 client.
+#
+# Every job runs on Linux and on Windows (MSVC; Paho over OpenSSL 4.1.0, az_mqtt over Schannel),
+# each leg with its own device. The custody job is Linux only: it needs an OpenSSL PKCS#11
+# provider and SoftHSM2, and az_mqtt takes key references only over OpenSSL.
+#
+#   vars:    E2E_MQTTV5_SHARED_ID_SCOPE (unset: the workflow skips),
+#            E2E_MQTTV5_SHARED_DPS_HOST, plus those of
+#            ci-c-e2e-mqttv5-adr-namespace.yml
+#   secrets: E2E_MQTTV5_SHARED_GROUP_CA,
+#            E2E_MQTTV5_SHARED_IOTHUB_SERVICE_CS ('service' policy, passed as
+#            E2E_MQTTV5_SHARED_IOTHUB_CS; the secret of that name holds the
+#            .NET e2e's iothubowner one),
+#            E2E_MQTTV5_SHARED_EVENTHUB_CS, AZURE_CLIENT_ID, AZURE_TENANT_ID
+#   No SAS: mqttv5 hubs accept X.509 only.
+#
+# Pull requests from forks and from Dependabot get no secrets, so they skip.
+
+name: ci-c-e2e-mqttv5
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'c/src/core/**'
+      - 'c/src/mqttv5/**'
+      - 'c/inc/azure/iot/*.h'
+      - 'c/inc/azure/iot/mqttv5/**'
+      - 'c/adapters/paho/**'
+      - 'c/adapters/az_mqtt/**'
+      - 'c/deps/az_mqtt/**'
+      - 'c/CMakeLists.txt'
+      - 'c/CMakePresets.json'
+      - 'c/cmake/**'
+      - 'c/tests/CMakeLists.txt'
+      - 'c/tests/support/**'
+      - 'c/tests/deps/**'
+      - 'c/tests/e2e/**'
+      - 'c/eng/e2e-shared-device.ps1'
+      - 'c/eng/e2e-trusted-ca.ps1'
+      - 'c/eng/e2e-connect-proxy.py'
+      - 'c/eng/e2e-mqttv5-adr-namespace.ps1'
+      - 'c/eng/setup-softhsm.sh'
+      - 'c/eng/setup-pkcs11-provider.sh'
+      - '.github/workflows/ci-c-e2e-mqttv5.yml'
+      - '.github/workflows/ci-c-e2e-mqttv5-adr-namespace.yml'
+      - '.github/actions/install-openssl/**'
+  schedule:
+    - cron: '30 11 * * *'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # The OpenSSL the Windows legs build against, as in ci-c-e2e.yml.
+  WINDOWS_OPENSSL_VERSION: '4.1.0'
+
+jobs:
+  # The namespace can drop out of Azure; DPS registrations fail until it is back.
+  # Not on pull requests: the repair logs in to Azure and runs the checked-out
+  # script, so it only runs trusted code (schedule, manual). Pull requests rely
+  # on the scheduled repair (every 10 minutes) in ci-c-e2e-mqttv5-adr-namespace.yml.
+  adr-namespace:
+    name: ADR namespace
+    if: ${{ vars.E2E_MQTTV5_SHARED_ID_SCOPE != '' && github.event_name != 'pull_request' }}
+    permissions:
+      contents: read
+      id-token: write
+    # actionlint 1.7.12 does not accept the $/ self-repository form yet.
+    uses: ./.github/workflows/ci-c-e2e-mqttv5-adr-namespace.yml # zizmor: ignore[self-repository]
+    secrets:
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+
+  # Builds the Windows legs' OpenSSL into the cache once per run, so the legs restore it instead
+  # of each building it on a cache miss (.github/actions/install-openssl).
+  # Skipped where every test job is (forks, Dependabot).
+  openssl:
+    name: OpenSSL (windows)
+    if: >-
+      ${{ vars.E2E_MQTTV5_SHARED_ID_SCOPE != '' &&
+          (github.event_name != 'pull_request' ||
+           (github.event.pull_request.head.repo.full_name == github.repository &&
+            github.actor != 'dependabot[bot]')) }}
+    permissions:
+      contents: read
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Set up MSVC
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
+      - name: Install OpenSSL
+        uses: ./.github/actions/install-openssl # zizmor: ignore[self-repository]
+        with:
+          version: ${{ env.WINDOWS_OPENSSL_VERSION }}
+
+  # The longest suites run as one job per adapter and shard (AZ_IOT_TEST_SHARD,
+  # c/tests/support/test_shard.h), each with its own device: run serially on one
+  # device they took up to 15 min. The shard count in AZ_IOT_TEST_SHARD must match
+  # the matrix's shard list. Jobs that read events spread over consumer groups
+  # e2e-0..e2e-9 (E2E_GROUP_SLOT); the Linux and Windows legs of a job share its slot, so a
+  # group has at most three readers in a run.
+  custom-topics:
+    name: custom topics / ${{ matrix.os-name }} / ${{ matrix.adapter }} / shard ${{ matrix.shard }} of 2
+    needs: [ adr-namespace, openssl ]
+    if: >-
+      ${{ !cancelled() && vars.E2E_MQTTV5_SHARED_ID_SCOPE != '' &&
+          (needs.adr-namespace.result == 'success' || needs.adr-namespace.result == 'skipped') &&
+          needs.openssl.result == 'success' &&
+          (github.event_name != 'pull_request' ||
+           (github.event.pull_request.head.repo.full_name == github.repository &&
+            github.actor != 'dependabot[bot]')) }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ ubuntu-24.04, windows-latest ]
+        adapter: [ paho, az_mqtt ]
+        shard: [ 0, 1 ]
+        include:
+          - { adapter: paho, target-suffix: '', tag: pa, index: 0 }
+          - { adapter: az_mqtt, target-suffix: _az_mqtt, tag: az, index: 1 }
+          - { os: ubuntu-24.04, os-name: linux, os-tag: l, preset: linux-gcc-debug }
+          - { os: windows-latest, os-name: windows, os-tag: w, preset: windows-msvc-debug }
+    env:
+      AZ_IOT_PRESET: ${{ matrix.preset }}
+      AZ_IOT_E2E_TEST: az_iot_tests_e2e_mqttv5_custom_topic${{ matrix.target-suffix }}
+      AZ_IOT_TEST_SHARD: ${{ matrix.shard }}/2
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Set up MSVC (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
+
+      # Restored from the cache the openssl job filled.
+      - name: Install OpenSSL (Windows)
+        if: runner.os == 'Windows'
+        uses: ./.github/actions/install-openssl # zizmor: ignore[self-repository]
+        with:
+          version: ${{ env.WINDOWS_OPENSSL_VERSION }}
+
+      - name: Install ninja (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
+
+      - name: Build
+        working-directory: c
+        shell: pwsh
+        run: |
+          cmake --preset $env:AZ_IOT_PRESET -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_BUILD_E2E_MQTTV5=ON -DAZ_IOT_WITH_PAHO=ON -DAZ_IOT_WITH_AZ_MQTT=ON -DAZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE=1114112
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake --build --preset $env:AZ_IOT_PRESET --target $env:AZ_IOT_E2E_TEST
+
+      - name: Issue a device
+        shell: pwsh
+        env:
+          E2E_MQTTV5_SHARED_GROUP_CA: ${{ secrets.E2E_MQTTV5_SHARED_GROUP_CA }}
+          E2E_MQTTV5_SHARED_IOTHUB_CS: ${{ secrets.E2E_MQTTV5_SHARED_IOTHUB_SERVICE_CS }}
+          E2E_MQTTV5_SHARED_EVENTHUB_CS: ${{ secrets.E2E_MQTTV5_SHARED_EVENTHUB_CS }}
+          E2E_MQTTV5_SHARED_ID_SCOPE: ${{ vars.E2E_MQTTV5_SHARED_ID_SCOPE }}
+          E2E_MQTTV5_SHARED_DPS_HOST: ${{ vars.E2E_MQTTV5_SHARED_DPS_HOST }}
+          E2E_REGISTRATION_ID: ci-mqttv5-ct-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.os-tag }}${{ matrix.tag }}${{ matrix.shard }}
+          E2E_GROUP_SLOT: 0
+          E2E_ADAPTER_INDEX: ${{ matrix.index }}
+          E2E_RUN_ID: ${{ github.run_id }}
+        # Consumer groups e2e-0..e2e-9; Event Hubs allows 5 readers per partition per group.
+        run: |
+          # One consumer group per job of this suite: slot + adapter index * shard count + shard.
+          $shard, $count = $env:AZ_IOT_TEST_SHARD -split '/'
+          $slot = [long]$env:E2E_GROUP_SLOT + [long]$env:E2E_ADAPTER_INDEX * [long]$count + [long]$shard
+          $group = 'e2e-' + (([long]$env:E2E_RUN_ID + $slot) % 10)
+          ./c/eng/e2e-shared-device.ps1 -Prefix E2E_MQTTV5_SHARED -RegistrationId $env:E2E_REGISTRATION_ID `
+            -ConsumerGroup $group -OutFile test_config/set_test_env_vars.ps1
+
+      - name: Run
+        shell: pwsh
+        env:
+          # The hub acknowledges custom topic publishes but does not deliver them to the
+          # events endpoint yet; the routed cases skip until it does. Remove when fixed.
+          AZ_IOT_E2E_SKIP_CUSTOM_TOPIC_ROUTING: '1'
+          # Surface the DPS/connect reason when the device does not connect; the
+          # Paho protocol trace shows each DPS response (assigning polls included).
+          AZ_IOT_E2E_LOG_LEVEL: TRACE
+          AZ_IOT_PAHO_TRACE: protocol
+        run: |
+          . ./test_config/set_test_env_vars.ps1
+          $dir = Join-Path ([System.IO.Path]::GetTempPath()) ('az-iot-c-e2e-' + [Guid]::NewGuid().ToString('N'))
+          New-Item -ItemType Directory -Path $dir -Force | Out-Null
+          $cert = Join-Path $dir 'device-cert.pem'
+          $key = Join-Path $dir 'device-key.pem'
+          [System.IO.File]::WriteAllText($cert,
+            [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:IOT_DPS_INDIVIDUAL_X509_CERTIFICATE_0)))
+          [System.IO.File]::WriteAllText($key,
+            [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:IOT_DPS_INDIVIDUAL_X509_KEY_0)))
+
+          $env:AZ_IOT_DPS_ID_SCOPE = $env:IOT_DPS_ID_SCOPE
+          $env:AZ_IOT_DPS_REGISTRATION_ID = $env:IOT_DPS_INDIVIDUAL_REGISTRATION_ID_0
+          $env:AZ_IOT_CLIENT_CERT = $cert
+          $env:AZ_IOT_CLIENT_KEY = $key
+          $env:AZ_IOT_TRUSTED_CA = ./c/eng/e2e-trusted-ca.ps1 -Path (Join-Path $dir 'trusted-ca.pem')
+          if ($env:IOT_DPS_GLOBAL_ENDPOINT) { $env:AZ_IOT_DPS_GLOBAL_ENDPOINT = $env:IOT_DPS_GLOBAL_ENDPOINT }
+
+          ctest --test-dir "c/build/$($env:AZ_IOT_PRESET)" -C Debug -R "^$($env:AZ_IOT_E2E_TEST)$" `
+            --verbose --no-tests=error --timeout 900
+
+  twin:
+    name: twin / ${{ matrix.os-name }} / ${{ matrix.adapter }} / shard ${{ matrix.shard }} of 3
+    needs: [ adr-namespace, openssl ]
+    if: >-
+      ${{ !cancelled() && vars.E2E_MQTTV5_SHARED_ID_SCOPE != '' &&
+          (needs.adr-namespace.result == 'success' || needs.adr-namespace.result == 'skipped') &&
+          needs.openssl.result == 'success' &&
+          (github.event_name != 'pull_request' ||
+           (github.event.pull_request.head.repo.full_name == github.repository &&
+            github.actor != 'dependabot[bot]')) }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ ubuntu-24.04, windows-latest ]
+        adapter: [ paho, az_mqtt ]
+        shard: [ 0, 1, 2 ]
+        include:
+          - { adapter: paho, target-suffix: '', tag: pa, index: 0 }
+          - { adapter: az_mqtt, target-suffix: _az_mqtt, tag: az, index: 1 }
+          - { os: ubuntu-24.04, os-name: linux, os-tag: l, preset: linux-gcc-debug }
+          - { os: windows-latest, os-name: windows, os-tag: w, preset: windows-msvc-debug }
+    env:
+      AZ_IOT_PRESET: ${{ matrix.preset }}
+      AZ_IOT_E2E_TEST: az_iot_tests_e2e_mqttv5_twin${{ matrix.target-suffix }}
+      AZ_IOT_TEST_SHARD: ${{ matrix.shard }}/3
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Set up MSVC (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
+
+      # Restored from the cache the openssl job filled.
+      - name: Install OpenSSL (Windows)
+        if: runner.os == 'Windows'
+        uses: ./.github/actions/install-openssl # zizmor: ignore[self-repository]
+        with:
+          version: ${{ env.WINDOWS_OPENSSL_VERSION }}
+
+      - name: Install ninja (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
+
+      - name: Build
+        working-directory: c
+        shell: pwsh
+        run: |
+          cmake --preset $env:AZ_IOT_PRESET -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_BUILD_E2E_MQTTV5=ON -DAZ_IOT_WITH_PAHO=ON -DAZ_IOT_WITH_AZ_MQTT=ON -DAZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE=1114112
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake --build --preset $env:AZ_IOT_PRESET --target $env:AZ_IOT_E2E_TEST
+
+      - name: Issue a device
+        shell: pwsh
+        env:
+          E2E_MQTTV5_SHARED_GROUP_CA: ${{ secrets.E2E_MQTTV5_SHARED_GROUP_CA }}
+          E2E_MQTTV5_SHARED_IOTHUB_CS: ${{ secrets.E2E_MQTTV5_SHARED_IOTHUB_SERVICE_CS }}
+          E2E_MQTTV5_SHARED_EVENTHUB_CS: ${{ secrets.E2E_MQTTV5_SHARED_EVENTHUB_CS }}
+          E2E_MQTTV5_SHARED_ID_SCOPE: ${{ vars.E2E_MQTTV5_SHARED_ID_SCOPE }}
+          E2E_MQTTV5_SHARED_DPS_HOST: ${{ vars.E2E_MQTTV5_SHARED_DPS_HOST }}
+          E2E_REGISTRATION_ID: ci-mqttv5-tw-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.os-tag }}${{ matrix.tag }}${{ matrix.shard }}
+          E2E_RUN_ID: ${{ github.run_id }}
+        # The twin suite reads no events; the consumer group only satisfies the script.
+        run: |
+          $group = 'e2e-' + ([long]$env:E2E_RUN_ID % 10)
+          ./c/eng/e2e-shared-device.ps1 -Prefix E2E_MQTTV5_SHARED -RegistrationId $env:E2E_REGISTRATION_ID `
+            -ConsumerGroup $group -OutFile test_config/set_test_env_vars.ps1
+
+      - name: Run
+        shell: pwsh
+        env:
+          AZ_IOT_E2E_LOG_LEVEL: INFO
+        run: |
+          . ./test_config/set_test_env_vars.ps1
+          $dir = Join-Path ([System.IO.Path]::GetTempPath()) ('az-iot-c-e2e-' + [Guid]::NewGuid().ToString('N'))
+          New-Item -ItemType Directory -Path $dir -Force | Out-Null
+          $cert = Join-Path $dir 'device-cert.pem'
+          $key = Join-Path $dir 'device-key.pem'
+          [System.IO.File]::WriteAllText($cert,
+            [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:IOT_DPS_INDIVIDUAL_X509_CERTIFICATE_0)))
+          [System.IO.File]::WriteAllText($key,
+            [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:IOT_DPS_INDIVIDUAL_X509_KEY_0)))
+
+          $env:AZ_IOT_DPS_ID_SCOPE = $env:IOT_DPS_ID_SCOPE
+          $env:AZ_IOT_DPS_REGISTRATION_ID = $env:IOT_DPS_INDIVIDUAL_REGISTRATION_ID_0
+          $env:AZ_IOT_CLIENT_CERT = $cert
+          $env:AZ_IOT_CLIENT_KEY = $key
+          $env:AZ_IOT_TRUSTED_CA = ./c/eng/e2e-trusted-ca.ps1 -Path (Join-Path $dir 'trusted-ca.pem')
+          if ($env:IOT_DPS_GLOBAL_ENDPOINT) { $env:AZ_IOT_DPS_GLOBAL_ENDPOINT = $env:IOT_DPS_GLOBAL_ENDPOINT }
+
+          ctest --test-dir "c/build/$($env:AZ_IOT_PRESET)" -C Debug -R "^$($env:AZ_IOT_E2E_TEST)$" `
+            --verbose --no-tests=error --timeout 900
+
+  connection:
+    name: connection / ${{ matrix.os-name }}
+    needs: [ adr-namespace, openssl ]
+    if: >-
+      ${{ !cancelled() && vars.E2E_MQTTV5_SHARED_ID_SCOPE != '' &&
+          (needs.adr-namespace.result == 'success' || needs.adr-namespace.result == 'skipped') &&
+          needs.openssl.result == 'success' &&
+          (github.event_name != 'pull_request' ||
+           (github.event.pull_request.head.repo.full_name == github.repository &&
+            github.actor != 'dependabot[bot]')) }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ ubuntu-24.04, windows-latest ]
+        include:
+          - { os: ubuntu-24.04, os-name: linux, os-tag: l, preset: linux-gcc-debug }
+          - { os: windows-latest, os-name: windows, os-tag: w, preset: windows-msvc-debug }
+    env:
+      AZ_IOT_PRESET: ${{ matrix.preset }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Set up MSVC (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
+
+      # Restored from the cache the openssl job filled.
+      - name: Install OpenSSL (Windows)
+        if: runner.os == 'Windows'
+        uses: ./.github/actions/install-openssl # zizmor: ignore[self-repository]
+        with:
+          version: ${{ env.WINDOWS_OPENSSL_VERSION }}
+
+      - name: Install ninja (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
+
+      - name: Build
+        working-directory: c
+        shell: pwsh
+        run: |
+          cmake --preset $env:AZ_IOT_PRESET -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_BUILD_E2E_MQTTV5=ON -DAZ_IOT_WITH_PAHO=ON -DAZ_IOT_WITH_AZ_MQTT=ON -DAZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE=1114112
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake --build --preset $env:AZ_IOT_PRESET --target az_iot_tests_e2e_mqttv5_connection az_iot_tests_e2e_mqttv5_connection_az_mqtt
+
+      - name: Issue a device
+        shell: pwsh
+        env:
+          E2E_MQTTV5_SHARED_GROUP_CA: ${{ secrets.E2E_MQTTV5_SHARED_GROUP_CA }}
+          E2E_MQTTV5_SHARED_IOTHUB_CS: ${{ secrets.E2E_MQTTV5_SHARED_IOTHUB_SERVICE_CS }}
+          E2E_MQTTV5_SHARED_EVENTHUB_CS: ${{ secrets.E2E_MQTTV5_SHARED_EVENTHUB_CS }}
+          E2E_MQTTV5_SHARED_ID_SCOPE: ${{ vars.E2E_MQTTV5_SHARED_ID_SCOPE }}
+          E2E_MQTTV5_SHARED_DPS_HOST: ${{ vars.E2E_MQTTV5_SHARED_DPS_HOST }}
+          E2E_REGISTRATION_ID: ci-mqttv5-cn-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.os-tag }}
+          E2E_GROUP_SLOT: 9
+          E2E_RUN_ID: ${{ github.run_id }}
+        # Consumer groups e2e-0..e2e-9; Event Hubs allows 5 readers per partition per group.
+        run: |
+          $group = 'e2e-' + (([long]$env:E2E_RUN_ID + [long]$env:E2E_GROUP_SLOT) % 10)
+          ./c/eng/e2e-shared-device.ps1 -Prefix E2E_MQTTV5_SHARED -RegistrationId $env:E2E_REGISTRATION_ID `
+            -ConsumerGroup $group -OutFile test_config/set_test_env_vars.ps1
+
+      - name: Run
+        shell: pwsh
+        env:
+          AZ_IOT_E2E_LOG_LEVEL: INFO
+        run: |
+          . ./test_config/set_test_env_vars.ps1
+          $dir = Join-Path ([System.IO.Path]::GetTempPath()) ('az-iot-c-e2e-' + [Guid]::NewGuid().ToString('N'))
+          New-Item -ItemType Directory -Path $dir -Force | Out-Null
+          $cert = Join-Path $dir 'device-cert.pem'
+          $key = Join-Path $dir 'device-key.pem'
+          [System.IO.File]::WriteAllText($cert,
+            [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:IOT_DPS_INDIVIDUAL_X509_CERTIFICATE_0)))
+          [System.IO.File]::WriteAllText($key,
+            [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:IOT_DPS_INDIVIDUAL_X509_KEY_0)))
+
+          $env:AZ_IOT_DPS_ID_SCOPE = $env:IOT_DPS_ID_SCOPE
+          $env:AZ_IOT_DPS_REGISTRATION_ID = $env:IOT_DPS_INDIVIDUAL_REGISTRATION_ID_0
+          $env:AZ_IOT_CLIENT_CERT = $cert
+          $env:AZ_IOT_CLIENT_KEY = $key
+          $env:AZ_IOT_TRUSTED_CA = ./c/eng/e2e-trusted-ca.ps1 -Path (Join-Path $dir 'trusted-ca.pem')
+          if ($env:IOT_DPS_GLOBAL_ENDPOINT) { $env:AZ_IOT_DPS_GLOBAL_ENDPOINT = $env:IOT_DPS_GLOBAL_ENDPOINT }
+
+          ctest --test-dir "c/build/$($env:AZ_IOT_PRESET)" -C Debug -R e2e_mqttv5_connection `
+            --verbose --no-tests=error --timeout 900
+
+  telemetry:
+    name: telemetry / ${{ matrix.os-name }}
+    needs: [ adr-namespace, openssl ]
+    if: >-
+      ${{ !cancelled() && vars.E2E_MQTTV5_SHARED_ID_SCOPE != '' &&
+          (needs.adr-namespace.result == 'success' || needs.adr-namespace.result == 'skipped') &&
+          needs.openssl.result == 'success' &&
+          (github.event_name != 'pull_request' ||
+           (github.event.pull_request.head.repo.full_name == github.repository &&
+            github.actor != 'dependabot[bot]')) }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ ubuntu-24.04, windows-latest ]
+        include:
+          - { os: ubuntu-24.04, os-name: linux, os-tag: l, preset: linux-gcc-debug }
+          - { os: windows-latest, os-name: windows, os-tag: w, preset: windows-msvc-debug }
+    env:
+      AZ_IOT_PRESET: ${{ matrix.preset }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Set up MSVC (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
+
+      # Restored from the cache the openssl job filled.
+      - name: Install OpenSSL (Windows)
+        if: runner.os == 'Windows'
+        uses: ./.github/actions/install-openssl # zizmor: ignore[self-repository]
+        with:
+          version: ${{ env.WINDOWS_OPENSSL_VERSION }}
+
+      - name: Install ninja (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
+
+      - name: Build
+        working-directory: c
+        shell: pwsh
+        run: |
+          cmake --preset $env:AZ_IOT_PRESET -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_BUILD_E2E_MQTTV5=ON -DAZ_IOT_WITH_PAHO=ON -DAZ_IOT_WITH_AZ_MQTT=ON -DAZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE=1114112
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake --build --preset $env:AZ_IOT_PRESET --target az_iot_tests_e2e_mqttv5_telemetry az_iot_tests_e2e_mqttv5_telemetry_az_mqtt
+
+      - name: Issue a device
+        shell: pwsh
+        env:
+          E2E_MQTTV5_SHARED_GROUP_CA: ${{ secrets.E2E_MQTTV5_SHARED_GROUP_CA }}
+          E2E_MQTTV5_SHARED_IOTHUB_CS: ${{ secrets.E2E_MQTTV5_SHARED_IOTHUB_SERVICE_CS }}
+          E2E_MQTTV5_SHARED_EVENTHUB_CS: ${{ secrets.E2E_MQTTV5_SHARED_EVENTHUB_CS }}
+          E2E_MQTTV5_SHARED_ID_SCOPE: ${{ vars.E2E_MQTTV5_SHARED_ID_SCOPE }}
+          E2E_MQTTV5_SHARED_DPS_HOST: ${{ vars.E2E_MQTTV5_SHARED_DPS_HOST }}
+          E2E_REGISTRATION_ID: ci-mqttv5-te-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.os-tag }}
+          E2E_GROUP_SLOT: 8
+          E2E_RUN_ID: ${{ github.run_id }}
+        # Consumer groups e2e-0..e2e-9; Event Hubs allows 5 readers per partition per group.
+        run: |
+          $group = 'e2e-' + (([long]$env:E2E_RUN_ID + [long]$env:E2E_GROUP_SLOT) % 10)
+          ./c/eng/e2e-shared-device.ps1 -Prefix E2E_MQTTV5_SHARED -RegistrationId $env:E2E_REGISTRATION_ID `
+            -ConsumerGroup $group -OutFile test_config/set_test_env_vars.ps1
+
+      - name: Run
+        shell: pwsh
+        env:
+          AZ_IOT_E2E_LOG_LEVEL: INFO
+        run: |
+          . ./test_config/set_test_env_vars.ps1
+          $dir = Join-Path ([System.IO.Path]::GetTempPath()) ('az-iot-c-e2e-' + [Guid]::NewGuid().ToString('N'))
+          New-Item -ItemType Directory -Path $dir -Force | Out-Null
+          $cert = Join-Path $dir 'device-cert.pem'
+          $key = Join-Path $dir 'device-key.pem'
+          [System.IO.File]::WriteAllText($cert,
+            [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:IOT_DPS_INDIVIDUAL_X509_CERTIFICATE_0)))
+          [System.IO.File]::WriteAllText($key,
+            [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:IOT_DPS_INDIVIDUAL_X509_KEY_0)))
+
+          $env:AZ_IOT_DPS_ID_SCOPE = $env:IOT_DPS_ID_SCOPE
+          $env:AZ_IOT_DPS_REGISTRATION_ID = $env:IOT_DPS_INDIVIDUAL_REGISTRATION_ID_0
+          $env:AZ_IOT_CLIENT_CERT = $cert
+          $env:AZ_IOT_CLIENT_KEY = $key
+          $env:AZ_IOT_TRUSTED_CA = ./c/eng/e2e-trusted-ca.ps1 -Path (Join-Path $dir 'trusted-ca.pem')
+          if ($env:IOT_DPS_GLOBAL_ENDPOINT) { $env:AZ_IOT_DPS_GLOBAL_ENDPOINT = $env:IOT_DPS_GLOBAL_ENDPOINT }
+
+          ctest --test-dir "c/build/$($env:AZ_IOT_PRESET)" -C Debug -R e2e_mqttv5_telemetry `
+            --verbose --no-tests=error --timeout 900
+
+  direct-method:
+    name: direct method / ${{ matrix.os-name }}
+    needs: [ adr-namespace, openssl ]
+    if: >-
+      ${{ !cancelled() && vars.E2E_MQTTV5_SHARED_ID_SCOPE != '' &&
+          (needs.adr-namespace.result == 'success' || needs.adr-namespace.result == 'skipped') &&
+          needs.openssl.result == 'success' &&
+          (github.event_name != 'pull_request' ||
+           (github.event.pull_request.head.repo.full_name == github.repository &&
+            github.actor != 'dependabot[bot]')) }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ ubuntu-24.04, windows-latest ]
+        include:
+          - { os: ubuntu-24.04, os-name: linux, os-tag: l, preset: linux-gcc-debug }
+          - { os: windows-latest, os-name: windows, os-tag: w, preset: windows-msvc-debug }
+    env:
+      AZ_IOT_PRESET: ${{ matrix.preset }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Set up MSVC (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
+
+      # Restored from the cache the openssl job filled.
+      - name: Install OpenSSL (Windows)
+        if: runner.os == 'Windows'
+        uses: ./.github/actions/install-openssl # zizmor: ignore[self-repository]
+        with:
+          version: ${{ env.WINDOWS_OPENSSL_VERSION }}
+
+      - name: Install ninja (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
+
+      - name: Build
+        working-directory: c
+        shell: pwsh
+        run: |
+          cmake --preset $env:AZ_IOT_PRESET -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_BUILD_E2E_MQTTV5=ON -DAZ_IOT_WITH_PAHO=ON -DAZ_IOT_WITH_AZ_MQTT=ON -DAZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE=1114112
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake --build --preset $env:AZ_IOT_PRESET --target az_iot_tests_e2e_mqttv5_direct_method az_iot_tests_e2e_mqttv5_direct_method_az_mqtt
+
+      - name: Issue a device
+        shell: pwsh
+        env:
+          E2E_MQTTV5_SHARED_GROUP_CA: ${{ secrets.E2E_MQTTV5_SHARED_GROUP_CA }}
+          E2E_MQTTV5_SHARED_IOTHUB_CS: ${{ secrets.E2E_MQTTV5_SHARED_IOTHUB_SERVICE_CS }}
+          E2E_MQTTV5_SHARED_EVENTHUB_CS: ${{ secrets.E2E_MQTTV5_SHARED_EVENTHUB_CS }}
+          E2E_MQTTV5_SHARED_ID_SCOPE: ${{ vars.E2E_MQTTV5_SHARED_ID_SCOPE }}
+          E2E_MQTTV5_SHARED_DPS_HOST: ${{ vars.E2E_MQTTV5_SHARED_DPS_HOST }}
+          E2E_REGISTRATION_ID: ci-mqttv5-dm-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.os-tag }}
+          E2E_RUN_ID: ${{ github.run_id }}
+        # The direct method suite reads no events; the consumer group only satisfies the script.
+        run: |
+          $group = 'e2e-' + ([long]$env:E2E_RUN_ID % 10)
+          ./c/eng/e2e-shared-device.ps1 -Prefix E2E_MQTTV5_SHARED -RegistrationId $env:E2E_REGISTRATION_ID `
+            -ConsumerGroup $group -OutFile test_config/set_test_env_vars.ps1
+
+      - name: Run
+        shell: pwsh
+        env:
+          AZ_IOT_E2E_LOG_LEVEL: INFO
+        run: |
+          . ./test_config/set_test_env_vars.ps1
+          $dir = Join-Path ([System.IO.Path]::GetTempPath()) ('az-iot-c-e2e-' + [Guid]::NewGuid().ToString('N'))
+          New-Item -ItemType Directory -Path $dir -Force | Out-Null
+          $cert = Join-Path $dir 'device-cert.pem'
+          $key = Join-Path $dir 'device-key.pem'
+          [System.IO.File]::WriteAllText($cert,
+            [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:IOT_DPS_INDIVIDUAL_X509_CERTIFICATE_0)))
+          [System.IO.File]::WriteAllText($key,
+            [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:IOT_DPS_INDIVIDUAL_X509_KEY_0)))
+
+          $env:AZ_IOT_DPS_ID_SCOPE = $env:IOT_DPS_ID_SCOPE
+          $env:AZ_IOT_DPS_REGISTRATION_ID = $env:IOT_DPS_INDIVIDUAL_REGISTRATION_ID_0
+          $env:AZ_IOT_CLIENT_CERT = $cert
+          $env:AZ_IOT_CLIENT_KEY = $key
+          $env:AZ_IOT_TRUSTED_CA = ./c/eng/e2e-trusted-ca.ps1 -Path (Join-Path $dir 'trusted-ca.pem')
+          if ($env:IOT_DPS_GLOBAL_ENDPOINT) { $env:AZ_IOT_DPS_GLOBAL_ENDPOINT = $env:IOT_DPS_GLOBAL_ENDPOINT }
+
+          ctest --test-dir "c/build/$($env:AZ_IOT_PRESET)" -C Debug -R e2e_mqttv5_direct_method `
+            --verbose --no-tests=error --timeout 900
+
+  transport:
+    name: transport / ${{ matrix.os-name }} / ${{ matrix.adapter }} / shard ${{ matrix.shard }} of 2
+    needs: [ adr-namespace, openssl ]
+    if: >-
+      ${{ !cancelled() && vars.E2E_MQTTV5_SHARED_ID_SCOPE != '' &&
+          (needs.adr-namespace.result == 'success' || needs.adr-namespace.result == 'skipped') &&
+          needs.openssl.result == 'success' &&
+          (github.event_name != 'pull_request' ||
+           (github.event.pull_request.head.repo.full_name == github.repository &&
+            github.actor != 'dependabot[bot]')) }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ ubuntu-24.04, windows-latest ]
+        adapter: [ paho, az_mqtt ]
+        shard: [ 0, 1 ]
+        include:
+          - { adapter: paho, target-suffix: '', tag: pa, index: 0 }
+          - { adapter: az_mqtt, target-suffix: _az_mqtt, tag: az, index: 1 }
+          - { os: ubuntu-24.04, os-name: linux, os-tag: l, preset: linux-gcc-debug }
+          - { os: windows-latest, os-name: windows, os-tag: w, preset: windows-msvc-debug }
+    env:
+      AZ_IOT_PRESET: ${{ matrix.preset }}
+      AZ_IOT_E2E_TEST: az_iot_tests_e2e_mqttv5_transport${{ matrix.target-suffix }}
+      AZ_IOT_TEST_SHARD: ${{ matrix.shard }}/2
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Set up MSVC (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
+
+      # Restored from the cache the openssl job filled.
+      - name: Install OpenSSL (Windows)
+        if: runner.os == 'Windows'
+        uses: ./.github/actions/install-openssl # zizmor: ignore[self-repository]
+        with:
+          version: ${{ env.WINDOWS_OPENSSL_VERSION }}
+
+      - name: Install ninja and tinyproxy (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y ninja-build tinyproxy
+
+      # An HTTP CONNECT proxy on loopback, run as the runner user so its log is readable; the
+      # proxy tests assert the CONNECT lines for the DPS and hub hosts appear in that log.
+      - name: Start the proxy (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo systemctl stop tinyproxy || true
+          conf="$RUNNER_TEMP/tinyproxy.conf"
+          log="$RUNNER_TEMP/tinyproxy.log"
+          cat > "$conf" <<EOF
+          Port 3128
+          Listen 127.0.0.1
+          Timeout 600
+          LogFile "$log"
+          LogLevel Info
+          PidFile "$RUNNER_TEMP/tinyproxy.pid"
+          MaxClients 50
+          Allow 127.0.0.1
+          ConnectPort 443
+          ConnectPort 8883
+          EOF
+          tinyproxy -c "$conf"
+          for _ in $(seq 1 20); do
+            if (exec 3<>/dev/tcp/127.0.0.1/3128) 2>/dev/null; then break; fi
+            sleep 0.5
+          done
+          (exec 3<>/dev/tcp/127.0.0.1/3128)
+          {
+            echo "AZ_IOT_PROXY_HOST=127.0.0.1"
+            echo "AZ_IOT_PROXY_PORT=3128"
+            echo "AZ_IOT_E2E_PROXY_LOG=$log"
+          } >> "$GITHUB_ENV"
+
+      # No tinyproxy on Windows: c/eng/e2e-connect-proxy.py logs the same CONNECT lines.
+      - name: Start the proxy (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $log = Join-Path $env:RUNNER_TEMP 'connect-proxy.log'
+          New-Item -ItemType File -Path $log -Force | Out-Null
+          Start-Process python -WindowStyle Hidden -ArgumentList @(
+            'c/eng/e2e-connect-proxy.py', '--port', '3128', '--log', $log)
+          $up = $false
+          for ($i = 0; $i -lt 20 -and -not $up; $i++) {
+            try { (New-Object System.Net.Sockets.TcpClient('127.0.0.1', 3128)).Dispose(); $up = $true }
+            catch { Start-Sleep -Milliseconds 500 }
+          }
+          if (-not $up) { throw 'the proxy did not start' }
+          "AZ_IOT_PROXY_HOST=127.0.0.1", "AZ_IOT_PROXY_PORT=3128", "AZ_IOT_E2E_PROXY_LOG=$log" |
+            Add-Content -Path $env:GITHUB_ENV
+
+      - name: Build
+        working-directory: c
+        shell: pwsh
+        run: |
+          cmake --preset $env:AZ_IOT_PRESET -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_BUILD_E2E_MQTTV5=ON -DAZ_IOT_WITH_PAHO=ON -DAZ_IOT_WITH_AZ_MQTT=ON -DAZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE=1114112
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake --build --preset $env:AZ_IOT_PRESET --target $env:AZ_IOT_E2E_TEST
+
+      - name: Issue a device
+        shell: pwsh
+        env:
+          E2E_MQTTV5_SHARED_GROUP_CA: ${{ secrets.E2E_MQTTV5_SHARED_GROUP_CA }}
+          E2E_MQTTV5_SHARED_IOTHUB_CS: ${{ secrets.E2E_MQTTV5_SHARED_IOTHUB_SERVICE_CS }}
+          E2E_MQTTV5_SHARED_EVENTHUB_CS: ${{ secrets.E2E_MQTTV5_SHARED_EVENTHUB_CS }}
+          E2E_MQTTV5_SHARED_ID_SCOPE: ${{ vars.E2E_MQTTV5_SHARED_ID_SCOPE }}
+          E2E_MQTTV5_SHARED_DPS_HOST: ${{ vars.E2E_MQTTV5_SHARED_DPS_HOST }}
+          E2E_REGISTRATION_ID: ci-mqttv5-tr-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.os-tag }}${{ matrix.tag }}${{ matrix.shard }}
+          E2E_GROUP_SLOT: 4
+          E2E_ADAPTER_INDEX: ${{ matrix.index }}
+          E2E_RUN_ID: ${{ github.run_id }}
+        # Consumer groups e2e-0..e2e-9; Event Hubs allows 5 readers per partition per group.
+        run: |
+          # One consumer group per job of this suite: slot + adapter index * shard count + shard.
+          $shard, $count = $env:AZ_IOT_TEST_SHARD -split '/'
+          $slot = [long]$env:E2E_GROUP_SLOT + [long]$env:E2E_ADAPTER_INDEX * [long]$count + [long]$shard
+          $group = 'e2e-' + (([long]$env:E2E_RUN_ID + $slot) % 10)
+          ./c/eng/e2e-shared-device.ps1 -Prefix E2E_MQTTV5_SHARED -RegistrationId $env:E2E_REGISTRATION_ID `
+            -ConsumerGroup $group -OutFile test_config/set_test_env_vars.ps1
+
+      - name: Run
+        shell: pwsh
+        env:
+          AZ_IOT_E2E_LOG_LEVEL: INFO
+        run: |
+          . ./test_config/set_test_env_vars.ps1
+          $dir = Join-Path ([System.IO.Path]::GetTempPath()) ('az-iot-c-e2e-' + [Guid]::NewGuid().ToString('N'))
+          New-Item -ItemType Directory -Path $dir -Force | Out-Null
+          $cert = Join-Path $dir 'device-cert.pem'
+          $key = Join-Path $dir 'device-key.pem'
+          [System.IO.File]::WriteAllText($cert,
+            [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:IOT_DPS_INDIVIDUAL_X509_CERTIFICATE_0)))
+          [System.IO.File]::WriteAllText($key,
+            [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:IOT_DPS_INDIVIDUAL_X509_KEY_0)))
+
+          $env:AZ_IOT_DPS_ID_SCOPE = $env:IOT_DPS_ID_SCOPE
+          $env:AZ_IOT_DPS_REGISTRATION_ID = $env:IOT_DPS_INDIVIDUAL_REGISTRATION_ID_0
+          $env:AZ_IOT_CLIENT_CERT = $cert
+          $env:AZ_IOT_CLIENT_KEY = $key
+          $env:AZ_IOT_TRUSTED_CA = ./c/eng/e2e-trusted-ca.ps1 -Path (Join-Path $dir 'trusted-ca.pem')
+          if ($env:IOT_DPS_GLOBAL_ENDPOINT) { $env:AZ_IOT_DPS_GLOBAL_ENDPOINT = $env:IOT_DPS_GLOBAL_ENDPOINT }
+
+          ctest --test-dir "c/build/$($env:AZ_IOT_PRESET)" -C Debug -R "^$($env:AZ_IOT_E2E_TEST)$" `
+            --verbose --no-tests=error --timeout 900
+
+      - name: Proxy log
+        if: always()
+        shell: bash
+        run: cat "$AZ_IOT_E2E_PROXY_LOG" || true
+
+  custody:
+    name: custody / linux
+    needs: adr-namespace
+    if: >-
+      ${{ !cancelled() && vars.E2E_MQTTV5_SHARED_ID_SCOPE != '' &&
+          (needs.adr-namespace.result == 'success' || needs.adr-namespace.result == 'skipped') &&
+          (github.event_name != 'pull_request' ||
+           (github.event.pull_request.head.repo.full_name == github.repository &&
+            github.actor != 'dependabot[bot]')) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      # softhsm2 + opensc hold the device key in a token; meson and pkg-config build the OpenSSL
+      # pkcs11 provider (c/eng/setup-pkcs11-provider.sh). Same as ci-c-e2e.yml.
+      - name: Install ninja, SoftHSM2 and the provider build tools
+        run: sudo apt-get update && sudo apt-get install -y ninja-build softhsm2 opensc meson pkg-config
+
+      - name: Build
+        working-directory: c
+        run: |
+          cmake --preset linux-gcc-debug -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_BUILD_E2E_MQTTV5=ON -DAZ_IOT_BUILD_E2E_PKCS11=ON -DAZ_IOT_WITH_PAHO=ON -DAZ_IOT_WITH_AZ_MQTT=ON -DAZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE=1114112
+          cmake --build --preset linux-gcc-debug --target az_iot_tests_e2e_mqttv5_custody az_iot_tests_e2e_mqttv5_custody_az_mqtt
+
+      - name: Issue a device
+        shell: pwsh
+        env:
+          E2E_MQTTV5_SHARED_GROUP_CA: ${{ secrets.E2E_MQTTV5_SHARED_GROUP_CA }}
+          E2E_MQTTV5_SHARED_IOTHUB_CS: ${{ secrets.E2E_MQTTV5_SHARED_IOTHUB_SERVICE_CS }}
+          E2E_MQTTV5_SHARED_EVENTHUB_CS: ${{ secrets.E2E_MQTTV5_SHARED_EVENTHUB_CS }}
+          E2E_MQTTV5_SHARED_ID_SCOPE: ${{ vars.E2E_MQTTV5_SHARED_ID_SCOPE }}
+          E2E_MQTTV5_SHARED_DPS_HOST: ${{ vars.E2E_MQTTV5_SHARED_DPS_HOST }}
+          E2E_REGISTRATION_ID: ci-mqttv5-cu-${{ github.run_id }}-${{ github.run_attempt }}
+          E2E_GROUP_SLOT: 8
+          E2E_RUN_ID: ${{ github.run_id }}
+        # Consumer groups e2e-0..e2e-9; Event Hubs allows 5 readers per partition per group.
+        run: |
+          $group = 'e2e-' + (([long]$env:E2E_RUN_ID + [long]$env:E2E_GROUP_SLOT) % 10)
+          ./c/eng/e2e-shared-device.ps1 -Prefix E2E_MQTTV5_SHARED -RegistrationId $env:E2E_REGISTRATION_ID `
+            -ConsumerGroup $group -OutFile test_config/set_test_env_vars.ps1
+
+      # The device key moves into a SoftHSM2 token and the file copy is deleted, as in the custody
+      # step of ci-c-e2e.yml; the suite reaches the key only through AZ_IOT_CLIENT_KEY_URI.
+      - name: Run
+        shell: pwsh
+        env:
+          AZ_IOT_E2E_LOG_LEVEL: DEBUG
+          # OpenSSL handshake errors; a custody failure is otherwise only "TCP/TLS connect failure".
+          AZ_IOT_PAHO_TRACE: error
+        run: |
+          . ./test_config/set_test_env_vars.ps1
+          $dir = Join-Path ([System.IO.Path]::GetTempPath()) ('az-iot-c-e2e-' + [Guid]::NewGuid().ToString('N'))
+          New-Item -ItemType Directory -Path $dir -Force | Out-Null
+          $cert = Join-Path $dir 'device-cert.pem'
+          $key = Join-Path $dir 'device-key.pem'
+          [System.IO.File]::WriteAllText($cert,
+            [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:IOT_DPS_INDIVIDUAL_X509_CERTIFICATE_0)))
+          [System.IO.File]::WriteAllText($key,
+            [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:IOT_DPS_INDIVIDUAL_X509_KEY_0)))
+
+          $env:AZ_IOT_DPS_ID_SCOPE = $env:IOT_DPS_ID_SCOPE
+          $env:AZ_IOT_DPS_REGISTRATION_ID = $env:IOT_DPS_INDIVIDUAL_REGISTRATION_ID_0
+          $env:AZ_IOT_CLIENT_CERT = $cert
+          $env:AZ_IOT_CLIENT_KEY = $key
+          $env:AZ_IOT_TRUSTED_CA = '/etc/ssl/certs/ca-certificates.crt'
+          if ($env:IOT_DPS_GLOBAL_ENDPOINT) { $env:AZ_IOT_DPS_GLOBAL_ENDPOINT = $env:IOT_DPS_GLOBAL_ENDPOINT }
+
+          # eval the provider exports so setup-softhsm.sh names pkcs11.so in the OpenSSL configuration.
+          $exports = & bash -c 'set -e; mods="$(c/eng/setup-pkcs11-provider.sh)"; eval "$mods"; echo "$mods"; c/eng/setup-softhsm.sh "$AZ_IOT_CLIENT_KEY"'
+          if ($LASTEXITCODE -ne 0) { throw "PKCS#11 token provisioning failed ($LASTEXITCODE)" }
+          foreach ($line in $exports) {
+            if ($line -match "^export ([A-Za-z0-9_]+)='(.*)'$") {
+              [System.Environment]::SetEnvironmentVariable($Matches[1], $Matches[2])
+            }
+          }
+          Remove-Item Env:AZ_IOT_CLIENT_KEY
+          if (Test-Path $key) { throw "the device key file is still on disk" }
+          if (-not $env:AZ_IOT_CLIENT_KEY_URI) { throw "setup-softhsm.sh exported no AZ_IOT_CLIENT_KEY_URI" }
+
+          Write-Host "--- OPENSSL_CONF = $env:OPENSSL_CONF"
+          Get-Content $env:OPENSSL_CONF | Write-Host
+          # The provider must be active from the configuration alone, not loaded at run time.
+          $providers = & openssl list -providers 2>&1 | Out-String
+          Write-Host "--- providers active from configuration:`n$providers"
+          if ($LASTEXITCODE -ne 0) { throw "openssl list -providers failed ($LASTEXITCODE)" }
+          if ($providers -notmatch '(?m)^\s+pkcs11\s*$') {
+            throw "the pkcs11 provider is not active from OPENSSL_CONF; the custody path would fall back to a run-time load"
+          }
+
+          ctest --test-dir c/build/linux-gcc-debug -R e2e_mqttv5_custody `
+            --verbose --no-tests=error --timeout 900
+          if ($LASTEXITCODE -ne 0) { throw "mqttv5 custody e2e failed ($LASTEXITCODE)" }

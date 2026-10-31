@@ -7,17 +7,31 @@
  * @file
  * @brief MQTT v5 (MQTTv5 hub) twin client.
  *
- * Desired properties are kept in sync with the service: the handler receives a
- * @ref AZ_IOT_MQTTV5_TWIN_DESIRED_SNAPSHOT (full document) whenever the device is
- * behind, then each in-order @ref AZ_IOT_MQTTV5_TWIN_DESIRED_PATCH. The client
- * fetches the snapshot itself: on connect when the birth-ack shows the device
- * behind (unless `options.twin_push.push_desired` has the service push it), and
- * whenever a patch or probe shows it behind. It holds no twin content, only
- * versions.
+ * Desired properties reach the handler as a
+ * @ref AZ_IOT_MQTTV5_TWIN_DESIRED_SNAPSHOT (full document) whenever the device
+ * is behind, then as each in-order @ref AZ_IOT_MQTTV5_TWIN_DESIRED_PATCH. The
+ * service sends patches and version probes only when
+ * `options.twin_push.push_desired` is set, and then also pushes the snapshot on
+ * connect. Otherwise (the default), changes made while connected reach the
+ * handler only on reconnect or after a GET. The client fetches a snapshot when
+ * the birth-ack (without push_desired), a GET, a patch or a probe shows it
+ * behind. It holds no twin content, only versions.
  *
  * GET and reported patches are requests: each completes exactly once, with the
- * service's answer, AZ_IOT_ERR_TIMEOUT, or AZ_IOT_ERR_NOT_CONNECTED. The SDK
- * never retries them.
+ * service's answer, AZ_IOT_ERR_TIMEOUT, or AZ_IOT_ERR_NOT_CONNECTED, timed from
+ * the call. A GET waits for a connection, and one unanswered when its session ends
+ * is sent again on the next. A reported patch is sent at once or refused, and one
+ * unanswered when its session ends fails with AZ_IOT_ERR_NOT_CONNECTED: it may
+ * have been applied. az_iot_connection_client_do_work() times them out.
+ *
+ * With `options.twin_push.push_desired` or `push_reported` set, the birth asks
+ * for a twin-push. The service sends one only for requested sections the
+ * birth-ack shows out of sync. If those sections do not arrive within the
+ * mqttv5 defensive timeout of hub CONNECTED (5 to 15 minutes, longer after
+ * consecutive misses), the client
+ * ends the session with a DISCONNECT and the connection reconnects (or faults
+ * without a reconnection policy), since a session without it receives no
+ * desired patches. az_iot_connection_client_do_work() checks it.
  */
 #ifndef AZ_IOT_MQTTV5_TWIN_CLIENT_H
 #define AZ_IOT_MQTTV5_TWIN_CLIENT_H
@@ -27,6 +41,7 @@
 #include <stdint.h>
 
 #include "azure/iot/az_iot_connection_client.h"
+#include "azure/iot/az_iot_delivery_tracker.h"
 #include "azure/iot/az_iot_message.h"
 #include "azure/iot/az_iot_result.h"
 
@@ -166,6 +181,31 @@ extern "C"
 /** @brief Default for az_iot_mqttv5_twin_client_set_request_timeout(). */
 #define AZ_IOT_MQTTV5_TWIN_REQUEST_TIMEOUT_MS_DEFAULT 60000u
 
+/** @brief Longest `ih/{device_id}/srv/twin` topic, with its terminator. */
+#define AZ_IOT_MQTTV5_TWIN_TOPIC_MAX 192u
+
+/** @brief Largest encoded GET body: three varint fields. */
+#define AZ_IOT_MQTTV5_TWIN_GET_BODY_MAX 33u
+
+/** @brief Tracked twin requests: the application's, plus the client's own snapshot GET. */
+#define AZ_IOT_MQTTV5_TWIN_TRACKED_MESSAGES (AZ_IOT_TWIN_MAX_PENDING + 1)
+
+  /** @brief A twin request held for its tracker entry. Internal; treat as opaque. */
+  typedef struct az_iot_mqttv5_twin_request
+  {
+    int kind; /* internal enum; 0: none */
+    uint8_t correlation_id[AZ_IOT_MQTTV5_TWIN_CORRELATION_ID_LEN];
+    az_iot_mqttv5_twin_get_options get_options; /* GET */
+    size_t patch_length; /* Reported patch: bytes framed in the encode buffer. */
+    bool sent;
+    union
+    {
+      az_iot_mqttv5_twin_get_callback get_cb;
+      az_iot_mqttv5_twin_patch_ack_callback patch_cb;
+    } cb;
+    void* user_ctx;
+  } az_iot_mqttv5_twin_request;
+
   /** @brief MQTT v5 twin client. Caller-allocated; treat as opaque. */
   typedef struct az_iot_mqttv5_twin_client
   {
@@ -194,26 +234,31 @@ extern "C"
       uint64_t reported_properties_service_version;
       az_span encode_buffer;
       uint32_t request_timeout_ms;
-      /* The SDK's own desired-snapshot GET, kept out of `pending`. */
+      /* Defensive wait for the twin-push the birth asks for. */
       struct
       {
-        bool in_flight;
-        uint8_t correlation_id[AZ_IOT_MQTTV5_TWIN_CORRELATION_ID_LEN];
-        uint64_t deadline_ms;
-      } snapshot;
-      struct
-      {
-        bool in_use;
-        int kind; /* internal enum */
-        uint8_t correlation_id[AZ_IOT_MQTTV5_TWIN_CORRELATION_ID_LEN];
-        uint64_t deadline_ms;
-        union
-        {
-          az_iot_mqttv5_twin_get_callback get_cb;
-          az_iot_mqttv5_twin_patch_ack_callback patch_cb;
-        } cb;
-        void* user_ctx;
-      } pending[AZ_IOT_TWIN_MAX_PENDING];
+        az_iot_deadline deadline; /* none while not waiting */
+        /* Consecutive waits that expired; selects the next wait's attempt. */
+        uint32_t missed_count;
+        /* Birth nonce of the twin-pushes decoded, the sections they carried and those sections'
+         * newest versions. */
+        uint8_t received_birth_nonce[AZ_IOT_MQTTV5_TWIN_CORRELATION_ID_LEN];
+        uint8_t received_sections;
+        uint64_t received_desired_version;
+        uint64_t received_reported_version;
+      } twin_push_wait;
+      /* The request each tracker entry holds (index = entry). Kind 0: none. */
+      az_iot_mqttv5_twin_request requests[AZ_IOT_MQTTV5_TWIN_TRACKED_MESSAGES];
+      size_t submitting_entry; /* The entry being submitted, while submit_in_progress. */
+      bool submit_in_progress;
+      az_iot_result
+          submit_failure; /* How the submitted request ended during submit; OK: it did not. */
+      /* Where encode() builds the message the tracker sends next. */
+      char outbound_topic[AZ_IOT_MQTTV5_TWIN_TOPIC_MAX];
+      uint8_t get_body[AZ_IOT_MQTTV5_TWIN_GET_BODY_MAX];
+      az_iot_mqtt_user_property outbound_type;
+      az_iot_delivery_tracker tracker;
+      az_iot_delivery_tracker_entry tracker_entries[AZ_IOT_MQTTV5_TWIN_TRACKED_MESSAGES];
     } _internal;
   } az_iot_mqttv5_twin_client;
 
@@ -238,7 +283,12 @@ extern "C"
   /**
    * @brief Request both twin sections.
    *
-   * @return AZ_IOT_ERR_NOT_SUPPORTED when AZ_IOT_TWIN_MAX_PENDING requests are in flight.
+   * Sent now, or once connected; sent again on the next session if its session ends
+   * unanswered.
+   *
+   * @return AZ_IOT_ERR_NOT_SUPPORTED when AZ_IOT_TWIN_MAX_PENDING requests are in flight;
+   *         AZ_IOT_ERR_NOT_CONNECTED before the device id is known.
+   *         AZ_IOT_ERR_BUSY from a twin callback run by another request call.
    */
   AZ_NODISCARD az_iot_result az_iot_mqttv5_twin_client_get(
       az_iot_mqttv5_twin_client* twin,
@@ -264,7 +314,9 @@ extern "C"
    * is learned from the birth-ack, GET and patch responses, and pushes.
    *
    * @return AZ_IOT_ERR_NOT_ENOUGH_SPACE when no encode buffer is set or the
-   *         framed patch does not fit.
+   *         framed patch does not fit, or the adapter cannot send it;
+   *         AZ_IOT_ERR_NOT_CONNECTED when not connected; AZ_IOT_ERR_BUSY when the
+   *         connection could not send it now. Nothing is sent on an error.
    */
   AZ_NODISCARD az_iot_result az_iot_mqttv5_twin_client_patch_reported(
       az_iot_mqttv5_twin_client* twin,
@@ -312,24 +364,24 @@ extern "C"
    *
    * @return AZ_IOT_ERR_INVALID_ARG for a negative size, or a non-empty span with a NULL pointer.
    * @return AZ_IOT_ERR_NOT_ENOUGH_SPACE when smaller than the framing alone.
+   * @return AZ_IOT_ERR_BUSY from a twin callback run by another request call.
    */
   az_iot_result az_iot_mqttv5_twin_client_set_encode_buffer(
       az_iot_mqttv5_twin_client* twin,
       az_span buffer);
 
   /**
-   * @brief How long a request waits for its response before completing with
-   *        AZ_IOT_ERR_TIMEOUT. 0 selects AZ_IOT_MQTTV5_TWIN_REQUEST_TIMEOUT_MS_DEFAULT.
+   * @brief How long a request made after this call waits for its response, from the call,
+   *        before completing with AZ_IOT_ERR_TIMEOUT. 0 selects
+   *        AZ_IOT_MQTTV5_TWIN_REQUEST_TIMEOUT_MS_DEFAULT.
    */
   az_iot_result az_iot_mqttv5_twin_client_set_request_timeout(
       az_iot_mqttv5_twin_client* twin,
       uint32_t timeout_ms);
 
   /**
-   * @brief Expire requests past their timeout. Call alongside
-   *        az_iot_connection_client_do_work().
-   *
-   * Without it, an unanswered request completes only when the session ends.
+   * @brief Expire requests past their timeout now. Optional:
+   *        az_iot_connection_client_do_work() expires them on time.
    */
   az_iot_result az_iot_mqttv5_twin_client_do_work(az_iot_mqttv5_twin_client* twin);
 

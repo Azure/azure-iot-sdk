@@ -60,8 +60,13 @@ static const char k_device_cert_pem[] = "-----BEGIN CERTIFICATE-----\n"
 static az_iot_result sign_load(
     az_iot_certificate_provider* self,
     az_iot_cert_role role,
+    uint8_t index,
     az_iot_certificate_material* out)
 {
+  if (index != 0)
+  {
+    return AZ_IOT_ERR_NOT_FOUND;
+  }
   (void)self;
   (void)role;
   memset(out, 0, sizeof(*out));
@@ -289,7 +294,11 @@ int main(void)
   az_iot_mqtt_factory factory
       = { .version = AZ_IOT_MQTT_VERSION_3_1_1, .create = standin_create, .factory_ctx = NULL };
 
+  /* Memory for the connection client's entries, sized for the default limits. */
+  static uint8_t connection_workspace[AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE];
   az_iot_connection_client_options copts = az_iot_connection_client_options_default();
+  copts.workspace = connection_workspace;
+  copts.workspace_size = sizeof(connection_workspace);
   /* Placeholder provisioning settings: the stand-in adapter fails the first
    * connect, which is the DPS one, after the signature has been made. */
   copts.dps.id_scope = "0ne00000000";

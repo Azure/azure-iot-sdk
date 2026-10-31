@@ -345,8 +345,8 @@ static az_iot_result write_fetch_request(
     r = az_json_writer_append_end_object(jw); /* agentInfo */
   }
 
-  /* Omitted entirely on the onboarding route: a day-0 device has nothing
-   * installed, and an empty triple is not the same statement. */
+  /* Omitted entirely when nothing is installed: an empty triple is not the
+   * same statement. */
   if (az_result_succeeded(r) && installed_update_id != NULL)
   {
     r = write_update_id(jw, "installedUpdateId", installed_update_id);
@@ -455,6 +455,15 @@ static const char* failure_origin_name(az_iot_su_failure_origin origin)
     default:
       return NULL;
   }
+}
+
+bool az_iot_su__outcome_is_valid(az_iot_su_outcome outcome, az_iot_su_failure_origin origin)
+{
+  /* The contract ties these together: NOT_APPLICABLE unless the outcome is a
+   * failure, and a real origin when it is. */
+  return outcome_name(outcome) != NULL && failure_origin_name(origin) != NULL
+      && ((outcome == AZ_IOT_SU_OUTCOME_FAILED)
+          != (origin == AZ_IOT_SU_FAILURE_ORIGIN_NOT_APPLICABLE));
 }
 
 /* Render extendedResultCodes.
@@ -575,37 +584,37 @@ az_iot_result az_iot_su__build_report_request(
     size_t out_size,
     size_t* out_len)
 {
+  if (out_len != NULL)
+  {
+    *out_len = 0;
+  }
   if (report == NULL || report->workflow_id == NULL || report->workflow_id[0] == '\0' || out == NULL
       || out_size == 0)
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
+  if (out_size > INT32_MAX)
+  {
+    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+  }
 
+  /* An invalid outcome pair is kept off the wire rather than left for the
+   * service to reject. */
+  if (!az_iot_su__outcome_is_valid(report->outcome, report->failure_origin)
+      || report->extended_result_codes == NULL)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
   const char* outcome = outcome_name(report->outcome);
   const char* origin = failure_origin_name(report->failure_origin);
-  if (outcome == NULL || origin == NULL || report->extended_result_codes == NULL)
+  /* A triple must be complete and nonempty, or absent: the same rule as on a
+   * fetch. */
+  az_iot_result id_valid = az_iot_su__validate_installed_update_id(report->installed_update_id);
+  if (id_valid != AZ_IOT_OK)
   {
-    return AZ_IOT_ERR_INVALID_ARG;
+    return id_valid;
   }
-  /* A triple must be complete or absent. Passing a NULL member through to the
-   * writer would trip an upstream precondition rather than returning an error
-   * to the caller. */
-  if (report->installed_update_id != NULL
-      && (report->installed_update_id->provider == NULL || report->installed_update_id->name == NULL
-          || report->installed_update_id->version == NULL))
-  {
-    return AZ_IOT_ERR_INVALID_ARG;
-  }
-  /* The contract ties these together: NOT_APPLICABLE unless the outcome is a
-   * failure, and a real origin when it is. Catching it here keeps an invalid
-   * pair off the wire rather than having the service reject it. */
-  if ((report->outcome == AZ_IOT_SU_OUTCOME_FAILED)
-      == (report->failure_origin == AZ_IOT_SU_FAILURE_ORIGIN_NOT_APPLICABLE))
-  {
-    return AZ_IOT_ERR_INVALID_ARG;
-  }
-  if (report->step_results_count < 0
-      || report->step_results_count > _az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS
+  if (report->step_results_count < 0 || report->step_results_count > AZ_IOT_SU_MAX_STEP_COUNT
       || (report->step_results_count > 0 && report->step_results == NULL))
   {
     return AZ_IOT_ERR_INVALID_ARG;
@@ -615,10 +624,8 @@ az_iot_result az_iot_su__build_report_request(
     for (int32_t i = 0; i < report->step_results_count; ++i)
     {
       const az_iot_su_step_result* step = &report->step_results[i];
-      if (step->outcome == AZ_IOT_SU_OUTCOME_IN_PROGRESS || outcome_name(step->outcome) == NULL
-          || failure_origin_name(step->failure_origin) == NULL
-          || ((step->outcome == AZ_IOT_SU_OUTCOME_FAILED)
-              == (step->failure_origin == AZ_IOT_SU_FAILURE_ORIGIN_NOT_APPLICABLE)))
+      if (step->outcome == AZ_IOT_SU_OUTCOME_IN_PROGRESS
+          || !az_iot_su__outcome_is_valid(step->outcome, step->failure_origin))
       {
         return AZ_IOT_ERR_INVALID_ARG;
       }
@@ -737,6 +744,11 @@ az_iot_result az_iot_su__build_report_request(
       }
       if (az_result_succeeded(r) && az_span_size(step->result_details) > 0)
       {
+        /* Past the writer's input limit its precondition fires instead of failing. */
+        if (az_span_size(step->result_details) > AZ_IOT_SU_MAX_JSON_STRING_SIZE)
+        {
+          return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+        }
         r = az_json_writer_append_property_name(&jw, AZ_SPAN_FROM_STR("resultDetails"));
         if (az_result_succeeded(r))
         {
@@ -912,7 +924,39 @@ az_iot_result az_iot_su__parse_fetch_response(
 /* errors                                                                    */
 /* ------------------------------------------------------------------------- */
 
+static az_iot_result parse_error_signals(
+    const uint8_t* payload,
+    size_t payload_len,
+    char* out_code,
+    size_t out_code_size,
+    int32_t* out_numeric_code);
+
 az_iot_result az_iot_su__parse_error_code(
+    const uint8_t* payload,
+    size_t payload_len,
+    char* out_code,
+    size_t out_code_size,
+    int32_t* out_numeric_code)
+{
+  az_iot_result r
+      = parse_error_signals(payload, payload_len, out_code, out_code_size, out_numeric_code);
+  /* A rejected body may have been read partway; what it yielded must not
+   * classify. */
+  if (r != AZ_IOT_OK)
+  {
+    if (out_code != NULL && out_code_size > 0)
+    {
+      out_code[0] = '\0';
+    }
+    if (out_numeric_code != NULL)
+    {
+      *out_numeric_code = 0;
+    }
+  }
+  return r;
+}
+
+static az_iot_result parse_error_signals(
     const uint8_t* payload,
     size_t payload_len,
     char* out_code,
@@ -1032,14 +1076,15 @@ az_iot_result az_iot_su__parse_error_code(
         }
         if (is_su_code && jr.token.kind == AZ_JSON_TOKEN_STRING)
         {
+          /* Oversized: dropped like an oversized `message`; errorCode still
+           * classifies. */
           int32_t n = az_span_size(jr.token.slice);
-          if (n < 0 || (size_t)n + 1 > out_code_size)
+          if (n >= 0 && (size_t)n + 1 <= out_code_size)
           {
-            return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+            memcpy(out_code, az_span_ptr(jr.token.slice), (size_t)n);
+            out_code[n] = '\0';
+            found_string_code = true;
           }
-          memcpy(out_code, az_span_ptr(jr.token.slice), (size_t)n);
-          out_code[n] = '\0';
-          found_string_code = true;
           continue;
         }
         if (az_result_failed(az_json_reader_skip_children(&jr)))
@@ -1084,7 +1129,8 @@ az_iot_su_error_action az_iot_su__classify_error(
   /* The originating string code is the most precise signal when present. */
   if (error_code != NULL && error_code[0] != '\0')
   {
-    if (strcmp(error_code, "UPDATE_ACCOUNT_NOT_LINKED") == 0)
+    if (strcmp(error_code, "UPDATE_ACCOUNT_NOT_LINKED") == 0
+        || strcmp(error_code, "UPDATE_ACCOUNT_ACCESS_DENIED") == 0)
     {
       return AZ_IOT_SU_ERROR_ACTION_PROCEED;
     }
@@ -1093,10 +1139,6 @@ az_iot_su_error_action az_iot_su__classify_error(
     {
       return AZ_IOT_SU_ERROR_ACTION_RESEND_AGENT_INFO;
     }
-    if (strcmp(error_code, "OUTDATED_SERVICE_CONFIG") == 0)
-    {
-      return AZ_IOT_SU_ERROR_ACTION_DROP_SERVICE_CONFIG_ETAG;
-    }
     if (strcmp(error_code, "UPSTREAM_UNAVAILABLE") == 0
         || strcmp(error_code, "INTERNAL_SERVER_ERROR") == 0)
     {
@@ -1104,7 +1146,10 @@ az_iot_su_error_action az_iot_su__classify_error(
     }
     if (strcmp(error_code, "REPORT_CONFLICT") == 0)
     {
-      return AZ_IOT_SU_ERROR_ACTION_ALREADY_REPORTED;
+      /* A conflicting payload was rejected, not accepted as a duplicate. The
+       * service says to stop resending and check for updates again. */
+      return (operation == AZ_IOT_SU_OP_REPORT_STATUS) ? AZ_IOT_SU_ERROR_ACTION_RECHECK
+                                                       : AZ_IOT_SU_ERROR_ACTION_FATAL;
     }
     if (strcmp(error_code, "THROTTLED") == 0 || strcmp(error_code, "TOO_MANY_REQUESTS") == 0)
     {
@@ -1112,10 +1157,22 @@ az_iot_su_error_action az_iot_su__classify_error(
     }
     /* Both sides of the 400000 bucket. Neither can be fixed by resending the
      * same request: the device is not onboarded, or the workflow no longer
-     * exists. Not reported as ALREADY_REPORTED -- that would claim a delivery
+     * exists. Not reported as delivered -- that would claim a delivery
      * that never happened. */
     if (strcmp(error_code, "INVALID_REQUEST") == 0
+        || strcmp(error_code, "UNSUPPORTED_API_VERSION") == 0
+        || strcmp(error_code, "UNSUPPORTED_AGENT_PROFILE") == 0
+        || strcmp(error_code, "INVALID_COMPATIBILITY_PROPERTIES") == 0
         || strcmp(error_code, "UNKNOWN_WORKFLOW_ID") == 0)
+    {
+      return AZ_IOT_SU_ERROR_ACTION_FATAL;
+    }
+    /* Not retried unchanged: operator action (device-class quota, access) or
+     * provisioning must change first. DEVICE_NOT_PROVISIONED clears on a later
+     * scheduled check once the device is provisioned. */
+    if (strcmp(error_code, "DEVICE_NOT_PROVISIONED") == 0
+        || strcmp(error_code, "MAX_DEVICE_CLASSES_EXCEEDED") == 0
+        || strcmp(error_code, "FORBIDDEN") == 0)
     {
       return AZ_IOT_SU_ERROR_ACTION_FATAL;
     }
@@ -1154,23 +1211,22 @@ az_iot_su_error_action az_iot_su__classify_error(
   switch (status)
   {
     case SU_ERROR_STATUS_BAD_REQUEST:
-      /* One 400 IS recoverable, which its status does not say. The whole
-       * resend/re-sync family shares that code, and resending the full
-       * agentInfo also drops the stale service-config ETag, so one action
-       * covers every member. Every other 400 is a malformed request. */
+      /* One 400 IS recoverable, which its status does not say: the agentInfo
+       * resend family shares that code. Every other 400 is a malformed
+       * request. */
       return (numeric_code == AZ_IOT_SU_ERR_AGENT_INFO_RESEND_REQUIRED)
           ? AZ_IOT_SU_ERROR_ACTION_RESEND_AGENT_INFO
           : AZ_IOT_SU_ERROR_ACTION_FATAL;
 
     case SU_ERROR_STATUS_CONFLICT:
-      /* The one documented 409 is shared by two conditions needing OPPOSITE
-       * handling: a fetch means the account is not linked (proceed, do not
-       * retry); a report means a terminal result is already recorded (treat as
-       * delivered). Without the string code, the operation in flight is what
-       * disambiguates them. An undocumented 409 is not assumed to mean either. */
+      /* No 409 is a delivered report: an identical report is a 200. The
+       * untyped 409000 on a report is a conflict with the service's state (the
+       * code REPORT_CONFLICT shares): check again. On a fetch it is most likely
+       * the update account (proceed: it must not block provisioning). Neither
+       * is retried unchanged. */
       if (numeric_code == AZ_IOT_SU_ERR_GENERIC_CONFLICT)
       {
-        return (operation == AZ_IOT_SU_OP_REPORT_STATUS) ? AZ_IOT_SU_ERROR_ACTION_ALREADY_REPORTED
+        return (operation == AZ_IOT_SU_OP_REPORT_STATUS) ? AZ_IOT_SU_ERROR_ACTION_RECHECK
                                                          : AZ_IOT_SU_ERROR_ACTION_PROCEED;
       }
       return AZ_IOT_SU_ERROR_ACTION_FATAL;

@@ -83,6 +83,9 @@ const char* mock_paho_last_https_proxy(void);
  * options the adapter passes declare at least that. */
 int mock_paho_last_connect_struct_version(void);
 
+/* MQTTAsync_connectOptions::connectTimeout on the last connect; -1 before any. */
+int mock_paho_last_connect_timeout(void);
+
 /* The trace callback the adapter installed, so a test can drive it directly and
  * assert on what it forwards. NULL until the adapter installs one. */
 MQTTAsync_traceCallback* mock_paho_trace_callback(void);
@@ -104,10 +107,14 @@ void* mock_paho_callback_context(void);
 
 MQTTAsync_messageArrived* mock_paho_message_arrived(void);
 MQTTAsync_connectionLost* mock_paho_connection_lost(void);
+/* The MQTT 5 server-DISCONNECT callback and its context, from MQTTAsync_setDisconnected(). */
+MQTTAsync_disconnected* mock_paho_disconnected(void);
+void* mock_paho_disconnected_context(void);
 
-/* Script the MQTT v5 User Properties that MQTTProperties_getPropertyAt() will
- * report, so a test can drive the adapter's inbound property extraction
- * without a broker.
+/* Script the MQTT v5 User Properties that mock_paho_inbound_properties() returns
+ * for an inbound message, so a test can drive the adapter's inbound property
+ * handling without a broker. The getters walk the MQTTProperties they are given,
+ * as Paho's do.
  *
  * `pairs` is 2 * `count` NUL-terminated strings, key first. The mock keeps
  * POINTERS to them -- they must outlive the test -- and copies nothing, which
@@ -115,10 +122,18 @@ MQTTAsync_connectionLost* mock_paho_connection_lost(void);
  * threads without the mock itself becoming the race under investigation.
  * Call with count 0 to go back to reporting no properties.
  *
- * Deliberately a SEPARATE table rather than a real implementation over the
- * MQTTProperties the adapter builds: MQTTProperties_add() here is a no-op that
- * stores nothing, and making it real would hand the adapter's outbound path
- * allocations that this mock's no-op MQTTProperties_free() would then leak. */
+ * MQTTProperties_add() stays a no-op that stores nothing (outbound), so the
+ * outbound path makes no allocations for the no-op MQTTProperties_free() to leak. */
 void mock_paho_set_inbound_user_properties(const char* const* pairs, int count);
+
+/** @brief An MQTTProperties over the table set by mock_paho_set_inbound_user_properties(), for an
+ * inbound message. Points into the table; MQTTProperties_free() is a no-op. */
+MQTTProperties mock_paho_inbound_properties(void);
+
+/** @brief Make the @p call-th MQTTProperties_add() from now (0 first) fail; -1: never. */
+void mock_paho_set_properties_add_fail_at(int call);
+
+/** @brief MQTTAsync_sendMessage() calls since mock_paho_reset(). */
+int mock_paho_send_calls(void);
 
 #endif /* AZ_IOT_TEST_MOCK_PAHO_ASYNC_H */

@@ -90,7 +90,7 @@ namespace Microsoft.Azure.Iot.Device.Mqtt
         ///     - At least once (1): Message gets delivered at least once (one time or more often).
         ///     - Exactly once  (2): Message gets delivered exactly once (It's ensured that the message only comes once).
         /// </summary>
-        public MqttQualityOfServiceLevel QualityOfServiceLevel { get; set; }
+        public MqttQualityOfServiceLevel QualityOfServiceLevel { get; set; } = MqttQualityOfServiceLevel.AtLeastOnce;
 
         /// <summary>
         ///     Gets or sets the MQTT topic.
@@ -116,6 +116,16 @@ namespace Microsoft.Azure.Iot.Device.Mqtt
         {
             UserProperties ??= [];
             UserProperties.Add(new MqttUserProperty(key, value));
+        }
+
+        /// <summary>
+        /// Make a copy of this publish that is sent to a different topic. Everything else is shared with this publish.
+        /// </summary>
+        internal MqttPublish WithTopic(string topic)
+        {
+            var copy = (MqttPublish)MemberwiseClone();
+            copy.Topic = topic;
+            return copy;
         }
 
         /// <summary>

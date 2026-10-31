@@ -416,8 +416,8 @@ typedef struct su_chain_vector
 {
   const char* name;
   const char* request;
-  size_t verify_calls; /**< verify_rs256_fn calls made before rejection. */
-  size_t sha256_calls; /**< sha256_fn calls made before rejection. */
+  size_t verify_calls; /**< verify_rs256 calls made before rejection. */
+  size_t sha256_calls; /**< SHA-256 computations started before rejection. */
 } su_chain_vector;
 
 /** @brief Byte @p i of the deterministic file payload. */

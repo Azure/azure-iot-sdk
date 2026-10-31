@@ -1,10 +1,9 @@
 // Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
 // See LICENSE file in the project root for full license information.
 
-using Google.Protobuf;
 using Microsoft.Azure.Iot.Device.Models.DirectMethods;
 using Microsoft.Azure.Iot.Device.Mqtt;
-using Microsoft.Azure.Iot.Device.Provisioning.Models;
+using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Unified.DirectMethods;
 using System.Text;
 using Xunit;
@@ -20,7 +19,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
         {
             MockFeatureConnectionClient connection = new()
             {
-                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(ConnectionProfile.Classic, DeviceId),
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv3, DeviceId),
             };
             using DirectMethodClient directMethodClient = new(connection);
 
@@ -54,7 +53,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
         {
             MockFeatureConnectionClient connection = new()
             {
-                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(ConnectionProfile.Classic, DeviceId),
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv3, DeviceId),
             };
             using DirectMethodClient directMethodClient = new(connection);
 
@@ -75,23 +74,23 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
             Assert.Empty(connection.PublishedMessages);
         }
 
-        private static MqttPublish CreateMqttv5MethodPublish(string type, byte[] correlationData, byte[] payload)
+        [Fact]
+        public void DirectMethodInvokedAsync_RejectsASecondHandler()
         {
-            var publish = new MqttPublish()
+            MockFeatureConnectionClient connection = new()
             {
-                Topic = $"ih/{DeviceId}/dev/methods",
-                Payload = payload,
-                CorrelationData = correlationData,
-                MessageExpiryInterval = 30,
-                QualityOfServiceLevel = MqttQualityOfServiceLevel.AtLeastOnce,
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv3, DeviceId),
             };
-            publish.UserProperties.Add(new("type", Encoding.UTF8.GetBytes(type)));
-            return publish;
-        }
+            using DirectMethodClient directMethodClient = new(connection);
+            Func<DirectMethodRequestReceivedEventArgs, Task<DirectMethodResponse>> handler =
+                _ => Task.FromResult(new DirectMethodResponse() { Status = 200 });
 
-        private static string GetType(MqttPublish publish)
-        {
-            return Assert.Single(publish.UserProperties, p => p.Name == "type").ReadValueAsString();
+            directMethodClient.DirectMethodInvokedAsync += handler;
+
+            Assert.Throws<InvalidOperationException>(() => directMethodClient.DirectMethodInvokedAsync += handler);
+
+            directMethodClient.DirectMethodInvokedAsync -= handler;
+            directMethodClient.DirectMethodInvokedAsync += handler;
         }
     }
 }

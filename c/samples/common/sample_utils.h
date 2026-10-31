@@ -4,8 +4,10 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 
 #include "azure/iot/az_iot_connection_client.h"
+#include "azure/iot/az_iot_log_file.h"
 
 typedef struct sample_config
 {
@@ -14,8 +16,6 @@ typedef struct sample_config
   char* cert;
   char* key;
   char* ca;
-  char* device_id; /* AZ_IOT_DEVICE_ID (optional, for mock bypass) */
-  char* mock_endpoint; /* AZ_IOT_HUB_MQTT_V5_MOCK_ENDPOINT (optional) */
   /* AZ_IOT_DPS_GLOBAL_ENDPOINT (optional). NULL selects the SDK default,
    * global.azure-devices-provisioning.net. Set it to run a sample against a
    * regional, private-link or sovereign-cloud provisioning endpoint, which
@@ -23,22 +23,20 @@ typedef struct sample_config
   char* dps_global_endpoint;
 } sample_config;
 
+/**
+ * @brief Log sink for samples. With AZ_IOT_SAMPLE_LOG_TO_FILE set (any
+ * non-empty value), a rotating file sink writing AZ_IOT_LOG_FILE_DEFAULT_NAME in
+ * the working directory (see az_iot_log_file_sink_open()); otherwise stderr.
+ * Falls back to stderr, with a message, if the file cannot be opened.
+ *
+ * @param[in] min_level Lowest level written.
+ * @return Sink to pass to az_iot_log_set_global_sink().
+ */
+az_iot_log_sink sample_log_sink(az_iot_log_level min_level);
+
 // Reads DPS configuration from environment variables.
 // Returns 0 on success, non-zero if any required variable is missing.
 int sample_config_load(sample_config* config);
-
-// Applies the DPS options every sample sets the same way: id_scope,
-// registration_id, and the optional global endpoint. Call it instead of
-// assigning those fields by hand, so a sample picks up a new DPS option
-// without being edited.
-//
-// Deliberately does NOT touch certificate_provider or anything else: a sample
-// that needs different auth still says so itself, and this stays the one thing
-// every DPS sample shares.
-struct az_iot_connection_client_options;
-void sample_apply_dps_options(
-    struct az_iot_connection_client_options* options,
-    const sample_config* config);
 
 // Releases memory allocated by sample_config_load (Windows only; no-op on Linux).
 void sample_config_release(sample_config* config);
@@ -46,7 +44,7 @@ void sample_config_release(sample_config* config);
 // Returns a heap copy of environment variable `name`, or a heap copy of
 // `fallback` when the variable is unset/empty (fallback may be NULL). Caller
 // frees with free(). Avoids getenv()/strdup() to stay clean under MSVC /WX.
-char* sample_env_dup(const char* name, const char* fallback);
+char* sample_env_copy(const char* name, const char* fallback);
 
 /**
  * @brief Copy @p src into @p dst, NUL included. Portable stand-in for C11
@@ -57,7 +55,7 @@ char* sample_env_dup(const char* name, const char* fallback);
  * @param[in] src       NUL-terminated source.
  * @return true if copied; false if @p src does not fit.
  */
-bool sample_copy_str(char* dst, size_t dst_size, const char* src);
+bool sample_string_copy(char* dst, size_t dst_size, const char* src);
 
 /**
  * @brief Read environment variable @p name, or @p fallback when unset/empty,
@@ -70,7 +68,90 @@ bool sample_copy_str(char* dst, size_t dst_size, const char* src);
  * @return true if copied; false when unset with no fallback, out of memory or
  * too long.
  */
-bool sample_env_to_buffer(const char* name, const char* fallback, char* dst, size_t dst_size);
+bool sample_env_copy_to_buffer(const char* name, const char* fallback, char* dst, size_t dst_size);
+
+/**
+ * @brief Open @p path for binary writing with owner-only access (0600) on
+ * POSIX rather than fopen()'s 0666 less umask. On Windows the file keeps the
+ * ACL inherited from its directory.
+ *
+ * @param[in] path File to write.
+ * @param[in] replace false: create or truncate @p path. true: remove @p path,
+ * then create it exclusively, so a file or link planted there is never opened.
+ * @return Stream to close with fclose(), or NULL on failure (with @p replace,
+ * including when @p path cannot be removed).
+ */
+FILE* sample_file_open_private(const char* path, bool replace);
+
+/**
+ * @brief Create @p path for binary writing with owner-only access (0600) on
+ * POSIX. Fails when @p path exists, so nothing already there is replaced or
+ * written through.
+ *
+ * @param[in] path File to create.
+ * @return Stream to close with fclose(), or NULL on failure.
+ */
+FILE* sample_file_create_private(const char* path);
+
+/**
+ * @brief Create a new file, named @p path plus a unique suffix, for binary
+ * writing with owner-only access (0600) on POSIX. Nothing already there is
+ * replaced or written through. Being in @p path's directory, it can then
+ * replace @p path through sample_file_replace().
+ *
+ * @param[in]  path             Name the new file's name starts with.
+ * @param[out] out_unique_path  The new file's name, to free(); NULL on failure.
+ * @return Stream to close with fclose(), or NULL on failure.
+ */
+FILE* sample_file_create_private_unique(const char* path, char** out_unique_path);
+
+/**
+ * @brief Open @p path for binary reading; on POSIX only a regular file, not
+ * through a symbolic link, is opened.
+ *
+ * @param[in] path File to read.
+ * @return Stream to close with fclose(), or NULL on failure.
+ */
+FILE* sample_file_open_read_no_follow(const char* path);
+
+/**
+ * @brief Flush @p file's buffered writes and the operating system's cache to
+ * storage, so they survive a power loss.
+ *
+ * @param[in] file Stream open for writing.
+ * @return true on success.
+ */
+bool sample_file_flush_to_storage(FILE* file);
+
+/**
+ * @brief Replace @p destination_path with @p source_path in one step, durably:
+ * a reader sees the old file or the new one, never a partial one, and the
+ * replacement survives a power loss. Flush @p source_path to storage first.
+ *
+ * On POSIX the directory is synced after the rename; if that fails, a line is
+ * written to stderr and true is still returned, since the destination is
+ * already replaced.
+ *
+ * @param[in] source_path      Complete file; renamed, so it is gone on success.
+ * @param[in] destination_path File to replace; created when absent. Same file
+ *                             system as @p source_path.
+ * @return true when the destination was replaced; false when it was left as it
+ * was.
+ */
+bool sample_file_replace(const char* source_path, const char* destination_path);
+
+/**
+ * @brief Record SIGINT (Ctrl+C) and SIGTERM instead of ending the process, so a
+ * sample's loop can stop and release its clients. Call once, from main().
+ */
+void sample_install_stop_handler(void);
+
+/**
+ * @brief Whether SIGINT or SIGTERM arrived since sample_install_stop_handler().
+ *
+ * @return true once a stop was requested.
+ */
+bool sample_is_stop_requested(void);
 
 // Milliseconds from an unspecified origin, never moving backwards. Only
 // differences are meaningful. The SDK keeps its clock internal, so a sample
@@ -82,61 +163,14 @@ uint64_t sample_now_ms(void);
 // for its do_work loop.
 void sample_sleep_ms(long ms);
 
-// Human-readable name for a connection state, for logging. Never NULL.
-const char* sample_connection_state_name(az_iot_connection_state state);
-
-/** @brief Human-readable name for a connection profile, for logging. Never NULL. */
-const char* sample_connection_profile_name(az_iot_connection_profile profile);
-
 /**
- * @brief Reads and prints the hub generation a CONNECTED client reached.
+ * @brief Sleep for what is left of a @p tick_ms tick that began at
+ * @p tick_start_ms (a sample_now_ms() value), so a do_work() loop cannot spin
+ * when do_work() returns early. Returns at once when the tick is over.
  *
- * @param[in] client Client whose hub lifecycle is CONNECTED.
- * @param[out] out_profile Resolved profile; written only on AZ_IOT_OK.
- * @return The az_iot_connection_client_get_hub_profile() result.
+ * @param[in] tick_start_ms sample_now_ms() when the tick began.
+ * @param[in] tick_ms       Tick length.
  */
-az_iot_result sample_get_hub_profile(
-    const az_iot_connection_client* client,
-    az_iot_connection_profile* out_profile);
-
-/**
- * @brief Whether @p event reports that DPS assigned the device to the other hub
- * generation than the attached feature clients were built for.
- *
- * The connection is then stopped (AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH): the
- * application destroys those clients, builds the ones for @p out_profile, and
- * calls az_iot_connection_client_close() then az_iot_connection_client_open().
- * This happens on the first connect and whenever a running device is moved to a
- * hub of the other generation.
- *
- * @param[in] event Connection state event.
- * @param[out] out_profile Assigned profile; written only when true is returned.
- * @return true on a profile mismatch, false otherwise.
- */
-bool sample_event_is_profile_mismatch(
-    const az_iot_connection_state_event* event,
-    az_iot_connection_profile* out_profile);
-
-/**
- * @brief Generation to build feature clients for before open().
- *
- * MQTT v5 when AZ_IOT_HUB_MQTT_V5_MOCK_ENDPOINT is set (that bypass skips DPS and
- * always connects over MQTT v5); otherwise MQTTv3, which DPS assigns when it
- * names no connectionProfile.
- *
- * @param[in] config Loaded sample configuration.
- * @return The profile to assume.
- */
-az_iot_connection_profile sample_initial_profile(const sample_config* config);
-
-/**
- * @brief Prints the service's profile value when @p event failed with
- * AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED (a generation newer than this SDK).
- *
- * The value is marked when truncated to AZ_IOT_CONNECTION_PROFILE_RAW_BUF.
- *
- * @param[in] event Connection state event; other events are ignored.
- */
-void sample_report_unsupported_profile(const az_iot_connection_state_event* event);
+void sample_sleep_until_tick_end(uint64_t tick_start_ms, uint32_t tick_ms);
 
 #endif // SAMPLE_UTILS_H

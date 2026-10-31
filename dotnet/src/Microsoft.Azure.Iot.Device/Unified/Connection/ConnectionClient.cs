@@ -1,4 +1,4 @@
-﻿// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
+// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
 // See LICENSE file in the project root for full license information.
 
 using Microsoft.Azure.Iot.Device.Exceptions;
@@ -6,14 +6,14 @@ using Microsoft.Azure.Iot.Device.MQTTv5.Connection;
 using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Models.CertificateManagement;
 using Microsoft.Azure.Iot.Device.Mqtt;
-using Microsoft.Azure.Iot.Device.MQTTnetAdapter;
-using Microsoft.Azure.Iot.Device.Provisioning;
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Reflection;
 using System.Runtime.InteropServices;
-using System.Security.Cryptography.X509Certificates;
+using System.Text;
 using System.Text.Json;
+using Microsoft.Azure.Iot.Device.Provisioning.Models;
+using Microsoft.Azure.Iot.Device.Unified.Models;
 
 namespace Microsoft.Azure.Iot.Device.Unified.Connection
 {
@@ -28,17 +28,62 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
 
         private readonly ConcurrentDictionary<string, CertificateSigningOperation> _pendingCertificateSigningOperations = new();
 
+        // The current (or most recent) connection to IoT hub. Never null, so that the twin client holds reported patches until
+        // the device presence flow completes on the first connection.
+        private volatile ClassicConnection _classicConnection = new(Guid.NewGuid());
+
+        Guid? IConnectionClient.ConnectionNonce => CurrentConnectionContext != null ? _classicConnection.Nonce : null;
+
+        event Action? IConnectionClient.ConnectionLost
+        {
+            add => HubConnectionLost += value;
+            remove => HubConnectionLost -= value;
+        }
+
+        private event Action? ClassicDevicePresenceEstablished;
+
+        event Action? IConnectionClient.ClassicDevicePresenceEstablished
+        {
+            add => ClassicDevicePresenceEstablished += value;
+            remove => ClassicDevicePresenceEstablished -= value;
+        }
+
+        bool IConnectionClient.IsClassicDevicePresenceEstablished =>
+            CurrentConnectionContext != null && _classicConnection.IsPresenceEstablished;
+
+        /// <inheritdoc/>
+        public bool IsTwinEnabled { get; }
+
+        /// <inheritdoc/>
+        public bool AreDirectMethodsEnabled { get; }
+
+        /// <inheritdoc/>
+        public bool AreCloudToDeviceMessagesEnabled { get; }
+
         /// <summary>
         /// Construct a new <see cref="ConnectionClient"/>
         /// </summary>
         /// <param name="options">
         /// The optional configurations that this client will use
         /// </param>
-        public ConnectionClient(ConnectionClientOptions? options = null) : base(options)
+        /// <param name="connectionContext">
+        /// An optional IoT hub assignment the application restored (for example, one persisted to disk across a device
+        /// reboot). When supplied, <see cref="AbstractConnectionClient.ProvisionAndConnectAsync"/> attempts to connect
+        /// directly to this IoT hub before provisioning for a new assignment.
+        /// </param>
+        public ConnectionClient(ConnectionClientOptions? options = null, ConnectionContext? connectionContext = null) : base(options, connectionContext)
         {
             options ??= new ConnectionClientOptions();
 
+            // Snapshot the opt-outs so that later changes to the options object cannot change which topics the
+            // presence flow subscribes to out from under feature clients that already checked them.
+            IsTwinEnabled = options.EnableTwin;
+            AreDirectMethodsEnabled = options.EnableDirectMethods;
+            AreCloudToDeviceMessagesEnabled = options.EnableCloudToDeviceMessages;
+
             ManagedMqttConnection.PublishReceivedAsync += HandleReceivedCertificateSigningPublish;
+            ManagedMqttConnection.DisconnectedAsync += HandleCertificateSigningDisconnectedAsync;
+            HubConnectionLost += () => _classicConnection.MarkLost();
         }
 
         private async Task HandleMQTTv5ClientConnectionReady(DevicePresenceFlowCompletedArgs args)
@@ -47,15 +92,14 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
             await RaiseDevicePresenceFlowCompletedAsync(new DevicePresenceFlowCompletedArgs() { IsSuccess = true });
         }
 
-        public override MqttConnect MqttConnectOverride(MqttConnect connect)
+        internal override MqttConnect IotHubMqttConnectOverride(MqttConnect connect)
         {
-            //Defer to gen 2 client
             Debug.Assert(CurrentConnectionContext != null);
 
-            connect.WebsocketUri = $"wss://{connect.HostName}/$iothub/websocket";
-            connect.ProtocolVersion = CurrentConnectionContext.ConnectionProfile == Provisioning.Models.ConnectionProfile.MqttV5 ? MqttProtocolVersion.V500 : MqttProtocolVersion.V311;
+            connect.WebsocketUri = BuildWebSocketUri(connect.HostName, connect.WebsocketPort, DefaultWebSocketPath);
+            connect.ProtocolVersion = CurrentConnectionContext.ConnectionProfile == IotHubConnectionType.Mqttv5 ? MqttProtocolVersion.V500 : MqttProtocolVersion.V311;
+
             connect.Username = $"{connect.HostName}/{connect.ClientId}/?api-version={ClassicHubApiVersion}&DeviceClientType={Uri.EscapeDataString(GetUserAgentString())}";
-            connect.Password = Array.Empty<byte>();
 
             // MQTTv3 flow does not need to insert anything unique per connect attempt
             return connect;
@@ -68,37 +112,226 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
             // This callback should only be reached after provisioning, so their should always be a connection context to use
             Debug.Assert(CurrentConnectionContext != null);
 
-            // Upon an MQTT connection being established, immediately re-subscribe to all twin/telemetry/direct methods topics if there is no session present.
-            if (args.ConnectAck.IsSessionPresent)
+            // Upon an MQTT connection being established, re-subscribe to the enabled twin/cloud-to-device/direct methods
+            // topics unless the resumed session is known to still hold them.
+            ClassicConnection classicConnection = new(Guid.NewGuid());
+            _classicConnection = classicConnection;
+            if (TryElideDevicePresenceSubscribe(args.ConnectAck))
             {
-                await RaiseDevicePresenceFlowCompletedAsync(new DevicePresenceFlowCompletedArgs() { IsSuccess = true });
+                await CompleteClassicDevicePresenceFlowAsync(classicConnection);
 
                 return;
             }
 
+            // A resumed session whose subscriptions this process has not observed (for example one left behind by a previous
+            // process that had other features enabled) may still hold subscriptions for features that are now disabled.
+            // Nothing would handle or acknowledge their messages, so those subscriptions are removed.
             MqttSubscribe mqttSubscribe = new();
-            var expectedQos = MqttQualityOfServiceLevel.AtMostOnce;
-            mqttSubscribe.TopicFilters.Add(new(Twin.TwinClient.ClassicTwinResponseTopic + "#", expectedQos));
-            mqttSubscribe.TopicFilters.Add(new(Twin.TwinClient.ClassicTwinDesiredPropertiesPatchTopic + "#", expectedQos));
-            mqttSubscribe.TopicFilters.Add(new(DirectMethods.DirectMethodClient.ClassicDirectMethodsRequestTopic + "#", expectedQos));
-            var suback = await ManagedMqttConnection.SubscribeAsync(mqttSubscribe);
+            MqttUnsubscribe mqttUnsubscribe = new();
+            if (AreCloudToDeviceMessagesEnabled)
+            {
+                mqttSubscribe.TopicFilters.Add(new(Telemetry.TelemetryClient.DeviceBoundMessagesTopicFormat + "#", MqttQualityOfServiceLevel.AtLeastOnce));
+            }
+            else
+            {
+                mqttUnsubscribe.TopicFilters.Add(Telemetry.TelemetryClient.DeviceBoundMessagesTopicFormat + "#");
+            }
+
+            if (IsTwinEnabled)
+            {
+                mqttSubscribe.TopicFilters.Add(new(Twin.TwinClient.ClassicTwinResponseTopic + "#", MqttQualityOfServiceLevel.AtMostOnce));
+                mqttSubscribe.TopicFilters.Add(new(Twin.TwinClient.ClassicTwinDesiredPropertiesPatchTopic + "#", MqttQualityOfServiceLevel.AtMostOnce));
+            }
+            else
+            {
+                mqttUnsubscribe.TopicFilters.Add(Twin.TwinClient.ClassicTwinResponseTopic + "#");
+                mqttUnsubscribe.TopicFilters.Add(Twin.TwinClient.ClassicTwinDesiredPropertiesPatchTopic + "#");
+            }
+
+            if (AreDirectMethodsEnabled)
+            {
+                mqttSubscribe.TopicFilters.Add(new(DirectMethods.DirectMethodClient.ClassicDirectMethodsRequestTopic + "#", MqttQualityOfServiceLevel.AtMostOnce));
+            }
+            else
+            {
+                mqttUnsubscribe.TopicFilters.Add(DirectMethods.DirectMethodClient.ClassicDirectMethodsRequestTopic + "#");
+            }
+
+            if (args.ConnectAck.IsSessionPresent && mqttUnsubscribe.TopicFilters.Count > 0
+                && !await TryUnsubscribeDisabledFeaturesAsync(mqttUnsubscribe))
+            {
+                return;
+            }
+
+            if (mqttSubscribe.TopicFilters.Count == 0)
+            {
+                // A SUBSCRIBE with no topic filters is a protocol error, and there is nothing to wait for.
+                MarkDevicePresenceSubscribed();
+                await CompleteClassicDevicePresenceFlowAsync(classicConnection);
+
+                return;
+            }
+
+            string deviceBoundMessagesTopic = string.Empty;
+            var suback = await ManagedMqttConnection.BuildAndSubscribeAsync(ConnectionEndpoint.IotHub, () =>
+            {
+                string deviceId = GetDeviceIdForTopics();
+                deviceBoundMessagesTopic = Telemetry.TelemetryClient.DeviceBoundMessagesTopicFormat
+                    .Replace(IConnectionClient.DeviceIdPlaceholder, deviceId, StringComparison.Ordinal) + "#";
+                return mqttSubscribe.WithTopicFilters(mqttSubscribe.TopicFilters
+                    .Select(topicFilter => topicFilter.Topic.Contains(IConnectionClient.DeviceIdPlaceholder, StringComparison.Ordinal)
+                        ? new MqttTopicFilter(
+                            topicFilter.Topic.Replace(IConnectionClient.DeviceIdPlaceholder, deviceId, StringComparison.Ordinal),
+                            topicFilter.QualityOfServiceLevel)
+                        : topicFilter)
+                    .ToList());
+            }, CurrentReprovisioningCancellationToken);
 
             bool anySubscribeFailed = false;
             foreach (var topicSuback in suback.Items)
             {
-                anySubscribeFailed |= (topicSuback.ReasonCode != MqttClientSubscribeReasonCode.GrantedQoS0);
+                if (topicSuback.TopicFilter.Topic.Equals(deviceBoundMessagesTopic, StringComparison.Ordinal))
+                {
+                    anySubscribeFailed |= (topicSuback.ReasonCode != MqttClientSubscribeReasonCode.GrantedQoS1);
+                }
+                else
+                { 
+                    anySubscribeFailed |= (topicSuback.ReasonCode != MqttClientSubscribeReasonCode.GrantedQoS0);
+                }
             }
 
             if (anySubscribeFailed)
             {
                 // Signal to the underlying MQTT connection manager that, even though we are manually disconnecting, we still want to reconnect.
-                await ManagedMqttConnection.DisconnectAsync(true, new MqttDisconnect() { Reason = MqttDisconnectReasonCode.NormalDisconnection, SessionExpiryInterval = 0 });
+                await ManagedMqttConnection.DisconnectAsync(true, new MqttDisconnect() { Reason = MqttDisconnectReasonCode.NormalDisconnection });
 
                 Trace.TraceError("Device failed to subscribe to one or more necessary MQTT topics upon connecting to IoT Hub. Disconnecting the MQTT client and trying again.");
             }
             else
             {
-                await RaiseDevicePresenceFlowCompletedAsync(new DevicePresenceFlowCompletedArgs() { IsSuccess = true });
+                MarkDevicePresenceSubscribed();
+                await CompleteClassicDevicePresenceFlowAsync(classicConnection);
+            }
+        }
+
+        private async Task CompleteClassicDevicePresenceFlowAsync(ClassicConnection classicConnection)
+        {
+            // Raised before the presence flow completes, so that the twin client has started fetching the twin by the time a
+            // connect call returns to the application.
+            if (classicConnection.TryMarkPresenceEstablished())
+            {
+                Action? handlers = ClassicDevicePresenceEstablished;
+                foreach (Action handler in handlers?.GetInvocationList().Cast<Action>() ?? Enumerable.Empty<Action>())
+                {
+                    try
+                    {
+                        handler();
+                    }
+                    catch (Exception e)
+                    {
+                        Trace.TraceWarning("A device presence established handler threw and was ignored. {0}", e);
+                    }
+                }
+            }
+
+            await RaiseDevicePresenceFlowCompletedAsync(new DevicePresenceFlowCompletedArgs() { IsSuccess = true });
+        }
+
+        // A connection to IoT hub, which this client identifies with a locally generated nonce.
+        private sealed class ClassicConnection(Guid nonce)
+        {
+            private const int Pending = 0;
+            private const int Established = 1;
+            private const int Lost = 2;
+
+            private int _state = Pending;
+
+            public Guid Nonce { get; } = nonce;
+
+            public bool IsPresenceEstablished => Volatile.Read(ref _state) == Established;
+
+            // Returns false if the connection was already lost, so that a presence flow that completes late never marks it.
+            public bool TryMarkPresenceEstablished() => Interlocked.CompareExchange(ref _state, Established, Pending) == Pending;
+
+            public void MarkLost() => Interlocked.Exchange(ref _state, Lost);
+        }
+
+        /// <summary>
+        /// Remove a resumed session's subscriptions for disabled features.
+        /// </summary>
+        /// <returns>
+        /// True if the presence flow can continue; false if it was abandoned because the connection was lost, or if the
+        /// connection was torn down so that it is retried.
+        /// </returns>
+        private async Task<bool> TryUnsubscribeDisabledFeaturesAsync(MqttUnsubscribe mqttUnsubscribe)
+        {
+            // Abandon the UNSUBSCRIBE once this connection is lost, so that a failure on it can never tear down a newer one.
+            using CancellationTokenSource presenceCancellation = CancellationTokenSource.CreateLinkedTokenSource(
+                ManagedMqttConnection.ConnectionLifetimeCancellationToken,
+                CurrentReprovisioningCancellationToken);
+
+            Task HandleConnectionLostAsync(MqttClientDisconnectedEventArgs _)
+            {
+                try
+                {
+                    presenceCancellation.Cancel();
+                }
+                catch (ObjectDisposedException)
+                {
+                    // A disconnect dispatch may have captured this handler before the UNSUBSCRIBE completed.
+                }
+
+                return Task.CompletedTask;
+            }
+
+            ManagedMqttConnection.DisconnectedAsync += HandleConnectionLostAsync;
+            try
+            {
+                var unsuback = await ManagedMqttConnection.BuildAndUnsubscribeAsync(ConnectionEndpoint.IotHub, () =>
+                {
+                    string deviceId = GetDeviceIdForTopics();
+                    return mqttUnsubscribe.WithTopicFilters(mqttUnsubscribe.TopicFilters
+                        .Select(topicFilter => topicFilter.Replace(IConnectionClient.DeviceIdPlaceholder, deviceId, StringComparison.Ordinal))
+                        .ToList());
+                }, throwOnUnsubackErrorCode: false, presenceCancellation.Token);
+
+                presenceCancellation.Token.ThrowIfCancellationRequested();
+
+                if (unsuback.Items.Any(item => item.ReasonCode != MqttClientUnsubscribeReasonCode.Success
+                    && item.ReasonCode != MqttClientUnsubscribeReasonCode.NoSubscriptionExisted))
+                {
+                    Trace.TraceError("Device failed to unsubscribe from the MQTT topics of disabled features upon resuming a session with IoT Hub. Disconnecting the MQTT client and trying again.");
+
+                    // Signal to the underlying MQTT connection manager that, even though we are manually disconnecting, we still want to reconnect.
+                    await ManagedMqttConnection.DisconnectAsync(true, new MqttDisconnect() { Reason = MqttDisconnectReasonCode.NormalDisconnection }, presenceCancellation.Token);
+                    return false;
+                }
+
+                return true;
+            }
+            catch (OperationCanceledException) when (presenceCancellation.IsCancellationRequested)
+            {
+                // The connection layer owns recovery; an abandoned presence flow must not restart it.
+                return false;
+            }
+            catch (Exception e) when (!presenceCancellation.IsCancellationRequested)
+            {
+                // Without this, nothing would reconnect or complete the presence flow while the connection stays up.
+                Trace.TraceError("Exception thrown while unsubscribing from the MQTT topics of disabled features upon resuming a session with IoT Hub. Disconnecting the MQTT client and trying again. {0}", e);
+                try
+                {
+                    await ManagedMqttConnection.DisconnectAsync(true, new MqttDisconnect() { Reason = MqttDisconnectReasonCode.NormalDisconnection }, presenceCancellation.Token);
+                }
+                catch (OperationCanceledException) when (presenceCancellation.IsCancellationRequested)
+                {
+                    // The connection was lost or closed meanwhile, so the connection layer owns recovery.
+                }
+
+                return false;
+            }
+            finally
+            {
+                ManagedMqttConnection.DisconnectedAsync -= HandleConnectionLostAsync;
             }
         }
 
@@ -106,89 +339,176 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
         /// Send a certificate signing request to IoT hub
         /// </summary>
         /// <param name="request">The certificates to have IoT hub sign.</param>
-        /// <param name="cancellationToken">The cancellation token</param>
+        /// <param name="cancellationToken">Cancels sending the request and any unfinished tasks of the pending certificate signing operation.</param>
         /// <returns>A set of tasks. One that completes when IoT hub accepts the request (and starts signing), one that completes when IoT hub completes the signing, and one that completes if any step in the process fails.</returns>
+        /// <remarks>Any MQTT disconnection cancels all pending certificate signing operations. Canceling the token removes only this request; it does not cancel certificate issuance on the service.</remarks>
         public async Task<CertificateSigningOperation> SendCertificateSigningRequestAsync(IotHubCertificateSigningRequest request, CancellationToken cancellationToken = default)
         {
             ObjectDisposedException.ThrowIf(_isDisposed, this);
 
-            if (CurrentConnectionContext == null)
+            // The connection context survives a disconnect, so the endpoint is what says whether this client is connected.
+            if (CurrentConnectionContext == null || CurrentEndpoint != ConnectionEndpoint.IotHub)
             {
                 throw new NotSupportedException("Must be connected before calling this method.");
             }
 
+            cancellationToken.ThrowIfCancellationRequested();
+
             CertificateSigningOperation operation = new();
 
-            _pendingCertificateSigningOperations.TryAdd(request.RequestId, operation);
-
-            await ManagedMqttConnection.SubscribeAsync(new(CertificateSigningResponseTopicFilter, MqttQualityOfServiceLevel.AtLeastOnce)); // TODO QoS correct?
-
-            MqttPublish certificateSigningRequestPublish = new()
+            if (!_pendingCertificateSigningOperations.TryAdd(request.RequestId, operation))
             {
-                Topic = CertificateSigningRequestTopic + request.RequestId,
-                Payload = JsonSerializer.SerializeToUtf8Bytes(request),
-            };
+                throw new InvalidOperationException($"A certificate signing request with request ID '{request.RequestId}' is already pending.");
+            }
 
-            // Puback is checked for non-success cases under this layer, so no need to check it here as well
-            MqttPublishAck puback = await ManagedMqttConnection.PublishAsync(certificateSigningRequestPublish, cancellationToken: cancellationToken);
+            CancellationTokenRegistration cancellationRegistration = default;
+            try
+            {
+                if (cancellationToken.CanBeCanceled)
+                {
+                    cancellationRegistration = cancellationToken.Register(() =>
+                    {
+                        if (_pendingCertificateSigningOperations.TryRemove(new KeyValuePair<string, CertificateSigningOperation>(request.RequestId, operation)))
+                        {
+                            operation.SetCanceled(cancellationToken);
+                        }
+                    });
+                    _ = operation.Completed.ContinueWith(
+                        _ => cancellationRegistration.Dispose(),
+                        CancellationToken.None,
+                        TaskContinuationOptions.ExecuteSynchronously,
+                        TaskScheduler.Default);
+                }
+
+                await ManagedMqttConnection.SubscribeAsync(ConnectionEndpoint.IotHub, new(CertificateSigningResponseTopicFilter, MqttQualityOfServiceLevel.AtLeastOnce), cancellationToken); // TODO QoS correct?
+
+                MqttPublish certificateSigningRequestPublish = new()
+                {
+                    Topic = CertificateSigningRequestTopic + request.RequestId,
+                    Payload = JsonSerializer.SerializeToUtf8Bytes(request),
+                };
+
+                // Puback is checked for non-success cases under this layer, so no need to check it here as well
+                await ManagedMqttConnection.PublishAsync(ConnectionEndpoint.IotHub, certificateSigningRequestPublish, cancellationToken: cancellationToken);
+            }
+            catch
+            {
+                _pendingCertificateSigningOperations.TryRemove(new KeyValuePair<string, CertificateSigningOperation>(request.RequestId, operation));
+                cancellationRegistration.Dispose();
+                throw;
+            }
 
             return operation;
         }
 
-        private async Task HandleReceivedCertificateSigningPublish(MqttPublishReceivedEventArgs args)
+        private Task HandleCertificateSigningDisconnectedAsync(MqttClientDisconnectedEventArgs args)
+        {
+            CancelPendingCertificateSigningOperations();
+
+            return Task.CompletedTask;
+        }
+
+        private void CancelPendingCertificateSigningOperations()
+        {
+            foreach (var pendingOperation in _pendingCertificateSigningOperations.ToArray())
+            {
+                if (_pendingCertificateSigningOperations.TryRemove(pendingOperation))
+                {
+                    pendingOperation.Value.SetCanceled(CancellationToken.None);
+                }
+            }
+        }
+
+        private Task HandleReceivedCertificateSigningPublish(MqttPublishReceivedEventArgs args)
         {
             if (args.Publish.Topic.StartsWith(CertificateSigningResponseTopic))
             {
+                CertificateSigningOperation? pendingCertificateSigningOperation = null;
+                string? requestId = null;
+                string? status = null;
+
                 try
                 {
                     string[] topicTokens = args.Publish.Topic.Split("/");
-                    if (topicTokens.Length != 5)
+                    if (topicTokens.Length != 5 || !topicTokens[4].StartsWith(RequestId, StringComparison.Ordinal))
                     {
-                        return;
+                        Trace.TraceWarning("Received a certificate signing response with an invalid topic: {0}", args.Publish.Topic);
+                        return Task.CompletedTask;
                     }
 
-                    string status = topicTokens[3];
-                    string requestId = topicTokens[4].Split(RequestId)[1];
+                    status = topicTokens[3];
+                    requestId = topicTokens[4][RequestId.Length..].Split('&')[0];
 
-                    if (!_pendingCertificateSigningOperations.TryGetValue(requestId, out var pendingCertificateSigningOperation))
+                    if (!_pendingCertificateSigningOperations.TryGetValue(requestId, out pendingCertificateSigningOperation))
                     {
-                        return;
+                        return Task.CompletedTask;
                     }
 
                     if (status.Equals("202"))
                     {
-                        CertificateSigningRequestAccepted accepted = JsonSerializer.Deserialize<CertificateSigningRequestAccepted>(args.Publish.Payload)!;
+                        CertificateSigningRequestAccepted accepted = JsonSerializer.Deserialize<CertificateSigningRequestAccepted>(args.Publish.Payload)
+                            ?? throw new JsonException("The certificate signing acceptance response was null.");
+                        if (accepted.CorrelationId == null)
+                        {
+                            throw new JsonException("The certificate signing acceptance response had a null correlation ID.");
+                        }
+
                         pendingCertificateSigningOperation.SetAccepted(accepted);
-                        return;
                     }
                     else if (status.Equals("200"))
                     {
-                        CertificateSigningResponse response = JsonSerializer.Deserialize<CertificateSigningResponse>(args.Publish.Payload)!;
-                        if (HandleCertificateSigningCompleteAsync != null)
+                        CertificateSigningResponse response = JsonSerializer.Deserialize<CertificateSigningResponse>(args.Publish.Payload)
+                            ?? throw new JsonException("The certificate signing completion response was null.");
+                        if (response.Certificates == null || response.CorrelationId == null)
                         {
-                            //TODO need a fault-injection like unit test that ensures that the client uses this new authentication provider upon reconnect since our API won't allow users to disconnect then reconnect to hub at will
-                            Debug.Assert(CurrentConnectionContext != null);
-                            CurrentConnectionContext.AuthenticationProvider = await HandleCertificateSigningCompleteAsync(response.Certificates);
+                            throw new JsonException("The certificate signing completion response had null certificates or correlation ID.");
                         }
-                        else
+
+                        if (!_pendingCertificateSigningOperations.TryRemove(new KeyValuePair<string, CertificateSigningOperation>(requestId, pendingCertificateSigningOperation)))
                         {
-                            Trace.TraceError("Certificate signing response could not update authentication provider because user never set \"HandleCertificateSigningCompleteAsync\" callback");
+                            return Task.CompletedTask;
                         }
+
+                        // The authentication provider receives these on the next connection attempt to IoT hub.
+                        if (CurrentConnectionContext != null)
+                        {
+                            CurrentConnectionContext.IssuedClientCertificates = response.Certificates;
+                        }
+
                         pendingCertificateSigningOperation.SetCompleted(response);
-                        return;
                     }
                     else
                     {
-                        CertificateSigningRequestErrorResponse error = JsonSerializer.Deserialize<CertificateSigningRequestErrorResponse>(args.Publish.Payload)!;
-                        pendingCertificateSigningOperation.SetFailed(new CertificateSigningRequestFailedException() { Error = error });
-                        return;
+                        CertificateSigningRequestErrorResponse error = JsonSerializer.Deserialize<CertificateSigningRequestErrorResponse>(args.Publish.Payload)
+                            ?? throw new JsonException("The certificate signing error response was null.");
+                        _pendingCertificateSigningOperations.TryRemove(new KeyValuePair<string, CertificateSigningOperation>(requestId, pendingCertificateSigningOperation));
+                        pendingCertificateSigningOperation.SetFailed(new CertificateSigningRequestFailedException()
+                        {
+                            Error = error,
+                            RequestId = requestId,
+                        });
                     }
                 }
-                finally
+                catch (Exception ex)
                 {
-                    await args.AcknowledgeAsync(CancellationToken.None);
+                    DeviceException failure = new(
+                        $"Failed to handle certificate signing response with status '{status}' for request '{requestId}'. Response payload: {Encoding.UTF8.GetString(args.Publish.Payload)}",
+                        ex)
+                    {
+                        Retryability = ErrorRetryability.Terminal,
+                        IsContained = true,
+                    };
+                    if (pendingCertificateSigningOperation != null && requestId != null)
+                    {
+                        _pendingCertificateSigningOperations.TryRemove(new KeyValuePair<string, CertificateSigningOperation>(requestId, pendingCertificateSigningOperation));
+                        pendingCertificateSigningOperation.SetFailed(failure);
+                    }
+
+                    Trace.TraceError("Failed to handle a certificate signing response. {0}", failure);
                 }
             }
+
+            return Task.CompletedTask;
         }
 
         /// <summary>
@@ -197,7 +517,9 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
         /// <param name="disposing">true to release both managed and unmanaged resources; false to releases only unmanaged resources.</param>
         public override void Dispose(bool disposing)
         {
+            CancelPendingCertificateSigningOperations();
             ManagedMqttConnection.PublishReceivedAsync -= HandleReceivedCertificateSigningPublish;
+            ManagedMqttConnection.DisconnectedAsync -= HandleCertificateSigningDisconnectedAsync;
             base.Dispose(disposing);
         }
 
@@ -206,7 +528,9 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
         /// </summary>
         public override void Dispose()
         {
+            CancelPendingCertificateSigningOperations();
             ManagedMqttConnection.PublishReceivedAsync -= HandleReceivedCertificateSigningPublish;
+            ManagedMqttConnection.DisconnectedAsync -= HandleCertificateSigningDisconnectedAsync;
             base.Dispose();
         }
 
@@ -226,6 +550,11 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
         private static string GetPackageVersion()
         {
             return typeof(ConnectionClient).GetTypeInfo().Assembly.GetName().Version!.ToString(3);
+        }
+
+        internal override bool DoesClientSupportHubType(ConnectionProfile connectionProfile)
+        {
+            return connectionProfile == ConnectionProfile.Classic;
         }
     }
 }

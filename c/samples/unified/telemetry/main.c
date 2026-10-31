@@ -10,13 +10,12 @@
  * when the device is moved to a hub of the other generation while it runs. The
  * MQTTv5-only route is mqttv5/telemetry.
  *
- * Every unified sample has this shape, and this is the one to read first:
+ * Most unified samples have this shape, and this is the one to read first:
  *
  *   1. Register BOTH MQTT adapters: DPS and MQTTv3 speak v3.1.1, MQTTv5 speaks v5.
  *   2. Build the feature clients for an assumed generation BEFORE open(). This
  *      one assumes MQTTv3, which is what DPS assigns when it names no
- *      connectionProfile (MQTT v5 under AZ_IOT_HUB_MQTT_V5_MOCK_ENDPOINT, see
- *      sample_initial_profile()); a real device would persist the last one.
+ *      connectionProfile; a real device would persist the last one.
  *   3. If DPS assigns the other generation -- on the first connect, or later
  *      when the device is moved and re-provisions -- the connection stops with
  *      AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH before the hub is reached, and
@@ -34,7 +33,14 @@
 #include <stdlib.h>
 
 #include "azure/iot/az_iot.h"
+/* The MQTT adapter this build of the sample uses (see samples/CMakeLists.txt). */
+#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
 #include "azure/iot/adapters/az_iot_adapter_paho.h"
+#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
+#include "azure/iot/adapters/az_iot_adapter_az_mqtt.h"
+#else
+#error "Define AZ_IOT_SAMPLE_ADAPTER_PAHO or AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT"
+#endif
 
 #include "sample_utils.h"
 
@@ -48,6 +54,8 @@ typedef struct
   sample_config config;
   az_iot_certificate_provider_pem certs;
   az_iot_connection_client connection_client;
+  az_iot_mqtt_factory* factory_v3;
+  az_iot_mqtt_factory* factory_v5;
   /* Only the one matching `profile` is initialized. */
   az_iot_mqttv3_telemetry_client mqttv3;
   az_iot_mqttv5_telemetry_client mqttv5;
@@ -112,6 +120,13 @@ static void sample_state_destroy(sample_state* state)
 {
   telemetry_destroy(state);
   az_iot_connection_client_deinit(&state->connection_client);
+#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
+  az_iot_paho_factory_destroy(state->factory_v3);
+  az_iot_paho_factory_destroy(state->factory_v5);
+#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
+  az_iot_az_mqtt_factory_destroy(state->factory_v3);
+  az_iot_az_mqtt_factory_destroy(state->factory_v5);
+#endif
   az_iot_certificate_provider_pem_deinit(&state->certs);
   sample_config_release(&state->config);
 }
@@ -122,8 +137,10 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
 
   /* Only record it: feature clients must not be destroyed from inside the
    * callback, which runs nested in do_work(). */
-  if (sample_event_is_profile_mismatch(event, &ctx->assigned_profile))
+  if (event->state == AZ_IOT_CONN_STATE_FAULTED
+      && event->reason == AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH && event->profile != NULL)
   {
+    ctx->assigned_profile = event->profile->connection_profile;
     ctx->rebuild = 1;
     return;
   }
@@ -131,7 +148,15 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
   if (event->state == AZ_IOT_CONN_STATE_FAULTED)
   {
     ctx->faulted = 1;
-    sample_report_unsupported_profile(event);
+    /* DPS assigned a hub generation newer than this SDK. */
+    if (event->reason == AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED && event->profile != NULL)
+    {
+      printf(
+          "Unsupported hub generation \"%s\"%s. Upgrade the SDK.\n",
+          event->profile->connection_profile_raw != NULL ? event->profile->connection_profile_raw
+                                                         : "(none)",
+          event->profile->connection_profile_raw_truncated ? " (truncated)" : "");
+    }
   }
 
   /* The provisioning lifecycle reports on its own scope; only the hub one says
@@ -182,7 +207,7 @@ static az_iot_result send_one(sample_state* state, user_context* ctx)
 
 int main(void)
 {
-  az_iot_log_sink log = az_iot_log_stderr_sink(AZ_IOT_LOG_LEVEL_INFO);
+  az_iot_log_sink log = sample_log_sink(AZ_IOT_LOG_LEVEL_INFO);
   az_iot_log_set_global_sink(&log);
 
   sample_state state = { 0 };
@@ -206,9 +231,15 @@ int main(void)
   }
 
   /* Connection client (DPS provisioning is internal). The default reconnection
-   * policy is what re-provisions a device its hub no longer accepts. */
+   * and identity recovery policies keep the device reconnecting on its own. */
+  /* Memory for the connection client's entries, sized for the default limits. */
+  static uint8_t connection_workspace[AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE];
   az_iot_connection_client_options copts = az_iot_connection_client_options_default();
-  sample_apply_dps_options(&copts, &state.config);
+  copts.workspace = connection_workspace;
+  copts.workspace_size = sizeof(connection_workspace);
+  copts.dps.id_scope = state.config.id_scope;
+  copts.dps.registration_id = state.config.reg_id;
+  copts.dps.global_endpoint = state.config.dps_global_endpoint; /* NULL: the global default */
   copts.certificate_provider = &state.certs.base;
 
   if (az_iot_connection_client_init(&state.connection_client, &copts) != AZ_IOT_OK)
@@ -220,22 +251,32 @@ int main(void)
 
   /* Both adapters: v3.1.1 serves DPS and an MQTTv3 hub, v5 serves an MQTTv5 hub.
    * The connection picks the one the assigned hub needs. */
-  if (az_iot_connection_client_register_mqtt_factory(
-          &state.connection_client, az_iot_paho_factory_create_v3_1_1())
+#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
+  state.factory_v3 = az_iot_paho_factory_create_v3_1_1();
+#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
+  state.factory_v3 = az_iot_az_mqtt_factory_create_v3_1_1();
+#endif
+  if (az_iot_connection_client_register_mqtt_factory(&state.connection_client, state.factory_v3)
       != AZ_IOT_OK)
   {
     sample_state_destroy(&state);
     return 1;
   }
-  if (az_iot_connection_client_register_mqtt_factory(
-          &state.connection_client, az_iot_paho_factory_create_v5())
+#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
+  state.factory_v5 = az_iot_paho_factory_create_v5();
+#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
+  state.factory_v5 = az_iot_az_mqtt_factory_create_v5();
+#endif
+  if (az_iot_connection_client_register_mqtt_factory(&state.connection_client, state.factory_v5)
       != AZ_IOT_OK)
   {
     sample_state_destroy(&state);
     return 1;
   }
 
-  if (telemetry_build(&state, sample_initial_profile(&state.config)) != AZ_IOT_OK
+  /* MQTTv3 until DPS says otherwise: what DPS assigns when it names no
+   * connectionProfile. */
+  if (telemetry_build(&state, AZ_IOT_CONNECTION_PROFILE_MQTT_V3) != AZ_IOT_OK
       || az_iot_connection_client_open(&state.connection_client) != AZ_IOT_OK)
   {
     sample_state_destroy(&state);
@@ -253,7 +294,7 @@ int main(void)
       user_ctx.rebuild = 0;
       printf(
           "DPS assigned %s; rebuilding the telemetry client.\n",
-          sample_connection_profile_name(user_ctx.assigned_profile));
+          az_iot_connection_profile_to_string(user_ctx.assigned_profile));
       telemetry_destroy(&state);
       user_ctx.send_pending = 0; /* lost with the old client */
       az_iot_connection_client_close(&state.connection_client);
@@ -280,7 +321,7 @@ int main(void)
   printf(
       "Sent %d message(s) on %s, %d failed.\n",
       user_ctx.sent_ok,
-      sample_connection_profile_name(state.profile),
+      az_iot_connection_profile_to_string(state.profile),
       user_ctx.send_failed);
 
   az_iot_connection_client_close(&state.connection_client);

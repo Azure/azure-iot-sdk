@@ -38,10 +38,10 @@ extern "C"
 {
 #endif
 
-  /* Every packet built here is an acknowledgement or a control packet, so it is
-   * small. The bound matches AZ_IOT_TEST_PROXY_RULE_BYTES_MAX, which is what an
+  /* Acknowledgements, control packets, and PUBLISHes with many User Properties.
+   * The bound matches AZ_IOT_TEST_PROXY_RULE_BYTES_MAX, which is what an
    * injected packet has to fit into. */
-#define AZ_IOT_TEST_MQTT_PACKET_MAX 64
+#define AZ_IOT_TEST_MQTT_PACKET_MAX 512
 
   typedef enum az_iot_test_mqtt_version
   {
@@ -130,9 +130,8 @@ extern "C"
    * exactly what a client must not collapse.
    *
    * Yields len == 0 -- which the proxy rejects, so the test fails where it is
-   * set up -- when the result would not fit AZ_IOT_TEST_MQTT_PACKET_MAX or
-   * would need a multi-byte length field. This builds the small packets an
-   * injected fixture needs, not arbitrary ones. */
+   * set up -- when the result would not fit AZ_IOT_TEST_MQTT_PACKET_MAX. Lengths
+   * of 128 and more take a multi-byte Variable Byte Integer. */
   az_iot_test_mqtt_packet az_iot_test_mqtt_publish_v5(
       const char* topic,
       const uint8_t* payload,
@@ -149,6 +148,22 @@ extern "C"
   az_iot_test_mqtt_packet az_iot_test_mqtt_suback_raw(
       az_iot_test_mqtt_version version,
       uint8_t code);
+  /* MQTT 5 PUBACK with reason @p code and, unless @p reason_string is NULL, a Reason String
+   * property. Carries a packet id. len == 0 when it would not fit AZ_IOT_TEST_MQTT_PACKET_MAX. */
+  az_iot_test_mqtt_packet az_iot_test_mqtt_puback_v5_raw(uint8_t code, const char* reason_string);
+  /* MQTT 5 CONNACK, session present clear, with reason @p code and, unless @p reason_string is
+   * NULL, a Reason String property. len == 0 when it would not fit AZ_IOT_TEST_MQTT_PACKET_MAX. */
+  az_iot_test_mqtt_packet az_iot_test_mqtt_connack_v5_raw(uint8_t code, const char* reason_string);
+  /* MQTT 5 server DISCONNECT with reason @p code (at bytes[2] while the Remaining Length is under
+   * 128) and, unless @p reason_string is NULL, a Reason String property. len == 0 as for
+   * az_iot_test_mqtt_connack_v5_raw(). */
+  az_iot_test_mqtt_packet az_iot_test_mqtt_disconnect_v5_raw(
+      uint8_t code,
+      const char* reason_string);
+  /* MQTT 5 SUBACK for one filter with reason @p code and, unless @p reason_string is NULL, a
+   * Reason String property. Carries a packet id. len == 0 as for
+   * az_iot_test_mqtt_connack_v5_raw(). */
+  az_iot_test_mqtt_packet az_iot_test_mqtt_suback_v5_raw(uint8_t code, const char* reason_string);
 
   /* Pin the packet id and clear the echo flag, for an acknowledgement that is
    * meant to answer something the client never sent. Does nothing to a packet

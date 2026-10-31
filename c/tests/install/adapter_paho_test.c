@@ -13,6 +13,7 @@
 #include "install_test.h"
 
 static az_iot_connection_client g_conn;
+static uint8_t g_connection_workspace[AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE];
 
 static void check_factory(az_iot_mqtt_factory* factory, az_iot_mqtt_version version)
 {
@@ -32,13 +33,16 @@ int main(void)
   check_factory(v5, AZ_IOT_MQTT_VERSION_5);
 
   az_iot_connection_client_options options = az_iot_connection_client_options_default();
-  options.host = "hub.example";
-  options.client_id = "install-test";
+  options.iothub_hostname = "hub.example";
+  options.device_id = "install-test";
+  options.workspace = g_connection_workspace;
+  options.workspace_size = sizeof(g_connection_workspace);
   CHECK(az_iot_connection_client_init(&g_conn, &options) == AZ_IOT_OK);
-  /* A registered factory is destroyed by deinit(). */
+  /* The application destroys a registered factory after deinit(). */
   CHECK(az_iot_connection_client_register_mqtt_factory(&g_conn, v3) == AZ_IOT_OK);
   az_iot_connection_client_deinit(&g_conn);
 
+  az_iot_paho_factory_destroy(v3);
   az_iot_paho_factory_destroy(v5);
   return 0;
 }

@@ -40,6 +40,7 @@
 #include "support/connection_test_harness.h"
 #include "support/mock_mqtt_iface.h"
 #include "support/test_provider.h"
+#include "support/su_error_cases.h"
 
 /* A registration response the provisioning parser accepts, used to prove the
  * channel's observer does not disturb the provisioning flow. */
@@ -50,12 +51,16 @@ static const char k_assigned_body[]
 
 typedef struct
 {
+  const su_error_case* error_case;
   az_iot_connection_client client;
   az_iot_mqtt_factory* factory;
   az_iot_test_state_log log;
 
   az_iot_su_channel_dps channel_state;
   az_iot_su_channel channel;
+  /* 2048 bytes: storage-sized device properties, fully escaped, overflow it. */
+  uint8_t body[2048];
+  char device_properties_strings[AZ_IOT_SU_DEVICE_PROPERTIES_BUFFER_SIZE];
 
   /* What the engine would have been told. */
   size_t update_count;
@@ -113,18 +118,86 @@ static void on_result(
   fx->last_action = action;
 }
 
+/* The channel never hashes or verifies, but the client it is built for needs a
+ * complete backend to initialize. */
+static az_iot_result stub_sha256_init(const az_iot_crypto* self, az_iot_sha256_ctx* ctx)
+{
+  (void)self;
+  (void)ctx;
+  return AZ_IOT_OK;
+}
+
+static az_iot_result stub_sha256_update(
+    const az_iot_crypto* self,
+    az_iot_sha256_ctx* ctx,
+    const uint8_t* data,
+    size_t len)
+{
+  (void)self;
+  (void)ctx;
+  (void)data;
+  (void)len;
+  return AZ_IOT_OK;
+}
+
+static az_iot_result stub_sha256_final(
+    const az_iot_crypto* self,
+    az_iot_sha256_ctx* ctx,
+    uint8_t out[AZ_IOT_SHA256_SIZE])
+{
+  (void)self;
+  (void)ctx;
+  if (out != NULL)
+  {
+    memset(out, 0, AZ_IOT_SHA256_SIZE);
+  }
+  return AZ_IOT_OK;
+}
+
+static az_iot_result stub_verify_rs256(
+    const az_iot_crypto* self,
+    const uint8_t* modulus,
+    size_t modulus_len,
+    const uint8_t* exponent,
+    size_t exponent_len,
+    const uint8_t* data,
+    size_t data_len,
+    const uint8_t* signature,
+    size_t signature_len)
+{
+  (void)self;
+  (void)modulus;
+  (void)modulus_len;
+  (void)exponent;
+  (void)exponent_len;
+  (void)data;
+  (void)data_len;
+  (void)signature;
+  (void)signature_len;
+  return AZ_IOT_ERR_AUTH;
+}
+
+static const az_iot_crypto k_stub_crypto = {
+  .version = AZ_IOT_CRYPTO_VERSION,
+  .sha256_init = stub_sha256_init,
+  .sha256_update = stub_sha256_update,
+  .sha256_final = stub_sha256_final,
+  .verify_rs256 = stub_verify_rs256,
+};
+
 static int setup(void** state)
 {
   fixture* fx = (fixture*)calloc(1, sizeof(*fx));
   assert_non_null(fx);
 
   az_iot_connection_client_options opts = { 0 };
-  opts.host = NULL; /* DPS mode */
-  opts.client_id = "ut-device";
+  opts.iothub_hostname = NULL; /* DPS mode */
+  opts.device_id = "ut-device";
   opts.dps.id_scope = "0ne00000000";
   opts.dps.registration_id = "ut-device";
   /* Short so the advisory-expiry case is testable without a long wait. */
   opts.dps_hold_timeout_ms = 50;
+  opts.crypto = &k_stub_crypto;
   assert_int_equal(az_iot_test_connection_client_init(&fx->client, &opts), AZ_IOT_OK);
 
   assert_int_equal(
@@ -134,14 +207,23 @@ static int setup(void** state)
   fx->factory = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
   assert_non_null(fx->factory);
 
-  az_iot_su_device_properties dp = { 0 };
-  dp.manufacturer = "Contoso";
-  dp.model = "Foobar";
-  dp.installed_update_id.provider = "Contoso";
-  dp.installed_update_id.name = "Foobar";
-  dp.installed_update_id.version = "1.0";
+  az_iot_su_device_properties device_properties = { 0 };
+  device_properties.manufacturer = "Contoso";
+  device_properties.model = "Foobar";
+  device_properties.installed_update_id.provider = "Contoso";
+  device_properties.installed_update_id.name = "Foobar";
+  device_properties.installed_update_id.version = "1.0";
   assert_int_equal(
-      az_iot_su_channel_dps_init(&fx->channel_state, &fx->client, &dp, &fx->channel), AZ_IOT_OK);
+      az_iot_su_channel_dps_init(
+          &fx->channel_state,
+          &fx->client,
+          &device_properties,
+          fx->body,
+          sizeof(fx->body),
+          fx->device_properties_strings,
+          sizeof(fx->device_properties_strings),
+          &fx->channel),
+      AZ_IOT_OK);
 
   *state = fx;
   return 0;
@@ -153,12 +235,8 @@ static int teardown(void** state)
   if (fx)
   {
     fx->channel.vtable->close(fx->channel.ctx);
-    bool adopted = (fx->client.factory_count > 0);
-    az_iot_connection_client_deinit(&fx->client);
-    if (!adopted)
-    {
-      az_iot_mock_mqtt_factory_destroy(fx->factory);
-    }
+    az_iot_test_connection_client_deinit(&fx->client);
+    az_iot_mock_mqtt_factory_destroy(fx->factory);
     free(fx);
   }
   return 0;
@@ -413,11 +491,13 @@ static void a_report_is_published_and_acknowledged(void** state)
   last_rid(m, rid, sizeof(rid));
   char topic[256];
   snprintf(topic, sizeof(topic), "$dps/registrations/res/200/?$rid=%s", rid);
-  assert_true(inject(fx, m, topic, "{}"));
+  assert_true(inject(fx, m, topic, ""));
 
   assert_int_equal(fx->result_count, 1);
   assert_int_equal(fx->last_op, AZ_IOT_SU_OP_REPORT_STATUS);
   assert_int_equal(fx->last_result, AZ_IOT_OK);
+  assert_int_equal(fx->last_action, AZ_IOT_SU_ERROR_ACTION_NONE);
+  assert_false(fx->channel_state.request_pending);
 }
 
 /* Registration no longer costs the channel its request.
@@ -474,6 +554,62 @@ static void registration_does_not_cost_the_channel_its_request(void** state)
   assert_int_equal(fx->last_result, AZ_IOT_OK);
 }
 
+/* Asserts the published body's top-level installedUpdateId is exactly
+ * {provider, name, version}, compared unescaped; absent when provider is NULL. */
+static void assert_installed_id_on_wire(
+    const az_iot_mock_call* pub,
+    const char* provider,
+    const char* name,
+    const char* version)
+{
+  const char* names[] = { "provider", "name", "version" };
+  const char* values[] = { provider, name, version };
+  az_json_reader reader;
+  assert_int_equal(
+      az_json_reader_init(
+          &reader, az_span_create((uint8_t*)pub->payload, (int32_t)pub->payload_len), NULL),
+      AZ_OK);
+  size_t found = 0;
+  int depth = 0;
+  while (az_result_succeeded(az_json_reader_next_token(&reader)))
+  {
+    if (reader.token.kind == AZ_JSON_TOKEN_BEGIN_OBJECT
+        || reader.token.kind == AZ_JSON_TOKEN_BEGIN_ARRAY)
+    {
+      depth++;
+    }
+    else if (
+        reader.token.kind == AZ_JSON_TOKEN_END_OBJECT
+        || reader.token.kind == AZ_JSON_TOKEN_END_ARRAY)
+    {
+      depth--;
+    }
+    else if (
+        depth == 1 && reader.token.kind == AZ_JSON_TOKEN_PROPERTY_NAME
+        && az_json_token_is_text_equal(&reader.token, AZ_SPAN_FROM_STR("installedUpdateId")))
+    {
+      found++;
+      assert_int_equal(az_json_reader_next_token(&reader), AZ_OK);
+      assert_int_equal(reader.token.kind, AZ_JSON_TOKEN_BEGIN_OBJECT);
+      for (size_t i = 0; i < 3; ++i)
+      {
+        assert_int_equal(az_json_reader_next_token(&reader), AZ_OK);
+        assert_int_equal(reader.token.kind, AZ_JSON_TOKEN_PROPERTY_NAME);
+        assert_true(
+            az_json_token_is_text_equal(&reader.token, az_span_create_from_str((char*)names[i])));
+        assert_int_equal(az_json_reader_next_token(&reader), AZ_OK);
+        assert_int_equal(reader.token.kind, AZ_JSON_TOKEN_STRING);
+        assert_true(
+            az_json_token_is_text_equal(&reader.token, az_span_create_from_str((char*)values[i])));
+      }
+      assert_int_equal(az_json_reader_next_token(&reader), AZ_OK);
+      assert_int_equal(reader.token.kind, AZ_JSON_TOKEN_END_OBJECT);
+    }
+  }
+  assert_int_equal(depth, 0);
+  assert_int_equal(found, provider != NULL ? 1 : 0);
+}
+
 /* Refreshing device properties must reach the channel: otherwise every later
  * fetch still carries the identity captured at startup. */
 static void updated_device_properties_change_what_is_sent(void** state)
@@ -483,13 +619,14 @@ static void updated_device_properties_change_what_is_sent(void** state)
 
   assert_non_null(fx->channel.vtable->set_device_properties);
 
-  az_iot_su_device_properties dp = { 0 };
-  dp.manufacturer = "Fabrikam";
-  dp.model = "Gizmo";
-  dp.installed_update_id.provider = "Fabrikam";
-  dp.installed_update_id.name = "Gizmo";
-  dp.installed_update_id.version = "2.0";
-  assert_int_equal(fx->channel.vtable->set_device_properties(fx->channel.ctx, &dp), AZ_IOT_OK);
+  az_iot_su_device_properties device_properties = { 0 };
+  device_properties.manufacturer = "Fabrikam";
+  device_properties.model = "Gizmo";
+  device_properties.installed_update_id.provider = "Fabrikam";
+  device_properties.installed_update_id.name = "Gizmo";
+  device_properties.installed_update_id.version = "2.0";
+  assert_int_equal(
+      fx->channel.vtable->set_device_properties(fx->channel.ctx, &device_properties), AZ_IOT_OK);
 
   assert_int_equal(
       fx->channel.vtable->request_update(fx->channel.ctx, AZ_IOT_SU_OP_GET_ONBOARDING_UPDATE),
@@ -497,18 +634,17 @@ static void updated_device_properties_change_what_is_sent(void** state)
 
   const az_iot_mock_call* pub = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_PUBLISH);
   assert_non_null(pub);
-  /* The onboarding request carries the compatibility properties (the installed
-   * update id rides the later get-update request), so that is what proves the
-   * refresh reached the channel. */
   assert_non_null(strstr((const char*)pub->payload, "Fabrikam"));
   assert_non_null(strstr((const char*)pub->payload, "Gizmo"));
+  assert_installed_id_on_wire(pub, "Fabrikam", "Gizmo", "2.0");
   /* The startup identity is gone, not merely appended to. */
   assert_null(strstr((const char*)pub->payload, "Contoso"));
 }
 
-/* The route reaches the wire: onboarding picks its own topic and omits
- * installedUpdateId, which a day-0 device has nothing to put in. */
-static void the_onboarding_route_selects_its_topic_and_omits_the_installed_id(void** state)
+/* The route reaches the wire: onboarding picks its own topic, and still sends
+ * the installed update id the device holds -- an unprovisioned device may
+ * already have one, and the service uses it to withhold an offer for it. */
+static void the_onboarding_route_selects_its_topic_and_sends_the_installed_id(void** state)
 {
   fixture* fx = (fixture*)*state;
   az_iot_mock_mqtt_client* m = open_and_bind(fx);
@@ -520,7 +656,7 @@ static void the_onboarding_route_selects_its_topic_and_omits_the_installed_id(vo
   const az_iot_mock_call* pub = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_PUBLISH);
   assert_non_null(pub);
   assert_non_null(strstr(pub->topic, "iotdps-get-onboarding-deviceupdate"));
-  assert_null(strstr((const char*)pub->payload, "installedUpdateId"));
+  assert_installed_id_on_wire(pub, "Contoso", "Foobar", "1.0");
 }
 
 /* The regular route is a different topic, and it DOES carry installedUpdateId --
@@ -537,7 +673,38 @@ static void the_regular_route_selects_its_topic_and_sends_the_installed_id(void*
   assert_non_null(pub);
   assert_non_null(strstr(pub->topic, "iotdps-get-deviceupdate"));
   assert_null(strstr(pub->topic, "onboarding"));
-  assert_non_null(strstr((const char*)pub->payload, "installedUpdateId"));
+  assert_installed_id_on_wire(pub, "Contoso", "Foobar", "1.0");
+}
+
+/* Nothing installed: the key is absent on either route, never null or empty. */
+static void assert_route_omits_the_installed_id_when_nothing_is_installed(
+    fixture* fx,
+    az_iot_su_operation operation)
+{
+  az_iot_su_device_properties device_properties = { .manufacturer = "Contoso", .model = "Foobar" };
+  assert_int_equal(
+      fx->channel.vtable->set_device_properties(fx->channel.ctx, &device_properties), AZ_IOT_OK);
+  az_iot_mock_mqtt_client* m = open_and_bind(fx);
+
+  assert_int_equal(fx->channel.vtable->request_update(fx->channel.ctx, operation), AZ_IOT_OK);
+
+  const az_iot_mock_call* pub = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_PUBLISH);
+  assert_non_null(pub);
+  assert_installed_id_on_wire(pub, NULL, NULL, NULL);
+  assert_null(strstr((const char*)pub->payload, "installedUpdateId"));
+  assert_null(strstr((const char*)pub->payload, "null"));
+}
+
+static void the_onboarding_route_omits_the_installed_id_when_nothing_is_installed(void** state)
+{
+  assert_route_omits_the_installed_id_when_nothing_is_installed(
+      (fixture*)*state, AZ_IOT_SU_OP_GET_ONBOARDING_UPDATE);
+}
+
+static void the_regular_route_omits_the_installed_id_when_nothing_is_installed(void** state)
+{
+  assert_route_omits_the_installed_id_when_nothing_is_installed(
+      (fixture*)*state, AZ_IOT_SU_OP_GET_UPDATE);
 }
 
 /* Report status is not a fetch route; the fetch entry point must not accept it. */
@@ -710,6 +877,171 @@ static void a_failure_without_a_retry_after_defers_nothing(void** state)
       AZ_IOT_OK);
 }
 
+/* Publish one operation and answer it on `status` with `body`, using the
+ * request's own $rid. `query` is appended after the $rid (e.g. "&retry-after=2"). */
+static void answer_operation(
+    fixture* fx,
+    az_iot_su_operation operation,
+    int status,
+    const char* query,
+    const char* body)
+{
+  az_iot_mock_mqtt_client* m = open_and_bind(fx);
+  if (operation == AZ_IOT_SU_OP_REPORT_STATUS)
+  {
+    az_iot_su_report report = { 0 };
+    report.workflow_id = "wf-1";
+    report.extended_result_codes = "00000000";
+    assert_int_equal(fx->channel.vtable->report(fx->channel.ctx, &report), AZ_IOT_OK);
+  }
+  else
+  {
+    assert_int_equal(fx->channel.vtable->request_update(fx->channel.ctx, operation), AZ_IOT_OK);
+  }
+  char rid[64];
+  last_rid(m, rid, sizeof(rid));
+  char topic[256];
+  int n
+      = snprintf(topic, sizeof(topic), "$dps/registrations/res/%d/?$rid=%s%s", status, rid, query);
+  assert_true(n > 0 && (size_t)n < sizeof(topic));
+  assert_true(inject(fx, m, topic, body));
+  assert_int_equal(fx->result_count, 1);
+  assert_int_equal(fx->last_op, operation);
+  assert_int_equal(fx->last_result, AZ_IOT_ERR_DPS);
+}
+
+/* A bodyless 429 is throttling: the transport status classifies it when the
+ * body carries no code, and the topic delay is honoured. The missing service
+ * code stays 0 rather than being synthesized. */
+static void a_bodyless_429_fetch_is_throttled_not_fatal(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  answer_operation(fx, AZ_IOT_SU_OP_GET_ONBOARDING_UPDATE, 429, "&retry-after=2", "");
+  assert_int_equal(fx->last_action, AZ_IOT_SU_ERROR_ACTION_RETRY_AFTER);
+  assert_int_equal(fx->last_retry_after_ms, 2000u);
+  assert_int_equal(fx->last_error_code, 0);
+  assert_string_equal(fx->last_error_text, "");
+  assert_true(fx->channel_state.retry_after_deadline_ms != 0);
+  /* Retryable: the pre-registration hold is kept. */
+  assert_true(az_iot_connection_client__dps_hold_is_active(&fx->client));
+}
+
+static void a_bodyless_429_report_is_throttled_not_fatal(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  answer_operation(fx, AZ_IOT_SU_OP_REPORT_STATUS, 429, "&retry-after=2", "");
+  assert_int_equal(fx->last_action, AZ_IOT_SU_ERROR_ACTION_RETRY_AFTER);
+  assert_int_equal(fx->last_retry_after_ms, 2000u);
+  assert_int_equal(fx->last_error_code, 0);
+}
+
+static void a_bodyless_503_fetch_is_retryable_not_fatal(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  answer_operation(fx, AZ_IOT_SU_OP_GET_ONBOARDING_UPDATE, 503, "", "");
+  assert_int_equal(fx->last_action, AZ_IOT_SU_ERROR_ACTION_RETRY);
+  assert_int_equal(fx->last_retry_after_ms, 0u);
+  assert_int_equal(fx->last_error_code, 0);
+  assert_true(az_iot_connection_client__dps_hold_is_active(&fx->client));
+}
+
+static void a_bodyless_503_report_is_retryable_not_fatal(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  answer_operation(fx, AZ_IOT_SU_OP_REPORT_STATUS, 503, "", "");
+  assert_int_equal(fx->last_action, AZ_IOT_SU_ERROR_ACTION_RETRY);
+  assert_int_equal(fx->last_error_code, 0);
+}
+
+/* A body with no recognizable error signal (e.g. a gateway HTML page) is the
+ * same as no body: the status decides. */
+static void an_unparseable_503_body_falls_back_to_the_status(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  answer_operation(fx, AZ_IOT_SU_OP_GET_ONBOARDING_UPDATE, 503, "", "<html>busy</html>");
+  assert_int_equal(fx->last_action, AZ_IOT_SU_ERROR_ACTION_RETRY);
+  assert_int_equal(fx->last_error_code, 0);
+}
+
+/* A truncated body is rejected whole: a code read before the cut must not
+ * override the status, nor drop the ETags. */
+static void a_truncated_503_body_falls_back_to_the_status(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  memcpy(fx->channel_state.agent_info_etag, "agent", sizeof("agent"));
+  answer_operation(
+      fx, AZ_IOT_SU_OP_GET_ONBOARDING_UPDATE, 503, "", "{\"errorCode\":400004,\"message\":\"x\"");
+  assert_int_equal(fx->last_action, AZ_IOT_SU_ERROR_ACTION_RETRY);
+  assert_int_equal(fx->last_error_code, 0);
+  assert_string_equal(fx->last_error_text, "");
+  assert_string_equal(fx->channel_state.agent_info_etag, "agent");
+}
+
+/* An oversized string code does not discard the body: its numeric code still
+ * takes precedence over the status. */
+static void an_oversized_string_code_still_classifies_by_the_body(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  char body[512];
+  int n = snprintf(
+      body, sizeof(body), "{\"errorCode\":400004,\"info\":{\"aduErrorCode\":\"%0300d\"}}", 0);
+  assert_true(n > 0 && (size_t)n < sizeof(body));
+  answer_operation(fx, AZ_IOT_SU_OP_GET_ONBOARDING_UPDATE, 503, "", body);
+  assert_int_equal(fx->last_action, AZ_IOT_SU_ERROR_ACTION_RESEND_AGENT_INFO);
+  assert_int_equal(fx->last_error_code, 400004);
+}
+
+/* The status fallback must not widen every bodyless failure into a retry. */
+static void a_bodyless_4xx_stays_fatal(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  answer_operation(fx, AZ_IOT_SU_OP_GET_ONBOARDING_UPDATE, 401, "", "");
+  assert_int_equal(fx->last_action, AZ_IOT_SU_ERROR_ACTION_FATAL);
+  assert_int_equal(fx->last_error_code, 0);
+}
+
+/* A bodyless 409 is not assumed to be either documented 409 meaning. */
+static void a_bodyless_409_report_stays_fatal(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  answer_operation(fx, AZ_IOT_SU_OP_REPORT_STATUS, 409, "", "");
+  assert_int_equal(fx->last_action, AZ_IOT_SU_ERROR_ACTION_FATAL);
+}
+
+/* A typed body still takes precedence over the transport status. */
+/* A string code without errorCode: a recognized one beats the status; prose
+ * does not, so it cannot turn a transient status fatal. */
+static void a_string_only_body_is_classified_by_code_then_status(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  answer_operation(
+      fx, AZ_IOT_SU_OP_GET_ONBOARDING_UPDATE, 503, "", "{\"message\":\"INVALID_REQUEST\"}");
+  assert_int_equal(fx->last_action, AZ_IOT_SU_ERROR_ACTION_FATAL);
+}
+
+static void a_prose_only_503_body_is_retryable(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  answer_operation(
+      fx, AZ_IOT_SU_OP_GET_ONBOARDING_UPDATE, 503, "", "{\"message\":\"Service is busy.\"}");
+  assert_int_equal(fx->last_action, AZ_IOT_SU_ERROR_ACTION_RETRY);
+  assert_string_equal(fx->last_error_text, "Service is busy.");
+  assert_int_equal(fx->last_error_code, 0);
+}
+
+static void a_typed_body_takes_precedence_over_the_status(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  answer_operation(
+      fx,
+      AZ_IOT_SU_OP_GET_ONBOARDING_UPDATE,
+      503,
+      "",
+      "{\"errorCode\":400000,\"message\":\"INVALID_REQUEST\"}");
+  assert_int_equal(fx->last_action, AZ_IOT_SU_ERROR_ACTION_FATAL);
+  assert_int_equal(fx->last_error_code, 400000);
+}
+
 static void invalid_replacements_preserve_channel_state_and_outstanding_body(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -721,10 +1053,12 @@ static void invalid_replacements_preserve_channel_state_and_outstanding_body(voi
   memcpy(fx->channel_state.service_config_etag, "config", sizeof("config"));
   az_iot_su_channel_dps before;
   memcpy(&before, &fx->channel_state, sizeof(before));
+  uint8_t body_before[sizeof(fx->body)];
+  memcpy(body_before, fx->body, sizeof(body_before));
   az_iot_su_custom_property six[]
       = { { "a", "1" }, { "b", "2" }, { "c", "3" }, { "d", "4" }, { "e", "5" }, { "f", "6" } };
   az_iot_su_custom_property duplicate[] = { { "manufacturer", "other" } };
-  char oversized[257];
+  char oversized[AZ_IOT_SU_DEVICE_PROPERTIES_BUFFER_SIZE + 1]; /* one byte over a channel copy */
   memset(oversized, 'x', sizeof(oversized) - 1);
   oversized[sizeof(oversized) - 1] = '\0';
   char escaped_compat[256];
@@ -758,10 +1092,85 @@ static void invalid_replacements_preserve_channel_state_and_outstanding_body(voi
   az_iot_su_device_properties valid = { .manufacturer = "replacement" };
   assert_int_equal(fx->channel.vtable->set_device_properties(fx->channel.ctx, &valid), AZ_IOT_OK);
   assert_true(fx->channel_state.request_pending);
-  assert_memory_equal(fx->channel_state.body, before.body, sizeof(before.body));
+  assert_memory_equal(fx->body, body_before, sizeof(body_before));
   assert_string_equal(fx->channel_state.pending_rid, before.pending_rid);
   assert_int_equal(fx->channel_state.pending_operation, before.pending_operation);
   assert_int_equal(fx->result_count, 0);
+}
+
+/* Accepted properties leave room in the update-check body for the longest installed ID, fully
+ * escaped: the applied ID adopted after a successful update always fits. */
+static void accepted_properties_leave_room_for_the_longest_installed_id(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  static char manufacturer[AZ_IOT_SU_DEVICE_PROPERTIES_BUFFER_SIZE];
+  az_iot_su_device_properties properties
+      = { .manufacturer = manufacturer, .installed_update_id = { "p", "n", "v" } };
+
+  /* Grow a fully escaped manufacturer until the channel refuses it. */
+  size_t refused_length = 0;
+  for (size_t length = 1; length < sizeof(manufacturer) && refused_length == 0; ++length)
+  {
+    memset(manufacturer, '\1', length);
+    manufacturer[length] = '\0';
+    if (fx->channel.vtable->set_device_properties(fx->channel.ctx, &properties) != AZ_IOT_OK)
+    {
+      refused_length = length;
+    }
+  }
+  assert_true(refused_length > 1);
+
+  /* The refused set fits with its own short installed ID: room is reserved. */
+  az_iot_su_custom_property compatibility[1] = { { "manufacturer", manufacturer } };
+  az_iot_su_agent_info agent = { 0 };
+  agent.agent_sdk_version = AZ_IOT_SU_CLIENT_AGENT_VERSION;
+  agent.agent_profile = 1;
+  agent.compatibility_properties = compatibility;
+  agent.compatibility_properties_count = 1;
+  az_iot_su_report_update_id short_id = { "p", "n", "v" };
+  size_t body_length = 0;
+  assert_int_equal(
+      az_iot_su__fetch_request_size(&agent, &short_id, NULL, NULL, sizeof(fx->body), &body_length),
+      AZ_IOT_OK);
+
+  /* The longest accepted set still takes the longest escaped installed ID. */
+  manufacturer[refused_length - 1] = '\0';
+  assert_int_equal(
+      fx->channel.vtable->set_device_properties(fx->channel.ctx, &properties), AZ_IOT_OK);
+  char longest_part[AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE / 3];
+  memset(longest_part, '\1', sizeof(longest_part) - 1);
+  longest_part[sizeof(longest_part) - 1] = '\0';
+  properties.installed_update_id
+      = (az_iot_su_update_id_info){ longest_part, longest_part, longest_part };
+  assert_int_equal(
+      fx->channel.vtable->set_device_properties(fx->channel.ctx, &properties), AZ_IOT_OK);
+  assert_string_equal(fx->channel_state.installed_update_id.version, longest_part);
+
+  /* That boundary request is actually serialized and sent. */
+  az_iot_mock_mqtt_client* m = open_and_bind(fx);
+  assert_int_equal(
+      fx->channel.vtable->request_update(fx->channel.ctx, AZ_IOT_SU_OP_GET_UPDATE), AZ_IOT_OK);
+  const az_iot_mock_call* pub = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_PUBLISH);
+  assert_non_null(pub);
+  assert_true(pub->payload_len <= sizeof(fx->body));
+}
+
+/* The channel's copy holds at most its storage; one byte more is refused, unchanged. */
+static void channel_property_copy_is_bounded_by_its_storage(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_su_device_properties exact = { .manufacturer = "abc", .model = "de" };
+  fx->channel_state.device_properties_strings_size = 7;
+  assert_int_equal(fx->channel.vtable->set_device_properties(fx->channel.ctx, &exact), AZ_IOT_OK);
+  assert_string_equal(fx->channel_state.compat[0].value, "abc");
+
+  az_iot_su_channel_dps before;
+  memcpy(&before, &fx->channel_state, sizeof(before));
+  az_iot_su_device_properties over = { .manufacturer = "abcd", .model = "de" };
+  assert_int_equal(
+      fx->channel.vtable->set_device_properties(fx->channel.ctx, &over),
+      AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+  assert_memory_equal(&fx->channel_state, &before, sizeof(before));
 }
 
 static void channel_keeps_all_five_custom_properties_and_owns_their_strings(void** state)
@@ -783,16 +1192,29 @@ static void channel_keeps_all_five_custom_properties_and_owns_their_strings(void
   assert_string_equal(fx->channel_state.compat[1].value, "");
   assert_string_equal(fx->channel_state.compat[4].name, "e");
 
-  properties = fx->channel_state.device_properties.properties;
+  /* Properties pointing into the channel's copy would be overwritten while copied: refused. */
+  az_iot_su_channel_dps before;
+  memcpy(&before, &fx->channel_state, sizeof(before));
+  properties = fx->channel_state.device_properties;
   properties.installed_update_id
       = (az_iot_su_update_id_info){ "provider-2", "name-2", "version-2" };
+  assert_int_equal(
+      fx->channel.vtable->set_device_properties(fx->channel.ctx, &properties),
+      AZ_IOT_ERR_INVALID_ARG);
+  assert_memory_equal(&fx->channel_state, &before, sizeof(before));
+
+  az_iot_su_custom_property again[]
+      = { { "a", "revision-2" }, { "b", "" }, { "c", "3" }, { "d", "4" }, { "e", "5" } };
+  properties = (az_iot_su_device_properties){
+    .custom_properties = again,
+    .custom_properties_count = 5,
+    .installed_update_id = { "provider-2", "name-2", "version-2" },
+  };
   assert_int_equal(
       fx->channel.vtable->set_device_properties(fx->channel.ctx, &properties), AZ_IOT_OK);
   assert_string_equal(fx->channel_state.compat[0].value, "revision-2");
   assert_string_equal(fx->channel_state.installed_update_id.version, "version-2");
   properties.installed_update_id = (az_iot_su_update_id_info){ 0 };
-  /* Re-read the aliased custom-property descriptors after the preceding commit. */
-  properties.custom_properties = fx->channel_state.device_properties.properties.custom_properties;
   assert_int_equal(
       fx->channel.vtable->set_device_properties(fx->channel.ctx, &properties), AZ_IOT_OK);
   assert_false(fx->channel_state.has_installed_update_id);
@@ -830,8 +1252,8 @@ static void channel_keeps_all_five_custom_properties_and_owns_their_strings(void
   assert_int_equal(found, 5);
 }
 
-/* ETags survive a reboot through save_state()/restore_state(), at their
- * largest size too. */
+/* ETags round-trip through save_state()/restore_state(), at their largest size
+ * too. */
 static void etags_round_trip_through_saved_state(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -905,14 +1327,17 @@ static void malformed_saved_state_is_refused(void** state)
 }
 
 /* Cached ETags never make a validated property set unsendable: properties are
- * sized without them, and a request they would overflow is sent without them. */
-static void oversized_cached_etags_are_dropped_from_the_request(void** state)
+ * sized without them, and a request they would overflow is sent without them.
+ * The installed update id is part of the sized body on both routes, and
+ * survives the drop escaped. */
+static void assert_oversized_cached_etags_are_dropped(fixture* fx, az_iot_su_operation operation)
 {
-  fixture* fx = (fixture*)*state;
-  char manufacturer[151];
+  char manufacturer[101];
   memset(manufacturer, '\1', sizeof(manufacturer) - 1);
   manufacturer[sizeof(manufacturer) - 1] = '\0';
-  az_iot_su_device_properties properties = { .manufacturer = manufacturer };
+  az_iot_su_device_properties properties
+      = { .manufacturer = manufacturer,
+          .installed_update_id = { "Contoso\"\\", "Foo\tbar", "1.0\n" } };
 
   /* Worst-case escaped ETags already cached. */
   memset(fx->channel_state.agent_info_etag, '\1', sizeof(fx->channel_state.agent_info_etag) - 1);
@@ -926,55 +1351,58 @@ static void oversized_cached_etags_are_dropped_from_the_request(void** state)
       fx->channel.vtable->set_device_properties(fx->channel.ctx, &properties), AZ_IOT_OK);
 
   az_iot_mock_mqtt_client* m = open_and_bind(fx);
-  assert_int_equal(
-      fx->channel.vtable->request_update(fx->channel.ctx, AZ_IOT_SU_OP_GET_UPDATE), AZ_IOT_OK);
+  assert_int_equal(fx->channel.vtable->request_update(fx->channel.ctx, operation), AZ_IOT_OK);
   const az_iot_mock_call* pub = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_PUBLISH);
   assert_non_null(pub);
-  char body[2048 + 1];
+  char body[sizeof(fx->body) + 1];
   assert_true(pub->payload_len < sizeof(body));
   memcpy(body, pub->payload, pub->payload_len);
   body[pub->payload_len] = '\0';
   assert_null(strstr(body, "Etag"));
   assert_non_null(strstr(body, "manufacturer"));
+  assert_installed_id_on_wire(pub, "Contoso\"\\", "Foo\tbar", "1.0\n");
   assert_string_equal(fx->channel_state.agent_info_etag, "");
   assert_string_equal(fx->channel_state.service_config_etag, "");
 }
 
-static void public_replacement_is_atomic_when_escaped_request_does_not_fit(void** state)
+static void oversized_cached_etags_are_dropped_from_the_request(void** state)
+{
+  assert_oversized_cached_etags_are_dropped((fixture*)*state, AZ_IOT_SU_OP_GET_UPDATE);
+}
+
+static void oversized_cached_etags_are_dropped_from_an_onboarding_request(void** state)
+{
+  assert_oversized_cached_etags_are_dropped((fixture*)*state, AZ_IOT_SU_OP_GET_ONBOARDING_UPDATE);
+}
+
+static void public_replacement_is_atomic_when_properties_do_not_fit(void** state)
 {
   fixture* fx = (fixture*)*state;
   az_iot_su_platform_hooks hooks = { 0 };
-  az_iot_su_crypto_hooks crypto = { 0 };
   az_iot_su_device_properties properties = { .manufacturer = "original" };
-  uint8_t storage[512] = { 0 };
+  static uint8_t workspace[AZ_IOT_SU_WORKSPACE_DEFAULT_SIZE];
   az_iot_su_client_config_options options = az_iot_su_client_config_options_default();
   options.hooks = &hooks;
-  options.crypto = &crypto;
   options.device_properties = &properties;
-  options.device_properties_buffer = storage;
-  options.device_properties_buffer_size = sizeof(storage);
+  options.workspace = workspace;
+  options.workspace_size = sizeof(workspace);
   az_iot_su_client client;
   assert_int_equal(az_iot_su_client_init(&client, &fx->client, &options), AZ_IOT_OK);
 
-  char escaped_compat[256];
-  char escaped_provider[188];
-  memset(escaped_compat, '\1', sizeof(escaped_compat) - 1);
-  escaped_compat[sizeof(escaped_compat) - 1] = '\0';
-  memset(escaped_provider, '\1', sizeof(escaped_provider) - 1);
-  escaped_provider[sizeof(escaped_provider) - 1] = '\0';
-  properties.manufacturer = escaped_compat;
-  properties.installed_update_id = (az_iot_su_update_id_info){ escaped_provider, "n", "v" };
-  size_t need = az_iot_su_device_properties_buffer_size(&properties);
-  assert_true(need > 0 && need <= sizeof(storage));
+  /* One byte over az_iot_su_limits::device_properties_size. */
+  char oversized[AZ_IOT_SU_DEVICE_PROPERTIES_BUFFER_SIZE + 1];
+  memset(oversized, 'x', sizeof(oversized) - 1);
+  oversized[sizeof(oversized) - 1] = '\0';
+  properties.manufacturer = oversized;
 
   az_iot_su_client before;
   memcpy(&before, &client, sizeof(before));
-  uint8_t storage_before[sizeof(storage)];
-  memcpy(storage_before, storage, sizeof(storage));
+  static uint8_t workspace_before[sizeof(workspace)];
+  memcpy(workspace_before, workspace, sizeof(workspace));
   assert_int_equal(
       az_iot_su_client_update_device_properties(&client, &properties), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
   assert_memory_equal(&client, &before, sizeof(before));
-  assert_memory_equal(storage, storage_before, sizeof(storage_before));
+  assert_memory_equal(workspace, workspace_before, sizeof(workspace_before));
   az_iot_su_client_deinit(&client);
 
   /* The same validation must run during initialization, before opening the channel. */
@@ -982,6 +1410,65 @@ static void public_replacement_is_atomic_when_escaped_request_does_not_fit(void*
       az_iot_su_client_init(&client, &fx->client, &options), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
   assert_int_equal(fx->client.dps_user_count, 0);
   assert_int_equal(fx->client.dps_hold_count, 0);
+}
+
+/** @brief Records the capacity in the update-check body ERROR line. */
+static void body_capacity_log_sink(
+    void* user_ctx,
+    az_iot_log_level level,
+    const char* component,
+    const char* file,
+    int line,
+    const char* msg)
+{
+  (void)component;
+  (void)file;
+  (void)line;
+  static const char prefix[]
+      = "an update check with these device properties needs a body capacity of ";
+  const char* found = msg != NULL ? strstr(msg, prefix) : NULL;
+  if (level == AZ_IOT_LOG_LEVEL_ERROR && found != NULL)
+  {
+    *(unsigned long*)user_ctx = strtoul(found + sizeof(prefix) - 1u, NULL, 10);
+  }
+}
+
+/* The capacity logged for an oversized update-check body is the smallest one accepted, not the
+ * serialized length: the JSON writer needs headroom past it. */
+static void update_check_body_log_gives_the_smallest_accepted_capacity(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_su_platform_hooks hooks = { 0 };
+  static char manufacturer[3001];
+  memset(manufacturer, 'm', sizeof(manufacturer) - 1u);
+  manufacturer[sizeof(manufacturer) - 1u] = '\0';
+  az_iot_su_device_properties properties = { .manufacturer = manufacturer };
+  static uint8_t workspace[4u * AZ_IOT_SU_WORKSPACE_DEFAULT_SIZE];
+  az_iot_su_client_config_options options = az_iot_su_client_config_options_default();
+  options.hooks = &hooks;
+  options.device_properties = &properties;
+  options.limits.device_properties_size = sizeof(manufacturer);
+  options.workspace = workspace;
+  options.workspace_size = sizeof(workspace);
+  az_iot_su_client client;
+
+  unsigned long logged = 0;
+  az_iot_log_sink sink = { .sink = body_capacity_log_sink,
+                           .user_ctx = &logged,
+                           .min_level = AZ_IOT_LOG_LEVEL_ERROR };
+  az_iot_log_set_global_sink(&sink);
+  assert_int_equal(
+      az_iot_su_client_init(&client, &fx->client, &options), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+  az_iot_log_set_global_sink(NULL);
+  assert_true(logged > options.limits.max_message_size);
+
+  options.limits.max_message_size = (size_t)logged - 1u;
+  assert_true(az_iot_su_workspace_size(&options.limits) <= options.workspace_size);
+  assert_int_equal(
+      az_iot_su_client_init(&client, &fx->client, &options), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+  options.limits.max_message_size = (size_t)logged;
+  assert_int_equal(az_iot_su_client_init(&client, &fx->client, &options), AZ_IOT_OK);
+  az_iot_su_client_deinit(&client);
 }
 
 /* Without a usable provisioning session there is nothing to publish onto. */
@@ -1391,8 +1878,8 @@ static void a_zero_hold_timeout_selects_the_default(void** state)
   assert_non_null(fx);
 
   az_iot_connection_client_options opts = { 0 };
-  opts.host = NULL;
-  opts.client_id = "ut-device";
+  opts.iothub_hostname = NULL;
+  opts.device_id = "ut-device";
   opts.dps.id_scope = "0ne00000000";
   opts.dps.registration_id = "ut-device";
   opts.dps_hold_timeout_ms = 0; /* -> AZ_IOT_DPS_HOLD_TIMEOUT_MS */
@@ -1401,11 +1888,20 @@ static void a_zero_hold_timeout_selects_the_default(void** state)
   fx->factory = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
   assert_non_null(fx->factory);
 
-  az_iot_su_device_properties dp = { 0 };
-  dp.manufacturer = "Contoso";
-  dp.model = "Foobar";
+  az_iot_su_device_properties device_properties = { 0 };
+  device_properties.manufacturer = "Contoso";
+  device_properties.model = "Foobar";
   assert_int_equal(
-      az_iot_su_channel_dps_init(&fx->channel_state, &fx->client, &dp, &fx->channel), AZ_IOT_OK);
+      az_iot_su_channel_dps_init(
+          &fx->channel_state,
+          &fx->client,
+          &device_properties,
+          fx->body,
+          sizeof(fx->body),
+          fx->device_properties_strings,
+          sizeof(fx->device_properties_strings),
+          &fx->channel),
+      AZ_IOT_OK);
   assert_int_equal(fx->channel.vtable->open(fx->channel.ctx, on_update, on_result, fx), AZ_IOT_OK);
   (void)open_to_registering(fx);
 
@@ -1417,7 +1913,8 @@ static void a_zero_hold_timeout_selects_the_default(void** state)
   assert_int_equal(fx->client.dps_phase, AZ_IOT_DPS_PHASE_HOLD);
 
   fx->channel.vtable->close(fx->channel.ctx);
-  az_iot_connection_client_deinit(&fx->client);
+  az_iot_test_connection_client_deinit(&fx->client);
+  az_iot_mock_mqtt_factory_destroy(fx->factory);
   free(fx);
 }
 
@@ -1955,10 +2452,12 @@ typedef struct
 static void su_log_sink(
     void* user_ctx,
     az_iot_log_level level,
+    const char* component,
     const char* file,
     int line,
     const char* msg)
 {
+  (void)component;
   su_log_capture* cap = (su_log_capture*)user_ctx;
   (void)file;
   (void)line;
@@ -2061,7 +2560,7 @@ static void a_lost_session_is_retried_a_bounded_number_of_times(void** state)
      *
      * Asserted not-blocked because a spent ladder would refuse outright and
      * the loop would stall on a cause that is not what is under test. */
-    fx->client.dps_user_retry_due_ms = 0;
+    fx->client.dps_user_retry._internal.due_ms = 0;
     assert_false(fx->client.dps_user_retry_blocked);
 
     /* A session, a request on it, and then the session goes away. */
@@ -2172,12 +2671,19 @@ static void an_answered_operation_clears_the_retry_count(void** state)
 /* The channel's seat in the connection-state registry: taken at open, returned
  * at close. The entry points at the channel, so one left behind is a call into
  * freed storage on the next transition. */
+/** @brief Occupies a feature-observer entry. */
+static void ignore_feature_event(const az_iot_connection_feature_event* event, void* user_ctx)
+{
+  (void)event;
+  (void)user_ctx;
+}
+
 static bool channel_observes_state(const fixture* fx)
 {
-  for (size_t i = 0; i < AZ_IOT_MAX_FEATURE_STATE_OBSERVERS; ++i)
+  for (size_t i = 0; i < AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_FEATURE_OBSERVERS; ++i)
   {
-    if (fx->client.feature_state_observers[i].cb != NULL
-        && fx->client.feature_state_observers[i].user_ctx == &fx->channel_state)
+    if (fx->client.feature_observers[i].cb != NULL
+        && fx->client.feature_observers[i].user_ctx == &fx->channel_state)
     {
       return true;
     }
@@ -2197,7 +2703,7 @@ static void the_channel_takes_and_returns_a_state_observer_seat(void** state)
   assert_false(channel_observes_state(fx));
 
   /* More bind/unbind cycles than the pool has seats: none leak. */
-  for (size_t i = 0; i < AZ_IOT_MAX_FEATURE_STATE_OBSERVERS + 2u; ++i)
+  for (size_t i = 0; i < AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_FEATURE_OBSERVERS + 2u; ++i)
   {
     assert_int_equal(
         fx->channel.vtable->open(fx->channel.ctx, on_update, on_result, fx), AZ_IOT_OK);
@@ -2211,10 +2717,11 @@ static void the_channel_takes_and_returns_a_state_observer_seat(void** state)
 static void a_full_observer_pool_refuses_the_bind(void** state)
 {
   fixture* fx = (fixture*)*state;
-  for (size_t i = 0; i < AZ_IOT_MAX_FEATURE_STATE_OBSERVERS; ++i)
+  for (size_t i = 0; i < AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_FEATURE_OBSERVERS; ++i)
   {
-    fx->client.feature_state_observers[i].cb = az_iot_test_on_state;
-    fx->client.feature_state_observers[i].user_ctx = &fx->log;
+    fx->client.feature_observers[i].cb = ignore_feature_event;
+    fx->client.feature_observers[i].user_ctx = &fx->log;
+    fx->client.feature_observers[i].events = AZ_IOT_CONNECTION_FEATURE_EVENT_STATE;
   }
 
   assert_int_equal(
@@ -2225,7 +2732,11 @@ static void a_full_observer_pool_refuses_the_bind(void** state)
   assert_int_equal(fx->client.dps_user_count, 0);
   assert_int_equal(fx->client.dps_hold_count, 0);
 
-  memset(fx->client.feature_state_observers, 0, sizeof(fx->client.feature_state_observers));
+  memset(
+      fx->client.feature_observers,
+      0,
+      AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_FEATURE_OBSERVERS
+          * sizeof(*fx->client.feature_observers));
 }
 
 /* The session a request rode can be replaced between two channel ticks: the
@@ -2403,10 +2914,11 @@ static void a_deferred_seat_refused_by_a_full_pool_refuses_operations(void** sta
   assert_int_equal(g_bind_from_observer_result, AZ_IOT_OK);
   assert_false(channel_observes_state(fx));
 
-  for (size_t i = 0; i < AZ_IOT_MAX_FEATURE_STATE_OBSERVERS; ++i)
+  for (size_t i = 0; i < AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_FEATURE_OBSERVERS; ++i)
   {
-    fx->client.feature_state_observers[i].cb = az_iot_test_on_state;
-    fx->client.feature_state_observers[i].user_ctx = &fx->log;
+    fx->client.feature_observers[i].cb = ignore_feature_event;
+    fx->client.feature_observers[i].user_ctx = &fx->log;
+    fx->client.feature_observers[i].events = AZ_IOT_CONNECTION_FEATURE_EVENT_STATE;
   }
 
   az_iot_su_report report = { 0 };
@@ -2421,14 +2933,13 @@ static void a_deferred_seat_refused_by_a_full_pool_refuses_operations(void** sta
   assert_false(channel_observes_state(fx));
 
   /* A seat frees up: the next entry takes it. */
-  memset(&fx->client.feature_state_observers[0], 0, sizeof(fx->client.feature_state_observers[0]));
+  memset(&fx->client.feature_observers[0], 0, sizeof(fx->client.feature_observers[0]));
   assert_int_equal(fx->channel.vtable->do_work(fx->channel.ctx), AZ_IOT_OK);
   assert_true(channel_observes_state(fx));
 
-  for (size_t i = 1; i < AZ_IOT_MAX_FEATURE_STATE_OBSERVERS; ++i)
+  for (size_t i = 1; i < AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_FEATURE_OBSERVERS; ++i)
   {
-    memset(
-        &fx->client.feature_state_observers[i], 0, sizeof(fx->client.feature_state_observers[i]));
+    memset(&fx->client.feature_observers[i], 0, sizeof(fx->client.feature_observers[i]));
   }
   assert_int_equal(
       az_iot_connection_client_remove_state_observer(
@@ -2620,10 +3131,145 @@ static void closing_the_channel_from_a_state_observer_returns_the_seat(void** st
       AZ_IOT_OK);
 }
 
+static int setup_error_case(void** state)
+{
+  const su_error_case* row = (const su_error_case*)*state;
+  int result = setup(state);
+  fixture* fx = (fixture*)*state;
+  fx->error_case = row;
+  fx->client.opts.dps_hold_timeout_ms = 60000;
+  return result;
+}
+
+static void catalog_send(fixture* fx, az_iot_su_operation operation)
+{
+  if (operation == AZ_IOT_SU_OP_REPORT_STATUS)
+  {
+    az_iot_su_report report = { 0 };
+    report.workflow_id = "catalog-workflow";
+    report.outcome = AZ_IOT_SU_OUTCOME_FAILED;
+    report.failure_origin = AZ_IOT_SU_FAILURE_ORIGIN_DEVICE;
+    report.result_code = -7;
+    report.extended_result_codes = "0000000A";
+    report.result_details = "catalog failure";
+    assert_int_equal(fx->channel.vtable->report(fx->channel.ctx, &report), AZ_IOT_OK);
+  }
+  else
+  {
+    assert_int_equal(fx->channel.vtable->request_update(fx->channel.ctx, operation), AZ_IOT_OK);
+  }
+}
+
+static void catalog_channel_error(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  const su_error_case* row = fx->error_case;
+  az_iot_mock_mqtt_client* m = open_and_bind(fx);
+  memcpy(fx->channel_state.agent_info_etag, "cached-agent", sizeof("cached-agent"));
+  memcpy(fx->channel_state.service_config_etag, "cached-config", sizeof("cached-config"));
+  catalog_send(fx, row->operation);
+
+  char rid[64];
+  last_rid(m, rid, sizeof(rid));
+  char body[512];
+  (void)su_error_body_build(row, body, sizeof(body));
+  char topic[256];
+  int n = snprintf(
+      topic,
+      sizeof(topic),
+      "$dps/registrations/res/%d/?$rid=%s%s",
+      (int)row->status,
+      rid,
+      row->query);
+  assert_true(n > 0 && (size_t)n < sizeof(topic));
+  assert_true(inject(fx, m, "$dps/registrations/res/200/?$rid=su999999", ""));
+  assert_int_equal(fx->result_count, 0);
+  assert_true(fx->channel_state.request_pending);
+  assert_string_equal(fx->channel_state.pending_rid, rid);
+
+  uint64_t before = az_iot_time_mono_ms();
+  assert_true(inject(fx, m, topic, body));
+  assert_int_equal(fx->result_count, 1);
+  assert_int_equal(fx->last_op, row->operation);
+  assert_int_equal(fx->last_result, AZ_IOT_ERR_DPS);
+  assert_int_equal(fx->last_action, row->action);
+  assert_int_equal(fx->last_error_code, row->numeric);
+  assert_string_equal(fx->last_error_text, row->code);
+  assert_string_equal(fx->last_tracking_id, row->shape == SU_ERROR_BODYLESS ? "" : "catalog-track");
+  assert_int_equal(fx->last_retry_after_ms, row->delay_ms);
+  assert_true(fx->service_error_strings_were_non_null);
+  assert_false(fx->channel_state.request_pending);
+  assert_int_equal(fx->update_count, 0);
+
+  bool corrective = row->action == AZ_IOT_SU_ERROR_ACTION_RESEND_AGENT_INFO;
+  assert_string_equal(fx->channel_state.agent_info_etag, corrective ? "" : "cached-agent");
+  assert_string_equal(fx->channel_state.service_config_etag, corrective ? "" : "cached-config");
+  uint8_t saved[AZ_IOT_SU_CHANNEL_STATE_MAX_SIZE];
+  size_t saved_len = 999;
+  assert_int_equal(
+      fx->channel.vtable->save_state(fx->channel.ctx, saved, sizeof(saved), &saved_len), AZ_IOT_OK);
+  assert_true(corrective ? saved_len == 0 : saved_len > 0);
+
+  assert_true(inject(fx, m, topic, body));
+  assert_int_equal(fx->result_count, 1);
+  bool terminal = row->action == AZ_IOT_SU_ERROR_ACTION_FATAL
+      || row->action == AZ_IOT_SU_ERROR_ACTION_PROCEED;
+  if (terminal && row->operation != AZ_IOT_SU_OP_REPORT_STATUS)
+  {
+    assert_int_equal(fx->client.dps_hold_count, 0);
+    assert_int_equal(fx->channel.vtable->do_work(fx->channel.ctx), AZ_IOT_OK);
+    assert_int_equal(az_iot_connection_client_do_work(&fx->client, 0), AZ_IOT_OK);
+    assert_int_equal(fx->client.dps_phase, AZ_IOT_DPS_PHASE_REGISTERING);
+    assert_true(inject(fx, m, "$dps/registrations/res/200/?$rid=1", k_assigned_body));
+    assert_false(az_iot_test_saw_state(&fx->log, AZ_IOT_CONN_STATE_FAULTED));
+    return;
+  }
+
+  if (row->delay_ms != 0)
+  {
+    assert_true(fx->channel_state.retry_after_deadline_ms >= before + row->delay_ms);
+    assert_true(fx->channel_state.retry_after_deadline_ms <= az_iot_time_mono_ms() + row->delay_ms);
+    size_t sent = az_iot_mock_mqtt_client_count_of(m, AZ_IOT_MOCK_CALL_PUBLISH);
+    assert_int_equal(
+        fx->channel.vtable->request_update(fx->channel.ctx, AZ_IOT_SU_OP_GET_UPDATE),
+        AZ_IOT_ERR_BUSY);
+    az_iot_su_report report = { .workflow_id = "other", .extended_result_codes = "00000000" };
+    assert_int_equal(fx->channel.vtable->report(fx->channel.ctx, &report), AZ_IOT_ERR_BUSY);
+    assert_int_equal(az_iot_mock_mqtt_client_count_of(m, AZ_IOT_MOCK_CALL_PUBLISH), sent);
+    fx->channel_state.retry_after_deadline_ms = az_iot_time_mono_ms();
+  }
+  else
+  {
+    assert_int_equal(fx->channel_state.retry_after_deadline_ms, 0);
+  }
+  catalog_send(fx, row->operation);
+  const az_iot_mock_call* pub = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_PUBLISH);
+  assert_non_null(pub);
+  if (corrective)
+  {
+    assert_non_null(strstr((const char*)pub->payload, "\"agentInfo\":"));
+    assert_non_null(strstr((const char*)pub->payload, "\"agentProfile\":"));
+    assert_non_null(strstr((const char*)pub->payload, "\"manufacturer\":\"Contoso\""));
+    assert_non_null(strstr((const char*)pub->payload, "\"model\":\"Foobar\""));
+    assert_null(strstr((const char*)pub->payload, "Etag"));
+  }
+  char newer_rid[64];
+  last_rid(m, newer_rid, sizeof(newer_rid));
+  assert_string_not_equal(newer_rid, rid);
+  snprintf(topic, sizeof(topic), "$dps/registrations/res/200/?$rid=%s", rid);
+  assert_true(inject(fx, m, topic, ""));
+  assert_int_equal(fx->result_count, 1);
+  assert_true(fx->channel_state.request_pending);
+  assert_string_equal(fx->channel_state.pending_rid, newer_rid);
+}
+
+#define SU_REGISTER_CHANNEL_CASE(name, op, code, status, numeric, action, shape, query, delay) \
+  { #name, catalog_channel_error, setup_error_case, teardown, (void*)&name },
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
-    cmocka_unit_test_setup_teardown(
+    SU_ERROR_CASES(SU_REGISTER_CHANNEL_CASE) cmocka_unit_test_setup_teardown(
         the_channel_takes_and_returns_a_state_observer_seat, setup, teardown),
     cmocka_unit_test_setup_teardown(a_full_observer_pool_refuses_the_bind, setup, teardown),
     cmocka_unit_test_setup_teardown(
@@ -2645,18 +3291,30 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         invalid_replacements_preserve_channel_state_and_outstanding_body, setup, teardown),
     cmocka_unit_test_setup_teardown(
+        channel_property_copy_is_bounded_by_its_storage, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        accepted_properties_leave_room_for_the_longest_installed_id, setup, teardown),
+    cmocka_unit_test_setup_teardown(
         channel_keeps_all_five_custom_properties_and_owns_their_strings, setup, teardown),
     cmocka_unit_test_setup_teardown(
         oversized_cached_etags_are_dropped_from_the_request, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        oversized_cached_etags_are_dropped_from_an_onboarding_request, setup, teardown),
     cmocka_unit_test_setup_teardown(etags_round_trip_through_saved_state, setup, teardown),
     cmocka_unit_test_setup_teardown(malformed_saved_state_is_refused, setup, teardown),
     cmocka_unit_test_setup_teardown(
-        public_replacement_is_atomic_when_escaped_request_does_not_fit, setup, teardown),
+        public_replacement_is_atomic_when_properties_do_not_fit, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        update_check_body_log_gives_the_smallest_accepted_capacity, setup, teardown),
     cmocka_unit_test_setup_teardown(request_update_publishes_on_the_dps_topic, setup, teardown),
     cmocka_unit_test_setup_teardown(
-        the_onboarding_route_selects_its_topic_and_omits_the_installed_id, setup, teardown),
+        the_onboarding_route_selects_its_topic_and_sends_the_installed_id, setup, teardown),
     cmocka_unit_test_setup_teardown(
         the_regular_route_selects_its_topic_and_sends_the_installed_id, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        the_onboarding_route_omits_the_installed_id_when_nothing_is_installed, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        the_regular_route_omits_the_installed_id_when_nothing_is_installed, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_request_for_a_non_fetch_operation_is_rejected, setup, teardown),
     cmocka_unit_test_setup_teardown(
@@ -2739,6 +3397,21 @@ int main(void)
         the_hub_is_still_pumped_while_a_provisioning_session_is_open, setup, teardown),
     cmocka_unit_test_setup_teardown(
         the_dps_pump_caps_its_wait_at_the_hold_deadline, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_bodyless_429_fetch_is_throttled_not_fatal, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_bodyless_429_report_is_throttled_not_fatal, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_bodyless_503_fetch_is_retryable_not_fatal, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_bodyless_503_report_is_retryable_not_fatal, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        an_unparseable_503_body_falls_back_to_the_status, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_truncated_503_body_falls_back_to_the_status, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_bodyless_4xx_stays_fatal, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        an_oversized_string_code_still_classifies_by_the_body, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_bodyless_409_report_stays_fatal, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_typed_body_takes_precedence_over_the_status, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_string_only_body_is_classified_by_code_then_status, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_prose_only_503_body_is_retryable, setup, teardown),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }

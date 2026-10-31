@@ -59,8 +59,13 @@ typedef struct csr_provider
 static az_iot_result csr_provider_load(
     az_iot_certificate_provider* s,
     az_iot_cert_role role,
+    uint8_t index,
     az_iot_certificate_material* out)
 {
+  if (index != 0)
+  {
+    return AZ_IOT_ERR_NOT_FOUND;
+  }
   (void)s;
   (void)role;
   memset(out, 0, sizeof(*out));
@@ -141,8 +146,8 @@ static payload_fixture* fixture_create(void)
 static az_iot_connection_client_options fixture_options(payload_fixture* fx)
 {
   az_iot_connection_client_options opts = { 0 };
-  opts.host = NULL; /* DPS mode */
-  opts.client_id = "ut-device";
+  opts.iothub_hostname = NULL; /* DPS mode */
+  opts.device_id = "ut-device";
   opts.dps.id_scope = "0ne00000000";
   opts.dps.registration_id = "ut-device";
   opts.certificate_provider = &fx->provider.base;
@@ -172,17 +177,9 @@ static void fixture_destroy(payload_fixture* fx)
   }
   if (fx->conn.client)
   {
-    bool adopted = (fx->conn.client->factory_count > 0);
-    az_iot_connection_client_deinit(&fx->conn.client_storage);
-    if (!adopted && fx->conn.factory)
-    {
-      az_iot_mock_mqtt_factory_destroy(fx->conn.factory);
-    }
+    az_iot_test_connection_client_deinit(&fx->conn.client_storage);
   }
-  else if (fx->conn.factory)
-  {
-    az_iot_mock_mqtt_factory_destroy(fx->conn.factory);
-  }
+  az_iot_mock_mqtt_factory_destroy(fx->conn.factory);
   free(fx);
 }
 
@@ -505,7 +502,7 @@ static void a_direct_connect_ignores_the_registration_payload(void** state)
   (void)state;
   payload_fixture* fx = fixture_create();
   az_iot_connection_client_options opts = fixture_options(fx);
-  opts.host = "broker.example";
+  opts.iothub_hostname = "broker.example";
   opts.dps.id_scope = NULL;
   opts.dps.registration_id = NULL;
   /* Deliberately no body buffer: nothing will be built. */

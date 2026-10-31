@@ -34,6 +34,26 @@ extern "C"
 
   void az_iot_mqttv3_telemetry_client_deinit(az_iot_mqttv3_telemetry_client* client);
 
+  /**
+   * @brief Send @p message as QoS 1 telemetry.
+   *
+   * QoS is always 1. Nothing is queued: a send while not connected fails, and an accepted send
+   * cannot be cancelled. The callback is the only completion signal; the SDK exposes no
+   * pending-send count or packet id.
+   *
+   * @param callback Required. Called once, only if this returns AZ_IOT_OK: with the broker's
+   *                 acknowledgement result, or with AZ_IOT_ERR_NOT_CONNECTED if the session ends
+   *                 first (also on az_iot_connection_client_close()); the message may then not
+   *                 have arrived, so resend if needed. Still called after
+   *                 az_iot_mqttv3_telemetry_client_deinit(); not called after
+   *                 az_iot_connection_client_deinit().
+   *
+   * @return AZ_IOT_OK if handed to the transport.
+   * @return AZ_IOT_ERR_INVALID_ARG if @p callback is NULL, among other arguments.
+   * @return AZ_IOT_ERR_NOT_CONNECTED if the connection is not connected; nothing was sent.
+   * @return AZ_IOT_ERR_BUSY if the limits.max_pending_publishes slots not reserved by other
+   *         feature clients are all awaiting acknowledgement; nothing was sent, retry later.
+   */
   AZ_NODISCARD az_iot_result az_iot_mqttv3_telemetry_client_send(
       az_iot_mqttv3_telemetry_client* client,
       const az_iot_telemetry_message* message,
