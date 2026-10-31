@@ -1,17 +1,5 @@
 menu "Software Updates ESP32 Sample Configuration"
 
-    config SU_WIFI_SSID
-        string "Wi-Fi SSID"
-        default "my-ssid"
-        help
-            SSID of the Wi-Fi network the device joins to reach Azure.
-
-    config SU_WIFI_PASSWORD
-        string "Wi-Fi password"
-        default "my-password"
-        help
-            WPA2 password for the configured Wi-Fi network.
-
     config SU_DPS_ID_SCOPE
         string "DPS ID scope"
         default "0ne00000000"
