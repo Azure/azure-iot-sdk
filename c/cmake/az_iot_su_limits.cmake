@@ -1,8 +1,9 @@
 # Copyright (c) Microsoft. All rights reserved.
 # Licensed under the MIT license. See LICENSE file in the project root for full license information.
 #
-# Software updates manifest limits. They size the manifest structures that
-# azure-sdk-for-c parses into and that az_iot_su_client embeds, so
+# Software updates manifest limits. They size the manifest structures
+# az_iot_su_client embeds and the azure-sdk-for-c request and install-result
+# structures it shares with az_iot_core, so
 # azure-sdk-for-c, az_iot_core and the application must be built with the same
 # values. The defaults accept every manifest Device Update accepts (10 files and
 # 10 steps per update); smaller values save memory on constrained devices.
@@ -49,8 +50,9 @@ unset(_az_iot_su_limit)
 unset(_az_iot_su_files_per_step)
 
 # Fails the configuration when the installed azure-sdk-for-c (az::iot::hub) was
-# built with other limits: its manifest parser would write a different layout
-# than az_iot_core reads. Not run when cross-compiling.
+# built with other limits: its request and install-result structures would have
+# a different layout than az_iot_core uses. The check parses a manifest at the
+# limits with its parser, which sizes its arrays with the same macros. Not run when cross-compiling.
 function(az_iot_su_check_installed_limits)
     if(CMAKE_CROSSCOMPILING AND NOT CMAKE_CROSSCOMPILING_EMULATOR)
         message(WARNING "Cross-compiling: not checked that the installed azure-sdk-for-c was "

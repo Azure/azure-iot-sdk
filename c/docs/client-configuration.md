@@ -322,10 +322,10 @@ in an `ERROR` log:
   manifest verification and is reported failed. `az_iot_su_parse_update_request()` returns
   `AZ_IOT_ERR_NOT_ENOUGH_SPACE`.
 
-They size structures that azure-sdk-for-c parses into and that `az_iot_su_client` embeds, so
-azure-sdk-for-c, the SDK and the application must be built with the same values. Set them as CMake
-options of the SDK build; it applies them to the azure-sdk-for-c parser (`az_iot_hub`) and to
-`az_iot_core` as public compile definitions, which reach the application through the `azure::iot::core` target and the
+They size the manifest structures `az_iot_su_client` embeds and the azure-sdk-for-c request and
+install-result structures it shares with the SDK, so azure-sdk-for-c, the SDK and the application
+must be built with the same values. Set them as CMake options of the SDK build; it applies them to
+azure-sdk-for-c (`az_iot_hub`) and to `az_iot_core` as public compile definitions, which reach the application through the `azure::iot::core` target and the
 `azure-iot-sdk-core` pkg-config file. `az_iot_su.h` refuses to compile with values that differ from
 azure-sdk-for-c's, and `az_iot_su_client_init()` refuses an application built with values that
 differ from the SDK's. An installed azure-sdk-for-c must be built with them (see
@@ -336,7 +336,7 @@ Smaller values save memory on constrained devices, for example
 
 | | 2 steps, 2 files | 10 steps, 10 files (default) |
 | --- | --- | --- |
-| `az_iot_su_client` | 3968 | 7936 |
+| `az_iot_su_client` | 3952 | 7920 |
 | Default workspace (`AZ_IOT_SU_WORKSPACE_DEFAULT_SIZE`) | 80720 | 87440 |
 | `az_iot_su_client_update_manifest` (also on the stack of `az_iot_su_parse_update_request()`) | 464 | 3216 |
 | `AZ_IOT_SU_MIN_MESSAGE_SIZE` | 2432 | 3456 |

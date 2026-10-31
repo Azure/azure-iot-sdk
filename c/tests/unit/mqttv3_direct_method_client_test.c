@@ -34,6 +34,8 @@
 #include "azure/iot/az_iot_result.h"
 #include "azure/iot/mqttv3/az_iot_direct_method_client.h"
 
+#include "internal/connection_client_internal.h"
+
 #include "support/mock_mqtt_iface.h"
 #include "support/test_provider.h"
 #include "support/subscription_ack.h"
@@ -894,6 +896,467 @@ static void deinit_tolerates_null(void** state)
   az_iot_mqttv3_direct_method_client_deinit(NULL);
 }
 
+/* ---- session end ------------------------------------------------------------ */
+
+/* IoT Hub fails a pending call when the device disconnects: the session end frees every slot,
+ * and answering such an invocation says NOT_CONNECTED and sends nothing. */
+static void a_session_end_ends_unanswered_invocations(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  invocation_record rec = { 0 };
+  assert_int_equal(
+      az_iot_mqttv3_direct_method_client_set_handler(&fx->dm, on_method, &rec), AZ_IOT_OK);
+  for (int i = 0; i < AZ_IOT_DM_MAX_INFLIGHT; ++i)
+  {
+    rec.fired = false;
+    inject_invocation(fx, i);
+    assert_true(rec.fired);
+  }
+
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(fx->mock));
+  (void)az_iot_connection_client_do_work(&fx->conn, 0);
+  for (size_t i = 0; i < AZ_IOT_DM_MAX_INFLIGHT; ++i)
+  {
+    assert_false(fx->dm._internal.req_pool[i]._internal.in_use);
+  }
+
+  /* The session end destroyed the adapter: nothing can be published, and nothing is tried. */
+  assert_int_equal(
+      az_iot_mqttv3_direct_method_respond(&fx->dm, rec.request, 200, NULL, 0),
+      AZ_IOT_ERR_NOT_CONNECTED);
+}
+
+/* An adapter TIMEOUT is returned as BUSY, since respond()'s TIMEOUT means the slot was freed;
+ * the request stays answerable and the next answer is sent. */
+static void an_answer_timed_out_by_the_adapter_is_refused_busy_and_kept(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  invocation_record rec = { 0 };
+  assert_int_equal(
+      az_iot_mqttv3_direct_method_client_set_handler(&fx->dm, on_method, &rec), AZ_IOT_OK);
+  inject_invocation(fx, 8);
+  assert_true(rec.fired);
+
+  az_iot_mock_mqtt_client_set_next_result(fx->mock, AZ_IOT_MOCK_CALL_PUBLISH, AZ_IOT_ERR_TIMEOUT);
+  assert_int_equal(
+      az_iot_mqttv3_direct_method_respond(&fx->dm, rec.request, 200, NULL, 0), AZ_IOT_ERR_BUSY);
+  az_iot_mock_mqtt_client_clear_calls(fx->mock);
+  assert_int_equal(
+      az_iot_mqttv3_direct_method_respond(&fx->dm, rec.request, 200, NULL, 0), AZ_IOT_OK);
+  const az_iot_mock_call* answer
+      = az_iot_mock_mqtt_client_last_of(fx->mock, AZ_IOT_MOCK_CALL_PUBLISH);
+  assert_non_null(answer);
+  assert_string_equal(answer->topic, "$iothub/methods/res/200/?$rid=8");
+}
+
+/* An adapter BUSY while connected keeps the request answerable: the next answer is sent. */
+static void an_answer_refused_busy_by_the_adapter_can_be_sent_again(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  invocation_record rec = { 0 };
+  assert_int_equal(
+      az_iot_mqttv3_direct_method_client_set_handler(&fx->dm, on_method, &rec), AZ_IOT_OK);
+  inject_invocation(fx, 3);
+  assert_true(rec.fired);
+
+  az_iot_mock_mqtt_client_set_next_result(fx->mock, AZ_IOT_MOCK_CALL_PUBLISH, AZ_IOT_ERR_BUSY);
+  assert_int_equal(
+      az_iot_mqttv3_direct_method_respond(&fx->dm, rec.request, 200, NULL, 0), AZ_IOT_ERR_BUSY);
+  az_iot_mock_mqtt_client_clear_calls(fx->mock);
+  assert_int_equal(
+      az_iot_mqttv3_direct_method_respond(&fx->dm, rec.request, 200, NULL, 0), AZ_IOT_OK);
+  const az_iot_mock_call* answer
+      = az_iot_mock_mqtt_client_last_of(fx->mock, AZ_IOT_MOCK_CALL_PUBLISH);
+  assert_non_null(answer);
+  assert_string_equal(answer->topic, "$iothub/methods/res/200/?$rid=3");
+}
+
+/* A payload too large for the adapter keeps the request: a smaller answer is sent, and an
+ * unanswered one is ended by the session end. */
+static void an_answer_too_large_for_the_adapter_can_be_sent_again(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  invocation_record rec = { 0 };
+  assert_int_equal(
+      az_iot_mqttv3_direct_method_client_set_handler(&fx->dm, on_method, &rec), AZ_IOT_OK);
+  inject_invocation(fx, 5);
+  assert_true(rec.fired);
+  az_iot_direct_method_request const retried = rec.request;
+
+  static const uint8_t large[] = "{\"large\":true}";
+  az_iot_mock_mqtt_client_set_next_result(
+      fx->mock, AZ_IOT_MOCK_CALL_PUBLISH, AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+  assert_int_equal(
+      az_iot_mqttv3_direct_method_respond(&fx->dm, retried, 200, large, sizeof(large) - 1u),
+      AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+  az_iot_mock_mqtt_client_clear_calls(fx->mock);
+  assert_int_equal(az_iot_mqttv3_direct_method_respond(&fx->dm, retried, 200, NULL, 0), AZ_IOT_OK);
+  const az_iot_mock_call* answer
+      = az_iot_mock_mqtt_client_last_of(fx->mock, AZ_IOT_MOCK_CALL_PUBLISH);
+  assert_non_null(answer);
+  assert_string_equal(answer->topic, "$iothub/methods/res/200/?$rid=5");
+
+  rec.fired = false;
+  inject_invocation(fx, 6);
+  assert_true(rec.fired);
+  az_iot_direct_method_request const unanswered = rec.request;
+  az_iot_mock_mqtt_client_set_next_result(
+      fx->mock, AZ_IOT_MOCK_CALL_PUBLISH, AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+  assert_int_equal(
+      az_iot_mqttv3_direct_method_respond(&fx->dm, unanswered, 200, large, sizeof(large) - 1u),
+      AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(fx->mock));
+  (void)az_iot_connection_client_do_work(&fx->conn, 0);
+  assert_int_equal(
+      az_iot_mqttv3_direct_method_respond(&fx->dm, unanswered, 200, NULL, 0),
+      AZ_IOT_ERR_NOT_CONNECTED);
+}
+
+/* A send error from a link that dropped before do_work() saw it (Paho answers AZ_IOT_ERR_MQTT)
+ * keeps the request, so the session end that follows makes it NOT_CONNECTED. */
+static void an_answer_failing_as_the_link_drops_is_ended_by_the_session_end(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  invocation_record rec = { 0 };
+  assert_int_equal(
+      az_iot_mqttv3_direct_method_client_set_handler(&fx->dm, on_method, &rec), AZ_IOT_OK);
+  inject_invocation(fx, 4);
+  assert_true(rec.fired);
+
+  az_iot_mock_mqtt_client_set_next_result(fx->mock, AZ_IOT_MOCK_CALL_PUBLISH, AZ_IOT_ERR_MQTT);
+  assert_int_equal(
+      az_iot_mqttv3_direct_method_respond(&fx->dm, rec.request, 200, NULL, 0), AZ_IOT_ERR_MQTT);
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(fx->mock));
+  (void)az_iot_connection_client_do_work(&fx->conn, 0);
+  assert_int_equal(
+      az_iot_mqttv3_direct_method_respond(&fx->dm, rec.request, 200, NULL, 0),
+      AZ_IOT_ERR_NOT_CONNECTED);
+}
+
+/* A request from another client naming the same slot and sequence is still refused as foreign. */
+static void a_session_end_does_not_vouch_for_a_foreign_request(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  invocation_record rec = { 0 };
+  assert_int_equal(
+      az_iot_mqttv3_direct_method_client_set_handler(&fx->dm, on_method, &rec), AZ_IOT_OK);
+  inject_invocation(fx, 1);
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(fx->mock));
+  (void)az_iot_connection_client_do_work(&fx->conn, 0);
+
+  az_iot_direct_method_request foreign = rec.request;
+  foreign._internal.owner = &rec;
+  assert_int_equal(
+      az_iot_mqttv3_direct_method_respond(&fx->dm, foreign, 200, NULL, 0), AZ_IOT_ERR_INVALID_ARG);
+}
+
+static void ignore_feature_event(const az_iot_connection_feature_event* event, void* user_ctx)
+{
+  (void)event;
+  (void)user_ctx;
+}
+
+/* With no feature observer free, init fails and leaves nothing behind; deinit withdraws the
+ * observer it took. */
+static void init_needs_a_feature_observer_and_deinit_returns_it(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_mqttv3_direct_method_client_deinit(&fx->dm);
+
+  static int owners[AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_FEATURE_OBSERVERS];
+  size_t taken = 0;
+  while (taken < AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_FEATURE_OBSERVERS
+         && az_iot_connection_client__add_feature_observer(
+                &fx->conn,
+                AZ_IOT_CONNECTION_FEATURE_EVENT_SESSION_END,
+                ignore_feature_event,
+                &owners[taken])
+             == AZ_IOT_OK)
+  {
+    taken++;
+  }
+  assert_int_equal(
+      az_iot_mqttv3_direct_method_client_init(&fx->dm, &fx->conn), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+  assert_int_equal(fx->conn.required_profile_refs, 0);
+  az_iot_connection_client__remove_feature_observer(&fx->conn, ignore_feature_event, &owners[0]);
+
+  assert_int_equal(az_iot_mqttv3_direct_method_client_init(&fx->dm, &fx->conn), AZ_IOT_OK);
+  az_iot_mqttv3_direct_method_client_deinit(&fx->dm);
+  assert_int_equal(
+      az_iot_connection_client__add_feature_observer(
+          &fx->conn, AZ_IOT_CONNECTION_FEATURE_EVENT_SESSION_END, ignore_feature_event, &owners[0]),
+      AZ_IOT_OK);
+  for (size_t i = 0; i < taken; ++i)
+  {
+    az_iot_connection_client__remove_feature_observer(&fx->conn, ignore_feature_event, &owners[i]);
+  }
+  assert_int_equal(az_iot_mqttv3_direct_method_client_init(&fx->dm, &fx->conn), AZ_IOT_OK);
+}
+
+/* A planned close ends the session too: every unanswered request is freed and answered with
+ * NOT_CONNECTED, nothing reaches the replacement adapter, and a new invocation is answered. */
+static void a_close_and_reopen_ends_unanswered_invocations(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  invocation_record rec = { 0 };
+  assert_int_equal(
+      az_iot_mqttv3_direct_method_client_set_handler(&fx->dm, on_method, &rec), AZ_IOT_OK);
+  az_iot_direct_method_request held[AZ_IOT_DM_MAX_INFLIGHT];
+  for (int i = 0; i < AZ_IOT_DM_MAX_INFLIGHT; ++i)
+  {
+    rec.fired = false;
+    inject_invocation(fx, i);
+    assert_true(rec.fired);
+    held[i] = rec.request;
+  }
+
+  (void)az_iot_connection_client_close(&fx->conn);
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(fx->mock));
+  (void)az_iot_connection_client_do_work(&fx->conn, 0);
+  for (size_t i = 0; i < AZ_IOT_DM_MAX_INFLIGHT; ++i)
+  {
+    assert_false(fx->dm._internal.req_pool[i]._internal.in_use);
+  }
+
+  assert_int_equal(az_iot_connection_client_open(&fx->conn), AZ_IOT_OK);
+  fx->mock = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(fx->mock, AZ_IOT_OK));
+  assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
+  az_iot_test_ack_subscriptions(&fx->conn, fx->mock);
+  az_iot_mock_mqtt_client_clear_calls(fx->mock);
+
+  for (int i = 0; i < AZ_IOT_DM_MAX_INFLIGHT; ++i)
+  {
+    assert_int_equal(
+        az_iot_mqttv3_direct_method_respond(&fx->dm, held[i], 200, NULL, 0),
+        AZ_IOT_ERR_NOT_CONNECTED);
+  }
+  assert_int_equal(az_iot_mock_mqtt_client_count_of(fx->mock, AZ_IOT_MOCK_CALL_PUBLISH), 0);
+
+  rec.fired = false;
+  inject_invocation(fx, 7);
+  assert_true(rec.fired);
+  assert_int_equal(
+      az_iot_mqttv3_direct_method_respond(&fx->dm, rec.request, 200, NULL, 0), AZ_IOT_OK);
+  const az_iot_mock_call* answer
+      = az_iot_mock_mqtt_client_last_of(fx->mock, AZ_IOT_MOCK_CALL_PUBLISH);
+  assert_non_null(answer);
+  assert_string_equal(answer->topic, "$iothub/methods/res/200/?$rid=7");
+
+  /* Reusing and answering a slot keeps its ended request's NOT_CONNECTED. */
+  for (int i = 0; i < AZ_IOT_DM_MAX_INFLIGHT; ++i)
+  {
+    assert_int_equal(
+        az_iot_mqttv3_direct_method_respond(&fx->dm, held[i], 200, NULL, 0),
+        AZ_IOT_ERR_NOT_CONNECTED);
+  }
+  assert_int_equal(az_iot_mock_mqtt_client_count_of(fx->mock, AZ_IOT_MOCK_CALL_PUBLISH), 1);
+}
+
+/* A method dispatched before every SUBACK is answered BUSY, stays answerable once connected,
+ * and leaves every slot's earlier ended request at NOT_CONNECTED. */
+static void an_answer_while_connecting_is_refused_busy_and_kept(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  invocation_record rec = { 0 };
+  assert_int_equal(
+      az_iot_mqttv3_direct_method_client_set_handler(&fx->dm, on_method, &rec), AZ_IOT_OK);
+  az_iot_direct_method_request ended[AZ_IOT_DM_MAX_INFLIGHT];
+  for (int i = 0; i < AZ_IOT_DM_MAX_INFLIGHT; ++i)
+  {
+    rec.fired = false;
+    inject_invocation(fx, 10 + i);
+    assert_true(rec.fired);
+    ended[i] = rec.request;
+  }
+
+  (void)az_iot_connection_client_close(&fx->conn);
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(fx->mock));
+  (void)az_iot_connection_client_do_work(&fx->conn, 0);
+  assert_int_equal(az_iot_connection_client_open(&fx->conn), AZ_IOT_OK);
+  fx->mock = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(fx->mock, AZ_IOT_OK));
+  assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_connection_client_get_state(&fx->conn, AZ_IOT_CONN_SCOPE_HUB),
+      AZ_IOT_CONN_STATE_CONNECTING);
+
+  rec.fired = false;
+  inject_invocation(fx, 2);
+  assert_true(rec.fired);
+  assert_int_equal(
+      az_iot_mqttv3_direct_method_respond(&fx->dm, rec.request, 200, NULL, 0), AZ_IOT_ERR_BUSY);
+  assert_int_equal(az_iot_mock_mqtt_client_count_of(fx->mock, AZ_IOT_MOCK_CALL_PUBLISH), 0);
+  for (int i = 0; i < AZ_IOT_DM_MAX_INFLIGHT; ++i)
+  {
+    assert_int_equal(
+        az_iot_mqttv3_direct_method_respond(&fx->dm, ended[i], 200, NULL, 0),
+        AZ_IOT_ERR_NOT_CONNECTED);
+  }
+
+  az_iot_test_ack_subscriptions(&fx->conn, fx->mock);
+  assert_int_equal(
+      az_iot_mqttv3_direct_method_respond(&fx->dm, rec.request, 200, NULL, 0), AZ_IOT_OK);
+  const az_iot_mock_call* answer
+      = az_iot_mock_mqtt_client_last_of(fx->mock, AZ_IOT_MOCK_CALL_PUBLISH);
+  assert_non_null(answer);
+  assert_string_equal(answer->topic, "$iothub/methods/res/200/?$rid=2");
+  for (int i = 0; i < AZ_IOT_DM_MAX_INFLIGHT; ++i)
+  {
+    assert_int_equal(
+        az_iot_mqttv3_direct_method_respond(&fx->dm, ended[i], 200, NULL, 0),
+        AZ_IOT_ERR_NOT_CONNECTED);
+  }
+}
+
+/* An init that fails for want of a feature observer, while connected, sends no SUBSCRIBE. */
+static void an_init_without_a_feature_observer_subscribes_nothing(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  az_iot_mqttv3_direct_method_client_deinit(&fx->dm);
+
+  static int owners[AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_FEATURE_OBSERVERS];
+  size_t taken = 0;
+  while (taken < AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_FEATURE_OBSERVERS
+         && az_iot_connection_client__add_feature_observer(
+                &fx->conn,
+                AZ_IOT_CONNECTION_FEATURE_EVENT_SESSION_END,
+                ignore_feature_event,
+                &owners[taken])
+             == AZ_IOT_OK)
+  {
+    taken++;
+  }
+  az_iot_mock_mqtt_client_clear_calls(fx->mock);
+  assert_int_equal(
+      az_iot_mqttv3_direct_method_client_init(&fx->dm, &fx->conn), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+  assert_int_equal(az_iot_mock_mqtt_client_count_of(fx->mock, AZ_IOT_MOCK_CALL_SUBSCRIBE), 0);
+  for (size_t i = 0; i < taken; ++i)
+  {
+    az_iot_connection_client__remove_feature_observer(&fx->conn, ignore_feature_event, &owners[i]);
+  }
+  assert_int_equal(az_iot_mqttv3_direct_method_client_init(&fx->dm, &fx->conn), AZ_IOT_OK);
+}
+
+/* Close, then reopen up to CONNECTED on a new adapter. */
+static void close_and_reopen(fixture* fx)
+{
+  (void)az_iot_connection_client_close(&fx->conn);
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(fx->mock));
+  (void)az_iot_connection_client_do_work(&fx->conn, 0);
+  assert_int_equal(az_iot_connection_client_open(&fx->conn), AZ_IOT_OK);
+  fx->mock = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(fx->mock, AZ_IOT_OK));
+  assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
+  az_iot_test_ack_subscriptions(&fx->conn, fx->mock);
+  az_iot_mock_mqtt_client_clear_calls(fx->mock);
+}
+
+/* Answered while closing, before the session end: refused NOT_CONNECTED, and still so after it. */
+static void a_response_while_closing_stays_not_connected(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  invocation_record rec = { 0 };
+  assert_int_equal(
+      az_iot_mqttv3_direct_method_client_set_handler(&fx->dm, on_method, &rec), AZ_IOT_OK);
+  inject_invocation(fx, 1);
+  assert_true(rec.fired);
+
+  (void)az_iot_connection_client_close(&fx->conn);
+  assert_int_equal(
+      az_iot_mqttv3_direct_method_respond(&fx->dm, rec.request, 200, NULL, 0),
+      AZ_IOT_ERR_NOT_CONNECTED);
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(fx->mock));
+  (void)az_iot_connection_client_do_work(&fx->conn, 0);
+  assert_int_equal(
+      az_iot_mqttv3_direct_method_respond(&fx->dm, rec.request, 200, NULL, 0),
+      AZ_IOT_ERR_NOT_CONNECTED);
+}
+
+/* One ended request is kept per slot: once its slot ends another invocation, the older request is
+ * refused as stale, and the newer one says NOT_CONNECTED. */
+static void a_later_session_end_on_the_same_slot_replaces_the_ended_request(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  invocation_record rec = { 0 };
+  assert_int_equal(
+      az_iot_mqttv3_direct_method_client_set_handler(&fx->dm, on_method, &rec), AZ_IOT_OK);
+  inject_invocation(fx, 1);
+  az_iot_direct_method_request const first = rec.request;
+  close_and_reopen(fx);
+
+  for (int i = 0; i < AZ_IOT_DM_MAX_INFLIGHT; ++i)
+  {
+    inject_invocation(fx, 10 + i);
+  }
+  assert_int_equal(rec.request._internal.slot, first._internal.slot);
+  az_iot_direct_method_request const second = rec.request;
+  close_and_reopen(fx);
+
+  assert_int_equal(
+      az_iot_mqttv3_direct_method_respond(&fx->dm, first, 200, NULL, 0), AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(
+      az_iot_mqttv3_direct_method_respond(&fx->dm, second, 200, NULL, 0), AZ_IOT_ERR_NOT_CONNECTED);
+}
+
+/* Init failing after it took its feature observer (no subscription left) gives the observer back.
+ */
+static void an_init_failing_after_its_observer_returns_it(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_mqttv3_direct_method_client_deinit(&fx->dm);
+
+  /* One more than the table holds, so the last registration is the one refused. */
+  enum
+  {
+    FILLERS = AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_PERSISTENT_SUBSCRIPTIONS + 1
+  };
+  assert_true(fx->conn.opts.limits.max_persistent_subscriptions < (size_t)FILLERS);
+  static int owners[FILLERS];
+  static char filters[FILLERS][32];
+  size_t taken = 0;
+  while (taken < (size_t)FILLERS)
+  {
+    snprintf(filters[taken], sizeof(filters[taken]), "filler/%u", (unsigned)taken);
+    if (az_iot_connection_client__add_subscription_on_connect(
+            &fx->conn,
+            filters[taken],
+            AZ_IOT_MQTT_QOS_0,
+            &owners[taken],
+            AZ_IOT_SUBSCRIPTION_FAILS_SESSION,
+            NULL)
+        != AZ_IOT_OK)
+    {
+      break;
+    }
+    taken++;
+  }
+  assert_true(taken < (size_t)FILLERS);
+  assert_int_not_equal(az_iot_mqttv3_direct_method_client_init(&fx->dm, &fx->conn), AZ_IOT_OK);
+  for (size_t i = 0; i < fx->conn.opts.limits.max_feature_observers; ++i)
+  {
+    assert_ptr_not_equal(fx->conn.feature_observers[i].user_ctx, &fx->dm);
+  }
+  for (size_t i = 0; i < taken; ++i)
+  {
+    (void)az_iot_connection_client__remove_subscriptions_for(&fx->conn, &owners[i]);
+  }
+  assert_int_equal(az_iot_mqttv3_direct_method_client_init(&fx->dm, &fx->conn), AZ_IOT_OK);
+}
 static void deinit_zeroes_the_client(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -1392,6 +1855,29 @@ int main(void)
     cmocka_unit_test(init_against_an_mqtt_v5_connection_is_rejected),
     cmocka_unit_test_setup_teardown(the_subscription_uses_qos_0, setup, teardown),
     cmocka_unit_test(deinit_tolerates_null),
+    cmocka_unit_test_setup_teardown(a_session_end_ends_unanswered_invocations, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        an_answer_refused_busy_by_the_adapter_can_be_sent_again, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        an_answer_timed_out_by_the_adapter_is_refused_busy_and_kept, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        an_answer_too_large_for_the_adapter_can_be_sent_again, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        an_answer_failing_as_the_link_drops_is_ended_by_the_session_end, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_session_end_does_not_vouch_for_a_foreign_request, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        init_needs_a_feature_observer_and_deinit_returns_it, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_close_and_reopen_ends_unanswered_invocations, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        an_answer_while_connecting_is_refused_busy_and_kept, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        an_init_without_a_feature_observer_subscribes_nothing, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_response_while_closing_stays_not_connected, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_later_session_end_on_the_same_slot_replaces_the_ended_request, setup, teardown),
+    cmocka_unit_test_setup_teardown(an_init_failing_after_its_observer_returns_it, setup, teardown),
     cmocka_unit_test_setup_teardown(deinit_zeroes_the_client, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_second_client_on_the_same_connection_is_refused, setup, teardown),

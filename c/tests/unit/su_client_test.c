@@ -5949,9 +5949,7 @@ static void update_at_the_manifest_limits_installs_every_step(void** state)
 }
 
 /* A manifest one over any limit fails before anything is downloaded, is reported failed, and
- * logs the limit; the public parser refuses it with AZ_IOT_ERR_NOT_ENOUGH_SPACE. The step and
- * hash counts are not bounded by the azure-sdk-for-c parser, so this also keeps it from
- * writing past its arrays. */
+ * logs the limit; the public parser refuses it with AZ_IOT_ERR_NOT_ENOUGH_SPACE. */
 static void update_over_a_manifest_limit_fails_before_download(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -5967,7 +5965,7 @@ static void update_over_a_manifest_limit_fails_before_download(void** state)
     { { 1, AZ_IOT_SU_MAX_FILE_COUNT + 1, 1, 1, NULL }, "AZ_IOT_SU_MAX_FILE_COUNT is" },
     { { 1, AZ_IOT_SU_MAX_FILE_COUNT, AZ_IOT_SU_MAX_FILE_COUNT_PER_STEP + 1, 1, NULL },
       "AZ_IOT_SU_MAX_FILE_COUNT_PER_STEP" },
-    { { 1, 1, 1, _az_IOT_ADU_CLIENT_MAX_FILE_HASH_COUNT + 1, NULL }, "hashes" },
+    { { 1, 1, 1, AZ_IOT_SU_MAX_FILE_HASH_COUNT + 1, NULL }, "hashes" },
   };
   for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i)
   {
@@ -6004,8 +6002,8 @@ static void update_over_a_manifest_limit_fails_before_download(void** state)
   }
 }
 
-/* A file mimeType that is not a string is refused before parsing: the azure-sdk-for-c parser
- * would read its members as file properties, past the hash count checked here. */
+/* A file mimeType that is not a string makes the manifest malformed: it fails before
+ * download. */
 static void manifest_with_a_non_string_mime_type_fails_before_download(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -6036,6 +6034,29 @@ static void manifest_with_a_non_string_mime_type_fails_before_download(void** st
           &request,
           &manifest),
       AZ_IOT_ERR_INVALID_ARG);
+}
+
+/* A file carrying delta members (properties, relatedFiles, downloadHandler) installs. */
+static void manifest_with_delta_file_members_installs(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  const manifest_shape shape
+      = { .step_count = 1,
+          .file_count = 1,
+          .first_step_file_count = 1,
+          .hash_count = 1,
+          .file_extra = ",\"properties\":{\"k\":\"v\"},\"relatedFiles\":{\"d\":{\"fileName\":"
+                        "\"d.delta\",\"sizeInBytes\":8,\"hashes\":{\"sha256\":\"AAAA\"},"
+                        "\"properties\":{\"microsoft.sourceFileHash\":\"AAAA\"}}},"
+                        "\"downloadHandler\":{\"id\":\"microsoft/delta:1\"}" };
+
+  inject_patch(fx, manifest_limits_patch("delta-file-members", shape));
+  pump(fx, 60);
+
+  assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_IDLE);
+  assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_SUCCEEDED);
+  assert_int_equal(fx->log.download_calls, 1);
 }
 /* The update body carries service-issued download URLs; DEBUG logs only its
  * size, TRACE the body. */
@@ -9411,6 +9432,159 @@ static void library_mode_does_not_hand_over_an_unverified_update(void** state)
   assert_string_equal(fx->chan.last_workflow_id, "wf-bad");
 }
 
+/** @brief What an observer read with az_iot_su_client_get_current_update() on entering a state. */
+typedef struct
+{
+  az_iot_su_client* su;
+  az_iot_su_state at;
+  bool seen;
+  bool had_manifest;
+  char workflow_id[32];
+  char manifest_text[1024];
+  int32_t signature_size;
+  uint32_t file_urls_count;
+} current_update_probe;
+
+static void span_to_str(char* dst, size_t cap, az_span s)
+{
+  int32_t n = az_span_size(s);
+  assert_true(n >= 0 && (size_t)n < cap);
+  if (n > 0)
+  {
+    memcpy(dst, az_span_ptr(s), (size_t)n);
+  }
+  dst[n] = '\0';
+}
+
+static void read_current_update_on_state(const az_iot_su_event* event, void* ctx)
+{
+  current_update_probe* p = (current_update_probe*)ctx;
+  if (event->kind != AZ_IOT_SU_EVENT_WORKFLOW_STATE_CHANGED || event->state != p->at)
+  {
+    return;
+  }
+  const az_iot_su_client_update_request* request = NULL;
+  const az_iot_su_client_update_manifest* manifest = NULL;
+  assert_int_equal(az_iot_su_client_get_current_update(p->su, &request, &manifest), AZ_IOT_OK);
+  assert_non_null(request);
+  p->seen = true;
+  p->had_manifest = manifest != NULL;
+  span_to_str(p->workflow_id, sizeof(p->workflow_id), request->workflow.id);
+  span_to_str(p->manifest_text, sizeof(p->manifest_text), request->update_manifest);
+  p->signature_size = az_span_size(request->update_manifest_signature);
+  p->file_urls_count = request->file_urls_count;
+}
+
+static void current_update_is_readable_from_manifest_received_until_idle(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  const az_iot_su_client_update_request* request = NULL;
+  const az_iot_su_client_update_manifest* manifest = NULL;
+  assert_int_equal(
+      az_iot_su_client_get_current_update(&fx->su, &request, &manifest), AZ_IOT_ERR_NOT_FOUND);
+  assert_null(request);
+  assert_null(manifest);
+  assert_int_equal(
+      az_iot_su_client_get_current_update(NULL, &request, &manifest), AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(
+      az_iot_su_client_get_current_update(&fx->su, NULL, &manifest), AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(
+      az_iot_su_client_get_current_update(&fx->su, &request, NULL), AZ_IOT_ERR_INVALID_ARG);
+
+  current_update_probe probe = { .su = &fx->su, .at = AZ_IOT_SU_STATE_MANIFEST_RECEIVED };
+  assert_int_equal(
+      az_iot_su_client_add_observer(&fx->su, read_current_update_on_state, &probe), AZ_IOT_OK);
+  inject_patch(fx, build_patch("wf-current"));
+
+  /* The whole offer, not yet verified, with the manifest already unescaped. */
+  assert_true(probe.seen);
+  assert_false(probe.had_manifest);
+  assert_string_equal(probe.workflow_id, "wf-current");
+  assert_non_null(strstr(probe.manifest_text, "{\"manifestVersion\":\"5\""));
+  assert_null(strchr(probe.manifest_text, '\\'));
+  assert_true(probe.signature_size > 0);
+  assert_int_equal(probe.file_urls_count, 1);
+
+  for (int i = 0; i < 8 && az_iot_su_client_get_state(&fx->su) != AZ_IOT_SU_STATE_DOWNLOAD_STARTED;
+       ++i)
+  {
+    assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  }
+  assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_DOWNLOAD_STARTED);
+  assert_int_equal(az_iot_su_client_get_current_update(&fx->su, &request, &manifest), AZ_IOT_OK);
+  assert_non_null(manifest);
+  assert_int_equal(manifest->instructions.steps_count, 1);
+  assert_true(az_span_is_content_equal(manifest->update_id.version, AZ_SPAN_FROM_STR("1.1")));
+  assert_true(az_span_is_content_equal(
+      request->update_manifest, az_span_create_from_str(probe.manifest_text)));
+
+  pump(fx, 64);
+  assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_IDLE);
+  assert_int_equal(
+      az_iot_su_client_get_current_update(&fx->su, &request, &manifest), AZ_IOT_ERR_NOT_FOUND);
+}
+
+static void current_update_of_a_failed_workflow_has_no_manifest(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  fx->log.verify_result = AZ_IOT_SU_RESULT_FAILURE;
+  current_update_probe probe = { .su = &fx->su, .at = AZ_IOT_SU_STATE_FAILED };
+  assert_int_equal(
+      az_iot_su_client_add_observer(&fx->su, read_current_update_on_state, &probe), AZ_IOT_OK);
+  inject_patch(fx, build_patch("wf-unverified"));
+  pump(fx, 8);
+
+  assert_true(probe.seen);
+  assert_false(probe.had_manifest);
+  assert_string_equal(probe.workflow_id, "wf-unverified");
+}
+
+static void current_update_with_an_undecodable_manifest_fails_before_verification(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  /* A lone high surrogate in the escaped manifest: staged, but not decodable. */
+  static char patch[SU_TEST_PATCH_SIZE];
+  copy_str(patch, sizeof(patch), build_patch("wf-undecodable"));
+  char* at = strstr(patch, "manifestVersion");
+  assert_non_null(at);
+  assert_true(strlen(patch) + 6 < sizeof(patch));
+  memmove(at + 6, at, strlen(at) + 1);
+  memcpy(at, "\\ud800", 6);
+
+  current_update_probe probe = { .su = &fx->su, .at = AZ_IOT_SU_STATE_MANIFEST_RECEIVED };
+  assert_int_equal(
+      az_iot_su_client_add_observer(&fx->su, read_current_update_on_state, &probe), AZ_IOT_OK);
+  inject_patch(fx, patch);
+  assert_true(probe.seen);
+  assert_false(probe.had_manifest);
+  assert_string_equal(probe.workflow_id, "wf-undecodable");
+  assert_string_equal(probe.manifest_text, "");
+
+  pump(fx, 8);
+  assert_int_equal(fx->log.verify_calls, 0);
+  assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_IDLE);
+  assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_FAILED);
+  assert_string_equal(fx->chan.last_workflow_id, "wf-undecodable");
+}
+
+static void current_update_in_library_mode_is_the_delegated_one(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  delegate(fx, build_patch("wf-lib-current"));
+
+  const az_iot_su_client_update_request* request = NULL;
+  const az_iot_su_client_update_manifest* manifest = NULL;
+  assert_int_equal(az_iot_su_client_get_current_update(&fx->su, &request, &manifest), AZ_IOT_OK);
+  assert_ptr_equal(request, fx->last_request);
+  assert_ptr_equal(manifest, fx->last_manifest);
+
+  az_iot_su_step_result success = lib_result(AZ_IOT_SU_OUTCOME_SUCCEEDED);
+  az_iot_su_step_result steps[1] = { lib_result(AZ_IOT_SU_OUTCOME_SUCCEEDED) };
+  assert_int_equal(az_iot_su_client_report_status(&fx->su, &success, steps, 1), AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_su_client_get_current_update(&fx->su, &request, &manifest), AZ_IOT_ERR_NOT_FOUND);
+}
+
 static void report_status_sends_progress_then_success(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -9853,6 +10027,7 @@ int main(void)
         update_over_a_manifest_limit_fails_before_download, setup, teardown),
     cmocka_unit_test_setup_teardown(
         manifest_with_a_non_string_mime_type_fails_before_download, setup, teardown),
+    cmocka_unit_test_setup_teardown(manifest_with_delta_file_members_installs, setup, teardown),
     cmocka_unit_test_setup_teardown(update_metadata_drives_full_workflow, setup, teardown),
     cmocka_unit_test_setup_teardown(escaped_file_url_is_decoded, setup, teardown),
     cmocka_unit_test_setup_teardown(escaped_workflow_id_is_decoded, setup, teardown),
@@ -10119,6 +10294,14 @@ int main(void)
         library_mode_hands_the_verified_update_to_the_application, setup_library, teardown),
     cmocka_unit_test_setup_teardown(
         library_mode_does_not_hand_over_an_unverified_update, setup_library, teardown),
+    cmocka_unit_test_setup_teardown(
+        current_update_is_readable_from_manifest_received_until_idle, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        current_update_of_a_failed_workflow_has_no_manifest, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        current_update_with_an_undecodable_manifest_fails_before_verification, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        current_update_in_library_mode_is_the_delegated_one, setup_library, teardown),
     cmocka_unit_test_setup_teardown(
         report_status_sends_progress_then_success, setup_library, teardown),
     cmocka_unit_test_setup_teardown(

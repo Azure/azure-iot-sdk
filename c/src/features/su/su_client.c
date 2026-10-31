@@ -32,6 +32,7 @@
 #include "azure/iot/az_iot_su.h"
 
 #include "internal/su_internal.h"
+#include "internal/su_manifest_internal.h"
 #include "internal/base64.h"
 #include "internal/crypto.h"
 #include "internal/json_string.h"
@@ -1327,6 +1328,7 @@ static void reset_to_idle(az_iot_su_client* client)
  *
  * Only removes the JSON string escaping: the signature covers the unescaped
  * bytes. The manifest is not interpreted until verify_manifest() accepts it.
+ * On failure both spans are left empty.
  *
  * @param client The client.
  * @return AZ_IOT_OK; AZ_IOT_ERR_INVALID_ARG when empty or undecodable.
@@ -1334,329 +1336,15 @@ static void reset_to_idle(az_iot_su_client* client)
 static az_iot_result decode_manifest(az_iot_su_client* client)
 {
   az_span manifest = SU_I(client).current_request.update_manifest;
-  az_span unescaped;
+  az_span unescaped = AZ_SPAN_EMPTY;
   if (az_span_size(manifest) <= 0
-      || az_iot_json_string_decode(manifest, manifest, &unescaped) != AZ_IOT_OK
-      || az_span_size(unescaped) <= 0)
+      || az_iot_json_string_decode(manifest, manifest, &unescaped) != AZ_IOT_OK)
   {
-    return AZ_IOT_ERR_INVALID_ARG;
+    unescaped = AZ_SPAN_EMPTY;
   }
   SU_I(client).current_request.update_manifest = unescaped;
   SU_I(client).manifest_text = unescaped;
-  return AZ_IOT_OK;
-}
-
-/**
- * @brief Move to the next property of the object being read.
- *
- * @param jr       Reader inside an object, on its start or on the end of a value.
- * @param name     Set to the property name.
- * @param is_error Set when the JSON is malformed.
- * @return true with the reader on the property value; false at the object end or on error.
- */
-static bool json_next_property(az_json_reader* jr, az_json_token* name, bool* is_error)
-{
-  if (az_result_failed(az_json_reader_next_token(jr)))
-  {
-    *is_error = true;
-    return false;
-  }
-  if (jr->token.kind == AZ_JSON_TOKEN_END_OBJECT)
-  {
-    return false;
-  }
-  if (jr->token.kind != AZ_JSON_TOKEN_PROPERTY_NAME)
-  {
-    *is_error = true;
-    return false;
-  }
-  *name = jr->token;
-  if (az_result_failed(az_json_reader_next_token(jr)))
-  {
-    *is_error = true;
-    return false;
-  }
-  return true;
-}
-
-/**
- * @brief Move to the next element of the array being read.
- *
- * @param jr       Reader inside an array, on its start or on the end of an element.
- * @param is_error Set when the JSON is malformed.
- * @return true with the reader on the element; false at the array end or on error.
- */
-static bool json_next_element(az_json_reader* jr, bool* is_error)
-{
-  if (az_result_failed(az_json_reader_next_token(jr)))
-  {
-    *is_error = true;
-    return false;
-  }
-  return jr->token.kind != AZ_JSON_TOKEN_END_ARRAY;
-}
-
-/** @brief Move the reader to the end of the current value; sets @p is_error on failure. */
-static void json_skip_value(az_json_reader* jr, bool* is_error)
-{
-  if (az_result_failed(az_json_reader_skip_children(jr)))
-  {
-    *is_error = true;
-  }
-}
-
-/**
- * @brief Count the members (array elements or object properties) of the current value.
- *
- * @param jr       Reader on a BEGIN_ARRAY or BEGIN_OBJECT token; left on its end.
- * @param is_error Set when the JSON is malformed.
- * @return The member count.
- */
-static uint32_t json_count_members(az_json_reader* jr, bool* is_error)
-{
-  uint32_t count = 0;
-  az_json_token name;
-  if (jr->token.kind == AZ_JSON_TOKEN_BEGIN_ARRAY)
-  {
-    while (!*is_error && json_next_element(jr, is_error))
-    {
-      count++;
-      json_skip_value(jr, is_error);
-    }
-  }
-  else
-  {
-    while (!*is_error && json_next_property(jr, &name, is_error))
-    {
-      count++;
-      json_skip_value(jr, is_error);
-    }
-  }
-  return count;
-}
-
-/** @brief Counts in an update manifest that size its parsed form. */
-typedef struct
-{
-  uint32_t step_count;
-  uint32_t file_count;
-  uint32_t largest_step_file_count;
-  uint32_t largest_file_hash_count;
-} manifest_counts;
-
-/**
- * @brief Count the steps of `instructions` and the files of the largest step.
- *
- * @param jr       Reader on the `instructions` value; left on its end.
- * @param counts   Updated.
- * @param is_error Set when the JSON is malformed.
- */
-static void count_manifest_steps(az_json_reader* jr, manifest_counts* counts, bool* is_error)
-{
-  az_json_token name;
-  if (jr->token.kind != AZ_JSON_TOKEN_BEGIN_OBJECT)
-  {
-    json_skip_value(jr, is_error);
-    return;
-  }
-  while (!*is_error && json_next_property(jr, &name, is_error))
-  {
-    if (!az_json_token_is_text_equal(&name, AZ_SPAN_FROM_STR("steps"))
-        || jr->token.kind != AZ_JSON_TOKEN_BEGIN_ARRAY)
-    {
-      json_skip_value(jr, is_error);
-      continue;
-    }
-    while (!*is_error && json_next_element(jr, is_error))
-    {
-      counts->step_count++;
-      if (jr->token.kind != AZ_JSON_TOKEN_BEGIN_OBJECT)
-      {
-        json_skip_value(jr, is_error);
-        continue;
-      }
-      az_json_token step_property;
-      while (!*is_error && json_next_property(jr, &step_property, is_error))
-      {
-        if (az_json_token_is_text_equal(&step_property, AZ_SPAN_FROM_STR("files"))
-            && jr->token.kind == AZ_JSON_TOKEN_BEGIN_ARRAY)
-        {
-          uint32_t step_files = json_count_members(jr, is_error);
-          if (step_files > counts->largest_step_file_count)
-          {
-            counts->largest_step_file_count = step_files;
-          }
-        }
-        else
-        {
-          json_skip_value(jr, is_error);
-        }
-      }
-    }
-  }
-}
-
-/**
- * @brief Count the manifest `files` and the hashes of the file with the most.
- *
- * @param jr       Reader on the `files` value; left on its end.
- * @param counts   Updated.
- * @param is_error Set when the JSON is malformed.
- */
-static void count_manifest_files(az_json_reader* jr, manifest_counts* counts, bool* is_error)
-{
-  az_json_token file_id;
-  if (jr->token.kind != AZ_JSON_TOKEN_BEGIN_OBJECT)
-  {
-    json_skip_value(jr, is_error);
-    return;
-  }
-  while (!*is_error && json_next_property(jr, &file_id, is_error))
-  {
-    counts->file_count++;
-    if (jr->token.kind != AZ_JSON_TOKEN_BEGIN_OBJECT)
-    {
-      json_skip_value(jr, is_error);
-      continue;
-    }
-    az_json_token file_property;
-    while (!*is_error && json_next_property(jr, &file_property, is_error))
-    {
-      if (az_json_token_is_text_equal(&file_property, AZ_SPAN_FROM_STR("hashes"))
-          && jr->token.kind == AZ_JSON_TOKEN_BEGIN_OBJECT)
-      {
-        uint32_t hashes = json_count_members(jr, is_error);
-        if (hashes > counts->largest_file_hash_count)
-        {
-          counts->largest_file_hash_count = hashes;
-        }
-      }
-      else if (
-          az_json_token_is_text_equal(&file_property, AZ_SPAN_FROM_STR("mimeType"))
-          && jr->token.kind != AZ_JSON_TOKEN_STRING)
-      {
-        /* The parser reads past a non-string mimeType without skipping it, so its members
-         * would be parsed as file properties. */
-        *is_error = true;
-      }
-      else
-      {
-        json_skip_value(jr, is_error);
-      }
-    }
-  }
-}
-
-/**
- * @brief Check a manifest's counts against the arrays it is parsed into.
- *
- * az_iot_adu_client_parse_update_manifest() bounds neither the step count nor the hashes of a
- * file, so a manifest over either would be written past those arrays. It is checked here
- * first; file counts too, so each exceeded limit is logged.
- *
- * @param manifest_text The decoded manifest JSON.
- * @return AZ_IOT_OK; AZ_IOT_ERR_NOT_ENOUGH_SPACE (logged) when a count exceeds its limit;
- * AZ_IOT_ERR_INVALID_ARG when the JSON is malformed or a file `mimeType` is not a string.
- */
-static az_iot_result check_manifest_limits(az_span manifest_text)
-{
-  az_json_reader jr;
-  if (az_result_failed(az_json_reader_init(&jr, manifest_text, NULL))
-      || az_result_failed(az_json_reader_next_token(&jr))
-      || jr.token.kind != AZ_JSON_TOKEN_BEGIN_OBJECT)
-  {
-    return AZ_IOT_ERR_INVALID_ARG;
-  }
-
-  manifest_counts counts = { 0 };
-  bool is_error = false;
-  az_json_token name;
-  while (!is_error && json_next_property(&jr, &name, &is_error))
-  {
-    if (az_json_token_is_text_equal(&name, AZ_SPAN_FROM_STR("instructions")))
-    {
-      count_manifest_steps(&jr, &counts, &is_error);
-    }
-    else if (az_json_token_is_text_equal(&name, AZ_SPAN_FROM_STR("files")))
-    {
-      count_manifest_files(&jr, &counts, &is_error);
-    }
-    else
-    {
-      json_skip_value(&jr, &is_error);
-    }
-  }
-  if (is_error)
-  {
-    return AZ_IOT_ERR_INVALID_ARG;
-  }
-
-  az_iot_result result = AZ_IOT_OK;
-  if (counts.step_count > (uint32_t)AZ_IOT_SU_MAX_STEP_COUNT)
-  {
-    AZ_IOT_LOG_ERRORF(
-        AZ_IOT_LOG_COMPONENT_SU,
-        "manifest has %u steps; AZ_IOT_SU_MAX_STEP_COUNT is %u",
-        (unsigned)counts.step_count,
-        (unsigned)AZ_IOT_SU_MAX_STEP_COUNT);
-    result = AZ_IOT_ERR_NOT_ENOUGH_SPACE;
-  }
-  if (counts.file_count > (uint32_t)AZ_IOT_SU_MAX_FILE_COUNT)
-  {
-    AZ_IOT_LOG_ERRORF(
-        AZ_IOT_LOG_COMPONENT_SU,
-        "manifest has %u files; AZ_IOT_SU_MAX_FILE_COUNT is %u",
-        (unsigned)counts.file_count,
-        (unsigned)AZ_IOT_SU_MAX_FILE_COUNT);
-    result = AZ_IOT_ERR_NOT_ENOUGH_SPACE;
-  }
-  if (counts.largest_step_file_count > (uint32_t)AZ_IOT_SU_MAX_FILE_COUNT_PER_STEP)
-  {
-    AZ_IOT_LOG_ERRORF(
-        AZ_IOT_LOG_COMPONENT_SU,
-        "manifest step has %u files; AZ_IOT_SU_MAX_FILE_COUNT_PER_STEP is %u",
-        (unsigned)counts.largest_step_file_count,
-        (unsigned)AZ_IOT_SU_MAX_FILE_COUNT_PER_STEP);
-    result = AZ_IOT_ERR_NOT_ENOUGH_SPACE;
-  }
-  if (counts.largest_file_hash_count > (uint32_t)_az_IOT_ADU_CLIENT_MAX_FILE_HASH_COUNT)
-  {
-    AZ_IOT_LOG_ERRORF(
-        AZ_IOT_LOG_COMPONENT_SU,
-        "manifest file has %u hashes; at most %u are supported",
-        (unsigned)counts.largest_file_hash_count,
-        (unsigned)_az_IOT_ADU_CLIENT_MAX_FILE_HASH_COUNT);
-    result = AZ_IOT_ERR_NOT_ENOUGH_SPACE;
-  }
-  return result;
-}
-
-/**
- * @brief Parse a decoded manifest after checking it fits the parsed form.
- *
- * @param az            Initialized azure-sdk-for-c client.
- * @param manifest_text The decoded manifest JSON; @p out_manifest spans point into it.
- * @param out_manifest  Filled.
- * @return AZ_IOT_OK; AZ_IOT_ERR_NOT_ENOUGH_SPACE when over a limit (check_manifest_limits());
- * AZ_IOT_ERR_INVALID_ARG when malformed.
- */
-static az_iot_result parse_update_manifest(
-    az_iot_adu_client* az,
-    az_span manifest_text,
-    az_iot_su_client_update_manifest* out_manifest)
-{
-  az_iot_result result = check_manifest_limits(manifest_text);
-  if (result != AZ_IOT_OK)
-  {
-    return result;
-  }
-  az_json_reader jr;
-  if (az_result_failed(az_json_reader_init(&jr, manifest_text, NULL))
-      || az_result_failed(az_iot_adu_client_parse_update_manifest(az, &jr, out_manifest)))
-  {
-    return AZ_IOT_ERR_INVALID_ARG;
-  }
-  return AZ_IOT_OK;
+  return az_span_size(unescaped) > 0 ? AZ_IOT_OK : AZ_IOT_ERR_INVALID_ARG;
 }
 
 /**
@@ -1670,8 +1358,8 @@ static az_iot_result parse_update_manifest(
  */
 static az_iot_result parse_manifest(az_iot_su_client* client)
 {
-  return parse_update_manifest(
-      &SU_I(client).az, SU_I(client).manifest_text, &SU_I(client).current_manifest);
+  return az_iot_su__parse_update_manifest(
+      SU_I(client).manifest_text, &SU_I(client).current_manifest);
 }
 
 /**
@@ -2165,6 +1853,9 @@ static void process_update_metadata(
   }
 
   SU_I(client).current_request = req;
+  /* Before any observer can read the request: its manifest is the unescaped
+   * text in every state. A failure is reported from MANIFEST_RECEIVED. */
+  (void)decode_manifest(client);
   SU_I(client).have_request = true;
   SU_I(client).checkpoint_pending = false;
   SU_I(client).install_called = false;
@@ -2176,7 +1867,7 @@ static void process_update_metadata(
       client,
       req.workflow.id,
       req.workflow.retry_timestamp,
-      manifest_fingerprint(req.update_manifest));
+      manifest_fingerprint(SU_I(client).manifest_text));
   SU_I(client).active_workflow_running = true;
 }
 
@@ -3179,12 +2870,6 @@ static az_iot_result su_client_init_core(
     SU_I(client).root_key_count = options->root_key_count;
   }
 
-  if (az_result_failed(az_iot_adu_client_init(&SU_I(client).az, NULL)))
-  {
-    memset(client, 0, sizeof(*client));
-    return AZ_IOT_ERR_INTERNAL;
-  }
-
   az_iot_result r = check_device_properties_fit_cache(client, options->device_properties);
   if (r != AZ_IOT_OK)
   {
@@ -4014,8 +3699,7 @@ AZ_NODISCARD az_iot_result az_iot_su_client_resume(az_iot_su_client* client)
   az_span manifest_text = az_span_create(SU_I(client).request_buffer + mf_off, (int32_t)mf_len);
   SU_I(client).manifest_text = manifest_text;
 
-  if (parse_update_manifest(&SU_I(client).az, manifest_text, &SU_I(client).current_manifest)
-      != AZ_IOT_OK)
+  if (az_iot_su__parse_update_manifest(manifest_text, &SU_I(client).current_manifest) != AZ_IOT_OK)
   {
     /* Corrupt manifest text: discard the snapshot and stay Idle. */
     reset_to_idle(client);
@@ -4327,7 +4011,8 @@ az_iot_result az_iot_su_client_do_work(az_iot_su_client* client)
 
     case AZ_IOT_SU_STATE_MANIFEST_RECEIVED:
     {
-      if (decode_manifest(client) != AZ_IOT_OK)
+      /* decode_manifest() ran when the request was staged. */
+      if (az_span_size(SU_I(client).manifest_text) <= 0)
       {
         result_init_steps(client, 1);
         result_step_failure(client, 0, AZ_IOT_SU_FACILITY_INTERNAL, 0);
@@ -4776,6 +4461,38 @@ az_iot_su_state az_iot_su_client_get_state(const az_iot_su_client* client)
   return SU_I(client).state;
 }
 
+AZ_NODISCARD az_iot_result az_iot_su_client_get_current_update(
+    const az_iot_su_client* client,
+    const az_iot_su_client_update_request** out_request,
+    const az_iot_su_client_update_manifest** out_manifest)
+{
+  if (out_request != NULL)
+  {
+    *out_request = NULL;
+  }
+  if (out_manifest != NULL)
+  {
+    *out_manifest = NULL;
+  }
+  if (client == NULL || out_request == NULL || out_manifest == NULL)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  az_iot_su_state state = SU_I(client).state;
+  if (state == AZ_IOT_SU_STATE_IDLE || !SU_I(client).have_request)
+  {
+    return AZ_IOT_ERR_NOT_FOUND;
+  }
+  *out_request = &SU_I(client).current_request;
+  /* Parsed only once verified; a failed workflow may have stopped before that. */
+  if (state != AZ_IOT_SU_STATE_MANIFEST_RECEIVED && state != AZ_IOT_SU_STATE_VERIFYING_MANIFEST
+      && state != AZ_IOT_SU_STATE_FAILED)
+  {
+    *out_manifest = &SU_I(client).current_manifest;
+  }
+  return AZ_IOT_OK;
+}
+
 AZ_NODISCARD az_iot_su_reboot_state
 az_iot_su_client_get_reboot_state(const az_iot_su_client* client)
 {
@@ -5003,12 +4720,6 @@ AZ_NODISCARD az_iot_result az_iot_su_parse_update_request(
     return AZ_IOT_ERR_NOT_SUPPORTED;
   }
 
-  az_iot_adu_client az;
-  if (az_result_failed(az_iot_adu_client_init(&az, NULL)))
-  {
-    return AZ_IOT_ERR_INTERNAL;
-  }
-
   az_iot_su_client_update_request req;
   az_iot_result r = parse_update_metadata(request_json, &req);
   if (r == AZ_IOT_OK)
@@ -5040,8 +4751,7 @@ AZ_NODISCARD az_iot_result az_iot_su_parse_update_request(
   }
 
   az_iot_su_client_update_manifest manifest;
-  memset(&manifest, 0, sizeof(manifest));
-  r = parse_update_manifest(&az, manifest_text, &manifest);
+  r = az_iot_su__parse_update_manifest(manifest_text, &manifest);
   if (r != AZ_IOT_OK)
   {
     return r;

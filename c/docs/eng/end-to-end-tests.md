@@ -357,7 +357,7 @@ workflow; nightly; manual. Pull requests from forks and from Dependabot skip.
 
 ## Software updates e2e
 
-Two suites, built with `-DAZ_IOT_BUILD_E2E_SU=ON` (not on Windows) and selected by
+Two suites, built with `-DAZ_IOT_BUILD_E2E_SU=ON` and selected by
 `ctest -R e2e_su`. Both run the shipping SDK over each MQTT adapter (Paho, az_mqtt) and X.509 against
 the real service.
 
@@ -468,10 +468,16 @@ multi-step updates, and reboot/resume.
 ## Adding a new scenario
 
 1. **Device side:** in [`e2e_scenarios_test.c`](../../tests/e2e/tests/e2e_scenarios_test.c)
-   add a `test_*` function (and register it in the cmocka table). Reuse the
+   add a `test_*` function and register it with
+   `cmocka_unit_test_teardown(test_*, detach_feature_client)`. Reuse the
    already-connected device from the shared fixture; interleave
    `az_iot_connection_client_do_work` with the service pump until the assertion
-   holds or a bounded deadline expires.
+   holds or a bounded deadline expires. Attach the test's one feature client in
+   the fixture's `client` union and set `attached` to its kind: a failed
+   assertion leaves the test early, and the teardown must deinitialize it, or
+   the shared connection keeps pointers into the failed test's stack. A
+   callback context the SDK may call after that `deinit` (a telemetry send's)
+   belongs in the fixture too.
 2. **Service side:** if the scenario needs a new cloud operation, add it to the
    [`az_iot_e2e_service`](../../tests/e2e/service/az_iot_e2e_service.h) facade
    (keep all `az_amqp` / HTTP usage inside the `service/*.c` files so tests stay

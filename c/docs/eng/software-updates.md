@@ -236,7 +236,7 @@ flowchart TB
     CORE --> CH["az_iot_su_channel (vtable)"]
     CH --> V2["Software updates channel<br/>iotdps-get-onboarding-deviceupdate · iotdps-get-deviceupdate ·<br/>iotdps-report-deviceupdatestatus<br/>over the device's DPS connection"]
     CH --> FAKE["test fake channel"]
-    CORE --> AZ["azure-sdk-for-c<br/>manifest parse/format"]
+    CORE --> AZ["azure-sdk-for-c<br/>JSON reader · request/result types"]
     CORE --> HK["platform hooks"]
     CORE --> CR["crypto backend<br/>(connection client)"]
 ```
@@ -669,8 +669,9 @@ The byte layout is documented next to the serializer in
 
 ### 5.1 Header: `inc/azure/iot/az_iot_su.h`
 
-> The header includes azure-sdk-for-c's manifest parsing/formatting header and
-> re-exports the upstream types it uses under `az_iot_su_*` names.
+> The header defines the manifest types, and includes azure-sdk-for-c's Device Update
+> client header for the request and install-result types it re-exports under
+> `az_iot_su_*` names.
 
 ```c
 #ifndef AZ_IOT_SU_H
@@ -681,7 +682,7 @@ The byte layout is documented next to the serializer in
 #include <stdbool.h>
 #include "az_iot_result.h"
 #include "az_iot_connection_client.h"
-#include <azure/iot/az_iot_adu_client.h>  /* azure-sdk-for-c: parsing structs */
+#include <azure/iot/az_iot_adu_client.h>  /* azure-sdk-for-c: request, install-result structs */
 
 #ifdef __cplusplus
 extern "C" {
@@ -1047,6 +1048,17 @@ az_iot_result az_iot_su_client_do_work(az_iot_su_client* client);
 az_iot_su_state az_iot_su_client_get_state(const az_iot_su_client* client);
 
 /**
+ * The update being worked on, in either mode: the request (workflowId, unescaped
+ * manifest text, signature, file URLs) from MANIFEST_RECEIVED until Idle or a
+ * replacing workflow, and the parsed manifest once verified (not in FAILED).
+ * NOT_FOUND when Idle.
+ */
+az_iot_result az_iot_su_client_get_current_update(
+    const az_iot_su_client* client,
+    const az_iot_su_client_update_request** out_request,
+    const az_iot_su_client_update_manifest** out_manifest);
+
+/**
  * Library mode: report the delegated update's progress or end. Terminal
  * outcomes carry one step result per manifest step. Validated, then copied;
  * sent like any report and retried when refused. See §5.3.
@@ -1250,9 +1262,13 @@ sequenceDiagram
   `az_iot_su_client_set_step_result_details()`.
 - Overall `result_details` are sent with the report they come with; the engine's terminal record
   keeps no overall details, so a resent terminal report and `WORKFLOW_COMPLETED` do not carry them.
+- No `is_installed_fn`: the application checks whether an offered update is already installed
+  and reports it `SKIPPED`.
 - No persistence: a restart forgets a delegated update and the service offers it again; an
   application that reboots mid-update owns its resume. The service's own limits still apply: an
-  update that outlives the DPS session hold (§2) is reported after the session renews.
+  update that outlives the DPS session hold (§2) is reported after the session renews. The
+  application keeps the installed update id across restarts and passes it in
+  `device_properties` at init.
 - Delta updates are not handled by the SDK. azure-sdk-for-c is archived and its parser skips
   `relatedFiles`, refuses unknown file members and caps `fileUrls` at the file count (§14), so a
   delta offer does not reach the application yet. Once the SDK owns the manifest parser, the
@@ -1272,6 +1288,9 @@ az_iot_su_client_add_observer(&su, on_su_event, app);
 az_iot_su_step_result done = { .outcome = AZ_IOT_SU_OUTCOME_SUCCEEDED };
 az_iot_su_client_report_status(&su, &done, steps, steps_count);
 ```
+
+The [library_mode sample](../../samples/software_update/pc/library_mode/README.md) runs this flow
+end to end.
 
 **Transport-free primitives.** No client, channel or transport: spans and structs only, no hidden
 allocation, fail-closed. Both modes share their cores, so there is a single verified copy of the
@@ -1528,7 +1547,7 @@ Platform-specific code (Linux libcurl downloads, ESP32 OTA partition writes, etc
 
 1. **Consistency with existing pattern** — MQTT adapters live in `adapters/paho/` and `adapters/az_mqtt/`, not in `src/core/`. Platform-specific software updates code MUST follow the same convention.
 
-2. **Clean dependency graph** — `src/features/su/` MUST depend only on `az_iot_connection_client` (through the software updates channel), `azure-sdk-for-c` (for parsing), and the hooks vtable. It MUST NOT depend on libcurl, ESP-IDF, or OS-specific headers. This makes it compilable and testable on any platform including host-only unit tests.
+2. **Clean dependency graph** — `src/features/su/` MUST depend only on `az_iot_connection_client` (through the software updates channel), `azure-sdk-for-c` (JSON reader, request and install-result types), and the hooks vtable. It MUST NOT depend on libcurl, ESP-IDF, or OS-specific headers. This makes it compilable and testable on any platform including host-only unit tests.
 
 3. **Customer freedom** — Customers who bring their own platform MUST NOT be forced to build/link our Linux or ESP32 code. They implement the hooks and never touch `adapters/su/`.
 
@@ -1602,7 +1621,7 @@ sequenceDiagram
     DPS-->>Ch: 200 { updateMetadata }
     Ch-->>SU: updateMetadata
     SU->>SU: parse, dedupe on workflowId
-    SU->>SU: az_iot_adu_client_parse_update_manifest() (ManifestReceived)
+    SU->>SU: az_iot_su__parse_update_manifest() (ManifestReceived)
     SU->>Crypto: verify_rs256(root_key, sjwk_signature) (VerifyingManifest)
     SU->>Crypto: verify_rs256(signing_key, manifest_signature)
     loop For each step
@@ -1645,8 +1664,8 @@ Operations MUST NOT be long-blocking. Each `do_work` invocation MUST process at 
   check after a conflicting report (§2).
 - **An operational channel over the IoT Hub connection.** Both routes run over DPS.
 - **A reusable conformance suite** for customer platform hooks and crypto backends.
-- **Delta updates.** Needs `relatedFiles` from an SDK-owned manifest parser (azure-sdk-for-c is
-  archived, §14); library mode is the route for an application-owned delta handler.
+- **Delta updates.** The manifest parser (§14) accepts `relatedFiles` and `downloadHandler` but
+  does not expose them yet; library mode is the route for an application-owned delta handler.
 - **Library-mode persistence and a received-offer accessor.** A delegated update is not stored,
   and `UPDATE_AVAILABLE` is the only way to see the offer.
 
@@ -1682,14 +1701,14 @@ Operations MUST NOT be long-blocking. Each `do_work` invocation MUST process at 
 
 ## 14. The azure-sdk-for-c dependency
 
-`azure-sdk-for-c` (fetched at a pinned tag) includes a Device Update client module that provides:
-
-| Capability | Function |
-|-----------|----------|
-| Parse update manifest JSON | `az_iot_adu_client_parse_update_manifest()` |
-| Structs for manifest, workflow, file info, step results | `az_iot_su_client_update_manifest`, `az_iot_su_client_update_request`, etc. |
+`azure-sdk-for-c` (fetched at a pinned tag) provides the JSON reader and base64 decoder the engine
+builds on, and a Device Update client module whose request and install-result types
+`az_iot_su.h` re-exports (`az_iot_su_client_update_request`, `az_iot_su_client_install_result`,
+etc.).
 
 Its device-twin helpers (service-property parsing, agent-state and acknowledgement formatting, component check) are not used by the engine; `az_iot_su_build_report()` builds the same `reportUpdateStatus` body the channel sends.
+
+azure-sdk-for-c is archived at 1.5.0: it takes no fixes, so the SDK owns what it needs to change.
 
 **What azure-sdk-for-c does NOT provide:**
 - State machine / workflow orchestration.
@@ -1697,82 +1716,79 @@ Its device-twin helpers (service-property parsing, agent-state and acknowledgeme
 - Any network I/O (download, MQTT).
 - Platform hooks for install/apply/backup/restore.
 
-### Strategy: Reuse, Don't Reimplement
+### Manifest parsing: SDK-owned
 
-Our `su_client` MUST **delegate** manifest parsing to `azure-sdk-for-c`'s `az_iot_su_client` module. We MUST NOT reimplement JSON parsing already provided by the upstream dependency. We own:
+The SDK parses the update manifest itself (`src/features/su/su_manifest.c`,
+`az_iot_su__parse_update_manifest()`) on the azure-sdk-for-c JSON reader, into the
+`az_iot_su_client_update_manifest` types `az_iot_su.h` defines. Owning it lets the SDK accept what
+the service sends without an upstream release:
 
-1. **State machine** — orchestrating the Download → Backup → Install → Apply → (Restore) lifecycle.
-2. **JWS verification** — via the connection client's crypto backend.
-3. **Channel integration** — carrying an update manifest in and a structured report out, through the `az_iot_su_channel` vtable; the software updates channel serializes both.
-4. **Platform hooks** — the vtable for download, install, apply, etc.
+- unknown members are skipped at every level (top level, `updateId`, `instructions`, steps,
+  `handlerProperties`, files), so a service-side addition does not fail parsing;
+- file `properties`, `relatedFiles` and `downloadHandler` (delta updates) are accepted;
+- a known member of the wrong type, or malformed JSON, fails with `AZ_IOT_ERR_INVALID_ARG`.
 
-This avoids duplicating the well-tested JSON parsing logic and keeps us aligned with the protocol schema as it evolves in the upstream dependency.
+We own:
 
+1. **Manifest parsing** — one pass, bounded by the manifest limits below.
+2. **State machine** — orchestrating the Download → Backup → Install → Apply → (Restore) lifecycle.
+3. **JWS verification** — via the connection client's crypto backend.
+4. **Channel integration** — carrying an update manifest in and a structured report out, through the `az_iot_su_channel` vtable; the software updates channel serializes both.
+5. **Platform hooks** — the vtable for download, install, apply, etc.
 
 ### What azure-sdk-for-c Provides (Sufficient As-Is)
 
 | Capability | Assessment |
 |-----------|------------|
-| Manifest v5 JSON parsing (inline steps, files, hashes) | ✅ Sufficient |
+| `az_json_reader` | Used by the manifest parser and the wire codec |
 | Reported-property JSON formatting (agent state + per-step results) | Not used; `az_iot_su_build_report()` and the channel build the `reportUpdateStatus` body |
 | Service property acknowledgement formatting (ACCEPT/REJECT) | Not used (device twin only) |
 | Component name check (`az_iot_adu_client_is_component_device_update`) | Not used (device twin only) |
 | Workflow struct with `action`, `id`, `retry_timestamp` | Only `id` is used (from `workflowId`) |
-| File hash parsing (`hash_type` + `hash_value` as `az_span`) | ✅ Sufficient |
 | `az_json_string_unescape()` for manifest string unescaping | Not used: it stops at `\u` escapes. The SDK decodes JSON strings with `az_iot_json_string_decode()` (`src/core/json_string.c`) |
 | `az_base64_url_decode()` / `az_base64_decode()` for JWS segments | Used through `az_iot_base64_decode()` (`src/core/base64.c`), which first rejects characters outside the alphabet (az_core left-shifts a negative value on them), misplaced padding and nonzero trailing bits, and decodes in blocks so the output may overwrite the input |
 | `az_iot_hub_client_properties_writer_*` for PnP component wrapping | Not used (device twin only) |
 
 ### Manifest Limits
 
-`az_iot_adu_internal.h` sizes the manifest arrays with `#ifndef`-guarded macros that default to 2.
-Device Update allows 10 files and 10 steps per update, so the SDK sets them from its own limits,
+Device Update allows 10 files and 10 steps per update. The manifest arrays are sized by
 `AZ_IOT_SU_MAX_STEP_COUNT`, `AZ_IOT_SU_MAX_FILE_COUNT` and `AZ_IOT_SU_MAX_FILE_COUNT_PER_STEP`
-(default 10, 10 and the file count; `cmake/az_iot_su_limits.cmake`). The arrays are shared by
-azure-sdk-for-c (the parser), `az_iot_core` and the application (`az_iot_su.h`), so:
+(default 10, 10 and the file count; `cmake/az_iot_su_limits.cmake`), and the hashes of a file by
+`AZ_IOT_SU_MAX_FILE_HASH_COUNT` (2; manifests carry one `sha256`). The upstream request and
+install-result types size their arrays with the `_az_IOT_ADU_CLIENT_MAX_*` macros of
+`az_iot_adu_internal.h` (default 2), and are shared by
+`az_iot_core`, the application (`az_iot_su.h`) and azure-sdk-for-c's Device Update module, so:
 
-- the CMake options of those names set them as public definitions on the azure-sdk-for-c parser
+- the CMake options of those names set them as public definitions on azure-sdk-for-c
   (`az_iot_hub`, fetched or installed) and on `az_iot_core`, its installed CMake package and
   its pkg-config file;
 - an installed azure-sdk-for-c is checked at configure time by parsing a manifest at the limits
+  with its own parser, which sizes its arrays with the same macros
   (`cmake/az_iot_su_limits_check.c`); [eng/install-deps.sh](../../eng/install-deps.sh) builds it
   with them;
 - `az_iot_su.h` maps `AZ_IOT_SU_MAX_*` to the `_az_IOT_ADU_CLIENT_MAX_*` macros and fails to
   compile when they differ.
 
-`_az_IOT_ADU_CLIENT_MAX_FILE_HASH_COUNT` keeps its default (2); manifests carry one `sha256`.
-
-The parser bounds the total and per-step file counts (`AZ_ERROR_NOT_ENOUGH_SPACE`) but not the step
-count or the hashes of a file: it would write past those arrays. `su_client.c` therefore counts all
-four before calling it (`check_manifest_limits()`), logs each exceeded limit, and fails the workflow
-(reported) or returns `AZ_IOT_ERR_NOT_ENOUGH_SPACE` from `az_iot_su_parse_update_request()`. More
-`fileUrls` than `AZ_IOT_SU_MAX_FILE_COUNT` refuses the update before processing
-(`AZ_IOT_SU_EVENT_UPDATE_REFUSED`, `AZ_IOT_ERR_NOT_ENOUGH_SPACE`).
-A file `mimeType` that is not a string is rejected the same way as malformed JSON: the parser
-advances past it without skipping its members, which it would then read as file properties.
+The parser counts steps, files, files of a step and hashes of a file past their limits (entries
+past a limit are still type-checked but not stored), logs each exceeded limit, and fails the
+workflow (reported) or returns `AZ_IOT_ERR_NOT_ENOUGH_SPACE` from
+`az_iot_su_parse_update_request()`. More `fileUrls` than `AZ_IOT_SU_MAX_FILE_COUNT` refuses the
+update before processing (`AZ_IOT_SU_EVENT_UPDATE_REFUSED`, `AZ_IOT_ERR_NOT_ENOUGH_SPACE`).
 
 The largest status report grows 117 bytes per step, so `AZ_IOT_SU_MIN_MESSAGE_SIZE` is
 2176 + 128 × `AZ_IOT_SU_MAX_STEP_COUNT` (3456 by default; the base fits a 128-byte workflow id, fully
-escaped). Memory cost of the default limits against 2/2 on 64-bit: `az_iot_su_client` 7936 bytes
-(3968), default workspace 87440 (80720), parsed manifest
+escaped). Memory cost of the default limits against 2/2 on 64-bit: `az_iot_su_client` 7920 bytes
+(3952), default workspace 87440 (80720), parsed manifest
 3216 (464). See [client-configuration.md](../client-configuration.md#software-updates-manifest-limits).
 
-### Known limitation: strict step parsing
+### Not Parsed (Matches Our Non-Goals)
 
-`az_iot_adu_client_parse_update_manifest()` rejects any unrecognized property inside
-`instructions.steps[]` and inside `handlerProperties` with `AZ_ERROR_JSON_INVALID_STATE`, while the
-top-level parser skips unknown properties. A service-side addition to a step would therefore fail
-manifest parsing. The fix belongs upstream (skip unknown properties, as the top-level parser does),
-consumed through a normal `AZ_SDK_C_TAG` bump; this repo carries no patch of the dependency.
-
-### Not Supported in azure-sdk-for-c
-
-| Feature | Status in azure-sdk-for-c | Our Position |
-|---------|--------------------------|---------------|
-| Reference steps (`"type": "reference"`) | Field name defined but not parsed | Non-Goal |
-| Detached manifest file ID | Field name defined but not parsed | Non-Goal |
-| Delta updates (`relatedFiles`, `downloadHandler`) | Explicitly skipped in parser | Planned: needs an SDK-owned manifest parser (upstream is archived); library mode hands the files to the application's own handler |
-| `mimeType` field | Skipped in parser | Non-Goal |
+| Feature | Parser | Our Position |
+|---------|--------|---------------|
+| Reference steps (`"type": "reference"`) | Not recognized (`type` skipped) | Non-Goal |
+| Detached manifest file ID | Not recognized (skipped) | Non-Goal |
+| Delta updates (`relatedFiles`, `downloadHandler`) | Accepted and skipped | Planned; until then the full file is downloaded, and library mode hands the files to the application's own handler |
+| `mimeType` field | Must be a string; not stored | Non-Goal |
 
 ### Additional Functionality We Build (Not in azure-sdk-for-c)
 

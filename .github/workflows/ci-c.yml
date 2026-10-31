@@ -68,11 +68,11 @@ jobs:
             common:
               - 'common/**'
               - '!common/**/*.md'
-            # A change to this workflow, or to the OpenSSL action it uses, decides
+            # A change to this workflow, or to the actions it uses, decides
             # what the build/test legs do, so it has to run them. One pattern:
             # `every` would AND two.
             workflow:
-              - '.github/{workflows/ci-c.yml,actions/install-openssl/**}'
+              - '.github/{workflows/ci-c.yml,actions/install-openssl/**,actions/install-curl-windows/**}'
 
   # The Paho-OFF legs build the whole tree on az_mqtt. Every leg checks that
   # nothing depends on an adapter it was configured without
@@ -148,20 +148,29 @@ jobs:
         # are expected to build.
         run: sudo apt-get update && sudo apt-get install -y ninja-build libssl-dev libcurl4-openssl-dev
 
+      # libcurl for the same samples on Windows.
+      - name: Install libcurl (Windows)
+        id: curl
+        if: runner.os == 'Windows'
+        # actionlint 1.7.12 does not accept the $/ self-repository form yet.
+        uses: ./.github/actions/install-curl-windows # zizmor: ignore[self-repository]
+
       - name: Configure
+        env:
+          CMAKE_PREFIX_PATH: ${{ steps.curl.outputs.prefix }}
         run: |
           cmake -DBUILD_DIR=build/${{ matrix.preset }} -DMODE=prepare -P eng/check-dependencies.cmake
           cmake --preset ${{ matrix.preset }} -DAZ_IOT_WITH_PAHO=${{ matrix.with_paho }} -DAZ_IOT_WITH_AZ_MQTT=ON
       - name: Build
         run: cmake --build --preset ${{ matrix.preset }} --config ${{ matrix.build_type }}
-      # Every connecting sample is built for every adapter. Windows: no libcurl
-      # (dps_tpm), and az_mqtt has no OpenSSL TLS there for key references (hsm_pkcs11).
+      # Every connecting sample is built for every adapter. Windows: az_mqtt has no
+      # OpenSSL TLS there for key references (hsm_pkcs11).
       - name: Check dependencies
         run: >
           cmake -DBUILD_DIR=build/${{ matrix.preset }} -DCONFIG=${{ matrix.build_type }}
           "-DFORBID=rust_mqtt${{ matrix.with_paho == 'OFF' && ';paho' || '' }}"
           "-DEXPECT_SAMPLES=${{ matrix.with_paho == 'OFF' && 'az_mqtt' || 'paho;az_mqtt' }}"
-          "-DEXPECT_SAMPLES_EXCEPT=${{ runner.os == 'Windows' && 'dps_tpm;http_download;hsm_pkcs11:az_mqtt' || '' }}"
+          "-DEXPECT_SAMPLES_EXCEPT=${{ runner.os == 'Windows' && 'hsm_pkcs11:az_mqtt' || '' }}"
           -P eng/check-dependencies.cmake
       - name: Check dependencies (negative control)
         if: matrix.with_paho == 'ON'
@@ -922,7 +931,7 @@ jobs:
           cmake -DBUILD_DIR=build/windows-msvc-debug -DCONFIG=Debug
           "-DFORBID=paho;rust_mqtt;openssl"
           -DEXPECT_SAMPLES=az_mqtt
-          "-DEXPECT_SAMPLES_EXCEPT=custom_certificate_provider;dps_csr_managed;dps_persist_assignment;hub_renew;dps_sas_key_issued_cert;user_provided_sas_token;dps_tpm;http_download;hsm_pkcs11;dps_sas_key;multi_step;reboot_resume;simulated_onboarding;simulated_regular"
+          "-DEXPECT_SAMPLES_EXCEPT=custom_certificate_provider;dps_csr_managed;dps_persist_assignment;hub_renew;dps_sas_key_issued_cert;user_provided_sas_token;dps_tpm;http_download;hsm_pkcs11;dps_sas_key;multi_step;reboot_resume;simulated_onboarding;simulated_regular;library_mode"
           -P eng/check-dependencies.cmake
 
   # Optimized build (so _FORTIFY_SOURCE is active) checked by
@@ -1458,7 +1467,7 @@ jobs:
       # actually had -- coverage computed over fewer tests than anyone thought.
       # Now that no suite decides at run time whether to participate, the count
       # is deterministic, so assert it exactly. Bump this when adding a suite.
-      EXPECTED_TESTS: '73'
+      EXPECTED_TESTS: '77'
     services:
       mosquitto:
         image: eclipse-mosquitto:2
