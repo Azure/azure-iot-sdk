@@ -1188,11 +1188,13 @@ static void library_mode_hands_over_the_offer_and_reports_the_applications_resul
   {
     steps[i] = (az_iot_su_step_result){
       .outcome = AZ_IOT_SU_OUTCOME_SUCCEEDED,
+      .result_code = AZ_IOT_SU_AGENT_RESULT_CODE_SUCCESS,
       .failure_origin = AZ_IOT_SU_FAILURE_ORIGIN_NOT_APPLICABLE,
     };
   }
   az_iot_su_step_result success = {
     .outcome = AZ_IOT_SU_OUTCOME_SUCCEEDED,
+    .result_code = AZ_IOT_SU_AGENT_RESULT_CODE_SUCCESS,
     .failure_origin = AZ_IOT_SU_FAILURE_ORIGIN_NOT_APPLICABLE,
   };
   assert_int_equal(
