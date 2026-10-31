@@ -401,13 +401,20 @@ DISCONNECT) climbs a third ladder, `identity_retry_attempt`, on `opts.identity_r
 (`reconnection_policy` when that is zeroed). `identity_recovery.max_duration_seconds` bounds every
 retry, on any ladder, from the first refusal until `HUB:CONNECTED`.
 
+A hub DPS has just assigned may refuse the device until the new registration reaches it. A DPS
+assignment sets `hub_newly_assigned`; until `HUB:CONNECTED`, refusals first climb
+`identity_retry_attempt_after_assignment` on `opts.identity_recovery.after_assignment_policy`
+(default 5 s doubling to 15 s, ±20%, 4 attempts) and, once that is spent, the identity ladder from
+its first rung. Registrations reset neither, so REPROVISION cycles stay bounded; a zeroed
+`after_assignment_policy` skips it.
+
 Reset points differ per ladder:
 
 | Event | Effect |
 | --- | --- |
-| DPS registration succeeds | `DPS` and `HUB` reset; identity ladder untouched |
+| DPS registration succeeds | `DPS` and `HUB` reset; identity ladders untouched; `hub_newly_assigned` set |
 | Hub CONNACK succeeds (before the MQTTv5 birth handshake) | `HUB` resets; `DPS` untouched |
-| `HUB:CONNECTED` (after the birth-ack on MQTTv5) | identity ladder resets |
+| `HUB:CONNECTED` (after the birth-ack on MQTTv5) | identity ladders reset; `hub_newly_assigned` cleared |
 | `dps.max_hub_connect_attempts_before_reprovision` crossed | `DPS` resets, so the first registration attempt waits `initial_delay_ms` |
 | `open()` / `close()` | all ladders reset |
 
@@ -999,7 +1006,7 @@ connection client itself, or a feature client.
 | Phase | Trigger | Surfaced as | Mapped by | SDK action | Notes / limits |
 | --- | --- | --- | --- | --- | --- |
 | CONNACK | Accepted | `AZ_IOT_OK` | adapter | MQTTv5: start the presence handshake, then the subscription gate. MQTTv3: straight to the subscription gate. `CONNECTED` once the gate settles. Attempt counter reset. | |
-| CONNACK | Identity refused — v3 `2`/`4`/`5`, v5 `0x85`/`0x86`/`0x87`/`0x8C` | `AZ_IOT_ERR_IDENTITY_REJECTED` | `az_iot_mqtt_connack_result()` | `schedule_identity_recovery()`: per `identity_recovery.mode`, the cached hub (`RETRY_HUB`), `dps_start()` (`REPROVISION`, zero; `needs_reprovision` is set whatever the policy, so the next `open()` registers too) or `FAULTED` (`NONE`). `FAULTED` when the ladder or `max_duration_seconds` is spent, or a policy is disabled. | The identity ladder survives registrations, so DPS-accept / hub-reject cycles stay bounded. No certificate is requested in `RETRY_HUB` mode. |
+| CONNACK | Identity refused — v3 `2`/`4`/`5`, v5 `0x85`/`0x86`/`0x87`/`0x8C` | `AZ_IOT_ERR_IDENTITY_REJECTED` | `az_iot_mqtt_connack_result()` | `schedule_identity_recovery()`: per `identity_recovery.mode`, the cached hub (`RETRY_HUB`), `dps_start()` (`REPROVISION`, zero; `needs_reprovision` is set whatever the policy, so the next `open()` registers too) or `FAULTED` (`NONE`). Paced by `after_assignment_policy` first after a DPS assignment, then `policy`. `FAULTED` when the ladder or `max_duration_seconds` is spent, or a policy is disabled. | The identity ladders survive registrations, so DPS-accept / hub-reject cycles stay bounded. No certificate is requested in `RETRY_HUB` mode. |
 | CONNACK | v3 `1 unacceptable protocol version` | `AZ_IOT_ERR_MQTT` | `az_iot_mqtt_connack_result()` | **retried** under policy | Excluded from the identity set: `1` says nothing about the identity. |
 | CONNACK | v3 `3 Server unavailable` | `AZ_IOT_ERR_MQTT` | `az_iot_mqtt_connack_result()` | retried | Correct: the canonical transient refusal. |
 | CONNACK | v5 deterministic refusals — `0x81`, `0x82`, `0x84`, `0x95`, `0x8A`, `0x90`, `0x99`, `0x9A`, `0x9B` | `AZ_IOT_ERR_MQTT` | `az_iot_mqtt_connack_result()` | **retried** | Same defect as v3 `1`. The four Will-related codes arise only when `opts.lwt` is set; the SDK sets no Will of its own. |

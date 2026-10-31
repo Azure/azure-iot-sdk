@@ -259,6 +259,7 @@ source of a pass is refused (see Fallback); an mqttv5 DISCONNECT refusal applies
 | --- | --- | --- | --- |
 | `mode` | `RETRY_HUB` | `REPROVISION` | What the next attempt does; see below. |
 | `policy` | 5 min initial, 1 h cap, ±25%, no limit | uses `reconnection_policy` | Retry schedule after a refusal. |
+| `after_assignment_policy` | 5 s initial, 15 s cap, ±20%, 4 attempts | none: `policy` from the first refusal | Retry schedule after a refusal from a hub DPS assigned in this episode, until `HUB:CONNECTED`; then `policy`. |
 | `max_duration_seconds` | 0 | 0 | Stop this long after the first refusal; `0` = no limit. No attempt in the episode (hub connect, DPS registration or poll) starts at or after it, until `HUB:CONNECTED`. Recovery stops as soon as the next attempt could not start in time, so the fault may come before the duration ends. Not kept across restarts. |
 
 | `mode` | Next attempt after a refusal |
@@ -270,6 +271,10 @@ source of a pass is refused (see Fallback); an mqttv5 DISCONNECT refusal applies
 - The schedule is separate from the reconnection ladders, and DPS registrations do not reset it.
   Only `HUB:CONNECTED`, `open()` and `close()` do. So repeated DPS-accept / hub-reject cycles
   still back off and stop at the policy's `max_attempts`.
+- A hub DPS has just assigned may refuse the device until the new registration reaches it. So
+  after a DPS assignment, refusals are first retried on `after_assignment_policy` (by default
+  4 attempts within about a minute), then on `policy`. Its attempts are spent once per episode:
+  DPS registrations do not restore them. `mode` still decides where each attempt goes.
 - When a limit is reached the client goes to `FAULTED` with the refusal as `reason`, on the HUB scope
   and, if a re-registration was pending, on the DPS scope as well.
 - With `reconnection_policy` disabled, the first mqttv5 DISCONNECT refusal faults, as does the
