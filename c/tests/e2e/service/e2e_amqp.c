@@ -630,6 +630,7 @@ bool e2e_amqp_telemetry_begin(
     }
     return false;
   }
+  t->connection_failed = false; /* a reconnect reuses the watcher */
   if (consumer_group == NULL || consumer_group[0] == '\0')
   {
     consumer_group = "$Default";
@@ -838,6 +839,19 @@ bool e2e_amqp_telemetry_do_work(e2e_amqp_telemetry* t, int wait_ms)
     return false;
   }
   return pump_connection(&t->connection, &t->transport_storage, &t->connection_failed, wait_ms);
+}
+
+int e2e_amqp_telemetry_find_detached_receiver(const e2e_amqp_telemetry* t)
+{
+  for (int p = 0; t->started && p < t->partition_count; p++)
+  {
+    const az_amqp_link_state state = az_amqp_link_get_state(&t->receivers[p]);
+    if (state == AZ_AMQP_LINK_STATE_DETACHED || state == AZ_AMQP_LINK_STATE_ERROR)
+    {
+      return p;
+    }
+  }
+  return -1;
 }
 
 bool e2e_amqp_telemetry_seen(const e2e_amqp_telemetry* t, const char* needle)

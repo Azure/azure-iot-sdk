@@ -105,6 +105,12 @@ messages), so each test starts the watch with a capture filter (its device id or
 marker): only bodies containing it enter the watcher's 64-message capture ring, and
 other traffic cannot evict a marker the test is about to check.
 
+Concurrent runs share the consumer groups, and Event Hubs detaches a sixth reader of
+a partition in a group. When a receiver is detached, the watcher logs
+`[e2e] telemetry: the service detached the receiver of partition <n>`, waits 5 s and
+reconnects, reading again from the time the watch began. A message is then captured
+twice; lookups use the first capture.
+
 SAS tokens are built with OpenSSL (HMAC-SHA256 + base64) on both platforms. Note
 the two key conventions the facade handles: Event Hubs signs with the **raw** key
 string, while IoT Hub **base64-decodes** the key first.

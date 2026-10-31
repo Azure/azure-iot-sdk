@@ -4,7 +4,8 @@
 
 /* SPDX-License-Identifier: MIT */
 /* The telemetry watcher's capture ring and capture filter: the replay of a shared events
- * endpoint must not evict the messages a test waits for. No network is used. */
+ * endpoint must not evict the messages a test waits for. Also its detection of a receiver the
+ * service detached. No network is used. */
 
 #include <stdarg.h>
 #include <stddef.h>
@@ -131,6 +132,30 @@ static void test_a_too_long_filter_is_refused(void** state)
   free(t);
 }
 
+/* Only a started watcher whose receiver went back to detached, as when the service refuses a
+ * sixth reader of a partition, reports that partition for a reconnect. */
+static void test_a_detached_receiver_is_found(void** state)
+{
+  (void)state;
+  e2e_amqp_telemetry* t = new_watcher(NULL);
+  t->partition_count = 3;
+  for (int p = 0; p < t->partition_count; p++)
+  {
+    t->receivers[p].state = AZ_AMQP_LINK_STATE_ATTACHED;
+  }
+  t->receivers[0].state = AZ_AMQP_LINK_STATE_ATTACHING;
+  t->receivers[2].state = AZ_AMQP_LINK_STATE_DETACHED;
+  assert_int_equal(e2e_amqp_telemetry_find_detached_receiver(t), -1);
+
+  t->started = true;
+  assert_int_equal(e2e_amqp_telemetry_find_detached_receiver(t), 2);
+  t->receivers[2].state = AZ_AMQP_LINK_STATE_ERROR;
+  assert_int_equal(e2e_amqp_telemetry_find_detached_receiver(t), 2);
+  t->receivers[2].state = AZ_AMQP_LINK_STATE_ATTACHED;
+  assert_int_equal(e2e_amqp_telemetry_find_detached_receiver(t), -1);
+  free(t);
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -138,6 +163,7 @@ int main(void)
     cmocka_unit_test(test_without_a_filter_the_oldest_capture_is_evicted),
     cmocka_unit_test(test_the_filter_matches_past_the_captured_prefix),
     cmocka_unit_test(test_a_too_long_filter_is_refused),
+    cmocka_unit_test(test_a_detached_receiver_is_found),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }

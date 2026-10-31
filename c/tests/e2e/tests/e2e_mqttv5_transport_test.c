@@ -450,6 +450,10 @@ static void telemetry_round_trip(fixture* fx, const char* tag, bool proxied, uns
       sent->done ? az_iot_result_to_string(sent->status) : "(none)",
       marker,
       seen ? "seen" : "not seen");
+  if (!seen)
+  {
+    az_iot_e2e_service_telemetry_dump(fx->service, marker);
+  }
 
   release(fx);
 

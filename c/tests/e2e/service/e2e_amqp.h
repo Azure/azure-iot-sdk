@@ -103,7 +103,8 @@ extern "C"
 
   /**
    * @brief Connects to @p eh_host:5671, CBS-authorizes @p sas_token against the entity and
-   * attaches one receiver per partition.
+   * attaches one receiver per partition. Called again after e2e_amqp_telemetry_end(), it
+   * reconnects and keeps the captures and watched needles.
    *
    * @param[in] consumer_group Consumer group to read from; `NULL` or empty selects `$Default`.
    * @param[in] enqueued_after_ms Only messages enqueued after this Unix time (ms) are delivered;
@@ -146,6 +147,10 @@ extern "C"
   /* Advance the telemetry connection once, waiting up to @p wait_ms for socket I/O.
    * Returns false if the connection has failed. */
   bool e2e_amqp_telemetry_do_work(e2e_amqp_telemetry* t, int wait_ms);
+
+  /** @brief The partition whose receiver the service detached (e.g. a sixth reader of the
+   * partition in the consumer group), or -1 while every receiver is attached or attaching. */
+  int e2e_amqp_telemetry_find_detached_receiver(const e2e_amqp_telemetry* t);
 
   /* Returns true if any captured telemetry body contains @p needle. */
   bool e2e_amqp_telemetry_seen(const e2e_amqp_telemetry* t, const char* needle);
