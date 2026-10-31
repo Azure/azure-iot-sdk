@@ -50,7 +50,8 @@ typedef struct az_iot_test_state_log
   bool error_present[AZ_IOT_TEST_MAX_STATES];
   az_iot_connection_error_source error_sources[AZ_IOT_TEST_MAX_STATES];
   int32_t error_codes[AZ_IOT_TEST_MAX_STATES];
-  char error_message[AZ_IOT_TEST_MAX_STATES][128];
+  char error_message[AZ_IOT_TEST_MAX_STATES][AZ_IOT_CONN_ERROR_MESSAGE_MAX + 1];
+  size_t error_message_lengths[AZ_IOT_TEST_MAX_STATES];
   az_iot_auth_source auth_sources[AZ_IOT_TEST_MAX_STATES];
   /* event->recovery, copied; the endpoint string dies with the callback. */
   bool recovery_present[AZ_IOT_TEST_MAX_STATES];
@@ -72,6 +73,8 @@ static inline void az_iot_test_on_state(const az_iot_connection_state_event* eve
     log->is_retriable[index] = event->is_retriable;
     log->auth_sources[index] = event->auth_source;
     log->error_present[index] = event->error != NULL;
+    log->error_message[index][0] = '\0';
+    log->error_message_lengths[index] = 0;
     if (event->error)
     {
       log->error_sources[index] = event->error->source;
@@ -86,6 +89,7 @@ static inline void az_iot_test_on_state(const az_iot_connection_state_event* eve
         }
         memcpy(log->error_message[index], az_span_ptr(event->error->message), n);
         log->error_message[index][n] = '\0';
+        log->error_message_lengths[index] = (size_t)msg_len;
       }
     }
     log->recovery_present[index] = event->recovery != NULL;

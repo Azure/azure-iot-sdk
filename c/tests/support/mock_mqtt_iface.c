@@ -667,6 +667,35 @@ bool az_iot_mock_mqtt_client_inject_suback(
   return az_iot_mock_mqtt_client_inject_event(m, &evt);
 }
 
+bool az_iot_mock_mqtt_client_inject_server_disconnect(
+    az_iot_mock_mqtt_client* m,
+    int32_t reason_code,
+    const char* reason_string)
+{
+  az_iot_mqtt_event evt;
+  memset(&evt, 0, sizeof(evt));
+  evt.kind = AZ_IOT_MQTT_EVT_DISCONNECTED;
+  evt.status = az_iot_mqtt_disconnect_result(AZ_IOT_MQTT_VERSION_5, (int)reason_code);
+  evt.protocol_code = reason_code;
+  evt.reason_string = reason_string;
+  evt.reason_string_len = reason_string != NULL ? strlen(reason_string) : 0;
+  return az_iot_mock_mqtt_client_inject_event(m, &evt);
+}
+
+bool az_iot_mock_mqtt_client_inject_suback_refusal(
+    az_iot_mock_mqtt_client* m,
+    uint16_t packet_id,
+    int32_t reason_code)
+{
+  az_iot_mqtt_event evt;
+  memset(&evt, 0, sizeof(evt));
+  evt.kind = AZ_IOT_MQTT_EVT_SUBSCRIBE_ACK;
+  evt.packet_id = packet_id;
+  evt.status = AZ_IOT_ERR_SUBSCRIPTION_REFUSED;
+  evt.protocol_code = reason_code;
+  return az_iot_mock_mqtt_client_inject_event(m, &evt);
+}
+
 size_t az_iot_mock_mqtt_client_count_of(const az_iot_mock_mqtt_client* m, az_iot_mock_call_kind k)
 {
   if (!m)
