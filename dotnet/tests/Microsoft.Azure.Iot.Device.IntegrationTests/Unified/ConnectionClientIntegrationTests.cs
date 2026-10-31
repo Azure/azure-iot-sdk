@@ -9,6 +9,7 @@ using Microsoft.Azure.Iot.Device.MqttNetAdapter;
 using Microsoft.Azure.Iot.Device.MQTTnetAdapter;
 using Microsoft.Azure.Iot.Device.Unified.Connection;
 using Microsoft.Azure.Iot.Device.Unified.Models;
+using Microsoft.Azure.Iot.Device.Tests;
 using System;
 using System.Collections.Generic;
 using System.Net;
@@ -28,6 +29,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
             MqttNetClientOptions mqttClientOptions = new()
             {
                 UseWebsocket = true,
+                EnableMqttLogs = TestLogging.IsEnabled,
             };
 
             ConnectionClientOptions connectionClientOptions = new()
@@ -55,6 +57,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
             MqttNetClientOptions mqttClientOptions = new()
             {
                 UseWebsocket = true,
+                EnableMqttLogs = TestLogging.IsEnabled,
                 Proxy = new WebProxy("localhost", proxyPort)
             };
 
@@ -138,7 +141,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
 
         private static async Task<UnifiedDeviceTestContext> ProvisionAndConnectAsync(AuthenticationProvider authentication, IndividualEnrollment individualEnrollment)
         {
-            ConnectionClient connectionClient = new();
+            ConnectionClient connectionClient = Setup.CreateConnectionClient();
             try
             {
                 ConnectionContext connectionContext = await Setup.RetryAroundAuthorizationAsync(

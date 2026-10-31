@@ -14,6 +14,11 @@ on:
   schedule:
     - cron: '0 13 * * *'  # Daily, 13:00 UTC.
   workflow_dispatch:
+    inputs:
+      full_logging:
+        description: Enable detailed .NET restore output
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -25,6 +30,7 @@ concurrency:
 env:
   DOTNET_NOLOGO: '1'
   DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+  DOTNET_VERBOSITY: ${{ (inputs.full_logging || vars.DOTNET_FULL_LOGGING == 'true') && 'detailed' || 'quiet' }}
 
 jobs:
   changes:

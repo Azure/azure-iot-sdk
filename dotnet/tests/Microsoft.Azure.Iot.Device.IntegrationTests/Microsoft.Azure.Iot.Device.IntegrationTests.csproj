@@ -30,6 +30,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Compile Include="..\TestLogging.cs" Link="TestLogging.cs" />
     <ProjectReference Include="..\..\src\Microsoft.Azure.Iot.Device\Microsoft.Azure.Iot.Device.csproj" />
   </ItemGroup>
 

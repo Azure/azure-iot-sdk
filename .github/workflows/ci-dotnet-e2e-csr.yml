@@ -5,6 +5,11 @@ name: ci-dotnet-e2e-csr
 
 on:
   workflow_dispatch:
+    inputs:
+      full_logging:
+        description: Enable detailed build/test output and SDK/MQTT traces (logs may contain sensitive data)
+        type: boolean
+        default: false
   pull_request:
     paths:
       - 'dotnet/**'
@@ -38,6 +43,10 @@ permissions:
 # independently, so teardown never depends on setup completing.
 env:
   E2E_RESOURCE_GROUP: DotnetCertMgmtE2ETestPipeline-${{ github.run_id }}-${{ github.run_attempt }}
+  DOTNET_VERBOSITY: ${{ (inputs.full_logging || vars.DOTNET_FULL_LOGGING == 'true') && 'detailed' || 'minimal' }}
+  DOTNET_TEST_LOGGER_VERBOSITY: ${{ (inputs.full_logging || vars.DOTNET_FULL_LOGGING == 'true') && 'detailed' || 'normal' }}
+  AZ_IOT_TEST_FULL_LOGGING: ${{ inputs.full_logging || vars.DOTNET_FULL_LOGGING == 'true' }}
+  AZ_IOT_TEST_LOG_DIRECTORY: ${{ github.workspace }}/coverage/sdk-logs
 
 jobs:
   setup:
@@ -106,7 +115,8 @@ jobs:
       - name: Build e2e tests
         working-directory: dotnet
         run: |
-          dotnet build ./Project.slnx
+          dotnet build ./Project.slnx --verbosity "$env:DOTNET_VERBOSITY"
+        shell: pwsh
 
       - name: Download shared test config
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
@@ -187,37 +197,37 @@ jobs:
           $env:AZ_IOT_CLIENT_CERT         = $certPath
           $env:AZ_IOT_CLIENT_KEY          = $keyPath
           $env:AZ_IOT_TRUSTED_CA          = $caPath
+          $env:IOT_DPS_GROUP_X509_REGISTRATION_ID = $groupRegId
+          $env:IOT_DPS_GROUP_X509_CERTIFICATE = $groupCertB64
+          $env:IOT_DPS_GROUP_X509_KEY = $groupKeyB64
           if ($env:IOT_DPS_GLOBAL_ENDPOINT) { $env:AZ_IOT_DPS_GLOBAL_ENDPOINT = $env:IOT_DPS_GLOBAL_ENDPOINT }
 
           # Only tests labeled Category=CertificateManagement run here;
           # all other tests run in ci-dotnet.
           dotnet test ./dotnet/Project.slnx `
             --filter "Category=CertificateManagement" `
+            --verbosity "$env:DOTNET_VERBOSITY" `
             --collect:"XPlat Code Coverage" `
-            --logger:"trx;LogFileName=test-results.trx" `
-            --environment IOTHUB_CONNECTION_STRING=$env:IOTHUB_CONNECTION_STRING `
-            --environment IOT_DPS_CONNECTION_STRING=$env:IOT_DPS_CONNECTION_STRING `
-            --environment IOT_DPS_ID_SCOPE=$env:IOT_DPS_ID_SCOPE `
-            --environment IOT_DPS_GROUP_X509_REGISTRATION_ID=$groupRegId `
-            --environment IOT_DPS_GROUP_X509_CERTIFICATE=$groupCertB64 `
-            --environment IOT_DPS_GROUP_X509_KEY=$groupKeyB64 `
-            --environment IOT_DPS_SYMM_KEY_GROUP_PRIMARY_KEY=$env:IOT_DPS_SYMM_KEY_GROUP_PRIMARY_KEY `
+            --logger:"trx" `
+            --logger:"console;verbosity=$env:DOTNET_TEST_LOGGER_VERBOSITY" `
             --results-directory ./coverage `
-            -- xunit.parallelizeAssembly=true
+            -- xunit.parallelizeAssembly=true xunit.diagnosticMessages=$env:AZ_IOT_TEST_FULL_LOGGING xunit.internalDiagnosticMessages=$env:AZ_IOT_TEST_FULL_LOGGING
 
       - name: Upload Test Report Artifact
+        if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: test-report-${{ matrix.os }}
-          path: ./coverage/*
-          if-no-files-found: error
+          path: ./coverage/
+          if-no-files-found: warn
+          retention-days: 7
 
       - uses: dorny/test-reporter@a43b3a5f7366b97d083190328d2c652e1a8b6aa2 # v3.0.0
         id: test-reporter
         if: always()
         with:
           name: dotnet cert management test report
-          path: '**/test-results.trx'
+          path: 'coverage/**/*.trx'
           reporter: dotnet-trx  
 
       - name: Annotate Test Report

@@ -18,7 +18,7 @@ mapfile -t projects < <(find "${root_dir}" -name '*.csproj' -not -path '*/obj/*'
 
 found=0
 for project in "${projects[@]}"; do
-    dotnet restore "${project}" --verbosity quiet
+    dotnet restore "${project}" --verbosity "${DOTNET_VERBOSITY:-quiet}"
     report="$(dotnet list "${project}" package --vulnerable --include-transitive --format json)"
     hits="$(jq -r '
         .projects[]? | .frameworks[]? | ((.topLevelPackages // []) + (.transitivePackages // []))[]
