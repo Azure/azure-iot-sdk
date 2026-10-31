@@ -54,7 +54,7 @@ print(load_pem_private_key(open(sys.argv[1], "rb").read(), None).key_size)' "$ke
   trap 'kill "$pid" 2> /dev/null || true; wait "$pid" 2> /dev/null || true' EXIT
   sleep 3
   # espefuse asks for BURN before writing the DS key into the eFuse image.
-  echo BURN | configure_esp_secure_cert.py "${args[@]}" --port "socket://localhost:${port}" \
+  echo BURN | configure_esp_secure_cert.py "${args[@]}" --port "socket://127.0.0.1:${port}" \
     --configure_ds --priv_key_algo RSA "$bits" --efuse_key_id 3 > tool.log 2>&1 \
     || { tail -n 40 tool.log; exit 1; }
   kill "$pid" 2> /dev/null || true

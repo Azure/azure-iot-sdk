@@ -84,7 +84,7 @@ case "$mode" in
       exit 2
     fi
     exec "${qemu[@]}" -global driver=esp32c3.gpio,property=strap_mode,value=0x02 \
-      -serial "tcp::$4,server,nowait"
+      -serial "tcp:127.0.0.1:$4,server,nowait" # Loopback only: the eFuse is not read-protected.
     ;;
 esac
 

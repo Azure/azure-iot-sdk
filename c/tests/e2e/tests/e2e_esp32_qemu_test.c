@@ -198,28 +198,42 @@ static bool json_enter(az_json_reader* r, const char* name)
 }
 
 /**
- * @brief Reads the unsigned integer at @p path (member names, outermost first, NULL-terminated)
- * in the JSON object @p json.
- * @return false when a member is missing or the value is not an unsigned integer.
+ * @brief Moves @p r to the value at @p path (member names, outermost first, NULL-terminated) in
+ * the JSON object @p json.
  */
-static bool json_read_uint64(const char* json, const char* const* path, uint64_t* out)
+static bool json_find(const char* json, const char* const* path, az_json_reader* r)
 {
-  az_json_reader r;
-  if (az_json_reader_init(
-          &r, az_span_create((uint8_t*)(uintptr_t)json, (int32_t)strlen(json)), NULL)
+  if (az_json_reader_init(r, az_span_create((uint8_t*)(uintptr_t)json, (int32_t)strlen(json)), NULL)
           != AZ_OK
-      || az_json_reader_next_token(&r) != AZ_OK)
+      || az_json_reader_next_token(r) != AZ_OK)
   {
     return false;
   }
   for (; *path != NULL; ++path)
   {
-    if (!json_enter(&r, *path))
+    if (!json_enter(r, *path))
     {
       return false;
     }
   }
-  return r.token.kind == AZ_JSON_TOKEN_NUMBER && az_json_token_get_uint64(&r.token, out) == AZ_OK;
+  return true;
+}
+
+/** @brief Reads the unsigned integer at @p path (see json_find()); false when it is not one. */
+static bool json_read_uint64(const char* json, const char* const* path, uint64_t* out)
+{
+  az_json_reader r;
+  return json_find(json, path, &r) && r.token.kind == AZ_JSON_TOKEN_NUMBER
+      && az_json_token_get_uint64(&r.token, out) == AZ_OK;
+}
+
+/** @brief Reads the string at @p path (see json_find()), unescaped, into @p out; false when it is
+ * not a string or does not fit. */
+static bool json_read_string(const char* json, const char* const* path, char* out, size_t size)
+{
+  az_json_reader r;
+  return json_find(json, path, &r) && r.token.kind == AZ_JSON_TOKEN_STRING
+      && az_json_token_get_string(&r.token, out, (int32_t)size, NULL) == AZ_OK;
 }
 
 /** @brief Writes "<tag>-<time><random>" to @p out, unique per run. */
@@ -339,7 +353,10 @@ static void the_echo_method_returns_its_payload(void** state)
   uint64_t device_status = 0;
   assert_true(json_read_uint64(response, method_status, &device_status));
   assert_int_equal(device_status, 200);
-  assert_non_null(strstr(response, marker));
+  static const char* const method_payload[] = { "payload", NULL };
+  char echoed[64] = { 0 };
+  assert_true(json_read_string(response, method_payload, echoed, sizeof(echoed)));
+  assert_string_equal(echoed, marker);
 }
 
 /** @brief A desired patch reaches the device, which acknowledges its version in reported. */
