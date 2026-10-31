@@ -323,10 +323,10 @@ void app_main(void)
 
   /* Largest update accepted. A one-file offer is about 5 KiB, and NVS
    * (partitions*.csv) must hold two generations of the largest checkpoint
-   * (AZ_IOT_SU_STATE_BLOB_MAX_SIZE(), about 9 KiB) while one
+   * (AZ_IOT_SU_STATE_BLOB_MAX_SIZE(), about 11 KiB) while one
    * replaces the other. */
 #define SU_MAX_UPDATE_SIZE 8192
-  /* The client's memory, about 20 KB: too large for the 12 KB main task stack. */
+  /* The client's memory, about 35 KB: too large for the 12 KB main task stack. */
   static uint8_t su_workspace[AZ_IOT_SU_WORKSPACE_SIZE(
       SU_MAX_UPDATE_SIZE,
       AZ_IOT_SU_VERIFY_SCRATCH_SIZE,
@@ -334,7 +334,8 @@ void app_main(void)
       AZ_IOT_SU_DEVICE_PROPERTIES_BUFFER_SIZE,
       AZ_IOT_SU_DEFAULT_RESULT_DETAILS_SIZE,
       AZ_IOT_SU_DEFAULT_MAX_ROOT_KEYS,
-      AZ_IOT_SU_DEFAULT_MAX_OBSERVERS)];
+      AZ_IOT_SU_DEFAULT_MAX_OBSERVERS,
+      AZ_IOT_SU_DEFAULT_MAX_RELATED_FILES)];
   static az_iot_su_client su;
   az_iot_su_client_config_options su_opts = az_iot_su_client_config_options_default();
   su_opts.hooks = &hooks;
