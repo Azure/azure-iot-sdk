@@ -132,13 +132,14 @@ az_iot_result az_iot_test_connection_client_init(
   return result;
 }
 
-void az_iot_test_connection_client_deinit(az_iot_connection_client* client)
+az_iot_result az_iot_test_connection_client_deinit(az_iot_connection_client* client)
 {
-  az_iot_connection_client_deinit(client);
+  az_iot_result result = az_iot_connection_client_deinit(client);
   test_connection_workspace* lent
-      = client != NULL ? test_connection_workspace_lent_to(client) : NULL;
+      = result == AZ_IOT_OK ? test_connection_workspace_lent_to(client) : NULL;
   if (lent != NULL)
   {
     lent->client = NULL;
   }
+  return result;
 }
