@@ -28,6 +28,10 @@
  *   SAMPLE_DOWNLOAD_PREFIX         path prefix of downloaded files
  *                                  (default ./su_download_)
  *   SAMPLE_INSTALL_CHUNKS          install_fn calls per step (default 4)
+ *   SAMPLE_DELTA_SOURCE_CACHE_DIR  source cache of the microsoft/delta:1 reference handler,
+ *                                  in a build with it (AZ_IOT_WITH_SU_DELTA); default
+ *                                  /var/lib/adu/sdc
+ *   SAMPLE_DELTA_LIBRARY           its delta processor library (default libadudiffapi.so)
  *   AZ_IOT_SU_POLL_INTERVAL_S      seconds between checks (default 14400)
  *   AZ_IOT_SU_LOG_LEVEL            trace|debug|info|warn|error|off
  */
@@ -61,6 +65,9 @@
 
 #include "sample_utils.h"
 #include "su_sim.h"
+#if defined(SAMPLE_WITH_SU_DELTA)
+#include "az_iot_su_delta.h"
+#endif
 
 /** @brief Device-specific failure sub-codes. Kept at 0x100 and above so they
  * never read as an AZ_IOT_SU_RESULT_* value; they end up in the low bits of the
@@ -131,6 +138,23 @@ static int build_download_path(
       (const char*)az_span_ptr(file->id));
   return n >= 0 && (size_t)n < out_size;
 }
+
+#if defined(SAMPLE_WITH_SU_DELTA)
+/** @brief get_file_path_fn of the delta handler: where fetch_update_file() stores @p file, and so
+ * where read_back_downloaded_file() reads it. */
+static int32_t get_download_path(
+    const az_iot_su_client_update_manifest_file* file,
+    uint32_t file_index,
+    char* path,
+    size_t path_size,
+    void* user_ctx)
+{
+  (void)file_index;
+  return build_download_path((const download_context*)user_ctx, file, path, path_size)
+      ? AZ_IOT_SU_RESULT_SUCCESS
+      : AZ_IOT_SU_RESULT_FAILURE;
+}
+#endif
 
 /** @brief Close the hash check's reader, if open. */
 static void close_hash_reader(download_context* d)
@@ -600,6 +624,13 @@ int main(void)
   char* proxy_port = sample_env_copy("AZ_IOT_PROXY_PORT", NULL);
   char* proxy_username = sample_env_copy("AZ_IOT_PROXY_USERNAME", NULL);
   char* proxy_password = sample_env_copy("AZ_IOT_PROXY_PASSWORD", NULL);
+#if defined(SAMPLE_WITH_SU_DELTA)
+  /* NULL: the handler's defaults. */
+  char* delta_source_cache_directory = sample_env_copy("SAMPLE_DELTA_SOURCE_CACHE_DIR", NULL);
+  char* delta_library = sample_env_copy("SAMPLE_DELTA_LIBRARY", NULL);
+  az_iot_su_delta_handler delta_handler = { 0 };
+  az_iot_su_download_handler download_handlers[1];
+#endif
 
   dl.path_prefix = sample_env_copy("SAMPLE_DOWNLOAD_PREFIX", "./su_download_");
   dl.install_chunks = su_sample_env_long("SAMPLE_INSTALL_CHUNKS", 4);
@@ -733,6 +764,26 @@ int main(void)
   su_opts.limits.result_details_size = AZ_IOT_SU_DEFAULT_RESULT_DETAILS_SIZE;
   su_opts.workspace = g_su_workspace;
   su_opts.workspace_size = sizeof(g_su_workspace);
+#if defined(SAMPLE_WITH_SU_DELTA)
+  /* microsoft/delta:1: for a file with a delta related file, download the delta and rebuild the
+   * file from it and the file of an earlier update in the source cache, with libadudiffapi.so.
+   * Downloads and rebuilds go to build_download_path(). Without the library, or without a cached
+   * source, or when the rebuilt file's hash does not match, the full file is downloaded. Each
+   * successful update moves its files into the cache, as the source of the next delta. */
+  az_iot_su_delta_handler_options delta_options = az_iot_su_delta_handler_options_default();
+  delta_options.source_cache_directory = delta_source_cache_directory;
+  delta_options.library_path = delta_library;
+  delta_options.get_file_path_fn = get_download_path;
+  delta_options.user_ctx = &dl;
+  if (az_iot_su_delta_handler_init(&delta_handler, &delta_options) != AZ_IOT_OK)
+  {
+    fprintf(stderr, "az_iot_su_delta_handler_init failed\n");
+    goto cleanup;
+  }
+  download_handlers[0] = az_iot_su_delta_handler_get_download_handler(&delta_handler);
+  su_opts.download_handlers = download_handlers;
+  su_opts.download_handler_count = 1;
+#endif
   if (az_iot_su_client_init(&su, &connection, &su_opts) != AZ_IOT_OK)
   {
     fprintf(stderr, "az_iot_su_client_init failed\n");
@@ -813,6 +864,11 @@ cleanup:
   {
     az_iot_su_client_deinit(&su);
   }
+#if defined(SAMPLE_WITH_SU_DELTA)
+  az_iot_su_delta_handler_deinit(&delta_handler);
+  free(delta_source_cache_directory);
+  free(delta_library);
+#endif
   if (connection_ready)
   {
     az_iot_connection_client_deinit(&connection);

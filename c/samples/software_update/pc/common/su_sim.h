@@ -34,6 +34,10 @@ typedef struct su_simulation_control
   int reboot; /**< SU_SIM_REBOOT: install returns REBOOT_REQUIRED once. */
   long delay_ms; /**< SU_SIM_DELAY_MS: per-download delay. */
   char* state_file; /**< SU_SIM_STATE_FILE: resume blob path. Owned. */
+  /** SU_SIM_FILE_DIR: existing directory where simulate_update_file_download() also writes the
+   * synthesized bytes, at su_sim_get_update_file_path(), for a download handler. NULL: no file is
+   * written. Owned. */
+  char* file_directory;
 
   int reboot_signalled; /**< Set when install returned REBOOT_REQUIRED; cleared by a rollback. */
   int reboot_pending; /**< The requested reboot is still wanted; cleared by a rollback. */
@@ -51,12 +55,41 @@ typedef struct su_simulation_control
 } su_simulation_control;
 
 /** @brief download_fn: logs the file; bytes are synthesized by read_back_simulated_update_file().
- */
+ * Also writes them to su_sim_get_update_file_path() when su_simulation_control::file_directory is
+ * set. */
 int32_t simulate_update_file_download(
     const az_iot_su_client_update_manifest_file* file,
     az_span url,
     uint32_t file_index,
     uint32_t file_count,
+    void* user_ctx);
+
+/**
+ * @brief Path of @p file in su_simulation_control::file_directory: the directory and the file id.
+ * Matches az_iot_su_delta_get_file_path_fn.
+ *
+ * @return AZ_IOT_SU_RESULT_SUCCESS; AZ_IOT_SU_RESULT_FAILURE without a directory or when the path
+ * does not fit @p path_size.
+ */
+int32_t su_sim_get_update_file_path(
+    const az_iot_su_client_update_manifest_file* file,
+    uint32_t file_index,
+    char* path,
+    size_t path_size,
+    void* user_ctx);
+
+/**
+ * @brief Simulated delta processor (az_iot_su_delta_apply_fn): copies @p source_path to
+ * @p target_path. read_back_simulated_update_file() serves synthesized bytes, so the built file's
+ * hash check passes whatever it holds.
+ *
+ * @return AZ_IOT_SU_RESULT_SUCCESS, or AZ_IOT_SU_RESULT_FAILURE when a file cannot be read or
+ * written.
+ */
+int32_t simulate_delta_apply(
+    const char* source_path,
+    const char* delta_path,
+    const char* target_path,
     void* user_ctx);
 
 /** @brief read_file_fn: zero-filled bytes of the declared size (first byte

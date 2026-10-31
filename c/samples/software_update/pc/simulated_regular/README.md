@@ -31,7 +31,7 @@ The simulated hooks are shared with the onboarding sample, in
 |---|---|
 | Connection, update request/response, manifest receipt, status reporting | **Real** (Paho MQTT adapter, real DPS endpoint) |
 | Manifest JWS signature verification | **Real** (OpenSSL crypto backend, real root keys) |
-| `download_fn` | **Simulated** — synthesizes deterministic (zero-filled) payload bytes of the manifest-declared size |
+| `download_fn` | **Simulated** — synthesizes deterministic (zero-filled) payload bytes of the manifest-declared size; also writes them to `SU_SIM_FILE_DIR` when set |
 | `read_file_fn` | **Simulated** — serves the same deterministic bytes back so core can run the **real** streaming SHA-256 hash check |
 | `install_fn` / `apply_fn` / `backup_fn` / `restore_fn` | **Simulated** — log only; optional forced failure or reboot |
 | `is_installed_fn` | Reports "already installed" for a manifest whose update id equals the installed one; the workflow then ends as skipped |
@@ -146,6 +146,8 @@ Set them in the shell that runs the sample. `SU_SIM_FAIL_STEP`, `SU_SIM_HASH_MIS
 | `SU_SIM_REBOOT=1` | `install_fn` returns `REBOOT_REQUIRED`; the sample **exits** once the state is persisted (while the write fails the client retries it; if it gives up, the update is rolled back and reported FAILED). Re-run it (without this knob) to `resume()` and finish the workflow; that run skips the startup check (a new workflow would supersede the resumed one); the next poll asks |
 | `SU_SIM_DELAY_MS=<ms>` | Per-download delay so progress is observable |
 | `SU_SIM_STATE_FILE=<path>` | Resume blob path (default `./su_sim_regular_state.blob`, distinct from the onboarding sample's) |
+| `SU_SIM_FILE_DIR=<dir>` | Existing directory: the simulated download also writes the synthesized files there, named by file id. Registers the delta handler; see [Delta updates](#delta-updates) |
+| `SU_SIM_DELTA_CACHE_DIR=<dir>` | The delta handler's source cache (default `./su_sim_source_cache`) |
 | `AZ_IOT_SU_POLL_INTERVAL_S=<s>` | Seconds between update checks (default `14400`, 4 h); `0` checks only at startup and after an applied update. Checks and reports from all devices share the provisioning service's request budget, which plans for one check per device every 4 hours, so keep short intervals for testing. A check not answered within half the interval (at most 60 s) is abandoned and asked again at the next poll |
 | `AZ_IOT_SU_LOG_LEVEL=<lvl>` | SDK log level: `trace`, `debug`, `info` (default), `warn`, `error`, `off`. The SDK's `su:` and `dps:` protocol lines are emitted at `debug` |
 | `AZ_IOT_PAHO_TRACE=<level>` | Enable the Paho MQTT library's trace logging (`error`, `protocol`, `min`, `medium`, `max`; any other value means `min`). The lines are logged at `TRACE` by the `paho` component, so also set `AZ_IOT_SU_LOG_LEVEL=trace`. Use this to diagnose `connection lost: (unknown)` — the trace reveals the underlying cause (socket error, server `DISCONNECT`, keep-alive timeout, etc.) |
@@ -160,6 +162,29 @@ SU_SIM_HASH_MISMATCH=1 ./az_iot_sample_simulated_regular
 # Require a reboot at install -> persist + exit; re-run to resume() and finish.
 SU_SIM_REBOOT=1 ./az_iot_sample_simulated_regular
 ./az_iot_sample_simulated_regular            # resumes from the persisted blob
+```
+
+### Delta updates
+
+In a Linux build with the reference `microsoft/delta:1` download handler
+(`-DAZ_IOT_WITH_SU_DELTA=ON`, on in the Linux presets) and `SU_SIM_FILE_DIR` set, the sample
+registers that handler ([software updates design](../../../../docs/eng/software-updates.md#82-delta-updates-the-reference-microsoftdelta1-handler))
+with a simulated delta processor, `simulate_delta_apply()`, which copies the source. Import:
+
+1. a first update (e.g. version 1.1.0) with one zero-filled file, the delta's source;
+2. a second update (e.g. 1.2.0) whose file has `downloadHandler` `microsoft/delta:1` and a
+   zero-filled related file with the properties `microsoft.sourceFileHash` (the first file's
+   base64 SHA-256) and `microsoft.sourceFileHashAlgorithm` `sha256`.
+
+The first update is downloaded in full and its file moved into the source cache when it
+succeeds. For the second one, the SDK downloads the related file, the handler "rebuilds" the
+file from it and the cached source, and the SDK checks the rebuilt file's hash. As
+`read_file_fn` serves synthesized bytes, that check passes whatever the copy holds; with the real
+processor it checks the rebuilt bytes. Without the cached source, the full file is downloaded.
+
+```bash
+mkdir -p ./su_sim_files
+SU_SIM_FILE_DIR=./su_sim_files ./az_iot_sample_simulated_regular
 ```
 
 ### Root keys

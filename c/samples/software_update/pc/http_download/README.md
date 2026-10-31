@@ -41,6 +41,8 @@ on the device changes.
   Each check waits at most half the interval (60 s cap). The sample exits if it cannot report
   an applied update as installed.
 - Requires Azure Device Provisioning service, an Azure IoT Hub and Azure Device Update.
+- Delta updates, in a Linux build with the reference `microsoft/delta:1` download handler
+  (`-DAZ_IOT_WITH_SU_DELTA=ON`, on in the Linux presets): see [Delta updates](#delta-updates).
 
 | Concern | Behavior |
 |---|---|
@@ -68,6 +70,8 @@ downloaded and hashed for real.
 | `AZ_IOT_PROXY_USERNAME`, `AZ_IOT_PROXY_PASSWORD` | no | Proxy Basic credentials |
 | `SAMPLE_DOWNLOAD_PREFIX` | no | Path prefix of downloaded files; default `./su_download_` |
 | `SAMPLE_INSTALL_CHUNKS` | no | `install_fn` calls per step; default 4 |
+| `SAMPLE_DELTA_SOURCE_CACHE_DIR` | no | Delta handler's source cache; default `/var/lib/adu/sdc` |
+| `SAMPLE_DELTA_LIBRARY` | no | Delta processor library; default `libadudiffapi.so` (the loader's search path) |
 | `AZ_IOT_SU_POLL_INTERVAL_S` | no | Seconds between checks; default 14400. The provisioning service plans for one check per device every 4 hours. |
 | `AZ_IOT_SU_LOG_LEVEL` | no | `trace`, `debug`, `info` (default), `warn`, `error`, `off` |
 
@@ -86,12 +90,40 @@ cmake --build --preset linux-gcc-debug --target az_iot_sample_software_update_ht
 With az_mqtt (`-DAZ_IOT_WITH_AZ_MQTT=ON`), target `az_iot_sample_software_update_http_download_az_mqtt` builds the same sample in
 `az_mqtt/` next to that binary ([adapters](../../../README.md#build)).
 
+## Delta updates
+
+Built with `AZ_IOT_WITH_SU_DELTA`, the sample registers the reference `microsoft/delta:1`
+download handler ([software updates design](../../../../docs/eng/software-updates.md#82-delta-updates-the-reference-microsoftdelta1-handler)).
+For an update file with that handler and a delta related file, the SDK downloads the delta to
+`SAMPLE_DOWNLOAD_PREFIX<related file id>`, the handler rebuilds the file at
+`SAMPLE_DOWNLOAD_PREFIX<file id>` from the delta and the source in its cache, and the SDK checks
+the rebuilt file's SHA-256. It downloads the full file instead when:
+
+- the delta processor library (`libadudiffapi.so` from the
+  [Device Update delta repository](https://github.com/Azure/iot-hub-device-update-delta)) cannot be
+  loaded;
+- the source is not in the cache;
+- the rebuild fails or its hash does not match.
+
+After each successful update the handler moves the update's files from the download prefix into
+the cache (one update per provider kept), as the sources of the next delta. The first update is a
+full download. The cache directory is created when needed: the default needs root, so set
+`SAMPLE_DELTA_SOURCE_CACHE_DIR` otherwise.
+
+```bash
+# From c/: download, verify and extract the pinned library; prints its path.
+bash eng/install-su-delta-processor.sh "$HOME/su-delta"
+export SAMPLE_DELTA_LIBRARY="$HOME/su-delta/root/usr/lib/libadudiffapi.so"
+export SAMPLE_DELTA_SOURCE_CACHE_DIR="$HOME/su-delta/cache"
+```
+
 ## Where to look in `main.c`
 
 | What | Where |
 |---|---|
 | Non-blocking download | `fetch_update_file()` |
 | Hash read-back | `read_back_downloaded_file()` |
+| Delta handler and its file paths | `delta_options` in `main()`, `get_download_path()` |
 | Chunked install | `install_update_step()` |
 | Proxy for MQTT and download | `copts.proxy` and `CURLOPT_PROXY` in `main()` / `fetch_update_file()` |
 | Limits and workspace | `su_opts.limits`, `g_su_workspace` |
