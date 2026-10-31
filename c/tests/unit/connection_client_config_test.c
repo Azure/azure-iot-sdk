@@ -65,10 +65,5 @@ typedef char default_workspace_size_follows_the_defaults
                  EXPECTED_INBOUND_HANDLERS)
          ? 1
          : -1];
-typedef char embedded_workspace_is_fixed
-    [_az_IOT_CONNECTION_CLIENT_EMBEDDED_WORKSPACE_SIZE
-             == AZ_IOT_CONNECTION_CLIENT_WORKSPACE_SIZE(16, 2, 8, 10, 4, 8, 8)
-         ? 1
-         : -1];
 
 int main(void) { return 0; }

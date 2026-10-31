@@ -71,8 +71,8 @@
 - Breaking: connection client entry counts are run-time limits
   (`az_iot_connection_client_options::limits`, 0 = default) instead of compile-time macros. The
   entries live in `options.workspace`, sized by `az_iot_connection_client_get_workspace_size()` or
-  `AZ_IOT_CONNECTION_CLIENT_WORKSPACE_SIZE()`; with no workspace the client uses its own, sized for
-  the defaults. `AZ_IOT_MAX_PENDING_PUBACKS`, `AZ_IOT_MAX_PUBACK_RESERVATIONS`,
+  `AZ_IOT_CONNECTION_CLIENT_WORKSPACE_SIZE()`, which is required: `init()` returns
+  `AZ_IOT_ERR_INVALID_ARG` without one. `AZ_IOT_MAX_PENDING_PUBACKS`, `AZ_IOT_MAX_PUBACK_RESERVATIONS`,
   `AZ_IOT_MAX_PERSISTENT_SUBS`, `AZ_IOT_MAX_SESSION_HANDLERS`, `AZ_IOT_MAX_FEATURE_STATE_OBSERVERS`,
   `AZ_IOT_MAX_APP_STATE_OBSERVERS`, `AZ_IOT_MAX_FEATURE_CLIENT_BINDS` and
   `AZ_IOT_MAX_INBOUND_HANDLERS` are removed. `AZ_IOT_MAX_MQTT_FACTORIES`, `AZ_IOT_DPS_HOST_BUF`,

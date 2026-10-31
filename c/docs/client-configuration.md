@@ -172,9 +172,8 @@ Entry counts are run-time values in `az_iot_connection_client_options::limits`
 - `az_iot_connection_client_get_workspace_size(&limits)`: bytes needed, any alignment.
 - `AZ_IOT_CONNECTION_CLIENT_WORKSPACE_SIZE(...)`: the same as a constant expression, for static
   arrays. `AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE`: the same for the defaults.
-- With `options.workspace` NULL, the client uses its own area, sized for the built-in defaults
-  below; a limit above one of them then fails `init()` with `AZ_IOT_ERR_INVALID_ARG`. A workspace
-  that is too small fails it with `AZ_IOT_ERR_NOT_ENOUGH_SPACE` and logs the size needed.
+- The workspace is required: `init()` fails with `AZ_IOT_ERR_INVALID_ARG` when it is NULL, and
+  with `AZ_IOT_ERR_NOT_ENOUGH_SPACE` when it is too small; both log the size needed.
 - Defining one of the former macros (`AZ_IOT_MAX_PENDING_PUBACKS`, `AZ_IOT_DPS_HOST_BUF`, ...)
   before including the header is a compile error.
 

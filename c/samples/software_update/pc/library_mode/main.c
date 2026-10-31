@@ -804,7 +804,11 @@ static int initialize_connection_client(sample_state* state)
 #elif defined(AZ_IOT_SAMPLE_CRYPTO_MBEDTLS)
   state->crypto = az_iot_crypto_mbedtls();
 #endif
+  /* Memory for the connection client's entries, sized for the default limits. */
+  static uint8_t connection_workspace[AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE];
   az_iot_connection_client_options copts = az_iot_connection_client_options_default();
+  copts.workspace = connection_workspace;
+  copts.workspace_size = sizeof(connection_workspace);
   copts.dps.id_scope = state->config.id_scope;
   copts.dps.registration_id = state->config.reg_id;
   copts.dps.global_endpoint = state->config.dps_global_endpoint; /* NULL: the global default */
