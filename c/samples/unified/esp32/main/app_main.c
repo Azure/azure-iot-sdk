@@ -154,14 +154,17 @@ static void track_assignment(hub_device* d)
 
 /**
  * @brief Takes @p version as the one to acknowledge unless an equal or newer one was seen: a late
- * twin GET or patch must not move the acknowledgement back.
+ * twin GET or patch must not move the acknowledgement back. An @p authoritative version (an
+ * mqttv5 snapshot, the whole desired document) is taken even when lower, e.g. after the twin was
+ * replaced.
  */
-static void note_desired_version(hub_device* d, uint64_t version)
+static void note_desired_version(hub_device* d, uint64_t version, bool authoritative)
 {
   /* First: an mqttv5 snapshot can arrive before hub CONNECTED, and a reset after it would drop
    * it. */
   track_assignment(d);
-  if (version <= d->newest_desired_version)
+  if (version == d->newest_desired_version
+      || (version < d->newest_desired_version && !authoritative))
   {
     ESP_LOGI(TAG, "desired version %" PRIu64 " is not newer; ignored", version);
     return;
@@ -247,7 +250,7 @@ static void send_telemetry(hub_device* d)
 static void on_desired_mqttv3(const uint8_t* patch, size_t length, uint64_t version, void* user_ctx)
 {
   ESP_LOGI(TAG, "desired version %" PRIu64 ": %.*s", version, (int)length, (const char*)patch);
-  note_desired_version((hub_device*)user_ctx, version);
+  note_desired_version((hub_device*)user_ctx, version, false);
 }
 
 static void on_desired_mqttv5(
@@ -257,9 +260,8 @@ static void on_desired_mqttv5(
     size_t length,
     void* user_ctx)
 {
-  (void)kind;
   ESP_LOGI(TAG, "desired version %" PRIu64 ": %.*s", version, (int)length, (const char*)payload);
-  note_desired_version((hub_device*)user_ctx, version);
+  note_desired_version((hub_device*)user_ctx, version, kind == AZ_IOT_MQTTV5_TWIN_DESIRED_SNAPSHOT);
 }
 
 /**
@@ -322,7 +324,7 @@ static void on_twin_mqttv3(az_iot_result status, const uint8_t* twin, size_t len
   if (version != 0)
   {
     ESP_LOGI(TAG, "desired version %" PRIu64 ": from the twin", version);
-    note_desired_version(d, version);
+    note_desired_version(d, version, false); // May be older than a live patch.
   }
 }
 
