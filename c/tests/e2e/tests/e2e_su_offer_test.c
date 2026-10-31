@@ -95,8 +95,8 @@
 #define E2E_SU_REQUEST_TIMEOUT_MS 60000u
 #define E2E_SU_DOWNLOAD_TIMEOUT_S 120L
 
-#define E2E_SU_MAX_FILES _az_IOT_ADU_CLIENT_MAX_TOTAL_FILE_COUNT
-#define E2E_SU_MAX_STEPS _az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS
+#define E2E_SU_MAX_FILES AZ_IOT_SU_MAX_FILE_COUNT
+#define E2E_SU_MAX_STEPS AZ_IOT_SU_MAX_STEP_COUNT
 
 /* --- run-wide state ------------------------------------------------------ */
 
