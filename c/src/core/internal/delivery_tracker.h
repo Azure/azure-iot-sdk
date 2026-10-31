@@ -125,6 +125,25 @@ extern "C"
   /** @brief Withdraw from the connection and drop every entry without completing it. */
   void az_iot_delivery_tracker__unbind(az_iot_delivery_tracker* tracker);
 
+  /** @brief A tracker's binding, taken before a call whose callbacks may unbind (or free) it. */
+  typedef struct az_iot_delivery_tracker_binding
+  {
+    az_iot_connection_client* connection;
+    uint32_t id; /**< Tells a rebind to the same connection apart, even after init(). */
+  } az_iot_delivery_tracker_binding;
+
+  /** @brief The binding of @p tracker now. */
+  az_iot_delivery_tracker_binding az_iot_delivery_tracker__binding(
+      const az_iot_delivery_tracker* tracker);
+
+  /**
+   * @brief Whether @p tracker still has binding @p binding. Asks the connection first, so it
+   *        reads @p tracker only while it is still bound: safe after a callback freed it.
+   */
+  bool az_iot_delivery_tracker__has_binding(
+      const az_iot_delivery_tracker* tracker,
+      az_iot_delivery_tracker_binding binding);
+
   /**
    * @brief Track a message and send it as soon as it can be.
    *
@@ -146,6 +165,19 @@ extern "C"
       size_t correlation_id_length,
       uint64_t timeout_ms,
       size_t* out_entry_index);
+
+  /**
+   * @brief As az_iot_delivery_tracker__submit(), into free entry @p entry_index, so the owner
+   *        holds the message's state there before encode() first runs.
+   * @retval AZ_IOT_ERR_INVALID_ARG Also for an @p entry_index out of range or in use.
+   */
+  az_iot_result az_iot_delivery_tracker__submit_at(
+      az_iot_delivery_tracker* tracker,
+      size_t entry_index,
+      const az_iot_delivery_tracker_profile* profile,
+      const uint8_t* correlation_id,
+      size_t correlation_id_length,
+      uint64_t timeout_ms);
 
   /**
    * @brief A response matched @p correlation_id: complete its message as DELIVERED. Queued

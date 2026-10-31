@@ -291,14 +291,10 @@ static az_iot_result clients_build(
   }
 }
 
-/* One pump step. The MQTTv5 twin client has timers of its own to drive. */
+/* One pump step: the connection also drives the twin clients' timeouts. */
 static void pump(sample_state* s, uint32_t timeout_ms)
 {
   (void)az_iot_connection_client_do_work(&s->connection_client, timeout_ms);
-  if (s->twin_initialized && s->profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5)
-  {
-    (void)az_iot_mqttv5_twin_client_do_work(&s->mqttv5);
-  }
 }
 
 /* GET + PATCH, answered through the callbacks. A request that was never queued
