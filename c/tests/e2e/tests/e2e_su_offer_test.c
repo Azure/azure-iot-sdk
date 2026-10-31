@@ -38,6 +38,9 @@
  */
 
 #define _POSIX_C_SOURCE 200809L
+#ifndef _CRT_SECURE_NO_WARNINGS
+#define _CRT_SECURE_NO_WARNINGS /* fopen */
+#endif
 
 #include <stdarg.h>
 #include <stddef.h>
@@ -49,6 +52,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#ifdef _WIN32
+#include <direct.h>
+#include <io.h>
+#endif
 
 #include <cmocka.h>
 
@@ -75,6 +82,7 @@
 #include "az_iot_crypto_openssl.h"
 
 #include "e2e_su_env.h"
+#include "support/test_env.h"
 #include "e2e_su_test_roots.h"
 
 /* --- budgets ------------------------------------------------------------- */
@@ -92,8 +100,10 @@
 /* --- run-wide state ------------------------------------------------------ */
 
 static e2e_su_env g_env;
-static const char* g_manufacturer;
-static const char* g_model;
+static char* g_manufacturer;
+static char* g_model;
+/* The offer a scenario asked require_model() for; freed after the scenario. */
+static char* g_scenario_model;
 
 /* Microsoft production roots plus the test roots. */
 #define E2E_SU_MAX_ROOTS 8
@@ -116,11 +126,14 @@ typedef enum
 } op_kind;
 
 #define E2E_SU_MAX_OPS 64
+/* The scratch directory: Windows' temporary directory can be long. */
+#define E2E_SU_DIR_MAX 260
+#define E2E_SU_PATH_MAX (E2E_SU_DIR_MAX + 16)
 
 /** @brief Platform-hook state: a scratch directory, an op log and injected faults. */
 typedef struct
 {
-  char dir[64];
+  char dir[E2E_SU_DIR_MAX];
   op_kind ops[E2E_SU_MAX_OPS];
   size_t op_count;
 
@@ -170,6 +183,12 @@ static void file_path(const platform* p, uint32_t index, char* out, size_t cap)
   snprintf(out, cap, "%s/f%u", p->dir, (unsigned)index);
 }
 
+/** @brief CURLOPT_WRITEFUNCTION: writes with this program's C runtime, not libcurl's (Windows). */
+static size_t write_downloaded_chunk(char* data, size_t size, size_t count, void* file)
+{
+  return fwrite(data, size, count, (FILE*)file);
+}
+
 static int32_t hook_download(
     const az_iot_su_client_update_manifest_file* file,
     az_span url,
@@ -190,7 +209,7 @@ static int32_t hook_download(
   memcpy(url_z, az_span_ptr(url), (size_t)az_span_size(url));
   url_z[az_span_size(url)] = '\0';
 
-  char path[96];
+  char path[E2E_SU_PATH_MAX];
   file_path(p, file_index, path, sizeof(path));
   FILE* f = fopen(path, "wb");
   if (f == NULL)
@@ -204,6 +223,7 @@ static int32_t hook_download(
   if (c != NULL)
   {
     (void)curl_easy_setopt(c, CURLOPT_URL, url_z);
+    (void)curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, write_downloaded_chunk);
     (void)curl_easy_setopt(c, CURLOPT_WRITEDATA, f);
     (void)curl_easy_setopt(c, CURLOPT_FAILONERROR, 1L);
     (void)curl_easy_setopt(c, CURLOPT_FOLLOWLOCATION, 1L);
@@ -242,7 +262,7 @@ static int32_t hook_read_file(
   {
     op_log(p, OP_READ);
   }
-  char path[96];
+  char path[E2E_SU_PATH_MAX];
   file_path(p, file_index, path, sizeof(path));
   FILE* f = fopen(path, "rb");
   if (f == NULL)
@@ -667,12 +687,25 @@ static fixture_options fixture_options_default(const char* model)
   };
 }
 
+/** @brief Creates an empty scratch directory under the system temporary directory. */
+static bool make_scratch_dir(char* dir, size_t size)
+{
+#ifdef _WIN32
+  char* temp = az_iot_test_env_dup("TEMP");
+  int n = snprintf(dir, size, "%s\\az_iot_e2e_su_XXXXXX", temp != NULL ? temp : ".");
+  free(temp);
+  return n > 0 && (size_t)n < size && _mktemp_s(dir, (size_t)n + 1) == 0 && _mkdir(dir) == 0;
+#else
+  int n = snprintf(dir, size, "/tmp/az_iot_e2e_su_XXXXXX");
+  return n > 0 && (size_t)n < size && mkdtemp(dir) != NULL;
+#endif
+}
+
 static void fixture_open(fixture* fx, const fixture_options* o)
 {
   memset(fx, 0, sizeof(*fx));
   fx->model = o->model;
-  snprintf(fx->plat.dir, sizeof(fx->plat.dir), "/tmp/az_iot_e2e_su_XXXXXX");
-  assert_non_null(mkdtemp(fx->plat.dir));
+  assert_true(make_scratch_dir(fx->plat.dir, sizeof(fx->plat.dir)));
   fx->have_dir = true;
   fx->plat.fail_install_step = o->fail_install_step;
   fx->plat.already_installed = o->already_installed;
@@ -780,11 +813,15 @@ static void fixture_close(fixture* fx)
   fx->have_dir = false;
   for (uint32_t i = 0; i < E2E_SU_MAX_FILES; ++i)
   {
-    char path[96];
+    char path[E2E_SU_PATH_MAX];
     file_path(&fx->plat, i, path, sizeof(path));
     (void)remove(path);
   }
+#ifdef _WIN32
+  (void)_rmdir(fx->plat.dir);
+#else
   (void)remove(fx->plat.dir);
+#endif
 }
 
 /* Pump both clients until @p cond holds, a fault, or the budget runs out. */
@@ -857,12 +894,13 @@ static const spy_report* send_report(fixture* fx, const az_iot_su_report* report
 
 static const char* require_model(const char* name)
 {
-  const char* v = e2e_su_env_require(name);
-  if (v == NULL)
+  free(g_scenario_model);
+  g_scenario_model = e2e_su_env_require(name);
+  if (g_scenario_model == NULL)
   {
     fail_msg("%s is not set: stage an offer for this scenario", name);
   }
-  return v;
+  return g_scenario_model;
 }
 
 /* --- scenarios ----------------------------------------------------------- */
@@ -1062,6 +1100,8 @@ static int scenario_teardown(void** state)
 {
   (void)state;
   fixture_close(&g_fx);
+  free(g_scenario_model);
+  g_scenario_model = NULL;
   return 0;
 }
 
@@ -1069,6 +1109,9 @@ static int group_teardown(void** state)
 {
   (void)state;
   curl_global_cleanup();
+  free(g_manufacturer);
+  free(g_model);
+  e2e_su_env_free(&g_env);
   return 0;
 }
 

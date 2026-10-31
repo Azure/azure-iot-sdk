@@ -72,15 +72,7 @@ endfunction()
 # selects the suites once the e2e directory is being built at all. Every
 # dependency is REQUIRED: a suite that cannot be built fails the configure
 # rather than dropping out of the run.
-#
-# Not built on Windows: the suites read their configuration with the borrowing
-# az_iot_test_env(), which cannot exist under MSVC (getenv is deprecated there
-# and these targets build with /WX), and nothing runs them on Windows.
-if(AZ_IOT_BUILD_E2E_SU AND WIN32)
-    message(STATUS "Software updates e2e suites skipped on Windows.")
-endif()
-
-if(AZ_IOT_BUILD_E2E_SU AND NOT WIN32)
+if(AZ_IOT_BUILD_E2E_SU)
     az_iot_add_e2e_suite(az_iot_tests_e2e_su
         SOURCES tests/e2e_su_test.c tests/e2e_su_env.c
         LIBS az_iot_core)
