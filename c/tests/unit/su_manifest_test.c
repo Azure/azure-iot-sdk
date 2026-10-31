@@ -172,20 +172,18 @@ static void related_files_past_the_storage_are_left_out(void** state)
         "\"a1\":{\"fileName\":\"a1\",\"relatedFiles\":{\"x\":{}},\"downloadHandler\":{\"id\":\"y\"}"
         "},"
         "\"a2\":{\"fileName\":\"a2\"}}},"
-        "\"b\":{\"fileName\":\"b\"},"
         "\"c\":{\"fileName\":\"c\",\"relatedFiles\":{\"c1\":{\"fileName\":\"c1\"},"
         "\"c2\":{\"fileName\":\"c2\"},\"c3\":{\"fileName\":\"c3\"}}}}}";
 
   g_related_capacity = 4;
   assert_int_equal(parse(manifest), AZ_IOT_OK);
-  assert_int_equal(g_manifest.files_count, 3);
+  assert_int_equal(g_manifest.files_count, 2);
   assert_span_equal(g_manifest.files[0].mime_type, "application/octet-stream");
   assert_int_equal(g_manifest.related_files_count, 4);
   assert_int_equal(g_manifest.files[0].related_files_index, 0);
   assert_int_equal(g_manifest.files[0].related_files_count, 2);
-  assert_int_equal(g_manifest.files[1].related_files_count, 0);
-  assert_int_equal(g_manifest.files[2].related_files_index, 2);
-  assert_int_equal(g_manifest.files[2].related_files_count, 2);
+  assert_int_equal(g_manifest.files[1].related_files_index, 2);
+  assert_int_equal(g_manifest.files[1].related_files_count, 2);
   assert_span_equal(g_manifest.related_files[0].id, "a1");
   assert_int_equal(g_manifest.related_files[0].related_files_count, 0);
   assert_int_equal(az_span_size(g_manifest.related_files[0].download_handler_id), 0);
@@ -195,10 +193,15 @@ static void related_files_past_the_storage_are_left_out(void** state)
   /* No storage keeps none; the files still parse. */
   g_related_capacity = 0;
   assert_int_equal(parse(manifest), AZ_IOT_OK);
-  assert_int_equal(g_manifest.files_count, 3);
+  assert_int_equal(g_manifest.files_count, 2);
   assert_int_equal(g_manifest.related_files_count, 0);
-  assert_int_equal(g_manifest.files[2].related_files_count, 0);
+  assert_int_equal(g_manifest.files[1].related_files_count, 0);
   g_related_capacity = sizeof(g_related_files) / sizeof(g_related_files[0]);
+
+  /* A file without relatedFiles has none. */
+  assert_int_equal(parse("{\"files\":{\"b\":{\"fileName\":\"b\"}}}"), AZ_IOT_OK);
+  assert_int_equal(g_manifest.related_files_count, 0);
+  assert_int_equal(g_manifest.files[0].related_files_count, 0);
 }
 
 /* A known member of the wrong type, malformed JSON or data after the root object is refused. */

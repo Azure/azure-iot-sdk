@@ -3822,6 +3822,15 @@ static void delta_update_keeps_related_files_across_a_reboot(void** state)
   assert_int_equal(az_iot_su_client_resume(&fx->su), AZ_IOT_OK);
   assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_INSTALL_COMPLETE);
 
+  const int last = related_count - 1;
+  char last_id[16];
+  char last_properties[64];
+  char last_url[64];
+  (void)snprintf(last_id, sizeof(last_id), "d%d", last);
+  (void)snprintf(
+      last_properties, sizeof(last_properties), "{\"microsoft.sourceFileHash\":\"S%d\"}", last);
+  (void)snprintf(last_url, sizeof(last_url), "http://example.com/d%d.delta", last);
+
   const az_iot_su_client_update_manifest* m = &fx->su._internal.current_manifest;
   assert_ptr_equal(m->related_files, fx->su._internal.related_file_storage);
   assert_int_equal(m->related_files_count, related_count);
@@ -3829,16 +3838,16 @@ static void delta_update_keeps_related_files_across_a_reboot(void** state)
   assert_true(az_span_is_content_equal(
       m->files[0].download_handler_id, AZ_SPAN_FROM_STR("microsoft/delta:1")));
   assert_true(
-      az_span_is_content_equal(m->related_files[related_count - 1].id, AZ_SPAN_FROM_STR("d14")));
+      az_span_is_content_equal(m->related_files[last].id, az_span_create_from_str(last_id)));
   assert_true(az_span_is_content_equal(
-      m->related_files[related_count - 1].properties,
-      AZ_SPAN_FROM_STR("{\"microsoft.sourceFileHash\":\"S14\"}")));
+      m->related_files[last].properties, az_span_create_from_str(last_properties)));
   const az_iot_su_client_update_request* req = &fx->su._internal.current_request;
   assert_ptr_equal(req->file_urls, fx->su._internal.file_url_storage);
   assert_int_equal(req->file_urls_count, related_count + 1);
-  assert_true(az_span_is_content_equal(req->file_urls[related_count].id, AZ_SPAN_FROM_STR("d14")));
+  assert_true(
+      az_span_is_content_equal(req->file_urls[related_count].id, az_span_create_from_str(last_id)));
   assert_true(az_span_is_content_equal(
-      req->file_urls[related_count].url, AZ_SPAN_FROM_STR("http://example.com/d14.delta")));
+      req->file_urls[related_count].url, az_span_create_from_str(last_url)));
 
   pump(fx, 40);
   assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_IDLE);
@@ -3861,11 +3870,19 @@ static void public_parser_fills_the_caller_storage(void** state)
   assert_int_equal(manifest.related_files_count, 3);
   assert_true(az_span_is_content_equal(manifest.related_files[2].id, AZ_SPAN_FROM_STR("d2")));
 
+  /* Without related-file storage, the URLs fit AZ_IOT_SU_MAX_FILE_COUNT. */
   az_iot_su_update_request_storage none = { g_parse_file_urls, NULL, 0 };
   assert_int_equal(
-      parse_with_storage(&fx->log, delta_patch("p", 3), k_root_keys, 1, &none, &req, &manifest),
+      parse_with_storage(
+          &fx->log,
+          delta_patch("p", AZ_IOT_SU_MAX_FILE_COUNT - 1),
+          k_root_keys,
+          1,
+          &none,
+          &req,
+          &manifest),
       AZ_IOT_OK);
-  assert_int_equal(req.file_urls_count, 4);
+  assert_int_equal(req.file_urls_count, AZ_IOT_SU_MAX_FILE_COUNT);
   assert_int_equal(manifest.related_files_count, 0);
   assert_int_equal(manifest.files[0].related_files_count, 0);
 
