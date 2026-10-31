@@ -8,8 +8,11 @@
  * Network -> DPS (X.509, identity from the esp_secure_cert partition) -> the assigned hub, on
  * mqttv3 or mqttv5. While connected it:
  *   - sends telemetry every HUB_TELEMETRY_INTERVAL_S seconds ({"deviceId":"<id>","count":n});
- *   - answers the direct method "echo" with its payload (status 200), any other with 404;
- *   - acknowledges each desired twin version by patching {"desiredVersion":v} into reported.
+ *   - answers the direct method "echo" with its payload (status 200; 413 when too large), any
+ *     other with 404;
+ *   - acknowledges each desired twin version by patching {"desiredVersion":v} into reported,
+ *     including one set while it was offline (mqttv3: a twin GET on connect; mqttv5: the desired
+ *     snapshot the hub pushes on connect).
  *
  * The feature clients are built for mqttv3 before open(), what DPS assigns when it names no
  * connectionProfile. If DPS assigns mqttv5, the connection stops with
@@ -34,6 +37,7 @@
 #include "protocol_examples_common.h"
 #include "sdkconfig.h"
 
+#include "azure/core/az_json.h"
 #include "azure/iot/adapters/az_iot_adapter_az_mqtt.h"
 #include "azure/iot/az_iot.h"
 
@@ -48,6 +52,11 @@ static const char* TAG = "hub_esp32";
 #define METHOD_RESPONSE_TIMEOUT_S 60u
 /** @brief The do_work() tick. */
 #define TICK_MS 50u
+/** @brief Wait before reporting again after a refused or failed reported patch. */
+#define REPORT_RETRY_MS 5000u
+/** @brief Largest echoed mqttv3 payload: the response must fit the adapter's send buffer, with
+ * room for its topic. */
+#define MQTTV3_ECHO_PAYLOAD_MAX (CONFIG_AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE - 256u)
 
 /** @brief The device: connection, the feature clients of one generation, and what is pending. */
 typedef struct
@@ -68,9 +77,12 @@ typedef struct
   az_iot_connection_profile assigned_profile;
   bool telemetry_pending;
   uint32_t telemetry_sent;
+  bool twin_get_due; /* mqttv3: read the desired version once connected */
   bool report_pending;
+  TickType_t report_after; /* no report before: a backoff after a refusal */
   uint64_t desired_version; /* latest desired version not yet acknowledged; 0: none */
   uint64_t reported_version; /* in the patch in flight */
+  uint64_t acknowledged_version;
 } hub_device;
 
 static hub_device s_device;
@@ -97,6 +109,7 @@ static void on_connection_state(const az_iot_connection_state_event* event, void
     if (event->state == AZ_IOT_CONN_STATE_CONNECTED)
     {
       ESP_LOGI(TAG, "ready on %s", az_iot_connection_profile_to_string(d->profile));
+      d->twin_get_due = d->profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V3;
     }
   }
 }
@@ -160,23 +173,91 @@ static void on_desired_mqttv5(
   ((hub_device*)user_ctx)->desired_version = version;
 }
 
-/** @brief Ends the reported patch in flight; a refused one is retried with the next version. */
+/**
+ * @brief Reads `desired.$version` from a twin document.
+ * @return The version; 0 when absent or unreadable.
+ */
+static uint64_t read_desired_version(const uint8_t* twin, size_t length)
+{
+  az_json_reader reader;
+  if (az_result_failed(
+          az_json_reader_init(&reader, az_span_create((uint8_t*)twin, (int32_t)length), NULL))
+      || az_result_failed(az_json_reader_next_token(&reader))
+      || reader.token.kind != AZ_JSON_TOKEN_BEGIN_OBJECT)
+  {
+    return 0;
+  }
+  int depth = 1; // Inside the document; 2: inside "desired".
+  while (az_result_succeeded(az_json_reader_next_token(&reader))
+         && reader.token.kind == AZ_JSON_TOKEN_PROPERTY_NAME)
+  {
+    bool const wanted = depth == 1
+        ? az_json_token_is_text_equal(&reader.token, AZ_SPAN_FROM_STR("desired"))
+        : az_json_token_is_text_equal(&reader.token, AZ_SPAN_FROM_STR("$version"));
+    if (az_result_failed(az_json_reader_next_token(&reader)))
+    {
+      return 0;
+    }
+    if (wanted && depth == 1)
+    {
+      if (reader.token.kind != AZ_JSON_TOKEN_BEGIN_OBJECT)
+      {
+        return 0;
+      }
+      depth = 2;
+    }
+    else if (wanted)
+    {
+      uint64_t version = 0;
+      return az_result_succeeded(az_json_token_get_uint64(&reader.token, &version)) ? version : 0;
+    }
+    else if (az_result_failed(az_json_reader_skip_children(&reader)))
+    {
+      return 0;
+    }
+  }
+  return 0;
+}
+
+static void on_twin_mqttv3(az_iot_result status, const uint8_t* twin, size_t length, void* user_ctx)
+{
+  hub_device* d = (hub_device*)user_ctx;
+  uint64_t const version = status == AZ_IOT_OK ? read_desired_version(twin, length) : 0;
+  if (status != AZ_IOT_OK)
+  {
+    ESP_LOGW(TAG, "twin get failed: %s", az_iot_result_to_string(status));
+  }
+  else if (version != 0 && version != d->acknowledged_version)
+  {
+    ESP_LOGI(TAG, "desired version %" PRIu64 ": from the twin", version);
+    d->desired_version = version;
+  }
+}
+
+/** @brief Ends the reported patch in flight; a refused one is retried after REPORT_RETRY_MS. */
 static void finish_report(hub_device* d, bool accepted)
 {
   d->report_pending = false;
-  if (accepted)
+  if (!accepted)
   {
-    ESP_LOGI(TAG, "desired version %" PRIu64 " acknowledged", d->reported_version);
-    if (d->desired_version == d->reported_version)
-    {
-      d->desired_version = 0;
-    }
+    d->report_after = xTaskGetTickCount() + pdMS_TO_TICKS(REPORT_RETRY_MS);
+    return;
+  }
+  ESP_LOGI(TAG, "desired version %" PRIu64 " acknowledged", d->reported_version);
+  d->acknowledged_version = d->reported_version;
+  if (d->desired_version == d->reported_version)
+  {
+    d->desired_version = 0;
   }
 }
 
 static void on_reported_mqttv3(az_iot_result status, uint64_t version, void* user_ctx)
 {
   (void)version;
+  if (status != AZ_IOT_OK)
+  {
+    ESP_LOGW(TAG, "reported patch refused: %s", az_iot_result_to_string(status));
+  }
   finish_report((hub_device*)user_ctx, status == AZ_IOT_OK);
 }
 
@@ -185,9 +266,17 @@ static void on_reported_mqttv5(
     const az_iot_mqttv5_twin_patch_result* result,
     void* user_ctx)
 {
-  finish_report(
-      (hub_device*)user_ctx,
-      status == AZ_IOT_OK && result != NULL && result->status == AZ_IOT_MQTTV5_TWIN_PATCH_OK);
+  bool const accepted
+      = status == AZ_IOT_OK && result != NULL && result->status == AZ_IOT_MQTTV5_TWIN_PATCH_OK;
+  if (status != AZ_IOT_OK)
+  {
+    ESP_LOGW(TAG, "reported patch failed: %s", az_iot_result_to_string(status));
+  }
+  else if (!accepted)
+  {
+    ESP_LOGW(TAG, "reported patch refused: %d", result != NULL ? (int)result->status : -1);
+  }
+  finish_report((hub_device*)user_ctx, accepted);
 }
 
 static void report_desired_version(hub_device* d)
@@ -202,6 +291,11 @@ static void report_desired_version(hub_device* d)
       : az_iot_mqttv3_twin_client_patch_reported(
             &d->mqttv3_twin, (const uint8_t*)patch, (size_t)length, on_reported_mqttv3, d);
   d->report_pending = result == AZ_IOT_OK;
+  if (result != AZ_IOT_OK)
+  {
+    ESP_LOGW(TAG, "reported patch not sent: %s", az_iot_result_to_string(result));
+    d->report_after = xTaskGetTickCount() + pdMS_TO_TICKS(REPORT_RETRY_MS);
+  }
 }
 
 /* ---- Direct methods ------------------------------------------------------- */
@@ -215,9 +309,24 @@ static void on_method_mqttv3(
 {
   hub_device* d = (hub_device*)user_ctx;
   bool const echo = method_name != NULL && strcmp(method_name, ECHO_METHOD) == 0;
-  (void)az_iot_mqttv3_direct_method_respond(
-      &d->mqttv3_methods, request, echo ? 200 : 404, echo ? payload : NULL, echo ? length : 0);
-  ESP_LOGI(TAG, "method '%s' answered %d", method_name ? method_name : "", echo ? 200 : 404);
+  bool const fits = length <= MQTTV3_ECHO_PAYLOAD_MAX;
+  int const status = !echo ? 404 : fits ? 200 : 413;
+  az_iot_result const r = az_iot_mqttv3_direct_method_respond(
+      &d->mqttv3_methods,
+      request,
+      status,
+      status == 200 ? payload : NULL,
+      status == 200 ? length : 0);
+  if (r != AZ_IOT_OK)
+  {
+    ESP_LOGW(
+        TAG,
+        "method '%s' not answered: %s",
+        method_name ? method_name : "",
+        az_iot_result_to_string(r));
+    return;
+  }
+  ESP_LOGI(TAG, "method '%s' answered %d", method_name ? method_name : "", status);
 }
 
 /* Only called for ECHO_METHOD: mqttv5 refuses undeclared names before they reach the device. */
@@ -230,8 +339,13 @@ static void on_echo_mqttv5(
 {
   hub_device* d = (hub_device*)user_ctx;
   bool const fits = length <= AZ_IOT_MQTTV5_DM_RESULT_BODY_MAX;
-  (void)az_iot_mqttv5_direct_method_respond(
+  az_iot_result const r = az_iot_mqttv5_direct_method_respond(
       &d->mqttv5_methods, request, fits ? 200 : 413, fits ? payload : NULL, fits ? length : 0);
+  if (r != AZ_IOT_OK)
+  {
+    ESP_LOGW(TAG, "method '%s' not answered: %s", method_name, az_iot_result_to_string(r));
+    return;
+  }
   ESP_LOGI(TAG, "method '%s' answered %d", method_name, fits ? 200 : 413);
 }
 
@@ -258,6 +372,7 @@ static void destroy_clients(hub_device* d)
   d->clients_built = false;
   d->telemetry_pending = false; // Lost with the old clients.
   d->report_pending = false;
+  d->twin_get_due = false;
 }
 
 /** @brief Builds the telemetry, twin and direct method clients for @p profile. Pins the
@@ -370,6 +485,8 @@ void app_main(void)
       = CONFIG_HUB_DPS_GLOBAL_ENDPOINT[0] != '\0' ? CONFIG_HUB_DPS_GLOBAL_ENDPOINT : NULL;
   options.certificate_provider = &certs.base;
   options.crypto = az_iot_crypto_mbedtls();
+  // mqttv5: the hub pushes the desired snapshot on connect and each desired patch.
+  options.twin_push.push_desired = true;
   if (az_iot_connection_client_init(&d->connection, &options) != AZ_IOT_OK)
   {
     restart("connection client init failed");
@@ -397,6 +514,7 @@ void app_main(void)
   TickType_t const interval = pdMS_TO_TICKS(CONFIG_HUB_TELEMETRY_INTERVAL_S * 1000u);
   TickType_t next_telemetry = xTaskGetTickCount();
   TickType_t tick_start = xTaskGetTickCount();
+  d->report_after = tick_start;
   for (;;)
   {
     wait_for_tick_end(tick_start); // At the top: the body continues early.
@@ -437,7 +555,17 @@ void app_main(void)
       next_telemetry = xTaskGetTickCount() + interval;
       send_telemetry(d);
     }
-    if (!d->report_pending && d->desired_version != 0)
+    if (d->twin_get_due)
+    {
+      d->twin_get_due = false;
+      az_iot_result const r = az_iot_mqttv3_twin_client_get(&d->mqttv3_twin, on_twin_mqttv3, d);
+      if (r != AZ_IOT_OK)
+      {
+        ESP_LOGW(TAG, "twin get not sent: %s", az_iot_result_to_string(r));
+      }
+    }
+    if (!d->report_pending && d->desired_version != 0
+        && (int32_t)(xTaskGetTickCount() - d->report_after) >= 0)
     {
       report_desired_version(d);
     }
