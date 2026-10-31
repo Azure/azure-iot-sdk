@@ -797,6 +797,37 @@ typedef struct az_iot_su_platform_hooks
     void* user_ctx;
 } az_iot_su_platform_hooks;
 
+/* --- Download handlers (OPTIONAL; not called yet) ------------------------ */
+
+/**
+ * Produces a file from a related file (e.g. a delta) instead of downloading
+ * it in full, for files whose manifest downloadHandler id equals `id`
+ * (1 to AZ_IOT_SU_MAX_DOWNLOAD_HANDLER_ID_SIZE = 64 printable ASCII characters,
+ * the import manifest's limit). Registered through
+ * az_iot_su_client_config_options::download_handlers. Core verifies the
+ * related and the built file with read_file_fn, and downloads the file in full
+ * whenever a handler cannot produce it.
+ */
+typedef struct az_iot_su_download_handler
+{
+    const char* id;
+    int32_t (*choose_related_file_fn)(
+        const az_iot_su_client_update_manifest* manifest,
+        const az_iot_su_client_update_manifest_file* file,
+        uint32_t* out_related_file_index,
+        void* user_ctx);
+    int32_t (*build_file_from_related_fn)(
+        const az_iot_su_client_update_manifest_file* file,
+        const az_iot_su_client_update_manifest_file* related_file,
+        uint32_t file_index,
+        void* user_ctx);
+    /* OPTIONAL: after a workflow that used the handler succeeds. */
+    void (*workflow_succeeded_fn)(
+        const az_iot_su_client_update_manifest* manifest,
+        void* user_ctx);
+    void* user_ctx;
+} az_iot_su_download_handler;
+
 /* --- Crypto (REQUIRED, from the connection client) ----------------------- */
 
 /**
@@ -920,6 +951,9 @@ typedef struct az_iot_su_client
  *   replacement_policy: what a new workflow id does to a workflow that may not
  *     be replaced. AZ_IOT_SU_REPLACEMENT_DEFER (default) or
  *     AZ_IOT_SU_REPLACEMENT_ROLLBACK (not yet supported).
+ *   download_handlers / download_handler_count: az_iot_su_download_handler
+ *     entries with distinct ids, referenced (they MUST outlive the client).
+ *     Need hooks->read_file_fn; refused in library_mode. Not called yet.
  */
 typedef struct az_iot_su_client_config_options
 {
@@ -932,6 +966,8 @@ typedef struct az_iot_su_client_config_options
     uint8_t*                            workspace;
     size_t                              workspace_size;
     az_iot_su_replacement_policy        replacement_policy;
+    const az_iot_su_download_handler*  download_handlers;
+    size_t                              download_handler_count;
 } az_iot_su_client_config_options;
 
 az_iot_su_client_config_options az_iot_su_client_config_options_default(void);
@@ -1003,8 +1039,9 @@ az_iot_result az_iot_su_client_remove_observer(
  * Initialize the software updates client. `connection` is the connection client whose DPS
  * session carries the software updates channel; `options` carries the rest (hooks,
  * crypto, trust store, device properties + caller cache). Returns
- * AZ_IOT_ERR_INVALID_ARG if a required field is NULL or replacement_policy is
- * not an az_iot_su_replacement_policy value, AZ_IOT_ERR_NOT_SUPPORTED if
+ * AZ_IOT_ERR_INVALID_ARG if a required field is NULL, replacement_policy is
+ * not an az_iot_su_replacement_policy value or a download handler is
+ * invalid, AZ_IOT_ERR_NOT_SUPPORTED if
  * replacement_policy is AZ_IOT_SU_REPLACEMENT_ROLLBACK, or
  * AZ_IOT_ERR_NOT_ENOUGH_SPACE if root_key_count > limits.max_root_keys or
  * the buffer is too small for device_properties. Inline: it passes the
@@ -1665,6 +1702,8 @@ Operations MUST NOT be long-blocking. Each `do_work` invocation MUST process at 
 - **A reusable conformance suite** for customer platform hooks and crypto backends.
 - **Delta updates.** The manifest parser (§14) accepts `relatedFiles` and `downloadHandler` but
   does not expose them yet; library mode is the route for an application-owned delta handler.
+  Download handlers (`az_iot_su_download_handler`) can be registered and are validated at init,
+  but are not called yet.
 - **Library-mode persistence and a received-offer accessor.** A delegated update is not stored,
   and `UPDATE_AVAILABLE` is the only way to see the offer.
 
@@ -1761,8 +1800,8 @@ update before processing (`AZ_IOT_SU_EVENT_UPDATE_REFUSED`, `AZ_IOT_ERR_NOT_ENOU
 
 The largest status report grows 117 bytes per step, so `AZ_IOT_SU_MIN_MESSAGE_SIZE` is
 2176 + 128 × `AZ_IOT_SU_MAX_STEP_COUNT` (3456 by default; the base fits a 128-byte workflow id, fully
-escaped). Memory cost of the default limits against 2/2 on 64-bit: `az_iot_su_client` 7672 bytes
-(3896), default workspace 87440 (80720), parsed manifest
+escaped). Memory cost of the default limits against 2/2 on 64-bit: `az_iot_su_client` 7688 bytes
+(3912), default workspace 87440 (80720), parsed manifest
 3216 (464). See [client-configuration.md](../client-configuration.md#software-updates-manifest-limits).
 
 ### Not Parsed (Matches Our Non-Goals)
