@@ -451,6 +451,37 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
         }
 
         [Fact]
+        public async Task GetTwinAsync_QueuedRequestIsSentOnceTheActiveOneIsAbandoned()
+        {
+            MockFeatureConnectionClient connection = new()
+            {
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv5, DeviceId),
+            };
+            using TwinClient twinClient = new(connection);
+            twinClient.GetTwinTimeoutSchedule = _ => Timeout.InfiniteTimeSpan;
+            using CancellationTokenSource abandonedCaller = new();
+
+            Task<DeviceTwin> abandoned = twinClient.GetTwinAsync(getReported: false, cancellationToken: abandonedCaller.Token);
+            MqttPublish abandonedPublish = await connection.WaitForPublishedMessagesAsync(1);
+            Task<DeviceTwin> queued = twinClient.GetTwinAsync(cancellationToken: TestContext.Current.CancellationToken);
+
+            // Once the active request's only caller gives up, the queued one is sent without waiting for a response or timeout.
+            abandonedCaller.Cancel();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => abandoned);
+            MqttPublish queuedPublish = await connection.WaitForPublishedMessagesAsync(2);
+            Assert.Equal(Sections.Both, TwinGet.Parser.ParseFrom(queuedPublish.Payload).Sections);
+
+            // A late response to the abandoned request doesn't complete the queued one.
+            await ReceiveGetResponseAsync(connection, abandonedPublish, 9, "{\"fanSpeed\":9}");
+            await Task.Delay(100, TestContext.Current.CancellationToken);
+            Assert.False(queued.IsCompleted);
+
+            await ReceiveGetResponseAsync(connection, queuedPublish, 6, "{}");
+            Assert.Equal(6ul, (await queued).DesiredVersion);
+            Assert.Equal(2, connection.PublishedMessages.Count);
+        }
+
+        [Fact]
         public async Task GetTwinAsync_StopsRetryingOnceNoCallerIsWaiting()
         {
             MockFeatureConnectionClient connection = new()
