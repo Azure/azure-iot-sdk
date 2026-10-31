@@ -331,6 +331,7 @@ typedef struct
   bool done;
   bool reneg_active; // driving a TLS post-handshake / renegotiation flight
   bool reneg_isc_done; // reneg ISC returned SEC_E_OK; only the final flush remains
+  bool use_supplied_credentials; // present client_cert even if the server's CA list omits it
   PCCERT_CONTEXT client_cert; // mutual-TLS client certificate (NULL = server-auth only)
   HCERTSTORE cert_store; // in-memory PFX store owning the client cert's ephemeral CNG key
   SecPkgContext_StreamSizes sizes;
@@ -346,6 +347,31 @@ typedef struct
 
 /** @brief The connection's Schannel state; NULL before its handshake starts and after close. */
 static _sch_state* _sch(az_amqp_sample_transport* s) { return (_sch_state*)s->tls_session; }
+
+/** @brief InitializeSecurityContext request flags for the connection @p sch. */
+static DWORD _sch_isc_flags(_sch_state const* sch)
+{
+  DWORD const flags = ISC_REQ_SEQUENCE_DETECT | ISC_REQ_REPLAY_DETECT | ISC_REQ_CONFIDENTIALITY
+      | ISC_REQ_ALLOCATE_MEMORY | ISC_REQ_STREAM;
+  return sch->use_supplied_credentials ? (flags | ISC_REQ_USE_SUPPLIED_CREDS) : flags;
+}
+
+/**
+ * @brief Handles SEC_I_INCOMPLETE_CREDENTIALS: the server asked for a client certificate and
+ * Schannel offered none.
+ *
+ * @details Either none is configured (the SAS/CBS connections: the handshake continues
+ * anonymously), or the configured one's issuer is not in the server's acceptable CA list (a
+ * self-signed device certificate): the next InitializeSecurityContext call then sets
+ * ISC_REQ_USE_SUPPLIED_CREDS, so Schannel presents it anyway, as curl does.
+ */
+static void _sch_on_incomplete_credentials(_sch_state* sch)
+{
+  if (sch->client_cert != NULL)
+  {
+    sch->use_supplied_credentials = true;
+  }
+}
 
 // Optional Schannel diagnostics, enabled by setting AZ_AMQP_TLS_DEBUG in the
 // environment (a no-op otherwise). Lines are phase-labeled and written to stderr
@@ -693,9 +719,6 @@ static az_amqp_transport_status _sch_handshake(az_amqp_sample_transport* s)
   memcpy(host, az_span_ptr(sni), (size_t)hn);
   host[hn] = 0;
 
-  DWORD const isc_flags = ISC_REQ_SEQUENCE_DETECT | ISC_REQ_REPLAY_DETECT | ISC_REQ_CONFIDENTIALITY
-      | ISC_REQ_ALLOCATE_MEMORY | ISC_REQ_STREAM;
-
   _sch_state* sch = _sch(s);
   if (sch != NULL && sch->done)
   {
@@ -765,7 +788,7 @@ static az_amqp_transport_status _sch_handshake(az_amqp_sample_transport* s)
         &sch->cred,
         NULL,
         (SEC_CHAR*)host,
-        isc_flags,
+        _sch_isc_flags(sch),
         0,
         0,
         NULL,
@@ -828,7 +851,7 @@ static az_amqp_transport_status _sch_handshake(az_amqp_sample_transport* s)
         &sch->cred,
         &sch->ctxt,
         (SEC_CHAR*)host,
-        isc_flags,
+        _sch_isc_flags(sch),
         0,
         0,
         &in,
@@ -852,11 +875,9 @@ static az_amqp_transport_status _sch_handshake(az_amqp_sample_transport* s)
 
     if (st == SEC_I_INCOMPLETE_CREDENTIALS)
     {
-      // The server requested (optional) TLS client authentication but Schannel has no
-      // certificate to offer -- either none was configured (the SAS/CBS AMQP
-      // connections) or the configured one was not usable. Continue the handshake
-      // anonymously by re-invoking InitializeSecurityContext with the same server
-      // flight. Azure IoT Hub's endpoint issues this request; Event Hubs does not.
+      // Azure IoT Hub's endpoint requests a client certificate; Event Hubs does not. Retry
+      // with the same server flight.
+      _sch_on_incomplete_credentials(sch);
       if (++incomplete_creds_seen > 2)
       {
         _sch_fail(s, "InitializeSecurityContext: incomplete credentials", (long)st);
@@ -941,8 +962,6 @@ static az_amqp_transport_status _sch_drive_reneg(az_amqp_sample_transport* s)
   memcpy(host, az_span_ptr(sni), (size_t)hn);
   host[hn] = 0;
 
-  DWORD const isc_flags = ISC_REQ_SEQUENCE_DETECT | ISC_REQ_REPLAY_DETECT | ISC_REQ_CONFIDENTIALITY
-      | ISC_REQ_ALLOCATE_MEMORY | ISC_REQ_STREAM;
   _sock sock = (_sock)s->file_descriptor;
 
   for (;;)
@@ -973,7 +992,7 @@ static az_amqp_transport_status _sch_drive_reneg(az_amqp_sample_transport* s)
           &sch->cred,
           &sch->ctxt,
           (SEC_CHAR*)host,
-          isc_flags,
+          _sch_isc_flags(sch),
           0,
           0,
           &in,
@@ -1018,7 +1037,8 @@ static az_amqp_transport_status _sch_drive_reneg(az_amqp_sample_transport* s)
         }
         else if (st == SEC_I_INCOMPLETE_CREDENTIALS)
         {
-          continue; // server requested a client cert; continue anonymously
+          _sch_on_incomplete_credentials(sch);
+          continue;
         }
         else
         {
