@@ -351,14 +351,14 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods
             // The broker reduced the probe's message expiry by the time it sat queued, so it is the connect budget still left on arrival.
             TimeSpan remainingConnectBudget = TimeSpan.FromSeconds(publish.MessageExpiryInterval) - _timeProvider.GetElapsedTime(probeReceivedTimestamp);
 
-            // Saturate at zero: a probe handler that outlived the connect budget must not wrap the unsigned remainder.
-            uint remainingConnectTimeoutInSeconds = remainingConnectBudget <= TimeSpan.Zero ? 0 : (uint)Math.Floor(remainingConnectBudget.TotalSeconds);
-
-            if (remainingConnectTimeoutInSeconds < 1)
+            if (remainingConnectBudget <= TimeSpan.Zero)
             {
                 Trace.TraceWarning("Application did not respond to direct method probe message before the connect timeout elapsed, so no probe ack message will be sent.");
                 return;
             }
+
+            // Round up so a fraction of a second left still yields a nonzero expiry; the exact budget bounds the publish attempt itself.
+            uint remainingConnectTimeoutInSeconds = (uint)Math.Min(Math.Ceiling(remainingConnectBudget.TotalSeconds), uint.MaxValue);
 
             Invocation? invocation = null;
             if (probeAck.ProbeAck.Ready != null)
@@ -426,11 +426,13 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods
             probeAckPublish.UserProperties.Add(new("type", Encoding.UTF8.GetBytes("probe-ack:1")));
 
             // A probe ack that can't be sent before the connect budget runs out is no use to the service, which has already given up.
-            bool sent = await TryPublishAsync(probeAckPublish, remainingConnectBudget, "probe ack", requestId);
+            PublishOutcome outcome = await TryPublishAsync(probeAckPublish, remainingConnectBudget, "probe ack", requestId);
 
-            if (!sent && invocation != null)
+            // Only a broker rejection proves the service never got this ready token. If delivery is merely unconfirmed (for example, the
+            // PUBACK was lost to a disconnect), the probe ack may still reach the service, so the ready state is kept until its ready wait
+            // deadline in case the matching exec arrives.
+            if (outcome == PublishOutcome.Rejected && invocation != null)
             {
-                // The service never got this ready token, so don't hold capacity for it.
                 DiscardUnannouncedInvocation(invocation);
             }
         }
@@ -473,7 +475,21 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods
 
             // The broker reduced the exec's message expiry by the time it sat queued, so it is the response timeout still left on arrival.
             TimeSpan execBudget = TimeSpan.FromSeconds(publish.MessageExpiryInterval);
+
+            RunInBackground(() => AdmitAndExecuteAsync(invocation, exec, methodHandler, execReceivedTimestamp, execBudget));
+        }
+
+        private async Task AdmitAndExecuteAsync(
+            Invocation invocation,
+            Exec exec,
+            Func<DirectMethodRequestReceivedEventArgs, Task<DirectMethodResponse>> methodHandler,
+            long execReceivedTimestamp,
+            TimeSpan execBudget)
+        {
             TimeSpan effectiveBudget = execBudget - invocation.SafetyMargin;
+
+            // Admission runs here, just before the handler would start, so time the exec spent waiting to be scheduled counts against it.
+            TimeSpan remainingEffectiveBudget = effectiveBudget - _timeProvider.GetElapsedTime(execReceivedTimestamp);
 
             // Exec admission and the ready wait timer both decide the fate of the same ready state, so they are serialized on it.
             bool admitted;
@@ -481,18 +497,18 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods
             {
                 if (invocation.State != InvocationState.Ready)
                 {
-                    Trace.TraceWarning("Received direct method exec message for request Id {0}, which is no longer awaiting one. Ignoring it.", requestId.Value);
+                    Trace.TraceWarning("Received direct method exec message for request Id {0}, which is no longer awaiting one. Ignoring it.", invocation.RequestId);
                     return;
                 }
 
                 if (!invocation.ReadyId.Equals(exec.ReadyId))
                 {
                     // Not this ready state's token, so leave the ready state for the exec that does carry it.
-                    Trace.TraceWarning("Received direct method exec message for request Id {0} with an unexpected ready Id. Ignoring it.", requestId.Value);
+                    Trace.TraceWarning("Received direct method exec message for request Id {0} with an unexpected ready Id. Ignoring it.", invocation.RequestId);
                     return;
                 }
 
-                admitted = effectiveBudget > invocation.MinimumExecutionTime;
+                admitted = remainingEffectiveBudget > invocation.MinimumExecutionTime;
                 if (admitted)
                 {
                     invocation.State = InvocationState.Executing;
@@ -509,14 +525,14 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods
                 Trace.TraceWarning(
                     "The direct method exec message for method {0} (request Id {1}) left {2} after the safety margin, which is not more than its minimum execution time of {3}, so this client abandoned it without running it.",
                     invocation.MethodName,
-                    requestId.Value,
-                    effectiveBudget,
+                    invocation.RequestId,
+                    remainingEffectiveBudget,
                     invocation.MinimumExecutionTime);
                 PublishAbandonInBackground(invocation, AbandonReason.InsufficientTime);
                 return;
             }
 
-            RunInBackground(() => ExecuteAsync(invocation, exec, methodHandler, execReceivedTimestamp, execBudget, effectiveBudget));
+            await ExecuteAsync(invocation, exec, methodHandler, execReceivedTimestamp, execBudget, effectiveBudget, remainingEffectiveBudget);
         }
 
         private async Task ExecuteAsync(
@@ -525,13 +541,11 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods
             Func<DirectMethodRequestReceivedEventArgs, Task<DirectMethodResponse>> methodHandler,
             long execReceivedTimestamp,
             TimeSpan execBudget,
-            TimeSpan effectiveBudget)
+            TimeSpan effectiveBudget,
+            TimeSpan remainingEffectiveBudget)
         {
             // The execution deadline leaves the safety margin for the result to travel back before the service's response timer fires.
-            TimeSpan remainingEffectiveBudget = effectiveBudget - _timeProvider.GetElapsedTime(execReceivedTimestamp);
-            using CancellationTokenSource executionDeadline = new(
-                remainingEffectiveBudget > TimeSpan.Zero ? remainingEffectiveBudget : TimeSpan.Zero,
-                _timeProvider);
+            using CancellationTokenSource executionDeadline = new(remainingEffectiveBudget, _timeProvider);
 
             DirectMethodRequestReceivedEventArgs directMethodInvokedArgs = new()
             {
@@ -631,8 +645,8 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods
             RunInBackground(() => TryPublishAsync(abandonPublish, TimeSpan.FromSeconds(expiry), "abandon", invocation.RequestId));
         }
 
-        // Publishes, giving up once the message would have expired or this client is disposed. Returns whether the broker accepted it.
-        private async Task<bool> TryPublishAsync(MqttPublish publish, TimeSpan expiresAfter, string description, Guid requestId)
+        // Publishes, giving up once the message would have expired or this client is disposed.
+        private async Task<PublishOutcome> TryPublishAsync(MqttPublish publish, TimeSpan expiresAfter, string description, Guid requestId)
         {
             using CancellationTokenSource expiry = CancellationTokenSource.CreateLinkedTokenSource(_disposalCancellation.Token);
             expiry.CancelAfter(TimeSpan.FromMilliseconds(Math.Clamp(expiresAfter.TotalMilliseconds, 0, MaxTimerDueTimeMilliseconds)));
@@ -648,23 +662,22 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods
                         requestId,
                         puback.ReasonCode,
                         puback.ReasonString);
-                    return false;
+                    return PublishOutcome.Rejected;
                 }
 
-                return true;
+                return PublishOutcome.Accepted;
             }
             catch (OperationCanceledException) when (expiry.IsCancellationRequested)
             {
-                Trace.TraceWarning("Gave up sending the direct method {0} for request Id {1} because it expired, or this client was disposed, before it could be sent.", description, requestId);
-                return false;
+                Trace.TraceWarning("Gave up waiting for the direct method {0} for request Id {1} to be acknowledged because it expired, or this client was disposed. It may still have been delivered.", description, requestId);
+                return PublishOutcome.Unconfirmed;
             }
             catch (Exception e)
             {
-                Trace.TraceError("Failed to send the direct method {0} for request Id {1}. {2}", description, requestId, e);
-                return false;
+                Trace.TraceError("Failed to confirm delivery of the direct method {0} for request Id {1}. It may still have been delivered. {2}", description, requestId, e);
+                return PublishOutcome.Unconfirmed;
             }
         }
-
         private void RunInBackground(Func<Task> work)
         {
             Task task = Task.Run(work);
@@ -795,7 +808,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods
             }
         }
 
-        // For an invocation whose ready probe ack this client couldn't confirm reached the service.
+        // For an invocation whose ready probe ack the broker rejected, so the service never received its ready token.
         private void DiscardUnannouncedInvocation(Invocation invocation)
         {
             lock (invocation)
@@ -864,6 +877,18 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods
         {
             DisposeCore();
             _connection.Dispose();
+        }
+
+        private enum PublishOutcome
+        {
+            // The broker acknowledged the publish.
+            Accepted,
+
+            // The broker refused the publish, so it was not delivered.
+            Rejected,
+
+            // No acknowledgement arrived (for example, it was lost to a disconnect), so the publish may or may not have been delivered.
+            Unconfirmed,
         }
 
         private enum InvocationState

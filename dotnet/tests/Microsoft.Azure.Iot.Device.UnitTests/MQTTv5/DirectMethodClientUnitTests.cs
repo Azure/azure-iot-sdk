@@ -573,6 +573,97 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             await AssertProbeAcceptedAsync(connection, Guid.NewGuid().ToByteArray());
         }
 
+        [Fact]
+        public async Task Exec_WhoseBudgetRunsOutBeforeTheHandlerCanStart_AbandonsWithoutInvokingTheHandler()
+        {
+            MockFeatureConnectionClient connection = new()
+            {
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv5, DeviceId),
+            };
+            ManualTimeProvider timeProvider = new();
+            using DirectMethodClient directMethodClient = new(connection, new DirectMethodClientOptions() { MaxConcurrentDirectMethods = 1 }, timeProvider);
+
+            bool methodInvoked = false;
+            directMethodClient.DirectMethodProbeReceivedAsync += (_) => Task.FromResult(DirectMethodProbeAck.Accepted());
+            directMethodClient.DirectMethodInvokedAsync += (_) =>
+            {
+                methodInvoked = true;
+                return Task.FromResult(new DirectMethodResponse() { Status = 200 });
+            };
+
+            byte[] correlationData = Guid.NewGuid().ToByteArray();
+            ByteString readyId = await AssertProbeAcceptedAsync(connection, correlationData);
+
+            // The 30 s exec budget less the 3 s safety margin is enough on arrival, but 28 s pass before the worker gets to run it.
+            timeProvider.AfterNextTimestamp = () => timeProvider.Advance(TimeSpan.FromSeconds(28));
+            var exec = new Exec() { ReadyId = readyId };
+            await ReceiveAsync(connection, directMethodClient, CreateInboundMethodPublish("exec:1", correlationData, exec.ToByteArray(), messageExpiryInterval: 30));
+
+            Assert.False(methodInvoked);
+            Assert.Equal(2, connection.PublishedMessages.Count);
+            AssertAbandon(connection.PublishedMessages[1], correlationData, readyId, AbandonReason.InsufficientTime, expectedExpirySeconds: 30);
+            await AssertProbeAcceptedAsync(connection, Guid.NewGuid().ToByteArray());
+        }
+
+        [Fact]
+        public async Task Probe_WithLessThanASecondOfConnectBudgetLeft_IsStillAnswered()
+        {
+            MockFeatureConnectionClient connection = new()
+            {
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv5, DeviceId),
+            };
+            ManualTimeProvider timeProvider = new();
+            using DirectMethodClient directMethodClient = new(connection, new DirectMethodClientOptions(), timeProvider);
+
+            directMethodClient.DirectMethodProbeReceivedAsync += (_) =>
+            {
+                timeProvider.Advance(TimeSpan.FromMilliseconds(500));
+                return Task.FromResult(DirectMethodProbeAck.Accepted());
+            };
+            directMethodClient.DirectMethodInvokedAsync += (_) => Task.FromResult(new DirectMethodResponse() { Status = 200 });
+
+            byte[] probe = new Probe() { MethodName = "reboot", ResponseTimeoutSeconds = 30 }.ToByteArray();
+            await ReceiveAsync(connection, directMethodClient, CreateInboundMethodPublish("probe:1", Guid.NewGuid().ToByteArray(), probe, messageExpiryInterval: 1));
+
+            MqttPublish probeAckPublish = Assert.Single(connection.PublishedMessages);
+            Assert.Equal(ProbeAck.ResultOneofCase.Ready, ProbeAck.Parser.ParseFrom(probeAckPublish.Payload).ResultCase);
+            Assert.Equal(1u, probeAckPublish.MessageExpiryInterval);
+        }
+
+        [Fact]
+        public async Task ReadyToken_IsKeptWhenItsProbeAckDeliveryIsUnconfirmed()
+        {
+            MockFeatureConnectionClient connection = new()
+            {
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv5, DeviceId),
+            };
+            using DirectMethodClient directMethodClient = new(connection, new DirectMethodClientOptions() { MaxConcurrentDirectMethods = 1 });
+
+            bool methodInvoked = false;
+            directMethodClient.DirectMethodProbeReceivedAsync += (_) => Task.FromResult(DirectMethodProbeAck.Accepted());
+            directMethodClient.DirectMethodInvokedAsync += (_) =>
+            {
+                methodInvoked = true;
+                return Task.FromResult(new DirectMethodResponse() { Status = 200 });
+            };
+
+            // The PUBACK for the probe ack is lost, but the broker may still have forwarded the ready token to the service.
+            connection.OnPublish = _ => throw new OperationCanceledException("connection lost");
+            byte[] correlationData = Guid.NewGuid().ToByteArray();
+            ByteString readyId = await AssertProbeAcceptedAsync(connection, correlationData);
+            await directMethodClient.WhenIdleAsync();
+            connection.OnPublish = null;
+
+            // The ready token still holds its capacity slot...
+            Assert.Equal(RejectedReason.DeviceBusy, await SendProbeAsync(connection, Guid.NewGuid().ToByteArray()));
+
+            // ...and the matching exec still runs.
+            var exec = new Exec() { ReadyId = readyId };
+            await ReceiveAsync(connection, directMethodClient, CreateInboundMethodPublish("exec:1", correlationData, exec.ToByteArray()));
+            Assert.True(methodInvoked);
+            Assert.Equal("result:1", GetType(connection.PublishedMessages[^1]));
+        }
+
         [Theory]
         // Exec budget 30 s less the 3 s safety margin is a 27 s execution deadline. The result keeps the rest of the exec budget.
         [InlineData(26_500, 4u)]
@@ -888,7 +979,15 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
 
             public override long TimestampFrequency => TimeSpan.TicksPerSecond;
 
-            public override long GetTimestamp() => Interlocked.Read(ref _timestamp);
+            public override long GetTimestamp()
+            {
+                long timestamp = Interlocked.Read(ref _timestamp);
+                Interlocked.Exchange(ref AfterNextTimestamp, null)?.Invoke();
+                return timestamp;
+            }
+
+            // Runs once, right after the next timestamp is read, to simulate time passing between two steps of the client's work.
+            public Action? AfterNextTimestamp;
 
             public void Advance(TimeSpan duration) => Interlocked.Add(ref _timestamp, duration.Ticks);
 
