@@ -563,7 +563,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
         [Fact]
         public async Task AnnounceDevicePresenceRecoversWhenSubackReasonCodeIsUnsuccessful()
         {
-            // The birth SUBSCRIBE is requested at QoS 1, so anything other than GrantedQoS1 is a failed subscribe.
+            // A SUBACK failure reason code means the subscription does not exist, so the birth flow disconnects.
             await RunInitialConnectBirthFailureTestAsync(
                 birthSubscribeInjector: (subscribe, attempt) => attempt == 1
                     ? new MqttSubscribeAck()
@@ -572,7 +572,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
                         {
                             new MqttSubscribeAckItem()
                             {
-                                ReasonCode = MqttClientSubscribeReasonCode.GrantedQoS0,
+                                ReasonCode = MqttClientSubscribeReasonCode.NotAuthorized,
                                 TopicFilter = new(subscribe.TopicFilters.First().Topic, MqttQualityOfServiceLevel.AtLeastOnce),
                             }
                         }
@@ -580,6 +580,43 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
                     : null,
                 birthPublishInjector: null,
                 cancellationToken: TestContext.Current.CancellationToken);
+        }
+
+        // The broker may grant a QoS other than the requested QoS 1. The subscription still exists, so the birth is sent
+        // on this connection rather than reconnecting forever.
+        [Theory]
+        [InlineData(MqttClientSubscribeReasonCode.GrantedQoS0)]
+        [InlineData(MqttClientSubscribeReasonCode.GrantedQoS2)]
+        public async Task AnnounceDevicePresenceAcceptsAnyGrantedQoS(MqttClientSubscribeReasonCode grantedReasonCode)
+        {
+            using MockConnectionMqttClient mockMqttClient = new() { AutoRespondToBirth = true };
+            using ConnectionClient connectionClient = new(new() { MqttClient = mockMqttClient });
+
+            int disconnectCount = 0;
+            mockMqttClient.OnDisconnect = disconnect =>
+            {
+                Interlocked.Increment(ref disconnectCount);
+                return Task.CompletedTask;
+            };
+            mockMqttClient.OnSubscribe = subscribe => Task.FromResult(new MqttSubscribeAck()
+            {
+                Items = new List<MqttSubscribeAckItem>()
+                {
+                    new MqttSubscribeAckItem()
+                    {
+                        ReasonCode = grantedReasonCode,
+                        TopicFilter = new(subscribe.TopicFilters.First().Topic, MqttQualityOfServiceLevel.AtLeastOnce),
+                    }
+                }
+            });
+
+            await connectionClient.ConnectToHubAsync(GetMockConnectionContext(), cancellationToken: TestContext.Current.CancellationToken)
+                .WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+
+            Assert.Equal(0, Volatile.Read(ref disconnectCount));
+            Assert.Equal(1, mockMqttClient.SentMqttTrafficInOrder.Count(traffic => traffic.Subscribe != null));
+            Assert.Equal(1, mockMqttClient.SentMqttTrafficInOrder.Count(traffic =>
+                traffic.Publish?.Topic.EndsWith("/srv/presence", StringComparison.Ordinal) == true));
         }
 
         [Fact]

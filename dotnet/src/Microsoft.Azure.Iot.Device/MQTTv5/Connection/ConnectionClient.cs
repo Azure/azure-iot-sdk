@@ -142,7 +142,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
             }
             catch (InvalidProtocolBufferException e)
             {
-                Trace.TraceWarning("Ignoring birth ack with a malformed payload. {0}", e.Message);
+                Trace.TraceWarning("Received birth ack with a malformed payload. {0}", e.Message);
                 birthAck = null;
                 return false;
             }
@@ -266,11 +266,20 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
                         return;
                     }
 
-                    if (presenceSuback.ReasonCode != MqttClientSubscribeReasonCode.GrantedQoS1)
+                    // Any granted QoS means the subscription exists, so the birth may be sent. Rejecting a downgraded grant
+                    // would only make the device reconnect forever to a broker that always grants the same QoS.
+                    if (presenceSuback.ReasonCode is not (MqttClientSubscribeReasonCode.GrantedQoS0
+                        or MqttClientSubscribeReasonCode.GrantedQoS1
+                        or MqttClientSubscribeReasonCode.GrantedQoS2))
                     {
                         Trace.TraceWarning("Received SUBACK on device presence SUBSCRIBE with unsuccessful result code: {0}.", presenceSuback.ReasonCode);
                         await connection.DisconnectAsync(true, new MqttDisconnect() { Reason = MqttDisconnectReasonCode.NormalDisconnection }, cancellationToken);
                         return;
+                    }
+
+                    if (presenceSuback.ReasonCode != MqttClientSubscribeReasonCode.GrantedQoS1)
+                    {
+                        Trace.TraceWarning("Device presence SUBSCRIBE requested QoS 1 but was granted {0}.", presenceSuback.ReasonCode);
                     }
 
                     presenceOwner.MarkDevicePresenceSubscribed();
@@ -309,7 +318,8 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
 
             birthMessage.UserProperties.Add(new("type", Encoding.UTF8.GetBytes("birth:1")));
 
-            TaskCompletionSource<BirthAck> birthAckReceivedTaskCompletionSource = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            // Completes with null if this attempt's birth ack has a payload that cannot be read.
+            TaskCompletionSource<BirthAck?> birthAckReceivedTaskCompletionSource = new(TaskCreationOptions.RunContinuationsAsynchronously);
             string birthAckTopic = string.Format("ih/{0}/dev/presence", deviceId);
             Func<MqttPublishReceivedEventArgs, Task> HandleReceivedBirthAck = (args) =>
             {
@@ -336,16 +346,24 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
                     {
                         if (receivedGuid.Equals(connectNonce))
                         {
-                            // The birth message flow is only complete once Hub sends a birth message ack with connection epoch equal to the latest connection epoch we have attempted
-                            if (TryParseBirthAck(publish.Payload, out BirthAck? birthAck))
+                            // The birth message flow is only complete once Hub sends a birth message ack with connection epoch equal to the latest connection epoch we have attempted.
+                            // An ack for this attempt that cannot be read ends the wait too, so that the flow reconnects at once
+                            // rather than waiting out the birth-ack timeout.
+                            TryParseBirthAck(publish.Payload, out BirthAck? birthAck);
+
+                            // Reset the streak as soon as the ack is accepted, even if the flow is canceled before it
+                            // observes the ack. An abandoned handler cannot reset a newer attempt's streak because a
+                            // newer CONNECT attempt replaces the nonce under the same lock.
+                            lock (_birthAckLock)
                             {
-                                // Reset the streak as soon as the ack is accepted, even if the flow is canceled before it
-                                // observes the ack. An abandoned handler cannot reset a newer attempt's streak because a
-                                // newer CONNECT attempt replaces the nonce under the same lock.
-                                lock (_birthAckLock)
+                                if (CurrentConnectionNonce == connectNonce
+                                    && !birthAckReceivedTaskCompletionSource.Task.IsCompleted)
                                 {
-                                    if (CurrentConnectionNonce == connectNonce
-                                        && !birthAckReceivedTaskCompletionSource.Task.IsCompleted)
+                                    if (birthAck == null)
+                                    {
+                                        birthAckReceivedTaskCompletionSource.TrySetResult(null);
+                                    }
+                                    else
                                     {
                                         // Record the versions before completing the flow so the twin client sees them for this connection.
                                         _latestBirthAck = new BirthAckVersions(connectNonce, birthAck.DesiredVersion, birthAck.ReportedVersion);
@@ -441,8 +459,17 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
                     return;
                 }
 
-                // The birth ack was accepted, possibly racing with the timeout, so the task has already completed with it.
-                BirthAck birthAck = await birthAckReceivedTaskCompletionSource.Task;
+                // The birth ack arrived, possibly racing with the timeout, so the task has already completed with it.
+                BirthAck? birthAck = await birthAckReceivedTaskCompletionSource.Task;
+                if (birthAck == null)
+                {
+                    // IoT hub admitted this birth, so the subscription works, but the ack's twin versions are unknown.
+                    // Announce presence again on a new connection rather than proceeding without them.
+                    Trace.TraceWarning("Received a malformed birth ack for connection nonce {0}. Reconnecting...", connectNonce);
+                    await connection.DisconnectAsync(true, new MqttDisconnect() { Reason = MqttDisconnectReasonCode.NormalDisconnection }, cancellationToken);
+                    return;
+                }
+
                 if (TryForgetTwinVersionsNewerThanHub(birth, birthAck))
                 {
                     // IoT hub's versions never decrease, so it never issued a version newer than its own. It treats such a

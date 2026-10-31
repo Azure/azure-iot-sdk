@@ -66,6 +66,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Models
                 EnableMqttLogging = EnableMqttLogging,
                 MqttClient = MqttClient,
                 UseCleanSession = UseCleanSession,
+                SessionExpiryInterval = SessionExpiryInterval,
             };
         }
     }
