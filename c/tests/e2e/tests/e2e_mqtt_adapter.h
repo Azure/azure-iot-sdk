@@ -24,9 +24,10 @@
 #error "Define AZ_IOT_E2E_ADAPTER_PAHO or AZ_IOT_E2E_ADAPTER_AZ_MQTT"
 #endif
 
-/** @brief Largest outgoing packet: the mqttv5 telemetry size cases publish up to 1 MiB + 4 KiB, so
- * that the hub's limit is what they test, not the client's. */
-#define E2E_MQTT_SEND_BUFFER_SIZE (1024u * 1024u + 4096u)
+/** @brief Largest outgoing packet: 1 MiB + 64 KiB. The mqttv5 telemetry size cases publish up to
+ * 1 MiB + 4 KiB, which with its MQTT headers must still fit, so that the hub's limit is what they
+ * test, not the client's. */
+#define E2E_MQTT_SEND_BUFFER_SIZE (1024u * 1024u + 64u * 1024u)
 
 /**
  * @brief Has @p opts build its MQTT clients with the adapter under test, in a heap workspace.

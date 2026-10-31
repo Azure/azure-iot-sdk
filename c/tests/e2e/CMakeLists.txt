@@ -339,7 +339,7 @@ endif()
 # ---------------------------------------------------------------------------
 if(AZ_IOT_BUILD_E2E_MQTTV5)
     # The telemetry size cases publish up to 1 MiB + 4 KiB to test the hub's limit: the send buffer
-    # in E2E_MQTT_SEND_BUFFER_SIZE (tests/e2e_mqtt_adapter.h) holds that.
+    # in E2E_MQTT_SEND_BUFFER_SIZE (tests/e2e_mqtt_adapter.h) holds that and its MQTT headers.
     az_iot_add_e2e_suite(az_iot_tests_e2e_mqttv5_custom_topic
         SOURCES tests/e2e_mqttv5_custom_topic_test.c tests/e2e_device.c
         LIBS az_iot_e2e_service az_iot_mqttv5)

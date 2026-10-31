@@ -61,7 +61,7 @@ holds the provisioning session beside the hub session, register the v3.1.1 facto
 `<suite>` over Paho and `<suite>_az_mqtt` over az_mqtt, selected in the sources with
 `AZ_IOT_E2E_ADAPTER_PAHO` or `AZ_IOT_E2E_ADAPTER_AZ_MQTT`. The workflows enable both, and their
 `ctest -R` filters run both. The custody suites run over az_mqtt only with OpenSSL TLS. The send
-buffer in those sizes is 1 MiB + 4 KiB: the telemetry size cases publish just over 1 MiB. The connect flow + all four scenarios live in
+buffer in those sizes is 1 MiB + 64 KiB: the telemetry size cases publish 1 MiB + 4 KiB, plus MQTT headers. The connect flow + all four scenarios live in
 [`e2e_scenarios_test.c`](../../tests/e2e/tests/e2e_scenarios_test.c); the connect
 is done once for the whole suite via cmocka's group setup.
 

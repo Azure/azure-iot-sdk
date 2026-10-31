@@ -753,14 +753,19 @@ static az_iot_mqtt_client* make_client(void)
   assert_non_null(slot);
   size_t const size = g_adapter->get_workspace_size(&k_client_limits);
   assert_true(size > 0);
-  slot->workspace = (uint8_t*)malloc(size);
-  assert_non_null(slot->workspace);
+  uint8_t* workspace = (uint8_t*)malloc(size);
+  assert_non_null(workspace);
   az_iot_mqtt_client* c = NULL;
-  assert_int_equal(
-      g_adapter->init(g_version, &k_client_limits, slot->workspace, size, &c), AZ_IOT_OK);
+  az_iot_result const r = g_adapter->init(g_version, &k_client_limits, workspace, size, &c);
+  if (r != AZ_IOT_OK || c == NULL || c->iface == NULL)
+  {
+    free(workspace);
+  }
+  assert_int_equal(r, AZ_IOT_OK);
   assert_non_null(c);
   assert_non_null(c->iface);
   slot->client = c;
+  slot->workspace = workspace;
   return c;
 }
 
@@ -778,6 +783,46 @@ static void destroy_client(az_iot_mqtt_client* c)
     slot->client = NULL;
   }
 }
+
+/**
+ * @brief Per-test teardown: destroys the clients a case left behind (a failed assertion skips its
+ * destroy_client()) and frees their workspaces.
+ */
+static int conf_release_clients(void** state)
+{
+  (void)state;
+  for (size_t i = 0; i < CONF_CLIENTS_MAX; ++i)
+  {
+    if (g_client_slots[i].client != NULL)
+    {
+      destroy_client(g_client_slots[i].client);
+    }
+  }
+  return 0;
+}
+
+/** @brief Runs this process's shard of @p tests, each followed by conf_release_clients(). */
+static int conf_run_group(const char* group_name, const struct CMUnitTest* tests, size_t count)
+{
+  struct CMUnitTest* with_release = (struct CMUnitTest*)malloc(sizeof(*with_release) * count);
+  if (with_release == NULL)
+  {
+    fprintf(stderr, "%s: out of memory\n", group_name);
+    return 1;
+  }
+  for (size_t i = 0; i < count; ++i)
+  {
+    with_release[i] = tests[i];
+    with_release[i].teardown_func = conf_release_clients;
+  }
+  int const failed = az_iot_test_shard_run_group(group_name, with_release, count, NULL, NULL);
+  free(with_release);
+  return failed;
+}
+
+/** @brief conf_run_group() named after the @p group_tests array. */
+#define CONF_RUN_GROUP(group_tests) \
+  conf_run_group(#group_tests, group_tests, sizeof(group_tests) / sizeof((group_tests)[0]))
 
 static void connect_client(az_iot_mqtt_client* c, conf_recorder* rec, const char* client_id)
 {
@@ -4684,14 +4729,14 @@ int az_iot_conformance_run_with_options(
             cmocka_unit_test(v5_many_properties_survive_a_roundtrip),
             cmocka_unit_test(v5_many_properties_from_the_server_are_all_surfaced),
             cmocka_unit_test(v5_session_present_from_connack_is_reported) };
-    failed = az_iot_test_shard_run_group_tests(v5_tests, NULL, NULL);
+    failed = CONF_RUN_GROUP(v5_tests);
   }
   else
   {
     const struct CMUnitTest v3_tests[]
         = { AZ_IOT_CONFORMANCE_COMMON_TESTS,
             cmocka_unit_test(v3_1_1_publish_ignores_the_v5_only_fields) };
-    failed = az_iot_test_shard_run_group_tests(v3_tests, NULL, NULL);
+    failed = CONF_RUN_GROUP(v3_tests);
   }
 
   /* Before the custody groups: they load the key's provider process-wide, after
@@ -4701,7 +4746,7 @@ int az_iot_conformance_run_with_options(
 #ifdef AZ_IOT_CONFORMANCE_WITH_TLS
     const struct CMUnitTest pem_tests[]
         = { cmocka_unit_test(mutual_tls_does_not_read_pem_after_returning) };
-    failed += az_iot_test_shard_run_group_tests(pem_tests, NULL, NULL);
+    failed += CONF_RUN_GROUP(pem_tests);
 #else
     char allow[16];
     failed += az_iot_conformance_report_unproven_capability(
@@ -4729,7 +4774,7 @@ int az_iot_conformance_run_with_options(
     {
       const struct CMUnitTest custody_tests[]
           = { cmocka_unit_test(key_custody_completes_a_tls_handshake) };
-      failed += az_iot_test_shard_run_group_tests(custody_tests, NULL, NULL);
+      failed += CONF_RUN_GROUP(custody_tests);
     }
     else
     {
@@ -4760,7 +4805,7 @@ int az_iot_conformance_run_with_options(
     {
       const struct CMUnitTest sign_tests[]
           = { cmocka_unit_test(key_custody_sign_hook_completes_a_tls_handshake) };
-      failed += az_iot_test_shard_run_group_tests(sign_tests, NULL, NULL);
+      failed += CONF_RUN_GROUP(sign_tests);
     }
     else
     {
@@ -4791,7 +4836,7 @@ int az_iot_conformance_run_with_options(
     {
       const struct CMUnitTest psa_tests[]
           = { cmocka_unit_test(key_custody_psa_key_completes_a_tls_handshake_and_reconnects) };
-      failed += az_iot_test_shard_run_group_tests(psa_tests, NULL, NULL);
+      failed += CONF_RUN_GROUP(psa_tests);
     }
     else
     {
@@ -4834,7 +4879,7 @@ int az_iot_conformance_run_with_options(
       (void)(a_websocket_session_carries_a_large_payload);
       const struct CMUnitTest ws_tests[]
           = { cmocka_unit_test(a_websocket_session_completes_a_roundtrip) };
-      failed += az_iot_test_shard_run_group_tests(ws_tests, NULL, NULL);
+      failed += CONF_RUN_GROUP(ws_tests);
     }
     else
     {
@@ -4862,7 +4907,7 @@ int az_iot_conformance_run_with_options(
             cmocka_unit_test(a_proxy_rejects_a_missing_credential),
             cmocka_unit_test(a_tunnel_dropped_mid_session_is_reported),
             cmocka_unit_test(a_proxy_that_refuses_the_tunnel_fails_the_connect) };
-    failed += az_iot_test_shard_run_group_tests(proxy_tests, NULL, NULL);
+    failed += CONF_RUN_GROUP(proxy_tests);
   }
 
   return (failed == 0) ? 0 : 1;
