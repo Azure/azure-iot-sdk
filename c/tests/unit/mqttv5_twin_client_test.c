@@ -2374,6 +2374,39 @@ static void a_session_end_resends_the_snapshot_on_the_next_session(void** state)
   assert_int_equal(rec.version, 3);
 }
 
+/* End the time limit of every twin request the tracker holds. */
+static void expire_held_twin_requests(fixture* fx)
+{
+  for (size_t i = 0; i < AZ_IOT_MQTTV5_TWIN_TRACKED_MESSAGES; ++i)
+  {
+    if (fx->twin._internal.requests[i].kind != 0)
+    {
+      az_iot_deadline__expire_now(&fx->twin._internal.tracker_entries[i]._internal.deadline);
+    }
+  }
+}
+
+/* A snapshot whose time limit passed during the outage is replaced at CONNECTED by a new one,
+ * under a new id, and its answer is delivered. */
+static void a_snapshot_expired_before_connected_is_replaced(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  desired_record rec = { 0 };
+  set_desired(fx, &rec);
+  inject_desired(fx, 3, "{}");
+  uint8_t first_corr[16];
+  memcpy(first_corr, last_get(fx)->correlation_data, sizeof(first_corr));
+
+  drop_session(fx);
+  reopen_with_versions_hooked(fx, 3, 0, expire_held_twin_requests);
+  assert_int_equal(count_gets(fx), 1);
+  assert_memory_not_equal(last_get(fx)->correlation_data, first_corr, sizeof(first_corr));
+  answer_last_get(fx, 3, "{\"s\":3}");
+  assert_int_equal(rec.kind, AZ_IOT_MQTTV5_TWIN_DESIRED_SNAPSHOT);
+  assert_int_equal(rec.version, 3);
+}
+
 /* ------------------------------------------------------------------------- */
 /* versions across connections                                               */
 /* ------------------------------------------------------------------------- */
@@ -3830,6 +3863,8 @@ int main(void)
         set_request_timeout_and_do_work_reject_a_null_client, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_session_end_resends_the_snapshot_on_the_next_session, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_snapshot_expired_before_connected_is_replaced, setup, teardown),
     cmocka_unit_test_setup_teardown(
         concurrent_get_and_patch_correlate_independently, setup, teardown),
     cmocka_unit_test_setup_teardown(
