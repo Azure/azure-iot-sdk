@@ -298,6 +298,7 @@ failure, or a runner that dies before teardown.
 | `setup` | ubuntu | provisions one resource group (IoT Hub + DPS) via the shared `provision-e2e-resources` action and publishes the test-config artifact |
 | `test` | ubuntu + windows, 4 groups each (matrix) | builds the e2e tests, materializes its device's X.509 material, and runs its group: `core` (every e2e suite but the three below, plus custody and the file upload sample on Linux), `transport-paho`, `transport-az_mqtt`, `sas` (both adapters) |
 | `coverage` | ubuntu | merges the four Linux groups' tracefiles into `coverage-trace-e2e`, only when every `test` job passed |
+| `esp32-qemu` | ubuntu, esp32 and esp32c3 (matrix) | the ESP32 IoT Hub sample in QEMU, always on the shared environment ([ESP32 in QEMU](#esp32-in-qemu)) |
 | `teardown` | ubuntu | `always()` deletes the resource group via `destroy-e2e-resources`, using the run-derived name (not a `setup` output) |
 
 Each `test` job has its own device (index os-index * 4 + group-index; eight DPS
@@ -320,7 +321,8 @@ RegistrationStatusWrite) and `E2E_SHARED_IOTHUB_REGISTRY_CS` (hub policy with Re
 The TPM suite deletes its enrollment and device; other devices the runs register stay in the
 shared hub and are removed manually. The hub
 needs consumer groups
-`e2e-0`..`e2e-9` and file upload with notifications. Push and nightly runs always provision.
+`e2e-0`..`e2e-9` and file upload with notifications. Push and nightly runs always provision,
+except for `esp32-qemu`, which always uses the shared environment.
 Pull requests from forks get no secrets and fail.
 
 [`ci-c-e2e-csr.yml`](../../../.github/workflows/ci-c-e2e-csr.yml) has the same opt-in,
@@ -368,6 +370,42 @@ workflow; nightly; manual. Pull requests from forks and from Dependabot skip.
 > **Software updates e2e** runs in its own workflow
 > ([`ci-c-e2e-adu.yml`](../../../.github/workflows/ci-c-e2e-adu.yml), Linux) on the same shared mqttv5
 > environment and triggers. See [Software updates e2e](#software-updates-e2e).
+
+---
+
+## ESP32 in QEMU
+
+[`e2e_esp32_qemu_test.c`](../../tests/e2e/tests/e2e_esp32_qemu_test.c)
+(`az_iot_tests_e2e_esp32_qemu`, `-DAZ_IOT_BUILD_E2E_ESP32_QEMU=ON`, POSIX hosts) plays only
+the service. The device is the [ESP32 IoT Hub sample](../../samples/unified/esp32/README.md)
+firmware in Espressif's QEMU. The test starts it with `E2E_ESP32_QEMU_COMMAND` (through
+`/bin/sh -c`, in its own process group) and reads the sample's stable `hub_esp32:` log lines.
+`E2E_ESP32_DEVICE_ID` is the registration id the firmware was built with. Once the firmware
+logs `hub_esp32: ready on`:
+
+1. **telemetry** — `{"deviceId":"<id>",...}` reaches the Event Hub endpoint;
+2. **direct method** — `echo` answers `200` with its marked payload;
+3. **twin** — the test patches a marked desired property; the firmware logs
+   `desired version <v> acknowledged` and a twin GET shows `"desiredVersion":<v>` in reported.
+
+[`eng/esp-idf-qemu-e2e.sh`](../../eng/esp-idf-qemu-e2e.sh) `<target> <cert.pem> <key.pem>`
+runs it all in an ESP-IDF environment with QEMU, a host compiler and OpenSSL headers:
+
+1. builds the sample's `qemu` firmware with the device's DPS settings (`SDKCONFIG_EXTRA`
+   for [`eng/esp-idf-build.sh`](../../eng/esp-idf-build.sh));
+2. writes the identity with [`eng/esp-idf-qemu-identity.sh`](../../eng/esp-idf-qemu-identity.sh):
+   - esp32: an `esp_secure_cert` partition holding the certificate and key;
+   - esp32c3: the key goes into the Digital Signature peripheral. The script boots QEMU in
+     download mode, and `configure_esp_secure_cert.py --configure_ds` burns the DS key into an
+     emulated eFuse image and writes the partition with the encrypted DS parameters. DS takes RSA
+     keys of at most 3072 bits;
+3. builds and runs the test, booting the firmware with
+   [`eng/esp-idf-qemu.sh`](../../eng/esp-idf-qemu.sh) `--run`.
+
+CI: job `esp32-qemu` in `ci-c-e2e.yml`. It runs esp32 and esp32c3 in `espressif/idf:v6.0`, with
+devices 12 and 13 issued by `e2e-shared-device.ps1`. It uses the shared environment on every run,
+push and nightly included: the per-run enrollments' RSA-4096 keys exceed DS's 3072 bits, while the
+shared group CA issues RSA-2048. Without the shared environment's secrets, the job fails.
 
 ---
 
