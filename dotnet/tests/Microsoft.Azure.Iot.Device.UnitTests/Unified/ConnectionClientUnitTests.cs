@@ -1266,7 +1266,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
             int attemptCount = 0;
             int connectionTransitionStarted = 0;
             Task? deliberateDisconnect = null;
-            Task? disconnection = null;
+            TaskCompletionSource<Task> disconnection = new(TaskCreationOptions.RunContinuationsAsynchronously);
             connectionClient.DevicePresenceFlowCompletedAsync += _ =>
             {
                 if (Interlocked.Exchange(ref connectionTransitionStarted, 1) == 0)
@@ -1297,7 +1297,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
             async Task<MqttPublishAck> FailFirstAttemptAsync()
             {
                 await releaseFirstAttempt.Task;
-                disconnection = mockMqttClient.SimulateServerDisconnectAsync(MqttDisconnectReason.ImplementationSpecificError);
+                disconnection.TrySetResult(mockMqttClient.SimulateServerDisconnectAsync(MqttDisconnectReason.ImplementationSpecificError));
                 throw new IOException("mock connection reset");
             }
 
@@ -1310,11 +1310,12 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
                 await firstAttemptStarted.Task.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
                 releaseFirstAttempt.TrySetResult();
                 await reconnectStarted.Task.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+                Task disconnectionTask = await disconnection.Task.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
                 finishReconnect.TrySetResult(new MqttConnectAck() { ResultCode = MqttConnectReasonCode.Success });
 
                 await presenceFlowCompleted.Task.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
                 await deliberateDisconnect!.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
-                await disconnection!.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+                await disconnectionTask.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
                 await connectionClient.ProvisionAndConnectAsync(
                     new ProvisioningSettings("someIdScope"),
                     context.AuthenticationProvider,
