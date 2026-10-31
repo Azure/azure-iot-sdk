@@ -4,7 +4,7 @@
 
 /* SPDX-License-Identifier: MIT */
 /* Connection client entry counts at run time: sizes, init in the application's workspace
- * (required), and the workspace wiped by deinit(). */
+ * (required), the workspace wiped by deinit(), and the documented sizing examples. */
 
 #include <stdarg.h>
 #include <stddef.h>
@@ -16,6 +16,15 @@
 #include <cmocka.h>
 
 #include "azure/iot/az_iot_connection_client.h"
+#include "azure/iot/mqttv3/az_iot_c2d_client.h"
+#include "azure/iot/mqttv3/az_iot_direct_method_client.h"
+#include "azure/iot/mqttv3/az_iot_telemetry_client.h"
+#include "azure/iot/mqttv3/az_iot_twin_client.h"
+#include "azure/iot/mqttv5/az_iot_direct_method_client.h"
+#include "azure/iot/mqttv5/az_iot_telemetry_client.h"
+#include "azure/iot/mqttv5/az_iot_twin_client.h"
+#include "support/mock_mqtt_iface.h"
+#include "support/test_provider.h"
 
 #define TEST_WORKSPACE_MAX 16384u
 
@@ -211,6 +220,171 @@ static void init_refuses_limits_it_cannot_hold(void** state)
   assert_memory_equal(&client, untouched, sizeof(client));
 }
 
+/** @brief Feature clients of the sizing examples in docs/client-configuration.md. */
+typedef struct example_device
+{
+  az_iot_connection_client connection;
+  az_iot_mqttv3_telemetry_client telemetry_v3;
+  az_iot_mqttv3_c2d_client c2d;
+  az_iot_mqttv3_direct_method_client direct_method_v3;
+  az_iot_mqttv3_twin_client twin_v3;
+  az_iot_mqttv5_telemetry_client telemetry_v5;
+  az_iot_mqttv5_direct_method_client direct_method_v5;
+  az_iot_mqttv5_twin_client twin_v5;
+} example_device;
+
+static example_device g_device;
+
+/**
+ * @brief Runs a documented sizing example: attaches its feature clients (MQTT 3.1.1: telemetry,
+ * C2D, direct methods, twin; MQTT 5: telemetry, direct methods, twin), opens and takes the
+ * CONNACK, which binds every feature client's topics.
+ * @return true if all of it succeeds with @p limits in a workspace of exactly their size.
+ */
+static bool example_device_connects(bool mqtt_v5, const az_iot_connection_client_limits* limits)
+{
+  az_iot_connection_client_options opts = direct_options();
+  opts.connection_profile
+      = mqtt_v5 ? AZ_IOT_CONNECTION_PROFILE_MQTT_V5 : AZ_IOT_CONNECTION_PROFILE_MQTT_V3;
+  opts.limits = *limits;
+  opts.workspace = g_workspace;
+  opts.workspace_size = az_iot_connection_client_get_workspace_size(limits);
+  assert_true(opts.workspace_size <= TEST_WORKSPACE_MAX);
+  az_iot_mqtt_factory* factory = az_iot_mock_mqtt_factory_create(
+      mqtt_v5 ? AZ_IOT_MQTT_VERSION_5 : AZ_IOT_MQTT_VERSION_3_1_1);
+  assert_non_null(factory);
+  memset(&g_device, 0, sizeof(g_device));
+  assert_int_equal(az_iot_test_connection_client_init(&g_device.connection, &opts), AZ_IOT_OK);
+  az_iot_connection_client* c = &g_device.connection;
+
+  size_t attached = 0;
+  az_iot_result result = mqtt_v5 ? az_iot_mqttv5_telemetry_client_init(&g_device.telemetry_v5, c)
+                                 : az_iot_mqttv3_telemetry_client_init(&g_device.telemetry_v3, c);
+  attached += result == AZ_IOT_OK ? 1u : 0u;
+  if (result == AZ_IOT_OK)
+  {
+    result = mqtt_v5 ? az_iot_mqttv5_direct_method_client_init(&g_device.direct_method_v5, c)
+                     : az_iot_mqttv3_direct_method_client_init(&g_device.direct_method_v3, c);
+    attached += result == AZ_IOT_OK ? 1u : 0u;
+  }
+  if (result == AZ_IOT_OK)
+  {
+    result = mqtt_v5 ? az_iot_mqttv5_twin_client_init(&g_device.twin_v5, c)
+                     : az_iot_mqttv3_twin_client_init(&g_device.twin_v3, c);
+    attached += result == AZ_IOT_OK ? 1u : 0u;
+  }
+  if (result == AZ_IOT_OK && !mqtt_v5)
+  {
+    result = az_iot_mqttv3_c2d_client_init(&g_device.c2d, c);
+    attached += result == AZ_IOT_OK ? 1u : 0u;
+  }
+  if (result == AZ_IOT_OK)
+  {
+    result = az_iot_connection_client_register_mqtt_factory(c, factory);
+  }
+  if (result == AZ_IOT_OK)
+  {
+    result = az_iot_connection_client_open(c);
+  }
+  if (result == AZ_IOT_OK)
+  {
+    az_iot_mock_mqtt_client* mock = az_iot_mock_mqtt_factory_last_client(factory);
+    assert_non_null(mock);
+    assert_true(az_iot_mock_mqtt_client_inject_connected(mock, AZ_IOT_OK));
+    result = az_iot_connection_client_do_work(c, 0);
+  }
+  const az_iot_connection_state hub = c->state[AZ_IOT_CONN_SCOPE_HUB];
+  const bool connects = result == AZ_IOT_OK
+      && (hub == AZ_IOT_CONN_STATE_CONNECTING || hub == AZ_IOT_CONN_STATE_CONNECTED);
+
+  if (mqtt_v5)
+  {
+    if (attached > 2)
+    {
+      az_iot_mqttv5_twin_client_deinit(&g_device.twin_v5);
+    }
+    if (attached > 1)
+    {
+      az_iot_mqttv5_direct_method_client_deinit(&g_device.direct_method_v5);
+    }
+    if (attached > 0)
+    {
+      az_iot_mqttv5_telemetry_client_deinit(&g_device.telemetry_v5);
+    }
+  }
+  else
+  {
+    if (attached > 3)
+    {
+      az_iot_mqttv3_c2d_client_deinit(&g_device.c2d);
+    }
+    if (attached > 2)
+    {
+      az_iot_mqttv3_twin_client_deinit(&g_device.twin_v3);
+    }
+    if (attached > 1)
+    {
+      az_iot_mqttv3_direct_method_client_deinit(&g_device.direct_method_v3);
+    }
+    if (attached > 0)
+    {
+      az_iot_mqttv3_telemetry_client_deinit(&g_device.telemetry_v3);
+    }
+  }
+  az_iot_connection_client_deinit(c);
+  az_iot_mock_mqtt_factory_destroy(factory);
+  return connects;
+}
+
+/**
+ * @brief Asserts that @p limits run the example and that one less of any limit above 1 does not,
+ * skipping max_pending_publishes and max_application_state_observers (the application's own).
+ */
+static void assert_example_limits_are_exact(
+    bool mqtt_v5,
+    const az_iot_connection_client_limits* limits)
+{
+  assert_true(example_device_connects(mqtt_v5, limits));
+  az_iot_connection_client_limits fewer;
+#define ASSERT_ONE_LESS_FAILS(field)                        \
+  if (limits->field > 1u)                                   \
+  {                                                         \
+    fewer = *limits;                                        \
+    fewer.field--;                                          \
+    assert_false(example_device_connects(mqtt_v5, &fewer)); \
+  }
+  ASSERT_ONE_LESS_FAILS(max_publish_reservations);
+  ASSERT_ONE_LESS_FAILS(max_persistent_subscriptions);
+  ASSERT_ONE_LESS_FAILS(max_feature_observers);
+  ASSERT_ONE_LESS_FAILS(max_feature_clients);
+  ASSERT_ONE_LESS_FAILS(max_inbound_handlers);
+#undef ASSERT_ONE_LESS_FAILS
+}
+
+static void the_mqttv3_sizing_example_holds_its_feature_clients_exactly(void** state)
+{
+  (void)state;
+  /* docs/client-configuration.md, "Sizing the limits": telemetry, C2D, direct methods, twin. */
+  const az_iot_connection_client_limits limits = { 4, 1, 4, 2, 1, 1, 4 };
+  assert_example_limits_are_exact(false, &limits);
+}
+
+static void the_mqttv5_sizing_example_holds_its_feature_clients_exactly(void** state)
+{
+  (void)state;
+  /* docs/client-configuration.md, "Sizing the limits": telemetry, direct methods, twin. The
+   * direct method client reserves AZ_IOT_MQTTV5_DM_RESERVED_PUBACKS slots; 4 are left to share. */
+  const az_iot_connection_client_limits limits
+      = { AZ_IOT_MQTTV5_DM_RESERVED_PUBACKS + 4u, 1, 1, 3, 1, 2, 2 };
+  assert_example_limits_are_exact(true, &limits);
+
+  az_iot_connection_client_limits reserved_only = limits;
+  reserved_only.max_pending_publishes = AZ_IOT_MQTTV5_DM_RESERVED_PUBACKS;
+  assert_true(example_device_connects(true, &reserved_only));
+  reserved_only.max_pending_publishes--;
+  assert_false(example_device_connects(true, &reserved_only));
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -219,6 +393,8 @@ int main(void)
     cmocka_unit_test(entries_live_in_the_application_workspace_and_are_wiped),
     cmocka_unit_test(a_workspace_holds_more_than_the_defaults),
     cmocka_unit_test(init_refuses_limits_it_cannot_hold),
+    cmocka_unit_test(the_mqttv3_sizing_example_holds_its_feature_clients_exactly),
+    cmocka_unit_test(the_mqttv5_sizing_example_holds_its_feature_clients_exactly),
   };
   return cmocka_run_group_tests_name("connection_client_workspace", tests, NULL, NULL);
 }
