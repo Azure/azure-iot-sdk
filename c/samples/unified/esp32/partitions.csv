@@ -1,0 +1,10 @@
+# Partition table for the IoT Hub sample, 4 MB flash.
+#
+# esp_secure_cert holds the device certificate and key (or DS parameters), at the offset
+# configure_esp_secure_cert.py writes by default.
+#
+# Name,          Type, SubType, Offset,  Size,     Flags
+esp_secure_cert, 0x3F, ,        0xD000,  0x2000,   encrypted
+nvs,             data, nvs,     0xF000,  0x6000,
+phy_init,        data, phy,     0x15000, 0x1000,
+factory,         app,  factory, 0x20000, 0x1E0000,

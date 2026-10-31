@@ -41,6 +41,7 @@ static const char k_sas_json[] = "{\"correlationId\":\"c\",\"hostName\":\"h\","
                                  "\"containerName\":\"k\",\"blobName\":\"b\",\"sasToken\":\"?s\"}";
 
 static uint8_t g_sas_buffer[AZ_IOT_SAS_BUFFER_SIZE(1, AZ_IOT_SAS_TOKEN_SIZE(256))];
+static uint8_t g_connection_workspace[AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE];
 
 typedef struct
 {
@@ -108,6 +109,8 @@ static az_iot_connection_client_options sas_options(void)
   opts.unix_time.get_time = fixed_time;
   opts.sas_buffer.buffer = g_sas_buffer;
   opts.sas_buffer.size = sizeof(g_sas_buffer);
+  opts.workspace = g_connection_workspace;
+  opts.workspace_size = sizeof(g_connection_workspace);
   return opts;
 }
 

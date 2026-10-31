@@ -910,8 +910,7 @@ extern "C"
     /**
      * Memory for the entries, owned by the client from init() to deinit(), which wipes it.
      * At least az_iot_connection_client_get_workspace_size(&limits) bytes, any alignment.
-     * NULL: the client uses its own area, sized for the built-in defaults (16, 2, 8, 10, 4, 8, 8
-     * in field order); no limit may exceed those.
+     * Required: init() fails with AZ_IOT_ERR_INVALID_ARG when it is NULL.
      */
     uint8_t* workspace;
     size_t workspace_size; /**< Bytes in workspace. */
@@ -1613,11 +1612,6 @@ extern "C"
       AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_FEATURE_CLIENTS,             \
       AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_INBOUND_HANDLERS)
 
-/* Area used when the options give no workspace (internal). Fixed counts 16, 2, 8, 10, 4, 8, 8,
- * not the overridable defaults, so the struct layout never depends on a macro. */
-#define _az_IOT_CONNECTION_CLIENT_EMBEDDED_WORKSPACE_SIZE \
-  AZ_IOT_CONNECTION_CLIENT_WORKSPACE_SIZE(16, 2, 8, 10, 4, 8, 8)
-
   struct az_iot_connection_client
   {
     az_iot_connection_client_options opts;
@@ -1657,6 +1651,10 @@ extern "C"
     void* reg_payload_cb_ctx;
 
     bool user_close;
+    /* The hub session ended (a DISCONNECTED event) and its transition is still pending. */
+    bool hub_session_ended;
+    /* That ending session also carried the server's DISCONNECT. */
+    bool hub_server_disconnect_seen;
 
     /* Set when the next reconnect attempt must re-provision through DPS rather
      * than reconnect to the cached assignment -- because the hub refused this
@@ -2050,8 +2048,6 @@ extern "C"
     /* The issued chain was not stored because the assignment was to be
      * rejected; it must not be adopted. */
     bool dps_cert_withheld;
-    /* Workspace used when the options give none. */
-    uint8_t default_workspace[_az_IOT_CONNECTION_CLIENT_EMBEDDED_WORKSPACE_SIZE];
   };
 
   typedef struct az_iot_connection_client az_iot_connection_client;
@@ -2087,6 +2083,8 @@ extern "C"
    *
    * Set the required fields for your auth/provisioning
    * mode on the returned struct before az_iot_connection_client_init():
+   *   - Always: workspace and workspace_size (AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE
+   *     bytes for the default limits).
    *   - DPS (iothub_hostname==NULL): dps.id_scope, dps.registration_id.
    *   - Direct hub connect: iothub_hostname, device_id; also set
    *     connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5 for an IoT Hub
