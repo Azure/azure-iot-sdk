@@ -58,7 +58,6 @@ struct az_iot_e2e_service
   int partition_count;
 
   e2e_amqp_telemetry* telemetry; /* non-NULL while watching */
-  int64_t telemetry_enqueued_after_ms; /* kept across reconnects, so none of the watch is missed */
   time_t telemetry_reconnect_at; /* 0 unless a receiver was detached */
   e2e_amqp_filenotify* filenotify; /* non-NULL while watching file notifications */
   /* [0] backs the single-request API; the rest are handles. */
@@ -231,50 +230,6 @@ const char* az_iot_e2e_service_last_error(const az_iot_e2e_service* svc)
   return svc->last_error;
 }
 
-/**
- * @brief Connects the allocated watcher, reading from svc->telemetry_enqueued_after_ms.
- *
- * @return false with the error set, and the watcher freed, on failure.
- */
-static bool telemetry_connect(az_iot_e2e_service* svc, const char* capture_filter)
-{
-  /* Event Hubs authorizes the entity audience with a SAS whose HMAC key is the
-   * raw key string (NOT base64-decoded) — the Event Hubs/Service Bus convention. */
-  /* Sized for the widest possible "amqps://<host>/<entity>": host[256] + entity[128]
-   * plus scheme and separator. A tighter bound trips GCC -Werror=format-truncation. */
-  char audience[512];
-  snprintf(audience, sizeof(audience), "amqps://%s/%s", svc->eh_info.host, svc->entity);
-
-  const char* err = NULL;
-  char sas[512];
-  if (!e2e_sas_token_create(
-          audience, svc->eh_info.key_name, svc->eh_info.key, false, sas_expiry(), sas, sizeof(sas)))
-  {
-    err = "telemetry: failed to build SAS token";
-  }
-  else if (!e2e_amqp_telemetry_begin(
-               svc->telemetry,
-               svc->eh_info.host,
-               svc->entity,
-               svc->consumer_group,
-               svc->telemetry_enqueued_after_ms,
-               sas,
-               svc->partition_count,
-               capture_filter,
-               &err))
-  {
-    err = (err != NULL) ? err : "telemetry: begin failed";
-  }
-  else
-  {
-    return true;
-  }
-  set_error(svc, err);
-  free(svc->telemetry);
-  svc->telemetry = NULL;
-  return false;
-}
-
 bool az_iot_e2e_service_telemetry_watch_begin(az_iot_e2e_service* svc, const char* capture_filter)
 {
   if (svc->telemetry != NULL)
@@ -286,23 +241,57 @@ bool az_iot_e2e_service_telemetry_watch_begin(az_iot_e2e_service* svc, const cha
     az_iot_e2e_service_telemetry_watch_end(svc);
   }
 
+  /* Event Hubs authorizes the entity audience with a SAS whose HMAC key is the
+   * raw key string (NOT base64-decoded) — the Event Hubs/Service Bus convention. */
+  /* Sized for the widest possible "amqps://<host>/<entity>": host[256] + entity[128]
+   * plus scheme and separator. A tighter bound trips GCC -Werror=format-truncation. */
+  char audience[512];
+  snprintf(audience, sizeof(audience), "amqps://%s/%s", svc->eh_info.host, svc->entity);
+
+  char sas[512];
+  if (!e2e_sas_token_create(
+          audience, svc->eh_info.key_name, svc->eh_info.key, false, sas_expiry(), sas, sizeof(sas)))
+  {
+    set_error(svc, "telemetry: failed to build SAS token");
+    return false;
+  }
+
   svc->telemetry = (e2e_amqp_telemetry*)calloc(1, sizeof(*svc->telemetry));
   if (svc->telemetry == NULL)
   {
     set_error(svc, "telemetry: out of memory");
     return false;
   }
-  svc->telemetry_enqueued_after_ms = ((int64_t)time(NULL) - E2E_TELEMETRY_CLOCK_SKEW_S) * 1000;
+
   svc->telemetry_reconnect_at = 0;
-  return telemetry_connect(svc, capture_filter);
+  const char* err = NULL;
+  int64_t enqueued_after_ms = ((int64_t)time(NULL) - E2E_TELEMETRY_CLOCK_SKEW_S) * 1000;
+  if (!e2e_amqp_telemetry_begin(
+          svc->telemetry,
+          svc->eh_info.host,
+          svc->entity,
+          svc->consumer_group,
+          enqueued_after_ms,
+          sas,
+          svc->partition_count,
+          capture_filter,
+          &err))
+  {
+    set_error(svc, (err != NULL) ? err : "telemetry: begin failed");
+    free(svc->telemetry);
+    svc->telemetry = NULL;
+    return false;
+  }
+  return true;
 }
 
 /**
  * @brief Reconnects the telemetry watcher, after a pause, when the service detached one of its
  * receivers: Event Hubs refuses a sixth reader of a partition in a consumer group, and concurrent
- * runs share the groups. Messages since the watch began are read again.
+ * runs share the groups. The watcher reads again from the time the watch began and drops the
+ * events it already received; az_iot_e2e_service_do_work() completes the setup step by step.
  *
- * @return false only if reconnecting failed; the watcher is then gone.
+ * @return false only if the reconnect could not start; the watcher is then gone.
  */
 static bool telemetry_reconnect_if_receiver_detached(az_iot_e2e_service* svc)
 {
@@ -327,11 +316,13 @@ static bool telemetry_reconnect_if_receiver_detached(az_iot_e2e_service* svc)
     return true;
   }
   svc->telemetry_reconnect_at = 0;
-
-  char capture_filter[E2E_AMQP_CAPTURE_FILTER_MAX];
-  (void)snprintf(capture_filter, sizeof(capture_filter), "%s", svc->telemetry->capture_filter);
-  e2e_amqp_telemetry_end(svc->telemetry);
-  return telemetry_connect(svc, capture_filter);
+  if (!e2e_amqp_telemetry_restart(svc->telemetry))
+  {
+    set_error(svc, svc->telemetry->error);
+    az_iot_e2e_service_telemetry_watch_end(svc);
+    return false;
+  }
+  return true;
 }
 
 bool az_iot_e2e_service_do_work(az_iot_e2e_service* svc, int timeout_ms)
@@ -347,7 +338,7 @@ bool az_iot_e2e_service_do_work(az_iot_e2e_service* svc, int timeout_ms)
 
   if (svc->telemetry != NULL && !e2e_amqp_telemetry_do_work(svc->telemetry, slice))
   {
-    set_error(svc, "telemetry: connection failed");
+    set_error(svc, svc->telemetry->error);
     return false;
   }
   if (svc->telemetry != NULL && !telemetry_reconnect_if_receiver_detached(svc))

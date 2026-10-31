@@ -5,7 +5,7 @@
 /* SPDX-License-Identifier: MIT */
 /* The telemetry watcher's capture ring and capture filter: the replay of a shared events
  * endpoint must not evict the messages a test waits for. Also its detection of a receiver the
- * service detached. No network is used. */
+ * service detached, and the drop of events a reconnect replays. No network is used. */
 
 #include <stdarg.h>
 #include <stddef.h>
@@ -147,12 +147,60 @@ static void test_a_detached_receiver_is_found(void** state)
   t->receivers[2].state = AZ_AMQP_LINK_STATE_DETACHED;
   assert_int_equal(e2e_amqp_telemetry_find_detached_receiver(t), -1);
 
-  t->started = true;
+  t->phase = E2E_AMQP_TELEMETRY_PHASE_RECEIVING;
   assert_int_equal(e2e_amqp_telemetry_find_detached_receiver(t), 2);
   t->receivers[2].state = AZ_AMQP_LINK_STATE_ERROR;
   assert_int_equal(e2e_amqp_telemetry_find_detached_receiver(t), 2);
   t->receivers[2].state = AZ_AMQP_LINK_STATE_ATTACHED;
   assert_int_equal(e2e_amqp_telemetry_find_detached_receiver(t), -1);
+  free(t);
+}
+
+/** @brief Delivers {"marker":"<marker>"} as event @p sequence_number of @p partition, as the
+ * receive callback does: a replayed event is neither counted nor captured. */
+static e2e_amqp_capture* deliver_event(
+    e2e_amqp_telemetry* t,
+    int partition,
+    int64_t sequence_number,
+    const char* marker)
+{
+  if (!e2e_amqp_telemetry_record_sequence_number(t, partition, sequence_number))
+  {
+    return NULL;
+  }
+  return receive_marker(t, marker);
+}
+
+/* A reconnect replays every event since the watch began, more than the ring holds, on two
+ * partitions: the replay is dropped, so the captures and their arrival order stay those of the
+ * first delivery, and the next new event follows them. */
+static void test_a_replay_after_a_reconnect_is_dropped(void** state)
+{
+  (void)state;
+  e2e_amqp_telemetry* t = new_watcher(NULL);
+  const int count = 2 * E2E_AMQP_CAPTURE_MAX;
+  char marker[32];
+  for (int pass = 0; pass < 2; pass++)
+  {
+    for (int i = 0; i < count; i++)
+    {
+      (void)snprintf(marker, sizeof(marker), "m-%d", i);
+      e2e_amqp_capture* c = deliver_event(t, i % 2, i / 2, marker);
+      assert_true(pass == 0 ? c != NULL : c == NULL);
+    }
+  }
+  assert_int_equal(t->received_count, count);
+  const e2e_amqp_capture* oldest_kept = e2e_amqp_telemetry_find(t, "\"m-64\"");
+  const e2e_amqp_capture* newest = e2e_amqp_telemetry_find(t, "\"m-127\"");
+  assert_non_null(oldest_kept);
+  assert_non_null(newest);
+  assert_int_equal(oldest_kept->seq, 64);
+  assert_int_equal(newest->seq, 127);
+
+  const e2e_amqp_capture* next = deliver_event(t, 0, count / 2, "m-new");
+  assert_non_null(next);
+  assert_int_equal(next->seq, count);
+  assert_non_null(deliver_event(t, 1, -1, "m-unknown-sequence"));
   free(t);
 }
 
@@ -164,6 +212,7 @@ int main(void)
     cmocka_unit_test(test_the_filter_matches_past_the_captured_prefix),
     cmocka_unit_test(test_a_too_long_filter_is_refused),
     cmocka_unit_test(test_a_detached_receiver_is_found),
+    cmocka_unit_test(test_a_replay_after_a_reconnect_is_dropped),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }

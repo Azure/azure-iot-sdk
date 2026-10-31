@@ -108,8 +108,10 @@ other traffic cannot evict a marker the test is about to check.
 Concurrent runs share the consumer groups, and Event Hubs detaches a sixth reader of
 a partition in a group. When a receiver is detached, the watcher logs
 `[e2e] telemetry: the service detached the receiver of partition <n>`, waits 5 s and
-reconnects, reading again from the time the watch began. A message is then captured
-twice; lookups use the first capture.
+reconnects, reading again from the time the watch began. The replayed events are
+dropped by their per-partition sequence number, so none is captured twice. The
+reconnect closes the socket without waiting, and each `do_work` call advances the
+connection setup by at most one step; setup fails after 60 s.
 
 SAS tokens are built with OpenSSL (HMAC-SHA256 + base64) on both platforms. Note
 the two key conventions the facade handles: Event Hubs signs with the **raw** key

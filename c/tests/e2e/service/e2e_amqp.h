@@ -23,6 +23,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <time.h>
 
 #ifdef __cplusplus
 extern "C"
@@ -36,6 +37,8 @@ extern "C"
 #define E2E_AMQP_WATCHED_MAX 4
 #define E2E_AMQP_WATCHED_NEEDLE_MAX 192
 #define E2E_AMQP_CAPTURE_FILTER_MAX 192
+/* Longest a telemetry watcher may take to connect, from its first or restarted setup step. */
+#define E2E_AMQP_SETUP_TIMEOUT_S 60
 /* Largest message one partition receiver reassembles (heap, per partition): past the 1 MB
  * message limit plus the properties and annotations the hub adds, so an oversized message the
  * hub accepted is still seen. The link silently drops a larger one. */
@@ -53,6 +56,25 @@ extern "C"
     bool props_truncated;
     uint32_t seq; /* arrival order since the watcher began, from 0 */
   } e2e_amqp_capture;
+
+  /** @brief A step of the telemetry watcher's connection setup, each advanced by
+   * e2e_amqp_telemetry_do_work(). */
+  typedef enum
+  {
+    E2E_AMQP_TELEMETRY_PHASE_IDLE = 0, /**< Not connected. */
+    E2E_AMQP_TELEMETRY_PHASE_OPENING_CONNECTION,
+    E2E_AMQP_TELEMETRY_PHASE_BEGINNING_SESSION,
+    E2E_AMQP_TELEMETRY_PHASE_OPENING_CBS,
+    E2E_AMQP_TELEMETRY_PHASE_AUTHORIZING,
+    E2E_AMQP_TELEMETRY_PHASE_RECEIVING, /**< Receivers attached or attaching. */
+  } e2e_amqp_telemetry_phase;
+
+  /** @brief The outcome of a CBS put-token request. */
+  typedef struct e2e_amqp_put_token_result
+  {
+    bool done;
+    uint32_t status;
+  } e2e_amqp_put_token_result;
 
   /* A telemetry watcher: an AMQP connection to the IoT Hub Event Hub-compatible
    * endpoint with one receiver link per partition. Received messages are
@@ -72,8 +94,13 @@ extern "C"
     az_amqp_cbs cbs;
     az_amqp_link receivers[E2E_AMQP_MAX_PARTITIONS];
     int partition_count;
-    bool started;
+    e2e_amqp_telemetry_phase phase;
+    time_t setup_deadline; /* a connection setup not done by then fails */
+    const char* error; /* static reason of the last failure, or NULL */
     bool connection_failed;
+    e2e_amqp_put_token_result put_token;
+    /* Lowest sequence number not received yet, per partition: a reconnect replays events. */
+    int64_t next_sequence_number[E2E_AMQP_MAX_PARTITIONS];
 
     /* Capture ring of recently received messages that contain capture_filter. */
     e2e_amqp_capture captured[E2E_AMQP_CAPTURE_MAX];
@@ -99,12 +126,14 @@ extern "C"
     char link_name[E2E_AMQP_MAX_PARTITIONS][32];
     char audience_buffer[256];
     uint8_t filter_buffer[256];
+    az_span filter; /* encoded enqueued-time filter in filter_buffer, or empty */
+    char host[256];
+    char sas_token[512];
   } e2e_amqp_telemetry;
 
   /**
    * @brief Connects to @p eh_host:5671, CBS-authorizes @p sas_token against the entity and
-   * attaches one receiver per partition. Called again after e2e_amqp_telemetry_end(), it
-   * reconnects and keeps the captures and watched needles.
+   * attaches one receiver per partition, within #E2E_AMQP_SETUP_TIMEOUT_S.
    *
    * @param[in] consumer_group Consumer group to read from; `NULL` or empty selects `$Default`.
    * @param[in] enqueued_after_ms Only messages enqueued after this Unix time (ms) are delivered;
@@ -144,13 +173,38 @@ extern "C"
       const uint8_t* body,
       size_t body_size);
 
-  /* Advance the telemetry connection once, waiting up to @p wait_ms for socket I/O.
-   * Returns false if the connection has failed. */
+  /**
+   * @brief Records that @p partition delivered the event with @p sequence_number.
+   *
+   * @param[in] sequence_number Negative when unknown: the event is then taken as new.
+   * @return false if the event was received before, i.e. replayed after a reconnect.
+   */
+  bool e2e_amqp_telemetry_record_sequence_number(
+      e2e_amqp_telemetry* t,
+      int partition,
+      int64_t sequence_number);
+
+  /**
+   * @brief Advances the telemetry connection once, waiting up to @p wait_ms for socket I/O, and
+   * then its setup by at most one step.
+   *
+   * @return false, with t->error set, if the connection failed or its setup did not finish
+   * within #E2E_AMQP_SETUP_TIMEOUT_S.
+   */
   bool e2e_amqp_telemetry_do_work(e2e_amqp_telemetry* t, int wait_ms);
 
   /** @brief The partition whose receiver the service detached (e.g. a sixth reader of the
    * partition in the consumer group), or -1 while every receiver is attached or attaching. */
   int e2e_amqp_telemetry_find_detached_receiver(const e2e_amqp_telemetry* t);
+
+  /**
+   * @brief Drops the connection, without waiting for the service, and starts setting it up again
+   * with the parameters of e2e_amqp_telemetry_begin(); e2e_amqp_telemetry_do_work() completes
+   * it. Captures, watched needles and received sequence numbers are kept.
+   *
+   * @return false, with t->error set, if the setup could not start.
+   */
+  bool e2e_amqp_telemetry_restart(e2e_amqp_telemetry* t);
 
   /* Returns true if any captured telemetry body contains @p needle. */
   bool e2e_amqp_telemetry_seen(const e2e_amqp_telemetry* t, const char* needle);

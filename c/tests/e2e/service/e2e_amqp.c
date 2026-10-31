@@ -73,6 +73,11 @@
 #define E2E_ERR_TELEMETRY_SOURCE E2E_AMQP_PFX_TELEMETRY "partition source address too long"
 #define E2E_ERR_TELEMETRY_OUT_OF_MEMORY E2E_AMQP_PFX_TELEMETRY "out of memory"
 #define E2E_ERR_TELEMETRY_CAPTURE_FILTER E2E_AMQP_PFX_TELEMETRY "capture filter too long"
+#define E2E_ERR_TELEMETRY_PARAMETER_TOO_LONG \
+  E2E_AMQP_PFX_TELEMETRY "host name or SAS token too long"
+#define E2E_ERR_TELEMETRY_SETUP_TIMEOUT E2E_AMQP_PFX_TELEMETRY "connection setup timed out"
+#define E2E_ERR_TELEMETRY_CONNECTION_FAILED E2E_AMQP_PFX_TELEMETRY "connection failed"
+#define E2E_ERR_TELEMETRY_NOT_CONNECTED E2E_AMQP_PFX_TELEMETRY "not connected"
 
 /* c2d */
 #define E2E_ERR_C2D_OUT_OF_MEMORY E2E_AMQP_PFX_C2D "out of memory"
@@ -120,12 +125,6 @@
 
 /* --- shared callbacks / pump ---------------------------------------------- */
 
-typedef struct put_token_result
-{
-  bool done;
-  uint32_t status;
-} put_token_result;
-
 static void on_connection_state_changed(
     az_amqp_connection* connection,
     az_amqp_connection_state previous_state,
@@ -164,7 +163,7 @@ static void on_put_token_complete(
 {
   (void)cbs;
   (void)status_description;
-  put_token_result* result = (put_token_result*)user_data;
+  e2e_amqp_put_token_result* result = (e2e_amqp_put_token_result*)user_data;
   result->status = status_code;
   result->done = true;
 }
@@ -479,6 +478,40 @@ static bool bytes_contain(const uint8_t* data, size_t size, const char* needle)
   return false;
 }
 
+/** @brief The Event Hubs sequence number of @p message within its partition, or -1 if absent. */
+static int64_t message_sequence_number(az_amqp_message const* message)
+{
+  static const char key_name[] = "x-opt-sequence-number";
+  az_span annotations;
+  az_amqp_decoder decoder;
+  az_amqp_value map;
+  az_amqp_decoder pairs;
+  if (az_result_failed(az_amqp_message_get_message_annotations(message, &annotations))
+      || az_result_failed(az_amqp_decoder_init(&decoder, annotations))
+      || az_result_failed(az_amqp_decoder_decode(&decoder, &map))
+      || az_result_failed(az_amqp_value_get_map_decoder(&map, &pairs, NULL)))
+  {
+    return -1;
+  }
+  while (az_amqp_decoder_has_next(&pairs))
+  {
+    az_amqp_value key;
+    az_amqp_value value;
+    if (az_result_failed(az_amqp_decoder_decode(&pairs, &key))
+        || az_result_failed(az_amqp_decoder_decode(&pairs, &value)))
+    {
+      return -1;
+    }
+    if (key.kind == AZ_AMQP_VALUE_KIND_SYMBOL
+        && az_span_size(key.payload) == (int32_t)(sizeof(key_name) - 1)
+        && memcmp(az_span_ptr(key.payload), key_name, sizeof(key_name) - 1) == 0)
+    {
+      return value.kind == AZ_AMQP_VALUE_KIND_LONG ? value.scalar.i64 : -1;
+    }
+  }
+  return -1;
+}
+
 static void on_message_received(
     az_amqp_link* link,
     az_amqp_message const* message,
@@ -486,6 +519,12 @@ static void on_message_received(
     void* user_data)
 {
   e2e_amqp_telemetry* t = (e2e_amqp_telemetry*)user_data;
+  if (!e2e_amqp_telemetry_record_sequence_number(
+          t, (int)(link - t->receivers), message_sequence_number(message)))
+  {
+    E2E_AMQP_DISCARD(az_amqp_link_accept(link, delivery->number));
+    return;
+  }
 
   az_amqp_message_body_kind body_kind;
   az_span body;
@@ -610,7 +649,13 @@ static bool encode_enqueued_after_filter(az_span buffer, int64_t after_ms, az_sp
   return true;
 }
 
-bool e2e_amqp_telemetry_begin(
+/**
+ * @brief Keeps what the setup steps and e2e_amqp_telemetry_restart() need: host, SAS token,
+ * audience, receive buffers, enqueued-time filter and partition source addresses.
+ *
+ * @return NULL, or the static reason of the failure.
+ */
+static const char* telemetry_prepare(
     e2e_amqp_telemetry* t,
     const char* eh_host,
     const char* entity_path,
@@ -618,19 +663,12 @@ bool e2e_amqp_telemetry_begin(
     int64_t enqueued_after_ms,
     const char* sas_token,
     int partition_count,
-    const char* capture_filter,
-    const char** err_out)
+    const char* capture_filter)
 {
-  const char* err = NULL;
   if (!e2e_amqp_telemetry_set_capture_filter(t, capture_filter))
   {
-    if (err_out != NULL)
-    {
-      *err_out = E2E_ERR_TELEMETRY_CAPTURE_FILTER;
-    }
-    return false;
+    return E2E_ERR_TELEMETRY_CAPTURE_FILTER;
   }
-  t->connection_failed = false; /* a reconnect reuses the watcher */
   if (consumer_group == NULL || consumer_group[0] == '\0')
   {
     consumer_group = "$Default";
@@ -645,14 +683,55 @@ bool e2e_amqp_telemetry_begin(
   }
   t->partition_count = partition_count;
 
-  az_span fqdn = az_span_create_from_str((char*)(uintptr_t)eh_host);
-  az_span token = az_span_create_from_str((char*)(uintptr_t)sas_token);
-
-  int audience_length = snprintf(
+  const int host_length = snprintf(t->host, sizeof(t->host), "%s", eh_host);
+  const int token_length = snprintf(t->sas_token, sizeof(t->sas_token), "%s", sas_token);
+  if (host_length < 0 || host_length >= (int)sizeof(t->host) || token_length < 0
+      || token_length >= (int)sizeof(t->sas_token))
+  {
+    return E2E_ERR_TELEMETRY_PARAMETER_TOO_LONG;
+  }
+  (void)snprintf(
       t->audience_buffer, sizeof(t->audience_buffer), "amqps://%s/%s", eh_host, entity_path);
-  az_span audience = az_span_create((uint8_t*)t->audience_buffer, audience_length);
 
-  /* 1. TLS transport to the AMQPS port. */
+  t->recv_buffers = (uint8_t*)malloc((size_t)partition_count * E2E_AMQP_RECV_MESSAGE_MAX);
+  if (t->recv_buffers == NULL)
+  {
+    return E2E_ERR_TELEMETRY_OUT_OF_MEMORY;
+  }
+  t->filter = AZ_SPAN_EMPTY;
+  if (enqueued_after_ms > 0
+      && !encode_enqueued_after_filter(
+          AZ_SPAN_FROM_BUFFER(t->filter_buffer), enqueued_after_ms, &t->filter))
+  {
+    return E2E_ERR_TELEMETRY_FILTER;
+  }
+  for (int p = 0; p < partition_count; p++)
+  {
+    const int source_length = snprintf(
+        t->source_addr[p],
+        sizeof(t->source_addr[p]),
+        "%s/ConsumerGroups/%s/Partitions/%d",
+        entity_path,
+        consumer_group,
+        p);
+    if (source_length <= 0 || source_length >= (int)sizeof(t->source_addr[p]))
+    {
+      return E2E_ERR_TELEMETRY_SOURCE;
+    }
+    (void)snprintf(t->link_name[p], sizeof(t->link_name[p]), "e2e-recv-%d", p);
+  }
+  return NULL;
+}
+
+/**
+ * @brief Opens a TLS transport to the AMQPS port and an AMQP connection on it, starting the
+ * setup deadline; e2e_amqp_telemetry_do_work() takes the remaining steps.
+ *
+ * @return NULL, or the static reason of the failure.
+ */
+static const char* telemetry_open_connection(e2e_amqp_telemetry* t)
+{
+  az_span fqdn = az_span_create_from_str(t->host);
   az_amqp_transport_options transport_options = { 0 };
   transport_options.host_name = fqdn;
   transport_options.port = AZ_AMQP_PORT_AMQPS;
@@ -660,11 +739,11 @@ bool e2e_amqp_telemetry_begin(
   if (az_result_failed(
           az_amqp_sample_transport_init(&t->transport, &t->transport_storage, &transport_options)))
   {
-    err = E2E_ERR_TELEMETRY_TRANSPORT_INIT;
-    goto error;
+    return E2E_ERR_TELEMETRY_TRANSPORT_INIT;
   }
 
-  /* 2. Connection with SASL ANONYMOUS (Event Hubs authorizes per-entity via CBS). */
+  /* SASL ANONYMOUS: Event Hubs authorizes per entity via CBS. */
+  t->connection_failed = false;
   t->session_slots[0] = NULL;
   az_amqp_connection_storage connection_storage = {
     .incoming_buffer = AZ_SPAN_FROM_BUFFER(t->incoming_buffer),
@@ -677,153 +756,202 @@ bool e2e_amqp_telemetry_begin(
   connection_options.hostname = fqdn;
   connection_options.idle_timeout_milliseconds = 240000;
   connection_options.sasl.mechanism = AZ_AMQP_SASL_MECHANISM_ANONYMOUS;
-
   if (az_result_failed(az_amqp_connection_init(
           &t->connection, &t->transport, &connection_storage, &connection_options)))
   {
-    err = E2E_ERR_TELEMETRY_CONN_INIT;
-    goto error;
+    return E2E_ERR_TELEMETRY_CONN_INIT;
   }
   az_amqp_connection_set_state_callback(
       &t->connection, on_connection_state_changed, &t->connection_failed);
-
   if (az_result_failed(az_amqp_connection_open(&t->connection)))
   {
-    err = E2E_ERR_TELEMETRY_CONN_OPEN;
-    goto error;
+    return E2E_ERR_TELEMETRY_CONN_OPEN;
   }
-  while (az_amqp_connection_get_state(&t->connection) == AZ_AMQP_CONNECTION_STATE_OPENING)
-  {
-    if (!pump_connection(&t->connection, &t->transport_storage, &t->connection_failed, 500))
-    {
-      err = E2E_ERR_TELEMETRY_CONN_DURING_OPEN;
-      goto error;
-    }
-  }
+  t->phase = E2E_AMQP_TELEMETRY_PHASE_OPENING_CONNECTION;
+  t->setup_deadline = time(NULL) + E2E_AMQP_SETUP_TIMEOUT_S;
+  return NULL;
+}
 
-  /* 3. Session sized for the CBS pair + one receiver per partition. */
-  az_amqp_session_storage session_storage
-      = { .links = t->link_slots, .links_capacity = partition_count + 2 };
-  if (az_result_failed(az_amqp_session_init(&t->session, &t->connection, &session_storage, NULL))
-      || az_result_failed(az_amqp_session_begin(&t->session)))
+/**
+ * @brief Attaches one receiver per partition, from the enqueued-time filter when set.
+ *
+ * @return NULL, or the static reason of the failure.
+ */
+static const char* telemetry_attach_receivers(e2e_amqp_telemetry* t)
+{
+  for (int p = 0; p < t->partition_count; p++)
   {
-    err = E2E_ERR_TELEMETRY_SESSION_BEGIN;
-    goto error;
-  }
-  while (az_amqp_session_get_state(&t->session) == AZ_AMQP_SESSION_STATE_BEGINNING)
-  {
-    if (!pump_connection(&t->connection, &t->transport_storage, &t->connection_failed, 500))
-    {
-      err = E2E_ERR_TELEMETRY_CONN_DURING_SESSION_BEGIN;
-      goto error;
-    }
-  }
-
-  /* 4. CBS authorize the Event Hub-compatible entity. */
-  az_amqp_cbs_options cbs_options = az_amqp_cbs_options_default();
-  cbs_options.reply_buffer = AZ_SPAN_FROM_BUFFER(t->cbs_reply_buffer);
-  if (az_result_failed(az_amqp_cbs_init(&t->cbs, &t->session, &cbs_options))
-      || az_result_failed(az_amqp_cbs_open(&t->cbs)))
-  {
-    err = E2E_ERR_TELEMETRY_CBS_OPEN;
-    goto error;
-  }
-  while (az_amqp_cbs_get_state(&t->cbs) == AZ_AMQP_CBS_STATE_OPENING)
-  {
-    if (!pump_connection(&t->connection, &t->transport_storage, &t->connection_failed, 500))
-    {
-      err = E2E_ERR_TELEMETRY_CONN_DURING_CBS_OPEN;
-      goto error;
-    }
-  }
-
-  put_token_result put_token = { 0 };
-  if (az_result_failed(az_amqp_cbs_put_token(
-          &t->cbs,
-          AZ_SPAN_FROM_STR(AZ_AMQP_CBS_TOKEN_TYPE_SAS),
-          audience,
-          token,
-          0,
-          on_put_token_complete,
-          &put_token)))
-  {
-    err = E2E_ERR_TELEMETRY_PUT_TOKEN_QUEUE;
-    goto error;
-  }
-  while (!put_token.done)
-  {
-    if (!pump_connection(&t->connection, &t->transport_storage, &t->connection_failed, 500))
-    {
-      err = E2E_ERR_TELEMETRY_CONN_DURING_CBS_AUTH;
-      goto error;
-    }
-  }
-  if (put_token.status / 100 != 2)
-  {
-    err = E2E_ERR_TELEMETRY_CBS_AUTH_REJECTED;
-    goto error;
-  }
-
-  /* 5. One receiver per partition, from enqueued_after_ms when set. */
-  t->recv_buffers = (uint8_t*)malloc((size_t)partition_count * E2E_AMQP_RECV_MESSAGE_MAX);
-  if (t->recv_buffers == NULL)
-  {
-    err = E2E_ERR_TELEMETRY_OUT_OF_MEMORY;
-    goto error;
-  }
-  az_span filter = AZ_SPAN_EMPTY;
-  if (enqueued_after_ms > 0
-      && !encode_enqueued_after_filter(
-          AZ_SPAN_FROM_BUFFER(t->filter_buffer), enqueued_after_ms, &filter))
-  {
-    err = E2E_ERR_TELEMETRY_FILTER;
-    goto error;
-  }
-
-  for (int p = 0; p < partition_count; p++)
-  {
-    int source_length = snprintf(
-        t->source_addr[p],
-        sizeof(t->source_addr[p]),
-        "%s/ConsumerGroups/%s/Partitions/%d",
-        entity_path,
-        consumer_group,
-        p);
-    if (source_length <= 0 || source_length >= (int)sizeof(t->source_addr[p]))
-    {
-      err = E2E_ERR_TELEMETRY_SOURCE;
-      goto error;
-    }
-    int name_length = snprintf(t->link_name[p], sizeof(t->link_name[p]), "e2e-recv-%d", p);
-
-    az_amqp_source source
-        = az_amqp_source_from_address(az_span_create((uint8_t*)t->source_addr[p], source_length));
-    source.filter = filter;
+    az_amqp_source source = az_amqp_source_from_address(az_span_create_from_str(t->source_addr[p]));
+    source.filter = t->filter;
     az_amqp_link_options receiver_options = az_amqp_link_receiver_options_default(
-        az_span_create((uint8_t*)t->link_name[p], name_length),
+        az_span_create_from_str(t->link_name[p]),
         source,
         AZ_AMQP_RECEIVER_SETTLE_MODE_FIRST,
         az_span_create(
             t->recv_buffers + (size_t)p * E2E_AMQP_RECV_MESSAGE_MAX, E2E_AMQP_RECV_MESSAGE_MAX),
         50 /* prefetch credit */);
-
     if (az_result_failed(az_amqp_link_init(&t->receivers[p], &t->session, &receiver_options)))
     {
-      err = E2E_ERR_TELEMETRY_RECEIVER_INIT;
-      goto error;
+      return E2E_ERR_TELEMETRY_RECEIVER_INIT;
     }
     az_amqp_link_set_message_callback(&t->receivers[p], on_message_received, t);
     if (az_result_failed(az_amqp_link_attach(&t->receivers[p])))
     {
-      err = E2E_ERR_TELEMETRY_RECEIVER_ATTACH;
-      goto error;
+      return E2E_ERR_TELEMETRY_RECEIVER_ATTACH;
     }
   }
+  t->phase = E2E_AMQP_TELEMETRY_PHASE_RECEIVING;
+  return NULL;
+}
 
-  t->started = true;
-  return true;
+/**
+ * @brief Starts the next setup step once the service completed the current one: session, CBS
+ * link, SAS authorization of the entity, then the receivers.
+ *
+ * @return NULL, or the static reason of the failure.
+ */
+static const char* telemetry_advance_setup(e2e_amqp_telemetry* t)
+{
+  switch (t->phase)
+  {
+    case E2E_AMQP_TELEMETRY_PHASE_OPENING_CONNECTION:
+    {
+      if (az_amqp_connection_get_state(&t->connection) == AZ_AMQP_CONNECTION_STATE_OPENING)
+      {
+        return NULL;
+      }
+      /* Sized for the CBS pair + one receiver per partition. */
+      az_amqp_session_storage session_storage
+          = { .links = t->link_slots, .links_capacity = t->partition_count + 2 };
+      if (az_result_failed(
+              az_amqp_session_init(&t->session, &t->connection, &session_storage, NULL))
+          || az_result_failed(az_amqp_session_begin(&t->session)))
+      {
+        return E2E_ERR_TELEMETRY_SESSION_BEGIN;
+      }
+      t->phase = E2E_AMQP_TELEMETRY_PHASE_BEGINNING_SESSION;
+      return NULL;
+    }
+    case E2E_AMQP_TELEMETRY_PHASE_BEGINNING_SESSION:
+    {
+      if (az_amqp_session_get_state(&t->session) == AZ_AMQP_SESSION_STATE_BEGINNING)
+      {
+        return NULL;
+      }
+      az_amqp_cbs_options cbs_options = az_amqp_cbs_options_default();
+      cbs_options.reply_buffer = AZ_SPAN_FROM_BUFFER(t->cbs_reply_buffer);
+      if (az_result_failed(az_amqp_cbs_init(&t->cbs, &t->session, &cbs_options))
+          || az_result_failed(az_amqp_cbs_open(&t->cbs)))
+      {
+        return E2E_ERR_TELEMETRY_CBS_OPEN;
+      }
+      t->phase = E2E_AMQP_TELEMETRY_PHASE_OPENING_CBS;
+      return NULL;
+    }
+    case E2E_AMQP_TELEMETRY_PHASE_OPENING_CBS:
+    {
+      if (az_amqp_cbs_get_state(&t->cbs) == AZ_AMQP_CBS_STATE_OPENING)
+      {
+        return NULL;
+      }
+      t->put_token = (e2e_amqp_put_token_result){ 0 };
+      if (az_result_failed(az_amqp_cbs_put_token(
+              &t->cbs,
+              AZ_SPAN_FROM_STR(AZ_AMQP_CBS_TOKEN_TYPE_SAS),
+              az_span_create_from_str(t->audience_buffer),
+              az_span_create_from_str(t->sas_token),
+              0,
+              on_put_token_complete,
+              &t->put_token)))
+      {
+        return E2E_ERR_TELEMETRY_PUT_TOKEN_QUEUE;
+      }
+      t->phase = E2E_AMQP_TELEMETRY_PHASE_AUTHORIZING;
+      return NULL;
+    }
+    case E2E_AMQP_TELEMETRY_PHASE_AUTHORIZING:
+      if (!t->put_token.done)
+      {
+        return NULL;
+      }
+      if (t->put_token.status / 100 != 2)
+      {
+        return E2E_ERR_TELEMETRY_CBS_AUTH_REJECTED;
+      }
+      return telemetry_attach_receivers(t);
+    case E2E_AMQP_TELEMETRY_PHASE_IDLE:
+    case E2E_AMQP_TELEMETRY_PHASE_RECEIVING:
+    default:
+      return NULL;
+  }
+}
 
-error:
+/** @brief The reason to report when the connection fails during @p phase. */
+static const char* telemetry_connection_failure(e2e_amqp_telemetry_phase phase)
+{
+  switch (phase)
+  {
+    case E2E_AMQP_TELEMETRY_PHASE_OPENING_CONNECTION:
+      return E2E_ERR_TELEMETRY_CONN_DURING_OPEN;
+    case E2E_AMQP_TELEMETRY_PHASE_BEGINNING_SESSION:
+      return E2E_ERR_TELEMETRY_CONN_DURING_SESSION_BEGIN;
+    case E2E_AMQP_TELEMETRY_PHASE_OPENING_CBS:
+      return E2E_ERR_TELEMETRY_CONN_DURING_CBS_OPEN;
+    case E2E_AMQP_TELEMETRY_PHASE_AUTHORIZING:
+      return E2E_ERR_TELEMETRY_CONN_DURING_CBS_AUTH;
+    case E2E_AMQP_TELEMETRY_PHASE_IDLE:
+    case E2E_AMQP_TELEMETRY_PHASE_RECEIVING:
+    default:
+      return E2E_ERR_TELEMETRY_CONNECTION_FAILED;
+  }
+}
+
+/** @brief Closes the transport, and with it the connection, without waiting for the service. */
+static void telemetry_close_transport(e2e_amqp_telemetry* t)
+{
+  if (t->transport.vtable != NULL && t->transport.vtable->close != NULL)
+  {
+    (void)t->transport.vtable->close(&t->transport);
+  }
+  memset(&t->transport, 0, sizeof(t->transport));
+  t->phase = E2E_AMQP_TELEMETRY_PHASE_IDLE;
+}
+
+bool e2e_amqp_telemetry_begin(
+    e2e_amqp_telemetry* t,
+    const char* eh_host,
+    const char* entity_path,
+    const char* consumer_group,
+    int64_t enqueued_after_ms,
+    const char* sas_token,
+    int partition_count,
+    const char* capture_filter,
+    const char** err_out)
+{
+  const char* err = telemetry_prepare(
+      t,
+      eh_host,
+      entity_path,
+      consumer_group,
+      enqueued_after_ms,
+      sas_token,
+      partition_count,
+      capture_filter);
+  if (err == NULL)
+  {
+    err = telemetry_open_connection(t);
+  }
+  while (err == NULL && t->phase != E2E_AMQP_TELEMETRY_PHASE_RECEIVING)
+  {
+    if (!e2e_amqp_telemetry_do_work(t, 500))
+    {
+      err = t->error;
+    }
+  }
+  if (err == NULL)
+  {
+    return true;
+  }
   if (err_out != NULL)
   {
     *err_out = err;
@@ -832,18 +960,64 @@ error:
   return false;
 }
 
-bool e2e_amqp_telemetry_do_work(e2e_amqp_telemetry* t, int wait_ms)
+bool e2e_amqp_telemetry_restart(e2e_amqp_telemetry* t)
 {
-  if (!t->started)
+  telemetry_close_transport(t);
+  const char* err = telemetry_open_connection(t);
+  if (err != NULL)
+  {
+    t->error = err;
+    telemetry_close_transport(t);
+    return false;
+  }
+  return true;
+}
+
+bool e2e_amqp_telemetry_record_sequence_number(
+    e2e_amqp_telemetry* t,
+    int partition,
+    int64_t sequence_number)
+{
+  if (sequence_number < 0 || partition < 0 || partition >= E2E_AMQP_MAX_PARTITIONS)
+  {
+    return true;
+  }
+  if (sequence_number < t->next_sequence_number[partition])
   {
     return false;
   }
-  return pump_connection(&t->connection, &t->transport_storage, &t->connection_failed, wait_ms);
+  t->next_sequence_number[partition] = sequence_number + 1;
+  return true;
+}
+
+bool e2e_amqp_telemetry_do_work(e2e_amqp_telemetry* t, int wait_ms)
+{
+  const e2e_amqp_telemetry_phase phase = t->phase;
+  const char* err = NULL;
+  if (phase == E2E_AMQP_TELEMETRY_PHASE_IDLE)
+  {
+    err = E2E_ERR_TELEMETRY_NOT_CONNECTED;
+  }
+  else if (!pump_connection(&t->connection, &t->transport_storage, &t->connection_failed, wait_ms))
+  {
+    err = telemetry_connection_failure(phase);
+  }
+  else if (phase != E2E_AMQP_TELEMETRY_PHASE_RECEIVING)
+  {
+    err = time(NULL) > t->setup_deadline ? E2E_ERR_TELEMETRY_SETUP_TIMEOUT
+                                         : telemetry_advance_setup(t);
+  }
+  if (err != NULL)
+  {
+    t->error = err;
+    return false;
+  }
+  return true;
 }
 
 int e2e_amqp_telemetry_find_detached_receiver(const e2e_amqp_telemetry* t)
 {
-  for (int p = 0; t->started && p < t->partition_count; p++)
+  for (int p = 0; t->phase == E2E_AMQP_TELEMETRY_PHASE_RECEIVING && p < t->partition_count; p++)
   {
     const az_amqp_link_state state = az_amqp_link_get_state(&t->receivers[p]);
     if (state == AZ_AMQP_LINK_STATE_DETACHED || state == AZ_AMQP_LINK_STATE_ERROR)
@@ -963,10 +1137,8 @@ void e2e_amqp_capture_dump(const e2e_amqp_capture* c)
 
 void e2e_amqp_telemetry_end(e2e_amqp_telemetry* t)
 {
-  if (t->started)
+  if (t->phase == E2E_AMQP_TELEMETRY_PHASE_RECEIVING)
   {
-    t->started = false;
-
     for (int p = 0; p < t->partition_count; p++)
     {
       E2E_AMQP_DISCARD(az_amqp_link_detach(&t->receivers[p], NULL));
@@ -989,14 +1161,9 @@ void e2e_amqp_telemetry_end(e2e_amqp_telemetry* t)
     }
   }
 
-  /* Always close the transport, even if we failed BEFORE fully starting
-   * (t->started stays false until the very end of _begin), so its socket and
-   * TLS state are released. az_amqp_connection_close tears down the AMQP session
-   * but leaves the caller-owned transport open, so close it here explicitly. */
-  if (t->transport.vtable != NULL && t->transport.vtable->close != NULL)
-  {
-    (void)t->transport.vtable->close(&t->transport);
-  }
+  /* Also when the setup did not finish, so the socket and TLS state are released:
+   * az_amqp_connection_close leaves the caller-owned transport open. */
+  telemetry_close_transport(t);
   free(t->recv_buffers);
   t->recv_buffers = NULL;
 }
@@ -1157,7 +1324,7 @@ bool e2e_amqp_send_c2d(
       goto cleanup;
     }
   }
-  put_token_result put_token = { 0 };
+  e2e_amqp_put_token_result put_token = { 0 };
   if (az_result_failed(az_amqp_cbs_put_token(
           &c->cbs,
           AZ_SPAN_FROM_STR(AZ_AMQP_CBS_TOKEN_TYPE_SAS),
@@ -1522,7 +1689,7 @@ bool e2e_amqp_filenotify_begin(
       goto error;
     }
   }
-  put_token_result put_token = { 0 };
+  e2e_amqp_put_token_result put_token = { 0 };
   if (az_result_failed(az_amqp_cbs_put_token(
           &f->cbs,
           AZ_SPAN_FROM_STR(AZ_AMQP_CBS_TOKEN_TYPE_SAS),
