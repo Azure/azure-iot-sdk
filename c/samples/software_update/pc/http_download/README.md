@@ -105,9 +105,11 @@ the rebuilt file's SHA-256. It downloads the full file instead when:
 - the source is not in the cache;
 - the rebuild fails or its hash does not match.
 
-After each successful update the handler moves the update's files from the download prefix into
-the cache (one update per provider kept), as the sources of the next delta. The first update is a
-full download. The cache directory is created when needed: the default needs root, so set
+After each successful update whose files name `microsoft/delta:1` (with or without related
+files), the handler moves the update's files from the download prefix into the cache (one update
+per provider kept), as the sources of the next delta; an update that does not name it leaves the
+cache as it is. So name the handler in the first update too, which is a full download, or seed the
+cache with `az_iot_su_delta_handler_get_source_cache_path()`. The cache directory is created when needed: the default needs root, so set
 `SAMPLE_DELTA_SOURCE_CACHE_DIR` otherwise.
 
 ```bash

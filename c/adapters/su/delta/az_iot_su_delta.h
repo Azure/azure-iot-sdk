@@ -59,12 +59,13 @@ extern "C"
    * @brief Write the path where the application's download_fn stores @p file, the way
    * download_fn gets it, as a NUL-terminated string.
    *
-   * Called for update files and related files: @p file_index is the index of the update file in
-   * both cases, as for download_fn. read_file_fn must read the files at these paths, including
-   * the files the handler builds there.
+   * Called for update files and related files: @p file_index is the update file's position in
+   * its step, as download_fn gets it, in both cases. read_file_fn must read the files at these
+   * paths, including the files the handler builds there.
    *
    * @param[in] file An update file or a related file.
-   * @param[in] file_index Index of the update file in the manifest.
+   * @param[in] file_index Position of the update file in its step (the last step that uses it,
+   * after the workflow succeeded).
    * @param[out] path Buffer for the path.
    * @param[in] path_size Capacity of @p path, terminator included.
    * @param[in] user_ctx az_iot_su_delta_handler_options::user_ctx.

@@ -1,0 +1,23 @@
+// Copyright (c) Microsoft. All rights reserved.
+// Licensed under the MIT license. See LICENSE file in the project root for full license
+// information.
+
+/* SPDX-License-Identifier: MIT */
+/**
+ * @file az_iot_su_delta_internal.h
+ * @brief Helpers of the `microsoft/delta:1` download handler, exposed for its unit tests.
+ */
+#ifndef AZ_IOT_SU_DELTA_INTERNAL_H
+#define AZ_IOT_SU_DELTA_INTERNAL_H
+
+#include <stdbool.h>
+
+/**
+ * @brief Copy @p source_path to @p target_path through `<target_path>.tmp`, renamed when complete.
+ *
+ * @return true when copied; false otherwise, with @p source_path kept and the temporary file
+ * removed.
+ */
+bool az_iot_su_delta__copy_file(const char* source_path, const char* target_path);
+
+#endif /* AZ_IOT_SU_DELTA_INTERNAL_H */

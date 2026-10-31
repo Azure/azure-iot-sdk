@@ -171,13 +171,15 @@ In a Linux build with the reference `microsoft/delta:1` download handler
 registers that handler ([software updates design](../../../../docs/eng/software-updates.md#82-delta-updates-the-reference-microsoftdelta1-handler))
 with a simulated delta processor, `simulate_delta_apply()`, which copies the source. Import:
 
-1. a first update (e.g. version 1.1.0) with one zero-filled file, the delta's source;
+1. a first update (e.g. version 1.1.0) with one zero-filled file, the delta's source, whose
+   `downloadHandler` is `microsoft/delta:1` (no related files needed);
 2. a second update (e.g. 1.2.0) whose file has `downloadHandler` `microsoft/delta:1` and a
    zero-filled related file with the properties `microsoft.sourceFileHash` (the first file's
    base64 SHA-256) and `microsoft.sourceFileHashAlgorithm` `sha256`.
 
 The first update is downloaded in full and its file moved into the source cache when it
-succeeds. For the second one, the SDK downloads the related file, the handler "rebuilds" the
+succeeds: the client calls a handler on success only when a file of the update names it, so an
+update with no `microsoft/delta:1` file leaves the cache as it is. For the second one, the SDK downloads the related file, the handler "rebuilds" the
 file from it and the cached source, and the SDK checks the rebuilt file's hash. As
 `read_file_fn` serves synthesized bytes, that check passes whatever the copy holds; with the real
 processor it checks the rebuilt bytes. Without the cached source, the full file is downloaded.

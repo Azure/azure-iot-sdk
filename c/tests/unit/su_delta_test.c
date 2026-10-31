@@ -28,6 +28,7 @@
 #include <unistd.h>
 
 #include "az_iot_su_delta.h"
+#include "az_iot_su_delta_internal.h"
 
 #ifdef AZ_IOT_TEST_SU_DELTA_LIBRARY
 #include "az_iot_crypto_openssl.h"
@@ -172,6 +173,17 @@ static az_iot_su_client_update_manifest_file make_file(
   return file;
 }
 
+/* One step that uses every file of @p manifest, in order, as the manifest parser fills it. */
+static void list_files_in_one_step(az_iot_su_client_update_manifest* manifest)
+{
+  manifest->instructions.steps_count = 1;
+  manifest->instructions.steps[0].files_count = manifest->files_count;
+  for (uint32_t i = 0; i < manifest->files_count; i++)
+  {
+    manifest->instructions.steps[0].files[i] = manifest->files[i].id;
+  }
+}
+
 /* A manifest of one delta-enabled file whose related files are @p related_files. */
 static void make_manifest(
     az_iot_su_client_update_manifest* manifest,
@@ -188,6 +200,7 @@ static void make_manifest(
   manifest->files_count = 1;
   manifest->related_files = related_files;
   manifest->related_files_count = related_files_count;
+  list_files_in_one_step(manifest);
 }
 
 static void seed_source(void)
@@ -748,6 +761,7 @@ static void test_workflow_succeeded_keeps_latest_update_per_provider(void** stat
   manifest.files_count = 2;
   write_file(FILES_DIRECTORY "/1-no-hash", "NO", 2);
 #endif
+  list_files_in_one_step(&manifest);
   write_file(FILES_DIRECTORY "/0-target", "TARGET", 6);
 
   download_handler.workflow_succeeded_fn(&manifest, download_handler.user_ctx);
@@ -820,6 +834,7 @@ static void test_succeeded_update_is_source_of_next(void** state)
   az_iot_su_client_update_manifest first;
   make_manifest(&first, NULL, 0);
   first.files[0] = make_file("image", SOURCE_HASH, 6, NULL);
+  list_files_in_one_step(&first);
   write_file(FILES_DIRECTORY "/0-image", "SOURCE", 6);
   download_handler.workflow_succeeded_fn(&first, download_handler.user_ctx);
   assert_true(file_exists(SOURCE_CACHE_FILE));
@@ -838,6 +853,112 @@ static void test_succeeded_update_is_source_of_next(void** state)
   download_handler.workflow_succeeded_fn(&second, download_handler.user_ctx);
   assert_true(file_exists(TARGET_CACHE_FILE));
   assert_false(file_exists(SOURCE_CACHE_FILE));
+}
+
+/* A file listing SHA-512 before SHA-256 is cached, and kept, under the SHA-256 the client
+ * verified. */
+static void test_workflow_succeeded_caches_under_sha256_in_any_position(void** state)
+{
+  (void)state;
+  fake_processor fake = { 0 };
+  az_iot_su_delta_handler handler;
+  init_handler(&handler, &fake);
+  az_iot_su_download_handler download_handler
+      = az_iot_su_delta_handler_get_download_handler(&handler);
+
+  az_iot_su_client_update_manifest manifest;
+  make_manifest(&manifest, NULL, 0);
+  manifest.files[0].hashes[1] = manifest.files[0].hashes[0];
+  manifest.files[0].hashes[0].hash_type = AZ_SPAN_FROM_STR("sha512");
+  manifest.files[0].hashes[0].hash_value = AZ_SPAN_FROM_STR("AA==");
+  manifest.files[0].hashes_count = 2;
+  write_file(FILES_DIRECTORY "/0-target", "TARGET", 6);
+
+  download_handler.workflow_succeeded_fn(&manifest, download_handler.user_ctx);
+  assert_true(file_exists(TARGET_CACHE_FILE));
+  assert_false(file_exists(PROVIDER_DIRECTORY "/sha512-AA_3D_3D"));
+
+  /* The next success of the same update keeps that entry. */
+  download_handler.workflow_succeeded_fn(&manifest, download_handler.user_ctx);
+  assert_true(file_exists(TARGET_CACHE_FILE));
+}
+
+#if AZ_IOT_SU_MAX_FILE_COUNT > 1 && AZ_IOT_SU_MAX_STEP_COUNT > 1
+/* Files are found where download_fn stored them: at their slot in their step, which differs
+ * from their manifest index when files are reordered or in several steps. */
+static void test_workflow_succeeded_finds_files_by_step_slot(void** state)
+{
+  (void)state;
+  fake_processor fake = { 0 };
+  az_iot_su_delta_handler handler;
+  init_handler(&handler, &fake);
+  az_iot_su_download_handler download_handler
+      = az_iot_su_delta_handler_get_download_handler(&handler);
+
+  az_iot_su_client_update_manifest manifest;
+  make_manifest(&manifest, NULL, 0);
+  manifest.files[1] = manifest.files[0];
+  manifest.files[0] = make_file("script", OTHER_SOURCE_HASH, 2, NULL);
+  manifest.files_count = 2;
+  manifest.instructions.steps_count = 2;
+  manifest.instructions.steps[0].files[0] = manifest.files[0].id;
+  manifest.instructions.steps[0].files_count = 1;
+  manifest.instructions.steps[1].files[0] = manifest.files[1].id;
+  manifest.instructions.steps[1].files_count = 1;
+  write_file(FILES_DIRECTORY "/0-target", "TARGET", 6);
+
+  download_handler.workflow_succeeded_fn(&manifest, download_handler.user_ctx);
+  assert_true(file_exists(TARGET_CACHE_FILE));
+  assert_false(file_exists(FILES_DIRECTORY "/0-target"));
+}
+#endif
+
+/* Copying, used when the cache is on another file system than the application's files. */
+static void test_copy_file_keeps_source(void** state)
+{
+  (void)state;
+  static char data[10000];
+  for (size_t i = 0; i < sizeof(data); i++)
+  {
+    data[i] = (char)('a' + (i % 26));
+  }
+  write_file(FILES_DIRECTORY "/source", data, sizeof(data));
+
+  assert_true(az_iot_su_delta__copy_file(FILES_DIRECTORY "/source", WORK_DIRECTORY "/target"));
+
+  static char copied[sizeof(data) + 1];
+  assert_int_equal(read_file(WORK_DIRECTORY "/target", copied, sizeof(copied)), sizeof(data));
+  assert_memory_equal(copied, data, sizeof(data));
+  assert_true(file_exists(FILES_DIRECTORY "/source"));
+  assert_false(file_exists(WORK_DIRECTORY "/target.tmp"));
+}
+
+/* A failed copy keeps the source and leaves no temporary file. */
+static void test_copy_file_failures_remove_temporary_target(void** state)
+{
+  (void)state;
+  write_file(FILES_DIRECTORY "/source", "SOURCE", 6);
+
+  /* The temporary path does not fit. */
+  char long_target[AZ_IOT_SU_DELTA_MAX_PATH_SIZE];
+  memset(long_target, 'a', sizeof(long_target));
+  memcpy(long_target, WORK_DIRECTORY "/", sizeof(WORK_DIRECTORY));
+  long_target[sizeof(long_target) - 4] = '\0';
+  assert_false(az_iot_su_delta__copy_file(FILES_DIRECTORY "/source", long_target));
+
+  /* Reading fails after the temporary target is opened: the source is a directory. */
+  assert_false(az_iot_su_delta__copy_file(FILES_DIRECTORY, WORK_DIRECTORY "/target"));
+  assert_false(file_exists(WORK_DIRECTORY "/target.tmp"));
+  assert_false(file_exists(WORK_DIRECTORY "/target"));
+
+  /* Renaming fails after the copy: the target is a directory that is not empty. */
+  assert_int_equal(mkdir(WORK_DIRECTORY "/occupied", 0700), 0);
+  write_file(WORK_DIRECTORY "/occupied/file", "X", 1);
+  assert_false(az_iot_su_delta__copy_file(FILES_DIRECTORY "/source", WORK_DIRECTORY "/occupied"));
+  assert_false(file_exists(WORK_DIRECTORY "/occupied.tmp"));
+  assert_true(file_exists(WORK_DIRECTORY "/occupied/file"));
+
+  assert_true(file_exists(FILES_DIRECTORY "/source"));
 }
 
 int main(void)
@@ -875,6 +996,22 @@ int main(void)
         teardown_work_directory),
     cmocka_unit_test_setup_teardown(
         test_succeeded_update_is_source_of_next, setup_work_directory, teardown_work_directory),
+    cmocka_unit_test_setup_teardown(
+        test_workflow_succeeded_caches_under_sha256_in_any_position,
+        setup_work_directory,
+        teardown_work_directory),
+#if AZ_IOT_SU_MAX_FILE_COUNT > 1 && AZ_IOT_SU_MAX_STEP_COUNT > 1
+    cmocka_unit_test_setup_teardown(
+        test_workflow_succeeded_finds_files_by_step_slot,
+        setup_work_directory,
+        teardown_work_directory),
+#endif
+    cmocka_unit_test_setup_teardown(
+        test_copy_file_keeps_source, setup_work_directory, teardown_work_directory),
+    cmocka_unit_test_setup_teardown(
+        test_copy_file_failures_remove_temporary_target,
+        setup_work_directory,
+        teardown_work_directory),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }

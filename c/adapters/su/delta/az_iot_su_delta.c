@@ -11,6 +11,7 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include "az_iot_su_delta.h"
+#include "az_iot_su_delta_internal.h"
 
 #include "azure/iot/az_iot_log.h"
 #include "azure/iot/az_iot_log_components.h"
@@ -506,8 +507,7 @@ static bool su_delta_make_directories(const char* path)
   return stat(path, &info) == 0 && S_ISDIR(info.st_mode);
 }
 
-/** @brief Copy @p source_path to @p target_path through a temporary file. */
-static bool su_delta_copy_file(const char* source_path, const char* target_path)
+bool az_iot_su_delta__copy_file(const char* source_path, const char* target_path)
 {
   char temporary_path[AZ_IOT_SU_DELTA_MAX_PATH_SIZE];
   int written = snprintf(temporary_path, sizeof(temporary_path), "%s.tmp", target_path);
@@ -574,12 +574,54 @@ static bool su_delta_move_file(const char* source_path, const char* target_path)
   {
     return true;
   }
-  if (!su_delta_copy_file(source_path, target_path))
+  if (!az_iot_su_delta__copy_file(source_path, target_path))
   {
     return false;
   }
   (void)unlink(source_path);
   return true;
+}
+
+/** @brief The SHA-256 hash of @p file, the one the client verifies; NULL when it has none. */
+static const az_iot_su_client_update_manifest_file_hash* su_delta_find_sha256_hash(
+    const az_iot_su_client_update_manifest_file* file)
+{
+  for (uint32_t i = 0; i < file->hashes_count; i++)
+  {
+    if (az_span_is_content_equal(file->hashes[i].hash_type, AZ_SPAN_FROM_STR("sha256")))
+    {
+      return &file->hashes[i];
+    }
+  }
+  return NULL;
+}
+
+/**
+ * @brief Find the file slot download_fn got @p file in: its position in the last step that
+ * uses it.
+ *
+ * @return true when a step uses @p file.
+ */
+static bool su_delta_find_file_slot(
+    const az_iot_su_client_update_manifest* manifest,
+    const az_iot_su_client_update_manifest_file* file,
+    uint32_t* out_file_slot)
+{
+  bool found = false;
+  for (uint32_t step = 0; step < manifest->instructions.steps_count; step++)
+  {
+    const az_iot_su_client_update_manifest_instructions_step* instructions
+        = &manifest->instructions.steps[step];
+    for (uint32_t slot = 0; slot < instructions->files_count; slot++)
+    {
+      if (az_span_is_content_equal(instructions->files[slot], file->id))
+      {
+        *out_file_slot = slot;
+        found = true;
+      }
+    }
+  }
+  return found;
 }
 
 /** @brief Whether @p name is the cache file name of a file of @p manifest. */
@@ -589,11 +631,12 @@ static bool su_delta_is_manifest_file(
 {
   for (uint32_t i = 0; i < manifest->files_count; i++)
   {
-    const az_iot_su_client_update_manifest_file* file = &manifest->files[i];
+    const az_iot_su_client_update_manifest_file_hash* hash
+        = su_delta_find_sha256_hash(&manifest->files[i]);
     char file_name[AZ_IOT_SU_DELTA_MAX_PATH_SIZE];
-    if (file->hashes_count > 0
+    if (hash != NULL
         && su_delta_get_cache_file_name(
-               file->hashes[0].hash_type, file->hashes[0].hash_value, file_name, sizeof(file_name))
+               hash->hash_type, hash->hash_value, file_name, sizeof(file_name))
             == AZ_IOT_OK
         && strcmp(file_name, name) == 0)
     {
@@ -659,14 +702,15 @@ static void su_delta_workflow_succeeded(
   for (uint32_t i = 0; i < manifest->files_count; i++)
   {
     const az_iot_su_client_update_manifest_file* file = &manifest->files[i];
+    const az_iot_su_client_update_manifest_file_hash* hash = su_delta_find_sha256_hash(file);
     char cache_path[AZ_IOT_SU_DELTA_MAX_PATH_SIZE];
     char file_path[AZ_IOT_SU_DELTA_MAX_PATH_SIZE];
-    if (file->hashes_count == 0
+    if (hash == NULL
         || su_delta_get_cache_path(
                handler,
                provider_directory,
-               file->hashes[0].hash_type,
-               file->hashes[0].hash_value,
+               hash->hash_type,
+               hash->hash_value,
                cache_path,
                sizeof(cache_path))
             != AZ_IOT_OK)
@@ -680,7 +724,10 @@ static void su_delta_workflow_succeeded(
       cached_count++;
       continue;
     }
-    if (options->get_file_path_fn(file, i, file_path, sizeof(file_path), options->user_ctx)
+    uint32_t file_slot = 0;
+    if (su_delta_find_file_slot(manifest, file, &file_slot)
+        && options->get_file_path_fn(
+               file, file_slot, file_path, sizeof(file_path), options->user_ctx)
             == AZ_IOT_SU_RESULT_SUCCESS
         && su_delta_move_file(file_path, cache_path))
     {

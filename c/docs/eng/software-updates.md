@@ -1744,13 +1744,15 @@ id>` in `pc/http_download`, `SU_SIM_FILE_DIR/<file id>` in `pc/simulated_regular
 than letters, digits and `-` become `_`; in the base64 hash, `+`, `/` and `=` become `_2B`, `_2F`
 and `_3D`.
 
-- When a workflow succeeds, each file of the update with a hash is moved (renamed, or copied
+- When a workflow succeeds, and a file of the update names `microsoft/delta:1` (the client calls a
+  handler on success only then), each file of the update with a SHA-256 hash is moved (renamed, or copied
   across file systems) from its `get_file_path_fn` path into the cache, unless an entry of the same
   size is already there.
 - Then every other entry of the update's provider is removed: the cache keeps the latest update
   per provider, the sources of its next delta.
-- So the first update of a device is a full download, and seeds the cache. To make it a delta,
-  seed the cache with the factory image at `az_iot_su_delta_handler_get_source_cache_path()`.
+- So the first update of a device is a full download, and seeds the cache when a file of it names
+  `microsoft/delta:1`, related files or not. To make it a delta, or without that name, seed the
+  cache with the factory image at `az_iot_su_delta_handler_get_source_cache_path()`.
 - Failing to store an entry is logged; it does not fail the workflow, whose result is already
   reported.
 
