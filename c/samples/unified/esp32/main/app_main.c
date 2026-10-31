@@ -669,10 +669,6 @@ void app_main(void)
     wait_for_tick_end(tick_start); // At the top: the body continues early.
     tick_start = xTaskGetTickCount();
     (void)az_iot_connection_client_do_work(&d->connection, TICK_MS);
-    if (d->clients_built && d->profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5)
-    {
-      (void)az_iot_mqttv5_twin_client_do_work(&d->mqttv5_twin); // Its own timers.
-    }
 
     if (d->rebuild)
     {

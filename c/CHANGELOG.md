@@ -14,6 +14,17 @@
   session end (`AZ_IOT_CONNECTION_SESSION_END_PLANNED`) and resume after it. These planned ends do not
   count toward reconnection backoff or `dps.max_hub_connect_attempts_before_reprovision`. Creating
   an MQTT client for one session while the other's exists fails with `AZ_IOT_ERR_INTERNAL`.
+- mqttv3 twin: requests go through the delivery tracker and time out:
+  `az_iot_mqttv3_twin_client_set_request_timeout()` (default
+  `AZ_IOT_MQTTV3_TWIN_REQUEST_TIMEOUT_MS_DEFAULT`, 60 s, from the call). A GET waits for a
+  connection and is sent again on the next session when its session ends unanswered; a reported
+  patch is sent at once or refused (`AZ_IOT_ERR_BUSY` or `AZ_IOT_ERR_NOT_CONNECTED`) and fails
+  with `AZ_IOT_ERR_NOT_CONNECTED` at a session end.
+- mqttv5 twin: requests go through the delivery tracker. A GET waits for a connection and is sent
+  again on the next session when its session ends unanswered; a reported patch is still sent at
+  once or refused (now `AZ_IOT_ERR_BUSY` when the connection cannot send it now) and fails with
+  `AZ_IOT_ERR_NOT_CONNECTED` at a session end. `az_iot_connection_client_do_work()` times requests
+  out, so `az_iot_mqttv5_twin_client_do_work()` is optional. The client uses two feature observers.
 - Breaking: `az_iot_subscription_failed_callback` takes the refused SUBACK's MQTT 5 Reason String
   (`reason_string`, `reason_string_len`, after `protocol_code`). On a session-scoped filter the
   Reason String is reported as `az_iot_connection_state_event.error->message`. Both adapters report

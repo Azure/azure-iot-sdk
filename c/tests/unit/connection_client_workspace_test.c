@@ -375,7 +375,7 @@ static void the_mqttv5_sizing_example_holds_its_feature_clients_exactly(void** s
   /* docs/client-configuration.md, "Sizing the limits": telemetry, direct methods, twin. The
    * direct method client reserves AZ_IOT_MQTTV5_DM_RESERVED_PUBACKS slots; 4 are left to share. */
   const az_iot_connection_client_limits limits
-      = { AZ_IOT_MQTTV5_DM_RESERVED_PUBACKS + 4u, 1, 1, 3, 1, 2, 2 };
+      = { AZ_IOT_MQTTV5_DM_RESERVED_PUBACKS + 4u, 1, 1, 4, 1, 2, 2 };
   assert_example_limits_are_exact(true, &limits);
 
   az_iot_connection_client_limits reserved_only = limits;

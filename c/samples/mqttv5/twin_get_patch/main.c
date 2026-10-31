@@ -290,7 +290,6 @@ int main(void)
   for (int i = 0; i < 1200 && user_ctx.conn_state != AZ_IOT_CONN_STATE_CONNECTED; ++i)
   {
     (void)az_iot_connection_client_do_work(&state.connection_client, 50);
-    (void)az_iot_mqttv5_twin_client_do_work(&state.twin);
     if (user_ctx.conn_state == AZ_IOT_CONN_STATE_FAULTED || user_ctx.provisioning_faulted)
     {
       break;
@@ -312,7 +311,6 @@ int main(void)
     for (int i = 0; i < 600 && (!user_ctx.get_done || !user_ctx.patch_done); ++i)
     {
       (void)az_iot_connection_client_do_work(&state.connection_client, 50);
-      (void)az_iot_mqttv5_twin_client_do_work(&state.twin);
     }
 
     /* A refused write is a failed sample run: the exchange completing is not
@@ -342,7 +340,6 @@ int main(void)
   for (int i = 0; i < 100 && user_ctx.conn_state != AZ_IOT_CONN_STATE_IDLE; ++i)
   {
     (void)az_iot_connection_client_do_work(&state.connection_client, 50);
-    (void)az_iot_mqttv5_twin_client_do_work(&state.twin);
   }
 
   sample_state_destroy(&state);

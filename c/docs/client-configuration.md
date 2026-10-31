@@ -216,7 +216,7 @@ topics, when a hub session starts:
 | mqttv3 direct methods | | | 1 | 1 | | 1 |
 | mqttv3 twin | | | 2 | 1 | | 2 |
 | mqttv5 direct methods | `AZ_IOT_MQTTV5_DM_RESERVED_PUBACKS` (8) | 1 | | 2 | 1 | 1 |
-| mqttv5 twin | | | | 1 | 1 | 1 |
+| mqttv5 twin | | | | 2 | 1 | 1 |
 | Hub certificate renewal (`csr_payload_buffer` set) | 1 | 1 | 1 | | | 1 |
 | Software updates, DPS channel | | | | 1 | | |
 
@@ -241,19 +241,19 @@ opts.limits = (az_iot_connection_client_limits){ .max_pending_publishes = 4,
 
 /* MQTT 5: telemetry (4 publishes in flight), direct methods, twin. The direct method client
  * reserves AZ_IOT_MQTTV5_DM_RESERVED_PUBACKS (8 with the default
- * AZ_IOT_MQTTV5_DM_MAX_CONCURRENT): 1,247 bytes. */
+ * AZ_IOT_MQTTV5_DM_MAX_CONCURRENT): 1,263 bytes. */
 opts.limits = (az_iot_connection_client_limits){
   .max_pending_publishes = AZ_IOT_MQTTV5_DM_RESERVED_PUBACKS + 4,
   .max_publish_reservations = 1,
   .max_persistent_subscriptions = 1,
-  .max_feature_observers = 3,
+  .max_feature_observers = 4,
   .max_application_state_observers = 1,
   .max_feature_clients = 2,
   .max_inbound_handlers = 2,
 };
 
 static uint8_t workspace[AZ_IOT_CONNECTION_CLIENT_WORKSPACE_SIZE(
-    AZ_IOT_MQTTV5_DM_RESERVED_PUBACKS + 4, 1, 1, 3, 1, 2, 2)];
+    AZ_IOT_MQTTV5_DM_RESERVED_PUBACKS + 4, 1, 1, 4, 1, 2, 2)];
 opts.workspace = workspace;
 opts.workspace_size = sizeof(workspace);
 ```
@@ -452,7 +452,7 @@ always the same thing.
 | `az_iot_mqttv3_direct_method_client_set_response_timeout()` | How long an unanswered mqttv3 invocation is held | 300 s |
 | `az_iot_mqttv5_direct_method_client_register_method()` | A method the device answers, and the time it needs | none declared |
 | `az_iot_mqttv5_direct_method_client_set_probe_handler()` | Whether to accept an invocation before its arguments arrive | accept when timing and capacity allow |
-| `az_iot_mqttv5_twin_client_set_request_timeout()` | How long a twin request may wait for its answer | 60 s |
+| `az_iot_mqttv5_twin_client_set_request_timeout()`, `az_iot_mqttv3_twin_client_set_request_timeout()` | How long a twin request may wait for its answer, from the call | 60 s |
 | `az_iot_mqttv5_twin_client_set_encode_buffer()` | Buffer reported patches are encoded into | required before patching |
 | `az_iot_mqttv3_file_upload_client_init()` (`http_transport`) | The HTTP client used for the IoT Hub file-upload calls | required |
 
