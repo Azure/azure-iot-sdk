@@ -448,6 +448,13 @@ static int group_setup(void** state)
   return e2e_su_env_load(&g_env);
 }
 
+static int group_teardown(void** state)
+{
+  (void)state;
+  e2e_su_env_free(&g_env);
+  return 0;
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -456,5 +463,5 @@ int main(void)
     cmocka_unit_test(etags_are_issued_stored_and_survive_the_session),
     cmocka_unit_test(an_unknown_workflow_report_is_not_treated_as_delivered),
   };
-  return cmocka_run_group_tests(tests, group_setup, NULL);
+  return cmocka_run_group_tests(tests, group_setup, group_teardown);
 }
