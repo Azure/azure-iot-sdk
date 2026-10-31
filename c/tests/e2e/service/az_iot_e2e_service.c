@@ -26,6 +26,9 @@
 /* Telemetry enqueued this long before the watch starts is still delivered, so a
  * runner clock ahead of the service cannot filter out the message under test. */
 #define E2E_TELEMETRY_CLOCK_SKEW_S 300
+/* Pause before reconnecting a watcher whose receiver the service detached, so a reader of the
+ * same consumer group can leave. */
+#define E2E_TELEMETRY_RECONNECT_DELAY_S 5
 /* Limits of one HTTPS request. An idempotent one is abandoned sooner, as it is retried. */
 #define E2E_HTTPS_TIMEOUT_S 60
 #define E2E_HTTPS_IDEMPOTENT_TIMEOUT_S 20
@@ -55,6 +58,7 @@ struct az_iot_e2e_service
   int partition_count;
 
   e2e_amqp_telemetry* telemetry; /* non-NULL while watching */
+  time_t telemetry_reconnect_at; /* 0 unless a receiver was detached */
   e2e_amqp_filenotify* filenotify; /* non-NULL while watching file notifications */
   /* [0] backs the single-request API; the rest are handles. */
   rest_call rest[AZ_IOT_E2E_SERVICE_MAX_REQUESTS];
@@ -226,11 +230,15 @@ const char* az_iot_e2e_service_last_error(const az_iot_e2e_service* svc)
   return svc->last_error;
 }
 
-bool az_iot_e2e_service_telemetry_watch_begin(az_iot_e2e_service* svc)
+bool az_iot_e2e_service_telemetry_watch_begin(az_iot_e2e_service* svc, const char* capture_filter)
 {
   if (svc->telemetry != NULL)
   {
-    return true; /* already watching */
+    if (strcmp(svc->telemetry->capture_filter, capture_filter != NULL ? capture_filter : "") == 0)
+    {
+      return true; /* already watching */
+    }
+    az_iot_e2e_service_telemetry_watch_end(svc);
   }
 
   /* Event Hubs authorizes the entity audience with a SAS whose HMAC key is the
@@ -255,6 +263,7 @@ bool az_iot_e2e_service_telemetry_watch_begin(az_iot_e2e_service* svc)
     return false;
   }
 
+  svc->telemetry_reconnect_at = 0;
   const char* err = NULL;
   int64_t enqueued_after_ms = ((int64_t)time(NULL) - E2E_TELEMETRY_CLOCK_SKEW_S) * 1000;
   if (!e2e_amqp_telemetry_begin(
@@ -265,11 +274,52 @@ bool az_iot_e2e_service_telemetry_watch_begin(az_iot_e2e_service* svc)
           enqueued_after_ms,
           sas,
           svc->partition_count,
+          capture_filter,
           &err))
   {
     set_error(svc, (err != NULL) ? err : "telemetry: begin failed");
     free(svc->telemetry);
     svc->telemetry = NULL;
+    return false;
+  }
+  return true;
+}
+
+/**
+ * @brief Reconnects the telemetry watcher, after a pause, when the service detached one of its
+ * receivers: Event Hubs refuses a sixth reader of a partition in a consumer group, and concurrent
+ * runs share the groups. The watcher reads again from the time the watch began and drops the
+ * events it already received; az_iot_e2e_service_do_work() completes the setup step by step.
+ *
+ * @return false only if the reconnect could not start; the watcher is then gone.
+ */
+static bool telemetry_reconnect_if_receiver_detached(az_iot_e2e_service* svc)
+{
+  const int partition = e2e_amqp_telemetry_find_detached_receiver(svc->telemetry);
+  if (partition < 0)
+  {
+    return true;
+  }
+  const time_t now = time(NULL);
+  if (svc->telemetry_reconnect_at == 0)
+  {
+    svc->telemetry_reconnect_at = now + E2E_TELEMETRY_RECONNECT_DELAY_S;
+    printf(
+        "[e2e] telemetry: the service detached the receiver of partition %d; reconnecting in "
+        "%ds\n",
+        partition,
+        E2E_TELEMETRY_RECONNECT_DELAY_S);
+    return true;
+  }
+  if (now < svc->telemetry_reconnect_at)
+  {
+    return true;
+  }
+  svc->telemetry_reconnect_at = 0;
+  if (!e2e_amqp_telemetry_restart(svc->telemetry))
+  {
+    set_error(svc, svc->telemetry->error);
+    az_iot_e2e_service_telemetry_watch_end(svc);
     return false;
   }
   return true;
@@ -288,7 +338,11 @@ bool az_iot_e2e_service_do_work(az_iot_e2e_service* svc, int timeout_ms)
 
   if (svc->telemetry != NULL && !e2e_amqp_telemetry_do_work(svc->telemetry, slice))
   {
-    set_error(svc, "telemetry: connection failed");
+    set_error(svc, svc->telemetry->error);
+    return false;
+  }
+  if (svc->telemetry != NULL && !telemetry_reconnect_if_receiver_detached(svc))
+  {
     return false;
   }
   if (svc->filenotify != NULL && !e2e_amqp_filenotify_do_work(svc->filenotify, slice))
