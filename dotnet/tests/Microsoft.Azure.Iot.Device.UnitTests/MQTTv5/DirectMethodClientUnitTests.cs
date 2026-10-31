@@ -2,6 +2,7 @@
 // See LICENSE file in the project root for full license information.
 
 using Google.Protobuf;
+using Microsoft.Azure.Iot.Device.Exceptions;
 using Microsoft.Azure.Iot.Device.MQTTv5.Connection;
 using Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods;
 using Microsoft.Azure.Iot.Device.MQTTv5.Models;
@@ -107,6 +108,61 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             Assert.Equal("{\"delaySeconds\":0}", Encoding.UTF8.GetString(invokedArgs.Payload!));
             Assert.True(invokedArgs.CancellationToken.CanBeCanceled);
             Assert.False(invokedArgs.CancellationToken.IsCancellationRequested);
+        }
+
+        [Theory]
+        [InlineData(null, 200)]
+        [InlineData(0, 0)]
+        [InlineData(128 * 1024, int.MinValue)]
+        [InlineData(128 * 1024, int.MaxValue)]
+        public async Task Exec_ResponseWithinLimits_PublishesResult(int? payloadSize, int status)
+        {
+            MockFeatureConnectionClient connection = new()
+            {
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv5, DeviceId),
+            };
+            using DirectMethodClient directMethodClient = new(connection);
+
+            byte[]? payload = payloadSize.HasValue ? new byte[payloadSize.Value] : null;
+            directMethodClient.DirectMethodProbeReceivedAsync += (_) => Task.FromResult(DirectMethodProbeAck.Accepted());
+            directMethodClient.DirectMethodInvokedAsync += (_) => Task.FromResult(new DirectMethodResponse() { Status = status, Payload = payload });
+
+            byte[] correlationData = Guid.NewGuid().ToByteArray();
+            ByteString readyId = await AssertProbeAcceptedAsync(connection, correlationData);
+            var exec = new Exec() { ReadyId = readyId };
+            await connection.SimulateReceiveAsync(CreateInboundMethodPublish("exec:1", correlationData, exec.ToByteArray()));
+
+            Assert.Equal(2, connection.PublishedMessages.Count);
+            MqttPublish resultPublish = connection.PublishedMessages[1];
+            Assert.Equal("result:1", GetType(resultPublish));
+            Result result = Result.Parser.ParseFrom(resultPublish.Payload);
+            Assert.Equal(status, result.Status);
+            Assert.Equal(payload ?? Array.Empty<byte>(), result.Body.ToByteArray());
+        }
+
+        [Fact]
+        public async Task Exec_ResponsePayloadExceedsLimit_ThrowsWithoutPublishingResult()
+        {
+            MockFeatureConnectionClient connection = new()
+            {
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv5, DeviceId),
+            };
+            using DirectMethodClient directMethodClient = new(connection);
+
+            directMethodClient.DirectMethodProbeReceivedAsync += (_) => Task.FromResult(DirectMethodProbeAck.Accepted());
+            directMethodClient.DirectMethodInvokedAsync += (_) => Task.FromResult(new DirectMethodResponse()
+            {
+                Status = 200,
+                Payload = new byte[128 * 1024 + 1],
+            });
+
+            byte[] correlationData = Guid.NewGuid().ToByteArray();
+            ByteString readyId = await AssertProbeAcceptedAsync(connection, correlationData);
+            var exec = new Exec() { ReadyId = readyId };
+            await Assert.ThrowsAsync<MessageTooLargeException>(() =>
+                connection.SimulateReceiveAsync(CreateInboundMethodPublish("exec:1", correlationData, exec.ToByteArray())));
+
+            Assert.Single(connection.PublishedMessages);
         }
 
         [Theory]
@@ -330,6 +386,36 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             await receiveTask;
 
             Assert.True(handlerToken.IsCancellationRequested);
+            Assert.Single(connection.PublishedMessages);
+        }
+
+        [Theory]
+        [InlineData(0)]
+        [InlineData(1100)]
+        public async Task Exec_HandlerReturnsAfterResponseTimeout_DoesNotPublishResult(int handlerDelayMilliseconds)
+        {
+            MockFeatureConnectionClient connection = new()
+            {
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv5, DeviceId),
+            };
+            using DirectMethodClient directMethodClient = new(connection);
+
+            bool methodInvoked = false;
+            directMethodClient.DirectMethodProbeReceivedAsync += (_) => Task.FromResult(DirectMethodProbeAck.Accepted());
+            directMethodClient.DirectMethodInvokedAsync += async (_) =>
+            {
+                methodInvoked = true;
+                await Task.Delay(handlerDelayMilliseconds, TestContext.Current.CancellationToken);
+                return new DirectMethodResponse() { Status = 200 };
+            };
+
+            byte[] correlationData = Guid.NewGuid().ToByteArray();
+            ByteString readyId = await AssertProbeAcceptedAsync(connection, correlationData);
+
+            var exec = new Exec() { ReadyId = readyId };
+            await connection.SimulateReceiveAsync(CreateInboundMethodPublish("exec:1", correlationData, exec.ToByteArray(), messageExpiryInterval: 0));
+
+            Assert.True(methodInvoked);
             Assert.Single(connection.PublishedMessages);
         }
 

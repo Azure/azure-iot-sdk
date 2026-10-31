@@ -3,6 +3,7 @@
 
 using Google.Protobuf;
 using Microsoft.Azure.Iot.Device.Events;
+using Microsoft.Azure.Iot.Device.Exceptions;
 using Microsoft.Azure.Iot.Device.MQTTv5.Connection;
 using Microsoft.Azure.Iot.Device.MQTTv5.Models;
 using Microsoft.Azure.Iot.Device.Models.DirectMethods;
@@ -20,6 +21,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods
     {
         //TODO need to think more on connection loss scenario. If direct method is received and is mid-processing when connection is lost, what should happen? Is sending response publish upon reconnect enough?
         private const string ProtobufContentType = "application/protobuf";
+        private const int MaxResponsePayloadSizeInBytes = 128 * 1024;
 
         // The connection client substitutes this device's current ID for the placeholder when it sends each response, so a
         // response still goes to the right topic if the device ID changes (for example, after re-provisioning).
@@ -55,8 +57,10 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods
         /// </summary>
         /// <remarks>
         /// Only one handler can be added at a time because only one direct method response can be sent per request.
+        /// Response payloads must not exceed 128 KiB. An oversized response is not published.
         /// </remarks>
         /// <exception cref="InvalidOperationException">Thrown when adding a handler while another handler is already added, or adding a multicast delegate.</exception>
+        /// <exception cref="MessageTooLargeException">Thrown when processing a response whose payload exceeds 128 KiB.</exception>
         public event Func<DirectMethodRequestReceivedEventArgs, Task<DirectMethodResponse>>? DirectMethodInvokedAsync
         {
             add => _directMethodInvoked.Add(value);
@@ -289,24 +293,21 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods
                     return;
                 }
 
-                uint secondsSinceReceivingExec;
-                try
-                {
-                    secondsSinceReceivingExec = (uint)stopwatch.Elapsed.TotalSeconds;
-                }
-                catch (InvalidCastException)
-                {
-                    // Should only happen if the double grows so large that a uint can't contain it.
-                    Trace.TraceError("Could not calculate time since exec message was received. This likely means the 'DirectMethodInvokedAsync' callback took too long. Cannot send result, so discarding this probe message");
-                    return;
-                }
+                double secondsSinceReceivingExec = Math.Floor(stopwatch.Elapsed.TotalSeconds);
 
-                uint remainingResponseTimeoutInSeconds = responseTimeoutInSeconds - secondsSinceReceivingExec;
+                uint remainingResponseTimeoutInSeconds = secondsSinceReceivingExec >= responseTimeoutInSeconds
+                    ? 0
+                    : responseTimeoutInSeconds - (uint)secondsSinceReceivingExec;
 
                 if (remainingResponseTimeoutInSeconds < 1)
                 {
                     Trace.TraceWarning("Application did not respond to direct method exec message before the response timeout elapsed, so no result message will be sent.");
                     return;
+                }
+
+                if (methodResponse.Payload != null && methodResponse.Payload.Length > MaxResponsePayloadSizeInBytes)
+                {
+                    throw new MessageTooLargeException("The direct method response payload exceeds the 128 KiB limit. It will not be sent.");
                 }
 
                 Result result = new()
