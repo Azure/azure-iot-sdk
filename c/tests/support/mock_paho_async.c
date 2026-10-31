@@ -50,6 +50,8 @@ static int s_last_connect_timeout;
 static void* s_callback_context;
 static MQTTAsync_messageArrived* s_message_arrived;
 static MQTTAsync_connectionLost* s_connection_lost;
+static MQTTAsync_disconnected* s_disconnected;
+static void* s_disconnected_context;
 
 /* Scripted inbound v5 User Properties. Set up before any producer thread
  * starts and only read after that, so the table is never itself contended. */
@@ -86,6 +88,8 @@ void mock_paho_reset(void)
   s_callback_context = NULL;
   s_message_arrived = NULL;
   s_connection_lost = NULL;
+  s_disconnected = NULL;
+  s_disconnected_context = NULL;
   s_user_property_count = 0;
   s_send_calls = 0;
   s_properties_add_fail_at = -1;
@@ -190,11 +194,15 @@ MQTTAsync_messageArrived* mock_paho_message_arrived(void) { return s_message_arr
 
 MQTTAsync_connectionLost* mock_paho_connection_lost(void) { return s_connection_lost; }
 
+MQTTAsync_disconnected* mock_paho_disconnected(void) { return s_disconnected; }
+
+void* mock_paho_disconnected_context(void) { return s_disconnected_context; }
+
 int MQTTAsync_setDisconnected(MQTTAsync handle, void* context, MQTTAsync_disconnected* co)
 {
   (void)handle;
-  (void)context;
-  (void)co;
+  s_disconnected = co;
+  s_disconnected_context = context;
   return s_set_disconnected_rc;
 }
 

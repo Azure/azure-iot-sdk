@@ -186,6 +186,20 @@ static void custody_material_is_all_or_none_per_route(void** state)
       AZ_IOT_CONFORMANCE_CUSTODY_PARTIAL);
 }
 
+/* The CONNACK Reason String capability is exercised by the MQTT 5 suite only: declared for the
+ * 3.1.1 suite, the run would pass without proving it, so it is refused. */
+static void the_connack_reason_string_capability_fits_only_the_v5_suite(void** state)
+{
+  (void)state;
+  uint32_t const capability = (uint32_t)AZ_IOT_CONFORMANCE_CAP_CONNACK_REASON_STRING;
+  assert_true(az_iot_conformance_capabilities_fit_suite(AZ_IOT_CONFORMANCE_SUITE_V5, capability));
+  assert_false(
+      az_iot_conformance_capabilities_fit_suite(AZ_IOT_CONFORMANCE_SUITE_V3_1_1, capability));
+  assert_true(az_iot_conformance_capabilities_fit_suite(AZ_IOT_CONFORMANCE_SUITE_V3_1_1, 0u));
+  assert_true(az_iot_conformance_capabilities_fit_suite(
+      AZ_IOT_CONFORMANCE_SUITE_V3_1_1, (uint32_t)AZ_IOT_CONFORMANCE_CAP_PROXY));
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -193,6 +207,7 @@ int main(void)
     cmocka_unit_test(the_exact_value_one_downgrades_it_to_a_notice),
     cmocka_unit_test(only_the_exact_value_one_opts_out),
     cmocka_unit_test(custody_material_is_all_or_none_per_route),
+    cmocka_unit_test(the_connack_reason_string_capability_fits_only_the_v5_suite),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }
