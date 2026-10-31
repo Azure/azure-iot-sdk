@@ -37,6 +37,7 @@
 #define E2E_READY_TIMEOUT_S 420 /* boot, DHCP, DPS and hub, TLS emulated */
 #define E2E_TELEMETRY_TIMEOUT_S 180
 #define E2E_REQUEST_TIMEOUT_S 120
+#define E2E_WATCH_TIMEOUT_S 90 /* the Event Hub AMQP handshake can fail transiently */
 #define E2E_PUMP_MS 50
 
 /** @brief The firmware's QEMU process and what it has printed. */
@@ -271,10 +272,20 @@ static int group_setup(void** state)
     fprintf(stderr, "[e2e] service: %s\n", error ? error : "(unknown)");
     return fail_group_setup();
   }
+  /* The cold AMQP handshake to the Event Hub-compatible endpoint can fail transiently (e.g. the
+   * CBS put-token): retry about every second, as e2e_custody_test.c does. */
+  bool watching = az_iot_e2e_service_telemetry_watch_begin(s_service);
+  for (time_t const start = time(NULL); !watching && time(NULL) - start < E2E_WATCH_TIMEOUT_S;)
+  {
+    fprintf(
+        stderr, "[e2e] telemetry watch: %s; retrying\n", az_iot_e2e_service_last_error(s_service));
+    struct timespec const second = { 1, 0 };
+    (void)nanosleep(&second, NULL);
+    watching = az_iot_e2e_service_telemetry_watch_begin(s_service);
+  }
   char needle[160];
   snprintf(needle, sizeof(needle), "\"deviceId\":\"%s\"", s_device_id);
-  if (!az_iot_e2e_service_telemetry_watch_begin(s_service)
-      || !az_iot_e2e_service_telemetry_watch_needle(s_service, needle))
+  if (!watching || !az_iot_e2e_service_telemetry_watch_needle(s_service, needle))
   {
     fprintf(stderr, "[e2e] telemetry watch: %s\n", az_iot_e2e_service_last_error(s_service));
     return fail_group_setup();
