@@ -364,6 +364,7 @@ extern "C"
    *
    * @return AZ_IOT_ERR_INVALID_ARG for a negative size, or a non-empty span with a NULL pointer.
    * @return AZ_IOT_ERR_NOT_ENOUGH_SPACE when smaller than the framing alone.
+   * @return AZ_IOT_ERR_BUSY from a twin callback run by another request call.
    */
   az_iot_result az_iot_mqttv5_twin_client_set_encode_buffer(
       az_iot_mqttv5_twin_client* twin,
