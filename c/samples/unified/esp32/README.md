@@ -15,6 +15,9 @@ assigns (mqttv3 or mqttv5):
   each connect; on mqttv5 the hub pushes the desired snapshot on connect. A version older than one
   already seen is ignored. A failed twin read or refused patch is retried after 5 s.
 
+It restarts after 15 minutes without a hub connection: ESP-IDF's `protocol_examples_common` stops
+reconnecting Wi-Fi after `EXAMPLE_WIFI_CONN_MAX_RETRY` failures, and a restart brings it up again.
+
 ```mermaid
 sequenceDiagram
     participant D as ESP32

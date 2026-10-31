@@ -53,6 +53,10 @@ static const char* TAG = "hub_esp32";
 #define METHOD_RESPONSE_TIMEOUT_S 60u
 /** @brief The do_work() tick. */
 #define TICK_MS 50u
+/** @brief Longest time without a hub connection before the device restarts. ESP-IDF's
+ * protocol_examples_common stops reconnecting Wi-Fi after EXAMPLE_WIFI_CONN_MAX_RETRY failures, and
+ * a restart brings the network up again. */
+#define OFFLINE_RESTART_S 900u
 /** @brief Wait before retrying a failed twin GET or reported patch. */
 #define TWIN_RETRY_MS 5000u
 /** @brief Largest echoed mqttv3 payload: the response must fit the adapter's send buffer, with
@@ -109,6 +113,7 @@ typedef struct
   az_iot_mqttv5_direct_method_client mqttv5_methods;
   /* Set by callbacks, acted on by the loop: clients are not rebuilt inside do_work(). */
   az_iot_connection_state hub_state;
+  TickType_t offline_since; /* when hub_state last left CONNECTED, or the loop started */
   bool faulted;
   bool rebuild;
   az_iot_connection_profile assigned_profile;
@@ -182,6 +187,10 @@ static void on_connection_state(const az_iot_connection_state_event* event, void
   }
   if (event->scope == AZ_IOT_CONN_SCOPE_HUB && event->state != d->hub_state)
   {
+    if (d->hub_state == AZ_IOT_CONN_STATE_CONNECTED)
+    {
+      d->offline_since = xTaskGetTickCount();
+    }
     d->hub_state = event->state;
     if (event->state == AZ_IOT_CONN_STATE_CONNECTED)
     {
@@ -630,9 +639,12 @@ void app_main(void)
     restart("open failed");
   }
 
-  TickType_t const interval = pdMS_TO_TICKS(CONFIG_HUB_TELEMETRY_INTERVAL_S * 1000u);
+  // Seconds to ticks directly: pdMS_TO_TICKS would overflow its 32-bit product for long intervals.
+  TickType_t const interval = (TickType_t)CONFIG_HUB_TELEMETRY_INTERVAL_S * configTICK_RATE_HZ;
+  TickType_t const offline_limit = (TickType_t)OFFLINE_RESTART_S * configTICK_RATE_HZ;
   TickType_t next_telemetry = xTaskGetTickCount();
   TickType_t tick_start = xTaskGetTickCount();
+  d->offline_since = tick_start;
   for (;;)
   {
     wait_for_tick_end(tick_start); // At the top: the body continues early.
@@ -669,6 +681,11 @@ void app_main(void)
     }
     if (d->hub_state != AZ_IOT_CONN_STATE_CONNECTED)
     {
+      if (xTaskGetTickCount() - d->offline_since >= offline_limit)
+      {
+        ESP_LOGE(TAG, "no hub connection for %u s", OFFLINE_RESTART_S);
+        restart("offline too long");
+      }
       continue;
     }
 

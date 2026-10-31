@@ -28,7 +28,9 @@ AZ_NODISCARD az_result az_platform_sleep_msec(int32_t milliseconds)
 {
   if (milliseconds > 0)
   {
-    TickType_t const ticks = pdMS_TO_TICKS((uint32_t)milliseconds);
+    // Widened: pdMS_TO_TICKS multiplies in TickType_t, which overflows for long sleeps.
+    TickType_t const ticks
+        = (TickType_t)((uint64_t)(uint32_t)milliseconds * configTICK_RATE_HZ / 1000u);
     vTaskDelay(ticks > 0 ? ticks : 1);
   }
   return AZ_OK;
