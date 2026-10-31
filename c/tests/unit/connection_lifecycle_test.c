@@ -57,7 +57,7 @@ static int teardown(void** state)
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
   if (fx)
   {
-    az_iot_connection_client_deinit(&fx->client_storage);
+    az_iot_test_connection_client_deinit(&fx->client_storage);
     az_iot_mock_mqtt_factory_destroy(fx->factory);
     free(fx);
   }
@@ -104,7 +104,7 @@ static void open_without_host_or_dps_is_rejected(void** state)
   az_iot_connection_client c;
   assert_int_equal(az_iot_test_connection_client_init(&c, &opts), AZ_IOT_OK);
   assert_int_equal(az_iot_connection_client_open(&c), AZ_IOT_ERR_INVALID_ARG);
-  az_iot_connection_client_deinit(&c);
+  az_iot_test_connection_client_deinit(&c);
 }
 
 static void open_without_client_id_is_rejected(void** state)
@@ -116,7 +116,7 @@ static void open_without_client_id_is_rejected(void** state)
   az_iot_connection_client c;
   assert_int_equal(az_iot_test_connection_client_init(&c, &opts), AZ_IOT_OK);
   assert_int_equal(az_iot_connection_client_open(&c), AZ_IOT_ERR_INVALID_ARG);
-  az_iot_connection_client_deinit(&c);
+  az_iot_test_connection_client_deinit(&c);
 }
 
 static void open_while_connecting_is_rejected(void** state)
@@ -164,7 +164,7 @@ static void open_rejects_factory_of_the_wrong_version(void** state)
   assert_int_equal(az_iot_connection_client_register_mqtt_factory(&c, v5), AZ_IOT_OK);
 
   assert_int_equal(az_iot_connection_client_open(&c), AZ_IOT_ERR_NOT_SUPPORTED);
-  az_iot_connection_client_deinit(&c);
+  az_iot_test_connection_client_deinit(&c);
   az_iot_mock_mqtt_factory_destroy(v5);
 }
 
@@ -205,7 +205,7 @@ static void connect_call_for_version(
   assert_non_null(rec);
   *out_connect = *rec;
 
-  az_iot_connection_client_deinit(&c);
+  az_iot_test_connection_client_deinit(&c);
   az_iot_mock_mqtt_factory_destroy(f);
 }
 
@@ -444,7 +444,7 @@ static void the_default_options_retry_a_refused_connack(void** state)
   (void)az_iot_connection_client_do_work(&c, 0);
   assert_true(az_iot_connection_client__is_connected(&c));
 
-  az_iot_connection_client_deinit(&c);
+  az_iot_test_connection_client_deinit(&c);
   az_iot_mock_mqtt_factory_destroy(f);
 }
 
@@ -479,7 +479,7 @@ static void reconnection_can_still_be_disabled(void** state)
   (void)az_iot_connection_client_do_work(&c, 0);
 
   assert_int_equal(az_iot_test_last_state(&log), AZ_IOT_CONN_STATE_FAULTED);
-  az_iot_connection_client_deinit(&c);
+  az_iot_test_connection_client_deinit(&c);
   az_iot_mock_mqtt_factory_destroy(f);
 }
 
@@ -523,7 +523,7 @@ static void a_peer_disconnect_without_retrying_settles_in_idle(void** state)
 
   /* IDLE means reopenable, which is the point of the distinction. */
   assert_int_equal(az_iot_connection_client_open(&c), AZ_IOT_OK);
-  az_iot_connection_client_deinit(&c);
+  az_iot_test_connection_client_deinit(&c);
   az_iot_mock_mqtt_factory_destroy(f);
 }
 
@@ -613,7 +613,7 @@ static void a_username_one_byte_too_long_fails_the_open(void** state)
   assert_non_null(f);
   assert_int_equal(az_iot_connection_client_register_mqtt_factory(&c, f), AZ_IOT_OK);
   assert_int_equal(az_iot_connection_client_open(&c), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
-  az_iot_connection_client_deinit(&c);
+  az_iot_test_connection_client_deinit(&c);
   az_iot_mock_mqtt_factory_destroy(f);
 }
 
@@ -832,7 +832,7 @@ static void deinit_while_connected_destroys_the_adapter(void** state)
 
   /* The mock frees itself inside deinit(), so read the state we care about
    * from the factory: a destroyed client detaches itself from last_client. */
-  az_iot_connection_client_deinit(&c);
+  az_iot_test_connection_client_deinit(&c);
   assert_null(az_iot_mock_mqtt_factory_last_client(factory));
 
   az_iot_mock_mqtt_factory_destroy(factory);
@@ -851,7 +851,7 @@ static void deinit_while_connecting_destroys_the_adapter(void** state)
   assert_int_equal(az_iot_connection_client_open(&c), AZ_IOT_OK);
   assert_non_null(az_iot_mock_mqtt_factory_last_client(factory));
 
-  az_iot_connection_client_deinit(&c);
+  az_iot_test_connection_client_deinit(&c);
   assert_null(az_iot_mock_mqtt_factory_last_client(factory));
 
   az_iot_mock_mqtt_factory_destroy(factory);
@@ -863,7 +863,7 @@ static void deinit_is_silent_on_the_state_callback(void** state)
   (void)open_to_connected(fx);
 
   size_t transitions = fx->log.count;
-  az_iot_connection_client_deinit(fx->client);
+  az_iot_test_connection_client_deinit(fx->client);
   assert_int_equal(fx->log.count, transitions);
 
   /* Neutralize the fixture teardown's deinit(): the client is already
@@ -874,7 +874,7 @@ static void deinit_is_silent_on_the_state_callback(void** state)
 static void deinit_tolerates_null(void** state)
 {
   (void)state;
-  az_iot_connection_client_deinit(NULL);
+  az_iot_test_connection_client_deinit(NULL);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -1311,7 +1311,7 @@ static void the_dispatch_guard_survives_nesting(void** state)
       az_iot_connection_client_get_state(&c, AZ_IOT_CONN_SCOPE_HUB), AZ_IOT_CONN_STATE_CONNECTED);
 
   az_iot_connection_client__dps_user_release(&c);
-  az_iot_connection_client_deinit(&c);
+  az_iot_test_connection_client_deinit(&c);
   az_iot_mock_mqtt_factory_destroy(f);
 }
 

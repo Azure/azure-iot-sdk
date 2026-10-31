@@ -34,6 +34,7 @@
 
 /* One key (DPS and hub share it), IDs up to 256 characters. */
 static uint8_t g_sas_buffer[AZ_IOT_SAS_BUFFER_SIZE(1, AZ_IOT_SAS_TOKEN_SIZE(256))];
+static uint8_t g_connection_workspace[AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE];
 
 typedef struct
 {
@@ -185,6 +186,8 @@ void e2e_sas_apply_dps(const e2e_sas_config* cfg, az_iot_connection_client_optio
   copts->crypto = az_iot_crypto_openssl();
   copts->sas_buffer.buffer = g_sas_buffer;
   copts->sas_buffer.size = sizeof(g_sas_buffer);
+  copts->workspace = g_connection_workspace;
+  copts->workspace_size = sizeof(g_connection_workspace);
   copts->dps_auth.sas.primary_key_base64 = cfg->group_key;
   copts->dps_auth.sas.is_enrollment_group_key = true;
 }

@@ -11,12 +11,15 @@
 #include "install_test.h"
 
 static az_iot_connection_client g_conn;
+static uint8_t g_connection_workspace[AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE];
 
 int main(void)
 {
   az_iot_connection_client_options options = az_iot_connection_client_options_default();
   options.iothub_hostname = "hub.example";
   options.device_id = "install-test";
+  options.workspace = g_connection_workspace;
+  options.workspace_size = sizeof(g_connection_workspace);
   options.connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5;
   CHECK(az_iot_connection_client_init(&g_conn, &options) == AZ_IOT_OK);
 

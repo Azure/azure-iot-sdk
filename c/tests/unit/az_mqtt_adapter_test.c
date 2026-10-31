@@ -73,6 +73,8 @@ static void factories_create_clients_of_their_version(void** state)
   az_iot_az_mqtt_factory_destroy(NULL);
 }
 
+static uint8_t g_connection_workspace[AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE];
+
 static void a_registered_factory_is_destroyed_by_the_application_after_deinit(void** state)
 {
   (void)state;
@@ -80,6 +82,8 @@ static void a_registered_factory_is_destroyed_by_the_application_after_deinit(vo
   az_iot_connection_client_options options = az_iot_connection_client_options_default();
   options.iothub_hostname = "hub.example";
   options.device_id = "az-mqtt-adapter-test";
+  options.workspace = g_connection_workspace;
+  options.workspace_size = sizeof(g_connection_workspace);
   assert_int_equal(az_iot_connection_client_init(&conn, &options), AZ_IOT_OK);
   az_iot_mqtt_factory* v5 = az_iot_az_mqtt_factory_create_v5();
   assert_int_equal(az_iot_connection_client_register_mqtt_factory(&conn, v5), AZ_IOT_OK);

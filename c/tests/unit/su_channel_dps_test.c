@@ -235,7 +235,7 @@ static int teardown(void** state)
   if (fx)
   {
     fx->channel.vtable->close(fx->channel.ctx);
-    az_iot_connection_client_deinit(&fx->client);
+    az_iot_test_connection_client_deinit(&fx->client);
     az_iot_mock_mqtt_factory_destroy(fx->factory);
     free(fx);
   }
@@ -1913,7 +1913,7 @@ static void a_zero_hold_timeout_selects_the_default(void** state)
   assert_int_equal(fx->client.dps_phase, AZ_IOT_DPS_PHASE_HOLD);
 
   fx->channel.vtable->close(fx->channel.ctx);
-  az_iot_connection_client_deinit(&fx->client);
+  az_iot_test_connection_client_deinit(&fx->client);
   az_iot_mock_mqtt_factory_destroy(fx->factory);
   free(fx);
 }
