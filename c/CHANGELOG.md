@@ -4,6 +4,12 @@
 
 ### Features Added
 
+- Connection client: on MQTT 5, the Reason String of a refused CONNACK or of a server DISCONNECT
+  with a nonzero reason code is reported as `az_iot_connection_state_event.error->message` (source
+  `AZ_IOT_CONN_ERR_SRC_MQTT`), truncated to `AZ_IOT_CONN_ERROR_MESSAGE_MAX` bytes.
+  `az_iot_mqtt_event.reason_string` now also carries it on `AZ_IOT_MQTT_EVT_DISCONNECTED` (both
+  adapters) and on a failed `AZ_IOT_MQTT_EVT_CONNECTED` (az_mqtt adapter; Paho does not expose it).
+  The Paho adapter keeps 128 bytes of a DISCONNECT Reason String.
 - Software updates: the update request, file URL, workflow and install-result types are the SDK's
   own; `az_iot_su.h` no longer includes azure-sdk-for-c's `az_iot_adu_client.h`, and an installed
   azure-sdk-for-c no longer needs the `AZ_IOT_SU_MAX_*` limits. Breaking:
