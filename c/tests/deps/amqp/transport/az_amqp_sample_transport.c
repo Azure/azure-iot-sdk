@@ -640,12 +640,16 @@ static bool _sch_build_client_cert(az_amqp_sample_transport* s, az_span cert_pem
   // only long enough to assemble a PKCS#12 blob (below) and is deleted before this
   // function returns; the key Schannel ultimately uses is the no-persist one that
   // PFXImportCertStore produces.
+  // Unique per import: the counter keeps concurrent imports apart, the process id and time other
+  // processes' names (as in tls_schannel.c).
+  static volatile LONG import_counter;
   (void)_snwprintf_s(
       key_name,
       _countof(key_name),
       _TRUNCATE,
-      L"az-iot-e2e-mtls-%lu-%lu",
+      L"az-iot-e2e-mtls-%lu-%lu-%lu",
       (unsigned long)GetCurrentProcessId(),
+      (unsigned long)InterlockedIncrement(&import_counter),
       (unsigned long)GetTickCount());
   if (NCryptOpenStorageProvider(&prov, MS_KEY_STORAGE_PROVIDER, 0) != ERROR_SUCCESS)
   {
