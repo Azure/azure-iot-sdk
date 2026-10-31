@@ -85,17 +85,16 @@ jobs:
       AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
       AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
 
-  # The longest suites run as one job per adapter and shard (AZ_IOT_TEST_SHARD,
-  # c/tests/support/test_shard.h), each with its own device: run serially on one
-  # device they took up to 15 min. The shard count in AZ_IOT_TEST_SHARD must match
-  # the matrix's shard list. Jobs that read events spread over consumer groups
-  # e2e-0..e2e-9 (E2E_GROUP_SLOT); the Linux and Windows legs of a job share its slot, so a
-  # group has at most three readers in a run.
   # Builds the Windows legs' OpenSSL into the cache once per run, so the legs restore it instead
   # of each building it on a cache miss (.github/actions/install-openssl).
+  # Skipped where every test job is (forks, Dependabot).
   openssl:
     name: OpenSSL (windows)
-    if: ${{ vars.E2E_MQTTV5_SHARED_ID_SCOPE != '' }}
+    if: >-
+      ${{ vars.E2E_MQTTV5_SHARED_ID_SCOPE != '' &&
+          (github.event_name != 'pull_request' ||
+           (github.event.pull_request.head.repo.full_name == github.repository &&
+            github.actor != 'dependabot[bot]')) }}
     permissions:
       contents: read
     runs-on: windows-latest
@@ -111,6 +110,12 @@ jobs:
         with:
           version: ${{ env.WINDOWS_OPENSSL_VERSION }}
 
+  # The longest suites run as one job per adapter and shard (AZ_IOT_TEST_SHARD,
+  # c/tests/support/test_shard.h), each with its own device: run serially on one
+  # device they took up to 15 min. The shard count in AZ_IOT_TEST_SHARD must match
+  # the matrix's shard list. Jobs that read events spread over consumer groups
+  # e2e-0..e2e-9 (E2E_GROUP_SLOT); the Linux and Windows legs of a job share its slot, so a
+  # group has at most three readers in a run.
   custom-topics:
     name: custom topics / ${{ matrix.os-name }} / ${{ matrix.adapter }} / shard ${{ matrix.shard }} of 2
     needs: [ adr-namespace, openssl ]
