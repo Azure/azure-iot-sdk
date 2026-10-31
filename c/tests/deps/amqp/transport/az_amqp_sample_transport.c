@@ -472,9 +472,21 @@ static bool _sch_add_issuer_certificates(HCERTSTORE store, az_span cert_pem)
       return true;
     }
     rest = az_span_slice_to_end(rest, offset);
-    BYTE der[8192];
-    DWORD der_len = sizeof(der);
+    DWORD der_len = 0;
     if (!CryptStringToBinaryA(
+            (LPCSTR)az_span_ptr(rest),
+            (DWORD)az_span_size(rest),
+            CRYPT_STRING_BASE64HEADER,
+            NULL,
+            &der_len,
+            NULL,
+            NULL))
+    {
+      return false;
+    }
+    BYTE* der = (BYTE*)malloc(der_len);
+    bool const added = der != NULL
+        && CryptStringToBinaryA(
             (LPCSTR)az_span_ptr(rest),
             (DWORD)az_span_size(rest),
             CRYPT_STRING_BASE64HEADER,
@@ -482,8 +494,10 @@ static bool _sch_add_issuer_certificates(HCERTSTORE store, az_span cert_pem)
             &der_len,
             NULL,
             NULL)
-        || !CertAddEncodedCertificateToStore(
-            store, X509_ASN_ENCODING, der, der_len, CERT_STORE_ADD_USE_EXISTING, NULL))
+        && CertAddEncodedCertificateToStore(
+            store, X509_ASN_ENCODING, der, der_len, CERT_STORE_ADD_USE_EXISTING, NULL);
+    free(der);
+    if (!added)
     {
       return false;
     }
