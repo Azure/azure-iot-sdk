@@ -228,6 +228,42 @@ static void disconnect_v5_raw_takes_two_byte_lengths_for_a_long_reason_string(vo
   assert_memory_equal(&p.bytes[9], reason, 129);
 }
 
+/* The reason code follows the Properties; the packet id is echoed like any acknowledgement's. */
+static void suback_v5_raw_tells_an_absent_reason_string_from_an_empty_one(void** state)
+{
+  (void)state;
+  static const uint8_t absent[] = { 0x90, 0x04, 0x00, 0x00, 0x00, 0x87 };
+  static const uint8_t empty[] = { 0x90, 0x07, 0x00, 0x00, 0x03, 0x1F, 0x00, 0x00, 0x87 };
+  static const uint8_t text[] = { 0x90, 0x09, 0x00, 0x00, 0x05, 0x1F, 0x00, 0x02, 'n', 'o', 0x97 };
+  az_iot_test_mqtt_packet p = az_iot_test_mqtt_suback_v5_raw(0x87, NULL);
+  assert_packet(&p, absent, sizeof(absent));
+  p = az_iot_test_mqtt_suback_v5_raw(0x87, "");
+  assert_packet(&p, empty, sizeof(empty));
+  p = az_iot_test_mqtt_suback_v5_raw(0x97, "no");
+  assert_packet(&p, text, sizeof(text));
+  assert_int_equal(p.packet_id_offset, 2);
+  assert_int_equal(p.echo_packet_id, 1);
+}
+
+/* Past Remaining Length 127 the lengths take two bytes; the reason code stays last and the packet
+ * id moves with them. */
+static void suback_v5_raw_takes_two_byte_lengths_for_a_long_reason_string(void** state)
+{
+  (void)state;
+  char reason[126];
+  memset(reason, 'r', sizeof(reason));
+  reason[125] = '\0';
+  az_iot_test_mqtt_packet p = az_iot_test_mqtt_suback_v5_raw(0x87, reason);
+  assert_int_equal(p.len, 136);
+  assert_int_equal(p.bytes[1], 0x85); /* Remaining Length 133 */
+  assert_int_equal(p.bytes[2], 0x01);
+  assert_int_equal(p.packet_id_offset, 3);
+  assert_int_equal(p.bytes[5], 0x80); /* Property Length 128 */
+  assert_int_equal(p.bytes[6], 0x01);
+  assert_memory_equal(&p.bytes[10], reason, 125);
+  assert_int_equal(p.bytes[135], 0x87);
+}
+
 /* 3.1.1 has no field for it, so the builder reports "not expressible" rather
  * than inventing a packet. A zero-length injection is refused by the proxy, so
  * a test that asks for one fails where it is set up. */
@@ -425,6 +461,8 @@ int main(void)
     cmocka_unit_test(connack_v5_raw_tells_an_absent_reason_string_from_an_empty_one),
     cmocka_unit_test(disconnect_v5_raw_tells_an_absent_reason_string_from_an_empty_one),
     cmocka_unit_test(disconnect_v5_raw_takes_two_byte_lengths_for_a_long_reason_string),
+    cmocka_unit_test(suback_v5_raw_tells_an_absent_reason_string_from_an_empty_one),
+    cmocka_unit_test(suback_v5_raw_takes_two_byte_lengths_for_a_long_reason_string),
     cmocka_unit_test(a_refusal_a_version_cannot_express_yields_nothing),
     cmocka_unit_test(server_disconnect_carries_the_v5_reason),
     cmocka_unit_test(pingresp_is_a_bare_fixed_header),
