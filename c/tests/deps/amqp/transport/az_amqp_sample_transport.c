@@ -331,7 +331,7 @@ typedef struct
   bool done;
   bool reneg_active; // driving a TLS post-handshake / renegotiation flight
   bool reneg_isc_done; // reneg ISC returned SEC_E_OK; only the final flush remains
-  bool use_supplied_credentials; // present client_cert even if the server's CA list omits it
+  bool use_supplied_credentials; // answer a certificate request with client_cert, or none
   PCCERT_CONTEXT client_cert; // mutual-TLS client certificate (NULL = server-auth only)
   HCERTSTORE cert_store; // in-memory PFX store owning the client cert's ephemeral CNG key
   SecPkgContext_StreamSizes sizes;
@@ -360,17 +360,14 @@ static DWORD _sch_isc_flags(_sch_state const* sch)
  * @brief Handles SEC_I_INCOMPLETE_CREDENTIALS: the server asked for a client certificate and
  * Schannel offered none.
  *
- * @details Either none is configured (the SAS/CBS connections: the handshake continues
- * anonymously), or the configured one's issuer is not in the server's acceptable CA list (a
- * self-signed device certificate): the next InitializeSecurityContext call then sets
- * ISC_REQ_USE_SUPPLIED_CREDS, so Schannel presents it anyway, as curl does.
+ * @details The next InitializeSecurityContext call sets ISC_REQ_USE_SUPPLIED_CREDS: Schannel then
+ * presents the configured certificate even if its issuer is not in the server's acceptable CA
+ * list (a self-signed device certificate), or continues anonymously when none is configured (the
+ * SAS/CBS connections), as curl and the az_mqtt Schannel adapter do.
  */
 static void _sch_on_incomplete_credentials(_sch_state* sch)
 {
-  if (sch->client_cert != NULL)
-  {
-    sch->use_supplied_credentials = true;
-  }
+  sch->use_supplied_credentials = true;
 }
 
 // Optional Schannel diagnostics, enabled by setting AZ_AMQP_TLS_DEBUG in the
