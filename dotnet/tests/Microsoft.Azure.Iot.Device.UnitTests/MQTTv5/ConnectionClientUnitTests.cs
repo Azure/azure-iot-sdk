@@ -822,12 +822,18 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
 
                 return Task.FromResult(new MqttPublishAck() { ReasonCode = MqttPublishAckReasonCode.Success });
             };
+            mockMqttClient.OnConnect = connect => Task.FromResult(new MqttConnectAck()
+            {
+                ResultCode = MqttConnectReasonCode.Success,
+                IsSessionPresent = !connect.CleanStart,
+            });
 
             await connectionClient.ConnectToHubAsync(GetMockConnectionContext(), TestContext.Current.CancellationToken)
                 .WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
 
             Assert.Equal(2, Volatile.Read(ref birthCount));
             Assert.Equal(new[] { 0, 0 }, requestedTimeouts);
+            Assert.Single(mockMqttClient.SentMqttTrafficInOrder.Where(traffic => traffic.Subscribe != null));
         }
 
         // A connect the application starts after closing is a fresh CONNECT cycle, so it uses the first row of the
