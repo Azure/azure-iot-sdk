@@ -318,6 +318,13 @@
 
 ### Bugs Fixed
 
+- Connection client, events drained in one `process_loop()`: a failed acknowledgement (PUBACK,
+  SUBACK, UNSUBACK) becomes connection error detail only when it fails the connection. A presence,
+  gated or DPS SUBACK drained after a session-ending event is ignored; a FAILS_SELF refusal is still
+  reported. A later end event of an ended session does not replace the server DISCONNECT's code,
+  and an identity refusal is acted on whatever came first. While `close()` disconnects, a late
+  SUBACK neither announces CONNECTED nor publishes the birth, and a new filter waits for the next
+  session.
 - ESP32: the `azure-sdk-for-c` component implements `az_platform_clock_msec()` and
   `az_platform_sleep_msec()` with `esp_timer` and FreeRTOS, so the az_mqtt adapter's idle wait
   sleeps instead of returning at once. The software updates sample's connect loop waits out each

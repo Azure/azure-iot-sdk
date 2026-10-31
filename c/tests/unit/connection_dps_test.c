@@ -1961,6 +1961,44 @@ static void dps_suback_failure_faults(void** state)
   assert_int_equal(az_iot_test_reason_for(&fx->log, AZ_IOT_CONN_STATE_FAULTED), AZ_IOT_ERR_MQTT);
 }
 
+/* A failed SUBACK drained after a DPS server DISCONNECT in the same process_loop belongs to the
+ * ending session: the DISCONNECT's status and detail stand. */
+static void dps_suback_failure_after_a_server_disconnect_is_ignored(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  az_iot_mock_mqtt_client* m = dps_open(fx);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  const az_iot_mock_call* sub = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_SUBSCRIBE);
+  assert_non_null(sub);
+
+  az_iot_mqtt_event disconnect;
+  memset(&disconnect, 0, sizeof(disconnect));
+  disconnect.kind = AZ_IOT_MQTT_EVT_DISCONNECTED;
+  disconnect.status = az_iot_mqtt_disconnect_result(AZ_IOT_MQTT_VERSION_5, 0x8B);
+  disconnect.protocol_code = 0x8B;
+  az_iot_mock_mqtt_client_set_events_per_loop(m, SIZE_MAX);
+  fx->log.count = 0;
+  assert_true(az_iot_mock_mqtt_client_inject_event(m, &disconnect));
+  assert_true(az_iot_mock_mqtt_client_inject_suback_refusal(m, sub->packet_id, 0x87));
+  for (int i = 0; i < 3; ++i)
+  {
+    (void)az_iot_connection_client_do_work(fx->client, 0);
+  }
+
+  size_t found = SIZE_MAX;
+  for (size_t i = 0; i < fx->log.count && found == SIZE_MAX; ++i)
+  {
+    if (fx->log.scopes[i] == AZ_IOT_CONN_SCOPE_DPS && fx->log.error_present[i])
+    {
+      found = i;
+    }
+  }
+  assert_int_not_equal(found, SIZE_MAX);
+  assert_int_equal(fx->log.reasons[found], disconnect.status);
+  assert_int_equal(fx->log.error_codes[found], 0x8B);
+}
+
 static void dps_disconnect_midflow_faults(void** state)
 {
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
@@ -3898,6 +3936,106 @@ static void a_refused_connack_carries_the_wire_code_as_mqtt(void** state)
   assert_false(fx->log.is_retriable[i_evt]);
 }
 
+/** @brief Provision, then return the hub session's mock client before its CONNACK. */
+static az_iot_mock_mqtt_client* hub_open_after_assignment(az_iot_test_conn* fx)
+{
+  az_iot_mock_mqtt_client* dps = dps_open_to_registering(fx);
+  assert_true(inject_dps_response(dps, DPS_RESPONSE_TOPIC_ASSIGNED, k_assigned_body));
+  for (int i = 0; i < 3; ++i)
+  {
+    (void)az_iot_connection_client_do_work(fx->client, 0);
+  }
+  az_iot_mock_mqtt_client* hub = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  assert_non_null(hub);
+  return hub;
+}
+
+/** @brief Run the client on what was injected; return the index of the first hub state event
+ * carrying error detail. */
+static size_t hub_error_event_after_injected(az_iot_test_conn* fx)
+{
+  for (int i = 0; i < 3; ++i)
+  {
+    (void)az_iot_connection_client_do_work(fx->client, 0);
+  }
+  size_t found = SIZE_MAX;
+  for (size_t i = 0; i < fx->log.count && found == SIZE_MAX; ++i)
+  {
+    if (fx->log.scopes[i] == AZ_IOT_CONN_SCOPE_HUB && fx->log.error_present[i])
+    {
+      found = i;
+    }
+  }
+  assert_int_not_equal(found, SIZE_MAX);
+  return found;
+}
+
+/* A refused PUBACK does not end the session and is reported to its publish callback: its code and
+ * Reason String must not become the detail of a later disconnection that carries none. */
+static void a_refused_puback_is_not_reported_as_a_later_disconnect_cause(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  az_iot_mock_mqtt_client* hub = hub_open_after_assignment(fx);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(hub, AZ_IOT_OK));
+  for (int i = 0; i < 3; ++i)
+  {
+    (void)az_iot_connection_client_do_work(fx->client, 0);
+  }
+
+  static const char reason[] = "no topic template allows this topic";
+  az_iot_mqtt_event puback;
+  memset(&puback, 0, sizeof(puback));
+  puback.kind = AZ_IOT_MQTT_EVT_PUBLISH_ACK;
+  puback.packet_id = 7;
+  puback.status = AZ_IOT_ERR_PUBLISH_REFUSED;
+  puback.protocol_code = 0x87;
+  puback.reason_string = reason;
+  puback.reason_string_len = sizeof(reason) - 1;
+  assert_true(az_iot_mock_mqtt_client_inject_event(hub, &puback));
+  fx->log.count = 0;
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(hub));
+  for (int i = 0; i < 3; ++i)
+  {
+    (void)az_iot_connection_client_do_work(fx->client, 0);
+  }
+
+  assert_true(fx->log.count > 0);
+  for (size_t i = 0; i < fx->log.count; ++i)
+  {
+    assert_false(fx->log.error_present[i] && fx->log.error_codes[i] == 0x87);
+    assert_int_equal(fx->log.error_message_lengths[i], 0);
+  }
+}
+
+/* A failed acknowledgement that does not end the session (here an UNSUBACK) must not replace the
+ * code of the server DISCONNECT that does, when both are drained together. */
+static void a_failed_unsuback_does_not_replace_the_disconnect_detail(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  az_iot_mock_mqtt_client* hub = hub_open_after_assignment(fx);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(hub, AZ_IOT_OK));
+  for (int i = 0; i < 3; ++i)
+  {
+    (void)az_iot_connection_client_do_work(fx->client, 0);
+  }
+
+  az_iot_mqtt_event unsuback;
+  memset(&unsuback, 0, sizeof(unsuback));
+  unsuback.kind = AZ_IOT_MQTT_EVT_UNSUBSCRIBE_ACK;
+  unsuback.packet_id = 9;
+  unsuback.status = AZ_IOT_ERR_MQTT;
+  unsuback.transport_code = -3;
+  /* Both reach the core in one process_loop(), before the DISCONNECT is acted on. */
+  az_iot_mock_mqtt_client_set_events_per_loop(hub, SIZE_MAX);
+  fx->log.count = 0;
+  assert_true(az_iot_mock_mqtt_client_inject_server_disconnect(hub, 0x97, NULL));
+  assert_true(az_iot_mock_mqtt_client_inject_event(hub, &unsuback));
+  size_t const i_evt = hub_error_event_after_injected(fx);
+
+  assert_int_equal(fx->log.error_sources[i_evt], AZ_IOT_CONN_ERR_SRC_MQTT);
+  assert_int_equal(fx->log.error_codes[i_evt], 0x97);
+}
+
 /* Below MQTT there is no wire code. The adapter's own negative code is what
  * separates "connection refused" from "TLS handshake failed" from "DNS", all
  * of which used to arrive as one AZ_IOT_ERR_MQTT. */
@@ -5443,6 +5581,8 @@ int main(void)
         a_session_without_the_registration_ref_does_not_register, setup, teardown),
     cmocka_unit_test_setup_teardown(dps_connack_failure_faults, setup, teardown),
     cmocka_unit_test_setup_teardown(dps_suback_failure_faults, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        dps_suback_failure_after_a_server_disconnect_is_ignored, setup, teardown),
     cmocka_unit_test_setup_teardown(dps_disconnect_midflow_faults, setup, teardown),
     cmocka_unit_test_setup_teardown(
         dps_malformed_response_faults_with_a_protocol_error, setup, teardown),
@@ -5609,6 +5749,12 @@ int main(void)
         a_failed_disconnect_carries_the_adapter_code, setup_with_reconnect, teardown),
     cmocka_unit_test_setup_teardown(
         a_refused_connack_carries_the_wire_code_as_mqtt, setup_with_reconnect, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_refused_puback_is_not_reported_as_a_later_disconnect_cause,
+        setup_with_reconnect,
+        teardown),
+    cmocka_unit_test_setup_teardown(
+        a_failed_unsuback_does_not_replace_the_disconnect_detail, setup_with_reconnect, teardown),
     cmocka_unit_test_setup_teardown(
         a_transport_failure_carries_the_adapter_code, setup_with_reconnect, teardown),
     cmocka_unit_test_setup_teardown(
