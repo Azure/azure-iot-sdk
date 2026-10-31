@@ -12,7 +12,8 @@
 # QEMU exits or <seconds> (default 120) pass first. The log is <build-dir>/qemu.log.
 #
 # Each run writes a fresh flash image from the build, so NVS and OTA state do not persist.
-# QEMU_FLASH_EXTRA="<offset> <file> ..." also writes those files into it (e.g. the device identity:
+# QEMU_FLASH_EXTRA="<offset> <file> ..." also writes those files (relative to the current
+# directory) into it (e.g. the device identity:
 # "0xd000 esp_secure_cert.bin").
 set -euo pipefail
 
@@ -47,9 +48,23 @@ fi
 
 flash="${build}/qemu_flash.bin"
 log="${build}/qemu.log"
-# shellcheck disable=SC2086 # QEMU_FLASH_EXTRA is a list of offset/file pairs.
+# QEMU_FLASH_EXTRA's files are relative to the caller; esptool runs in the build directory.
+extra=()
+read -r -a pairs <<< "${QEMU_FLASH_EXTRA:-}"
+if [ $((${#pairs[@]} % 2)) -ne 0 ]; then
+  echo "QEMU_FLASH_EXTRA: expected <offset> <file> pairs" >&2
+  exit 2
+fi
+for ((i = 0; i < ${#pairs[@]}; i += 2)); do
+  file=${pairs[i + 1]}
+  if [ ! -f "$file" ]; then
+    echo "QEMU_FLASH_EXTRA: no such file: $file" >&2
+    exit 2
+  fi
+  extra+=("${pairs[i]}" "$(cd "$(dirname "$file")" && pwd)/$(basename "$file")")
+done
 (cd "$build" && python -m esptool --chip "$target" merge-bin --pad-to-size 4MB -o "$flash" \
-  @flash_args ${QEMU_FLASH_EXTRA:-} > /dev/null)
+  @flash_args "${extra[@]}" > /dev/null)
 
 "${qemu[@]}" -nographic -drive "file=${flash},if=mtd,format=raw" -nic user,model=open_eth \
   > "$log" 2>&1 &
