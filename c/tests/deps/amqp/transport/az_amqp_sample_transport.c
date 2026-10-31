@@ -1132,7 +1132,10 @@ static az_amqp_transport_status _sch_drive_reneg(az_amqp_sample_transport* s)
           {
             continue; // more handshake data already buffered
           }
-          sch->reneg_needs_read = true; // otherwise fall through to read more
+          // Flush this step's token (e.g. the ClientHello answering a HelloRequest) at the top
+          // of the loop, then read the server's reply.
+          sch->reneg_needs_read = true;
+          continue;
         }
         else
         {
