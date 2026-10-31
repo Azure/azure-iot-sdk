@@ -951,6 +951,48 @@ static void an_answer_refused_busy_by_the_adapter_can_be_sent_again(void** state
   assert_string_equal(answer->topic, "$iothub/methods/res/200/?$rid=3");
 }
 
+/* A payload too large for the adapter keeps the request: a smaller answer is sent, and an
+ * unanswered one is ended by the session end. */
+static void an_answer_too_large_for_the_adapter_can_be_sent_again(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  invocation_record rec = { 0 };
+  assert_int_equal(
+      az_iot_mqttv3_direct_method_client_set_handler(&fx->dm, on_method, &rec), AZ_IOT_OK);
+  inject_invocation(fx, 5);
+  assert_true(rec.fired);
+  az_iot_direct_method_request const retried = rec.request;
+  rec.fired = false;
+  inject_invocation(fx, 6);
+  assert_true(rec.fired);
+  az_iot_direct_method_request const unanswered = rec.request;
+
+  static const uint8_t large[] = "{\"large\":true}";
+  az_iot_mock_mqtt_client_set_next_result(
+      fx->mock, AZ_IOT_MOCK_CALL_PUBLISH, AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+  assert_int_equal(
+      az_iot_mqttv3_direct_method_respond(&fx->dm, retried, 200, large, sizeof(large) - 1u),
+      AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+  az_iot_mock_mqtt_client_clear_calls(fx->mock);
+  assert_int_equal(az_iot_mqttv3_direct_method_respond(&fx->dm, retried, 200, NULL, 0), AZ_IOT_OK);
+  const az_iot_mock_call* answer
+      = az_iot_mock_mqtt_client_last_of(fx->mock, AZ_IOT_MOCK_CALL_PUBLISH);
+  assert_non_null(answer);
+  assert_string_equal(answer->topic, "$iothub/methods/res/200/?$rid=5");
+
+  az_iot_mock_mqtt_client_set_next_result(
+      fx->mock, AZ_IOT_MOCK_CALL_PUBLISH, AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+  assert_int_equal(
+      az_iot_mqttv3_direct_method_respond(&fx->dm, unanswered, 200, large, sizeof(large) - 1u),
+      AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(fx->mock));
+  (void)az_iot_connection_client_do_work(&fx->conn, 0);
+  assert_int_equal(
+      az_iot_mqttv3_direct_method_respond(&fx->dm, unanswered, 200, NULL, 0),
+      AZ_IOT_ERR_NOT_CONNECTED);
+}
+
 /* A send error from a link that dropped before do_work() saw it (Paho answers AZ_IOT_ERR_MQTT)
  * keeps the request, so the session end that follows makes it NOT_CONNECTED. */
 static void an_answer_failing_as_the_link_drops_is_ended_by_the_session_end(void** state)
@@ -1792,6 +1834,8 @@ int main(void)
     cmocka_unit_test_setup_teardown(a_session_end_ends_unanswered_invocations, setup, teardown),
     cmocka_unit_test_setup_teardown(
         an_answer_refused_busy_by_the_adapter_can_be_sent_again, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        an_answer_too_large_for_the_adapter_can_be_sent_again, setup, teardown),
     cmocka_unit_test_setup_teardown(
         an_answer_failing_as_the_link_drops_is_ended_by_the_session_end, setup, teardown),
     cmocka_unit_test_setup_teardown(
