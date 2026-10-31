@@ -135,9 +135,10 @@ extern "C"
    * this SDK does not keep. Do not hold a request across the teardown of the
    * client that issued it.
    *
-   * @return AZ_IOT_ERR_TIMEOUT if @p request has passed its response timeout --
-   *         nothing is sent and the slot is released;
-   *         AZ_IOT_ERR_NOT_CONNECTED if the session it arrived on has ended -- nothing
+   * @return AZ_IOT_ERR_TIMEOUT if @p request has passed its response timeout while
+   *         it still holds its slot -- nothing is sent and the slot is released;
+   *         AZ_IOT_ERR_NOT_CONNECTED if the session it arrived on has ended, even past
+   *         its response timeout once the session end reclaimed the slot -- nothing
    *         is sent, as the call already failed service-side. Kept even after its
    *         slot is reused, until the slot ends another invocation the same way;
    *         after that, AZ_IOT_ERR_INVALID_ARG;
