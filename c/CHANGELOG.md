@@ -65,6 +65,8 @@
   `AZ_IOT_ERR_BUSY` when called from a callback the connection client runs (state, publish
   completion, SAS token, DPS, CSR, subscription failure, inbound message, feature observer). Call
   them after `do_work()` returns. See [Opening and closing](docs/connecting.md#opening-and-closing).
+- Breaking: `az_iot_connection_client_deinit()` returns `az_iot_result`: `AZ_IOT_ERR_BUSY` from
+  the same callbacks, where it releases nothing, and `AZ_IOT_ERR_INVALID_ARG` for a NULL client.
 - Breaking: `az_iot_connection_client_limits::max_session_handlers` and `max_feature_state_observers`
   are replaced by `max_feature_observers` (default 10,
   `AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_FEATURE_OBSERVERS`): feature clients observe connection
