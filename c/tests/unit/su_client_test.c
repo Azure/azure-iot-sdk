@@ -646,8 +646,8 @@ typedef struct
   char last_installed_provider[64];
   char last_installed_name[64];
   char last_installed_version[64];
-  az_iot_su_step_result last_step_results[_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS];
-  uint8_t last_step_details[_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS][256];
+  az_iot_su_step_result last_step_results[AZ_IOT_SU_MAX_STEP_COUNT];
+  uint8_t last_step_details[AZ_IOT_SU_MAX_STEP_COUNT][256];
   size_t do_work_count;
   size_t set_properties_count;
   az_iot_result set_properties_result;
@@ -734,7 +734,7 @@ static az_iot_result fake_channel_report(void* ctx, const az_iot_su_report* repo
   fc->report_count++;
   fc->last_report = *report;
   assert_true(report->step_results_count >= 0);
-  assert_true(report->step_results_count <= _az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS);
+  assert_true(report->step_results_count <= AZ_IOT_SU_MAX_STEP_COUNT);
   if (report->step_results_count == 0)
   {
     assert_null(report->step_results);
@@ -2277,7 +2277,7 @@ static void terminal_report_preserves_step_results_at_capacity(void** state)
 
   fx->su._internal.state = AZ_IOT_SU_STATE_IDLE;
   fx->su._internal.pending_outcome = AZ_IOT_SU_OUTCOME_FAILED;
-  fx->su._internal.step_results_count = _az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS;
+  fx->su._internal.step_results_count = AZ_IOT_SU_MAX_STEP_COUNT;
   uint8_t details[] = { 'a', '\0', 'b' };
   for (int32_t i = 0; i < fx->su._internal.step_results_count; ++i)
   {
@@ -2291,8 +2291,7 @@ static void terminal_report_preserves_step_results_at_capacity(void** state)
 
   assert_int_equal(az_iot_su__report_state(&fx->su), AZ_IOT_OK);
   assert_int_equal(fx->chan.report_count, 1);
-  assert_int_equal(
-      fx->chan.last_report.step_results_count, _az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS);
+  assert_int_equal(fx->chan.last_report.step_results_count, AZ_IOT_SU_MAX_STEP_COUNT);
 
   /* A retaining channel copies the array and span bytes before the engine
    * reuses its storage for another workflow. */
@@ -3030,7 +3029,7 @@ static void workspace_size_follows_the_limits(void** state)
   assert_int_equal(
       az_iot_su_workspace_size(&limits),
       1300 + 2u * 50u + AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE + AZ_IOT_SU_MIN_MESSAGE_SIZE
-          + 2u * AZ_IOT_SU_PERSIST_OVERHEAD + 50u * _az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS + 11u
+          + 2u * AZ_IOT_SU_PERSIST_OVERHEAD + 50u * AZ_IOT_SU_MAX_STEP_COUNT + 11u
           + AZ_IOT_SU_DEFAULT_MAX_ROOT_KEYS * sizeof(az_iot_su_root_key)
           + AZ_IOT_SU_DEFAULT_MAX_OBSERVERS * sizeof(az_iot_su_observer_registration)
           + sizeof(az_iot_su_workspace_alignment) - 1u);
