@@ -332,6 +332,51 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
         }
 
         [Fact]
+        public async Task TwinPushOfUnsupportedTypeVersionDoesNotSatisfyExpectedTwinPush()
+        {
+            using MockConnectionMqttClient mockMqttClient = new();
+            mockMqttClient.OnPublish = async publish =>
+            {
+                if (publish.Topic.EndsWith("/srv/presence", StringComparison.Ordinal))
+                {
+                    // The twin client ignores twin pushes of other type versions, so they don't count as the expected push.
+                    MqttPublish push = new()
+                    {
+                        Topic = "ih/someDeviceId/dev/twin",
+                        CorrelationData = publish.CorrelationData,
+                        Payload = new Device.Models.Twin.TwinPush().ToByteArray(),
+                    };
+                    push.UserProperties.Add(new("type", Encoding.UTF8.GetBytes("twin-push:2")));
+                    await mockMqttClient.SimulatePublishReceivedAsync(push);
+
+                    MqttPublish birthAck = new()
+                    {
+                        Topic = "ih/someDeviceId/dev/presence",
+                        CorrelationData = publish.CorrelationData,
+                        Payload = new BirthAck() { DesiredVersion = 3, ReportedVersion = 2 }.ToByteArray(),
+                    };
+                    birthAck.UserProperties.Add(new("type", Encoding.UTF8.GetBytes("birth-ack:1")));
+                    _ = mockMqttClient.SimulatePublishReceivedAsync(birthAck);
+                }
+
+                return new MqttPublishAck() { ReasonCode = MqttPublishAckReasonCode.Success };
+            };
+            MqttV5ConnectionClientOptions options = new()
+            {
+                MqttClient = mockMqttClient,
+                ConnectionRetryPolicy = new ExponentialBackoffRetryPolicy(uint.MaxValue, TimeSpan.Zero, useJitter: false),
+            };
+            using ConnectionClient connectionClient = new(options);
+            connectionClient.TwinPushTimeoutSchedule = attempt => attempt == 1 ? TimeSpan.FromMilliseconds(50) : Timeout.InfiniteTimeSpan;
+
+            await connectionClient.ConnectToHubAsync(GetMockConnectionContext(), TestContext.Current.CancellationToken)
+                .WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+
+            await WaitForBirthCountAsync(mockMqttClient, 2);
+            Assert.Single(mockMqttClient.DisconnectRequests);
+        }
+
+        [Fact]
         public async Task NoTwinPushIsExpectedWhenBirthVersionsMatchBirthAck()
         {
             using MockConnectionMqttClient mockMqttClient = new()

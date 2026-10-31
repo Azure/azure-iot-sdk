@@ -200,17 +200,18 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
         /// <param name="getReported">Request the service to include the reported properties in the returned twin.</param>
         /// <param name="getDesired">Request the service to include the desired properties in the returned twin.</param>
         /// <param name="ifNotMatchReported">
-        /// If provided, and the version matches or exceeds the version of the reported properties held by the service, then the 
-        /// service will not include the reported properties in the returned twin.
+        /// If provided (non-zero), and the version equals the version of the reported properties held by the service, then the
+        /// service will not include the reported properties in the returned twin. The returned twin still includes their version.
         /// </param>
         /// <param name="ifNotMatchDesired">
-        /// If provided, and the version matches or exceeds the version of the desired properties held by the service, then the 
-        /// service will not include the desired properties in the returned twin.
+        /// If provided (non-zero), and the version equals the version of the desired properties held by the service, then the
+        /// service will not include the desired properties in the returned twin. The returned twin still includes their version.
         /// </param>
         /// <param name="cancellationToken">The cancellation token.</param>
         /// <returns>The returned twin.</returns>
         /// <remarks>
-        /// Concurrent calls with identical arguments share a single request to IoT hub and all receive its response. If IoT hub
+        /// Concurrent calls with identical arguments share a single request to IoT hub and all receive its response. Calls with
+        /// different arguments are sent to IoT hub one at a time, each once the previous one has completed. If IoT hub
         /// doesn't respond within a defensive timeout (5 to 15 minutes, growing with each attempt), the request is sent again.
         /// </remarks>
         /// <exception cref="ArgumentException">Thrown when neither desired nor reported properties are requested.</exception>

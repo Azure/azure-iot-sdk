@@ -379,7 +379,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
         }
 
         [Fact]
-        public async Task GetTwinAsync_IdenticalConcurrentCallsShareOneRequest()
+        public async Task GetTwinAsync_IdenticalConcurrentCallsShareOneRequestAndDifferentOnesAreSentOneAtATime()
         {
             MockFeatureConnectionClient connection = new()
             {
@@ -390,11 +390,13 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
 
             Task<DeviceTwin> first = twinClient.GetTwinAsync(getReported: false, cancellationToken: TestContext.Current.CancellationToken);
             Task<DeviceTwin> cancelled = twinClient.GetTwinAsync(getReported: false, cancellationToken: cancelledCaller.Token);
-            Task<DeviceTwin> second = twinClient.GetTwinAsync(getReported: false, cancellationToken: TestContext.Current.CancellationToken);            Task<DeviceTwin> different = twinClient.GetTwinAsync(getReported: false, ifNotMatchDesired: 1, cancellationToken: TestContext.Current.CancellationToken);
+            Task<DeviceTwin> second = twinClient.GetTwinAsync(getReported: false, cancellationToken: TestContext.Current.CancellationToken);
+            Task<DeviceTwin> different = twinClient.GetTwinAsync(getReported: false, ifNotMatchDesired: 1, cancellationToken: TestContext.Current.CancellationToken);
 
-            await connection.WaitForPublishedMessagesAsync(2);
+            // The different request waits until IoT hub responds to the first.
+            await connection.WaitForPublishedMessagesAsync(1);
             await Task.Delay(100, TestContext.Current.CancellationToken);
-            Assert.Equal(2, connection.PublishedMessages.Count);
+            Assert.Single(connection.PublishedMessages);
 
             // One caller giving up doesn't abandon the request for the others.
             cancelledCaller.Cancel();
@@ -405,13 +407,47 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             Assert.Same(await first, await second);
             Assert.False(different.IsCompleted);
 
-            await ReceiveGetResponseAsync(connection, connection.PublishedMessages[1], 4, "{\"fanSpeed\":4}");
+            MqttPublish differentPublish = await connection.WaitForPublishedMessagesAsync(2);
+            Assert.Equal(1ul, TwinGet.Parser.ParseFrom(differentPublish.Payload).IfNotMatchDesired);
+            await ReceiveGetResponseAsync(connection, differentPublish, 4, "{\"fanSpeed\":4}");
             Assert.Equal(4ul, (await different).DesiredVersion);
 
             // Once the shared request completes, a new call sends a new request.
             Task<DeviceTwin> later = twinClient.GetTwinAsync(getReported: false, cancellationToken: TestContext.Current.CancellationToken);
             await ReceiveGetResponseAsync(connection, await connection.WaitForPublishedMessagesAsync(3), 5, "{\"fanSpeed\":5}");
             Assert.Equal(5ul, (await later).DesiredVersion);
+        }
+
+        [Fact]
+        public async Task GetTwinAsync_QueuedRequestIsSentOnceTheActiveOneFails()
+        {
+            MockFeatureConnectionClient connection = new()
+            {
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv5, DeviceId),
+            };
+            using TwinClient twinClient = new(connection);
+            using CancellationTokenSource abandonedCaller = new();
+
+            Task<DeviceTwin> active = twinClient.GetTwinAsync(getReported: false, cancellationToken: TestContext.Current.CancellationToken);
+            Task<DeviceTwin> abandoned = twinClient.GetTwinAsync(getDesired: false, cancellationToken: abandonedCaller.Token);
+            Task<DeviceTwin> queued = twinClient.GetTwinAsync(cancellationToken: TestContext.Current.CancellationToken);
+            await connection.WaitForPublishedMessagesAsync(1);
+
+            // A queued request whose callers all give up is never sent.
+            abandonedCaller.Cancel();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => abandoned);
+
+            connection.SimulateConnectionLost();
+            DeviceException exception = await Assert.ThrowsAsync<DeviceException>(() => active);
+            Assert.Equal(ErrorRetryability.Retryable, exception.Retryability);
+
+            MqttPublish queuedPublish = await connection.WaitForPublishedMessagesAsync(2);
+            Assert.Equal(Sections.Both, TwinGet.Parser.ParseFrom(queuedPublish.Payload).Sections);
+            await ReceiveGetResponseAsync(connection, queuedPublish, 6, "{}");
+            Assert.Equal(6ul, (await queued).DesiredVersion);
+
+            await Task.Delay(100, TestContext.Current.CancellationToken);
+            Assert.Equal(2, connection.PublishedMessages.Count);
         }
 
         [Fact]
@@ -747,6 +783,30 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
 
             Assert.Equal(0, eventCount);
             Assert.Empty(connection.PublishedMessages);
+        }
+
+        [Theory]
+        [InlineData("desired-patch:1")]
+        [InlineData("twin-push:1")]
+        public async Task MalformedConnectionScopedMessage_IsDropped(string type)
+        {
+            (MockFeatureConnectionClient connection, Guid nonce) = CreateConnectionWithNonce();
+            using TwinClient twinClient = new(connection);
+            await ReceiveTwinPushAsync(connection, nonce, 5, "{\"fanSpeed\":40}");
+
+            int eventCount = 0;
+            twinClient.DesiredPatchReceived += _ => eventCount++;
+            twinClient.TwinPushReceived += _ => eventCount++;
+
+            await connection.SimulateReceiveAsync(CreateInboundTwinPublish(type, nonce.ToByteArray(bigEndian: true), new byte[] { 0xFF, 0xFF, 0xFF }));
+
+            Assert.Equal(0, eventCount);
+            Assert.Empty(connection.PublishedMessages);
+            Assert.Equal(5ul, twinClient.GetTwinState().DesiredVersion);
+
+            // Later messages are still processed.
+            await ReceiveDesiredPatchAsync(connection, nonce, 6, "{\"fanSpeed\":60}");
+            Assert.Equal(1, eventCount);
         }
 
         [Fact]

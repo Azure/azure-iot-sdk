@@ -37,11 +37,19 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
         private const string AzureEventGridIncomingTwinPublishTopic = "ih/" + IConnectionClient.DeviceIdPlaceholder + "/dev/twin";
         private const string AzureEventGridIncomingPresencePublishTopic = "ih/" + IConnectionClient.DeviceIdPlaceholder + "/dev/presence";
 
-        // Guards _getTwinExchangesByRequest, _getTwinExchangesById and _getTwinLostConnectionNonce.
+        // Guards _getTwinExchangesByRequest, _getTwinExchangesById, _activeGetTwinExchange, _queuedGetTwinExchanges and
+        // _getTwinLostConnectionNonce.
         private readonly object _getTwinExchangesLock = new();
 
-        // The outstanding get twin exchange for each distinct get twin request. Identical concurrent requests share one exchange.
+        // The get twin exchange for each distinct get twin request, whether active or queued. Identical concurrent requests share one exchange.
         private readonly Dictionary<GetTwinRequest, GetTwinExchange> _getTwinExchangesByRequest = new();
+
+        // The one get twin exchange that may have a request out to IoT hub. Application get twin requests are sent one at a
+        // time, as the twin protocol recommends, so the others wait in _queuedGetTwinExchanges.
+        private GetTwinExchange? _activeGetTwinExchange;
+
+        // The get twin exchanges waiting for the active one to end, in the order they were made.
+        private readonly LinkedList<GetTwinExchange> _queuedGetTwinExchanges = new();
 
         // The outstanding get twin exchanges, keyed by the ID of their latest attempt. Responses to earlier attempts are dropped.
         private readonly Dictionary<Guid, GetTwinExchange> _getTwinExchangesById = new();
@@ -272,12 +280,12 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
         /// <param name="getReported">Request the service to include the reported properties in the returned twin.</param>
         /// <param name="getDesired">Request the service to include the desired properties in the returned twin.</param>
         /// <param name="ifNotMatchReported">
-        /// If provided, and the version matches or exceeds the version of the reported properties held by the service, then the 
-        /// service will not include the reported properties in the returned twin.
+        /// If provided (non-zero), and the version equals the version of the reported properties held by the service, then the
+        /// service will not include the reported properties in the returned twin. The returned twin still includes their version.
         /// </param>
         /// <param name="ifNotMatchDesired">
-        /// If provided, and the version matches or exceeds the version of the desired properties held by the service, then the 
-        /// service will not include the desired properties in the returned twin.
+        /// If provided (non-zero), and the version equals the version of the desired properties held by the service, then the
+        /// service will not include the desired properties in the returned twin. The returned twin still includes their version.
         /// </param>
         /// <param name="cancellationToken">The cancellation token.</param>
         /// <returns>The returned twin.</returns>
@@ -287,7 +295,8 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
         /// However, this SDK will parse the twin that the service returns to filter out unrequested sections to mimic the behavior of MQTTv5 IoT hubs.
         /// </para>
         /// <para>
-        /// Concurrent calls with identical arguments share a single request to IoT hub and all receive its response. If IoT hub
+        /// Concurrent calls with identical arguments share a single request to IoT hub and all receive its response. Calls with
+        /// different arguments are sent to IoT hub one at a time, each once the previous one has completed. If IoT hub
         /// doesn't respond within a defensive timeout (5 to 15 minutes, growing with each attempt), the request is sent again.
         /// </para>
         /// </remarks>
@@ -309,14 +318,22 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
 
             GetTwinRequest request = new(getDesired, getReported, ifNotMatchDesired, ifNotMatchReported);
             GetTwinExchange? exchange;
-            bool isNewExchange = false;
+            bool isActivated = false;
             lock (_getTwinExchangesLock)
             {
                 if (!_getTwinExchangesByRequest.TryGetValue(request, out exchange))
                 {
                     exchange = new GetTwinExchange(request);
                     _getTwinExchangesByRequest[request] = exchange;
-                    isNewExchange = true;
+                    if (_activeGetTwinExchange == null)
+                    {
+                        _activeGetTwinExchange = exchange;
+                        isActivated = true;
+                    }
+                    else
+                    {
+                        exchange.QueueNode = _queuedGetTwinExchanges.AddLast(exchange);
+                    }
                 }
 
                 exchange.WaiterCount++;
@@ -324,7 +341,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
 
             try
             {
-                if (isNewExchange)
+                if (isActivated)
                 {
                     SendNextGetTwinAttempt(exchange);
                 }
@@ -469,8 +486,8 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
                 return null;
             }
 
-            // MQTTv3 IoT hubs don't support if-match. Otherwise, if IoT hub didn't reveal its version, an if-match of 0 makes
-            // this patch unconditional.
+            // MQTTv3 IoT hubs don't support if-match. Otherwise, IoT hub's versions are never 0, so if IoT hub didn't reveal its
+            // version, an if-match of 0 is rejected with IoT hub's current version, which the next attempt then uses.
             ulong ifMatch = IsClassicConnection() ? 0 : GetAuthoritativeVersion(desired: false) ?? 0;
 
             JsonObject payload = _pendingReportedPatches[0].Patch.DeepClone().AsObject();
@@ -645,7 +662,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
                 CorrelationData = attempt.PatchId.ToByteArray(bigEndian: true),
                 Payload = new ReportedPatch()
                 {
-                    IfMatch = attempt.IfMatch, // If this value is 0, the if-match field will not be included in the serialized payload and the request is treated as unconditional
+                    IfMatch = attempt.IfMatch,
                     Payload = ByteString.CopyFrom(attempt.Payload),
                 }.ToByteArray(),
                 ContentType = ProtobufContentType,
@@ -885,10 +902,30 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
                 _getTwinExchangesById.Remove(getId);
             }
 
+            if (exchange.QueueNode != null)
+            {
+                _queuedGetTwinExchanges.Remove(exchange.QueueNode);
+                exchange.QueueNode = null;
+            }
+
             exchange.Timer?.Dispose();
 
             // Callbacks registered on this token run asynchronously so that they never run while holding the lock.
             _ = exchange.Cancellation.CancelAsync();
+
+            if (_activeGetTwinExchange == exchange)
+            {
+                _activeGetTwinExchange = null;
+                if (!_isDisposed && _queuedGetTwinExchanges.First is LinkedListNode<GetTwinExchange> next)
+                {
+                    _queuedGetTwinExchanges.RemoveFirst();
+                    next.Value.QueueNode = null;
+                    _activeGetTwinExchange = next.Value;
+
+                    // This lock is reentrant, and the request itself is published off this thread.
+                    SendNextGetTwinAttempt(next.Value);
+                }
+            }
         }
 
         // Twin exchanges can't outlive the connection they were sent on, since IoT hub never sends their responses on a later one.
@@ -1121,7 +1158,18 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
                     return;
                 }
 
-                DesiredPatch receivedDesiredPatch = DesiredPatch.Parser.ParseFrom(args.Publish.PayloadAsReadOnlySequence);
+                DesiredPatch receivedDesiredPatch;
+                try
+                {
+                    receivedDesiredPatch = DesiredPatch.Parser.ParseFrom(args.Publish.PayloadAsReadOnlySequence);
+                }
+                catch (InvalidProtocolBufferException e)
+                {
+                    // If this was a patch, the next one reveals the gap and resyncs the desired properties.
+                    Trace.TraceWarning("Dropping a malformed desired properties patch: {0}", e);
+                    return;
+                }
+
                 RecordAuthoritativeVersions(connectionNonce, receivedDesiredPatch.Version, 0);
 
                 DesiredStateOutcome outcome = new();
@@ -1140,7 +1188,17 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
                     return;
                 }
 
-                TwinPush receivedTwinPush = TwinPush.Parser.ParseFrom(args.Publish.PayloadAsReadOnlySequence);
+                TwinPush receivedTwinPush;
+                try
+                {
+                    receivedTwinPush = TwinPush.Parser.ParseFrom(args.Publish.PayloadAsReadOnlySequence);
+                }
+                catch (InvalidProtocolBufferException e)
+                {
+                    Trace.TraceWarning("Dropping a malformed twin push: {0}", e);
+                    return;
+                }
+
                 RecordAuthoritativeVersions(connectionNonce, receivedTwinPush.Desired?.Version ?? 0, receivedTwinPush.Reported?.Version ?? 0);
                 var twinPushArgs = new TwinPushReceivedEventArgs();
                 if (receivedTwinPush.Reported != null)
@@ -1918,6 +1976,9 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
             public int Attempt { get; set; } = 1;
 
             public int WaiterCount { get; set; }
+
+            // This exchange's place in _queuedGetTwinExchanges while it waits to become the active exchange.
+            public LinkedListNode<GetTwinExchange>? QueueNode { get; set; }
 
             public bool IsEnded { get; set; }
 

@@ -596,8 +596,9 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
             {
                 MqttPublish publish = args.Publish;
                 if (publish.Topic.Equals(_topic, StringComparison.Ordinal)
-                    && publish.UserProperties.TryGetType(out string? messageType, out _)
+                    && publish.UserProperties.TryGetType(out string? messageType, out int? typeVersion)
                     && messageType.Equals("twin-push")
+                    && typeVersion == 1
                     && GuidExtensions.TryParseBytes(publish.CorrelationData, out Guid? receivedNonce)
                     && receivedNonce.Value == _connectNonce)
                 {
