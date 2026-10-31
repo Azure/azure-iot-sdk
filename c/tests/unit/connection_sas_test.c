@@ -2710,7 +2710,9 @@ static void a_user_token_renewal_settles_no_longer_than_the_old_token_lives(void
   assert_int_equal(fx->client.state[AZ_IOT_CONN_SCOPE_HUB], AZ_IOT_CONN_STATE_CONNECTED);
   assert_true(fx->client.hub_session_token_expiry_ms >= before + 99000u);
   assert_true(fx->client.hub_session_token_expiry_ms <= az_iot_time_mono_ms() + 100000u);
-  assert_int_equal(fx->client.hub_session_token_expiry_unix_seconds, NOW + 100u);
+  /* Rounded down from the time left since delivery: never later than the token's real expiry. */
+  uint64_t const expiry_unix_seconds = fx->client.hub_session_token_expiry_unix_seconds;
+  assert_true(expiry_unix_seconds == NOW + 100u || expiry_unix_seconds == NOW + 99u);
   az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
   int acks = 0;
   (void)publish_awaiting_puback(fx, &acks);
@@ -2718,10 +2720,10 @@ static void a_user_token_renewal_settles_no_longer_than_the_old_token_lives(void
   g_fake.mode = FAKE_TOKEN_LATER;
   fx->client.sas_token_renewal_due_ms[AZ_IOT_CONN_SCOPE_HUB] = az_iot_time_mono_ms();
   pump(fx, 3);
-  now = NOW + 99u;
+  now = expiry_unix_seconds - 1u;
   assert_int_equal(supply_user_token(fx, AZ_IOT_CONN_SCOPE_HUB), AZ_IOT_OK);
   pump(fx, 1);
-  assert_int_equal(fx->client.hub_session_token_expiry_unix_seconds, NOW + 100u);
+  assert_int_equal(fx->client.hub_session_token_expiry_unix_seconds, expiry_unix_seconds);
   assert_true(az_iot_connection_client__holds_sends_for_session_end(&fx->client));
   assert_int_equal(az_iot_mock_mqtt_client_count_of(m, AZ_IOT_MOCK_CALL_DISCONNECT), 0);
   assert_true(
