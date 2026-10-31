@@ -339,6 +339,24 @@ static void sleep_until_tick_end_returns_at_once_after_the_tick(void** state)
   assert_true(sample_now_ms() - start < 50u);
 }
 
+/* Manifest file ids that would leave the download directory are refused. */
+static void is_plain_file_name_refuses_names_that_leave_the_directory(void** state)
+{
+  (void)state;
+  assert_true(sample_is_plain_file_name(AZ_SPAN_FROM_STR("firmware.swu")));
+  assert_true(sample_is_plain_file_name(AZ_SPAN_FROM_STR("..swu")));
+  assert_true(sample_is_plain_file_name(AZ_SPAN_FROM_STR("...")));
+
+  assert_false(sample_is_plain_file_name(AZ_SPAN_EMPTY));
+  assert_false(sample_is_plain_file_name(AZ_SPAN_FROM_STR(".")));
+  assert_false(sample_is_plain_file_name(AZ_SPAN_FROM_STR("..")));
+  assert_false(sample_is_plain_file_name(AZ_SPAN_FROM_STR("../outside")));
+  assert_false(sample_is_plain_file_name(AZ_SPAN_FROM_STR("/etc/passwd")));
+  assert_false(sample_is_plain_file_name(AZ_SPAN_FROM_STR("a\\b")));
+  assert_false(sample_is_plain_file_name(AZ_SPAN_FROM_STR("C:file")));
+  assert_false(sample_is_plain_file_name(AZ_SPAN_FROM_BUFFER("a\0b")));
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -359,6 +377,7 @@ int main(void)
         file_create_private_unique_creates_a_new_name_beside_the_path, setup, teardown),
     cmocka_unit_test_setup_teardown(
         file_open_read_no_follow_refuses_a_link_and_a_missing_file, setup, teardown),
+    cmocka_unit_test(is_plain_file_name_refuses_names_that_leave_the_directory),
     cmocka_unit_test(stop_handler_records_sigterm_and_sigint),
     cmocka_unit_test(sleep_until_tick_end_waits_out_the_rest_of_the_tick),
     cmocka_unit_test(sleep_until_tick_end_returns_at_once_after_the_tick),

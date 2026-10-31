@@ -71,6 +71,15 @@ bool sample_string_copy(char* dst, size_t dst_size, const char* src);
 bool sample_env_copy_to_buffer(const char* name, const char* fallback, char* dst, size_t dst_size);
 
 /**
+ * @brief Whether @p name, from a manifest, can name a file in a directory without
+ * leaving it: not empty, `.` or `..`, and free of `/`, `\\`, `:` and NUL.
+ *
+ * @param[in] name Name to check.
+ * @return true when @p name is a single, plain file name.
+ */
+bool sample_is_plain_file_name(az_span name);
+
+/**
  * @brief Open @p path for binary writing with owner-only access (0600) on
  * POSIX rather than fopen()'s 0666 less umask. On Windows the file keeps the
  * ACL inherited from its directory.

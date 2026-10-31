@@ -75,7 +75,7 @@
 #define SAMPLE_ERR_FILE_OPEN 0x101
 #define SAMPLE_ERR_URL_TOO_LONG 0x102
 #define SAMPLE_ERR_TOO_LARGE 0x103 /* more data than the manifest's file size */
-#define SAMPLE_ERR_PATH_TOO_LONG 0x104
+#define SAMPLE_ERR_PATH_INVALID 0x104 /* file id not a plain file name, or path too long */
 #define SAMPLE_ERR_CURL 0x200 /* + CURLcode */
 #define SAMPLE_ERR_HTTP 0x1000 /* + HTTP status */
 
@@ -121,7 +121,8 @@ typedef struct
 /**
  * @brief Path of a downloaded file: the prefix and the manifest's file id.
  *
- * @return 0 when it does not fit @p out: files would otherwise overwrite each other.
+ * @return 0 when the id is not a plain file name (see sample_is_plain_file_name()), or when the
+ * path does not fit @p out: files would otherwise leave the directory or overwrite each other.
  */
 static int build_download_path(
     const download_context* d,
@@ -129,6 +130,10 @@ static int build_download_path(
     char* out,
     size_t out_size)
 {
+  if (!sample_is_plain_file_name(file->id))
+  {
+    return 0;
+  }
   int n = snprintf(
       out,
       out_size,
@@ -241,7 +246,7 @@ static int32_t fetch_update_file(
   if (!build_download_path(d, file, path, sizeof(path)))
   {
     stop_transfer_and_close_file(d);
-    return SAMPLE_ERR_PATH_TOO_LONG;
+    return SAMPLE_ERR_PATH_INVALID;
   }
   /* A workflow that replaced the one being downloaded asks for another file:
    * the transfer in progress is not that file's. */
@@ -361,7 +366,7 @@ static int32_t read_back_downloaded_file(
   if (!build_download_path(d, file, path, sizeof(path)))
   {
     close_hash_reader(d);
-    return SAMPLE_ERR_PATH_TOO_LONG;
+    return SAMPLE_ERR_PATH_INVALID;
   }
   /* The SDK reads sequentially: reopen only for another file or offset. */
   if (d->reader != NULL && (strcmp(path, d->reader_path) != 0 || offset != d->reader_offset))

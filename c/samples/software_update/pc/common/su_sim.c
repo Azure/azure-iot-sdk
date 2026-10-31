@@ -95,7 +95,7 @@ int32_t su_sim_get_update_file_path(
 {
   (void)file_index;
   const su_simulation_control* s = (const su_simulation_control*)user_ctx;
-  if (s->file_directory == NULL)
+  if (s->file_directory == NULL || !sample_is_plain_file_name(file->id))
   {
     return AZ_IOT_SU_RESULT_FAILURE;
   }

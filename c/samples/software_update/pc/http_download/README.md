@@ -34,8 +34,8 @@ on the device changes.
   `AZ_IOT_SU_RESULT_IN_PROGRESS` between them.
 - Device failure codes from 0x100 up, so they never read as an `AZ_IOT_SU_RESULT_*`
   value. A failed download reports `0x1000 + HTTP status`, `0x200 + CURLcode`, `0x103` (more
-  data than the manifest size) or `0x104` (`SAMPLE_DOWNLOAD_PREFIX` + file id too long) in the
-  low bits of the step's extended result code.
+  data than the manifest size) or `0x104` (file id not a plain file name, or
+  `SAMPLE_DOWNLOAD_PREFIX` + file id too long) in the low bits of the step's extended result code.
 - The regular route: checks at startup, again after each applied update, and every
   `AZ_IOT_SU_POLL_INTERVAL_S` (default 4 hours).
   Each check waits at most half the interval (60 s cap). The sample exits if it cannot report
