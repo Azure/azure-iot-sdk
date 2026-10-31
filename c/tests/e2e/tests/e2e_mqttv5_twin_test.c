@@ -36,7 +36,7 @@
 #include "e2e_log.h"
 #include "support/test_shard.h"
 
-#define E2E_REQUEST_TIMEOUT_S 60
+#define E2E_REQUEST_TIMEOUT_S 70 /* Above the service's twin GET/PATCH retries (64 s). */
 #define E2E_DELIVERY_TIMEOUT_S 60
 /* How long pull mode must stay without a patch after a desired change. */
 #define E2E_NO_PATCH_WINDOW_S 30

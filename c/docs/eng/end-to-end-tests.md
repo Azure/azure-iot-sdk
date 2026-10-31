@@ -451,9 +451,11 @@ multi-step updates, and reboot/resume.
 - **HTTPS calls without a response are retried when safe.** A connection can
   stall with no response at all. The service facade sends a request again on a
   new connection (3 attempts, 2 s apart) when none of it was sent, or when it is
-  idempotent (the DPS and device DELETEs; 20 s per attempt instead of 60 s).
-  Each failed attempt is logged with its phase, bytes sent and received, and the
-  transport's error.
+  idempotent (the DPS and device DELETEs, and the twin GET and desired PATCH;
+  20 s per attempt instead of 60 s). This holds for the blocking calls and for
+  those driven with `az_iot_e2e_service_request_poll()`, which pause without
+  blocking. Each failed attempt is logged with its phase, bytes sent and
+  received, and the transport's error.
 - **DPS provisioning has its own time budget.** DPS assignment intermittently
   takes from tens of seconds to over 90 s. Connect waits charge time to DPS
   while the client's DPS scope is active, with a budget of 180 s
