@@ -39,8 +39,10 @@ AZ_NODISCARD az_iot_result az_iot_test_connection_client_init(
 
 /**
  * @brief az_iot_connection_client_deinit(), then frees the workspace
- * az_iot_test_connection_client_init() lent @p client, if any.
+ * az_iot_test_connection_client_init() lent @p client, if any, when it succeeded.
+ *
+ * @return az_iot_connection_client_deinit()'s result.
  */
-void az_iot_test_connection_client_deinit(az_iot_connection_client* client);
+az_iot_result az_iot_test_connection_client_deinit(az_iot_connection_client* client);
 
 #endif /* AZ_IOT_TEST_PROVIDER_H */
