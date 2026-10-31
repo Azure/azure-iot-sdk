@@ -43,13 +43,17 @@ extern "C"
   az_iot_result az_iot_json_string_decode(az_span in, az_span out, az_span* out_decoded);
 
   /**
-   * @brief Check whether JSON string body @p escaped decodes to @p plain, without a buffer.
+   * @brief Whether a JSON string body decodes to the same text as another string, without a
+   * buffer: `f\u0031` equals `f1`.
    *
-   * @param escaped The escaped string body, e.g. a token slice.
-   * @param plain   The decoded text to compare with.
-   * @return true when they are equal; false otherwise or when @p escaped is malformed.
+   * @param escaped          A JSON string body (without quotes), e.g. a token slice.
+   * @param other            The other string.
+   * @param other_is_escaped Whether @p other is also a JSON string body; otherwise it is decoded
+   *                         text, compared as is.
+   * @return true when both decode to the same bytes; false otherwise or when an escape is
+   * malformed.
    */
-  bool az_iot_json_string_equals(az_span escaped, az_span plain);
+  bool az_iot_json_string_equals(az_span escaped, az_span other, bool other_is_escaped);
 
 #ifdef __cplusplus
 }

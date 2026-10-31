@@ -926,6 +926,13 @@ extern "C"
      * Appended so positional initializers keep their meaning.
      */
     uint32_t max_unconfirmed_delivery_timeout_ms;
+    /**
+     * @brief Longest az_iot_connection_client_send_csr() waits for a terminal response, in
+     * milliseconds, restarted by a 202. az_iot_connection_client_options_default() sets
+     * #AZ_IOT_DEFAULT_CSR_RESPONSE_TIMEOUT_MS; init() also turns 0 into it. Appended so
+     * positional initializers keep their meaning.
+     */
+    uint32_t csr_response_timeout_ms;
   } az_iot_connection_client_options;
 
   typedef enum az_iot_connection_state
@@ -1170,8 +1177,8 @@ extern "C"
    * @param store_result Result of store_issued_certificate(): AZ_IOT_OK if the
    * chain is stored. On failure the registration fails.
    *
-   * Runs while the provisioning message is being processed: do not call
-   * _deinit() from it; az_iot_connection_client_close() and _open() return
+   * Runs while the provisioning message is being processed:
+   * az_iot_connection_client_close(), _open() and _deinit() return
    * AZ_IOT_ERR_BUSY there.
    */
   typedef void (*az_iot_operational_cert_callback)(
@@ -1217,8 +1224,8 @@ extern "C"
    *
    * Runs from az_iot_connection_client_do_work(), and the hub connect starts
    * after it. To stop that connect, call az_iot_connection_client_close() after
-   * do_work() returns; from the callback it returns AZ_IOT_ERR_BUSY. It must
-   * not call az_iot_connection_client_deinit().
+   * do_work() returns; from the callback it, like az_iot_connection_client_deinit(),
+   * returns AZ_IOT_ERR_BUSY.
    *
    * @param assignment The adopted assignment; valid only during the call.
    * @param user_ctx   As registered.
@@ -1243,11 +1250,17 @@ extern "C"
   /* Reports that a FAILS_SELF subscription did not come up. The entry is already
    * out of the registry when this runs, so the callback may re-register.
    * `protocol_code` is the verbatim wire code, 0 when there was none.
-   * `topic_filter` is valid only for the duration of the call. */
+   * `reason_string` is the MQTT 5 SUBACK's Reason String, verbatim: UTF-8, not
+   * NUL-terminated; NULL when there was none or the adapter did not report it,
+   * non-NULL with `reason_string_len` 0 when present and empty. Diagnostics
+   * only. `topic_filter` and `reason_string` are valid only for the duration of
+   * the call. */
   typedef void (*az_iot_subscription_failed_callback)(
       const char* topic_filter,
       az_iot_result reason,
       int32_t protocol_code,
+      const char* reason_string,
+      size_t reason_string_len,
       const void* owner);
 
   /* ------------------------------------------------------------------------- */
@@ -1296,6 +1309,10 @@ extern "C"
 /** @brief Default az_iot_connection_client_options::max_unconfirmed_delivery_timeout_ms (5 min). */
 #ifndef AZ_IOT_DEFAULT_MAX_UNCONFIRMED_DELIVERY_TIMEOUT_MS
 #define AZ_IOT_DEFAULT_MAX_UNCONFIRMED_DELIVERY_TIMEOUT_MS 300000u
+#endif
+/** @brief Default az_iot_connection_client_options::csr_response_timeout_ms (2 min). */
+#ifndef AZ_IOT_DEFAULT_CSR_RESPONSE_TIMEOUT_MS
+#define AZ_IOT_DEFAULT_CSR_RESPONSE_TIMEOUT_MS 120000u
 #endif
 /** @brief Default lifetime of a token the SDK signs from a key, in seconds. */
 #ifndef AZ_IOT_DEFAULT_SAS_TOKEN_LIFETIME_SECONDS
@@ -2103,9 +2120,15 @@ extern "C"
    * @brief Deinitialize the client.
    *
    * Does not destroy factories registered with az_iot_connection_client_register_mqtt_factory():
-   * the application owns them and destroys them after this returns.
+   * the application owns them and destroys them after this returns. Not callable from a callback
+   * the client runs: call it after do_work() returns.
+   *
+   * Not AZ_NODISCARD: teardown op commonly called fire-and-forget.
+   *
+   * @return AZ_IOT_OK; AZ_IOT_ERR_INVALID_ARG for a NULL client; AZ_IOT_ERR_BUSY from inside a
+   * callback, with nothing released.
    */
-  void az_iot_connection_client_deinit(az_iot_connection_client* client);
+  az_iot_result az_iot_connection_client_deinit(az_iot_connection_client* client);
 
   /**
    * @brief Register an MQTT factory in the client's adapter registry.
@@ -2341,7 +2364,9 @@ extern "C"
    *
    * Only one operation may be in flight (AZ_IOT_ERR_BUSY). A request the broker
    * rejects fails at once with the PUBACK status; one with no terminal response
-   * within an internal timeout fails with AZ_IOT_ERR_TIMEOUT.
+   * within opts.csr_response_timeout_ms fails with AZ_IOT_ERR_TIMEOUT; one open
+   * when the session ends fails with AZ_IOT_ERR_NOT_CONNECTED (resubmit it with
+   * the same  request_id once reconnected).
    *
    * @param request_id NULL to generate one, or a prior id to resubmit.
    * @param replace NULL, or "*" / a request id to supersede an active hub-side

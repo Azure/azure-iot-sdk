@@ -129,6 +129,8 @@ target_include_directories(az_iot_tests_smoke PRIVATE
 az_iot_add_cmocka_test(az_iot_tests_mqtt_iface_contract unit/mqtt_iface_contract_test.c)
 target_link_libraries(az_iot_tests_mqtt_iface_contract PRIVATE az_iot_test_support)
 az_iot_add_cmocka_test(az_iot_tests_connection_client_workspace unit/connection_client_workspace_test.c)
+target_link_libraries(az_iot_tests_connection_client_workspace
+    PRIVATE az_iot_test_support az_iot_mqttv3 az_iot_mqttv5)
 # Default limits: built in, a user's definition, and a config file, resolved as documented.
 foreach(_case DEFAULT OVERRIDE CONFIG_FILE)
     set(_t az_iot_tests_connection_client_config_${_case})
@@ -321,6 +323,8 @@ target_include_directories(az_iot_tests_proto3 PRIVATE ${PROJECT_SOURCE_DIR}/src
 
 az_iot_add_cmocka_test(az_iot_tests_mqttv3_twin_client unit/mqttv3_twin_client_test.c)
 target_link_libraries(az_iot_tests_mqttv3_twin_client PRIVATE az_iot_test_support az_iot_mqttv3)
+target_include_directories(az_iot_tests_mqttv3_twin_client PRIVATE
+    ${PROJECT_SOURCE_DIR}/src/core)
 az_iot_add_cmocka_test(az_iot_tests_mqttv5_twin_client unit/mqttv5_twin_client_test.c)
 target_link_libraries(az_iot_tests_mqttv5_twin_client PRIVATE az_iot_test_support az_iot_mqttv5)
 target_include_directories(az_iot_tests_mqttv5_twin_client PRIVATE

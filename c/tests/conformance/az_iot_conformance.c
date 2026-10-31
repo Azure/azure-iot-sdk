@@ -2283,14 +2283,16 @@ static void a_stalled_link_resumes_without_losing_the_session(void** state)
  * ever ran.
  *
  * Everything else on the connection is still the real broker; only this one
- * exchange is scripted. */
-static void a_refused_subscribe_is_reported(void** state)
+ * exchange is scripted. The SUBACK's Reason String, @p reason_string (NULL: none), must be
+ * reported verbatim, like a PUBACK's. */
+static void assert_refused_subscribe_is_reported(
+    const az_iot_test_mqtt_packet* suback,
+    int32_t code,
+    const char* reason_string)
 {
-  (void)state;
   uint16_t proxy_port = 0;
   az_iot_test_proxy* proxy = start_proxy(&proxy_port);
-
-  az_iot_test_mqtt_packet suback = conf_suback(AZ_IOT_TEST_MQTT_REASON_REFUSED);
+  assert_int_not_equal(suback->len, 0);
 
   az_iot_test_proxy_rule swallow = { 0 };
   swallow.dir = AZ_IOT_TEST_PROXY_C2B;
@@ -2301,7 +2303,7 @@ static void a_refused_subscribe_is_reported(void** state)
   az_iot_test_proxy_rule refuse = { 0 };
   refuse.dir = AZ_IOT_TEST_PROXY_C2B;
   refuse.on_packet = AZ_IOT_TEST_PROXY_PKT_SUBSCRIBE;
-  inject_packet(&refuse, AZ_IOT_TEST_PROXY_B2C, &suback);
+  inject_packet(&refuse, AZ_IOT_TEST_PROXY_B2C, suback);
   int refuse_id = az_iot_test_proxy_add_rule(proxy, &refuse);
   assert_true(refuse_id >= 0);
 
@@ -2337,14 +2339,42 @@ static void a_refused_subscribe_is_reported(void** state)
     }
   }
   assert_true(ack >= 0);
-  assert_int_equal(rec.statuses[ack], AZ_IOT_ERR_SUBSCRIPTION_REFUSED);
-  assert_int_equal(
-      rec.protocol_codes[ack], (g_factory->version == AZ_IOT_MQTT_VERSION_5) ? 0x87 : 0x80);
+  assert_int_equal(rec.statuses[ack], az_iot_mqtt_suback_result(g_factory->version, (int)code));
+  assert_int_equal(rec.protocol_codes[ack], code);
+  assert_reason_string_recorded(&rec, (size_t)ack, reason_string);
   assert_int_equal(az_iot_test_proxy_rule_hits(proxy, (size_t)refuse_id), 1);
 
   (void)c->iface->disconnect(c);
   destroy_client(c);
   az_iot_test_proxy_stop(proxy);
+}
+
+static void a_refused_subscribe_is_reported(void** state)
+{
+  (void)state;
+  az_iot_test_mqtt_packet const suback = conf_suback(AZ_IOT_TEST_MQTT_REASON_REFUSED);
+  int32_t const code = (g_factory->version == AZ_IOT_MQTT_VERSION_5) ? 0x87 : 0x80;
+  /* A refusal the broker will repeat: the status reported must say so. */
+  assert_int_equal(
+      az_iot_mqtt_suback_result(g_factory->version, (int)code), AZ_IOT_ERR_SUBSCRIPTION_REFUSED);
+  assert_refused_subscribe_is_reported(&suback, code, NULL);
+}
+
+/* v5 only: MQTT 3.1.1 has no Reason String. Not authorized, with the broker's explanation. */
+static void a_refused_subscribe_reason_string_is_reported(void** state)
+{
+  (void)state;
+  az_iot_test_mqtt_packet const suback
+      = az_iot_test_mqtt_suback_v5_raw(0x87, "no topic space allows this filter");
+  assert_refused_subscribe_is_reported(&suback, 0x87, "no topic space allows this filter");
+}
+
+/* A present but empty Reason String is reported as such, not as absent. */
+static void a_refused_subscribe_empty_reason_string_is_reported(void** state)
+{
+  (void)state;
+  az_iot_test_mqtt_packet const suback = az_iot_test_mqtt_suback_v5_raw(0x97, "");
+  assert_refused_subscribe_is_reported(&suback, 0x97, "");
 }
 
 /* A PUBLISH cut short mid-flight must never reach the application. Half a
@@ -4609,6 +4639,8 @@ int az_iot_conformance_run_with_options(
             cmocka_unit_test(a_refused_connack_reason_string_is_reported),
             cmocka_unit_test(a_refused_connack_empty_reason_string_is_reported),
             cmocka_unit_test(a_refused_connack_without_a_reason_string_reports_none),
+            cmocka_unit_test(a_refused_subscribe_reason_string_is_reported),
+            cmocka_unit_test(a_refused_subscribe_empty_reason_string_is_reported),
             cmocka_unit_test(a_refused_publish_is_reported),
             cmocka_unit_test(a_refused_publish_with_an_empty_reason_string_is_reported),
             cmocka_unit_test(a_publish_over_quota_is_reported_as_busy),

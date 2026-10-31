@@ -178,6 +178,11 @@ connection client's `unix_time` source) in the persisted record, so it survives 
   are part of the package format.
 - `fileUrls` are **not** covered by the signature. Payload integrity comes from the per-file hashes
   inside the signed manifest.
+- After verification and before any step runs, every file id a step names must be in the manifest
+  `files` and have a `fileUrls` entry. Otherwise the workflow fails (reported as an internal
+  failure, `AZ_IOT_ERR_PROTOCOL`) with nothing downloaded or installed, and library mode never
+  offers it to the application. `az_iot_su_parse_update_request()` returns
+  `AZ_IOT_ERR_INVALID_ARG`.
 - Binding the account id into the signature is not supported: the service returns no `accountId`.
 
 ### Errors
