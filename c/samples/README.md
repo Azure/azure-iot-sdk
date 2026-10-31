@@ -27,6 +27,7 @@ run it, and what to expect.
 | [unified/websockets](unified/websockets/README.md) | Telemetry over MQTT over WebSockets (port 443). |
 | [unified/proxy](unified/proxy/README.md) | Telemetry through an HTTP proxy. |
 | [unified/multithreaded_telemetry](unified/multithreaded_telemetry/README.md) | Telemetry with readings from other threads, handed to the one thread that calls the SDK. |
+| [unified/esp32](unified/esp32/README.md) | ESP32 (ESP-IDF): telemetry, twin and a direct method, identity from the `esp_secure_cert` partition. Runs in QEMU too. |
 | [mqttv5/telemetry](mqttv5/telemetry/README.md) | Telemetry on an mqttv5 hub. |
 | [mqttv5/twin_get_patch](mqttv5/twin_get_patch/README.md) | Device twin on an mqttv5 hub. |
 | [mqttv5/direct_method_responder](mqttv5/direct_method_responder/README.md) | Direct methods on an mqttv5 hub, with a probe handler. |
@@ -162,7 +163,8 @@ The `unified/` and `mqttv5/` samples read:
 
 A sample with a missing required variable names it and exits 1. Other samples add or replace
 variables; their READMEs list them. `AZ_IOT_SAMPLE_LOG_TO_FILE` applies to every sample except
-`authentication/hsm_sign_callback`, `authentication/custom_provider_template` and the ESP32 one.
+`authentication/hsm_sign_callback`, `authentication/custom_provider_template` and the ESP32 ones,
+which are configured with `idf.py menuconfig`.
 
 ## Build
 

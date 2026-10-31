@@ -20,14 +20,20 @@ extern "C"
    * Unknown members are skipped at every level. A known member of the wrong type, or anything
    * but whitespace after the root object, is malformed.
    *
-   * @param manifest_text The decoded manifest JSON; @p out_manifest spans point into it.
-   * @param out_manifest  Filled; cleared first.
+   * @param manifest_text          The decoded manifest JSON; @p out_manifest spans point into it.
+   * @param related_files          Storage for related files; may be NULL to keep none.
+   * @param related_files_capacity Entries in @p related_files. Related files past it are left
+   *                               out, with a warning. A related file keeps at most
+   *                               AZ_IOT_SU_MAX_FILE_HASH_COUNT hashes.
+   * @param out_manifest           Filled; cleared first.
    * @return AZ_IOT_OK; AZ_IOT_ERR_NOT_ENOUGH_SPACE (each exceeded limit logged) when steps,
    * files, files of a step or hashes of a file exceed their AZ_IOT_SU_MAX_* limit;
    * AZ_IOT_ERR_INVALID_ARG when malformed.
    */
   az_iot_result az_iot_su__parse_update_manifest(
       az_span manifest_text,
+      az_iot_su_client_update_manifest_file* related_files,
+      size_t related_files_capacity,
       az_iot_su_client_update_manifest* out_manifest);
 
   /**

@@ -13,6 +13,14 @@
 - Software updates: `az_iot_su_download_handler` and `az_iot_su_client_config_options::download_handlers`
   register handlers that build a file from a related file (e.g. a delta), matched by the manifest's
   `downloadHandler` id. `az_iot_su_client_init()` validates them; the client does not call them yet.
+- Software updates: the parsed manifest keeps each file's `mimeType`, `properties`,
+  `downloadHandler` id and related files (`relatedFiles`, delta updates), and the request accepts
+  their `fileUrls`. New `az_iot_su_limits::max_related_files` (default
+  `AZ_IOT_SU_DEFAULT_MAX_RELATED_FILES`, 40) bounds the related files kept; more are left out with
+  a warning. Breaking: `az_iot_su_client_update_request::file_urls` is a pointer to
+  `AZ_IOT_SU_FILE_URL_CAPACITY()` entries, `az_iot_su_parse_update_request()` takes an
+  `az_iot_su_update_request_storage`, and `AZ_IOT_SU_WORKSPACE_SIZE()` and
+  `AZ_IOT_SU_STATE_BLOB_MAX_SIZE()` take `max_related_files`.
 - Breaking: removed the Rust MQTT adapter shell, its `az_iot_rust_mqtt_*` APIs and FFI contract,
   `AZ_IOT_RUST_MQTT_WORKSPACE_SIZE`, `AZ_IOT_WITH_RUST_MQTT`, the `adapter_rust_mqtt` CMake and
   pkg-config component, and Yocto's `rust-mqtt` option. Use Paho or az_mqtt instead; the generic
@@ -313,16 +321,26 @@
   `sdkconfig.qemu` runs it in QEMU (esp32, esp32s3, esp32c3) over OpenCores Ethernet;
   `eng/esp-idf-qemu.sh` boots a build in QEMU and waits for a log line, and CI boots the QEMU
   builds until they get an IPv4 address.
+- ESP32 IoT Hub sample [unified/esp32](samples/unified/esp32/README.md): DPS with the
+  `esp_secure_cert` identity, then telemetry, the `echo` direct method and desired-twin
+  acknowledgements on the assigned hub (mqttv3 or mqttv5). CI builds it for esp32, esp32c3,
+  esp32s3 and esp32c6, and boots its QEMU build on esp32, esp32s3 and esp32c3.
 
 ### Bugs Fixed
 
+- Connection client, events drained in one `process_loop()`: a failed acknowledgement (PUBACK,
+  SUBACK, UNSUBACK) becomes connection error detail only when it fails the connection. A presence,
+  gated or DPS SUBACK drained after a session-ending event is ignored; a FAILS_SELF refusal is still
+  reported. A later end event of an ended session does not replace the server DISCONNECT's code,
+  and an identity refusal is acted on whatever came first. While `close()` disconnects, a late
+  SUBACK neither announces CONNECTED nor publishes the birth, and a new filter waits for the next
+  session.
 - Software updates: a verified update whose step names a file missing from the manifest `files`, or
   from `fileUrls`, is refused before any step runs, instead of failing at that step's download
   after earlier steps were installed and rolled back (or passing an empty URL to `download_fn`).
   Library mode does not offer it to the application, and `az_iot_su_parse_update_request()`
   returns `AZ_IOT_ERR_INVALID_ARG`. File ids are matched decoded, so a JSON-escaped id (`f\u0031`)
   finds its file and URL (`f1`).
-
 - ESP32: the `azure-sdk-for-c` component implements `az_platform_clock_msec()` and
   `az_platform_sleep_msec()` with `esp_timer` and FreeRTOS, so the az_mqtt adapter's idle wait
   sleeps instead of returning at once. The software updates sample's connect loop waits out each
