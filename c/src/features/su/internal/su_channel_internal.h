@@ -372,6 +372,10 @@ extern "C"
      * it, tick after tick. */
     uint64_t publish_resume_at_ms;
     uint8_t publish_refusals;
+    /* The last publish was refused as too large and did not pause: the engine
+     * sends a report again at once without its details, and only a refusal
+     * after that pauses. */
+    bool publish_refused_too_large;
 
     /* Consecutive session losses that cost an operation its answer.
      *

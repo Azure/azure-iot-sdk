@@ -2485,6 +2485,42 @@ static void a_report_refused_at_send_pauses_and_lets_the_session_go(void** state
   assert_int_equal(fx->channel_state.publish_refusals, 0);
 }
 
+/* A report refused as too large is not paused at once, so the report sent again
+ * without its details still goes out; a refusal after it pauses. */
+static void a_report_refused_as_too_large_can_be_sent_again_at_once(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_mock_mqtt_client* m = open_session_for_an_operation(fx);
+  assert_int_equal(fx->channel.vtable->do_work(fx->channel.ctx), AZ_IOT_OK);
+  az_iot_su_report report;
+  memset(&report, 0, sizeof(report));
+  report.workflow_id = "wf-1";
+  report.extended_result_codes = "00000000";
+  size_t publishes = az_iot_mock_mqtt_client_count_of(m, AZ_IOT_MOCK_CALL_PUBLISH);
+
+  /* Too large, then too large again: the second attempt is sent, then paused. */
+  az_iot_mock_mqtt_client_set_next_result(m, AZ_IOT_MOCK_CALL_PUBLISH, AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+  assert_int_equal(
+      fx->channel.vtable->report(fx->channel.ctx, &report), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+  assert_int_equal(fx->channel_state.publish_resume_at_ms, 0);
+  az_iot_mock_mqtt_client_set_next_result(m, AZ_IOT_MOCK_CALL_PUBLISH, AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+  assert_int_equal(
+      fx->channel.vtable->report(fx->channel.ctx, &report), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+  assert_int_equal(az_iot_mock_mqtt_client_count_of(m, AZ_IOT_MOCK_CALL_PUBLISH), publishes + 2u);
+  assert_true(fx->channel_state.publish_resume_at_ms > az_iot_time_mono_ms());
+  assert_int_equal(fx->channel.vtable->report(fx->channel.ctx, &report), AZ_IOT_ERR_BUSY);
+
+  /* After the pause: too large, then the smaller report is accepted. */
+  fx->channel_state.publish_resume_at_ms = 1;
+  az_iot_mock_mqtt_client_set_next_result(m, AZ_IOT_MOCK_CALL_PUBLISH, AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+  assert_int_equal(
+      fx->channel.vtable->report(fx->channel.ctx, &report), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+  assert_int_equal(fx->channel.vtable->report(fx->channel.ctx, &report), AZ_IOT_OK);
+  assert_int_equal(az_iot_mock_mqtt_client_count_of(m, AZ_IOT_MOCK_CALL_PUBLISH), publishes + 4u);
+  assert_int_equal(fx->channel_state.publish_refusals, 0);
+  assert_false(fx->channel_state.publish_refused_too_large);
+}
+
 /* An update check's deadline bounds the connection's wait, waiting for a
  * session included, so a long do_work() timeout does not postpone its expiry. */
 static void a_pending_check_bounds_the_connection_wait_to_its_deadline(void** state)
@@ -3804,6 +3840,8 @@ int main(void)
         a_replaced_unaccepted_check_takes_its_session_demand_with_it, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_report_refused_at_send_pauses_and_lets_the_session_go, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_report_refused_as_too_large_can_be_sent_again_at_once, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_pending_check_bounds_the_connection_wait_to_its_deadline, setup, teardown),
     cmocka_unit_test_setup_teardown(

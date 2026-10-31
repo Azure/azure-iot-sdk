@@ -458,8 +458,18 @@ static az_iot_result publish_operation(
   if (r != AZ_IOT_OK)
   {
     /* Not sent, so no answer is awaited: publishing pauses, and without other
-     * work the interest goes, so the hub session can resume meanwhile. */
-    pause_publishing_after_refusal(c);
+     * work the interest goes, so the hub session can resume meanwhile. A first
+     * refusal as too large does not pause, so the report the engine sends at
+     * once without its details (az_iot_su__report_state()) still goes out. */
+    if (r == AZ_IOT_ERR_NOT_ENOUGH_SPACE && !c->publish_refused_too_large)
+    {
+      c->publish_refused_too_large = true;
+    }
+    else
+    {
+      c->publish_refused_too_large = false;
+      pause_publishing_after_refusal(c);
+    }
     if (!c->request_pending && !c->wants_session && !session_kept_for_pre_registration_check(c))
     {
       release_session_interest(c);
@@ -467,6 +477,7 @@ static az_iot_result publish_operation(
     return r;
   }
   c->publish_refusals = 0;
+  c->publish_refused_too_large = false;
 
   /* Recorded only after the publish is accepted, so a failed send does not
    * leave the channel waiting for a response that will never come. */
@@ -891,6 +902,7 @@ static void channel_close(void* ctx)
   c->retry_after_deadline_ms = 0;
   c->publish_resume_at_ms = 0;
   c->publish_refusals = 0;
+  c->publish_refused_too_large = false;
   c->session_loss_attempts = 0;
 }
 
