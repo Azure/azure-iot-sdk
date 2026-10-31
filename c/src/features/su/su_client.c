@@ -1328,6 +1328,7 @@ static void reset_to_idle(az_iot_su_client* client)
  *
  * Only removes the JSON string escaping: the signature covers the unescaped
  * bytes. The manifest is not interpreted until verify_manifest() accepts it.
+ * On failure both spans are left empty.
  *
  * @param client The client.
  * @return AZ_IOT_OK; AZ_IOT_ERR_INVALID_ARG when empty or undecodable.
@@ -1335,16 +1336,15 @@ static void reset_to_idle(az_iot_su_client* client)
 static az_iot_result decode_manifest(az_iot_su_client* client)
 {
   az_span manifest = SU_I(client).current_request.update_manifest;
-  az_span unescaped;
+  az_span unescaped = AZ_SPAN_EMPTY;
   if (az_span_size(manifest) <= 0
-      || az_iot_json_string_decode(manifest, manifest, &unescaped) != AZ_IOT_OK
-      || az_span_size(unescaped) <= 0)
+      || az_iot_json_string_decode(manifest, manifest, &unescaped) != AZ_IOT_OK)
   {
-    return AZ_IOT_ERR_INVALID_ARG;
+    unescaped = AZ_SPAN_EMPTY;
   }
   SU_I(client).current_request.update_manifest = unescaped;
   SU_I(client).manifest_text = unescaped;
-  return AZ_IOT_OK;
+  return az_span_size(unescaped) > 0 ? AZ_IOT_OK : AZ_IOT_ERR_INVALID_ARG;
 }
 
 /**
@@ -1853,6 +1853,9 @@ static void process_update_metadata(
   }
 
   SU_I(client).current_request = req;
+  /* Before any observer can read the request: its manifest is the unescaped
+   * text in every state. A failure is reported from MANIFEST_RECEIVED. */
+  (void)decode_manifest(client);
   SU_I(client).have_request = true;
   SU_I(client).checkpoint_pending = false;
   SU_I(client).install_called = false;
@@ -1864,7 +1867,7 @@ static void process_update_metadata(
       client,
       req.workflow.id,
       req.workflow.retry_timestamp,
-      manifest_fingerprint(req.update_manifest));
+      manifest_fingerprint(SU_I(client).manifest_text));
   SU_I(client).active_workflow_running = true;
 }
 
@@ -4008,7 +4011,8 @@ az_iot_result az_iot_su_client_do_work(az_iot_su_client* client)
 
     case AZ_IOT_SU_STATE_MANIFEST_RECEIVED:
     {
-      if (decode_manifest(client) != AZ_IOT_OK)
+      /* decode_manifest() ran when the request was staged. */
+      if (az_span_size(SU_I(client).manifest_text) <= 0)
       {
         result_init_steps(client, 1);
         result_step_failure(client, 0, AZ_IOT_SU_FACILITY_INTERNAL, 0);
@@ -4455,6 +4459,38 @@ az_iot_su_state az_iot_su_client_get_state(const az_iot_su_client* client)
     return AZ_IOT_SU_STATE_IDLE;
   }
   return SU_I(client).state;
+}
+
+AZ_NODISCARD az_iot_result az_iot_su_client_get_current_update(
+    const az_iot_su_client* client,
+    const az_iot_su_client_update_request** out_request,
+    const az_iot_su_client_update_manifest** out_manifest)
+{
+  if (out_request != NULL)
+  {
+    *out_request = NULL;
+  }
+  if (out_manifest != NULL)
+  {
+    *out_manifest = NULL;
+  }
+  if (client == NULL || out_request == NULL || out_manifest == NULL)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  az_iot_su_state state = SU_I(client).state;
+  if (state == AZ_IOT_SU_STATE_IDLE || !SU_I(client).have_request)
+  {
+    return AZ_IOT_ERR_NOT_FOUND;
+  }
+  *out_request = &SU_I(client).current_request;
+  /* Parsed only once verified; a failed workflow may have stopped before that. */
+  if (state != AZ_IOT_SU_STATE_MANIFEST_RECEIVED && state != AZ_IOT_SU_STATE_VERIFYING_MANIFEST
+      && state != AZ_IOT_SU_STATE_FAILED)
+  {
+    *out_manifest = &SU_I(client).current_manifest;
+  }
+  return AZ_IOT_OK;
 }
 
 AZ_NODISCARD az_iot_su_reboot_state
