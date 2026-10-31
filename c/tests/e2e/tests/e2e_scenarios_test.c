@@ -112,7 +112,7 @@ static bool subscriptions_live(e2e_fixture* fx)
 
 /* Pump until the device's subscriptions are live, so a message the cloud sends next reaches one.
  * Feature clients subscribe at init on a CONNECTED session. Returns false, after printing why, on
- * timeout, so the caller can deinitialize its client before failing. */
+ * timeout. */
 static bool wait_for_subscription_acks(e2e_fixture* fx)
 {
   time_t start = time(NULL);
@@ -371,11 +371,7 @@ static void c2d_send_and_receive(
   fx->attached = E2E_FEATURE_CLIENT_C2D;
   assert_int_equal(az_iot_mqttv3_c2d_client_set_handler(&fx->client.c2d, on_c2d, cctx), AZ_IOT_OK);
 
-  if (!wait_for_subscription_acks(fx))
-  {
-    az_iot_mqttv3_c2d_client_deinit(&c2d);
-    fail();
-  }
+  assert_true(wait_for_subscription_acks(fx));
 
   /* The service C2D send opens its own short-lived AMQP connection, whose cold
    * handshake can be refused transiently (same Windows "peer closed the
@@ -491,11 +487,7 @@ static void test_direct_method(void** state)
           &fx->client.direct_method, on_method, &fx->client.direct_method),
       AZ_IOT_OK);
 
-  if (!wait_for_subscription_acks(fx))
-  {
-    az_iot_mqttv3_direct_method_client_deinit(&dm);
-    fail();
-  }
+  assert_true(wait_for_subscription_acks(fx));
 
   assert_true(
       az_iot_e2e_service_method_invoke_begin(fx->service, fx->dev.device_id, "echo", "\"ping\""));
@@ -599,11 +591,7 @@ static void test_twin(void** state)
       az_iot_mqttv3_twin_client_set_desired_handler(&fx->client.twin, on_desired, &dctx),
       AZ_IOT_OK);
 
-  if (!wait_for_subscription_acks(fx))
-  {
-    az_iot_mqttv3_twin_client_deinit(&twin);
-    fail();
-  }
+  assert_true(wait_for_subscription_acks(fx));
 
   char desired_json[128];
   snprintf(desired_json, sizeof(desired_json), "{\"cfg\":\"%s\"}", dctx.expected);
