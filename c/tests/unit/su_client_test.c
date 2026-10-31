@@ -7362,6 +7362,104 @@ static void standalone_entry_points_check_the_backend_they_need(void** state)
       AZ_IOT_OK);
 }
 
+/** @brief az_iot_su_verify_manifest() of @p manifest / @p signature; *out_error starts non-zero. */
+static az_iot_result verify_manifest_with(
+    fixture* fx,
+    az_span manifest,
+    az_span signature,
+    const az_iot_su_root_key* roots,
+    size_t root_count,
+    uint32_t* out_error)
+{
+  fx->log.verify_calls = 0;
+  *out_error = 0xFFu;
+  return az_iot_su_verify_manifest(
+      manifest, signature, &fx->crypto.base, roots, root_count, out_error);
+}
+
+static void standalone_manifest_verification_reports_why_it_fails(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_su_client_update_request req;
+  az_iot_su_client_update_manifest parsed;
+  assert_int_equal(
+      parse_with_roots(&fx->log, build_patch("wf-verify"), k_root_keys, 1, &req, &parsed),
+      AZ_IOT_OK);
+  char text[2048];
+  int32_t text_len = az_span_size(req.update_manifest);
+  assert_true(text_len > 0 && (size_t)text_len < sizeof(text));
+  memcpy(text, az_span_ptr(req.update_manifest), (size_t)text_len);
+  az_span manifest = az_span_create((uint8_t*)text, text_len);
+  az_span signature = req.update_manifest_signature;
+  uint32_t why = 0;
+
+  /* Verifies, and leaves its inputs untouched. */
+  assert_int_equal(verify_manifest_with(fx, manifest, signature, k_root_keys, 1, &why), AZ_IOT_OK);
+  assert_int_equal(why, 0);
+  assert_memory_equal(text, az_span_ptr(req.update_manifest), (size_t)text_len);
+  assert_int_equal(
+      az_iot_su_verify_manifest(manifest, signature, &fx->crypto.base, k_root_keys, 1, NULL),
+      AZ_IOT_OK);
+
+  static const uint8_t other_mod[] = { 0x09, 0x08, 0x07 };
+  static const uint8_t other_exp[] = { 0x01, 0x00, 0x01 };
+  const az_iot_su_root_key strangers[] = {
+    { "not-the-testkid", other_mod, sizeof(other_mod), other_exp, sizeof(other_exp), false }
+  };
+  assert_int_equal(
+      verify_manifest_with(fx, manifest, signature, strangers, 1, &why), AZ_IOT_ERR_AUTH);
+  assert_int_equal(why, AZ_IOT_SU_MANIFEST_ERROR_UNKNOWN_KID);
+  assert_int_equal(
+      verify_manifest_with(fx, manifest, AZ_SPAN_EMPTY, k_root_keys, 1, &why), AZ_IOT_ERR_AUTH);
+  assert_int_equal(why, AZ_IOT_SU_MANIFEST_ERROR_MALFORMED);
+
+  fx->log.verify_fail_call = 1;
+  assert_int_equal(
+      verify_manifest_with(fx, manifest, signature, k_root_keys, 1, &why), AZ_IOT_ERR_AUTH);
+  assert_int_equal(why, AZ_IOT_SU_MANIFEST_ERROR_ROOT_SIGNATURE);
+  fx->log.verify_fail_call = 2;
+  assert_int_equal(
+      verify_manifest_with(fx, manifest, signature, k_root_keys, 1, &why), AZ_IOT_ERR_AUTH);
+  assert_int_equal(why, AZ_IOT_SU_MANIFEST_ERROR_SIGNATURE);
+  fx->log.verify_fail_call = 0;
+
+  /* A backend fault is not a rejection. */
+  fx->log.verify_result = AZ_IOT_SU_RESULT_FAILURE;
+  fx->log.verify_error = AZ_IOT_ERR_INTERNAL;
+  assert_int_equal(
+      verify_manifest_with(fx, manifest, signature, k_root_keys, 1, &why), AZ_IOT_ERR_INTERNAL);
+  assert_int_equal(why, AZ_IOT_SU_MANIFEST_ERROR_CRYPTO);
+  static char patch[SU_TEST_PATCH_SIZE];
+  copy_str(patch, sizeof(patch), build_patch("wf-verify"));
+  assert_int_equal(
+      az_iot_su_parse_update_request(
+          az_span_create_from_str(patch), &fx->crypto.base, k_root_keys, 1, &req, &parsed),
+      AZ_IOT_ERR_INTERNAL);
+  fx->log.verify_result = AZ_IOT_SU_RESULT_SUCCESS;
+  fx->log.verify_error = AZ_IOT_OK;
+
+  fx->log.manifest_sha256_wrong = true;
+  assert_int_equal(
+      verify_manifest_with(fx, manifest, signature, k_root_keys, 1, &why), AZ_IOT_ERR_AUTH);
+  assert_int_equal(why, AZ_IOT_SU_MANIFEST_ERROR_HASH);
+  fx->log.manifest_sha256_wrong = false;
+
+  /* Arguments: no error reason, since nothing was verified. */
+  assert_int_equal(
+      az_iot_su_verify_manifest(manifest, signature, NULL, k_root_keys, 1, &why),
+      AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(why, 0);
+  assert_int_equal(
+      verify_manifest_with(fx, manifest, signature, NULL, 1, &why), AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(why, 0);
+  mock_crypto no_verify = make_mock_crypto(&fx->log);
+  no_verify.base.verify_rs256 = NULL;
+  assert_int_equal(
+      az_iot_su_verify_manifest(manifest, signature, &no_verify.base, k_root_keys, 1, &why),
+      AZ_IOT_ERR_NOT_SUPPORTED);
+  assert_int_equal(why, 0);
+}
+
 /* The vtable advertises an optional do_work hook for a channel with
  * asynchronous work of its own. A channel that reports lost operations there
  * depends on actually being ticked, so pin that the engine drives it. */
@@ -10145,6 +10243,8 @@ int main(void)
     cmocka_unit_test_setup_teardown(init_requires_a_crypto_backend_that_verifies, setup, teardown),
     cmocka_unit_test_setup_teardown(
         standalone_entry_points_check_the_backend_they_need, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        standalone_manifest_verification_reports_why_it_fails, setup, teardown),
     cmocka_unit_test_setup_teardown(do_work_drives_the_channel, setup, teardown),
     cmocka_unit_test_setup_teardown(a_terminal_verdict_does_not_re_arm_the_report, setup, teardown),
     cmocka_unit_test_setup_teardown(
