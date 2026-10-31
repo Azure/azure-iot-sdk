@@ -60,7 +60,7 @@ internal class Program
         ConnectionContext connectionContext = await connectionClient.ProvisionAndConnectAsync(provisioningSettings, authentication, cancellationToken: cancellationToken);
         Console.WriteLine($"Device {connectionContext.DeviceId} connected to {connectionContext.IotHubHostName} with its X.509 certificate");
 
-        await connectionClient.DisconnectAsync(cancellationToken);
+        await connectionClient.DisconnectAsync(null, cancellationToken);
     }
 
     /// <summary>
@@ -127,7 +127,7 @@ internal class Program
         ConnectionContext connectionContext = await connectionClient.ProvisionAndConnectAsync(provisioningSettings, authentication, cancellationToken: cancellationToken);
         Console.WriteLine($"Device {connectionContext.DeviceId} connected to {connectionContext.IotHubHostName} with a SAS token signed with its symmetric key");
 
-        await connectionClient.DisconnectAsync(cancellationToken);
+        await connectionClient.DisconnectAsync(null, cancellationToken);
     }
 
     /// <summary>
@@ -210,7 +210,7 @@ internal class Program
                 Console.WriteLine(
                     "DPS did not issue a certificate, so this device cannot authenticate with an issued certificate. Link this " +
                     "device's enrollment to a certificate management credential policy, then run this scenario again.");
-                await connectionClient.DisconnectAsync(cancellationToken);
+                await connectionClient.DisconnectAsync(null, cancellationToken);
                 return;
             }
 
@@ -218,7 +218,7 @@ internal class Program
 
             iotHubIssuedCertificates = await RequestCertificateFromIotHubAsync(connectionClient, connectionContext, getIotHubCertificateSigningKey(), cancellationToken);
 
-            await connectionClient.DisconnectAsync(cancellationToken);
+            await connectionClient.DisconnectAsync(null, cancellationToken);
         }
 
         if (iotHubIssuedCertificates == null)
@@ -236,7 +236,7 @@ internal class Program
         string issuer = ReferenceEquals(renewedConnectionContext.IssuedClientCertificates, iotHubIssuedCertificates) ? "IoT Hub" : "DPS (after re-provisioning)";
         Console.WriteLine($"Device {renewedConnectionContext.DeviceId} connected to {renewedConnectionContext.IotHubHostName} with the certificate {issuer} issued: {DescribeCertificateChain(renewedConnectionContext.IssuedClientCertificates!)}");
 
-        await renewedConnectionClient.DisconnectAsync(cancellationToken);
+        await renewedConnectionClient.DisconnectAsync(null, cancellationToken);
     }
 
     /// <summary>

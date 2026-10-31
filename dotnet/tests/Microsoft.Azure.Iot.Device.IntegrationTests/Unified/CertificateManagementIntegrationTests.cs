@@ -35,7 +35,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
             Assert.NotNull(connectionContext.IssuedClientCertificates);
             Assert.NotEmpty(connectionContext.IssuedClientCertificates);
 
-            await device.ConnectionClient.DisconnectAsync(TestContext.Current.CancellationToken);
+            await device.ConnectionClient.DisconnectAsync(null, TestContext.Current.CancellationToken);
             Assert.Same(connectionContext, device.ConnectionClient.GetCurrentConnectionContext());
 
             ProvisioningSettings provisioningSettings = new(DpsIdScope)
@@ -145,7 +145,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
             Assert.NotNull(connectionContext.IssuedClientCertificates);
             Assert.NotEmpty(connectionContext.IssuedClientCertificates);
 
-            await connectionClient.DisconnectAsync(cts.Token);
+            await connectionClient.DisconnectAsync(null, cts.Token);
             Assert.Same(connectionContext, connectionClient.GetCurrentConnectionContext());
 
             ConnectionContext reconnectedContext = await connectionClient.ProvisionAndConnectAsync(
@@ -180,12 +180,12 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
             }
 
             // Upon getting the newly signed certificate, disconnect from IoT Hub and then reconnect with that new certificate
-            await connectionClient.DisconnectAsync(cts.Token);
+            await connectionClient.DisconnectAsync(null, cts.Token);
 
             Assert.NotNull(hubCsrResponse.Certificates);
             Assert.NotEmpty(hubCsrResponse.Certificates);
 
-            await connectionClient.DisconnectAsync(cts.Token);
+            await connectionClient.DisconnectAsync(null, cts.Token);
         }
 
         private static X509Certificate2 CreateX509CertificateFromKeyAndCert(string certificate, string key)
