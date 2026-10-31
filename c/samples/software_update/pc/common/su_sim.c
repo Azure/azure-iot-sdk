@@ -86,6 +86,24 @@ const char* su_sample_operation_name(az_iot_su_operation operation)
   return SU_SAMPLE_NAME_OF(k_su_operation_names, operation);
 }
 
+bool su_sample_decode_file_id(
+    const az_iot_su_client_update_manifest_file* file,
+    char* name,
+    size_t name_size)
+{
+  az_span decoded;
+  if (name_size == 0
+      || az_iot_su_decode_manifest_string(
+             file->id, az_span_create((uint8_t*)name, (int32_t)(name_size - 1)), &decoded)
+          != AZ_IOT_OK
+      || !sample_is_plain_file_name(decoded))
+  {
+    return false;
+  }
+  name[az_span_size(decoded)] = '\0';
+  return true;
+}
+
 int32_t su_sim_get_update_file_path(
     const az_iot_su_client_update_manifest_file* file,
     uint32_t file_index,
@@ -95,17 +113,12 @@ int32_t su_sim_get_update_file_path(
 {
   (void)file_index;
   const su_simulation_control* s = (const su_simulation_control*)user_ctx;
-  if (s->file_directory == NULL || !sample_is_plain_file_name(file->id))
+  char name[SU_SAMPLE_FILE_NAME_SIZE];
+  if (s->file_directory == NULL || !su_sample_decode_file_id(file, name, sizeof(name)))
   {
     return AZ_IOT_SU_RESULT_FAILURE;
   }
-  int n = snprintf(
-      path,
-      path_size,
-      "%s/%.*s",
-      s->file_directory,
-      (int)az_span_size(file->id),
-      (const char*)az_span_ptr(file->id));
+  int n = snprintf(path, path_size, "%s/%s", s->file_directory, name);
   return (n >= 0 && (size_t)n < path_size) ? AZ_IOT_SU_RESULT_SUCCESS : AZ_IOT_SU_RESULT_FAILURE;
 }
 

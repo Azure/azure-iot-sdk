@@ -119,9 +119,9 @@ typedef struct
 } download_context;
 
 /**
- * @brief Path of a downloaded file: the prefix and the manifest's file id.
+ * @brief Path of a downloaded file: the prefix and the manifest's decoded file id.
  *
- * @return 0 when the id is not a plain file name (see sample_is_plain_file_name()), or when the
+ * @return 0 when the id is not a plain file name (see su_sample_decode_file_id()), or when the
  * path does not fit @p out: files would otherwise leave the directory or overwrite each other.
  */
 static int build_download_path(
@@ -130,17 +130,12 @@ static int build_download_path(
     char* out,
     size_t out_size)
 {
-  if (!sample_is_plain_file_name(file->id))
+  char name[SU_SAMPLE_FILE_NAME_SIZE];
+  if (!su_sample_decode_file_id(file, name, sizeof(name)))
   {
     return 0;
   }
-  int n = snprintf(
-      out,
-      out_size,
-      "%s%.*s",
-      d->path_prefix,
-      (int)az_span_size(file->id),
-      (const char*)az_span_ptr(file->id));
+  int n = snprintf(out, out_size, "%s%s", d->path_prefix, name);
   return n >= 0 && (size_t)n < out_size;
 }
 

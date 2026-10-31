@@ -40,6 +40,10 @@
 /** Permissions of the cache files the handler copies. */
 #define SU_DELTA_FILE_MODE 0640
 
+/** @brief File the delta processor writes, in the source cache directory, which only the handler
+ * writes to; a sanitized provider directory never has this name. */
+#define SU_DELTA_BUILD_FILE_NAME ".build.tmp"
+
 /* libadudiffapi legacy apply API (iot-hub-device-update-delta, legacy_adudiffapply.h). */
 typedef void* (*su_delta_create_session_fn)(void);
 typedef void (*su_delta_close_session_fn)(void* session);
@@ -230,10 +234,15 @@ static bool su_delta_read_source_properties(
     }
     if (target != NULL && reader.token.kind == AZ_JSON_TOKEN_STRING)
     {
-      if (az_json_token_get_string(&reader.token, target, (int32_t)size, NULL) != AZ_OK)
+      /* az_json_token_get_string() rejects `\u` escapes. */
+      az_span value;
+      if (az_iot_json_string_decode(
+              reader.token.slice, az_span_create((uint8_t*)target, (int32_t)size - 1), &value)
+          != AZ_IOT_OK)
       {
         return false;
       }
+      target[az_span_size(value)] = '\0';
     }
     else if (az_json_reader_skip_children(&reader) != AZ_OK)
     {
@@ -441,6 +450,21 @@ static int32_t su_delta_choose_related_file(
   return AZ_IOT_SU_RESULT_FAILURE;
 }
 
+/** @brief Move @p source_path to @p target_path, copying across file systems. */
+static bool su_delta_move_file(const char* source_path, const char* target_path)
+{
+  if (rename(source_path, target_path) == 0)
+  {
+    return true;
+  }
+  if (!az_iot_su_delta__copy_file(source_path, target_path))
+  {
+    return false;
+  }
+  (void)unlink(source_path);
+  return true;
+}
+
 static int32_t su_delta_build_file_from_related(
     const az_iot_su_client_update_manifest_file* file,
     const az_iot_su_client_update_manifest_file* related_file,
@@ -456,26 +480,33 @@ static int32_t su_delta_build_file_from_related(
   char source_path[AZ_IOT_SU_DELTA_MAX_PATH_SIZE];
   char delta_path[AZ_IOT_SU_DELTA_MAX_PATH_SIZE];
   char target_path[AZ_IOT_SU_DELTA_MAX_PATH_SIZE];
+  char build_path[AZ_IOT_SU_DELTA_MAX_PATH_SIZE];
   if (!su_delta_get_source_path(handler, related_file, source_path, sizeof(source_path))
       || options->get_file_path_fn(
              related_file, file_index, delta_path, sizeof(delta_path), options->user_ctx)
           != AZ_IOT_SU_RESULT_SUCCESS
       || options->get_file_path_fn(
              file, file_index, target_path, sizeof(target_path), options->user_ctx)
-          != AZ_IOT_SU_RESULT_SUCCESS)
+          != AZ_IOT_SU_RESULT_SUCCESS
+      || su_delta_join_cache_path(
+             handler, SU_DELTA_BUILD_FILE_NAME, NULL, build_path, sizeof(build_path))
+          != AZ_IOT_OK)
   {
     AZ_IOT_LOG_ERROR(AZ_IOT_LOG_COMPONENT_SU, "delta: cannot get the paths to build a file");
     handler->_internal.build_in_progress = false;
     return AZ_IOT_SU_RESULT_FAILURE;
   }
 
+  /* The processor writes a file only the handler can reach, so nothing planted in the
+   * application's directory is written through; the result then replaces target_path. */
   if (!handler->_internal.build_in_progress)
   {
+    (void)unlink(build_path);
     (void)unlink(target_path);
   }
   int32_t result = options->apply_delta_fn != NULL
-      ? options->apply_delta_fn(source_path, delta_path, target_path, options->user_ctx)
-      : su_delta_apply_with_library(handler, source_path, delta_path, target_path);
+      ? options->apply_delta_fn(source_path, delta_path, build_path, options->user_ctx)
+      : su_delta_apply_with_library(handler, source_path, delta_path, build_path);
   if (result == AZ_IOT_SU_RESULT_IN_PROGRESS)
   {
     handler->_internal.build_in_progress = true;
@@ -490,7 +521,14 @@ static int32_t su_delta_build_file_from_related(
         target_path,
         source_path,
         delta_path);
-    (void)unlink(target_path);
+    (void)unlink(build_path);
+    return AZ_IOT_SU_RESULT_FAILURE;
+  }
+  if (!su_delta_move_file(build_path, target_path))
+  {
+    AZ_IOT_LOG_ERRORF(
+        AZ_IOT_LOG_COMPONENT_SU, "delta: cannot move the built file to '%s'", target_path);
+    (void)unlink(build_path);
     return AZ_IOT_SU_RESULT_FAILURE;
   }
   return AZ_IOT_SU_RESULT_SUCCESS;
@@ -582,21 +620,6 @@ bool az_iot_su_delta__copy_file(const char* source_path, const char* target_path
     (void)unlink(temporary_path);
     return false;
   }
-  return true;
-}
-
-/** @brief Move @p source_path to @p target_path, copying across file systems. */
-static bool su_delta_move_file(const char* source_path, const char* target_path)
-{
-  if (rename(source_path, target_path) == 0)
-  {
-    return true;
-  }
-  if (!az_iot_su_delta__copy_file(source_path, target_path))
-  {
-    return false;
-  }
-  (void)unlink(source_path);
   return true;
 }
 

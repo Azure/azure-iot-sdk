@@ -15,6 +15,7 @@
 #ifndef SU_SIM_H
 #define SU_SIM_H
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -64,12 +65,30 @@ int32_t simulate_update_file_download(
     uint32_t file_count,
     void* user_ctx);
 
+/** @brief Capacity of su_sample_decode_file_id()'s output, terminator included. */
+#define SU_SAMPLE_FILE_NAME_SIZE 256
+
 /**
- * @brief Path of @p file in su_simulation_control::file_directory: the directory and the file id.
- * Matches az_iot_su_delta_get_file_path_fn.
+ * @brief Decode @p file's id (`f\u0031` is `f1`) into a file name that stays in its directory.
  *
- * @return AZ_IOT_SU_RESULT_SUCCESS; AZ_IOT_SU_RESULT_FAILURE without a directory or when the path
- * does not fit @p path_size.
+ * @param[in] file Manifest file.
+ * @param[out] name Buffer for the NUL-terminated name.
+ * @param[in] name_size Capacity of @p name.
+ * @return true; false when the id is malformed, does not fit, or is not a plain file name
+ * (see sample_is_plain_file_name()).
+ */
+bool su_sample_decode_file_id(
+    const az_iot_su_client_update_manifest_file* file,
+    char* name,
+    size_t name_size);
+
+/**
+ * @brief Path of @p file in su_simulation_control::file_directory: the directory and the decoded
+ * file id. Matches az_iot_su_delta_get_file_path_fn.
+ *
+ * @return AZ_IOT_SU_RESULT_SUCCESS; AZ_IOT_SU_RESULT_FAILURE without a directory, when the id is
+ * not a plain file name (see su_sample_decode_file_id()), or when the path does not fit
+ * @p path_size.
  */
 int32_t su_sim_get_update_file_path(
     const az_iot_su_client_update_manifest_file* file,

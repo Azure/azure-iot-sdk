@@ -83,7 +83,8 @@ extern "C"
    *
    * @param[in] source_path Source file, in the source cache.
    * @param[in] delta_path Downloaded delta file.
-   * @param[in] target_path File to write.
+   * @param[in] target_path File to write: a private file in the source cache directory, which the
+   * handler then moves to the path #az_iot_su_delta_get_file_path_fn gives.
    * @param[in] user_ctx az_iot_su_delta_handler_options::user_ctx.
    * @return AZ_IOT_SU_RESULT_SUCCESS; AZ_IOT_SU_RESULT_IN_PROGRESS to be called again with the
    * same paths on the next do_work(); anything else is a failure, after which the handler removes

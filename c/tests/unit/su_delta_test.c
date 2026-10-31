@@ -37,6 +37,7 @@
 #define WORK_DIRECTORY AZ_IOT_TEST_SU_DELTA_WORK_DIRECTORY
 #define CACHE_DIRECTORY WORK_DIRECTORY "/cache"
 #define FILES_DIRECTORY WORK_DIRECTORY "/files"
+#define BUILD_FILE CACHE_DIRECTORY "/.build.tmp"
 #define PROVIDER "Contoso.Ltd"
 #define PROVIDER_DIRECTORY CACHE_DIRECTORY "/Contoso_Ltd"
 
@@ -509,6 +510,46 @@ static void test_choose_picks_first_related_file_with_cached_source(void** state
   assert_int_equal(chosen, 1);
 }
 
+/* Escaped property values are decoded: "sha\u0032\u0035\u0036" is sha256. */
+static void test_choose_decodes_escaped_source_properties(void** state)
+{
+  (void)state;
+  fake_processor fake = { 0 };
+  az_iot_su_delta_handler handler;
+  init_handler(&handler, &fake);
+  az_iot_su_download_handler download_handler
+      = az_iot_su_delta_handler_get_download_handler(&handler);
+  seed_source();
+
+  az_iot_su_client_update_manifest_file related_files[1];
+  related_files[0] = make_file(
+      "delta",
+      "AA==",
+      5,
+      "{\"microsoft.sourceFileHashAlgorithm\":\"sha\\u0032\\u0035\\u0036\","
+      "\"microsoft.sourceFileHash\":\"nuDNVz6kcEmOtefngw1gEGmcGB5L5ZRaBB0qbMbe90E\\u003d\"}");
+  az_iot_su_client_update_manifest manifest;
+  make_manifest(&manifest, related_files, 1);
+  uint32_t chosen = 99;
+  assert_int_equal(
+      download_handler.choose_related_file_fn(
+          &manifest, &manifest.files[0], &chosen, download_handler.user_ctx),
+      AZ_IOT_SU_RESULT_SUCCESS);
+  assert_int_equal(chosen, 0);
+
+  /* A malformed escape is no source. */
+  related_files[0] = make_file(
+      "delta",
+      "AA==",
+      5,
+      "{\"microsoft.sourceFileHashAlgorithm\":\"sha256\\x\","
+      "\"microsoft.sourceFileHash\":\"" SOURCE_HASH "\"}");
+  assert_int_equal(
+      download_handler.choose_related_file_fn(
+          &manifest, &manifest.files[0], &chosen, download_handler.user_ctx),
+      AZ_IOT_SU_RESULT_FAILURE);
+}
+
 static void test_choose_declines_without_cached_source(void** state)
 {
   (void)state;
@@ -627,9 +668,10 @@ static void test_build_applies_delta_to_cached_source(void** state)
   make_manifest(&manifest, related_files, 1);
   choose(&download_handler, &manifest);
 
-  /* The downloaded delta, and a stale target from an interrupted attempt. */
+  /* The downloaded delta, and stale files from an interrupted attempt. */
   write_file(FILES_DIRECTORY "/3-delta", "DELTA", 5);
   write_file(FILES_DIRECTORY "/3-target", "STALE", 5);
+  write_file(BUILD_FILE, "STALE", 5);
   assert_int_equal(
       download_handler.build_file_from_related_fn(
           &manifest.files[0], &related_files[0], 3, download_handler.user_ctx),
@@ -638,10 +680,53 @@ static void test_build_applies_delta_to_cached_source(void** state)
   assert_false(fake.target_existed[0]);
   assert_string_equal(fake.source_path, SOURCE_CACHE_FILE);
   assert_string_equal(fake.delta_path, FILES_DIRECTORY "/3-delta");
-  assert_string_equal(fake.target_path, FILES_DIRECTORY "/3-target");
+  /* Built in the cache, then moved to where the application reads it. */
+  assert_string_equal(fake.target_path, BUILD_FILE);
+  assert_false(file_exists(BUILD_FILE));
   char target[32] = { 0 };
   assert_int_equal(read_file(FILES_DIRECTORY "/3-target", target, sizeof(target)), 11);
   assert_string_equal(target, "SOURCEDELTA");
+}
+
+/* A link planted at the target path is replaced, never written through. */
+static void test_build_replaces_a_link_at_the_target_path(void** state)
+{
+  (void)state;
+  fake_processor fake = { 0 };
+  az_iot_su_delta_handler handler;
+  init_handler(&handler, &fake);
+  az_iot_su_download_handler download_handler
+      = az_iot_su_delta_handler_get_download_handler(&handler);
+  seed_source();
+  az_iot_su_client_update_manifest_file related_files[1];
+  related_files[0] = make_file("delta", "AA==", 5, SOURCE_PROPERTIES(SOURCE_HASH));
+  az_iot_su_client_update_manifest manifest;
+  make_manifest(&manifest, related_files, 1);
+  choose(&download_handler, &manifest);
+  write_file(FILES_DIRECTORY "/0-delta", "DELTA", 5);
+  write_file(WORK_DIRECTORY "/outside", "OUTSIDE", 7);
+
+  /* Planted after the handler cleared the target path, while the processor runs. */
+  fake.results[0] = AZ_IOT_SU_RESULT_IN_PROGRESS;
+  assert_int_equal(
+      download_handler.build_file_from_related_fn(
+          &manifest.files[0], &related_files[0], 0, download_handler.user_ctx),
+      AZ_IOT_SU_RESULT_IN_PROGRESS);
+  assert_int_equal(symlink(WORK_DIRECTORY "/outside", FILES_DIRECTORY "/0-target"), 0);
+  assert_int_equal(
+      download_handler.build_file_from_related_fn(
+          &manifest.files[0], &related_files[0], 0, download_handler.user_ctx),
+      AZ_IOT_SU_RESULT_SUCCESS);
+
+  char content[32] = { 0 };
+  assert_int_equal(read_file(WORK_DIRECTORY "/outside", content, sizeof(content)), 7);
+  assert_string_equal(content, "OUTSIDE");
+  struct stat info;
+  assert_int_equal(lstat(FILES_DIRECTORY "/0-target", &info), 0);
+  assert_true(S_ISREG(info.st_mode));
+  memset(content, 0, sizeof(content));
+  assert_int_equal(read_file(FILES_DIRECTORY "/0-target", content, sizeof(content)), 11);
+  assert_string_equal(content, "SOURCEDELTA");
 }
 
 static void test_build_continues_in_progress_apply(void** state)
@@ -704,6 +789,7 @@ static void test_build_failure_removes_partial_target(void** state)
           &manifest.files[0], &related_files[0], 0, download_handler.user_ctx),
       AZ_IOT_SU_RESULT_FAILURE);
   assert_false(file_exists(FILES_DIRECTORY "/0-target"));
+  assert_false(file_exists(BUILD_FILE));
   assert_true(file_exists(FILES_DIRECTORY "/0-delta"));
   assert_true(file_exists(SOURCE_CACHE_FILE));
 }
@@ -1116,6 +1202,10 @@ int main(void)
         setup_work_directory,
         teardown_work_directory),
     cmocka_unit_test_setup_teardown(
+        test_choose_decodes_escaped_source_properties,
+        setup_work_directory,
+        teardown_work_directory),
+    cmocka_unit_test_setup_teardown(
         test_choose_declines_without_cached_source, setup_work_directory, teardown_work_directory),
     cmocka_unit_test_setup_teardown(
         test_choose_declines_when_library_cannot_be_loaded,
@@ -1123,6 +1213,10 @@ int main(void)
         teardown_work_directory),
     cmocka_unit_test_setup_teardown(
         test_build_applies_delta_to_cached_source, setup_work_directory, teardown_work_directory),
+    cmocka_unit_test_setup_teardown(
+        test_build_replaces_a_link_at_the_target_path,
+        setup_work_directory,
+        teardown_work_directory),
     cmocka_unit_test_setup_teardown(
         test_build_continues_in_progress_apply, setup_work_directory, teardown_work_directory),
     cmocka_unit_test_setup_teardown(
@@ -1276,6 +1370,7 @@ static void test_library_failure_removes_partial_target(void** state)
           &manifest.files[0], &related_files[0], 0, download_handler.user_ctx),
       AZ_IOT_SU_RESULT_FAILURE);
   assert_false(file_exists(FILES_DIRECTORY "/0-target"));
+  assert_false(file_exists(BUILD_FILE));
 
   /* A source removed after choosing. */
   assert_int_equal(unlink(SOURCE_CACHE_FILE), 0);
@@ -1284,6 +1379,7 @@ static void test_library_failure_removes_partial_target(void** state)
           &manifest.files[0], &related_files[0], 0, download_handler.user_ctx),
       AZ_IOT_SU_RESULT_FAILURE);
   assert_false(file_exists(FILES_DIRECTORY "/0-target"));
+  assert_false(file_exists(BUILD_FILE));
   az_iot_su_delta_handler_deinit(&handler);
 }
 

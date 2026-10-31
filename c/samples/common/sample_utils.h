@@ -71,7 +71,7 @@ bool sample_string_copy(char* dst, size_t dst_size, const char* src);
 bool sample_env_copy_to_buffer(const char* name, const char* fallback, char* dst, size_t dst_size);
 
 /**
- * @brief Whether @p name, from a manifest, can name a file in a directory without
+ * @brief Whether @p name, a decoded manifest file id, can name a file in a directory without
  * leaving it: not empty, `.` or `..`, and free of `/`, `\\`, `:` and NUL.
  *
  * @param[in] name Name to check.

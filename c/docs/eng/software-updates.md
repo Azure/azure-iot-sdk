@@ -1461,6 +1461,12 @@ az_iot_result az_iot_su_verify_file_hash(
     void* read_ctx);
 
 /**
+ * Decode a manifest string the parser keeps escaped, such as a file id
+ * (`f\u0031` is `f1`), before using it as a name or comparing it.
+ */
+az_iot_result az_iot_su_decode_manifest_string(az_span escaped, az_span out, az_span* out_decoded);
+
+/**
  * Build the reportUpdateStatus request body for a report, without a client or
  * a channel: the body the managed client and library mode send. Invalid reports
  * (empty workflow id, incomplete installed update id, outcome / failure-origin
