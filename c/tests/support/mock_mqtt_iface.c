@@ -79,6 +79,9 @@ typedef struct az_iot_mock_mqtt_factory_state
 /* The mock adapter's clients: the newest still alive, and its counts. */
 static az_iot_mock_mqtt_client* s_adapter_last_client;
 static az_iot_mock_mqtt_adapter_stats s_adapter_stats;
+/* Versions requested by the mock adapter's init() calls, oldest first. */
+static az_iot_mqtt_version s_adapter_versions[AZ_IOT_MOCK_MQTT_ADAPTER_VERSION_HISTORY];
+static size_t s_adapter_version_count;
 /* One-shot CONNECT failure for the next client the mock adapter builds. */
 static bool s_adapter_fail_next_connect;
 static az_iot_result s_adapter_next_connect_result;
@@ -572,6 +575,11 @@ static az_iot_result mock_adapter_init(
     return AZ_IOT_ERR_INVALID_ARG;
   }
   *out_client = NULL;
+  if (s_adapter_version_count < AZ_IOT_MOCK_MQTT_ADAPTER_VERSION_HISTORY)
+  {
+    s_adapter_versions[s_adapter_version_count] = mqtt_version;
+  }
+  s_adapter_version_count++;
   if (workspace == NULL || !az_iot_mqtt__limits_are_valid(limits))
   {
     return AZ_IOT_ERR_INVALID_ARG;
@@ -620,10 +628,21 @@ az_iot_mock_mqtt_client* az_iot_mock_mqtt_adapter_last_client(void)
 
 az_iot_mock_mqtt_adapter_stats az_iot_mock_mqtt_adapter_get_stats(void) { return s_adapter_stats; }
 
+bool az_iot_mock_mqtt_adapter_get_requested_version(size_t index, az_iot_mqtt_version* out_version)
+{
+  if (index >= s_adapter_version_count || index >= AZ_IOT_MOCK_MQTT_ADAPTER_VERSION_HISTORY)
+  {
+    return false;
+  }
+  *out_version = s_adapter_versions[index];
+  return true;
+}
+
 void az_iot_mock_mqtt_adapter_reset(void)
 {
   s_adapter_last_client = NULL;
   memset(&s_adapter_stats, 0, sizeof(s_adapter_stats));
+  s_adapter_version_count = 0;
   s_adapter_fail_next_connect = false;
 }
 

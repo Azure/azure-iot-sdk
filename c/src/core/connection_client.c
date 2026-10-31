@@ -6888,6 +6888,20 @@ static az_iot_result check_init_workspace(
   return AZ_IOT_OK;
 }
 
+/** @brief True when [@p a, @p a + @p a_size) and [@p b, @p b + @p b_size) share a byte. */
+static bool are_memory_ranges_overlapping(
+    const uint8_t* a,
+    size_t a_size,
+    const uint8_t* b,
+    size_t b_size)
+{
+  const uintptr_t a_start = (uintptr_t)a;
+  const uintptr_t b_start = (uintptr_t)b;
+  /* Differences, not ends, so a range ending at the top of the address space cannot wrap. */
+  return a_size != 0u && b_size != 0u
+      && (b_start >= a_start ? b_start - a_start < a_size : a_start - b_start < b_size);
+}
+
 AZ_NODISCARD az_iot_result az_iot_connection_client_init(
     az_iot_connection_client* client,
     const az_iot_connection_client_options* opts)
@@ -6964,6 +6978,12 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_init(
     if (wr != AZ_IOT_OK)
     {
       return wr;
+    }
+    if (are_memory_ranges_overlapping(
+            opts->workspace, opts->workspace_size, opts->mqtt_workspace, opts->mqtt_workspace_size))
+    {
+      AZ_IOT_LOG_ERROR(AZ_IOT_LOG_COMPONENT_CONNECTION, "init: mqtt_workspace overlaps workspace");
+      return AZ_IOT_ERR_INVALID_ARG;
     }
   }
   memset(client, 0, sizeof(*client));

@@ -169,6 +169,9 @@ extern "C"
   /** @brief The newest client the mock adapter built that is not destroyed yet, or NULL. */
   az_iot_mock_mqtt_client* az_iot_mock_mqtt_adapter_last_client(void);
 
+/** @brief init() calls whose requested version the mock adapter records. */
+#define AZ_IOT_MOCK_MQTT_ADAPTER_VERSION_HISTORY 8u
+
   /** @brief Counts of the mock adapter's clients since the last reset. */
   typedef struct az_iot_mock_mqtt_adapter_stats
   {
@@ -180,8 +183,15 @@ extern "C"
 
   az_iot_mock_mqtt_adapter_stats az_iot_mock_mqtt_adapter_get_stats(void);
 
-  /** @brief Clears the stats, last client and armed failure; call with no client of the adapter
-   * alive. */
+  /** @brief Sets @p out_version to the MQTT version the @p index-th init() since the last reset
+   * requested (0: first); false past the calls made or the first
+   * #AZ_IOT_MOCK_MQTT_ADAPTER_VERSION_HISTORY. */
+  bool az_iot_mock_mqtt_adapter_get_requested_version(
+      size_t index,
+      az_iot_mqtt_version* out_version);
+
+  /** @brief Clears the stats, requested versions, last client and armed failure; call with no
+   * client of the adapter alive. */
   void az_iot_mock_mqtt_adapter_reset(void);
 
   /** @brief Arms a one-shot CONNECT failure with @p result on the next client the mock adapter

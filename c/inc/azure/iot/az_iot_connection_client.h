@@ -950,7 +950,8 @@ extern "C"
      * @brief Memory for the MQTT client, owned by the client from init() to deinit(), which wipes
      * it. At least mqtt_adapter->get_workspace_size(&mqtt_limits) bytes, any alignment. Required
      * with mqtt_adapter: init() fails with AZ_IOT_ERR_INVALID_ARG when it is NULL, and with
-     * AZ_IOT_ERR_NOT_ENOUGH_SPACE when it is too small. Unused without mqtt_adapter.
+     * AZ_IOT_ERR_NOT_ENOUGH_SPACE when it is too small. Must not overlap workspace: init() fails
+     * with AZ_IOT_ERR_INVALID_ARG when the two share a byte. Unused without mqtt_adapter.
      */
     uint8_t* mqtt_workspace;
     size_t mqtt_workspace_size; /**< Bytes in mqtt_workspace. */

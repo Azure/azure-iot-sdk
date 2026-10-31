@@ -188,6 +188,8 @@ factories.
 - `init()` fails with `AZ_IOT_ERR_INVALID_ARG` when the limits are invalid (the adapter's size is
   0) or the workspace is NULL, and with `AZ_IOT_ERR_NOT_ENOUGH_SPACE` when it is too small; the
   last two log the size needed. `deinit()` wipes it.
+- `mqtt_workspace` and `workspace` must be disjoint (adjacent is fine): `init()` fails with
+  `AZ_IOT_ERR_INVALID_ARG` when they share a byte, before it changes the client.
 - The hub session resumes its MQTT session unless `session_continuity` is
   `AZ_IOT_SESSION_CONTINUITY_CLEAN`. az_mqtt then needs a `message_store_size` of at least
   `send_buffer_size` plus its 18-byte per-message overhead; with 0 its connect fails with

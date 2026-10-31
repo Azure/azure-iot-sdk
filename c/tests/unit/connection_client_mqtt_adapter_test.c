@@ -39,6 +39,11 @@ static const char k_assigned_body[]
     = "{\"operationId\":\"op-1\",\"status\":\"assigned\","
       "\"registrationState\":{\"registrationId\":\"ut-device\","
       "\"assignedHub\":\"myhub.azure-devices.net\",\"deviceId\":\"assigned-device\"}}";
+static const char k_assigned_mqtt_v5_body[]
+    = "{\"operationId\":\"op-1\",\"status\":\"assigned\","
+      "\"registrationState\":{\"registrationId\":\"ut-device\","
+      "\"assignedHub\":\"myhub.azure-devices.net\",\"connectionProfile\":\"mqttV5\","
+      "\"deviceId\":\"assigned-device\"}}";
 
 static const az_iot_mqtt_limits k_limits = { 1024, 1024, 4, 0, 1024 };
 
@@ -163,8 +168,13 @@ static void assert_local_error(
   assert_string_equal(log->error_message[index], message);
 }
 
-/** @brief Opens a DPS client and takes it to the assigned hub's CONNECT; returns the DPS client. */
-static az_iot_mock_mqtt_client* register_to_the_assigned_hub(adapter_fixture* fx)
+/**
+ * @brief Opens a DPS client and takes it to the CONNECT of the hub @p assigned_body assigns;
+ * returns the DPS client.
+ */
+static az_iot_mock_mqtt_client* register_with_the_assignment(
+    adapter_fixture* fx,
+    const char* assigned_body)
 {
   assert_int_equal(az_iot_connection_client_open(&fx->client), AZ_IOT_OK);
   az_iot_mock_mqtt_client* dps = az_iot_mock_mqtt_adapter_last_client();
@@ -179,14 +189,20 @@ static az_iot_mock_mqtt_client* register_to_the_assigned_hub(adapter_fixture* fx
   assert_true(az_iot_mock_mqtt_client_inject_message(
       dps,
       k_assigned_topic,
-      (const uint8_t*)k_assigned_body,
-      strlen(k_assigned_body),
+      (const uint8_t*)assigned_body,
+      strlen(assigned_body),
       AZ_IOT_MQTT_QOS_1));
   for (int i = 0; i < 5; ++i)
   {
     (void)az_iot_connection_client_do_work(&fx->client, 0);
   }
   return dps;
+}
+
+/** @brief register_with_the_assignment() to an MQTT 3.1.1 hub. */
+static az_iot_mock_mqtt_client* register_to_the_assigned_hub(adapter_fixture* fx)
+{
+  return register_with_the_assignment(fx, k_assigned_body);
 }
 
 static void assert_connects_to(az_iot_mock_mqtt_client* m, const char* host)
@@ -229,6 +245,97 @@ static void init_checks_the_mqtt_workspace(void** state)
   assert_int_equal(az_iot_connection_client_deinit(&fx->client), AZ_IOT_OK);
 }
 
+/** @brief Where init_*_workspaces() place workspace and mqtt_workspace in one buffer. */
+typedef struct workspace_layout
+{
+  size_t workspace_offset;
+  size_t workspace_size;
+  size_t mqtt_workspace_offset;
+  size_t mqtt_workspace_size;
+} workspace_layout;
+
+/** @brief direct_options() with the mock adapter and both workspaces placed in @p buffer. */
+static az_iot_connection_client_options options_with_layout(
+    uint8_t* buffer,
+    const workspace_layout* layout)
+{
+  az_iot_connection_client_options opts = direct_options();
+  opts.workspace = buffer + layout->workspace_offset;
+  opts.workspace_size = layout->workspace_size;
+  opts.mqtt_adapter = az_iot_mock_mqtt_get_adapter();
+  opts.mqtt_limits = k_limits;
+  opts.mqtt_workspace = buffer + layout->mqtt_workspace_offset;
+  opts.mqtt_workspace_size = layout->mqtt_workspace_size;
+  return opts;
+}
+
+static void init_refuses_overlapping_workspaces(void** state)
+{
+  adapter_fixture* fx = (adapter_fixture*)*state;
+  static uint8_t untouched[sizeof(az_iot_connection_client)];
+  memset(&fx->client, 0x5A, sizeof(fx->client));
+  memset(untouched, 0x5A, sizeof(untouched));
+  az_iot_connection_client_options defaults = direct_options();
+  const size_t w = az_iot_connection_client_get_workspace_size(&defaults.limits);
+  const size_t m = fx->mqtt_workspace_size;
+  const size_t largest = w > m ? w : m;
+  const size_t buffer_size = 2u * (w + m);
+  uint8_t* buffer = (uint8_t*)malloc(buffer_size);
+  assert_non_null(buffer);
+  memset(buffer, 0xC3, buffer_size);
+
+  const workspace_layout layouts[] = {
+    /* Identical. */
+    { 0, largest, 0, largest },
+    /* mqtt_workspace starts on workspace's last byte. */
+    { 0, w, w - 1u, m },
+    /* workspace starts on mqtt_workspace's last byte. */
+    { m - 1u, w, 0, m },
+    /* mqtt_workspace inside workspace. */
+    { 0, w + m + 2u, 1, m },
+    /* workspace inside mqtt_workspace. */
+    { 1, w, 0, w + m + 2u },
+  };
+  for (size_t i = 0; i < sizeof(layouts) / sizeof(layouts[0]); ++i)
+  {
+    az_iot_connection_client_options opts = options_with_layout(buffer, &layouts[i]);
+    assert_int_equal(az_iot_connection_client_init(&fx->client, &opts), AZ_IOT_ERR_INVALID_ARG);
+  }
+
+  /* Refused before the client or either workspace changed. */
+  assert_memory_equal(&fx->client, untouched, sizeof(fx->client));
+  for (size_t i = 0; i < buffer_size; ++i)
+  {
+    assert_int_equal(buffer[i], 0xC3);
+  }
+  assert_int_equal(az_iot_mock_mqtt_adapter_get_stats().built, 0);
+  free(buffer);
+}
+
+static void init_accepts_adjacent_workspaces(void** state)
+{
+  adapter_fixture* fx = (adapter_fixture*)*state;
+  az_iot_connection_client_options defaults = direct_options();
+  const size_t w = az_iot_connection_client_get_workspace_size(&defaults.limits);
+  const size_t m = fx->mqtt_workspace_size;
+  uint8_t* buffer = (uint8_t*)malloc(w + m);
+  assert_non_null(buffer);
+
+  const workspace_layout layouts[] = {
+    /* mqtt_workspace right after workspace. */
+    { 0, w, w, m },
+    /* workspace right after mqtt_workspace. */
+    { m, w, 0, m },
+  };
+  for (size_t i = 0; i < sizeof(layouts) / sizeof(layouts[0]); ++i)
+  {
+    az_iot_connection_client_options opts = options_with_layout(buffer, &layouts[i]);
+    assert_int_equal(az_iot_connection_client_init(&fx->client, &opts), AZ_IOT_OK);
+    assert_int_equal(az_iot_connection_client_deinit(&fx->client), AZ_IOT_OK);
+  }
+  free(buffer);
+}
+
 static void a_direct_hub_connect_builds_its_client_in_the_workspace(void** state)
 {
   adapter_fixture* fx = (adapter_fixture*)*state;
@@ -264,6 +371,68 @@ static void registration_then_the_hub_session_reuse_the_workspace(void** state)
   assert_ptr_equal(hub, dps);
   assert_ptr_equal(fx->client.active_client, hub);
   assert_connects_to(hub, "myhub.azure-devices.net");
+  assert_adapter_stats(2, 1);
+}
+
+static void registration_then_an_mqtt_v5_hub_session_reuse_the_workspace(void** state)
+{
+  adapter_fixture* fx = (adapter_fixture*)*state;
+  init_with_mock_adapter(fx, dps_options());
+
+  az_iot_mock_mqtt_client* dps = register_with_the_assignment(fx, k_assigned_mqtt_v5_body);
+  assert_in_mqtt_workspace(fx, dps, sizeof(az_iot_mqtt_client));
+  assert_null(fx->client.dps_mqtt);
+
+  /* DPS asked for MQTT 3.1.1, the assigned hub for MQTT 5. */
+  az_iot_mqtt_version version;
+  assert_true(az_iot_mock_mqtt_adapter_get_requested_version(0, &version));
+  assert_int_equal(version, AZ_IOT_MQTT_VERSION_3_1_1);
+  assert_true(az_iot_mock_mqtt_adapter_get_requested_version(1, &version));
+  assert_int_equal(version, AZ_IOT_MQTT_VERSION_5);
+  assert_false(az_iot_mock_mqtt_adapter_get_requested_version(2, &version));
+
+  /* max_live 1: the DPS client was destroyed before the hub client was built in its place. */
+  az_iot_mock_mqtt_client* hub = az_iot_mock_mqtt_adapter_last_client();
+  assert_ptr_equal(hub, dps);
+  assert_ptr_equal(fx->client.active_client, hub);
+  assert_connects_to(hub, "myhub.azure-devices.net");
+  assert_adapter_stats(2, 1);
+
+  /* MQTT 5: the presence birth-ack, not the CONNACK, connects the session. */
+  assert_true(az_iot_mock_mqtt_client_inject_connected(hub, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(&fx->client, 0);
+  assert_int_not_equal(
+      az_iot_connection_client_get_state(&fx->client, AZ_IOT_CONN_SCOPE_HUB),
+      AZ_IOT_CONN_STATE_CONNECTED);
+  const az_iot_mock_call* sub = az_iot_mock_mqtt_client_last_of(hub, AZ_IOT_MOCK_CALL_SUBSCRIBE);
+  assert_non_null(sub);
+  assert_true(az_iot_mock_mqtt_client_inject_suback(hub, sub->packet_id, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(&fx->client, 0);
+  const az_iot_mock_call* birth = az_iot_mock_mqtt_client_last_of(hub, AZ_IOT_MOCK_CALL_PUBLISH);
+  assert_non_null(birth);
+  assert_int_equal(birth->correlation_data_len, 16);
+  /* nonce and ack_type must outlive the do_work that delivers the event. */
+  uint8_t nonce[16];
+  memcpy(nonce, birth->correlation_data, sizeof(nonce));
+  az_iot_mqtt_user_property ack_type = { "type", "birth-ack:1" };
+  az_iot_mqtt_message ack_message;
+  memset(&ack_message, 0, sizeof(ack_message));
+  ack_message.topic = "ih/assigned-device/dev/presence";
+  ack_message.correlation_data = nonce;
+  ack_message.correlation_data_len = sizeof(nonce);
+  ack_message.user_properties = az_iot_mqtt_user_properties_from_array(&ack_type, 1);
+  az_iot_mqtt_event ack;
+  memset(&ack, 0, sizeof(ack));
+  ack.kind = AZ_IOT_MQTT_EVT_MESSAGE;
+  ack.message = &ack_message;
+  assert_true(az_iot_mock_mqtt_client_inject_event(hub, &ack));
+  (void)az_iot_connection_client_do_work(&fx->client, 0);
+  assert_int_equal(
+      az_iot_connection_client_get_state(&fx->client, AZ_IOT_CONN_SCOPE_HUB),
+      AZ_IOT_CONN_STATE_CONNECTED);
+  az_iot_hub_profile profile;
+  assert_int_equal(az_iot_connection_client_get_hub_profile(&fx->client, &profile), AZ_IOT_OK);
+  assert_int_equal(profile.connection_profile, AZ_IOT_CONNECTION_PROFILE_MQTT_V5);
   assert_adapter_stats(2, 1);
 }
 
@@ -545,10 +714,14 @@ int main(void)
 {
   const struct CMUnitTest tests[] = {
     cmocka_unit_test_setup_teardown(init_checks_the_mqtt_workspace, setup, teardown),
+    cmocka_unit_test_setup_teardown(init_refuses_overlapping_workspaces, setup, teardown),
+    cmocka_unit_test_setup_teardown(init_accepts_adjacent_workspaces, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_direct_hub_connect_builds_its_client_in_the_workspace, setup, teardown),
     cmocka_unit_test_setup_teardown(
         registration_then_the_hub_session_reuse_the_workspace, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        registration_then_an_mqtt_v5_hub_session_reuse_the_workspace, setup, teardown),
     cmocka_unit_test_setup_teardown(a_reconnect_after_a_drop_reuses_the_workspace, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_hub_session_beside_a_held_provisioning_session_is_refused_busy, setup, teardown),
