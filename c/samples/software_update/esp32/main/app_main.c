@@ -6,7 +6,7 @@
 /* software_update/esp32 - real Azure software updates over-the-air firmware update on an
  * ESP32-WROOM, end to end:
  *
- *   Wi-Fi -> DPS provisioning (X.509, az_mqtt) -> software update check ->
+ *   Network -> DPS provisioning (X.509, az_mqtt) -> software update check ->
  *   manifest JWS verification (mbedTLS) -> HTTPS download straight into the
  *   inactive OTA partition -> per-file SHA-256 check -> set boot partition ->
  *   reboot -> resume the workflow in the new image -> report the new version.
@@ -19,7 +19,8 @@
  * it asks on the onboarding route; once it has (recorded in NVS), it asks on
  * the regular route. After connecting it checks every SU_POLL_INTERVAL_S.
  *
- * Configure Wi-Fi + DPS via `idf.py menuconfig` (see Kconfig.projbuild). The
+ * Configure the network (Wi-Fi, or Ethernet in QEMU: sdkconfig.qemu) and DPS via
+ * `idf.py menuconfig` (see Kconfig.projbuild). The
  * device certificate and key come from the esp_secure_cert partition; on chips
  * with the Digital Signature peripheral the key never leaves it. An optional
  * server CA is compiled in from main/certs/trusted_ca.pem (EMBED_TXTFILES).
@@ -42,7 +43,9 @@
 #include "azure/iot/adapters/az_iot_adapter_az_mqtt.h"
 
 #include "su_version.h"
-#include "wifi_connect.h"
+#include "esp_event.h"
+#include "esp_netif.h"
+#include "protocol_examples_common.h"
 #include "az_iot_certificate_provider_esp_secure_cert.h"
 #include "az_iot_crypto_mbedtls.h"
 #include "az_iot_su_esp32_ota.h"
@@ -241,7 +244,7 @@ void app_main(void)
 {
   ESP_LOGI(TAG, "Software updates ESP32 sample starting (firmware version %s)", SU_UPDATE_VERSION);
 
-  /* NVS is required by Wi-Fi and used to persist the software updates resume blob. */
+  /* NVS is required by Wi-Fi and is used to persist the software updates resume blob. */
   esp_err_t nvs = nvs_flash_init();
   if (nvs == ESP_ERR_NVS_NO_FREE_PAGES || nvs == ESP_ERR_NVS_NEW_VERSION_FOUND)
   {
@@ -249,9 +252,12 @@ void app_main(void)
     ESP_ERROR_CHECK(nvs_flash_init());
   }
 
-  if (wifi_connect_blocking() != ESP_OK)
+  /* Wi-Fi, or OpenCores Ethernet in QEMU (sdkconfig.qemu); blocks until an IPv4 address. */
+  ESP_ERROR_CHECK(esp_netif_init());
+  ESP_ERROR_CHECK(esp_event_loop_create_default());
+  if (example_connect() != ESP_OK)
   {
-    ESP_LOGE(TAG, "Wi-Fi connect failed; rebooting");
+    ESP_LOGE(TAG, "network connect failed; rebooting");
     esp_restart();
   }
 
@@ -271,7 +277,11 @@ void app_main(void)
   }
 
   /* Connection client: DPS provisioning + X.509, mbedTLS crypto. */
+  /* Memory for the connection client's entries, sized for the default limits. */
+  static uint8_t connection_workspace[AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE];
   az_iot_connection_client_options copts = az_iot_connection_client_options_default();
+  copts.workspace = connection_workspace;
+  copts.workspace_size = sizeof(connection_workspace);
   copts.dps.id_scope = CONFIG_SU_DPS_ID_SCOPE;
   copts.dps.registration_id = CONFIG_SU_DPS_REGISTRATION_ID;
   copts.certificate_provider = &certs.base;
@@ -415,7 +425,8 @@ void app_main(void)
   const unsigned max_ticks = (2u * (unsigned)AZ_IOT_DPS_HOLD_TIMEOUT_MS) / tick_ms;
   for (unsigned i = 0; i < max_ticks && g_conn_state != AZ_IOT_CONN_STATE_CONNECTED; ++i)
   {
-    (void)az_iot_connection_client_do_work(&conn, 50);
+    TickType_t const tick_start = xTaskGetTickCount();
+    (void)az_iot_connection_client_do_work(&conn, tick_ms);
     (void)az_iot_su_client_do_work(&su);
     if (check_deferred && az_iot_su_client_get_state(&su) == AZ_IOT_SU_STATE_IDLE)
     {
@@ -428,6 +439,13 @@ void app_main(void)
     if (g_conn_state == AZ_IOT_CONN_STATE_FAULTED || g_provisioning_faulted)
     {
       break;
+    }
+    /* do_work() returns at once while no session is open (a retry backoff):
+     * wait out the tick, so the bound holds and the idle task runs. */
+    TickType_t const spent = xTaskGetTickCount() - tick_start;
+    if (spent < pdMS_TO_TICKS(tick_ms))
+    {
+      vTaskDelay(pdMS_TO_TICKS(tick_ms) - spent);
     }
   }
 

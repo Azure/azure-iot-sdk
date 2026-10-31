@@ -259,7 +259,11 @@ int main(void)
   az_iot_connection_profile profile = AZ_IOT_CONNECTION_PROFILE_UNKNOWN;
   int telemetry_initialized = 0;
 
+  /* Memory for the connection client's entries, sized for the default limits. */
+  static uint8_t connection_workspace[AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE];
   az_iot_connection_client_options copts = az_iot_connection_client_options_default();
+  copts.workspace = connection_workspace;
+  copts.workspace_size = sizeof(connection_workspace);
   copts.device_id = config.reg_id;
   /* This sample carries its own config struct (PKCS#11 URI and engine id), not
    * the shared sample_config, so it sets the DPS fields directly -- including
