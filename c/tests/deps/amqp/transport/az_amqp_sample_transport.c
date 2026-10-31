@@ -449,6 +449,29 @@ static bool _sch_queue(_sch_state* sch, uint8_t const* p, int n)
 }
 
 /**
+ * @brief Queues a handshake token InitializeSecurityContext returned in @p token and frees it.
+ *
+ * @return false, with the error set, when it does not fit: dropping it would leave the peer
+ * waiting for a flight that never arrives.
+ */
+static bool _sch_queue_token(az_amqp_sample_transport* s, SecBuffer* token)
+{
+  if (token->cbBuffer == 0 || token->pvBuffer == NULL)
+  {
+    return true;
+  }
+  bool const queued
+      = _sch_queue(_sch(s), (uint8_t const*)token->pvBuffer, (int)token->cbBuffer);
+  FreeContextBuffer(token->pvBuffer);
+  token->pvBuffer = NULL;
+  if (!queued)
+  {
+    _set_error(s, 0, "TLS handshake token exceeds the output buffer");
+  }
+  return queued;
+}
+
+/**
  * @brief Adds the certificates after the first in @p cert_pem (the leaf's issuers) to @p store.
  *
  * @details Schannel builds the presented chain from the client certificate's own store, so the
@@ -861,10 +884,9 @@ static az_amqp_transport_status _sch_handshake(az_amqp_sample_transport* s)
       _sch_fail(s, "InitializeSecurityContext (initial) failed", (long)st);
       return AZ_AMQP_TRANSPORT_STATUS_ERROR;
     }
-    if (outbuf.cbBuffer > 0 && outbuf.pvBuffer != NULL)
+    if (!_sch_queue_token(s, &outbuf))
     {
-      (void)_sch_queue(sch, (uint8_t const*)outbuf.pvBuffer, (int)outbuf.cbBuffer);
-      FreeContextBuffer(outbuf.pvBuffer);
+      return AZ_AMQP_TRANSPORT_STATUS_ERROR;
     }
     az_amqp_transport_status f = _sch_flush(s);
     if (f == AZ_AMQP_TRANSPORT_STATUS_ERROR)
@@ -919,10 +941,9 @@ static az_amqp_transport_status _sch_handshake(az_amqp_sample_transport* s)
         &attrs,
         NULL);
 
-    if (outbuf.cbBuffer > 0 && outbuf.pvBuffer != NULL)
+    if (!_sch_queue_token(s, &outbuf))
     {
-      (void)_sch_queue(sch, (uint8_t const*)outbuf.pvBuffer, (int)outbuf.cbBuffer);
-      FreeContextBuffer(outbuf.pvBuffer);
+      return AZ_AMQP_TRANSPORT_STATUS_ERROR;
     }
 
     if (st == SEC_E_INCOMPLETE_MESSAGE)
@@ -1061,10 +1082,9 @@ static az_amqp_transport_status _sch_drive_reneg(az_amqp_sample_transport* s)
           &attrs,
           NULL);
 
-      if (outbuf.cbBuffer > 0 && outbuf.pvBuffer != NULL)
+      if (!_sch_queue_token(s, &outbuf))
       {
-        (void)_sch_queue(sch, (uint8_t const*)outbuf.pvBuffer, (int)outbuf.cbBuffer);
-        FreeContextBuffer(outbuf.pvBuffer);
+        return AZ_AMQP_TRANSPORT_STATUS_ERROR;
       }
 
       if (st == SEC_I_INCOMPLETE_CREDENTIALS)
