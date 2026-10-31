@@ -1800,12 +1800,42 @@ extern "C"
       void* read_ctx);
 
   /**
+   * @brief Verify a manifest's signature chain without a client.
+   *
+   * The check the client makes before it trusts a manifest: JWS/SJWK, root-key
+   * `kid`, RS256, both RSA checks, SHA-256 binding. Nothing is parsed or
+   * modified. Uses AZ_IOT_SU_VERIFY_SCRATCH_SIZE bytes of stack.
+   *
+   * @param[in] manifest The unescaped manifest text the signature covers, as in
+   *   az_iot_su_client_update_request::update_manifest.
+   * @param[in] signature The compact `updateManifestSignature`.
+   * @param[in] crypto Backend; needs verify_rs256.
+   * @param[in] root_keys Trusted root keys, e.g. az_iot_su_microsoft_root_keys().
+   * @param[in] root_key_count Entries in @p root_keys.
+   * @param[out] out_error Why it failed: an AZ_IOT_SU_MANIFEST_ERROR_* sub-code,
+   *   reported as AZ_IOT_SU_EXTENDED_RESULT(AZ_IOT_SU_FACILITY_MANIFEST, code);
+   *   0 otherwise. May be NULL.
+   * @return AZ_IOT_OK when the manifest verifies.
+   * @retval AZ_IOT_ERR_AUTH The manifest or its signature is rejected.
+   * @retval AZ_IOT_ERR_INTERNAL The crypto backend failed
+   *   (AZ_IOT_SU_MANIFEST_ERROR_CRYPTO); not a rejection.
+   * @retval AZ_IOT_ERR_INVALID_ARG An invalid @p crypto, or NULL @p root_keys
+   *   with a non-zero @p root_key_count.
+   * @retval AZ_IOT_ERR_NOT_SUPPORTED @p crypto has no verify_rs256.
+   */
+  AZ_NODISCARD az_iot_result az_iot_su_verify_manifest(
+      az_span manifest,
+      az_span signature,
+      const az_iot_crypto* crypto,
+      const az_iot_su_root_key* root_keys,
+      size_t root_key_count,
+      uint32_t* out_error);
+
+  /**
    * @brief Verify and parse an `updateMetadata` object without a client.
    *
-   * Verifies the manifest trust chain (JWS/SJWK, root-key `kid`, RS256, both
-   * RSA checks, SHA-256 binding), then parses the manifest. Fail-closed:
-   * non-NULL outputs are zeroed on every error. Uses
-   * AZ_IOT_SU_VERIFY_SCRATCH_SIZE bytes of stack for the decoded signature.
+   * Verifies the manifest with az_iot_su_verify_manifest(), then parses it.
+   * Fail-closed: non-NULL outputs are zeroed on every error.
    *
    * @param request_json   `{ workflowId, updateManifest, updateManifestSignature,
    *                       fileUrls }` as the service sends it. The
@@ -1824,7 +1854,8 @@ extern "C"
    * AZ_IOT_ERR_NOT_ENOUGH_SPACE when the update exceeds AZ_IOT_SU_MAX_STEP_COUNT,
    * AZ_IOT_SU_MAX_FILE_COUNT, AZ_IOT_SU_MAX_FILE_COUNT_PER_STEP or 2 hashes per file;
    * AZ_IOT_ERR_NOT_SUPPORTED when @p crypto has no verify_rs256;
-   * AZ_IOT_ERR_AUTH when verification fails.
+   * AZ_IOT_ERR_AUTH when verification fails; AZ_IOT_ERR_INTERNAL when the
+   * crypto backend fails. az_iot_su_verify_manifest() reports why.
    */
   AZ_NODISCARD az_iot_result az_iot_su_parse_update_request(
       az_span request_json,
