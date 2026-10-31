@@ -697,12 +697,17 @@ typedef struct sub_failure_probe
   az_iot_result reason;
   int32_t protocol_code;
   char topic[64];
+  /* The Reason String, copied; -1: NULL. */
+  char reason_string[64];
+  int reason_string_length;
 } sub_failure_probe;
 
 static void on_sub_failed(
     const char* topic_filter,
     az_iot_result reason,
     int32_t protocol_code,
+    const char* reason_string,
+    size_t reason_string_len,
     const void* owner)
 {
   sub_failure_probe* p = (sub_failure_probe*)owner;
@@ -710,6 +715,13 @@ static void on_sub_failed(
   p->reason = reason;
   p->protocol_code = protocol_code;
   snprintf(p->topic, sizeof(p->topic), "%s", topic_filter ? topic_filter : "");
+  p->reason_string_length = reason_string != NULL ? (int)reason_string_len : -1;
+  snprintf(
+      p->reason_string,
+      sizeof(p->reason_string),
+      "%.*s",
+      reason_string != NULL ? (int)reason_string_len : 0,
+      reason_string != NULL ? reason_string : "");
 }
 
 /* Register one session-scoped filter and drive the connection to the point
@@ -876,6 +888,8 @@ static void a_refused_self_scoped_filter_keeps_the_connection(void** state)
   assert_int_equal(probe.calls, 1);
   assert_int_equal(probe.reason, AZ_IOT_ERR_SUBSCRIPTION_REFUSED);
   assert_string_equal(probe.topic, "custom/topic/#");
+  /* The SUBACK carried no Reason String. */
+  assert_int_equal(probe.reason_string_length, -1);
 
   /* Dropped from the registry, so the reconnect does not resurrect it. */
   az_iot_mock_mqtt_client_clear_calls(m);
@@ -904,11 +918,15 @@ static void close_open_and_deinit_on_sub_failed(
     const char* topic_filter,
     az_iot_result reason,
     int32_t protocol_code,
+    const char* reason_string,
+    size_t reason_string_len,
     const void* owner)
 {
   (void)topic_filter;
   (void)reason;
   (void)protocol_code;
+  (void)reason_string;
+  (void)reason_string_len;
   sub_failure_lifecycle_calls* r = (sub_failure_lifecycle_calls*)(uintptr_t)owner;
   r->calls++;
   r->close_result = az_iot_connection_client_close(r->client);
@@ -1040,9 +1058,11 @@ static void on_sub_failed_then_reregister(
     const char* topic_filter,
     az_iot_result reason,
     int32_t protocol_code,
+    const char* reason_string,
+    size_t reason_string_len,
     const void* owner)
 {
-  on_sub_failed(topic_filter, reason, protocol_code, owner);
+  on_sub_failed(topic_filter, reason, protocol_code, reason_string, reason_string_len, owner);
   sub_failed_actor* actor = (sub_failed_actor*)(uintptr_t)owner;
   actor->reregister_result = az_iot_connection_client__add_subscription_on_connect(
       actor->client,
@@ -1136,19 +1156,54 @@ static void a_refused_self_scoped_filter_reports_the_wire_code(void** state)
   assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_OK));
   (void)az_iot_connection_client_do_work(fx->client, 0);
 
-  /* 0x87 Not authorized, as an MQTTv5 topic-space refusal would arrive. */
+  /* 0x87 Not authorized, as an MQTTv5 topic-space refusal would arrive, with the broker's Reason
+   * String. */
+  static const char reason[] = "no topic space allows this filter";
   az_iot_mqtt_event ack;
   memset(&ack, 0, sizeof(ack));
   ack.kind = AZ_IOT_MQTT_EVT_SUBSCRIBE_ACK;
   ack.packet_id = subscribe_pid_for(m, "custom/topic/#");
   ack.status = AZ_IOT_ERR_SUBSCRIPTION_REFUSED;
   ack.protocol_code = 0x87;
+  ack.reason_string = reason;
+  ack.reason_string_len = sizeof(reason) - 1;
   assert_true(az_iot_mock_mqtt_client_inject_event(m, &ack));
   (void)az_iot_connection_client_do_work(fx->client, 0);
 
   assert_int_equal(probe.calls, 1);
   assert_int_equal(probe.protocol_code, 0x87);
+  assert_int_equal(probe.reason_string_length, (int)sizeof(reason) - 1);
+  assert_string_equal(probe.reason_string, reason);
   assert_true(az_iot_connection_client__is_connected(fx->client));
+}
+
+/* A gated filter's refusal ends the session; the SUBACK's Reason String says why, as the error
+ * message of the state event reporting it. */
+static void a_refused_session_filter_reports_the_reason_string(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  az_iot_mock_mqtt_client* m = open_to_pending_gate(fx, "restored/#");
+  const az_iot_mock_call* sub = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_SUBSCRIBE);
+  assert_non_null(sub);
+
+  static const char reason[] = "no topic space allows this filter";
+  az_iot_mqtt_event ack;
+  memset(&ack, 0, sizeof(ack));
+  ack.kind = AZ_IOT_MQTT_EVT_SUBSCRIBE_ACK;
+  ack.packet_id = sub->packet_id;
+  ack.status = AZ_IOT_ERR_SUBSCRIPTION_REFUSED;
+  ack.protocol_code = 0x87;
+  ack.reason_string = reason;
+  ack.reason_string_len = sizeof(reason) - 1;
+  assert_true(az_iot_mock_mqtt_client_inject_event(m, &ack));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+
+  assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_FAULTED);
+  size_t const i = fx->log.count - 1u;
+  assert_true(fx->log.error_present[i]);
+  assert_int_equal(fx->log.error_sources[i], AZ_IOT_CONN_ERR_SRC_MQTT);
+  assert_int_equal(fx->log.error_codes[i], 0x87);
+  assert_string_equal(fx->log.error_message[i], reason);
 }
 
 /* CONNECTED waits for EVERY gated filter, not merely the first to answer. */
@@ -2107,6 +2162,8 @@ int main(void)
         a_gate_that_is_never_acked_times_out, setup_two_attempts, teardown),
     cmocka_unit_test_setup_teardown(
         a_refused_self_scoped_filter_reports_the_wire_code, setup_two_attempts, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_refused_session_filter_reports_the_reason_string, setup_two_attempts, teardown),
     cmocka_unit_test_setup_teardown(
         connected_waits_for_all_gated_subacks, setup_two_attempts, teardown),
     cmocka_unit_test_setup_teardown(

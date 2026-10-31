@@ -4,6 +4,10 @@
 
 ### Features Added
 
+- Breaking: `az_iot_subscription_failed_callback` takes the refused SUBACK's MQTT 5 Reason String
+  (`reason_string`, `reason_string_len`, after `protocol_code`). On a session-scoped filter the
+  Reason String is reported as `az_iot_connection_state_event.error->message`. Both adapters report
+  it on `AZ_IOT_MQTT_EVT_SUBSCRIBE_ACK`.
 - Certificate renewal: `az_iot_connection_client_options::csr_response_timeout_ms` sets how long
   `az_iot_connection_client_send_csr()` waits for a terminal response (0: 120 s,
   `AZ_IOT_DEFAULT_CSR_RESPONSE_TIMEOUT_MS`). A renewal open when the session ends (a drop or

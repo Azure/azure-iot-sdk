@@ -107,6 +107,8 @@ The SDK decides these per session role and hands them to `connect`. An adapter t
 
 **On a v5 server DISCONNECT or refused CONNACK with a Reason String** — set `reason_string` and `reason_string_len` the same way on the `AZ_IOT_MQTT_EVT_DISCONNECTED` or failed `AZ_IOT_MQTT_EVT_CONNECTED` event. Required for a server DISCONNECT; for a refused CONNACK, required when your MQTT library exposes it (Paho's does not). Both events are often raised after the packet's buffer is reused, so copy the string; keeping its first 128 bytes is enough, since that is all the SDK retains. The connection client reports it to the application as `az_iot_connection_state_event.error->message`. Conformance: `a_server_disconnect_reason_string_is_reported`, `a_server_disconnect_empty_reason_string_is_reported`, and, for `AZ_IOT_CONFORMANCE_CAP_CONNACK_REASON_STRING`, `a_refused_connack_reason_string_is_reported` and `a_refused_connack_empty_reason_string_is_reported`.
 
+**On a v5 SUBACK refusal with a Reason String** — set `reason_string` and `reason_string_len` on the failed `AZ_IOT_MQTT_EVT_SUBSCRIBE_ACK`, as for a PUBACK: required for a reason code of `0x80` or above. Conformance: `a_refused_subscribe_reason_string_is_reported`, `a_refused_subscribe_empty_reason_string_is_reported`.
+
 **On an UNSUBACK** — raise `AZ_IOT_MQTT_EVT_UNSUBSCRIBE_ACK` with the packet id `unsubscribe()` returned, in both versions. Conformance: `publish_subscribe_roundtrip`.
 
 A v3.1.1 adapter may ignore all v5-only fields (they will always be NULL/zero when passed to `publish`).
