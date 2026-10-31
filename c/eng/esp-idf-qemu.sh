@@ -73,7 +73,7 @@ trap 'kill "$pid" 2> /dev/null || true; wait "$pid" 2> /dev/null || true' EXIT
 
 status=1
 for _ in $(seq 0 "$seconds"); do
-  if grep -aqE "$expect" "$log"; then
+  if grep -aqE -e "$expect" "$log"; then
     status=0
     break
   fi
@@ -81,11 +81,11 @@ for _ in $(seq 0 "$seconds"); do
   sleep 1
 done
 # A line written as QEMU exited, or in the last second.
-if [ "$status" -ne 0 ] && grep -aqE "$expect" "$log"; then
+if [ "$status" -ne 0 ] && grep -aqE -e "$expect" "$log"; then
   status=0
 fi
 
-grep -aE "$expect" "$log" | head -n 5 || true
+grep -aE -e "$expect" "$log" | head -n 5 || true
 if [ "$status" -ne 0 ]; then
   tail -n 60 "$log"
   echo "no line matching '${expect}' within ${seconds} s" >&2
