@@ -1025,8 +1025,12 @@ static az_iot_result channel_do_work(void* ctx)
   az_iot_result sr = channel_observe_deferred(c);
 
   /* A report not answered in time is retried on the engine's pacing, and the
-   * session released meanwhile: the hub session waits while it is up. */
+   * session released meanwhile: the hub session waits while it is up. Only on
+   * the report's own session, still ready: a report lost with its session is
+   * handled below, which keeps the session interest and so its pacing. */
   if (c->request_pending && c->pending_operation == AZ_IOT_SU_OP_REPORT_STATUS
+      && c->pending_epoch == c->session_epoch
+      && az_iot_connection_client__dps_session_ready(c->connection)
       && az_iot_time_mono_ms() >= c->report_response_deadline_ms)
   {
     AZ_IOT_LOG_ERROR(AZ_IOT_LOG_COMPONENT_SU, "no answer to the status report in time; retrying");

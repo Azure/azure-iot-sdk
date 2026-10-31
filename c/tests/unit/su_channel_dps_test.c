@@ -2260,6 +2260,37 @@ static void a_request_lost_with_its_session_keeps_the_session_pacing(void** stat
   assert_true(fx->client.dps_user_retry_blocked);
 }
 
+/* A report whose deadline passes after its session was lost is handled as lost
+ * with its session, not as unanswered: the interest, and so the connection
+ * client's pacing (here, retries disabled), stays. */
+static void a_report_lost_with_its_session_past_its_deadline_keeps_the_session_pacing(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_mock_mqtt_client* m = open_session_for_an_operation(fx);
+  az_iot_su_report report;
+  memset(&report, 0, sizeof(report));
+  report.workflow_id = "wf-1";
+  report.extended_result_codes = "00000000";
+  assert_int_equal(fx->channel.vtable->report(fx->channel.ctx, &report), AZ_IOT_OK);
+  assert_true(fx->channel_state.request_pending);
+
+  /* The session is lost, and the report's deadline passes before the next tick. */
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(m));
+  (void)az_iot_connection_client_do_work(&fx->client, 0);
+  assert_null(fx->client.dps_mqtt);
+  assert_true(fx->client.dps_user_retry_blocked);
+  fx->channel_state.report_response_deadline_ms = az_iot_time_mono_ms();
+
+  /* Lost with its session: retried by the engine, with the interest kept. */
+  assert_int_equal(fx->channel.vtable->do_work(fx->channel.ctx), AZ_IOT_OK);
+  assert_false(fx->channel_state.request_pending);
+  assert_int_equal(fx->last_op, AZ_IOT_SU_OP_REPORT_STATUS);
+  assert_int_equal(fx->last_result, AZ_IOT_ERR_NOT_CONNECTED);
+  assert_int_equal(fx->last_action, AZ_IOT_SU_ERROR_ACTION_RETRY);
+  assert_int_equal(fx->client.dps_user_count, 1);
+  assert_true(fx->client.dps_user_retry_blocked);
+}
+
 /* The interest count is a uint8_t; refuse rather than wrap. */
 static void the_user_count_refuses_to_overflow(void** state)
 {
@@ -3561,6 +3592,8 @@ int main(void)
         an_abandoned_unaccepted_check_drops_its_session_demand, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_request_lost_with_its_session_keeps_the_session_pacing, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_report_lost_with_its_session_past_its_deadline_keeps_the_session_pacing, setup, teardown),
     cmocka_unit_test_setup_teardown(the_user_count_refuses_to_overflow, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_refused_request_causes_a_session_to_be_opened, setup, teardown),
