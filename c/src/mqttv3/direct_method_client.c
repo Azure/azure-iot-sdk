@@ -461,7 +461,8 @@ az_iot_result az_iot_mqttv3_direct_method_respond(
         "the answer to '%s' was not sent (%s); it may be answered again",
         slot->_internal.method_name,
         az_iot_result_to_string(r));
-    return r;
+    /* AZ_IOT_ERR_TIMEOUT from respond() means the response timeout passed and the slot is free. */
+    return r == AZ_IOT_ERR_TIMEOUT ? AZ_IOT_ERR_BUSY : r;
   }
   slot->_internal.in_use = false;
   return r;

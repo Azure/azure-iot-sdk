@@ -146,7 +146,8 @@ extern "C"
    *         and the request stays answerable: answer it again once connected;
    *         any other send error but AZ_IOT_ERR_INVALID_ARG (e.g. AZ_IOT_ERR_BUSY,
    *         AZ_IOT_ERR_MQTT, or AZ_IOT_ERR_NOT_ENOUGH_SPACE for a payload too large
-   *         for the adapter) -- nothing is sent and the request stays answerable until
+   *         for the adapter; an adapter AZ_IOT_ERR_TIMEOUT is returned as
+   *         AZ_IOT_ERR_BUSY) -- nothing is sent and the request stays answerable until
    *         its response timeout, or AZ_IOT_ERR_NOT_CONNECTED once its session ends;
    *         AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH if @p request came from a
    *         mqttv5 client; AZ_IOT_ERR_INVALID_ARG if it was already answered, if

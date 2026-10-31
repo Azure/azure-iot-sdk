@@ -928,6 +928,30 @@ static void a_session_end_ends_unanswered_invocations(void** state)
       AZ_IOT_ERR_NOT_CONNECTED);
 }
 
+/* An adapter TIMEOUT is returned as BUSY, since respond()'s TIMEOUT means the slot was freed;
+ * the request stays answerable and the next answer is sent. */
+static void an_answer_timed_out_by_the_adapter_is_refused_busy_and_kept(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  invocation_record rec = { 0 };
+  assert_int_equal(
+      az_iot_mqttv3_direct_method_client_set_handler(&fx->dm, on_method, &rec), AZ_IOT_OK);
+  inject_invocation(fx, 8);
+  assert_true(rec.fired);
+
+  az_iot_mock_mqtt_client_set_next_result(fx->mock, AZ_IOT_MOCK_CALL_PUBLISH, AZ_IOT_ERR_TIMEOUT);
+  assert_int_equal(
+      az_iot_mqttv3_direct_method_respond(&fx->dm, rec.request, 200, NULL, 0), AZ_IOT_ERR_BUSY);
+  az_iot_mock_mqtt_client_clear_calls(fx->mock);
+  assert_int_equal(
+      az_iot_mqttv3_direct_method_respond(&fx->dm, rec.request, 200, NULL, 0), AZ_IOT_OK);
+  const az_iot_mock_call* answer
+      = az_iot_mock_mqtt_client_last_of(fx->mock, AZ_IOT_MOCK_CALL_PUBLISH);
+  assert_non_null(answer);
+  assert_string_equal(answer->topic, "$iothub/methods/res/200/?$rid=8");
+}
+
 /* An adapter BUSY while connected keeps the request answerable: the next answer is sent. */
 static void an_answer_refused_busy_by_the_adapter_can_be_sent_again(void** state)
 {
@@ -1834,6 +1858,8 @@ int main(void)
     cmocka_unit_test_setup_teardown(a_session_end_ends_unanswered_invocations, setup, teardown),
     cmocka_unit_test_setup_teardown(
         an_answer_refused_busy_by_the_adapter_can_be_sent_again, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        an_answer_timed_out_by_the_adapter_is_refused_busy_and_kept, setup, teardown),
     cmocka_unit_test_setup_teardown(
         an_answer_too_large_for_the_adapter_can_be_sent_again, setup, teardown),
     cmocka_unit_test_setup_teardown(
