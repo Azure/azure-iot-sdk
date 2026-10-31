@@ -2,29 +2,33 @@
 # Copyright (c) Microsoft. All rights reserved.
 # Licensed under the MIT license. See LICENSE file in the project root for full license information.
 #
-# Boots an ESP-IDF build in Espressif's QEMU with OpenCores Ethernet (user networking) and waits
-# for a line of its log. Requires an ESP-IDF environment (export.sh sourced) with qemu-xtensa or
-# qemu-riscv32 installed.
+# Runs an ESP-IDF build in Espressif's QEMU with OpenCores Ethernet (user networking). Requires an
+# ESP-IDF environment (export.sh sourced) with qemu-xtensa or qemu-riscv32 installed.
 #
-#   eng/esp-idf-qemu.sh <build-dir> <target> <regex> [seconds]
+#   eng/esp-idf-qemu.sh <build-dir> <target> <regex> [seconds]  wait for a log line
+#   eng/esp-idf-qemu.sh <build-dir> <target> --run              run, the log on stdout
+#   eng/esp-idf-qemu.sh <build-dir> <target> --download <port>  download mode, UART on TCP <port>
 #
-# target: esp32, esp32s3 or esp32c3. Exits 0 once a log line matches <regex> (grep -E), 1 when
-# QEMU exits or <seconds> (default 120) pass first. The log is <build-dir>/qemu.log.
+# target: esp32, esp32s3 or esp32c3 (--download: esp32c3). Waiting exits 0 once a log line
+# matches <regex> (grep -E), 1 when QEMU exits or <seconds> (default 120) pass first; the log is
+# <build-dir>/qemu.log. --run and --download run until QEMU is killed.
 #
 # Each run writes a fresh flash image from the build, so NVS and OTA state do not persist.
-# QEMU_FLASH_EXTRA="<offset> <file> ..." also writes those files (relative to the current
-# directory) into it (e.g. the device identity:
-# "0xd000 esp_secure_cert.bin").
+#
+# Environment:
+#   QEMU_FLASH_EXTRA  "<offset> <file> ..." also written into the flash image (e.g. the device
+#                     identity: "0xd000 esp_secure_cert.bin"); files relative to the current
+#                     directory
+#   QEMU_EFUSE        eFuse image, kept across runs (e.g. the Digital Signature key)
 set -euo pipefail
 
 if [ $# -lt 3 ]; then
-  echo "usage: $0 <build-dir> <target> <regex> [seconds]" >&2
+  echo "usage: $0 <build-dir> <target> <regex> [seconds] | --run | --download <port>" >&2
   exit 2
 fi
 build=$(cd "$1" && pwd)
 target=$2
-expect=$3
-seconds=${4:-120}
+mode=$3
 
 case "$target" in
   esp32) qemu=(qemu-system-xtensa -M esp32 -m 4M) ;;
@@ -47,7 +51,6 @@ if ! command -v "${qemu[0]}" > /dev/null; then
 fi
 
 flash="${build}/qemu_flash.bin"
-log="${build}/qemu.log"
 # QEMU_FLASH_EXTRA's files are relative to the caller; esptool runs in the build directory.
 extra=()
 read -r -a pairs <<< "${QEMU_FLASH_EXTRA:-}"
@@ -65,9 +68,30 @@ for ((i = 0; i < ${#pairs[@]}; i += 2)); do
 done
 (cd "$build" && python -m esptool --chip "$target" merge-bin --pad-to-size 4MB -o "$flash" \
   @flash_args "${extra[@]}" > /dev/null)
+qemu+=(-nographic -drive "file=${flash},if=mtd,format=raw")
+if [ -n "${QEMU_EFUSE:-}" ]; then
+  qemu+=(-drive "file=${QEMU_EFUSE},if=none,format=raw,id=efuse"
+    -global "driver=nvram.${target}.efuse,property=drive,value=efuse")
+fi
 
-"${qemu[@]}" -nographic -drive "file=${flash},if=mtd,format=raw" -nic user,model=open_eth \
-  > "$log" 2>&1 &
+case "$mode" in
+  --run)
+    exec "${qemu[@]}" -nic user,model=open_eth
+    ;;
+  --download)
+    if [ "$target" != esp32c3 ] || [ $# -lt 4 ]; then
+      echo "--download needs esp32c3 and a port" >&2
+      exit 2
+    fi
+    exec "${qemu[@]}" -global driver=esp32c3.gpio,property=strap_mode,value=0x02 \
+      -serial "tcp:127.0.0.1:$4,server,nowait" # Loopback only: the eFuse is not read-protected.
+    ;;
+esac
+
+expect=$mode
+seconds=${4:-120}
+log="${build}/qemu.log"
+"${qemu[@]}" -nic user,model=open_eth > "$log" 2>&1 &
 pid=$!
 trap 'kill "$pid" 2> /dev/null || true; wait "$pid" 2> /dev/null || true' EXIT
 

@@ -1400,6 +1400,9 @@ static void request_in_flight_when_session_drops_is_answered_after_reconnect(voi
     fx->race.in_flight_at_drop = -1;
     fx->race.active = true;
     fx->race.drops_at_start = fx->hub_drops;
+    /* In flight before the evicting connection starts: on a fast hub the drop can arrive before
+     * its connect hook first pumps the device, which would leave nothing to test. */
+    race_tick(fx);
     evict(fx);
     const time_t dropped = time(NULL);
     while (fx->race.in_flight > 0 && (time(NULL) - dropped) < E2E_DEVICE_REQUEST_WAIT_S)

@@ -14,6 +14,8 @@
 #ifndef AZ_IOT_JSON_STRING_H
 #define AZ_IOT_JSON_STRING_H
 
+#include <stdbool.h>
+
 #include <azure/core/az_span.h>
 
 #include "azure/iot/az_iot_result.h"
@@ -39,6 +41,19 @@ extern "C"
    * AZ_IOT_ERR_NOT_ENOUGH_SPACE when @p out is too small.
    */
   az_iot_result az_iot_json_string_decode(az_span in, az_span out, az_span* out_decoded);
+
+  /**
+   * @brief Whether a JSON string body decodes to the same text as another string, without a
+   * buffer: `f\u0031` equals `f1`.
+   *
+   * @param escaped          A JSON string body (without quotes), e.g. a token slice.
+   * @param other            The other string.
+   * @param other_is_escaped Whether @p other is also a JSON string body; otherwise it is decoded
+   *                         text, compared as is.
+   * @return true when both decode to the same bytes; false otherwise or when an escape is
+   * malformed.
+   */
+  bool az_iot_json_string_equals(az_span escaped, az_span other, bool other_is_escaped);
 
 #ifdef __cplusplus
 }

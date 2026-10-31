@@ -354,6 +354,11 @@
   `esp_secure_cert` identity, then telemetry, the `echo` direct method and desired-twin
   acknowledgements on the assigned hub (mqttv3 or mqttv5). CI builds it for esp32, esp32c3,
   esp32s3 and esp32c6, and boots its QEMU build on esp32, esp32s3 and esp32c3.
+- ESP32 end-to-end test: `ci-c-e2e` runs the ESP32 IoT Hub sample in QEMU on esp32 and esp32c3
+  against an IoT Hub (telemetry, the `echo` method, a desired-version acknowledgement), with
+  the esp32c3 key in the emulated Digital Signature peripheral. `eng/esp-idf-qemu-e2e.sh` runs it
+  locally; `eng/esp-idf-qemu-identity.sh` writes a QEMU device identity
+  ([docs](docs/eng/end-to-end-tests.md#esp32-in-qemu)).
 
 ### Bugs Fixed
 
@@ -364,6 +369,12 @@
   and an identity refusal is acted on whatever came first. While `close()` disconnects, a late
   SUBACK neither announces CONNECTED nor publishes the birth, and a new filter waits for the next
   session.
+- Software updates: a verified update whose step names a file missing from the manifest `files`, or
+  from `fileUrls`, is refused before any step runs, instead of failing at that step's download
+  after earlier steps were installed and rolled back (or passing an empty URL to `download_fn`).
+  Library mode does not offer it to the application, and `az_iot_su_parse_update_request()`
+  returns `AZ_IOT_ERR_INVALID_ARG`. File ids are matched decoded, so a JSON-escaped id (`f\u0031`)
+  finds its file and URL (`f1`).
 - ESP32: the `azure-sdk-for-c` component implements `az_platform_clock_msec()` and
   `az_platform_sleep_msec()` with `esp_timer` and FreeRTOS, so the az_mqtt adapter's idle wait
   sleeps instead of returning at once. The software updates sample's connect loop waits out each
