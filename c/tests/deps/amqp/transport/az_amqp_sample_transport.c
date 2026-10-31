@@ -963,6 +963,7 @@ static az_amqp_transport_status _sch_drive_reneg(az_amqp_sample_transport* s)
   host[hn] = 0;
 
   _sock sock = (_sock)s->file_descriptor;
+  int incomplete_creds_seen = 0;
 
   for (;;)
   {
@@ -1008,6 +1009,19 @@ static az_amqp_transport_status _sch_drive_reneg(az_amqp_sample_transport* s)
         FreeContextBuffer(outbuf.pvBuffer);
       }
 
+      if (st == SEC_I_INCOMPLETE_CREDENTIALS)
+      {
+        // Retry the same server flight: nothing is consumed (see the initial handshake).
+        _sch_on_incomplete_credentials(sch);
+        if (++incomplete_creds_seen > 2)
+        {
+          _sch_fail(
+              s, "InitializeSecurityContext (post-handshake): incomplete credentials", (long)st);
+          return AZ_AMQP_TRANSPORT_STATUS_ERROR;
+        }
+        continue;
+      }
+
       if (st != SEC_E_INCOMPLETE_MESSAGE)
       {
         // Consume what ISC processed; keep any trailing extra (following records).
@@ -1034,11 +1048,6 @@ static az_amqp_transport_status _sch_drive_reneg(az_amqp_sample_transport* s)
             continue; // more handshake data already buffered
           }
           // otherwise fall through to read more
-        }
-        else if (st == SEC_I_INCOMPLETE_CREDENTIALS)
-        {
-          _sch_on_incomplete_credentials(sch);
-          continue;
         }
         else
         {
