@@ -1664,7 +1664,7 @@ jobs:
   # with the samples' minimum, v6.0.
   # ---------------------------------------------------------------------------
   esp-idf:
-    name: esp-idf / ${{ matrix.sample }} / ${{ matrix.target }} / ${{ matrix.profile }}${{ matrix.idf && format(' / {0}', matrix.idf) || '' }}
+    name: esp-idf / ${{ matrix.sample }} / ${{ matrix.target }} / ${{ matrix.profile }}${{ matrix.idf == 'v6.0' && ' / v6.0' || '' }}
     needs: changes
     if: needs.changes.outputs.c == 'true' || github.event_name != 'pull_request'
     runs-on: ubuntu-24.04
@@ -1681,6 +1681,8 @@ jobs:
         sample: [ software_update/esp32 ]
         target: [ esp32, esp32c3, esp32s3, esp32c6 ]
         profile: [ default, secure ]
+        # An axis, so the v6.0 entries below add jobs instead of changing the v6.1 ones.
+        idf: [ v6.1 ]
         include:
           - sample: software_update/esp32
             target: esp32
