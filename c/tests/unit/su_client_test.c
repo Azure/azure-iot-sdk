@@ -1170,19 +1170,19 @@ static void init_fixture_client_with_limits(
     const az_iot_su_platform_hooks* hooks,
     const az_iot_su_limits* limits)
 {
-  az_iot_su_device_properties dp = { 0 };
-  dp.manufacturer = "Contoso";
-  dp.model = "Foobar";
-  dp.installed_update_id.provider = "Contoso";
-  dp.installed_update_id.name = "Foobar";
-  dp.installed_update_id.version = "1.0";
+  az_iot_su_device_properties device_properties = { 0 };
+  device_properties.manufacturer = "Contoso";
+  device_properties.model = "Foobar";
+  device_properties.installed_update_id.provider = "Contoso";
+  device_properties.installed_update_id.name = "Foobar";
+  device_properties.installed_update_id.version = "1.0";
 
   az_iot_su_client_config_options su_opts = az_iot_su_client_config_options_default();
   su_opts.hooks = hooks;
   su_opts.library_mode = (hooks == NULL);
   su_opts.root_keys = k_root_keys;
   su_opts.root_key_count = sizeof(k_root_keys) / sizeof(k_root_keys[0]);
-  su_opts.device_properties = &dp;
+  su_opts.device_properties = &device_properties;
   if (limits != NULL)
   {
     su_opts.limits = *limits;
@@ -2103,18 +2103,18 @@ static void resuming_a_fresh_client_reports_the_restored_state(void** state)
   az_iot_su_platform_hooks hooks;
   init_hooks(fx, &hooks, &fx->crypto);
 
-  az_iot_su_device_properties dp = { 0 };
-  dp.manufacturer = "Contoso";
-  dp.model = "Foobar";
-  dp.installed_update_id.provider = "Contoso";
-  dp.installed_update_id.name = "Foobar";
-  dp.installed_update_id.version = "1.0";
+  az_iot_su_device_properties device_properties = { 0 };
+  device_properties.manufacturer = "Contoso";
+  device_properties.model = "Foobar";
+  device_properties.installed_update_id.provider = "Contoso";
+  device_properties.installed_update_id.name = "Foobar";
+  device_properties.installed_update_id.version = "1.0";
 
   az_iot_su_client_config_options su_opts = az_iot_su_client_config_options_default();
   su_opts.hooks = &hooks;
   su_opts.root_keys = k_root_keys;
   su_opts.root_key_count = sizeof(k_root_keys) / sizeof(k_root_keys[0]);
-  su_opts.device_properties = &dp;
+  su_opts.device_properties = &device_properties;
   su_opts.workspace = g_second_workspace;
   su_opts.workspace_size = sizeof(g_second_workspace);
 
@@ -2181,13 +2181,14 @@ static void update_device_properties_is_accepted_without_reporting(void** state)
   assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
   fx->chan.report_count = 0;
 
-  az_iot_su_device_properties dp = { 0 };
-  dp.manufacturer = "Contoso";
-  dp.model = "Foobar2";
-  dp.installed_update_id.provider = "Contoso";
-  dp.installed_update_id.name = "Foobar";
-  dp.installed_update_id.version = "2.0";
-  assert_int_equal(az_iot_su_client_update_device_properties(&fx->su, &dp), AZ_IOT_OK);
+  az_iot_su_device_properties device_properties = { 0 };
+  device_properties.manufacturer = "Contoso";
+  device_properties.model = "Foobar2";
+  device_properties.installed_update_id.provider = "Contoso";
+  device_properties.installed_update_id.name = "Foobar";
+  device_properties.installed_update_id.version = "2.0";
+  assert_int_equal(
+      az_iot_su_client_update_device_properties(&fx->su, &device_properties), AZ_IOT_OK);
 
   assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
   assert_int_equal(fx->chan.report_count, 0);
@@ -2326,15 +2327,16 @@ static void custom_device_properties_are_accepted_and_serialized(void** state)
     { "location", "building42" },
     { "tier", "gold" },
   };
-  az_iot_su_device_properties dp = { 0 };
-  dp.manufacturer = "Contoso";
-  dp.model = "Foobar";
-  dp.installed_update_id.provider = "Contoso";
-  dp.installed_update_id.name = "Foobar";
-  dp.installed_update_id.version = "1.0";
-  dp.custom_properties = customs;
-  dp.custom_properties_count = sizeof(customs) / sizeof(customs[0]);
-  assert_int_equal(az_iot_su_client_update_device_properties(&fx->su, &dp), AZ_IOT_OK);
+  az_iot_su_device_properties device_properties = { 0 };
+  device_properties.manufacturer = "Contoso";
+  device_properties.model = "Foobar";
+  device_properties.installed_update_id.provider = "Contoso";
+  device_properties.installed_update_id.name = "Foobar";
+  device_properties.installed_update_id.version = "1.0";
+  device_properties.custom_properties = customs;
+  device_properties.custom_properties_count = sizeof(customs) / sizeof(customs[0]);
+  assert_int_equal(
+      az_iot_su_client_update_device_properties(&fx->su, &device_properties), AZ_IOT_OK);
   assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
 
   const az_iot_su_device_properties* cached = &fx->su._internal.device_properties;
@@ -2370,16 +2372,16 @@ static void public_initialize_takes_a_connection_and_builds_its_own_channel(void
   hooks.apply_fn = mock_apply;
   hooks.user_ctx = &log;
 
-  az_iot_su_device_properties dp = { 0 };
-  dp.manufacturer = "Contoso";
-  dp.model = "Foobar";
-  dp.installed_update_id.provider = "Contoso";
-  dp.installed_update_id.name = "Foobar";
-  dp.installed_update_id.version = "1.0";
+  az_iot_su_device_properties device_properties = { 0 };
+  device_properties.manufacturer = "Contoso";
+  device_properties.model = "Foobar";
+  device_properties.installed_update_id.provider = "Contoso";
+  device_properties.installed_update_id.name = "Foobar";
+  device_properties.installed_update_id.version = "1.0";
 
   az_iot_su_client_config_options o = az_iot_su_client_config_options_default();
   o.hooks = &hooks;
-  o.device_properties = &dp;
+  o.device_properties = &device_properties;
   o.workspace = g_second_workspace;
   o.workspace_size = sizeof(g_second_workspace);
 
@@ -2457,16 +2459,16 @@ static void public_initialize_rejects_a_client_layout_mismatch(void** state)
   hooks.apply_fn = mock_apply;
   hooks.user_ctx = &log;
 
-  az_iot_su_device_properties dp = { 0 };
-  dp.manufacturer = "Contoso";
-  dp.model = "Foobar";
-  dp.installed_update_id.provider = "Contoso";
-  dp.installed_update_id.name = "Foobar";
-  dp.installed_update_id.version = "1.0";
+  az_iot_su_device_properties device_properties = { 0 };
+  device_properties.manufacturer = "Contoso";
+  device_properties.model = "Foobar";
+  device_properties.installed_update_id.provider = "Contoso";
+  device_properties.installed_update_id.name = "Foobar";
+  device_properties.installed_update_id.version = "1.0";
 
   az_iot_su_client_config_options o = az_iot_su_client_config_options_default();
   o.hooks = &hooks;
-  o.device_properties = &dp;
+  o.device_properties = &device_properties;
   o.workspace = g_second_workspace;
   o.workspace_size = sizeof(g_second_workspace);
 
@@ -2612,13 +2614,13 @@ static void device_properties_too_small_is_rejected(void** state)
   hooks.apply_fn = mock_apply;
   hooks.user_ctx = &log;
 
-  az_iot_su_device_properties dp = { 0 };
-  dp.manufacturer = "AReallyLongManufacturerNameThatWillNotFit";
-  dp.model = "AndAModelToo";
+  az_iot_su_device_properties device_properties = { 0 };
+  device_properties.manufacturer = "AReallyLongManufacturerNameThatWillNotFit";
+  device_properties.model = "AndAModelToo";
 
   az_iot_su_client_config_options su_opts = az_iot_su_client_config_options_default();
   su_opts.hooks = &hooks;
-  su_opts.device_properties = &dp;
+  su_opts.device_properties = &device_properties;
   su_opts.limits.device_properties_size = 8;
   su_opts.workspace = g_second_workspace;
   su_opts.workspace_size = az_iot_su_workspace_size(&su_opts.limits);
@@ -2646,10 +2648,10 @@ static void a_channel_without_cancel_update_is_rejected(void** state)
   hooks.install_fn = mock_install;
   hooks.apply_fn = mock_apply;
   hooks.user_ctx = &log;
-  az_iot_su_device_properties dp = { .manufacturer = "m", .model = "n" };
+  az_iot_su_device_properties device_properties = { .manufacturer = "m", .model = "n" };
   az_iot_su_client_config_options su_opts = az_iot_su_client_config_options_default();
   su_opts.hooks = &hooks;
-  su_opts.device_properties = &dp;
+  su_opts.device_properties = &device_properties;
   su_opts.workspace = g_second_workspace;
   su_opts.workspace_size = sizeof(g_second_workspace);
 
@@ -2965,13 +2967,14 @@ static void the_largest_installed_id_reaches_the_accepted_report(void** state)
   memset(long_part, 'p', LONG + 1);
   long_part[LONG + 1] = '\0';
 
-  az_iot_su_device_properties dp = { 0 };
-  dp.manufacturer = "Contoso";
-  dp.model = "Foobar";
-  dp.installed_update_id.provider = "a";
-  dp.installed_update_id.name = "b";
-  dp.installed_update_id.version = long_part; /* one byte too many */
-  assert_int_not_equal(az_iot_su_client_update_device_properties(&fx->su, &dp), AZ_IOT_OK);
+  az_iot_su_device_properties device_properties = { 0 };
+  device_properties.manufacturer = "Contoso";
+  device_properties.model = "Foobar";
+  device_properties.installed_update_id.provider = "a";
+  device_properties.installed_update_id.name = "b";
+  device_properties.installed_update_id.version = long_part; /* one byte too many */
+  assert_int_not_equal(
+      az_iot_su_client_update_device_properties(&fx->su, &device_properties), AZ_IOT_OK);
   long_part[LONG] = '\0';
 
   const char* workflows[3] = { "aaaaaaaa-0000-0000-0000-00000000000a",
@@ -2981,10 +2984,11 @@ static void the_largest_installed_id_reaches_the_accepted_report(void** state)
   {
     const char* parts[3] = { "a", "b", "c" };
     parts[i] = long_part;
-    dp.installed_update_id.provider = parts[0];
-    dp.installed_update_id.name = parts[1];
-    dp.installed_update_id.version = parts[2];
-    assert_int_equal(az_iot_su_client_update_device_properties(&fx->su, &dp), AZ_IOT_OK);
+    device_properties.installed_update_id.provider = parts[0];
+    device_properties.installed_update_id.name = parts[1];
+    device_properties.installed_update_id.version = parts[2];
+    assert_int_equal(
+        az_iot_su_client_update_device_properties(&fx->su, &device_properties), AZ_IOT_OK);
 
     inject_patch(fx, build_patch(workflows[i]));
     pump(fx, 40);
@@ -3078,10 +3082,10 @@ static void workspace_size_follows_the_limits(void** state)
 static void init_checks_the_workspace(void** state)
 {
   fixture* fx = (fixture*)*state;
-  az_iot_su_device_properties dp = { .manufacturer = "m" };
+  az_iot_su_device_properties device_properties = { .manufacturer = "m" };
   az_iot_su_client_config_options o = az_iot_su_client_config_options_default();
   o.hooks = &fx->su._internal.hooks;
-  o.device_properties = &dp;
+  o.device_properties = &device_properties;
   o.limits.max_update_size = 1024;
   size_t need = az_iot_su_workspace_size(&o.limits);
   az_iot_su_client client;
@@ -3192,21 +3196,21 @@ static void device_properties_buffer_size_matches_need(void** state)
   hooks.user_ctx = &log;
 
   az_iot_su_custom_property customs[] = { { "location", "building42" } };
-  az_iot_su_device_properties dp = { 0 };
-  dp.manufacturer = "Contoso";
-  dp.model = "Foobar";
-  dp.installed_update_id.provider = "Contoso";
-  dp.installed_update_id.name = "Foobar";
-  dp.installed_update_id.version = "1.0";
-  dp.custom_properties = customs;
-  dp.custom_properties_count = 1;
+  az_iot_su_device_properties device_properties = { 0 };
+  device_properties.manufacturer = "Contoso";
+  device_properties.model = "Foobar";
+  device_properties.installed_update_id.provider = "Contoso";
+  device_properties.installed_update_id.name = "Foobar";
+  device_properties.installed_update_id.version = "1.0";
+  device_properties.custom_properties = customs;
+  device_properties.custom_properties_count = 1;
 
-  size_t need = az_iot_su_device_properties_buffer_size(&dp);
+  size_t need = az_iot_su_device_properties_buffer_size(&device_properties);
   assert_int_equal(need, 8 + 7 + 8 + 7 + 4 + 9 + 11);
 
   az_iot_su_client_config_options o = az_iot_su_client_config_options_default();
   o.hooks = &hooks;
-  o.device_properties = &dp;
+  o.device_properties = &device_properties;
   o.workspace = g_second_workspace;
   o.workspace_size = sizeof(g_second_workspace);
 
@@ -3271,12 +3275,13 @@ static void rejected_properties_preserve_the_entire_cache(void** state)
 
   for (unsigned mask = 1; mask < 7; ++mask)
   {
-    az_iot_su_device_properties dp = { .manufacturer = "m" };
-    dp.installed_update_id.provider = (mask & 1) != 0 ? "p" : NULL;
-    dp.installed_update_id.name = (mask & 2) != 0 ? "n" : NULL;
-    dp.installed_update_id.version = (mask & 4) != 0 ? "v" : NULL;
+    az_iot_su_device_properties device_properties = { .manufacturer = "m" };
+    device_properties.installed_update_id.provider = (mask & 1) != 0 ? "p" : NULL;
+    device_properties.installed_update_id.name = (mask & 2) != 0 ? "n" : NULL;
+    device_properties.installed_update_id.version = (mask & 4) != 0 ? "v" : NULL;
     assert_int_equal(
-        az_iot_su_client_update_device_properties(&fx->su, &dp), AZ_IOT_ERR_INVALID_ARG);
+        az_iot_su_client_update_device_properties(&fx->su, &device_properties),
+        AZ_IOT_ERR_INVALID_ARG);
     assert_memory_equal(&fx->su, &before, sizeof(before));
     assert_memory_equal(
         fx->su._internal.device_properties_buffer, buffer_before, sizeof(buffer_before));
@@ -3285,10 +3290,11 @@ static void rejected_properties_preserve_the_entire_cache(void** state)
   {
     const char* parts[] = { "p", "n", "v" };
     parts[i] = "";
-    az_iot_su_device_properties dp
+    az_iot_su_device_properties device_properties
         = { .manufacturer = "m", .installed_update_id = { parts[0], parts[1], parts[2] } };
     assert_int_equal(
-        az_iot_su_client_update_device_properties(&fx->su, &dp), AZ_IOT_ERR_INVALID_ARG);
+        az_iot_su_client_update_device_properties(&fx->su, &device_properties),
+        AZ_IOT_ERR_INVALID_ARG);
     assert_memory_equal(&fx->su, &before, sizeof(before));
     assert_memory_equal(
         fx->su._internal.device_properties_buffer, buffer_before, sizeof(buffer_before));
@@ -3303,9 +3309,10 @@ static void a_channel_rejection_does_not_replace_the_engine_cache(void** state)
   uint8_t buffer_before[AZ_IOT_SU_DEVICE_PROPERTIES_BUFFER_SIZE];
   memcpy(buffer_before, fx->su._internal.device_properties_buffer, sizeof(buffer_before));
   fx->chan.set_properties_result = AZ_IOT_ERR_NOT_ENOUGH_SPACE;
-  az_iot_su_device_properties dp = { .manufacturer = "replacement" };
+  az_iot_su_device_properties device_properties = { .manufacturer = "replacement" };
   assert_int_equal(
-      az_iot_su_client_update_device_properties(&fx->su, &dp), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+      az_iot_su_client_update_device_properties(&fx->su, &device_properties),
+      AZ_IOT_ERR_NOT_ENOUGH_SPACE);
   assert_int_equal(fx->chan.set_properties_count, 1);
   assert_memory_equal(&fx->su, &before, sizeof(before));
   assert_memory_equal(
@@ -3320,18 +3327,19 @@ static void property_copies_survive_mutation_and_aliasing(void** state)
   char value[] = "revision-2";
   char version[] = "2.0";
   az_iot_su_custom_property custom[] = { { name, value } };
-  az_iot_su_device_properties dp = {
+  az_iot_su_device_properties device_properties = {
     .manufacturer = manufacturer,
     .installed_update_id = { "provider", "name", version },
     .custom_properties = custom,
     .custom_properties_count = 1,
   };
-  assert_int_equal(az_iot_su_client_update_device_properties(&fx->su, &dp), AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_su_client_update_device_properties(&fx->su, &device_properties), AZ_IOT_OK);
   memset(manufacturer, 'x', sizeof(manufacturer));
   memset(name, 'x', sizeof(name));
   memset(value, 'x', sizeof(value));
   memset(version, 'x', sizeof(version));
-  memset(&dp, 0, sizeof(dp));
+  memset(&device_properties, 0, sizeof(device_properties));
   memset(custom, 0, sizeof(custom));
 
   const az_iot_su_device_properties* cached = &fx->su._internal.device_properties;
@@ -3344,9 +3352,11 @@ static void property_copies_survive_mutation_and_aliasing(void** state)
   /* Properties pointing into the client's copy would be overwritten while copied: refused. */
   static az_iot_su_client before;
   memcpy(&before, &fx->su, sizeof(before));
-  dp = *cached;
-  dp.manufacturer = "A much longer manufacturer";
-  assert_int_equal(az_iot_su_client_update_device_properties(&fx->su, &dp), AZ_IOT_ERR_INVALID_ARG);
+  device_properties = *cached;
+  device_properties.manufacturer = "A much longer manufacturer";
+  assert_int_equal(
+      az_iot_su_client_update_device_properties(&fx->su, &device_properties),
+      AZ_IOT_ERR_INVALID_ARG);
   assert_int_equal(
       az_iot_su_client_update_device_properties(&fx->su, cached), AZ_IOT_ERR_INVALID_ARG);
   assert_memory_equal(&fx->su, &before, sizeof(before));
@@ -3366,14 +3376,14 @@ static void properties_fit_device_properties_size_exactly(void** state)
   char provider[AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE - 4 + 1]; /* with "n" and "v": the whole ID */
   memset(provider, 'p', sizeof(provider));
   provider[sizeof(provider) - 2] = '\0';
-  az_iot_su_device_properties dp
+  az_iot_su_device_properties device_properties
       = { .manufacturer = manufacturer, .installed_update_id = { provider, "n", "v" } };
   const size_t need = 601u + AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE;
-  assert_int_equal(az_iot_su_device_properties_buffer_size(&dp), need);
+  assert_int_equal(az_iot_su_device_properties_buffer_size(&device_properties), need);
 
   az_iot_su_client_config_options opts = az_iot_su_client_config_options_default();
   opts.hooks = &fx->su._internal.hooks;
-  opts.device_properties = &dp;
+  opts.device_properties = &device_properties;
   opts.limits.max_update_size = 4096;
   opts.limits.device_properties_size = need;
   opts.workspace = g_second_workspace + 1;
@@ -3387,7 +3397,8 @@ static void properties_fit_device_properties_size_exactly(void** state)
       AZ_IOT_OK);
   assert_string_equal(client._internal.device_properties.manufacturer, manufacturer);
   assert_string_equal(client._internal.device_properties.installed_update_id.provider, provider);
-  assert_int_equal(az_iot_su_client_update_device_properties(&client, &dp), AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_su_client_update_device_properties(&client, &device_properties), AZ_IOT_OK);
   assert_string_equal(client._internal.device_properties.manufacturer, manufacturer);
 
   static az_iot_su_client before;
@@ -3400,7 +3411,8 @@ static void properties_fit_device_properties_size_exactly(void** state)
   manufacturer[600] = 'm';
   manufacturer[601] = '\0';
   assert_int_equal(
-      az_iot_su_client_update_device_properties(&client, &dp), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+      az_iot_su_client_update_device_properties(&client, &device_properties),
+      AZ_IOT_ERR_NOT_ENOUGH_SPACE);
   assert_memory_equal(&client, &before, sizeof(before));
   assert_int_equal(cap.count, 1);
   manufacturer[600] = '\0';
@@ -3410,21 +3422,22 @@ static void properties_fit_device_properties_size_exactly(void** state)
     "installed update ID needs 193 bytes; AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE is 192", 0
   };
   assert_int_equal(
-      az_iot_su_client_update_device_properties(&client, &dp), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+      az_iot_su_client_update_device_properties(&client, &device_properties),
+      AZ_IOT_ERR_NOT_ENOUGH_SPACE);
   assert_memory_equal(&client, &before, sizeof(before));
   assert_int_equal(cap.count, 1);
   az_iot_log_set_global_sink(NULL);
-  assert_int_equal(az_iot_su_device_properties_buffer_size(&dp), 0);
+  assert_int_equal(az_iot_su_device_properties_buffer_size(&device_properties), 0);
   az_iot_su_client_deinit(&client);
 }
 
 static void properties_validate_initialization_before_opening_the_channel(void** state)
 {
   fixture* fx = (fixture*)*state;
-  az_iot_su_device_properties dp = { 0 };
+  az_iot_su_device_properties device_properties = { 0 };
   az_iot_su_client_config_options opts = az_iot_su_client_config_options_default();
   opts.hooks = &fx->su._internal.hooks;
-  opts.device_properties = &dp;
+  opts.device_properties = &device_properties;
   /* Unaligned: the workspace needs no alignment. */
   opts.workspace = g_second_workspace + 1;
   opts.workspace_size = sizeof(g_second_workspace) - 1;
@@ -3439,13 +3452,14 @@ static void properties_validate_initialization_before_opening_the_channel(void**
   assert_int_equal(fx->conn.dps_user_count, 0);
   assert_int_equal(fx->conn.dps_hold_count, 0);
 
-  dp.manufacturer = "m";
+  device_properties.manufacturer = "m";
   assert_int_equal(az_iot_su_client_init(&client, &fx->conn, &opts), AZ_IOT_OK);
   assert_string_equal(client._internal.device_properties.manufacturer, "m");
   az_iot_su_client_deinit(&client);
   assert_int_equal(fx->conn.dps_user_count, 0);
   assert_int_equal(
-      az_iot_su_client_update_device_properties(&client, &dp), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+      az_iot_su_client_update_device_properties(&client, &device_properties),
+      AZ_IOT_ERR_NOT_ENOUGH_SPACE);
 }
 
 static void property_updates_work_without_a_channel_setter(void** state)
@@ -4280,11 +4294,11 @@ static void a_new_workflow_is_deferred_until_a_last_apply_reboot(void** state)
 static void the_replacement_policy_is_validated(void** state)
 {
   fixture* fx = (fixture*)*state;
-  az_iot_su_device_properties dp = { .manufacturer = "m" };
+  az_iot_su_device_properties device_properties = { .manufacturer = "m" };
   az_iot_su_client_config_options opts = az_iot_su_client_config_options_default();
   assert_int_equal(opts.replacement_policy, AZ_IOT_SU_REPLACEMENT_DEFER);
   opts.hooks = &fx->su._internal.hooks;
-  opts.device_properties = &dp;
+  opts.device_properties = &device_properties;
   opts.workspace = g_second_workspace;
   opts.workspace_size = sizeof(g_second_workspace);
   az_iot_su_client client;
@@ -4624,13 +4638,13 @@ static void root_keys_and_observers_are_bounded_by_the_limits(void** state)
 {
   fixture* fx = (fixture*)*state;
   az_iot_su_platform_hooks hooks = fx->su._internal.hooks;
-  az_iot_su_device_properties dp = { .manufacturer = "Contoso" };
+  az_iot_su_device_properties device_properties = { .manufacturer = "Contoso" };
   az_iot_su_client_deinit(&fx->su);
   az_iot_su_client_config_options o = az_iot_su_client_config_options_default();
   o.hooks = &hooks;
   o.root_keys = k_root_keys;
   o.root_key_count = sizeof(k_root_keys) / sizeof(k_root_keys[0]);
-  o.device_properties = &dp;
+  o.device_properties = &device_properties;
   o.workspace = fx->workspace + 1;
   o.workspace_size = sizeof(fx->workspace) - 1;
 
@@ -4669,20 +4683,20 @@ static void root_keys_and_observers_are_bounded_by_the_limits(void** state)
 static void the_applied_id_is_adopted_with_an_exact_sized_cache(void** state)
 {
   fixture* fx = (fixture*)*state;
-  az_iot_su_device_properties dp = { 0 };
-  dp.manufacturer = "Contoso";
-  dp.model = "Foobar";
-  dp.installed_update_id.provider = "Contoso";
-  dp.installed_update_id.name = "Foobar";
-  dp.installed_update_id.version = "1"; /* shorter than the applied "1.1" */
+  az_iot_su_device_properties device_properties = { 0 };
+  device_properties.manufacturer = "Contoso";
+  device_properties.model = "Foobar";
+  device_properties.installed_update_id.provider = "Contoso";
+  device_properties.installed_update_id.name = "Foobar";
+  device_properties.installed_update_id.version = "1"; /* shorter than the applied "1.1" */
   az_iot_su_platform_hooks hooks = fx->su._internal.hooks;
   az_iot_su_client_deinit(&fx->su);
   az_iot_su_client_config_options o = az_iot_su_client_config_options_default();
   o.hooks = &hooks;
   o.root_keys = k_root_keys;
   o.root_key_count = sizeof(k_root_keys) / sizeof(k_root_keys[0]);
-  o.device_properties = &dp;
-  o.limits.device_properties_size = az_iot_su_device_properties_buffer_size(&dp);
+  o.device_properties = &device_properties;
+  o.limits.device_properties_size = az_iot_su_device_properties_buffer_size(&device_properties);
   o.workspace = fx->workspace;
   o.workspace_size = sizeof(fx->workspace);
   assert_int_equal(
@@ -4783,13 +4797,14 @@ static void new_properties_do_not_resend_a_settled_report(void** state)
       fx->chan.engine_ctx);
   int sent = fx->chan.report_count;
 
-  az_iot_su_device_properties dp = { 0 };
-  dp.manufacturer = "Contoso";
-  dp.model = "Foobar";
-  dp.installed_update_id.provider = "Contoso";
-  dp.installed_update_id.name = "Foobar";
-  dp.installed_update_id.version = "9.9";
-  assert_int_equal(az_iot_su_client_update_device_properties(&fx->su, &dp), AZ_IOT_OK);
+  az_iot_su_device_properties device_properties = { 0 };
+  device_properties.manufacturer = "Contoso";
+  device_properties.model = "Foobar";
+  device_properties.installed_update_id.provider = "Contoso";
+  device_properties.installed_update_id.name = "Foobar";
+  device_properties.installed_update_id.version = "9.9";
+  assert_int_equal(
+      az_iot_su_client_update_device_properties(&fx->su, &device_properties), AZ_IOT_OK);
   pump(fx, 3);
   assert_int_equal(fx->chan.report_count, sent);
   assert_string_equal(fx->chan.properties.installed_update_id.version, "9.9");
@@ -4843,10 +4858,11 @@ static void properties_changed_before_the_verdict_complete_once(void** state)
   fixture* fx = (fixture*)*state;
   assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
   finish_with_report_unacknowledged(fx);
-  az_iot_su_device_properties dp = { 0 };
-  dp.manufacturer = "Contoso";
-  dp.model = "Foobar";
-  assert_int_equal(az_iot_su_client_update_device_properties(&fx->su, &dp), AZ_IOT_OK);
+  az_iot_su_device_properties device_properties = { 0 };
+  device_properties.manufacturer = "Contoso";
+  device_properties.model = "Foobar";
+  assert_int_equal(
+      az_iot_su_client_update_device_properties(&fx->su, &device_properties), AZ_IOT_OK);
   fx->chan.result_cb(
       AZ_IOT_SU_OP_REPORT_STATUS,
       AZ_IOT_OK,
@@ -7211,10 +7227,10 @@ static void verify_file_hash_rejects_an_unsupported_algorithm(void** state)
 static void init_requires_a_crypto_backend_that_verifies(void** state)
 {
   fixture* fx = (fixture*)*state;
-  az_iot_su_device_properties dp = { .manufacturer = "m", .model = "n" };
+  az_iot_su_device_properties device_properties = { .manufacturer = "m", .model = "n" };
   az_iot_su_client_config_options o = az_iot_su_client_config_options_default();
   o.hooks = &fx->su._internal.hooks;
-  o.device_properties = &dp;
+  o.device_properties = &device_properties;
   o.workspace = g_second_workspace;
   o.workspace_size = sizeof(g_second_workspace);
   fake_channel fc = { 0 };
@@ -8657,13 +8673,14 @@ static void a_late_report_verdict_does_not_pace_a_newer_report(void** state)
   finish_with_report_unacknowledged(fx);
   int sent = fx->chan.report_count;
 
-  az_iot_su_device_properties dp = { 0 };
-  dp.manufacturer = "Contoso";
-  dp.model = "Foobar2";
-  dp.installed_update_id.provider = "Contoso";
-  dp.installed_update_id.name = "Foobar";
-  dp.installed_update_id.version = "1.1";
-  assert_int_equal(az_iot_su_client_update_device_properties(&fx->su, &dp), AZ_IOT_OK);
+  az_iot_su_device_properties device_properties = { 0 };
+  device_properties.manufacturer = "Contoso";
+  device_properties.model = "Foobar2";
+  device_properties.installed_update_id.provider = "Contoso";
+  device_properties.installed_update_id.name = "Foobar";
+  device_properties.installed_update_id.version = "1.1";
+  assert_int_equal(
+      az_iot_su_client_update_device_properties(&fx->su, &device_properties), AZ_IOT_OK);
   deliver_no_hint_retry(fx, AZ_IOT_SU_OP_REPORT_STATUS);
   assert_true(fx->su._internal.retry._internal.due_ms > az_iot_time_mono_ms());
 
@@ -8785,15 +8802,15 @@ static int setup_wire_error_case(void** state)
 
   az_iot_su_platform_hooks hooks;
   init_hooks(fx, &hooks, &fx->crypto);
-  az_iot_su_device_properties dp = { 0 };
-  dp.manufacturer = "Contoso";
-  dp.model = "Foobar";
-  dp.installed_update_id = (az_iot_su_update_id_info){ "Contoso", "Foobar", "1.0" };
+  az_iot_su_device_properties device_properties = { 0 };
+  device_properties.manufacturer = "Contoso";
+  device_properties.model = "Foobar";
+  device_properties.installed_update_id = (az_iot_su_update_id_info){ "Contoso", "Foobar", "1.0" };
   az_iot_su_client_config_options su_opts = az_iot_su_client_config_options_default();
   su_opts.hooks = &hooks;
   su_opts.root_keys = k_root_keys;
   su_opts.root_key_count = sizeof(k_root_keys) / sizeof(k_root_keys[0]);
-  su_opts.device_properties = &dp;
+  su_opts.device_properties = &device_properties;
   su_opts.workspace = fx->workspace;
   su_opts.workspace_size = sizeof(fx->workspace);
   assert_int_equal(az_iot_su_client_init(&fx->su, &fx->conn, &su_opts), AZ_IOT_OK);
@@ -9223,11 +9240,11 @@ static az_iot_su_step_result lib_result(az_iot_su_outcome outcome)
 static void library_mode_needs_no_platform_hooks_but_a_trust_store(void** state)
 {
   fixture* fx = (fixture*)*state;
-  az_iot_su_device_properties dp = { .manufacturer = "Contoso", .model = "Foobar" };
+  az_iot_su_device_properties device_properties = { .manufacturer = "Contoso", .model = "Foobar" };
   az_iot_su_client_config_options opts = az_iot_su_client_config_options_default();
   opts.root_keys = k_root_keys;
   opts.root_key_count = 1;
-  opts.device_properties = &dp;
+  opts.device_properties = &device_properties;
   opts.workspace = fx->workspace;
   opts.workspace_size = sizeof(fx->workspace);
   az_iot_su_client_deinit(&fx->su);

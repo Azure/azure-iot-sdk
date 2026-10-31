@@ -112,6 +112,12 @@ namespace Microsoft.Azure.Iot.Device
             remove => _provisioningFlowCompleted.Remove(value);
         }
 
+        /// <summary>
+        /// Raised whenever this client's connection to IoT hub is lost or closed (including deliberately), before this
+        /// client starts reconnecting. Handlers must return quickly; any exception they throw is logged and ignored.
+        /// </summary>
+        internal event Action? HubConnectionLost;
+
         private const string ProvisioningUsernameFormat = "{0}/registrations/{1}/api-version={2}&ClientVersion={3}";
 
         // WebSocket settings mirror the C SDK (AZ_IOT_MQTT_DEFAULT_WEBSOCKET_PATH / AZ_IOT_MQTT_HUB_V5_WEBSOCKET_PATH):
@@ -212,10 +218,37 @@ namespace Microsoft.Azure.Iot.Device
 
         public ConnectionContext? GetCurrentConnectionContext() => CurrentConnectionContext;
 
+        // The IoT hub and device ID of the most recent connection to IoT hub (or of the assignment the application restored
+        // into this client), so that state tied to that identity, such as the device's copy of its twin, can be discarded
+        // once the device connects as a different one.
+        private volatile HubIdentity? _hubIdentity;
+
+        private sealed record HubIdentity(string IotHubHostName, string DeviceId)
+        {
+            public bool Matches(ConnectionContext connectionContext)
+            {
+                return string.Equals(IotHubHostName, connectionContext.IotHubHostName, StringComparison.OrdinalIgnoreCase)
+                    && string.Equals(DeviceId, connectionContext.DeviceId, StringComparison.Ordinal);
+            }
+        }
+
+        /// <summary>
+        /// Called when this client is about to connect to IoT hub as a different identity (IoT hub or device ID) than on its
+        /// previous connection, before the device presence flow runs for the new identity.
+        /// </summary>
+        internal virtual void HandleHubIdentityChanged()
+        {
+        }
+
         // Backing field for CurrentEndpoint. Volatile because it is written on a caller thread (as a connection is
         // established) and read on the connection layer's callback threads (which dispatch the provisioning vs. device
         // presence flow on it), so every thread must observe the latest value.
         private volatile ConnectionEndpoint _currentEndpoint = ConnectionEndpoint.None;
+
+        // The endpoint that the most recently established connection was established for, or None once its loss has been
+        // handled. The connection layer reports a connection's loss before the next connection is reported as established,
+        // so this identifies which endpoint a reported loss belongs to even after CurrentEndpoint has moved on.
+        private volatile ConnectionEndpoint _connectedEndpoint = ConnectionEndpoint.None;
 
         /// <summary>
         /// The endpoint that this client is currently connecting to, or connected to.
@@ -373,6 +406,10 @@ namespace Microsoft.Azure.Iot.Device
             // Seed any assignment the application restored so that ProvisionAndConnectAsync can try connecting directly
             // to it before falling back to provisioning for a fresh one.
             CurrentConnectionContext = connectionContext;
+            if (connectionContext != null)
+            {
+                _hubIdentity = new HubIdentity(connectionContext.IotHubHostName, connectionContext.DeviceId);
+            }
 
             _connectionRetryPolicy = options.ConnectionRetryPolicy;
             _useCleanSession = options.UseCleanSession;
@@ -833,6 +870,20 @@ namespace Microsoft.Azure.Iot.Device
             connectionContext.UsesSecondaryCredentials = false;
             CurrentConnectionContext = connectionContext;
 
+            HubIdentity? previousIdentity = _hubIdentity;
+            if (previousIdentity != null && !previousIdentity.Matches(connectionContext))
+            {
+                Trace.TraceInformation(
+                    "Connecting as device {0} on IoT hub {1} instead of device {2} on IoT hub {3}, so discarding state tied to the previous identity.",
+                    connectionContext.DeviceId,
+                    connectionContext.IotHubHostName,
+                    previousIdentity.DeviceId,
+                    previousIdentity.IotHubHostName);
+                HandleHubIdentityChanged();
+            }
+
+            _hubIdentity = new HubIdentity(connectionContext.IotHubHostName, connectionContext.DeviceId);
+
             // Any session left on this IoT hub was not set up by this connection's presence flow, so its subscriptions are unknown.
             ClearDevicePresenceSubscribed();
 
@@ -986,7 +1037,10 @@ namespace Microsoft.Azure.Iot.Device
         /// </summary>
         private async Task HandleConnectedAsync(MqttClientConnectedEventArgs args)
         {
-            switch (CurrentEndpoint)
+            ConnectionEndpoint endpoint = CurrentEndpoint;
+            _connectedEndpoint = endpoint;
+
+            switch (endpoint)
             {
                 case ConnectionEndpoint.DeviceProvisioningService:
                     await HandleConnectedToDpsAsync(args);
@@ -1002,14 +1056,58 @@ namespace Microsoft.Azure.Iot.Device
 
         private Task HandleDisconnectedAsync(MqttClientDisconnectedEventArgs args)
         {
+            // A connection whose connected notification never ran (because it was lost first) was established for the
+            // current endpoint.
+            ConnectionEndpoint lostEndpoint = _connectedEndpoint;
+            _connectedEndpoint = ConnectionEndpoint.None;
+            if (lostEndpoint == ConnectionEndpoint.None)
+            {
+                lostEndpoint = CurrentEndpoint;
+            }
+
+            if (lostEndpoint == ConnectionEndpoint.DeviceProvisioningService
+                && CurrentEndpoint != ConnectionEndpoint.DeviceProvisioningService)
+            {
+                // The underlying client may report the loss of the Device Provisioning Service connection after this
+                // client has already moved on to connecting to the IoT hub. That loss says nothing about the IoT hub
+                // connection, so it must not abandon that connection's work.
+                Trace.TraceInformation("Ignoring the loss of a Device Provisioning Service connection that this client already moved on from.");
+                return Task.CompletedTask;
+            }
+
             if (CurrentEndpoint == ConnectionEndpoint.DeviceProvisioningService)
             {
                 // Because DPS cannot persist sessions, any connection loss should be treated as a session loss. Abandon
                 // the in-progress flow so that it can be restarted from the beginning once the connection is re-established.
                 CancelCurrentProvisioningFlow();
             }
+            else
+            {
+                RaiseHubConnectionLost();
+            }
 
             return Task.CompletedTask;
+        }
+
+        private void RaiseHubConnectionLost()
+        {
+            Action? handlers = HubConnectionLost;
+            if (handlers == null)
+            {
+                return;
+            }
+
+            foreach (Action handler in handlers.GetInvocationList().Cast<Action>())
+            {
+                try
+                {
+                    handler();
+                }
+                catch (Exception e)
+                {
+                    Trace.TraceWarning("A connection lost handler threw and was ignored. {0}", e);
+                }
+            }
         }
 
         /// <summary>

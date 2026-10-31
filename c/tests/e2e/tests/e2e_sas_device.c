@@ -4,6 +4,7 @@
 
 /* SPDX-License-Identifier: MIT */
 #include "e2e_sas_device.h"
+#include "e2e_connect_clock.h"
 
 #include <stdarg.h>
 #include <stddef.h>
@@ -224,15 +225,17 @@ void e2e_sas_connect_renew_and_send(
   assert_int_equal(az_iot_mqttv3_telemetry_client_init(&telemetry, &conn), AZ_IOT_OK);
   assert_int_equal(az_iot_connection_client_open(&conn), AZ_IOT_OK);
 
-  time_t start = time(NULL);
+  e2e_connect_clock clock;
+  e2e_connect_clock_start(&clock);
   while (ctx.hub_state != AZ_IOT_CONN_STATE_CONNECTED && ctx.hub_state != AZ_IOT_CONN_STATE_FAULTED
-         && (time(NULL) - start) < E2E_SAS_CONNECT_TIMEOUT_S)
+         && e2e_connect_clock_running(&clock, &conn, E2E_SAS_CONNECT_TIMEOUT_S))
   {
     (void)az_iot_connection_client_do_work(&conn, 50);
   }
+  e2e_connect_clock_log(&clock, "SAS device");
   assert_int_equal(ctx.hub_state, AZ_IOT_CONN_STATE_CONNECTED);
 
-  start = time(NULL);
+  time_t start = time(NULL);
   while (run->hub_renewals < renewals && ctx.hub_state != AZ_IOT_CONN_STATE_FAULTED
          && (time(NULL) - start) < E2E_SAS_RENEWAL_TIMEOUT_S)
   {

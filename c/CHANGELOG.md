@@ -4,12 +4,19 @@
 
 ### Features Added
 
+- Breaking: removed the Rust MQTT adapter shell, its `az_iot_rust_mqtt_*` APIs and FFI contract,
+  `AZ_IOT_RUST_MQTT_WORKSPACE_SIZE`, `AZ_IOT_WITH_RUST_MQTT`, the `adapter_rust_mqtt` CMake and
+  pkg-config component, and Yocto's `rust-mqtt` option. Use Paho or az_mqtt instead; the generic
+  bring-your-own MQTT interface is unchanged.
 - `az_iot_connection_profile_to_string()` names an `az_iot_connection_profile`, for logging.
 - `az_iot_certificate_material::client_key_psa_id` and `az_iot_mqtt_tls_options::client_key_psa_id`
   name a non-extractable client key by PSA Crypto key id (0: none), e.g. the ESP32 Digital
   Signature peripheral on ESP-IDF v6. The az_mqtt adapter uses it with mbedTLS; with another TLS
-  backend, and in the Paho and rust_mqtt adapters, the connect fails with
+  backend, and in the Paho adapter, the connect fails with
   `AZ_IOT_ERR_NOT_SUPPORTED`. Bring-your-own adapters must do the same unless they support it.
+- Conformance: `AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY_PSA` and `az_iot_conformance_options::client_key_psa_id`
+  prove the PSA key route with a TLS handshake and a reconnect. The az_mqtt harness declares it on
+  mbedTLS with PSA keys and imports the PEM key at `AZ_IOT_CONFORMANCE_PSA_KEY`.
 - Breaking: `az_iot_connection_client_open()` and `az_iot_connection_client_close()` return
   `AZ_IOT_ERR_BUSY` when called from a callback the connection client runs (state, publish
   completion, SAS token, DPS, CSR, subscription failure, inbound message, feature observer). Call
@@ -68,12 +75,11 @@
   `az_iot_az_mqtt_get_workspace_size()` gives the exact size; `AZ_IOT_AZ_MQTT_WORKSPACE_SIZE()` a
   constant-expression bound for static arrays. The client's `destroy()` wipes the workspace and
   frees nothing. The factories are unchanged; they now allocate one workspace per client.
-- Paho and Rust adapters in application memory: `az_iot_paho_get_adapter()` and
-  `az_iot_rust_mqtt_get_adapter()` return the same `az_iot_mqtt_adapter` descriptor. The workspace
-  holds the adapter's own state (`AZ_IOT_PAHO_WORKSPACE_SIZE`, `AZ_IOT_RUST_MQTT_WORKSPACE_SIZE`);
-  Paho and the Rust client still allocate their internals and size their own buffers, so the limits
-  are only checked. `destroy()` releases those internals, wipes the workspace and frees nothing
-  else. The factories are unchanged.
+- Paho adapter in application memory: `az_iot_paho_get_adapter()` returns an
+  `az_iot_mqtt_adapter` descriptor. The workspace holds the adapter's own state
+  (`AZ_IOT_PAHO_WORKSPACE_SIZE`); Paho still allocates its internals and sizes its own buffers,
+  so the limits are only checked. `destroy()` releases those internals, wipes the workspace
+  and frees nothing else. The factories are unchanged.
 - az_mqtt adapter: `AZ_IOT_AZ_MQTT_MESSAGE_STORAGE_SIZE` may be 0, for devices that only use clean
   sessions: no message store is allocated, and a connect whose session outlives the connection
   (`clean_start` false; MQTT 5: with `session_expiry_seconds` > 0) returns `AZ_IOT_ERR_NOT_SUPPORTED`.

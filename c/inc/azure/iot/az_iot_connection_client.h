@@ -1626,6 +1626,10 @@ extern "C"
      * events are dispatched before the application's. Two pools so neither kind of subscriber
      * can starve the other. */
     az_iot_connection_feature_observer* feature_observers;
+    /* New feature-observer registrations so far; never reset, so it tells registrations apart. */
+    uint32_t feature_observer_registrations;
+    /* Identity changes so far; counted before IDENTITY_CHANGED observers run. */
+    uint32_t identity_changes;
     az_iot_connection_state_observer* app_state_observers;
     /* Set while a transition is being dispatched. Registering an observer from
      * inside a callback would hand it the transition in flight, so adding is
@@ -2109,7 +2113,7 @@ extern "C"
    *
    * Ownership: the application owns the factory. The struct is copied and need not outlive this
    * call; factory_ctx is borrowed and must stay valid until az_iot_connection_client_deinit()
-   * returns. Adapter factories (Paho, az_mqtt, Rust) are their own factory_ctx, so destroy them
+   * returns. Adapter factories (Paho, az_mqtt) are their own factory_ctx, so destroy them
    * (e.g. az_iot_paho_factory_destroy()) only after deinit(). Registering the same factory again
    * returns AZ_IOT_OK and changes nothing. On any other result nothing is borrowed; the application
    * may release the factory at once.

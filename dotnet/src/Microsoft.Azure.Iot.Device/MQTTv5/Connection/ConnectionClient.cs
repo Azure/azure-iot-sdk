@@ -1,4 +1,4 @@
-﻿// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
+// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
 // See LICENSE file in the project root for full license information.
 
 using Google.Protobuf;
@@ -36,7 +36,64 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
         private readonly bool _receiveReportedPropertiesUponConnect;
         private readonly uint _sessionExpiryInterval;
 
-        private Guid? CurrentConnectionNonce { get; set; }
+        internal Guid? CurrentConnectionNonce { get; private set; }
+
+        Guid? IConnectionClient.ConnectionNonce => CurrentConnectionNonce;
+
+        private volatile BirthAckVersions? _latestBirthAck;
+
+        BirthAckVersions? IConnectionClient.LatestBirthAck => _latestBirthAck;
+
+        event Action? IConnectionClient.ConnectionLost
+        {
+            add => HubConnectionLost += value;
+            remove => HubConnectionLost -= value;
+        }
+
+        private event Action? HubIdentityChanged;
+
+        event Action? IConnectionClient.HubIdentityChanged
+        {
+            add => HubIdentityChanged += value;
+            remove => HubIdentityChanged -= value;
+        }
+
+        // The latest twin section versions that the device holds, which are announced in each birth.
+        private ulong _desiredPropertiesVersion;
+        private ulong _reportedPropertiesVersion;
+
+        // The attempt (starting at 1) of the defensive timeout for the next twin push that a birth ack implies IoT hub will send.
+        // It escalates each time the twin push doesn't arrive, and resets once one does.
+        private int _twinPushTimeoutAttempt = 1;
+
+        /// <summary>
+        /// How long to wait for the twin push that a birth ack implies IoT hub will send, given the attempt (starting at 1),
+        /// before reconnecting so that IoT hub sends it again.
+        /// </summary>
+        internal Func<int, TimeSpan> TwinPushTimeoutSchedule { get; set; } = DefensiveTimeoutSchedule.GetTimeout;
+
+        void IConnectionClient.ObserveDesiredPropertiesVersion(ulong version) => AdvanceTo(ref _desiredPropertiesVersion, version);
+
+        void IConnectionClient.ObserveReportedPropertiesVersion(ulong version) => AdvanceTo(ref _reportedPropertiesVersion, version);
+
+        void IConnectionClient.ReplaceDesiredPropertiesVersion(ulong version) => Interlocked.Exchange(ref _desiredPropertiesVersion, version);
+
+        void IConnectionClient.ReplaceReportedPropertiesVersion(ulong version) => Interlocked.Exchange(ref _reportedPropertiesVersion, version);
+
+        private static void AdvanceTo(ref ulong location, ulong version)
+        {
+            ulong current = Interlocked.Read(ref location);
+            while (version > current)
+            {
+                ulong original = Interlocked.CompareExchange(ref location, version, current);
+                if (original == current)
+                {
+                    return;
+                }
+
+                current = original;
+            }
+        }
 
         // How many presence flows in a row have timed out waiting for their birth-ack. Selects the next birth-ack
         // timeout, and resets once a birth-ack arrives.
@@ -98,6 +155,21 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
             _receiveDesiredPropertyUpdates = options.ReceiveDesiredPropertyUpdates;
             _receiveReportedPropertiesUponConnect = options.ReceiveReportedPropertiesUponConnect;
             _sessionExpiryInterval = options.SessionExpiryInterval;
+        }
+
+        internal override void HandleHubIdentityChanged()
+        {
+            ForgetTwinVersions();
+            HubIdentityChanged?.Invoke();
+        }
+
+        // The recorded twin versions belong to the previous identity, so announcing them in the next birth could stop
+        // IoT hub from pushing the new identity's twin.
+        internal void ForgetTwinVersions()
+        {
+            Interlocked.Exchange(ref _desiredPropertiesVersion, 0);
+            Interlocked.Exchange(ref _reportedPropertiesVersion, 0);
+            _latestBirthAck = null;
         }
 
         public override Task HandleConnectedToHubAsync(MqttClientConnectedEventArgs args)
@@ -211,9 +283,10 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
                 }
             }
 
-            // The device's last known version of the twin's reported and desired properties. Currently, there is no support for persisting this state on disk, so assume the device has never seen the twin.
-            uint deviceDesiredPropertyVersion = 0;
-            uint deviceReportedPropertyVersion = 0;
+            // The latest versions of the twin's desired and reported properties that the device holds. IoT hub pushes a section upon
+            // connecting (if requested) only if its version differs from the one announced here.
+            ulong deviceDesiredPropertyVersion = Interlocked.Read(ref _desiredPropertiesVersion);
+            ulong deviceReportedPropertyVersion = Interlocked.Read(ref _reportedPropertiesVersion);
 
             Birth birth = new()
             {
@@ -272,9 +345,14 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
                                 lock (_birthAckLock)
                                 {
                                     if (CurrentConnectionNonce == connectNonce
-                                        && birthAckReceivedTaskCompletionSource.TrySetResult(birthAck))
+                                        && !birthAckReceivedTaskCompletionSource.Task.IsCompleted)
                                     {
-                                        _consecutiveBirthAckTimeouts = 0;
+                                        // Record the versions before completing the flow so the twin client sees them for this connection.
+                                        _latestBirthAck = new BirthAckVersions(connectNonce, birthAck.DesiredVersion, birthAck.ReportedVersion);
+                                        if (birthAckReceivedTaskCompletionSource.TrySetResult(birthAck))
+                                        {
+                                            _consecutiveBirthAckTimeouts = 0;
+                                        }
                                     }
                                 }
                             }
@@ -292,6 +370,11 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
 
                 return Task.CompletedTask;
             };
+
+            // IoT hub may send the twin push that this birth triggers before the birth ack, so watch for it from before sending the birth.
+            TwinPushWatch? twinPushWatch = birth.PushDesired || birth.PushReported
+                ? new TwinPushWatch(connection, deviceId, connectNonce)
+                : null;
 
             connection.PublishReceivedAsync += HandleReceivedBirthAck;
 
@@ -357,14 +440,172 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
                     await connection.DisconnectAsync(true, new MqttDisconnect() { Reason = MqttDisconnectReasonCode.NormalDisconnection }, cancellationToken);
                     return;
                 }
+
+                // The birth ack was accepted, possibly racing with the timeout, so the task has already completed with it.
+                BirthAck birthAck = await birthAckReceivedTaskCompletionSource.Task;
+                if (TryForgetTwinVersionsNewerThanHub(birth, birthAck))
+                {
+                    // IoT hub's versions never decrease, so it never issued a version newer than its own. It treats such a
+                    // version as current, so it doesn't push that section, and it doesn't send this connection the desired
+                    // properties patches up to that version. Only a birth with valid versions makes it do so, so reconnect.
+                    Trace.TraceWarning(
+                        "This device announced twin versions (desired {0}, reported {1}) newer than IoT hub's (desired {2}, reported {3}). Reconnecting to announce valid versions.",
+                        birth.DesiredVersion,
+                        birth.ReportedVersion,
+                        birthAck.DesiredVersion,
+                        birthAck.ReportedVersion);
+                    await connection.DisconnectAsync(true, new MqttDisconnect() { Reason = MqttDisconnectReasonCode.NormalDisconnection }, cancellationToken);
+                    return;
+                }
+
+                if (twinPushWatch != null && IsTwinPushExpected(birth, birthAck))
+                {
+                    _ = WaitForExpectedTwinPushAsync(connection, presenceOwner, connectNonce, twinPushWatch);
+                    twinPushWatch = null;
+                }
             }
             finally
             {
                 connection.PublishReceivedAsync -= HandleReceivedBirthAck;
+                twinPushWatch?.Stop();
             }
 
             cancellationToken.ThrowIfCancellationRequested();
             await RaiseDevicePresenceFlowCompletedAsync(new());
+        }
+
+        // Whether IoT hub sends a twin push upon admitting this birth. It does if a section the birth asked to be pushed has a
+        // different version than the one the device holds.
+        private static bool IsTwinPushExpected(Birth birth, BirthAck birthAck)
+        {
+            // IoT hub's versions are never 0, so a 0 means the birth ack didn't include that section's version.
+            return (birth.PushDesired && birthAck.DesiredVersion != 0 && birthAck.DesiredVersion != birth.DesiredVersion)
+                || (birth.PushReported && birthAck.ReportedVersion != 0 && birthAck.ReportedVersion != birth.ReportedVersion);
+        }
+
+        // Stops announcing each twin version that the given birth announced but that is newer than IoT hub's, and returns
+        // whether there was any. A version the twin client recorded since the birth was sent is kept.
+        private bool TryForgetTwinVersionsNewerThanHub(Birth birth, BirthAck birthAck)
+        {
+            // IoT hub's versions are never 0, so a 0 means the birth ack didn't include that section's version.
+            bool isDesiredNewer = birthAck.DesiredVersion != 0 && birth.DesiredVersion > birthAck.DesiredVersion;
+            bool isReportedNewer = birthAck.ReportedVersion != 0 && birth.ReportedVersion > birthAck.ReportedVersion;
+            if (isDesiredNewer)
+            {
+                Interlocked.CompareExchange(ref _desiredPropertiesVersion, 0, birth.DesiredVersion);
+            }
+
+            if (isReportedNewer)
+            {
+                Interlocked.CompareExchange(ref _reportedPropertiesVersion, 0, birth.ReportedVersion);
+            }
+
+            return isDesiredNewer || isReportedNewer;
+        }
+
+        // Wait for the twin push that IoT hub should send for the given connection's birth. If it doesn't arrive in time, IoT hub
+        // most likely failed to set up this connection for twin traffic (including future desired property patches), and only a
+        // fresh birth makes it do so, so reconnect.
+        private async Task WaitForExpectedTwinPushAsync(MqttConnectionManager connection, AbstractConnectionClient presenceOwner, Guid connectNonce, TwinPushWatch twinPushWatch)
+        {
+            CancellationTokenSource? connectionLost = null;
+
+            Task HandleConnectionLostAsync(MqttClientDisconnectedEventArgs _)
+            {
+                try
+                {
+                    connectionLost?.Cancel();
+                }
+                catch (ObjectDisposedException)
+                {
+                    // A disconnect dispatch may have captured this handler after the wait completed.
+                }
+
+                return Task.CompletedTask;
+            }
+
+            int attempt = Volatile.Read(ref _twinPushTimeoutAttempt);
+            try
+            {
+                connectionLost = CancellationTokenSource.CreateLinkedTokenSource(
+                    connection.ConnectionLifetimeCancellationToken,
+                    presenceOwner.CurrentReprovisioningCancellationToken);
+                connection.DisconnectedAsync += HandleConnectionLostAsync;
+
+                try
+                {
+                    await twinPushWatch.Received.WaitAsync(TwinPushTimeoutSchedule(attempt), connectionLost.Token);
+                    Volatile.Write(ref _twinPushTimeoutAttempt, 1);
+                }
+                catch (TimeoutException)
+                {
+                    if (CurrentConnectionNonce != connectNonce)
+                    {
+                        // The device already reconnected, which made IoT hub decide whether to push the twin again.
+                        return;
+                    }
+
+                    Volatile.Write(ref _twinPushTimeoutAttempt, attempt + 1);
+                    Trace.TraceWarning("Timed out waiting for the twin push that IoT hub should send upon connecting. Reconnecting so that IoT hub sends it again.");
+
+                    // Don't let the disconnect this causes cancel itself.
+                    connection.DisconnectedAsync -= HandleConnectionLostAsync;
+                    await connection.DisconnectAsync(true, new MqttDisconnect() { Reason = MqttDisconnectReasonCode.NormalDisconnection, SessionExpiryInterval = 0 }, connectionLost.Token);
+                }
+            }
+            catch (Exception e) when (e is OperationCanceledException || e is ObjectDisposedException)
+            {
+                // The connection was lost or closed, so the next connection's birth decides whether IoT hub pushes the twin.
+            }
+            catch (Exception e)
+            {
+                Trace.TraceWarning("Failed to reconnect after timing out waiting for a twin push: {0}", e);
+            }
+            finally
+            {
+                connection.DisconnectedAsync -= HandleConnectionLostAsync;
+                connectionLost?.Dispose();
+                twinPushWatch.Stop();
+            }
+        }
+
+        // Watches the given connection for the twin push that IoT hub sends upon admitting the birth with the given connection nonce.
+        private sealed class TwinPushWatch
+        {
+            private readonly MqttConnectionManager _connection;
+            private readonly string _topic;
+            private readonly Guid _connectNonce;
+            private readonly TaskCompletionSource _received = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+            public TwinPushWatch(MqttConnectionManager connection, string deviceId, Guid connectNonce)
+            {
+                _connection = connection;
+                _topic = $"ih/{deviceId}/dev/twin";
+                _connectNonce = connectNonce;
+                _connection.PublishReceivedAsync += HandlePublishReceivedAsync;
+            }
+
+            public Task Received => _received.Task;
+
+            public void Stop()
+            {
+                _connection.PublishReceivedAsync -= HandlePublishReceivedAsync;
+            }
+
+            private Task HandlePublishReceivedAsync(MqttPublishReceivedEventArgs args)
+            {
+                MqttPublish publish = args.Publish;
+                if (publish.Topic.Equals(_topic, StringComparison.Ordinal)
+                    && publish.UserProperties.TryGetType(out string? messageType, out _)
+                    && messageType.Equals("twin-push")
+                    && GuidExtensions.TryParseBytes(publish.CorrelationData, out Guid? receivedNonce)
+                    && receivedNonce.Value == _connectNonce)
+                {
+                    _received.TrySetResult();
+                }
+
+                return Task.CompletedTask;
+            }
         }
 
         internal override MqttConnect IotHubMqttConnectOverride(MqttConnect connect)

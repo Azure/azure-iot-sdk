@@ -628,6 +628,42 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             Assert.Equal(0, mockDps.RegistrationCount);
         }
 
+        [Fact]
+        public async Task LateDpsDisconnectCallbackIsNotReportedAsHubConnectionLoss()
+        {
+            using MockConnectionMqttClient mockMqttClient = new() { RaiseDisconnectCallbackOnClientDisconnect = false };
+            MockDeviceProvisioningService mockDps = new(mockMqttClient, _ => FirstAssignedHub);
+
+            int lateCallbackRaised = 0;
+            mockMqttClient.OnConnect = async connect =>
+            {
+                if (connect.HostName == FirstAssignedHub && Interlocked.Exchange(ref lateCallbackRaised, 1) == 0)
+                {
+                    // MQTTnet raises the DPS connection's disconnect callback on its own thread, which may run only after
+                    // this client has moved on to connecting to the hub.
+                    await mockMqttClient.SimulateSpuriousDisconnectCallbackAsync(MqttDisconnectReason.NormalDisconnection);
+                }
+
+                return new MqttConnectAck() { ResultCode = MqttConnectReasonCode.Success };
+            };
+
+            using TestConnectionClient connectionClient = new(new() { MqttClient = mockMqttClient });
+            int hubConnectionLostCount = 0;
+            connectionClient.HubConnectionLost += () => Interlocked.Increment(ref hubConnectionLostCount);
+
+            await connectionClient.ProvisionAndConnectAsync(
+                CreateProvisioningSettings(),
+                CreateAuthenticationProvider(),
+                cancellationToken: TestContext.Current.CancellationToken).WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+
+            Assert.Equal(1, lateCallbackRaised);
+            Assert.Equal(0, Volatile.Read(ref hubConnectionLostCount));
+
+            // A loss of the hub connection itself is still reported.
+            await mockMqttClient.SimulateServerDisconnectAsync(MqttDisconnectReason.ServerBusy);
+            Assert.Equal(1, Volatile.Read(ref hubConnectionLostCount));
+        }
+
         [Theory]
         [InlineData(IotHubConnectionType.Mqttv3, false, false)]
         [InlineData(IotHubConnectionType.Mqttv3, false, true)]
@@ -1924,6 +1960,12 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             Assert.Equal(ConnectionEndpoint.None, connectionClient.CurrentEndpoint);
             Assert.True(connectionClient.IsConnectionTargetSet);
 
+            // The twin client gets the twin upon each connection to an MQTTv3 IoT hub, including the first one.
+            lock (hostsFeatureOperationsWereSentTo)
+            {
+                hostsFeatureOperationsWereSentTo.Clear();
+            }
+
             Task telemetry = Task.Run(
                 () => telemetryClient.SendTelemetryAsync(
                     new DeviceToCloudTelemetry() { Payload = Encoding.UTF8.GetBytes("hello") },
@@ -1943,7 +1985,9 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             Assert.Equal(2, mockDps.RegistrationCount);
             lock (hostsFeatureOperationsWereSentTo)
             {
-                Assert.Equal(new[] { SecondAssignedHub, SecondAssignedHub }, hostsFeatureOperationsWereSentTo);
+                // The telemetry, the application's get twin request and the twin client's own get twin request upon reconnecting.
+                Assert.True(hostsFeatureOperationsWereSentTo.Count >= 2);
+                Assert.All(hostsFeatureOperationsWereSentTo, host => Assert.Equal(SecondAssignedHub, host));
             }
         }
 

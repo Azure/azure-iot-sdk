@@ -11,7 +11,7 @@ conformance suite. For a first build, see the [samples overview](../../samples/R
 ```
 inc/azure/iot/      public headers
 src/                core, mqttv3 and mqttv5 feature clients, software updates
-adapters/           MQTT adapters (Paho, az_mqtt, Rust shell), OpenSSL certificate provider,
+adapters/           MQTT adapters (Paho, az_mqtt), OpenSSL certificate provider,
                     crypto backends (OpenSSL, mbedTLS), software updates platform adapters
 samples/            samples, one README each
 tests/              unit, conformance, end-to-end and install tests
@@ -42,7 +42,7 @@ target_link_libraries(app PRIVATE azure::iot::mqttv3 azure::iot::adapter_paho)
 ```
 
 - Components: `core`, `mqttv3`, `mqttv5`, and each adapter built (`adapter_paho`,
-  `adapter_az_mqtt`, `adapter_rust_mqtt`, `crypto_openssl`, `crypto_mbedtls`,
+  `adapter_az_mqtt`, `crypto_openssl`, `crypto_mbedtls`,
   `certificate_provider_managed`). An MQTT adapter's header is installed only with the adapter.
 - azure-sdk-for-c ships in the package (headers under `include/azure-sdk-for-c`);
   Paho installs its own `eclipse-paho-mqtt-c` package into the same prefix.
@@ -86,6 +86,9 @@ without (`paho`, `az_mqtt`, `rust_mqtt`, `openssl`, `mbedtls`, `curl`). It check
 target's sources, include directories, definitions, link inputs and target dependencies (CMake File
 API), the headers compiled in (Ninja), the binaries' needed libraries and symbols, fetched copies
 under `_deps/`, and optionally an install prefix. CI runs it on every build leg.
+`rust_mqtt` remains a forbidden-dependency pattern to guard against reintroducing the removed
+adapter. Every PR and main build runs the install matrix, which checks that the build and package
+contain no Rust MQTT adapter artifacts and that requesting its CMake component fails.
 
 ```sh
 cmake -DBUILD_DIR=build/x -DMODE=prepare -P eng/check-dependencies.cmake   # before configuring

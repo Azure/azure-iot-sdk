@@ -33,6 +33,84 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
         bool IsConnectionTargetSet => true;
 
         /// <summary>
+        /// The connection nonce sent in the birth message of the current (or most recent) connection attempt to an
+        /// MQTTv5 IoT hub, or null if it is not known.
+        /// </summary>
+        /// <remarks>
+        /// IoT hub tags connection-scoped messages (such as twin pushes and desired property patches) with this nonce.
+        /// Connections to MQTTv3 IoT hubs have no birth message, so for those this is an ID that the connection client
+        /// generates for each connection, which IoT hub never sees.
+        /// </remarks>
+        internal Guid? ConnectionNonce => null;
+
+        /// <summary>
+        /// Raised whenever the device presence flow completes on a connection to an MQTTv3 IoT hub, which means that the
+        /// twin topics are subscribed to, so that IoT hub delivers the responses to twin requests.
+        /// </summary>
+        /// <remarks>
+        /// MQTTv3 IoT hubs neither acknowledge a device's presence nor push its twin upon connecting, so the twin client
+        /// uses this to fetch the twin instead. Never raised for MQTTv5 IoT hubs, whose birth ack serves this purpose.
+        /// </remarks>
+        internal event Action? ClassicDevicePresenceEstablished { add { } remove { } }
+
+        /// <summary>
+        /// Whether the device presence flow has completed on the current connection to an MQTTv3 IoT hub. See
+        /// <see cref="ClassicDevicePresenceEstablished"/>.
+        /// </summary>
+        internal bool IsClassicDevicePresenceEstablished => false;
+
+        /// <summary>
+        /// The twin versions from the latest birth ack that IoT hub sent this connection client, or null if there hasn't
+        /// been one (or this connection client doesn't track them).
+        /// </summary>
+        /// <remarks>
+        /// Feature clients constructed after the device connected use this to learn the versions they missed.
+        /// </remarks>
+        internal BirthAckVersions? LatestBirthAck => null;
+
+        /// <summary>
+        /// Raised whenever the connection to IoT hub is lost or closed, before any reconnection starts.
+        /// </summary>
+        /// <remarks>
+        /// Twin exchanges are bound to the connection that they were sent on, so feature clients use this to abandon them.
+        /// </remarks>
+        internal event Action? ConnectionLost { add { } remove { } }
+
+        /// <summary>
+        /// Raised when the device connects to IoT hub as a different identity (IoT hub or device ID) than on its previous
+        /// connection, for example after re-provisioning, before the device announces its presence with that identity.
+        /// </summary>
+        /// <remarks>
+        /// Twin versions are only meaningful for the identity they came from, so by the time this is raised the connection
+        /// client has forgotten the twin versions it recorded, and feature clients discard their copies of the twin.
+        /// </remarks>
+        internal event Action? HubIdentityChanged { add { } remove { } }
+
+        /// <summary>
+        /// Record that the device now holds this version of the desired properties, so that it is announced to IoT hub upon
+        /// (re)connecting. Older versions than the one already recorded are ignored.
+        /// </summary>
+        internal void ObserveDesiredPropertiesVersion(ulong version) { }
+
+        /// <summary>
+        /// Record that the device now holds this version of the reported properties, so that it is announced to IoT hub upon
+        /// (re)connecting. Older versions than the one already recorded are ignored.
+        /// </summary>
+        internal void ObserveReportedPropertiesVersion(ulong version) { }
+
+        /// <summary>
+        /// Replace the recorded version of the desired properties that the device holds, even with an older one. Used when
+        /// IoT hub reveals that the recorded version is not valid (for example, it is newer than IoT hub's version).
+        /// </summary>
+        internal void ReplaceDesiredPropertiesVersion(ulong version) { }
+
+        /// <summary>
+        /// Replace the recorded version of the reported properties that the device holds, even with an older one. Used when
+        /// IoT hub reveals that the recorded version is not valid (for example, it is newer than IoT hub's version).
+        /// </summary>
+        internal void ReplaceReportedPropertiesVersion(ulong version) { }
+
+        /// <summary>
         /// Send a PUBLISH to IoT hub. Any <see cref="DeviceIdPlaceholder"/> in the topic is replaced with the device's
         /// current ID when it is sent.
         /// </summary>

@@ -60,7 +60,7 @@ reconnection disabled.
 - A factory that was never registered, or whose registration failed, can be destroyed at any time.
 - Registering the same factory twice returns `AZ_IOT_OK` and keeps one registration.
 
-The same rules apply to the az_mqtt and Rust adapter factories, and match the certificate providers:
+The same rules apply to the az_mqtt adapter factories, and match the certificate providers:
 the application creates them, and destroys them after the connection client.
 Each sample that connects is also built on az_mqtt, from the same `main.c`
 ([samples](../samples/README.md#build)).

@@ -149,6 +149,272 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
         }
 
         [Fact]
+        public async Task BirthAnnouncesInitialThenLatestObservedTwinVersions()
+        {
+            using MockConnectionMqttClient mockMqttClient = new() { AutoRespondToBirth = true };
+            MqttV5ConnectionClientOptions options = new()
+            {
+                MqttClient = mockMqttClient,
+                ConnectionRetryPolicy = new ExponentialBackoffRetryPolicy(uint.MaxValue, TimeSpan.Zero, useJitter: false),
+            };
+            using ConnectionClient connectionClient = new(options);
+            using TwinClient twinClient = new(connectionClient, new Device.Models.Twin.TwinState() { DesiredVersion = 5, ReportedVersion = 3 });
+
+            await connectionClient.ConnectToHubAsync(GetMockConnectionContext(), TestContext.Current.CancellationToken)
+                .WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+
+            var push = new Device.Models.Twin.TwinPush()
+            {
+                Desired = new Device.Models.Twin.Section { Version = 7, Payload = ByteString.CopyFromUtf8("{}") },
+                Reported = new Device.Models.Twin.Section { Version = 4, Payload = ByteString.CopyFromUtf8("{}") },
+            };
+            MqttPublish pushPublish = new()
+            {
+                Topic = "ih/someDeviceId/dev/twin",
+                CorrelationData = connectionClient.CurrentConnectionNonce!.Value.ToByteArray(bigEndian: true),
+                Payload = push.ToByteArray(),
+            };
+            pushPublish.UserProperties.Add(new("type", Encoding.UTF8.GetBytes("twin-push:1")));
+            await mockMqttClient.SimulatePublishReceivedAsync(pushPublish);
+
+            TaskCompletionSource reconnected = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            connectionClient.DevicePresenceFlowCompletedAsync += _ =>
+            {
+                reconnected.TrySetResult();
+                return Task.CompletedTask;
+            };
+            await mockMqttClient.SimulateServerDisconnectAsync(MqttDisconnectReason.ServerBusy)
+                .WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+            await reconnected.Task.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+
+            Birth[] births = mockMqttClient.SentMqttTrafficInOrder
+                .Select(traffic => traffic.Publish).OfType<MqttPublish>()
+                .Where(publish => publish.Topic.EndsWith("/srv/presence", StringComparison.Ordinal))
+                .Select(publish => Birth.Parser.ParseFrom(publish.Payload))
+                .ToArray();
+            Assert.Equal(2, births.Length);
+            Assert.Equal(5ul, births[0].DesiredVersion);
+            Assert.Equal(3ul, births[0].ReportedVersion);
+            Assert.Equal(7ul, births[1].DesiredVersion);
+            Assert.Equal(4ul, births[1].ReportedVersion);
+        }
+
+        [Fact]
+        public async Task BirthAsDifferentIdentityAnnouncesNoTwinVersions()
+        {
+            using MockConnectionMqttClient mockMqttClient = new() { AutoRespondToBirth = true };
+            MqttV5ConnectionClientOptions options = new()
+            {
+                MqttClient = mockMqttClient,
+                ConnectionRetryPolicy = new ExponentialBackoffRetryPolicy(uint.MaxValue, TimeSpan.Zero, useJitter: false),
+            };
+            using ConnectionClient connectionClient = new(options);
+            using TwinClient twinClient = new(connectionClient, new Device.Models.Twin.TwinState() { DesiredVersion = 5, ReportedVersion = 3 });
+
+            await connectionClient.ConnectToHubAsync(GetMockConnectionContext(), TestContext.Current.CancellationToken)
+                .WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+            await connectionClient.DisconnectAsync(TestContext.Current.CancellationToken);
+
+#pragma warning disable SYSLIB0026 // Mock certificate
+            ConnectionContext otherIdentity = new()
+            {
+                AuthenticationProvider = new X509AuthenticationProvider(new System.Security.Cryptography.X509Certificates.X509Certificate2(), null),
+                DeviceId = "someOtherDeviceId",
+                IotHubHostName = "someHostName",
+                ConnectionProfile = IotHubConnectionType.Mqttv5,
+            };
+#pragma warning restore SYSLIB0026
+            await connectionClient.ConnectToHubAsync(otherIdentity, TestContext.Current.CancellationToken)
+                .WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+
+            Birth[] births = mockMqttClient.SentMqttTrafficInOrder
+                .Select(traffic => traffic.Publish).OfType<MqttPublish>()
+                .Where(publish => publish.Topic.EndsWith("/srv/presence", StringComparison.Ordinal))
+                .Select(publish => Birth.Parser.ParseFrom(publish.Payload))
+                .ToArray();
+            Assert.Equal(2, births.Length);
+            Assert.Equal(5ul, births[0].DesiredVersion);
+            Assert.Equal(3ul, births[0].ReportedVersion);
+            Assert.Equal(0ul, births[1].DesiredVersion);
+            Assert.Equal(0ul, births[1].ReportedVersion);
+            Assert.Equal(0ul, twinClient.GetTwinState().DesiredVersion);
+            Assert.Equal(0ul, twinClient.GetTwinState().ReportedVersion);
+        }
+
+        [Fact]
+        public async Task MissingExpectedTwinPushReconnectsWithEscalatingTimeout()
+        {
+            using MockConnectionMqttClient mockMqttClient = new()
+            {
+                AutoRespondToBirth = true,
+                AutoBirthAck = new BirthAck() { DesiredVersion = 3, ReportedVersion = 2 },
+            };
+            MqttV5ConnectionClientOptions options = new()
+            {
+                MqttClient = mockMqttClient,
+                ConnectionRetryPolicy = new ExponentialBackoffRetryPolicy(uint.MaxValue, TimeSpan.Zero, useJitter: false),
+            };
+            using ConnectionClient connectionClient = new(options);
+            List<int> attempts = new();
+            connectionClient.TwinPushTimeoutSchedule = attempt =>
+            {
+                lock (attempts)
+                {
+                    attempts.Add(attempt);
+                }
+
+                return attempt < 3 ? TimeSpan.FromMilliseconds(50) : Timeout.InfiniteTimeSpan;
+            };
+
+            await connectionClient.ConnectToHubAsync(GetMockConnectionContext(), TestContext.Current.CancellationToken)
+                .WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+
+            await WaitForBirthCountAsync(mockMqttClient, 3);
+            lock (attempts)
+            {
+                Assert.Equal(new[] { 1, 2, 3 }, attempts);
+            }
+
+            Assert.Equal(2, mockMqttClient.DisconnectRequests.Count);
+        }
+
+        [Fact]
+        public async Task TwinPushBeforeBirthAckSatisfiesExpectedTwinPush()
+        {
+            using MockConnectionMqttClient mockMqttClient = new();
+            mockMqttClient.OnPublish = async publish =>
+            {
+                if (publish.Topic.EndsWith("/srv/presence", StringComparison.Ordinal))
+                {
+                    // IoT hub usually sends the twin push before the birth ack.
+                    MqttPublish push = new()
+                    {
+                        Topic = "ih/someDeviceId/dev/twin",
+                        CorrelationData = publish.CorrelationData,
+                        Payload = new Device.Models.Twin.TwinPush().ToByteArray(),
+                    };
+                    push.UserProperties.Add(new("type", Encoding.UTF8.GetBytes("twin-push:1")));
+                    await mockMqttClient.SimulatePublishReceivedAsync(push);
+
+                    MqttPublish birthAck = new()
+                    {
+                        Topic = "ih/someDeviceId/dev/presence",
+                        CorrelationData = publish.CorrelationData,
+                        Payload = new BirthAck() { DesiredVersion = 3, ReportedVersion = 2 }.ToByteArray(),
+                    };
+                    birthAck.UserProperties.Add(new("type", Encoding.UTF8.GetBytes("birth-ack:1")));
+                    _ = mockMqttClient.SimulatePublishReceivedAsync(birthAck);
+                }
+
+                return new MqttPublishAck() { ReasonCode = MqttPublishAckReasonCode.Success };
+            };
+            MqttV5ConnectionClientOptions options = new()
+            {
+                MqttClient = mockMqttClient,
+                ConnectionRetryPolicy = new ExponentialBackoffRetryPolicy(uint.MaxValue, TimeSpan.Zero, useJitter: false),
+            };
+            using ConnectionClient connectionClient = new(options);
+            TaskCompletionSource<int> scheduleRequested = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            connectionClient.TwinPushTimeoutSchedule = attempt =>
+            {
+                scheduleRequested.TrySetResult(attempt);
+                return TimeSpan.FromMilliseconds(50);
+            };
+
+            await connectionClient.ConnectToHubAsync(GetMockConnectionContext(), TestContext.Current.CancellationToken)
+                .WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+            Assert.Equal(1, await scheduleRequested.Task.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken));
+
+            // Give a (wrongly) missed twin push's timeout plenty of time to reconnect.
+            await Task.Delay(TimeSpan.FromMilliseconds(500), TestContext.Current.CancellationToken);
+            Assert.Empty(mockMqttClient.DisconnectRequests);
+            Assert.Equal(1, mockMqttClient.ConnectAttemptCount);
+        }
+
+        [Fact]
+        public async Task NoTwinPushIsExpectedWhenBirthVersionsMatchBirthAck()
+        {
+            using MockConnectionMqttClient mockMqttClient = new()
+            {
+                AutoRespondToBirth = true,
+                AutoBirthAck = new BirthAck() { DesiredVersion = 3, ReportedVersion = 2 },
+            };
+            MqttV5ConnectionClientOptions options = new()
+            {
+                MqttClient = mockMqttClient,
+                ConnectionRetryPolicy = new ExponentialBackoffRetryPolicy(uint.MaxValue, TimeSpan.Zero, useJitter: false),
+            };
+            using ConnectionClient connectionClient = new(options);
+            using TwinClient twinClient = new(connectionClient, new Device.Models.Twin.TwinState() { DesiredVersion = 3, ReportedVersion = 2 });
+            bool scheduleRequested = false;
+            connectionClient.TwinPushTimeoutSchedule = _ =>
+            {
+                scheduleRequested = true;
+                return TimeSpan.Zero;
+            };
+
+            await connectionClient.ConnectToHubAsync(GetMockConnectionContext(), TestContext.Current.CancellationToken)
+                .WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+            await Task.Delay(TimeSpan.FromMilliseconds(200), TestContext.Current.CancellationToken);
+
+            Assert.False(scheduleRequested);
+            Assert.Empty(mockMqttClient.DisconnectRequests);
+        }
+
+        [Fact]
+        public async Task BirthAckWithOlderTwinVersionThanAnnouncedReconnectsToAnnounceValidVersions()
+        {
+            using MockConnectionMqttClient mockMqttClient = new()
+            {
+                AutoRespondToBirth = true,
+                AutoBirthAck = new BirthAck() { DesiredVersion = 2, ReportedVersion = 3 },
+            };
+            MqttV5ConnectionClientOptions options = new()
+            {
+                MqttClient = mockMqttClient,
+                ConnectionRetryPolicy = new ExponentialBackoffRetryPolicy(uint.MaxValue, TimeSpan.Zero, useJitter: false),
+            };
+            using ConnectionClient connectionClient = new(options);
+            using TwinClient twinClient = new(connectionClient, new Device.Models.Twin.TwinState() { DesiredVersion = 5, ReportedVersion = 3 });
+            connectionClient.TwinPushTimeoutSchedule = _ => Timeout.InfiniteTimeSpan;
+
+            // Connecting completes only once IoT hub acknowledges a birth with valid versions.
+            await connectionClient.ConnectToHubAsync(GetMockConnectionContext(), TestContext.Current.CancellationToken)
+                .WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+
+            Birth[] births = mockMqttClient.SentMqttTrafficInOrder
+                .Select(traffic => traffic.Publish).OfType<MqttPublish>()
+                .Where(publish => publish.Topic.EndsWith("/srv/presence", StringComparison.Ordinal))
+                .Select(publish => Birth.Parser.ParseFrom(publish.Payload))
+                .ToArray();
+            Assert.Equal(2, births.Length);
+            Assert.Equal(5ul, births[0].DesiredVersion);
+            Assert.Equal(3ul, births[0].ReportedVersion);
+            Assert.Equal(0ul, births[1].DesiredVersion);
+            Assert.Equal(3ul, births[1].ReportedVersion);
+            Assert.Single(mockMqttClient.DisconnectRequests);
+        }
+
+        private static async Task WaitForBirthCountAsync(MockConnectionMqttClient mockMqttClient, int count)
+        {
+            using CancellationTokenSource timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+            timeout.CancelAfter(TimeSpan.FromSeconds(30));
+            while (true)
+            {
+                lock (mockMqttClient.SentMqttTrafficInOrder)
+                {
+                    if (mockMqttClient.SentMqttTrafficInOrder.Count(traffic =>
+                        traffic.Publish?.Topic.EndsWith("/srv/presence", StringComparison.Ordinal) == true) >= count)
+                    {
+                        return;
+                    }
+                }
+
+                await Task.Delay(TimeSpan.FromMilliseconds(20), timeout.Token);
+            }
+        }
+
+        [Fact]
         public async Task AnnounceDevicePresenceRecoversWhenSubackIsMalformed()
         {
             // A SUBACK with no items is malformed, so the birth flow disconnects and lets the manager reconnect.

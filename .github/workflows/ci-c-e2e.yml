@@ -137,9 +137,9 @@ jobs:
           # An undefined repository variable arrives as an empty string, which
           # would otherwise override the action default, so the fallback is here.
           azure-location: ${{ vars.E2E_AZURE_LOCATION || 'eastus2euap' }}
-          # One DPS enrollment per test job (2 OSes x 4 groups) so parallel jobs
+          # One DPS enrollment per test job (3 legs x 4 groups) so parallel jobs
           # never share a device or its twin (device index: see the test job).
-          dps-x509-individual-enrollments: '8'
+          dps-x509-individual-enrollments: '12'
           # A symmetric-key enrollment group for the SAS e2e suite
           # (az_iot_tests_e2e_sas); each leg registers its own device under it.
           dps-symmkey-group-enrollment-devices: '1'
@@ -156,7 +156,7 @@ jobs:
           set -euo pipefail
           hub="$(az iot hub list -g "$E2E_RESOURCE_GROUP" --query '[0].name' -o tsv)"
           [ -n "$hub" ] || { echo "::error::no IoT Hub in $E2E_RESOURCE_GROUP"; exit 1; }
-          for i in 0 1 2 3 4 5 6 7; do
+          for i in $(seq 0 11); do
             az iot hub consumer-group create -g "$E2E_RESOURCE_GROUP" --hub-name "$hub" -n "e2e-$i" -o none
           done
 
@@ -179,6 +179,8 @@ jobs:
         include:
           - os: windows-latest
             openssl: '4.1.0'
+          - os: ubuntu-24.04
+            openssl: '4.1.0'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     steps:
@@ -194,7 +196,7 @@ jobs:
           version: ${{ matrix.openssl }}
 
   test:
-    name: ${{ matrix.os }} / ${{ matrix.group }}
+    name: ${{ matrix.os }}${{ matrix.os == 'ubuntu-24.04' && matrix.openssl != 'system' && format(' / OpenSSL {0}', matrix.openssl) || '' }} / ${{ matrix.group }}
     needs: [ setup, openssl ]
     # Runs after setup, or without it in shared mode (setup skipped).
     if: ${{ !cancelled() && (needs.setup.result == 'success' || needs.setup.result == 'skipped') && needs.openssl.result == 'success' }}
@@ -210,10 +212,17 @@ jobs:
       # Each OS runs as four groups, each on its own device: one device's suites
       # cannot overlap, and serially one OS took ~7 min of tests. transport and
       # sas are the slow suites (~100 s per adapter); core is the rest.
-      # Device index = os-index * 4 + group-index (0..7).
+      # Linux runs twice: on the distribution's OpenSSL 3.0 (the minimum
+      # supported) and on 4.1.0; Windows runs on 4.1.0, the version its
+      # installers ship. 'system' is the runner's own OpenSSL.
+      # Device index = os-index * 4 + group-index (0..11).
       matrix:
         os: [ ubuntu-24.04, windows-latest ]
+        openssl: [ system, '4.1.0' ]
         group: [ core, transport-paho, transport-az_mqtt, sas ]
+        exclude:
+          - os: windows-latest
+            openssl: system
         include:
           # The Linux leg builds instrumented (linux-gcc-e2e-coverage) so its run
           # contributes to the coverage picture. e2e is where the feature clients
@@ -228,6 +237,11 @@ jobs:
           - os: windows-latest
             preset: windows-msvc-debug
             os-index: 1
+          # Not instrumented: the 3.0 leg already contributes the coverage.
+          - os: ubuntu-24.04
+            openssl: '4.1.0'
+            preset: linux-gcc-debug
+            os-index: 2
           - group: core
             group-index: 0
             tests: e2e
@@ -252,15 +266,13 @@ jobs:
         if: runner.os == 'Windows'
         uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
 
-      # Windows runs the Paho/OpenSSL device path on OpenSSL 4.x, the version the
-      # Windows installers now ship; Linux keeps the distribution's 3.0, the
-      # minimum supported, so the e2e suites cover both majors. Restored from
-      # the cache the openssl job filled (.github/actions/install-openssl).
-      - name: Install OpenSSL 4.1.0 (Windows)
-        if: runner.os == 'Windows'
+      # Restored from the cache the openssl job filled
+      # (.github/actions/install-openssl).
+      - name: Install OpenSSL ${{ matrix.openssl }}
+        if: matrix.openssl != 'system'
         uses: ./.github/actions/install-openssl # zizmor: ignore[self-repository]
         with:
-          version: '4.1.0'
+          version: ${{ matrix.openssl }}
 
       - name: Install ninja (Linux)
         if: runner.os == 'Linux'
@@ -435,11 +447,14 @@ jobs:
           $exclude = if ($env:E2E_EXCLUDE) { "custody|$($env:E2E_EXCLUDE)" } else { 'custody' }
           ctest --test-dir c/build/${{ matrix.preset }} @cfg -R $env:E2E_TESTS -E $exclude `
             --verbose --no-tests=error --timeout 900 `
-            --output-junit ./test_config/results/e2e-${{ matrix.os }}-${{ matrix.group }}.xml
+            --output-junit ./test_config/results/e2e-${{ matrix.os }}-${{ matrix.openssl }}-${{ matrix.group }}.xml
 
       - name: Run the PKCS#11 custody e2e (Linux)
         if: runner.os == 'Linux' && matrix.group == 'core'
         shell: pwsh
+        env:
+          # pkcs11-provider 0.6 (the script's default) does not build on OpenSSL 4.x.
+          PKCS11_PROVIDER_TAG: ${{ matrix.openssl != 'system' && 'v1.3.0' || '' }}
         # The "Storage / custody" scenario of docs/eng/certificate-management.md:
         # the SAME device provisions through DPS and talks to the hub, but with
         # its private key inside a SoftHSM2 token instead of on disk. Nothing is
@@ -522,7 +537,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: e2e-results-${{ matrix.os }}-${{ matrix.group }}
+          name: e2e-results-${{ matrix.os }}-${{ matrix.openssl }}-${{ matrix.group }}
           path: ./test_config/results/**/*.xml
           if-no-files-found: ignore
 
@@ -530,12 +545,12 @@ jobs:
         # Deliberately not `if: always()`. A failed or timed-out e2e run leaves
         # partial or absent .gcda, and feeding that into the combined report
         # would understate coverage for a reason unrelated to the change.
-        if: runner.os == 'Linux' && success()
+        if: matrix.preset == 'linux-gcc-e2e-coverage' && success()
         working-directory: c
         run: bash eng/collect-coverage.sh build/linux-gcc-e2e-coverage coverage/e2e.json e2e-linux
 
       - name: Upload coverage tracefile (Linux)
-        if: runner.os == 'Linux' && success()
+        if: matrix.preset == 'linux-gcc-e2e-coverage' && success()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: coverage-trace-e2e-linux-${{ matrix.group }}

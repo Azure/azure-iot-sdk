@@ -28,13 +28,13 @@ if(TARGET az_iot_certificate_provider_managed)
 endif()
 
 # The complete app-owned custom provider: real PKCS#10 CSR issuance from
-# samples/common. Needs OpenSSL 3.0+ on every platform.
+# custom_certificate_provider/. Needs OpenSSL 3.0+ on every platform.
 find_package(OpenSSL 3.0 QUIET)
 if(OPENSSL_FOUND)
     az_iot_add_adapter_sample(az_iot_sample_auth_custom_certificate_provider
         SOURCES custom_certificate_provider/main.c
-                ${_auth_common}/sample_cert_provider.c
-                ${_auth_common}/sample_csr_openssl.c
+                custom_certificate_provider/sample_cert_provider.c
+                custom_certificate_provider/sample_csr_openssl.c
                 ${_auth_common}/sample_utils.c
         LIBS az_iot_core OpenSSL::Crypto)
 endif()

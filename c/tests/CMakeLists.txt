@@ -189,6 +189,10 @@ target_include_directories(az_iot_tests_defensive_timeout PRIVATE
 az_iot_add_cmocka_test(az_iot_tests_deadline unit/deadline_test.c)
 target_include_directories(az_iot_tests_deadline PRIVATE
     ${PROJECT_SOURCE_DIR}/src/core)
+az_iot_add_cmocka_test(az_iot_tests_delivery_tracker unit/delivery_tracker_test.c)
+target_link_libraries(az_iot_tests_delivery_tracker PRIVATE az_iot_test_support)
+target_include_directories(az_iot_tests_delivery_tracker PRIVATE
+    ${PROJECT_SOURCE_DIR}/src/core)
 az_iot_add_cmocka_test(az_iot_tests_span_writer unit/span_writer_test.c)
 target_include_directories(az_iot_tests_span_writer PRIVATE
     ${PROJECT_SOURCE_DIR}/src/core)
@@ -543,11 +547,6 @@ if(AZ_IOT_WITH_PAHO)
     az_iot_apply_coverage(az_iot_tests_paho_event_queue_race)
 endif()
 
-if(AZ_IOT_WITH_RUST_MQTT)
-    az_iot_add_cmocka_test(az_iot_tests_rust_mqtt_adapter unit/rust_mqtt_adapter_test.c)
-    target_link_libraries(az_iot_tests_rust_mqtt_adapter PRIVATE az_iot_adapter_rust_mqtt)
-endif()
-
 # Crypto backends: the shared known-answer contract suite
 # (support/crypto_contract.c), once per backend target that was built. It also
 # drives the SDK's composed SHA-256 and HMAC-SHA256 (src/core/crypto.c).
@@ -626,16 +625,20 @@ if(UNIX)
     target_link_libraries(az_iot_tests_sample_reading_queue PRIVATE pthread)
 endif()
 
-# The samples' app-owned certificate provider (samples/common), OpenSSL 3.0+.
+# The samples' app-owned certificate provider
+# (samples/authentication/custom_certificate_provider), OpenSSL 3.0+.
 find_package(OpenSSL 3.0 QUIET)
 if(OPENSSL_FOUND)
     set(_sample_common ${CMAKE_CURRENT_SOURCE_DIR}/../samples/common)
+    set(_sample_provider
+        ${CMAKE_CURRENT_SOURCE_DIR}/../samples/authentication/custom_certificate_provider)
     az_iot_add_cmocka_test(az_iot_tests_sample_cert_provider
         unit/sample_cert_provider_test.c
-        ${_sample_common}/sample_cert_provider.c
-        ${_sample_common}/sample_csr_openssl.c
+        ${_sample_provider}/sample_cert_provider.c
+        ${_sample_provider}/sample_csr_openssl.c
         ${_sample_common}/sample_utils.c)
-    target_include_directories(az_iot_tests_sample_cert_provider PRIVATE ${_sample_common})
+    target_include_directories(az_iot_tests_sample_cert_provider PRIVATE
+        ${_sample_common} ${_sample_provider})
     target_link_libraries(az_iot_tests_sample_cert_provider PRIVATE OpenSSL::Crypto)
 
     # Certificate provider contract suite (support/cert_provider_contract.c), run
@@ -643,11 +646,11 @@ if(OPENSSL_FOUND)
     az_iot_add_cmocka_test(az_iot_tests_certificate_provider_contract
         unit/certificate_provider_contract_test.c
         support/cert_provider_contract.c
-        ${_sample_common}/sample_cert_provider.c
-        ${_sample_common}/sample_csr_openssl.c
+        ${_sample_provider}/sample_cert_provider.c
+        ${_sample_provider}/sample_csr_openssl.c
         ${_sample_common}/sample_utils.c)
     target_include_directories(az_iot_tests_certificate_provider_contract PRIVATE
-        ${_sample_common})
+        ${_sample_common} ${_sample_provider})
     target_link_libraries(az_iot_tests_certificate_provider_contract PRIVATE OpenSSL::Crypto)
     if(TARGET az_iot_certificate_provider_managed)
         target_link_libraries(az_iot_tests_certificate_provider_contract PRIVATE
@@ -970,6 +973,10 @@ if(AZ_IOT_WITH_AZ_MQTT)
     unset(_case)
     unset(_az_mqtt_size_defs)
 
+    if("AZ_IOT_AZ_MQTT_MBEDTLS" IN_LIST _az_mqtt_adapter_defs)
+        # The harness imports its PSA key with the mbedTLS install az_mqtt found.
+        find_package(MbedTLS CONFIG QUIET)
+    endif()
     foreach(_v 3 5)
         set(_t az_iot_conformance_az_mqtt_v${_v})
         add_executable(${_t} conformance/az_mqtt_main.c)
@@ -978,6 +985,17 @@ if(AZ_IOT_WITH_AZ_MQTT)
         # The key-reference capability is declared only where the adapter honours it.
         if("AZ_IOT_AZ_MQTT_OPENSSL" IN_LIST _az_mqtt_adapter_defs)
             target_compile_definitions(${_t} PRIVATE AZ_IOT_AZ_MQTT_OPENSSL)
+        endif()
+        # And the PSA key route where the adapter's backend is mbedTLS.
+        if("AZ_IOT_AZ_MQTT_MBEDTLS" IN_LIST _az_mqtt_adapter_defs)
+            target_compile_definitions(${_t} PRIVATE AZ_IOT_AZ_MQTT_MBEDTLS)
+            if(TARGET MbedTLS::mbedtls)
+                target_link_libraries(${_t} PRIVATE MbedTLS::mbedtls)
+            else()
+                target_include_directories(${_t} SYSTEM PRIVATE ${MBEDTLS_INCLUDE_DIR})
+                target_link_libraries(${_t} PRIVATE
+                    ${MBEDTLS_SSL_LIB} ${MBEDTLS_X509_LIB} ${MBEDTLS_CRYPTO_LIB})
+            endif()
         endif()
         az_iot_apply_warnings(${_t})
         if(AZ_IOT_BUILD_CONFORMANCE_TESTS)

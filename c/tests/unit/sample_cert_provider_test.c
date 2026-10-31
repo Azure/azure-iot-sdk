@@ -4,7 +4,8 @@
 
 /* SPDX-License-Identifier: MIT */
 /* Unit tests for the samples' app-owned certificate provider
- * (samples/common/sample_cert_provider.c + sample_csr_openssl.c). */
+ * (samples/authentication/custom_certificate_provider/sample_cert_provider.c
+ * + sample_csr_openssl.c). */
 #ifndef _CRT_SECURE_NO_WARNINGS
 #define _CRT_SECURE_NO_WARNINGS
 #endif

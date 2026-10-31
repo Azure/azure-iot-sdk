@@ -34,6 +34,42 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
         bool IsConnectionTargetSet => true;
 
         /// <summary>
+        /// The connection nonce sent in the birth message of the current (or most recent) connection attempt to an
+        /// MQTTv5 IoT hub, or, for an MQTTv3 IoT hub, an ID that this client generates for each connection. Null if it is
+        /// not known.
+        /// </summary>
+        internal Guid? ConnectionNonce => null;
+
+        /// <summary>
+        /// Raised whenever the connection to IoT hub is lost or closed, before any reconnection starts.
+        /// </summary>
+        internal event Action? ConnectionLost { add { } remove { } }
+
+        /// <inheritdoc cref="MQTTv5.Connection.IConnectionClient.HubIdentityChanged"/>
+        internal event Action? HubIdentityChanged { add { } remove { } }
+
+        /// <inheritdoc cref="MQTTv5.Connection.IConnectionClient.ClassicDevicePresenceEstablished"/>
+        internal event Action? ClassicDevicePresenceEstablished { add { } remove { } }
+
+        /// <inheritdoc cref="MQTTv5.Connection.IConnectionClient.IsClassicDevicePresenceEstablished"/>
+        internal bool IsClassicDevicePresenceEstablished => false;
+
+        /// <inheritdoc cref="MQTTv5.Connection.IConnectionClient.LatestBirthAck"/>
+        internal MQTTv5.Connection.BirthAckVersions? LatestBirthAck => null;
+
+        /// <inheritdoc cref="MQTTv5.Connection.IConnectionClient.ObserveDesiredPropertiesVersion"/>
+        internal void ObserveDesiredPropertiesVersion(ulong version) { }
+
+        /// <inheritdoc cref="MQTTv5.Connection.IConnectionClient.ObserveReportedPropertiesVersion"/>
+        internal void ObserveReportedPropertiesVersion(ulong version) { }
+
+        /// <inheritdoc cref="MQTTv5.Connection.IConnectionClient.ReplaceDesiredPropertiesVersion"/>
+        internal void ReplaceDesiredPropertiesVersion(ulong version) { }
+
+        /// <inheritdoc cref="MQTTv5.Connection.IConnectionClient.ReplaceReportedPropertiesVersion"/>
+        internal void ReplaceReportedPropertiesVersion(ulong version) { }
+
+        /// <summary>
         /// Whether this connection client subscribes to twin topics. See <see cref="ConnectionClientOptions.EnableTwin"/>.
         /// </summary>
         bool IsTwinEnabled => true;
