@@ -5064,8 +5064,7 @@ static bool is_redundant_hub_session_end(
     const az_iot_connection_client* c,
     const az_iot_mqtt_event* evt)
 {
-  if (!c->hub_session_ended
-      || (evt->kind != AZ_IOT_MQTT_EVT_DISCONNECTED && evt->kind != AZ_IOT_MQTT_EVT_ERROR))
+  if (evt->kind != AZ_IOT_MQTT_EVT_DISCONNECTED && evt->kind != AZ_IOT_MQTT_EVT_ERROR)
   {
     return false;
   }
@@ -5075,11 +5074,12 @@ static bool is_redundant_hub_session_end(
   {
     return false;
   }
-  if (reason_is_identity_refusal(c->deferred_reason))
+  /* One already ending the session (by DISCONNECTED or ERROR) is not replaced. */
+  if (c->deferred != DEFER_NONE && reason_is_identity_refusal(c->deferred_reason))
   {
     return true;
   }
-  return !is_server_disconnect(evt) || c->hub_server_disconnect_seen;
+  return c->hub_session_ended && (!is_server_disconnect(evt) || c->hub_server_disconnect_seen);
 }
 
 static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
@@ -5093,6 +5093,12 @@ static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
   {
     AZ_IOT_LOG_DEBUG(AZ_IOT_LOG_COMPONENT_CONNECTION, "end event after the session ended; ignored");
     return;
+  }
+  /* An identity refusal replacing a pending end: that end's detail is not its cause. */
+  if (c->deferred != DEFER_NONE && reason_is_identity_refusal(evt->status)
+      && (evt->kind == AZ_IOT_MQTT_EVT_DISCONNECTED || evt->kind == AZ_IOT_MQTT_EVT_ERROR))
+  {
+    clear_staged_error(c);
   }
 
   /* See the DPS handler: staged here so every failure route below inherits it. */

@@ -1514,18 +1514,23 @@ static void an_identity_refusal_after_a_local_end_faults(void** state)
 
   assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_FAULTED);
   assert_int_equal(az_iot_test_reason_for(&fx->log, AZ_IOT_CONN_STATE_FAULTED), AZ_IOT_ERR_AUTH);
+  /* The local end's transport code is not the refusal's cause. */
+  assert_false(fx->log.error_present[fx->log.count - 1]);
 }
 
-/* A server DISCONNECT after a code-less identity refusal does not replace it: the client still
- * faults with the refusal. */
-static void a_server_disconnect_after_an_identity_refusal_keeps_the_fault(void** state)
+/**
+ * @brief A code-less identity refusal of @p kind, then a server DISCONNECT 0x8B in one drain: the
+ * client still faults with the refusal.
+ */
+static void assert_a_server_disconnect_keeps_the_identity_refusal_fault(
+    az_iot_test_conn* fx,
+    az_iot_mqtt_event_kind kind)
 {
-  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
   az_iot_mock_mqtt_client* m = open_to_connected(fx);
   az_iot_mock_mqtt_client_set_events_per_loop(m, SIZE_MAX);
   az_iot_mqtt_event refusal;
   memset(&refusal, 0, sizeof(refusal));
-  refusal.kind = AZ_IOT_MQTT_EVT_DISCONNECTED;
+  refusal.kind = kind;
   refusal.status = AZ_IOT_ERR_AUTH;
   assert_true(az_iot_mock_mqtt_client_inject_event(m, &refusal));
   assert_true(az_iot_mock_mqtt_client_inject_server_disconnect(m, 0x8B, NULL));
@@ -1533,6 +1538,20 @@ static void a_server_disconnect_after_an_identity_refusal_keeps_the_fault(void**
 
   assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_FAULTED);
   assert_int_equal(az_iot_test_reason_for(&fx->log, AZ_IOT_CONN_STATE_FAULTED), AZ_IOT_ERR_AUTH);
+}
+
+/* A server DISCONNECT after a code-less identity refusal does not replace it. */
+static void a_server_disconnect_after_an_identity_refusal_keeps_the_fault(void** state)
+{
+  assert_a_server_disconnect_keeps_the_identity_refusal_fault(
+      (az_iot_test_conn*)*state, AZ_IOT_MQTT_EVT_DISCONNECTED);
+}
+
+/* As above when the adapter reports the refusal as an ERROR. */
+static void a_server_disconnect_after_an_identity_refusal_error_keeps_the_fault(void** state)
+{
+  assert_a_server_disconnect_keeps_the_identity_refusal_fault(
+      (az_iot_test_conn*)*state, AZ_IOT_MQTT_EVT_ERROR);
 }
 
 /* While close() disconnects the session, a gated SUBACK does not announce CONNECTED and a new
@@ -2061,6 +2080,10 @@ int main(void)
         an_identity_refusal_after_a_local_end_faults, setup_no_reconnect, teardown),
     cmocka_unit_test_setup_teardown(
         a_server_disconnect_after_an_identity_refusal_keeps_the_fault,
+        setup_no_reconnect,
+        teardown),
+    cmocka_unit_test_setup_teardown(
+        a_server_disconnect_after_an_identity_refusal_error_keeps_the_fault,
         setup_no_reconnect,
         teardown),
     cmocka_unit_test_setup_teardown(
