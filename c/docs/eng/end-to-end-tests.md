@@ -100,6 +100,21 @@ Service configuration (set by the provisioning config script):
 
 The telemetry watcher only receives messages enqueued from 5 minutes before it
 starts (an Event Hubs enqueued-time filter), so a reused hub's backlog is skipped.
+That window still holds every device's traffic on a shared hub (often hundreds of
+messages), so each test starts the watch with a capture filter (its device id or
+marker): only bodies containing it enter the watcher's 64-message capture ring, and
+other traffic cannot evict a marker the test is about to check.
+
+Concurrent runs share the consumer groups, and Event Hubs detaches a sixth reader of
+a partition in a group. When a receiver is detached, the watcher logs
+`[e2e] telemetry: the service detached the receiver of partition <n>`, waits 5 s and
+reconnects, reading again from the time the watch began. The replayed events are
+dropped by their per-partition sequence number, so none is captured twice. The
+reconnect closes the socket without waiting, and each `do_work` call advances the
+connection setup by at most one step. Setup ends once every receiver's attach is
+answered, and fails after 60 s. `az_iot_tests_e2e_amqp_telemetry` covers replay
+dropping, the reconnect and the setup deadline against an in-memory Event Hubs
+peer, with no live service.
 
 SAS tokens are built with OpenSSL (HMAC-SHA256 + base64) on both platforms. Note
 the two key conventions the facade handles: Event Hubs signs with the **raw** key
