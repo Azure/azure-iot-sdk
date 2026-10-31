@@ -14,7 +14,8 @@ assigns (mqttv3 or mqttv5):
   reported properties, including one set while it was offline: on mqttv3 it reads the twin on
   each connect; on mqttv5 the hub pushes the desired snapshot on connect. A version older than one
   already seen is ignored, except in an mqttv5 snapshot (the whole document, e.g. a replaced
-  twin). A failed twin read or refused patch is retried after 5 s.
+  twin). A failed twin read or refused patch is retried after 5 s; on mqttv3, one unanswered for
+  60 s makes the sample reconnect, which ends it, and it is then retried.
 
 It restarts after 15 minutes without a hub connection: ESP-IDF's `protocol_examples_common` stops
 reconnecting Wi-Fi after `EXAMPLE_WIFI_CONN_MAX_RETRY` failures, and a restart brings it up again.

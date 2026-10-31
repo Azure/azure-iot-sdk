@@ -59,6 +59,9 @@ static const char* TAG = "hub_esp32";
 #define OFFLINE_RESTART_S 900u
 /** @brief Wait before retrying a failed twin GET or reported patch. */
 #define TWIN_RETRY_MS 5000u
+/** @brief Longest wait for an mqttv3 twin response: the mqttv3 twin client ends a request only with
+ * its session, so the sample reconnects after this. */
+#define TWIN_RESPONSE_TIMEOUT_S 60u
 /** @brief Largest echoed mqttv3 payload: the response must fit the adapter's send buffer, with
  * room for its topic. */
 #define MQTTV3_ECHO_PAYLOAD_MAX (CONFIG_AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE - 256u)
@@ -121,9 +124,13 @@ typedef struct
   uint32_t telemetry_sent;
   pending_method_answer method_answer;
   bool twin_get_due; /* mqttv3: read the desired version once connected */
+  bool twin_get_in_flight;
+  TickType_t twin_get_sent;
   retry_wait twin_get_retry;
   bool report_pending;
+  TickType_t report_sent;
   retry_wait report_retry;
+  bool reconnecting; /* closed for a stalled twin request; reopened at IDLE */
   /* Desired versions, for the hub and device id below: a new assignment starts its own count. */
   char assigned_hub[256];
   char assigned_device_id[129];
@@ -313,6 +320,7 @@ static uint64_t read_desired_version(const uint8_t* twin, size_t length)
 static void on_twin_mqttv3(az_iot_result status, const uint8_t* twin, size_t length, void* user_ctx)
 {
   hub_device* d = (hub_device*)user_ctx;
+  d->twin_get_in_flight = false;
   if (status != AZ_IOT_OK)
   {
     ESP_LOGW(TAG, "twin get failed: %s; retrying", az_iot_result_to_string(status));
@@ -384,6 +392,7 @@ static void report_desired_version(hub_device* d)
       : az_iot_mqttv3_twin_client_patch_reported(
             &d->mqttv3_twin, (const uint8_t*)patch, (size_t)length, on_reported_mqttv3, d);
   d->report_pending = result == AZ_IOT_OK;
+  d->report_sent = xTaskGetTickCount();
   if (result != AZ_IOT_OK)
   {
     ESP_LOGW(TAG, "reported patch not sent: %s", az_iot_result_to_string(result));
@@ -503,6 +512,7 @@ static void destroy_clients(hub_device* d)
   d->telemetry_pending = false; // Lost with the old clients.
   d->report_pending = false;
   d->twin_get_due = false;
+  d->twin_get_in_flight = false;
 }
 
 /** @brief Builds the telemetry, twin and direct method clients for @p profile. Pins the
@@ -644,6 +654,7 @@ void app_main(void)
   // Seconds to ticks directly: pdMS_TO_TICKS would overflow its 32-bit product for long intervals.
   TickType_t const interval = (TickType_t)CONFIG_HUB_TELEMETRY_INTERVAL_S * configTICK_RATE_HZ;
   TickType_t const offline_limit = (TickType_t)OFFLINE_RESTART_S * configTICK_RATE_HZ;
+  TickType_t const twin_response_limit = (TickType_t)TWIN_RESPONSE_TIMEOUT_S * configTICK_RATE_HZ;
   TickType_t next_telemetry = xTaskGetTickCount();
   TickType_t tick_start = xTaskGetTickCount();
   d->offline_since = tick_start;
@@ -683,11 +694,31 @@ void app_main(void)
     }
     if (d->hub_state != AZ_IOT_CONN_STATE_CONNECTED)
     {
+      if (d->reconnecting && d->hub_state == AZ_IOT_CONN_STATE_IDLE)
+      {
+        d->reconnecting = false;
+        if (az_iot_connection_client_open(&d->connection) != AZ_IOT_OK)
+        {
+          restart("reopen failed");
+        }
+      }
       if (xTaskGetTickCount() - d->offline_since >= offline_limit)
       {
         ESP_LOGE(TAG, "no hub connection for %u s", OFFLINE_RESTART_S);
         restart("offline too long");
       }
+      continue;
+    }
+
+    TickType_t const now = xTaskGetTickCount();
+    if (!d->reconnecting && d->profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V3
+        && ((d->twin_get_in_flight && now - d->twin_get_sent >= twin_response_limit)
+            || (d->report_pending && now - d->report_sent >= twin_response_limit)))
+    {
+      // close() fails the outstanding requests (AZ_IOT_ERR_NOT_CONNECTED); they retry after.
+      ESP_LOGW(TAG, "no twin response for %u s; reconnecting", TWIN_RESPONSE_TIMEOUT_S);
+      d->reconnecting = true;
+      (void)az_iot_connection_client_close(&d->connection);
       continue;
     }
 
@@ -700,6 +731,8 @@ void app_main(void)
     {
       az_iot_result const r = az_iot_mqttv3_twin_client_get(&d->mqttv3_twin, on_twin_mqttv3, d);
       d->twin_get_due = r != AZ_IOT_OK;
+      d->twin_get_in_flight = r == AZ_IOT_OK;
+      d->twin_get_sent = xTaskGetTickCount();
       if (r != AZ_IOT_OK)
       {
         ESP_LOGW(TAG, "twin get not sent: %s; retrying", az_iot_result_to_string(r));
