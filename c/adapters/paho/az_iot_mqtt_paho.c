@@ -39,6 +39,7 @@
 #include <MQTTAsync.h>
 
 #include <stdbool.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <limits.h>
 #include <string.h>
@@ -126,7 +127,7 @@ typedef struct queued_event
   /* v5 Correlation Data (heap copy). */
   uint8_t* correlation_data;
   size_t correlation_data_len;
-  /* v5 PUBACK Reason String (heap copy); evt.reason_string points here. */
+  /* v5 Reason String (heap copy); evt.reason_string points here. */
   char* reason_string;
   struct queued_event* next;
 } queued_event;
@@ -249,15 +250,50 @@ static void q_drain_all(paho_client* m)
   }
 }
 
+/* Copy at most @p maximum_length bytes of the MQTT 5 Reason String in @p properties (NULL: none) to
+ * the node: Paho frees the properties when its callback returns. Absent, or out of memory:
+ * evt.reason_string stays NULL. */
+static void queued_event_copy_reason_string(
+    queued_event* n,
+    MQTTProperties* properties,
+    size_t maximum_length)
+{
+  if (properties == NULL)
+  {
+    return;
+  }
+  MQTTProperty* reason
+      = MQTTProperties_getPropertyAt(properties, MQTTPROPERTY_CODE_REASON_STRING, 0);
+  if (reason == NULL || reason->value.data.data == NULL || reason->value.data.len < 0)
+  {
+    return;
+  }
+  size_t length = (size_t)reason->value.data.len;
+  if (length > maximum_length)
+  {
+    length = maximum_length;
+  }
+  n->reason_string = (char*)malloc(length ? length : 1);
+  if (n->reason_string)
+  {
+    memcpy(n->reason_string, reason->value.data.data, length);
+    n->evt.reason_string = n->reason_string;
+    n->evt.reason_string_len = length;
+  }
+}
+
 /* Allocate + enqueue a simple status event (no message payload), carrying the
- * code that came off the wire. */
-static void enqueue_status_codes(
+ * code that came off the wire and the MQTT 5 Reason String in @p properties
+ * (NULL: none), kept to AZ_IOT_MQTT_SESSION_REASON_STRING_MAX bytes on CONNECTED and DISCONNECTED.
+ */
+static void enqueue_status_codes_with_reason_string(
     paho_client* m,
     az_iot_mqtt_event_kind kind,
     az_iot_result status,
     uint16_t packet_id,
     int32_t protocol_code,
-    int32_t transport_code)
+    int32_t transport_code,
+    MQTTProperties* properties)
 {
   queued_event* n = (queued_event*)calloc(1, sizeof(*n));
   if (!n)
@@ -269,7 +305,27 @@ static void enqueue_status_codes(
   n->evt.packet_id = packet_id;
   n->evt.protocol_code = protocol_code;
   n->evt.transport_code = transport_code;
+  queued_event_copy_reason_string(
+      n,
+      properties,
+      (kind == AZ_IOT_MQTT_EVT_CONNECTED || kind == AZ_IOT_MQTT_EVT_DISCONNECTED)
+          ? AZ_IOT_MQTT_SESSION_REASON_STRING_MAX
+          : SIZE_MAX);
   q_push(m, n);
+}
+
+/* Allocate + enqueue a simple status event (no message payload), carrying the
+ * code that came off the wire. */
+static void enqueue_status_codes(
+    paho_client* m,
+    az_iot_mqtt_event_kind kind,
+    az_iot_result status,
+    uint16_t packet_id,
+    int32_t protocol_code,
+    int32_t transport_code)
+{
+  enqueue_status_codes_with_reason_string(
+      m, kind, status, packet_id, protocol_code, transport_code, NULL);
 }
 
 /* A code that came off the wire, with no transport code to report. */
@@ -545,7 +601,6 @@ static void paho_disconnected(
     enum MQTTReasonCodes reasonCode)
 {
   paho_client* m = (paho_client*)context;
-  (void)properties;
   AZ_IOT_LOG_WARNF(
       AZ_IOT_LOG_COMPONENT_PAHO, "server sent DISCONNECT (reason %d)", (int)reasonCode);
   if (m)
@@ -555,12 +610,14 @@ static void paho_disconnected(
      * reporting that as AZ_IOT_OK left the core settling at IDLE with nothing
      * to explain it -- the reason code was the one thing that distinguished
      * "the hub closed us for quota exceeded" from a dropped socket. */
-    enqueue_status_code(
+    enqueue_status_codes_with_reason_string(
         m,
         AZ_IOT_MQTT_EVT_DISCONNECTED,
         az_iot_mqtt_disconnect_result(m->version, (int)reasonCode),
         0,
-        paho_wire_code((int)reasonCode));
+        paho_wire_code((int)reasonCode),
+        0,
+        properties);
   }
 }
 
@@ -956,6 +1013,7 @@ static void paho_connect_failure5(void* context, MQTTAsync_failureData5* respons
   }
   if (m)
   {
+    /* No Reason String: Paho (through 1.3.16) passes none of a refused CONNACK's properties. */
     int code5 = paho_connect_failure5_code(response);
     enqueue_status_codes(
         m,
@@ -1042,19 +1100,7 @@ static void paho_publish_failure5(void* context, MQTTAsync_failureData5* respons
     {
       n->evt.status = az_iot_mqtt_puback_result(m->version, code);
       n->evt.protocol_code = code;
-      MQTTProperty* reason
-          = MQTTProperties_getPropertyAt(&response->properties, MQTTPROPERTY_CODE_REASON_STRING, 0);
-      if (reason && reason->value.data.data)
-      {
-        size_t const len = (size_t)reason->value.data.len;
-        n->reason_string = (char*)malloc(len ? len : 1);
-        if (n->reason_string)
-        {
-          memcpy(n->reason_string, reason->value.data.data, len);
-          n->evt.reason_string = n->reason_string;
-          n->evt.reason_string_len = len;
-        }
-      }
+      queued_event_copy_reason_string(n, &response->properties, SIZE_MAX);
     }
     else
     {
