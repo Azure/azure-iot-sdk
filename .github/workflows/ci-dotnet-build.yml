@@ -12,6 +12,11 @@ on:
   # would block a required check. The `changes` job below skips work instead.
   pull_request:
   workflow_dispatch:
+    inputs:
+      full_logging:
+        description: Enable detailed build/test output and SDK traces (logs may contain sensitive data)
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -23,6 +28,10 @@ concurrency:
 env:
   DOTNET_NOLOGO: '1'
   DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+  DOTNET_VERBOSITY: ${{ (inputs.full_logging || vars.DOTNET_FULL_LOGGING == 'true') && 'detailed' || 'minimal' }}
+  DOTNET_TEST_LOGGER_VERBOSITY: ${{ (inputs.full_logging || vars.DOTNET_FULL_LOGGING == 'true') && 'detailed' || 'normal' }}
+  AZ_IOT_TEST_FULL_LOGGING: ${{ inputs.full_logging || vars.DOTNET_FULL_LOGGING == 'true' }}
+  AZ_IOT_TEST_LOG_DIRECTORY: ${{ github.workspace }}/coverage/sdk-logs
 
 jobs:
   changes:
@@ -94,9 +103,25 @@ jobs:
           dotnet-version: '10.0.x'
 
       - name: Build
-        run: dotnet build Project.slnx --configuration Release
+        shell: pwsh
+        run: dotnet build Project.slnx --configuration Release --verbosity "$env:DOTNET_VERBOSITY"
 
       - name: Unit tests
+        shell: pwsh
         run: >
           dotnet test tests/Microsoft.Azure.Iot.Device.UnitTests/Microsoft.Azure.Iot.Device.UnitTests.csproj
           --configuration Release --no-build
+          --verbosity "$env:DOTNET_VERBOSITY"
+          --logger:"trx;LogFilePrefix=unit-tests"
+          --logger:"console;verbosity=$env:DOTNET_TEST_LOGGER_VERBOSITY"
+          --results-directory "$env:GITHUB_WORKSPACE/coverage"
+          -- xunit.diagnosticMessages=$env:AZ_IOT_TEST_FULL_LOGGING xunit.internalDiagnosticMessages=$env:AZ_IOT_TEST_FULL_LOGGING
+
+      - name: Upload Test Report Artifact
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: test-report-${{ matrix.os }}
+          path: ./coverage/
+          if-no-files-found: warn
+          retention-days: 7

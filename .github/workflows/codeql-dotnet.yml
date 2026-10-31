@@ -14,6 +14,11 @@ on:
   schedule:
     - cron: '0 12 * * 1'  # Weekly, Monday 12:00 UTC: new queries run against unchanged code.
   workflow_dispatch:
+    inputs:
+      full_logging:
+        description: Enable detailed .NET build output
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -25,6 +30,7 @@ concurrency:
 env:
   DOTNET_NOLOGO: '1'
   DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+  DOTNET_VERBOSITY: ${{ (inputs.full_logging || vars.DOTNET_FULL_LOGGING == 'true') && 'detailed' || 'minimal' }}
 
 jobs:
   changes:
@@ -84,9 +90,9 @@ jobs:
       - name: Build library and samples
         run: |
           set -euo pipefail
-          dotnet build src/Microsoft.Azure.Iot.Device/Microsoft.Azure.Iot.Device.csproj --configuration Release
+          dotnet build src/Microsoft.Azure.Iot.Device/Microsoft.Azure.Iot.Device.csproj --configuration Release --verbosity "$DOTNET_VERBOSITY"
           grep -oE 'Path="samples/[^"]+\.csproj"' Project.slnx | cut -d'"' -f2 | while read -r project; do
-            dotnet build "$project" --configuration Release
+            dotnet build "$project" --configuration Release --verbosity "$DOTNET_VERBOSITY"
           done
 
       - name: Analyze

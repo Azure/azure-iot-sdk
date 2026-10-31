@@ -14,6 +14,7 @@ using System.Text.Json;
 using Xunit;
 using Microsoft.Azure.Iot.Device.Authentication;
 using Microsoft.Azure.Iot.Device.Unified.Models;
+using Microsoft.Azure.Iot.Device.Tests;
 
 namespace Microsoft.Azure.Iot.Device.IntegrationTests
 {
@@ -60,6 +61,13 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
 
         public const int TestTimeoutMilliseconds = 60 * 1000;
 
+        public static ConnectionClient CreateConnectionClient(ConnectionClientOptions? options = null)
+        {
+            options ??= new();
+            options.EnableMqttLogging |= TestLogging.IsEnabled;
+            return new(options);
+        }
+
         public static async Task<UnifiedDeviceTestContext> CreateConnectedUnifiedConnectionClientAsync(bool testAgainstClassicHub, ConnectionClientOptions? options = null, CancellationToken cancellationToken = default)
         {
             if (!testAgainstClassicHub)
@@ -91,7 +99,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
 
             X509AuthenticationProvider x509AuthenticationProvider = new(pfx, null);
 
-            ConnectionClient connectionClient = new(options);
+            ConnectionClient connectionClient = CreateConnectionClient(options);
             ProvisioningSettings provisioningSettings = new(DpsIdScope);
 
             try
@@ -150,7 +158,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
 
             var (csrBase64, privateKey) = CertificateUtilities.GenerateCsrAndPrivateKey(registrationId, CertificateUtilities.CsrAlgorithm.RSA);
 
-            ConnectionClient connectionClient = new(options);
+            ConnectionClient connectionClient = CreateConnectionClient(options);
             ProvisioningSettings provisioningSettings = new(DpsIdScope)
             {
                 CertificateSigningRequest = new(privateKey, csrBase64)
@@ -207,7 +215,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
                 ? new(registrationId, DpsIdScope, symmetricKey, null)
                 : new(registrationId, DpsIdScope, symmetricKey, null, issuedCertificatePrivateKey);
 
-            ConnectionClient connectionClient = new(options);
+            ConnectionClient connectionClient = CreateConnectionClient(options);
             ProvisioningSettings provisioningSettings = new(DpsIdScope)
             {
                 CertificateSigningRequest = issuedCertificatePrivateKey == null

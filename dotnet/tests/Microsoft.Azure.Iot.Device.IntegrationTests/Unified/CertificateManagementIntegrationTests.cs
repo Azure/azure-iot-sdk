@@ -131,7 +131,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
             var (csrBase64, privateKey) = CertificateUtilities.GenerateCsrAndPrivateKey(registrationId, CertificateUtilities.CsrAlgorithm.RSA);
             X509AuthenticationProvider x509AuthenticationProvider = new(deviceCertificate, null, privateKey);
 
-            ConnectionClient connectionClient = new();
+            ConnectionClient connectionClient = Setup.CreateConnectionClient();
 
             ProvisioningSettings provisioningSettings = new(DpsIdScope)
             {

@@ -78,6 +78,28 @@ and Release builds; retain it if you customize compilation constants.
 See the dedicated [logging sample](samples/Unified/LoggingSample/) for a runnable example that captures
 console and file logs while provisioning a device and sending telemetry.
 
+### CI diagnostics
+
+All .NET workflows accept a **full_logging** checkbox when started with **Run workflow**. Set the repository
+Actions variable `DOTNET_FULL_LOGGING` to `true` to enable it for pull requests, pushes, and scheduled runs as well.
+Logging is off by default. The option enables detailed .NET build/restore output and, in workflows that run tests,
+detailed test output, xUnit diagnostics, and SDK traces. Integration-test connections also enable MQTTnet logging,
+including the custom WebSocket clients.
+
+The test workflows upload `test-report-<os>` artifacts even when tests fail. Download the artifact from the failed
+workflow run: it contains TRX results and coverage, plus `sdk-logs/*.log` when full logging is enabled. SDK log files
+are separate for each test assembly and process and include timestamps and thread IDs. Files are flushed as messages
+are written so diagnostics survive test-host crashes. The artifacts expire after seven days.
+
+To capture the same SDK/MQTT diagnostics locally, set `AZ_IOT_TEST_FULL_LOGGING=true` before running `dotnet test`.
+Optionally set `AZ_IOT_TEST_LOG_DIRECTORY` to an absolute output directory; otherwise logs go under
+`TestResults/sdk-logs` in the test host's working directory. This is test-only configuration and does not change the
+library's logging defaults.
+
+Full logs can contain sensitive device data, topics, and payloads; GitHub's console secret masking does not sanitize
+downloadable artifacts. Restrict artifact access and review/redact logs before sharing them. CI deliberately avoids
+MSBuild diagnostic verbosity and VSTest `--diag`, which can dump environment variables containing credentials.
+
 ## MQTTv5 Public Preview Notice
 
 > Please note that all preview APIs are subject to change prior to their formal release
