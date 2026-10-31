@@ -8,6 +8,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "internal/mqtt_limits.h"
+
 #define AZ_IOT_MOCK_EVENT_QUEUE_MAX 32
 #define AZ_IOT_MOCK_CALL_KIND_COUNT (AZ_IOT_MOCK_CALL_DESTROY + 1)
 
@@ -57,6 +59,8 @@ struct az_iot_mock_mqtt_client
   /* Back-link to the factory so factory can null its last_client when we are
    * destroyed. */
   struct az_iot_mock_mqtt_factory_state* owner;
+  /* Built by the mock adapter in a workspace: destroy() frees nothing. */
+  bool in_workspace;
 };
 
 typedef struct az_iot_mock_mqtt_factory_state
@@ -71,6 +75,10 @@ typedef struct az_iot_mock_mqtt_factory_state
   bool fail_next_connect;
   az_iot_result next_connect_result;
 } az_iot_mock_mqtt_factory_state;
+
+/* The mock adapter's clients: the newest still alive, and its counts. */
+static az_iot_mock_mqtt_client* s_adapter_last_client;
+static az_iot_mock_mqtt_adapter_stats s_adapter_stats;
 
 /* ------------------------------------------------------------------------- */
 /* helpers                                                                   */
@@ -432,6 +440,16 @@ static void mock_destroy(az_iot_mqtt_client* self)
   {
     m->owner->last_client = NULL;
   }
+  if (m->in_workspace)
+  {
+    /* The workspace is the application's: kept as is, so the core's wipe is observable. */
+    if (s_adapter_last_client == m)
+    {
+      s_adapter_last_client = NULL;
+    }
+    s_adapter_stats.live--;
+    return;
+  }
   free(m);
 }
 
@@ -454,6 +472,14 @@ static const az_iot_mqtt_iface s_iface_template_v5
 /* factory                                                                   */
 /* ------------------------------------------------------------------------- */
 
+/** @brief Sets up @p m, zeroed, as a mock client of @p version. */
+static void mock_client_setup(az_iot_mock_mqtt_client* m, az_iot_mqtt_version version)
+{
+  m->iface_storage = (version == AZ_IOT_MQTT_VERSION_5) ? s_iface_template_v5 : s_iface_template_v3;
+  m->base.iface = &m->iface_storage;
+  m->next_packet_id = 0;
+}
+
 static az_iot_mqtt_client* mock_factory_create(void* factory_ctx)
 {
   az_iot_mock_mqtt_factory_state* st = (az_iot_mock_mqtt_factory_state*)factory_ctx;
@@ -464,10 +490,7 @@ static az_iot_mqtt_client* mock_factory_create(void* factory_ctx)
     return NULL;
   }
 
-  m->iface_storage
-      = (st->public_.version == AZ_IOT_MQTT_VERSION_5) ? s_iface_template_v5 : s_iface_template_v3;
-  m->base.iface = &m->iface_storage;
-  m->next_packet_id = 0;
+  mock_client_setup(m, st->public_.version);
   m->owner = st;
   if (st->fail_next_connect)
   {
@@ -522,6 +545,75 @@ az_iot_mock_mqtt_client* az_iot_mock_mqtt_factory_last_client(const az_iot_mqtt_
 az_iot_mock_mqtt_client* az_iot_mock_mqtt_client_from(az_iot_mqtt_client* c)
 {
   return mock_self(c);
+}
+
+/* ------------------------------------------------------------------------- */
+/* adapter: clients in application memory                                    */
+/* ------------------------------------------------------------------------- */
+
+static size_t mock_adapter_get_workspace_size(const az_iot_mqtt_limits* limits)
+{
+  return az_iot_mqtt__limits_are_valid(limits) ? sizeof(az_iot_mock_mqtt_client) + 15u : 0;
+}
+
+static az_iot_result mock_adapter_init(
+    az_iot_mqtt_version mqtt_version,
+    const az_iot_mqtt_limits* limits,
+    uint8_t* workspace,
+    size_t workspace_size,
+    az_iot_mqtt_client** out_client)
+{
+  if (out_client == NULL)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  *out_client = NULL;
+  if (workspace == NULL || !az_iot_mqtt__limits_are_valid(limits))
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  if (mqtt_version != AZ_IOT_MQTT_VERSION_3_1_1 && mqtt_version != AZ_IOT_MQTT_VERSION_5)
+  {
+    return AZ_IOT_ERR_NOT_SUPPORTED;
+  }
+  if (workspace_size < mock_adapter_get_workspace_size(limits))
+  {
+    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+  }
+  az_iot_mock_mqtt_client* m
+      = (az_iot_mock_mqtt_client*)(void*)(((uintptr_t)workspace + 15u) & ~(uintptr_t)15u);
+  memset(m, 0, sizeof(*m));
+  mock_client_setup(m, mqtt_version);
+  m->in_workspace = true;
+  s_adapter_last_client = m;
+  s_adapter_stats.built++;
+  s_adapter_stats.live++;
+  if (s_adapter_stats.live > s_adapter_stats.max_live)
+  {
+    s_adapter_stats.max_live = s_adapter_stats.live;
+  }
+  *out_client = &m->base;
+  return AZ_IOT_OK;
+}
+
+static const az_iot_mqtt_adapter s_mock_adapter = {
+  .get_workspace_size = mock_adapter_get_workspace_size,
+  .init = mock_adapter_init,
+};
+
+const az_iot_mqtt_adapter* az_iot_mock_mqtt_get_adapter(void) { return &s_mock_adapter; }
+
+az_iot_mock_mqtt_client* az_iot_mock_mqtt_adapter_last_client(void)
+{
+  return s_adapter_last_client;
+}
+
+az_iot_mock_mqtt_adapter_stats az_iot_mock_mqtt_adapter_get_stats(void) { return s_adapter_stats; }
+
+void az_iot_mock_mqtt_adapter_reset(void)
+{
+  s_adapter_last_client = NULL;
+  memset(&s_adapter_stats, 0, sizeof(s_adapter_stats));
 }
 
 /* ------------------------------------------------------------------------- */

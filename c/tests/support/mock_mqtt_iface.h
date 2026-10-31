@@ -17,6 +17,8 @@
  * it. When the test is done, call az_iot_mock_mqtt_factory_destroy() to free
  * everything (any client still alive is destroyed first).
  *
+ * az_iot_mock_mqtt_get_adapter() builds the same clients in application memory instead.
+ *
  * Not thread-safe; tests are single-threaded.
  */
 #ifndef AZ_IOT_MOCK_MQTT_IFACE_H
@@ -156,6 +158,29 @@ extern "C"
 
   /* Cast an az_iot_mqtt_client to its mock backing if it came from this factory. */
   az_iot_mock_mqtt_client* az_iot_mock_mqtt_client_from(az_iot_mqtt_client* c);
+
+  /**
+   * @brief The mock as an az_iot_mqtt_adapter: init() builds a mock client inside the workspace
+   * (16-byte aligned, no heap) and reports AZ_IOT_ERR_NOT_ENOUGH_SPACE when it does not fit. Its
+   * destroy() frees and wipes nothing, so a test can see what the core wipes.
+   */
+  const az_iot_mqtt_adapter* az_iot_mock_mqtt_get_adapter(void);
+
+  /** @brief The newest client the mock adapter built that is not destroyed yet, or NULL. */
+  az_iot_mock_mqtt_client* az_iot_mock_mqtt_adapter_last_client(void);
+
+  /** @brief Counts of the mock adapter's clients since the last reset. */
+  typedef struct az_iot_mock_mqtt_adapter_stats
+  {
+    size_t built; /**< Built by init(). */
+    size_t live; /**< Built and not destroyed. */
+    size_t max_live; /**< Most live at once. */
+  } az_iot_mock_mqtt_adapter_stats;
+
+  az_iot_mock_mqtt_adapter_stats az_iot_mock_mqtt_adapter_get_stats(void);
+
+  /** @brief Clears the stats and last client; call with no client of the adapter alive. */
+  void az_iot_mock_mqtt_adapter_reset(void);
 
   /* Value of the User Property named `key` on a recorded call, or NULL if the
    * call did not carry one. */

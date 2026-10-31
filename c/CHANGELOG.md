@@ -4,6 +4,12 @@
 
 ### Features Added
 
+- Connection client: `az_iot_connection_client_options::mqtt_adapter`, `mqtt_limits`,
+  `mqtt_workspace` and `mqtt_workspace_size` build each session's MQTT client in application
+  memory (e.g. `az_iot_az_mqtt_get_adapter()`), instead of registered factories (still used when
+  `mqtt_adapter` is NULL). `init()` checks the workspace size; `deinit()` wipes it. The workspace
+  holds one client at a time: a DPS or hub session start while the other session's client exists
+  fails with `AZ_IOT_ERR_BUSY` and is retried.
 - Breaking: `az_iot_subscription_failed_callback` takes the refused SUBACK's MQTT 5 Reason String
   (`reason_string`, `reason_string_len`, after `protocol_code`). On a session-scoped filter the
   Reason String is reported as `az_iot_connection_state_event.error->message`. Both adapters report
