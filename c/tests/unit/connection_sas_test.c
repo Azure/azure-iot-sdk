@@ -260,6 +260,7 @@ static int teardown(void** state)
 /** @brief Direct mqttv3 hub options authenticating with KEY_B64 only. */
 /* Room for two distinct keys and a token for IDs up to 256 characters. */
 static uint8_t g_sas_buffer[AZ_IOT_SAS_BUFFER_SIZE(2, AZ_IOT_SAS_TOKEN_SIZE(256))];
+static uint8_t g_connection_workspace[AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE];
 
 static bool all_zero(const void* p, size_t n)
 {
@@ -284,6 +285,8 @@ static az_iot_connection_client_options hub_sas_options(void)
   opts.unix_time.get_time = fixed_time;
   opts.sas_buffer.buffer = g_sas_buffer;
   opts.sas_buffer.size = sizeof(g_sas_buffer);
+  opts.workspace = g_connection_workspace;
+  opts.workspace_size = sizeof(g_connection_workspace);
   return opts;
 }
 
@@ -300,6 +303,8 @@ static az_iot_connection_client_options dps_sas_options(const char* key)
   opts.unix_time.get_time = fixed_time;
   opts.sas_buffer.buffer = g_sas_buffer;
   opts.sas_buffer.size = sizeof(g_sas_buffer);
+  opts.workspace = g_connection_workspace;
+  opts.workspace_size = sizeof(g_connection_workspace);
   return opts;
 }
 
@@ -371,6 +376,8 @@ static void init_accepts_a_token_callback_without_keys(void** state)
   opts.iothub_hostname = "broker.example";
   opts.device_id = "ut-device";
   opts.hub_auth.sas.on_sas_token_required = unused_token_callback;
+  opts.workspace = g_connection_workspace;
+  opts.workspace_size = sizeof(g_connection_workspace);
   assert_int_equal(az_iot_connection_client_init(&fx->client, &opts), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
   opts.sas_buffer.buffer = g_sas_buffer;
   opts.sas_buffer.size = sizeof(g_sas_buffer);
@@ -556,6 +563,8 @@ static void the_token_size_macro_is_enough_for_the_worst_case(void** state)
       opts.unix_time.get_time = max_time;
       opts.sas_buffer.buffer = buf;
       opts.sas_buffer.size = sizeof(buf) - (size_t)shrink;
+      opts.workspace = g_connection_workspace;
+      opts.workspace_size = sizeof(g_connection_workspace);
       if (dps)
       {
         opts.device_id = k_second;
@@ -1937,6 +1946,8 @@ static az_iot_connection_client_options user_token_hub_options(fixture* fx, fake
   opts.hub_auth.sas.on_sas_token_required = fake_token_callback;
   opts.sas_buffer.buffer = g_sas_buffer;
   opts.sas_buffer.size = sizeof(g_sas_buffer);
+  opts.workspace = g_connection_workspace;
+  opts.workspace_size = sizeof(g_connection_workspace);
   return opts;
 }
 
