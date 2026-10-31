@@ -319,9 +319,10 @@ typedef struct
   uint8_t verify_sig[8];
   size_t verify_sig_len;
 
-  /* When set, is_installed sets these details on step 0 of su_client. */
+  /* When set, is_installed sets these details on step is_installed_details_step of su_client. */
   az_iot_su_client* su_client;
   const char* is_installed_details;
+  uint32_t is_installed_details_step;
   az_iot_result is_installed_details_result;
 } hook_log;
 
@@ -450,7 +451,9 @@ static int32_t mock_is_installed(const az_iot_su_client_update_manifest* m, void
   if (l->su_client != NULL && l->is_installed_details != NULL)
   {
     l->is_installed_details_result = az_iot_su_client_set_step_result_details(
-        l->su_client, 0, az_span_create_from_str((char*)(uintptr_t)l->is_installed_details));
+        l->su_client,
+        l->is_installed_details_step,
+        az_span_create_from_str((char*)(uintptr_t)l->is_installed_details));
   }
   return l->is_installed_result;
 }
@@ -4465,6 +4468,84 @@ static void download_handlers_build_files_of_every_step(void** state)
   assert_int_equal(fx->delta.choose_calls, 2);
   assert_int_equal(fx->delta.build_calls, 2);
   assert_int_equal(fx->delta.succeeded_calls, 1);
+}
+
+/** @brief Details of the fallback in run_fallback_details_case(). */
+#define SU_TEST_BUILD_FALLBACK_DETAILS "full download: build from related file failed"
+
+/**
+ * @brief Step 0 of a two-step update falls back to a full download, with every step's details
+ * slot @p details_size bytes. is_installed_fn sets @p app_details (none when NULL) on step
+ * @p app_details_step. Step 0 keeps its delta code and reports @p step0_details; step 1 reports
+ * no code and its own details.
+ */
+static void run_fallback_details_case(
+    void** state,
+    size_t details_size,
+    const char* app_details,
+    uint32_t app_details_step,
+    const char* step0_details)
+{
+  fixture* fx = (fixture*)*state;
+  use_test_download_handler(fx, SU_TEST_DELTA_HANDLER_ID);
+  az_iot_su_platform_hooks hooks = fx->su._internal.hooks;
+  az_iot_su_client_deinit(&fx->su);
+  az_iot_su_limits limits = az_iot_su_limits_default();
+  limits.result_details_size = details_size;
+  init_fixture_client_with_limits(fx, &hooks, &limits);
+  open_to_connected(fx);
+  (void)snprintf(fx->delta.build_fail_id, sizeof(fx->delta.build_fail_id), "s0f0");
+  fx->log.su_client = &fx->su;
+  fx->log.is_installed_details = app_details;
+  fx->log.is_installed_details_step = app_details_step;
+
+  inject_patch(fx, delta_steps_patch("delta-details", 2, 1, SU_TEST_DELTA_HANDLER_ID, 1));
+  pump(fx, 80);
+
+  if (app_details != NULL)
+  {
+    assert_int_equal(fx->log.is_installed_details_result, AZ_IOT_OK);
+  }
+  assert_succeeded_with_delta_code(fx, 0, AZ_IOT_SU_DELTA_ERROR_BUILD, step0_details);
+  assert_int_equal(fx->chan.last_report.step_results_count, 2);
+  const az_iot_su_step_result* neighbor = &fx->chan.last_report.step_results[1];
+  assert_int_equal(neighbor->outcome, AZ_IOT_SU_OUTCOME_SUCCEEDED);
+  assert_int_equal(neighbor->extended_result_code, 0);
+  char text[64];
+  span_to_cstr(neighbor->result_details, text, sizeof(text));
+  assert_string_equal(text, (app_details != NULL && app_details_step == 1) ? app_details : "");
+  assert_int_equal(fx->delta.build_calls, 2);
+}
+
+/* With no room for details, a fallback reports its code alone. */
+static void a_fallback_with_no_details_room_reports_its_code_alone(void** state)
+{
+  run_fallback_details_case(state, 0, NULL, 0, "");
+}
+
+/* Fallback details one byte too long are left out; the next step's details are intact. */
+static void fallback_details_one_byte_too_long_are_left_out(void** state)
+{
+  run_fallback_details_case(state, sizeof(SU_TEST_BUILD_FALLBACK_DETAILS) - 2, "next step", 1, "");
+}
+
+/* Fallback details that fill their slot exactly are reported, and the next step's details
+ * are intact. */
+static void fallback_details_filling_their_slot_are_reported(void** state)
+{
+  run_fallback_details_case(
+      state,
+      sizeof(SU_TEST_BUILD_FALLBACK_DETAILS) - 1,
+      "next step",
+      1,
+      SU_TEST_BUILD_FALLBACK_DETAILS);
+}
+
+/* Details the application set on the step are kept: a fallback adds only its code. */
+static void a_fallback_keeps_the_application_details(void** state)
+{
+  run_fallback_details_case(
+      state, AZ_IOT_SU_DEFAULT_RESULT_DETAILS_SIZE, "app details", 0, "app details");
 }
 
 /* With handlers registered, a file naming none is downloaded in full as usual, with no code;
@@ -11347,6 +11428,13 @@ int main(void)
         a_full_download_after_a_fallback_starts_on_the_next_do_work, setup, teardown),
     cmocka_unit_test_setup_teardown(download_handlers_build_every_file_of_a_step, setup, teardown),
     cmocka_unit_test_setup_teardown(download_handlers_build_files_of_every_step, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_fallback_with_no_details_room_reports_its_code_alone, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        fallback_details_one_byte_too_long_are_left_out, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        fallback_details_filling_their_slot_are_reported, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_fallback_keeps_the_application_details, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_file_naming_no_download_handler_is_downloaded_as_usual, setup, teardown),
     cmocka_unit_test_setup_teardown(
