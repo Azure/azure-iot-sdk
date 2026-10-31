@@ -1456,6 +1456,28 @@ static void a_local_end_after_a_server_disconnect_keeps_its_detail(void** state)
       (az_iot_test_conn*)*state, true, 0, false);
 }
 
+/* An adapter ERROR after the server DISCONNECT in the same process_loop() is redundant: the
+ * DISCONNECT's transition and code stand, not the ERROR's fault and transport code. */
+static void an_adapter_error_after_a_server_disconnect_keeps_its_detail(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  az_iot_mock_mqtt_client* m = open_to_connected(fx);
+  az_iot_mock_mqtt_client_set_events_per_loop(m, SIZE_MAX);
+  assert_true(az_iot_mock_mqtt_client_inject_server_disconnect(m, 0x8B, NULL));
+  az_iot_mqtt_event error;
+  memset(&error, 0, sizeof(error));
+  error.kind = AZ_IOT_MQTT_EVT_ERROR;
+  error.status = AZ_IOT_ERR_MQTT;
+  error.transport_code = -3;
+  assert_true(az_iot_mock_mqtt_client_inject_event(m, &error));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+
+  size_t const last = fx->log.count - 1;
+  assert_int_equal(fx->log.states[last], AZ_IOT_CONN_STATE_IDLE);
+  assert_int_equal(fx->log.error_sources[last], AZ_IOT_CONN_ERR_SRC_MQTT);
+  assert_int_equal(fx->log.error_codes[last], 0x8B);
+}
+
 /* A server DISCONNECT after a local end is not redundant: its code is reported. */
 static void a_server_disconnect_after_a_local_end_is_reported(void** state)
 {
@@ -2008,6 +2030,8 @@ int main(void)
         teardown),
     cmocka_unit_test_setup_teardown(
         a_local_end_after_a_server_disconnect_keeps_its_detail, setup_no_reconnect, teardown),
+    cmocka_unit_test_setup_teardown(
+        an_adapter_error_after_a_server_disconnect_keeps_its_detail, setup_no_reconnect, teardown),
     cmocka_unit_test_setup_teardown(
         a_server_disconnect_after_a_local_end_is_reported, setup_no_reconnect, teardown),
     cmocka_unit_test_setup_teardown(
