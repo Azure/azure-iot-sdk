@@ -928,6 +928,51 @@ static void a_session_end_ends_unanswered_invocations(void** state)
       AZ_IOT_ERR_NOT_CONNECTED);
 }
 
+/* An adapter BUSY while connected keeps the request answerable: the next answer is sent. */
+static void an_answer_refused_busy_by_the_adapter_can_be_sent_again(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  invocation_record rec = { 0 };
+  assert_int_equal(
+      az_iot_mqttv3_direct_method_client_set_handler(&fx->dm, on_method, &rec), AZ_IOT_OK);
+  inject_invocation(fx, 3);
+  assert_true(rec.fired);
+
+  az_iot_mock_mqtt_client_set_next_result(fx->mock, AZ_IOT_MOCK_CALL_PUBLISH, AZ_IOT_ERR_BUSY);
+  assert_int_equal(
+      az_iot_mqttv3_direct_method_respond(&fx->dm, rec.request, 200, NULL, 0), AZ_IOT_ERR_BUSY);
+  az_iot_mock_mqtt_client_clear_calls(fx->mock);
+  assert_int_equal(
+      az_iot_mqttv3_direct_method_respond(&fx->dm, rec.request, 200, NULL, 0), AZ_IOT_OK);
+  const az_iot_mock_call* answer
+      = az_iot_mock_mqtt_client_last_of(fx->mock, AZ_IOT_MOCK_CALL_PUBLISH);
+  assert_non_null(answer);
+  assert_string_equal(answer->topic, "$iothub/methods/res/200/?$rid=3");
+}
+
+/* A send error from a link that dropped before do_work() saw it (Paho answers AZ_IOT_ERR_MQTT)
+ * keeps the request, so the session end that follows makes it NOT_CONNECTED. */
+static void an_answer_failing_as_the_link_drops_is_ended_by_the_session_end(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  invocation_record rec = { 0 };
+  assert_int_equal(
+      az_iot_mqttv3_direct_method_client_set_handler(&fx->dm, on_method, &rec), AZ_IOT_OK);
+  inject_invocation(fx, 4);
+  assert_true(rec.fired);
+
+  az_iot_mock_mqtt_client_set_next_result(fx->mock, AZ_IOT_MOCK_CALL_PUBLISH, AZ_IOT_ERR_MQTT);
+  assert_int_equal(
+      az_iot_mqttv3_direct_method_respond(&fx->dm, rec.request, 200, NULL, 0), AZ_IOT_ERR_MQTT);
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(fx->mock));
+  (void)az_iot_connection_client_do_work(&fx->conn, 0);
+  assert_int_equal(
+      az_iot_mqttv3_direct_method_respond(&fx->dm, rec.request, 200, NULL, 0),
+      AZ_IOT_ERR_NOT_CONNECTED);
+}
+
 /* A request from another client naming the same slot and sequence is still refused as foreign. */
 static void a_session_end_does_not_vouch_for_a_foreign_request(void** state)
 {
@@ -1745,6 +1790,10 @@ int main(void)
     cmocka_unit_test_setup_teardown(the_subscription_uses_qos_0, setup, teardown),
     cmocka_unit_test(deinit_tolerates_null),
     cmocka_unit_test_setup_teardown(a_session_end_ends_unanswered_invocations, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        an_answer_refused_busy_by_the_adapter_can_be_sent_again, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        an_answer_failing_as_the_link_drops_is_ended_by_the_session_end, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_session_end_does_not_vouch_for_a_foreign_request, setup, teardown),
     cmocka_unit_test_setup_teardown(

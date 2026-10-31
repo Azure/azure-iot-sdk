@@ -452,6 +452,17 @@ az_iot_result az_iot_mqttv3_direct_method_respond(
     /* Closing, or the link dropped ahead of its SESSION_END: answering again says so too. */
     DI(dm).ended_by_session_seq[index] = slot->_internal.seq;
   }
+  else if (r != AZ_IOT_OK && r != AZ_IOT_ERR_INVALID_ARG && r != AZ_IOT_ERR_NOT_ENOUGH_SPACE)
+  {
+    /* Adapter BUSY, or an error from a link that dropped unseen: the slot stays answerable
+     * until its response timeout, or its SESSION_END records it. */
+    AZ_IOT_LOG_WARNF(
+        AZ_IOT_LOG_COMPONENT_MQTTV3_DIRECT_METHOD,
+        "the answer to '%s' was not sent (%s); it may be answered again",
+        slot->_internal.method_name,
+        az_iot_result_to_string(r));
+    return r;
+  }
   slot->_internal.in_use = false;
   return r;
 }

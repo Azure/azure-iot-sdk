@@ -112,6 +112,8 @@ extern "C"
    * @brief Answer an invocation, releasing its pool slot.
    *
    * Not AZ_NODISCARD: best-effort response send, commonly fire-and-forget.
+   * A send refused for a reason that can pass keeps the slot until the response
+   * timeout, so a caller that ignores the result costs that slot a delay.
    *
    * An invocation that is never answered has its slot reclaimed once its
    * response timeout passes, so dropping one costs a delay rather than the
@@ -142,6 +144,10 @@ extern "C"
    *         AZ_IOT_ERR_BUSY if the connection is still setting up (a method can
    *         arrive before every subscription is acknowledged) -- nothing is sent
    *         and the request stays answerable: answer it again once connected;
+   *         any other send error but AZ_IOT_ERR_INVALID_ARG and
+   *         AZ_IOT_ERR_NOT_ENOUGH_SPACE (e.g. AZ_IOT_ERR_BUSY or AZ_IOT_ERR_MQTT from
+   *         the adapter) -- nothing is sent and the request stays answerable until
+   *         its response timeout, or AZ_IOT_ERR_NOT_CONNECTED once its session ends;
    *         AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH if @p request came from a
    *         mqttv5 client; AZ_IOT_ERR_INVALID_ARG if it was already answered, if
    *         its slot was reclaimed on timeout and reused, or if it never came from
