@@ -406,6 +406,10 @@ the device in every `Active` run, then in the newest. `Export-SuE2EOfferVariable
 variables for a `-RunId` without contacting Azure. `Get-SuE2EFixtureTag` hashes the code that defines the offers;
 appended to a reused `-RunId`, a change to that code stages a new set. With `-Reuse`, a failed import
 is treated as done if the update now exists (another run imported it), else retried up to 3 times.
+Each REST request is retried on a transient failure (no response; HTTP 408, 429, 500, 502, 503 or
+504; another 5xx with a transient error code such as `BadGatewayConnection`), up to 5 attempts,
+after `Retry-After` or 2, 4, 8, 16 s (at most 60 s), with a warning per retry; a `401` with
+`invalid_token` is retried once with a new token, and other `4xx` are not retried.
 
 CI ([`ci-c-e2e-adu.yml`](../../../.github/workflows/ci-c-e2e-adu.yml)) runs on the shared mqttv5
 environment, whose ADR namespace is linked to a Device Update instance, on pull requests touching
