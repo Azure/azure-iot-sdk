@@ -421,7 +421,8 @@ void app_main(void)
   const unsigned max_ticks = (2u * (unsigned)AZ_IOT_DPS_HOLD_TIMEOUT_MS) / tick_ms;
   for (unsigned i = 0; i < max_ticks && g_conn_state != AZ_IOT_CONN_STATE_CONNECTED; ++i)
   {
-    (void)az_iot_connection_client_do_work(&conn, 50);
+    TickType_t const tick_start = xTaskGetTickCount();
+    (void)az_iot_connection_client_do_work(&conn, tick_ms);
     (void)az_iot_su_client_do_work(&su);
     if (check_deferred && az_iot_su_client_get_state(&su) == AZ_IOT_SU_STATE_IDLE)
     {
@@ -434,6 +435,13 @@ void app_main(void)
     if (g_conn_state == AZ_IOT_CONN_STATE_FAULTED || g_provisioning_faulted)
     {
       break;
+    }
+    /* do_work() returns at once while no session is open (a retry backoff):
+     * wait out the tick, so the bound holds and the idle task runs. */
+    TickType_t const spent = xTaskGetTickCount() - tick_start;
+    if (spent < pdMS_TO_TICKS(tick_ms))
+    {
+      vTaskDelay(pdMS_TO_TICKS(tick_ms) - spent);
     }
   }
 
