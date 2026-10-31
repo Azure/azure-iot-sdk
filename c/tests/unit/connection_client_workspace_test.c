@@ -3,8 +3,8 @@
 // information.
 
 /* SPDX-License-Identifier: MIT */
-/* Connection client entry counts at run time: sizes, init in an application workspace or the
- * client's default one, and the workspace wiped by deinit(). */
+/* Connection client entry counts at run time: sizes, init in the application's workspace
+ * (required), and the workspace wiped by deinit(). */
 
 #include <stdarg.h>
 #include <stddef.h>
@@ -197,19 +197,10 @@ static void init_refuses_limits_it_cannot_hold(void** state)
   opts.limits.max_publish_reservations = 255;
   assert_int_equal(az_iot_connection_client_init(&client, &opts), AZ_IOT_ERR_INVALID_ARG);
 
-  /* Above one default and below another, with no workspace: same total size, still refused. */
+  /* No workspace, whatever the limits. */
   opts = direct_options();
-  opts.limits.max_feature_observers = AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_FEATURE_OBSERVERS - 2u;
-  opts.limits.max_application_state_observers
-      = AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_APPLICATION_STATE_OBSERVERS + 3u;
-  assert_int_equal(
-      az_iot_connection_client_get_workspace_size(&opts.limits),
-      AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE);
   assert_int_equal(az_iot_connection_client_init(&client, &opts), AZ_IOT_ERR_INVALID_ARG);
-
-  /* More than the defaults, with no workspace. */
-  opts = direct_options();
-  opts.limits.max_pending_publishes = 64;
+  opts.limits = (az_iot_connection_client_limits){ 1, 1, 1, 1, 1, 1, 1 };
   assert_int_equal(az_iot_connection_client_init(&client, &opts), AZ_IOT_ERR_INVALID_ARG);
 
   /* A workspace one byte short. */
@@ -218,16 +209,6 @@ static void init_refuses_limits_it_cannot_hold(void** state)
   assert_int_equal(az_iot_connection_client_init(&client, &opts), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
 
   assert_memory_equal(&client, untouched, sizeof(client));
-
-  /* No workspace: limits within the built-in defaults use the client's own. */
-  opts = direct_options();
-  opts.limits = (az_iot_connection_client_limits){ 1, 1, 1, 1, 1, 1, 1 };
-  assert_int_equal(az_iot_connection_client_init(&client, &opts), AZ_IOT_OK);
-  assert_true(
-      (uint8_t*)client.pending_pubacks >= client.default_workspace
-      && (uint8_t*)client.pending_pubacks
-          < client.default_workspace + sizeof(client.default_workspace));
-  az_iot_connection_client_deinit(&client);
 }
 
 int main(void)
