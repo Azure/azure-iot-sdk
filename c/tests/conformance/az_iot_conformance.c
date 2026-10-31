@@ -70,6 +70,7 @@ static const char* g_key_engine = NULL;
 static const char* g_client_cert_path = NULL;
 static az_iot_mqtt_sign_callback g_sign = NULL;
 static void* g_sign_ctx = NULL;
+static uint32_t g_client_key_psa_id = 0;
 static uint16_t g_websocket_port = 0;
 static const char* g_websocket_path = NULL;
 
@@ -97,6 +98,11 @@ static bool adapter_claims_key_custody_sign(void)
 {
   return (g_capabilities & (uint32_t)AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY_SIGN) != 0u;
 }
+
+static bool adapter_claims_key_custody_psa(void)
+{
+  return (g_capabilities & (uint32_t)AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY_PSA) != 0u;
+}
 /* Which custody routes have complete material.
  *
  * Judged per route and on ALL of a route's fields, never on key_uri alone. An
@@ -111,7 +117,8 @@ int az_iot_conformance_custody_material_state(
     const char* crypto_engine_id,
     const char* client_cert_path,
     bool has_sign,
-    bool has_sign_ctx)
+    bool has_sign_ctx,
+    uint32_t client_key_psa_id)
 {
   /* An empty string is missing, not supplied. The bundled harnesses already
    * map an empty environment variable to NULL, so accepting "" here would hold
@@ -120,6 +127,7 @@ int az_iot_conformance_custody_material_state(
   const bool has_uri = (key_uri != NULL) && (key_uri[0] != '\0');
   const bool has_engine = (crypto_engine_id != NULL) && (crypto_engine_id[0] != '\0');
   const bool has_cert = (client_cert_path != NULL) && (client_cert_path[0] != '\0');
+  const bool has_psa = client_key_psa_id != 0u;
 
   /* Either half of the pair means the URI route was intended, so a missing
    * counterpart is reported rather than treated as "route not requested". */
@@ -127,7 +135,7 @@ int az_iot_conformance_custody_material_state(
 
   /* has_sign_ctx counts here too: without it a lone sign_ctx would be reported
    * as "nothing supplied" and the check below could never be reached. */
-  if (!uri_requested && !has_sign && !has_sign_ctx && !has_cert)
+  if (!uri_requested && !has_sign && !has_sign_ctx && !has_cert && !has_psa)
   {
     return AZ_IOT_CONFORMANCE_CUSTODY_NONE;
   }
@@ -135,7 +143,7 @@ int az_iot_conformance_custody_material_state(
   {
     return AZ_IOT_CONFORMANCE_CUSTODY_PARTIAL;
   }
-  if (has_sign && !has_cert)
+  if ((has_sign || has_psa) && !has_cert)
   {
     return AZ_IOT_CONFORMANCE_CUSTODY_PARTIAL;
   }
@@ -146,14 +154,15 @@ int az_iot_conformance_custody_material_state(
   {
     return AZ_IOT_CONFORMANCE_CUSTODY_PARTIAL;
   }
-  if (!uri_requested && !has_sign)
+  if (!uri_requested && !has_sign && !has_psa)
   {
     /* A certificate and/or a sign context, with no route to use either. */
     return AZ_IOT_CONFORMANCE_CUSTODY_PARTIAL;
   }
 
   return (uri_requested ? AZ_IOT_CONFORMANCE_CUSTODY_URI : 0)
-      | (has_sign ? AZ_IOT_CONFORMANCE_CUSTODY_SIGN : 0);
+      | (has_sign ? AZ_IOT_CONFORMANCE_CUSTODY_SIGN : 0)
+      | (has_psa ? AZ_IOT_CONFORMANCE_CUSTODY_PSA : 0);
 }
 
 /* Read an environment variable without tripping MSVC's C4996 on getenv.
@@ -3360,6 +3369,56 @@ static void key_custody_sign_hook_completes_a_tls_handshake(void** state)
   az_iot_test_proxy_stop(proxy);
   remove(ca_path);
 }
+
+/* The PSA route: the adapter signs with a key held in the PSA Crypto key store,
+ * named only by its id. Connects twice with the same id, so a key the adapter
+ * consumed or released after the first handshake fails the second.
+ *
+ * Runs only when the harness supplied a key; see az_iot_conformance_options. */
+static void key_custody_psa_key_completes_a_tls_handshake_and_reconnects(void** state)
+{
+  (void)state;
+  uint16_t proxy_port = 0;
+  az_iot_test_proxy* proxy = start_proxy(&proxy_port);
+
+  az_iot_test_proxy_tls_options tls = az_iot_test_proxy_tls_options_default();
+  tls.accept_any_client_cert = 1;
+  assert_int_equal(az_iot_test_proxy_enable_tls(proxy, &tls), 0);
+
+  char ca_pem[4096];
+  char ca_path[128];
+  assert_true(az_iot_test_proxy_ca_pem(proxy, ca_pem, sizeof(ca_pem)) > 0);
+  assert_true(write_temp_pem(ca_pem, ca_path, sizeof(ca_path)));
+
+  char cid[64];
+  unique_client_id(cid, sizeof(cid), "az-iot-conf-custody-psa-e2e");
+  conf_recorder rec = { 0 };
+  az_iot_mqtt_client* c = make_client();
+  c->iface->set_inbound_cb(c, on_event, &rec);
+
+  az_iot_mqtt_connect_options copts = { 0 };
+  copts.host = "127.0.0.1";
+  copts.port = proxy_port;
+  copts.client_id = cid;
+  copts.keep_alive_seconds = 30;
+  copts.connect_timeout_seconds = k_step_timeout_seconds;
+  copts.tls.trusted_ca_path = ca_path;
+  copts.tls.client_cert_path = g_client_cert_path;
+  copts.tls.client_key_psa_id = g_client_key_psa_id;
+
+  for (int attempt = 0; attempt < 2; ++attempt)
+  {
+    memset(&rec, 0, sizeof(rec));
+    assert_int_equal(c->iface->connect(c, &copts), AZ_IOT_OK);
+    assert_true(wait_until(c, &rec, saw_connected_ok, k_step_timeout_ms));
+    assert_int_equal(c->iface->disconnect(c), AZ_IOT_OK);
+    assert_true(wait_until(c, &rec, saw_disconnected, k_step_timeout_ms));
+  }
+
+  destroy_client(c);
+  az_iot_test_proxy_stop(proxy);
+  remove(ca_path);
+}
 #endif /* AZ_IOT_CONFORMANCE_WITH_TLS */
 
 /* ------------------------------------------------------------------------- */
@@ -4251,6 +4310,7 @@ int az_iot_conformance_run_with_options(
   g_client_cert_path = options ? options->client_cert_path : NULL;
   g_sign = options ? options->sign : NULL;
   g_sign_ctx = options ? options->sign_ctx : NULL;
+  g_client_key_psa_id = options ? options->client_key_psa_id : 0u;
   g_websocket_port = options ? options->websocket_port : 0;
   g_websocket_path = options ? options->websocket_path : NULL;
 
@@ -4285,20 +4345,27 @@ int az_iot_conformance_run_with_options(
    * collapse this back to an aggregate test: a route's material must not be
    * able to hide behind the other route being complete. */
   const int custody_material = az_iot_conformance_custody_material_state(
-      g_key_uri, g_key_engine, g_client_cert_path, g_sign != NULL, g_sign_ctx != NULL);
+      g_key_uri,
+      g_key_engine,
+      g_client_cert_path,
+      g_sign != NULL,
+      g_sign_ctx != NULL,
+      g_client_key_psa_id);
 
   if (custody_material == AZ_IOT_CONFORMANCE_CUSTODY_PARTIAL)
   {
     fprintf(
         stderr,
         "conformance: key custody material is incomplete (key_uri=%s, crypto_engine_id=%s, "
-        "sign=%s, sign_ctx=%s, client_cert_path=%s). The URI route needs key_uri + "
-        "crypto_engine_id + client_cert_path; the sign route needs sign + client_cert_path, "
-        "and sign_ctx is meaningful only alongside sign\n",
+        "sign=%s, sign_ctx=%s, client_key_psa_id=%s, client_cert_path=%s). The URI route needs "
+        "key_uri + crypto_engine_id + client_cert_path; the sign route needs sign + "
+        "client_cert_path, and sign_ctx is meaningful only alongside sign; the PSA route needs "
+        "client_key_psa_id + client_cert_path\n",
         (g_key_uri != NULL && g_key_uri[0] != '\0') ? "set" : "MISSING",
         (g_key_engine != NULL && g_key_engine[0] != '\0') ? "set" : "MISSING",
         (g_sign != NULL) ? "set" : "MISSING",
         (g_sign_ctx != NULL) ? "set" : "MISSING",
+        (g_client_key_psa_id != 0u) ? "set" : "MISSING",
         (g_client_cert_path != NULL && g_client_cert_path[0] != '\0') ? "set" : "MISSING");
     return 1;
   }
@@ -4321,6 +4388,14 @@ int az_iot_conformance_run_with_options(
         stderr,
         "conformance: a sign hook was supplied but "
         "AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY_SIGN was not declared\n");
+    return 1;
+  }
+  if ((custody_material & AZ_IOT_CONFORMANCE_CUSTODY_PSA) != 0 && !adapter_claims_key_custody_psa())
+  {
+    fprintf(
+        stderr,
+        "conformance: a PSA key id was supplied but "
+        "AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY_PSA was not declared\n");
     return 1;
   }
 
@@ -4482,6 +4557,37 @@ int az_iot_conformance_run_with_options(
       char allow[16];
       failed += az_iot_conformance_report_unproven_capability(
           "AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY_SIGN",
+          unproven,
+          read_env("AZ_IOT_CONFORMANCE_ALLOW_UNPROVEN", allow, sizeof(allow)));
+    }
+  }
+
+  if (adapter_claims_key_custody_psa())
+  {
+    const char* unproven = NULL;
+#ifdef AZ_IOT_CONFORMANCE_WITH_TLS
+    if ((custody_material & AZ_IOT_CONFORMANCE_CUSTODY_PSA) != 0)
+    {
+      const struct CMUnitTest psa_tests[]
+          = { cmocka_unit_test(key_custody_psa_key_completes_a_tls_handshake_and_reconnects) };
+      failed += az_iot_test_shard_run_group_tests(psa_tests, NULL, NULL);
+    }
+    else
+    {
+      unproven = "no PSA key was supplied. Set az_iot_conformance_options client_key_psa_id and"
+                 " client_cert_path to a key in the PSA key store and a certificate carrying its"
+                 " public key.";
+    }
+#else
+    unproven = "this build has no TLS support. Configure with"
+               " -DAZ_IOT_BUILD_CONFORMANCE_TESTS_TLS=ON.";
+#endif
+
+    if (unproven != NULL)
+    {
+      char allow[16];
+      failed += az_iot_conformance_report_unproven_capability(
+          "AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY_PSA",
           unproven,
           read_env("AZ_IOT_CONFORMANCE_ALLOW_UNPROVEN", allow, sizeof(allow)));
     }

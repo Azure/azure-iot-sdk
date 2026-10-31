@@ -39,15 +39,15 @@ set(srcs
     "${_az_src}/iot/az_iot_provisioning_client_sas.c"
     "${_az_src}/iot/az_iot_adu_client.c"
 
-    # Platform shim: az_core's az_platform_* hooks (clock/sleep/random). The
-    # no-op variant satisfies the linker; our SDK does its own timing via the
-    # MQTT iface do_work() pump and never relies on these at runtime.
-    "${_az_src}/platform/az_noplatform.c"
+    # az_core's az_platform_* hooks (clock, sleep) on ESP-IDF. The az_mqtt
+    # adapter sleeps through them while no connection is open.
+    "az_platform_esp_idf.c"
 )
 
 idf_component_register(
     SRCS ${srcs}
     INCLUDE_DIRS "${AZ_SDK_C_ROOT}/sdk/inc"
+    PRIV_REQUIRES esp_timer freertos
 )
 
 # Upstream uses legacy "func()" declarations and other constructs our strict

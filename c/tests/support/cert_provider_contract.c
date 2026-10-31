@@ -212,7 +212,7 @@ static X509* check_material(az_iot_certificate_provider* p, const az_iot_certifi
   }
   if (!m->client_key_pem && !m->client_key_path)
   {
-    assert_true(m->client_key_uri != NULL || has_sign);
+    assert_true(m->client_key_uri != NULL || m->client_key_psa_id != 0 || has_sign);
   }
   if (has_sign)
   {

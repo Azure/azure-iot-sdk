@@ -70,7 +70,7 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
       stderr,
       "[dps_csr] %s: %s (%s)\n",
       is_dps ? "dps" : "hub",
-      sample_connection_state_name(event->state),
+      az_iot_connection_state_to_string(event->state),
       az_iot_result_to_string(event->reason));
 
   /* Transport codes are adapter-defined, so they are not printed. */
@@ -165,11 +165,7 @@ static void pump(az_iot_connection_client* client)
 {
   uint64_t start = sample_now_ms();
   (void)az_iot_connection_client_do_work(client, SAMPLE_TICK_MS);
-  uint64_t spent = sample_now_ms() - start;
-  if (spent < SAMPLE_TICK_MS)
-  {
-    sample_sleep_ms((long)(SAMPLE_TICK_MS - spent));
-  }
+  sample_sleep_until_tick_end(start, SAMPLE_TICK_MS);
 }
 
 int main(void)
@@ -184,9 +180,9 @@ int main(void)
   }
 
   /* Every string cleanup frees is assigned before the first goto. */
-  char* op_key = sample_env_dup("AZ_IOT_OPERATIONAL_KEY", "operational_key.pem");
-  char* op_cert = sample_env_dup("AZ_IOT_OPERATIONAL_CERT", "operational_cert.pem");
-  char* registration_payload = sample_env_dup("AZ_IOT_DPS_REGISTRATION_PAYLOAD", NULL);
+  char* op_key = sample_env_copy("AZ_IOT_OPERATIONAL_KEY", "operational_key.pem");
+  char* op_cert = sample_env_copy("AZ_IOT_OPERATIONAL_CERT", "operational_cert.pem");
+  char* registration_payload = sample_env_copy("AZ_IOT_DPS_REGISTRATION_PAYLOAD", NULL);
 
   int rc = 1;
   sample_context ctx = { 0 };
@@ -219,7 +215,11 @@ int main(void)
     goto cleanup;
   }
 
+  /* Memory for the connection client's entries, sized for the default limits. */
+  static uint8_t connection_workspace[AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE];
   az_iot_connection_client_options opts = az_iot_connection_client_options_default();
+  opts.workspace = connection_workspace;
+  opts.workspace_size = sizeof(connection_workspace);
   opts.dps.id_scope = config.id_scope;
   opts.dps.registration_id = config.reg_id;
   opts.dps.global_endpoint = config.dps_global_endpoint; /* NULL: the global default */

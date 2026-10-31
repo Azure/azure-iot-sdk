@@ -102,13 +102,13 @@ static void hsm_config_release(hsm_config* c)
 static int hsm_config_load(hsm_config* c)
 {
   memset(c, 0, sizeof(*c));
-  c->id_scope = sample_env_dup("AZ_IOT_DPS_ID_SCOPE", SAMPLE_ID_SCOPE);
-  c->reg_id = sample_env_dup("AZ_IOT_DPS_REGISTRATION_ID", SAMPLE_REGISTRATION_ID);
-  c->cert = sample_env_dup("AZ_IOT_CLIENT_CERT", SAMPLE_CLIENT_CERT);
-  c->key_uri = sample_env_dup("AZ_IOT_CLIENT_KEY_URI", SAMPLE_CLIENT_KEY_URI);
-  c->engine_id = sample_env_dup("AZ_IOT_CRYPTO_ENGINE_ID", SAMPLE_CRYPTO_ENGINE_ID);
-  c->ca = sample_env_dup("AZ_IOT_TRUSTED_CA", SAMPLE_TRUSTED_CA);
-  c->dps_global_endpoint = sample_env_dup("AZ_IOT_DPS_GLOBAL_ENDPOINT", NULL);
+  c->id_scope = sample_env_copy("AZ_IOT_DPS_ID_SCOPE", SAMPLE_ID_SCOPE);
+  c->reg_id = sample_env_copy("AZ_IOT_DPS_REGISTRATION_ID", SAMPLE_REGISTRATION_ID);
+  c->cert = sample_env_copy("AZ_IOT_CLIENT_CERT", SAMPLE_CLIENT_CERT);
+  c->key_uri = sample_env_copy("AZ_IOT_CLIENT_KEY_URI", SAMPLE_CLIENT_KEY_URI);
+  c->engine_id = sample_env_copy("AZ_IOT_CRYPTO_ENGINE_ID", SAMPLE_CRYPTO_ENGINE_ID);
+  c->ca = sample_env_copy("AZ_IOT_TRUSTED_CA", SAMPLE_TRUSTED_CA);
+  c->dps_global_endpoint = sample_env_copy("AZ_IOT_DPS_GLOBAL_ENDPOINT", NULL);
 
   return (is_set(c->id_scope) && is_set(c->reg_id) && is_set(c->cert) && is_set(c->key_uri)
           && is_set(c->engine_id))
@@ -259,7 +259,11 @@ int main(void)
   az_iot_connection_profile profile = AZ_IOT_CONNECTION_PROFILE_UNKNOWN;
   int telemetry_initialized = 0;
 
+  /* Memory for the connection client's entries, sized for the default limits. */
+  static uint8_t connection_workspace[AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE];
   az_iot_connection_client_options copts = az_iot_connection_client_options_default();
+  copts.workspace = connection_workspace;
+  copts.workspace_size = sizeof(connection_workspace);
   copts.device_id = config.reg_id;
   /* This sample carries its own config struct (PKCS#11 URI and engine id), not
    * the shared sample_config, so it sets the DPS fields directly -- including
@@ -322,8 +326,11 @@ int main(void)
     fprintf(stderr, "[hsm_pkcs11] connected; the handshake signed inside the token\n");
 
     az_iot_result init_rc = AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED;
-    if (sample_get_hub_profile(&connection_client, &profile) == AZ_IOT_OK)
+    az_iot_hub_profile hub_profile;
+    if (az_iot_connection_client_get_hub_profile(&connection_client, &hub_profile) == AZ_IOT_OK)
     {
+      profile = hub_profile.connection_profile;
+      printf("Hub profile: %s\n", az_iot_connection_profile_to_string(profile));
       if (profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5)
       {
         init_rc = az_iot_mqttv5_telemetry_client_init(&mqttv5, &connection_client);

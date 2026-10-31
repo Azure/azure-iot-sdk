@@ -55,7 +55,7 @@ message was sent and the connection never settled at `FAULTED`; otherwise 1.
 ## Expected output
 
 ```
-Sent 21 message(s) on MQTTv3 (MQTT v3.1.1), 0 failed, 0 reading(s) dropped.
+Sent 21 message(s) on AZ_IOT_CONNECTION_PROFILE_MQTT_V3, 0 failed, 0 reading(s) dropped.
 ```
 
 The counts depend on how long connecting took.

@@ -79,8 +79,10 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
 {
   user_context* ctx = (user_context*)user_ctx;
 
-  if (sample_event_is_profile_mismatch(event, &ctx->assigned_profile))
+  if (event->state == AZ_IOT_CONN_STATE_FAULTED
+      && event->reason == AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH && event->profile != NULL)
   {
+    ctx->assigned_profile = event->profile->connection_profile;
     ctx->unsupported_hub = 1;
     return;
   }
@@ -88,7 +90,15 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
   if (event->state == AZ_IOT_CONN_STATE_FAULTED)
   {
     ctx->faulted = 1;
-    sample_report_unsupported_profile(event);
+    /* DPS assigned a hub generation newer than this SDK. */
+    if (event->reason == AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED && event->profile != NULL)
+    {
+      printf(
+          "Unsupported hub generation \"%s\"%s. Upgrade the SDK.\n",
+          event->profile->connection_profile_raw != NULL ? event->profile->connection_profile_raw
+                                                         : "(none)",
+          event->profile->connection_profile_raw_truncated ? " (truncated)" : "");
+    }
   }
 
   /* The provisioning lifecycle reports on its own scope; only the hub one says
@@ -179,7 +189,11 @@ int main(void)
 
   /* Connection client (DPS provisioning is internal). The default reconnection
    * and identity recovery policies keep the device reconnecting on its own. */
+  /* Memory for the connection client's entries, sized for the default limits. */
+  static uint8_t connection_workspace[AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE];
   az_iot_connection_client_options copts = az_iot_connection_client_options_default();
+  copts.workspace = connection_workspace;
+  copts.workspace_size = sizeof(connection_workspace);
   copts.dps.id_scope = state.config.id_scope;
   copts.dps.registration_id = state.config.reg_id;
   copts.dps.global_endpoint = state.config.dps_global_endpoint; /* NULL: the global default */
@@ -230,7 +244,7 @@ int main(void)
   {
     printf(
         "DPS assigned %s. Cloud-to-device messages are not available on this hub generation.\n",
-        sample_connection_profile_name(user_ctx.assigned_profile));
+        az_iot_connection_profile_to_string(user_ctx.assigned_profile));
   }
 
   printf("Received %d message(s).\n", user_ctx.messages_received);

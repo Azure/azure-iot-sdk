@@ -4,12 +4,19 @@
 
 ### Features Added
 
+- Breaking: removed the Rust MQTT adapter shell, its `az_iot_rust_mqtt_*` APIs and FFI contract,
+  `AZ_IOT_RUST_MQTT_WORKSPACE_SIZE`, `AZ_IOT_WITH_RUST_MQTT`, the `adapter_rust_mqtt` CMake and
+  pkg-config component, and Yocto's `rust-mqtt` option. Use Paho or az_mqtt instead; the generic
+  bring-your-own MQTT interface is unchanged.
 - `az_iot_connection_profile_to_string()` names an `az_iot_connection_profile`, for logging.
 - `az_iot_certificate_material::client_key_psa_id` and `az_iot_mqtt_tls_options::client_key_psa_id`
   name a non-extractable client key by PSA Crypto key id (0: none), e.g. the ESP32 Digital
   Signature peripheral on ESP-IDF v6. The az_mqtt adapter uses it with mbedTLS; with another TLS
-  backend, and in the Paho and rust_mqtt adapters, the connect fails with
+  backend, and in the Paho adapter, the connect fails with
   `AZ_IOT_ERR_NOT_SUPPORTED`. Bring-your-own adapters must do the same unless they support it.
+- Conformance: `AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY_PSA` and `az_iot_conformance_options::client_key_psa_id`
+  prove the PSA key route with a TLS handshake and a reconnect. The az_mqtt harness declares it on
+  mbedTLS with PSA keys and imports the PEM key at `AZ_IOT_CONFORMANCE_PSA_KEY`.
 - Breaking: `az_iot_connection_client_open()` and `az_iot_connection_client_close()` return
   `AZ_IOT_ERR_BUSY` when called from a callback the connection client runs (state, publish
   completion, SAS token, DPS, CSR, subscription failure, inbound message, feature observer). Call
@@ -70,12 +77,11 @@
   `az_iot_az_mqtt_get_workspace_size()` gives the exact size; `AZ_IOT_AZ_MQTT_WORKSPACE_SIZE()` a
   constant-expression bound for static arrays. The client's `destroy()` wipes the workspace and
   frees nothing. The factories are unchanged; they now allocate one workspace per client.
-- Paho and Rust adapters in application memory: `az_iot_paho_get_adapter()` and
-  `az_iot_rust_mqtt_get_adapter()` return the same `az_iot_mqtt_adapter` descriptor. The workspace
-  holds the adapter's own state (`AZ_IOT_PAHO_WORKSPACE_SIZE`, `AZ_IOT_RUST_MQTT_WORKSPACE_SIZE`);
-  Paho and the Rust client still allocate their internals and size their own buffers, so the limits
-  are only checked. `destroy()` releases those internals, wipes the workspace and frees nothing
-  else. The factories are unchanged.
+- Paho adapter in application memory: `az_iot_paho_get_adapter()` returns an
+  `az_iot_mqtt_adapter` descriptor. The workspace holds the adapter's own state
+  (`AZ_IOT_PAHO_WORKSPACE_SIZE`); Paho still allocates its internals and sizes its own buffers,
+  so the limits are only checked. `destroy()` releases those internals, wipes the workspace
+  and frees nothing else. The factories are unchanged.
 - az_mqtt adapter: `AZ_IOT_AZ_MQTT_MESSAGE_STORAGE_SIZE` may be 0, for devices that only use clean
   sessions: no message store is allocated, and a connect whose session outlives the connection
   (`clean_start` false; MQTT 5: with `session_expiry_seconds` > 0) returns `AZ_IOT_ERR_NOT_SUPPORTED`.
@@ -287,9 +293,26 @@
 - az_mqtt adapter on ESP-IDF (`azure-iot-sdk-az-mqtt` component): with no trusted CA it verifies
   the server against the ESP-IDF certificate bundle. The ESP32 software updates sample uses it
   instead of its own esp-mqtt adapter, and no longer depends on `espressif/mqtt`.
+- ESP-IDF certificate provider over the `esp_secure_cert` partition
+  (`azure-iot-sdk-certificate-provider-esp-secure-cert`, `espressif/esp_secure_cert_mgr` 2.9.3):
+  `az_iot_certificate_provider_esp_secure_cert_init()`. With the Digital Signature peripheral the
+  key is a PSA key (`client_key_psa_id`); otherwise the partition's PEM key, read per connection.
+  The ESP32 software updates sample uses it instead of a certificate and key compiled into the
+  image; its partition tables gain `esp_secure_cert` (0xD000; 0x11000 in the security profile),
+  so devices running an earlier build of the sample must be reflashed over serial.
+- ESP32 software updates sample: the network comes from ESP-IDF's `protocol_examples_common`
+  (`example_connect()`), replacing the sample's own Wi-Fi code. The Wi-Fi settings are now
+  `EXAMPLE_WIFI_SSID` / `EXAMPLE_WIFI_PASSWORD` (were `SU_WIFI_SSID` / `SU_WIFI_PASSWORD`).
+  `sdkconfig.qemu` runs it in QEMU (esp32, esp32s3, esp32c3) over OpenCores Ethernet;
+  `eng/esp-idf-qemu.sh` boots a build in QEMU and waits for a log line, and CI boots the QEMU
+  builds until they get an IPv4 address.
 
 ### Bugs Fixed
 
+- ESP32: the `azure-sdk-for-c` component implements `az_platform_clock_msec()` and
+  `az_platform_sleep_msec()` with `esp_timer` and FreeRTOS, so the az_mqtt adapter's idle wait
+  sleeps instead of returning at once. The software updates sample's connect loop waits out each
+  50 ms tick, so a DPS retry backoff no longer spins it through its bound, starving the idle task.
 - Paho adapter: `process_loop()` returns as soon as an event is queued and dispatches it, instead
   of sleeping its whole timeout and dispatching it on the next call.
 - mqttv5: the connection's `process_loop()` wait ends by the presence SUBACK and birth-ack

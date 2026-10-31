@@ -18,7 +18,7 @@
 
 int su_sample_env_flag(const char* name)
 {
-  char* v = sample_env_dup(name, NULL);
+  char* v = sample_env_copy(name, NULL);
   int on = (v != NULL && strcmp(v, "0") != 0);
   free(v);
   return on;
@@ -26,7 +26,7 @@ int su_sample_env_flag(const char* name)
 
 long su_sample_env_long(const char* name, long fallback)
 {
-  char* v = sample_env_dup(name, NULL);
+  char* v = sample_env_copy(name, NULL);
   long out = fallback;
   if (v != NULL)
   {
@@ -48,7 +48,7 @@ az_iot_log_level su_sample_log_level_from_env(void)
    * protocol lines are DEBUG and would bury the sample's own output. */
   static const char* const k_names[] = { "trace", "debug", "info", "warn", "error", "off" };
   az_iot_log_level out = AZ_IOT_LOG_LEVEL_INFO;
-  char* v = sample_env_dup("AZ_IOT_SU_LOG_LEVEL", NULL);
+  char* v = sample_env_copy("AZ_IOT_SU_LOG_LEVEL", NULL);
   for (size_t i = 0; v != NULL && i < sizeof(k_names) / sizeof(k_names[0]); ++i)
   {
     if (strcmp(v, k_names[i]) == 0)
@@ -65,7 +65,7 @@ az_iot_log_level su_sample_log_level_from_env(void)
 static const char* const k_su_state_names[] = {
   "Idle",           "ManifestReceived", "VerifyingManifest", "DownloadStarted", "DownloadComplete",
   "BackupStarted",  "BackupComplete",   "InstallStarted",    "InstallComplete", "ApplyStarted",
-  "RestoreStarted", "Failed",
+  "RestoreStarted", "Failed",           "Delegated",
 };
 static const char* const k_su_operation_names[] = {
   "onboarding update check",
@@ -245,7 +245,7 @@ int32_t save_update_workflow_to_file(const uint8_t* blob, size_t len, void* user
     return AZ_IOT_SU_RESULT_SUCCESS;
   }
   s->persist_failed = 1;
-  FILE* f = sample_fopen_private(s->state_file, false);
+  FILE* f = sample_file_open_private(s->state_file, false);
   if (f == NULL)
   {
     return AZ_IOT_SU_RESULT_FAILURE;
@@ -265,7 +265,7 @@ int32_t save_update_workflow_to_file(const uint8_t* blob, size_t len, void* user
 int32_t load_update_workflow_from_file(uint8_t* blob, size_t cap, size_t* out_len, void* user_ctx)
 {
   su_simulation_control* s = (su_simulation_control*)user_ctx;
-  FILE* f = sample_fopen_read_nofollow(s->state_file);
+  FILE* f = sample_file_open_read_no_follow(s->state_file);
   if (f == NULL)
   {
     return 1; /* nothing persisted */

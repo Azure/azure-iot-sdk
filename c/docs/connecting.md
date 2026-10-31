@@ -60,7 +60,7 @@ reconnection disabled.
 - A factory that was never registered, or whose registration failed, can be destroyed at any time.
 - Registering the same factory twice returns `AZ_IOT_OK` and keeps one registration.
 
-The same rules apply to the az_mqtt and Rust adapter factories, and match the certificate providers:
+The same rules apply to the az_mqtt adapter factories, and match the certificate providers:
 the application creates them, and destroys them after the connection client.
 Each sample that connects is also built on az_mqtt, from the same `main.c`
 ([samples](../samples/README.md#build)).
@@ -370,7 +370,7 @@ storage still yields the key.
 | The key | The provider returns | Adapter | Sample |
 | --- | --- | --- | --- |
 | Can be named (PKCS#11 URI, TPM 2.0 object) and has an OpenSSL 3.x provider | `client_key_uri` + `crypto_engine_id` | Paho (`AZ_IOT_PAHO_KEY_CUSTODY`); az_mqtt with OpenSSL TLS | [`hsm_pkcs11`](../samples/authentication/hsm_pkcs11/README.md) |
-| Is a PSA Crypto key (e.g. the ESP32 Digital Signature peripheral) | `client_key_psa_id` | az_mqtt with mbedTLS TLS (ESP-IDF); others refuse it with `AZ_IOT_ERR_NOT_SUPPORTED` | — |
+| Is a PSA Crypto key (e.g. the ESP32 Digital Signature peripheral) | `client_key_psa_id` | az_mqtt with mbedTLS TLS (ESP-IDF); others refuse it with `AZ_IOT_ERR_NOT_SUPPORTED` | [ESP32 software updates](../samples/software_update/esp32/README.md#device-identity) |
 | Can only be asked to sign | A `sign()` hook | Your own ([Bring your own MQTT client](how_to_byo_mqtt_client.md)); Paho and az_mqtt refuse it with `AZ_IOT_ERR_NOT_SUPPORTED` | [`hsm_sign_callback`](../samples/authentication/hsm_sign_callback/README.md) |
 
 - **Bootstrap keys** authenticate to DPS; keep them in hardware too.

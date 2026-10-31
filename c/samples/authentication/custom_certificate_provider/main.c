@@ -7,7 +7,7 @@
  *
  * The COMPLETE, app-owned certificate-provider path (vs. the shipped "managed"
  * provider used by dps_csr_managed). It wires sample_cert_provider - a real
- * az_iot_certificate_provider implemented in samples/common with OpenSSL CSR
+ * az_iot_certificate_provider implemented next to this file with OpenSSL CSR
  * issuance - into a full DPS CSR
  * enrollment: authenticate to DPS with the bootstrap identity, send a real
  * PKCS#10 CSR, persist the issued operational chain, and connect to the assigned
@@ -95,8 +95,8 @@ int main(void)
     return 1;
   }
 
-  char* op_key = sample_env_dup("AZ_IOT_OPERATIONAL_KEY", "operational_key.pem");
-  char* op_cert = sample_env_dup("AZ_IOT_OPERATIONAL_CERT", "operational_cert.pem");
+  char* op_key = sample_env_copy("AZ_IOT_OPERATIONAL_KEY", "operational_key.pem");
+  char* op_cert = sample_env_copy("AZ_IOT_OPERATIONAL_CERT", "operational_cert.pem");
 
   int rc = 1;
   user_context user_ctx = { 0 };
@@ -118,7 +118,11 @@ int main(void)
     goto cleanup;
   }
 
+  /* Memory for the connection client's entries, sized for the default limits. */
+  static uint8_t connection_workspace[AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE];
   az_iot_connection_client_options copts = az_iot_connection_client_options_default();
+  copts.workspace = connection_workspace;
+  copts.workspace_size = sizeof(connection_workspace);
   copts.dps.id_scope = config.id_scope;
   copts.dps.registration_id = config.reg_id;
   copts.dps.global_endpoint = config.dps_global_endpoint; /* NULL: the global default */
@@ -172,8 +176,12 @@ int main(void)
 
   if (user_ctx.conn_state == AZ_IOT_CONN_STATE_CONNECTED)
   {
-    az_iot_connection_profile profile = AZ_IOT_CONNECTION_PROFILE_UNKNOWN;
-    (void)sample_get_hub_profile(&connection_client, &profile);
+    az_iot_hub_profile hub_profile;
+    if (az_iot_connection_client_get_hub_profile(&connection_client, &hub_profile) == AZ_IOT_OK)
+    {
+      printf(
+          "Hub profile: %s\n", az_iot_connection_profile_to_string(hub_profile.connection_profile));
+    }
     fprintf(
         stderr,
         "[custom_cert] connected with %s identity\n",

@@ -17,6 +17,7 @@ set(AZ_IOT_CORE_SOURCES
     core/retry_policy.c
     core/defensive_timeout.c
     core/deadline.c
+    core/delivery_tracker.c
     core/env.c
     core/dispatch.c
     core/proto3.c
@@ -30,6 +31,7 @@ set(AZ_IOT_CORE_SOURCES
     core/dps_tpm_client.c
     features/su/su_client.c
     features/su/su_device_properties.c
+    features/su/su_manifest.c
     features/su/su_root_keys_microsoft.c
     features/su/su_report.c
     features/su/su_channel_dps.c
@@ -47,6 +49,8 @@ set(AZ_IOT_MQTTV3_SOURCES
 set(AZ_IOT_MQTTV5_SOURCES
     mqttv5/telemetry_client.c
     mqttv5/direct_method_client.c
+    mqttv5/direct_method_budget.c
+    mqttv5/direct_method_delivery.c
     mqttv5/direct_method_codec.c
     mqttv5/twin_client.c
     mqttv5/custom_topic_client.c

@@ -87,7 +87,7 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
       stderr,
       "[dps_sas_key_issued_cert] %s: %s (%s)\n",
       event->scope == AZ_IOT_CONN_SCOPE_DPS ? "dps" : "hub",
-      sample_connection_state_name(event->state),
+      az_iot_connection_state_to_string(event->state),
       az_iot_result_to_string(event->reason));
   if (event->scope == AZ_IOT_CONN_SCOPE_HUB)
   {
@@ -135,22 +135,22 @@ static void pump(az_iot_connection_client* client)
 {
   uint64_t start = sample_now_ms();
   (void)az_iot_connection_client_do_work(client, SAMPLE_TICK_MS);
-  uint64_t spent = sample_now_ms() - start;
-  if (spent < SAMPLE_TICK_MS)
-  {
-    sample_sleep_ms((long)(SAMPLE_TICK_MS - spent));
-  }
+  sample_sleep_until_tick_end(start, SAMPLE_TICK_MS);
 }
 
 /** @brief Sends one message on the generation DPS assigned. */
 static az_iot_result send_telemetry(az_iot_connection_client* client, sample_context* ctx)
 {
-  az_iot_connection_profile profile = AZ_IOT_CONNECTION_PROFILE_UNKNOWN;
-  az_iot_result r = sample_get_hub_profile(client, &profile);
+  /* The generation DPS assigned decides which telemetry client to use. */
+  az_iot_hub_profile hub_profile;
+  az_iot_result r = az_iot_connection_client_get_hub_profile(client, &hub_profile);
   if (r != AZ_IOT_OK)
   {
+    printf("Hub profile not available: %s\n", az_iot_result_to_string(r));
     return r;
   }
+  az_iot_connection_profile profile = hub_profile.connection_profile;
+  printf("Hub profile: %s\n", az_iot_connection_profile_to_string(profile));
   static const uint8_t payload[] = "{\"auth\":\"sas-key,x509-issued\"}";
   az_iot_telemetry_message msg = { 0 };
   msg.payload = payload;
@@ -189,18 +189,18 @@ static az_iot_result send_telemetry(az_iot_connection_client* client, sample_con
 
 int main(void)
 {
-  az_iot_log_sink log = az_iot_log_stderr_sink(AZ_IOT_LOG_LEVEL_INFO);
+  az_iot_log_sink log = sample_log_sink(AZ_IOT_LOG_LEVEL_INFO);
   az_iot_log_set_global_sink(&log);
 
   sas_config config = {
-    .id_scope = sample_env_dup("AZ_IOT_DPS_ID_SCOPE", NULL),
-    .reg_id = sample_env_dup("AZ_IOT_DPS_REGISTRATION_ID", NULL),
-    .key = sample_env_dup("AZ_IOT_DPS_SYMMETRIC_KEY", NULL),
-    .group_key = sample_env_dup("AZ_IOT_DPS_ENROLLMENT_GROUP_KEY", NULL),
-    .ca = sample_env_dup("AZ_IOT_TRUSTED_CA", NULL),
-    .endpoint = sample_env_dup("AZ_IOT_DPS_GLOBAL_ENDPOINT", NULL),
-    .op_key = sample_env_dup("AZ_IOT_OPERATIONAL_KEY", "operational_key.pem"),
-    .op_cert = sample_env_dup("AZ_IOT_OPERATIONAL_CERT", "operational_cert.pem"),
+    .id_scope = sample_env_copy("AZ_IOT_DPS_ID_SCOPE", NULL),
+    .reg_id = sample_env_copy("AZ_IOT_DPS_REGISTRATION_ID", NULL),
+    .key = sample_env_copy("AZ_IOT_DPS_SYMMETRIC_KEY", NULL),
+    .group_key = sample_env_copy("AZ_IOT_DPS_ENROLLMENT_GROUP_KEY", NULL),
+    .ca = sample_env_copy("AZ_IOT_TRUSTED_CA", NULL),
+    .endpoint = sample_env_copy("AZ_IOT_DPS_GLOBAL_ENDPOINT", NULL),
+    .op_key = sample_env_copy("AZ_IOT_OPERATIONAL_KEY", "operational_key.pem"),
+    .op_cert = sample_env_copy("AZ_IOT_OPERATIONAL_CERT", "operational_cert.pem"),
   };
   if (!is_set(config.id_scope) || !is_set(config.reg_id)
       || is_set(config.key) == is_set(config.group_key))
@@ -233,7 +233,11 @@ int main(void)
     goto cleanup;
   }
 
+  /* Memory for the connection client's entries, sized for the default limits. */
+  static uint8_t connection_workspace[AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE];
   az_iot_connection_client_options opts = az_iot_connection_client_options_default();
+  opts.workspace = connection_workspace;
+  opts.workspace_size = sizeof(connection_workspace);
   opts.device_id = config.reg_id;
   opts.dps.id_scope = config.id_scope;
   opts.dps.registration_id = config.reg_id;

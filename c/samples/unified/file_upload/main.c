@@ -443,7 +443,11 @@ int main(void)
   }
 
   /* Connection client (DPS provisioning is internal). */
+  /* Memory for the connection client's entries, sized for the default limits. */
+  static uint8_t connection_workspace[AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE];
   az_iot_connection_client_options copts = az_iot_connection_client_options_default();
+  copts.workspace = connection_workspace;
+  copts.workspace_size = sizeof(connection_workspace);
   copts.dps.id_scope = state.config.id_scope;
   copts.dps.registration_id = state.config.reg_id;
   copts.dps.global_endpoint = state.config.dps_global_endpoint; /* NULL: the global default */
@@ -496,16 +500,17 @@ int main(void)
     }
   }
 
-  az_iot_connection_profile profile = AZ_IOT_CONNECTION_PROFILE_UNKNOWN;
+  az_iot_hub_profile hub_profile = { 0 };
   if (user_ctx.conn_state != AZ_IOT_CONN_STATE_CONNECTED)
   {
     printf("Failed to reach CONNECTED (state=%d).\n", (int)user_ctx.conn_state);
   }
-  else if (sample_get_hub_profile(&state.connection_client, &profile) != AZ_IOT_OK)
+  else if (
+      az_iot_connection_client_get_hub_profile(&state.connection_client, &hub_profile) != AZ_IOT_OK)
   {
-    /* Already reported. */
+    printf("Hub profile not available.\n");
   }
-  else if (profile != AZ_IOT_CONNECTION_PROFILE_MQTT_V3)
+  else if (hub_profile.connection_profile != AZ_IOT_CONNECTION_PROFILE_MQTT_V3)
   {
     /* No mqttv5 file upload client exists; the mqttv3 one would refuse this
      * connection at init(). */

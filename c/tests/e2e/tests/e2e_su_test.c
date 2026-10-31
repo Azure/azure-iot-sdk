@@ -161,17 +161,17 @@ static void fixture_open(e2e_fixture* fx)
   assert_int_equal(
       az_iot_connection_client_add_state_observer(&fx->conn, on_conn_state, fx), AZ_IOT_OK);
 
-  az_iot_su_device_properties dp = { 0 };
-  dp.manufacturer = "contoso";
-  dp.model = "tractor";
-  dp.installed_update_id.provider = "contoso";
-  dp.installed_update_id.name = "tractor";
-  dp.installed_update_id.version = "1.0";
+  az_iot_su_device_properties device_properties = { 0 };
+  device_properties.manufacturer = "contoso";
+  device_properties.model = "tractor";
+  device_properties.installed_update_id.provider = "contoso";
+  device_properties.installed_update_id.name = "tractor";
+  device_properties.installed_update_id.version = "1.0";
   assert_int_equal(
       az_iot_su_channel_dps_init(
           &fx->channel_state,
           &fx->conn,
-          &dp,
+          &device_properties,
           fx->channel_body,
           sizeof(fx->channel_body),
           fx->channel_device_properties,
@@ -448,6 +448,13 @@ static int group_setup(void** state)
   return e2e_su_env_load(&g_env);
 }
 
+static int group_teardown(void** state)
+{
+  (void)state;
+  e2e_su_env_free(&g_env);
+  return 0;
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -456,5 +463,5 @@ int main(void)
     cmocka_unit_test(etags_are_issued_stored_and_survive_the_session),
     cmocka_unit_test(an_unknown_workflow_report_is_not_treated_as_delivered),
   };
-  return cmocka_run_group_tests(tests, group_setup, NULL);
+  return cmocka_run_group_tests(tests, group_setup, group_teardown);
 }

@@ -156,7 +156,6 @@ set(_az_iot_pc_descriptions
     mqttv5                        "IoT Hub mqttv5 clients"
     adapter_paho                  "Eclipse Paho MQTT adapter"
     adapter_az_mqtt               "az_mqtt MQTT adapter"
-    adapter_rust_mqtt             "Rust MQTT adapter"
     crypto_openssl                "OpenSSL crypto backend"
     crypto_mbedtls                "mbedTLS crypto backend"
     certificate_provider_managed  "OpenSSL managed certificate provider"

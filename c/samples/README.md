@@ -45,6 +45,7 @@ run it, and what to expect.
 | [software_update/pc/http_download](software_update/pc/http_download/README.md) | Software updates with a real, non-blocking HTTPS download (libcurl) through a proxy; simulated install. |
 | [software_update/pc/multi_step](software_update/pc/multi_step/README.md) | A multi-step update: per-step hooks, rollback, failure codes, step result details and the final report. |
 | [software_update/pc/reboot_resume](software_update/pc/reboot_resume/README.md) | An update that needs a reboot: atomic state persistence, when to reboot, and resume. |
+| [software_update/pc/library_mode](software_update/pc/library_mode/README.md) | Library mode: the application downloads, installs and reports each verified update itself; simulated download (zero-filled files) and install. |
 | [software_update/esp32](software_update/esp32/README.md) | Software updates with a real over-the-air install on an ESP32. |
 
 ## How a unified sample handles the hub generation
@@ -64,6 +65,13 @@ the assigned profile. The `unified/` samples respond in one of three ways:
   assignment they report it and exit 1.
 
 See [Architecture](../docs/architecture.md#hub-generations-mqttv3-and-mqttv5).
+
+## Shared code
+
+[`common/`](common/) holds platform plumbing only: environment variables, clock and sleep,
+owner-only and atomic file writes, the Ctrl+C/SIGTERM stop flag, the log sink, and the simulated
+TPM. What a sample demonstrates (options, certificate providers, callbacks, `do_work()` loops,
+teardown) is in its `main.c`.
 
 ## Prerequisites
 

@@ -77,30 +77,72 @@ at the next poll. No check is made while a deployment is in flight.
 
 ### Device identity
 
-The build embeds these files into the firmware (`EMBED_TXTFILES`). The committed
-files are placeholders.
+The device certificate and key are not in the image: they come from the `esp_secure_cert`
+partition (0xD000; 0x11000 in the [security profile](#production-security-profile-optional)),
+read by the [esp_secure_cert certificate provider](../../../adapters/cert_esp_secure_cert/az_iot_certificate_provider_esp_secure_cert.h)
+(`espressif/esp_secure_cert_mgr`). The certificate CN must equal `SU_DPS_REGISTRATION_ID`.
 
-| File | Required | Content |
-|---|---|---|
-| `main/certs/device_cert.pem` | yes | Device certificate (PEM). CN must equal `SU_DPS_REGISTRATION_ID`. |
-| `main/certs/device_key.pem` | yes | Unencrypted device private key (PEM). |
-| `main/certs/trusted_ca.pem` | no | CA bundle for the DPS and hub **server** certificates. Leave the placeholder to use the ESP-IDF certificate bundle, which trusts the Azure roots. |
+| Chip | Key |
+|---|---|
+| ESP32-S3, ESP32-C3, ESP32-C6 | Digital Signature (DS) peripheral: an RSA key, encrypted with an eFuse key that only the peripheral uses once read-protected (below). TLS signs with it as a PSA key. |
+| ESP32 | PEM key in the partition, read into RAM for each connection and wiped after. Flash encryption (security profile) protects it at rest. |
 
-> The device key is compiled into the image. Use a per-device key and treat the
-> binary as a secret. The [security profile](#production-security-profile-optional)
-> encrypts flash, but does not move the key into hardware. For production key custody, see
-> [Production keys](../../../docs/connecting.md#production-keys).
+Write the partition with Espressif's `configure_esp_secure_cert.py`
+(`pip install esp-secure-cert-tool`) after `idf.py flash`; `idf.py flash` leaves it in place,
+`idf.py erase-flash` erases it. These commands are for development:
+
+```sh
+# ESP32-S3/C3/C6: --configure_ds burns the eFuse key block --efuse_key_id (irreversible).
+configure_esp_secure_cert.py -p PORT --target_chip esp32c3 --secure_cert_type cust_flash_tlv \
+    --device-cert device_cert.pem --private-key device_key.pem \
+    --configure_ds --priv_key_algo RSA 2048 --efuse_key_id 3
+# ESP32:
+configure_esp_secure_cert.py -p PORT --target_chip esp32 --secure_cert_type cust_flash_tlv \
+    --device-cert device_cert.pem --private-key device_key.pem
+```
+
+`--priv_key_algo` must match the key (RSA and its size). The tool burns the DS key block
+**without read protection**, so its key can still be read and used to decrypt the DS data off
+the chip. For production, read-protect it right after provisioning and check that
+`espefuse.py -p PORT summary` reports the block as read-protected:
+
+```sh
+espefuse.py --chip esp32c3 -p PORT read_protect_efuse BLOCK_KEY3
+```
+
+With the [security profile](#production-security-profile-optional), provision **before the
+first boot of the secure build**: its first boot enables release-mode flash encryption and, on
+ESP32 rev v3.0+, disables serial download, after which the partition can no longer be written.
+Per device:
+
+1. Provision as above with `--sec_cert_part_offset 0x11000`. The partition is written in
+   plaintext; the first secure boot encrypts it with the app (`encrypted` flag in
+   [`partitions_secure.csv`](partitions_secure.csv)). On ESP32-S3/C3/C6 keep the DS key in
+   block 3 and read-protect it: the first secure boot puts its Secure Boot and flash encryption
+   keys in the first free blocks (0 and 1), and NVS encryption creates its key in block 2.
+   The [virtual eFuse rehearsal](#production-security-profile-optional) burns nothing, but
+   `--configure_ds` and `read_protect_efuse` burn real eFuses: for it, provision as on ESP32
+   (no `--configure_ds`, no read protection); its profile turns DS off and uses the PEM key.
+2. Flash and boot the secure build.
+
+For production key custody, see [Production keys](../../../docs/connecting.md#production-keys).
+
+`main/certs/trusted_ca.pem` (optional, compiled in) is the CA for the DPS and hub **server**
+certificates. Leave the placeholder to use the ESP-IDF certificate bundle, which trusts the
+Azure roots.
 
 ### Settings
 
 Set with `idf.py menuconfig` → *Software Updates ESP32 Sample Configuration*
-([`main/Kconfig.projbuild`](main/Kconfig.projbuild)). Values land in the git-ignored
-`sdkconfig`.
+([`main/Kconfig.projbuild`](main/Kconfig.projbuild)), and the Wi-Fi network under *Example
+Connection Configuration* (ESP-IDF's
+[`protocol_examples_common`](https://github.com/espressif/esp-idf/tree/v6.0/examples/common_components/protocol_examples_common)).
+Values land in the git-ignored `sdkconfig`.
 
 | Setting | Required | Meaning |
 |---|---|---|
-| `SU_WIFI_SSID` | yes | Wi-Fi network (WPA2). |
-| `SU_WIFI_PASSWORD` | yes | Wi-Fi password. |
+| `EXAMPLE_WIFI_SSID` | yes | Wi-Fi network. |
+| `EXAMPLE_WIFI_PASSWORD` | yes | Wi-Fi password. |
 | `SU_DPS_ID_SCOPE` | yes | DPS ID scope. |
 | `SU_DPS_REGISTRATION_ID` | yes | Registration id / device id; must equal the certificate CN. |
 | `SU_POLL_INTERVAL_S` | no | Seconds between update checks once connected. Default `14400` (4 h), range 10–86400. All devices share the provisioning service's request budget, which plans for one check per device every 4 hours; use a shorter interval only for testing. |
@@ -143,7 +185,8 @@ production software updates roots compiled into the SDK. See
   git submodule update --init c/deps/azure-sdk-for-c
   ```
 
-Nothing is fetched from the ESP Component Registry.
+From the ESP Component Registry, at exact versions: `espressif/esp_secure_cert_mgr` (device
+identity) and `espressif/ethernet_init` (needed by `protocol_examples_common`).
 
 ### Build and flash
 
@@ -161,15 +204,37 @@ Leave the monitor running; see [Expected output](#expected-output).
 
 CI (`ci-c`, job `esp-idf`) builds this sample for esp32, esp32c3, esp32s3 and
 esp32c6, with the default and the [production security](#production-security-profile-optional)
-profiles, plus the esp32 legacy and virtual eFuse profiles. Any compiler
-warning fails the build. To run one build the same way, from `c/`:
+profiles, plus the esp32 legacy and virtual eFuse profiles, and the [QEMU](#run-in-qemu) profile
+for esp32, esp32s3 and esp32c3, which it also boots in QEMU until it gets an IPv4 address. Any
+compiler warning fails the build. To run one build the same way, from `c/`:
 
 ```sh
 eng/esp-idf-build.sh samples/software_update/esp32 esp32c3 secure
 ```
 
-Profiles: `default`, `secure`, `secure_esp32_legacy`, `secure_virtual_efuse`.
+Profiles: `default`, `secure`, `secure_esp32_legacy`, `secure_virtual_efuse`, `qemu`.
 Secure builds are signed with a throwaway key and must not be flashed.
+
+### Run in QEMU
+
+QEMU emulates esp32, esp32s3 and esp32c3, but not Wi-Fi: [`sdkconfig.qemu`](sdkconfig.qemu)
+switches the network to OpenCores Ethernet, which QEMU user networking connects to the host's
+network. From `c/`, with ESP-IDF's QEMU installed (`idf_tools.py install qemu-xtensa qemu-riscv32`):
+
+```sh
+eng/esp-idf-build.sh samples/software_update/esp32 esp32c3 qemu /tmp/su
+eng/esp-idf-qemu.sh /tmp/su/software_update-esp32-esp32c3-qemu/build esp32c3 "Got IPv4 event"
+```
+
+The image boots, gets `10.0.2.15` and then needs a device identity, or the sample stops at
+`no device certificate in the esp_secure_cert partition`. Write the `esp_secure_cert` partition
+([Device identity](#device-identity)) into the flash image with
+`QEMU_FLASH_EXTRA="0xd000 esp_secure_cert.bin" eng/esp-idf-qemu.sh ...`. Each run writes a fresh
+flash image, so NVS and OTA state do not persist. The full log is `qemu.log` in the build
+directory. The `qemu` profile leaves Secure Boot and flash encryption off, as `default` does.
+ESP-IDF's QEMU can emulate both
+([QEMU guide](https://docs.espressif.com/projects/esp-idf/en/v6.0/esp32/api-guides/tools/qemu.html)),
+but this sample has no profile that combines them with `qemu`.
 
 ### Deploy an update
 
@@ -197,7 +262,7 @@ revision. For production, layer these opt-in overlays on top of
 | Flash encryption | Release mode |
 | NVS encryption | Keys in the encrypted `nvs_keys` partition (ESP32, and every chip in the rehearsal); HMAC-derived on ESP32-S3/C3/C6 (eFuse key block 2) |
 | UART download mode | Disabled on ESP32 rev v3.0+: no serial flashing afterwards, updates are OTA only. Secure download mode on ESP32-S3/C3/C6. Stays enabled on ESP32 below rev v3.0 (not supported there). |
-| Partition table | [`partitions_secure.csv`](partitions_secure.csv) at 0x10000, for the larger bootloader; same A/B app slots |
+| Partition table | [`partitions_secure.csv`](partitions_secure.csv) at 0x10000, for the larger bootloader; same A/B app slots; `esp_secure_cert` at 0x11000 |
 
 > **Irreversible.** The first boot of such an image burns eFuses. JTAG is
 > disabled and download mode is disabled or restricted (see above). On ESP32
@@ -245,6 +310,7 @@ revision. For production, layer these opt-in overlays on top of
    idf.py "${SECURE[@]}" menuconfig
    grep -E '^CONFIG_(SECURE_BOOT|SECURE_FLASH_ENC_ENABLED|NVS_ENCRYPTION)=y' sdkconfig.production   # 3 lines
    idf.py "${SECURE[@]}" -p <PORT> erase-flash
+   # Provision the identity at 0x11000 here (see Device identity): the first boot locks flash.
    idf.py "${SECURE[@]}" -p <PORT> build flash monitor
    ```
 
@@ -257,6 +323,7 @@ revision. For production, layer these opt-in overlays on top of
    idf.py @secure menuconfig
    Select-String '^CONFIG_(SECURE_BOOT|SECURE_FLASH_ENC_ENABLED|NVS_ENCRYPTION)=y' sdkconfig.production   # 3 lines
    idf.py @secure -p <PORT> erase-flash
+   # Provision the identity at 0x11000 here (see Device identity): the first boot locks flash.
    idf.py @secure -p <PORT> build flash monitor
    ```
 
@@ -292,7 +359,7 @@ It runs until powered off, like the agent it stands in for. It reboots
 | Cause | Log line |
 |---|---|
 | An update was installed; boots the new image | `rebooting into the new firmware to apply the update` |
-| Wi-Fi fails after 10 retries | `Wi-Fi connect failed; rebooting` |
+| Network connect fails (Wi-Fi: after `EXAMPLE_WIFI_CONN_MAX_RETRY` retries) | `network connect failed; rebooting` |
 | No hub connection within about 120 s (twice `AZ_IOT_DPS_HOLD_TIMEOUT_MS`), or provisioning faulted | `could not connect; rebooting` |
 | The connection faults while no update is in flight | `connection faulted; rebooting` |
 | An SDK call fails at startup | `<call> failed` |
@@ -303,8 +370,8 @@ At startup (other log lines omitted):
 
 ```
 I (...) su_esp32: Software updates ESP32 sample starting (firmware version 1.0.0)
-I (...) wifi: connecting to SSID 'my-ssid'
-I (...) wifi: got IP: 192.168.1.23
+I (...) example_connect: Connecting to my-ssid...
+I (...) example_common: Connected to example_netif_sta
 I (...) su_esp32: checking for updates on the onboarding route
 I (...) su_esp32: connection: AZ_IOT_CONN_STATE_IDLE -> AZ_IOT_CONN_STATE_CONNECTING (reason=0x00000000)
 I (...) su_esp32: connection: AZ_IOT_CONN_STATE_CONNECTING -> AZ_IOT_CONN_STATE_CONNECTED (reason=0x00000000)
@@ -329,8 +396,9 @@ I (...) su_ota: image confirmed valid; rollback cancelled
 
 | Symptom | Likely cause |
 |---------|--------------|
-| `retrying Wi-Fi connect (n/10)`, then `Wi-Fi connect failed; rebooting` | Wrong `SU_WIFI_SSID` / `SU_WIFI_PASSWORD`, or not a WPA2 network. |
-| `could not connect; rebooting` | DPS refused the device: certificate CN differs from `SU_DPS_REGISTRATION_ID`, no matching enrollment, or the placeholder certificate is still embedded. |
+| `WiFi Connect failed <n> times, stop reconnect.`, then `network connect failed; rebooting` | Wrong `EXAMPLE_WIFI_SSID` / `EXAMPLE_WIFI_PASSWORD`, or a network below WPA2 (`sdkconfig.defaults` sets `EXAMPLE_WIFI_AUTH_WPA2_PSK`). |
+| `no device certificate in the esp_secure_cert partition; see README` | The partition was not written, was written at another offset, or (ESP32-S3/C3/C6) lacks the DS data. See [Device identity](#device-identity). |
+| `could not connect; rebooting` | DPS refused the device: certificate CN differs from `SU_DPS_REGISTRATION_ID`, or no matching enrollment. |
 | Connected, but no update is ever offered | Compatibility mismatch (`Espressif` / `ESP32-WROOM`), wrong route for the job type, or the update was deployed through the IoT-Hub-based model. |
 | `su_ota: http status ...` or `http open failed` | Download URL unreachable, or TLS to the storage host failed. |
 | `su_ota: esp_ota_write failed` | Image larger than the 1856 KB OTA slot. |
@@ -343,11 +411,11 @@ The SDK logs at `INFO`; change the level in `app_main()` for more detail.
 
 | What | Code |
 |------|------|
-| Embedded certificates | `az_iot_cert_embedded_init()` |
+| Device certificate and key | `az_iot_certificate_provider_esp_secure_cert_init()` |
 | az_mqtt adapter (MQTT 3.1.1 + 5) | `az_iot_az_mqtt_factory_create_v3_1_1()`, `az_iot_az_mqtt_factory_create_v5()` |
 | Crypto backend | `copts.crypto = az_iot_crypto_mbedtls()` |
 | OTA hooks, root keys | `az_iot_su_esp32_ota_get_platform_hooks()`, `az_iot_su_microsoft_root_keys()` |
-| Compatibility properties | `dp.manufacturer`, `dp.model` |
+| Compatibility properties | `device_properties.manufacturer`, `device_properties.model` |
 | Resume after the OTA reboot | `az_iot_su_client_resume()` |
 | Route selection | `app_request_check()`, `app_is_registered()` |
 | Poll loop and reboot | the `for (;;)` loop at the end of `app_main()` |
@@ -357,23 +425,23 @@ The SDK logs at `INFO`; change the level in `app_main()` for more detail.
 ```
 samples/software_update/esp32/
 ├── CMakeLists.txt                   ESP-IDF project
-├── partitions.csv                   A/B OTA partition table (4 MB flash)
+├── partitions.csv                   esp_secure_cert + A/B OTA partition table (4 MB flash)
 ├── partitions_secure.csv            same, plus nvs_keys / efuse_em (security profile)
 ├── sdkconfig.defaults               target, flash size, rollback, az_mqtt, mbedTLS
 ├── sdkconfig.secure[.<target>]      security profile (opt-in)
 ├── sdkconfig.secure_esp32_legacy    ESP32 below rev v3.0: Secure Boot v1
 ├── sdkconfig.secure_virtual_efuse   rehearse the profile without burning eFuses
+├── sdkconfig.qemu                   QEMU: OpenCores Ethernet instead of Wi-Fi
 └── main/
-    ├── app_main.c                   Wi-Fi → DPS → software updates loop
-    ├── az_iot_cert_embedded.[ch]    in-memory X.509 certificate provider
-    ├── wifi_connect.[ch]            station-mode Wi-Fi
+    ├── app_main.c                   network → DPS → software updates loop
     ├── su_version.h                 firmware version
     ├── Kconfig.projbuild            settings
-    └── certs/                       embedded PEM files
+    └── certs/trusted_ca.pem         optional server CA, compiled in
 ```
 
 The SDK, azure-sdk-for-c, the crypto backend
 ([`adapters/crypto_mbedtls`](../../../adapters/crypto_mbedtls/): RS256 / SHA-256 over PSA Crypto)
-and the OTA platform hooks ([`adapters/su/esp32`](../../../adapters/su/esp32/)) are the ESP-IDF
+the OTA platform hooks ([`adapters/su/esp32`](../../../adapters/su/esp32/)) and the certificate
+provider ([`adapters/cert_esp_secure_cert`](../../../adapters/cert_esp_secure_cert/)) are the ESP-IDF
 components in [`platforms/esp32/components`](../../../platforms/esp32/README.md).
 

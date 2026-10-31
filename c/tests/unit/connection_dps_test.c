@@ -490,6 +490,7 @@ static void reprovisioning_connects_to_the_new_assignment(void** state)
 
 typedef struct identity_log
 {
+  const az_iot_connection_client* client;
   int identity_changes;
   int identity_changes_seen_by_assignment;
 } identity_log;
@@ -497,7 +498,10 @@ typedef struct identity_log
 static void count_identity_change(const az_iot_connection_feature_event* event, void* user_ctx)
 {
   assert_int_equal(event->kind, AZ_IOT_CONNECTION_FEATURE_EVENT_IDENTITY_CHANGED);
-  ++((identity_log*)user_ctx)->identity_changes;
+  identity_log* log = (identity_log*)user_ctx;
+  /* Counted before any observer runs. */
+  assert_int_equal(log->client->identity_changes, (uint32_t)log->identity_changes + 1u);
+  ++log->identity_changes;
 }
 
 static void note_assignment(const az_iot_dps_assignment* assignment, void* user_ctx)
@@ -555,6 +559,7 @@ static void a_different_assignment_reports_an_identity_change(void** state)
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
   use_reprovision_mode(fx);
   identity_log log = { 0 };
+  log.client = fx->client;
   assert_int_equal(
       az_iot_connection_client__add_feature_observer(
           fx->client,
@@ -3372,12 +3377,13 @@ static void the_dps_ladder_does_not_inherit_the_hub_backoff(void** state)
   {
     az_iot_mock_mqtt_client* hub = az_iot_mock_mqtt_factory_last_client(fx->factory);
     assert_non_null(hub);
-    uint64_t before = az_iot_time_mono_ms();
     assert_true(az_iot_mock_mqtt_client_inject_connected(hub, AZ_IOT_ERR_MQTT));
     (void)az_iot_connection_client_do_work(fx->client, 0);
     (void)az_iot_connection_client_do_work(fx->client, 0);
     assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_RETRY_PENDING);
-    last_delay = fx->client->reconnect_due_ms - before;
+    size_t last = fx->log.count - 1u;
+    assert_true(fx->log.recovery_present[last]);
+    last_delay = fx->log.recovery[last].next_attempt_delay_ms;
     if (i < 2)
     {
       az_iot_test_wait_ms((unsigned)last_delay + 5u);
@@ -3387,7 +3393,7 @@ static void the_dps_ladder_does_not_inherit_the_hub_backoff(void** state)
 
   /* The hub ladder had reached 40 ms; the DPS one starts over at 10 ms. */
   assert_true(fx->client->needs_reprovision);
-  assert_true(last_delay <= (uint64_t)LADDER_INITIAL_MS + 2u);
+  assert_int_equal(last_delay, LADDER_INITIAL_MS);
   assert_int_equal(fx->client->retry_attempt[AZ_IOT_CONN_SCOPE_DPS], 1);
 
   /* And the attempt that deadline schedules really is a registration -- the

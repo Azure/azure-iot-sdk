@@ -56,7 +56,6 @@
  *   SU_SIM_DELAY_MS=<ms>     per-download delay so progress is observable
  *   SU_SIM_STATE_FILE=<path> resume blob path (default ./su_sim_state.blob)
  */
-#include <signal.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -99,13 +98,6 @@
  * az_iot_su_root_key array (kid + big-endian modulus/exponent) and pass it
  * to az_iot_su_client_init() in place of the Microsoft keys.
  */
-
-static volatile sig_atomic_t g_stop = 0;
-static void on_sigint(int signo)
-{
-  (void)signo;
-  g_stop = 1;
-}
 
 typedef struct
 {
@@ -190,8 +182,8 @@ static void on_connection_state_event_received(
     printf(
         "%s: %s -> %s (%s)\n",
         (scope == AZ_IOT_CONN_SCOPE_DPS) ? "Provisioning" : "Hub",
-        sample_connection_state_name(state->connection_state[scope]),
-        sample_connection_state_name(event->state),
+        az_iot_connection_state_to_string(state->connection_state[scope]),
+        az_iot_connection_state_to_string(event->state),
         az_iot_result_to_string(event->reason));
     state->connection_state[scope] = event->state;
 
@@ -298,6 +290,9 @@ static void on_su_event(const az_iot_su_event* event, void* user_ctx)
           "Workflow completed; final report %s.\n",
           event->reason == AZ_IOT_OK ? "accepted" : "rejected by the service");
       break;
+    case AZ_IOT_SU_EVENT_UPDATE_AVAILABLE:
+      /* Library mode only; this sample runs the managed client. */
+      break;
   }
 }
 
@@ -325,7 +320,11 @@ static int initialize_connection_client(sample_state* state)
   }
 
   /* Connection client. */
+  /* Memory for the connection client's entries, sized for the default limits. */
+  static uint8_t connection_workspace[AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE];
   az_iot_connection_client_options copts = az_iot_connection_client_options_default();
+  copts.workspace = connection_workspace;
+  copts.workspace_size = sizeof(connection_workspace);
   copts.dps.id_scope = state->config.id_scope;
   copts.dps.registration_id = state->config.reg_id;
   copts.dps.global_endpoint = state->config.dps_global_endpoint; /* NULL: the global default */
@@ -382,7 +381,7 @@ int main(void)
   az_iot_log_sink log = sample_log_sink(su_sample_log_level_from_env());
   az_iot_log_set_global_sink(&log);
 
-  (void)signal(SIGINT, on_sigint); /* Ctrl+C handling is a convenience */
+  sample_install_stop_handler(); /* Ctrl+C or SIGTERM ends the loop below */
 
   sample_state state = { 0 };
 
@@ -391,7 +390,7 @@ int main(void)
   state.simulation_control.hash_mismatch = su_sample_env_flag("SU_SIM_HASH_MISMATCH");
   state.simulation_control.reboot = su_sample_env_flag("SU_SIM_REBOOT");
   state.simulation_control.delay_ms = su_sample_env_long("SU_SIM_DELAY_MS", 0);
-  state.simulation_control.state_file = sample_env_dup("SU_SIM_STATE_FILE", "./su_sim_state.blob");
+  state.simulation_control.state_file = sample_env_copy("SU_SIM_STATE_FILE", "./su_sim_state.blob");
   if (state.simulation_control.state_file == NULL)
   {
     return 1;
@@ -434,13 +433,13 @@ int main(void)
    * against. Configurable because a hard-coded value that does not match the
    * imported update is answered "nothing to do" -- indistinguishable from
    * "nothing deployed" unless the device says what it asked with. */
-  state.su_device_properties.manufacturer = sample_env_dup("AZ_IOT_SU_MANUFACTURER", "Contoso");
-  state.su_device_properties.model = sample_env_dup("AZ_IOT_SU_MODEL", "SU-Sim");
+  state.su_device_properties.manufacturer = sample_env_copy("AZ_IOT_SU_MANUFACTURER", "Contoso");
+  state.su_device_properties.model = sample_env_copy("AZ_IOT_SU_MODEL", "SU-Sim");
   state.su_device_properties.installed_provider
-      = sample_env_dup("AZ_IOT_SU_INSTALLED_PROVIDER", "Contoso");
-  state.su_device_properties.installed_name = sample_env_dup("AZ_IOT_SU_INSTALLED_NAME", "SU-Sim");
+      = sample_env_copy("AZ_IOT_SU_INSTALLED_PROVIDER", "Contoso");
+  state.su_device_properties.installed_name = sample_env_copy("AZ_IOT_SU_INSTALLED_NAME", "SU-Sim");
   state.su_device_properties.installed_version
-      = sample_env_dup("AZ_IOT_SU_INSTALLED_VERSION", "1.0.0");
+      = sample_env_copy("AZ_IOT_SU_INSTALLED_VERSION", "1.0.0");
   if (state.su_device_properties.manufacturer == NULL || state.su_device_properties.model == NULL
       || state.su_device_properties.installed_provider == NULL
       || state.su_device_properties.installed_name == NULL
@@ -450,17 +449,17 @@ int main(void)
     return 1;
   }
 
-  az_iot_su_device_properties dp = { 0 };
-  dp.manufacturer = state.su_device_properties.manufacturer;
-  dp.model = state.su_device_properties.model;
-  dp.installed_update_id.provider = state.su_device_properties.installed_provider;
-  dp.installed_update_id.name = state.su_device_properties.installed_name;
-  dp.installed_update_id.version = state.su_device_properties.installed_version;
+  az_iot_su_device_properties device_properties = { 0 };
+  device_properties.manufacturer = state.su_device_properties.manufacturer;
+  device_properties.model = state.su_device_properties.model;
+  device_properties.installed_update_id.provider = state.su_device_properties.installed_provider;
+  device_properties.installed_update_id.name = state.su_device_properties.installed_name;
+  device_properties.installed_update_id.version = state.su_device_properties.installed_version;
 
   /* Named, rather than a bare error out of init(): the cache is fixed
    * and these values now come from the environment. */
-  size_t dp_needed = az_iot_su_device_properties_buffer_size(&dp);
-  if (dp_needed == 0)
+  size_t device_properties_needed = az_iot_su_device_properties_buffer_size(&device_properties);
+  if (device_properties_needed == 0)
   {
     fprintf(
         stderr,
@@ -472,13 +471,13 @@ int main(void)
     sample_state_destroy(&state);
     return 1;
   }
-  if (dp_needed > AZ_IOT_SU_DEVICE_PROPERTIES_BUFFER_SIZE)
+  if (device_properties_needed > AZ_IOT_SU_DEVICE_PROPERTIES_BUFFER_SIZE)
   {
     fprintf(
         stderr,
         "Device properties need %zu bytes of cache; this sample has %zu. Shorten "
         "them or raise limits.device_properties_size.\n",
-        dp_needed,
+        device_properties_needed,
         (size_t)AZ_IOT_SU_DEVICE_PROPERTIES_BUFFER_SIZE);
     sample_state_destroy(&state);
     return 1;
@@ -488,7 +487,7 @@ int main(void)
   su_opts.hooks = &hooks;
   su_opts.root_keys = root_keys;
   su_opts.root_key_count = root_key_count;
-  su_opts.device_properties = &dp;
+  su_opts.device_properties = &device_properties;
   /* Limits, each the SDK default; the workspace is sized for them. */
   su_opts.limits.max_update_size = AZ_IOT_SU_DEFAULT_MAX_UPDATE_SIZE;
   su_opts.limits.scratch_size = AZ_IOT_SU_VERIFY_SCRATCH_SIZE;
@@ -570,7 +569,7 @@ int main(void)
    * are pumped -- the connection delivers, the software updates client advances -- and
    * everything this loop reacts to arrives through the two observers. */
   rc = 0; /* interrupted or asked to reboot is a normal exit */
-  while (!g_stop)
+  while (!sample_is_stop_requested())
   {
     (void)az_iot_connection_client_do_work(&state.connection_client, 50);
     (void)az_iot_su_client_do_work(&state.su_client);

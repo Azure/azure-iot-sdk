@@ -348,8 +348,8 @@ static az_iot_result sign_token_with_tpm(
 static void on_token_required(const az_iot_sas_token_request* request, void* user_ctx)
 {
   token_request* p = &((sample_context*)user_ctx)->request;
-  if (!sample_copy_str(p->resource_uri, sizeof(p->resource_uri), request->resource_uri)
-      || !sample_copy_str(p->key_name, sizeof(p->key_name), request->key_name))
+  if (!sample_string_copy(p->resource_uri, sizeof(p->resource_uri), request->resource_uri)
+      || !sample_string_copy(p->key_name, sizeof(p->key_name), request->key_name))
   {
     fprintf(stderr, "[dps_tpm] token request too long for this sample\n");
     return;
@@ -394,7 +394,7 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
   fprintf(
       stderr,
       "[dps_tpm] hub: %s (%s)\n",
-      sample_connection_state_name(event->state),
+      az_iot_connection_state_to_string(event->state),
       az_iot_result_to_string(event->reason));
   ctx->hub_state = event->state;
   if (event->reason != AZ_IOT_OK
@@ -444,11 +444,11 @@ int main(int argc, char** argv)
   az_iot_log_sink log = sample_log_sink(AZ_IOT_LOG_LEVEL_INFO);
   az_iot_log_set_global_sink(&log);
 
-  char* id_scope = sample_env_dup("AZ_IOT_DPS_ID_SCOPE", NULL);
-  char* state_dir = sample_env_dup("AZ_IOT_TPM_SIM_STATE", ".");
-  char* endpoint = sample_env_dup("AZ_IOT_DPS_GLOBAL_ENDPOINT", SAMPLE_DEFAULT_ENDPOINT);
-  char* reg_id_env = sample_env_dup("AZ_IOT_DPS_REGISTRATION_ID", NULL);
-  char* ca = sample_env_dup("AZ_IOT_TRUSTED_CA", NULL);
+  char* id_scope = sample_env_copy("AZ_IOT_DPS_ID_SCOPE", NULL);
+  char* state_dir = sample_env_copy("AZ_IOT_TPM_SIM_STATE", ".");
+  char* endpoint = sample_env_copy("AZ_IOT_DPS_GLOBAL_ENDPOINT", SAMPLE_DEFAULT_ENDPOINT);
+  char* reg_id_env = sample_env_copy("AZ_IOT_DPS_REGISTRATION_ID", NULL);
+  char* ca = sample_env_copy("AZ_IOT_TRUSTED_CA", NULL);
   bool enrollment_only = argc > 1 && strcmp(argv[1], "--enrollment") == 0;
   int rc = 1;
   sample_context ctx = { 0 };
@@ -470,7 +470,7 @@ int main(int argc, char** argv)
   char reg_id[AZ_IOT_DPS_TPM_ID_MAX + 1]; /* also fits AZ_IOT_DPS_TPM_REGISTRATION_ID_SIZE */
   if (reg_id_env != NULL)
   {
-    if (!sample_copy_str(reg_id, sizeof(reg_id), reg_id_env))
+    if (!sample_string_copy(reg_id, sizeof(reg_id), reg_id_env))
     {
       goto cleanup;
     }
@@ -528,7 +528,11 @@ int main(int argc, char** argv)
   az_iot_auth hub_auth = { 0 };
   hub_auth.sas.on_sas_token_required = on_token_required;
   hub_auth.sas.user_ctx = &ctx;
+  /* Memory for the connection client's entries, sized for the default limits. */
+  static uint8_t connection_workspace[AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE];
   az_iot_connection_client_options opts = az_iot_connection_client_options_default();
+  opts.workspace = connection_workspace;
+  opts.workspace_size = sizeof(connection_workspace);
   opts.iothub_hostname = a->assigned_hub;
   opts.device_id = a->device_id;
   opts.connection_profile = a->connection_profile;

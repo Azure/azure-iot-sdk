@@ -13,11 +13,12 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         public bool IsAcknowledged => AcknowledgeCount > 0;
         public int AcknowledgeCount { get; private set; }
         public bool AcknowledgeFails { get; init; }
+        public bool RejectRepeatedAcknowledgements { get; init; }
 
         public override Task AcknowledgeAsync(CancellationToken cancellationToken)
         {
             AcknowledgeCount++;
-            return AcknowledgeFails
+            return AcknowledgeFails || (RejectRepeatedAcknowledgements && AcknowledgeCount > 1)
                 ? Task.FromException(new InvalidOperationException("Acknowledgment failed."))
                 : Task.CompletedTask;
         }

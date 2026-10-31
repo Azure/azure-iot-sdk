@@ -214,7 +214,7 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
       stderr,
       "[user_provided_sas_token] %s: %s (%s)\n",
       event->scope == AZ_IOT_CONN_SCOPE_DPS ? "dps" : "hub",
-      sample_connection_state_name(event->state),
+      az_iot_connection_state_to_string(event->state),
       az_iot_result_to_string(event->reason));
   if (event->scope == AZ_IOT_CONN_SCOPE_HUB)
   {
@@ -239,14 +239,14 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
 
 int main(void)
 {
-  az_iot_log_sink log = az_iot_log_stderr_sink(AZ_IOT_LOG_LEVEL_INFO);
+  az_iot_log_sink log = sample_log_sink(AZ_IOT_LOG_LEVEL_INFO);
   az_iot_log_set_global_sink(&log);
 
-  char* id_scope = sample_env_dup("AZ_IOT_DPS_ID_SCOPE", NULL);
-  char* reg_id = sample_env_dup("AZ_IOT_DPS_REGISTRATION_ID", NULL);
-  char* key_b64 = sample_env_dup("AZ_IOT_DPS_SYMMETRIC_KEY", NULL);
-  char* ca = sample_env_dup("AZ_IOT_TRUSTED_CA", NULL);
-  char* endpoint = sample_env_dup("AZ_IOT_DPS_GLOBAL_ENDPOINT", NULL);
+  char* id_scope = sample_env_copy("AZ_IOT_DPS_ID_SCOPE", NULL);
+  char* reg_id = sample_env_copy("AZ_IOT_DPS_REGISTRATION_ID", NULL);
+  char* key_b64 = sample_env_copy("AZ_IOT_DPS_SYMMETRIC_KEY", NULL);
+  char* ca = sample_env_copy("AZ_IOT_TRUSTED_CA", NULL);
+  char* endpoint = sample_env_copy("AZ_IOT_DPS_GLOBAL_ENDPOINT", NULL);
   int rc = 1;
   sample_context ctx = { 0 };
   az_iot_connection_client client = { 0 };
@@ -273,7 +273,11 @@ int main(void)
   tokens.sas.on_sas_token_required = request_token;
   tokens.sas.user_ctx = &ctx;
 
+  /* Memory for the connection client's entries, sized for the default limits. */
+  static uint8_t connection_workspace[AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE];
   az_iot_connection_client_options opts = az_iot_connection_client_options_default();
+  opts.workspace = connection_workspace;
+  opts.workspace_size = sizeof(connection_workspace);
   opts.device_id = reg_id;
   opts.dps.id_scope = id_scope;
   opts.dps.registration_id = reg_id;
