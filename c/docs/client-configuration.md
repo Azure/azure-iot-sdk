@@ -198,11 +198,70 @@ opts.workspace_size = sizeof(workspace);
 | --- | --- | --- |
 | `max_pending_publishes` | 16 | QoS 1 publishes awaiting an acknowledgement with a completion callback, across all feature clients. When the caller's pool is full, nothing is sent and the call returns `AZ_IOT_ERR_BUSY`; retry once an acknowledgement arrives. See [In-flight QoS 1 publishes](#in-flight-qos-1-publishes). At most 65535. |
 | `max_publish_reservations` | 2 | Feature clients holding a reservation of `max_pending_publishes`; an mqttv5 direct method client takes one; certificate renewal takes one when `opts.csr_payload_buffer` is set. At most 254. |
-| `max_persistent_subscriptions` | 8 | Topic filters re-subscribed on every session. A fully loaded mqttv3 device uses 5; mqttv5 feature clients use none. At most 255. |
-| `max_feature_observers` | 10 | Feature-client observers of connection state, session end, publish completion and the `do_work()` tick. A loaded device uses one per feature client, two for the mqttv5 direct method and twin clients (their delivery tracker). |
+| `max_persistent_subscriptions` | 8 | Topic filters re-subscribed on every session. MQTT 3.1.1 feature clients use up to 4, certificate renewal 1; mqttv5 feature clients use none. See [Sizing the limits](#sizing-the-limits). At most 255. |
+| `max_feature_observers` | 10 | Feature-client observers of connection state, session end, publish completion and the `do_work()` tick. See [Sizing the limits](#sizing-the-limits). |
 | `max_application_state_observers` | 4 | Connection-state observers the application can register. |
 | `max_feature_clients` | 8 | Feature clients attached to one connection client. |
 | `max_inbound_handlers` | 8 | Inbound topic handlers. |
+
+##### Sizing the limits
+
+The defaults hold every feature client with room to spare. To use less memory, set each limit to
+what the device uses. Each feature client takes these entries when attached or, for some of its
+topics, when a hub session starts:
+
+| Feature client | `max_pending_publishes` reserved | `max_publish_reservations` | `max_persistent_subscriptions` | `max_feature_observers` | `max_feature_clients` | `max_inbound_handlers` |
+| --- | --- | --- | --- | --- | --- | --- |
+| mqttv3 C2D | | | 1 | | 1 | 1 |
+| mqttv3 direct methods | | | 1 | 1 | | 1 |
+| mqttv3 twin | | | 2 | 1 | | 2 |
+| mqttv5 direct methods | `AZ_IOT_MQTTV5_DM_RESERVED_PUBACKS` (8) | 1 | | 2 | 1 | 1 |
+| mqttv5 twin | | | | 1 | 1 | 1 |
+| Hub certificate renewal (`csr_payload_buffer` set) | 1 | 1 | 1 | | | 1 |
+| Software updates, DPS channel | | | | 1 | | |
+
+Certificate renewal reserves its slot at `init()` and takes its subscription and handler on the
+first `az_iot_connection_client_send_csr()`. Telemetry, file upload and mqttv5 custom topics take
+none. `max_pending_publishes` also needs one slot per QoS 1 publish the application keeps in
+flight with a completion callback, and `max_application_state_observers` one per observer it adds.
+Each limit is at least 1.
+
+Examples, checked by `connection_client_workspace_test.c` (sizes on a 64-bit build; the defaults
+take 3,903 bytes):
+
+```c
+/* MQTT 3.1.1: telemetry (4 publishes in flight), C2D, direct methods, twin. 1,631 bytes. */
+opts.limits = (az_iot_connection_client_limits){ .max_pending_publishes = 4,
+                                                 .max_publish_reservations = 1,
+                                                 .max_persistent_subscriptions = 4,
+                                                 .max_feature_observers = 2,
+                                                 .max_application_state_observers = 1,
+                                                 .max_feature_clients = 1,
+                                                 .max_inbound_handlers = 4 };
+
+/* MQTT 5: telemetry (4 publishes in flight), direct methods, twin. The direct method client
+ * reserves AZ_IOT_MQTTV5_DM_RESERVED_PUBACKS (8 with the default
+ * AZ_IOT_MQTTV5_DM_MAX_CONCURRENT): 1,247 bytes. */
+opts.limits = (az_iot_connection_client_limits){
+  .max_pending_publishes = AZ_IOT_MQTTV5_DM_RESERVED_PUBACKS + 4,
+  .max_publish_reservations = 1,
+  .max_persistent_subscriptions = 1,
+  .max_feature_observers = 3,
+  .max_application_state_observers = 1,
+  .max_feature_clients = 2,
+  .max_inbound_handlers = 2,
+};
+
+static uint8_t workspace[AZ_IOT_CONNECTION_CLIENT_WORKSPACE_SIZE(
+    AZ_IOT_MQTTV5_DM_RESERVED_PUBACKS + 4, 1, 1, 3, 1, 2, 2)];
+opts.workspace = workspace;
+opts.workspace_size = sizeof(workspace);
+```
+
+A limit too small for a feature client makes its `init()` fail. For the topics bound when a hub
+session starts, a direct hub connection fails `open()`; with DPS, `open()` succeeds and each hub
+session attempt after assignment fails, reported through the hub connection state and retried
+under `reconnection_policy`. For certificate renewal, the first `send_csr()` fails.
 
 Fixed sizes:
 
