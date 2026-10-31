@@ -52,7 +52,7 @@
 #define E2E_TELEMETRY_TIMEOUT_S 90 /* publish + EH-side receive               */
 #define E2E_C2D_TIMEOUT_S 60
 #define E2E_METHOD_TIMEOUT_S 60
-#define E2E_TWIN_TIMEOUT_S 60 /* per REST-request drive                  */
+#define E2E_TWIN_TIMEOUT_S 70 /* per REST-request drive, above its 64 s of retries */
 #define E2E_TWIN_PROP_TIMEOUT_S 90 /* reported-property propagation poll      */
 #define E2E_CONNECT_TIMEOUT_S 45 /* cold service-AMQP connect retry budget  */
 #define E2E_SUBACK_TIMEOUT_S 30 /* feature-client SUBSCRIBEs acknowledged  */
