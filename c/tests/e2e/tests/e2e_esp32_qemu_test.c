@@ -30,6 +30,8 @@
 #include <time.h>
 #include <unistd.h>
 
+#include <azure/core/az_json.h>
+
 #include "az_iot_e2e_service.h"
 
 #define E2E_READY_TIMEOUT_S 420 /* boot, DHCP, DPS and hub, TLS emulated */
@@ -167,6 +169,58 @@ static int wait_for_request(int* status, char* body, size_t body_size)
   return rc;
 }
 
+/** @brief Moves @p r, on an object's BEGIN_OBJECT, to the value of member @p name. */
+static bool json_enter(az_json_reader* r, const char* name)
+{
+  if (r->token.kind != AZ_JSON_TOKEN_BEGIN_OBJECT)
+  {
+    return false;
+  }
+  while (az_json_reader_next_token(r) == AZ_OK && r->token.kind == AZ_JSON_TOKEN_PROPERTY_NAME)
+  {
+    bool const match = az_json_token_is_text_equal(
+        &r->token, az_span_create((uint8_t*)(uintptr_t)name, (int32_t)strlen(name)));
+    if (az_json_reader_next_token(r) != AZ_OK)
+    {
+      return false;
+    }
+    if (match)
+    {
+      return true;
+    }
+    if (az_json_reader_skip_children(r) != AZ_OK)
+    {
+      return false;
+    }
+  }
+  return false;
+}
+
+/**
+ * @brief Reads the unsigned integer at @p path (member names, outermost first, NULL-terminated)
+ * in the JSON object @p json.
+ * @return false when a member is missing or the value is not an unsigned integer.
+ */
+static bool json_read_uint64(const char* json, const char* const* path, uint64_t* out)
+{
+  az_json_reader r;
+  if (az_json_reader_init(
+          &r, az_span_create((uint8_t*)(uintptr_t)json, (int32_t)strlen(json)), NULL)
+          != AZ_OK
+      || az_json_reader_next_token(&r) != AZ_OK)
+  {
+    return false;
+  }
+  for (; *path != NULL; ++path)
+  {
+    if (!json_enter(&r, *path))
+    {
+      return false;
+    }
+  }
+  return r.token.kind == AZ_JSON_TOKEN_NUMBER && az_json_token_get_uint64(&r.token, out) == AZ_OK;
+}
+
 /** @brief Writes "<tag>-<time><random>" to @p out, unique per run. */
 static void make_marker(char* out, size_t size, const char* tag)
 {
@@ -269,24 +323,12 @@ static void the_echo_method_returns_its_payload(void** state)
   printf("[e2e] echo: rc=%d status=%d body=%s\n", rc, status, response);
   assert_int_equal(rc, 1);
   assert_int_equal(status, 200);
+  // The HTTP status is the service's; the body's "status" is the device's.
+  static const char* const method_status[] = { "status", NULL };
+  uint64_t device_status = 0;
+  assert_true(json_read_uint64(response, method_status, &device_status));
+  assert_int_equal(device_status, 200);
   assert_non_null(strstr(response, marker));
-}
-
-/** @brief The desired "$version" in the twin JSON @p twin, or 0. */
-static uint64_t desired_version(const char* twin)
-{
-  const char* desired = strstr(twin, "\"desired\"");
-  const char* reported = strstr(twin, "\"reported\"");
-  if (desired == NULL)
-  {
-    return 0;
-  }
-  const char* version = strstr(desired, "\"$version\":");
-  if (version == NULL || (reported != NULL && reported > desired && version > reported))
-  {
-    return 0;
-  }
-  return strtoull(version + strlen("\"$version\":"), NULL, 10);
 }
 
 /** @brief A desired patch reaches the device, which acknowledges its version in reported. */
@@ -302,7 +344,9 @@ static void a_desired_patch_is_acknowledged_in_reported(void** state)
   static char twin[16384];
   assert_int_equal(wait_for_request(&status, twin, sizeof(twin)), 1);
   assert_int_equal(status, 200);
-  uint64_t const version = desired_version(twin);
+  static const char* const desired_version_path[] = { "properties", "desired", "$version", NULL };
+  uint64_t version = 0;
+  assert_true(json_read_uint64(twin, desired_version_path, &version));
   printf("[e2e] desired patch: version %" PRIu64 "\n", version);
   assert_true(version > 0);
 
@@ -310,14 +354,14 @@ static void a_desired_patch_is_acknowledged_in_reported(void** state)
   snprintf(acknowledged, sizeof(acknowledged), "desired version %" PRIu64 " acknowledged", version);
   assert_true(wait_for_firmware(acknowledged, E2E_REQUEST_TIMEOUT_S));
 
-  char reported[64];
-  snprintf(reported, sizeof(reported), "\"desiredVersion\":%" PRIu64, version);
+  static const char* const reported_path[] = { "properties", "reported", "desiredVersion", NULL };
   bool seen = false;
   for (int attempt = 0; attempt < 10 && !seen; ++attempt)
   {
     assert_true(az_iot_e2e_service_twin_get_begin(s_service, s_device_id));
     assert_int_equal(wait_for_request(&status, twin, sizeof(twin)), 1);
-    seen = status == 200 && strstr(twin, reported) != NULL;
+    uint64_t reported = 0;
+    seen = status == 200 && json_read_uint64(twin, reported_path, &reported) && reported == version;
     for (int i = 0; !seen && i < 100; ++i) // About 5 s between reads.
     {
       pump();
