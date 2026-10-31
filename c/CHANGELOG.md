@@ -321,6 +321,10 @@
   `sdkconfig.qemu` runs it in QEMU (esp32, esp32s3, esp32c3) over OpenCores Ethernet;
   `eng/esp-idf-qemu.sh` boots a build in QEMU and waits for a log line, and CI boots the QEMU
   builds until they get an IPv4 address.
+- ESP32 IoT Hub sample [unified/esp32](samples/unified/esp32/README.md): DPS with the
+  `esp_secure_cert` identity, then telemetry, the `echo` direct method and desired-twin
+  acknowledgements on the assigned hub (mqttv3 or mqttv5). CI builds it for esp32, esp32c3,
+  esp32s3 and esp32c6, and boots its QEMU build on esp32, esp32s3 and esp32c3.
 
 ### Bugs Fixed
 

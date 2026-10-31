@@ -1696,6 +1696,13 @@ jobs:
           - sample: software_update/esp32
             target: esp32c3
             profile: qemu
+          - { sample: unified/esp32, target: esp32, profile: default }
+          - { sample: unified/esp32, target: esp32c3, profile: default }
+          - { sample: unified/esp32, target: esp32s3, profile: default }
+          - { sample: unified/esp32, target: esp32c6, profile: default }
+          - { sample: unified/esp32, target: esp32, profile: qemu }
+          - { sample: unified/esp32, target: esp32s3, profile: qemu }
+          - { sample: unified/esp32, target: esp32c3, profile: qemu }
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
