@@ -9292,6 +9292,107 @@ static void library_mode_needs_no_platform_hooks_but_a_trust_store(void** state)
   init_fixture_client(fx, NULL);
 }
 
+static int32_t stub_choose_related_file(
+    const az_iot_su_client_update_manifest* manifest,
+    const az_iot_su_client_update_manifest_file* file,
+    uint32_t* out_related_file_index,
+    void* user_ctx)
+{
+  (void)manifest;
+  (void)file;
+  (void)out_related_file_index;
+  (void)user_ctx;
+  return AZ_IOT_SU_RESULT_FAILURE;
+}
+
+static int32_t stub_build_file_from_related(
+    const az_iot_su_client_update_manifest_file* file,
+    const az_iot_su_client_update_manifest_file* related_file,
+    uint32_t file_index,
+    void* user_ctx)
+{
+  (void)file;
+  (void)related_file;
+  (void)file_index;
+  (void)user_ctx;
+  return AZ_IOT_SU_RESULT_FAILURE;
+}
+
+static az_iot_result init_with_options(fixture* fx, const az_iot_su_client_config_options* options)
+{
+  az_iot_su_client_deinit(&fx->su);
+  return az_iot_su_client__initialize_with_channel(
+      &fx->su, &fx->channel, &fx->crypto.base, options);
+}
+
+/* Download handlers are referenced; each needs both hooks and a distinct id of 1 to 64 printable
+ * ASCII characters, and the client needs read_file_fn and managed mode. */
+static void init_validates_download_handlers(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_su_platform_hooks hooks = fx->su._internal.hooks;
+  az_iot_su_device_properties device_properties = { .manufacturer = "Contoso", .model = "Foobar" };
+  az_iot_su_download_handler handlers[2] = {
+    { "microsoft/delta:1", stub_choose_related_file, stub_build_file_from_related, NULL, NULL },
+    { "contoso/delta:1", stub_choose_related_file, stub_build_file_from_related, NULL, NULL },
+  };
+  const az_iot_su_platform_hooks wired_hooks = hooks;
+  char id_64[AZ_IOT_SU_MAX_DOWNLOAD_HANDLER_ID_SIZE + 1] = { 0 };
+  memset(id_64, 'a', AZ_IOT_SU_MAX_DOWNLOAD_HANDLER_ID_SIZE);
+  char id_65[AZ_IOT_SU_MAX_DOWNLOAD_HANDLER_ID_SIZE + 2] = { 0 };
+  memset(id_65, 'a', AZ_IOT_SU_MAX_DOWNLOAD_HANDLER_ID_SIZE + 1);
+  az_iot_su_client_config_options opts = az_iot_su_client_config_options_default();
+  opts.hooks = &hooks;
+  opts.root_keys = k_root_keys;
+  opts.root_key_count = 1;
+  opts.device_properties = &device_properties;
+  opts.workspace = fx->workspace;
+  opts.workspace_size = sizeof(fx->workspace);
+  opts.download_handlers = handlers;
+  opts.download_handler_count = 2;
+
+  assert_int_equal(init_with_options(fx, &opts), AZ_IOT_OK);
+  assert_ptr_equal(fx->su._internal.download_handlers, handlers);
+  assert_int_equal(fx->su._internal.download_handler_count, 2);
+  handlers[1].id = id_64;
+  assert_int_equal(init_with_options(fx, &opts), AZ_IOT_OK);
+
+  const char* const invalid_ids[] = {
+    NULL, "", "contoso/delta 1", id_65, "contoso/d\xC3\xA9lta:1", "microsoft/delta:1",
+  };
+  for (size_t i = 0; i < sizeof(invalid_ids) / sizeof(invalid_ids[0]); ++i)
+  {
+    handlers[1].id = invalid_ids[i];
+    assert_int_equal(init_with_options(fx, &opts), AZ_IOT_ERR_INVALID_ARG);
+  }
+  handlers[1].id = "contoso/delta:1";
+
+  handlers[1].choose_related_file_fn = NULL;
+  assert_int_equal(init_with_options(fx, &opts), AZ_IOT_ERR_INVALID_ARG);
+  handlers[1].choose_related_file_fn = stub_choose_related_file;
+  handlers[1].build_file_from_related_fn = NULL;
+  assert_int_equal(init_with_options(fx, &opts), AZ_IOT_ERR_INVALID_ARG);
+  handlers[1].build_file_from_related_fn = stub_build_file_from_related;
+
+  opts.download_handlers = NULL;
+  assert_int_equal(init_with_options(fx, &opts), AZ_IOT_ERR_INVALID_ARG);
+  opts.download_handlers = handlers;
+
+  /* Without read_file_fn neither the related file nor the built file can be verified. */
+  hooks.read_file_fn = NULL;
+  assert_int_equal(init_with_options(fx, &opts), AZ_IOT_ERR_INVALID_ARG);
+  hooks = wired_hooks;
+
+  /* Library mode downloads nothing. */
+  opts.library_mode = true;
+  assert_int_equal(init_with_options(fx, &opts), AZ_IOT_ERR_INVALID_ARG);
+  opts.library_mode = false;
+
+  opts.download_handler_count = 0;
+  opts.download_handlers = NULL;
+  assert_int_equal(init_with_options(fx, &opts), AZ_IOT_OK);
+}
+
 static void library_mode_hands_the_verified_update_to_the_application(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -10187,6 +10288,7 @@ int main(void)
         a_delay_that_cannot_fit_abandons_immediately_and_reports_it, setup, teardown),
     cmocka_unit_test_setup_teardown(a_delay_that_fits_leaves_the_request_queued, setup, teardown),
     cmocka_unit_test_setup_teardown(a_delay_cannot_abandon_an_unbounded_request, setup, teardown),
+    cmocka_unit_test_setup_teardown(init_validates_download_handlers, setup, teardown),
     cmocka_unit_test_setup_teardown(
         library_mode_needs_no_platform_hooks_but_a_trust_store, setup_library, teardown),
     cmocka_unit_test_setup_teardown(
