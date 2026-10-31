@@ -1021,8 +1021,12 @@ extern "C"
     az_iot_connection_error_source source;
     /** @brief The code itself. 0 means "none supplied" and is ambiguous. */
     int32_t code;
-    /** @brief Service-supplied text (DPS), or the failed step (LOCAL); empty
-     * otherwise. Callback lifetime -- copy to retain. */
+    /** @brief Service-supplied text (DPS), the MQTT 5 Reason String of the
+     * packet `code` came from (MQTT; e.g. a refused CONNACK or a server
+     * DISCONNECT, when the server sent one and the adapter reports it), or the
+     * failed step (LOCAL); empty otherwise. Truncated to
+     * AZ_IOT_CONN_ERROR_MESSAGE_MAX bytes, possibly within a UTF-8 character.
+     * Callback lifetime -- copy to retain. */
     az_span message;
   } az_iot_connection_error_detail;
 
