@@ -769,7 +769,7 @@ static void a_refused_session_filter_faults_terminally(void** state)
 }
 
 /* A refused gated SUBACK drained after a server DISCONNECT in the same process_loop belongs to the
- * ending session: the DISCONNECT's transition and code stand. */
+ * ending session: the DISCONNECT's transition, code and Reason String stand. */
 static void a_refused_session_filter_after_a_server_disconnect_is_ignored(void** state)
 {
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
@@ -777,8 +777,9 @@ static void a_refused_session_filter_after_a_server_disconnect_is_ignored(void**
   const az_iot_mock_call* sub = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_SUBSCRIBE);
   assert_non_null(sub);
 
+  static const char reason[] = "quota exceeded";
   az_iot_mock_mqtt_client_set_events_per_loop(m, SIZE_MAX);
-  assert_true(az_iot_mock_mqtt_client_inject_server_disconnect(m, 0x97, NULL));
+  assert_true(az_iot_mock_mqtt_client_inject_server_disconnect(m, 0x97, reason));
   assert_true(az_iot_mock_mqtt_client_inject_suback_refusal(m, sub->packet_id, 0x87));
   (void)az_iot_connection_client_do_work(fx->client, 0);
 
@@ -788,6 +789,7 @@ static void a_refused_session_filter_after_a_server_disconnect_is_ignored(void**
   assert_true(fx->log.error_present[i]);
   assert_int_equal(fx->log.error_sources[i], AZ_IOT_CONN_ERR_SRC_MQTT);
   assert_int_equal(fx->log.error_codes[i], 0x97);
+  assert_string_equal(fx->log.error_message[i], reason);
 }
 
 /* Quota exceeded or an unspecified error is how a passing service-side fault
@@ -970,8 +972,9 @@ static void a_refused_self_scoped_filter_after_a_server_disconnect_is_reported(v
   const az_iot_mock_call* sub = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_SUBSCRIBE);
   assert_non_null(sub);
 
+  static const char reason[] = "quota exceeded";
   az_iot_mock_mqtt_client_set_events_per_loop(m, SIZE_MAX);
-  assert_true(az_iot_mock_mqtt_client_inject_server_disconnect(m, 0x97, NULL));
+  assert_true(az_iot_mock_mqtt_client_inject_server_disconnect(m, 0x97, reason));
   assert_true(az_iot_mock_mqtt_client_inject_suback_refusal(m, sub->packet_id, 0x87));
   (void)az_iot_connection_client_do_work(fx->client, 0);
 
@@ -980,6 +983,7 @@ static void a_refused_self_scoped_filter_after_a_server_disconnect_is_reported(v
   assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_RETRY_PENDING);
   size_t const i = fx->log.count - 1u;
   assert_int_equal(fx->log.error_codes[i], 0x97);
+  assert_string_equal(fx->log.error_message[i], reason);
 
   /* Dropped from the registry, so the reconnect does not reissue it. */
   az_iot_test_wait_ms(RETRY_DELAY_MS + 5u);
@@ -1411,7 +1415,8 @@ static void matching_puback_invokes_the_callback(void** state)
 /**
  * @brief Drain, in one process_loop(): a gated filter's refusal with @p suback_protocol_code (none
  * when 0), then a server DISCONNECT 0x8B and a local DISCONNECTED (no codes if @p clean_local_end,
- * else a transport code), the server's first if @p server_first. IDLE reports the server's code.
+ * else a transport code), the server's first if @p server_first. IDLE reports the server's code and
+ * Reason String.
  */
 static void assert_the_server_disconnect_detail_survives_a_local_end(
     az_iot_test_conn* fx,
@@ -1437,12 +1442,12 @@ static void assert_the_server_disconnect_detail_survives_a_local_end(
   local_end.transport_code = clean_local_end ? 0 : -3;
   if (server_first)
   {
-    assert_true(az_iot_mock_mqtt_client_inject_server_disconnect(m, 0x8B, NULL));
+    assert_true(az_iot_mock_mqtt_client_inject_server_disconnect(m, 0x8B, "server shutting down"));
   }
   assert_true(az_iot_mock_mqtt_client_inject_event(m, &local_end));
   if (!server_first)
   {
-    assert_true(az_iot_mock_mqtt_client_inject_server_disconnect(m, 0x8B, NULL));
+    assert_true(az_iot_mock_mqtt_client_inject_server_disconnect(m, 0x8B, "server shutting down"));
   }
   (void)az_iot_connection_client_do_work(fx->client, 0);
 
@@ -1450,6 +1455,7 @@ static void assert_the_server_disconnect_detail_survives_a_local_end(
   assert_int_equal(fx->log.states[last], AZ_IOT_CONN_STATE_IDLE);
   assert_int_equal(fx->log.error_sources[last], AZ_IOT_CONN_ERR_SRC_MQTT);
   assert_int_equal(fx->log.error_codes[last], 0x8B);
+  assert_string_equal(fx->log.error_message[last], "server shutting down");
 }
 
 /* A local end after the server DISCONNECT is redundant: it does not replace the server's code. */

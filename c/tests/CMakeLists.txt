@@ -901,6 +901,8 @@ if(AZ_IOT_WITH_AZ_MQTT)
             $<TARGET_PROPERTY:az_iot_adapter_az_mqtt,INCLUDE_DIRECTORIES>)
         target_compile_definitions(${_t} PRIVATE ${_az_mqtt_size_defs})
     endforeach()
+    # The CONNACK and DISCONNECT Reason String cases build their packets with the test server's.
+    target_link_libraries(az_iot_tests_az_mqtt_adapter PRIVATE az_iot_test_mqtt_server)
     if(WIN32)
         # The PUBACK cases run an in-process server.
         target_link_libraries(az_iot_tests_az_mqtt_adapter PRIVATE ws2_32)
