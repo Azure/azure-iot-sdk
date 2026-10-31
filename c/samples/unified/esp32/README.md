@@ -6,7 +6,7 @@
 An ESP32 that provisions through DPS with an X.509 identity and then, on whichever hub DPS
 assigns (mqttv3 or mqttv5):
 
-- sends telemetry every `HUB_TELEMETRY_INTERVAL_S` seconds (`{"count":n}`);
+- sends telemetry every `HUB_TELEMETRY_INTERVAL_S` seconds (`{"deviceId":"<id>","count":n}`);
 - answers the direct method `echo` with its payload (status 200), any other with 404 (mqttv5
   refuses undeclared methods itself);
 - acknowledges each desired twin version by patching `{"desiredVersion":<version>}` into the
@@ -21,7 +21,7 @@ sequenceDiagram
     DPS-->>D: assigned hub and connection profile
     D->>Hub: connect (mqttv3 or mqttv5)
     loop while connected
-        D->>Hub: telemetry {"count":n}
+        D->>Hub: telemetry {"deviceId":"<id>","count":n}
         Hub-->>D: direct method echo / desired twin patch
         D->>Hub: method response / reported {"desiredVersion":v}
     end

@@ -7,7 +7,7 @@
  *
  * Network -> DPS (X.509, identity from the esp_secure_cert partition) -> the assigned hub, on
  * mqttv3 or mqttv5. While connected it:
- *   - sends telemetry every HUB_TELEMETRY_INTERVAL_S seconds ({"count":n});
+ *   - sends telemetry every HUB_TELEMETRY_INTERVAL_S seconds ({"deviceId":"<id>","count":n});
  *   - answers the direct method "echo" with its payload (status 200), any other with 404;
  *   - acknowledges each desired twin version by patching {"desiredVersion":v} into reported.
  *
@@ -117,8 +117,13 @@ static void on_telemetry_sent(az_iot_result status, void* user_ctx)
 
 static void send_telemetry(hub_device* d)
 {
-  char payload[32];
-  int length = snprintf(payload, sizeof(payload), "{\"count\":%" PRIu32 "}", d->telemetry_sent + 1);
+  char payload[192];
+  int length = snprintf(
+      payload,
+      sizeof(payload),
+      "{\"deviceId\":\"%s\",\"count\":%" PRIu32 "}",
+      CONFIG_HUB_DPS_REGISTRATION_ID,
+      d->telemetry_sent + 1);
   az_iot_telemetry_property properties[] = {
     { AZ_IOT_MSG_PROP_CONTENT_TYPE, "application/json" },
   };
