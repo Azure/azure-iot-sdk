@@ -94,7 +94,7 @@ With az_mqtt (`-DAZ_IOT_WITH_AZ_MQTT=ON`), target `az_iot_sample_software_update
 builds the same sample in `az_mqtt/` next to that binary ([adapters](../../../README.md#build)).
 
 Size the storage behind `persist_workflow_state_fn` for `AZ_IOT_SU_STATE_BLOB_MAX_SIZE(max_update_size,
-result_details_size)` bytes.
+result_details_size, max_related_files)` bytes.
 
 ## Where to look in `main.c`
 

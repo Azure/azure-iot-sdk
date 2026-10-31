@@ -1,0 +1,35 @@
+# ESP-IDF default configuration for the ESP32 IoT Hub sample. Applied on a fresh
+# `idf.py build`; tweak the rest with `idf.py menuconfig`.
+
+# --- Target -----------------------------------------------------------------
+CONFIG_IDF_TARGET="esp32"
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+
+# --- Partition table (see partitions.csv) -------------------------------------
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+CONFIG_PARTITION_TABLE_FILENAME="partitions.csv"
+
+# --- TLS / mbedTLS ----------------------------------------------------------
+# The DPS and hub servers are verified against the ESP-IDF certificate bundle,
+# which holds the Azure roots.
+CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN=4096
+CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN=16384
+CONFIG_MBEDTLS_DYNAMIC_BUFFER=y
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
+
+# --- Main task stack --------------------------------------------------------
+# The SDK pump and the TLS handshake run on the main task.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=12288
+
+# --- Network (protocol_examples_common) ---------------------------------------
+# Wi-Fi station; set CONFIG_EXAMPLE_WIFI_SSID/PASSWORD with menuconfig. IPv4 only:
+# with IPv6 enabled, connecting also waits for an IPv6 address.
+CONFIG_EXAMPLE_CONNECT_WIFI=y
+CONFIG_EXAMPLE_WIFI_AUTH_WPA2_PSK=y
+CONFIG_EXAMPLE_CONNECT_IPV6=n
+
+# --- az_mqtt (MQTT client) ----------------------------------------------------
+# azure-sdk-for-c is compiled once, by the azure-sdk-for-c component.
+CONFIG_AZ_MQTT_BUILD_AZ_CORE=n
+CONFIG_AZ_MQTT_AZ_CORE_COMPONENT="azure-sdk-for-c"
