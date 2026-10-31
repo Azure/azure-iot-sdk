@@ -331,6 +331,7 @@ typedef struct
   bool done;
   bool reneg_active; // driving a TLS post-handshake / renegotiation flight
   bool reneg_isc_done; // reneg ISC returned SEC_E_OK; only the final flush remains
+  bool reneg_needs_read; // reneg ISC needs more ciphertext before it can be called again
   bool use_supplied_credentials; // answer a certificate request with client_cert, or none
   PCCERT_CONTEXT client_cert; // mutual-TLS client certificate (NULL = server-auth only)
   HCERTSTORE cert_store; // in-memory PFX store owning the client cert's ephemeral CNG key
@@ -820,6 +821,7 @@ static az_amqp_transport_status _sch_handshake(az_amqp_sample_transport* s)
     {
       return AZ_AMQP_TRANSPORT_STATUS_ERROR;
     }
+    _sch_dbg("client certificate: %s", sch->client_cert != NULL ? "configured" : "none");
     // Use the modern SCH_CREDENTIALS structure. The legacy SCHANNEL_CRED caps
     // negotiation at TLS 1.2; SCH_CREDENTIALS lets Schannel negotiate TLS 1.3
     // where available (falling back to 1.2). We disable only TLS 1.0/1.1 so the
@@ -953,6 +955,7 @@ static az_amqp_transport_status _sch_handshake(az_amqp_sample_transport* s)
     {
       // Azure IoT Hub's endpoint requests a client certificate; Event Hubs does not. Retry
       // with the same server flight.
+      _sch_dbg("handshake: server requested a client certificate");
       _sch_on_incomplete_credentials(sch);
       if (++incomplete_creds_seen > 2)
       {
@@ -1016,9 +1019,11 @@ static az_amqp_transport_status _sch_handshake(az_amqp_sample_transport* s)
 
 // Advances a TLS post-handshake flight (TLS 1.3 NewSessionTicket / KeyUpdate, or
 // a TLS 1.2 server-initiated renegotiation) that DecryptMessage surfaced via
-// SEC_I_RENEGOTIATE. The handshake token to process must already be at the front
-// of sch->in. Non-blocking and resumable across calls (state lives in
-// sch->reneg_active / sch->reneg_isc_done): returns OK once the flight is fully
+// SEC_I_RENEGOTIATE. Any handshake bytes DecryptMessage returned must already be
+// at the front of sch->in; with none (a TLS 1.2 HelloRequest), InitializeSecurityContext
+// is called with empty input so the client sends its ClientHello first. Non-blocking
+// and resumable across calls (state lives in sch->reneg_active, sch->reneg_isc_done
+// and sch->reneg_needs_read): returns OK once the flight is fully
 // processed (and reneg_active is cleared), WANT_READ when more socket data is
 // needed, WANT_WRITE while an output token (e.g. a KeyUpdate response) is
 // mid-flush, CLOSED/ERROR otherwise.
@@ -1057,7 +1062,7 @@ static az_amqp_transport_status _sch_drive_reneg(az_amqp_sample_transport* s)
       return AZ_AMQP_TRANSPORT_STATUS_OK;
     }
 
-    if (sch->in_len > 0)
+    if (sch->in_len > 0 || !sch->reneg_needs_read)
     {
       SecBuffer inbufs[2] = { { (unsigned long)sch->in_len, SECBUFFER_TOKEN, sch->in },
                               { 0, SECBUFFER_EMPTY, NULL } };
@@ -1079,6 +1084,10 @@ static az_amqp_transport_status _sch_drive_reneg(az_amqp_sample_transport* s)
           &attrs,
           NULL);
 
+      _sch_dbg(
+          "renegotiation: InitializeSecurityContext 0x%08lx, %lu token bytes out",
+          (unsigned long)st,
+          (unsigned long)outbuf.cbBuffer);
       if (!_sch_queue_token(s, &outbuf))
       {
         return AZ_AMQP_TRANSPORT_STATUS_ERROR;
@@ -1087,6 +1096,7 @@ static az_amqp_transport_status _sch_drive_reneg(az_amqp_sample_transport* s)
       if (st == SEC_I_INCOMPLETE_CREDENTIALS)
       {
         // Retry the same server flight: nothing is consumed (see the initial handshake).
+        _sch_dbg("renegotiation: server requested a client certificate");
         _sch_on_incomplete_credentials(sch);
         if (++incomplete_creds_seen > 2)
         {
@@ -1122,7 +1132,7 @@ static az_amqp_transport_status _sch_drive_reneg(az_amqp_sample_transport* s)
           {
             continue; // more handshake data already buffered
           }
-          // otherwise fall through to read more
+          sch->reneg_needs_read = true; // otherwise fall through to read more
         }
         else
         {
@@ -1130,7 +1140,10 @@ static az_amqp_transport_status _sch_drive_reneg(az_amqp_sample_transport* s)
           return AZ_AMQP_TRANSPORT_STATUS_ERROR;
         }
       }
-      // SEC_E_INCOMPLETE_MESSAGE: fall through to read more ciphertext.
+      else
+      {
+        sch->reneg_needs_read = true; // SEC_E_INCOMPLETE_MESSAGE: read more ciphertext.
+      }
     }
 
     if (sch->in_len >= _SCH_BUF)
@@ -1278,6 +1291,8 @@ static az_amqp_transport_status _sch_read(
         }
         sch->in_len = extra_len;
         sch->reneg_active = true;
+        sch->reneg_needs_read = false;
+        _sch_dbg("renegotiation requested by the server (%d handshake bytes)", extra_len);
         az_amqp_transport_status rs = _sch_drive_reneg(s);
         if (rs != AZ_AMQP_TRANSPORT_STATUS_OK)
         {
