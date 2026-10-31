@@ -232,7 +232,7 @@ static int teardown(void** state)
   if (fx)
   {
     az_iot_mqttv5_twin_client_deinit(&fx->twin);
-    az_iot_connection_client_deinit(&fx->conn);
+    az_iot_test_connection_client_deinit(&fx->conn);
     az_iot_mock_mqtt_factory_destroy(fx->factory);
     free(fx);
   }
@@ -889,7 +889,7 @@ static void get_before_the_device_id_is_assigned_is_refused(void** state)
   assert_int_equal(az_iot_mqttv5_twin_client_get(&twin, on_get, &rec), AZ_IOT_ERR_NOT_CONNECTED);
 
   az_iot_mqttv5_twin_client_deinit(&twin);
-  az_iot_connection_client_deinit(&conn);
+  az_iot_test_connection_client_deinit(&conn);
 }
 
 static void get_with_a_full_pending_table_is_rejected(void** state)
@@ -2553,7 +2553,7 @@ static void init_against_an_mqtt_v3_connection_is_rejected(void** state)
   assert_int_equal(
       az_iot_mqttv5_twin_client_init(&twin, &conn), AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH);
 
-  az_iot_connection_client_deinit(&conn);
+  az_iot_test_connection_client_deinit(&conn);
 }
 
 static void deinit_tolerates_null(void** state)
@@ -2636,7 +2636,7 @@ static void deinit_frees_the_connect_time_bind_slot(void** state)
     az_iot_mqttv5_twin_client_deinit(&twins[i]);
   }
 
-  az_iot_connection_client_deinit(&conn);
+  az_iot_test_connection_client_deinit(&conn);
 }
 
 static void a_deinitialized_twin_client_is_not_called_on_a_later_session_end(void** state)

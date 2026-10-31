@@ -214,7 +214,7 @@ static int teardown(void** state)
   fixture* fx = (fixture*)*state;
   if (fx)
   {
-    az_iot_connection_client_deinit(&fx->client);
+    az_iot_test_connection_client_deinit(&fx->client);
     az_iot_mock_mqtt_factory_destroy(fx->factory);
     free(fx);
   }

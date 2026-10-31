@@ -131,7 +131,7 @@ static int teardown(void** state)
   if (fx)
   {
     az_iot_mqttv3_twin_client_deinit(&fx->twin);
-    az_iot_connection_client_deinit(&fx->conn);
+    az_iot_test_connection_client_deinit(&fx->conn);
     az_iot_mock_mqtt_factory_destroy(fx->factory);
     free(fx);
   }
@@ -566,7 +566,7 @@ static void deinitializing_the_connection_does_not_complete_pending_requests(voi
    * already be gone, so calling into it would turn cleanup into a
    * use-after-free. */
   az_iot_mqttv3_twin_client_deinit(&fx->twin);
-  az_iot_connection_client_deinit(&fx->conn);
+  az_iot_test_connection_client_deinit(&fx->conn);
   assert_false(rec.fired);
 
   /* Rebuild what teardown() expects to tear down. */
@@ -685,7 +685,7 @@ static void init_against_an_mqtt_v5_connection_is_rejected(void** state)
   assert_int_equal(
       az_iot_mqttv3_twin_client_init(&twin, &conn), AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH);
 
-  az_iot_connection_client_deinit(&conn);
+  az_iot_test_connection_client_deinit(&conn);
 }
 
 static void both_subscriptions_use_qos_0(void** state)
