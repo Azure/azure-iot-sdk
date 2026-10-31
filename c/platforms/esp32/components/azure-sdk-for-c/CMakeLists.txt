@@ -25,7 +25,7 @@ set(srcs
     "${_az_src}/core/az_precondition.c"
     "${_az_src}/core/az_span.c"
 
-    # az_iot (MQTT topic build/parse for Hub, DPS, and software updates manifest parsing).
+    # az_iot (MQTT topic build/parse for Hub and DPS).
     "${_az_src}/iot/az_iot_common.c"
     "${_az_src}/iot/az_iot_hub_client.c"
     "${_az_src}/iot/az_iot_hub_client_c2d.c"
@@ -37,7 +37,6 @@ set(srcs
     "${_az_src}/iot/az_iot_hub_client_twin.c"
     "${_az_src}/iot/az_iot_provisioning_client.c"
     "${_az_src}/iot/az_iot_provisioning_client_sas.c"
-    "${_az_src}/iot/az_iot_adu_client.c"
 
     # az_core's az_platform_* hooks (clock, sleep) on ESP-IDF. The az_mqtt
     # adapter sleeps through them while no connection is open.
@@ -55,7 +54,7 @@ idf_component_register(
 target_compile_options(${COMPONENT_LIB} PRIVATE -w)
 
 # Software updates manifest limits. PUBLIC: the SDK and the application must
-# compile az_iot_su.h with the values this parser is built with.
+# compile az_iot_su.h with the same values.
 if(NOT CMAKE_BUILD_EARLY_EXPANSION)
     include("${AZ_IOT_ROOT}/cmake/az_iot_su_limits.cmake")
     target_compile_definitions(${COMPONENT_LIB} PUBLIC ${AZ_IOT_SU_LIMIT_DEFINITIONS})

@@ -4,6 +4,12 @@
 
 ### Features Added
 
+- Software updates: the update request, file URL, workflow and install-result types are the SDK's
+  own; `az_iot_su.h` no longer includes azure-sdk-for-c's `az_iot_adu_client.h`, and an installed
+  azure-sdk-for-c no longer needs the `AZ_IOT_SU_MAX_*` limits. Breaking:
+  `az_iot_su_client_install_result` has no `step_results` (steps are in `az_iot_su_step_result`),
+  and `AZ_IOT_SU_CLIENT_SERVICE_ACTION_APPLY_DEPLOYMENT` is an `az_iot_su_client_service_action`
+  enumerator.
 - Breaking: removed the Rust MQTT adapter shell, its `az_iot_rust_mqtt_*` APIs and FFI contract,
   `AZ_IOT_RUST_MQTT_WORKSPACE_SIZE`, `AZ_IOT_WITH_RUST_MQTT`, the `adapter_rust_mqtt` CMake and
   pkg-config component, and Yocto's `rust-mqtt` option. Use Paho or az_mqtt instead; the generic
