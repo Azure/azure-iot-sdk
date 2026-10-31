@@ -10,7 +10,10 @@ option in full.
 ## Minimal setup
 
 ```c
+static uint8_t workspace[AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE];
 az_iot_connection_client_options opts = az_iot_connection_client_options_default();
+opts.workspace = workspace; /* required; see client-configuration.md */
+opts.workspace_size = sizeof(workspace);
 opts.dps.id_scope = "<id-scope>";
 opts.dps.registration_id = "<registration-id>";
 opts.certificate_provider = &certs.base; /* e.g. az_iot_certificate_provider_pem */
