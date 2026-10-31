@@ -58,6 +58,7 @@ $script:Scenarios = [ordered]@{
     # A SKIPPED report is recorded as Succeeded (measured).
     ALREADY_INSTALLED = @{ Short = 'skip'; Variable = 'AZ_IOT_E2E_SU_OFFER_MODEL_ALREADY_INSTALLED'; Expected = 'Succeeded' }
     UNTRUSTED         = @{ Short = 'untrusted'; Variable = 'AZ_IOT_E2E_SU_OFFER_MODEL_UNTRUSTED'; Expected = 'Failed' }
+    LIBRARY_MODE      = @{ Short = 'lib'; Variable = 'AZ_IOT_E2E_SU_OFFER_MODEL_LIBRARY_MODE'; Expected = 'Succeeded' }
 }
 
 function Get-SuE2EConfig {
