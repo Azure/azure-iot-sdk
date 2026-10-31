@@ -666,6 +666,33 @@ if(OPENSSL_FOUND)
             AZ_IOT_CONTRACT_WITH_MANAGED)
     endif()
 
+    # The ESP32 esp_secure_cert provider over desktop fakes, with the key as a PSA key over the
+    # DS context (_ds; _ds_tls13 with TLS 1.3) and as the partition's PEM (_pem).
+    foreach(_keys ds ds_tls13 pem)
+        set(_t az_iot_tests_certificate_provider_esp_secure_cert_${_keys})
+        az_iot_add_cmocka_test(${_t}
+            unit/certificate_provider_esp_secure_cert_test.c
+            support/cert_provider_contract.c
+            support/fake_esp_secure_cert.c
+            ${PROJECT_SOURCE_DIR}/adapters/cert_esp_secure_cert/az_iot_certificate_provider_esp_secure_cert.c)
+        target_include_directories(${_t} PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/support/fake_esp_secure_cert
+            ${CMAKE_CURRENT_SOURCE_DIR}/support
+            ${PROJECT_SOURCE_DIR}/adapters/cert_esp_secure_cert
+            ${PROJECT_SOURCE_DIR}/src/core)
+        target_link_libraries(${_t} PRIVATE OpenSSL::Crypto)
+        if(_keys MATCHES "^ds")
+            target_compile_definitions(${_t} PRIVATE CONFIG_ESP_SECURE_CERT_DS_PERIPHERAL)
+        endif()
+        if(_keys STREQUAL "ds_tls13")
+            target_compile_definitions(${_t} PRIVATE CONFIG_MBEDTLS_SSL_PROTO_TLS1_3)
+        endif()
+        # Instrumented: the provider source is shipped; gcovr excludes tests/ (the fakes).
+        az_iot_apply_coverage(${_t})
+    endforeach()
+    unset(_t)
+    unset(_keys)
+
     # The samples' simulated TPM, against vectors from swtpm and tpm2-tools.
     if(TARGET az_iot_crypto_openssl)
         az_iot_add_cmocka_test(az_iot_tests_sample_tpm_sim

@@ -15,3 +15,5 @@ CONFIG_EFUSE_VIRTUAL_KEEP_IN_FLASH=y
 CONFIG_SECURE_FLASH_ENCRYPTION_MODE_DEVELOPMENT=y
 # HMAC reads the physical eFuse, not the virtual copy: protect NVS keys with flash encryption.
 CONFIG_NVS_SEC_KEY_PROTECT_USING_FLASH_ENC=y
+# So does the Digital Signature peripheral: rehearse with the esp_secure_cert partition's PEM key.
+CONFIG_ESP_SECURE_CERT_DS_PERIPHERAL=n
