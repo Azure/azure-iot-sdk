@@ -1056,7 +1056,13 @@ static az_amqp_transport_status _sch_drive_reneg(az_amqp_sample_transport* s)
     }
     if (sch->reneg_isc_done)
     {
-      // ISC already reported SEC_E_OK; its final token has now been flushed.
+      // ISC already reported SEC_E_OK; its final token has now been flushed. A renegotiated
+      // cipher can change the record sizes _sch_write() uses.
+      if (QueryContextAttributes(&sch->ctxt, SECPKG_ATTR_STREAM_SIZES, &sch->sizes) != SEC_E_OK)
+      {
+        _set_error(s, 0, "QueryContextAttributes(STREAM_SIZES) after renegotiation failed");
+        return AZ_AMQP_TRANSPORT_STATUS_ERROR;
+      }
       sch->reneg_active = false;
       sch->reneg_isc_done = false;
       return AZ_AMQP_TRANSPORT_STATUS_OK;
