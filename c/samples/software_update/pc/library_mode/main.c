@@ -126,6 +126,7 @@ typedef struct
   uint64_t owed_report_resend_ms; /* when to resend a final report that lost its session; 0: no */
   bool check_outstanding; /* an update check was asked and has no verdict yet */
   bool check_once_registered; /* the first check was abandoned before the device registered */
+  bool startup_check_unanswered; /* the startup check has no verdict yet */
   uint64_t check_not_before_ms; /* no check before then: retry-after, or the SDK's own check */
   bool
       final_report_unsettled; /* a final report is owed and WORKFLOW_COMPLETED has not settled it */
@@ -631,9 +632,12 @@ static void hold_update_checks_for(sample_state* state, uint32_t delay_ms)
 static void on_su_event(const az_iot_su_event* event, void* user_ctx)
 {
   sample_state* state = (sample_state*)user_ctx;
+  bool is_startup_check_verdict = false;
   if (is_update_check_verdict(event))
   {
     state->check_outstanding = false;
+    is_startup_check_verdict = state->startup_check_unanswered;
+    state->startup_check_unanswered = false;
   }
 
   switch (event->kind)
@@ -704,11 +708,13 @@ static void on_su_event(const az_iot_su_event* event, void* user_ctx)
       if (event->operation == AZ_IOT_SU_OP_GET_UPDATE)
       {
         /* A device that has never registered has no device record yet: check
-         * again once registration creates it. A registered one asked to wait
-         * checks again after the hold. */
+         * again once registration creates it. A registered one checks again
+         * after the hold when asked to wait, and once when the startup check
+         * ended after the hub connected (a timeout, say). */
         state->check_once_registered = state->check_once_registered || !state->device_registered;
         state->check_now = state->check_now
-            || (state->device_registered && event->service_error.retry_after_ms > 0);
+            || (state->device_registered
+                && (event->service_error.retry_after_ms > 0 || is_startup_check_verdict));
       }
       else if (
           event->operation == AZ_IOT_SU_OP_REPORT_STATUS
@@ -964,6 +970,7 @@ int main(void)
     return 1;
   }
   state.check_outstanding = true;
+  state.startup_check_unanswered = true;
 
   printf(
       "Library mode. Matched against a deployed update: manufacturer=%s model=%s\n"
