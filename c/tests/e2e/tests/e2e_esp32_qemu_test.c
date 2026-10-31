@@ -286,19 +286,20 @@ static int group_setup(void** state)
     fprintf(stderr, "[e2e] service: %s\n", error ? error : "(unknown)");
     return fail_group_setup();
   }
-  /* The cold AMQP handshake to the Event Hub-compatible endpoint can fail transiently (e.g. the
-   * CBS put-token): retry about every second, as e2e_custody_test.c does. */
-  bool watching = az_iot_e2e_service_telemetry_watch_begin(s_service);
+  char needle[160];
+  snprintf(needle, sizeof(needle), "\"deviceId\":\"%s\"", s_device_id);
+  /* Capture only this device's telemetry: the shared hub replays other runs' messages too. The
+   * cold AMQP handshake to the Event Hub-compatible endpoint can fail transiently (e.g. the CBS
+   * put-token): retry about every second, as e2e_custody_test.c does. */
+  bool watching = az_iot_e2e_service_telemetry_watch_begin(s_service, needle);
   for (time_t const start = time(NULL); !watching && time(NULL) - start < E2E_WATCH_TIMEOUT_S;)
   {
     fprintf(
         stderr, "[e2e] telemetry watch: %s; retrying\n", az_iot_e2e_service_last_error(s_service));
     struct timespec const second = { 1, 0 };
     (void)nanosleep(&second, NULL);
-    watching = az_iot_e2e_service_telemetry_watch_begin(s_service);
+    watching = az_iot_e2e_service_telemetry_watch_begin(s_service, needle);
   }
-  char needle[160];
-  snprintf(needle, sizeof(needle), "\"deviceId\":\"%s\"", s_device_id);
   if (!watching || !az_iot_e2e_service_telemetry_watch_needle(s_service, needle))
   {
     fprintf(stderr, "[e2e] telemetry watch: %s\n", az_iot_e2e_service_last_error(s_service));
