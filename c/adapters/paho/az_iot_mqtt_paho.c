@@ -1043,9 +1043,18 @@ static void paho_subscribe_success5(void* context, MQTTAsync_successData5* respo
   {
     AZ_IOT_LOG_WARNF(AZ_IOT_LOG_COMPONENT_PAHO, "SUBACK refused: reason_code=%d", code);
   }
-  enqueue_status_code(m, AZ_IOT_MQTT_EVT_SUBSCRIBE_ACK, status, pid, paho_wire_code(code));
+  enqueue_status_codes_with_reason_string(
+      m,
+      AZ_IOT_MQTT_EVT_SUBSCRIBE_ACK,
+      status,
+      pid,
+      paho_wire_code(code),
+      0,
+      (response && status != AZ_IOT_OK) ? &response->properties : NULL);
 }
 
+/* Paho calls this for a single-filter SUBACK reason code >= 0x80, with the SUBACK's properties, and
+ * for a subscribe that ends without a SUBACK (a negative code, no properties). */
 static void paho_subscribe_failure5(void* context, MQTTAsync_failureData5* response)
 {
   paho_client* m = (paho_client*)context;
@@ -1055,13 +1064,14 @@ static void paho_subscribe_failure5(void* context, MQTTAsync_failureData5* respo
     int code = response
         ? (((int)response->reasonCode >= 0x80) ? (int)response->reasonCode : response->code)
         : -1;
-    enqueue_status_codes(
+    enqueue_status_codes_with_reason_string(
         m,
         AZ_IOT_MQTT_EVT_SUBSCRIBE_ACK,
         az_iot_mqtt_suback_result(m->version, code),
         pid,
         paho_wire_code(code),
-        paho_transport_code(code));
+        paho_transport_code(code),
+        (response && code >= 0x80) ? &response->properties : NULL);
   }
 }
 

@@ -436,6 +436,8 @@ extern "C"
      * - AZ_IOT_MQTT_EVT_PUBLISH_ACK with a PUBACK reason code of 0x80 or above, except for an ack
      *   it holds past the receive buffer's lifetime; below 0x80 it may omit it (Paho's API does
      *   not expose it).
+     * - AZ_IOT_MQTT_EVT_SUBSCRIBE_ACK with a SUBACK reason code of 0x80 or above, except for an
+     *   ack it holds past the receive buffer's lifetime.
      * - AZ_IOT_MQTT_EVT_DISCONNECTED reporting a server DISCONNECT.
      * - AZ_IOT_MQTT_EVT_CONNECTED reporting a refused CONNACK, when its MQTT library exposes it
      *   (Paho's does not).
