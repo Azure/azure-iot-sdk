@@ -46,6 +46,8 @@ static const char* TAG = "hub_esp32";
 #define ECHO_METHOD "echo"
 /** @brief How long an mqttv3 direct method request stays answerable. */
 #define METHOD_RESPONSE_TIMEOUT_S 60u
+/** @brief The do_work() tick. */
+#define TICK_MS 50u
 
 /** @brief The device: connection, the feature clients of one generation, and what is pending. */
 typedef struct
@@ -307,6 +309,19 @@ static az_iot_result build_clients(hub_device* d, az_iot_connection_profile prof
   return r;
 }
 
+/**
+ * @brief Waits out what is left of a #TICK_MS tick begun at @p tick_start: do_work() returns at
+ * once while no session is open (a retry backoff), and the loop must not starve the idle task.
+ */
+static void wait_for_tick_end(TickType_t tick_start)
+{
+  TickType_t const spent = xTaskGetTickCount() - tick_start;
+  if (spent < pdMS_TO_TICKS(TICK_MS))
+  {
+    vTaskDelay(pdMS_TO_TICKS(TICK_MS) - spent);
+  }
+}
+
 /** @brief Logs @p what and restarts: this sample has nothing better to do on such a failure. */
 static void restart(const char* what)
 {
@@ -381,9 +396,12 @@ void app_main(void)
 
   TickType_t const interval = pdMS_TO_TICKS(CONFIG_HUB_TELEMETRY_INTERVAL_S * 1000u);
   TickType_t next_telemetry = xTaskGetTickCount();
+  TickType_t tick_start = xTaskGetTickCount();
   for (;;)
   {
-    (void)az_iot_connection_client_do_work(&d->connection, 50);
+    wait_for_tick_end(tick_start); // At the top: the body continues early.
+    tick_start = xTaskGetTickCount();
+    (void)az_iot_connection_client_do_work(&d->connection, TICK_MS);
     if (d->clients_built && d->profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5)
     {
       (void)az_iot_mqttv5_twin_client_do_work(&d->mqttv5_twin); // Its own timers.
