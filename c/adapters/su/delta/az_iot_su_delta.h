@@ -88,7 +88,8 @@ extern "C"
    * @param[in] user_ctx az_iot_su_delta_handler_options::user_ctx.
    * @return AZ_IOT_SU_RESULT_SUCCESS; AZ_IOT_SU_RESULT_IN_PROGRESS to be called again with the
    * same paths on the next do_work(); anything else is a failure, after which the handler removes
-   * @p target_path.
+   * @p target_path. A build still in progress when the handler chooses again, for another file or
+   * update, is abandoned: @p target_path is removed and this is not called again for it.
    */
   typedef int32_t (*az_iot_su_delta_apply_fn)(
       const char* source_path,

@@ -624,7 +624,14 @@ endif()
 set(AZ_IOT_SU_DELTA_TEST_LIBRARY "" CACHE FILEPATH
     "libadudiffapi.so for the microsoft/delta:1 interop test (needs AZ_IOT_WITH_SU_DELTA)")
 if(TARGET az_iot_su_delta)
-    az_iot_add_cmocka_test(az_iot_tests_su_delta unit/su_delta_test.c)
+    # With the samples' delta processor (su_sim.c), run against the handler.
+    set(_su_sample_common ${CMAKE_CURRENT_SOURCE_DIR}/../samples/software_update/pc/common)
+    az_iot_add_cmocka_test(az_iot_tests_su_delta
+        unit/su_delta_test.c
+        ${_su_sample_common}/su_sim.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/../samples/common/sample_utils.c)
+    target_include_directories(az_iot_tests_su_delta PRIVATE
+        ${_su_sample_common} ${CMAKE_CURRENT_SOURCE_DIR}/../samples/common)
     target_link_libraries(az_iot_tests_su_delta PRIVATE az_iot_su_delta)
     target_compile_definitions(az_iot_tests_su_delta PRIVATE
         AZ_IOT_TEST_SU_DELTA_WORK_DIRECTORY="${CMAKE_CURRENT_BINARY_DIR}/su_delta_work")

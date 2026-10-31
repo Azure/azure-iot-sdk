@@ -98,9 +98,9 @@ int32_t su_sim_get_update_file_path(
     void* user_ctx);
 
 /**
- * @brief Simulated delta processor (az_iot_su_delta_apply_fn): copies @p source_path to
- * @p target_path. read_back_simulated_update_file() serves synthesized bytes, so the built file's
- * hash check passes whatever it holds.
+ * @brief Simulated delta processor (az_iot_su_delta_apply_fn): copies @p source_path into the
+ * existing @p target_path. read_back_simulated_update_file() serves synthesized bytes, so the built
+ * file's hash check passes whatever it holds.
  *
  * @return AZ_IOT_SU_RESULT_SUCCESS, or AZ_IOT_SU_RESULT_FAILURE when a file cannot be read or
  * written.

@@ -34,6 +34,8 @@
 
 #ifdef AZ_IOT_TEST_SU_DELTA_LIBRARY
 #include "az_iot_crypto_openssl.h"
+#else
+#include "su_sim.h"
 #endif
 
 #define WORK_DIRECTORY AZ_IOT_TEST_SU_DELTA_WORK_DIRECTORY
@@ -835,6 +837,114 @@ static void test_build_files_of_handlers_sharing_the_cache_are_separate(void** s
   az_iot_su_delta_handler_deinit(&handlers[1]);
 }
 
+/* Choosing again abandons a build still in progress: its file is removed even when the new choice
+ * declines, so no build is ever called to release it. */
+static void test_choosing_again_removes_an_unfinished_build(void** state)
+{
+  (void)state;
+  fake_processor fake = { 0 };
+  fake.results[0] = AZ_IOT_SU_RESULT_IN_PROGRESS;
+  fake.write_partial_target = true;
+  az_iot_su_delta_handler handler;
+  init_handler(&handler, &fake);
+  az_iot_su_download_handler download_handler
+      = az_iot_su_delta_handler_get_download_handler(&handler);
+  seed_source();
+  az_iot_su_client_update_manifest_file related_files[1];
+  related_files[0] = make_file("delta", "AA==", 5, SOURCE_PROPERTIES(SOURCE_HASH));
+  az_iot_su_client_update_manifest manifest;
+  make_manifest(&manifest, related_files, 1);
+  choose(&download_handler, &manifest);
+  write_file(FILES_DIRECTORY "/0-delta", "DELTA", 5);
+  assert_int_equal(
+      download_handler.build_file_from_related_fn(
+          &manifest.files[0], &related_files[0], 0, download_handler.user_ctx),
+      AZ_IOT_SU_RESULT_IN_PROGRESS);
+  assert_int_equal(count_entries(CACHE_DIRECTORY, BUILD_FILE_PREFIX), 1);
+
+  /* The next update has no cached source: the handler declines, and the file downloads in full. */
+  assert_int_equal(unlink(SOURCE_CACHE_FILE), 0);
+  uint32_t chosen = 99;
+  assert_int_equal(
+      download_handler.choose_related_file_fn(
+          &manifest, &manifest.files[0], &chosen, download_handler.user_ctx),
+      AZ_IOT_SU_RESULT_FAILURE);
+  assert_int_equal(count_entries(CACHE_DIRECTORY, BUILD_FILE_PREFIX), 0);
+  az_iot_su_delta_handler_deinit(&handler);
+}
+
+/* A processor that runs the sample's, then has another handler sharing the cache start a build
+ * before returning. */
+typedef struct sample_processor_with_other_build
+{
+  const az_iot_su_download_handler* other;
+  az_iot_su_client_update_manifest* other_manifest;
+  az_iot_su_client_update_manifest_file* other_related_file;
+  int32_t other_result;
+} sample_processor_with_other_build;
+
+static int32_t apply_with_sample_then_start_other_build(
+    const char* source_path,
+    const char* delta_path,
+    const char* target_path,
+    void* user_ctx)
+{
+  sample_processor_with_other_build* context = (sample_processor_with_other_build*)user_ctx;
+  int32_t result = simulate_delta_apply(source_path, delta_path, target_path, NULL);
+  context->other_result = context->other->build_file_from_related_fn(
+      &context->other_manifest->files[0], context->other_related_file, 1, context->other->user_ctx);
+  return result;
+}
+
+/* The sample processor writes the file the handler created and locked, so another handler starting
+ * a build meanwhile does not remove it as abandoned. */
+static void test_sample_processor_output_survives_other_build_starts(void** state)
+{
+  (void)state;
+  seed_source();
+  fake_processor other_fake = { 0 };
+  other_fake.results[0] = AZ_IOT_SU_RESULT_IN_PROGRESS;
+  az_iot_su_delta_handler other_handler;
+  init_handler(&other_handler, &other_fake);
+  az_iot_su_download_handler other = az_iot_su_delta_handler_get_download_handler(&other_handler);
+  az_iot_su_client_update_manifest_file other_related_files[1];
+  other_related_files[0] = make_file("delta", "AA==", 5, SOURCE_PROPERTIES(SOURCE_HASH));
+  az_iot_su_client_update_manifest other_manifest;
+  make_manifest(&other_manifest, other_related_files, 1);
+  choose(&other, &other_manifest);
+  write_file(FILES_DIRECTORY "/1-delta", "OTHER", 5);
+
+  sample_processor_with_other_build context
+      = { &other, &other_manifest, &other_related_files[0], AZ_IOT_SU_RESULT_FAILURE };
+  az_iot_su_delta_handler_options options = az_iot_su_delta_handler_options_default();
+  options.source_cache_directory = CACHE_DIRECTORY;
+  options.get_file_path_fn = get_file_path;
+  options.apply_delta_fn = apply_with_sample_then_start_other_build;
+  options.user_ctx = &context;
+  az_iot_su_delta_handler handler;
+  assert_int_equal(az_iot_su_delta_handler_init(&handler, &options), AZ_IOT_OK);
+  az_iot_su_download_handler download_handler
+      = az_iot_su_delta_handler_get_download_handler(&handler);
+  az_iot_su_client_update_manifest_file related_files[1];
+  related_files[0] = make_file("delta", "AA==", 5, SOURCE_PROPERTIES(SOURCE_HASH));
+  az_iot_su_client_update_manifest manifest;
+  make_manifest(&manifest, related_files, 1);
+  choose(&download_handler, &manifest);
+  write_file(FILES_DIRECTORY "/0-delta", "DELTA", 5);
+
+  assert_int_equal(
+      download_handler.build_file_from_related_fn(
+          &manifest.files[0], &related_files[0], 0, download_handler.user_ctx),
+      AZ_IOT_SU_RESULT_SUCCESS);
+  assert_int_equal(context.other_result, AZ_IOT_SU_RESULT_IN_PROGRESS);
+  char target[16] = { 0 };
+  assert_int_equal(read_file(FILES_DIRECTORY "/0-target", target, sizeof(target)), 6);
+  assert_string_equal(target, "SOURCE");
+  az_iot_su_delta_handler_deinit(&handler);
+  az_iot_su_delta_handler_deinit(&other_handler);
+  assert_int_equal(count_entries(CACHE_DIRECTORY, BUILD_FILE_PREFIX), 0);
+}
+
 /* Starting a build removes build files left by a stopped process, not ones a handler holds;
  * deinitializing removes the handler's unfinished one. */
 static void test_build_removes_only_abandoned_build_files(void** state)
@@ -1344,6 +1454,14 @@ int main(void)
         teardown_work_directory),
     cmocka_unit_test_setup_teardown(
         test_build_removes_only_abandoned_build_files,
+        setup_work_directory,
+        teardown_work_directory),
+    cmocka_unit_test_setup_teardown(
+        test_choosing_again_removes_an_unfinished_build,
+        setup_work_directory,
+        teardown_work_directory),
+    cmocka_unit_test_setup_teardown(
+        test_sample_processor_output_survives_other_build_starts,
         setup_work_directory,
         teardown_work_directory),
     cmocka_unit_test_setup_teardown(

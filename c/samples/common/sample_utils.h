@@ -124,6 +124,16 @@ FILE* sample_file_create_private_unique(const char* path, char** out_unique_path
 FILE* sample_file_open_read_no_follow(const char* path);
 
 /**
+ * @brief Open the existing file @p path for binary writing, emptied. The file itself is kept, with
+ * its mode and any lock held on it; nothing is created. On POSIX only a regular file, not through a
+ * symbolic link, is opened.
+ *
+ * @param[in] path File to rewrite.
+ * @return Stream to close with fclose(), or NULL on failure.
+ */
+FILE* sample_file_rewrite_existing_no_follow(const char* path);
+
+/**
  * @brief Flush @p file's buffered writes and the operating system's cache to
  * storage, so they survive a power loss.
  *

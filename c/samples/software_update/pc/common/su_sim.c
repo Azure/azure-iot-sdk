@@ -190,7 +190,8 @@ int32_t simulate_delta_apply(
   {
     return AZ_IOT_SU_RESULT_FAILURE;
   }
-  FILE* out = sample_file_open_private(target_path, true);
+  /* The handler created target_path and holds a lock on it: write that file, not a new one. */
+  FILE* out = sample_file_rewrite_existing_no_follow(target_path);
   int ok = out != NULL;
   uint8_t buffer[4096];
   size_t n = 0;

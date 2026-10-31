@@ -395,6 +395,21 @@ static int32_t su_delta_apply_with_library(
   return result;
 }
 
+/** @brief Release the build file, removing it unless @p published moved it away. */
+static void su_delta_release_build_file(az_iot_su_delta_handler* handler, bool published)
+{
+  if (handler->_internal.build_path[0] == '\0')
+  {
+    return;
+  }
+  if (!published)
+  {
+    (void)unlink(handler->_internal.build_path);
+  }
+  (void)close(handler->_internal.build_descriptor);
+  handler->_internal.build_path[0] = '\0';
+}
+
 static int32_t su_delta_choose_related_file(
     const az_iot_su_client_update_manifest* manifest,
     const az_iot_su_client_update_manifest_file* file,
@@ -406,7 +421,9 @@ static int32_t su_delta_choose_related_file(
   {
     return AZ_IOT_SU_RESULT_FAILURE;
   }
+  /* A build still unfinished was abandoned for this new choice. */
   handler->_internal.build_in_progress = false;
+  su_delta_release_build_file(handler, false);
   if (!su_delta_get_provider_directory(
           manifest->update_id.provider,
           handler->_internal.provider_directory,
@@ -541,30 +558,12 @@ static bool su_delta_create_build_file(az_iot_su_delta_handler* handler)
       handler->_internal.build_descriptor = descriptor;
       return true;
     }
-    /* Otherwise another handler removed it as abandoned before it was locked. */
-    if (still_named)
-    {
-      (void)unlink(path);
-    }
+    /* Otherwise another handler removed it as abandoned before it was locked, or, left unlocked,
+     * the next build start removes it. */
     (void)close(descriptor);
   }
   path[0] = '\0';
   return false;
-}
-
-/** @brief Release the build file, removing it unless @p published moved it away. */
-static void su_delta_release_build_file(az_iot_su_delta_handler* handler, bool published)
-{
-  if (handler->_internal.build_path[0] == '\0')
-  {
-    return;
-  }
-  if (!published)
-  {
-    (void)unlink(handler->_internal.build_path);
-  }
-  (void)close(handler->_internal.build_descriptor);
-  handler->_internal.build_path[0] = '\0';
 }
 
 /** @brief Move @p source_path to @p target_path, copying across file systems. */
