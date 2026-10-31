@@ -2748,6 +2748,90 @@ static az_iot_result su_workspace_lay_out(
   return AZ_IOT_OK;
 }
 
+/**
+ * @brief Finds the entry whose id is @p id in an array of handler structs.
+ *
+ * @param[in] entries Structs of @p entry_size bytes whose first member is `const char* id`.
+ * @return The entry, or NULL if none matches.
+ */
+static const void* su_find_handler_by_id(
+    const void* entries,
+    size_t entry_count,
+    size_t entry_size,
+    az_span id)
+{
+  const uint8_t* entry = (const uint8_t*)entries;
+  for (size_t i = 0; i < entry_count; ++i, entry += entry_size)
+  {
+    const char* entry_id = *(const char* const*)(const void*)entry;
+    size_t length = strlen(entry_id);
+    if (length == (size_t)az_span_size(id) && memcmp(entry_id, az_span_ptr(id), length) == 0)
+    {
+      return entry;
+    }
+  }
+  return NULL;
+}
+
+/**
+ * @brief Checks a download-handler registry: every hook set, ids valid and distinct.
+ *
+ * @return AZ_IOT_OK, or AZ_IOT_ERR_INVALID_ARG with an error log.
+ */
+static az_iot_result su_check_download_handlers(const az_iot_su_client_config_options* options)
+{
+  if (options->download_handler_count == 0)
+  {
+    return AZ_IOT_OK;
+  }
+  if (options->download_handlers == NULL || options->library_mode
+      || options->hooks->read_file_fn == NULL)
+  {
+    AZ_IOT_LOG_ERROR(
+        AZ_IOT_LOG_COMPONENT_SU,
+        "download handlers need hooks with read_file_fn and are not allowed in library mode");
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  for (size_t i = 0; i < options->download_handler_count; ++i)
+  {
+    const az_iot_su_download_handler* handler = &options->download_handlers[i];
+    if (handler->id == NULL || handler->choose_related_file_fn == NULL
+        || handler->build_file_from_related_fn == NULL)
+    {
+      AZ_IOT_LOG_ERRORF(
+          AZ_IOT_LOG_COMPONENT_SU, "download handler %u: NULL id or hook", (unsigned)i);
+      return AZ_IOT_ERR_INVALID_ARG;
+    }
+    size_t length = 0;
+    while (length <= AZ_IOT_SU_MAX_DOWNLOAD_HANDLER_ID_SIZE && handler->id[length] > ' '
+           && handler->id[length] <= '~')
+    {
+      ++length;
+    }
+    if (length == 0 || length > AZ_IOT_SU_MAX_DOWNLOAD_HANDLER_ID_SIZE
+        || handler->id[length] != '\0')
+    {
+      AZ_IOT_LOG_ERRORF(AZ_IOT_LOG_COMPONENT_SU, "download handler %u: invalid id", (unsigned)i);
+      return AZ_IOT_ERR_INVALID_ARG;
+    }
+    if (su_find_handler_by_id(
+            options->download_handlers,
+            i,
+            sizeof(*handler),
+            az_span_create((uint8_t*)(uintptr_t)handler->id, (int32_t)length))
+        != NULL)
+    {
+      AZ_IOT_LOG_ERRORF(
+          AZ_IOT_LOG_COMPONENT_SU,
+          "download handler %u: duplicate id %s",
+          (unsigned)i,
+          handler->id);
+      return AZ_IOT_ERR_INVALID_ARG;
+    }
+  }
+  return AZ_IOT_OK;
+}
+
 /* Core initialization. Assumes the caller has ALREADY zeroed the client: the
  * public path builds its channel into storage inside that client, so a memset
  * here would wipe it. */
@@ -2812,6 +2896,11 @@ static az_iot_result su_client_init_core(
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
+  az_iot_result handlers_result = su_check_download_handlers(options);
+  if (handlers_result != AZ_IOT_OK)
+  {
+    return handlers_result;
+  }
 
   SU_I(client).channel.vtable = channel->vtable;
   SU_I(client).channel.ctx = channel->ctx;
@@ -2822,6 +2911,8 @@ static az_iot_result su_client_init_core(
     SU_I(client).hooks = *options->hooks;
   }
   SU_I(client).library_mode = options->library_mode;
+  SU_I(client).download_handlers = options->download_handlers;
+  SU_I(client).download_handler_count = options->download_handler_count;
   SU_I(client).crypto = crypto;
   SU_I(client).persist_max_attempts = (uint32_t)AZ_IOT_SU_PERSIST_MAX_ATTEMPTS;
   SU_I(client).persist_blob = layout.persist_blob;

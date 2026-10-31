@@ -486,6 +486,55 @@ extern "C"
     void* user_ctx;
   } az_iot_su_platform_hooks;
 
+  /* --- Download handlers ------------------------------------------------------------------- */
+
+/** @brief Longest az_iot_su_download_handler::id, in bytes (the import manifest's limit). */
+#define AZ_IOT_SU_MAX_DOWNLOAD_HANDLER_ID_SIZE 64
+
+  /**
+   * @brief Produces a file from a related file instead of downloading it in full, for files whose
+   * manifest entry names this handler's id (e.g. a delta handler, "microsoft/delta:1").
+   *
+   * The client does not call download handlers yet; registering one only validates it.
+   * Hooks return AZ_IOT_SU_RESULT_* codes and MAY return IN_PROGRESS to be re-invoked on the next
+   * do_work().
+   */
+  typedef struct az_iot_su_download_handler
+  {
+    /** Handler id matched against a file's downloadHandler id: 1 to
+     * AZ_IOT_SU_MAX_DOWNLOAD_HANDLER_ID_SIZE printable ASCII characters, no space. Must outlive
+     * the client. */
+    const char* id;
+
+    /**
+     * Choose the related file of @p file to download. Set @p out_related_file_index (0 to the
+     * file's related-file count - 1) and return SUCCESS. Any other result except IN_PROGRESS
+     * means no related file is usable: @p file is downloaded in full.
+     */
+    int32_t (*choose_related_file_fn)(
+        const az_iot_su_client_update_manifest* manifest,
+        const az_iot_su_client_update_manifest_file* file,
+        uint32_t* out_related_file_index,
+        void* user_ctx);
+
+    /**
+     * Build @p file, the manifest's file @p file_index, from the downloaded @p related_file.
+     * Core then verifies @p file's hash with read_file_fn; on failure @p file is downloaded in
+     * full.
+     */
+    int32_t (*build_file_from_related_fn)(
+        const az_iot_su_client_update_manifest_file* file,
+        const az_iot_su_client_update_manifest_file* related_file,
+        uint32_t file_index,
+        void* user_ctx);
+
+    /** OPTIONAL (MAY be NULL). Called once a workflow that used this handler succeeds, e.g. to
+     * keep its files as sources for later updates. */
+    void (*workflow_succeeded_fn)(const az_iot_su_client_update_manifest* manifest, void* user_ctx);
+
+    void* user_ctx;
+  } az_iot_su_download_handler;
+
   /* --- Root key store (owned and managed by software updates core) ---------------------- */
 
   /**
@@ -1163,6 +1212,9 @@ extern "C"
 
       /** Library mode: verified updates are handed to the application. */
       bool library_mode;
+      /** az_iot_su_client_config_options::download_handlers, referenced. */
+      const az_iot_su_download_handler* download_handlers;
+      size_t download_handler_count;
       /** The hand-off events are being dispatched. */
       bool delegating;
       /** A terminal report arrived during the hand-off; applied after it. */
@@ -1343,6 +1395,10 @@ extern "C"
     /** What a new workflow id does to a workflow that may not be replaced.
      * Default AZ_IOT_SU_REPLACEMENT_DEFER. */
     az_iot_su_replacement_policy replacement_policy;
+    /** Download handlers, with distinct ids. Referenced, not copied: must outlive the client.
+     * Need hooks->read_file_fn; not allowed with library_mode. */
+    const az_iot_su_download_handler* download_handlers;
+    size_t download_handler_count; /**< Entries in download_handlers. */
   } az_iot_su_client_config_options;
 
   /**
@@ -1399,7 +1455,8 @@ extern "C"
    * @retval AZ_IOT_ERR_INVALID_ARG A required field is NULL, the connection
    *   client has no crypto backend, or the device properties are malformed
    *   (including zero compatibility properties), replacement_policy is not
-   *   an az_iot_su_replacement_policy value, or a limit is out of range. Also
+   *   an az_iot_su_replacement_policy value, a limit is out of range, or a download handler is
+   *   invalid (NULL id or hook, bad or duplicate id, no read_file_fn, library_mode). Also
    *   returned, with an error log and the client untouched, when any
    *   az_iot_su_client_layout field differs between the application and SDK builds.
    * @retval AZ_IOT_ERR_NOT_SUPPORTED The crypto backend has no verify_rs256, or
