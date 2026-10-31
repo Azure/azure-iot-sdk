@@ -539,7 +539,7 @@ checked before backoff is scheduled.
 | Software updates status report not yet acked | Terminal: yes | Retried until the service accepts or permanently rejects it; idempotent on `workflowId`. After repeated DPS session loss it is abandoned for the process. A terminal report stays owed (in durable storage when persistence is configured) and is re-sent later (next device-properties update, or after restart and resume); an in-progress report is not replayed, the next reporting point sends current state. |
 | Presence (birth) phase | No | Restarted with a freshly generated nonce. |
 | DPS phase | No | Not re-run on an ordinary reconnect: the cached assignment is reused. It is re-run only when `needs_reprovision` is set — a CONNACK identity rejection in `REPROVISION` mode, `az_iot_connection_client_request_reprovision()`, the `max_hub_connect_attempts_before_reprovision` threshold, or `reject_assignment()`. When it does re-run it restarts from `DPS_CONNECTING`. |
-| In-flight CSR operation | Yes | `teardown_active()` does not touch `csr_op`, so a response on the next session completes it. `AZ_IOT_ERR_TIMEOUT` fires only at `CSR_OP_TIMEOUT_MS` (120 s, re-armed on each `202`); `az_iot_connection_client_cancel_csr()` ends it early. The request is published from a reserved PUBACK slot; a rejected PUBACK fails the operation at once, a session end before the PUBACK does not. |
+| In-flight CSR operation | No | The session end fails it with `AZ_IOT_ERR_NOT_CONNECTED`: its response would have come on that session. Resubmit with the same request id once reconnected. `AZ_IOT_ERR_TIMEOUT` fires at `opts.csr_response_timeout_ms` (120 s by default, re-armed on each `202`); `az_iot_connection_client_cancel_csr()` ends it early. The request is published from a reserved PUBACK slot; a rejected PUBACK fails the operation at once. |
 
 ### 5.4 The first attempt
 
@@ -915,7 +915,7 @@ be refused again, and leave the device cycling forever without saying why.
 
 Buffers are fixed-size struct members, not allocations, so exceeding one is a hard failure rather than
 a slow path. Constants are `#ifndef`-guarded and can be raised at build time, except
-`AZ_IOT_CSR_PAYLOAD_BUFFER_MIN` (a sizing recommendation) and `CSR_MAX_BASE64` / `CSR_OP_TIMEOUT_MS`
+`AZ_IOT_CSR_PAYLOAD_BUFFER_MIN` (a sizing recommendation) and `CSR_MAX_BASE64`
 (fixed in `connection_client.c`). From
 [az_iot_connection_client.h](../../inc/azure/iot/az_iot_connection_client.h) unless noted.
 
@@ -950,7 +950,7 @@ a slow path. Constants are `#ifndef`-guarded and can be raised at build time, ex
 | `az_iot_defensive_timeout__ms()` | 5–15 min | MQTTv5 birth-ack: 5, 6, 8, then 10 min base per consecutive miss, plus 0–5 min jitter | `AZ_IOT_ERR_TIMEOUT` |
 | `AZ_IOT_DPS_HOLD_TIMEOUT_MS` | 60000 | How long registration may be held for a pre-registration exchange | the hold expires and registration proceeds |
 | `AZ_IOT_DEFAULT_MAX_HUB_CONNECT_ATTEMPTS_BEFORE_REPROVISION` | 50 | Consecutive hub connect failures before the client re-provisions | `needs_reprovision` set; not an error |
-| `CSR_OP_TIMEOUT_MS` | 120000 | Hub CSR renewal, re-armed on each `202 Accepted` | `AZ_IOT_ERR_TIMEOUT` |
+| `AZ_IOT_DEFAULT_CSR_RESPONSE_TIMEOUT_MS` | 120000 | Default `opts.csr_response_timeout_ms`: hub CSR renewal, re-armed on each `202 Accepted` | `AZ_IOT_ERR_TIMEOUT` |
 
 Every one of these is a *silent* limit until it is crossed, and the result that surfaces is the
 result of whatever call happened to be last — `AZ_IOT_ERR_NOT_ENOUGH_SPACE` does not say which pool

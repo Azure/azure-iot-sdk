@@ -926,6 +926,13 @@ extern "C"
      * Appended so positional initializers keep their meaning.
      */
     uint32_t max_unconfirmed_delivery_timeout_ms;
+    /**
+     * @brief Longest az_iot_connection_client_send_csr() waits for a terminal response, in
+     * milliseconds, restarted by a 202. az_iot_connection_client_options_default() sets
+     * #AZ_IOT_DEFAULT_CSR_RESPONSE_TIMEOUT_MS; init() also turns 0 into it. Appended so
+     * positional initializers keep their meaning.
+     */
+    uint32_t csr_response_timeout_ms;
   } az_iot_connection_client_options;
 
   typedef enum az_iot_connection_state
@@ -1296,6 +1303,10 @@ extern "C"
 /** @brief Default az_iot_connection_client_options::max_unconfirmed_delivery_timeout_ms (5 min). */
 #ifndef AZ_IOT_DEFAULT_MAX_UNCONFIRMED_DELIVERY_TIMEOUT_MS
 #define AZ_IOT_DEFAULT_MAX_UNCONFIRMED_DELIVERY_TIMEOUT_MS 300000u
+#endif
+/** @brief Default az_iot_connection_client_options::csr_response_timeout_ms (2 min). */
+#ifndef AZ_IOT_DEFAULT_CSR_RESPONSE_TIMEOUT_MS
+#define AZ_IOT_DEFAULT_CSR_RESPONSE_TIMEOUT_MS 120000u
 #endif
 /** @brief Default lifetime of a token the SDK signs from a key, in seconds. */
 #ifndef AZ_IOT_DEFAULT_SAS_TOKEN_LIFETIME_SECONDS
@@ -2341,7 +2352,9 @@ extern "C"
    *
    * Only one operation may be in flight (AZ_IOT_ERR_BUSY). A request the broker
    * rejects fails at once with the PUBACK status; one with no terminal response
-   * within an internal timeout fails with AZ_IOT_ERR_TIMEOUT.
+   * within opts.csr_response_timeout_ms fails with AZ_IOT_ERR_TIMEOUT; one open
+   * when the session ends fails with AZ_IOT_ERR_NOT_CONNECTED (resubmit it with
+   * the same  request_id once reconnected).
    *
    * @param request_id NULL to generate one, or a prior id to resubmit.
    * @param replace NULL, or "*" / a request id to supersede an active hub-side
