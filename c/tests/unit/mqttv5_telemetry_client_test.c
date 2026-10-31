@@ -129,7 +129,7 @@ static int teardown(void** state)
   if (test)
   {
     az_iot_mqttv5_telemetry_client_deinit(&test->telemetry);
-    az_iot_connection_client_deinit(&test->connection);
+    az_iot_test_connection_client_deinit(&test->connection);
     az_iot_mock_mqtt_factory_destroy(test->factory);
     free(test);
   }
@@ -842,7 +842,7 @@ static void a_send_while_not_connected_is_refused_and_not_queued(void** state)
 static void a_send_without_a_device_id_is_not_connected(void** state)
 {
   fixture* test = (fixture*)*state;
-  az_iot_connection_client_deinit(&test->connection);
+  az_iot_test_connection_client_deinit(&test->connection);
   az_iot_connection_client_options options = { 0 };
   options.iothub_hostname = "broker.example";
   options.port = 8883;
@@ -900,7 +900,7 @@ static void connection_deinit_completes_nothing(void** state)
   assert_int_equal(
       az_iot_mqttv5_telemetry_client_send(&test->telemetry, &message, on_send, &record), AZ_IOT_OK);
   az_iot_mqttv5_telemetry_client_deinit(&test->telemetry);
-  az_iot_connection_client_deinit(&test->connection);
+  az_iot_test_connection_client_deinit(&test->connection);
   /* Already torn down; teardown must not deinit it a second time. */
   memset(&test->connection, 0, sizeof(test->connection));
   assert_false(record.fired);

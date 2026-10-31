@@ -185,7 +185,7 @@ static int teardown(void** state)
   if (fx)
   {
     az_iot_mqttv3_c2d_client_deinit(&fx->c2d);
-    az_iot_connection_client_deinit(&fx->conn);
+    az_iot_test_connection_client_deinit(&fx->conn);
     az_iot_mock_mqtt_factory_destroy(fx->factory);
     free(fx);
   }
@@ -263,7 +263,7 @@ static void init_against_an_mqtt_v5_connection_is_rejected(void** state)
   assert_int_equal(
       az_iot_mqttv3_c2d_client_init(&c2d, &conn), AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH);
 
-  az_iot_connection_client_deinit(&conn);
+  az_iot_test_connection_client_deinit(&conn);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -315,7 +315,7 @@ static void the_topic_is_built_from_the_client_id(void** state)
   assert_non_null(find_subscribe(m, "devices/fallback-device/messages/devicebound/#"));
 
   az_iot_mqttv3_c2d_client_deinit(&c2d);
-  az_iot_connection_client_deinit(&conn);
+  az_iot_test_connection_client_deinit(&conn);
   az_iot_mock_mqtt_factory_destroy(f);
 }
 
@@ -339,7 +339,7 @@ static void without_any_device_id_the_connect_attempt_fails(void** state)
   assert_int_not_equal(az_iot_connection_client_open(&conn), AZ_IOT_OK);
 
   az_iot_mqttv3_c2d_client_deinit(&c2d);
-  az_iot_connection_client_deinit(&conn);
+  az_iot_test_connection_client_deinit(&conn);
   az_iot_mock_mqtt_factory_destroy(f);
 }
 
@@ -367,7 +367,7 @@ static void a_device_id_that_overflows_the_topic_fails_the_connect_attempt(void*
   assert_int_not_equal(az_iot_connection_client_open(&conn), AZ_IOT_OK);
 
   az_iot_mqttv3_c2d_client_deinit(&c2d);
-  az_iot_connection_client_deinit(&conn);
+  az_iot_test_connection_client_deinit(&conn);
   az_iot_mock_mqtt_factory_destroy(f);
 }
 
@@ -898,7 +898,7 @@ static void a_client_for_a_different_identity_registers_alongside(void** state)
   assert_int_equal(az_iot_mqttv3_c2d_client_init(&other, &other_conn), AZ_IOT_OK);
 
   az_iot_mqttv3_c2d_client_deinit(&other);
-  az_iot_connection_client_deinit(&other_conn);
+  az_iot_test_connection_client_deinit(&other_conn);
 
   /* And on this connection, the slot frees up once its holder goes away. */
   az_iot_mqttv3_c2d_client_deinit(&fx->c2d);
