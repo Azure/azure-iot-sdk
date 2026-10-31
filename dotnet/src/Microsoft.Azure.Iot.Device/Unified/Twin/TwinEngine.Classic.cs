@@ -1,8 +1,9 @@
-// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
+﻿// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
 // See LICENSE file in the project root for full license information.
 
 using Google.Protobuf;
 using Microsoft.Azure.Iot.Device.Exceptions;
+using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Models.Twin;
 using Microsoft.Azure.Iot.Device.Mqtt;
 using System.Collections.Specialized;
@@ -15,19 +16,18 @@ using System.Web;
 
 namespace Microsoft.Azure.Iot.Device.Unified.Twin
 {
-    // How IoT hub's (MQTTv3) twin protocol shapes this engine:
+    // Support for MQTTv3 IoT hubs, which use different topics and payloads, and lack several features that this engine relies
+    // on for MQTTv5 IoT hubs:
     //
-    // - IoT hub neither acknowledges a device's presence with its twin versions nor pushes the twin upon connecting. Instead,
-    //   once the device presence flow completes on each connection, this client GETs the full twin (the "connect sync"),
-    //   raises TwinPushReceived with the sections that changed, and only then sends reported properties patches. The connect
-    //   sync is a desired properties resync, so desired patches received meanwhile are buffered and applied after it.
+    // - There is no birth ack or twin push. Instead, once the device presence flow completes on each connection, this client
+    //   GETs the full twin (the "connect sync"), raises TwinPushReceived with the sections that changed, and only then sends
+    //   reported properties patches. The connect sync is a desired properties resync, so desired patches received meanwhile
+    //   are buffered and applied after it.
     // - Reported properties patches can't be conditional (there is no if-match), so a patch whose response is lost is applied
     //   again when it is resent. Patches are therefore applied at least once, rather than at most once.
-    // - Requests and responses are QoS 0, so either may be lost. Each request is sent again if its response doesn't arrive
-    //   within a defensive timeout.
     // - There is no connection nonce on the wire, so the connection client identifies each connection with a local one.
     // - GET requests can't select sections or be conditional, so this client filters the full twin that IoT hub returns.
-    // - Responses carry HTTP-like status codes, which this client maps onto the twin results (see Result).
+    // - Responses carry HTTP-like status codes, which this client maps onto the MQTTv5 results.
     internal sealed partial class TwinEngine
     {
         private const string ClassicTwinTopicPrefix = "$iothub/twin/";
@@ -43,6 +43,11 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
 
         // Guarded by _desiredStateLock. The connection on which this client last started a connect sync.
         private Guid? _classicConnectSyncConnectionNonce;
+
+        private bool IsClassicConnection()
+        {
+            return _connection.GetCurrentConnectionContext()?.ConnectionProfile == IotHubConnectionType.Mqttv3;
+        }
 
         private void HandleClassicDevicePresenceEstablished()
         {
@@ -85,7 +90,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
                 _desiredResync.ReportedVersionAtStart = reportedVersionAtStart;
             }
 
-            Trace.TraceInformation("Connected to IoT hub, so getting the twin before sending any reported properties patches.");
+            Trace.TraceInformation("Connected to an MQTTv3 IoT hub, so getting the twin before sending any reported properties patches.");
 
             // The connection client raises this while it holds the lock that reconnecting needs, so the GET must not be sent
             // (which may wait for a reconnection if the connection is lost meanwhile) on this thread.
@@ -112,6 +117,8 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
                     _localDesiredVersion = 0;
                     _isTwinStateChanged = true;
                 }
+
+                _connection.ReplaceDesiredPropertiesVersion(0);
             }
         }
 
@@ -137,6 +144,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
                         // As for the desired properties, this device's copy is not valid (see ResetLocalDesiredVersionIfInvalid).
                         Trace.TraceWarning("This device held version {0} of the reported properties, which doesn't match IoT hub's version {1}. Adopting version {1}.", _localReportedVersion, response.ReportedVersion);
                         SetLocalReportedState(response.ReportedVersion, reportedProperties);
+                        _connection.ReplaceReportedPropertiesVersion(response.ReportedVersion);
                         isAdopted = true;
                     }
                 }
@@ -186,7 +194,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
 
         private static MqttPublish CreateClassicReportedPatchPublish(ReportedPatchAttempt attempt)
         {
-            // IoT hub doesn't support if-match, so this patch is unconditional.
+            // MQTTv3 IoT hubs don't support if-match, so this patch is unconditional.
             return new MqttPublish()
             {
                 Topic = string.Format(CultureInfo.InvariantCulture, ClassicTwinReportedPropertiesPatchTopicFormat, attempt.PatchId),
@@ -197,6 +205,11 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
 
         private async Task HandleReceivedClassicPublishAsync(MqttPublish publish)
         {
+            if (!IsClassicConnection())
+            {
+                return;
+            }
+
             if (publish.Topic.StartsWith(ClassicTwinResponseTopic, StringComparison.Ordinal))
             {
                 await HandleReceivedClassicResponseAsync(publish);
@@ -292,7 +305,8 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
                 return;
             }
 
-            // IoT hub always returns the full twin, so drop the sections that the request's if-not-match versions exclude.
+            // MQTTv3 IoT hubs always return the full twin, so drop the sections that the request's if-not-match versions exclude,
+            // as an MQTTv5 IoT hub would.
             GetTwinRequest request = exchange.Request;
             if (request.IfNotMatchDesired != 0 && request.IfNotMatchDesired >= response.DesiredVersion)
             {
@@ -336,6 +350,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
             };
 
             Guid? connectionNonce = _connection.ConnectionNonce;
+            RecordAuthoritativeVersions(connectionNonce, version, 0);
 
             DesiredStateOutcome outcome = new();
             lock (_desiredStateLock)
@@ -347,8 +362,8 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
             await CompleteAsync(outcome);
         }
 
-        // Converts the full twin that IoT hub returns, such as {"desired":{"$version":1},"reported":{"$version":1}}, into a
-        // response carrying both sections.
+        // Converts the full twin that an MQTTv3 IoT hub returns, such as {"desired":{"$version":1},"reported":{"$version":1}},
+        // into the response that an MQTTv5 IoT hub would return for both sections.
         private static bool TryParseClassicTwin(MqttPublish publish, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out TwinGetResponse? response)
         {
             try
@@ -374,7 +389,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
             }
         }
 
-        // Removes the "$version" property that IoT hub adds to each twin section, and returns it (or 0 if it is absent).
+        // Removes the "$version" property that MQTTv3 IoT hubs add to each twin section, and returns it (or 0 if it is absent).
         private static ulong TakeClassicVersion(JsonObject section)
         {
             ulong version = section[ClassicVersionKey]?.GetValue<ulong>() ?? 0;

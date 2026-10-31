@@ -1,4 +1,4 @@
-﻿// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
+// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
 // See LICENSE file in the project root for full license information.
 
 using Microsoft.Azure.Iot.Device.Authentication;
@@ -11,7 +11,8 @@ using System.Text.Json.Nodes;
 using TwinClient = Microsoft.Azure.Iot.Device.Unified.Twin.TwinClient;
 
 /// <summary>
-/// Demonstrates keeping a device's copy of its twin in sync with IoT hub, and persisting it between runs.
+/// Demonstrates keeping a device's copy of its twin in sync with IoT hub, and persisting it between runs, whether the IoT
+/// hub uses MQTTv3 or MQTTv5.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -91,8 +92,8 @@ internal class Program
         };
 
         // Raised with the full desired and/or reported properties upon connecting if this device's versions are out of date.
-        // The SDK gets the twin upon each connection to find out. The SDK also raises this with the full desired properties
-        // when it resynchronizes them.
+        // On an MQTTv3 IoT hub, the SDK gets the twin upon each connection to find out. The SDK also raises this with the full
+        // desired properties when it resynchronizes them.
         twinClient.TwinPushReceived += args =>
         {
             if (args.Reported != null)
@@ -117,7 +118,7 @@ internal class Program
         ProvisioningSettings provisioningSettings = new(idScope);
 
         ConnectionContext connectionContext = await connectionClient.ProvisionAndConnectAsync(provisioningSettings, authentication, cancellationToken: cts.Token);
-        Console.WriteLine($"Device {deviceId} is now provisioned and connected to IoT Hub. Now listening for desired property patches");
+        Console.WriteLine($"Device {deviceId} is now provisioned and connected to IoT Hub using {connectionContext.ConnectionProfile}. Now listening for desired property patches");
 
         try
         {

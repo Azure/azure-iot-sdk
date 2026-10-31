@@ -33,9 +33,24 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         /// <summary>The connection nonce returned to feature clients. Null simulates a connection client that does not expose it.</summary>
         public Guid? ConnectionNonce { get; set; }
 
+        Guid? global::Microsoft.Azure.Iot.Device.MQTTv5.Connection.IConnectionClient.ConnectionNonce => ConnectionNonce;
+
         Guid? global::Microsoft.Azure.Iot.Device.Unified.Connection.IConnectionClient.ConnectionNonce => ConnectionNonce;
 
+        /// <summary>The versions from the latest birth ack that the connection client received, if any.</summary>
+        public global::Microsoft.Azure.Iot.Device.MQTTv5.Connection.BirthAckVersions? LatestBirthAck { get; set; }
+
+        global::Microsoft.Azure.Iot.Device.MQTTv5.Connection.BirthAckVersions? global::Microsoft.Azure.Iot.Device.MQTTv5.Connection.IConnectionClient.LatestBirthAck => LatestBirthAck;
+
+        global::Microsoft.Azure.Iot.Device.MQTTv5.Connection.BirthAckVersions? global::Microsoft.Azure.Iot.Device.Unified.Connection.IConnectionClient.LatestBirthAck => LatestBirthAck;
+
         public event Action? ConnectionLost;
+
+        event Action? global::Microsoft.Azure.Iot.Device.MQTTv5.Connection.IConnectionClient.ConnectionLost
+        {
+            add => ConnectionLost += value;
+            remove => ConnectionLost -= value;
+        }
 
         event Action? global::Microsoft.Azure.Iot.Device.Unified.Connection.IConnectionClient.ConnectionLost
         {
@@ -52,8 +67,14 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
         public event Action? ClassicDevicePresenceEstablished;
 
-        /// <summary>Whether the device presence flow completed on the current connection to IoT hub.</summary>
+        /// <summary>Whether the device presence flow completed on the current connection to an MQTTv3 IoT hub.</summary>
         public bool IsClassicDevicePresenceEstablished { get; set; }
+
+        event Action? global::Microsoft.Azure.Iot.Device.MQTTv5.Connection.IConnectionClient.ClassicDevicePresenceEstablished
+        {
+            add => ClassicDevicePresenceEstablished += value;
+            remove => ClassicDevicePresenceEstablished -= value;
+        }
 
         event Action? global::Microsoft.Azure.Iot.Device.Unified.Connection.IConnectionClient.ClassicDevicePresenceEstablished
         {
@@ -61,15 +82,53 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             remove => ClassicDevicePresenceEstablished -= value;
         }
 
+        bool global::Microsoft.Azure.Iot.Device.MQTTv5.Connection.IConnectionClient.IsClassicDevicePresenceEstablished => IsClassicDevicePresenceEstablished;
+
         bool global::Microsoft.Azure.Iot.Device.Unified.Connection.IConnectionClient.IsClassicDevicePresenceEstablished => IsClassicDevicePresenceEstablished;
 
-        /// <summary>Notify feature clients that the device presence flow completed on a new connection to IoT hub.</summary>
+        /// <summary>Notify feature clients that the device presence flow completed on a new connection to an MQTTv3 IoT hub.</summary>
         public void SimulateClassicDevicePresenceEstablished(Guid? connectionNonce = null)
         {
             ConnectionNonce = connectionNonce ?? Guid.NewGuid();
             IsClassicDevicePresenceEstablished = true;
             ClassicDevicePresenceEstablished?.Invoke();
         }
+
+        public ulong InitialDesiredPropertiesVersion { get; set; }
+
+        public ulong InitialReportedPropertiesVersion { get; set; }
+
+        /// <summary>Every desired properties version a feature client reported that the device now holds, in order.</summary>
+        public List<ulong> ObservedDesiredPropertiesVersions { get; } = new();
+
+        /// <summary>Every reported properties version a feature client reported that the device now holds, in order.</summary>
+        public List<ulong> ObservedReportedPropertiesVersions { get; } = new();
+
+        ulong global::Microsoft.Azure.Iot.Device.MQTTv5.Connection.IConnectionClient.InitialDesiredPropertiesVersion => InitialDesiredPropertiesVersion;
+
+        ulong global::Microsoft.Azure.Iot.Device.MQTTv5.Connection.IConnectionClient.InitialReportedPropertiesVersion => InitialReportedPropertiesVersion;
+
+        void global::Microsoft.Azure.Iot.Device.MQTTv5.Connection.IConnectionClient.ObserveDesiredPropertiesVersion(ulong version) => ObservedDesiredPropertiesVersions.Add(version);
+
+        void global::Microsoft.Azure.Iot.Device.MQTTv5.Connection.IConnectionClient.ObserveReportedPropertiesVersion(ulong version) => ObservedReportedPropertiesVersions.Add(version);
+
+        /// <summary>Every version that a feature client replaced the recorded desired properties version with, in order.</summary>
+        public List<ulong> ReplacedDesiredPropertiesVersions { get; } = new();
+
+        /// <summary>Every version that a feature client replaced the recorded reported properties version with, in order.</summary>
+        public List<ulong> ReplacedReportedPropertiesVersions { get; } = new();
+
+        void global::Microsoft.Azure.Iot.Device.MQTTv5.Connection.IConnectionClient.ReplaceDesiredPropertiesVersion(ulong version) => ReplacedDesiredPropertiesVersions.Add(version);
+
+        void global::Microsoft.Azure.Iot.Device.MQTTv5.Connection.IConnectionClient.ReplaceReportedPropertiesVersion(ulong version) => ReplacedReportedPropertiesVersions.Add(version);
+
+        void global::Microsoft.Azure.Iot.Device.Unified.Connection.IConnectionClient.ObserveDesiredPropertiesVersion(ulong version) => ObservedDesiredPropertiesVersions.Add(version);
+
+        void global::Microsoft.Azure.Iot.Device.Unified.Connection.IConnectionClient.ObserveReportedPropertiesVersion(ulong version) => ObservedReportedPropertiesVersions.Add(version);
+
+        void global::Microsoft.Azure.Iot.Device.Unified.Connection.IConnectionClient.ReplaceDesiredPropertiesVersion(ulong version) => ReplacedDesiredPropertiesVersions.Add(version);
+
+        void global::Microsoft.Azure.Iot.Device.Unified.Connection.IConnectionClient.ReplaceReportedPropertiesVersion(ulong version) => ReplacedReportedPropertiesVersions.Add(version);
 
         /// <summary>Every publish, subscribe and unsubscribe the feature clients sent, in order.</summary>
         public List<MqttPublish> PublishedMessages { get; } = new();

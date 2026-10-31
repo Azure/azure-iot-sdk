@@ -11,26 +11,32 @@ using System.Text.Json.Nodes;
 namespace Microsoft.Azure.Iot.Device.Unified.Twin
 {
     /// <summary>
-    /// The feature client for interacting with a device's twin properties.
+    /// The feature client for interacting with a device's twin properties, whether the device is connected to an MQTTv5 IoT
+    /// hub or an MQTTv3 one.
     /// </summary>
     /// <remarks>
     /// <para>
     /// This client keeps a copy of the twin, coalesces reported properties patches, holds them while the device is
-    /// disconnected, and retries them after reconnecting. The application doesn't need to coordinate its twin operations with
-    /// the connection's state.
+    /// disconnected, and retries them after reconnecting, the same way as <see cref="MQTTv5.Twin.TwinClient"/> does. The
+    /// application doesn't need to coordinate its twin operations with the connection's state.
+    /// </para>
+    /// <para>
+    /// MQTTv3 IoT hubs lack some of the features that this client relies on for MQTTv5 IoT hubs, so it behaves differently
+    /// when connected to one:
     /// </para>
     /// <list type="bullet">
     /// <item><description>
-    /// Reported properties patches are applied at least once, since IoT hub can't make a patch conditional on its version of
-    /// the reported properties. A patch whose response is lost is applied again when it is resent.
+    /// Reported properties patches are applied at least once, rather than at most once, since MQTTv3 IoT hubs can't make a
+    /// patch conditional on their version of the reported properties. A patch whose response is lost is applied again when it
+    /// is resent.
     /// </description></item>
     /// <item><description>
-    /// IoT hub doesn't push the twin when the device connects, so this client gets the full twin upon each connection, and
-    /// raises <see cref="TwinPushReceived"/> with the sections that changed. Reported properties patches are only sent once
-    /// that request completes.
+    /// MQTTv3 IoT hubs don't push the twin when the device connects, so this client gets the full twin upon each connection
+    /// instead, and raises <see cref="TwinPushReceived"/> with the sections that changed. Reported properties patches are
+    /// only sent once that request completes.
     /// </description></item>
     /// <item><description>
-    /// IoT hub responds with HTTP-like status codes, which this client maps onto <see cref="Result"/>: 2xx onto
+    /// MQTTv3 IoT hubs respond with HTTP-like status codes, which this client maps onto <see cref="Result"/>: 2xx onto
     /// <see cref="Result.Ok"/>, 400 onto <see cref="Result.PayloadInvalid"/>, 413 onto <see cref="Result.PayloadTooLarge"/>
     /// and anything else (including throttling) onto <see cref="Result.InternalError"/>.
     /// </description></item>
@@ -38,16 +44,11 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
     /// </remarks>
     public class TwinClient : IDisposable
     {
-        // The device presence flow subscribes to these topics.
+        // The device presence flow subscribes to these topics on MQTTv3 IoT hubs.
         internal const string ClassicTwinResponseTopic = "$iothub/twin/res/";
         internal const string ClassicTwinDesiredPropertiesPatchTopic = "$iothub/twin/PATCH/properties/desired/";
 
         private readonly TwinEngine _twinClient;
-
-        private readonly IConnectionClient _connection;
-
-        // Handles the twin when the device is connected to an MQTTv5 IoT hub.
-        private readonly MQTTv5.Twin.TwinClient _mqttv5HubTwinClient;
 
         /// <summary>
         /// Construct a new <see cref="TwinClient"/> instance.
@@ -88,8 +89,9 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
         /// </param>
         /// <remarks>
         /// Its pending reported properties patches are sent, in order, before any made afterwards. Their outcomes are raised by
-        /// <see cref="ReportedPatchCompleted"/>. IoT hub always returns the full twin, but <see cref="TwinPushReceived"/> is
-        /// only raised with the sections that changed since this snapshot.
+        /// <see cref="ReportedPatchCompleted"/>. MQTTv5 IoT hubs only push the twin sections that changed since this snapshot.
+        /// MQTTv3 IoT hubs always return the full twin, but <see cref="TwinPushReceived"/> is still only raised with the
+        /// sections that changed.
         /// </remarks>
         /// <exception cref="InvalidOperationException">Thrown if <paramref name="connection"/> opted out of twins (see <see cref="ConnectionClientOptions.EnableTwin"/>).</exception>
         public TwinClient(IConnectionClient connection, TwinState? initialState)
@@ -99,9 +101,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
                 throw new InvalidOperationException($"The provided connection client opted out of twins. Set {nameof(ConnectionClientOptions)}.{nameof(ConnectionClientOptions.EnableTwin)} to true to use a {nameof(TwinClient)}.");
             }
 
-            _connection = connection;
-            _twinClient = new TwinEngine(connection, initialState);
-            _mqttv5HubTwinClient = new MQTTv5.Twin.TwinClient(new Stub(connection));
+            _twinClient = new TwinEngine(new Stub(connection), initialState);
         }
 
         /// <summary>
@@ -114,16 +114,8 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
         /// </remarks>
         public event Action<DesiredPatchReceivedEventArgs>? DesiredPatchReceived
         {
-            add
-            {
-                _twinClient.DesiredPatchReceived += value;
-                _mqttv5HubTwinClient.DesiredPatchReceived += value;
-            }
-            remove
-            {
-                _twinClient.DesiredPatchReceived -= value;
-                _mqttv5HubTwinClient.DesiredPatchReceived -= value;
-            }
+            add => _twinClient.DesiredPatchReceived += value;
+            remove => _twinClient.DesiredPatchReceived -= value;
         }
 
         /// <summary>
@@ -131,8 +123,9 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
         /// last observed them, without the application asking for it.
         /// </summary>
         /// <remarks>
-        /// Raised whenever the device connects and its copy of the desired or reported properties is out of date, since this
-        /// client gets the twin upon each connection. Also raised with just the desired section when this client resynchronizes its desired properties with IoT hub (for example, after
+        /// Raised whenever the device connects and its copy of the desired or reported properties is out of date. MQTTv5 IoT
+        /// hubs push these sections. For MQTTv3 IoT hubs, this client gets the twin upon each connection instead. Also raised with
+        /// just the desired section when this client resynchronizes its desired properties with IoT hub (for example, after
         /// missing a desired properties patch). The desired properties in the snapshot replace the ones this device held.
         /// </remarks>
         public event Action<TwinPushReceivedEventArgs>? TwinPushReceived
@@ -141,44 +134,21 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
             remove => _twinClient.TwinPushReceived -= value;
         }
 
-        /// <summary>
-        /// An event that executes whenever this device's copy of its twin changes, with a snapshot of it to persist.
-        /// </summary>
-        /// <remarks>
-        /// <para>
-        /// The SDK doesn't persist the twin. An application that persists each snapshot, and passes the latest one to
-        /// <see cref="TwinClient(IConnectionClient, TwinState?)"/> when it starts again, only receives the twin sections that
-        /// changed while it was stopped, and its reported properties patches that IoT hub hadn't applied are sent again.
-        /// </para>
-        /// <para>
-        /// Snapshots are raised one at a time, in the order the changes were made, so the latest one raised is always the
-        /// latest state. Changes made by a handler of this event (or of <see cref="ReportedPatchCompleted"/>) are raised once
-        /// that handler returns. The snapshot belongs to the handler, which may keep it.
-        /// </para>
-        /// </remarks>
+        /// <inheritdoc cref="MQTTv5.Twin.TwinClient.TwinStateChanged"/>
         public event Action<TwinState>? TwinStateChanged
         {
             add => _twinClient.TwinStateChanged += value;
             remove => _twinClient.TwinStateChanged -= value;
         }
 
-        /// <summary>
-        /// An event that executes whenever IoT hub responds to a reported properties patch that this client sent, or the patch
-        /// couldn't be sent. Raised in the order the patches were sent.
-        /// </summary>
-        /// <remarks>
-        /// Unlike awaiting <see cref="UpdateReportedPropertiesAsync"/>, this is raised for every patch, including those made by
-        /// <see cref="EnqueueReportedPropertiesUpdate"/> or restored from a <see cref="TwinState"/>.
-        /// </remarks>
+        /// <inheritdoc cref="MQTTv5.Twin.TwinClient.ReportedPatchCompleted"/>
         public event Action<ReportedPatchCompletedEventArgs>? ReportedPatchCompleted
         {
             add => _twinClient.ReportedPatchCompleted += value;
             remove => _twinClient.ReportedPatchCompleted -= value;
         }
 
-        /// <summary>
-        /// Get a snapshot of this device's copy of its twin, as last raised by <see cref="TwinStateChanged"/> (or changed since).
-        /// </summary>
+        /// <inheritdoc cref="MQTTv5.Twin.TwinClient.GetTwinState"/>
         public TwinState GetTwinState()
         {
             return _twinClient.GetTwinState();
@@ -200,11 +170,6 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
         /// </exception>
         public Task<DeviceTwin> GetTwinAsync(CancellationToken cancellationToken = default)
         {
-            if (IsConnectedToMqttv5Hub())
-            {
-                return _mqttv5HubTwinClient.GetTwinAsync(true, true, 0, 0, cancellationToken);
-            }
-
             return _twinClient.GetTwinAsync(getReported: true, getDesired: true, ifNotMatchReported: 0, ifNotMatchDesired: 0, cancellationToken);
         }
 
@@ -228,40 +193,18 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
         /// connection is lost, the patch is sent again once the device has (re)connected.
         /// </para>
         /// <para>
-        /// IoT hub can't make a patch conditional on its version of the reported properties, so a patch whose response was lost
-        /// is applied again when it is resent.
+        /// On MQTTv5 IoT hubs, each patch is conditional on IoT hub's version of the reported properties, so IoT hub applies it at
+        /// most once. MQTTv3 IoT hubs don't support that, so a patch whose response was lost is applied again when it is resent.
         /// </para>
         /// </remarks>
         /// <exception cref="DeviceException">Thrown if the patch could not be sent.</exception>
         /// <exception cref="ObjectDisposedException">Thrown if this client is disposed before IoT hub responds.</exception>
         public Task<ReportedPatchResponse> UpdateReportedPropertiesAsync(JsonObject reportedProperties, CancellationToken cancellationToken = default)
         {
-            if (IsConnectedToMqttv5Hub())
-            {
-                // Unconditional, which matches the behavior when connected to an MQTTv3 IoT hub.
-                return _mqttv5HubTwinClient.UpdateReportedPropertiesAsync(
-                    new MQTTv5.Twin.ReportedPatchRequest() { ReportedProperties = reportedProperties, IfMatch = 0 },
-                    cancellationToken);
-            }
-
             return _twinClient.UpdateReportedPropertiesCoreAsync(reportedProperties, cancellationToken);
         }
 
-        /// <summary>
-        /// Queue an update to this device's reported properties, without waiting for IoT hub to apply it.
-        /// </summary>
-        /// <param name="reportedProperties">The patch of the reported properties to send to IoT hub.</param>
-        /// <remarks>
-        /// <para>
-        /// The patch is sent exactly as by <see cref="UpdateReportedPropertiesAsync"/>, including when the device isn't
-        /// connected yet, and it is sent after every patch made before it. Its outcome is raised by
-        /// <see cref="ReportedPatchCompleted"/>.
-        /// </para>
-        /// <para>
-        /// The patch is part of the <see cref="TwinState"/> raised by <see cref="TwinStateChanged"/> before this method returns,
-        /// so an application that persists that state doesn't lose the patch if it stops before IoT hub applies it.
-        /// </para>
-        /// </remarks>
+        /// <inheritdoc cref="MQTTv5.Twin.TwinClient.EnqueueReportedPropertiesUpdate"/>
         public void EnqueueReportedPropertiesUpdate(JsonObject reportedProperties)
         {
             _twinClient.EnqueueReportedPropertiesUpdate(reportedProperties);
@@ -282,11 +225,6 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
         public void Dispose()
         {
             _twinClient.Dispose();
-        }
-
-        private bool IsConnectedToMqttv5Hub()
-        {
-            return _connection.GetCurrentConnectionContext()?.ConnectionProfile == IotHubConnectionType.Mqttv5;
         }
     }
 }

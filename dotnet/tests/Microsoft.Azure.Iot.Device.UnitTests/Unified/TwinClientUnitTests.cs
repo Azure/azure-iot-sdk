@@ -602,15 +602,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
                     ReportedPayload = ByteString.CopyFromUtf8("{\"temperature\":21}"),
                 };
 
-                var inbound = new MqttPublish()
-                {
-                    Topic = $"ih/{DeviceId}/dev/twin",
-                    Payload = response.ToByteArray(),
-                    CorrelationData = publish.CorrelationData,
-                    QualityOfServiceLevel = MqttQualityOfServiceLevel.AtMostOnce,
-                };
-                inbound.UserProperties.Add(new("type", Encoding.UTF8.GetBytes("get-response:1")));
-                await connection.SimulateReceiveAsync(inbound);
+                await connection.SimulateReceiveAsync(CreateInboundMqttv5TwinPublish("get-response:1", publish.CorrelationData!, response.ToByteArray()));
                 return new MqttPublishAck() { ReasonCode = MqttPublishAckReasonCode.Success };
             };
 
@@ -621,6 +613,60 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
             Assert.Equal($"ih/{IConnectionClient.DeviceIdPlaceholder}/srv/twin", getPublish.Topic);
             Assert.Equal(1ul, twin.DesiredVersion);
             Assert.Equal(2ul, twin.ReportedVersion);
+        }
+
+        [Fact]
+        public async Task UpdateReportedPropertiesAsync_MqttV5_SendsConditionalPatchOnceIoTHubAcknowledgesPresence()
+        {
+            Guid nonce = Guid.NewGuid();
+            MockFeatureConnectionClient connection = new()
+            {
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv5, DeviceId),
+                ConnectionNonce = nonce,
+            };
+            using TwinClient twinClient = new(connection);
+
+            Task<ReportedPatchResponse> patchTask = twinClient.UpdateReportedPropertiesAsync(new JsonObject() { ["temperature"] = 25 }, TestContext.Current.CancellationToken);
+            Assert.Empty(connection.PublishedMessages);
+
+            MqttPublish birthAck = new()
+            {
+                Topic = $"ih/{DeviceId}/dev/presence",
+                Payload = new global::Microsoft.Azure.Iot.Device.MQTTv5.Connection.BirthAck() { DesiredVersion = 1, ReportedVersion = 2 }.ToByteArray(),
+                CorrelationData = nonce.ToByteArray(bigEndian: true),
+                QualityOfServiceLevel = MqttQualityOfServiceLevel.AtMostOnce,
+            };
+            birthAck.UserProperties.Add(new("type", Encoding.UTF8.GetBytes("birth-ack:1")));
+            await connection.SimulateReceiveAsync(birthAck);
+
+            MqttPublish patchPublish = Assert.Single(connection.PublishedMessages);
+            ReportedPatch patch = ReportedPatch.Parser.ParseFrom(patchPublish.Payload);
+            Assert.Equal(2ul, patch.IfMatch);
+            Assert.Equal("{\"temperature\":25}", patch.Payload.ToStringUtf8());
+
+            var response = new ReportedPatchResponse() { Result = Result.Ok, Version = 3 };
+            await connection.SimulateReceiveAsync(CreateInboundMqttv5TwinPublish("reported-patch-response:1", patchPublish.CorrelationData!, response.ToByteArray()));
+            Assert.Equal(3ul, (await patchTask).Version);
+        }
+
+        [Fact]
+        public async Task TwinPushReceived_MqttV5_IsForwarded()
+        {
+            MockFeatureConnectionClient connection = new()
+            {
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv5, DeviceId),
+            };
+            using TwinClient twinClient = new(connection);
+            TwinPushReceivedEventArgs? received = null;
+            twinClient.TwinPushReceived += args => received = args;
+
+            var push = new TwinPush()
+            {
+                Desired = new Section { Version = 4, Payload = ByteString.CopyFromUtf8("{\"fanSpeed\":40}") },
+            };
+            await connection.SimulateReceiveAsync(CreateInboundMqttv5TwinPublish("twin-push:1", Guid.NewGuid().ToByteArray(bigEndian: true), push.ToByteArray()));
+
+            Assert.Equal(4ul, received!.Desired!.PropertiesVersion);
         }
 
         [Fact]
@@ -729,6 +775,19 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
             string rest = topic.Substring(index + "$rid=".Length);
             int ampersand = rest.IndexOf('&');
             return ampersand >= 0 ? rest.Substring(0, ampersand) : rest;
+        }
+
+        private static MqttPublish CreateInboundMqttv5TwinPublish(string type, byte[] correlationData, byte[] payload)
+        {
+            var publish = new MqttPublish()
+            {
+                Topic = $"ih/{DeviceId}/dev/twin",
+                Payload = payload,
+                CorrelationData = correlationData,
+                QualityOfServiceLevel = MqttQualityOfServiceLevel.AtMostOnce,
+            };
+            publish.UserProperties.Add(new("type", Encoding.UTF8.GetBytes(type)));
+            return publish;
         }
     }
 }

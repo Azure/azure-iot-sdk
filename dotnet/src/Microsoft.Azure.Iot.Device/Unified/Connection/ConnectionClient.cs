@@ -30,11 +30,16 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
 
         private MQTTv5.Connection.ConnectionClient _mqttv5ConnectionClient;
 
-        // The current (or most recent) connection to IoT hub. Never null, so that the twin client holds reported patches until
-        // the device presence flow completes on the first connection.
+        // The current (or most recent) connection to an MQTTv3 IoT hub. Never null, so that the twin client holds reported
+        // patches until the device presence flow completes on the first connection.
         private volatile ClassicConnection _classicConnection = new(Guid.NewGuid());
 
-        Guid? IConnectionClient.ConnectionNonce => CurrentConnectionContext != null ? _classicConnection.Nonce : null;
+        Guid? IConnectionClient.ConnectionNonce => CurrentConnectionContext?.ConnectionProfile switch
+        {
+            IotHubConnectionType.Mqttv5 => _mqttv5ConnectionClient.CurrentConnectionNonce,
+            IotHubConnectionType.Mqttv3 => _classicConnection.Nonce,
+            _ => null,
+        };
 
         event Action? IConnectionClient.ConnectionLost
         {
@@ -51,7 +56,22 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
         }
 
         bool IConnectionClient.IsClassicDevicePresenceEstablished =>
-            CurrentConnectionContext != null && _classicConnection.IsPresenceEstablished;
+            CurrentConnectionContext?.ConnectionProfile == IotHubConnectionType.Mqttv3
+                && _classicConnection.IsPresenceEstablished;
+
+        // The nested MQTTv5 client announces the twin versions that the device holds in each birth, so it keeps track of them
+        // even while this client is connected to an MQTTv3 IoT hub, in case the device is later re-provisioned to an MQTTv5 one.
+        private MQTTv5.Connection.IConnectionClient Mqttv5TwinVersions => _mqttv5ConnectionClient;
+
+        BirthAckVersions? IConnectionClient.LatestBirthAck => Mqttv5TwinVersions.LatestBirthAck;
+
+        void IConnectionClient.ObserveDesiredPropertiesVersion(ulong version) => Mqttv5TwinVersions.ObserveDesiredPropertiesVersion(version);
+
+        void IConnectionClient.ObserveReportedPropertiesVersion(ulong version) => Mqttv5TwinVersions.ObserveReportedPropertiesVersion(version);
+
+        void IConnectionClient.ReplaceDesiredPropertiesVersion(ulong version) => Mqttv5TwinVersions.ReplaceDesiredPropertiesVersion(version);
+
+        void IConnectionClient.ReplaceReportedPropertiesVersion(ulong version) => Mqttv5TwinVersions.ReplaceReportedPropertiesVersion(version);
 
         /// <inheritdoc/>
         public bool IsTwinEnabled { get; }
@@ -274,7 +294,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
             await RaiseDevicePresenceFlowCompletedAsync(new DevicePresenceFlowCompletedArgs() { IsSuccess = true });
         }
 
-        // A connection to IoT hub, which this client identifies with a locally generated nonce.
+        // A connection to an MQTTv3 IoT hub, which this client identifies with a locally generated nonce.
         private sealed class ClassicConnection(Guid nonce)
         {
             private const int Pending = 0;

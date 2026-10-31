@@ -3,13 +3,14 @@
 
 using Microsoft.Azure.Iot.Device.MQTTv5.Connection;
 using Microsoft.Azure.Iot.Device.MQTTv5.Twin;
-using TwinPushReceivedEventArgs = Microsoft.Azure.Iot.Device.MQTTv5.Twin.TwinPushReceivedEventArgs;
 using Microsoft.Azure.Iot.Device.IntegrationTests.MQTTv5;
 using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Models.Twin;
 using System.Text.Json.Nodes;
+using System.Threading.Channels;
 using Xunit;
 using Microsoft.Azure.Devices;
+using ServiceTwin = Microsoft.Azure.Devices.Shared.Twin;
 
 namespace Microsoft.Azure.Iot.Device.IntegrationTests.MQTTv5
 {
@@ -100,7 +101,6 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.MQTTv5
             ReportedPatchRequest reportedPatchRequest = new()
             {
                 ReportedProperties = new JsonObject(),
-                IfMatch = 0
             };
 
             reportedPatchRequest.ReportedProperties[expectedReportedPropertyKey] = expectedReportedPropertyValue;
@@ -165,45 +165,258 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.MQTTv5
         }
 
         [Fact(Timeout = Setup.TestTimeoutMilliseconds)]
-        public async Task TestIfMatchFilteringReportedPatchRequest()
+        public async Task TestReportedPatchesAreConditionalOnTrackedVersionAndCombined()
         {
             CancellationToken cancellationToken = TestContext.Current.CancellationToken;
             MQTTv5DeviceTestContext testDeviceContext = await Setup.CreateConnectedMQTTv5ConnectionClientAsync(null, cancellationToken: cancellationToken);
             using TwinClient twinClient = new(testDeviceContext.ConnectionClient);
             await using (testDeviceContext)
             {
+                // Each patch is made conditional on the version from the birth ack or the previous response, so sequential
+                // patches are all accepted.
                 string propertyName = Guid.NewGuid().ToString();
                 var first = await twinClient.UpdateReportedPropertiesAsync(
                     new() { ReportedProperties = new JsonObject { [propertyName] = "first" } }, cancellationToken);
                 Assert.Equal(Result.Ok, first.Result);
+                Assert.Equal(first.Version, twinClient.AuthoritativeReportedPropertiesVersion);
 
-                var current = await twinClient.UpdateReportedPropertiesAsync(
-                    new()
-                    {
-                        ReportedProperties = new JsonObject { [propertyName] = "current" },
-                        IfMatch = first.Version,
-                    }, cancellationToken);
-                Assert.Equal(Result.Ok, current.Result);
-                Assert.True(current.Version > first.Version);
+                var second = await twinClient.UpdateReportedPropertiesAsync(
+                    new() { ReportedProperties = new JsonObject { [propertyName] = "second" } }, cancellationToken);
+                Assert.Equal(Result.Ok, second.Result);
+                Assert.Equal(first.Version + 1, second.Version);
 
-                var stale = await twinClient.UpdateReportedPropertiesAsync(
-                    new()
-                    {
-                        ReportedProperties = new JsonObject { [propertyName] = "stale" },
-                        IfMatch = first.Version,
-                    }, cancellationToken);
-                Assert.Equal(Result.VersionMismatch, stale.Result);
-                Assert.Equal(current.Version, stale.Version);
+                // Patches made while one is in flight are combined into the next patch, in order.
+                string otherPropertyName = Guid.NewGuid().ToString();
+                ReportedPatchResponse[] concurrent = await Task.WhenAll(
+                    twinClient.UpdateReportedPropertiesAsync(new() { ReportedProperties = new JsonObject { [propertyName] = "third" } }, cancellationToken),
+                    twinClient.UpdateReportedPropertiesAsync(new() { ReportedProperties = new JsonObject { [propertyName] = "fourth" } }, cancellationToken),
+                    twinClient.UpdateReportedPropertiesAsync(new() { ReportedProperties = new JsonObject { [otherPropertyName] = "other" } }, cancellationToken));
+                Assert.All(concurrent, response => Assert.Equal(Result.Ok, response.Result));
+                ulong latestVersion = concurrent.Max(response => response.Version);
+                Assert.True(latestVersion <= second.Version + 2);
+                Assert.Equal(latestVersion, twinClient.AuthoritativeReportedPropertiesVersion);
 
-                DeviceTwin unchanged = await twinClient.GetTwinAsync(cancellationToken: cancellationToken);
-                Assert.NotNull(unchanged.Reported);
-                Assert.Equal("current", unchanged.Reported[propertyName]!.GetValue<string>());
-                Assert.Equal(current.Version, unchanged.ReportedVersion);
+                DeviceTwin twin = await twinClient.GetTwinAsync(cancellationToken: cancellationToken);
+                Assert.NotNull(twin.Reported);
+                Assert.Equal("fourth", twin.Reported[propertyName]!.GetValue<string>());
+                Assert.Equal("other", twin.Reported[otherPropertyName]!.GetValue<string>());
+                Assert.Equal(latestVersion, twin.ReportedVersion);
+            }
+        }
+        [Fact(Timeout = Setup.TestTimeoutMilliseconds)]
+        public async Task TestDesiredPatchesAfterTwinPushAreDeliveredInVersionOrder()
+        {
+            CancellationToken cancellationToken = TestContext.Current.CancellationToken;
+            using RegistryManager registryManager = Setup.GetMQTTv5IotHubRegistryManager();
+            MQTTv5DeviceTestContext testDeviceContext = await Setup.CreateProvisionableMQTTv5DeviceAsync(null, cancellationToken: cancellationToken);
+            using TwinClient twinClient = new(testDeviceContext.ConnectionClient);
+            await using (testDeviceContext)
+            {
+                TwinEventRecorder events = new(twinClient);
+                await ConnectAsync(testDeviceContext, cancellationToken);
+                ulong pushedVersion = (await events.NextAsync<TwinPushReceivedEventArgs>(cancellationToken)).Desired!.PropertiesVersion;
 
-                var next = await twinClient.UpdateReportedPropertiesAsync(
-                    new() { ReportedProperties = new JsonObject { [propertyName] = "next" } }, cancellationToken);
-                Assert.Equal(Result.Ok, next.Result);
-                Assert.True(next.Version > current.Version);
+                List<(string Key, string Value)> updates = new();
+                for (int i = 0; i < 3; i++)
+                {
+                    updates.Add(await UpdateDesiredPropertyAsync(registryManager, testDeviceContext.DeviceId, cancellationToken));
+                }
+
+                // Each patch is exactly one version newer than the last, so no resync is needed.
+                for (int i = 0; i < updates.Count; i++)
+                {
+                    DesiredPatchReceivedEventArgs patch = await events.NextAsync<DesiredPatchReceivedEventArgs>(cancellationToken);
+                    Assert.Equal(pushedVersion + (ulong)i + 1, patch.DesiredPropertiesVersion);
+                    Assert.Equal(updates[i].Value, patch.DesiredProperties[updates[i].Key]!.GetValue<string>());
+                }
+            }
+        }
+
+        [Fact(Timeout = Setup.TestTimeoutMilliseconds)]
+        public async Task TestDesiredPatchGapResyncsDesiredProperties()
+        {
+            CancellationToken cancellationToken = TestContext.Current.CancellationToken;
+            using RegistryManager registryManager = Setup.GetMQTTv5IotHubRegistryManager();
+            MQTTv5DeviceTestContext testDeviceContext = await Setup.CreateProvisionableMQTTv5DeviceAsync(null, cancellationToken: cancellationToken);
+            using TwinClient twinClient = new(testDeviceContext.ConnectionClient);
+            await using (testDeviceContext)
+            {
+                TwinEventRecorder events = new(twinClient);
+                await ConnectAsync(testDeviceContext, cancellationToken);
+                ulong pushedVersion = (await events.NextAsync<TwinPushReceivedEventArgs>(cancellationToken)).Desired!.PropertiesVersion;
+
+                // This twin client missed the twin push, so it has not observed any desired properties version yet. The next
+                // patch therefore skips versions from its point of view and makes it resync the desired properties.
+                TwinClient lateTwinClient = new(testDeviceContext.ConnectionClient);
+                try
+                {
+                    TwinEventRecorder lateEvents = new(lateTwinClient);
+
+                    (string firstKey, string firstValue) = await UpdateDesiredPropertyAsync(registryManager, testDeviceContext.DeviceId, cancellationToken);
+
+                    DesiredPatchReceivedEventArgs patch = await events.NextAsync<DesiredPatchReceivedEventArgs>(cancellationToken);
+                    Assert.Equal(pushedVersion + 1, patch.DesiredPropertiesVersion);
+
+                    TwinPushReceivedEventArgs snapshot = await lateEvents.NextAsync<TwinPushReceivedEventArgs>(cancellationToken);
+                    Assert.Null(snapshot.Reported);
+                    Assert.NotNull(snapshot.Desired);
+                    Assert.Equal(pushedVersion + 1, snapshot.Desired.PropertiesVersion);
+                    Assert.Equal(firstValue, snapshot.Desired.Properties[firstKey]!.GetValue<string>());
+
+                    // Now that it has resynced, the late twin client receives the next patch as normal.
+                    (string secondKey, string secondValue) = await UpdateDesiredPropertyAsync(registryManager, testDeviceContext.DeviceId, cancellationToken);
+
+                    DesiredPatchReceivedEventArgs latePatch = await lateEvents.NextAsync<DesiredPatchReceivedEventArgs>(cancellationToken);
+                    Assert.Equal(pushedVersion + 2, latePatch.DesiredPropertiesVersion);
+                    Assert.Equal(secondValue, latePatch.DesiredProperties[secondKey]!.GetValue<string>());
+                }
+                finally
+                {
+                    // Don't dispose the shared connection client along with this twin client.
+                    lateTwinClient.Dispose(false);
+                }
+            }
+        }
+
+        [Fact(Timeout = 2 * Setup.TestTimeoutMilliseconds)]
+        public async Task TestReconnectAfterMissingDesiredUpdateDeliversNewerSnapshot()
+        {
+            CancellationToken cancellationToken = TestContext.Current.CancellationToken;
+            using RegistryManager registryManager = Setup.GetMQTTv5IotHubRegistryManager();
+            MQTTv5DeviceTestContext testDeviceContext = await Setup.CreateProvisionableMQTTv5DeviceAsync(null, cancellationToken: cancellationToken);
+            using TwinClient twinClient = new(testDeviceContext.ConnectionClient);
+            await using (testDeviceContext)
+            {
+                TwinEventRecorder events = new(twinClient);
+                await ConnectAsync(testDeviceContext, cancellationToken);
+                ulong pushedVersion = (await events.NextAsync<TwinPushReceivedEventArgs>(cancellationToken)).Desired!.PropertiesVersion;
+
+                await testDeviceContext.ConnectionClient.DisconnectAsync(cancellationToken);
+                (string missedKey, string missedValue) = await UpdateDesiredPropertyAsync(registryManager, testDeviceContext.DeviceId, cancellationToken);
+                await ConnectAsync(testDeviceContext, cancellationToken);
+
+                TwinPushReceivedEventArgs push = await events.NextAsync<TwinPushReceivedEventArgs>(cancellationToken);
+                Assert.NotNull(push.Desired);
+                Assert.Equal(pushedVersion + 1, push.Desired.PropertiesVersion);
+                Assert.Equal(missedValue, push.Desired.Properties[missedKey]!.GetValue<string>());
+
+                (string key, string value) = await UpdateDesiredPropertyAsync(registryManager, testDeviceContext.DeviceId, cancellationToken);
+
+                DesiredPatchReceivedEventArgs patch = await events.NextAsync<DesiredPatchReceivedEventArgs>(cancellationToken);
+                Assert.Equal(pushedVersion + 2, patch.DesiredPropertiesVersion);
+                Assert.Equal(value, patch.DesiredProperties[key]!.GetValue<string>());
+            }
+        }
+
+        [Fact(Timeout = 2 * Setup.TestTimeoutMilliseconds)]
+        public async Task TestReconnectWithoutTwinUpdatesSkipsTwinPush()
+        {
+            CancellationToken cancellationToken = TestContext.Current.CancellationToken;
+            using RegistryManager registryManager = Setup.GetMQTTv5IotHubRegistryManager();
+            MQTTv5DeviceTestContext testDeviceContext = await Setup.CreateProvisionableMQTTv5DeviceAsync(null, cancellationToken: cancellationToken);
+            using TwinClient twinClient = new(testDeviceContext.ConnectionClient);
+            await using (testDeviceContext)
+            {
+                TwinEventRecorder events = new(twinClient);
+                await ConnectAsync(testDeviceContext, cancellationToken);
+                TwinPushReceivedEventArgs firstPush = await events.NextAsync<TwinPushReceivedEventArgs>(cancellationToken);
+                ulong pushedVersion = firstPush.Desired!.PropertiesVersion;
+
+                await testDeviceContext.ConnectionClient.DisconnectAsync(cancellationToken);
+                await ConnectAsync(testDeviceContext, cancellationToken);
+
+                // The birth tells IoT hub which versions this device holds, and the birth ack confirms that IoT hub has the same ones.
+                Assert.Equal(pushedVersion, await WaitForAuthoritativeDesiredVersionAsync(twinClient, cancellationToken));
+                Assert.Equal(firstPush.Reported!.PropertiesVersion, twinClient.AuthoritativeReportedPropertiesVersion);
+
+                // Since neither section changed, IoT hub doesn't push the twin again, so the next event is the next patch.
+                (string key, string value) = await UpdateDesiredPropertyAsync(registryManager, testDeviceContext.DeviceId, cancellationToken);
+
+                DesiredPatchReceivedEventArgs patch = await events.NextAsync<DesiredPatchReceivedEventArgs>(cancellationToken);
+                Assert.Equal(pushedVersion + 1, patch.DesiredPropertiesVersion);
+                Assert.Equal(value, patch.DesiredProperties[key]!.GetValue<string>());
+            }
+        }
+
+        [Fact(Timeout = Setup.TestTimeoutMilliseconds)]
+        public async Task TestInitialDesiredVersionNewerThanHubResyncsDesiredProperties()
+        {
+            CancellationToken cancellationToken = TestContext.Current.CancellationToken;
+            using RegistryManager registryManager = Setup.GetMQTTv5IotHubRegistryManager();
+            MQTTv5DeviceTestContext testDeviceContext = await Setup.CreateProvisionableMQTTv5DeviceAsync(
+                null,
+                new Device.MQTTv5.Models.ConnectionClientOptions() { InitialDesiredPropertiesVersion = 1000 },
+                cancellationToken);
+            using TwinClient twinClient = new(testDeviceContext.ConnectionClient);
+            await using (testDeviceContext)
+            {
+                TwinEventRecorder events = new(twinClient);
+                await ConnectAsync(testDeviceContext, cancellationToken);
+
+                // IoT hub's push may look stale (and so carry no desired section) until the birth ack reveals that this
+                // device's version is not valid, at which point the twin client fetches the desired properties instead.
+                TwinPushSection? desired;
+                do
+                {
+                    desired = (await events.NextAsync<TwinPushReceivedEventArgs>(cancellationToken)).Desired;
+                }
+                while (desired == null);
+
+                Assert.Equal(twinClient.AuthoritativeDesiredPropertiesVersion, desired.PropertiesVersion);
+
+                (string key, string value) = await UpdateDesiredPropertyAsync(registryManager, testDeviceContext.DeviceId, cancellationToken);
+
+                DesiredPatchReceivedEventArgs patch = await events.NextAsync<DesiredPatchReceivedEventArgs>(cancellationToken);
+                Assert.Equal(desired.PropertiesVersion + 1, patch.DesiredPropertiesVersion);
+                Assert.Equal(value, patch.DesiredProperties[key]!.GetValue<string>());
+            }
+        }
+
+        private static async Task<ulong> WaitForAuthoritativeDesiredVersionAsync(TwinClient twinClient, CancellationToken cancellationToken)
+        {
+            // The twin client handles the birth ack independently of the connection client, so it may do so slightly later.
+            ulong? version;
+            while ((version = twinClient.AuthoritativeDesiredPropertiesVersion) == null)
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(100), cancellationToken);
+            }
+
+            return version.Value;
+        }
+
+        private static Task<ConnectionContext> ConnectAsync(MQTTv5DeviceTestContext testDeviceContext, CancellationToken cancellationToken)
+        {
+            return Setup.RetryAroundAuthorizationAsync<ConnectionContext>(
+                () => testDeviceContext.ConnectionClient.ProvisionAndConnectAsync(
+                    Setup.CreateProvisioningSettings(testAgainstClassicHub: false), testDeviceContext.AuthenticationProvider, cancellationToken: cancellationToken),
+                cancellationToken);
+        }
+
+        // Each update increments the desired properties version by one.
+        private static async Task<(string Key, string Value)> UpdateDesiredPropertyAsync(RegistryManager registryManager, string deviceId, CancellationToken cancellationToken)
+        {
+            string key = Guid.NewGuid().ToString();
+            string value = Guid.NewGuid().ToString();
+            ServiceTwin patch = new();
+            patch.Properties.Desired[key] = value;
+            await registryManager.UpdateTwinAsync(deviceId, patch, "*", cancellationToken);
+            return (key, value);
+        }
+
+        // Records the desired patch and twin push events a twin client raises, in the order it raises them.
+        private sealed class TwinEventRecorder
+        {
+            private readonly Channel<EventArgs> _events = Channel.CreateUnbounded<EventArgs>();
+
+            public TwinEventRecorder(TwinClient twinClient)
+            {
+                twinClient.DesiredPatchReceived += args => _events.Writer.TryWrite(args);
+                twinClient.TwinPushReceived += args => _events.Writer.TryWrite(args);
+            }
+
+            public async Task<T> NextAsync<T>(CancellationToken cancellationToken) where T : EventArgs
+            {
+                return Assert.IsType<T>(await _events.Reader.ReadAsync(cancellationToken));
             }
         }
     }

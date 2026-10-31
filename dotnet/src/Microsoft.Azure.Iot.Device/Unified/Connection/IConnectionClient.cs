@@ -34,13 +34,10 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
         bool IsConnectionTargetSet => true;
 
         /// <summary>
-        /// An ID that the connection client generates for each connection to IoT hub, which IoT hub never sees, or null if it
-        /// is not known.
+        /// The connection nonce sent in the birth message of the current (or most recent) connection attempt to an
+        /// MQTTv5 IoT hub, or, for an MQTTv3 IoT hub, an ID that this client generates for each connection. Null if it is
+        /// not known.
         /// </summary>
-        /// <remarks>
-        /// The twin client uses this to tell responses and held reported properties patches of one connection apart from
-        /// those of the next.
-        /// </remarks>
         internal Guid? ConnectionNonce => null;
 
         /// <summary>
@@ -48,21 +45,26 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
         /// </summary>
         internal event Action? ConnectionLost { add { } remove { } }
 
-        /// <summary>
-        /// Raised whenever the device presence flow completes on a connection to IoT hub, which means that the twin topics
-        /// are subscribed to, so that IoT hub delivers the responses to twin requests.
-        /// </summary>
-        /// <remarks>
-        /// IoT hub neither acknowledges a device's presence nor pushes its twin upon connecting, so the twin client uses this
-        /// to fetch the twin instead.
-        /// </remarks>
+        /// <inheritdoc cref="MQTTv5.Connection.IConnectionClient.ClassicDevicePresenceEstablished"/>
         internal event Action? ClassicDevicePresenceEstablished { add { } remove { } }
 
-        /// <summary>
-        /// Whether the device presence flow has completed on the current connection to IoT hub. See
-        /// <see cref="ClassicDevicePresenceEstablished"/>.
-        /// </summary>
+        /// <inheritdoc cref="MQTTv5.Connection.IConnectionClient.IsClassicDevicePresenceEstablished"/>
         internal bool IsClassicDevicePresenceEstablished => false;
+
+        /// <inheritdoc cref="MQTTv5.Connection.IConnectionClient.LatestBirthAck"/>
+        internal MQTTv5.Connection.BirthAckVersions? LatestBirthAck => null;
+
+        /// <inheritdoc cref="MQTTv5.Connection.IConnectionClient.ObserveDesiredPropertiesVersion"/>
+        internal void ObserveDesiredPropertiesVersion(ulong version) { }
+
+        /// <inheritdoc cref="MQTTv5.Connection.IConnectionClient.ObserveReportedPropertiesVersion"/>
+        internal void ObserveReportedPropertiesVersion(ulong version) { }
+
+        /// <inheritdoc cref="MQTTv5.Connection.IConnectionClient.ReplaceDesiredPropertiesVersion"/>
+        internal void ReplaceDesiredPropertiesVersion(ulong version) { }
+
+        /// <inheritdoc cref="MQTTv5.Connection.IConnectionClient.ReplaceReportedPropertiesVersion"/>
+        internal void ReplaceReportedPropertiesVersion(ulong version) { }
 
         /// <summary>
         /// Whether this connection client subscribes to twin topics. See <see cref="ConnectionClientOptions.EnableTwin"/>.

@@ -1924,7 +1924,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             Assert.Equal(ConnectionEndpoint.None, connectionClient.CurrentEndpoint);
             Assert.True(connectionClient.IsConnectionTargetSet);
 
-            // The twin client gets the twin upon each connection to IoT hub, including the first one.
+            // The twin client gets the twin upon each connection to an MQTTv3 IoT hub, including the first one.
             lock (hostsFeatureOperationsWereSentTo)
             {
                 hostsFeatureOperationsWereSentTo.Clear();

@@ -43,6 +43,9 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         /// </summary>
         public bool AutoRespondToBirth { get; set; }
 
+        /// <summary>The birth-ack that <see cref="AutoRespondToBirth"/> answers each birth with.</summary>
+        public BirthAck AutoBirthAck { get; set; } = new();
+
         /// <summary>How many CONNECTs have been attempted, including the ones the server refused.</summary>
         public int ConnectAttemptCount => Volatile.Read(ref _connectAttemptCount);
 
@@ -210,7 +213,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             MqttPublish birthAck = new()
             {
                 Topic = $"ih/{deviceId}/dev/presence",
-                Payload = new BirthAck().ToByteArray(),
+                Payload = AutoBirthAck.ToByteArray(),
                 CorrelationData = publish.CorrelationData,
             };
             birthAck.UserProperties.Add(new("type", Encoding.UTF8.GetBytes("birth-ack:1")));
