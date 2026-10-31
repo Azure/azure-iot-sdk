@@ -1907,6 +1907,9 @@ extern "C"
     /* A DPS assignment the hub has not accepted yet: set by a registration,
      * cleared with the ladders above. */
     bool hub_newly_assigned;
+    /* The last identity retry was scheduled on the after_assignment_policy
+     * ladder; selects the attempt a duration fault reports. */
+    bool identity_retry_after_assignment;
     uint64_t identity_recovery_started_ms;
     bool identity_recovery_active;
     /* The refusal that started the episode; the reason of a duration fault. */

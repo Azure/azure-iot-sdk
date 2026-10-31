@@ -669,6 +669,7 @@ static void reset_identity_recovery(az_iot_connection_client* c)
   c->identity_retry_attempt = 0;
   c->identity_retry_attempt_after_assignment = 0;
   c->hub_newly_assigned = false;
+  c->identity_retry_after_assignment = false;
   c->identity_recovery_started_ms = 0;
   c->identity_recovery_active = false;
 }
@@ -1913,7 +1914,9 @@ static void stop_identity_recovery(az_iot_connection_client* c, az_iot_connectio
   AZ_IOT_LOG_WARN(AZ_IOT_LOG_COMPONENT_CONNECTION, "identity recovery duration spent; stopping");
   c->reconnect_due_ms = 0;
   c->recovery_report.classification = AZ_IOT_CONN_FAILURE_IDENTITY;
-  c->recovery_report.attempt = c->identity_retry_attempt;
+  c->recovery_report.attempt = c->identity_retry_after_assignment
+      ? c->identity_retry_attempt_after_assignment
+      : c->identity_retry_attempt;
   c->recovery_report.delay_ms = 0;
   c->recovery_report.reprovisions = false;
   c->recovery_report.staged = true;
@@ -1970,6 +1973,7 @@ static void schedule_identity_recovery(az_iot_connection_client* c, az_iot_resul
   {
     retry = false;
   }
+  c->identity_retry_after_assignment = after_assignment;
   uint32_t attempt
       = after_assignment ? c->identity_retry_attempt_after_assignment : c->identity_retry_attempt;
   /* No attempt is scheduled to start at or past the deadline. */

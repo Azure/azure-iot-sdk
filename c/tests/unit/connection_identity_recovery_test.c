@@ -1097,6 +1097,26 @@ static void the_short_ladder_stops_at_max_duration(void** state)
   assert_int_equal(fx->client->reconnect_due_ms, 0);
 }
 
+/* A short-ladder retry still due when do_work() first runs past the deadline
+ * faults with the short ladder's attempt. */
+static void a_short_ladder_retry_past_the_deadline_reports_its_attempt(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  use_after_assignment_policy(fx, 3);
+  fx->client->opts.identity_recovery.max_duration_seconds = 1;
+  assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
+  provision(fx);
+  reject_identity_expecting(fx, AFTER_ASSIGNMENT_INITIAL_MS, 1);
+
+  az_iot_test_wait_until_ms(fx->client->identity_recovery_started_ms + 1000u);
+  pump(fx, 1);
+  assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_FAULTED);
+  const az_iot_connection_recovery_info* r = last_hub_recovery(fx, AZ_IOT_CONN_STATE_FAULTED);
+  assert_int_equal(r->classification, AZ_IOT_CONN_FAILURE_IDENTITY);
+  assert_int_equal(r->attempt, 1);
+  assert_int_equal(fx->client->reconnect_due_ms, 0);
+}
+
 /* NONE mode still faults on the first refusal after an assignment. */
 static void mode_none_faults_on_a_refusal_after_an_assignment(void** state)
 {
@@ -1175,6 +1195,8 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         a_refusal_without_an_assignment_uses_the_identity_policy, setup_v3, teardown),
     cmocka_unit_test_setup_teardown(the_short_ladder_stops_at_max_duration, setup_dps, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_short_ladder_retry_past_the_deadline_reports_its_attempt, setup_dps, teardown),
     cmocka_unit_test_setup_teardown(
         mode_none_faults_on_a_refusal_after_an_assignment, setup_dps, teardown),
     cmocka_unit_test(options_default_retries_a_new_assignment_on_a_short_bounded_ladder),
