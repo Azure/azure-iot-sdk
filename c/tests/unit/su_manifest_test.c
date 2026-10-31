@@ -398,6 +398,116 @@ static void entries_past_a_limit_are_still_checked(void** state)
       AZ_IOT_ERR_INVALID_ARG);
 }
 
+/** @brief az_iot_su__check_step_file_references() with @p url_ids as the request's file ids. */
+static az_iot_result check_references(
+    const char* manifest_text,
+    uint32_t first_step,
+    const char* const* url_ids,
+    uint32_t url_count)
+{
+  assert_int_equal(parse(manifest_text), AZ_IOT_OK);
+  az_iot_su_client_file_url urls[4];
+  assert_true(url_count <= sizeof(urls) / sizeof(urls[0]));
+  for (uint32_t i = 0; i < url_count; ++i)
+  {
+    urls[i].id = az_span_create((uint8_t*)(uintptr_t)url_ids[i], (int32_t)strlen(url_ids[i]));
+    urls[i].url = AZ_SPAN_FROM_STR("http://example.com/file");
+  }
+  return az_iot_su__check_step_file_references(&g_manifest, first_step, urls, url_count);
+}
+
+/* Every step file must be in the manifest `files` and in the request URLs; ids match exactly. */
+static void step_files_must_be_described_and_have_urls(void** state)
+{
+  (void)state;
+  const char* const both[] = { "f1", "f2" };
+  const char* two_steps
+      = "{\"instructions\":{\"steps\":[{\"files\":[\"f1\"]},{\"files\":[\"f2\",\"f1\"]}]},"
+        "\"files\":{\"f1\":{},\"f2\":{}}}";
+  const char* one_file
+      = "{\"instructions\":{\"steps\":[{\"files\":[\"f1\"]}]},\"files\":{\"f1\":{}}}";
+
+  assert_int_equal(check_references(two_steps, 0, both, 2), AZ_IOT_OK);
+
+  /* A file used by several steps needs one URL. */
+  const char* const only_f1[] = { "f1" };
+  assert_int_equal(
+      check_references(
+          "{\"instructions\":{\"steps\":[{\"files\":[\"f1\"]},{\"files\":[\"f1\"]}]},"
+          "\"files\":{\"f1\":{}}}",
+          0,
+          only_f1,
+          1),
+      AZ_IOT_OK);
+
+  /* A step file missing from the URLs. */
+  assert_int_equal(check_references(two_steps, 0, only_f1, 1), AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(check_references(two_steps, 0, NULL, 0), AZ_IOT_ERR_INVALID_ARG);
+
+  /* A step file missing from `files`, though it has a URL. */
+  assert_int_equal(
+      check_references(
+          "{\"instructions\":{\"steps\":[{\"files\":[\"f1\"]},{\"files\":[\"f2\"]}]},"
+          "\"files\":{\"f1\":{}}}",
+          0,
+          both,
+          2),
+      AZ_IOT_ERR_INVALID_ARG);
+
+  /* Ids are compared whole: "f1" is neither "f10" nor "F1". */
+  const char* const longer[] = { "f10" };
+  const char* const other_case[] = { "F1" };
+  assert_int_equal(check_references(one_file, 0, longer, 1), AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(check_references(one_file, 0, other_case, 1), AZ_IOT_ERR_INVALID_ARG);
+
+  /* Ids are compared decoded: `f\u0031` is "f1" in a step, a `files` key, or both. */
+  assert_int_equal(
+      check_references(
+          "{\"instructions\":{\"steps\":[{\"files\":[\"f\\u0031\"]}]},\"files\":{\"f1\":{}}}",
+          0,
+          only_f1,
+          1),
+      AZ_IOT_OK);
+  assert_int_equal(
+      check_references(
+          "{\"instructions\":{\"steps\":[{\"files\":[\"f1\"]}]},\"files\":{\"f\\u0031\":{}}}",
+          0,
+          only_f1,
+          1),
+      AZ_IOT_OK);
+  assert_int_equal(
+      check_references(
+          "{\"instructions\":{\"steps\":[{\"files\":[\"\\u0066\\u0031\"]}]},"
+          "\"files\":{\"f\\u0031\":{}}}",
+          0,
+          only_f1,
+          1),
+      AZ_IOT_OK);
+  assert_int_equal(
+      check_references(
+          "{\"instructions\":{\"steps\":[{\"files\":[\"f\\u0032\"]}]},\"files\":{\"f1\":{}}}",
+          0,
+          both,
+          2),
+      AZ_IOT_ERR_INVALID_ARG);
+}
+
+/* Steps before first_step are not checked; steps without files, or none at all, always pass. */
+static void only_steps_from_first_step_are_checked(void** state)
+{
+  (void)state;
+  const char* const only_f2[] = { "f2" };
+  const char* unresolved_first
+      = "{\"instructions\":{\"steps\":[{\"files\":[\"f1\"]},{\"files\":[\"f2\"]}]},"
+        "\"files\":{\"f2\":{}}}";
+
+  assert_int_equal(check_references(unresolved_first, 0, only_f2, 1), AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(check_references(unresolved_first, 1, only_f2, 1), AZ_IOT_OK);
+  assert_int_equal(check_references(unresolved_first, 2, NULL, 0), AZ_IOT_OK);
+  assert_int_equal(check_references("{\"instructions\":{\"steps\":[{}]}}", 0, NULL, 0), AZ_IOT_OK);
+  assert_int_equal(check_references("{}", 0, NULL, 0), AZ_IOT_OK);
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -409,6 +519,8 @@ int main(void)
     cmocka_unit_test(a_manifest_at_the_limits_is_parsed),
     cmocka_unit_test(a_manifest_over_a_limit_is_refused),
     cmocka_unit_test(entries_past_a_limit_are_still_checked),
+    cmocka_unit_test(step_files_must_be_described_and_have_urls),
+    cmocka_unit_test(only_steps_from_first_step_are_checked),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }

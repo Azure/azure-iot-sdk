@@ -73,7 +73,8 @@ extern "C"
   {
     /** Update handler of the step, e.g. `microsoft/swupdate:1`. */
     az_span handler;
-    /** Ids of the files the step uses; see az_iot_su_client_update_manifest.files. */
+    /** Ids of the files the step uses; see az_iot_su_client_update_manifest.files. Raw JSON
+     * string bodies: escapes are kept, so `f\u0031` is the id `f1`. */
     az_span files[AZ_IOT_SU_MAX_FILE_COUNT_PER_STEP];
     /** Number of items in `files`. */
     uint32_t files_count;
@@ -100,7 +101,8 @@ extern "C"
   /** @brief A file of an update manifest. */
   typedef struct az_iot_su_client_update_manifest_file
   {
-    /** File id, as in step `files` and the request's `fileUrls`. */
+    /** File id, as in step `files` and the request's `fileUrls`. A raw JSON string body: escapes
+     * are kept, so compare ids decoded. */
     az_span id;
     /** File name. */
     az_span file_name;
@@ -174,7 +176,7 @@ extern "C"
   /** @brief Download URL of an update file. */
   typedef struct az_iot_su_client_file_url
   {
-    /** File id, as in the manifest `files`. */
+    /** File id, as in the manifest `files`. Decoded, unlike the manifest's ids. */
     az_span id;
     /** Download URL. */
     az_span url;
@@ -1946,7 +1948,9 @@ extern "C"
   /**
    * @brief Verify and parse an `updateMetadata` object without a client.
    *
-   * Verifies the manifest with az_iot_su_verify_manifest(), then parses it.
+   * Verifies the manifest with az_iot_su_verify_manifest(), then parses it and
+   * checks that every file of every step is described by the manifest `files`
+   * and has a `fileUrls` entry.
    * Fail-closed: non-NULL outputs are zeroed on every error.
    *
    * @param request_json   `{ workflowId, updateManifest, updateManifestSignature,
@@ -1964,7 +1968,8 @@ extern "C"
    * @param out_request    Workflow id and file URLs.
    * @param out_manifest   The verified manifest.
    * @return AZ_IOT_OK; AZ_IOT_ERR_NOT_FOUND without `workflowId`;
-   * AZ_IOT_ERR_INVALID_ARG on bad arguments or malformed input;
+   * AZ_IOT_ERR_INVALID_ARG on bad arguments, malformed input, or a step file missing from the
+   * manifest `files` or from `fileUrls`;
    * AZ_IOT_ERR_NOT_ENOUGH_SPACE when the update exceeds AZ_IOT_SU_MAX_STEP_COUNT,
    * AZ_IOT_SU_MAX_FILE_COUNT, AZ_IOT_SU_MAX_FILE_COUNT_PER_STEP, 2 hashes per file or the
    * file URL capacity of @p storage;

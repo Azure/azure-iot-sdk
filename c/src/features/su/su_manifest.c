@@ -15,6 +15,7 @@
 #include <azure/core/az_span.h>
 
 #include "internal/su_manifest_internal.h"
+#include "internal/json_string.h"
 #include "internal/log_internal.h"
 
 /** @brief Counts in an update manifest, including entries past a limit. */
@@ -670,4 +671,71 @@ az_iot_result az_iot_su__parse_update_manifest(
         (unsigned)related.capacity);
   }
   return check_manifest_counts(&counts);
+}
+
+const az_iot_su_client_update_manifest_file* az_iot_su__find_manifest_file(
+    const az_iot_su_client_update_manifest* manifest,
+    az_span id)
+{
+  for (uint32_t i = 0; i < manifest->files_count; ++i)
+  {
+    if (az_iot_json_string_equals(manifest->files[i].id, id, true))
+    {
+      return &manifest->files[i];
+    }
+  }
+  return NULL;
+}
+
+const az_iot_su_client_file_url* az_iot_su__find_file_url(
+    const az_iot_su_client_file_url* file_urls,
+    uint32_t file_urls_count,
+    az_span id)
+{
+  for (uint32_t i = 0; i < file_urls_count; ++i)
+  {
+    if (az_iot_json_string_equals(id, file_urls[i].id, false))
+    {
+      return &file_urls[i];
+    }
+  }
+  return NULL;
+}
+
+az_iot_result az_iot_su__check_step_file_references(
+    const az_iot_su_client_update_manifest* manifest,
+    uint32_t first_step,
+    const az_iot_su_client_file_url* file_urls,
+    uint32_t file_urls_count)
+{
+  for (uint32_t i = first_step; i < manifest->instructions.steps_count; ++i)
+  {
+    const az_iot_su_client_update_manifest_instructions_step* step
+        = &manifest->instructions.steps[i];
+    for (uint32_t j = 0; j < step->files_count; ++j)
+    {
+      az_span id = step->files[j];
+      if (az_iot_su__find_manifest_file(manifest, id) == NULL)
+      {
+        AZ_IOT_LOG_ERRORF(
+            AZ_IOT_LOG_COMPONENT_SU,
+            "step %u names file '%.*s', which the manifest does not describe",
+            (unsigned)i,
+            (int)az_span_size(id),
+            (const char*)az_span_ptr(id));
+        return AZ_IOT_ERR_INVALID_ARG;
+      }
+      if (az_iot_su__find_file_url(file_urls, file_urls_count, id) == NULL)
+      {
+        AZ_IOT_LOG_ERRORF(
+            AZ_IOT_LOG_COMPONENT_SU,
+            "step %u names file '%.*s', which has no download URL",
+            (unsigned)i,
+            (int)az_span_size(id),
+            (const char*)az_span_ptr(id));
+        return AZ_IOT_ERR_INVALID_ARG;
+      }
+    }
+  }
+  return AZ_IOT_OK;
 }
