@@ -4714,23 +4714,29 @@ static void report_and_drop_subscription(
     az_iot_connection_client* c,
     size_t index,
     az_iot_result reason,
-    int32_t protocol_code)
+    int32_t protocol_code,
+    const char* reason_string,
+    size_t reason_string_len)
 {
   az_iot_subscription_failed_callback cb = c->persistent_subs[index].on_failed;
   const void* owner = c->persistent_subs[index].owner;
   char topic[AZ_IOT_PERSISTENT_SUB_TOPIC_MAX];
   memcpy(topic, c->persistent_subs[index].topic_filter, sizeof(topic));
 
+  int const logged_reason_length
+      = reason_string != NULL && reason_string_len <= INT32_MAX ? (int)reason_string_len : 0;
   AZ_IOT_LOG_WARNF(
       AZ_IOT_LOG_COMPONENT_CONNECTION,
-      "subscription '%s' failed (reason_code=%d); dropping it, connection stays up",
+      "subscription '%s' failed (reason_code=%d reason='%.*s'); dropping it, connection stays up",
       topic,
-      (int)protocol_code);
+      (int)protocol_code,
+      logged_reason_length,
+      logged_reason_length > 0 ? reason_string : "");
   memset(&c->persistent_subs[index], 0, sizeof(c->persistent_subs[index]));
   if (cb)
   {
     enter_callback(c);
-    cb(topic, reason, protocol_code, owner);
+    cb(topic, reason, protocol_code, reason_string, reason_string_len, owner);
     leave_callback(c);
   }
 }
@@ -4824,7 +4830,7 @@ static void begin_feature_subscriptions(az_iot_connection_client* c)
        * refusal would be. */
       if (!gated)
       {
-        report_and_drop_subscription(c, i, r, 0);
+        report_and_drop_subscription(c, i, r, 0, NULL, 0);
         continue;
       }
       AZ_IOT_LOG_ERRORF(
@@ -4878,7 +4884,13 @@ static bool subscription_gate_settle(az_iot_connection_client* c, const az_iot_m
     {
       if (!gated)
       {
-        report_and_drop_subscription(c, sub_index, ack->status, ack->protocol_code);
+        report_and_drop_subscription(
+            c,
+            sub_index,
+            ack->status,
+            ack->protocol_code,
+            ack->reason_string,
+            ack->reason_string != NULL ? ack->reason_string_len : 0);
         return true;
       }
       if (session_ending)
