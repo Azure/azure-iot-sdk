@@ -2001,7 +2001,7 @@ static void a_refused_snapshot_publish_is_sent_again(void** state)
   inject_desired(fx, 3, "{}");
   assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
   size_t const sent = count_gets(fx);
-  assert_true(sent >= 1u);
+  assert_int_equal(sent, 2u); /* the refused attempt, then its retry */
   inject_desired(fx, 4, "{}");
   assert_int_equal(count_gets(fx), sent); /* still the one in flight */
   answer_last_get(fx, 4, "{\"s\":4}");
