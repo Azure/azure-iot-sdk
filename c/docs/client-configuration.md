@@ -199,7 +199,7 @@ opts.workspace_size = sizeof(workspace);
 | `max_pending_publishes` | 16 | QoS 1 publishes awaiting an acknowledgement with a completion callback, across all feature clients. When the caller's pool is full, nothing is sent and the call returns `AZ_IOT_ERR_BUSY`; retry once an acknowledgement arrives. See [In-flight QoS 1 publishes](#in-flight-qos-1-publishes). At most 65535. |
 | `max_publish_reservations` | 2 | Feature clients holding a reservation of `max_pending_publishes`; an mqttv5 direct method client takes one; certificate renewal takes one when `opts.csr_payload_buffer` is set. At most 254. |
 | `max_persistent_subscriptions` | 8 | Topic filters re-subscribed on every session. A fully loaded mqttv3 device uses 5; mqttv5 feature clients use none. At most 255. |
-| `max_feature_observers` | 10 | Feature-client observers of connection state, session end, publish completion and the `do_work()` tick. A loaded device uses one per feature client. |
+| `max_feature_observers` | 10 | Feature-client observers of connection state, session end, publish completion and the `do_work()` tick. A loaded device uses one per feature client, two for the mqttv5 direct method and twin clients (their delivery tracker). |
 | `max_application_state_observers` | 4 | Connection-state observers the application can register. |
 | `max_feature_clients` | 8 | Feature clients attached to one connection client. |
 | `max_inbound_handlers` | 8 | Inbound topic handlers. |

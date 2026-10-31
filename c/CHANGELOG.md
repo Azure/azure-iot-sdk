@@ -4,6 +4,11 @@
 
 ### Features Added
 
+- mqttv5 twin: requests go through the delivery tracker. A GET waits for a connection and is sent
+  again on the next session when its session ends unanswered; a reported patch is still sent at
+  once or refused (now `AZ_IOT_ERR_BUSY` when the connection cannot send it now) and fails with
+  `AZ_IOT_ERR_NOT_CONNECTED` at a session end. `az_iot_connection_client_do_work()` times requests
+  out, so `az_iot_mqttv5_twin_client_do_work()` is optional. The client uses two feature observers.
 - Certificate renewal: `az_iot_connection_client_options::csr_response_timeout_ms` sets how long
   `az_iot_connection_client_send_csr()` waits for a terminal response (0: 120 s,
   `AZ_IOT_DEFAULT_CSR_RESPONSE_TIMEOUT_MS`). A renewal open when the session ends (a drop or
