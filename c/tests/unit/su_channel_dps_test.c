@@ -2426,6 +2426,89 @@ static void a_replaced_unaccepted_check_takes_its_session_demand_with_it(void** 
   az_iot_su_client_deinit(&su);
 }
 
+/* A report the adapter keeps refusing at send pauses publishing, doubling per
+ * refusal, and lets the session go meanwhile, so the hub session waiting for it
+ * can resume instead of waiting while the report is retried every tick. */
+static void a_report_refused_at_send_pauses_and_lets_the_session_go(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_mock_mqtt_client* m = open_session_for_an_operation(fx);
+  /* The session is up: the check's demand for one is met. */
+  assert_int_equal(fx->channel.vtable->do_work(fx->channel.ctx), AZ_IOT_OK);
+  az_iot_su_report report;
+  memset(&report, 0, sizeof(report));
+  report.workflow_id = "wf-1";
+  report.extended_result_codes = "00000000";
+  size_t publishes = az_iot_mock_mqtt_client_count_of(m, AZ_IOT_MOCK_CALL_PUBLISH);
+
+  /* Refused at send: paused, and the session interest let go. */
+  az_iot_mock_mqtt_client_set_next_result(m, AZ_IOT_MOCK_CALL_PUBLISH, AZ_IOT_ERR_INTERNAL);
+  assert_int_not_equal(fx->channel.vtable->report(fx->channel.ctx, &report), AZ_IOT_OK);
+  assert_int_equal(az_iot_mock_mqtt_client_count_of(m, AZ_IOT_MOCK_CALL_PUBLISH), publishes + 1u);
+  uint64_t now = az_iot_time_mono_ms();
+  assert_true(fx->channel_state.publish_resume_at_ms > now);
+  assert_true(
+      fx->channel_state.publish_resume_at_ms <= now + AZ_IOT_SU_CHANNEL_PUBLISH_RETRY_BASE_MS);
+  assert_int_equal(fx->client.dps_user_count, 0);
+
+  /* Refused while paused, before a publish or a session is asked for. */
+  for (int i = 0; i < 3; ++i)
+  {
+    assert_int_equal(fx->channel.vtable->do_work(fx->channel.ctx), AZ_IOT_OK);
+    assert_int_equal(fx->channel.vtable->report(fx->channel.ctx, &report), AZ_IOT_ERR_BUSY);
+  }
+  assert_int_equal(az_iot_mock_mqtt_client_count_of(m, AZ_IOT_MOCK_CALL_PUBLISH), publishes + 1u);
+  assert_int_equal(fx->client.dps_user_count, 0);
+
+  /* Refused again once the pause ends: the next pause is twice as long. */
+  fx->channel_state.publish_resume_at_ms = 1;
+  az_iot_mock_mqtt_client_set_next_result(m, AZ_IOT_MOCK_CALL_PUBLISH, AZ_IOT_ERR_INTERNAL);
+  assert_int_not_equal(fx->channel.vtable->report(fx->channel.ctx, &report), AZ_IOT_OK);
+  assert_int_equal(az_iot_mock_mqtt_client_count_of(m, AZ_IOT_MOCK_CALL_PUBLISH), publishes + 2u);
+  now = az_iot_time_mono_ms();
+  assert_true(
+      fx->channel_state.publish_resume_at_ms > now + AZ_IOT_SU_CHANNEL_PUBLISH_RETRY_BASE_MS);
+  assert_int_equal(fx->client.dps_user_count, 0);
+
+  /* The provisioning session ends meanwhile. */
+  assert_int_equal(fx->channel.vtable->do_work(fx->channel.ctx), AZ_IOT_OK);
+  (void)az_iot_connection_client_do_work(&fx->client, 0);
+  assert_null(fx->client.dps_mqtt);
+
+  /* An accepted publish ends the run of refusals. */
+  fx->channel_state.publish_resume_at_ms = 1;
+  assert_int_equal(fx->channel.vtable->report(fx->channel.ctx, &report), AZ_IOT_ERR_NOT_CONNECTED);
+  assert_int_equal(fx->channel.vtable->do_work(fx->channel.ctx), AZ_IOT_OK);
+  (void)az_iot_connection_client_do_work(&fx->client, 0);
+  m = drive_existing_session(fx);
+  assert_int_equal(fx->channel.vtable->report(fx->channel.ctx, &report), AZ_IOT_OK);
+  assert_int_equal(fx->channel_state.publish_refusals, 0);
+}
+
+/* An update check's deadline bounds the connection's wait, waiting for a
+ * session included, so a long do_work() timeout does not postpone its expiry. */
+static void a_pending_check_bounds_the_connection_wait_to_its_deadline(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_mock_mqtt_client* hub = connect_hub_after_assignment(fx);
+  az_iot_su_client su;
+  init_su_client_without_startup_report(fx, &su);
+
+  assert_int_equal(az_iot_su_client_request_update(&su, 60000u), AZ_IOT_OK);
+  assert_int_equal(az_iot_su_client_do_work(&su), AZ_IOT_OK);
+  assert_int_not_equal(su._internal.pending_fetch, 0);
+
+  (void)az_iot_connection_client_do_work(&fx->client, 120000u);
+  assert_true(
+      az_iot_mock_mqtt_client_last_of(hub, AZ_IOT_MOCK_CALL_PROCESS_LOOP)->timeout_ms <= 60000u);
+
+  su._internal.pending_fetch_deadline_ms = az_iot_time_mono_ms();
+  (void)az_iot_connection_client_do_work(&fx->client, 120000u);
+  assert_int_equal(
+      az_iot_mock_mqtt_client_last_of(hub, AZ_IOT_MOCK_CALL_PROCESS_LOOP)->timeout_ms, 0u);
+  az_iot_su_client_deinit(&su);
+}
+
 /* One MQTT session at a time: an operation after provisioning ends the hub
  * session first, runs on a provisioning session opened only once the hub client
  * is gone, and the hub reconnects to its assignment once the channel has no
@@ -3719,6 +3802,10 @@ int main(void)
     cmocka_unit_test_setup_teardown(an_expired_check_does_not_end_the_hub_session, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_replaced_unaccepted_check_takes_its_session_demand_with_it, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_report_refused_at_send_pauses_and_lets_the_session_go, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_pending_check_bounds_the_connection_wait_to_its_deadline, setup, teardown),
     cmocka_unit_test_setup_teardown(
         the_dps_pump_caps_its_wait_at_the_hold_deadline, setup, teardown),
     cmocka_unit_test_setup_teardown(a_bodyless_429_fetch_is_throttled_not_fatal, setup, teardown),

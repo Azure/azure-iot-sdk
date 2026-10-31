@@ -83,23 +83,15 @@ static bool report_awaited_on_its_ready_session(const az_iot_su_channel_dps* c)
       && az_iot_connection_client__dps_session_ready(c->connection);
 }
 
-/**
- * @brief Lower @p remaining_ms to the time left before the awaited status
- * report's response deadline, so the connection's wait ends by then.
- *
- * @param c            The channel.
- * @param remaining_ms The connection's wait bound, lowered in place.
- */
-static void lower_wait_to_report_response_deadline(
-    const az_iot_su_channel_dps* c,
-    uint64_t* remaining_ms)
+/** @brief Lower @p remaining_ms to the time left before @p deadline_ms, unless it is 0. */
+static void lower_wait_to_deadline(uint64_t deadline_ms, uint64_t* remaining_ms)
 {
-  if (!report_awaited_on_its_ready_session(c))
+  if (deadline_ms == 0)
   {
     return;
   }
   uint64_t now = az_iot_time_mono_ms();
-  uint64_t left = c->report_response_deadline_ms > now ? c->report_response_deadline_ms - now : 0;
+  uint64_t left = deadline_ms > now ? deadline_ms - now : 0;
   if (left < *remaining_ms)
   {
     *remaining_ms = left;
@@ -107,8 +99,27 @@ static void lower_wait_to_report_response_deadline(
 }
 
 /**
+ * @brief Lower @p remaining_ms to the awaited status report's response deadline
+ * and the engine's next deadline, so the connection's wait ends by then.
+ *
+ * @param c            The channel.
+ * @param remaining_ms The connection's wait bound, lowered in place.
+ */
+static void lower_wait_to_next_deadline(const az_iot_su_channel_dps* c, uint64_t* remaining_ms)
+{
+  if (report_awaited_on_its_ready_session(c))
+  {
+    lower_wait_to_deadline(c->report_response_deadline_ms, remaining_ms);
+  }
+  if (c->engine_deadline_cb != NULL)
+  {
+    lower_wait_to_deadline(c->engine_deadline_cb(c->engine_ctx), remaining_ms);
+  }
+}
+
+/**
  * @brief Connection observer, run inside the connection client's dispatch.
- * NEXT_DEADLINE bounds the wait by the report's response deadline; STATE is
+ * NEXT_DEADLINE bounds the wait by the report's and the engine's deadlines; STATE is
  * recorded, and the hold is taken here because it must precede the new
  * session's SUBACK, which can arrive before the channel's next tick.
  *
@@ -128,7 +139,7 @@ static void on_connection_event(
   az_iot_su_channel_dps* c = (az_iot_su_channel_dps*)user_ctx;
   if (c != NULL && feature_event->kind == AZ_IOT_CONNECTION_FEATURE_EVENT_NEXT_DEADLINE)
   {
-    lower_wait_to_report_response_deadline(c, feature_event->remaining_ms);
+    lower_wait_to_next_deadline(c, feature_event->remaining_ms);
     return;
   }
   const az_iot_connection_state_event* event = feature_event->state;
@@ -314,6 +325,65 @@ static bool retry_after_in_force(az_iot_su_channel_dps* c)
   return false;
 }
 
+/**
+ * @brief Whether publishing is paused: the service's retry-after, or the pause
+ * after the adapter refused a publish. Checked before a session is asked for,
+ * so a pause does not end the hub session for a publish that will be refused.
+ *
+ * @param c The channel.
+ */
+static bool publish_paused(az_iot_su_channel_dps* c)
+{
+  if (retry_after_in_force(c))
+  {
+    return true;
+  }
+  if (c->publish_resume_at_ms != 0 && az_iot_time_mono_ms() < c->publish_resume_at_ms)
+  {
+    return true;
+  }
+  c->publish_resume_at_ms = 0;
+  return false;
+}
+
+/**
+ * @brief Pause publishing after the adapter refused a publish, doubling from
+ * #AZ_IOT_SU_CHANNEL_PUBLISH_RETRY_BASE_MS to #AZ_IOT_SU_CHANNEL_PUBLISH_RETRY_MAX_MS
+ * per refusal in a row.
+ *
+ * @param c The channel.
+ */
+static void pause_publishing_after_refusal(az_iot_su_channel_dps* c)
+{
+  uint64_t delay = AZ_IOT_SU_CHANNEL_PUBLISH_RETRY_BASE_MS;
+  for (uint8_t i = 0; i < c->publish_refusals && delay < AZ_IOT_SU_CHANNEL_PUBLISH_RETRY_MAX_MS;
+       ++i)
+  {
+    delay *= 2u;
+  }
+  if (delay > AZ_IOT_SU_CHANNEL_PUBLISH_RETRY_MAX_MS)
+  {
+    delay = AZ_IOT_SU_CHANNEL_PUBLISH_RETRY_MAX_MS;
+  }
+  if (c->publish_refusals < UINT8_MAX)
+  {
+    c->publish_refusals++;
+  }
+  c->publish_resume_at_ms = az_iot_time_mono_ms() + delay;
+}
+
+/**
+ * @brief Whether the pre-registration check is still owed on a registration
+ * under way, which keeps the session across registration.
+ *
+ * @param c The channel.
+ */
+static bool session_kept_for_pre_registration_check(const az_iot_su_channel_dps* c)
+{
+  return c->wants_hold && !c->exchange_done
+      && az_iot_connection_client__dps_registration_pending(c->connection);
+}
+
 static az_iot_result publish_operation(
     az_iot_su_channel_dps* c,
     az_iot_su_operation operation,
@@ -352,7 +422,7 @@ static az_iot_result publish_operation(
     return AZ_IOT_ERR_NOT_CONNECTED;
   }
 
-  if (retry_after_in_force(c))
+  if (publish_paused(c))
   {
     return AZ_IOT_ERR_BUSY;
   }
@@ -387,8 +457,16 @@ static az_iot_result publish_operation(
   r = az_iot_connection_client__dps_publish(c->connection, &msg);
   if (r != AZ_IOT_OK)
   {
+    /* Not sent, so no answer is awaited: publishing pauses, and without other
+     * work the interest goes, so the hub session can resume meanwhile. */
+    pause_publishing_after_refusal(c);
+    if (!c->request_pending && !c->wants_session && !session_kept_for_pre_registration_check(c))
+    {
+      release_session_interest(c);
+    }
     return r;
   }
+  c->publish_refusals = 0;
 
   /* Recorded only after the publish is accepted, so a failed send does not
    * leave the channel waiting for a response that will never come. */
@@ -802,6 +880,7 @@ static void channel_close(void* ctx)
   c->update_cb = NULL;
   c->result_cb = NULL;
   c->engine_ctx = NULL;
+  c->engine_deadline_cb = NULL;
   c->request_pending = false;
   /* The demand for a session belongs to the binding that raised it. Leaving it
    * set would make the next binding open a session for an operation nobody
@@ -810,6 +889,8 @@ static void channel_close(void* ctx)
   /* The delay belongs to the binding that earned it. A fresh bind is a fresh
    * start, not a continuation of someone else's backoff. */
   c->retry_after_deadline_ms = 0;
+  c->publish_resume_at_ms = 0;
+  c->publish_refusals = 0;
   c->session_loss_attempts = 0;
 }
 
@@ -831,7 +912,7 @@ static az_iot_result channel_request_update(void* ctx, az_iot_su_operation opera
   }
   /* Before the session check, not after: asking for a session we may not
    * publish on is what turns one delay into a reconnect loop. */
-  if (retry_after_in_force(c))
+  if (publish_paused(c))
   {
     return AZ_IOT_ERR_BUSY;
   }
@@ -910,7 +991,7 @@ static az_iot_result channel_report(void* ctx, const az_iot_su_report* report)
   {
     return sr;
   }
-  if (retry_after_in_force(c))
+  if (publish_paused(c))
   {
     return AZ_IOT_ERR_BUSY;
   }
@@ -1123,7 +1204,7 @@ static az_iot_result channel_do_work(void* ctx)
     /* Nothing to ask for until close(); the demand is raised again after it. */
     clear_session_demand(c);
   }
-  else if (c->update_cb != NULL && had_work && !retry_after_in_force(c))
+  else if (c->update_cb != NULL && had_work && !publish_paused(c))
   {
     /* Not fatal, so the tick continues either way -- but not silent. BUSY is
      * the ordinary answer (a session is coming up, or the hub session is being
@@ -1185,8 +1266,7 @@ static az_iot_result channel_do_work(void* ctx)
    * connection client's pacing of the session. Without work the session ends
    * and the hub session resumes; an operation the engine issues later in this
    * tick takes the interest again before the connection client's next pass. */
-  if (c->wants_hold && !c->exchange_done
-      && az_iot_connection_client__dps_registration_pending(c->connection))
+  if (session_kept_for_pre_registration_check(c))
   {
     (void)hold_session_interest(c);
   }
@@ -1286,6 +1366,18 @@ static az_iot_result channel_restore_state(void* ctx, const uint8_t* buf, size_t
  *
  * Reported raw, without expiring it: retry_after_in_force() clears the deadline
  * as a side effect of reading it, and the engine needs the instant itself. */
+/** @brief Record the engine's deadline function, read on NEXT_DEADLINE. */
+static void channel_set_engine_deadline_cb(
+    void* ctx,
+    az_iot_su_channel_engine_deadline_cb deadline_cb)
+{
+  az_iot_su_channel_dps* c = (az_iot_su_channel_dps*)ctx;
+  if (c != NULL)
+  {
+    c->engine_deadline_cb = deadline_cb;
+  }
+}
+
 /**
  * @brief Drop the outstanding request if it is @p operation (a fetch).
  *
@@ -1329,6 +1421,7 @@ static const az_iot_su_channel_vtable k_channel_vtable = {
   .cancel_update = channel_cancel_update,
   .save_state = channel_save_state,
   .restore_state = channel_restore_state,
+  .set_engine_deadline_cb = channel_set_engine_deadline_cb,
 };
 
 az_iot_result az_iot_su_channel_dps_init(

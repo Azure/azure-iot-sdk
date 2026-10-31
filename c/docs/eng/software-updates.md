@@ -123,7 +123,10 @@ How long the hub waits is bounded. An update check waits at most its request tim
 `AZ_IOT_SU_REQUEST_DEFAULT_TIMEOUT_MS`, 60 s; `AZ_IOT_SU_REQUEST_NO_TIMEOUT` sets no bound); when
 it ends unanswered or unaccepted, or a check of the other kind replaces it before it is accepted,
 the channel stops asking for a session for it. An expired check is given up before the channel's
-tick, so the hub session is not ended for it. A status report waits at most
+tick, so the hub session is not ended for it, and `az_iot_connection_client_do_work()` waits no
+longer than a check's deadline. A publish the adapter refuses pauses the channel's publishing
+(1 s doubling to 60 s per refusal in a row) and, without other work, releases the session, so the
+hub session resumes meanwhile. A status report waits at most
 `AZ_IOT_SU_CHANNEL_REPORT_RESPONSE_TIMEOUT_MS` (default 60 s, the same value) for its answer, and
 `az_iot_connection_client_do_work()` waits no longer than that; past it the session is released
 and the report, still owed, is sent again on the retry backoff (1 s doubling to 60 s, ±20%), as

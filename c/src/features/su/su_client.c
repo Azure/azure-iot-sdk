@@ -2661,6 +2661,24 @@ static bool abandon_expired_fetch(az_iot_su_client* client)
   return false;
 }
 
+/**
+ * @brief The update check's deadline, queued or awaited, for the channel to
+ * bound the connection's wait by; 0 when there is none (or no timeout).
+ *
+ * @param engine_ctx The software updates client.
+ */
+static uint64_t next_fetch_deadline(void* engine_ctx)
+{
+  const az_iot_su_client* client = (const az_iot_su_client*)engine_ctx;
+  if (client == NULL || SU_I(client).detached
+      || (SU_I(client).pending_fetch == SU_FETCH_NONE
+          && SU_I(client).fetch_in_flight == SU_FETCH_NONE))
+  {
+    return 0;
+  }
+  return SU_I(client).pending_fetch_deadline_ms;
+}
+
 static void drive_pending_fetch(az_iot_su_client* client)
 {
   if (abandon_expired_fetch(client))
@@ -3093,6 +3111,10 @@ static az_iot_result su_client_init_core(
   {
     memset(client, 0, sizeof(*client));
     return r;
+  }
+  if (channel->vtable->set_engine_deadline_cb != NULL)
+  {
+    channel->vtable->set_engine_deadline_cb(channel->ctx, next_fetch_deadline);
   }
 
   /* Report the initial Idle agent state + installed update id on startup. */
