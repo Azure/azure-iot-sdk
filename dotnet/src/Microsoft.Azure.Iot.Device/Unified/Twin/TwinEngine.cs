@@ -1188,14 +1188,9 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
                     return;
                 }
 
-                TwinPush receivedTwinPush;
-                try
+                // Parse every section before applying any, so that a malformed push is not partially applied.
+                if (!TryParseTwinPush(args.Publish.PayloadAsReadOnlySequence, out TwinPush? receivedTwinPush, out JsonObject? desiredProperties, out JsonObject? reportedProperties))
                 {
-                    receivedTwinPush = TwinPush.Parser.ParseFrom(args.Publish.PayloadAsReadOnlySequence);
-                }
-                catch (InvalidProtocolBufferException e)
-                {
-                    Trace.TraceWarning("Dropping a malformed twin push: {0}", e);
                     return;
                 }
 
@@ -1205,7 +1200,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
                 {
                     twinPushArgs.Reported = new()
                     {
-                        Properties = ParseSectionPayload(receivedTwinPush.Reported.Payload),
+                        Properties = reportedProperties!,
                         PropertiesVersion = receivedTwinPush.Reported.Version
                     };
                     SetLocalReportedVersionFromSnapshot(receivedTwinPush.Reported.Version, twinPushArgs.Reported.Properties);
@@ -1218,7 +1213,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
 
                     if (receivedTwinPush.Desired != null)
                     {
-                        twinPushArgs.Desired = TryApplyDesiredSnapshot(receivedTwinPush.Desired.Version, receivedTwinPush.Desired.Payload);
+                        twinPushArgs.Desired = TryApplyDesiredSnapshot(receivedTwinPush.Desired.Version, desiredProperties!);
                         if (twinPushArgs.Desired == null)
                         {
                             Trace.TraceInformation("Dropping the desired section of a twin push with version {0} because this device has already observed version {1}.", receivedTwinPush.Desired.Version, _localDesiredVersion);
@@ -1507,12 +1502,17 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
         // Must be called while holding _desiredStateLock. Returns null if the snapshot is not newer than this device's view.
         private TwinPushSection? TryApplyDesiredSnapshot(ulong version, ByteString payload)
         {
+            return version <= _localDesiredVersion ? null : TryApplyDesiredSnapshot(version, ParseSectionPayload(payload));
+        }
+
+        // Must be called while holding _desiredStateLock. Returns null if the snapshot is not newer than this device's view.
+        private TwinPushSection? TryApplyDesiredSnapshot(ulong version, JsonObject desiredProperties)
+        {
             if (version <= _localDesiredVersion)
             {
                 return null;
             }
 
-            JsonObject desiredProperties = ParseSectionPayload(payload);
             AdvanceLocalDesiredVersion(version, desiredProperties, isPatch: false);
             return new TwinPushSection()
             {
@@ -1887,7 +1887,36 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
 
         private static JsonObject ParseSectionPayload(ByteString payload)
         {
-            return payload.IsEmpty ? new JsonObject() : JsonObject.Parse(payload.Span)!.AsObject();
+            return payload.IsEmpty
+                ? new JsonObject()
+                : JsonNode.Parse(payload.Span) as JsonObject ?? throw new JsonException("A twin section's payload is not a JSON object.");
+        }
+
+        /// <summary>
+        /// Parses a twin push and the properties of each section it carries. Returns false (and logs why) if any of it is malformed,
+        /// in which case none of it may be applied.
+        /// </summary>
+        internal static bool TryParseTwinPush(
+            in System.Buffers.ReadOnlySequence<byte> payload,
+            [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out TwinPush? twinPush,
+            out JsonObject? desiredProperties,
+            out JsonObject? reportedProperties)
+        {
+            try
+            {
+                twinPush = TwinPush.Parser.ParseFrom(payload);
+                desiredProperties = twinPush.Desired == null ? null : ParseSectionPayload(twinPush.Desired.Payload);
+                reportedProperties = twinPush.Reported == null ? null : ParseSectionPayload(twinPush.Reported.Payload);
+                return true;
+            }
+            catch (Exception e) when (e is InvalidProtocolBufferException || e is JsonException)
+            {
+                Trace.TraceWarning("Dropping a malformed twin push: {0}", e);
+                twinPush = null;
+                desiredProperties = null;
+                reportedProperties = null;
+                return false;
+            }
         }
 
         private static MqttPublish CreateGetTwinPublish(Guid getId, Sections sections, ulong ifNotMatchDesired, ulong ifNotMatchReported)

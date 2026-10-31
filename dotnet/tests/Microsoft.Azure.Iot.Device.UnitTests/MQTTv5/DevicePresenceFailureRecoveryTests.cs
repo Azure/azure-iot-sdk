@@ -331,22 +331,33 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             Assert.Equal(1, mockMqttClient.ConnectAttemptCount);
         }
 
-        [Fact]
-        public async Task TwinPushOfUnsupportedTypeVersionDoesNotSatisfyExpectedTwinPush()
+        [Theory]
+        [InlineData("unsupported-type-version")]
+        [InlineData("malformed-protobuf")]
+        [InlineData("malformed-section")]
+        public async Task UnusableTwinPushDoesNotSatisfyExpectedTwinPush(string defect)
         {
             using MockConnectionMqttClient mockMqttClient = new();
             mockMqttClient.OnPublish = async publish =>
             {
                 if (publish.Topic.EndsWith("/srv/presence", StringComparison.Ordinal))
                 {
-                    // The twin client ignores twin pushes of other type versions, so they don't count as the expected push.
+                    // The twin client ignores twin pushes that it can't apply, so they don't count as the expected push.
                     MqttPublish push = new()
                     {
                         Topic = "ih/someDeviceId/dev/twin",
                         CorrelationData = publish.CorrelationData,
-                        Payload = new Device.Models.Twin.TwinPush().ToByteArray(),
+                        Payload = defect switch
+                        {
+                            "malformed-protobuf" => new byte[] { 0xFF, 0xFF, 0xFF },
+                            "malformed-section" => new Device.Models.Twin.TwinPush()
+                            {
+                                Desired = new Device.Models.Twin.Section { Version = 3, Payload = ByteString.CopyFromUtf8("not json") },
+                            }.ToByteArray(),
+                            _ => new Device.Models.Twin.TwinPush().ToByteArray(),
+                        },
                     };
-                    push.UserProperties.Add(new("type", Encoding.UTF8.GetBytes("twin-push:2")));
+                    push.UserProperties.Add(new("type", Encoding.UTF8.GetBytes(defect == "unsupported-type-version" ? "twin-push:2" : "twin-push:1")));
                     await mockMqttClient.SimulatePublishReceivedAsync(push);
 
                     MqttPublish birthAck = new()
@@ -374,6 +385,84 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
 
             await WaitForBirthCountAsync(mockMqttClient, 2);
             Assert.Single(mockMqttClient.DisconnectRequests);
+        }
+
+        [Fact]
+        public async Task EscalatedTwinPushTimeoutResetsOnceABirthNeedsNoTwinPush()
+        {
+            int birthCount = 0;
+            using MockConnectionMqttClient mockMqttClient = new();
+            mockMqttClient.OnPublish = async publish =>
+            {
+                if (publish.Topic.EndsWith("/srv/presence", StringComparison.Ordinal))
+                {
+                    // Only the second birth's versions match IoT hub's, so it is the only one that needs no twin push.
+                    BirthAck ack = Interlocked.Increment(ref birthCount) == 2
+                        ? new BirthAck()
+                        : new BirthAck() { DesiredVersion = 3, ReportedVersion = 2 };
+                    MqttPublish birthAck = new()
+                    {
+                        Topic = "ih/someDeviceId/dev/presence",
+                        CorrelationData = publish.CorrelationData,
+                        Payload = ack.ToByteArray(),
+                    };
+                    birthAck.UserProperties.Add(new("type", Encoding.UTF8.GetBytes("birth-ack:1")));
+                    _ = mockMqttClient.SimulatePublishReceivedAsync(birthAck);
+                }
+
+                return new MqttPublishAck() { ReasonCode = MqttPublishAckReasonCode.Success };
+            };
+            MqttV5ConnectionClientOptions options = new()
+            {
+                MqttClient = mockMqttClient,
+                ConnectionRetryPolicy = new ExponentialBackoffRetryPolicy(uint.MaxValue, TimeSpan.Zero, useJitter: false),
+            };
+            using ConnectionClient connectionClient = new(options);
+            List<int> attempts = new();
+            connectionClient.TwinPushTimeoutSchedule = attempt =>
+            {
+                lock (attempts)
+                {
+                    attempts.Add(attempt);
+                    return attempts.Count == 1 ? TimeSpan.FromMilliseconds(50) : Timeout.InfiniteTimeSpan;
+                }
+            };
+            int completedFlows = 0;
+            TaskCompletionSource secondFlowCompleted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            connectionClient.DevicePresenceFlowCompletedAsync += _ =>
+            {
+                if (Interlocked.Increment(ref completedFlows) == 2)
+                {
+                    secondFlowCompleted.TrySetResult();
+                }
+
+                return Task.CompletedTask;
+            };
+
+            await connectionClient.ConnectToHubAsync(GetMockConnectionContext(), TestContext.Current.CancellationToken)
+                .WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+
+            // The first twin push times out, so the device reconnects with the next birth, which needs no twin push.
+            await secondFlowCompleted.Task.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+
+            await mockMqttClient.SimulateServerDisconnectAsync(MqttDisconnectReason.ServerBusy)
+                .WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+            await WaitForBirthCountAsync(mockMqttClient, 3);
+            using CancellationTokenSource timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+            timeout.CancelAfter(TimeSpan.FromSeconds(30));
+            while (true)
+            {
+                lock (attempts)
+                {
+                    if (attempts.Count == 2)
+                    {
+                        Assert.Equal(new[] { 1, 1 }, attempts);
+                        return;
+                    }
+                }
+
+                await Task.Delay(TimeSpan.FromMilliseconds(20), timeout.Token);
+            }
         }
 
         [Fact]

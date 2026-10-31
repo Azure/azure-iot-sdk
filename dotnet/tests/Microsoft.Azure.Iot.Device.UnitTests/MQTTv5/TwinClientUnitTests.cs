@@ -809,6 +809,31 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             Assert.Equal(1, eventCount);
         }
 
+        [Theory]
+        [InlineData("not json")]
+        [InlineData("[1]")]
+        [InlineData("null")]
+        public async Task TwinPushWithMalformedSection_IsDroppedWithoutApplyingAnySection(string desiredPayload)
+        {
+            (MockFeatureConnectionClient connection, Guid nonce) = CreateConnectionWithNonce();
+            using TwinClient twinClient = new(connection);
+            await ReceiveTwinPushAsync(connection, nonce, 5, "{\"fanSpeed\":40}");
+
+            int eventCount = 0;
+            twinClient.TwinPushReceived += _ => eventCount++;
+
+            var push = new TwinPush()
+            {
+                Reported = new Section { Version = 9, Payload = ByteString.CopyFromUtf8("{\"temperature\":20}") },
+                Desired = new Section { Version = 6, Payload = ByteString.CopyFromUtf8(desiredPayload) },
+            };
+            await connection.SimulateReceiveAsync(CreateInboundTwinPublish("twin-push:1", nonce.ToByteArray(bigEndian: true), push.ToByteArray()));
+
+            Assert.Equal(0, eventCount);
+            Assert.Equal(5ul, twinClient.GetTwinState().DesiredVersion);
+            Assert.Equal(0ul, twinClient.GetTwinState().ReportedVersion);
+        }
+
         [Fact]
         public async Task DesiredProbe_AheadOfLocalVersion_ResyncsAndDeliversSnapshotThenBufferedPatches()
         {
