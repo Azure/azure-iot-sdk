@@ -425,6 +425,17 @@ static void advance_delegated_update(sample_state* s)
         finish_delegated_update(s, skipped);
         return;
       }
+      /* Nothing would be applied, so there would be no update id to keep. */
+      if (manifest->instructions.steps_count == 0)
+      {
+        finish_delegated_update(
+            s,
+            make_failed_result(
+                AZ_IOT_SU_FAILURE_ORIGIN_AGENT_EXTENSION,
+                AZ_IOT_SU_FACILITY_INSTALL,
+                AZ_SPAN_FROM_STR("update has no steps")));
+        return;
+      }
       u->phase = DELEGATED_UPDATE_PHASE_DOWNLOADING;
       u->next_index = 0;
       return;
@@ -506,7 +517,7 @@ static void advance_delegated_update(sample_state* s)
        * update offered again is reported skipped, not installed twice. */
       if (!save_applied_update_id_as_installed(s))
       {
-        s->installed_id_unsaved = true;
+        s->installed_id_unsaved = s->simulation_control.applied_valid != 0;
         finish_delegated_update(
             s,
             make_failed_result(
@@ -912,10 +923,15 @@ int main(void)
     return 1;
   }
 
+  /* Room for the longest installed update id the client supports, so a later
+   * update's id still fits, at startup and in az_iot_su_client_update_device_properties(). */
   az_iot_su_device_properties device_properties = current_device_properties(&state);
-  size_t device_properties_needed = az_iot_su_device_properties_buffer_size(&device_properties);
-  if (device_properties_needed == 0
-      || device_properties_needed > AZ_IOT_SU_DEVICE_PROPERTIES_BUFFER_SIZE)
+  az_iot_su_device_properties compatibility_only = device_properties;
+  compatibility_only.installed_update_id = (az_iot_su_update_id_info){ 0 };
+  size_t compatibility_size = az_iot_su_device_properties_buffer_size(&compatibility_only);
+  if (az_iot_su_device_properties_buffer_size(&device_properties) == 0 || compatibility_size == 0
+      || compatibility_size + AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE
+          > AZ_IOT_SU_DEVICE_PROPERTIES_BUFFER_SIZE)
   {
     fprintf(stderr, "Device properties are invalid or too long.\n");
     sample_state_destroy(&state);

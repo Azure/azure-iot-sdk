@@ -25,7 +25,8 @@ zero-filled payloads of the declared size; install and apply only log. The hash 
 - Each downloaded file is checked with `az_iot_su_verify_file_hash()`.
 - One `IN_PROGRESS` report after the downloads, then the final report with one result per
   manifest step: `SUCCEEDED`, or `FAILED` with the failing step and later steps `SKIPPED`.
-  `az_iot_su_client_report_status()` sends and retries it.
+  `az_iot_su_client_report_status()` sends and retries it. An update with no steps is reported
+  `FAILED` before any download.
 - After a success the client sends the new update id as installed on later checks. Library
   mode persists nothing, so the sample keeps the id in a file (`AZ_IOT_SU_INSTALLED_FILE`),
   written before the success report, and passes it to `az_iot_su_client_init()` on the next run.
@@ -50,7 +51,7 @@ Deploy an update as for [simulated_regular](../simulated_regular/README.md), wit
 | `AZ_IOT_DPS_ID_SCOPE`, `AZ_IOT_DPS_REGISTRATION_ID` | yes | The device's DPS enrollment |
 | `AZ_IOT_CLIENT_CERT`, `AZ_IOT_CLIENT_KEY`, `AZ_IOT_TRUSTED_CA` | yes | X.509 credential and trust bundle |
 | `AZ_IOT_DPS_GLOBAL_ENDPOINT` | no | DPS endpoint; default global |
-| `AZ_IOT_SU_MANUFACTURER`, `AZ_IOT_SU_MODEL` | no | Compatibility properties; default `Contoso`/`SU-Sim` |
+| `AZ_IOT_SU_MANUFACTURER`, `AZ_IOT_SU_MODEL` | no | Compatibility properties; default `Contoso`/`SU-Sim`. With the longest installed update id (`AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE`) they must fit `AZ_IOT_SU_DEVICE_PROPERTIES_BUFFER_SIZE`, or the sample stops |
 | `AZ_IOT_SU_INSTALLED_PROVIDER` / `_NAME` / `_VERSION` | no | Installed update id when `AZ_IOT_SU_INSTALLED_FILE` does not exist; default `Contoso/SU-Sim/1.0.0` |
 | `AZ_IOT_SU_INSTALLED_FILE` | no | Where the installed update id is kept; default `./su_library_installed.txt`. Its first line names the device (`<ID scope> <registration ID>`), then provider, name and version. The sample stops if it exists but cannot be read, is not exactly four lines, or names another device |
 | `SU_SIM_FAIL_STEP=<n>` | no | 1-based step whose install fails; `0` (default) none |
