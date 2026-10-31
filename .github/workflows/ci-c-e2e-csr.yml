@@ -38,7 +38,8 @@
 #   1. setup    : provision the cert-management resource group ONCE (DPS + ADR +
 #                 the X.509 enrollment group), mint the bootstrap identity, and
 #                 publish the config as an artifact.
-#   2. test     : build `az_iot_tests_e2e_csr` (AZ_IOT_BUILD_E2E_CSR=ON),
+#   2. test     : on Linux and Windows (MSVC; Paho over OpenSSL, az_mqtt over
+#                 Schannel), build `az_iot_tests_e2e_csr` (AZ_IOT_BUILD_E2E_CSR=ON),
 #                 materialize the bootstrap chain + key, and run
 #                 `ctest -R e2e_csr`.
 #   3. teardown : always() deletes the resource group. It recomputes the group
@@ -74,7 +75,9 @@ on:
       # The e2e harness (shared device fixture + CSR test + service facade).
       - 'c/tests/e2e/**'
       - 'c/eng/e2e-shared-device.ps1'
+      - 'c/eng/e2e-trusted-ca.ps1'
       - '.github/workflows/ci-c-e2e-csr.yml'
+      - '.github/actions/install-openssl/**'
   push:
     branches: [ main ]
     paths:
@@ -86,7 +89,9 @@ on:
       - 'c/inc/azure/iot/az_iot_connection_client.h'
       - 'c/tests/e2e/**'
       - 'c/eng/e2e-shared-device.ps1'
+      - 'c/eng/e2e-trusted-ca.ps1'
       - '.github/workflows/ci-c-e2e-csr.yml'
+      - '.github/actions/install-openssl/**'
   schedule:
     - cron: '0 12 * * *'  # Nightly at 5am PST (offset from the fast + ADU workflows)
 
@@ -168,27 +173,55 @@ jobs:
           if-no-files-found: error
 
   test:
-    name: csr (ubuntu-24.04)
+    name: csr (${{ matrix.os }})
     needs: setup
     # Runs after setup, or without it in shared mode (setup skipped).
     if: ${{ !cancelled() && (needs.setup.result == 'success' || needs.setup.result == 'skipped') }}
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    runs-on: ${{ matrix.os }}
+    # Windows: room for an OpenSSL build on a cache miss.
+    timeout-minutes: ${{ matrix.os == 'windows-latest' && 75 || 30 }}
+    strategy:
+      fail-fast: false
+      # A provisioned environment has one bootstrap device, so its OS legs take turns. In shared
+      # mode each leg issues its own device and they run in parallel.
+      max-parallel: ${{ (vars.E2E_CSR_SHARED_ID_SCOPE != '' && github.event_name == 'pull_request') && 2 || 1 }}
+      matrix:
+        os: [ ubuntu-24.04, windows-latest ]
+        include:
+          # Linux builds instrumented for the combined coverage report.
+          - { os: ubuntu-24.04, os-tag: l, preset: linux-gcc-e2e-coverage }
+          - { os: windows-latest, os-tag: w, preset: windows-msvc-debug }
+    env:
+      AZ_IOT_PRESET: ${{ matrix.preset }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
 
+      - name: Set up MSVC (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
+
+      # OpenSSL 4.1.0, as the Windows legs of ci-c-e2e.yml (cached per runner image).
+      - name: Install OpenSSL (Windows)
+        if: runner.os == 'Windows'
+        uses: ./.github/actions/install-openssl # zizmor: ignore[self-repository]
+        with:
+          version: '4.1.0'
+
       - name: Install ninja (Linux)
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update && sudo apt-get install -y ninja-build
           python3 -m pip install --upgrade 'gcovr==7.2'
 
       - name: Build CSR e2e test
         working-directory: c
+        shell: pwsh
         run: |
-          cmake --preset linux-gcc-e2e-coverage -DAZ_IOT_WITH_AZ_MQTT=ON -DAZ_IOT_BUILD_E2E_CSR=ON
-          cmake --build --preset linux-gcc-e2e-coverage --target az_iot_tests_e2e_csr az_iot_tests_e2e_csr_sas az_iot_tests_e2e_csr_az_mqtt az_iot_tests_e2e_csr_sas_az_mqtt
+          cmake --preset $env:AZ_IOT_PRESET -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_WITH_AZ_MQTT=ON -DAZ_IOT_BUILD_E2E_CSR=ON
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake --build --preset $env:AZ_IOT_PRESET --target az_iot_tests_e2e_csr az_iot_tests_e2e_csr_sas az_iot_tests_e2e_csr_az_mqtt az_iot_tests_e2e_csr_sas_az_mqtt
 
       - name: Download shared test config
         if: env.E2E_SHARED != 'true'
@@ -205,13 +238,17 @@ jobs:
           E2E_CSR_SHARED_ID_SCOPE: ${{ vars.E2E_CSR_SHARED_ID_SCOPE }}
           E2E_CSR_SHARED_DPS_HOST: ${{ vars.E2E_CSR_SHARED_DPS_HOST }}
           E2E_CSR_SHARED_SAS_GROUP_KEY: ${{ secrets.E2E_CSR_SHARED_SAS_GROUP_KEY }}
-          E2E_REGISTRATION_ID: ci-csr-${{ github.run_id }}-${{ github.run_attempt }}
+          E2E_REGISTRATION_ID: ci-csr-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.os-tag }}
         run: |
           ./c/eng/e2e-shared-device.ps1 -Csr -RegistrationId $env:E2E_REGISTRATION_ID `
             -OutFile test_config/set_test_env_vars.ps1
 
       - name: Run CSR e2e
         shell: pwsh
+        env:
+          E2E_OS_TAG: ${{ matrix.os-tag }}
+          # An MSYS openssl would rewrite the "/CN=..." subject into a path.
+          MSYS2_ARG_CONV_EXCL: '*'
         run: |
           # Service-side config (IOT_DPS_*, IOT_DPS_GROUP_X509_*) is set by the
           # generated script.
@@ -242,8 +279,8 @@ jobs:
             [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($certB64)))
           [System.IO.File]::WriteAllText($keyPath,
             [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($keyB64)))
-          # Trusted CA for the DPS/hub SERVER TLS validation = the system bundle.
-          Copy-Item "/etc/ssl/certs/ca-certificates.crt" $caPath
+          # Trusted CA for the DPS/hub SERVER TLS validation = the host's roots.
+          $caPath = ./c/eng/e2e-trusted-ca.ps1 -Path $caPath
           # A self-signed certificate DPS and the hub refuse (CONNACK 5): the
           # certificate fallback test offers it before the real one.
           $rejectedCert = Join-Path $dir "rejected-cert.pem"
@@ -268,33 +305,33 @@ jobs:
           }
           Write-Host "::add-mask::$($env:IOT_DPS_SYMM_KEY_GROUP_PRIMARY_KEY)"
           $env:AZ_IOT_DPS_SAS_GROUP_KEY = $env:IOT_DPS_SYMM_KEY_GROUP_PRIMARY_KEY
-          $env:AZ_IOT_DPS_SAS_REGISTRATION_ID = "sas-csr-${{ github.run_id }}-${{ github.run_attempt }}"
+          $env:AZ_IOT_DPS_SAS_REGISTRATION_ID = "sas-csr-${{ github.run_id }}-${{ github.run_attempt }}-$($env:E2E_OS_TAG)"
           # Verbose SDK logging so a connect/DPS failure surfaces its reason.
           $env:AZ_IOT_E2E_LOG_LEVEL = 'TRACE'
 
           New-Item -ItemType Directory -Path ./test_config/results -Force | Out-Null
           # `-R e2e_csr` selects az_iot_tests_e2e_csr and az_iot_tests_e2e_csr_sas.
-          ctest --test-dir c/build/linux-gcc-e2e-coverage -R e2e_csr `
+          ctest --test-dir "c/build/$($env:AZ_IOT_PRESET)" -C Debug -R e2e_csr `
             --verbose --no-tests=error --timeout 900 `
-            --output-junit ./test_config/results/e2e-csr.xml
+            --output-junit "./test_config/results/e2e-csr-$($env:E2E_OS_TAG).xml"
 
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: e2e-csr-results
+          name: e2e-csr-results-${{ matrix.os }}
           path: ./test_config/results/**/*.xml
           if-no-files-found: ignore
 
       - name: Collect coverage
         # Not `if: always()` -- a failed run leaves partial or absent .gcda, and
         # merging that would understate coverage for an unrelated reason.
-        if: success()
+        if: runner.os == 'Linux' && success()
         working-directory: c
         run: bash eng/collect-coverage.sh build/linux-gcc-e2e-coverage coverage/e2e-csr.json e2e-csr
 
       - name: Upload coverage tracefile
-        if: success()
+        if: runner.os == 'Linux' && success()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: coverage-trace-e2e-csr
