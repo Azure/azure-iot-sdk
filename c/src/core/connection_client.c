@@ -7793,6 +7793,16 @@ az_iot_result az_iot_connection_client_close(az_iot_connection_client* client)
   {
     return AZ_IOT_OK;
   }
+  /* A SAS renewal still settling: this DISCONNECT takes it over, under its disconnect bound. */
+  if (az_iot_deadline__is_set(&client->planned_hub_session_end.drain_deadline))
+  {
+    az_iot_deadline__clear(&client->planned_hub_session_end.drain_deadline);
+    client->planned_hub_session_end.reason = AZ_IOT_OK;
+    az_iot_deadline__arm_after_ms(
+        &client->planned_hub_session_end.disconnect_deadline,
+        az_iot_time_mono_ms(),
+        PLANNED_DISCONNECT_TIMEOUT_MS);
+  }
   az_iot_result r = client->active_client->iface->disconnect(client->active_client);
   if (r != AZ_IOT_OK && r != AZ_IOT_ERR_NOT_CONNECTED)
   {

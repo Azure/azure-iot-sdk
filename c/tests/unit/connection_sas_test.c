@@ -1873,6 +1873,28 @@ static void a_close_ends_a_settling_renewal(void** state)
   assert_true(no_connect_pending(fx));
 }
 
+/* close() during the settle with an adapter that never reports DISCONNECTED: the disconnect bound
+ * settles IDLE, and open() works again. */
+static void a_close_during_the_settle_without_a_disconnect_event_settles_idle(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  uint64_t now = NOW;
+  open_renewable_hub(fx, &now, NULL);
+  int acks = 0;
+  (void)publish_awaiting_puback(fx, &acks);
+  az_iot_mock_mqtt_client* m = start_settling_renewal(fx);
+  assert_int_equal(az_iot_connection_client_close(&fx->client), AZ_IOT_OK);
+  assert_int_equal(az_iot_mock_mqtt_client_count_of(m, AZ_IOT_MOCK_CALL_DISCONNECT), 1);
+  pump(fx, 1);
+  assert_int_equal(fx->client.state[AZ_IOT_CONN_SCOPE_HUB], AZ_IOT_CONN_STATE_DISCONNECTING);
+
+  az_iot_connection_client__planned_hub_session_end_force_timeout(&fx->client);
+  pump(fx, 1);
+  assert_int_equal(fx->client.state[AZ_IOT_CONN_SCOPE_HUB], AZ_IOT_CONN_STATE_IDLE);
+  assert_true(no_connect_pending(fx));
+  assert_int_equal(az_iot_connection_client_open(&fx->client), AZ_IOT_OK);
+}
+
 /* The settle is bounded by the session token's expiry: a key-signed token records it at signing,
  * and a token close to expiry settles only for what is left. */
 static void a_renewal_settles_no_longer_than_the_token_lives(void** state)
@@ -4185,6 +4207,8 @@ int main(void)
     cmocka_unit_test_setup_teardown(a_failure_end_takes_over_a_settling_renewal, setup, teardown),
     cmocka_unit_test_setup_teardown(a_lost_session_ends_a_settling_renewal, setup, teardown),
     cmocka_unit_test_setup_teardown(a_close_ends_a_settling_renewal, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_close_during_the_settle_without_a_disconnect_event_settles_idle, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_renewal_settles_no_longer_than_the_token_lives, setup, teardown),
     cmocka_unit_test_setup_teardown(a_renewal_of_an_expired_token_does_not_settle, setup, teardown),

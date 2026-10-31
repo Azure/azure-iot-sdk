@@ -466,7 +466,7 @@ CONNACK; the `DPS` counter only when registration succeeds.
   with; 0 once it expired); each `do_work()` ends the session once no PUBACK or certificate renewal response is awaited, no feature observer
   answers `AZ_IOT_CONNECTION_FEATURE_EVENT_UNSETTLED_QUERY`, or at the deadline or the token's Unix-time
   expiry (rechecked each pass; it also caps the wait). A failure end,
-  `close()` or a lost session ends the settle. Delivery trackers hold new sends from then until the
+  `close()` (its DISCONNECT under `PLANNED_DISCONNECT_TIMEOUT_MS`) or a lost session ends the settle. Delivery trackers hold new sends from then until the
   session ends (`__holds_sends_for_session_end()`); `publish_tracked()` refuses a QoS 1 publish
   with `AZ_IOT_ERR_BUSY` while settling, and any publish with `AZ_IOT_ERR_NOT_CONNECTED` once the
   DISCONNECT is sent.
