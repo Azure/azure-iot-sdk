@@ -625,6 +625,10 @@ void app_main(void)
       = CONFIG_HUB_DPS_GLOBAL_ENDPOINT[0] != '\0' ? CONFIG_HUB_DPS_GLOBAL_ENDPOINT : NULL;
   options.certificate_provider = &certs.base;
   options.crypto = az_iot_crypto_mbedtls();
+  // Memory for the connection client's entries, sized for the default limits.
+  static uint8_t connection_workspace[AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE];
+  options.workspace = connection_workspace;
+  options.workspace_size = sizeof(connection_workspace);
   // mqttv5: the hub pushes the desired snapshot on connect and each desired patch.
   options.twin_push.push_desired = true;
   if (az_iot_connection_client_init(&d->connection, &options) != AZ_IOT_OK)
