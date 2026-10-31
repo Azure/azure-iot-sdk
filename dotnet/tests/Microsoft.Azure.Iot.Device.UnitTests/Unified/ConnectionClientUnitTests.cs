@@ -62,7 +62,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
             }
             else
             {
-                await connectionClient.DisconnectAsync(TestContext.Current.CancellationToken);
+                await connectionClient.DisconnectAsync(null, TestContext.Current.CancellationToken);
             }
 
             MqttDisconnect disconnect = Assert.Single(mockMqttClient.DisconnectRequests);
@@ -187,7 +187,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
 
             if (clientInitiated)
             {
-                await client.DisconnectAsync(TestContext.Current.CancellationToken);
+                await client.DisconnectAsync(null, TestContext.Current.CancellationToken);
             }
             else
             {
@@ -1111,7 +1111,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
                 }
                 else
                 {
-                    await connectionClient.DisconnectAsync(TestContext.Current.CancellationToken);
+                    await connectionClient.DisconnectAsync(null, TestContext.Current.CancellationToken);
                 }
 
                 await Assert.ThrowsAnyAsync<OperationCanceledException>(
@@ -1145,7 +1145,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
             canceledDisconnect.Cancel();
             await Assert.ThrowsAnyAsync<OperationCanceledException>(() => withOptions
                 ? connectionClient.DisconnectAsync(new DisconnectOptions() { SessionExpiryInterval = 300 }, canceledDisconnect.Token)
-                : connectionClient.DisconnectAsync(canceledDisconnect.Token));
+                : connectionClient.DisconnectAsync(null, canceledDisconnect.Token));
             Assert.Empty(mockMqttClient.DisconnectRequests);
 
             int attemptCount = 0;
@@ -1222,7 +1222,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
                 await mockMqttClient.SimulateServerDisconnectAsync(MqttDisconnectReason.ImplementationSpecificError);
                 await presenceFlowCompleted.Task.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
 
-                await connectionClient.DisconnectAsync(TestContext.Current.CancellationToken);
+                await connectionClient.DisconnectAsync(null, TestContext.Current.CancellationToken);
                 await connectionClient.ProvisionAndConnectAsync(
                     new ProvisioningSettings("someIdScope"),
                     context.AuthenticationProvider,
@@ -1271,7 +1271,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
             {
                 if (Interlocked.Exchange(ref connectionTransitionStarted, 1) == 0)
                 {
-                    deliberateDisconnect = connectionClient.DisconnectAsync(TestContext.Current.CancellationToken);
+                    deliberateDisconnect = connectionClient.DisconnectAsync(null, TestContext.Current.CancellationToken);
                     presenceFlowCompleted.TrySetResult();
                 }
 

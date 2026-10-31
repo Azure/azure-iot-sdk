@@ -584,27 +584,6 @@ namespace Microsoft.Azure.Iot.Device
         }
 
         /// <summary>
-        /// Disconnect this device from IoT hub.
-        /// </summary>
-        /// <remarks>
-        /// The <see cref="ConnectionContext"/> this client holds survives a disconnect. A later <see cref="ProvisionAndConnectAsync"/> 
-        /// therefore reconnects directly to the same IoT hub (with any certificates it issued) unless forceProvisioning is set or unless 
-        /// the cached credentials expire.
-        /// <para>
-        /// A deliberate disconnect takes precedence over any automatic recovery in progress. Reconnection to the IoT hub
-        /// and re-provisioning through Device Provisioning Service both stop, and every feature operation (PUBLISH,
-        /// SUBSCRIBE or UNSUBSCRIBE) that is waiting for the connection to be re-established is released and throws
-        /// <see cref="OperationCanceledException"/> rather than being sent once the connection comes back. Feature
-        /// operations started after this call fail fast until this client is connected again.
-        /// </para>
-        /// </remarks>
-        /// <param name="cancellationToken">The cancellation token.</param>
-        public Task DisconnectAsync(CancellationToken cancellationToken = default)
-        {
-            return DisconnectAsync(null, cancellationToken);
-        }
-
-        /// <summary>
         /// Disconnect this device from IoT hub with optional disconnect settings.
         /// </summary>
         /// <remarks>
@@ -613,7 +592,7 @@ namespace Microsoft.Azure.Iot.Device
         /// </remarks>
         /// <param name="options">The disconnect settings, or null to use the defaults.</param>
         /// <param name="cancellationToken">The cancellation token.</param>
-        public async Task DisconnectAsync(DisconnectOptions? options, CancellationToken cancellationToken = default)
+        public async Task DisconnectAsync(DisconnectOptions? options = null, CancellationToken cancellationToken = default)
         {
             ObjectDisposedException.ThrowIf(_isDisposed, this);
 
