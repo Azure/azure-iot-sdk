@@ -5,7 +5,6 @@
 /* SPDX-License-Identifier: MIT */
 #include <stdbool.h>
 #include <stdint.h>
-#include <string.h>
 
 #include "internal/json_string.h"
 
@@ -46,37 +45,39 @@ static bool read_hex4(const uint8_t* p, uint32_t* out)
 }
 
 /**
- * @brief Decode the character at @p *i of a JSON string body to UTF-8.
+ * @brief Decode the character at @p *position: a plain byte or one escape.
  *
- * @param src  The escaped string body.
- * @param n    Size of @p src.
- * @param i    Position of the character; advanced past it on success.
- * @param utf8 Receives the UTF-8 bytes.
- * @return The number of bytes in @p utf8 (1 to 4); 0 on an unknown or truncated
- * escape, a lone or reversed surrogate, or `\u0000`.
+ * @param src      The escaped string body.
+ * @param size     Bytes in @p src.
+ * @param position Index of the character; advanced past it. Must be below @p size.
+ * @param out      Receives the decoded bytes.
+ * @return Bytes written to @p out (1 to 4); 0 when the escape is malformed.
  */
-static int32_t decode_next_character(const uint8_t* src, int32_t n, int32_t* i, uint8_t utf8[4])
+static int32_t decode_next_character(
+    const uint8_t* src,
+    int32_t size,
+    int32_t* position,
+    uint8_t out[4])
 {
-  int32_t at = *i;
-  uint8_t c = src[at];
-  if (c != '\\')
+  int32_t i = *position;
+  if (src[i] != '\\')
   {
-    utf8[0] = c;
-    *i = at + 1;
+    out[0] = src[i];
+    *position = i + 1;
     return 1;
   }
-  if (++at >= n)
+  if (++i >= size)
   {
     return 0;
   }
 
   uint8_t simple = 0;
-  switch (src[at])
+  switch (src[i])
   {
     case '"':
     case '\\':
     case '/':
-      simple = src[at];
+      simple = src[i];
       break;
     case 'b':
       simple = '\b';
@@ -100,56 +101,56 @@ static int32_t decode_next_character(const uint8_t* src, int32_t n, int32_t* i, 
   }
   if (simple != 0)
   {
-    utf8[0] = simple;
-    *i = at + 1;
+    out[0] = simple;
+    *position = i + 1;
     return 1;
   }
 
   uint32_t cp;
-  if (n - at - 1 < 4 || !read_hex4(&src[at + 1], &cp))
+  if (size - i - 1 < 4 || !read_hex4(&src[i + 1], &cp))
   {
     return 0;
   }
-  at += 4;
+  i += 4;
   if (cp >= 0xD800 && cp <= 0xDBFF)
   {
     uint32_t lo;
-    if (n - at - 1 < 6 || src[at + 1] != '\\' || src[at + 2] != 'u' || !read_hex4(&src[at + 3], &lo)
+    if (size - i - 1 < 6 || src[i + 1] != '\\' || src[i + 2] != 'u' || !read_hex4(&src[i + 3], &lo)
         || lo < 0xDC00 || lo > 0xDFFF)
     {
       return 0;
     }
-    at += 6;
+    i += 6;
     cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
   }
   else if ((cp >= 0xDC00 && cp <= 0xDFFF) || cp == 0)
   {
     return 0;
   }
-  *i = at + 1;
+  *position = i + 1;
 
   if (cp < 0x80)
   {
-    utf8[0] = (uint8_t)cp;
+    out[0] = (uint8_t)cp;
     return 1;
   }
   if (cp < 0x800)
   {
-    utf8[0] = (uint8_t)(0xC0 | (cp >> 6));
-    utf8[1] = (uint8_t)(0x80 | (cp & 0x3F));
+    out[0] = (uint8_t)(0xC0 | (cp >> 6));
+    out[1] = (uint8_t)(0x80 | (cp & 0x3F));
     return 2;
   }
   if (cp < 0x10000)
   {
-    utf8[0] = (uint8_t)(0xE0 | (cp >> 12));
-    utf8[1] = (uint8_t)(0x80 | ((cp >> 6) & 0x3F));
-    utf8[2] = (uint8_t)(0x80 | (cp & 0x3F));
+    out[0] = (uint8_t)(0xE0 | (cp >> 12));
+    out[1] = (uint8_t)(0x80 | ((cp >> 6) & 0x3F));
+    out[2] = (uint8_t)(0x80 | (cp & 0x3F));
     return 3;
   }
-  utf8[0] = (uint8_t)(0xF0 | (cp >> 18));
-  utf8[1] = (uint8_t)(0x80 | ((cp >> 12) & 0x3F));
-  utf8[2] = (uint8_t)(0x80 | ((cp >> 6) & 0x3F));
-  utf8[3] = (uint8_t)(0x80 | (cp & 0x3F));
+  out[0] = (uint8_t)(0xF0 | (cp >> 18));
+  out[1] = (uint8_t)(0x80 | ((cp >> 12) & 0x3F));
+  out[2] = (uint8_t)(0x80 | ((cp >> 6) & 0x3F));
+  out[3] = (uint8_t)(0x80 | (cp & 0x3F));
   return 4;
 }
 
@@ -160,48 +161,98 @@ az_iot_result az_iot_json_string_decode(az_span in, az_span out, az_span* out_de
     return AZ_IOT_ERR_INVALID_ARG;
   }
   const uint8_t* src = az_span_ptr(in);
-  int32_t n = az_span_size(in);
+  int32_t size = az_span_size(in);
   uint8_t* dst = az_span_ptr(out);
-  int32_t cap = az_span_size(out);
-  int32_t w = 0;
+  int32_t capacity = az_span_size(out);
+  int32_t written = 0;
 
-  for (int32_t i = 0; i < n;)
+  int32_t position = 0;
+  while (position < size)
   {
-    uint8_t utf8[4];
-    int32_t length = decode_next_character(src, n, &i, utf8);
-    if (length == 0)
+    /* Decoded before it is written: in place, the write never passes the read. */
+    uint8_t character[4];
+    int32_t character_size = decode_next_character(src, size, &position, character);
+    if (character_size == 0)
     {
       return AZ_IOT_ERR_INVALID_ARG;
     }
-    if (cap - w < length)
+    if (capacity - written < character_size)
     {
       return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
     }
-    memcpy(&dst[w], utf8, (size_t)length);
-    w += length;
+    for (int32_t k = 0; k < character_size; ++k)
+    {
+      dst[written++] = character[k];
+    }
   }
 
-  *out_decoded = az_span_create(dst, w);
+  *out_decoded = az_span_create(dst, written);
   return AZ_IOT_OK;
 }
 
-bool az_iot_json_string_equals(az_span escaped, az_span plain)
+/** @brief Reads the decoded bytes of a JSON string body, or plain text, one byte at a time. */
+typedef struct
 {
-  const uint8_t* src = az_span_ptr(escaped);
-  int32_t n = az_span_size(escaped);
-  const uint8_t* expected = az_span_ptr(plain);
-  int32_t remaining = az_span_size(plain);
+  const uint8_t* text;
+  int32_t size;
+  int32_t position;
+  bool is_escaped;
+  uint8_t pending[4];
+  int32_t pending_size;
+  int32_t pending_position;
+} json_string_byte_reader;
 
-  for (int32_t i = 0; i < n;)
+/** @brief End of the text, from json_string_byte_reader_next(). */
+#define JSON_STRING_BYTE_READER_END (-1)
+/** @brief A malformed escape, from json_string_byte_reader_next(). */
+#define JSON_STRING_BYTE_READER_MALFORMED (-2)
+
+/**
+ * @brief Read the next decoded byte.
+ *
+ * @return The byte (0 to 255); JSON_STRING_BYTE_READER_END; or JSON_STRING_BYTE_READER_MALFORMED.
+ */
+static int32_t json_string_byte_reader_next(json_string_byte_reader* reader)
+{
+  if (reader->pending_position < reader->pending_size)
   {
-    uint8_t utf8[4];
-    int32_t length = decode_next_character(src, n, &i, utf8);
-    if (length == 0 || length > remaining || memcmp(utf8, expected, (size_t)length) != 0)
+    return reader->pending[reader->pending_position++];
+  }
+  if (reader->position >= reader->size)
+  {
+    return JSON_STRING_BYTE_READER_END;
+  }
+  if (!reader->is_escaped)
+  {
+    return reader->text[reader->position++];
+  }
+  reader->pending_size
+      = decode_next_character(reader->text, reader->size, &reader->position, reader->pending);
+  if (reader->pending_size == 0)
+  {
+    return JSON_STRING_BYTE_READER_MALFORMED;
+  }
+  reader->pending_position = 1;
+  return reader->pending[0];
+}
+
+bool az_iot_json_string_equals(az_span escaped, az_span other, bool other_is_escaped)
+{
+  json_string_byte_reader readers[2] = {
+    { az_span_ptr(escaped), az_span_size(escaped), 0, true, { 0 }, 0, 0 },
+    { az_span_ptr(other), az_span_size(other), 0, other_is_escaped, { 0 }, 0, 0 },
+  };
+  for (;;)
+  {
+    int32_t a = json_string_byte_reader_next(&readers[0]);
+    int32_t b = json_string_byte_reader_next(&readers[1]);
+    if (a == JSON_STRING_BYTE_READER_MALFORMED || a != b)
     {
       return false;
     }
-    expected += length;
-    remaining -= length;
+    if (a == JSON_STRING_BYTE_READER_END)
+    {
+      return true;
+    }
   }
-  return remaining == 0;
 }

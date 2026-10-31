@@ -74,6 +74,9 @@ option(AZ_IOT_BUILD_PKCS11_TESTS "Register the Paho key-custody tests that need 
 # the same build-it-when-it-will-run rule as AZ_IOT_BUILD_E2E_CSR. With
 # AZ_IOT_BUILD_E2E_MQTTV5 it also builds the mqttv5 custody suite.
 option(AZ_IOT_BUILD_E2E_PKCS11 "Build the PKCS#11 custody e2e tests (need a token + e2e resources)" OFF)
+# The ESP32 e2e test runs the ESP32 IoT Hub sample's firmware in QEMU against the e2e resources;
+# only the e2e workflow's esp32-qemu legs build that firmware. Same build-it-when-it-will-run rule.
+option(AZ_IOT_BUILD_E2E_ESP32_QEMU "Build the ESP32 QEMU e2e test (needs E2E_ESP32_QEMU_COMMAND + e2e resources)" OFF)
 # Install rules and the azure-iot-sdk CMake package (find_package). On by default
 # only for a top-level build, so a parent project that adds this tree with
 # add_subdirectory() or FetchContent does not install it as a side effect.
@@ -105,7 +108,8 @@ option(AZ_IOT_USE_INSTALLED_AZURE_SDK_FOR_C "Use an installed azure-sdk-for-c (c
 option(AZ_IOT_USE_INSTALLED_PAHO "Use an installed Eclipse Paho C (find_package(eclipse-paho-mqtt-c)) instead of fetching it" OFF)
 
 # Options that would otherwise create nothing without saying so.
-foreach(_opt AZ_IOT_BUILD_E2E_SU AZ_IOT_BUILD_E2E_CSR AZ_IOT_BUILD_E2E_MQTTV5 AZ_IOT_BUILD_E2E_PKCS11)
+foreach(_opt AZ_IOT_BUILD_E2E_SU AZ_IOT_BUILD_E2E_CSR AZ_IOT_BUILD_E2E_MQTTV5 AZ_IOT_BUILD_E2E_PKCS11
+        AZ_IOT_BUILD_E2E_ESP32_QEMU)
     if(${_opt} AND NOT AZ_IOT_BUILD_E2E)
         message(FATAL_ERROR "${_opt}=ON needs AZ_IOT_BUILD_E2E=ON")
     endif()

@@ -104,7 +104,8 @@ add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../deps/amqp
 
 # Receiver credit accounting of the vendored AMQP client, over an in-memory
 # peer. Needs no Azure resources; named `e2e` so the e2e job's filter runs it.
-az_iot_add_cmocka_test(az_iot_tests_e2e_amqp_link tests/e2e_amqp_link_test.c)
+az_iot_add_cmocka_test(az_iot_tests_e2e_amqp_link
+    tests/e2e_amqp_link_test.c tests/e2e_amqp_test_peer.c)
 target_link_libraries(az_iot_tests_e2e_amqp_link PRIVATE az_amqp)
 
 # A write by the harness AMQP transport to a closed loopback peer fails without
@@ -131,10 +132,44 @@ target_include_directories(az_iot_tests_e2e_http_headers PRIVATE service)
 target_link_libraries(az_iot_tests_e2e_http_headers PRIVATE
     az_iot_e2e_service az_amqp az_amqp_transport)
 
+# The telemetry watcher's capture filter and ring: messages of other devices on the
+# shared events endpoint do not evict the ones a test waits for; a receiver the
+# service detached is found; events replayed after a reconnect are dropped. No network; named
+# `e2e` so the e2e job's filter runs it.
+az_iot_add_cmocka_test(az_iot_tests_e2e_amqp_capture tests/e2e_amqp_capture_test.c)
+target_include_directories(az_iot_tests_e2e_amqp_capture PRIVATE service)
+target_link_libraries(az_iot_tests_e2e_amqp_capture PRIVATE
+    az_iot_e2e_service az_amqp az_amqp_transport)
+
+# The telemetry watcher against an in-memory peer playing Event Hubs: replayed
+# transfers are dropped, a detached receiver reconnects with its state kept, and
+# the setup deadline covers receivers still attaching. No network; named `e2e`
+# so the e2e job's filter runs it.
+az_iot_add_cmocka_test(az_iot_tests_e2e_amqp_telemetry
+    tests/e2e_amqp_telemetry_test.c tests/e2e_amqp_test_peer.c)
+target_include_directories(az_iot_tests_e2e_amqp_telemetry PRIVATE service)
+target_link_libraries(az_iot_tests_e2e_amqp_telemetry PRIVATE
+    az_iot_e2e_service az_amqp az_amqp_transport)
+
 # ---------------------------------------------------------------------------
 # Service-side facade (hides az_amqp behind a plain-C API used by the tests).
 # ---------------------------------------------------------------------------
 add_subdirectory(service)
+
+# ---------------------------------------------------------------------------
+# az_iot_tests_e2e_esp32_qemu: the ESP32 IoT Hub sample (samples/unified/esp32) in QEMU, started by
+# E2E_ESP32_QEMU_COMMAND, against the e2e hub. The service side is az_iot_e2e_service; the device
+# is the firmware, so no SDK adapter is linked here.
+# ---------------------------------------------------------------------------
+if(AZ_IOT_BUILD_E2E_ESP32_QEMU)
+    if(NOT UNIX)
+        message(FATAL_ERROR "AZ_IOT_BUILD_E2E_ESP32_QEMU=ON needs a POSIX host (it starts QEMU)")
+    endif()
+    az_iot_add_cmocka_test(az_iot_tests_e2e_esp32_qemu tests/e2e_esp32_qemu_test.c)
+    target_link_libraries(az_iot_tests_e2e_esp32_qemu PRIVATE az_iot_e2e_service)
+    # DPS, TLS and MQTT run emulated: minutes, not seconds.
+    set_tests_properties(az_iot_tests_e2e_esp32_qemu PROPERTIES TIMEOUT 1200)
+endif()
 
 # ---------------------------------------------------------------------------
 # az_iot_tests_e2e

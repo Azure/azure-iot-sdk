@@ -190,7 +190,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
             // The application disconnects the device deliberately and then connects it again by hand -- without
             // provisioning -- holding the connection context that provisioning returned.
-            await connectionClient.DisconnectAsync(TestContext.Current.CancellationToken);
+            await connectionClient.DisconnectAsync(null, TestContext.Current.CancellationToken);
 
             await Assert.ThrowsAsync<DeviceException>(
                 async () => await connectionClient.ConnectToHubAsync(connectionContext, TestContext.Current.CancellationToken));
@@ -217,7 +217,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             Assert.Equal(1, mockDps.RegistrationCount);
 
             // Like the C client's close(), a deliberate disconnect keeps the IoT hub assignment.
-            await connectionClient.DisconnectAsync(TestContext.Current.CancellationToken);
+            await connectionClient.DisconnectAsync(null, TestContext.Current.CancellationToken);
 
             Assert.Equal(ConnectionEndpoint.None, connectionClient.CurrentEndpoint);
             Assert.Same(connectionContext, connectionClient.GetCurrentConnectionContext());
@@ -532,7 +532,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
                 await internalDisconnectStarted.Task.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
 
                 // Complete a public disconnect while the registration retry is still waiting for its DPS teardown.
-                await connectionClient.DisconnectAsync(TestContext.Current.CancellationToken)
+                await connectionClient.DisconnectAsync(null, TestContext.Current.CancellationToken)
                     .WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
             }
             finally
@@ -1931,7 +1931,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             Assert.Equal(ConnectionEndpoint.None, connectionClient.CurrentEndpoint);
             Assert.True(connectionClient.IsConnectionTargetSet);
 
-            await connectionClient.DisconnectAsync(TestContext.Current.CancellationToken);
+            await connectionClient.DisconnectAsync(null, TestContext.Current.CancellationToken);
 
             Assert.False(connectionClient.IsConnectionTargetSet);
             await Assert.ThrowsAsync<NotSupportedException>(
@@ -2008,7 +2008,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             await mockMqttClient.SimulateServerDisconnectAsync(MqttDisconnectReason.NotAuthorized);
             await retryPolicy.ReprovisioningRetryDelayStarted.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
 
-            await connectionClient.DisconnectAsync(TestContext.Current.CancellationToken).WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+            await connectionClient.DisconnectAsync(null, TestContext.Current.CancellationToken).WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
 
             await Assert.ThrowsAsync<OperationCanceledException>(() => pendingPublish.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken));
 
@@ -2053,7 +2053,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
             Assert.Equal(ConnectionEndpoint.DeviceProvisioningService, connectionClient.CurrentEndpoint);
 
-            await connectionClient.DisconnectAsync(TestContext.Current.CancellationToken)
+            await connectionClient.DisconnectAsync(null, TestContext.Current.CancellationToken)
                 .WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
 
             Assert.False(mockMqttClient.IsConnected());
@@ -2102,7 +2102,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             await mockMqttClient.SimulateServerDisconnectAsync(MqttDisconnectReason.NotAuthorized);
             await recoveryHubSubscriptionStarted.Task.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
 
-            await connectionClient.DisconnectAsync(TestContext.Current.CancellationToken)
+            await connectionClient.DisconnectAsync(null, TestContext.Current.CancellationToken)
                 .WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
 
             Assert.False(mockMqttClient.IsConnected());
@@ -2174,7 +2174,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             Assert.True(madeReconnectAttempts);
             Assert.False(pendingPublish.IsCompleted);
 
-            await connectionClient.DisconnectAsync(TestContext.Current.CancellationToken).WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+            await connectionClient.DisconnectAsync(null, TestContext.Current.CancellationToken).WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
 
             await Assert.ThrowsAsync<OperationCanceledException>(() => pendingPublish.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken));
 
@@ -2227,7 +2227,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             await mockMqttClient.SimulateServerDisconnectAsync(MqttDisconnectReason.ServerBusy);
             await reconnectionConnectStarted.Task.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
 
-            await connectionClient.DisconnectAsync(TestContext.Current.CancellationToken)
+            await connectionClient.DisconnectAsync(null, TestContext.Current.CancellationToken)
                 .WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
 
             Volatile.Write(ref allowLateConnectionCleanup, 1);
@@ -2313,7 +2313,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             await mockMqttClient.SimulateServerDisconnectAsync(MqttDisconnectReason.NotAuthorized);
             await reprovisioningConnectStarted.Task.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
 
-            Task disconnect = connectionClient.DisconnectAsync(TestContext.Current.CancellationToken);
+            Task disconnect = connectionClient.DisconnectAsync(null, TestContext.Current.CancellationToken);
 
             // The waiting operation is released straight away, without waiting for the in-flight connect to finish.
             await Assert.ThrowsAsync<OperationCanceledException>(() => pendingPublish.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken));
@@ -2374,7 +2374,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
                 _ = Task.Run(async () =>
                 {
                     await recoveryHubConnectStarted.Task;
-                    disconnectStarted.TrySetResult(connectionClient.DisconnectAsync(TestContext.Current.CancellationToken));
+                    disconnectStarted.TrySetResult(connectionClient.DisconnectAsync(null, TestContext.Current.CancellationToken));
                 });
 
                 return Task.CompletedTask;
@@ -2439,7 +2439,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             await mockMqttClient.SimulateServerDisconnectAsync(MqttDisconnectReason.NotAuthorized);
             await reprovisioningConnectStarted.Task.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
 
-            await connectionClient.DisconnectAsync(TestContext.Current.CancellationToken)
+            await connectionClient.DisconnectAsync(null, TestContext.Current.CancellationToken)
                 .WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
 
             Assert.False(connectionFaulted.Task.IsCompleted);
@@ -2637,7 +2637,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             {
                 try
                 {
-                    await connectionClient.DisconnectAsync(TestContext.Current.CancellationToken);
+                    await connectionClient.DisconnectAsync(null, TestContext.Current.CancellationToken);
                     ConnectionContext context = await connectionClient.ProvisionAndConnectAsync(
                         CreateProvisioningSettings(),
                         CreateAuthenticationProvider(),

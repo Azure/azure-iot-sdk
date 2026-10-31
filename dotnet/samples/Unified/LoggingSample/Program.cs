@@ -89,7 +89,7 @@ internal class Program
             }
 
             using CancellationTokenSource disconnectCts = new(TimeSpan.FromSeconds(10));
-            await connectionClient.DisconnectAsync(disconnectCts.Token);
+            await connectionClient.DisconnectAsync(null, disconnectCts.Token);
         }
         finally
         {

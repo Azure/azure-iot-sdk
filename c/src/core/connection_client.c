@@ -1095,8 +1095,10 @@ static void complete_publish(
   }
 }
 
-/** @brief Destroys the hub session, completes its pending PUBACKs and tells feature observers
- * it ended for @p reason. */
+static void fail_open_csr(az_iot_connection_client* c, az_iot_result status);
+
+/** @brief Destroys the hub session, completes its pending PUBACKs, fails an open certificate
+ * renewal and tells feature observers it ended for @p reason. */
 static void end_session(az_iot_connection_client* c, az_iot_connection_session_end_reason reason)
 {
   c->hub_session_ended = false;
@@ -1145,6 +1147,12 @@ static void end_session(az_iot_connection_client* c, az_iot_connection_session_e
     {
       complete_publish(c, cb, result_cb, user_ctx, AZ_IOT_ERR_NOT_CONNECTED, NULL);
     }
+  }
+
+  /* Its response would have come on this session. */
+  if (c->csr_op.in_use)
+  {
+    fail_open_csr(c, AZ_IOT_ERR_NOT_CONNECTED);
   }
 
   /* Tell the feature clients the session is gone. A twin GET correlated by
@@ -4700,23 +4708,29 @@ static void report_and_drop_subscription(
     az_iot_connection_client* c,
     size_t index,
     az_iot_result reason,
-    int32_t protocol_code)
+    int32_t protocol_code,
+    const char* reason_string,
+    size_t reason_string_len)
 {
   az_iot_subscription_failed_callback cb = c->persistent_subs[index].on_failed;
   const void* owner = c->persistent_subs[index].owner;
   char topic[AZ_IOT_PERSISTENT_SUB_TOPIC_MAX];
   memcpy(topic, c->persistent_subs[index].topic_filter, sizeof(topic));
 
+  int const logged_reason_length
+      = reason_string != NULL && reason_string_len <= INT32_MAX ? (int)reason_string_len : 0;
   AZ_IOT_LOG_WARNF(
       AZ_IOT_LOG_COMPONENT_CONNECTION,
-      "subscription '%s' failed (reason_code=%d); dropping it, connection stays up",
+      "subscription '%s' failed (reason_code=%d reason='%.*s'); dropping it, connection stays up",
       topic,
-      (int)protocol_code);
+      (int)protocol_code,
+      logged_reason_length,
+      logged_reason_length > 0 ? reason_string : "");
   memset(&c->persistent_subs[index], 0, sizeof(c->persistent_subs[index]));
   if (cb)
   {
     enter_callback(c);
-    cb(topic, reason, protocol_code, owner);
+    cb(topic, reason, protocol_code, reason_string, reason_string_len, owner);
     leave_callback(c);
   }
 }
@@ -4810,7 +4824,7 @@ static void begin_feature_subscriptions(az_iot_connection_client* c)
        * refusal would be. */
       if (!gated)
       {
-        report_and_drop_subscription(c, i, r, 0);
+        report_and_drop_subscription(c, i, r, 0, NULL, 0);
         continue;
       }
       AZ_IOT_LOG_ERRORF(
@@ -4864,7 +4878,13 @@ static bool subscription_gate_settle(az_iot_connection_client* c, const az_iot_m
     {
       if (!gated)
       {
-        report_and_drop_subscription(c, sub_index, ack->status, ack->protocol_code);
+        report_and_drop_subscription(
+            c,
+            sub_index,
+            ack->status,
+            ack->protocol_code,
+            ack->reason_string,
+            ack->reason_string != NULL ? ack->reason_string_len : 0);
         return true;
       }
       if (session_ending)
@@ -6264,8 +6284,8 @@ static void process_sas_token_request(az_iot_connection_client* c)
  * @brief @p timeout_ms, capped so a process_loop() wait ends by the next
  * connection deadline: a SAS token request's bound (none while one waits to be
  * asked, as do_work() asks it), a session's SAS token renewal, a planned hub
- * session end's disconnect bound, the presence SUBACK or birth-ack timeout, or a
- * feature observer's NEXT_DEADLINE.
+ * session end's disconnect bound, the presence SUBACK or birth-ack timeout, an open
+ * certificate renewal's response timeout, or a feature observer's NEXT_DEADLINE.
  */
 static uint32_t limit_wait_to_connection_deadlines(az_iot_connection_client* c, uint32_t timeout_ms)
 {
@@ -6340,6 +6360,11 @@ static uint32_t limit_wait_to_connection_deadlines(az_iot_connection_client* c, 
   {
     uint64_t presence_left = az_iot_deadline__remaining_ms(&c->presence.deadline, now);
     remaining = presence_left < remaining ? presence_left : remaining;
+  }
+  if (c->csr_op.in_use)
+  {
+    uint64_t const csr_left = c->csr_op.deadline_ms > now ? c->csr_op.deadline_ms - now : 0;
+    remaining = csr_left < remaining ? csr_left : remaining;
   }
   az_iot_connection_feature_event const deadline_query
       = { AZ_IOT_CONNECTION_FEATURE_EVENT_NEXT_DEADLINE,
@@ -6438,6 +6463,7 @@ AZ_NODISCARD az_iot_connection_client_options az_iot_connection_client_options_d
   opts.identity_recovery.policy = az_iot_connection_client_get_default_identity_recovery_policy();
   opts.identity_recovery.mode = AZ_IOT_IDENTITY_RECOVERY_RETRY_HUB;
   opts.max_unconfirmed_delivery_timeout_ms = AZ_IOT_DEFAULT_MAX_UNCONFIRMED_DELIVERY_TIMEOUT_MS;
+  opts.csr_response_timeout_ms = AZ_IOT_DEFAULT_CSR_RESPONSE_TIMEOUT_MS;
   return opts;
 }
 
@@ -6833,6 +6859,10 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_init(
     client->opts.max_unconfirmed_delivery_timeout_ms
         = AZ_IOT_DEFAULT_MAX_UNCONFIRMED_DELIVERY_TIMEOUT_MS;
   }
+  if (client->opts.csr_response_timeout_ms == 0u)
+  {
+    client->opts.csr_response_timeout_ms = AZ_IOT_DEFAULT_CSR_RESPONSE_TIMEOUT_MS;
+  }
   client->opts.limits = limits;
   memset(client->opts.workspace, 0, workspace_size);
   workspace_assign(client, client->opts.workspace);
@@ -6900,11 +6930,18 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_init(
   return AZ_IOT_OK;
 }
 
-void az_iot_connection_client_deinit(az_iot_connection_client* client)
+az_iot_result az_iot_connection_client_deinit(az_iot_connection_client* client)
 {
   if (!client)
   {
-    return;
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  if (client->callback_depth > 0)
+  {
+    AZ_IOT_LOG_ERROR(
+        AZ_IOT_LOG_COMPONENT_CONNECTION,
+        "deinit: not callable from a callback; call after do_work()");
+    return AZ_IOT_ERR_BUSY;
   }
   /* Abandon pending QoS-1 acknowledgements WITHOUT completing them. On a
    * dropped session the callback is useful -- it tells the caller the publish
@@ -6926,6 +6963,8 @@ void az_iot_connection_client_deinit(az_iot_connection_client* client)
   {
     memset(&client->feature_observers[i], 0, sizeof(client->feature_observers[i]));
   }
+  /* And for an open certificate renewal. */
+  client->csr_op.in_use = false;
   release_material(client, AZ_IOT_CONN_SCOPE_DPS);
   release_material(client, AZ_IOT_CONN_SCOPE_HUB);
   teardown_active(client);
@@ -6935,6 +6974,7 @@ void az_iot_connection_client_deinit(az_iot_connection_client* client)
   az_iot_crypto__wipe(client->opts.workspace, client->opts.workspace_size);
   /* provisioned_iot_hub_hostname / provisioned_device_id are inline fixed buffers; nothing to free.
    */
+  return AZ_IOT_OK;
 }
 
 AZ_NODISCARD az_iot_result az_iot_connection_client_register_mqtt_factory(
@@ -7842,14 +7882,7 @@ static az_iot_result do_work_pass(az_iot_connection_client* client, uint32_t tim
    * slot is not stuck BUSY for the life of the connection. */
   if (client->csr_op.in_use && az_iot_time_mono_ms() >= client->csr_op.deadline_ms)
   {
-    az_iot_csr_callback cb = client->csr_op.cb;
-    void* uc = client->csr_op.user_ctx;
-    client->csr_op.in_use = false;
-    puback_abandon(client, &client->csr_op);
-    az_iot_csr_event evt;
-    csr_event_init(&evt, AZ_IOT_CSR_FAILED);
-    evt.status = AZ_IOT_ERR_TIMEOUT;
-    report_csr_event(client, cb, &evt, uc);
+    fail_open_csr(client, AZ_IOT_ERR_TIMEOUT);
   }
 
   /* Fail a stalled MQTTv5 presence (birth) handshake so a missing SUBACK or
@@ -9420,7 +9453,6 @@ static void drop_subscriptions_from_other_generations(az_iot_connection_client* 
 #define CSR_RES_PREFIX "$iothub/credentials/res/"
 #define CSR_RES_FILTER "$iothub/credentials/res/#"
 #define CSR_MAX_BASE64 8192 /* service cap: CSR <= 8 KB */
-#define CSR_OP_TIMEOUT_MS 120000u /* give up on a renewal with no terminal response after 2 min */
 
 /* Hub renewal request: publish topic + body formats. */
 #define CSR_RENEW_TOPIC_PREFIX "$iothub/credentials/POST/issueCertificate/?$rid="
@@ -9471,6 +9503,24 @@ static void report_csr_event(
     cb(evt, user_ctx);
     leave_callback(c);
   }
+}
+
+/** @brief Ends the open renewal with AZ_IOT_CSR_FAILED and @p status, freeing its slot first. */
+static void fail_open_csr(az_iot_connection_client* c, az_iot_result status)
+{
+  az_iot_csr_callback cb = c->csr_op.cb;
+  void* uc = c->csr_op.user_ctx;
+  c->csr_op.in_use = false;
+  puback_abandon(c, &c->csr_op);
+  AZ_IOT_LOG_WARNF(
+      AZ_IOT_LOG_COMPONENT_CONNECTION,
+      "certificate renewal request %s failed (%s)",
+      c->csr_op.request_id,
+      az_iot_result_to_string(status));
+  az_iot_csr_event evt;
+  csr_event_init(&evt, AZ_IOT_CSR_FAILED);
+  evt.status = status;
+  report_csr_event(c, cb, &evt, uc);
 }
 
 /**
@@ -9643,8 +9693,7 @@ static void csr_parse_error(az_span payload, csr_error_info* out)
 
 /**
  * @brief PUBACK for a renewal request. A rejection completes the operation now instead of at
- *        CSR_OP_TIMEOUT_MS. A session that ended first does not: the response may still arrive
- *        on the next one, as for a request acknowledged before the drop.
+ *        opts.csr_response_timeout_ms. NOT_CONNECTED is left to end_session(), which fails it.
  *
  * Cancel and timeout abandon the request's slot, so an ack that still matches one is always for
  * the open operation.
@@ -9656,18 +9705,7 @@ static void on_csr_puback(az_iot_result status, void* user_ctx)
   {
     return;
   }
-  az_iot_csr_callback cb = c->csr_op.cb;
-  void* uc = c->csr_op.user_ctx;
-  c->csr_op.in_use = false;
-  AZ_IOT_LOG_WARNF(
-      AZ_IOT_LOG_COMPONENT_CONNECTION,
-      "certificate renewal request %s rejected (%s)",
-      c->csr_op.request_id,
-      az_iot_result_to_string(status));
-  az_iot_csr_event evt;
-  csr_event_init(&evt, AZ_IOT_CSR_FAILED);
-  evt.status = status;
-  report_csr_event(c, cb, &evt, uc);
+  fail_open_csr(c, status);
 }
 
 /**
@@ -9761,7 +9799,7 @@ static void on_csr_response(void* user_ctx, const az_iot_mqtt_message* msg)
   {
     /* Accepted: signing in progress; keep the op open for the 200/error and
      * extend the deadline so a slow-but-alive signer is not timed out. */
-    c->csr_op.deadline_ms = az_iot_time_mono_ms() + CSR_OP_TIMEOUT_MS;
+    c->csr_op.deadline_ms = az_iot_time_mono_ms() + c->opts.csr_response_timeout_ms;
     evt.kind = AZ_IOT_CSR_ACCEPTED;
     evt.status = AZ_IOT_OK;
     report_csr_event(c, cb, &evt, uc);
@@ -9953,7 +9991,7 @@ static az_iot_result csr_publish(
   msg.qos = AZ_IOT_MQTT_QOS_1;
 
   client->csr_op.in_use = true;
-  client->csr_op.deadline_ms = az_iot_time_mono_ms() + CSR_OP_TIMEOUT_MS;
+  client->csr_op.deadline_ms = az_iot_time_mono_ms() + client->opts.csr_response_timeout_ms;
 
   az_iot_result r
       = az_iot_connection_client__publish(client, &client->csr_op, &msg, on_csr_puback, client);
