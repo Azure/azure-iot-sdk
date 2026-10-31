@@ -15,6 +15,7 @@ shows the mqttv3 route side by side; this is the feature where the generations d
 - mqttv5 asks before it calls: every invocation starts with a probe that names the method and carries the caller's timeout; only a device that accepts receives the arguments.
 - Methods are declared with `register_method()`. A probe for any other name is answered `METHOD_NOT_FOUND` by the SDK and never reaches the application.
 - The probe handler can decline a declared method with a reason (the caller gets `DEVICE_BUSY` instead of a timeout). This sample accepts every probe.
+- A payload larger than `AZ_IOT_MQTTV5_DM_RESULT_BODY_MAX` (512 bytes), the largest result the client sends, is answered 413 with no payload.
 - Platforms: Linux and Windows.
 
 ## Service requirements

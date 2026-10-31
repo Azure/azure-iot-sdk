@@ -62,6 +62,11 @@ typedef struct sample_config
       .connect_strings_size = SAMPLE_MQTT_CONNECT_STRINGS_SIZE,               \
   })
 
+/** @brief Largest payload a sample sends back from inbound data, such as a method echo: the send
+ * buffer less room for the topic and packet header. A sample answers a larger one with status 413
+ * (Paho builds too, so both behave alike). */
+#define SAMPLE_MQTT_ECHO_PAYLOAD_MAX (SAMPLE_MQTT_SEND_BUFFER_SIZE - 256u)
+
 /** @brief Bytes of a static workspace for one MQTT client of #SAMPLE_MQTT_LIMITS, for the
  * adapter this build of the sample uses. */
 #if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)

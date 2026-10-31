@@ -168,8 +168,30 @@ static void on_method_mqttv3(
   }
 
   printf("method '%s' invoked, %zu byte payload\n", method_name, payload_len);
-  (void)az_iot_mqttv3_direct_method_respond(
-      &ctx->state->mqttv3, request, STATUS_OK, payload, payload_len);
+
+  /* The echo must fit the MQTT send buffer with its topic; the arguments can be larger (up to
+   * the receive buffer). An answer that does not fit is refused and the request KEPT, so answer
+   * 413 rather than leave the caller waiting. */
+  int status = payload_len <= SAMPLE_MQTT_ECHO_PAYLOAD_MAX ? STATUS_OK : STATUS_PAYLOAD_TOO_LARGE;
+  az_iot_result result = az_iot_mqttv3_direct_method_respond(
+      &ctx->state->mqttv3,
+      request,
+      status,
+      status == STATUS_OK ? payload : NULL,
+      status == STATUS_OK ? payload_len : 0);
+  if (result == AZ_IOT_ERR_NOT_ENOUGH_SPACE)
+  {
+    status = STATUS_PAYLOAD_TOO_LARGE;
+    result = az_iot_mqttv3_direct_method_respond(&ctx->state->mqttv3, request, status, NULL, 0);
+  }
+  if (result != AZ_IOT_OK)
+  {
+    printf("response was not sent: %s\n", az_iot_result_to_string(result));
+  }
+  else if (status != STATUS_OK)
+  {
+    printf("payload larger than %u bytes: answered %d\n", SAMPLE_MQTT_ECHO_PAYLOAD_MAX, status);
+  }
 }
 
 /* ---- MQTTv5 (mqttv5) ------------------------------------------------------------ */
