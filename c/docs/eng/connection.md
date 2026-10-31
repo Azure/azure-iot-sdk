@@ -363,14 +363,16 @@ Which ladder a retry climbs is the scope of the **next attempt**, which is not a
 the failure: a hub failure retried as a re-registration (threshold crossed, or
 a CONNACK refusal in `REPROVISION` mode) climbs a DPS ladder. A hub identity refusal climbs a third,
 identity ladder on `opts.identity_recovery` (see [connection-c.md §5.2](connection-c.md#52-what-triggers-a-reconnect)).
+Until `HUB:CONNECTED`, refusals after a DPS assignment first climb a short ladder on
+`identity_recovery.after_assignment_policy`, since the new registration may not have reached the hub.
 
 Reset points differ per ladder:
 
 | Event | Effect |
 | --- | --- |
-| DPS registration succeeds | `DPS` and `HUB` reset; identity ladder untouched |
+| DPS registration succeeds | `DPS` and `HUB` reset; identity ladders untouched |
 | Hub CONNACK succeeds (birth-ack on MQTTv5) | `HUB` resets; `DPS` untouched |
-| `HUB:CONNECTED` | identity ladder resets |
+| `HUB:CONNECTED` | identity ladders reset |
 | `dps.max_hub_connect_attempts_before_reprovision` crossed | `DPS` resets, so the first registration attempt waits `initial_delay_ms` |
 | `open()` / `close()` | all ladders reset |
 
