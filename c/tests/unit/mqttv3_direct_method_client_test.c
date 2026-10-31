@@ -963,10 +963,6 @@ static void an_answer_too_large_for_the_adapter_can_be_sent_again(void** state)
   inject_invocation(fx, 5);
   assert_true(rec.fired);
   az_iot_direct_method_request const retried = rec.request;
-  rec.fired = false;
-  inject_invocation(fx, 6);
-  assert_true(rec.fired);
-  az_iot_direct_method_request const unanswered = rec.request;
 
   static const uint8_t large[] = "{\"large\":true}";
   az_iot_mock_mqtt_client_set_next_result(
@@ -981,6 +977,10 @@ static void an_answer_too_large_for_the_adapter_can_be_sent_again(void** state)
   assert_non_null(answer);
   assert_string_equal(answer->topic, "$iothub/methods/res/200/?$rid=5");
 
+  rec.fired = false;
+  inject_invocation(fx, 6);
+  assert_true(rec.fired);
+  az_iot_direct_method_request const unanswered = rec.request;
   az_iot_mock_mqtt_client_set_next_result(
       fx->mock, AZ_IOT_MOCK_CALL_PUBLISH, AZ_IOT_ERR_NOT_ENOUGH_SPACE);
   assert_int_equal(
