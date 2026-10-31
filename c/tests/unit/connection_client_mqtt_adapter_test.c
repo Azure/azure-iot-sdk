@@ -131,6 +131,7 @@ static void assert_adapter_stats(size_t built, size_t live)
   az_iot_mock_mqtt_adapter_stats stats = az_iot_mock_mqtt_adapter_get_stats();
   assert_int_equal(stats.built, built);
   assert_int_equal(stats.live, live);
+  assert_int_equal(stats.destroyed, built - live);
   assert_int_equal(stats.max_live, 1);
 }
 
@@ -358,6 +359,70 @@ static void a_provisioning_session_beside_the_hub_session_is_refused_busy(void**
   az_iot_connection_client__dps_user_release(&fx->client);
 }
 
+static void a_failed_hub_connect_releases_the_workspace_for_the_retry(void** state)
+{
+  adapter_fixture* fx = (adapter_fixture*)*state;
+  az_iot_connection_client_options opts = direct_options();
+  with_retries(&opts);
+  init_with_mock_adapter(fx, opts);
+  assert_int_equal(az_iot_connection_client_open(&fx->client), AZ_IOT_OK);
+  az_iot_mock_mqtt_client* slot = az_iot_mock_mqtt_adapter_last_client();
+  assert_true(az_iot_mock_mqtt_client_inject_connected(slot, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(&fx->client, 0);
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(slot));
+  (void)az_iot_connection_client_do_work(&fx->client, 0);
+
+  /* The reconnect's client fails connect(): destroyed once, the workspace released. */
+  az_iot_mock_mqtt_adapter_fail_next_connect(AZ_IOT_ERR_TLS);
+  az_iot_test_wait_until_ms(fx->client.reconnect_due_ms);
+  (void)az_iot_connection_client_do_work(&fx->client, 0);
+  assert_int_equal(az_iot_mock_mqtt_client_count_of(slot, AZ_IOT_MOCK_CALL_CONNECT), 1);
+  assert_int_equal(az_iot_mock_mqtt_client_count_of(slot, AZ_IOT_MOCK_CALL_DESTROY), 1);
+  assert_null(fx->client.active_client);
+  assert_null(fx->client.mqtt_workspace_client);
+  assert_adapter_stats(2, 0);
+  size_t failed = last_event_on(&fx->log, AZ_IOT_CONN_SCOPE_HUB);
+  assert_int_equal(fx->log.states[failed], AZ_IOT_CONN_STATE_RETRY_PENDING);
+  assert_local_error(&fx->log, failed, AZ_IOT_ERR_TLS, "MQTT adapter connect() failed");
+
+  /* The next retry builds its client in the same workspace and connects. */
+  az_iot_test_wait_until_ms(fx->client.reconnect_due_ms);
+  (void)az_iot_connection_client_do_work(&fx->client, 0);
+  assert_ptr_equal(az_iot_mock_mqtt_adapter_last_client(), slot);
+  assert_ptr_equal(fx->client.active_client, slot);
+  assert_adapter_stats(3, 1);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(slot, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(&fx->client, 0);
+  assert_int_equal(
+      az_iot_connection_client_get_state(&fx->client, AZ_IOT_CONN_SCOPE_HUB),
+      AZ_IOT_CONN_STATE_CONNECTED);
+}
+
+static void a_failed_dps_connect_releases_the_workspace_for_the_retry(void** state)
+{
+  adapter_fixture* fx = (adapter_fixture*)*state;
+  init_with_mock_adapter(fx, dps_options());
+
+  /* The DPS client fails connect(): destroyed once, the workspace released. */
+  az_iot_mock_mqtt_adapter_fail_next_connect(AZ_IOT_ERR_TLS);
+  assert_int_equal(az_iot_connection_client_open(&fx->client), AZ_IOT_ERR_TLS);
+  assert_null(fx->client.dps_mqtt);
+  assert_null(fx->client.mqtt_workspace_client);
+  assert_adapter_stats(1, 0);
+  size_t failed = last_event_on(&fx->log, AZ_IOT_CONN_SCOPE_DPS);
+  assert_int_equal(fx->log.states[failed], AZ_IOT_CONN_STATE_IDLE);
+  assert_local_error(&fx->log, failed, AZ_IOT_ERR_TLS, "MQTT adapter connect() failed");
+
+  /* The retry registers in the same workspace, and the hub session follows it there. */
+  az_iot_mock_mqtt_client* dps = register_to_the_assigned_hub(fx);
+  assert_in_mqtt_workspace(fx, dps, sizeof(az_iot_mqtt_client));
+  az_iot_mock_mqtt_client* hub = az_iot_mock_mqtt_adapter_last_client();
+  assert_ptr_equal(hub, dps);
+  assert_ptr_equal(fx->client.active_client, hub);
+  assert_connects_to(hub, "myhub.azure-devices.net");
+  assert_adapter_stats(3, 1);
+}
+
 static void deinit_wipes_the_mqtt_workspace(void** state)
 {
   adapter_fixture* fx = (adapter_fixture*)*state;
@@ -489,6 +554,10 @@ int main(void)
         a_hub_session_beside_a_held_provisioning_session_is_refused_busy, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_provisioning_session_beside_the_hub_session_is_refused_busy, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_failed_hub_connect_releases_the_workspace_for_the_retry, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_failed_dps_connect_releases_the_workspace_for_the_retry, setup, teardown),
     cmocka_unit_test_setup_teardown(deinit_wipes_the_mqtt_workspace, setup, teardown),
     cmocka_unit_test_setup_teardown(adapter_init_errors_fail_the_start, setup, teardown),
 #ifdef AZ_IOT_TEST_WITH_AZ_MQTT_ADAPTER

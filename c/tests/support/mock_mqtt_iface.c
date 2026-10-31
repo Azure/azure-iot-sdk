@@ -79,6 +79,9 @@ typedef struct az_iot_mock_mqtt_factory_state
 /* The mock adapter's clients: the newest still alive, and its counts. */
 static az_iot_mock_mqtt_client* s_adapter_last_client;
 static az_iot_mock_mqtt_adapter_stats s_adapter_stats;
+/* One-shot CONNECT failure for the next client the mock adapter builds. */
+static bool s_adapter_fail_next_connect;
+static az_iot_result s_adapter_next_connect_result;
 
 /* ------------------------------------------------------------------------- */
 /* helpers                                                                   */
@@ -447,6 +450,7 @@ static void mock_destroy(az_iot_mqtt_client* self)
     {
       s_adapter_last_client = NULL;
     }
+    s_adapter_stats.destroyed++;
     s_adapter_stats.live--;
     return;
   }
@@ -585,6 +589,12 @@ static az_iot_result mock_adapter_init(
   memset(m, 0, sizeof(*m));
   mock_client_setup(m, mqtt_version);
   m->in_workspace = true;
+  if (s_adapter_fail_next_connect)
+  {
+    s_adapter_fail_next_connect = false;
+    m->has_override[AZ_IOT_MOCK_CALL_CONNECT] = true;
+    m->override_result[AZ_IOT_MOCK_CALL_CONNECT] = s_adapter_next_connect_result;
+  }
   s_adapter_last_client = m;
   s_adapter_stats.built++;
   s_adapter_stats.live++;
@@ -614,6 +624,13 @@ void az_iot_mock_mqtt_adapter_reset(void)
 {
   s_adapter_last_client = NULL;
   memset(&s_adapter_stats, 0, sizeof(s_adapter_stats));
+  s_adapter_fail_next_connect = false;
+}
+
+void az_iot_mock_mqtt_adapter_fail_next_connect(az_iot_result result)
+{
+  s_adapter_fail_next_connect = true;
+  s_adapter_next_connect_result = result;
 }
 
 /* ------------------------------------------------------------------------- */

@@ -173,14 +173,20 @@ extern "C"
   typedef struct az_iot_mock_mqtt_adapter_stats
   {
     size_t built; /**< Built by init(). */
+    size_t destroyed; /**< Destroyed by destroy(). */
     size_t live; /**< Built and not destroyed. */
     size_t max_live; /**< Most live at once. */
   } az_iot_mock_mqtt_adapter_stats;
 
   az_iot_mock_mqtt_adapter_stats az_iot_mock_mqtt_adapter_get_stats(void);
 
-  /** @brief Clears the stats and last client; call with no client of the adapter alive. */
+  /** @brief Clears the stats, last client and armed failure; call with no client of the adapter
+   * alive. */
   void az_iot_mock_mqtt_adapter_reset(void);
+
+  /** @brief Arms a one-shot CONNECT failure with @p result on the next client the mock adapter
+   * builds, as az_iot_mock_mqtt_factory_fail_next_connect() does for a factory. */
+  void az_iot_mock_mqtt_adapter_fail_next_connect(az_iot_result result);
 
   /* Value of the User Property named `key` on a recorded call, or NULL if the
    * call did not carry one. */
