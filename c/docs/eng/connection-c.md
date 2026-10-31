@@ -534,7 +534,7 @@ checked before backoff is scheduled.
 | Software updates workflow state | Yes | Owned by the software updates engine and persisted, so an install survives a reconnect and a reboot. |
 | Reconnect attempt counter | Reset on success | Incremented per failed attempt. |
 | In-flight QoS 1 PUBACKs | No | Packet ids belong to the destroyed adapter; callers must re-send. |
-| Twin GET/PATCH, method responses, telemetry in flight | No | Feature clients must re-issue. |
+| Twin GET/PATCH, method responses, telemetry in flight | No | Feature clients must re-issue; the twin clients send an unanswered GET again on the next session and fail a reported patch with `AZ_IOT_ERR_NOT_CONNECTED`. |
 | MQTTv3 desired-property patches sent while disconnected | No | IoT Hub does not queue them, and the SDK does not fetch the twin on reconnect. The application calls `az_iot_mqttv3_twin_client_get()` if it needs the current desired state. |
 | Software updates status report not yet acked | Terminal: yes | Retried until the service accepts or permanently rejects it; idempotent on `workflowId`. After repeated DPS session loss it is abandoned for the process. A terminal report stays owed (in durable storage when persistence is configured) and is re-sent later (next device-properties update, or after restart and resume); an in-progress report is not replayed, the next reporting point sends current state. |
 | Presence (birth) phase | No | Restarted with a freshly generated nonce. |

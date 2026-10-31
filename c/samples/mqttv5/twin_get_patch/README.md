@@ -14,7 +14,7 @@ a property (PATCH), and closes. For a device that must serve either generation, 
 - Builds its client before `open()`: an mqttv5 client records the generation it needs instead of reading it from a live connection.
 - GET returns the desired and reported sections separately, each with its own version.
 - PATCH reports the service's verdict as well as a transport status. A patch can complete and still be refused (another writer moved the version first), so the run succeeds only when the verdict is OK.
-- The client encodes patches into an application-supplied buffer and needs its own `az_iot_mqttv5_twin_client_do_work()` in the pump.
+- The client encodes patches into an application-supplied buffer. `az_iot_connection_client_do_work()` times its requests out.
 - Platforms: Linux and Windows.
 
 ## Service requirements
@@ -111,4 +111,3 @@ patch_reported: done=1 status=AZ_IOT_OK verdict=1 version=2
 | Create the client, encode buffer, desired handler | `az_iot_mqttv5_twin_client_init()`, `az_iot_mqttv5_twin_client_set_encode_buffer()`, `az_iot_mqttv5_twin_client_set_desired_handler()` |
 | GET | `az_iot_mqttv5_twin_client_get()`, `on_get()` |
 | PATCH and its verdict | `az_iot_mqttv5_twin_client_patch_reported()`, `on_patch()` |
-| Pump the twin client | `az_iot_mqttv5_twin_client_do_work()` |
