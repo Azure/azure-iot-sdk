@@ -157,6 +157,21 @@ target_link_libraries(az_iot_tests_e2e_amqp_telemetry PRIVATE
 add_subdirectory(service)
 
 # ---------------------------------------------------------------------------
+# az_iot_tests_e2e_esp32_qemu: the ESP32 IoT Hub sample (samples/unified/esp32) in QEMU, started by
+# E2E_ESP32_QEMU_COMMAND, against the e2e hub. The service side is az_iot_e2e_service; the device
+# is the firmware, so no SDK adapter is linked here.
+# ---------------------------------------------------------------------------
+if(AZ_IOT_BUILD_E2E_ESP32_QEMU)
+    if(NOT UNIX)
+        message(FATAL_ERROR "AZ_IOT_BUILD_E2E_ESP32_QEMU=ON needs a POSIX host (it starts QEMU)")
+    endif()
+    az_iot_add_cmocka_test(az_iot_tests_e2e_esp32_qemu tests/e2e_esp32_qemu_test.c)
+    target_link_libraries(az_iot_tests_e2e_esp32_qemu PRIVATE az_iot_e2e_service)
+    # DPS, TLS and MQTT run emulated: minutes, not seconds.
+    set_tests_properties(az_iot_tests_e2e_esp32_qemu PROPERTIES TIMEOUT 1200)
+endif()
+
+# ---------------------------------------------------------------------------
 # az_iot_tests_e2e
 #
 # The in-process end-to-end suite: ONE cmocka executable that plays both the
