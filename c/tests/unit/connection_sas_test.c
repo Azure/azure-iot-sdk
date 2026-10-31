@@ -2653,6 +2653,56 @@ static void a_user_token_renewal_waits_for_the_token_connected(void** state)
   assert_int_equal(g_fake.calls, 2);
 }
 
+/* A user token's expiry is recorded for the session it connects, by both clocks, and a renewal
+ * whose replacement arrives near that expiry settles no longer than the old token lives: here 1 s
+ * by Unix time, then 300 ms by the monotonic clock. */
+static void a_user_token_renewal_settles_no_longer_than_the_old_token_lives(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  uint64_t now = NOW;
+  az_iot_connection_client_options opts = user_token_hub_options(fx, FAKE_TOKEN_SUPPLY);
+  opts.unix_time.get_time = switchable_time;
+  opts.unix_time.user_ctx = &now;
+  uint64_t const before = az_iot_time_mono_ms();
+  init_and_open(fx, &opts);
+  pump(fx, 1);
+  connack(fx, AZ_IOT_OK);
+  assert_int_equal(fx->client.state[AZ_IOT_CONN_SCOPE_HUB], AZ_IOT_CONN_STATE_CONNECTED);
+  assert_true(fx->client.hub_session_token_expiry_ms >= before + 99000u);
+  assert_true(fx->client.hub_session_token_expiry_ms <= az_iot_time_mono_ms() + 100000u);
+  assert_int_equal(fx->client.hub_session_token_expiry_unix_seconds, NOW + 100u);
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  int acks = 0;
+  (void)publish_awaiting_puback(fx, &acks);
+
+  g_fake.mode = FAKE_TOKEN_LATER;
+  fx->client.sas_token_renewal_due_ms[AZ_IOT_CONN_SCOPE_HUB] = az_iot_time_mono_ms();
+  pump(fx, 3);
+  now = NOW + 99u;
+  assert_int_equal(supply_user_token(fx, AZ_IOT_CONN_SCOPE_HUB), AZ_IOT_OK);
+  pump(fx, 1);
+  assert_int_equal(fx->client.hub_session_token_expiry_unix_seconds, NOW + 100u);
+  assert_true(az_iot_connection_client__holds_sends_for_session_end(&fx->client));
+  assert_int_equal(az_iot_mock_mqtt_client_count_of(m, AZ_IOT_MOCK_CALL_DISCONNECT), 0);
+  assert_true(
+      az_iot_deadline__remaining_ms(
+          &fx->client.planned_hub_session_end.drain_deadline, az_iot_time_mono_ms())
+      <= 1000u);
+
+  /* The same renewal, the monotonic clock this time: 300 ms left on the old token. */
+  az_iot_deadline__clear(&fx->client.planned_hub_session_end.drain_deadline);
+  fx->client.sas_token_renewal_in_progress[AZ_IOT_CONN_SCOPE_HUB] = false;
+  now = NOW;
+  fx->client.hub_session_token_expiry_ms = az_iot_time_mono_ms() + 300u;
+  assert_int_equal(supply_user_token(fx, AZ_IOT_CONN_SCOPE_HUB), AZ_IOT_OK);
+  pump(fx, 1);
+  assert_int_equal(az_iot_mock_mqtt_client_count_of(m, AZ_IOT_MOCK_CALL_DISCONNECT), 0);
+  assert_true(
+      az_iot_deadline__remaining_ms(
+          &fx->client.planned_hub_session_end.drain_deadline, az_iot_time_mono_ms())
+      <= 300u);
+}
+
 /* A renewal token that expired before do_work() used it: the session stays
  * up, and the token is asked for again. */
 static void an_expired_renewal_token_is_asked_again(void** state)
@@ -4100,6 +4150,8 @@ int main(void)
     cmocka_unit_test_setup_teardown(a_rejected_user_token_ends_the_pass, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_user_token_renewal_waits_for_the_token_connected, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_user_token_renewal_settles_no_longer_than_the_old_token_lives, setup, teardown),
     cmocka_unit_test_setup_teardown(an_expired_renewal_token_is_asked_again, setup, teardown),
     cmocka_unit_test_setup_teardown(an_unasked_token_renews_the_connected_hub, setup, teardown),
     cmocka_unit_test_setup_teardown(an_unasked_token_does_not_renew_a_key_session, setup, teardown),
