@@ -296,8 +296,10 @@ extern "C"
      * reprovisions needs its check held on that session too. */
     bool wants_hold;
 
-    /* Standing interest in the provisioning session itself, so one can be
-     * opened on demand after the device has provisioned. Distinct from
+    /* Interest in the provisioning session itself, held only while the channel
+     * has work for it (a request outstanding or waiting for a session, or the
+     * pre-registration check owed on a registration under way): the hub
+     * session is paused while a provisioning session is up. Distinct from
      * wants_hold, which only delays a registration that is about to happen. */
     bool holds_user;
 

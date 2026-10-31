@@ -4,6 +4,16 @@
 
 ### Features Added
 
+- Breaking: the connection client runs one MQTT session at a time; the provisioning session and the
+  hub session no longer overlap. With software updates bound, the hub connect after registration
+  waits while the update check still needs the provisioning session, then connects to the assigned
+  hub without registering again. After registration, each update check or status report made while
+  the hub is connected ends the hub session and the hub reconnects to its assignment once the
+  software updates client has no work left: the hub scope reports `RETRY_PENDING` with reason
+  `AZ_IOT_OK` (`is_credential_renewal` false, no `recovery`), and feature clients see an ordinary
+  session end (`AZ_IOT_CONNECTION_SESSION_END_PLANNED`) and resume after it. These planned ends do not
+  count toward reconnection backoff or `dps.max_hub_connect_attempts_before_reprovision`. Creating
+  an MQTT client for one session while the other's exists fails with `AZ_IOT_ERR_INTERNAL`.
 - Breaking: `az_iot_subscription_failed_callback` takes the refused SUBACK's MQTT 5 Reason String
   (`reason_string`, `reason_string_len`, after `protocol_code`). On a session-scoped filter the
   Reason String is reported as `az_iot_connection_state_event.error->message`. Both adapters report

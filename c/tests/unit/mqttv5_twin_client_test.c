@@ -2332,6 +2332,54 @@ static void a_session_end_drops_the_snapshot_and_reconnect_refetches(void** stat
   assert_int_equal(rec.version, 3);
 }
 
+/* A hub session ended for a provisioning session (a software update check) is
+ * an ordinary session end: the snapshot is dropped, and the hub session that
+ * reconnects afterwards fetches it again. */
+static void a_session_ended_for_a_provisioning_session_refetches_after_reconnect(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  fx->conn.opts.dps.id_scope = "0ne00000000";
+  fx->conn.opts.dps.registration_id = "ut-device";
+  az_iot_mqtt_factory* dps_factory = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
+  assert_non_null(dps_factory);
+  assert_int_equal(
+      az_iot_connection_client_register_mqtt_factory(&fx->conn, dps_factory), AZ_IOT_OK);
+  open_to_connected(fx);
+  desired_record rec = { 0 };
+  set_desired(fx, &rec);
+  inject_desired(fx, 3, "{}");
+  const az_iot_mock_call* first = last_get(fx);
+  uint8_t stale_corr[16];
+  memcpy(stale_corr, first->correlation_data, sizeof(stale_corr));
+
+  /* The hub session ends first; the provisioning session opens once it is gone. */
+  assert_int_equal(az_iot_connection_client__dps_user_acquire(&fx->conn), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client__dps_session_ensure(&fx->conn), AZ_IOT_ERR_BUSY);
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(fx->mock));
+  assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
+  assert_null(fx->conn.active_client);
+  assert_non_null(fx->conn.dps_mqtt);
+  assert_null(az_iot_mock_mqtt_factory_last_client(fx->factory));
+
+  /* Released: the hub session reconnects and the twin resumes. */
+  az_iot_connection_client__dps_user_release(&fx->conn);
+  assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
+  assert_null(fx->conn.dps_mqtt);
+  fx->mock = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  assert_non_null(fx->mock);
+  open_to_birth_ack_after_open(fx, 3, 0);
+  az_iot_test_ack_subscriptions(&fx->conn, fx->mock);
+  assert_non_null(find_subscribe(fx->mock, "ih/ut-device/dev/#"));
+  const uint8_t late[] = { 0x08, 0x03, 0x1A, 0x02, '{', '}' };
+  inject_twin(fx, "get-response:1", stale_corr, late, sizeof(late));
+  assert_false(rec.fired);
+
+  answer_last_get(fx, 3, "{\"s\":3}");
+  assert_int_equal(rec.kind, AZ_IOT_MQTTV5_TWIN_DESIRED_SNAPSHOT);
+  assert_int_equal(rec.version, 3);
+  az_iot_mock_mqtt_factory_destroy(dps_factory);
+}
+
 /* ------------------------------------------------------------------------- */
 /* versions across connections                                               */
 /* ------------------------------------------------------------------------- */
@@ -3475,6 +3523,8 @@ int main(void)
         set_request_timeout_and_do_work_reject_a_null_client, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_session_end_drops_the_snapshot_and_reconnect_refetches, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_session_ended_for_a_provisioning_session_refetches_after_reconnect, setup, teardown),
     cmocka_unit_test_setup_teardown(
         concurrent_get_and_patch_correlate_independently, setup, teardown),
     cmocka_unit_test_setup_teardown(

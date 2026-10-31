@@ -18,8 +18,9 @@
  * arrive on the provisioning subscription the connection client already
  * establishes, which is why this channel adds no subscription of its own.
  *
- * Both routes are implemented. After registration the channel keeps, or opens
- * on demand, a provisioning session for the operational route.
+ * Both routes are implemented. After registration the channel opens a
+ * provisioning session on demand for the operational route, holding it only
+ * while it has work: the connection client pauses the hub session meanwhile.
  */
 
 #include <string.h>
@@ -157,7 +158,40 @@ static az_iot_result channel_observe(az_iot_su_channel_dps* c)
  */
 static az_iot_result channel_observe_deferred(az_iot_su_channel_dps* c)
 {
-  return c->holds_user ? channel_observe(c) : AZ_IOT_OK;
+  return c->update_cb != NULL ? channel_observe(c) : AZ_IOT_OK;
+}
+
+/**
+ * @brief Take an interest in the provisioning session, once, while there is
+ * work for it.
+ *
+ * @param c The channel.
+ * @return AZ_IOT_OK if held. Otherwise the connection client's error.
+ */
+static az_iot_result hold_session_interest(az_iot_su_channel_dps* c)
+{
+  if (c->holds_user)
+  {
+    return AZ_IOT_OK;
+  }
+  az_iot_result r = az_iot_connection_client__dps_user_acquire(c->connection);
+  c->holds_user = r == AZ_IOT_OK;
+  return r;
+}
+
+/**
+ * @brief Give up the interest in the provisioning session, so it ends and the
+ * hub session resumes.
+ *
+ * @param c The channel.
+ */
+static void release_session_interest(az_iot_su_channel_dps* c)
+{
+  if (c->holds_user)
+  {
+    c->holds_user = false;
+    az_iot_connection_client__dps_user_release(c->connection);
+  }
 }
 
 /**
@@ -287,6 +321,12 @@ static az_iot_result publish_operation(
   msg.payload = body;
   msg.payload_len = body_len;
 
+  /* Keeps the session up until the response arrives. */
+  r = hold_session_interest(c);
+  if (r != AZ_IOT_OK)
+  {
+    return r;
+  }
   r = az_iot_connection_client__dps_publish(c->connection, &msg);
   if (r != AZ_IOT_OK)
   {
@@ -627,21 +667,6 @@ static az_iot_result channel_open(
   c->wants_hold = true;
   c->exchange_done = false;
 
-  /* Standing interest in the provisioning session, so one can be opened on
-   * demand after the device has provisioned. Without it every operation after
-   * registration has nothing to publish on. Released at close. */
-  az_iot_result ur = az_iot_connection_client__dps_user_acquire(c->connection);
-  if (ur != AZ_IOT_OK)
-  {
-    /* Reported rather than swallowed: without the interest every operation
-     * after registration would fail with no indication why. */
-    AZ_IOT_LOG_ERROR(
-        AZ_IOT_LOG_COMPONENT_SU, "could not register interest in the provisioning session");
-    az_iot_connection_client__set_dps_message_observer(c->connection, NULL, NULL);
-    return ur;
-  }
-  c->holds_user = true;
-
   /* How the channel learns that its session was replaced, or that the
    * connection settled in a fault. BUSY is retried later
    * (channel_observe_deferred()); anything else refuses the bind. */
@@ -650,8 +675,7 @@ static az_iot_result channel_open(
   {
     AZ_IOT_LOG_ERROR(AZ_IOT_LOG_COMPONENT_SU, "could not observe the connection state");
     c->wants_hold = false;
-    c->holds_user = false;
-    az_iot_connection_client__dps_user_release(c->connection);
+    c->update_cb = NULL;
     az_iot_connection_client__set_dps_message_observer(c->connection, NULL, NULL);
     return sr;
   }
@@ -669,8 +693,7 @@ static az_iot_result channel_open(
       az_iot_connection_client__remove_feature_observer(c->connection, on_connection_state, c);
     }
     c->wants_hold = false;
-    c->holds_user = false;
-    az_iot_connection_client__dps_user_release(c->connection);
+    c->update_cb = NULL;
     az_iot_connection_client__set_dps_message_observer(c->connection, NULL, NULL);
     return hr;
   }
@@ -712,11 +735,7 @@ static void channel_close(void* ctx)
     c->observes_state = false;
     az_iot_connection_client__remove_feature_observer(c->connection, on_connection_state, c);
   }
-  if (c->holds_user)
-  {
-    c->holds_user = false;
-    az_iot_connection_client__dps_user_release(c->connection);
-  }
+  release_session_interest(c);
   /* The standing interest ends with the binding, so a closed channel cannot
    * hold a later session hostage. */
   c->wants_hold = false;
@@ -1028,18 +1047,23 @@ static az_iot_result channel_do_work(void* ctx)
     /* Nothing to ask for until close(); the demand is raised again after it. */
     c->wants_session = false;
   }
-  else if (c->holds_user && had_work && !retry_after_in_force(c))
+  else if (c->update_cb != NULL && had_work && !retry_after_in_force(c))
   {
     /* Not fatal, so the tick continues either way -- but not silent. BUSY is
-     * the ordinary answer (a session is coming up, ask again next tick);
-     * anything else means no session will appear, and without a line here an
-     * operation that never goes out has no explanation in the log.
+     * the ordinary answer (a session is coming up, or the hub session is being
+     * ended for it: ask again next tick); anything else means no session will
+     * appear, and without a line here an operation that never goes out has no
+     * explanation in the log.
      *
      * Latched, because this runs at the application's pump frequency and the
      * demand is not cleared until a session is ready: a persistent refusal
      * would otherwise emit one line per tick, for ever. One line per failure
      * episode is what has diagnostic value; the repeats carry nothing. */
-    az_iot_result er = az_iot_connection_client__dps_session_ensure(c->connection);
+    az_iot_result er = hold_session_interest(c);
+    if (er == AZ_IOT_OK)
+    {
+      er = az_iot_connection_client__dps_session_ensure(c->connection);
+    }
     if (er != AZ_IOT_OK && er != AZ_IOT_ERR_BUSY)
     {
       ensure_failed = true;
@@ -1075,6 +1099,22 @@ static az_iot_result channel_do_work(void* ctx)
     {
       c->holds_registration = true;
     }
+  }
+
+  /* Work keeps the session: a request outstanding or waiting for a session, or
+   * the pre-registration check still owed on a registration under way (the
+   * session is then kept across registration and the hub session waits for
+   * it). Without work the session ends and the hub session resumes; an
+   * operation the engine issues later in this tick takes the interest again
+   * before the connection client's next pass. */
+  if (c->wants_hold && !c->exchange_done
+      && az_iot_connection_client__dps_registration_pending(c->connection))
+  {
+    (void)hold_session_interest(c);
+  }
+  else if (!c->request_pending && !c->wants_session)
+  {
+    release_session_interest(c);
   }
   return sr;
 }

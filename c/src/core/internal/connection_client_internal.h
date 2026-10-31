@@ -327,15 +327,15 @@ extern "C"
   bool az_iot_connection_client__dps_hold_is_active(const az_iot_connection_client* client);
 
   /**
-   * @brief Take a standing interest in the provisioning session.
+   * @brief Take an interest in the provisioning session.
    *
    * The session exists exactly while somebody holds it -- these interests plus
    * the connection client's own registration ref -- so a holder keeps it alive
-   * across registration, and the last release ends it.
-   *
-   * Acquire at initialize, release at deinit. Distinct from the
-   * pre-registration hold, which delays a registration that is about to happen
-   * rather than asking for the session itself; a caller usually wants both.
+   * across registration, and the last release ends it. No hub session runs
+   * while it exists, so hold an interest only while there is work for the
+   * session. Distinct from the pre-registration hold, which delays a
+   * registration that is about to happen rather than asking for the session
+   * itself.
    *
    * @param[in] client The connection client. Must not be NULL.
    *
@@ -346,13 +346,13 @@ extern "C"
   az_iot_result az_iot_connection_client__dps_user_acquire(az_iot_connection_client* client);
 
   /**
-   * @brief Give up a standing interest taken with
+   * @brief Give up an interest taken with
    *        az_iot_connection_client__dps_user_acquire().
    *
    * Does not close the session, even when this is the last interest: this is
    * reachable from inside a message callback, where freeing the adapter would
    * free the object being dispatched on. az_iot_connection_client_do_work()
-   * closes it at a safe point.
+   * closes it at a safe point, then starts a hub session that waited for it.
    *
    * @param[in] client The connection client. NULL, and an interest count
    *                   already at zero, are both ignored.
@@ -383,12 +383,19 @@ extern "C"
    * users' messages, and registers only if the connection client separately
    * holds the registration ref, which az_iot_connection_client_open() raises.
    *
+   * The two sessions never coexist: a connected hub session is ended first (a
+   * planned end; feature clients see AZ_IOT_CONNECTION_SESSION_END_PLANNED) and
+   * waits at HUB:RETRY_PENDING, reason AZ_IOT_OK, until no provisioning session
+   * is in use. It then reconnects to the cached assignment, without
+   * registering.
+   *
    * @param[in] client The connection client. Must not be NULL.
    *
    * @return AZ_IOT_OK when a publish can be made now.
    * @retval AZ_IOT_ERR_INVALID_ARG @p client is NULL.
-   * @retval AZ_IOT_ERR_BUSY A session is coming up, or a retry is scheduled;
-   *         call again on a later tick.
+   * @retval AZ_IOT_ERR_BUSY A session is coming up, the hub session is being
+   *         ended or set up, or a retry is scheduled; call again on a later
+   *         tick.
    * @retval AZ_IOT_ERR_NOT_SUPPORTED The caller holds no interest, DPS is not
    *         configured, or a lifecycle has settled into FAULTED -- opening a
    *         session from there would drag it out of its terminal state and
