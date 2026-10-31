@@ -463,6 +463,11 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
                     _ = WaitForExpectedTwinPushAsync(connection, presenceOwner, connectNonce, twinPushWatch);
                     twinPushWatch = null;
                 }
+                else
+                {
+                    // IoT hub admitted this birth without needing to push the twin, so twin pushes have stopped failing.
+                    Volatile.Write(ref _twinPushTimeoutAttempt, 1);
+                }
             }
             finally
             {
@@ -550,7 +555,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
 
                     // Don't let the disconnect this causes cancel itself.
                     connection.DisconnectedAsync -= HandleConnectionLostAsync;
-                    await connection.DisconnectAsync(true, new MqttDisconnect() { Reason = MqttDisconnectReasonCode.NormalDisconnection, SessionExpiryInterval = 0 }, connectionLost.Token);
+                    await connection.DisconnectAsync(true, new MqttDisconnect() { Reason = MqttDisconnectReasonCode.NormalDisconnection }, connectionLost.Token);
                 }
             }
             catch (Exception e) when (e is OperationCanceledException || e is ObjectDisposedException)
@@ -596,10 +601,13 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
             {
                 MqttPublish publish = args.Publish;
                 if (publish.Topic.Equals(_topic, StringComparison.Ordinal)
-                    && publish.UserProperties.TryGetType(out string? messageType, out _)
+                    && publish.UserProperties.TryGetType(out string? messageType, out int? typeVersion)
                     && messageType.Equals("twin-push")
+                    && typeVersion == 1
                     && GuidExtensions.TryParseBytes(publish.CorrelationData, out Guid? receivedNonce)
-                    && receivedNonce.Value == _connectNonce)
+                    && receivedNonce.Value == _connectNonce
+                    // The twin client drops a malformed push, so only one it can apply counts as delivered.
+                    && Unified.Twin.TwinEngine.TryParseTwinPush(publish.PayloadAsReadOnlySequence, out _, out _, out _))
                 {
                     _received.TrySetResult();
                 }
