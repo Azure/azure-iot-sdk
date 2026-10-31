@@ -4,6 +4,12 @@
 
 ### Features Added
 
+- Certificate renewal: `az_iot_connection_client_options::csr_response_timeout_ms` sets how long
+  `az_iot_connection_client_send_csr()` waits for a terminal response (0: 120 s,
+  `AZ_IOT_DEFAULT_CSR_RESPONSE_TIMEOUT_MS`). A renewal open when the session ends (a drop or
+  `close()`) now fails with `AZ_IOT_CSR_FAILED` / `AZ_IOT_ERR_NOT_CONNECTED` instead of staying
+  open; resubmit it with the same request id once reconnected. `deinit()` calls no renewal
+  callback.
 - Connection client: on MQTT 5, the Reason String of a refused CONNACK or of a server DISCONNECT
   with a nonzero reason code is reported as `az_iot_connection_state_event.error->message` (source
   `AZ_IOT_CONN_ERR_SRC_MQTT`), truncated to `AZ_IOT_CONN_ERROR_MESSAGE_MAX` bytes.
