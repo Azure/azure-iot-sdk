@@ -25,6 +25,7 @@
  */
 #include <inttypes.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "esp_event.h"
@@ -83,6 +84,17 @@ static bool retry_wait_over(retry_wait* w)
   return !w->active;
 }
 
+/** @brief An mqttv3 method answer refused with AZ_IOT_ERR_BUSY (the connection still setting
+ * up), retried from the loop. */
+typedef struct
+{
+  bool active;
+  az_iot_direct_method_request request;
+  int status;
+  uint8_t* payload; /* owned copy; NULL when empty */
+  size_t length;
+} pending_method_answer;
+
 /** @brief The device: connection, the feature clients of one generation, and what is pending. */
 typedef struct
 {
@@ -102,6 +114,7 @@ typedef struct
   az_iot_connection_profile assigned_profile;
   bool telemetry_pending;
   uint32_t telemetry_sent;
+  pending_method_answer method_answer;
   bool twin_get_due; /* mqttv3: read the desired version once connected */
   retry_wait twin_get_retry;
   bool report_pending;
@@ -140,6 +153,9 @@ static void track_assignment(hub_device* d)
  */
 static void note_desired_version(hub_device* d, uint64_t version)
 {
+  /* First: an mqttv5 snapshot can arrive before hub CONNECTED, and a reset after it would drop
+   * it. */
+  track_assignment(d);
   if (version <= d->newest_desired_version)
   {
     ESP_LOGI(TAG, "desired version %" PRIu64 " is not newer; ignored", version);
@@ -366,6 +382,35 @@ static void report_desired_version(hub_device* d)
 
 /* ---- Direct methods ------------------------------------------------------- */
 
+/** @brief Drops the held mqttv3 method answer, if any. */
+static void drop_method_answer(hub_device* d)
+{
+  free(d->method_answer.payload);
+  d->method_answer = (pending_method_answer){ 0 };
+}
+
+/** @brief Sends the held mqttv3 method answer; keeps it while the connection is still setting up
+ * (AZ_IOT_ERR_BUSY), drops it otherwise (answered, timed out, or its session ended). */
+static void retry_method_answer(hub_device* d)
+{
+  pending_method_answer* a = &d->method_answer;
+  az_iot_result const r = az_iot_mqttv3_direct_method_respond(
+      &d->mqttv3_methods, a->request, a->status, a->payload, a->length);
+  if (r == AZ_IOT_ERR_BUSY)
+  {
+    return;
+  }
+  if (r == AZ_IOT_OK)
+  {
+    ESP_LOGI(TAG, "held method answer sent: %d", a->status);
+  }
+  else
+  {
+    ESP_LOGW(TAG, "method answer dropped: %s", az_iot_result_to_string(r));
+  }
+  drop_method_answer(d);
+}
+
 static void on_method_mqttv3(
     az_iot_direct_method_request request,
     const char* method_name,
@@ -374,25 +419,32 @@ static void on_method_mqttv3(
     void* user_ctx)
 {
   hub_device* d = (hub_device*)user_ctx;
-  bool const echo = method_name != NULL && strcmp(method_name, ECHO_METHOD) == 0;
+  const char* const name = method_name ? method_name : "";
+  bool const echo = strcmp(name, ECHO_METHOD) == 0;
   bool const fits = length <= MQTTV3_ECHO_PAYLOAD_MAX;
   int const status = !echo ? 404 : fits ? 200 : 413;
+  size_t const answer_length = status == 200 ? length : 0;
   az_iot_result const r = az_iot_mqttv3_direct_method_respond(
-      &d->mqttv3_methods,
-      request,
-      status,
-      status == 200 ? payload : NULL,
-      status == 200 ? length : 0);
-  if (r != AZ_IOT_OK)
+      &d->mqttv3_methods, request, status, answer_length > 0 ? payload : NULL, answer_length);
+  if (r == AZ_IOT_OK)
   {
-    ESP_LOGW(
-        TAG,
-        "method '%s' not answered: %s",
-        method_name ? method_name : "",
-        az_iot_result_to_string(r));
+    ESP_LOGI(TAG, "method '%s' answered %d", name, status);
     return;
   }
-  ESP_LOGI(TAG, "method '%s' answered %d", method_name ? method_name : "", status);
+  // BUSY: the connection is still setting up and the request stays answerable; hold one answer.
+  uint8_t* copy = NULL;
+  if (r != AZ_IOT_ERR_BUSY || d->method_answer.active
+      || (answer_length > 0 && (copy = malloc(answer_length)) == NULL))
+  {
+    ESP_LOGW(TAG, "method '%s' not answered: %s", name, az_iot_result_to_string(r));
+    return;
+  }
+  if (copy != NULL)
+  {
+    memcpy(copy, payload, answer_length);
+  }
+  d->method_answer = (pending_method_answer){ true, request, status, copy, answer_length };
+  ESP_LOGI(TAG, "method '%s': answer held until the connection is ready", name);
 }
 
 /* Only called for ECHO_METHOD: mqttv5 refuses undeclared names before they reach the device. */
@@ -436,6 +488,7 @@ static void destroy_clients(hub_device* d)
     az_iot_mqttv3_telemetry_client_deinit(&d->mqttv3_telemetry);
   }
   d->clients_built = false;
+  drop_method_answer(d); // Not answerable by the next clients.
   d->telemetry_pending = false; // Lost with the old clients.
   d->report_pending = false;
   d->twin_get_due = false;
@@ -609,6 +662,10 @@ void app_main(void)
     if (d->faulted)
     {
       restart("connection faulted"); // Settled until close(): nothing more would be sent.
+    }
+    if (d->method_answer.active)
+    {
+      retry_method_answer(d); // Also drops it once unanswerable, connected or not.
     }
     if (d->hub_state != AZ_IOT_CONN_STATE_CONNECTED)
     {
