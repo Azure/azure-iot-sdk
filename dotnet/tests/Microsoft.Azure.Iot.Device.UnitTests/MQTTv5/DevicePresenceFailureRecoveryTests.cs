@@ -335,6 +335,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
         [InlineData("unsupported-type-version")]
         [InlineData("malformed-protobuf")]
         [InlineData("malformed-section")]
+        [InlineData("stale-nonce")]
         public async Task UnusableTwinPushDoesNotSatisfyExpectedTwinPush(string defect)
         {
             using MockConnectionMqttClient mockMqttClient = new();
@@ -346,13 +347,17 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
                     MqttPublish push = new()
                     {
                         Topic = "ih/someDeviceId/dev/twin",
-                        CorrelationData = publish.CorrelationData,
+                        CorrelationData = defect == "stale-nonce" ? Guid.NewGuid().ToByteArray(bigEndian: true) : publish.CorrelationData,
                         Payload = defect switch
                         {
                             "malformed-protobuf" => new byte[] { 0xFF, 0xFF, 0xFF },
                             "malformed-section" => new Device.Models.Twin.TwinPush()
                             {
                                 Desired = new Device.Models.Twin.Section { Version = 3, Payload = ByteString.CopyFromUtf8("not json") },
+                            }.ToByteArray(),
+                            "stale-nonce" => new Device.Models.Twin.TwinPush()
+                            {
+                                Desired = new Device.Models.Twin.Section { Version = 3, Payload = ByteString.CopyFromUtf8("{}") },
                             }.ToByteArray(),
                             _ => new Device.Models.Twin.TwinPush().ToByteArray(),
                         },

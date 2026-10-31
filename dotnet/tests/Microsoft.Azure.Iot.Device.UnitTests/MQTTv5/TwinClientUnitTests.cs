@@ -840,6 +840,61 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             Assert.Equal(1, eventCount);
         }
 
+        // Twin pushes and desired patches are scoped to the connection whose birth they answer, so one that is not tagged
+        // with the current connection attempt's nonce is dropped.
+        [Theory]
+        [InlineData("desired-patch:1", "previous")]
+        [InlineData("twin-push:1", "previous")]
+        [InlineData("desired-patch:1", "unrelated")]
+        [InlineData("twin-push:1", "unrelated")]
+        [InlineData("desired-patch:1", "littleEndian")]
+        [InlineData("twin-push:1", "littleEndian")]
+        [InlineData("desired-patch:1", "truncated")]
+        [InlineData("twin-push:1", "truncated")]
+        [InlineData("desired-patch:1", "missing")]
+        [InlineData("twin-push:1", "missing")]
+        public async Task ConnectionScopedMessage_NotTaggedWithCurrentNonce_IsDropped(string type, string correlation)
+        {
+            (MockFeatureConnectionClient connection, Guid previousNonce) = CreateConnectionWithNonce();
+            using TwinClient twinClient = new(connection);
+            await ReceiveTwinPushAsync(connection, previousNonce, 5, "{\"fanSpeed\":40}");
+
+            connection.SimulateConnectionLost();
+
+            // A nonce whose big-endian and little-endian encodings differ, so that the byte order is checked.
+            Guid currentNonce = Guid.Parse("00112233-4455-6677-8899-aabbccddeeff");
+            connection.ConnectionNonce = currentNonce;
+
+            int eventCount = 0;
+            twinClient.DesiredPatchReceived += _ => eventCount++;
+            twinClient.TwinPushReceived += _ => eventCount++;
+
+            byte[]? correlationData = correlation switch
+            {
+                "previous" => previousNonce.ToByteArray(bigEndian: true),
+                "unrelated" => Guid.NewGuid().ToByteArray(bigEndian: true),
+                "littleEndian" => currentNonce.ToByteArray(),
+                "truncated" => currentNonce.ToByteArray(bigEndian: true)[..8],
+                _ => null,
+            };
+            ByteString desiredPayload = ByteString.CopyFromUtf8("{\"fanSpeed\":60}");
+            byte[] payload = type == "twin-push:1"
+                ? new TwinPush() { Desired = new Section { Version = 6, Payload = desiredPayload } }.ToByteArray()
+                : new DesiredPatch() { Version = 6, Payload = desiredPayload }.ToByteArray();
+
+            await connection.SimulateReceiveAsync(CreateInboundTwinPublish(type, correlationData, payload));
+
+            Assert.Equal(0, eventCount);
+            Assert.Empty(connection.PublishedMessages);
+            Assert.Equal(5ul, twinClient.GetTwinState().DesiredVersion);
+
+            // The same message tagged with the current connection's nonce is applied.
+            await connection.SimulateReceiveAsync(CreateInboundTwinPublish(type, currentNonce.ToByteArray(bigEndian: true), payload));
+
+            Assert.Equal(1, eventCount);
+            Assert.Equal(6ul, twinClient.GetTwinState().DesiredVersion);
+        }
+
         [Theory]
         [InlineData("not json")]
         [InlineData("[1]")]
@@ -1537,7 +1592,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             return connection.SimulateReceiveAsync(CreateInboundTwinPublish("reported-patch-response:1", patchPublish.CorrelationData!, response.ToByteArray()));
         }
 
-        private static MqttPublish CreateInboundTwinPublish(string type, byte[] correlationData, byte[] payload)
+        private static MqttPublish CreateInboundTwinPublish(string type, byte[]? correlationData, byte[] payload)
         {
             var publish = new MqttPublish()
             {
