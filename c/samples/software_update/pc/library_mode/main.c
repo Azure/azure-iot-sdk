@@ -129,6 +129,7 @@ typedef struct
   uint64_t check_not_before_ms; /* no check before then: retry-after, or the SDK's own check */
   bool
       final_report_unsettled; /* a final report is owed and WORKFLOW_COMPLETED has not settled it */
+  bool installed_id_unsaved; /* an update was applied, but its id is not in the installed file */
 
   /* Set by the observers. */
   az_iot_connection_state connection_state[AZ_IOT_CONN_SCOPE_COUNT];
@@ -186,9 +187,11 @@ static bool read_installed_update_id_line(FILE* file, char* dst, size_t dst_size
 }
 
 /**
- * @brief Load the installed update id from the installed file.
+ * @brief Load the installed update id from the installed file: the device's
+ * "<DPS ID scope> <registration ID>", then provider, name and version.
  * @return 1 when loaded; 0 when the file does not exist (first run); -1 when it
- * cannot be read or is malformed (anything but exactly three lines).
+ * cannot be read or is malformed (anything but exactly four lines); -2 when it
+ * names another device.
  */
 static int load_installed_update_id(sample_state* s)
 {
@@ -198,13 +201,22 @@ static int load_installed_update_id(sample_state* s)
   {
     return (errno == ENOENT) ? 0 : -1;
   }
-  bool loaded
-      = read_installed_update_id_line(file, s->installed_provider, sizeof(s->installed_provider))
+  char device[SU_SIM_ID_PART_SIZE * 2];
+  bool loaded = read_installed_update_id_line(file, device, sizeof(device))
+      && read_installed_update_id_line(file, s->installed_provider, sizeof(s->installed_provider))
       && read_installed_update_id_line(file, s->installed_name, sizeof(s->installed_name))
       && read_installed_update_id_line(file, s->installed_version, sizeof(s->installed_version))
       && fgetc(file) == EOF && !ferror(file);
   (void)fclose(file);
-  return loaded ? 1 : -1;
+  if (!loaded)
+  {
+    return -1;
+  }
+  char expected[sizeof(device)];
+  int length = snprintf(expected, sizeof(expected), "%s %s", s->config.id_scope, s->config.reg_id);
+  bool same_device
+      = length > 0 && (size_t)length < sizeof(expected) && strcmp(device, expected) == 0;
+  return same_device ? 1 : -2;
 }
 
 /**
@@ -226,7 +238,9 @@ static bool save_applied_update_id_as_installed(sample_state* s)
   }
   bool written = fprintf(
                      file,
-                     "%s\n%s\n%s\n",
+                     "%s %s\n%s\n%s\n%s\n",
+                     s->config.id_scope,
+                     s->config.reg_id,
                      applied->applied_provider,
                      applied->applied_name,
                      applied->applied_version)
@@ -249,6 +263,18 @@ static bool save_applied_update_id_as_installed(sample_state* s)
       && sample_string_copy(s->installed_name, sizeof(s->installed_name), applied->applied_name)
       && sample_string_copy(
              s->installed_version, sizeof(s->installed_version), applied->applied_version);
+}
+
+/** @brief The device properties the client sends: compatibility and installed update id. */
+static az_iot_su_device_properties current_device_properties(sample_state* s)
+{
+  az_iot_su_device_properties device_properties = { 0 };
+  device_properties.manufacturer = s->manufacturer;
+  device_properties.model = s->model;
+  device_properties.installed_update_id.provider = s->installed_provider;
+  device_properties.installed_update_id.name = s->installed_name;
+  device_properties.installed_update_id.version = s->installed_version;
+  return device_properties;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -361,6 +387,34 @@ static void advance_delegated_update(sample_state* s)
 
     case DELEGATED_UPDATE_PHASE_STARTING:
     {
+      /* No offer is processed until an applied update's id is saved, so that
+       * update offered again is recognized as installed. */
+      if (s->installed_id_unsaved)
+      {
+        if (!save_applied_update_id_as_installed(s))
+        {
+          finish_delegated_update(
+              s,
+              make_failed_result(
+                  AZ_IOT_SU_FAILURE_ORIGIN_DEVICE,
+                  AZ_IOT_SU_FACILITY_PERSIST,
+                  AZ_SPAN_FROM_STR("installed update id not saved")));
+          return;
+        }
+        s->installed_id_unsaved = false;
+        /* The client adopts an applied id only after a success, and that one
+         * was reported failed. */
+        az_iot_su_device_properties device_properties = current_device_properties(s);
+        az_iot_result updated
+            = az_iot_su_client_update_device_properties(&s->su_client, &device_properties);
+        if (updated != AZ_IOT_OK)
+        {
+          fprintf(
+              stderr,
+              "Installed update id saved but not sent until restart: %s\n",
+              az_iot_result_to_string(updated));
+        }
+      }
       /* Library mode calls no is_installed_fn: the application checks. */
       if (is_offered_update_already_installed(manifest, &s->simulation_control)
           == AZ_IOT_SU_RESULT_ALREADY_INSTALLED)
@@ -452,6 +506,7 @@ static void advance_delegated_update(sample_state* s)
        * update offered again is reported skipped, not installed twice. */
       if (!save_applied_update_id_as_installed(s))
       {
+        s->installed_id_unsaved = true;
         finish_delegated_update(
             s,
             make_failed_result(
@@ -584,7 +639,10 @@ static void on_su_event(const az_iot_su_event* event, void* user_ctx)
         u->step_results[i].outcome = AZ_IOT_SU_OUTCOME_SKIPPED;
       }
       u->phase = DELEGATED_UPDATE_PHASE_STARTING;
-      state->simulation_control.applied_valid = 0;
+      if (!state->installed_id_unsaved)
+      {
+        state->simulation_control.applied_valid = 0;
+      }
       printf(
           "Verified update %.*s/%.*s/%.*s handed over: %u file(s), %u step(s).\n",
           az_span_size(event->manifest->update_id.provider),
@@ -778,6 +836,14 @@ static int load_device_identity(sample_state* s)
     return 1;
   }
   int loaded = load_installed_update_id(s);
+  if (loaded == -2)
+  {
+    fprintf(
+        stderr,
+        "%s belongs to another device; set AZ_IOT_SU_INSTALLED_FILE for this one.\n",
+        s->installed_file);
+    return 1;
+  }
   if (loaded < 0)
   {
     fprintf(stderr, "%s cannot be read or is malformed; fix or remove it.\n", s->installed_file);
@@ -846,12 +912,7 @@ int main(void)
     return 1;
   }
 
-  az_iot_su_device_properties device_properties = { 0 };
-  device_properties.manufacturer = state.manufacturer;
-  device_properties.model = state.model;
-  device_properties.installed_update_id.provider = state.installed_provider;
-  device_properties.installed_update_id.name = state.installed_name;
-  device_properties.installed_update_id.version = state.installed_version;
+  az_iot_su_device_properties device_properties = current_device_properties(&state);
   size_t device_properties_needed = az_iot_su_device_properties_buffer_size(&device_properties);
   if (device_properties_needed == 0
       || device_properties_needed > AZ_IOT_SU_DEVICE_PROPERTIES_BUFFER_SIZE)
