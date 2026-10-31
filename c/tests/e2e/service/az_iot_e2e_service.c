@@ -807,12 +807,13 @@ static int poll_slot(
     rc = -1;
   }
 
+  /* A status line is reported even when the rest of the response did not arrive. */
+  if (out_http_status != NULL && e2e_http_status(r) != 0)
+  {
+    *out_http_status = e2e_http_status(r);
+  }
   if (rc == 1)
   {
-    if (out_http_status != NULL)
-    {
-      *out_http_status = e2e_http_status(r);
-    }
     if (resp_buf != NULL && resp_buf_size > 0)
     {
       int body_len = 0;
