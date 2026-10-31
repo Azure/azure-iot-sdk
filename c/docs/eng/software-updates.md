@@ -1313,7 +1313,8 @@ security-critical path.
  *
  * Returns AZ_IOT_OK (verified parse), AZ_IOT_ERR_NOT_FOUND
  * (no workflowId), AZ_IOT_ERR_INVALID_ARG (bad args or
- * malformed JSON), or AZ_IOT_ERR_AUTH (signature/trust verification failed).
+ * malformed JSON), AZ_IOT_ERR_AUTH (signature/trust verification failed) or
+ * AZ_IOT_ERR_INTERNAL (crypto backend fault).
  */
 az_iot_result az_iot_su_parse_update_request(
     az_span request_json,
@@ -1322,6 +1323,20 @@ az_iot_result az_iot_su_parse_update_request(
     size_t root_key_count,
     az_iot_su_client_update_request* out_request,
     az_iot_su_client_update_manifest* out_manifest);
+
+/**
+ * Verify only: the trust chain az_iot_su_parse_update_request() checks, over the
+ * unescaped manifest text (request->update_manifest) and its signature. Nothing
+ * is parsed. AZ_IOT_ERR_AUTH on rejection, AZ_IOT_ERR_INTERNAL on a backend
+ * fault; *out_error (optional) is the AZ_IOT_SU_MANIFEST_ERROR_* reason.
+ */
+az_iot_result az_iot_su_verify_manifest(
+    az_span manifest,
+    az_span signature,
+    const az_iot_crypto* crypto,
+    const az_iot_su_root_key* root_keys,
+    size_t root_key_count,
+    uint32_t* out_error);
 
 /**
  * Streaming SHA-256 integrity check for one file, callable from the consumer's
