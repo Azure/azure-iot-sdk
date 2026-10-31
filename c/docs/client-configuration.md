@@ -50,9 +50,6 @@ and/or `AZ_IOT_USE_INSTALLED_PAHO` and put their prefixes on `CMAKE_PREFIX_PATH`
   `az_win32` or `az_noplatform`) libraries under `lib`. Debug builds link libraries of the same
   names from `debug/lib` (vcpkg layout) when present. Consumers of the installed SDK need exactly the
   azure-sdk-for-c version it was built with.
-  It must also be built with the [software updates manifest limits](#software-updates-manifest-limits)
-  of this build; configuration fails otherwise (checked by running a small program, so not when
-  cross-compiling).
   [eng/install-deps.sh](../eng/install-deps.sh) (POSIX) builds such a prefix, and Paho's, from the pinned
   commits.
 - Paho is found with `find_package(eclipse-paho-mqtt-c CONFIG)`; its static, SSL-capable target
@@ -322,21 +319,18 @@ in an `ERROR` log:
   manifest verification and is reported failed. `az_iot_su_parse_update_request()` returns
   `AZ_IOT_ERR_NOT_ENOUGH_SPACE`.
 
-They size the manifest structures `az_iot_su_client` embeds and the azure-sdk-for-c request and
-install-result structures it shares with the SDK, so azure-sdk-for-c, the SDK and the application
-must be built with the same values. Set them as CMake options of the SDK build; it applies them to
-azure-sdk-for-c (`az_iot_hub`) and to `az_iot_core` as public compile definitions, which reach the application through the `azure::iot::core` target and the
-`azure-iot-sdk-core` pkg-config file. `az_iot_su.h` refuses to compile with values that differ from
-azure-sdk-for-c's, and `az_iot_su_client_init()` refuses an application built with values that
-differ from the SDK's. An installed azure-sdk-for-c must be built with them (see
-[Installed dependencies](#installed-dependencies)).
+They size the manifest and request structures `az_iot_su_client` embeds, so the SDK and the
+application must be built with the same values. Set them as CMake options of the SDK build; it
+applies them to `az_iot_core` as public compile definitions, which reach the application through the
+`azure::iot::core` target and the `azure-iot-sdk-core` pkg-config file. `az_iot_su_client_init()`
+refuses an application built with values that differ from the SDK's.
 
 Smaller values save memory on constrained devices, for example
 `-DAZ_IOT_SU_MAX_STEP_COUNT=2 -DAZ_IOT_SU_MAX_FILE_COUNT=2`. Sizes on a 64-bit build:
 
 | | 2 steps, 2 files | 10 steps, 10 files (default) |
 | --- | --- | --- |
-| `az_iot_su_client` | 3952 | 7920 |
+| `az_iot_su_client` | 3896 | 7672 |
 | Default workspace (`AZ_IOT_SU_WORKSPACE_DEFAULT_SIZE`) | 80720 | 87440 |
 | `az_iot_su_client_update_manifest` (also on the stack of `az_iot_su_parse_update_request()`) | 464 | 3216 |
 | `AZ_IOT_SU_MIN_MESSAGE_SIZE` | 2432 | 3456 |

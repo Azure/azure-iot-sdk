@@ -173,10 +173,9 @@ static void keep_sent_terminal(
     t->has_installed = az_iot_span_writer_end(&writer, NULL) == AZ_IOT_OK;
   }
   size_t d = SU_I(client).step_details_size;
-  uint8_t* region = SU_I(client).sent_details
-      + (size_t)slot * (size_t)_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS * d;
+  uint8_t* region = SU_I(client).sent_details + (size_t)slot * (size_t)AZ_IOT_SU_MAX_STEP_COUNT * d;
   int32_t count = report->step_results_count;
-  if (count < 0 || count > _az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS)
+  if (count < 0 || count > AZ_IOT_SU_MAX_STEP_COUNT)
   {
     count = 0;
   }
@@ -287,7 +286,7 @@ az_iot_result az_iot_su__report_state(az_iot_su_client* client)
   {
     /* The details do not fit az_iot_su_limits::max_message_size: send the
      * result without them rather than not at all. */
-    az_iot_su_step_result plain[_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS];
+    az_iot_su_step_result plain[AZ_IOT_SU_MAX_STEP_COUNT];
     for (int32_t i = 0; i < v.report.step_results_count; ++i)
     {
       plain[i] = v.report.step_results[i];

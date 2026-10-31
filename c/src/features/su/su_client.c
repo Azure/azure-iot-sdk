@@ -63,21 +63,6 @@ static void raise_simple(
     bool report_terminal,
     const az_iot_su_report* report);
 
-/* fetch_in_flight, fetch_delivered and report_sent_terminal occupy padding
- * after pending_fetch, so adding them left the caller-allocated client's size and offsets
- * unchanged. Fails the build if that padding is ever gone. */
-typedef struct
-{
-  char c;
-  uint64_t v;
-} su_u64_alignment_probe;
-typedef char az_iot_su_fetch_in_flight_uses_padding
-    [(offsetof(az_iot_su_client, _internal.report_sent_terminal)
-          % offsetof(su_u64_alignment_probe, v)
-      != 0u)
-         ? 1
-         : -1];
-
 typedef char az_iot_su_channel_storage_is_large_enough
     [(sizeof(((az_iot_su_client*)0)->_internal.channel_storage) >= sizeof(az_iot_su_channel_dps))
          ? 1
@@ -216,9 +201,9 @@ static void result_init_steps(az_iot_su_client* client, int32_t step_count)
   {
     step_count = 0;
   }
-  if (step_count > _az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS)
+  if (step_count > AZ_IOT_SU_MAX_STEP_COUNT)
   {
-    step_count = _az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS;
+    step_count = AZ_IOT_SU_MAX_STEP_COUNT;
   }
   SU_I(client).step_results_count = step_count;
   for (int32_t i = 0; i < step_count; ++i)
@@ -2661,7 +2646,7 @@ AZ_NODISCARD size_t az_iot_su_workspace_size(const az_iot_su_limits* limits)
   {
     return 0;
   }
-  size_t details = (size_t)_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS * limits->result_details_size;
+  size_t details = (size_t)AZ_IOT_SU_MAX_STEP_COUNT * limits->result_details_size;
   size_t parts[10] = { limits->max_root_keys * sizeof(az_iot_su_root_key)
                            + limits->max_observers * sizeof(az_iot_su_observer_registration)
                            + sizeof(az_iot_su_workspace_alignment) - 1u,
@@ -2734,8 +2719,7 @@ static az_iot_result su_workspace_lay_out(
         (unsigned)need);
     return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
   }
-  size_t details
-      = (size_t)_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS * options->limits.result_details_size;
+  size_t details = (size_t)AZ_IOT_SU_MAX_STEP_COUNT * options->limits.result_details_size;
   /* Parts holding pointers come first, aligned: the workspace itself need not be. */
   const uintptr_t alignment = (uintptr_t)sizeof(az_iot_su_workspace_alignment);
   uint8_t* p = options->workspace
@@ -3090,14 +3074,13 @@ void az_iot_su_client_deinit(az_iot_su_client* client)
 #define AZ_IOT_SU_PERSIST_STEP_RECORD 16u
 #define AZ_IOT_SU_PERSIST_URL_RECORD 16u
 /* Upper bound on the whole trailer + crc, used to size the persist scratch. */
-#define AZ_IOT_SU_PERSIST_TRAILER_MAX                                                             \
-  (AZ_IOT_SU_PERSIST_TRAILER_FIXED                                                                \
-   + ((uint32_t)(_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS) * AZ_IOT_SU_PERSIST_STEP_RECORD) + 4u \
-   + ((uint32_t)(_az_IOT_ADU_CLIENT_MAX_TOTAL_FILE_COUNT) * AZ_IOT_SU_PERSIST_URL_RECORD) + 4u    \
-   + (uint32_t)(AZ_IOT_SU_WORKFLOW_ID_SIZE) + 4u + (uint32_t)(AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE)   \
-   + 4u + (uint32_t)(AZ_IOT_SU_CHANNEL_STATE_MAX_SIZE)                                            \
-   + 4u * (uint32_t)(_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS) + AZ_IOT_RETRY_STATE_RECORD_SIZE  \
-   + 4u)
+#define AZ_IOT_SU_PERSIST_TRAILER_MAX                                                              \
+  (AZ_IOT_SU_PERSIST_TRAILER_FIXED                                                                 \
+   + ((uint32_t)(AZ_IOT_SU_MAX_STEP_COUNT) * AZ_IOT_SU_PERSIST_STEP_RECORD) + 4u                   \
+   + ((uint32_t)(AZ_IOT_SU_MAX_FILE_COUNT) * AZ_IOT_SU_PERSIST_URL_RECORD) + 4u                    \
+   + (uint32_t)(AZ_IOT_SU_WORKFLOW_ID_SIZE) + 4u + (uint32_t)(AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE)    \
+   + 4u + (uint32_t)(AZ_IOT_SU_CHANNEL_STATE_MAX_SIZE) + 4u * (uint32_t)(AZ_IOT_SU_MAX_STEP_COUNT) \
+   + AZ_IOT_RETRY_STATE_RECORD_SIZE + 4u)
 
 /* The workspace reserves AZ_IOT_SU_PERSIST_OVERHEAD beside the request for the
  * workflow record, and as much again for the terminal record: header plus the
@@ -3228,8 +3211,7 @@ static az_iot_result su_persist(az_iot_su_client* client, su_record kind)
   const az_iot_su_client_update_request* req = &SU_I(client).current_request;
   uint32_t request_len = terminal ? 0u : (uint32_t)SU_I(client).request_len;
   uint32_t url_count = terminal ? 0u : req->file_urls_count;
-  if (request_len > SU_I(client).request_buffer_size
-      || url_count > _az_IOT_ADU_CLIENT_MAX_TOTAL_FILE_COUNT)
+  if (request_len > SU_I(client).request_buffer_size || url_count > AZ_IOT_SU_MAX_FILE_COUNT)
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
@@ -3242,7 +3224,7 @@ static az_iot_result su_persist(az_iot_su_client* client, su_record kind)
     }
   }
   int32_t step_count = SU_I(client).step_results_count;
-  if (step_count < 0 || step_count > _az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS)
+  if (step_count < 0 || step_count > AZ_IOT_SU_MAX_STEP_COUNT)
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
@@ -3554,7 +3536,7 @@ AZ_NODISCARD az_iot_result az_iot_su_client_resume(az_iot_su_client* client)
   int32_t res_code = (int32_t)rd_u32le(&blob[t + 4u]);
   int32_t res_ext = (int32_t)rd_u32le(&blob[t + 8u]);
   int32_t step_count = (int32_t)rd_u32le(&blob[t + 12u]);
-  if (step_count < 0 || step_count > _az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS)
+  if (step_count < 0 || step_count > AZ_IOT_SU_MAX_STEP_COUNT)
   {
     return AZ_IOT_OK;
   }
@@ -3565,7 +3547,7 @@ AZ_NODISCARD az_iot_result az_iot_su_client_resume(az_iot_su_client* client)
     return AZ_IOT_OK;
   }
   uint32_t url_count = rd_u32le(&blob[end]);
-  if (url_count > _az_IOT_ADU_CLIENT_MAX_TOTAL_FILE_COUNT)
+  if (url_count > AZ_IOT_SU_MAX_FILE_COUNT)
   {
     return AZ_IOT_OK;
   }
@@ -3583,8 +3565,8 @@ AZ_NODISCARD az_iot_result az_iot_su_client_resume(az_iot_su_client* client)
   {
     return AZ_IOT_OK;
   }
-  uint32_t details_at[_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS] = { 0 };
-  uint32_t details_len[_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS] = { 0 };
+  uint32_t details_at[AZ_IOT_SU_MAX_STEP_COUNT] = { 0 };
+  uint32_t details_len[AZ_IOT_SU_MAX_STEP_COUNT] = { 0 };
   for (int32_t i = 0; i < step_count; ++i)
   {
     if (!take_field(
@@ -4318,7 +4300,7 @@ az_iot_result az_iot_su_client_set_step_result_details(
    * step exists from then (is_installed_fn included) until the workflow ends. */
   az_iot_su_state st = SU_I(client).state;
   if (st == AZ_IOT_SU_STATE_IDLE || st == AZ_IOT_SU_STATE_FAILED
-      || step_index >= (uint32_t)_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS
+      || step_index >= (uint32_t)AZ_IOT_SU_MAX_STEP_COUNT
       || (int32_t)step_index >= SU_I(client).step_results_count)
   {
     return AZ_IOT_ERR_NOT_FOUND;

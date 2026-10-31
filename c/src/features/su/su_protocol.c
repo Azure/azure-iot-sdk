@@ -614,8 +614,7 @@ az_iot_result az_iot_su__build_report_request(
   {
     return id_valid;
   }
-  if (report->step_results_count < 0
-      || report->step_results_count > _az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS
+  if (report->step_results_count < 0 || report->step_results_count > AZ_IOT_SU_MAX_STEP_COUNT
       || (report->step_results_count > 0 && report->step_results == NULL))
   {
     return AZ_IOT_ERR_INVALID_ARG;
