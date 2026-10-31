@@ -17,10 +17,9 @@
  * @brief Most steps an update manifest may have. Device Update allows 10.
  *
  * With AZ_IOT_SU_MAX_FILE_COUNT and AZ_IOT_SU_MAX_FILE_COUNT_PER_STEP, sizes the parsed manifest
- * az_iot_su_client embeds, and the azure-sdk-for-c request and install-result structures. A
- * manifest over any of them fails parsing, so its workflow fails. Set them with the CMake options
- * of the same names: azure-sdk-for-c, the SDK and the application must all be built with the same
- * values.
+ * az_iot_su_client embeds, and the update request. A manifest over any of them fails parsing, so
+ * its workflow fails. Set them with the CMake options of the same names: the SDK and the
+ * application must be built with the same values.
  */
 #ifndef AZ_IOT_SU_MAX_STEP_COUNT
 #define AZ_IOT_SU_MAX_STEP_COUNT 10
@@ -42,27 +41,6 @@
     || AZ_IOT_SU_MAX_FILE_COUNT_PER_STEP < 1                     \
     || AZ_IOT_SU_MAX_FILE_COUNT_PER_STEP > AZ_IOT_SU_MAX_FILE_COUNT
 #error "AZ_IOT_SU_MAX_*: each must be at least 1, and files per step at most the file count"
-#endif
-
-#ifndef _az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS
-#define _az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS AZ_IOT_SU_MAX_STEP_COUNT
-#endif
-#ifndef _az_IOT_ADU_CLIENT_MAX_TOTAL_FILE_COUNT
-#define _az_IOT_ADU_CLIENT_MAX_TOTAL_FILE_COUNT AZ_IOT_SU_MAX_FILE_COUNT
-#endif
-#ifndef _az_IOT_ADU_CLIENT_MAX_FILE_COUNT_PER_STEP
-#define _az_IOT_ADU_CLIENT_MAX_FILE_COUNT_PER_STEP AZ_IOT_SU_MAX_FILE_COUNT_PER_STEP
-#endif
-
-/* azure-sdk-for-c request and install-result types, re-exported below under software updates
- * names. */
-#include <azure/iot/az_iot_adu_client.h>
-
-#if _az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS != AZ_IOT_SU_MAX_STEP_COUNT  \
-    || _az_IOT_ADU_CLIENT_MAX_TOTAL_FILE_COUNT != AZ_IOT_SU_MAX_FILE_COUNT \
-    || _az_IOT_ADU_CLIENT_MAX_FILE_COUNT_PER_STEP != AZ_IOT_SU_MAX_FILE_COUNT_PER_STEP
-#error \
-    "azure-sdk-for-c limits differ from AZ_IOT_SU_MAX_*: set AZ_IOT_SU_MAX_*, and include az_iot_su.h before az_iot_adu_client.h"
 #endif
 
 #ifdef __cplusplus
@@ -156,15 +134,63 @@ extern "C"
     az_span create_date_time;
   } az_iot_su_client_update_manifest;
 
-  /* --- Upstream types (azure-sdk-for-c) ------------------------------------ */
+  /* --- Update request ------------------------------------------------------ */
 
-  typedef az_iot_adu_client_update_request az_iot_su_client_update_request;
-  typedef az_iot_adu_client_file_url az_iot_su_client_file_url;
-  typedef az_iot_adu_client_install_result az_iot_su_client_install_result;
+/** @brief Default agent version reported to the service (`agentVersion`). */
+#define AZ_IOT_SU_CLIENT_AGENT_VERSION "DU;agent/1.0.0"
 
-#define AZ_IOT_SU_CLIENT_SERVICE_ACTION_APPLY_DEPLOYMENT \
-  AZ_IOT_ADU_CLIENT_SERVICE_ACTION_APPLY_DEPLOYMENT
-#define AZ_IOT_SU_CLIENT_AGENT_VERSION AZ_IOT_ADU_CLIENT_AGENT_VERSION
+  /** @brief Action the service asks of the device. */
+  typedef enum az_iot_su_client_service_action
+  {
+    /** Apply the offered update. */
+    AZ_IOT_SU_CLIENT_SERVICE_ACTION_APPLY_DEPLOYMENT = 3,
+  } az_iot_su_client_service_action;
+
+  /** @brief The deployment an update request belongs to. */
+  typedef struct az_iot_su_client_workflow
+  {
+    /** Action to take. */
+    az_iot_su_client_service_action action;
+    /** Workflow (deployment) id. */
+    az_span id;
+    /** Time of the last retry of the deployment; empty when none. */
+    az_span retry_timestamp;
+  } az_iot_su_client_workflow;
+
+  /** @brief Download URL of an update file. */
+  typedef struct az_iot_su_client_file_url
+  {
+    /** File id, as in the manifest `files`. */
+    az_span id;
+    /** Download URL. */
+    az_span url;
+  } az_iot_su_client_file_url;
+
+  /** @brief An update request (`updateMetadata`). Spans point into the request text. */
+  typedef struct az_iot_su_client_update_request
+  {
+    /** Deployment the request belongs to. */
+    az_iot_su_client_workflow workflow;
+    /** Update manifest text, as signed. */
+    az_span update_manifest;
+    /** JWS over the manifest. */
+    az_span update_manifest_signature;
+    /** Download URL of each file. */
+    az_iot_su_client_file_url file_urls[AZ_IOT_SU_MAX_FILE_COUNT];
+    /** Number of items in `file_urls`. */
+    uint32_t file_urls_count;
+  } az_iot_su_client_update_request;
+
+  /** @brief Overall result of a workflow, reported to the service. */
+  typedef struct az_iot_su_client_install_result
+  {
+    /** Result code; AZ_IOT_SU_AGENT_RESULT_CODE_SUCCESS on success. */
+    int32_t result_code;
+    /** Extended result code; see AZ_IOT_SU_EXTENDED_RESULT(). */
+    int32_t extended_result_code;
+    /** Free-form result details. */
+    az_span result_details;
+  } az_iot_su_client_install_result;
 
   /* --- Result codes (returned by platform hooks) --------------------------- */
 
@@ -277,12 +303,12 @@ extern "C"
 /** @brief Persisted-state bytes beyond the update metadata and the step result details: header
  * (40 bytes) and trailer (16 fixed, 16 per step, 4 + 16 per file URL, then length-prefixed
  * workflow id, applied update id, channel state and the details of each step, 16 retry schedule,
- * 4 CRC). Grows with the upstream step and file limits. */
+ * 4 CRC). Grows with the step and file limits. */
 #ifndef AZ_IOT_SU_PERSIST_OVERHEAD
-#define AZ_IOT_SU_PERSIST_OVERHEAD                                                          \
-  (92u + (AZ_IOT_SU_WORKFLOW_ID_SIZE) + (AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE)                  \
-   + (AZ_IOT_SU_CHANNEL_STATE_MAX_SIZE) + 20u * (_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS) \
-   + 16u * (_az_IOT_ADU_CLIENT_MAX_TOTAL_FILE_COUNT))
+#define AZ_IOT_SU_PERSIST_OVERHEAD                                         \
+  (92u + (AZ_IOT_SU_WORKFLOW_ID_SIZE) + (AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE) \
+   + (AZ_IOT_SU_CHANNEL_STATE_MAX_SIZE) + 20u * (AZ_IOT_SU_MAX_STEP_COUNT) \
+   + 16u * (AZ_IOT_SU_MAX_FILE_COUNT))
 #endif
 
 /**
@@ -323,7 +349,7 @@ extern "C"
  * version is internal and checked by az_iot_su_client_resume(). */
 #define AZ_IOT_SU_STATE_BLOB_MAX_SIZE(max_update_size, result_details_size) \
   ((size_t)(max_update_size) + (size_t)AZ_IOT_SU_PERSIST_OVERHEAD           \
-   + (size_t)(_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS) * (size_t)(result_details_size))
+   + (size_t)(AZ_IOT_SU_MAX_STEP_COUNT) * (size_t)(result_details_size))
 
   /* --- Internal fine-grained state enum ------------------------------------ */
 
@@ -958,7 +984,7 @@ extern "C"
     char extended_result_codes[16];
     bool has_installed;
     char installed[AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE]; /**< provider, name, version; NUL each */
-    az_iot_su_step_result step_results[_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS];
+    az_iot_su_step_result step_results[AZ_IOT_SU_MAX_STEP_COUNT];
     int32_t step_results_count;
   } az_iot_su_sent_report_internal;
 
@@ -1062,7 +1088,7 @@ extern "C"
 
       /* Accumulated result reported to the service. */
       az_iot_su_client_install_result install_result;
-      az_iot_su_step_result step_results[_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS];
+      az_iot_su_step_result step_results[AZ_IOT_SU_MAX_STEP_COUNT];
       int32_t step_results_count;
 
       /** Workspace part holding the copied property strings. */
@@ -1250,7 +1276,7 @@ extern "C"
   ((size_t)(max_update_size) + (size_t)(scratch_size) + (size_t)(max_message_size)             \
    + 2u * (size_t)(device_properties_size) + (size_t)AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE          \
    + 2u * (size_t)AZ_IOT_SU_PERSIST_OVERHEAD                                                   \
-   + 5u * (size_t)(_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS) * (size_t)(result_details_size)  \
+   + 5u * (size_t)(AZ_IOT_SU_MAX_STEP_COUNT) * (size_t)(result_details_size)                   \
    + (size_t)(result_details_size) + 1u + (size_t)(max_root_keys) * sizeof(az_iot_su_root_key) \
    + (size_t)(max_observers) * sizeof(az_iot_su_observer_registration)                         \
    + sizeof(az_iot_su_workspace_alignment) - 1u)

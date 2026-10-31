@@ -894,9 +894,9 @@ static void largest_engine_report_fits_the_channel_body(void** state)
   }
   const az_iot_su_report_update_id installed = { id[0], id[1], id[2] };
 
-  az_iot_su_step_result steps[_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS];
+  az_iot_su_step_result steps[AZ_IOT_SU_MAX_STEP_COUNT];
   memset(steps, 0, sizeof(steps));
-  for (int32_t i = 0; i < _az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS; ++i)
+  for (int32_t i = 0; i < AZ_IOT_SU_MAX_STEP_COUNT; ++i)
   {
     steps[i].outcome = AZ_IOT_SU_OUTCOME_FAILED;
     steps[i].failure_origin = AZ_IOT_SU_FAILURE_ORIGIN_AGENT_CORE;
@@ -912,7 +912,7 @@ static void largest_engine_report_fits_the_channel_body(void** state)
   report.result_code = INT32_MIN;
   report.extended_result_codes = "ffffffff";
   report.step_results = steps;
-  report.step_results_count = _az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS;
+  report.step_results_count = AZ_IOT_SU_MAX_STEP_COUNT;
 
   /* AZ_IOT_SU_MIN_MESSAGE_SIZE is the guarantee that this fits. */
   uint8_t body[AZ_IOT_SU_MIN_MESSAGE_SIZE];
