@@ -51,10 +51,19 @@ jobs:
   format:
     name: dotnet format
     needs: changes
-    if: needs.changes.outputs.dotnet == 'true' || github.event_name != 'pull_request'
+    # Also runs when change detection did not succeed, so the check fails instead of being skipped.
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.dotnet == 'true' || github.event_name != 'pull_request') }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
+      - name: Require change detection
+        if: needs.changes.result != 'success'
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+        run: |
+          echo "::error::change detection did not succeed ($CHANGES_RESULT)"
+          exit 1
+
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
