@@ -235,6 +235,9 @@ extern "C"
 #define AZ_IOT_SU_FACILITY_PERSIST 0x8u
 /* Superseded by a new workflow under AZ_IOT_SU_REPLACEMENT_ROLLBACK (reserved; not yet produced) */
 #define AZ_IOT_SU_FACILITY_SUPERSEDED 0x9u
+/* A download handler could not produce a file, which was downloaded in full; see
+ * AZ_IOT_SU_DELTA_ERROR_*. Reported on a SUCCEEDED step and the overall result. */
+#define AZ_IOT_SU_FACILITY_DELTA 0xAu
 #define AZ_IOT_SU_FACILITY_INTERNAL 0xFu /* parser/state/buffer error in the client */
 
 /* Compose a 32-bit extended_result_code from a facility nibble + sub-code. */
@@ -250,6 +253,15 @@ extern "C"
 #define AZ_IOT_SU_MANIFEST_ERROR_ROOT_SIGNATURE 0x6u /* sjwk does not verify with the root key */
 #define AZ_IOT_SU_MANIFEST_ERROR_SIGNATURE 0x7u /* manifest does not verify with the sjwk key */
 #define AZ_IOT_SU_MANIFEST_ERROR_HASH 0x8u /* manifest SHA-256 differs from the signed one */
+
+/* Sub-codes of AZ_IOT_SU_FACILITY_DELTA: why a file naming a download handler was downloaded in
+ * full. The first in a step is kept. */
+#define AZ_IOT_SU_DELTA_ERROR_NO_HANDLER 0x1u /* no registered handler has the file's id */
+#define AZ_IOT_SU_DELTA_ERROR_NO_SOURCE 0x2u /* no related file, or none chosen (no source) */
+#define AZ_IOT_SU_DELTA_ERROR_RELATED_DOWNLOAD 0x3u /* no URL, or download_fn failed */
+#define AZ_IOT_SU_DELTA_ERROR_RELATED_HASH 0x4u /* related file SHA-256 != manifest hash */
+#define AZ_IOT_SU_DELTA_ERROR_BUILD 0x5u /* build_file_from_related_fn failed */
+#define AZ_IOT_SU_DELTA_ERROR_BUILT_HASH 0x6u /* built file SHA-256 != manifest hash */
 
   /* --- Compile-time capacities --------------------------------------------- */
 
@@ -419,7 +431,9 @@ extern "C"
      * Download one file (called once per file, once per do_work iteration).
      * Return IN_PROGRESS to continue on the next do_work, SUCCESS when complete.
      * Hash verification is performed by core with the connection client's
-     * crypto backend.
+     * crypto backend. Also called for the related file a download handler
+     * chose: @p file is then that related file, and @p file_index that of the
+     * file it belongs to, so store it apart (e.g. by id).
      */
     int32_t (*download_fn)(
         const az_iot_su_client_update_manifest_file* file,
@@ -437,6 +451,7 @@ extern "C"
      * download). Read from byte @p offset into @p buffer (capacity
      * @p buffer_size); set @p out_read to the number of bytes read (0 signals
      * end-of-file). MUST return AZ_IOT_SU_RESULT_SUCCESS on a successful read.
+     * Also reads related files and built files, as download_fn names them.
      */
     int32_t (*read_file_fn)(
         const az_iot_su_client_update_manifest_file* file,
@@ -525,7 +540,12 @@ extern "C"
    * @brief Produces a file from a related file instead of downloading it in full, for files whose
    * manifest entry names this handler's id (e.g. a delta handler, "microsoft/delta:1").
    *
-   * The client does not call download handlers yet; registering one only validates it.
+   * For each such file, do_work() calls choose_related_file_fn, downloads the chosen related file
+   * with download_fn, checks its SHA-256 with read_file_fn, calls build_file_from_related_fn and
+   * checks the built file's SHA-256. If one of these fails, or handlers are registered but none has
+   * the file's id, the file is downloaded in full and its step reports an AZ_IOT_SU_FACILITY_DELTA
+   * code even if it succeeds. With no handler registered, files are downloaded in full as usual.
+   * A file being built is not resumed after a reboot: it starts again with choose_related_file_fn.
    * Hooks return AZ_IOT_SU_RESULT_* codes and MAY return IN_PROGRESS to be re-invoked on the next
    * do_work().
    */
@@ -539,7 +559,8 @@ extern "C"
     /**
      * Choose the related file of @p file to download. Set @p out_related_file_index (0 to the
      * file's related-file count - 1) and return SUCCESS. Any other result except IN_PROGRESS
-     * means no related file is usable: @p file is downloaded in full.
+     * means no related file is usable: @p file is downloaded in full. Not called for a file with no
+     * related file.
      */
     int32_t (*choose_related_file_fn)(
         const az_iot_su_client_update_manifest* manifest,
@@ -548,9 +569,9 @@ extern "C"
         void* user_ctx);
 
     /**
-     * Build @p file, the manifest's file @p file_index, from the downloaded @p related_file.
-     * Core then verifies @p file's hash with read_file_fn; on failure @p file is downloaded in
-     * full.
+     * Build @p file, which download_fn would get with @p file_index, from the downloaded and
+     * verified @p related_file. Core then verifies @p file's hash with read_file_fn; on failure
+     * @p file is downloaded in full.
      */
     int32_t (*build_file_from_related_fn)(
         const az_iot_su_client_update_manifest_file* file,
@@ -558,8 +579,9 @@ extern "C"
         uint32_t file_index,
         void* user_ctx);
 
-    /** OPTIONAL (MAY be NULL). Called once a workflow that used this handler succeeds, e.g. to
-     * keep its files as sources for later updates. */
+    /** OPTIONAL (MAY be NULL). Called once a workflow succeeds, before its SUCCEEDED report,
+     * when a file of its manifest names this handler's id, built or downloaded in full, e.g. to
+     * keep the files as sources for later updates. Not called for a FAILED or SKIPPED workflow. */
     void (*workflow_succeeded_fn)(const az_iot_su_client_update_manifest* manifest, void* user_ctx);
 
     void* user_ctx;
@@ -1105,6 +1127,10 @@ extern "C"
       bool have_request;
       uint32_t current_step;
       uint32_t current_file;
+      /** Related file chosen for current_file, among its related files. */
+      uint32_t chosen_related_file_index;
+      /** How far current_file has got (su_client.c); restarts with each file and state. */
+      uint8_t file_download_phase;
       /* A reboot checkpoint failed to persist; Apply waits until it succeeds. */
       bool checkpoint_pending;
       /* Storage is believed to hold a checkpoint this client wrote or resumed
