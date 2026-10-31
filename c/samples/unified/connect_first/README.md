@@ -105,7 +105,7 @@ After a move to the other generation it first prints
 
 | What | Code |
 | --- | --- |
-| Register both MQTT adapters (DPS always uses MQTT 3.1.1) | `az_iot_paho_factory_create_v3_1_1()`, `az_iot_paho_factory_create_v5()`; az_mqtt: `az_iot_az_mqtt_factory_create_v3_1_1()`, `az_iot_az_mqtt_factory_create_v5()` |
+| MQTT adapter and the workspace it builds each MQTT client in | `mqtt_adapter` (`az_iot_paho_get_adapter()`; az_mqtt: `az_iot_az_mqtt_get_adapter()`), `mqtt_limits`, `mqtt_workspace`; sizes in [`sample_utils.h`](../../common/sample_utils.h) |
 | Read the assigned generation once connected | `az_iot_connection_client_get_hub_profile()` |
 | Build the matching client | `telemetry_build()` |
 | Handle a later move | `on_conn_state()`: `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH`, then `telemetry_destroy()` and reopen |
