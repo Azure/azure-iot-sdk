@@ -67,6 +67,7 @@ static mock_http g_http;
 
 /* Storage a misbehaving hook could redirect the SDK to. */
 static uint8_t g_foreign_buffer[256];
+static uint8_t g_connection_workspace[AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE];
 
 static az_iot_result mock_send(
     const char* method,
@@ -194,6 +195,8 @@ typedef struct
 {
   az_iot_connection_client conn;
   az_iot_mqttv3_file_upload_client fu;
+  /** @brief Workspace of conn; tests may hold another client at the same time. */
+  uint8_t connection_workspace[AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE];
 } fixture;
 
 static int setup(void** state)
@@ -205,6 +208,8 @@ static int setup(void** state)
   opts.iothub_hostname = TEST_HUB; /* direct host => MQTTv3 flavor; no open needed */
   opts.port = 8883;
   opts.device_id = TEST_DEVICE;
+  opts.workspace = fx->connection_workspace;
+  opts.workspace_size = sizeof(fx->connection_workspace);
   assert_int_equal(az_iot_connection_client_init(&fx->conn, &opts), AZ_IOT_OK);
 
   memset(&g_http, 0, sizeof(g_http));
@@ -443,6 +448,8 @@ static void init_rejects_unresolved_hub_address(void** state)
   az_iot_connection_client_options opts = { 0 };
   opts.dps.id_scope = "0ne00000000";
   opts.dps.registration_id = "reg-1";
+  opts.workspace = g_connection_workspace;
+  opts.workspace_size = sizeof(g_connection_workspace);
   assert_int_equal(az_iot_connection_client_init(&conn, &opts), AZ_IOT_OK);
   assert_null(az_iot_connection_client_get_iothub_address(&conn));
 
@@ -462,6 +469,8 @@ static void init_rejects_missing_device_id(void** state)
   opts.iothub_hostname = TEST_HUB;
   opts.port = 8883;
   /* client_id deliberately left NULL. */
+  opts.workspace = g_connection_workspace;
+  opts.workspace_size = sizeof(g_connection_workspace);
   assert_int_equal(az_iot_connection_client_init(&conn, &opts), AZ_IOT_OK);
 
   az_iot_mqttv3_file_upload_client fu2;
@@ -493,6 +502,8 @@ static void oversized_hub_address_is_rejected_at_the_operation(void** state)
   opts.iothub_hostname = long_host;
   opts.port = 8883;
   opts.device_id = TEST_DEVICE;
+  opts.workspace = g_connection_workspace;
+  opts.workspace_size = sizeof(g_connection_workspace);
   assert_int_equal(az_iot_connection_client_init(&conn, &opts), AZ_IOT_OK);
 
   az_iot_mqttv3_file_upload_client fu2;
@@ -528,6 +539,8 @@ static void oversized_device_id_is_rejected_at_the_operation(void** state)
   opts.iothub_hostname = TEST_HUB;
   opts.port = 8883;
   opts.device_id = long_id;
+  opts.workspace = g_connection_workspace;
+  opts.workspace_size = sizeof(g_connection_workspace);
   assert_int_equal(az_iot_connection_client_init(&conn, &opts), AZ_IOT_OK);
 
   az_iot_mqttv3_file_upload_client fu2;
@@ -559,6 +572,8 @@ static void failed_init_leaves_client_unusable(void** state)
   az_iot_connection_client_options opts = { 0 };
   opts.iothub_hostname = TEST_HUB;
   opts.port = 8883;
+  opts.workspace = g_connection_workspace;
+  opts.workspace_size = sizeof(g_connection_workspace);
   assert_int_equal(az_iot_connection_client_init(&conn, &opts), AZ_IOT_OK);
 
   az_iot_mqttv3_file_upload_client fu2;
@@ -933,6 +948,8 @@ static void init_against_an_mqtt_v5_connection_is_rejected(void** state)
   opts.port = 8883;
   opts.device_id = TEST_DEVICE;
   opts.connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5;
+  opts.workspace = g_connection_workspace;
+  opts.workspace_size = sizeof(g_connection_workspace);
   assert_int_equal(az_iot_connection_client_init(&conn, &opts), AZ_IOT_OK);
 
   az_iot_mqttv3_file_upload_client fu2;
@@ -978,6 +995,8 @@ static void a_post_pin_init_failure_releases_the_profile_pin(void** state)
   az_iot_connection_client_options opts = { 0 };
   opts.dps.id_scope = "0ne00000000";
   opts.dps.registration_id = "reg-1";
+  opts.workspace = g_connection_workspace;
+  opts.workspace_size = sizeof(g_connection_workspace);
   assert_int_equal(az_iot_connection_client_init(&conn, &opts), AZ_IOT_OK);
 
   az_iot_mqttv3_file_upload_client fu2;
@@ -1009,6 +1028,8 @@ static void init_without_an_http_hook_takes_no_profile_pin(void** state)
   az_iot_connection_client_options opts = { 0 };
   opts.dps.id_scope = "0ne00000000";
   opts.dps.registration_id = "reg-1";
+  opts.workspace = g_connection_workspace;
+  opts.workspace_size = sizeof(g_connection_workspace);
   assert_int_equal(az_iot_connection_client_init(&conn, &opts), AZ_IOT_OK);
 
   az_iot_mqttv3_file_upload_client fu2;
@@ -1630,6 +1651,8 @@ static void max_length_endpoint_still_builds_a_url(void** state)
   opts.iothub_hostname = long_host;
   opts.port = 8883;
   opts.device_id = long_id;
+  opts.workspace = g_connection_workspace;
+  opts.workspace_size = sizeof(g_connection_workspace);
   assert_int_equal(az_iot_connection_client_init(&conn, &opts), AZ_IOT_OK);
 
   memset(&g_http, 0, sizeof(g_http));

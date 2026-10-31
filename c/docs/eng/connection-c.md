@@ -539,7 +539,7 @@ checked before backoff is scheduled.
 | Software updates status report not yet acked | Terminal: yes | Retried until the service accepts or permanently rejects it; idempotent on `workflowId`. After repeated DPS session loss it is abandoned for the process. A terminal report stays owed (in durable storage when persistence is configured) and is re-sent later (next device-properties update, or after restart and resume); an in-progress report is not replayed, the next reporting point sends current state. |
 | Presence (birth) phase | No | Restarted with a freshly generated nonce. |
 | DPS phase | No | Not re-run on an ordinary reconnect: the cached assignment is reused. It is re-run only when `needs_reprovision` is set — a CONNACK identity rejection in `REPROVISION` mode, `az_iot_connection_client_request_reprovision()`, the `max_hub_connect_attempts_before_reprovision` threshold, or `reject_assignment()`. When it does re-run it restarts from `DPS_CONNECTING`. |
-| In-flight CSR operation | Yes | `teardown_active()` does not touch `csr_op`, so a response on the next session completes it. `AZ_IOT_ERR_TIMEOUT` fires only at `CSR_OP_TIMEOUT_MS` (120 s, re-armed on each `202`); `az_iot_connection_client_cancel_csr()` ends it early. The request is published from a reserved PUBACK slot; a rejected PUBACK fails the operation at once, a session end before the PUBACK does not. |
+| In-flight CSR operation | No | The session end fails it with `AZ_IOT_ERR_NOT_CONNECTED`: its response would have come on that session. Resubmit with the same request id once reconnected. `AZ_IOT_ERR_TIMEOUT` fires at `opts.csr_response_timeout_ms` (120 s by default, re-armed on each `202`); `az_iot_connection_client_cancel_csr()` ends it early. The request is published from a reserved PUBACK slot; a rejected PUBACK fails the operation at once. |
 
 ### 5.4 The first attempt
 
@@ -915,7 +915,7 @@ be refused again, and leave the device cycling forever without saying why.
 
 Buffers are fixed-size struct members, not allocations, so exceeding one is a hard failure rather than
 a slow path. Constants are `#ifndef`-guarded and can be raised at build time, except
-`AZ_IOT_CSR_PAYLOAD_BUFFER_MIN` (a sizing recommendation) and `CSR_MAX_BASE64` / `CSR_OP_TIMEOUT_MS`
+`AZ_IOT_CSR_PAYLOAD_BUFFER_MIN` (a sizing recommendation) and `CSR_MAX_BASE64`
 (fixed in `connection_client.c`). From
 [az_iot_connection_client.h](../../inc/azure/iot/az_iot_connection_client.h) unless noted.
 
@@ -950,7 +950,7 @@ a slow path. Constants are `#ifndef`-guarded and can be raised at build time, ex
 | `az_iot_defensive_timeout__ms()` | 5–15 min | MQTTv5 birth-ack: 5, 6, 8, then 10 min base per consecutive miss, plus 0–5 min jitter | `AZ_IOT_ERR_TIMEOUT` |
 | `AZ_IOT_DPS_HOLD_TIMEOUT_MS` | 60000 | How long registration may be held for a pre-registration exchange | the hold expires and registration proceeds |
 | `AZ_IOT_DEFAULT_MAX_HUB_CONNECT_ATTEMPTS_BEFORE_REPROVISION` | 50 | Consecutive hub connect failures before the client re-provisions | `needs_reprovision` set; not an error |
-| `CSR_OP_TIMEOUT_MS` | 120000 | Hub CSR renewal, re-armed on each `202 Accepted` | `AZ_IOT_ERR_TIMEOUT` |
+| `AZ_IOT_DEFAULT_CSR_RESPONSE_TIMEOUT_MS` | 120000 | Default `opts.csr_response_timeout_ms`: hub CSR renewal, re-armed on each `202 Accepted` | `AZ_IOT_ERR_TIMEOUT` |
 
 Every one of these is a *silent* limit until it is crossed, and the result that surfaces is the
 result of whatever call happened to be last — `AZ_IOT_ERR_NOT_ENOUGH_SPACE` does not say which pool
@@ -997,6 +997,7 @@ connection client itself, or a feature client.
 | CONNACK | v5 redirection — `0x9C Use another server`, `0x9D Server moved` | `AZ_IOT_ERR_MQTT` | `az_iot_mqtt_connack_result()` | **retried against the same host** | The Server Reference property is not read. |
 | CONNECT | No CONNACK within the connect timeout | `AZ_IOT_ERR_MQTT` | Paho | ordinary failed attempt | 30 s by default, configurable; the same value is used for the DPS bootstrap connect. |
 | CONNACK | Arrives after `close()` | ignored | connection client | logged at debug, `break` — the pending DISCONNECTED event settles the session to `IDLE` | Guarded on `user_close || state == DISCONNECTING`. Correct. |
+| CONNACK | v5 refusal carrying a Reason String | as for its code | adapter | as for its code; the Reason String becomes `error->message` (source `MQTT`), truncated to 128 bytes | az_mqtt reports it; Paho does not, because it passes none of a refused CONNACK's properties. |
 | CONNECT | No factory registered for the version the role requires | `AZ_IOT_ERR_NOT_SUPPORTED` | `find_factory()` | `open()` transitions back to `IDLE` and returns the error | Role → version: DPS and the MQTTv3 hub are v3.1.1, the MQTTv5 hub is v5. |
 
 #### 9.5.4 Phase 4 — DPS provisioning
@@ -1067,7 +1068,7 @@ registry carries MQTTv3 feature filters and application custom topics.
 | PUBACK | v3.1.1 PUBACK | `AZ_IOT_OK` / `AZ_IOT_ERR_MQTT` | `paho_publish_success` / `_failure` | as above | v3.1.1 PUBACK carries no reason code; a failure is a publish that ended without one. |
 | PUBACK | az_mqtt adapter, any PUBACK | `AZ_IOT_OK` below `0x80`; `AZ_IOT_ERR_PUBLISH_REFUSED` for `0x87`, `0x90`, `0x99`, and `0x95` (reported by az_mqtt for a publish over the server's Maximum Packet Size, not a wire PUBACK code); `AZ_IOT_ERR_BUSY` for `0x97`; else `AZ_IOT_ERR_MQTT` | `az_iot_mqtt_puback_result()` | the ack callback fires with that status and the Reason String; the connection logs `protocol_code` and the Reason String and survives | Correct. A Reason String is dropped for an event held past the receive buffer. |
 | PUBACK | Unknown packet id | dropped | connection client | nothing | Deliberate: a publish issued without an ack callback has no table entry. |
-| DISCONNECT | Server-initiated v5 DISCONNECT | `az_iot_mqtt_disconnect_result()`: `AZ_IOT_OK` for `0x00`, `AZ_IOT_ERR_AUTH` for `0x87`, `AZ_IOT_ERR_MQTT` otherwise; the wire code is carried as `error->code` | `paho_disconnected` | `DEFER_RECONNECT` for every code while a policy is configured, `DEFER_IDLE` otherwise (`DEFER_FAULT` for `0x87`); `0x87` (`AZ_IOT_ERR_AUTH`) climbs the identity ladder | `0x87` is reported non-retriable and retries the same hub on `identity_recovery`; `0x8E Session taken over` is not named, so it reconnects like a routine drop. |
+| DISCONNECT | Server-initiated v5 DISCONNECT | `az_iot_mqtt_disconnect_result()`: `AZ_IOT_ERR_NOT_CONNECTED` for `0x00`, `AZ_IOT_ERR_AUTH` for `0x87`, `AZ_IOT_ERR_MQTT` otherwise; a nonzero wire code is carried as `error->code`, its Reason String as `error->message` (truncated to 128 bytes); `0x00` carries no error detail | `paho_disconnected`, az_mqtt `_azm_on_disconnect` | `DEFER_RECONNECT` for every code while a policy is configured, `DEFER_IDLE` otherwise (`DEFER_FAULT` for `0x87`); `0x87` (`AZ_IOT_ERR_AUTH`) climbs the identity ladder | `0x87` is reported non-retriable and retries the same hub on `identity_recovery`; `0x8E Session taken over` is not named, so it reconnects like a routine drop. |
 | Keep-alive | Local keep-alive expiry | DISCONNECTED with no status: reported as `AZ_IOT_ERR_NOT_CONNECTED` on `RETRY_PENDING`, `AZ_IOT_OK` on `IDLE` | Paho `connectionLost` | `DEFER_RECONNECT` while a policy is configured, `DEFER_IDLE` otherwise | Keep-alive is 30 s by default. |
 | Transport | Adapter raises `AZ_IOT_MQTT_EVT_ERROR` | the event's status, or `AZ_IOT_ERR_MQTT` | adapter | `DEFER_RECONNECT` or `DEFER_FAULT` | |
 | Inbound | Message matching no dispatch prefix | dropped | `az_iot_dispatch_route()` | nothing; the return value is explicitly discarded | Correct and deliberate — the behaviour brokers rely on for filters that outlive their subscriber. |

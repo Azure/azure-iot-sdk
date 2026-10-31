@@ -260,7 +260,7 @@ static int teardown(void** state)
   if (fx)
   {
     az_iot_mqttv5_direct_method_client_deinit(&fx->dm);
-    az_iot_connection_client_deinit(&fx->conn);
+    az_iot_test_connection_client_deinit(&fx->conn);
     az_iot_mock_mqtt_factory_destroy(fx->factory);
     free(fx);
   }
@@ -613,7 +613,7 @@ static void init_against_an_mqtt_v3_connection_is_rejected(void** state)
   assert_int_equal(
       az_iot_mqttv5_direct_method_client_init(&dm, &conn), AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH);
 
-  az_iot_connection_client_deinit(&conn);
+  az_iot_test_connection_client_deinit(&conn);
 }
 
 static void a_device_id_too_long_for_the_topics_says_so(void** state)
@@ -654,7 +654,7 @@ static void a_device_id_too_long_for_the_topics_says_so(void** state)
   assert_non_null(strstr(cap.all, "AZ_IOT_MQTTV5_DM_TOPIC_MAX"));
 
   az_iot_mqttv5_direct_method_client_deinit(&dm);
-  az_iot_connection_client_deinit(&conn);
+  az_iot_test_connection_client_deinit(&conn);
   az_iot_mock_mqtt_factory_destroy(factory);
 }
 

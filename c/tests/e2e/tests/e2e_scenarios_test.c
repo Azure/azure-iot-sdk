@@ -52,9 +52,10 @@
 #define E2E_TELEMETRY_TIMEOUT_S 90 /* publish + EH-side receive               */
 #define E2E_C2D_TIMEOUT_S 60
 #define E2E_METHOD_TIMEOUT_S 60
-#define E2E_TWIN_TIMEOUT_S 60 /* per REST-request drive                  */
+#define E2E_TWIN_TIMEOUT_S 70 /* per REST-request drive, above its 64 s of retries */
 #define E2E_TWIN_PROP_TIMEOUT_S 90 /* reported-property propagation poll      */
 #define E2E_CONNECT_TIMEOUT_S 45 /* cold service-AMQP connect retry budget  */
+#define E2E_SUBACK_TIMEOUT_S 30 /* feature-client SUBSCRIBEs acknowledged  */
 #define E2E_PUMP_MS 20 /* per do_work / poll slice                */
 
 /* ---- shared fixture ------------------------------------------------------- */
@@ -99,6 +100,38 @@ static e2e_fixture g_fixture;
 
 /* Advance the device MQTT stack for a single slice. */
 static void device_do_work(e2e_fixture* fx, int ms) { e2e_device_do_work(&fx->dev, ms); }
+
+/* Whether the hub session is CONNECTED with every SUBSCRIBE acknowledged. A teardown or a SUBACK
+ * timeout also clears the pending count, so CONNECTED is checked too. */
+static bool subscriptions_live(e2e_fixture* fx)
+{
+  return az_iot_connection_client_get_state(&fx->dev.conn, AZ_IOT_CONN_SCOPE_HUB)
+      == AZ_IOT_CONN_STATE_CONNECTED
+      && fx->dev.conn.subscription_gate.pending_count == 0;
+}
+
+/* Pump until the device's subscriptions are live, so a message the cloud sends next reaches one.
+ * Feature clients subscribe at init on a CONNECTED session. Returns false, after printing why, on
+ * timeout. */
+static bool wait_for_subscription_acks(e2e_fixture* fx)
+{
+  time_t start = time(NULL);
+  while (!subscriptions_live(fx) && (time(NULL) - start) < E2E_SUBACK_TIMEOUT_S)
+  {
+    device_do_work(fx, E2E_PUMP_MS);
+  }
+  if (subscriptions_live(fx))
+  {
+    return true;
+  }
+  print_error(
+      "subscriptions not live after %d s: hub %s, %zu SUBSCRIBE(s) unacknowledged\n",
+      E2E_SUBACK_TIMEOUT_S,
+      az_iot_connection_state_to_string(
+          az_iot_connection_client_get_state(&fx->dev.conn, AZ_IOT_CONN_SCOPE_HUB)),
+      fx->dev.conn.subscription_gate.pending_count);
+  return false;
+}
 
 /* ---- unique correlation markers ------------------------------------------- */
 
@@ -187,8 +220,7 @@ static int detach_feature_client(void** state)
       break;
   }
   fx->attached = E2E_FEATURE_CLIENT_NONE;
-  /* Releases the AMQP/TLS connection before the next scenario (the Windows
-   * reference transport allows only one TLS connection at a time). */
+  /* Releases the AMQP/TLS connection before the next scenario. */
   az_iot_e2e_service_telemetry_watch_end(fx->service);
   return 0;
 }
@@ -218,8 +250,7 @@ static void test_telemetry(void** state)
    * transiently (observed on the Windows leg: the peer closes the connection
    * during open), so retry with a short backoff up to E2E_CONNECT_TIMEOUT_S,
    * pumping the device in between to keep its MQTT connection warm. Each
-   * attempt opens a brand-new connection (a failed one frees itself and
-   * releases the transport's single TLS slot). */
+   * attempt opens a brand-new connection (a failed one frees itself). */
   bool watching = az_iot_e2e_service_telemetry_watch_begin(fx->service);
   for (time_t connect_start = time(NULL);
        !watching && (time(NULL) - connect_start) < E2E_CONNECT_TIMEOUT_S;)
@@ -338,17 +369,13 @@ static void c2d_send_and_receive(
   fx->attached = E2E_FEATURE_CLIENT_C2D;
   assert_int_equal(az_iot_mqttv3_c2d_client_set_handler(&fx->client.c2d, on_c2d, cctx), AZ_IOT_OK);
 
-  /* Give the subscription a few work slices to settle before the cloud sends. */
-  for (int i = 0; i < 20; ++i)
-  {
-    device_do_work(fx, E2E_PUMP_MS);
-  }
+  assert_true(wait_for_subscription_acks(fx));
 
   /* The service C2D send opens its own short-lived AMQP connection, whose cold
    * handshake can be refused transiently (same Windows "peer closed the
    * connection" as telemetry). Retry with a short backoff up to
    * E2E_CONNECT_TIMEOUT_S, pumping the device in between; each attempt opens a
-   * fresh connection (a failed one tears itself down and releases the TLS slot). */
+   * fresh connection (a failed one tears itself down). */
   bool sent = az_iot_e2e_service_send_c2d_with_properties(
       fx->service,
       fx->dev.device_id,
@@ -458,10 +485,7 @@ static void test_direct_method(void** state)
           &fx->client.direct_method, on_method, &fx->client.direct_method),
       AZ_IOT_OK);
 
-  for (int i = 0; i < 20; ++i)
-  {
-    device_do_work(fx, E2E_PUMP_MS);
-  }
+  assert_true(wait_for_subscription_acks(fx));
 
   assert_true(
       az_iot_e2e_service_method_invoke_begin(fx->service, fx->dev.device_id, "echo", "\"ping\""));
@@ -565,10 +589,7 @@ static void test_twin(void** state)
       az_iot_mqttv3_twin_client_set_desired_handler(&fx->client.twin, on_desired, &dctx),
       AZ_IOT_OK);
 
-  for (int i = 0; i < 20; ++i)
-  {
-    device_do_work(fx, E2E_PUMP_MS);
-  }
+  assert_true(wait_for_subscription_acks(fx));
 
   char desired_json[128];
   snprintf(desired_json, sizeof(desired_json), "{\"cfg\":\"%s\"}", dctx.expected);

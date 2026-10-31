@@ -17,10 +17,9 @@
  * @brief Most steps an update manifest may have. Device Update allows 10.
  *
  * With AZ_IOT_SU_MAX_FILE_COUNT and AZ_IOT_SU_MAX_FILE_COUNT_PER_STEP, sizes the parsed manifest
- * az_iot_su_client embeds, and the azure-sdk-for-c request and install-result structures. A
- * manifest over any of them fails parsing, so its workflow fails. Set them with the CMake options
- * of the same names: azure-sdk-for-c, the SDK and the application must all be built with the same
- * values.
+ * az_iot_su_client embeds, and the update request. A manifest over any of them fails parsing, so
+ * its workflow fails. Set them with the CMake options of the same names: the SDK and the
+ * application must be built with the same values.
  */
 #ifndef AZ_IOT_SU_MAX_STEP_COUNT
 #define AZ_IOT_SU_MAX_STEP_COUNT 10
@@ -42,27 +41,6 @@
     || AZ_IOT_SU_MAX_FILE_COUNT_PER_STEP < 1                     \
     || AZ_IOT_SU_MAX_FILE_COUNT_PER_STEP > AZ_IOT_SU_MAX_FILE_COUNT
 #error "AZ_IOT_SU_MAX_*: each must be at least 1, and files per step at most the file count"
-#endif
-
-#ifndef _az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS
-#define _az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS AZ_IOT_SU_MAX_STEP_COUNT
-#endif
-#ifndef _az_IOT_ADU_CLIENT_MAX_TOTAL_FILE_COUNT
-#define _az_IOT_ADU_CLIENT_MAX_TOTAL_FILE_COUNT AZ_IOT_SU_MAX_FILE_COUNT
-#endif
-#ifndef _az_IOT_ADU_CLIENT_MAX_FILE_COUNT_PER_STEP
-#define _az_IOT_ADU_CLIENT_MAX_FILE_COUNT_PER_STEP AZ_IOT_SU_MAX_FILE_COUNT_PER_STEP
-#endif
-
-/* azure-sdk-for-c request and install-result types, re-exported below under software updates
- * names. */
-#include <azure/iot/az_iot_adu_client.h>
-
-#if _az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS != AZ_IOT_SU_MAX_STEP_COUNT  \
-    || _az_IOT_ADU_CLIENT_MAX_TOTAL_FILE_COUNT != AZ_IOT_SU_MAX_FILE_COUNT \
-    || _az_IOT_ADU_CLIENT_MAX_FILE_COUNT_PER_STEP != AZ_IOT_SU_MAX_FILE_COUNT_PER_STEP
-#error \
-    "azure-sdk-for-c limits differ from AZ_IOT_SU_MAX_*: set AZ_IOT_SU_MAX_*, and include az_iot_su.h before az_iot_adu_client.h"
 #endif
 
 #ifdef __cplusplus
@@ -132,13 +110,22 @@ extern "C"
     az_iot_su_client_update_manifest_file_hash hashes[AZ_IOT_SU_MAX_FILE_HASH_COUNT];
     /** Number of items in `hashes`. */
     uint32_t hashes_count;
+    /** MIME type; empty when absent. */
+    az_span mime_type;
+    /** The `properties` JSON object, unparsed; empty when absent. */
+    az_span properties;
+    /** `downloadHandler` id; empty when absent. Always empty for a related file. */
+    az_span download_handler_id;
+    /** First of this file's related files in the manifest's `related_files`. */
+    uint32_t related_files_index;
+    /** Number of this file's related files; 0 for a related file. */
+    uint32_t related_files_count;
   } az_iot_su_client_update_manifest_file;
 
   /**
    * @brief A parsed update manifest. Spans point into the manifest text.
    *
-   * Members the SDK does not use, such as `compatibility`, file `relatedFiles`,
-   * `downloadHandler`, `mimeType` and `properties`, are skipped.
+   * Members the SDK does not use, such as `compatibility`, are skipped.
    */
   typedef struct az_iot_su_client_update_manifest
   {
@@ -152,19 +139,73 @@ extern "C"
     az_iot_su_client_update_manifest_file files[AZ_IOT_SU_MAX_FILE_COUNT];
     /** Number of items in `files`. */
     uint32_t files_count;
+    /** Related files (`relatedFiles`) of all files, in caller or workspace storage; see
+     * az_iot_su_limits::max_related_files. Those past its capacity are left out. */
+    az_iot_su_client_update_manifest_file* related_files;
+    /** Number of items in `related_files`. */
+    uint32_t related_files_count;
     /** Creation date and time. */
     az_span create_date_time;
   } az_iot_su_client_update_manifest;
 
-  /* --- Upstream types (azure-sdk-for-c) ------------------------------------ */
+  /* --- Update request ------------------------------------------------------ */
 
-  typedef az_iot_adu_client_update_request az_iot_su_client_update_request;
-  typedef az_iot_adu_client_file_url az_iot_su_client_file_url;
-  typedef az_iot_adu_client_install_result az_iot_su_client_install_result;
+/** @brief Default agent version reported to the service (`agentVersion`). */
+#define AZ_IOT_SU_CLIENT_AGENT_VERSION "DU;agent/1.0.0"
 
-#define AZ_IOT_SU_CLIENT_SERVICE_ACTION_APPLY_DEPLOYMENT \
-  AZ_IOT_ADU_CLIENT_SERVICE_ACTION_APPLY_DEPLOYMENT
-#define AZ_IOT_SU_CLIENT_AGENT_VERSION AZ_IOT_ADU_CLIENT_AGENT_VERSION
+  /** @brief Action the service asks of the device. */
+  typedef enum az_iot_su_client_service_action
+  {
+    /** Apply the offered update. */
+    AZ_IOT_SU_CLIENT_SERVICE_ACTION_APPLY_DEPLOYMENT = 3,
+  } az_iot_su_client_service_action;
+
+  /** @brief The deployment an update request belongs to. */
+  typedef struct az_iot_su_client_workflow
+  {
+    /** Action to take. */
+    az_iot_su_client_service_action action;
+    /** Workflow (deployment) id. */
+    az_span id;
+    /** Time of the last retry of the deployment; empty when none. */
+    az_span retry_timestamp;
+  } az_iot_su_client_workflow;
+
+  /** @brief Download URL of an update file. */
+  typedef struct az_iot_su_client_file_url
+  {
+    /** File id, as in the manifest `files`. */
+    az_span id;
+    /** Download URL. */
+    az_span url;
+  } az_iot_su_client_file_url;
+
+  /** @brief An update request (`updateMetadata`). Spans point into the request text. */
+  typedef struct az_iot_su_client_update_request
+  {
+    /** Deployment the request belongs to. */
+    az_iot_su_client_workflow workflow;
+    /** Update manifest text, as signed. */
+    az_span update_manifest;
+    /** JWS over the manifest. */
+    az_span update_manifest_signature;
+    /** Download URL of each file and related file, in caller or workspace storage of
+     * AZ_IOT_SU_FILE_URL_CAPACITY() entries. */
+    az_iot_su_client_file_url* file_urls;
+    /** Number of items in `file_urls`. */
+    uint32_t file_urls_count;
+  } az_iot_su_client_update_request;
+
+  /** @brief Overall result of a workflow, reported to the service. */
+  typedef struct az_iot_su_client_install_result
+  {
+    /** Result code; AZ_IOT_SU_AGENT_RESULT_CODE_SUCCESS on success. */
+    int32_t result_code;
+    /** Extended result code; see AZ_IOT_SU_EXTENDED_RESULT(). */
+    int32_t extended_result_code;
+    /** Free-form result details. */
+    az_span result_details;
+  } az_iot_su_client_install_result;
 
   /* --- Result codes (returned by platform hooks) --------------------------- */
 
@@ -233,6 +274,15 @@ extern "C"
 #define AZ_IOT_SU_DEFAULT_MAX_OBSERVERS 4
 #endif
 
+/** @brief Default az_iot_su_limits::max_related_files: four for each of ten files. */
+#ifndef AZ_IOT_SU_DEFAULT_MAX_RELATED_FILES
+#define AZ_IOT_SU_DEFAULT_MAX_RELATED_FILES 40
+#endif
+
+/** @brief Download URLs an update request may carry: one per file and per related file. */
+#define AZ_IOT_SU_FILE_URL_CAPACITY(max_related_files) \
+  ((size_t)(AZ_IOT_SU_MAX_FILE_COUNT) + (size_t)(max_related_files))
+
 /** @brief Default az_iot_su_limits::max_update_size: the service's 64 KiB response ceiling. */
 #ifndef AZ_IOT_SU_DEFAULT_MAX_UPDATE_SIZE
 #define AZ_IOT_SU_DEFAULT_MAX_UPDATE_SIZE 65536
@@ -277,12 +327,12 @@ extern "C"
 /** @brief Persisted-state bytes beyond the update metadata and the step result details: header
  * (40 bytes) and trailer (16 fixed, 16 per step, 4 + 16 per file URL, then length-prefixed
  * workflow id, applied update id, channel state and the details of each step, 16 retry schedule,
- * 4 CRC). Grows with the upstream step and file limits. */
+ * 4 CRC). Grows with the step and file limits. */
 #ifndef AZ_IOT_SU_PERSIST_OVERHEAD
-#define AZ_IOT_SU_PERSIST_OVERHEAD                                                          \
-  (92u + (AZ_IOT_SU_WORKFLOW_ID_SIZE) + (AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE)                  \
-   + (AZ_IOT_SU_CHANNEL_STATE_MAX_SIZE) + 20u * (_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS) \
-   + 16u * (_az_IOT_ADU_CLIENT_MAX_TOTAL_FILE_COUNT))
+#define AZ_IOT_SU_PERSIST_OVERHEAD                                         \
+  (92u + (AZ_IOT_SU_WORKFLOW_ID_SIZE) + (AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE) \
+   + (AZ_IOT_SU_CHANNEL_STATE_MAX_SIZE) + 20u * (AZ_IOT_SU_MAX_STEP_COUNT) \
+   + 16u * (AZ_IOT_SU_MAX_FILE_COUNT))
 #endif
 
 /**
@@ -318,12 +368,16 @@ extern "C"
 #error "AZ_IOT_SU_PERSIST_MAX_ATTEMPTS must be between 1 and 0xFFFFFFFF"
 #endif
 
+/** @brief Persisted bytes per download URL beyond AZ_IOT_SU_MAX_FILE_COUNT. */
+#define AZ_IOT_SU_PERSIST_URL_RECORD_SIZE 16
+
 /** @brief Largest blob passed to persist_workflow_state_fn for a client with these
- * az_iot_su_limits::max_update_size and result_details_size; size storage for this. The format
- * version is internal and checked by az_iot_su_client_resume(). */
-#define AZ_IOT_SU_STATE_BLOB_MAX_SIZE(max_update_size, result_details_size) \
-  ((size_t)(max_update_size) + (size_t)AZ_IOT_SU_PERSIST_OVERHEAD           \
-   + (size_t)(_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS) * (size_t)(result_details_size))
+ * az_iot_su_limits::max_update_size, result_details_size and max_related_files; size storage for
+ * this. The format version is internal and checked by az_iot_su_client_resume(). */
+#define AZ_IOT_SU_STATE_BLOB_MAX_SIZE(max_update_size, result_details_size, max_related_files) \
+  ((size_t)(max_update_size) + (size_t)AZ_IOT_SU_PERSIST_OVERHEAD                              \
+   + (size_t)(AZ_IOT_SU_MAX_STEP_COUNT) * (size_t)(result_details_size)                        \
+   + (size_t)(max_related_files) * (size_t)AZ_IOT_SU_PERSIST_URL_RECORD_SIZE)
 
   /* --- Internal fine-grained state enum ------------------------------------ */
 
@@ -459,6 +513,55 @@ extern "C"
 
     void* user_ctx;
   } az_iot_su_platform_hooks;
+
+  /* --- Download handlers ------------------------------------------------------------------- */
+
+/** @brief Longest az_iot_su_download_handler::id, in bytes (the import manifest's limit). */
+#define AZ_IOT_SU_MAX_DOWNLOAD_HANDLER_ID_SIZE 64
+
+  /**
+   * @brief Produces a file from a related file instead of downloading it in full, for files whose
+   * manifest entry names this handler's id (e.g. a delta handler, "microsoft/delta:1").
+   *
+   * The client does not call download handlers yet; registering one only validates it.
+   * Hooks return AZ_IOT_SU_RESULT_* codes and MAY return IN_PROGRESS to be re-invoked on the next
+   * do_work().
+   */
+  typedef struct az_iot_su_download_handler
+  {
+    /** Handler id matched against a file's downloadHandler id: 1 to
+     * AZ_IOT_SU_MAX_DOWNLOAD_HANDLER_ID_SIZE printable ASCII characters, no space. Must outlive
+     * the client. */
+    const char* id;
+
+    /**
+     * Choose the related file of @p file to download. Set @p out_related_file_index (0 to the
+     * file's related-file count - 1) and return SUCCESS. Any other result except IN_PROGRESS
+     * means no related file is usable: @p file is downloaded in full.
+     */
+    int32_t (*choose_related_file_fn)(
+        const az_iot_su_client_update_manifest* manifest,
+        const az_iot_su_client_update_manifest_file* file,
+        uint32_t* out_related_file_index,
+        void* user_ctx);
+
+    /**
+     * Build @p file, the manifest's file @p file_index, from the downloaded @p related_file.
+     * Core then verifies @p file's hash with read_file_fn; on failure @p file is downloaded in
+     * full.
+     */
+    int32_t (*build_file_from_related_fn)(
+        const az_iot_su_client_update_manifest_file* file,
+        const az_iot_su_client_update_manifest_file* related_file,
+        uint32_t file_index,
+        void* user_ctx);
+
+    /** OPTIONAL (MAY be NULL). Called once a workflow that used this handler succeeds, e.g. to
+     * keep its files as sources for later updates. */
+    void (*workflow_succeeded_fn)(const az_iot_su_client_update_manifest* manifest, void* user_ctx);
+
+    void* user_ctx;
+  } az_iot_su_download_handler;
 
   /* --- Root key store (owned and managed by software updates core) ---------------------- */
 
@@ -958,7 +1061,7 @@ extern "C"
     char extended_result_codes[16];
     bool has_installed;
     char installed[AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE]; /**< provider, name, version; NUL each */
-    az_iot_su_step_result step_results[_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS];
+    az_iot_su_step_result step_results[AZ_IOT_SU_MAX_STEP_COUNT];
     int32_t step_results_count;
   } az_iot_su_sent_report_internal;
 
@@ -993,6 +1096,10 @@ extern "C"
       /* Current deployment, parsed from the `updateMetadata` payload. */
       az_iot_su_client_update_request current_request;
       az_iot_su_client_update_manifest current_manifest;
+      /** Workspace storage behind current_request.file_urls and current_manifest.related_files. */
+      az_iot_su_client_file_url* file_url_storage;
+      az_iot_su_client_update_manifest_file* related_file_storage;
+      size_t max_related_files;
       bool have_request;
       uint32_t current_step;
       uint32_t current_file;
@@ -1051,7 +1158,7 @@ extern "C"
       size_t request_buffer_size; /**< az_iot_su_limits::max_update_size. */
       size_t request_len;
       uint8_t* persist_blob; /**< Workflow record and resume load buffer. */
-      size_t persist_blob_size; /**< AZ_IOT_SU_STATE_BLOB_MAX_SIZE(request_buffer_size). */
+      size_t persist_blob_size; /**< AZ_IOT_SU_STATE_BLOB_MAX_SIZE() of the limits. */
       uint8_t* terminal_blob; /**< Terminal record. */
       uint8_t* scratch; /**< Decode and verification scratch. */
       size_t scratch_size; /**< az_iot_su_limits::scratch_size. */
@@ -1062,7 +1169,7 @@ extern "C"
 
       /* Accumulated result reported to the service. */
       az_iot_su_client_install_result install_result;
-      az_iot_su_step_result step_results[_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS];
+      az_iot_su_step_result step_results[AZ_IOT_SU_MAX_STEP_COUNT];
       int32_t step_results_count;
 
       /** Workspace part holding the copied property strings. */
@@ -1137,6 +1244,9 @@ extern "C"
 
       /** Library mode: verified updates are handed to the application. */
       bool library_mode;
+      /** az_iot_su_client_config_options::download_handlers, referenced. */
+      const az_iot_su_download_handler* download_handlers;
+      size_t download_handler_count;
       /** The hand-off events are being dispatched. */
       bool delegating;
       /** A terminal report arrived during the hand-off; applied after it. */
@@ -1175,7 +1285,7 @@ extern "C"
        * refuses a newer one. */
       az_iot_su_sent_report_internal sent_terminal[2];
       uint8_t sent_terminal_slot; /**< Index of the latest sent_terminal entry. */
-      /* Kept last: earlier offsets, and the padding su_client.c asserts on, stay unchanged. */
+      /* Kept last: earlier offsets stay unchanged. */
       uint8_t* step_details; /**< result_details_size bytes per step. */
       uint8_t* sent_details; /**< Two sent_terminal slots of result_details_size bytes per step. */
       size_t step_details_size; /**< az_iot_su_limits::result_details_size. */
@@ -1214,7 +1324,7 @@ extern "C"
   {
     /** Largest update metadata accepted, in bytes; a larger one raises
      * AZ_IOT_SU_EVENT_UPDATE_REFUSED. Also bounds the persisted state:
-     * AZ_IOT_SU_STATE_BLOB_MAX_SIZE(max_update_size). At least 256. */
+     * AZ_IOT_SU_STATE_BLOB_MAX_SIZE(). At least 256. */
     size_t max_update_size;
     /** Decode and signature-verification scratch, in bytes. A signature part or file
      * URL that does not fit is refused. At least 256. */
@@ -1233,6 +1343,10 @@ extern "C"
     /** Most observers az_iot_su_client_add_observer() can register. At most
      * AZ_IOT_SU_MAX_LIMIT_COUNT. */
     size_t max_observers;
+    /** Most related files (`relatedFiles`, e.g. deltas) kept from a manifest; more are left out,
+     * so their files are downloaded in full. Also allows as many more download URLs, see
+     * AZ_IOT_SU_FILE_URL_CAPACITY(). 0 keeps none. At most AZ_IOT_SU_MAX_LIMIT_COUNT. */
+    size_t max_related_files;
   } az_iot_su_limits;
 
 /**
@@ -1246,13 +1360,18 @@ extern "C"
     device_properties_size,                                                                    \
     result_details_size,                                                                       \
     max_root_keys,                                                                             \
-    max_observers)                                                                             \
+    max_observers,                                                                             \
+    max_related_files)                                                                         \
   ((size_t)(max_update_size) + (size_t)(scratch_size) + (size_t)(max_message_size)             \
    + 2u * (size_t)(device_properties_size) + (size_t)AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE          \
    + 2u * (size_t)AZ_IOT_SU_PERSIST_OVERHEAD                                                   \
-   + 5u * (size_t)(_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS) * (size_t)(result_details_size)  \
+   + 5u * (size_t)(AZ_IOT_SU_MAX_STEP_COUNT) * (size_t)(result_details_size)                   \
    + (size_t)(result_details_size) + 1u + (size_t)(max_root_keys) * sizeof(az_iot_su_root_key) \
    + (size_t)(max_observers) * sizeof(az_iot_su_observer_registration)                         \
+   + AZ_IOT_SU_FILE_URL_CAPACITY(max_related_files) * sizeof(az_iot_su_client_file_url)        \
+   + (size_t)(max_related_files)                                                               \
+       * (sizeof(az_iot_su_client_update_manifest_file)                                        \
+          + (size_t)AZ_IOT_SU_PERSIST_URL_RECORD_SIZE)                                         \
    + sizeof(az_iot_su_workspace_alignment) - 1u)
 
 /** @brief Workspace bytes for az_iot_su_limits_default(). */
@@ -1264,13 +1383,15 @@ extern "C"
       AZ_IOT_SU_DEVICE_PROPERTIES_BUFFER_SIZE, \
       AZ_IOT_SU_DEFAULT_RESULT_DETAILS_SIZE,   \
       AZ_IOT_SU_DEFAULT_MAX_ROOT_KEYS,         \
-      AZ_IOT_SU_DEFAULT_MAX_OBSERVERS)
+      AZ_IOT_SU_DEFAULT_MAX_OBSERVERS,         \
+      AZ_IOT_SU_DEFAULT_MAX_RELATED_FILES)
 
   /**
    * @brief Returns the default limits: AZ_IOT_SU_DEFAULT_MAX_UPDATE_SIZE,
    * AZ_IOT_SU_VERIFY_SCRATCH_SIZE, AZ_IOT_SU_DEFAULT_MAX_MESSAGE_SIZE,
    * AZ_IOT_SU_DEVICE_PROPERTIES_BUFFER_SIZE, AZ_IOT_SU_DEFAULT_RESULT_DETAILS_SIZE,
-   * AZ_IOT_SU_DEFAULT_MAX_ROOT_KEYS and AZ_IOT_SU_DEFAULT_MAX_OBSERVERS.
+   * AZ_IOT_SU_DEFAULT_MAX_ROOT_KEYS, AZ_IOT_SU_DEFAULT_MAX_OBSERVERS and
+   * AZ_IOT_SU_DEFAULT_MAX_RELATED_FILES.
    *
    * @return The default limits.
    */
@@ -1317,6 +1438,10 @@ extern "C"
     /** What a new workflow id does to a workflow that may not be replaced.
      * Default AZ_IOT_SU_REPLACEMENT_DEFER. */
     az_iot_su_replacement_policy replacement_policy;
+    /** Download handlers, with distinct ids. Referenced, not copied: must outlive the client.
+     * Need hooks->read_file_fn; not allowed with library_mode. */
+    const az_iot_su_download_handler* download_handlers;
+    size_t download_handler_count; /**< Entries in download_handlers. */
   } az_iot_su_client_config_options;
 
   /**
@@ -1373,7 +1498,8 @@ extern "C"
    * @retval AZ_IOT_ERR_INVALID_ARG A required field is NULL, the connection
    *   client has no crypto backend, or the device properties are malformed
    *   (including zero compatibility properties), replacement_policy is not
-   *   an az_iot_su_replacement_policy value, or a limit is out of range. Also
+   *   an az_iot_su_replacement_policy value, a limit is out of range, or a download handler is
+   *   invalid (NULL id or hook, bad or duplicate id, no read_file_fn, library_mode). Also
    *   returned, with an error log and the client untouched, when any
    *   az_iot_su_client_layout field differs between the application and SDK builds.
    * @retval AZ_IOT_ERR_NOT_SUPPORTED The crypto backend has no verify_rs256, or
@@ -1459,6 +1585,37 @@ extern "C"
 
   /** Get the current software updates agent state. */
   az_iot_su_state az_iot_su_client_get_state(const az_iot_su_client* client);
+
+  /**
+   * @brief Get the update the client is working on, in either mode.
+   *
+   * The request (`workflowId`, the manifest text, its signature, the file URLs)
+   * is available from AZ_IOT_SU_STATE_MANIFEST_RECEIVED until the client returns
+   * to Idle; `request->update_manifest` is always the unescaped text the
+   * signature covers. It is not verified before the state leaves
+   * AZ_IOT_SU_STATE_VERIFYING_MANIFEST. After az_iot_su_client_resume() the
+   * signature and retry timestamp are empty.
+   *
+   * The parsed manifest is available once verified, until the workflow ends;
+   * not in AZ_IOT_SU_STATE_FAILED. In library mode both are the ones
+   * AZ_IOT_SU_EVENT_UPDATE_AVAILABLE carries.
+   *
+   * Both are owned by the client and valid until it returns to Idle, a new
+   * workflow replaces this one (managed client only; see
+   * AZ_IOT_SU_EVENT_WORKFLOW_STATE_CHANGED), or it is deinitialized. Call on the
+   * do_work() thread, or serialize with it; legal from an observer.
+   *
+   * @param[in] client The client.
+   * @param[out] out_request The current request; NULL on error.
+   * @param[out] out_manifest The verified manifest, or NULL when there is none yet.
+   * @return AZ_IOT_OK when a workflow is in progress.
+   * @retval AZ_IOT_ERR_INVALID_ARG A NULL argument.
+   * @retval AZ_IOT_ERR_NOT_FOUND No workflow is in progress.
+   */
+  AZ_NODISCARD az_iot_result az_iot_su_client_get_current_update(
+      const az_iot_su_client* client,
+      const az_iot_su_client_update_request** out_request,
+      const az_iot_su_client_update_manifest** out_manifest);
 
   /**
    * @brief Library mode: report the application's progress or outcome for the
@@ -1742,13 +1899,55 @@ extern "C"
       size_t* out_read,
       void* read_ctx);
 
+  /** @brief Caller storage for the arrays az_iot_su_parse_update_request() fills. */
+  typedef struct az_iot_su_update_request_storage
+  {
+    /** AZ_IOT_SU_FILE_URL_CAPACITY(max_related_files) entries. */
+    az_iot_su_client_file_url* file_urls;
+    /** max_related_files entries; may be NULL when max_related_files is 0. */
+    az_iot_su_client_update_manifest_file* related_files;
+    /** Related files to keep; see az_iot_su_limits::max_related_files. At most
+     * AZ_IOT_SU_MAX_LIMIT_COUNT. */
+    size_t max_related_files;
+  } az_iot_su_update_request_storage;
+
+  /**
+   * @brief Verify a manifest's signature chain without a client.
+   *
+   * The check the client makes before it trusts a manifest: JWS/SJWK, root-key
+   * `kid`, RS256, both RSA checks, SHA-256 binding. Nothing is parsed or
+   * modified. Uses AZ_IOT_SU_VERIFY_SCRATCH_SIZE bytes of stack.
+   *
+   * @param[in] manifest The unescaped manifest text the signature covers, as in
+   *   az_iot_su_client_update_request::update_manifest.
+   * @param[in] signature The compact `updateManifestSignature`.
+   * @param[in] crypto Backend; needs verify_rs256.
+   * @param[in] root_keys Trusted root keys, e.g. az_iot_su_microsoft_root_keys().
+   * @param[in] root_key_count Entries in @p root_keys.
+   * @param[out] out_error Why it failed: an AZ_IOT_SU_MANIFEST_ERROR_* sub-code,
+   *   reported as AZ_IOT_SU_EXTENDED_RESULT(AZ_IOT_SU_FACILITY_MANIFEST, code);
+   *   0 otherwise. May be NULL.
+   * @return AZ_IOT_OK when the manifest verifies.
+   * @retval AZ_IOT_ERR_AUTH The manifest or its signature is rejected.
+   * @retval AZ_IOT_ERR_INTERNAL The crypto backend failed
+   *   (AZ_IOT_SU_MANIFEST_ERROR_CRYPTO); not a rejection.
+   * @retval AZ_IOT_ERR_INVALID_ARG An invalid @p crypto, or NULL @p root_keys
+   *   with a non-zero @p root_key_count.
+   * @retval AZ_IOT_ERR_NOT_SUPPORTED @p crypto has no verify_rs256.
+   */
+  AZ_NODISCARD az_iot_result az_iot_su_verify_manifest(
+      az_span manifest,
+      az_span signature,
+      const az_iot_crypto* crypto,
+      const az_iot_su_root_key* root_keys,
+      size_t root_key_count,
+      uint32_t* out_error);
+
   /**
    * @brief Verify and parse an `updateMetadata` object without a client.
    *
-   * Verifies the manifest trust chain (JWS/SJWK, root-key `kid`, RS256, both
-   * RSA checks, SHA-256 binding), then parses the manifest. Fail-closed:
-   * non-NULL outputs are zeroed on every error. Uses
-   * AZ_IOT_SU_VERIFY_SCRATCH_SIZE bytes of stack for the decoded signature.
+   * Verifies the manifest with az_iot_su_verify_manifest(), then parses it.
+   * Fail-closed: non-NULL outputs are zeroed on every error.
    *
    * @param request_json   `{ workflowId, updateManifest, updateManifestSignature,
    *                       fileUrls }` as the service sends it. The
@@ -1760,20 +1959,25 @@ extern "C"
    * @param crypto         Backend; needs verify_rs256.
    * @param root_keys      Trusted root keys, e.g. az_iot_su_microsoft_root_keys().
    * @param root_key_count Entries in @p root_keys.
+   * @param storage        Arrays behind the outputs' file URLs and related files; must outlive
+   *                       them.
    * @param out_request    Workflow id and file URLs.
    * @param out_manifest   The verified manifest.
    * @return AZ_IOT_OK; AZ_IOT_ERR_NOT_FOUND without `workflowId`;
    * AZ_IOT_ERR_INVALID_ARG on bad arguments or malformed input;
    * AZ_IOT_ERR_NOT_ENOUGH_SPACE when the update exceeds AZ_IOT_SU_MAX_STEP_COUNT,
-   * AZ_IOT_SU_MAX_FILE_COUNT, AZ_IOT_SU_MAX_FILE_COUNT_PER_STEP or 2 hashes per file;
+   * AZ_IOT_SU_MAX_FILE_COUNT, AZ_IOT_SU_MAX_FILE_COUNT_PER_STEP, 2 hashes per file or the
+   * file URL capacity of @p storage;
    * AZ_IOT_ERR_NOT_SUPPORTED when @p crypto has no verify_rs256;
-   * AZ_IOT_ERR_AUTH when verification fails.
+   * AZ_IOT_ERR_AUTH when verification fails; AZ_IOT_ERR_INTERNAL when the
+   * crypto backend fails. az_iot_su_verify_manifest() reports why.
    */
   AZ_NODISCARD az_iot_result az_iot_su_parse_update_request(
       az_span request_json,
       const az_iot_crypto* crypto,
       const az_iot_su_root_key* root_keys,
       size_t root_key_count,
+      const az_iot_su_update_request_storage* storage,
       az_iot_su_client_update_request* out_request,
       az_iot_su_client_update_manifest* out_manifest);
 

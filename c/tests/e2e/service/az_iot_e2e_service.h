@@ -188,10 +188,7 @@ extern "C"
    *        functions (the *_begin calls and az_iot_e2e_service_request_poll);
    *        the rest are handles from az_iot_e2e_service_method_invoke_start.
    *
-   * Each request is its own TLS connection. OpenSSL (Linux/macOS) keeps state
-   * per connection; the Windows reference transport (Schannel) keeps ONE global
-   * TLS session, so on Windows only one request -- handle or not -- may be in
-   * flight at a time. Suites that use handles are Linux-only.
+   * Each request is its own TLS connection.
    */
 #define AZ_IOT_E2E_SERVICE_MAX_REQUESTS 8
 
@@ -269,7 +266,8 @@ extern "C"
   /* Advance the in-flight REST request without blocking the device. On completion
    * (returns 1) writes the HTTP status to @p out_http_status and the response body
    * (NUL-terminated, truncated to fit) to @p resp_buf. Returns 0 while pending,
-   * 1 when complete, -1 on error. */
+   * 1 when complete, -1 on error; on -1 the status is still written when a status
+   * line arrived. */
   int az_iot_e2e_service_request_poll(
       az_iot_e2e_service* svc,
       int* out_http_status,

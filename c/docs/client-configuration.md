@@ -50,9 +50,6 @@ and/or `AZ_IOT_USE_INSTALLED_PAHO` and put their prefixes on `CMAKE_PREFIX_PATH`
   `az_win32` or `az_noplatform`) libraries under `lib`. Debug builds link libraries of the same
   names from `debug/lib` (vcpkg layout) when present. Consumers of the installed SDK need exactly the
   azure-sdk-for-c version it was built with.
-  It must also be built with the [software updates manifest limits](#software-updates-manifest-limits)
-  of this build; configuration fails otherwise (checked by running a small program, so not when
-  cross-compiling).
   [eng/install-deps.sh](../eng/install-deps.sh) (POSIX) builds such a prefix, and Paho's, from the pinned
   commits.
 - Paho is found with `find_package(eclipse-paho-mqtt-c CONFIG)`; its static, SSL-capable target
@@ -175,9 +172,8 @@ Entry counts are run-time values in `az_iot_connection_client_options::limits`
 - `az_iot_connection_client_get_workspace_size(&limits)`: bytes needed, any alignment.
 - `AZ_IOT_CONNECTION_CLIENT_WORKSPACE_SIZE(...)`: the same as a constant expression, for static
   arrays. `AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE`: the same for the defaults.
-- With `options.workspace` NULL, the client uses its own area, sized for the built-in defaults
-  below; a limit above one of them then fails `init()` with `AZ_IOT_ERR_INVALID_ARG`. A workspace
-  that is too small fails it with `AZ_IOT_ERR_NOT_ENOUGH_SPACE` and logs the size needed.
+- The workspace is required: `init()` fails with `AZ_IOT_ERR_INVALID_ARG` when it is NULL, and
+  with `AZ_IOT_ERR_NOT_ENOUGH_SPACE` when it is too small; both log the size needed.
 - Defining one of the former macros (`AZ_IOT_MAX_PENDING_PUBACKS`, `AZ_IOT_DPS_HOST_BUF`, ...)
   before including the header is a compile error.
 
@@ -238,6 +234,7 @@ Defaults used when the matching option is left at 0:
 | `AZ_IOT_DEFAULT_SUBSCRIPTION_ACK_TIMEOUT_SECONDS` | 60 | `subscription_ack_timeout_seconds` (also the mqttv5 presence SUBACK) |
 | `AZ_IOT_DEFAULT_SESSION_EXPIRY_SECONDS` | 3600 | `session_expiry_seconds` (mqttv5) |
 | `AZ_IOT_DEFAULT_MAX_UNCONFIRMED_DELIVERY_TIMEOUT_MS` | 300000 | `max_unconfirmed_delivery_timeout_ms`: how long an SDK message with no Message Expiry is kept for confirmation or resend (mqttv5 direct method results and notices); cannot be disabled |
+| `AZ_IOT_DEFAULT_CSR_RESPONSE_TIMEOUT_MS` | 120000 | `csr_response_timeout_ms`: how long a certificate renewal waits for a terminal response, restarted by a `202` |
 | `AZ_IOT_DPS_HOLD_TIMEOUT_MS` | 60000 | `dps_hold_timeout_ms` |
 | `AZ_IOT_DEFAULT_MAX_HUB_CONNECT_ATTEMPTS_BEFORE_REPROVISION` | 50 | `dps.max_hub_connect_attempts_before_reprovision`, set by `az_iot_connection_client_options_default()` |
 | `AZ_IOT_DEFAULT_IDENTITY_RECOVERY_INITIAL_DELAY_MS` | 300000 | `identity_recovery.policy.initial_delay_ms`, set by `az_iot_connection_client_options_default()` |
@@ -280,10 +277,11 @@ error.
 | --- | --- | --- |
 | `AZ_IOT_SU_DEFAULT_MAX_ROOT_KEYS` | 8 | Default `az_iot_su_limits::max_root_keys`. |
 | `AZ_IOT_SU_DEFAULT_MAX_OBSERVERS` | 4 | Default `az_iot_su_limits::max_observers`. |
+| `AZ_IOT_SU_DEFAULT_MAX_RELATED_FILES` | 40 | Default `az_iot_su_limits::max_related_files`: four for each of ten files. |
 | `AZ_IOT_SU_DEFAULT_MAX_UPDATE_SIZE` | 65536 | Default `az_iot_su_limits::max_update_size`. |
 | `AZ_IOT_SU_DEFAULT_MAX_MESSAGE_SIZE` | `AZ_IOT_SU_MIN_MESSAGE_SIZE` (3456) | Default `az_iot_su_limits::max_message_size`. |
 | `AZ_IOT_SU_DEFAULT_RESULT_DETAILS_SIZE` | 128 | Default `az_iot_su_limits::result_details_size`. |
-| `AZ_IOT_SU_VERIFY_SCRATCH_SIZE` | 8192 | Stack used by `az_iot_su_parse_update_request()` for the decoded signature (JWS header with the signing key, and the signatures), and the default `az_iot_su_limits::scratch_size`. A signature that does not fit fails with `AZ_IOT_ERR_AUTH` and an `ERROR` log naming the part that is too large. |
+| `AZ_IOT_SU_VERIFY_SCRATCH_SIZE` | 8192 | Stack used by `az_iot_su_verify_manifest()` (and so `az_iot_su_parse_update_request()`) for the decoded signature (JWS header with the signing key, and the signatures), and the default `az_iot_su_limits::scratch_size`. A signature that does not fit fails with `AZ_IOT_ERR_AUTH` and an `ERROR` log naming the part that is too large. |
 | `AZ_IOT_SU_WORKFLOW_ID_SIZE` (fixed) | 128 | Workflow ID kept for reporting, duplicate detection and persistence. A deployment with a longer ID is refused: nothing is processed or reported, and `AZ_IOT_SU_EVENT_UPDATE_REFUSED` is raised with `AZ_IOT_ERR_NOT_ENOUGH_SPACE`. |
 | `AZ_IOT_SU_RETRY_TIMESTAMP_SIZE` (fixed) | 64 | Copy of the deployment's `retryTimestamp` (ISO-8601, about 28 characters; not persisted). A longer one is treated as absent. |
 | `AZ_IOT_SU_PERSIST_MAX_ATTEMPTS` | 5 | Consecutive failed state writes before the client stops retrying (1 to `0xFFFFFFFF`). |
@@ -296,49 +294,48 @@ The software updates client's variable-size memory is not set by macros. The app
 
 | Limit | Default | Bounds |
 | --- | --- | --- |
-| `max_update_size` | 65536 | Copy of the update metadata (manifest, signature and file URLs); a one-file offer is about 5 KiB. A larger one is refused: `AZ_IOT_SU_EVENT_UPDATE_REFUSED` with `AZ_IOT_ERR_NOT_ENOUGH_SPACE`. Also bounds the persisted state, `AZ_IOT_SU_STATE_BLOB_MAX_SIZE(max_update_size)`. |
+| `max_update_size` | 65536 | Copy of the update metadata (manifest, signature and file URLs); a one-file offer is about 5 KiB. A larger one is refused: `AZ_IOT_SU_EVENT_UPDATE_REFUSED` with `AZ_IOT_ERR_NOT_ENOUGH_SPACE`. Also bounds the persisted state, `AZ_IOT_SU_STATE_BLOB_MAX_SIZE(max_update_size, result_details_size, max_related_files)`. |
 | `scratch_size` | 8192 | Signature verification and string decoding. A signature part that does not fit fails verification; a file URL that does not fit is refused with `AZ_IOT_ERR_NOT_ENOUGH_SPACE`. |
 | `max_message_size` | 3456 | Update-check and status-report bodies. At least `AZ_IOT_SU_MIN_MESSAGE_SIZE` (2176 plus 128 per `AZ_IOT_SU_MAX_STEP_COUNT`; 3456 by default), which fits the largest status report the client builds, so no report is refused for its size. |
 | `device_properties_size` | 512 | Device-property strings (UTF-8 bytes, NUL terminators included), the only limit on compatibility properties besides their count. Size it with `az_iot_su_device_properties_buffer_size()` of the largest set the application will pass, including later `az_iot_su_client_update_device_properties()` calls; a set that does not fit is refused with `AZ_IOT_ERR_NOT_ENOUGH_SPACE` and an `ERROR` log of the bytes needed. Counted twice, plus `AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE`: the client's copy and the update check's, which may also carry the applied update ID. |
 | `max_root_keys` | 8 | Root keys `root_keys` may hold; more fail `az_iot_su_client_init()` with `AZ_IOT_ERR_NOT_ENOUGH_SPACE`. At most `AZ_IOT_SU_MAX_LIMIT_COUNT` (1024). |
 | `max_observers` | 4 | Observers `az_iot_su_client_add_observer()` can register; one more returns `AZ_IOT_ERR_NOT_ENOUGH_SPACE`. At most `AZ_IOT_SU_MAX_LIMIT_COUNT` (1024). |
+| `max_related_files` | 40 | Related files (`relatedFiles`, e.g. delta updates) kept from a manifest, across all its files; more are left out with a `WARNING` log, so their files are downloaded in full. Also allows as many more `fileUrls`: the request holds `AZ_IOT_SU_FILE_URL_CAPACITY(max_related_files)` (`AZ_IOT_SU_MAX_FILE_COUNT` plus this). Each costs `sizeof(az_iot_su_client_update_manifest_file)` + `sizeof(az_iot_su_client_file_url)` + 16 persisted bytes (216 on 64-bit). 0 keeps none. At most `AZ_IOT_SU_MAX_LIMIT_COUNT` (1024). |
 | `result_details_size` | 128 | `resultDetails` kept per step (`az_iot_su_client_set_step_result_details()`); at most 1024. Counted five times per step: the details, both persisted records and two copies of the reports sent. |
 
-The workspace also holds `2 * AZ_IOT_SU_PERSIST_OVERHEAD` bytes for the persisted-state records and
-up to `sizeof(az_iot_su_workspace_alignment) - 1` bytes to align the root keys and observers. These
-values do not change the layout of `az_iot_su_client`.
+The workspace also holds `2 * AZ_IOT_SU_PERSIST_OVERHEAD` bytes for the persisted-state records,
+`AZ_IOT_SU_MAX_FILE_COUNT` file URLs, and up to `sizeof(az_iot_su_workspace_alignment) - 1` bytes to
+align the root keys, observers, related files and file URLs. These values do not change the layout
+of `az_iot_su_client`.
 
 #### Software updates manifest limits
 
 `AZ_IOT_SU_MAX_STEP_COUNT`, `AZ_IOT_SU_MAX_FILE_COUNT` and `AZ_IOT_SU_MAX_FILE_COUNT_PER_STEP` bound
-an update: steps in its manifest, files in its manifest and `fileUrls`, and files one step
-references. The defaults (10, 10, 10) are the Device Update limits, so no update it accepts is
-refused for its step or file count. An update over a limit is not installed and the limit is named
-in an `ERROR` log:
+an update: steps in its manifest, files in its manifest and (with `max_related_files`) `fileUrls`,
+and files one step references. The defaults (10, 10, 10) are the Device Update limits, so no update
+it accepts is refused for its step or file count. An update over a limit is not installed and the
+limit is named in an `ERROR` log:
 
-- more `fileUrls` than `AZ_IOT_SU_MAX_FILE_COUNT`: refused, nothing reported,
+- more `fileUrls` than `AZ_IOT_SU_FILE_URL_CAPACITY(max_related_files)`: refused, nothing reported,
   `AZ_IOT_SU_EVENT_UPDATE_REFUSED` with `AZ_IOT_ERR_NOT_ENOUGH_SPACE`;
 - a manifest over a limit, or with more than 2 hashes for a file: the workflow fails after
   manifest verification and is reported failed. `az_iot_su_parse_update_request()` returns
   `AZ_IOT_ERR_NOT_ENOUGH_SPACE`.
 
-They size the manifest structures `az_iot_su_client` embeds and the azure-sdk-for-c request and
-install-result structures it shares with the SDK, so azure-sdk-for-c, the SDK and the application
-must be built with the same values. Set them as CMake options of the SDK build; it applies them to
-azure-sdk-for-c (`az_iot_hub`) and to `az_iot_core` as public compile definitions, which reach the application through the `azure::iot::core` target and the
-`azure-iot-sdk-core` pkg-config file. `az_iot_su.h` refuses to compile with values that differ from
-azure-sdk-for-c's, and `az_iot_su_client_init()` refuses an application built with values that
-differ from the SDK's. An installed azure-sdk-for-c must be built with them (see
-[Installed dependencies](#installed-dependencies)).
+They size the manifest and request structures `az_iot_su_client` embeds, so the SDK and the
+application must be built with the same values. Set them as CMake options of the SDK build; it
+applies them to `az_iot_core` as public compile definitions, which reach the application through the
+`azure::iot::core` target and the `azure-iot-sdk-core` pkg-config file. `az_iot_su_client_init()`
+refuses an application built with values that differ from the SDK's.
 
 Smaller values save memory on constrained devices, for example
 `-DAZ_IOT_SU_MAX_STEP_COUNT=2 -DAZ_IOT_SU_MAX_FILE_COUNT=2`. Sizes on a 64-bit build:
 
 | | 2 steps, 2 files | 10 steps, 10 files (default) |
 | --- | --- | --- |
-| `az_iot_su_client` | 3952 | 7920 |
-| Default workspace (`AZ_IOT_SU_WORKSPACE_DEFAULT_SIZE`) | 80720 | 87440 |
-| `az_iot_su_client_update_manifest` (also on the stack of `az_iot_su_parse_update_request()`) | 464 | 3216 |
+| `az_iot_su_client` | 4008 | 7976 |
+| Default workspace (`AZ_IOT_SU_WORKSPACE_DEFAULT_SIZE`) | 89424 | 96400 |
+| `az_iot_su_client_update_manifest` (also on the stack of `az_iot_su_parse_update_request()`) | 592 | 3792 |
 | `AZ_IOT_SU_MIN_MESSAGE_SIZE` | 2432 | 3456 |
 
 #### Dispatch and logging
@@ -363,7 +360,7 @@ is granted only when usable at once: if tracked publishes in flight occupy its s
 | --- | --- | --- | --- |
 | mqttv3 and mqttv5 telemetry `send` | 1 per call | Only the shared pool | Shared pool; the callback is required. |
 | mqttv5 direct methods | Probe ack, result, abandon | `AZ_IOT_MQTTV5_DM_MAX_CONCURRENT` invocations. Not bounded: refused probes are also acknowledged, and refused probes past `AZ_IOT_MQTTV5_DM_NOTICE_QUEUE_MAX` are sent untracked. A result keeps its slot until acknowledged. | Reserves `2 × AZ_IOT_MQTTV5_DM_MAX_CONCURRENT` at init; init fails with `AZ_IOT_ERR_NOT_ENOUGH_SPACE` if they do not fit, or `AZ_IOT_ERR_BUSY` as above. Probe acks and results never go untracked: when all are in use they wait for the next PUBACK. Probe rejections and abandons leave one slot free per invocation that could still need one, and past that are sent untracked. |
-| Certificate renewal | 1 request | 1 operation at a time | Reserves 1 at init when `opts.csr_payload_buffer` is set. Cancel and timeout give it back at once. |
+| Certificate renewal | 1 request | 1 operation at a time | Reserves 1 at init when `opts.csr_payload_buffer` is set. Cancel, timeout and a session end give it back at once. |
 
 Not counted: twin and mqttv3 direct methods (QoS 0, bounded by `AZ_IOT_TWIN_MAX_PENDING` and
 `AZ_IOT_DM_MAX_INFLIGHT`), and the provisioning session (DPS registration, software updates).

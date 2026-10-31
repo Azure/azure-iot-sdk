@@ -127,7 +127,7 @@ static int teardown(void** state)
   if (fx)
   {
     az_iot_mqttv3_direct_method_client_deinit(&fx->dm);
-    az_iot_connection_client_deinit(&fx->conn);
+    az_iot_test_connection_client_deinit(&fx->conn);
     az_iot_mock_mqtt_factory_destroy(fx->factory);
     free(fx);
   }
@@ -344,7 +344,7 @@ static void a_request_from_another_client_is_refused(void** state)
       az_iot_mqttv3_direct_method_respond(&fx->dm, rec1.request, 200, NULL, 0), AZ_IOT_OK);
 
   az_iot_mqttv3_direct_method_client_deinit(&dm2);
-  az_iot_connection_client_deinit(&conn2);
+  az_iot_test_connection_client_deinit(&conn2);
   az_iot_mock_mqtt_factory_destroy(factory2);
 }
 
@@ -865,7 +865,7 @@ static void init_against_an_mqtt_v5_connection_is_rejected(void** state)
   assert_int_equal(
       az_iot_mqttv3_direct_method_client_init(&dm, &conn), AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH);
 
-  az_iot_connection_client_deinit(&conn);
+  az_iot_test_connection_client_deinit(&conn);
 }
 
 static void the_subscription_uses_qos_0(void** state)

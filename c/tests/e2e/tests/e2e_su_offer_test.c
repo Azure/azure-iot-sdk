@@ -27,6 +27,7 @@
  *   AZ_IOT_E2E_SU_OFFER_MODEL_INSTALL_FAILURE    install fails
  *   AZ_IOT_E2E_SU_OFFER_MODEL_ALREADY_INSTALLED  device already has it
  *   AZ_IOT_E2E_SU_OFFER_MODEL_UNTRUSTED          verified against a wrong key
+ *   AZ_IOT_E2E_SU_OFFER_MODEL_LIBRARY_MODE       handed to the test (library mode)
  *
  * A missing variable fails the scenario that needs it.
  *
@@ -94,8 +95,8 @@
 #define E2E_SU_REQUEST_TIMEOUT_MS 60000u
 #define E2E_SU_DOWNLOAD_TIMEOUT_S 120L
 
-#define E2E_SU_MAX_FILES _az_IOT_ADU_CLIENT_MAX_TOTAL_FILE_COUNT
-#define E2E_SU_MAX_STEPS _az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS
+#define E2E_SU_MAX_FILES AZ_IOT_SU_MAX_FILE_COUNT
+#define E2E_SU_MAX_STEPS AZ_IOT_SU_MAX_STEP_COUNT
 
 /* --- run-wide state ------------------------------------------------------ */
 
@@ -633,6 +634,11 @@ typedef struct
   size_t abandoned;
   az_iot_su_operation abandoned_op;
   az_iot_result abandoned_reason;
+
+  /* Library mode: the update handed over by AZ_IOT_SU_EVENT_UPDATE_AVAILABLE. */
+  size_t updates_available;
+  const az_iot_su_client_update_request* delegated_request;
+  const az_iot_su_client_update_manifest* delegated_manifest;
 } fixture;
 
 /* Large, and scenarios run one at a time. */
@@ -661,6 +667,12 @@ static void on_su_event(const az_iot_su_event* event, void* ctx)
         (int)event->service_error.code,
         event->service_error.message);
   }
+  else if (event->kind == AZ_IOT_SU_EVENT_UPDATE_AVAILABLE)
+  {
+    fx->updates_available++;
+    fx->delegated_request = event->request;
+    fx->delegated_manifest = event->manifest;
+  }
 }
 
 typedef struct
@@ -672,6 +684,8 @@ typedef struct
   bool request_onboarding_update;
   int32_t fail_install_step;
   bool already_installed;
+  /* No platform hooks: the verified update is handed to the test. */
+  bool library_mode;
 } fixture_options;
 
 static fixture_options fixture_options_default(const char* model)
@@ -684,6 +698,7 @@ static fixture_options fixture_options_default(const char* model)
     .request_onboarding_update = true,
     .fail_install_step = -1,
     .already_installed = false,
+    .library_mode = false,
   };
 }
 
@@ -730,17 +745,17 @@ static void fixture_open(fixture* fx, const fixture_options* o)
   assert_int_equal(
       az_iot_connection_client_register_mqtt_factory(&fx->conn, fx->factory), AZ_IOT_OK);
 
-  az_iot_su_device_properties dp = { 0 };
-  dp.manufacturer = o->manufacturer;
-  dp.model = o->model;
-  dp.installed_update_id.provider = "e2e";
-  dp.installed_update_id.name = "e2e";
-  dp.installed_update_id.version = "0.0.0";
+  az_iot_su_device_properties device_properties = { 0 };
+  device_properties.manufacturer = o->manufacturer;
+  device_properties.model = o->model;
+  device_properties.installed_update_id.provider = "e2e";
+  device_properties.installed_update_id.name = "e2e";
+  device_properties.installed_update_id.version = "0.0.0";
   assert_int_equal(
       az_iot_su_channel_dps_init(
           &fx->channel_state,
           &fx->conn,
-          &dp,
+          &device_properties,
           fx->channel_body,
           sizeof(fx->channel_body),
           fx->channel_device_properties,
@@ -761,10 +776,11 @@ static void fixture_open(fixture* fx, const fixture_options* o)
     .user_ctx = &fx->plat,
   };
   az_iot_su_client_config_options su = az_iot_su_client_config_options_default();
-  su.hooks = &hooks;
+  su.hooks = o->library_mode ? NULL : &hooks;
+  su.library_mode = o->library_mode;
   su.root_keys = o->roots;
   su.root_key_count = o->root_count;
-  su.device_properties = &dp;
+  su.device_properties = &device_properties;
   su.workspace = fx->su_workspace;
   su.workspace_size = sizeof(fx->su_workspace);
   az_iot_su_channel spy = { .vtable = &k_spy_vtable, .ctx = &fx->spy };
@@ -836,18 +852,25 @@ static void fixture_close(fixture* fx)
     }                                                           \
   } while (0)
 
-/** @brief The acknowledged terminal report, or NULL. */
-static const spy_report* terminal_report(const fixture* fx)
+/** @brief The newest terminal report sent, answered or not, or NULL. */
+static const spy_report* newest_sent_terminal_report(const fixture* fx)
 {
   for (size_t i = fx->spy.report_count; i > 0; --i)
   {
     const spy_report* r = &fx->spy.reports[i - 1];
     if (r->outcome != AZ_IOT_SU_OUTCOME_IN_PROGRESS)
     {
-      return r->has_verdict ? r : NULL;
+      return r;
     }
   }
   return NULL;
+}
+
+/** @brief The acknowledged terminal report, or NULL. */
+static const spy_report* terminal_report(const fixture* fx)
+{
+  const spy_report* r = newest_sent_terminal_report(fx);
+  return (r != NULL && r->has_verdict) ? r : NULL;
 }
 
 /* Runs the offered workflow to its acknowledged terminal report. */
@@ -1056,6 +1079,140 @@ static void untrusted_manifest_is_reported_failed(void** state)
   assert_int_equal(r->result, AZ_IOT_OK);
 }
 
+/** @brief One downloaded file, as az_iot_su_verify_file_hash() reads it. */
+typedef struct
+{
+  platform* plat;
+  const az_iot_su_client_update_manifest_file* file;
+  uint32_t index;
+} downloaded_file;
+
+static int32_t read_downloaded_chunk(
+    size_t offset,
+    uint8_t* buffer,
+    size_t buffer_size,
+    size_t* out_read,
+    void* ctx)
+{
+  downloaded_file* d = (downloaded_file*)ctx;
+  return hook_read_file(d->file, d->index, offset, buffer, buffer_size, out_read, d->plat);
+}
+
+static az_span find_file_url(
+    const az_iot_su_client_update_request* request,
+    const az_iot_su_client_update_manifest_file* file)
+{
+  for (uint32_t i = 0; i < request->file_urls_count; ++i)
+  {
+    if (az_span_is_content_equal(request->file_urls[i].id, file->id))
+    {
+      return request->file_urls[i].url;
+    }
+  }
+  return AZ_SPAN_EMPTY;
+}
+
+/* Library mode: the verified offer is handed to the application, which
+ * downloads and hashes the files itself and reports progress, then success. */
+static void library_mode_hands_over_the_offer_and_reports_the_applications_result(void** state)
+{
+  (void)state;
+  fixture* fx = &g_fx;
+  fixture_options o
+      = fixture_options_default(require_model("AZ_IOT_E2E_SU_OFFER_MODEL_LIBRARY_MODE"));
+  o.library_mode = true;
+  fixture_open(fx, &o);
+
+  PUMP_UNTIL(
+      fx,
+      fx->updates_available > 0 || fx->abandoned > 0 || newest_sent_terminal_report(fx) != NULL,
+      E2E_SU_WORKFLOW_BUDGET_S);
+  assert_false(fx->faulted);
+  assert_int_equal(fx->abandoned, 0);
+  if (fx->spy.offers == 0)
+  {
+    fail_msg("no update was offered for model \"%s\"", fx->model);
+  }
+  assert_int_equal(fx->updates_available, 1);
+  assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_DELEGATED);
+  assert_null(newest_sent_terminal_report(fx));
+
+  const az_iot_su_client_update_request* request = fx->delegated_request;
+  const az_iot_su_client_update_manifest* manifest = fx->delegated_manifest;
+  assert_non_null(request);
+  assert_non_null(manifest);
+  assert_true(manifest->files_count >= 1 && manifest->files_count <= E2E_SU_MAX_FILES);
+  for (uint32_t i = 0; i < manifest->files_count; ++i)
+  {
+    const az_iot_su_client_update_manifest_file* file = &manifest->files[i];
+    assert_int_equal(
+        hook_download(file, find_file_url(request, file), i, manifest->files_count, &fx->plat),
+        AZ_IOT_SU_RESULT_SUCCESS);
+    assert_true(fx->plat.downloaded_size[i] == file->size_in_bytes);
+    downloaded_file d = { .plat = &fx->plat, .file = file, .index = i };
+    assert_int_equal(
+        az_iot_su_verify_file_hash(file, az_iot_crypto_openssl(), read_downloaded_chunk, &d),
+        AZ_IOT_OK);
+  }
+
+  az_iot_su_step_result progress = {
+    .outcome = AZ_IOT_SU_OUTCOME_IN_PROGRESS,
+    .failure_origin = AZ_IOT_SU_FAILURE_ORIGIN_NOT_APPLICABLE,
+    .result_details = AZ_SPAN_FROM_STR("downloaded"),
+  };
+  /* Waits out the SDK's own IN_PROGRESS verdict first: one report is in flight at a time. */
+  PUMP_UNTIL(
+      fx,
+      fx->spy.report_count == 0 || fx->spy.reports[fx->spy.report_count - 1].has_verdict,
+      E2E_SU_VERDICT_BUDGET_S);
+  size_t before = fx->spy.report_count;
+  assert_int_equal(az_iot_su_client_report_status(&fx->su, &progress, NULL, 0), AZ_IOT_OK);
+  /* A retryable verdict leaves its attempt without one: the resend, newest, gets it. */
+  PUMP_UNTIL(
+      fx,
+      fx->spy.report_count > before && fx->spy.reports[fx->spy.report_count - 1].has_verdict,
+      E2E_SU_VERDICT_BUDGET_S);
+  assert_false(fx->faulted);
+  assert_true(fx->spy.report_count > before);
+  const spy_report* reported = &fx->spy.reports[fx->spy.report_count - 1];
+  assert_true(reported->has_verdict);
+  assert_int_equal(reported->outcome, AZ_IOT_SU_OUTCOME_IN_PROGRESS);
+  assert_int_equal(reported->result, AZ_IOT_OK);
+  assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_DELEGATED);
+
+  /* The hand-off's request and manifest are invalid once the terminal report is in. */
+  uint32_t step_count = manifest->instructions.steps_count;
+  assert_true(step_count >= 1 && step_count <= E2E_SU_MAX_STEPS);
+  az_iot_su_step_result steps[E2E_SU_MAX_STEPS];
+  for (uint32_t i = 0; i < step_count; ++i)
+  {
+    steps[i] = (az_iot_su_step_result){
+      .outcome = AZ_IOT_SU_OUTCOME_SUCCEEDED,
+      .result_code = AZ_IOT_SU_AGENT_RESULT_CODE_SUCCESS,
+      .failure_origin = AZ_IOT_SU_FAILURE_ORIGIN_NOT_APPLICABLE,
+    };
+  }
+  az_iot_su_step_result success = {
+    .outcome = AZ_IOT_SU_OUTCOME_SUCCEEDED,
+    .result_code = AZ_IOT_SU_AGENT_RESULT_CODE_SUCCESS,
+    .failure_origin = AZ_IOT_SU_FAILURE_ORIGIN_NOT_APPLICABLE,
+  };
+  assert_int_equal(
+      az_iot_su_client_report_status(&fx->su, &success, steps, (int32_t)step_count), AZ_IOT_OK);
+  fx->delegated_request = NULL;
+  fx->delegated_manifest = NULL;
+  assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_IDLE);
+
+  const spy_report* r = run_offered_workflow(fx);
+  assert_int_equal(r->outcome, AZ_IOT_SU_OUTCOME_SUCCEEDED);
+  assert_int_equal(r->result_code, 700);
+  assert_int_equal(r->failure_origin, AZ_IOT_SU_FAILURE_ORIGIN_NOT_APPLICABLE);
+  assert_int_equal(r->step_count, (int32_t)step_count);
+  assert_int_equal(r->step0_outcome, AZ_IOT_SU_OUTCOME_SUCCEEDED);
+  assert_int_equal(r->result, AZ_IOT_OK);
+  assert_int_equal(fx->updates_available, 1);
+}
+
 /* --- main ---------------------------------------------------------------- */
 
 static int group_setup(void** state)
@@ -1132,6 +1289,8 @@ int main(void)
         install_failure_is_rolled_back_and_reported_failed, scenario_teardown),
     cmocka_unit_test_teardown(already_installed_update_is_reported_skipped, scenario_teardown),
     cmocka_unit_test_teardown(untrusted_manifest_is_reported_failed, scenario_teardown),
+    cmocka_unit_test_teardown(
+        library_mode_hands_over_the_offer_and_reports_the_applications_result, scenario_teardown),
   };
   return cmocka_run_group_tests(tests, group_setup, group_teardown);
 }

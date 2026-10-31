@@ -10,7 +10,10 @@ option in full.
 ## Minimal setup
 
 ```c
+static uint8_t workspace[AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE];
 az_iot_connection_client_options opts = az_iot_connection_client_options_default();
+opts.workspace = workspace; /* required; see client-configuration.md */
+opts.workspace_size = sizeof(workspace);
 opts.dps.id_scope = "<id-scope>";
 opts.dps.registration_id = "<registration-id>";
 opts.certificate_provider = &certs.base; /* e.g. az_iot_certificate_provider_pem */
@@ -110,7 +113,11 @@ A DPS registration on a provisioning session that is already up goes `SETTING_UP
 with no `CONNECTING`, since nothing new is connected.
 So each failed attempt produces an event, including under a policy that retries forever. A step that
 fails on the device carries `error->source == AZ_IOT_CONN_ERR_SRC_LOCAL`, the step's `az_iot_result`
-as `code`, and the step as `message`, for example `certificate provider load() failed`.
+as `code`, and the step as `message`, for example `certificate provider load() failed`. A refused
+MQTT 5 CONNACK or a server DISCONNECT with a nonzero reason code carries
+`error->source == AZ_IOT_CONN_ERR_SRC_MQTT`, the reason code as `code`, and the server's Reason
+String, if it sent one, as `message` (at most `AZ_IOT_CONN_ERROR_MESSAGE_MAX` bytes). The Paho
+adapter cannot report a refused CONNACK's Reason String.
 `open()` first validates the configuration (credential shape, CSR support, registration payload
 and its buffer); a refusal there starts no attempt, raises no event, and is reported only by
 `open()`'s return value.

@@ -36,7 +36,7 @@
 #include "e2e_log.h"
 #include "support/test_shard.h"
 
-#define E2E_REQUEST_TIMEOUT_S 60
+#define E2E_REQUEST_TIMEOUT_S 70 /* Above the service's twin GET/PATCH retries (64 s). */
 #define E2E_DELIVERY_TIMEOUT_S 60
 /* How long pull mode must stay without a patch after a desired change. */
 #define E2E_NO_PATCH_WINDOW_S 30
@@ -851,12 +851,29 @@ static bool wait_connected(fixture* fx)
   return fx->dev.conn_state == AZ_IOT_CONN_STATE_CONNECTED;
 }
 
+/**
+ * @brief Wait for the desired snapshot delivered on connect: the twin-push with push_desired,
+ * else the answer to the client's own GET. A desired change made before it arrives can be in it.
+ */
+static void wait_connect_snapshot(fixture* fx)
+{
+  for (time_t start = time(NULL);
+       fx->desired.deliveries == 0 && (time(NULL) - start) < E2E_DELIVERY_TIMEOUT_S;)
+  {
+    pump(fx);
+  }
+  if (fx->desired.deliveries == 0)
+  {
+    fail_msg("no desired snapshot on connect");
+  }
+}
+
 /* Without push_desired the service sends no desired patches while connected; a GET finds the
  * change and the client delivers it as a snapshot. */
 static void pull_mode_sees_a_desired_change_only_after_a_get(void** state)
 {
   fixture* fx = (fixture*)*state;
-  pump_for(fx, E2E_SETTLE_S);
+  wait_connect_snapshot(fx);
 
   service_patch_desired(fx, "e2ePull");
   pump_for(fx, E2E_NO_PATCH_WINDOW_S);
@@ -891,7 +908,7 @@ static void push_mode_pushes_a_snapshot_on_connect(void** state)
 static void push_mode_delivers_each_desired_patch(void** state)
 {
   fixture* fx = (fixture*)*state;
-  pump_for(fx, E2E_SETTLE_S);
+  wait_connect_snapshot(fx);
   for (int i = 0; i < 2; ++i)
   {
     service_patch_desired(fx, "e2ePush");

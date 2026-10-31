@@ -12,6 +12,7 @@
 #include <setjmp.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 
 #if defined(_WIN32)
@@ -42,6 +43,7 @@ typedef socklen_t test_socklen;
 #include "azure/iot/adapters/az_iot_adapter_az_mqtt.h"
 #include "azure/iot/az_iot_connection_client.h"
 #include "azure/iot/az_iot_mqtt_iface.h"
+#include "az_iot_test_mqtt_server.h"
 
 #include <az_mqtt5/az_mqtt5_codec.h>
 #include <stdio.h>
@@ -73,6 +75,8 @@ static void factories_create_clients_of_their_version(void** state)
   az_iot_az_mqtt_factory_destroy(NULL);
 }
 
+static uint8_t g_connection_workspace[AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE];
+
 static void a_registered_factory_is_destroyed_by_the_application_after_deinit(void** state)
 {
   (void)state;
@@ -80,6 +84,8 @@ static void a_registered_factory_is_destroyed_by_the_application_after_deinit(vo
   az_iot_connection_client_options options = az_iot_connection_client_options_default();
   options.iothub_hostname = "hub.example";
   options.device_id = "az-mqtt-adapter-test";
+  options.workspace = g_connection_workspace;
+  options.workspace_size = sizeof(g_connection_workspace);
   assert_int_equal(az_iot_connection_client_init(&conn, &options), AZ_IOT_OK);
   az_iot_mqtt_factory* v5 = az_iot_az_mqtt_factory_create_v5();
   assert_int_equal(az_iot_connection_client_register_mqtt_factory(&conn, v5), AZ_IOT_OK);
@@ -481,6 +487,140 @@ static void puback_codes_are_classified_v5(void** state)
   az_iot_az_mqtt_factory_destroy(f);
 }
 
+// ──────────── CONNACK / DISCONNECT Reason Strings, against an in-process server ─────────────
+
+typedef struct
+{
+  int connected;
+  int session_ends; /**< Failed CONNECTED or DISCONNECTED events. */
+  az_iot_mqtt_event_kind kind;
+  int32_t protocol_code;
+  int reason_string_length; /**< -1: NULL. */
+  char reason_string[AZ_IOT_MQTT_SESSION_REASON_STRING_MAX + 16];
+} session_end_recorder;
+
+static void record_session_end(const az_iot_mqtt_event* evt, void* ctx)
+{
+  session_end_recorder* r = (session_end_recorder*)ctx;
+  if (evt->kind == AZ_IOT_MQTT_EVT_CONNECTED && evt->status == AZ_IOT_OK)
+  {
+    r->connected++;
+    return;
+  }
+  if (evt->kind != AZ_IOT_MQTT_EVT_CONNECTED && evt->kind != AZ_IOT_MQTT_EVT_DISCONNECTED)
+  {
+    return;
+  }
+  r->session_ends++;
+  r->kind = evt->kind;
+  r->protocol_code = evt->protocol_code;
+  r->reason_string_length = -1;
+  if (evt->reason_string != NULL)
+  {
+    assert_true(evt->reason_string_len <= sizeof(r->reason_string));
+    memcpy(r->reason_string, evt->reason_string, evt->reason_string_len);
+    r->reason_string_length = (int)evt->reason_string_len;
+  }
+}
+
+/**
+ * @brief The adapter copies a CONNACK or DISCONNECT Reason String (its event is raised after the
+ * receive buffer may be reused) and keeps AZ_IOT_MQTT_SESSION_REASON_STRING_MAX bytes of it:
+ * verbatim at that length, truncated past it.
+ */
+static void run_session_reason_string(bool refuse_connack, size_t length)
+{
+  /* Buffers sized for these packets, whatever this build's defaults. */
+  az_iot_mqtt_limits const limits = {
+    .send_buffer_size = 1024,
+    .receive_buffer_size = 1024,
+    .max_in_flight_messages = 1,
+    .message_store_size = 0,
+    .connect_strings_size = 1024,
+  };
+  size_t const workspace_size = az_iot_az_mqtt_get_workspace_size(&limits);
+  uint8_t* workspace = (uint8_t*)malloc(workspace_size);
+  assert_non_null(workspace);
+  uint16_t port = 0;
+  test_sock listener = listen_loopback(&port);
+  session_end_recorder r = { 0 };
+  az_iot_mqtt_client* c = NULL;
+  assert_int_equal(
+      az_iot_az_mqtt_get_adapter()->init(
+          AZ_IOT_MQTT_VERSION_5, &limits, workspace, workspace_size, &c),
+      AZ_IOT_OK);
+  c->iface->set_inbound_cb(c, record_session_end, &r);
+  az_iot_mqtt_connect_options o = valid_connect();
+  o.host = "127.0.0.1";
+  o.port = port;
+  o.clean_start = true;
+  assert_int_equal(c->iface->connect(c, &o), AZ_IOT_OK);
+
+  test_sock conn = accept_client(c, listener);
+  uint8_t packet[512];
+  (void)read_packet(c, conn, packet, sizeof(packet));
+  assert_int_equal(packet[0], 0x10); // CONNECT.
+
+  char reason[AZ_IOT_MQTT_SESSION_REASON_STRING_MAX + 8];
+  assert_true(length < sizeof(reason));
+  for (size_t i = 0; i < length; i++)
+  {
+    reason[i] = (char)('a' + (i % 26));
+  }
+  reason[length] = '\0';
+  uint8_t const code = (uint8_t)(refuse_connack ? 0x87u : 0x97u);
+  if (!refuse_connack)
+  {
+    static const uint8_t connack[] = { 0x20, 0x03, 0x00, 0x00, 0x00 };
+    send_all(conn, connack, sizeof(connack));
+    for (int step = 0; step < STEPS && r.connected == 0; step++)
+    {
+      assert_int_equal(c->iface->process_loop(c, 10), AZ_IOT_OK);
+    }
+    assert_int_equal(r.connected, 1);
+  }
+  az_iot_test_mqtt_packet const end = refuse_connack
+      ? az_iot_test_mqtt_connack_v5_raw(code, reason)
+      : az_iot_test_mqtt_disconnect_v5_raw(code, reason);
+  assert_int_not_equal(end.len, 0);
+  send_all(conn, end.bytes, end.len);
+  for (int step = 0; step < STEPS && r.session_ends == 0; step++)
+  {
+    assert_int_equal(c->iface->process_loop(c, 10), AZ_IOT_OK);
+  }
+
+  assert_int_equal(r.session_ends, 1);
+  assert_int_equal(
+      r.kind, refuse_connack ? AZ_IOT_MQTT_EVT_CONNECTED : AZ_IOT_MQTT_EVT_DISCONNECTED);
+  assert_int_equal(r.protocol_code, code);
+  size_t const kept = length < AZ_IOT_MQTT_SESSION_REASON_STRING_MAX
+      ? length
+      : AZ_IOT_MQTT_SESSION_REASON_STRING_MAX;
+  assert_int_equal(r.reason_string_length, (int)kept);
+  assert_memory_equal(r.reason_string, reason, kept);
+
+  (void)c->iface->disconnect(c);
+  c->iface->set_inbound_cb(c, NULL, NULL);
+  c->iface->destroy(c);
+  test_closesock(conn);
+  test_closesock(listener);
+  free(workspace);
+}
+
+static void a_connack_reason_string_is_kept_up_to_its_bound(void** state)
+{
+  (void)state;
+  run_session_reason_string(true, AZ_IOT_MQTT_SESSION_REASON_STRING_MAX);
+  run_session_reason_string(true, AZ_IOT_MQTT_SESSION_REASON_STRING_MAX + 1);
+}
+
+static void a_disconnect_reason_string_is_kept_up_to_its_bound(void** state)
+{
+  (void)state;
+  run_session_reason_string(false, AZ_IOT_MQTT_SESSION_REASON_STRING_MAX);
+  run_session_reason_string(false, AZ_IOT_MQTT_SESSION_REASON_STRING_MAX + 1);
+}
+
 /** @brief Two properties at cursors 0 and 2^31, ending at SIZE_MAX: valid, and past INT32_MAX. */
 static az_iot_result wide_cursor_next(
     const void* source,
@@ -879,6 +1019,8 @@ int main(void)
     cmocka_unit_test(a_connect_the_encoder_refuses_fails_the_attempt),
     cmocka_unit_test(puback_codes_are_classified_v3),
     cmocka_unit_test(puback_codes_are_classified_v5),
+    cmocka_unit_test(a_connack_reason_string_is_kept_up_to_its_bound),
+    cmocka_unit_test(a_disconnect_reason_string_is_kept_up_to_its_bound),
     cmocka_unit_test(publish_accepts_a_user_property_cursor_past_int32_max),
   };
   int const failed = cmocka_run_group_tests(tests, NULL, NULL);

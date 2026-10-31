@@ -7,7 +7,7 @@
  *
  * One connected device for the suite; each test declares the methods it needs and the per-test
  * teardown withdraws them. The service side invokes over REST (az_iot_e2e_service.h) with
- * request handles, so several invocations can be in flight at once (Linux only). The handler
+ * request handles, so several invocations can be in flight at once. The handler
  * only records each invocation; the test decides when and how to answer it.
  *
  * Every service outcome is printed with its HTTP status and body. Probe rejections are asserted

@@ -925,13 +925,10 @@ void e2e_amqp_telemetry_end(e2e_amqp_telemetry* t)
     }
   }
 
-  /* Always release the transport's TLS slot, even if we failed BEFORE fully
-   * starting (t->started stays false until the very end of _begin). On Windows
-   * the Schannel adapter uses a single global slot; a failed attempt that left
-   * the slot open would force every subsequent retry -- and the c2d/method/twin
-   * connections -- to reuse the dead session instead of performing a fresh TLS
-   * handshake. az_amqp_connection_close tears down the AMQP session but leaves
-   * the caller-owned transport open, so close it here explicitly. */
+  /* Always close the transport, even if we failed BEFORE fully starting
+   * (t->started stays false until the very end of _begin), so its socket and
+   * TLS state are released. az_amqp_connection_close tears down the AMQP session
+   * but leaves the caller-owned transport open, so close it here explicitly. */
   if (t->transport.vtable != NULL && t->transport.vtable->close != NULL)
   {
     (void)t->transport.vtable->close(&t->transport);
@@ -1241,7 +1238,7 @@ cleanup:
     }
   }
 
-  /* Release the transport's TLS slot (see e2e_amqp_telemetry_end). */
+  /* Close the transport (see e2e_amqp_telemetry_end). */
   if (c->transport.vtable != NULL && c->transport.vtable->close != NULL)
   {
     (void)c->transport.vtable->close(&c->transport);
@@ -1638,7 +1635,7 @@ void e2e_amqp_filenotify_end(e2e_amqp_filenotify* f)
     }
   }
 
-  /* Always release the transport's TLS slot (see e2e_amqp_telemetry_end). */
+  /* Always close the transport (see e2e_amqp_telemetry_end). */
   if (f->transport.vtable != NULL && f->transport.vtable->close != NULL)
   {
     (void)f->transport.vtable->close(&f->transport);

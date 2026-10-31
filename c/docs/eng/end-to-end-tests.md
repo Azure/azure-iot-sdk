@@ -201,10 +201,6 @@ its policy signs the device delete, sent to the `IOTHUB_CONNECTION_STRING` host)
 Direct-hub mode (`AZ_IOT_HUB_HOSTNAME`, `AZ_IOT_DEVICE_ID`) reaches an mqttv5 hub with
 `AZ_IOT_HUB_CONNECTION_PROFILE=mqttv5`; without DPS, nothing else reports the hub's profile.
 
-> The Windows reference transport keeps a single TLS connection at a time, so the
-> telemetry watcher is closed before the c2d/method/twin scenarios open theirs.
-> The device uses its adapter's own independent TLS stack, so the two never collide.
-
 ---
 
 ## Build & CMake wiring
@@ -376,6 +372,7 @@ Offered-update scenarios:
 | install failure rolled back, reported FAILED | `AZ_IOT_E2E_SU_OFFER_MODEL_INSTALL_FAILURE` |
 | already installed, reported SKIPPED | `AZ_IOT_E2E_SU_OFFER_MODEL_ALREADY_INSTALLED` |
 | manifest verified against the wrong keys, reported FAILED | `AZ_IOT_E2E_SU_OFFER_MODEL_UNTRUSTED` |
+| library mode: verified offer handed to the application, which downloads, hashes and reports progress then SUCCEEDED | `AZ_IOT_E2E_SU_OFFER_MODEL_LIBRARY_MODE` |
 
 The device identity is fixed by its certificate, so offers are told apart by compatibility:
 each is an update compatible only with `AZ_IOT_E2E_SU_OFFER_MANUFACTURER` and its model, with
@@ -438,9 +435,9 @@ multi-step updates, and reboot/resume.
   hide a broken setup.
 - **CA bundle without downloads.** Linux uses the OpenSSL system bundle; Windows
   exports the machine `Root` store. Avoid fetching roots over the network.
-- **One TLS connection at a time (Windows).** The vendored reference transport
-  keeps a single Schannel TLS slot, so the service facade closes the telemetry
-  watcher before opening the c2d/method/twin connections.
+- **TLS state per connection.** The vendored reference transport keeps each
+  connection's TLS state (Schannel on Windows, OpenSSL on Linux) in its own
+  storage, so service connections can be open at the same time.
 - **Resource quotas are hard limits.** Provisioning per matrix leg keeps tests
   isolated but multiplies resource usage; keep the matrix lean and always delete
   the RG.
@@ -454,9 +451,11 @@ multi-step updates, and reboot/resume.
 - **HTTPS calls without a response are retried when safe.** A connection can
   stall with no response at all. The service facade sends a request again on a
   new connection (3 attempts, 2 s apart) when none of it was sent, or when it is
-  idempotent (the DPS and device DELETEs; 20 s per attempt instead of 60 s).
-  Each failed attempt is logged with its phase, bytes sent and received, and the
-  transport's error.
+  idempotent (the DPS and device DELETEs, and the twin GET and desired PATCH;
+  20 s per attempt instead of 60 s). This holds for the blocking calls and for
+  those driven with `az_iot_e2e_service_request_poll()`, which pause without
+  blocking. Each failed attempt is logged with its phase, bytes sent and
+  received, and the transport's error.
 - **DPS provisioning has its own time budget.** DPS assignment intermittently
   takes from tens of seconds to over 90 s. Connect waits charge time to DPS
   while the client's DPS scope is active, with a budget of 180 s

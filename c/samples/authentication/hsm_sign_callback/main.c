@@ -294,7 +294,11 @@ int main(void)
   az_iot_mqtt_factory factory
       = { .version = AZ_IOT_MQTT_VERSION_3_1_1, .create = standin_create, .factory_ctx = NULL };
 
+  /* Memory for the connection client's entries, sized for the default limits. */
+  static uint8_t connection_workspace[AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE];
   az_iot_connection_client_options copts = az_iot_connection_client_options_default();
+  copts.workspace = connection_workspace;
+  copts.workspace_size = sizeof(connection_workspace);
   /* Placeholder provisioning settings: the stand-in adapter fails the first
    * connect, which is the DPS one, after the signature has been made. */
   copts.dps.id_scope = "0ne00000000";

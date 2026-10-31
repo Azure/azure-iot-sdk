@@ -94,6 +94,7 @@ typedef struct
 } custody_fixture;
 
 static custody_fixture g_fixture;
+static uint8_t g_connection_workspace[AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE];
 
 static char* str_dup(const char* value)
 {
@@ -215,6 +216,8 @@ static int device_connect(custody_fixture* fx)
   copts.dps.id_scope = fx->config.id_scope;
   copts.dps.registration_id = fx->config.reg_id;
   copts.certificate_provider = &fx->provider.base;
+  copts.workspace = g_connection_workspace;
+  copts.workspace_size = sizeof(g_connection_workspace);
   if (fx->config.global_endpoint != NULL)
   {
     copts.dps.global_endpoint = fx->config.global_endpoint;

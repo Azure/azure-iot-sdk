@@ -63,7 +63,8 @@ char* e2e_su_env_require(const char* name);
  * @brief Applies @p env to connection and certificate options.
  *
  * Sets DPS mode (no hub host), scope, registration id, global endpoint, proxy,
- * and the PEM paths. The caller sets the certificate provider pointer.
+ * the PEM paths, and a workspace for one client at a time. The caller sets the
+ * certificate provider pointer.
  */
 void e2e_su_env_apply(
     const e2e_su_env* env,

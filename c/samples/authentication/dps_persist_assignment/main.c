@@ -223,7 +223,11 @@ int main(void)
     goto cleanup;
   }
 
+  /* Memory for the connection client's entries, sized for the default limits. */
+  static uint8_t connection_workspace[AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE];
   az_iot_connection_client_options opts = az_iot_connection_client_options_default();
+  opts.workspace = connection_workspace;
+  opts.workspace_size = sizeof(connection_workspace);
   opts.dps.id_scope = config.id_scope;
   opts.dps.registration_id = config.reg_id;
   opts.dps.global_endpoint = config.dps_global_endpoint; /* NULL: the global default */

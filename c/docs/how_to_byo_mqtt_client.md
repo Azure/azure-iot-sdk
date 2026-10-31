@@ -40,7 +40,7 @@ The contract is in [inc/azure/iot/az_iot_mqtt_iface.h](../inc/azure/iot/az_iot_m
 | Slot              | Required behavior                                                                                    |
 |-------------------|------------------------------------------------------------------------------------------------------|
 | `connect`         | Initiate CONNECT to `opts->host:opts->port` with `client_id`. Non-blocking. Result via inbound `EVT_CONNECTED`. For v5: honor `clean_start`, `session_expiry_seconds`, `user_properties`, and LWT fields from `connect_options`. |
-| `disconnect`      | Initiate DISCONNECT. Non-blocking. Eventually emits `EVT_DISCONNECTED`. For v5: carry `disconnect_reason_code` from the options the session was connected with. |
+| `disconnect`      | Initiate DISCONNECT. Non-blocking. Eventually emits `EVT_DISCONNECTED` with status `AZ_IOT_OK` (only this completion uses `AZ_IOT_OK`; a lost connection or a server DISCONNECT reports an error). For v5: carry `disconnect_reason_code` from the options the session was connected with. |
 | `subscribe`       | Send SUBSCRIBE. Return `out_packet_id` synchronously; emit `EVT_SUBSCRIBE_ACK` when SUBACK arrives.   |
 | `unsubscribe`     | Send UNSUBSCRIBE. Same pattern as `subscribe`. Emit `EVT_UNSUBSCRIBE_ACK`.                            |
 | `publish`         | Send PUBLISH. For QoS>0, emit `EVT_PUBLISH_ACK` when PUBACK arrives. For v5: set `content_type`, `response_topic`, `correlation_data`, and `user_properties` from `az_iot_mqtt_message` on the outbound packet. |
@@ -104,6 +104,8 @@ The SDK decides these per session role and hands them to `connect`. An adapter t
 **On any acknowledgement that carries a code** — also set `protocol_code` on the `az_iot_mqtt_event` to that verbatim wire value, and leave it 0 only when there is none. A non-zero value is always the wire code, including the granted QoS on a SUBACK that succeeded. `status` is what the SDK branches on; `protocol_code` is what a log line and a support engineer read, and it is the only way a code newer than this SDK survives the trip into C. Do not substitute your own numbering for it.
 
 **On a v5 PUBACK with a Reason String** — set `reason_string` and `reason_string_len` to it, verbatim; an empty one is non-NULL with length 0, an absent one NULL. Required for a reason code of `0x80` or above, optional below it. It must stay valid until the callback returns; an adapter that delivers from another thread copies it (Paho's adapter does). Applications receive it in their publish callback: it is often the only account of why the hub refused a message. Conformance: `a_refused_publish_is_reported`, `a_refused_publish_with_an_empty_reason_string_is_reported`.
+
+**On a v5 server DISCONNECT or refused CONNACK with a Reason String** — set `reason_string` and `reason_string_len` the same way on the `AZ_IOT_MQTT_EVT_DISCONNECTED` or failed `AZ_IOT_MQTT_EVT_CONNECTED` event. Required for a server DISCONNECT; for a refused CONNACK, required when your MQTT library exposes it (Paho's does not). Both events are often raised after the packet's buffer is reused, so copy the string; keeping its first 128 bytes is enough, since that is all the SDK retains. The connection client reports it to the application as `az_iot_connection_state_event.error->message`. Conformance: `a_server_disconnect_reason_string_is_reported`, `a_server_disconnect_empty_reason_string_is_reported`, and, for `AZ_IOT_CONFORMANCE_CAP_CONNACK_REASON_STRING`, `a_refused_connack_reason_string_is_reported` and `a_refused_connack_empty_reason_string_is_reported`.
 
 **On an UNSUBACK** — raise `AZ_IOT_MQTT_EVT_UNSUBSCRIBE_ACK` with the packet id `unsubscribe()` returned, in both versions. Conformance: `publish_subscribe_roundtrip`.
 
@@ -327,6 +329,8 @@ return az_iot_conformance_run_with_options(AZ_IOT_CONFORMANCE_SUITE_V3_1_1, f, &
 ```
 
 If your adapter loads TLS credentials from in-memory PEM (`trusted_ca_pem`, `client_cert_pem`, `client_key_pem`), declare `AZ_IOT_CONFORMANCE_CAP_TLS_PEM`. It needs no material: the suite issues a client certificate, connects with PEM only, and wipes the buffers as soon as `connect()` returns; the handshake must still succeed. It needs a TLS build (`-DAZ_IOT_BUILD_CONFORMANCE_TESTS_TLS=ON`).
+
+If your MQTT 5 adapter reports a refused CONNACK's Reason String, declare `AZ_IOT_CONFORMANCE_CAP_CONNACK_REASON_STRING`. It needs no material; the suite then requires the string verbatim. MQTT 5 suite only: declared for the 3.1.1 suite, the run is refused. Undeclared, it requires the failed `CONNECTED` event to carry none rather than a wrong one. The bundled az_mqtt adapter declares it; Paho's does not.
 
 Each declared route is proved by its own real TLS handshake, signed with a key you cannot read: `key_custody_completes_a_tls_handshake` for the URI route, `key_custody_sign_hook_completes_a_tls_handshake` for the callback route. Declaring one route does not oblige you to the other — the bundled Paho adapter declares only `_URI`, because Paho exposes no TLS key callback.
 
