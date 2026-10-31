@@ -1895,6 +1895,46 @@ static void a_close_during_the_settle_without_a_disconnect_event_settles_idle(vo
   assert_int_equal(az_iot_connection_client_open(&fx->client), AZ_IOT_OK);
 }
 
+/* Reports a delivery unsettled until a TICK expires it, as the delivery tracker does. */
+static void report_unsettled_until_tick(
+    const az_iot_connection_feature_event* event,
+    void* user_ctx)
+{
+  bool* unsettled = (bool*)user_ctx;
+  if (event->kind == AZ_IOT_CONNECTION_FEATURE_EVENT_TICK)
+  {
+    *unsettled = false;
+  }
+  else if (*unsettled)
+  {
+    *event->unsettled = true;
+  }
+}
+
+/* The last delivery expiring on a TICK ends the settle in that same do_work(), not after the
+ * next wait. */
+static void a_delivery_expiring_on_the_tick_ends_the_settle_at_once(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  uint64_t now = NOW;
+  open_renewable_hub(fx, &now, NULL);
+  bool unsettled = true;
+  assert_int_equal(
+      az_iot_connection_client__add_feature_observer(
+          &fx->client,
+          AZ_IOT_CONNECTION_FEATURE_EVENT_UNSETTLED_QUERY | AZ_IOT_CONNECTION_FEATURE_EVENT_TICK,
+          report_unsettled_until_tick,
+          &unsettled),
+      AZ_IOT_OK);
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  fx->client.sas_token_renewal_due_ms[AZ_IOT_CONN_SCOPE_HUB] = az_iot_time_mono_ms();
+  pump(fx, 1);
+  assert_false(unsettled);
+  assert_int_equal(az_iot_mock_mqtt_client_count_of(m, AZ_IOT_MOCK_CALL_DISCONNECT), 1);
+  az_iot_connection_client__remove_feature_observer(
+      &fx->client, report_unsettled_until_tick, &unsettled);
+}
+
 /* The settle is bounded by the session token's expiry: a key-signed token records it at signing,
  * and a token close to expiry settles only for what is left. */
 static void a_renewal_settles_no_longer_than_the_token_lives(void** state)
@@ -4261,6 +4301,8 @@ int main(void)
     cmocka_unit_test_setup_teardown(a_close_ends_a_settling_renewal, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_close_during_the_settle_without_a_disconnect_event_settles_idle, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_delivery_expiring_on_the_tick_ends_the_settle_at_once, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_renewal_settles_no_longer_than_the_token_lives, setup, teardown),
     cmocka_unit_test_setup_teardown(a_renewal_of_an_expired_token_does_not_settle, setup, teardown),
