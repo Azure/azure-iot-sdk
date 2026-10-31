@@ -292,6 +292,17 @@ static az_span find_file_url(
   return AZ_SPAN_EMPTY;
 }
 
+/**
+ * @brief @p details, cut to the bytes the client keeps under
+ * az_iot_su_limits_default(), so a build with a smaller
+ * AZ_IOT_SU_DEFAULT_RESULT_DETAILS_SIZE still reports.
+ */
+static az_span fit_result_details(az_span details)
+{
+  int32_t capacity = (int32_t)AZ_IOT_SU_DEFAULT_RESULT_DETAILS_SIZE;
+  return (az_span_size(details) <= capacity) ? details : az_span_slice(details, 0, capacity);
+}
+
 /** @brief A FAILED result for the phase named by @p facility. */
 static az_iot_su_step_result make_failed_result(
     az_iot_su_failure_origin origin,
@@ -303,7 +314,7 @@ static az_iot_su_step_result make_failed_result(
   result.failure_origin = origin;
   result.result_code = -(int32_t)facility; /* a failure code is never positive */
   result.extended_result_code = AZ_IOT_SU_EXTENDED_RESULT(facility, 1u);
-  result.result_details = details;
+  result.result_details = fit_result_details(details);
   return result;
 }
 
@@ -350,7 +361,7 @@ static void advance_delegated_update(sample_state* s)
       {
         az_iot_su_step_result skipped = { 0 };
         skipped.outcome = AZ_IOT_SU_OUTCOME_SKIPPED;
-        skipped.result_details = AZ_SPAN_FROM_STR("already installed");
+        skipped.result_details = fit_result_details(AZ_SPAN_FROM_STR("already installed"));
         finish_delegated_update(s, skipped);
         return;
       }
@@ -398,7 +409,7 @@ static void advance_delegated_update(sample_state* s)
        * milestones, not every file. */
       az_iot_su_step_result progress = { 0 };
       progress.outcome = AZ_IOT_SU_OUTCOME_IN_PROGRESS;
-      progress.result_details = AZ_SPAN_FROM_STR("downloaded; installing");
+      progress.result_details = fit_result_details(AZ_SPAN_FROM_STR("downloaded; installing"));
       if (az_iot_su_client_report_status(&s->su_client, &progress, NULL, 0) != AZ_IOT_OK)
       {
         fprintf(stderr, "Could not report progress.\n");
