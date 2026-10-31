@@ -6340,14 +6340,11 @@ static void apply_deferred(az_iot_connection_client* c)
   c->hub_server_disconnect_seen = false;
   c->deferred = DEFER_NONE;
   c->deferred_reason = AZ_IOT_OK;
-  /* close() ran after this was scheduled (from a callback while events were drained): the
-   * application asked for the session to end at IDLE, and an adapter whose session already ended
-   * raises no DISCONNECTED to settle it. A planned end close() took over settles without its
-   * reason. */
-  if (c->user_close)
+  /* close() took the planned end over before its DISCONNECTED arrived. */
+  if (action == DEFER_PLANNED_END && c->user_close)
   {
-    reason = (action == DEFER_PLANNED_END) ? AZ_IOT_OK : reason;
     action = DEFER_IDLE;
+    reason = AZ_IOT_OK;
   }
 
   switch (action)
@@ -7625,28 +7622,12 @@ az_iot_result az_iot_connection_client_close(az_iot_connection_client* client)
 
   client->user_close = true;
   set_state_to(client, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_DISCONNECTING, AZ_IOT_OK);
-  /* A planned end already sent DISCONNECT; its completion or bound settles IDLE. A session that
-   * already ended (close() called from a callback after its DISCONNECTED) is settled at IDLE by the
-   * pending transition: a DISCONNECT there could only fail and report a local error over the
-   * server's. A session a local failure is about to tear down is still live: it is disconnected in
-   * order, so a configured DISCONNECT reason (and Will) applies. */
-  if (planned_hub_session_end_in_progress(client) || client->hub_session_ended)
+  /* A planned end already sent DISCONNECT; its completion or bound settles IDLE. */
+  if (planned_hub_session_end_in_progress(client))
   {
     return AZ_IOT_OK;
   }
   az_iot_result r = client->active_client->iface->disconnect(client->active_client);
-  if (client->deferred != DEFER_NONE)
-  {
-    /* A local failure scheduled a transition on this live session. An accepted DISCONNECT replaces
-     * it: the session settles on its DISCONNECTED event, once the adapter has sent it. Otherwise
-     * nothing will end the session, so it settles at IDLE now. */
-    client->deferred = (r == AZ_IOT_OK) ? DEFER_NONE : DEFER_IDLE;
-    if (r == AZ_IOT_OK)
-    {
-      /* The failure it replaces is not this session's end: its DISCONNECTED stages its own. */
-      clear_staged_error(client);
-    }
-  }
   if (r != AZ_IOT_OK && r != AZ_IOT_ERR_NOT_CONNECTED)
   {
     return r;

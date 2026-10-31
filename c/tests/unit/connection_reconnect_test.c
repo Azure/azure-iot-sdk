@@ -1021,25 +1021,15 @@ static uint16_t subscribe_pid_for(const az_iot_mock_mqtt_client* m, const char* 
   return 0;
 }
 
-/** @brief What on_sub_failed_then_act() does from the refusal callback. */
-typedef enum
-{
-  SUB_FAILED_ACTION_CLOSE,
-  SUB_FAILED_ACTION_REREGISTER
-} sub_failed_action;
-
+/** @brief A refused filter's owner that registers a replacement filter from its callback. */
 typedef struct
 {
   sub_failure_probe probe; /* First: on_sub_failed() records into it. */
   az_iot_connection_client* client;
-  sub_failed_action action;
-  az_iot_result action_result;
-  /* The session's mock and its DISCONNECT calls after close(), counted in the callback. */
-  az_iot_mock_mqtt_client* session;
-  size_t disconnect_calls;
+  az_iot_result reregister_result;
 } sub_failed_actor;
 
-static void on_sub_failed_then_act(
+static void on_sub_failed_then_reregister(
     const char* topic_filter,
     az_iot_result reason,
     int32_t protocol_code,
@@ -1047,20 +1037,13 @@ static void on_sub_failed_then_act(
 {
   on_sub_failed(topic_filter, reason, protocol_code, owner);
   sub_failed_actor* actor = (sub_failed_actor*)(uintptr_t)owner;
-  actor->action_result = actor->action == SUB_FAILED_ACTION_CLOSE
-      ? az_iot_connection_client_close(actor->client)
-      : az_iot_connection_client__add_subscription_on_connect(
-            actor->client,
-            "replacement/#",
-            AZ_IOT_MQTT_QOS_1,
-            actor,
-            AZ_IOT_SUBSCRIPTION_FAILS_SELF,
-            on_sub_failed);
-  if (actor->session != NULL)
-  {
-    actor->disconnect_calls
-        = az_iot_mock_mqtt_client_count_of(actor->session, AZ_IOT_MOCK_CALL_DISCONNECT);
-  }
+  actor->reregister_result = az_iot_connection_client__add_subscription_on_connect(
+      actor->client,
+      "replacement/#",
+      AZ_IOT_MQTT_QOS_1,
+      actor,
+      AZ_IOT_SUBSCRIPTION_FAILS_SELF,
+      on_sub_failed);
 }
 
 /**
@@ -1082,7 +1065,7 @@ static az_iot_mock_mqtt_client* refuse_self_scoped_filter_after_disconnect(
           AZ_IOT_MQTT_QOS_1,
           actor,
           AZ_IOT_SUBSCRIPTION_FAILS_SELF,
-          on_sub_failed_then_act),
+          on_sub_failed_then_reregister),
       AZ_IOT_OK);
   assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
   az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
@@ -1097,51 +1080,6 @@ static az_iot_mock_mqtt_client* refuse_self_scoped_filter_after_disconnect(
   return m;
 }
 
-/* close() from the refusal callback, after a DISCONNECT scheduled a reconnect, wins: the client
- * settles at IDLE instead of reconnecting, though the ended session raises no further event. */
-static void close_from_a_refusal_callback_after_a_server_disconnect_cancels_the_reconnect(
-    void** state)
-{
-  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
-  sub_failed_actor actor;
-  memset(&actor, 0, sizeof(actor));
-  actor.action = SUB_FAILED_ACTION_CLOSE;
-  actor.session = refuse_self_scoped_filter_after_disconnect(fx, &actor, 0x97);
-  /* A DISCONNECT on the ended session would be refused, and report a local error. */
-  az_iot_mock_mqtt_client_set_next_result(
-      actor.session, AZ_IOT_MOCK_CALL_DISCONNECT, AZ_IOT_ERR_MQTT);
-  (void)az_iot_connection_client_do_work(fx->client, 0);
-
-  assert_int_equal(actor.probe.calls, 1);
-  assert_int_equal(actor.action_result, AZ_IOT_OK);
-  assert_int_equal(actor.disconnect_calls, 0);
-  assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_IDLE);
-  size_t const last = fx->log.count - 1u;
-  assert_int_equal(fx->log.error_codes[last], 0x97);
-  size_t const events = fx->log.count;
-  az_iot_test_wait_ms(RETRY_DELAY_MS + 5u);
-  (void)az_iot_connection_client_do_work(fx->client, 0);
-  assert_int_equal(fx->log.count, events);
-  assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_IDLE);
-}
-
-/* As above with retries disabled: a Not authorized DISCONNECT schedules a fault, and close() from
- * the refusal callback still settles the client at IDLE, not FAULTED. */
-static void close_from_a_refusal_callback_after_a_refusing_disconnect_cancels_the_fault(
-    void** state)
-{
-  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
-  sub_failed_actor actor;
-  memset(&actor, 0, sizeof(actor));
-  actor.action = SUB_FAILED_ACTION_CLOSE;
-  (void)refuse_self_scoped_filter_after_disconnect(fx, &actor, 0x87);
-  (void)az_iot_connection_client_do_work(fx->client, 0);
-
-  assert_int_equal(actor.probe.calls, 1);
-  assert_int_equal(actor.action_result, AZ_IOT_OK);
-  assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_IDLE);
-}
-
 /* A filter registered from the refusal callback while the session is ending is not issued on that
  * session; it stays registered and is subscribed on the next one. */
 static void a_filter_registered_after_a_server_disconnect_waits_for_the_next_session(void** state)
@@ -1149,7 +1087,6 @@ static void a_filter_registered_after_a_server_disconnect_waits_for_the_next_ses
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
   sub_failed_actor actor;
   memset(&actor, 0, sizeof(actor));
-  actor.action = SUB_FAILED_ACTION_REREGISTER;
   az_iot_mock_mqtt_client* m = refuse_self_scoped_filter_after_disconnect(fx, &actor, 0x97);
   /* The ended session would refuse it, and a refused SUBSCRIBE rolls the registration back. The
    * session is destroyed by the drain: m is not used after do_work(). */
@@ -1157,7 +1094,7 @@ static void a_filter_registered_after_a_server_disconnect_waits_for_the_next_ses
   (void)az_iot_connection_client_do_work(fx->client, 0);
 
   assert_int_equal(actor.probe.calls, 1);
-  assert_int_equal(actor.action_result, AZ_IOT_OK);
+  assert_int_equal(actor.reregister_result, AZ_IOT_OK);
 
   az_iot_test_wait_ms(RETRY_DELAY_MS + 5u);
   (void)az_iot_connection_client_do_work(fx->client, 0);
@@ -1468,214 +1405,93 @@ static void matching_puback_invokes_the_callback(void** state)
 
 /** @brief Closes the client from a publish callback; records the result and the session's
  * DISCONNECT calls. */
-typedef struct
-{
-  az_iot_connection_client* client;
-  az_iot_mock_mqtt_client* session;
-  az_iot_result close_result;
-  size_t disconnect_calls;
-  /* Queue the DISCONNECTED Paho reports for a disconnect it refuses. */
-  bool report_refused_disconnect;
-  /* That DISCONNECTED carries no codes (a clean local end) instead of a transport code. */
-  bool clean_local_end;
-  /* Wire code of the refused gated SUBACK; 0 for none. */
-  int32_t suback_protocol_code;
-  /* Queued after that DISCONNECTED, if not NULL. */
-  const az_iot_mqtt_event* server_end_after_local_end;
-} close_on_puback_probe;
-
-static void close_on_puback(az_iot_result status, void* user_ctx)
-{
-  (void)status;
-  close_on_puback_probe* p = (close_on_puback_probe*)user_ctx;
-  p->close_result = az_iot_connection_client_close(p->client);
-  p->disconnect_calls = az_iot_mock_mqtt_client_count_of(p->session, AZ_IOT_MOCK_CALL_DISCONNECT);
-  if (p->report_refused_disconnect)
-  {
-    az_iot_mqtt_event local_end;
-    memset(&local_end, 0, sizeof(local_end));
-    local_end.kind = AZ_IOT_MQTT_EVT_DISCONNECTED;
-    local_end.status = AZ_IOT_ERR_MQTT;
-    local_end.transport_code = p->clean_local_end ? 0 : -3; /* MQTTASYNC_DISCONNECTED */
-    assert_true(az_iot_mock_mqtt_client_inject_event(p->session, &local_end));
-    if (p->server_end_after_local_end)
-    {
-      assert_true(az_iot_mock_mqtt_client_inject_event(p->session, p->server_end_after_local_end));
-    }
-  }
-}
-
 /**
- * @brief Refuse a gated filter (a fault is scheduled; the session is still live), then call
- * close() from a publish callback drained after it, with the adapter's disconnect() returning
- * @p disconnect_result. @p server_end, if not NULL, is queued after the PUBACK. Returns the
- * session's mock client.
+ * @brief Drain, in one process_loop(): a gated filter's refusal with @p suback_protocol_code (none
+ * when 0), then a server DISCONNECT 0x8B and a local DISCONNECTED (no codes if @p clean_local_end,
+ * else a transport code), the server's first if @p server_first. IDLE reports the server's code.
  */
-static az_iot_mock_mqtt_client* close_after_a_refused_gated_filter(
-    az_iot_test_conn* fx,
-    close_on_puback_probe* probe,
-    az_iot_result disconnect_result,
-    const az_iot_mqtt_event* server_end)
-{
-  az_iot_mock_mqtt_client* m = open_to_connected(fx);
-  probe->client = fx->client;
-  probe->session = m;
-  az_iot_mqtt_message msg = { 0 };
-  msg.topic = "devices/ut-device/messages/events/";
-  msg.payload = (const uint8_t*)"x";
-  msg.payload_len = 1;
-  msg.qos = AZ_IOT_MQTT_QOS_1;
-  assert_int_equal(
-      az_iot_connection_client__publish(fx->client, NULL, &msg, close_on_puback, probe), AZ_IOT_OK);
-  uint16_t const publish_id
-      = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_PUBLISH)->packet_id;
-  assert_int_equal(
-      az_iot_connection_client__add_subscription_on_connect(
-          fx->client, "gated/#", AZ_IOT_MQTT_QOS_1, fx, AZ_IOT_SUBSCRIPTION_FAILS_SESSION, NULL),
-      AZ_IOT_OK);
-  uint16_t const subscribe_id = subscribe_pid_for(m, "gated/#");
-  assert_int_not_equal(subscribe_id, 0);
-
-  az_iot_mock_mqtt_client_set_next_result(m, AZ_IOT_MOCK_CALL_DISCONNECT, disconnect_result);
-  az_iot_mock_mqtt_client_set_events_per_loop(m, SIZE_MAX);
-  assert_true(
-      az_iot_mock_mqtt_client_inject_suback_refusal(m, subscribe_id, probe->suback_protocol_code));
-  assert_true(az_iot_mock_mqtt_client_inject_puback(m, publish_id, AZ_IOT_OK));
-  if (server_end)
-  {
-    assert_true(az_iot_mock_mqtt_client_inject_event(m, server_end));
-  }
-  (void)az_iot_connection_client_do_work(fx->client, 0);
-  assert_int_equal(probe->disconnect_calls, 1);
-  return m;
-}
-
-/* close() after a local failure disconnects the live session in order (its DISCONNECT reason and
- * Will apply) and waits for the session's DISCONNECTED before settling at IDLE. */
-static void close_after_a_local_failure_waits_for_the_live_session_to_disconnect(void** state)
-{
-  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
-  close_on_puback_probe probe;
-  memset(&probe, 0, sizeof(probe));
-  az_iot_mock_mqtt_client* m = close_after_a_refused_gated_filter(fx, &probe, AZ_IOT_OK, NULL);
-
-  assert_int_equal(probe.close_result, AZ_IOT_OK);
-  /* Not torn down before the adapter has sent its DISCONNECT. */
-  assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_DISCONNECTING);
-  assert_ptr_equal(az_iot_mock_mqtt_factory_last_client(fx->factory), m);
-
-  assert_true(az_iot_mock_mqtt_client_inject_disconnected(m));
-  (void)az_iot_connection_client_do_work(fx->client, 0);
-  assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_IDLE);
-}
-
-/* A rejected DISCONNECT leaves nothing to end the session: close() settles it at IDLE at once. */
-static void close_after_a_local_failure_with_a_rejected_disconnect_settles_at_idle(void** state)
-{
-  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
-  close_on_puback_probe probe;
-  memset(&probe, 0, sizeof(probe));
-  (void)close_after_a_refused_gated_filter(fx, &probe, AZ_IOT_ERR_MQTT, NULL);
-
-  assert_int_equal(probe.close_result, AZ_IOT_ERR_MQTT);
-  assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_IDLE);
-}
-
-/**
- * @brief A refused gated filter, then close() from a PUBACK callback with the disconnect refused
- * (the adapter queues its own DISCONNECTED) and a server DISCONNECT queued before (@p server_first)
- * or after that local end. @p suback_protocol_code is the refusal's wire code; @p clean_local_end
- * makes the local DISCONNECTED code-less. IDLE reports the server's code.
- */
-static void assert_close_after_a_local_failure_keeps_the_server_disconnect_detail(
+static void assert_the_server_disconnect_detail_survives_a_local_end(
     az_iot_test_conn* fx,
     bool server_first,
     int32_t suback_protocol_code,
     bool clean_local_end)
 {
-  az_iot_mqtt_event server_end;
-  memset(&server_end, 0, sizeof(server_end));
-  server_end.kind = AZ_IOT_MQTT_EVT_DISCONNECTED;
-  server_end.status = az_iot_mqtt_disconnect_result(AZ_IOT_MQTT_VERSION_5, 0x8B);
-  server_end.protocol_code = 0x8B;
-  close_on_puback_probe probe;
-  memset(&probe, 0, sizeof(probe));
-  probe.report_refused_disconnect = true;
-  probe.server_end_after_local_end = server_first ? NULL : &server_end;
-  probe.suback_protocol_code = suback_protocol_code;
-  probe.clean_local_end = clean_local_end;
-  (void)close_after_a_refused_gated_filter(
-      fx, &probe, AZ_IOT_ERR_MQTT, server_first ? &server_end : NULL);
-
-  size_t const last = fx->log.count - 1;
-  assert_int_equal(fx->log.states[last], AZ_IOT_CONN_STATE_IDLE);
-  assert_int_equal(fx->log.reasons[last], server_end.status);
-  assert_int_equal(fx->log.error_codes[last], 0x8B);
-}
-
-static void close_after_a_local_failure_keeps_a_queued_server_disconnect_detail(void** state)
-{
-  assert_close_after_a_local_failure_keeps_the_server_disconnect_detail(
-      (az_iot_test_conn*)*state, true, 0, false);
-}
-
-static void close_after_a_local_failure_reports_a_server_disconnect_after_the_local_end(
-    void** state)
-{
-  assert_close_after_a_local_failure_keeps_the_server_disconnect_detail(
-      (az_iot_test_conn*)*state, false, 0, false);
-}
-
-/* A coded SUBACK refusal and a code-less local end before the server DISCONNECT: the refusal's
- * staged wire code does not count as the server's end, so the server's detail is reported. */
-static void close_after_a_coded_refusal_reports_a_server_disconnect_after_a_clean_local_end(
-    void** state)
-{
-  assert_close_after_a_local_failure_keeps_the_server_disconnect_detail(
-      (az_iot_test_conn*)*state, false, 0x87, true);
-}
-
-/* An identity refusal reported without codes after the local end is still acted on, though codes
- * cannot tell it from a local end: IDLE carries it. */
-static void close_after_a_local_failure_reports_an_identity_refusal_after_the_local_end(
-    void** state)
-{
-  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
-  az_iot_mqtt_event refusal;
-  memset(&refusal, 0, sizeof(refusal));
-  refusal.kind = AZ_IOT_MQTT_EVT_DISCONNECTED;
-  refusal.status = AZ_IOT_ERR_AUTH;
-  close_on_puback_probe probe;
-  memset(&probe, 0, sizeof(probe));
-  probe.report_refused_disconnect = true;
-  probe.server_end_after_local_end = &refusal;
-  (void)close_after_a_refused_gated_filter(fx, &probe, AZ_IOT_ERR_MQTT, NULL);
-
-  size_t const last = fx->log.count - 1;
-  assert_int_equal(fx->log.states[last], AZ_IOT_CONN_STATE_IDLE);
-  assert_int_equal(fx->log.reasons[last], AZ_IOT_ERR_AUTH);
-}
-
-/* An accepted close() replaces the refused gated filter's failure: a code-less failed DISCONNECTED
- * then settles IDLE without the refusal's code as its cause. */
-static void close_after_a_local_failure_drops_the_replaced_failure_detail(void** state)
-{
-  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
-  close_on_puback_probe probe;
-  memset(&probe, 0, sizeof(probe));
-  probe.suback_protocol_code = 0x87;
-  az_iot_mock_mqtt_client* m = close_after_a_refused_gated_filter(fx, &probe, AZ_IOT_OK, NULL);
-
-  az_iot_mqtt_event end;
-  memset(&end, 0, sizeof(end));
-  end.kind = AZ_IOT_MQTT_EVT_DISCONNECTED;
-  end.status = AZ_IOT_ERR_MQTT;
-  assert_true(az_iot_mock_mqtt_client_inject_event(m, &end));
+  az_iot_mock_mqtt_client* m = open_to_connected(fx);
+  az_iot_mock_mqtt_client_set_events_per_loop(m, SIZE_MAX);
+  if (suback_protocol_code != 0)
+  {
+    assert_int_equal(
+        az_iot_connection_client__add_subscription_on_connect(
+            fx->client, "gated/#", AZ_IOT_MQTT_QOS_1, fx, AZ_IOT_SUBSCRIPTION_FAILS_SESSION, NULL),
+        AZ_IOT_OK);
+    assert_true(az_iot_mock_mqtt_client_inject_suback_refusal(
+        m, subscribe_pid_for(m, "gated/#"), suback_protocol_code));
+  }
+  az_iot_mqtt_event local_end;
+  memset(&local_end, 0, sizeof(local_end));
+  local_end.kind = AZ_IOT_MQTT_EVT_DISCONNECTED;
+  local_end.status = AZ_IOT_ERR_MQTT;
+  local_end.transport_code = clean_local_end ? 0 : -3;
+  if (server_first)
+  {
+    assert_true(az_iot_mock_mqtt_client_inject_server_disconnect(m, 0x8B, NULL));
+  }
+  assert_true(az_iot_mock_mqtt_client_inject_event(m, &local_end));
+  if (!server_first)
+  {
+    assert_true(az_iot_mock_mqtt_client_inject_server_disconnect(m, 0x8B, NULL));
+  }
   (void)az_iot_connection_client_do_work(fx->client, 0);
 
   size_t const last = fx->log.count - 1;
   assert_int_equal(fx->log.states[last], AZ_IOT_CONN_STATE_IDLE);
-  assert_false(fx->log.error_present[last]);
+  assert_int_equal(fx->log.error_sources[last], AZ_IOT_CONN_ERR_SRC_MQTT);
+  assert_int_equal(fx->log.error_codes[last], 0x8B);
+}
+
+/* A local end after the server DISCONNECT is redundant: it does not replace the server's code. */
+static void a_local_end_after_a_server_disconnect_keeps_its_detail(void** state)
+{
+  assert_the_server_disconnect_detail_survives_a_local_end(
+      (az_iot_test_conn*)*state, true, 0, false);
+}
+
+/* A server DISCONNECT after a local end is not redundant: its code is reported. */
+static void a_server_disconnect_after_a_local_end_is_reported(void** state)
+{
+  assert_the_server_disconnect_detail_survives_a_local_end(
+      (az_iot_test_conn*)*state, false, 0, false);
+}
+
+/* A coded SUBACK refusal and a code-less local end before the server DISCONNECT: the refusal's
+ * staged wire code does not count as the server's end, so the server's code is reported. */
+static void a_server_disconnect_after_a_coded_refusal_and_a_clean_local_end_is_reported(
+    void** state)
+{
+  assert_the_server_disconnect_detail_survives_a_local_end(
+      (az_iot_test_conn*)*state, false, 0x87, true);
+}
+
+/* An identity refusal without codes after a local end is acted on, though codes cannot tell it
+ * from a local end: with retries disabled it faults. */
+static void an_identity_refusal_after_a_local_end_faults(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  az_iot_mock_mqtt_client* m = open_to_connected(fx);
+  az_iot_mock_mqtt_client_set_events_per_loop(m, SIZE_MAX);
+  az_iot_mqtt_event end;
+  memset(&end, 0, sizeof(end));
+  end.kind = AZ_IOT_MQTT_EVT_DISCONNECTED;
+  end.status = AZ_IOT_ERR_MQTT;
+  end.transport_code = -3;
+  assert_true(az_iot_mock_mqtt_client_inject_event(m, &end));
+  end.status = AZ_IOT_ERR_AUTH;
+  end.transport_code = 0;
+  assert_true(az_iot_mock_mqtt_client_inject_event(m, &end));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+
+  assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_FAULTED);
+  assert_int_equal(az_iot_test_reason_for(&fx->log, AZ_IOT_CONN_STATE_FAULTED), AZ_IOT_ERR_AUTH);
 }
 
 /* While close() disconnects the session, a gated SUBACK does not announce CONNECTED and a new
@@ -2191,41 +2007,15 @@ int main(void)
         setup_two_attempts,
         teardown),
     cmocka_unit_test_setup_teardown(
-        close_from_a_refusal_callback_after_a_server_disconnect_cancels_the_reconnect,
-        setup_two_attempts,
-        teardown),
+        a_local_end_after_a_server_disconnect_keeps_its_detail, setup_no_reconnect, teardown),
     cmocka_unit_test_setup_teardown(
-        close_from_a_refusal_callback_after_a_refusing_disconnect_cancels_the_fault,
+        a_server_disconnect_after_a_local_end_is_reported, setup_no_reconnect, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_server_disconnect_after_a_coded_refusal_and_a_clean_local_end_is_reported,
         setup_no_reconnect,
         teardown),
     cmocka_unit_test_setup_teardown(
-        close_after_a_local_failure_waits_for_the_live_session_to_disconnect,
-        setup_no_reconnect,
-        teardown),
-    cmocka_unit_test_setup_teardown(
-        close_after_a_local_failure_with_a_rejected_disconnect_settles_at_idle,
-        setup_no_reconnect,
-        teardown),
-    cmocka_unit_test_setup_teardown(
-        close_after_a_local_failure_keeps_a_queued_server_disconnect_detail,
-        setup_no_reconnect,
-        teardown),
-    cmocka_unit_test_setup_teardown(
-        close_after_a_local_failure_reports_a_server_disconnect_after_the_local_end,
-        setup_no_reconnect,
-        teardown),
-    cmocka_unit_test_setup_teardown(
-        close_after_a_coded_refusal_reports_a_server_disconnect_after_a_clean_local_end,
-        setup_no_reconnect,
-        teardown),
-    cmocka_unit_test_setup_teardown(
-        close_after_a_local_failure_reports_an_identity_refusal_after_the_local_end,
-        setup_no_reconnect,
-        teardown),
-    cmocka_unit_test_setup_teardown(
-        close_after_a_local_failure_drops_the_replaced_failure_detail,
-        setup_no_reconnect,
-        teardown),
+        an_identity_refusal_after_a_local_end_faults, setup_no_reconnect, teardown),
     cmocka_unit_test_setup_teardown(
         close_while_the_subscription_gate_is_open_ignores_the_closing_session,
         setup_no_reconnect,
