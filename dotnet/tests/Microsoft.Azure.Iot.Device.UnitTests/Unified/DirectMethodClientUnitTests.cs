@@ -94,7 +94,9 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
             var probe = new Probe() { MethodName = "reboot", ResponseTimeoutSeconds = 30 };
             await connection.SimulateReceiveAsync(CreateMqttv5MethodPublish("probe:1", correlationData, probe.ToByteArray()));
 
-            MqttPublish probeAckPublish = Assert.Single(connection.PublishedMessages);
+            // The probe ack and result are sent in the background.
+            MqttPublish probeAckPublish = await connection.WaitForPublishedMessagesAsync(1);
+            Assert.Single(connection.PublishedMessages);
             // The device ID is left for the connection client to fill in when it actually sends the publish.
             Assert.Equal($"ih/{Microsoft.Azure.Iot.Device.Unified.Connection.IConnectionClient.DeviceIdPlaceholder}/srv/methods", probeAckPublish.Topic);
             Assert.Equal("probe-ack:1", GetType(probeAckPublish));
@@ -105,8 +107,8 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
             var exec = new Exec() { ReadyId = readyId, Params = ByteString.CopyFromUtf8("{}") };
             await connection.SimulateReceiveAsync(CreateMqttv5MethodPublish("exec:1", correlationData, exec.ToByteArray()));
 
+            MqttPublish resultPublish = await connection.WaitForPublishedMessagesAsync(2);
             Assert.Equal(2, connection.PublishedMessages.Count);
-            MqttPublish resultPublish = connection.PublishedMessages[1];
             Assert.Equal("result:1", GetType(resultPublish));
             Result result = Result.Parser.ParseFrom(resultPublish.Payload);
             Assert.Equal(200, result.Status);
@@ -126,7 +128,8 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
             MockMqttPublishReceivedEventArgs args = await connection.SimulateReceiveAsync(CreateMqttv5MethodPublish("probe:1", Guid.NewGuid().ToByteArray(), probe.ToByteArray()));
 
             Assert.Equal(0, args.AcknowledgeCount);
-            MqttPublish probeAckPublish = Assert.Single(connection.PublishedMessages);
+            MqttPublish probeAckPublish = await connection.WaitForPublishedMessagesAsync(1);
+            Assert.Single(connection.PublishedMessages);
             Assert.Equal("probe-ack:1", GetType(probeAckPublish));
             ProbeAck sentProbeAck = ProbeAck.Parser.ParseFrom(probeAckPublish.Payload);
             Assert.Equal(ProbeAck.ResultOneofCase.Rejected, sentProbeAck.ResultCase);
@@ -152,7 +155,8 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
             await connection.SimulateReceiveAsync(CreateMqttv5MethodPublish("probe:1", Guid.NewGuid().ToByteArray(), probe.ToByteArray()));
 
             Assert.False(connection.IsDisposed);
-            MqttPublish probeAckPublish = Assert.Single(connection.PublishedMessages);
+            MqttPublish probeAckPublish = await connection.WaitForPublishedMessagesAsync(1);
+            Assert.Single(connection.PublishedMessages);
             ProbeAck sentProbeAck = ProbeAck.Parser.ParseFrom(probeAckPublish.Payload);
             Assert.Equal(ProbeAck.ResultOneofCase.Ready, sentProbeAck.ResultCase);
         }

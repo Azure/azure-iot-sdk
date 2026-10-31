@@ -34,5 +34,23 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Models
         /// </para>
         /// </remarks>
         public int MaxConcurrentDirectMethods { get; set; } = DefaultMaxConcurrentDirectMethods;
+
+        /// <summary>
+        /// The time reserved for a direct method's result to travel back to the service before the service's response timeout elapses.
+        /// Must not be negative. When null (the default), it is 10% of the invocation's response timeout, clamped between 1 and 10 seconds.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// The direct method handler's cancellation token is cancelled this long before the response timeout, and this client waits this
+        /// long past the response timeout for an exec message before it abandons an accepted probe. A probe is rejected with
+        /// <see cref="Device.Models.DirectMethods.RejectedReason.InsufficientTime"/> if its response timeout, less this margin, is not more
+        /// than the minimum execution time given to <see cref="DirectMethods.DirectMethodProbeAck.Accepted(TimeSpan)"/>. With the default
+        /// margin, that means a probe with a 1 second response timeout is always rejected.
+        /// </para>
+        /// <para>
+        /// This value is read once when the direct method client is constructed.
+        /// </para>
+        /// </remarks>
+        public TimeSpan? SafetyMargin { get; set; }
     }
 }
