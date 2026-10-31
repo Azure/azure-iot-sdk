@@ -66,7 +66,8 @@ extern "C"
     E2E_AMQP_TELEMETRY_PHASE_BEGINNING_SESSION,
     E2E_AMQP_TELEMETRY_PHASE_OPENING_CBS,
     E2E_AMQP_TELEMETRY_PHASE_AUTHORIZING,
-    E2E_AMQP_TELEMETRY_PHASE_RECEIVING, /**< Receivers attached or attaching. */
+    E2E_AMQP_TELEMETRY_PHASE_ATTACHING_RECEIVERS, /**< A receiver awaits the service's answer. */
+    E2E_AMQP_TELEMETRY_PHASE_RECEIVING, /**< Every receiver's attach was answered. */
   } e2e_amqp_telemetry_phase;
 
   /** @brief The outcome of a CBS put-token request. */
@@ -89,6 +90,10 @@ extern "C"
   {
     az_amqp_sample_transport transport_storage;
     az_amqp_transport transport;
+    /** @brief Unit tests only: when set, the connection uses this transport instead of TLS to the
+     * host, and do_work does not wait for socket I/O. */
+    const az_amqp_transport_vtable* transport_override;
+    void* transport_override_impl;
     az_amqp_connection connection;
     az_amqp_session session;
     az_amqp_cbs cbs;
@@ -194,7 +199,8 @@ extern "C"
   bool e2e_amqp_telemetry_do_work(e2e_amqp_telemetry* t, int wait_ms);
 
   /** @brief The partition whose receiver the service detached (e.g. a sixth reader of the
-   * partition in the consumer group), or -1 while every receiver is attached or attaching. */
+   * partition in the consumer group), or -1 while every receiver is attached or the setup is not
+   * done. */
   int e2e_amqp_telemetry_find_detached_receiver(const e2e_amqp_telemetry* t);
 
   /**

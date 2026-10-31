@@ -104,7 +104,8 @@ add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../deps/amqp
 
 # Receiver credit accounting of the vendored AMQP client, over an in-memory
 # peer. Needs no Azure resources; named `e2e` so the e2e job's filter runs it.
-az_iot_add_cmocka_test(az_iot_tests_e2e_amqp_link tests/e2e_amqp_link_test.c)
+az_iot_add_cmocka_test(az_iot_tests_e2e_amqp_link
+    tests/e2e_amqp_link_test.c tests/e2e_amqp_test_peer.c)
 target_link_libraries(az_iot_tests_e2e_amqp_link PRIVATE az_amqp)
 
 # A write by the harness AMQP transport to a closed loopback peer fails without
@@ -138,6 +139,16 @@ target_link_libraries(az_iot_tests_e2e_http_headers PRIVATE
 az_iot_add_cmocka_test(az_iot_tests_e2e_amqp_capture tests/e2e_amqp_capture_test.c)
 target_include_directories(az_iot_tests_e2e_amqp_capture PRIVATE service)
 target_link_libraries(az_iot_tests_e2e_amqp_capture PRIVATE
+    az_iot_e2e_service az_amqp az_amqp_transport)
+
+# The telemetry watcher against an in-memory peer playing Event Hubs: replayed
+# transfers are dropped, a detached receiver reconnects with its state kept, and
+# the setup deadline covers receivers still attaching. No network; named `e2e`
+# so the e2e job's filter runs it.
+az_iot_add_cmocka_test(az_iot_tests_e2e_amqp_telemetry
+    tests/e2e_amqp_telemetry_test.c tests/e2e_amqp_test_peer.c)
+target_include_directories(az_iot_tests_e2e_amqp_telemetry PRIVATE service)
+target_link_libraries(az_iot_tests_e2e_amqp_telemetry PRIVATE
     az_iot_e2e_service az_amqp az_amqp_transport)
 
 # ---------------------------------------------------------------------------

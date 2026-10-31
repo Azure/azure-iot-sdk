@@ -111,7 +111,10 @@ a partition in a group. When a receiver is detached, the watcher logs
 reconnects, reading again from the time the watch began. The replayed events are
 dropped by their per-partition sequence number, so none is captured twice. The
 reconnect closes the socket without waiting, and each `do_work` call advances the
-connection setup by at most one step; setup fails after 60 s.
+connection setup by at most one step. Setup ends once every receiver's attach is
+answered, and fails after 60 s. `az_iot_tests_e2e_amqp_telemetry` covers replay
+dropping, the reconnect and the setup deadline against an in-memory Event Hubs
+peer, with no live service.
 
 SAS tokens are built with OpenSSL (HMAC-SHA256 + base64) on both platforms. Note
 the two key conventions the facade handles: Event Hubs signs with the **raw** key
