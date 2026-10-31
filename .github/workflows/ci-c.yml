@@ -1657,8 +1657,9 @@ jobs:
 
   # ---------------------------------------------------------------------------
   # ESP-IDF builds: one job per ESP32 sample, target and profile, each through
-  # eng/esp-idf-build.sh (fails on any compiler warning). Build checks only:
-  # secure profiles are signed with a key generated per build and discarded.
+  # eng/esp-idf-build.sh (fails on any compiler warning). Secure profiles are
+  # signed with a key generated per build and discarded. qemu builds (OpenCores
+  # Ethernet) are also booted in QEMU and must get an IPv4 address.
   # ---------------------------------------------------------------------------
   esp-idf:
     name: esp-idf / ${{ matrix.sample }} / ${{ matrix.target }} / ${{ matrix.profile }}
@@ -1685,6 +1686,16 @@ jobs:
           - sample: software_update/esp32
             target: esp32
             profile: secure_virtual_efuse
+          # QEMU emulates esp32, esp32s3 and esp32c3 only.
+          - sample: software_update/esp32
+            target: esp32
+            profile: qemu
+          - sample: software_update/esp32
+            target: esp32s3
+            profile: qemu
+          - sample: software_update/esp32
+            target: esp32c3
+            profile: qemu
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -1702,6 +1713,17 @@ jobs:
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           . "$IDF_PATH/export.sh" > /dev/null
           bash eng/esp-idf-build.sh "samples/$SAMPLE" "$TARGET" "$PROFILE"
+      - name: Boot in QEMU
+        if: matrix.profile == 'qemu'
+        env:
+          SAMPLE: ${{ matrix.sample }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          . "$IDF_PATH/export.sh" > /dev/null
+          # eng/esp-idf-build.sh names the build <dir>-<sample>-<target>-<profile>.
+          name="$(basename "$(dirname "$SAMPLE")")-$(basename "$SAMPLE")"
+          bash eng/esp-idf-qemu.sh "$RUNNER_TEMP/esp-idf-build/${name}-${TARGET}-qemu/build" \
+            "$TARGET" "Got IPv4 event" 120
 
   # Single check name for the esp-idf matrix, which reports one check per cell.
   # Same rules as coverage-gate below.

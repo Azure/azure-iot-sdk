@@ -4,7 +4,6 @@
 idf_component_register(
     SRCS
         "app_main.c"
-        "wifi_connect.c"
     INCLUDE_DIRS
         "."
     EMBED_TXTFILES
@@ -16,7 +15,7 @@ idf_component_register(
         azure-iot-sdk-az-mqtt              # MQTT adapter
         azure-iot-sdk-certificate-provider-esp-secure-cert  # device identity
         nvs_flash                          # Wi-Fi, update check route
-        esp_wifi
         esp_netif
         esp_event
+        protocol_examples_common           # example_connect(): Wi-Fi, or Ethernet in QEMU
 )

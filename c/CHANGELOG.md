@@ -298,9 +298,19 @@
   The ESP32 software updates sample uses it instead of a certificate and key compiled into the
   image; its partition tables gain `esp_secure_cert` (0xD000; 0x11000 in the security profile),
   so devices running an earlier build of the sample must be reflashed over serial.
+- ESP32 software updates sample: the network comes from ESP-IDF's `protocol_examples_common`
+  (`example_connect()`), replacing the sample's own Wi-Fi code. The Wi-Fi settings are now
+  `EXAMPLE_WIFI_SSID` / `EXAMPLE_WIFI_PASSWORD` (were `SU_WIFI_SSID` / `SU_WIFI_PASSWORD`).
+  `sdkconfig.qemu` runs it in QEMU (esp32, esp32s3, esp32c3) over OpenCores Ethernet;
+  `eng/esp-idf-qemu.sh` boots a build in QEMU and waits for a log line, and CI boots the QEMU
+  builds until they get an IPv4 address.
 
 ### Bugs Fixed
 
+- ESP32: the `azure-sdk-for-c` component implements `az_platform_clock_msec()` and
+  `az_platform_sleep_msec()` with `esp_timer` and FreeRTOS, so the az_mqtt adapter's idle wait
+  sleeps instead of returning at once. The software updates sample's connect loop waits out each
+  50 ms tick, so a DPS retry backoff no longer spins it through its bound, starving the idle task.
 - Paho adapter: `process_loop()` returns as soon as an event is queued and dispatches it, instead
   of sleeping its whole timeout and dispatching it on the next call.
 - mqttv5: the connection's `process_loop()` wait ends by the presence SUBACK and birth-ack
