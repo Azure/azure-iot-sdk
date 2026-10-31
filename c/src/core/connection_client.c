@@ -886,6 +886,90 @@ static const az_iot_mqtt_factory* find_factory(
   return NULL;
 }
 
+/**
+ * @brief Builds the MQTT client of @p scope's session: with opts.mqtt_adapter in
+ * opts.mqtt_workspace, otherwise from the factory registered for @p version. Stages the local
+ * error of a failure.
+ */
+static az_iot_result create_session_mqtt_client(
+    az_iot_connection_client* c,
+    az_iot_connection_scope scope,
+    az_iot_mqtt_version version,
+    az_iot_mqtt_client** out_client)
+{
+  *out_client = NULL;
+  const az_iot_mqtt_adapter* adapter = c->opts.mqtt_adapter;
+  if (adapter == NULL)
+  {
+    const az_iot_mqtt_factory* f = find_factory(c, version);
+    if (!f)
+    {
+      stage_local_error(
+          c,
+          scope,
+          AZ_IOT_ERR_NOT_SUPPORTED,
+          scope == AZ_IOT_CONN_SCOPE_DPS ? "no MQTT 3.1.1 factory registered"
+                                         : "no MQTT factory for the hub protocol");
+      return AZ_IOT_ERR_NOT_SUPPORTED;
+    }
+    az_iot_mqtt_client* mc = f->create(f->factory_ctx);
+    if (!mc || !mc->iface)
+    {
+      stage_local_error(c, scope, AZ_IOT_ERR_INTERNAL, "MQTT factory create() failed");
+      return AZ_IOT_ERR_INTERNAL;
+    }
+    *out_client = mc;
+    return AZ_IOT_OK;
+  }
+
+  /* The workspace holds one client; the live one is never touched. */
+  if (c->mqtt_workspace_client != NULL)
+  {
+    stage_local_error(
+        c, scope, AZ_IOT_ERR_BUSY, "mqtt_workspace holds the other session's MQTT client");
+    return AZ_IOT_ERR_BUSY;
+  }
+  az_iot_mqtt_client* mc = NULL;
+  az_iot_result r = adapter->init(
+      version, &c->opts.mqtt_limits, c->opts.mqtt_workspace, c->opts.mqtt_workspace_size, &mc);
+  if (r == AZ_IOT_ERR_NOT_SUPPORTED)
+  {
+    stage_local_error(
+        c,
+        scope,
+        r,
+        version == AZ_IOT_MQTT_VERSION_5 ? "the MQTT adapter does not build MQTT 5 clients"
+                                         : "the MQTT adapter does not build MQTT 3.1.1 clients");
+    return r;
+  }
+  if (r == AZ_IOT_ERR_NOT_ENOUGH_SPACE)
+  {
+    stage_local_error(c, scope, r, "mqtt_workspace is too small for the MQTT client");
+    return r;
+  }
+  if (r != AZ_IOT_OK || !mc || !mc->iface)
+  {
+    stage_local_error(c, scope, AZ_IOT_ERR_INTERNAL, "MQTT adapter init() failed");
+    return AZ_IOT_ERR_INTERNAL;
+  }
+  c->mqtt_workspace_client = mc;
+  *out_client = mc;
+  return AZ_IOT_OK;
+}
+
+/** @brief Destroys @p mc, a session's MQTT client, and frees opts.mqtt_workspace if it held it. */
+static void destroy_session_mqtt_client(az_iot_connection_client* c, az_iot_mqtt_client* mc)
+{
+  if (mc == c->mqtt_workspace_client)
+  {
+    c->mqtt_workspace_client = NULL;
+  }
+  if (mc->iface && mc->iface->destroy)
+  {
+    mc->iface->destroy(mc);
+  }
+}
+
 /* Apply the caller's keep-alive and connect timeout, or the SDK defaults when
  * they were left at 0.
  *
@@ -1103,9 +1187,9 @@ static void end_session(az_iot_connection_client* c, az_iot_connection_session_e
 {
   c->hub_session_ended = false;
   c->hub_server_disconnect_seen = false;
-  if (c->active_client && c->active_client->iface && c->active_client->iface->destroy)
+  if (c->active_client)
   {
-    c->active_client->iface->destroy(c->active_client);
+    destroy_session_mqtt_client(c, c->active_client);
   }
   c->active_client = NULL;
   /* A birth-ack wait torn down at or past its deadline is a miss, whatever
@@ -2606,9 +2690,9 @@ static void dps_teardown_mqtt(az_iot_connection_client* c)
    * holds again rather than racing past. */
   c->dps_hold_active = false;
   c->dps_hold_deadline_ms = 0;
-  if (c->dps_mqtt && c->dps_mqtt->iface && c->dps_mqtt->iface->destroy)
+  if (c->dps_mqtt)
   {
-    c->dps_mqtt->iface->destroy(c->dps_mqtt);
+    destroy_session_mqtt_client(c, c->dps_mqtt);
   }
   c->dps_mqtt = NULL;
 }
@@ -3835,20 +3919,12 @@ static az_iot_result dps_connect_session(az_iot_connection_client* c)
     return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
   }
 
-  const az_iot_mqtt_factory* f = find_factory(c, AZ_IOT_MQTT_VERSION_3_1_1);
-  if (!f)
+  az_iot_mqtt_client* mc = NULL;
+  az_iot_result create_result
+      = create_session_mqtt_client(c, AZ_IOT_CONN_SCOPE_DPS, AZ_IOT_MQTT_VERSION_3_1_1, &mc);
+  if (create_result != AZ_IOT_OK)
   {
-    stage_local_error(
-        c, AZ_IOT_CONN_SCOPE_DPS, AZ_IOT_ERR_NOT_SUPPORTED, "no MQTT 3.1.1 factory registered");
-    return AZ_IOT_ERR_NOT_SUPPORTED;
-  }
-
-  az_iot_mqtt_client* mc = f->create(f->factory_ctx);
-  if (!mc || !mc->iface)
-  {
-    stage_local_error(
-        c, AZ_IOT_CONN_SCOPE_DPS, AZ_IOT_ERR_INTERNAL, "MQTT factory create() failed");
-    return AZ_IOT_ERR_INTERNAL;
+    return create_result;
   }
 
   mc->iface->set_inbound_cb(mc, on_dps_mqtt_event, c);
@@ -3876,7 +3952,7 @@ static az_iot_result dps_connect_session(az_iot_connection_client* c)
     AZ_IOT_LOG_ERROR(
         AZ_IOT_LOG_COMPONENT_DPS,
         "no certificate provider and no SAS key or token callback; refusing to connect");
-    mc->iface->destroy(mc);
+    destroy_session_mqtt_client(c, mc);
     stage_local_error(
         c,
         AZ_IOT_CONN_SCOPE_DPS,
@@ -3904,7 +3980,7 @@ static az_iot_result dps_connect_session(az_iot_connection_client* c)
       AZ_IOT_LOG_WARN(AZ_IOT_LOG_COMPONENT_DPS, "the certificate selected for fallback is gone");
       c->auth[AZ_IOT_CONN_SCOPE_DPS].first = AZ_IOT_AUTH_SOURCE_NONE;
       c->auth[AZ_IOT_CONN_SCOPE_DPS].pass_from = AZ_IOT_AUTH_SOURCE_NONE;
-      mc->iface->destroy(mc);
+      destroy_session_mqtt_client(c, mc);
       stage_local_error(c, AZ_IOT_CONN_SCOPE_DPS, lr, "certificate selected for fallback is gone");
       return lr;
     }
@@ -3940,7 +4016,7 @@ static az_iot_result dps_connect_session(az_iot_connection_client* c)
       if (cr != AZ_IOT_OK)
       {
         release_material(c, AZ_IOT_CONN_SCOPE_DPS);
-        mc->iface->destroy(mc);
+        destroy_session_mqtt_client(c, mc);
         stage_local_error(c, AZ_IOT_CONN_SCOPE_DPS, cr, "certificate material rejected");
         return cr;
       }
@@ -3954,7 +4030,7 @@ static az_iot_result dps_connect_session(az_iot_connection_client* c)
           AZ_IOT_LOG_COMPONENT_DPS,
           "certificate provider load() failed for the bootstrap identity (%d)",
           (int)lr);
-      mc->iface->destroy(mc);
+      destroy_session_mqtt_client(c, mc);
       stage_local_error(c, AZ_IOT_CONN_SCOPE_DPS, lr, "certificate provider load() failed");
       return lr;
     }
@@ -3968,7 +4044,7 @@ static az_iot_result dps_connect_session(az_iot_connection_client* c)
     {
       /* Waiting for the token: the attempt stays in SETTING_UP. */
       release_material(c, AZ_IOT_CONN_SCOPE_DPS);
-      mc->iface->destroy(mc);
+      destroy_session_mqtt_client(c, mc);
       return AZ_IOT_OK;
     }
   }
@@ -3982,7 +4058,7 @@ static az_iot_result dps_connect_session(az_iot_connection_client* c)
     if (sr != AZ_IOT_OK)
     {
       release_material(c, AZ_IOT_CONN_SCOPE_DPS);
-      mc->iface->destroy(mc);
+      destroy_session_mqtt_client(c, mc);
       stage_local_error(c, AZ_IOT_CONN_SCOPE_DPS, sr, "SAS token signing failed");
       return sr;
     }
@@ -5480,20 +5556,11 @@ static az_iot_result start_connect_attempt(az_iot_connection_client* c)
   }
 
   az_iot_mqtt_version version = az_iot_mqtt_required_version_for_role(c->session_role);
-  const az_iot_mqtt_factory* f = find_factory(c, version);
-  if (!f)
+  az_iot_mqtt_client* mc = NULL;
+  az_iot_result create_result = create_session_mqtt_client(c, AZ_IOT_CONN_SCOPE_HUB, version, &mc);
+  if (create_result != AZ_IOT_OK)
   {
-    stage_local_error(
-        c, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_ERR_NOT_SUPPORTED, "no MQTT factory for the hub protocol");
-    return AZ_IOT_ERR_NOT_SUPPORTED;
-  }
-
-  az_iot_mqtt_client* mc = f->create(f->factory_ctx);
-  if (!mc || !mc->iface)
-  {
-    stage_local_error(
-        c, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_ERR_INTERNAL, "MQTT factory create() failed");
-    return AZ_IOT_ERR_INTERNAL;
+    return create_result;
   }
 
   mc->iface->set_inbound_cb(mc, on_mqtt_event, c);
@@ -5513,7 +5580,7 @@ static az_iot_result start_connect_attempt(az_iot_connection_client* c)
     if (!ensure_hub_client(c))
     {
       AZ_IOT_LOG_ERROR(AZ_IOT_LOG_COMPONENT_CONNECTION, "invalid host, client ID or model ID");
-      mc->iface->destroy(mc);
+      destroy_session_mqtt_client(c, mc);
       stage_local_error(
           c, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_ERR_INVALID_ARG, "invalid host, client ID or model ID");
       return AZ_IOT_ERR_INVALID_ARG;
@@ -5523,7 +5590,7 @@ static az_iot_result start_connect_attempt(az_iot_connection_client* c)
       AZ_IOT_LOG_ERROR(
           AZ_IOT_LOG_COMPONENT_CONNECTION,
           "AZ_IOT_MQTT_USERNAME_BUF is too small for the MQTTv3 CONNECT username");
-      mc->iface->destroy(mc);
+      destroy_session_mqtt_client(c, mc);
       stage_local_error(
           c,
           AZ_IOT_CONN_SCOPE_HUB,
@@ -5546,7 +5613,7 @@ static az_iot_result start_connect_attempt(az_iot_connection_client* c)
       AZ_IOT_LOG_ERROR(
           AZ_IOT_LOG_COMPONENT_CONNECTION,
           "AZ_IOT_MQTT_USERNAME_BUF is too small for the MQTTv5 CONNECT username");
-      mc->iface->destroy(mc);
+      destroy_session_mqtt_client(c, mc);
       stage_local_error(
           c,
           AZ_IOT_CONN_SCOPE_HUB,
@@ -5571,7 +5638,7 @@ static az_iot_result start_connect_attempt(az_iot_connection_client* c)
     AZ_IOT_LOG_ERROR(
         AZ_IOT_LOG_COMPONENT_CONNECTION,
         "no certificate provider and no SAS key or token callback; refusing to connect");
-    mc->iface->destroy(mc);
+    destroy_session_mqtt_client(c, mc);
     stage_local_error(
         c,
         AZ_IOT_CONN_SCOPE_HUB,
@@ -5601,7 +5668,7 @@ static az_iot_result start_connect_attempt(az_iot_connection_client* c)
           AZ_IOT_LOG_COMPONENT_CONNECTION, "the certificate selected for fallback is gone");
       c->auth[AZ_IOT_CONN_SCOPE_HUB].first = AZ_IOT_AUTH_SOURCE_NONE;
       c->auth[AZ_IOT_CONN_SCOPE_HUB].pass_from = AZ_IOT_AUTH_SOURCE_NONE;
-      mc->iface->destroy(mc);
+      destroy_session_mqtt_client(c, mc);
       stage_local_error(c, AZ_IOT_CONN_SCOPE_HUB, lr, "certificate selected for fallback is gone");
       return lr;
     }
@@ -5614,7 +5681,7 @@ static az_iot_result start_connect_attempt(az_iot_connection_client* c)
     {
       AZ_IOT_LOG_ERRORF(
           AZ_IOT_LOG_COMPONENT_CONNECTION, "certificate provider load() failed (%d)", (int)lr);
-      mc->iface->destroy(mc);
+      destroy_session_mqtt_client(c, mc);
       stage_local_error(c, AZ_IOT_CONN_SCOPE_HUB, lr, "certificate provider load() failed");
       return lr;
     }
@@ -5631,7 +5698,7 @@ static az_iot_result start_connect_attempt(az_iot_connection_client* c)
       if (cr != AZ_IOT_OK)
       {
         release_material(c, AZ_IOT_CONN_SCOPE_HUB);
-        mc->iface->destroy(mc);
+        destroy_session_mqtt_client(c, mc);
         stage_local_error(c, AZ_IOT_CONN_SCOPE_HUB, cr, "certificate material rejected");
         return cr;
       }
@@ -5649,7 +5716,7 @@ static az_iot_result start_connect_attempt(az_iot_connection_client* c)
     {
       /* Waiting for the token: the attempt stays in SETTING_UP. */
       release_material(c, AZ_IOT_CONN_SCOPE_HUB);
-      mc->iface->destroy(mc);
+      destroy_session_mqtt_client(c, mc);
       return AZ_IOT_OK;
     }
   }
@@ -5663,7 +5730,7 @@ static az_iot_result start_connect_attempt(az_iot_connection_client* c)
     if (sr != AZ_IOT_OK)
     {
       release_material(c, AZ_IOT_CONN_SCOPE_HUB);
-      mc->iface->destroy(mc);
+      destroy_session_mqtt_client(c, mc);
       stage_local_error(c, AZ_IOT_CONN_SCOPE_HUB, sr, "SAS token signing failed");
       return sr;
     }
@@ -5690,7 +5757,7 @@ static az_iot_result start_connect_attempt(az_iot_connection_client* c)
         AZ_IOT_LOG_COMPONENT_CONNECTION, "attempt closed from the state callback; abandoned");
     sas_wipe_token(c);
     release_material(c, AZ_IOT_CONN_SCOPE_HUB);
-    mc->iface->destroy(mc);
+    destroy_session_mqtt_client(c, mc);
     return AZ_IOT_OK;
   }
   az_iot_result r = mc->iface->connect(mc, &copts);
@@ -5698,7 +5765,7 @@ static az_iot_result start_connect_attempt(az_iot_connection_client* c)
   release_material(c, AZ_IOT_CONN_SCOPE_HUB);
   if (r != AZ_IOT_OK)
   {
-    mc->iface->destroy(mc);
+    destroy_session_mqtt_client(c, mc);
     stage_local_error(c, AZ_IOT_CONN_SCOPE_HUB, r, "MQTT adapter connect() failed");
     return r;
   }
@@ -6786,6 +6853,41 @@ static void workspace_assign(az_iot_connection_client* c, uint8_t* workspace)
       l->max_inbound_handlers);
 }
 
+/**
+ * @brief Checks a workspace option of init(), logging the bytes given and needed on failure.
+ *
+ * @param name The option's name, for the log.
+ * @retval AZ_IOT_ERR_INVALID_ARG @p workspace is NULL.
+ * @retval AZ_IOT_ERR_NOT_ENOUGH_SPACE @p size is below @p needed.
+ */
+static az_iot_result check_init_workspace(
+    const char* name,
+    const uint8_t* workspace,
+    size_t size,
+    size_t needed)
+{
+  if (workspace == NULL)
+  {
+    AZ_IOT_LOG_ERRORF(
+        AZ_IOT_LOG_COMPONENT_CONNECTION,
+        "init: no %s; %lu bytes needed",
+        name,
+        (unsigned long)needed);
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  if (size < needed)
+  {
+    AZ_IOT_LOG_ERRORF(
+        AZ_IOT_LOG_COMPONENT_CONNECTION,
+        "init: the %s has %lu bytes; %lu needed",
+        name,
+        (unsigned long)size,
+        (unsigned long)needed);
+    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+  }
+  return AZ_IOT_OK;
+}
+
 AZ_NODISCARD az_iot_result az_iot_connection_client_init(
     az_iot_connection_client* client,
     const az_iot_connection_client_options* opts)
@@ -6835,22 +6937,34 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_init(
     return AZ_IOT_ERR_INVALID_ARG;
   }
   const size_t workspace_size = workspace_size_of(&limits);
-  if (opts->workspace == NULL)
+  az_iot_result wr
+      = check_init_workspace("workspace", opts->workspace, opts->workspace_size, workspace_size);
+  if (wr != AZ_IOT_OK)
   {
-    AZ_IOT_LOG_ERRORF(
-        AZ_IOT_LOG_COMPONENT_CONNECTION,
-        "init: no workspace; %lu bytes needed",
-        (unsigned long)workspace_size);
-    return AZ_IOT_ERR_INVALID_ARG;
+    return wr;
   }
-  if (opts->workspace_size < workspace_size)
+  const az_iot_mqtt_adapter* mqtt_adapter = opts->mqtt_adapter;
+  if (mqtt_adapter != NULL)
   {
-    AZ_IOT_LOG_ERRORF(
-        AZ_IOT_LOG_COMPONENT_CONNECTION,
-        "init: the workspace has %lu bytes; %lu needed",
-        (unsigned long)opts->workspace_size,
-        (unsigned long)workspace_size);
-    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+    if (mqtt_adapter->get_workspace_size == NULL || mqtt_adapter->init == NULL)
+    {
+      AZ_IOT_LOG_ERROR(
+          AZ_IOT_LOG_COMPONENT_CONNECTION, "init: mqtt_adapter lacks get_workspace_size or init");
+      return AZ_IOT_ERR_INVALID_ARG;
+    }
+    const size_t mqtt_workspace_size = mqtt_adapter->get_workspace_size(&opts->mqtt_limits);
+    if (mqtt_workspace_size == 0)
+    {
+      AZ_IOT_LOG_ERROR(
+          AZ_IOT_LOG_COMPONENT_CONNECTION, "init: mqtt_limits are not valid for mqtt_adapter");
+      return AZ_IOT_ERR_INVALID_ARG;
+    }
+    wr = check_init_workspace(
+        "mqtt_workspace", opts->mqtt_workspace, opts->mqtt_workspace_size, mqtt_workspace_size);
+    if (wr != AZ_IOT_OK)
+    {
+      return wr;
+    }
   }
   memset(client, 0, sizeof(*client));
   client->opts = *opts;
@@ -6972,6 +7086,11 @@ az_iot_result az_iot_connection_client_deinit(az_iot_connection_client* client)
   sas_wipe(client);
   /* Registered factories are borrowed; the application destroys them after this returns. */
   az_iot_crypto__wipe(client->opts.workspace, client->opts.workspace_size);
+  /* The MQTT clients are destroyed above; their workspace held credentials. */
+  if (client->opts.mqtt_adapter != NULL)
+  {
+    az_iot_crypto__wipe(client->opts.mqtt_workspace, client->opts.mqtt_workspace_size);
+  }
   /* provisioned_iot_hub_hostname / provisioned_device_id are inline fixed buffers; nothing to free.
    */
   return AZ_IOT_OK;

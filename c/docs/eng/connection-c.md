@@ -848,8 +848,8 @@ connection failure path:
 | `AZ_IOT_ERR_PROTOCOL` | A service payload could not be parsed. |
 | `AZ_IOT_ERR_MQTT` | The catch-all for transport and broker failures. **The great majority of wire failures land here**, including every CONNACK code that is not an identity refusal, every SUBACK refusal the broker may not repeat, and every PUBACK failure that is not `AZ_IOT_ERR_PUBLISH_REFUSED` or quota exceeded. |
 | `AZ_IOT_ERR_DPS` | Registration returned a failed or disabled status. |
-| `AZ_IOT_ERR_NOT_SUPPORTED` | No adapter factory for the required protocol version; a fixed-size registry is full; a service-supplied string is longer than its buffer. |
-| `AZ_IOT_ERR_BUSY` | A single-slot operation is already in flight, or the service is throttling. |
+| `AZ_IOT_ERR_NOT_SUPPORTED` | No adapter factory for the required protocol version, or `opts.mqtt_adapter` does not build it; a fixed-size registry is full; a service-supplied string is longer than its buffer. |
+| `AZ_IOT_ERR_BUSY` | A single-slot operation is already in flight (including the MQTT workspace holding the other session's client), or the service is throttling. |
 | `AZ_IOT_ERR_NOT_ENOUGH_SPACE` | A compile-time buffer bound was exceeded. |
 | `AZ_IOT_ERR_NOT_FOUND` | A required field was absent from a service payload. |
 | `AZ_IOT_ERR_INTERNAL` | A dependency call failed in a way the SDK cannot attribute. |
@@ -999,6 +999,8 @@ connection client itself, or a feature client.
 | CONNACK | Arrives after `close()` | ignored | connection client | logged at debug, `break` — the pending DISCONNECTED event settles the session to `IDLE` | Guarded on `user_close || state == DISCONNECTING`. Correct. |
 | CONNACK | v5 refusal carrying a Reason String | as for its code | adapter | as for its code; the Reason String becomes `error->message` (source `MQTT`), truncated to 128 bytes | az_mqtt reports it; Paho does not, because it passes none of a refused CONNACK's properties. |
 | CONNECT | No factory registered for the version the role requires | `AZ_IOT_ERR_NOT_SUPPORTED` | `find_factory()` | `open()` transitions back to `IDLE` and returns the error | Role → version: DPS and the MQTTv3 hub are v3.1.1, the MQTTv5 hub is v5. |
+| CONNECT | `opts.mqtt_adapter`: the MQTT workspace holds the other session's client | `AZ_IOT_ERR_BUSY` | `create_session_mqtt_client()` | as for any failed start: retried under the policy, or `IDLE` and returned from `open()` | One client at a time. Only while the software updates DPS channel holds the provisioning session beside the hub session. The live client is not touched. |
+| CONNECT | `opts.mqtt_adapter`: `init()` fails | `AZ_IOT_ERR_NOT_SUPPORTED` (version not built), `AZ_IOT_ERR_NOT_ENOUGH_SPACE`; otherwise `AZ_IOT_ERR_INTERNAL` | `create_session_mqtt_client()` | as for a missing factory | `init()` of the connection client already checked the workspace size. |
 
 #### 9.5.4 Phase 4 — DPS provisioning
 
@@ -1090,6 +1092,7 @@ registry carries MQTTv3 feature filters and application custom topics.
 | Direct methods | In-flight pool full (5th) | **none** | direct-method client | **the invocation is dropped**, with a warning logged | A slot is released by responding, or reclaimed by `requests_expire_stale()` after `response_timeout_seconds`. |
 | Direct methods (mqttv5) | Probe-ack, result or abandon while the hub is not `CONNECTED` (e.g. between CONNACK and the birth-ack) | `AZ_IOT_ERR_NOT_CONNECTED` from the publish; `respond()` returns `AZ_IOT_OK` | direct-method client | held, with its ready token or slot, and published on the next `HUB:CONNECTED` | Dropped if its budget runs out first. Probe rejections and abandons share `AZ_IOT_MQTTV5_DM_MAX_CONCURRENT` held entries; past that they are dropped with a warning. |
 | Connect | No factory for the required version | `AZ_IOT_ERR_NOT_SUPPORTED` | `find_factory()` | back to `IDLE`, error returned from `open()` | |
+| Connect | `opts.mqtt_adapter`: the MQTT workspace holds the other session's client | `AZ_IOT_ERR_BUSY` | `create_session_mqtt_client()` | the start fails and is retried like any other | |
 | Registry | Session-end handler registry full (5th distinct context) | `AZ_IOT_ERR_NOT_SUPPORTED` | connection client | the registration fails | Re-registering the same context upserts rather than consuming a slot. |
 | Registry | Inbound dispatch table full (9th) | `AZ_IOT_ERR_NOT_SUPPORTED` | dispatch | the registration fails | |
 | Init | Invalid or missing arguments | `AZ_IOT_ERR_INVALID_ARG` | explicit guards at each public entry point | the call returns | No layer aborts. Every public entry point checks its arguments explicitly. |

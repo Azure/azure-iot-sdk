@@ -54,6 +54,28 @@ for (;;)
 Start from `az_iot_connection_client_options_default()`. A zero-initialized options struct has
 reconnection disabled.
 
+### MQTT clients in application memory (recommended)
+
+Instead of factories, set an adapter and a workspace: the connection client builds each session's
+MQTT client there, with no factory to create, register or destroy and, with az_mqtt, no
+allocation. Sizing and rules: [client configuration](client-configuration.md#connection-client-az_iot_connection_clienth).
+
+```c
+static uint8_t mqtt_workspace[AZ_IOT_AZ_MQTT_WORKSPACE_SIZE(4096, 4096, 8, 8192, 4096, 8192)];
+opts.mqtt_adapter = az_iot_az_mqtt_get_adapter(); /* or az_iot_paho_get_adapter() */
+opts.mqtt_limits = (az_iot_mqtt_limits){ .send_buffer_size = 4096,
+                                         .receive_buffer_size = 4096,
+                                         .max_in_flight_messages = 8,
+                                         .message_store_size = 8192, /* resumed hub session */
+                                         .connect_strings_size = 4096 };
+opts.mqtt_workspace = mqtt_workspace; /* wiped by deinit() */
+opts.mqtt_workspace_size = sizeof(mqtt_workspace);
+```
+
+The workspace holds one MQTT client at a time: while the software updates DPS channel holds the
+provisioning session, a hub session start fails with `AZ_IOT_ERR_BUSY` and is retried, and the
+reverse.
+
 ## MQTT factory ownership
 
 - The application owns every factory it creates with `az_iot_paho_factory_create_*()`.
