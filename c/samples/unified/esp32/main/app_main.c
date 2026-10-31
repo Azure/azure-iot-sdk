@@ -52,11 +52,36 @@ static const char* TAG = "hub_esp32";
 #define METHOD_RESPONSE_TIMEOUT_S 60u
 /** @brief The do_work() tick. */
 #define TICK_MS 50u
-/** @brief Wait before reporting again after a refused or failed reported patch. */
-#define REPORT_RETRY_MS 5000u
+/** @brief Wait before retrying a failed twin GET or reported patch. */
+#define TWIN_RETRY_MS 5000u
 /** @brief Largest echoed mqttv3 payload: the response must fit the adapter's send buffer, with
  * room for its topic. */
 #define MQTTV3_ECHO_PAYLOAD_MAX (CONFIG_AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE - 256u)
+
+/** @brief A wait before the next retry: none, or #TWIN_RETRY_MS from @c started. */
+typedef struct
+{
+  bool active;
+  TickType_t started;
+} retry_wait;
+
+/** @brief Starts a #TWIN_RETRY_MS wait. */
+static void retry_wait_start(retry_wait* w)
+{
+  w->active = true;
+  w->started = xTaskGetTickCount();
+}
+
+/** @brief Whether no wait is active; ends one that has run its course. Unsigned tick arithmetic,
+ * so a counter wrap does not extend it. */
+static bool retry_wait_over(retry_wait* w)
+{
+  if (w->active && xTaskGetTickCount() - w->started >= pdMS_TO_TICKS(TWIN_RETRY_MS))
+  {
+    w->active = false;
+  }
+  return !w->active;
+}
 
 /** @brief The device: connection, the feature clients of one generation, and what is pending. */
 typedef struct
@@ -78,15 +103,51 @@ typedef struct
   bool telemetry_pending;
   uint32_t telemetry_sent;
   bool twin_get_due; /* mqttv3: read the desired version once connected */
+  retry_wait twin_get_retry;
   bool report_pending;
-  TickType_t report_after; /* no report before: a backoff after a refusal */
+  retry_wait report_retry;
+  /* Desired versions, for the hub and device id below: a new assignment starts its own count. */
+  char assigned_hub[256];
+  char assigned_device_id[129];
+  uint64_t newest_desired_version; /* highest seen; older deliveries are ignored */
   uint64_t desired_version; /* latest desired version not yet acknowledged; 0: none */
   uint64_t reported_version; /* in the patch in flight */
-  uint64_t acknowledged_version;
 } hub_device;
 
 static hub_device s_device;
 static uint8_t s_mqttv5_twin_encode_buffer[256];
+
+/** @brief On hub CONNECTED: a different hub or device id than before restarts the desired-version
+ * tracking, since that twin counts its versions from its own start. */
+static void track_assignment(hub_device* d)
+{
+  const char* hub = az_iot_connection_client_get_iothub_address(&d->connection);
+  const char* device_id = az_iot_connection_client_get_device_id(&d->connection);
+  if (hub == NULL || device_id == NULL
+      || (strcmp(hub, d->assigned_hub) == 0 && strcmp(device_id, d->assigned_device_id) == 0))
+  {
+    return;
+  }
+  (void)snprintf(d->assigned_hub, sizeof(d->assigned_hub), "%s", hub);
+  (void)snprintf(d->assigned_device_id, sizeof(d->assigned_device_id), "%s", device_id);
+  d->newest_desired_version = 0;
+  d->desired_version = 0;
+}
+
+/**
+ * @brief Takes @p version as the one to acknowledge unless an equal or newer one was seen: a late
+ * twin GET or patch must not move the acknowledgement back.
+ */
+static void note_desired_version(hub_device* d, uint64_t version)
+{
+  if (version <= d->newest_desired_version)
+  {
+    ESP_LOGI(TAG, "desired version %" PRIu64 " is not newer; ignored", version);
+    return;
+  }
+  d->newest_desired_version = version;
+  d->desired_version = version;
+}
 
 static void on_connection_state(const az_iot_connection_state_event* event, void* user_ctx)
 {
@@ -109,7 +170,9 @@ static void on_connection_state(const az_iot_connection_state_event* event, void
     if (event->state == AZ_IOT_CONN_STATE_CONNECTED)
     {
       ESP_LOGI(TAG, "ready on %s", az_iot_connection_profile_to_string(d->profile));
+      track_assignment(d);
       d->twin_get_due = d->profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V3;
+      d->twin_get_retry.active = false;
     }
   }
 }
@@ -132,12 +195,13 @@ static void on_telemetry_sent(az_iot_result status, void* user_ctx)
 
 static void send_telemetry(hub_device* d)
 {
+  // The device id DPS assigned, which need not equal the registration id (custom allocation).
   char payload[192];
   int length = snprintf(
       payload,
       sizeof(payload),
       "{\"deviceId\":\"%s\",\"count\":%" PRIu32 "}",
-      CONFIG_HUB_DPS_REGISTRATION_ID,
+      d->assigned_device_id,
       d->telemetry_sent + 1);
   az_iot_telemetry_property properties[] = {
     { AZ_IOT_MSG_PROP_CONTENT_TYPE, "application/json" },
@@ -158,7 +222,7 @@ static void send_telemetry(hub_device* d)
 static void on_desired_mqttv3(const uint8_t* patch, size_t length, uint64_t version, void* user_ctx)
 {
   ESP_LOGI(TAG, "desired version %" PRIu64 ": %.*s", version, (int)length, (const char*)patch);
-  ((hub_device*)user_ctx)->desired_version = version;
+  note_desired_version((hub_device*)user_ctx, version);
 }
 
 static void on_desired_mqttv5(
@@ -170,7 +234,7 @@ static void on_desired_mqttv5(
 {
   (void)kind;
   ESP_LOGI(TAG, "desired version %" PRIu64 ": %.*s", version, (int)length, (const char*)payload);
-  ((hub_device*)user_ctx)->desired_version = version;
+  note_desired_version((hub_device*)user_ctx, version);
 }
 
 /**
@@ -222,29 +286,31 @@ static uint64_t read_desired_version(const uint8_t* twin, size_t length)
 static void on_twin_mqttv3(az_iot_result status, const uint8_t* twin, size_t length, void* user_ctx)
 {
   hub_device* d = (hub_device*)user_ctx;
-  uint64_t const version = status == AZ_IOT_OK ? read_desired_version(twin, length) : 0;
   if (status != AZ_IOT_OK)
   {
-    ESP_LOGW(TAG, "twin get failed: %s", az_iot_result_to_string(status));
+    ESP_LOGW(TAG, "twin get failed: %s; retrying", az_iot_result_to_string(status));
+    d->twin_get_due = true;
+    retry_wait_start(&d->twin_get_retry);
+    return;
   }
-  else if (version != 0 && version != d->acknowledged_version)
+  uint64_t const version = read_desired_version(twin, length);
+  if (version != 0)
   {
     ESP_LOGI(TAG, "desired version %" PRIu64 ": from the twin", version);
-    d->desired_version = version;
+    note_desired_version(d, version);
   }
 }
 
-/** @brief Ends the reported patch in flight; a refused one is retried after REPORT_RETRY_MS. */
+/** @brief Ends the reported patch in flight; a refused one is retried after #TWIN_RETRY_MS. */
 static void finish_report(hub_device* d, bool accepted)
 {
   d->report_pending = false;
   if (!accepted)
   {
-    d->report_after = xTaskGetTickCount() + pdMS_TO_TICKS(REPORT_RETRY_MS);
+    retry_wait_start(&d->report_retry);
     return;
   }
   ESP_LOGI(TAG, "desired version %" PRIu64 " acknowledged", d->reported_version);
-  d->acknowledged_version = d->reported_version;
   if (d->desired_version == d->reported_version)
   {
     d->desired_version = 0;
@@ -294,7 +360,7 @@ static void report_desired_version(hub_device* d)
   if (result != AZ_IOT_OK)
   {
     ESP_LOGW(TAG, "reported patch not sent: %s", az_iot_result_to_string(result));
-    d->report_after = xTaskGetTickCount() + pdMS_TO_TICKS(REPORT_RETRY_MS);
+    retry_wait_start(&d->report_retry);
   }
 }
 
@@ -514,7 +580,6 @@ void app_main(void)
   TickType_t const interval = pdMS_TO_TICKS(CONFIG_HUB_TELEMETRY_INTERVAL_S * 1000u);
   TickType_t next_telemetry = xTaskGetTickCount();
   TickType_t tick_start = xTaskGetTickCount();
-  d->report_after = tick_start;
   for (;;)
   {
     wait_for_tick_end(tick_start); // At the top: the body continues early.
@@ -555,17 +620,17 @@ void app_main(void)
       next_telemetry = xTaskGetTickCount() + interval;
       send_telemetry(d);
     }
-    if (d->twin_get_due)
+    if (d->twin_get_due && retry_wait_over(&d->twin_get_retry))
     {
-      d->twin_get_due = false;
       az_iot_result const r = az_iot_mqttv3_twin_client_get(&d->mqttv3_twin, on_twin_mqttv3, d);
+      d->twin_get_due = r != AZ_IOT_OK;
       if (r != AZ_IOT_OK)
       {
-        ESP_LOGW(TAG, "twin get not sent: %s", az_iot_result_to_string(r));
+        ESP_LOGW(TAG, "twin get not sent: %s; retrying", az_iot_result_to_string(r));
+        retry_wait_start(&d->twin_get_retry);
       }
     }
-    if (!d->report_pending && d->desired_version != 0
-        && (int32_t)(xTaskGetTickCount() - d->report_after) >= 0)
+    if (!d->report_pending && d->desired_version != 0 && retry_wait_over(&d->report_retry))
     {
       report_desired_version(d);
     }
