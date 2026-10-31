@@ -330,28 +330,90 @@ static void json_read_object_text(az_json_reader* jr, az_span* out, bool* is_err
   }
 }
 
-static void parse_related_files(
+/**
+ * @brief Parse a member that files and related files share: `fileName`, `sizeInBytes`,
+ * `hashes`, `mimeType` or `properties`.
+ *
+ * @param jr         Reader on the member's value; left on its end when parsed.
+ * @param name       Member name.
+ * @param file       Filled with at most AZ_IOT_SU_MAX_FILE_HASH_COUNT hashes.
+ * @param hash_count Set to the number of `hashes`, including those past the limit.
+ * @param is_error   Set when malformed.
+ * @return false when @p name is not a shared member; its value is left unread.
+ */
+static bool parse_file_shared_member(
     az_json_reader* jr,
+    const az_json_token* name,
     az_iot_su_client_update_manifest_file* file,
-    const related_file_storage* related,
-    manifest_counts* counts,
-    bool* is_error);
+    uint32_t* hash_count,
+    bool* is_error)
+{
+  if (az_json_token_is_text_equal(name, AZ_SPAN_FROM_STR("fileName")))
+  {
+    json_read_string(jr, &file->file_name, is_error);
+  }
+  else if (az_json_token_is_text_equal(name, AZ_SPAN_FROM_STR("sizeInBytes")))
+  {
+    if (json_token_is_kind(jr, AZ_JSON_TOKEN_NUMBER, is_error)
+        && az_result_failed(az_json_token_get_int64(&jr->token, &file->size_in_bytes)))
+    {
+      *is_error = true;
+    }
+  }
+  else if (az_json_token_is_text_equal(name, AZ_SPAN_FROM_STR("hashes")))
+  {
+    az_json_token hash_type;
+    if (!json_token_is_kind(jr, AZ_JSON_TOKEN_BEGIN_OBJECT, is_error))
+    {
+      return true;
+    }
+    uint32_t count = 0;
+    while (!*is_error && json_next_property(jr, &hash_type, is_error))
+    {
+      if (count < (uint32_t)AZ_IOT_SU_MAX_FILE_HASH_COUNT)
+      {
+        file->hashes[count].hash_type = hash_type.slice;
+        json_read_string(jr, &file->hashes[count].hash_value, is_error);
+      }
+      else
+      {
+        (void)json_token_is_kind(jr, AZ_JSON_TOKEN_STRING, is_error);
+      }
+      count++;
+    }
+    file->hashes_count = count < (uint32_t)AZ_IOT_SU_MAX_FILE_HASH_COUNT
+        ? count
+        : (uint32_t)AZ_IOT_SU_MAX_FILE_HASH_COUNT;
+    *hash_count = count;
+  }
+  else if (az_json_token_is_text_equal(name, AZ_SPAN_FROM_STR("mimeType")))
+  {
+    json_read_string(jr, &file->mime_type, is_error);
+  }
+  else if (az_json_token_is_text_equal(name, AZ_SPAN_FROM_STR("properties")))
+  {
+    json_read_object_text(jr, &file->properties, is_error);
+  }
+  else
+  {
+    return false;
+  }
+  return true;
+}
 
 /**
- * @brief Parse one file of `files`, or one related file.
+ * @brief Parse one related file; its own `relatedFiles` and `downloadHandler` are skipped.
  *
- * @param jr       Reader on the file object; left on its end.
+ * A related file is optional: past AZ_IOT_SU_MAX_FILE_HASH_COUNT, its extra hashes are
+ * dropped instead of refusing the update.
+ *
+ * @param jr       Reader on the related file object; left on its end.
  * @param file     Filled with at most AZ_IOT_SU_MAX_FILE_HASH_COUNT hashes.
- * @param related  Storage for its related files; NULL for a related file, whose
- *                 `relatedFiles` and `downloadHandler` are skipped.
- * @param counts   Largest file hash count (files only) and related file count updated.
  * @param is_error Set when malformed.
  */
-static void parse_file(
+static void parse_related_file(
     az_json_reader* jr,
     az_iot_su_client_update_manifest_file* file,
-    const related_file_storage* related,
-    manifest_counts* counts,
     bool* is_error)
 {
   az_json_token name;
@@ -359,69 +421,10 @@ static void parse_file(
   {
     return;
   }
+  uint32_t hash_count = 0;
   while (!*is_error && json_next_property(jr, &name, is_error))
   {
-    if (az_json_token_is_text_equal(&name, AZ_SPAN_FROM_STR("fileName")))
-    {
-      json_read_string(jr, &file->file_name, is_error);
-    }
-    else if (az_json_token_is_text_equal(&name, AZ_SPAN_FROM_STR("sizeInBytes")))
-    {
-      if (json_token_is_kind(jr, AZ_JSON_TOKEN_NUMBER, is_error)
-          && az_result_failed(az_json_token_get_int64(&jr->token, &file->size_in_bytes)))
-      {
-        *is_error = true;
-      }
-    }
-    else if (az_json_token_is_text_equal(&name, AZ_SPAN_FROM_STR("hashes")))
-    {
-      az_json_token hash_type;
-      if (!json_token_is_kind(jr, AZ_JSON_TOKEN_BEGIN_OBJECT, is_error))
-      {
-        return;
-      }
-      uint32_t hash_count = 0;
-      while (!*is_error && json_next_property(jr, &hash_type, is_error))
-      {
-        if (hash_count < (uint32_t)AZ_IOT_SU_MAX_FILE_HASH_COUNT)
-        {
-          file->hashes[hash_count].hash_type = hash_type.slice;
-          json_read_string(jr, &file->hashes[hash_count].hash_value, is_error);
-        }
-        else
-        {
-          (void)json_token_is_kind(jr, AZ_JSON_TOKEN_STRING, is_error);
-        }
-        hash_count++;
-      }
-      file->hashes_count = hash_count < (uint32_t)AZ_IOT_SU_MAX_FILE_HASH_COUNT
-          ? hash_count
-          : (uint32_t)AZ_IOT_SU_MAX_FILE_HASH_COUNT;
-      /* A related file is optional: past the limit, its extra hashes are dropped instead. */
-      if (related != NULL && hash_count > counts->largest_file_hash_count)
-      {
-        counts->largest_file_hash_count = hash_count;
-      }
-    }
-    else if (az_json_token_is_text_equal(&name, AZ_SPAN_FROM_STR("mimeType")))
-    {
-      json_read_string(jr, &file->mime_type, is_error);
-    }
-    else if (az_json_token_is_text_equal(&name, AZ_SPAN_FROM_STR("properties")))
-    {
-      json_read_object_text(jr, &file->properties, is_error);
-    }
-    else if (
-        related != NULL && az_json_token_is_text_equal(&name, AZ_SPAN_FROM_STR("downloadHandler")))
-    {
-      parse_download_handler(jr, &file->download_handler_id, is_error);
-    }
-    else if (
-        related != NULL && az_json_token_is_text_equal(&name, AZ_SPAN_FROM_STR("relatedFiles")))
-    {
-      parse_related_files(jr, file, related, counts, is_error);
-    }
-    else
+    if (!parse_file_shared_member(jr, &name, file, &hash_count, is_error))
     {
       json_skip_value(jr, is_error);
     }
@@ -465,8 +468,54 @@ static void parse_related_files(
       file->related_files_count++;
     }
     related_file->id = related_id.slice;
-    parse_file(jr, related_file, NULL, counts, is_error);
+    parse_related_file(jr, related_file, is_error);
     counts->related_file_count++;
+  }
+}
+
+/**
+ * @brief Parse one file of `files`.
+ *
+ * @param jr       Reader on the file object; left on its end.
+ * @param file     Filled with at most AZ_IOT_SU_MAX_FILE_HASH_COUNT hashes.
+ * @param related  Storage for its related files.
+ * @param counts   Largest file hash count and related file count updated.
+ * @param is_error Set when malformed.
+ */
+static void parse_file(
+    az_json_reader* jr,
+    az_iot_su_client_update_manifest_file* file,
+    const related_file_storage* related,
+    manifest_counts* counts,
+    bool* is_error)
+{
+  az_json_token name;
+  if (!json_token_is_kind(jr, AZ_JSON_TOKEN_BEGIN_OBJECT, is_error))
+  {
+    return;
+  }
+  while (!*is_error && json_next_property(jr, &name, is_error))
+  {
+    uint32_t hash_count = 0;
+    if (parse_file_shared_member(jr, &name, file, &hash_count, is_error))
+    {
+      if (hash_count > counts->largest_file_hash_count)
+      {
+        counts->largest_file_hash_count = hash_count;
+      }
+    }
+    else if (az_json_token_is_text_equal(&name, AZ_SPAN_FROM_STR("downloadHandler")))
+    {
+      parse_download_handler(jr, &file->download_handler_id, is_error);
+    }
+    else if (az_json_token_is_text_equal(&name, AZ_SPAN_FROM_STR("relatedFiles")))
+    {
+      parse_related_files(jr, file, related, counts, is_error);
+    }
+    else
+    {
+      json_skip_value(jr, is_error);
+    }
   }
 }
 
