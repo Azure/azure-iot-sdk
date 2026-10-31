@@ -316,6 +316,12 @@
 
 ### Bugs Fixed
 
+- Software updates: a verified update whose step names a file missing from the manifest `files`, or
+  from `fileUrls`, is refused before any step runs, instead of failing at that step's download
+  after earlier steps were installed and rolled back (or passing an empty URL to `download_fn`).
+  Library mode does not offer it to the application, and `az_iot_su_parse_update_request()`
+  returns `AZ_IOT_ERR_INVALID_ARG`.
+
 - ESP32: the `azure-sdk-for-c` component implements `az_platform_clock_msec()` and
   `az_platform_sleep_msec()` with `esp_timer` and FreeRTOS, so the az_mqtt adapter's idle wait
   sleeps instead of returning at once. The software updates sample's connect loop waits out each

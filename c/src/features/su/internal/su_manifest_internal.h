@@ -30,6 +30,23 @@ extern "C"
       az_span manifest_text,
       az_iot_su_client_update_manifest* out_manifest);
 
+  /**
+   * @brief Check that every file of steps [@p first_step, end) is described by the manifest and
+   * has a download URL.
+   *
+   * @param manifest        A parsed manifest.
+   * @param first_step      First step checked; steps before it are not.
+   * @param file_urls       Download URL of each file, from the request.
+   * @param file_urls_count Entries in @p file_urls.
+   * @return AZ_IOT_OK; AZ_IOT_ERR_INVALID_ARG (the offending step and file id logged) when a step
+   * names a file id missing from `files` or from @p file_urls.
+   */
+  az_iot_result az_iot_su__check_step_file_references(
+      const az_iot_su_client_update_manifest* manifest,
+      uint32_t first_step,
+      const az_iot_su_client_file_url* file_urls,
+      uint32_t file_urls_count);
+
 #ifdef __cplusplus
 }
 #endif

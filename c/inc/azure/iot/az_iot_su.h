@@ -1891,7 +1891,9 @@ extern "C"
   /**
    * @brief Verify and parse an `updateMetadata` object without a client.
    *
-   * Verifies the manifest with az_iot_su_verify_manifest(), then parses it.
+   * Verifies the manifest with az_iot_su_verify_manifest(), then parses it and
+   * checks that every file of every step is described by the manifest `files`
+   * and has a `fileUrls` entry.
    * Fail-closed: non-NULL outputs are zeroed on every error.
    *
    * @param request_json   `{ workflowId, updateManifest, updateManifestSignature,
@@ -1907,7 +1909,8 @@ extern "C"
    * @param out_request    Workflow id and file URLs.
    * @param out_manifest   The verified manifest.
    * @return AZ_IOT_OK; AZ_IOT_ERR_NOT_FOUND without `workflowId`;
-   * AZ_IOT_ERR_INVALID_ARG on bad arguments or malformed input;
+   * AZ_IOT_ERR_INVALID_ARG on bad arguments, malformed input, or a step file missing from the
+   * manifest `files` or from `fileUrls`;
    * AZ_IOT_ERR_NOT_ENOUGH_SPACE when the update exceeds AZ_IOT_SU_MAX_STEP_COUNT,
    * AZ_IOT_SU_MAX_FILE_COUNT, AZ_IOT_SU_MAX_FILE_COUNT_PER_STEP or 2 hashes per file;
    * AZ_IOT_ERR_NOT_SUPPORTED when @p crypto has no verify_rs256;

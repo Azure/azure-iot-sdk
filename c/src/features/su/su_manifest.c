@@ -481,3 +481,70 @@ az_iot_result az_iot_su__parse_update_manifest(
   }
   return check_manifest_counts(&counts);
 }
+
+/** @brief Whether the manifest describes file @p id. */
+static bool manifest_has_file(const az_iot_su_client_update_manifest* manifest, az_span id)
+{
+  for (uint32_t i = 0; i < manifest->files_count; ++i)
+  {
+    if (az_span_is_content_equal(manifest->files[i].id, id))
+    {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** @brief Whether a download URL is listed for file @p id. */
+static bool file_urls_have_file(
+    const az_iot_su_client_file_url* file_urls,
+    uint32_t file_urls_count,
+    az_span id)
+{
+  for (uint32_t i = 0; i < file_urls_count; ++i)
+  {
+    if (az_span_is_content_equal(file_urls[i].id, id))
+    {
+      return true;
+    }
+  }
+  return false;
+}
+
+az_iot_result az_iot_su__check_step_file_references(
+    const az_iot_su_client_update_manifest* manifest,
+    uint32_t first_step,
+    const az_iot_su_client_file_url* file_urls,
+    uint32_t file_urls_count)
+{
+  for (uint32_t i = first_step; i < manifest->instructions.steps_count; ++i)
+  {
+    const az_iot_su_client_update_manifest_instructions_step* step
+        = &manifest->instructions.steps[i];
+    for (uint32_t j = 0; j < step->files_count; ++j)
+    {
+      az_span id = step->files[j];
+      if (!manifest_has_file(manifest, id))
+      {
+        AZ_IOT_LOG_ERRORF(
+            AZ_IOT_LOG_COMPONENT_SU,
+            "step %u names file '%.*s', which the manifest does not describe",
+            (unsigned)i,
+            (int)az_span_size(id),
+            (const char*)az_span_ptr(id));
+        return AZ_IOT_ERR_INVALID_ARG;
+      }
+      if (!file_urls_have_file(file_urls, file_urls_count, id))
+      {
+        AZ_IOT_LOG_ERRORF(
+            AZ_IOT_LOG_COMPONENT_SU,
+            "step %u names file '%.*s', which has no download URL",
+            (unsigned)i,
+            (int)az_span_size(id),
+            (const char*)az_span_ptr(id));
+        return AZ_IOT_ERR_INVALID_ARG;
+      }
+    }
+  }
+  return AZ_IOT_OK;
+}
