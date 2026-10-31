@@ -393,7 +393,7 @@ always the same thing.
 | `az_iot_mqttv3_direct_method_client_set_response_timeout()` | How long an unanswered mqttv3 invocation is held | 300 s |
 | `az_iot_mqttv5_direct_method_client_register_method()` | A method the device answers, and the time it needs | none declared |
 | `az_iot_mqttv5_direct_method_client_set_probe_handler()` | Whether to accept an invocation before its arguments arrive | accept when timing and capacity allow |
-| `az_iot_mqttv5_twin_client_set_request_timeout()` | How long a twin request may wait for its answer | 60 s |
+| `az_iot_mqttv5_twin_client_set_request_timeout()`, `az_iot_mqttv3_twin_client_set_request_timeout()` | How long a twin request may wait for its answer, from the call | 60 s |
 | `az_iot_mqttv5_twin_client_set_encode_buffer()` | Buffer reported patches are encoded into | required before patching |
 | `az_iot_mqttv3_file_upload_client_init()` (`http_transport`) | The HTTP client used for the IoT Hub file-upload calls | required |
 
