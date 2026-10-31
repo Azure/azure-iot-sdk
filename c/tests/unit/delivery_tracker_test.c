@@ -204,7 +204,7 @@ static size_t submit(
     fixture* fx,
     const az_iot_delivery_tracker_profile* profile,
     uint8_t id,
-    uint32_t timeout_ms)
+    uint64_t timeout_ms)
 {
   size_t index = SIZE_MAX;
   assert_int_equal(
@@ -699,6 +699,18 @@ static void the_wait_ends_by_the_earliest_time_limit(void** state)
   assert_true(waited <= 5000u && waited >= 4000u);
 }
 
+/* A time limit past UINT32_MAX ms is kept in full. */
+static void a_time_limit_past_32_bit_milliseconds_is_kept(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  connect(fx);
+  uint64_t const limit_ms = (uint64_t)UINT32_MAX + 60000u;
+  size_t const index = submit(fx, &k_resend, 1u, limit_ms);
+  assert_true(
+      az_iot_deadline__remaining_ms(&fx->entries[index]._internal.deadline, az_iot_time_mono_ms())
+      > UINT32_MAX);
+}
+
 /* The do_work() after a PUBACK error requeued a message does not wait: its TICK resends it. */
 static void a_requeued_message_does_not_wait_out_the_adapter(void** state)
 {
@@ -1046,6 +1058,7 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         a_refused_message_near_its_time_limit_is_retried_before_it, setup, teardown),
     cmocka_unit_test_setup_teardown(the_wait_ends_by_the_earliest_time_limit, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_time_limit_past_32_bit_milliseconds_is_kept, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_requeued_message_does_not_wait_out_the_adapter, setup, teardown),
     cmocka_unit_test_setup_teardown(freed_capacity_sends_the_queued_message, setup, teardown),

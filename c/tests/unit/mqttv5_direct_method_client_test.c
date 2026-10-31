@@ -4298,6 +4298,35 @@ static void the_wait_ends_by_the_next_token_or_request_deadline(void** state)
   waited = az_iot_mock_mqtt_client_last_of(fx->mock, AZ_IOT_MOCK_CALL_PROCESS_LOOP)->timeout_ms;
   assert_true(waited <= 3000u && waited >= 2000u);
 }
+/* A result deadline past UINT32_MAX ms (a 60-day budget) is kept in full by its tracker entry. */
+static void a_result_deadline_past_32_bit_milliseconds_is_kept(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  invocation_record rec = { 0 };
+  fx->rec = &rec;
+  uint8_t request_id[16];
+  make_request_id(request_id, 0xE1);
+  uint8_t ready_id[16];
+  probe_and_accept(fx, request_id, "slow", 300, ready_id);
+
+  uint8_t exec[64];
+  size_t exec_len = build_exec(exec, ready_id, 16, NULL, 0);
+  uint32_t const sixty_days_seconds = 60u * 24u * 3600u;
+  inject_dm(fx, DEV_TOPIC, "exec:1", request_id, 16, exec, exec_len, sixty_days_seconds);
+  assert_true(rec.fired);
+  assert_int_equal(
+      az_iot_mqttv5_direct_method_respond(&fx->dm, rec.request, 200, NULL, 0), AZ_IOT_OK);
+
+  size_t const entry = fx->dm._internal.result_tracker_entry[rec.request._internal.slot];
+  assert_true(entry != 0u);
+  assert_true(
+      az_iot_deadline__remaining_ms(
+          &fx->dm._internal.tracker_entries[entry - 1u]._internal.deadline, az_iot_time_mono_ms())
+      > UINT32_MAX);
+}
+
 static void a_held_result_is_dropped_once_its_deadline_passes(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -5082,6 +5111,8 @@ int main(void)
         an_exec_budget_smaller_than_the_safety_margin_never_runs, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_held_result_is_dropped_once_its_deadline_passes, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_result_deadline_past_32_bit_milliseconds_is_kept, setup, teardown),
     cmocka_unit_test_setup_teardown(responding_twice_is_rejected, setup, teardown),
     cmocka_unit_test_setup_teardown(
         respond_rejects_a_request_from_the_other_generation, setup, teardown),

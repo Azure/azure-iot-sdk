@@ -144,7 +144,7 @@ extern "C"
       const az_iot_delivery_tracker_profile* profile,
       const uint8_t* correlation_id,
       size_t correlation_id_length,
-      uint32_t timeout_ms,
+      uint64_t timeout_ms,
       size_t* out_entry_index);
 
   /**

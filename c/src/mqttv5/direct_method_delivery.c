@@ -187,12 +187,11 @@ static az_iot_result submit_reply_for_delivery(
     const uint8_t* request_id,
     uint64_t deadline_ms)
 {
-  uint32_t timeout_ms = 0;
+  uint64_t timeout_ms = 0;
   if (deadline_ms != 0u)
   {
     uint64_t const now = az_iot_time_mono_ms();
-    uint64_t const left = (deadline_ms > now) ? deadline_ms - now : 1u;
-    timeout_ms = (left > UINT32_MAX) ? UINT32_MAX : (uint32_t)left;
+    timeout_ms = (deadline_ms > now) ? deadline_ms - now : 1u;
   }
   *held = DM_TRACKER_ENTRY_PENDING;
   size_t entry = 0;
