@@ -4090,14 +4090,16 @@ static void a_server_disconnect_reason_reaches_the_app_with_retries_disabled(voi
   assert_true(fx->log.is_retriable[i_evt]);
 }
 
-/* 0x00 is an ordinary close and must stay one: classifying every DISCONNECT as
- * a failure would fault a session the peer ended cleanly. */
-static void a_normal_server_disconnect_is_still_a_clean_close(void** state)
+/* 0x00 is an ordinary close: retriable, and not AZ_IOT_OK, which only a
+ * disconnect the client asked for reports. */
+static void a_normal_server_disconnect_is_not_a_requested_disconnect(void** state)
 {
   (void)state;
-  assert_int_equal(az_iot_mqtt_disconnect_result(AZ_IOT_MQTT_VERSION_5, 0x00), AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_mqtt_disconnect_result(AZ_IOT_MQTT_VERSION_5, 0x00), AZ_IOT_ERR_NOT_CONNECTED);
   /* v3.1.1 has no reason code at all. */
-  assert_int_equal(az_iot_mqtt_disconnect_result(AZ_IOT_MQTT_VERSION_3_1_1, 0), AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_mqtt_disconnect_result(AZ_IOT_MQTT_VERSION_3_1_1, 0), AZ_IOT_ERR_NOT_CONNECTED);
   /* A refused credential is named, so is_retriable can say "do not bother". */
   assert_int_equal(az_iot_mqtt_disconnect_result(AZ_IOT_MQTT_VERSION_5, 0x87), AZ_IOT_ERR_AUTH);
   /* Transient service-side conditions stay retriable. */
@@ -5594,7 +5596,7 @@ int main(void)
         setup_with_reconnect,
         teardown),
     cmocka_unit_test_setup_teardown(
-        a_normal_server_disconnect_is_still_a_clean_close, setup_with_reconnect, teardown),
+        a_normal_server_disconnect_is_not_a_requested_disconnect, setup_with_reconnect, teardown),
     cmocka_unit_test_setup_teardown(
         a_failed_disconnect_carries_the_adapter_code, setup_with_reconnect, teardown),
     cmocka_unit_test_setup_teardown(
