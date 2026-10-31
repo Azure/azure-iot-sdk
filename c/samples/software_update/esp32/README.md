@@ -30,7 +30,7 @@ sequenceDiagram
 ```
 
 ## Sample features
-- Target platform: **ESP32** (ESP-IDF v6.0), any chip revision.
+- Target platform: **ESP32** (ESP-IDF v6.0 or later), any chip revision.
 - Real download, install, reboot and automatic rollback; nothing simulated.
 - Asks on the onboarding route until it has connected to its hub, then on the
   regular route every `SU_POLL_INTERVAL_S`. See [Update-check route](#update-check-route).
@@ -175,8 +175,9 @@ production software updates roots compiled into the SDK. See
 
 ### Prerequisites
 
-- **[ESP-IDF v6.0](https://docs.espressif.com/projects/esp-idf/en/v6.0/esp32/get-started/index.html)**,
-  with its environment exported in the shell (`export.sh`, `export.ps1` or `export.bat`).
+- **[ESP-IDF v6.0](https://docs.espressif.com/projects/esp-idf/en/v6.0/esp32/get-started/index.html)
+  or later** (CI builds with v6.1, and v6.0 as the minimum), with its environment exported in the
+  shell (`export.sh`, `export.ps1` or `export.bat`).
 - An **ESP32 board with 4 MB flash** (for example ESP32-DevKitC with an
   ESP32-WROOM-32 module) and its USB serial port.
 - The `azure-sdk-for-c` submodule, which the ESP-IDF build compiles from source:
@@ -185,8 +186,9 @@ production software updates roots compiled into the SDK. See
   git submodule update --init c/deps/azure-sdk-for-c
   ```
 
-From the ESP Component Registry, at exact versions: `espressif/esp_secure_cert_mgr` (device
-identity) and `espressif/ethernet_init` (needed by `protocol_examples_common`).
+From the ESP Component Registry: `espressif/esp_secure_cert_mgr` (device identity, an exact
+version) and `espressif/ethernet_init`, at the version ESP-IDF's `protocol_examples_common`
+requires.
 
 ### Build and flash
 
@@ -205,8 +207,9 @@ Leave the monitor running; see [Expected output](#expected-output).
 CI (`ci-c`, job `esp-idf`) builds this sample for esp32, esp32c3, esp32s3 and
 esp32c6, with the default and the [production security](#production-security-profile-optional)
 profiles, plus the esp32 legacy and virtual eFuse profiles, and the [QEMU](#run-in-qemu) profile
-for esp32, esp32s3 and esp32c3, which it also boots in QEMU until it gets an IPv4 address. Any
-compiler warning fails the build. To run one build the same way, from `c/`:
+for esp32, esp32s3 and esp32c3, which it also boots in QEMU until it gets an IPv4 address. It builds
+with ESP-IDF v6.1, and the default profile for esp32 with v6.0 too, the minimum. Any compiler
+warning fails the build. To run one build the same way, from `c/`:
 
 ```sh
 eng/esp-idf-build.sh samples/software_update/esp32 esp32c3 secure

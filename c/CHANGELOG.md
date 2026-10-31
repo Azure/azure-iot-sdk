@@ -374,6 +374,10 @@
 
 ### Bugs Fixed
 
+- ESP32 samples (`software_update/esp32`, `unified/esp32`) build with every ESP-IDF 6 release:
+  they pinned `espressif/ethernet_init` to `==1.2.0`, while ESP-IDF v6.0.2 and later need
+  `^1.3.0`. The version now comes from ESP-IDF's `protocol_examples_common`. CI builds the ESP32
+  samples and runs the ESP32 QEMU e2e with ESP-IDF v6.1, and builds both samples with v6.0.
 - Connection client, events drained in one `process_loop()`: a failed acknowledgement (PUBACK,
   SUBACK, UNSUBACK) becomes connection error detail only when it fails the connection. A presence,
   gated or DPS SUBACK drained after a session-ending event is ignored; a FAILS_SELF refusal is still
