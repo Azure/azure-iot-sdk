@@ -671,11 +671,27 @@ static void request_snapshot_if_behind(az_iot_mqttv5_twin_client* t)
   az_iot_mqttv5_twin_request request;
   memset(&request, 0, sizeof(request));
   request.kind = TWIN_PENDING_SNAPSHOT;
-  if (submit_twin_request(t, &request) != AZ_IOT_OK)
+  az_iot_result const r = submit_twin_request(t, &request);
+  if (r == AZ_IOT_ERR_NOT_INITIALIZED)
   {
-    return; /* re-evaluated on the next desired event */
+    return; /* A callback deinitialized the client. */
   }
-  TI(t).desired_catch_up_pending = false;
+  /* BUSY: from a callback of another request call; issued on a later TICK. Other failures are
+   * re-evaluated on the next desired event. */
+  TI(t).desired_catch_up_pending = r == AZ_IOT_ERR_BUSY;
+}
+
+/** @brief TICK: issue a snapshot an earlier call could not. @return Whether the client is still
+ *         initialized: a callback the submission runs may deinitialize it. */
+static bool request_pending_snapshot(az_iot_mqttv5_twin_client* t)
+{
+  if (!TI(t).desired_catch_up_pending || !az_iot_connection_client__is_connected(TI(t).conn))
+  {
+    return true;
+  }
+  az_iot_delivery_tracker_binding const bound = az_iot_delivery_tracker__binding(&TI(t).tracker);
+  request_snapshot_if_behind(t);
+  return az_iot_delivery_tracker__has_binding(&TI(t).tracker, bound);
 }
 
 /** @brief Session end: a twin-push wait already past its deadline is a miss. Requests are the
@@ -1139,7 +1155,13 @@ static void on_connection_state(const az_iot_connection_state_event* event, void
   }
   if (event->state == AZ_IOT_CONN_STATE_CONNECTED)
   {
+    az_iot_delivery_tracker_binding const bound = az_iot_delivery_tracker__binding(&TI(t).tracker);
     on_hub_connected(t);
+    /* Its snapshot submission may run a callback that deinitializes the client. */
+    if (!az_iot_delivery_tracker__has_binding(&TI(t).tracker, bound))
+    {
+      return;
+    }
     /* Armed only here, not by init on a session already up: its push may be gone. */
     twin_push_wait_arm(t);
   }
@@ -1160,7 +1182,10 @@ static void on_connection_event(const az_iot_connection_feature_event* event, vo
       twin_push_wait_end_session(user_ctx);
       break;
     case AZ_IOT_CONNECTION_FEATURE_EVENT_TICK:
-      twin_push_wait_check(user_ctx);
+      if (request_pending_snapshot((az_iot_mqttv5_twin_client*)user_ctx))
+      {
+        twin_push_wait_check(user_ctx);
+      }
       break;
     case AZ_IOT_CONNECTION_FEATURE_EVENT_NEXT_DEADLINE:
       twin_push_wait_lower_remaining(user_ctx, event->remaining_ms);
@@ -1459,6 +1484,11 @@ az_iot_result az_iot_mqttv5_twin_client_set_encode_buffer(
   if (!twin)
   {
     return AZ_IOT_ERR_INVALID_ARG;
+  }
+  /* From a callback run by another request call: that call may still read the buffer. */
+  if (TI(twin).submit_in_progress)
+  {
+    return AZ_IOT_ERR_BUSY;
   }
   int32_t size = az_span_size(buffer);
   if (size < 0 || (size > 0 && !az_span_ptr(buffer)))
