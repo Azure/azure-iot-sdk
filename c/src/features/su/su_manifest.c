@@ -474,7 +474,8 @@ az_iot_result az_iot_su__parse_update_manifest(
       json_skip_value(&jr, &is_error);
     }
   }
-  if (is_error)
+  /* Nothing but whitespace may follow the root object. */
+  if (is_error || az_json_reader_next_token(&jr) != AZ_ERROR_JSON_READER_DONE)
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }

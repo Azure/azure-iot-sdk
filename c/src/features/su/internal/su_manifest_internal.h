@@ -17,7 +17,8 @@ extern "C"
   /**
    * @brief Parse a decoded update manifest.
    *
-   * Unknown members are skipped at every level. A known member of the wrong type is malformed.
+   * Unknown members are skipped at every level. A known member of the wrong type, or anything
+   * but whitespace after the root object, is malformed.
    *
    * @param manifest_text The decoded manifest JSON; @p out_manifest spans point into it.
    * @param out_manifest  Filled; cleared first.

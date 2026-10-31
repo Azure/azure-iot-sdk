@@ -82,7 +82,8 @@ static void every_field_is_parsed(void** state)
   assert_span_equal(m->create_date_time, "2022-07-07T03:02:48.8449038Z");
 }
 
-/* Members the parser does not know are skipped, whatever their type, at every level. */
+/* Members the parser does not know are skipped, whatever their type, at every level; whitespace
+ * after the root object is allowed. */
 static void unknown_members_are_skipped_at_every_level(void** state)
 {
   (void)state;
@@ -95,7 +96,7 @@ static void unknown_members_are_skipped_at_every_level(void** state)
             "\"installedCriteria\":\"1\",\"nested\":{\"y\":[]}}}]},"
             "\"files\":{\"f\":{\"properties\":{\"k\":\"v\"},\"fileName\":\"f.bin\","
             "\"sizeInBytes\":1,\"hashes\":{\"sha256\":\"h\"},\"future\":[1,2]}},"
-            "\"createdDateTime\":\"t\",\"trailing\":[]}"),
+            "\"createdDateTime\":\"t\",\"trailing\":[]} \r\n\t"),
       AZ_IOT_OK);
   assert_span_equal(g_manifest.update_id.name, "N");
   assert_int_equal(g_manifest.instructions.steps_count, 1);
@@ -130,7 +131,7 @@ static void delta_file_members_are_accepted(void** state)
   assert_span_equal(g_manifest.files[0].hashes[0].hash_value, "FULL");
 }
 
-/* A known member of the wrong type, or malformed JSON, is refused. */
+/* A known member of the wrong type, malformed JSON or data after the root object is refused. */
 static void malformed_manifests_are_rejected(void** state)
 {
   (void)state;
@@ -161,6 +162,11 @@ static void malformed_manifests_are_rejected(void** state)
     "{\"files\":{\"f\":{\"mimeType\":{\"hashes\":{\"sha256\":\"a\"}}}}}",
     "{\"createdDateTime\":1}",
     "{\"files\":{\"f\":{\"fileName\":\"x\"}}",
+    "{}x",
+    "{}}",
+    "{}{}",
+    "{} 1",
+    "{\"manifestVersion\":\"5\"},",
   };
   for (size_t i = 0; i < sizeof(manifests) / sizeof(manifests[0]); ++i)
   {
