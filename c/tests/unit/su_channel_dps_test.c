@@ -2183,6 +2183,31 @@ static void an_unanswered_report_releases_the_session_for_a_retry(void** state)
   assert_null(fx->client.dps_mqtt);
 }
 
+/* The awaited report's response deadline bounds the provisioning session's
+ * wait, so a long do_work() timeout does not postpone the report's timeout. */
+static void an_awaited_report_bounds_the_connection_wait_to_its_deadline(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_mock_mqtt_client* m = open_session_for_an_operation(fx);
+  az_iot_su_report report;
+  memset(&report, 0, sizeof(report));
+  report.workflow_id = "wf-1";
+  report.extended_result_codes = "00000000";
+  assert_int_equal(fx->channel.vtable->report(fx->channel.ctx, &report), AZ_IOT_OK);
+
+  (void)az_iot_connection_client_do_work(
+      &fx->client, 2u * AZ_IOT_SU_CHANNEL_REPORT_RESPONSE_TIMEOUT_MS);
+  assert_true(
+      az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_PROCESS_LOOP)->timeout_ms
+      <= AZ_IOT_SU_CHANNEL_REPORT_RESPONSE_TIMEOUT_MS);
+
+  fx->channel_state.report_response_deadline_ms = az_iot_time_mono_ms();
+  (void)az_iot_connection_client_do_work(
+      &fx->client, 2u * AZ_IOT_SU_CHANNEL_REPORT_RESPONSE_TIMEOUT_MS);
+  assert_int_equal(
+      az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_PROCESS_LOOP)->timeout_ms, 0u);
+}
+
 /* An abandoned update check that was never accepted drops its demand for a
  * session, so the channel stops holding one for it; a report still waiting for
  * a session keeps the demand. */
@@ -3588,6 +3613,8 @@ int main(void)
         the_session_survives_while_held_and_closes_when_released, setup, teardown),
     cmocka_unit_test_setup_teardown(
         an_unanswered_report_releases_the_session_for_a_retry, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        an_awaited_report_bounds_the_connection_wait_to_its_deadline, setup, teardown),
     cmocka_unit_test_setup_teardown(
         an_abandoned_unaccepted_check_drops_its_session_demand, setup, teardown),
     cmocka_unit_test_setup_teardown(

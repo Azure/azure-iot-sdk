@@ -8606,6 +8606,69 @@ static void a_report_left_unanswered_is_retried_on_the_backoff(void** state)
   assert_int_equal(fx->chan.report_count, sent + 1);
 }
 
+/* Properties for a report queued by az_iot_su_client_update_device_properties(). */
+static void queue_device_properties_report(fixture* fx)
+{
+  az_iot_su_device_properties device_properties = { 0 };
+  device_properties.manufacturer = "Contoso";
+  device_properties.model = "Foobar2";
+  device_properties.installed_update_id.provider = "Contoso";
+  device_properties.installed_update_id.name = "Foobar";
+  device_properties.installed_update_id.version = "2.0";
+  assert_int_equal(
+      az_iot_su_client_update_device_properties(&fx->su, &device_properties), AZ_IOT_OK);
+}
+
+/* A report the channel stopped awaiting, then the newer one queued since are sent on its backoff,
+ * not on the next tick. */
+static void assert_report_waits_out_the_backoff(fixture* fx, int sent)
+{
+  assert_true(fx->su._internal.device_properties_report_pending);
+  assert_true(fx->su._internal.report_paced);
+  assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  assert_int_equal(fx->chan.report_count, sent);
+
+  fx->su._internal.retry._internal.due_ms = az_iot_time_mono_ms();
+  assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  assert_int_equal(fx->chan.report_count, sent + 1);
+}
+
+/* A report queued while the previous one is awaited waits out that one's timeout backoff too. */
+static void a_report_queued_before_a_timeout_waits_out_its_backoff(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  finish_with_report_unacknowledged(fx);
+  int sent = fx->chan.report_count;
+  queue_device_properties_report(fx);
+  assert_true(fx->su._internal.device_properties_report_pending);
+  assert_false(fx->su._internal.report_paced);
+
+  fx->chan.result_cb(
+      AZ_IOT_SU_OP_REPORT_STATUS,
+      AZ_IOT_ERR_TIMEOUT,
+      AZ_IOT_SU_ERROR_ACTION_RETRY,
+      NULL,
+      fx->chan.engine_ctx);
+  assert_report_waits_out_the_backoff(fx, sent);
+}
+
+/* A report queued after a timeout does not cut the backoff short. */
+static void a_report_queued_after_a_timeout_keeps_its_backoff(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  finish_with_report_unacknowledged(fx);
+  int sent = fx->chan.report_count;
+
+  fx->chan.result_cb(
+      AZ_IOT_SU_OP_REPORT_STATUS,
+      AZ_IOT_ERR_TIMEOUT,
+      AZ_IOT_SU_ERROR_ACTION_RETRY,
+      NULL,
+      fx->chan.engine_ctx);
+  queue_device_properties_report(fx);
+  assert_report_waits_out_the_backoff(fx, sent);
+}
+
 /* AZ_IOT_SU_REQUEST_NO_TIMEOUT waits for the answer indefinitely too. */
 static void a_disabled_timeout_waits_for_an_answer_indefinitely(void** state)
 {
@@ -10870,6 +10933,10 @@ int main(void)
         an_unaccepted_check_abandoned_at_its_deadline_is_cancelled, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_report_left_unanswered_is_retried_on_the_backoff, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_report_queued_before_a_timeout_waits_out_its_backoff, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_report_queued_after_a_timeout_keeps_its_backoff, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_disabled_timeout_waits_for_an_answer_indefinitely, setup, teardown),
     cmocka_unit_test_setup_teardown(each_request_carries_its_own_timeout, setup, teardown),

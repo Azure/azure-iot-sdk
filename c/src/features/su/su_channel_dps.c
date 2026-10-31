@@ -71,9 +71,46 @@ static bool rid_is_ours(const char* rid)
 /* ------------------------------------------------------------------------- */
 
 /**
- * @brief Connection-state observer, run inside the connection client's
- * dispatch. Records state; the hold is taken here because it must precede the
- * new session's SUBACK, which can arrive before the channel's next tick.
+ * @brief Whether the pending status report is awaited on its own session, still
+ * ready: the only case its response deadline applies to.
+ *
+ * @param c The channel.
+ */
+static bool report_awaited_on_its_ready_session(const az_iot_su_channel_dps* c)
+{
+  return c->request_pending && c->pending_operation == AZ_IOT_SU_OP_REPORT_STATUS
+      && c->pending_epoch == c->session_epoch
+      && az_iot_connection_client__dps_session_ready(c->connection);
+}
+
+/**
+ * @brief Lower @p remaining_ms to the time left before the awaited status
+ * report's response deadline, so the connection's wait ends by then.
+ *
+ * @param c            The channel.
+ * @param remaining_ms The connection's wait bound, lowered in place.
+ */
+static void lower_wait_to_report_response_deadline(
+    const az_iot_su_channel_dps* c,
+    uint64_t* remaining_ms)
+{
+  if (!report_awaited_on_its_ready_session(c))
+  {
+    return;
+  }
+  uint64_t now = az_iot_time_mono_ms();
+  uint64_t left = c->report_response_deadline_ms > now ? c->report_response_deadline_ms - now : 0;
+  if (left < *remaining_ms)
+  {
+    *remaining_ms = left;
+  }
+}
+
+/**
+ * @brief Connection observer, run inside the connection client's dispatch.
+ * NEXT_DEADLINE bounds the wait by the report's response deadline; STATE is
+ * recorded, and the hold is taken here because it must precede the new
+ * session's SUBACK, which can arrive before the channel's next tick.
  *
  * DPS:DISCONNECTING ends every provisioning session, so it marks the session a
  * request rode as gone; dps_session_ready() cannot, as a session replaced
@@ -81,15 +118,20 @@ static bool rid_is_ours(const char* rid)
  * DPS:CONNECTING, because a teardown ending a registration is announced while
  * the phase still refuses a hold.
  *
- * @param event    The transition.
- * @param user_ctx The channel.
+ * @param feature_event The event.
+ * @param user_ctx      The channel.
  */
-static void on_connection_state(
+static void on_connection_event(
     const az_iot_connection_feature_event* feature_event,
     void* user_ctx)
 {
-  const az_iot_connection_state_event* event = feature_event->state;
   az_iot_su_channel_dps* c = (az_iot_su_channel_dps*)user_ctx;
+  if (c != NULL && feature_event->kind == AZ_IOT_CONNECTION_FEATURE_EVENT_NEXT_DEADLINE)
+  {
+    lower_wait_to_report_response_deadline(c, feature_event->remaining_ms);
+    return;
+  }
+  const az_iot_connection_state_event* event = feature_event->state;
   if (c == NULL || event == NULL || (size_t)event->scope >= AZ_IOT_CONN_SCOPE_COUNT)
   {
     return;
@@ -137,7 +179,10 @@ static az_iot_result channel_observe(az_iot_su_channel_dps* c)
         = az_iot_connection_client_get_state(c->connection, (az_iot_connection_scope)i);
   }
   az_iot_result r = az_iot_connection_client__add_feature_observer(
-      c->connection, AZ_IOT_CONNECTION_FEATURE_EVENT_STATE, on_connection_state, c);
+      c->connection,
+      AZ_IOT_CONNECTION_FEATURE_EVENT_STATE | AZ_IOT_CONNECTION_FEATURE_EVENT_NEXT_DEADLINE,
+      on_connection_event,
+      c);
   if (r == AZ_IOT_OK)
   {
     c->observes_state = true;
@@ -704,7 +749,7 @@ static az_iot_result channel_open(
     if (c->observes_state)
     {
       c->observes_state = false;
-      az_iot_connection_client__remove_feature_observer(c->connection, on_connection_state, c);
+      az_iot_connection_client__remove_feature_observer(c->connection, on_connection_event, c);
     }
     c->wants_hold = false;
     c->update_cb = NULL;
@@ -747,7 +792,7 @@ static void channel_close(void* ctx)
   if (c->observes_state)
   {
     c->observes_state = false;
-    az_iot_connection_client__remove_feature_observer(c->connection, on_connection_state, c);
+    az_iot_connection_client__remove_feature_observer(c->connection, on_connection_event, c);
   }
   release_session_interest(c);
   /* The standing interest ends with the binding, so a closed channel cannot
@@ -1028,9 +1073,7 @@ static az_iot_result channel_do_work(void* ctx)
    * session released meanwhile: the hub session waits while it is up. Only on
    * the report's own session, still ready: a report lost with its session is
    * handled below, which keeps the session interest and so its pacing. */
-  if (c->request_pending && c->pending_operation == AZ_IOT_SU_OP_REPORT_STATUS
-      && c->pending_epoch == c->session_epoch
-      && az_iot_connection_client__dps_session_ready(c->connection)
+  if (report_awaited_on_its_ready_session(c)
       && az_iot_time_mono_ms() >= c->report_response_deadline_ms)
   {
     AZ_IOT_LOG_ERROR(AZ_IOT_LOG_COMPONENT_SU, "no answer to the status report in time; retrying");

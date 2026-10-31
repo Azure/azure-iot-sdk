@@ -2420,11 +2420,19 @@ static void on_channel_result(
   {
     case AZ_IOT_SU_OP_REPORT_STATUS:
       SU_I(client).terminal_report_in_flight = false;
-      /* A report queued since keeps its own pacing; one send covers both. */
+      /* One send covers this report and one queued since. That one keeps its own pacing, unless
+       * this report went unanswered: then it waits out the backoff too, so it does not reopen the
+       * session at once. */
       if (!SU_I(client).device_properties_report_pending)
       {
         SU_I(client).device_properties_report_pending = true;
         SU_I(client).report_paced = paced;
+        SU_I(client).report_paced_by_timeout = paced && result == AZ_IOT_ERR_TIMEOUT;
+      }
+      else if (paced && result == AZ_IOT_ERR_TIMEOUT)
+      {
+        SU_I(client).report_paced = true;
+        SU_I(client).report_paced_by_timeout = true;
       }
       break;
     case AZ_IOT_SU_OP_GET_ONBOARDING_UPDATE:
@@ -4763,8 +4771,12 @@ AZ_NODISCARD az_iot_result az_iot_su_client_update_device_properties(
       = SU_I(client).state != AZ_IOT_SU_STATE_IDLE && SU_I(client).state != AZ_IOT_SU_STATE_FAILED;
   if (running || SU_I(client).report_owed || SU_I(client).terminal_report_in_flight)
   {
+    /* A report waiting out an unanswered report's backoff keeps it. */
+    if (!SU_I(client).device_properties_report_pending || !SU_I(client).report_paced_by_timeout)
+    {
+      SU_I(client).report_paced = false;
+    }
     SU_I(client).device_properties_report_pending = true;
-    SU_I(client).report_paced = false;
   }
   return AZ_IOT_OK;
 }
