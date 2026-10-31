@@ -123,6 +123,15 @@ extern "C"
    */
   az_iot_retry_policy az_iot_connection_client_get_default_identity_recovery_policy(void);
 
+  /**
+   * @brief Default identity recovery policy right after a DPS assignment: 5 s
+   * initial delay, 15 s cap, 4 attempts, +/-20% jitter. Installed in
+   * opts.identity_recovery.after_assignment_policy by
+   * az_iot_connection_client_options_default().
+   */
+  az_iot_retry_policy
+  az_iot_connection_client_get_default_identity_recovery_after_assignment_policy(void);
+
   /** @brief What follows a hub refusal of the device identity. */
   typedef enum az_iot_identity_recovery_mode
   {
@@ -821,11 +830,17 @@ extern "C"
      * faults on the first MQTT 5 DISCONNECT refusal, or on the CONNACK refusal
      * that ends a credential pass (see az_iot_auth).
      *
+     * A hub that DPS has just assigned may refuse the device until the new
+     * registration reaches it. Until HUB:CONNECTED, refusals after a DPS
+     * assignment are first retried on after_assignment_policy, once per
+     * episode (DPS registrations do not restore it), then on policy.
+     *
      * Zeroed, it keeps the earlier behaviour: re-provision after a CONNACK
      * refusal, paced by reconnection_policy.
      * az_iot_connection_client_options_default() selects
      * AZ_IOT_IDENTITY_RECOVERY_RETRY_HUB with
-     * az_iot_connection_client_get_default_identity_recovery_policy().
+     * az_iot_connection_client_get_default_identity_recovery_policy() and
+     * az_iot_connection_client_get_default_identity_recovery_after_assignment_policy().
      *
      * Appended, like the options above it, so positional initializers keep
      * their meaning.
@@ -841,6 +856,11 @@ extern "C"
       uint32_t max_duration_seconds;
       /** @brief What the next attempt does after a refusal. */
       az_iot_identity_recovery_mode mode;
+      /** @brief Retry schedule for refusals after a DPS assignment, until
+       * HUB:CONNECTED; its max_attempts bounds it (0 = no limit), then policy
+       * applies. Zeroed (initial_delay_ms 0): policy from the first refusal.
+       * mode still decides what the next attempt does. */
+      az_iot_retry_policy after_assignment_policy;
     } identity_recovery;
 
     /**
@@ -1399,6 +1419,19 @@ extern "C"
 #ifndef AZ_IOT_DEFAULT_MAX_HUB_CONNECT_ATTEMPTS_BEFORE_REPROVISION
 #define AZ_IOT_DEFAULT_MAX_HUB_CONNECT_ATTEMPTS_BEFORE_REPROVISION 50u
 #endif
+/* See az_iot_connection_client_get_default_identity_recovery_after_assignment_policy(). */
+#ifndef AZ_IOT_DEFAULT_IDENTITY_RECOVERY_AFTER_ASSIGNMENT_INITIAL_DELAY_MS
+#define AZ_IOT_DEFAULT_IDENTITY_RECOVERY_AFTER_ASSIGNMENT_INITIAL_DELAY_MS 5000u
+#endif
+#ifndef AZ_IOT_DEFAULT_IDENTITY_RECOVERY_AFTER_ASSIGNMENT_MAX_DELAY_MS
+#define AZ_IOT_DEFAULT_IDENTITY_RECOVERY_AFTER_ASSIGNMENT_MAX_DELAY_MS 15000u
+#endif
+#ifndef AZ_IOT_DEFAULT_IDENTITY_RECOVERY_AFTER_ASSIGNMENT_MAX_ATTEMPTS
+#define AZ_IOT_DEFAULT_IDENTITY_RECOVERY_AFTER_ASSIGNMENT_MAX_ATTEMPTS 4u
+#endif
+#ifndef AZ_IOT_DEFAULT_IDENTITY_RECOVERY_AFTER_ASSIGNMENT_JITTER_PCT
+#define AZ_IOT_DEFAULT_IDENTITY_RECOVERY_AFTER_ASSIGNMENT_JITTER_PCT 20u
+#endif
 /* See az_iot_connection_client_get_default_identity_recovery_policy(). */
 #ifndef AZ_IOT_DEFAULT_IDENTITY_RECOVERY_INITIAL_DELAY_MS
 #define AZ_IOT_DEFAULT_IDENTITY_RECOVERY_INITIAL_DELAY_MS 300000u
@@ -1892,6 +1925,15 @@ extern "C"
      * HUB:CONNECTED, open() and close(), so DPS-accept / hub-reject cycles
      * stay bounded. */
     uint32_t identity_retry_attempt;
+    /* Ladder of opts.identity_recovery.after_assignment_policy, reset with the
+     * one above. */
+    uint32_t identity_retry_attempt_after_assignment;
+    /* A DPS assignment the hub has not accepted yet: set by a registration,
+     * cleared with the ladders above. */
+    bool hub_newly_assigned;
+    /* The last identity retry was scheduled on the after_assignment_policy
+     * ladder; selects the attempt a duration fault reports. */
+    bool identity_retry_after_assignment;
     uint64_t identity_recovery_started_ms;
     bool identity_recovery_active;
     /* The refusal that started the episode; the reason of a duration fault. */
@@ -2098,8 +2140,9 @@ extern "C"
    * forever, +/-20% jitter). Set reconnection_policy.initial_delay_ms = 0 on
    * the returned struct to make every failure terminal instead.
    *
-   * identity_recovery gets AZ_IOT_IDENTITY_RECOVERY_RETRY_HUB and
-   * az_iot_connection_client_get_default_identity_recovery_policy().
+   * identity_recovery gets AZ_IOT_IDENTITY_RECOVERY_RETRY_HUB,
+   * az_iot_connection_client_get_default_identity_recovery_policy() and
+   * az_iot_connection_client_get_default_identity_recovery_after_assignment_policy().
    *
    * Note that a zero-initialized options struct is NOT the same thing: it has
    * reconnection disabled, since initial_delay_ms is then 0, and the earlier
