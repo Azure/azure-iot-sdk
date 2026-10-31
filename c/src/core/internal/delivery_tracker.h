@@ -148,6 +148,19 @@ extern "C"
       size_t* out_entry_index);
 
   /**
+   * @brief As az_iot_delivery_tracker__submit(), into free entry @p entry_index, so the owner
+   *        holds the message's state there before encode() first runs.
+   * @retval AZ_IOT_ERR_INVALID_ARG Also for an @p entry_index out of range or in use.
+   */
+  az_iot_result az_iot_delivery_tracker__submit_at(
+      az_iot_delivery_tracker* tracker,
+      size_t entry_index,
+      const az_iot_delivery_tracker_profile* profile,
+      const uint8_t* correlation_id,
+      size_t correlation_id_length,
+      uint64_t timeout_ms);
+
+  /**
    * @brief A response matched @p correlation_id: complete its message as DELIVERED. Queued
    *        messages the freed capacity lets go are sent.
    * @retval AZ_IOT_ERR_NOT_FOUND No tracked message has it.

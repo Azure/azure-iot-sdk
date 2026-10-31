@@ -112,29 +112,20 @@ static bool snapshot_in_flight(const az_iot_mqttv5_twin_client* t)
       return true;
     }
   }
-  return TI(t).submitting.kind == TWIN_PENDING_SNAPSHOT;
+  return false;
 }
 
-/**
- * @brief The request tracker entry @p entry_index holds, or NULL. An entry without one is the
- *        request being submitted: the tracker named its entry, so it moves there.
- */
+/** @brief The request tracker entry @p entry_index holds, or NULL. */
 static az_iot_mqttv5_twin_request* request_of_entry(
     az_iot_mqttv5_twin_client* t,
     size_t entry_index)
 {
-  if (entry_index >= AZ_IOT_MQTTV5_TWIN_TRACKED_MESSAGES)
+  if (entry_index >= AZ_IOT_MQTTV5_TWIN_TRACKED_MESSAGES
+      || TI(t).requests[entry_index].kind == TWIN_PENDING_NONE)
   {
     return NULL;
   }
-  az_iot_mqttv5_twin_request* request = &TI(t).requests[entry_index];
-  if (request->kind == TWIN_PENDING_NONE && TI(t).submitting.kind != TWIN_PENDING_NONE)
-  {
-    *request = TI(t).submitting;
-    memset(&TI(t).submitting, 0, sizeof(TI(t).submitting));
-    TI(t).submitting_entry = entry_index;
-  }
-  return request->kind == TWIN_PENDING_NONE ? NULL : request;
+  return &TI(t).requests[entry_index];
 }
 
 /** @brief True when the `type` user property is exactly "<want>:1". */
@@ -583,38 +574,42 @@ static az_iot_result submit_twin_request(
   {
     return AZ_IOT_ERR_BUSY;
   }
-  TI(t).submitting = *request;
-  az_iot_connection_client__gen_uuid(TI(t).conn, TI(t).submitting.correlation_id);
-  uint8_t correlation_id[AZ_IOT_MQTTV5_TWIN_CORRELATION_ID_LEN];
-  memcpy(correlation_id, TI(t).submitting.correlation_id, sizeof(correlation_id));
-  TI(t).submitting_entry = SIZE_MAX;
+  size_t entry = 0;
+  while (entry < AZ_IOT_MQTTV5_TWIN_TRACKED_MESSAGES
+         && TI(t).requests[entry].kind != TWIN_PENDING_NONE)
+  {
+    ++entry;
+  }
+  if (entry == AZ_IOT_MQTTV5_TWIN_TRACKED_MESSAGES)
+  {
+    return AZ_IOT_ERR_NOT_SUPPORTED;
+  }
+  az_iot_mqttv5_twin_request* held = &TI(t).requests[entry];
+  *held = *request;
+  az_iot_connection_client__gen_uuid(TI(t).conn, held->correlation_id);
+  TI(t).submitting_entry = entry;
   TI(t).submit_failure = AZ_IOT_OK;
   TI(t).submit_in_progress = true;
-  size_t entry = SIZE_MAX;
-  az_iot_result r = az_iot_delivery_tracker__submit(
+  az_iot_result const r = az_iot_delivery_tracker__submit_at(
       &TI(t).tracker,
+      entry,
       request->kind == TWIN_PENDING_PATCH ? &k_twin_reported_patch_profile : &k_twin_get_profile,
-      correlation_id,
-      sizeof(correlation_id),
-      TI(t).request_timeout_ms,
-      &entry);
+      held->correlation_id,
+      sizeof(held->correlation_id),
+      TI(t).request_timeout_ms);
   TI(t).submit_in_progress = false;
-  if (r == AZ_IOT_OK && TI(t).submitting.kind != TWIN_PENDING_NONE)
-  {
-    (void)request_of_entry(t, entry); /* Queued without an encode. */
-  }
-  memset(&TI(t).submitting, 0, sizeof(TI(t).submitting));
   if (r != AZ_IOT_OK)
   {
+    memset(held, 0, sizeof(*held));
     return r;
   }
   if (TI(t).submit_failure != AZ_IOT_OK)
   {
-    return TI(t).submit_failure;
+    return TI(t).submit_failure; /* Already released. */
   }
-  if (request->kind == TWIN_PENDING_PATCH && !TI(t).requests[entry].sent)
+  if (request->kind == TWIN_PENDING_PATCH && !held->sent)
   {
-    memset(&TI(t).requests[entry], 0, sizeof(TI(t).requests[entry]));
+    memset(held, 0, sizeof(*held));
     az_iot_delivery_tracker__cancel(&TI(t).tracker, entry);
     return az_iot_connection_client__is_connected(TI(t).conn) ? AZ_IOT_ERR_BUSY
                                                               : AZ_IOT_ERR_NOT_CONNECTED;

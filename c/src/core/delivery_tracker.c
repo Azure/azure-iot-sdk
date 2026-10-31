@@ -529,6 +529,46 @@ void az_iot_delivery_tracker__unbind(az_iot_delivery_tracker* tracker)
   TI(tracker).connection = NULL;
 }
 
+/** @brief Whether @p profile and the correlation id can be tracked. */
+static bool submission_is_valid(
+    const az_iot_delivery_tracker_profile* profile,
+    const uint8_t* correlation_id,
+    size_t correlation_id_length)
+{
+  return profile != NULL && profile->encode != NULL && profile->on_complete != NULL
+      && correlation_id_length <= AZ_IOT_DELIVERY_TRACKER_CORRELATION_ID_MAX
+      && (correlation_id != NULL || correlation_id_length == 0u)
+      && (profile->confirmation != AZ_IOT_DELIVERY_TRACKER_CONFIRM_BY_RESPONSE
+          || correlation_id_length != 0u);
+}
+
+/** @brief Queue a message in free entry @p e and send what can go. */
+static void track_in_entry(
+    az_iot_delivery_tracker* tracker,
+    az_iot_delivery_tracker_entry* e,
+    const az_iot_delivery_tracker_profile* profile,
+    const uint8_t* correlation_id,
+    size_t correlation_id_length,
+    uint64_t timeout_ms)
+{
+  EI(e).tracker = tracker;
+  EI(e).profile = profile;
+  EI(e).sequence = TI(tracker).next_sequence++;
+  EI(e).identity = TI(tracker).connection->identity_changes;
+  if (correlation_id_length != 0u)
+  {
+    memcpy(EI(e).correlation_id, correlation_id, correlation_id_length);
+  }
+  EI(e).correlation_id_length = (uint8_t)correlation_id_length;
+  az_iot_deadline__arm_after_ms(
+      &EI(e).deadline,
+      az_iot_time_mono_ms(),
+      timeout_ms != 0u ? timeout_ms
+                       : TI(tracker).connection->opts.max_unconfirmed_delivery_timeout_ms);
+  EI(e).state = ENTRY_QUEUED;
+  flush(tracker, true);
+}
+
 az_iot_result az_iot_delivery_tracker__submit(
     az_iot_delivery_tracker* tracker,
     const az_iot_delivery_tracker_profile* profile,
@@ -537,12 +577,8 @@ az_iot_result az_iot_delivery_tracker__submit(
     uint64_t timeout_ms,
     size_t* out_entry_index)
 {
-  if (tracker == NULL || profile == NULL || profile->encode == NULL || profile->on_complete == NULL
-      || out_entry_index == NULL
-      || correlation_id_length > AZ_IOT_DELIVERY_TRACKER_CORRELATION_ID_MAX
-      || (correlation_id == NULL && correlation_id_length != 0u)
-      || (profile->confirmation == AZ_IOT_DELIVERY_TRACKER_CONFIRM_BY_RESPONSE
-          && correlation_id_length == 0u))
+  if (tracker == NULL || out_entry_index == NULL
+      || !submission_is_valid(profile, correlation_id, correlation_id_length))
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
@@ -559,23 +595,39 @@ az_iot_result az_iot_delivery_tracker__submit(
   {
     return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
   }
-  EI(e).tracker = tracker;
-  EI(e).profile = profile;
-  EI(e).sequence = TI(tracker).next_sequence++;
-  EI(e).identity = TI(tracker).connection->identity_changes;
-  if (correlation_id_length != 0u)
-  {
-    memcpy(EI(e).correlation_id, correlation_id, correlation_id_length);
-  }
-  EI(e).correlation_id_length = (uint8_t)correlation_id_length;
-  az_iot_deadline__arm_after_ms(
-      &EI(e).deadline,
-      az_iot_time_mono_ms(),
-      timeout_ms != 0u ? timeout_ms
-                       : TI(tracker).connection->opts.max_unconfirmed_delivery_timeout_ms);
-  EI(e).state = ENTRY_QUEUED;
   *out_entry_index = index_of(tracker, e);
-  flush(tracker, true);
+  track_in_entry(tracker, e, profile, correlation_id, correlation_id_length, timeout_ms);
+  return AZ_IOT_OK;
+}
+
+az_iot_result az_iot_delivery_tracker__submit_at(
+    az_iot_delivery_tracker* tracker,
+    size_t entry_index,
+    const az_iot_delivery_tracker_profile* profile,
+    const uint8_t* correlation_id,
+    size_t correlation_id_length,
+    uint64_t timeout_ms)
+{
+  if (tracker == NULL || !submission_is_valid(profile, correlation_id, correlation_id_length))
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  if (TI(tracker).connection == NULL)
+  {
+    return AZ_IOT_ERR_NOT_INITIALIZED;
+  }
+  if (entry_index >= TI(tracker).capacity
+      || EI(&TI(tracker).entries[entry_index]).state != ENTRY_FREE)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  track_in_entry(
+      tracker,
+      &TI(tracker).entries[entry_index],
+      profile,
+      correlation_id,
+      correlation_id_length,
+      timeout_ms);
   return AZ_IOT_OK;
 }
 

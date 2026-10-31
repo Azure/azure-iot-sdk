@@ -247,11 +247,9 @@ extern "C"
         uint64_t received_desired_version;
         uint64_t received_reported_version;
       } twin_push_wait;
-      /* The request each tracker entry holds (index = entry), and the one being submitted until
-       * the tracker names its entry. Kind 0: none. */
+      /* The request each tracker entry holds (index = entry). Kind 0: none. */
       az_iot_mqttv5_twin_request requests[AZ_IOT_MQTTV5_TWIN_TRACKED_MESSAGES];
-      az_iot_mqttv5_twin_request submitting;
-      size_t submitting_entry; /* SIZE_MAX until named. */
+      size_t submitting_entry; /* The entry being submitted, while submit_in_progress. */
       bool submit_in_progress;
       az_iot_result
           submit_failure; /* How the submitted request ended during submit; OK: it did not. */
