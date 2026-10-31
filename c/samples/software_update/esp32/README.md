@@ -231,7 +231,10 @@ The image boots, gets `10.0.2.15` and then needs a device identity, or the sampl
 ([Device identity](#device-identity)) into the flash image with
 `QEMU_FLASH_EXTRA="0xd000 esp_secure_cert.bin" eng/esp-idf-qemu.sh ...`. Each run writes a fresh
 flash image, so NVS and OTA state do not persist. The full log is `qemu.log` in the build
-directory. QEMU does not emulate Secure Boot or flash encryption.
+directory. The `qemu` profile leaves Secure Boot and flash encryption off, as `default` does.
+ESP-IDF's QEMU can emulate both
+([QEMU guide](https://docs.espressif.com/projects/esp-idf/en/v6.0/esp32/api-guides/tools/qemu.html)),
+but this sample has no profile that combines them with `qemu`.
 
 ### Deploy an update
 
