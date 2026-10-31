@@ -1500,6 +1500,9 @@ extern "C"
     AZ_IOT_CONNECTION_FEATURE_EVENT_IDENTITY_CHANGED = 16,
     AZ_IOT_CONNECTION_FEATURE_EVENT_NEXT_DEADLINE
     = 32, /**< Before do_work() waits; see remaining_ms. */
+    /** Before a SAS renewal ends the session: set *unsettled if a delivery awaits its PUBACK or
+     *  response. */
+    AZ_IOT_CONNECTION_FEATURE_EVENT_UNSETTLED_QUERY = 64,
   } az_iot_connection_feature_event_kind;
   /** @brief Why an MQTT session ended. */
   typedef enum az_iot_connection_session_end_reason
@@ -1516,6 +1519,8 @@ extern "C"
     /** NEXT_DEADLINE only (NULL otherwise): lower it to the milliseconds to the observer's next
      * deadline, so the adapter wait ends by then and the TICK after it acts on time. */
     uint64_t* remaining_ms;
+    /** UNSETTLED_QUERY only (NULL otherwise): set it true, never false. */
+    bool* unsettled;
   } az_iot_connection_feature_event;
   typedef void (*az_iot_connection_feature_observer_callback)(
       const az_iot_connection_feature_event* event,
@@ -1995,10 +2000,12 @@ extern "C"
     /* A hub session being ended on purpose: DISCONNECT sent, its completion
      * awaited until `disconnect_deadline` (none: no planned end). `reason`
      * AZ_IOT_OK (SAS renewal) reconnects at once; a failure reconnects with it,
-     * or faults without a reconnection policy. */
+     * or faults without a reconnection policy. A SAS renewal first lets deliveries
+     * settle until `drain_deadline` (none: not draining), holding new tracked sends. */
     struct
     {
       az_iot_deadline disconnect_deadline;
+      az_iot_deadline drain_deadline;
       az_iot_result reason;
     } planned_hub_session_end;
     bool sas_token_renewal_in_progress[AZ_IOT_CONN_SCOPE_COUNT];
@@ -2022,6 +2029,10 @@ extern "C"
      * seconds for a monotonic clock that stops in suspend; 0: none. */
     uint64_t sas_token_expiry_ms[AZ_IOT_CONN_SCOPE_COUNT];
     uint64_t sas_token_expiry_unix_seconds[AZ_IOT_CONN_SCOPE_COUNT];
+    /* Expiry of the token the hub session connected with, by each clock (0: unknown). Bounds a
+     * SAS renewal's settle. */
+    uint64_t hub_session_token_expiry_ms;
+    uint64_t hub_session_token_expiry_unix_seconds;
     /* Each scope's next token request is not asked before this (monotonic
      * ms): a renewal request that could not be asked. 0: none. */
     uint64_t sas_token_ask_after_ms[AZ_IOT_CONN_SCOPE_COUNT];

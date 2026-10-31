@@ -144,7 +144,8 @@ extern "C"
    *         AZ_IOT_MQTTV5_CUSTOM_TOPIC_MAX_LEVELS), a QoS other than 0 or 1, a count without
    *         its array, or a user property with an empty key or NULL value. Nothing was sent.
    * @retval AZ_IOT_ERR_NOT_SUPPORTED @p client is not initialized.
-   * @retval AZ_IOT_ERR_NOT_CONNECTED The connection is not connected.
+   * @retval AZ_IOT_ERR_NOT_CONNECTED The connection is not connected, or its session is being ended
+   *         on purpose.
    * @retval AZ_IOT_ERR_BUSY QoS 1, and every pending-acknowledgement slot it may use is taken;
    *         nothing was sent, retry later.
    */

@@ -62,7 +62,8 @@ extern "C"
    * @return AZ_IOT_OK if handed to the transport.
    * @return AZ_IOT_ERR_INVALID_ARG if @p callback is NULL, among other arguments, or the
    *         correlation id is longer than 65535 bytes.
-   * @return AZ_IOT_ERR_NOT_CONNECTED if the connection is not connected; nothing was sent.
+   * @return AZ_IOT_ERR_NOT_CONNECTED if the connection is not connected, or its session is being
+   *         ended on purpose; nothing was sent.
    * @return AZ_IOT_ERR_BUSY if the limits.max_pending_publishes slots not reserved by other
    *         feature clients are all awaiting acknowledgement; nothing was sent, retry later.
    */
