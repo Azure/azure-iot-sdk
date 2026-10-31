@@ -10,7 +10,7 @@ Libraries the C SDK builds against, and the known issues of each.
 | [Mbed TLS](https://github.com/Mbed-TLS/mbedtls) | 3.6 LTS or 4.1+ | mbedTLS crypto backend, az_mqtt TLS (`AZ_IOT_AZ_MQTT_TLS=mbedtls`) | Optional |
 | az_mqtt | Published from this repository: [deps/az_mqtt](../deps/az_mqtt/README.md) | az_mqtt adapter | `AZ_IOT_WITH_AZ_MQTT` |
 | [cmocka](https://gitlab.com/cmocka/cmocka) | 1.1.7 (`CMOCKA_TAG`) | Tests only | `AZ_IOT_BUILD_TESTS` |
-| [libcurl](https://curl.se/libcurl/) | Any; 7.55.0+ for the software update download sample (`CURLINFO_SIZE_DOWNLOAD_T`) | Samples (file upload, DPS TPM, software update download); software updates e2e offer suite | Optional for samples; required by `AZ_IOT_BUILD_E2E_SU` on non-Windows |
+| [libcurl](https://curl.se/libcurl/) | Any; 7.55.0+ for the software update download sample (`CURLINFO_SIZE_DOWNLOAD_T`) | Samples (file upload, DPS TPM, software update download); software updates e2e offer suite | Optional for samples; required by `AZ_IOT_BUILD_E2E_SU` |
 
 Exact commits are in [cgmanifest.json](../cgmanifest.json). How to use installed copies instead of
 the fetched ones: [Installed dependencies](client-configuration.md#installed-dependencies).

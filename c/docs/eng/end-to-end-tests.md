@@ -357,7 +357,7 @@ workflow; nightly; manual. Pull requests from forks and from Dependabot skip.
 
 ## Software updates e2e
 
-Two suites, built with `-DAZ_IOT_BUILD_E2E_SU=ON` (not on Windows) and selected by
+Two suites, built with `-DAZ_IOT_BUILD_E2E_SU=ON` and selected by
 `ctest -R e2e_su`. Both run the shipping SDK over each MQTT adapter (Paho, az_mqtt) and X.509 against
 the real service.
 
