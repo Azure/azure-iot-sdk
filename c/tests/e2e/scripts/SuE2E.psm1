@@ -50,8 +50,19 @@ $script:AduScope = 'https://api.adu.microsoft.com/'
 # (AZ_IOT_E2E_SU_ARM_ENDPOINT) serves requests but is not a token audience.
 $script:ArmScope = 'https://management.azure.com/'
 
+# Download handler id the test delta offers name; e2e_su_offer_test.c registers
+# a handler with this id (E2E_SU_TEST_DELTA_HANDLER_ID).
+$script:TestDeltaHandlerId = 'sdke2e/xor-delta:1'
+# Id of the reference handler (AZ_IOT_SU_DELTA_DOWNLOAD_HANDLER_ID), and its test
+# vectors, shared with the unit tests: target.swu = source.swu + delta.bin.
+$script:MicrosoftDeltaHandlerId = 'microsoft/delta:1'
+$script:DeltaVectorsDir = Join-Path $PSScriptRoot '../../unit/data/su_delta'
+
 # Scenario name -> device-suite variable holding its model, and the per-device
 # job result status the service is expected to record once the suite has run.
+# Delta = 'Test' or 'Microsoft': the update's file names the test or the
+# reference download handler and has a related file (see Import-SuE2EUpdate);
+# absent: a plain one-file update.
 $script:Scenarios = [ordered]@{
     REAL              = @{ Short = 'real'; Variable = 'AZ_IOT_E2E_SU_OFFER_MODEL'; Expected = 'Succeeded' }
     INSTALL_FAILURE   = @{ Short = 'fail'; Variable = 'AZ_IOT_E2E_SU_OFFER_MODEL_INSTALL_FAILURE'; Expected = 'Failed' }
@@ -59,6 +70,13 @@ $script:Scenarios = [ordered]@{
     ALREADY_INSTALLED = @{ Short = 'skip'; Variable = 'AZ_IOT_E2E_SU_OFFER_MODEL_ALREADY_INSTALLED'; Expected = 'Succeeded' }
     UNTRUSTED         = @{ Short = 'untrusted'; Variable = 'AZ_IOT_E2E_SU_OFFER_MODEL_UNTRUSTED'; Expected = 'Failed' }
     LIBRARY_MODE      = @{ Short = 'lib'; Variable = 'AZ_IOT_E2E_SU_OFFER_MODEL_LIBRARY_MODE'; Expected = 'Succeeded' }
+    # Alike but for the model: a device sees an offer once. The DELTA device
+    # holds the source and builds the file from the related file; the
+    # DELTA_NO_SOURCE device does not, and downloads the file in full.
+    DELTA             = @{ Short = 'delta'; Variable = 'AZ_IOT_E2E_SU_OFFER_MODEL_DELTA'; Expected = 'Succeeded'; Delta = 'Test' }
+    DELTA_NO_SOURCE   = @{ Short = 'nosrc'; Variable = 'AZ_IOT_E2E_SU_OFFER_MODEL_DELTA_NO_SOURCE'; Expected = 'Succeeded'; Delta = 'Test' }
+    # The reference microsoft/delta:1 handler and the real delta processor.
+    MICROSOFT_DELTA   = @{ Short = 'msdelta'; Variable = 'AZ_IOT_E2E_SU_OFFER_MODEL_MICROSOFT_DELTA'; Expected = 'Succeeded'; Delta = 'Microsoft' }
 }
 
 function Get-SuE2EConfig {
@@ -135,6 +153,21 @@ function Get-SuE2EUpdateBlobName([string]$Provider, [string]$Name, [string]$Vers
     return "$Provider/$Name/$Version/$FileName"
 }
 
+# Files Import-SuE2EUpdate uploads for an update of -Model, payloads first.
+function Get-SuE2EUpdateFileNames([string]$Model, [string]$Delta) {
+    $names = @("$Model.bin")
+    if ($Delta) { $names += "$Model.delta" }
+    return $names + "$Model.importmanifest.json"
+}
+
+# Source the test delta offers' related file is made from. e2e_su_offer_test.c
+# generates the same bytes (delta_source_byte()).
+function Get-SuE2EDeltaSource {
+    $bytes = [byte[]]::new(4096)
+    for ($i = 0; $i -lt $bytes.Length; $i++) { $bytes[$i] = ($i * 31 + 7) % 256 }
+    return ,$bytes
+}
+
 <#
 .SYNOPSIS
     Waits for the long-running operation a response started, if it started
@@ -183,7 +216,13 @@ function Get-SuE2EJobsUri([hashtable]$Config) {
 <#
 .SYNOPSIS
     Imports a one-file, one-step update compatible with exactly one
-    manufacturer/model pair, and waits for the import to finish.
+    manufacturer/model pair, and waits for the import to finish. With -Delta,
+    the file names a download handler and has one related file, with the hash
+    of the source it is made from as its microsoft.sourceFileHash property:
+      Test       the test handler; the file is random, the related file is the
+                 file XOR Get-SuE2EDeltaSource.
+      Microsoft  microsoft/delta:1; the file is target.swu, the related file
+                 delta.bin, the source source.swu ($script:DeltaVectorsDir).
 #>
 function Import-SuE2EUpdate {
     param(
@@ -194,6 +233,7 @@ function Import-SuE2EUpdate {
         [Parameter(Mandatory)][string]$Manufacturer,
         [Parameter(Mandatory)][string]$Model,
         [Parameter(Mandatory)][string]$WorkDir,
+        [ValidateSet('', 'Test', 'Microsoft')][string]$Delta = '',
         # Receives each uploaded blob name as soon as it exists, for cleanup.
         [Parameter(Mandatory)][AllowEmptyCollection()][System.Collections.Generic.List[string]]$Blobs,
         # Called after each upload, so the caller can persist $Blobs at once.
@@ -201,12 +241,49 @@ function Import-SuE2EUpdate {
     )
     New-Item -ItemType Directory -Force -Path $WorkDir | Out-Null
 
-    # Random content, so the device's hash check is meaningful.
+    # Random content, so the device's hash check is meaningful; for the
+    # reference handler, the target vector its delta rebuilds.
     $payload = Join-Path $WorkDir "$Model.bin"
-    $bytes = [byte[]]::new(4096)
-    [System.Security.Cryptography.RandomNumberGenerator]::Fill($bytes)
+    if ($Delta -eq 'Microsoft') {
+        $bytes = [System.IO.File]::ReadAllBytes((Join-Path $script:DeltaVectorsDir 'target.swu'))
+    }
+    else {
+        $bytes = [byte[]]::new(4096)
+        [System.Security.Cryptography.RandomNumberGenerator]::Fill($bytes)
+    }
     [System.IO.File]::WriteAllBytes($payload, $bytes)
     $payloadHash = [Convert]::ToBase64String([System.Security.Cryptography.SHA256]::HashData($bytes))
+    $payloadFile = [ordered]@{
+        filename    = "$Model.bin"
+        sizeInBytes = $bytes.Length
+        hashes      = @{ sha256 = $payloadHash }
+    }
+    $files = @($payload)
+    if ($Delta -eq 'Microsoft') {
+        $source = [System.IO.File]::ReadAllBytes((Join-Path $script:DeltaVectorsDir 'source.swu'))
+        $deltaBytes = [System.IO.File]::ReadAllBytes((Join-Path $script:DeltaVectorsDir 'delta.bin'))
+        $handlerId = $script:MicrosoftDeltaHandlerId
+    }
+    elseif ($Delta -eq 'Test') {
+        $source = Get-SuE2EDeltaSource
+        $deltaBytes = [byte[]]::new($bytes.Length)
+        for ($i = 0; $i -lt $bytes.Length; $i++) { $deltaBytes[$i] = $bytes[$i] -bxor $source[$i % $source.Length] }
+        $handlerId = $script:TestDeltaHandlerId
+    }
+    if ($Delta) {
+        $files += Join-Path $WorkDir "$Model.delta"
+        [System.IO.File]::WriteAllBytes($files[-1], $deltaBytes)
+        $payloadFile.relatedFiles = @([ordered]@{
+                filename    = "$Model.delta"
+                sizeInBytes = $deltaBytes.Length
+                hashes      = @{ sha256 = [Convert]::ToBase64String([System.Security.Cryptography.SHA256]::HashData($deltaBytes)) }
+                properties  = [ordered]@{
+                    'microsoft.sourceFileHashAlgorithm' = 'sha256'
+                    'microsoft.sourceFileHash'          = [Convert]::ToBase64String([System.Security.Cryptography.SHA256]::HashData($source))
+                }
+            })
+        $payloadFile.downloadHandler = @{ id = $handlerId }
+    }
 
     $manifest = [ordered]@{
         updateId        = [ordered]@{ provider = $Provider; name = $Name; version = $Version }
@@ -218,11 +295,7 @@ function Import-SuE2EUpdate {
                     handlerProperties = @{ installedCriteria = $Version }
                 })
         }
-        files           = @([ordered]@{
-                filename    = "$Model.bin"
-                sizeInBytes = $bytes.Length
-                hashes      = @{ sha256 = $payloadHash }
-            })
+        files           = @($payloadFile)
         createdDateTime = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
         manifestVersion = '5.0'
     }
@@ -232,7 +305,7 @@ function Import-SuE2EUpdate {
     $manifestBytes = [System.IO.File]::ReadAllBytes($manifestPath)
 
     $urls = @{}
-    foreach ($file in $payload, $manifestPath) {
+    foreach ($file in $files + $manifestPath) {
         $blob = Get-SuE2EUpdateBlobName $Provider $Name $Version (Split-Path -Leaf $file)
         az storage blob upload --auth-mode login --account-name $Config.STORAGE_ACCOUNT `
             --container-name $Config.STORAGE_CONTAINER --name $blob --file $file --overwrite --only-show-errors | Out-Null
@@ -253,7 +326,7 @@ function Import-SuE2EUpdate {
                     sizeInBytes = $manifestBytes.Length
                     hashes      = @{ sha256 = [Convert]::ToBase64String([System.Security.Cryptography.SHA256]::HashData($manifestBytes)) }
                 }
-                files          = @(@{ fileName = "$Model.bin"; url = $urls[$payload] })
+                files          = @($files | ForEach-Object { @{ fileName = (Split-Path -Leaf $_); url = $urls[$_] } })
             })
     }
     $base = "https://$($Config.ADU_ENDPOINT)"
@@ -449,9 +522,15 @@ function Get-SuE2EOfferNames {
     offer set instead of reusing one staged by older code.
 #>
 function Get-SuE2EFixtureTag {
-    $text = ('Get-SuE2EOfferNames', 'Import-SuE2EUpdate', 'New-SuE2EOnboardingJob', 'New-SuE2EJobRun' |
+    $text = ('Get-SuE2EOfferNames', 'Get-SuE2EUpdateFileNames', 'Get-SuE2EDeltaSource', 'Import-SuE2EUpdate', 'New-SuE2EOnboardingJob', 'New-SuE2EJobRun' |
             ForEach-Object { (Get-Command -Module SuE2E -Name $_).Definition }) -join "`n"
-    $text += ($script:Scenarios.Keys | ForEach-Object { "$_=$($script:Scenarios[$_].Short)" }) -join ','
+    $text += $script:TestDeltaHandlerId + $script:MicrosoftDeltaHandlerId
+    # The reference offer's content.
+    $text += ('source.swu', 'target.swu', 'delta.bin' | ForEach-Object {
+            [Convert]::ToHexString([System.Security.Cryptography.SHA256]::HashData(
+                    [System.IO.File]::ReadAllBytes((Join-Path $script:DeltaVectorsDir $_))))
+        }) -join ','
+    $text += ($script:Scenarios.Keys | ForEach-Object { "$_=$($script:Scenarios[$_].Short)/$($script:Scenarios[$_]['Delta'])" }) -join ','
     $hash = [System.Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes(($text -replace "`r`n", "`n")))
     return [Convert]::ToHexString($hash).Substring(0, 8).ToLowerInvariant()
 }
@@ -510,7 +589,7 @@ function New-SuE2EOffers {
         $n = $names.Offers[$scenario]
         $blobs = [System.Collections.Generic.List[string]]::new()
         if ($Reuse) {
-            foreach ($file in "$($n.Model).bin", "$($n.Model).importmanifest.json") {
+            foreach ($file in Get-SuE2EUpdateFileNames $n.Model $script:Scenarios[$scenario]['Delta']) {
                 $blobs.Add((Get-SuE2EUpdateBlobName 'sdke2e' $n.Model '1.0.0' $file))
             }
         }
@@ -539,7 +618,7 @@ function New-SuE2EOffers {
                 try {
                     [void](Import-SuE2EUpdate -Config $config -Provider 'sdke2e' -Name $n.Model `
                             -Version '1.0.0' -Manufacturer $manufacturer -Model $n.Model -WorkDir $WorkDir `
-                            -Blobs $offer.Blobs -OnChange $save)
+                            -Delta "$($script:Scenarios[$scenario]['Delta'])" -Blobs $offer.Blobs -OnChange $save)
                     break
                 }
                 catch {

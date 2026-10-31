@@ -6,7 +6,9 @@
 # Runs both software updates suites, per MQTT adapter, each adapter with its own
 # new device:
 #   az_iot_tests_e2e_su        the DPS channel, with no update offered
-#   az_iot_tests_e2e_su_offer  offered updates through the whole client
+#   az_iot_tests_e2e_su_offer  offered updates through the whole client, delta
+#                              ones with the real delta processor (installed by
+#                              .github/actions/install-su-delta-processor)
 # then checks what the service recorded for each device and offer.
 #
 # Runs against the shared mqttv5 environment (ci-c-e2e-mqttv5.yml), whose ADR
@@ -48,6 +50,7 @@ on:
       - 'c/adapters/crypto_openssl/**'
       - 'c/adapters/cert_openssl/**'
       - 'c/adapters/su/**'
+      - 'c/eng/install-su-delta-processor.sh'
       - 'c/deps/az_mqtt/**'
       - 'c/CMakeLists.txt'
       - 'c/CMakePresets.json'
@@ -56,10 +59,12 @@ on:
       - 'c/tests/support/**'
       - 'c/tests/deps/**'
       - 'c/tests/e2e/**'
+      - 'c/tests/unit/data/su_delta/**'
       - 'c/eng/e2e-shared-device.ps1'
       - 'c/eng/collect-coverage.sh'
       - 'c/eng/e2e-mqttv5-adr-namespace.ps1'
       - '.github/workflows/ci-c-e2e-adu.yml'
+      - '.github/actions/install-su-delta-processor/**'
       - '.github/workflows/ci-c-e2e-mqttv5-adr-namespace.yml'
   schedule:
     - cron: '0 12 * * *'
@@ -100,9 +105,9 @@ jobs:
     permissions:
       contents: read
       id-token: write   # azure/login OIDC
-    # Above the sum of the step budgets (about 215 min), so every step's own
-    # timeout fires first.
-    timeout-minutes: 230
+    # Above the sum of the step budgets (about 345 min), so every step's own
+    # timeout fires first; GitHub-hosted jobs stop at 360 min.
+    timeout-minutes: 355
     env:
       AZ_IOT_E2E_SU_DPS_HOST: ${{ vars.E2E_MQTTV5_SHARED_DPS_HOST }}
       AZ_IOT_E2E_SU_ID_SCOPE: ${{ vars.E2E_MQTTV5_SHARED_ID_SCOPE }}
@@ -125,12 +130,22 @@ jobs:
           sudo apt-get update && sudo apt-get install -y ninja-build libcurl4-openssl-dev
           python3 -m pip install --upgrade 'gcovr==7.2'
 
+      # The real delta processor for the MICROSOFT_DELTA offer.
+      - name: Install the software updates delta processor
+        id: su-delta
+        timeout-minutes: 5
+        # actionlint 1.7.12 does not accept the $/ self-repository form yet.
+        uses: ./.github/actions/install-su-delta-processor # zizmor: ignore[self-repository]
+
       # Built instrumented so the run feeds the combined coverage report.
       - name: Build
         timeout-minutes: 15
         working-directory: c
+        env:
+          LIBRARY: ${{ steps.su-delta.outputs.library }}
         run: |
-          cmake --preset linux-gcc-e2e-coverage -DAZ_IOT_WITH_PAHO=ON -DAZ_IOT_WITH_AZ_MQTT=ON -DAZ_IOT_BUILD_E2E_SU=ON
+          cmake --preset linux-gcc-e2e-coverage -DAZ_IOT_WITH_PAHO=ON -DAZ_IOT_WITH_AZ_MQTT=ON -DAZ_IOT_BUILD_E2E_SU=ON \
+            -DAZ_IOT_WITH_SU_DELTA=ON -DAZ_IOT_SU_DELTA_TEST_LIBRARY="$LIBRARY"
           cmake --build --preset linux-gcc-e2e-coverage --target az_iot_tests_e2e_su az_iot_tests_e2e_su_offer az_iot_tests_e2e_su_az_mqtt az_iot_tests_e2e_su_offer_az_mqtt
 
       - name: Azure Login via OIDC
@@ -141,10 +156,10 @@ jobs:
           subscription-id: ${{ vars.E2E_MQTTV5_SHARED_SUBSCRIPTION_ID }}
 
       # Seconds when the offers are staged. Otherwise typically about 11 min; at
-      # most 4 x (10 min import + 5 min job) + 10 min to Active + 5 min grace.
+      # most 8 x (10 min import + 5 min job) + 10 min to Active + 5 min grace.
       - name: Ensure standing offers
         id: offers
-        timeout-minutes: 75
+        timeout-minutes: 135
         shell: pwsh
         run: |
           Import-Module ./c/tests/e2e/scripts/SuE2E.psm1
@@ -179,11 +194,11 @@ jobs:
           }
           "SU_DEVICES=$dir" | Add-Content -Path $env:GITHUB_ENV
 
-      # Budgets: e2e_su 10 min; e2e_su_offer 30 min (4 offers x (90 s check +
-      # 300 s workflow), plus setup).
+      # Budgets: e2e_su 10 min; e2e_su_offer 65 min (8 offers x (90 s check +
+      # 300 s workflow), plus the scenarios without an offer and setup).
       - name: Run software updates e2e (paho)
         id: paho
-        timeout-minutes: 45
+        timeout-minutes: 80
         run: |
           mkdir -p results
           AZ_IOT_E2E_SU_REG_ID="$SU_REG_ID_PAHO" \
@@ -194,14 +209,14 @@ jobs:
           AZ_IOT_E2E_SU_REG_ID="$SU_REG_ID_PAHO_OFFER" \
           AZ_IOT_E2E_SU_CERT="$SU_DEVICES/paho-offer-cert.pem" AZ_IOT_E2E_SU_KEY="$SU_DEVICES/paho-offer-key.pem" \
           ctest --test-dir c/build/linux-gcc-e2e-coverage -R '^az_iot_tests_e2e_su_offer$' \
-            --verbose --no-tests=error --timeout 1800 \
+            --verbose --no-tests=error --timeout 3900 \
             --output-junit "$GITHUB_WORKSPACE/results/e2e-su-offer-paho.xml" || status=$?
           exit "${status:-0}"
 
       - name: Run software updates e2e (az_mqtt)
         id: az_mqtt
         if: ${{ !cancelled() && steps.offers.outcome == 'success' }}
-        timeout-minutes: 45
+        timeout-minutes: 80
         run: |
           mkdir -p results
           AZ_IOT_E2E_SU_REG_ID="$SU_REG_ID_AZ_MQTT" \
@@ -212,7 +227,7 @@ jobs:
           AZ_IOT_E2E_SU_REG_ID="$SU_REG_ID_AZ_MQTT_OFFER" \
           AZ_IOT_E2E_SU_CERT="$SU_DEVICES/az-mqtt-offer-cert.pem" AZ_IOT_E2E_SU_KEY="$SU_DEVICES/az-mqtt-offer-key.pem" \
           ctest --test-dir c/build/linux-gcc-e2e-coverage -R '^az_iot_tests_e2e_su_offer_az_mqtt$' \
-            --verbose --no-tests=error --timeout 1800 \
+            --verbose --no-tests=error --timeout 3900 \
             --output-junit "$GITHUB_WORKSPACE/results/e2e-su-offer-az-mqtt.xml" || status=$?
           exit "${status:-0}"
 

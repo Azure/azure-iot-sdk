@@ -28,6 +28,15 @@
  *   AZ_IOT_E2E_SU_OFFER_MODEL_ALREADY_INSTALLED  device already has it
  *   AZ_IOT_E2E_SU_OFFER_MODEL_UNTRUSTED          verified against a wrong key
  *   AZ_IOT_E2E_SU_OFFER_MODEL_LIBRARY_MODE       handed to the test (library mode)
+ *   AZ_IOT_E2E_SU_OFFER_MODEL_DELTA              built from a related file
+ *   AZ_IOT_E2E_SU_OFFER_MODEL_DELTA_NO_SOURCE    alike, device has no source
+ *   AZ_IOT_E2E_SU_OFFER_MODEL_MICROSOFT_DELTA    built by the reference microsoft/delta:1 handler
+ *
+ * The DELTA offers name the test download handler E2E_SU_TEST_DELTA_HANDLER_ID: their file's
+ * related file is the file XOR a source both sides generate (delta_source_byte()). The
+ * MICROSOFT_DELTA offer is the unit tests' vectors (tests/unit/data/su_delta): the file is
+ * target.swu, its related file delta.bin, made from source.swu. The reference handler
+ * (az_iot_su_delta.h) builds it with the real delta processor, AZ_IOT_SU_DELTA_TEST_LIBRARY.
  *
  * A missing variable fails the scenario that needs it.
  *
@@ -43,6 +52,7 @@
 #define _CRT_SECURE_NO_WARNINGS /* fopen */
 #endif
 
+#include <errno.h>
 #include <stdarg.h>
 #include <stddef.h>
 #include <setjmp.h>
@@ -56,11 +66,16 @@
 #ifdef _WIN32
 #include <direct.h>
 #include <io.h>
+#else
+#include <sys/stat.h>
 #endif
 
 #include <cmocka.h>
 
 #include <curl/curl.h>
+
+#include <azure/core/az_base64.h>
+#include <azure/core/az_json.h>
 
 /* The MQTT adapter this build of the suite uses (see tests/e2e/CMakeLists.txt). */
 #if defined(AZ_IOT_E2E_ADAPTER_PAHO)
@@ -79,8 +94,10 @@
 #include "internal/connection_client_internal.h"
 
 #include "su_internal.h"
+#include "su_protocol_internal.h"
 
 #include "az_iot_crypto_openssl.h"
+#include "az_iot_su_delta.h"
 
 #include "e2e_su_env.h"
 #include "support/test_env.h"
@@ -98,6 +115,26 @@
 #define E2E_SU_MAX_FILES AZ_IOT_SU_MAX_FILE_COUNT
 #define E2E_SU_MAX_STEPS AZ_IOT_SU_MAX_STEP_COUNT
 
+/* --- delta updates ------------------------------------------------------- */
+
+/* The test download handler's id; SuE2E.psm1 names it in the delta offers. */
+#define E2E_SU_TEST_DELTA_HANDLER_ID "sdke2e/xor-delta:1"
+/* Bytes of the source the delta offers' related file was made from. */
+#define E2E_SU_DELTA_SOURCE_SIZE 4096u
+
+/* The delta engine's code the no-source scenario asserts on. */
+#define E2E_SU_DELTA_NO_SOURCE_CODE \
+  AZ_IOT_SU_EXTENDED_RESULT(AZ_IOT_SU_FACILITY_DELTA, AZ_IOT_SU_DELTA_ERROR_NO_SOURCE)
+
+/* Update provider of the offers (SuE2E.psm1); the reference handler caches sources under it. */
+#define E2E_SU_OFFER_PROVIDER "sdke2e"
+
+/* Set by tests/e2e/CMakeLists.txt: the reference handler's test vectors, and the delta processor
+ * (AZ_IOT_SU_DELTA_TEST_LIBRARY; empty when not configured). */
+#if !defined(AZ_IOT_E2E_SU_DELTA_VECTORS_DIRECTORY) || !defined(AZ_IOT_E2E_SU_DELTA_LIBRARY)
+#error "Define AZ_IOT_E2E_SU_DELTA_VECTORS_DIRECTORY and AZ_IOT_E2E_SU_DELTA_LIBRARY"
+#endif
+
 /* --- run-wide state ------------------------------------------------------ */
 
 static e2e_su_env g_env;
@@ -112,6 +149,12 @@ static az_iot_su_root_key g_trusted[E2E_SU_MAX_ROOTS];
 static size_t g_trusted_count;
 /* Same kids, each bound to another key's modulus: every signature fails. */
 static az_iot_su_root_key g_wrong[E2E_SU_MAX_ROOTS];
+
+/* Base64 SHA-256 of the delta source, as the offers' `microsoft.sourceFileHash`. */
+static char g_delta_source_hash[48];
+/* Base64 SHA-256 of the reference handler's source.swu and target.swu vectors. */
+static char g_reference_source_hash[48];
+static char g_reference_target_hash[48];
 
 /* --- platform hooks ------------------------------------------------------ */
 
@@ -130,6 +173,8 @@ typedef enum
 /* The scratch directory: Windows' temporary directory can be long. */
 #define E2E_SU_DIR_MAX 260
 #define E2E_SU_PATH_MAX (E2E_SU_DIR_MAX + 16)
+/* Longest file id kept, terminator included. */
+#define E2E_SU_FILE_ID_SIZE 64
 
 /** @brief Platform-hook state: a scratch directory, an op log and injected faults. */
 typedef struct
@@ -143,6 +188,19 @@ typedef struct
 
   int64_t expected_size[E2E_SU_MAX_FILES];
   int64_t downloaded_size[E2E_SU_MAX_FILES];
+
+  /* Delta updates: the download handler under test (the test one or the reference one), whether
+   * the device holds the test handler's source, the reference handler's source cache, the id of
+   * the related file chosen (download_fn stores that one apart), and what ran. */
+  az_iot_su_download_handler delta_handler;
+  bool has_delta_source;
+  char delta_cache_dir[E2E_SU_PATH_MAX];
+  char chosen_related_file_id[E2E_SU_FILE_ID_SIZE];
+  size_t related_file_choices;
+  size_t related_file_downloads;
+  size_t full_downloads;
+  size_t builds_from_related_file;
+  size_t workflow_successes;
 } platform;
 
 static void op_log(platform* p, op_kind k)
@@ -179,9 +237,17 @@ static bool ops_in_order(const platform* p, const op_kind* seq, size_t n)
   return j == n;
 }
 
-static void file_path(const platform* p, uint32_t index, char* out, size_t cap)
+/** @brief True when @p file is the related file the test download handler chose. */
+static bool is_chosen_related_file(platform* p, const az_iot_su_client_update_manifest_file* file)
 {
-  snprintf(out, cap, "%s/f%u", p->dir, (unsigned)index);
+  return p->chosen_related_file_id[0] != '\0'
+      && az_span_is_content_equal(file->id, az_span_create_from_str(p->chosen_related_file_id));
+}
+
+/** @brief Where file @p index is stored; @p related: the related file chosen for it. */
+static void file_path(const platform* p, uint32_t index, bool related, char* out, size_t cap)
+{
+  (void)snprintf(out, cap, "%s/%c%u", p->dir, related ? 'r' : 'f', (unsigned)index);
 }
 
 /** @brief CURLOPT_WRITEFUNCTION: writes with this program's C runtime, not libcurl's (Windows). */
@@ -210,8 +276,17 @@ static int32_t hook_download(
   memcpy(url_z, az_span_ptr(url), (size_t)az_span_size(url));
   url_z[az_span_size(url)] = '\0';
 
+  bool related = is_chosen_related_file(p, file);
+  if (related)
+  {
+    p->related_file_downloads++;
+  }
+  else
+  {
+    p->full_downloads++;
+  }
   char path[E2E_SU_PATH_MAX];
-  file_path(p, file_index, path, sizeof(path));
+  file_path(p, file_index, related, path, sizeof(path));
   FILE* f = fopen(path, "wb");
   if (f == NULL)
   {
@@ -243,8 +318,11 @@ static int32_t hook_download(
         "  download of file %u failed: %s (HTTP %ld)\n", file_index, curl_easy_strerror(rc), http);
     return AZ_IOT_SU_RESULT_FAILURE;
   }
-  p->expected_size[file_index] = file->size_in_bytes;
-  p->downloaded_size[file_index] = size;
+  if (!related)
+  {
+    p->expected_size[file_index] = file->size_in_bytes;
+    p->downloaded_size[file_index] = size;
+  }
   return AZ_IOT_SU_RESULT_SUCCESS;
 }
 
@@ -257,14 +335,13 @@ static int32_t hook_read_file(
     size_t* out_read,
     void* ctx)
 {
-  (void)file;
   platform* p = (platform*)ctx;
   if (offset == 0)
   {
     op_log(p, OP_READ);
   }
   char path[E2E_SU_PATH_MAX];
-  file_path(p, file_index, path, sizeof(path));
+  file_path(p, file_index, is_chosen_related_file(p, file), path, sizeof(path));
   FILE* f = fopen(path, "rb");
   if (f == NULL)
   {
@@ -347,6 +424,325 @@ static int32_t hook_load(uint8_t* blob, size_t cap, size_t* out_len, void* ctx)
   (void)out_len;
   (void)ctx;
   return 1; /* nothing persisted */
+}
+
+/* --- delta updates: hashes and files -------------------------------------- */
+
+/** @brief Finishes @p ctx into the base64 SHA-256 at @p out; @p ok: whether every update did. */
+static bool finish_sha256_base64(
+    const az_iot_crypto* crypto,
+    az_iot_sha256_ctx* ctx,
+    bool ok,
+    char* out,
+    size_t out_size)
+{
+  uint8_t digest[AZ_IOT_SHA256_SIZE];
+  ok = crypto->sha256_final(crypto, ctx, digest) == AZ_IOT_OK && ok;
+  int32_t written = 0;
+  ok = ok
+      && az_result_succeeded(az_base64_encode(
+          az_span_create((uint8_t*)out, (int32_t)out_size - 1),
+          az_span_create(digest, (int32_t)sizeof(digest)),
+          &written));
+  out[ok ? written : 0] = '\0';
+  return ok;
+}
+
+/** @brief Writes the base64 SHA-256 of the file at @p path to @p out. */
+static bool sha256_base64_of_file(const char* path, char* out, size_t out_size)
+{
+  const az_iot_crypto* crypto = az_iot_crypto_openssl();
+  az_iot_sha256_ctx ctx;
+  FILE* in = fopen(path, "rb");
+  if (in == NULL)
+  {
+    return false;
+  }
+  if (crypto->sha256_init(crypto, &ctx) != AZ_IOT_OK)
+  {
+    (void)fclose(in);
+    return false;
+  }
+  bool ok = true;
+  uint8_t chunk[512];
+  size_t n = 0;
+  while (ok && (n = fread(chunk, 1, sizeof(chunk), in)) > 0)
+  {
+    ok = crypto->sha256_update(crypto, &ctx, chunk, n) == AZ_IOT_OK;
+  }
+  ok = ok && !ferror(in);
+  (void)fclose(in);
+  return finish_sha256_base64(crypto, &ctx, ok, out, out_size);
+}
+
+/** @brief Size of the file at @p path, or -1. */
+static int64_t size_of_file(const char* path)
+{
+  FILE* f = fopen(path, "rb");
+  if (f == NULL)
+  {
+    return -1;
+  }
+  long size = fseek(f, 0, SEEK_END) == 0 ? ftell(f) : -1L;
+  (void)fclose(f);
+  return (int64_t)size;
+}
+
+/** @brief Copies the file at @p from to @p to. */
+static bool copy_file(const char* from, const char* to)
+{
+  FILE* in = fopen(from, "rb");
+  FILE* out = (in != NULL) ? fopen(to, "wb") : NULL;
+  bool ok = in != NULL && out != NULL;
+  uint8_t chunk[512];
+  size_t n = 0;
+  while (ok && (n = fread(chunk, 1, sizeof(chunk), in)) > 0)
+  {
+    ok = fwrite(chunk, 1, n, out) == n;
+  }
+  ok = ok && !ferror(in);
+  if (out != NULL)
+  {
+    ok = fclose(out) == 0 && ok;
+  }
+  if (in != NULL)
+  {
+    (void)fclose(in);
+  }
+  return ok;
+}
+
+/** @brief Creates the directory @p path; true when it exists. */
+static bool make_directory(const char* path)
+{
+#ifdef _WIN32
+  return _mkdir(path) == 0 || errno == EEXIST;
+#else
+  return mkdir(path, 0700) == 0 || errno == EEXIST;
+#endif
+}
+
+/** @brief Path of a vector of the reference handler's tests (tests/unit/data/su_delta). */
+static void reference_delta_vector_path(const char* name, char* out, size_t cap)
+{
+  (void)snprintf(out, cap, "%s/%s", AZ_IOT_E2E_SU_DELTA_VECTORS_DIRECTORY, name);
+}
+
+/* --- delta updates: test download handler --------------------------------- */
+
+/** @brief Byte @p i of the delta source. SuE2E.psm1 (Get-SuE2EDeltaSource) generates the same. */
+static uint8_t delta_source_byte(size_t i) { return (uint8_t)((i * 31u + 7u) & 0xFFu); }
+
+/** @brief Sets g_delta_source_hash to the base64 SHA-256 of the delta source. */
+static bool compute_delta_source_hash(void)
+{
+  const az_iot_crypto* crypto = az_iot_crypto_openssl();
+  az_iot_sha256_ctx ctx;
+  if (crypto->sha256_init(crypto, &ctx) != AZ_IOT_OK)
+  {
+    return false;
+  }
+  bool ok = true;
+  for (size_t i = 0; i < E2E_SU_DELTA_SOURCE_SIZE; ++i)
+  {
+    uint8_t b = delta_source_byte(i);
+    ok = ok && crypto->sha256_update(crypto, &ctx, &b, 1) == AZ_IOT_OK;
+  }
+  return finish_sha256_base64(crypto, &ctx, ok, g_delta_source_hash, sizeof(g_delta_source_hash));
+}
+
+/** @brief True when @p related's `microsoft.sourceFileHash` property is the delta source's hash. */
+static bool is_made_from_delta_source(const az_iot_su_client_update_manifest_file* related)
+{
+  az_json_reader reader;
+  if (az_result_failed(az_json_reader_init(&reader, related->properties, NULL))
+      || az_result_failed(az_json_reader_next_token(&reader))
+      || reader.token.kind != AZ_JSON_TOKEN_BEGIN_OBJECT)
+  {
+    return false;
+  }
+  while (az_result_succeeded(az_json_reader_next_token(&reader))
+         && reader.token.kind == AZ_JSON_TOKEN_PROPERTY_NAME)
+  {
+    bool is_source_hash
+        = az_json_token_is_text_equal(&reader.token, AZ_SPAN_FROM_STR("microsoft.sourceFileHash"));
+    if (az_result_failed(az_json_reader_next_token(&reader)))
+    {
+      return false;
+    }
+    if (is_source_hash)
+    {
+      return reader.token.kind == AZ_JSON_TOKEN_STRING
+          && az_json_token_is_text_equal(
+                 &reader.token, az_span_create_from_str(g_delta_source_hash));
+    }
+    if (az_result_failed(az_json_reader_skip_children(&reader)))
+    {
+      return false;
+    }
+  }
+  return false;
+}
+
+/** @brief Chooses the related file made from the delta source, when the device holds it. */
+static int32_t test_delta_choose_related_file(
+    const az_iot_su_client_update_manifest* manifest,
+    const az_iot_su_client_update_manifest_file* file,
+    uint32_t* out_related_file_index,
+    void* ctx)
+{
+  const platform* p = (const platform*)ctx;
+  for (uint32_t i = 0; p->has_delta_source && i < file->related_files_count
+       && file->related_files_index + i < manifest->related_files_count;
+       ++i)
+  {
+    if (is_made_from_delta_source(&manifest->related_files[file->related_files_index + i]))
+    {
+      *out_related_file_index = i;
+      return AZ_IOT_SU_RESULT_SUCCESS;
+    }
+  }
+  return AZ_IOT_SU_RESULT_FAILURE;
+}
+
+/** @brief Builds file @p file_index as its downloaded related file XOR the delta source. */
+static int32_t test_delta_build_file_from_related(
+    const az_iot_su_client_update_manifest_file* file,
+    const az_iot_su_client_update_manifest_file* related_file,
+    uint32_t file_index,
+    void* ctx)
+{
+  (void)file;
+  (void)related_file;
+  const platform* p = (const platform*)ctx;
+  char related_path[E2E_SU_PATH_MAX];
+  char built_path[E2E_SU_PATH_MAX];
+  file_path(p, file_index, true, related_path, sizeof(related_path));
+  file_path(p, file_index, false, built_path, sizeof(built_path));
+  FILE* in = fopen(related_path, "rb");
+  FILE* out = (in != NULL) ? fopen(built_path, "wb") : NULL;
+  size_t size = 0;
+  bool ok = in != NULL && out != NULL;
+  while (ok)
+  {
+    uint8_t chunk[512];
+    size_t n = fread(chunk, 1, sizeof(chunk), in);
+    for (size_t i = 0; i < n; ++i)
+    {
+      chunk[i] ^= delta_source_byte(size + i);
+    }
+    ok = !ferror(in) && fwrite(chunk, 1, n, out) == n;
+    size += n;
+    if (n < sizeof(chunk))
+    {
+      break;
+    }
+  }
+  if (out != NULL)
+  {
+    ok = fclose(out) == 0 && ok;
+  }
+  if (in != NULL)
+  {
+    (void)fclose(in);
+  }
+  return ok ? AZ_IOT_SU_RESULT_SUCCESS : AZ_IOT_SU_RESULT_FAILURE;
+}
+
+/* --- delta updates: reference handler ------------------------------------- */
+
+/** @brief az_iot_su_delta_get_file_path_fn: where hook_download() stores @p file. */
+static int32_t reference_delta_get_file_path(
+    const az_iot_su_client_update_manifest_file* file,
+    uint32_t file_index,
+    char* path,
+    size_t path_size,
+    void* ctx)
+{
+  platform* p = (platform*)ctx;
+  file_path(p, file_index, is_chosen_related_file(p, file), path, path_size);
+  return AZ_IOT_SU_RESULT_SUCCESS;
+}
+
+/* --- delta updates: recording handler ------------------------------------- */
+
+/*
+ * Registered in place of platform::delta_handler, with its id: records what the client asked of
+ * it and the related file it chose, so hook_download() and hook_read_file() store that one apart.
+ */
+
+/** @brief Calls the handler under test, recording the related file it chose. */
+static int32_t recording_choose_related_file(
+    const az_iot_su_client_update_manifest* manifest,
+    const az_iot_su_client_update_manifest_file* file,
+    uint32_t* out_related_file_index,
+    void* ctx)
+{
+  platform* p = (platform*)ctx;
+  int32_t result = p->delta_handler.choose_related_file_fn(
+      manifest, file, out_related_file_index, p->delta_handler.user_ctx);
+  if (result == AZ_IOT_SU_RESULT_IN_PROGRESS)
+  {
+    return result;
+  }
+  p->related_file_choices++;
+  if (result == AZ_IOT_SU_RESULT_SUCCESS)
+  {
+    uint32_t index = file->related_files_index + *out_related_file_index;
+    if (index >= manifest->related_files_count
+        || az_span_size(manifest->related_files[index].id)
+            >= (int32_t)sizeof(p->chosen_related_file_id))
+    {
+      return AZ_IOT_SU_RESULT_FAILURE;
+    }
+    az_span_to_str(
+        p->chosen_related_file_id,
+        (int32_t)sizeof(p->chosen_related_file_id),
+        manifest->related_files[index].id);
+  }
+  return result;
+}
+
+/** @brief Calls the handler under test, recording the size of the file it built. */
+static int32_t recording_build_file_from_related(
+    const az_iot_su_client_update_manifest_file* file,
+    const az_iot_su_client_update_manifest_file* related_file,
+    uint32_t file_index,
+    void* ctx)
+{
+  platform* p = (platform*)ctx;
+  if (file_index >= E2E_SU_MAX_FILES)
+  {
+    return AZ_IOT_SU_RESULT_FAILURE;
+  }
+  int32_t result = p->delta_handler.build_file_from_related_fn(
+      file, related_file, file_index, p->delta_handler.user_ctx);
+  if (result == AZ_IOT_SU_RESULT_IN_PROGRESS)
+  {
+    return result;
+  }
+  p->builds_from_related_file++;
+  if (result == AZ_IOT_SU_RESULT_SUCCESS)
+  {
+    char built_path[E2E_SU_PATH_MAX];
+    file_path(p, file_index, false, built_path, sizeof(built_path));
+    p->expected_size[file_index] = file->size_in_bytes;
+    p->downloaded_size[file_index] = size_of_file(built_path);
+  }
+  return result;
+}
+
+/** @brief Counts the successful workflows, then calls the handler under test. */
+static void recording_workflow_succeeded(
+    const az_iot_su_client_update_manifest* manifest,
+    void* ctx)
+{
+  platform* p = (platform*)ctx;
+  p->workflow_successes++;
+  if (p->delta_handler.workflow_succeeded_fn != NULL)
+  {
+    p->delta_handler.workflow_succeeded_fn(manifest, p->delta_handler.user_ctx);
+  }
 }
 
 /* --- report capture ------------------------------------------------------ */
@@ -621,6 +1017,10 @@ typedef struct
   spy_channel spy;
   az_iot_su_client su;
   platform plat;
+  /* The client references its download handlers for its lifetime: the recording handler, and
+   * the reference handler it may call. */
+  az_iot_su_download_handler delta_handler;
+  az_iot_su_delta_handler reference_delta_handler;
   uint8_t su_workspace[AZ_IOT_SU_WORKSPACE_DEFAULT_SIZE];
   const char* model;
 
@@ -629,6 +1029,7 @@ typedef struct
   bool have_certs;
   bool have_conn;
   bool have_su;
+  bool have_reference_delta_handler;
 
   bool faulted;
   size_t abandoned;
@@ -675,6 +1076,15 @@ static void on_su_event(const az_iot_su_event* event, void* ctx)
   }
 }
 
+typedef enum
+{
+  DELTA_HANDLER_NONE,
+  /* The test download handler, E2E_SU_TEST_DELTA_HANDLER_ID. */
+  DELTA_HANDLER_TEST,
+  /* The reference microsoft/delta:1 handler, with the real delta processor. */
+  DELTA_HANDLER_REFERENCE,
+} delta_handler_kind;
+
 typedef struct
 {
   const char* manufacturer;
@@ -686,6 +1096,10 @@ typedef struct
   bool already_installed;
   /* No platform hooks: the verified update is handed to the test. */
   bool library_mode;
+  /* The download handler registered, through the recording handler. */
+  delta_handler_kind delta_handler;
+  /* The device holds the source the delta handler builds from. */
+  bool has_delta_source;
 } fixture_options;
 
 static fixture_options fixture_options_default(const char* model)
@@ -699,6 +1113,8 @@ static fixture_options fixture_options_default(const char* model)
     .fail_install_step = -1,
     .already_installed = false,
     .library_mode = false,
+    .delta_handler = DELTA_HANDLER_NONE,
+    .has_delta_source = false,
   };
 }
 
@@ -716,6 +1132,105 @@ static bool make_scratch_dir(char* dir, size_t size)
 #endif
 }
 
+/** @brief Writes the reference handler's source cache path of the file with base64 SHA-256
+ * @p hash, from an update of the offers' provider. */
+static az_iot_result reference_delta_cache_path(
+    const fixture* fx,
+    char* hash,
+    char* out,
+    size_t out_size)
+{
+  return az_iot_su_delta_handler_get_source_cache_path(
+      &fx->reference_delta_handler,
+      AZ_SPAN_FROM_STR(E2E_SU_OFFER_PROVIDER),
+      AZ_SPAN_FROM_STR("sha256"),
+      az_span_create_from_str(hash),
+      out,
+      out_size);
+}
+
+/** @brief Path of the reference handler's cache directory for the offers' provider. */
+static void reference_delta_provider_dir(const fixture* fx, char* out, size_t cap)
+{
+  (void)snprintf(out, cap, "%s/%s", fx->plat.delta_cache_dir, E2E_SU_OFFER_PROVIDER);
+}
+
+/** @brief Puts source.swu in the reference handler's cache, as an earlier update would have. */
+static void seed_reference_delta_source(fixture* fx)
+{
+  char provider_dir[E2E_SU_PATH_MAX];
+  char cache_path[AZ_IOT_SU_DELTA_MAX_PATH_SIZE];
+  char source_path[E2E_SU_PATH_MAX];
+  reference_delta_provider_dir(fx, provider_dir, sizeof(provider_dir));
+  reference_delta_vector_path("source.swu", source_path, sizeof(source_path));
+  assert_true(make_directory(fx->plat.delta_cache_dir));
+  assert_true(make_directory(provider_dir));
+  assert_int_equal(
+      reference_delta_cache_path(fx, g_reference_source_hash, cache_path, sizeof(cache_path)),
+      AZ_IOT_OK);
+  assert_true(copy_file(source_path, cache_path));
+}
+
+/** @brief Removes the reference handler's cache: the vectors' entries and its directories. */
+static void remove_reference_delta_cache(const fixture* fx)
+{
+  char* hashes[] = { g_reference_source_hash, g_reference_target_hash };
+  for (size_t i = 0; i < sizeof(hashes) / sizeof(hashes[0]); ++i)
+  {
+    char cache_path[AZ_IOT_SU_DELTA_MAX_PATH_SIZE];
+    if (reference_delta_cache_path(fx, hashes[i], cache_path, sizeof(cache_path)) == AZ_IOT_OK)
+    {
+      (void)remove(cache_path);
+    }
+  }
+  char provider_dir[E2E_SU_PATH_MAX];
+  reference_delta_provider_dir(fx, provider_dir, sizeof(provider_dir));
+  (void)remove(provider_dir);
+  (void)remove(fx->plat.delta_cache_dir);
+}
+
+/**
+ * @brief Sets up the download handler @p o asks for, and the recording handler registered in its
+ * place. The reference handler caches sources under the scratch directory.
+ */
+static void fixture_open_delta_handler(fixture* fx, const fixture_options* o)
+{
+  platform* p = &fx->plat;
+  if (o->delta_handler == DELTA_HANDLER_TEST)
+  {
+    p->delta_handler = (az_iot_su_download_handler){
+      .id = E2E_SU_TEST_DELTA_HANDLER_ID,
+      .choose_related_file_fn = test_delta_choose_related_file,
+      .build_file_from_related_fn = test_delta_build_file_from_related,
+      .user_ctx = p,
+    };
+  }
+  else
+  {
+    (void)snprintf(p->delta_cache_dir, sizeof(p->delta_cache_dir), "%s/sdc", p->dir);
+    az_iot_su_delta_handler_options options = az_iot_su_delta_handler_options_default();
+    options.source_cache_directory = p->delta_cache_dir;
+    options.get_file_path_fn = reference_delta_get_file_path;
+    options.library_path = AZ_IOT_E2E_SU_DELTA_LIBRARY;
+    options.user_ctx = p;
+    assert_int_equal(
+        az_iot_su_delta_handler_init(&fx->reference_delta_handler, &options), AZ_IOT_OK);
+    fx->have_reference_delta_handler = true;
+    p->delta_handler = az_iot_su_delta_handler_get_download_handler(&fx->reference_delta_handler);
+    if (o->has_delta_source)
+    {
+      seed_reference_delta_source(fx);
+    }
+  }
+  fx->delta_handler = (az_iot_su_download_handler){
+    .id = p->delta_handler.id,
+    .choose_related_file_fn = recording_choose_related_file,
+    .build_file_from_related_fn = recording_build_file_from_related,
+    .workflow_succeeded_fn = recording_workflow_succeeded,
+    .user_ctx = p,
+  };
+}
+
 static void fixture_open(fixture* fx, const fixture_options* o)
 {
   memset(fx, 0, sizeof(*fx));
@@ -724,6 +1239,7 @@ static void fixture_open(fixture* fx, const fixture_options* o)
   fx->have_dir = true;
   fx->plat.fail_install_step = o->fail_install_step;
   fx->plat.already_installed = o->already_installed;
+  fx->plat.has_delta_source = o->has_delta_source;
 
   az_iot_certificate_provider_pem_options pem = az_iot_certificate_provider_pem_options_default();
   az_iot_connection_client_options opts = az_iot_connection_client_options_default();
@@ -783,6 +1299,12 @@ static void fixture_open(fixture* fx, const fixture_options* o)
   su.device_properties = &device_properties;
   su.workspace = fx->su_workspace;
   su.workspace_size = sizeof(fx->su_workspace);
+  if (o->delta_handler != DELTA_HANDLER_NONE)
+  {
+    fixture_open_delta_handler(fx, o);
+    su.download_handlers = &fx->delta_handler;
+    su.download_handler_count = 1;
+  }
   az_iot_su_channel spy = { .vtable = &k_spy_vtable, .ctx = &fx->spy };
   assert_int_equal(
       az_iot_su_client__initialize_with_channel(&fx->su, &spy, az_iot_crypto_openssl(), &su),
@@ -805,6 +1327,12 @@ static void fixture_close(fixture* fx)
   {
     az_iot_su_client_deinit(&fx->su);
     fx->have_su = false;
+  }
+  if (fx->have_reference_delta_handler)
+  {
+    remove_reference_delta_cache(fx);
+    az_iot_su_delta_handler_deinit(&fx->reference_delta_handler);
+    fx->have_reference_delta_handler = false;
   }
   if (fx->have_conn)
   {
@@ -830,7 +1358,9 @@ static void fixture_close(fixture* fx)
   for (uint32_t i = 0; i < E2E_SU_MAX_FILES; ++i)
   {
     char path[E2E_SU_PATH_MAX];
-    file_path(&fx->plat, i, path, sizeof(path));
+    file_path(&fx->plat, i, false, path, sizeof(path));
+    (void)remove(path);
+    file_path(&fx->plat, i, true, path, sizeof(path));
     (void)remove(path);
   }
 #ifdef _WIN32
@@ -1213,6 +1743,106 @@ static void library_mode_hands_over_the_offer_and_reports_the_applications_resul
   assert_int_equal(fx->updates_available, 1);
 }
 
+/**
+ * @brief Runs a delta offer with download handler @p handler registered: asserts what ran and the
+ * terminal report, a succeeded one-step update with @p step0_extended_result_code.
+ */
+static void run_delta_offer(
+    const char* model_variable,
+    delta_handler_kind handler,
+    bool has_delta_source,
+    int32_t step0_extended_result_code)
+{
+  fixture* fx = &g_fx;
+  fixture_options o = fixture_options_default(require_model(model_variable));
+  o.delta_handler = handler;
+  o.has_delta_source = has_delta_source;
+  fixture_open(fx, &o);
+
+  const spy_report* r = run_offered_workflow(fx);
+
+  assert_int_equal(fx->plat.related_file_choices, 1);
+  assert_int_equal(fx->plat.related_file_downloads, has_delta_source ? 1 : 0);
+  assert_int_equal(fx->plat.builds_from_related_file, has_delta_source ? 1 : 0);
+  assert_int_equal(fx->plat.full_downloads, has_delta_source ? 0 : 1);
+  assert_int_equal(fx->plat.workflow_successes, 1);
+  assert_true(fx->plat.downloaded_size[0] > 0);
+  assert_true(fx->plat.downloaded_size[0] == fx->plat.expected_size[0]);
+  assert_true(op_seen(&fx->plat, OP_INSTALL));
+  assert_false(op_seen(&fx->plat, OP_RESTORE));
+
+  assert_int_equal(r->outcome, AZ_IOT_SU_OUTCOME_SUCCEEDED);
+  assert_int_equal(r->result_code, 700);
+  assert_int_equal(r->failure_origin, AZ_IOT_SU_FAILURE_ORIGIN_NOT_APPLICABLE);
+  assert_int_equal(r->step_count, 1);
+  assert_int_equal(r->step0_outcome, AZ_IOT_SU_OUTCOME_SUCCEEDED);
+  assert_int_equal(r->result, AZ_IOT_OK);
+  const saved_report* sent = &fx->spy.last_terminal;
+  assert_true(sent->valid);
+  assert_int_equal(sent->steps[0].extended_result_code, step0_extended_result_code);
+  /* One step: the update's code is the step's. */
+  char expected[16];
+  az_iot_su__format_extended_result_code(expected, sizeof(expected), step0_extended_result_code);
+  assert_string_equal(sent->extended_result_codes, expected);
+  assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_IDLE);
+}
+
+/** @brief A device holding the source builds the file from its related file instead of downloading
+ * it in full, and reports SUCCEEDED with no delta code. */
+static void delta_update_is_built_from_the_related_file_and_reported(void** state)
+{
+  (void)state;
+  run_delta_offer("AZ_IOT_E2E_SU_OFFER_MODEL_DELTA", DELTA_HANDLER_TEST, true, 0);
+}
+
+/** @brief A device without the source: the handler declines, the file is downloaded in full, and
+ * the update is reported SUCCEEDED with the delta engine's no-source code. */
+static void delta_update_without_source_falls_back_to_full_download(void** state)
+{
+  (void)state;
+  run_delta_offer(
+      "AZ_IOT_E2E_SU_OFFER_MODEL_DELTA_NO_SOURCE",
+      DELTA_HANDLER_TEST,
+      false,
+      E2E_SU_DELTA_NO_SOURCE_CODE);
+}
+
+/**
+ * @brief The reference microsoft/delta:1 handler, with the real delta processor, builds the file
+ * (target.swu) from its related file (delta.bin) and the cached source (source.swu); the update is
+ * reported SUCCEEDED with no delta code, and the file replaces the source in the cache.
+ */
+static void reference_delta_update_is_built_by_the_delta_processor_and_cached(void** state)
+{
+  (void)state;
+  if (strlen(AZ_IOT_E2E_SU_DELTA_LIBRARY) == 0 || size_of_file(AZ_IOT_E2E_SU_DELTA_LIBRARY) < 0)
+  {
+    fail_msg(
+        "no delta processor at \"%s\": configure with -DAZ_IOT_SU_DELTA_TEST_LIBRARY=<path of "
+        "libadudiffapi.so> (eng/install-su-delta-processor.sh)",
+        AZ_IOT_E2E_SU_DELTA_LIBRARY);
+  }
+  run_delta_offer("AZ_IOT_E2E_SU_OFFER_MODEL_MICROSOFT_DELTA", DELTA_HANDLER_REFERENCE, true, 0);
+
+  /* The built file moved into the cache as the provider's one entry. */
+  fixture* fx = &g_fx;
+  char target_entry[AZ_IOT_SU_DELTA_MAX_PATH_SIZE];
+  char source_entry[AZ_IOT_SU_DELTA_MAX_PATH_SIZE];
+  char built_path[E2E_SU_PATH_MAX];
+  char hash[sizeof(g_reference_target_hash)];
+  assert_int_equal(
+      reference_delta_cache_path(fx, g_reference_target_hash, target_entry, sizeof(target_entry)),
+      AZ_IOT_OK);
+  assert_int_equal(
+      reference_delta_cache_path(fx, g_reference_source_hash, source_entry, sizeof(source_entry)),
+      AZ_IOT_OK);
+  file_path(&fx->plat, 0, false, built_path, sizeof(built_path));
+  assert_true(sha256_base64_of_file(target_entry, hash, sizeof(hash)));
+  assert_string_equal(hash, g_reference_target_hash);
+  assert_true(size_of_file(source_entry) < 0);
+  assert_true(size_of_file(built_path) < 0);
+}
+
 /* --- main ---------------------------------------------------------------- */
 
 static int group_setup(void** state)
@@ -1244,7 +1874,15 @@ static int group_setup(void** state)
     g_wrong[i].modulus_len = g_trusted[(i + 1) % g_trusted_count].modulus_len;
   }
 
-  if (curl_global_init(CURL_GLOBAL_DEFAULT) != CURLE_OK)
+  char source_path[E2E_SU_PATH_MAX];
+  char target_path[E2E_SU_PATH_MAX];
+  reference_delta_vector_path("source.swu", source_path, sizeof(source_path));
+  reference_delta_vector_path("target.swu", target_path, sizeof(target_path));
+  if (curl_global_init(CURL_GLOBAL_DEFAULT) != CURLE_OK || !compute_delta_source_hash()
+      || !sha256_base64_of_file(
+          source_path, g_reference_source_hash, sizeof(g_reference_source_hash))
+      || !sha256_base64_of_file(
+          target_path, g_reference_target_hash, sizeof(g_reference_target_hash)))
   {
     return 1;
   }
@@ -1291,6 +1929,12 @@ int main(void)
     cmocka_unit_test_teardown(untrusted_manifest_is_reported_failed, scenario_teardown),
     cmocka_unit_test_teardown(
         library_mode_hands_over_the_offer_and_reports_the_applications_result, scenario_teardown),
+    cmocka_unit_test_teardown(
+        delta_update_is_built_from_the_related_file_and_reported, scenario_teardown),
+    cmocka_unit_test_teardown(
+        delta_update_without_source_falls_back_to_full_download, scenario_teardown),
+    cmocka_unit_test_teardown(
+        reference_delta_update_is_built_by_the_delta_processor_and_cached, scenario_teardown),
   };
   return cmocka_run_group_tests(tests, group_setup, group_teardown);
 }
