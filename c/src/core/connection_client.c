@@ -6651,26 +6651,6 @@ static void sas_wipe(az_iot_connection_client* c)
   az_iot_crypto__wipe(c->auth, sizeof(c->auth));
 }
 
-/* Counts the embedded area holds: _az_IOT_CONNECTION_CLIENT_EMBEDDED_WORKSPACE_SIZE. */
-#define LIMIT_EMBEDDED_PENDING_PUBLISHES 16u
-#define LIMIT_EMBEDDED_PUBLISH_RESERVATIONS 2u
-#define LIMIT_EMBEDDED_PERSISTENT_SUBSCRIPTIONS 8u
-#define LIMIT_EMBEDDED_FEATURE_OBSERVERS 10u
-#define LIMIT_EMBEDDED_APPLICATION_STATE_OBSERVERS 4u
-#define LIMIT_EMBEDDED_FEATURE_CLIENTS 8u
-#define LIMIT_EMBEDDED_INBOUND_HANDLERS 8u
-typedef char az_iot_connection_embedded_workspace_counts_agree
-    [(_az_IOT_CONNECTION_CLIENT_EMBEDDED_WORKSPACE_SIZE
-      == AZ_IOT_CONNECTION_CLIENT_WORKSPACE_SIZE(
-          LIMIT_EMBEDDED_PENDING_PUBLISHES,
-          LIMIT_EMBEDDED_PUBLISH_RESERVATIONS,
-          LIMIT_EMBEDDED_PERSISTENT_SUBSCRIPTIONS,
-          LIMIT_EMBEDDED_FEATURE_OBSERVERS,
-          LIMIT_EMBEDDED_APPLICATION_STATE_OBSERVERS,
-          LIMIT_EMBEDDED_FEATURE_CLIENTS,
-          LIMIT_EMBEDDED_INBOUND_HANDLERS))
-         ? 1
-         : -1];
 /* Bound on the counts with no tighter maximum, so the size arithmetic cannot overflow. */
 #define LIMIT_MAX_ENTRIES 65535u
 
@@ -6715,18 +6695,6 @@ static bool limits_resolve(
   /* Reservation and subscription indexes are stored in a uint8_t. */
   return out->max_publish_reservations < UINT8_MAX
       && out->max_persistent_subscriptions <= UINT8_MAX;
-}
-
-/** @brief Whether any resolved count in @p l is above what the embedded area holds. */
-static bool limits_exceed_embedded_workspace(const az_iot_connection_client_limits* l)
-{
-  return l->max_pending_publishes > LIMIT_EMBEDDED_PENDING_PUBLISHES
-      || l->max_publish_reservations > LIMIT_EMBEDDED_PUBLISH_RESERVATIONS
-      || l->max_persistent_subscriptions > LIMIT_EMBEDDED_PERSISTENT_SUBSCRIPTIONS
-      || l->max_feature_observers > LIMIT_EMBEDDED_FEATURE_OBSERVERS
-      || l->max_application_state_observers > LIMIT_EMBEDDED_APPLICATION_STATE_OBSERVERS
-      || l->max_feature_clients > LIMIT_EMBEDDED_FEATURE_CLIENTS
-      || l->max_inbound_handlers > LIMIT_EMBEDDED_INBOUND_HANDLERS;
 }
 
 /** @brief Workspace bytes for resolved @p l. */
@@ -6781,18 +6749,6 @@ static void workspace_assign(az_iot_connection_client* c, uint8_t* workspace)
       l->max_inbound_handlers);
 }
 
-/** @brief The workspace @p c uses: the application's, or its own default one. */
-static uint8_t* workspace_of(az_iot_connection_client* c)
-{
-  return c->opts.workspace != NULL ? c->opts.workspace : c->default_workspace;
-}
-
-/** @brief Bytes of @p c's workspace: all of the application's, or the whole embedded area. */
-static size_t workspace_capacity_of(const az_iot_connection_client* c)
-{
-  return c->opts.workspace != NULL ? c->opts.workspace_size : sizeof(c->default_workspace);
-}
-
 AZ_NODISCARD az_iot_result az_iot_connection_client_init(
     az_iot_connection_client* client,
     const az_iot_connection_client_options* opts)
@@ -6842,14 +6798,15 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_init(
     return AZ_IOT_ERR_INVALID_ARG;
   }
   const size_t workspace_size = workspace_size_of(&limits);
-  if (opts->workspace == NULL && limits_exceed_embedded_workspace(&limits))
+  if (opts->workspace == NULL)
   {
-    AZ_IOT_LOG_ERROR(
+    AZ_IOT_LOG_ERRORF(
         AZ_IOT_LOG_COMPONENT_CONNECTION,
-        "init: limits above the built-in defaults need a workspace");
+        "init: no workspace; %lu bytes needed",
+        (unsigned long)workspace_size);
     return AZ_IOT_ERR_INVALID_ARG;
   }
-  if (opts->workspace != NULL && opts->workspace_size < workspace_size)
+  if (opts->workspace_size < workspace_size)
   {
     AZ_IOT_LOG_ERRORF(
         AZ_IOT_LOG_COMPONENT_CONNECTION,
@@ -6866,8 +6823,8 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_init(
         = AZ_IOT_DEFAULT_MAX_UNCONFIRMED_DELIVERY_TIMEOUT_MS;
   }
   client->opts.limits = limits;
-  memset(workspace_of(client), 0, workspace_size);
-  workspace_assign(client, workspace_of(client));
+  memset(client->opts.workspace, 0, workspace_size);
+  workspace_assign(client, client->opts.workspace);
   sv = sas_load_keys(client);
   if (sv != AZ_IOT_OK)
   {
@@ -6964,7 +6921,7 @@ void az_iot_connection_client_deinit(az_iot_connection_client* client)
   dps_teardown_mqtt(client);
   sas_wipe(client);
   /* Registered factories are borrowed; the application destroys them after this returns. */
-  az_iot_crypto__wipe(workspace_of(client), workspace_capacity_of(client));
+  az_iot_crypto__wipe(client->opts.workspace, client->opts.workspace_size);
   /* provisioned_iot_hub_hostname / provisioned_device_id are inline fixed buffers; nothing to free.
    */
 }
