@@ -94,7 +94,7 @@ $script:TransientErrorCodes = 'BadGateway', 'BadGatewayConnection', 'GatewayTime
     on attempt -Attempt, or $null when the failure is not transient.
 
 .DESCRIPTION
-    Transient: no response (the connection failed), a status in
+    Transient: no response (the connection failed or timed out), a status in
     $script:TransientStatusCodes, or another 5xx whose error.code is in
     $script:TransientErrorCodes. Other 4xx are not. The wait is Retry-After
     when the response has it, else -BackoffSeconds doubled per attempt; both
@@ -109,7 +109,10 @@ function Get-SuE2ETransientRetryDelay {
     )
     $r = $ErrorRecord.Exception.PSObject.Properties['Response'] ? $ErrorRecord.Exception.Response : $null
     if (-not $r) {
-        if ($ErrorRecord.Exception -isnot [System.Net.Http.HttpRequestException]) { return $null }
+        # A connection failure, or a client-side timeout (TaskCanceledException over TimeoutException).
+        $e = $ErrorRecord.Exception
+        $timedOut = $e -is [System.TimeoutException] -or $e.InnerException -is [System.TimeoutException]
+        if ($e -isnot [System.Net.Http.HttpRequestException] -and -not $timedOut) { return $null }
     }
     elseif ([int]$r.StatusCode -notin $script:TransientStatusCodes) {
         if ([int]$r.StatusCode -lt 500) { return $null }
