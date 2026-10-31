@@ -239,16 +239,21 @@ opts.limits = (az_iot_connection_client_limits){ .max_pending_publishes = 4,
                                                  .max_feature_clients = 1,
                                                  .max_inbound_handlers = 4 };
 
-/* MQTT 5: telemetry (4 publishes in flight), direct methods, twin. 1,247 bytes. */
-opts.limits = (az_iot_connection_client_limits){ .max_pending_publishes = 8 + 4,
-                                                 .max_publish_reservations = 1,
-                                                 .max_persistent_subscriptions = 1,
-                                                 .max_feature_observers = 3,
-                                                 .max_application_state_observers = 1,
-                                                 .max_feature_clients = 2,
-                                                 .max_inbound_handlers = 2 };
+/* MQTT 5: telemetry (4 publishes in flight), direct methods, twin. The direct method client
+ * reserves AZ_IOT_MQTTV5_DM_RESERVED_PUBACKS (8 with the default
+ * AZ_IOT_MQTTV5_DM_MAX_CONCURRENT): 1,247 bytes. */
+opts.limits = (az_iot_connection_client_limits){
+  .max_pending_publishes = AZ_IOT_MQTTV5_DM_RESERVED_PUBACKS + 4,
+  .max_publish_reservations = 1,
+  .max_persistent_subscriptions = 1,
+  .max_feature_observers = 3,
+  .max_application_state_observers = 1,
+  .max_feature_clients = 2,
+  .max_inbound_handlers = 2,
+};
 
-static uint8_t workspace[AZ_IOT_CONNECTION_CLIENT_WORKSPACE_SIZE(8 + 4, 1, 1, 3, 1, 2, 2)];
+static uint8_t workspace[AZ_IOT_CONNECTION_CLIENT_WORKSPACE_SIZE(
+    AZ_IOT_MQTTV5_DM_RESERVED_PUBACKS + 4, 1, 1, 3, 1, 2, 2)];
 opts.workspace = workspace;
 opts.workspace_size = sizeof(workspace);
 ```
