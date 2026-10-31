@@ -10,6 +10,10 @@
 #
 # target: esp32, esp32s3 or esp32c3. Exits 0 once a log line matches <regex> (grep -E), 1 when
 # QEMU exits or <seconds> (default 120) pass first. The log is <build-dir>/qemu.log.
+#
+# Each run writes a fresh flash image from the build, so NVS and OTA state do not persist.
+# QEMU_FLASH_EXTRA="<offset> <file> ..." also writes those files into it (e.g. the device identity:
+# "0xd000 esp_secure_cert.bin").
 set -euo pipefail
 
 if [ $# -lt 3 ]; then
@@ -43,7 +47,9 @@ fi
 
 flash="${build}/qemu_flash.bin"
 log="${build}/qemu.log"
-(cd "$build" && python -m esptool --chip "$target" merge-bin --pad-to-size 4MB -o "$flash" @flash_args > /dev/null)
+# shellcheck disable=SC2086 # QEMU_FLASH_EXTRA is a list of offset/file pairs.
+(cd "$build" && python -m esptool --chip "$target" merge-bin --pad-to-size 4MB -o "$flash" \
+  @flash_args ${QEMU_FLASH_EXTRA:-} > /dev/null)
 
 "${qemu[@]}" -nographic -drive "file=${flash},if=mtd,format=raw" -nic user,model=open_eth \
   > "$log" 2>&1 &
@@ -51,7 +57,7 @@ pid=$!
 trap 'kill "$pid" 2> /dev/null || true; wait "$pid" 2> /dev/null || true' EXIT
 
 status=1
-for _ in $(seq 1 "$seconds"); do
+for _ in $(seq 0 "$seconds"); do
   if grep -aqE "$expect" "$log"; then
     status=0
     break
@@ -59,6 +65,10 @@ for _ in $(seq 1 "$seconds"); do
   kill -0 "$pid" 2> /dev/null || break
   sleep 1
 done
+# A line written as QEMU exited, or in the last second.
+if [ "$status" -ne 0 ] && grep -aqE "$expect" "$log"; then
+  status=0
+fi
 
 grep -aE "$expect" "$log" | head -n 5 || true
 if [ "$status" -ne 0 ]; then

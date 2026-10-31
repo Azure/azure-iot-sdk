@@ -226,9 +226,11 @@ eng/esp-idf-build.sh samples/software_update/esp32 esp32c3 qemu /tmp/su
 eng/esp-idf-qemu.sh /tmp/su/software_update-esp32-esp32c3-qemu/build esp32c3 "Got IPv4 event"
 ```
 
-The image boots, gets `10.0.2.15` and then needs a device identity: write an `esp_secure_cert`
-partition into the flash image ([Device identity](#device-identity)), or the sample stops at
-`no device certificate in the esp_secure_cert partition`. The full log is `qemu.log` in the build
+The image boots, gets `10.0.2.15` and then needs a device identity, or the sample stops at
+`no device certificate in the esp_secure_cert partition`. Write the `esp_secure_cert` partition
+([Device identity](#device-identity)) into the flash image with
+`QEMU_FLASH_EXTRA="0xd000 esp_secure_cert.bin" eng/esp-idf-qemu.sh ...`. Each run writes a fresh
+flash image, so NVS and OTA state do not persist. The full log is `qemu.log` in the build
 directory. QEMU does not emulate Secure Boot or flash encryption.
 
 ### Deploy an update
