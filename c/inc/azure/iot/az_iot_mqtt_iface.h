@@ -391,7 +391,9 @@ extern "C"
   {
     az_iot_mqtt_event_kind kind;
     uint16_t packet_id; /* for *_ACK events */
-    az_iot_result status; /* for ACK / ERROR events */
+    /* For ACK / ERROR events. For AZ_IOT_MQTT_EVT_DISCONNECTED: AZ_IOT_OK only
+     * when a disconnect() the client asked for completed; an error otherwise. */
+    az_iot_result status;
     const az_iot_mqtt_message* message; /* for AZ_IOT_MQTT_EVT_MESSAGE only */
     /* For AZ_IOT_MQTT_EVT_CONNECTED: the Session Present flag the broker
      * returned in the CONNACK. Carried by BOTH protocol versions -- MQTT 3.1.1
@@ -613,6 +615,10 @@ extern "C"
    * session. Reporting those as AZ_IOT_OK made "the hub closed us for quota
    * exceeded" indistinguishable from an ordinary peer close, and with retries
    * disabled it settled the session at IDLE with nothing to explain it.
+   *
+   * 0x00 yields AZ_IOT_ERR_NOT_CONNECTED, not AZ_IOT_OK: AZ_IOT_OK is reserved
+   * for a disconnect the client asked for. 0x87 yields AZ_IOT_ERR_AUTH; other
+   * codes AZ_IOT_ERR_MQTT.
    *
    * v3.1.1 has no DISCONNECT reason code; pass 0. */
   AZ_NODISCARD az_iot_result

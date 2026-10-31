@@ -531,7 +531,8 @@ static void paho_connection_lost(void* context, char* cause)
   AZ_IOT_LOG_WARNF(AZ_IOT_LOG_COMPONENT_PAHO, "connection lost: %s", cause ? cause : "(unknown)");
   if (m)
   {
-    enqueue_status(m, AZ_IOT_MQTT_EVT_DISCONNECTED, AZ_IOT_OK, 0);
+    /* AZ_IOT_OK is reserved for a disconnect the client asked for. */
+    enqueue_status(m, AZ_IOT_MQTT_EVT_DISCONNECTED, AZ_IOT_ERR_NOT_CONNECTED, 0);
   }
 }
 
