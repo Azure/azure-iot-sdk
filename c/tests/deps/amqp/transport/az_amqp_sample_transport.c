@@ -1342,6 +1342,15 @@ static az_amqp_transport_status _sch_write(
     _set_error(s, 0, "TLS session not established");
     return AZ_AMQP_TRANSPORT_STATUS_ERROR;
   }
+  // Finish a renegotiation the read path started: the context cannot encrypt until it is done.
+  if (sch->reneg_active)
+  {
+    az_amqp_transport_status rs = _sch_drive_reneg(s);
+    if (rs != AZ_AMQP_TRANSPORT_STATUS_OK)
+    {
+      return rs;
+    }
+  }
   // Flush pending ciphertext from a previous partial write before encrypting more.
   az_amqp_transport_status fs = _sch_flush(s);
   if (fs != AZ_AMQP_TRANSPORT_STATUS_OK)
