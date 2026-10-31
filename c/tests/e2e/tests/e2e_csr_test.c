@@ -187,6 +187,11 @@ static void on_renew_event(const az_iot_csr_event* evt, void* user_ctx)
     c->renew_accepted = true;
     return;
   }
+  if (evt->kind == AZ_IOT_CSR_FAILED && evt->status == AZ_IOT_ERR_NOT_CONNECTED)
+  {
+    c->hub_dropped = true; /* The session ended with it open: resubmitted once reconnected. */
+    return;
+  }
   c->renew_kind = evt->kind;
   c->renew_status = evt->status;
   c->renew_store_status = evt->store_status;
