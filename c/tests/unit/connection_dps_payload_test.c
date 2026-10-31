@@ -177,7 +177,7 @@ static void fixture_destroy(payload_fixture* fx)
   }
   if (fx->conn.client)
   {
-    az_iot_connection_client_deinit(&fx->conn.client_storage);
+    az_iot_test_connection_client_deinit(&fx->conn.client_storage);
   }
   az_iot_mock_mqtt_factory_destroy(fx->conn.factory);
   free(fx);
