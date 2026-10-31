@@ -1104,7 +1104,7 @@ below stand in for what would otherwise be a second flavor section.
 | | Notify with an unknown correlation id is rejected | — | e2e | Done | [test_notify_with_unknown_correlation_id_is_rejected](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/e2e/tests/e2e_fileupload_test.c#L569) |
 | | Client rejects invalid arguments | — | e2e | Done | [test_client_rejects_invalid_arguments](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/e2e/tests/e2e_fileupload_test.c#L586) |
 | | Sequential uploads reuse the client | — | e2e | Done | [test_sequential_uploads_reuse_the_client](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/e2e/tests/e2e_fileupload_test.c#L610) |
-| | SAS-key device uploads a file | DPS symmetric-key group device: both hub calls carry the SDK's hub SAS token, no client certificate; blob PUT and completion succeed. Also needs the SAS suites' env. | e2e | Done | [test_sas_key_device_uploads_a_file](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/e2e/tests/e2e_fileupload_test.c#L740) |
+| | SAS-key device uploads a file | DPS symmetric-key group device: both hub calls carry the SDK's hub SAS token, no client certificate; blob PUT and completion succeed. Also needs the SAS suites' env. | e2e | Done | [test_sas_key_device_uploads_a_file](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/e2e/tests/e2e_fileupload_test.c#L735) |
 | | A slow hook does not wedge the MQTT pump | The hook is called synchronously on the `do_work()` thread; the header documents the risk but nothing measures it. | unit | Pending | *mqttv3_file_upload_client_test.c* |
 
 ## Software updates

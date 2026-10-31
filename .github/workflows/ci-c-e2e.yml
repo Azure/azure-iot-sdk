@@ -353,6 +353,8 @@ jobs:
         env:
           E2E_TESTS: ${{ matrix.tests }}
           E2E_EXCLUDE: ${{ matrix.tests-exclude }}
+          # Schannel handshake and renegotiation trace of the service harness (Windows only).
+          AZ_AMQP_TLS_DEBUG: ${{ runner.os == 'Windows' && '1' || '' }}
         run: |
           # Service-side config (IOTHUB_*, IOT_DPS_*) is set by the generated script.
           . ./test_config/set_test_env_vars.ps1
