@@ -48,6 +48,7 @@ static const char* g_host = "localhost";
 static uint16_t g_port = 1883;
 /* AZ_IOT_TEST_TIMEOUT_SCALE; set in main(). */
 static int g_timeout_scale = 1;
+static uint8_t g_connection_workspace[AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE];
 
 #if defined(_WIN32)
 static void sleep_ms(unsigned ms) { Sleep(ms); }
@@ -177,6 +178,8 @@ static void reconnect_after_real_drop(void** state)
   opts.reconnection_policy.max_delay_ms = 200;
   opts.reconnection_policy.max_attempts = 5;
   opts.reconnection_policy.jitter_pct = 0;
+  opts.workspace = g_connection_workspace;
+  opts.workspace_size = sizeof(g_connection_workspace);
   assert_int_equal(az_iot_connection_client_init(client, &opts), AZ_IOT_OK);
 
   state_log log = { 0 };
@@ -266,6 +269,8 @@ static az_iot_connection_client* start_client_with_c2d(
   opts.reconnection_policy.max_delay_ms = 200;
   opts.reconnection_policy.max_attempts = 5;
   opts.reconnection_policy.jitter_pct = 0;
+  opts.workspace = g_connection_workspace;
+  opts.workspace_size = sizeof(g_connection_workspace);
   assert_int_equal(az_iot_connection_client_init(client, &opts), AZ_IOT_OK);
   (void)az_iot_connection_client_add_state_observer(client, on_state, log);
 

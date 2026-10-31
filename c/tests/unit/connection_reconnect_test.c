@@ -108,7 +108,7 @@ static int teardown(void** state)
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
   if (fx)
   {
-    az_iot_connection_client_deinit(&fx->client_storage);
+    az_iot_test_connection_client_deinit(&fx->client_storage);
     az_iot_mock_mqtt_factory_destroy(fx->factory);
     free(fx);
   }
@@ -1960,7 +1960,7 @@ static void deinit_while_reconnect_is_scheduled(void** state)
   assert_null(az_iot_mock_mqtt_factory_last_client(fx->factory));
 
   size_t transitions = fx->log.count;
-  az_iot_connection_client_deinit(fx->client);
+  az_iot_test_connection_client_deinit(fx->client);
   assert_int_equal(fx->log.count, transitions);
 
   /* Neutralize the fixture teardown's deinit(): already destroyed. */
@@ -1978,7 +1978,7 @@ static void deinit_does_not_complete_pending_pubacks(void** state)
   puback_probe probe = { 0 };
   (void)publish_qos1(fx, m, &probe);
 
-  az_iot_connection_client_deinit(fx->client);
+  az_iot_test_connection_client_deinit(fx->client);
   assert_int_equal(probe.calls, 0);
 
   /* Neutralize the fixture teardown's deinit(): already destroyed. */

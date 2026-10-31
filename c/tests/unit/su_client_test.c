@@ -1251,7 +1251,7 @@ static int teardown(void** state)
   {
     az_iot_su_client_deinit(&fx->su);
 
-    az_iot_connection_client_deinit(&fx->conn);
+    az_iot_test_connection_client_deinit(&fx->conn);
     az_iot_mock_mqtt_factory_destroy(fx->factory);
     free(fx);
   }
@@ -2407,7 +2407,7 @@ static void public_initialize_takes_a_connection_and_builds_its_own_channel(void
   az_iot_su_client su_no_conn;
   assert_int_equal(az_iot_su_client_init(&su_no_conn, NULL, &o), AZ_IOT_ERR_INVALID_ARG);
 
-  az_iot_connection_client_deinit(&conn);
+  az_iot_test_connection_client_deinit(&conn);
 }
 
 typedef struct layout_log
@@ -2534,7 +2534,7 @@ static void public_initialize_rejects_a_client_layout_mismatch(void** state)
   az_iot_su_client_deinit(&su);
 
   az_iot_log_set_global_sink(NULL);
-  az_iot_connection_client_deinit(&conn);
+  az_iot_test_connection_client_deinit(&conn);
 }
 
 /* extendedResultCodes is contract-shaped: comma-separated UNSIGNED hex int32,
@@ -2627,7 +2627,7 @@ static void device_properties_too_small_is_rejected(void** state)
       az_iot_su_client__initialize_with_channel(&su, &channel, &crypto.base, &su_opts),
       AZ_IOT_ERR_NOT_ENOUGH_SPACE);
 
-  az_iot_connection_client_deinit(&conn);
+  az_iot_test_connection_client_deinit(&conn);
 }
 
 /* cancel_update is required: without it a late verdict could be taken for a
@@ -3226,7 +3226,7 @@ static void device_properties_buffer_size_matches_need(void** state)
       az_iot_su_client__initialize_with_channel(&su_short, &channel, &crypto.base, &o),
       AZ_IOT_ERR_NOT_ENOUGH_SPACE);
 
-  az_iot_connection_client_deinit(&conn);
+  az_iot_test_connection_client_deinit(&conn);
 }
 
 static void rejected_properties_preserve_the_entire_cache(void** state)
@@ -7286,7 +7286,7 @@ static void init_requires_a_crypto_backend_that_verifies(void** state)
   copts.device_id = "ut-no-crypto";
   assert_int_equal(az_iot_test_connection_client_init(&conn, &copts), AZ_IOT_OK);
   assert_int_equal(az_iot_su_client_init(&su, &conn, &o), AZ_IOT_ERR_INVALID_ARG);
-  az_iot_connection_client_deinit(&conn);
+  az_iot_test_connection_client_deinit(&conn);
 }
 
 /** @brief Whether all @p len bytes at @p p are zero. */
@@ -8909,7 +8909,7 @@ static int setup_wire_error_case(void** state)
   fixture* fx = (fixture*)*state;
   fx->error_case = row;
   az_iot_su_client_deinit(&fx->su);
-  az_iot_connection_client_deinit(&fx->conn);
+  az_iot_test_connection_client_deinit(&fx->conn);
   az_iot_connection_client_options opts = { 0 };
   opts.device_id = "ut-device";
   opts.dps.id_scope = "0ne00000000";

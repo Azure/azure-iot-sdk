@@ -96,7 +96,7 @@ static int teardown(void** state)
   if (test)
   {
     az_iot_mqttv5_custom_topic_client_deinit(&test->custom);
-    az_iot_connection_client_deinit(&test->connection);
+    az_iot_test_connection_client_deinit(&test->connection);
     az_iot_mock_mqtt_factory_destroy(test->factory);
     free(test);
   }
@@ -750,7 +750,7 @@ static int teardown_dps(void** state)
   if (fx)
   {
     az_iot_mqttv5_custom_topic_client_deinit(&fx->custom);
-    az_iot_connection_client_deinit(&fx->connection);
+    az_iot_test_connection_client_deinit(&fx->connection);
     az_iot_mock_mqtt_factory_destroy(fx->v3);
     az_iot_mock_mqtt_factory_destroy(fx->v5);
     free(fx);

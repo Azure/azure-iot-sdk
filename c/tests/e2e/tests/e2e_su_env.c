@@ -12,6 +12,8 @@
 
 #include "support/test_env.h"
 
+static uint8_t g_connection_workspace[AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE];
+
 char* e2e_su_env_require(const char* name)
 {
   char* v = az_iot_test_env_dup(name);
@@ -120,6 +122,8 @@ void e2e_su_env_apply(
   conn->dps.id_scope = env->id_scope;
   conn->dps.registration_id = env->registration_id;
   conn->dps.global_endpoint = env->dps_host;
+  conn->workspace = g_connection_workspace;
+  conn->workspace_size = sizeof(g_connection_workspace);
   if (env->proxy_host[0] != '\0')
   {
     conn->proxy.host = env->proxy_host;
