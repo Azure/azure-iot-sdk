@@ -399,6 +399,14 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods
                         return;
                     }
 
+                    // Disposal may have drained _invocations while the probe callback ran. It cancels before draining, so either it saw
+                    // this invocation or this check sees the cancellation; either way no timer is left holding on to a disposed client.
+                    if (_disposalCancellation.IsCancellationRequested)
+                    {
+                        DiscardUnannouncedInvocation(invocation);
+                        return;
+                    }
+
                     // ready_wait_budget = remaining connect budget + response timeout + safety margin, measured from when this
                     // invocation entered ready.
                     ArmReadyWaitTimer(invocation, remainingConnectBudget + TimeSpan.FromSeconds(probe.ResponseTimeoutSeconds) + safetyMargin);
@@ -487,37 +495,50 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods
             TimeSpan execBudget)
         {
             TimeSpan effectiveBudget = execBudget - invocation.SafetyMargin;
-
-            // Admission runs here, just before the handler would start, so time the exec spent waiting to be scheduled counts against it.
-            TimeSpan remainingEffectiveBudget = effectiveBudget - _timeProvider.GetElapsedTime(execReceivedTimestamp);
+            TimeSpan remainingEffectiveBudget;
+            CancellationTokenSource? executionDeadline = null;
 
             // Exec admission and the ready wait timer both decide the fate of the same ready state, so they are serialized on it.
-            bool admitted;
+            bool notReady;
+            bool readyIdMatches;
+            bool admitted = false;
             lock (invocation)
             {
-                if (invocation.State != InvocationState.Ready)
-                {
-                    Trace.TraceWarning("Received direct method exec message for request Id {0}, which is no longer awaiting one. Ignoring it.", invocation.RequestId);
-                    return;
-                }
+                notReady = invocation.State != InvocationState.Ready;
 
-                if (!invocation.ReadyId.Equals(exec.ReadyId))
-                {
-                    // Not this ready state's token, so leave the ready state for the exec that does carry it.
-                    Trace.TraceWarning("Received direct method exec message for request Id {0} with an unexpected ready Id. Ignoring it.", invocation.RequestId);
-                    return;
-                }
+                // An exec without this ready state's token leaves the ready state for the exec that does carry it.
+                readyIdMatches = invocation.ReadyId.Equals(exec.ReadyId);
 
-                admitted = remainingEffectiveBudget > invocation.MinimumExecutionTime;
-                if (admitted)
+                // Measured here, at the moment of admission, so time the exec spent waiting to be scheduled or for this lock counts against it.
+                remainingEffectiveBudget = effectiveBudget - _timeProvider.GetElapsedTime(execReceivedTimestamp);
+
+                if (!notReady && readyIdMatches)
                 {
-                    invocation.State = InvocationState.Executing;
+                    admitted = remainingEffectiveBudget > invocation.MinimumExecutionTime;
+                    if (admitted)
+                    {
+                        // Started together with the transition, so the handler's deadline is exactly what admission allowed for.
+                        executionDeadline = new CancellationTokenSource(remainingEffectiveBudget, _timeProvider);
+                        invocation.State = InvocationState.Executing;
+                    }
+                    else
+                    {
+                        invocation.State = InvocationState.Abandoned;
+                        ReleaseCapacityLocked(invocation);
+                    }
                 }
-                else
-                {
-                    invocation.State = InvocationState.Abandoned;
-                    ReleaseCapacityLocked(invocation);
-                }
+            }
+
+            if (notReady)
+            {
+                Trace.TraceWarning("Received direct method exec message for request Id {0}, which is no longer awaiting one. Ignoring it.", invocation.RequestId);
+                return;
+            }
+
+            if (!readyIdMatches)
+            {
+                Trace.TraceWarning("Received direct method exec message for request Id {0} with an unexpected ready Id. Ignoring it.", invocation.RequestId);
+                return;
             }
 
             if (!admitted)
@@ -532,9 +553,13 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods
                 return;
             }
 
-            await ExecuteAsync(invocation, exec, methodHandler, execReceivedTimestamp, execBudget, effectiveBudget, remainingEffectiveBudget);
+            using (executionDeadline)
+            {
+                await ExecuteAsync(invocation, exec, methodHandler, execReceivedTimestamp, execBudget, effectiveBudget, executionDeadline!);
+            }
         }
 
+        // The execution deadline leaves the safety margin for the result to travel back before the service's response timer fires.
         private async Task ExecuteAsync(
             Invocation invocation,
             Exec exec,
@@ -542,10 +567,8 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods
             long execReceivedTimestamp,
             TimeSpan execBudget,
             TimeSpan effectiveBudget,
-            TimeSpan remainingEffectiveBudget)
+            CancellationTokenSource executionDeadline)
         {
-            // The execution deadline leaves the safety margin for the result to travel back before the service's response timer fires.
-            using CancellationTokenSource executionDeadline = new(remainingEffectiveBudget, _timeProvider);
 
             DirectMethodRequestReceivedEventArgs directMethodInvokedArgs = new()
             {
@@ -808,7 +831,8 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods
             }
         }
 
-        // For an invocation whose ready probe ack the broker rejected, so the service never received its ready token.
+        // For an invocation whose ready token the service never received: the broker rejected its probe ack, or the client was disposed
+        // before the probe ack was sent.
         private void DiscardUnannouncedInvocation(Invocation invocation)
         {
             lock (invocation)

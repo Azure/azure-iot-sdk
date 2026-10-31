@@ -894,6 +894,39 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             await AssertProbeAcceptedAsync(connection, Guid.NewGuid().ToByteArray());
         }
 
+        [Fact]
+        public async Task Probe_AcceptedAfterTheClientIsDisposed_LeavesNoReadyStateBehind()
+        {
+            MockFeatureConnectionClient connection = new()
+            {
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv5, DeviceId),
+            };
+            ManualTimeProvider timeProvider = new();
+            DirectMethodClient directMethodClient = new(connection, new DirectMethodClientOptions(), timeProvider);
+
+            TaskCompletionSource probeHandlerStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            TaskCompletionSource probeHandlerCanFinish = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            directMethodClient.DirectMethodProbeReceivedAsync += async (_) =>
+            {
+                probeHandlerStarted.SetResult();
+                await probeHandlerCanFinish.Task;
+                return DirectMethodProbeAck.Accepted();
+            };
+            directMethodClient.DirectMethodInvokedAsync += (_) => Task.FromResult(new DirectMethodResponse() { Status = 200 });
+
+            byte[] probe = new Probe() { MethodName = "reboot", ResponseTimeoutSeconds = 30 }.ToByteArray();
+            await connection.SimulateReceiveAsync(CreateInboundMethodPublish("probe:1", Guid.NewGuid().ToByteArray(), probe));
+            await probeHandlerStarted.Task.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+
+            // The probe callback accepts only after disposal has already released every tracked invocation.
+            directMethodClient.Dispose();
+            probeHandlerCanFinish.SetResult();
+            await directMethodClient.WhenIdleAsync();
+
+            Assert.True(Assert.Single(timeProvider.Timers).IsDisposed);
+            Assert.Empty(connection.PublishedMessages);
+        }
+
         // Delivers a publish and waits for all the work the client started for it in the background.
         private static async Task<MockMqttPublishReceivedEventArgs> ReceiveAsync(MockFeatureConnectionClient connection, DirectMethodClient directMethodClient, MqttPublish publish)
         {
@@ -1013,6 +1046,8 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             }
 
             public TimeSpan DueTime { get; private set; }
+
+            public bool IsDisposed => _disposed;
 
             public void Fire()
             {
