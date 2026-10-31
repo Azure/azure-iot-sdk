@@ -54,7 +54,9 @@ message Abandon {
 enum AbandonReason {
   ABANDON_REASON_UNSPECIFIED = 0;
   READY_WAIT_TIMEOUT = 1;
-  INSUFFICIENT_TIME_DUP = 2; //TODO "INSUFFICIENT_TIME" is already defined elsewhere. Check with service folks about this       // matching exec arrived, but remaining budget after safety margin was not enough to begin execution
+  // Named with the enum prefix because proto3 enum values share their package's scope, so a bare
+  // INSUFFICIENT_TIME would collide with RejectedReason's.
+  ABANDON_REASON_INSUFFICIENT_TIME = 2; // matching exec arrived, but remaining budget after safety margin was not enough to begin execution
 }
 
 // Execute authorization: Service → Device
