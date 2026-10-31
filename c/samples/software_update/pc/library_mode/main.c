@@ -127,7 +127,8 @@ typedef struct
   bool check_outstanding; /* an update check was asked and has no verdict yet */
   bool check_once_registered; /* the first check was abandoned before the device registered */
   uint64_t check_not_before_ms; /* no check before then: retry-after, or the SDK's own check */
-  bool final_report_unsettled; /* the final report was handed to the client and has no verdict */
+  bool
+      final_report_unsettled; /* a final report is owed and WORKFLOW_COMPLETED has not settled it */
 
   /* Set by the observers. */
   az_iot_connection_state connection_state[AZ_IOT_CONN_SCOPE_COUNT];
@@ -604,7 +605,9 @@ static void on_su_event(const az_iot_su_event* event, void* user_ctx)
           su_sample_state_name(event->state));
       if (event->state == AZ_IOT_SU_STATE_FAILED)
       {
-        /* Before any hand-off: the manifest did not verify. */
+        /* Before any hand-off: the manifest did not verify. Its failure report
+         * is the final one. */
+        state->final_report_unsettled = true;
         fprintf(
             stderr,
             "Update failed: %s, extended result 0x%08x\n",
@@ -629,17 +632,14 @@ static void on_su_event(const az_iot_su_event* event, void* user_ctx)
           event->service_error.message,
           event->service_error.tracking_id);
       hold_update_checks_for(state, event->service_error.retry_after_ms);
-      if (event->operation == AZ_IOT_SU_OP_REPORT_STATUS
-          && event->reason == AZ_IOT_ERR_NOT_CONNECTED)
-      {
-        /* Its session is gone: it settles only through a later check. */
-        state->final_report_unsettled = false;
-      }
       if (event->operation == AZ_IOT_SU_OP_GET_UPDATE)
       {
         /* A device that has never registered has no device record yet: check
-         * again once registration creates it. */
+         * again once registration creates it. A registered one asked to wait
+         * checks again after the hold. */
         state->check_once_registered = state->check_once_registered || !state->device_registered;
+        state->check_now = state->check_now
+            || (state->device_registered && event->service_error.retry_after_ms > 0);
       }
       else if (
           event->operation == AZ_IOT_SU_OP_REPORT_STATUS
@@ -913,10 +913,12 @@ int main(void)
     advance_delegated_update(&state);
 
     /* FAULTED is settled: the SDK does not retry out of it. Delegated work in
-     * flight is finished first. Its final report is not persisted in library
+     * flight is finished first. The final report is not persisted in library
      * mode, so while provisioning has not faulted it gets a bounded wait to
-     * settle; the SDK's other work cannot progress without a connection. */
-    if (state.connection_is_faulted && fault_exit_ms == 0)
+     * settle, from when no delegated work is left; the SDK's other work cannot
+     * progress without a connection. */
+    if (state.connection_is_faulted && state.update.phase == DELEGATED_UPDATE_PHASE_NONE
+        && fault_exit_ms == 0)
     {
       fault_exit_ms = sample_now_ms() + FINAL_REPORT_FAULT_WAIT_MS;
     }
