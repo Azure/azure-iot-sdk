@@ -35,6 +35,8 @@
 #                 builds the native e2e tests, gets its test-config, materializes
 #                 the device X.509 material to files, and runs its group.
 #      coverage : merges the Linux groups' tracefiles into coverage-trace-e2e.
+#      esp32-qemu: the ESP32 IoT Hub sample in QEMU (esp32, esp32c3), always on
+#                 the shared environment (see the job).
 #   3. teardown : always() deletes the shared resource group (via the reusable
 #                 destroy-e2e-resources step). It recomputes the group name from
 #                 the run id rather than reading a setup output, so it also cleans
@@ -562,6 +564,93 @@ jobs:
   # One e2e tracefile for ci-c-coverage-combined: the union of the Linux groups.
   # Only when every test job succeeded, as before: a failed group leaves partial
   # coverage, and merging it would understate coverage for an unrelated reason.
+  # The ESP32 IoT Hub sample (samples/unified/esp32) in QEMU: the firmware is the
+  # device, az_iot_tests_e2e_esp32_qemu the service (eng/esp-idf-qemu-e2e.sh).
+  # esp32 keeps its key in flash; esp32c3 in the Digital Signature peripheral,
+  # its key burned into an emulated eFuse. Always on the shared environment, on
+  # push and nightly too: the per-run enrollments' RSA-4096 keys exceed the DS
+  # peripheral's 3072 bits, and the shared group CA issues RSA-2048. Device
+  # index 12 (esp32) and 13 (esp32c3), after the test legs' 0..11.
+  esp32-qemu:
+    name: esp32 qemu / ${{ matrix.target }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    # Runs pull-request code: no Azure OIDC token.
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: esp32
+            device-index: 12
+          - target: esp32c3
+            device-index: 13
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+          # The ESP-IDF component builds azure-sdk-for-c from c/deps.
+          submodules: true
+
+      - name: Issue a device on the shared environment
+        shell: pwsh
+        env:
+          E2E_SHARED_GROUP_CA: ${{ secrets.E2E_SHARED_GROUP_CA }}
+          E2E_SHARED_IOTHUB_CS: ${{ secrets.E2E_SHARED_IOTHUB_CS }}
+          E2E_SHARED_EVENTHUB_CS: ${{ secrets.E2E_SHARED_EVENTHUB_CS }}
+          E2E_SHARED_ID_SCOPE: ${{ vars.E2E_SHARED_ID_SCOPE }}
+          E2E_SHARED_SAS_GROUP_KEY: ${{ secrets.E2E_SHARED_SAS_GROUP_KEY }}
+          E2E_SHARED_DPS_CS: ${{ secrets.E2E_SHARED_DPS_CS }}
+          E2E_SHARED_IOTHUB_REGISTRY_CS: ${{ secrets.E2E_SHARED_IOTHUB_REGISTRY_CS }}
+          E2E_RUN_ID: ${{ github.run_id }}
+          E2E_RUN_ATTEMPT: ${{ github.run_attempt }}
+          E2E_DEVICE_INDEX: ${{ matrix.device-index }}
+        # The test runs in the ESP-IDF container: hand it the device's PEMs and
+        # a docker --env-file (NAME=value, the value taken literally).
+        run: |
+          $idx = [int]$env:E2E_DEVICE_INDEX
+          $regId = "ci-$($env:E2E_RUN_ID)-$($env:E2E_RUN_ATTEMPT)-$idx"
+          $group = 'e2e-' + (([long]$env:E2E_RUN_ID * 8 + $idx) % 10)
+          ./c/eng/e2e-shared-device.ps1 -RegistrationId $regId -DeviceIndex $idx `
+            -ConsumerGroup $group -OutFile test_config/set_test_env_vars.ps1
+          . ./test_config/set_test_env_vars.ps1
+          $dir = Join-Path $env:RUNNER_TEMP 'esp32-device'
+          New-Item -ItemType Directory -Path $dir -Force | Out-Null
+          foreach ($pair in @(@('CERTIFICATE', 'cert.pem'), @('KEY', 'key.pem'))) {
+            $b64 = (Get-Item "env:IOT_DPS_INDIVIDUAL_X509_$($pair[0])_$idx").Value
+            [IO.File]::WriteAllBytes((Join-Path $dir $pair[1]), [Convert]::FromBase64String($b64))
+          }
+          @(
+            "E2E_ESP32_DEVICE_ID=$regId"
+            "IOT_DPS_ID_SCOPE=$env:IOT_DPS_ID_SCOPE"
+            "IOTHUB_CONNECTION_STRING=$env:IOTHUB_CONNECTION_STRING"
+            "IOTHUB_EVENTHUB_CONNECTION_STRING=$env:IOTHUB_EVENTHUB_CONNECTION_STRING"
+            "IOTHUB_EVENTHUB_CONSUMER_GROUP=$env:IOTHUB_EVENTHUB_CONSUMER_GROUP"
+          ) | Set-Content -Path (Join-Path $dir 'env')
+          Remove-Item -Recurse -Force test_config
+          Write-Host "e2e device (index $idx): $regId"
+
+      - name: Run e2e
+        env:
+          TARGET: ${{ matrix.target }}
+        # espressif/idf:v6.0, pinned by digest (as ci-c.yml's esp-idf job). Its
+        # entrypoint sources export.sh; the host compiler and OpenSSL headers
+        # build the test.
+        run: |
+          docker run --rm --env-file "$RUNNER_TEMP/esp32-device/env" \
+            -v "$GITHUB_WORKSPACE:/work" -v "$RUNNER_TEMP/esp32-device:/device:ro" -w /work/c \
+            espressif/idf:v6.0@sha256:59df146f64aa0b13886a13a74682ad157482b446f5cc16582500803c95c71401 \
+            bash -c 'set -e
+              git config --global --add safe.directory /work
+              apt-get update -qq && apt-get install -y -qq gcc libc6-dev libssl-dev > /dev/null
+              bash eng/esp-idf-qemu-e2e.sh "$0" /device/cert.pem /device/key.pem /tmp/esp32-qemu-e2e' \
+            "$TARGET"
+
+      - name: Remove the device material
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/esp32-device"
+
   coverage:
     name: coverage (merge)
     needs: test
