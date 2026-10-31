@@ -2572,16 +2572,23 @@ static bool expire_fetch_in_flight(az_iot_su_client* client)
   return true;
 }
 
-static void drive_pending_fetch(az_iot_su_client* client)
+/**
+ * @brief Abandon an update check whose deadline passed, awaited or queued, and
+ * tell the channel, so it stops asking for a session for it.
+ *
+ * @param client The software updates client.
+ * @return true if a check was abandoned.
+ */
+static bool abandon_expired_fetch(az_iot_su_client* client)
 {
   if (expire_fetch_in_flight(client))
   {
-    return;
+    return true;
   }
   uint8_t requested = SU_I(client).pending_fetch;
   if (requested == SU_FETCH_NONE)
   {
-    return;
+    return false;
   }
   az_iot_su_operation operation = fetch_operation(requested);
 
@@ -2621,8 +2628,23 @@ static void drive_pending_fetch(az_iot_su_client* client)
       SU_I(client).channel.vtable->cancel_update(SU_I(client).channel.ctx, operation);
     }
     raise_abandoned(client, operation, AZ_IOT_ERR_TIMEOUT, &k_no_service_error);
+    return true;
+  }
+  return false;
+}
+
+static void drive_pending_fetch(az_iot_su_client* client)
+{
+  if (abandon_expired_fetch(client))
+  {
     return;
   }
+  uint8_t requested = SU_I(client).pending_fetch;
+  if (requested == SU_FETCH_NONE)
+  {
+    return;
+  }
+  az_iot_su_operation operation = fetch_operation(requested);
   /* After the deadline check: pacing must not postpone an abandonment. A newer
    * application request is not paced: the application owns its cadence. */
   if (SU_I(client).pending_fetch_paced && !az_iot_retry_state__due(&SU_I(client).retry))
@@ -4051,9 +4073,13 @@ az_iot_result az_iot_su_client_do_work(az_iot_su_client* client)
     return AZ_IOT_ERR_DETACHED;
   }
 
-  /* Give the channel its tick first. A channel with asynchronous work of its
-   * own reports lost operations here, and the engine's own pending flags are
-   * re-armed from that, so this has to run before they are read below. */
+  /* An expired update check is given up first, so the channel's tick does not
+   * ask for a session (ending the hub session) for it. */
+  (void)abandon_expired_fetch(client);
+
+  /* Give the channel its tick before the rest. A channel with asynchronous work
+   * of its own reports lost operations here, and the engine's own pending flags
+   * are re-armed from that, so this has to run before they are read below. */
   if (SU_I(client).channel.vtable != NULL && SU_I(client).channel.vtable->do_work != NULL)
   {
     (void)SU_I(client).channel.vtable->do_work(SU_I(client).channel.ctx);
@@ -4718,6 +4744,25 @@ az_iot_result az_iot_su_client_remove_observer(
   return AZ_IOT_ERR_NOT_FOUND;
 }
 
+/**
+ * @brief Tell the channel a queued update check of another kind, not yet
+ * accepted, is replaced by @p requested, so it stops asking for a session for
+ * it. One awaiting its answer keeps waiting.
+ *
+ * @param client    The software updates client.
+ * @param requested The SU_FETCH_* kind replacing it.
+ */
+static void cancel_replaced_unaccepted_fetch(az_iot_su_client* client, uint8_t requested)
+{
+  uint8_t replaced = SU_I(client).pending_fetch;
+  if (replaced == SU_FETCH_NONE || replaced == requested || replaced == SU_I(client).fetch_in_flight
+      || SU_I(client).channel.vtable == NULL || SU_I(client).channel.vtable->cancel_update == NULL)
+  {
+    return;
+  }
+  SU_I(client).channel.vtable->cancel_update(SU_I(client).channel.ctx, fetch_operation(replaced));
+}
+
 AZ_NODISCARD az_iot_result
 az_iot_su_client_request_onboarding_update(az_iot_su_client* client, uint32_t timeout_ms)
 {
@@ -4725,6 +4770,7 @@ az_iot_su_client_request_onboarding_update(az_iot_su_client* client, uint32_t ti
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
+  cancel_replaced_unaccepted_fetch(client, SU_FETCH_ONBOARDING);
   SU_I(client).pending_fetch = SU_FETCH_ONBOARDING;
   SU_I(client).last_requested_fetch = SU_FETCH_ONBOARDING;
   SU_I(client).pending_fetch_paced = false;
@@ -4739,6 +4785,7 @@ az_iot_su_client_request_update(az_iot_su_client* client, uint32_t timeout_ms)
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
+  cancel_replaced_unaccepted_fetch(client, SU_FETCH_REGULAR);
   SU_I(client).pending_fetch = SU_FETCH_REGULAR;
   SU_I(client).last_requested_fetch = SU_FETCH_REGULAR;
   SU_I(client).pending_fetch_paced = false;

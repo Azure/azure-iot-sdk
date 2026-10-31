@@ -2329,13 +2329,9 @@ static void the_user_count_refuses_to_overflow(void** state)
   fx->client.dps_user_count = 0;
 }
 
-/* One MQTT session at a time: an operation after provisioning ends the hub
- * session first, runs on a provisioning session opened only once the hub client
- * is gone, and the hub reconnects to its assignment once the channel has no
- * work left -- without registering again. */
-static void the_hub_session_ends_before_the_channel_session_opens(void** state)
+/* Register, then connect the hub session to its assignment. @return The hub client. */
+static az_iot_mock_mqtt_client* connect_hub_after_assignment(fixture* fx)
 {
-  fixture* fx = (fixture*)*state;
   az_iot_mock_mqtt_client* m = open_to_registering(fx);
   assert_true(inject(fx, m, "$dps/registrations/res/200/?$rid=1", k_assigned_body));
   for (int i = 0; i < 3; ++i)
@@ -2349,6 +2345,95 @@ static void the_hub_session_ends_before_the_channel_session_opens(void** state)
   assert_int_equal(
       az_iot_connection_client_get_state(&fx->client, AZ_IOT_CONN_SCOPE_HUB),
       AZ_IOT_CONN_STATE_CONNECTED);
+  return hub;
+}
+
+/* A software updates client on the fixture's connection, its startup report
+ * taken as sent so only the test's checks ask for a session. */
+static void init_su_client_without_startup_report(fixture* fx, az_iot_su_client* su)
+{
+  static az_iot_su_platform_hooks hooks;
+  static az_iot_su_device_properties properties = { .manufacturer = "Contoso" };
+  static uint8_t workspace[AZ_IOT_SU_WORKSPACE_DEFAULT_SIZE];
+  az_iot_su_client_config_options options = az_iot_su_client_config_options_default();
+  options.hooks = &hooks;
+  options.device_properties = &properties;
+  options.workspace = workspace;
+  options.workspace_size = sizeof(workspace);
+  assert_int_equal(az_iot_su_client_init(su, &fx->client, &options), AZ_IOT_OK);
+  su->_internal.device_properties_report_pending = false;
+}
+
+/* The hub session is left alone, and no provisioning session is asked for. */
+static void assert_hub_session_undisturbed(
+    fixture* fx,
+    const az_iot_su_client* su,
+    az_iot_mock_mqtt_client* hub)
+{
+  const az_iot_su_channel_dps* channel
+      = (const az_iot_su_channel_dps*)(const void*)&su->_internal.channel_storage;
+  assert_int_equal(channel->session_demand, 0);
+  assert_false(channel->wants_session);
+  assert_null(az_iot_mock_mqtt_client_last_of(hub, AZ_IOT_MOCK_CALL_DISCONNECT));
+  (void)az_iot_connection_client_do_work(&fx->client, 0);
+  assert_null(fx->client.dps_mqtt);
+  assert_ptr_equal(az_iot_mock_mqtt_client_from(fx->client.active_client), hub);
+  assert_int_equal(
+      az_iot_connection_client_get_state(&fx->client, AZ_IOT_CONN_SCOPE_HUB),
+      AZ_IOT_CONN_STATE_CONNECTED);
+}
+
+/* A check refused for want of a session and expired before the next tick is
+ * given up before the channel's tick, so the hub session is not ended for it. */
+static void an_expired_check_does_not_end_the_hub_session(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_mock_mqtt_client* hub = connect_hub_after_assignment(fx);
+  az_iot_su_client su;
+  init_su_client_without_startup_report(fx, &su);
+
+  assert_int_equal(az_iot_su_client_request_update(&su, 60000u), AZ_IOT_OK);
+  assert_int_equal(az_iot_su_client_do_work(&su), AZ_IOT_OK);
+  assert_int_not_equal(su._internal.pending_fetch, 0);
+
+  su._internal.pending_fetch_deadline_ms = 1;
+  assert_int_equal(az_iot_su_client_do_work(&su), AZ_IOT_OK);
+  assert_int_equal(su._internal.pending_fetch, 0);
+  assert_hub_session_undisturbed(fx, &su, hub);
+  az_iot_su_client_deinit(&su);
+}
+
+/* A check replaced by one of the other kind before either was accepted takes
+ * its session demand with it: once the replacement expires, nothing keeps
+ * asking for a session. */
+static void a_replaced_unaccepted_check_takes_its_session_demand_with_it(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_mock_mqtt_client* hub = connect_hub_after_assignment(fx);
+  az_iot_su_client su;
+  init_su_client_without_startup_report(fx, &su);
+
+  assert_int_equal(az_iot_su_client_request_update(&su, 60000u), AZ_IOT_OK);
+  assert_int_equal(az_iot_su_client_do_work(&su), AZ_IOT_OK);
+  assert_int_equal(az_iot_su_client_request_onboarding_update(&su, 60000u), AZ_IOT_OK);
+  assert_int_equal(az_iot_su_client_do_work(&su), AZ_IOT_OK);
+  assert_int_not_equal(su._internal.pending_fetch, 0);
+
+  su._internal.pending_fetch_deadline_ms = 1;
+  assert_int_equal(az_iot_su_client_do_work(&su), AZ_IOT_OK);
+  assert_int_equal(su._internal.pending_fetch, 0);
+  assert_hub_session_undisturbed(fx, &su, hub);
+  az_iot_su_client_deinit(&su);
+}
+
+/* One MQTT session at a time: an operation after provisioning ends the hub
+ * session first, runs on a provisioning session opened only once the hub client
+ * is gone, and the hub reconnects to its assignment once the channel has no
+ * work left -- without registering again. */
+static void the_hub_session_ends_before_the_channel_session_opens(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_mock_mqtt_client* hub = connect_hub_after_assignment(fx);
 
   /* An operation: the hub session is ended first; no provisioning client yet. */
   assert_int_equal(fx->channel.vtable->open(fx->channel.ctx, on_update, on_result, fx), AZ_IOT_OK);
@@ -2367,7 +2452,7 @@ static void the_hub_session_ends_before_the_channel_session_opens(void** state)
       AZ_IOT_CONN_STATE_RETRY_PENDING);
 
   /* The operation runs on the new session, which does not register. */
-  m = drive_existing_session(fx);
+  az_iot_mock_mqtt_client* m = drive_existing_session(fx);
   assert_int_equal(
       fx->channel.vtable->request_update(fx->channel.ctx, AZ_IOT_SU_OP_GET_UPDATE), AZ_IOT_OK);
   const az_iot_mock_call* pub = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_PUBLISH);
@@ -3631,6 +3716,9 @@ int main(void)
         a_demand_queued_before_the_hold_expires_runs_on_the_kept_session, setup, teardown),
     cmocka_unit_test_setup_teardown(
         the_hub_session_ends_before_the_channel_session_opens, setup, teardown),
+    cmocka_unit_test_setup_teardown(an_expired_check_does_not_end_the_hub_session, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_replaced_unaccepted_check_takes_its_session_demand_with_it, setup, teardown),
     cmocka_unit_test_setup_teardown(
         the_dps_pump_caps_its_wait_at_the_hold_deadline, setup, teardown),
     cmocka_unit_test_setup_teardown(a_bodyless_429_fetch_is_throttled_not_fatal, setup, teardown),

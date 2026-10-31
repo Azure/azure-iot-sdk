@@ -121,13 +121,15 @@ overlap. After registration, each check or status report made while the hub is c
 These ends count toward no reconnection backoff or `max_hub_connect_attempts_before_reprovision`.
 How long the hub waits is bounded. An update check waits at most its request timeout (default
 `AZ_IOT_SU_REQUEST_DEFAULT_TIMEOUT_MS`, 60 s; `AZ_IOT_SU_REQUEST_NO_TIMEOUT` sets no bound); when
-it ends unanswered or unaccepted, the channel stops asking for a session for it. A status report
-waits at most `AZ_IOT_SU_CHANNEL_REPORT_RESPONSE_TIMEOUT_MS` (default 60 s, the same value) for
-its answer, and `az_iot_connection_client_do_work()` waits no longer than that; past it the
-session is released and the report, still owed, is sent again on the retry backoff (1 s doubling
-to 60 s, ±20%), as is a report queued before or after the timeout. A request lost with its session keeps the channel's interest
-while the engine retries it, so the connection client's pacing of provisioning sessions still
-applies.
+it ends unanswered or unaccepted, or a check of the other kind replaces it before it is accepted,
+the channel stops asking for a session for it. An expired check is given up before the channel's
+tick, so the hub session is not ended for it. A status report waits at most
+`AZ_IOT_SU_CHANNEL_REPORT_RESPONSE_TIMEOUT_MS` (default 60 s, the same value) for its answer, and
+`az_iot_connection_client_do_work()` waits no longer than that; past it the session is released
+and the report, still owed, is sent again on the retry backoff (1 s doubling to 60 s, ±20%), as
+is a report queued before or after the timeout. A request lost with its session keeps the
+channel's interest while the engine retries it, so the connection client's pacing of provisioning
+sessions still applies.
 An application that must not lose the hub during a check schedules checks when that is acceptable.
 
 ### Request (both fetches)
