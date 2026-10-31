@@ -752,6 +752,26 @@ static void the_wait_ends_by_the_earliest_time_limit(void** state)
 }
 
 /* A time limit past UINT32_MAX ms is kept in full. */
+/* submit_at() tracks a message in the entry the owner names, and refuses one in use. */
+static void submit_at_uses_the_named_entry(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  connect(fx);
+  uint8_t id = 7u;
+  assert_int_equal(
+      az_iot_delivery_tracker__submit_at(&fx->tracker, 2u, &k_resend, &id, 1u, 60000u), AZ_IOT_OK);
+  assert_string_equal(last_publish(fx)->topic, "t/2");
+  assert_int_equal(
+      az_iot_delivery_tracker__submit_at(&fx->tracker, 2u, &k_resend, &id, 1u, 60000u),
+      AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(
+      az_iot_delivery_tracker__submit_at(&fx->tracker, SIZE_MAX, &k_resend, &id, 1u, 60000u),
+      AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(
+      az_iot_delivery_tracker__submit_at(&fx->tracker, 0u, NULL, &id, 1u, 60000u),
+      AZ_IOT_ERR_INVALID_ARG);
+}
+
 static void a_time_limit_past_32_bit_milliseconds_is_kept(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -1111,6 +1131,7 @@ int main(void)
         a_refused_message_near_its_time_limit_is_retried_before_it, setup, teardown),
     cmocka_unit_test_setup_teardown(the_wait_ends_by_the_earliest_time_limit, setup, teardown),
     cmocka_unit_test_setup_teardown(a_time_limit_past_32_bit_milliseconds_is_kept, setup, teardown),
+    cmocka_unit_test_setup_teardown(submit_at_uses_the_named_entry, setup, teardown),
     cmocka_unit_test_setup_teardown(
         sends_wait_while_a_renewal_settles_and_sent_messages_are_unsettled, setup, teardown),
     cmocka_unit_test_setup_teardown(
