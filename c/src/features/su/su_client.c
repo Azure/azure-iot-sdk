@@ -1333,21 +1333,31 @@ static az_iot_result decode_manifest(az_iot_su_client* client)
 }
 
 /**
- * @brief Parse the verified manifest_text into current_manifest.
+ * @brief Parse the verified manifest_text into current_manifest, and check that every step file
+ * is described by it and has a download URL.
  *
  * current_manifest holds spans into manifest_text (client-owned request_buffer).
  *
  * @param client The client; decode_manifest() and verify_manifest() succeeded.
  * @return AZ_IOT_OK; AZ_IOT_ERR_NOT_ENOUGH_SPACE when over a limit; AZ_IOT_ERR_INVALID_ARG when
- * malformed.
+ * malformed or a step file is unresolved.
  */
 static az_iot_result parse_manifest(az_iot_su_client* client)
 {
-  return az_iot_su__parse_update_manifest(
+  az_iot_result r = az_iot_su__parse_update_manifest(
       SU_I(client).manifest_text,
       SU_I(client).related_file_storage,
       SU_I(client).max_related_files,
       &SU_I(client).current_manifest);
+  if (r == AZ_IOT_OK)
+  {
+    r = az_iot_su__check_step_file_references(
+        &SU_I(client).current_manifest,
+        0,
+        SU_I(client).current_request.file_urls,
+        SU_I(client).current_request.file_urls_count);
+  }
+  return r;
 }
 
 /**
@@ -3305,32 +3315,6 @@ static bool span_in_request(const az_iot_su_client* client, az_span v)
       && len <= SU_I(client).request_len - (size_t)(ptr - base);
 }
 
-/** @brief Whether every file of steps [from, steps_count) has a download URL. */
-static bool remaining_files_have_urls(
-    const az_iot_su_client_update_manifest* m,
-    uint32_t from,
-    const az_iot_su_client_file_url* urls,
-    uint32_t url_count)
-{
-  for (uint32_t i = from; i < m->instructions.steps_count; ++i)
-  {
-    const az_iot_su_client_update_manifest_instructions_step* st = &m->instructions.steps[i];
-    for (uint32_t j = 0; j < st->files_count; ++j)
-    {
-      bool found = false;
-      for (uint32_t k = 0; k < url_count && !found; ++k)
-      {
-        found = az_span_is_content_equal(st->files[j], urls[k].id);
-      }
-      if (!found)
-      {
-        return false;
-      }
-    }
-  }
-  return true;
-}
-
 /** @brief Length of the packed applied update id, or 0 when none is held. */
 static size_t applied_update_id_len(const az_iot_su_client* client)
 {
@@ -3862,7 +3846,9 @@ AZ_NODISCARD az_iot_result az_iot_su_client_resume(az_iot_su_client* client)
   bool step_installed = state == (uint32_t)AZ_IOT_SU_STATE_INSTALL_COMPLETE
       || state == (uint32_t)AZ_IOT_SU_STATE_APPLY_STARTED;
   uint32_t from = step_installed ? step + 1u : step;
-  if (!remaining_files_have_urls(&SU_I(client).current_manifest, from, req->file_urls, url_count))
+  if (az_iot_su__check_step_file_references(
+          &SU_I(client).current_manifest, from, req->file_urls, url_count)
+      != AZ_IOT_OK)
   {
     /* It can never be resumed, so retire it rather than refuse it every boot. */
     SU_I(client).checkpoint_stored = true;
@@ -3930,14 +3916,7 @@ static const az_iot_su_client_update_manifest_file* step_file_entry(
     return NULL;
   }
   az_span id = m->instructions.steps[step].files[file_slot];
-  for (uint32_t i = 0; i < m->files_count; ++i)
-  {
-    if (az_span_is_content_equal(m->files[i].id, id))
-    {
-      return &m->files[i];
-    }
-  }
-  return NULL;
+  return az_iot_su__find_manifest_file(m, id);
 }
 
 /* Begin a best-effort reverse-order rollback and finish in Failed/Idle.
@@ -4230,15 +4209,11 @@ az_iot_result az_iot_su_client_do_work(az_iot_su_client* client)
         (void)az_iot_su__report_state(client);
         break;
       }
-      az_span url = AZ_SPAN_EMPTY;
-      for (uint32_t i = 0; i < SU_I(client).current_request.file_urls_count; ++i)
-      {
-        if (az_span_is_content_equal(SU_I(client).current_request.file_urls[i].id, file->id))
-        {
-          url = SU_I(client).current_request.file_urls[i].url;
-          break;
-        }
-      }
+      const az_iot_su_client_file_url* file_url = az_iot_su__find_file_url(
+          SU_I(client).current_request.file_urls,
+          SU_I(client).current_request.file_urls_count,
+          file->id);
+      az_span url = (file_url != NULL) ? file_url->url : AZ_SPAN_EMPTY;
       int32_t dr = (h->download_fn != NULL) ? h->download_fn(file, url, fidx, fcount, h->user_ctx)
                                             : AZ_IOT_SU_RESULT_FAILURE;
       if (dr == AZ_IOT_SU_RESULT_IN_PROGRESS)
@@ -4901,6 +4876,10 @@ AZ_NODISCARD az_iot_result az_iot_su_parse_update_request(
   az_iot_su_client_update_manifest manifest;
   r = az_iot_su__parse_update_manifest(
       manifest_text, storage->related_files, storage->max_related_files, &manifest);
+  if (r == AZ_IOT_OK)
+  {
+    r = az_iot_su__check_step_file_references(&manifest, 0, req.file_urls, req.file_urls_count);
+  }
   if (r != AZ_IOT_OK)
   {
     return r;
