@@ -48,6 +48,10 @@ extern "C"
        * which shares that type, does not carry storage for a timeout it derives
        * from the exec budget instead. */
       uint64_t req_expires_at_ms[AZ_IOT_DM_MAX_INFLIGHT];
+      /* Parallel to req_pool: seq of the last invocation of each slot that a session end (or a
+       * respond() refused NOT_CONNECTED) took, so respond() on it says NOT_CONNECTED rather
+       * than INVALID_ARG. One per slot: a later one replaces it. */
+      uint32_t ended_by_session_seq[AZ_IOT_DM_MAX_INFLIGHT];
       uint32_t response_timeout_seconds;
       /* Bumped on every acquire and copied into the request handed out, so a
        * request naming a slot that has since been reused no longer matches. */
@@ -68,6 +72,10 @@ extern "C"
    * AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH; otherwise a conflict surfaces when
    * the connection resolves, which fails it before it reports CONNECTED. The
    * same error is returned when an mqttv5 client is already attached.
+   *
+   * Observes the connection: when a session ends, every invocation not answered yet ends with
+   * it (IoT Hub fails a pending call when the device disconnects), and its slot is free again.
+   * Returns AZ_IOT_ERR_NOT_ENOUGH_SPACE when no feature observer is free.
    */
   AZ_NODISCARD az_iot_result az_iot_mqttv3_direct_method_client_init(
       az_iot_mqttv3_direct_method_client* client,
@@ -104,6 +112,8 @@ extern "C"
    * @brief Answer an invocation, releasing its pool slot.
    *
    * Not AZ_NODISCARD: best-effort response send, commonly fire-and-forget.
+   * A send refused for a reason that can pass keeps the slot until the response
+   * timeout, so a caller that ignores the result costs that slot a delay.
    *
    * An invocation that is never answered has its slot reclaimed once its
    * response timeout passes, so dropping one costs a delay rather than the
@@ -125,12 +135,25 @@ extern "C"
    * this SDK does not keep. Do not hold a request across the teardown of the
    * client that issued it.
    *
-   * @return AZ_IOT_ERR_TIMEOUT if @p request has passed its response timeout --
-   *         nothing is sent and the slot is released;
+   * @return AZ_IOT_ERR_TIMEOUT if @p request has passed its response timeout while
+   *         it still holds its slot -- nothing is sent and the slot is released;
+   *         AZ_IOT_ERR_NOT_CONNECTED if the session it arrived on has ended, even past
+   *         its response timeout once the session end reclaimed the slot -- nothing
+   *         is sent, as the call already failed service-side. Kept even after its
+   *         slot is reused, until the slot ends another invocation the same way;
+   *         after that, AZ_IOT_ERR_INVALID_ARG;
+   *         AZ_IOT_ERR_BUSY if the connection is still setting up (a method can
+   *         arrive before every subscription is acknowledged) -- nothing is sent
+   *         and the request stays answerable: answer it again once connected;
+   *         any other send error but AZ_IOT_ERR_INVALID_ARG (e.g. AZ_IOT_ERR_BUSY,
+   *         AZ_IOT_ERR_MQTT, or AZ_IOT_ERR_NOT_ENOUGH_SPACE for a payload too large
+   *         for the adapter; an adapter AZ_IOT_ERR_TIMEOUT is returned as
+   *         AZ_IOT_ERR_BUSY) -- nothing is sent and the request stays answerable until
+   *         its response timeout, or AZ_IOT_ERR_NOT_CONNECTED once its session ends;
    *         AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH if @p request came from a
    *         mqttv5 client; AZ_IOT_ERR_INVALID_ARG if it was already answered, if
-   *         its slot was reclaimed and reused, or if it never came from this
-   *         client.
+   *         its slot was reclaimed on timeout and reused, or if it never came from
+   *         this client.
    */
   az_iot_result az_iot_mqttv3_direct_method_respond(
       az_iot_mqttv3_direct_method_client* client,
