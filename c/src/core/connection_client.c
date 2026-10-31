@@ -1062,8 +1062,10 @@ static void complete_publish(
   }
 }
 
-/** @brief Destroys the hub session, completes its pending PUBACKs and tells feature observers
- * it ended for @p reason. */
+static void fail_open_csr(az_iot_connection_client* c, az_iot_result status);
+
+/** @brief Destroys the hub session, completes its pending PUBACKs, fails an open certificate
+ * renewal and tells feature observers it ended for @p reason. */
 static void end_session(az_iot_connection_client* c, az_iot_connection_session_end_reason reason)
 {
   if (c->active_client && c->active_client->iface && c->active_client->iface->destroy)
@@ -1110,6 +1112,12 @@ static void end_session(az_iot_connection_client* c, az_iot_connection_session_e
     {
       complete_publish(c, cb, result_cb, user_ctx, AZ_IOT_ERR_NOT_CONNECTED, NULL);
     }
+  }
+
+  /* Its response would have come on this session. */
+  if (c->csr_op.in_use)
+  {
+    fail_open_csr(c, AZ_IOT_ERR_NOT_CONNECTED);
   }
 
   /* Tell the feature clients the session is gone. A twin GET correlated by
@@ -6334,6 +6342,7 @@ AZ_NODISCARD az_iot_connection_client_options az_iot_connection_client_options_d
   opts.identity_recovery.policy = az_iot_connection_client_get_default_identity_recovery_policy();
   opts.identity_recovery.mode = AZ_IOT_IDENTITY_RECOVERY_RETRY_HUB;
   opts.max_unconfirmed_delivery_timeout_ms = AZ_IOT_DEFAULT_MAX_UNCONFIRMED_DELIVERY_TIMEOUT_MS;
+  opts.csr_response_timeout_ms = AZ_IOT_DEFAULT_CSR_RESPONSE_TIMEOUT_MS;
   return opts;
 }
 
@@ -6772,6 +6781,10 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_init(
     client->opts.max_unconfirmed_delivery_timeout_ms
         = AZ_IOT_DEFAULT_MAX_UNCONFIRMED_DELIVERY_TIMEOUT_MS;
   }
+  if (client->opts.csr_response_timeout_ms == 0u)
+  {
+    client->opts.csr_response_timeout_ms = AZ_IOT_DEFAULT_CSR_RESPONSE_TIMEOUT_MS;
+  }
   client->opts.limits = limits;
   memset(workspace_of(client), 0, workspace_size);
   workspace_assign(client, workspace_of(client));
@@ -6865,6 +6878,8 @@ void az_iot_connection_client_deinit(az_iot_connection_client* client)
   {
     memset(&client->feature_observers[i], 0, sizeof(client->feature_observers[i]));
   }
+  /* And for an open certificate renewal. */
+  client->csr_op.in_use = false;
   release_material(client, AZ_IOT_CONN_SCOPE_DPS);
   release_material(client, AZ_IOT_CONN_SCOPE_HUB);
   teardown_active(client);
@@ -7781,14 +7796,7 @@ static az_iot_result do_work_pass(az_iot_connection_client* client, uint32_t tim
    * slot is not stuck BUSY for the life of the connection. */
   if (client->csr_op.in_use && az_iot_time_mono_ms() >= client->csr_op.deadline_ms)
   {
-    az_iot_csr_callback cb = client->csr_op.cb;
-    void* uc = client->csr_op.user_ctx;
-    client->csr_op.in_use = false;
-    puback_abandon(client, &client->csr_op);
-    az_iot_csr_event evt;
-    csr_event_init(&evt, AZ_IOT_CSR_FAILED);
-    evt.status = AZ_IOT_ERR_TIMEOUT;
-    report_csr_event(client, cb, &evt, uc);
+    fail_open_csr(client, AZ_IOT_ERR_TIMEOUT);
   }
 
   /* Fail a stalled MQTTv5 presence (birth) handshake so a missing SUBACK or
@@ -9356,7 +9364,6 @@ static void drop_subscriptions_from_other_generations(az_iot_connection_client* 
 #define CSR_RES_PREFIX "$iothub/credentials/res/"
 #define CSR_RES_FILTER "$iothub/credentials/res/#"
 #define CSR_MAX_BASE64 8192 /* service cap: CSR <= 8 KB */
-#define CSR_OP_TIMEOUT_MS 120000u /* give up on a renewal with no terminal response after 2 min */
 
 /* Hub renewal request: publish topic + body formats. */
 #define CSR_RENEW_TOPIC_PREFIX "$iothub/credentials/POST/issueCertificate/?$rid="
@@ -9407,6 +9414,24 @@ static void report_csr_event(
     cb(evt, user_ctx);
     leave_callback(c);
   }
+}
+
+/** @brief Ends the open renewal with AZ_IOT_CSR_FAILED and @p status, freeing its slot first. */
+static void fail_open_csr(az_iot_connection_client* c, az_iot_result status)
+{
+  az_iot_csr_callback cb = c->csr_op.cb;
+  void* uc = c->csr_op.user_ctx;
+  c->csr_op.in_use = false;
+  puback_abandon(c, &c->csr_op);
+  AZ_IOT_LOG_WARNF(
+      AZ_IOT_LOG_COMPONENT_CONNECTION,
+      "certificate renewal request %s failed (%s)",
+      c->csr_op.request_id,
+      az_iot_result_to_string(status));
+  az_iot_csr_event evt;
+  csr_event_init(&evt, AZ_IOT_CSR_FAILED);
+  evt.status = status;
+  report_csr_event(c, cb, &evt, uc);
 }
 
 /**
@@ -9579,8 +9604,7 @@ static void csr_parse_error(az_span payload, csr_error_info* out)
 
 /**
  * @brief PUBACK for a renewal request. A rejection completes the operation now instead of at
- *        CSR_OP_TIMEOUT_MS. A session that ended first does not: the response may still arrive
- *        on the next one, as for a request acknowledged before the drop.
+ *        opts.csr_response_timeout_ms. NOT_CONNECTED is left to end_session(), which fails it.
  *
  * Cancel and timeout abandon the request's slot, so an ack that still matches one is always for
  * the open operation.
@@ -9592,18 +9616,7 @@ static void on_csr_puback(az_iot_result status, void* user_ctx)
   {
     return;
   }
-  az_iot_csr_callback cb = c->csr_op.cb;
-  void* uc = c->csr_op.user_ctx;
-  c->csr_op.in_use = false;
-  AZ_IOT_LOG_WARNF(
-      AZ_IOT_LOG_COMPONENT_CONNECTION,
-      "certificate renewal request %s rejected (%s)",
-      c->csr_op.request_id,
-      az_iot_result_to_string(status));
-  az_iot_csr_event evt;
-  csr_event_init(&evt, AZ_IOT_CSR_FAILED);
-  evt.status = status;
-  report_csr_event(c, cb, &evt, uc);
+  fail_open_csr(c, status);
 }
 
 /**
@@ -9697,7 +9710,7 @@ static void on_csr_response(void* user_ctx, const az_iot_mqtt_message* msg)
   {
     /* Accepted: signing in progress; keep the op open for the 200/error and
      * extend the deadline so a slow-but-alive signer is not timed out. */
-    c->csr_op.deadline_ms = az_iot_time_mono_ms() + CSR_OP_TIMEOUT_MS;
+    c->csr_op.deadline_ms = az_iot_time_mono_ms() + c->opts.csr_response_timeout_ms;
     evt.kind = AZ_IOT_CSR_ACCEPTED;
     evt.status = AZ_IOT_OK;
     report_csr_event(c, cb, &evt, uc);
@@ -9889,7 +9902,7 @@ static az_iot_result csr_publish(
   msg.qos = AZ_IOT_MQTT_QOS_1;
 
   client->csr_op.in_use = true;
-  client->csr_op.deadline_ms = az_iot_time_mono_ms() + CSR_OP_TIMEOUT_MS;
+  client->csr_op.deadline_ms = az_iot_time_mono_ms() + client->opts.csr_response_timeout_ms;
 
   az_iot_result r
       = az_iot_connection_client__publish(client, &client->csr_op, &msg, on_csr_puback, client);

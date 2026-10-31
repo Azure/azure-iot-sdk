@@ -4,6 +4,12 @@
 
 ### Features Added
 
+- Certificate renewal: `az_iot_connection_client_options::csr_response_timeout_ms` sets how long
+  `az_iot_connection_client_send_csr()` waits for a terminal response (0: 120 s,
+  `AZ_IOT_DEFAULT_CSR_RESPONSE_TIMEOUT_MS`). A renewal open when the session ends (a drop or
+  `close()`) now fails with `AZ_IOT_CSR_FAILED` / `AZ_IOT_ERR_NOT_CONNECTED` instead of staying
+  open; resubmit it with the same request id once reconnected. `deinit()` calls no renewal
+  callback.
 - Software updates: the update request, file URL, workflow and install-result types are the SDK's
   own; `az_iot_su.h` no longer includes azure-sdk-for-c's `az_iot_adu_client.h`, and an installed
   azure-sdk-for-c no longer needs the `AZ_IOT_SU_MAX_*` limits. Breaking:
