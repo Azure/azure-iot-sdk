@@ -1139,6 +1139,14 @@ static void adopt_session(az_iot_mqttv5_twin_client* t)
 static void on_hub_connected(az_iot_mqttv5_twin_client* t)
 {
   adopt_session(t);
+  /* A snapshot overdue from the previous session would otherwise block this catch-up, then
+   * expire with no replacement. Expiring may run callbacks that deinitialize the client. */
+  az_iot_delivery_tracker_binding const bound = az_iot_delivery_tracker__binding(&TI(t).tracker);
+  az_iot_delivery_tracker__expire_overdue(&TI(t).tracker);
+  if (!az_iot_delivery_tracker__has_binding(&TI(t).tracker, bound))
+  {
+    return;
+  }
   if (!az_iot_connection_client__twin_push_desired(TI(t).conn) || TI(t).desired_snapshot_required
       || TI(t).desired_catch_up_pending)
   {

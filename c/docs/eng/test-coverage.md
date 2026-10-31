@@ -11,7 +11,7 @@ Scope: Azure IoT C SDK (`c/`). One table per feature area.
 | Status | `Done` = implemented and running in CI. `Pending` = not implemented. |
 | Code Location | Implementing function, deep-linked to its definition line on `main`. Pending rows name the file the test belongs in. |
 
-Types: **unit** = cmocka + fake MQTT adapter, no network (`c/tests/unit`); **conformance** = live MQTT broker via `AZ_IOT_MQTT_BROKER_HOST`, no Azure service (`c/tests/conformance`); **integration** = the genuine Paho + OpenSSL stack driven against the in-process test proxy (`c/tests/integration`); **e2e** = real DPS + IoT Hub with the Paho adapter (`c/tests/e2e`).
+Types: **unit** = cmocka + fake MQTT adapter, no network (`c/tests/unit`); **conformance** = live MQTT broker via `AZ_IOT_MQTT_BROKER_HOST`, no Azure service (`c/tests/conformance`); **integration** = the genuine Paho + OpenSSL stack driven against the in-process test proxy (`c/tests/integration`); **e2e** = real DPS + IoT Hub over both MQTT adapters (Paho, az_mqtt), on Linux and Windows except [End-to-end on Windows](#end-to-end-on-windows) (`c/tests/e2e`).
 
 Areas: [Connection](#connection) · [Telemetry](#telemetry-device-to-cloud) ·
 [Cloud-to-device](#cloud-to-device-messages) · [Direct methods](#direct-methods) ·
@@ -1037,7 +1037,7 @@ subscriber registry. Wire format and status codes per
 | | mqttv5: a desired change missed offline arrives on reconnect | Pull mode: a snapshot at the REST twin's desired `$version`. | e2e | Done | [desired_missed_offline_is_picked_up_on_reconnect](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/e2e/tests/e2e_mqttv5_twin_test.c#L1234) |
 | | mqttv5: a late desired handler gets a snapshot | Push mode; after the handler is set to NULL nothing is delivered. | e2e | Done | [late_desired_handler_gets_snapshot](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/e2e/tests/e2e_mqttv5_twin_test.c#L1248) |
 | | mqttv5: a request in flight when the session drops is answered after the reconnect | A second connection with the same identity evicts the session while four GETs are kept in flight (each answer replaced at once): those the drop finds are sent again after the automatic reconnect and answered `AZ_IOT_OK`; any failure fails the test. Three evictions without a GET in flight fail as an unmet precondition. | e2e | Done | [request_in_flight_when_session_drops_is_answered_after_reconnect](../../tests/e2e/tests/e2e_mqttv5_twin_test.c) |
-| | mqttv5: requests on the delivery tracker | A refused GET is sent again by the next `do_work()`; a refused or disconnected reported patch returns `AZ_IOT_ERR_BUSY` / `AZ_IOT_ERR_NOT_CONNECTED` and holds no slot; a refused snapshot GET is sent again; at a session end the snapshot and every GET are sent again under their ids; a GET made while disconnected is sent once connected; the connection's `do_work()` alone times a request out; a patch from a callback the patch call runs is refused BUSY and the outer patch keeps its bytes; a client deinitialized by a callback during a request call or an answer is not touched again; a refused GET is retried within the retry interval with every PUBACK slot taken; the encode buffer cannot be replaced during a call; hub CONNECTED handling stops when a callback deinitializes the client; a snapshot refused during another call is issued on a later TICK. | unit | Done | [mqttv5_twin_client_test.c](../../tests/unit/mqttv5_twin_client_test.c) |
+| | mqttv5: requests on the delivery tracker | A refused GET is sent again by the next `do_work()`; a refused or disconnected reported patch returns `AZ_IOT_ERR_BUSY` / `AZ_IOT_ERR_NOT_CONNECTED` and holds no slot; a refused snapshot GET is sent again; at a session end the snapshot and every GET are sent again under their ids; a GET made while disconnected is sent once connected; the connection's `do_work()` alone times a request out; a patch from a callback the patch call runs is refused BUSY and the outer patch keeps its bytes; a client deinitialized by a callback during a request call or an answer is not touched again; a refused GET is retried within the retry interval with every PUBACK slot taken; the encode buffer cannot be replaced during a call; hub CONNECTED handling stops when a callback deinitializes the client; a snapshot expired before CONNECTED is replaced there; a snapshot refused during another call is issued on a later TICK. | unit | Done | [mqttv5_twin_client_test.c](../../tests/unit/mqttv5_twin_client_test.c) |
 | | mqttv5: a desired change during an outage arrives on reconnect | Push mode: desired patched while the evicted device waits to reconnect, without pumping it; after the automatic reconnect the handler gets it at the REST twin's desired `$version`. | e2e | Done | [desired_change_during_outage_is_fetched_on_reconnect](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/e2e/tests/e2e_mqttv5_twin_test.c#L1455) |
 | | mqttv5: the request timeout completes an unanswered request | A 1 ms timeout with the twin client pumped completes the GET `TIMEOUT`; with the default restored a GET succeeds on the same session. | e2e | Done | [request_timeout_completes_unanswered_request](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/e2e/tests/e2e_mqttv5_twin_test.c#L1492) |
 | | mqttv5: the pending request limit is enforced | `AZ_IOT_TWIN_MAX_PENDING` GETs are accepted back to back, the next is refused `NOT_SUPPORTED`; every accepted one completes `AZ_IOT_OK`. | e2e | Done | [pending_request_limit_is_enforced](https://github.com/Azure/azure-iot-sdk/blob/main/c/tests/e2e/tests/e2e_mqttv5_twin_test.c#L1524) |
@@ -2003,6 +2003,16 @@ at all.
 | Reconnect restores feature clients | Depends entirely on the row above for a way to force the drop; the assertions themselves (twin/method/C2D after recovery) are straightforward once it exists. |
 | Long haul connection stability | Multi-hour runtime. This does not belong on a PR gate at all — it needs a scheduled job with its own timeout budget and leak/reconnect-counter reporting. |
 | Connect with wrong device id rejected | An identity provisioned in DPS but absent from (or disabled in) the hub, created and torn down by the provisioning step. The e2e resource provisioning is [downloaded at runtime from `Azure/iot-sdks-e2e-fx`](https://github.com/Azure/iot-sdks-e2e-fx), so the fixture change lands in that repository, not this one. |
+
+### End-to-end on Windows
+
+e2e rows run on Windows too, except these suites ([why](end-to-end-tests.md#not-run-on-windows)):
+
+| Suites | Reason |
+| --- | --- |
+| Custody (`e2e_custody_test.c`, `e2e_mqttv5_custody_test.c`) | Technical: no OpenSSL pkcs11 provider for MSVC; Schannel takes no key references. |
+| AMQP transport SIGPIPE (`e2e_amqp_transport_sigpipe_test.c`) | Technical: Windows has no SIGPIPE. |
+| Software updates (`e2e_su_test.c`, `e2e_su_offer_test.c`) | Not built on Windows yet. |
 
 
 ## Defects and limitations
