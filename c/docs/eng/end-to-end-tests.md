@@ -24,7 +24,8 @@ The infrastructure was designed to satisfy these requirements:
   own isolated resource group.
 - **Long-running suites out of PRs.** Software updates e2e needs a DPS, ADR namespace and
   Device Update instance linked together, so it runs in its own workflow, not on PRs.
-- **Cross-platform.** Every scenario runs on both Windows and Linux hosts (software updates e2e: Linux only).
+- **Cross-platform.** Every scenario runs on both Windows and Linux hosts, except those in
+  [Not run on Windows](#not-run-on-windows).
 
 ---
 
@@ -194,7 +195,8 @@ its policy signs the device delete, sent to the `IOTHUB_CONNECTION_STRING` host)
   (`AZ_IOT_E2E_PROXY_LOG`) must show the CONNECT to DPS, then to the hub. A proxy on a closed port
   keeps the device off the hub and sends nothing, through DPS and on a direct mqttv5 hub connect
   to the assigned hub. Needs `AZ_IOT_PROXY_HOST`/`_PORT`; fails without them. `ci-c-e2e-mqttv5`
-  (tinyproxy on the runner).
+  (tinyproxy on Linux; [`eng/e2e-connect-proxy.py`](../../eng/e2e-connect-proxy.py) on Windows,
+  which logs the same CONNECT lines).
 - [`e2e_mqttv5_direct_method_test.c`](../../tests/e2e/tests/e2e_mqttv5_direct_method_test.c) —
   methods invoked through the service REST API. Answers (200, 500, no payload, a result body of
   exactly `AZ_IOT_MQTTV5_DM_RESULT_BODY_MAX`) reach the caller; undeclared, wrong-case, withdrawn,
@@ -326,7 +328,8 @@ keyed on `E2E_CSR_SHARED_ID_SCOPE`. It needs its own certificate-management envi
 (ADR-linked hub and DPS; a DPS without a managed identity cannot be linked), so it
 cannot reuse the one above. Each run issues a bootstrap device with
 `e2e-shared-device.ps1 -Csr` from secret `E2E_CSR_SHARED_GROUP_CA` (the group's issuing
-CA certificate and key, then its root). `E2E_CSR_SHARED_DPS_HOST` optionally sets the DPS
+CA certificate and key, then its root); its Linux and Windows legs each issue their own. A
+provisioned run has one bootstrap device, so its legs run one after the other. `E2E_CSR_SHARED_DPS_HOST` optionally sets the DPS
 device endpoint. `E2E_CSR_SHARED_SAS_GROUP_KEY` is the key of a symmetric-key group linked
 to the same certificate policy.
 
@@ -349,7 +352,9 @@ resource group once: those survive the namespace, so the job creates none and ne
 assignment write unless the namespace identity changes.
 
 [`ci-c-e2e-mqttv5.yml`](../../../.github/workflows/ci-c-e2e-mqttv5.yml) runs the mqttv5 suites on
-that environment, one job per client. The twin, transport and custom topic suites run one job per
+that environment, one job per client and OS (Linux, and Windows with MSVC: Paho over OpenSSL 4.1.0,
+az_mqtt over Schannel; custody is Linux only, see [Not run on Windows](#not-run-on-windows)), each
+with its own device. The twin, transport and custom topic suites run one job per
 adapter and per shard instead (`AZ_IOT_TEST_SHARD=<index>/<count>`, see
 [`test_shard.h`](../../tests/support/test_shard.h)), each with its own device, so their cases run in
 parallel. On schedule and manual runs the namespace job runs first; pull
@@ -443,6 +448,19 @@ multi-step updates, and reboot/resume.
 
 ---
 
+## Not run on Windows
+
+Every other e2e suite runs on Linux and on Windows (MSVC; Paho over OpenSSL 4.1.0, az_mqtt over
+Schannel), on every pull request and main run of its workflow.
+
+| Suite | Why |
+| --- | --- |
+| `az_iot_tests_e2e_custody`, `az_iot_tests_e2e_mqttv5_custody` | The device key is in a PKCS#11 token (SoftHSM2) reached through the OpenSSL pkcs11 provider. The provider has no MSVC build (it needs a POSIX `dl` library) and the runner's OpenSSL is an MSVC build. az_mqtt on Windows uses Schannel, which takes no key references. |
+| `az_iot_tests_e2e_amqp_transport_sigpipe` | Tests SIGPIPE, which Windows does not have. |
+| `az_iot_tests_e2e_su`, `az_iot_tests_e2e_su_offer` (`ci-c-e2e-adu`) | Not built on Windows yet. |
+
+---
+
 ## Conventions & gotchas
 
 - **Always a real gate, never a skip.** The suite connects the device and
@@ -452,8 +470,9 @@ multi-step updates, and reboot/resume.
   against real Azure resources (the ci-c-e2e pipeline, or a deliberate local run
   with the e2e-fx config dot-sourced), so there is no "skipped but green" path to
   hide a broken setup.
-- **CA bundle without downloads.** Linux uses the OpenSSL system bundle; Windows
-  exports the machine `Root` store. Avoid fetching roots over the network.
+- **CA bundle without downloads.** [`eng/e2e-trusted-ca.ps1`](../../eng/e2e-trusted-ca.ps1)
+  writes it: the OpenSSL system bundle on Linux, the `Root` stores on Windows. Avoid
+  fetching roots over the network.
 - **TLS state per connection.** The vendored reference transport keeps each
   connection's TLS state (Schannel on Windows, OpenSSL on Linux) in its own
   storage, so service connections can be open at the same time.
