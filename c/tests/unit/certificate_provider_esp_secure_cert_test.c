@@ -4,9 +4,9 @@
 
 /* SPDX-License-Identifier: MIT */
 /* The esp_secure_cert certificate provider on the desktop, over fakes of esp_secure_cert_mgr and
- * PSA (support/fake_esp_secure_cert). Built twice: with CONFIG_ESP_SECURE_CERT_DS_PERIPHERAL (the
- * key is a PSA key over the DS context) and without (the key is the partition's PEM). Both run the
- * certificate provider contract suite. */
+ * PSA (support/fake_esp_secure_cert). Built three times: with CONFIG_ESP_SECURE_CERT_DS_PERIPHERAL
+ * (the key is a PSA key over the DS context), with TLS 1.2 or also TLS 1.3, and without (the key is
+ * the partition's PEM). Each runs the certificate provider contract suite. */
 #include <stdarg.h>
 #include <stddef.h>
 #include <setjmp.h>
@@ -138,6 +138,12 @@ static void the_ds_context_becomes_a_psa_signing_key(void** state)
   assert_int_equal(2048, a->bits);
   assert_int_equal(PSA_KEY_USAGE_SIGN_HASH, a->usage);
   assert_int_equal(PSA_ALG_RSA_PKCS1V15_SIGN(PSA_ALG_ANY_HASH), a->algorithm);
+#if defined(CONFIG_MBEDTLS_SSL_PROTO_TLS1_3)
+  assert_int_equal(
+      PSA_ALG_RSA_PSS(PSA_ALG_ANY_HASH), a->enrollment_algorithm); // TLS 1.3 signs PSS.
+#else
+  assert_int_equal(0, a->enrollment_algorithm);
+#endif
   assert_ptr_equal(p.ds_context, g_fake_esp_secure_cert.imported_ds_context);
 
   az_iot_certificate_material m;

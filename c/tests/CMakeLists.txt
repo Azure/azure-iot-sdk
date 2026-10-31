@@ -660,8 +660,8 @@ if(OPENSSL_FOUND)
     endif()
 
     # The ESP32 esp_secure_cert provider over desktop fakes, with the key as a PSA key over the
-    # DS context (_ds) and as the partition's PEM (_pem).
-    foreach(_keys ds pem)
+    # DS context (_ds; _ds_tls13 with TLS 1.3) and as the partition's PEM (_pem).
+    foreach(_keys ds ds_tls13 pem)
         set(_t az_iot_tests_certificate_provider_esp_secure_cert_${_keys})
         az_iot_add_cmocka_test(${_t}
             unit/certificate_provider_esp_secure_cert_test.c
@@ -674,8 +674,11 @@ if(OPENSSL_FOUND)
             ${PROJECT_SOURCE_DIR}/adapters/cert_esp_secure_cert
             ${PROJECT_SOURCE_DIR}/src/core)
         target_link_libraries(${_t} PRIVATE OpenSSL::Crypto)
-        if(_keys STREQUAL "ds")
+        if(_keys MATCHES "^ds")
             target_compile_definitions(${_t} PRIVATE CONFIG_ESP_SECURE_CERT_DS_PERIPHERAL)
+        endif()
+        if(_keys STREQUAL "ds_tls13")
+            target_compile_definitions(${_t} PRIVATE CONFIG_MBEDTLS_SSL_PROTO_TLS1_3)
         endif()
         # Instrumented: the provider source is shipped; gcovr excludes tests/ (the fakes).
         az_iot_apply_coverage(${_t})

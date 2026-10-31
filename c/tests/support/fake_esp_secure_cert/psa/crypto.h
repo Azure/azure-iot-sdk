@@ -23,6 +23,7 @@ typedef uint32_t psa_key_usage_t;
 #define PSA_KEY_USAGE_SIGN_HASH ((psa_key_usage_t)0x1000)
 #define PSA_ALG_ANY_HASH ((psa_algorithm_t)0x020000ff)
 #define PSA_ALG_RSA_PKCS1V15_SIGN(hash) ((psa_algorithm_t)(0x06000200 | ((hash) & 0xff)))
+#define PSA_ALG_RSA_PSS(hash) ((psa_algorithm_t)(0x06000300 | ((hash) & 0xff)))
 
 /** @brief What the provider sets, so a test can check it. */
 typedef struct psa_key_attributes_t
@@ -31,6 +32,7 @@ typedef struct psa_key_attributes_t
   size_t bits;
   psa_key_usage_t usage;
   psa_algorithm_t algorithm;
+  psa_algorithm_t enrollment_algorithm;
   psa_key_lifetime_t lifetime;
 } psa_key_attributes_t;
 
@@ -42,6 +44,7 @@ typedef struct psa_key_attributes_t
 #define psa_set_key_bits(a, b) ((a)->bits = (b))
 #define psa_set_key_usage_flags(a, u) ((a)->usage = (u))
 #define psa_set_key_algorithm(a, alg) ((a)->algorithm = (alg))
+#define psa_set_key_enrollment_algorithm(a, alg) ((a)->enrollment_algorithm = (alg))
 #define psa_set_key_lifetime(a, l) ((a)->lifetime = (l))
 
 psa_status_t psa_crypto_init(void);
