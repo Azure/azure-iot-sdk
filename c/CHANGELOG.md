@@ -50,7 +50,13 @@
   enumerator.
 - Software updates: `az_iot_su_download_handler` and `az_iot_su_client_config_options::download_handlers`
   register handlers that build a file from a related file (e.g. a delta), matched by the manifest's
-  `downloadHandler` id. `az_iot_su_client_init()` validates them; the client does not call them yet.
+  `downloadHandler` id. `az_iot_su_client_init()` validates them.
+- Software updates: the managed client builds each file that names a registered download handler
+  from the related file the handler chooses, verifying the related and the built file's SHA-256.
+  If that fails, the file is downloaded in full and its step reports `SUCCEEDED` with an
+  `AZ_IOT_SU_FACILITY_DELTA` (`0xA`) extended result code (`AZ_IOT_SU_DELTA_ERROR_*` sub-codes)
+  and short result details. `workflow_succeeded_fn` is called once a workflow with such a file
+  succeeds. `download_fn` and `read_file_fn` also get related files.
 - Software updates: the parsed manifest keeps each file's `mimeType`, `properties`,
   `downloadHandler` id and related files (`relatedFiles`, delta updates), and the request accepts
   their `fileUrls`. New `az_iot_su_limits::max_related_files` (default

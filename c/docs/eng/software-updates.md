@@ -327,6 +327,8 @@ manifest before the file is eligible for Install:
 3. On mismatch, the client MUST treat the file as a download failure: it MUST
    discard the file and transition to `Failed` (the deployment does not proceed
    to Backup/Install). It MUST NOT retry indefinitely within a single workflow.
+   A file built by a download handler is downloaded in full instead (Delta Downloads
+   below).
 4. `DownloadStarted → DownloadComplete` occurs only after **every** file for the
    current step has passed hash verification.
 
@@ -335,6 +337,68 @@ the state machine advance to `BackupStarted`/`InstallStarted`. This ordering —
 authenticate the manifest, *then* trust its hashes, *then* verify payloads — is
 mandatory; verifying payload hashes from an unverified manifest provides no
 security.
+
+### Delta Downloads (Download Handlers)
+
+A manifest file MAY name a download handler (`downloadHandler.id`, e.g. `microsoft/delta:1`) and
+list related files (e.g. deltas from earlier versions). The application registers
+`az_iot_su_download_handler` entries at init (§5.1). In DownloadStarted, for each file whose
+`download_handler_id` is set while at least one handler is registered, the client runs these
+phases, each in its own `do_work()` call while a hook returns `AZ_IOT_SU_RESULT_IN_PROGRESS`
+and in the same call otherwise. After a fallback the full download starts on the next `do_work()`,
+so `download_fn` is called at most once per call:
+
+1. **Choose.** The handler with the file's id gets `choose_related_file_fn` and picks one of the
+   file's related files (not called when the file has none).
+2. **Download related.** `download_fn` downloads the chosen related file from its `fileUrls` URL,
+   with the file's position in the step as `file_index`; core checks its SHA-256 against the
+   related file's signed hash with `read_file_fn`.
+3. **Build.** `build_file_from_related_fn` builds the file from the related file.
+4. **Verify.** Core checks the built file's SHA-256 against the file's signed hash with
+   `read_file_fn`, as for a downloaded file.
+
+```mermaid
+flowchart LR
+    F[file names a handler] --> H{handler registered?}
+    H -- no --> X[full download]
+    H -- yes --> C[choose_related_file_fn] --> D[download_fn related] --> RH{related hash ok?}
+    RH -- yes --> B[build_file_from_related_fn] --> BH{built hash ok?}
+    BH -- yes --> N[next file]
+    C -. failure .-> X
+    D -. failure .-> X
+    RH -- no --> X
+    B -. failure .-> X
+    BH -- no --> X
+    X --> FH{hash ok?}
+    FH -- yes --> N
+    FH -- no --> FAIL[Failed: facility 0x2 / 0x3]
+```
+
+A file that cannot be built is logged (`WARNING`) and downloaded in full, then verified as usual.
+Its step keeps the first fallback's facility `0xA` code, and when its details are still empty and
+fit, a short text such as `full download: build from related file failed`. A step that succeeds
+reports outcome `SUCCEEDED`, failure origin `NOT_APPLICABLE` and result code `700` with that code;
+the overall result carries the first step's. If the full download fails too, the step fails with
+facility `0x2` (or `0x3`) as any download does. A file built from a related file reports no
+extended code.
+
+| Sub-code | Name | Cause | Details |
+|---|---|---|---|
+| `0x1` | `NO_HANDLER` | handlers are registered, none has the file's id | `full download: no download handler` |
+| `0x2` | `NO_SOURCE` | no related file, `choose_related_file_fn` failed, or chose an index out of range | `full download: no source` |
+| `0x3` | `RELATED_DOWNLOAD` | no URL for the related file, or `download_fn` failed | `full download: related file download failed` |
+| `0x4` | `RELATED_HASH` | related file SHA-256 ≠ its signed hash | `full download: related file hash mismatch` |
+| `0x5` | `BUILD` | `build_file_from_related_fn` failed | `full download: build from related file failed` |
+| `0x6` | `BUILT_HASH` | built file SHA-256 ≠ the file's signed hash | `full download: built file hash mismatch` |
+
+With no handler registered, or for a file naming none, files are downloaded in full with no code,
+as before. Once the workflow succeeds (just before its `SUCCEEDED` report), each registered handler with a
+`workflow_succeeded_fn` whose id a manifest file names is called once, in registration order,
+whether its files were built or downloaded in full (e.g. to keep them as sources for later
+updates); it is not called for a `FAILED` or `SKIPPED` workflow. A new workflow that replaces the
+current one (§4 Cancellation) drops a file being built as it drops a download. The persisted
+record (§4 Persistence) keeps no phase: a step resumed after a reboot starts its files again from
+**Choose**. Library mode (§5.3) refuses download handlers and runs none of this.
 
 ### Device Properties on the Wire
 
@@ -429,6 +493,7 @@ defines a structured layout:
 | `0x7` | Restore | `restore_fn` failed (rollback itself failed) |
 | `0x8` | Persist | `persist_workflow_state_fn` kept failing at a reboot boundary (`AZ_IOT_SU_PERSIST_MAX_ATTEMPTS`); low bits carry its last return value |
 | `0x9` | Superseded | reserved for `AZ_IOT_SU_REPLACEMENT_ROLLBACK` (not yet supported) |
+| `0xA` | Delta | a file naming a download handler was downloaded in full (sub-codes in Delta Downloads above); reported on a `SUCCEEDED` step |
 | `0xF` | Internal / client | parser, state, or buffer error inside the software updates client |
 
 The low 28 bits MUST carry the originating hook's raw return value (or an SDK
@@ -802,7 +867,7 @@ typedef struct az_iot_su_platform_hooks
     void* user_ctx;
 } az_iot_su_platform_hooks;
 
-/* --- Download handlers (OPTIONAL; not called yet) ------------------------ */
+/* --- Download handlers (OPTIONAL) ---------------------------------------- */
 
 /**
  * Produces a file from a related file (e.g. a delta) instead of downloading
@@ -811,7 +876,9 @@ typedef struct az_iot_su_platform_hooks
  * the import manifest's limit). Registered through
  * az_iot_su_client_config_options::download_handlers. Core verifies the
  * related and the built file with read_file_fn, and downloads the file in full
- * whenever a handler cannot produce it.
+ * whenever a handler cannot produce it (§4 Delta Downloads). download_fn and
+ * read_file_fn also get the related file, with the file's position in the step
+ * as file_index.
  */
 typedef struct az_iot_su_download_handler
 {
@@ -826,7 +893,8 @@ typedef struct az_iot_su_download_handler
         const az_iot_su_client_update_manifest_file* related_file,
         uint32_t file_index,
         void* user_ctx);
-    /* OPTIONAL: after a workflow that used the handler succeeds. */
+    /* OPTIONAL: once a workflow with a file naming the handler succeeds
+     * (before its SUCCEEDED report), built or downloaded in full. */
     void (*workflow_succeeded_fn)(
         const az_iot_su_client_update_manifest* manifest,
         void* user_ctx);
@@ -958,7 +1026,7 @@ typedef struct az_iot_su_client
  *     AZ_IOT_SU_REPLACEMENT_ROLLBACK (not yet supported).
  *   download_handlers / download_handler_count: az_iot_su_download_handler
  *     entries with distinct ids, referenced (they MUST outlive the client).
- *     Need hooks->read_file_fn; refused in library_mode. Not called yet.
+ *     Need hooks->read_file_fn; refused in library_mode.
  */
 typedef struct az_iot_su_client_config_options
 {
@@ -1313,7 +1381,8 @@ sequenceDiagram
 - Delta updates: the manifest handed to the application carries each file's related files
   (`related_files`, up to `az_iot_su_limits::max_related_files`), `download_handler_id` and
   `properties`, and the request carries their `fileUrls`. The application's own handler applies the
-  delta; the report contract does not change.
+  delta; the report contract does not change. The client's download handlers (§4 Delta Downloads)
+  are refused in library mode.
 
 ```c
 az_iot_su_client_config_options opts = az_iot_su_client_config_options_default();
@@ -1705,11 +1774,6 @@ Operations MUST NOT be long-blocking. Each `do_work` invocation MUST process at 
   check after a conflicting report (§2).
 - **An operational channel over the IoT Hub connection.** Both routes run over DPS.
 - **A reusable conformance suite** for customer platform hooks and crypto backends.
-- **Delta updates in the managed client.** The manifest parser (§14) exposes related files,
-  `downloadHandler` and `properties`, but the managed client downloads full files; library mode is
-  the route for an application-owned delta handler.
-  Download handlers (`az_iot_su_download_handler`) can be registered and are validated at init,
-  but are not called yet.
 - **Library-mode persistence and a received-offer accessor.** A delegated update is not stored,
   and `UPDATE_AVAILABLE` is the only way to see the offer.
 
@@ -1738,7 +1802,7 @@ Operations MUST NOT be long-blocking. Each `do_work` invocation MUST process at 
 | 2 | Root key provisioning | **Both compiled-in and runtime-loadable, core-owned.** Core ships Microsoft defaults (`az_iot_su_microsoft_root_keys()`), callers MAY override at `init`. Runtime Root Key Package rotation is not implemented (§11). |
 | 3 | Manifest algorithm | **RS256 only (v1).** Core MUST reject any JWS with `alg != RS256`; the crypto backend MUST implement `verify_rs256`. |
 | 4 | Manifest version | **v5 only.** The client MUST support manifest v5. Earlier versions MUST NOT be supported. |
-| 5 | Multi-file handling | **Per-file.** `download_fn` MUST be called once per file per do_work, with `file_index`/`file_count` for progress awareness. Operations MUST NOT be long-blocking. |
+| 5 | Multi-file handling | **Per-file.** `download_fn` MUST be called at most once per do_work (for a file, or the related file a download handler chose), with `file_index`/`file_count` for progress awareness. Operations MUST NOT be long-blocking. |
 | 6 | Thread safety | **Single-threaded.** The software updates client MUST NOT use internal locks or threads. Applications that need concurrency MUST wrap externally. |
 
 ---
@@ -1811,8 +1875,8 @@ update before processing (`AZ_IOT_SU_EVENT_UPDATE_REFUSED`, `AZ_IOT_ERR_NOT_ENOU
 
 The largest status report grows 117 bytes per step, so `AZ_IOT_SU_MIN_MESSAGE_SIZE` is
 2176 + 128 × `AZ_IOT_SU_MAX_STEP_COUNT` (3456 by default; the base fits a 128-byte workflow id, fully
-escaped). Memory cost of the default limits against 2/2 on 64-bit: `az_iot_su_client` 7976 bytes
-(4008), default workspace 96400 (89424), parsed manifest
+escaped). Memory cost of the default limits against 2/2 on 64-bit: `az_iot_su_client` 7984 bytes
+(4016), default workspace 96400 (89424), parsed manifest
 3792 (592). See [client-configuration.md](../client-configuration.md#software-updates-manifest-limits).
 
 ### Not Parsed (Matches Our Non-Goals)
@@ -1821,7 +1885,7 @@ escaped). Memory cost of the default limits against 2/2 on 64-bit: `az_iot_su_cl
 |---------|--------|---------------|
 | Reference steps (`"type": "reference"`) | Not recognized (`type` skipped) | Non-Goal |
 | Detached manifest file ID | Not recognized (skipped) | Non-Goal |
-| Delta updates (`relatedFiles`, `downloadHandler`) | Kept (`related_files`, `download_handler_id`, `properties`) | Planned in the managed client, which downloads the full file until then; library mode hands them to the application's own handler |
+| Delta updates (`relatedFiles`, `downloadHandler`) | Kept (`related_files`, `download_handler_id`, `properties`) | Managed client: registered download handlers build files from related files, with a full-download fallback (§4 Delta Downloads); library mode hands them to the application's own handler |
 | `mimeType` field | Must be a string; kept as `mime_type` | Not used by the SDK |
 
 ### Additional Functionality We Build (Not in azure-sdk-for-c)
