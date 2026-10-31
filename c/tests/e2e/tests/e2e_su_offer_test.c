@@ -183,6 +183,12 @@ static void file_path(const platform* p, uint32_t index, char* out, size_t cap)
   snprintf(out, cap, "%s/f%u", p->dir, (unsigned)index);
 }
 
+/** @brief CURLOPT_WRITEFUNCTION: writes with this program's C runtime, not libcurl's (Windows). */
+static size_t write_downloaded_chunk(char* data, size_t size, size_t count, void* file)
+{
+  return fwrite(data, size, count, (FILE*)file);
+}
+
 static int32_t hook_download(
     const az_iot_su_client_update_manifest_file* file,
     az_span url,
@@ -217,6 +223,7 @@ static int32_t hook_download(
   if (c != NULL)
   {
     (void)curl_easy_setopt(c, CURLOPT_URL, url_z);
+    (void)curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, write_downloaded_chunk);
     (void)curl_easy_setopt(c, CURLOPT_WRITEDATA, f);
     (void)curl_easy_setopt(c, CURLOPT_FAILONERROR, 1L);
     (void)curl_easy_setopt(c, CURLOPT_FOLLOWLOCATION, 1L);
