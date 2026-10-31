@@ -10,6 +10,9 @@
   `az_iot_su_client_install_result` has no `step_results` (steps are in `az_iot_su_step_result`),
   and `AZ_IOT_SU_CLIENT_SERVICE_ACTION_APPLY_DEPLOYMENT` is an `az_iot_su_client_service_action`
   enumerator.
+- Software updates: `az_iot_su_download_handler` and `az_iot_su_client_config_options::download_handlers`
+  register handlers that build a file from a related file (e.g. a delta), matched by the manifest's
+  `downloadHandler` id. `az_iot_su_client_init()` validates them; the client does not call them yet.
 - Breaking: removed the Rust MQTT adapter shell, its `az_iot_rust_mqtt_*` APIs and FFI contract,
   `AZ_IOT_RUST_MQTT_WORKSPACE_SIZE`, `AZ_IOT_WITH_RUST_MQTT`, the `adapter_rust_mqtt` CMake and
   pkg-config component, and Yocto's `rust-mqtt` option. Use Paho or az_mqtt instead; the generic
