@@ -69,6 +69,10 @@
  * reconnecting anyway. */
 #define PLANNED_DISCONNECT_TIMEOUT_MS 5000u
 
+/** @brief How long a SAS renewal lets deliveries settle (PUBACKs, responses) before its
+ * disconnect: a renewal takes up to this plus PLANNED_DISCONNECT_TIMEOUT_MS. */
+#define SAS_RENEWAL_SETTLE_TIMEOUT_MS 5000u
+
 /** @brief When to ask again for a renewal token that could not be asked for. */
 #define SAS_TOKEN_RENEWAL_RETRY_MS 30000u
 
@@ -286,7 +290,7 @@ static void notify_feature_observers_of(
     az_iot_connection_feature_event_kind kind)
 {
   az_iot_connection_feature_event const event
-      = { kind, NULL, AZ_IOT_CONNECTION_SESSION_END_LOST, NULL };
+      = { kind, NULL, AZ_IOT_CONNECTION_SESSION_END_LOST, NULL, NULL };
   notify_feature_observers(c, &event);
 }
 
@@ -296,8 +300,9 @@ static void dispatch_state_event(
 {
   bool was_dispatching = c->dispatching_state;
   c->dispatching_state = true;
-  az_iot_connection_feature_event const feature_event
-      = { AZ_IOT_CONNECTION_FEATURE_EVENT_STATE, event, AZ_IOT_CONNECTION_SESSION_END_LOST, NULL };
+  az_iot_connection_feature_event const feature_event = {
+    AZ_IOT_CONNECTION_FEATURE_EVENT_STATE, event, AZ_IOT_CONNECTION_SESSION_END_LOST, NULL, NULL
+  };
   notify_feature_observers(c, &feature_event);
   for (size_t i = 0; i < c->opts.limits.max_application_state_observers; ++i)
   {
@@ -763,6 +768,7 @@ static void set_state_to(
       && new_state != AZ_IOT_CONN_STATE_CONNECTED && new_state != AZ_IOT_CONN_STATE_DISCONNECTING)
   {
     az_iot_deadline__clear(&c->planned_hub_session_end.disconnect_deadline);
+    az_iot_deadline__clear(&c->planned_hub_session_end.drain_deadline);
   }
   /* Bookkeeping that belongs to the transition itself, not to any observer, so
    * it runs whether or not anyone is watching. A settled scope has no attempt
@@ -1165,7 +1171,7 @@ static void end_session(az_iot_connection_client* c, az_iot_connection_session_e
    * torn-down session and gets a clean NOT_CONNECTED rather than publishing
    * into a half-freed adapter. */
   az_iot_connection_feature_event const event
-      = { AZ_IOT_CONNECTION_FEATURE_EVENT_SESSION_END, NULL, reason, NULL };
+      = { AZ_IOT_CONNECTION_FEATURE_EVENT_SESSION_END, NULL, reason, NULL, NULL };
   notify_feature_observers(c, &event);
 }
 
@@ -5743,6 +5749,7 @@ static void finish_planned_hub_session_end(az_iot_connection_client* c)
  */
 static void start_planned_hub_session_end(az_iot_connection_client* c, az_iot_result reason)
 {
+  az_iot_deadline__clear(&c->planned_hub_session_end.drain_deadline);
   c->planned_hub_session_end.reason = reason;
   az_iot_deadline__arm_after_ms(
       &c->planned_hub_session_end.disconnect_deadline,
@@ -5754,15 +5761,73 @@ static void start_planned_hub_session_end(az_iot_connection_client* c, az_iot_re
   }
 }
 
+/** @brief Whether a delivery on the hub session awaits its PUBACK, or a feature client's
+ *         its response. */
+static bool hub_session_has_unsettled_deliveries(az_iot_connection_client* c)
+{
+  for (size_t i = 0; i < c->opts.limits.max_pending_publishes; ++i)
+  {
+    if (c->pending_pubacks[i].in_use)
+    {
+      return true;
+    }
+  }
+  bool unsettled = false;
+  az_iot_connection_feature_event const query = { AZ_IOT_CONNECTION_FEATURE_EVENT_UNSETTLED_QUERY,
+                                                  NULL,
+                                                  AZ_IOT_CONNECTION_SESSION_END_PLANNED,
+                                                  NULL,
+                                                  &unsettled };
+  notify_feature_observers(c, &query);
+  return unsettled;
+}
+
+/** @brief A SAS renewal settling its session's deliveries: end the session once none are
+ *         left or the settle bound passed. */
+static void end_settled_session_for_sas_renewal(az_iot_connection_client* c)
+{
+  if (!az_iot_deadline__is_set(&c->planned_hub_session_end.drain_deadline))
+  {
+    return;
+  }
+  if (c->user_close)
+  {
+    az_iot_deadline__clear(&c->planned_hub_session_end.drain_deadline);
+    return;
+  }
+  bool const bound_passed = az_iot_deadline__has_passed(
+      &c->planned_hub_session_end.drain_deadline, az_iot_time_mono_ms());
+  if (!bound_passed && hub_session_has_unsettled_deliveries(c))
+  {
+    return;
+  }
+  if (bound_passed)
+  {
+    AZ_IOT_LOG_WARN(
+        AZ_IOT_LOG_COMPONENT_CONNECTION,
+        "SAS renewal: deliveries still unsettled at the settle bound; reconnecting anyway");
+  }
+  start_planned_hub_session_end(c, AZ_IOT_OK);
+}
+
 /** @brief Starts renewing the hub's SAS token. MQTT 3.1.1 cannot re-authenticate
- * a live session, so the session is ended and reconnected with a new token. */
+ * a live session, so the session is ended and reconnected with a new token, once its
+ * deliveries settle (at most SAS_RENEWAL_SETTLE_TIMEOUT_MS, and not past the token's expiry). */
 static void start_sas_token_renewal(az_iot_connection_client* c)
 {
   AZ_IOT_LOG_INFO(AZ_IOT_LOG_COMPONENT_CONNECTION, "renewing the SAS token; reconnecting");
   c->sas_token_renewal_due_ms[AZ_IOT_CONN_SCOPE_HUB] = 0;
   c->sas_token_renewal_due_unix_seconds[AZ_IOT_CONN_SCOPE_HUB] = 0;
   c->sas_token_renewal_in_progress[AZ_IOT_CONN_SCOPE_HUB] = true;
-  start_planned_hub_session_end(c, AZ_IOT_OK);
+  uint64_t const now = az_iot_time_mono_ms();
+  uint64_t settle_ms = SAS_RENEWAL_SETTLE_TIMEOUT_MS;
+  uint64_t const expiry_ms = c->sas_token_expiry_ms[AZ_IOT_CONN_SCOPE_HUB];
+  if (expiry_ms != 0u && expiry_ms - now < settle_ms)
+  {
+    settle_ms = expiry_ms > now ? expiry_ms - now : 0u;
+  }
+  az_iot_deadline__arm_after_ms(&c->planned_hub_session_end.drain_deadline, now, settle_ms);
+  end_settled_session_for_sas_renewal(c);
 }
 
 /** @brief Whether @p source authenticates with a SAS token. */
@@ -6272,7 +6337,7 @@ static void process_sas_token_request(az_iot_connection_client* c)
  * @brief @p timeout_ms, capped so a process_loop() wait ends by the next
  * connection deadline: a SAS token request's bound (none while one waits to be
  * asked, as do_work() asks it), a session's SAS token renewal, a planned hub
- * session end's disconnect bound, the presence SUBACK or birth-ack timeout, an open
+ * session end's settle and disconnect bounds, the presence SUBACK or birth-ack timeout, an open
  * certificate renewal's response timeout, or a feature observer's NEXT_DEADLINE.
  */
 static uint32_t limit_wait_to_connection_deadlines(az_iot_connection_client* c, uint32_t timeout_ms)
@@ -6341,6 +6406,9 @@ static uint32_t limit_wait_to_connection_deadlines(az_iot_connection_client* c, 
   }
   uint64_t planned_end_left
       = az_iot_deadline__remaining_ms(&c->planned_hub_session_end.disconnect_deadline, now);
+  uint64_t const settle_left
+      = az_iot_deadline__remaining_ms(&c->planned_hub_session_end.drain_deadline, now);
+  remaining = settle_left < remaining ? settle_left : remaining;
   remaining = planned_end_left < remaining ? planned_end_left : remaining;
   /* Once a planned end is under way the presence deadline has done its job; its bound counts. */
   if ((c->presence.phase == PRESENCE_PHASE_SUBSCRIBING || c->presence.phase == PRESENCE_PHASE_BIRTH)
@@ -6358,7 +6426,8 @@ static uint32_t limit_wait_to_connection_deadlines(az_iot_connection_client* c, 
       = { AZ_IOT_CONNECTION_FEATURE_EVENT_NEXT_DEADLINE,
           NULL,
           AZ_IOT_CONNECTION_SESSION_END_LOST,
-          &remaining };
+          &remaining,
+          NULL };
   notify_feature_observers(c, &deadline_query);
   return (uint64_t)timeout_ms > remaining ? (uint32_t)remaining : timeout_ms;
 }
@@ -7931,6 +8000,9 @@ static az_iot_result do_work_pass(az_iot_connection_client* client, uint32_t tim
     }
   }
 
+  /* A SAS renewal ends its session once its deliveries settle. */
+  end_settled_session_for_sas_renewal(client);
+
   /* A planned end whose disconnect was not reported in time ends anyway; at
    * IDLE once close() took it over. */
   if (planned_hub_session_end_in_progress(client)
@@ -8256,10 +8328,21 @@ az_iot_result az_iot_connection_client__end_hub_session(
 void az_iot_connection_client__planned_hub_session_end_force_timeout(
     az_iot_connection_client* client)
 {
+  if (client && az_iot_deadline__is_set(&client->planned_hub_session_end.drain_deadline))
+  {
+    az_iot_deadline__expire_now(&client->planned_hub_session_end.drain_deadline);
+  }
   if (client && planned_hub_session_end_in_progress(client))
   {
     az_iot_deadline__expire_now(&client->planned_hub_session_end.disconnect_deadline);
   }
+}
+
+bool az_iot_connection_client__holds_sends_for_session_end(const az_iot_connection_client* client)
+{
+  return client
+      && (az_iot_deadline__is_set(&client->planned_hub_session_end.drain_deadline)
+          || planned_hub_session_end_in_progress(client));
 }
 
 bool az_iot_connection_client__twin_push_expected(const az_iot_connection_client* client)

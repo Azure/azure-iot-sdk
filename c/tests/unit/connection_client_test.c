@@ -3197,6 +3197,9 @@ static void log_feature_event(const az_iot_connection_feature_event* event, void
       assert_non_null(event->remaining_ms);
       ++log->next_deadline;
       break;
+    case AZ_IOT_CONNECTION_FEATURE_EVENT_UNSETTLED_QUERY:
+      assert_non_null(event->unsettled);
+      break;
   }
 }
 

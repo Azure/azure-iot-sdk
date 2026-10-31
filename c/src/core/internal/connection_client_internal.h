@@ -188,9 +188,17 @@ extern "C"
       az_iot_connection_client* client,
       az_iot_result reason);
 
-  /** @brief Test seam: make a planned hub session end's disconnect bound pass. */
+  /** @brief Test seam: make a planned hub session end's settle and disconnect bounds pass. */
   void az_iot_connection_client__planned_hub_session_end_force_timeout(
       az_iot_connection_client* client);
+
+  /**
+   * @brief Whether new tracked sends wait: the hub session is being ended on purpose, and a SAS
+   *        renewal first lets its deliveries settle (see
+   *        AZ_IOT_CONNECTION_FEATURE_EVENT_UNSETTLED_QUERY).
+   */
+  bool az_iot_connection_client__holds_sends_for_session_end(
+      const az_iot_connection_client* client);
 
   /* Test seam: force a pending subscription gate to expire on the next
    * do_work(). No-op when no gate is armed. Lets unit tests exercise the

@@ -3030,9 +3030,11 @@ static void a_handler_that_deinitializes_the_client_is_not_followed_by_a_drain(v
 static void announce_identity_change(az_iot_connection_client* conn)
 {
   ++conn->identity_changes;
-  az_iot_connection_feature_event const event = {
-    AZ_IOT_CONNECTION_FEATURE_EVENT_IDENTITY_CHANGED, NULL, AZ_IOT_CONNECTION_SESSION_END_LOST, NULL
-  };
+  az_iot_connection_feature_event const event = { AZ_IOT_CONNECTION_FEATURE_EVENT_IDENTITY_CHANGED,
+                                                  NULL,
+                                                  AZ_IOT_CONNECTION_SESSION_END_LOST,
+                                                  NULL,
+                                                  NULL };
   for (size_t i = 0; i < conn->opts.limits.max_feature_observers; ++i)
   {
     const az_iot_connection_feature_observer* observer = &conn->feature_observers[i];

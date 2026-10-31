@@ -4,6 +4,10 @@
 
 ### Features Added
 
+- SAS token renewal lets the session's deliveries settle before its DISCONNECT: publishes
+  awaiting a PUBACK and SDK requests awaiting a response, for up to 5 s (not past the token's
+  expiry), while the SDK holds its own new sends. A renewal now takes up to that plus the
+  disconnect bound.
 - Certificate renewal: `az_iot_connection_client_options::csr_response_timeout_ms` sets how long
   `az_iot_connection_client_send_csr()` waits for a terminal response (0: 120 s,
   `AZ_IOT_DEFAULT_CSR_RESPONSE_TIMEOUT_MS`). A renewal open when the session ends (a drop or

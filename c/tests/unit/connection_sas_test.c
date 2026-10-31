@@ -19,6 +19,7 @@
 
 #include "azure/iot/az_iot_connection_client.h"
 #include "internal/connection_client_internal.h"
+#include "internal/deadline.h"
 #include "internal/mono_time.h"
 #include "support/connection_test_harness.h"
 #include "support/mock_mqtt_iface.h"
@@ -1719,6 +1720,157 @@ static void the_hub_wait_is_capped_by_the_renewal(void** state)
   (void)az_iot_connection_client_do_work(&fx->client, 60000u);
   assert_true(
       az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_PROCESS_LOOP)->timeout_ms <= 5000u);
+}
+
+static void count_puback(az_iot_result status, void* user_ctx)
+{
+  (void)status;
+  ++*(int*)user_ctx;
+}
+
+/** @brief Publishes a QoS 1 message whose PUBACK is awaited; returns its packet id. */
+static uint16_t publish_awaiting_puback(fixture* fx, int* acks)
+{
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  az_iot_mqtt_message msg = { 0 };
+  msg.topic = "devices/ut-device/messages/events/";
+  msg.qos = AZ_IOT_MQTT_QOS_1;
+  assert_int_equal(
+      az_iot_connection_client__publish(&fx->client, fx, &msg, count_puback, acks), AZ_IOT_OK);
+  return az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_PUBLISH)->packet_id;
+}
+
+/** @brief Makes the renewal due and pumps once: with a delivery unsettled, no DISCONNECT yet. */
+static az_iot_mock_mqtt_client* start_settling_renewal(fixture* fx)
+{
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  fx->client.sas_token_renewal_due_ms[AZ_IOT_CONN_SCOPE_HUB] = az_iot_time_mono_ms();
+  pump(fx, 1);
+  assert_true(fx->client.sas_token_renewal_in_progress[AZ_IOT_CONN_SCOPE_HUB]);
+  assert_int_equal(az_iot_mock_mqtt_client_count_of(m, AZ_IOT_MOCK_CALL_DISCONNECT), 0);
+  assert_int_equal(fx->client.state[AZ_IOT_CONN_SCOPE_HUB], AZ_IOT_CONN_STATE_CONNECTED);
+  assert_true(az_iot_connection_client__holds_sends_for_session_end(&fx->client));
+  return m;
+}
+
+/* A renewal lets an awaited PUBACK arrive before it ends the session, and the do_work() wait
+ * meanwhile ends by the settle bound. */
+static void a_renewal_waits_for_an_awaited_puback(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  uint64_t now = NOW;
+  open_renewable_hub(fx, &now, NULL);
+  int acks = 0;
+  uint16_t const packet_id = publish_awaiting_puback(fx, &acks);
+  az_iot_mock_mqtt_client* m = start_settling_renewal(fx);
+  (void)az_iot_connection_client_do_work(&fx->client, 60000u);
+  assert_true(
+      az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_PROCESS_LOOP)->timeout_ms <= 5000u);
+  assert_int_equal(az_iot_mock_mqtt_client_count_of(m, AZ_IOT_MOCK_CALL_DISCONNECT), 0);
+
+  assert_true(az_iot_mock_mqtt_client_inject_puback(m, packet_id, AZ_IOT_OK));
+  pump(fx, 1);
+  assert_int_equal(acks, 1);
+  assert_int_equal(az_iot_mock_mqtt_client_count_of(m, AZ_IOT_MOCK_CALL_DISCONNECT), 1);
+  assert_true(az_iot_connection_client__holds_sends_for_session_end(&fx->client));
+  assert_false(az_iot_deadline__is_set(&fx->client.planned_hub_session_end.drain_deadline));
+}
+
+static void report_unsettled(const az_iot_connection_feature_event* event, void* user_ctx)
+{
+  if (*(bool*)user_ctx)
+  {
+    *event->unsettled = true;
+  }
+}
+
+/* A renewal waits for a feature client's open response, and ends the session once it is in. */
+static void a_renewal_waits_for_an_open_response(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  uint64_t now = NOW;
+  open_renewable_hub(fx, &now, NULL);
+  bool unsettled = true;
+  assert_int_equal(
+      az_iot_connection_client__add_feature_observer(
+          &fx->client,
+          AZ_IOT_CONNECTION_FEATURE_EVENT_UNSETTLED_QUERY,
+          report_unsettled,
+          &unsettled),
+      AZ_IOT_OK);
+  az_iot_mock_mqtt_client* m = start_settling_renewal(fx);
+  pump(fx, 1);
+  assert_int_equal(az_iot_mock_mqtt_client_count_of(m, AZ_IOT_MOCK_CALL_DISCONNECT), 0);
+
+  unsettled = false;
+  pump(fx, 1);
+  assert_int_equal(az_iot_mock_mqtt_client_count_of(m, AZ_IOT_MOCK_CALL_DISCONNECT), 1);
+  az_iot_connection_client__remove_feature_observer(&fx->client, report_unsettled, &unsettled);
+}
+
+/* The settle bound ends the wait: the renewal disconnects with the PUBACK still awaited. */
+static void a_renewal_settles_for_at_most_its_bound(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  uint64_t now = NOW;
+  open_renewable_hub(fx, &now, NULL);
+  int acks = 0;
+  (void)publish_awaiting_puback(fx, &acks);
+  az_iot_mock_mqtt_client* m = start_settling_renewal(fx);
+  az_iot_connection_client__planned_hub_session_end_force_timeout(&fx->client);
+  pump(fx, 1);
+  assert_int_equal(az_iot_mock_mqtt_client_count_of(m, AZ_IOT_MOCK_CALL_DISCONNECT), 1);
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(m));
+  pump(fx, 1);
+  assert_int_equal(acks, 1); /* completed NOT_CONNECTED by the session end */
+  const recorded_event* e = last_event(fx, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_RETRY_PENDING);
+  assert_non_null(e);
+  assert_true(e->renewal);
+}
+
+/* A planned end for a failure during the settle takes over at once. */
+static void a_failure_end_takes_over_a_settling_renewal(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  uint64_t now = NOW;
+  open_renewable_hub(fx, &now, NULL);
+  int acks = 0;
+  (void)publish_awaiting_puback(fx, &acks);
+  az_iot_mock_mqtt_client* m = start_settling_renewal(fx);
+  assert_int_equal(
+      az_iot_connection_client__end_hub_session(&fx->client, AZ_IOT_ERR_TIMEOUT), AZ_IOT_OK);
+  assert_int_equal(az_iot_mock_mqtt_client_count_of(m, AZ_IOT_MOCK_CALL_DISCONNECT), 1);
+  assert_false(az_iot_deadline__is_set(&fx->client.planned_hub_session_end.drain_deadline));
+}
+
+static void a_lost_session_ends_a_settling_renewal(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  uint64_t now = NOW;
+  open_renewable_hub(fx, &now, NULL);
+  int acks = 0;
+  (void)publish_awaiting_puback(fx, &acks);
+  az_iot_mock_mqtt_client* m = start_settling_renewal(fx);
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(m));
+  pump(fx, 1);
+  assert_false(az_iot_connection_client__holds_sends_for_session_end(&fx->client));
+  assert_int_not_equal(fx->client.state[AZ_IOT_CONN_SCOPE_HUB], AZ_IOT_CONN_STATE_CONNECTED);
+}
+
+static void a_close_ends_a_settling_renewal(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  uint64_t now = NOW;
+  open_renewable_hub(fx, &now, NULL);
+  int acks = 0;
+  (void)publish_awaiting_puback(fx, &acks);
+  az_iot_mock_mqtt_client* m = start_settling_renewal(fx);
+  assert_int_equal(az_iot_connection_client_close(&fx->client), AZ_IOT_OK);
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(m));
+  pump(fx, 2);
+  assert_int_equal(fx->client.state[AZ_IOT_CONN_SCOPE_HUB], AZ_IOT_CONN_STATE_IDLE);
+  assert_false(az_iot_connection_client__holds_sends_for_session_end(&fx->client));
+  assert_true(no_connect_pending(fx));
 }
 
 /* A provisioning session a feature client holds beside the hub: its wait,
@@ -3909,6 +4061,12 @@ int main(void)
     cmocka_unit_test_setup_teardown(a_close_during_a_renewal_settles_idle, setup, teardown),
     cmocka_unit_test_setup_teardown(a_refused_renewal_falls_back, setup, teardown),
     cmocka_unit_test_setup_teardown(the_hub_wait_is_capped_by_the_renewal, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_renewal_waits_for_an_awaited_puback, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_renewal_waits_for_an_open_response, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_renewal_settles_for_at_most_its_bound, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_failure_end_takes_over_a_settling_renewal, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_lost_session_ends_a_settling_renewal, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_close_ends_a_settling_renewal, setup, teardown),
     cmocka_unit_test_setup_teardown(a_held_dps_wait_is_capped_by_the_hub_renewal, setup, teardown),
     cmocka_unit_test_setup_teardown(a_suspended_monotonic_clock_still_renews, setup, teardown),
     cmocka_unit_test_setup_teardown(

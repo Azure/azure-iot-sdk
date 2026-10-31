@@ -275,7 +275,9 @@ static void flush(az_iot_delivery_tracker* t, bool skip_requeued)
   TI(t).send_refused = 0u;
   uint8_t priority = 0;
   uint64_t sequence = 0; /* Sequences start at 1, so (0, 0) precedes every entry. */
-  while (az_iot_connection_client__is_connected(connection))
+  /* Held while a SAS renewal lets the session's deliveries settle. */
+  while (az_iot_connection_client__is_connected(connection)
+         && !az_iot_connection_client__holds_sends_for_session_end(connection))
   {
     az_iot_delivery_tracker_entry* candidate = NULL;
     for (size_t i = 0; i < TI(t).capacity; ++i)
@@ -371,7 +373,8 @@ static void discard(az_iot_delivery_tracker_entry* e)
 static void lower_remaining_to_next_action(const az_iot_delivery_tracker* t, uint64_t* remaining_ms)
 {
   uint64_t const now = az_iot_time_mono_ms();
-  bool const connected = az_iot_connection_client__is_connected(TI(t).connection);
+  bool const connected = az_iot_connection_client__is_connected(TI(t).connection)
+      && !az_iot_connection_client__holds_sends_for_session_end(TI(t).connection);
   for (size_t i = 0; i < TI(t).capacity; ++i)
   {
     const az_iot_delivery_tracker_entry* e = &TI(t).entries[i];
@@ -395,6 +398,20 @@ static void lower_remaining_to_next_action(const az_iot_delivery_tracker* t, uin
     }
     *remaining_ms = left < *remaining_ms ? left : *remaining_ms;
   }
+}
+
+/** @brief Whether a sent message awaits its PUBACK or response. */
+static bool has_unsettled_message(const az_iot_delivery_tracker* t)
+{
+  for (size_t i = 0; i < TI(t).capacity; ++i)
+  {
+    uint8_t const state = EI(&TI(t).entries[i]).state;
+    if (state == ENTRY_IN_FLIGHT || state == ENTRY_AWAITING_RESPONSE)
+    {
+      return true;
+    }
+  }
+  return false;
 }
 
 static void on_connection_event(const az_iot_connection_feature_event* event, void* user_ctx)
@@ -430,6 +447,12 @@ static void on_connection_event(const az_iot_connection_feature_event* event, vo
       break;
     case AZ_IOT_CONNECTION_FEATURE_EVENT_NEXT_DEADLINE:
       lower_remaining_to_next_action(t, event->remaining_ms);
+      break;
+    case AZ_IOT_CONNECTION_FEATURE_EVENT_UNSETTLED_QUERY:
+      if (has_unsettled_message(t))
+      {
+        *event->unsettled = true;
+      }
       break;
   }
 }
@@ -495,7 +518,8 @@ az_iot_result az_iot_delivery_tracker__bind(
             | AZ_IOT_CONNECTION_FEATURE_EVENT_PUBLISH_COMPLETED
             | AZ_IOT_CONNECTION_FEATURE_EVENT_TICK
             | AZ_IOT_CONNECTION_FEATURE_EVENT_IDENTITY_CHANGED
-            | AZ_IOT_CONNECTION_FEATURE_EVENT_NEXT_DEADLINE,
+            | AZ_IOT_CONNECTION_FEATURE_EVENT_NEXT_DEADLINE
+            | AZ_IOT_CONNECTION_FEATURE_EVENT_UNSETTLED_QUERY,
         on_connection_event,
         tracker);
     if (result != AZ_IOT_OK)

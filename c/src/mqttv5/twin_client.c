@@ -968,6 +968,7 @@ static void on_connection_event(const az_iot_connection_feature_event* event, vo
       break;
     case AZ_IOT_CONNECTION_FEATURE_EVENT_PUBLISH_COMPLETED:
     case AZ_IOT_CONNECTION_FEATURE_EVENT_IDENTITY_CHANGED:
+    case AZ_IOT_CONNECTION_FEATURE_EVENT_UNSETTLED_QUERY:
     default:
       break;
   }
