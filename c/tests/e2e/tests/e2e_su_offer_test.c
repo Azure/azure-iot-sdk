@@ -852,18 +852,25 @@ static void fixture_close(fixture* fx)
     }                                                           \
   } while (0)
 
-/** @brief The acknowledged terminal report, or NULL. */
-static const spy_report* terminal_report(const fixture* fx)
+/** @brief The newest terminal report sent, answered or not, or NULL. */
+static const spy_report* newest_sent_terminal_report(const fixture* fx)
 {
   for (size_t i = fx->spy.report_count; i > 0; --i)
   {
     const spy_report* r = &fx->spy.reports[i - 1];
     if (r->outcome != AZ_IOT_SU_OUTCOME_IN_PROGRESS)
     {
-      return r->has_verdict ? r : NULL;
+      return r;
     }
   }
   return NULL;
+}
+
+/** @brief The acknowledged terminal report, or NULL. */
+static const spy_report* terminal_report(const fixture* fx)
+{
+  const spy_report* r = newest_sent_terminal_report(fx);
+  return (r != NULL && r->has_verdict) ? r : NULL;
 }
 
 /* Runs the offered workflow to its acknowledged terminal report. */
@@ -1118,7 +1125,7 @@ static void library_mode_hands_over_the_offer_and_reports_the_applications_resul
 
   PUMP_UNTIL(
       fx,
-      fx->updates_available > 0 || fx->abandoned > 0 || terminal_report(fx) != NULL,
+      fx->updates_available > 0 || fx->abandoned > 0 || newest_sent_terminal_report(fx) != NULL,
       E2E_SU_WORKFLOW_BUDGET_S);
   assert_false(fx->faulted);
   assert_int_equal(fx->abandoned, 0);
@@ -1128,7 +1135,7 @@ static void library_mode_hands_over_the_offer_and_reports_the_applications_resul
   }
   assert_int_equal(fx->updates_available, 1);
   assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_DELEGATED);
-  assert_null(terminal_report(fx));
+  assert_null(newest_sent_terminal_report(fx));
 
   const az_iot_su_client_update_request* request = fx->delegated_request;
   const az_iot_su_client_update_manifest* manifest = fx->delegated_manifest;
