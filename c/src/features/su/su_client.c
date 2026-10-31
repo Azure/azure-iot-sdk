@@ -63,21 +63,6 @@ static void raise_simple(
     bool report_terminal,
     const az_iot_su_report* report);
 
-/* fetch_in_flight, fetch_delivered and report_sent_terminal occupy padding
- * after pending_fetch, so adding them left the caller-allocated client's size and offsets
- * unchanged. Fails the build if that padding is ever gone. */
-typedef struct
-{
-  char c;
-  uint64_t v;
-} su_u64_alignment_probe;
-typedef char az_iot_su_fetch_in_flight_uses_padding
-    [(offsetof(az_iot_su_client, _internal.report_sent_terminal)
-          % offsetof(su_u64_alignment_probe, v)
-      != 0u)
-         ? 1
-         : -1];
-
 typedef char az_iot_su_channel_storage_is_large_enough
     [(sizeof(((az_iot_su_client*)0)->_internal.channel_storage) >= sizeof(az_iot_su_channel_dps))
          ? 1

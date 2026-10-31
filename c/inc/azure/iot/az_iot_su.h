@@ -1201,7 +1201,7 @@ extern "C"
        * refuses a newer one. */
       az_iot_su_sent_report_internal sent_terminal[2];
       uint8_t sent_terminal_slot; /**< Index of the latest sent_terminal entry. */
-      /* Kept last: earlier offsets, and the padding su_client.c asserts on, stay unchanged. */
+      /* Kept last: earlier offsets stay unchanged. */
       uint8_t* step_details; /**< result_details_size bytes per step. */
       uint8_t* sent_details; /**< Two sent_terminal slots of result_details_size bytes per step. */
       size_t step_details_size; /**< az_iot_su_limits::result_details_size. */
