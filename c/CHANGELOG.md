@@ -4,6 +4,12 @@
 
 ### Features Added
 
+- mqttv3 twin: requests go through the delivery tracker and time out:
+  `az_iot_mqttv3_twin_client_set_request_timeout()` (default
+  `AZ_IOT_MQTTV3_TWIN_REQUEST_TIMEOUT_MS_DEFAULT`, 60 s, from the call). A GET waits for a
+  connection and is sent again on the next session when its session ends unanswered; a reported
+  patch is sent at once or refused (`AZ_IOT_ERR_BUSY` or `AZ_IOT_ERR_NOT_CONNECTED`) and fails
+  with `AZ_IOT_ERR_NOT_CONNECTED` at a session end.
 - mqttv5 twin: requests go through the delivery tracker. A GET waits for a connection and is sent
   again on the next session when its session ends unanswered; a reported patch is still sent at
   once or refused (now `AZ_IOT_ERR_BUSY` when the connection cannot send it now) and fails with
