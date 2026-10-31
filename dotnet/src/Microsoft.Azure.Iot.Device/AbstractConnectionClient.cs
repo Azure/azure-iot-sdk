@@ -587,8 +587,16 @@ namespace Microsoft.Azure.Iot.Device
         /// Disconnect this device from IoT hub with optional disconnect settings.
         /// </summary>
         /// <remarks>
-        /// This overload has the same recovery and pending-operation cancellation behavior as
-        /// <see cref="DisconnectAsync(CancellationToken)"/>.
+        /// <para>
+        /// The cached <see cref="ConnectionContext"/> survives a disconnect. A later
+        /// <see cref="ProvisionAndConnectAsync"/> reconnects directly to the same IoT hub unless forceProvisioning is
+        /// set or the cached credentials are rejected.
+        /// </para>
+        /// <para>
+        /// A deliberate disconnect stops automatic reconnection and re-provisioning. Feature operations waiting for
+        /// recovery are released and throw <see cref="OperationCanceledException"/> instead of being sent after recovery.
+        /// New feature operations fail fast until this client is connected again.
+        /// </para>
         /// </remarks>
         /// <param name="options">The disconnect settings, or null to use the defaults.</param>
         /// <param name="cancellationToken">The cancellation token.</param>

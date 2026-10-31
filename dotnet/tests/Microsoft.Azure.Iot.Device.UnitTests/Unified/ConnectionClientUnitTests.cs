@@ -62,7 +62,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
             }
             else
             {
-                await connectionClient.DisconnectAsync(null, TestContext.Current.CancellationToken);
+                await connectionClient.DisconnectAsync(cancellationToken: TestContext.Current.CancellationToken);
             }
 
             MqttDisconnect disconnect = Assert.Single(mockMqttClient.DisconnectRequests);
