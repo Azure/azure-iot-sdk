@@ -43,9 +43,11 @@ build="${work}/firmware/unified-esp32-${target}-qemu/build"
 bash "${here}/esp-idf-qemu-identity.sh" "$build" "$target" "$cert" "$key" "${work}/identity"
 efuse=
 if [ -f "${work}/identity/qemu_efuse.bin" ]; then
-  efuse="QEMU_EFUSE='${work}/identity/qemu_efuse.bin' "
+  efuse="QEMU_EFUSE=qemu_efuse.bin "
 fi
-export E2E_ESP32_QEMU_COMMAND="QEMU_FLASH_EXTRA='0xd000 ${work}/identity/esp_secure_cert.bin' \
+# From the identity directory: QEMU_FLASH_EXTRA is split on whitespace, so its file is passed
+# relative, which keeps a work directory with spaces working.
+export E2E_ESP32_QEMU_COMMAND="cd '${work}/identity' && QEMU_FLASH_EXTRA='0xd000 esp_secure_cert.bin' \
 ${efuse}bash '${here}/esp-idf-qemu.sh' '${build}' ${target} --run"
 
 tests="${work}/tests"
