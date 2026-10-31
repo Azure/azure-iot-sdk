@@ -134,13 +134,15 @@ Azure roots.
 ### Settings
 
 Set with `idf.py menuconfig` → *Software Updates ESP32 Sample Configuration*
-([`main/Kconfig.projbuild`](main/Kconfig.projbuild)). Values land in the git-ignored
-`sdkconfig`.
+([`main/Kconfig.projbuild`](main/Kconfig.projbuild)), and the Wi-Fi network under *Example
+Connection Configuration* (ESP-IDF's
+[`protocol_examples_common`](https://github.com/espressif/esp-idf/tree/v6.0/examples/common_components/protocol_examples_common)).
+Values land in the git-ignored `sdkconfig`.
 
 | Setting | Required | Meaning |
 |---|---|---|
-| `SU_WIFI_SSID` | yes | Wi-Fi network (WPA2). |
-| `SU_WIFI_PASSWORD` | yes | Wi-Fi password. |
+| `EXAMPLE_WIFI_SSID` | yes | Wi-Fi network. |
+| `EXAMPLE_WIFI_PASSWORD` | yes | Wi-Fi password. |
 | `SU_DPS_ID_SCOPE` | yes | DPS ID scope. |
 | `SU_DPS_REGISTRATION_ID` | yes | Registration id / device id; must equal the certificate CN. |
 | `SU_POLL_INTERVAL_S` | no | Seconds between update checks once connected. Default `14400` (4 h), range 10–86400. All devices share the provisioning service's request budget, which plans for one check per device every 4 hours; use a shorter interval only for testing. |
@@ -183,7 +185,8 @@ production software updates roots compiled into the SDK. See
   git submodule update --init c/deps/azure-sdk-for-c
   ```
 
-Nothing is fetched from the ESP Component Registry.
+From the ESP Component Registry, at exact versions: `espressif/esp_secure_cert_mgr` (device
+identity) and `espressif/ethernet_init` (needed by `protocol_examples_common`).
 
 ### Build and flash
 
@@ -201,15 +204,32 @@ Leave the monitor running; see [Expected output](#expected-output).
 
 CI (`ci-c`, job `esp-idf`) builds this sample for esp32, esp32c3, esp32s3 and
 esp32c6, with the default and the [production security](#production-security-profile-optional)
-profiles, plus the esp32 legacy and virtual eFuse profiles. Any compiler
-warning fails the build. To run one build the same way, from `c/`:
+profiles, plus the esp32 legacy and virtual eFuse profiles, and the [QEMU](#run-in-qemu) profile
+for esp32, esp32s3 and esp32c3, which it also boots in QEMU until it gets an IPv4 address. Any
+compiler warning fails the build. To run one build the same way, from `c/`:
 
 ```sh
 eng/esp-idf-build.sh samples/software_update/esp32 esp32c3 secure
 ```
 
-Profiles: `default`, `secure`, `secure_esp32_legacy`, `secure_virtual_efuse`.
+Profiles: `default`, `secure`, `secure_esp32_legacy`, `secure_virtual_efuse`, `qemu`.
 Secure builds are signed with a throwaway key and must not be flashed.
+
+### Run in QEMU
+
+QEMU emulates esp32, esp32s3 and esp32c3, but not Wi-Fi: [`sdkconfig.qemu`](sdkconfig.qemu)
+switches the network to OpenCores Ethernet, which QEMU user networking connects to the host's
+network. From `c/`, with ESP-IDF's QEMU installed (`idf_tools.py install qemu-xtensa qemu-riscv32`):
+
+```sh
+eng/esp-idf-build.sh samples/software_update/esp32 esp32c3 qemu /tmp/su
+eng/esp-idf-qemu.sh /tmp/su/software_update-esp32-esp32c3-qemu/build esp32c3 "Got IPv4 event"
+```
+
+The image boots, gets `10.0.2.15` and then needs a device identity: write an `esp_secure_cert`
+partition into the flash image ([Device identity](#device-identity)), or the sample stops at
+`no device certificate in the esp_secure_cert partition`. The full log is `qemu.log` in the build
+directory. QEMU does not emulate Secure Boot or flash encryption.
 
 ### Deploy an update
 
@@ -334,7 +354,7 @@ It runs until powered off, like the agent it stands in for. It reboots
 | Cause | Log line |
 |---|---|
 | An update was installed; boots the new image | `rebooting into the new firmware to apply the update` |
-| Wi-Fi fails after 10 retries | `Wi-Fi connect failed; rebooting` |
+| Network connect fails (Wi-Fi: after `EXAMPLE_WIFI_CONN_MAX_RETRY` retries) | `network connect failed; rebooting` |
 | No hub connection within about 120 s (twice `AZ_IOT_DPS_HOLD_TIMEOUT_MS`), or provisioning faulted | `could not connect; rebooting` |
 | The connection faults while no update is in flight | `connection faulted; rebooting` |
 | An SDK call fails at startup | `<call> failed` |
@@ -345,8 +365,8 @@ At startup (other log lines omitted):
 
 ```
 I (...) su_esp32: Software updates ESP32 sample starting (firmware version 1.0.0)
-I (...) wifi: connecting to SSID 'my-ssid'
-I (...) wifi: got IP: 192.168.1.23
+I (...) example_connect: Connecting to my-ssid...
+I (...) example_common: Connected to example_netif_sta
 I (...) su_esp32: checking for updates on the onboarding route
 I (...) su_esp32: connection: AZ_IOT_CONN_STATE_IDLE -> AZ_IOT_CONN_STATE_CONNECTING (reason=0x00000000)
 I (...) su_esp32: connection: AZ_IOT_CONN_STATE_CONNECTING -> AZ_IOT_CONN_STATE_CONNECTED (reason=0x00000000)
@@ -371,7 +391,7 @@ I (...) su_ota: image confirmed valid; rollback cancelled
 
 | Symptom | Likely cause |
 |---------|--------------|
-| `retrying Wi-Fi connect (n/10)`, then `Wi-Fi connect failed; rebooting` | Wrong `SU_WIFI_SSID` / `SU_WIFI_PASSWORD`, or not a WPA2 network. |
+| `WiFi Connect failed <n> times, stop reconnect.`, then `network connect failed; rebooting` | Wrong `EXAMPLE_WIFI_SSID` / `EXAMPLE_WIFI_PASSWORD`, or a network below WPA2 (`sdkconfig.defaults` sets `EXAMPLE_WIFI_AUTH_WPA2_PSK`). |
 | `no device certificate in the esp_secure_cert partition; see README` | The partition was not written, was written at another offset, or (ESP32-S3/C3/C6) lacks the DS data. See [Device identity](#device-identity). |
 | `could not connect; rebooting` | DPS refused the device: certificate CN differs from `SU_DPS_REGISTRATION_ID`, or no matching enrollment. |
 | Connected, but no update is ever offered | Compatibility mismatch (`Espressif` / `ESP32-WROOM`), wrong route for the job type, or the update was deployed through the IoT-Hub-based model. |
@@ -406,9 +426,9 @@ samples/software_update/esp32/
 ├── sdkconfig.secure[.<target>]      security profile (opt-in)
 ├── sdkconfig.secure_esp32_legacy    ESP32 below rev v3.0: Secure Boot v1
 ├── sdkconfig.secure_virtual_efuse   rehearse the profile without burning eFuses
+├── sdkconfig.qemu                   QEMU: OpenCores Ethernet instead of Wi-Fi
 └── main/
-    ├── app_main.c                   Wi-Fi → DPS → software updates loop
-    ├── wifi_connect.[ch]            station-mode Wi-Fi
+    ├── app_main.c                   network → DPS → software updates loop
     ├── su_version.h                 firmware version
     ├── Kconfig.projbuild            settings
     └── certs/trusted_ca.pem         optional server CA, compiled in

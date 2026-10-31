@@ -298,6 +298,12 @@
   The ESP32 software updates sample uses it instead of a certificate and key compiled into the
   image; its partition tables gain `esp_secure_cert` (0xD000; 0x11000 in the security profile),
   so devices running an earlier build of the sample must be reflashed over serial.
+- ESP32 software updates sample: the network comes from ESP-IDF's `protocol_examples_common`
+  (`example_connect()`), replacing the sample's own Wi-Fi code. The Wi-Fi settings are now
+  `EXAMPLE_WIFI_SSID` / `EXAMPLE_WIFI_PASSWORD` (were `SU_WIFI_SSID` / `SU_WIFI_PASSWORD`).
+  `sdkconfig.qemu` runs it in QEMU (esp32, esp32s3, esp32c3) over OpenCores Ethernet;
+  `eng/esp-idf-qemu.sh` boots a build in QEMU and waits for a log line, and CI boots the QEMU
+  builds until they get an IPv4 address.
 
 ### Bugs Fixed
 
