@@ -21,6 +21,8 @@
 #include "azure/iot/az_iot_result.h"
 #include "azure/iot/mqttv3/az_iot_twin_client.h"
 
+#include "internal/connection_client_internal.h"
+#include "internal/deadline.h"
 #include "support/connection_test_harness.h"
 #include "support/mock_mqtt_iface.h"
 #include "support/test_provider.h"
@@ -143,19 +145,6 @@ static void open_to_connected(fixture* fx)
 {
   assert_int_equal(
       az_iot_connection_client_register_mqtt_factory(&fx->conn, fx->factory), AZ_IOT_OK);
-  assert_int_equal(az_iot_connection_client_open(&fx->conn), AZ_IOT_OK);
-  fx->mock = az_iot_mock_mqtt_factory_last_client(fx->factory);
-  assert_non_null(fx->mock);
-  assert_true(az_iot_mock_mqtt_client_inject_connected(fx->mock, AZ_IOT_OK));
-  assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
-  az_iot_test_ack_subscriptions(&fx->conn, fx->mock);
-  az_iot_mock_mqtt_client_clear_calls(fx->mock);
-}
-
-/* Start a second session on a client that is already back in IDLE. The factory
- * registered by open_to_connected() is still in the registry. */
-static void reopen_to_connected(fixture* fx)
-{
   assert_int_equal(az_iot_connection_client_open(&fx->conn), AZ_IOT_OK);
   fx->mock = az_iot_mock_mqtt_factory_last_client(fx->factory);
   assert_non_null(fx->mock);
@@ -459,12 +448,9 @@ static size_t count_get_publishes(const fixture* fx)
   return count;
 }
 
-/* Drop the session and bring up the next one, keeping its history, pumping until held resends
- * have gone out. */
-static void drop_and_reopen(fixture* fx)
+/* Bring up the next session, keeping its history, pumping until held resends have gone out. */
+static void reopen_keeping_history(fixture* fx)
 {
-  assert_true(az_iot_mock_mqtt_client_inject_disconnected(fx->mock));
-  assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
   assert_int_equal(az_iot_connection_client_open(&fx->conn), AZ_IOT_OK);
   fx->mock = az_iot_mock_mqtt_factory_last_client(fx->factory);
   assert_non_null(fx->mock);
@@ -475,6 +461,14 @@ static void drop_and_reopen(fixture* fx)
   {
     assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
   }
+}
+
+/* Drop the session and bring up the next one, keeping its history. */
+static void drop_and_reopen(fixture* fx)
+{
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(fx->mock));
+  assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
+  reopen_keeping_history(fx);
 }
 
 /* A GET unanswered when its session ends is sent again, under its rid, on the next session. */
@@ -913,11 +907,8 @@ static void a_get_while_disconnected_waits_and_a_patch_is_refused(void** state)
           &fx->twin, patch, sizeof(patch) - 1, on_patch, &refused),
       AZ_IOT_ERR_NOT_CONNECTED);
 
-  reopen_to_connected(fx);
-  for (int i = 0; i < 2 && count_get_publishes(fx) == 0u; ++i)
-  {
-    assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
-  }
+  reopen_keeping_history(fx);
+  assert_int_equal(count_get_publishes(fx), 1u);
   static const uint8_t body[] = "{}";
   assert_true(az_iot_mock_mqtt_client_inject_message(
       fx->mock, "$iothub/twin/res/200/?$rid=1", body, sizeof(body) - 1, AZ_IOT_MQTT_QOS_0));
@@ -948,6 +939,103 @@ static void an_unanswered_request_times_out(void** state)
   assert_int_equal(az_iot_mqttv3_twin_client_set_request_timeout(&fx->twin, 0), AZ_IOT_OK);
   assert_int_equal(
       fx->twin._internal.request_timeout_ms, AZ_IOT_MQTTV3_TWIN_REQUEST_TIMEOUT_MS_DEFAULT);
+}
+
+/* Queue a GET whose first send is refused, and end its time limit: the next flush expires it. */
+static void queue_an_expired_get(fixture* fx, az_iot_twin_get_callback cb, void* ctx)
+{
+  az_iot_mock_mqtt_client_set_next_result(fx->mock, AZ_IOT_MOCK_CALL_PUBLISH, AZ_IOT_ERR_BUSY);
+  assert_int_equal(az_iot_mqttv3_twin_client_get(&fx->twin, cb, ctx), AZ_IOT_OK);
+  for (size_t i = 0; i < AZ_IOT_TWIN_MAX_PENDING; ++i)
+  {
+    if (fx->twin._internal.requests[i].kind != 0 && !fx->twin._internal.requests[i].sent)
+    {
+      az_iot_deadline__expire_now(&fx->twin._internal.tracker_entries[i]._internal.deadline);
+    }
+  }
+}
+
+typedef struct deinit_call
+{
+  fixture* fx;
+  bool fired;
+} deinit_call;
+
+static void deinit_from_get_callback(
+    az_iot_result status,
+    const uint8_t* payload,
+    size_t payload_len,
+    void* user_ctx)
+{
+  (void)status;
+  (void)payload;
+  (void)payload_len;
+  deinit_call* call = (deinit_call*)user_ctx;
+  call->fired = true;
+  az_iot_mqttv3_twin_client_deinit(&call->fx->twin);
+}
+
+/* A callback that deinitializes the client during a request call: the call returns
+ * AZ_IOT_ERR_NOT_INITIALIZED without touching the client again. */
+static void a_client_deinitialized_by_a_callback_during_a_request_call(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  deinit_call call = { fx, false };
+  queue_an_expired_get(fx, deinit_from_get_callback, &call);
+
+  get_record rec = { 0 };
+  assert_int_equal(
+      az_iot_mqttv3_twin_client_get(&fx->twin, on_get, &rec), AZ_IOT_ERR_NOT_INITIALIZED);
+  assert_true(call.fired);
+  assert_false(rec.fired);
+}
+
+/* A callback that deinitializes the client while an answered request is released: the answer is
+ * not reported to a deinitialized client. */
+static void a_client_deinitialized_by_a_callback_during_an_answer(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  get_record answered = { 0 };
+  assert_int_equal(az_iot_mqttv3_twin_client_get(&fx->twin, on_get, &answered), AZ_IOT_OK);
+  deinit_call call = { fx, false };
+  queue_an_expired_get(fx, deinit_from_get_callback, &call);
+
+  static const uint8_t body[] = "{}";
+  assert_true(az_iot_mock_mqtt_client_inject_message(
+      fx->mock, "$iothub/twin/res/200/?$rid=1", body, sizeof(body) - 1, AZ_IOT_MQTT_QOS_0));
+  (void)az_iot_connection_client_do_work(&fx->conn, 0);
+  assert_true(call.fired);
+  assert_false(answered.fired);
+}
+
+static void count_puback(az_iot_result status, void* user_ctx)
+{
+  (void)status;
+  ++*(int*)user_ctx;
+}
+
+/* With every shared PUBACK slot taken, a refused GET (QoS 0, needing none) still bounds the
+ * connection's wait to the retry interval. */
+static void a_refused_get_is_retried_soon_when_puback_slots_are_full(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  int acks = 0;
+  az_iot_mqtt_message msg = { 0 };
+  msg.topic = "devices/ut-device/messages/events/";
+  msg.qos = AZ_IOT_MQTT_QOS_1;
+  while (az_iot_connection_client__publish(&fx->conn, fx, &msg, count_puback, &acks) == AZ_IOT_OK)
+  {
+  }
+  az_iot_mock_mqtt_client_set_next_result(fx->mock, AZ_IOT_MOCK_CALL_PUBLISH, AZ_IOT_ERR_BUSY);
+  get_record rec = { 0 };
+  assert_int_equal(az_iot_mqttv3_twin_client_get(&fx->twin, on_get, &rec), AZ_IOT_OK);
+  (void)az_iot_connection_client_do_work(&fx->conn, 60000u);
+  assert_true(
+      az_iot_mock_mqtt_client_last_of(fx->mock, AZ_IOT_MOCK_CALL_PROCESS_LOOP)->timeout_ms
+      <= 1000u);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -1315,6 +1403,12 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         a_get_while_disconnected_waits_and_a_patch_is_refused, setup, teardown),
     cmocka_unit_test_setup_teardown(an_unanswered_request_times_out, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_client_deinitialized_by_a_callback_during_a_request_call, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_client_deinitialized_by_a_callback_during_an_answer, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_refused_get_is_retried_soon_when_puback_slots_are_full, setup, teardown),
     cmocka_unit_test_setup_teardown(patch_rejects_a_null_client, setup, teardown),
     cmocka_unit_test_setup_teardown(patch_rejects_a_null_patch_with_a_length, setup, teardown),
     cmocka_unit_test_setup_teardown(an_empty_patch_is_publishable, setup, teardown),

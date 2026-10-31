@@ -282,7 +282,14 @@ static void on_twin_response(void* user_ctx, const az_iot_mqtt_message* msg)
   /* Answered: released before its callback, so the callback may make a new request. */
   az_iot_mqttv3_twin_request const request = TI(t).requests[idx];
   memset(&TI(t).requests[idx], 0, sizeof(TI(t).requests[idx]));
+  az_iot_delivery_tracker_binding const bound = az_iot_delivery_tracker__binding(&TI(t).tracker);
   az_iot_delivery_tracker__cancel(&TI(t).tracker, (size_t)idx);
+  /* The cancel sends what the freed entry lets go; a callback there may deinitialize this client.
+   */
+  if (!az_iot_delivery_tracker__has_binding(&TI(t).tracker, bound))
+  {
+    return;
+  }
   report_twin_request(&request, status_to_result(status), msg->payload, msg->payload_len, version);
 }
 
@@ -443,7 +450,7 @@ static const az_iot_delivery_tracker_profile k_twin_get_profile = {
   .confirmation = AZ_IOT_DELIVERY_TRACKER_CONFIRM_BY_RESPONSE,
   .on_session_loss = AZ_IOT_DELIVERY_TRACKER_ON_SESSION_LOSS_RESEND,
   .priority = 0,
-  .send_untracked_without_slot = false,
+  .send_untracked_without_slot = true, /* QoS 0: never needs a PUBACK slot. */
   .encode = encode_twin_request,
   .on_complete = complete_twin_request,
   .on_sent = note_twin_request_sent,
@@ -455,7 +462,7 @@ static const az_iot_delivery_tracker_profile k_twin_reported_patch_profile = {
   .confirmation = AZ_IOT_DELIVERY_TRACKER_CONFIRM_BY_RESPONSE,
   .on_session_loss = AZ_IOT_DELIVERY_TRACKER_ON_SESSION_LOSS_FAIL,
   .priority = 0,
-  .send_untracked_without_slot = false,
+  .send_untracked_without_slot = true, /* QoS 0: never needs a PUBACK slot. */
   .encode = encode_twin_request,
   .on_complete = complete_twin_request,
   .on_sent = note_twin_request_sent,
@@ -491,13 +498,21 @@ static az_iot_result submit_twin_request(
   TI(t).submitting_entry = entry;
   TI(t).submit_failure = AZ_IOT_OK;
   TI(t).submit_in_progress = true;
+  int const kind = request->kind;
+  az_iot_connection_client* const conn = TI(t).conn;
+  az_iot_delivery_tracker_binding const bound = az_iot_delivery_tracker__binding(&TI(t).tracker);
   az_iot_result const r = az_iot_delivery_tracker__submit_at(
       &TI(t).tracker,
       entry,
-      request->kind == TWIN_PENDING_PATCH ? &k_twin_reported_patch_profile : &k_twin_get_profile,
+      kind == TWIN_PENDING_PATCH ? &k_twin_reported_patch_profile : &k_twin_get_profile,
       correlation_id,
       sizeof(correlation_id),
       TI(t).request_timeout_ms);
+  /* A callback of an older request may have deinitialized (or freed) this client. */
+  if (!az_iot_delivery_tracker__has_binding(&TI(t).tracker, bound))
+  {
+    return AZ_IOT_ERR_NOT_INITIALIZED;
+  }
   TI(t).submit_in_progress = false;
   if (r != AZ_IOT_OK)
   {
@@ -510,12 +525,12 @@ static az_iot_result submit_twin_request(
   }
   held->patch = NULL;
   held->patch_len = 0;
-  if (request->kind == TWIN_PENDING_PATCH && !held->sent)
+  if (kind == TWIN_PENDING_PATCH && !held->sent)
   {
     memset(held, 0, sizeof(*held));
     az_iot_delivery_tracker__cancel(&TI(t).tracker, entry);
-    return az_iot_connection_client__is_connected(TI(t).conn) ? AZ_IOT_ERR_BUSY
-                                                              : AZ_IOT_ERR_NOT_CONNECTED;
+    return az_iot_connection_client__is_connected(conn) ? AZ_IOT_ERR_BUSY
+                                                        : AZ_IOT_ERR_NOT_CONNECTED;
   }
   return AZ_IOT_OK;
 }
