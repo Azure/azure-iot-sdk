@@ -1516,6 +1516,25 @@ static void an_identity_refusal_after_a_local_end_faults(void** state)
   assert_int_equal(az_iot_test_reason_for(&fx->log, AZ_IOT_CONN_STATE_FAULTED), AZ_IOT_ERR_AUTH);
 }
 
+/* A server DISCONNECT after a code-less identity refusal does not replace it: the client still
+ * faults with the refusal. */
+static void a_server_disconnect_after_an_identity_refusal_keeps_the_fault(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  az_iot_mock_mqtt_client* m = open_to_connected(fx);
+  az_iot_mock_mqtt_client_set_events_per_loop(m, SIZE_MAX);
+  az_iot_mqtt_event refusal;
+  memset(&refusal, 0, sizeof(refusal));
+  refusal.kind = AZ_IOT_MQTT_EVT_DISCONNECTED;
+  refusal.status = AZ_IOT_ERR_AUTH;
+  assert_true(az_iot_mock_mqtt_client_inject_event(m, &refusal));
+  assert_true(az_iot_mock_mqtt_client_inject_server_disconnect(m, 0x8B, NULL));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+
+  assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_FAULTED);
+  assert_int_equal(az_iot_test_reason_for(&fx->log, AZ_IOT_CONN_STATE_FAULTED), AZ_IOT_ERR_AUTH);
+}
+
 /* While close() disconnects the session, a gated SUBACK does not announce CONNECTED and a new
  * filter is kept for the next session without a SUBSCRIBE on the closing one. */
 static void close_while_the_subscription_gate_is_open_ignores_the_closing_session(void** state)
@@ -2040,6 +2059,10 @@ int main(void)
         teardown),
     cmocka_unit_test_setup_teardown(
         an_identity_refusal_after_a_local_end_faults, setup_no_reconnect, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_server_disconnect_after_an_identity_refusal_keeps_the_fault,
+        setup_no_reconnect,
+        teardown),
     cmocka_unit_test_setup_teardown(
         close_while_the_subscription_gate_is_open_ignores_the_closing_session,
         setup_no_reconnect,
