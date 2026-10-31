@@ -1861,7 +1861,8 @@ typedef enum
 {
   FAKE_TOKEN_SUPPLY, /* update_sas_token() from the callback */
   FAKE_TOKEN_LATER, /* notify only; the test supplies the token */
-  FAKE_TOKEN_CLOSE_INSIDE /* update_sas_token(), then close() and open(), from the callback */
+  FAKE_TOKEN_CLOSE_INSIDE /* update_sas_token(), then close(), open() and deinit(), from the
+                             callback */
 } fake_token_mode;
 
 static struct
@@ -1878,6 +1879,7 @@ static struct
   az_iot_connection_client* client;
   az_iot_result close_result;
   az_iot_result open_result;
+  az_iot_result deinit_result;
 } g_fake;
 
 static void fake_token_callback(const az_iot_sas_token_request* request, void* user_ctx)
@@ -1912,6 +1914,7 @@ static void fake_token_callback(const az_iot_sas_token_request* request, void* u
   {
     g_fake.close_result = az_iot_connection_client_close(g_fake.client);
     g_fake.open_result = az_iot_connection_client_open(g_fake.client);
+    g_fake.deinit_result = az_iot_connection_client_deinit(g_fake.client);
   }
 }
 
@@ -1985,8 +1988,9 @@ static void a_ready_user_token_connects_the_hub(void** state)
       fx->client.sas_token_renewal_due_ms[AZ_IOT_CONN_SCOPE_HUB] <= az_iot_time_mono_ms() + 80000u);
 }
 
-/* close() and open() from the token callback are refused; the attempt connects with the token. */
-static void close_and_open_from_the_token_callback_are_refused(void** state)
+/* close(), open() and deinit() from the token callback are refused; the attempt connects with the
+ * token. */
+static void close_open_and_deinit_from_the_token_callback_are_refused(void** state)
 {
   fixture* fx = (fixture*)*state;
   az_iot_connection_client_options opts = user_token_hub_options(fx, FAKE_TOKEN_CLOSE_INSIDE);
@@ -1995,6 +1999,7 @@ static void close_and_open_from_the_token_callback_are_refused(void** state)
   assert_int_equal(g_fake.calls, 1);
   assert_int_equal(g_fake.close_result, AZ_IOT_ERR_BUSY);
   assert_int_equal(g_fake.open_result, AZ_IOT_ERR_BUSY);
+  assert_int_equal(g_fake.deinit_result, AZ_IOT_ERR_BUSY);
   assert_string_equal(last_connect(fx)->password, USER_TOKEN);
   connack(fx, AZ_IOT_OK);
   assert_int_equal(fx->client.state[AZ_IOT_CONN_SCOPE_HUB], AZ_IOT_CONN_STATE_CONNECTED);
@@ -3793,7 +3798,7 @@ int main(void)
     cmocka_unit_test_setup_teardown(init_accepts_a_token_callback_without_keys, setup, teardown),
     cmocka_unit_test_setup_teardown(a_ready_user_token_connects_the_hub, setup, teardown),
     cmocka_unit_test_setup_teardown(
-        close_and_open_from_the_token_callback_are_refused, setup, teardown),
+        close_open_and_deinit_from_the_token_callback_are_refused, setup, teardown),
     cmocka_unit_test_setup_teardown(a_user_token_connects_an_mqttv5_hub, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_pending_user_token_connects_dps_once_delivered, setup, teardown),

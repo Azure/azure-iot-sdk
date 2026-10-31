@@ -519,30 +519,36 @@ typedef struct assignment_lifecycle_calls
   int calls;
   az_iot_result close_result;
   az_iot_result open_result;
+  az_iot_result deinit_result;
 } assignment_lifecycle_calls;
 
-static void close_and_open_on_assignment(const az_iot_dps_assignment* assignment, void* user_ctx)
+static void close_open_and_deinit_on_assignment(
+    const az_iot_dps_assignment* assignment,
+    void* user_ctx)
 {
   (void)assignment;
   assignment_lifecycle_calls* r = (assignment_lifecycle_calls*)user_ctx;
   r->calls++;
   r->close_result = az_iot_connection_client_close(r->client);
   r->open_result = az_iot_connection_client_open(r->client);
+  r->deinit_result = az_iot_connection_client_deinit(r->client);
 }
 
-/* close() and open() from the assignment callback are refused; the hub connect still starts. */
-static void close_and_open_from_the_assignment_callback_are_refused(void** state)
+/* close(), open() and deinit() from the assignment callback are refused; the hub connect still
+ * starts. */
+static void close_open_and_deinit_from_the_assignment_callback_are_refused(void** state)
 {
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
-  assignment_lifecycle_calls r = { fx->client, 0, AZ_IOT_OK, AZ_IOT_OK };
+  assignment_lifecycle_calls r = { fx->client, 0, AZ_IOT_OK, AZ_IOT_OK, AZ_IOT_OK };
   assert_int_equal(
       az_iot_connection_client_set_dps_assignment_callback(
-          fx->client, close_and_open_on_assignment, &r),
+          fx->client, close_open_and_deinit_on_assignment, &r),
       AZ_IOT_OK);
   assert_non_null(provision_to_hub_connecting(fx));
   assert_int_equal(r.calls, 1);
   assert_int_equal(r.close_result, AZ_IOT_ERR_BUSY);
   assert_int_equal(r.open_result, AZ_IOT_ERR_BUSY);
+  assert_int_equal(r.deinit_result, AZ_IOT_ERR_BUSY);
   assert_int_equal(
       az_iot_connection_client_get_state(fx->client, AZ_IOT_CONN_SCOPE_HUB),
       AZ_IOT_CONN_STATE_CONNECTING);
@@ -5802,7 +5808,9 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         a_different_assignment_reports_an_identity_change, setup_with_reconnect, teardown),
     cmocka_unit_test_setup_teardown(
-        close_and_open_from_the_assignment_callback_are_refused, setup_with_reconnect, teardown),
+        close_open_and_deinit_from_the_assignment_callback_are_refused,
+        setup_with_reconnect,
+        teardown),
     cmocka_unit_test_setup_teardown(
         repeated_identity_rejection_still_honors_max_attempts, setup_with_reconnect, teardown),
     cmocka_unit_test_setup_teardown(identity_rejection_without_a_policy_faults, setup, teardown),
