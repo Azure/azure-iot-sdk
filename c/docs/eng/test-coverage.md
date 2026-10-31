@@ -2024,7 +2024,6 @@ e2e rows run on Windows too, except these suites ([why](end-to-end-tests.md#not-
 | --- | --- |
 | Custody (`e2e_custody_test.c`, `e2e_mqttv5_custody_test.c`) | Technical: no OpenSSL pkcs11 provider for MSVC; Schannel takes no key references. |
 | AMQP transport SIGPIPE (`e2e_amqp_transport_sigpipe_test.c`) | Technical: Windows has no SIGPIPE. |
-| Software updates (`e2e_su_test.c`, `e2e_su_offer_test.c`) | Not built on Windows yet. |
 
 
 ## Defects and limitations
