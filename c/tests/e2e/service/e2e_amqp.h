@@ -8,9 +8,9 @@
  * the IoT Hub service endpoint), built on the vendored `az_amqp` library and
  * its sample reference transport.
  *
- * This header is INTERNAL to the az_iot_e2e_service static library. Test
- * translation units never include it, so the `az_amqp` dependency stays behind
- * the service-client facade.
+ * This header is INTERNAL to the az_iot_e2e_service static library. The e2e
+ * suites never include it (only its unit test does), so the `az_amqp` dependency
+ * stays behind the service-client facade.
  */
 #ifndef AZ_IOT_E2E_AMQP_H
 #define AZ_IOT_E2E_AMQP_H
@@ -35,6 +35,7 @@ extern "C"
 #define E2E_AMQP_CAPTURE_PROPS_MAX 4096
 #define E2E_AMQP_WATCHED_MAX 4
 #define E2E_AMQP_WATCHED_NEEDLE_MAX 192
+#define E2E_AMQP_CAPTURE_FILTER_MAX 192
 /* Largest message one partition receiver reassembles (heap, per partition): past the 1 MB
  * message limit plus the properties and annotations the hub adds, so an oversized message the
  * hub accepted is still seen. The link silently drops a larger one. */
@@ -56,7 +57,9 @@ extern "C"
   /* A telemetry watcher: an AMQP connection to the IoT Hub Event Hub-compatible
    * endpoint with one receiver link per partition. Received messages are
    * captured into a ring (newest overwrite oldest) so the test can poll for a
-   * correlation marker, even on a hub other runs are sending to.
+   * correlation marker. The watcher replays the last minutes of a hub other runs
+   * are sending to, often more messages than the ring holds, so only bodies
+   * containing the capture filter are captured.
    *
    * The struct is large (frame + per-partition buffers) and therefore intended to
    * be heap-allocated as part of the owning service object. */
@@ -72,11 +75,13 @@ extern "C"
     bool started;
     bool connection_failed;
 
-    /* Capture ring of recently received messages. */
+    /* Capture ring of recently received messages that contain capture_filter. */
     e2e_amqp_capture captured[E2E_AMQP_CAPTURE_MAX];
     int captured_count;
     int captured_next; /* ring slot the next message is written to */
-    uint32_t received_count; /* messages captured since begin */
+    uint32_t received_count; /* data messages received since begin, captured or not */
+    char capture_filter[E2E_AMQP_CAPTURE_FILTER_MAX]; /* empty: capture every message */
+    bool eviction_reported; /* the first eviction from the ring has been logged */
 
     /** @brief Needles matched against every full body on arrival; a match latches until end. */
     char watched[E2E_AMQP_WATCHED_MAX][E2E_AMQP_WATCHED_NEEDLE_MAX];
@@ -103,6 +108,7 @@ extern "C"
    * @param[in] consumer_group Consumer group to read from; `NULL` or empty selects `$Default`.
    * @param[in] enqueued_after_ms Only messages enqueued after this Unix time (ms) are delivered;
    * 0 reads from the start of the stream.
+   * @param[in] capture_filter See e2e_amqp_telemetry_set_capture_filter().
    * @param[out] err_out When non-NULL, set to a static message on failure.
    * @return true on success.
    */
@@ -114,7 +120,28 @@ extern "C"
       int64_t enqueued_after_ms,
       const char* sas_token,
       int partition_count,
+      const char* capture_filter,
       const char** err_out);
+
+  /**
+   * @brief Captures only the bodies that contain @p capture_filter.
+   *
+   * @param[in] capture_filter Substring a body must contain; `NULL` or empty captures every body.
+   * @return false if @p capture_filter is too long; the filter is then unchanged.
+   */
+  bool e2e_amqp_telemetry_set_capture_filter(e2e_amqp_telemetry* t, const char* capture_filter);
+
+  /**
+   * @brief Counts a received data body and, if it contains the capture filter, captures it into
+   * the ring, evicting the oldest capture when the ring is full.
+   *
+   * @return The capture, for the caller to add the properties to; NULL if the filter excludes the
+   * body.
+   */
+  e2e_amqp_capture* e2e_amqp_telemetry_capture_body(
+      e2e_amqp_telemetry* t,
+      const uint8_t* body,
+      size_t body_size);
 
   /* Advance the telemetry connection once, waiting up to @p wait_ms for socket I/O.
    * Returns false if the connection has failed. */

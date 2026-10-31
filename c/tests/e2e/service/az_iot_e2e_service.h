@@ -46,9 +46,15 @@ extern "C"
 
   /* ---- Telemetry (AMQP receive, pumped concurrently with the device) -------- */
 
-  /* Begin watching the Event Hub-compatible endpoint for device telemetry.
+  /* Begin watching the Event Hub-compatible endpoint for device telemetry. The watcher replays
+   * the last 5 minutes of a hub other runs share, often more messages than its 64-message
+   * capture ring holds, so only bodies containing @p capture_filter (`NULL` or empty: every body)
+   * are captured for the queries below: pass the marker, or the device id every marker of the
+   * watch contains. A watcher running with another filter is restarted.
    * Returns false on setup failure (see az_iot_e2e_service_last_error). */
-  bool az_iot_e2e_service_telemetry_watch_begin(az_iot_e2e_service* svc);
+  bool az_iot_e2e_service_telemetry_watch_begin(
+      az_iot_e2e_service* svc,
+      const char* capture_filter);
 
   /* Pump the service transport for up to @p timeout_ms. Call this interleaved with
    * the device's own do_work while waiting for telemetry or a file-upload

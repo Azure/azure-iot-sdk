@@ -131,6 +131,14 @@ target_include_directories(az_iot_tests_e2e_http_headers PRIVATE service)
 target_link_libraries(az_iot_tests_e2e_http_headers PRIVATE
     az_iot_e2e_service az_amqp az_amqp_transport)
 
+# The telemetry watcher's capture filter and ring: messages of other devices on the
+# shared events endpoint do not evict the ones a test waits for. No network; named
+# `e2e` so the e2e job's filter runs it.
+az_iot_add_cmocka_test(az_iot_tests_e2e_amqp_capture tests/e2e_amqp_capture_test.c)
+target_include_directories(az_iot_tests_e2e_amqp_capture PRIVATE service)
+target_link_libraries(az_iot_tests_e2e_amqp_capture PRIVATE
+    az_iot_e2e_service az_amqp az_amqp_transport)
+
 # ---------------------------------------------------------------------------
 # Service-side facade (hides az_amqp behind a plain-C API used by the tests).
 # ---------------------------------------------------------------------------

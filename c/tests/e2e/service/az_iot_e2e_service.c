@@ -211,11 +211,15 @@ const char* az_iot_e2e_service_last_error(const az_iot_e2e_service* svc)
   return svc->last_error;
 }
 
-bool az_iot_e2e_service_telemetry_watch_begin(az_iot_e2e_service* svc)
+bool az_iot_e2e_service_telemetry_watch_begin(az_iot_e2e_service* svc, const char* capture_filter)
 {
   if (svc->telemetry != NULL)
   {
-    return true; /* already watching */
+    if (strcmp(svc->telemetry->capture_filter, capture_filter != NULL ? capture_filter : "") == 0)
+    {
+      return true; /* already watching */
+    }
+    az_iot_e2e_service_telemetry_watch_end(svc);
   }
 
   /* Event Hubs authorizes the entity audience with a SAS whose HMAC key is the
@@ -250,6 +254,7 @@ bool az_iot_e2e_service_telemetry_watch_begin(az_iot_e2e_service* svc)
           enqueued_after_ms,
           sas,
           svc->partition_count,
+          capture_filter,
           &err))
   {
     set_error(svc, (err != NULL) ? err : "telemetry: begin failed");

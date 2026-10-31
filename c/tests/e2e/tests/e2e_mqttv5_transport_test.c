@@ -345,10 +345,10 @@ static void assert_tunnelled(
   assert_true(ok);
 }
 
-/** @brief Starts the events watch, pumping the device while the service connects. */
-static void watch_begin(fixture* fx)
+/** @brief Starts the events watch for @p marker, pumping the device while the service connects. */
+static void watch_begin(fixture* fx, const char* marker)
 {
-  bool watching = az_iot_e2e_service_telemetry_watch_begin(fx->service);
+  bool watching = az_iot_e2e_service_telemetry_watch_begin(fx->service, marker);
   for (time_t start = time(NULL);
        !watching && (time(NULL) - start) < E2E_SERVICE_CONNECT_TIMEOUT_S;)
   {
@@ -356,7 +356,7 @@ static void watch_begin(fixture* fx)
     {
       e2e_device_do_work(&fx->dev, E2E_PUMP_MS);
     }
-    watching = az_iot_e2e_service_telemetry_watch_begin(fx->service);
+    watching = az_iot_e2e_service_telemetry_watch_begin(fx->service, marker);
   }
   if (!watching)
   {
@@ -410,7 +410,7 @@ static void telemetry_round_trip(fixture* fx, const char* tag, bool proxied, uns
   char payload[256];
   snprintf(payload, sizeof(payload), "{\"e2e\":\"%s\",\"marker\":\"%s\"}", tag, marker);
 
-  watch_begin(fx);
+  watch_begin(fx, marker);
   assert_int_equal(az_iot_mqttv5_telemetry_client_init(&fx->telemetry, &dev->conn), AZ_IOT_OK);
   fx->telemetry_ok = true;
   az_iot_telemetry_property props[] = {
@@ -555,7 +555,7 @@ static void assert_no_fallback(fixture* fx, const char* tag, bool direct_hub)
   bool seen = false;
   if (telemetry_ok)
   {
-    watch_begin(fx);
+    watch_begin(fx, marker);
     time_t last_send = 0;
     for (time_t start = time(NULL); (time(NULL) - start) < E2E_NO_FALLBACK_WINDOW_S;)
     {

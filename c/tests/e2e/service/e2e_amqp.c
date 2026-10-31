@@ -72,6 +72,7 @@
 #define E2E_ERR_TELEMETRY_FILTER E2E_AMQP_PFX_TELEMETRY "enqueued-time filter encode failed"
 #define E2E_ERR_TELEMETRY_SOURCE E2E_AMQP_PFX_TELEMETRY "partition source address too long"
 #define E2E_ERR_TELEMETRY_OUT_OF_MEMORY E2E_AMQP_PFX_TELEMETRY "out of memory"
+#define E2E_ERR_TELEMETRY_CAPTURE_FILTER E2E_AMQP_PFX_TELEMETRY "capture filter too long"
 
 /* c2d */
 #define E2E_ERR_C2D_OUT_OF_MEMORY E2E_AMQP_PFX_C2D "out of memory"
@@ -499,20 +500,13 @@ static void on_message_received(
       printf("[e2e amqp] watched needle '%s' received\n", t->watched[i]);
     }
   }
+  e2e_amqp_capture* slot = NULL;
   if (has_body && body_kind == AZ_AMQP_MESSAGE_BODY_KIND_DATA)
   {
-    int n = az_span_size(body);
-    if (n > E2E_AMQP_CAPTURE_BODY_MAX - 1)
-    {
-      n = E2E_AMQP_CAPTURE_BODY_MAX - 1;
-    }
-    e2e_amqp_capture* slot = &t->captured[t->captured_next];
-    memcpy(slot->body, az_span_ptr(body), (size_t)n);
-    slot->body[n] = '\0';
-    slot->body_size = (size_t)az_span_size(body);
-    slot->props_len = 0;
-    slot->props_truncated = false;
-    slot->seq = t->received_count++;
+    slot = e2e_amqp_telemetry_capture_body(t, az_span_ptr(body), (size_t)az_span_size(body));
+  }
+  if (slot != NULL)
+  {
     capture_properties(slot, message);
 
     az_span map;
@@ -524,15 +518,62 @@ static void on_message_received(
     {
       capture_map(slot, map, "annotation:");
     }
-
-    t->captured_next = (t->captured_next + 1) % E2E_AMQP_CAPTURE_MAX;
-    if (t->captured_count < E2E_AMQP_CAPTURE_MAX)
-    {
-      t->captured_count++;
-    }
   }
 
   E2E_AMQP_DISCARD(az_amqp_link_accept(link, delivery->number));
+}
+
+bool e2e_amqp_telemetry_set_capture_filter(e2e_amqp_telemetry* t, const char* capture_filter)
+{
+  const size_t n = capture_filter != NULL ? strlen(capture_filter) : 0;
+  if (n >= sizeof(t->capture_filter))
+  {
+    return false;
+  }
+  if (n > 0)
+  {
+    memcpy(t->capture_filter, capture_filter, n);
+  }
+  t->capture_filter[n] = '\0';
+  return true;
+}
+
+e2e_amqp_capture* e2e_amqp_telemetry_capture_body(
+    e2e_amqp_telemetry* t,
+    const uint8_t* body,
+    size_t body_size)
+{
+  const uint32_t seq = t->received_count++;
+  if (t->capture_filter[0] != '\0' && !bytes_contain(body, body_size, t->capture_filter))
+  {
+    return NULL;
+  }
+  e2e_amqp_capture* slot = &t->captured[t->captured_next];
+  if (t->captured_count == E2E_AMQP_CAPTURE_MAX && !t->eviction_reported)
+  {
+    t->eviction_reported = true;
+    printf(
+        "[e2e amqp] capture ring full: message #%u evicts #%u\n",
+        (unsigned)seq,
+        (unsigned)slot->seq);
+  }
+  const size_t n
+      = body_size < E2E_AMQP_CAPTURE_BODY_MAX - 1 ? body_size : E2E_AMQP_CAPTURE_BODY_MAX - 1;
+  if (n > 0)
+  {
+    memcpy(slot->body, body, n);
+  }
+  slot->body[n] = '\0';
+  slot->body_size = body_size;
+  slot->props_len = 0;
+  slot->props_truncated = false;
+  slot->seq = seq;
+  t->captured_next = (t->captured_next + 1) % E2E_AMQP_CAPTURE_MAX;
+  if (t->captured_count < E2E_AMQP_CAPTURE_MAX)
+  {
+    t->captured_count++;
+  }
+  return slot;
 }
 
 /**
@@ -577,9 +618,18 @@ bool e2e_amqp_telemetry_begin(
     int64_t enqueued_after_ms,
     const char* sas_token,
     int partition_count,
+    const char* capture_filter,
     const char** err_out)
 {
   const char* err = NULL;
+  if (!e2e_amqp_telemetry_set_capture_filter(t, capture_filter))
+  {
+    if (err_out != NULL)
+    {
+      *err_out = E2E_ERR_TELEMETRY_CAPTURE_FILTER;
+    }
+    return false;
+  }
   if (consumer_group == NULL || consumer_group[0] == '\0')
   {
     consumer_group = "$Default";

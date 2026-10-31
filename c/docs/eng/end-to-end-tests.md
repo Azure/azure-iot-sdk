@@ -100,6 +100,10 @@ Service configuration (set by the provisioning config script):
 
 The telemetry watcher only receives messages enqueued from 5 minutes before it
 starts (an Event Hubs enqueued-time filter), so a reused hub's backlog is skipped.
+That window still holds every device's traffic on a shared hub (often hundreds of
+messages), so each test starts the watch with a capture filter (its device id or
+marker): only bodies containing it enter the watcher's 64-message capture ring, and
+other traffic cannot evict a marker the test is about to check.
 
 SAS tokens are built with OpenSSL (HMAC-SHA256 + base64) on both platforms. Note
 the two key conventions the facade handles: Event Hubs signs with the **raw** key
