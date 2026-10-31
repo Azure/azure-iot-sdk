@@ -160,6 +160,10 @@ extern "C"
   az_iot_test_mqtt_packet az_iot_test_mqtt_disconnect_v5_raw(
       uint8_t code,
       const char* reason_string);
+  /* MQTT 5 SUBACK for one filter with reason @p code and, unless @p reason_string is NULL, a
+   * Reason String property. Carries a packet id. len == 0 as for
+   * az_iot_test_mqtt_connack_v5_raw(). */
+  az_iot_test_mqtt_packet az_iot_test_mqtt_suback_v5_raw(uint8_t code, const char* reason_string);
 
   /* Pin the packet id and clear the echo flag, for an acknowledgement that is
    * meant to answer something the client never sent. Does nothing to a packet
