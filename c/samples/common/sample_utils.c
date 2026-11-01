@@ -522,6 +522,26 @@ bool sample_file_write_atomically(const char* path, const void* data, size_t siz
   return replaced;
 }
 
+bool sample_file_delete(const char* path)
+{
+  if (path == NULL)
+  {
+    errno = EINVAL;
+    return false;
+  }
+  if (remove(path) != 0)
+  {
+    return errno == ENOENT;
+  }
+#ifndef _WIN32
+  if (!sync_parent_directory(path))
+  {
+    fprintf(stderr, "%s: deleted, but its directory could not be synced to storage\n", path);
+  }
+#endif
+  return true;
+}
+
 /** @brief Set by on_stop_signal(); sig_atomic_t is the only type a handler may write. */
 static volatile sig_atomic_t s_stop_requested = 0;
 

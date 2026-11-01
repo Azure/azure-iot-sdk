@@ -11,6 +11,13 @@
   application and the SDK. The direct method and twin counts (`AZ_IOT_DM_MAX_INFLIGHT`,
   `AZ_IOT_TWIN_MAX_PENDING`, `AZ_IOT_MQTTV5_DM_*` counts) and `AZ_IOT_MQTTV5_DM_RESULT_BODY_MAX` are
   still overridable and must match between the two.
+- Connection client: `az_iot_connection_client_set_dps_assignment_invalidated_callback()` reports,
+  once, when the client will not use the assignment it holds again: DPS returned an assignment it
+  rejected, the hub refused the identity in `AZ_IOT_IDENTITY_RECOVERY_REPROVISION` mode, or
+  `dps.max_hub_connect_attempts_before_reprovision` was reached. An application that saves the
+  assignment deletes it there, so a restart registers with DPS instead of restoring it. The
+  `dps_persist_assignment` sample does. See
+  [docs/connecting.md](docs/connecting.md#saved-hub-with-dps-fallback).
 - Breaking: the connection client runs one MQTT session at a time; the provisioning session and the
   hub session no longer overlap. With software updates bound, the hub connect after registration
   waits while the update check still needs the provisioning session, then connects to the assigned
