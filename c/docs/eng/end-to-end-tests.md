@@ -402,7 +402,7 @@ runs it all in an ESP-IDF environment with QEMU, a host compiler and OpenSSL hea
 3. builds and runs the test, booting the firmware with
    [`eng/esp-idf-qemu.sh`](../../eng/esp-idf-qemu.sh) `--run`.
 
-CI: job `esp32-qemu` in `ci-c-e2e.yml`. It runs esp32 and esp32c3 in `espressif/idf:v6.0`, with
+CI: job `esp32-qemu` in `ci-c-e2e.yml`. It runs esp32 and esp32c3 in `espressif/idf:v6.1`, with
 devices 12 and 13 issued by `e2e-shared-device.ps1`. It uses the shared environment on every run,
 push and nightly included: the per-run enrollments' RSA-4096 keys exceed DS's 3072 bits, while the
 shared group CA issues RSA-2048. Without the shared environment's secrets, the job fails.
