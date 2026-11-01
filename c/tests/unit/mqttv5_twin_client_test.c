@@ -2364,6 +2364,53 @@ static void a_session_end_resends_the_snapshot_on_the_next_session(void** state)
   assert_int_equal(rec.version, 3);
 }
 
+/* A hub session ended for a provisioning session (a software update check) is
+ * an ordinary session end: the snapshot stays in flight and is sent again, under
+ * its id, by the hub session that reconnects afterwards. */
+static void a_session_ended_for_a_provisioning_session_resends_the_snapshot_after_reconnect(
+    void** state)
+{
+  fixture* fx = (fixture*)*state;
+  fx->conn.opts.dps.id_scope = "0ne00000000";
+  fx->conn.opts.dps.registration_id = "ut-device";
+  /* The provisioning session is MQTT 3.1.1: the mock adapter of both versions, same workspace. */
+  fx->conn.opts.mqtt_adapter = az_iot_mock_mqtt_get_adapter();
+  open_to_connected(fx);
+  desired_record rec = { 0 };
+  set_desired(fx, &rec);
+  inject_desired(fx, 3, "{}");
+  const az_iot_mock_call* first = last_get(fx);
+  uint8_t first_corr[16];
+  memcpy(first_corr, first->correlation_data, sizeof(first_corr));
+
+  /* The hub session ends first; the provisioning session opens once it is gone. */
+  assert_int_equal(az_iot_connection_client__dps_user_acquire(&fx->conn), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client__dps_session_ensure(&fx->conn), AZ_IOT_ERR_BUSY);
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(fx->mock));
+  assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
+  assert_null(fx->conn.active_client);
+  assert_non_null(fx->conn.dps_mqtt);
+  assert_null(az_iot_mock_mqtt_adapter_last_client_of(AZ_IOT_MQTT_VERSION_5));
+
+  /* Released: the hub session reconnects and the twin resumes. */
+  az_iot_connection_client__dps_user_release(&fx->conn);
+  assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
+  assert_null(fx->conn.dps_mqtt);
+  fx->mock = az_iot_mock_mqtt_adapter_last_client_of(AZ_IOT_MQTT_VERSION_5);
+  assert_non_null(fx->mock);
+  open_to_birth_ack_after_open(fx, 3, 0);
+  az_iot_test_ack_subscriptions(&fx->conn, fx->mock);
+  assert_non_null(find_subscribe(fx->mock, "ih/ut-device/dev/#"));
+  assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
+  assert_int_equal(count_gets(fx), 1);
+  assert_memory_equal(last_get(fx)->correlation_data, first_corr, sizeof(first_corr));
+  assert_false(rec.fired);
+
+  answer_last_get(fx, 3, "{\"s\":3}");
+  assert_int_equal(rec.kind, AZ_IOT_MQTTV5_TWIN_DESIRED_SNAPSHOT);
+  assert_int_equal(rec.version, 3);
+}
+
 /* End the time limit of every twin request the tracker holds. */
 static void expire_held_twin_requests(fixture* fx)
 {
@@ -3870,6 +3917,10 @@ int main(void)
         a_session_end_resends_the_snapshot_on_the_next_session, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_snapshot_expired_before_connected_is_replaced, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_session_ended_for_a_provisioning_session_resends_the_snapshot_after_reconnect,
+        setup,
+        teardown),
     cmocka_unit_test_setup_teardown(
         concurrent_get_and_patch_correlate_independently, setup, teardown),
     cmocka_unit_test_setup_teardown(

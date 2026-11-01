@@ -235,7 +235,7 @@ Why each one:
   attempt. That reason is a property of the *service*, not of how long the session lives, so it is
   unaffected by any change to when the provisioning session is torn down: `clean_start` is only
   read at CONNECT, and it is inert at this service whenever it is read. A provisioning session that
-  outlived registration, or ran alongside a hub session, would still take the same terms.
+  outlived registration would still take the same terms.
 - **MQTTv3 resumes.** An MQTTv3 hub holds the device's *subscription* and its in-flight QoS 1 only
   for a session that is not clean. Connecting clean does not lose the hub's server-side C2D queue —
   that is delivered once the device re-subscribes — but it does discard the subscription and any

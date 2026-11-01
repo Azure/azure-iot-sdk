@@ -28,6 +28,8 @@
 #include "azure/iot/az_iot_result.h"
 #include "azure/iot/mqttv3/az_iot_c2d_client.h"
 
+#include "internal/connection_client_internal.h"
+
 #include "support/mock_mqtt_iface.h"
 #include "support/test_provider.h"
 #include "support/subscription_ack.h"
@@ -943,6 +945,48 @@ static void the_subscription_is_reissued_after_a_reconnect(void** state)
   assert_int_equal(rec.count, 1);
 }
 
+/* A hub session ended for a provisioning session (a software update check) is
+ * an ordinary session end: the subscription is reissued on the session that
+ * reconnects once the provisioning session is released. */
+static void the_subscription_is_reissued_after_a_provisioning_session(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  fx->conn.opts.dps.id_scope = "0ne00000000";
+  fx->conn.opts.dps.registration_id = "ut-device";
+  open_to_connected(fx);
+  assert_non_null(find_subscribe(fx->mock, C2D_FILTER));
+
+  /* The hub session ends first; the provisioning session opens once it is gone. */
+  assert_int_equal(az_iot_connection_client__dps_user_acquire(&fx->conn), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client__dps_session_ensure(&fx->conn), AZ_IOT_ERR_BUSY);
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(fx->mock));
+  assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
+  assert_null(fx->conn.active_client);
+  assert_non_null(fx->conn.dps_mqtt);
+  assert_int_equal(
+      az_iot_connection_client_get_state(&fx->conn, AZ_IOT_CONN_SCOPE_HUB),
+      AZ_IOT_CONN_STATE_RETRY_PENDING);
+
+  /* Released: the hub session reconnects, without open(), and subscribes again. */
+  az_iot_connection_client__dps_user_release(&fx->conn);
+  assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
+  assert_null(fx->conn.dps_mqtt);
+  fx->mock = az_iot_mock_mqtt_adapter_last_client();
+  assert_non_null(fx->mock);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(fx->mock, AZ_IOT_OK));
+  assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
+  az_iot_test_ack_subscriptions(&fx->conn, fx->mock);
+  assert_non_null(find_subscribe(fx->mock, C2D_FILTER));
+  assert_int_equal(
+      az_iot_connection_client_get_state(&fx->conn, AZ_IOT_CONN_SCOPE_HUB),
+      AZ_IOT_CONN_STATE_CONNECTED);
+
+  message_record rec = { 0 };
+  assert_int_equal(az_iot_mqttv3_c2d_client_set_handler(&fx->c2d, on_c2d, &rec), AZ_IOT_OK);
+  inject(fx, C2D_TOPIC, "after the provisioning session");
+  assert_int_equal(rec.count, 1);
+}
+
 /* ------------------------------------------------------------------------- */
 /* destroy                                                                   */
 /* ------------------------------------------------------------------------- */
@@ -1028,6 +1072,8 @@ int main(void)
     cmocka_unit_test_setup_teardown(a_replacement_client_takes_over_delivery, setup, teardown),
     cmocka_unit_test_setup_teardown(
         the_subscription_is_reissued_after_a_reconnect, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        the_subscription_is_reissued_after_a_provisioning_session, setup, teardown),
     cmocka_unit_test_setup_teardown(a_message_after_deinit_reaches_nobody, setup, teardown),
     cmocka_unit_test(deinit_tolerates_null),
     cmocka_unit_test_setup_teardown(deinit_is_idempotent, setup, teardown),

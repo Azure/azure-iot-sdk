@@ -1187,9 +1187,10 @@ static void reentrant_observer(const az_iot_connection_state_event* event, void*
  * out, the outer pass would resume unguarded and a later observer could mutate
  * the arrays still being walked.
  *
- * The first observer starts the session at HUB:CONNECTED (nesting a dispatch),
- * then checks that adding an observer and close() are still refused; a second,
- * registered afterwards, then tries to mutate the registry. */
+ * The first observer starts the session at the HUB:RETRY_PENDING of a hub
+ * session ended for it (nesting a dispatch), then checks that adding an
+ * observer and close() are still refused; a second, registered afterwards,
+ * then tries to mutate the registry. */
 typedef struct nested_dispatch_probe
 {
   az_iot_connection_client* client;
@@ -1215,7 +1216,8 @@ static void nested_starting_observer(const az_iot_connection_state_event* event,
     g_nested.inner_events++;
     return;
   }
-  if (event->scope == AZ_IOT_CONN_SCOPE_HUB && event->state == AZ_IOT_CONN_STATE_CONNECTED
+  /* The hub session paused for the provisioning session; the session starts from here. */
+  if (event->scope == AZ_IOT_CONN_SCOPE_HUB && event->state == AZ_IOT_CONN_STATE_RETRY_PENDING
       && !g_nested.started)
   {
     g_nested.started = true;
@@ -1232,9 +1234,9 @@ static void nested_starting_observer(const az_iot_connection_state_event* event,
 static void late_mutating_observer(const az_iot_connection_state_event* event, void* user_ctx)
 {
   (void)user_ctx;
-  /* Recorded only for the outer HUB:CONNECTED pass, after the nesting. */
+  /* Recorded only for the outer HUB:RETRY_PENDING pass, after the nesting. */
   if (g_nested.started && event->scope == AZ_IOT_CONN_SCOPE_HUB
-      && event->state == AZ_IOT_CONN_STATE_CONNECTED)
+      && event->state == AZ_IOT_CONN_STATE_RETRY_PENDING)
   {
     g_nested.late_add = az_iot_connection_client_add_state_observer(
         g_nested.client, late_mutating_observer, (void*)(uintptr_t)7);
@@ -1260,11 +1262,16 @@ static void the_dispatch_guard_survives_nesting(void** state)
       az_iot_connection_client_add_state_observer(&c, late_mutating_observer, NULL), AZ_IOT_OK);
   assert_int_equal(az_iot_connection_client__dps_user_acquire(&c), AZ_IOT_OK);
 
-  /* The saved hub connects first; the feature session starts from its CONNECTED. */
+  /* The saved hub connects first, then ends for the feature session, which
+   * starts from the hub's RETRY_PENDING. */
   assert_int_equal(az_iot_connection_client_open(&c), AZ_IOT_OK);
   az_iot_mock_mqtt_client* hub = az_iot_mock_mqtt_factory_last_client(f);
   assert_non_null(hub);
   assert_true(az_iot_mock_mqtt_client_inject_connected(hub, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(&c, 0);
+  assert_int_equal(az_iot_connection_client__dps_session_ensure(&c), AZ_IOT_ERR_BUSY);
+  assert_false(g_nested.started);
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(hub));
   (void)az_iot_connection_client_do_work(&c, 0);
 
   assert_true(g_nested.started);
@@ -1278,7 +1285,9 @@ static void the_dispatch_guard_survives_nesting(void** state)
   assert_int_equal(c.callback_depth, 0);
   assert_false(c.dispatching_state);
   assert_int_equal(
-      az_iot_connection_client_get_state(&c, AZ_IOT_CONN_SCOPE_HUB), AZ_IOT_CONN_STATE_CONNECTED);
+      az_iot_connection_client_get_state(&c, AZ_IOT_CONN_SCOPE_HUB),
+      AZ_IOT_CONN_STATE_RETRY_PENDING);
+  assert_null(c.active_client);
 
   az_iot_connection_client__dps_user_release(&c);
   assert_int_equal(az_iot_test_connection_client_deinit(&c), AZ_IOT_OK);
