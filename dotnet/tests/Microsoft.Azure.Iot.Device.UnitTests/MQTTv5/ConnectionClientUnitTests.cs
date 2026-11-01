@@ -255,6 +255,23 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
         [Theory]
         [InlineData(false)]
         [InlineData(true)]
+        public async Task DisconnectWithoutOptionsKeepsTheConfiguredSessionExpiryInterval(bool useUnifiedClient)
+        {
+            using MockConnectionMqttClient mockMqttClient = new() { AutoRespondToBirth = true };
+            AbstractConnectionClient connectionClient = useUnifiedClient
+                ? new Device.Unified.Connection.ConnectionClient(new() { MqttClient = mockMqttClient, SessionExpiryInterval = 120 })
+                : new ConnectionClient(new MqttV5ConnectionClientOptions() { MqttClient = mockMqttClient, SessionExpiryInterval = 120 });
+            using IDisposable connectionClientLifetime = (IDisposable)connectionClient;
+
+            await connectionClient.ConnectToHubAsync(GetMockConnectionContext(), TestContext.Current.CancellationToken);
+            await connectionClient.DisconnectAsync(null, TestContext.Current.CancellationToken);
+
+            Assert.Equal(120u, Assert.Single(mockMqttClient.DisconnectRequests).SessionExpiryInterval);
+        }
+
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
         public async Task FailedConnectAttemptForcesResubscribeOnResumedSession(bool useUnifiedClient)
         {
             using MockConnectionMqttClient mockMqttClient = new() { AutoRespondToBirth = true };
@@ -901,7 +918,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
                 Assert.Equal(new[] { 0, 1, 2 }, requestedTimeouts);
             }
 
-            await connectionClient.DisconnectAsync(TestContext.Current.CancellationToken);
+            await connectionClient.DisconnectAsync(null, TestContext.Current.CancellationToken);
 
             await connectionClient.ConnectToHubAsync(GetMockConnectionContext(), TestContext.Current.CancellationToken)
                 .WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);

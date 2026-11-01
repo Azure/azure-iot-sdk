@@ -291,14 +291,10 @@ static az_iot_result clients_build(
   }
 }
 
-/* One pump step. The MQTTv5 twin client has timers of its own to drive. */
+/* One pump step: the connection also drives the twin clients' timeouts. */
 static void pump(sample_state* s, uint32_t timeout_ms)
 {
   (void)az_iot_connection_client_do_work(&s->connection_client, timeout_ms);
-  if (s->twin_initialized && s->profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5)
-  {
-    (void)az_iot_mqttv5_twin_client_do_work(&s->mqttv5);
-  }
 }
 
 /* GET + PATCH, answered through the callbacks. A request that was never queued
@@ -362,7 +358,11 @@ int main(void)
 
   /* Connection client (DPS provisioning is internal). The default reconnection
    * and identity recovery policies keep the device reconnecting on its own. */
+  /* Memory for the connection client's entries, sized for the default limits. */
+  static uint8_t connection_workspace[AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE];
   az_iot_connection_client_options copts = az_iot_connection_client_options_default();
+  copts.workspace = connection_workspace;
+  copts.workspace_size = sizeof(connection_workspace);
   copts.dps.id_scope = state.config.id_scope;
   copts.dps.registration_id = state.config.reg_id;
   copts.dps.global_endpoint = state.config.dps_global_endpoint; /* NULL: the global default */

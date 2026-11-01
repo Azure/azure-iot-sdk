@@ -59,7 +59,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.MQTTv5
             ConnectionContext cachedContext = await ConnectAsync(device, cancellationToken);
             Assert.True(await DeviceExistsAsync(registryManager, device.DeviceId, cancellationToken));
 
-            await device.ConnectionClient.DisconnectAsync(cancellationToken);
+            await device.ConnectionClient.DisconnectAsync(null, cancellationToken);
             await registryManager.RemoveDeviceAsync(device.DeviceId, cancellationToken);
             Assert.False(await DeviceExistsAsync(registryManager, device.DeviceId, cancellationToken));
 
@@ -84,7 +84,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.MQTTv5
             }
             finally
             {
-                await reconnectingClient.DisconnectAsync(CancellationToken.None);
+                await reconnectingClient.DisconnectAsync(null, CancellationToken.None);
             }
         }
 

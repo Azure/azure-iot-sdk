@@ -49,7 +49,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
                 TestContext.Current.CancellationToken);
             using CustomTopicsClient customTopicsClient = new(connection);
 
-            await connection.DisconnectAsync(TestContext.Current.CancellationToken);
+            await connection.DisconnectAsync(null, TestContext.Current.CancellationToken);
 
             await Assert.ThrowsAsync<NotSupportedException>(
                 () => customTopicsClient.PublishAsync(new MqttPublish() { Topic = "topic" }, TestContext.Current.CancellationToken));
@@ -239,7 +239,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
                 TestContext.Current.CancellationToken);
             await publishSent.Task.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
 
-            await connectionClient.DisconnectAsync(TestContext.Current.CancellationToken);
+            await connectionClient.DisconnectAsync(null, TestContext.Current.CancellationToken);
 
             await Assert.ThrowsAsync<OperationCanceledException>(() => publishTask.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken));
         }
@@ -299,7 +299,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             // attempt. A disconnect that lands before then fails the operation fast instead.
             await Task.Delay(TimeSpan.FromMilliseconds(500), TestContext.Current.CancellationToken);
 
-            await connectionClient.DisconnectAsync(TestContext.Current.CancellationToken);
+            await connectionClient.DisconnectAsync(null, TestContext.Current.CancellationToken);
 
             await Assert.ThrowsAsync<OperationCanceledException>(() => publishTask.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken));
             Assert.False(operationCancellation.IsCancellationRequested);

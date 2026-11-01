@@ -777,7 +777,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
                 TestContext.Current.CancellationToken);
             using TwinClient twinClient = new(connection);
 
-            await connection.DisconnectAsync(TestContext.Current.CancellationToken);
+            await connection.DisconnectAsync(null, TestContext.Current.CancellationToken);
 
             await Assert.ThrowsAsync<NotSupportedException>(
                 async () => await twinClient.GetTwinAsync(cancellationToken: TestContext.Current.CancellationToken));
@@ -1392,7 +1392,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             using TwinClient twinClient = new(connection);
             ConnectionContext context = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv5, DeviceId);
             await connection.ConnectToHubAsync(context, TestContext.Current.CancellationToken);
-            await connection.DisconnectAsync(TestContext.Current.CancellationToken);
+            await connection.DisconnectAsync(null, TestContext.Current.CancellationToken);
 
             Task<ReportedPatchResponse> update = UpdateReportedAsync(twinClient, "{\"a\":1}");
             Assert.False(update.IsCompleted);

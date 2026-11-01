@@ -619,26 +619,37 @@ namespace Microsoft.Azure.Iot.Device
         }
 
         /// <summary>
-        /// Disconnect this device from IoT hub.
+        /// Disconnect this device from IoT hub with optional disconnect settings.
         /// </summary>
         /// <remarks>
-        /// The <see cref="ConnectionContext"/> this client holds survives a disconnect. A later <see cref="ProvisionAndConnectAsync"/> 
-        /// therefore reconnects directly to the same IoT hub (with any certificates it issued) unless forceProvisioning is set or unless 
-        /// the cached credentials expire.
         /// <para>
-        /// A deliberate disconnect takes precedence over any automatic recovery in progress. Reconnection to the IoT hub
-        /// and re-provisioning through Device Provisioning Service both stop, and every feature operation (PUBLISH,
-        /// SUBSCRIBE or UNSUBSCRIBE) that is waiting for the connection to be re-established is released and throws
-        /// <see cref="OperationCanceledException"/> rather than being sent once the connection comes back. Feature
-        /// operations started after this call fail fast until this client is connected again.
+        /// The cached <see cref="ConnectionContext"/> survives a disconnect. A later
+        /// <see cref="ProvisionAndConnectAsync"/> reconnects directly to the same IoT hub unless forceProvisioning is
+        /// set or the cached credentials are rejected.
+        /// </para>
+        /// <para>
+        /// A deliberate disconnect stops automatic reconnection and re-provisioning. Feature operations waiting for
+        /// recovery are released and throw <see cref="OperationCanceledException"/> instead of being sent after recovery.
+        /// New feature operations fail fast until this client is connected again.
         /// </para>
         /// </remarks>
+        /// <param name="options">
+        /// The disconnect settings, or null to use the defaults. When null, a connection to an MQTTv5 IoT hub keeps the
+        /// session expiry interval configured on this client's options; otherwise the
+        /// <see cref="DisconnectOptions.SessionExpiryInterval"/> default applies.
+        /// </param>
         /// <param name="cancellationToken">The cancellation token.</param>
-        public async Task DisconnectAsync(CancellationToken cancellationToken = default)
+        public async Task DisconnectAsync(DisconnectOptions? options = null, CancellationToken cancellationToken = default)
         {
             ObjectDisposedException.ThrowIf(_isDisposed, this);
 
             cancellationToken.ThrowIfCancellationRequested();
+
+            MqttDisconnect disconnect = CreateNormalDisconnect();
+            if (options != null)
+            {
+                disconnect.SessionExpiryInterval = options.SessionExpiryInterval;
+            }
 
             // Record the disconnect before cancelling anything, so that a re-provisioning attempt or a waiting operation
             // that races this call observes it and stands down.
@@ -667,7 +678,7 @@ namespace Microsoft.Azure.Iot.Device
                 }
 
                 // This also stops the connection layer from reconnecting to the IoT hub.
-                await ManagedMqttConnection.DisconnectAsync(false, new MqttDisconnect() { Reason = MqttDisconnectReasonCode.NormalDisconnection }, cancellationToken);
+                await ManagedMqttConnection.DisconnectAsync(false, disconnect, cancellationToken);
 
                 Trace.TraceInformation("ConnectionClient's current endpoint is now neither IoT Hub or DPS");
                 CurrentEndpoint = ConnectionEndpoint.None;
@@ -918,6 +929,7 @@ namespace Microsoft.Azure.Iot.Device
                     TcpPort = 8883,
                     WebsocketPort = WebSocketPort,
                     ClientId = deviceId,
+                    SessionExpiryInterval = CurrentConnectionContext.ConnectionProfile == IotHubConnectionType.Mqttv5 ? 3600u : 0u,
 
                     // Overwritten on each connect attempt by PatchConnectPacketAsync when session resumption is allowed.
                     CleanSession = true,
@@ -1646,6 +1658,21 @@ namespace Microsoft.Azure.Iot.Device
                 await DisconnectFromDpsAsync();
             }
         }
+
+        /// <summary>
+        /// The session expiry interval, in seconds, that a DISCONNECT sent to the IoT hub carries when the application did
+        /// not choose one, including the DISCONNECTs sent by automatic recovery.
+        /// </summary>
+        internal virtual uint DefaultDisconnectSessionExpiryInterval => new DisconnectOptions().SessionExpiryInterval;
+
+        /// <summary>
+        /// A normal DISCONNECT to send to the IoT hub, carrying <see cref="DefaultDisconnectSessionExpiryInterval"/>.
+        /// </summary>
+        internal MqttDisconnect CreateNormalDisconnect() => new()
+        {
+            Reason = MqttDisconnectReasonCode.NormalDisconnection,
+            SessionExpiryInterval = DefaultDisconnectSessionExpiryInterval,
+        };
 
         private async Task DisconnectFromDpsAsync()
         {

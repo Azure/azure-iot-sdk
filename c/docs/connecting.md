@@ -10,7 +10,10 @@ option in full.
 ## Minimal setup
 
 ```c
+static uint8_t workspace[AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE];
 az_iot_connection_client_options opts = az_iot_connection_client_options_default();
+opts.workspace = workspace; /* required; see client-configuration.md */
+opts.workspace_size = sizeof(workspace);
 opts.dps.id_scope = "<id-scope>";
 opts.dps.registration_id = "<registration-id>";
 opts.certificate_provider = &certs.base; /* e.g. az_iot_certificate_provider_pem */
@@ -110,7 +113,11 @@ A DPS registration on a provisioning session that is already up goes `SETTING_UP
 with no `CONNECTING`, since nothing new is connected.
 So each failed attempt produces an event, including under a policy that retries forever. A step that
 fails on the device carries `error->source == AZ_IOT_CONN_ERR_SRC_LOCAL`, the step's `az_iot_result`
-as `code`, and the step as `message`, for example `certificate provider load() failed`.
+as `code`, and the step as `message`, for example `certificate provider load() failed`. A refused
+MQTT 5 CONNACK or a server DISCONNECT with a nonzero reason code carries
+`error->source == AZ_IOT_CONN_ERR_SRC_MQTT`, the reason code as `code`, and the server's Reason
+String, if it sent one, as `message` (at most `AZ_IOT_CONN_ERROR_MESSAGE_MAX` bytes). The Paho
+adapter cannot report a refused CONNACK's Reason String.
 `open()` first validates the configuration (credential shape, CSR support, registration payload
 and its buffer); a refusal there starts no attempt, raises no event, and is reported only by
 `open()`'s return value.
@@ -120,11 +127,12 @@ and its buffer); a refusal there starts no attempt, raises no event, and is repo
 - `open()` starts a connection from `IDLE`. `close()` returns the client to `IDLE` from any state;
   from a live session the disconnect completes in `do_work()`.
 - `close()` then `open()` reconnects after `FAULTED`. Feature clients and observers survive it.
-- `open()` and `close()` cannot be called from a callback the client runs: state observers,
-  publish completion callbacks, the SAS token callback, the DPS operational-certificate,
+- `open()`, `close()` and `deinit()` cannot be called from a callback the client runs: state
+  observers, publish completion callbacks, the SAS token callback, the DPS operational-certificate,
   registration-payload and assignment callbacks, CSR callbacks, subscription-failure callbacks,
   and feature clients' message and response handlers. There they return `AZ_IOT_ERR_BUSY` and
   change nothing. Record the decision in the callback and call them after `do_work()` returns.
+  Feature clients' own `deinit()` stays callable from callbacks.
 - The client reconnects by itself under `reconnection_policy`. To decide yourself, use
   `az_iot_connection_client_get_disabled_retry_policy()`: a failure then ends in `FAULTED`.
 
@@ -251,6 +259,7 @@ source of a pass is refused (see Fallback); an mqttv5 DISCONNECT refusal applies
 | --- | --- | --- | --- |
 | `mode` | `RETRY_HUB` | `REPROVISION` | What the next attempt does; see below. |
 | `policy` | 5 min initial, 1 h cap, ±25%, no limit | uses `reconnection_policy` | Retry schedule after a refusal. |
+| `after_assignment_policy` | 5 s initial, 15 s cap, ±20%, 4 attempts | none: `policy` from the first refusal | Retry schedule after a refusal from a hub DPS assigned in this episode, until `HUB:CONNECTED`; then `policy`. |
 | `max_duration_seconds` | 0 | 0 | Stop this long after the first refusal; `0` = no limit. No attempt in the episode (hub connect, DPS registration or poll) starts at or after it, until `HUB:CONNECTED`. Recovery stops as soon as the next attempt could not start in time, so the fault may come before the duration ends. Not kept across restarts. |
 
 | `mode` | Next attempt after a refusal |
@@ -262,6 +271,10 @@ source of a pass is refused (see Fallback); an mqttv5 DISCONNECT refusal applies
 - The schedule is separate from the reconnection ladders, and DPS registrations do not reset it.
   Only `HUB:CONNECTED`, `open()` and `close()` do. So repeated DPS-accept / hub-reject cycles
   still back off and stop at the policy's `max_attempts`.
+- A hub DPS has just assigned may refuse the device until the new registration reaches it. So
+  after a DPS assignment, refusals are first retried on `after_assignment_policy` (by default
+  4 attempts within about a minute), then on `policy`. Its attempts are spent once per episode:
+  DPS registrations do not restore them. `mode` still decides where each attempt goes.
 - When a limit is reached the client goes to `FAULTED` with the refusal as `reason`, on the HUB scope
   and, if a re-registration was pending, on the DPS scope as well.
 - With `reconnection_policy` disabled, the first mqttv5 DISCONNECT refusal faults, as does the
@@ -369,7 +382,7 @@ storage still yields the key.
 | The key | The provider returns | Adapter | Sample |
 | --- | --- | --- | --- |
 | Can be named (PKCS#11 URI, TPM 2.0 object) and has an OpenSSL 3.x provider | `client_key_uri` + `crypto_engine_id` | Paho (`AZ_IOT_PAHO_KEY_CUSTODY`); az_mqtt with OpenSSL TLS | [`hsm_pkcs11`](../samples/authentication/hsm_pkcs11/README.md) |
-| Is a PSA Crypto key (e.g. the ESP32 Digital Signature peripheral) | `client_key_psa_id` | az_mqtt with mbedTLS TLS (ESP-IDF); others refuse it with `AZ_IOT_ERR_NOT_SUPPORTED` | — |
+| Is a PSA Crypto key (e.g. the ESP32 Digital Signature peripheral) | `client_key_psa_id` | az_mqtt with mbedTLS TLS (ESP-IDF); others refuse it with `AZ_IOT_ERR_NOT_SUPPORTED` | [ESP32 software updates](../samples/software_update/esp32/README.md#device-identity) |
 | Can only be asked to sign | A `sign()` hook | Your own ([Bring your own MQTT client](how_to_byo_mqtt_client.md)); Paho and az_mqtt refuse it with `AZ_IOT_ERR_NOT_SUPPORTED` | [`hsm_sign_callback`](../samples/authentication/hsm_sign_callback/README.md) |
 
 - **Bootstrap keys** authenticate to DPS; keep them in hardware too.

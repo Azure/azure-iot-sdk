@@ -216,7 +216,11 @@ int main(void)
   }
 
   /* Connection client (DPS provisioning is internal) */
+  /* Memory for the connection client's entries, sized for the default limits. */
+  static uint8_t connection_workspace[AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE];
   az_iot_connection_client_options copts = az_iot_connection_client_options_default();
+  copts.workspace = connection_workspace;
+  copts.workspace_size = sizeof(connection_workspace);
   copts.dps.id_scope = state.config.id_scope;
   copts.dps.registration_id = state.config.reg_id;
   copts.dps.global_endpoint = state.config.dps_global_endpoint; /* NULL: the global default */
@@ -286,7 +290,6 @@ int main(void)
   for (int i = 0; i < 1200 && user_ctx.conn_state != AZ_IOT_CONN_STATE_CONNECTED; ++i)
   {
     (void)az_iot_connection_client_do_work(&state.connection_client, 50);
-    (void)az_iot_mqttv5_twin_client_do_work(&state.twin);
     if (user_ctx.conn_state == AZ_IOT_CONN_STATE_FAULTED || user_ctx.provisioning_faulted)
     {
       break;
@@ -308,7 +311,6 @@ int main(void)
     for (int i = 0; i < 600 && (!user_ctx.get_done || !user_ctx.patch_done); ++i)
     {
       (void)az_iot_connection_client_do_work(&state.connection_client, 50);
-      (void)az_iot_mqttv5_twin_client_do_work(&state.twin);
     }
 
     /* A refused write is a failed sample run: the exchange completing is not
@@ -338,7 +340,6 @@ int main(void)
   for (int i = 0; i < 100 && user_ctx.conn_state != AZ_IOT_CONN_STATE_IDLE; ++i)
   {
     (void)az_iot_connection_client_do_work(&state.connection_client, 50);
-    (void)az_iot_mqttv5_twin_client_do_work(&state.twin);
   }
 
   sample_state_destroy(&state);

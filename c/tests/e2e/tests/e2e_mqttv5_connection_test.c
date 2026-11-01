@@ -416,9 +416,10 @@ static void ensure_saved_hub(fixture* fx)
   reset_a(fx);
 }
 
-static void watch_begin(fixture* fx)
+/** @brief Starts the events watch for @p marker, pumping the device while the service connects. */
+static void watch_begin(fixture* fx, const char* marker)
 {
-  bool watching = az_iot_e2e_service_telemetry_watch_begin(fx->service);
+  bool watching = az_iot_e2e_service_telemetry_watch_begin(fx->service, marker);
   for (time_t start = time(NULL);
        !watching && (time(NULL) - start) < E2E_SERVICE_CONNECT_TIMEOUT_S;)
   {
@@ -426,7 +427,7 @@ static void watch_begin(fixture* fx)
     {
       pump(fx);
     }
-    watching = az_iot_e2e_service_telemetry_watch_begin(fx->service);
+    watching = az_iot_e2e_service_telemetry_watch_begin(fx->service, marker);
   }
   if (!watching)
   {
@@ -451,7 +452,7 @@ static void assert_telemetry_routed(fixture* fx)
   char payload[E2E_MARKER_MAX + 16];
   snprintf(payload, sizeof(payload), "{\"marker\":\"%s\"}", marker);
 
-  watch_begin(fx);
+  watch_begin(fx, marker);
   az_iot_telemetry_message message = { 0 };
   message.payload = (const uint8_t*)payload;
   message.payload_len = strlen(payload);

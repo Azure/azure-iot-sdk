@@ -93,6 +93,7 @@ typedef struct
 } fixture;
 
 static fixture g_fx;
+static uint8_t g_connection_workspace[AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE];
 
 static char* env_dup(const char* name)
 {
@@ -258,6 +259,8 @@ static int device_connect(fixture* fx)
   copts.dps.id_scope = fx->config.id_scope;
   copts.dps.registration_id = fx->config.reg_id;
   copts.certificate_provider = &fx->provider.base;
+  copts.workspace = g_connection_workspace;
+  copts.workspace_size = sizeof(g_connection_workspace);
   if (fx->config.global_endpoint != NULL)
   {
     copts.dps.global_endpoint = fx->config.global_endpoint;
@@ -426,7 +429,7 @@ static void telemetry_flows_over_the_token_authenticated_connection(void** state
 
   /* The cold AMQP open to the events endpoint can fail transiently; retry, device kept alive. */
   az_iot_e2e_service_telemetry_watch_end(fx->service);
-  bool watching = az_iot_e2e_service_telemetry_watch_begin(fx->service);
+  bool watching = az_iot_e2e_service_telemetry_watch_begin(fx->service, fx->device_id);
   for (time_t start = time(NULL);
        !watching && (time(NULL) - start) < E2E_SERVICE_CONNECT_TIMEOUT_S;)
   {
@@ -434,7 +437,7 @@ static void telemetry_flows_over_the_token_authenticated_connection(void** state
     {
       pump(fx);
     }
-    watching = az_iot_e2e_service_telemetry_watch_begin(fx->service);
+    watching = az_iot_e2e_service_telemetry_watch_begin(fx->service, fx->device_id);
   }
   if (!watching)
   {

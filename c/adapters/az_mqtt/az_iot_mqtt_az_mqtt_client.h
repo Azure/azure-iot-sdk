@@ -133,6 +133,10 @@ typedef struct
   az_mqtt5_user_property connect_properties[AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX];
   int32_t decode_codes[4]; /* Subscription identifiers or reason codes. */
   int32_t server_disconnect_code; /* -1: none. */
+  /* Reason String of the refused CONNACK or the server DISCONNECT that ends this session, copied:
+   * the session-end event is raised after the receive buffer is reused. Length -1: none. */
+  char session_reason_string[AZ_IOT_MQTT_SESSION_REASON_STRING_MAX];
+  int32_t session_reason_string_length;
   uint8_t disconnect_reason_code;
 #endif
   az_mqtt_native_error native[_AZM_NATIVE_MAX];
@@ -231,9 +235,16 @@ static void _azm_emit(_azm_client* m, az_iot_mqtt_event const* event)
   else if (m->pending_count < AZ_IOT_AZ_MQTT_PENDING_EVENTS_MAX)
   {
     m->pending[m->pending_count] = *event;
-    // The reason string points into the receive buffer, which a held event outlives.
-    m->pending[m->pending_count].reason_string = NULL;
-    m->pending[m->pending_count].reason_string_len = 0;
+#if AZ_IOT_AZ_MQTT_V == 5
+    // Kept when it is the session_reason_string copy: only a later session overwrites that, and
+    // process_loop() delivers held events before it reads anything.
+    if (event->reason_string != m->session_reason_string)
+#endif
+    {
+      // Points into the receive buffer, which a held event outlives.
+      m->pending[m->pending_count].reason_string = NULL;
+      m->pending[m->pending_count].reason_string_len = 0;
+    }
     m->pending_count++;
   }
   else
@@ -256,8 +267,45 @@ static void _azm_emit_status(
   event.status = status;
   event.protocol_code = protocol_code;
   event.transport_code = transport_code;
+#if AZ_IOT_AZ_MQTT_V == 5
+  /* A refused CONNACK's or the server DISCONNECT's code: its Reason String goes with it. */
+  bool const from_session_end_packet = (kind == AZ_IOT_MQTT_EVT_CONNECTED && protocol_code != 0)
+      || (kind == AZ_IOT_MQTT_EVT_DISCONNECTED && m->server_disconnect_code >= 0
+          && protocol_code == m->server_disconnect_code);
+  if (from_session_end_packet && m->session_reason_string_length >= 0)
+  {
+    event.reason_string = m->session_reason_string;
+    event.reason_string_len = (size_t)m->session_reason_string_length;
+  }
+#endif
   _azm_emit(m, &event);
 }
+
+#if AZ_IOT_AZ_MQTT_V == 5
+/**
+ * @brief Copy @p reason_string to session_reason_string, truncated to
+ * AZ_IOT_MQTT_SESSION_REASON_STRING_MAX bytes. az_span_ptr() NULL: the packet carried none.
+ */
+static void _azm_keep_session_reason_string(_azm_client* m, az_span reason_string)
+{
+  if (az_span_ptr(reason_string) == NULL)
+  {
+    m->session_reason_string_length = -1;
+    return;
+  }
+  int32_t length = az_span_size(reason_string);
+  if (length > (int32_t)sizeof(m->session_reason_string))
+  {
+    length = (int32_t)sizeof(m->session_reason_string);
+  }
+  if (length > 0)
+  {
+    memcpy(m->session_reason_string, az_span_ptr(reason_string), (size_t)length);
+  }
+  m->session_reason_string_length = length;
+}
+
+#endif
 
 // ──────────────────────── az_mqtt callbacks ──────────────────
 
@@ -293,6 +341,7 @@ static void _azm_on_connack(_AZM(client) * client, _AZM(connack_data) const* con
   m->connack_received = true;
 #if AZ_IOT_AZ_MQTT_V == 5
   m->connack_code = (int32_t)connack->reason_code;
+  _azm_keep_session_reason_string(m, connack->reason_string);
 #else
   m->connack_code = (int32_t)connack->return_code;
 #endif
@@ -379,7 +428,9 @@ static void _azm_on_connection_closed(_AZM(client) * client, az_result reason)
 static void _azm_on_disconnect(az_mqtt5_client* client, az_mqtt5_disconnect_data const* disconnect)
 {
   // The session ends right after: _azm_on_connection_closed reports it with this code.
-  _azm_of(client)->server_disconnect_code = (int32_t)disconnect->reason_code;
+  _azm_client* m = _azm_of(client);
+  m->server_disconnect_code = (int32_t)disconnect->reason_code;
+  _azm_keep_session_reason_string(m, disconnect->reason_string);
 }
 #endif
 
@@ -563,6 +614,14 @@ static void _azm_on_suback(_AZM(client) * client, _AZM(suback_data) const* subac
   event.packet_id = suback->packet_id;
   event.protocol_code = code;
   event.status = az_iot_mqtt_suback_result(_AZM_VERSION, (int)code);
+#if AZ_IOT_AZ_MQTT_V == 5
+  // NULL: no Reason String. Non-NULL with length 0: present and empty.
+  if (az_span_ptr(suback->reason_string) != NULL)
+  {
+    event.reason_string = (char const*)az_span_ptr(suback->reason_string);
+    event.reason_string_len = (size_t)az_span_size(suback->reason_string);
+  }
+#endif
   _azm_emit(m, &event);
 }
 
@@ -956,6 +1015,7 @@ static az_iot_result _azm_connect(az_iot_mqtt_client* self, az_iot_mqtt_connect_
   options.decode_user_properties = AZ_SPAN_EMPTY;
   options.decode_codes = _AZM_SPAN_OF(m->decode_codes);
   m->server_disconnect_code = -1;
+  m->session_reason_string_length = -1;
   m->disconnect_reason_code = o->disconnect_reason_code;
 #endif
 

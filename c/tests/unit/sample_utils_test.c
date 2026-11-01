@@ -22,6 +22,7 @@
 #include <signal.h>
 #include <stdbool.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #if !defined(_WIN32)
@@ -227,6 +228,42 @@ static void file_create_private_refuses_an_existing_name(void** state)
 #endif
 }
 
+static void file_create_private_unique_creates_a_new_name_beside_the_path(void** state)
+{
+  (void)state;
+  write_text_file(DESTINATION_FILE, "kept");
+  char* first = NULL;
+  char* second = NULL;
+  FILE* first_file = sample_file_create_private_unique(DESTINATION_FILE, &first);
+  FILE* second_file = sample_file_create_private_unique(DESTINATION_FILE, &second);
+  assert_non_null(first_file);
+  assert_non_null(second_file);
+  assert_string_not_equal(first, second);
+  assert_int_equal(strncmp(first, DESTINATION_FILE ".", strlen(DESTINATION_FILE ".")), 0);
+  assert_int_equal(fputs("new", first_file) >= 0, 1);
+  assert_int_equal(fclose(first_file), 0);
+  assert_int_equal(fclose(second_file), 0);
+  assert_file_holds(DESTINATION_FILE, "kept");
+#if !defined(_WIN32)
+  struct stat st;
+  assert_int_equal(stat(first, &st), 0);
+  assert_int_equal(st.st_mode & 0777, 0600);
+#endif
+  /* Beside the path, so it can replace it. */
+  assert_true(sample_file_replace(first, DESTINATION_FILE));
+  assert_file_holds(DESTINATION_FILE, "new");
+  assert_int_equal(remove(second), 0);
+  free(first);
+  free(second);
+
+  char* none = NULL;
+  assert_null(sample_file_create_private_unique(NULL, &none));
+  assert_null(none);
+  assert_null(sample_file_create_private_unique(DESTINATION_FILE, NULL));
+  assert_null(sample_file_create_private_unique("missing_directory.tmp/name", &none));
+  assert_null(none);
+}
+
 static void file_open_read_no_follow_refuses_a_link_and_a_missing_file(void** state)
 {
   (void)state;
@@ -318,6 +355,8 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         file_open_private_replace_does_not_write_through_a_link, setup, teardown),
     cmocka_unit_test_setup_teardown(file_create_private_refuses_an_existing_name, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        file_create_private_unique_creates_a_new_name_beside_the_path, setup, teardown),
     cmocka_unit_test_setup_teardown(
         file_open_read_no_follow_refuses_a_link_and_a_missing_file, setup, teardown),
     cmocka_unit_test(stop_handler_records_sigterm_and_sigint),

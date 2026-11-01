@@ -35,6 +35,13 @@ CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
 # on the main task; give it a generous stack.
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=12288
 
+# --- Network (protocol_examples_common) ---------------------------------------
+# Wi-Fi station; set CONFIG_EXAMPLE_WIFI_SSID/PASSWORD with menuconfig. IPv4 only:
+# with IPv6 enabled, connecting also waits for an IPv6 address.
+CONFIG_EXAMPLE_CONNECT_WIFI=y
+CONFIG_EXAMPLE_WIFI_AUTH_WPA2_PSK=y
+CONFIG_EXAMPLE_CONNECT_IPV6=n
+
 # --- az_mqtt (MQTT client) ----------------------------------------------------
 # azure-sdk-for-c is compiled once, by the azure-sdk-for-c component.
 CONFIG_AZ_MQTT_BUILD_AZ_CORE=n

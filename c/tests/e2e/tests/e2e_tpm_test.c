@@ -53,6 +53,8 @@
 #define E2E_TPM_TOKEN_LIFETIME_S 3600u
 #define E2E_TPM_TICK_MS 50u
 
+static uint8_t g_connection_workspace[AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE];
+
 typedef struct
 {
   sample_tpm_sim* tpm;
@@ -260,6 +262,8 @@ static void test_dps_tpm_registration_and_hub_sas(void** state)
     opts.sas_buffer.buffer = sas_buffer;
     opts.sas_buffer.size = sizeof(sas_buffer);
     opts.trusted_ca.path = ca;
+    opts.workspace = g_connection_workspace;
+    opts.workspace_size = sizeof(g_connection_workspace);
     az_iot_connection_client client = { 0 };
     az_iot_mqttv3_telemetry_client telemetry = { 0 };
 #if defined(AZ_IOT_E2E_ADAPTER_PAHO)

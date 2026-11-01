@@ -142,7 +142,14 @@ extern "C"
      * Signature peripheral behind a PSA driver). Proved with
      * az_iot_conformance_options client_key_psa_id + client_cert_path, by a
      * handshake and a reconnect with the same key. */
-    AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY_PSA = 1u << 5
+    AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY_PSA = 1u << 5,
+
+    /* MQTT 5 only: a refused CONNACK's Reason String is reported on the failed
+     * AZ_IOT_MQTT_EVT_CONNECTED. Needs nothing here. Not declaring it does NOT
+     * mean untested: the baseline then requires the event to carry no Reason
+     * String rather than a wrong one. The bundled Paho adapter does not declare
+     * it -- Paho passes none of a refused CONNACK's properties. */
+    AZ_IOT_CONFORMANCE_CAP_CONNACK_REASON_STRING = 1u << 6
   } az_iot_conformance_capability;
 
   typedef struct az_iot_conformance_options
@@ -267,6 +274,15 @@ extern "C"
       const char* capability,
       const char* why,
       const char* allow_value);
+
+  /* Internal, exposed for the suite's own tests.
+   *
+   * Whether @p suite_kind exercises every capability in @p capabilities (bitwise OR of
+   * az_iot_conformance_capability): AZ_IOT_CONFORMANCE_CAP_CONNACK_REASON_STRING only in
+   * AZ_IOT_CONFORMANCE_SUITE_V5. Nonzero when it does. */
+  int az_iot_conformance_capabilities_fit_suite(
+      az_iot_conformance_suite suite_kind,
+      uint32_t capabilities);
 
   /* As above, plus the adapter's declared capabilities. `options` may be NULL,
    * which means the same as declaring nothing. */

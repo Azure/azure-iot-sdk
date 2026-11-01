@@ -29,10 +29,20 @@ void az_iot_test_provider_init(az_iot_test_provider* provider, const char* trust
 
 /**
  * @brief az_iot_connection_client_init() with a shared az_iot_test_provider
- * (no CA) when @p opts has no certificate_provider.
+ * (no CA) when @p opts has no certificate_provider, and a default-size
+ * workspace lent to @p client when @p opts has no workspace, until
+ * az_iot_test_connection_client_deinit().
  */
 AZ_NODISCARD az_iot_result az_iot_test_connection_client_init(
     az_iot_connection_client* client,
     const az_iot_connection_client_options* opts);
+
+/**
+ * @brief az_iot_connection_client_deinit(), then frees the workspace
+ * az_iot_test_connection_client_init() lent @p client, if any, when it succeeded.
+ *
+ * @return az_iot_connection_client_deinit()'s result.
+ */
+az_iot_result az_iot_test_connection_client_deinit(az_iot_connection_client* client);
 
 #endif /* AZ_IOT_TEST_PROVIDER_H */

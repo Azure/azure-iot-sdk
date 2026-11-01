@@ -18,6 +18,7 @@
 #ifndef AZ_IOT_DELIVERY_TRACKER_INTERNAL_H
 #define AZ_IOT_DELIVERY_TRACKER_INTERNAL_H
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -29,6 +30,12 @@
 extern "C"
 {
 #endif
+
+/**
+ * @brief After a refused send (BUSY, a transport error), do_work() waits at most this long, or
+ *        half a queued message's remaining time limit if that is shorter.
+ */
+#define AZ_IOT_DELIVERY_TRACKER_REFUSED_SEND_RETRY_MS 1000u
 
   /** @brief How a message is confirmed. */
   typedef enum az_iot_delivery_tracker_confirmation
@@ -43,8 +50,6 @@ extern "C"
   {
     AZ_IOT_DELIVERY_TRACKER_ON_SESSION_LOSS_FAIL = 1, /**< Completes as SESSION_LOST. */
     AZ_IOT_DELIVERY_TRACKER_ON_SESSION_LOSS_RESEND = 2, /**< Sent again on a later session. */
-    /** Completes as SESSION_LOST; sent untracked when no PUBACK slot is free. */
-    AZ_IOT_DELIVERY_TRACKER_ON_SESSION_LOSS_DROP = 3,
   } az_iot_delivery_tracker_session_loss_policy;
 
   /** @brief Final outcome of a tracked message. */
@@ -66,9 +71,12 @@ extern "C"
     az_iot_delivery_tracker_confirmation confirmation;
     az_iot_delivery_tracker_session_loss_policy on_session_loss;
     uint8_t priority; /**< 0 first: orders sends and PUBACK slots. */
+    /** With no PUBACK slot for it, sent once untracked (completes as DELIVERED) instead of held. */
+    bool send_untracked_without_slot;
     /**
      * @brief Fill @p out for entry @p entry_index; called at each send.
-     * @return AZ_IOT_OK, or an error that discards the message.
+     * @return AZ_IOT_OK; AZ_IOT_ERR_TIMEOUT when the owner's own deadline has passed (the message
+     *         completes as EXPIRED); any other error discards the message.
      */
     az_iot_result (*encode)(void* owner_context, size_t entry_index, az_iot_mqtt_message* out);
     /**
@@ -80,6 +88,11 @@ extern "C"
         size_t entry_index,
         az_iot_delivery_tracker_outcome outcome,
         const az_iot_publish_result* detail);
+    /**
+     * @brief Optional: entry @p entry_index was just published (it may be sent again). Only record
+     *        it: no tracker call.
+     */
+    void (*on_sent)(void* owner_context, size_t entry_index);
   } az_iot_delivery_tracker_profile;
 
   /**
@@ -112,6 +125,25 @@ extern "C"
   /** @brief Withdraw from the connection and drop every entry without completing it. */
   void az_iot_delivery_tracker__unbind(az_iot_delivery_tracker* tracker);
 
+  /** @brief A tracker's binding, taken before a call whose callbacks may unbind (or free) it. */
+  typedef struct az_iot_delivery_tracker_binding
+  {
+    az_iot_connection_client* connection;
+    uint32_t id; /**< Tells a rebind to the same connection apart, even after init(). */
+  } az_iot_delivery_tracker_binding;
+
+  /** @brief The binding of @p tracker now. */
+  az_iot_delivery_tracker_binding az_iot_delivery_tracker__binding(
+      const az_iot_delivery_tracker* tracker);
+
+  /**
+   * @brief Whether @p tracker still has binding @p binding. Asks the connection first, so it
+   *        reads @p tracker only while it is still bound: safe after a callback freed it.
+   */
+  bool az_iot_delivery_tracker__has_binding(
+      const az_iot_delivery_tracker* tracker,
+      az_iot_delivery_tracker_binding binding);
+
   /**
    * @brief Track a message and send it as soon as it can be.
    *
@@ -131,8 +163,21 @@ extern "C"
       const az_iot_delivery_tracker_profile* profile,
       const uint8_t* correlation_id,
       size_t correlation_id_length,
-      uint32_t timeout_ms,
+      uint64_t timeout_ms,
       size_t* out_entry_index);
+
+  /**
+   * @brief As az_iot_delivery_tracker__submit(), into free entry @p entry_index, so the owner
+   *        holds the message's state there before encode() first runs.
+   * @retval AZ_IOT_ERR_INVALID_ARG Also for an @p entry_index out of range or in use.
+   */
+  az_iot_result az_iot_delivery_tracker__submit_at(
+      az_iot_delivery_tracker* tracker,
+      size_t entry_index,
+      const az_iot_delivery_tracker_profile* profile,
+      const uint8_t* correlation_id,
+      size_t correlation_id_length,
+      uint64_t timeout_ms);
 
   /**
    * @brief A response matched @p correlation_id: complete its message as DELIVERED. Queued
@@ -149,6 +194,12 @@ extern "C"
    *        messages the freed capacity lets go are sent.
    */
   void az_iot_delivery_tracker__cancel(az_iot_delivery_tracker* tracker, size_t entry_index);
+
+  /**
+   * @brief Complete as EXPIRED every message whose time limit has passed, as the next TICK would.
+   *        For an owner about to need the entries back.
+   */
+  void az_iot_delivery_tracker__expire_overdue(az_iot_delivery_tracker* tracker);
 
 #ifdef __cplusplus
 }

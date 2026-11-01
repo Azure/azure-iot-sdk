@@ -203,10 +203,11 @@ AZ_NODISCARD az_iot_result az_iot_mqtt_connack_result(az_iot_mqtt_version versio
 AZ_NODISCARD az_iot_result
 az_iot_mqtt_disconnect_result(az_iot_mqtt_version version, int disconnect_code)
 {
-  /* No code: an ordinary end of session, and what v3.1.1 always reports. */
+  /* No code: an ordinary end of session, and what v3.1.1 always reports. Still
+   * not AZ_IOT_OK, which is reserved for a disconnect the client asked for. */
   if (disconnect_code == DISCONNECT_V5_NORMAL || version != AZ_IOT_MQTT_VERSION_5)
   {
-    return AZ_IOT_OK;
+    return AZ_IOT_ERR_NOT_CONNECTED;
   }
 
   /* Adapters report their own failures with negative codes; those never came

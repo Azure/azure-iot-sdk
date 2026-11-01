@@ -157,6 +157,9 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
             _sessionExpiryInterval = options.SessionExpiryInterval;
         }
 
+        // Keep the session for the interval requested at CONNECT rather than the generic DISCONNECT default.
+        internal override uint DefaultDisconnectSessionExpiryInterval => _sessionExpiryInterval;
+
         internal override void HandleHubIdentityChanged()
         {
             ForgetTwinVersions();
@@ -262,7 +265,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
                     if (presenceSuback == null || suback.Items.Count != 1)
                     {
                         Trace.TraceWarning("Received malformed SUBACK on devicebound SUBSCRIBE. Attempting connection again...");
-                        await connection.DisconnectAsync(true, new MqttDisconnect() { Reason = MqttDisconnectReasonCode.NormalDisconnection }, cancellationToken);
+                        await connection.DisconnectAsync(true, CreateNormalDisconnect(), cancellationToken);
                         return;
                     }
 
@@ -273,7 +276,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
                         or MqttClientSubscribeReasonCode.GrantedQoS2))
                     {
                         Trace.TraceWarning("Received SUBACK on device presence SUBSCRIBE with unsuccessful result code: {0}.", presenceSuback.ReasonCode);
-                        await connection.DisconnectAsync(true, new MqttDisconnect() { Reason = MqttDisconnectReasonCode.NormalDisconnection }, cancellationToken);
+                        await connection.DisconnectAsync(true, CreateNormalDisconnect(), cancellationToken);
                         return;
                     }
 
@@ -287,7 +290,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
                 catch (Exception e) when (!cancellationToken.IsCancellationRequested)
                 {
                     Trace.TraceWarning("Exception thrown while subscribing to devicebound topic. Attempting connection again...", e);
-                    await connection.DisconnectAsync(true, new MqttDisconnect() { Reason = MqttDisconnectReasonCode.NormalDisconnection }, cancellationToken);
+                    await connection.DisconnectAsync(true, CreateNormalDisconnect(), cancellationToken);
                     return;
                 }
             }
@@ -406,7 +409,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
                 catch (Exception e) when (!cancellationToken.IsCancellationRequested)
                 {
                     Trace.TraceWarning("Exception thrown while publishing birth message", e);
-                    await connection.DisconnectAsync(true, new MqttDisconnect() { Reason = MqttDisconnectReasonCode.NormalDisconnection }, cancellationToken);
+                    await connection.DisconnectAsync(true, CreateNormalDisconnect(), cancellationToken);
                     return;
                 }
 
@@ -415,7 +418,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
                 if (birthMessagePuback.ReasonCode != MqttPublishAckReasonCode.Success)
                 {
                     Trace.TraceWarning("Received unsuccessful PUBACK when publishing birth message with reason code: {0}.", birthMessagePuback.ReasonCode);
-                    await connection.DisconnectAsync(true, new MqttDisconnect() { Reason = MqttDisconnectReasonCode.NormalDisconnection }, cancellationToken);
+                    await connection.DisconnectAsync(true, CreateNormalDisconnect(), cancellationToken);
                     return;
                 }
 
@@ -455,7 +458,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
                         birthAckTimeout,
                         connectNonce,
                         consecutiveTimeouts + 1);
-                    await connection.DisconnectAsync(true, new MqttDisconnect() { Reason = MqttDisconnectReasonCode.NormalDisconnection }, cancellationToken);
+                    await connection.DisconnectAsync(true, CreateNormalDisconnect(), cancellationToken);
                     return;
                 }
 
@@ -466,7 +469,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
                     // IoT hub admitted this birth, so the subscription works, but the ack's twin versions are unknown.
                     // Announce presence again on a new connection rather than proceeding without them.
                     Trace.TraceWarning("Received a malformed birth ack for connection nonce {0}. Reconnecting...", connectNonce);
-                    await connection.DisconnectAsync(true, new MqttDisconnect() { Reason = MqttDisconnectReasonCode.NormalDisconnection }, cancellationToken);
+                    await connection.DisconnectAsync(true, CreateNormalDisconnect(), cancellationToken);
                     return;
                 }
 
@@ -481,7 +484,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
                         birth.ReportedVersion,
                         birthAck.DesiredVersion,
                         birthAck.ReportedVersion);
-                    await connection.DisconnectAsync(true, new MqttDisconnect() { Reason = MqttDisconnectReasonCode.NormalDisconnection }, cancellationToken);
+                    await connection.DisconnectAsync(true, CreateNormalDisconnect(), cancellationToken);
                     return;
                 }
 
@@ -582,7 +585,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
 
                     // Don't let the disconnect this causes cancel itself.
                     connection.DisconnectedAsync -= HandleConnectionLostAsync;
-                    await connection.DisconnectAsync(true, new MqttDisconnect() { Reason = MqttDisconnectReasonCode.NormalDisconnection }, connectionLost.Token);
+                    await connection.DisconnectAsync(true, CreateNormalDisconnect(), connectionLost.Token);
                 }
             }
             catch (Exception e) when (e is OperationCanceledException || e is ObjectDisposedException)

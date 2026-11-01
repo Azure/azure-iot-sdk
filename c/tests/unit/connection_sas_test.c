@@ -260,6 +260,7 @@ static int teardown(void** state)
 /** @brief Direct mqttv3 hub options authenticating with KEY_B64 only. */
 /* Room for two distinct keys and a token for IDs up to 256 characters. */
 static uint8_t g_sas_buffer[AZ_IOT_SAS_BUFFER_SIZE(2, AZ_IOT_SAS_TOKEN_SIZE(256))];
+static uint8_t g_connection_workspace[AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE];
 
 static bool all_zero(const void* p, size_t n)
 {
@@ -284,6 +285,8 @@ static az_iot_connection_client_options hub_sas_options(void)
   opts.unix_time.get_time = fixed_time;
   opts.sas_buffer.buffer = g_sas_buffer;
   opts.sas_buffer.size = sizeof(g_sas_buffer);
+  opts.workspace = g_connection_workspace;
+  opts.workspace_size = sizeof(g_connection_workspace);
   return opts;
 }
 
@@ -300,6 +303,8 @@ static az_iot_connection_client_options dps_sas_options(const char* key)
   opts.unix_time.get_time = fixed_time;
   opts.sas_buffer.buffer = g_sas_buffer;
   opts.sas_buffer.size = sizeof(g_sas_buffer);
+  opts.workspace = g_connection_workspace;
+  opts.workspace_size = sizeof(g_connection_workspace);
   return opts;
 }
 
@@ -371,6 +376,8 @@ static void init_accepts_a_token_callback_without_keys(void** state)
   opts.iothub_hostname = "broker.example";
   opts.device_id = "ut-device";
   opts.hub_auth.sas.on_sas_token_required = unused_token_callback;
+  opts.workspace = g_connection_workspace;
+  opts.workspace_size = sizeof(g_connection_workspace);
   assert_int_equal(az_iot_connection_client_init(&fx->client, &opts), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
   opts.sas_buffer.buffer = g_sas_buffer;
   opts.sas_buffer.size = sizeof(g_sas_buffer);
@@ -556,6 +563,8 @@ static void the_token_size_macro_is_enough_for_the_worst_case(void** state)
       opts.unix_time.get_time = max_time;
       opts.sas_buffer.buffer = buf;
       opts.sas_buffer.size = sizeof(buf) - (size_t)shrink;
+      opts.workspace = g_connection_workspace;
+      opts.workspace_size = sizeof(g_connection_workspace);
       if (dps)
       {
         opts.device_id = k_second;
@@ -1852,7 +1861,8 @@ typedef enum
 {
   FAKE_TOKEN_SUPPLY, /* update_sas_token() from the callback */
   FAKE_TOKEN_LATER, /* notify only; the test supplies the token */
-  FAKE_TOKEN_CLOSE_INSIDE /* update_sas_token(), then close() and open(), from the callback */
+  FAKE_TOKEN_CLOSE_INSIDE /* update_sas_token(), then close(), open() and deinit(), from the
+                             callback */
 } fake_token_mode;
 
 static struct
@@ -1869,6 +1879,7 @@ static struct
   az_iot_connection_client* client;
   az_iot_result close_result;
   az_iot_result open_result;
+  az_iot_result deinit_result;
 } g_fake;
 
 static void fake_token_callback(const az_iot_sas_token_request* request, void* user_ctx)
@@ -1903,6 +1914,7 @@ static void fake_token_callback(const az_iot_sas_token_request* request, void* u
   {
     g_fake.close_result = az_iot_connection_client_close(g_fake.client);
     g_fake.open_result = az_iot_connection_client_open(g_fake.client);
+    g_fake.deinit_result = az_iot_connection_client_deinit(g_fake.client);
   }
 }
 
@@ -1934,6 +1946,8 @@ static az_iot_connection_client_options user_token_hub_options(fixture* fx, fake
   opts.hub_auth.sas.on_sas_token_required = fake_token_callback;
   opts.sas_buffer.buffer = g_sas_buffer;
   opts.sas_buffer.size = sizeof(g_sas_buffer);
+  opts.workspace = g_connection_workspace;
+  opts.workspace_size = sizeof(g_connection_workspace);
   return opts;
 }
 
@@ -1974,8 +1988,9 @@ static void a_ready_user_token_connects_the_hub(void** state)
       fx->client.sas_token_renewal_due_ms[AZ_IOT_CONN_SCOPE_HUB] <= az_iot_time_mono_ms() + 80000u);
 }
 
-/* close() and open() from the token callback are refused; the attempt connects with the token. */
-static void close_and_open_from_the_token_callback_are_refused(void** state)
+/* close(), open() and deinit() from the token callback are refused; the attempt connects with the
+ * token. */
+static void close_open_and_deinit_from_the_token_callback_are_refused(void** state)
 {
   fixture* fx = (fixture*)*state;
   az_iot_connection_client_options opts = user_token_hub_options(fx, FAKE_TOKEN_CLOSE_INSIDE);
@@ -1984,6 +1999,7 @@ static void close_and_open_from_the_token_callback_are_refused(void** state)
   assert_int_equal(g_fake.calls, 1);
   assert_int_equal(g_fake.close_result, AZ_IOT_ERR_BUSY);
   assert_int_equal(g_fake.open_result, AZ_IOT_ERR_BUSY);
+  assert_int_equal(g_fake.deinit_result, AZ_IOT_ERR_BUSY);
   assert_string_equal(last_connect(fx)->password, USER_TOKEN);
   connack(fx, AZ_IOT_OK);
   assert_int_equal(fx->client.state[AZ_IOT_CONN_SCOPE_HUB], AZ_IOT_CONN_STATE_CONNECTED);
@@ -3782,7 +3798,7 @@ int main(void)
     cmocka_unit_test_setup_teardown(init_accepts_a_token_callback_without_keys, setup, teardown),
     cmocka_unit_test_setup_teardown(a_ready_user_token_connects_the_hub, setup, teardown),
     cmocka_unit_test_setup_teardown(
-        close_and_open_from_the_token_callback_are_refused, setup, teardown),
+        close_open_and_deinit_from_the_token_callback_are_refused, setup, teardown),
     cmocka_unit_test_setup_teardown(a_user_token_connects_an_mqttv5_hub, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_pending_user_token_connects_dps_once_delivered, setup, teardown),

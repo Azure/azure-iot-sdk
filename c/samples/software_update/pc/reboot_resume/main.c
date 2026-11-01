@@ -388,7 +388,11 @@ int main(void)
   {
     goto cleanup;
   }
+  /* Memory for the connection client's entries, sized for the default limits. */
+  static uint8_t connection_workspace[AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE];
   az_iot_connection_client_options copts = az_iot_connection_client_options_default();
+  copts.workspace = connection_workspace;
+  copts.workspace_size = sizeof(connection_workspace);
   copts.dps.id_scope = config.id_scope;
   copts.dps.registration_id = config.reg_id;
   copts.dps.global_endpoint = config.dps_global_endpoint; /* NULL: the global default */
@@ -443,7 +447,8 @@ int main(void)
   su_opts.root_key_count = root_key_count;
   su_opts.device_properties = &device_properties;
   /* Limits, each the SDK default; the saved workflow is at most
-   * AZ_IOT_SU_STATE_BLOB_MAX_SIZE(max_update_size, result_details_size) bytes. */
+   * AZ_IOT_SU_STATE_BLOB_MAX_SIZE(max_update_size, result_details_size, max_related_files) bytes.
+   */
   su_opts.limits.max_update_size = AZ_IOT_SU_DEFAULT_MAX_UPDATE_SIZE;
   su_opts.limits.scratch_size = AZ_IOT_SU_VERIFY_SCRATCH_SIZE;
   su_opts.limits.max_message_size = AZ_IOT_SU_DEFAULT_MAX_MESSAGE_SIZE;

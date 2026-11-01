@@ -122,7 +122,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
 
             // Disconnect the device deliberately, then delete its identity from the registry. The device now holds valid
             // cached provisioning state but no longer exists in the hub it was assigned to.
-            await device.ConnectionClient.DisconnectAsync(cancellationToken);
+            await device.ConnectionClient.DisconnectAsync(null, cancellationToken);
             await registryManager.RemoveDeviceAsync(deviceId, cancellationToken);
 
             // Build a fresh client seeded with the cached assignment, as an application would after restoring persisted

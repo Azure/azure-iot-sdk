@@ -213,7 +213,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
 
             await connectionClient.ConnectToHubAsync(GetMockConnectionContext(), TestContext.Current.CancellationToken)
                 .WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
-            await connectionClient.DisconnectAsync(TestContext.Current.CancellationToken);
+            await connectionClient.DisconnectAsync(null, TestContext.Current.CancellationToken);
 
 #pragma warning disable SYSLIB0026 // Mock certificate
             ConnectionContext otherIdentity = new()
@@ -252,6 +252,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             MqttV5ConnectionClientOptions options = new()
             {
                 MqttClient = mockMqttClient,
+                SessionExpiryInterval = 120,
                 ConnectionRetryPolicy = new ExponentialBackoffRetryPolicy(uint.MaxValue, TimeSpan.Zero, useJitter: false),
             };
             using ConnectionClient connectionClient = new(options);
@@ -276,6 +277,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             }
 
             Assert.Equal(2, mockMqttClient.DisconnectRequests.Count);
+            Assert.All(mockMqttClient.DisconnectRequests, disconnect => Assert.Equal(120u, disconnect.SessionExpiryInterval));
         }
 
         [Fact]
@@ -755,7 +757,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
                 }
                 else
                 {
-                    await connectionClient.DisconnectAsync(TestContext.Current.CancellationToken);
+                    await connectionClient.DisconnectAsync(null, TestContext.Current.CancellationToken);
                 }
 
                 await announcement.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);

@@ -291,7 +291,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.MQTTv5
                 await ConnectAsync(testDeviceContext, cancellationToken);
                 ulong pushedVersion = (await events.NextAsync<TwinPushReceivedEventArgs>(cancellationToken)).Desired!.PropertiesVersion;
 
-                await testDeviceContext.ConnectionClient.DisconnectAsync(cancellationToken);
+                await testDeviceContext.ConnectionClient.DisconnectAsync(null, cancellationToken);
                 (string missedKey, string missedValue) = await UpdateDesiredPropertyAsync(registryManager, testDeviceContext.DeviceId, cancellationToken);
                 await ConnectAsync(testDeviceContext, cancellationToken);
 
@@ -322,7 +322,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.MQTTv5
                 TwinPushReceivedEventArgs firstPush = await events.NextAsync<TwinPushReceivedEventArgs>(cancellationToken);
                 ulong pushedVersion = firstPush.Desired!.PropertiesVersion;
 
-                await testDeviceContext.ConnectionClient.DisconnectAsync(cancellationToken);
+                await testDeviceContext.ConnectionClient.DisconnectAsync(null, cancellationToken);
                 await ConnectAsync(testDeviceContext, cancellationToken);
 
                 // The birth tells IoT hub which versions this device holds, and the birth ack confirms that IoT hub has the same ones.
