@@ -671,16 +671,30 @@ re-initialized since: then the new workflow is deferred.
 `persist_workflow_state_fn` / `load_workflow_state_fn` exchange an **opaque, self-contained byte
 blob** that the core serializes and the platform merely stores verbatim (file,
 NVS partition, EEPROM, …). The platform MUST NOT interpret it; the format is
-internal and may change between SDK versions.
+internal and may change between SDK versions. Library mode never calls these hooks (§5.3).
 
+- **Atomic and durable** — `persist_workflow_state_fn` MUST replace the stored record
+  atomically, and the record MUST be durable when it returns: after a power loss either the old
+  or the new record survives, never a mix. A torn record fails the CRC check and is treated as
+  nothing to resume, which loses the workflow and any owed terminal report. A zero-length write
+  erases the record and MUST succeed when nothing is stored. Usual implementations:
+  - file: write a unique temporary file, `fsync()` it, `rename()` it over the record, `fsync()`
+    the directory;
+  - ESP-IDF NVS: `nvs_set_blob()` then `nvs_commit()`.
 - **Size** — at most `AZ_IOT_SU_STATE_BLOB_MAX_SIZE(max_update_size, result_details_size, max_related_files)` bytes; size storage for it.
+  `load_workflow_state_fn` returns non-zero for a stored record larger than its capacity.
+- **Resume capacity** — a record resumes only on a client whose limits can hold it: its update
+  copy in `max_update_size`, each step's details in `result_details_size`, its download URLs in
+  `AZ_IOT_SU_FILE_URL_CAPACITY(max_related_files)` and its steps in `AZ_IOT_SU_MAX_STEP_COUNT`.
+  Otherwise it is ignored like a missing record. Do not lower these limits in a firmware update
+  while a workflow may be stored.
 - **In place** — a workflow record is serialized around the update copy in the workspace: its
   header just before it, its trailer just after. A terminal record has no request and is built
   in a separate workspace part, so a newer update copy is never overwritten. `resume()` loads
   the record in place, so it returns `AZ_IOT_ERR_BUSY` while a workflow is in progress.
 - **Versioned** — magic `"SUCP"` and a `u16` format version (currently 3). A
-  record of any other magic or version (versions 1 and 2 included) is ignored. All integers are
-  little-endian.
+  record of any other magic or version (versions 1 and 2 included) is ignored. Any layout change
+  bumps the version. All integers are little-endian.
 - **Integrity-checked** — a CRC-32 over the rest of the blob, stored in its last four bytes; a record with extra bytes after it is ignored.
 - **Contents** — workflow state, step/file position, flags (have-request,
   report-owed, retry record), the raw request buffer (manifest, workflow id),
@@ -700,7 +714,8 @@ The byte layout is documented next to the serializer in
 #### Resume semantics (`az_iot_su_client_resume()`)
 
 1. Call `load_workflow_state_fn`. If it reports no state (including an empty record), or
-   `magic`/`version`/`crc32` fail validation, `resume()` is a **no-op** returning
+   `magic`/`version`/`crc32` fail validation, or the record exceeds this client's limits
+   (resume capacity above), `resume()` is a **no-op** returning
    success — the agent starts clean and waits for the next update offer. A
    valid record is refused with `AZ_IOT_ERR_NOT_SUPPORTED` when
    `persist_workflow_state_fn` is NULL (it could never be cleared), and with
@@ -882,6 +897,7 @@ typedef struct az_iot_su_platform_hooks
     /**
      * Persist workflow state to non-volatile storage (for reboot survival).
      * OPTIONAL — REQUIRED only if reboot is possible during update.
+     * MUST replace the record atomically and durably (§4 Persistence).
      * state_blob_len == 0 means erase the stored record.
      */
     int32_t (*persist_workflow_state_fn)(
