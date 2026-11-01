@@ -54,7 +54,7 @@ static void a_psa_only_credential_reaches_the_tls_options(void** state)
   assert_int_equal(az_span_size(m->tls.client_key_path), 0);
   assert_int_equal(az_span_size(m->tls.client_key_uri), 0);
   assert_true(az_result_succeeded(az_mqtt_tls_options_check(&m->tls)));
-  _azm_release_owned(m);
+  _azm_release_connect_strings(m);
 
   c->iface->destroy(c);
   free(workspace);

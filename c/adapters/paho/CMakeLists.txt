@@ -8,10 +8,8 @@
 # eclipse-paho-mqtt-c CMake package. Builds a static lib only (no DLL). TLS is
 # enabled when OpenSSL is available (required for Azure IoT connections on port 8883).
 #
-# Registers two factories:
-#   - v3.1.1, supported roles: { DPS, HUB_MQTT_V3 }
-#   - v5,     supported roles: { HUB_MQTT_V5 }
-# Each factory creates a fresh Paho client object per session (no sharing).
+# az_iot_paho_get_adapter() builds one Paho client per session in the application's
+# mqtt_workspace: v3.1.1 for DPS and the MQTTv3 hub, v5 for the MQTTv5 hub.
 
 if(AZ_IOT_USE_INSTALLED_PAHO)
     # Upstream's package config does not load OpenSSL, which its SSL targets link.
