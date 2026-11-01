@@ -413,6 +413,38 @@ static void file_write_atomically_fails_and_keeps_the_destination(void** state)
 #endif
 }
 
+/** @brief Write @p text to a new file from sample_file_create_private_unique(), then
+ *  complete it with sample_file_complete_atomic_write(); returns that call's result
+ *  and checks that the new file is gone either way. */
+static bool write_unique_and_complete(const char* text, bool contents_written)
+{
+  char* temporary_path = NULL;
+  FILE* file = sample_file_create_private_unique(DESTINATION_FILE, &temporary_path);
+  assert_non_null(file);
+  char temporary_name[128];
+  assert_true(sample_string_copy(temporary_name, sizeof(temporary_name), temporary_path));
+  assert_int_equal(fputs(text, file) >= 0, 1);
+  bool replaced
+      = sample_file_complete_atomic_write(file, temporary_path, DESTINATION_FILE, contents_written);
+  assert_null(sample_file_open_read_no_follow(temporary_name));
+  return replaced;
+}
+
+static void file_complete_atomic_write_replaces_only_complete_contents(void** state)
+{
+  (void)state;
+  write_text_file(DESTINATION_FILE, "old");
+
+  assert_false(write_unique_and_complete("partial", false));
+  assert_file_holds(DESTINATION_FILE, "old");
+
+  assert_true(write_unique_and_complete("new", true));
+  assert_file_holds(DESTINATION_FILE, "new");
+
+  assert_false(sample_file_complete_atomic_write(NULL, NULL, DESTINATION_FILE, true));
+  assert_file_holds(DESTINATION_FILE, "new");
+}
+
 #if !defined(_WIN32)
 /**
  * @brief Whether @p signal_number, raised in a new child process after
@@ -528,6 +560,8 @@ int main(void)
         file_write_atomically_replaces_the_destination, setup, teardown),
     cmocka_unit_test_setup_teardown(
         file_write_atomically_fails_and_keeps_the_destination, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        file_complete_atomic_write_replaces_only_complete_contents, setup, teardown),
     cmocka_unit_test(stop_handler_records_sigterm_and_sigint),
     cmocka_unit_test(sleep_until_tick_end_waits_out_the_rest_of_the_tick),
     cmocka_unit_test(sleep_until_tick_end_returns_at_once_after_the_tick),
