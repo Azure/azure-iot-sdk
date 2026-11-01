@@ -1820,16 +1820,18 @@ extern "C"
      * such attempt is waiting. */
     uint64_t dps_session_ready_deadline_ms;
 
-    /* Who needs the provisioning session. It exists exactly while this total is
-     * non-zero: the connection client holds dps_registration_ref while the
-     * device must register, and each session user holds a count.
+    /* Who needs the provisioning session. It exists exactly while one of these
+     * (or dps_standing_ref) is set: the connection client holds
+     * dps_registration_ref while the device must register, and
+     * dps_session_wanted is set while the feature client using the session
+     * (software updates) has work for it.
      *
      * Registration is a task performed on the session, not a property of it --
      * it runs only while dps_registration_ref is held, which is what keeps a
-     * session opened for its other users from registering and moving the hub
-     * session to a new assignment. */
+     * session opened for the feature client from registering and moving the
+     * hub session to a new assignment. */
     bool dps_registration_ref;
-    uint8_t dps_user_count;
+    bool dps_session_wanted;
 
     /* SUBACK seen; DPS:CONNECTED still to be announced. The pump announces it
      * after the adapter's process_loop returns, so observers do not run inside
@@ -1838,13 +1840,13 @@ extern "C"
 
     /* The client's own demand for a provisioning session, held for the whole
      * open()..close() life of a provision_only client. Distinct from
-     * dps_registration_ref (a task) and dps_user_count (feature clients): it
-     * says the session IS the connection, so the pump must neither collect it
-     * nor leave it down. */
+     * dps_registration_ref (a task) and dps_session_wanted (a feature client):
+     * it says the session IS the connection, so the pump must neither collect
+     * it nor leave it down. */
     bool dps_standing_ref;
 
-    /* Pacing for re-opening a provisioning session that was held for its USERS
-     * rather than for a registration.
+    /* Pacing for re-opening a provisioning session that was wanted by its USER
+     * rather than held for a registration.
      *
      * Such a session is not put through schedule_reconnect(): that begins with
      * teardown_active() and a hub retry, which a feature client's session
@@ -1866,7 +1868,8 @@ extern "C"
      * retries (initial_delay_ms == 0, where the computed delay would be 0 and
      * pace nothing) or when max_attempts is spent; it is cleared by a session
      * that comes up, by a successful registration, by open()/close(), and by
-     * the last user releasing its ref -- a new holder is new demand. */
+     * az_iot_connection_client__dps_session_release() -- a later want is new
+     * demand. */
     az_iot_retry_state dps_user_retry;
     bool dps_user_retry_blocked;
 

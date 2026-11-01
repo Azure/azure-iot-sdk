@@ -3212,7 +3212,7 @@ static void init_checks_the_workspace(void** state)
       az_iot_su_client__initialize_with_channel(&client, &channel, fx->su._internal.crypto, &o),
       AZ_IOT_ERR_INVALID_ARG);
   assert_false(fc.opened);
-  assert_int_equal(fx->conn.dps_user_count, 0);
+  assert_false(fx->conn.dps_session_wanted);
 
   o.limits.scratch_size = AZ_IOT_SU_VERIFY_SCRATCH_SIZE;
   assert_int_equal(
@@ -3557,14 +3557,14 @@ static void properties_validate_initialization_before_opening_the_channel(void**
       AZ_IOT_ERR_INVALID_ARG);
   assert_false(fc.opened);
   assert_int_equal(az_iot_su_client_init(&client, &fx->conn, &opts), AZ_IOT_ERR_INVALID_ARG);
-  assert_int_equal(fx->conn.dps_user_count, 0);
+  assert_false(fx->conn.dps_session_wanted);
   assert_int_equal(fx->conn.dps_hold_count, 0);
 
   device_properties.manufacturer = "m";
   assert_int_equal(az_iot_su_client_init(&client, &fx->conn, &opts), AZ_IOT_OK);
   assert_string_equal(client._internal.device_properties.manufacturer, "m");
   az_iot_su_client_deinit(&client);
-  assert_int_equal(fx->conn.dps_user_count, 0);
+  assert_false(fx->conn.dps_session_wanted);
   assert_int_equal(
       az_iot_su_client_update_device_properties(&client, &device_properties),
       AZ_IOT_ERR_NOT_ENOUGH_SPACE);
@@ -5454,7 +5454,7 @@ static void the_replacement_policy_is_validated(void** state)
       az_iot_su_client__initialize_with_channel(&client, &channel, fx->su._internal.crypto, &opts),
       AZ_IOT_ERR_NOT_SUPPORTED);
   assert_int_equal(az_iot_su_client_init(&client, &fx->conn, &opts), AZ_IOT_ERR_NOT_SUPPORTED);
-  assert_int_equal(fx->conn.dps_user_count, 0);
+  assert_false(fx->conn.dps_session_wanted);
   opts.replacement_policy = (az_iot_su_replacement_policy)2;
   assert_int_equal(
       az_iot_su_client__initialize_with_channel(&client, &channel, fx->su._internal.crypto, &opts),

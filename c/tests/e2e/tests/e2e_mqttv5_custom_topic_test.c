@@ -25,6 +25,7 @@
 #include "azure/iot/az_iot.h"
 
 #include "az_iot_e2e_service.h"
+#include "e2e_connect_clock.h"
 #include "e2e_device.h"
 #include "e2e_log.h"
 #include "support/test_env.h"
@@ -145,12 +146,12 @@ static void pump(fixture* fx) { e2e_device_do_work(&fx->dev, E2E_PUMP_MS); }
 
 static bool wait_connected(fixture* fx)
 {
-  for (time_t start = time(NULL); (time(NULL) - start) < E2E_CONNECT_TIMEOUT_S;)
+  /* A connect after a re-provision registers again: DPS has its own budget. */
+  e2e_connect_clock clock;
+  e2e_connect_clock_start(&clock);
+  while (fx->dev.conn_state != AZ_IOT_CONN_STATE_CONNECTED
+         && e2e_connect_clock_running(&clock, &fx->dev.conn, E2E_CONNECT_TIMEOUT_S))
   {
-    if (fx->dev.conn_state == AZ_IOT_CONN_STATE_CONNECTED)
-    {
-      return true;
-    }
     pump(fx);
   }
   return fx->dev.conn_state == AZ_IOT_CONN_STATE_CONNECTED;

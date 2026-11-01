@@ -974,7 +974,6 @@ static void the_subscription_is_reissued_after_a_provisioning_session(void** sta
   assert_non_null(find_subscribe(fx->mock, C2D_FILTER));
 
   /* The hub session ends first; the provisioning session opens once it is gone. */
-  assert_int_equal(az_iot_connection_client__dps_user_acquire(&fx->conn), AZ_IOT_OK);
   assert_int_equal(az_iot_connection_client__dps_session_ensure(&fx->conn), AZ_IOT_ERR_BUSY);
   assert_true(az_iot_mock_mqtt_client_inject_disconnected(fx->mock));
   assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
@@ -985,7 +984,7 @@ static void the_subscription_is_reissued_after_a_provisioning_session(void** sta
       AZ_IOT_CONN_STATE_RETRY_PENDING);
 
   /* Released: the hub session reconnects, without open(), and subscribes again. */
-  az_iot_connection_client__dps_user_release(&fx->conn);
+  az_iot_connection_client__dps_session_release(&fx->conn);
   assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
   assert_null(fx->conn.dps_mqtt);
   fx->mock = az_iot_mock_mqtt_factory_last_client(fx->factory);

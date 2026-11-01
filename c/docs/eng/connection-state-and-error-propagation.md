@@ -96,7 +96,7 @@ waiting hub session reconnects, and the next session attempt is paced by its own
 - With retries disabled, or `max_attempts` spent, the client refuses further session attempts with
   `AZ_IOT_ERR_NOT_SUPPORTED` instead of retrying on every pump tick.
 - The refusal clears when a session comes up, a registration succeeds, on `open()` or `close()`,
-  or when the last holder releases its reference.
+  or when the feature client releases the session.
 - A synchronous session-start failure is paced at the call site.
 
 The core paces the transport. Whether an operation is still worth re-issuing is the feature
