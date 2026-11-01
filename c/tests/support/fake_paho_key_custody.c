@@ -8,6 +8,7 @@
 #include "fake_paho_key_custody.h"
 
 #include "az_iot_paho_key_custody.h"
+#include "test_env.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -20,25 +21,6 @@ static int s_release_calls;
 /* Kept after release() so a test can look for the file the adapter should have
  * removed. */
 static char s_last_path[512];
-
-/* The temporary directory, spelled the way each platform spells it. */
-static const char* temp_dir(void)
-{
-  static const char* const names[] = { "TMPDIR", "TEMP", "TMP" };
-  for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); ++i)
-  {
-    const char* v = getenv(names[i]);
-    if (v && v[0] != '\0')
-    {
-      return v;
-    }
-  }
-#if defined(_WIN32)
-  return ".";
-#else
-  return "/tmp";
-#endif
-}
 
 static bool file_exists(const char* path)
 {
@@ -112,8 +94,13 @@ az_iot_result az_iot_paho_key_custody_prepare(
   /* A distinct name per prepare(), so "the file from the previous connect was
    * removed" is a real observation and not the same path being rewritten. */
   static unsigned s_seq;
+  char dir[400];
   char path[512];
-  snprintf(path, sizeof(path), "%s/az-iot-ut-keyref-%u.pem", temp_dir(), ++s_seq);
+  if (!az_iot_test_temp_dir(dir, sizeof(dir)))
+  {
+    return AZ_IOT_ERR_OUT_OF_MEMORY;
+  }
+  snprintf(path, sizeof(path), "%s/az-iot-ut-keyref-%u.pem", dir, ++s_seq);
 
   FILE* f = fopen(path, "w");
   if (!f)

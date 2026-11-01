@@ -93,27 +93,8 @@
 #include <openssl/pem.h>
 #include <openssl/x509.h>
 
+#include "../support/test_env.h"
 #include "../support/test_x509.h"
-
-/* The temporary directory, spelled the way each platform spells it. Windows
- * sets TEMP/TMP and not TMPDIR, and this harness builds there. */
-static const char* temp_dir(void)
-{
-  static const char* const names[] = { "TMPDIR", "TEMP", "TMP" };
-  for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); ++i)
-  {
-    const char* v = getenv(names[i]);
-    if (v != NULL && v[0] != '\0')
-    {
-      return v;
-    }
-  }
-#if defined(_WIN32)
-  return ".";
-#else
-  return "/tmp";
-#endif
-}
 
 /* Delete the certificates the suite leaves behind in the working directory.
  *
@@ -734,9 +715,16 @@ int main(void)
     return 1;
   }
 
+  char temp_dir[400];
   char work_dir[512];
-  int work_len = snprintf(
-      work_dir, sizeof(work_dir), "%s/az-iot-sign-negative-%ld", temp_dir(), (long)az_iot_getpid());
+  int work_len = az_iot_test_temp_dir(temp_dir, sizeof(temp_dir))
+      ? snprintf(
+            work_dir,
+            sizeof(work_dir),
+            "%s/az-iot-sign-negative-%ld",
+            temp_dir,
+            (long)az_iot_getpid())
+      : -1;
   if (work_len < 0 || (size_t)work_len >= sizeof(work_dir))
   {
     /* A truncated path names a different directory, so creating it, entering it
