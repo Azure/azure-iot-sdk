@@ -633,7 +633,11 @@ namespace Microsoft.Azure.Iot.Device
         /// New feature operations fail fast until this client is connected again.
         /// </para>
         /// </remarks>
-        /// <param name="options">The disconnect settings, or null to use the defaults.</param>
+        /// <param name="options">
+        /// The disconnect settings, or null to use the defaults. When null, a connection to an MQTTv5 IoT hub keeps the
+        /// session expiry interval configured on this client's options; otherwise the
+        /// <see cref="DisconnectOptions.SessionExpiryInterval"/> default applies.
+        /// </param>
         /// <param name="cancellationToken">The cancellation token.</param>
         public async Task DisconnectAsync(DisconnectOptions? options = null, CancellationToken cancellationToken = default)
         {
@@ -641,12 +645,11 @@ namespace Microsoft.Azure.Iot.Device
 
             cancellationToken.ThrowIfCancellationRequested();
 
-            options ??= new DisconnectOptions();
-            MqttDisconnect disconnect = new()
+            MqttDisconnect disconnect = CreateNormalDisconnect();
+            if (options != null)
             {
-                Reason = MqttDisconnectReasonCode.NormalDisconnection,
-                SessionExpiryInterval = options.SessionExpiryInterval,
-            };
+                disconnect.SessionExpiryInterval = options.SessionExpiryInterval;
+            }
 
             // Record the disconnect before cancelling anything, so that a re-provisioning attempt or a waiting operation
             // that races this call observes it and stands down.
@@ -1655,6 +1658,21 @@ namespace Microsoft.Azure.Iot.Device
                 await DisconnectFromDpsAsync();
             }
         }
+
+        /// <summary>
+        /// The session expiry interval, in seconds, that a DISCONNECT sent to the IoT hub carries when the application did
+        /// not choose one, including the DISCONNECTs sent by automatic recovery.
+        /// </summary>
+        internal virtual uint DefaultDisconnectSessionExpiryInterval => new DisconnectOptions().SessionExpiryInterval;
+
+        /// <summary>
+        /// A normal DISCONNECT to send to the IoT hub, carrying <see cref="DefaultDisconnectSessionExpiryInterval"/>.
+        /// </summary>
+        internal MqttDisconnect CreateNormalDisconnect() => new()
+        {
+            Reason = MqttDisconnectReasonCode.NormalDisconnection,
+            SessionExpiryInterval = DefaultDisconnectSessionExpiryInterval,
+        };
 
         private async Task DisconnectFromDpsAsync()
         {

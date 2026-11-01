@@ -252,6 +252,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             MqttV5ConnectionClientOptions options = new()
             {
                 MqttClient = mockMqttClient,
+                SessionExpiryInterval = 120,
                 ConnectionRetryPolicy = new ExponentialBackoffRetryPolicy(uint.MaxValue, TimeSpan.Zero, useJitter: false),
             };
             using ConnectionClient connectionClient = new(options);
@@ -276,6 +277,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             }
 
             Assert.Equal(2, mockMqttClient.DisconnectRequests.Count);
+            Assert.All(mockMqttClient.DisconnectRequests, disconnect => Assert.Equal(120u, disconnect.SessionExpiryInterval));
         }
 
         [Fact]

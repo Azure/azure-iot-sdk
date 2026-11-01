@@ -145,6 +145,11 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
             await RaiseDevicePresenceFlowCompletedAsync(new DevicePresenceFlowCompletedArgs() { IsSuccess = true });
         }
 
+        internal override uint DefaultDisconnectSessionExpiryInterval =>
+            CurrentConnectionContext?.ConnectionProfile == IotHubConnectionType.Mqttv5
+                ? _mqttv5ConnectionClient.DefaultDisconnectSessionExpiryInterval
+                : base.DefaultDisconnectSessionExpiryInterval;
+
         internal override MqttConnect IotHubMqttConnectOverride(MqttConnect connect)
         {
             Debug.Assert(CurrentConnectionContext != null);
@@ -275,7 +280,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
             if (anySubscribeFailed)
             {
                 // Signal to the underlying MQTT connection manager that, even though we are manually disconnecting, we still want to reconnect.
-                await ManagedMqttConnection.DisconnectAsync(true, new MqttDisconnect() { Reason = MqttDisconnectReasonCode.NormalDisconnection });
+                await ManagedMqttConnection.DisconnectAsync(true, CreateNormalDisconnect());
 
                 Trace.TraceError("Device failed to subscribe to one or more necessary MQTT topics upon connecting to IoT Hub. Disconnecting the MQTT client and trying again.");
             }
@@ -375,7 +380,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
                     Trace.TraceError("Device failed to unsubscribe from the MQTT topics of disabled features upon resuming a session with IoT Hub. Disconnecting the MQTT client and trying again.");
 
                     // Signal to the underlying MQTT connection manager that, even though we are manually disconnecting, we still want to reconnect.
-                    await ManagedMqttConnection.DisconnectAsync(true, new MqttDisconnect() { Reason = MqttDisconnectReasonCode.NormalDisconnection }, presenceCancellation.Token);
+                    await ManagedMqttConnection.DisconnectAsync(true, CreateNormalDisconnect(), presenceCancellation.Token);
                     return false;
                 }
 
@@ -392,7 +397,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
                 Trace.TraceError("Exception thrown while unsubscribing from the MQTT topics of disabled features upon resuming a session with IoT Hub. Disconnecting the MQTT client and trying again. {0}", e);
                 try
                 {
-                    await ManagedMqttConnection.DisconnectAsync(true, new MqttDisconnect() { Reason = MqttDisconnectReasonCode.NormalDisconnection }, presenceCancellation.Token);
+                    await ManagedMqttConnection.DisconnectAsync(true, CreateNormalDisconnect(), presenceCancellation.Token);
                 }
                 catch (OperationCanceledException) when (presenceCancellation.IsCancellationRequested)
                 {
