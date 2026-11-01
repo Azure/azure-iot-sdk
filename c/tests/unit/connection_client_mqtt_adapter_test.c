@@ -143,15 +143,13 @@ static void assert_adapter_stats(size_t built, size_t live)
 /** @brief Index of the newest event on @p scope; fails if there is none. */
 static size_t last_event_on(const az_iot_test_state_log* log, az_iot_connection_scope scope)
 {
-  for (size_t i = log->count; i > 0; --i)
+  size_t i = log->count;
+  while (i > 0 && log->scopes[i - 1] != scope)
   {
-    if (log->scopes[i - 1] == scope)
-    {
-      return i - 1;
-    }
+    --i;
   }
-  fail();
-  return 0;
+  assert_true(i > 0);
+  return i - 1;
 }
 
 /** @brief Asserts the event at @p index failed locally with @p result and @p message. */
