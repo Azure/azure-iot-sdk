@@ -48,8 +48,6 @@
 #define SAMPLE_LINE_MAX 256
 /** @brief Where the assignment is saved, in the working directory. */
 #define SAMPLE_ASSIGNMENT_FILE "dps_assignment.txt"
-/** @brief Written first, then renamed over SAMPLE_ASSIGNMENT_FILE. */
-#define SAMPLE_ASSIGNMENT_TMP_FILE SAMPLE_ASSIGNMENT_FILE ".tmp"
 /** @brief Saved profile names. */
 #define SAMPLE_PROFILE_MQTTV3 "mqttv3"
 #define SAMPLE_PROFILE_MQTTV5 "mqttv5"
@@ -116,8 +114,8 @@ static bool load_assignment(const char* path, saved_assignment* out)
   return true;
 }
 
-/** @brief Saves the adopted assignment, replacing any earlier one. Written to a
- *  temporary file and renamed, so the record file always holds one complete
+/** @brief Saves the adopted assignment, replacing any earlier one through
+ *  sample_file_write_atomically(), so the record file always holds one complete
  *  record, the previous or the new one. */
 static void on_assignment(const az_iot_dps_assignment* assignment, void* user_ctx)
 {
@@ -125,19 +123,17 @@ static void on_assignment(const az_iot_dps_assignment* assignment, void* user_ct
   const char* profile = assignment->profile->connection_profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5
       ? SAMPLE_PROFILE_MQTTV5
       : SAMPLE_PROFILE_MQTTV3;
-  FILE* f = sample_file_open_private(SAMPLE_ASSIGNMENT_TMP_FILE, true);
-  bool ok = f != NULL
-      && fprintf(f, "%s\n%s\n%s\n", assignment->hub_hostname, assignment->device_id, profile) > 0
-      && sample_file_flush_to_storage(f);
-  if (f != NULL && fclose(f) != 0)
-  {
-    ok = false;
-  }
-  ok = ok && sample_file_replace(SAMPLE_ASSIGNMENT_TMP_FILE, ctx->assignment_path);
-  if (!ok)
-  {
-    (void)remove(SAMPLE_ASSIGNMENT_TMP_FILE);
-  }
+  /* Three lines: hub, device id and profile, each shorter than SAMPLE_LINE_MAX. */
+  char record[3 * SAMPLE_LINE_MAX];
+  int record_length = snprintf(
+      record,
+      sizeof(record),
+      "%s\n%s\n%s\n",
+      assignment->hub_hostname,
+      assignment->device_id,
+      profile);
+  bool ok = record_length > 0 && (size_t)record_length < sizeof(record)
+      && sample_file_write_atomically(ctx->assignment_path, record, (size_t)record_length);
   ctx->assigned = true;
   ctx->assignment_saved = ok;
   fprintf(

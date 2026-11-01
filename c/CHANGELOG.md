@@ -85,6 +85,12 @@
   full. The `pc/http_download` and `pc/simulated_regular` samples register it.
 - Software updates: `az_iot_su_decode_manifest_string()` decodes a manifest string the parser keeps
   escaped, such as a file id (`f\u0031` is `f1`).
+- End-to-end tests: the Software Update offer suite runs delta updates against the service, with
+  a test download handler: a device holding the source builds the file from the related file, and
+  one without it falls back to a full download reported with the delta `NO_SOURCE` code; and, on
+  POSIX, with the reference `microsoft/delta:1` handler and the real delta processor. Three new
+  standing offers (`AZ_IOT_E2E_SU_OFFER_MODEL_DELTA`, `_DELTA_NO_SOURCE`, `_MICROSOFT_DELTA`). On
+  POSIX the offer suite now needs `AZ_IOT_WITH_SU_DELTA=ON` and `AZ_IOT_SU_DELTA_TEST_LIBRARY`.
 - Software updates: the parsed manifest keeps each file's `mimeType`, `properties`,
   `downloadHandler` id and related files (`relatedFiles`, delta updates), and the request accepts
   their `fileUrls`. New `az_iot_su_limits::max_related_files` (default
