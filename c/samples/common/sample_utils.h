@@ -203,16 +203,17 @@ FILE* sample_file_rewrite_existing_no_follow(const char* path);
 bool sample_file_flush_to_storage(FILE* file);
 
 /**
- * @brief Remove @p path so the removal survives a power loss. Succeeds when
- * @p path does not exist.
+ * @brief Remove @p path, then, on POSIX, sync its directory so the removal
+ * survives a power loss. Succeeds when @p path does not exist.
  *
- * On POSIX the directory is then synced, also when @p path did not exist, in
- * case an earlier removal had not reached storage. If that sync fails, a line
- * is written to stderr and true is still returned, as in sample_file_replace():
- * only then may a power loss bring the file back.
+ * The directory is synced also when @p path did not exist, in case an earlier
+ * removal had not reached storage. If that sync fails, a line is written to
+ * stderr and true is still returned, as in sample_file_replace(). On Windows
+ * nothing is synced. In both cases a power loss may bring the file back.
  *
  * @param[in] path File to remove.
- * @return true when @p path is gone.
+ * @return true when @p path is gone; durably only on POSIX, when the sync
+ * succeeded.
  */
 bool sample_file_remove_durably(const char* path);
 

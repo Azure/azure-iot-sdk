@@ -340,7 +340,7 @@ int32_t save_update_workflow_to_file(const uint8_t* blob, size_t len, void* user
   su_simulation_control* s = (su_simulation_control*)user_ctx;
   if (len == 0)
   {
-    /* Invalidation: remove the file, durably, so a later run finds no checkpoint. */
+    /* Invalidation: remove the file so a later run finds no checkpoint. */
     if (!sample_file_remove_durably(s->state_file))
     {
       return AZ_IOT_SU_RESULT_FAILURE;

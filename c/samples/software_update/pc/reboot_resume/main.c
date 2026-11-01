@@ -160,8 +160,8 @@ static int32_t apply_update_step(
  *
  * Written with sample_file_write_atomically(), so a crash mid-write leaves the
  * previous record intact and two runs never share a temporary file. A
- * zero-length write erases the record with sample_file_remove_durably(): the
- * workflow ended and must not be resumed, even after a power loss.
+ * zero-length write erases the record with sample_file_remove_durably(), as
+ * the workflow ended and must not be resumed.
  */
 static int32_t save_update_workflow(const uint8_t* blob, size_t len, void* user_ctx)
 {
