@@ -131,7 +131,6 @@ typedef struct az_iot_test_conn
 {
   az_iot_connection_client client_storage;
   az_iot_connection_client* client;
-  az_iot_mqtt_factory* factory;
   az_iot_test_state_log log;
 } az_iot_test_conn;
 
