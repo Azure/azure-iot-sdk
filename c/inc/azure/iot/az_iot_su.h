@@ -102,7 +102,7 @@ extern "C"
   typedef struct az_iot_su_client_update_manifest_file
   {
     /** File id, as in step `files` and the request's `fileUrls`. A raw JSON string body: escapes
-     * are kept, so compare ids decoded. */
+     * are kept, so compare ids decoded (az_iot_su_decode_manifest_string()). */
     az_span id;
     /** File name. */
     az_span file_name;
@@ -2031,6 +2031,22 @@ extern "C"
       const az_iot_crypto* crypto,
       az_iot_su_read_chunk_callback read_chunk,
       void* read_ctx);
+
+  /**
+   * @brief Decode a manifest string the parser keeps escaped, such as a file id: `f\u0031` is
+   * `f1`.
+   *
+   * Handles every JSON escape, `\uXXXX` included. The output is never longer than the input, so
+   * @p out may be @p escaped itself (in-place decoding).
+   *
+   * @param[in] escaped A raw JSON string body, e.g. az_iot_su_client_update_manifest_file::id.
+   * @param[out] out Destination.
+   * @param[out] out_decoded The decoded slice of @p out.
+   * @return AZ_IOT_OK; AZ_IOT_ERR_INVALID_ARG on NULL @p out_decoded, a malformed escape or
+   * `\u0000`; AZ_IOT_ERR_NOT_ENOUGH_SPACE when @p out is too small.
+   */
+  AZ_NODISCARD az_iot_result
+  az_iot_su_decode_manifest_string(az_span escaped, az_span out, az_span* out_decoded);
 
   /**
    * @brief Builds the status-report request body for @p report.

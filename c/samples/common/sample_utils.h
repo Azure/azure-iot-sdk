@@ -131,6 +131,15 @@ bool sample_string_copy(char* dst, size_t dst_size, const char* src);
 bool sample_env_copy_to_buffer(const char* name, const char* fallback, char* dst, size_t dst_size);
 
 /**
+ * @brief Whether @p name, a decoded manifest file id, can name a file in a directory without
+ * leaving it: not empty, `.` or `..`, and free of `/`, `\\`, `:` and NUL.
+ *
+ * @param[in] name Name to check.
+ * @return true when @p name is a single, plain file name.
+ */
+bool sample_is_plain_file_name(az_span name);
+
+/**
  * @brief Open @p path for binary writing with owner-only access (0600) on
  * POSIX rather than fopen()'s 0666 less umask. On Windows the file keeps the
  * ACL inherited from its directory.
@@ -173,6 +182,16 @@ FILE* sample_file_create_private_unique(const char* path, char** out_unique_path
  * @return Stream to close with fclose(), or NULL on failure.
  */
 FILE* sample_file_open_read_no_follow(const char* path);
+
+/**
+ * @brief Open the existing file @p path for binary writing, emptied. The file itself is kept, with
+ * its mode and any lock held on it; nothing is created. On POSIX only a regular file, not through a
+ * symbolic link, is opened.
+ *
+ * @param[in] path File to rewrite.
+ * @return Stream to close with fclose(), or NULL on failure.
+ */
+FILE* sample_file_rewrite_existing_no_follow(const char* path);
 
 /**
  * @brief Flush @p file's buffered writes and the operating system's cache to

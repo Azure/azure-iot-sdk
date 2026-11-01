@@ -62,5 +62,13 @@
         "branch": 55,
         "function": 80,
         "comment": "Shipped (AZ_IOT_WITH_CERT_PROVIDER_MANAGED default ON, requires OpenSSL 3.0+). Measured 78.2/57.9/84.6 on unit+conformance."
+    },
+    {
+        "name": "adapter-su-delta",
+        "prefix": "adapters/su/delta/",
+        "line": 80,
+        "branch": 65,
+        "function": 95,
+        "comment": "Optional (AZ_IOT_WITH_SU_DELTA default OFF, ON in the Linux presets). Unit tests plus the interop test with the real delta processor. Measured 88.1/73.6/100.0 with gcov 12 (CI gcovr may differ); the copy fallback across file systems is not reached."
     }
 ]
