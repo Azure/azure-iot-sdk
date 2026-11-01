@@ -2384,7 +2384,6 @@ static void a_session_ended_for_a_provisioning_session_resends_the_snapshot_afte
   memcpy(first_corr, first->correlation_data, sizeof(first_corr));
 
   /* The hub session ends first; the provisioning session opens once it is gone. */
-  assert_int_equal(az_iot_connection_client__dps_user_acquire(&fx->conn), AZ_IOT_OK);
   assert_int_equal(az_iot_connection_client__dps_session_ensure(&fx->conn), AZ_IOT_ERR_BUSY);
   assert_true(az_iot_mock_mqtt_client_inject_disconnected(fx->mock));
   assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
@@ -2393,7 +2392,7 @@ static void a_session_ended_for_a_provisioning_session_resends_the_snapshot_afte
   assert_null(az_iot_mock_mqtt_adapter_last_client_of(AZ_IOT_MQTT_VERSION_5));
 
   /* Released: the hub session reconnects and the twin resumes. */
-  az_iot_connection_client__dps_user_release(&fx->conn);
+  az_iot_connection_client__dps_session_release(&fx->conn);
   assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
   assert_null(fx->conn.dps_mqtt);
   fx->mock = az_iot_mock_mqtt_adapter_last_client_of(AZ_IOT_MQTT_VERSION_5);

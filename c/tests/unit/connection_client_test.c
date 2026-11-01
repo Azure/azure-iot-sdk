@@ -4490,11 +4490,10 @@ static void a_dps_session_without_a_certificate_provider_is_refused(void** state
   (void)state;
   az_iot_connection_client client;
   tls_client_init(&client, NULL, true, false);
-  assert_int_equal(az_iot_connection_client__dps_user_acquire(&client), AZ_IOT_OK);
   assert_int_equal(
       az_iot_connection_client__dps_session_ensure(&client), AZ_IOT_ERR_CREDENTIAL_INCOMPLETE);
   assert_null(az_iot_mock_mqtt_adapter_last_client());
-  az_iot_connection_client__dps_user_release(&client);
+  az_iot_connection_client__dps_session_release(&client);
   az_iot_test_connection_client_deinit(&client);
 }
 
@@ -4538,7 +4537,6 @@ static void a_dps_session_rejects_operational_cert_without_release_or_store(void
     opts.mqtt_adapter = az_iot_mock_mqtt_get_adapter_for_version(AZ_IOT_MQTT_VERSION_3_1_1);
     az_iot_connection_client client;
     assert_int_equal(az_iot_test_connection_client_init(&client, &opts), AZ_IOT_OK);
-    assert_int_equal(az_iot_connection_client__dps_user_acquire(&client), AZ_IOT_OK);
     assert_int_equal(az_iot_connection_client__dps_session_ensure(&client), AZ_IOT_ERR_BUSY);
     az_iot_mock_mqtt_client* dps = az_iot_mock_mqtt_adapter_last_client();
     assert_non_null(dps);
@@ -4558,7 +4556,7 @@ static void a_dps_session_rejects_operational_cert_without_release_or_store(void
     (void)az_iot_connection_client_do_work(&client, 0);
     assert_int_equal(prov.get_csr_calls, 0);
     assert_int_equal(az_iot_mock_mqtt_client_count_of(dps, AZ_IOT_MOCK_CALL_PUBLISH), 0);
-    az_iot_connection_client__dps_user_release(&client);
+    az_iot_connection_client__dps_session_release(&client);
     az_iot_test_connection_client_deinit(&client);
   }
 }

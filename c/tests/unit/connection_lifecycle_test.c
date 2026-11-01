@@ -1260,7 +1260,7 @@ static void the_dispatch_guard_survives_nesting(void** state)
       az_iot_connection_client_add_state_observer(&c, nested_starting_observer, NULL), AZ_IOT_OK);
   assert_int_equal(
       az_iot_connection_client_add_state_observer(&c, late_mutating_observer, NULL), AZ_IOT_OK);
-  assert_int_equal(az_iot_connection_client__dps_user_acquire(&c), AZ_IOT_OK);
+  c.dps_session_wanted = true;
 
   /* The saved hub connects first, then ends for the feature session, which
    * starts from the hub's RETRY_PENDING. */
@@ -1289,7 +1289,7 @@ static void the_dispatch_guard_survives_nesting(void** state)
       AZ_IOT_CONN_STATE_RETRY_PENDING);
   assert_null(c.active_client);
 
-  az_iot_connection_client__dps_user_release(&c);
+  az_iot_connection_client__dps_session_release(&c);
   assert_int_equal(az_iot_test_connection_client_deinit(&c), AZ_IOT_OK);
   az_iot_mock_mqtt_factory_destroy(f);
 }
