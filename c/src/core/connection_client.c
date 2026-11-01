@@ -9062,6 +9062,9 @@ az_iot_result az_iot_connection_client__dps_session_ensure(az_iot_connection_cli
     {
       AZ_IOT_LOG_INFO(
           AZ_IOT_LOG_COMPONENT_CONNECTION, "ending the hub session for a provisioning session");
+      /* Takes over a SAS renewal still letting deliveries settle: the end is a
+       * pause, not a renewal, and the hub reconnects with a new token anyway. */
+      client->sas_token_renewal_in_progress[AZ_IOT_CONN_SCOPE_HUB] = false;
       client->planned_hub_session_end.for_provisioning_session = true;
       start_planned_hub_session_end(client, AZ_IOT_OK);
     }

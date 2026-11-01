@@ -2086,6 +2086,55 @@ static void a_held_dps_session_starts_once_the_hub_session_ends(void** state)
   az_iot_connection_client__dps_user_release(&fx->client);
 }
 
+/* A provisioning session asked for while a SAS renewal lets a PUBACK settle
+ * takes over the end: the pause and the hub's reconnect after it are not
+ * reported as a credential renewal. */
+static void a_provisioning_session_takes_over_a_settling_renewal(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  uint64_t now = NOW;
+  az_iot_connection_client_options opts = hub_sas_options();
+  opts.unix_time.get_time = switchable_time;
+  opts.unix_time.user_ctx = &now;
+  opts.hub_auth.sas.token_lifetime_seconds = 100;
+  opts.hub_auth.sas.renewal_percent = 50;
+  opts.dps.id_scope = "0ne00000001";
+  opts.dps.registration_id = "ut-device";
+  opts.dps_auth.sas.primary_key_base64 = KEY_B64;
+  init_and_open(fx, &opts);
+  connack(fx, AZ_IOT_OK);
+  assert_int_equal(fx->client.state[AZ_IOT_CONN_SCOPE_HUB], AZ_IOT_CONN_STATE_CONNECTED);
+  int acks = 0;
+  (void)publish_awaiting_puback(fx, &acks);
+  az_iot_mock_mqtt_client* hub = start_settling_renewal(fx);
+  size_t const from = fx->log_count;
+
+  assert_int_equal(az_iot_connection_client__dps_user_acquire(&fx->client), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client__dps_session_ensure(&fx->client), AZ_IOT_ERR_BUSY);
+  assert_false(fx->client.sas_token_renewal_in_progress[AZ_IOT_CONN_SCOPE_HUB]);
+  assert_int_equal(az_iot_mock_mqtt_client_count_of(hub, AZ_IOT_MOCK_CALL_DISCONNECT), 1);
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(hub));
+  pump(fx, 1);
+  assert_int_equal(fx->client.state[AZ_IOT_CONN_SCOPE_HUB], AZ_IOT_CONN_STATE_RETRY_PENDING);
+  (void)ready_dps(fx);
+
+  /* Released: the hub session reconnects. */
+  az_iot_connection_client__dps_user_release(&fx->client);
+  pump(fx, 3);
+  connack(fx, AZ_IOT_OK);
+  assert_int_equal(fx->client.state[AZ_IOT_CONN_SCOPE_HUB], AZ_IOT_CONN_STATE_CONNECTED);
+  bool hub_reconnected = false;
+  for (size_t i = from; i < fx->log_count; ++i)
+  {
+    if (fx->log[i].scope == AZ_IOT_CONN_SCOPE_HUB)
+    {
+      assert_false(fx->log[i].renewal);
+      hub_reconnected = hub_reconnected || fx->log[i].state == AZ_IOT_CONN_STATE_CONNECTED;
+    }
+  }
+  assert_true(hub_reconnected);
+}
+
 /* A monotonic clock that stopped in suspend: the renewal starts when Unix time
  * reaches it. */
 static void a_suspended_monotonic_clock_still_renews(void** state)
@@ -4347,6 +4396,8 @@ int main(void)
         a_settle_ends_when_the_token_expires_by_unix_time, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_held_dps_session_starts_once_the_hub_session_ends, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_provisioning_session_takes_over_a_settling_renewal, setup, teardown),
     cmocka_unit_test_setup_teardown(a_suspended_monotonic_clock_still_renews, setup, teardown),
     cmocka_unit_test_setup_teardown(
         the_default_renewal_time_is_80_percent_of_an_hour, setup, teardown),
