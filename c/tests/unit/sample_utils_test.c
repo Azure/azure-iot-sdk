@@ -382,7 +382,9 @@ static void is_plain_file_name_refuses_names_that_leave_the_directory(void** sta
   assert_false(sample_is_plain_file_name(AZ_SPAN_FROM_STR("/etc/passwd")));
   assert_false(sample_is_plain_file_name(AZ_SPAN_FROM_STR("a\\b")));
   assert_false(sample_is_plain_file_name(AZ_SPAN_FROM_STR("C:file")));
-  assert_false(sample_is_plain_file_name(AZ_SPAN_FROM_BUFFER("a\0b")));
+  char with_nul[] = "a\0b";
+  assert_false(
+      sample_is_plain_file_name(az_span_create((uint8_t*)with_nul, (int32_t)sizeof(with_nul) - 1)));
 }
 
 int main(void)
