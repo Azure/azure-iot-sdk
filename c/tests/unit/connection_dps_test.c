@@ -1702,6 +1702,21 @@ static void a_release_during_the_settle_keeps_the_hub_session(void** state)
   assert_null(fx->client->dps_mqtt);
 }
 
+/* An X.509 hub session does not inherit the expiry of a token an earlier session used: an expired
+ * one does not end its settle at once. */
+static void an_earlier_session_token_does_not_end_an_x509_settle(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  fx->client->hub_session_token_expiry_ms = 1u;
+  fx->client->hub_session_token_expiry_unix_seconds = 1u;
+  puback_record record = { 0 };
+  uint16_t packet_id = 0;
+  (void)start_settling_for_a_provisioning_session(fx, &record, &packet_id);
+  assert_int_equal(fx->client->hub_session_token_expiry_ms, 0);
+  assert_int_equal(fx->client->hub_session_token_expiry_unix_seconds, 0);
+  az_iot_connection_client__dps_session_release(fx->client);
+}
+
 /* deinit() during the settle ends the hub session without calling back. */
 static void deinit_during_the_settle_for_a_provisioning_session(void** state)
 {
@@ -6255,6 +6270,8 @@ int main(void)
         teardown),
     cmocka_unit_test_setup_teardown(
         a_release_during_the_settle_keeps_the_hub_session, setup_on_factory, teardown),
+    cmocka_unit_test_setup_teardown(
+        an_earlier_session_token_does_not_end_an_x509_settle, setup_on_factory, teardown),
     cmocka_unit_test_setup_teardown(
         deinit_during_the_settle_for_a_provisioning_session, setup_on_factory, teardown),
     cmocka_unit_test_setup_teardown(an_unheld_session_is_dropped_at_registration, setup, teardown),

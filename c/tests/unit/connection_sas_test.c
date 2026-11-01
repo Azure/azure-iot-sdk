@@ -2201,6 +2201,39 @@ static void a_released_provisioning_session_leaves_a_settling_renewal_to_renew(v
   assert_false(fx->client.hub_waits_for_provisioning_session);
 }
 
+/* A SAS renewal falling due while the hub session settles for a provisioning session waits for the
+ * reconnect, and the do_work() wait still ends by the settle bound rather than at once. */
+static void a_renewal_due_during_a_provisioning_settle_does_not_shorten_the_wait(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  uint64_t now = NOW;
+  az_iot_connection_client_options opts = hub_sas_options();
+  opts.unix_time.get_time = switchable_time;
+  opts.unix_time.user_ctx = &now;
+  opts.hub_auth.sas.token_lifetime_seconds = 100;
+  opts.hub_auth.sas.renewal_percent = 50;
+  opts.dps.id_scope = "0ne00000001";
+  opts.dps.registration_id = "ut-device";
+  opts.dps_auth.sas.primary_key_base64 = KEY_B64;
+  init_and_open(fx, &opts);
+  connack(fx, AZ_IOT_OK);
+  int acks = 0;
+  (void)publish_awaiting_puback(fx, &acks);
+  az_iot_mock_mqtt_client* hub = newest_mock_client(fx);
+  fx->client.dps_session_wanted = true;
+  assert_int_equal(az_iot_connection_client__dps_session_ensure(&fx->client), AZ_IOT_ERR_BUSY);
+
+  fx->client.sas_token_renewal_due_ms[AZ_IOT_CONN_SCOPE_HUB] = az_iot_time_mono_ms();
+  (void)az_iot_connection_client_do_work(&fx->client, 60000u);
+  assert_false(fx->client.sas_token_renewal_in_progress[AZ_IOT_CONN_SCOPE_HUB]);
+  assert_int_equal(az_iot_mock_mqtt_client_count_of(hub, AZ_IOT_MOCK_CALL_DISCONNECT), 0);
+  uint32_t const waited
+      = az_iot_mock_mqtt_client_last_of(hub, AZ_IOT_MOCK_CALL_PROCESS_LOOP)->timeout_ms;
+  assert_true(waited > 0u);
+  assert_true(waited <= 5000u);
+  az_iot_connection_client__dps_session_release(&fx->client);
+}
+
 /* A monotonic clock that stopped in suspend: the renewal starts when Unix time
  * reaches it. */
 static void a_suspended_monotonic_clock_still_renews(void** state)
@@ -4454,6 +4487,8 @@ int main(void)
         a_provisioning_session_takes_over_a_settling_renewal, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_released_provisioning_session_leaves_a_settling_renewal_to_renew, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_renewal_due_during_a_provisioning_settle_does_not_shorten_the_wait, setup, teardown),
     cmocka_unit_test_setup_teardown(a_suspended_monotonic_clock_still_renews, setup, teardown),
     cmocka_unit_test_setup_teardown(
         the_default_renewal_time_is_80_percent_of_an_hour, setup, teardown),

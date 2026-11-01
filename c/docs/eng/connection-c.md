@@ -485,7 +485,7 @@ CONNACK; the `DPS` counter only when registration succeeds.
   with `AZ_IOT_ERR_BUSY` while settling, and any publish with `AZ_IOT_ERR_NOT_CONNECTED` once the
   DISCONNECT is sent. A provisioning session asked for while a SAS renewal settles takes that settle
   over (its bound kept); one no longer demanded before the settle ends drops it, leaving the hub
-  session up, or the renewal it took over to go on. No SAS renewal starts while a settle runs.
+  session up, or the renewal it took over to go on. No SAS renewal starts while a settle runs, and its due time does not shorten the `process_loop()` wait. `start_connect_attempt()` clears the session token expiry, so an X.509 session has none.
 - A planned hub session end: `start_planned_hub_session_end()` sends DISCONNECT and arms
   `planned_hub_session_end.disconnect_deadline` (`PLANNED_DISCONNECT_TIMEOUT_MS`); the DISCONNECTED
   event (unless an identity refusal) or the deadline calls `finish_planned_hub_session_end()`.

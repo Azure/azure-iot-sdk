@@ -5661,6 +5661,9 @@ static az_iot_result start_connect_attempt(az_iot_connection_client* c)
   }
   c->auth[AZ_IOT_CONN_SCOPE_HUB].source = AZ_IOT_AUTH_SOURCE_NONE;
   c->auth[AZ_IOT_CONN_SCOPE_HUB].x509_index = 0;
+  /* Nor a token yet: one an earlier session used must not bound this session's settle. */
+  c->hub_session_token_expiry_ms = 0;
+  c->hub_session_token_expiry_unix_seconds = 0;
   set_state_to(c, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_SETTING_UP, AZ_IOT_OK);
 
   az_iot_result br = run_feature_client_binds(c);
@@ -6629,9 +6632,11 @@ static uint32_t limit_wait_to_connection_deadlines(az_iot_connection_client* c, 
     {
       continue;
     }
-    /* A planned end in progress holds the hub's renewal; its bound is counted below. */
+    /* A planned end in progress or settling holds the hub's renewal; its bounds are counted
+     * below. */
     bool in_progress = c->sas_token_renewal_in_progress[scope]
-        || (scope == AZ_IOT_CONN_SCOPE_HUB && planned_hub_session_end_in_progress(c));
+        || (scope == AZ_IOT_CONN_SCOPE_HUB
+            && (planned_hub_session_end_in_progress(c) || hub_session_end_settling(c)));
     uint64_t deadline = in_progress ? 0 : c->sas_token_renewal_due_ms[scope];
     if (!in_progress && c->sas_token_expiry_ms[scope] != 0
         && (deadline == 0 || c->sas_token_expiry_ms[scope] < deadline))
