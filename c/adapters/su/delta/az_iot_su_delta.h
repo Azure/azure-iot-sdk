@@ -13,7 +13,9 @@
  *   source cache.
  * - build_file_from_related_fn applies the downloaded delta to that source, writing the file.
  * - workflow_succeeded_fn moves the update's files into the source cache and removes the other
- *   entries of the update provider, so the cache keeps only the latest update per provider.
+ *   entries of the update provider, so the cache keeps only the latest update per provider. A
+ *   source chosen for a build is locked until the build ends, and no handler sharing the cache,
+ *   in this process or another, removes it meanwhile.
  *
  * Cache entries are `<directory>/<provider>/<algorithm>-<hash>`: in `<provider>` and
  * `<algorithm>`, characters other than letters, digits and `-` become `_`; in the base64 hash,
@@ -81,7 +83,8 @@ extern "C"
   /**
    * @brief Write @p target_path from @p source_path and the delta at @p delta_path.
    *
-   * @param[in] source_path Source file, in the source cache.
+   * @param[in] source_path Source file, in the source cache; kept there, even by other handlers
+   * sharing it, until the build ends.
    * @param[in] delta_path Downloaded delta file.
    * @param[in] target_path File to write: an empty file created for this build in the source cache
    * directory, which the handler then moves to the path #az_iot_su_delta_get_file_path_fn gives.
@@ -131,6 +134,10 @@ extern "C"
       char build_path[AZ_IOT_SU_DELTA_MAX_PATH_SIZE];
       /** Descriptor holding the lock on build_path while it is not empty. */
       int build_descriptor;
+      /** The source of the chosen build is pinned through source_descriptor. */
+      bool source_pinned;
+      /** Descriptor holding a shared lock on the chosen source while source_pinned. */
+      int source_descriptor;
       /** The default processor's library (dlopen()) and functions, or NULL. */
       void* library;
       void* create_session;

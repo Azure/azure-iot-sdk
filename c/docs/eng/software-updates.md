@@ -1788,7 +1788,7 @@ or later. ESP32 and Windows register no handler: their files are always download
 
 | Test | What |
 |---|---|
-| `az_iot_tests_su_delta` | Unit: cache path encoding, lookup, store and eviction; the rebuild through a fake `apply_delta_fn`, with partial target cleanup; a missing library or symbol declines. |
+| `az_iot_tests_su_delta` | Unit: cache path encoding, lookup, store and eviction; the rebuild through a fake `apply_delta_fn` and the samples' `simulate_delta_apply`, with partial target cleanup; handlers sharing a cache keep their own build files and do not evict a source being built from; a missing library or symbol declines. |
 | `az_iot_tests_su_delta_interop` | The real `libadudiffapi.so` rebuilds the committed `target.swu` from `source.swu` and `delta.bin` (SHA-256 checked); a truncated delta fails and leaves no target. |
 
 - The vectors are in `tests/unit/data/su_delta/`, with `SHA256SUMS`. They are regenerated, byte for

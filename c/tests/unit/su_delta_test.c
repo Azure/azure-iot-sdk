@@ -837,6 +837,87 @@ static void test_build_files_of_handlers_sharing_the_cache_are_separate(void** s
   az_iot_su_delta_handler_deinit(&handlers[1]);
 }
 
+/* A source being built from is locked: another handler's workflow success, between the apply
+ * calls, does not remove it; once the build ends, the next one does. */
+static void test_source_of_a_build_in_progress_survives_other_workflow_success(void** state)
+{
+  (void)state;
+  fake_processor fake = { 0 };
+  fake.results[0] = AZ_IOT_SU_RESULT_IN_PROGRESS;
+  az_iot_su_delta_handler handler;
+  init_handler(&handler, &fake);
+  az_iot_su_download_handler download_handler
+      = az_iot_su_delta_handler_get_download_handler(&handler);
+  seed_source();
+  az_iot_su_client_update_manifest_file related_files[1];
+  related_files[0] = make_file("delta", "AA==", 5, SOURCE_PROPERTIES(SOURCE_HASH));
+  az_iot_su_client_update_manifest manifest;
+  make_manifest(&manifest, related_files, 1);
+  choose(&download_handler, &manifest);
+  write_file(FILES_DIRECTORY "/0-delta", "DELTA", 5);
+  assert_int_equal(
+      download_handler.build_file_from_related_fn(
+          &manifest.files[0], &related_files[0], 0, download_handler.user_ctx),
+      AZ_IOT_SU_RESULT_IN_PROGRESS);
+
+  fake_processor other_fake = { 0 };
+  az_iot_su_delta_handler other_handler;
+  init_handler(&other_handler, &other_fake);
+  az_iot_su_download_handler other = az_iot_su_delta_handler_get_download_handler(&other_handler);
+  az_iot_su_client_update_manifest other_manifest;
+  make_manifest(&other_manifest, NULL, 0);
+  write_file(FILES_DIRECTORY "/0-target", "TARGET", 6);
+  other.workflow_succeeded_fn(&other_manifest, other.user_ctx);
+  assert_true(file_exists(TARGET_CACHE_FILE));
+  assert_true(file_exists(SOURCE_CACHE_FILE));
+
+  assert_int_equal(
+      download_handler.build_file_from_related_fn(
+          &manifest.files[0], &related_files[0], 0, download_handler.user_ctx),
+      AZ_IOT_SU_RESULT_SUCCESS);
+  char target[32] = { 0 };
+  assert_int_equal(read_file(FILES_DIRECTORY "/0-target", target, sizeof(target)), 11);
+  assert_string_equal(target, "SOURCEDELTA");
+  other.workflow_succeeded_fn(&other_manifest, other.user_ctx);
+  assert_false(file_exists(SOURCE_CACHE_FILE));
+  az_iot_su_delta_handler_deinit(&handler);
+  az_iot_su_delta_handler_deinit(&other_handler);
+}
+
+/* A source being removed is not chosen; a source chosen but never built from is unlocked when
+ * the workflow succeeds, so that success removes it. */
+static void test_source_lock_follows_the_workflow(void** state)
+{
+  (void)state;
+  fake_processor fake = { 0 };
+  az_iot_su_delta_handler handler;
+  init_handler(&handler, &fake);
+  az_iot_su_download_handler download_handler
+      = az_iot_su_delta_handler_get_download_handler(&handler);
+  seed_source();
+  az_iot_su_client_update_manifest_file related_files[1];
+  related_files[0] = make_file("delta", "AA==", 5, SOURCE_PROPERTIES(SOURCE_HASH));
+  az_iot_su_client_update_manifest manifest;
+  make_manifest(&manifest, related_files, 1);
+
+  int removing = open(SOURCE_CACHE_FILE, O_RDONLY);
+  assert_true(removing >= 0);
+  assert_int_equal(flock(removing, LOCK_EX), 0);
+  uint32_t chosen = 99;
+  assert_int_equal(
+      download_handler.choose_related_file_fn(
+          &manifest, &manifest.files[0], &chosen, download_handler.user_ctx),
+      AZ_IOT_SU_RESULT_FAILURE);
+  (void)close(removing);
+
+  choose(&download_handler, &manifest);
+  write_file(FILES_DIRECTORY "/0-target", "TARGET", 6);
+  download_handler.workflow_succeeded_fn(&manifest, download_handler.user_ctx);
+  assert_true(file_exists(TARGET_CACHE_FILE));
+  assert_false(file_exists(SOURCE_CACHE_FILE));
+  az_iot_su_delta_handler_deinit(&handler);
+}
+
 /* Choosing again abandons a build still in progress: its file is removed even when the new choice
  * declines, so no build is ever called to release it. */
 static void test_choosing_again_removes_an_unfinished_build(void** state)
@@ -1460,6 +1541,12 @@ int main(void)
         test_choosing_again_removes_an_unfinished_build,
         setup_work_directory,
         teardown_work_directory),
+    cmocka_unit_test_setup_teardown(
+        test_source_of_a_build_in_progress_survives_other_workflow_success,
+        setup_work_directory,
+        teardown_work_directory),
+    cmocka_unit_test_setup_teardown(
+        test_source_lock_follows_the_workflow, setup_work_directory, teardown_work_directory),
     cmocka_unit_test_setup_teardown(
         test_sample_processor_output_survives_other_build_starts,
         setup_work_directory,
