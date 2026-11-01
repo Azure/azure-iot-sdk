@@ -17,6 +17,8 @@
  * it. When the test is done, call az_iot_mock_mqtt_factory_destroy() to free
  * everything (any client still alive is destroyed first).
  *
+ * az_iot_mock_mqtt_get_adapter() builds the same clients in application memory instead.
+ *
  * Not thread-safe; tests are single-threaded.
  */
 #ifndef AZ_IOT_MOCK_MQTT_IFACE_H
@@ -156,6 +158,45 @@ extern "C"
 
   /* Cast an az_iot_mqtt_client to its mock backing if it came from this factory. */
   az_iot_mock_mqtt_client* az_iot_mock_mqtt_client_from(az_iot_mqtt_client* c);
+
+  /**
+   * @brief The mock as an az_iot_mqtt_adapter: init() builds a mock client inside the workspace
+   * (16-byte aligned, no heap) and reports AZ_IOT_ERR_NOT_ENOUGH_SPACE when it does not fit. Its
+   * destroy() frees and wipes nothing, so a test can see what the core wipes.
+   */
+  const az_iot_mqtt_adapter* az_iot_mock_mqtt_get_adapter(void);
+
+  /** @brief The newest client the mock adapter built that is not destroyed yet, or NULL. */
+  az_iot_mock_mqtt_client* az_iot_mock_mqtt_adapter_last_client(void);
+
+/** @brief init() calls whose requested version the mock adapter records. */
+#define AZ_IOT_MOCK_MQTT_ADAPTER_VERSION_HISTORY 8u
+
+  /** @brief Counts of the mock adapter's clients since the last reset. */
+  typedef struct az_iot_mock_mqtt_adapter_stats
+  {
+    size_t built; /**< Built by init(). */
+    size_t destroyed; /**< Destroyed by destroy(). */
+    size_t live; /**< Built and not destroyed. */
+    size_t max_live; /**< Most live at once. */
+  } az_iot_mock_mqtt_adapter_stats;
+
+  az_iot_mock_mqtt_adapter_stats az_iot_mock_mqtt_adapter_get_stats(void);
+
+  /** @brief Sets @p out_version to the MQTT version the @p index-th init() since the last reset
+   * requested (0: first); false past the calls made or the first
+   * #AZ_IOT_MOCK_MQTT_ADAPTER_VERSION_HISTORY. */
+  bool az_iot_mock_mqtt_adapter_get_requested_version(
+      size_t index,
+      az_iot_mqtt_version* out_version);
+
+  /** @brief Clears the stats, requested versions, last client and armed failure; call with no
+   * client of the adapter alive. */
+  void az_iot_mock_mqtt_adapter_reset(void);
+
+  /** @brief Arms a one-shot CONNECT failure with @p result on the next client the mock adapter
+   * builds, as az_iot_mock_mqtt_factory_fail_next_connect() does for a factory. */
+  void az_iot_mock_mqtt_adapter_fail_next_connect(az_iot_result result);
 
   /* Value of the User Property named `key` on a recorded call, or NULL if the
    * call did not carry one. */

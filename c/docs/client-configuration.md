@@ -179,6 +179,42 @@ Entry counts are run-time values in `az_iot_connection_client_options::limits`
 - Defining one of the former macros (`AZ_IOT_MAX_PENDING_PUBACKS`, `AZ_IOT_DPS_HOST_BUF`, ...)
   before including the header is a compile error.
 
+With `options.mqtt_adapter` set (for example `az_iot_az_mqtt_get_adapter()`), the client
+builds each session's MQTT client in `options.mqtt_workspace`, sized for `options.mqtt_limits`
+(see [Clients in application memory](#clients-in-application-memory)). NULL keeps the registered
+factories.
+
+- Size `mqtt_workspace` with the adapter's `get_workspace_size(&mqtt_limits)`
+  (`az_iot_az_mqtt_get_workspace_size()`, `az_iot_paho_get_workspace_size()`), or for a static
+  array with `AZ_IOT_AZ_MQTT_WORKSPACE_SIZE(...)` or `AZ_IOT_PAHO_WORKSPACE_SIZE`. Any alignment.
+- `init()` fails with `AZ_IOT_ERR_INVALID_ARG` when the limits are invalid (the adapter's size is
+  0) or the workspace is NULL, and with `AZ_IOT_ERR_NOT_ENOUGH_SPACE` when it is too small; the
+  last two log the size needed. `deinit()` wipes it.
+- `mqtt_workspace` and `workspace` must be disjoint (adjacent is fine): `init()` fails with
+  `AZ_IOT_ERR_INVALID_ARG` when they share a byte, before it changes the client.
+- The hub session resumes its MQTT session unless `session_continuity` is
+  `AZ_IOT_SESSION_CONTINUITY_CLEAN`. az_mqtt then needs a `message_store_size` of at least
+  `send_buffer_size` plus its 18-byte per-message overhead; with 0 its connect fails with
+  `AZ_IOT_ERR_NOT_SUPPORTED`.
+- It holds one MQTT client at a time. A provisioning session cannot start while the hub session's
+  client exists, nor the reverse: the start fails with `AZ_IOT_ERR_BUSY` and is reported and
+  retried like any failed start. Today only the software updates DPS channel holds the
+  provisioning session beside the hub session.
+
+```c
+/* The last argument bounds the TLS backend's state: 8 KB covers OpenSSL and mbedTLS; Schannel
+ * (Windows) needs about 197 KB. */
+static uint8_t mqtt_workspace[AZ_IOT_AZ_MQTT_WORKSPACE_SIZE(4096, 4096, 8, 8192, 4096, 8192)];
+opts.mqtt_adapter = az_iot_az_mqtt_get_adapter();
+opts.mqtt_limits = (az_iot_mqtt_limits){ .send_buffer_size = 4096,
+                                         .receive_buffer_size = 4096,
+                                         .max_in_flight_messages = 8,
+                                         .message_store_size = 8192,
+                                         .connect_strings_size = 4096 };
+opts.mqtt_workspace = mqtt_workspace;
+opts.mqtt_workspace_size = sizeof(mqtt_workspace);
+```
+
 The defaults are compile-time values
 ([az_iot_connection_client_config.h](../inc/azure/iot/az_iot_connection_client_config.h)):
 `AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_<LIMIT>`, for example
