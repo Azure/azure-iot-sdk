@@ -31,7 +31,6 @@
  *   AZ_IOT_SU_POLL_INTERVAL_S      seconds between checks (default 14400)
  *   AZ_IOT_SU_LOG_LEVEL            trace|debug|info|warn|error|off
  */
-#include <errno.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -161,15 +160,15 @@ static int32_t apply_update_step(
  *
  * Written with sample_file_write_atomically(), so a crash mid-write leaves the
  * previous record intact and two runs never share a temporary file. A
- * zero-length write erases the record: the workflow ended and must not be
- * resumed.
+ * zero-length write erases the record with sample_file_remove_durably(): the
+ * workflow ended and must not be resumed, even after a power loss.
  */
 static int32_t save_update_workflow(const uint8_t* blob, size_t len, void* user_ctx)
 {
   update_hooks_context* context = (update_hooks_context*)user_ctx;
   if (len == 0)
   {
-    if (remove(context->state_file) != 0 && errno != ENOENT)
+    if (!sample_file_remove_durably(context->state_file))
     {
       return AZ_IOT_SU_RESULT_FAILURE;
     }

@@ -140,6 +140,39 @@ static void file_replace_reports_a_done_rename_when_the_directory_sync_fails(voi
 #endif
 }
 
+static void file_remove_durably_removes_and_accepts_a_missing_file(void** state)
+{
+  (void)state;
+  write_text_file(DESTINATION_FILE, "old");
+
+  assert_true(sample_file_remove_durably(DESTINATION_FILE));
+  assert_null(sample_file_open_read_no_follow(DESTINATION_FILE));
+  assert_true(sample_file_remove_durably(DESTINATION_FILE));
+  assert_false(sample_file_remove_durably(NULL));
+#if !defined(_WIN32)
+  /* Write and search but no read: the removal succeeds, the directory sync does not. */
+  assert_int_equal(mkdir(DIRECTORY, 0700), 0);
+  write_text_file(DIRECTORY "/" DESTINATION_FILE, "old");
+  assert_int_equal(chmod(DIRECTORY, 0300), 0);
+  bool removed = sample_file_remove_durably(DIRECTORY "/" DESTINATION_FILE);
+  assert_int_equal(chmod(DIRECTORY, 0700), 0);
+  assert_true(removed);
+  assert_null(sample_file_open_read_no_follow(DIRECTORY "/" DESTINATION_FILE));
+#endif
+}
+
+static void file_remove_durably_fails_when_the_path_cannot_be_removed(void** state)
+{
+  (void)state;
+#if !defined(_WIN32)
+  /* A directory that is not empty. */
+  assert_int_equal(mkdir(DIRECTORY, 0700), 0);
+  write_text_file(DIRECTORY "/" DESTINATION_FILE, "kept");
+  assert_false(sample_file_remove_durably(DIRECTORY));
+  assert_file_holds(DIRECTORY "/" DESTINATION_FILE, "kept");
+#endif
+}
+
 static void file_flush_to_storage_writes_through_the_buffer(void** state)
 {
   (void)state;
@@ -459,6 +492,10 @@ int main(void)
         file_replace_fails_without_a_source_and_keeps_the_destination, setup, teardown),
     cmocka_unit_test_setup_teardown(
         file_replace_reports_a_done_rename_when_the_directory_sync_fails, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        file_remove_durably_removes_and_accepts_a_missing_file, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        file_remove_durably_fails_when_the_path_cannot_be_removed, setup, teardown),
     cmocka_unit_test_setup_teardown(
         file_flush_to_storage_writes_through_the_buffer, setup, teardown),
     cmocka_unit_test_setup_teardown(file_open_private_creates_an_owner_only_file, setup, teardown),

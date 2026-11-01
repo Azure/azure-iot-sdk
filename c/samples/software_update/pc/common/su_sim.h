@@ -153,7 +153,7 @@ int32_t simulate_update_step_restore(
     void* user_ctx);
 
 /** @brief persist_workflow_state_fn: replaces state_file with the blob atomically and durably
- *  (sample_file_write_atomically()); @p len 0 removes it. */
+ *  (sample_file_write_atomically()); @p len 0 removes it durably (sample_file_remove_durably()). */
 int32_t save_update_workflow_to_file(const uint8_t* blob, size_t len, void* user_ctx);
 
 /** @brief load_workflow_state_fn: reads state_file; 1 when absent, larger than @p cap
