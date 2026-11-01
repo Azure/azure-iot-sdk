@@ -10,6 +10,9 @@
 
 #define _POSIX_C_SOURCE 200809L
 #define _DEFAULT_SOURCE /* flock() */
+#if defined(__APPLE__)
+#define _DARWIN_C_SOURCE /* flock(), hidden by _POSIX_C_SOURCE alone */
+#endif
 
 #include "az_iot_su_delta.h"
 #include "az_iot_su_delta_internal.h"
@@ -716,6 +719,11 @@ static int32_t su_delta_build_file_from_related(
 static bool su_delta_replace_cache_entry(const char* file_path, const char* cache_path)
 {
   int existing = open(cache_path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
+  /* Only a missing entry or a link is replaced unlocked: another may be pinned. */
+  if (existing < 0 && errno != ENOENT && errno != ELOOP)
+  {
+    return false;
+  }
   if (existing >= 0)
   {
     struct stat info;
@@ -844,17 +852,21 @@ static const az_iot_su_client_update_manifest_file_hash* su_delta_find_sha256_ha
 }
 
 /**
- * @brief Find the file slot download_fn got @p file in: its position in the last step that
- * uses it.
+ * @brief Write where the application stores @p file, at its slot in the last step that lists it.
  *
- * @return true when a step uses @p file.
+ * @param[out] out_download_order When it is downloaded relative to the other files: later files
+ * have a greater order.
  */
-static bool su_delta_find_file_slot(
+static bool su_delta_get_stored_file_path(
+    const az_iot_su_delta_handler* handler,
     const az_iot_su_client_update_manifest* manifest,
     const az_iot_su_client_update_manifest_file* file,
-    uint32_t* out_file_slot)
+    uint32_t* out_download_order,
+    char* path,
+    size_t path_size)
 {
   bool found = false;
+  uint32_t file_slot = 0;
   for (uint32_t step = 0; step < manifest->instructions.steps_count; step++)
   {
     const az_iot_su_client_update_manifest_instructions_step* instructions
@@ -863,12 +875,45 @@ static bool su_delta_find_file_slot(
     {
       if (az_iot_json_string_equals(instructions->files[slot], file->id, true))
       {
-        *out_file_slot = slot;
+        file_slot = slot;
+        *out_download_order = step * AZ_IOT_SU_MAX_FILE_COUNT_PER_STEP + slot;
         found = true;
       }
     }
   }
-  return found;
+  const az_iot_su_delta_handler_options* options = &handler->_internal.options;
+  return found
+      && options->get_file_path_fn(file, file_slot, path, path_size, options->user_ctx)
+      == AZ_IOT_SU_RESULT_SUCCESS;
+}
+
+/**
+ * @brief Whether a file of @p manifest downloaded after the one at @p download_order is stored at
+ * @p path too, e.g. at the same slot of a later step with storage by slot only, replacing it.
+ */
+static bool su_delta_is_stored_file_path_reused(
+    const az_iot_su_delta_handler* handler,
+    const az_iot_su_client_update_manifest* manifest,
+    uint32_t download_order,
+    const char* path)
+{
+  for (uint32_t i = 0; i < manifest->files_count; i++)
+  {
+    char other_path[AZ_IOT_SU_DELTA_MAX_PATH_SIZE];
+    uint32_t other_download_order = 0;
+    if (su_delta_get_stored_file_path(
+            handler,
+            manifest,
+            &manifest->files[i],
+            &other_download_order,
+            other_path,
+            sizeof(other_path))
+        && other_download_order > download_order && strcmp(other_path, path) == 0)
+    {
+      return true;
+    }
+  }
+  return false;
 }
 
 /** @brief Whether @p name is the cache file name of a file of @p manifest. */
@@ -932,7 +977,6 @@ static void su_delta_workflow_succeeded(
   }
   /* The workflow is over: a source chosen but not built from is no longer pinned. */
   su_delta_end_build(handler, false);
-  const az_iot_su_delta_handler_options* options = &handler->_internal.options;
   char provider_directory[AZ_IOT_SU_DELTA_MAX_PROVIDER_SIZE];
   char directory[AZ_IOT_SU_DELTA_MAX_PATH_SIZE];
   if (!su_delta_get_provider_directory(
@@ -983,11 +1027,10 @@ static void su_delta_workflow_succeeded(
     /* The application's file, verified by the client, refreshes the entry: one of the same size
      * may hold other bytes, and a link is never built from. */
     struct stat info;
-    uint32_t file_slot = 0;
-    if (su_delta_find_file_slot(manifest, file, &file_slot)
-        && options->get_file_path_fn(
-               file, file_slot, file_path, sizeof(file_path), options->user_ctx)
-            == AZ_IOT_SU_RESULT_SUCCESS
+    uint32_t download_order = 0;
+    if (su_delta_get_stored_file_path(
+            handler, manifest, file, &download_order, file_path, sizeof(file_path))
+        && !su_delta_is_stored_file_path_reused(handler, manifest, download_order, file_path)
         && lstat(file_path, &info) == 0 && S_ISREG(info.st_mode)
         && su_delta_replace_cache_entry(file_path, cache_path))
     {

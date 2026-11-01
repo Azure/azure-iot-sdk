@@ -13,6 +13,9 @@
  */
 
 #define _POSIX_C_SOURCE 200809L
+#if defined(__APPLE__)
+#define _DARWIN_C_SOURCE /* flock(), hidden by _POSIX_C_SOURCE alone */
+#endif
 
 #include <stdarg.h>
 #include <stddef.h>
@@ -1271,7 +1274,7 @@ static void test_workflow_succeeded_keeps_latest_update_per_provider(void** stat
   az_iot_su_client_update_manifest manifest;
   make_manifest(&manifest, NULL, 0);
   manifest.files[0] = make_file("target", TARGET_HASH, 6, NULL);
-#if AZ_IOT_SU_MAX_FILE_COUNT > 1
+#if AZ_IOT_SU_MAX_FILE_COUNT_PER_STEP > 1
   manifest.files[1] = make_file("no-hash", NULL, 2, NULL);
   manifest.files_count = 2;
   write_file(FILES_DIRECTORY "/1-no-hash", "NO", 2);
@@ -1288,7 +1291,7 @@ static void test_workflow_succeeded_keeps_latest_update_per_provider(void** stat
   assert_false(file_exists(SOURCE_CACHE_FILE));
   assert_false(file_exists(PROVIDER_DIRECTORY "/sha256-old.tmp"));
   assert_true(file_exists(CACHE_DIRECTORY "/Other/sha256-AA_3D_3D"));
-#if AZ_IOT_SU_MAX_FILE_COUNT > 1
+#if AZ_IOT_SU_MAX_FILE_COUNT_PER_STEP > 1
   assert_true(file_exists(FILES_DIRECTORY "/1-no-hash"));
 #endif
 
@@ -1339,6 +1342,16 @@ static void test_workflow_succeeded_refreshes_entries_not_built_from(void** stat
   download_handler.workflow_succeeded_fn(&manifest, download_handler.user_ctx);
   assert_int_equal(read_file(TARGET_CACHE_FILE, content, sizeof(content)), 6);
   assert_string_equal(content, "TARGET");
+
+  /* An entry that cannot be opened to check its lock is kept. Root opens any file. */
+  if (geteuid() != 0)
+  {
+    assert_int_equal(chmod(TARGET_CACHE_FILE, 0), 0);
+    write_file(FILES_DIRECTORY "/0-target", "TARGET", 6);
+    download_handler.workflow_succeeded_fn(&manifest, download_handler.user_ctx);
+    assert_true(file_exists(FILES_DIRECTORY "/0-target"));
+    assert_int_equal(chmod(TARGET_CACHE_FILE, 0600), 0);
+  }
   az_iot_su_delta_handler_deinit(&handler);
 }
 
@@ -1498,6 +1511,43 @@ static void test_workflow_succeeded_finds_files_by_step_slot(void** state)
   download_handler.workflow_succeeded_fn(&manifest, download_handler.user_ctx);
   assert_true(file_exists(TARGET_CACHE_FILE));
   assert_false(file_exists(FILES_DIRECTORY "/0-target"));
+}
+
+/* With storage by slot only, steps reusing a slot share a path: it holds the last step's file,
+ * which alone is cached, whatever the manifest's file order. */
+static void test_workflow_succeeded_caches_the_last_file_at_a_shared_path(void** state)
+{
+  (void)state;
+  az_iot_su_delta_handler_options options = az_iot_su_delta_handler_options_default();
+  options.source_cache_directory = CACHE_DIRECTORY;
+  options.get_file_path_fn = get_file_path_by_index;
+  az_iot_su_delta_handler handler;
+  assert_int_equal(az_iot_su_delta_handler_init(&handler, &options), AZ_IOT_OK);
+  az_iot_su_download_handler download_handler
+      = az_iot_su_delta_handler_get_download_handler(&handler);
+
+  for (uint32_t last = 0; last < 2; last++)
+  {
+    az_iot_su_client_update_manifest manifest;
+    make_manifest(&manifest, NULL, 0);
+    manifest.files[last] = make_file("second", TARGET_HASH, 6, NULL);
+    manifest.files[1 - last] = make_file("first", SOURCE_HASH, 6, NULL);
+    manifest.files_count = 2;
+    manifest.instructions.steps_count = 2;
+    manifest.instructions.steps[0].files[0] = AZ_SPAN_FROM_STR("first");
+    manifest.instructions.steps[0].files_count = 1;
+    manifest.instructions.steps[1].files[0] = AZ_SPAN_FROM_STR("second");
+    manifest.instructions.steps[1].files_count = 1;
+    write_file(FILES_DIRECTORY "/0", "SECOND", 6);
+
+    download_handler.workflow_succeeded_fn(&manifest, download_handler.user_ctx);
+    char content[16] = { 0 };
+    assert_int_equal(read_file(TARGET_CACHE_FILE, content, sizeof(content)), 6);
+    assert_string_equal(content, "SECOND");
+    assert_false(file_exists(SOURCE_CACHE_FILE));
+    assert_int_equal(unlink(TARGET_CACHE_FILE), 0);
+  }
+  az_iot_su_delta_handler_deinit(&handler);
 }
 #endif
 
@@ -1791,6 +1841,10 @@ int main(void)
 #if AZ_IOT_SU_MAX_FILE_COUNT > 1 && AZ_IOT_SU_MAX_STEP_COUNT > 1
     cmocka_unit_test_setup_teardown(
         test_workflow_succeeded_finds_files_by_step_slot,
+        setup_work_directory,
+        teardown_work_directory),
+    cmocka_unit_test_setup_teardown(
+        test_workflow_succeeded_caches_the_last_file_at_a_shared_path,
         setup_work_directory,
         teardown_work_directory),
 #endif
