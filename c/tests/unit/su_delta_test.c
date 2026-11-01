@@ -1252,6 +1252,36 @@ static void test_workflow_succeeded_keeps_latest_update_per_provider(void** stat
   assert_true(file_exists(FILES_DIRECTORY "/0-target"));
 }
 
+/* A cache entry that is a link, even to a file of the right size, is replaced by the update's
+ * file; the link's target is kept. */
+static void test_workflow_succeeded_replaces_a_cache_link(void** state)
+{
+  (void)state;
+  fake_processor fake = { 0 };
+  az_iot_su_delta_handler handler;
+  init_handler(&handler, &fake);
+  az_iot_su_download_handler download_handler
+      = az_iot_su_delta_handler_get_download_handler(&handler);
+  seed_source();
+  write_file(FILES_DIRECTORY "/linked", "LINKED", 6);
+  assert_int_equal(symlink(FILES_DIRECTORY "/linked", TARGET_CACHE_FILE), 0);
+  az_iot_su_client_update_manifest manifest;
+  make_manifest(&manifest, NULL, 0);
+  write_file(FILES_DIRECTORY "/0-target", "TARGET", 6);
+
+  download_handler.workflow_succeeded_fn(&manifest, download_handler.user_ctx);
+  struct stat info;
+  assert_int_equal(lstat(TARGET_CACHE_FILE, &info), 0);
+  assert_true(S_ISREG(info.st_mode));
+  char content[16] = { 0 };
+  assert_int_equal(read_file(TARGET_CACHE_FILE, content, sizeof(content)), 6);
+  assert_string_equal(content, "TARGET");
+  memset(content, 0, sizeof(content));
+  assert_int_equal(read_file(FILES_DIRECTORY "/linked", content, sizeof(content)), 6);
+  assert_string_equal(content, "LINKED");
+  az_iot_su_delta_handler_deinit(&handler);
+}
+
 static void test_workflow_succeeded_keeps_cache_when_nothing_stored(void** state)
 {
   (void)state;
@@ -1641,6 +1671,10 @@ int main(void)
         test_build_fails_without_source_properties, setup_work_directory, teardown_work_directory),
     cmocka_unit_test_setup_teardown(
         test_workflow_succeeded_keeps_latest_update_per_provider,
+        setup_work_directory,
+        teardown_work_directory),
+    cmocka_unit_test_setup_teardown(
+        test_workflow_succeeded_replaces_a_cache_link,
         setup_work_directory,
         teardown_work_directory),
     cmocka_unit_test_setup_teardown(

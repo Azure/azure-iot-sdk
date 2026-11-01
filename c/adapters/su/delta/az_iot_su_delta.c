@@ -945,7 +945,8 @@ static void su_delta_workflow_succeeded(
       continue;
     }
     struct stat info;
-    if (stat(cache_path, &info) == 0 && S_ISREG(info.st_mode)
+    /* A link is replaced: choose_related_file_fn never builds from one. */
+    if (lstat(cache_path, &info) == 0 && S_ISREG(info.st_mode)
         && (int64_t)info.st_size == file->size_in_bytes)
     {
       cached_count++;
