@@ -424,6 +424,8 @@ extern "C"
      * AZ_IOT_IDENTITY_RECOVERY_REPROVISION,
      * az_iot_connection_client_request_reprovision()). A registration then
      * replaces iothub_hostname, device_id and the profile.
+     * az_iot_dps_assignment_invalidated_callback reports when they must not be
+     * restored again.
      */
     const char* iothub_hostname;
     /* Port for the HUB connect. 0 selects the default for `transport`: 8883 for
@@ -1245,7 +1247,8 @@ extern "C"
 
   /**
    * @brief A DPS assignment the client adopted. Persist it to connect straight
-   * to the hub after a restart; see docs/connecting.md.
+   * to the hub after a restart, and delete it on
+   * az_iot_dps_assignment_invalidated_callback; see docs/connecting.md.
    *
    * Every pointer is valid only during the callback; copy what must be kept.
    */
@@ -1279,6 +1282,39 @@ extern "C"
    */
   typedef void (
       *az_iot_dps_assignment_callback)(const az_iot_dps_assignment* assignment, void* user_ctx);
+
+  /**
+   * @brief Fired when the client decides the hub assignment it holds must not be
+   * used again. Delete a saved copy, so a restart registers with DPS instead of
+   * restoring it; see docs/connecting.md.
+   *
+   * The held assignment is opts.iothub_hostname, opts.device_id and
+   * opts.connection_profile, or the last one az_iot_dps_assignment_callback
+   * reported. With opts.dps configured, fired when:
+   * - a registration returns an assignment the client rejects: @p reason is
+   *   AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED, AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH
+   *   or the error that made it unusable;
+   * - the hub refuses the identity at CONNACK in
+   *   AZ_IOT_IDENTITY_RECOVERY_REPROVISION mode: AZ_IOT_ERR_IDENTITY_REJECTED;
+   * - dps.max_hub_connect_attempts_before_reprovision consecutive hub connects
+   *   fail: the last failure.
+   *
+   * Fired at most once per held assignment; an adopted assignment can be
+   * invalidated again. Not fired without a held hub (a first registration), nor
+   * for az_iot_connection_client_request_reprovision(), which the application
+   * decided. It reports a decision: the client registers with DPS next with or
+   * without it, and does not fall back to the invalidated hub, even across
+   * close() and open(), until an assignment is adopted. Attached feature clients
+   * are not affected.
+   *
+   * Runs at the end of az_iot_connection_client_do_work(), after that call's other
+   * callbacks. az_iot_connection_client_close(), _open() and _deinit() return
+   * AZ_IOT_ERR_BUSY from it.
+   *
+   * @param reason   Why the held assignment must not be used again.
+   * @param user_ctx As registered.
+   */
+  typedef void (*az_iot_dps_assignment_invalidated_callback)(az_iot_result reason, void* user_ctx);
 
   /* What a refused persistent subscription costs. Both values name a FAILURE:
    * the difference is blast radius, not whether the subscription mattered.
@@ -2150,6 +2186,13 @@ extern "C"
 
     az_iot_dps_assignment_callback assignment_cb;
     void* assignment_cb_ctx;
+    az_iot_dps_assignment_invalidated_callback assignment_invalidated_cb;
+    void* assignment_invalidated_cb_ctx;
+    /* The held assignment was invalidated; cleared when one is adopted. */
+    bool held_assignment_invalidated;
+    /* do_work() still owes assignment_invalidated_cb that invalidation. */
+    bool assignment_invalidation_pending;
+    az_iot_result assignment_invalidation_reason;
     /* A stored issued chain awaits adoption of its assignment: the other
      * generation cannot be required until then. */
     bool dps_cert_awaits_adoption;
@@ -2337,6 +2380,20 @@ extern "C"
   az_iot_result az_iot_connection_client_set_dps_assignment_callback(
       az_iot_connection_client* client,
       az_iot_dps_assignment_callback cb,
+      void* user_ctx);
+
+  /**
+   * @brief Registers a callback fired when the held DPS assignment must not be
+   * used again. Optional; NULL @p cb unregisters.
+   *
+   * @param[in] client   Client.
+   * @param[in] cb       See az_iot_dps_assignment_invalidated_callback.
+   * @param[in] user_ctx Passed to @p cb.
+   * @return AZ_IOT_OK; AZ_IOT_ERR_INVALID_ARG for a NULL client.
+   */
+  az_iot_result az_iot_connection_client_set_dps_assignment_invalidated_callback(
+      az_iot_connection_client* client,
+      az_iot_dps_assignment_invalidated_callback cb,
       void* user_ctx);
 
   /**

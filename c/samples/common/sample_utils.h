@@ -250,6 +250,19 @@ bool sample_file_replace(const char* source_path, const char* destination_path);
 bool sample_file_write_atomically(const char* path, const void* data, size_t size);
 
 /**
+ * @brief Delete @p path durably: the deletion survives a power loss. A missing
+ * file counts as deleted.
+ *
+ * On POSIX the directory is synced after the removal; if that fails, a line is
+ * written to stderr and true is still returned, since the file is already gone.
+ *
+ * @param[in] path File to delete.
+ * @return true when @p path no longer exists; false when it is still there,
+ * with errno set by remove().
+ */
+bool sample_file_delete(const char* path);
+
+/**
  * @brief Record SIGINT (Ctrl+C) and SIGTERM instead of ending the process, so a
  * sample's loop can stop and release its clients. Call once, from main().
  */
