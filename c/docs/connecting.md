@@ -282,6 +282,7 @@ source of a pass is refused (see Fallback); an mqttv5 DISCONNECT refusal applies
 | --- | --- | --- | --- |
 | `mode` | `RETRY_HUB` | `REPROVISION` | What the next attempt does; see below. |
 | `policy` | 5 min initial, 1 h cap, ±25%, no limit | uses `reconnection_policy` | Retry schedule after a refusal. |
+| `after_assignment_policy` | 5 s initial, 15 s cap, ±20%, 4 attempts | none: `policy` from the first refusal | Retry schedule after a refusal from a hub DPS assigned in this episode, until `HUB:CONNECTED`; then `policy`. |
 | `max_duration_seconds` | 0 | 0 | Stop this long after the first refusal; `0` = no limit. No attempt in the episode (hub connect, DPS registration or poll) starts at or after it, until `HUB:CONNECTED`. Recovery stops as soon as the next attempt could not start in time, so the fault may come before the duration ends. Not kept across restarts. |
 
 | `mode` | Next attempt after a refusal |
@@ -293,6 +294,10 @@ source of a pass is refused (see Fallback); an mqttv5 DISCONNECT refusal applies
 - The schedule is separate from the reconnection ladders, and DPS registrations do not reset it.
   Only `HUB:CONNECTED`, `open()` and `close()` do. So repeated DPS-accept / hub-reject cycles
   still back off and stop at the policy's `max_attempts`.
+- A hub DPS has just assigned may refuse the device until the new registration reaches it. So
+  after a DPS assignment, refusals are first retried on `after_assignment_policy` (by default
+  4 attempts within about a minute), then on `policy`. Its attempts are spent once per episode:
+  DPS registrations do not restore them. `mode` still decides where each attempt goes.
 - When a limit is reached the client goes to `FAULTED` with the refusal as `reason`, on the HUB scope
   and, if a re-registration was pending, on the DPS scope as well.
 - With `reconnection_policy` disabled, the first mqttv5 DISCONNECT refusal faults, as does the
@@ -501,11 +506,16 @@ copts.trusted_ca.path = "ca.pem";         /* server trust, any credential */
   `token_lifetime_seconds` (key-signed, default one hour) or of the supplied `lifetime_seconds`,
   by the monotonic clock or Unix time, whichever comes first (the former may stop in suspend).
   MQTT 3.1.1 cannot re-authenticate a live session, so the SDK
-  disconnects and reconnects at once, with or without a `reconnection_policy`: `RETRY_PENDING`,
+  ends it and reconnects at once, with or without a `reconnection_policy`: `RETRY_PENDING`,
   `SETTING_UP`, `CONNECTING`, `CONNECTED`, each with `is_credential_renewal` and reason
-  `AZ_IOT_OK`. Publishes awaiting a PUBACK complete with `AZ_IOT_ERR_NOT_CONNECTED`. A failed
+  `AZ_IOT_OK`. Before a hub session's DISCONNECT, its deliveries settle for up to 5 s (not past the
+  token's expiry by either clock): publishes awaiting a PUBACK, and SDK requests awaiting a
+  response. Meanwhile a new QoS 1 publish returns `AZ_IOT_ERR_BUSY` (QoS 0 is sent), and once the
+  DISCONNECT is sent any publish returns `AZ_IOT_ERR_NOT_CONNECTED`. Publishes still awaiting a
+  PUBACK then complete with `AZ_IOT_ERR_NOT_CONNECTED`. A failed
   reconnect is an ordinary failure (fallback, policy). A provisioning session kept open without a
-  registration (`provision_only`, or held by a feature client) is renewed the same way, reporting
+  registration (`provision_only`, or held by a feature client) is also ended and reconnected, but
+  at once: nothing settles before its DISCONNECT. It reports
   `DISCONNECTING`, `SETTING_UP`, `CONNECTING`, `CONNECTED`, each flagged; its feature clients see
   `DISCONNECTING` as for any loss of the session. A registration in progress is not interrupted.
 - **Multiple certificates.** `load()` takes an index: certificate 0, 1, ... of the role, until

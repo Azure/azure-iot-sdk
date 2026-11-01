@@ -368,7 +368,7 @@ script as `E2E_MQTTV5_SHARED_IOTHUB_CS`, as the secret of that name holds `iothu
 workflow; nightly; manual. Pull requests from forks and from Dependabot skip.
 
 > **Software updates e2e** runs in its own workflow
-> ([`ci-c-e2e-adu.yml`](../../../.github/workflows/ci-c-e2e-adu.yml), Linux) on the same shared mqttv5
+> ([`ci-c-e2e-adu.yml`](../../../.github/workflows/ci-c-e2e-adu.yml), Linux and Windows) on the same shared mqttv5
 > environment and triggers. See [Software updates e2e](#software-updates-e2e).
 
 ---
@@ -402,7 +402,7 @@ runs it all in an ESP-IDF environment with QEMU, a host compiler and OpenSSL hea
 3. builds and runs the test, booting the firmware with
    [`eng/esp-idf-qemu.sh`](../../eng/esp-idf-qemu.sh) `--run`.
 
-CI: job `esp32-qemu` in `ci-c-e2e.yml`. It runs esp32 and esp32c3 in `espressif/idf:v6.0`, with
+CI: job `esp32-qemu` in `ci-c-e2e.yml`. It runs esp32 and esp32c3 in `espressif/idf:v6.1`, with
 devices 12 and 13 issued by `e2e-shared-device.ps1`. It uses the shared environment on every run,
 push and nightly included: the per-run enrollments' RSA-4096 keys exceed DS's 3072 bits, while the
 shared group CA issues RSA-2048. Without the shared environment's secrets, the job fails.
@@ -458,10 +458,13 @@ CI ([`ci-c-e2e-adu.yml`](../../../.github/workflows/ci-c-e2e-adu.yml)) runs on t
 environment, whose ADR namespace is linked to a Device Update instance, on pull requests touching
 core, Software Update or adapter code, the e2e harness or the workflow; nightly; manual. Pull requests
 from forks and from Dependabot skip. Scheduled and manual runs first run the namespace repair
-(`ci-c-e2e-mqttv5-adr-namespace.yml`), which also restores the Software Update link. One job then
-ensures the standing offers (`New-SuE2EOffers -RunId "s$(Get-SuE2EFixtureTag)" -Reuse`; seconds once
-staged), issues a new device per suite execution (4: each suite on each adapter) from the enrollment
-group's CA (`e2e-shared-device.ps1`), runs the suites, then checks the offer devices' job results.
+(`ci-c-e2e-mqttv5-adr-namespace.yml`), which also restores the Software Update link. The `offers`
+job then ensures the standing offers (`New-SuE2EOffers -RunId "s$(Get-SuE2EFixtureTag)" -Reuse`;
+seconds once staged) and passes their state on. The `e2e-su` job, on Linux and on Windows (libcurl
+from [`install-curl-windows`](../../../.github/actions/install-curl-windows/action.yml)), sets the
+offer variables (`Export-SuE2EOfferVariables`), issues a new device per suite execution (4: each
+suite on each adapter) from the enrollment group's CA (`e2e-shared-device.ps1`), runs the suites,
+then checks the offer devices' job results.
 Nothing is deleted per run; offer sets staged by older fixture code are left in place. Inputs:
 variables `E2E_MQTTV5_SHARED_SUBSCRIPTION_ID`, `_RESOURCE_GROUP`, `_ADR_NAMESPACE`, `_ID_SCOPE`,
 `_DPS_HOST`, `_LOCATION`, `_SU_ENDPOINT`, `_SU_STORAGE_ACCOUNT`, `_SU_STORAGE_CONTAINER`, and
@@ -495,7 +498,7 @@ Schannel), on every pull request and main run of its workflow.
 | --- | --- |
 | `az_iot_tests_e2e_custody`, `az_iot_tests_e2e_mqttv5_custody` | The device key is in a PKCS#11 token (SoftHSM2) reached through the OpenSSL pkcs11 provider. The provider has no MSVC build (it needs a POSIX `dl` library) and the runner's OpenSSL is an MSVC build. az_mqtt on Windows uses Schannel, which takes no key references. |
 | `az_iot_tests_e2e_amqp_transport_sigpipe` | Tests SIGPIPE, which Windows does not have. |
-| `az_iot_tests_e2e_su`, `az_iot_tests_e2e_su_offer` (`ci-c-e2e-adu`) | Not built on Windows yet. |
+| File upload sample run (`ci-c-e2e`, built on Windows) | The sample passes its PEM client certificate to libcurl; libcurl over Schannel (the Windows build) takes client certificates from a certificate store or PFX only. |
 
 ---
 

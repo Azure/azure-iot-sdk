@@ -10,6 +10,11 @@
   `mqtt_adapter` is NULL). `init()` checks the workspace size; `deinit()` wipes it. The workspace
   holds one client at a time: a DPS or hub session start while the other session's client exists
   fails with `AZ_IOT_ERR_BUSY` and is retried.
+- SAS token renewal lets the session's deliveries settle before its DISCONNECT: publishes
+  awaiting a PUBACK and SDK requests awaiting a response (twin), for up to 5 s (not past the
+  token's expiry). Meanwhile a new QoS 1 publish returns `AZ_IOT_ERR_BUSY`; once the DISCONNECT
+  is sent, any publish returns `AZ_IOT_ERR_NOT_CONNECTED`. A renewal now takes up to that plus
+  the disconnect bound.
 - mqttv3 twin: requests go through the delivery tracker and time out:
   `az_iot_mqttv3_twin_client_set_request_timeout()` (default
   `AZ_IOT_MQTTV3_TWIN_REQUEST_TIMEOUT_MS_DEFAULT`, 60 s, from the call). A GET waits for a
@@ -37,6 +42,12 @@
   `az_iot_mqtt_event.reason_string` now also carries it on `AZ_IOT_MQTT_EVT_DISCONNECTED` (both
   adapters) and on a failed `AZ_IOT_MQTT_EVT_CONNECTED` (az_mqtt adapter; Paho does not expose it).
   The Paho adapter keeps 128 bytes of a DISCONNECT Reason String.
+- Connection client: a hub that refuses the device right after a DPS assignment, before the new
+  registration reaches it, is retried soon: `identity_recovery.after_assignment_policy` (default
+  `az_iot_connection_client_get_default_identity_recovery_after_assignment_policy()`: 5 s doubling
+  to 15 s, ±20%, 4 attempts) paces those refusals until `HUB:CONNECTED`, before the 5-minute
+  identity recovery policy. Zeroed, every refusal waits on `policy` as before. See
+  [Identity recovery](docs/connecting.md#identity-recovery).
 - Software updates: the update request, file URL, workflow and install-result types are the SDK's
   own; `az_iot_su.h` no longer includes azure-sdk-for-c's `az_iot_adu_client.h`, and an installed
   azure-sdk-for-c no longer needs the `AZ_IOT_SU_MAX_*` limits. Breaking:
@@ -45,7 +56,13 @@
   enumerator.
 - Software updates: `az_iot_su_download_handler` and `az_iot_su_client_config_options::download_handlers`
   register handlers that build a file from a related file (e.g. a delta), matched by the manifest's
-  `downloadHandler` id. `az_iot_su_client_init()` validates them; the client does not call them yet.
+  `downloadHandler` id. `az_iot_su_client_init()` validates them.
+- Software updates: the managed client builds each file that names a registered download handler
+  from the related file the handler chooses, verifying the related and the built file's SHA-256.
+  If that fails, the file is downloaded in full and its step reports `SUCCEEDED` with an
+  `AZ_IOT_SU_FACILITY_DELTA` (`0xA`) extended result code (`AZ_IOT_SU_DELTA_ERROR_*` sub-codes)
+  and short result details. `workflow_succeeded_fn` is called once a workflow with such a file
+  succeeds. `download_fn` and `read_file_fn` also get related files.
 - Software updates: the parsed manifest keeps each file's `mimeType`, `properties`,
   `downloadHandler` id and related files (`relatedFiles`, delta updates), and the request accepts
   their `fileUrls`. New `az_iot_su_limits::max_related_files` (default
@@ -368,6 +385,15 @@
 
 ### Bugs Fixed
 
+- ESP32 samples (`software_update/esp32`, `unified/esp32`) build with every ESP-IDF 6 release:
+  they pinned `espressif/ethernet_init` to `==1.2.0`, while ESP-IDF v6.0.2 and later need
+  `^1.3.0`. The version now comes from ESP-IDF's `protocol_examples_common`. CI builds the ESP32
+  samples and runs the ESP32 QEMU e2e with ESP-IDF v6.1, and builds both samples with v6.0.
+- ESP32 with the Digital Signature peripheral (esp32c3, esp32s3, esp32c6) connects with ESP-IDF
+  v6.0.1 and later: the `esp_secure_cert` certificate provider imports the DS key in the layout
+  those releases expect (an `esp_rsa_ds_opaque_key_t`; v6.0 keeps the old one), and az_mqtt's
+  mbedTLS backend wraps a PSA key that cannot export its public key (TF-PSA-Crypto 1.1, ESP-IDF
+  v6.0.3 and later) with the client certificate's public key.
 - Connection client, events drained in one `process_loop()`: a failed acknowledgement (PUBACK,
   SUBACK, UNSUBACK) becomes connection error detail only when it fails the connection. A presence,
   gated or DPS SUBACK drained after a session-ending event is ignored; a FAILS_SELF refusal is still

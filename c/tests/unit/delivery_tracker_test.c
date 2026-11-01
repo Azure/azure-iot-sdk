@@ -451,14 +451,45 @@ static void priority_zero_keeps_its_guaranteed_slot(void** state)
   assert_string_equal(last_publish(fx)->topic, "t/1");
 }
 
+/* While a SAS renewal settles, queued messages wait and the wait does not spin; a sent message
+ * awaiting its PUBACK is reported unsettled. */
+static void sends_wait_while_a_renewal_settles_and_sent_messages_are_unsettled(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  connect(fx);
+  (void)submit(fx, &k_resend, 1u, 60000u);
+  assert_int_equal(publish_count(fx), 1);
+  uint16_t const first = last_publish(fx)->packet_id;
+  assert_true(az_iot_test_has_unsettled_deliveries(&fx->connection));
+
+  az_iot_deadline__arm_after_ms(
+      &fx->connection.planned_hub_session_end.drain_deadline, az_iot_time_mono_ms(), 60000u);
+  (void)submit(fx, &k_resend, 2u, 60000u);
+  (void)az_iot_connection_client_do_work(&fx->connection, 30000u);
+  assert_int_equal(publish_count(fx), 1);
+  assert_true(
+      az_iot_mock_mqtt_client_last_of(fx->mock, AZ_IOT_MOCK_CALL_PROCESS_LOOP)->timeout_ms > 1000u);
+
+  assert_true(az_iot_mock_mqtt_client_inject_puback(fx->mock, first, AZ_IOT_OK));
+  az_iot_deadline__clear(&fx->connection.planned_hub_session_end.drain_deadline);
+  do_work(fx);
+  assert_int_equal(publish_count(fx), 2);
+  assert_true(
+      az_iot_mock_mqtt_client_inject_puback(fx->mock, last_publish(fx)->packet_id, AZ_IOT_OK));
+  do_work(fx);
+  assert_false(az_iot_test_has_unsettled_deliveries(&fx->connection));
+}
+
 /* Count an identity change and tell the IDENTITY_CHANGED observers in registration order, as
  * dps_apply_deferred() does. */
 static void signal_identity_change(fixture* fx)
 {
   ++fx->connection.identity_changes;
-  az_iot_connection_feature_event const event = {
-    AZ_IOT_CONNECTION_FEATURE_EVENT_IDENTITY_CHANGED, NULL, AZ_IOT_CONNECTION_SESSION_END_LOST, NULL
-  };
+  az_iot_connection_feature_event const event = { AZ_IOT_CONNECTION_FEATURE_EVENT_IDENTITY_CHANGED,
+                                                  NULL,
+                                                  AZ_IOT_CONNECTION_SESSION_END_LOST,
+                                                  NULL,
+                                                  NULL };
   for (size_t i = 0; i < fx->connection.opts.limits.max_feature_observers; ++i)
   {
     const az_iot_connection_feature_observer* observer = &fx->connection.feature_observers[i];
@@ -1080,6 +1111,8 @@ int main(void)
     cmocka_unit_test_setup_teardown(the_wait_ends_by_the_earliest_time_limit, setup, teardown),
     cmocka_unit_test_setup_teardown(a_time_limit_past_32_bit_milliseconds_is_kept, setup, teardown),
     cmocka_unit_test_setup_teardown(submit_at_uses_the_named_entry, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        sends_wait_while_a_renewal_settles_and_sent_messages_are_unsettled, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_requeued_message_does_not_wait_out_the_adapter, setup, teardown),
     cmocka_unit_test_setup_teardown(freed_capacity_sends_the_queued_message, setup, teardown),
