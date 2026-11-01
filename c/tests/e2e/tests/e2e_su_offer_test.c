@@ -201,6 +201,7 @@ typedef struct
   size_t related_file_downloads;
   size_t full_downloads;
   size_t builds_from_related_file;
+  size_t workflow_ends;
   size_t workflow_successes;
 } platform;
 
@@ -739,16 +740,21 @@ static int32_t recording_build_file_from_related(
   return result;
 }
 
-/** @brief Counts the successful workflows, then calls the handler under test. */
-static void recording_workflow_succeeded(
+/** @brief Counts the ended and the successful workflows, then calls the handler under test. */
+static void recording_workflow_ended(
     const az_iot_su_client_update_manifest* manifest,
+    az_iot_su_outcome outcome,
     void* ctx)
 {
   platform* p = (platform*)ctx;
-  p->workflow_successes++;
-  if (p->delta_handler.workflow_succeeded_fn != NULL)
+  p->workflow_ends++;
+  if (outcome == AZ_IOT_SU_OUTCOME_SUCCEEDED)
   {
-    p->delta_handler.workflow_succeeded_fn(manifest, p->delta_handler.user_ctx);
+    p->workflow_successes++;
+  }
+  if (p->delta_handler.workflow_ended_fn != NULL)
+  {
+    p->delta_handler.workflow_ended_fn(manifest, outcome, p->delta_handler.user_ctx);
   }
 }
 
@@ -1244,7 +1250,7 @@ static void fixture_open_delta_handler(fixture* fx, const fixture_options* o)
     .id = p->delta_handler.id,
     .choose_related_file_fn = recording_choose_related_file,
     .build_file_from_related_fn = recording_build_file_from_related,
-    .workflow_succeeded_fn = recording_workflow_succeeded,
+    .workflow_ended_fn = recording_workflow_ended,
     .user_ctx = p,
   };
 }
@@ -1776,6 +1782,7 @@ static void run_delta_offer(
   assert_int_equal(fx->plat.related_file_downloads, has_delta_source ? 1 : 0);
   assert_int_equal(fx->plat.builds_from_related_file, has_delta_source ? 1 : 0);
   assert_int_equal(fx->plat.full_downloads, has_delta_source ? 0 : 1);
+  assert_int_equal(fx->plat.workflow_ends, 1);
   assert_int_equal(fx->plat.workflow_successes, 1);
   assert_true(fx->plat.downloaded_size[0] > 0);
   assert_true(fx->plat.downloaded_size[0] == fx->plat.expected_size[0]);

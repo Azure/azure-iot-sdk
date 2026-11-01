@@ -2526,7 +2526,11 @@ extern "C"
    * rejects fails at once with the PUBACK status; one with no terminal response
    * within opts.csr_response_timeout_ms fails with AZ_IOT_ERR_TIMEOUT; one open
    * when the session ends fails with AZ_IOT_ERR_NOT_CONNECTED (resubmit it with
-   * the same  request_id once reconnected).
+   * the same request_id once reconnected). If the hub had accepted it, it may still
+   * be active there and the resubmission fails with service_code 409xxx: supersede
+   * it with @p replace, under a new request_id so a late response to it is ignored.
+   * A replacement failing with 412xxx found nothing left to replace: send it again
+   * without @p replace.
    *
    * @param request_id NULL to generate one, or a prior id to resubmit.
    * @param replace NULL, or "*" / a request id to supersede an active hub-side

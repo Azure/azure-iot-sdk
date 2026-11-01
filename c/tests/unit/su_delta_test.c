@@ -357,7 +357,7 @@ static void test_get_download_handler(void** state)
   assert_string_equal(download_handler.id, "microsoft/delta:1");
   assert_non_null(download_handler.choose_related_file_fn);
   assert_non_null(download_handler.build_file_from_related_fn);
-  assert_non_null(download_handler.workflow_succeeded_fn);
+  assert_non_null(download_handler.workflow_ended_fn);
   assert_ptr_equal(download_handler.user_ctx, &handler);
   assert_true(strlen(download_handler.id) < AZ_IOT_SU_MAX_DOWNLOAD_HANDLER_ID_SIZE);
 }
@@ -872,7 +872,7 @@ static void test_source_of_a_build_in_progress_survives_other_workflow_success(v
   az_iot_su_client_update_manifest other_manifest;
   make_manifest(&other_manifest, NULL, 0);
   write_file(FILES_DIRECTORY "/0-target", "TARGET", 6);
-  other.workflow_succeeded_fn(&other_manifest, other.user_ctx);
+  other.workflow_ended_fn(&other_manifest, AZ_IOT_SU_OUTCOME_SUCCEEDED, other.user_ctx);
   assert_true(file_exists(TARGET_CACHE_FILE));
   assert_true(file_exists(SOURCE_CACHE_FILE));
 
@@ -883,7 +883,7 @@ static void test_source_of_a_build_in_progress_survives_other_workflow_success(v
   char target[32] = { 0 };
   assert_int_equal(read_file(FILES_DIRECTORY "/0-target", target, sizeof(target)), 11);
   assert_string_equal(target, "SOURCEDELTA");
-  other.workflow_succeeded_fn(&other_manifest, other.user_ctx);
+  other.workflow_ended_fn(&other_manifest, AZ_IOT_SU_OUTCOME_SUCCEEDED, other.user_ctx);
   assert_false(file_exists(SOURCE_CACHE_FILE));
   az_iot_su_delta_handler_deinit(&handler);
   az_iot_su_delta_handler_deinit(&other_handler);
@@ -917,10 +917,61 @@ static void test_source_lock_follows_the_workflow(void** state)
 
   choose(&download_handler, &manifest);
   write_file(FILES_DIRECTORY "/0-target", "TARGET", 6);
-  download_handler.workflow_succeeded_fn(&manifest, download_handler.user_ctx);
+  download_handler.workflow_ended_fn(
+      &manifest, AZ_IOT_SU_OUTCOME_SUCCEEDED, download_handler.user_ctx);
   assert_true(file_exists(TARGET_CACHE_FILE));
   assert_false(file_exists(SOURCE_CACHE_FILE));
   az_iot_su_delta_handler_deinit(&handler);
+}
+
+/* A workflow ending otherwise than SUCCEEDED ends its build: the build file is removed and the
+ * source unpinned, so another handler's success evicts it; nothing is cached. */
+static void test_workflow_ended_without_success_ends_the_build(void** state)
+{
+  (void)state;
+  const az_iot_su_outcome outcomes[]
+      = { AZ_IOT_SU_OUTCOME_FAILED, AZ_IOT_SU_OUTCOME_CANCELED, AZ_IOT_SU_OUTCOME_SKIPPED };
+  for (size_t i = 0; i < sizeof(outcomes) / sizeof(outcomes[0]); i++)
+  {
+    fake_processor fake = { 0 };
+    fake.results[0] = AZ_IOT_SU_RESULT_IN_PROGRESS;
+    fake.write_partial_target = true;
+    az_iot_su_delta_handler handler;
+    init_handler(&handler, &fake);
+    az_iot_su_download_handler download_handler
+        = az_iot_su_delta_handler_get_download_handler(&handler);
+    seed_source();
+    az_iot_su_client_update_manifest_file related_files[1];
+    related_files[0] = make_file("delta", "AA==", 5, SOURCE_PROPERTIES(SOURCE_HASH));
+    az_iot_su_client_update_manifest manifest;
+    make_manifest(&manifest, related_files, 1);
+    choose(&download_handler, &manifest);
+    write_file(FILES_DIRECTORY "/0-delta", "DELTA", 5);
+    assert_int_equal(
+        download_handler.build_file_from_related_fn(
+            &manifest.files[0], &related_files[0], 0, download_handler.user_ctx),
+        AZ_IOT_SU_RESULT_IN_PROGRESS);
+    assert_int_equal(count_entries(CACHE_DIRECTORY, BUILD_FILE_PREFIX), 1);
+    write_file(FILES_DIRECTORY "/0-target", "TARGET", 6);
+
+    download_handler.workflow_ended_fn(&manifest, outcomes[i], download_handler.user_ctx);
+    assert_int_equal(count_entries(CACHE_DIRECTORY, BUILD_FILE_PREFIX), 0);
+    assert_false(file_exists(TARGET_CACHE_FILE));
+    assert_true(file_exists(SOURCE_CACHE_FILE));
+
+    fake_processor other_fake = { 0 };
+    az_iot_su_delta_handler other_handler;
+    init_handler(&other_handler, &other_fake);
+    az_iot_su_download_handler other = az_iot_su_delta_handler_get_download_handler(&other_handler);
+    az_iot_su_client_update_manifest other_manifest;
+    make_manifest(&other_manifest, NULL, 0);
+    other.workflow_ended_fn(&other_manifest, AZ_IOT_SU_OUTCOME_SUCCEEDED, other.user_ctx);
+    assert_true(file_exists(TARGET_CACHE_FILE));
+    assert_false(file_exists(SOURCE_CACHE_FILE));
+    az_iot_su_delta_handler_deinit(&handler);
+    az_iot_su_delta_handler_deinit(&other_handler);
+    assert_int_equal(unlink(TARGET_CACHE_FILE), 0);
+  }
 }
 
 /* An eviction that opened an entry another handler then removed and stored again keeps the new
@@ -959,7 +1010,8 @@ typedef struct succeeding_workflow
 static void* succeed_workflow(void* context)
 {
   const succeeding_workflow* workflow = (const succeeding_workflow*)context;
-  workflow->handler->workflow_succeeded_fn(workflow->manifest, workflow->handler->user_ctx);
+  workflow->handler->workflow_ended_fn(
+      workflow->manifest, AZ_IOT_SU_OUTCOME_SUCCEEDED, workflow->handler->user_ctx);
   return NULL;
 }
 
@@ -1282,7 +1334,8 @@ static void test_workflow_succeeded_keeps_latest_update_per_provider(void** stat
   list_files_in_one_step(&manifest);
   write_file(FILES_DIRECTORY "/0-target", "TARGET", 6);
 
-  download_handler.workflow_succeeded_fn(&manifest, download_handler.user_ctx);
+  download_handler.workflow_ended_fn(
+      &manifest, AZ_IOT_SU_OUTCOME_SUCCEEDED, download_handler.user_ctx);
 
   char content[16] = { 0 };
   assert_int_equal(read_file(TARGET_CACHE_FILE, content, sizeof(content)), 6);
@@ -1297,10 +1350,12 @@ static void test_workflow_succeeded_keeps_latest_update_per_provider(void** stat
 
   /* Again, e.g. after a reboot: without the application's file, the cached one stays; with it,
    * it refreshes the cached one. */
-  download_handler.workflow_succeeded_fn(&manifest, download_handler.user_ctx);
+  download_handler.workflow_ended_fn(
+      &manifest, AZ_IOT_SU_OUTCOME_SUCCEEDED, download_handler.user_ctx);
   assert_int_equal(read_file(TARGET_CACHE_FILE, content, sizeof(content)), 6);
   write_file(FILES_DIRECTORY "/0-target", "TARGET", 6);
-  download_handler.workflow_succeeded_fn(&manifest, download_handler.user_ctx);
+  download_handler.workflow_ended_fn(
+      &manifest, AZ_IOT_SU_OUTCOME_SUCCEEDED, download_handler.user_ctx);
   assert_int_equal(read_file(TARGET_CACHE_FILE, content, sizeof(content)), 6);
   assert_false(file_exists(FILES_DIRECTORY "/0-target"));
 }
@@ -1322,7 +1377,8 @@ static void test_workflow_succeeded_refreshes_entries_not_built_from(void** stat
 
   write_file(TARGET_CACHE_FILE, "WRONG!", 6);
   write_file(FILES_DIRECTORY "/0-target", "TARGET", 6);
-  download_handler.workflow_succeeded_fn(&manifest, download_handler.user_ctx);
+  download_handler.workflow_ended_fn(
+      &manifest, AZ_IOT_SU_OUTCOME_SUCCEEDED, download_handler.user_ctx);
   assert_int_equal(read_file(TARGET_CACHE_FILE, content, sizeof(content)), 6);
   assert_string_equal(content, "TARGET");
   assert_false(file_exists(FILES_DIRECTORY "/0-target"));
@@ -1332,14 +1388,16 @@ static void test_workflow_succeeded_refreshes_entries_not_built_from(void** stat
   assert_true(pinned >= 0);
   assert_int_equal(flock(pinned, LOCK_SH), 0);
   write_file(FILES_DIRECTORY "/0-target", "TARGET", 6);
-  download_handler.workflow_succeeded_fn(&manifest, download_handler.user_ctx);
+  download_handler.workflow_ended_fn(
+      &manifest, AZ_IOT_SU_OUTCOME_SUCCEEDED, download_handler.user_ctx);
   memset(content, 0, sizeof(content));
   assert_int_equal(read_file(TARGET_CACHE_FILE, content, sizeof(content)), 3);
   assert_string_equal(content, "OLD");
   assert_true(file_exists(FILES_DIRECTORY "/0-target"));
 
   assert_int_equal(close(pinned), 0);
-  download_handler.workflow_succeeded_fn(&manifest, download_handler.user_ctx);
+  download_handler.workflow_ended_fn(
+      &manifest, AZ_IOT_SU_OUTCOME_SUCCEEDED, download_handler.user_ctx);
   assert_int_equal(read_file(TARGET_CACHE_FILE, content, sizeof(content)), 6);
   assert_string_equal(content, "TARGET");
 
@@ -1348,7 +1406,8 @@ static void test_workflow_succeeded_refreshes_entries_not_built_from(void** stat
   {
     assert_int_equal(chmod(TARGET_CACHE_FILE, 0), 0);
     write_file(FILES_DIRECTORY "/0-target", "TARGET", 6);
-    download_handler.workflow_succeeded_fn(&manifest, download_handler.user_ctx);
+    download_handler.workflow_ended_fn(
+        &manifest, AZ_IOT_SU_OUTCOME_SUCCEEDED, download_handler.user_ctx);
     assert_true(file_exists(FILES_DIRECTORY "/0-target"));
     assert_int_equal(chmod(TARGET_CACHE_FILE, 0600), 0);
   }
@@ -1372,7 +1431,8 @@ static void test_workflow_succeeded_replaces_a_cache_link(void** state)
   make_manifest(&manifest, NULL, 0);
   write_file(FILES_DIRECTORY "/0-target", "TARGET", 6);
 
-  download_handler.workflow_succeeded_fn(&manifest, download_handler.user_ctx);
+  download_handler.workflow_ended_fn(
+      &manifest, AZ_IOT_SU_OUTCOME_SUCCEEDED, download_handler.user_ctx);
   struct stat info;
   assert_int_equal(lstat(TARGET_CACHE_FILE, &info), 0);
   assert_true(S_ISREG(info.st_mode));
@@ -1398,16 +1458,18 @@ static void test_workflow_succeeded_keeps_cache_when_nothing_stored(void** state
   /* The update's file is gone from the application's storage. */
   az_iot_su_client_update_manifest manifest;
   make_manifest(&manifest, NULL, 0);
-  download_handler.workflow_succeeded_fn(&manifest, download_handler.user_ctx);
+  download_handler.workflow_ended_fn(
+      &manifest, AZ_IOT_SU_OUTCOME_SUCCEEDED, download_handler.user_ctx);
   assert_true(file_exists(SOURCE_CACHE_FILE));
   assert_false(file_exists(TARGET_CACHE_FILE));
 
   /* No provider, a cache directory that cannot be created, or arguments missing. */
   write_file(FILES_DIRECTORY "/0-target", "TARGET", 6);
   manifest.update_id.provider = AZ_SPAN_EMPTY;
-  download_handler.workflow_succeeded_fn(&manifest, download_handler.user_ctx);
-  download_handler.workflow_succeeded_fn(NULL, download_handler.user_ctx);
-  download_handler.workflow_succeeded_fn(&manifest, NULL);
+  download_handler.workflow_ended_fn(
+      &manifest, AZ_IOT_SU_OUTCOME_SUCCEEDED, download_handler.user_ctx);
+  download_handler.workflow_ended_fn(NULL, AZ_IOT_SU_OUTCOME_SUCCEEDED, download_handler.user_ctx);
+  download_handler.workflow_ended_fn(&manifest, AZ_IOT_SU_OUTCOME_SUCCEEDED, NULL);
   manifest.update_id.provider = AZ_SPAN_FROM_STR(PROVIDER);
 
   az_iot_su_delta_handler_options options = az_iot_su_delta_handler_options_default();
@@ -1417,7 +1479,8 @@ static void test_workflow_succeeded_keeps_cache_when_nothing_stored(void** state
   assert_int_equal(az_iot_su_delta_handler_init(&blocked, &options), AZ_IOT_OK);
   az_iot_su_download_handler blocked_handler
       = az_iot_su_delta_handler_get_download_handler(&blocked);
-  blocked_handler.workflow_succeeded_fn(&manifest, blocked_handler.user_ctx);
+  blocked_handler.workflow_ended_fn(
+      &manifest, AZ_IOT_SU_OUTCOME_SUCCEEDED, blocked_handler.user_ctx);
   assert_true(file_exists(FILES_DIRECTORY "/0-target"));
   assert_true(file_exists(SOURCE_CACHE_FILE));
 }
@@ -1437,7 +1500,8 @@ static void test_succeeded_update_is_source_of_next(void** state)
   first.files[0] = make_file("image", SOURCE_HASH, 6, NULL);
   list_files_in_one_step(&first);
   write_file(FILES_DIRECTORY "/0-image", "SOURCE", 6);
-  download_handler.workflow_succeeded_fn(&first, download_handler.user_ctx);
+  download_handler.workflow_ended_fn(
+      &first, AZ_IOT_SU_OUTCOME_SUCCEEDED, download_handler.user_ctx);
   assert_true(file_exists(SOURCE_CACHE_FILE));
 
   az_iot_su_client_update_manifest_file related_files[1];
@@ -1451,7 +1515,8 @@ static void test_succeeded_update_is_source_of_next(void** state)
           &second.files[0], &related_files[0], 0, download_handler.user_ctx),
       AZ_IOT_SU_RESULT_SUCCESS);
   second.files[0].size_in_bytes = 11;
-  download_handler.workflow_succeeded_fn(&second, download_handler.user_ctx);
+  download_handler.workflow_ended_fn(
+      &second, AZ_IOT_SU_OUTCOME_SUCCEEDED, download_handler.user_ctx);
   assert_true(file_exists(TARGET_CACHE_FILE));
   assert_false(file_exists(SOURCE_CACHE_FILE));
 }
@@ -1475,12 +1540,14 @@ static void test_workflow_succeeded_caches_under_sha256_in_any_position(void** s
   manifest.files[0].hashes_count = 2;
   write_file(FILES_DIRECTORY "/0-target", "TARGET", 6);
 
-  download_handler.workflow_succeeded_fn(&manifest, download_handler.user_ctx);
+  download_handler.workflow_ended_fn(
+      &manifest, AZ_IOT_SU_OUTCOME_SUCCEEDED, download_handler.user_ctx);
   assert_true(file_exists(TARGET_CACHE_FILE));
   assert_false(file_exists(PROVIDER_DIRECTORY "/sha512-AA_3D_3D"));
 
   /* The next success of the same update keeps that entry. */
-  download_handler.workflow_succeeded_fn(&manifest, download_handler.user_ctx);
+  download_handler.workflow_ended_fn(
+      &manifest, AZ_IOT_SU_OUTCOME_SUCCEEDED, download_handler.user_ctx);
   assert_true(file_exists(TARGET_CACHE_FILE));
 }
 
@@ -1508,7 +1575,8 @@ static void test_workflow_succeeded_finds_files_by_step_slot(void** state)
   manifest.instructions.steps[1].files_count = 1;
   write_file(FILES_DIRECTORY "/0-target", "TARGET", 6);
 
-  download_handler.workflow_succeeded_fn(&manifest, download_handler.user_ctx);
+  download_handler.workflow_ended_fn(
+      &manifest, AZ_IOT_SU_OUTCOME_SUCCEEDED, download_handler.user_ctx);
   assert_true(file_exists(TARGET_CACHE_FILE));
   assert_false(file_exists(FILES_DIRECTORY "/0-target"));
 }
@@ -1540,7 +1608,8 @@ static void test_workflow_succeeded_caches_the_last_file_at_a_shared_path(void**
     manifest.instructions.steps[1].files_count = 1;
     write_file(FILES_DIRECTORY "/0", "SECOND", 6);
 
-    download_handler.workflow_succeeded_fn(&manifest, download_handler.user_ctx);
+    download_handler.workflow_ended_fn(
+        &manifest, AZ_IOT_SU_OUTCOME_SUCCEEDED, download_handler.user_ctx);
     char content[16] = { 0 };
     assert_int_equal(read_file(TARGET_CACHE_FILE, content, sizeof(content)), 6);
     assert_string_equal(content, "SECOND");
@@ -1648,7 +1717,8 @@ static void test_workflow_succeeded_finds_escaped_step_file_ids(void** state)
   manifest.instructions.steps[0].files[0] = AZ_SPAN_FROM_STR("t\\u0061rget");
   write_file(FILES_DIRECTORY "/0-target", "TARGET", 6);
 
-  download_handler.workflow_succeeded_fn(&manifest, download_handler.user_ctx);
+  download_handler.workflow_ended_fn(
+      &manifest, AZ_IOT_SU_OUTCOME_SUCCEEDED, download_handler.user_ctx);
   assert_true(file_exists(TARGET_CACHE_FILE));
   assert_false(file_exists(FILES_DIRECTORY "/0-target"));
 }
@@ -1687,7 +1757,8 @@ static void test_provider_spellings_share_a_cache_directory(void** state)
   first.files[0] = make_file("image", SOURCE_HASH, 6, NULL);
   list_files_in_one_step(&first);
   write_file(FILES_DIRECTORY "/0-image", "SOURCE", 6);
-  download_handler.workflow_succeeded_fn(&first, download_handler.user_ctx);
+  download_handler.workflow_ended_fn(
+      &first, AZ_IOT_SU_OUTCOME_SUCCEEDED, download_handler.user_ctx);
   assert_true(file_exists(SOURCE_CACHE_FILE));
 
   char path[AZ_IOT_SU_DELTA_MAX_PATH_SIZE];
@@ -1808,6 +1879,10 @@ int main(void)
         teardown_work_directory),
     cmocka_unit_test_setup_teardown(
         test_source_lock_follows_the_workflow, setup_work_directory, teardown_work_directory),
+    cmocka_unit_test_setup_teardown(
+        test_workflow_ended_without_success_ends_the_build,
+        setup_work_directory,
+        teardown_work_directory),
     cmocka_unit_test_setup_teardown(
         test_sample_processor_output_survives_other_build_starts,
         setup_work_directory,
