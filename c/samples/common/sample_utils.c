@@ -184,6 +184,25 @@ char* sample_env_copy(const char* name, const char* fallback)
 #endif
 }
 
+bool sample_is_plain_file_name(az_span name)
+{
+  int32_t size = az_span_size(name);
+  const uint8_t* bytes = az_span_ptr(name);
+  if (size <= 0 || (size == 1 && bytes[0] == '.')
+      || (size == 2 && bytes[0] == '.' && bytes[1] == '.'))
+  {
+    return false;
+  }
+  for (int32_t i = 0; i < size; i++)
+  {
+    if (bytes[i] == '/' || bytes[i] == '\\' || bytes[i] == ':' || bytes[i] == '\0')
+    {
+      return false;
+    }
+  }
+  return true;
+}
+
 bool sample_string_copy(char* dst, size_t dst_size, const char* src)
 {
   size_t n = strlen(src);
@@ -356,6 +375,48 @@ FILE* sample_file_open_read_no_follow(const char* path)
   }
   return f;
 #endif
+}
+
+FILE* sample_file_rewrite_existing_no_follow(const char* path)
+{
+  if (!path)
+  {
+    return NULL;
+  }
+  FILE* f = NULL;
+  int fd;
+#ifdef _WIN32
+  if (_sopen_s(&fd, path, _O_WRONLY | _O_TRUNC | _O_BINARY, _SH_DENYWR, 0) != 0)
+  {
+    return NULL;
+  }
+  f = _fdopen(fd, "wb");
+  if (!f)
+  {
+    (void)_close(fd);
+  }
+#else
+#ifdef O_NOFOLLOW
+  fd = open(path, O_WRONLY | O_NOFOLLOW | O_NONBLOCK);
+#else
+  fd = open(path, O_WRONLY | O_NONBLOCK);
+#endif
+  if (fd < 0)
+  {
+    return NULL;
+  }
+  /* Emptied only once known to be a regular file; "wb" on a descriptor does not truncate. */
+  struct stat st;
+  if (fstat(fd, &st) == 0 && S_ISREG(st.st_mode) && ftruncate(fd, 0) == 0)
+  {
+    f = fdopen(fd, "wb");
+  }
+  if (!f)
+  {
+    (void)close(fd);
+  }
+#endif
+  return f;
 }
 
 bool sample_file_flush_to_storage(FILE* file)

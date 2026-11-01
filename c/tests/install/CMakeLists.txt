@@ -40,6 +40,7 @@ set(_sources
     crypto_openssl                crypto_test.c
     crypto_mbedtls                crypto_test.c
     certificate_provider_managed  certificate_provider_managed_test.c
+    su_delta                      su_delta_test.c
 )
 list(LENGTH _sources _n)
 math(EXPR _last "${_n} - 1")

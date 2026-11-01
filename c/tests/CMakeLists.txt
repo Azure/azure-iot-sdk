@@ -627,6 +627,44 @@ if(TARGET az_iot_certificate_provider_managed)
     endif()
 endif()
 
+# Reference microsoft/delta:1 download handler (adapters/su/delta), with a fake delta processor.
+# AZ_IOT_SU_DELTA_TEST_LIBRARY (the libadudiffapi.so that eng/install-su-delta-processor.sh
+# prints) adds the interop test: the real library rebuilds the committed target vector.
+set(AZ_IOT_SU_DELTA_TEST_LIBRARY "" CACHE FILEPATH
+    "libadudiffapi.so for the microsoft/delta:1 interop test (needs AZ_IOT_WITH_SU_DELTA)")
+if(TARGET az_iot_su_delta)
+    # With the samples' delta processor (su_sim.c), run against the handler.
+    set(_su_sample_common ${CMAKE_CURRENT_SOURCE_DIR}/../samples/software_update/pc/common)
+    az_iot_add_cmocka_test(az_iot_tests_su_delta RACE
+        unit/su_delta_test.c
+        ${_su_sample_common}/su_sim.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/../samples/common/sample_utils.c)
+    target_include_directories(az_iot_tests_su_delta PRIVATE
+        ${_su_sample_common} ${CMAKE_CURRENT_SOURCE_DIR}/../samples/common)
+    target_link_libraries(az_iot_tests_su_delta PRIVATE az_iot_su_delta pthread)
+    target_compile_definitions(az_iot_tests_su_delta PRIVATE
+        AZ_IOT_TEST_SU_DELTA_WORK_DIRECTORY="${CMAKE_CURRENT_BINARY_DIR}/su_delta_work")
+endif()
+if(AZ_IOT_SU_DELTA_TEST_LIBRARY)
+    # Configured but unusable fails here rather than leaving the test out.
+    if(NOT TARGET az_iot_su_delta)
+        message(FATAL_ERROR "AZ_IOT_SU_DELTA_TEST_LIBRARY needs -DAZ_IOT_WITH_SU_DELTA=ON.")
+    endif()
+    if(NOT EXISTS "${AZ_IOT_SU_DELTA_TEST_LIBRARY}")
+        message(FATAL_ERROR "AZ_IOT_SU_DELTA_TEST_LIBRARY: ${AZ_IOT_SU_DELTA_TEST_LIBRARY} not found.")
+    endif()
+    if(NOT TARGET az_iot_crypto_openssl)
+        message(FATAL_ERROR "AZ_IOT_SU_DELTA_TEST_LIBRARY needs the OpenSSL crypto backend.")
+    endif()
+    az_iot_add_cmocka_test(az_iot_tests_su_delta_interop unit/su_delta_test.c)
+    target_link_libraries(az_iot_tests_su_delta_interop PRIVATE
+        az_iot_su_delta az_iot_crypto_openssl)
+    target_compile_definitions(az_iot_tests_su_delta_interop PRIVATE
+        AZ_IOT_TEST_SU_DELTA_LIBRARY="${AZ_IOT_SU_DELTA_TEST_LIBRARY}"
+        AZ_IOT_TEST_SU_DELTA_VECTORS_DIRECTORY="${CMAKE_CURRENT_SOURCE_DIR}/unit/data/su_delta"
+        AZ_IOT_TEST_SU_DELTA_WORK_DIRECTORY="${CMAKE_CURRENT_BINARY_DIR}/su_delta_interop_work")
+endif()
+
 # The samples' platform helpers (samples/common/sample_utils.c).
 az_iot_add_cmocka_test(az_iot_tests_sample_utils
     unit/sample_utils_test.c
