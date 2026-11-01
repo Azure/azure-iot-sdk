@@ -4,10 +4,9 @@
 
 /* SPDX-License-Identifier: MIT */
 /* Construction-level smoke test for the Paho adapter. Does not touch the
- * network; verifies that the factory advertises the right version and that a
- * created client carries a fully-populated iface vtable, and that the
- * application destroys a registered factory after the connection client's
- * deinit(). */
+ * network; verifies that a client the adapter builds is of the version asked
+ * and carries a fully-populated iface vtable, and that the application
+ * destroys a registered factory after the connection client's deinit(). */
 #include <stdarg.h>
 #include <stddef.h>
 #include <setjmp.h>
@@ -22,14 +21,19 @@
 
 #include "support/test_provider.h"
 
-static void v3_factory_creates_v3_client(void** state)
+/* Paho sizes its own buffers: the limits only have to be valid. */
+static const az_iot_mqtt_limits k_limits = { 1024, 1024, 4, 0, 0 };
+
+static void adapter_builds_a_v3_client(void** state)
 {
   (void)state;
-  az_iot_mqtt_factory* f = az_iot_paho_factory_create_v3_1_1();
-  assert_non_null(f);
-  assert_int_equal(f->version, AZ_IOT_MQTT_VERSION_3_1_1);
-
-  az_iot_mqtt_client* c = f->create(f->factory_ctx);
+  uint8_t workspace[AZ_IOT_PAHO_WORKSPACE_SIZE];
+  assert_true(az_iot_paho_get_adapter()->get_workspace_size(&k_limits) <= sizeof(workspace));
+  az_iot_mqtt_client* c = NULL;
+  assert_int_equal(
+      az_iot_paho_get_adapter()->init(
+          AZ_IOT_MQTT_VERSION_3_1_1, &k_limits, workspace, sizeof(workspace), &c),
+      AZ_IOT_OK);
   assert_non_null(c);
   assert_non_null(c->iface);
   assert_int_equal(c->iface->version, AZ_IOT_MQTT_VERSION_3_1_1);
@@ -48,21 +52,20 @@ static void v3_factory_creates_v3_client(void** state)
   assert_int_equal(c->iface->process_loop(c, 0), AZ_IOT_OK);
 
   c->iface->destroy(c);
-  az_iot_paho_factory_destroy(f);
 }
 
-static void v5_factory_creates_v5_client(void** state)
+static void adapter_builds_a_v5_client(void** state)
 {
   (void)state;
-  az_iot_mqtt_factory* f = az_iot_paho_factory_create_v5();
-  assert_non_null(f);
-  assert_int_equal(f->version, AZ_IOT_MQTT_VERSION_5);
-
-  az_iot_mqtt_client* c = f->create(f->factory_ctx);
+  uint8_t workspace[AZ_IOT_PAHO_WORKSPACE_SIZE];
+  az_iot_mqtt_client* c = NULL;
+  assert_int_equal(
+      az_iot_paho_get_adapter()->init(
+          AZ_IOT_MQTT_VERSION_5, &k_limits, workspace, sizeof(workspace), &c),
+      AZ_IOT_OK);
   assert_non_null(c);
   assert_int_equal(c->iface->version, AZ_IOT_MQTT_VERSION_5);
   c->iface->destroy(c);
-  az_iot_paho_factory_destroy(f);
 }
 
 /* A client in an application workspace: same vtable; destroy() wipes the state and frees
@@ -202,8 +205,8 @@ static void a_factory_that_failed_to_register_is_destroyed_by_the_application(vo
 int main(void)
 {
   const struct CMUnitTest tests[] = {
-    cmocka_unit_test(v3_factory_creates_v3_client),
-    cmocka_unit_test(v5_factory_creates_v5_client),
+    cmocka_unit_test(adapter_builds_a_v3_client),
+    cmocka_unit_test(adapter_builds_a_v5_client),
     cmocka_unit_test(adapter_runs_a_client_in_a_workspace),
     cmocka_unit_test(the_shared_limits_check_bounds_each_size),
     cmocka_unit_test(registered_factories_are_destroyed_by_the_application_after_deinit),
