@@ -136,4 +136,8 @@ void mock_paho_set_properties_add_fail_at(int call);
 /** @brief MQTTAsync_sendMessage() calls since mock_paho_reset(). */
 int mock_paho_send_calls(void);
 
+/** @brief The response options of the last MQTTAsync_sendMessage() call: its completion callbacks
+ *         and context. */
+const MQTTAsync_responseOptions* mock_paho_last_send_response(void);
+
 #endif /* AZ_IOT_TEST_MOCK_PAHO_ASYNC_H */
