@@ -24,6 +24,66 @@ typedef struct sample_config
 } sample_config;
 
 /**
+ * @name MQTT client limits of the samples
+ * @brief az_iot_connection_client_options::mqtt_limits of every sample, and the workspace that
+ * holds one MQTT client of those limits. Paho sizes its own buffers and only checks the limits.
+ *
+ * - Send 8 KiB: CONNECT with a SAS token, a DPS request with a CSR, telemetry, twin patches and
+ *   method responses of the samples.
+ * - Receive 132 KiB: a 128 KB direct method payload with its topic and properties. Also holds a
+ *   full twin, a 64 KB cloud-to-device message and a DPS response with an issued chain.
+ * - 8 QoS 1 exchanges in flight.
+ * - Message store 16 KiB: unacknowledged messages kept for the resumed hub session, one of full
+ *   size or many of the samples' size.
+ * - Connect strings 4 KiB: host, client ID, user name, SAS token, TLS file paths or key URI, proxy
+ *   and WebSocket path.
+ * @{
+ */
+#define SAMPLE_MQTT_SEND_BUFFER_SIZE ((size_t)8u * 1024u)
+#define SAMPLE_MQTT_RECEIVE_BUFFER_SIZE ((size_t)132u * 1024u)
+#define SAMPLE_MQTT_MAX_IN_FLIGHT_MESSAGES 8u
+#define SAMPLE_MQTT_MESSAGE_STORE_SIZE ((size_t)16u * 1024u)
+#define SAMPLE_MQTT_CONNECT_STRINGS_SIZE ((size_t)4u * 1024u)
+/** @brief Bound of az_mqtt's TLS state: Schannel on Windows (about 197 KB), else OpenSSL or
+ * mbedTLS (under 5 KB). */
+#if defined(_WIN32)
+#define SAMPLE_MQTT_TLS_STATE_SIZE ((size_t)256u * 1024u)
+#else
+#define SAMPLE_MQTT_TLS_STATE_SIZE ((size_t)8u * 1024u)
+#endif
+
+/** @brief The limits above, for az_iot_connection_client_options::mqtt_limits. */
+#define SAMPLE_MQTT_LIMITS                                                    \
+  ((az_iot_mqtt_limits){                                                      \
+      .send_buffer_size = SAMPLE_MQTT_SEND_BUFFER_SIZE,                       \
+      .receive_buffer_size = SAMPLE_MQTT_RECEIVE_BUFFER_SIZE,                 \
+      .max_in_flight_messages = (uint16_t)SAMPLE_MQTT_MAX_IN_FLIGHT_MESSAGES, \
+      .message_store_size = SAMPLE_MQTT_MESSAGE_STORE_SIZE,                   \
+      .connect_strings_size = SAMPLE_MQTT_CONNECT_STRINGS_SIZE,               \
+  })
+
+/** @brief Largest payload a sample sends back from inbound data, such as a method echo: the send
+ * buffer less room for the topic and packet header. A sample answers a larger one with status 413
+ * (Paho builds too, so both behave alike). */
+#define SAMPLE_MQTT_ECHO_PAYLOAD_MAX (SAMPLE_MQTT_SEND_BUFFER_SIZE - 256u)
+
+/** @brief Bytes of a static workspace for one MQTT client of #SAMPLE_MQTT_LIMITS, for the
+ * adapter this build of the sample uses. */
+#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
+#define SAMPLE_MQTT_WORKSPACE_SIZE AZ_IOT_PAHO_WORKSPACE_SIZE
+#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
+#define SAMPLE_MQTT_WORKSPACE_SIZE        \
+  AZ_IOT_AZ_MQTT_WORKSPACE_SIZE(          \
+      SAMPLE_MQTT_SEND_BUFFER_SIZE,       \
+      SAMPLE_MQTT_RECEIVE_BUFFER_SIZE,    \
+      SAMPLE_MQTT_MAX_IN_FLIGHT_MESSAGES, \
+      SAMPLE_MQTT_MESSAGE_STORE_SIZE,     \
+      SAMPLE_MQTT_CONNECT_STRINGS_SIZE,   \
+      SAMPLE_MQTT_TLS_STATE_SIZE)
+#endif
+/** @} */
+
+/**
  * @brief Log sink for samples. With AZ_IOT_SAMPLE_LOG_TO_FILE set (any
  * non-empty value), a rotating file sink writing AZ_IOT_LOG_FILE_DEFAULT_NAME in
  * the working directory (see az_iot_log_file_sink_open()); otherwise stderr.
