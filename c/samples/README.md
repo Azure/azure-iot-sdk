@@ -189,7 +189,6 @@ Each sample that connects is built once per MQTT adapter in the build, from the 
 `az_iot_az_mqtt_get_adapter()`) with `AZ_IOT_SAMPLE_ADAPTER_PAHO` or
 `AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT`, which the build defines. The connection client builds each MQTT
 client in a static workspace sized for `SAMPLE_MQTT_LIMITS` in
-[`common/sample_utils.h`](common/sample_utils.h): raise those for larger messages. The Software
-Update samples still register MQTT factories. With samples on, at least one of the two
-adapters is required. The SAS-key and Software Update samples use the OpenSSL crypto backend, or
+[`common/sample_utils.h`](common/sample_utils.h): raise those for larger messages. With samples
+on, at least one of the two adapters is required. The SAS-key and Software Update samples use the OpenSSL crypto backend, or
 mbedTLS when OpenSSL is not built (`AZ_IOT_SAMPLE_CRYPTO_OPENSSL`, `AZ_IOT_SAMPLE_CRYPTO_MBEDTLS`).
