@@ -22,6 +22,8 @@
   memory (e.g. `az_iot_az_mqtt_get_adapter()`), instead of registered factories (still used when
   `mqtt_adapter` is NULL). `init()` checks the workspace size; `deinit()` wipes it. The workspace
   holds one client at a time, as one MQTT session runs at a time.
+- Samples: the software updates samples (PC and ESP32) build their MQTT client in a static
+  workspace through `mqtt_adapter`, like the other samples, instead of registering MQTT factories.
 - SAS token renewal lets the session's deliveries settle before its DISCONNECT: publishes
   awaiting a PUBACK and SDK requests awaiting a response (twin), for up to 5 s (not past the
   token's expiry). Meanwhile a new QoS 1 publish returns `AZ_IOT_ERR_BUSY`; once the DISCONNECT

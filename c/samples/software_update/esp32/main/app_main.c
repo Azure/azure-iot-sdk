@@ -52,6 +52,14 @@
 
 static const char* TAG = "su_esp32";
 
+/** @brief MQTT message store: one full-size message with az_mqtt's 18-byte per-message overhead,
+ * kept for the resumed hub session. */
+#define MQTT_MESSAGE_STORE_SIZE (CONFIG_AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE + 32u)
+/** @brief Copies a connect makes: host, client ID, user name, device certificate and key PEM. */
+#define MQTT_CONNECT_STRINGS_SIZE 8192u
+/** @brief Bound of az_mqtt's TLS state with mbedTLS (about 4.5 KB). */
+#define MQTT_TLS_STATE_SIZE 8192u
+
 /* Server CA compiled into the firmware (see main/CMakeLists.txt EMBED_TXTFILES).
  * Text embedding NUL-terminates it, so the *_start symbol is a C string. */
 extern const char trusted_ca_pem_start[] asm("_binary_trusted_ca_pem_start");
@@ -286,6 +294,25 @@ void app_main(void)
   copts.dps.registration_id = CONFIG_SU_DPS_REGISTRATION_ID;
   copts.certificate_provider = &certs.base;
   copts.crypto = az_iot_crypto_mbedtls();
+  /* The az_mqtt adapter builds each session's MQTT client in this workspace, one at a time:
+   * MQTT 3.1.1 for DPS and an mqttv3 hub, MQTT 5 for an mqttv5 hub. Sizes: menuconfig. */
+  static uint8_t mqtt_workspace[AZ_IOT_AZ_MQTT_WORKSPACE_SIZE(
+      CONFIG_AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE,
+      CONFIG_AZ_IOT_AZ_MQTT_RECEIVE_BUFFER_SIZE,
+      CONFIG_AZ_IOT_AZ_MQTT_INFLIGHT_MAX,
+      MQTT_MESSAGE_STORE_SIZE,
+      MQTT_CONNECT_STRINGS_SIZE,
+      MQTT_TLS_STATE_SIZE)];
+  copts.mqtt_adapter = az_iot_az_mqtt_get_adapter();
+  copts.mqtt_limits = (az_iot_mqtt_limits){
+    .send_buffer_size = CONFIG_AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE,
+    .receive_buffer_size = CONFIG_AZ_IOT_AZ_MQTT_RECEIVE_BUFFER_SIZE,
+    .max_in_flight_messages = CONFIG_AZ_IOT_AZ_MQTT_INFLIGHT_MAX,
+    .message_store_size = MQTT_MESSAGE_STORE_SIZE,
+    .connect_strings_size = MQTT_CONNECT_STRINGS_SIZE,
+  };
+  copts.mqtt_workspace = mqtt_workspace;
+  copts.mqtt_workspace_size = sizeof(mqtt_workspace);
 
   az_iot_connection_client conn;
   if (az_iot_connection_client_init(&conn, &copts) != AZ_IOT_OK)
@@ -294,17 +321,6 @@ void app_main(void)
     esp_restart();
   }
   az_iot_connection_client_add_state_observer(&conn, on_conn_state, NULL);
-
-  /* az_mqtt adapter: MQTT 3.1.1 for DPS and an mqttv3 hub, MQTT 5 for an mqttv5 hub.
-   * The factories must outlive conn. This task never returns, so they are never destroyed. */
-  az_iot_mqtt_factory* factory_v3 = az_iot_az_mqtt_factory_create_v3_1_1();
-  az_iot_mqtt_factory* factory_v5 = az_iot_az_mqtt_factory_create_v5();
-  if (az_iot_connection_client_register_mqtt_factory(&conn, factory_v3) != AZ_IOT_OK
-      || az_iot_connection_client_register_mqtt_factory(&conn, factory_v5) != AZ_IOT_OK)
-  {
-    ESP_LOGE(TAG, "register mqtt factory failed");
-    esp_restart();
-  }
 
   /* Real OTA platform hooks + Microsoft root keys. */
   az_iot_su_esp32_ota_context ota = { 0 };
