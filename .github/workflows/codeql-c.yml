@@ -89,6 +89,7 @@ jobs:
           -DAZ_IOT_BUILD_TESTS=OFF
           -DAZ_IOT_BUILD_SAMPLES=ON
           -DAZ_IOT_WITH_PAHO=ON
+          -DAZ_IOT_WITH_SU_DELTA=ON
 
       - name: Build everything (not analyzed)
         run: cmake --build build/codeql

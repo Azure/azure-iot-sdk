@@ -265,6 +265,34 @@ static void file_create_private_unique_creates_a_new_name_beside_the_path(void**
   assert_null(none);
 }
 
+static void file_rewrite_existing_no_follow_keeps_the_file_and_refuses_a_link(void** state)
+{
+  (void)state;
+  assert_null(sample_file_rewrite_existing_no_follow(NULL));
+  assert_null(sample_file_rewrite_existing_no_follow(DESTINATION_FILE));
+  assert_null(sample_file_open_read_no_follow(DESTINATION_FILE));
+
+  write_text_file(DESTINATION_FILE, "old contents");
+#if !defined(_WIN32)
+  struct stat before;
+  assert_int_equal(stat(DESTINATION_FILE, &before), 0);
+#endif
+  FILE* file = sample_file_rewrite_existing_no_follow(DESTINATION_FILE);
+  assert_non_null(file);
+  assert_int_equal(fputs("new", file) >= 0, 1);
+  assert_int_equal(fclose(file), 0);
+  assert_file_holds(DESTINATION_FILE, "new");
+#if !defined(_WIN32)
+  struct stat after;
+  assert_int_equal(stat(DESTINATION_FILE, &after), 0);
+  assert_true(before.st_ino == after.st_ino && before.st_dev == after.st_dev);
+
+  assert_int_equal(symlink(DESTINATION_FILE, LINK_FILE), 0);
+  assert_null(sample_file_rewrite_existing_no_follow(LINK_FILE));
+  assert_file_holds(DESTINATION_FILE, "new");
+#endif
+}
+
 static void file_open_read_no_follow_refuses_a_link_and_a_missing_file(void** state)
 {
   (void)state;
@@ -401,6 +429,26 @@ static void sleep_until_tick_end_returns_at_once_after_the_tick(void** state)
   assert_true(sample_now_ms() - start < 50u);
 }
 
+/* Manifest file ids that would leave the download directory are refused. */
+static void is_plain_file_name_refuses_names_that_leave_the_directory(void** state)
+{
+  (void)state;
+  assert_true(sample_is_plain_file_name(AZ_SPAN_FROM_STR("firmware.swu")));
+  assert_true(sample_is_plain_file_name(AZ_SPAN_FROM_STR("..swu")));
+  assert_true(sample_is_plain_file_name(AZ_SPAN_FROM_STR("...")));
+
+  assert_false(sample_is_plain_file_name(AZ_SPAN_EMPTY));
+  assert_false(sample_is_plain_file_name(AZ_SPAN_FROM_STR(".")));
+  assert_false(sample_is_plain_file_name(AZ_SPAN_FROM_STR("..")));
+  assert_false(sample_is_plain_file_name(AZ_SPAN_FROM_STR("../outside")));
+  assert_false(sample_is_plain_file_name(AZ_SPAN_FROM_STR("/etc/passwd")));
+  assert_false(sample_is_plain_file_name(AZ_SPAN_FROM_STR("a\\b")));
+  assert_false(sample_is_plain_file_name(AZ_SPAN_FROM_STR("C:file")));
+  char with_nul[] = "a\0b";
+  assert_false(
+      sample_is_plain_file_name(az_span_create((uint8_t*)with_nul, (int32_t)sizeof(with_nul) - 1)));
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -421,6 +469,9 @@ int main(void)
         file_create_private_unique_creates_a_new_name_beside_the_path, setup, teardown),
     cmocka_unit_test_setup_teardown(
         file_open_read_no_follow_refuses_a_link_and_a_missing_file, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        file_rewrite_existing_no_follow_keeps_the_file_and_refuses_a_link, setup, teardown),
+    cmocka_unit_test(is_plain_file_name_refuses_names_that_leave_the_directory),
     cmocka_unit_test_setup_teardown(
         file_write_atomically_replaces_the_destination, setup, teardown),
     cmocka_unit_test_setup_teardown(
