@@ -83,9 +83,21 @@ if(AZ_IOT_BUILD_E2E_SU)
             "(AZ_IOT_WITH_CRYPTO_OPENSSL=ON).")
     endif()
     find_package(CURL REQUIRED)
+    # On POSIX, the offer suite runs the reference microsoft/delta:1 handler (POSIX only) with the
+    # real delta processor, AZ_IOT_SU_DELTA_TEST_LIBRARY (tests/CMakeLists.txt); without it that
+    # scenario fails.
+    set(_su_offer_delta_libs)
+    if(UNIX)
+        if(NOT TARGET az_iot_su_delta)
+            message(FATAL_ERROR
+                "AZ_IOT_BUILD_E2E_SU needs the microsoft/delta:1 download handler "
+                "(AZ_IOT_WITH_SU_DELTA=ON).")
+        endif()
+        set(_su_offer_delta_libs az_iot_su_delta)
+    endif()
     az_iot_add_e2e_suite(az_iot_tests_e2e_su_offer
         SOURCES tests/e2e_su_offer_test.c tests/e2e_su_env.c tests/e2e_su_test_roots.c
-        LIBS az_iot_core az_iot_crypto_openssl CURL::libcurl)
+        LIBS az_iot_core az_iot_crypto_openssl ${_su_offer_delta_libs} CURL::libcurl)
     # The suites assert on the channel and the codecs, and the offer suite's spy
     # wraps the channel: all internal.
     foreach(_t az_iot_tests_e2e_su az_iot_tests_e2e_su_az_mqtt
@@ -93,6 +105,14 @@ if(AZ_IOT_BUILD_E2E_SU)
         if(TARGET ${_t})
             target_include_directories(${_t} PRIVATE
                 ${PROJECT_SOURCE_DIR}/src/core ${PROJECT_SOURCE_DIR}/src/features/su/internal)
+        endif()
+    endforeach()
+    foreach(_t az_iot_tests_e2e_su_offer az_iot_tests_e2e_su_offer_az_mqtt)
+        if(TARGET ${_t} AND _su_offer_delta_libs)
+            target_compile_definitions(${_t} PRIVATE
+                AZ_IOT_E2E_SU_WITH_REFERENCE_DELTA
+                AZ_IOT_E2E_SU_DELTA_VECTORS_DIRECTORY="${PROJECT_SOURCE_DIR}/tests/unit/data/su_delta"
+                AZ_IOT_E2E_SU_DELTA_LIBRARY="${AZ_IOT_SU_DELTA_TEST_LIBRARY}")
         endif()
     endforeach()
 else()
