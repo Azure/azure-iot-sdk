@@ -31,6 +31,7 @@
 #include "azure/iot/az_iot_result.h"
 
 #include "internal/connection_client_internal.h"
+#include "internal/deadline.h"
 
 #include "support/connection_test_harness.h"
 
@@ -1454,6 +1455,283 @@ static void deinit_while_the_hub_waits_ends_the_held_session(void** state)
   assert_null(fx->client->dps_mqtt);
   assert_null(fx->client->active_client);
   assert_null(az_iot_mock_mqtt_adapter_last_client());
+}
+
+/** @brief Counts a hub PUBACK and keeps its result. */
+typedef struct puback_record
+{
+  int count;
+  az_iot_result result;
+} puback_record;
+
+static void record_puback(az_iot_result status, void* user_ctx)
+{
+  puback_record* record = (puback_record*)user_ctx;
+  record->count++;
+  record->result = status;
+}
+
+/** @brief Publishes a QoS 1 message on the hub session; returns its packet id. */
+static uint16_t publish_awaiting_puback_on_hub(
+    az_iot_test_conn* fx,
+    az_iot_mock_mqtt_client* hub,
+    puback_record* record)
+{
+  az_iot_mqtt_message msg = { 0 };
+  msg.topic = "devices/ut-device/messages/events/";
+  msg.qos = AZ_IOT_MQTT_QOS_1;
+  assert_int_equal(
+      az_iot_connection_client__publish(fx->client, fx, &msg, record_puback, record), AZ_IOT_OK);
+  return az_iot_mock_mqtt_client_last_of(hub, AZ_IOT_MOCK_CALL_PUBLISH)->packet_id;
+}
+
+/**
+ * @brief Connects the hub with a PUBACK awaited, then asks for a provisioning session: the hub
+ * session settles, CONNECTED, no DISCONNECT yet, new tracked sends held.
+ */
+static az_iot_mock_mqtt_client* start_settling_for_a_provisioning_session(
+    az_iot_test_conn* fx,
+    puback_record* record,
+    uint16_t* packet_id)
+{
+  az_iot_mock_mqtt_client* hub = provision_to_hub_connected(fx);
+  *packet_id = publish_awaiting_puback_on_hub(fx, hub, record);
+  assert_int_equal(az_iot_connection_client__dps_session_ensure(fx->client), AZ_IOT_ERR_BUSY);
+  assert_int_equal(az_iot_connection_client__dps_session_ensure(fx->client), AZ_IOT_ERR_BUSY);
+  assert_int_equal(az_iot_mock_mqtt_client_count_of(hub, AZ_IOT_MOCK_CALL_DISCONNECT), 0);
+  assert_true(az_iot_connection_client__holds_sends_for_session_end(fx->client));
+  assert_int_equal(
+      az_iot_connection_client_get_state(fx->client, AZ_IOT_CONN_SCOPE_HUB),
+      AZ_IOT_CONN_STATE_CONNECTED);
+  assert_null(fx->client->dps_mqtt);
+  return hub;
+}
+
+/* The hub session ended for a provisioning session first lets its deliveries settle: it waits for
+ * an awaited PUBACK, and ends as soon as it is in. */
+static void a_session_end_for_a_provisioning_session_waits_for_its_deliveries(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  puback_record record = { 0 };
+  uint16_t packet_id = 0;
+  az_iot_mock_mqtt_client* hub = start_settling_for_a_provisioning_session(fx, &record, &packet_id);
+  for (int i = 0; i < 3; ++i)
+  {
+    (void)az_iot_connection_client_do_work(fx->client, 0);
+  }
+  assert_int_equal(az_iot_mock_mqtt_client_count_of(hub, AZ_IOT_MOCK_CALL_DISCONNECT), 0);
+  assert_null(fx->client->dps_mqtt);
+
+  assert_true(az_iot_mock_mqtt_client_inject_puback(hub, packet_id, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_int_equal(record.count, 1);
+  assert_int_equal(record.result, AZ_IOT_OK);
+  assert_int_equal(az_iot_mock_mqtt_client_count_of(hub, AZ_IOT_MOCK_CALL_DISCONNECT), 1);
+
+  fx->log.count = 0;
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(hub));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_hub_waits(fx);
+  assert_non_null(fx->client->dps_mqtt);
+  size_t paused
+      = az_iot_test_index_of(&fx->log, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_RETRY_PENDING);
+  assert_int_not_equal(paused, SIZE_MAX);
+  assert_int_equal(fx->log.reasons[paused], AZ_IOT_OK);
+  assert_int_equal(fx->client->consecutive_hub_connect_failures, 0);
+  assert_int_equal(fx->client->retry_attempt[AZ_IOT_CONN_SCOPE_HUB], 0);
+  az_iot_connection_client__dps_session_release(fx->client);
+}
+
+/* Keeps whether the settle bound's warning was logged. */
+static void capture_settle_bound_warning(
+    void* user_ctx,
+    az_iot_log_level level,
+    const char* component,
+    const char* file,
+    int line,
+    const char* msg)
+{
+  (void)file;
+  (void)line;
+  if (level == AZ_IOT_LOG_LEVEL_WARN && strcmp(component, AZ_IOT_LOG_COMPONENT_CONNECTION) == 0
+      && strstr(msg, "unsettled at the settle bound") != NULL)
+  {
+    *(bool*)user_ctx = true;
+  }
+}
+
+/* The settle bound ends the wait with a warning: the PUBACK still awaited completes
+ * NOT_CONNECTED, and the end stays planned. */
+static void a_session_end_for_a_provisioning_session_settles_for_at_most_its_bound(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  puback_record record = { 0 };
+  uint16_t packet_id = 0;
+  az_iot_mock_mqtt_client* hub = start_settling_for_a_provisioning_session(fx, &record, &packet_id);
+  assert_true(
+      az_iot_deadline__remaining_ms(
+          &fx->client->planned_hub_session_end.drain_deadline, az_iot_time_mono_ms())
+      <= 5000u);
+
+  bool warned = false;
+  az_iot_log_sink sink = { .sink = capture_settle_bound_warning,
+                           .user_ctx = &warned,
+                           .min_level = AZ_IOT_LOG_LEVEL_WARN };
+  az_iot_connection_client__planned_hub_session_end_force_timeout(fx->client);
+  az_iot_log_set_global_sink(&sink);
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  az_iot_log_set_global_sink(NULL);
+  assert_true(warned);
+  assert_int_equal(az_iot_mock_mqtt_client_count_of(hub, AZ_IOT_MOCK_CALL_DISCONNECT), 1);
+
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(hub));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_int_equal(record.count, 1);
+  assert_int_equal(record.result, AZ_IOT_ERR_NOT_CONNECTED);
+  assert_hub_waits(fx);
+  assert_int_equal(fx->client->consecutive_hub_connect_failures, 0);
+  az_iot_connection_client__dps_session_release(fx->client);
+}
+
+/* close() during the settle takes the end over: the hub settles at IDLE and no provisioning
+ * session opens. */
+static void close_during_the_settle_for_a_provisioning_session_settles_idle(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  puback_record record = { 0 };
+  uint16_t packet_id = 0;
+  az_iot_mock_mqtt_client* hub = start_settling_for_a_provisioning_session(fx, &record, &packet_id);
+
+  assert_int_equal(az_iot_connection_client_close(fx->client), AZ_IOT_OK);
+  assert_int_equal(az_iot_mock_mqtt_client_count_of(hub, AZ_IOT_MOCK_CALL_DISCONNECT), 1);
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(hub));
+  for (int i = 0; i < 3; ++i)
+  {
+    (void)az_iot_connection_client_do_work(fx->client, 0);
+  }
+  assert_null(fx->client->active_client);
+  assert_null(fx->client->dps_mqtt);
+  assert_false(fx->client->hub_waits_for_provisioning_session);
+  assert_false(fx->client->planned_hub_session_end.for_provisioning_session);
+  assert_false(az_iot_connection_client__holds_sends_for_session_end(fx->client));
+  assert_int_equal(
+      az_iot_connection_client_get_state(fx->client, AZ_IOT_CONN_SCOPE_HUB),
+      AZ_IOT_CONN_STATE_IDLE);
+  assert_int_equal(record.count, 1);
+  az_iot_connection_client__dps_session_release(fx->client);
+}
+
+/* A link lost during the settle ends it as a lost session: nothing is held any more, and the end
+ * is not reported as planned. */
+static void a_link_lost_during_the_settle_for_a_provisioning_session_ends_it(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  puback_record record = { 0 };
+  uint16_t packet_id = 0;
+  az_iot_mock_mqtt_client* hub = start_settling_for_a_provisioning_session(fx, &record, &packet_id);
+
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(hub));
+  assert_int_equal(az_iot_mock_mqtt_client_count_of(hub, AZ_IOT_MOCK_CALL_DISCONNECT), 0);
+  /* The pass below ends the session and destroys the hub client. */
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_null(fx->client->active_client);
+  assert_false(az_iot_connection_client__holds_sends_for_session_end(fx->client));
+  assert_false(fx->client->planned_hub_session_end.for_provisioning_session);
+  assert_false(fx->client->hub_waits_for_provisioning_session);
+  assert_int_equal(record.count, 1);
+  assert_int_equal(record.result, AZ_IOT_ERR_NOT_CONNECTED);
+  assert_int_not_equal(
+      az_iot_connection_client_get_state(fx->client, AZ_IOT_CONN_SCOPE_HUB),
+      AZ_IOT_CONN_STATE_CONNECTED);
+  az_iot_connection_client__dps_session_release(fx->client);
+}
+
+/* A provisioning session released before the settle ends: the hub session stays, and new tracked
+ * sends go out again. */
+static void a_release_during_the_settle_keeps_the_hub_session(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  puback_record record = { 0 };
+  uint16_t packet_id = 0;
+  az_iot_mock_mqtt_client* hub = start_settling_for_a_provisioning_session(fx, &record, &packet_id);
+
+  az_iot_connection_client__dps_session_release(fx->client);
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_false(az_iot_connection_client__holds_sends_for_session_end(fx->client));
+  assert_false(fx->client->planned_hub_session_end.for_provisioning_session);
+  assert_true(az_iot_mock_mqtt_client_inject_puback(hub, packet_id, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_int_equal(record.count, 1);
+  assert_int_equal(record.result, AZ_IOT_OK);
+  assert_int_equal(az_iot_mock_mqtt_client_count_of(hub, AZ_IOT_MOCK_CALL_DISCONNECT), 0);
+  assert_ptr_equal(az_iot_mock_mqtt_client_from(fx->client->active_client), hub);
+  assert_int_equal(
+      az_iot_connection_client_get_state(fx->client, AZ_IOT_CONN_SCOPE_HUB),
+      AZ_IOT_CONN_STATE_CONNECTED);
+  assert_null(fx->client->dps_mqtt);
+}
+
+/* An X.509 hub session does not inherit the expiry of a token an earlier session used: an expired
+ * one does not end its settle at once. */
+static void an_earlier_session_token_does_not_end_an_x509_settle(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  fx->client->hub_session_token_expiry_ms = 1u;
+  fx->client->hub_session_token_expiry_unix_seconds = 1u;
+  puback_record record = { 0 };
+  uint16_t packet_id = 0;
+  (void)start_settling_for_a_provisioning_session(fx, &record, &packet_id);
+  assert_int_equal(fx->client->hub_session_token_expiry_ms, 0);
+  assert_int_equal(fx->client->hub_session_token_expiry_unix_seconds, 0);
+  az_iot_connection_client__dps_session_release(fx->client);
+}
+
+/* Releases the provisioning session from an UNSETTLED_QUERY, reporting nothing unsettled. */
+static void release_on_unsettled_query(const az_iot_connection_feature_event* event, void* user_ctx)
+{
+  (void)event;
+  az_iot_connection_client__dps_session_release((az_iot_connection_client*)user_ctx);
+}
+
+/* A release from the settle's own UNSETTLED_QUERY keeps the hub session: no DISCONNECT for the
+ * withdrawn request. */
+static void a_release_from_the_unsettled_query_keeps_the_hub_session(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  az_iot_mock_mqtt_client* hub = provision_to_hub_connected(fx);
+  assert_int_equal(
+      az_iot_connection_client__add_feature_observer(
+          fx->client,
+          AZ_IOT_CONNECTION_FEATURE_EVENT_UNSETTLED_QUERY,
+          release_on_unsettled_query,
+          fx->client),
+      AZ_IOT_OK);
+
+  assert_int_equal(az_iot_connection_client__dps_session_ensure(fx->client), AZ_IOT_ERR_BUSY);
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_int_equal(az_iot_mock_mqtt_client_count_of(hub, AZ_IOT_MOCK_CALL_DISCONNECT), 0);
+  assert_false(az_iot_connection_client__holds_sends_for_session_end(fx->client));
+  assert_false(fx->client->planned_hub_session_end.for_provisioning_session);
+  assert_int_equal(
+      az_iot_connection_client_get_state(fx->client, AZ_IOT_CONN_SCOPE_HUB),
+      AZ_IOT_CONN_STATE_CONNECTED);
+  az_iot_connection_client__remove_feature_observer(
+      fx->client, release_on_unsettled_query, fx->client);
+}
+
+/* deinit() during the settle ends the hub session without calling back. */
+static void deinit_during_the_settle_for_a_provisioning_session(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  puback_record record = { 0 };
+  uint16_t packet_id = 0;
+  (void)start_settling_for_a_provisioning_session(fx, &record, &packet_id);
+
+  assert_int_equal(az_iot_connection_client_deinit(fx->client), AZ_IOT_OK);
+  assert_null(fx->client->active_client);
+  assert_null(fx->client->dps_mqtt);
+  assert_null(az_iot_mock_mqtt_adapter_last_client());
+  assert_int_equal(record.count, 0);
 }
 
 /* The mirror image, and the behaviour every device without a feature client
@@ -6308,6 +6586,22 @@ int main(void)
         close_while_the_hub_ends_for_a_feature_session_settles_idle, setup, teardown),
     cmocka_unit_test_setup_teardown(
         deinit_while_the_hub_waits_ends_the_held_session, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_session_end_for_a_provisioning_session_waits_for_its_deliveries, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_session_end_for_a_provisioning_session_settles_for_at_most_its_bound, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        close_during_the_settle_for_a_provisioning_session_settles_idle, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_link_lost_during_the_settle_for_a_provisioning_session_ends_it, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_release_during_the_settle_keeps_the_hub_session, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        an_earlier_session_token_does_not_end_an_x509_settle, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_release_from_the_unsettled_query_keeps_the_hub_session, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        deinit_during_the_settle_for_a_provisioning_session, setup, teardown),
     cmocka_unit_test_setup_teardown(an_unheld_session_is_dropped_at_registration, setup, teardown),
     cmocka_unit_test_setup_teardown(
         releasing_the_last_ref_closes_the_session_from_the_pump, setup, teardown),

@@ -69,9 +69,10 @@
  * reconnecting anyway. */
 #define PLANNED_DISCONNECT_TIMEOUT_MS 5000u
 
-/** @brief How long a SAS renewal lets deliveries settle (PUBACKs, responses) before its
- * disconnect: a renewal takes up to this plus PLANNED_DISCONNECT_TIMEOUT_MS. */
-#define SAS_RENEWAL_SETTLE_TIMEOUT_MS 5000u
+/** @brief How long a SAS renewal or a pause for a provisioning session lets the hub session's
+ * deliveries settle (PUBACKs, responses) before its disconnect: the end takes up to this plus
+ * PLANNED_DISCONNECT_TIMEOUT_MS. */
+#define HUB_SESSION_SETTLE_TIMEOUT_MS 5000u
 
 /** @brief When to ask again for a renewal token that could not be asked for. */
 #define SAS_TOKEN_RENEWAL_RETRY_MS 30000u
@@ -5698,6 +5699,9 @@ static az_iot_result start_connect_attempt(az_iot_connection_client* c)
   }
   c->auth[AZ_IOT_CONN_SCOPE_HUB].source = AZ_IOT_AUTH_SOURCE_NONE;
   c->auth[AZ_IOT_CONN_SCOPE_HUB].x509_index = 0;
+  /* Nor a token yet: one an earlier session used must not bound this session's settle. */
+  c->hub_session_token_expiry_ms = 0;
+  c->hub_session_token_expiry_unix_seconds = 0;
   set_state_to(c, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_SETTING_UP, AZ_IOT_OK);
 
   az_iot_result br = run_feature_client_binds(c);
@@ -6043,11 +6047,28 @@ static bool hub_session_has_unsettled_deliveries(az_iot_connection_client* c)
   return unsettled;
 }
 
-/** @brief A SAS renewal settling its session's deliveries: end the session once none are
- *         left or the settle bound passed. */
-static void end_settled_session_for_sas_renewal(az_iot_connection_client* c)
+/** @brief Whether a planned hub session end lets the session's deliveries settle before its
+ *         DISCONNECT. */
+static bool hub_session_end_settling(const az_iot_connection_client* c)
 {
-  if (!az_iot_deadline__is_set(&c->planned_hub_session_end.drain_deadline))
+  return az_iot_deadline__is_set(&c->planned_hub_session_end.drain_deadline);
+}
+
+/**
+ * @brief A planned hub session end (a SAS renewal, or a pause for a provisioning session) letting
+ *        its deliveries settle: ends the session once none are left or the settle bound passed.
+ *        Drops the settle once close() took it over, or once no provisioning session is wanted any
+ *        more and no SAS renewal shares the settle: the hub session then stays.
+ */
+static void end_hub_session_once_settled(az_iot_connection_client* c)
+{
+  if (!hub_session_end_settling(c))
+  {
+    return;
+  }
+  /* First: its observers may release the provisioning session, close(), or end the session. */
+  bool const unsettled = hub_session_has_unsettled_deliveries(c);
+  if (!hub_session_end_settling(c))
   {
     return;
   }
@@ -6056,10 +6077,21 @@ static void end_settled_session_for_sas_renewal(az_iot_connection_client* c)
     az_iot_deadline__clear(&c->planned_hub_session_end.drain_deadline);
     return;
   }
+  if (c->planned_hub_session_end.for_provisioning_session && !dps_session_demanded(c))
+  {
+    c->planned_hub_session_end.for_provisioning_session = false;
+    if (!c->sas_token_renewal_in_progress[AZ_IOT_CONN_SCOPE_HUB])
+    {
+      AZ_IOT_LOG_INFO(
+          AZ_IOT_LOG_COMPONENT_CONNECTION,
+          "the provisioning session is no longer wanted; the hub session stays");
+      az_iot_deadline__clear(&c->planned_hub_session_end.drain_deadline);
+      return;
+    }
+  }
   bool const bound_passed = az_iot_deadline__has_passed(
                                 &c->planned_hub_session_end.drain_deadline, az_iot_time_mono_ms())
       || hub_session_token_unix_left_ms(c) == 0u;
-  bool const unsettled = hub_session_has_unsettled_deliveries(c);
   if (!bound_passed && unsettled)
   {
     return;
@@ -6068,18 +6100,24 @@ static void end_settled_session_for_sas_renewal(az_iot_connection_client* c)
   {
     AZ_IOT_LOG_WARN(
         AZ_IOT_LOG_COMPONENT_CONNECTION,
-        "SAS renewal: deliveries still unsettled at the settle bound; reconnecting anyway");
+        "planned session end: deliveries still unsettled at the settle bound; ending it anyway");
+  }
+  /* A pause, not a renewal, even when it took a renewal over: the hub reconnects with a new token
+   * anyway. */
+  if (c->planned_hub_session_end.for_provisioning_session)
+  {
+    c->sas_token_renewal_in_progress[AZ_IOT_CONN_SCOPE_HUB] = false;
   }
   start_planned_hub_session_end(c, AZ_IOT_OK);
 }
 
 /**
- * @brief How long a SAS renewal may let deliveries settle: SAS_RENEWAL_SETTLE_TIMEOUT_MS, but not
+ * @brief How long a SAS renewal may let deliveries settle: HUB_SESSION_SETTLE_TIMEOUT_MS, but not
  *        past the session token's expiry by either clock (0 once it expired).
  */
 static uint64_t sas_renewal_settle_ms(const az_iot_connection_client* c)
 {
-  uint64_t settle_ms = SAS_RENEWAL_SETTLE_TIMEOUT_MS;
+  uint64_t settle_ms = HUB_SESSION_SETTLE_TIMEOUT_MS;
   uint64_t const now_ms = az_iot_time_mono_ms();
   uint64_t const expiry_ms = c->hub_session_token_expiry_ms;
   if (expiry_ms != 0u)
@@ -6091,6 +6129,15 @@ static uint64_t sas_renewal_settle_ms(const az_iot_connection_client* c)
   return unix_left_ms < settle_ms ? unix_left_ms : settle_ms;
 }
 
+/** @brief Starts a planned hub session end that first lets the session's deliveries settle for at
+ *         most @p settle_ms; new tracked sends wait meanwhile. */
+static void start_settled_hub_session_end(az_iot_connection_client* c, uint64_t settle_ms)
+{
+  az_iot_deadline__arm_after_ms(
+      &c->planned_hub_session_end.drain_deadline, az_iot_time_mono_ms(), settle_ms);
+  end_hub_session_once_settled(c);
+}
+
 /** @brief Starts renewing the hub's SAS token. MQTT 3.1.1 cannot re-authenticate
  * a live session, so the session is ended and reconnected with a new token, once its
  * deliveries settle (sas_renewal_settle_ms()). */
@@ -6100,9 +6147,7 @@ static void start_sas_token_renewal(az_iot_connection_client* c)
   c->sas_token_renewal_due_ms[AZ_IOT_CONN_SCOPE_HUB] = 0;
   c->sas_token_renewal_due_unix_seconds[AZ_IOT_CONN_SCOPE_HUB] = 0;
   c->sas_token_renewal_in_progress[AZ_IOT_CONN_SCOPE_HUB] = true;
-  az_iot_deadline__arm_after_ms(
-      &c->planned_hub_session_end.drain_deadline, az_iot_time_mono_ms(), sas_renewal_settle_ms(c));
-  end_settled_session_for_sas_renewal(c);
+  start_settled_hub_session_end(c, sas_renewal_settle_ms(c));
 }
 
 /** @brief Whether @p source authenticates with a SAS token. */
@@ -6336,8 +6381,10 @@ static void process_sas_token_renewal(az_iot_connection_client* c)
     return;
   }
   uint64_t now = az_iot_time_mono_ms();
-  /* A session already ending gets its new token on the reconnect. */
-  if (c->sas_token_renewal_in_progress[hub] || planned_hub_session_end_in_progress(c))
+  /* A session already ending, or settling to end for a provisioning session, gets its new token
+   * on the reconnect. */
+  if (c->sas_token_renewal_in_progress[hub] || planned_hub_session_end_in_progress(c)
+      || hub_session_end_settling(c))
   {
     return;
   }
@@ -6628,9 +6675,11 @@ static uint32_t limit_wait_to_connection_deadlines(az_iot_connection_client* c, 
     {
       continue;
     }
-    /* A planned end in progress holds the hub's renewal; its bound is counted below. */
+    /* A planned end in progress or settling holds the hub's renewal; its bounds are counted
+     * below. */
     bool in_progress = c->sas_token_renewal_in_progress[scope]
-        || (scope == AZ_IOT_CONN_SCOPE_HUB && planned_hub_session_end_in_progress(c));
+        || (scope == AZ_IOT_CONN_SCOPE_HUB
+            && (planned_hub_session_end_in_progress(c) || hub_session_end_settling(c)));
     uint64_t deadline = in_progress ? 0 : c->sas_token_renewal_due_ms[scope];
     if (!in_progress && c->sas_token_expiry_ms[scope] != 0
         && (deadline == 0 || c->sas_token_expiry_ms[scope] < deadline))
@@ -8072,7 +8121,7 @@ az_iot_result az_iot_connection_client_close(az_iot_connection_client* client)
   {
     return AZ_IOT_OK;
   }
-  /* A SAS renewal still settling: this DISCONNECT takes it over, under its disconnect bound. */
+  /* A planned end still settling: this DISCONNECT takes it over, under its disconnect bound. */
   if (az_iot_deadline__is_set(&client->planned_hub_session_end.drain_deadline))
   {
     az_iot_deadline__clear(&client->planned_hub_session_end.drain_deadline);
@@ -8416,8 +8465,8 @@ static az_iot_result do_work_pass(az_iot_connection_client* client, uint32_t tim
     }
   }
 
-  /* A SAS renewal ends its session once its deliveries settle. */
-  end_settled_session_for_sas_renewal(client);
+  /* A planned end ends its session once its deliveries settle. */
+  end_hub_session_once_settled(client);
 
   /* A planned end whose disconnect was not reported in time ends anyway; at
    * IDLE once close() took it over. */
@@ -8584,9 +8633,9 @@ az_iot_result az_iot_connection_client_do_work(
   az_iot_result r = do_work_pass(client, timeout_ms);
   /* After every timer, on every path. A callback may withdraw itself or another observer. */
   notify_feature_observers_of(client, AZ_IOT_CONNECTION_FEATURE_EVENT_TICK);
-  /* The TICK may have expired a settling SAS renewal's last delivery: end the session now rather
+  /* The TICK may have expired a settling planned end's last delivery: end the session now rather
    * than after the next wait. */
-  end_settled_session_for_sas_renewal(client);
+  end_hub_session_once_settled(client);
   /* Last: a TICK observer or the session end above can invalidate the assignment too. */
   notify_assignment_invalidated(client);
   return r;
@@ -9241,22 +9290,24 @@ static az_iot_result dps_session_ensure(az_iot_connection_client* client)
     return AZ_IOT_ERR_BUSY;
   }
 
-  /* One session at a time: a connected hub session is ended first, as planned,
-   * and do_work() opens this one once it is gone. Not from a callback, which
+  /* One session at a time: a connected hub session is ended first, as planned, once its
+   * deliveries settle, and do_work() opens this one once it is gone. Not from a callback, which
    * may run inside the hub adapter. */
   if (hub_session_in_use(client))
   {
     if (client->state[AZ_IOT_CONN_SCOPE_HUB] == AZ_IOT_CONN_STATE_CONNECTED
         && client->active_client != NULL && !client->user_close
-        && !planned_hub_session_end_in_progress(client) && client->callback_depth == 0)
+        && !planned_hub_session_end_in_progress(client)
+        && !client->planned_hub_session_end.for_provisioning_session && client->callback_depth == 0)
     {
       AZ_IOT_LOG_INFO(
           AZ_IOT_LOG_COMPONENT_CONNECTION, "ending the hub session for a provisioning session");
-      /* Takes over a SAS renewal still letting deliveries settle: the end is a
-       * pause, not a renewal, and the hub reconnects with a new token anyway. */
-      client->sas_token_renewal_in_progress[AZ_IOT_CONN_SCOPE_HUB] = false;
       client->planned_hub_session_end.for_provisioning_session = true;
-      start_planned_hub_session_end(client, AZ_IOT_OK);
+      /* A SAS renewal already settling keeps its bound; its end then becomes this pause. */
+      if (!hub_session_end_settling(client))
+      {
+        start_settled_hub_session_end(client, HUB_SESSION_SETTLE_TIMEOUT_MS);
+      }
     }
     return AZ_IOT_ERR_BUSY;
   }
@@ -9525,7 +9576,7 @@ static az_iot_result publish_tracked(
     return AZ_IOT_ERR_NOT_CONNECTED;
   }
   /* A session being ended on purpose takes nothing more once its DISCONNECT is sent, and no new
-   * QoS 1 publish while a SAS renewal lets its deliveries settle. */
+   * QoS 1 publish while a planned end lets its deliveries settle. */
   if (planned_hub_session_end_in_progress(client))
   {
     return AZ_IOT_ERR_NOT_CONNECTED;
