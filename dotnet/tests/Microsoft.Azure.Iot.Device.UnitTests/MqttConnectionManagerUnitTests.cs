@@ -25,17 +25,22 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         [InlineData(3600u, 3600u, true)]
         [InlineData(3600u, 0u, true)]
         [InlineData(0u, 3600u, true)]
-        public async Task DisconnectExpiryRespectsTheFinalMqtt5ConnectPacket(
+        public async Task DisconnectExpiryRespectsLaterUnderlyingConnectHandlers(
             uint proposedExpiry, uint actualExpiry, bool desireReconnection)
         {
             using MockConnectionMqttClient mqttClient = new() { RaiseDisconnectCallbackOnClientDisconnect = false };
             using MqttConnectionManager connectionManager = new(mqttClient, TimeSpan.FromSeconds(30), new RecordingRetryPolicy());
-            connectionManager.ConnectingAsync += (packet, _) => Task.FromResult(new MqttConnect()
+            mqttClient.ConnectingAsync += (packet, _) => Task.FromResult(new MqttConnect()
             {
                 HostName = packet.HostName,
                 ProtocolVersion = MqttProtocolVersion.V500,
                 SessionExpiryInterval = actualExpiry,
             });
+            mqttClient.OnConnect = packet =>
+            {
+                Assert.Equal(actualExpiry, packet.SessionExpiryInterval);
+                return Task.FromResult(new MqttConnectAck() { ResultCode = MqttConnectReasonCode.Success });
+            };
             await connectionManager.ConnectAsync(new MqttConnect()
             {
                 HostName = "some-hub.azure-devices.net",

@@ -70,7 +70,10 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
             if (ConnectingAsync != null)
             {
-                connect = await ConnectingAsync.Invoke(connect, cancellationToken);
+                foreach (Func<MqttConnect, CancellationToken, Task<MqttConnect>> handler in ConnectingAsync.GetInvocationList())
+                {
+                    connect = await handler(connect, cancellationToken);
+                }
             }
 
             Interlocked.Increment(ref _connectAttemptCount);

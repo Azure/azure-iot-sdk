@@ -359,12 +359,16 @@ namespace Microsoft.Azure.Iot.Device
             }
         }
 
-        private async Task<MqttConnect> DelegateConnectingAsync(MqttConnect connect, CancellationToken cancellationToken)
+        private Task<MqttConnect> DelegateConnectingAsync(MqttConnect connect, CancellationToken cancellationToken)
         {
-            MqttConnect packet = await _connecting.InvokeAsync(connect, cancellationToken);
-            _protocolVersionAtConnect = packet.ProtocolVersion;
-            _sessionExpiryIntervalAtConnect = packet.SessionExpiryInterval;
-            return packet;
+            return _connecting.InvokeAsync(connect, cancellationToken);
+        }
+
+        private Task<MqttConnect> CaptureConnectSettingsAsync(MqttConnect connect, CancellationToken cancellationToken)
+        {
+            _protocolVersionAtConnect = connect.ProtocolVersion;
+            _sessionExpiryIntervalAtConnect = connect.SessionExpiryInterval;
+            return Task.FromResult(connect);
         }
 
         private async Task DelegateDisconnectedAsync(MqttClientDisconnectedEventArgs args)
@@ -894,7 +898,17 @@ namespace Microsoft.Azure.Iot.Device
                 return null;
             }
 
-            MqttConnectAck connectResult = await _underlyingMqttClient.ConnectAsync(options, cancellationToken).ConfigureAwait(false);
+            MqttConnectAck connectResult;
+            // Observe the packet after handlers registered directly on the adapter, not just this manager's handlers.
+            _underlyingMqttClient.ConnectingAsync += CaptureConnectSettingsAsync;
+            try
+            {
+                connectResult = await _underlyingMqttClient.ConnectAsync(options, cancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                _underlyingMqttClient.ConnectingAsync -= CaptureConnectSettingsAsync;
+            }
 
             if (connectResult.ResultCode != MqttConnectReasonCode.Success)
             {
