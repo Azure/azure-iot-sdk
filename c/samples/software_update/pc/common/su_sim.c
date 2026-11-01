@@ -341,7 +341,7 @@ int32_t save_update_workflow_to_file(const uint8_t* blob, size_t len, void* user
   if (len == 0)
   {
     /* Invalidation: remove the file so a later run finds no checkpoint. */
-    if (remove(s->state_file) != 0 && errno != ENOENT)
+    if (!sample_file_remove_durably(s->state_file))
     {
       return AZ_IOT_SU_RESULT_FAILURE;
     }
