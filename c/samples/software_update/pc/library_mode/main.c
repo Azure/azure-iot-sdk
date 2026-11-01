@@ -236,16 +236,8 @@ static bool save_applied_update_id_as_installed(sample_state* s)
                      applied->applied_provider,
                      applied->applied_name,
                      applied->applied_version)
-          > 0
-      && sample_file_flush_to_storage(file);
-  bool replaced
-      = fclose(file) == 0 && written && sample_file_replace(temporary_path, s->installed_file);
-  if (!replaced)
-  {
-    (void)remove(temporary_path);
-  }
-  free(temporary_path);
-  if (!replaced)
+      > 0;
+  if (!sample_file_complete_atomic_write(file, temporary_path, s->installed_file, written))
   {
     return false;
   }
