@@ -62,8 +62,6 @@ typedef struct
   sample_config config;
   az_iot_certificate_provider_pem certs;
   az_iot_connection_client connection_client;
-  az_iot_mqtt_factory* factory_v3;
-  az_iot_mqtt_factory* factory_v5;
   /* Only the one matching `profile` is ever initialized. */
   az_iot_mqttv3_direct_method_client mqttv3;
   az_iot_mqttv5_direct_method_client mqttv5;
@@ -103,13 +101,6 @@ static void sample_state_destroy(sample_state* s)
 {
   clients_destroy(s, NULL);
   az_iot_connection_client_deinit(&s->connection_client);
-#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
-  az_iot_paho_factory_destroy(s->factory_v3);
-  az_iot_paho_factory_destroy(s->factory_v5);
-#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
-  az_iot_az_mqtt_factory_destroy(s->factory_v3);
-  az_iot_az_mqtt_factory_destroy(s->factory_v5);
-#endif
   az_iot_certificate_provider_pem_deinit(&s->certs);
   sample_config_release(&s->config);
 }
@@ -177,8 +168,33 @@ static void on_method_mqttv3(
   }
 
   printf("method '%s' invoked, %zu byte payload\n", method_name, payload_len);
-  (void)az_iot_mqttv3_direct_method_respond(
-      &ctx->state->mqttv3, request, STATUS_OK, payload, payload_len);
+
+  /* The echo must fit the MQTT send buffer with its topic; the arguments can be larger (up to
+   * the receive buffer). An answer that does not fit is refused and the request KEPT, so answer
+   * 413 rather than leave the caller waiting. */
+  int status = payload_len <= SAMPLE_MQTT_ECHO_PAYLOAD_MAX ? STATUS_OK : STATUS_PAYLOAD_TOO_LARGE;
+  az_iot_result result = az_iot_mqttv3_direct_method_respond(
+      &ctx->state->mqttv3,
+      request,
+      status,
+      status == STATUS_OK ? payload : NULL,
+      status == STATUS_OK ? payload_len : 0);
+  if (result == AZ_IOT_ERR_NOT_ENOUGH_SPACE)
+  {
+    status = STATUS_PAYLOAD_TOO_LARGE;
+    result = az_iot_mqttv3_direct_method_respond(&ctx->state->mqttv3, request, status, NULL, 0);
+  }
+  if (result != AZ_IOT_OK)
+  {
+    printf("response was not sent: %s\n", az_iot_result_to_string(result));
+  }
+  else if (status != STATUS_OK)
+  {
+    printf(
+        "payload larger than %u bytes: answered %d\n",
+        (unsigned)SAMPLE_MQTT_ECHO_PAYLOAD_MAX,
+        status);
+  }
 }
 
 /* ---- MQTTv5 (mqttv5) ------------------------------------------------------------ */
@@ -323,6 +339,17 @@ int main(void)
   copts.dps.registration_id = state.config.reg_id;
   copts.dps.global_endpoint = state.config.dps_global_endpoint; /* NULL: the global default */
   copts.certificate_provider = &state.certs.base;
+  /* The adapter builds each session's MQTT client in this workspace, one at a time: MQTT 3.1.1
+   * for DPS and an MQTTv3 hub, MQTT 5 for an MQTTv5 hub. Limits: sample_utils.h. */
+  static uint8_t mqtt_workspace[SAMPLE_MQTT_WORKSPACE_SIZE];
+#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
+  copts.mqtt_adapter = az_iot_paho_get_adapter();
+#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
+  copts.mqtt_adapter = az_iot_az_mqtt_get_adapter();
+#endif
+  copts.mqtt_limits = SAMPLE_MQTT_LIMITS;
+  copts.mqtt_workspace = mqtt_workspace;
+  copts.mqtt_workspace_size = sizeof(mqtt_workspace);
 
   if (az_iot_connection_client_init(&state.connection_client, &copts) != AZ_IOT_OK)
   {
@@ -330,30 +357,6 @@ int main(void)
     return 1;
   }
   az_iot_connection_client_add_state_observer(&state.connection_client, on_conn_state, &user_ctx);
-
-  /* Both adapters: v3.1.1 serves DPS and an MQTTv3 hub, v5 serves an MQTTv5 hub. */
-#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
-  state.factory_v3 = az_iot_paho_factory_create_v3_1_1();
-#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
-  state.factory_v3 = az_iot_az_mqtt_factory_create_v3_1_1();
-#endif
-  if (az_iot_connection_client_register_mqtt_factory(&state.connection_client, state.factory_v3)
-      != AZ_IOT_OK)
-  {
-    sample_state_destroy(&state);
-    return 1;
-  }
-#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
-  state.factory_v5 = az_iot_paho_factory_create_v5();
-#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
-  state.factory_v5 = az_iot_az_mqtt_factory_create_v5();
-#endif
-  if (az_iot_connection_client_register_mqtt_factory(&state.connection_client, state.factory_v5)
-      != AZ_IOT_OK)
-  {
-    sample_state_destroy(&state);
-    return 1;
-  }
 
   /* Assume a generation until DPS says otherwise; see unified/telemetry. */
   if (clients_build(&state, AZ_IOT_CONNECTION_PROFILE_MQTT_V3, &user_ctx) != AZ_IOT_OK

@@ -13,7 +13,7 @@ see [`mqttv5/direct_method_responder`](../../mqttv5/direct_method_responder/READ
 - Direct methods differ most between the generations, so each gets its own setup:
 -   - mqttv3 has no method registry and no probe. One handler receives every invocation with its arguments, so the sample routes by name and answers unknown names with 404. mqttv3 never learns the caller's timeout, so the sample sets a local response timeout (60 s).
 -   - mqttv5 asks before it calls. Methods are declared with `register_method()`; a probe for any other name is answered `METHOD_NOT_FOUND` by the SDK before the arguments are sent. An optional probe handler can decline a declared method (for example `DEVICE_BUSY`); this sample accepts every probe.
-- On mqttv5, a payload larger than `AZ_IOT_MQTTV5_DM_RESULT_BODY_MAX` is answered 413.
+- Echo size: an echo must fit the MQTT send buffer. On mqttv3, a payload larger than `SAMPLE_MQTT_ECHO_PAYLOAD_MAX` (the 8 KiB send buffer less 256 bytes for the topic, in [`sample_utils.h`](../../common/sample_utils.h)) is answered 413 with no payload, in the Paho build too; raise `SAMPLE_MQTT_SEND_BUFFER_SIZE` to echo more. On mqttv5, one larger than `AZ_IOT_MQTTV5_DM_RESULT_BODY_MAX` (512 bytes) is answered 413.
 - Rebuilds its clients when DPS assigns the other generation, as [`unified/telemetry`](../telemetry/README.md) does.
 - Platforms: Linux and Windows.
 
@@ -115,7 +115,7 @@ prints `method '<name>' is not implemented here`.
 
 | What | Code |
 | --- | --- |
-| Register both MQTT adapters (DPS always uses MQTT 3.1.1) | `az_iot_paho_factory_create_v3_1_1()`, `az_iot_paho_factory_create_v5()`; az_mqtt: `az_iot_az_mqtt_factory_create_v3_1_1()`, `az_iot_az_mqtt_factory_create_v5()` |
+| MQTT adapter and the workspace it builds each MQTT client in | `mqtt_adapter` (`az_iot_paho_get_adapter()`; az_mqtt: `az_iot_az_mqtt_get_adapter()`), `mqtt_limits`, `mqtt_workspace`; sizes in [`sample_utils.h`](../../common/sample_utils.h) |
 | Build or rebuild the method client for a generation | `clients_build()`, `clients_destroy()` |
 | mqttv3: one handler, route by name, local timeout | `az_iot_mqttv3_direct_method_client_set_handler()`, `on_method_mqttv3()`, `az_iot_mqttv3_direct_method_client_set_response_timeout()` |
 | mqttv5: declare the method, probe handler | `az_iot_mqttv5_direct_method_client_register_method()`, `az_iot_mqttv5_direct_method_client_set_probe_handler()`, `on_echo_mqttv5()` |
