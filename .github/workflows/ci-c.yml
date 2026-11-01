@@ -1688,16 +1688,18 @@ jobs:
   # ESP-IDF builds: one job per ESP32 sample, target and profile, each through
   # eng/esp-idf-build.sh (fails on any compiler warning). Secure profiles are
   # signed with a key generated per build and discarded. qemu builds (OpenCores
-  # Ethernet) are also booted in QEMU and must get an IPv4 address.
+  # Ethernet) are also booted in QEMU and must get an IPv4 address. Every cell
+  # builds with the newest ESP-IDF 6 release; the cells with `idf: v6.0` build
+  # with the samples' minimum, v6.0.
   # ---------------------------------------------------------------------------
   esp-idf:
-    name: esp-idf / ${{ matrix.sample }} / ${{ matrix.target }} / ${{ matrix.profile }}
+    name: esp-idf / ${{ matrix.sample }} / ${{ matrix.target }} / ${{ matrix.profile }}${{ matrix.idf == 'v6.0' && ' / v6.0' || '' }}
     needs: changes
     if: needs.changes.outputs.c == 'true' || github.event_name != 'pull_request'
     runs-on: ubuntu-24.04
     container:
-      # espressif/idf:v6.0, pinned by digest.
-      image: espressif/idf:v6.0@sha256:59df146f64aa0b13886a13a74682ad157482b446f5cc16582500803c95c71401
+      # espressif/idf, pinned by digest: v6.1 (the newest ESP-IDF 6 release), or v6.0.
+      image: ${{ matrix.idf == 'v6.0' && 'espressif/idf:v6.0@sha256:59df146f64aa0b13886a13a74682ad157482b446f5cc16582500803c95c71401' || 'espressif/idf:v6.1@sha256:81893c71bb5e570088901f21def8684c25cd2a9020281bd01b843a7655edb18c' }}
     defaults:
       run:
         shell: bash
@@ -1708,6 +1710,8 @@ jobs:
         sample: [ software_update/esp32 ]
         target: [ esp32, esp32c3, esp32s3, esp32c6 ]
         profile: [ default, secure ]
+        # An axis, so the v6.0 entries below add jobs instead of changing the v6.1 ones.
+        idf: [ v6.1 ]
         include:
           - sample: software_update/esp32
             target: esp32
@@ -1732,6 +1736,9 @@ jobs:
           - { sample: unified/esp32, target: esp32, profile: qemu }
           - { sample: unified/esp32, target: esp32s3, profile: qemu }
           - { sample: unified/esp32, target: esp32c3, profile: qemu }
+          # The samples' minimum ESP-IDF.
+          - { sample: software_update/esp32, target: esp32, profile: default, idf: v6.0 }
+          - { sample: unified/esp32, target: esp32, profile: default, idf: v6.0 }
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:

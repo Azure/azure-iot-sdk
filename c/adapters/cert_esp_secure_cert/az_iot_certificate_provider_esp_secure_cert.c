@@ -65,6 +65,19 @@ static az_iot_result import_ds_key(az_iot_certificate_provider_esp_secure_cert* 
     return AZ_IOT_ERR_NOT_FOUND;
   }
   // As esp-tls does: the PSA key references the context, which must outlive it.
+#if defined(PSA_KEY_LIFETIME_ESP_RSA_DS_VOLATILE)
+  // ESP-IDF v6.0.1 and later: the key data is an opaque key pointing to the context.
+  esp_rsa_ds_opaque_key_t opaque_key = { 0 };
+  opaque_key.ds_data_ctx = ds;
+  const uint8_t* key_data = (const uint8_t*)&opaque_key;
+  size_t const key_data_size = sizeof(opaque_key);
+  psa_key_lifetime_t const lifetime = PSA_KEY_LIFETIME_ESP_RSA_DS_VOLATILE;
+#else
+  // ESP-IDF v6.0: the key data is the context itself.
+  const uint8_t* key_data = (const uint8_t*)ds;
+  size_t const key_data_size = sizeof(*ds);
+  psa_key_lifetime_t const lifetime = PSA_KEY_LIFETIME_ESP_RSA_DS;
+#endif
   psa_key_attributes_t attributes = PSA_KEY_ATTRIBUTES_INIT;
   psa_set_key_type(&attributes, PSA_KEY_TYPE_RSA_KEY_PAIR);
   psa_set_key_bits(&attributes, ds->rsa_length_bits);
@@ -73,12 +86,12 @@ static az_iot_result import_ds_key(az_iot_certificate_provider_esp_secure_cert* 
 #if defined(CONFIG_MBEDTLS_SSL_PROTO_TLS1_3)
   psa_set_key_enrollment_algorithm(&attributes, PSA_ALG_RSA_PSS(PSA_ALG_ANY_HASH));
 #endif
-  psa_set_key_lifetime(&attributes, PSA_KEY_LIFETIME_ESP_RSA_DS);
+  psa_set_key_lifetime(&attributes, lifetime);
   psa_key_id_t id = 0;
   psa_status_t status = psa_crypto_init();
   if (status == PSA_SUCCESS)
   {
-    status = psa_import_key(&attributes, (const uint8_t*)ds, sizeof(*ds), &id);
+    status = psa_import_key(&attributes, key_data, key_data_size, &id);
   }
   psa_reset_key_attributes(&attributes);
   if (status != PSA_SUCCESS || id == 0)

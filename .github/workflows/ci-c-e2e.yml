@@ -620,13 +620,13 @@ jobs:
       - name: Run e2e
         env:
           TARGET: ${{ matrix.target }}
-        # espressif/idf:v6.0, pinned by digest (as ci-c.yml's esp-idf job). Its
+        # espressif/idf:v6.1, pinned by digest (as ci-c.yml's esp-idf job). Its
         # entrypoint sources export.sh; the host compiler and OpenSSL headers
         # build the test.
         run: |
           docker run --rm --env-file "$RUNNER_TEMP/esp32-device/env" \
             -v "$GITHUB_WORKSPACE:/work" -v "$RUNNER_TEMP/esp32-device:/device:ro" -w /work/c \
-            espressif/idf:v6.0@sha256:59df146f64aa0b13886a13a74682ad157482b446f5cc16582500803c95c71401 \
+            espressif/idf:v6.1@sha256:81893c71bb5e570088901f21def8684c25cd2a9020281bd01b843a7655edb18c \
             bash -c 'set -e
               git config --global --add safe.directory /work
               apt-get update -qq && apt-get install -y -qq gcc libc6-dev libssl-dev > /dev/null

@@ -874,6 +874,7 @@ namespace Microsoft.Azure.Iot.Device
                     TcpPort = 8883,
                     WebsocketPort = WebSocketPort,
                     ClientId = deviceId,
+                    SessionExpiryInterval = CurrentConnectionContext.ConnectionProfile == IotHubConnectionType.Mqttv5 ? 3600u : 0u,
 
                     // Overwritten on each connect attempt by PatchConnectPacketAsync when session resumption is allowed.
                     CleanSession = true,
