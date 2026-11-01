@@ -83,9 +83,59 @@ typedef struct az_iot_mock_mqtt_factory_state
   mock_client_source source;
 } az_iot_mock_mqtt_factory_state;
 
-/* The mock adapters' clients, the newest live one of each MQTT version, and their counts. */
+/* The mock adapters' clients and their counts. */
 static mock_client_source s_adapter_source;
-static az_iot_mock_mqtt_client* s_adapter_last_client_of_version[AZ_IOT_MQTT_VERSION_5 + 1];
+/* The mock adapters' live clients, oldest first; the oldest is dropped when full. */
+#define MOCK_ADAPTER_LIVE_CLIENTS_MAX 32u
+static az_iot_mock_mqtt_client* s_adapter_live_clients[MOCK_ADAPTER_LIVE_CLIENTS_MAX];
+static size_t s_adapter_live_client_count;
+
+/** @brief Record @p m as the newest live client of the mock adapters. */
+static void adapter_live_clients_add(az_iot_mock_mqtt_client* m)
+{
+  if (s_adapter_live_client_count == MOCK_ADAPTER_LIVE_CLIENTS_MAX)
+  {
+    memmove(
+        &s_adapter_live_clients[0],
+        &s_adapter_live_clients[1],
+        (MOCK_ADAPTER_LIVE_CLIENTS_MAX - 1u) * sizeof(s_adapter_live_clients[0]));
+    s_adapter_live_client_count--;
+  }
+  s_adapter_live_clients[s_adapter_live_client_count++] = m;
+}
+
+/** @brief Forget @p m, destroyed, among the mock adapters' live clients. */
+static void adapter_live_clients_remove(const az_iot_mock_mqtt_client* m)
+{
+  for (size_t i = 0; i < s_adapter_live_client_count; ++i)
+  {
+    if (s_adapter_live_clients[i] == m)
+    {
+      memmove(
+          &s_adapter_live_clients[i],
+          &s_adapter_live_clients[i + 1u],
+          (s_adapter_live_client_count - i - 1u) * sizeof(s_adapter_live_clients[0]));
+      s_adapter_live_client_count--;
+      return;
+    }
+  }
+}
+
+/** @brief The newest live client of the mock adapters, of @p version unless @p any_version. */
+static az_iot_mock_mqtt_client* adapter_newest_live_client(
+    bool any_version,
+    az_iot_mqtt_version version)
+{
+  for (size_t i = s_adapter_live_client_count; i > 0; --i)
+  {
+    az_iot_mock_mqtt_client* m = s_adapter_live_clients[i - 1u];
+    if (any_version || m->iface_storage.version == version)
+    {
+      return m;
+    }
+  }
+  return NULL;
+}
 static az_iot_mock_mqtt_adapter_stats s_adapter_stats;
 /* Versions requested by the mock adapter's init() calls, oldest first. */
 static az_iot_mqtt_version s_adapter_versions[AZ_IOT_MOCK_MQTT_ADAPTER_VERSION_HISTORY];
@@ -454,10 +504,7 @@ static void mock_destroy(az_iot_mqtt_client* self)
   if (m->in_workspace)
   {
     /* The workspace is the application's: kept as is, so the core's wipe is observable. */
-    if (s_adapter_last_client_of_version[m->iface_storage.version] == m)
-    {
-      s_adapter_last_client_of_version[m->iface_storage.version] = NULL;
-    }
+    adapter_live_clients_remove(m);
     s_adapter_stats.destroyed++;
     s_adapter_stats.live--;
     return;
@@ -623,7 +670,7 @@ static az_iot_result mock_adapter_build(
   memset(m, 0, sizeof(*m));
   mock_client_setup(m, mqtt_version, &s_adapter_source);
   m->in_workspace = true;
-  s_adapter_last_client_of_version[mqtt_version] = m;
+  adapter_live_clients_add(m);
   s_adapter_stats.built++;
   s_adapter_stats.live++;
   if (s_adapter_stats.live > s_adapter_stats.max_live)
@@ -701,14 +748,12 @@ const az_iot_mqtt_adapter* az_iot_mock_mqtt_get_adapter_for_version(az_iot_mqtt_
 
 az_iot_mock_mqtt_client* az_iot_mock_mqtt_adapter_last_client(void)
 {
-  return s_adapter_source.last_client;
+  return adapter_newest_live_client(true, AZ_IOT_MQTT_VERSION_3_1_1);
 }
 
 az_iot_mock_mqtt_client* az_iot_mock_mqtt_adapter_last_client_of(az_iot_mqtt_version version)
 {
-  return version == AZ_IOT_MQTT_VERSION_3_1_1 || version == AZ_IOT_MQTT_VERSION_5
-      ? s_adapter_last_client_of_version[version]
-      : NULL;
+  return adapter_newest_live_client(false, version);
 }
 
 az_iot_mock_mqtt_adapter_stats az_iot_mock_mqtt_adapter_get_stats(void)
@@ -736,7 +781,8 @@ void az_iot_mock_mqtt_adapter_fail_next_connect(az_iot_result result)
 void az_iot_mock_mqtt_adapter_reset(void)
 {
   memset(&s_adapter_source, 0, sizeof(s_adapter_source));
-  memset(s_adapter_last_client_of_version, 0, sizeof(s_adapter_last_client_of_version));
+  memset(s_adapter_live_clients, 0, sizeof(s_adapter_live_clients));
+  s_adapter_live_client_count = 0;
   memset(&s_adapter_stats, 0, sizeof(s_adapter_stats));
   s_adapter_version_count = 0;
 }

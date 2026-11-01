@@ -708,9 +708,50 @@ static void init_sizes_the_mqtt_workspace_for_the_az_mqtt_adapter(void** state)
 }
 #endif
 
+/* The mock adapter reports its newest client still alive, of any version or of
+ * one, after a newer client is destroyed. */
+static void the_mock_adapter_reports_its_newest_live_client(void** state)
+{
+  (void)state;
+  const az_iot_mqtt_adapter* adapter = az_iot_mock_mqtt_get_adapter();
+  size_t const size = adapter->get_workspace_size(&az_iot_mock_mqtt_limits);
+  uint8_t* older_workspace = (uint8_t*)malloc(size);
+  uint8_t* newer_workspace = (uint8_t*)malloc(size);
+  assert_non_null(older_workspace);
+  assert_non_null(newer_workspace);
+  az_iot_mqtt_client* older = NULL;
+  az_iot_mqtt_client* newer = NULL;
+  assert_int_equal(
+      adapter->init(
+          AZ_IOT_MQTT_VERSION_3_1_1, &az_iot_mock_mqtt_limits, older_workspace, size, &older),
+      AZ_IOT_OK);
+  assert_int_equal(
+      adapter->init(
+          AZ_IOT_MQTT_VERSION_3_1_1, &az_iot_mock_mqtt_limits, newer_workspace, size, &newer),
+      AZ_IOT_OK);
+  assert_ptr_equal(
+      az_iot_mock_mqtt_adapter_last_client_of(AZ_IOT_MQTT_VERSION_3_1_1),
+      az_iot_mock_mqtt_client_from(newer));
+
+  newer->iface->destroy(newer);
+  assert_ptr_equal(
+      az_iot_mock_mqtt_adapter_last_client_of(AZ_IOT_MQTT_VERSION_3_1_1),
+      az_iot_mock_mqtt_client_from(older));
+  assert_ptr_equal(az_iot_mock_mqtt_adapter_last_client(), az_iot_mock_mqtt_client_from(older));
+  assert_null(az_iot_mock_mqtt_adapter_last_client_of(AZ_IOT_MQTT_VERSION_5));
+
+  older->iface->destroy(older);
+  assert_null(az_iot_mock_mqtt_adapter_last_client_of(AZ_IOT_MQTT_VERSION_3_1_1));
+  assert_null(az_iot_mock_mqtt_adapter_last_client());
+  free(newer_workspace);
+  free(older_workspace);
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
+    cmocka_unit_test_setup_teardown(
+        the_mock_adapter_reports_its_newest_live_client, setup, teardown),
     cmocka_unit_test_setup_teardown(init_checks_the_mqtt_workspace, setup, teardown),
     cmocka_unit_test_setup_teardown(init_refuses_overlapping_workspaces, setup, teardown),
     cmocka_unit_test_setup_teardown(init_accepts_adjacent_workspaces, setup, teardown),
