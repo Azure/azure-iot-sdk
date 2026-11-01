@@ -73,8 +73,6 @@ typedef struct fixture
 {
   az_iot_connection_client client_storage;
   az_iot_connection_client* client;
-  az_iot_mqtt_factory* factory;
-  az_iot_mqtt_factory* other_factory;
   state_record rec;
   uint8_t csr_buf[AZ_IOT_CSR_PAYLOAD_BUFFER_MIN];
 } fixture;
@@ -82,7 +80,7 @@ typedef struct fixture
 static uint8_t g_connection_workspace[AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE];
 static uint8_t g_mqtt_workspace[AZ_IOT_MOCK_MQTT_WORKSPACE_SIZE];
 
-/** @brief A direct MQTT 3.1.1 client whose MQTT clients @p mqtt_adapter builds (NULL: none). */
+/** @brief A direct MQTT 3.1.1 client whose MQTT clients @p mqtt_adapter builds. */
 static int setup_direct(void** state, const az_iot_mqtt_adapter* mqtt_adapter)
 {
   fixture* fx = (fixture*)calloc(1, sizeof(*fx));
@@ -108,24 +106,12 @@ static int setup(void** state)
   return setup_direct(state, az_iot_mock_mqtt_get_adapter_for_version(AZ_IOT_MQTT_VERSION_3_1_1));
 }
 
-/* The factory registry tests: no adapter, and a factory to register. */
-static int setup_factory_registry(void** state)
-{
-  int rc = setup_direct(state, NULL);
-  fixture* fx = (fixture*)*state;
-  fx->factory = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
-  assert_non_null(fx->factory);
-  return rc;
-}
-
 static int teardown(void** state)
 {
   fixture* fx = (fixture*)*state;
   if (fx)
   {
     az_iot_test_connection_client_deinit(&fx->client_storage);
-    az_iot_mock_mqtt_factory_destroy(fx->factory);
-    az_iot_mock_mqtt_factory_destroy(fx->other_factory);
     free(fx);
   }
   return 0;
@@ -166,153 +152,12 @@ static int setup_with_reconnect(void** state)
 /* tests                                                                     */
 /* ------------------------------------------------------------------------- */
 
-static void register_rejects_null_create(void** state)
-{
-  fixture* fx = (fixture*)*state;
-
-  /* A factory with a NULL create function is rejected. */
-  az_iot_mqtt_factory bad = { 0 };
-  bad.version = AZ_IOT_MQTT_VERSION_3_1_1;
-  bad.create = NULL;
-  assert_int_equal(
-      az_iot_connection_client_register_mqtt_factory(fx->client, &bad), AZ_IOT_ERR_INVALID_ARG);
-}
-
-static void registering_the_same_factory_twice_does_not_grow_the_registry(void** state)
-{
-  fixture* fx = (fixture*)*state;
-
-  /* A duplicate entry would never be reachable: find_factory() returns the
-   * first match for a version. */
-  assert_int_equal(
-      az_iot_connection_client_register_mqtt_factory(fx->client, fx->factory), AZ_IOT_OK);
-  assert_int_equal(fx->client->factory_count, 1);
-
-  assert_int_equal(
-      az_iot_connection_client_register_mqtt_factory(fx->client, fx->factory), AZ_IOT_OK);
-  assert_int_equal(fx->client->factory_count, 1);
-}
-
-static void a_duplicate_registration_leaves_the_connection_usable(void** state)
-{
-  fixture* fx = (fixture*)*state;
-
-  assert_int_equal(
-      az_iot_connection_client_register_mqtt_factory(fx->client, fx->factory), AZ_IOT_OK);
-  assert_int_equal(
-      az_iot_connection_client_register_mqtt_factory(fx->client, fx->factory), AZ_IOT_OK);
-
-  /* Swallowing the duplicate must not swallow the registration itself. */
-  assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
-  az_iot_mock_mqtt_client* mock = az_iot_mock_mqtt_factory_last_client(fx->factory);
-  assert_non_null(mock);
-  assert_true(az_iot_mock_mqtt_client_inject_connected(mock, AZ_IOT_OK));
-  assert_int_equal(az_iot_connection_client_do_work(fx->client, 0), AZ_IOT_OK);
-  assert_true(fx->rec.count > 0);
-  assert_int_equal(fx->rec.states[fx->rec.count - 1], AZ_IOT_CONN_STATE_CONNECTED);
-}
-
-static void a_distinct_factory_for_the_same_version_still_registers(void** state)
-{
-  fixture* fx = (fixture*)*state;
-
-  /* Only an EXACT duplicate is folded away. A different factory is a different
-   * registration, even when it serves a version that already has one. */
-  assert_int_equal(
-      az_iot_connection_client_register_mqtt_factory(fx->client, fx->factory), AZ_IOT_OK);
-  assert_int_equal(fx->client->factory_count, 1);
-
-  fx->other_factory = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
-  assert_non_null(fx->other_factory);
-  assert_int_equal(
-      az_iot_connection_client_register_mqtt_factory(fx->client, fx->other_factory), AZ_IOT_OK);
-  assert_int_equal(fx->client->factory_count, 2);
-}
-
 /* A direct-hub client reports the caller's client_id alongside its host. */
 static void get_device_id_returns_the_direct_client_id(void** state)
 {
   fixture* fx = (fixture*)*state;
   assert_string_equal(az_iot_connection_client_get_device_id(fx->client), "ut-device");
   assert_string_equal(az_iot_connection_client_get_iothub_address(fx->client), "broker.example");
-}
-
-static az_iot_mqtt_client* null_factory_create(void* ctx)
-{
-  (void)ctx;
-  return NULL;
-}
-
-static void init_bare_client(az_iot_connection_client* client)
-{
-  az_iot_connection_client_options opts = { 0 };
-  opts.iothub_hostname = "broker.example";
-  opts.port = 8883;
-  opts.device_id = "ut-device";
-  assert_int_equal(az_iot_test_connection_client_init(client, &opts), AZ_IOT_OK);
-}
-
-/* deinit() only borrows a registered factory: it is still usable afterwards
- * and the application destroys it. ASan reports a use-after-free or a double
- * free if deinit() released it. */
-static void deinit_leaves_a_registered_factory_intact(void** state)
-{
-  (void)state;
-  az_iot_connection_client client;
-  init_bare_client(&client);
-  az_iot_mqtt_factory* factory = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
-  assert_non_null(factory);
-  assert_int_equal(az_iot_connection_client_register_mqtt_factory(&client, factory), AZ_IOT_OK);
-  assert_int_equal(az_iot_connection_client_open(&client), AZ_IOT_OK);
-  assert_non_null(az_iot_mock_mqtt_factory_last_client(factory));
-
-  az_iot_test_connection_client_deinit(&client);
-
-  /* deinit() destroyed the session's MQTT client, not the factory. */
-  assert_null(az_iot_mock_mqtt_factory_last_client(factory));
-  assert_int_equal(factory->version, AZ_IOT_MQTT_VERSION_3_1_1);
-  az_iot_mqtt_client* mqtt = factory->create(factory->factory_ctx);
-  assert_non_null(mqtt);
-  assert_ptr_equal(
-      az_iot_mock_mqtt_factory_last_client(factory), az_iot_mock_mqtt_client_from(mqtt));
-  mqtt->iface->destroy(mqtt);
-  az_iot_mock_mqtt_factory_destroy(factory);
-}
-
-/* A rejected registration leaves the registry exactly as it was. */
-static void a_rejected_registration_changes_nothing(void** state)
-{
-  (void)state;
-  az_iot_connection_client client;
-  init_bare_client(&client);
-  int ctx[AZ_IOT_MAX_MQTT_FACTORIES + 1];
-  az_iot_mqtt_factory factories[AZ_IOT_MAX_MQTT_FACTORIES + 1];
-  for (size_t i = 0; i < AZ_IOT_MAX_MQTT_FACTORIES + 1; ++i)
-  {
-    factories[i].version = AZ_IOT_MQTT_VERSION_3_1_1;
-    factories[i].create = null_factory_create;
-    factories[i].factory_ctx = &ctx[i];
-  }
-  for (size_t i = 0; i < AZ_IOT_MAX_MQTT_FACTORIES; ++i)
-  {
-    assert_int_equal(
-        az_iot_connection_client_register_mqtt_factory(&client, &factories[i]), AZ_IOT_OK);
-  }
-  az_iot_mqtt_factory* rejected = &factories[AZ_IOT_MAX_MQTT_FACTORIES];
-  assert_int_equal(
-      az_iot_connection_client_register_mqtt_factory(&client, rejected), AZ_IOT_ERR_NOT_SUPPORTED);
-  assert_int_equal(
-      az_iot_connection_client_register_mqtt_factory(NULL, rejected), AZ_IOT_ERR_INVALID_ARG);
-
-  assert_int_equal(client.factory_count, AZ_IOT_MAX_MQTT_FACTORIES);
-  /* Field by field: struct padding is uninitialized. */
-  for (size_t i = 0; i < AZ_IOT_MAX_MQTT_FACTORIES; ++i)
-  {
-    assert_int_equal(client.factories[i].version, factories[i].version);
-    assert_true(client.factories[i].create == factories[i].create);
-    assert_ptr_equal(client.factories[i].factory_ctx, factories[i].factory_ctx);
-  }
-  az_iot_test_connection_client_deinit(&client);
 }
 
 static int setup_with_a_v5_only_adapter(void** state)
@@ -1514,6 +1359,10 @@ static void open_rejects_operational_cert_without_csr_provider(void** state)
   opts.dps.request_operational_certificate = true;
   opts.workspace = g_connection_workspace;
   opts.workspace_size = sizeof(g_connection_workspace);
+  opts.mqtt_adapter = az_iot_mock_mqtt_get_adapter_for_version(AZ_IOT_MQTT_VERSION_3_1_1);
+  opts.mqtt_limits = az_iot_mock_mqtt_limits;
+  opts.mqtt_workspace = g_mqtt_workspace;
+  opts.mqtt_workspace_size = sizeof(g_mqtt_workspace);
 
   /* Case 1: no certificate_provider at all: refused as missing, before the CSR
    * capability is considered. */
@@ -4974,18 +4823,7 @@ int main(void)
         hub_mqtt_v5_a_client_attached_while_connecting_binds_at_once, setup_mqtt_v5, teardown),
     cmocka_unit_test_setup_teardown(
         an_mqttv3_client_attached_while_connecting_is_not_bound, setup, teardown),
-    cmocka_unit_test_setup_teardown(register_rejects_null_create, setup_factory_registry, teardown),
     cmocka_unit_test_setup_teardown(get_device_id_returns_the_direct_client_id, setup, teardown),
-    cmocka_unit_test_setup_teardown(
-        registering_the_same_factory_twice_does_not_grow_the_registry,
-        setup_factory_registry,
-        teardown),
-    cmocka_unit_test_setup_teardown(
-        a_duplicate_registration_leaves_the_connection_usable, setup_factory_registry, teardown),
-    cmocka_unit_test_setup_teardown(
-        a_distinct_factory_for_the_same_version_still_registers, setup_factory_registry, teardown),
-    cmocka_unit_test(deinit_leaves_a_registered_factory_intact),
-    cmocka_unit_test(a_rejected_registration_changes_nothing),
     cmocka_unit_test_setup_teardown(
         open_when_the_adapter_lacks_the_mqtt_version_returns_not_supported,
         setup_with_a_v5_only_adapter,

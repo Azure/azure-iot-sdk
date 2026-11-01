@@ -128,6 +128,7 @@ az_iot_apply_warnings(az_iot_test_support)
 az_iot_add_cmocka_test(az_iot_tests_smoke unit/smoke_test.c)
 target_include_directories(az_iot_tests_smoke PRIVATE
     ${PROJECT_SOURCE_DIR}/src/core)
+target_link_libraries(az_iot_tests_smoke PRIVATE az_iot_test_support)
 az_iot_add_cmocka_test(az_iot_tests_mqtt_iface_contract unit/mqtt_iface_contract_test.c)
 target_link_libraries(az_iot_tests_mqtt_iface_contract PRIVATE az_iot_test_support)
 az_iot_add_cmocka_test(az_iot_tests_connection_client_workspace unit/connection_client_workspace_test.c)
@@ -378,7 +379,8 @@ set_tests_properties(
 # only so the profile-pin test can show a released pin admits the other
 # generation.
 az_iot_add_cmocka_test(az_iot_tests_mqttv3_file_upload unit/mqttv3_file_upload_client_test.c)
-target_link_libraries(az_iot_tests_mqttv3_file_upload PRIVATE az_iot_mqttv3 az_iot_mqttv5)
+target_link_libraries(az_iot_tests_mqttv3_file_upload PRIVATE
+    az_iot_mqttv3 az_iot_mqttv5 az_iot_test_support)
 
 az_iot_add_cmocka_test(az_iot_tests_certificate_provider_pem unit/certificate_provider_pem_test.c)
 

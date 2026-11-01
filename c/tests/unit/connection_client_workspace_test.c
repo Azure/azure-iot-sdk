@@ -96,7 +96,7 @@ static void zero_limits_resolve_to_the_defaults_in_a_static_workspace(void** sta
   az_iot_connection_client_options opts = direct_options();
   opts.workspace = workspace;
   opts.workspace_size = sizeof(workspace);
-  assert_int_equal(az_iot_connection_client_init(&client, &opts), AZ_IOT_OK);
+  assert_int_equal(az_iot_test_connection_client_init(&client, &opts), AZ_IOT_OK);
   const az_iot_connection_client_limits* l = &client.opts.limits;
   assert_int_equal(
       l->max_pending_publishes, AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_PENDING_PUBLISHES);
@@ -115,7 +115,7 @@ static void zero_limits_resolve_to_the_defaults_in_a_static_workspace(void** sta
   assert_true(
       (uint8_t*)client.pending_pubacks >= workspace
       && (uint8_t*)client.pending_pubacks < workspace + sizeof(workspace));
-  az_iot_connection_client_deinit(&client);
+  az_iot_test_connection_client_deinit(&client);
 }
 
 static void entries_live_in_the_application_workspace_and_are_wiped(void** state)
@@ -132,7 +132,7 @@ static void entries_live_in_the_application_workspace_and_are_wiped(void** state
   /* One byte in: the client aligns inside the workspace. */
   opts.workspace = g_workspace + 1;
   opts.workspace_size = supplied;
-  assert_int_equal(az_iot_connection_client_init(&client, &opts), AZ_IOT_OK);
+  assert_int_equal(az_iot_test_connection_client_init(&client, &opts), AZ_IOT_OK);
   assert_true(
       (uint8_t*)client.app_state_observers >= g_workspace + 1
       && (uint8_t*)client.app_state_observers < g_workspace + 1 + size);
@@ -146,7 +146,7 @@ static void entries_live_in_the_application_workspace_and_are_wiped(void** state
       az_iot_connection_client_add_state_observer(&client, on_state, &second),
       AZ_IOT_ERR_NOT_ENOUGH_SPACE);
 
-  az_iot_connection_client_deinit(&client);
+  az_iot_test_connection_client_deinit(&client);
   for (size_t i = 1; i <= supplied; i++)
   {
     assert_int_equal(g_workspace[i], 0);
@@ -170,7 +170,7 @@ static void a_workspace_holds_more_than_the_defaults(void** state)
   memset(g_workspace, 0xA5, sizeof(g_workspace));
   opts.workspace = g_workspace;
   opts.workspace_size = size;
-  assert_int_equal(az_iot_connection_client_init(&client, &opts), AZ_IOT_OK);
+  assert_int_equal(az_iot_test_connection_client_init(&client, &opts), AZ_IOT_OK);
   assert_true(
       (uint8_t*)client.app_state_observers >= g_workspace
       && (uint8_t*)(client.app_state_observers + OBSERVERS) <= g_workspace + size);
@@ -185,7 +185,7 @@ static void a_workspace_holds_more_than_the_defaults(void** state)
       az_iot_connection_client_add_state_observer(&client, on_state, &contexts[OBSERVERS]),
       AZ_IOT_ERR_NOT_ENOUGH_SPACE);
 
-  az_iot_connection_client_deinit(&client);
+  az_iot_test_connection_client_deinit(&client);
   for (size_t i = 0; i < size; i++)
   {
     assert_int_equal(g_workspace[i], 0);

@@ -14,6 +14,7 @@
 #include "azure/iot/az_iot_mqtt_iface.h"
 #include "azure/iot/az_iot_connection_client.h"
 #include "internal/connection_client_internal.h"
+#include "support/test_provider.h"
 
 static void mqtt_role_to_required_version(void** state)
 {
@@ -55,8 +56,8 @@ static void connection_client_init_deinit_roundtrip(void** state)
   opts.workspace = g_connection_workspace;
   opts.workspace_size = sizeof(g_connection_workspace);
   az_iot_connection_client c;
-  assert_int_equal(az_iot_connection_client_init(&c, &opts), AZ_IOT_OK);
-  az_iot_connection_client_deinit(&c);
+  assert_int_equal(az_iot_test_connection_client_init(&c, &opts), AZ_IOT_OK);
+  az_iot_test_connection_client_deinit(&c);
 }
 
 int main(void)

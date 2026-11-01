@@ -26,6 +26,7 @@
 #include "azure/iot/mqttv3/az_iot_file_upload_client.h"
 /* Only to prove a released MQTTv3 pin admits the other generation. */
 #include "azure/iot/mqttv5/az_iot_telemetry_client.h"
+#include "support/test_provider.h"
 
 #define TEST_HUB "myhub.azure-devices.net"
 #define TEST_DEVICE "dev1"
@@ -210,6 +211,7 @@ static int setup(void** state)
   opts.device_id = TEST_DEVICE;
   opts.workspace = fx->connection_workspace;
   opts.workspace_size = sizeof(fx->connection_workspace);
+  az_iot_test_use_mock_mqtt_adapter(&opts);
   assert_int_equal(az_iot_connection_client_init(&fx->conn, &opts), AZ_IOT_OK);
 
   memset(&g_http, 0, sizeof(g_http));
@@ -450,6 +452,7 @@ static void init_rejects_unresolved_hub_address(void** state)
   opts.dps.registration_id = "reg-1";
   opts.workspace = g_connection_workspace;
   opts.workspace_size = sizeof(g_connection_workspace);
+  az_iot_test_use_mock_mqtt_adapter(&opts);
   assert_int_equal(az_iot_connection_client_init(&conn, &opts), AZ_IOT_OK);
   assert_null(az_iot_connection_client_get_iothub_address(&conn));
 
@@ -471,6 +474,7 @@ static void init_rejects_missing_device_id(void** state)
   /* client_id deliberately left NULL. */
   opts.workspace = g_connection_workspace;
   opts.workspace_size = sizeof(g_connection_workspace);
+  az_iot_test_use_mock_mqtt_adapter(&opts);
   assert_int_equal(az_iot_connection_client_init(&conn, &opts), AZ_IOT_OK);
 
   az_iot_mqttv3_file_upload_client fu2;
@@ -504,6 +508,7 @@ static void oversized_hub_address_is_rejected_at_the_operation(void** state)
   opts.device_id = TEST_DEVICE;
   opts.workspace = g_connection_workspace;
   opts.workspace_size = sizeof(g_connection_workspace);
+  az_iot_test_use_mock_mqtt_adapter(&opts);
   assert_int_equal(az_iot_connection_client_init(&conn, &opts), AZ_IOT_OK);
 
   az_iot_mqttv3_file_upload_client fu2;
@@ -541,6 +546,7 @@ static void oversized_device_id_is_rejected_at_the_operation(void** state)
   opts.device_id = long_id;
   opts.workspace = g_connection_workspace;
   opts.workspace_size = sizeof(g_connection_workspace);
+  az_iot_test_use_mock_mqtt_adapter(&opts);
   assert_int_equal(az_iot_connection_client_init(&conn, &opts), AZ_IOT_OK);
 
   az_iot_mqttv3_file_upload_client fu2;
@@ -574,6 +580,7 @@ static void failed_init_leaves_client_unusable(void** state)
   opts.port = 8883;
   opts.workspace = g_connection_workspace;
   opts.workspace_size = sizeof(g_connection_workspace);
+  az_iot_test_use_mock_mqtt_adapter(&opts);
   assert_int_equal(az_iot_connection_client_init(&conn, &opts), AZ_IOT_OK);
 
   az_iot_mqttv3_file_upload_client fu2;
@@ -950,6 +957,7 @@ static void init_against_an_mqtt_v5_connection_is_rejected(void** state)
   opts.connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5;
   opts.workspace = g_connection_workspace;
   opts.workspace_size = sizeof(g_connection_workspace);
+  az_iot_test_use_mock_mqtt_adapter(&opts);
   assert_int_equal(az_iot_connection_client_init(&conn, &opts), AZ_IOT_OK);
 
   az_iot_mqttv3_file_upload_client fu2;
@@ -997,6 +1005,7 @@ static void a_post_pin_init_failure_releases_the_profile_pin(void** state)
   opts.dps.registration_id = "reg-1";
   opts.workspace = g_connection_workspace;
   opts.workspace_size = sizeof(g_connection_workspace);
+  az_iot_test_use_mock_mqtt_adapter(&opts);
   assert_int_equal(az_iot_connection_client_init(&conn, &opts), AZ_IOT_OK);
 
   az_iot_mqttv3_file_upload_client fu2;
@@ -1030,6 +1039,7 @@ static void init_without_an_http_hook_takes_no_profile_pin(void** state)
   opts.dps.registration_id = "reg-1";
   opts.workspace = g_connection_workspace;
   opts.workspace_size = sizeof(g_connection_workspace);
+  az_iot_test_use_mock_mqtt_adapter(&opts);
   assert_int_equal(az_iot_connection_client_init(&conn, &opts), AZ_IOT_OK);
 
   az_iot_mqttv3_file_upload_client fu2;
@@ -1653,6 +1663,7 @@ static void max_length_endpoint_still_builds_a_url(void** state)
   opts.device_id = long_id;
   opts.workspace = g_connection_workspace;
   opts.workspace_size = sizeof(g_connection_workspace);
+  az_iot_test_use_mock_mqtt_adapter(&opts);
   assert_int_equal(az_iot_connection_client_init(&conn, &opts), AZ_IOT_OK);
 
   memset(&g_http, 0, sizeof(g_http));
