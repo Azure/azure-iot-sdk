@@ -30,7 +30,9 @@
 #include "support/connection_test_harness.h"
 #include "support/test_provider.h"
 
-#define RETRY_DELAY_MS 20u
+/* Too long to elapse during a test: tests fire the retry with
+ * az_iot_test_make_retry_due_now(). */
+#define RETRY_DELAY_MS 60000u
 /* Bytes past the MQTT workspace that must stay untouched. */
 #define GUARD_SIZE 32u
 
@@ -452,7 +454,7 @@ static void a_reconnect_after_a_drop_reuses_the_workspace(void** state)
       AZ_IOT_CONN_STATE_RETRY_PENDING);
   assert_adapter_stats(1, 0);
 
-  az_iot_test_wait_until_ms(fx->client.reconnect_due_ms);
+  az_iot_test_make_retry_due_now(&fx->client);
   (void)az_iot_connection_client_do_work(&fx->client, 0);
   az_iot_mock_mqtt_client* second = az_iot_mock_mqtt_adapter_last_client();
   assert_ptr_equal(second, first);
@@ -543,7 +545,7 @@ static void a_failed_hub_connect_releases_the_workspace_for_the_retry(void** sta
 
   /* The reconnect's client fails connect(): destroyed once, the workspace released. */
   az_iot_mock_mqtt_adapter_fail_next_connect(AZ_IOT_ERR_TLS);
-  az_iot_test_wait_until_ms(fx->client.reconnect_due_ms);
+  az_iot_test_make_retry_due_now(&fx->client);
   (void)az_iot_connection_client_do_work(&fx->client, 0);
   assert_int_equal(az_iot_mock_mqtt_client_count_of(slot, AZ_IOT_MOCK_CALL_CONNECT), 1);
   assert_int_equal(az_iot_mock_mqtt_client_count_of(slot, AZ_IOT_MOCK_CALL_DESTROY), 1);
@@ -555,7 +557,7 @@ static void a_failed_hub_connect_releases_the_workspace_for_the_retry(void** sta
   assert_local_error(&fx->log, failed, AZ_IOT_ERR_TLS, "MQTT adapter connect() failed");
 
   /* The next retry builds its client in the same workspace and connects. */
-  az_iot_test_wait_until_ms(fx->client.reconnect_due_ms);
+  az_iot_test_make_retry_due_now(&fx->client);
   (void)az_iot_connection_client_do_work(&fx->client, 0);
   assert_ptr_equal(az_iot_mock_mqtt_adapter_last_client(), slot);
   assert_ptr_equal(fx->client.active_client, slot);

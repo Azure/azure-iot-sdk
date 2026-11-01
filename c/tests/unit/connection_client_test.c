@@ -131,11 +131,13 @@ static int teardown(void** state)
   return 0;
 }
 
-/* Setup variant with reconnect enabled. initial_delay/max_delay are large
- * enough (20ms) that a single (valgrind-slowed) do_work cannot cross the
- * reconnect deadline in the same call that schedules it -- otherwise the
- * RETRY_PENDING state would be skipped straight to CONNECTING. No jitter so
- * timing is deterministic; max_attempts 2 so we can drive the give-up branch. */
+/* Reconnect backoff too long to elapse during a test, so pumping cannot fire a
+ * retry before the test has observed RETRY_PENDING; tests fire it with
+ * az_iot_test_make_retry_due_now(). */
+#define RETRY_DELAY_MS 60000u
+
+/* Setup variant with reconnect enabled (RETRY_DELAY_MS). No jitter so timing is
+ * deterministic; max_attempts 2 so we can drive the give-up branch. */
 static int setup_with_reconnect(void** state)
 {
   fixture* fx = (fixture*)calloc(1, sizeof(*fx));
@@ -145,8 +147,8 @@ static int setup_with_reconnect(void** state)
   opts.iothub_hostname = "broker.example";
   opts.port = 8883;
   opts.device_id = "ut-device";
-  opts.reconnection_policy.initial_delay_ms = 20;
-  opts.reconnection_policy.max_delay_ms = 20;
+  opts.reconnection_policy.initial_delay_ms = RETRY_DELAY_MS;
+  opts.reconnection_policy.max_delay_ms = RETRY_DELAY_MS;
   opts.reconnection_policy.max_attempts = 2;
   opts.reconnection_policy.jitter_pct = 0;
   opts.mqtt_adapter = az_iot_mock_mqtt_get_adapter_for_version(AZ_IOT_MQTT_VERSION_3_1_1);
@@ -158,16 +160,6 @@ static int setup_with_reconnect(void** state)
 
   *state = fx;
   return 0;
-}
-
-/* Spin until the monotonic clock advances by `ms`. Used in reconnect tests so
- * we don't depend on a sleep helper / feature macros. */
-static void wait_ms(unsigned ms)
-{
-  uint64_t deadline = az_iot_time_mono_ms() + ms;
-  while (az_iot_time_mono_ms() < deadline)
-  { /* spin */
-  }
 }
 
 /* ------------------------------------------------------------------------- */
@@ -458,7 +450,7 @@ static void connack_fail_with_reconnect_schedules_retry(void** state)
   assert_null(az_iot_mock_mqtt_adapter_last_client());
 
   /* After the reconnect delay elapses, the next do_work fires another connect. */
-  wait_ms(100);
+  az_iot_test_make_retry_due_now(fx->client);
   (void)az_iot_connection_client_do_work(fx->client, 0);
   assert_int_equal(fx->rec.states[fx->rec.count - 1], AZ_IOT_CONN_STATE_CONNECTING);
   az_iot_mock_mqtt_client* m2 = az_iot_mock_mqtt_adapter_last_client();
@@ -490,7 +482,7 @@ static void max_attempts_exhausted_transitions_to_faulted(void** state)
     if (i < 2)
     {
       assert_int_equal(fx->rec.states[fx->rec.count - 1], AZ_IOT_CONN_STATE_RETRY_PENDING);
-      wait_ms(100);
+      az_iot_test_make_retry_due_now(fx->client);
       (void)az_iot_connection_client_do_work(fx->client, 0);
       assert_int_equal(fx->rec.states[fx->rec.count - 1], AZ_IOT_CONN_STATE_CONNECTING);
     }
@@ -519,7 +511,7 @@ static void peer_disconnect_with_reconnect_drives_retry(void** state)
   (void)az_iot_connection_client_do_work(fx->client, 0);
   assert_int_equal(fx->rec.states[fx->rec.count - 1], AZ_IOT_CONN_STATE_RETRY_PENDING);
 
-  wait_ms(100);
+  az_iot_test_make_retry_due_now(fx->client);
   (void)az_iot_connection_client_do_work(fx->client, 0);
   assert_int_equal(fx->rec.states[fx->rec.count - 1], AZ_IOT_CONN_STATE_CONNECTING);
 }
@@ -539,7 +531,7 @@ static void close_during_reconnecting_goes_idle(void** state)
   assert_int_equal(fx->rec.states[fx->rec.count - 1], AZ_IOT_CONN_STATE_IDLE);
 
   /* Subsequent do_work must not start any retries. */
-  wait_ms(100);
+  assert_int_equal(fx->client->reconnect_due_ms, 0);
   size_t before = fx->rec.count;
   (void)az_iot_connection_client_do_work(fx->client, 0);
   assert_int_equal(fx->rec.count, before);
@@ -3498,8 +3490,8 @@ static int setup_mqtt_v5_with_reconnect(void** state)
   opts.port = 8883;
   opts.device_id = "ut-device";
   opts.connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5;
-  opts.reconnection_policy.initial_delay_ms = 20;
-  opts.reconnection_policy.max_delay_ms = 20;
+  opts.reconnection_policy.initial_delay_ms = RETRY_DELAY_MS;
+  opts.reconnection_policy.max_delay_ms = RETRY_DELAY_MS;
   opts.reconnection_policy.max_attempts = 3;
   opts.reconnection_policy.jitter_pct = 0;
   opts.mqtt_adapter = az_iot_mock_mqtt_get_adapter_for_version(AZ_IOT_MQTT_VERSION_5);
@@ -3534,7 +3526,7 @@ static void hub_mqtt_v5_birth_timeout_retries_with_a_new_nonce(void** state)
   complete_planned_disconnect(fx);
   assert_int_equal(fx->rec.states[fx->rec.count - 1], AZ_IOT_CONN_STATE_RETRY_PENDING);
 
-  wait_ms(25);
+  az_iot_test_make_retry_due_now(fx->client);
   (void)az_iot_connection_client_do_work(fx->client, 0);
 
   az_iot_mock_mqtt_client* m2 = az_iot_mock_mqtt_adapter_last_client();
@@ -3615,10 +3607,10 @@ static void expire_presence_step(fixture* fx)
   assert_null(az_iot_mock_mqtt_adapter_last_client());
 }
 
-/* Wait out the retry backoff and return the new session's mock client. */
+/* Let the retry backoff pass and return the new session's mock client. */
 static az_iot_mock_mqtt_client* reconnect(fixture* fx)
 {
-  wait_ms(25);
+  az_iot_test_make_retry_due_now(fx->client);
   (void)az_iot_connection_client_do_work(fx->client, 0);
   az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_adapter_last_client();
   assert_non_null(m);
@@ -4444,8 +4436,8 @@ static void tls_client_init(
   }
   else
   {
-    opts.reconnection_policy.initial_delay_ms = 20;
-    opts.reconnection_policy.max_delay_ms = 20;
+    opts.reconnection_policy.initial_delay_ms = RETRY_DELAY_MS;
+    opts.reconnection_policy.max_delay_ms = RETRY_DELAY_MS;
     opts.reconnection_policy.jitter_pct = 0;
   }
   if (dps)
@@ -4634,7 +4626,7 @@ static void a_provider_that_stops_loading_fails_the_reconnect(void** state)
       az_iot_connection_client_get_state(&client, AZ_IOT_CONN_SCOPE_HUB),
       AZ_IOT_CONN_STATE_RETRY_PENDING);
 
-  client.reconnect_due_ms = az_iot_time_mono_ms();
+  az_iot_test_make_retry_due_now(&client);
   int loads_before = prov.load_calls;
   (void)az_iot_connection_client_do_work(&client, 0);
   assert_true(prov.load_calls > loads_before);
@@ -4673,7 +4665,7 @@ static void hub_retrying_for_ever(
 static size_t fire_retry(az_iot_connection_client* client, az_iot_test_state_log* log)
 {
   log->count = 0;
-  client->reconnect_due_ms = az_iot_time_mono_ms();
+  az_iot_test_make_retry_due_now(client);
   (void)az_iot_connection_client_do_work(client, 0);
   assert_int_equal(log->scopes[0], AZ_IOT_CONN_SCOPE_HUB);
   assert_int_equal(log->states[0], AZ_IOT_CONN_STATE_SETTING_UP);
@@ -4734,7 +4726,7 @@ static void every_failed_hub_setup_is_reported_with_its_step(void** state)
   client.opts.certificate_provider = &prov.base;
   prov.bootstrap_rc = AZ_IOT_OK;
   log.count = 0;
-  client.reconnect_due_ms = az_iot_time_mono_ms();
+  az_iot_test_make_retry_due_now(&client);
   (void)az_iot_connection_client_do_work(&client, 0);
   assert_int_equal(log.states[0], AZ_IOT_CONN_STATE_SETTING_UP);
   assert_int_equal(log.states[1], AZ_IOT_CONN_STATE_CONNECTING);
