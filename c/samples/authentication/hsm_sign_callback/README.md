@@ -73,4 +73,5 @@ Exit code 0 when the adapter called `sign()` exactly once; otherwise 1. `open()`
 | --- | --- |
 | Provider with a sign() hook | `sign_load()`, `sign_sign()`, `sign_release()`, `sign_deinit()` |
 | Where an adapter consumes the hook | `standin_connect()` |
+| A stand-in adapter building its client in the application's workspace | `k_standin_adapter`, `standin_init()`; `copts.mqtt_adapter` in `main()` |
 | Result of the run | `on_conn_state()` and the end of `main()` |

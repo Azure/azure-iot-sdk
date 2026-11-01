@@ -12,7 +12,7 @@ first. For an mqttv5-only device, see
 ## Sample features
 
 - Hub generations: mqttv3 (MQTT 3.1.1) and mqttv5 (MQTT 5), whichever DPS assigns, including after the device is moved to a hub of the other generation.
-- Keeping the request is a struct copy: nothing is allocated. `method_name` and `payload` point into SDK buffers that do not outlive the handler, so the payload is copied out.
+- Keeping the request is a struct copy: nothing is allocated. `method_name` and `payload` point into SDK buffers that do not outlive the handler, so the payload is copied out. A payload larger than that copy (256 bytes) is answered 413 at once.
 - The deadline for the late answer is where the generations differ:
 -   - mqttv3 never learns the caller's timeout; the sample sets its own (60 s). While one invocation is held, another is answered 429 after its arguments arrived.
 -   - mqttv5 carries the caller's budget. The method is declared with the time it needs (3 s), so a caller whose timeout cannot cover it is refused `INSUFFICIENT_TIME` at the probe; while one invocation is held, the probe answers `DEVICE_BUSY`. Both happen before the arguments are sent.
@@ -116,7 +116,7 @@ On an mqttv5 hub each invocation is preceded by
 
 | What | Code |
 | --- | --- |
-| Register both MQTT adapters (DPS always uses MQTT 3.1.1) | `az_iot_paho_factory_create_v3_1_1()`, `az_iot_paho_factory_create_v5()`; az_mqtt: `az_iot_az_mqtt_factory_create_v3_1_1()`, `az_iot_az_mqtt_factory_create_v5()` |
+| MQTT adapter and the workspace it builds each MQTT client in | `mqtt_adapter` (`az_iot_paho_get_adapter()`; az_mqtt: `az_iot_az_mqtt_get_adapter()`), `mqtt_limits`, `mqtt_workspace`; sizes in [`sample_utils.h`](../../common/sample_utils.h) |
 | Keep the request and return | `on_method_mqttv3()`, `on_slow_echo()` |
 | Answer later from the pump | `deferred_pump()` |
 | mqttv5: declare the method with its time budget; busy probe | `az_iot_mqttv5_direct_method_client_register_method()`, `az_iot_mqttv5_direct_method_client_set_probe_handler()` |

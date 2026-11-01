@@ -49,8 +49,6 @@ typedef struct
   sample_config config;
   az_iot_certificate_provider_pem certs;
   az_iot_connection_client connection_client;
-  az_iot_mqtt_factory* factory_v3;
-  az_iot_mqtt_factory* factory_v5;
   /* Only the one matching `profile` is ever initialized. */
   az_iot_mqttv3_twin_client mqttv3;
   az_iot_mqttv5_twin_client mqttv5;
@@ -97,13 +95,6 @@ static void sample_state_destroy(sample_state* s)
 {
   clients_destroy(s);
   az_iot_connection_client_deinit(&s->connection_client);
-#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
-  az_iot_paho_factory_destroy(s->factory_v3);
-  az_iot_paho_factory_destroy(s->factory_v5);
-#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
-  az_iot_az_mqtt_factory_destroy(s->factory_v3);
-  az_iot_az_mqtt_factory_destroy(s->factory_v5);
-#endif
   az_iot_certificate_provider_pem_deinit(&s->certs);
   sample_config_release(&s->config);
 }
@@ -367,6 +358,17 @@ int main(void)
   copts.dps.registration_id = state.config.reg_id;
   copts.dps.global_endpoint = state.config.dps_global_endpoint; /* NULL: the global default */
   copts.certificate_provider = &state.certs.base;
+  /* The adapter builds each session's MQTT client in this workspace, one at a time: MQTT 3.1.1
+   * for DPS and an MQTTv3 hub, MQTT 5 for an MQTTv5 hub. Limits: sample_utils.h. */
+  static uint8_t mqtt_workspace[SAMPLE_MQTT_WORKSPACE_SIZE];
+#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
+  copts.mqtt_adapter = az_iot_paho_get_adapter();
+#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
+  copts.mqtt_adapter = az_iot_az_mqtt_get_adapter();
+#endif
+  copts.mqtt_limits = SAMPLE_MQTT_LIMITS;
+  copts.mqtt_workspace = mqtt_workspace;
+  copts.mqtt_workspace_size = sizeof(mqtt_workspace);
 
   if (az_iot_connection_client_init(&state.connection_client, &copts) != AZ_IOT_OK)
   {
@@ -374,30 +376,6 @@ int main(void)
     return 1;
   }
   az_iot_connection_client_add_state_observer(&state.connection_client, on_conn_state, &user_ctx);
-
-  /* Both adapters: v3.1.1 serves DPS and an MQTTv3 hub, v5 serves an MQTTv5 hub. */
-#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
-  state.factory_v3 = az_iot_paho_factory_create_v3_1_1();
-#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
-  state.factory_v3 = az_iot_az_mqtt_factory_create_v3_1_1();
-#endif
-  if (az_iot_connection_client_register_mqtt_factory(&state.connection_client, state.factory_v3)
-      != AZ_IOT_OK)
-  {
-    sample_state_destroy(&state);
-    return 1;
-  }
-#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
-  state.factory_v5 = az_iot_paho_factory_create_v5();
-#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
-  state.factory_v5 = az_iot_az_mqtt_factory_create_v5();
-#endif
-  if (az_iot_connection_client_register_mqtt_factory(&state.connection_client, state.factory_v5)
-      != AZ_IOT_OK)
-  {
-    sample_state_destroy(&state);
-    return 1;
-  }
 
   /* Assume a generation until DPS says otherwise; see unified/telemetry. */
   if (clients_build(&state, AZ_IOT_CONNECTION_PROFILE_MQTT_V3, &user_ctx) != AZ_IOT_OK

@@ -18,7 +18,7 @@ and closes.
   its own. At QoS 1 a refused message completes with the hub's reason code and Reason String;
   at QoS 0 the hub sends no acknowledgement, so a refused message is dropped without an error.
 - Custom topics are publish only.
-- Registers both MQTT adapters (v3.1.1 and v5): the hub uses MQTT 5, but DPS always uses MQTT 3.1.1.
+- The MQTT adapter builds an MQTT 3.1.1 client for DPS, then an MQTT 5 one for the hub, in turn in one workspace.
 - Platforms: Linux and Windows.
 
 ## Service requirements

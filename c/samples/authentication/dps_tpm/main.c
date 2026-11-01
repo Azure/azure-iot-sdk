@@ -454,7 +454,6 @@ int main(int argc, char** argv)
   sample_context ctx = { 0 };
   az_iot_connection_client client = { 0 };
   az_iot_mqttv3_telemetry_client telemetry = { 0 };
-  az_iot_mqtt_factory* factory = NULL;
   static https_response response;
 
   ctx.tpm = sample_tpm_sim_create(state_dir);
@@ -542,14 +541,20 @@ int main(int argc, char** argv)
   opts.sas_buffer.size = sizeof(sas_buffer);
   opts.trusted_ca.path = ca;
 
+  /* The adapter builds each session's MQTT client in this workspace, one at a time: MQTT 3.1.1
+   * for DPS and an MQTTv3 hub, MQTT 5 for an MQTTv5 hub. Limits: sample_utils.h. */
+  static uint8_t mqtt_workspace[SAMPLE_MQTT_WORKSPACE_SIZE];
 #if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
-  factory = az_iot_paho_factory_create_v3_1_1();
+  opts.mqtt_adapter = az_iot_paho_get_adapter();
 #elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
-  factory = az_iot_az_mqtt_factory_create_v3_1_1();
+  opts.mqtt_adapter = az_iot_az_mqtt_get_adapter();
 #endif
+  opts.mqtt_limits = SAMPLE_MQTT_LIMITS;
+  opts.mqtt_workspace = mqtt_workspace;
+  opts.mqtt_workspace_size = sizeof(mqtt_workspace);
+
   if (az_iot_connection_client_init(&client, &opts) != AZ_IOT_OK
       || az_iot_connection_client_add_state_observer(&client, on_conn_state, &ctx) != AZ_IOT_OK
-      || az_iot_connection_client_register_mqtt_factory(&client, factory) != AZ_IOT_OK
       || az_iot_mqttv3_telemetry_client_init(&telemetry, &client) != AZ_IOT_OK
       || az_iot_connection_client_open(&client) != AZ_IOT_OK)
   {
@@ -597,11 +602,6 @@ int main(int argc, char** argv)
 cleanup:
   az_iot_mqttv3_telemetry_client_deinit(&telemetry);
   az_iot_connection_client_deinit(&client);
-#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
-  az_iot_paho_factory_destroy(factory);
-#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
-  az_iot_az_mqtt_factory_destroy(factory);
-#endif
   sample_tpm_sim_destroy(ctx.tpm);
   free(id_scope);
   free(state_dir);
