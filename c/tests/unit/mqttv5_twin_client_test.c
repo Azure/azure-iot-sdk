@@ -561,7 +561,7 @@ static void issue_get(fixture* fx, get_record* rec, uint8_t out_corr[16])
   memcpy(out_corr, pub->correlation_data, 16);
 }
 
-/* End the time limit of every twin request the tracker holds, without waiting for the clock. */
+/** @brief End the time limit of every twin request the tracker holds, without the clock. */
 static void expire_held_twin_requests(fixture* fx)
 {
   for (size_t i = 0; i < AZ_IOT_MQTTV5_TWIN_TRACKED_MESSAGES; ++i)
