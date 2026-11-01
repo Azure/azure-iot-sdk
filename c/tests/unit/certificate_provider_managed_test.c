@@ -1459,6 +1459,59 @@ static void managed_a_failed_rename_keeps_the_destination(void** state)
   remove_test_files();
 }
 
+#define SYNC_DIR "az_iot_managed_test_sync_dir"
+#define SYNC_DIR_KEY SYNC_DIR "/" OP_KEY
+#define SYNC_DIR_CERT SYNC_DIR "/" OP_CERT
+
+/* Files are written into the directory of their path, and a store whose
+ * directory cannot then be synced still succeeds: the new chain has already
+ * replaced the old one and is the one served. Mode 0300 allows the rename but
+ * not opening the directory to sync it (root opens it anyway, and the sync then
+ * succeeds; the result is the same). */
+static void managed_a_store_whose_directory_cannot_be_synced_succeeds(void** state)
+{
+  (void)state;
+  (void)remove(SYNC_DIR_KEY);
+  (void)remove(SYNC_DIR_CERT);
+  (void)rmdir(SYNC_DIR);
+  assert_int_equal(0, mkdir(SYNC_DIR, 0700));
+  az_iot_certificate_provider_managed_options opts = test_options();
+  opts.operational_key_pem_path = SYNC_DIR_KEY;
+  opts.operational_cert_pem_path = SYNC_DIR_CERT;
+  az_iot_certificate_provider_managed prov;
+  assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_managed_init(&prov, &opts));
+  assert_true(file_exists(SYNC_DIR_KEY));
+
+  char* first = make_cert_base64((EVP_PKEY*)prov.operational_key, 1);
+  az_span chain1[1] = { az_span_create_from_str(first) };
+  az_iot_issued_certificate issued1 = { .certificates = chain1, .count = 1 };
+  assert_int_equal(AZ_IOT_OK, prov.base.vtable->store_issued_certificate(&prov.base, &issued1));
+
+  char* second = make_cert_base64((EVP_PKEY*)prov.operational_key, 2);
+  az_span chain2[1] = { az_span_create_from_str(second) };
+  az_iot_issued_certificate issued2 = { .certificates = chain2, .count = 1 };
+  assert_int_equal(0, chmod(SYNC_DIR, 0300));
+  az_iot_result rc = prov.base.vtable->store_issued_certificate(&prov.base, &issued2);
+  assert_int_equal(0, chmod(SYNC_DIR, 0700));
+  assert_int_equal(AZ_IOT_OK, rc);
+  assert_true(prov.has_operational);
+  az_iot_certificate_provider_managed_deinit(&prov);
+
+  char* on_disk = read_chain_base64(SYNC_DIR_CERT);
+  assert_string_equal(on_disk, second);
+  az_iot_certificate_provider_managed prov2;
+  assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_managed_init(&prov2, &opts));
+  assert_true(prov2.has_operational);
+  az_iot_certificate_provider_managed_deinit(&prov2);
+
+  free(on_disk);
+  free(second);
+  free(first);
+  assert_int_equal(0, remove(SYNC_DIR_KEY));
+  assert_int_equal(0, remove(SYNC_DIR_CERT));
+  assert_int_equal(0, rmdir(SYNC_DIR));
+}
+
 /* init() loads an existing key without rewriting it, so its mode is kept. */
 static void managed_init_keeps_an_existing_key_file_mode(void** state)
 {
@@ -1757,6 +1810,7 @@ int main(void)
     cmocka_unit_test(managed_init_keeps_an_existing_key_file_mode),
     cmocka_unit_test(managed_a_failed_write_keeps_the_previous_chain),
     cmocka_unit_test(managed_a_failed_rename_keeps_the_destination),
+    cmocka_unit_test(managed_a_store_whose_directory_cannot_be_synced_succeeds),
     cmocka_unit_test(managed_writes_replace_a_link_instead_of_following_it),
 #endif
     cmocka_unit_test(managed_init_removes_only_its_own_stale_temp_files),
