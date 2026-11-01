@@ -824,8 +824,8 @@ static az_iot_result bind_topics(void* owner, az_iot_connection_client* conn)
   {
     AZ_IOT_LOG_ERRORF(
         AZ_IOT_LOG_COMPONENT_MQTTV5_DIRECT_METHOD,
-        "device id '%s' does not fit the %u byte method topic buffers; raise "
-        "AZ_IOT_MQTTV5_DM_TOPIC_MAX",
+        "device id '%s' does not fit the fixed %u byte method topic buffers "
+        "(AZ_IOT_MQTTV5_DM_TOPIC_MAX); use a shorter device id",
         device_id,
         (unsigned)AZ_IOT_MQTTV5_DM_TOPIC_MAX);
     DI(client).inbound_topic[0] = '\0';

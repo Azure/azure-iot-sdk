@@ -105,8 +105,8 @@ extern "C"
    *                          received message, so there is no bound to exceed.
    *   topics                 built once at connect. A device id too long for
    *                          AZ_IOT_MQTTV5_DM_TOPIC_MAX fails the connect attempt
-   *                          with a log naming the limit, rather than binding a
-   *                          truncated topic.
+   *                          with a log naming the fixed limit, rather than
+   *                          binding a truncated topic; use a shorter device id.
    *   result body            outbound only. See
    *                          az_iot_mqttv5_direct_method_respond().
    */
