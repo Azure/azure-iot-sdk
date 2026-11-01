@@ -159,9 +159,10 @@ static int32_t apply_update_step(
 /**
  * @brief persist_workflow_state_fn: save the workflow so it survives a reboot.
  *
- * Written to a temporary file and renamed over the old one, so a crash
- * mid-write leaves the previous record intact. A zero-length write erases
- * the record: the workflow ended and must not be resumed.
+ * Written with sample_file_write_atomically(), so a crash mid-write leaves the
+ * previous record intact and two runs never share a temporary file. A
+ * zero-length write erases the record: the workflow ended and must not be
+ * resumed.
  */
 static int32_t save_update_workflow(const uint8_t* blob, size_t len, void* user_ctx)
 {
@@ -175,29 +176,9 @@ static int32_t save_update_workflow(const uint8_t* blob, size_t len, void* user_
     printf("[persist] erased %s\n", context->state_file);
     return AZ_IOT_SU_RESULT_SUCCESS;
   }
-  char tmp[512];
-  int tmp_len = snprintf(tmp, sizeof(tmp), "%s.tmp", context->state_file);
-  if (tmp_len < 0 || (size_t)tmp_len >= sizeof(tmp))
+  if (!sample_file_write_atomically(context->state_file, blob, len))
   {
     return AZ_IOT_SU_RESULT_FAILURE; /* the old record stays */
-  }
-  FILE* f = sample_file_open_private(tmp, true);
-  if (f == NULL)
-  {
-    return AZ_IOT_SU_RESULT_FAILURE;
-  }
-  size_t written = fwrite(blob, 1, len, f);
-  bool flushed = written == len && sample_file_flush_to_storage(f);
-  int closed = fclose(f); /* reports a delayed write failure */
-  if (!flushed || closed != 0)
-  {
-    (void)remove(tmp);
-    return AZ_IOT_SU_RESULT_FAILURE;
-  }
-  if (!sample_file_replace(tmp, context->state_file))
-  {
-    (void)remove(tmp);
-    return AZ_IOT_SU_RESULT_FAILURE;
   }
   printf("[persist] %zu bytes -> %s\n", len, context->state_file);
   return AZ_IOT_SU_RESULT_SUCCESS;
