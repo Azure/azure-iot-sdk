@@ -966,17 +966,11 @@ if(AZ_IOT_WITH_AZ_MQTT)
         add_test(NAME az_iot_az_mqtt_adapter_broker COMMAND az_iot_az_mqtt_adapter_broker)
     endif()
 
-    # The adapter with a receive buffer larger than its send buffer, against an in-process server.
-    az_iot_add_cmocka_test(az_iot_tests_az_mqtt_adapter_sizes
-        unit/az_mqtt_adapter_sizes_test.c
-        support/az_mqtt_asymmetric_common.c
-        support/az_mqtt_asymmetric_v3.c
-        support/az_mqtt_asymmetric_v5.c
-        support/az_mqtt_asymmetric_adapter.c)
-    target_include_directories(az_iot_tests_az_mqtt_adapter_sizes PRIVATE
-        ${PROJECT_SOURCE_DIR}/inc ${PROJECT_SOURCE_DIR}/adapters/az_mqtt ${PROJECT_SOURCE_DIR}/src/core
-        ${CMAKE_CURRENT_SOURCE_DIR}/support)
-    target_link_libraries(az_iot_tests_az_mqtt_adapter_sizes PRIVATE az_mqttv3 az_mqttv5)
+    # The adapter's clients with a receive buffer larger than their send buffer, against an
+    # in-process server.
+    az_iot_add_cmocka_test(az_iot_tests_az_mqtt_adapter_sizes unit/az_mqtt_adapter_sizes_test.c)
+    target_link_libraries(az_iot_tests_az_mqtt_adapter_sizes PRIVATE
+        az_iot_adapter_az_mqtt az_mqttv3 az_mqttv5)
     if(WIN32)
         target_link_libraries(az_iot_tests_az_mqtt_adapter_sizes PRIVATE ws2_32)
     endif()
@@ -985,6 +979,7 @@ if(AZ_IOT_WITH_AZ_MQTT)
     az_iot_add_cmocka_test(az_iot_tests_az_mqtt_adapter_ack
         unit/az_mqtt_adapter_ack_test.c
         ${PROJECT_SOURCE_DIR}/adapters/az_mqtt/az_iot_mqtt_az_mqtt.c
+        ${PROJECT_SOURCE_DIR}/adapters/az_mqtt/az_iot_mqtt_az_mqtt_adapter.c
         ${PROJECT_SOURCE_DIR}/adapters/az_mqtt/az_iot_mqtt_az_mqtt_v3.c)
     target_include_directories(az_iot_tests_az_mqtt_adapter_ack PRIVATE
         ${PROJECT_SOURCE_DIR}/inc ${PROJECT_SOURCE_DIR}/adapters/az_mqtt ${PROJECT_SOURCE_DIR}/src/core)
@@ -997,6 +992,7 @@ if(AZ_IOT_WITH_AZ_MQTT)
     az_iot_add_cmocka_test(az_iot_tests_az_mqtt_adapter_psa
         unit/az_mqtt_adapter_psa_test.c
         ${PROJECT_SOURCE_DIR}/adapters/az_mqtt/az_iot_mqtt_az_mqtt.c
+        ${PROJECT_SOURCE_DIR}/adapters/az_mqtt/az_iot_mqtt_az_mqtt_adapter.c
         ${PROJECT_SOURCE_DIR}/adapters/az_mqtt/az_iot_mqtt_az_mqtt_v3.c)
     target_include_directories(az_iot_tests_az_mqtt_adapter_psa PRIVATE
         ${PROJECT_SOURCE_DIR}/inc ${PROJECT_SOURCE_DIR}/adapters/az_mqtt ${PROJECT_SOURCE_DIR}/src/core)
@@ -1034,16 +1030,10 @@ if(AZ_IOT_WITH_AZ_MQTT)
         target_link_libraries(az_iot_tests_az_mqtt_adapter_wipe PRIVATE ws2_32)
     endif()
 
-    # The adapter with no message store (AZ_IOT_AZ_MQTT_MESSAGE_STORAGE_SIZE 0).
-    az_iot_add_cmocka_test(az_iot_tests_az_mqtt_adapter_no_store
-        unit/az_mqtt_adapter_no_store_test.c
-        ${PROJECT_SOURCE_DIR}/adapters/az_mqtt/az_iot_mqtt_az_mqtt.c
-        support/az_mqtt_no_store_v3.c
-        support/az_mqtt_no_store_v5.c)
-    target_include_directories(az_iot_tests_az_mqtt_adapter_no_store PRIVATE
-        ${PROJECT_SOURCE_DIR}/inc ${PROJECT_SOURCE_DIR}/adapters/az_mqtt ${PROJECT_SOURCE_DIR}/src/core
-        ${CMAKE_CURRENT_SOURCE_DIR}/support)
-    target_link_libraries(az_iot_tests_az_mqtt_adapter_no_store PRIVATE az_mqttv3 az_mqttv5)
+    # The adapter with no message store (az_iot_mqtt_limits.message_store_size 0).
+    az_iot_add_cmocka_test(az_iot_tests_az_mqtt_adapter_no_store unit/az_mqtt_adapter_no_store_test.c)
+    target_link_libraries(az_iot_tests_az_mqtt_adapter_no_store PRIVATE
+        az_iot_adapter_az_mqtt az_mqttv3 az_mqttv5)
     if(WIN32)
         target_link_libraries(az_iot_tests_az_mqtt_adapter_no_store PRIVATE ws2_32)
     endif()
@@ -1051,7 +1041,9 @@ if(AZ_IOT_WITH_AZ_MQTT)
     # The adapter compiled in, so its copies of connect strings can be inspected.
     az_iot_add_cmocka_test(az_iot_tests_az_mqtt_adapter_release
         unit/az_mqtt_adapter_release_test.c
-        ${PROJECT_SOURCE_DIR}/adapters/az_mqtt/az_iot_mqtt_az_mqtt.c)
+        ${PROJECT_SOURCE_DIR}/adapters/az_mqtt/az_iot_mqtt_az_mqtt.c
+        ${PROJECT_SOURCE_DIR}/adapters/az_mqtt/az_iot_mqtt_az_mqtt_adapter.c
+        ${PROJECT_SOURCE_DIR}/adapters/az_mqtt/az_iot_mqtt_az_mqtt_v3.c)
     target_include_directories(az_iot_tests_az_mqtt_adapter_release PRIVATE
         ${PROJECT_SOURCE_DIR}/inc ${PROJECT_SOURCE_DIR}/adapters/az_mqtt ${PROJECT_SOURCE_DIR}/src/core)
     target_link_libraries(az_iot_tests_az_mqtt_adapter_release PRIVATE az_mqttv3 az_mqttv5)
