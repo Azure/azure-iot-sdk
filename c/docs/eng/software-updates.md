@@ -94,14 +94,49 @@ sequenceDiagram
   fatal or proceed error) releases registration at once. A retryable failure (e.g. 503) keeps
   registration held until the check is answered or `dps_hold_timeout_ms` (default
   `AZ_IOT_DPS_HOLD_TIMEOUT_MS`, 60 s) expires; then the device registers anyway.
-- Registration is held for the check, not for an install: an offered update is installed and
-  reported alongside registration. Follow-up checks the application requests (e.g. to chain
-  onboarding updates) do not hold registration.
+- Registration is held for the check, not for an install. Follow-up checks the application
+  requests (e.g. to chain onboarding updates) do not hold registration.
+- The hub connection waits for the check: while the channel still has work on the provisioning
+  session when the device registers, the session is kept and the hub session starts only once the
+  channel lets go, on the assignment just obtained (no second registration).
 - Onboarding progress is recorded on the onboarding update job, not on a device record, since the
   device has none yet.
 
 The operational route uses `requestSoftwareUpdates` with the same shapes, when the application
 asks.
+
+### One MQTT session at a time
+
+The SDK runs one MQTT session at a time, so the provisioning session and the hub session never
+overlap. After registration, each check or status report made while the hub is connected:
+
+1. ends the hub session as planned: feature clients see an ordinary session end
+   (`AZ_IOT_CONNECTION_SESSION_END_PLANNED`) and the application sees `HUB:RETRY_PENDING` with reason
+   `AZ_IOT_OK` (and `is_credential_renewal` false), not a failure;
+2. opens a provisioning session and runs the operation on it, then any operation the engine issues
+   next on the same session;
+3. closes the provisioning session once the channel has no work left, and the hub reconnects to its
+   assignment without registering again. Feature clients resume as after any reconnect.
+
+These ends count toward no reconnection backoff or `max_hub_connect_attempts_before_reprovision`.
+How long the hub waits is bounded. An update check waits at most its request timeout (default
+`AZ_IOT_SU_REQUEST_DEFAULT_TIMEOUT_MS`, 60 s; `AZ_IOT_SU_REQUEST_NO_TIMEOUT` sets no bound); when
+it ends unanswered or unaccepted, or a check of the other kind replaces it before it is accepted,
+the channel stops asking for a session for it. An expired check is given up before the channel's
+tick, so the hub session is not ended for it, and `az_iot_connection_client_do_work()` waits no
+longer than a check's deadline. A publish the adapter refuses pauses the channel's publishing
+(1 s doubling to 60 s per refusal in a row) and, without other work, releases the session, so the
+hub session resumes meanwhile. A first refusal as too large does not pause, so the report sent again
+at once without its details still goes out. A provisioning session opened for an operation that is
+not ready (no SUBACK) within 60 s ends as failed: the hub session resumes, and the next attempt waits
+out the reconnection policy. A status report waits at most
+`AZ_IOT_SU_CHANNEL_REPORT_RESPONSE_TIMEOUT_MS` (default 60 s, the same value) for its answer, and
+`az_iot_connection_client_do_work()` waits no longer than that; past it the session is released
+and the report, still owed, is sent again on the retry backoff (1 s doubling to 60 s, ±20%), as
+is a report queued before or after the timeout. A request lost with its session keeps the
+channel's interest while the engine retries it, so the connection client's pacing of provisioning
+sessions still applies.
+An application that must not lose the hub during a check schedules checks when that is acceptable.
 
 ### Request (both fetches)
 
@@ -178,6 +213,11 @@ connection client's `unix_time` source) in the persisted record, so it survives 
   are part of the package format.
 - `fileUrls` are **not** covered by the signature. Payload integrity comes from the per-file hashes
   inside the signed manifest.
+- After verification and before any step runs, every file id a step names must be in the manifest
+  `files` and have a `fileUrls` entry. Otherwise the workflow fails (reported as an internal
+  failure, `AZ_IOT_ERR_PROTOCOL`) with nothing downloaded or installed, and library mode never
+  offers it to the application. `az_iot_su_parse_update_request()` returns
+  `AZ_IOT_ERR_INVALID_ARG`.
 - Binding the account id into the signature is not supported: the service returns no `accountId`.
 
 ### Errors
@@ -1456,6 +1496,12 @@ az_iot_result az_iot_su_verify_file_hash(
     void* read_ctx);
 
 /**
+ * Decode a manifest string the parser keeps escaped, such as a file id
+ * (`f\u0031` is `f1`), before using it as a name or comparing it.
+ */
+az_iot_result az_iot_su_decode_manifest_string(az_span escaped, az_span out, az_span* out_decoded);
+
+/**
  * Build the reportUpdateStatus request body for a report, without a client or
  * a channel: the body the managed client and library mode send. Invalid reports
  * (empty workflow id, incomplete installed update id, outcome / failure-origin
@@ -1736,8 +1782,10 @@ match.
 `get_file_path_fn(file, file_index, ...)` returns the path at which `download_fn` stores `file`
 and `read_file_fn` reads it. It is called for related files too, with the owning file's index as
 `download_fn` gets. The handler reads the delta at the related file's path and writes the built
-file at the update file's path. The samples use their download path: `SAMPLE_DOWNLOAD_PREFIX<file
-id>` in `pc/http_download`, `SU_SIM_FILE_DIR/<file id>` in `pc/simulated_regular`.
+file at the update file's path, which may be the same. Files of several steps may share a path,
+e.g. with storage by slot only: the handler caches only the last one downloaded there. The samples
+use their download path: `SAMPLE_DOWNLOAD_PREFIX<file id>` in `pc/http_download`,
+`SU_SIM_FILE_DIR/<file id>` in `pc/simulated_regular`.
 
 **Source cache.** The reference agent's layout, so both can share a cache:
 `<directory>/<provider>/<algorithm>-<hash>`. In `<provider>` and `<algorithm>`, characters other
@@ -1746,10 +1794,13 @@ and `_3D`.
 
 - When a workflow succeeds, and a file of the update names `microsoft/delta:1` (the client calls a
   handler on success only then), each file of the update with a SHA-256 hash is moved (renamed, or copied
-  across file systems) from its `get_file_path_fn` path into the cache, unless an entry of the same
-  size is already there.
+  across file systems) from its `get_file_path_fn` path into the cache. It replaces the entry
+  there, which may hold other bytes, unless a handler builds from it. Without that file (e.g.
+  already moved), an entry of the file's size counts as stored.
 - Then every other entry of the update's provider is removed: the cache keeps the latest update
-  per provider, the sources of its next delta.
+  per provider, the sources of its next delta. Entries a handler builds from are kept.
+- Handlers sharing the cache, in one process or several, store and evict a provider's entries one
+  at a time, holding a lock on its directory: a success waits while another handler's runs.
 - So the first update of a device is a full download, and seeds the cache when a file of it names
   `microsoft/delta:1`, related files or not. To make it a delta, or without that name, seed the
   cache with the factory image at `az_iot_su_delta_handler_get_source_cache_path()`.
@@ -1777,7 +1828,7 @@ or later. ESP32 and Windows register no handler: their files are always download
 
 | Test | What |
 |---|---|
-| `az_iot_tests_su_delta` | Unit: cache path encoding, lookup, store and eviction; the rebuild through a fake `apply_delta_fn`, with partial target cleanup; a missing library or symbol declines. |
+| `az_iot_tests_su_delta` | Unit: cache path encoding, lookup, store and eviction; the rebuild through a fake `apply_delta_fn` and the samples' `simulate_delta_apply`, with partial target cleanup and a delta at the target's path; files of several steps at one path; a stored entry is refreshed from the application's file unless built from; handlers sharing a cache keep their own build files, do not evict a source being built from or an entry stored again since opened, and store and evict a provider's entries one at a time; a missing library or symbol declines. |
 | `az_iot_tests_su_delta_interop` | The real `libadudiffapi.so` rebuilds the committed `target.swu` from `source.swu` and `delta.bin` (SHA-256 checked); a truncated delta fails and leaves no target. |
 
 - The vectors are in `tests/unit/data/su_delta/`, with `SHA256SUMS`. They are regenerated, byte for
@@ -2037,8 +2088,9 @@ sessions ([connection-state-and-error-propagation.md](connection-state-and-error
 
 - The channel registers a feature-client state observer and acts only on the `DPS` scope, so it
   works whatever the hub state and under `dps.provision_only`.
-- It holds registration for the onboarding check and holds the provisioning session open while it
-  needs it. The connection client paces re-establishing a failed session.
+- It holds registration for the onboarding check, and holds the provisioning session only while it
+  has work for it. The hub session waits meanwhile (see [One MQTT session at a time](#one-mqtt-session-at-a-time)).
+  The connection client paces re-establishing a failed session.
 - It survives `close()` → `open()`. Device properties travel on each update check, so there is no
   re-report on reconnect.
 

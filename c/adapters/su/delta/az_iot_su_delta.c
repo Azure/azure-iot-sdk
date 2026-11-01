@@ -9,12 +9,17 @@
  */
 
 #define _POSIX_C_SOURCE 200809L
+#define _DEFAULT_SOURCE /* flock() */
+#if defined(__APPLE__)
+#define _DARWIN_C_SOURCE /* flock(), hidden by _POSIX_C_SOURCE alone */
+#endif
 
 #include "az_iot_su_delta.h"
 #include "az_iot_su_delta_internal.h"
 
 #include "azure/iot/az_iot_log.h"
 #include "azure/iot/az_iot_log_components.h"
+#include "internal/json_string.h"
 
 #include <azure/core/az_json.h>
 
@@ -23,7 +28,9 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <sys/file.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -38,6 +45,10 @@
 
 /** Permissions of the cache files the handler copies. */
 #define SU_DELTA_FILE_MODE 0640
+
+/** @brief Name prefix of the files the delta processor writes, in the source cache directory,
+ * which only handlers write to; a sanitized provider directory never starts with it. */
+#define SU_DELTA_BUILD_FILE_PREFIX ".build-"
 
 /* libadudiffapi legacy apply API (iot-hub-device-update-delta, legacy_adudiffapply.h). */
 typedef void* (*su_delta_create_session_fn)(void);
@@ -73,6 +84,21 @@ static bool su_delta_sanitize_directory_name(az_span name, char* out, size_t out
   }
   out[size] = '\0';
   return true;
+}
+
+/**
+ * @brief Write the cache directory name of a manifest's provider: @p json_provider decoded
+ * (`Contoso\u002eLtd` is `Contoso.Ltd`), then sanitized.
+ *
+ * @return false when the provider is empty, malformed, or does not fit @p out.
+ */
+static bool su_delta_get_provider_directory(az_span json_provider, char* out, size_t out_size)
+{
+  uint8_t decoded[AZ_IOT_SU_DELTA_MAX_PROVIDER_SIZE];
+  az_span provider;
+  return az_iot_json_string_decode(json_provider, AZ_SPAN_FROM_BUFFER(decoded), &provider)
+      == AZ_IOT_OK
+      && su_delta_sanitize_directory_name(provider, out, out_size);
 }
 
 /** @brief Write the cache file name `<algorithm>-<encoded hash>` of a file. */
@@ -214,10 +240,15 @@ static bool su_delta_read_source_properties(
     }
     if (target != NULL && reader.token.kind == AZ_JSON_TOKEN_STRING)
     {
-      if (az_json_token_get_string(&reader.token, target, (int32_t)size, NULL) != AZ_OK)
+      /* az_json_token_get_string() rejects `\u` escapes. */
+      az_span value;
+      if (az_iot_json_string_decode(
+              reader.token.slice, az_span_create((uint8_t*)target, (int32_t)size - 1), &value)
+          != AZ_IOT_OK)
       {
         return false;
       }
+      target[az_span_size(value)] = '\0';
     }
     else if (az_json_reader_skip_children(&reader) != AZ_OK)
     {
@@ -257,10 +288,66 @@ static bool su_delta_get_source_path(
       == AZ_IOT_OK;
 }
 
-static bool su_delta_is_readable_file(const char* path)
+/** @brief Whether @p path still names the file open at @p descriptor. */
+static bool su_delta_is_still_named(int descriptor, const char* path)
+{
+  struct stat opened;
+  struct stat named;
+  return fstat(descriptor, &opened) == 0 && lstat(path, &named) == 0
+      && opened.st_dev == named.st_dev && opened.st_ino == named.st_ino;
+}
+
+bool az_iot_su_delta__remove_opened_file_unless_locked(int descriptor, const char* path)
 {
   struct stat info;
-  return stat(path, &info) == 0 && S_ISREG(info.st_mode) && access(path, R_OK) == 0;
+  /* Locked, then checked again: @p path may name a file created since @p descriptor was opened. */
+  return fstat(descriptor, &info) == 0 && !S_ISDIR(info.st_mode)
+      && flock(descriptor, LOCK_EX | LOCK_NB) == 0 && su_delta_is_still_named(descriptor, path)
+      && unlink(path) == 0;
+}
+
+/**
+ * @brief Remove the file at @p path unless a handler holds a lock on it: a file being built, or a
+ * source being built from. A directory, or a file that cannot be opened, is kept; a link is
+ * removed.
+ *
+ * @return true when removed.
+ */
+static bool su_delta_remove_file_unless_locked(const char* path)
+{
+  int descriptor = open(path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
+  if (descriptor < 0)
+  {
+    return errno == ELOOP && unlink(path) == 0;
+  }
+  bool removed = az_iot_su_delta__remove_opened_file_unless_locked(descriptor, path);
+  (void)close(descriptor);
+  return removed;
+}
+
+/**
+ * @brief Pin @p source_path, the source of the coming build, with a shared lock, so that no
+ * handler evicts it until the build ends.
+ *
+ * @return false when it is not a readable regular file, or is being evicted.
+ */
+static bool su_delta_pin_source(az_iot_su_delta_handler* handler, const char* source_path)
+{
+  int descriptor = open(source_path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
+  if (descriptor < 0)
+  {
+    return false;
+  }
+  struct stat opened;
+  if (flock(descriptor, LOCK_SH | LOCK_NB) == 0 && fstat(descriptor, &opened) == 0
+      && S_ISREG(opened.st_mode) && su_delta_is_still_named(descriptor, source_path))
+  {
+    handler->_internal.source_descriptor = descriptor;
+    handler->_internal.source_pinned = true;
+    return true;
+  }
+  (void)close(descriptor);
+  return false;
 }
 
 /** @brief Load the default delta processor, unless loaded. */
@@ -367,6 +454,33 @@ static int32_t su_delta_apply_with_library(
   return result;
 }
 
+/** @brief Release the build file, removing it unless @p published moved it away. */
+static void su_delta_release_build_file(az_iot_su_delta_handler* handler, bool published)
+{
+  if (handler->_internal.build_path[0] == '\0')
+  {
+    return;
+  }
+  if (!published)
+  {
+    (void)unlink(handler->_internal.build_path);
+  }
+  (void)close(handler->_internal.build_descriptor);
+  handler->_internal.build_path[0] = '\0';
+}
+
+/** @brief End the handler's build, if any: release its file and unpin its source. */
+static void su_delta_end_build(az_iot_su_delta_handler* handler, bool published)
+{
+  handler->_internal.build_in_progress = false;
+  su_delta_release_build_file(handler, published);
+  if (handler->_internal.source_pinned)
+  {
+    (void)close(handler->_internal.source_descriptor);
+    handler->_internal.source_pinned = false;
+  }
+}
+
 static int32_t su_delta_choose_related_file(
     const az_iot_su_client_update_manifest* manifest,
     const az_iot_su_client_update_manifest_file* file,
@@ -378,8 +492,9 @@ static int32_t su_delta_choose_related_file(
   {
     return AZ_IOT_SU_RESULT_FAILURE;
   }
-  handler->_internal.build_in_progress = false;
-  if (!su_delta_sanitize_directory_name(
+  /* A build still unfinished was abandoned for this new choice. */
+  su_delta_end_build(handler, false);
+  if (!su_delta_get_provider_directory(
           manifest->update_id.provider,
           handler->_internal.provider_directory,
           sizeof(handler->_internal.provider_directory)))
@@ -403,7 +518,7 @@ static int32_t su_delta_choose_related_file(
     char source_path[AZ_IOT_SU_DELTA_MAX_PATH_SIZE];
     if (su_delta_get_source_path(
             handler, &manifest->related_files[index], source_path, sizeof(source_path))
-        && su_delta_is_readable_file(source_path))
+        && su_delta_pin_source(handler, source_path))
     {
       AZ_IOT_LOG_INFOF(
           AZ_IOT_LOG_COMPONENT_SU,
@@ -423,6 +538,103 @@ static int32_t su_delta_choose_related_file(
       (int)az_span_size(file->id),
       (const char*)az_span_ptr(file->id));
   return AZ_IOT_SU_RESULT_FAILURE;
+}
+
+/**
+ * @brief Create a file at @p path_template, whose `XXXXXX` end is replaced to name one that did
+ * not exist: nothing already there is opened or removed.
+ *
+ * @return Its descriptor, with #SU_DELTA_FILE_MODE; -1 on failure.
+ */
+static int su_delta_create_unique_file(char* path_template)
+{
+  int descriptor = mkstemp(path_template);
+  if (descriptor < 0)
+  {
+    return -1;
+  }
+  if (fcntl(descriptor, F_SETFD, FD_CLOEXEC) != 0
+      || fchmod(descriptor, (mode_t)SU_DELTA_FILE_MODE) != 0)
+  {
+    (void)close(descriptor);
+    (void)unlink(path_template);
+    return -1;
+  }
+  return descriptor;
+}
+
+/** @brief Remove build files no handler holds: left by a process that stopped mid-build. */
+static void su_delta_remove_abandoned_build_files(const az_iot_su_delta_handler* handler)
+{
+  DIR* entries = opendir(handler->_internal.options.source_cache_directory);
+  if (entries == NULL)
+  {
+    return;
+  }
+  for (struct dirent* entry = readdir(entries); entry != NULL; entry = readdir(entries))
+  {
+    char path[AZ_IOT_SU_DELTA_MAX_PATH_SIZE];
+    if (strncmp(entry->d_name, SU_DELTA_BUILD_FILE_PREFIX, sizeof(SU_DELTA_BUILD_FILE_PREFIX) - 1)
+            != 0
+        || su_delta_join_cache_path(handler, entry->d_name, NULL, path, sizeof(path)) != AZ_IOT_OK)
+    {
+      continue;
+    }
+    (void)su_delta_remove_file_unless_locked(path);
+  }
+  (void)closedir(entries);
+}
+
+/**
+ * @brief Create the file the processor writes, unique to this build and locked while the handler
+ * holds it, so other handlers sharing the cache directory neither reuse nor remove it.
+ */
+static bool su_delta_create_build_file(az_iot_su_delta_handler* handler)
+{
+  char* path = handler->_internal.build_path;
+  for (int attempt = 0; attempt < 3; attempt++)
+  {
+    if (su_delta_join_cache_path(
+            handler,
+            SU_DELTA_BUILD_FILE_PREFIX "XXXXXX",
+            NULL,
+            path,
+            sizeof(handler->_internal.build_path))
+        != AZ_IOT_OK)
+    {
+      break;
+    }
+    int descriptor = su_delta_create_unique_file(path);
+    if (descriptor < 0)
+    {
+      break;
+    }
+    if (flock(descriptor, LOCK_EX) == 0 && su_delta_is_still_named(descriptor, path))
+    {
+      handler->_internal.build_descriptor = descriptor;
+      return true;
+    }
+    /* Otherwise another handler removed it as abandoned before it was locked, or, left unlocked,
+     * the next build start removes it. */
+    (void)close(descriptor);
+  }
+  path[0] = '\0';
+  return false;
+}
+
+/** @brief Move @p source_path to @p target_path, copying across file systems. */
+static bool su_delta_move_file(const char* source_path, const char* target_path)
+{
+  if (rename(source_path, target_path) == 0)
+  {
+    return true;
+  }
+  if (!az_iot_su_delta__copy_file(source_path, target_path))
+  {
+    return false;
+  }
+  (void)unlink(source_path);
+  return true;
 }
 
 static int32_t su_delta_build_file_from_related(
@@ -449,23 +661,33 @@ static int32_t su_delta_build_file_from_related(
           != AZ_IOT_SU_RESULT_SUCCESS)
   {
     AZ_IOT_LOG_ERROR(AZ_IOT_LOG_COMPONENT_SU, "delta: cannot get the paths to build a file");
-    handler->_internal.build_in_progress = false;
+    su_delta_end_build(handler, false);
     return AZ_IOT_SU_RESULT_FAILURE;
   }
 
+  /* The processor writes a file only handlers can reach, so nothing planted in the
+   * application's directory is written through; the result then replaces target_path, which
+   * may be delta_path until then. */
   if (!handler->_internal.build_in_progress)
   {
-    (void)unlink(target_path);
+    su_delta_release_build_file(handler, false);
+    su_delta_remove_abandoned_build_files(handler);
+    if (!su_delta_create_build_file(handler))
+    {
+      AZ_IOT_LOG_ERROR(AZ_IOT_LOG_COMPONENT_SU, "delta: cannot create a file to build into");
+      su_delta_end_build(handler, false);
+      return AZ_IOT_SU_RESULT_FAILURE;
+    }
   }
+  const char* build_path = handler->_internal.build_path;
   int32_t result = options->apply_delta_fn != NULL
-      ? options->apply_delta_fn(source_path, delta_path, target_path, options->user_ctx)
-      : su_delta_apply_with_library(handler, source_path, delta_path, target_path);
+      ? options->apply_delta_fn(source_path, delta_path, build_path, options->user_ctx)
+      : su_delta_apply_with_library(handler, source_path, delta_path, build_path);
   if (result == AZ_IOT_SU_RESULT_IN_PROGRESS)
   {
     handler->_internal.build_in_progress = true;
     return AZ_IOT_SU_RESULT_IN_PROGRESS;
   }
-  handler->_internal.build_in_progress = false;
   if (result != AZ_IOT_SU_RESULT_SUCCESS)
   {
     AZ_IOT_LOG_ERRORF(
@@ -474,10 +696,52 @@ static int32_t su_delta_build_file_from_related(
         target_path,
         source_path,
         delta_path);
-    (void)unlink(target_path);
+    su_delta_end_build(handler, false);
     return AZ_IOT_SU_RESULT_FAILURE;
   }
+  if (!su_delta_move_file(build_path, target_path))
+  {
+    AZ_IOT_LOG_ERRORF(
+        AZ_IOT_LOG_COMPONENT_SU, "delta: cannot move the built file to '%s'", target_path);
+    su_delta_end_build(handler, false);
+    return AZ_IOT_SU_RESULT_FAILURE;
+  }
+  su_delta_end_build(handler, true);
   return AZ_IOT_SU_RESULT_SUCCESS;
+}
+
+/**
+ * @brief Move the application's file at @p file_path to the cache entry @p cache_path, replacing
+ * an entry no handler builds from.
+ *
+ * @return false when not moved, or when a handler builds from the entry, which is kept.
+ */
+static bool su_delta_replace_cache_entry(const char* file_path, const char* cache_path)
+{
+  int existing = open(cache_path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
+  /* Only a missing entry or a link is replaced unlocked: another may be pinned. */
+  if (existing < 0 && errno != ENOENT && errno != ELOOP)
+  {
+    return false;
+  }
+  if (existing >= 0)
+  {
+    struct stat info;
+    /* Held until the rename, so no handler pins the entry meanwhile. */
+    bool replaceable = fstat(existing, &info) == 0 && S_ISREG(info.st_mode)
+        && flock(existing, LOCK_EX | LOCK_NB) == 0 && su_delta_is_still_named(existing, cache_path);
+    if (!replaceable)
+    {
+      (void)close(existing);
+      return false;
+    }
+  }
+  bool moved = su_delta_move_file(file_path, cache_path);
+  if (existing >= 0)
+  {
+    (void)close(existing);
+  }
+  return moved;
 }
 
 /** @brief Create @p path and its missing parents. */
@@ -510,18 +774,24 @@ static bool su_delta_make_directories(const char* path)
 bool az_iot_su_delta__copy_file(const char* source_path, const char* target_path)
 {
   char temporary_path[AZ_IOT_SU_DELTA_MAX_PATH_SIZE];
-  int written = snprintf(temporary_path, sizeof(temporary_path), "%s.tmp", target_path);
+  int written = snprintf(temporary_path, sizeof(temporary_path), "%s.XXXXXX", target_path);
   if (written < 0 || (size_t)written >= sizeof(temporary_path))
   {
     return false;
   }
-  int source = open(source_path, O_RDONLY | O_CLOEXEC);
+  /* The source may be replaced meanwhile: neither follow a link nor wait on a FIFO. */
+  int source = open(source_path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
   if (source < 0)
   {
     return false;
   }
-  int target
-      = open(temporary_path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, (mode_t)SU_DELTA_FILE_MODE);
+  struct stat info;
+  if (fstat(source, &info) != 0 || !S_ISREG(info.st_mode))
+  {
+    (void)close(source);
+    return false;
+  }
+  int target = su_delta_create_unique_file(temporary_path);
   if (target < 0)
   {
     (void)close(source);
@@ -567,21 +837,6 @@ bool az_iot_su_delta__copy_file(const char* source_path, const char* target_path
   return true;
 }
 
-/** @brief Move @p source_path to @p target_path, copying across file systems. */
-static bool su_delta_move_file(const char* source_path, const char* target_path)
-{
-  if (rename(source_path, target_path) == 0)
-  {
-    return true;
-  }
-  if (!az_iot_su_delta__copy_file(source_path, target_path))
-  {
-    return false;
-  }
-  (void)unlink(source_path);
-  return true;
-}
-
 /** @brief The SHA-256 hash of @p file, the one the client verifies; NULL when it has none. */
 static const az_iot_su_client_update_manifest_file_hash* su_delta_find_sha256_hash(
     const az_iot_su_client_update_manifest_file* file)
@@ -597,31 +852,68 @@ static const az_iot_su_client_update_manifest_file_hash* su_delta_find_sha256_ha
 }
 
 /**
- * @brief Find the file slot download_fn got @p file in: its position in the last step that
- * uses it.
+ * @brief Write where the application stores @p file, at its slot in the last step that lists it.
  *
- * @return true when a step uses @p file.
+ * @param[out] out_download_order When it is downloaded relative to the other files: later files
+ * have a greater order.
  */
-static bool su_delta_find_file_slot(
+static bool su_delta_get_stored_file_path(
+    const az_iot_su_delta_handler* handler,
     const az_iot_su_client_update_manifest* manifest,
     const az_iot_su_client_update_manifest_file* file,
-    uint32_t* out_file_slot)
+    uint32_t* out_download_order,
+    char* path,
+    size_t path_size)
 {
   bool found = false;
+  uint32_t file_slot = 0;
   for (uint32_t step = 0; step < manifest->instructions.steps_count; step++)
   {
     const az_iot_su_client_update_manifest_instructions_step* instructions
         = &manifest->instructions.steps[step];
     for (uint32_t slot = 0; slot < instructions->files_count; slot++)
     {
-      if (az_span_is_content_equal(instructions->files[slot], file->id))
+      if (az_iot_json_string_equals(instructions->files[slot], file->id, true))
       {
-        *out_file_slot = slot;
+        file_slot = slot;
+        *out_download_order = step * AZ_IOT_SU_MAX_FILE_COUNT_PER_STEP + slot;
         found = true;
       }
     }
   }
-  return found;
+  const az_iot_su_delta_handler_options* options = &handler->_internal.options;
+  return found
+      && options->get_file_path_fn(file, file_slot, path, path_size, options->user_ctx)
+      == AZ_IOT_SU_RESULT_SUCCESS;
+}
+
+/**
+ * @brief Whether a file of @p manifest downloaded after the one at @p download_order is stored at
+ * @p path too, e.g. at the same slot of a later step with storage by slot only, replacing it.
+ */
+static bool su_delta_is_stored_file_path_reused(
+    const az_iot_su_delta_handler* handler,
+    const az_iot_su_client_update_manifest* manifest,
+    uint32_t download_order,
+    const char* path)
+{
+  for (uint32_t i = 0; i < manifest->files_count; i++)
+  {
+    char other_path[AZ_IOT_SU_DELTA_MAX_PATH_SIZE];
+    uint32_t other_download_order = 0;
+    if (su_delta_get_stored_file_path(
+            handler,
+            manifest,
+            &manifest->files[i],
+            &other_download_order,
+            other_path,
+            sizeof(other_path))
+        && other_download_order > download_order && strcmp(other_path, path) == 0)
+    {
+      return true;
+    }
+  }
+  return false;
 }
 
 /** @brief Whether @p name is the cache file name of a file of @p manifest. */
@@ -665,12 +957,10 @@ static void su_delta_remove_other_entries(
     }
     char path[AZ_IOT_SU_DELTA_MAX_PATH_SIZE];
     int written = snprintf(path, sizeof(path), "%s/%s", directory, entry->d_name);
-    struct stat info;
-    if (written > 0 && (size_t)written < sizeof(path) && lstat(path, &info) == 0
-        && !S_ISDIR(info.st_mode))
+    /* Kept while a handler builds from it. */
+    if (written > 0 && (size_t)written < sizeof(path) && su_delta_remove_file_unless_locked(path))
     {
-      AZ_IOT_LOG_INFOF(AZ_IOT_LOG_COMPONENT_SU, "delta: removing cached source '%s'", path);
-      (void)unlink(path);
+      AZ_IOT_LOG_INFOF(AZ_IOT_LOG_COMPONENT_SU, "delta: removed cached source '%s'", path);
     }
   }
   (void)closedir(entries);
@@ -685,16 +975,33 @@ static void su_delta_workflow_succeeded(
   {
     return;
   }
-  const az_iot_su_delta_handler_options* options = &handler->_internal.options;
+  /* The workflow is over: a source chosen but not built from is no longer pinned. */
+  su_delta_end_build(handler, false);
   char provider_directory[AZ_IOT_SU_DELTA_MAX_PROVIDER_SIZE];
   char directory[AZ_IOT_SU_DELTA_MAX_PATH_SIZE];
-  if (!su_delta_sanitize_directory_name(
+  if (!su_delta_get_provider_directory(
           manifest->update_id.provider, provider_directory, sizeof(provider_directory))
       || su_delta_join_cache_path(handler, provider_directory, NULL, directory, sizeof(directory))
           != AZ_IOT_OK
       || !su_delta_make_directories(directory))
   {
     AZ_IOT_LOG_ERROR(AZ_IOT_LOG_COMPONENT_SU, "delta: cannot create the source cache directory");
+    return;
+  }
+  /* Handlers sharing the cache store and evict a provider's entries one at a time, so none
+   * removes a file another is copying in, or one stored while it evicts. */
+  int directory_lock = open(directory, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+  int locked = -1;
+  while (directory_lock >= 0 && (locked = flock(directory_lock, LOCK_EX)) != 0 && errno == EINTR)
+  {
+  }
+  if (locked != 0)
+  {
+    AZ_IOT_LOG_ERROR(AZ_IOT_LOG_COMPONENT_SU, "delta: cannot lock the source cache directory");
+    if (directory_lock >= 0)
+    {
+      (void)close(directory_lock);
+    }
     return;
   }
 
@@ -717,21 +1024,24 @@ static void su_delta_workflow_succeeded(
     {
       continue;
     }
+    /* The application's file, verified by the client, refreshes the entry: one of the same size
+     * may hold other bytes, and a link is never built from. */
     struct stat info;
-    if (stat(cache_path, &info) == 0 && S_ISREG(info.st_mode)
-        && (int64_t)info.st_size == file->size_in_bytes)
-    {
-      cached_count++;
-      continue;
-    }
-    uint32_t file_slot = 0;
-    if (su_delta_find_file_slot(manifest, file, &file_slot)
-        && options->get_file_path_fn(
-               file, file_slot, file_path, sizeof(file_path), options->user_ctx)
-            == AZ_IOT_SU_RESULT_SUCCESS
-        && su_delta_move_file(file_path, cache_path))
+    uint32_t download_order = 0;
+    if (su_delta_get_stored_file_path(
+            handler, manifest, file, &download_order, file_path, sizeof(file_path))
+        && !su_delta_is_stored_file_path_reused(handler, manifest, download_order, file_path)
+        && lstat(file_path, &info) == 0 && S_ISREG(info.st_mode)
+        && su_delta_replace_cache_entry(file_path, cache_path))
     {
       AZ_IOT_LOG_INFOF(AZ_IOT_LOG_COMPONENT_SU, "delta: cached source '%s'", cache_path);
+      cached_count++;
+    }
+    /* Otherwise, e.g. moved by an earlier call, or kept while a handler builds from it. */
+    else if (
+        lstat(cache_path, &info) == 0 && S_ISREG(info.st_mode)
+        && (int64_t)info.st_size == file->size_in_bytes)
+    {
       cached_count++;
     }
     else
@@ -747,6 +1057,7 @@ static void su_delta_workflow_succeeded(
   {
     su_delta_remove_other_entries(manifest, directory);
   }
+  (void)close(directory_lock);
 }
 
 az_iot_su_delta_handler_options az_iot_su_delta_handler_options_default(void)
@@ -829,6 +1140,7 @@ void az_iot_su_delta_handler_deinit(az_iot_su_delta_handler* handler)
   {
     return;
   }
+  su_delta_end_build(handler, false);
   if (handler->_internal.library != NULL)
   {
     (void)dlclose(handler->_internal.library);

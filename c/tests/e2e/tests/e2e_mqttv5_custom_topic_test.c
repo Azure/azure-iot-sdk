@@ -25,6 +25,7 @@
 #include "azure/iot/az_iot.h"
 
 #include "az_iot_e2e_service.h"
+#include "e2e_connect_clock.h"
 #include "e2e_device.h"
 #include "e2e_log.h"
 #include "support/test_env.h"
@@ -145,12 +146,12 @@ static void pump(fixture* fx) { e2e_device_do_work(&fx->dev, E2E_PUMP_MS); }
 
 static bool wait_connected(fixture* fx)
 {
-  for (time_t start = time(NULL); (time(NULL) - start) < E2E_CONNECT_TIMEOUT_S;)
+  /* A connect after a re-provision registers again: DPS has its own budget. */
+  e2e_connect_clock clock;
+  e2e_connect_clock_start(&clock);
+  while (fx->dev.conn_state != AZ_IOT_CONN_STATE_CONNECTED
+         && e2e_connect_clock_running(&clock, &fx->dev.conn, E2E_CONNECT_TIMEOUT_S))
   {
-    if (fx->dev.conn_state == AZ_IOT_CONN_STATE_CONNECTED)
-    {
-      return true;
-    }
     pump(fx);
   }
   return fx->dev.conn_state == AZ_IOT_CONN_STATE_CONNECTED;
@@ -240,9 +241,10 @@ static int group_teardown(void** state)
   return 0;
 }
 
-static void watch_begin(fixture* fx)
+/** @brief Starts the events watch for @p marker, pumping the device while the service connects. */
+static void watch_begin(fixture* fx, const char* marker)
 {
-  bool watching = az_iot_e2e_service_telemetry_watch_begin(fx->service);
+  bool watching = az_iot_e2e_service_telemetry_watch_begin(fx->service, marker);
   for (time_t start = time(NULL);
        !watching && (time(NULL) - start) < E2E_SERVICE_CONNECT_TIMEOUT_S;)
   {
@@ -250,7 +252,7 @@ static void watch_begin(fixture* fx)
     {
       pump(fx);
     }
-    watching = az_iot_e2e_service_telemetry_watch_begin(fx->service);
+    watching = az_iot_e2e_service_telemetry_watch_begin(fx->service, marker);
   }
   if (!watching)
   {
@@ -302,7 +304,7 @@ static bool publish_topic_and_watch(
   char payload[E2E_MARKER_MAX + 16];
   snprintf(payload, sizeof(payload), "{\"marker\":\"%s\"}", marker);
 
-  watch_begin(fx);
+  watch_begin(fx, marker);
   az_iot_mqttv5_custom_topic_message message = { 0 };
   message.topic = topic;
   message.payload = (const uint8_t*)payload;
@@ -401,7 +403,7 @@ static void baseline_telemetry_is_routed(void** state)
   char payload[E2E_MARKER_MAX + 16];
   snprintf(payload, sizeof(payload), "{\"marker\":\"%s\"}", marker);
 
-  watch_begin(fx);
+  watch_begin(fx, marker);
   az_iot_mqttv5_telemetry_client telemetry;
   assert_int_equal(az_iot_mqttv5_telemetry_client_init(&telemetry, &fx->dev.conn), AZ_IOT_OK);
   az_iot_telemetry_message message = { 0 };

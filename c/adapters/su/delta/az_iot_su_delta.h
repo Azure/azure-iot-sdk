@@ -12,8 +12,13 @@
  *   `microsoft.sourceFileHash` and `microsoft.sourceFileHashAlgorithm` properties, is in the
  *   source cache.
  * - build_file_from_related_fn applies the downloaded delta to that source, writing the file.
- * - workflow_succeeded_fn moves the update's files into the source cache and removes the other
- *   entries of the update provider, so the cache keeps only the latest update per provider.
+ * - workflow_succeeded_fn moves the update's files into the source cache, replacing entries no
+ *   build uses, and removes the other entries of the update provider, so the cache keeps only
+ *   the latest update per provider. A source chosen for a build is locked until the build ends
+ *   (or, when the client downloads the full file instead, until the next choice, success or
+ *   deinit), and no handler sharing the cache, in this process or another, removes it
+ *   meanwhile. Such handlers store and evict a provider's entries one at a time:
+ *   workflow_succeeded_fn waits while another does.
  *
  * Cache entries are `<directory>/<provider>/<algorithm>-<hash>`: in `<provider>` and
  * `<algorithm>`, characters other than letters, digits and `-` become `_`; in the base64 hash,
@@ -81,13 +86,16 @@ extern "C"
   /**
    * @brief Write @p target_path from @p source_path and the delta at @p delta_path.
    *
-   * @param[in] source_path Source file, in the source cache.
+   * @param[in] source_path Source file, in the source cache; kept there, even by other handlers
+   * sharing it, until the build ends.
    * @param[in] delta_path Downloaded delta file.
-   * @param[in] target_path File to write.
+   * @param[in] target_path File to write: an empty file created for this build in the source cache
+   * directory, which the handler then moves to the path #az_iot_su_delta_get_file_path_fn gives.
    * @param[in] user_ctx az_iot_su_delta_handler_options::user_ctx.
    * @return AZ_IOT_SU_RESULT_SUCCESS; AZ_IOT_SU_RESULT_IN_PROGRESS to be called again with the
    * same paths on the next do_work(); anything else is a failure, after which the handler removes
-   * @p target_path.
+   * @p target_path. A build still in progress when the handler chooses again, for another file or
+   * update, is abandoned: @p target_path is removed and this is not called again for it.
    */
   typedef int32_t (*az_iot_su_delta_apply_fn)(
       const char* source_path,
@@ -125,6 +133,14 @@ extern "C"
       char provider_directory[AZ_IOT_SU_DELTA_MAX_PROVIDER_SIZE];
       /** The delta processor returned IN_PROGRESS for the file being built. */
       bool build_in_progress;
+      /** File the delta processor writes for the current build, or empty. */
+      char build_path[AZ_IOT_SU_DELTA_MAX_PATH_SIZE];
+      /** Descriptor holding the lock on build_path while it is not empty. */
+      int build_descriptor;
+      /** The source of the chosen build is pinned through source_descriptor. */
+      bool source_pinned;
+      /** Descriptor holding a shared lock on the chosen source while source_pinned. */
+      int source_descriptor;
       /** The default processor's library (dlopen()) and functions, or NULL. */
       void* library;
       void* create_session;
@@ -171,7 +187,7 @@ extern "C"
    * image.
    *
    * @param[in] handler An initialized handler.
-   * @param[in] provider Update provider.
+   * @param[in] provider Update provider, as decoded text (`Contoso.Ltd`, not JSON-escaped).
    * @param[in] hash_algorithm Hash algorithm, e.g. `sha256`.
    * @param[in] hash Base64 hash of the file.
    * @param[out] path Buffer for the NUL-terminated path.

@@ -12,7 +12,8 @@
 #          secure_<overlay>    + sdkconfig.secure + sdkconfig.secure_<overlay>
 #          <overlay>           + sdkconfig.<overlay> (e.g. qemu)
 # Secure profiles are signed with a key generated for this build only: the
-# images are build checks and must never be flashed.
+# images are build checks and must never be flashed. SDKCONFIG_EXTRA names one
+# more defaults file, applied last (e.g. the e2e device's DPS settings).
 set -euo pipefail
 
 if [ $# -lt 3 ]; then
@@ -65,6 +66,10 @@ case "$profile" in
     defaults="${defaults};${sample}/sdkconfig.${profile}"
     ;;
 esac
+
+if [ -n "${SDKCONFIG_EXTRA:-}" ]; then
+  defaults="${defaults};$(cd "$(dirname "$SDKCONFIG_EXTRA")" && pwd)/$(basename "$SDKCONFIG_EXTRA")"
+fi
 
 log="${work}/build.log"
 echo "Building ${sample_name} for ${target} (${profile}) in ${build}"

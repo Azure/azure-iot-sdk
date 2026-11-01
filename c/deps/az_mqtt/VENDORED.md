@@ -2,7 +2,7 @@
 
 MQTT 3.1.1 and MQTT 5 client libraries used by the az_mqtt adapter (`c/adapters/az_mqtt`).
 
-- Source: az_mqtt commit `907a29a` (main), unmodified.
+- Source: az_mqtt commit `7539e4f` (main), unmodified.
 - Imported: `CMakeLists.txt`, `LICENSE`, `README.md`, `doc/`, `inc/`, `src/`, and the ESP-IDF
   component files `port/`, `Kconfig`, `idf_component.yml` (used by
   [platforms/esp32](../../platforms/esp32/README.md) with `AZ_MQTT_BUILD_AZ_CORE=n`).

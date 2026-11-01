@@ -36,7 +36,8 @@
  * related file is the file XOR a source both sides generate (delta_source_byte()). The
  * MICROSOFT_DELTA offer is the unit tests' vectors (tests/unit/data/su_delta): the file is
  * target.swu, its related file delta.bin, made from source.swu. The reference handler
- * (az_iot_su_delta.h) builds it with the real delta processor, AZ_IOT_SU_DELTA_TEST_LIBRARY.
+ * (az_iot_su_delta.h) builds it with the real delta processor, AZ_IOT_SU_DELTA_TEST_LIBRARY; POSIX
+ * only (AZ_IOT_E2E_SU_WITH_REFERENCE_DELTA), so not run elsewhere.
  *
  * A missing variable fails the scenario that needs it.
  *
@@ -97,7 +98,9 @@
 #include "su_protocol_internal.h"
 
 #include "az_iot_crypto_openssl.h"
+#ifdef AZ_IOT_E2E_SU_WITH_REFERENCE_DELTA
 #include "az_iot_su_delta.h"
+#endif
 
 #include "e2e_su_env.h"
 #include "support/test_env.h"
@@ -126,13 +129,15 @@
 #define E2E_SU_DELTA_NO_SOURCE_CODE \
   AZ_IOT_SU_EXTENDED_RESULT(AZ_IOT_SU_FACILITY_DELTA, AZ_IOT_SU_DELTA_ERROR_NO_SOURCE)
 
+#ifdef AZ_IOT_E2E_SU_WITH_REFERENCE_DELTA
 /* Update provider of the offers (SuE2E.psm1); the reference handler caches sources under it. */
 #define E2E_SU_OFFER_PROVIDER "sdke2e"
 
-/* Set by tests/e2e/CMakeLists.txt: the reference handler's test vectors, and the delta processor
- * (AZ_IOT_SU_DELTA_TEST_LIBRARY; empty when not configured). */
+/* Set by tests/e2e/CMakeLists.txt with the reference handler: its test vectors, and the delta
+ * processor (AZ_IOT_SU_DELTA_TEST_LIBRARY; empty when not configured). */
 #if !defined(AZ_IOT_E2E_SU_DELTA_VECTORS_DIRECTORY) || !defined(AZ_IOT_E2E_SU_DELTA_LIBRARY)
 #error "Define AZ_IOT_E2E_SU_DELTA_VECTORS_DIRECTORY and AZ_IOT_E2E_SU_DELTA_LIBRARY"
+#endif
 #endif
 
 /* --- run-wide state ------------------------------------------------------ */
@@ -152,9 +157,11 @@ static az_iot_su_root_key g_wrong[E2E_SU_MAX_ROOTS];
 
 /* Base64 SHA-256 of the delta source, as the offers' `microsoft.sourceFileHash`. */
 static char g_delta_source_hash[48];
+#ifdef AZ_IOT_E2E_SU_WITH_REFERENCE_DELTA
 /* Base64 SHA-256 of the reference handler's source.swu and target.swu vectors. */
 static char g_reference_source_hash[48];
 static char g_reference_target_hash[48];
+#endif
 
 /* --- platform hooks ------------------------------------------------------ */
 
@@ -448,6 +455,21 @@ static bool finish_sha256_base64(
   return ok;
 }
 
+/** @brief Size of the file at @p path, or -1. */
+static int64_t size_of_file(const char* path)
+{
+  FILE* f = fopen(path, "rb");
+  if (f == NULL)
+  {
+    return -1;
+  }
+  long size = fseek(f, 0, SEEK_END) == 0 ? ftell(f) : -1L;
+  (void)fclose(f);
+  return (int64_t)size;
+}
+
+#ifdef AZ_IOT_E2E_SU_WITH_REFERENCE_DELTA
+
 /** @brief Writes the base64 SHA-256 of the file at @p path to @p out. */
 static bool sha256_base64_of_file(const char* path, char* out, size_t out_size)
 {
@@ -473,19 +495,6 @@ static bool sha256_base64_of_file(const char* path, char* out, size_t out_size)
   ok = ok && !ferror(in);
   (void)fclose(in);
   return finish_sha256_base64(crypto, &ctx, ok, out, out_size);
-}
-
-/** @brief Size of the file at @p path, or -1. */
-static int64_t size_of_file(const char* path)
-{
-  FILE* f = fopen(path, "rb");
-  if (f == NULL)
-  {
-    return -1;
-  }
-  long size = fseek(f, 0, SEEK_END) == 0 ? ftell(f) : -1L;
-  (void)fclose(f);
-  return (int64_t)size;
 }
 
 /** @brief Copies the file at @p from to @p to. */
@@ -527,6 +536,7 @@ static void reference_delta_vector_path(const char* name, char* out, size_t cap)
 {
   (void)snprintf(out, cap, "%s/%s", AZ_IOT_E2E_SU_DELTA_VECTORS_DIRECTORY, name);
 }
+#endif
 
 /* --- delta updates: test download handler --------------------------------- */
 
@@ -651,6 +661,8 @@ static int32_t test_delta_build_file_from_related(
 
 /* --- delta updates: reference handler ------------------------------------- */
 
+#ifdef AZ_IOT_E2E_SU_WITH_REFERENCE_DELTA
+
 /** @brief az_iot_su_delta_get_file_path_fn: where hook_download() stores @p file. */
 static int32_t reference_delta_get_file_path(
     const az_iot_su_client_update_manifest_file* file,
@@ -663,6 +675,7 @@ static int32_t reference_delta_get_file_path(
   file_path(p, file_index, is_chosen_related_file(p, file), path, path_size);
   return AZ_IOT_SU_RESULT_SUCCESS;
 }
+#endif
 
 /* --- delta updates: recording handler ------------------------------------- */
 
@@ -1020,7 +1033,9 @@ typedef struct
   /* The client references its download handlers for its lifetime: the recording handler, and
    * the reference handler it may call. */
   az_iot_su_download_handler delta_handler;
+#ifdef AZ_IOT_E2E_SU_WITH_REFERENCE_DELTA
   az_iot_su_delta_handler reference_delta_handler;
+#endif
   uint8_t su_workspace[AZ_IOT_SU_WORKSPACE_DEFAULT_SIZE];
   const char* model;
 
@@ -1029,7 +1044,9 @@ typedef struct
   bool have_certs;
   bool have_conn;
   bool have_su;
+#ifdef AZ_IOT_E2E_SU_WITH_REFERENCE_DELTA
   bool have_reference_delta_handler;
+#endif
 
   bool faulted;
   size_t abandoned;
@@ -1081,8 +1098,10 @@ typedef enum
   DELTA_HANDLER_NONE,
   /* The test download handler, E2E_SU_TEST_DELTA_HANDLER_ID. */
   DELTA_HANDLER_TEST,
+#ifdef AZ_IOT_E2E_SU_WITH_REFERENCE_DELTA
   /* The reference microsoft/delta:1 handler, with the real delta processor. */
   DELTA_HANDLER_REFERENCE,
+#endif
 } delta_handler_kind;
 
 typedef struct
@@ -1121,16 +1140,18 @@ static fixture_options fixture_options_default(const char* model)
 /** @brief Creates an empty scratch directory under the system temporary directory. */
 static bool make_scratch_dir(char* dir, size_t size)
 {
+  if (!az_iot_test_temp_path(dir, size, "az_iot_e2e_su_XXXXXX"))
+  {
+    return false;
+  }
 #ifdef _WIN32
-  char* temp = az_iot_test_env_dup("TEMP");
-  int n = snprintf(dir, size, "%s\\az_iot_e2e_su_XXXXXX", temp != NULL ? temp : ".");
-  free(temp);
-  return n > 0 && (size_t)n < size && _mktemp_s(dir, (size_t)n + 1) == 0 && _mkdir(dir) == 0;
+  return _mktemp_s(dir, strlen(dir) + 1) == 0 && _mkdir(dir) == 0;
 #else
-  int n = snprintf(dir, size, "/tmp/az_iot_e2e_su_XXXXXX");
-  return n > 0 && (size_t)n < size && mkdtemp(dir) != NULL;
+  return mkdtemp(dir) != NULL;
 #endif
 }
+
+#ifdef AZ_IOT_E2E_SU_WITH_REFERENCE_DELTA
 
 /** @brief Writes the reference handler's source cache path of the file with base64 SHA-256
  * @p hash, from an update of the offers' provider. */
@@ -1188,6 +1209,7 @@ static void remove_reference_delta_cache(const fixture* fx)
   (void)remove(provider_dir);
   (void)remove(fx->plat.delta_cache_dir);
 }
+#endif
 
 /**
  * @brief Sets up the download handler @p o asks for, and the recording handler registered in its
@@ -1205,6 +1227,7 @@ static void fixture_open_delta_handler(fixture* fx, const fixture_options* o)
       .user_ctx = p,
     };
   }
+#ifdef AZ_IOT_E2E_SU_WITH_REFERENCE_DELTA
   else
   {
     (void)snprintf(p->delta_cache_dir, sizeof(p->delta_cache_dir), "%s/sdc", p->dir);
@@ -1222,6 +1245,7 @@ static void fixture_open_delta_handler(fixture* fx, const fixture_options* o)
       seed_reference_delta_source(fx);
     }
   }
+#endif
   fx->delta_handler = (az_iot_su_download_handler){
     .id = p->delta_handler.id,
     .choose_related_file_fn = recording_choose_related_file,
@@ -1328,12 +1352,14 @@ static void fixture_close(fixture* fx)
     az_iot_su_client_deinit(&fx->su);
     fx->have_su = false;
   }
+#ifdef AZ_IOT_E2E_SU_WITH_REFERENCE_DELTA
   if (fx->have_reference_delta_handler)
   {
     remove_reference_delta_cache(fx);
     az_iot_su_delta_handler_deinit(&fx->reference_delta_handler);
     fx->have_reference_delta_handler = false;
   }
+#endif
   if (fx->have_conn)
   {
     az_iot_connection_client_deinit(&fx->conn);
@@ -1807,6 +1833,8 @@ static void delta_update_without_source_falls_back_to_full_download(void** state
       E2E_SU_DELTA_NO_SOURCE_CODE);
 }
 
+#ifdef AZ_IOT_E2E_SU_WITH_REFERENCE_DELTA
+
 /**
  * @brief The reference microsoft/delta:1 handler, with the real delta processor, builds the file
  * (target.swu) from its related file (delta.bin) and the cached source (source.swu); the update is
@@ -1842,6 +1870,7 @@ static void reference_delta_update_is_built_by_the_delta_processor_and_cached(vo
   assert_true(size_of_file(source_entry) < 0);
   assert_true(size_of_file(built_path) < 0);
 }
+#endif
 
 /* --- main ---------------------------------------------------------------- */
 
@@ -1874,18 +1903,22 @@ static int group_setup(void** state)
     g_wrong[i].modulus_len = g_trusted[(i + 1) % g_trusted_count].modulus_len;
   }
 
+  if (curl_global_init(CURL_GLOBAL_DEFAULT) != CURLE_OK || !compute_delta_source_hash())
+  {
+    return 1;
+  }
+#ifdef AZ_IOT_E2E_SU_WITH_REFERENCE_DELTA
   char source_path[E2E_SU_PATH_MAX];
   char target_path[E2E_SU_PATH_MAX];
   reference_delta_vector_path("source.swu", source_path, sizeof(source_path));
   reference_delta_vector_path("target.swu", target_path, sizeof(target_path));
-  if (curl_global_init(CURL_GLOBAL_DEFAULT) != CURLE_OK || !compute_delta_source_hash()
-      || !sha256_base64_of_file(
-          source_path, g_reference_source_hash, sizeof(g_reference_source_hash))
+  if (!sha256_base64_of_file(source_path, g_reference_source_hash, sizeof(g_reference_source_hash))
       || !sha256_base64_of_file(
           target_path, g_reference_target_hash, sizeof(g_reference_target_hash)))
   {
     return 1;
   }
+#endif
   return rc;
 }
 
@@ -1933,8 +1966,10 @@ int main(void)
         delta_update_is_built_from_the_related_file_and_reported, scenario_teardown),
     cmocka_unit_test_teardown(
         delta_update_without_source_falls_back_to_full_download, scenario_teardown),
+#ifdef AZ_IOT_E2E_SU_WITH_REFERENCE_DELTA
     cmocka_unit_test_teardown(
         reference_delta_update_is_built_by_the_delta_processor_and_cached, scenario_teardown),
+#endif
   };
   return cmocka_run_group_tests(tests, group_setup, group_teardown);
 }

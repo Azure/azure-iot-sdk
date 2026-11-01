@@ -97,6 +97,14 @@ extern "C"
       void* engine_ctx);
 
   /**
+   * @brief The engine's next deadline, for the connection client's wait.
+   *
+   * @param engine_ctx The engine context passed to open().
+   * @return The monotonic time (ms) of the engine's next deadline; 0 for none.
+   */
+  typedef uint64_t (*az_iot_su_channel_engine_deadline_cb)(void* engine_ctx);
+
+  /**
    * @brief The delivery + reporting vtable.
    *
    * Every function takes the channel's own @p ctx. All are REQUIRED except
@@ -169,13 +177,14 @@ extern "C"
     az_iot_result (*do_work)(void* ctx);
 
     /**
-     * @brief REQUIRED. Stop waiting for the verdict of an accepted fetch.
+     * @brief REQUIRED. Stop waiting for the verdict of a fetch, and stop asking
+     * for a session for it.
      *
-     * Called when the engine abandons @p operation on its deadline. The channel
-     * drops the outstanding request if it is that fetch, so a later request is
-     * not refused as busy and a late answer is never delivered; no verdict is
-     * reported for it. Required because verdicts carry no request identity: a
-     * late one would otherwise be taken for a newer request's.
+     * Called when the engine abandons @p operation on its deadline, accepted or
+     * not. The channel drops the outstanding request if it is that fetch, so a
+     * later request is not refused as busy and a late answer is never delivered;
+     * no verdict is reported for it. Required because verdicts carry no request
+     * identity: a late one would otherwise be taken for a newer request's.
      *
      * @param ctx       The channel's context.
      * @param operation The fetch being abandoned; never AZ_IOT_SU_OP_REPORT_STATUS.
@@ -198,6 +207,13 @@ extern "C"
      *        May be NULL. Invalid input MUST leave the channel state unchanged.
      */
     az_iot_result (*restore_state)(void* ctx, const uint8_t* buf, size_t len);
+
+    /**
+     * @brief OPTIONAL. Called by the engine after open() with the function giving its next
+     *        deadline, so a channel driven by a connection client bounds that client's wait
+     *        by it. May be NULL.
+     */
+    void (*set_engine_deadline_cb)(void* ctx, az_iot_su_channel_engine_deadline_cb deadline_cb);
 
   } az_iot_su_channel_vtable;
 
@@ -241,12 +257,33 @@ extern "C"
 #error "AZ_IOT_SU_CHANNEL_MAX_SESSION_RETRIES must be between 1 and 254"
 #endif
 
+/**
+ * @brief Longest wait for the answer to a status report, in milliseconds.
+ *
+ * The hub session waits while a report is outstanding, so an answer lost on a
+ * live session must not keep it waiting: past this the report is retried on the
+ * engine's pacing and the session released meanwhile. Defaults to
+ * AZ_IOT_SU_REQUEST_DEFAULT_TIMEOUT_MS, the bound an update check gets by default.
+ */
+#ifndef AZ_IOT_SU_CHANNEL_REPORT_RESPONSE_TIMEOUT_MS
+#define AZ_IOT_SU_CHANNEL_REPORT_RESPONSE_TIMEOUT_MS AZ_IOT_SU_REQUEST_DEFAULT_TIMEOUT_MS
+#endif
+
+/** @brief First pause, in milliseconds, after the adapter refuses a publish; doubles per refusal
+ * in a row. */
+#define AZ_IOT_SU_CHANNEL_PUBLISH_RETRY_BASE_MS 1000u
+
+/** @brief Longest pause, in milliseconds, after the adapter refuses publishes in a row. */
+#define AZ_IOT_SU_CHANNEL_PUBLISH_RETRY_MAX_MS 60000u
+
   typedef struct az_iot_su_channel_dps
   {
     az_iot_connection_client* connection;
     az_iot_su_channel_update_cb update_cb;
     az_iot_su_channel_result_cb result_cb;
     void* engine_ctx;
+    /** The engine's next deadline, for NEXT_DEADLINE; NULL when not set. */
+    az_iot_su_channel_engine_deadline_cb engine_deadline_cb;
 
     /* Correlation for the one request that may be outstanding. The device
      * drives one operation at a time, so a single slot is enough and makes an
@@ -296,15 +333,14 @@ extern "C"
      * reprovisions needs its check held on that session too. */
     bool wants_hold;
 
-    /* Standing interest in the provisioning session itself, so one can be
-     * opened on demand after the device has provisioned. Distinct from
-     * wants_hold, which only delays a registration that is about to happen. */
-    bool holds_user;
+    /* Operations (bit 1 << az_iot_su_operation) refused because no session was
+     * up. The tick asks for a session only while one is set -- opening one
+     * speculatively would just linger and close again; an abandoned fetch drops
+     * its own bit. */
+    uint8_t session_demand;
 
-    /* An operation was refused because no session was up. The tick reads this
-     * to know a session is actually wanted -- opening one speculatively would
-     * just linger and close again. */
-    bool wants_session;
+    /** When an outstanding status report stops being awaited (monotonic ms). */
+    uint64_t report_response_deadline_ms;
 
     /* Set once a dps_session_ensure() failure has been logged, so a refusal
      * that persists does not emit one line per pump tick. Cleared as soon as
@@ -319,6 +355,17 @@ extern "C"
      * force. Honouring it is the difference between backing off on the
      * schedule the service asked for and hammering it on our own. */
     uint64_t retry_after_deadline_ms;
+
+    /* When publishing may resume after the adapter refused a publish (monotonic
+     * ms; 0 when not paused), and the refusals in a row that set it. A refusing
+     * adapter would otherwise hold the session, and the hub session waiting for
+     * it, tick after tick. */
+    uint64_t publish_resume_at_ms;
+    uint8_t publish_refusals;
+    /* The last publish was refused as too large and did not pause: the engine
+     * sends a report again at once without its details, and only a refusal
+     * after that pauses. */
+    bool publish_refused_too_large;
 
     /* Consecutive session losses that cost an operation its answer.
      *

@@ -17,64 +17,20 @@
 
 #include <azure/az_amqp.h>
 
+#include "e2e_amqp_test_peer.h"
+
 #define PEER_INITIAL_DELIVERY_COUNT 100u
-#define FRAME_TYPE_AMQP 0
 #define DESC_OPEN 0x10
 #define DESC_BEGIN 0x11
 #define DESC_ATTACH 0x12
 #define DESC_FLOW 0x13
 #define DESC_TRANSFER 0x14
 
-/* ---- in-memory transport -------------------------------------------------- */
-
-typedef struct
-{
-  uint8_t to_client[8192];
-  size_t to_client_len;
-  size_t to_client_pos;
-  uint8_t from_client[16384];
-  size_t from_client_len;
-} mem_transport;
-
-static az_amqp_transport_status mem_ok(az_amqp_transport* t)
-{
-  (void)t;
-  return AZ_AMQP_TRANSPORT_STATUS_OK;
-}
-
-static az_amqp_transport_status mem_read(az_amqp_transport* t, az_span dst, size_t* out)
-{
-  mem_transport* m = (mem_transport*)az_amqp_transport_get_impl(t);
-  size_t n = m->to_client_len - m->to_client_pos;
-  if (n > (size_t)az_span_size(dst))
-  {
-    n = (size_t)az_span_size(dst);
-  }
-  memcpy(az_span_ptr(dst), m->to_client + m->to_client_pos, n);
-  m->to_client_pos += n;
-  *out = n;
-  return (n > 0) ? AZ_AMQP_TRANSPORT_STATUS_OK : AZ_AMQP_TRANSPORT_STATUS_WANT_READ;
-}
-
-static az_amqp_transport_status mem_write(az_amqp_transport* t, az_span src, size_t* out)
-{
-  mem_transport* m = (mem_transport*)az_amqp_transport_get_impl(t);
-  size_t const n = (size_t)az_span_size(src);
-  assert_true(m->from_client_len + n <= sizeof(m->from_client));
-  memcpy(m->from_client + m->from_client_len, az_span_ptr(src), n);
-  m->from_client_len += n;
-  *out = n;
-  return AZ_AMQP_TRANSPORT_STATUS_OK;
-}
-
-static const az_amqp_transport_vtable k_mem_vtable
-    = { mem_ok, mem_ok, mem_read, mem_write, mem_ok, NULL };
-
 /* ---- peer side ------------------------------------------------------------ */
 
 typedef struct
 {
-  mem_transport mem;
+  e2e_amqp_test_peer mem;
   az_amqp_transport transport;
   az_amqp_connection connection;
   az_amqp_session session;
@@ -91,21 +47,8 @@ typedef struct
 /** @brief Queues one AMQP frame (performative + optional payload) to the client. */
 static void peer_send(fixture* fx, az_span performative, az_span payload)
 {
-  mem_transport* m = &fx->mem;
-  size_t const size = 8 + (size_t)az_span_size(performative) + (size_t)az_span_size(payload);
-  assert_true(m->to_client_len + size <= sizeof(m->to_client));
-  uint8_t* p = m->to_client + m->to_client_len;
-  p[0] = (uint8_t)(size >> 24);
-  p[1] = (uint8_t)(size >> 16);
-  p[2] = (uint8_t)(size >> 8);
-  p[3] = (uint8_t)size;
-  p[4] = 2;
-  p[5] = FRAME_TYPE_AMQP;
-  p[6] = 0;
-  p[7] = 0;
-  memcpy(p + 8, az_span_ptr(performative), (size_t)az_span_size(performative));
-  memcpy(p + 8 + az_span_size(performative), az_span_ptr(payload), (size_t)az_span_size(payload));
-  m->to_client_len += size;
+  e2e_amqp_test_peer_send_frame(
+      &fx->mem, E2E_AMQP_TEST_PEER_FRAME_TYPE_AMQP, performative, payload);
 }
 
 static void pump(fixture* fx)
@@ -119,10 +62,7 @@ static void pump(fixture* fx)
 
 static void peer_open(fixture* fx)
 {
-  static const uint8_t header[8] = { 'A', 'M', 'Q', 'P', 0, 1, 0, 0 };
-  assert_true(fx->mem.to_client_len + sizeof(header) <= sizeof(fx->mem.to_client));
-  memcpy(fx->mem.to_client + fx->mem.to_client_len, header, sizeof(header));
-  fx->mem.to_client_len += sizeof(header);
+  e2e_amqp_test_peer_send_header(&fx->mem, E2E_AMQP_TEST_PEER_PROTOCOL_ID_AMQP);
 
   uint8_t buf[64];
   az_amqp_encoder e;
@@ -206,12 +146,12 @@ static bool last_client_flow(fixture* fx, uint32_t* out_delivery_count, uint32_t
 {
   bool found = false;
   size_t pos = 8; /* skip the protocol header */
-  while (pos + 8 <= fx->mem.from_client_len)
+  while (pos + 8 <= fx->mem.from_client_length)
   {
     const uint8_t* p = fx->mem.from_client + pos;
     size_t const size
         = ((size_t)p[0] << 24) | ((size_t)p[1] << 16) | ((size_t)p[2] << 8) | (size_t)p[3];
-    assert_true(size >= 8 && pos + size <= fx->mem.from_client_len);
+    assert_true(size >= 8 && pos + size <= fx->mem.from_client_length);
     size_t const body_off = (size_t)p[4] * 4;
     if (size > body_off)
     {
@@ -284,7 +224,9 @@ static void on_link_state(
 /** @brief Opens connection, session and a receiver link against the in-memory peer. */
 static void attach_receiver(fixture* fx, uint32_t prefetch_credit)
 {
-  assert_int_equal(AZ_OK, az_amqp_transport_init(&fx->transport, &k_mem_vtable, &fx->mem));
+  assert_int_equal(
+      AZ_OK,
+      az_amqp_transport_init(&fx->transport, &e2e_amqp_test_peer_transport_vtable, &fx->mem));
   az_amqp_connection_storage cs = {
     .incoming_buffer = AZ_SPAN_FROM_BUFFER(fx->incoming),
     .outgoing_buffer = AZ_SPAN_FROM_BUFFER(fx->outgoing),

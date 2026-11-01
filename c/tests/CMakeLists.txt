@@ -121,6 +121,8 @@ target_include_directories(az_iot_test_support PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}
 )
 target_link_libraries(az_iot_test_support PUBLIC az_iot_core)
+# The mock adapter checks az_iot_mqtt_limits as the real adapters do (internal/mqtt_limits.h).
+target_include_directories(az_iot_test_support PRIVATE ${PROJECT_SOURCE_DIR}/src/core)
 az_iot_apply_warnings(az_iot_test_support)
 
 az_iot_add_cmocka_test(az_iot_tests_smoke unit/smoke_test.c)
@@ -129,6 +131,14 @@ target_include_directories(az_iot_tests_smoke PRIVATE
 az_iot_add_cmocka_test(az_iot_tests_mqtt_iface_contract unit/mqtt_iface_contract_test.c)
 target_link_libraries(az_iot_tests_mqtt_iface_contract PRIVATE az_iot_test_support)
 az_iot_add_cmocka_test(az_iot_tests_connection_client_workspace unit/connection_client_workspace_test.c)
+target_link_libraries(az_iot_tests_connection_client_workspace
+    PRIVATE az_iot_test_support az_iot_mqttv3 az_iot_mqttv5)
+# MQTT clients built in an application workspace (opts.mqtt_adapter).
+az_iot_add_cmocka_test(az_iot_tests_connection_client_mqtt_adapter
+    unit/connection_client_mqtt_adapter_test.c)
+target_link_libraries(az_iot_tests_connection_client_mqtt_adapter PRIVATE az_iot_test_support)
+target_include_directories(az_iot_tests_connection_client_mqtt_adapter PRIVATE
+    ${PROJECT_SOURCE_DIR}/src/core)
 # Default limits: built in, a user's definition, and a config file, resolved as documented.
 foreach(_case DEFAULT OVERRIDE CONFIG_FILE)
     set(_t az_iot_tests_connection_client_config_${_case})
@@ -243,6 +253,8 @@ target_include_directories(az_iot_tests_mqttv5_custom_topic_client PRIVATE
     ${PROJECT_SOURCE_DIR}/src/core)
 az_iot_add_cmocka_test(az_iot_tests_mqttv3_c2d_client unit/mqttv3_c2d_client_test.c)
 target_link_libraries(az_iot_tests_mqttv3_c2d_client PRIVATE az_iot_test_support az_iot_mqttv3)
+target_include_directories(az_iot_tests_mqttv3_c2d_client PRIVATE
+    ${PROJECT_SOURCE_DIR}/src/core)
 az_iot_add_cmocka_test(az_iot_tests_mqttv3_direct_method_client unit/mqttv3_direct_method_client_test.c)
 target_link_libraries(az_iot_tests_mqttv3_direct_method_client PRIVATE az_iot_test_support az_iot_mqttv3)
 target_include_directories(az_iot_tests_mqttv3_direct_method_client PRIVATE
@@ -258,7 +270,8 @@ endif()
 # library and the application have to be built against the same value, hence
 # compiling the mqttv3 source into this target rather than linking az_iot_mqttv3,
 # which carries the default. Running the whole suite against a raised rid bound
-# is what proves the knob reaches every buffer derived from it.
+# is what proves the knob reaches every buffer derived from it. A single
+# in-flight slot (AZ_IOT_DM_MAX_INFLIGHT=1) proves no test or loop assumes two.
 az_iot_add_cmocka_test(az_iot_tests_mqttv3_direct_method_client_tuned
     unit/mqttv3_direct_method_client_test.c
     ${PROJECT_SOURCE_DIR}/src/mqttv3/direct_method_client.c)
@@ -267,7 +280,8 @@ target_include_directories(az_iot_tests_mqttv3_direct_method_client_tuned PRIVAT
     ${PROJECT_SOURCE_DIR}/src/core
     ${PROJECT_SOURCE_DIR}/src/mqttv3)
 target_compile_definitions(az_iot_tests_mqttv3_direct_method_client_tuned PRIVATE
-    AZ_IOT_DM_RID_MAX=200)
+    AZ_IOT_DM_RID_MAX=200
+    AZ_IOT_DM_MAX_INFLIGHT=1)
 if(UNIX)
     target_compile_definitions(az_iot_tests_mqttv3_direct_method_client_tuned PRIVATE
         _POSIX_C_SOURCE=200809L)
@@ -287,7 +301,8 @@ endif()
 # same value -- hence the mqttv5 sources are compiled into this target rather than
 # linked from az_iot_mqttv5, which carries the default. Running the whole suite
 # against an overridden limit proves the knob reaches every pool, loop and
-# admission check, and catches anyone reintroducing a hardcoded bound.
+# admission check, and catches anyone reintroducing a hardcoded bound. It is set
+# to 1, the smallest, through its documented default AZ_IOT_DM_MAX_INFLIGHT.
 az_iot_add_cmocka_test(az_iot_tests_mqttv5_direct_method_client_tuned
     unit/mqttv5_direct_method_client_test.c
     ${PROJECT_SOURCE_DIR}/src/mqttv5/direct_method_client.c
@@ -299,7 +314,7 @@ target_include_directories(az_iot_tests_mqttv5_direct_method_client_tuned PRIVAT
     ${PROJECT_SOURCE_DIR}/src/core
     ${PROJECT_SOURCE_DIR}/src/mqttv5)
 target_compile_definitions(az_iot_tests_mqttv5_direct_method_client_tuned PRIVATE
-    AZ_IOT_MQTTV5_DM_MAX_CONCURRENT=2
+    AZ_IOT_DM_MAX_INFLIGHT=1
     AZ_IOT_MQTTV5_DM_NOTICE_QUEUE_MAX=4)
 if(UNIX)
     target_compile_definitions(az_iot_tests_mqttv5_direct_method_client_tuned PRIVATE
@@ -321,6 +336,8 @@ target_include_directories(az_iot_tests_proto3 PRIVATE ${PROJECT_SOURCE_DIR}/src
 
 az_iot_add_cmocka_test(az_iot_tests_mqttv3_twin_client unit/mqttv3_twin_client_test.c)
 target_link_libraries(az_iot_tests_mqttv3_twin_client PRIVATE az_iot_test_support az_iot_mqttv3)
+target_include_directories(az_iot_tests_mqttv3_twin_client PRIVATE
+    ${PROJECT_SOURCE_DIR}/src/core)
 az_iot_add_cmocka_test(az_iot_tests_mqttv5_twin_client unit/mqttv5_twin_client_test.c)
 target_link_libraries(az_iot_tests_mqttv5_twin_client PRIVATE az_iot_test_support az_iot_mqttv5)
 target_include_directories(az_iot_tests_mqttv5_twin_client PRIVATE
@@ -620,8 +637,15 @@ endif()
 set(AZ_IOT_SU_DELTA_TEST_LIBRARY "" CACHE FILEPATH
     "libadudiffapi.so for the microsoft/delta:1 interop test (needs AZ_IOT_WITH_SU_DELTA)")
 if(TARGET az_iot_su_delta)
-    az_iot_add_cmocka_test(az_iot_tests_su_delta unit/su_delta_test.c)
-    target_link_libraries(az_iot_tests_su_delta PRIVATE az_iot_su_delta)
+    # With the samples' delta processor (su_sim.c), run against the handler.
+    set(_su_sample_common ${CMAKE_CURRENT_SOURCE_DIR}/../samples/software_update/pc/common)
+    az_iot_add_cmocka_test(az_iot_tests_su_delta RACE
+        unit/su_delta_test.c
+        ${_su_sample_common}/su_sim.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/../samples/common/sample_utils.c)
+    target_include_directories(az_iot_tests_su_delta PRIVATE
+        ${_su_sample_common} ${CMAKE_CURRENT_SOURCE_DIR}/../samples/common)
+    target_link_libraries(az_iot_tests_su_delta PRIVATE az_iot_su_delta pthread)
     target_compile_definitions(az_iot_tests_su_delta PRIVATE
         AZ_IOT_TEST_SU_DELTA_WORK_DIRECTORY="${CMAKE_CURRENT_BINARY_DIR}/su_delta_work")
 endif()
@@ -987,6 +1011,14 @@ if(AZ_IOT_WITH_AZ_MQTT)
         az_iot_adapter_az_mqtt az_mqttv3 az_mqttv5)
     if(WIN32)
         target_link_libraries(az_iot_tests_az_mqtt_adapter_workspace PRIVATE ws2_32)
+    endif()
+    # The connection client sized for the az_mqtt adapter and its transport (az_mqtt_core).
+    target_link_libraries(az_iot_tests_connection_client_mqtt_adapter PRIVATE
+        az_iot_adapter_az_mqtt az_mqtt_core)
+    target_compile_definitions(az_iot_tests_connection_client_mqtt_adapter PRIVATE
+        AZ_IOT_TEST_WITH_AZ_MQTT_ADAPTER)
+    if(WIN32)
+        target_link_libraries(az_iot_tests_connection_client_mqtt_adapter PRIVATE ws2_32)
     endif()
 
     # The adapter with recording malloc and free: freed memory holds no credential.

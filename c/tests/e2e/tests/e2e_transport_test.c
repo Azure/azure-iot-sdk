@@ -153,7 +153,7 @@ static void telemetry_round_trip(e2e_fixture* fx, const char* tag)
   char payload[128];
   snprintf(payload, sizeof(payload), "{\"e2e\":\"%s\",\"marker\":\"%s\"}", tag, marker);
 
-  bool watching = az_iot_e2e_service_telemetry_watch_begin(fx->service);
+  bool watching = az_iot_e2e_service_telemetry_watch_begin(fx->service, marker);
   for (time_t connect_start = time(NULL);
        !watching && (time(NULL) - connect_start) < E2E_CONNECT_TIMEOUT_S;)
   {
@@ -161,7 +161,7 @@ static void telemetry_round_trip(e2e_fixture* fx, const char* tag)
     {
       e2e_device_do_work(&dev, E2E_PUMP_MS);
     }
-    watching = az_iot_e2e_service_telemetry_watch_begin(fx->service);
+    watching = az_iot_e2e_service_telemetry_watch_begin(fx->service, marker);
   }
   if (!watching)
   {

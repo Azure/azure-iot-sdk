@@ -65,16 +65,15 @@ static int setup_opts(
 {
   az_iot_test_conn* fx = (az_iot_test_conn*)calloc(1, sizeof(*fx));
   assert_non_null(fx);
-  assert_int_equal(az_iot_test_connection_client_init(&fx->client_storage, opts), AZ_IOT_OK);
+  az_iot_connection_client_options with_adapter = *opts;
+  with_adapter.mqtt_adapter = az_iot_mock_mqtt_get_adapter_for_version(v);
+  assert_int_equal(
+      az_iot_test_connection_client_init(&fx->client_storage, &with_adapter), AZ_IOT_OK);
   fx->client = &fx->client_storage;
   assert_int_equal(
       az_iot_connection_client_add_state_observer(fx->client, az_iot_test_on_state, &fx->log),
       AZ_IOT_OK);
   az_iot_connection_client__seed_rng(fx->client, 0xC0FFEEFEEDFACEull);
-  fx->factory = az_iot_mock_mqtt_factory_create(v);
-  assert_non_null(fx->factory);
-  assert_int_equal(
-      az_iot_connection_client_register_mqtt_factory(fx->client, fx->factory), AZ_IOT_OK);
   *state = fx;
   return 0;
 }
@@ -108,7 +107,6 @@ static int teardown(void** state)
   if (fx)
   {
     az_iot_test_connection_client_deinit(&fx->client_storage);
-    az_iot_mock_mqtt_factory_destroy(fx->factory);
     free(fx);
   }
   return 0;
@@ -126,9 +124,9 @@ static void pump(az_iot_test_conn* fx, int n)
   }
 }
 
-static const char* last_connect_host(az_iot_test_conn* fx)
+static const char* last_connect_host(void)
 {
-  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_adapter_last_client();
   assert_non_null(m);
   const az_iot_mock_call* c = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_CONNECT);
   assert_non_null(c);
@@ -155,7 +153,7 @@ static size_t last_index_of(
 
 static void reject_identity(az_iot_test_conn* fx)
 {
-  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_adapter_last_client();
   assert_non_null(m);
   assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_ERR_IDENTITY_REJECTED));
   pump(fx, 2);
@@ -181,7 +179,7 @@ static const az_iot_connection_recovery_info* last_hub_recovery(
 
 static void provision(az_iot_test_conn* fx)
 {
-  az_iot_mock_mqtt_client* dps = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  az_iot_mock_mqtt_client* dps = az_iot_mock_mqtt_adapter_last_client();
   assert_non_null(dps);
   assert_true(az_iot_mock_mqtt_client_inject_connected(dps, AZ_IOT_OK));
   pump(fx, 1);
@@ -196,13 +194,13 @@ static void provision(az_iot_test_conn* fx)
       strlen(k_assigned_body),
       AZ_IOT_MQTT_QOS_1));
   pump(fx, 5);
-  assert_string_equal(last_connect_host(fx), HUB_HOST);
+  assert_string_equal(last_connect_host(), HUB_HOST);
 }
 
 /* mqttv5: CONNACK -> presence SUBACK -> birth-ack -> HUB:CONNECTED. */
 static void connect_v5(az_iot_test_conn* fx)
 {
-  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_adapter_last_client();
   assert_non_null(m);
   assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_OK));
   pump(fx, 1);
@@ -235,7 +233,7 @@ static void connect_v5(az_iot_test_conn* fx)
 
 static void inject_v5_disconnect(az_iot_test_conn* fx, az_iot_result status, int32_t reason_code)
 {
-  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_adapter_last_client();
   assert_non_null(m);
   az_iot_mqtt_event evt;
   memset(&evt, 0, sizeof(evt));
@@ -267,7 +265,7 @@ static void mqttv3_connack_rejection_retries_the_hub_on_the_identity_ladder(void
   assert_int_equal(fx->log.reasons[i], AZ_IOT_ERR_IDENTITY_REJECTED);
 
   fire_retry(fx);
-  assert_string_equal(last_connect_host(fx), HUB_HOST);
+  assert_string_equal(last_connect_host(), HUB_HOST);
 }
 
 static void mqttv5_connack_rejection_retries_the_hub_on_the_identity_ladder(void** state)
@@ -281,7 +279,7 @@ static void mqttv5_connack_rejection_retries_the_hub_on_the_identity_ladder(void
   assert_int_equal(r->next_attempt_delay_ms, IDENTITY_MS);
 
   fire_retry(fx);
-  assert_string_equal(last_connect_host(fx), HUB_HOST);
+  assert_string_equal(last_connect_host(), HUB_HOST);
 }
 
 /* A mid-session Not authorized DISCONNECT is the same refusal as a CONNACK one. */
@@ -300,7 +298,7 @@ static void mqttv5_mid_session_not_authorized_uses_the_identity_ladder(void** st
   assert_int_equal(fx->log.recovery[i].next_attempt_delay_ms, IDENTITY_MS);
 
   fire_retry(fx);
-  assert_string_equal(last_connect_host(fx), HUB_HOST);
+  assert_string_equal(last_connect_host(), HUB_HOST);
 }
 
 static void mqttv5_mid_session_server_busy_uses_the_reconnection_policy(void** state)
@@ -401,7 +399,7 @@ static void a_retry_due_before_the_deadline_does_not_start_after_it(void** state
 
   az_iot_test_wait_until_ms(fx->client->identity_recovery_started_ms + 1000u);
   pump(fx, 1);
-  assert_null(az_iot_mock_mqtt_factory_last_client(fx->factory));
+  assert_null(az_iot_mock_mqtt_adapter_last_client());
   assert_int_equal(fx->client->reconnect_due_ms, 0);
   assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_FAULTED);
   const az_iot_connection_recovery_info* r = last_hub_recovery(fx, AZ_IOT_CONN_STATE_FAULTED);
@@ -454,7 +452,7 @@ static void max_duration_bounds_transient_retries_after_a_refusal(void** state)
   {
     /* Keep only this round's events; the log is bounded. */
     memset(&fx->log, 0, sizeof(fx->log));
-    az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+    az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_adapter_last_client();
     assert_non_null(m);
     assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_ERR_MQTT));
     pump(fx, 2);
@@ -470,9 +468,9 @@ static void max_duration_bounds_transient_retries_after_a_refusal(void** state)
   size_t i = last_index_of(&fx->log, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_FAULTED);
   assert_int_equal(fx->log.reasons[i], AZ_IOT_ERR_IDENTITY_REJECTED);
   /* Nothing is attempted after the fault. */
-  assert_null(az_iot_mock_mqtt_factory_last_client(fx->factory));
+  assert_null(az_iot_mock_mqtt_adapter_last_client());
   pump(fx, 3);
-  assert_null(az_iot_mock_mqtt_factory_last_client(fx->factory));
+  assert_null(az_iot_mock_mqtt_adapter_last_client());
 }
 
 /* Only HUB:CONNECTED restarts the ladder; a transient failure in between does
@@ -484,7 +482,7 @@ static void only_a_hub_connection_resets_the_identity_ladder(void** state)
 
   reject_identity(fx);
   fire_retry(fx);
-  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_adapter_last_client();
   assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_ERR_MQTT));
   pump(fx, 2);
   assert_int_equal(
@@ -495,7 +493,7 @@ static void only_a_hub_connection_resets_the_identity_ladder(void** state)
   assert_int_equal(last_hub_recovery(fx, AZ_IOT_CONN_STATE_RETRY_PENDING)->attempt, 2);
 
   fire_retry(fx);
-  m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  m = az_iot_mock_mqtt_adapter_last_client();
   assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_OK));
   pump(fx, 1);
   assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_CONNECTED);
@@ -523,7 +521,7 @@ static void a_refusal_retries_the_assigned_hub_without_dps(void** state)
     assert_false(fx->client->needs_reprovision);
     assert_false(last_hub_recovery(fx, AZ_IOT_CONN_STATE_RETRY_PENDING)->next_attempt_reprovisions);
     fire_retry(fx);
-    assert_string_equal(last_connect_host(fx), HUB_HOST);
+    assert_string_equal(last_connect_host(), HUB_HOST);
     assert_null(fx->client->dps_mqtt);
   }
 }
@@ -537,7 +535,7 @@ static void refusals_do_not_trigger_the_unreachable_hub_threshold(void** state)
   assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
   provision(fx);
 
-  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_adapter_last_client();
   assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_ERR_MQTT));
   pump(fx, 2);
   fire_retry(fx);
@@ -545,14 +543,14 @@ static void refusals_do_not_trigger_the_unreachable_hub_threshold(void** state)
   {
     reject_identity(fx);
     fire_retry(fx);
-    assert_string_equal(last_connect_host(fx), HUB_HOST);
+    assert_string_equal(last_connect_host(), HUB_HOST);
   }
   /* The transient failure before the refusals was forgotten. */
-  m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  m = az_iot_mock_mqtt_adapter_last_client();
   assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_ERR_MQTT));
   pump(fx, 2);
   fire_retry(fx);
-  assert_string_equal(last_connect_host(fx), HUB_HOST);
+  assert_string_equal(last_connect_host(), HUB_HOST);
 }
 
 /* REPROVISION mode: DPS assigns, the hub refuses again. The cycle keeps its
@@ -577,7 +575,7 @@ static void reprovision_cycles_are_bounded(void** state)
     assert_int_equal(r->next_attempt_delay_ms, expected[n]);
     assert_true(r->next_attempt_reprovisions);
     fire_retry(fx);
-    assert_string_equal(last_connect_host(fx), DPS_HOST);
+    assert_string_equal(last_connect_host(), DPS_HOST);
     provision(fx);
   }
   reject_identity(fx);
@@ -588,7 +586,7 @@ static void reprovision_cycles_are_bounded(void** state)
   assert_int_equal(fx->client->reconnect_due_ms, 0);
   /* Nothing further is attempted: no adapter is created after the fault. */
   pump(fx, 5);
-  assert_null(az_iot_mock_mqtt_factory_last_client(fx->factory));
+  assert_null(az_iot_mock_mqtt_adapter_last_client());
 }
 
 /* ------------------------------------------------------------------------- */
@@ -607,7 +605,7 @@ static void request_reprovision_runs_the_pending_retry_through_dps_now(void** st
   assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_RETRY_PENDING);
   assert_int_equal(az_iot_connection_client_request_reprovision(fx->client), AZ_IOT_OK);
   pump(fx, 1);
-  assert_string_equal(last_connect_host(fx), DPS_HOST);
+  assert_string_equal(last_connect_host(), DPS_HOST);
 
   /* The re-provision completes and the refusal ladder carries on from it. */
   provision(fx);
@@ -626,14 +624,14 @@ static void close_and_open_after_a_fault_returns_to_the_cached_hub(void** state)
 
   assert_int_equal(az_iot_connection_client_close(fx->client), AZ_IOT_OK);
   assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
-  assert_string_equal(last_connect_host(fx), HUB_HOST);
+  assert_string_equal(last_connect_host(), HUB_HOST);
 
   /* Unless the application asks for a re-provision. */
   reject_identity(fx);
   assert_int_equal(az_iot_connection_client_close(fx->client), AZ_IOT_OK);
   assert_int_equal(az_iot_connection_client_request_reprovision(fx->client), AZ_IOT_OK);
   assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
-  assert_string_equal(last_connect_host(fx), DPS_HOST);
+  assert_string_equal(last_connect_host(), DPS_HOST);
 }
 
 /* A pending registration retry keeps its DPS backoff (and any retry-after). */
@@ -643,7 +641,7 @@ static void request_reprovision_keeps_a_pending_registration_schedule(void** sta
   fx->client->opts.reconnection_policy.initial_delay_ms = 3600000u;
   fx->client->opts.reconnection_policy.max_delay_ms = 3600000u;
   assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
-  az_iot_mock_mqtt_client* dps = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  az_iot_mock_mqtt_client* dps = az_iot_mock_mqtt_adapter_last_client();
   assert_true(az_iot_mock_mqtt_client_inject_connected(dps, AZ_IOT_ERR_MQTT));
   pump(fx, 3);
   assert_int_equal(
@@ -667,19 +665,19 @@ static void request_reprovision_during_a_registration_does_not_linger(void** sta
   reject_identity(fx);
   assert_int_equal(az_iot_connection_client_request_reprovision(fx->client), AZ_IOT_OK);
   pump(fx, 1);
-  assert_string_equal(last_connect_host(fx), DPS_HOST);
+  assert_string_equal(last_connect_host(), DPS_HOST);
 
   assert_int_equal(az_iot_connection_client_request_reprovision(fx->client), AZ_IOT_OK);
   provision(fx);
   assert_false(fx->client->needs_reprovision);
 
-  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_adapter_last_client();
   assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_OK));
   pump(fx, 1);
   assert_true(az_iot_mock_mqtt_client_inject_disconnected(m));
   pump(fx, 1);
   fire_retry(fx);
-  assert_string_equal(last_connect_host(fx), HUB_HOST);
+  assert_string_equal(last_connect_host(), HUB_HOST);
 }
 
 /* DPS refusing the bootstrap identity is retried on reconnection_policy, not
@@ -707,8 +705,8 @@ static az_iot_mock_mqtt_client* reprovision_after_a_bounded_refusal(az_iot_test_
   provision(fx);
   reject_identity(fx);
   fire_retry(fx);
-  assert_string_equal(last_connect_host(fx), DPS_HOST);
-  az_iot_mock_mqtt_client* dps = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  assert_string_equal(last_connect_host(), DPS_HOST);
+  az_iot_mock_mqtt_client* dps = az_iot_mock_mqtt_adapter_last_client();
   assert_true(az_iot_mock_mqtt_client_inject_connected(dps, AZ_IOT_OK));
   pump(fx, 1);
   const az_iot_mock_call* sub = az_iot_mock_mqtt_client_last_of(dps, AZ_IOT_MOCK_CALL_SUBSCRIBE);
@@ -775,7 +773,7 @@ static void a_delayed_registration_retry_past_the_deadline_faults_both_scopes(vo
   az_iot_test_wait_until_ms(fx->client->identity_recovery_started_ms + 1000u);
   pump(fx, 1);
   assert_identity_recovery_stopped(fx);
-  assert_null(az_iot_mock_mqtt_factory_last_client(fx->factory));
+  assert_null(az_iot_mock_mqtt_adapter_last_client());
 }
 
 /* A DPS retry-after that lands past max_duration_seconds stops recovery. */
@@ -820,9 +818,9 @@ static void a_registration_polling_past_the_identity_deadline_is_abandoned(void*
 /* Register on the DPS adapter the last attempt opened, and answer with @p body. */
 static void answer_registration(az_iot_test_conn* fx, const char* body)
 {
-  az_iot_mock_mqtt_client* dps = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  az_iot_mock_mqtt_client* dps = az_iot_mock_mqtt_adapter_last_client();
   assert_non_null(dps);
-  assert_string_equal(last_connect_host(fx), DPS_HOST);
+  assert_string_equal(last_connect_host(), DPS_HOST);
   assert_true(az_iot_mock_mqtt_client_inject_connected(dps, AZ_IOT_OK));
   pump(fx, 1);
   const az_iot_mock_call* sub = az_iot_mock_mqtt_client_last_of(dps, AZ_IOT_MOCK_CALL_SUBSCRIBE);
@@ -871,7 +869,7 @@ static void a_rejected_reassignment_after_a_refusal_faults_the_hub(void** state)
   assert_both_scopes_faulted(fx, AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED);
   /* Nothing further is attempted. */
   pump(fx, 3);
-  assert_null(az_iot_mock_mqtt_factory_last_client(fx->factory));
+  assert_null(az_iot_mock_mqtt_adapter_last_client());
 }
 
 /* Same when the re-registration came from the unreachable-hub threshold. */
@@ -881,7 +879,7 @@ static void a_rejected_reassignment_after_an_unreachable_hub_faults_the_hub(void
   fx->client->opts.dps.max_hub_connect_attempts_before_reprovision = 1;
   assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
   provision(fx);
-  az_iot_mock_mqtt_client* hub = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  az_iot_mock_mqtt_client* hub = az_iot_mock_mqtt_adapter_last_client();
   assert_true(az_iot_mock_mqtt_client_inject_connected(hub, AZ_IOT_ERR_MQTT));
   pump(fx, 2);
   fire_retry(fx);
@@ -932,7 +930,7 @@ static void zeroed_identity_recovery_reprovisions_on_the_reconnection_schedule(v
   assert_int_equal(r->next_attempt_delay_ms, RECONNECT_MS);
   assert_true(r->next_attempt_reprovisions);
   fire_retry(fx);
-  assert_string_equal(last_connect_host(fx), DPS_HOST);
+  assert_string_equal(last_connect_host(), DPS_HOST);
 }
 
 static void options_default_enables_slow_hub_recovery_without_dps(void** state)
@@ -949,6 +947,184 @@ static void options_default_enables_slow_hub_recovery_without_dps(void** state)
       opts.identity_recovery.policy.jitter_pct, AZ_IOT_DEFAULT_IDENTITY_RECOVERY_JITTER_PCT);
   assert_int_equal(opts.identity_recovery.max_duration_seconds, 0u);
   assert_int_equal(opts.identity_recovery.mode, AZ_IOT_IDENTITY_RECOVERY_RETRY_HUB);
+}
+
+static void options_default_retries_a_new_assignment_on_a_short_bounded_ladder(void** state)
+{
+  (void)state;
+  az_iot_connection_client_options opts = az_iot_connection_client_options_default();
+  const az_iot_retry_policy* p = &opts.identity_recovery.after_assignment_policy;
+  assert_int_equal(
+      p->initial_delay_ms, AZ_IOT_DEFAULT_IDENTITY_RECOVERY_AFTER_ASSIGNMENT_INITIAL_DELAY_MS);
+  assert_int_equal(p->max_delay_ms, AZ_IOT_DEFAULT_IDENTITY_RECOVERY_AFTER_ASSIGNMENT_MAX_DELAY_MS);
+  assert_int_equal(p->max_attempts, AZ_IOT_DEFAULT_IDENTITY_RECOVERY_AFTER_ASSIGNMENT_MAX_ATTEMPTS);
+  assert_int_equal(p->jitter_pct, AZ_IOT_DEFAULT_IDENTITY_RECOVERY_AFTER_ASSIGNMENT_JITTER_PCT);
+  assert_true(p->max_attempts > 0u);
+}
+
+/* ------------------------------------------------------------------------- */
+/* identity_recovery.after_assignment_policy                                 */
+/* ------------------------------------------------------------------------- */
+
+/* Delays distinct from RECONNECT_MS and IDENTITY_MS. */
+#define AFTER_ASSIGNMENT_INITIAL_MS 5u
+#define AFTER_ASSIGNMENT_MAX_MS 10u
+
+static void use_after_assignment_policy(az_iot_test_conn* fx, uint32_t max_attempts)
+{
+  az_iot_retry_policy* p = &fx->client->opts.identity_recovery.after_assignment_policy;
+  p->initial_delay_ms = AFTER_ASSIGNMENT_INITIAL_MS;
+  p->max_delay_ms = AFTER_ASSIGNMENT_MAX_MS;
+  p->max_attempts = max_attempts;
+  p->jitter_pct = 0;
+}
+
+/* Rejects the identity and checks the delay and attempt the refusal reported. */
+static void reject_identity_expecting(az_iot_test_conn* fx, uint32_t delay_ms, uint32_t attempt)
+{
+  reject_identity(fx);
+  assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_RETRY_PENDING);
+  const az_iot_connection_recovery_info* r = last_hub_recovery(fx, AZ_IOT_CONN_STATE_RETRY_PENDING);
+  assert_int_equal(r->classification, AZ_IOT_CONN_FAILURE_IDENTITY);
+  assert_int_equal(r->next_attempt_delay_ms, delay_ms);
+  assert_int_equal(r->attempt, attempt);
+}
+
+/* A hub DPS has just assigned may not know the registration yet: its refusals
+ * climb the short ladder first, then the identity recovery policy. */
+static void refusals_after_an_assignment_retry_on_the_short_ladder_first(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  use_after_assignment_policy(fx, 3);
+  assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
+  provision(fx);
+
+  static const uint32_t expected[] = { 5, 10, 10 };
+  for (uint32_t n = 0; n < 3; ++n)
+  {
+    reject_identity_expecting(fx, expected[n], n + 1);
+    assert_false(last_hub_recovery(fx, AZ_IOT_CONN_STATE_RETRY_PENDING)->next_attempt_reprovisions);
+    fire_retry(fx);
+    assert_string_equal(last_connect_host(), HUB_HOST);
+  }
+  reject_identity_expecting(fx, IDENTITY_MS, 1);
+  fire_retry(fx);
+  reject_identity_expecting(fx, IDENTITY_MS, 2);
+}
+
+/* REPROVISION mode: each refusal registers again, but a registration does not
+ * restore the short ladder, so the cycles still reach the slow one. */
+static void a_registration_does_not_restore_the_short_ladder(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  fx->client->opts.identity_recovery.mode = AZ_IOT_IDENTITY_RECOVERY_REPROVISION;
+  use_after_assignment_policy(fx, 1);
+  assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
+  provision(fx);
+
+  reject_identity_expecting(fx, AFTER_ASSIGNMENT_INITIAL_MS, 1);
+  assert_true(last_hub_recovery(fx, AZ_IOT_CONN_STATE_RETRY_PENDING)->next_attempt_reprovisions);
+  fire_retry(fx);
+  assert_string_equal(last_connect_host(), DPS_HOST);
+  provision(fx);
+  reject_identity_expecting(fx, IDENTITY_MS, 1);
+  fire_retry(fx);
+  provision(fx);
+  reject_identity_expecting(fx, IDENTITY_MS, 2);
+}
+
+/* HUB:CONNECTED ends the short ladder; a later registration starts it over. */
+static void a_hub_connection_ends_the_short_ladder(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  use_after_assignment_policy(fx, 2);
+  assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
+  provision(fx);
+  reject_identity_expecting(fx, AFTER_ASSIGNMENT_INITIAL_MS, 1);
+  fire_retry(fx);
+
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_adapter_last_client();
+  assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_OK));
+  pump(fx, 1);
+  assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_CONNECTED);
+  assert_false(fx->client->hub_newly_assigned);
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(m));
+  pump(fx, 1);
+  fire_retry(fx);
+  reject_identity_expecting(fx, IDENTITY_MS, 1);
+
+  assert_int_equal(az_iot_connection_client_request_reprovision(fx->client), AZ_IOT_OK);
+  pump(fx, 1);
+  assert_string_equal(last_connect_host(), DPS_HOST);
+  provision(fx);
+  reject_identity_expecting(fx, AFTER_ASSIGNMENT_INITIAL_MS, 1);
+}
+
+/* A hub the device was not assigned in this run gets no short ladder. */
+static void a_refusal_without_an_assignment_uses_the_identity_policy(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  use_after_assignment_policy(fx, 3);
+  assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
+  reject_identity_expecting(fx, IDENTITY_MS, 1);
+}
+
+/* max_duration_seconds bounds the short ladder too. */
+static void the_short_ladder_stops_at_max_duration(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  use_after_assignment_policy(fx, 0);
+  fx->client->opts.identity_recovery.after_assignment_policy.initial_delay_ms = 400;
+  fx->client->opts.identity_recovery.after_assignment_policy.max_delay_ms = 400;
+  fx->client->opts.identity_recovery.max_duration_seconds = 1;
+  assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
+  provision(fx);
+
+  for (int n = 0; n < 6 && az_iot_test_last_state(&fx->log) != AZ_IOT_CONN_STATE_FAULTED; ++n)
+  {
+    reject_identity(fx);
+    if (az_iot_test_last_state(&fx->log) == AZ_IOT_CONN_STATE_RETRY_PENDING)
+    {
+      assert_int_equal(last_hub_recovery(fx, AZ_IOT_CONN_STATE_RETRY_PENDING)->attempt, n + 1);
+      fire_retry(fx);
+    }
+  }
+  assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_FAULTED);
+  assert_int_equal(
+      az_iot_test_reason_for(&fx->log, AZ_IOT_CONN_STATE_FAULTED), AZ_IOT_ERR_IDENTITY_REJECTED);
+  assert_int_equal(fx->client->reconnect_due_ms, 0);
+}
+
+/* A short-ladder retry still due when do_work() first runs past the deadline
+ * faults with the short ladder's attempt. */
+static void a_short_ladder_retry_past_the_deadline_reports_its_attempt(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  use_after_assignment_policy(fx, 3);
+  fx->client->opts.identity_recovery.max_duration_seconds = 1;
+  assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
+  provision(fx);
+  reject_identity_expecting(fx, AFTER_ASSIGNMENT_INITIAL_MS, 1);
+
+  az_iot_test_wait_until_ms(fx->client->identity_recovery_started_ms + 1000u);
+  pump(fx, 1);
+  assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_FAULTED);
+  const az_iot_connection_recovery_info* r = last_hub_recovery(fx, AZ_IOT_CONN_STATE_FAULTED);
+  assert_int_equal(r->classification, AZ_IOT_CONN_FAILURE_IDENTITY);
+  assert_int_equal(r->attempt, 1);
+  assert_int_equal(fx->client->reconnect_due_ms, 0);
+}
+
+/* NONE mode still faults on the first refusal after an assignment. */
+static void mode_none_faults_on_a_refusal_after_an_assignment(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  fx->client->opts.identity_recovery.mode = AZ_IOT_IDENTITY_RECOVERY_NONE;
+  use_after_assignment_policy(fx, 3);
+  assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
+  provision(fx);
+  reject_identity(fx);
+  assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_FAULTED);
 }
 
 int main(void)
@@ -1009,6 +1185,19 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         max_duration_bounds_transient_retries_after_a_refusal, setup_v3, teardown),
     cmocka_unit_test(options_default_enables_slow_hub_recovery_without_dps),
+    cmocka_unit_test_setup_teardown(
+        refusals_after_an_assignment_retry_on_the_short_ladder_first, setup_dps, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_registration_does_not_restore_the_short_ladder, setup_dps, teardown),
+    cmocka_unit_test_setup_teardown(a_hub_connection_ends_the_short_ladder, setup_dps, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_refusal_without_an_assignment_uses_the_identity_policy, setup_v3, teardown),
+    cmocka_unit_test_setup_teardown(the_short_ladder_stops_at_max_duration, setup_dps, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_short_ladder_retry_past_the_deadline_reports_its_attempt, setup_dps, teardown),
+    cmocka_unit_test_setup_teardown(
+        mode_none_faults_on_a_refusal_after_an_assignment, setup_dps, teardown),
+    cmocka_unit_test(options_default_retries_a_new_assignment_on_a_short_bounded_ladder),
   };
   return cmocka_run_group_tests_name("connection_identity_recovery", tests, NULL, NULL);
 }

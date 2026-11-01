@@ -235,7 +235,7 @@ Why each one:
   attempt. That reason is a property of the *service*, not of how long the session lives, so it is
   unaffected by any change to when the provisioning session is torn down: `clean_start` is only
   read at CONNECT, and it is inert at this service whenever it is read. A provisioning session that
-  outlived registration, or ran alongside a hub session, would still take the same terms.
+  outlived registration would still take the same terms.
 - **MQTTv3 resumes.** An MQTTv3 hub holds the device's *subscription* and its in-flight QoS 1 only
   for a session that is not clean. Connecting clean does not lose the hub's server-side C2D queue —
   that is delivered once the device re-subscribes — but it does discard the subscription and any
@@ -363,14 +363,16 @@ Which ladder a retry climbs is the scope of the **next attempt**, which is not a
 the failure: a hub failure retried as a re-registration (threshold crossed, or
 a CONNACK refusal in `REPROVISION` mode) climbs a DPS ladder. A hub identity refusal climbs a third,
 identity ladder on `opts.identity_recovery` (see [connection-c.md §5.2](connection-c.md#52-what-triggers-a-reconnect)).
+Until `HUB:CONNECTED`, refusals after a DPS assignment first climb a short ladder on
+`identity_recovery.after_assignment_policy`, since the new registration may not have reached the hub.
 
 Reset points differ per ladder:
 
 | Event | Effect |
 | --- | --- |
-| DPS registration succeeds | `DPS` and `HUB` reset; identity ladder untouched |
+| DPS registration succeeds | `DPS` and `HUB` reset; identity ladders untouched |
 | Hub CONNACK succeeds (birth-ack on MQTTv5) | `HUB` resets; `DPS` untouched |
-| `HUB:CONNECTED` | identity ladder resets |
+| `HUB:CONNECTED` | identity ladders reset |
 | `dps.max_hub_connect_attempts_before_reprovision` crossed | `DPS` resets, so the first registration attempt waits `initial_delay_ms` |
 | `open()` / `close()` | all ladders reset |
 

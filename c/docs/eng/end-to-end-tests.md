@@ -24,7 +24,8 @@ The infrastructure was designed to satisfy these requirements:
   own isolated resource group.
 - **Long-running suites out of PRs.** Software updates e2e needs a DPS, ADR namespace and
   Device Update instance linked together, so it runs in its own workflow, not on PRs.
-- **Cross-platform.** Every scenario runs on both Windows and Linux hosts (software updates e2e: Linux only).
+- **Cross-platform.** Every scenario runs on both Windows and Linux hosts, except those in
+  [Not run on Windows](#not-run-on-windows).
 
 ---
 
@@ -53,13 +54,14 @@ single-threaded and non-blocking.
 
 The device is the public SDK over an MQTT adapter, connected exactly like a
 real device: **DPS provisioning with an X.509 individual enrollment**
-(`dps.id_scope` set → the connection client provisions internally, then connects to the assigned hub). Both the MQTT v3.1.1 and v5
-factories are registered. Each suite that connects is built once per adapter in the build:
+(`dps.id_scope` set → the connection client provisions internally, then connects to the assigned hub). The connection
+client builds its MQTT 3.1.1 and v5 clients with the adapter's descriptor (`mqtt_adapter`) in a heap workspace, sized in
+[`e2e_mqtt_adapter.h`](../../tests/e2e/tests/e2e_mqtt_adapter.h); the software updates suites, whose DPS channel
+holds the provisioning session beside the hub session, register the v3.1.1 factory instead. Each suite that connects is built once per adapter in the build:
 `<suite>` over Paho and `<suite>_az_mqtt` over az_mqtt, selected in the sources with
 `AZ_IOT_E2E_ADAPTER_PAHO` or `AZ_IOT_E2E_ADAPTER_AZ_MQTT`. The workflows enable both, and their
-`ctest -R` filters run both. The custody suites run over az_mqtt only with OpenSSL TLS. With
-az_mqtt, `AZ_IOT_BUILD_E2E_MQTTV5` needs `-DAZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE=1114112` or more: the telemetry size cases publish just
-over 1 MiB. The connect flow + all four scenarios live in
+`ctest -R` filters run both. The custody suites run over az_mqtt only with OpenSSL TLS. The send
+buffer in those sizes is 1 MiB + 64 KiB: the telemetry size cases publish 1 MiB + 4 KiB, plus MQTT headers. The connect flow + all four scenarios live in
 [`e2e_scenarios_test.c`](../../tests/e2e/tests/e2e_scenarios_test.c); the connect
 is done once for the whole suite via cmocka's group setup.
 
@@ -100,6 +102,21 @@ Service configuration (set by the provisioning config script):
 
 The telemetry watcher only receives messages enqueued from 5 minutes before it
 starts (an Event Hubs enqueued-time filter), so a reused hub's backlog is skipped.
+That window still holds every device's traffic on a shared hub (often hundreds of
+messages), so each test starts the watch with a capture filter (its device id or
+marker): only bodies containing it enter the watcher's 64-message capture ring, and
+other traffic cannot evict a marker the test is about to check.
+
+Concurrent runs share the consumer groups, and Event Hubs detaches a sixth reader of
+a partition in a group. When a receiver is detached, the watcher logs
+`[e2e] telemetry: the service detached the receiver of partition <n>`, waits 5 s and
+reconnects, reading again from the time the watch began. The replayed events are
+dropped by their per-partition sequence number, so none is captured twice. The
+reconnect closes the socket without waiting, and each `do_work` call advances the
+connection setup by at most one step. Setup ends once every receiver's attach is
+answered, and fails after 60 s. `az_iot_tests_e2e_amqp_telemetry` covers replay
+dropping, the reconnect and the setup deadline against an in-memory Event Hubs
+peer, with no live service.
 
 SAS tokens are built with OpenSSL (HMAC-SHA256 + base64) on both platforms. Note
 the two key conventions the facade handles: Event Hubs signs with the **raw** key
@@ -179,7 +196,8 @@ its policy signs the device delete, sent to the `IOTHUB_CONNECTION_STRING` host)
   (`AZ_IOT_E2E_PROXY_LOG`) must show the CONNECT to DPS, then to the hub. A proxy on a closed port
   keeps the device off the hub and sends nothing, through DPS and on a direct mqttv5 hub connect
   to the assigned hub. Needs `AZ_IOT_PROXY_HOST`/`_PORT`; fails without them. `ci-c-e2e-mqttv5`
-  (tinyproxy on the runner).
+  (tinyproxy on Linux; [`eng/e2e-connect-proxy.py`](../../eng/e2e-connect-proxy.py) on Windows,
+  which logs the same CONNECT lines).
 - [`e2e_mqttv5_direct_method_test.c`](../../tests/e2e/tests/e2e_mqttv5_direct_method_test.c) —
   methods invoked through the service REST API. Answers (200, 500, no payload, a result body of
   exactly `AZ_IOT_MQTTV5_DM_RESULT_BODY_MAX`) reach the caller; undeclared, wrong-case, withdrawn,
@@ -281,6 +299,7 @@ failure, or a runner that dies before teardown.
 | `setup` | ubuntu | provisions one resource group (IoT Hub + DPS) via the shared `provision-e2e-resources` action and publishes the test-config artifact |
 | `test` | ubuntu + windows, 4 groups each (matrix) | builds the e2e tests, materializes its device's X.509 material, and runs its group: `core` (every e2e suite but the three below, plus custody and the file upload sample on Linux), `transport-paho`, `transport-az_mqtt`, `sas` (both adapters) |
 | `coverage` | ubuntu | merges the four Linux groups' tracefiles into `coverage-trace-e2e`, only when every `test` job passed |
+| `esp32-qemu` | ubuntu, esp32 and esp32c3 (matrix) | the ESP32 IoT Hub sample in QEMU, always on the shared environment ([ESP32 in QEMU](#esp32-in-qemu)) |
 | `teardown` | ubuntu | `always()` deletes the resource group via `destroy-e2e-resources`, using the run-derived name (not a `setup` output) |
 
 Each `test` job has its own device (index os-index * 4 + group-index; eight DPS
@@ -303,7 +322,8 @@ RegistrationStatusWrite) and `E2E_SHARED_IOTHUB_REGISTRY_CS` (hub policy with Re
 The TPM suite deletes its enrollment and device; other devices the runs register stay in the
 shared hub and are removed manually. The hub
 needs consumer groups
-`e2e-0`..`e2e-9` and file upload with notifications. Push and nightly runs always provision.
+`e2e-0`..`e2e-9` and file upload with notifications. Push and nightly runs always provision,
+except for `esp32-qemu`, which always uses the shared environment.
 Pull requests from forks get no secrets and fail.
 
 [`ci-c-e2e-csr.yml`](../../../.github/workflows/ci-c-e2e-csr.yml) has the same opt-in,
@@ -311,7 +331,8 @@ keyed on `E2E_CSR_SHARED_ID_SCOPE`. It needs its own certificate-management envi
 (ADR-linked hub and DPS; a DPS without a managed identity cannot be linked), so it
 cannot reuse the one above. Each run issues a bootstrap device with
 `e2e-shared-device.ps1 -Csr` from secret `E2E_CSR_SHARED_GROUP_CA` (the group's issuing
-CA certificate and key, then its root). `E2E_CSR_SHARED_DPS_HOST` optionally sets the DPS
+CA certificate and key, then its root); its Linux and Windows legs each issue their own. A
+provisioned run has one bootstrap device, so its legs run one after the other. `E2E_CSR_SHARED_DPS_HOST` optionally sets the DPS
 device endpoint. `E2E_CSR_SHARED_SAS_GROUP_KEY` is the key of a symmetric-key group linked
 to the same certificate policy.
 
@@ -334,7 +355,9 @@ resource group once: those survive the namespace, so the job creates none and ne
 assignment write unless the namespace identity changes.
 
 [`ci-c-e2e-mqttv5.yml`](../../../.github/workflows/ci-c-e2e-mqttv5.yml) runs the mqttv5 suites on
-that environment, one job per client. The twin, transport and custom topic suites run one job per
+that environment, one job per client and OS (Linux, and Windows with MSVC: Paho over OpenSSL 4.1.0,
+az_mqtt over Schannel; custody is Linux only, see [Not run on Windows](#not-run-on-windows)), each
+with its own device. The twin, transport and custom topic suites run one job per
 adapter and per shard instead (`AZ_IOT_TEST_SHARD=<index>/<count>`, see
 [`test_shard.h`](../../tests/support/test_shard.h)), each with its own device, so their cases run in
 parallel. On schedule and manual runs the namespace job runs first; pull
@@ -342,12 +365,50 @@ requests skip it (it logs in to Azure and runs the checked-out script) and rely 
 `e2e-shared-device.ps1 -Prefix E2E_MQTTV5_SHARED` from secret `E2E_MQTTV5_SHARED_GROUP_CA`, and
 reads secrets `E2E_MQTTV5_SHARED_IOTHUB_SERVICE_CS` and `_EVENTHUB_CS` (`service` policy; the former is passed to the
 script as `E2E_MQTTV5_SHARED_IOTHUB_CS`, as the secret of that name holds `iothubowner` for the .NET e2e), and variables `E2E_MQTTV5_SHARED_ID_SCOPE` (unset skips the workflow) and
-`_DPS_HOST`. No SAS: mqttv5 hubs accept X.509 only. Triggers: pull requests touching mqttv5 or core device code, the e2e harness or the
+`_DPS_HOST`. Jobs that read events use consumer groups `e2e-0`..`e2e-10` on the hub, group
+(run id + slot) mod 11: a group has at most two readers in a run, so two overlapping runs stay
+within Event Hubs' five readers per partition. No SAS: mqttv5 hubs accept X.509 only. Triggers: pull requests touching mqttv5 or core device code, the e2e harness or the
 workflow; nightly; manual. Pull requests from forks and from Dependabot skip.
 
 > **Software updates e2e** runs in its own workflow
-> ([`ci-c-e2e-adu.yml`](../../../.github/workflows/ci-c-e2e-adu.yml), Linux) on the same shared mqttv5
+> ([`ci-c-e2e-adu.yml`](../../../.github/workflows/ci-c-e2e-adu.yml), Linux and Windows) on the same shared mqttv5
 > environment and triggers. See [Software updates e2e](#software-updates-e2e).
+
+---
+
+## ESP32 in QEMU
+
+[`e2e_esp32_qemu_test.c`](../../tests/e2e/tests/e2e_esp32_qemu_test.c)
+(`az_iot_tests_e2e_esp32_qemu`, `-DAZ_IOT_BUILD_E2E_ESP32_QEMU=ON`, POSIX hosts) plays only
+the service. The device is the [ESP32 IoT Hub sample](../../samples/unified/esp32/README.md)
+firmware in Espressif's QEMU. The test starts it with `E2E_ESP32_QEMU_COMMAND` (through
+`/bin/sh -c`, in its own process group) and reads the sample's stable `hub_esp32:` log lines.
+`E2E_ESP32_DEVICE_ID` is the registration id the firmware was built with. Once the firmware
+logs `hub_esp32: ready on`:
+
+1. **telemetry** — `{"deviceId":"<id>",...}` reaches the Event Hub endpoint;
+2. **direct method** — `echo` answers `200` with its marked payload;
+3. **twin** — the test patches a marked desired property; the firmware logs
+   `desired version <v> acknowledged` and a twin GET shows `"desiredVersion":<v>` in reported.
+
+[`eng/esp-idf-qemu-e2e.sh`](../../eng/esp-idf-qemu-e2e.sh) `<target> <cert.pem> <key.pem>`
+runs it all in an ESP-IDF environment with QEMU, a host compiler and OpenSSL headers:
+
+1. builds the sample's `qemu` firmware with the device's DPS settings (`SDKCONFIG_EXTRA`
+   for [`eng/esp-idf-build.sh`](../../eng/esp-idf-build.sh));
+2. writes the identity with [`eng/esp-idf-qemu-identity.sh`](../../eng/esp-idf-qemu-identity.sh):
+   - esp32: an `esp_secure_cert` partition holding the certificate and key;
+   - esp32c3: the key goes into the Digital Signature peripheral. The script boots QEMU in
+     download mode, and `configure_esp_secure_cert.py --configure_ds` burns the DS key into an
+     emulated eFuse image and writes the partition with the encrypted DS parameters. DS takes RSA
+     keys of at most 3072 bits;
+3. builds and runs the test, booting the firmware with
+   [`eng/esp-idf-qemu.sh`](../../eng/esp-idf-qemu.sh) `--run`.
+
+CI: job `esp32-qemu` in `ci-c-e2e.yml`. It runs esp32 and esp32c3 in `espressif/idf:v6.1`, with
+devices 12 and 13 issued by `e2e-shared-device.ps1`. It uses the shared environment on every run,
+push and nightly included: the per-run enrollments' RSA-4096 keys exceed DS's 3072 bits, while the
+shared group CA issues RSA-2048. Without the shared environment's secrets, the job fails.
 
 ---
 
@@ -355,10 +416,11 @@ workflow; nightly; manual. Pull requests from forks and from Dependabot skip.
 
 Two suites, built with `-DAZ_IOT_BUILD_E2E_SU=ON` and selected by
 `ctest -R e2e_su`. Both run the shipping SDK over each MQTT adapter (Paho, az_mqtt) and X.509 against
-the real service. The offer suite also needs the `microsoft/delta:1` download handler
-(`-DAZ_IOT_WITH_SU_DELTA=ON`, POSIX) and the real delta processor:
+the real service. On POSIX the offer suite also needs the `microsoft/delta:1` download handler
+(`-DAZ_IOT_WITH_SU_DELTA=ON`, POSIX only) and the real delta processor:
 `-DAZ_IOT_SU_DELTA_TEST_LIBRARY=<path of libadudiffapi.so>`, installed by
-`eng/install-su-delta-processor.sh`. Without the library its scenario fails.
+`eng/install-su-delta-processor.sh`. Without the library its scenario fails; elsewhere (Windows) the
+scenario is not built.
 
 | Suite | What it drives |
 | --- | --- |
@@ -378,7 +440,7 @@ Offered-update scenarios:
 | library mode: verified offer handed to the application, which downloads, hashes and reports progress then SUCCEEDED | `AZ_IOT_E2E_SU_OFFER_MODEL_LIBRARY_MODE` |
 | delta update: the device holds the source, downloads only the related file and builds the file from it; SUCCEEDED with no delta code | `AZ_IOT_E2E_SU_OFFER_MODEL_DELTA` |
 | delta update, device without the source: the handler declines, the file is downloaded in full; SUCCEEDED with the delta `NO_SOURCE` code | `AZ_IOT_E2E_SU_OFFER_MODEL_DELTA_NO_SOURCE` |
-| delta update with the reference `microsoft/delta:1` handler and the real delta processor: built from the cached source, SUCCEEDED with no delta code; the file replaces the source in the cache | `AZ_IOT_E2E_SU_OFFER_MODEL_MICROSOFT_DELTA` |
+| delta update with the reference `microsoft/delta:1` handler and the real delta processor (POSIX only): built from the cached source, SUCCEEDED with no delta code; the file replaces the source in the cache | `AZ_IOT_E2E_SU_OFFER_MODEL_MICROSOFT_DELTA` |
 
 The two delta offers are alike but for the model, since a device sees each offer once. Their file names
 the download handler `sdke2e/xor-delta:1`, which the suite registers, and has one related file: the
@@ -412,16 +474,25 @@ the device in every `Active` run, then in the newest. `Export-SuE2EOfferVariable
 variables for a `-RunId` without contacting Azure. `Get-SuE2EFixtureTag` hashes the code that defines the offers;
 appended to a reused `-RunId`, a change to that code stages a new set. With `-Reuse`, a failed import
 is treated as done if the update now exists (another run imported it), else retried up to 3 times.
+Each REST request is retried on a transient failure (no response; HTTP 408, 429, 500, 502, 503 or
+504; another 5xx with a transient error code such as `BadGatewayConnection`), up to 5 attempts,
+after `Retry-After` or 2, 4, 8, 16 s (at most 60 s), with a warning per retry; a `401` with
+`invalid_token` is retried once with a new token, and other `4xx` are not retried.
 
 CI ([`ci-c-e2e-adu.yml`](../../../.github/workflows/ci-c-e2e-adu.yml)) runs on the shared mqttv5
 environment, whose ADR namespace is linked to a Device Update instance, on pull requests touching
 core, Software Update or adapter code, the e2e harness or the workflow; nightly; manual. Pull requests
 from forks and from Dependabot skip. Scheduled and manual runs first run the namespace repair
-(`ci-c-e2e-mqttv5-adr-namespace.yml`), which also restores the Software Update link. One job then
-ensures the standing offers (`New-SuE2EOffers -RunId "s$(Get-SuE2EFixtureTag)" -Reuse`; seconds once
-staged), issues a new device per suite execution (4: each suite on each adapter) from the enrollment
-group's CA (`e2e-shared-device.ps1`), installs the delta processor
-(`.github/actions/install-su-delta-processor`), runs the suites, then checks the offer devices' job results.
+(`ci-c-e2e-mqttv5-adr-namespace.yml`), which also restores the Software Update link. The `offers`
+job then ensures the standing offers (`New-SuE2EOffers -RunId "s$(Get-SuE2EFixtureTag)" -Reuse`;
+seconds once staged) and passes their state on. The `e2e-su` job, on Linux and on Windows (libcurl
+from [`install-curl-windows`](../../../.github/actions/install-curl-windows/action.yml)), sets the
+offer variables (`Export-SuE2EOfferVariables`), issues a new device per suite execution (4: each
+suite on each adapter) from the enrollment group's CA (`e2e-shared-device.ps1`), installs the delta
+processor on Linux ([`install-su-delta-processor`](../../../.github/actions/install-su-delta-processor/action.yml)),
+runs the suites, then checks the offer devices' job results. The reference `microsoft/delta:1`
+handler is POSIX only: on Windows the offer suite skips the `MICROSOFT_DELTA` scenario, and the
+check skips its result (`Test-SuE2EOffers -Skip`).
 Nothing is deleted per run; offer sets staged by older fixture code are left in place. Inputs:
 variables `E2E_MQTTV5_SHARED_SUBSCRIPTION_ID`, `_RESOURCE_GROUP`, `_ADR_NAMESPACE`, `_ID_SCOPE`,
 `_DPS_HOST`, `_LOCATION`, `_SU_ENDPOINT`, `_SU_STORAGE_ACCOUNT`, `_SU_STORAGE_CONTAINER`, and
@@ -446,6 +517,19 @@ multi-step updates, and reboot/resume.
 
 ---
 
+## Not run on Windows
+
+Every other e2e suite runs on Linux and on Windows (MSVC; Paho over OpenSSL 4.1.0, az_mqtt over
+Schannel), on every pull request and main run of its workflow.
+
+| Suite | Why |
+| --- | --- |
+| `az_iot_tests_e2e_custody`, `az_iot_tests_e2e_mqttv5_custody` | The device key is in a PKCS#11 token (SoftHSM2) reached through the OpenSSL pkcs11 provider. The provider has no MSVC build (it needs a POSIX `dl` library) and the runner's OpenSSL is an MSVC build. az_mqtt on Windows uses Schannel, which takes no key references. |
+| `az_iot_tests_e2e_amqp_transport_sigpipe` | Tests SIGPIPE, which Windows does not have. |
+| File upload sample run (`ci-c-e2e`, built on Windows) | The sample passes its PEM client certificate to libcurl; libcurl over Schannel (the Windows build) takes client certificates from a certificate store or PFX only. |
+
+---
+
 ## Conventions & gotchas
 
 - **Always a real gate, never a skip.** The suite connects the device and
@@ -455,8 +539,9 @@ multi-step updates, and reboot/resume.
   against real Azure resources (the ci-c-e2e pipeline, or a deliberate local run
   with the e2e-fx config dot-sourced), so there is no "skipped but green" path to
   hide a broken setup.
-- **CA bundle without downloads.** Linux uses the OpenSSL system bundle; Windows
-  exports the machine `Root` store. Avoid fetching roots over the network.
+- **CA bundle without downloads.** [`eng/e2e-trusted-ca.ps1`](../../eng/e2e-trusted-ca.ps1)
+  writes it: the OpenSSL system bundle on Linux, the `Root` stores on Windows. Avoid
+  fetching roots over the network.
 - **TLS state per connection.** The vendored reference transport keeps each
   connection's TLS state (Schannel on Windows, OpenSSL on Linux) in its own
   storage, so service connections can be open at the same time.

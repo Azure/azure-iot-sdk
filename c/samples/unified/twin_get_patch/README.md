@@ -14,7 +14,7 @@ on whichever IoT Hub DPS assigns. For an mqttv5-only device, see
 - The two generations differ in protocol, so each client has its own callbacks:
 -   - GET: mqttv3 returns one document; mqttv5 returns the desired and reported sections separately, each with its own version.
 -   - PATCH: mqttv3 reports the new version; mqttv5 also reports the service's verdict. An mqttv5 patch can complete and still be refused (another writer moved the version first); the sample counts that as a failure.
--   - The mqttv5 client encodes patches into an application-supplied buffer and needs its own `az_iot_mqttv5_twin_client_do_work()` in the pump.
+-   - The mqttv5 client encodes patches into an application-supplied buffer.
 - Rebuilds its clients when DPS assigns the other generation, as [`unified/telemetry`](../telemetry/README.md) does.
 - Platforms: Linux and Windows.
 
@@ -118,8 +118,8 @@ On an mqttv5 hub, the GET prints `twin GET desired (version N): ...` and
 
 | What | Code |
 | --- | --- |
-| Register both MQTT adapters (DPS always uses MQTT 3.1.1) | `az_iot_paho_factory_create_v3_1_1()`, `az_iot_paho_factory_create_v5()`; az_mqtt: `az_iot_az_mqtt_factory_create_v3_1_1()`, `az_iot_az_mqtt_factory_create_v5()` |
+| MQTT adapter and the workspace it builds each MQTT client in | `mqtt_adapter` (`az_iot_paho_get_adapter()`; az_mqtt: `az_iot_az_mqtt_get_adapter()`), `mqtt_limits`, `mqtt_workspace`; sizes in [`sample_utils.h`](../../common/sample_utils.h) |
 | Build or rebuild the twin client for a generation | `clients_build()`, `clients_destroy()` |
 | mqttv3 GET, PATCH, desired updates | `az_iot_mqttv3_twin_client_get()`, `az_iot_mqttv3_twin_client_patch_reported()`; `on_get_mqttv3()`, `on_patch_mqttv3()`, `on_desired_mqttv3()` |
 | mqttv5 GET, PATCH, desired updates | `az_iot_mqttv5_twin_client_get()`, `az_iot_mqttv5_twin_client_patch_reported()`; `on_get_mqttv5()`, `on_patch_mqttv5()`, `on_desired_mqttv5()` |
-| mqttv5 encode buffer and pump | `az_iot_mqttv5_twin_client_set_encode_buffer()`, `az_iot_mqttv5_twin_client_do_work()` |
+| mqttv5 encode buffer | `az_iot_mqttv5_twin_client_set_encode_buffer()` |

@@ -100,11 +100,59 @@ function Get-SuE2EToken([string]$Resource) {
     return $token
 }
 
+# HTTP statuses retried as transient: timeout, throttling, server or gateway failure.
+$script:TransientStatusCodes = 408, 429, 500, 502, 503, 504
+# ARM and data-plane error codes (error.code) retried as transient on any other 5xx.
+$script:TransientErrorCodes = 'BadGateway', 'BadGatewayConnection', 'GatewayTimeout', 'InternalServerError',
+'RequestTimeout', 'ServerBusy', 'ServerTimeout', 'ServiceUnavailable', 'TooManyRequests'
+
 <#
 .SYNOPSIS
-    Sends one request with a token for -Resource fetched for it. A 401
-    invalid_token (a token replaced as it expired) is retried once, after
-    -RetrySeconds, with a new token.
+    Seconds to wait before retrying a request that failed with -ErrorRecord
+    on attempt -Attempt, or $null when the failure is not transient.
+
+.DESCRIPTION
+    Transient: no response (the connection failed or timed out), a status in
+    $script:TransientStatusCodes, or another 5xx whose error.code is in
+    $script:TransientErrorCodes. Other 4xx are not. The wait is Retry-After
+    when the response has it, else -BackoffSeconds doubled per attempt; both
+    are capped at -MaxDelaySeconds.
+#>
+function Get-SuE2ETransientRetryDelay {
+    param(
+        [Parameter(Mandatory)][System.Management.Automation.ErrorRecord]$ErrorRecord,
+        [Parameter(Mandatory)][int]$Attempt,
+        [int]$BackoffSeconds = 2,
+        [int]$MaxDelaySeconds = 60
+    )
+    $r = $ErrorRecord.Exception.PSObject.Properties['Response'] ? $ErrorRecord.Exception.Response : $null
+    if (-not $r) {
+        # A connection failure, or a client-side timeout (TaskCanceledException over TimeoutException).
+        $e = $ErrorRecord.Exception
+        $timedOut = $e -is [System.TimeoutException] -or $e.InnerException -is [System.TimeoutException]
+        if ($e -isnot [System.Net.Http.HttpRequestException] -and -not $timedOut) { return $null }
+    }
+    elseif ([int]$r.StatusCode -notin $script:TransientStatusCodes) {
+        if ([int]$r.StatusCode -lt 500) { return $null }
+        $code = try { ($ErrorRecord.ErrorDetails.Message | ConvertFrom-Json -AsHashtable).error.code } catch { $null }
+        if ($code -notin $script:TransientErrorCodes) { return $null }
+    }
+    $delay = $BackoffSeconds * [math]::Pow(2, $Attempt - 1)
+    $after = if ($r) { $r.Headers.RetryAfter } else { $null }
+    if ($after -and $null -ne $after.Delta) { $delay = $after.Delta.TotalSeconds }
+    elseif ($after -and $null -ne $after.Date) { $delay = ($after.Date - [DateTimeOffset]::UtcNow).TotalSeconds }
+    return [int][math]::Ceiling([math]::Min([math]::Max($delay, 0), $MaxDelaySeconds))
+}
+
+<#
+.SYNOPSIS
+    Sends one request with a token for -Resource fetched for each attempt.
+
+.DESCRIPTION
+    A 401 invalid_token (a token replaced as it expired) is retried once,
+    after -RetrySeconds, with a new token. A transient failure (see
+    Get-SuE2ETransientRetryDelay) is retried after its delay, up to
+    -Attempts requests in all. Anything else is thrown at once.
 #>
 function Invoke-SuE2ERest {
     param(
@@ -112,7 +160,8 @@ function Invoke-SuE2ERest {
         [Parameter(Mandatory)][string]$Uri,
         [Parameter(Mandatory)][string]$Resource,
         [object]$Body,
-        [int]$RetrySeconds = 30
+        [int]$RetrySeconds = 30,
+        [int]$Attempts = 5
     )
     $params = @{
         Method                  = $Method
@@ -122,6 +171,8 @@ function Invoke-SuE2ERest {
         StatusCodeVariable      = 'status'
     }
     if ($null -ne $Body) { $params.Body = ($Body | ConvertTo-Json -Depth 20) }
+    $request = "$Method $($Uri -replace '\?.*')"
+    $tokenRenewed = $false
     for ($attempt = 1; ; $attempt++) {
         $params.Headers = @{ Authorization = "Bearer $(Get-SuE2EToken $Resource)" }
         try {
@@ -129,11 +180,23 @@ function Invoke-SuE2ERest {
             return [pscustomobject]@{ Status = $status; Headers = $headers; Body = $response }
         }
         catch {
+            if ($attempt -ge $Attempts) { throw }
             $r = $_.Exception.PSObject.Properties['Response'] ? $_.Exception.Response : $null
             $invalidToken = $r -and [int]$r.StatusCode -eq 401 -and "$($r.Headers.WwwAuthenticate)" -match 'invalid_token'
-            if (-not $invalidToken -or $attempt -ge 2) { throw }
-            Write-Warning "401 invalid_token on $Method $($Uri -replace '\?.*'); retrying with a new token"
-            Start-Sleep -Seconds $RetrySeconds
+            if ($invalidToken -and -not $tokenRenewed) {
+                $tokenRenewed = $true
+                Write-Warning "401 invalid_token on $request; retrying with a new token"
+                Start-Sleep -Seconds $RetrySeconds
+                continue
+            }
+            $delay = Get-SuE2ETransientRetryDelay -ErrorRecord $_ -Attempt $attempt
+            if ($null -eq $delay) { throw }
+            $received = if ($r) { [int]$r.StatusCode } else { 'no response' }
+            # One line, bounded: a gateway may answer with a whole HTML page.
+            $reason = ("$_" -replace '\s+', ' ').Trim()
+            if ($reason.Length -gt 300) { $reason = "$($reason.Substring(0, 300))..." }
+            Write-Warning "$received on $request (attempt $attempt of $Attempts): $reason; retrying in $delay s"
+            Start-Sleep -Seconds $delay
         }
     }
 }
@@ -691,6 +754,8 @@ function Test-SuE2EOffers {
     param(
         [Parameter(Mandatory)][string]$StatePath,
         [Parameter(Mandatory)][string]$RegistrationId,
+        # Scenarios the device does not run (MICROSOFT_DELTA off POSIX).
+        [string[]]$Skip = @(),
         # Results are projected asynchronously, so absent or InProgress is waited out.
         [int]$Minutes = 10
     )
@@ -699,6 +764,7 @@ function Test-SuE2EOffers {
     $deadline = (Get-Date).AddMinutes($Minutes)
     $failures = @()
     foreach ($scenario in $script:Scenarios.Keys) {
+        if ($scenario -in $Skip) { continue }
         $offer = $state.Offers[$scenario]
         $expected = $script:Scenarios[$scenario].Expected
         while ($true) {

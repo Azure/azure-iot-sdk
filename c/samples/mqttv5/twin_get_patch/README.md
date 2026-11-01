@@ -10,11 +10,11 @@ a property (PATCH), and closes. For a device that must serve either generation, 
 ## Sample features
 
 - Hub generation: mqttv5 (MQTT 5) only. An assignment to an mqttv3 hub fails; use the `unified/` sample instead.
-- Registers both MQTT adapters (v3.1.1 and v5): the hub uses MQTT 5, but DPS always uses MQTT 3.1.1. Registering only the MQTT 5 adapter makes provisioning fail with `AZ_IOT_ERR_NOT_SUPPORTED`.
+- The MQTT adapter builds an MQTT 3.1.1 client for DPS, then an MQTT 5 one for the hub, in turn in one workspace.
 - Builds its client before `open()`: an mqttv5 client records the generation it needs instead of reading it from a live connection.
 - GET returns the desired and reported sections separately, each with its own version.
 - PATCH reports the service's verdict as well as a transport status. A patch can complete and still be refused (another writer moved the version first), so the run succeeds only when the verdict is OK.
-- The client encodes patches into an application-supplied buffer and needs its own `az_iot_mqttv5_twin_client_do_work()` in the pump.
+- The client encodes patches into an application-supplied buffer. `az_iot_connection_client_do_work()` times its requests out.
 - Platforms: Linux and Windows.
 
 ## Service requirements
@@ -107,8 +107,7 @@ patch_reported: done=1 status=AZ_IOT_OK verdict=1 version=2
 
 | What | Code |
 | --- | --- |
-| Register both MQTT adapters | `az_iot_paho_factory_create_v3_1_1()`, `az_iot_paho_factory_create_v5()`; az_mqtt: `az_iot_az_mqtt_factory_create_v3_1_1()`, `az_iot_az_mqtt_factory_create_v5()` |
+| MQTT adapter and the workspace it builds each MQTT client in | `mqtt_adapter` (`az_iot_paho_get_adapter()`; az_mqtt: `az_iot_az_mqtt_get_adapter()`), `mqtt_limits`, `mqtt_workspace`; sizes in [`sample_utils.h`](../../common/sample_utils.h) |
 | Create the client, encode buffer, desired handler | `az_iot_mqttv5_twin_client_init()`, `az_iot_mqttv5_twin_client_set_encode_buffer()`, `az_iot_mqttv5_twin_client_set_desired_handler()` |
 | GET | `az_iot_mqttv5_twin_client_get()`, `on_get()` |
 | PATCH and its verdict | `az_iot_mqttv5_twin_client_patch_reported()`, `on_patch()` |
-| Pump the twin client | `az_iot_mqttv5_twin_client_do_work()` |

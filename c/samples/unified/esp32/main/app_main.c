@@ -65,6 +65,13 @@ static const char* TAG = "hub_esp32";
 /** @brief Largest echoed mqttv3 payload: the response must fit the adapter's send buffer, with
  * room for its topic. */
 #define MQTTV3_ECHO_PAYLOAD_MAX (CONFIG_AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE - 256u)
+/** @brief MQTT message store: one full-size message with az_mqtt's 18-byte per-message overhead,
+ * kept for the resumed hub session. */
+#define MQTT_MESSAGE_STORE_SIZE (CONFIG_AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE + 32u)
+/** @brief Copies a connect makes: host, client ID, user name, device certificate and key PEM. */
+#define MQTT_CONNECT_STRINGS_SIZE 8192u
+/** @brief Bound of az_mqtt's TLS state with mbedTLS (about 4.5 KB). */
+#define MQTT_TLS_STATE_SIZE 8192u
 
 /** @brief A wait before the next retry: none, or #TWIN_RETRY_MS from @c started. */
 typedef struct
@@ -633,23 +640,30 @@ void app_main(void)
   options.workspace_size = sizeof(connection_workspace);
   // mqttv5: the hub pushes the desired snapshot on connect and each desired patch.
   options.twin_push.push_desired = true;
+  /* The az_mqtt adapter builds each session's MQTT client in this workspace, one at a time:
+   * MQTT 3.1.1 for DPS and an mqttv3 hub, MQTT 5 for an mqttv5 hub. Sizes: menuconfig. */
+  static uint8_t mqtt_workspace[AZ_IOT_AZ_MQTT_WORKSPACE_SIZE(
+      CONFIG_AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE,
+      CONFIG_AZ_IOT_AZ_MQTT_RECEIVE_BUFFER_SIZE,
+      CONFIG_AZ_IOT_AZ_MQTT_INFLIGHT_MAX,
+      MQTT_MESSAGE_STORE_SIZE,
+      MQTT_CONNECT_STRINGS_SIZE,
+      MQTT_TLS_STATE_SIZE)];
+  options.mqtt_adapter = az_iot_az_mqtt_get_adapter();
+  options.mqtt_limits = (az_iot_mqtt_limits){
+    .send_buffer_size = CONFIG_AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE,
+    .receive_buffer_size = CONFIG_AZ_IOT_AZ_MQTT_RECEIVE_BUFFER_SIZE,
+    .max_in_flight_messages = CONFIG_AZ_IOT_AZ_MQTT_INFLIGHT_MAX,
+    .message_store_size = MQTT_MESSAGE_STORE_SIZE,
+    .connect_strings_size = MQTT_CONNECT_STRINGS_SIZE,
+  };
+  options.mqtt_workspace = mqtt_workspace;
+  options.mqtt_workspace_size = sizeof(mqtt_workspace);
   if (az_iot_connection_client_init(&d->connection, &options) != AZ_IOT_OK)
   {
     restart("connection client init failed");
   }
   az_iot_connection_client_add_state_observer(&d->connection, on_connection_state, d);
-
-  /* MQTT 3.1.1 for DPS and an mqttv3 hub, MQTT 5 for an mqttv5 hub. The factories must outlive
-   * the connection, which lives as long as this task. */
-  if (az_iot_connection_client_register_mqtt_factory(
-          &d->connection, az_iot_az_mqtt_factory_create_v3_1_1())
-          != AZ_IOT_OK
-      || az_iot_connection_client_register_mqtt_factory(
-             &d->connection, az_iot_az_mqtt_factory_create_v5())
-          != AZ_IOT_OK)
-  {
-    restart("registering the MQTT adapters failed");
-  }
 
   if (build_clients(d, AZ_IOT_CONNECTION_PROFILE_MQTT_V3) != AZ_IOT_OK
       || az_iot_connection_client_open(&d->connection) != AZ_IOT_OK)
@@ -669,10 +683,6 @@ void app_main(void)
     wait_for_tick_end(tick_start); // At the top: the body continues early.
     tick_start = xTaskGetTickCount();
     (void)az_iot_connection_client_do_work(&d->connection, TICK_MS);
-    if (d->clients_built && d->profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5)
-    {
-      (void)az_iot_mqttv5_twin_client_do_work(&d->mqttv5_twin); // Its own timers.
-    }
 
     if (d->rebuild)
     {

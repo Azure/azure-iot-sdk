@@ -179,6 +179,42 @@ Entry counts are run-time values in `az_iot_connection_client_options::limits`
 - Defining one of the former macros (`AZ_IOT_MAX_PENDING_PUBACKS`, `AZ_IOT_DPS_HOST_BUF`, ...)
   before including the header is a compile error.
 
+With `options.mqtt_adapter` set (for example `az_iot_az_mqtt_get_adapter()`), the client
+builds each session's MQTT client in `options.mqtt_workspace`, sized for `options.mqtt_limits`
+(see [Clients in application memory](#clients-in-application-memory)). NULL keeps the registered
+factories.
+
+- Size `mqtt_workspace` with the adapter's `get_workspace_size(&mqtt_limits)`
+  (`az_iot_az_mqtt_get_workspace_size()`, `az_iot_paho_get_workspace_size()`), or for a static
+  array with `AZ_IOT_AZ_MQTT_WORKSPACE_SIZE(...)` or `AZ_IOT_PAHO_WORKSPACE_SIZE`. Any alignment.
+- `init()` fails with `AZ_IOT_ERR_INVALID_ARG` when the limits are invalid (the adapter's size is
+  0) or the workspace is NULL, and with `AZ_IOT_ERR_NOT_ENOUGH_SPACE` when it is too small; the
+  last two log the size needed. `deinit()` wipes it.
+- `mqtt_workspace` and `workspace` must be disjoint (adjacent is fine): `init()` fails with
+  `AZ_IOT_ERR_INVALID_ARG` when they share a byte, before it changes the client.
+- The hub session resumes its MQTT session unless `session_continuity` is
+  `AZ_IOT_SESSION_CONTINUITY_CLEAN`. az_mqtt then needs a `message_store_size` of at least
+  `send_buffer_size` plus its 18-byte per-message overhead; with 0 its connect fails with
+  `AZ_IOT_ERR_NOT_SUPPORTED`.
+- It holds one MQTT client at a time. A provisioning session cannot start while the hub session's
+  client exists, nor the reverse: the start fails with `AZ_IOT_ERR_BUSY` and is reported and
+  retried like any failed start. Today only the software updates DPS channel holds the
+  provisioning session beside the hub session.
+
+```c
+/* The last argument bounds the TLS backend's state: 8 KB covers OpenSSL and mbedTLS; Schannel
+ * (Windows) needs about 197 KB. */
+static uint8_t mqtt_workspace[AZ_IOT_AZ_MQTT_WORKSPACE_SIZE(4096, 4096, 8, 8192, 4096, 8192)];
+opts.mqtt_adapter = az_iot_az_mqtt_get_adapter();
+opts.mqtt_limits = (az_iot_mqtt_limits){ .send_buffer_size = 4096,
+                                         .receive_buffer_size = 4096,
+                                         .max_in_flight_messages = 8,
+                                         .message_store_size = 8192,
+                                         .connect_strings_size = 4096 };
+opts.mqtt_workspace = mqtt_workspace;
+opts.mqtt_workspace_size = sizeof(mqtt_workspace);
+```
+
 The defaults are compile-time values
 ([az_iot_connection_client_config.h](../inc/azure/iot/az_iot_connection_client_config.h)):
 `AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_<LIMIT>`, for example
@@ -200,11 +236,70 @@ opts.workspace_size = sizeof(workspace);
 | --- | --- | --- |
 | `max_pending_publishes` | 16 | QoS 1 publishes awaiting an acknowledgement with a completion callback, across all feature clients. When the caller's pool is full, nothing is sent and the call returns `AZ_IOT_ERR_BUSY`; retry once an acknowledgement arrives. See [In-flight QoS 1 publishes](#in-flight-qos-1-publishes). At most 65535. |
 | `max_publish_reservations` | 2 | Feature clients holding a reservation of `max_pending_publishes`; an mqttv5 direct method client takes one; certificate renewal takes one when `opts.csr_payload_buffer` is set. At most 254. |
-| `max_persistent_subscriptions` | 8 | Topic filters re-subscribed on every session. A fully loaded mqttv3 device uses 5; mqttv5 feature clients use none. At most 255. |
-| `max_feature_observers` | 10 | Feature-client observers of connection state, session end, publish completion and the `do_work()` tick. A loaded device uses one per feature client. |
+| `max_persistent_subscriptions` | 8 | Topic filters re-subscribed on every session. MQTT 3.1.1 feature clients use up to 4, certificate renewal 1; mqttv5 feature clients use none. See [Sizing the limits](#sizing-the-limits). At most 255. |
+| `max_feature_observers` | 10 | Feature-client observers of connection state, session end, publish completion and the `do_work()` tick. See [Sizing the limits](#sizing-the-limits). |
 | `max_application_state_observers` | 4 | Connection-state observers the application can register. |
 | `max_feature_clients` | 8 | Feature clients attached to one connection client. |
 | `max_inbound_handlers` | 8 | Inbound topic handlers. |
+
+##### Sizing the limits
+
+The defaults hold every feature client with room to spare. To use less memory, set each limit to
+what the device uses. Each feature client takes these entries when attached or, for some of its
+topics, when a hub session starts:
+
+| Feature client | `max_pending_publishes` reserved | `max_publish_reservations` | `max_persistent_subscriptions` | `max_feature_observers` | `max_feature_clients` | `max_inbound_handlers` |
+| --- | --- | --- | --- | --- | --- | --- |
+| mqttv3 C2D | | | 1 | | 1 | 1 |
+| mqttv3 direct methods | | | 1 | 1 | | 1 |
+| mqttv3 twin | | | 2 | 1 | | 2 |
+| mqttv5 direct methods | `AZ_IOT_MQTTV5_DM_RESERVED_PUBACKS` (8) | 1 | | 2 | 1 | 1 |
+| mqttv5 twin | | | | 2 | 1 | 1 |
+| Hub certificate renewal (`csr_payload_buffer` set) | 1 | 1 | 1 | | | 1 |
+| Software updates, DPS channel | | | | 1 | | |
+
+Certificate renewal reserves its slot at `init()` and takes its subscription and handler on the
+first `az_iot_connection_client_send_csr()`. Telemetry, file upload and mqttv5 custom topics take
+none. `max_pending_publishes` also needs one slot per QoS 1 publish the application keeps in
+flight with a completion callback, and `max_application_state_observers` one per observer it adds.
+Each limit is at least 1.
+
+Examples, checked by `connection_client_workspace_test.c` (sizes on a 64-bit build; the defaults
+take 3,903 bytes):
+
+```c
+/* MQTT 3.1.1: telemetry (4 publishes in flight), C2D, direct methods, twin. 1,631 bytes. */
+opts.limits = (az_iot_connection_client_limits){ .max_pending_publishes = 4,
+                                                 .max_publish_reservations = 1,
+                                                 .max_persistent_subscriptions = 4,
+                                                 .max_feature_observers = 2,
+                                                 .max_application_state_observers = 1,
+                                                 .max_feature_clients = 1,
+                                                 .max_inbound_handlers = 4 };
+
+/* MQTT 5: telemetry (4 publishes in flight), direct methods, twin. The direct method client
+ * reserves AZ_IOT_MQTTV5_DM_RESERVED_PUBACKS (8 with the default
+ * AZ_IOT_MQTTV5_DM_MAX_CONCURRENT): 1,263 bytes. */
+opts.limits = (az_iot_connection_client_limits){
+  .max_pending_publishes = AZ_IOT_MQTTV5_DM_RESERVED_PUBACKS + 4,
+  .max_publish_reservations = 1,
+  .max_persistent_subscriptions = 1,
+  .max_feature_observers = 4,
+  .max_application_state_observers = 1,
+  .max_feature_clients = 2,
+  .max_inbound_handlers = 2,
+};
+
+static uint8_t workspace[AZ_IOT_CONNECTION_CLIENT_WORKSPACE_SIZE(
+    AZ_IOT_MQTTV5_DM_RESERVED_PUBACKS + 4, 1, 1, 4, 1, 2, 2)];
+opts.workspace = workspace;
+opts.workspace_size = sizeof(workspace);
+```
+
+A limit too small for a feature client makes its `init()` fail. For the topics bound when a hub
+session starts, a direct hub connection fails `open()`; with DPS, `open()` succeeds and each hub
+session attempt after assignment fails, reported through the hub connection state and retried
+under `reconnection_policy`. For certificate renewal, the first `send_csr()` fails.
 
 Fixed sizes:
 
@@ -236,11 +331,16 @@ Defaults used when the matching option is left at 0:
 | `AZ_IOT_DEFAULT_SUBSCRIPTION_ACK_TIMEOUT_SECONDS` | 60 | `subscription_ack_timeout_seconds` (also the mqttv5 presence SUBACK) |
 | `AZ_IOT_DEFAULT_SESSION_EXPIRY_SECONDS` | 3600 | `session_expiry_seconds` (mqttv5) |
 | `AZ_IOT_DEFAULT_MAX_UNCONFIRMED_DELIVERY_TIMEOUT_MS` | 300000 | `max_unconfirmed_delivery_timeout_ms`: how long an SDK message with no Message Expiry is kept for confirmation or resend (mqttv5 direct method results and notices); cannot be disabled |
+| `AZ_IOT_DEFAULT_CSR_RESPONSE_TIMEOUT_MS` | 120000 | `csr_response_timeout_ms`: how long a certificate renewal waits for a terminal response, restarted by a `202` |
 | `AZ_IOT_DPS_HOLD_TIMEOUT_MS` | 60000 | `dps_hold_timeout_ms` |
 | `AZ_IOT_DEFAULT_MAX_HUB_CONNECT_ATTEMPTS_BEFORE_REPROVISION` | 50 | `dps.max_hub_connect_attempts_before_reprovision`, set by `az_iot_connection_client_options_default()` |
 | `AZ_IOT_DEFAULT_IDENTITY_RECOVERY_INITIAL_DELAY_MS` | 300000 | `identity_recovery.policy.initial_delay_ms`, set by `az_iot_connection_client_options_default()` |
 | `AZ_IOT_DEFAULT_IDENTITY_RECOVERY_MAX_DELAY_MS` | 3600000 | `identity_recovery.policy.max_delay_ms`, set by `az_iot_connection_client_options_default()` |
 | `AZ_IOT_DEFAULT_IDENTITY_RECOVERY_JITTER_PCT` | 25 | `identity_recovery.policy.jitter_pct`, set by `az_iot_connection_client_options_default()` |
+| `AZ_IOT_DEFAULT_IDENTITY_RECOVERY_AFTER_ASSIGNMENT_INITIAL_DELAY_MS` | 5000 | `identity_recovery.after_assignment_policy.initial_delay_ms`, set by `az_iot_connection_client_options_default()` |
+| `AZ_IOT_DEFAULT_IDENTITY_RECOVERY_AFTER_ASSIGNMENT_MAX_DELAY_MS` | 15000 | `identity_recovery.after_assignment_policy.max_delay_ms`, set by `az_iot_connection_client_options_default()` |
+| `AZ_IOT_DEFAULT_IDENTITY_RECOVERY_AFTER_ASSIGNMENT_MAX_ATTEMPTS` | 4 | `identity_recovery.after_assignment_policy.max_attempts`, set by `az_iot_connection_client_options_default()` |
+| `AZ_IOT_DEFAULT_IDENTITY_RECOVERY_AFTER_ASSIGNMENT_JITTER_PCT` | 20 | `identity_recovery.after_assignment_policy.jitter_pct`, set by `az_iot_connection_client_options_default()` |
 
 #### Feature clients ([az_iot_message.h](../inc/azure/iot/az_iot_message.h) and the client headers)
 
@@ -361,7 +461,7 @@ is granted only when usable at once: if tracked publishes in flight occupy its s
 | --- | --- | --- | --- |
 | mqttv3 and mqttv5 telemetry `send` | 1 per call | Only the shared pool | Shared pool; the callback is required. |
 | mqttv5 direct methods | Probe ack, result, abandon | `AZ_IOT_MQTTV5_DM_MAX_CONCURRENT` invocations. Not bounded: refused probes are also acknowledged, and refused probes past `AZ_IOT_MQTTV5_DM_NOTICE_QUEUE_MAX` are sent untracked. A result keeps its slot until acknowledged. | Reserves `2 × AZ_IOT_MQTTV5_DM_MAX_CONCURRENT` at init; init fails with `AZ_IOT_ERR_NOT_ENOUGH_SPACE` if they do not fit, or `AZ_IOT_ERR_BUSY` as above. Probe acks and results never go untracked: when all are in use they wait for the next PUBACK. Probe rejections and abandons leave one slot free per invocation that could still need one, and past that are sent untracked. |
-| Certificate renewal | 1 request | 1 operation at a time | Reserves 1 at init when `opts.csr_payload_buffer` is set. Cancel and timeout give it back at once. |
+| Certificate renewal | 1 request | 1 operation at a time | Reserves 1 at init when `opts.csr_payload_buffer` is set. Cancel, timeout and a session end give it back at once. |
 
 Not counted: twin and mqttv3 direct methods (QoS 0, bounded by `AZ_IOT_TWIN_MAX_PENDING` and
 `AZ_IOT_DM_MAX_INFLIGHT`), and the provisioning session (DPS registration, software updates).
@@ -394,7 +494,7 @@ always the same thing.
 | `az_iot_mqttv3_direct_method_client_set_response_timeout()` | How long an unanswered mqttv3 invocation is held | 300 s |
 | `az_iot_mqttv5_direct_method_client_register_method()` | A method the device answers, and the time it needs | none declared |
 | `az_iot_mqttv5_direct_method_client_set_probe_handler()` | Whether to accept an invocation before its arguments arrive | accept when timing and capacity allow |
-| `az_iot_mqttv5_twin_client_set_request_timeout()` | How long a twin request may wait for its answer | 60 s |
+| `az_iot_mqttv5_twin_client_set_request_timeout()`, `az_iot_mqttv3_twin_client_set_request_timeout()` | How long a twin request may wait for its answer, from the call | 60 s |
 | `az_iot_mqttv5_twin_client_set_encode_buffer()` | Buffer reported patches are encoded into | required before patching |
 | `az_iot_mqttv3_file_upload_client_init()` (`http_transport`) | The HTTP client used for the IoT Hub file-upload calls | required |
 

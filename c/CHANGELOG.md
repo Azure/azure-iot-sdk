@@ -4,12 +4,62 @@
 
 ### Features Added
 
+- Breaking: the connection client runs one MQTT session at a time; the provisioning session and the
+  hub session no longer overlap. With software updates bound, the hub connect after registration
+  waits while the update check still needs the provisioning session, then connects to the assigned
+  hub without registering again. After registration, each update check or status report made while
+  the hub is connected ends the hub session and the hub reconnects to its assignment once the
+  software updates client has no work left: the hub scope reports `RETRY_PENDING` with reason
+  `AZ_IOT_OK` (`is_credential_renewal` false, no `recovery`), and feature clients see an ordinary
+  session end (`AZ_IOT_CONNECTION_SESSION_END_PLANNED`) and resume after it. These planned ends do not
+  count toward reconnection backoff or `dps.max_hub_connect_attempts_before_reprovision`. Creating
+  an MQTT client for one session while the other's exists fails with `AZ_IOT_ERR_INTERNAL`.
+- Connection client (internal): the provisioning session is wanted through
+  `__dps_session_ensure()` or `__dps_publish()` and given back with `__dps_session_release()`;
+  `__dps_user_acquire()` and `__dps_user_release()` are removed. Behavior is unchanged.
+- Connection client: `az_iot_connection_client_options::mqtt_adapter`, `mqtt_limits`,
+  `mqtt_workspace` and `mqtt_workspace_size` build each session's MQTT client in application
+  memory (e.g. `az_iot_az_mqtt_get_adapter()`), instead of registered factories (still used when
+  `mqtt_adapter` is NULL). `init()` checks the workspace size; `deinit()` wipes it. The workspace
+  holds one client at a time, as one MQTT session runs at a time.
+- SAS token renewal lets the session's deliveries settle before its DISCONNECT: publishes
+  awaiting a PUBACK and SDK requests awaiting a response (twin), for up to 5 s (not past the
+  token's expiry). Meanwhile a new QoS 1 publish returns `AZ_IOT_ERR_BUSY`; once the DISCONNECT
+  is sent, any publish returns `AZ_IOT_ERR_NOT_CONNECTED`. A renewal now takes up to that plus
+  the disconnect bound.
+- mqttv3 twin: requests go through the delivery tracker and time out:
+  `az_iot_mqttv3_twin_client_set_request_timeout()` (default
+  `AZ_IOT_MQTTV3_TWIN_REQUEST_TIMEOUT_MS_DEFAULT`, 60 s, from the call). A GET waits for a
+  connection and is sent again on the next session when its session ends unanswered; a reported
+  patch is sent at once or refused (`AZ_IOT_ERR_BUSY` or `AZ_IOT_ERR_NOT_CONNECTED`) and fails
+  with `AZ_IOT_ERR_NOT_CONNECTED` at a session end.
+- mqttv5 twin: requests go through the delivery tracker. A GET waits for a connection and is sent
+  again on the next session when its session ends unanswered; a reported patch is still sent at
+  once or refused (now `AZ_IOT_ERR_BUSY` when the connection cannot send it now) and fails with
+  `AZ_IOT_ERR_NOT_CONNECTED` at a session end. `az_iot_connection_client_do_work()` times requests
+  out, so `az_iot_mqttv5_twin_client_do_work()` is optional. The client uses two feature observers.
+- Breaking: `az_iot_subscription_failed_callback` takes the refused SUBACK's MQTT 5 Reason String
+  (`reason_string`, `reason_string_len`, after `protocol_code`). On a session-scoped filter the
+  Reason String is reported as `az_iot_connection_state_event.error->message`. Both adapters report
+  it on `AZ_IOT_MQTT_EVT_SUBSCRIBE_ACK`.
+- Certificate renewal: `az_iot_connection_client_options::csr_response_timeout_ms` sets how long
+  `az_iot_connection_client_send_csr()` waits for a terminal response (0: 120 s,
+  `AZ_IOT_DEFAULT_CSR_RESPONSE_TIMEOUT_MS`). A renewal open when the session ends (a drop or
+  `close()`) now fails with `AZ_IOT_CSR_FAILED` / `AZ_IOT_ERR_NOT_CONNECTED` instead of staying
+  open; resubmit it with the same request id once reconnected. `deinit()` calls no renewal
+  callback.
 - Connection client: on MQTT 5, the Reason String of a refused CONNACK or of a server DISCONNECT
   with a nonzero reason code is reported as `az_iot_connection_state_event.error->message` (source
   `AZ_IOT_CONN_ERR_SRC_MQTT`), truncated to `AZ_IOT_CONN_ERROR_MESSAGE_MAX` bytes.
   `az_iot_mqtt_event.reason_string` now also carries it on `AZ_IOT_MQTT_EVT_DISCONNECTED` (both
   adapters) and on a failed `AZ_IOT_MQTT_EVT_CONNECTED` (az_mqtt adapter; Paho does not expose it).
   The Paho adapter keeps 128 bytes of a DISCONNECT Reason String.
+- Connection client: a hub that refuses the device right after a DPS assignment, before the new
+  registration reaches it, is retried soon: `identity_recovery.after_assignment_policy` (default
+  `az_iot_connection_client_get_default_identity_recovery_after_assignment_policy()`: 5 s doubling
+  to 15 s, ±20%, 4 attempts) paces those refusals until `HUB:CONNECTED`, before the 5-minute
+  identity recovery policy. Zeroed, every refusal waits on `policy` as before. See
+  [Identity recovery](docs/connecting.md#identity-recovery).
 - Software updates: the update request, file URL, workflow and install-result types are the SDK's
   own; `az_iot_su.h` no longer includes azure-sdk-for-c's `az_iot_adu_client.h`, and an installed
   azure-sdk-for-c no longer needs the `AZ_IOT_SU_MAX_*` limits. Breaking:
@@ -31,12 +81,14 @@
   reference agent's layout (default `/var/lib/adu/sdc`, latest update per provider). The default
   delta processor, `libadudiffapi.so`, is loaded at run time; without it files are downloaded in
   full. The `pc/http_download` and `pc/simulated_regular` samples register it.
+- Software updates: `az_iot_su_decode_manifest_string()` decodes a manifest string the parser keeps
+  escaped, such as a file id (`f\u0031` is `f1`).
 - End-to-end tests: the Software Update offer suite runs delta updates against the service, with
   a test download handler: a device holding the source builds the file from the related file, and
-  one without it falls back to a full download reported with the delta `NO_SOURCE` code; and with
-  the reference `microsoft/delta:1` handler and the real delta processor. Three new standing offers
-  (`AZ_IOT_E2E_SU_OFFER_MODEL_DELTA`, `_DELTA_NO_SOURCE`, `_MICROSOFT_DELTA`). The offer suite now
-  needs `AZ_IOT_WITH_SU_DELTA=ON` and `AZ_IOT_SU_DELTA_TEST_LIBRARY`.
+  one without it falls back to a full download reported with the delta `NO_SOURCE` code; and, on
+  POSIX, with the reference `microsoft/delta:1` handler and the real delta processor. Three new
+  standing offers (`AZ_IOT_E2E_SU_OFFER_MODEL_DELTA`, `_DELTA_NO_SOURCE`, `_MICROSOFT_DELTA`). On
+  POSIX the offer suite now needs `AZ_IOT_WITH_SU_DELTA=ON` and `AZ_IOT_SU_DELTA_TEST_LIBRARY`.
 - Software updates: the parsed manifest keeps each file's `mimeType`, `properties`,
   `downloadHandler` id and related files (`relatedFiles`, delta updates), and the request accepts
   their `fileUrls`. New `az_iot_su_limits::max_related_files` (default
@@ -62,6 +114,8 @@
   `AZ_IOT_ERR_BUSY` when called from a callback the connection client runs (state, publish
   completion, SAS token, DPS, CSR, subscription failure, inbound message, feature observer). Call
   them after `do_work()` returns. See [Opening and closing](docs/connecting.md#opening-and-closing).
+- Breaking: `az_iot_connection_client_deinit()` returns `az_iot_result`: `AZ_IOT_ERR_BUSY` from
+  the same callbacks, where it releases nothing, and `AZ_IOT_ERR_INVALID_ARG` for a NULL client.
 - Breaking: `az_iot_connection_client_limits::max_session_handlers` and `max_feature_state_observers`
   are replaced by `max_feature_observers` (default 10,
   `AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_FEATURE_OBSERVERS`): feature clients observe connection
@@ -349,9 +403,23 @@
   `esp_secure_cert` identity, then telemetry, the `echo` direct method and desired-twin
   acknowledgements on the assigned hub (mqttv3 or mqttv5). CI builds it for esp32, esp32c3,
   esp32s3 and esp32c6, and boots its QEMU build on esp32, esp32s3 and esp32c3.
+- ESP32 end-to-end test: `ci-c-e2e` runs the ESP32 IoT Hub sample in QEMU on esp32 and esp32c3
+  against an IoT Hub (telemetry, the `echo` method, a desired-version acknowledgement), with
+  the esp32c3 key in the emulated Digital Signature peripheral. `eng/esp-idf-qemu-e2e.sh` runs it
+  locally; `eng/esp-idf-qemu-identity.sh` writes a QEMU device identity
+  ([docs](docs/eng/end-to-end-tests.md#esp32-in-qemu)).
 
 ### Bugs Fixed
 
+- ESP32 samples (`software_update/esp32`, `unified/esp32`) build with every ESP-IDF 6 release:
+  they pinned `espressif/ethernet_init` to `==1.2.0`, while ESP-IDF v6.0.2 and later need
+  `^1.3.0`. The version now comes from ESP-IDF's `protocol_examples_common`. CI builds the ESP32
+  samples and runs the ESP32 QEMU e2e with ESP-IDF v6.1, and builds both samples with v6.0.
+- ESP32 with the Digital Signature peripheral (esp32c3, esp32s3, esp32c6) connects with ESP-IDF
+  v6.0.1 and later: the `esp_secure_cert` certificate provider imports the DS key in the layout
+  those releases expect (an `esp_rsa_ds_opaque_key_t`; v6.0 keeps the old one), and az_mqtt's
+  mbedTLS backend wraps a PSA key that cannot export its public key (TF-PSA-Crypto 1.1, ESP-IDF
+  v6.0.3 and later) with the client certificate's public key.
 - Connection client, events drained in one `process_loop()`: a failed acknowledgement (PUBACK,
   SUBACK, UNSUBACK) becomes connection error detail only when it fails the connection. A presence,
   gated or DPS SUBACK drained after a session-ending event is ignored; a FAILS_SELF refusal is still
@@ -359,6 +427,12 @@
   and an identity refusal is acted on whatever came first. While `close()` disconnects, a late
   SUBACK neither announces CONNECTED nor publishes the birth, and a new filter waits for the next
   session.
+- Software updates: a verified update whose step names a file missing from the manifest `files`, or
+  from `fileUrls`, is refused before any step runs, instead of failing at that step's download
+  after earlier steps were installed and rolled back (or passing an empty URL to `download_fn`).
+  Library mode does not offer it to the application, and `az_iot_su_parse_update_request()`
+  returns `AZ_IOT_ERR_INVALID_ARG`. File ids are matched decoded, so a JSON-escaped id (`f\u0031`)
+  finds its file and URL (`f1`).
 - ESP32: the `azure-sdk-for-c` component implements `az_platform_clock_msec()` and
   `az_platform_sleep_msec()` with `esp_timer` and FreeRTOS, so the az_mqtt adapter's idle wait
   sleeps instead of returning at once. The software updates sample's connect loop waits out each

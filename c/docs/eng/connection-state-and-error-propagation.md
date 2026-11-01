@@ -83,16 +83,20 @@ is a re-registration leaves `HUB` in `RETRY_PENDING` while the attempt runs on `
 ## 3. Shared provisioning sessions
 
 A feature client (for example software updates) can hold the provisioning session open past
-registration; the session is reference-counted. When such a session fails, the connection client
-does **not** run its normal reconnect path, because that tears down the active hub connection.
-`DPS` settles at `IDLE` instead, and the next session attempt is paced by its own retry counter:
+registration, or open one after it; the session is reference-counted. Only one MQTT session runs at
+a time: while a provisioning session is in use the hub session waits at `HUB:RETRY_PENDING` with
+reason `AZ_IOT_OK` and no retry scheduled (a connected hub session is first ended as planned), and
+it reconnects to its assignment once the session ends. These ends count toward no ladder or
+re-provisioning threshold. When such a session fails, the connection client does **not** run its
+normal reconnect path, which is the registration ladder. `DPS` settles at `IDLE` instead, the
+waiting hub session reconnects, and the next session attempt is paced by its own retry counter:
 
 - The delays come from `opts.reconnection_policy`, on a counter separate from the registration
   ladder, so a user-held session's outage cannot spend a later re-provisioning's budget.
 - With retries disabled, or `max_attempts` spent, the client refuses further session attempts with
   `AZ_IOT_ERR_NOT_SUPPORTED` instead of retrying on every pump tick.
 - The refusal clears when a session comes up, a registration succeeds, on `open()` or `close()`,
-  or when the last holder releases its reference.
+  or when the feature client releases the session.
 - A synchronous session-start failure is paced at the call site.
 
 The core paces the transport. Whether an operation is still worth re-issuing is the feature

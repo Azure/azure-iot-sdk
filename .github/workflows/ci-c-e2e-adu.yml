@@ -7,9 +7,11 @@
 # new device:
 #   az_iot_tests_e2e_su        the DPS channel, with no update offered
 #   az_iot_tests_e2e_su_offer  offered updates through the whole client, delta
-#                              ones with the real delta processor (installed by
-#                              .github/actions/install-su-delta-processor)
-# then checks what the service recorded for each device and offer.
+#                              ones on Linux also with the real delta processor
+#                              (installed by .github/actions/install-su-delta-processor)
+# then checks what the service recorded for each device and offer. The offers job
+# stages the offers once; the e2e-su job runs on Linux and on Windows (MSVC; Paho
+# over OpenSSL, az_mqtt over Schannel), each leg with its own devices.
 #
 # Runs against the shared mqttv5 environment (ci-c-e2e-mqttv5.yml), whose ADR
 # namespace is linked to a Device Update instance. Offers are standing: staged
@@ -61,9 +63,12 @@ on:
       - 'c/tests/e2e/**'
       - 'c/tests/unit/data/su_delta/**'
       - 'c/eng/e2e-shared-device.ps1'
+      - 'c/eng/e2e-trusted-ca.ps1'
       - 'c/eng/collect-coverage.sh'
       - 'c/eng/e2e-mqttv5-adr-namespace.ps1'
       - '.github/workflows/ci-c-e2e-adu.yml'
+      - '.github/actions/install-curl-windows/**'
+      - '.github/actions/install-openssl/**'
       - '.github/actions/install-su-delta-processor/**'
       - '.github/workflows/ci-c-e2e-mqttv5-adr-namespace.yml'
   schedule:
@@ -92,8 +97,9 @@ jobs:
       AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
       AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
 
-  e2e-su:
-    name: software updates e2e (linux)
+  # Stages the standing offers once per run; each OS leg below reads them.
+  offers:
+    name: software updates offers
     needs: adr-namespace
     if: >-
       ${{ !cancelled() &&
@@ -105,13 +111,69 @@ jobs:
     permissions:
       contents: read
       id-token: write   # azure/login OIDC
-    # Above the sum of the step budgets (about 345 min), so every step's own
-    # timeout fires first; GitHub-hosted jobs stop at 360 min.
-    timeout-minutes: 355
+    timeout-minutes: 140
     env:
+      AZ_IOT_E2E_SU_SUBSCRIPTION_ID: ${{ vars.E2E_MQTTV5_SHARED_SUBSCRIPTION_ID }}
+      AZ_IOT_E2E_SU_RESOURCE_GROUP: ${{ vars.E2E_MQTTV5_SHARED_RESOURCE_GROUP }}
+      AZ_IOT_E2E_SU_LOCATION: ${{ vars.E2E_MQTTV5_SHARED_LOCATION }}
+      AZ_IOT_E2E_SU_ADR_NAMESPACE: ${{ vars.E2E_MQTTV5_SHARED_ADR_NAMESPACE }}
+      AZ_IOT_E2E_SU_ADU_ENDPOINT: ${{ vars.E2E_MQTTV5_SHARED_SU_ENDPOINT }}
+      AZ_IOT_E2E_SU_STORAGE_ACCOUNT: ${{ vars.E2E_MQTTV5_SHARED_SU_STORAGE_ACCOUNT }}
+      AZ_IOT_E2E_SU_STORAGE_CONTAINER: ${{ vars.E2E_MQTTV5_SHARED_SU_STORAGE_CONTAINER }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Azure Login via OIDC
+        uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2.3.1
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.E2E_MQTTV5_SHARED_SUBSCRIPTION_ID }}
+
+      # Seconds when the offers are staged. Otherwise typically about 11 min; at
+      # most 8 x (10 min import + 5 min job) + 10 min to Active + 5 min grace.
+      - name: Ensure standing offers
+        timeout-minutes: 135
+        shell: pwsh
+        run: |
+          Import-Module ./c/tests/e2e/scripts/SuE2E.psm1
+          New-SuE2EOffers -RunId "s$(Get-SuE2EFixtureTag)" -StatePath su-offers.json -Reuse
+
+      # Offer and job names only; the test legs check each device's job results with it.
+      - name: Upload the offers
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: su-offers
+          path: su-offers.json
+          retention-days: 1
+          if-no-files-found: error
+
+  e2e-su:
+    name: software updates e2e (${{ matrix.os-name }})
+    needs: offers
+    if: ${{ !cancelled() && needs.offers.result == 'success' }}
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+      id-token: write   # azure/login OIDC
+    # Above the sum of the step budgets (about 200 min), so every step's own
+    # timeout fires first.
+    timeout-minutes: 220
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ ubuntu-24.04, windows-latest ]
+        include:
+          # Linux builds instrumented for the combined coverage report.
+          - { os: ubuntu-24.04, os-name: linux, os-tag: l, preset: linux-gcc-e2e-coverage }
+          - { os: windows-latest, os-name: windows, os-tag: w, preset: windows-msvc-debug }
+    env:
+      AZ_IOT_PRESET: ${{ matrix.preset }}
+      E2E_OS_TAG: ${{ matrix.os-tag }}
       AZ_IOT_E2E_SU_DPS_HOST: ${{ vars.E2E_MQTTV5_SHARED_DPS_HOST }}
       AZ_IOT_E2E_SU_ID_SCOPE: ${{ vars.E2E_MQTTV5_SHARED_ID_SCOPE }}
-      AZ_IOT_E2E_SU_TRUSTED_CA: /etc/ssl/certs/ca-certificates.crt
       AZ_IOT_E2E_SU_SUBSCRIPTION_ID: ${{ vars.E2E_MQTTV5_SHARED_SUBSCRIPTION_ID }}
       AZ_IOT_E2E_SU_RESOURCE_GROUP: ${{ vars.E2E_MQTTV5_SHARED_RESOURCE_GROUP }}
       AZ_IOT_E2E_SU_LOCATION: ${{ vars.E2E_MQTTV5_SHARED_LOCATION }}
@@ -125,28 +187,50 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Install build dependencies
+      - name: Set up MSVC (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
+
+      # OpenSSL 4.1.0, as the Windows legs of ci-c-e2e.yml (cached per runner image).
+      - name: Install OpenSSL (Windows)
+        if: runner.os == 'Windows'
+        uses: ./.github/actions/install-openssl # zizmor: ignore[self-repository]
+        with:
+          version: '4.1.0'
+
+      - name: Install build dependencies (Linux)
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update && sudo apt-get install -y ninja-build libcurl4-openssl-dev
           python3 -m pip install --upgrade 'gcovr==7.2'
 
-      # The real delta processor for the MICROSOFT_DELTA offer.
-      - name: Install the software updates delta processor
+      # The real delta processor for the MICROSOFT_DELTA offer (POSIX only, as the
+      # reference microsoft/delta:1 handler).
+      - name: Install the software updates delta processor (Linux)
         id: su-delta
+        if: runner.os == 'Linux'
         timeout-minutes: 5
         # actionlint 1.7.12 does not accept the $/ self-repository form yet.
         uses: ./.github/actions/install-su-delta-processor # zizmor: ignore[self-repository]
 
-      # Built instrumented so the run feeds the combined coverage report.
+      - name: Install libcurl (Windows)
+        id: curl
+        if: runner.os == 'Windows'
+        # actionlint 1.7.12 does not accept the $/ self-repository form yet.
+        uses: ./.github/actions/install-curl-windows # zizmor: ignore[self-repository]
+
       - name: Build
         timeout-minutes: 15
         working-directory: c
+        shell: pwsh
         env:
-          LIBRARY: ${{ steps.su-delta.outputs.library }}
+          CMAKE_PREFIX_PATH: ${{ steps.curl.outputs.prefix }}
+          SU_DELTA_LIBRARY: ${{ steps.su-delta.outputs.library }}
         run: |
-          cmake --preset linux-gcc-e2e-coverage -DAZ_IOT_WITH_PAHO=ON -DAZ_IOT_WITH_AZ_MQTT=ON -DAZ_IOT_BUILD_E2E_SU=ON \
-            -DAZ_IOT_WITH_SU_DELTA=ON -DAZ_IOT_SU_DELTA_TEST_LIBRARY="$LIBRARY"
-          cmake --build --preset linux-gcc-e2e-coverage --target az_iot_tests_e2e_su az_iot_tests_e2e_su_offer az_iot_tests_e2e_su_az_mqtt az_iot_tests_e2e_su_offer_az_mqtt
+          $delta = if ($IsLinux) { '-DAZ_IOT_WITH_SU_DELTA=ON', "-DAZ_IOT_SU_DELTA_TEST_LIBRARY=$env:SU_DELTA_LIBRARY" } else { @() }
+          cmake --preset $env:AZ_IOT_PRESET -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_WITH_PAHO=ON -DAZ_IOT_WITH_AZ_MQTT=ON -DAZ_IOT_BUILD_E2E_SU=ON @delta
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake --build --preset $env:AZ_IOT_PRESET --target az_iot_tests_e2e_su az_iot_tests_e2e_su_offer az_iot_tests_e2e_su_az_mqtt az_iot_tests_e2e_su_offer_az_mqtt
 
       - name: Azure Login via OIDC
         uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2.3.1
@@ -155,15 +239,17 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.E2E_MQTTV5_SHARED_SUBSCRIPTION_ID }}
 
-      # Seconds when the offers are staged. Otherwise typically about 11 min; at
-      # most 8 x (10 min import + 5 min job) + 10 min to Active + 5 min grace.
-      - name: Ensure standing offers
-        id: offers
-        timeout-minutes: 135
+      - name: Download the offers
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: su-offers
+          path: ${{ github.workspace }}
+
+      - name: Export the offer variables
         shell: pwsh
         run: |
           Import-Module ./c/tests/e2e/scripts/SuE2E.psm1
-          New-SuE2EOffers -RunId "s$(Get-SuE2EFixtureTag)" -StatePath $env:SU_OFFERS_STATE -Reuse
+          Export-SuE2EOfferVariables -RunId "s$(Get-SuE2EFixtureTag)"
 
       # A new device per suite execution: an offer reaches a device once, and the
       # offer suite starts from a device with no registration.
@@ -179,68 +265,66 @@ jobs:
         run: |
           $dir = Join-Path $env:RUNNER_TEMP 'su-devices'
           New-Item -ItemType Directory -Force -Path $dir | Out-Null
-          chmod 700 $dir
+          if (-not $IsWindows) { chmod 700 $dir }
           foreach ($device in 'paho', 'paho-offer', 'az-mqtt', 'az-mqtt-offer') {
-            $regId = "ci-su-$device-$env:RUN_TAG"
+            $regId = "ci-su-$device-$env:RUN_TAG-$env:E2E_OS_TAG"
             $config = Join-Path $dir "$device.ps1"
             ./c/eng/e2e-shared-device.ps1 -Prefix E2E_MQTTV5_SHARED -RegistrationId $regId -OutFile $config
             . $config
             [IO.File]::WriteAllBytes((Join-Path $dir "$device-cert.pem"), [Convert]::FromBase64String($env:IOT_DPS_INDIVIDUAL_X509_CERTIFICATE_0))
             [IO.File]::WriteAllBytes((Join-Path $dir "$device-key.pem"), [Convert]::FromBase64String($env:IOT_DPS_INDIVIDUAL_X509_KEY_0))
             Remove-Item $config
-            chmod 600 (Join-Path $dir "$device-key.pem")
+            if (-not $IsWindows) { chmod 600 (Join-Path $dir "$device-key.pem") }
             $name = $device.Replace('-', '_').ToUpperInvariant()
             "SU_REG_ID_$name=$regId" | Add-Content -Path $env:GITHUB_ENV
           }
-          "SU_DEVICES=$dir" | Add-Content -Path $env:GITHUB_ENV
+          $ca = ./c/eng/e2e-trusted-ca.ps1 -Path (Join-Path $dir 'trusted-ca.pem')
+          "SU_DEVICES=$dir", "AZ_IOT_E2E_SU_TRUSTED_CA=$ca" | Add-Content -Path $env:GITHUB_ENV
 
-      # Budgets: e2e_su 10 min; e2e_su_offer 65 min (8 offers x (90 s check +
-      # 300 s workflow), plus the scenarios without an offer and setup).
-      - name: Run software updates e2e (paho)
-        id: paho
-        timeout-minutes: 80
+      # Per adapter: e2e_su (10 min budget), then e2e_su_offer (65 min: 8 offers x
+      # (90 s check + 300 s workflow), plus the scenarios without an offer and
+      # setup), each on its own device.
+      - name: Run software updates e2e
+        timeout-minutes: 160
+        shell: pwsh
+        env:
+          AZ_IOT_CURL_PREFIX: ${{ steps.curl.outputs.prefix }}
         run: |
-          mkdir -p results
-          AZ_IOT_E2E_SU_REG_ID="$SU_REG_ID_PAHO" \
-          AZ_IOT_E2E_SU_CERT="$SU_DEVICES/paho-cert.pem" AZ_IOT_E2E_SU_KEY="$SU_DEVICES/paho-key.pem" \
-          ctest --test-dir c/build/linux-gcc-e2e-coverage -R '^az_iot_tests_e2e_su$' \
-            --verbose --no-tests=error --timeout 600 \
-            --output-junit "$GITHUB_WORKSPACE/results/e2e-su-paho.xml" || status=$?
-          AZ_IOT_E2E_SU_REG_ID="$SU_REG_ID_PAHO_OFFER" \
-          AZ_IOT_E2E_SU_CERT="$SU_DEVICES/paho-offer-cert.pem" AZ_IOT_E2E_SU_KEY="$SU_DEVICES/paho-offer-key.pem" \
-          ctest --test-dir c/build/linux-gcc-e2e-coverage -R '^az_iot_tests_e2e_su_offer$' \
-            --verbose --no-tests=error --timeout 3900 \
-            --output-junit "$GITHUB_WORKSPACE/results/e2e-su-offer-paho.xml" || status=$?
-          exit "${status:-0}"
-
-      - name: Run software updates e2e (az_mqtt)
-        id: az_mqtt
-        if: ${{ !cancelled() && steps.offers.outcome == 'success' }}
-        timeout-minutes: 80
-        run: |
-          mkdir -p results
-          AZ_IOT_E2E_SU_REG_ID="$SU_REG_ID_AZ_MQTT" \
-          AZ_IOT_E2E_SU_CERT="$SU_DEVICES/az-mqtt-cert.pem" AZ_IOT_E2E_SU_KEY="$SU_DEVICES/az-mqtt-key.pem" \
-          ctest --test-dir c/build/linux-gcc-e2e-coverage -R '^az_iot_tests_e2e_su_az_mqtt$' \
-            --verbose --no-tests=error --timeout 600 \
-            --output-junit "$GITHUB_WORKSPACE/results/e2e-su-az-mqtt.xml" || status=$?
-          AZ_IOT_E2E_SU_REG_ID="$SU_REG_ID_AZ_MQTT_OFFER" \
-          AZ_IOT_E2E_SU_CERT="$SU_DEVICES/az-mqtt-offer-cert.pem" AZ_IOT_E2E_SU_KEY="$SU_DEVICES/az-mqtt-offer-key.pem" \
-          ctest --test-dir c/build/linux-gcc-e2e-coverage -R '^az_iot_tests_e2e_su_offer_az_mqtt$' \
-            --verbose --no-tests=error --timeout 3900 \
-            --output-junit "$GITHUB_WORKSPACE/results/e2e-su-offer-az-mqtt.xml" || status=$?
-          exit "${status:-0}"
+          if ($env:AZ_IOT_CURL_PREFIX) {
+            $env:PATH = "$env:AZ_IOT_CURL_PREFIX\debug\bin;$env:AZ_IOT_CURL_PREFIX\bin;$env:PATH"
+          }
+          New-Item -ItemType Directory -Force -Path results | Out-Null
+          $failed = @()
+          foreach ($adapter in 'paho', 'az_mqtt') {
+            $suffix = if ($adapter -eq 'paho') { '' } else { '_az_mqtt' }
+            $device = $adapter.Replace('_', '-')
+            foreach ($suite in @(@{ Name = 'su'; Device = $device; Timeout = 600 },
+                                 @{ Name = 'su_offer'; Device = "$device-offer"; Timeout = 3900 })) {
+              $test = "az_iot_tests_e2e_$($suite.Name)$suffix"
+              $env:AZ_IOT_E2E_SU_REG_ID = [Environment]::GetEnvironmentVariable(
+                'SU_REG_ID_' + $suite.Device.Replace('-', '_').ToUpperInvariant())
+              $env:AZ_IOT_E2E_SU_CERT = Join-Path $env:SU_DEVICES "$($suite.Device)-cert.pem"
+              $env:AZ_IOT_E2E_SU_KEY = Join-Path $env:SU_DEVICES "$($suite.Device)-key.pem"
+              ctest --test-dir "c/build/$($env:AZ_IOT_PRESET)" -C Debug -R "^$test$" `
+                --verbose --no-tests=error --timeout $suite.Timeout `
+                --output-junit (Join-Path $env:GITHUB_WORKSPACE "results/$test-$($env:E2E_OS_TAG).xml")
+              if ($LASTEXITCODE -ne 0) { $failed += $test }
+            }
+          }
+          if ($failed) { throw "failed: $($failed -join ', ')" }
 
       - name: Check job results
-        if: ${{ !cancelled() && steps.offers.outcome == 'success' }}
+        if: ${{ !cancelled() }}
         timeout-minutes: 25
         shell: pwsh
         run: |
           Import-Module ./c/tests/e2e/scripts/SuE2E.psm1
           $failed = @()
+          # The reference microsoft/delta:1 handler is POSIX only.
+          $skip = if ($IsWindows) { @('MICROSOFT_DELTA') } else { @() }
           foreach ($regId in $env:SU_REG_ID_PAHO_OFFER, $env:SU_REG_ID_AZ_MQTT_OFFER) {
             Write-Host "== $regId"
-            try { Test-SuE2EOffers -StatePath $env:SU_OFFERS_STATE -RegistrationId $regId }
+            try { Test-SuE2EOffers -StatePath $env:SU_OFFERS_STATE -RegistrationId $regId -Skip $skip }
             catch { Write-Host "::error::$regId`: $_"; $failed += $regId }
           }
           if ($failed) { exit 1 }
@@ -249,19 +333,19 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: e2e-su-results
+          name: e2e-su-results-${{ matrix.os-name }}
           path: results/*.xml
           if-no-files-found: ignore
 
       - name: Collect coverage
         # Not `if: always()`: a failed run leaves partial .gcda, which would
         # understate coverage for an unrelated reason.
-        if: success()
+        if: runner.os == 'Linux' && success()
         working-directory: c
         run: bash eng/collect-coverage.sh build/linux-gcc-e2e-coverage coverage/e2e-adu.json e2e-adu
 
       - name: Upload coverage tracefile
-        if: success()
+        if: runner.os == 'Linux' && success()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: coverage-trace-e2e-adu

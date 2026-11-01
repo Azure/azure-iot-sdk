@@ -18,13 +18,7 @@
 
 #include "az_iot_crypto_openssl.h"
 /* The MQTT adapter this build of the suite uses (see tests/e2e/CMakeLists.txt). */
-#if defined(AZ_IOT_E2E_ADAPTER_PAHO)
-#include "azure/iot/adapters/az_iot_adapter_paho.h"
-#elif defined(AZ_IOT_E2E_ADAPTER_AZ_MQTT)
-#include "azure/iot/adapters/az_iot_adapter_az_mqtt.h"
-#else
-#error "Define AZ_IOT_E2E_ADAPTER_PAHO or AZ_IOT_E2E_ADAPTER_AZ_MQTT"
-#endif
+#include "e2e_mqtt_adapter.h"
 #include "support/test_env.h"
 
 #define E2E_SAS_CONNECT_TIMEOUT_S 120
@@ -215,16 +209,13 @@ void e2e_sas_connect_renew_and_send(
   az_iot_connection_client conn = { 0 };
   az_iot_mqttv3_telemetry_client telemetry = { 0 };
 
-  assert_int_equal(az_iot_connection_client_init(&conn, copts), AZ_IOT_OK);
+  az_iot_connection_client_options opts = *copts;
+  uint8_t* mqtt_workspace = e2e_use_mqtt_adapter(&opts);
+  assert_non_null(mqtt_workspace);
+  assert_int_equal(az_iot_connection_client_init(&conn, &opts), AZ_IOT_OK);
   run->client = &conn;
   assert_int_equal(
       az_iot_connection_client_add_state_observer(&conn, on_conn_state, &ctx), AZ_IOT_OK);
-#if defined(AZ_IOT_E2E_ADAPTER_PAHO)
-  az_iot_mqtt_factory* factory = az_iot_paho_factory_create_v3_1_1();
-#elif defined(AZ_IOT_E2E_ADAPTER_AZ_MQTT)
-  az_iot_mqtt_factory* factory = az_iot_az_mqtt_factory_create_v3_1_1();
-#endif
-  assert_int_equal(az_iot_connection_client_register_mqtt_factory(&conn, factory), AZ_IOT_OK);
   assert_int_equal(az_iot_mqttv3_telemetry_client_init(&telemetry, &conn), AZ_IOT_OK);
   assert_int_equal(az_iot_connection_client_open(&conn), AZ_IOT_OK);
 
@@ -273,11 +264,7 @@ void e2e_sas_connect_renew_and_send(
   assert_int_equal(ctx.hub_state, AZ_IOT_CONN_STATE_IDLE);
   az_iot_mqttv3_telemetry_client_deinit(&telemetry);
   az_iot_connection_client_deinit(&conn);
-#if defined(AZ_IOT_E2E_ADAPTER_PAHO)
-  az_iot_paho_factory_destroy(factory);
-#elif defined(AZ_IOT_E2E_ADAPTER_AZ_MQTT)
-  az_iot_az_mqtt_factory_destroy(factory);
-#endif
+  free(mqtt_workspace);
   run->client = NULL;
 }
 
@@ -295,16 +282,13 @@ void e2e_sas_hold_dps_and_renew(
       = { .hub_state = AZ_IOT_CONN_STATE_IDLE, .dps_state = AZ_IOT_CONN_STATE_IDLE, .run = run };
   az_iot_connection_client conn = { 0 };
   assert_true(copts->dps.provision_only);
-  assert_int_equal(az_iot_connection_client_init(&conn, copts), AZ_IOT_OK);
+  az_iot_connection_client_options opts = *copts;
+  uint8_t* mqtt_workspace = e2e_use_mqtt_adapter(&opts);
+  assert_non_null(mqtt_workspace);
+  assert_int_equal(az_iot_connection_client_init(&conn, &opts), AZ_IOT_OK);
   run->client = &conn;
   assert_int_equal(
       az_iot_connection_client_add_state_observer(&conn, on_conn_state, &ctx), AZ_IOT_OK);
-#if defined(AZ_IOT_E2E_ADAPTER_PAHO)
-  az_iot_mqtt_factory* factory = az_iot_paho_factory_create_v3_1_1();
-#elif defined(AZ_IOT_E2E_ADAPTER_AZ_MQTT)
-  az_iot_mqtt_factory* factory = az_iot_az_mqtt_factory_create_v3_1_1();
-#endif
-  assert_int_equal(az_iot_connection_client_register_mqtt_factory(&conn, factory), AZ_IOT_OK);
   assert_int_equal(az_iot_connection_client_open(&conn), AZ_IOT_OK);
   time_t start = time(NULL);
   while (ctx.dps_state != AZ_IOT_CONN_STATE_CONNECTED && ctx.dps_state != AZ_IOT_CONN_STATE_FAULTED
@@ -333,10 +317,6 @@ void e2e_sas_hold_dps_and_renew(
   }
   assert_int_equal(ctx.dps_state, AZ_IOT_CONN_STATE_IDLE);
   az_iot_connection_client_deinit(&conn);
-#if defined(AZ_IOT_E2E_ADAPTER_PAHO)
-  az_iot_paho_factory_destroy(factory);
-#elif defined(AZ_IOT_E2E_ADAPTER_AZ_MQTT)
-  az_iot_az_mqtt_factory_destroy(factory);
-#endif
+  free(mqtt_workspace);
   run->client = NULL;
 }

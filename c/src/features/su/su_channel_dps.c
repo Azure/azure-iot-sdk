@@ -18,8 +18,9 @@
  * arrive on the provisioning subscription the connection client already
  * establishes, which is why this channel adds no subscription of its own.
  *
- * Both routes are implemented. After registration the channel keeps, or opens
- * on demand, a provisioning session for the operational route.
+ * Both routes are implemented. After registration the channel opens a
+ * provisioning session on demand for the operational route, holding it only
+ * while it has work: the connection client pauses the hub session meanwhile.
  */
 
 #include <string.h>
@@ -70,9 +71,57 @@ static bool rid_is_ours(const char* rid)
 /* ------------------------------------------------------------------------- */
 
 /**
- * @brief Connection-state observer, run inside the connection client's
- * dispatch. Records state; the hold is taken here because it must precede the
- * new session's SUBACK, which can arrive before the channel's next tick.
+ * @brief Whether the pending status report is awaited on its own session, still
+ * ready: the only case its response deadline applies to.
+ *
+ * @param c The channel.
+ */
+static bool report_awaited_on_its_ready_session(const az_iot_su_channel_dps* c)
+{
+  return c->request_pending && c->pending_operation == AZ_IOT_SU_OP_REPORT_STATUS
+      && c->pending_epoch == c->session_epoch
+      && az_iot_connection_client__dps_session_ready(c->connection);
+}
+
+/** @brief Lower @p remaining_ms to the time left before @p deadline_ms, unless it is 0. */
+static void lower_wait_to_deadline(uint64_t deadline_ms, uint64_t* remaining_ms)
+{
+  if (deadline_ms == 0)
+  {
+    return;
+  }
+  uint64_t now = az_iot_time_mono_ms();
+  uint64_t left = deadline_ms > now ? deadline_ms - now : 0;
+  if (left < *remaining_ms)
+  {
+    *remaining_ms = left;
+  }
+}
+
+/**
+ * @brief Lower @p remaining_ms to the awaited status report's response deadline
+ * and the engine's next deadline, so the connection's wait ends by then.
+ *
+ * @param c            The channel.
+ * @param remaining_ms The connection's wait bound, lowered in place.
+ */
+static void lower_wait_to_next_deadline(const az_iot_su_channel_dps* c, uint64_t* remaining_ms)
+{
+  if (report_awaited_on_its_ready_session(c))
+  {
+    lower_wait_to_deadline(c->report_response_deadline_ms, remaining_ms);
+  }
+  if (c->engine_deadline_cb != NULL)
+  {
+    lower_wait_to_deadline(c->engine_deadline_cb(c->engine_ctx), remaining_ms);
+  }
+}
+
+/**
+ * @brief Connection observer, run inside the connection client's dispatch.
+ * NEXT_DEADLINE bounds the wait by the report's and the engine's deadlines; STATE is
+ * recorded, and the hold is taken here because it must precede the new
+ * session's SUBACK, which can arrive before the channel's next tick.
  *
  * DPS:DISCONNECTING ends every provisioning session, so it marks the session a
  * request rode as gone; dps_session_ready() cannot, as a session replaced
@@ -80,15 +129,20 @@ static bool rid_is_ours(const char* rid)
  * DPS:CONNECTING, because a teardown ending a registration is announced while
  * the phase still refuses a hold.
  *
- * @param event    The transition.
- * @param user_ctx The channel.
+ * @param feature_event The event.
+ * @param user_ctx      The channel.
  */
-static void on_connection_state(
+static void on_connection_event(
     const az_iot_connection_feature_event* feature_event,
     void* user_ctx)
 {
-  const az_iot_connection_state_event* event = feature_event->state;
   az_iot_su_channel_dps* c = (az_iot_su_channel_dps*)user_ctx;
+  if (c != NULL && feature_event->kind == AZ_IOT_CONNECTION_FEATURE_EVENT_NEXT_DEADLINE)
+  {
+    lower_wait_to_next_deadline(c, feature_event->remaining_ms);
+    return;
+  }
+  const az_iot_connection_state_event* event = feature_event->state;
   if (c == NULL || event == NULL || (size_t)event->scope >= AZ_IOT_CONN_SCOPE_COUNT)
   {
     return;
@@ -136,7 +190,10 @@ static az_iot_result channel_observe(az_iot_su_channel_dps* c)
         = az_iot_connection_client_get_state(c->connection, (az_iot_connection_scope)i);
   }
   az_iot_result r = az_iot_connection_client__add_feature_observer(
-      c->connection, AZ_IOT_CONNECTION_FEATURE_EVENT_STATE, on_connection_state, c);
+      c->connection,
+      AZ_IOT_CONNECTION_FEATURE_EVENT_STATE | AZ_IOT_CONNECTION_FEATURE_EVENT_NEXT_DEADLINE,
+      on_connection_event,
+      c);
   if (r == AZ_IOT_OK)
   {
     c->observes_state = true;
@@ -157,7 +214,7 @@ static az_iot_result channel_observe(az_iot_su_channel_dps* c)
  */
 static az_iot_result channel_observe_deferred(az_iot_su_channel_dps* c)
 {
-  return c->holds_user ? channel_observe(c) : AZ_IOT_OK;
+  return c->update_cb != NULL ? channel_observe(c) : AZ_IOT_OK;
 }
 
 /**
@@ -189,11 +246,13 @@ static bool connection_settled_in_fault(const az_iot_su_channel_dps* c)
  * has settled in a fault; the first refusal after close() raises it again.
  *
  * @param c The channel.
+ * @param operation The operation refused.
  * @return AZ_IOT_ERR_NOT_CONNECTED.
  */
-static az_iot_result refuse_for_no_session(az_iot_su_channel_dps* c)
+static az_iot_result refuse_for_no_session(az_iot_su_channel_dps* c, az_iot_su_operation operation)
 {
-  c->wants_session = !connection_settled_in_fault(c);
+  c->session_demand
+      = connection_settled_in_fault(c) ? 0u : (uint8_t)(c->session_demand | (1u << operation));
   return AZ_IOT_ERR_NOT_CONNECTED;
 }
 
@@ -221,6 +280,65 @@ static bool retry_after_in_force(az_iot_su_channel_dps* c)
   }
   c->retry_after_deadline_ms = 0;
   return false;
+}
+
+/**
+ * @brief Whether publishing is paused: the service's retry-after, or the pause
+ * after the adapter refused a publish. Checked before a session is asked for,
+ * so a pause does not end the hub session for a publish that will be refused.
+ *
+ * @param c The channel.
+ */
+static bool publish_paused(az_iot_su_channel_dps* c)
+{
+  if (retry_after_in_force(c))
+  {
+    return true;
+  }
+  if (c->publish_resume_at_ms != 0 && az_iot_time_mono_ms() < c->publish_resume_at_ms)
+  {
+    return true;
+  }
+  c->publish_resume_at_ms = 0;
+  return false;
+}
+
+/**
+ * @brief Pause publishing after the adapter refused a publish, doubling from
+ * #AZ_IOT_SU_CHANNEL_PUBLISH_RETRY_BASE_MS to #AZ_IOT_SU_CHANNEL_PUBLISH_RETRY_MAX_MS
+ * per refusal in a row.
+ *
+ * @param c The channel.
+ */
+static void pause_publishing_after_refusal(az_iot_su_channel_dps* c)
+{
+  uint64_t delay = AZ_IOT_SU_CHANNEL_PUBLISH_RETRY_BASE_MS;
+  for (uint8_t i = 0; i < c->publish_refusals && delay < AZ_IOT_SU_CHANNEL_PUBLISH_RETRY_MAX_MS;
+       ++i)
+  {
+    delay *= 2u;
+  }
+  if (delay > AZ_IOT_SU_CHANNEL_PUBLISH_RETRY_MAX_MS)
+  {
+    delay = AZ_IOT_SU_CHANNEL_PUBLISH_RETRY_MAX_MS;
+  }
+  if (c->publish_refusals < UINT8_MAX)
+  {
+    c->publish_refusals++;
+  }
+  c->publish_resume_at_ms = az_iot_time_mono_ms() + delay;
+}
+
+/**
+ * @brief Whether the pre-registration check is still owed on a registration
+ * under way, which keeps the session across registration.
+ *
+ * @param c The channel.
+ */
+static bool session_kept_for_pre_registration_check(const az_iot_su_channel_dps* c)
+{
+  return c->wants_hold && !c->exchange_done
+      && az_iot_connection_client__dps_registration_pending(c->connection);
 }
 
 static az_iot_result publish_operation(
@@ -261,7 +379,7 @@ static az_iot_result publish_operation(
     return AZ_IOT_ERR_NOT_CONNECTED;
   }
 
-  if (retry_after_in_force(c))
+  if (publish_paused(c))
   {
     return AZ_IOT_ERR_BUSY;
   }
@@ -287,11 +405,32 @@ static az_iot_result publish_operation(
   msg.payload = body;
   msg.payload_len = body_len;
 
+  /* Keeps the session up until the response arrives. */
   r = az_iot_connection_client__dps_publish(c->connection, &msg);
   if (r != AZ_IOT_OK)
   {
+    /* Not sent, so no answer is awaited: publishing pauses, and without other
+     * work the interest goes, so the hub session can resume meanwhile. A first
+     * refusal as too large does not pause, so the report the engine sends at
+     * once without its details (az_iot_su__report_state()) still goes out. */
+    if (r == AZ_IOT_ERR_NOT_ENOUGH_SPACE && !c->publish_refused_too_large)
+    {
+      c->publish_refused_too_large = true;
+    }
+    else
+    {
+      c->publish_refused_too_large = false;
+      pause_publishing_after_refusal(c);
+    }
+    if (!c->request_pending && c->session_demand == 0
+        && !session_kept_for_pre_registration_check(c))
+    {
+      az_iot_connection_client__dps_session_release(c->connection);
+    }
     return r;
   }
+  c->publish_refusals = 0;
+  c->publish_refused_too_large = false;
 
   /* Recorded only after the publish is accepted, so a failed send does not
    * leave the channel waiting for a response that will never come. */
@@ -299,6 +438,8 @@ static az_iot_result publish_operation(
   c->pending_operation = operation;
   c->pending_epoch = c->session_epoch;
   c->request_pending = true;
+  c->report_response_deadline_ms
+      = az_iot_time_mono_ms() + (uint64_t)AZ_IOT_SU_CHANNEL_REPORT_RESPONSE_TIMEOUT_MS;
   return AZ_IOT_OK;
 }
 
@@ -584,7 +725,7 @@ static bool channel_forget_pending_if_session_gone(az_iot_su_channel_dps* c)
           "giving up on the operation after %u consecutive provisioning-session losses",
           (unsigned)c->session_loss_attempts);
       c->session_loss_attempts = 0;
-      c->wants_session = false;
+      c->session_demand = 0;
       emit_result(c, operation, AZ_IOT_ERR_NOT_CONNECTED, AZ_IOT_SU_ERROR_ACTION_FATAL, NULL);
       return true;
     }
@@ -627,21 +768,6 @@ static az_iot_result channel_open(
   c->wants_hold = true;
   c->exchange_done = false;
 
-  /* Standing interest in the provisioning session, so one can be opened on
-   * demand after the device has provisioned. Without it every operation after
-   * registration has nothing to publish on. Released at close. */
-  az_iot_result ur = az_iot_connection_client__dps_user_acquire(c->connection);
-  if (ur != AZ_IOT_OK)
-  {
-    /* Reported rather than swallowed: without the interest every operation
-     * after registration would fail with no indication why. */
-    AZ_IOT_LOG_ERROR(
-        AZ_IOT_LOG_COMPONENT_SU, "could not register interest in the provisioning session");
-    az_iot_connection_client__set_dps_message_observer(c->connection, NULL, NULL);
-    return ur;
-  }
-  c->holds_user = true;
-
   /* How the channel learns that its session was replaced, or that the
    * connection settled in a fault. BUSY is retried later
    * (channel_observe_deferred()); anything else refuses the bind. */
@@ -650,8 +776,7 @@ static az_iot_result channel_open(
   {
     AZ_IOT_LOG_ERROR(AZ_IOT_LOG_COMPONENT_SU, "could not observe the connection state");
     c->wants_hold = false;
-    c->holds_user = false;
-    az_iot_connection_client__dps_user_release(c->connection);
+    c->update_cb = NULL;
     az_iot_connection_client__set_dps_message_observer(c->connection, NULL, NULL);
     return sr;
   }
@@ -666,11 +791,10 @@ static az_iot_result channel_open(
     if (c->observes_state)
     {
       c->observes_state = false;
-      az_iot_connection_client__remove_feature_observer(c->connection, on_connection_state, c);
+      az_iot_connection_client__remove_feature_observer(c->connection, on_connection_event, c);
     }
     c->wants_hold = false;
-    c->holds_user = false;
-    az_iot_connection_client__dps_user_release(c->connection);
+    c->update_cb = NULL;
     az_iot_connection_client__set_dps_message_observer(c->connection, NULL, NULL);
     return hr;
   }
@@ -710,13 +834,9 @@ static void channel_close(void* ctx)
   if (c->observes_state)
   {
     c->observes_state = false;
-    az_iot_connection_client__remove_feature_observer(c->connection, on_connection_state, c);
+    az_iot_connection_client__remove_feature_observer(c->connection, on_connection_event, c);
   }
-  if (c->holds_user)
-  {
-    c->holds_user = false;
-    az_iot_connection_client__dps_user_release(c->connection);
-  }
+  az_iot_connection_client__dps_session_release(c->connection);
   /* The standing interest ends with the binding, so a closed channel cannot
    * hold a later session hostage. */
   c->wants_hold = false;
@@ -724,14 +844,18 @@ static void channel_close(void* ctx)
   c->update_cb = NULL;
   c->result_cb = NULL;
   c->engine_ctx = NULL;
+  c->engine_deadline_cb = NULL;
   c->request_pending = false;
   /* The demand for a session belongs to the binding that raised it. Leaving it
    * set would make the next binding open a session for an operation nobody
    * asked for. */
-  c->wants_session = false;
+  c->session_demand = 0;
   /* The delay belongs to the binding that earned it. A fresh bind is a fresh
    * start, not a continuation of someone else's backoff. */
   c->retry_after_deadline_ms = 0;
+  c->publish_resume_at_ms = 0;
+  c->publish_refusals = 0;
+  c->publish_refused_too_large = false;
   c->session_loss_attempts = 0;
 }
 
@@ -753,7 +877,7 @@ static az_iot_result channel_request_update(void* ctx, az_iot_su_operation opera
   }
   /* Before the session check, not after: asking for a session we may not
    * publish on is what turns one delay into a reconnect loop. */
-  if (retry_after_in_force(c))
+  if (publish_paused(c))
   {
     return AZ_IOT_ERR_BUSY;
   }
@@ -770,7 +894,7 @@ static az_iot_result channel_request_update(void* ctx, az_iot_su_operation opera
   }
   if (!az_iot_connection_client__dps_session_ready(c->connection))
   {
-    return refuse_for_no_session(c);
+    return refuse_for_no_session(c, operation);
   }
 
   az_iot_su_agent_info agent = { 0 };
@@ -832,7 +956,7 @@ static az_iot_result channel_report(void* ctx, const az_iot_su_report* report)
   {
     return sr;
   }
-  if (retry_after_in_force(c))
+  if (publish_paused(c))
   {
     return AZ_IOT_ERR_BUSY;
   }
@@ -842,7 +966,7 @@ static az_iot_result channel_report(void* ctx, const az_iot_su_report* report)
   }
   if (!az_iot_connection_client__dps_session_ready(c->connection))
   {
-    return refuse_for_no_session(c);
+    return refuse_for_no_session(c, AZ_IOT_SU_OP_REPORT_STATUS);
   }
 
   size_t body_len = 0;
@@ -991,19 +1115,36 @@ static az_iot_result channel_do_work(void* ctx)
   /* Returned at the end, not here: the rest of the tick still runs. */
   az_iot_result sr = channel_observe_deferred(c);
 
+  /* A report not answered in time is retried on the engine's pacing, and the
+   * session released meanwhile: the hub session waits while it is up. Only on
+   * the report's own session, still ready: a report lost with its session is
+   * handled below, which keeps the session interest and so its pacing. */
+  if (report_awaited_on_its_ready_session(c)
+      && az_iot_time_mono_ms() >= c->report_response_deadline_ms)
+  {
+    AZ_IOT_LOG_ERROR(AZ_IOT_LOG_COMPONENT_SU, "no answer to the status report in time; retrying");
+    c->request_pending = false;
+    emit_result(
+        c, AZ_IOT_SU_OP_REPORT_STATUS, AZ_IOT_ERR_TIMEOUT, AZ_IOT_SU_ERROR_ACTION_RETRY, NULL);
+  }
+
   /* Recorded BEFORE the pending request is retired: that call clears
    * request_pending precisely when the session is gone, so testing it
    * afterwards could never be true and the session would never be reopened. */
-  bool had_work = c->request_pending || c->wants_session;
+  bool had_work = c->request_pending || c->session_demand != 0;
+  bool had_request = c->request_pending;
 
-  /* An operation ABANDONED here takes its demand with it: wants_session was
+  /* An operation ABANDONED here takes its demand with it: session_demand was
    * just cleared, and had_work was captured before that. Acting on the stale
    * value would open a session for an operation that has already been given up
    * on -- the exact loop the bound exists to end. */
-  if (channel_forget_pending_if_session_gone(c))
+  bool abandoned = channel_forget_pending_if_session_gone(c);
+  if (abandoned)
   {
     had_work = false;
   }
+  /* Lost with its session and handed back to the engine for a retry. */
+  bool retrying_lost_request = had_request && !c->request_pending && !abandoned;
 
   /* Ask for a session when there is work and none is up. This is what makes an
    * operation possible after the device has provisioned: the ordinary flow tore
@@ -1021,19 +1162,20 @@ static az_iot_result channel_do_work(void* ctx)
   bool ensure_failed = false;
   if (az_iot_connection_client__dps_session_ready(c->connection))
   {
-    c->wants_session = false;
+    c->session_demand = 0;
   }
   else if (connection_settled_in_fault(c))
   {
     /* Nothing to ask for until close(); the demand is raised again after it. */
-    c->wants_session = false;
+    c->session_demand = 0;
   }
-  else if (c->holds_user && had_work && !retry_after_in_force(c))
+  else if (c->update_cb != NULL && had_work && !publish_paused(c))
   {
     /* Not fatal, so the tick continues either way -- but not silent. BUSY is
-     * the ordinary answer (a session is coming up, ask again next tick);
-     * anything else means no session will appear, and without a line here an
-     * operation that never goes out has no explanation in the log.
+     * the ordinary answer (a session is coming up, or the hub session is being
+     * ended for it: ask again next tick); anything else means no session will
+     * appear, and without a line here an operation that never goes out has no
+     * explanation in the log.
      *
      * Latched, because this runs at the application's pump frequency and the
      * demand is not cleared until a session is ready: a persistent refusal
@@ -1075,6 +1217,24 @@ static az_iot_result channel_do_work(void* ctx)
     {
       c->holds_registration = true;
     }
+  }
+
+  /* Work keeps the session: a request outstanding or waiting for a session, or
+   * the pre-registration check still owed on a registration under way (the
+   * session is then kept across registration and the hub session waits for
+   * it; it is up or coming up, so asking opens nothing). So does a request just
+   * lost with its session: the engine asks for it again later in this tick, and
+   * letting go meanwhile would reset the connection client's pacing of the
+   * session. Without work the session ends and the hub session resumes; an
+   * operation the engine issues later in this tick asks for it again before the
+   * connection client's next pass. */
+  if (session_kept_for_pre_registration_check(c))
+  {
+    (void)az_iot_connection_client__dps_session_ensure(c->connection);
+  }
+  else if (!retrying_lost_request && !c->request_pending && c->session_demand == 0)
+  {
+    az_iot_connection_client__dps_session_release(c->connection);
   }
   return sr;
 }
@@ -1168,6 +1328,18 @@ static az_iot_result channel_restore_state(void* ctx, const uint8_t* buf, size_t
  *
  * Reported raw, without expiring it: retry_after_in_force() clears the deadline
  * as a side effect of reading it, and the engine needs the instant itself. */
+/** @brief Record the engine's deadline function, read on NEXT_DEADLINE. */
+static void channel_set_engine_deadline_cb(
+    void* ctx,
+    az_iot_su_channel_engine_deadline_cb deadline_cb)
+{
+  az_iot_su_channel_dps* c = (az_iot_su_channel_dps*)ctx;
+  if (c != NULL)
+  {
+    c->engine_deadline_cb = deadline_cb;
+  }
+}
+
 /**
  * @brief Drop the outstanding request if it is @p operation (a fetch).
  *
@@ -1181,8 +1353,13 @@ static az_iot_result channel_restore_state(void* ctx, const uint8_t* buf, size_t
 static void channel_cancel_update(void* ctx, az_iot_su_operation operation)
 {
   az_iot_su_channel_dps* c = (az_iot_su_channel_dps*)ctx;
-  if (c == NULL || operation == AZ_IOT_SU_OP_REPORT_STATUS || !c->request_pending
-      || c->pending_operation != operation)
+  if (c == NULL || operation == AZ_IOT_SU_OP_REPORT_STATUS)
+  {
+    return;
+  }
+  /* The abandoned fetch no longer needs a session; other operations still may. */
+  c->session_demand &= (uint8_t) ~(1u << operation);
+  if (!c->request_pending || c->pending_operation != operation)
   {
     return;
   }
@@ -1202,6 +1379,7 @@ static const az_iot_su_channel_vtable k_channel_vtable = {
   .cancel_update = channel_cancel_update,
   .save_state = channel_save_state,
   .restore_state = channel_restore_state,
+  .set_engine_deadline_cb = channel_set_engine_deadline_cb,
 };
 
 az_iot_result az_iot_su_channel_dps_init(

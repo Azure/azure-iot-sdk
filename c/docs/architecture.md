@@ -51,7 +51,7 @@ flowchart TB
 | Layer | Headers | Role |
 | --- | --- | --- |
 | Connection client | `az_iot_connection_client.h`, `az_iot_retry_policy.h` | One per device. Provisions through DPS, connects to the assigned hub, reconnects, and owns the MQTT session. |
-| Feature clients | `mqttv3/*.h`, `mqttv5/*.h` | Protocol features. Each binds to a connection client, which delivers its messages. Some also need their own pump: call `az_iot_mqttv5_twin_client_do_work()` to expire unanswered requests. |
+| Feature clients | `mqttv3/*.h`, `mqttv5/*.h` | Protocol features. Each binds to a connection client, which delivers its messages. The connection client's `do_work()` drives their timeouts. |
 | Software updates client | `az_iot_su.h` | Checks for, verifies, downloads, installs and reports device updates. In library mode it hands each verified update to the application, which downloads, installs and reports through it. Pumped by `az_iot_su_client_do_work()`. |
 | Certificate provider | `az_iot_certificate_provider.h` | Supplies TLS credentials and, optionally, handles CSRs and issued certificates. |
 | MQTT adapter interface | `az_iot_mqtt_iface.h` | The contract an MQTT client library implements. |

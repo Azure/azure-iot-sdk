@@ -81,15 +81,24 @@ static bool pump_until(az_iot_mqtt_client* c, const round_log* log, const int* c
   return *counter != 0;
 }
 
-static void run_round(az_iot_mqtt_factory* f, int round)
+static void run_round(az_iot_mqtt_version version, int round)
 {
   char client_id[64];
   char topic[96];
   (void)snprintf(client_id, sizeof(client_id), "az-teardown-%lu-%d", g_run_id, round);
   (void)snprintf(topic, sizeof(topic), "az/teardown/%lu/%d", g_run_id, round);
 
-  az_iot_mqtt_client* c = f->create(f->factory_ctx);
-  assert_non_null(c);
+  /* Paho sizes its own buffers: the limits only have to be valid. */
+  static const az_iot_mqtt_limits k_limits = { 4096, 4096, 8, 0, 1024 };
+  size_t const workspace_size = az_iot_paho_get_workspace_size(&k_limits);
+  /* On the heap and freed after destroy(), so a Paho thread still touching the client is a
+   * use-after-free the sanitizers report. */
+  uint8_t* workspace = (uint8_t*)malloc(workspace_size);
+  assert_non_null(workspace);
+  az_iot_mqtt_client* c = NULL;
+  assert_int_equal(
+      az_iot_paho_get_adapter()->init(version, &k_limits, workspace, workspace_size, &c),
+      AZ_IOT_OK);
   round_log log = { 0 };
   c->iface->set_inbound_cb(c, on_event, &log);
 
@@ -126,28 +135,27 @@ static void run_round(az_iot_mqtt_factory* f, int round)
     assert_int_equal(c->iface->disconnect(c), AZ_IOT_OK);
   }
   c->iface->destroy(c);
+  free(workspace);
 }
 
-static void teardown_under_load(az_iot_mqtt_factory* f, int first_round)
+static void teardown_under_load(az_iot_mqtt_version version, int first_round)
 {
-  assert_non_null(f);
   for (int r = 0; r < ROUNDS_PER_VERSION; ++r)
   {
-    run_round(f, first_round + r);
+    run_round(version, first_round + r);
   }
-  az_iot_paho_factory_destroy(f);
 }
 
 static void test_teardown_under_load_v3(void** state)
 {
   (void)state;
-  teardown_under_load(az_iot_paho_factory_create_v3_1_1(), 0);
+  teardown_under_load(AZ_IOT_MQTT_VERSION_3_1_1, 0);
 }
 
 static void test_teardown_under_load_v5(void** state)
 {
   (void)state;
-  teardown_under_load(az_iot_paho_factory_create_v5(), ROUNDS_PER_VERSION);
+  teardown_under_load(AZ_IOT_MQTT_VERSION_5, ROUNDS_PER_VERSION);
 }
 
 int main(void)

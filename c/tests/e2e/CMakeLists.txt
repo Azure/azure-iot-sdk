@@ -83,16 +83,21 @@ if(AZ_IOT_BUILD_E2E_SU)
             "(AZ_IOT_WITH_CRYPTO_OPENSSL=ON).")
     endif()
     find_package(CURL REQUIRED)
-    # The offer suite runs the reference microsoft/delta:1 handler with the real delta processor,
-    # AZ_IOT_SU_DELTA_TEST_LIBRARY (tests/CMakeLists.txt); without it that scenario fails.
-    if(NOT TARGET az_iot_su_delta)
-        message(FATAL_ERROR
-            "AZ_IOT_BUILD_E2E_SU needs the microsoft/delta:1 download handler "
-            "(AZ_IOT_WITH_SU_DELTA=ON).")
+    # On POSIX, the offer suite runs the reference microsoft/delta:1 handler (POSIX only) with the
+    # real delta processor, AZ_IOT_SU_DELTA_TEST_LIBRARY (tests/CMakeLists.txt); without it that
+    # scenario fails.
+    set(_su_offer_delta_libs)
+    if(UNIX)
+        if(NOT TARGET az_iot_su_delta)
+            message(FATAL_ERROR
+                "AZ_IOT_BUILD_E2E_SU needs the microsoft/delta:1 download handler "
+                "(AZ_IOT_WITH_SU_DELTA=ON).")
+        endif()
+        set(_su_offer_delta_libs az_iot_su_delta)
     endif()
     az_iot_add_e2e_suite(az_iot_tests_e2e_su_offer
         SOURCES tests/e2e_su_offer_test.c tests/e2e_su_env.c tests/e2e_su_test_roots.c
-        LIBS az_iot_core az_iot_crypto_openssl az_iot_su_delta CURL::libcurl)
+        LIBS az_iot_core az_iot_crypto_openssl ${_su_offer_delta_libs} CURL::libcurl)
     # The suites assert on the channel and the codecs, and the offer suite's spy
     # wraps the channel: all internal.
     foreach(_t az_iot_tests_e2e_su az_iot_tests_e2e_su_az_mqtt
@@ -103,8 +108,9 @@ if(AZ_IOT_BUILD_E2E_SU)
         endif()
     endforeach()
     foreach(_t az_iot_tests_e2e_su_offer az_iot_tests_e2e_su_offer_az_mqtt)
-        if(TARGET ${_t})
+        if(TARGET ${_t} AND _su_offer_delta_libs)
             target_compile_definitions(${_t} PRIVATE
+                AZ_IOT_E2E_SU_WITH_REFERENCE_DELTA
                 AZ_IOT_E2E_SU_DELTA_VECTORS_DIRECTORY="${PROJECT_SOURCE_DIR}/tests/unit/data/su_delta"
                 AZ_IOT_E2E_SU_DELTA_LIBRARY="${AZ_IOT_SU_DELTA_TEST_LIBRARY}")
         endif()
@@ -118,7 +124,8 @@ add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../deps/amqp
 
 # Receiver credit accounting of the vendored AMQP client, over an in-memory
 # peer. Needs no Azure resources; named `e2e` so the e2e job's filter runs it.
-az_iot_add_cmocka_test(az_iot_tests_e2e_amqp_link tests/e2e_amqp_link_test.c)
+az_iot_add_cmocka_test(az_iot_tests_e2e_amqp_link
+    tests/e2e_amqp_link_test.c tests/e2e_amqp_test_peer.c)
 target_link_libraries(az_iot_tests_e2e_amqp_link PRIVATE az_amqp)
 
 # A write by the harness AMQP transport to a closed loopback peer fails without
@@ -145,10 +152,44 @@ target_include_directories(az_iot_tests_e2e_http_headers PRIVATE service)
 target_link_libraries(az_iot_tests_e2e_http_headers PRIVATE
     az_iot_e2e_service az_amqp az_amqp_transport)
 
+# The telemetry watcher's capture filter and ring: messages of other devices on the
+# shared events endpoint do not evict the ones a test waits for; a receiver the
+# service detached is found; events replayed after a reconnect are dropped. No network; named
+# `e2e` so the e2e job's filter runs it.
+az_iot_add_cmocka_test(az_iot_tests_e2e_amqp_capture tests/e2e_amqp_capture_test.c)
+target_include_directories(az_iot_tests_e2e_amqp_capture PRIVATE service)
+target_link_libraries(az_iot_tests_e2e_amqp_capture PRIVATE
+    az_iot_e2e_service az_amqp az_amqp_transport)
+
+# The telemetry watcher against an in-memory peer playing Event Hubs: replayed
+# transfers are dropped, a detached receiver reconnects with its state kept, and
+# the setup deadline covers receivers still attaching. No network; named `e2e`
+# so the e2e job's filter runs it.
+az_iot_add_cmocka_test(az_iot_tests_e2e_amqp_telemetry
+    tests/e2e_amqp_telemetry_test.c tests/e2e_amqp_test_peer.c)
+target_include_directories(az_iot_tests_e2e_amqp_telemetry PRIVATE service)
+target_link_libraries(az_iot_tests_e2e_amqp_telemetry PRIVATE
+    az_iot_e2e_service az_amqp az_amqp_transport)
+
 # ---------------------------------------------------------------------------
 # Service-side facade (hides az_amqp behind a plain-C API used by the tests).
 # ---------------------------------------------------------------------------
 add_subdirectory(service)
+
+# ---------------------------------------------------------------------------
+# az_iot_tests_e2e_esp32_qemu: the ESP32 IoT Hub sample (samples/unified/esp32) in QEMU, started by
+# E2E_ESP32_QEMU_COMMAND, against the e2e hub. The service side is az_iot_e2e_service; the device
+# is the firmware, so no SDK adapter is linked here.
+# ---------------------------------------------------------------------------
+if(AZ_IOT_BUILD_E2E_ESP32_QEMU)
+    if(NOT UNIX)
+        message(FATAL_ERROR "AZ_IOT_BUILD_E2E_ESP32_QEMU=ON needs a POSIX host (it starts QEMU)")
+    endif()
+    az_iot_add_cmocka_test(az_iot_tests_e2e_esp32_qemu tests/e2e_esp32_qemu_test.c)
+    target_link_libraries(az_iot_tests_e2e_esp32_qemu PRIVATE az_iot_e2e_service)
+    # DPS, TLS and MQTT run emulated: minutes, not seconds.
+    set_tests_properties(az_iot_tests_e2e_esp32_qemu PROPERTIES TIMEOUT 1200)
+endif()
 
 # ---------------------------------------------------------------------------
 # az_iot_tests_e2e
@@ -317,15 +358,8 @@ endif()
 # environment has, so it is built only when AZ_IOT_BUILD_E2E_MQTTV5 is set.
 # ---------------------------------------------------------------------------
 if(AZ_IOT_BUILD_E2E_MQTTV5)
-    # The telemetry size cases publish up to 1 MiB + 4 KiB to test the hub's limit; az_mqtt's
-    # send buffer (264 KiB by default) must hold that, or they would test the client's.
-    set(_e2e_send_buffer_min 1114112)
-    if(TARGET az_iot_adapter_az_mqtt AND (AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE STREQUAL ""
-       OR AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE LESS _e2e_send_buffer_min))
-        message(FATAL_ERROR "AZ_IOT_BUILD_E2E_MQTTV5=ON with az_mqtt needs "
-            "-DAZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE=${_e2e_send_buffer_min} or more "
-            "(got '${AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE}').")
-    endif()
+    # The telemetry size cases publish up to 1 MiB + 4 KiB to test the hub's limit: the send buffer
+    # in E2E_MQTT_SEND_BUFFER_SIZE (tests/e2e_mqtt_adapter.h) holds that and its MQTT headers.
     az_iot_add_e2e_suite(az_iot_tests_e2e_mqttv5_custom_topic
         SOURCES tests/e2e_mqttv5_custom_topic_test.c tests/e2e_device.c
         LIBS az_iot_e2e_service az_iot_mqttv5)

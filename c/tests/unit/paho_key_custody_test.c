@@ -28,6 +28,8 @@
 
 #include "az_iot_paho_key_custody.h"
 
+#include "../support/test_env.h"
+
 /* A software EC P-256 key. Test material only -- it authenticates nothing and
  * is here precisely so the adapter can be caught refusing to copy an
  * EXTRACTABLE key into the reference file. */
@@ -40,25 +42,6 @@ static const char k_software_key_pem[]
 
 static char g_key_path[512];
 static char g_key_uri[600];
-
-/* The temporary directory, spelled the way each platform spells it. */
-static const char* temp_dir(void)
-{
-  static const char* const names[] = { "TMPDIR", "TEMP", "TMP" };
-  for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); ++i)
-  {
-    const char* v = getenv(names[i]);
-    if (v && v[0] != '\0')
-    {
-      return v;
-    }
-  }
-#if defined(_WIN32)
-  return ".";
-#else
-  return "/tmp";
-#endif
-}
 
 /* The adapter distinguishes its refusals in the LOG, not in the result code --
  * they are all AZ_IOT_ERR_TLS to the caller. Capturing the log is therefore the
@@ -89,7 +72,7 @@ static void capture_reset(void) { g_last_error[0] = '\0'; }
 static int group_setup(void** state)
 {
   (void)state;
-  snprintf(g_key_path, sizeof(g_key_path), "%s/az-iot-ut-softkey.pem", temp_dir());
+  assert_true(az_iot_test_temp_path(g_key_path, sizeof(g_key_path), "az-iot-ut-softkey.pem"));
   FILE* f = fopen(g_key_path, "w");
   assert_non_null(f);
   assert_true(fwrite(k_software_key_pem, 1, sizeof(k_software_key_pem) - 1, f) > 0);
@@ -397,7 +380,7 @@ static void release_removes_the_reference_file(void** state)
 {
   (void)state;
   char path[512];
-  snprintf(path, sizeof(path), "%s/az-iot-ut-keyref-release.pem", temp_dir());
+  assert_true(az_iot_test_temp_path(path, sizeof(path), "az-iot-ut-keyref-release.pem"));
   FILE* f = fopen(path, "w");
   assert_non_null(f);
   fputs("-----BEGIN PKCS#11 PROVIDER URI-----\n", f);
