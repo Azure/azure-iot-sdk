@@ -163,9 +163,11 @@ static bool inject_dps_response(az_iot_mock_mqtt_client* m, const char* topic, c
 /* ------------------------------------------------------------------------- */
 
 /* Fixture with a reconnection policy so the retry path is live. Backoff is
- * short but long enough that a single do_work() cannot cross the deadline in
- * the call that schedules it. */
-#define REPROVISION_DELAY_MS 20u
+ * too long to elapse during a test, so pumping cannot fire a retry before the
+ * test has observed RETRY_PENDING; tests fire it with
+ * az_iot_test_make_retry_due_now(). Shorter than the 30 s retry-after of
+ * a_service_retry_after_outranks_the_policy_backoff. */
+#define REPROVISION_DELAY_MS 10000u
 
 /** @brief setup() with a reconnection policy. */
 static int setup_with_reconnect(void** state)
@@ -225,7 +227,7 @@ static az_iot_mock_mqtt_client* reprovision_with(
   assert_true(az_iot_mock_mqtt_client_inject_connected(hub, AZ_IOT_ERR_IDENTITY_REJECTED));
   (void)az_iot_connection_client_do_work(fx->client, 0);
   (void)az_iot_connection_client_do_work(fx->client, 0);
-  az_iot_test_wait_ms(REPROVISION_DELAY_MS + 5u);
+  az_iot_test_make_retry_due_now(fx->client);
   (void)az_iot_connection_client_do_work(fx->client, 0);
 
   az_iot_mock_mqtt_client* dps = az_iot_mock_mqtt_adapter_last_client();
@@ -259,7 +261,7 @@ static void hub_identity_rejection_retries_the_cached_hub(void** state)
   assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_RETRY_PENDING);
   assert_false(fx->client->needs_reprovision);
 
-  az_iot_test_wait_ms(REPROVISION_DELAY_MS + 5u);
+  az_iot_test_make_retry_due_now(fx->client);
   (void)az_iot_connection_client_do_work(fx->client, 0);
 
   az_iot_mock_mqtt_client* retry = az_iot_mock_mqtt_adapter_last_client();
@@ -282,7 +284,7 @@ static void hub_identity_rejection_reprovisions_through_dps(void** state)
   (void)az_iot_connection_client_do_work(fx->client, 0);
   assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_RETRY_PENDING);
 
-  az_iot_test_wait_ms(REPROVISION_DELAY_MS + 5u);
+  az_iot_test_make_retry_due_now(fx->client);
   (void)az_iot_connection_client_do_work(fx->client, 0);
 
   /* The retry targets DPS, not the hub that just refused us. */
@@ -305,7 +307,7 @@ static void hub_transport_error_reconnects_without_reprovisioning(void** state)
   (void)az_iot_connection_client_do_work(fx->client, 0);
   assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_RETRY_PENDING);
 
-  az_iot_test_wait_ms(REPROVISION_DELAY_MS + 5u);
+  az_iot_test_make_retry_due_now(fx->client);
   (void)az_iot_connection_client_do_work(fx->client, 0);
 
   az_iot_mock_mqtt_client* retry = az_iot_mock_mqtt_adapter_last_client();
@@ -356,7 +358,7 @@ static az_iot_mock_mqtt_client* fail_hub_attempt(az_iot_test_conn* fx, az_iot_mo
   assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_ERR_MQTT));
   (void)az_iot_connection_client_do_work(fx->client, 0);
   (void)az_iot_connection_client_do_work(fx->client, 0);
-  az_iot_test_wait_ms(REPROVISION_DELAY_MS + 5u);
+  az_iot_test_make_retry_due_now(fx->client);
   (void)az_iot_connection_client_do_work(fx->client, 0);
 
   az_iot_mock_mqtt_client* next = az_iot_mock_mqtt_adapter_last_client();
@@ -416,7 +418,7 @@ static void a_successful_connect_clears_the_hub_failure_count_without_an_observe
    * living inside the observer branch. */
   assert_true(az_iot_mock_mqtt_client_inject_disconnected(second));
   (void)az_iot_connection_client_do_work(fx->client, 0);
-  az_iot_test_wait_ms(REPROVISION_DELAY_MS + 5u);
+  az_iot_test_make_retry_due_now(fx->client);
   (void)az_iot_connection_client_do_work(fx->client, 0);
 
   az_iot_mock_mqtt_client* third = az_iot_mock_mqtt_adapter_last_client();
@@ -453,7 +455,7 @@ static void a_successful_hub_connection_resets_the_failure_count(void** state)
    * an intermittent link must not accumulate its way into re-provisioning. */
   assert_true(az_iot_mock_mqtt_client_inject_disconnected(second));
   (void)az_iot_connection_client_do_work(fx->client, 0);
-  az_iot_test_wait_ms(REPROVISION_DELAY_MS + 5u);
+  az_iot_test_make_retry_due_now(fx->client);
   (void)az_iot_connection_client_do_work(fx->client, 0);
 
   az_iot_mock_mqtt_client* third = az_iot_mock_mqtt_adapter_last_client();
@@ -607,7 +609,11 @@ static void repeated_identity_rejection_still_honors_max_attempts(void** state)
     assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_ERR_IDENTITY_REJECTED));
     (void)az_iot_connection_client_do_work(fx->client, 0);
     (void)az_iot_connection_client_do_work(fx->client, 0);
-    az_iot_test_wait_ms(REPROVISION_DELAY_MS + 5u);
+    if (az_iot_test_saw_state(&fx->log, AZ_IOT_CONN_STATE_FAULTED))
+    {
+      break;
+    }
+    az_iot_test_make_retry_due_now(fx->client);
     (void)az_iot_connection_client_do_work(fx->client, 0);
     m = az_iot_mock_mqtt_adapter_last_client();
     if (!m)
@@ -1071,7 +1077,7 @@ static void dps_failed_status_retries_against_dps(void** state)
   {
     (void)az_iot_connection_client_do_work(fx->client, 0);
   }
-  az_iot_test_wait_ms(REPROVISION_DELAY_MS + 5u);
+  az_iot_test_make_retry_due_now(fx->client);
   (void)az_iot_connection_client_do_work(fx->client, 0);
 
   az_iot_mock_mqtt_client* second = az_iot_mock_mqtt_adapter_last_client();
@@ -1111,14 +1117,14 @@ static void a_failed_dps_retry_stays_on_dps_when_no_hub_is_known(void** state)
 
   /* Make the next connect fail synchronously, so dps_start() itself fails. */
   az_iot_mock_mqtt_adapter_fail_next_connect(AZ_IOT_ERR_MQTT);
-  az_iot_test_wait_ms(REPROVISION_DELAY_MS + 5u);
+  az_iot_test_make_retry_due_now(fx->client);
   (void)az_iot_connection_client_do_work(fx->client, 0);
 
   /* The demand must survive: there is no hub to fall back to. */
   assert_true(fx->client->needs_reprovision);
 
   /* And the next retry really does go to DPS rather than a NULL endpoint. */
-  az_iot_test_wait_ms(REPROVISION_DELAY_MS + 5u);
+  az_iot_test_make_retry_due_now(fx->client);
   (void)az_iot_connection_client_do_work(fx->client, 0);
   az_iot_mock_mqtt_client* next = az_iot_mock_mqtt_adapter_last_client();
   assert_non_null(next);
@@ -1137,7 +1143,11 @@ static void dps_failed_status_still_honors_max_attempts(void** state)
     {
       (void)az_iot_connection_client_do_work(fx->client, 0);
     }
-    az_iot_test_wait_ms(REPROVISION_DELAY_MS + 5u);
+    if (az_iot_test_saw_state(&fx->log, AZ_IOT_CONN_STATE_FAULTED))
+    {
+      break;
+    }
+    az_iot_test_make_retry_due_now(fx->client);
     (void)az_iot_connection_client_do_work(fx->client, 0);
 
     m = az_iot_mock_mqtt_adapter_last_client();
@@ -1895,8 +1905,8 @@ static void repeated_user_session_failures_climb_the_ladder(void** state)
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
   fx->client->dps_session_wanted = true;
   /* Room to climb, and no bound in the way. */
-  fx->client->opts.reconnection_policy.initial_delay_ms = 10u;
-  fx->client->opts.reconnection_policy.max_delay_ms = 10000u;
+  fx->client->opts.reconnection_policy.initial_delay_ms = 10000u;
+  fx->client->opts.reconnection_policy.max_delay_ms = 1000000u;
   fx->client->opts.reconnection_policy.max_attempts = 0u;
   fx->client->opts.reconnection_policy.jitter_pct = 0u;
 
@@ -2110,7 +2120,7 @@ static void a_service_retry_after_outranks_the_policy_backoff(void** state)
   assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_RETRY_PENDING);
 
   /* The policy in this fixture would have retried after REPROVISION_DELAY_MS
-   * (20ms). The service asked for 30s, so the deadline must be far beyond it. */
+   * (10 s). The service asked for 30 s, so the deadline must be beyond it. */
   uint64_t now = az_iot_time_mono_ms();
   assert_true(fx->client->reconnect_due_ms > now + 20000ull);
 
@@ -2118,7 +2128,7 @@ static void a_service_retry_after_outranks_the_policy_backoff(void** state)
    * elapses. The failed session was destroyed, which clears the mock's cached
    * last client, so a non-NULL one here would mean a retry was issued. */
   assert_null(az_iot_mock_mqtt_adapter_last_client());
-  az_iot_test_wait_ms(REPROVISION_DELAY_MS + 5u);
+  az_iot_test_age_retry_schedule_ms(fx->client, REPROVISION_DELAY_MS);
   (void)az_iot_connection_client_do_work(fx->client, 0);
   assert_null(az_iot_mock_mqtt_adapter_last_client());
   assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_RETRY_PENDING);
@@ -2340,7 +2350,7 @@ static size_t fault_without_retry(az_iot_test_conn* fx, const char* topic, const
     (void)az_iot_connection_client_do_work(fx->client, 0);
   }
   /* Past the policy's delay, so a scheduled retry would have fired. */
-  az_iot_test_wait_ms(REPROVISION_DELAY_MS + 5u);
+  az_iot_test_age_retry_schedule_ms(fx->client, REPROVISION_DELAY_MS);
   (void)az_iot_connection_client_do_work(fx->client, 0);
 
   assert_false(az_iot_test_saw_state(&fx->log, AZ_IOT_CONN_STATE_RETRY_PENDING));
@@ -3328,7 +3338,7 @@ static void a_rejected_reprovision_does_not_reuse_the_cached_hub(void** state)
   assert_true(az_iot_mock_mqtt_client_inject_connected(hub, AZ_IOT_ERR_IDENTITY_REJECTED));
   (void)az_iot_connection_client_do_work(fx->client, 0);
   (void)az_iot_connection_client_do_work(fx->client, 0);
-  az_iot_test_wait_ms(REPROVISION_DELAY_MS + 5u);
+  az_iot_test_make_retry_due_now(fx->client);
   (void)az_iot_connection_client_do_work(fx->client, 0);
 
   az_iot_mock_mqtt_client* dps2 = az_iot_mock_mqtt_adapter_last_client();
@@ -3412,7 +3422,7 @@ static void the_reprovision_demand_survives_close_and_open(void** state)
   (void)az_iot_connection_client_do_work(fx->client, 0);
   assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_RETRY_PENDING);
 
-  az_iot_test_wait_ms(REPROVISION_DELAY_MS + 5u);
+  az_iot_test_make_retry_due_now(fx->client);
   (void)az_iot_connection_client_do_work(fx->client, 0);
   az_iot_mock_mqtt_client* dps2 = az_iot_mock_mqtt_adapter_last_client();
   assert_non_null(dps2);
@@ -3431,7 +3441,7 @@ static void the_reprovision_demand_survives_close_and_open(void** state)
     }
     if (az_iot_test_last_state(&fx->log) == AZ_IOT_CONN_STATE_RETRY_PENDING)
     {
-      az_iot_test_wait_until_ms(fx->client->reconnect_due_ms);
+      az_iot_test_make_retry_due_now(fx->client);
       (void)az_iot_connection_client_do_work(fx->client, 0);
     }
   }
@@ -3450,8 +3460,9 @@ static void the_reprovision_demand_survives_close_and_open(void** state)
 /* ------------------------------------------------------------------------- */
 
 /* A real exponential ladder, unlike setup_with_reconnect's deliberately flat
- * one, so a position on it is observable in the scheduled delay. */
-#define LADDER_INITIAL_MS 10u
+ * one, so a position on it is observable in the scheduled delay. Too long to
+ * elapse during a test, like REPROVISION_DELAY_MS. */
+#define LADDER_INITIAL_MS 10000u
 
 static int setup_with_exponential_reconnect(void** state)
 {
@@ -3460,7 +3471,7 @@ static int setup_with_exponential_reconnect(void** state)
 
   az_iot_connection_client_options opts = dps_options();
   opts.reconnection_policy.initial_delay_ms = LADDER_INITIAL_MS;
-  opts.reconnection_policy.max_delay_ms = 10000u;
+  opts.reconnection_policy.max_delay_ms = 100u * LADDER_INITIAL_MS;
   opts.reconnection_policy.max_attempts = 0; /* forever */
   opts.reconnection_policy.jitter_pct = 0; /* deterministic */
   opts.dps.max_hub_connect_attempts_before_reprovision = 3;
@@ -3647,7 +3658,7 @@ static void a_diverted_retry_consumes_its_pending_token(void** state)
       az_iot_connection_client_get_state(fx->client, AZ_IOT_CONN_SCOPE_HUB),
       AZ_IOT_CONN_STATE_RETRY_PENDING);
 
-  az_iot_test_wait_until_ms(fx->client->reconnect_due_ms);
+  az_iot_test_make_retry_due_now(fx->client);
   (void)az_iot_connection_client_do_work(fx->client, 0);
 
   /* Fired, and the token is spent: further ticks cannot start another attempt
@@ -3690,7 +3701,7 @@ static void the_dps_ladder_does_not_inherit_the_hub_backoff(void** state)
     (void)az_iot_connection_client_do_work(fx->client, 0);
   }
 
-  /* Climb the hub ladder: 10, 20, 40 ms. The third failure crosses
+  /* Climb the hub ladder: 10, 20, 40 s. The third failure crosses
    * max_hub_connect_attempts_before_reprovision and switches to DPS. */
   uint64_t last_delay = 0;
   for (int i = 0; i < 3; ++i)
@@ -3706,19 +3717,19 @@ static void the_dps_ladder_does_not_inherit_the_hub_backoff(void** state)
     last_delay = fx->log.recovery[last].next_attempt_delay_ms;
     if (i < 2)
     {
-      az_iot_test_wait_ms((unsigned)last_delay + 5u);
+      az_iot_test_make_retry_due_now(fx->client);
       (void)az_iot_connection_client_do_work(fx->client, 0);
     }
   }
 
-  /* The hub ladder had reached 40 ms; the DPS one starts over at 10 ms. */
+  /* The hub ladder had reached 40 s; the DPS one starts over at 10 s. */
   assert_true(fx->client->needs_reprovision);
   assert_int_equal(last_delay, LADDER_INITIAL_MS);
   assert_int_equal(fx->client->retry_attempt[AZ_IOT_CONN_SCOPE_DPS], 1);
 
   /* And the attempt that deadline schedules really is a registration -- the
    * observable fact the short delay is only evidence for. */
-  az_iot_test_wait_ms((unsigned)last_delay + 5u);
+  az_iot_test_make_retry_due_now(fx->client);
   (void)az_iot_connection_client_do_work(fx->client, 0);
   az_iot_mock_mqtt_client* next = az_iot_mock_mqtt_adapter_last_client();
   assert_non_null(next);
@@ -3750,7 +3761,7 @@ static void the_hub_ladder_cannot_spend_the_dps_budget(void** state)
     (void)az_iot_connection_client_do_work(fx->client, 0);
     (void)az_iot_connection_client_do_work(fx->client, 0);
     assert_false(az_iot_test_saw_state(&fx->log, AZ_IOT_CONN_STATE_FAULTED));
-    az_iot_test_wait_until_ms(fx->client->reconnect_due_ms);
+    az_iot_test_make_retry_due_now(fx->client);
     (void)az_iot_connection_client_do_work(fx->client, 0);
   }
 
@@ -3789,7 +3800,7 @@ static void a_successful_registration_clears_both_ladders(void** state)
     assert_true(az_iot_mock_mqtt_client_inject_connected(hub, AZ_IOT_ERR_MQTT));
     (void)az_iot_connection_client_do_work(fx->client, 0);
     (void)az_iot_connection_client_do_work(fx->client, 0);
-    az_iot_test_wait_until_ms(fx->client->reconnect_due_ms);
+    az_iot_test_make_retry_due_now(fx->client);
     (void)az_iot_connection_client_do_work(fx->client, 0);
   }
   assert_true(fx->client->retry_attempt[AZ_IOT_CONN_SCOPE_HUB] > 0);
@@ -3799,7 +3810,7 @@ static void a_successful_registration_clears_both_ladders(void** state)
   assert_true(az_iot_mock_mqtt_client_inject_connected(hub, AZ_IOT_ERR_IDENTITY_REJECTED));
   (void)az_iot_connection_client_do_work(fx->client, 0);
   (void)az_iot_connection_client_do_work(fx->client, 0);
-  az_iot_test_wait_until_ms(fx->client->reconnect_due_ms);
+  az_iot_test_make_retry_due_now(fx->client);
   (void)az_iot_connection_client_do_work(fx->client, 0);
 
   /* Re-register successfully. */
@@ -5256,17 +5267,18 @@ static az_iot_mock_mqtt_client* refuse_saved_hub(az_iot_test_conn* fx, az_iot_mo
   (void)az_iot_connection_client_do_work(fx->client, 0);
   (void)az_iot_connection_client_do_work(fx->client, 0);
   assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_RETRY_PENDING);
-  az_iot_test_wait_ms(REPROVISION_DELAY_MS + 5u);
+  az_iot_test_make_retry_due_now(fx->client);
   (void)az_iot_connection_client_do_work(fx->client, 0);
   az_iot_mock_mqtt_client* next = az_iot_mock_mqtt_adapter_last_client();
   assert_non_null(next);
   return next;
 }
 
-/* Register on DPS adapter @p dps and return the assigned hub's adapter. */
-static az_iot_mock_mqtt_client* register_to_assigned_hub(
+/** @brief Registers on DPS adapter @p dps and answers with @p body. */
+static void answer_registration(
     az_iot_test_conn* fx,
-    az_iot_mock_mqtt_client* dps)
+    az_iot_mock_mqtt_client* dps,
+    const char* body)
 {
   assert_string_equal(last_connect_host(dps), DPS_GLOBAL);
   assert_true(az_iot_mock_mqtt_client_inject_connected(dps, AZ_IOT_OK));
@@ -5275,11 +5287,19 @@ static az_iot_mock_mqtt_client* register_to_assigned_hub(
   assert_non_null(sub);
   assert_true(az_iot_mock_mqtt_client_inject_suback(dps, sub->packet_id, AZ_IOT_OK));
   (void)az_iot_connection_client_do_work(fx->client, 0);
-  assert_true(inject_dps_response(dps, DPS_RESPONSE_TOPIC_ASSIGNED, k_assigned_body));
+  assert_true(inject_dps_response(dps, DPS_RESPONSE_TOPIC_ASSIGNED, body));
   for (int i = 0; i < 5; ++i)
   {
     (void)az_iot_connection_client_do_work(fx->client, 0);
   }
+}
+
+/* Register on DPS adapter @p dps and return the assigned hub's adapter. */
+static az_iot_mock_mqtt_client* register_to_assigned_hub(
+    az_iot_test_conn* fx,
+    az_iot_mock_mqtt_client* dps)
+{
+  answer_registration(fx, dps, k_assigned_body);
   az_iot_mock_mqtt_client* hub = az_iot_mock_mqtt_adapter_last_client();
   assert_non_null(hub);
   return hub;
@@ -5713,7 +5733,7 @@ static void assignment_callback_fires_again_on_reprovision(void** state)
   assert_true(az_iot_mock_mqtt_client_inject_connected(hub, AZ_IOT_ERR_IDENTITY_REJECTED));
   (void)az_iot_connection_client_do_work(fx->client, 0);
   (void)az_iot_connection_client_do_work(fx->client, 0);
-  az_iot_test_wait_ms(REPROVISION_DELAY_MS + 5u);
+  az_iot_test_make_retry_due_now(fx->client);
   (void)az_iot_connection_client_do_work(fx->client, 0);
 
   az_iot_mock_mqtt_client* dps2 = az_iot_mock_mqtt_adapter_last_client();
@@ -5799,6 +5819,368 @@ static void set_dps_assignment_callback_rejects_a_null_client(void** state)
       AZ_IOT_ERR_INVALID_ARG);
 }
 
+/* ------------------------------------------------------------------------- */
+/* assignment invalidation (delete the saved copy)                           */
+/* ------------------------------------------------------------------------- */
+
+typedef struct invalidation_record
+{
+  int count;
+  az_iot_result reason;
+  /* Read in the callback. */
+  uint32_t identity_changes;
+  az_iot_connection_state hub_state;
+  /* Set: call close(), open() and deinit() on it from the callback. */
+  az_iot_connection_client* lifecycle_client;
+  az_iot_result close_result;
+  az_iot_result open_result;
+  az_iot_result deinit_result;
+} invalidation_record;
+
+typedef struct invalidation_watch
+{
+  az_iot_connection_client* client;
+  invalidation_record rec;
+} invalidation_watch;
+
+static void record_invalidation(az_iot_result reason, void* user_ctx)
+{
+  invalidation_watch* w = (invalidation_watch*)user_ctx;
+  w->rec.count++;
+  w->rec.reason = reason;
+  w->rec.identity_changes = w->client->identity_changes;
+  w->rec.hub_state = az_iot_connection_client_get_state(w->client, AZ_IOT_CONN_SCOPE_HUB);
+  if (w->rec.lifecycle_client != NULL)
+  {
+    w->rec.close_result = az_iot_connection_client_close(w->rec.lifecycle_client);
+    w->rec.open_result = az_iot_connection_client_open(w->rec.lifecycle_client);
+    w->rec.deinit_result = az_iot_connection_client_deinit(w->rec.lifecycle_client);
+  }
+}
+
+/** @brief Registers record_invalidation() on @p client with @p w. */
+static void watch_invalidation(az_iot_connection_client* client, invalidation_watch* w)
+{
+  memset(w, 0, sizeof(*w));
+  w->client = client;
+  assert_int_equal(
+      az_iot_connection_client_set_dps_assignment_invalidated_callback(
+          client, record_invalidation, w),
+      AZ_IOT_OK);
+}
+
+/* A re-registration the client rejects invalidates the saved hub, once, and
+ * request_reprovision() alone does not. */
+static void a_rejected_assignment_invalidates_the_saved_one(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  invalidation_watch w;
+  watch_invalidation(fx->client, &w);
+  assignment_record rec = { 0 };
+  assert_int_equal(
+      az_iot_connection_client_set_dps_assignment_callback(fx->client, record_assignment, &rec),
+      AZ_IOT_OK);
+
+  assert_int_equal(az_iot_connection_client_request_reprovision(fx->client), AZ_IOT_OK);
+  az_iot_mock_mqtt_client* dps = dps_open(fx);
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_int_equal(w.rec.count, 0);
+
+  answer_registration(fx, dps, k_assigned_profile_unknown);
+  assert_true(az_iot_test_saw_state(&fx->log, AZ_IOT_CONN_STATE_FAULTED));
+  assert_int_equal(w.rec.count, 1);
+  assert_int_equal(w.rec.reason, AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED);
+  assert_int_equal(w.rec.identity_changes, 0);
+  assert_int_equal(rec.count, 0);
+  assert_string_equal(az_iot_connection_client_get_iothub_address(fx->client), SAVED_HUB);
+
+  /* The same held hub is not invalidated twice. */
+  assert_int_equal(az_iot_connection_client_close(fx->client), AZ_IOT_OK);
+  dps = dps_open(fx);
+  answer_registration(fx, dps, k_assigned_profile_unknown);
+  assert_int_equal(w.rec.count, 1);
+}
+
+/* An assignment for the other generation than the attached feature clients
+ * require invalidates the saved hub. */
+static void a_mismatched_assignment_invalidates_the_saved_one(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  invalidation_watch w;
+  watch_invalidation(fx->client, &w);
+  assert_int_equal(
+      az_iot_connection_client__require_profile(fx->client, AZ_IOT_CONNECTION_PROFILE_MQTT_V3),
+      AZ_IOT_OK);
+
+  assert_int_equal(az_iot_connection_client_request_reprovision(fx->client), AZ_IOT_OK);
+  answer_registration(fx, dps_open(fx), k_assigned_mqtt_v5);
+
+  assert_int_equal(w.rec.count, 1);
+  assert_int_equal(w.rec.reason, AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH);
+  az_iot_connection_client__release_profile(fx->client);
+}
+
+/* In REPROVISION mode a refusal of the saved identity invalidates it before
+ * the registration, without an identity change; the adoption is reported by the
+ * assignment callback only. */
+static void a_saved_hub_identity_refusal_invalidates_it(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  use_reprovision_mode(fx);
+  invalidation_watch w;
+  watch_invalidation(fx->client, &w);
+  assignment_record rec = { 0 };
+  assert_int_equal(
+      az_iot_connection_client_set_dps_assignment_callback(fx->client, record_assignment, &rec),
+      AZ_IOT_OK);
+
+  az_iot_mock_mqtt_client* dps = refuse_saved_hub(fx, saved_hub_open(fx));
+  assert_int_equal(w.rec.count, 1);
+  assert_int_equal(w.rec.reason, AZ_IOT_ERR_IDENTITY_REJECTED);
+  assert_int_equal(w.rec.hub_state, AZ_IOT_CONN_STATE_RETRY_PENDING);
+  assert_int_equal(w.rec.identity_changes, 0);
+  assert_int_equal(fx->client->identity_changes, 0);
+
+  (void)register_to_assigned_hub(fx, dps);
+  assert_int_equal(rec.count, 1);
+  assert_int_equal(w.rec.count, 1);
+}
+
+/* In RETRY_HUB mode a refusal keeps the saved hub: nothing is invalidated. */
+static void a_saved_hub_identity_refusal_in_retry_hub_mode_invalidates_nothing(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  fx->client->opts.identity_recovery.mode = AZ_IOT_IDENTITY_RECOVERY_RETRY_HUB;
+  invalidation_watch w;
+  watch_invalidation(fx->client, &w);
+  (void)refuse_saved_hub(fx, saved_hub_open(fx));
+  assert_int_equal(w.rec.count, 0);
+}
+
+/* The unreachable-hub threshold invalidates the saved hub when it is crossed,
+ * with the last failure as the reason. */
+static void an_unreachable_saved_hub_is_invalidated_at_the_threshold(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  invalidation_watch w;
+  watch_invalidation(fx->client, &w);
+
+  az_iot_mock_mqtt_client* second = fail_hub_attempt(fx, saved_hub_open(fx));
+  assert_int_equal(w.rec.count, 0);
+
+  az_iot_mock_mqtt_client* dps = fail_hub_attempt(fx, second);
+  assert_string_equal(last_connect_host(dps), DPS_GLOBAL);
+  assert_int_equal(w.rec.count, 1);
+  assert_int_equal(w.rec.reason, AZ_IOT_ERR_MQTT);
+}
+
+/* request_reprovision() and the assignment it adopts invalidate nothing. */
+static void a_requested_reprovision_invalidates_nothing(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  invalidation_watch w;
+  watch_invalidation(fx->client, &w);
+  assert_int_equal(az_iot_connection_client_request_reprovision(fx->client), AZ_IOT_OK);
+  (void)register_to_assigned_hub(fx, dps_open(fx));
+  assert_int_equal(w.rec.count, 0);
+}
+
+/* A first registration holds no hub: adopting or rejecting its assignment
+ * invalidates nothing. */
+static void a_first_registration_invalidates_nothing(void** state)
+{
+  (void)state;
+  for (int rejected = 0; rejected < 2; ++rejected)
+  {
+    profile_fixture pf = { 0 };
+    profile_fixture_open(&pf);
+    invalidation_watch w;
+    watch_invalidation(&pf.c, &w);
+    profile_assign(&pf, rejected ? k_assigned_profile_unknown : k_assigned_mqtt_v5);
+    assert_int_equal(az_iot_test_saw_state(&pf.log, AZ_IOT_CONN_STATE_FAULTED), rejected != 0);
+    assert_int_equal(w.rec.count, 0);
+    profile_fixture_close(&pf);
+  }
+}
+
+/* An adopted assignment replaces the invalidated one, so it can be invalidated
+ * in turn. */
+static void an_adopted_assignment_can_be_invalidated_again(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  use_reprovision_mode(fx);
+  invalidation_watch w;
+  watch_invalidation(fx->client, &w);
+
+  az_iot_mock_mqtt_client* hub = provision_to_hub_connecting(fx);
+  assert_int_equal(w.rec.count, 0);
+  hub = reprovision_with(fx, hub, k_assigned_body);
+  assert_int_equal(w.rec.count, 1);
+  (void)reprovision_with(fx, hub, k_assigned_body);
+  assert_int_equal(w.rec.count, 2);
+  assert_int_equal(w.rec.reason, AZ_IOT_ERR_IDENTITY_REJECTED);
+}
+
+/* close(), open() and deinit() from the invalidated callback are refused; the
+ * registration still starts. */
+static void close_open_and_deinit_from_the_invalidated_callback_are_refused(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  use_reprovision_mode(fx);
+  invalidation_watch w;
+  watch_invalidation(fx->client, &w);
+  w.rec.lifecycle_client = fx->client;
+
+  az_iot_mock_mqtt_client* dps = refuse_saved_hub(fx, saved_hub_open(fx));
+  assert_int_equal(w.rec.count, 1);
+  assert_int_equal(w.rec.close_result, AZ_IOT_ERR_BUSY);
+  assert_int_equal(w.rec.open_result, AZ_IOT_ERR_BUSY);
+  assert_int_equal(w.rec.deinit_result, AZ_IOT_ERR_BUSY);
+  assert_string_equal(last_connect_host(dps), DPS_GLOBAL);
+}
+
+/** @brief Fails the start of the registration that is due, and returns the
+ * attempt that follows it. */
+static az_iot_mock_mqtt_client* fail_registration_start(az_iot_test_conn* fx)
+{
+  az_iot_mock_mqtt_adapter_fail_next_connect(AZ_IOT_ERR_TLS);
+  az_iot_test_wait_ms(REPROVISION_DELAY_MS + 5u);
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_int_equal(
+      az_iot_connection_client_get_state(fx->client, AZ_IOT_CONN_SCOPE_DPS),
+      AZ_IOT_CONN_STATE_RETRY_PENDING);
+  az_iot_test_wait_ms(REPROVISION_DELAY_MS + 5u);
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  az_iot_mock_mqtt_client* next = az_iot_mock_mqtt_adapter_last_client();
+  assert_non_null(next);
+  return next;
+}
+
+/* A registration that fails to start retries DPS, not the invalidated hub. */
+static void a_failed_registration_start_does_not_fall_back_to_an_invalidated_hub(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  use_reprovision_mode(fx);
+  az_iot_mock_mqtt_client* hub = saved_hub_open(fx);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(hub, AZ_IOT_ERR_IDENTITY_REJECTED));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_true(fx->client->held_assignment_invalidated);
+
+  assert_string_equal(last_connect_host(fail_registration_start(fx)), DPS_GLOBAL);
+}
+
+/* After request_reprovision() the saved hub stays the fallback of a
+ * registration that fails to start. */
+static void a_failed_requested_registration_start_falls_back_to_the_saved_hub(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  az_iot_mock_mqtt_client* hub = saved_hub_open(fx);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(hub, AZ_IOT_ERR_MQTT));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_int_equal(az_iot_connection_client_request_reprovision(fx->client), AZ_IOT_OK);
+
+  assert_string_equal(last_connect_host(fail_registration_start(fx)), SAVED_HUB);
+}
+
+/* close() during the registration that replaces an invalidated hub, then
+ * open(): DPS again, not that hub. */
+static void reopening_during_registration_does_not_reuse_an_invalidated_hub(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  use_reprovision_mode(fx);
+  az_iot_mock_mqtt_client* dps = refuse_saved_hub(fx, saved_hub_open(fx));
+  assert_string_equal(last_connect_host(dps), DPS_GLOBAL);
+
+  assert_int_equal(az_iot_connection_client_close(fx->client), AZ_IOT_OK);
+  assert_string_equal(last_connect_host(dps_open(fx)), DPS_GLOBAL);
+}
+
+/* close() during a registration request_reprovision() asked for, then open():
+ * the saved hub, as before. */
+static void reopening_during_a_requested_registration_reuses_the_saved_hub(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  assert_int_equal(az_iot_connection_client_request_reprovision(fx->client), AZ_IOT_OK);
+  assert_string_equal(last_connect_host(dps_open(fx)), DPS_GLOBAL);
+
+  assert_int_equal(az_iot_connection_client_close(fx->client), AZ_IOT_OK);
+  (void)saved_hub_open(fx);
+}
+
+typedef struct end_session_on_tick
+{
+  az_iot_connection_client* client;
+  int ends;
+} end_session_on_tick;
+
+/** @brief TICK observer: ends the hub session once with a failure, as an overdue feature request
+ * does. */
+static void end_hub_session_once_on_tick(const az_iot_connection_feature_event* event, void* ctx)
+{
+  assert_int_equal(event->kind, AZ_IOT_CONNECTION_FEATURE_EVENT_TICK);
+  end_session_on_tick* e = (end_session_on_tick*)ctx;
+  if (e->ends == 0)
+  {
+    e->ends++;
+    assert_int_equal(
+        az_iot_connection_client__end_hub_session(e->client, AZ_IOT_ERR_TIMEOUT), AZ_IOT_OK);
+  }
+}
+
+/* An invalidation raised by a TICK observer is delivered by the same do_work(). */
+static void an_invalidation_from_a_tick_observer_is_delivered_in_the_same_do_work(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  fx->client->opts.dps.max_hub_connect_attempts_before_reprovision = 1;
+  invalidation_watch w;
+  watch_invalidation(fx->client, &w);
+  az_iot_mock_mqtt_client* hub = saved_hub_open(fx);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(hub, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_int_equal(
+      az_iot_connection_client_get_state(fx->client, AZ_IOT_CONN_SCOPE_HUB),
+      AZ_IOT_CONN_STATE_CONNECTED);
+
+  /* The DISCONNECT fails at once, so the session ends inside the observer. */
+  az_iot_mock_mqtt_client_set_next_result(hub, AZ_IOT_MOCK_CALL_DISCONNECT, AZ_IOT_ERR_MQTT);
+  end_session_on_tick e = { fx->client, 0 };
+  assert_int_equal(
+      az_iot_connection_client__add_feature_observer(
+          fx->client, AZ_IOT_CONNECTION_FEATURE_EVENT_TICK, end_hub_session_once_on_tick, &e),
+      AZ_IOT_OK);
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  az_iot_connection_client__remove_feature_observer(fx->client, end_hub_session_once_on_tick, &e);
+
+  assert_int_equal(e.ends, 1);
+  assert_int_equal(w.rec.count, 1);
+  assert_int_equal(w.rec.reason, AZ_IOT_ERR_TIMEOUT);
+}
+
+/* A NULL callback unregisters. */
+static void a_null_invalidated_callback_unregisters(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  use_reprovision_mode(fx);
+  invalidation_watch w;
+  watch_invalidation(fx->client, &w);
+  assert_int_equal(
+      az_iot_connection_client_set_dps_assignment_invalidated_callback(fx->client, NULL, NULL),
+      AZ_IOT_OK);
+  (void)refuse_saved_hub(fx, saved_hub_open(fx));
+  assert_int_equal(w.rec.count, 0);
+}
+
+static void set_dps_assignment_invalidated_callback_rejects_a_null_client(void** state)
+{
+  (void)state;
+  assert_int_equal(
+      az_iot_connection_client_set_dps_assignment_invalidated_callback(
+          NULL, record_invalidation, NULL),
+      AZ_IOT_ERR_INVALID_ARG);
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -5810,6 +6192,45 @@ int main(void)
     cmocka_unit_test(a_restored_assignment_connects_without_registering),
     cmocka_unit_test(a_null_assignment_callback_unregisters),
     cmocka_unit_test(set_dps_assignment_callback_rejects_a_null_client),
+    /* assignment invalidation */
+    cmocka_unit_test_setup_teardown(
+        a_rejected_assignment_invalidates_the_saved_one, setup_saved_hub, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_mismatched_assignment_invalidates_the_saved_one, setup_saved_hub, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_saved_hub_identity_refusal_invalidates_it, setup_saved_hub, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_saved_hub_identity_refusal_in_retry_hub_mode_invalidates_nothing,
+        setup_saved_hub,
+        teardown),
+    cmocka_unit_test_setup_teardown(
+        an_unreachable_saved_hub_is_invalidated_at_the_threshold, setup_saved_hub, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_requested_reprovision_invalidates_nothing, setup_saved_hub, teardown),
+    cmocka_unit_test(a_first_registration_invalidates_nothing),
+    cmocka_unit_test_setup_teardown(
+        an_adopted_assignment_can_be_invalidated_again, setup_with_reconnect, teardown),
+    cmocka_unit_test_setup_teardown(
+        close_open_and_deinit_from_the_invalidated_callback_are_refused, setup_saved_hub, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_null_invalidated_callback_unregisters, setup_saved_hub, teardown),
+    cmocka_unit_test_setup_teardown(
+        an_invalidation_from_a_tick_observer_is_delivered_in_the_same_do_work,
+        setup_saved_hub,
+        teardown),
+    cmocka_unit_test_setup_teardown(
+        a_failed_registration_start_does_not_fall_back_to_an_invalidated_hub,
+        setup_saved_hub,
+        teardown),
+    cmocka_unit_test_setup_teardown(
+        a_failed_requested_registration_start_falls_back_to_the_saved_hub,
+        setup_saved_hub,
+        teardown),
+    cmocka_unit_test_setup_teardown(
+        reopening_during_registration_does_not_reuse_an_invalidated_hub, setup_saved_hub, teardown),
+    cmocka_unit_test_setup_teardown(
+        reopening_during_a_requested_registration_reuses_the_saved_hub, setup_saved_hub, teardown),
+    cmocka_unit_test(set_dps_assignment_invalidated_callback_rejects_a_null_client),
     /* endpoint + version selection */
     cmocka_unit_test_setup_teardown(
         dps_connects_to_the_global_endpoint_by_default, setup, teardown),

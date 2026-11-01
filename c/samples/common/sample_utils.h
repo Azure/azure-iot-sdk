@@ -207,9 +207,10 @@ bool sample_file_flush_to_storage(FILE* file);
  * a reader sees the old file or the new one, never a partial one, and the
  * replacement survives a power loss. Flush @p source_path to storage first.
  *
- * On POSIX the directory is synced after the rename; if that fails, a line is
- * written to stderr and true is still returned, since the destination is
- * already replaced.
+ * On POSIX the directory is synced after the rename. If that sync fails, a line
+ * is written to stderr and true is still returned, since readers already get
+ * the new file: only then may a power loss bring back the old file (never a
+ * partial one).
  *
  * @param[in] source_path      Complete file; renamed, so it is gone on success.
  * @param[in] destination_path File to replace; created when absent. Same file
@@ -218,6 +219,33 @@ bool sample_file_flush_to_storage(FILE* file);
  * was.
  */
 bool sample_file_replace(const char* source_path, const char* destination_path);
+
+/**
+ * @brief Replace @p path with a file holding @p data, atomically and durably:
+ * written to a new file from sample_file_create_private_unique(), flushed with
+ * sample_file_flush_to_storage(), then moved over @p path with
+ * sample_file_replace(). On failure that new file is removed and @p path is
+ * left as it was.
+ *
+ * @param[in] path File to replace; created (owner-only on POSIX) when absent.
+ * @param[in] data Bytes to write; may be NULL when @p size is 0.
+ * @param[in] size Number of bytes in @p data.
+ * @return true when @p path holds @p data.
+ */
+bool sample_file_write_atomically(const char* path, const void* data, size_t size);
+
+/**
+ * @brief Delete @p path durably: the deletion survives a power loss. A missing
+ * file counts as deleted.
+ *
+ * On POSIX the directory is synced after the removal; if that fails, a line is
+ * written to stderr and true is still returned, since the file is already gone.
+ *
+ * @param[in] path File to delete.
+ * @return true when @p path no longer exists; false when it is still there,
+ * with errno set by remove().
+ */
+bool sample_file_delete(const char* path);
 
 /**
  * @brief Record SIGINT (Ctrl+C) and SIGTERM instead of ending the process, so a

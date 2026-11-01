@@ -1060,11 +1060,12 @@ static void resolve_connect_transport(
  *
  *  - HUB_MQTT_V3 (v3.1.1): a PERSISTENT session, which is the behaviour this
  *    role already had and is kept deliberately. MQTTv3 IoT Hub holds a
- *    device's subscriptions, and the cloud-to-device messages that arrived
- *    while it was away, only for a session that is NOT clean; connecting clean
- *    would silently drop whatever was queued during an outage. The SUBSCRIBEs
- *    are re-issued on every connect either way (begin_feature_subscriptions),
- *    so resuming costs nothing and losing the queue costs delivery.
+ *    device's subscriptions and in-flight QoS 1 deliveries only for a session
+ *    that is NOT clean. Connecting clean does not lose the hub's
+ *    cloud-to-device queue, which is delivered once the device re-subscribes,
+ *    but it discards in-flight deliveries. The SUBSCRIBEs are re-issued on
+ *    every connect either way (begin_feature_subscriptions), so resuming costs
+ *    nothing.
  *
  *  - HUB_MQTT_V5 (v5): a resumed session as well, with a Session Expiry Interval
  *    so there is something left to resume. The presence design is explicit that
@@ -1888,6 +1889,38 @@ static void fault_retry_scopes(
   }
 }
 
+/**
+ * @brief Makes the next attempt a DPS registration because the held assignment
+ * must not be used again, and queues assignment_invalidated_cb for it once.
+ *
+ * Queued, not called: callers run inside adapter events and transitions, and
+ * do_work() delivers it with notify_assignment_invalidated().
+ *
+ * @param[in] c      Client.
+ * @param[in] reason Reported to assignment_invalidated_cb.
+ */
+static void invalidate_held_assignment(az_iot_connection_client* c, az_iot_result reason)
+{
+  c->needs_reprovision = true;
+  if (c->opts.iothub_hostname != NULL && !c->held_assignment_invalidated)
+  {
+    c->held_assignment_invalidated = true;
+    c->assignment_invalidation_pending = true;
+    c->assignment_invalidation_reason = reason;
+  }
+}
+
+/**
+ * @brief Whether a failed or interrupted registration may fall back to the held
+ * hub: one is held and has not been invalidated.
+ *
+ * @param[in] c Client.
+ */
+static bool held_assignment_is_usable(const az_iot_connection_client* c)
+{
+  return c->opts.iothub_hostname != NULL && !c->held_assignment_invalidated;
+}
+
 static void schedule_reconnect(
     az_iot_connection_client* c,
     az_iot_connection_scope failure_scope,
@@ -1926,7 +1959,7 @@ static void schedule_reconnect(
         "hub unreachable for the configured number of attempts; "
         "re-provisioning through DPS");
     c->consecutive_hub_connect_failures = 0;
-    c->needs_reprovision = true;
+    invalidate_held_assignment(c, reason);
     /* Crossing into provisioning starts the DPS ladder at the beginning: the
      * hub attempts that got us here say nothing about how long DPS will take,
      * so the first registration attempt must wait initial_delay_ms rather than
@@ -2122,7 +2155,7 @@ static void note_identity_refusal(az_iot_connection_client* c, az_iot_result sta
       && c->opts.identity_recovery.mode == AZ_IOT_IDENTITY_RECOVERY_REPROVISION && dps_configured(c)
       && !c->user_close)
   {
-    c->needs_reprovision = true;
+    invalidate_held_assignment(c, status);
   }
 }
 
@@ -4287,7 +4320,8 @@ static az_iot_result dps_register_on_ready_session(az_iot_connection_client* c)
 }
 
 /* Fail an assignment this client cannot use, and make sure the NEXT open()
- * goes back to DPS instead of to whatever assignment is still cached.
+ * goes back to DPS instead of to whatever assignment is still cached. The
+ * application is told the cached one must not be used again either.
  *
  * Declining to adopt the new values is not enough on a re-provision: opts.iothub_hostname
  * and opts.device_id still name the hub from the previous assignment, and
@@ -4305,7 +4339,7 @@ static az_iot_result dps_register_on_ready_session(az_iot_connection_client* c)
 static void reject_assignment(az_iot_connection_client* c, az_iot_result reason)
 {
   c->dps_cert_awaits_adoption = false;
-  c->needs_reprovision = true;
+  invalidate_held_assignment(c, reason);
   fault_retry_scopes(c, AZ_IOT_CONN_SCOPE_DPS, reason);
 }
 
@@ -4599,6 +4633,10 @@ static void dps_apply_deferred(az_iot_connection_client* c)
   c->dps_phase = DPS_PHASE_NONE;
   /* This registration satisfies any re-provision asked for while it ran. */
   c->needs_reprovision = false;
+  /* The adopted assignment replaces the invalidated one, in the application's
+   * record too. */
+  c->held_assignment_invalidated = false;
+  c->assignment_invalidation_pending = false;
 
   /* Registration succeeded, so BOTH ladders start over: the DPS one because it
    * has done its job, and the hub one because this is a fresh assignment --
@@ -6358,7 +6396,7 @@ static void fail_sas_token_attempt(
       /* As any registration that failed to start: re-registered, or the
        * cached hub tried; see do_work(). */
       c->dps_registration_ref = false;
-      c->needs_reprovision = c->needs_reprovision || c->opts.iothub_hostname == NULL;
+      c->needs_reprovision = c->needs_reprovision || !held_assignment_is_usable(c);
       schedule_reconnect(c, AZ_IOT_CONN_SCOPE_DPS, reason);
     }
     else
@@ -6418,7 +6456,7 @@ static void resume_sas_token_attempt(az_iot_connection_client* c, az_iot_connect
     if (c->dps_mqtt != NULL && c->dps_registration_ref)
     {
       /* Provisioning is under way now; see open(). */
-      c->needs_reprovision = false;
+      c->needs_reprovision = c->held_assignment_invalidated;
     }
     return;
   }
@@ -6429,7 +6467,7 @@ static void resume_sas_token_attempt(az_iot_connection_client* c, az_iot_connect
   if (c->dps_registration_ref)
   {
     c->dps_registration_ref = false;
-    c->needs_reprovision = c->needs_reprovision || c->opts.iothub_hostname == NULL;
+    c->needs_reprovision = c->needs_reprovision || !held_assignment_is_usable(c);
     schedule_reconnect(c, AZ_IOT_CONN_SCOPE_DPS, r);
     return;
   }
@@ -7482,6 +7520,20 @@ az_iot_result az_iot_connection_client_set_dps_assignment_callback(
   return AZ_IOT_OK;
 }
 
+az_iot_result az_iot_connection_client_set_dps_assignment_invalidated_callback(
+    az_iot_connection_client* client,
+    az_iot_dps_assignment_invalidated_callback cb,
+    void* user_ctx)
+{
+  if (!client)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  client->assignment_invalidated_cb = cb;
+  client->assignment_invalidated_cb_ctx = user_ctx;
+  return AZ_IOT_OK;
+}
+
 /**
  * @brief The configuration support needs first, once per open(). Identifiers only, no secrets.
  *
@@ -7806,10 +7858,11 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_open(az_iot_connection_clien
     }
     /* Consumed only once provisioning is really under way, so a failed start
      * still leaves the demand standing for the next open(). A start waiting
-     * for its token is not under way yet. */
+     * for its token is not under way yet. An invalidated assignment keeps it
+     * standing until one is adopted: a close() now must not reopen that hub. */
     if (client->sas_token_request[AZ_IOT_CONN_SCOPE_DPS].request_id == 0)
     {
-      client->needs_reprovision = false;
+      client->needs_reprovision = client->held_assignment_invalidated;
     }
     return r;
   }
@@ -8424,8 +8477,9 @@ static az_iot_result do_work_pass(az_iot_connection_client* client, uint32_t tim
        * a fallback if the hub path has somewhere to go. With no assignment
        * (opts.iothub_hostname still NULL) an ordinary retry would hand the adapter a NULL
        * endpoint and the client would never reach DPS again, so the demand
-       * survives and the next retry provisions. */
-      client->needs_reprovision = (client->opts.iothub_hostname == NULL);
+       * survives and the next retry provisions. An invalidated assignment is
+       * no fallback either. */
+      client->needs_reprovision = !held_assignment_is_usable(client);
       /* session_role stays the cached hub's: the provisioning session carries
        * its own role, and the hub fallback must keep the assigned protocol. */
       attempted = AZ_IOT_CONN_SCOPE_DPS;
@@ -8501,6 +8555,24 @@ static az_iot_result do_work_pass(az_iot_connection_client* client, uint32_t tim
   return r;
 }
 
+/** @brief Runs assignment_invalidated_cb for the invalidation
+ * invalidate_held_assignment() queued, if any. */
+static void notify_assignment_invalidated(az_iot_connection_client* c)
+{
+  if (!c->assignment_invalidation_pending)
+  {
+    return;
+  }
+  c->assignment_invalidation_pending = false;
+  if (c->assignment_invalidated_cb)
+  {
+    enter_callback(c);
+    c->assignment_invalidated_cb(
+        c->assignment_invalidation_reason, c->assignment_invalidated_cb_ctx);
+    leave_callback(c);
+  }
+}
+
 az_iot_result az_iot_connection_client_do_work(
     az_iot_connection_client* client,
     uint32_t timeout_ms)
@@ -8515,6 +8587,8 @@ az_iot_result az_iot_connection_client_do_work(
   /* The TICK may have expired a settling SAS renewal's last delivery: end the session now rather
    * than after the next wait. */
   end_settled_session_for_sas_renewal(client);
+  /* Last: a TICK observer or the session end above can invalidate the assignment too. */
+  notify_assignment_invalidated(client);
   return r;
 }
 
@@ -9463,7 +9537,7 @@ static az_iot_result publish_tracked(
   }
   bool const has_cb = ack_cb != NULL || result_cb != NULL;
 
-  /* QoS 1/2 with a callback: reserve the correlation slot BEFORE publishing,
+  /* QoS 1 with a callback: reserve the correlation slot BEFORE publishing,
    * so a full pool sends nothing and the caller can retry without
    * duplicating. The reserved slot has no callback, so neither the PUBACK match
    * nor teardown_active() acts on it. Adapters deliver events only from
@@ -9515,8 +9589,9 @@ static az_iot_result publish_tracked(
     return r;
   }
 
-  /* QoS 0: there is no PUBACK on the wire. Complete synchronously. QoS 1/2
-   * without a callback: the future PUBACK is silently absorbed. */
+  /* QoS 0: there is no PUBACK on the wire. Complete synchronously. QoS 1
+   * without a callback: the future PUBACK is silently absorbed. Feature clients
+   * never pass QoS 2. */
   if (msg->qos == AZ_IOT_MQTT_QOS_0)
   {
     complete_publish(client, ack_cb, result_cb, user_ctx, AZ_IOT_OK, NULL);

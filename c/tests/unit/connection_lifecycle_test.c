@@ -394,12 +394,10 @@ static void the_default_options_retry_a_refused_connack(void** state)
   az_iot_connection_client_options opts = az_iot_connection_client_options_default();
   opts.iothub_hostname = "broker.example";
   opts.device_id = "ut-device";
-  /* initial_delay_ms is deliberately NOT overridden: it is the field that
-   * decides whether reconnection happens at all, so the test has to depend on
-   * the default supplying it. Only the cap is shortened, which bounds the
-   * computed delay (base = min(max_delay_ms, initial_delay_ms << n)) so the
-   * retry deadline is reachable without a one-second wait. */
-  opts.reconnection_policy.max_delay_ms = 20u;
+  /* The delays are deliberately NOT overridden: initial_delay_ms decides
+   * whether reconnection happens at all, so the test has to depend on the
+   * default supplying it. The test lets the backoff pass with
+   * az_iot_test_make_retry_due_now() instead of waiting it out. */
   opts.reconnection_policy.jitter_pct = 0;
   opts.mqtt_adapter = az_iot_mock_mqtt_get_adapter_for_version(AZ_IOT_MQTT_VERSION_3_1_1);
 
@@ -423,7 +421,7 @@ static void the_default_options_retry_a_refused_connack(void** state)
   assert_false(az_iot_test_saw_state(&log, AZ_IOT_CONN_STATE_FAULTED));
 
   /* And the retry is really issued once the backoff elapses. */
-  az_iot_test_wait_ms(25u);
+  az_iot_test_make_retry_due_now(&c);
   (void)az_iot_connection_client_do_work(&c, 0);
   az_iot_mock_mqtt_client* second = az_iot_mock_mqtt_adapter_last_client();
   assert_non_null(second);

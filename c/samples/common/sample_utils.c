@@ -498,6 +498,50 @@ bool sample_file_replace(const char* source_path, const char* destination_path)
 #endif
 }
 
+bool sample_file_write_atomically(const char* path, const void* data, size_t size)
+{
+  if (data == NULL && size > 0)
+  {
+    return false;
+  }
+  char* temporary_path = NULL;
+  FILE* file = sample_file_create_private_unique(path, &temporary_path);
+  if (file == NULL)
+  {
+    return false;
+  }
+  bool written
+      = (size == 0 || fwrite(data, 1, size, file) == size) && sample_file_flush_to_storage(file);
+  /* fclose() can report a delayed write failure. */
+  bool replaced = fclose(file) == 0 && written && sample_file_replace(temporary_path, path);
+  if (!replaced)
+  {
+    (void)remove(temporary_path);
+  }
+  free(temporary_path);
+  return replaced;
+}
+
+bool sample_file_delete(const char* path)
+{
+  if (path == NULL)
+  {
+    errno = EINVAL;
+    return false;
+  }
+  if (remove(path) != 0)
+  {
+    return errno == ENOENT;
+  }
+#ifndef _WIN32
+  if (!sync_parent_directory(path))
+  {
+    fprintf(stderr, "%s: deleted, but its directory could not be synced to storage\n", path);
+  }
+#endif
+  return true;
+}
+
 /** @brief Set by on_stop_signal(); sig_atomic_t is the only type a handler may write. */
 static volatile sig_atomic_t s_stop_requested = 0;
 

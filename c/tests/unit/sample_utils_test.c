@@ -26,6 +26,7 @@
 #include <string.h>
 
 #if !defined(_WIN32)
+#include <dirent.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -83,6 +84,53 @@ static void assert_file_holds(const char* path, const char* expected)
   assert_int_equal(fclose(file), 0);
   assert_int_equal(read, strlen(expected));
   assert_string_equal(contents, expected);
+}
+
+static void file_delete_removes_the_file(void** state)
+{
+  (void)state;
+  write_text_file(DESTINATION_FILE, "old");
+
+  assert_true(sample_file_delete(DESTINATION_FILE));
+
+  assert_null(sample_file_open_read_no_follow(DESTINATION_FILE));
+}
+
+static void file_delete_treats_a_missing_file_as_deleted(void** state)
+{
+  (void)state;
+  assert_true(sample_file_delete(DESTINATION_FILE));
+  assert_false(sample_file_delete(NULL));
+}
+
+static void file_delete_fails_when_the_file_stays(void** state)
+{
+  (void)state;
+#if !defined(_WIN32)
+  /* A directory that is not empty cannot be removed. */
+  assert_int_equal(mkdir(DIRECTORY, 0700), 0);
+  write_text_file(DIRECTORY "/" DESTINATION_FILE, "old");
+
+  assert_false(sample_file_delete(DIRECTORY));
+
+  assert_file_holds(DIRECTORY "/" DESTINATION_FILE, "old");
+#endif
+}
+
+static void file_delete_reports_a_done_removal_when_the_directory_sync_fails(void** state)
+{
+  (void)state;
+#if !defined(_WIN32)
+  /* Write and search but no read: the removal succeeds, opening the directory
+   * for its sync does not (unless run as root). */
+  assert_int_equal(mkdir(DIRECTORY, 0700), 0);
+  write_text_file(DIRECTORY "/" DESTINATION_FILE, "old");
+  assert_int_equal(chmod(DIRECTORY, 0300), 0);
+  bool deleted = sample_file_delete(DIRECTORY "/" DESTINATION_FILE);
+  assert_int_equal(chmod(DIRECTORY, 0700), 0);
+  assert_true(deleted);
+  assert_null(sample_file_open_read_no_follow(DIRECTORY "/" DESTINATION_FILE));
+#endif
 }
 
 static void file_replace_overwrites_the_destination(void** state)
@@ -305,6 +353,67 @@ static void file_open_read_no_follow_refuses_a_link_and_a_missing_file(void** st
 }
 
 #if !defined(_WIN32)
+/** @brief Number of entries in @p directory, "." and ".." excluded. */
+static int count_directory_entries(const char* directory)
+{
+  DIR* opened = opendir(directory);
+  assert_non_null(opened);
+  int count = 0;
+  struct dirent* entry;
+  while ((entry = readdir(opened)) != NULL)
+  {
+    if (strcmp(entry->d_name, ".") != 0 && strcmp(entry->d_name, "..") != 0)
+    {
+      ++count;
+    }
+  }
+  assert_int_equal(closedir(opened), 0);
+  return count;
+}
+#endif
+
+static void file_write_atomically_replaces_the_destination(void** state)
+{
+  (void)state;
+  assert_true(sample_file_write_atomically(DESTINATION_FILE, "old", 3));
+  assert_file_holds(DESTINATION_FILE, "old");
+  assert_true(sample_file_write_atomically(DESTINATION_FILE, "new", 3));
+  assert_file_holds(DESTINATION_FILE, "new");
+  assert_true(sample_file_write_atomically(DESTINATION_FILE, NULL, 0));
+  assert_file_holds(DESTINATION_FILE, "");
+#if !defined(_WIN32)
+  struct stat st;
+  assert_int_equal(stat(DESTINATION_FILE, &st), 0);
+  assert_int_equal(st.st_mode & 0777, 0600);
+  /* No temporary file is left beside the destination. */
+  assert_int_equal(mkdir(DIRECTORY, 0700), 0);
+  assert_true(sample_file_write_atomically(DIRECTORY "/" DESTINATION_FILE, "new", 3));
+  assert_true(sample_file_write_atomically(DIRECTORY "/" DESTINATION_FILE, "newer", 5));
+  assert_file_holds(DIRECTORY "/" DESTINATION_FILE, "newer");
+  assert_int_equal(count_directory_entries(DIRECTORY), 1);
+#endif
+}
+
+static void file_write_atomically_fails_and_keeps_the_destination(void** state)
+{
+  (void)state;
+  write_text_file(DESTINATION_FILE, "old");
+
+  assert_false(sample_file_write_atomically(DESTINATION_FILE, NULL, 3));
+  assert_false(sample_file_write_atomically(NULL, "new", 3));
+  assert_false(sample_file_write_atomically("missing_directory.tmp/name", "new", 3));
+
+  assert_file_holds(DESTINATION_FILE, "old");
+#if !defined(_WIN32)
+  /* The rename fails over a directory: the temporary file is removed. */
+  assert_int_equal(mkdir(DIRECTORY, 0700), 0);
+  assert_int_equal(mkdir(DIRECTORY "/" DESTINATION_FILE, 0700), 0);
+  assert_false(sample_file_write_atomically(DIRECTORY "/" DESTINATION_FILE, "new", 3));
+  assert_int_equal(count_directory_entries(DIRECTORY), 1);
+#endif
+}
+
+#if !defined(_WIN32)
 /**
  * @brief Whether @p signal_number, raised in a new child process after
  * sample_install_stop_handler(), moves the stop request from false to true without
@@ -391,6 +500,11 @@ int main(void)
 {
   const struct CMUnitTest tests[] = {
     cmocka_unit_test_setup_teardown(file_replace_overwrites_the_destination, setup, teardown),
+    cmocka_unit_test_setup_teardown(file_delete_removes_the_file, setup, teardown),
+    cmocka_unit_test_setup_teardown(file_delete_treats_a_missing_file_as_deleted, setup, teardown),
+    cmocka_unit_test_setup_teardown(file_delete_fails_when_the_file_stays, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        file_delete_reports_a_done_removal_when_the_directory_sync_fails, setup, teardown),
     cmocka_unit_test_setup_teardown(
         file_replace_creates_a_missing_destination_given_with_a_directory, setup, teardown),
     cmocka_unit_test_setup_teardown(
@@ -410,6 +524,10 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         file_rewrite_existing_no_follow_keeps_the_file_and_refuses_a_link, setup, teardown),
     cmocka_unit_test(is_plain_file_name_refuses_names_that_leave_the_directory),
+    cmocka_unit_test_setup_teardown(
+        file_write_atomically_replaces_the_destination, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        file_write_atomically_fails_and_keeps_the_destination, setup, teardown),
     cmocka_unit_test(stop_handler_records_sigterm_and_sigint),
     cmocka_unit_test(sleep_until_tick_end_waits_out_the_rest_of_the_tick),
     cmocka_unit_test(sleep_until_tick_end_returns_at_once_after_the_tick),

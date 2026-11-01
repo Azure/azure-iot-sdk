@@ -415,7 +415,11 @@ shared group CA issues RSA-2048. Without the shared environment's secrets, the j
 
 Two suites, built with `-DAZ_IOT_BUILD_E2E_SU=ON` and selected by
 `ctest -R e2e_su`. Both run the shipping SDK over each MQTT adapter (Paho, az_mqtt) and X.509 against
-the real service.
+the real service. On POSIX the offer suite also needs the `microsoft/delta:1` download handler
+(`-DAZ_IOT_WITH_SU_DELTA=ON`, POSIX only) and the real delta processor:
+`-DAZ_IOT_SU_DELTA_TEST_LIBRARY=<path of libadudiffapi.so>`, installed by
+`eng/install-su-delta-processor.sh`. Without the library its scenario fails; elsewhere (Windows) the
+scenario is not built.
 
 | Suite | What it drives |
 | --- | --- |
@@ -433,6 +437,24 @@ Offered-update scenarios:
 | already installed, reported SKIPPED | `AZ_IOT_E2E_SU_OFFER_MODEL_ALREADY_INSTALLED` |
 | manifest verified against the wrong keys, reported FAILED | `AZ_IOT_E2E_SU_OFFER_MODEL_UNTRUSTED` |
 | library mode: verified offer handed to the application, which downloads, hashes and reports progress then SUCCEEDED | `AZ_IOT_E2E_SU_OFFER_MODEL_LIBRARY_MODE` |
+| delta update: the device holds the source, downloads only the related file and builds the file from it; SUCCEEDED with no delta code | `AZ_IOT_E2E_SU_OFFER_MODEL_DELTA` |
+| delta update, device without the source: the handler declines, the file is downloaded in full; SUCCEEDED with the delta `NO_SOURCE` code | `AZ_IOT_E2E_SU_OFFER_MODEL_DELTA_NO_SOURCE` |
+| delta update with the reference `microsoft/delta:1` handler and the real delta processor (POSIX only): built from the cached source, SUCCEEDED with no delta code; the file replaces the source in the cache | `AZ_IOT_E2E_SU_OFFER_MODEL_MICROSOFT_DELTA` |
+
+The two delta offers are alike but for the model, since a device sees each offer once. Their file names
+the download handler `sdke2e/xor-delta:1`, which the suite registers, and has one related file: the
+file XOR a 4096-byte source that `SuE2E.psm1` (`Get-SuE2EDeltaSource`) and the suite
+(`delta_source_byte()`) both generate, with the base64 SHA-256 of that source as its
+`microsoft.sourceFileHash` property. The handler chooses the related file only when the device holds
+the source and that property matches. The suite asserts what ran (choice, related or full download,
+build, `workflow_succeeded_fn`) and each report's step extended code.
+
+The `MICROSOFT_DELTA` offer is the unit tests' vectors, `tests/unit/data/su_delta`: its file is
+`target.swu`, with the related file `delta.bin` for the download handler `microsoft/delta:1` and
+`microsoft.sourceFileHash` the base64 SHA-256 of `source.swu`. The suite registers the reference
+handler (`az_iot_su_delta.h`) with a per-run source cache holding `source.swu`, and asserts that only
+the related file is downloaded, that the built file matches `target.swu`, and that afterwards the cache
+holds `target.swu` in place of `source.swu`.
 
 The device identity is fixed by its certificate, so offers are told apart by compatibility:
 each is an update compatible only with `AZ_IOT_E2E_SU_OFFER_MANUFACTURER` and its model, with
@@ -465,8 +487,11 @@ job then ensures the standing offers (`New-SuE2EOffers -RunId "s$(Get-SuE2EFixtu
 seconds once staged) and passes their state on. The `e2e-su` job, on Linux and on Windows (libcurl
 from [`install-curl-windows`](../../../.github/actions/install-curl-windows/action.yml)), sets the
 offer variables (`Export-SuE2EOfferVariables`), issues a new device per suite execution (4: each
-suite on each adapter) from the enrollment group's CA (`e2e-shared-device.ps1`), runs the suites,
-then checks the offer devices' job results.
+suite on each adapter) from the enrollment group's CA (`e2e-shared-device.ps1`), installs the delta
+processor on Linux ([`install-su-delta-processor`](../../../.github/actions/install-su-delta-processor/action.yml)),
+runs the suites, then checks the offer devices' job results. The reference `microsoft/delta:1`
+handler is POSIX only: on Windows the offer suite skips the `MICROSOFT_DELTA` scenario, and the
+check skips its result (`Test-SuE2EOffers -Skip`).
 Nothing is deleted per run; offer sets staged by older fixture code are left in place. Inputs:
 variables `E2E_MQTTV5_SHARED_SUBSCRIPTION_ID`, `_RESOURCE_GROUP`, `_ADR_NAMESPACE`, `_ID_SCOPE`,
 `_DPS_HOST`, `_LOCATION`, `_SU_ENDPOINT`, `_SU_STORAGE_ACCOUNT`, `_SU_STORAGE_CONTAINER`, and

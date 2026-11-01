@@ -506,11 +506,20 @@ extern "C"
      * Written at a reboot requested by install/apply, and when a workflow ends
      * (carrying its unsent terminal report until the service accepts it).
      *
+     * MUST replace the stored record atomically and be durable when it returns: after a
+     * power loss either the old or the new record survives, never a mix. A torn record
+     * fails its CRC check and is treated as nothing to resume, which loses the workflow
+     * and any owed terminal report. Usual implementations:
+     * - file: write a unique temporary file, fsync() it, rename() it over the record,
+     *   fsync() the directory;
+     * - ESP-IDF NVS: nvs_set_blob() then nvs_commit().
+     *
      * @p state_blob_len == 0 means invalidate: empty or erase the stored record
-     * so a later boot does not resume a workflow that has already ended. Return
+     * so a later boot does not resume a workflow that has already ended; it MUST
+     * succeed when nothing is stored. Return
      * non-zero on failure; the client raises AZ_IOT_SU_EVENT_PERSIST_FAILED and
      * retries from do_work() with back-off, holding the workflow at a reboot
-     * boundary, up to AZ_IOT_SU_PERSIST_MAX_ATTEMPTS.
+     * boundary, up to AZ_IOT_SU_PERSIST_MAX_ATTEMPTS. Not called in library mode.
      */
     int32_t (*persist_workflow_state_fn)(
         const uint8_t* state_blob,
@@ -519,8 +528,17 @@ extern "C"
 
     /**
      * Load previously-persisted workflow state. Return 0 and fill
-     * state_blob/len on success; non-zero if no state persisted. A successful
-     * zero-length read also means nothing to resume.
+     * state_blob/len on success; non-zero if no state persisted or the record is
+     * larger than @p state_blob_capacity. A successful zero-length read also means
+     * nothing to resume.
+     *
+     * A record resumes only if it fits this client's limits: its update copy in
+     * az_iot_su_limits::max_update_size, each step's details in result_details_size,
+     * its download URLs in AZ_IOT_SU_FILE_URL_CAPACITY(max_related_files) and its steps
+     * in AZ_IOT_SU_MAX_STEP_COUNT. Otherwise, or if its format version differs, it is
+     * ignored like a missing record, which loses the workflow and any owed terminal
+     * report. Do not lower these limits in a firmware update while a workflow may be
+     * stored. Not called in library mode.
      */
     int32_t (*load_workflow_state_fn)(
         uint8_t* state_blob,
@@ -1562,7 +1580,8 @@ extern "C"
    * (the client stays Idle) and re-sends it from do_work().
    *
    * @return AZ_IOT_OK if resumed or nothing usable was persisted (including a
-   *   record of another format version); AZ_IOT_ERR_NOT_SUPPORTED for a valid
+   *   record of another format version or one this client's limits cannot hold, see
+   *   load_workflow_state_fn); AZ_IOT_ERR_NOT_SUPPORTED for a valid
    *   record of this format when persist_workflow_state_fn is NULL (it could never be cleared);
    *   AZ_IOT_ERR_INVALID_ARG for a NULL client or
    *   a record whose download URLs do not cover the remaining steps;

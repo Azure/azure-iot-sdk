@@ -13,6 +13,13 @@
   provisioning session is released, the hub reconnects, and the request is sent again on the retry
   backoff. A provisioning session opened for an operation waits at most 120 s (was 60 s) to become
   ready.
+- Connection client: `az_iot_connection_client_set_dps_assignment_invalidated_callback()` reports,
+  once, when the client will not use the assignment it holds again: DPS returned an assignment it
+  rejected, the hub refused the identity in `AZ_IOT_IDENTITY_RECOVERY_REPROVISION` mode, or
+  `dps.max_hub_connect_attempts_before_reprovision` was reached. An application that saves the
+  assignment deletes it there, so a restart registers with DPS instead of restoring it. The
+  `dps_persist_assignment` sample does. See
+  [docs/connecting.md](docs/connecting.md#saved-hub-with-dps-fallback).
 - Breaking: the connection client runs one MQTT session at a time; the provisioning session and the
   hub session no longer overlap. With software updates bound, the hub connect after registration
   waits while the update check still needs the provisioning session, then connects to the assigned
@@ -94,6 +101,12 @@
   full. The `pc/http_download` and `pc/simulated_regular` samples register it.
 - Software updates: `az_iot_su_decode_manifest_string()` decodes a manifest string the parser keeps
   escaped, such as a file id (`f\u0031` is `f1`).
+- End-to-end tests: the Software Update offer suite runs delta updates against the service, with
+  a test download handler: a device holding the source builds the file from the related file, and
+  one without it falls back to a full download reported with the delta `NO_SOURCE` code; and, on
+  POSIX, with the reference `microsoft/delta:1` handler and the real delta processor. Three new
+  standing offers (`AZ_IOT_E2E_SU_OFFER_MODEL_DELTA`, `_DELTA_NO_SOURCE`, `_MICROSOFT_DELTA`). On
+  POSIX the offer suite now needs `AZ_IOT_WITH_SU_DELTA=ON` and `AZ_IOT_SU_DELTA_TEST_LIBRARY`.
 - Software updates: the parsed manifest keeps each file's `mimeType`, `properties`,
   `downloadHandler` id and related files (`relatedFiles`, delta updates), and the request accepts
   their `fileUrls`. New `az_iot_su_limits::max_related_files` (default

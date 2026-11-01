@@ -6,7 +6,9 @@
 # Runs both software updates suites, per MQTT adapter, each adapter with its own
 # new device:
 #   az_iot_tests_e2e_su        the DPS channel, with no update offered
-#   az_iot_tests_e2e_su_offer  offered updates through the whole client
+#   az_iot_tests_e2e_su_offer  offered updates through the whole client, delta
+#                              ones on Linux also with the real delta processor
+#                              (installed by .github/actions/install-su-delta-processor)
 # then checks what the service recorded for each device and offer. The offers job
 # stages the offers once; the e2e-su job runs on Linux and on Windows (MSVC; Paho
 # over OpenSSL, az_mqtt over Schannel), each leg with its own devices.
@@ -50,6 +52,7 @@ on:
       - 'c/adapters/crypto_openssl/**'
       - 'c/adapters/cert_openssl/**'
       - 'c/adapters/su/**'
+      - 'c/eng/install-su-delta-processor.sh'
       - 'c/deps/az_mqtt/**'
       - 'c/CMakeLists.txt'
       - 'c/CMakePresets.json'
@@ -58,6 +61,7 @@ on:
       - 'c/tests/support/**'
       - 'c/tests/deps/**'
       - 'c/tests/e2e/**'
+      - 'c/tests/unit/data/su_delta/**'
       - 'c/eng/e2e-shared-device.ps1'
       - 'c/eng/e2e-trusted-ca.ps1'
       - 'c/eng/collect-coverage.sh'
@@ -65,6 +69,7 @@ on:
       - '.github/workflows/ci-c-e2e-adu.yml'
       - '.github/actions/install-curl-windows/**'
       - '.github/actions/install-openssl/**'
+      - '.github/actions/install-su-delta-processor/**'
       - '.github/workflows/ci-c-e2e-mqttv5-adr-namespace.yml'
   schedule:
     - cron: '0 12 * * *'
@@ -106,7 +111,7 @@ jobs:
     permissions:
       contents: read
       id-token: write   # azure/login OIDC
-    timeout-minutes: 80
+    timeout-minutes: 140
     env:
       AZ_IOT_E2E_SU_SUBSCRIPTION_ID: ${{ vars.E2E_MQTTV5_SHARED_SUBSCRIPTION_ID }}
       AZ_IOT_E2E_SU_RESOURCE_GROUP: ${{ vars.E2E_MQTTV5_SHARED_RESOURCE_GROUP }}
@@ -128,9 +133,9 @@ jobs:
           subscription-id: ${{ vars.E2E_MQTTV5_SHARED_SUBSCRIPTION_ID }}
 
       # Seconds when the offers are staged. Otherwise typically about 11 min; at
-      # most 4 x (10 min import + 5 min job) + 10 min to Active + 5 min grace.
+      # most 8 x (10 min import + 5 min job) + 10 min to Active + 5 min grace.
       - name: Ensure standing offers
-        timeout-minutes: 75
+        timeout-minutes: 135
         shell: pwsh
         run: |
           Import-Module ./c/tests/e2e/scripts/SuE2E.psm1
@@ -153,9 +158,9 @@ jobs:
     permissions:
       contents: read
       id-token: write   # azure/login OIDC
-    # Above the sum of the step budgets (about 130 min), so every step's own
+    # Above the sum of the step budgets (about 200 min), so every step's own
     # timeout fires first.
-    timeout-minutes: 150
+    timeout-minutes: 220
     strategy:
       fail-fast: false
       matrix:
@@ -199,6 +204,15 @@ jobs:
           sudo apt-get update && sudo apt-get install -y ninja-build libcurl4-openssl-dev
           python3 -m pip install --upgrade 'gcovr==7.2'
 
+      # The real delta processor for the MICROSOFT_DELTA offer (POSIX only, as the
+      # reference microsoft/delta:1 handler).
+      - name: Install the software updates delta processor (Linux)
+        id: su-delta
+        if: runner.os == 'Linux'
+        timeout-minutes: 5
+        # actionlint 1.7.12 does not accept the $/ self-repository form yet.
+        uses: ./.github/actions/install-su-delta-processor # zizmor: ignore[self-repository]
+
       - name: Install libcurl (Windows)
         id: curl
         if: runner.os == 'Windows'
@@ -211,8 +225,10 @@ jobs:
         shell: pwsh
         env:
           CMAKE_PREFIX_PATH: ${{ steps.curl.outputs.prefix }}
+          SU_DELTA_LIBRARY: ${{ steps.su-delta.outputs.library }}
         run: |
-          cmake --preset $env:AZ_IOT_PRESET -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_WITH_PAHO=ON -DAZ_IOT_WITH_AZ_MQTT=ON -DAZ_IOT_BUILD_E2E_SU=ON
+          $delta = if ($IsLinux) { '-DAZ_IOT_WITH_SU_DELTA=ON', "-DAZ_IOT_SU_DELTA_TEST_LIBRARY=$env:SU_DELTA_LIBRARY" } else { @() }
+          cmake --preset $env:AZ_IOT_PRESET -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_WITH_PAHO=ON -DAZ_IOT_WITH_AZ_MQTT=ON -DAZ_IOT_BUILD_E2E_SU=ON @delta
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cmake --build --preset $env:AZ_IOT_PRESET --target az_iot_tests_e2e_su az_iot_tests_e2e_su_offer az_iot_tests_e2e_su_az_mqtt az_iot_tests_e2e_su_offer_az_mqtt
 
@@ -265,10 +281,11 @@ jobs:
           $ca = ./c/eng/e2e-trusted-ca.ps1 -Path (Join-Path $dir 'trusted-ca.pem')
           "SU_DEVICES=$dir", "AZ_IOT_E2E_SU_TRUSTED_CA=$ca" | Add-Content -Path $env:GITHUB_ENV
 
-      # Per adapter: e2e_su (10 min budget), then e2e_su_offer (30 min: 4 offers x
-      # (90 s check + 300 s workflow), plus setup), each on its own device.
+      # Per adapter: e2e_su (10 min budget), then e2e_su_offer (65 min: 8 offers x
+      # (90 s check + 300 s workflow), plus the scenarios without an offer and
+      # setup), each on its own device.
       - name: Run software updates e2e
-        timeout-minutes: 90
+        timeout-minutes: 160
         shell: pwsh
         env:
           AZ_IOT_CURL_PREFIX: ${{ steps.curl.outputs.prefix }}
@@ -282,7 +299,7 @@ jobs:
             $suffix = if ($adapter -eq 'paho') { '' } else { '_az_mqtt' }
             $device = $adapter.Replace('_', '-')
             foreach ($suite in @(@{ Name = 'su'; Device = $device; Timeout = 600 },
-                                 @{ Name = 'su_offer'; Device = "$device-offer"; Timeout = 1800 })) {
+                                 @{ Name = 'su_offer'; Device = "$device-offer"; Timeout = 3900 })) {
               $test = "az_iot_tests_e2e_$($suite.Name)$suffix"
               $env:AZ_IOT_E2E_SU_REG_ID = [Environment]::GetEnvironmentVariable(
                 'SU_REG_ID_' + $suite.Device.Replace('-', '_').ToUpperInvariant())
@@ -303,9 +320,11 @@ jobs:
         run: |
           Import-Module ./c/tests/e2e/scripts/SuE2E.psm1
           $failed = @()
+          # The reference microsoft/delta:1 handler is POSIX only.
+          $skip = if ($IsWindows) { @('MICROSOFT_DELTA') } else { @() }
           foreach ($regId in $env:SU_REG_ID_PAHO_OFFER, $env:SU_REG_ID_AZ_MQTT_OFFER) {
             Write-Host "== $regId"
-            try { Test-SuE2EOffers -StatePath $env:SU_OFFERS_STATE -RegistrationId $regId }
+            try { Test-SuE2EOffers -StatePath $env:SU_OFFERS_STATE -RegistrationId $regId -Skip $skip }
             catch { Write-Host "::error::$regId`: $_"; $failed += $regId }
           }
           if ($failed) { exit 1 }
