@@ -52,23 +52,86 @@
 #define E2E_TELEMETRY_TIMEOUT_S 90 /* publish + EH-side receive               */
 #define E2E_C2D_TIMEOUT_S 60
 #define E2E_METHOD_TIMEOUT_S 60
-#define E2E_TWIN_TIMEOUT_S 60 /* per REST-request drive                  */
+#define E2E_TWIN_TIMEOUT_S 70 /* per REST-request drive, above its 64 s of retries */
 #define E2E_TWIN_PROP_TIMEOUT_S 90 /* reported-property propagation poll      */
 #define E2E_CONNECT_TIMEOUT_S 45 /* cold service-AMQP connect retry budget  */
+#define E2E_SUBACK_TIMEOUT_S 30 /* feature-client SUBSCRIBEs acknowledged  */
 #define E2E_PUMP_MS 20 /* per do_work / poll slice                */
 
 /* ---- shared fixture ------------------------------------------------------- */
+
+/** @brief Completion of a telemetry send. */
+typedef struct
+{
+  int done;
+  az_iot_result status;
+} send_ctx;
+
+/** @brief Which feature client a test attached to the shared connection; one per test. */
+typedef enum
+{
+  E2E_FEATURE_CLIENT_NONE,
+  E2E_FEATURE_CLIENT_TELEMETRY,
+  E2E_FEATURE_CLIENT_C2D,
+  E2E_FEATURE_CLIENT_DIRECT_METHOD,
+  E2E_FEATURE_CLIENT_TWIN,
+} e2e_feature_client_kind;
 
 typedef struct
 {
   e2e_device dev;
   az_iot_e2e_service* service;
+  /* The feature client the running test attached to dev.conn. A failed
+   * assertion leaves the test early, so detach_feature_client() deinitializes it. */
+  e2e_feature_client_kind attached;
+  union
+  {
+    az_iot_mqttv3_telemetry_client telemetry;
+    az_iot_mqttv3_c2d_client c2d;
+    az_iot_mqttv3_direct_method_client direct_method;
+    az_iot_mqttv3_twin_client twin;
+  } client;
+  /* The send callback still runs after the telemetry client's deinit, until the
+   * connection closes, so its context outlives the test. */
+  send_ctx telemetry_send;
 } e2e_fixture;
 
 static e2e_fixture g_fixture;
 
 /* Advance the device MQTT stack for a single slice. */
 static void device_do_work(e2e_fixture* fx, int ms) { e2e_device_do_work(&fx->dev, ms); }
+
+/* Whether the hub session is CONNECTED with every SUBSCRIBE acknowledged. A teardown or a SUBACK
+ * timeout also clears the pending count, so CONNECTED is checked too. */
+static bool subscriptions_live(e2e_fixture* fx)
+{
+  return az_iot_connection_client_get_state(&fx->dev.conn, AZ_IOT_CONN_SCOPE_HUB)
+      == AZ_IOT_CONN_STATE_CONNECTED
+      && fx->dev.conn.subscription_gate.pending_count == 0;
+}
+
+/* Pump until the device's subscriptions are live, so a message the cloud sends next reaches one.
+ * Feature clients subscribe at init on a CONNECTED session. Returns false, after printing why, on
+ * timeout. */
+static bool wait_for_subscription_acks(e2e_fixture* fx)
+{
+  time_t start = time(NULL);
+  while (!subscriptions_live(fx) && (time(NULL) - start) < E2E_SUBACK_TIMEOUT_S)
+  {
+    device_do_work(fx, E2E_PUMP_MS);
+  }
+  if (subscriptions_live(fx))
+  {
+    return true;
+  }
+  print_error(
+      "subscriptions not live after %d s: hub %s, %zu SUBSCRIBE(s) unacknowledged\n",
+      E2E_SUBACK_TIMEOUT_S,
+      az_iot_connection_state_to_string(
+          az_iot_connection_client_get_state(&fx->dev.conn, AZ_IOT_CONN_SCOPE_HUB)),
+      fx->dev.conn.subscription_gate.pending_count);
+  return false;
+}
 
 /* ---- unique correlation markers ------------------------------------------- */
 
@@ -130,13 +193,39 @@ static int group_teardown(void** state)
   return 0;
 }
 
-/* ---- telemetry ------------------------------------------------------------ */
-
-typedef struct
+/**
+ * @brief Per-test teardown: deinitializes the feature client the test attached
+ * and ends the telemetry watch, whether the test passed or failed. Otherwise the
+ * connection would keep pointers to the failed test's client and contexts.
+ */
+static int detach_feature_client(void** state)
 {
-  int done;
-  az_iot_result status;
-} send_ctx;
+  e2e_fixture* fx = (e2e_fixture*)*state;
+  switch (fx->attached)
+  {
+    case E2E_FEATURE_CLIENT_TELEMETRY:
+      az_iot_mqttv3_telemetry_client_deinit(&fx->client.telemetry);
+      break;
+    case E2E_FEATURE_CLIENT_C2D:
+      az_iot_mqttv3_c2d_client_deinit(&fx->client.c2d);
+      break;
+    case E2E_FEATURE_CLIENT_DIRECT_METHOD:
+      az_iot_mqttv3_direct_method_client_deinit(&fx->client.direct_method);
+      break;
+    case E2E_FEATURE_CLIENT_TWIN:
+      az_iot_mqttv3_twin_client_deinit(&fx->client.twin);
+      break;
+    case E2E_FEATURE_CLIENT_NONE:
+    default:
+      break;
+  }
+  fx->attached = E2E_FEATURE_CLIENT_NONE;
+  /* Releases the AMQP/TLS connection before the next scenario. */
+  az_iot_e2e_service_telemetry_watch_end(fx->service);
+  return 0;
+}
+
+/* ---- telemetry ------------------------------------------------------------ */
 
 static void on_send_done(az_iot_result status, void* user_ctx)
 {
@@ -161,9 +250,8 @@ static void test_telemetry(void** state)
    * transiently (observed on the Windows leg: the peer closes the connection
    * during open), so retry with a short backoff up to E2E_CONNECT_TIMEOUT_S,
    * pumping the device in between to keep its MQTT connection warm. Each
-   * attempt opens a brand-new connection (a failed one frees itself and
-   * releases the transport's single TLS slot). */
-  bool watching = az_iot_e2e_service_telemetry_watch_begin(fx->service);
+   * attempt opens a brand-new connection (a failed one frees itself). */
+  bool watching = az_iot_e2e_service_telemetry_watch_begin(fx->service, marker);
   for (time_t connect_start = time(NULL);
        !watching && (time(NULL) - connect_start) < E2E_CONNECT_TIMEOUT_S;)
   {
@@ -171,7 +259,7 @@ static void test_telemetry(void** state)
     {
       device_do_work(fx, E2E_PUMP_MS);
     }
-    watching = az_iot_e2e_service_telemetry_watch_begin(fx->service);
+    watching = az_iot_e2e_service_telemetry_watch_begin(fx->service, marker);
   }
   if (!watching)
   {
@@ -180,9 +268,9 @@ static void test_telemetry(void** state)
   }
   assert_true(watching);
 
-  az_iot_mqttv3_telemetry_client telemetry_client;
   assert_int_equal(
-      az_iot_mqttv3_telemetry_client_init(&telemetry_client, &fx->dev.conn), AZ_IOT_OK);
+      az_iot_mqttv3_telemetry_client_init(&fx->client.telemetry, &fx->dev.conn), AZ_IOT_OK);
+  fx->attached = E2E_FEATURE_CLIENT_TELEMETRY;
 
   az_iot_telemetry_property props[] = {
     { AZ_IOT_MSG_PROP_CONTENT_TYPE, "application/json" },
@@ -193,9 +281,11 @@ static void test_telemetry(void** state)
   msg.properties = props;
   msg.properties_count = sizeof(props) / sizeof(props[0]);
 
-  send_ctx sc = { 0 };
+  memset(&fx->telemetry_send, 0, sizeof(fx->telemetry_send));
   assert_int_equal(
-      az_iot_mqttv3_telemetry_client_send(&telemetry_client, &msg, on_send_done, &sc), AZ_IOT_OK);
+      az_iot_mqttv3_telemetry_client_send(
+          &fx->client.telemetry, &msg, on_send_done, &fx->telemetry_send),
+      AZ_IOT_OK);
 
   bool seen = false;
   time_t start = time(NULL);
@@ -213,18 +303,13 @@ static void test_telemetry(void** state)
   /* The Event Hub can observe the message before the device's own send
    * acknowledgement (PUBACK) has been pumped in, so breaking on `seen` alone
    * races the send. Drain the device briefly until the send completes. */
-  for (time_t ack = time(NULL); !sc.done && (time(NULL) - ack) < 5;)
+  for (time_t ack = time(NULL); !fx->telemetry_send.done && (time(NULL) - ack) < 5;)
   {
     device_do_work(fx, E2E_PUMP_MS);
   }
 
-  az_iot_mqttv3_telemetry_client_deinit(&telemetry_client);
-  /* Release the AMQP/TLS connection before the next scenario (the Windows
-   * reference transport allows only one TLS connection at a time). */
-  az_iot_e2e_service_telemetry_watch_end(fx->service);
-
-  assert_true(sc.done);
-  assert_int_equal(sc.status, AZ_IOT_OK);
+  assert_true(fx->telemetry_send.done);
+  assert_int_equal(fx->telemetry_send.status, AZ_IOT_OK);
   if (!seen)
   {
     fprintf(
@@ -280,21 +365,17 @@ static void c2d_send_and_receive(
     c2d_ctx* cctx,
     const az_iot_e2e_c2d_properties* properties)
 {
-  az_iot_mqttv3_c2d_client c2d;
-  assert_int_equal(az_iot_mqttv3_c2d_client_init(&c2d, &fx->dev.conn), AZ_IOT_OK);
-  assert_int_equal(az_iot_mqttv3_c2d_client_set_handler(&c2d, on_c2d, cctx), AZ_IOT_OK);
+  assert_int_equal(az_iot_mqttv3_c2d_client_init(&fx->client.c2d, &fx->dev.conn), AZ_IOT_OK);
+  fx->attached = E2E_FEATURE_CLIENT_C2D;
+  assert_int_equal(az_iot_mqttv3_c2d_client_set_handler(&fx->client.c2d, on_c2d, cctx), AZ_IOT_OK);
 
-  /* Give the subscription a few work slices to settle before the cloud sends. */
-  for (int i = 0; i < 20; ++i)
-  {
-    device_do_work(fx, E2E_PUMP_MS);
-  }
+  assert_true(wait_for_subscription_acks(fx));
 
   /* The service C2D send opens its own short-lived AMQP connection, whose cold
    * handshake can be refused transiently (same Windows "peer closed the
    * connection" as telemetry). Retry with a short backoff up to
    * E2E_CONNECT_TIMEOUT_S, pumping the device in between; each attempt opens a
-   * fresh connection (a failed one tears itself down and releases the TLS slot). */
+   * fresh connection (a failed one tears itself down). */
   bool sent = az_iot_e2e_service_send_c2d_with_properties(
       fx->service,
       fx->dev.device_id,
@@ -326,8 +407,6 @@ static void c2d_send_and_receive(
   {
     device_do_work(fx, E2E_PUMP_MS);
   }
-
-  az_iot_mqttv3_c2d_client_deinit(&c2d);
 }
 
 static void test_c2d(void** state)
@@ -398,14 +477,15 @@ static void test_direct_method(void** state)
 {
   e2e_fixture* fx = (e2e_fixture*)*state;
 
-  az_iot_mqttv3_direct_method_client dm;
-  assert_int_equal(az_iot_mqttv3_direct_method_client_init(&dm, &fx->dev.conn), AZ_IOT_OK);
-  assert_int_equal(az_iot_mqttv3_direct_method_client_set_handler(&dm, on_method, &dm), AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_mqttv3_direct_method_client_init(&fx->client.direct_method, &fx->dev.conn), AZ_IOT_OK);
+  fx->attached = E2E_FEATURE_CLIENT_DIRECT_METHOD;
+  assert_int_equal(
+      az_iot_mqttv3_direct_method_client_set_handler(
+          &fx->client.direct_method, on_method, &fx->client.direct_method),
+      AZ_IOT_OK);
 
-  for (int i = 0; i < 20; ++i)
-  {
-    device_do_work(fx, E2E_PUMP_MS);
-  }
+  assert_true(wait_for_subscription_acks(fx));
 
   assert_true(
       az_iot_e2e_service_method_invoke_begin(fx->service, fx->dev.device_id, "echo", "\"ping\""));
@@ -423,8 +503,6 @@ static void test_direct_method(void** state)
       break;
     }
   }
-
-  az_iot_mqttv3_direct_method_client_deinit(&dm);
 
   if (rc != 1)
   {
@@ -501,19 +579,17 @@ static void test_twin(void** state)
 {
   e2e_fixture* fx = (e2e_fixture*)*state;
 
-  az_iot_mqttv3_twin_client twin;
-  assert_int_equal(az_iot_mqttv3_twin_client_init(&twin, &fx->dev.conn), AZ_IOT_OK);
+  assert_int_equal(az_iot_mqttv3_twin_client_init(&fx->client.twin, &fx->dev.conn), AZ_IOT_OK);
+  fx->attached = E2E_FEATURE_CLIENT_TWIN;
 
   /* --- desired: cloud patches, device observes ------------------------- */
   desired_ctx dctx = { 0 };
   make_marker(dctx.expected, sizeof(dctx.expected), "desired");
   assert_int_equal(
-      az_iot_mqttv3_twin_client_set_desired_handler(&twin, on_desired, &dctx), AZ_IOT_OK);
+      az_iot_mqttv3_twin_client_set_desired_handler(&fx->client.twin, on_desired, &dctx),
+      AZ_IOT_OK);
 
-  for (int i = 0; i < 20; ++i)
-  {
-    device_do_work(fx, E2E_PUMP_MS);
-  }
+  assert_true(wait_for_subscription_acks(fx));
 
   char desired_json[128];
   snprintf(desired_json, sizeof(desired_json), "{\"cfg\":\"%s\"}", dctx.expected);
@@ -555,7 +631,11 @@ static void test_twin(void** state)
   patch_ack_ctx pack = { 0 };
   assert_int_equal(
       az_iot_mqttv3_twin_client_patch_reported(
-          &twin, (const uint8_t*)reported_json, strlen(reported_json), on_patch_ack, &pack),
+          &fx->client.twin,
+          (const uint8_t*)reported_json,
+          strlen(reported_json),
+          on_patch_ack,
+          &pack),
       AZ_IOT_OK);
 
   start = time(NULL);
@@ -600,18 +680,16 @@ static void test_twin(void** state)
     }
   }
   assert_true(reported_seen);
-
-  az_iot_mqttv3_twin_client_deinit(&twin);
 }
 
 int main(void)
 {
   const struct CMUnitTest tests[] = {
-    cmocka_unit_test(test_telemetry),
-    cmocka_unit_test(test_c2d),
-    cmocka_unit_test(test_c2d_system_properties),
-    cmocka_unit_test(test_direct_method),
-    cmocka_unit_test(test_twin),
+    cmocka_unit_test_teardown(test_telemetry, detach_feature_client),
+    cmocka_unit_test_teardown(test_c2d, detach_feature_client),
+    cmocka_unit_test_teardown(test_c2d_system_properties, detach_feature_client),
+    cmocka_unit_test_teardown(test_direct_method, detach_feature_client),
+    cmocka_unit_test_teardown(test_twin, detach_feature_client),
   };
   return cmocka_run_group_tests(tests, group_setup, group_teardown);
 }

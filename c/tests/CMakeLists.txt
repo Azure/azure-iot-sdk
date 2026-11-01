@@ -129,6 +129,8 @@ target_include_directories(az_iot_tests_smoke PRIVATE
 az_iot_add_cmocka_test(az_iot_tests_mqtt_iface_contract unit/mqtt_iface_contract_test.c)
 target_link_libraries(az_iot_tests_mqtt_iface_contract PRIVATE az_iot_test_support)
 az_iot_add_cmocka_test(az_iot_tests_connection_client_workspace unit/connection_client_workspace_test.c)
+target_link_libraries(az_iot_tests_connection_client_workspace
+    PRIVATE az_iot_test_support az_iot_mqttv3 az_iot_mqttv5)
 # Default limits: built in, a user's definition, and a config file, resolved as documented.
 foreach(_case DEFAULT OVERRIDE CONFIG_FILE)
     set(_t az_iot_tests_connection_client_config_${_case})
@@ -245,6 +247,8 @@ az_iot_add_cmocka_test(az_iot_tests_mqttv3_c2d_client unit/mqttv3_c2d_client_tes
 target_link_libraries(az_iot_tests_mqttv3_c2d_client PRIVATE az_iot_test_support az_iot_mqttv3)
 az_iot_add_cmocka_test(az_iot_tests_mqttv3_direct_method_client unit/mqttv3_direct_method_client_test.c)
 target_link_libraries(az_iot_tests_mqttv3_direct_method_client PRIVATE az_iot_test_support az_iot_mqttv3)
+target_include_directories(az_iot_tests_mqttv3_direct_method_client PRIVATE
+    ${PROJECT_SOURCE_DIR}/src/core)
 if(UNIX)
     # The slot-reclaim deadline is only observable once a real second has
     # passed, so the suite calls nanosleep().
@@ -289,13 +293,16 @@ endif()
 az_iot_add_cmocka_test(az_iot_tests_mqttv5_direct_method_client_tuned
     unit/mqttv5_direct_method_client_test.c
     ${PROJECT_SOURCE_DIR}/src/mqttv5/direct_method_client.c
+    ${PROJECT_SOURCE_DIR}/src/mqttv5/direct_method_budget.c
+    ${PROJECT_SOURCE_DIR}/src/mqttv5/direct_method_delivery.c
     ${PROJECT_SOURCE_DIR}/src/mqttv5/direct_method_codec.c)
 target_link_libraries(az_iot_tests_mqttv5_direct_method_client_tuned PRIVATE az_iot_test_support)
 target_include_directories(az_iot_tests_mqttv5_direct_method_client_tuned PRIVATE
     ${PROJECT_SOURCE_DIR}/src/core
     ${PROJECT_SOURCE_DIR}/src/mqttv5)
 target_compile_definitions(az_iot_tests_mqttv5_direct_method_client_tuned PRIVATE
-    AZ_IOT_MQTTV5_DM_MAX_CONCURRENT=2)
+    AZ_IOT_MQTTV5_DM_MAX_CONCURRENT=2
+    AZ_IOT_MQTTV5_DM_NOTICE_QUEUE_MAX=4)
 if(UNIX)
     target_compile_definitions(az_iot_tests_mqttv5_direct_method_client_tuned PRIVATE
         _POSIX_C_SOURCE=200809L)
@@ -316,6 +323,8 @@ target_include_directories(az_iot_tests_proto3 PRIVATE ${PROJECT_SOURCE_DIR}/src
 
 az_iot_add_cmocka_test(az_iot_tests_mqttv3_twin_client unit/mqttv3_twin_client_test.c)
 target_link_libraries(az_iot_tests_mqttv3_twin_client PRIVATE az_iot_test_support az_iot_mqttv3)
+target_include_directories(az_iot_tests_mqttv3_twin_client PRIVATE
+    ${PROJECT_SOURCE_DIR}/src/core)
 az_iot_add_cmocka_test(az_iot_tests_mqttv5_twin_client unit/mqttv5_twin_client_test.c)
 target_link_libraries(az_iot_tests_mqttv5_twin_client PRIVATE az_iot_test_support az_iot_mqttv5)
 target_include_directories(az_iot_tests_mqttv5_twin_client PRIVATE
@@ -330,6 +339,8 @@ target_compile_definitions(az_iot_tests_su_client_layout_mismatch PRIVATE
     AZ_IOT_TEST_SU_MAX_STEP_COUNT=${_az_iot_test_su_other_step_count}
     AZ_IOT_TEST_SU_EXPECTED_MISMATCH="AZ_IOT_SU_MAX_STEP_COUNT")
 az_iot_add_cmocka_test(az_iot_tests_su_protocol unit/su_protocol_test.c)
+az_iot_add_cmocka_test(az_iot_tests_su_manifest unit/su_manifest_test.c)
+target_include_directories(az_iot_tests_su_manifest PRIVATE ${PROJECT_SOURCE_DIR}/src/features/su)
 target_link_libraries(az_iot_tests_su_client PRIVATE az_iot_test_support)
 # For az_iot_time_mono_ms: the request deadline is a monotonic instant, so a
 # test that exercises it has to speak the same clock.
@@ -659,6 +670,33 @@ if(OPENSSL_FOUND)
             AZ_IOT_CONTRACT_WITH_MANAGED)
     endif()
 
+    # The ESP32 esp_secure_cert provider over desktop fakes, with the key as a PSA key over the
+    # DS context (_ds; _ds_tls13 with TLS 1.3) and as the partition's PEM (_pem).
+    foreach(_keys ds ds_tls13 pem)
+        set(_t az_iot_tests_certificate_provider_esp_secure_cert_${_keys})
+        az_iot_add_cmocka_test(${_t}
+            unit/certificate_provider_esp_secure_cert_test.c
+            support/cert_provider_contract.c
+            support/fake_esp_secure_cert.c
+            ${PROJECT_SOURCE_DIR}/adapters/cert_esp_secure_cert/az_iot_certificate_provider_esp_secure_cert.c)
+        target_include_directories(${_t} PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/support/fake_esp_secure_cert
+            ${CMAKE_CURRENT_SOURCE_DIR}/support
+            ${PROJECT_SOURCE_DIR}/adapters/cert_esp_secure_cert
+            ${PROJECT_SOURCE_DIR}/src/core)
+        target_link_libraries(${_t} PRIVATE OpenSSL::Crypto)
+        if(_keys MATCHES "^ds")
+            target_compile_definitions(${_t} PRIVATE CONFIG_ESP_SECURE_CERT_DS_PERIPHERAL)
+        endif()
+        if(_keys STREQUAL "ds_tls13")
+            target_compile_definitions(${_t} PRIVATE CONFIG_MBEDTLS_SSL_PROTO_TLS1_3)
+        endif()
+        # Instrumented: the provider source is shipped; gcovr excludes tests/ (the fakes).
+        az_iot_apply_coverage(${_t})
+    endforeach()
+    unset(_t)
+    unset(_keys)
+
     # The samples' simulated TPM, against vectors from swtpm and tpm2-tools.
     if(TARGET az_iot_crypto_openssl)
         az_iot_add_cmocka_test(az_iot_tests_sample_tpm_sim
@@ -867,6 +905,8 @@ if(AZ_IOT_WITH_AZ_MQTT)
             $<TARGET_PROPERTY:az_iot_adapter_az_mqtt,INCLUDE_DIRECTORIES>)
         target_compile_definitions(${_t} PRIVATE ${_az_mqtt_size_defs})
     endforeach()
+    # The CONNACK and DISCONNECT Reason String cases build their packets with the test server's.
+    target_link_libraries(az_iot_tests_az_mqtt_adapter PRIVATE az_iot_test_mqtt_server)
     if(WIN32)
         # The PUBACK cases run an in-process server.
         target_link_libraries(az_iot_tests_az_mqtt_adapter PRIVATE ws2_32)

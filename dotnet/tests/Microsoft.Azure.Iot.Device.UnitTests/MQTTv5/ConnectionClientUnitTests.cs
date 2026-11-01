@@ -901,7 +901,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
                 Assert.Equal(new[] { 0, 1, 2 }, requestedTimeouts);
             }
 
-            await connectionClient.DisconnectAsync(TestContext.Current.CancellationToken);
+            await connectionClient.DisconnectAsync(null, TestContext.Current.CancellationToken);
 
             await connectionClient.ConnectToHubAsync(GetMockConnectionContext(), TestContext.Current.CancellationToken)
                 .WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);

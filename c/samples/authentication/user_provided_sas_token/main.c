@@ -273,7 +273,11 @@ int main(void)
   tokens.sas.on_sas_token_required = request_token;
   tokens.sas.user_ctx = &ctx;
 
+  /* Memory for the connection client's entries, sized for the default limits. */
+  static uint8_t connection_workspace[AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE];
   az_iot_connection_client_options opts = az_iot_connection_client_options_default();
+  opts.workspace = connection_workspace;
+  opts.workspace_size = sizeof(connection_workspace);
   opts.device_id = reg_id;
   opts.dps.id_scope = id_scope;
   opts.dps.registration_id = reg_id;

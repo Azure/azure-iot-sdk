@@ -83,9 +83,6 @@ if(AZ_IOT_USE_INSTALLED_AZURE_SDK_FOR_C)
     # The release AZ_SDK_C_TAG pins, or a later compatible one.
     find_package(azure-sdk-for-c 1.5.0 REQUIRED)
     message(STATUS "Using installed azure-sdk-for-c ${azure-sdk-for-c_VERSION} (${AZURE_SDK_FOR_C_INCLUDE_DIR})")
-    az_iot_su_check_installed_limits()
-    # Targets compiling az_iot_adu_client.h get the layout the installed parser was built with.
-    target_compile_definitions(az::iot::hub INTERFACE ${AZ_IOT_SU_LIMIT_DEFINITIONS})
 else()
     include(FetchContent)
 
@@ -144,14 +141,6 @@ else()
     if(TARGET az_posix)
         target_compile_definitions(az_posix PRIVATE _DEFAULT_SOURCE _POSIX_C_SOURCE=200809L)
     endif()
-
-    # The manifest parser (az_iot_adu_client.c) and every target compiling its header must
-    # use the limits az_iot_core uses.
-    foreach(_az_tgt IN ITEMS az_iot_hub az_iot_adu)
-        if(TARGET ${_az_tgt})
-            target_compile_definitions(${_az_tgt} PUBLIC ${AZ_IOT_SU_LIMIT_DEFINITIONS})
-        endif()
-    endforeach()
 
     # Treat azure-sdk-for-c headers as SYSTEM so our strict warnings don't flag
     # upstream code (e.g. legacy "func()" declarations vs -Wstrict-prototypes).

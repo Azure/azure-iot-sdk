@@ -94,6 +94,18 @@ FILE* sample_file_open_private(const char* path, bool replace);
 FILE* sample_file_create_private(const char* path);
 
 /**
+ * @brief Create a new file, named @p path plus a unique suffix, for binary
+ * writing with owner-only access (0600) on POSIX. Nothing already there is
+ * replaced or written through. Being in @p path's directory, it can then
+ * replace @p path through sample_file_replace().
+ *
+ * @param[in]  path             Name the new file's name starts with.
+ * @param[out] out_unique_path  The new file's name, to free(); NULL on failure.
+ * @return Stream to close with fclose(), or NULL on failure.
+ */
+FILE* sample_file_create_private_unique(const char* path, char** out_unique_path);
+
+/**
  * @brief Open @p path for binary reading; on POSIX only a regular file, not
  * through a symbolic link, is opened.
  *

@@ -184,7 +184,7 @@ static void registered_factories_are_destroyed_by_the_application_after_deinit(v
   assert_int_equal(az_iot_connection_client_register_mqtt_factory(&client, v3), AZ_IOT_OK);
   assert_int_equal(az_iot_connection_client_register_mqtt_factory(&client, v5), AZ_IOT_OK);
 
-  az_iot_connection_client_deinit(&client);
+  az_iot_test_connection_client_deinit(&client);
   az_iot_paho_factory_destroy(v3);
   az_iot_paho_factory_destroy(v5);
 }

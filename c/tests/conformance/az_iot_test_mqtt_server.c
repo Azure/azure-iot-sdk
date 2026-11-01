@@ -129,35 +129,52 @@ az_iot_test_mqtt_packet az_iot_test_mqtt_suback_raw(az_iot_test_mqtt_version ver
   return p;
 }
 
+static az_iot_test_mqtt_packet packet_with_reason_string(
+    uint8_t first_byte,
+    const uint8_t* head,
+    size_t head_len,
+    const char* reason_string,
+    const uint8_t* tail,
+    size_t tail_len);
+
 az_iot_test_mqtt_packet az_iot_test_mqtt_puback_v5_raw(uint8_t code, const char* reason_string)
 {
-  az_iot_test_mqtt_packet p = packet_empty();
-  size_t const n = reason_string ? strlen(reason_string) : 0;
-  /* Property 0x1F, a 2-byte length, the string. */
-  size_t const props = reason_string ? 3 + n : 0;
-  /* Packet id, reason code, property length, properties: kept single-byte lengths. */
-  size_t const remaining = 2 + 1 + 1 + props;
-  if (remaining > 127)
+  /* Packet id, patched by the proxy; reason code. */
+  uint8_t const head[] = { 0x00, 0x00, code };
+  az_iot_test_mqtt_packet p
+      = packet_with_reason_string(MQTT_PUBACK, head, sizeof(head), reason_string, NULL, 0);
+  if (p.len != 0)
   {
-    return p;
+    p.packet_id_offset = (p.bytes[1] & 0x80u) ? 3 : 2; /* After a 1- or 2-byte Remaining Length. */
+    p.echo_packet_id = 1;
   }
+  return p;
+}
 
-  p.bytes[0] = MQTT_PUBACK;
-  p.bytes[1] = (uint8_t)remaining;
-  p.bytes[2] = 0x00; /* packet id, patched by the proxy */
-  p.bytes[3] = 0x00;
-  p.bytes[4] = code;
-  p.bytes[5] = (uint8_t)props;
-  if (reason_string)
+az_iot_test_mqtt_packet az_iot_test_mqtt_connack_v5_raw(uint8_t code, const char* reason_string)
+{
+  /* Acknowledge flags (session present clear); reason code. */
+  uint8_t const head[] = { 0x00, code };
+  return packet_with_reason_string(MQTT_CONNACK, head, sizeof(head), reason_string, NULL, 0);
+}
+
+az_iot_test_mqtt_packet az_iot_test_mqtt_disconnect_v5_raw(uint8_t code, const char* reason_string)
+{
+  uint8_t const head[] = { code };
+  return packet_with_reason_string(MQTT_DISCONNECT, head, sizeof(head), reason_string, NULL, 0);
+}
+
+az_iot_test_mqtt_packet az_iot_test_mqtt_suback_v5_raw(uint8_t code, const char* reason_string)
+{
+  /* Packet id, patched by the proxy. The reason code is the payload, after the Properties. */
+  uint8_t const head[] = { 0x00, 0x00 };
+  az_iot_test_mqtt_packet p
+      = packet_with_reason_string(MQTT_SUBACK, head, sizeof(head), reason_string, &code, 1);
+  if (p.len != 0)
   {
-    p.bytes[6] = 0x1F;
-    p.bytes[7] = 0x00;
-    p.bytes[8] = (uint8_t)n;
-    memcpy(&p.bytes[9], reason_string, n);
+    p.packet_id_offset = (p.bytes[1] & 0x80u) ? 3 : 2; /* After a 1- or 2-byte Remaining Length. */
+    p.echo_packet_id = 1;
   }
-  p.len = 2 + remaining;
-  p.packet_id_offset = 2;
-  p.echo_packet_id = 1;
   return p;
 }
 
@@ -256,6 +273,46 @@ static void write_lenstr(uint8_t* buf, size_t* pos, const char* s)
     memcpy(buf + *pos, s, n);
     *pos += n;
   }
+}
+
+/* A packet of type @p first_byte: @p head, then Properties holding only a Reason String unless
+ * @p reason_string is NULL, then @p tail. len == 0 when it would not fit
+ * AZ_IOT_TEST_MQTT_PACKET_MAX. */
+static az_iot_test_mqtt_packet packet_with_reason_string(
+    uint8_t first_byte,
+    const uint8_t* head,
+    size_t head_len,
+    const char* reason_string,
+    const uint8_t* tail,
+    size_t tail_len)
+{
+  az_iot_test_mqtt_packet p = packet_empty();
+  /* Property 0x1F, then the string with its 2-byte length. */
+  size_t const props = reason_string ? 3u + strlen(reason_string) : 0u;
+  size_t const remaining = head_len + vbi_len(props) + props + tail_len;
+  if (1u + vbi_len(remaining) + remaining > sizeof(p.bytes))
+  {
+    return p;
+  }
+
+  size_t pos = 0;
+  p.bytes[pos++] = first_byte;
+  write_vbi(p.bytes, &pos, remaining);
+  memcpy(&p.bytes[pos], head, head_len);
+  pos += head_len;
+  write_vbi(p.bytes, &pos, props);
+  if (reason_string)
+  {
+    p.bytes[pos++] = 0x1F;
+    write_lenstr(p.bytes, &pos, reason_string);
+  }
+  if (tail_len > 0)
+  {
+    memcpy(&p.bytes[pos], tail, tail_len);
+    pos += tail_len;
+  }
+  p.len = pos;
+  return p;
 }
 
 az_iot_test_mqtt_packet az_iot_test_mqtt_publish_v5(

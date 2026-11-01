@@ -217,6 +217,8 @@ int e2e_device_connect_with(e2e_device* dev, const e2e_device_connect_options* o
     }
   }
   copts.twin_push.push_reported = opts != NULL && opts->twin_push_reported;
+  copts.workspace = dev->connection_workspace;
+  copts.workspace_size = sizeof(dev->connection_workspace);
 
   if (az_iot_connection_client_init(&dev->conn, &copts) != AZ_IOT_OK)
   {

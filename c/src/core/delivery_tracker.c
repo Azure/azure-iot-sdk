@@ -33,25 +33,15 @@ static size_t index_of(const az_iot_delivery_tracker* t, const az_iot_delivery_t
 {
   return (size_t)(e - TI(t).entries);
 }
-
-/** @brief A tracker binding, as seen before a walk that calls on_complete. */
-typedef struct binding
+az_iot_delivery_tracker_binding az_iot_delivery_tracker__binding(const az_iot_delivery_tracker* t)
 {
-  az_iot_connection_client* connection;
-  uint32_t id; /**< Tells a rebind to the same connection apart, even after init(). */
-} binding;
-
-static binding binding_of(const az_iot_delivery_tracker* t)
-{
-  binding const b = { TI(t).connection, TI(t).binding_id };
+  az_iot_delivery_tracker_binding const b = { TI(t).connection, TI(t).binding_id };
   return b;
 }
 
-/**
- * @brief Whether @p t still has binding @p b; an on_complete may have unbound (and freed) or
- *        rebound it. The observer check comes first: it does not read @p t.
- */
-static bool still_bound(const az_iot_delivery_tracker* t, binding b)
+bool az_iot_delivery_tracker__has_binding(
+    const az_iot_delivery_tracker* t,
+    az_iot_delivery_tracker_binding b)
 {
   return az_iot_connection_client__has_feature_observer(b.connection, on_connection_event, t)
       && TI(t).binding_id == b.id;
@@ -166,11 +156,18 @@ static bool may_take_slot(const az_iot_delivery_tracker* t, uint8_t priority)
  * @retval NO_SLOT_FOR_PRIORITY No PUBACK slot it may take; stays queued.
  * @return Otherwise the publish result; any failure leaves it queued.
  */
+static void expire(az_iot_delivery_tracker_entry* e);
+
 static az_iot_result try_send(az_iot_delivery_tracker* t, az_iot_delivery_tracker_entry* e)
 {
   const az_iot_delivery_tracker_profile* profile = EI(e).profile;
   az_iot_mqtt_message message = { 0 };
   az_iot_result result = profile->encode(TI(t).owner_context, index_of(t, e), &message);
+  if (result == AZ_IOT_ERR_TIMEOUT)
+  {
+    expire(e); /* The owner's own deadline passed. */
+    return AZ_IOT_OK;
+  }
   if (result != AZ_IOT_OK)
   {
     AZ_IOT_LOG_ERRORF(
@@ -184,7 +181,7 @@ static az_iot_result try_send(az_iot_delivery_tracker* t, az_iot_delivery_tracke
   bool track = message.qos != AZ_IOT_MQTT_QOS_0;
   if (track && !may_take_slot(t, profile->priority))
   {
-    if (profile->on_session_loss != AZ_IOT_DELIVERY_TRACKER_ON_SESSION_LOSS_DROP)
+    if (!profile->send_untracked_without_slot)
     {
       return NO_SLOT_FOR_PRIORITY;
     }
@@ -207,6 +204,10 @@ static az_iot_result try_send(az_iot_delivery_tracker* t, az_iot_delivery_tracke
   if (result != AZ_IOT_OK)
   {
     return result;
+  }
+  if (profile->on_sent != NULL)
+  {
+    profile->on_sent(TI(t).owner_context, index_of(t, e));
   }
   if (track)
   {
@@ -260,7 +261,7 @@ static bool held_back(const az_iot_delivery_tracker* t, const az_iot_delivery_tr
 static void flush(az_iot_delivery_tracker* t, bool skip_requeued)
 {
   az_iot_connection_client* const connection = TI(t).connection;
-  binding const bound = binding_of(t);
+  az_iot_delivery_tracker_binding const bound = az_iot_delivery_tracker__binding(t);
   TI(t).send_refused = 0u;
   uint8_t priority = 0;
   uint64_t sequence = 0; /* Sequences start at 1, so (0, 0) precedes every entry. */
@@ -296,7 +297,7 @@ static void flush(az_iot_delivery_tracker* t, bool skip_requeued)
     {
       result = try_send(t, candidate);
     }
-    if (!still_bound(t, bound))
+    if (!az_iot_delivery_tracker__has_binding(t, bound))
     {
       return;
     }
@@ -320,7 +321,7 @@ static void for_each_entry(
     bool (*selected)(az_iot_delivery_tracker_entry* e),
     void (*apply)(az_iot_delivery_tracker_entry* e))
 {
-  binding const bound = binding_of(t);
+  az_iot_delivery_tracker_binding const bound = az_iot_delivery_tracker__binding(t);
   uint64_t const submitted_before = TI(t).next_sequence; /* Not what callbacks submit now. */
   for (size_t i = 0; i < TI(t).capacity; ++i)
   {
@@ -329,7 +330,7 @@ static void for_each_entry(
         && (state == ENTRY_FREE || EI(e).state == state) && (selected == NULL || selected(e)))
     {
       apply(e);
-      if (!still_bound(t, bound))
+      if (!az_iot_delivery_tracker__has_binding(t, bound))
       {
         return;
       }
@@ -353,24 +354,34 @@ static void discard(az_iot_delivery_tracker_entry* e)
 /**
  * @brief Lower @p remaining_ms to the earliest message time limit, or to 0 when this
  *        do_work()'s TICK can send a queued message: a held back one becomes sendable, or a
- *        PUBACK slot freed since the last flush. Not after a refused flush: events resume it.
+ *        PUBACK slot freed since the last flush (or it may go untracked). After a refused flush,
+ *        to AZ_IOT_DELIVERY_TRACKER_REFUSED_SEND_RETRY_MS or half the message's time left, so it
+ *        is retried before it expires.
  */
 static void lower_remaining_to_next_action(const az_iot_delivery_tracker* t, uint64_t* remaining_ms)
 {
   uint64_t const now = az_iot_time_mono_ms();
-  bool const can_send_now
-      = TI(t).send_refused == 0u && az_iot_connection_client__is_connected(TI(t).connection);
+  bool const connected = az_iot_connection_client__is_connected(TI(t).connection);
   for (size_t i = 0; i < TI(t).capacity; ++i)
   {
     const az_iot_delivery_tracker_entry* e = &TI(t).entries[i];
     uint64_t left = EI(e).state == ENTRY_FREE ? UINT64_MAX
                                               : az_iot_deadline__remaining_ms(&EI(e).deadline, now);
-    /* A held back message is sendable from the TICK where held_back() turns false. */
-    if (EI(e).state == ENTRY_QUEUED && can_send_now
-        && (EI(e).held_for_resend == 0u || TI(t).tick_count != EI(e).held_at_tick)
-        && may_take_slot(t, EI(e).profile->priority))
+    /* After a refused send, not at once (no busy loop) but before the time limit. */
+    uint64_t sendable_in_ms = 0u;
+    if (TI(t).send_refused != 0u)
     {
-      left = 0u;
+      sendable_in_ms = left / 2u < AZ_IOT_DELIVERY_TRACKER_REFUSED_SEND_RETRY_MS
+          ? left / 2u
+          : AZ_IOT_DELIVERY_TRACKER_REFUSED_SEND_RETRY_MS;
+    }
+    /* A held back message is sendable from the TICK where held_back() turns false. */
+    if (EI(e).state == ENTRY_QUEUED && connected
+        && (EI(e).held_for_resend == 0u || TI(t).tick_count != EI(e).held_at_tick)
+        && (EI(e).profile->send_untracked_without_slot || may_take_slot(t, EI(e).profile->priority))
+        && sendable_in_ms < left)
+    {
+      left = sendable_in_ms;
     }
     *remaining_ms = left < *remaining_ms ? left : *remaining_ms;
   }
@@ -379,7 +390,7 @@ static void lower_remaining_to_next_action(const az_iot_delivery_tracker* t, uin
 static void on_connection_event(const az_iot_connection_feature_event* event, void* user_ctx)
 {
   az_iot_delivery_tracker* t = (az_iot_delivery_tracker*)user_ctx;
-  binding const bound = binding_of(t);
+  az_iot_delivery_tracker_binding const bound = az_iot_delivery_tracker__binding(t);
   switch (event->kind)
   {
     case AZ_IOT_CONNECTION_FEATURE_EVENT_STATE:
@@ -394,7 +405,7 @@ static void on_connection_event(const az_iot_connection_feature_event* event, vo
       break;
     case AZ_IOT_CONNECTION_FEATURE_EVENT_TICK:
       for_each_entry(t, ENTRY_FREE, has_expired, expire);
-      if (still_bound(t, bound))
+      if (az_iot_delivery_tracker__has_binding(t, bound))
       {
         ++TI(t).tick_count;
         flush(t, true);
@@ -508,20 +519,56 @@ void az_iot_delivery_tracker__unbind(az_iot_delivery_tracker* tracker)
   TI(tracker).connection = NULL;
 }
 
+/** @brief Whether @p profile and the correlation id can be tracked. */
+static bool submission_is_valid(
+    const az_iot_delivery_tracker_profile* profile,
+    const uint8_t* correlation_id,
+    size_t correlation_id_length)
+{
+  return profile != NULL && profile->encode != NULL && profile->on_complete != NULL
+      && correlation_id_length <= AZ_IOT_DELIVERY_TRACKER_CORRELATION_ID_MAX
+      && (correlation_id != NULL || correlation_id_length == 0u)
+      && (profile->confirmation != AZ_IOT_DELIVERY_TRACKER_CONFIRM_BY_RESPONSE
+          || correlation_id_length != 0u);
+}
+
+/** @brief Queue a message in free entry @p e and send what can go. */
+static void track_in_entry(
+    az_iot_delivery_tracker* tracker,
+    az_iot_delivery_tracker_entry* e,
+    const az_iot_delivery_tracker_profile* profile,
+    const uint8_t* correlation_id,
+    size_t correlation_id_length,
+    uint64_t timeout_ms)
+{
+  EI(e).tracker = tracker;
+  EI(e).profile = profile;
+  EI(e).sequence = TI(tracker).next_sequence++;
+  EI(e).identity = TI(tracker).connection->identity_changes;
+  if (correlation_id_length != 0u)
+  {
+    memcpy(EI(e).correlation_id, correlation_id, correlation_id_length);
+  }
+  EI(e).correlation_id_length = (uint8_t)correlation_id_length;
+  az_iot_deadline__arm_after_ms(
+      &EI(e).deadline,
+      az_iot_time_mono_ms(),
+      timeout_ms != 0u ? timeout_ms
+                       : TI(tracker).connection->opts.max_unconfirmed_delivery_timeout_ms);
+  EI(e).state = ENTRY_QUEUED;
+  flush(tracker, true);
+}
+
 az_iot_result az_iot_delivery_tracker__submit(
     az_iot_delivery_tracker* tracker,
     const az_iot_delivery_tracker_profile* profile,
     const uint8_t* correlation_id,
     size_t correlation_id_length,
-    uint32_t timeout_ms,
+    uint64_t timeout_ms,
     size_t* out_entry_index)
 {
-  if (tracker == NULL || profile == NULL || profile->encode == NULL || profile->on_complete == NULL
-      || out_entry_index == NULL
-      || correlation_id_length > AZ_IOT_DELIVERY_TRACKER_CORRELATION_ID_MAX
-      || (correlation_id == NULL && correlation_id_length != 0u)
-      || (profile->confirmation == AZ_IOT_DELIVERY_TRACKER_CONFIRM_BY_RESPONSE
-          && correlation_id_length == 0u))
+  if (tracker == NULL || out_entry_index == NULL
+      || !submission_is_valid(profile, correlation_id, correlation_id_length))
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
@@ -538,30 +585,46 @@ az_iot_result az_iot_delivery_tracker__submit(
   {
     return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
   }
-  EI(e).tracker = tracker;
-  EI(e).profile = profile;
-  EI(e).sequence = TI(tracker).next_sequence++;
-  EI(e).identity = TI(tracker).connection->identity_changes;
-  if (correlation_id_length != 0u)
-  {
-    memcpy(EI(e).correlation_id, correlation_id, correlation_id_length);
-  }
-  EI(e).correlation_id_length = (uint8_t)correlation_id_length;
-  az_iot_deadline__arm_after_ms(
-      &EI(e).deadline,
-      az_iot_time_mono_ms(),
-      timeout_ms != 0u ? timeout_ms
-                       : TI(tracker).connection->opts.max_unconfirmed_delivery_timeout_ms);
-  EI(e).state = ENTRY_QUEUED;
   *out_entry_index = index_of(tracker, e);
-  flush(tracker, true);
+  track_in_entry(tracker, e, profile, correlation_id, correlation_id_length, timeout_ms);
+  return AZ_IOT_OK;
+}
+
+az_iot_result az_iot_delivery_tracker__submit_at(
+    az_iot_delivery_tracker* tracker,
+    size_t entry_index,
+    const az_iot_delivery_tracker_profile* profile,
+    const uint8_t* correlation_id,
+    size_t correlation_id_length,
+    uint64_t timeout_ms)
+{
+  if (tracker == NULL || !submission_is_valid(profile, correlation_id, correlation_id_length))
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  if (TI(tracker).connection == NULL)
+  {
+    return AZ_IOT_ERR_NOT_INITIALIZED;
+  }
+  if (entry_index >= TI(tracker).capacity
+      || EI(&TI(tracker).entries[entry_index]).state != ENTRY_FREE)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  track_in_entry(
+      tracker,
+      &TI(tracker).entries[entry_index],
+      profile,
+      correlation_id,
+      correlation_id_length,
+      timeout_ms);
   return AZ_IOT_OK;
 }
 
 /** @brief Send what a freed entry or PUBACK slot now lets go, unless @p t lost binding @p b. */
-static void flush_if_still_bound(az_iot_delivery_tracker* t, binding b)
+static void flush_if_still_bound(az_iot_delivery_tracker* t, az_iot_delivery_tracker_binding b)
 {
-  if (still_bound(t, b))
+  if (az_iot_delivery_tracker__has_binding(t, b))
   {
     flush(t, true);
   }
@@ -576,7 +639,7 @@ az_iot_result az_iot_delivery_tracker__complete(
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
-  binding const bound = binding_of(tracker);
+  az_iot_delivery_tracker_binding const bound = az_iot_delivery_tracker__binding(tracker);
   for (size_t i = 0; i < TI(tracker).capacity; ++i)
   {
     az_iot_delivery_tracker_entry* e = &TI(tracker).entries[i];
@@ -604,6 +667,14 @@ void az_iot_delivery_tracker__cancel(az_iot_delivery_tracker* tracker, size_t en
   {
     forget_publish(e);
     memset(e, 0, sizeof(*e));
-    flush_if_still_bound(tracker, binding_of(tracker));
+    flush_if_still_bound(tracker, az_iot_delivery_tracker__binding(tracker));
+  }
+}
+
+void az_iot_delivery_tracker__expire_overdue(az_iot_delivery_tracker* tracker)
+{
+  if (tracker != NULL && TI(tracker).connection != NULL)
+  {
+    for_each_entry(tracker, ENTRY_FREE, has_expired, expire);
   }
 }

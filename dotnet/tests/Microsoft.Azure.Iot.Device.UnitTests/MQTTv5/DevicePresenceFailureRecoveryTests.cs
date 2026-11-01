@@ -213,7 +213,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
 
             await connectionClient.ConnectToHubAsync(GetMockConnectionContext(), TestContext.Current.CancellationToken)
                 .WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
-            await connectionClient.DisconnectAsync(TestContext.Current.CancellationToken);
+            await connectionClient.DisconnectAsync(null, TestContext.Current.CancellationToken);
 
 #pragma warning disable SYSLIB0026 // Mock certificate
             ConnectionContext otherIdentity = new()
@@ -755,7 +755,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
                 }
                 else
                 {
-                    await connectionClient.DisconnectAsync(TestContext.Current.CancellationToken);
+                    await connectionClient.DisconnectAsync(null, TestContext.Current.CancellationToken);
                 }
 
                 await announcement.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);

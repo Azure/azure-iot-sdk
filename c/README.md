@@ -109,7 +109,9 @@ in its header.
   headers, CMake package and pkg-config files.
 - To port to another platform, supply an MQTT adapter
   ([Bring your own MQTT client](docs/how_to_byo_mqtt_client.md)) and, for software updates, a
-  crypto backend and the platform hooks ([ESP32 sample](samples/software_update/esp32/README.md)).
+  crypto backend and either the platform hooks ([ESP32 sample](samples/software_update/esp32/README.md))
+  or, in library mode, an application that installs the updates itself
+  ([library_mode sample](samples/software_update/pc/library_mode/README.md)).
 
 ## Getting Help
 

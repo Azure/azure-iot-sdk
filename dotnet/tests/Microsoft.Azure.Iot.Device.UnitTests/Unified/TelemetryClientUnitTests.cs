@@ -455,7 +455,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
                 TestContext.Current.CancellationToken);
             using TelemetryClient telemetryClient = new(connection);
 
-            await connection.DisconnectAsync(TestContext.Current.CancellationToken);
+            await connection.DisconnectAsync(null, TestContext.Current.CancellationToken);
 
             await Assert.ThrowsAsync<NotSupportedException>(
                 async () => await telemetryClient.SendTelemetryAsync(new DeviceToCloudTelemetry(), TestContext.Current.CancellationToken));

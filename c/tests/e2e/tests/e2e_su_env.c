@@ -12,9 +12,11 @@
 
 #include "support/test_env.h"
 
-const char* e2e_su_env_require(const char* name)
+static uint8_t g_connection_workspace[AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE];
+
+char* e2e_su_env_require(const char* name)
 {
-  const char* v = az_iot_test_env(name);
+  char* v = az_iot_test_env_dup(name);
   if (v == NULL)
   {
     printf("software updates e2e: required variable %s is not set\n", name);
@@ -23,20 +25,15 @@ const char* e2e_su_env_require(const char* name)
 }
 
 /**
- * @brief Parses `[http://]host[:port][/]` from `https_proxy`.
+ * @brief Parses `[http://]host[:port][/]`, the value of `https_proxy`.
  *
  * A missing port means 80, the http default.
  *
- * @return 0 when unset or parsed; non-zero for a form this suite cannot use
+ * @return 0 when parsed; non-zero for a form this suite cannot use
  *   (another scheme, credentials, or a host or port that does not fit).
  */
-static int load_proxy(e2e_su_env* env)
+static int parse_proxy(e2e_su_env* env, const char* v)
 {
-  const char* v = az_iot_test_env("https_proxy");
-  if (v == NULL)
-  {
-    return 0;
-  }
   const char* host = strstr(v, "://");
   if (host != NULL && (host - v != 4 || strncmp(v, "http", 4) != 0))
   {
@@ -72,6 +69,15 @@ static int load_proxy(e2e_su_env* env)
   return 0;
 }
 
+/** @brief Applies `https_proxy` when set; see parse_proxy(). 0 when unset or parsed. */
+static int load_proxy(e2e_su_env* env)
+{
+  char* value = az_iot_test_env_dup("https_proxy");
+  int rc = (value != NULL) ? parse_proxy(env, value) : 0;
+  free(value);
+  return rc;
+}
+
 int e2e_su_env_load(e2e_su_env* env)
 {
   memset(env, 0, sizeof(*env));
@@ -91,6 +97,17 @@ int e2e_su_env_load(e2e_su_env* env)
   return rc;
 }
 
+void e2e_su_env_free(e2e_su_env* env)
+{
+  free(env->dps_host);
+  free(env->id_scope);
+  free(env->registration_id);
+  free(env->cert_path);
+  free(env->key_path);
+  free(env->trusted_ca);
+  memset(env, 0, sizeof(*env));
+}
+
 void e2e_su_env_apply(
     const e2e_su_env* env,
     az_iot_connection_client_options* conn,
@@ -105,6 +122,8 @@ void e2e_su_env_apply(
   conn->dps.id_scope = env->id_scope;
   conn->dps.registration_id = env->registration_id;
   conn->dps.global_endpoint = env->dps_host;
+  conn->workspace = g_connection_workspace;
+  conn->workspace_size = sizeof(g_connection_workspace);
   if (env->proxy_host[0] != '\0')
   {
     conn->proxy.host = env->proxy_host;

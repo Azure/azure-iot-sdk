@@ -94,6 +94,7 @@ typedef struct
 } custody_fixture;
 
 static custody_fixture g_fixture;
+static uint8_t g_connection_workspace[AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE];
 
 static char* str_dup(const char* value)
 {
@@ -215,6 +216,8 @@ static int device_connect(custody_fixture* fx)
   copts.dps.id_scope = fx->config.id_scope;
   copts.dps.registration_id = fx->config.reg_id;
   copts.certificate_provider = &fx->provider.base;
+  copts.workspace = g_connection_workspace;
+  copts.workspace_size = sizeof(g_connection_workspace);
   if (fx->config.global_endpoint != NULL)
   {
     copts.dps.global_endpoint = fx->config.global_endpoint;
@@ -388,7 +391,7 @@ static void telemetry_flows_over_the_token_authenticated_connection(void** state
    * whose reason was discarded is what this test did before, and a transient
    * open failure was indistinguishable from a custody fault. Mirrors
    * e2e_scenarios_test.c. */
-  bool watching = az_iot_e2e_service_telemetry_watch_begin(g_fixture.service);
+  bool watching = az_iot_e2e_service_telemetry_watch_begin(g_fixture.service, needle);
   for (time_t connect_start = time(NULL);
        !watching && (time(NULL) - connect_start) < E2E_CONNECT_TIMEOUT_S;)
   {
@@ -396,7 +399,7 @@ static void telemetry_flows_over_the_token_authenticated_connection(void** state
     {
       (void)az_iot_connection_client_do_work(&g_fixture.conn, E2E_PUMP_MS);
     }
-    watching = az_iot_e2e_service_telemetry_watch_begin(g_fixture.service);
+    watching = az_iot_e2e_service_telemetry_watch_begin(g_fixture.service, needle);
   }
   if (!watching)
   {

@@ -67,6 +67,8 @@
 #define E2E_RENEW_TIMEOUT_S 270
 #define E2E_RENEW_ATTEMPTS 3
 
+static uint8_t g_connection_workspace[AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE];
+
 /* ---- device callbacks ----------------------------------------------------- */
 
 typedef struct
@@ -183,6 +185,11 @@ static void on_renew_event(const az_iot_csr_event* evt, void* user_ctx)
   if (evt->kind == AZ_IOT_CSR_ACCEPTED)
   {
     c->renew_accepted = true;
+    return;
+  }
+  if (evt->kind == AZ_IOT_CSR_FAILED && evt->status == AZ_IOT_ERR_NOT_CONNECTED)
+  {
+    c->hub_dropped = true; /* The session ended with it open: resubmitted once reconnected. */
     return;
   }
   c->renew_kind = evt->kind;
@@ -427,6 +434,8 @@ static void run_csr_enrollment(
   AZ_IOT_CSR_PAYLOAD_STORAGE(csr_buf);
   copts.csr_payload_buffer = az_span_create(csr_buf, sizeof(csr_buf));
   copts.dps.request_operational_certificate = true;
+  copts.workspace = g_connection_workspace;
+  copts.workspace_size = sizeof(g_connection_workspace);
   if (global != NULL)
   {
     copts.dps.global_endpoint = global;

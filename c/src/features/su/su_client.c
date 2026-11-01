@@ -32,6 +32,7 @@
 #include "azure/iot/az_iot_su.h"
 
 #include "internal/su_internal.h"
+#include "internal/su_manifest_internal.h"
 #include "internal/base64.h"
 #include "internal/crypto.h"
 #include "internal/json_string.h"
@@ -42,6 +43,19 @@
 
 /** @brief Bytes of the persisted-record header, which precedes the request. */
 #define AZ_IOT_SU_PERSIST_HEADER_SIZE 40u
+
+/** @brief How far the current file has got (az_iot_su_client::file_download_phase). */
+typedef enum
+{
+  /** The file starts: a download handler, if the file names one, chooses a related file. */
+  SU_FILE_PHASE_CHOOSE = 0,
+  /** The chosen related file is downloaded, then its hash is checked. */
+  SU_FILE_PHASE_DOWNLOAD_RELATED,
+  /** The handler builds the file from the related file, then the file's hash is checked. */
+  SU_FILE_PHASE_BUILD,
+  /** The file is downloaded in full, then its hash is checked. */
+  SU_FILE_PHASE_FULL_DOWNLOAD,
+} su_file_download_phase;
 
 /* The public header reserves opaque storage for the SDK-built channel so the
  * client struct stays caller-allocated with no hidden allocation. If the
@@ -61,21 +75,6 @@ static void raise_simple(
     az_iot_su_operation operation,
     bool report_terminal,
     const az_iot_su_report* report);
-
-/* fetch_in_flight, fetch_delivered and report_sent_terminal occupy padding
- * after pending_fetch, so adding them left the caller-allocated client's size and offsets
- * unchanged. Fails the build if that padding is ever gone. */
-typedef struct
-{
-  char c;
-  uint64_t v;
-} su_u64_alignment_probe;
-typedef char az_iot_su_fetch_in_flight_uses_padding
-    [(offsetof(az_iot_su_client, _internal.report_sent_terminal)
-          % offsetof(su_u64_alignment_probe, v)
-      != 0u)
-         ? 1
-         : -1];
 
 typedef char az_iot_su_channel_storage_is_large_enough
     [(sizeof(((az_iot_su_client*)0)->_internal.channel_storage) >= sizeof(az_iot_su_channel_dps))
@@ -215,9 +214,9 @@ static void result_init_steps(az_iot_su_client* client, int32_t step_count)
   {
     step_count = 0;
   }
-  if (step_count > _az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS)
+  if (step_count > AZ_IOT_SU_MAX_STEP_COUNT)
   {
-    step_count = _az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS;
+    step_count = AZ_IOT_SU_MAX_STEP_COUNT;
   }
   SU_I(client).step_results_count = step_count;
   for (int32_t i = 0; i < step_count; ++i)
@@ -234,7 +233,12 @@ static void result_step_success(az_iot_su_client* client, uint32_t step)
     SU_I(client).step_results[step].outcome = AZ_IOT_SU_OUTCOME_SUCCEEDED;
     SU_I(client).step_results[step].failure_origin = AZ_IOT_SU_FAILURE_ORIGIN_NOT_APPLICABLE;
     SU_I(client).step_results[step].result_code = AZ_IOT_SU_AGENT_RESULT_CODE_SUCCESS;
-    SU_I(client).step_results[step].extended_result_code = 0;
+    /* A delta fallback recorded while the step's files were downloaded is kept. */
+    int32_t* extended = &SU_I(client).step_results[step].extended_result_code;
+    if (((uint32_t)*extended >> 28) != AZ_IOT_SU_FACILITY_DELTA)
+    {
+      *extended = 0;
+    }
   }
 }
 
@@ -270,6 +274,15 @@ static void result_overall_success(az_iot_su_client* client)
   az_iot_su_client_install_result* r = &SU_I(client).install_result;
   r->result_code = AZ_IOT_SU_AGENT_RESULT_CODE_SUCCESS;
   r->extended_result_code = 0;
+  /* The first step's delta fallback, as a failure carries the first failed step's code. */
+  for (int32_t i = 0; i < SU_I(client).step_results_count && r->extended_result_code == 0; ++i)
+  {
+    if (((uint32_t)SU_I(client).step_results[i].extended_result_code >> 28)
+        == AZ_IOT_SU_FACILITY_DELTA)
+    {
+      r->extended_result_code = SU_I(client).step_results[i].extended_result_code;
+    }
+  }
 
   /* Latch the outcome and the applied update id while the manifest is still
    * live: reset_to_idle() clears it before the report is emitted. */
@@ -318,7 +331,7 @@ static void result_overall_success(az_iot_su_client* client)
  * the SJWK header (alg, kid), the manifest signature or the JWS payload; the
  * SJWK signature, payload and signing key are decoded in place within the
  * header. The managed client uses its az_iot_su_limits::scratch_size workspace
- * scratch; az_iot_su_parse_update_request() uses AZ_IOT_SU_VERIFY_SCRATCH_SIZE
+ * scratch; az_iot_su_verify_manifest() uses AZ_IOT_SU_VERIFY_SCRATCH_SIZE
  * bytes of stack. Values that do not fit are logged as too large, not as
  * invalid.
  */
@@ -1327,6 +1340,7 @@ static void reset_to_idle(az_iot_su_client* client)
  *
  * Only removes the JSON string escaping: the signature covers the unescaped
  * bytes. The manifest is not interpreted until verify_manifest() accepts it.
+ * On failure both spans are left empty.
  *
  * @param client The client.
  * @return AZ_IOT_OK; AZ_IOT_ERR_INVALID_ARG when empty or undecodable.
@@ -1334,344 +1348,43 @@ static void reset_to_idle(az_iot_su_client* client)
 static az_iot_result decode_manifest(az_iot_su_client* client)
 {
   az_span manifest = SU_I(client).current_request.update_manifest;
-  az_span unescaped;
+  az_span unescaped = AZ_SPAN_EMPTY;
   if (az_span_size(manifest) <= 0
-      || az_iot_json_string_decode(manifest, manifest, &unescaped) != AZ_IOT_OK
-      || az_span_size(unescaped) <= 0)
+      || az_iot_json_string_decode(manifest, manifest, &unescaped) != AZ_IOT_OK)
   {
-    return AZ_IOT_ERR_INVALID_ARG;
+    unescaped = AZ_SPAN_EMPTY;
   }
   SU_I(client).current_request.update_manifest = unescaped;
   SU_I(client).manifest_text = unescaped;
-  return AZ_IOT_OK;
+  return az_span_size(unescaped) > 0 ? AZ_IOT_OK : AZ_IOT_ERR_INVALID_ARG;
 }
 
 /**
- * @brief Move to the next property of the object being read.
- *
- * @param jr       Reader inside an object, on its start or on the end of a value.
- * @param name     Set to the property name.
- * @param is_error Set when the JSON is malformed.
- * @return true with the reader on the property value; false at the object end or on error.
- */
-static bool json_next_property(az_json_reader* jr, az_json_token* name, bool* is_error)
-{
-  if (az_result_failed(az_json_reader_next_token(jr)))
-  {
-    *is_error = true;
-    return false;
-  }
-  if (jr->token.kind == AZ_JSON_TOKEN_END_OBJECT)
-  {
-    return false;
-  }
-  if (jr->token.kind != AZ_JSON_TOKEN_PROPERTY_NAME)
-  {
-    *is_error = true;
-    return false;
-  }
-  *name = jr->token;
-  if (az_result_failed(az_json_reader_next_token(jr)))
-  {
-    *is_error = true;
-    return false;
-  }
-  return true;
-}
-
-/**
- * @brief Move to the next element of the array being read.
- *
- * @param jr       Reader inside an array, on its start or on the end of an element.
- * @param is_error Set when the JSON is malformed.
- * @return true with the reader on the element; false at the array end or on error.
- */
-static bool json_next_element(az_json_reader* jr, bool* is_error)
-{
-  if (az_result_failed(az_json_reader_next_token(jr)))
-  {
-    *is_error = true;
-    return false;
-  }
-  return jr->token.kind != AZ_JSON_TOKEN_END_ARRAY;
-}
-
-/** @brief Move the reader to the end of the current value; sets @p is_error on failure. */
-static void json_skip_value(az_json_reader* jr, bool* is_error)
-{
-  if (az_result_failed(az_json_reader_skip_children(jr)))
-  {
-    *is_error = true;
-  }
-}
-
-/**
- * @brief Count the members (array elements or object properties) of the current value.
- *
- * @param jr       Reader on a BEGIN_ARRAY or BEGIN_OBJECT token; left on its end.
- * @param is_error Set when the JSON is malformed.
- * @return The member count.
- */
-static uint32_t json_count_members(az_json_reader* jr, bool* is_error)
-{
-  uint32_t count = 0;
-  az_json_token name;
-  if (jr->token.kind == AZ_JSON_TOKEN_BEGIN_ARRAY)
-  {
-    while (!*is_error && json_next_element(jr, is_error))
-    {
-      count++;
-      json_skip_value(jr, is_error);
-    }
-  }
-  else
-  {
-    while (!*is_error && json_next_property(jr, &name, is_error))
-    {
-      count++;
-      json_skip_value(jr, is_error);
-    }
-  }
-  return count;
-}
-
-/** @brief Counts in an update manifest that size its parsed form. */
-typedef struct
-{
-  uint32_t step_count;
-  uint32_t file_count;
-  uint32_t largest_step_file_count;
-  uint32_t largest_file_hash_count;
-} manifest_counts;
-
-/**
- * @brief Count the steps of `instructions` and the files of the largest step.
- *
- * @param jr       Reader on the `instructions` value; left on its end.
- * @param counts   Updated.
- * @param is_error Set when the JSON is malformed.
- */
-static void count_manifest_steps(az_json_reader* jr, manifest_counts* counts, bool* is_error)
-{
-  az_json_token name;
-  if (jr->token.kind != AZ_JSON_TOKEN_BEGIN_OBJECT)
-  {
-    json_skip_value(jr, is_error);
-    return;
-  }
-  while (!*is_error && json_next_property(jr, &name, is_error))
-  {
-    if (!az_json_token_is_text_equal(&name, AZ_SPAN_FROM_STR("steps"))
-        || jr->token.kind != AZ_JSON_TOKEN_BEGIN_ARRAY)
-    {
-      json_skip_value(jr, is_error);
-      continue;
-    }
-    while (!*is_error && json_next_element(jr, is_error))
-    {
-      counts->step_count++;
-      if (jr->token.kind != AZ_JSON_TOKEN_BEGIN_OBJECT)
-      {
-        json_skip_value(jr, is_error);
-        continue;
-      }
-      az_json_token step_property;
-      while (!*is_error && json_next_property(jr, &step_property, is_error))
-      {
-        if (az_json_token_is_text_equal(&step_property, AZ_SPAN_FROM_STR("files"))
-            && jr->token.kind == AZ_JSON_TOKEN_BEGIN_ARRAY)
-        {
-          uint32_t step_files = json_count_members(jr, is_error);
-          if (step_files > counts->largest_step_file_count)
-          {
-            counts->largest_step_file_count = step_files;
-          }
-        }
-        else
-        {
-          json_skip_value(jr, is_error);
-        }
-      }
-    }
-  }
-}
-
-/**
- * @brief Count the manifest `files` and the hashes of the file with the most.
- *
- * @param jr       Reader on the `files` value; left on its end.
- * @param counts   Updated.
- * @param is_error Set when the JSON is malformed.
- */
-static void count_manifest_files(az_json_reader* jr, manifest_counts* counts, bool* is_error)
-{
-  az_json_token file_id;
-  if (jr->token.kind != AZ_JSON_TOKEN_BEGIN_OBJECT)
-  {
-    json_skip_value(jr, is_error);
-    return;
-  }
-  while (!*is_error && json_next_property(jr, &file_id, is_error))
-  {
-    counts->file_count++;
-    if (jr->token.kind != AZ_JSON_TOKEN_BEGIN_OBJECT)
-    {
-      json_skip_value(jr, is_error);
-      continue;
-    }
-    az_json_token file_property;
-    while (!*is_error && json_next_property(jr, &file_property, is_error))
-    {
-      if (az_json_token_is_text_equal(&file_property, AZ_SPAN_FROM_STR("hashes"))
-          && jr->token.kind == AZ_JSON_TOKEN_BEGIN_OBJECT)
-      {
-        uint32_t hashes = json_count_members(jr, is_error);
-        if (hashes > counts->largest_file_hash_count)
-        {
-          counts->largest_file_hash_count = hashes;
-        }
-      }
-      else if (
-          az_json_token_is_text_equal(&file_property, AZ_SPAN_FROM_STR("mimeType"))
-          && jr->token.kind != AZ_JSON_TOKEN_STRING)
-      {
-        /* The parser reads past a non-string mimeType without skipping it, so its members
-         * would be parsed as file properties. */
-        *is_error = true;
-      }
-      else
-      {
-        json_skip_value(jr, is_error);
-      }
-    }
-  }
-}
-
-/**
- * @brief Check a manifest's counts against the arrays it is parsed into.
- *
- * az_iot_adu_client_parse_update_manifest() bounds neither the step count nor the hashes of a
- * file, so a manifest over either would be written past those arrays. It is checked here
- * first; file counts too, so each exceeded limit is logged.
- *
- * @param manifest_text The decoded manifest JSON.
- * @return AZ_IOT_OK; AZ_IOT_ERR_NOT_ENOUGH_SPACE (logged) when a count exceeds its limit;
- * AZ_IOT_ERR_INVALID_ARG when the JSON is malformed or a file `mimeType` is not a string.
- */
-static az_iot_result check_manifest_limits(az_span manifest_text)
-{
-  az_json_reader jr;
-  if (az_result_failed(az_json_reader_init(&jr, manifest_text, NULL))
-      || az_result_failed(az_json_reader_next_token(&jr))
-      || jr.token.kind != AZ_JSON_TOKEN_BEGIN_OBJECT)
-  {
-    return AZ_IOT_ERR_INVALID_ARG;
-  }
-
-  manifest_counts counts = { 0 };
-  bool is_error = false;
-  az_json_token name;
-  while (!is_error && json_next_property(&jr, &name, &is_error))
-  {
-    if (az_json_token_is_text_equal(&name, AZ_SPAN_FROM_STR("instructions")))
-    {
-      count_manifest_steps(&jr, &counts, &is_error);
-    }
-    else if (az_json_token_is_text_equal(&name, AZ_SPAN_FROM_STR("files")))
-    {
-      count_manifest_files(&jr, &counts, &is_error);
-    }
-    else
-    {
-      json_skip_value(&jr, &is_error);
-    }
-  }
-  if (is_error)
-  {
-    return AZ_IOT_ERR_INVALID_ARG;
-  }
-
-  az_iot_result result = AZ_IOT_OK;
-  if (counts.step_count > (uint32_t)AZ_IOT_SU_MAX_STEP_COUNT)
-  {
-    AZ_IOT_LOG_ERRORF(
-        AZ_IOT_LOG_COMPONENT_SU,
-        "manifest has %u steps; AZ_IOT_SU_MAX_STEP_COUNT is %u",
-        (unsigned)counts.step_count,
-        (unsigned)AZ_IOT_SU_MAX_STEP_COUNT);
-    result = AZ_IOT_ERR_NOT_ENOUGH_SPACE;
-  }
-  if (counts.file_count > (uint32_t)AZ_IOT_SU_MAX_FILE_COUNT)
-  {
-    AZ_IOT_LOG_ERRORF(
-        AZ_IOT_LOG_COMPONENT_SU,
-        "manifest has %u files; AZ_IOT_SU_MAX_FILE_COUNT is %u",
-        (unsigned)counts.file_count,
-        (unsigned)AZ_IOT_SU_MAX_FILE_COUNT);
-    result = AZ_IOT_ERR_NOT_ENOUGH_SPACE;
-  }
-  if (counts.largest_step_file_count > (uint32_t)AZ_IOT_SU_MAX_FILE_COUNT_PER_STEP)
-  {
-    AZ_IOT_LOG_ERRORF(
-        AZ_IOT_LOG_COMPONENT_SU,
-        "manifest step has %u files; AZ_IOT_SU_MAX_FILE_COUNT_PER_STEP is %u",
-        (unsigned)counts.largest_step_file_count,
-        (unsigned)AZ_IOT_SU_MAX_FILE_COUNT_PER_STEP);
-    result = AZ_IOT_ERR_NOT_ENOUGH_SPACE;
-  }
-  if (counts.largest_file_hash_count > (uint32_t)_az_IOT_ADU_CLIENT_MAX_FILE_HASH_COUNT)
-  {
-    AZ_IOT_LOG_ERRORF(
-        AZ_IOT_LOG_COMPONENT_SU,
-        "manifest file has %u hashes; at most %u are supported",
-        (unsigned)counts.largest_file_hash_count,
-        (unsigned)_az_IOT_ADU_CLIENT_MAX_FILE_HASH_COUNT);
-    result = AZ_IOT_ERR_NOT_ENOUGH_SPACE;
-  }
-  return result;
-}
-
-/**
- * @brief Parse a decoded manifest after checking it fits the parsed form.
- *
- * @param az            Initialized azure-sdk-for-c client.
- * @param manifest_text The decoded manifest JSON; @p out_manifest spans point into it.
- * @param out_manifest  Filled.
- * @return AZ_IOT_OK; AZ_IOT_ERR_NOT_ENOUGH_SPACE when over a limit (check_manifest_limits());
- * AZ_IOT_ERR_INVALID_ARG when malformed.
- */
-static az_iot_result parse_update_manifest(
-    az_iot_adu_client* az,
-    az_span manifest_text,
-    az_iot_su_client_update_manifest* out_manifest)
-{
-  az_iot_result result = check_manifest_limits(manifest_text);
-  if (result != AZ_IOT_OK)
-  {
-    return result;
-  }
-  az_json_reader jr;
-  if (az_result_failed(az_json_reader_init(&jr, manifest_text, NULL))
-      || az_result_failed(az_iot_adu_client_parse_update_manifest(az, &jr, out_manifest)))
-  {
-    return AZ_IOT_ERR_INVALID_ARG;
-  }
-  return AZ_IOT_OK;
-}
-
-/**
- * @brief Parse the verified manifest_text into current_manifest.
+ * @brief Parse the verified manifest_text into current_manifest, and check that every step file
+ * is described by it and has a download URL.
  *
  * current_manifest holds spans into manifest_text (client-owned request_buffer).
  *
  * @param client The client; decode_manifest() and verify_manifest() succeeded.
  * @return AZ_IOT_OK; AZ_IOT_ERR_NOT_ENOUGH_SPACE when over a limit; AZ_IOT_ERR_INVALID_ARG when
- * malformed.
+ * malformed or a step file is unresolved.
  */
 static az_iot_result parse_manifest(az_iot_su_client* client)
 {
-  return parse_update_manifest(
-      &SU_I(client).az, SU_I(client).manifest_text, &SU_I(client).current_manifest);
+  az_iot_result r = az_iot_su__parse_update_manifest(
+      SU_I(client).manifest_text,
+      SU_I(client).related_file_storage,
+      SU_I(client).max_related_files,
+      &SU_I(client).current_manifest);
+  if (r == AZ_IOT_OK)
+  {
+    r = az_iot_su__check_step_file_references(
+        &SU_I(client).current_manifest,
+        0,
+        SU_I(client).current_request.file_urls,
+        SU_I(client).current_request.file_urls_count);
+  }
+  return r;
 }
 
 /**
@@ -1733,47 +1446,31 @@ static az_iot_result decode_nonempty(az_span s, az_span scratch)
 }
 
 /**
- * @brief Check that decode_request_strings() will accept @p req, without
- * changing it. Lets a bad payload be refused before it disturbs the active
- * workflow or its checkpoint.
- *
- * @param client The client; its workspace scratch is used as decode scratch.
- * @param req    Parsed request.
- * @return AZ_IOT_OK; AZ_IOT_ERR_NOT_ENOUGH_SPACE when a value does not fit the
- *   scratch; AZ_IOT_ERR_INVALID_ARG on an undecodable or empty value.
- */
-static az_iot_result check_request_strings(
-    az_iot_su_client* client,
-    const az_iot_su_client_update_request* req)
-{
-  az_span scratch = az_span_create(SU_I(client).scratch, (int32_t)SU_I(client).scratch_size);
-  az_iot_result r = decode_nonempty(req->workflow.id, scratch);
-  for (uint32_t i = 0; r == AZ_IOT_OK && i < req->file_urls_count; ++i)
-  {
-    r = decode_nonempty(req->file_urls[i].id, scratch);
-    if (r == AZ_IOT_OK)
-    {
-      r = decode_nonempty(req->file_urls[i].url, scratch);
-    }
-  }
-  return r;
-}
-
-/**
  * @brief Parse a software updates `updateMetadata` object into @p out_req.
  *
  * Shape: `{ workflowId, updateManifest, updateManifestSignature, fileUrls }`.
  * It carries no action, so it is an apply; unknown properties are skipped.
  *
- * @param doc     The object. MUST outlive @p out_req, whose spans point into it.
- * @param out_req Zeroed, then filled.
+ * @param doc               The object. MUST outlive @p out_req, whose spans point into it.
+ * @param file_urls         Storage for the `fileUrls`; NULL to only count them.
+ * @param file_url_capacity Most `fileUrls` accepted.
+ * @param check_scratch     When not empty, each `fileUrls` id and URL is checked to decode,
+ *                          nonempty, into it, without changing @p doc.
+ * @param out_req           Zeroed, then filled.
  * @return AZ_IOT_OK; AZ_IOT_ERR_NOT_FOUND when @p doc has no `workflowId`;
- * AZ_IOT_ERR_NOT_ENOUGH_SPACE (logged) with more than AZ_IOT_SU_MAX_FILE_COUNT `fileUrls`;
- * AZ_IOT_ERR_INVALID_ARG when malformed or without a manifest.
+ * AZ_IOT_ERR_NOT_ENOUGH_SPACE (logged) with more than @p file_url_capacity `fileUrls`, or when a
+ * checked string does not fit @p check_scratch; AZ_IOT_ERR_INVALID_ARG when malformed, without a
+ * manifest, or a checked string is undecodable or empty.
  */
-static az_iot_result parse_update_metadata(az_span doc, az_iot_su_client_update_request* out_req)
+static az_iot_result parse_update_metadata(
+    az_span doc,
+    az_iot_su_client_file_url* file_urls,
+    size_t file_url_capacity,
+    az_span check_scratch,
+    az_iot_su_client_update_request* out_req)
 {
   memset(out_req, 0, sizeof(*out_req));
+  out_req->file_urls = file_urls;
 
   az_json_reader jr;
   if (az_result_failed(az_json_reader_init(&jr, doc, NULL))
@@ -1838,12 +1535,12 @@ static az_iot_result parse_update_metadata(az_span doc, az_iot_su_client_update_
         {
           return AZ_IOT_ERR_INVALID_ARG;
         }
-        if (out_req->file_urls_count == AZ_IOT_SU_MAX_FILE_COUNT)
+        if (out_req->file_urls_count == file_url_capacity)
         {
           AZ_IOT_LOG_ERRORF(
               AZ_IOT_LOG_COMPONENT_SU,
-              "update has more than AZ_IOT_SU_MAX_FILE_COUNT (%u) fileUrls",
-              (unsigned)AZ_IOT_SU_MAX_FILE_COUNT);
+              "update has more than %u fileUrls (AZ_IOT_SU_FILE_URL_CAPACITY)",
+              (unsigned)file_url_capacity);
           return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
         }
         az_span id = jr.token.slice;
@@ -1852,8 +1549,23 @@ static az_iot_result parse_update_metadata(az_span doc, az_iot_su_client_update_
         {
           return AZ_IOT_ERR_INVALID_ARG;
         }
-        out_req->file_urls[out_req->file_urls_count].id = id;
-        out_req->file_urls[out_req->file_urls_count].url = jr.token.slice;
+        if (az_span_size(check_scratch) > 0)
+        {
+          az_iot_result r = decode_nonempty(id, check_scratch);
+          if (r == AZ_IOT_OK)
+          {
+            r = decode_nonempty(jr.token.slice, check_scratch);
+          }
+          if (r != AZ_IOT_OK)
+          {
+            return r;
+          }
+        }
+        if (file_urls != NULL)
+        {
+          file_urls[out_req->file_urls_count].id = id;
+          file_urls[out_req->file_urls_count].url = jr.token.slice;
+        }
         out_req->file_urls_count++;
       }
       if (jr.token.kind != AZ_JSON_TOKEN_END_OBJECT)
@@ -1881,6 +1593,38 @@ static az_iot_result parse_update_metadata(az_span doc, az_iot_su_client_update_
   }
   out_req->workflow.action = AZ_IOT_SU_CLIENT_SERVICE_ACTION_APPLY_DEPLOYMENT;
   return AZ_IOT_OK;
+}
+
+/** @brief Download URLs the client accepts in one update request. */
+static size_t file_url_capacity(const az_iot_su_client* client)
+{
+  return AZ_IOT_SU_FILE_URL_CAPACITY(SU_I(client).max_related_files);
+}
+
+/**
+ * @brief Check that decode_request_strings() will accept the request in @p doc, without
+ * changing it. Lets a bad payload be refused before it disturbs the active
+ * workflow or its checkpoint.
+ *
+ * @param client The client; its workspace scratch is used as decode scratch.
+ * @param doc    The request, already parsed once by parse_update_metadata().
+ * @param req    @p doc as parsed without storage, for its workflow id.
+ * @return AZ_IOT_OK; AZ_IOT_ERR_NOT_ENOUGH_SPACE when a value does not fit the
+ *   scratch; AZ_IOT_ERR_INVALID_ARG on an undecodable or empty value.
+ */
+static az_iot_result check_request_strings(
+    az_iot_su_client* client,
+    az_span doc,
+    const az_iot_su_client_update_request* req)
+{
+  az_span scratch = az_span_create(SU_I(client).scratch, (int32_t)SU_I(client).scratch_size);
+  az_iot_result r = decode_nonempty(req->workflow.id, scratch);
+  if (r == AZ_IOT_OK)
+  {
+    az_iot_su_client_update_request checked;
+    r = parse_update_metadata(doc, NULL, file_url_capacity(client), scratch, &checked);
+  }
+  return r;
 }
 
 /* --- Duplicate detection -------------------------------------------------- */
@@ -2031,7 +1775,8 @@ static void process_update_metadata(
    * valid for the duration of this call, which is enough to decide what to do. */
   az_span transient = az_span_create((uint8_t*)(uintptr_t)patch, (int32_t)patch_len);
   az_iot_su_client_update_request probe;
-  az_iot_result pr = parse_update_metadata(transient, &probe);
+  az_iot_result pr
+      = parse_update_metadata(transient, NULL, file_url_capacity(client), AZ_SPAN_EMPTY, &probe);
   if (pr == AZ_IOT_ERR_NOT_ENOUGH_SPACE)
   {
     raise_refused(client, AZ_IOT_ERR_NOT_ENOUGH_SPACE);
@@ -2105,7 +1850,7 @@ static void process_update_metadata(
     }
   }
 
-  az_iot_result sr = check_request_strings(client, &probe);
+  az_iot_result sr = check_request_strings(client, transient, &probe);
   if (sr == AZ_IOT_ERR_NOT_ENOUGH_SPACE)
   {
     AZ_IOT_LOG_ERRORF(
@@ -2158,13 +1903,19 @@ static void process_update_metadata(
   az_span buf = az_span_create(SU_I(client).request_buffer, (int32_t)patch_len);
 
   az_iot_su_client_update_request req;
-  if (parse_update_metadata(buf, &req) != AZ_IOT_OK || decode_request_strings(&req) != AZ_IOT_OK)
+  if (parse_update_metadata(
+          buf, SU_I(client).file_url_storage, file_url_capacity(client), AZ_SPAN_EMPTY, &req)
+          != AZ_IOT_OK
+      || decode_request_strings(&req) != AZ_IOT_OK)
   {
     SU_I(client).request_len = 0;
     return;
   }
 
   SU_I(client).current_request = req;
+  /* Before any observer can read the request: its manifest is the unescaped
+   * text in every state. A failure is reported from MANIFEST_RECEIVED. */
+  (void)decode_manifest(client);
   SU_I(client).have_request = true;
   SU_I(client).checkpoint_pending = false;
   SU_I(client).install_called = false;
@@ -2176,7 +1927,7 @@ static void process_update_metadata(
       client,
       req.workflow.id,
       req.workflow.retry_timestamp,
-      manifest_fingerprint(req.update_manifest));
+      manifest_fingerprint(SU_I(client).manifest_text));
   SU_I(client).active_workflow_running = true;
 }
 
@@ -2438,6 +2189,7 @@ static void set_su_state(az_iot_su_client* client, az_iot_su_state next)
     return;
   }
   SU_I(client).state = next;
+  SU_I(client).file_download_phase = (uint8_t)SU_FILE_PHASE_CHOOSE;
   if (next == AZ_IOT_SU_STATE_FAILED)
   {
     SU_I(client).reboot_requested = false; /* nothing left to activate */
@@ -2945,6 +2697,7 @@ AZ_NODISCARD az_iot_su_limits az_iot_su_limits_default(void)
   limits.result_details_size = AZ_IOT_SU_DEFAULT_RESULT_DETAILS_SIZE;
   limits.max_root_keys = AZ_IOT_SU_DEFAULT_MAX_ROOT_KEYS;
   limits.max_observers = AZ_IOT_SU_DEFAULT_MAX_OBSERVERS;
+  limits.max_related_files = AZ_IOT_SU_DEFAULT_MAX_RELATED_FILES;
   return limits;
 }
 
@@ -2959,7 +2712,8 @@ AZ_NODISCARD size_t az_iot_su_workspace_size(const az_iot_su_limits* limits)
       || limits->device_properties_size == 0
       || limits->result_details_size > AZ_IOT_SU_MAX_RESULT_DETAILS_SIZE
       || limits->max_root_keys > AZ_IOT_SU_MAX_LIMIT_COUNT
-      || limits->max_observers > AZ_IOT_SU_MAX_LIMIT_COUNT)
+      || limits->max_observers > AZ_IOT_SU_MAX_LIMIT_COUNT
+      || limits->max_related_files > AZ_IOT_SU_MAX_LIMIT_COUNT)
   {
     return 0;
   }
@@ -2970,19 +2724,24 @@ AZ_NODISCARD size_t az_iot_su_workspace_size(const az_iot_su_limits* limits)
   {
     return 0;
   }
-  size_t details = (size_t)_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS * limits->result_details_size;
-  size_t parts[10] = { limits->max_root_keys * sizeof(az_iot_su_root_key)
-                           + limits->max_observers * sizeof(az_iot_su_observer_registration)
-                           + sizeof(az_iot_su_workspace_alignment) - 1u,
-                       limits->max_update_size + (size_t)AZ_IOT_SU_PERSIST_OVERHEAD + details,
-                       (size_t)AZ_IOT_SU_PERSIST_OVERHEAD + details,
-                       limits->scratch_size,
-                       limits->max_message_size,
-                       limits->device_properties_size,
-                       limits->device_properties_size + (size_t)AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE,
-                       details,
-                       2u * details,
-                       limits->result_details_size + 1u };
+  size_t details = (size_t)AZ_IOT_SU_MAX_STEP_COUNT * limits->result_details_size;
+  size_t related_urls = limits->max_related_files * (size_t)AZ_IOT_SU_PERSIST_URL_RECORD_SIZE;
+  size_t parts[10]
+      = { limits->max_root_keys * sizeof(az_iot_su_root_key)
+              + limits->max_observers * sizeof(az_iot_su_observer_registration)
+              + limits->max_related_files * sizeof(az_iot_su_client_update_manifest_file)
+              + AZ_IOT_SU_FILE_URL_CAPACITY(limits->max_related_files)
+                  * sizeof(az_iot_su_client_file_url)
+              + sizeof(az_iot_su_workspace_alignment) - 1u,
+          limits->max_update_size + (size_t)AZ_IOT_SU_PERSIST_OVERHEAD + details + related_urls,
+          (size_t)AZ_IOT_SU_PERSIST_OVERHEAD + details,
+          limits->scratch_size,
+          limits->max_message_size,
+          limits->device_properties_size,
+          limits->device_properties_size + (size_t)AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE,
+          details,
+          2u * details,
+          limits->result_details_size + 1u };
   size_t total = 0;
   for (size_t i = 0; i < sizeof(parts) / sizeof(parts[0]); ++i)
   {
@@ -3007,6 +2766,8 @@ typedef struct
 {
   az_iot_su_root_key* root_keys;
   az_iot_su_observer_registration* observers;
+  az_iot_su_client_update_manifest_file* related_files;
+  az_iot_su_client_file_url* file_urls;
   uint8_t* persist_blob; /**< Workflow record: header, request, trailer. */
   uint8_t* terminal_blob;
   uint8_t* scratch;
@@ -3043,8 +2804,7 @@ static az_iot_result su_workspace_lay_out(
         (unsigned)need);
     return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
   }
-  size_t details
-      = (size_t)_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS * options->limits.result_details_size;
+  size_t details = (size_t)AZ_IOT_SU_MAX_STEP_COUNT * options->limits.result_details_size;
   /* Parts holding pointers come first, aligned: the workspace itself need not be. */
   const uintptr_t alignment = (uintptr_t)sizeof(az_iot_su_workspace_alignment);
   uint8_t* p = options->workspace
@@ -3053,8 +2813,14 @@ static az_iot_result su_workspace_lay_out(
   p += options->limits.max_root_keys * sizeof(az_iot_su_root_key);
   out->observers = (az_iot_su_observer_registration*)(void*)p;
   p += options->limits.max_observers * sizeof(az_iot_su_observer_registration);
+  out->related_files = (az_iot_su_client_update_manifest_file*)(void*)p;
+  p += options->limits.max_related_files * sizeof(az_iot_su_client_update_manifest_file);
+  out->file_urls = (az_iot_su_client_file_url*)(void*)p;
+  p += AZ_IOT_SU_FILE_URL_CAPACITY(options->limits.max_related_files)
+      * sizeof(az_iot_su_client_file_url);
   out->persist_blob = p;
-  p += options->limits.max_update_size + (size_t)AZ_IOT_SU_PERSIST_OVERHEAD + details;
+  p += options->limits.max_update_size + (size_t)AZ_IOT_SU_PERSIST_OVERHEAD + details
+      + options->limits.max_related_files * (size_t)AZ_IOT_SU_PERSIST_URL_RECORD_SIZE;
   out->terminal_blob = p;
   p += (size_t)AZ_IOT_SU_PERSIST_OVERHEAD + details;
   out->scratch = p;
@@ -3070,6 +2836,91 @@ static az_iot_result su_workspace_lay_out(
   out->sent_details = p;
   p += 2u * details;
   out->overall_details = p;
+  return AZ_IOT_OK;
+}
+
+/**
+ * @brief Finds the entry whose id is manifest id @p json_id in an array of handler structs.
+ *
+ * @param[in] entries Structs of @p entry_size bytes whose first member is `const char* id`.
+ * @param json_id The id as manifest JSON text, escapes included.
+ * @return The entry, or NULL if none matches.
+ */
+static const void* su_find_handler_by_id(
+    const void* entries,
+    size_t entry_count,
+    size_t entry_size,
+    az_span json_id)
+{
+  const uint8_t* entry = (const uint8_t*)entries;
+  for (size_t i = 0; i < entry_count; ++i, entry += entry_size)
+  {
+    const char* entry_id = *(const char* const*)(const void*)entry;
+    if (az_iot_json_string_equals(
+            json_id, az_span_create_from_str((char*)(uintptr_t)entry_id), false))
+    {
+      return entry;
+    }
+  }
+  return NULL;
+}
+
+/**
+ * @brief Checks a download-handler registry: every hook set, ids valid and distinct.
+ *
+ * @return AZ_IOT_OK, or AZ_IOT_ERR_INVALID_ARG with an error log.
+ */
+static az_iot_result su_check_download_handlers(const az_iot_su_client_config_options* options)
+{
+  if (options->download_handler_count == 0)
+  {
+    return AZ_IOT_OK;
+  }
+  if (options->download_handlers == NULL || options->library_mode
+      || options->hooks->read_file_fn == NULL)
+  {
+    AZ_IOT_LOG_ERROR(
+        AZ_IOT_LOG_COMPONENT_SU,
+        "download handlers need hooks with read_file_fn and are not allowed in library mode");
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  for (size_t i = 0; i < options->download_handler_count; ++i)
+  {
+    const az_iot_su_download_handler* handler = &options->download_handlers[i];
+    if (handler->id == NULL || handler->choose_related_file_fn == NULL
+        || handler->build_file_from_related_fn == NULL)
+    {
+      AZ_IOT_LOG_ERRORF(
+          AZ_IOT_LOG_COMPONENT_SU, "download handler %u: NULL id or hook", (unsigned)i);
+      return AZ_IOT_ERR_INVALID_ARG;
+    }
+    size_t length = 0;
+    while (length <= AZ_IOT_SU_MAX_DOWNLOAD_HANDLER_ID_SIZE && handler->id[length] > ' '
+           && handler->id[length] <= '~')
+    {
+      ++length;
+    }
+    if (length == 0 || length > AZ_IOT_SU_MAX_DOWNLOAD_HANDLER_ID_SIZE
+        || handler->id[length] != '\0')
+    {
+      AZ_IOT_LOG_ERRORF(AZ_IOT_LOG_COMPONENT_SU, "download handler %u: invalid id", (unsigned)i);
+      return AZ_IOT_ERR_INVALID_ARG;
+    }
+    bool duplicate = false;
+    for (size_t j = 0; j < i; ++j)
+    {
+      duplicate = duplicate || strcmp(options->download_handlers[j].id, handler->id) == 0;
+    }
+    if (duplicate)
+    {
+      AZ_IOT_LOG_ERRORF(
+          AZ_IOT_LOG_COMPONENT_SU,
+          "download handler %u: duplicate id %s",
+          (unsigned)i,
+          handler->id);
+      return AZ_IOT_ERR_INVALID_ARG;
+    }
+  }
   return AZ_IOT_OK;
 }
 
@@ -3137,6 +2988,11 @@ static az_iot_result su_client_init_core(
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
+  az_iot_result handlers_result = su_check_download_handlers(options);
+  if (handlers_result != AZ_IOT_OK)
+  {
+    return handlers_result;
+  }
 
   SU_I(client).channel.vtable = channel->vtable;
   SU_I(client).channel.ctx = channel->ctx;
@@ -3147,11 +3003,15 @@ static az_iot_result su_client_init_core(
     SU_I(client).hooks = *options->hooks;
   }
   SU_I(client).library_mode = options->library_mode;
+  SU_I(client).download_handlers = options->download_handlers;
+  SU_I(client).download_handler_count = options->download_handler_count;
   SU_I(client).crypto = crypto;
   SU_I(client).persist_max_attempts = (uint32_t)AZ_IOT_SU_PERSIST_MAX_ATTEMPTS;
   SU_I(client).persist_blob = layout.persist_blob;
   SU_I(client).persist_blob_size = AZ_IOT_SU_STATE_BLOB_MAX_SIZE(
-      options->limits.max_update_size, options->limits.result_details_size);
+      options->limits.max_update_size,
+      options->limits.result_details_size,
+      options->limits.max_related_files);
   SU_I(client).request_buffer = layout.persist_blob + AZ_IOT_SU_PERSIST_HEADER_SIZE;
   SU_I(client).request_buffer_size = options->limits.max_update_size;
   SU_I(client).terminal_blob = layout.terminal_blob;
@@ -3166,6 +3026,9 @@ static az_iot_result su_client_init_core(
   SU_I(client).root_keys = layout.root_keys;
   SU_I(client).observers = layout.observers;
   SU_I(client).max_observers = options->limits.max_observers;
+  SU_I(client).file_url_storage = layout.file_urls;
+  SU_I(client).related_file_storage = layout.related_files;
+  SU_I(client).max_related_files = options->limits.max_related_files;
   memset(
       layout.observers, 0, options->limits.max_observers * sizeof(az_iot_su_observer_registration));
   set_su_state(client, AZ_IOT_SU_STATE_IDLE);
@@ -3177,12 +3040,6 @@ static az_iot_result su_client_init_core(
       SU_I(client).root_keys[i] = options->root_keys[i];
     }
     SU_I(client).root_key_count = options->root_key_count;
-  }
-
-  if (az_result_failed(az_iot_adu_client_init(&SU_I(client).az, NULL)))
-  {
-    memset(client, 0, sizeof(*client));
-    return AZ_IOT_ERR_INTERNAL;
   }
 
   az_iot_result r = check_device_properties_fit_cache(client, options->device_properties);
@@ -3375,6 +3232,8 @@ void az_iot_su_client_deinit(az_iot_su_client* client)
  *   [T+16] step records { u32 outcome, u32 failure_origin, i32 result_code,
  *                         i32 extended_result_code }
  *          u32 url_count, then url_count *
+ *            (at most AZ_IOT_SU_FILE_URL_CAPACITY(); a client with less capacity ignores
+ *            the record)
  *            { u32 id_off, u32 id_len, u32 url_off, u32 url_len }
  *            (offsets into request_buffer)
  *          u32 len + active workflow id
@@ -3403,16 +3262,16 @@ void az_iot_su_client_deinit(az_iot_su_client* client)
 /* Fixed part of the trailer (outcome + 3 result ints). */
 #define AZ_IOT_SU_PERSIST_TRAILER_FIXED 16u
 #define AZ_IOT_SU_PERSIST_STEP_RECORD 16u
-#define AZ_IOT_SU_PERSIST_URL_RECORD 16u
-/* Upper bound on the whole trailer + crc, used to size the persist scratch. */
-#define AZ_IOT_SU_PERSIST_TRAILER_MAX                                                             \
-  (AZ_IOT_SU_PERSIST_TRAILER_FIXED                                                                \
-   + ((uint32_t)(_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS) * AZ_IOT_SU_PERSIST_STEP_RECORD) + 4u \
-   + ((uint32_t)(_az_IOT_ADU_CLIENT_MAX_TOTAL_FILE_COUNT) * AZ_IOT_SU_PERSIST_URL_RECORD) + 4u    \
-   + (uint32_t)(AZ_IOT_SU_WORKFLOW_ID_SIZE) + 4u + (uint32_t)(AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE)   \
-   + 4u + (uint32_t)(AZ_IOT_SU_CHANNEL_STATE_MAX_SIZE)                                            \
-   + 4u * (uint32_t)(_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS) + AZ_IOT_RETRY_STATE_RECORD_SIZE  \
-   + 4u)
+/* Upper bound on the trailer + crc with AZ_IOT_SU_MAX_FILE_COUNT URLs; each URL past those has
+ * AZ_IOT_SU_PERSIST_URL_RECORD_SIZE more in the workspace, per az_iot_su_limits::max_related_files.
+ */
+#define AZ_IOT_SU_PERSIST_TRAILER_MAX                                                              \
+  (AZ_IOT_SU_PERSIST_TRAILER_FIXED                                                                 \
+   + ((uint32_t)(AZ_IOT_SU_MAX_STEP_COUNT) * AZ_IOT_SU_PERSIST_STEP_RECORD) + 4u                   \
+   + ((uint32_t)(AZ_IOT_SU_MAX_FILE_COUNT) * AZ_IOT_SU_PERSIST_URL_RECORD_SIZE) + 4u               \
+   + (uint32_t)(AZ_IOT_SU_WORKFLOW_ID_SIZE) + 4u + (uint32_t)(AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE)    \
+   + 4u + (uint32_t)(AZ_IOT_SU_CHANNEL_STATE_MAX_SIZE) + 4u * (uint32_t)(AZ_IOT_SU_MAX_STEP_COUNT) \
+   + AZ_IOT_RETRY_STATE_RECORD_SIZE + 4u)
 
 /* The workspace reserves AZ_IOT_SU_PERSIST_OVERHEAD beside the request for the
  * workflow record, and as much again for the terminal record: header plus the
@@ -3485,32 +3344,6 @@ static bool span_in_request(const az_iot_su_client* client, az_span v)
       && len <= SU_I(client).request_len - (size_t)(ptr - base);
 }
 
-/** @brief Whether every file of steps [from, steps_count) has a download URL. */
-static bool remaining_files_have_urls(
-    const az_iot_su_client_update_manifest* m,
-    uint32_t from,
-    const az_iot_su_client_file_url* urls,
-    uint32_t url_count)
-{
-  for (uint32_t i = from; i < m->instructions.steps_count; ++i)
-  {
-    const az_iot_su_client_update_manifest_instructions_step* st = &m->instructions.steps[i];
-    for (uint32_t j = 0; j < st->files_count; ++j)
-    {
-      bool found = false;
-      for (uint32_t k = 0; k < url_count && !found; ++k)
-      {
-        found = az_span_is_content_equal(st->files[j], urls[k].id);
-      }
-      if (!found)
-      {
-        return false;
-      }
-    }
-  }
-  return true;
-}
-
 /** @brief Length of the packed applied update id, or 0 when none is held. */
 static size_t applied_update_id_len(const az_iot_su_client* client)
 {
@@ -3543,8 +3376,7 @@ static az_iot_result su_persist(az_iot_su_client* client, su_record kind)
   const az_iot_su_client_update_request* req = &SU_I(client).current_request;
   uint32_t request_len = terminal ? 0u : (uint32_t)SU_I(client).request_len;
   uint32_t url_count = terminal ? 0u : req->file_urls_count;
-  if (request_len > SU_I(client).request_buffer_size
-      || url_count > _az_IOT_ADU_CLIENT_MAX_TOTAL_FILE_COUNT)
+  if (request_len > SU_I(client).request_buffer_size || url_count > file_url_capacity(client))
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
@@ -3557,7 +3389,7 @@ static az_iot_result su_persist(az_iot_su_client* client, su_record kind)
     }
   }
   int32_t step_count = SU_I(client).step_results_count;
-  if (step_count < 0 || step_count > _az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS)
+  if (step_count < 0 || step_count > AZ_IOT_SU_MAX_STEP_COUNT)
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
@@ -3625,7 +3457,7 @@ static az_iot_result su_persist(az_iot_su_client* client, su_record kind)
     wr_u32le(&blob[p + 4], (uint32_t)az_span_size(req->file_urls[i].id));
     wr_u32le(&blob[p + 8], request_offset(client, req->file_urls[i].url));
     wr_u32le(&blob[p + 12], (uint32_t)az_span_size(req->file_urls[i].url));
-    p += AZ_IOT_SU_PERSIST_URL_RECORD;
+    p += AZ_IOT_SU_PERSIST_URL_RECORD_SIZE;
   }
 
   wr_u32le(&blob[p], (uint32_t)wf_len);
@@ -3869,7 +3701,7 @@ AZ_NODISCARD az_iot_result az_iot_su_client_resume(az_iot_su_client* client)
   int32_t res_code = (int32_t)rd_u32le(&blob[t + 4u]);
   int32_t res_ext = (int32_t)rd_u32le(&blob[t + 8u]);
   int32_t step_count = (int32_t)rd_u32le(&blob[t + 12u]);
-  if (step_count < 0 || step_count > _az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS)
+  if (step_count < 0 || step_count > AZ_IOT_SU_MAX_STEP_COUNT)
   {
     return AZ_IOT_OK;
   }
@@ -3880,12 +3712,12 @@ AZ_NODISCARD az_iot_result az_iot_su_client_resume(az_iot_su_client* client)
     return AZ_IOT_OK;
   }
   uint32_t url_count = rd_u32le(&blob[end]);
-  if (url_count > _az_IOT_ADU_CLIENT_MAX_TOTAL_FILE_COUNT)
+  if (url_count > file_url_capacity(client))
   {
     return AZ_IOT_OK;
   }
   uint32_t urls_at = end + 4u;
-  end = urls_at + url_count * AZ_IOT_SU_PERSIST_URL_RECORD;
+  end = urls_at + url_count * AZ_IOT_SU_PERSIST_URL_RECORD_SIZE;
   uint32_t wf_at = 0;
   uint32_t wf_id_len = 0;
   uint32_t applied_at = 0;
@@ -3898,8 +3730,8 @@ AZ_NODISCARD az_iot_result az_iot_su_client_resume(az_iot_su_client* client)
   {
     return AZ_IOT_OK;
   }
-  uint32_t details_at[_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS] = { 0 };
-  uint32_t details_len[_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS] = { 0 };
+  uint32_t details_at[AZ_IOT_SU_MAX_STEP_COUNT] = { 0 };
+  uint32_t details_len[AZ_IOT_SU_MAX_STEP_COUNT] = { 0 };
   for (int32_t i = 0; i < step_count; ++i)
   {
     if (!take_field(
@@ -3991,7 +3823,7 @@ AZ_NODISCARD az_iot_result az_iot_su_client_resume(az_iot_su_client* client)
   }
   for (uint32_t i = 0; i < url_count; ++i)
   {
-    const uint8_t* u = &blob[urls_at + i * AZ_IOT_SU_PERSIST_URL_RECORD];
+    const uint8_t* u = &blob[urls_at + i * AZ_IOT_SU_PERSIST_URL_RECORD_SIZE];
     uint32_t id_off = rd_u32le(u);
     uint32_t id_len = rd_u32le(u + 4);
     uint32_t url_off = rd_u32le(u + 8);
@@ -4014,7 +3846,11 @@ AZ_NODISCARD az_iot_result az_iot_su_client_resume(az_iot_su_client* client)
   az_span manifest_text = az_span_create(SU_I(client).request_buffer + mf_off, (int32_t)mf_len);
   SU_I(client).manifest_text = manifest_text;
 
-  if (parse_update_manifest(&SU_I(client).az, manifest_text, &SU_I(client).current_manifest)
+  if (az_iot_su__parse_update_manifest(
+          manifest_text,
+          SU_I(client).related_file_storage,
+          SU_I(client).max_related_files,
+          &SU_I(client).current_manifest)
       != AZ_IOT_OK)
   {
     /* Corrupt manifest text: discard the snapshot and stay Idle. */
@@ -4023,10 +3859,11 @@ AZ_NODISCARD az_iot_result az_iot_su_client_resume(az_iot_su_client* client)
   }
 
   az_iot_su_client_update_request* req = &SU_I(client).current_request;
+  req->file_urls = SU_I(client).file_url_storage;
   req->file_urls_count = url_count;
   for (uint32_t i = 0; i < url_count; ++i)
   {
-    const uint8_t* u = &blob[urls_at + i * AZ_IOT_SU_PERSIST_URL_RECORD];
+    const uint8_t* u = &blob[urls_at + i * AZ_IOT_SU_PERSIST_URL_RECORD_SIZE];
     req->file_urls[i].id
         = az_span_create(SU_I(client).request_buffer + rd_u32le(u), (int32_t)rd_u32le(u + 4));
     req->file_urls[i].url
@@ -4038,7 +3875,9 @@ AZ_NODISCARD az_iot_result az_iot_su_client_resume(az_iot_su_client* client)
   bool step_installed = state == (uint32_t)AZ_IOT_SU_STATE_INSTALL_COMPLETE
       || state == (uint32_t)AZ_IOT_SU_STATE_APPLY_STARTED;
   uint32_t from = step_installed ? step + 1u : step;
-  if (!remaining_files_have_urls(&SU_I(client).current_manifest, from, req->file_urls, url_count))
+  if (az_iot_su__check_step_file_references(
+          &SU_I(client).current_manifest, from, req->file_urls, url_count)
+      != AZ_IOT_OK)
   {
     /* It can never be resumed, so retire it rather than refuse it every boot. */
     SU_I(client).checkpoint_stored = true;
@@ -4106,14 +3945,213 @@ static const az_iot_su_client_update_manifest_file* step_file_entry(
     return NULL;
   }
   az_span id = m->instructions.steps[step].files[file_slot];
-  for (uint32_t i = 0; i < m->files_count; ++i)
+  return az_iot_su__find_manifest_file(m, id);
+}
+
+/**
+ * @brief The download URL of manifest file @p json_id in the request; empty when it has none.
+ *
+ * @param json_id The file id as manifest JSON text, escapes included; `fileUrls` ids are decoded.
+ */
+static az_span file_download_url(const az_iot_su_client* client, az_span json_id)
+{
+  const az_iot_su_client_file_url* file_url = az_iot_su__find_file_url(
+      SU_I(client).current_request.file_urls,
+      SU_I(client).current_request.file_urls_count,
+      json_id);
+  return (file_url != NULL) ? file_url->url : AZ_SPAN_EMPTY;
+}
+
+/**
+ * @brief Copy @p details into step @p step_index's details slot.
+ *
+ * The caller has checked the step exists and @p details fits.
+ */
+static void store_step_details(az_iot_su_client* client, uint32_t step_index, az_span details)
+{
+  int32_t len = az_span_size(details);
+  uint8_t* slot = SU_I(client).step_details + (size_t)step_index * SU_I(client).step_details_size;
+  if (len > 0)
   {
-    if (az_span_is_content_equal(m->files[i].id, id))
+    memmove(slot, az_span_ptr(details), (size_t)len);
+  }
+  SU_I(client).step_results[step_index].result_details = az_span_create(slot, len);
+}
+
+/** @brief Result details of a delta fallback, indexed by AZ_IOT_SU_DELTA_ERROR_* sub-code. */
+static const char* const k_delta_fallback_details[] = {
+  "",
+  "full download: no download handler",
+  "full download: no source",
+  "full download: related file download failed",
+  "full download: related file hash mismatch",
+  "full download: build from related file failed",
+  "full download: built file hash mismatch",
+};
+
+/**
+ * @brief Give up building @p file from a related file: it is downloaded in full.
+ *
+ * Step @p step keeps its first AZ_IOT_SU_FACILITY_DELTA code and, when it has no details yet and
+ * they fit, a short text naming the cause.
+ *
+ * @param sub_code An AZ_IOT_SU_DELTA_ERROR_* sub-code.
+ * @return AZ_IOT_SU_RESULT_FAILURE.
+ */
+static int32_t fall_back_to_full_download(
+    az_iot_su_client* client,
+    uint32_t step,
+    const az_iot_su_client_update_manifest_file* file,
+    uint32_t sub_code)
+{
+  const char* details = k_delta_fallback_details[sub_code];
+  AZ_IOT_LOG_WARNF(
+      AZ_IOT_LOG_COMPONENT_SU,
+      "file %.*s: %s",
+      (int)az_span_size(file->id),
+      (const char*)az_span_ptr(file->id),
+      details);
+  SU_I(client).file_download_phase = (uint8_t)SU_FILE_PHASE_FULL_DOWNLOAD;
+  if ((int32_t)step >= SU_I(client).step_results_count)
+  {
+    return AZ_IOT_SU_RESULT_FAILURE;
+  }
+  az_iot_su_step_result* result = &SU_I(client).step_results[step];
+  if (result->extended_result_code == 0)
+  {
+    result->extended_result_code = AZ_IOT_SU_EXTENDED_RESULT(AZ_IOT_SU_FACILITY_DELTA, sub_code);
+    size_t length = strlen(details);
+    if (az_span_size(result->result_details) == 0 && length <= SU_I(client).step_details_size)
     {
-      return &m->files[i];
+      store_step_details(
+          client, step, az_span_create((uint8_t*)(uintptr_t)details, (int32_t)length));
     }
   }
-  return NULL;
+  return AZ_IOT_SU_RESULT_FAILURE;
+}
+
+/**
+ * @brief Drive @p file through the download handler its manifest entry names: choose a related
+ * file, download it and check its hash, build @p file from it and check @p file's hash.
+ *
+ * One phase follows another in the same call until a hook returns IN_PROGRESS.
+ *
+ * @param file_slot @p file's position in step @p step, as download_fn gets it.
+ * @param file_count Number of files of step @p step.
+ * @return AZ_IOT_SU_RESULT_SUCCESS when @p file is built and verified, IN_PROGRESS to be called
+ * again, or AZ_IOT_SU_RESULT_FAILURE after a fallback: @p file is then downloaded in full.
+ */
+static int32_t build_file_with_download_handler(
+    az_iot_su_client* client,
+    uint32_t step,
+    uint32_t file_slot,
+    uint32_t file_count,
+    const az_iot_su_client_update_manifest_file* file)
+{
+  const az_iot_su_platform_hooks* hooks = &SU_I(client).hooks;
+  const az_iot_su_client_update_manifest* manifest = &SU_I(client).current_manifest;
+  const az_iot_su_download_handler* handler
+      = (const az_iot_su_download_handler*)su_find_handler_by_id(
+          SU_I(client).download_handlers,
+          SU_I(client).download_handler_count,
+          sizeof(az_iot_su_download_handler),
+          file->download_handler_id);
+  if (handler == NULL)
+  {
+    return fall_back_to_full_download(client, step, file, AZ_IOT_SU_DELTA_ERROR_NO_HANDLER);
+  }
+
+  if (SU_I(client).file_download_phase == (uint8_t)SU_FILE_PHASE_CHOOSE)
+  {
+    uint32_t chosen = 0;
+    int32_t chose = (file->related_files_count > 0)
+        ? handler->choose_related_file_fn(manifest, file, &chosen, handler->user_ctx)
+        : AZ_IOT_SU_RESULT_FAILURE;
+    if (chose == AZ_IOT_SU_RESULT_IN_PROGRESS)
+    {
+      return AZ_IOT_SU_RESULT_IN_PROGRESS;
+    }
+    if (chose != AZ_IOT_SU_RESULT_SUCCESS || chosen >= file->related_files_count
+        || file->related_files_index + chosen >= manifest->related_files_count)
+    {
+      return fall_back_to_full_download(client, step, file, AZ_IOT_SU_DELTA_ERROR_NO_SOURCE);
+    }
+    SU_I(client).chosen_related_file_index = chosen;
+    SU_I(client).file_download_phase = (uint8_t)SU_FILE_PHASE_DOWNLOAD_RELATED;
+  }
+  const az_iot_su_client_update_manifest_file* related
+      = &manifest
+             ->related_files[file->related_files_index + SU_I(client).chosen_related_file_index];
+
+  if (SU_I(client).file_download_phase == (uint8_t)SU_FILE_PHASE_DOWNLOAD_RELATED)
+  {
+    az_span url = file_download_url(client, related->id);
+    int32_t downloaded = (hooks->download_fn != NULL && az_span_size(url) > 0)
+        ? hooks->download_fn(related, url, file_slot, file_count, hooks->user_ctx)
+        : AZ_IOT_SU_RESULT_FAILURE;
+    if (downloaded == AZ_IOT_SU_RESULT_IN_PROGRESS)
+    {
+      return AZ_IOT_SU_RESULT_IN_PROGRESS;
+    }
+    if (downloaded != AZ_IOT_SU_RESULT_SUCCESS)
+    {
+      return fall_back_to_full_download(client, step, file, AZ_IOT_SU_DELTA_ERROR_RELATED_DOWNLOAD);
+    }
+    if (verify_file_hash(client, related, file_slot) != AZ_IOT_SU_RESULT_SUCCESS)
+    {
+      return fall_back_to_full_download(client, step, file, AZ_IOT_SU_DELTA_ERROR_RELATED_HASH);
+    }
+    SU_I(client).file_download_phase = (uint8_t)SU_FILE_PHASE_BUILD;
+  }
+
+  int32_t built = handler->build_file_from_related_fn(file, related, file_slot, handler->user_ctx);
+  if (built == AZ_IOT_SU_RESULT_IN_PROGRESS)
+  {
+    return AZ_IOT_SU_RESULT_IN_PROGRESS;
+  }
+  if (built != AZ_IOT_SU_RESULT_SUCCESS)
+  {
+    return fall_back_to_full_download(client, step, file, AZ_IOT_SU_DELTA_ERROR_BUILD);
+  }
+  if (verify_file_hash(client, file, file_slot) != AZ_IOT_SU_RESULT_SUCCESS)
+  {
+    return fall_back_to_full_download(client, step, file, AZ_IOT_SU_DELTA_ERROR_BUILT_HASH);
+  }
+  AZ_IOT_LOG_INFOF(
+      AZ_IOT_LOG_COMPONENT_SU,
+      "file %.*s built from related file %.*s",
+      (int)az_span_size(file->id),
+      (const char*)az_span_ptr(file->id),
+      (int)az_span_size(related->id),
+      (const char*)az_span_ptr(related->id));
+  return AZ_IOT_SU_RESULT_SUCCESS;
+}
+
+/**
+ * @brief Call workflow_succeeded_fn of each download handler a file of the manifest names, once,
+ * in registration order.
+ */
+static void notify_download_handlers_of_success(az_iot_su_client* client)
+{
+  const az_iot_su_client_update_manifest* manifest = &SU_I(client).current_manifest;
+  for (size_t h = 0; h < SU_I(client).download_handler_count; ++h)
+  {
+    const az_iot_su_download_handler* handler = &SU_I(client).download_handlers[h];
+    if (handler->workflow_succeeded_fn == NULL)
+    {
+      continue;
+    }
+    for (uint32_t i = 0; i < manifest->files_count; ++i)
+    {
+      if (su_find_handler_by_id(
+              handler, 1, sizeof(*handler), manifest->files[i].download_handler_id)
+          != NULL)
+      {
+        handler->workflow_succeeded_fn(manifest, handler->user_ctx);
+        break;
+      }
+    }
+  }
 }
 
 /* Begin a best-effort reverse-order rollback and finish in Failed/Idle.
@@ -4327,7 +4365,8 @@ az_iot_result az_iot_su_client_do_work(az_iot_su_client* client)
 
     case AZ_IOT_SU_STATE_MANIFEST_RECEIVED:
     {
-      if (decode_manifest(client) != AZ_IOT_OK)
+      /* decode_manifest() ran when the request was staged. */
+      if (az_span_size(SU_I(client).manifest_text) <= 0)
       {
         result_init_steps(client, 1);
         result_step_failure(client, 0, AZ_IOT_SU_FACILITY_INTERNAL, 0);
@@ -4405,15 +4444,22 @@ az_iot_result az_iot_su_client_do_work(az_iot_su_client* client)
         (void)az_iot_su__report_state(client);
         break;
       }
-      az_span url = AZ_SPAN_EMPTY;
-      for (uint32_t i = 0; i < SU_I(client).current_request.file_urls_count; ++i)
+      /* With handlers registered, a file naming one is built from a related file first. */
+      if (SU_I(client).download_handler_count > 0 && az_span_size(file->download_handler_id) > 0
+          && SU_I(client).file_download_phase != (uint8_t)SU_FILE_PHASE_FULL_DOWNLOAD)
       {
-        if (az_span_is_content_equal(SU_I(client).current_request.file_urls[i].id, file->id))
+        int32_t built = build_file_with_download_handler(client, step, fidx, fcount, file);
+        if (built == AZ_IOT_SU_RESULT_SUCCESS)
         {
-          url = SU_I(client).current_request.file_urls[i].url;
-          break;
+          SU_I(client).file_download_phase = (uint8_t)SU_FILE_PHASE_CHOOSE;
+          SU_I(client).current_file++;
         }
+        /* After a fallback the full download starts on the next do_work(), so download_fn is
+         * called at most once per call. */
+        break;
       }
+      SU_I(client).file_download_phase = (uint8_t)SU_FILE_PHASE_FULL_DOWNLOAD;
+      az_span url = file_download_url(client, file->id);
       int32_t dr = (h->download_fn != NULL) ? h->download_fn(file, url, fidx, fcount, h->user_ctx)
                                             : AZ_IOT_SU_RESULT_FAILURE;
       if (dr == AZ_IOT_SU_RESULT_IN_PROGRESS)
@@ -4440,6 +4486,7 @@ az_iot_result az_iot_su_client_do_work(az_iot_su_client* client)
           break;
         }
       }
+      SU_I(client).file_download_phase = (uint8_t)SU_FILE_PHASE_CHOOSE;
       SU_I(client).current_file++;
       break;
     }
@@ -4558,6 +4605,7 @@ az_iot_result az_iot_su_client_do_work(az_iot_su_client* client)
       result_overall_success(client);
       latch_terminal(client, AZ_IOT_SU_OUTCOME_SUCCEEDED);
       SU_I(client).reboot_owed = (ar == AZ_IOT_SU_RESULT_REBOOT_REQUIRED);
+      notify_download_handlers_of_success(client);
       reset_to_idle(client);
       (void)az_iot_su__report_state(client);
       break;
@@ -4595,13 +4643,7 @@ static void write_step_details(az_iot_su_client* client, uint32_t step_index, az
   {
     return;
   }
-  int32_t len = az_span_size(details);
-  uint8_t* slot = SU_I(client).step_details + (size_t)step_index * SU_I(client).step_details_size;
-  if (len > 0)
-  {
-    memmove(slot, az_span_ptr(details), (size_t)len);
-  }
-  SU_I(client).step_results[step_index].result_details = az_span_create(slot, len);
+  store_step_details(client, step_index, details);
   /* Held at a stored resume point (an install awaiting its reboot, or the next
    * step after an apply that asked for one), no later write would carry the
    * change: rewrite the record on the next do_work(), before the workflow goes on. */
@@ -4633,7 +4675,7 @@ az_iot_result az_iot_su_client_set_step_result_details(
    * step exists from then (is_installed_fn included) until the workflow ends. */
   az_iot_su_state st = SU_I(client).state;
   if (st == AZ_IOT_SU_STATE_IDLE || st == AZ_IOT_SU_STATE_FAILED
-      || step_index >= (uint32_t)_az_IOT_ADU_CLIENT_MAX_INSTRUCTIONS_STEPS
+      || step_index >= (uint32_t)AZ_IOT_SU_MAX_STEP_COUNT
       || (int32_t)step_index >= SU_I(client).step_results_count)
   {
     return AZ_IOT_ERR_NOT_FOUND;
@@ -4774,6 +4816,38 @@ az_iot_su_state az_iot_su_client_get_state(const az_iot_su_client* client)
     return AZ_IOT_SU_STATE_IDLE;
   }
   return SU_I(client).state;
+}
+
+AZ_NODISCARD az_iot_result az_iot_su_client_get_current_update(
+    const az_iot_su_client* client,
+    const az_iot_su_client_update_request** out_request,
+    const az_iot_su_client_update_manifest** out_manifest)
+{
+  if (out_request != NULL)
+  {
+    *out_request = NULL;
+  }
+  if (out_manifest != NULL)
+  {
+    *out_manifest = NULL;
+  }
+  if (client == NULL || out_request == NULL || out_manifest == NULL)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  az_iot_su_state state = SU_I(client).state;
+  if (state == AZ_IOT_SU_STATE_IDLE || !SU_I(client).have_request)
+  {
+    return AZ_IOT_ERR_NOT_FOUND;
+  }
+  *out_request = &SU_I(client).current_request;
+  /* Parsed only once verified; a failed workflow may have stopped before that. */
+  if (state != AZ_IOT_SU_STATE_MANIFEST_RECEIVED && state != AZ_IOT_SU_STATE_VERIFYING_MANIFEST
+      && state != AZ_IOT_SU_STATE_FAILED)
+  {
+    *out_manifest = &SU_I(client).current_manifest;
+  }
+  return AZ_IOT_OK;
 }
 
 AZ_NODISCARD az_iot_su_reboot_state
@@ -4933,11 +5007,55 @@ AZ_NODISCARD az_iot_result az_iot_su_client_update_device_properties(
 /* agent core-library API (library mode / bring-your-own state machine)      */
 /* ------------------------------------------------------------------------- */
 
+AZ_NODISCARD az_iot_result az_iot_su_verify_manifest(
+    az_span manifest,
+    az_span signature,
+    const az_iot_crypto* crypto,
+    const az_iot_su_root_key* root_keys,
+    size_t root_key_count,
+    uint32_t* out_error)
+{
+  if (out_error != NULL)
+  {
+    *out_error = 0;
+  }
+  if (az_iot_crypto__validate(crypto) != AZ_IOT_OK || (root_keys == NULL && root_key_count > 0))
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  if (crypto->verify_rs256 == NULL)
+  {
+    return AZ_IOT_ERR_NOT_SUPPORTED;
+  }
+
+  uint8_t scratch[AZ_IOT_SU_VERIFY_SCRATCH_SIZE];
+  uint32_t verify_error = 0;
+  if (verify_manifest_core(
+          crypto,
+          root_keys,
+          root_key_count,
+          manifest,
+          signature,
+          scratch,
+          sizeof(scratch),
+          &verify_error)
+      == AZ_IOT_SU_RESULT_SUCCESS)
+  {
+    return AZ_IOT_OK;
+  }
+  if (out_error != NULL)
+  {
+    *out_error = verify_error;
+  }
+  return verify_error == AZ_IOT_SU_MANIFEST_ERROR_CRYPTO ? AZ_IOT_ERR_INTERNAL : AZ_IOT_ERR_AUTH;
+}
+
 AZ_NODISCARD az_iot_result az_iot_su_parse_update_request(
     az_span request_json,
     const az_iot_crypto* crypto,
     const az_iot_su_root_key* root_keys,
     size_t root_key_count,
+    const az_iot_su_update_request_storage* storage,
     az_iot_su_client_update_request* out_request,
     az_iot_su_client_update_manifest* out_manifest)
 {
@@ -4951,7 +5069,9 @@ AZ_NODISCARD az_iot_result az_iot_su_parse_update_request(
     memset(out_manifest, 0, sizeof(*out_manifest));
   }
   if (az_iot_crypto__validate(crypto) != AZ_IOT_OK || out_request == NULL || out_manifest == NULL
-      || az_span_size(request_json) <= 0)
+      || az_span_size(request_json) <= 0 || storage == NULL || storage->file_urls == NULL
+      || storage->max_related_files > AZ_IOT_SU_MAX_LIMIT_COUNT
+      || (storage->related_files == NULL && storage->max_related_files > 0))
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
@@ -4960,14 +5080,13 @@ AZ_NODISCARD az_iot_result az_iot_su_parse_update_request(
     return AZ_IOT_ERR_NOT_SUPPORTED;
   }
 
-  az_iot_adu_client az;
-  if (az_result_failed(az_iot_adu_client_init(&az, NULL)))
-  {
-    return AZ_IOT_ERR_INTERNAL;
-  }
-
   az_iot_su_client_update_request req;
-  az_iot_result r = parse_update_metadata(request_json, &req);
+  az_iot_result r = parse_update_metadata(
+      request_json,
+      storage->file_urls,
+      AZ_IOT_SU_FILE_URL_CAPACITY(storage->max_related_files),
+      AZ_SPAN_EMPTY,
+      &req);
   if (r == AZ_IOT_OK)
   {
     r = decode_request_strings(&req);
@@ -4989,25 +5108,20 @@ AZ_NODISCARD az_iot_result az_iot_su_parse_update_request(
   req.update_manifest = manifest_text;
 
   /* Trust gate before the manifest is parsed. */
-  uint8_t scratch[AZ_IOT_SU_VERIFY_SCRATCH_SIZE];
-  uint32_t verify_error = 0;
-  if (verify_manifest_core(
-          crypto,
-          root_keys,
-          root_key_count,
-          manifest_text,
-          req.update_manifest_signature,
-          scratch,
-          sizeof(scratch),
-          &verify_error)
-      != AZ_IOT_SU_RESULT_SUCCESS)
+  r = az_iot_su_verify_manifest(
+      manifest_text, req.update_manifest_signature, crypto, root_keys, root_key_count, NULL);
+  if (r != AZ_IOT_OK)
   {
-    return AZ_IOT_ERR_AUTH;
+    return r;
   }
 
   az_iot_su_client_update_manifest manifest;
-  memset(&manifest, 0, sizeof(manifest));
-  r = parse_update_manifest(&az, manifest_text, &manifest);
+  r = az_iot_su__parse_update_manifest(
+      manifest_text, storage->related_files, storage->max_related_files, &manifest);
+  if (r == AZ_IOT_OK)
+  {
+    r = az_iot_su__check_step_file_references(&manifest, 0, req.file_urls, req.file_urls_count);
+  }
   if (r != AZ_IOT_OK)
   {
     return r;
