@@ -757,13 +757,15 @@ static az_iot_mqtt_client* make_client(void)
   assert_non_null(workspace);
   az_iot_mqtt_client* c = NULL;
   az_iot_result const r = g_adapter->init(g_version, &k_client_limits, workspace, size, &c);
+  /* Judged before the workspace, which holds the client, is freed. */
   if (r != AZ_IOT_OK || c == NULL || c->iface == NULL)
   {
+    const char* const what = r != AZ_IOT_OK ? "failed"
+        : c == NULL                         ? "gave no client"
+                                            : "gave no iface";
     free(workspace);
+    fail_msg("adapter init() %s (%d)", what, (int)r);
   }
-  assert_int_equal(r, AZ_IOT_OK);
-  assert_non_null(c);
-  assert_non_null(c->iface);
   slot->client = c;
   slot->workspace = workspace;
   return c;
