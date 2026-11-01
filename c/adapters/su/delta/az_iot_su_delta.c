@@ -771,9 +771,16 @@ bool az_iot_su_delta__copy_file(const char* source_path, const char* target_path
   {
     return false;
   }
-  int source = open(source_path, O_RDONLY | O_CLOEXEC);
+  /* The source may be replaced meanwhile: neither follow a link nor wait on a FIFO. */
+  int source = open(source_path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
   if (source < 0)
   {
+    return false;
+  }
+  struct stat info;
+  if (fstat(source, &info) != 0 || !S_ISREG(info.st_mode))
+  {
+    (void)close(source);
     return false;
   }
   int target = su_delta_create_unique_file(temporary_path);

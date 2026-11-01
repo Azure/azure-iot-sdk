@@ -16,8 +16,8 @@
  * @brief Copy @p source_path to @p target_path through a new `<target_path>.XXXXXX` file,
  * renamed when complete; no existing file is replaced but @p target_path.
  *
- * @return true when copied; false otherwise, with @p source_path kept and the temporary file
- * removed.
+ * @return true when copied; false otherwise, e.g. when @p source_path is not a regular file (a
+ * link is not followed), with @p source_path kept and the temporary file removed.
  */
 bool az_iot_su_delta__copy_file(const char* source_path, const char* target_path);
 

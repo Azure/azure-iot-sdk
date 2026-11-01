@@ -1534,8 +1534,13 @@ static void test_copy_file_failures_remove_temporary_target(void** state)
   long_target[sizeof(long_target) - 4] = '\0';
   assert_false(az_iot_su_delta__copy_file(FILES_DIRECTORY "/source", long_target));
 
-  /* Reading fails after the temporary target is opened: the source is a directory. */
+  /* The source is not a regular file: a directory, a link to one, or a FIFO, which is not
+   * waited on. */
   assert_false(az_iot_su_delta__copy_file(FILES_DIRECTORY, WORK_DIRECTORY "/target"));
+  assert_int_equal(symlink(FILES_DIRECTORY "/source", FILES_DIRECTORY "/link"), 0);
+  assert_false(az_iot_su_delta__copy_file(FILES_DIRECTORY "/link", WORK_DIRECTORY "/target"));
+  assert_int_equal(mkfifo(FILES_DIRECTORY "/fifo", 0600), 0);
+  assert_false(az_iot_su_delta__copy_file(FILES_DIRECTORY "/fifo", WORK_DIRECTORY "/target"));
   assert_int_equal(count_entries(WORK_DIRECTORY, "target"), 0);
 
   /* Renaming fails after the copy: the target is a directory that is not empty. */
