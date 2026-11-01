@@ -5,17 +5,17 @@
 
 This guide is for a customer (or platform team) who wants to plug a non-default MQTT client library into `azure-iot-sdk`. The SDK ships with an Eclipse Paho-C adapter, but the MQTT layer is fully pluggable: anything that can implement the `az_iot_mqtt_iface` vtable can be dropped in.
 
-If you can produce a static or shared library that exposes one factory function per MQTT version you support, you are done. The conformance test suite ([tests/conformance/](../tests/conformance/)) verifies that your adapter is plug-compatible.
+If you can produce a static or shared library that exposes an `az_iot_mqtt_adapter` (a `get_workspace_size()` and an `init()` that builds a client of the MQTT version asked in application memory), you are done. The conformance test suite ([tests/conformance/](../tests/conformance/)) verifies that your adapter is plug-compatible.
 
 ## Prerequisites
 
 - Your MQTT client must be able to speak at least one of:
   - **MQTT v3.1.1**, or
   - **MQTT v5**.
-- Implementations may speak both; ship one factory per version.
+- Implementations may speak both; one adapter builds clients of every version it supports.
 - C99 source-level compatibility for the adapter glue (the underlying client may be C++/Rust/etc., as long as it exposes a C ABI).
 
-The SDK internally determines which MQTT version is required for each Azure service (DPS uses v3.1.1, MQTTv5 uses v5). Your adapter only needs to declare the version it supports — the SDK handles the rest.
+The SDK internally determines which MQTT version is required for each Azure service (DPS uses v3.1.1, MQTTv5 uses v5) and asks your adapter's `init()` for a client of that version. Refuse a version you do not support with `AZ_IOT_ERR_NOT_SUPPORTED`.
 
 ## Files you need to write
 
@@ -27,7 +27,7 @@ adapters/mymqtt/
 └── az_iot_mqtt_mymqtt.c    # implements az_iot_mqtt_iface (and pulls in your client lib)
 
 inc/azure/iot/adapters/
-└── az_iot_adapter_mymqtt.h # public factory builders (one per version)
+└── az_iot_adapter_mymqtt.h # public az_iot_mymqtt_get_adapter()
 ```
 
 You can take [adapters/paho/](../adapters/paho/) (a client with its own I/O thread) or
@@ -170,38 +170,53 @@ Two obligations, and only one of them is a choice.
 
 **Non-extractable keys.** If `tls.client_key_uri`, `tls.client_key_psa_id` or `tls.sign` is set, the caller is asking you to authenticate with a private key that cannot be read. Honour it, or fail the connect with `AZ_IOT_ERR_NOT_SUPPORTED`. What you must never do is connect *without* the credential you were asked to use — the conformance suite checks this whether or not you claim the feature. See 4.4.
 
-## Step 2 — Implement the factory
+## Step 2 — Implement the adapter
 
-A factory is just a struct + a `create` function:
+An adapter is a constant struct of two functions (see `az_iot_mqtt_adapter` in [az_iot_mqtt_iface.h](../inc/azure/iot/az_iot_mqtt_iface.h)). The application lends the connection client one workspace, and the connection client builds each session's client in it with `init()`; it runs one session, so one client, at a time:
 
 ```c
-typedef struct mymqtt_factory_state_tag {
-    az_iot_mqtt_factory public_;
-    /* ... your state ... */
-} mymqtt_factory_state_t;
-
-static az_iot_mqtt_client* mymqtt_factory_create(void* factory_ctx)
+/* get_workspace_size(): bytes for the largest client this adapter builds with limits, over the
+ * MQTT versions it supports; 0 when limits are invalid. */
+static size_t mymqtt_get_workspace_size(const az_iot_mqtt_limits* limits)
 {
-    mymqtt_factory_state_t* st = factory_ctx;
-    /* allocate, fill iface_storage, return &client->base */
+    if (limits == NULL || limits->send_buffer_size == 0 /* ... */)
+    {
+        return 0;
+    }
+    return sizeof(mymqtt_client) + 15u /* any alignment */ + limits->send_buffer_size
+        + limits->receive_buffer_size /* + in-flight entries, message store, connect strings */;
 }
 
-az_iot_mqtt_factory* az_iot_mymqtt_factory_create_v3_1_1(void)
+/* init(): build a client of mqtt_version in workspace, which stays valid until the client is
+ * destroyed. No allocation is needed: carve every buffer out of the workspace. */
+static az_iot_result mymqtt_init(
+    az_iot_mqtt_version mqtt_version,
+    const az_iot_mqtt_limits* limits,
+    uint8_t* workspace,
+    size_t workspace_size,
+    az_iot_mqtt_client** out_client)
 {
-    mymqtt_factory_state_t* st = calloc(1, sizeof(*st));
-    st->public_.version = AZ_IOT_MQTT_VERSION_3_1_1;
-    st->public_.create = mymqtt_factory_create;
-    st->public_.factory_ctx = st;
-    return &st->public_;
+    if (mqtt_version != AZ_IOT_MQTT_VERSION_3_1_1)
+    {
+        return AZ_IOT_ERR_NOT_SUPPORTED;
+    }
+    if (workspace_size < mymqtt_get_workspace_size(limits))
+    {
+        return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+    }
+    /* align, zero, fill iface, place buffers; *out_client = &client->base */
+    return AZ_IOT_OK;
 }
 
-void az_iot_mymqtt_factory_destroy(az_iot_mqtt_factory* factory)
-{
-    free(factory); /* NULL: no-op */
-}
+static const az_iot_mqtt_adapter s_mymqtt_adapter = {
+    .get_workspace_size = mymqtt_get_workspace_size,
+    .init = mymqtt_init,
+};
+
+const az_iot_mqtt_adapter* az_iot_mymqtt_get_adapter(void) { return &s_mymqtt_adapter; }
 ```
 
-The factory struct is minimal: it advertises the MQTT **version** it supports and provides a `create` function that produces clients for that version. The SDK internally knows which version is required for each Azure service and selects the appropriate registered factory at connection time. The application owns the factory and releases it with your destroy function; the connection client only borrows it.
+The client's `destroy()` releases what the client holds and wipes what it copied (credentials included), but frees nothing: the workspace is the application's again once it returns. `az_iot_mqtt_limits` carries the sizes the application chose (send and receive buffers, requests in flight, message store, connect strings); honour the ones that apply to your client and check the others are valid. A client library that allocates its own buffers (as Paho does) may keep only its own state in the workspace.
 
 ## Step 3 — Wire it into CMake
 
@@ -367,36 +382,37 @@ Material is all-or-none per route, and material supplied for a route you did not
 
 ## Step 5 — Use your adapter at runtime
 
-Once the conformance suite is green, plug the factory into the connection client:
+Once the conformance suite is green, give the adapter, the sizes and a workspace to the connection client:
 
 ```c
-az_iot_mqtt_factory* f = az_iot_mymqtt_factory_create_v3_1_1();
-if (az_iot_connection_client_register_mqtt_factory(client, f) != AZ_IOT_OK)
+static uint8_t mqtt_workspace[MYMQTT_WORKSPACE_SIZE]; /* >= get_workspace_size(&limits) */
+
+az_iot_connection_client_options opts = az_iot_connection_client_options_default();
+/* ... workspace, identity, auth ... */
+opts.mqtt_adapter = az_iot_mymqtt_get_adapter();
+opts.mqtt_limits = (az_iot_mqtt_limits){ .send_buffer_size = 8192, .receive_buffer_size = 8192,
+                                         .max_in_flight_messages = 8,
+                                         .connect_strings_size = 4096 };
+opts.mqtt_workspace = mqtt_workspace;
+opts.mqtt_workspace_size = sizeof(mqtt_workspace);
+if (az_iot_connection_client_init(&client, &opts) != AZ_IOT_OK)
 {
     /* handle the error */
 }
-/* register a v5 factory too if you support HUB_MQTT_V5 */
-
-/* ... use the client ... */
-
-az_iot_connection_client_deinit(client);
-az_iot_mymqtt_factory_destroy(f);
 ```
 
-The connection client picks the right factory at session-open time based on the MQTT version required for the target Azure service.
-
-Registration lends the factory to the connection client; the application still owns it. Keep it alive until `az_iot_connection_client_deinit()` returns, then destroy it.
+`mqtt_adapter`, `mqtt_limits` and `mqtt_workspace` are required: `init()` fails with `AZ_IOT_ERR_INVALID_ARG` without them, and with `AZ_IOT_ERR_NOT_ENOUGH_SPACE` when the workspace is too small. At session-open time the connection client asks the adapter for a client of the MQTT version the target Azure service requires. The workspace is the connection client's until `az_iot_connection_client_deinit()` returns; deinit wipes it.
 
 ## Common pitfalls
 
 - **Calling the user callback on the wrong thread.** The SDK's whole point is to keep the user on a single thread. If you hand callbacks straight from your client's I/O thread, all higher-level state machines in the SDK become racy. Use a FIFO + drain in `process_loop`.
 - **Returning success synchronously when the operation has not actually completed.** `connect`, `subscribe`, `publish` all return immediately; success/failure of the broker round-trip arrives later through the inbound callback. Returning `az_iot_OK` from `connect` only means "I accepted your CONNECT request and started working on it".
 - **Forgetting to populate every vtable slot.** The conformance suite asserts every slot is non-NULL.
-- **Reusing a single underlying client across DPS → Hub transitions.** Each session asks the factory for a fresh client; do not cache.
+- **Reusing a single underlying client across DPS → Hub transitions.** Each session asks `init()` for a fresh client in the workspace; do not cache.
 - **Gating server certificate validation on a caller flag.** There is no such flag, and `use_tls` is not one — it only selects TLS. Validate the chain and the hostname every time.
 - **Ignoring a key reference you cannot honour.** Connecting anyway means the session carries none of the credential the caller asked to authenticate with. Fail with `AZ_IOT_ERR_NOT_SUPPORTED` instead.
-- **Wrong version.** Registering only a v3.1.1 factory when you need MQTTv5 (which requires v5) will fail at connection time with `AZ_IOT_ERR_NOT_SUPPORTED`.
-- **Destroying a factory before `deinit()`.** The connection client keeps using a registered factory until `az_iot_connection_client_deinit()` returns; destroying it earlier is a use-after-free.
+- **Wrong version.** An adapter that builds only v3.1.1 clients, used with MQTTv5 (which requires v5), fails at connection time with `AZ_IOT_ERR_NOT_SUPPORTED`.
+- **Allocating or keeping pointers past `destroy()`.** The workspace may be reused for the next session's client as soon as `destroy()` returns; anything the client allocated must be released by then.
 
 ## Feature clients and what they need from the adapter
 

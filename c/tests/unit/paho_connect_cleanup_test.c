@@ -679,10 +679,12 @@ static void on_puback(const az_iot_mqtt_event* e, void* ctx)
 }
 
 /** @brief A v5 client, connected, with one QoS 1 publish sent. */
-static az_iot_mqtt_client* publish_on_a_v5_client(az_iot_mqtt_factory* f, puback_sink* sink)
+static az_iot_mqtt_client* publish_on_a_v5_client(
+    uint8_t* workspace,
+    size_t workspace_size,
+    puback_sink* sink)
 {
-  az_iot_mqtt_client* client = f->create(f->factory_ctx);
-  assert_non_null(client);
+  az_iot_mqtt_client* client = build_client(AZ_IOT_MQTT_VERSION_5, workspace, workspace_size);
   client->iface->set_inbound_cb(client, on_puback, sink);
   az_iot_mqtt_connect_options opts;
   memset(&opts, 0, sizeof(opts));
@@ -718,10 +720,9 @@ static void a_v5_publish_write_failure_ignores_its_uninitialized_reason_code(voi
 {
   (void)state;
   mock_paho_reset();
-  az_iot_mqtt_factory* f = az_iot_paho_factory_create_v5();
-  assert_non_null(f);
+  uint8_t workspace[AZ_IOT_PAHO_WORKSPACE_SIZE];
   puback_sink sink = { 0 };
-  az_iot_mqtt_client* client = publish_on_a_v5_client(f, &sink);
+  az_iot_mqtt_client* client = publish_on_a_v5_client(workspace, sizeof(workspace), &sink);
 
   const MQTTAsync_responseOptions* resp = mock_paho_last_send_response();
   MQTTAsync_failureData5 data;
@@ -738,7 +739,6 @@ static void a_v5_publish_write_failure_ignores_its_uninitialized_reason_code(voi
   assert_int_equal(sink.last.reason_string_len, 0);
 
   client->iface->destroy(client);
-  az_iot_paho_factory_destroy(f);
 }
 
 /* A PUBACK refusal keeps its reason code. */
@@ -746,10 +746,9 @@ static void a_v5_puback_refusal_keeps_its_reason_code(void** state)
 {
   (void)state;
   mock_paho_reset();
-  az_iot_mqtt_factory* f = az_iot_paho_factory_create_v5();
-  assert_non_null(f);
+  uint8_t workspace[AZ_IOT_PAHO_WORKSPACE_SIZE];
   puback_sink sink = { 0 };
-  az_iot_mqtt_client* client = publish_on_a_v5_client(f, &sink);
+  az_iot_mqtt_client* client = publish_on_a_v5_client(workspace, sizeof(workspace), &sink);
 
   const MQTTAsync_responseOptions* resp = mock_paho_last_send_response();
   MQTTAsync_failureData5 data = MQTTAsync_failureData5_initializer;
@@ -762,7 +761,6 @@ static void a_v5_puback_refusal_keeps_its_reason_code(void** state)
   assert_int_equal(sink.last.protocol_code, MQTTREASONCODE_NOT_AUTHORIZED);
 
   client->iface->destroy(client);
-  az_iot_paho_factory_destroy(f);
 }
 
 int main(void)

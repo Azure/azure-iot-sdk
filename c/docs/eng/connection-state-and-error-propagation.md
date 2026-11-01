@@ -71,7 +71,7 @@ Rules:
    session that is already up reports `SETTING_UP → CONNECTED`.
 9. **`open()` validates its configuration before any attempt starts**: the state, the
    credential setup, CSR support, and the registration payload and its buffer. A refusal there is
-   returned and raises no event. Every later `open()` failure (no factory, credential `load()`,
+   returned and raises no event. Every later `open()` failure (the adapter's `init()`, credential `load()`,
    SAS signing, adapter `connect()`) belongs to the attempt: it reports `SETTING_UP`, then `IDLE`
    with the reason and LOCAL detail, and is also returned.
 
