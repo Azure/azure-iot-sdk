@@ -151,7 +151,7 @@ sequenceDiagram
         alt no ref held (dps_refs_held() false)
             Conn->>DPS: DISCONNECT + tear down v3.1.1 adapter
         else a ref is held
-            Note over Conn,DPS: session kept, do_work() pumps it with the hub session
+            Note over Conn,DPS: session kept; the hub session waits until it is released
         end
         Conn->>Conn: resolve connection profile, apply assigned host / client id, pick hub role
     end
@@ -188,12 +188,13 @@ Key ordering guarantees that both clients must honour:
   use the persistent-subscription registry.
 
 2. **One MQTT session at a time.** `dps_apply_deferred()` keeps the DPS session after a successful
-   assignment while `dps_refs_held()` — a feature client's `__dps_user_acquire()` ref, or
-   `provision_only`'s standing ref — and tears it down otherwise. While a provisioning session is in
-   use (`dps_mqtt`, or a DPS start in `SETTING_UP`) the hub session does not start: it waits at
-   `HUB:RETRY_PENDING`, reason `AZ_IOT_OK`, no retry scheduled (`hub_waits_for_provisioning_session`).
-   When the last ref is released the pump closes the DPS session and the hub connects to the
-   assignment just adopted or cached, without registering again. A feature client that asks for a
+   assignment while `dps_refs_held()` — a feature client wants it (`dps_session_wanted`, set by
+   `__dps_session_ensure()` or `__dps_publish()`), or `provision_only`'s standing ref — and tears it
+   down otherwise. While a provisioning session is in use (`dps_mqtt`, or a DPS start in
+   `SETTING_UP`) the hub session does not start: it waits at `HUB:RETRY_PENDING`, reason
+   `AZ_IOT_OK`, no retry scheduled (`hub_waits_for_provisioning_session`). When
+   `__dps_session_release()` gives it back the pump closes the DPS session and the hub connects to
+   the assignment just adopted or cached, without registering again. A feature client that asks for a
    session through `__dps_session_ensure()` while the hub is `CONNECTED` gets `AZ_IOT_ERR_BUSY`; the
    hub session is ended first as a planned end (`planned_hub_session_end.for_provisioning_session`;
    feature clients see `AZ_IOT_CONNECTION_SESSION_END_PLANNED`), and `do_work()` opens the DPS
@@ -708,11 +709,10 @@ sequenceDiagram
 
 - **Registration is held for the check, not for the install.** A check that finds an update releases
   the hold like any other verdict. While the channel still has work on the session (a request
-  outstanding, or the check still owed), its `__dps_user_acquire()` ref keeps the session across
+  outstanding, or the check still owed), its `__dps_session_ensure()` keeps the session across
   registration and the hub session waits (§3, ordering guarantee 2); it starts once the channel lets
-  go. Later
-  operations (the install's reports, a re-check) end the hub session and run on a new DPS session. A
-  bootstrap deployment can chain, so the agent re-checks after installing.
+  go. Later operations (the install's reports, a re-check) end the hub session and run on a new DPS
+  session. A bootstrap deployment can chain, so the agent re-checks after installing.
 - Bootstrap progress is stored **in the bootstrap update job**, not on the device's ADR attributes —
   the device resource does not exist yet.
 - Trust comes from the **root-key package** at `serviceConfiguration.rootKeyDownloadUrl` returned by
@@ -798,9 +798,9 @@ reports include complete per-step outcomes when steps are available — see
 - **Software updates follows the DPS scope, not the hub one.** The channel records both scopes but acts only on
   `AZ_IOT_CONN_SCOPE_DPS`, so it works under `provision_only`. It never opens, closes or reconnects
   the hub session itself. It holds registration for the bootstrap check (§7.1), and after
-  provisioning asks for a DPS session through `__dps_session_ensure()` when it has work, holding its
-  `__dps_user_acquire()` ref only while it does. The connection client ends the hub session first
-  and reconnects it when the ref is released, so the application sees the hub disconnect for each
+  provisioning asks for a DPS session through `__dps_session_ensure()` when it has work and gives it
+  back with `__dps_session_release()` when it has none. The connection client ends the hub session
+  first and reconnects it after the release, so the application sees the hub disconnect for each
   operational check or report and reconnect after. While either scope has settled in `FAULTED`, no
   new session is opened until `close()`.
 - **Compatibility properties are opaque key/value pairs** (1–5) reported by the agent alongside an

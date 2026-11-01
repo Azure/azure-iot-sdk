@@ -14,6 +14,9 @@
   session end (`AZ_IOT_CONNECTION_SESSION_END_PLANNED`) and resume after it. These planned ends do not
   count toward reconnection backoff or `dps.max_hub_connect_attempts_before_reprovision`. Creating
   an MQTT client for one session while the other's exists fails with `AZ_IOT_ERR_INTERNAL`.
+- Connection client (internal): the provisioning session is wanted through
+  `__dps_session_ensure()` or `__dps_publish()` and given back with `__dps_session_release()`;
+  `__dps_user_acquire()` and `__dps_user_release()` are removed. Behavior is unchanged.
 - Connection client: `az_iot_connection_client_options::mqtt_adapter`, `mqtt_limits`,
   `mqtt_workspace` and `mqtt_workspace_size` build each session's MQTT client in application
   memory (e.g. `az_iot_az_mqtt_get_adapter()`), instead of registered factories (still used when
