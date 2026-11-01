@@ -71,15 +71,14 @@ static bool rid_is_ours(const char* rid)
 /* ------------------------------------------------------------------------- */
 
 /**
- * @brief Whether the pending status report is awaited on its own session, still
+ * @brief Whether the pending request is awaited on its own session, still
  * ready: the only case its response deadline applies to.
  *
  * @param c The channel.
  */
-static bool report_awaited_on_its_ready_session(const az_iot_su_channel_dps* c)
+static bool request_awaited_on_its_ready_session(const az_iot_su_channel_dps* c)
 {
-  return c->request_pending && c->pending_operation == AZ_IOT_SU_OP_REPORT_STATUS
-      && c->pending_epoch == c->session_epoch
+  return c->request_pending && c->pending_epoch == c->session_epoch
       && az_iot_connection_client__dps_session_ready(c->connection);
 }
 
@@ -99,7 +98,7 @@ static void lower_wait_to_deadline(uint64_t deadline_ms, uint64_t* remaining_ms)
 }
 
 /**
- * @brief Lower @p remaining_ms to the awaited status report's response deadline
+ * @brief Lower @p remaining_ms to the awaited request's response deadline
  * and the engine's next deadline, so the connection's wait ends by then.
  *
  * @param c            The channel.
@@ -107,9 +106,9 @@ static void lower_wait_to_deadline(uint64_t deadline_ms, uint64_t* remaining_ms)
  */
 static void lower_wait_to_next_deadline(const az_iot_su_channel_dps* c, uint64_t* remaining_ms)
 {
-  if (report_awaited_on_its_ready_session(c))
+  if (request_awaited_on_its_ready_session(c))
   {
-    lower_wait_to_deadline(c->report_response_deadline_ms, remaining_ms);
+    lower_wait_to_deadline(c->response_deadline_ms, remaining_ms);
   }
   if (c->engine_deadline_cb != NULL)
   {
@@ -438,8 +437,7 @@ static az_iot_result publish_operation(
   c->pending_operation = operation;
   c->pending_epoch = c->session_epoch;
   c->request_pending = true;
-  c->report_response_deadline_ms
-      = az_iot_time_mono_ms() + (uint64_t)AZ_IOT_SU_CHANNEL_REPORT_RESPONSE_TIMEOUT_MS;
+  c->response_deadline_ms = az_iot_time_mono_ms() + (uint64_t)AZ_IOT_SU_CHANNEL_RESPONSE_TIMEOUT_MS;
   return AZ_IOT_OK;
 }
 
@@ -1115,17 +1113,19 @@ static az_iot_result channel_do_work(void* ctx)
   /* Returned at the end, not here: the rest of the tick still runs. */
   az_iot_result sr = channel_observe_deferred(c);
 
-  /* A report not answered in time is retried on the engine's pacing, and the
-   * session released meanwhile: the hub session waits while it is up. Only on
-   * the report's own session, still ready: a report lost with its session is
+  /* A request not answered in time -- a status report, or an update check
+   * within its own request timeout -- is retried on the engine's pacing,
+   * and the session released meanwhile: the hub session waits while it is up.
+   * Only on the request's own session, still ready: one lost with its session is
    * handled below, which keeps the session interest and so its pacing. */
-  if (report_awaited_on_its_ready_session(c)
-      && az_iot_time_mono_ms() >= c->report_response_deadline_ms)
+  if (request_awaited_on_its_ready_session(c) && az_iot_time_mono_ms() >= c->response_deadline_ms)
   {
-    AZ_IOT_LOG_ERROR(AZ_IOT_LOG_COMPONENT_SU, "no answer to the status report in time; retrying");
+    AZ_IOT_LOG_ERRORF(
+        AZ_IOT_LOG_COMPONENT_SU,
+        "no answer to the %s in time; retrying",
+        c->pending_operation == AZ_IOT_SU_OP_REPORT_STATUS ? "status report" : "update check");
     c->request_pending = false;
-    emit_result(
-        c, AZ_IOT_SU_OP_REPORT_STATUS, AZ_IOT_ERR_TIMEOUT, AZ_IOT_SU_ERROR_ACTION_RETRY, NULL);
+    emit_result(c, c->pending_operation, AZ_IOT_ERR_TIMEOUT, AZ_IOT_SU_ERROR_ACTION_RETRY, NULL);
   }
 
   /* Recorded BEFORE the pending request is retired: that call clears

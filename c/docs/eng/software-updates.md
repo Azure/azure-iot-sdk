@@ -119,24 +119,28 @@ overlap. After registration, each check or status report made while the hub is c
    assignment without registering again. Feature clients resume as after any reconnect.
 
 These ends count toward no reconnection backoff or `max_hub_connect_attempts_before_reprovision`.
-How long the hub waits is bounded. An update check waits at most its request timeout (default
-`AZ_IOT_SU_REQUEST_DEFAULT_TIMEOUT_MS`, 60 s; `AZ_IOT_SU_REQUEST_NO_TIMEOUT` sets no bound); when
-it ends unanswered or unaccepted, or a check of the other kind replaces it before it is accepted,
-the channel stops asking for a session for it. An expired check is given up before the channel's
-tick, so the hub session is not ended for it, and `az_iot_connection_client_do_work()` waits no
-longer than a check's deadline. A publish the adapter refuses pauses the channel's publishing
-(1 s doubling to 60 s per refusal in a row) and, without other work, releases the session, so the
-hub session resumes meanwhile. A first refusal as too large does not pause, so the report sent again
-at once without its details still goes out. A provisioning session opened for an operation that is
-not ready (no SUBACK) within 60 s ends as failed: the hub session resumes, and the next attempt waits
-out the reconnection policy. A status report waits at most
-`AZ_IOT_SU_CHANNEL_REPORT_RESPONSE_TIMEOUT_MS` (default 60 s, the same value) for its answer, and
-`az_iot_connection_client_do_work()` waits no longer than that; past it the session is released
-and the report, still owed, is sent again on the retry backoff (1 s doubling to 60 s, ±20%), as
-is a report queued before or after the timeout. A request lost with its session keeps the
-channel's interest while the engine retries it, so the connection client's pacing of provisioning
-sessions still applies.
-An application that must not lose the hub during a check schedules checks when that is acceptable.
+How long the hub waits is bounded, because the hub session is down while the provisioning session
+runs. An update check waits at most its request timeout (default
+`AZ_IOT_SU_REQUEST_DEFAULT_TIMEOUT_MS`, 60 s); a timeout of 0 is refused with
+`AZ_IOT_ERR_INVALID_ARG`, so no check can hold the hub indefinitely. When it ends unanswered or
+unaccepted, or a check of the other kind replaces it before it is accepted, the channel stops asking
+for a session for it. An expired check is given up before the channel's tick, so the hub session is
+not ended for it, and `az_iot_connection_client_do_work()` waits no longer than a check's deadline.
+A publish the adapter refuses pauses the channel's publishing (1 s doubling to 60 s per refusal in a
+row) and, without other work, releases the session, so the hub session resumes meanwhile. A first
+refusal as too large does not pause, so the report sent again at once without its details still goes
+out. A provisioning session opened for an operation that is not ready (no SUBACK) within 120 s ends
+as failed: the hub session resumes, and the next attempt waits out the reconnection policy. A
+request the channel sent -- a status report, or an update check within its request timeout -- waits
+at most `AZ_IOT_SU_CHANNEL_RESPONSE_TIMEOUT_MS` (default 120 s) for its answer, and
+`az_iot_connection_client_do_work()` waits no longer than that; past it the session is released and
+the request is sent again on the retry backoff (1 s doubling to 60 s, ±20%), as is a report queued
+before or after the timeout. A request lost with its session keeps the channel's interest while the
+engine retries it, so the connection client's pacing of provisioning sessions still applies. A very
+large request timeout is still a bound, but a long one: a check the service cannot answer (no device
+record, no linked hub) keeps ending the hub session until it expires, each attempt for up to 120 s
+and repeated on the backoff, so telemetry, twin and methods go offline again and again. An
+application that must not lose the hub during a check schedules checks when that is acceptable.
 
 ### Request (both fetches)
 
@@ -1249,9 +1253,9 @@ az_iot_su_reboot_state az_iot_su_client_get_reboot_state(const az_iot_su_client*
  * Asynchronous: records the request; the NEXT do_work() issues it, retrying on
  * a later tick if the channel is not ready.
  *
- * timeout_ms bounds the whole wait in WALL-CLOCK terms;
- * AZ_IOT_SU_REQUEST_NO_TIMEOUT (0) means no bound, and
- * AZ_IOT_SU_REQUEST_DEFAULT_TIMEOUT_MS (60000) is the default for a caller
+ * timeout_ms bounds the whole wait in WALL-CLOCK terms and must be greater
+ * than 0 (0 returns AZ_IOT_ERR_INVALID_ARG): the hub session is down while a
+ * check runs. AZ_IOT_SU_REQUEST_DEFAULT_TIMEOUT_MS (60000) is the default for a caller
  * with no policy of its own. The bound covers the retries before the channel
  * accepts the check AND the wait for its answer after. On expiry the request
  * is dropped (the channel stops waiting, so a late answer is ignored) and

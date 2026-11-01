@@ -146,7 +146,7 @@ static const char* const k_props[] = { "type", "telemetry:1", "empty", "" };
 
 typedef struct race_fixture
 {
-  az_iot_mqtt_factory* factory;
+  uint8_t workspace[AZ_IOT_PAHO_WORKSPACE_SIZE];
   az_iot_mqtt_client* client;
   /* Consumer-thread state. Only the consumer thread touches these while the
    * producers run; the main thread reads them after joining it, and the join
@@ -219,10 +219,12 @@ static void fixture_setup(race_fixture* f)
   mock_paho_reset();
   mock_paho_set_inbound_user_properties(k_props, K_PROPS_COUNT);
 
-  f->factory = az_iot_paho_factory_create_v5();
-  assert_non_null(f->factory);
-  f->client = f->factory->create(f->factory->factory_ctx);
-  assert_non_null(f->client);
+  /* Paho sizes its own buffers: the limits only have to be valid. */
+  static const az_iot_mqtt_limits limits = { 1024, 1024, 4, 0, 0 };
+  assert_int_equal(
+      az_iot_paho_get_adapter()->init(
+          AZ_IOT_MQTT_VERSION_5, &limits, f->workspace, sizeof(f->workspace), &f->client),
+      AZ_IOT_OK);
 
   f->client->iface->set_inbound_cb(f->client, on_event, f);
 
@@ -240,11 +242,7 @@ static void fixture_setup(race_fixture* f)
   assert_ptr_equal(mock_paho_callback_context(), f->client);
 }
 
-static void fixture_teardown(race_fixture* f)
-{
-  f->client->iface->destroy(f->client);
-  az_iot_paho_factory_destroy(f->factory);
-}
+static void fixture_teardown(race_fixture* f) { f->client->iface->destroy(f->client); }
 
 /* Drain until every event the producers will send has been delivered.
  *

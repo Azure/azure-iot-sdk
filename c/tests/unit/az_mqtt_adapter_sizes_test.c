@@ -3,14 +3,12 @@
 // information.
 
 /* SPDX-License-Identifier: MIT */
-/* az_mqtt adapter built with a receive buffer larger than its send buffer
- * (az_mqtt_asymmetric_sizes.h), against an in-process server: CONNECT advertises the receive size
+/* az_mqtt adapter clients with a receive buffer larger than their send buffer, against an
+ * in-process server: CONNECT advertises the receive size
  * (MQTT 5 Maximum Packet Size), and a PUBLISH whose payload, topic and user property value each
  * exceed the send size arrives whole. A packet of exactly the receive size arrives; on MQTT 5, one
  * announced above it is refused from its fixed header with DISCONNECT 0x95, and the session ends
  * with AZ_IOT_ERR_NOT_ENOUGH_SPACE (not retriable). */
-#include "az_mqtt_asymmetric_sizes.h"
-
 #include <stdarg.h>
 #include <stddef.h>
 #include <setjmp.h>
@@ -43,9 +41,13 @@ typedef socklen_t test_socklen;
 
 #include <cmocka.h>
 
-#include "az_iot_az_mqtt_config.h"
 #include "azure/iot/adapters/az_iot_adapter_az_mqtt.h"
 #include "azure/iot/az_iot_mqtt_iface.h"
+
+/* The clients' limits: a receive buffer larger than the send buffer. */
+#define SEND_BUFFER_SIZE 1024
+#define RECEIVE_BUFFER_SIZE 8192
+#define MAX_IN_FLIGHT 8
 
 /* Payload, topic and user property value each over the send size; together under the receive
  * size. The topic is copied out of the packet, so it also covers its buffer; user properties are
@@ -53,9 +55,9 @@ typedef socklen_t test_socklen;
 #define PAYLOAD_LEN 2000
 #define TOPIC_LEN 1500
 #define VALUE_LEN 1500
-#if PAYLOAD_LEN <= AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE || TOPIC_LEN <= AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE \
-    || VALUE_LEN <= AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE                                                \
-    || PAYLOAD_LEN + TOPIC_LEN + VALUE_LEN + 64 > AZ_IOT_AZ_MQTT_RECEIVE_BUFFER_SIZE
+#if PAYLOAD_LEN <= SEND_BUFFER_SIZE || TOPIC_LEN <= SEND_BUFFER_SIZE \
+    || VALUE_LEN <= SEND_BUFFER_SIZE                                 \
+    || PAYLOAD_LEN + TOPIC_LEN + VALUE_LEN + 64 > RECEIVE_BUFFER_SIZE
 #error "Each must be over the send size, and all under the receive size"
 #endif
 #define STEPS 500
@@ -67,7 +69,7 @@ typedef struct
   az_iot_result disconnect_status;
   int messages;
   char topic[TOPIC_LEN + 1];
-  uint8_t payload[AZ_IOT_AZ_MQTT_RECEIVE_BUFFER_SIZE];
+  uint8_t payload[RECEIVE_BUFFER_SIZE];
   size_t payload_len;
   size_t properties;
   char key[2];
@@ -278,10 +280,11 @@ static uint32_t connect_property(const uint8_t* p, size_t n, uint8_t wanted)
   return 0;
 }
 
-/** @brief A client of @p f connected to an in-process server. */
+/** @brief A client connected to an in-process server. */
 typedef struct
 {
   az_iot_mqtt_client* client;
+  uint8_t* workspace; /**< The client's heap workspace, freed by close_session(); NULL: none. */
   test_sock listener;
   test_sock connection;
   bool v5;
@@ -301,6 +304,7 @@ static session open_session_of(
 {
   session s;
   s.v5 = v5;
+  s.workspace = NULL;
   uint16_t port = 0;
   test_sock listener = listen_loopback(&port);
   memset(&s_recorder, 0, sizeof(s_recorder));
@@ -347,20 +351,34 @@ static session open_session_of(
   return s;
 }
 
-/** @brief A client of @p f, connected with the compile-time sizes. */
-static session open_session(az_iot_mqtt_factory* f)
+/** @brief A @p version client built by the adapter in a heap workspace, connected with the
+ * limits of this test. */
+static session open_session(az_iot_mqtt_version version)
 {
-  return open_session_of(
-      f->create(f->factory_ctx),
-      f->version == AZ_IOT_MQTT_VERSION_5,
-      AZ_IOT_AZ_MQTT_RECEIVE_BUFFER_SIZE,
-      AZ_IOT_AZ_MQTT_INFLIGHT_MAX);
+  az_iot_mqtt_limits const limits = {
+    .send_buffer_size = SEND_BUFFER_SIZE,
+    .receive_buffer_size = RECEIVE_BUFFER_SIZE,
+    .max_in_flight_messages = MAX_IN_FLIGHT,
+    .message_store_size = 0,
+    .connect_strings_size = 256,
+  };
+  size_t const size = az_iot_az_mqtt_get_workspace_size(&limits);
+  uint8_t* workspace = (uint8_t*)malloc(size);
+  assert_non_null(workspace);
+  az_iot_mqtt_client* c = NULL;
+  assert_int_equal(
+      az_iot_az_mqtt_get_adapter()->init(version, &limits, workspace, size, &c), AZ_IOT_OK);
+  session s
+      = open_session_of(c, version == AZ_IOT_MQTT_VERSION_5, RECEIVE_BUFFER_SIZE, MAX_IN_FLIGHT);
+  s.workspace = workspace;
+  return s;
 }
 
 static void close_session(session* s)
 {
   (void)s->client->iface->disconnect(s->client);
   s->client->iface->destroy(s->client);
+  free(s->workspace);
   test_closesock(s->connection);
   test_closesock(s->listener);
 }
@@ -375,9 +393,9 @@ static void run_until_messages(az_iot_mqtt_client* c, int count)
   assert_int_equal(s_recorder.messages, count);
 }
 
-static void run_client(az_iot_mqtt_factory* f)
+static void run_client(az_iot_mqtt_version version)
 {
-  session s = open_session(f);
+  session s = open_session(version);
   bool const v5 = s.v5;
   az_iot_mqtt_client* c = s.client;
   test_sock conn = s.connection;
@@ -458,10 +476,10 @@ static size_t make_publish_of_size(uint8_t* out, size_t total, bool v5)
   return total;
 }
 
-static void receives_a_packet_of_exactly_the_receive_size(az_iot_mqtt_factory* f)
+static void receives_a_packet_of_exactly_the_receive_size(az_iot_mqtt_version version)
 {
-  session s = open_session(f);
-  static uint8_t publish[AZ_IOT_AZ_MQTT_RECEIVE_BUFFER_SIZE];
+  session s = open_session(version);
+  static uint8_t publish[RECEIVE_BUFFER_SIZE];
   size_t const n = make_publish_of_size(publish, sizeof(publish), s.v5);
   send_all(s.connection, publish, n);
   run_until_messages(s.client, 1);
@@ -474,33 +492,25 @@ static void receives_a_packet_of_exactly_the_receive_size(az_iot_mqtt_factory* f
 static void receives_a_packet_of_exactly_the_receive_size_v3(void** state)
 {
   (void)state;
-  az_iot_mqtt_factory* f = az_iot_az_mqtt_factory_create_v3_1_1();
-  assert_non_null(f);
-  receives_a_packet_of_exactly_the_receive_size(f);
-  az_iot_az_mqtt_factory_destroy(f);
+  receives_a_packet_of_exactly_the_receive_size(AZ_IOT_MQTT_VERSION_3_1_1);
 }
 
 static void receives_a_packet_of_exactly_the_receive_size_v5(void** state)
 {
   (void)state;
-  az_iot_mqtt_factory* f = az_iot_az_mqtt_factory_create_v5();
-  assert_non_null(f);
-  receives_a_packet_of_exactly_the_receive_size(f);
-  az_iot_az_mqtt_factory_destroy(f);
+  receives_a_packet_of_exactly_the_receive_size(AZ_IOT_MQTT_VERSION_5);
 }
 
 static void a_packet_over_the_receive_size_ends_the_session_from_its_header_v5(void** state)
 {
   (void)state;
-  az_iot_mqtt_factory* f = az_iot_az_mqtt_factory_create_v5();
-  assert_non_null(f);
-  session s = open_session(f);
+  session s = open_session(AZ_IOT_MQTT_VERSION_5);
 
   // Fixed header only, announcing one byte over the advertised Maximum Packet Size; no body
   // follows.
   uint8_t header[3];
   header[0] = 0x30;
-  assert_int_equal(write_varint(header + 1, (size_t)AZ_IOT_AZ_MQTT_RECEIVE_BUFFER_SIZE + 1 - 3), 2);
+  assert_int_equal(write_varint(header + 1, (size_t)RECEIVE_BUFFER_SIZE + 1 - 3), 2);
   send_all(s.connection, header, sizeof(header));
   for (int step = 0; step < STEPS && s_recorder.disconnected == 0; step++)
   {
@@ -530,28 +540,21 @@ static void a_packet_over_the_receive_size_ends_the_session_from_its_header_v5(v
   assert_int_equal(received[2], 0x95);
 
   close_session(&s);
-  az_iot_az_mqtt_factory_destroy(f);
 }
 
 static void receives_more_than_it_can_send_v3(void** state)
 {
   (void)state;
-  az_iot_mqtt_factory* f = az_iot_az_mqtt_factory_create_v3_1_1();
-  assert_non_null(f);
-  run_client(f);
-  az_iot_az_mqtt_factory_destroy(f);
+  run_client(AZ_IOT_MQTT_VERSION_3_1_1);
 }
 
 static void receives_more_than_it_can_send_and_advertises_it_v5(void** state)
 {
   (void)state;
-  az_iot_mqtt_factory* f = az_iot_az_mqtt_factory_create_v5();
-  assert_non_null(f);
-  run_client(f);
-  az_iot_az_mqtt_factory_destroy(f);
+  run_client(AZ_IOT_MQTT_VERSION_5);
 }
 
-/* A workspace client advertises its own limits, not the compile-time ones. */
+/* A client advertises the limits it was built with, not those of the other cases. */
 static void a_workspace_client_advertises_its_limits_v5(void** state)
 {
   (void)state;
@@ -560,8 +563,8 @@ static void a_workspace_client_advertises_its_limits_v5(void** state)
   limits.receive_buffer_size = 4096;
   limits.max_in_flight_messages = 3;
   limits.connect_strings_size = 256;
-  assert_true(limits.receive_buffer_size != AZ_IOT_AZ_MQTT_RECEIVE_BUFFER_SIZE);
-  assert_true(limits.max_in_flight_messages != AZ_IOT_AZ_MQTT_INFLIGHT_MAX);
+  assert_true(limits.receive_buffer_size != RECEIVE_BUFFER_SIZE);
+  assert_true(limits.max_in_flight_messages != MAX_IN_FLIGHT);
   size_t const size = az_iot_az_mqtt_get_workspace_size(&limits);
   assert_true(size > 0);
   /* Sized from the adapter: the TLS backend's state is part of it (Schannel: about 197 KB). */
