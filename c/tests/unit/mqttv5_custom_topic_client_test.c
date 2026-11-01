@@ -702,7 +702,9 @@ static void format_topic_needs_a_connection(void** state)
       AZ_IOT_ERR_NOT_CONNECTED);
 }
 
-#define REPROVISION_DELAY_MS 20u
+/* Too long to elapse during a test: the test fires the retry with
+ * az_iot_test_make_retry_due_now(). */
+#define REPROVISION_DELAY_MS 10000u
 
 /** @brief A DPS connection whose assignments land on an mqttv5 hub. */
 typedef struct dps_fixture
@@ -842,7 +844,7 @@ static void format_topic_follows_a_reprovisioned_device_id(void** state)
           &fx->custom, "c/{deviceId}/t", out, sizeof(out), NULL),
       AZ_IOT_ERR_NOT_CONNECTED);
 
-  az_iot_test_wait_ms(REPROVISION_DELAY_MS + 5u);
+  az_iot_test_make_retry_due_now(&fx->connection);
   (void)az_iot_connection_client_do_work(&fx->connection, 0);
   /* The retry goes to DPS, not to the hub it had. */
   assert_int_equal(
