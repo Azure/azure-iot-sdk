@@ -122,26 +122,25 @@ These ends count toward no reconnection backoff or `max_hub_connect_attempts_bef
 How long the hub waits is bounded, because the hub session is down while the provisioning session
 runs. An update check waits at most its request timeout (default
 `AZ_IOT_SU_REQUEST_DEFAULT_TIMEOUT_MS`, 60 s); a timeout of 0 is refused with
-`AZ_IOT_ERR_INVALID_ARG`, so no check can hold the hub indefinitely. When it ends unanswered or unaccepted, or a check of the other kind replaces it before it is accepted,
-the channel stops asking for a session for it. An expired check is given up before the channel's
-tick, so the hub session is not ended for it, and `az_iot_connection_client_do_work()` waits no
-longer than a check's deadline. A publish the adapter refuses pauses the channel's publishing
-(1 s doubling to 60 s per refusal in a row) and, without other work, releases the session, so the
-hub session resumes meanwhile. A first refusal as too large does not pause, so the report sent again
-at once without its details still goes out. A provisioning session opened for an operation that is
-not ready (no SUBACK) within 120 s ends as failed: the hub session resumes, and the next attempt
-waits out the reconnection policy. A request the channel sent -- a status report, or an update
-check within its request timeout -- waits at most
-`AZ_IOT_SU_CHANNEL_RESPONSE_TIMEOUT_MS` (default 120 s) for its answer, and
-`az_iot_connection_client_do_work()` waits no longer than that; past it the session is released
-and the request is sent again on the retry backoff (1 s doubling to 60 s, ±20%), as is a report
-queued before or after the timeout. A request lost with its session keeps the
-channel's interest while the engine retries it, so the connection client's pacing of provisioning
-sessions still applies.
-A very large request timeout is still a bound, but a long one: a check the service cannot answer (no
-device record, no linked hub) keeps ending the hub session until it expires, each attempt for up to
-120 s and repeated on the backoff, so telemetry, twin and methods go offline again and again.
-An application that must not lose the hub during a check schedules checks when that is acceptable.
+`AZ_IOT_ERR_INVALID_ARG`, so no check can hold the hub indefinitely. When it ends unanswered or
+unaccepted, or a check of the other kind replaces it before it is accepted, the channel stops asking
+for a session for it. An expired check is given up before the channel's tick, so the hub session is
+not ended for it, and `az_iot_connection_client_do_work()` waits no longer than a check's deadline.
+A publish the adapter refuses pauses the channel's publishing (1 s doubling to 60 s per refusal in a
+row) and, without other work, releases the session, so the hub session resumes meanwhile. A first
+refusal as too large does not pause, so the report sent again at once without its details still goes
+out. A provisioning session opened for an operation that is not ready (no SUBACK) within 120 s ends
+as failed: the hub session resumes, and the next attempt waits out the reconnection policy. A
+request the channel sent -- a status report, or an update check within its request timeout -- waits
+at most `AZ_IOT_SU_CHANNEL_RESPONSE_TIMEOUT_MS` (default 120 s) for its answer, and
+`az_iot_connection_client_do_work()` waits no longer than that; past it the session is released and
+the request is sent again on the retry backoff (1 s doubling to 60 s, ±20%), as is a report queued
+before or after the timeout. A request lost with its session keeps the channel's interest while the
+engine retries it, so the connection client's pacing of provisioning sessions still applies. A very
+large request timeout is still a bound, but a long one: a check the service cannot answer (no device
+record, no linked hub) keeps ending the hub session until it expires, each attempt for up to 120 s
+and repeated on the backoff, so telemetry, twin and methods go offline again and again. An
+application that must not lose the hub during a check schedules checks when that is acceptable.
 
 ### Request (both fetches)
 
