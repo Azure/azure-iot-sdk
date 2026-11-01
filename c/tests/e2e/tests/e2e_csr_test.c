@@ -59,7 +59,7 @@
 #define E2E_CONNECT_TIMEOUT_S 120
 /* The SDK waits up to 120 s for the 202 and, after it, 120 s for the 200. */
 #define E2E_RENEW_TIMEOUT_S 270
-#define E2E_RENEW_ATTEMPTS 3
+#define E2E_RENEW_ATTEMPTS 5
 
 static uint8_t g_connection_workspace[AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE];
 
@@ -83,6 +83,10 @@ typedef struct
   az_iot_result renew_status;
   az_iot_result renew_store_status;
   size_t renew_issued_count;
+  /* Set when the hub refused the renewal with 409: another request is active there. */
+  bool renew_conflict;
+  /* Set when the hub refused a replacement with 412: the request it replaced has ended. */
+  bool renew_nothing_to_replace;
   /* Set when the hub session is lost (RETRY_PENDING). */
   bool hub_dropped;
 } csr_ctx;
@@ -186,6 +190,16 @@ static void on_renew_event(const az_iot_csr_event* evt, void* user_ctx)
     c->hub_dropped = true; /* The session ended with it open: resubmitted once reconnected. */
     return;
   }
+  if (evt->kind == AZ_IOT_CSR_FAILED && evt->service_code / 1000 == 409)
+  {
+    c->renew_conflict = true; /* A request accepted before a drop is still active: replaced. */
+    return;
+  }
+  if (evt->kind == AZ_IOT_CSR_FAILED && evt->service_code / 1000 == 412)
+  {
+    c->renew_nothing_to_replace = true; /* It ended meanwhile: sent again without replace. */
+    return;
+  }
   c->renew_kind = evt->kind;
   c->renew_status = evt->status;
   c->renew_store_status = evt->store_status;
@@ -214,16 +228,22 @@ static void pump_until_hub_state(
  *
  * If the hub session drops before a terminal response, the request is
  * resubmitted with the same request id once reconnected (documented recovery
- * for az_iot_connection_client_send_csr()). */
+ * for az_iot_connection_client_send_csr()). If the hub then answers 409, the
+ * request it accepted before the drop is still active there: it is replaced
+ * ("*") under a new request id, so a late response to it is ignored. If that
+ * request ended before the replacement arrived, the hub answers 412 and the
+ * renewal is sent again, without replace, under another new request id. */
 static void renew_on_hub(az_iot_connection_client* conn, csr_ctx* ctx)
 {
-  char request_id[32];
+  char base_request_id[24];
   (void)snprintf(
-      request_id,
-      sizeof(request_id),
+      base_request_id,
+      sizeof(base_request_id),
       "%08x-%08x",
       (unsigned)time(NULL),
       (unsigned)(uintptr_t)ctx & 0xffffffffu);
+  char request_id[40];
+  (void)snprintf(request_id, sizeof(request_id), "%s", base_request_id);
 
   int attempt = 0;
   while (!ctx->renew_done && attempt < E2E_RENEW_ATTEMPTS)
@@ -238,14 +258,29 @@ static void renew_on_hub(az_iot_connection_client* conn, csr_ctx* ctx)
       }
       az_iot_result cancelled = az_iot_connection_client_cancel_csr(conn);
       assert_true(cancelled == AZ_IOT_OK || cancelled == AZ_IOT_ERR_NOT_FOUND);
-      fprintf(stderr, "[e2e-csr] hub session lost; resubmitting renewal %s\n", request_id);
+      if (ctx->renew_conflict || ctx->renew_nothing_to_replace)
+      {
+        (void)snprintf(request_id, sizeof(request_id), "%s-%d", base_request_id, attempt);
+      }
+      fprintf(
+          stderr,
+          "[e2e-csr] %s; resubmitting renewal %s\n",
+          ctx->renew_conflict                 ? "another request active, replacing it"
+              : ctx->renew_nothing_to_replace ? "nothing left to replace, sending it again"
+                                              : "hub session lost",
+          request_id);
     }
+    const char* replace = ctx->renew_conflict ? "*" : NULL;
     ++attempt;
     ctx->hub_dropped = false;
+    ctx->renew_conflict = false;
+    ctx->renew_nothing_to_replace = false;
     assert_int_equal(
-        AZ_IOT_OK, az_iot_connection_client_send_csr(conn, request_id, NULL, on_renew_event, ctx));
+        AZ_IOT_OK,
+        az_iot_connection_client_send_csr(conn, request_id, replace, on_renew_event, ctx));
     time_t start = time(NULL);
-    while (!ctx->renew_done && !ctx->hub_dropped && (time(NULL) - start) < E2E_RENEW_TIMEOUT_S)
+    while (!ctx->renew_done && !ctx->hub_dropped && !ctx->renew_conflict
+           && !ctx->renew_nothing_to_replace && (time(NULL) - start) < E2E_RENEW_TIMEOUT_S)
     {
       (void)az_iot_connection_client_do_work(conn, 50);
     }

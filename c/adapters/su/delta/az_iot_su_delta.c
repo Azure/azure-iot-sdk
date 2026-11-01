@@ -966,8 +966,13 @@ static void su_delta_remove_other_entries(
   (void)closedir(entries);
 }
 
-static void su_delta_workflow_succeeded(
+/**
+ * @brief workflow_ended_fn: end the workflow's build; on SUCCEEDED, also move the update's files
+ * into the source cache and evict the provider's other entries.
+ */
+static void su_delta_workflow_ended(
     const az_iot_su_client_update_manifest* manifest,
+    az_iot_su_outcome outcome,
     void* user_ctx)
 {
   az_iot_su_delta_handler* handler = (az_iot_su_delta_handler*)user_ctx;
@@ -977,6 +982,10 @@ static void su_delta_workflow_succeeded(
   }
   /* The workflow is over: a source chosen but not built from is no longer pinned. */
   su_delta_end_build(handler, false);
+  if (outcome != AZ_IOT_SU_OUTCOME_SUCCEEDED)
+  {
+    return;
+  }
   char provider_directory[AZ_IOT_SU_DELTA_MAX_PROVIDER_SIZE];
   char directory[AZ_IOT_SU_DELTA_MAX_PATH_SIZE];
   if (!su_delta_get_provider_directory(
@@ -1110,7 +1119,7 @@ az_iot_su_download_handler az_iot_su_delta_handler_get_download_handler(
   download_handler.id = AZ_IOT_SU_DELTA_DOWNLOAD_HANDLER_ID;
   download_handler.choose_related_file_fn = su_delta_choose_related_file;
   download_handler.build_file_from_related_fn = su_delta_build_file_from_related;
-  download_handler.workflow_succeeded_fn = su_delta_workflow_succeeded;
+  download_handler.workflow_ended_fn = su_delta_workflow_ended;
   download_handler.user_ctx = handler;
   return download_handler;
 }
