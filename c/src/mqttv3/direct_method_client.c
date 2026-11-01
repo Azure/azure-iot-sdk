@@ -26,14 +26,10 @@
 /* Longest decimal an int32 status can print, INT32_MIN included. */
 #define AZ_IOT_MQTTV3_DM_STATUS_MAX 11
 
-/* Derived from the parts the topic is built out of rather than fixed, because
- * AZ_IOT_DM_RID_MAX is a documented knob and it widens what the parser accepts.
- * At a fixed size the buffer did not widen with it, so an invocation carrying a
- * rid near the top of a raised bound was accepted, ran its handler, and then
- * could not be answered at all -- while shorter rids on the same build answered
- * normally. Deriving the size keeps "accepted" and "answerable" the same set.
- * Capacity works out at 40 + AZ_IOT_DM_RID_MAX against a worst case of 38,
- * terminator included, so it holds at every bound with two bytes spare. */
+/* Derived from the parts the topic is built out of, AZ_IOT_DM_RID_MAX included,
+ * so every rid the parser accepts can be answered. Capacity works out at
+ * 40 + AZ_IOT_DM_RID_MAX against a worst case of 38 + AZ_IOT_DM_RID_MAX,
+ * terminator included. */
 #define AZ_IOT_MQTTV3_DM_TOPIC_MAX                               \
   (sizeof(METHODS_RESPONSE_PREFIX) + AZ_IOT_MQTTV3_DM_STATUS_MAX \
    + sizeof(METHODS_RESPONSE_RID_MARKER) + AZ_IOT_DM_RID_MAX)

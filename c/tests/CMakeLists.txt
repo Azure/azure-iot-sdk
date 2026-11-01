@@ -265,13 +265,10 @@ if(UNIX)
     target_compile_definitions(az_iot_tests_mqttv3_direct_method_client PRIVATE
         _POSIX_C_SOURCE=200809L)
 endif()
-# AZ_IOT_DM_RID_MAX is a documented compile-time knob, and it sizes both a
-# public struct and the response topic the client builds from it -- so the
-# library and the application have to be built against the same value, hence
-# compiling the mqttv3 source into this target rather than linking az_iot_mqttv3,
-# which carries the default. Running the whole suite against a raised rid bound
-# is what proves the knob reaches every buffer derived from it. A single
-# in-flight slot (AZ_IOT_DM_MAX_INFLIGHT=1) proves no test or loop assumes two.
+# AZ_IOT_DM_MAX_INFLIGHT sizes a public struct, so the library and the
+# application have to be built against the same value, hence compiling the
+# mqttv3 source into this target rather than linking az_iot_mqttv3, which carries
+# the default. A single in-flight slot proves no test or loop assumes two.
 az_iot_add_cmocka_test(az_iot_tests_mqttv3_direct_method_client_tuned
     unit/mqttv3_direct_method_client_test.c
     ${PROJECT_SOURCE_DIR}/src/mqttv3/direct_method_client.c)
@@ -280,7 +277,6 @@ target_include_directories(az_iot_tests_mqttv3_direct_method_client_tuned PRIVAT
     ${PROJECT_SOURCE_DIR}/src/core
     ${PROJECT_SOURCE_DIR}/src/mqttv3)
 target_compile_definitions(az_iot_tests_mqttv3_direct_method_client_tuned PRIVATE
-    AZ_IOT_DM_RID_MAX=200
     AZ_IOT_DM_MAX_INFLIGHT=1)
 if(UNIX)
     target_compile_definitions(az_iot_tests_mqttv3_direct_method_client_tuned PRIVATE

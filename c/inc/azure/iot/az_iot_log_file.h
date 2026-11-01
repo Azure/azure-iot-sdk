@@ -33,10 +33,12 @@ extern "C"
 #define AZ_IOT_LOG_FILE_DEFAULT_MAX_FILES 3u
 #endif
 
-/** @brief Capacity, terminator included, of the stored log file path. Overridable; at least 8. */
-#ifndef AZ_IOT_LOG_FILE_PATH_MAX
-#define AZ_IOT_LOG_FILE_PATH_MAX 256
+#if defined(AZ_IOT_LOG_FILE_PATH_MAX)
+#error "AZ_IOT_LOG_FILE_PATH_MAX is fixed: see c/docs/client-configuration.md."
 #endif
+
+/** @brief Capacity, terminator included, of the stored log file path. Fixed. */
+#define AZ_IOT_LOG_FILE_PATH_MAX 256
 
   /** @brief File sink options. Zero selects the default for each field. */
   typedef struct az_iot_log_file_sink_options

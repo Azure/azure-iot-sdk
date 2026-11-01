@@ -1614,10 +1614,9 @@ static void the_sequence_counter_skips_zero_on_wrap(void** state)
 
 /* AZ_IOT_DM_RID_MAX bounds the rid the parser will accept, and the response
  * topic is built from that rid. A rid at the bound is the worst case, so it is
- * the one that has to survive the round trip: if the response buffer does not
- * track the knob, exactly these invocations are accepted and then cannot be
- * answered, while shorter rids on the same build are fine. Sized from the macro
- * so the same test is the worst case in both the default and the tuned build. */
+ * the one that has to survive the round trip: if the response buffer were too
+ * small, exactly these invocations would be accepted and then could not be
+ * answered, while shorter rids are fine. */
 static void a_rid_at_the_configured_bound_still_answers(void** state)
 {
   fixture* fx = (fixture*)*state;

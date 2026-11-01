@@ -20,10 +20,12 @@ extern "C"
 {
 #endif
 
-/* Longest topic this client builds: "ih/" + device id + "/dev/methods". */
-#ifndef AZ_IOT_MQTTV5_DM_TOPIC_MAX
-#define AZ_IOT_MQTTV5_DM_TOPIC_MAX 192
+#if defined(AZ_IOT_MQTTV5_DM_TOPIC_MAX)
+#error "AZ_IOT_MQTTV5_DM_TOPIC_MAX is fixed: see c/docs/client-configuration.md."
 #endif
+
+/** @brief Longest topic this client builds: "ih/" + device id + "/dev/methods". Fixed. */
+#define AZ_IOT_MQTTV5_DM_TOPIC_MAX 192
 
 /* Bytes of a result body this client can frame into a protobuf Result. The
  * frame is built in a buffer inside the client rather than on the heap, one per
