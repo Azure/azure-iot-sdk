@@ -1060,11 +1060,12 @@ static void resolve_connect_transport(
  *
  *  - HUB_MQTT_V3 (v3.1.1): a PERSISTENT session, which is the behaviour this
  *    role already had and is kept deliberately. MQTTv3 IoT Hub holds a
- *    device's subscriptions, and the cloud-to-device messages that arrived
- *    while it was away, only for a session that is NOT clean; connecting clean
- *    would silently drop whatever was queued during an outage. The SUBSCRIBEs
- *    are re-issued on every connect either way (begin_feature_subscriptions),
- *    so resuming costs nothing and losing the queue costs delivery.
+ *    device's subscriptions and in-flight QoS 1 deliveries only for a session
+ *    that is NOT clean. Connecting clean does not lose the hub's
+ *    cloud-to-device queue, which is delivered once the device re-subscribes,
+ *    but it discards in-flight deliveries. The SUBSCRIBEs are re-issued on
+ *    every connect either way (begin_feature_subscriptions), so resuming costs
+ *    nothing.
  *
  *  - HUB_MQTT_V5 (v5): a resumed session as well, with a Session Expiry Interval
  *    so there is something left to resume. The presence design is explicit that
@@ -9463,7 +9464,7 @@ static az_iot_result publish_tracked(
   }
   bool const has_cb = ack_cb != NULL || result_cb != NULL;
 
-  /* QoS 1/2 with a callback: reserve the correlation slot BEFORE publishing,
+  /* QoS 1 with a callback: reserve the correlation slot BEFORE publishing,
    * so a full pool sends nothing and the caller can retry without
    * duplicating. The reserved slot has no callback, so neither the PUBACK match
    * nor teardown_active() acts on it. Adapters deliver events only from
@@ -9515,8 +9516,9 @@ static az_iot_result publish_tracked(
     return r;
   }
 
-  /* QoS 0: there is no PUBACK on the wire. Complete synchronously. QoS 1/2
-   * without a callback: the future PUBACK is silently absorbed. */
+  /* QoS 0: there is no PUBACK on the wire. Complete synchronously. QoS 1
+   * without a callback: the future PUBACK is silently absorbed. Feature clients
+   * never pass QoS 2. */
   if (msg->qos == AZ_IOT_MQTT_QOS_0)
   {
     complete_publish(client, ack_cb, result_cb, user_ctx, AZ_IOT_OK, NULL);

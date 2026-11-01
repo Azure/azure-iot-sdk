@@ -79,9 +79,9 @@ comes from, in order:
 | --- | --- | --- | --- |
 | `AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE` | 270336 (264 KiB) | 8192 (8 KiB) | Largest outgoing packet. A larger connect or publish fails. |
 | `AZ_IOT_AZ_MQTT_RECEIVE_BUFFER_SIZE` | 270336 (264 KiB) | 135168 (132 KiB) | Largest incoming packet. MQTT 5: the Maximum Packet Size advertised; the server drops larger messages. MQTT 3.1.1: a larger packet ends the session. |
-| `AZ_IOT_AZ_MQTT_INFLIGHT_MAX` | 64 | 8 | QoS 1/2 exchanges in flight, 1-32767. MQTT 5: also the Receive Maximum advertised. |
+| `AZ_IOT_AZ_MQTT_INFLIGHT_MAX` | 64 | 8 | QoS 1 exchanges in flight (the SDK uses no QoS 2), 1-32767. MQTT 5: also the Receive Maximum advertised. |
 | `AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX` | 16 | 4 | MQTT 5 user properties on CONNECT; more is refused. PUBLISH user properties are not limited (sent and received in place). |
-| `AZ_IOT_AZ_MQTT_MESSAGE_STORAGE_SIZE` | send size + 18 | send size + 18 | Store of unacknowledged QoS 1/2 PUBLISH, for sessions that outlive the connection. 0: no store; a connect with `clean_start` false (MQTT 5: and `session_expiry_seconds` > 0) returns `AZ_IOT_ERR_NOT_SUPPORTED`. Macro only. |
+| `AZ_IOT_AZ_MQTT_MESSAGE_STORAGE_SIZE` | send size + 18 | send size + 18 | Copies of unacknowledged QoS 1 PUBLISH that az_mqtt requires while a session outlives the connection. The default holds one full-size publish; never resent. Sizing: [Message store](#message-store). 0: no store; a connect with `clean_start` false (MQTT 5: and `session_expiry_seconds` > 0) returns `AZ_IOT_ERR_NOT_SUPPORTED`. Macro only. |
 
 IoT Hub limits: device-to-cloud messages 256 KB, direct method payloads 128 KB, cloud-to-device
 messages 64 KB, twin documents 32 KB. `CONSTRAINED` receives all of these, and sends packets up to
@@ -115,8 +115,8 @@ stack or heap), with no allocation by the adapter. The sizes above become run-ti
 | --- | --- |
 | `send_buffer_size` | Largest outgoing packet. |
 | `receive_buffer_size` | Largest incoming packet; MQTT 5: the Maximum Packet Size advertised. |
-| `max_in_flight_messages` | QoS 1/2 exchanges at once, 1-32767; MQTT 5: the Receive Maximum advertised. |
-| `message_store_size` | Copies for resend on a resumed session; 0: clean sessions only. |
+| `max_in_flight_messages` | QoS 1 exchanges at once (the SDK uses no QoS 2), 1-32767; MQTT 5: the Receive Maximum advertised. |
+| `message_store_size` | Copies of unacknowledged QoS 1 PUBLISH the adapter keeps while a session outlives the connection; never resent (see [Message store](#message-store)). 0: clean sessions only. |
 | `connect_strings_size` | Copies a connect makes of its strings (host, credentials, TLS paths or PEM, proxy, will, user properties), one NUL each. |
 
 - `az_iot_az_mqtt_get_workspace_size(&limits)`: the exact size, for the largest of the MQTT 3.1.1
@@ -196,11 +196,12 @@ factories.
 - The hub session resumes its MQTT session unless `session_continuity` is
   `AZ_IOT_SESSION_CONTINUITY_CLEAN`. az_mqtt then needs a `message_store_size` of at least
   `send_buffer_size` plus its 18-byte per-message overhead; with 0 its connect fails with
-  `AZ_IOT_ERR_NOT_SUPPORTED`.
-- It holds one MQTT client at a time. A provisioning session cannot start while the hub session's
-  client exists, nor the reverse: the start fails with `AZ_IOT_ERR_BUSY` and is reported and
-  retried like any failed start. Today only the software updates DPS channel holds the
-  provisioning session beside the hub session.
+  `AZ_IOT_ERR_NOT_SUPPORTED`. That minimum holds one full-size unacknowledged QoS 1 publish; while
+  it awaits its PUBACK, a publish that does not fit returns `AZ_IOT_ERR_BUSY`. Sizing:
+  [Message store](#message-store).
+- It holds one MQTT client at a time, which is enough because the client runs
+  [one MQTT session at a time](connecting.md#one-mqtt-session-at-a-time): the provisioning session
+  and the hub session never overlap.
 
 ```c
 /* The last argument bounds the TLS backend's state: 8 KB covers OpenSSL and mbedTLS; Schannel
@@ -475,6 +476,25 @@ Not counted: twin and mqttv3 direct methods (QoS 0, bounded by `AZ_IOT_TWIN_MAX_
 With the defaults, telemetry gets all 16 slots, 8 when an mqttv5 direct method client is
 attached, and one fewer when `opts.csr_payload_buffer` is set. To size it, add the telemetry sends you keep in flight to the reservations. A slot is
 16 bytes on 32-bit targets and 32 bytes on 64-bit targets; a reservation entry is 8 or 16 bytes.
+
+#### Message store
+
+On a session that outlives the connection (the hub session, unless `session_continuity` is
+`AZ_IOT_SESSION_CONTINUITY_CLEAN`), az_mqtt keeps a copy of each unacknowledged QoS 1 publish in
+`message_store_size` (`AZ_IOT_AZ_MQTT_MESSAGE_STORAGE_SIZE`): its encoded size plus 18 bytes
+(`AZ_MQTT_INFLIGHT_MESSAGE_OVERHEAD`), until its PUBACK. A publish that does not fit returns
+`AZ_IOT_ERR_BUSY`; retry after a PUBACK. The default, `send_buffer_size + 18`, holds one full-size
+publish, so a second QoS 1 publish in flight can already return `AZ_IOT_ERR_BUSY`.
+
+Size it for the QoS 1 publishes you keep in flight: the sum of their encoded sizes plus 18 bytes
+each, and never below the minimum of `send_buffer_size + 18` (a nonzero store below that fails
+`init()`, and the workspace size query returns 0). How many are in flight is bounded by
+`max_in_flight_messages`, and for publishes with a completion callback by
+`max_pending_publishes` (above).
+
+The SDK never resends these copies: each session gets a new MQTT client, and unacknowledged
+publishes complete with `AZ_IOT_ERR_NOT_CONNECTED` for the layer above to retry
+([Connecting](connecting.md#resumed-sessions-and-retries)).
 
 ## Run time
 
