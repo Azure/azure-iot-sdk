@@ -6663,7 +6663,8 @@ static uint32_t limit_wait_to_connection_deadlines(az_iot_connection_client* c, 
     uint64_t const csr_left = c->csr_op.deadline_ms > now ? c->csr_op.deadline_ms - now : 0;
     remaining = csr_left < remaining ? csr_left : remaining;
   }
-  if (c->dps_session_ready_deadline_ms != 0)
+  /* A registration that adopted the session bounds it itself, as the expiry does. */
+  if (c->dps_session_ready_deadline_ms != 0 && !c->dps_registration_ref)
   {
     uint64_t const ready_left
         = c->dps_session_ready_deadline_ms > now ? c->dps_session_ready_deadline_ms - now : 0;

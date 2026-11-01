@@ -1655,6 +1655,43 @@ static void a_registration_adopts_the_session_its_users_hold(void** state)
   az_iot_connection_client__dps_user_release(fx->client);
 }
 
+/* Process-loop hook: record the wait the client was given. */
+static void record_process_loop_timeout(az_iot_mock_mqtt_client* m, void* ctx)
+{
+  *(uint32_t*)ctx = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_PROCESS_LOOP)->timeout_ms;
+}
+
+/* A registration that adopts its users' session before its SUBACK owns it: a
+ * passed readiness bound, which only a users' session is ended for, does not
+ * cut the wait to 0 either. */
+static void an_adopted_session_waits_past_its_readiness_bound(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  assert_int_equal(
+      az_iot_connection_client_register_mqtt_factory(fx->client, fx->factory), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client__dps_user_acquire(fx->client), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client__dps_session_ensure(fx->client), AZ_IOT_ERR_BUSY);
+  az_iot_mock_mqtt_client* dps = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  assert_non_null(dps);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(dps, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_false(az_iot_connection_client__dps_session_ready(fx->client));
+  assert_int_not_equal(fx->client->dps_session_ready_deadline_ms, 0);
+
+  assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
+  assert_true(fx->client->dps_registration_ref);
+  assert_ptr_equal(az_iot_mock_mqtt_client_from(fx->client->dps_mqtt), dps);
+
+  uint32_t dps_wait = 0;
+  az_iot_mock_mqtt_client_set_process_loop_hook(dps, record_process_loop_timeout, &dps_wait);
+  fx->client->dps_session_ready_deadline_ms = 1;
+  (void)az_iot_connection_client_do_work(fx->client, 5000u);
+  assert_true(dps_wait > 0u);
+  assert_ptr_equal(az_iot_mock_mqtt_client_from(fx->client->dps_mqtt), dps);
+  az_iot_mock_mqtt_client_set_process_loop_hook(dps, NULL, NULL);
+  az_iot_connection_client__dps_user_release(fx->client);
+}
+
 /* A session user must not be able to open one while a registration retry is
  * scheduled.
  *
@@ -5985,6 +6022,8 @@ int main(void)
         close_from_a_faulted_registration_still_ends_the_held_session, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_registration_adopts_the_session_its_users_hold, setup_with_reconnect, teardown),
+    cmocka_unit_test_setup_teardown(
+        an_adopted_session_waits_past_its_readiness_bound, setup_with_reconnect, teardown),
     cmocka_unit_test_setup_teardown(
         a_pending_retry_refuses_a_new_session, setup_with_reconnect, teardown),
     cmocka_unit_test_setup_teardown(
