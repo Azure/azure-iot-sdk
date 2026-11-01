@@ -5236,3 +5236,13 @@ AZ_NODISCARD az_iot_result az_iot_su_verify_file_hash(
       ? AZ_IOT_OK
       : AZ_IOT_ERR_AUTH;
 }
+
+AZ_NODISCARD az_iot_result
+az_iot_su_decode_manifest_string(az_span escaped, az_span out, az_span* out_decoded)
+{
+  if (out_decoded == NULL)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  return az_iot_json_string_decode(escaped, out, out_decoded);
+}

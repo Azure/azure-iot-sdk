@@ -1512,6 +1512,12 @@ az_iot_result az_iot_su_verify_file_hash(
     void* read_ctx);
 
 /**
+ * Decode a manifest string the parser keeps escaped, such as a file id
+ * (`f\u0031` is `f1`), before using it as a name or comparing it.
+ */
+az_iot_result az_iot_su_decode_manifest_string(az_span escaped, az_span out, az_span* out_decoded);
+
+/**
  * Build the reportUpdateStatus request body for a report, without a client or
  * a channel: the body the managed client and library mode send. Invalid reports
  * (empty workflow id, incomplete installed update id, outcome / failure-origin
@@ -1724,6 +1730,7 @@ Platform-specific code (Linux libcurl downloads, ESP32 OTA partition writes, etc
 | `adapters/crypto_mbedtls/` | `az_iot_crypto`: `verify_rs256`, `sha256_*` using mbedTLS | mbedTLS |
 | `adapters/crypto_openssl/` | `az_iot_crypto`: `verify_rs256`, `sha256_*` using OpenSSL | OpenSSL |
 | `adapters/su/esp32/` | ESP32 platform hooks (download, OTA install, persistence); ESP-IDF component in `platforms/esp32/components` | ESP-IDF |
+| `adapters/su/delta/` | The reference `microsoft/delta:1` download handler, POSIX (§8.2) | `libdl`; the delta processor at run time |
 | `samples/software_update/` | Samples that wire a crypto backend, platform hooks and the main loop | All of the above |
 
 There is no Linux platform adapter; the PC samples implement their own hooks.
@@ -1741,6 +1748,118 @@ There is no Linux platform adapter; the PC samples implement their own hooks.
 The PC samples verify manifests for real (OpenSSL, Microsoft root keys) and simulate download and
 install; their READMEs list the simulation knobs.
 
+Built with `AZ_IOT_WITH_SU_DELTA`, `pc/http_download` registers the delta handler (§8.2) with the
+real delta processor, and `pc/simulated_regular` registers it with a simulated processor when
+`SU_SIM_FILE_DIR` is set. The ESP32 sample registers no handler.
+
+### 8.2 Delta updates: the reference `microsoft/delta:1` handler
+
+`adapters/su/delta/` implements the `microsoft/delta:1` download handler of the Device Update
+reference agent as an `az_iot_su_download_handler`. It rebuilds an update file from a delta
+related file and the file of an earlier update, the *source*, kept in a source cache.
+
+| | |
+|---|---|
+| Build | `-DAZ_IOT_WITH_SU_DELTA=ON` (default OFF; ON in the Linux presets). POSIX only: configuring it elsewhere fails. |
+| Target, header | `azure::iot::su_delta`, `az_iot_su_delta.h`; pkg-config `azure-iot-sdk-su_delta` |
+| Links | `az_iot_core` and `libdl`. Not the delta processor: it is loaded at run time. |
+
+```c
+az_iot_su_delta_handler_options az_iot_su_delta_handler_options_default(void);
+az_iot_result az_iot_su_delta_handler_init(az_iot_su_delta_handler*, const az_iot_su_delta_handler_options*);
+az_iot_su_download_handler az_iot_su_delta_handler_get_download_handler(az_iot_su_delta_handler*);
+az_iot_result az_iot_su_delta_handler_get_source_cache_path(const az_iot_su_delta_handler*,
+    az_span provider, az_span hash_algorithm, az_span hash, char* path, size_t path_size);
+void az_iot_su_delta_handler_deinit(az_iot_su_delta_handler*);
+```
+
+| Option | Default | Meaning |
+|---|---|---|
+| `get_file_path_fn` | required | Where the application's `download_fn` stores a file (below) |
+| `source_cache_directory` | `/var/lib/adu/sdc` | Source cache; created when needed |
+| `apply_delta_fn` | `NULL`: `libadudiffapi` | Delta processor |
+| `library_path` | `libadudiffapi.so` | The default processor's library, for `dlopen()` |
+| `user_ctx` | `NULL` | Passed to `get_file_path_fn` and `apply_delta_fn` |
+
+**Flow.** For a manifest file whose `downloadHandler` is `microsoft/delta:1`:
+
+1. `choose_related_file_fn` picks the first related file whose source is in the cache. The
+   related file's `properties` name the source: `microsoft.sourceFileHash` (base64) and
+   `microsoft.sourceFileHashAlgorithm` (e.g. `sha256`).
+2. The client downloads that related file with `download_fn` and checks its hash.
+3. `build_file_from_related_fn` applies the delta to the source and writes the update file.
+4. The client checks the built file's hash with `read_file_fn`, as for a downloaded file.
+5. When the workflow succeeds, `workflow_succeeded_fn` stores the update's files in the cache.
+
+The client downloads the full file instead when the handler declines or fails, or a hash does not
+match.
+
+**Storage contract.** The handler works on files, where the application's hooks keep them:
+`get_file_path_fn(file, file_index, ...)` returns the path at which `download_fn` stores `file`
+and `read_file_fn` reads it. It is called for related files too, with the owning file's index as
+`download_fn` gets. The handler reads the delta at the related file's path and writes the built
+file at the update file's path, which may be the same. Files of several steps may share a path,
+e.g. with storage by slot only: the handler caches only the last one downloaded there. The samples
+use their download path: `SAMPLE_DOWNLOAD_PREFIX<file id>` in `pc/http_download`,
+`SU_SIM_FILE_DIR/<file id>` in `pc/simulated_regular`.
+
+**Source cache.** The reference agent's layout, so both can share a cache:
+`<directory>/<provider>/<algorithm>-<hash>`. In `<provider>` and `<algorithm>`, characters other
+than letters, digits and `-` become `_`; in the base64 hash, `+`, `/` and `=` become `_2B`, `_2F`
+and `_3D`.
+
+- When a workflow succeeds, and a file of the update names `microsoft/delta:1` (the client calls a
+  handler on success only then), each file of the update with a SHA-256 hash is moved (renamed, or copied
+  across file systems) from its `get_file_path_fn` path into the cache. It replaces the entry
+  there, which may hold other bytes, unless a handler builds from it. Without that file (e.g.
+  already moved), an entry of the file's size counts as stored.
+- Then every other entry of the update's provider is removed: the cache keeps the latest update
+  per provider, the sources of its next delta. Entries a handler builds from are kept.
+- Handlers sharing the cache, in one process or several, store and evict a provider's entries one
+  at a time, holding a lock on its directory: a success waits while another handler's runs.
+- So the first update of a device is a full download, and seeds the cache when a file of it names
+  `microsoft/delta:1`, related files or not. To make it a delta, or without that name, seed the
+  cache with the factory image at `az_iot_su_delta_handler_get_source_cache_path()`.
+- Failing to store an entry is logged; it does not fail the workflow, whose result is already
+  reported.
+
+**Delta processor.** The default is `libadudiffapi.so` from
+[Azure/iot-hub-device-update-delta](https://github.com/Azure/iot-hub-device-update-delta),
+`dlopen()`ed on first use through its C API (`adu_diff_apply_create_session()`,
+`adu_diff_apply()`...).
+
+- When it cannot be loaded, or lacks a symbol, `choose_related_file_fn` logs a warning and
+  declines, so every file is downloaded in full.
+- It does not check that the source is the expected file. A wrong source builds a wrong file,
+  which the built file's hash check rejects.
+- On failure it leaves a partial file: the handler removes it.
+- It runs inside `az_iot_su_client_do_work()` and blocks it until the file is built. An
+  application that cannot block that long sets `apply_delta_fn` to run the processor elsewhere,
+  returning `AZ_IOT_SU_RESULT_IN_PROGRESS` until it is done.
+
+**Platforms.** POSIX (Linux). The published processor package is Linux x86_64 and needs glibc 2.34
+or later. ESP32 and Windows register no handler: their files are always downloaded in full.
+
+**Tests and CI.**
+
+| Test | What |
+|---|---|
+| `az_iot_tests_su_delta` | Unit: cache path encoding, lookup, store and eviction; the rebuild through a fake `apply_delta_fn` and the samples' `simulate_delta_apply`, with partial target cleanup and a delta at the target's path; files of several steps at one path; a stored entry is refreshed from the application's file unless built from; handlers sharing a cache keep their own build files, do not evict a source being built from or an entry stored again since opened, and store and evict a provider's entries one at a time; a missing library or symbol declines. |
+| `az_iot_tests_su_delta_interop` | The real `libadudiffapi.so` rebuilds the committed `target.swu` from `source.swu` and `delta.bin` (SHA-256 checked); a truncated delta fails and leaves no target. |
+
+- The vectors are in `tests/unit/data/su_delta/`, with `SHA256SUMS`. They are regenerated, byte for
+  byte, by `tests/support/gen_su_delta_vectors.sh` with the pinned DiffGenTool.
+- The interop test is built only when `-DAZ_IOT_SU_DELTA_TEST_LIBRARY=<path>` is set. Configuring
+  fails when that file is missing or the handler is not built.
+- [`eng/install-su-delta-processor.sh`](../../eng/install-su-delta-processor.sh) downloads the
+  pinned `.deb` package, checks its SHA-256 and extracts it with `dpkg-deb -x` (no root). It
+  prints the library path.
+- The composite action
+  [`install-su-delta-processor`](../../../.github/actions/install-su-delta-processor/action.yml)
+  runs it with the package cached under its SHA-256.
+- `ci-c.yml` uses it in the Linux legs of the build job and in the coverage job. The build job
+  fails if the interop test is not registered.
+
 ---
 
 ## 9. Source Layout
@@ -1755,6 +1874,7 @@ src/features/su/
 ├── su_root_keys_microsoft.c     compiled-in Microsoft root keys
 └── internal/                    internal headers
 adapters/su/{crypto_mbedtls,crypto_openssl,esp32}/
+adapters/su/delta/               reference microsoft/delta:1 download handler (§8.2)
 tests/unit/su_*_test.c           unit tests against a fake channel
 tests/e2e/                       software updates e2e suites (see §15)
 ```
@@ -1965,6 +2085,7 @@ Every external effect is a hook, so the engine is tested on the host with no net
 | Unit | `tests/unit/su_client_test.c` | The engine against a fake channel, scripted platform hooks and a mock crypto backend: state transitions, multi-step updates, rollback, signature and hash failures, persistence and resume, device properties. |
 | Unit | `tests/unit/su_channel_dps_test.c`, `tests/unit/su_protocol_test.c` | The DPS channel against the connection client, and the wire codec. |
 | Crypto backends | `tests/unit/crypto_mbedtls_test.c`, `tests/unit/crypto_openssl_test.c` | Known-answer RS256, SHA-256 and HMAC-SHA256 vectors through the real library (`tests/support/crypto_contract.c`). |
+| Delta handler | `tests/unit/su_delta_test.c` | The `microsoft/delta:1` handler, and its interop with the real delta processor (§8.2). |
 | End to end | `tests/e2e/tests/e2e_su_test.c`, `tests/e2e/tests/e2e_su_offer_test.c` | The DPS channel and offered updates against the real service. Built with `-DAZ_IOT_BUILD_E2E_SU=ON`. See [end-to-end-tests.md](end-to-end-tests.md#software-updates-e2e). |
 
 Unit and crypto-adapter tests run on every CI build. The end-to-end suites run in their own

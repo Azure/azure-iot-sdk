@@ -43,7 +43,7 @@ target_link_libraries(app PRIVATE azure::iot::mqttv3 azure::iot::adapter_paho)
 
 - Components: `core`, `mqttv3`, `mqttv5`, and each adapter built (`adapter_paho`,
   `adapter_az_mqtt`, `crypto_openssl`, `crypto_mbedtls`,
-  `certificate_provider_managed`). An MQTT adapter's header is installed only with the adapter.
+  `certificate_provider_managed`, `su_delta`). An MQTT adapter's header is installed only with the adapter.
 - azure-sdk-for-c ships in the package (headers under `include/azure-sdk-for-c`);
   Paho installs its own `eclipse-paho-mqtt-c` package into the same prefix.
 - OpenSSL, and mbedTLS for `crypto_mbedtls`, must be findable by the consumer.
