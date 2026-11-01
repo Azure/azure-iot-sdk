@@ -258,15 +258,16 @@ extern "C"
 #endif
 
 /**
- * @brief Longest wait for the answer to a status report, in milliseconds.
+ * @brief Longest wait for the answer to a request the channel sent (an update
+ * check or a status report), in milliseconds.
  *
- * The hub session waits while a report is outstanding, so an answer lost on a
- * live session must not keep it waiting: past this the report is retried on the
- * engine's pacing and the session released meanwhile. Defaults to
- * AZ_IOT_SU_REQUEST_DEFAULT_TIMEOUT_MS, the bound an update check gets by default.
+ * The hub session waits while a request is outstanding, so an answer lost on a
+ * live session must not keep it waiting: past this the request is retried on the
+ * engine's pacing and the session released meanwhile. It also bounds an update
+ * check made with AZ_IOT_SU_REQUEST_NO_TIMEOUT once the channel has sent it.
  */
-#ifndef AZ_IOT_SU_CHANNEL_REPORT_RESPONSE_TIMEOUT_MS
-#define AZ_IOT_SU_CHANNEL_REPORT_RESPONSE_TIMEOUT_MS AZ_IOT_SU_REQUEST_DEFAULT_TIMEOUT_MS
+#ifndef AZ_IOT_SU_CHANNEL_RESPONSE_TIMEOUT_MS
+#define AZ_IOT_SU_CHANNEL_RESPONSE_TIMEOUT_MS 120000u
 #endif
 
 /** @brief First pause, in milliseconds, after the adapter refuses a publish; doubles per refusal
@@ -339,8 +340,8 @@ extern "C"
      * its own bit. */
     uint8_t session_demand;
 
-    /** When an outstanding status report stops being awaited (monotonic ms). */
-    uint64_t report_response_deadline_ms;
+    /** When the outstanding request stops being awaited (monotonic ms). */
+    uint64_t response_deadline_ms;
 
     /* Set once a dps_session_ensure() failure has been logged, so a refusal
      * that persists does not emit one line per pump tick. Cleared as soon as

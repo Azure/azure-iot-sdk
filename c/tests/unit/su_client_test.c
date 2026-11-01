@@ -9555,6 +9555,36 @@ static void a_report_queued_after_a_timeout_keeps_its_backoff(void** state)
   assert_report_waits_out_the_backoff(fx, sent);
 }
 
+/* A check the channel stopped awaiting (AZ_IOT_ERR_TIMEOUT), made without a
+ * timeout, is asked again on the engine's backoff, not on the next tick. */
+static void a_check_left_unanswered_is_retried_on_the_backoff(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  fx->chan.request_update_result = AZ_IOT_OK;
+  assert_int_equal(
+      az_iot_su_client_request_update(&fx->su, AZ_IOT_SU_REQUEST_NO_TIMEOUT), AZ_IOT_OK);
+  (void)az_iot_su_client_do_work(&fx->su);
+  int const sent = fx->chan.request_update_count;
+  assert_int_not_equal(fx->su._internal.fetch_in_flight, 0);
+
+  fx->chan.result_cb(
+      AZ_IOT_SU_OP_GET_UPDATE,
+      AZ_IOT_ERR_TIMEOUT,
+      AZ_IOT_SU_ERROR_ACTION_RETRY,
+      NULL,
+      fx->chan.engine_ctx);
+  assert_int_equal(fx->su._internal.fetch_in_flight, 0);
+  assert_int_not_equal(fx->su._internal.pending_fetch, 0);
+  assert_true(fx->su._internal.pending_fetch_paced);
+  assert_int_equal(fx->su._internal.pending_fetch_deadline_ms, 0);
+  (void)az_iot_su_client_do_work(&fx->su);
+  assert_int_equal(fx->chan.request_update_count, sent);
+
+  fx->su._internal.retry._internal.due_ms = az_iot_time_mono_ms();
+  (void)az_iot_su_client_do_work(&fx->su);
+  assert_int_equal(fx->chan.request_update_count, sent + 1);
+}
+
 /* AZ_IOT_SU_REQUEST_NO_TIMEOUT waits for the answer indefinitely too. */
 static void a_disabled_timeout_waits_for_an_answer_indefinitely(void** state)
 {
@@ -11861,6 +11891,8 @@ int main(void)
         an_unaccepted_check_abandoned_at_its_deadline_is_cancelled, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_report_left_unanswered_is_retried_on_the_backoff, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_check_left_unanswered_is_retried_on_the_backoff, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_report_queued_before_a_timeout_waits_out_its_backoff, setup, teardown),
     cmocka_unit_test_setup_teardown(

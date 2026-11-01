@@ -4,6 +4,11 @@
 
 ### Features Added
 
+- Software updates: an update check the channel sent, `AZ_IOT_SU_REQUEST_NO_TIMEOUT` included, or
+  a status report waits at most 120 s (`AZ_IOT_SU_CHANNEL_RESPONSE_TIMEOUT_MS`, was 60 s for
+  reports only) for its answer; then the provisioning session is released, the hub reconnects, and
+  the request is sent again on the retry backoff. A provisioning session opened for an operation
+  waits at most 120 s (was 60 s) to become ready.
 - Breaking: the connection client runs one MQTT session at a time; the provisioning session and the
   hub session no longer overlap. With software updates bound, the hub connect after registration
   waits while the update check still needs the provisioning session, then connects to the assigned

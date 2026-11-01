@@ -2767,7 +2767,7 @@ static void apply_user_token(
  * as failed: a hub session it paused resumes, and the next attempt waits out
  * the reconnection policy.
  */
-#define DPS_SESSION_READY_TIMEOUT_MS 60000u
+#define DPS_SESSION_READY_TIMEOUT_MS 120000u
 
 static void dps_teardown_mqtt(az_iot_connection_client* c)
 {

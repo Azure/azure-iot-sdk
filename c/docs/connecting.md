@@ -268,9 +268,10 @@ and what the application observes is:
 - These disconnects are planned: they count toward no reconnection backoff and not toward
   `dps.max_hub_connect_attempts_before_reprovision`.
 - The hub is not held indefinitely. An update check waits at most its request timeout (default
-  60 s; none with `AZ_IOT_SU_REQUEST_NO_TIMEOUT`). A status report waits at most 60 s for its
-  answer; then the provisioning session is released, the hub reconnects, and the report is sent
-  again later on the software updates retry backoff (1 s doubling to 60 s).
+  60 s). Once sent, a check (with `AZ_IOT_SU_REQUEST_NO_TIMEOUT` too) or a status report waits at
+  most 120 s for its answer, and a provisioning session at most 120 s to become ready; then the
+  provisioning session is released, the hub reconnects, and the request is sent again later on
+  the software updates retry backoff (1 s doubling to 60 s).
 - `close()` and `deinit()` end whichever session exists, the hub's wait included.
 
 ## Reconnection
