@@ -1297,6 +1297,9 @@ extern "C"
       bool pending_fetch_paced;
       /** The pending report was re-armed by a verdict that armed retry. */
       bool report_paced;
+      /** report_paced came from a report left unanswered (AZ_IOT_ERR_TIMEOUT): a report queued
+       * since waits it out too. */
+      bool report_paced_by_timeout;
       /** install_fn was called in the current workflow. */
       bool install_called;
       /** The last apply asked for a reboot; cleared by the reboot (re-initialization). */

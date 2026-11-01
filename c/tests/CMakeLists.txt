@@ -253,6 +253,8 @@ target_include_directories(az_iot_tests_mqttv5_custom_topic_client PRIVATE
     ${PROJECT_SOURCE_DIR}/src/core)
 az_iot_add_cmocka_test(az_iot_tests_mqttv3_c2d_client unit/mqttv3_c2d_client_test.c)
 target_link_libraries(az_iot_tests_mqttv3_c2d_client PRIVATE az_iot_test_support az_iot_mqttv3)
+target_include_directories(az_iot_tests_mqttv3_c2d_client PRIVATE
+    ${PROJECT_SOURCE_DIR}/src/core)
 az_iot_add_cmocka_test(az_iot_tests_mqttv3_direct_method_client unit/mqttv3_direct_method_client_test.c)
 target_link_libraries(az_iot_tests_mqttv3_direct_method_client PRIVATE az_iot_test_support az_iot_mqttv3)
 target_include_directories(az_iot_tests_mqttv3_direct_method_client PRIVATE
