@@ -715,17 +715,10 @@ int main(void)
     return 1;
   }
 
-  char temp_dir[400];
+  char work_name[64];
   char work_dir[512];
-  int work_len = az_iot_test_temp_dir(temp_dir, sizeof(temp_dir))
-      ? snprintf(
-            work_dir,
-            sizeof(work_dir),
-            "%s/az-iot-sign-negative-%ld",
-            temp_dir,
-            (long)az_iot_getpid())
-      : -1;
-  if (work_len < 0 || (size_t)work_len >= sizeof(work_dir))
+  (void)snprintf(work_name, sizeof(work_name), "az-iot-sign-negative-%ld", (long)az_iot_getpid());
+  if (!az_iot_test_temp_path(work_dir, sizeof(work_dir), work_name))
   {
     /* A truncated path names a different directory, so creating it, entering it
      * and removing it would each act on something nobody asked for. */

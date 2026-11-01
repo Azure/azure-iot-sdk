@@ -705,18 +705,12 @@ static fixture_options fixture_options_default(const char* model)
 /** @brief Creates an empty scratch directory under the system temporary directory. */
 static bool make_scratch_dir(char* dir, size_t size)
 {
-  char temp[E2E_SU_DIR_MAX];
-  if (!az_iot_test_temp_dir(temp, sizeof(temp)))
-  {
-    return false;
-  }
-  int n = snprintf(dir, size, "%s/az_iot_e2e_su_XXXXXX", temp);
-  if (n <= 0 || (size_t)n >= size)
+  if (!az_iot_test_temp_path(dir, size, "az_iot_e2e_su_XXXXXX"))
   {
     return false;
   }
 #ifdef _WIN32
-  return _mktemp_s(dir, (size_t)n + 1) == 0 && _mkdir(dir) == 0;
+  return _mktemp_s(dir, strlen(dir) + 1) == 0 && _mkdir(dir) == 0;
 #else
   return mkdtemp(dir) != NULL;
 #endif

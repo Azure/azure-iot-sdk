@@ -7,6 +7,7 @@
 #define AZ_IOT_TEST_ENV_H
 
 #include <stdbool.h>
+#include <stdio.h>
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
@@ -124,6 +125,26 @@ static inline bool az_iot_test_temp_dir(char* out, size_t size)
 #else
   return az_iot_test_copy_string(out, size, "/tmp");
 #endif
+}
+
+/**
+ * @brief Writes "<temporary directory>/<name>" to @p out (see az_iot_test_temp_dir()).
+ *
+ * @details Allocates nothing.
+ *
+ * @return true when the whole path fits in @p size bytes.
+ */
+static inline bool az_iot_test_temp_path(char* out, size_t size, const char* name)
+{
+  size_t len = 0;
+  int written = 0;
+  if (!az_iot_test_temp_dir(out, size))
+  {
+    return false;
+  }
+  len = strlen(out);
+  written = snprintf(out + len, size - len, "/%s", name);
+  return written > 0 && (size_t)written < size - len;
 }
 
 /**

@@ -94,13 +94,13 @@ az_iot_result az_iot_paho_key_custody_prepare(
   /* A distinct name per prepare(), so "the file from the previous connect was
    * removed" is a real observation and not the same path being rewritten. */
   static unsigned s_seq;
-  char dir[400];
+  char name[64];
   char path[512];
-  if (!az_iot_test_temp_dir(dir, sizeof(dir)))
+  (void)snprintf(name, sizeof(name), "az-iot-ut-keyref-%u.pem", ++s_seq);
+  if (!az_iot_test_temp_path(path, sizeof(path), name))
   {
     return AZ_IOT_ERR_OUT_OF_MEMORY;
   }
-  snprintf(path, sizeof(path), "%s/az-iot-ut-keyref-%u.pem", dir, ++s_seq);
 
   FILE* f = fopen(path, "w");
   if (!f)

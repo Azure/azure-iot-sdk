@@ -72,9 +72,7 @@ static void capture_reset(void) { g_last_error[0] = '\0'; }
 static int group_setup(void** state)
 {
   (void)state;
-  char dir[400];
-  assert_true(az_iot_test_temp_dir(dir, sizeof(dir)));
-  snprintf(g_key_path, sizeof(g_key_path), "%s/az-iot-ut-softkey.pem", dir);
+  assert_true(az_iot_test_temp_path(g_key_path, sizeof(g_key_path), "az-iot-ut-softkey.pem"));
   FILE* f = fopen(g_key_path, "w");
   assert_non_null(f);
   assert_true(fwrite(k_software_key_pem, 1, sizeof(k_software_key_pem) - 1, f) > 0);
@@ -381,10 +379,8 @@ static void release_is_idempotent(void** state)
 static void release_removes_the_reference_file(void** state)
 {
   (void)state;
-  char dir[400];
   char path[512];
-  assert_true(az_iot_test_temp_dir(dir, sizeof(dir)));
-  snprintf(path, sizeof(path), "%s/az-iot-ut-keyref-release.pem", dir);
+  assert_true(az_iot_test_temp_path(path, sizeof(path), "az-iot-ut-keyref-release.pem"));
   FILE* f = fopen(path, "w");
   assert_non_null(f);
   fputs("-----BEGIN PKCS#11 PROVIDER URI-----\n", f);
