@@ -285,6 +285,24 @@ static bool su_delta_get_source_path(
       == AZ_IOT_OK;
 }
 
+/** @brief Whether @p path still names the file open at @p descriptor. */
+static bool su_delta_is_still_named(int descriptor, const char* path)
+{
+  struct stat opened;
+  struct stat named;
+  return fstat(descriptor, &opened) == 0 && lstat(path, &named) == 0
+      && opened.st_dev == named.st_dev && opened.st_ino == named.st_ino;
+}
+
+bool az_iot_su_delta__remove_opened_file_unless_locked(int descriptor, const char* path)
+{
+  struct stat info;
+  /* Locked, then checked again: @p path may name a file created since @p descriptor was opened. */
+  return fstat(descriptor, &info) == 0 && !S_ISDIR(info.st_mode)
+      && flock(descriptor, LOCK_EX | LOCK_NB) == 0 && su_delta_is_still_named(descriptor, path)
+      && unlink(path) == 0;
+}
+
 /**
  * @brief Remove the file at @p path unless a handler holds a lock on it: a file being built, or a
  * source being built from. A directory, or a file that cannot be opened, is kept; a link is
@@ -299,9 +317,7 @@ static bool su_delta_remove_file_unless_locked(const char* path)
   {
     return errno == ELOOP && unlink(path) == 0;
   }
-  struct stat info;
-  bool removed = fstat(descriptor, &info) == 0 && !S_ISDIR(info.st_mode)
-      && flock(descriptor, LOCK_EX | LOCK_NB) == 0 && unlink(path) == 0;
+  bool removed = az_iot_su_delta__remove_opened_file_unless_locked(descriptor, path);
   (void)close(descriptor);
   return removed;
 }
@@ -320,10 +336,8 @@ static bool su_delta_pin_source(az_iot_su_delta_handler* handler, const char* so
     return false;
   }
   struct stat opened;
-  struct stat named;
   if (flock(descriptor, LOCK_SH | LOCK_NB) == 0 && fstat(descriptor, &opened) == 0
-      && S_ISREG(opened.st_mode) && lstat(source_path, &named) == 0 && opened.st_dev == named.st_dev
-      && opened.st_ino == named.st_ino)
+      && S_ISREG(opened.st_mode) && su_delta_is_still_named(descriptor, source_path))
   {
     handler->_internal.source_descriptor = descriptor;
     handler->_internal.source_pinned = true;
@@ -592,12 +606,7 @@ static bool su_delta_create_build_file(az_iot_su_delta_handler* handler)
     {
       break;
     }
-    bool locked = flock(descriptor, LOCK_EX) == 0;
-    struct stat opened;
-    struct stat named;
-    bool still_named = fstat(descriptor, &opened) == 0 && lstat(path, &named) == 0
-        && opened.st_dev == named.st_dev && opened.st_ino == named.st_ino;
-    if (locked && still_named)
+    if (flock(descriptor, LOCK_EX) == 0 && su_delta_is_still_named(descriptor, path))
     {
       handler->_internal.build_descriptor = descriptor;
       return true;
@@ -899,6 +908,22 @@ static void su_delta_workflow_succeeded(
     AZ_IOT_LOG_ERROR(AZ_IOT_LOG_COMPONENT_SU, "delta: cannot create the source cache directory");
     return;
   }
+  /* Handlers sharing the cache store and evict a provider's entries one at a time, so none
+   * removes a file another is copying in, or one stored while it evicts. */
+  int directory_lock = open(directory, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+  int locked = -1;
+  while (directory_lock >= 0 && (locked = flock(directory_lock, LOCK_EX)) != 0 && errno == EINTR)
+  {
+  }
+  if (locked != 0)
+  {
+    AZ_IOT_LOG_ERROR(AZ_IOT_LOG_COMPONENT_SU, "delta: cannot lock the source cache directory");
+    if (directory_lock >= 0)
+    {
+      (void)close(directory_lock);
+    }
+    return;
+  }
 
   uint32_t cached_count = 0;
   for (uint32_t i = 0; i < manifest->files_count; i++)
@@ -949,6 +974,7 @@ static void su_delta_workflow_succeeded(
   {
     su_delta_remove_other_entries(manifest, directory);
   }
+  (void)close(directory_lock);
 }
 
 az_iot_su_delta_handler_options az_iot_su_delta_handler_options_default(void)

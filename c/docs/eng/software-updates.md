@@ -1760,7 +1760,9 @@ and `_3D`.
   across file systems) from its `get_file_path_fn` path into the cache, unless an entry of the same
   size is already there.
 - Then every other entry of the update's provider is removed: the cache keeps the latest update
-  per provider, the sources of its next delta.
+  per provider, the sources of its next delta. Entries a handler builds from are kept.
+- Handlers sharing the cache, in one process or several, store and evict a provider's entries one
+  at a time, holding a lock on its directory: a success waits while another handler's runs.
 - So the first update of a device is a full download, and seeds the cache when a file of it names
   `microsoft/delta:1`, related files or not. To make it a delta, or without that name, seed the
   cache with the factory image at `az_iot_su_delta_handler_get_source_cache_path()`.
@@ -1788,7 +1790,7 @@ or later. ESP32 and Windows register no handler: their files are always download
 
 | Test | What |
 |---|---|
-| `az_iot_tests_su_delta` | Unit: cache path encoding, lookup, store and eviction; the rebuild through a fake `apply_delta_fn` and the samples' `simulate_delta_apply`, with partial target cleanup; handlers sharing a cache keep their own build files and do not evict a source being built from; a missing library or symbol declines. |
+| `az_iot_tests_su_delta` | Unit: cache path encoding, lookup, store and eviction; the rebuild through a fake `apply_delta_fn` and the samples' `simulate_delta_apply`, with partial target cleanup; handlers sharing a cache keep their own build files, do not evict a source being built from or an entry stored again since opened, and store and evict a provider's entries one at a time; a missing library or symbol declines. |
 | `az_iot_tests_su_delta_interop` | The real `libadudiffapi.so` rebuilds the committed `target.swu` from `source.swu` and `delta.bin` (SHA-256 checked); a truncated delta fails and leaves no target. |
 
 - The vectors are in `tests/unit/data/su_delta/`, with `SHA256SUMS`. They are regenerated, byte for

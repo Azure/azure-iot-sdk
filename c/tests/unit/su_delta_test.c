@@ -25,8 +25,10 @@
 
 #include <dirent.h>
 #include <fcntl.h>
+#include <pthread.h>
 #include <sys/file.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "az_iot_su_delta.h"
@@ -918,6 +920,82 @@ static void test_source_lock_follows_the_workflow(void** state)
   az_iot_su_delta_handler_deinit(&handler);
 }
 
+/* An eviction that opened an entry another handler then removed and stored again keeps the new
+ * one, pinned for a build or not. */
+static void test_eviction_keeps_an_entry_stored_again(void** state)
+{
+  (void)state;
+  seed_source();
+  int evicting = open(SOURCE_CACHE_FILE, O_RDONLY);
+  assert_true(evicting >= 0);
+  assert_int_equal(unlink(SOURCE_CACHE_FILE), 0);
+  write_file(SOURCE_CACHE_FILE, "AGAIN", 5);
+  int pinned = open(SOURCE_CACHE_FILE, O_RDONLY);
+  assert_true(pinned >= 0);
+  assert_int_equal(flock(pinned, LOCK_SH), 0);
+
+  assert_false(az_iot_su_delta__remove_opened_file_unless_locked(evicting, SOURCE_CACHE_FILE));
+  assert_int_equal(close(pinned), 0);
+  assert_false(az_iot_su_delta__remove_opened_file_unless_locked(evicting, SOURCE_CACHE_FILE));
+  assert_true(file_exists(SOURCE_CACHE_FILE));
+  assert_int_equal(close(evicting), 0);
+
+  int current = open(SOURCE_CACHE_FILE, O_RDONLY);
+  assert_true(current >= 0);
+  assert_true(az_iot_su_delta__remove_opened_file_unless_locked(current, SOURCE_CACHE_FILE));
+  assert_false(file_exists(SOURCE_CACHE_FILE));
+  assert_int_equal(close(current), 0);
+}
+
+typedef struct succeeding_workflow
+{
+  const az_iot_su_download_handler* handler;
+  const az_iot_su_client_update_manifest* manifest;
+} succeeding_workflow;
+
+static void* succeed_workflow(void* context)
+{
+  const succeeding_workflow* workflow = (const succeeding_workflow*)context;
+  workflow->handler->workflow_succeeded_fn(workflow->manifest, workflow->handler->user_ctx);
+  return NULL;
+}
+
+/* A handler's success waits while another copies a file into the provider's cache, rather than
+ * removing the copy before it is renamed into place. */
+static void test_success_waits_for_a_copy_into_the_cache(void** state)
+{
+  (void)state;
+  fake_processor fake = { 0 };
+  az_iot_su_delta_handler handler;
+  init_handler(&handler, &fake);
+  az_iot_su_download_handler download_handler
+      = az_iot_su_delta_handler_get_download_handler(&handler);
+  seed_source();
+  az_iot_su_client_update_manifest manifest;
+  make_manifest(&manifest, NULL, 0);
+  write_file(FILES_DIRECTORY "/0-target", "TARGET", 6);
+
+  /* The other handler's copy, in progress. */
+  int copying = open(PROVIDER_DIRECTORY, O_RDONLY | O_DIRECTORY);
+  assert_true(copying >= 0);
+  assert_int_equal(flock(copying, LOCK_EX), 0);
+  write_file(PROVIDER_DIRECTORY "/copy.a1b2c3", "COPY", 4);
+  succeeding_workflow workflow = { &download_handler, &manifest };
+  pthread_t thread;
+  assert_int_equal(pthread_create(&thread, NULL, succeed_workflow, &workflow), 0);
+  struct timespec pause = { 0, 100 * 1000 * 1000 };
+  (void)nanosleep(&pause, NULL);
+  assert_true(file_exists(PROVIDER_DIRECTORY "/copy.a1b2c3"));
+  assert_false(file_exists(TARGET_CACHE_FILE));
+
+  assert_int_equal(rename(PROVIDER_DIRECTORY "/copy.a1b2c3", PROVIDER_DIRECTORY "/copied"), 0);
+  assert_int_equal(close(copying), 0);
+  assert_int_equal(pthread_join(thread, NULL), 0);
+  assert_true(file_exists(TARGET_CACHE_FILE));
+  assert_false(file_exists(PROVIDER_DIRECTORY "/copied"));
+  az_iot_su_delta_handler_deinit(&handler);
+}
+
 /* Choosing again abandons a build still in progress: its file is removed even when the new choice
  * declines, so no build is ever called to release it. */
 static void test_choosing_again_removes_an_unfinished_build(void** state)
@@ -1535,6 +1613,12 @@ int main(void)
         teardown_work_directory),
     cmocka_unit_test_setup_teardown(
         test_build_removes_only_abandoned_build_files,
+        setup_work_directory,
+        teardown_work_directory),
+    cmocka_unit_test_setup_teardown(
+        test_eviction_keeps_an_entry_stored_again, setup_work_directory, teardown_work_directory),
+    cmocka_unit_test_setup_teardown(
+        test_success_waits_for_a_copy_into_the_cache,
         setup_work_directory,
         teardown_work_directory),
     cmocka_unit_test_setup_teardown(

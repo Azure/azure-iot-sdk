@@ -21,4 +21,12 @@
  */
 bool az_iot_su_delta__copy_file(const char* source_path, const char* target_path);
 
+/**
+ * @brief Remove @p path if it still names the file open at @p descriptor, which is not a
+ * directory and no handler holds a lock on.
+ *
+ * @return true when removed.
+ */
+bool az_iot_su_delta__remove_opened_file_unless_locked(int descriptor, const char* path);
+
 #endif /* AZ_IOT_SU_DELTA_INTERNAL_H */

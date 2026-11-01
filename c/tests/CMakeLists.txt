@@ -632,7 +632,7 @@ if(TARGET az_iot_su_delta)
         ${CMAKE_CURRENT_SOURCE_DIR}/../samples/common/sample_utils.c)
     target_include_directories(az_iot_tests_su_delta PRIVATE
         ${_su_sample_common} ${CMAKE_CURRENT_SOURCE_DIR}/../samples/common)
-    target_link_libraries(az_iot_tests_su_delta PRIVATE az_iot_su_delta)
+    target_link_libraries(az_iot_tests_su_delta PRIVATE az_iot_su_delta pthread)
     target_compile_definitions(az_iot_tests_su_delta PRIVATE
         AZ_IOT_TEST_SU_DELTA_WORK_DIRECTORY="${CMAKE_CURRENT_BINARY_DIR}/su_delta_work")
 endif()
