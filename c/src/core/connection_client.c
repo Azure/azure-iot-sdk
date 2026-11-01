@@ -7914,7 +7914,8 @@ static az_iot_result do_work_pass(az_iot_connection_client* client, uint32_t tim
     {
       AZ_IOT_LOG_ERROR(
           AZ_IOT_LOG_COMPONENT_DPS, "the provisioning session was not ready in time; ending it");
-      client->dps_session_ready_deadline_ms = 0;
+      /* The passed deadline stays until teardown clears it, so this pass does
+       * not wait in process_loop() before the staged end is applied. */
       dps_finalize(client, AZ_IOT_ERR_TIMEOUT, false);
     }
 

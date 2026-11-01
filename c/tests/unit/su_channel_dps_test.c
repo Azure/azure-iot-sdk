@@ -2534,6 +2534,12 @@ static void a_report_refused_as_too_large_can_be_sent_again_at_once(void** state
   assert_false(fx->channel_state.publish_refused_too_large);
 }
 
+/* Process-loop hook: record the wait the client was given. */
+static void record_process_loop_timeout(az_iot_mock_mqtt_client* m, void* ctx)
+{
+  *(uint32_t*)ctx = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_PROCESS_LOOP)->timeout_ms;
+}
+
 /* A provisioning session opened for an operation that connects but never
  * acknowledges its SUBSCRIBE ends as failed past its readiness bound: the hub
  * session resumes, the channel keeps its demand, and the next attempt waits out
@@ -2564,9 +2570,13 @@ static void a_session_never_ready_ends_as_failed_and_the_hub_resumes(void** stat
   assert_false(az_iot_connection_client__dps_session_ready(&fx->client));
   assert_non_null(fx->client.dps_mqtt);
 
-  /* Past it: ended as failed, paced, and the hub session reconnects. */
+  /* Past it: ended as failed, without waiting first, paced, and the hub
+   * session reconnects. */
+  uint32_t dps_wait = UINT32_MAX;
+  az_iot_mock_mqtt_client_set_process_loop_hook(m, record_process_loop_timeout, &dps_wait);
   fx->client.dps_session_ready_deadline_ms = 1;
-  (void)az_iot_connection_client_do_work(&fx->client, 0);
+  (void)az_iot_connection_client_do_work(&fx->client, 120000u);
+  assert_int_equal(dps_wait, 0);
   assert_null(fx->client.dps_mqtt);
   assert_int_equal(fx->client.dps_session_ready_deadline_ms, 0);
   assert_true(fx->client.dps_user_retry_blocked);
@@ -2587,6 +2597,7 @@ static void a_session_never_ready_ends_as_failed_and_the_hub_resumes(void** stat
   }
   assert_null(fx->client.dps_mqtt);
   assert_ptr_equal(az_iot_mock_mqtt_client_from(fx->client.active_client), hub_again);
+  az_iot_mock_mqtt_client_set_process_loop_hook(hub_again, NULL, NULL);
 }
 
 /* An update check's deadline bounds the connection's wait, waiting for a
