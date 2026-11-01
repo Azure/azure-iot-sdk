@@ -251,7 +251,7 @@ typedef enum
   OP_RESTORE,
   OP_CHOOSE_RELATED_FILE,
   OP_BUILD_FILE_FROM_RELATED,
-  OP_WORKFLOW_SUCCEEDED
+  OP_WORKFLOW_ENDED
 } op_kind;
 
 #define MAX_OPS 96
@@ -338,7 +338,9 @@ typedef struct
   char build_fail_id[32]; /* build fails for this file */
   int choose_calls;
   int build_calls;
-  int succeeded_calls;
+  int ended_calls;
+  az_iot_su_outcome ended_outcomes[2]; /* of the first calls to workflow_ended_fn */
+  char ended_last_file_id[2][32]; /* the id of the last file of their manifest */
   char built_file_id[32];
   char built_from_id[32];
   uint32_t built_file_index;
@@ -3900,14 +3902,23 @@ static int32_t test_build_file_from_related(
       : AZ_IOT_SU_RESULT_SUCCESS;
 }
 
-static void test_workflow_succeeded(
+static void test_workflow_ended(
     const az_iot_su_client_update_manifest* manifest,
+    az_iot_su_outcome outcome,
     void* user_ctx)
 {
   delta_handler_log* d = (delta_handler_log*)user_ctx;
   assert_true(manifest->files_count > 0);
-  log_op(d->log, OP_WORKFLOW_SUCCEEDED, 0);
-  d->succeeded_calls++;
+  log_op(d->log, OP_WORKFLOW_ENDED, 0);
+  if (d->ended_calls < 2)
+  {
+    d->ended_outcomes[d->ended_calls] = outcome;
+    span_to_cstr(
+        manifest->files[manifest->files_count - 1].id,
+        d->ended_last_file_id[d->ended_calls],
+        sizeof(d->ended_last_file_id[0]));
+  }
+  d->ended_calls++;
 }
 
 /** @brief Re-initialize fx->su with one test download handler of id @p id. */
@@ -3917,11 +3928,18 @@ static void use_test_download_handler(fixture* fx, const char* id)
   fx->delta.log = &fx->log;
   fx->delta.choose_result = AZ_IOT_SU_RESULT_SUCCESS;
   fx->download_handler = (az_iot_su_download_handler){
-    id, test_choose_related_file, test_build_file_from_related, test_workflow_succeeded, &fx->delta,
+    id, test_choose_related_file, test_build_file_from_related, test_workflow_ended, &fx->delta,
   };
   fx->download_handlers = &fx->download_handler;
   fx->download_handler_count = 1;
   reboot_client(fx);
+}
+
+/** @brief Assert that workflow_ended_fn was called once, with @p outcome. */
+static void assert_workflow_ended_once(const fixture* fx, az_iot_su_outcome outcome)
+{
+  assert_int_equal(fx->delta.ended_calls, 1);
+  assert_int_equal(fx->delta.ended_outcomes[0], outcome);
 }
 
 #define SU_TEST_APPEND(buffer, used, ...)                                             \
@@ -4104,12 +4122,12 @@ static void a_download_handler_builds_a_file_from_a_related_file(void** state)
   assert_string_equal(fx->delta.built_file_id, "s0f0");
   assert_string_equal(fx->delta.built_from_id, "s0f0r1");
   assert_int_equal(fx->delta.built_file_index, 0);
-  assert_int_equal(fx->delta.succeeded_calls, 1);
+  assert_workflow_ended_once(fx, AZ_IOT_SU_OUTCOME_SUCCEEDED);
   static const op_kind expect[] = {
     OP_IS_INSTALLED, OP_CHOOSE_RELATED_FILE,
     OP_DOWNLOAD,     OP_BUILD_FILE_FROM_RELATED,
     OP_BACKUP,       OP_INSTALL,
-    OP_APPLY,        OP_WORKFLOW_SUCCEEDED,
+    OP_APPLY,        OP_WORKFLOW_ENDED,
   };
   assert_true(ops_contain_sequence(&fx->log, expect, sizeof(expect) / sizeof(expect[0])));
   assert_int_equal(fx->failed_count, 0);
@@ -4129,7 +4147,7 @@ static void an_escaped_download_handler_id_selects_its_handler(void** state)
   assert_succeeded_with_delta_code(fx, 0, 0, "");
   assert_downloads(fx, "s0f0r0");
   assert_int_equal(fx->delta.build_calls, 1);
-  assert_int_equal(fx->delta.succeeded_calls, 1);
+  assert_workflow_ended_once(fx, AZ_IOT_SU_OUTCOME_SUCCEEDED);
 }
 
 /* A related file id escaped in the manifest ("s0f0r\u0031") finds its decoded fileUrls id. */
@@ -4160,7 +4178,7 @@ static void an_escaped_related_file_id_finds_its_url(void** state)
   assert_succeeded_with_delta_code(fx, 0, 0, "");
   assert_string_equal(fx->log.download_urls[0], "http://example.com/s0f0r1");
   assert_string_equal(fx->delta.built_from_id, "s0f0r\\u0031");
-  assert_int_equal(fx->delta.succeeded_calls, 1);
+  assert_workflow_ended_once(fx, AZ_IOT_SU_OUTCOME_SUCCEEDED);
 }
 
 /** @brief How a delta fallback case is provoked. */
@@ -4230,8 +4248,15 @@ static void run_delta_fallback_case(
       fx->delta.build_calls,
       (fault == DELTA_FAULT_BUILD || fault == DELTA_FAULT_BUILT_HASH) ? 1 : 0);
   assert_int_equal(fx->log.corrupt_reads, 0);
-  /* The handler hears of a success of an update naming it, built or not. */
-  assert_int_equal(fx->delta.succeeded_calls, fault == DELTA_FAULT_HANDLER_ID ? 0 : 1);
+  /* The handler hears of the end of an update naming it, built or not. */
+  if (fault == DELTA_FAULT_HANDLER_ID)
+  {
+    assert_int_equal(fx->delta.ended_calls, 0);
+  }
+  else
+  {
+    assert_workflow_ended_once(fx, AZ_IOT_SU_OUTCOME_SUCCEEDED);
+  }
   assert_int_equal(fx->failed_count, 0);
 }
 
@@ -4316,7 +4341,7 @@ static void a_built_file_hash_mismatch_falls_back_to_a_full_download(void** stat
 }
 
 /* A full download that fails after a fallback fails the workflow as any download does, and
- * the handler does not hear of it. */
+ * the handler hears of it as FAILED. */
 static void a_failed_full_download_after_a_fallback_fails_the_workflow(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -4336,7 +4361,7 @@ static void a_failed_full_download_after_a_fallback_fails_the_workflow(void** st
   assert_int_equal(fx->chan.last_report.step_results[0].extended_result_code, extended);
   assert_int_equal(fx->last_failed_extended, extended);
   assert_int_equal(fx->delta.build_calls, 0);
-  assert_int_equal(fx->delta.succeeded_calls, 0);
+  assert_workflow_ended_once(fx, AZ_IOT_SU_OUTCOME_FAILED);
   assert_int_equal((int)count_ops(&fx->log, OP_INSTALL), 0);
 }
 
@@ -4379,7 +4404,7 @@ static void download_handler_phases_may_be_in_progress(void** state)
   assert_int_equal(fx->delta.choose_calls, 3);
   assert_int_equal(fx->log.download_calls, 3);
   assert_int_equal(fx->delta.build_calls, 3);
-  assert_int_equal(fx->delta.succeeded_calls, 1);
+  assert_workflow_ended_once(fx, AZ_IOT_SU_OUTCOME_SUCCEEDED);
 }
 
 /* A full download after a fallback may be in progress too; the handler is not asked again. */
@@ -4444,7 +4469,7 @@ static void download_handlers_build_every_file_of_a_step(void** state)
   assert_string_equal(fx->delta.built_file_id, "s0f1");
   assert_string_equal(fx->delta.built_from_id, "s0f1r0");
   assert_int_equal(fx->delta.built_file_index, 1);
-  assert_int_equal(fx->delta.succeeded_calls, 1);
+  assert_workflow_ended_once(fx, AZ_IOT_SU_OUTCOME_SUCCEEDED);
 }
 
 /* Each step's files go through the handler; a fallback is reported on its step only, and the
@@ -4468,7 +4493,7 @@ static void download_handlers_build_files_of_every_step(void** state)
   assert_downloads(fx, "s0f0r0 s1f0r0 s1f0");
   assert_int_equal(fx->delta.choose_calls, 2);
   assert_int_equal(fx->delta.build_calls, 2);
-  assert_int_equal(fx->delta.succeeded_calls, 1);
+  assert_workflow_ended_once(fx, AZ_IOT_SU_OUTCOME_SUCCEEDED);
 }
 
 /** @brief Details of the fallback in run_fallback_details_case(). */
@@ -4563,12 +4588,12 @@ static void a_file_naming_no_download_handler_is_downloaded_as_usual(void** stat
   assert_succeeded_with_delta_code(fx, 0, 0, "");
   assert_downloads(fx, "s0f0");
   assert_int_equal(fx->delta.choose_calls, 0);
-  assert_int_equal(fx->delta.succeeded_calls, 0);
+  assert_int_equal(fx->delta.ended_calls, 0);
 }
 
-/* workflow_succeeded_fn is not called for an update already installed (SKIPPED) or one that
- * fails after its files were built. */
-static void workflow_succeeded_fn_is_called_only_for_a_succeeded_workflow(void** state)
+/* workflow_ended_fn tells the handler how the workflow ended: SKIPPED for an update already
+ * installed, FAILED for one whose install fails after its files were built. */
+static void workflow_ended_fn_is_told_the_outcome(void** state)
 {
   fixture* fx = (fixture*)*state;
   use_test_download_handler(fx, SU_TEST_DELTA_HANDLER_ID);
@@ -4578,7 +4603,7 @@ static void workflow_succeeded_fn_is_called_only_for_a_succeeded_workflow(void**
   pump(fx, 40);
   assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_SKIPPED);
   assert_int_equal(fx->delta.choose_calls, 0);
-  assert_int_equal(fx->delta.succeeded_calls, 0);
+  assert_workflow_ended_once(fx, AZ_IOT_SU_OUTCOME_SKIPPED);
 
   use_test_download_handler(fx, SU_TEST_DELTA_HANDLER_ID);
   fx->log.is_installed_result = AZ_IOT_SU_RESULT_SUCCESS;
@@ -4587,11 +4612,40 @@ static void workflow_succeeded_fn_is_called_only_for_a_succeeded_workflow(void**
   pump(fx, 40);
   assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_FAILED);
   assert_int_equal(fx->delta.build_calls, 1);
-  assert_int_equal(fx->delta.succeeded_calls, 0);
+  assert_workflow_ended_once(fx, AZ_IOT_SU_OUTCOME_FAILED);
+}
+
+/* A workflow whose manifest fails verification, or parses but names a file with no URL, ends
+ * without reaching the handlers. */
+static void workflow_ended_fn_is_not_called_for_a_manifest_not_accepted(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  use_test_download_handler(fx, SU_TEST_DELTA_HANDLER_ID);
+  open_to_connected(fx);
+  fx->log.verify_result = AZ_IOT_SU_RESULT_FAILURE;
+  inject_patch(fx, delta_steps_patch("delta-unverified", 1, 1, SU_TEST_DELTA_HANDLER_ID, 1));
+  pump(fx, 40);
+  assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_FAILED);
+  assert_int_equal(fx->delta.ended_calls, 0);
+
+  use_test_download_handler(fx, SU_TEST_DELTA_HANDLER_ID);
+  fx->log.verify_result = AZ_IOT_SU_RESULT_SUCCESS;
+  char* patch
+      = (char*)(uintptr_t)delta_steps_patch("delta-unresolved", 1, 1, SU_TEST_DELTA_HANDLER_ID, 1);
+  char* url = strstr(patch, "\"s0f0\":\"http");
+  assert_non_null(url);
+  url[1] = 'z';
+  inject_patch(fx, patch);
+  pump(fx, 40);
+  assert_string_equal(fx->chan.last_workflow_id, "delta-unresolved");
+  assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_FAILED);
+  assert_int_equal(fx->delta.choose_calls, 0);
+  assert_int_equal(fx->delta.ended_calls, 0);
 }
 
 /* A new workflow arriving while a file is being built cancels it as it would a download: the
- * new workflow starts its files from the handler's choice. */
+ * new workflow starts its files from the handler's choice, and the handler hears of the replaced
+ * workflow's end as CANCELED. */
 static void a_new_workflow_cancels_a_file_being_built(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -4599,7 +4653,7 @@ static void a_new_workflow_cancels_a_file_being_built(void** state)
   open_to_connected(fx);
   fx->delta.build_in_progress = 1000;
 
-  inject_patch(fx, delta_steps_patch("delta-replaced", 1, 1, SU_TEST_DELTA_HANDLER_ID, 1));
+  inject_patch(fx, delta_steps_patch("delta-replaced", 2, 1, SU_TEST_DELTA_HANDLER_ID, 1));
   pump_to_state(fx, AZ_IOT_SU_STATE_DOWNLOAD_STARTED, 20);
   for (int i = 0; i < 3; ++i)
   {
@@ -4617,7 +4671,12 @@ static void a_new_workflow_cancels_a_file_being_built(void** state)
   assert_int_equal(fx->delta.choose_calls, 2);
   assert_int_equal(fx->delta.build_calls, 4);
   assert_downloads(fx, "s0f0r0 s0f0r0");
-  assert_int_equal(fx->delta.succeeded_calls, 1);
+  /* The replaced workflow ends first, with its own manifest. */
+  assert_int_equal(fx->delta.ended_calls, 2);
+  assert_int_equal(fx->delta.ended_outcomes[0], AZ_IOT_SU_OUTCOME_CANCELED);
+  assert_string_equal(fx->delta.ended_last_file_id[0], "s1f0");
+  assert_int_equal(fx->delta.ended_outcomes[1], AZ_IOT_SU_OUTCOME_SUCCEEDED);
+  assert_string_equal(fx->delta.ended_last_file_id[1], "s0f0");
 }
 
 /* A file being built is not resumed after a reboot: the step resumed from its record starts
@@ -4655,7 +4714,7 @@ static void a_file_being_built_restarts_after_a_reboot(void** state)
   assert_int_equal(fx->delta.choose_calls, 3);
   assert_int_equal(fx->delta.build_calls, 3);
   assert_downloads(fx, "s0f0r0 s1f0r0 s1f0r0");
-  assert_int_equal(fx->delta.succeeded_calls, 1);
+  assert_workflow_ended_once(fx, AZ_IOT_SU_OUTCOME_SUCCEEDED);
 }
 
 /* A delta update keeps its related files and more URLs than AZ_IOT_SU_MAX_FILE_COUNT, in the
@@ -11625,8 +11684,9 @@ int main(void)
     cmocka_unit_test_setup_teardown(a_fallback_keeps_the_application_details, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_file_naming_no_download_handler_is_downloaded_as_usual, setup, teardown),
+    cmocka_unit_test_setup_teardown(workflow_ended_fn_is_told_the_outcome, setup, teardown),
     cmocka_unit_test_setup_teardown(
-        workflow_succeeded_fn_is_called_only_for_a_succeeded_workflow, setup, teardown),
+        workflow_ended_fn_is_not_called_for_a_manifest_not_accepted, setup, teardown),
     cmocka_unit_test_setup_teardown(a_new_workflow_cancels_a_file_being_built, setup, teardown),
     cmocka_unit_test_setup_teardown(a_file_being_built_restarts_after_a_reboot, setup, teardown),
     cmocka_unit_test_setup_teardown(

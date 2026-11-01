@@ -69,6 +69,7 @@ static bool expire_fetch_in_flight(az_iot_su_client* client);
 static void raise_refused(az_iot_su_client* client, az_iot_result reason);
 static void raise_deferred(az_iot_su_client* client);
 static void raise_retry_wait(az_iot_su_client* client, uint32_t retry_after_ms);
+static void notify_download_handlers_of_end(az_iot_su_client* client, az_iot_su_outcome outcome);
 static void raise_simple(
     az_iot_su_client* client,
     az_iot_su_event_kind kind,
@@ -1284,7 +1285,7 @@ static bool retry_record_wanted(const az_iot_su_client* client)
  * @brief Latch a terminal outcome whose report must survive a reboot until accepted.
  *
  * Ends the running workflow: FAILED schedules its retry, any other outcome
- * clears the schedule.
+ * clears the schedule. Download handlers are told of the end.
  */
 static void latch_terminal(az_iot_su_client* client, az_iot_su_outcome outcome)
 {
@@ -1319,6 +1320,7 @@ static void latch_terminal(az_iot_su_client* client, az_iot_su_outcome outcome)
   {
     adopt_applied_update_id(client);
   }
+  notify_download_handlers_of_end(client, outcome);
 }
 
 /* Reset the workflow back to Idle, clearing the parsed request. */
@@ -1330,6 +1332,7 @@ static void reset_to_idle(az_iot_su_client* client)
   SU_I(client).current_step = 0;
   SU_I(client).current_file = 0;
   SU_I(client).checkpoint_pending = false;
+  SU_I(client).download_handler_end_owed = false;
   memset(&SU_I(client).current_request, 0, sizeof(SU_I(client).current_request));
   memset(&SU_I(client).current_manifest, 0, sizeof(SU_I(client).current_manifest));
   SU_I(client).request_len = 0;
@@ -1895,6 +1898,9 @@ static void process_update_metadata(
     SU_I(client).checkpoint_superseded = SU_I(client).checkpoint_stored;
     az_iot_retry_state__reset(&SU_I(client).workflow_retry);
   }
+
+  /* The replaced workflow's manifest points into request_buffer: end it first. */
+  notify_download_handlers_of_end(client, AZ_IOT_SU_OUTCOME_CANCELED);
 
   /* Stage the patch into client-owned storage and re-parse so current_request
    * / current_manifest reference stable memory. */
@@ -3958,6 +3964,9 @@ AZ_NODISCARD az_iot_result az_iot_su_client_resume(az_iot_su_client* client)
   SU_I(client).checkpoint_terminal = false;
   SU_I(client).checkpoint_retry = false;
   SU_I(client).checkpoint_superseded = false;
+  /* A resumed workflow past verification owes its end to the download handlers. */
+  SU_I(client).download_handler_end_owed = state != (uint32_t)AZ_IOT_SU_STATE_MANIFEST_RECEIVED
+      && state != (uint32_t)AZ_IOT_SU_STATE_VERIFYING_MANIFEST;
 
   /* Restore the accumulated result so completed step results of a multi-step
    * deployment survive a mid-deployment reboot. */
@@ -4189,16 +4198,21 @@ static int32_t build_file_with_download_handler(
 }
 
 /**
- * @brief Call workflow_succeeded_fn of each download handler a file of the manifest names, once,
- * in registration order.
+ * @brief Call workflow_ended_fn of each download handler a file of the manifest names, once, in
+ * registration order, if the workflow's end is still owed to them.
  */
-static void notify_download_handlers_of_success(az_iot_su_client* client)
+static void notify_download_handlers_of_end(az_iot_su_client* client, az_iot_su_outcome outcome)
 {
+  if (!SU_I(client).download_handler_end_owed)
+  {
+    return;
+  }
+  SU_I(client).download_handler_end_owed = false;
   const az_iot_su_client_update_manifest* manifest = &SU_I(client).current_manifest;
   for (size_t h = 0; h < SU_I(client).download_handler_count; ++h)
   {
     const az_iot_su_download_handler* handler = &SU_I(client).download_handlers[h];
-    if (handler->workflow_succeeded_fn == NULL)
+    if (handler->workflow_ended_fn == NULL)
     {
       continue;
     }
@@ -4208,7 +4222,7 @@ static void notify_download_handlers_of_success(az_iot_su_client* client)
               handler, 1, sizeof(*handler), manifest->files[i].download_handler_id)
           != NULL)
       {
-        handler->workflow_succeeded_fn(manifest, handler->user_ctx);
+        handler->workflow_ended_fn(manifest, outcome, handler->user_ctx);
         break;
       }
     }
@@ -4465,6 +4479,7 @@ az_iot_result az_iot_su_client_do_work(az_iot_su_client* client)
         break;
       }
       result_init_steps(client, (int32_t)SU_I(client).current_manifest.instructions.steps_count);
+      SU_I(client).download_handler_end_owed = true;
       /* Already installed. There is no accept/reject acknowledgement, so it is
        * reported as a SKIPPED outcome. */
       int32_t inst = (h->is_installed_fn != NULL)
@@ -4670,7 +4685,6 @@ az_iot_result az_iot_su_client_do_work(az_iot_su_client* client)
       result_overall_success(client);
       latch_terminal(client, AZ_IOT_SU_OUTCOME_SUCCEEDED);
       SU_I(client).reboot_owed = (ar == AZ_IOT_SU_RESULT_REBOOT_REQUIRED);
-      notify_download_handlers_of_success(client);
       reset_to_idle(client);
       (void)az_iot_su__report_state(client);
       break;

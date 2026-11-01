@@ -73,8 +73,8 @@
   from the related file the handler chooses, verifying the related and the built file's SHA-256.
   If that fails, the file is downloaded in full and its step reports `SUCCEEDED` with an
   `AZ_IOT_SU_FACILITY_DELTA` (`0xA`) extended result code (`AZ_IOT_SU_DELTA_ERROR_*` sub-codes)
-  and short result details. `workflow_succeeded_fn` is called once a workflow with such a file
-  succeeds. `download_fn` and `read_file_fn` also get related files.
+  and short result details. `workflow_ended_fn` is called once a workflow with such a file ends,
+  with its outcome (`CANCELED` when a new workflow replaced it). `download_fn` and `read_file_fn` also get related files.
 - Software updates: the reference `microsoft/delta:1` download handler, `az_iot_su_delta.h`
   (`-DAZ_IOT_WITH_SU_DELTA=ON`, component `su_delta`, POSIX only). It rebuilds a file from a delta
   related file and the file of an earlier update, kept in a source cache with the Device Update

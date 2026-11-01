@@ -549,6 +549,24 @@ extern "C"
     void* user_ctx;
   } az_iot_su_platform_hooks;
 
+  /**
+   * @brief Terminal and non-terminal outcomes a device reports for a workflow.
+   *
+   * These are the values the service accepts on the status-report operation.
+   * An engine that declines a deployment reports `SKIPPED`; there is no
+   * protocol-level accept/reject acknowledgement.
+   */
+  typedef enum az_iot_su_outcome
+  {
+    AZ_IOT_SU_OUTCOME_IN_PROGRESS = 0,
+    AZ_IOT_SU_OUTCOME_SUCCEEDED,
+    AZ_IOT_SU_OUTCOME_FAILED,
+    AZ_IOT_SU_OUTCOME_CANCELED, /**< Set by the service, or passed to
+                                 az_iot_su_download_handler::workflow_ended_fn for a workflow a
+                                 new one replaced; the client never reports it. */
+    AZ_IOT_SU_OUTCOME_SKIPPED,
+  } az_iot_su_outcome;
+
   /* --- Download handlers ------------------------------------------------------------------- */
 
 /** @brief Longest az_iot_su_download_handler::id, in bytes (the import manifest's limit). */
@@ -597,10 +615,17 @@ extern "C"
         uint32_t file_index,
         void* user_ctx);
 
-    /** OPTIONAL (MAY be NULL). Called once a workflow succeeds, before its SUCCEEDED report,
-     * when a file of its manifest names this handler's id, built or downloaded in full, e.g. to
-     * keep the files as sources for later updates. Not called for a FAILED or SKIPPED workflow. */
-    void (*workflow_succeeded_fn)(const az_iot_su_client_update_manifest* manifest, void* user_ctx);
+    /**
+     * OPTIONAL (MAY be NULL). Called once when a workflow whose manifest names this handler's id
+     * ends, before its terminal report: @p outcome is SUCCEEDED, FAILED, SKIPPED, or CANCELED
+     * when a new workflow replaced it. Release what the handler holds for the workflow; on
+     * SUCCEEDED, e.g. keep the files as sources for later updates. Not called for a workflow
+     * whose manifest fails verification or parsing, nor on az_iot_su_client_deinit().
+     */
+    void (*workflow_ended_fn)(
+        const az_iot_su_client_update_manifest* manifest,
+        az_iot_su_outcome outcome,
+        void* user_ctx);
 
     void* user_ctx;
   } az_iot_su_download_handler;
@@ -719,22 +744,6 @@ extern "C"
   /* --- Update outcome vocabulary ------------------------------------------ */
   /* The structured result the engine produces for a workflow. Public because an
    * application observes it; the transport that carries it is internal. */
-
-  /**
-   * @brief Terminal and non-terminal outcomes a device reports for a workflow.
-   *
-   * These are the values the service accepts on the status-report operation.
-   * An engine that declines a deployment reports `SKIPPED`; there is no
-   * protocol-level accept/reject acknowledgement.
-   */
-  typedef enum az_iot_su_outcome
-  {
-    AZ_IOT_SU_OUTCOME_IN_PROGRESS = 0,
-    AZ_IOT_SU_OUTCOME_SUCCEEDED,
-    AZ_IOT_SU_OUTCOME_FAILED,
-    AZ_IOT_SU_OUTCOME_CANCELED, /**< Set by the service; the client never reports it. */
-    AZ_IOT_SU_OUTCOME_SKIPPED,
-  } az_iot_su_outcome;
 
   /**
    * @brief Which layer a failure came from. `NOT_APPLICABLE` is used for every
@@ -1320,6 +1329,9 @@ extern "C"
       bool report_paced_by_timeout;
       /** install_fn was called in the current workflow. */
       bool install_called;
+      /** The current workflow's manifest is parsed and its end is owed to the download handlers'
+       * workflow_ended_fn. */
+      bool download_handler_end_owed;
       /** The last apply asked for a reboot; cleared by the reboot (re-initialization). */
       bool reboot_owed;
       /** install_fn or apply_fn of the current workflow asked for a reboot; cleared on FAILED. */

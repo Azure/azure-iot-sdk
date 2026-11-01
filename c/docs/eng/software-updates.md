@@ -427,11 +427,14 @@ extended code.
 | `0x6` | `BUILT_HASH` | built file SHA-256 ≠ the file's signed hash | `full download: built file hash mismatch` |
 
 With no handler registered, or for a file naming none, files are downloaded in full with no code,
-as before. Once the workflow succeeds (just before its `SUCCEEDED` report), each registered handler with a
-`workflow_succeeded_fn` whose id a manifest file names is called once, in registration order,
-whether its files were built or downloaded in full (e.g. to keep them as sources for later
-updates); it is not called for a `FAILED` or `SKIPPED` workflow. A new workflow that replaces the
-current one (§4 Cancellation) drops a file being built as it drops a download. The persisted
+as before. When a workflow whose manifest verified and parsed ends (just before its terminal
+report), each registered handler with a `workflow_ended_fn` whose id a manifest file names is
+called once, in registration order, with the outcome: `SUCCEEDED`, `FAILED` or `SKIPPED`, whether
+its files were built or downloaded in full. The handler releases what it holds for the workflow
+and, on `SUCCEEDED`, may keep the files as sources for later updates. A new workflow that replaces
+the current one (§4 Cancellation) drops a file being built as it drops a download, and the handler
+is called with `CANCELED` and the replaced workflow's manifest; the client never reports
+`CANCELED`. The persisted
 record (§4 Persistence) keeps no phase: a step resumed after a reboot starts its files again from
 **Choose**. Library mode (§5.3) refuses download handlers and runs none of this.
 
@@ -944,10 +947,11 @@ typedef struct az_iot_su_download_handler
         const az_iot_su_client_update_manifest_file* related_file,
         uint32_t file_index,
         void* user_ctx);
-    /* OPTIONAL: once a workflow with a file naming the handler succeeds
-     * (before its SUCCEEDED report), built or downloaded in full. */
-    void (*workflow_succeeded_fn)(
+    /* OPTIONAL: once a workflow with a file naming the handler ends (before
+     * its terminal report), with its outcome; CANCELED when replaced. */
+    void (*workflow_ended_fn)(
         const az_iot_su_client_update_manifest* manifest,
+        az_iot_su_outcome outcome,
         void* user_ctx);
     void* user_ctx;
 } az_iot_su_download_handler;
@@ -1789,7 +1793,8 @@ void az_iot_su_delta_handler_deinit(az_iot_su_delta_handler*);
 2. The client downloads that related file with `download_fn` and checks its hash.
 3. `build_file_from_related_fn` applies the delta to the source and writes the update file.
 4. The client checks the built file's hash with `read_file_fn`, as for a downloaded file.
-5. When the workflow succeeds, `workflow_succeeded_fn` stores the update's files in the cache.
+5. When the workflow ends, `workflow_ended_fn` unlocks the source and removes an unfinished
+   build; if it succeeded, it also stores the update's files in the cache.
 
 The client downloads the full file instead when the handler declines or fails, or a hash does not
 match.

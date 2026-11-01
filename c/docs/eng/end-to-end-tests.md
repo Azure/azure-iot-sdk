@@ -448,7 +448,7 @@ file XOR a 4096-byte source that `SuE2E.psm1` (`Get-SuE2EDeltaSource`) and the s
 (`delta_source_byte()`) both generate, with the base64 SHA-256 of that source as its
 `microsoft.sourceFileHash` property. The handler chooses the related file only when the device holds
 the source and that property matches. The suite asserts what ran (choice, related or full download,
-build, `workflow_succeeded_fn`) and each report's step extended code.
+build, `workflow_ended_fn`) and each report's step extended code.
 
 The `MICROSOFT_DELTA` offer is the unit tests' vectors, `tests/unit/data/su_delta`: its file is
 `target.swu`, with the related file `delta.bin` for the download handler `microsoft/delta:1` and
