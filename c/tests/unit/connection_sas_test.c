@@ -2234,6 +2234,57 @@ static void a_renewal_due_during_a_provisioning_settle_does_not_shorten_the_wait
   az_iot_connection_client__dps_session_release(&fx->client);
 }
 
+/* Releases the provisioning session from an UNSETTLED_QUERY, reporting nothing unsettled. */
+static void release_on_unsettled_query(const az_iot_connection_feature_event* event, void* user_ctx)
+{
+  (void)event;
+  az_iot_connection_client__dps_session_release((az_iot_connection_client*)user_ctx);
+}
+
+/* A release from the UNSETTLED_QUERY of a settle taken over from a SAS renewal leaves the
+ * renewal to end the session, reported as one. */
+static void a_release_from_the_unsettled_query_leaves_the_renewal_to_renew(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  uint64_t now = NOW;
+  az_iot_connection_client_options opts = hub_sas_options();
+  opts.unix_time.get_time = switchable_time;
+  opts.unix_time.user_ctx = &now;
+  opts.hub_auth.sas.token_lifetime_seconds = 100;
+  opts.hub_auth.sas.renewal_percent = 50;
+  opts.dps.id_scope = "0ne00000001";
+  opts.dps.registration_id = "ut-device";
+  opts.dps_auth.sas.primary_key_base64 = KEY_B64;
+  init_and_open(fx, &opts);
+  connack(fx, AZ_IOT_OK);
+  int acks = 0;
+  uint16_t const packet_id = publish_awaiting_puback(fx, &acks);
+  az_iot_mock_mqtt_client* hub = start_settling_renewal(fx);
+  fx->client.dps_session_wanted = true;
+  assert_int_equal(az_iot_connection_client__dps_session_ensure(&fx->client), AZ_IOT_ERR_BUSY);
+  assert_int_equal(
+      az_iot_connection_client__add_feature_observer(
+          &fx->client,
+          AZ_IOT_CONNECTION_FEATURE_EVENT_UNSETTLED_QUERY,
+          release_on_unsettled_query,
+          &fx->client),
+      AZ_IOT_OK);
+
+  assert_true(az_iot_mock_mqtt_client_inject_puback(hub, packet_id, AZ_IOT_OK));
+  pump(fx, 1);
+  assert_int_equal(az_iot_mock_mqtt_client_count_of(hub, AZ_IOT_MOCK_CALL_DISCONNECT), 1);
+  assert_false(fx->client.planned_hub_session_end.for_provisioning_session);
+  assert_true(fx->client.sas_token_renewal_in_progress[AZ_IOT_CONN_SCOPE_HUB]);
+  az_iot_connection_client__remove_feature_observer(
+      &fx->client, release_on_unsettled_query, &fx->client);
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(hub));
+  pump(fx, 1);
+  const recorded_event* e = last_event(fx, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_RETRY_PENDING);
+  assert_non_null(e);
+  assert_true(e->renewal);
+  assert_false(fx->client.hub_waits_for_provisioning_session);
+}
+
 /* A monotonic clock that stopped in suspend: the renewal starts when Unix time
  * reaches it. */
 static void a_suspended_monotonic_clock_still_renews(void** state)
@@ -4489,6 +4540,8 @@ int main(void)
         a_released_provisioning_session_leaves_a_settling_renewal_to_renew, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_renewal_due_during_a_provisioning_settle_does_not_shorten_the_wait, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_release_from_the_unsettled_query_leaves_the_renewal_to_renew, setup, teardown),
     cmocka_unit_test_setup_teardown(a_suspended_monotonic_clock_still_renews, setup, teardown),
     cmocka_unit_test_setup_teardown(
         the_default_renewal_time_is_80_percent_of_an_hour, setup, teardown),

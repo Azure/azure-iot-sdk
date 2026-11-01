@@ -1719,6 +1719,39 @@ static void an_earlier_session_token_does_not_end_an_x509_settle(void** state)
   az_iot_connection_client__dps_session_release(fx->client);
 }
 
+/* Releases the provisioning session from an UNSETTLED_QUERY, reporting nothing unsettled. */
+static void release_on_unsettled_query(const az_iot_connection_feature_event* event, void* user_ctx)
+{
+  (void)event;
+  az_iot_connection_client__dps_session_release((az_iot_connection_client*)user_ctx);
+}
+
+/* A release from the settle's own UNSETTLED_QUERY keeps the hub session: no DISCONNECT for the
+ * withdrawn request. */
+static void a_release_from_the_unsettled_query_keeps_the_hub_session(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  az_iot_mock_mqtt_client* hub = provision_to_hub_connected(fx);
+  assert_int_equal(
+      az_iot_connection_client__add_feature_observer(
+          fx->client,
+          AZ_IOT_CONNECTION_FEATURE_EVENT_UNSETTLED_QUERY,
+          release_on_unsettled_query,
+          fx->client),
+      AZ_IOT_OK);
+
+  assert_int_equal(az_iot_connection_client__dps_session_ensure(fx->client), AZ_IOT_ERR_BUSY);
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_int_equal(az_iot_mock_mqtt_client_count_of(hub, AZ_IOT_MOCK_CALL_DISCONNECT), 0);
+  assert_false(az_iot_connection_client__holds_sends_for_session_end(fx->client));
+  assert_false(fx->client->planned_hub_session_end.for_provisioning_session);
+  assert_int_equal(
+      az_iot_connection_client_get_state(fx->client, AZ_IOT_CONN_SCOPE_HUB),
+      AZ_IOT_CONN_STATE_CONNECTED);
+  az_iot_connection_client__remove_feature_observer(
+      fx->client, release_on_unsettled_query, fx->client);
+}
+
 /* deinit() during the settle ends the hub session without calling back. */
 static void deinit_during_the_settle_for_a_provisioning_session(void** state)
 {
@@ -6274,6 +6307,8 @@ int main(void)
         a_release_during_the_settle_keeps_the_hub_session, setup_on_factory, teardown),
     cmocka_unit_test_setup_teardown(
         an_earlier_session_token_does_not_end_an_x509_settle, setup_on_factory, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_release_from_the_unsettled_query_keeps_the_hub_session, setup_on_factory, teardown),
     cmocka_unit_test_setup_teardown(
         deinit_during_the_settle_for_a_provisioning_session, setup_on_factory, teardown),
     cmocka_unit_test_setup_teardown(an_unheld_session_is_dropped_at_registration, setup, teardown),

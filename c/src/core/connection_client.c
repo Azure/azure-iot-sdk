@@ -6029,6 +6029,12 @@ static void end_hub_session_once_settled(az_iot_connection_client* c)
   {
     return;
   }
+  /* First: its observers may release the provisioning session, close(), or end the session. */
+  bool const unsettled = hub_session_has_unsettled_deliveries(c);
+  if (!hub_session_end_settling(c))
+  {
+    return;
+  }
   if (c->user_close)
   {
     az_iot_deadline__clear(&c->planned_hub_session_end.drain_deadline);
@@ -6049,7 +6055,6 @@ static void end_hub_session_once_settled(az_iot_connection_client* c)
   bool const bound_passed = az_iot_deadline__has_passed(
                                 &c->planned_hub_session_end.drain_deadline, az_iot_time_mono_ms())
       || hub_session_token_unix_left_ms(c) == 0u;
-  bool const unsettled = hub_session_has_unsettled_deliveries(c);
   if (!bound_passed && unsettled)
   {
     return;

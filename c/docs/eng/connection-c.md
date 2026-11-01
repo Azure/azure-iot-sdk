@@ -475,8 +475,8 @@ CONNACK; the `DPS` counter only when registration succeeds.
 - A SAS renewal or an end for a provisioning session first settles: `start_settled_hub_session_end()`
   arms `planned_hub_session_end.drain_deadline` (`HUB_SESSION_SETTLE_TIMEOUT_MS`; for a SAS renewal
   also not past `hub_session_token_expiry_ms` or `_unix_seconds`, the expiry of the token the session
-  connected with; 0 once it expired); each `do_work()` runs `end_hub_session_once_settled()`, which
-  ends the session once no PUBACK or certificate renewal response is awaited, no feature observer
+  connected with; 0 once it expired); each `do_work()` runs `end_hub_session_once_settled()`, which (after the
+  query, whose observers may release, close or end the session) ends the session once no PUBACK or certificate renewal response is awaited, no feature observer
   answers `AZ_IOT_CONNECTION_FEATURE_EVENT_UNSETTLED_QUERY`, or at the deadline or the token's Unix-time
   expiry (rechecked each pass, and again after its TICK; it also caps the wait), with a warning if
   deliveries are still unsettled. A failure end,
