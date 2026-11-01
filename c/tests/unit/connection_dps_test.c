@@ -6214,6 +6214,55 @@ static void reopening_during_a_requested_registration_reuses_the_saved_hub(void*
   (void)saved_hub_open(fx);
 }
 
+typedef struct end_session_on_tick
+{
+  az_iot_connection_client* client;
+  int ends;
+} end_session_on_tick;
+
+/** @brief TICK observer: ends the hub session once with a failure, as an overdue feature request
+ * does. */
+static void end_hub_session_once_on_tick(const az_iot_connection_feature_event* event, void* ctx)
+{
+  assert_int_equal(event->kind, AZ_IOT_CONNECTION_FEATURE_EVENT_TICK);
+  end_session_on_tick* e = (end_session_on_tick*)ctx;
+  if (e->ends == 0)
+  {
+    e->ends++;
+    assert_int_equal(
+        az_iot_connection_client__end_hub_session(e->client, AZ_IOT_ERR_TIMEOUT), AZ_IOT_OK);
+  }
+}
+
+/* An invalidation raised by a TICK observer is delivered by the same do_work(). */
+static void an_invalidation_from_a_tick_observer_is_delivered_in_the_same_do_work(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  fx->client->opts.dps.max_hub_connect_attempts_before_reprovision = 1;
+  invalidation_watch w;
+  watch_invalidation(fx->client, &w);
+  az_iot_mock_mqtt_client* hub = saved_hub_open(fx);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(hub, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_int_equal(
+      az_iot_connection_client_get_state(fx->client, AZ_IOT_CONN_SCOPE_HUB),
+      AZ_IOT_CONN_STATE_CONNECTED);
+
+  /* The DISCONNECT fails at once, so the session ends inside the observer. */
+  az_iot_mock_mqtt_client_set_next_result(hub, AZ_IOT_MOCK_CALL_DISCONNECT, AZ_IOT_ERR_MQTT);
+  end_session_on_tick e = { fx->client, 0 };
+  assert_int_equal(
+      az_iot_connection_client__add_feature_observer(
+          fx->client, AZ_IOT_CONNECTION_FEATURE_EVENT_TICK, end_hub_session_once_on_tick, &e),
+      AZ_IOT_OK);
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  az_iot_connection_client__remove_feature_observer(fx->client, end_hub_session_once_on_tick, &e);
+
+  assert_int_equal(e.ends, 1);
+  assert_int_equal(w.rec.count, 1);
+  assert_int_equal(w.rec.reason, AZ_IOT_ERR_TIMEOUT);
+}
+
 /* A NULL callback unregisters. */
 static void a_null_invalidated_callback_unregisters(void** state)
 {
@@ -6270,6 +6319,10 @@ int main(void)
         close_open_and_deinit_from_the_invalidated_callback_are_refused, setup_saved_hub, teardown),
     cmocka_unit_test_setup_teardown(
         a_null_invalidated_callback_unregisters, setup_saved_hub, teardown),
+    cmocka_unit_test_setup_teardown(
+        an_invalidation_from_a_tick_observer_is_delivered_in_the_same_do_work,
+        setup_saved_hub,
+        teardown),
     cmocka_unit_test_setup_teardown(
         a_failed_registration_start_does_not_fall_back_to_an_invalidated_hub,
         setup_saved_hub,

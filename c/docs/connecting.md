@@ -243,9 +243,9 @@ opts.dps.registration_id = "<registration-id>";
   failed (the last failure). Without it, a restart before a new assignment is adopted restores
   the old one. Until one is adopted, the client itself does not go back to that hub, even when a
   registration fails to start or `close()` and `open()` interrupt it. It does not fire for
-  `az_iot_connection_client_request_reprovision()`, which the
-  application decided, nor on a first registration. It runs from `do_work()`, after that call's
-  state callbacks; `open()`, `close()` and `deinit()` return `AZ_IOT_ERR_BUSY` there.
+  `az_iot_connection_client_request_reprovision()`, which the application decided, nor on a first
+  registration. It runs at the end of `do_work()`, after that call's other callbacks; `open()`,
+  `close()` and `deinit()` return `AZ_IOT_ERR_BUSY` there.
 - `open()` connects to the saved hub; DPS is not contacted while it accepts the device.
 - It goes to DPS under the same conditions as a cached assignment (above). With
   `options_default()`, `identity_recovery.mode` is `RETRY_HUB`, so a hub that refuses the identity

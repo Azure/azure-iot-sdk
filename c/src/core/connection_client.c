@@ -8581,12 +8581,13 @@ az_iot_result az_iot_connection_client_do_work(
     return AZ_IOT_ERR_INVALID_ARG;
   }
   az_iot_result r = do_work_pass(client, timeout_ms);
-  notify_assignment_invalidated(client);
   /* After every timer, on every path. A callback may withdraw itself or another observer. */
   notify_feature_observers_of(client, AZ_IOT_CONNECTION_FEATURE_EVENT_TICK);
   /* The TICK may have expired a settling SAS renewal's last delivery: end the session now rather
    * than after the next wait. */
   end_settled_session_for_sas_renewal(client);
+  /* Last: a TICK observer or the session end above can invalidate the assignment too. */
+  notify_assignment_invalidated(client);
   return r;
 }
 

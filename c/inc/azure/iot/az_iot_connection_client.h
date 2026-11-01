@@ -1307,7 +1307,7 @@ extern "C"
    * close() and open(), until an assignment is adopted. Attached feature clients
    * are not affected.
    *
-   * Runs from az_iot_connection_client_do_work(), after that call's state
+   * Runs at the end of az_iot_connection_client_do_work(), after that call's other
    * callbacks. az_iot_connection_client_close(), _open() and _deinit() return
    * AZ_IOT_ERR_BUSY from it.
    *
