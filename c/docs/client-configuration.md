@@ -481,8 +481,10 @@ On a session that outlives the connection (the hub session, unless `session_cont
 publish, so a second QoS 1 publish in flight can already return `AZ_IOT_ERR_BUSY`.
 
 Size it for the QoS 1 publishes you keep in flight: the sum of their encoded sizes plus 18 bytes
-each. That number is bounded by `max_in_flight_messages`, and for publishes with a completion
-callback by `max_pending_publishes` (above).
+each, and never below the minimum of `send_buffer_size + 18` (a nonzero store below that fails
+`init()`, and the workspace size query returns 0). How many are in flight is bounded by
+`max_in_flight_messages`, and for publishes with a completion callback by
+`max_pending_publishes` (above).
 
 The SDK never resends these copies: each session gets a new MQTT client, and unacknowledged
 publishes complete with `AZ_IOT_ERR_NOT_CONNECTED` for the layer above to retry
