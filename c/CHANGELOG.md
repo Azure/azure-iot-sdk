@@ -7,8 +7,10 @@
 - Breaking: feature-client string and topic sizes that lay out public structs are fixed:
   `AZ_IOT_DM_METHOD_NAME_MAX` (96), `AZ_IOT_DM_RID_MAX` (32), `AZ_IOT_DM_CORR_DATA_MAX` (64),
   `AZ_IOT_MQTTV5_DM_TOPIC_MAX` (192) and `AZ_IOT_LOG_FILE_PATH_MAX` (256). Defining any of them
-  before including the headers is a compile error, so the application cannot lay out the direct
-  method clients or the log file sink differently from the SDK.
+  before including the headers is a compile error, so these sizes cannot differ between the
+  application and the SDK. The direct method and twin counts (`AZ_IOT_DM_MAX_INFLIGHT`,
+  `AZ_IOT_TWIN_MAX_PENDING`, `AZ_IOT_MQTTV5_DM_*` counts) and `AZ_IOT_MQTTV5_DM_RESULT_BODY_MAX` are
+  still overridable and must match between the two.
 - Breaking: the connection client runs one MQTT session at a time; the provisioning session and the
   hub session no longer overlap. With software updates bound, the hub connect after registration
   waits while the update check still needs the provisioning session, then connects to the assigned
