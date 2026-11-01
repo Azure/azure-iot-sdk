@@ -1085,9 +1085,11 @@ static void paho_publish_success5(void* context, MQTTAsync_successData5* respons
   }
 }
 
-/* Paho calls this for a PUBACK reason code >= 0x80 (reasonCode, with the PUBACK's properties) and
- * for a publish that ends without one (a negative code). The properties are freed on return, so
- * the Reason String is copied. */
+/* Paho calls this for a PUBACK reason code >= 0x80 (reasonCode, with the PUBACK's properties, and
+ * code 0) and for a publish that ends without one (a non-zero code). For the latter, Paho 1.3.16
+ * leaves reasonCode and properties uninitialized (MQTTAsync_writeComplete(), a full buffer), so
+ * they are read only with code 0. The properties are freed on return, so the Reason String is
+ * copied. */
 static void paho_publish_failure5(void* context, MQTTAsync_failureData5* response)
 {
   paho_client* m = (paho_client*)context;
@@ -1105,7 +1107,7 @@ static void paho_publish_failure5(void* context, MQTTAsync_failureData5* respons
   if (response)
   {
     n->evt.packet_id = (uint16_t)response->token;
-    int const code = (int)response->reasonCode;
+    int const code = response->code == MQTTASYNC_SUCCESS ? (int)response->reasonCode : 0;
     if (code >= 0x80)
     {
       n->evt.status = az_iot_mqtt_puback_result(m->version, code);
