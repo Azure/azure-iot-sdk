@@ -1664,8 +1664,10 @@ static void a_link_lost_during_the_settle_for_a_provisioning_session_ends_it(voi
   az_iot_mock_mqtt_client* hub = start_settling_for_a_provisioning_session(fx, &record, &packet_id);
 
   assert_true(az_iot_mock_mqtt_client_inject_disconnected(hub));
-  (void)az_iot_connection_client_do_work(fx->client, 0);
   assert_int_equal(az_iot_mock_mqtt_client_count_of(hub, AZ_IOT_MOCK_CALL_DISCONNECT), 0);
+  /* The pass below ends the session and destroys the hub client. */
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_null(fx->client->active_client);
   assert_false(az_iot_connection_client__holds_sends_for_session_end(fx->client));
   assert_false(fx->client->planned_hub_session_end.for_provisioning_session);
   assert_false(fx->client->hub_waits_for_provisioning_session);
