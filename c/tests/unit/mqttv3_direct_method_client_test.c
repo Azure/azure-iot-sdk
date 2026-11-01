@@ -791,10 +791,16 @@ static void the_response_timeout_setter_validates_its_arguments(void** state)
   invocation_record rec = { 0 };
   assert_int_equal(
       az_iot_mqttv3_direct_method_client_set_handler(&fx->dm, on_method, &rec), AZ_IOT_OK);
-  inject_invocation(fx, 0);
+  for (int i = 0; i < AZ_IOT_DM_MAX_INFLIGHT; ++i)
+  {
+    rec.fired = false;
+    inject_invocation(fx, i);
+    assert_true(rec.fired);
+  }
+  /* Every slot is still held: a 0 s timeout would have reclaimed one for this. */
   rec.fired = false;
-  inject_invocation(fx, 1);
-  assert_true(rec.fired);
+  inject_invocation(fx, AZ_IOT_DM_MAX_INFLIGHT);
+  assert_false(rec.fired);
 }
 
 static void an_unparsable_topic_says_why(void** state)
