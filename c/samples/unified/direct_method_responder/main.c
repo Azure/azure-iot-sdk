@@ -190,7 +190,10 @@ static void on_method_mqttv3(
   }
   else if (status != STATUS_OK)
   {
-    printf("payload larger than %u bytes: answered %d\n", SAMPLE_MQTT_ECHO_PAYLOAD_MAX, status);
+    printf(
+        "payload larger than %u bytes: answered %d\n",
+        (unsigned)SAMPLE_MQTT_ECHO_PAYLOAD_MAX,
+        status);
   }
 }
 

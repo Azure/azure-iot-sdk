@@ -39,17 +39,17 @@ typedef struct sample_config
  *   and WebSocket path.
  * @{
  */
-#define SAMPLE_MQTT_SEND_BUFFER_SIZE (8u * 1024u)
-#define SAMPLE_MQTT_RECEIVE_BUFFER_SIZE (132u * 1024u)
+#define SAMPLE_MQTT_SEND_BUFFER_SIZE ((size_t)8u * 1024u)
+#define SAMPLE_MQTT_RECEIVE_BUFFER_SIZE ((size_t)132u * 1024u)
 #define SAMPLE_MQTT_MAX_IN_FLIGHT_MESSAGES 8u
-#define SAMPLE_MQTT_MESSAGE_STORE_SIZE (16u * 1024u)
-#define SAMPLE_MQTT_CONNECT_STRINGS_SIZE (4u * 1024u)
+#define SAMPLE_MQTT_MESSAGE_STORE_SIZE ((size_t)16u * 1024u)
+#define SAMPLE_MQTT_CONNECT_STRINGS_SIZE ((size_t)4u * 1024u)
 /** @brief Bound of az_mqtt's TLS state: Schannel on Windows (about 197 KB), else OpenSSL or
  * mbedTLS (under 5 KB). */
 #if defined(_WIN32)
-#define SAMPLE_MQTT_TLS_STATE_SIZE (256u * 1024u)
+#define SAMPLE_MQTT_TLS_STATE_SIZE ((size_t)256u * 1024u)
 #else
-#define SAMPLE_MQTT_TLS_STATE_SIZE (8u * 1024u)
+#define SAMPLE_MQTT_TLS_STATE_SIZE ((size_t)8u * 1024u)
 #endif
 
 /** @brief The limits above, for az_iot_connection_client_options::mqtt_limits. */
