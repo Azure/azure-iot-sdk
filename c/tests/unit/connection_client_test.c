@@ -315,7 +315,13 @@ static void a_rejected_registration_changes_nothing(void** state)
   az_iot_test_connection_client_deinit(&client);
 }
 
-static void open_without_factory_returns_not_supported(void** state)
+static int setup_with_a_v5_only_adapter(void** state)
+{
+  return setup_direct(state, az_iot_mock_mqtt_get_adapter_for_version(AZ_IOT_MQTT_VERSION_5));
+}
+
+/* The MQTT 3.1.1 session needs a client the MQTT 5 only adapter cannot build. */
+static void open_when_the_adapter_lacks_the_mqtt_version_returns_not_supported(void** state)
 {
   fixture* fx = (fixture*)*state;
   assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_ERR_NOT_SUPPORTED);
@@ -4981,7 +4987,9 @@ int main(void)
     cmocka_unit_test(deinit_leaves_a_registered_factory_intact),
     cmocka_unit_test(a_rejected_registration_changes_nothing),
     cmocka_unit_test_setup_teardown(
-        open_without_factory_returns_not_supported, setup_factory_registry, teardown),
+        open_when_the_adapter_lacks_the_mqtt_version_returns_not_supported,
+        setup_with_a_v5_only_adapter,
+        teardown),
     cmocka_unit_test_setup_teardown(
         open_invokes_connect_and_transitions_to_connecting, setup, teardown),
     cmocka_unit_test_setup_teardown(connected_event_transitions_to_connected, setup, teardown),

@@ -850,14 +850,11 @@ static az_iot_result fake_channel_report(void* ctx, const az_iot_su_report* repo
   return fc->report_result;
 }
 
-/* The public macros mean what the header says they mean. Pinned because a
- * sample or an application compiled against a changed value would fail
- * silently, and because NO_TIMEOUT must stay the value the engine reads as
- * "no bound". */
+/* The public default means what the header says. Pinned because a sample or an
+ * application compiled against a changed value would change silently. */
 static void the_public_timeout_macros_hold_their_contract(void** state)
 {
   (void)state;
-  assert_int_equal(AZ_IOT_SU_REQUEST_NO_TIMEOUT, 0u);
   assert_int_equal(AZ_IOT_SU_REQUEST_DEFAULT_TIMEOUT_MS, 60000u);
 }
 
@@ -5714,8 +5711,7 @@ static void a_held_check_is_abandoned_when_its_report_cannot_be_sent(void** stat
       AZ_IOT_SU_ERROR_ACTION_FATAL,
       NULL,
       fx->chan.engine_ctx);
-  assert_int_equal(
-      az_iot_su_client_request_update(&fx->su, AZ_IOT_SU_REQUEST_NO_TIMEOUT), AZ_IOT_OK);
+  assert_int_equal(az_iot_su_client_request_update(&fx->su, UT_TIMEOUT_MS), AZ_IOT_OK);
   pump(fx, 3);
   int reports = fx->chan.report_count;
   fx->abandoned_count = 0;
@@ -9614,48 +9610,44 @@ static void a_report_queued_after_a_timeout_keeps_its_backoff(void** state)
   assert_report_waits_out_the_backoff(fx, sent);
 }
 
-/* AZ_IOT_SU_REQUEST_NO_TIMEOUT waits for the answer indefinitely too. */
-static void a_disabled_timeout_waits_for_an_answer_indefinitely(void** state)
+/* A request without a bound is refused: while a check is outstanding the hub
+ * session is paused, so every check needs a deadline. */
+static void a_zero_timeout_is_refused(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  assert_int_equal(az_iot_su_client_request_update(&fx->su, 0u), AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(az_iot_su_client_request_onboarding_update(&fx->su, 0u), AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(fx->su._internal.pending_fetch, 0);
+}
+
+/* A check the channel stopped awaiting (AZ_IOT_ERR_TIMEOUT) is asked again on
+ * the engine's backoff, not on the next tick, under its own deadline. */
+static void a_check_left_unanswered_is_retried_on_the_backoff(void** state)
 {
   fixture* fx = (fixture*)*state;
   fx->chan.request_update_result = AZ_IOT_OK;
-  fx->abandoned_count = 0;
-  assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
-
-  assert_int_equal(
-      az_iot_su_client_request_update(&fx->su, AZ_IOT_SU_REQUEST_NO_TIMEOUT), AZ_IOT_OK);
-  for (int i = 0; i < 20; ++i)
-  {
-    (void)az_iot_su_client_do_work(&fx->su);
-  }
+  assert_int_equal(az_iot_su_client_request_update(&fx->su, UT_TIMEOUT_MS), AZ_IOT_OK);
+  (void)az_iot_su_client_do_work(&fx->su);
+  int const sent = fx->chan.request_update_count;
+  uint64_t const deadline = fx->su._internal.pending_fetch_deadline_ms;
   assert_int_not_equal(fx->su._internal.fetch_in_flight, 0);
-  assert_int_equal(fx->abandoned_count, 0);
-  assert_int_equal(fx->chan.cancel_count, 0);
-}
 
-/* The documented opt-out: AZ_IOT_SU_REQUEST_NO_TIMEOUT retries indefinitely.
- * Passed as the real argument, so the path is covered through the public API
- * rather than by poking the deadline. */
-static void a_disabled_timeout_never_abandons(void** state)
-{
-  fixture* fx = (fixture*)*state;
-  fx->chan.request_update_result = AZ_IOT_ERR_NOT_CONNECTED;
-  fx->abandoned_count = 0;
-
-  assert_int_equal(
-      az_iot_su_client_request_update(&fx->su, AZ_IOT_SU_REQUEST_NO_TIMEOUT), AZ_IOT_OK);
-  assert_int_equal(fx->su._internal.pending_fetch_deadline_ms, 0);
-
-  for (int i = 0; i < 20; ++i)
-  {
-    (void)az_iot_su_client_do_work(&fx->su);
-  }
-
-  /* Still queued, still retrying, never abandoned. */
+  fx->chan.result_cb(
+      AZ_IOT_SU_OP_GET_UPDATE,
+      AZ_IOT_ERR_TIMEOUT,
+      AZ_IOT_SU_ERROR_ACTION_RETRY,
+      NULL,
+      fx->chan.engine_ctx);
+  assert_int_equal(fx->su._internal.fetch_in_flight, 0);
   assert_int_not_equal(fx->su._internal.pending_fetch, 0);
-  assert_int_equal(fx->su._internal.pending_fetch_deadline_ms, 0);
-  assert_int_equal(fx->abandoned_count, 0);
-  assert_true(fx->chan.request_update_count >= 20);
+  assert_true(fx->su._internal.pending_fetch_paced);
+  assert_int_equal(fx->su._internal.pending_fetch_deadline_ms, deadline);
+  (void)az_iot_su_client_do_work(&fx->su);
+  assert_int_equal(fx->chan.request_update_count, sent);
+
+  fx->su._internal.retry._internal.due_ms = az_iot_time_mono_ms();
+  (void)az_iot_su_client_do_work(&fx->su);
+  assert_int_equal(fx->chan.request_update_count, sent + 1);
 }
 
 /* The deadline is the CALLER's, in wall-clock terms, and each call carries its
@@ -9776,31 +9768,6 @@ static void a_delay_that_fits_leaves_the_request_queued(void** state)
   assert_int_equal(fx->abandoned_count, 0);
   assert_int_not_equal(fx->su._internal.pending_fetch, 0);
   assert_int_equal(fx->su._internal.pending_fetch_deadline_ms, armed);
-}
-
-/* With no bound, even a delay longer than any budget cannot abandon: there is
- * no deadline for it to fail to fit inside. */
-static void a_delay_cannot_abandon_an_unbounded_request(void** state)
-{
-  fixture* fx = (fixture*)*state;
-  assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
-  fx->abandoned_count = 0;
-  fx->chan.request_update_result = AZ_IOT_ERR_BUSY;
-
-  assert_int_equal(
-      az_iot_su_client_request_update(&fx->su, AZ_IOT_SU_REQUEST_NO_TIMEOUT), AZ_IOT_OK);
-
-  az_iot_su_service_error se
-      = { .code = 429001, .message = "", .tracking_id = "", .retry_after_ms = SERVICE_DELAY_MS };
-  fx->chan.result_cb(
-      AZ_IOT_SU_OP_GET_UPDATE,
-      AZ_IOT_ERR_DPS,
-      AZ_IOT_SU_ERROR_ACTION_RETRY,
-      &se,
-      fx->chan.engine_ctx);
-
-  assert_int_equal(fx->abandoned_count, 0);
-  assert_int_not_equal(fx->su._internal.pending_fetch, 0);
 }
 
 /* --- explicit update requests -------------------------------------------- */
@@ -11907,7 +11874,6 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         a_late_verdict_cannot_resurrect_an_unbounded_request, setup, teardown),
     cmocka_unit_test(the_public_timeout_macros_hold_their_contract),
-    cmocka_unit_test_setup_teardown(a_disabled_timeout_never_abandons, setup, teardown),
     cmocka_unit_test_setup_teardown(
         an_accepted_request_without_an_answer_is_abandoned, setup, teardown),
     cmocka_unit_test_setup_teardown(an_answer_ends_the_in_flight_wait, setup, teardown),
@@ -11922,18 +11888,18 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         a_report_left_unanswered_is_retried_on_the_backoff, setup, teardown),
     cmocka_unit_test_setup_teardown(
+        a_check_left_unanswered_is_retried_on_the_backoff, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_zero_timeout_is_refused, setup, teardown),
+    cmocka_unit_test_setup_teardown(
         a_report_queued_before_a_timeout_waits_out_its_backoff, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_report_queued_after_a_timeout_keeps_its_backoff, setup, teardown),
-    cmocka_unit_test_setup_teardown(
-        a_disabled_timeout_waits_for_an_answer_indefinitely, setup, teardown),
     cmocka_unit_test_setup_teardown(each_request_carries_its_own_timeout, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_service_delay_does_not_extend_the_callers_deadline, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_delay_that_cannot_fit_abandons_immediately_and_reports_it, setup, teardown),
     cmocka_unit_test_setup_teardown(a_delay_that_fits_leaves_the_request_queued, setup, teardown),
-    cmocka_unit_test_setup_teardown(a_delay_cannot_abandon_an_unbounded_request, setup, teardown),
     cmocka_unit_test_setup_teardown(init_validates_download_handlers, setup, teardown),
     cmocka_unit_test_setup_teardown(
         library_mode_needs_no_platform_hooks_but_a_trust_store, setup_library, teardown),

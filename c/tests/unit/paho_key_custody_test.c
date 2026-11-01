@@ -434,10 +434,14 @@ static void custody_without_support_is_refused(void** state)
 static void connect_with_an_unusable_key_reference_fails(void** state)
 {
   (void)state;
-  az_iot_mqtt_factory* f = az_iot_paho_factory_create_v3_1_1();
-  assert_non_null(f);
-  az_iot_mqtt_client* c = f->create(f->factory_ctx);
-  assert_non_null(c);
+  /* Paho sizes its own buffers: the limits only have to be valid. */
+  static const az_iot_mqtt_limits limits = { 1024, 1024, 4, 0, 0 };
+  uint8_t workspace[AZ_IOT_PAHO_WORKSPACE_SIZE];
+  az_iot_mqtt_client* c = NULL;
+  assert_int_equal(
+      az_iot_paho_get_adapter()->init(
+          AZ_IOT_MQTT_VERSION_3_1_1, &limits, workspace, sizeof(workspace), &c),
+      AZ_IOT_OK);
 
   az_iot_mqtt_connect_options opts;
   memset(&opts, 0, sizeof(opts));
@@ -451,7 +455,6 @@ static void connect_with_an_unusable_key_reference_fails(void** state)
   assert_int_equal(c->iface->connect(c, &opts), AZ_IOT_ERR_NOT_SUPPORTED);
 
   c->iface->destroy(c);
-  az_iot_paho_factory_destroy(f);
 }
 
 int main(void)

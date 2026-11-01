@@ -5045,7 +5045,7 @@ static void cancel_replaced_unaccepted_fetch(az_iot_su_client* client, uint8_t r
 AZ_NODISCARD az_iot_result
 az_iot_su_client_request_onboarding_update(az_iot_su_client* client, uint32_t timeout_ms)
 {
-  if (client == NULL)
+  if (client == NULL || timeout_ms == 0u)
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
@@ -5060,7 +5060,7 @@ az_iot_su_client_request_onboarding_update(az_iot_su_client* client, uint32_t ti
 AZ_NODISCARD az_iot_result
 az_iot_su_client_request_update(az_iot_su_client* client, uint32_t timeout_ms)
 {
-  if (client == NULL)
+  if (client == NULL || timeout_ms == 0u)
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }

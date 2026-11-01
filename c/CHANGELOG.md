@@ -4,6 +4,15 @@
 
 ### Features Added
 
+- Breaking: `AZ_IOT_SU_REQUEST_NO_TIMEOUT` is removed, and `az_iot_su_client_request_update()` and
+  `az_iot_su_client_request_onboarding_update()` return `AZ_IOT_ERR_INVALID_ARG` for a timeout of
+  0. The hub session is down while a check runs, so every check is bounded; pass
+  `AZ_IOT_SU_REQUEST_DEFAULT_TIMEOUT_MS` or your own bound.
+- Software updates: an update check the channel sent or a status report waits at most 120 s
+  (`AZ_IOT_SU_CHANNEL_RESPONSE_TIMEOUT_MS`, was 60 s for reports only) for its answer; then the
+  provisioning session is released, the hub reconnects, and the request is sent again on the retry
+  backoff. A provisioning session opened for an operation waits at most 120 s (was 60 s) to become
+  ready.
 - Connection client: `az_iot_connection_client_set_dps_assignment_invalidated_callback()` reports,
   once, when the client will not use the assignment it holds again: DPS returned an assignment it
   rejected, the hub refused the identity in `AZ_IOT_IDENTITY_RECOVERY_REPROVISION` mode, or

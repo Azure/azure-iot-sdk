@@ -397,9 +397,8 @@ void app_main(void)
    *
    * The timeout bounds how long the CLIENT keeps reissuing this check before
    * giving up and raising AZ_IOT_SU_EVENT_OPERATION_ABANDONED with
-   * AZ_IOT_ERR_TIMEOUT -- otherwise an unservable check is retried on every
-   * do_work() for the life of the client. AZ_IOT_SU_REQUEST_NO_TIMEOUT asks
-   * for exactly that, and is the wrong default on a battery-powered device.
+   * AZ_IOT_ERR_TIMEOUT -- a check pauses the hub session while it runs, so a
+   * longer bound keeps the device off its hub for longer.
    * It is bounded to half the poll interval: a new request resets the
    * deadline, so a longer bound would let an unanswered check outlive every
    * poll. */

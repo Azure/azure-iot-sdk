@@ -705,14 +705,6 @@ extern "C"
 #endif
 
 /**
- * @brief The `timeout_ms` that asks for NO bound: the request is retried for as
- * long as it takes, and the only abandonment is a channel verdict.
- *
- * Named because a bare 0 at a call site reads like "expire immediately", which
- * is the opposite of what it does. */
-#define AZ_IOT_SU_REQUEST_NO_TIMEOUT 0u
-
-/**
  * @brief A default request timeout, in milliseconds, for callers with no policy
  * of their own.
  *
@@ -721,7 +713,7 @@ extern "C"
  * can ask again when it chooses instead of the client waiting or retrying
  * silently.
  *
- * Only a default. The bound is a per-call argument of
+ * Only a default. The bound is a required per-call argument of
  * az_iot_su_client_request_update() / _request_onboarding_update(), because
  * only the application knows how long it can wait for a given check -- a
  * boot-time onboarding probe and a nightly background poll do not share a
@@ -1838,7 +1830,7 @@ extern "C"
    * Asynchronous. Records the request; the NEXT az_iot_su_client_do_work()
    * issues it, and retries on a later tick if the channel is not ready. The
    * result arrives through the engine, not this return value. Returns
-   * AZ_IOT_ERR_INVALID_ARG if @p client is NULL.
+   * AZ_IOT_ERR_INVALID_ARG if @p client is NULL or @p timeout_ms is 0.
    *
    * There is ONE pending slot, and the newest request wins. Calling either
    * request function twice before do_work() does NOT queue two fetches: the
@@ -1867,16 +1859,21 @@ extern "C"
    * @p timeout_ms. If that report loses its session for good, the check is
    * abandoned with AZ_IOT_ERR_NOT_CONNECTED; the report stays owed.
    *
-   * Pass AZ_IOT_SU_REQUEST_NO_TIMEOUT for no bound: the request is then
-   * retried indefinitely and the only abandonment is a channel verdict.
+   * Every check is bounded: the hub session is ended while a check is
+   * outstanding (one MQTT session at a time), so an unbounded check could keep
+   * the device off its hub. A very large @p timeout_ms has that effect for as
+   * long as it lasts: a check the service cannot answer (no device record, no
+   * linked hub) keeps ending the hub session, each attempt for up to
+   * AZ_IOT_SU_CHANNEL_RESPONSE_TIMEOUT_MS (120 s) and repeated on the backoff,
+   * so telemetry, twin and methods go offline again and again.
    * AZ_IOT_SU_REQUEST_DEFAULT_TIMEOUT_MS is available for callers with no
    * policy of their own.
    *
    * @param[in] client   The software updates client.
-   * @param[in] timeout_ms Wall-clock bound in milliseconds;
-   *                     AZ_IOT_SU_REQUEST_NO_TIMEOUT for none.
+   * @param[in] timeout_ms Wall-clock bound in milliseconds; must be greater
+   *                     than 0.
    * @return AZ_IOT_OK when the request is recorded, AZ_IOT_ERR_INVALID_ARG if
-   *         @p client is NULL.
+   *         @p client is NULL or @p timeout_ms is 0.
    *
    * Single-threaded contract: MUST be called on the do_work thread or be
    * externally serialized with do_work().
