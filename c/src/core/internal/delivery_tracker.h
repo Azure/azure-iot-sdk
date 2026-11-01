@@ -58,7 +58,8 @@ extern "C"
     AZ_IOT_DELIVERY_TRACKER_OUTCOME_DELIVERED, /**< PUBACK success, or its response. */
     AZ_IOT_DELIVERY_TRACKER_OUTCOME_REFUSED, /**< The hub refused the PUBLISH. */
     AZ_IOT_DELIVERY_TRACKER_OUTCOME_EXPIRED, /**< Its time limit passed. */
-    AZ_IOT_DELIVERY_TRACKER_OUTCOME_SESSION_LOST, /**< Policy FAIL or DROP. */
+    /** Policy FAIL: its session ended, or its PUBACK failed other than as a refusal. */
+    AZ_IOT_DELIVERY_TRACKER_OUTCOME_SESSION_LOST,
     /** Not sendable (encode() failed, or the adapter returned AZ_IOT_ERR_INVALID_ARG or
      * AZ_IOT_ERR_NOT_ENOUGH_SPACE), or the device identity changed. */
     AZ_IOT_DELIVERY_TRACKER_OUTCOME_DISCARDED,

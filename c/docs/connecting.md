@@ -73,9 +73,8 @@ opts.mqtt_workspace = mqtt_workspace; /* wiped by deinit() */
 opts.mqtt_workspace_size = sizeof(mqtt_workspace);
 ```
 
-The workspace holds one MQTT client at a time: while the software updates DPS channel holds the
-provisioning session, a hub session start fails with `AZ_IOT_ERR_BUSY` and is retried, and the
-reverse.
+The workspace holds one MQTT client at a time, which is enough because the client runs
+[one MQTT session at a time](#one-mqtt-session-at-a-time).
 
 ## MQTT factory ownership
 
@@ -344,11 +343,13 @@ What survives a reconnect:
 | Kept | Lost |
 | --- | --- |
 | The hub assignment and connection profile | In-flight QoS 1 publishes that were not yet acknowledged |
-| Subscriptions registered by feature clients | Pending twin requests and direct-method responses |
+| Subscriptions registered by feature clients | Pending twin reported-property patches, and mqttv3 direct-method invocations not yet answered |
 | The operational certificate | Desired-property updates sent while disconnected (mqttv3). Call the twin client's `get()` to resynchronize. |
 | Software update progress and unsent reports | |
 
-Re-send anything in the "Lost" column once the connection is back.
+Re-send the publishes and patches once the connection is back. The SDK resends pending twin get
+requests and mqttv5 direct-method responses itself: see
+[Resumed sessions and retries](#resumed-sessions-and-retries).
 
 ## Network: WebSockets and proxies
 
@@ -374,7 +375,7 @@ Examples: [`samples/unified/websockets`](../samples/unified/websockets/main.c),
 
 | Option | Effect |
 | --- | --- |
-| `session_continuity` | `DEFAULT` / `RESUME` / `CLEAN`. The hub session resumes by default. DPS sessions are always clean. |
+| `session_continuity` | `DEFAULT` / `RESUME` / `CLEAN`. The hub session resumes on every connect, including the first after a reboot, unless `CLEAN`. DPS sessions are always clean. See [Resumed sessions and retries](#resumed-sessions-and-retries). |
 | `session_expiry_seconds` | mqttv5 only. How long the broker keeps the session after a disconnect. Default 1 hour. |
 | `lwt` | Optional Last Will. The SDK sets none of its own. |
 | `keep_alive_seconds`, `connect_timeout_seconds` | Default 30 s each. |
@@ -385,6 +386,39 @@ On an mqttv5 hub its birth then requests no twin session and the service sends i
 `ih/{device_id}/dev/#` covers the twin topic, but nothing is published there. On an mqttv3 hub, only
 an initialized twin client subscribes to twin topics. A `twin_push` bit set without a twin client
 makes the service push sections that the device drops.
+
+### Resumed sessions and retries
+
+**Resume policy.** The hub session asks to resume (MQTT 5 Clean Start 0, MQTT 3.1.1 Clean
+Session 0) on every connect unless `session_continuity` is `AZ_IOT_SESSION_CONTINUITY_CLEAN`,
+including the first connect after a reboot. Why:
+
+- mqttv3 IoT Hub keeps the device's subscriptions and in-flight QoS 1 deliveries only for a
+  session that is not clean. A clean connect discards them; it does not lose the hub's
+  cloud-to-device queue, which is delivered once the device re-subscribes.
+- mqttv5: the broker keeps the subscriptions and redelivers QoS 1 messages to the device across a
+  drop. The backlog is bounded: Event Grid keeps a disconnected session at most
+  `session_expiry_seconds` (default 1 hour, clamped to 8 hours) and at most 100 messages / 1 MB;
+  past that the session is lost.
+
+DPS sessions are always clean. On mqttv5, choose `CLEAN` for a device that should not replay the
+broker's backlog after a long absence.
+
+**Retries.** Each session gets a new MQTT client, destroyed when the session ends. What was sent
+on it and not yet confirmed (by a PUBACK or a response) is retried on a later session by the
+layer above, as a new PUBLISH:
+
+- the application: telemetry and custom-topic publishes, and twin reported-property patches
+  (the service may have applied them), complete with `AZ_IOT_ERR_NOT_CONNECTED`;
+- the SDK: twin get requests and mqttv5 direct-method responses are resent.
+
+This deliberately deviates from MQTT section 4.4, `MQTT-4.4.0-1`
+([3.1.1](https://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html),
+[5.0](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html)): on a resumed session the
+SDK does not resend unacknowledged PUBLISH packets with their original packet identifiers. A retry
+may therefore arrive twice, which QoS 1 allows; for SDK messages the service ignores the duplicate
+by correlation id. The SDK sends no QoS 2 PUBLISH. Adapter requirements:
+[Bring your own MQTT client](how_to_byo_mqtt_client.md#resumed-sessions-no-resend).
 
 ## Certificates
 
