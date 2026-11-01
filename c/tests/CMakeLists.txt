@@ -128,6 +128,7 @@ az_iot_apply_warnings(az_iot_test_support)
 az_iot_add_cmocka_test(az_iot_tests_smoke unit/smoke_test.c)
 target_include_directories(az_iot_tests_smoke PRIVATE
     ${PROJECT_SOURCE_DIR}/src/core)
+target_link_libraries(az_iot_tests_smoke PRIVATE az_iot_test_support)
 az_iot_add_cmocka_test(az_iot_tests_mqtt_iface_contract unit/mqtt_iface_contract_test.c)
 target_link_libraries(az_iot_tests_mqtt_iface_contract PRIVATE az_iot_test_support)
 az_iot_add_cmocka_test(az_iot_tests_connection_client_workspace unit/connection_client_workspace_test.c)
@@ -403,7 +404,8 @@ set_tests_properties(
 # only so the profile-pin test can show a released pin admits the other
 # generation.
 az_iot_add_cmocka_test(az_iot_tests_mqttv3_file_upload unit/mqttv3_file_upload_client_test.c)
-target_link_libraries(az_iot_tests_mqttv3_file_upload PRIVATE az_iot_mqttv3 az_iot_mqttv5)
+target_link_libraries(az_iot_tests_mqttv3_file_upload PRIVATE
+    az_iot_mqttv3 az_iot_mqttv5 az_iot_test_support)
 
 az_iot_add_cmocka_test(az_iot_tests_certificate_provider_pem unit/certificate_provider_pem_test.c)
 
@@ -979,10 +981,10 @@ if(AZ_IOT_WITH_PAHO)
 endif()
 
 if(AZ_IOT_WITH_AZ_MQTT)
-    # The adapter's sizes: its az_iot_az_mqtt_config.h, with the same definitions.
+    # The adapter's limits: its az_iot_az_mqtt_config.h, with the same definitions.
     get_target_property(_az_mqtt_adapter_defs az_iot_adapter_az_mqtt COMPILE_DEFINITIONS)
     set(_az_mqtt_size_defs "${_az_mqtt_adapter_defs}")
-    list(FILTER _az_mqtt_size_defs INCLUDE REGEX "^AZ_IOT_AZ_MQTT_(FOOTPRINT|CONFIG_FILE|SEND_|RECEIVE_|INFLIGHT_|USER_PROPERTIES_|MBEDTLS$)")
+    list(FILTER _az_mqtt_size_defs INCLUDE REGEX "^AZ_IOT_AZ_MQTT_(FOOTPRINT|CONFIG_FILE|USER_PROPERTIES_|MBEDTLS$)")
     az_iot_add_cmocka_test(az_iot_tests_az_mqtt_adapter unit/az_mqtt_adapter_test.c)
     # Needs a broker, as the conformance suites: registered under the same option.
     az_iot_add_cmocka_test(az_iot_az_mqtt_adapter_broker
@@ -1053,19 +1055,6 @@ if(AZ_IOT_WITH_AZ_MQTT)
         AZ_IOT_TEST_WITH_AZ_MQTT_ADAPTER)
     if(WIN32)
         target_link_libraries(az_iot_tests_connection_client_mqtt_adapter PRIVATE ws2_32)
-    endif()
-
-    # The adapter with recording malloc and free: freed memory holds no credential.
-    az_iot_add_cmocka_test(az_iot_tests_az_mqtt_adapter_wipe
-        unit/az_mqtt_adapter_wipe_test.c
-        support/az_mqtt_wipe_hooks.c
-        support/az_mqtt_wipe_common.c)
-    target_include_directories(az_iot_tests_az_mqtt_adapter_wipe PRIVATE
-        ${PROJECT_SOURCE_DIR}/inc ${PROJECT_SOURCE_DIR}/adapters/az_mqtt ${PROJECT_SOURCE_DIR}/src/core
-        ${CMAKE_CURRENT_SOURCE_DIR}/support)
-    target_link_libraries(az_iot_tests_az_mqtt_adapter_wipe PRIVATE az_mqttv3 az_mqttv5)
-    if(WIN32)
-        target_link_libraries(az_iot_tests_az_mqtt_adapter_wipe PRIVATE ws2_32)
     endif()
 
     # The adapter with no message store (az_iot_mqtt_limits.message_store_size 0).

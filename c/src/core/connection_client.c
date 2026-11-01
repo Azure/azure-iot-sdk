@@ -6,8 +6,8 @@
 /* ConnectionClient core (Phase 2.1 + 2.2 + DPS integration).
  *
  * Owns:
- *   - the adapter registry (factories registered by the application)
- *   - the active MQTT client for the current session
+ *   - the active MQTT client for the current session, built by opts.mqtt_adapter in
+ *     opts.mqtt_workspace
  *   - the lifecycle state machine
  *     (IDLE -> CONNECTING -> CONNECTED -> DISCONNECTING -> IDLE,
  *      with RETRY_PENDING and FAULTED side branches)
@@ -881,26 +881,9 @@ static void settle_all_scopes_to_idle(az_iot_connection_client* c)
   set_state_to(c, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_IDLE, AZ_IOT_OK);
 }
 
-static const az_iot_mqtt_factory* find_factory(
-    const az_iot_connection_client* c,
-    az_iot_mqtt_version version)
-{
-  for (size_t i = 0; i < c->factory_count; ++i)
-  {
-    const az_iot_mqtt_factory* f = &c->factories[i];
-    if (f->version != version)
-    {
-      continue;
-    }
-    return f;
-  }
-  return NULL;
-}
-
 /**
- * @brief Builds the MQTT client of @p scope's session: with opts.mqtt_adapter in
- * opts.mqtt_workspace, otherwise from the factory registered for @p version. Stages the local
- * error of a failure.
+ * @brief Builds the MQTT client of @p scope's session with opts.mqtt_adapter in
+ * opts.mqtt_workspace. Stages the local error of a failure.
  */
 static az_iot_result create_session_mqtt_client(
     az_iot_connection_client* c,
@@ -910,28 +893,6 @@ static az_iot_result create_session_mqtt_client(
 {
   *out_client = NULL;
   const az_iot_mqtt_adapter* adapter = c->opts.mqtt_adapter;
-  if (adapter == NULL)
-  {
-    const az_iot_mqtt_factory* f = find_factory(c, version);
-    if (!f)
-    {
-      stage_local_error(
-          c,
-          scope,
-          AZ_IOT_ERR_NOT_SUPPORTED,
-          scope == AZ_IOT_CONN_SCOPE_DPS ? "no MQTT 3.1.1 factory registered"
-                                         : "no MQTT factory for the hub protocol");
-      return AZ_IOT_ERR_NOT_SUPPORTED;
-    }
-    az_iot_mqtt_client* mc = f->create(f->factory_ctx);
-    if (!mc || !mc->iface)
-    {
-      stage_local_error(c, scope, AZ_IOT_ERR_INTERNAL, "MQTT factory create() failed");
-      return AZ_IOT_ERR_INTERNAL;
-    }
-    *out_client = mc;
-    return AZ_IOT_OK;
-  }
 
   /* The workspace holds one client; the live one is never touched. */
   if (c->mqtt_workspace_client != NULL)
@@ -7270,33 +7231,35 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_init(
     return wr;
   }
   const az_iot_mqtt_adapter* mqtt_adapter = opts->mqtt_adapter;
-  if (mqtt_adapter != NULL)
+  if (mqtt_adapter == NULL)
   {
-    if (mqtt_adapter->get_workspace_size == NULL || mqtt_adapter->init == NULL)
-    {
-      AZ_IOT_LOG_ERROR(
-          AZ_IOT_LOG_COMPONENT_CONNECTION, "init: mqtt_adapter lacks get_workspace_size or init");
-      return AZ_IOT_ERR_INVALID_ARG;
-    }
-    const size_t mqtt_workspace_size = mqtt_adapter->get_workspace_size(&opts->mqtt_limits);
-    if (mqtt_workspace_size == 0)
-    {
-      AZ_IOT_LOG_ERROR(
-          AZ_IOT_LOG_COMPONENT_CONNECTION, "init: mqtt_limits are not valid for mqtt_adapter");
-      return AZ_IOT_ERR_INVALID_ARG;
-    }
-    wr = check_init_workspace(
-        "mqtt_workspace", opts->mqtt_workspace, opts->mqtt_workspace_size, mqtt_workspace_size);
-    if (wr != AZ_IOT_OK)
-    {
-      return wr;
-    }
-    if (are_memory_ranges_overlapping(
-            opts->workspace, opts->workspace_size, opts->mqtt_workspace, opts->mqtt_workspace_size))
-    {
-      AZ_IOT_LOG_ERROR(AZ_IOT_LOG_COMPONENT_CONNECTION, "init: mqtt_workspace overlaps workspace");
-      return AZ_IOT_ERR_INVALID_ARG;
-    }
+    AZ_IOT_LOG_ERROR(AZ_IOT_LOG_COMPONENT_CONNECTION, "init: mqtt_adapter is required");
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  if (mqtt_adapter->get_workspace_size == NULL || mqtt_adapter->init == NULL)
+  {
+    AZ_IOT_LOG_ERROR(
+        AZ_IOT_LOG_COMPONENT_CONNECTION, "init: mqtt_adapter lacks get_workspace_size or init");
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  const size_t mqtt_workspace_size = mqtt_adapter->get_workspace_size(&opts->mqtt_limits);
+  if (mqtt_workspace_size == 0)
+  {
+    AZ_IOT_LOG_ERROR(
+        AZ_IOT_LOG_COMPONENT_CONNECTION, "init: mqtt_limits are not valid for mqtt_adapter");
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  wr = check_init_workspace(
+      "mqtt_workspace", opts->mqtt_workspace, opts->mqtt_workspace_size, mqtt_workspace_size);
+  if (wr != AZ_IOT_OK)
+  {
+    return wr;
+  }
+  if (are_memory_ranges_overlapping(
+          opts->workspace, opts->workspace_size, opts->mqtt_workspace, opts->mqtt_workspace_size))
+  {
+    AZ_IOT_LOG_ERROR(AZ_IOT_LOG_COMPONENT_CONNECTION, "init: mqtt_workspace overlaps workspace");
+    return AZ_IOT_ERR_INVALID_ARG;
   }
   memset(client, 0, sizeof(*client));
   client->opts = *opts;
@@ -7416,47 +7379,11 @@ az_iot_result az_iot_connection_client_deinit(az_iot_connection_client* client)
   teardown_active(client);
   dps_teardown_mqtt(client);
   sas_wipe(client);
-  /* Registered factories are borrowed; the application destroys them after this returns. */
   az_iot_crypto__wipe(client->opts.workspace, client->opts.workspace_size);
   /* The MQTT clients are destroyed above; their workspace held credentials. */
-  if (client->opts.mqtt_adapter != NULL)
-  {
-    az_iot_crypto__wipe(client->opts.mqtt_workspace, client->opts.mqtt_workspace_size);
-  }
+  az_iot_crypto__wipe(client->opts.mqtt_workspace, client->opts.mqtt_workspace_size);
   /* provisioned_iot_hub_hostname / provisioned_device_id are inline fixed buffers; nothing to free.
    */
-  return AZ_IOT_OK;
-}
-
-AZ_NODISCARD az_iot_result az_iot_connection_client_register_mqtt_factory(
-    az_iot_connection_client* client,
-    const az_iot_mqtt_factory* factory)
-{
-  if (!client || !factory || !factory->create)
-  {
-    AZ_IOT_LOG_ERROR(AZ_IOT_LOG_COMPONENT_CONNECTION, "register_mqtt_factory: invalid arguments");
-    return AZ_IOT_ERR_INVALID_ARG;
-  }
-
-  /* An identical entry is redundant: find_factory() returns the first match
-   * for a version, so registering the same factory again is a no-op. A
-   * different factory for an already-registered version still appends and
-   * loses to the first one at lookup. */
-  for (size_t i = 0; i < client->factory_count; ++i)
-  {
-    const az_iot_mqtt_factory* f = &client->factories[i];
-    if (f->create == factory->create && f->factory_ctx == factory->factory_ctx
-        && f->version == factory->version)
-    {
-      return AZ_IOT_OK;
-    }
-  }
-
-  if (client->factory_count >= AZ_IOT_MAX_MQTT_FACTORIES)
-  {
-    return AZ_IOT_ERR_NOT_SUPPORTED;
-  }
-  client->factories[client->factory_count++] = *factory;
   return AZ_IOT_OK;
 }
 

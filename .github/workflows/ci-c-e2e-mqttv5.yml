@@ -168,7 +168,7 @@ jobs:
         working-directory: c
         shell: pwsh
         run: |
-          cmake --preset $env:AZ_IOT_PRESET -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_BUILD_E2E_MQTTV5=ON -DAZ_IOT_WITH_PAHO=ON -DAZ_IOT_WITH_AZ_MQTT=ON -DAZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE=1114112
+          cmake --preset $env:AZ_IOT_PRESET -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_BUILD_E2E_MQTTV5=ON -DAZ_IOT_WITH_PAHO=ON -DAZ_IOT_WITH_AZ_MQTT=ON
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cmake --build --preset $env:AZ_IOT_PRESET --target $env:AZ_IOT_E2E_TEST
 
@@ -275,7 +275,7 @@ jobs:
         working-directory: c
         shell: pwsh
         run: |
-          cmake --preset $env:AZ_IOT_PRESET -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_BUILD_E2E_MQTTV5=ON -DAZ_IOT_WITH_PAHO=ON -DAZ_IOT_WITH_AZ_MQTT=ON -DAZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE=1114112
+          cmake --preset $env:AZ_IOT_PRESET -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_BUILD_E2E_MQTTV5=ON -DAZ_IOT_WITH_PAHO=ON -DAZ_IOT_WITH_AZ_MQTT=ON
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cmake --build --preset $env:AZ_IOT_PRESET --target $env:AZ_IOT_E2E_TEST
 
@@ -365,7 +365,7 @@ jobs:
         working-directory: c
         shell: pwsh
         run: |
-          cmake --preset $env:AZ_IOT_PRESET -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_BUILD_E2E_MQTTV5=ON -DAZ_IOT_WITH_PAHO=ON -DAZ_IOT_WITH_AZ_MQTT=ON -DAZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE=1114112
+          cmake --preset $env:AZ_IOT_PRESET -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_BUILD_E2E_MQTTV5=ON -DAZ_IOT_WITH_PAHO=ON -DAZ_IOT_WITH_AZ_MQTT=ON
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cmake --build --preset $env:AZ_IOT_PRESET --target az_iot_tests_e2e_mqttv5_connection az_iot_tests_e2e_mqttv5_connection_az_mqtt
 
@@ -456,7 +456,7 @@ jobs:
         working-directory: c
         shell: pwsh
         run: |
-          cmake --preset $env:AZ_IOT_PRESET -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_BUILD_E2E_MQTTV5=ON -DAZ_IOT_WITH_PAHO=ON -DAZ_IOT_WITH_AZ_MQTT=ON -DAZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE=1114112
+          cmake --preset $env:AZ_IOT_PRESET -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_BUILD_E2E_MQTTV5=ON -DAZ_IOT_WITH_PAHO=ON -DAZ_IOT_WITH_AZ_MQTT=ON
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cmake --build --preset $env:AZ_IOT_PRESET --target az_iot_tests_e2e_mqttv5_telemetry az_iot_tests_e2e_mqttv5_telemetry_az_mqtt
 
@@ -547,7 +547,7 @@ jobs:
         working-directory: c
         shell: pwsh
         run: |
-          cmake --preset $env:AZ_IOT_PRESET -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_BUILD_E2E_MQTTV5=ON -DAZ_IOT_WITH_PAHO=ON -DAZ_IOT_WITH_AZ_MQTT=ON -DAZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE=1114112
+          cmake --preset $env:AZ_IOT_PRESET -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_BUILD_E2E_MQTTV5=ON -DAZ_IOT_WITH_PAHO=ON -DAZ_IOT_WITH_AZ_MQTT=ON
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cmake --build --preset $env:AZ_IOT_PRESET --target az_iot_tests_e2e_mqttv5_direct_method az_iot_tests_e2e_mqttv5_direct_method_az_mqtt
 
@@ -693,7 +693,7 @@ jobs:
         working-directory: c
         shell: pwsh
         run: |
-          cmake --preset $env:AZ_IOT_PRESET -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_BUILD_E2E_MQTTV5=ON -DAZ_IOT_WITH_PAHO=ON -DAZ_IOT_WITH_AZ_MQTT=ON -DAZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE=1114112
+          cmake --preset $env:AZ_IOT_PRESET -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_BUILD_E2E_MQTTV5=ON -DAZ_IOT_WITH_PAHO=ON -DAZ_IOT_WITH_AZ_MQTT=ON
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cmake --build --preset $env:AZ_IOT_PRESET --target $env:AZ_IOT_E2E_TEST
 
@@ -772,7 +772,7 @@ jobs:
       - name: Build
         working-directory: c
         run: |
-          cmake --preset linux-gcc-debug -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_BUILD_E2E_MQTTV5=ON -DAZ_IOT_BUILD_E2E_PKCS11=ON -DAZ_IOT_WITH_PAHO=ON -DAZ_IOT_WITH_AZ_MQTT=ON -DAZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE=1114112
+          cmake --preset linux-gcc-debug -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_BUILD_E2E_MQTTV5=ON -DAZ_IOT_BUILD_E2E_PKCS11=ON -DAZ_IOT_WITH_PAHO=ON -DAZ_IOT_WITH_AZ_MQTT=ON
           cmake --build --preset linux-gcc-debug --target az_iot_tests_e2e_mqttv5_custody az_iot_tests_e2e_mqttv5_custody_az_mqtt
 
       - name: Issue a device

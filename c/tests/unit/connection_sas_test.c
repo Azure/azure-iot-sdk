@@ -392,6 +392,7 @@ static void init_accepts_a_token_callback_without_keys(void** state)
   opts.hub_auth.sas.on_sas_token_required = unused_token_callback;
   opts.workspace = g_connection_workspace;
   opts.workspace_size = sizeof(g_connection_workspace);
+  build_mqtt_clients_with_the_mock_adapter(&opts);
   assert_int_equal(az_iot_connection_client_init(&fx->client, &opts), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
   opts.sas_buffer.buffer = g_sas_buffer;
   opts.sas_buffer.size = sizeof(g_sas_buffer);

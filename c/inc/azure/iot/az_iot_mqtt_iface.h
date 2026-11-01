@@ -22,8 +22,8 @@ extern "C"
 #endif
 
   /* MQTT protocol versions supported by adapters. DPS + MQTTv3 hub require v3.1.1;
-   * MQTTv5 hub requires v5. A single adapter binary may register factories for both,
-   * but each instance speaks exactly one version. */
+   * MQTTv5 hub requires v5. An adapter may build clients of both, but each client speaks
+   * exactly one version. */
   typedef enum az_iot_mqtt_version
   {
     AZ_IOT_MQTT_VERSION_3_1_1 = 0,
@@ -485,30 +485,13 @@ extern "C"
     void (*destroy)(az_iot_mqtt_client* self);
   } az_iot_mqtt_iface;
 
-  /* Concrete client object returned by a factory. The first member MUST be a pointer
+  /* Concrete client object built by an adapter's init(). The first member MUST be a pointer
    * to the iface so the core can dispatch generically. */
   struct az_iot_mqtt_client
   {
     const az_iot_mqtt_iface* iface;
     /* adapter-specific state follows */
   };
-
-  /**
-   * @brief Factory: produces a client that speaks a specific MQTT version. The SDK selects a
-   * factory by version at connection time based on the service being targeted (DPS and mqttv3
-   * require v3.1.1, mqttv5 requires v5).
-   *
-   * az_iot_connection_client_register_mqtt_factory() copies this struct, so the struct itself need
-   * not outlive the call. factory_ctx is borrowed: the application keeps it valid until
-   * az_iot_connection_client_deinit() returns, then releases it. Adapter factories (Paho, az_mqtt)
-   * are their own factory_ctx: destroy them with the adapter's destroy function after deinit().
-   */
-  typedef struct az_iot_mqtt_factory
-  {
-    az_iot_mqtt_version version;
-    az_iot_mqtt_client* (*create)(void* factory_ctx);
-    void* factory_ctx;
-  } az_iot_mqtt_factory;
 
   /**
    * @brief Sizes of one MQTT client, chosen by the application. An adapter turns them into the

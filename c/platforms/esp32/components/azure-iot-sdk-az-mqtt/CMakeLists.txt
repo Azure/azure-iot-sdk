@@ -2,8 +2,8 @@
 # Licensed under the MIT license. See LICENSE file in the project root for full license information.
 
 # ESP-IDF component for the az_mqtt MQTT adapter (adapters/az_mqtt), over the
-# az_mqtt component (deps/az_mqtt) with ESP-IDF's mbedTLS. Buffer sizes come from
-# Kconfig (desktop defaults would need about 1 MB per client).
+# az_mqtt component (deps/az_mqtt) with ESP-IDF's mbedTLS. The application sets buffer sizes
+# in az_iot_connection_client_options::mqtt_limits (the samples take them from Kconfig).
 
 # c/, four levels up from platforms/esp32/components/azure-iot-sdk-az-mqtt/.
 get_filename_component(AZ_IOT_ROOT "${CMAKE_CURRENT_LIST_DIR}/../../../.." ABSOLUTE)
@@ -24,8 +24,5 @@ target_compile_definitions(${COMPONENT_LIB} PRIVATE AZ_IOT_AZ_MQTT_MBEDTLS)
 # Kconfig values are not set during ESP-IDF's requirement expansion.
 if(NOT CMAKE_BUILD_EARLY_EXPANSION)
     target_compile_definitions(${COMPONENT_LIB} PRIVATE
-        AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE=${CONFIG_AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE}
-        AZ_IOT_AZ_MQTT_RECEIVE_BUFFER_SIZE=${CONFIG_AZ_IOT_AZ_MQTT_RECEIVE_BUFFER_SIZE}
-        AZ_IOT_AZ_MQTT_INFLIGHT_MAX=${CONFIG_AZ_IOT_AZ_MQTT_INFLIGHT_MAX}
         AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX=${CONFIG_AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX})
 endif()

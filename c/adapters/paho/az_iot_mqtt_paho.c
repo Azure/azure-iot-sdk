@@ -169,9 +169,6 @@ typedef struct paho_client
    * the session that asked for it. Unused on v3.1.1, which has no reason
    * codes. */
   uint8_t disconnect_reason_code;
-
-  /* Factory client: the allocation destroy() frees. NULL: built in an application workspace. */
-  void* allocation;
 } paho_client;
 
 static paho_client* paho_self(az_iot_mqtt_client* c) { return (paho_client*)c; }
@@ -2053,9 +2050,7 @@ static void paho_iface_destroy(az_iot_mqtt_client* self)
   free(m->server_uri);
   proxy_uri_release(&m->proxy_uri);
   free(m->client_id);
-  void* const allocation = m->allocation;
   memset(m, 0, sizeof(*m));
-  free(allocation); /* NULL for a client in an application workspace. */
 }
 
 static const az_iot_mqtt_iface s_iface_template_v3
@@ -2069,7 +2064,7 @@ static const az_iot_mqtt_iface s_iface_template_v5
         paho_iface_process_loop, paho_iface_set_inbound_cb, paho_iface_destroy };
 
 /* ------------------------------------------------------------------------- */
-/* adapter (application workspace) and factory                               */
+/* adapter (application workspace)                                           */
 /* ------------------------------------------------------------------------- */
 
 /* AZ_IOT_PAHO_WORKSPACE_SIZE relies on this bound. */
@@ -2129,62 +2124,3 @@ static const az_iot_mqtt_adapter s_paho_adapter = {
 };
 
 const az_iot_mqtt_adapter* az_iot_paho_get_adapter(void) { return &s_paho_adapter; }
-
-typedef struct paho_factory_state
-{
-  az_iot_mqtt_factory public_;
-} paho_factory_state;
-
-static az_iot_mqtt_client* paho_factory_create(void* factory_ctx)
-{
-  paho_factory_state* st = (paho_factory_state*)factory_ctx;
-  static const az_iot_mqtt_limits limits = { 1, 1, 1, 0, 0 }; /* Paho sizes its own buffers. */
-  size_t const size = az_iot_paho_get_workspace_size(&limits);
-  if (size == 0)
-  {
-    return NULL;
-  }
-  uint8_t* allocation = (uint8_t*)malloc(size);
-  az_iot_mqtt_client* client = NULL;
-  if (allocation == NULL
-      || paho_adapter_init(st->public_.version, &limits, allocation, size, &client) != AZ_IOT_OK)
-  {
-    free(allocation);
-    return NULL;
-  }
-  paho_self(client)->allocation = allocation;
-  return client;
-}
-
-static az_iot_mqtt_factory* build_factory(az_iot_mqtt_version v)
-{
-  paho_factory_state* st = (paho_factory_state*)calloc(1, sizeof(*st));
-  if (!st)
-  {
-    return NULL;
-  }
-  st->public_.version = v;
-  st->public_.create = paho_factory_create;
-  st->public_.factory_ctx = st;
-  return &st->public_;
-}
-
-az_iot_mqtt_factory* az_iot_paho_factory_create_v3_1_1(void)
-{
-  return build_factory(AZ_IOT_MQTT_VERSION_3_1_1);
-}
-
-az_iot_mqtt_factory* az_iot_paho_factory_create_v5(void)
-{
-  return build_factory(AZ_IOT_MQTT_VERSION_5);
-}
-
-void az_iot_paho_factory_destroy(az_iot_mqtt_factory* factory)
-{
-  if (!factory)
-  {
-    return;
-  }
-  paho_factory_state* st = (paho_factory_state*)factory->factory_ctx;
-  free(st);
-}

@@ -22,7 +22,7 @@ it adds `c/`.
 | `AZ_IOT_WITH_CRYPTO_MBEDTLS` | `ON` | Build the mbedTLS crypto backend, `az_iot_crypto_mbedtls()`. Built only when mbedTLS 3.6 LTS or 4.1+ is found. |
 | `AZ_IOT_WITH_AZ_MQTT` | `OFF` | Build the az_mqtt MQTT adapter (`az_iot_adapter_az_mqtt.h`) and the bundled `deps/az_mqtt` client. |
 | `AZ_IOT_AZ_MQTT_TLS` | `openssl` | TLS backend of the az_mqtt adapter: `openssl` (3.0+, with key references) or `mbedtls`. Windows uses Schannel. |
-| `AZ_IOT_AZ_MQTT_FOOTPRINT`, `AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE`, `AZ_IOT_AZ_MQTT_RECEIVE_BUFFER_SIZE`, `AZ_IOT_AZ_MQTT_INFLIGHT_MAX`, `AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX`, `AZ_IOT_AZ_MQTT_CONFIG_FILE` | empty | Per-client sizes of the az_mqtt adapter. Empty: the value of the footprint (`DEFAULT` or `CONSTRAINED`). Each is also a compile-time macro, so builds without CMake can set them. See [az_mqtt adapter sizes](#az_mqtt-adapter-sizes). |
+| `AZ_IOT_AZ_MQTT_FOOTPRINT`, `AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX`, `AZ_IOT_AZ_MQTT_CONFIG_FILE` | empty | Compile-time limits of the az_mqtt adapter. Empty: the value of the footprint (`DEFAULT` or `CONSTRAINED`). Each is also a compile-time macro, so builds without CMake can set them. Buffer sizes are run-time values. See [az_mqtt adapter limits](#az_mqtt-adapter-limits). |
 | `AZ_IOT_WITH_SU_DELTA` | `OFF` (`ON` in the Linux presets) | Build the reference `microsoft/delta:1` software updates download handler (`az_iot_su_delta.h`), POSIX only. See [delta updates](eng/software-updates.md#82-delta-updates-the-reference-microsoftdelta1-handler). |
 | `AZ_IOT_SU_DELTA_TEST_LIBRARY` | empty | Path of `libadudiffapi.so`: also builds the handler's interop test with it. Configuring fails when the file is missing. |
 | `AZ_IOT_BUILD_SAMPLES` | `ON` | Build the samples. |
@@ -65,10 +65,16 @@ copied into the `azure-iot-sdk` package: its config file finds it again, so cons
 dependency's prefix on `CMAKE_PREFIX_PATH` too. With MSVC, installed libraries must use the
 static C runtime (`/MT`, `/MTd` for Debug), as the SDK does.
 
-### az_mqtt adapter sizes
+### az_mqtt adapter limits
 
-Defaults are in [az_iot_az_mqtt_config.h](../adapters/az_mqtt/az_iot_az_mqtt_config.h). Each value
-comes from, in order:
+Buffer sizes and requests in flight are run-time values, `az_iot_mqtt_limits` (see
+[Clients in application memory](#clients-in-application-memory)). The removed
+`AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE`, `AZ_IOT_AZ_MQTT_RECEIVE_BUFFER_SIZE`,
+`AZ_IOT_AZ_MQTT_INFLIGHT_MAX` and `AZ_IOT_AZ_MQTT_MESSAGE_STORAGE_SIZE` fail the build when
+defined, and so does setting one of the first three as a CMake option.
+
+The compile-time defaults are in [az_iot_az_mqtt_config.h](../adapters/az_mqtt/az_iot_az_mqtt_config.h).
+Each value comes from, in order:
 
 1. a definition: a compiler `-D`, the file named by `AZ_IOT_AZ_MQTT_CONFIG_FILE`, or CMake
    (which passes each option only when set);
@@ -77,47 +83,35 @@ comes from, in order:
 
 | Macro | `DEFAULT` | `CONSTRAINED` | Effect |
 | --- | --- | --- | --- |
-| `AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE` | 270336 (264 KiB) | 8192 (8 KiB) | Largest outgoing packet. A larger connect or publish fails. |
-| `AZ_IOT_AZ_MQTT_RECEIVE_BUFFER_SIZE` | 270336 (264 KiB) | 135168 (132 KiB) | Largest incoming packet. MQTT 5: the Maximum Packet Size advertised; the server drops larger messages. MQTT 3.1.1: a larger packet ends the session. |
-| `AZ_IOT_AZ_MQTT_INFLIGHT_MAX` | 64 | 8 | QoS 1 exchanges in flight (the SDK uses no QoS 2), 1-32767. MQTT 5: also the Receive Maximum advertised. |
 | `AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX` | 16 | 4 | MQTT 5 user properties on CONNECT; more is refused. PUBLISH user properties are not limited (sent and received in place). |
-| `AZ_IOT_AZ_MQTT_MESSAGE_STORAGE_SIZE` | send size + 18 | send size + 18 | Copies of unacknowledged QoS 1 PUBLISH that az_mqtt requires while a session outlives the connection. The default holds one full-size publish; never resent. Sizing: [Message store](#message-store). 0: no store; a connect with `clean_start` false (MQTT 5: and `session_expiry_seconds` > 0) returns `AZ_IOT_ERR_NOT_SUPPORTED`. Macro only. |
-
-IoT Hub limits: device-to-cloud messages 256 KB, direct method payloads 128 KB, cloud-to-device
-messages 64 KB, twin documents 32 KB. `CONSTRAINED` receives all of these, and sends packets up to
-8 KiB.
-
-Each client allocates, when created, the send and receive buffers, a buffer for the strings of a
-received PUBLISH (receive size + 3 bytes; user properties are read in place) and the
-transport. On its first connect whose session outlives the connection (`clean_start` false; MQTT 5:
-also `session_expiry_seconds` > 0) it also allocates the message store, kept until the client is
-destroyed. Per client: about 792 KiB with `DEFAULT` (1,056 KiB with such a session), 272 KiB with
-`CONSTRAINED` (280 KiB).
 
 The values apply where the adapter sources are compiled; defining them only for the application
 has no effect. Without CMake, compile the adapter with them:
 
 ```sh
-cc -DAZ_IOT_AZ_MQTT_FOOTPRINT=AZ_IOT_AZ_MQTT_FOOTPRINT_CONSTRAINED -DAZ_IOT_AZ_MQTT_RECEIVE_BUFFER_SIZE=36864 ...
+cc -DAZ_IOT_AZ_MQTT_FOOTPRINT=AZ_IOT_AZ_MQTT_FOOTPRINT_CONSTRAINED -DAZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX=6 ...
 cc -DAZ_IOT_AZ_MQTT_CONFIG_FILE='"my_az_mqtt_config.h"' ...   # a header on the include path
 ```
 
-With CMake: `-DAZ_IOT_AZ_MQTT_FOOTPRINT=CONSTRAINED`, any option above, or
-`-DAZ_IOT_AZ_MQTT_CONFIG_FILE=<header>` (an absolute path, or a name on the include path).
+With CMake: `-DAZ_IOT_AZ_MQTT_FOOTPRINT=CONSTRAINED`, `-DAZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX=<n>`,
+or `-DAZ_IOT_AZ_MQTT_CONFIG_FILE=<header>` (an absolute path, or a name on the include path).
 
 #### Clients in application memory
 
 `az_iot_az_mqtt_get_adapter()` builds clients in a workspace the application provides (static,
-stack or heap), with no allocation by the adapter. The sizes above become run-time values in
-`az_iot_mqtt_limits`:
+stack or heap), with no allocation by the adapter, sized by `az_iot_mqtt_limits`:
 
 | Field | Meaning |
 | --- | --- |
-| `send_buffer_size` | Largest outgoing packet. |
-| `receive_buffer_size` | Largest incoming packet; MQTT 5: the Maximum Packet Size advertised. |
+| `send_buffer_size` | Largest outgoing packet. A larger connect or publish fails. |
+| `receive_buffer_size` | Largest incoming packet; MQTT 5: the Maximum Packet Size advertised, and the server drops larger messages. MQTT 3.1.1: a larger packet ends the session. |
 | `max_in_flight_messages` | QoS 1 exchanges at once (the SDK uses no QoS 2), 1-32767; MQTT 5: the Receive Maximum advertised. |
-| `message_store_size` | Copies of unacknowledged QoS 1 PUBLISH the adapter keeps while a session outlives the connection; never resent (see [Message store](#message-store)). 0: clean sessions only. |
+| `message_store_size` | Copies of unacknowledged QoS 1 PUBLISH the adapter keeps while a session outlives the connection (at least one packet of `send_buffer_size` plus 18 bytes); never resent (see [Message store](#message-store)). 0: clean sessions only, and a connect with `clean_start` false (MQTT 5: and `session_expiry_seconds` > 0) returns `AZ_IOT_ERR_NOT_SUPPORTED`. |
 | `connect_strings_size` | Copies a connect makes of its strings (host, credentials, TLS paths or PEM, proxy, will, user properties), one NUL each. |
+
+IoT Hub limits: device-to-cloud messages 256 KB, direct method payloads 128 KB, cloud-to-device
+messages 64 KB, twin documents 32 KB. Size the buffers for the messages the device sends and
+receives.
 
 - `az_iot_az_mqtt_get_workspace_size(&limits)`: the exact size, for the largest of the MQTT 3.1.1
   and MQTT 5 clients, with this build's TLS backend.
@@ -180,10 +174,10 @@ Entry counts are run-time values in `az_iot_connection_client_options::limits`
 - Defining one of the former macros (`AZ_IOT_MAX_PENDING_PUBACKS`, `AZ_IOT_DPS_HOST_BUF`, ...)
   before including the header is a compile error.
 
-With `options.mqtt_adapter` set (for example `az_iot_az_mqtt_get_adapter()`), the client
-builds each session's MQTT client in `options.mqtt_workspace`, sized for `options.mqtt_limits`
-(see [Clients in application memory](#clients-in-application-memory)). NULL keeps the registered
-factories.
+The client builds each session's MQTT client with `options.mqtt_adapter` (for example
+`az_iot_az_mqtt_get_adapter()`) in `options.mqtt_workspace`, sized for `options.mqtt_limits`
+(see [Clients in application memory](#clients-in-application-memory)). All three are required:
+`init()` fails with `AZ_IOT_ERR_INVALID_ARG` when `mqtt_adapter` is NULL.
 
 - Size `mqtt_workspace` with the adapter's `get_workspace_size(&mqtt_limits)`
   (`az_iot_az_mqtt_get_workspace_size()`, `az_iot_paho_get_workspace_size()`), or for a static
@@ -307,7 +301,6 @@ Fixed sizes:
 
 | Constant | Value | Bounds |
 | --- | --- | --- |
-| `AZ_IOT_MAX_MQTT_FACTORIES` | 4 | MQTT adapter factories registered with one connection client. |
 | `AZ_IOT_CONNECTION_CLIENT_PUBLISH_COMPLETION_OBSERVERS` | 2 | Feature clients told after each hub PUBACK, to retry publishes held for adapter capacity. The mqttv5 direct method client uses one. |
 | `AZ_IOT_PERSISTENT_SUB_TOPIC_MAX` | 128 | Length of one persistent topic filter. |
 | `AZ_IOT_DPS_HOST_BUF` | 128 | Assigned IoT Hub host name, terminator included. A longer one fails the provisioning attempt with `AZ_IOT_ERR_NOT_SUPPORTED`. |
@@ -481,7 +474,7 @@ attached, and one fewer when `opts.csr_payload_buffer` is set. To size it, add t
 
 On a session that outlives the connection (the hub session, unless `session_continuity` is
 `AZ_IOT_SESSION_CONTINUITY_CLEAN`), az_mqtt keeps a copy of each unacknowledged QoS 1 publish in
-`message_store_size` (`AZ_IOT_AZ_MQTT_MESSAGE_STORAGE_SIZE`): its encoded size plus 18 bytes
+`message_store_size`: its encoded size plus 18 bytes
 (`AZ_MQTT_INFLIGHT_MESSAGE_OVERHEAD`), until its PUBACK. A publish that does not fit returns
 `AZ_IOT_ERR_BUSY`; retry after a PUBACK. The default, `send_buffer_size + 18`, holds one full-size
 publish, so a second QoS 1 publish in flight can already return `AZ_IOT_ERR_BUSY`.

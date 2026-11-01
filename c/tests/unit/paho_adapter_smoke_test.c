@@ -5,8 +5,7 @@
 /* SPDX-License-Identifier: MIT */
 /* Construction-level smoke test for the Paho adapter. Does not touch the
  * network; verifies that a client the adapter builds is of the version asked
- * and carries a fully-populated iface vtable, and that the application
- * destroys a registered factory after the connection client's deinit(). */
+ * and carries a fully-populated iface vtable. */
 #include <stdarg.h>
 #include <stddef.h>
 #include <setjmp.h>
@@ -17,9 +16,6 @@
 
 #include "azure/iot/az_iot_mqtt_iface.h"
 #include "azure/iot/adapters/az_iot_adapter_paho.h"
-#include "azure/iot/az_iot_connection_client.h"
-
-#include "support/test_provider.h"
 
 /* Paho sizes its own buffers: the limits only have to be valid. */
 static const az_iot_mqtt_limits k_limits = { 1024, 1024, 4, 0, 0 };
@@ -167,41 +163,6 @@ static void the_shared_limits_check_bounds_each_size(void** state)
   assert_false(limits_accepted(&l));
 }
 
-/* Registration only lends the factories to the connection client: the
- * application destroys them after deinit(). Under valgrind/ASan, a double free
- * here means deinit() released them; a leak means nothing did. */
-static void registered_factories_are_destroyed_by_the_application_after_deinit(void** state)
-{
-  (void)state;
-  az_iot_connection_client client;
-  az_iot_connection_client_options opts = { 0 };
-  opts.iothub_hostname = "broker.example";
-  opts.port = 8883;
-  opts.device_id = "ut-device";
-  assert_int_equal(az_iot_test_connection_client_init(&client, &opts), AZ_IOT_OK);
-
-  az_iot_mqtt_factory* v3 = az_iot_paho_factory_create_v3_1_1();
-  az_iot_mqtt_factory* v5 = az_iot_paho_factory_create_v5();
-  assert_non_null(v3);
-  assert_non_null(v5);
-  assert_int_equal(az_iot_connection_client_register_mqtt_factory(&client, v3), AZ_IOT_OK);
-  assert_int_equal(az_iot_connection_client_register_mqtt_factory(&client, v5), AZ_IOT_OK);
-
-  az_iot_test_connection_client_deinit(&client);
-  az_iot_paho_factory_destroy(v3);
-  az_iot_paho_factory_destroy(v5);
-}
-
-/* A factory whose registration failed is still the application's to destroy. */
-static void a_factory_that_failed_to_register_is_destroyed_by_the_application(void** state)
-{
-  (void)state;
-  az_iot_mqtt_factory* f = az_iot_paho_factory_create_v5();
-  assert_non_null(f);
-  assert_int_equal(az_iot_connection_client_register_mqtt_factory(NULL, f), AZ_IOT_ERR_INVALID_ARG);
-  az_iot_paho_factory_destroy(f);
-}
-
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -209,8 +170,6 @@ int main(void)
     cmocka_unit_test(adapter_builds_a_v5_client),
     cmocka_unit_test(adapter_runs_a_client_in_a_workspace),
     cmocka_unit_test(the_shared_limits_check_bounds_each_size),
-    cmocka_unit_test(registered_factories_are_destroyed_by_the_application_after_deinit),
-    cmocka_unit_test(a_factory_that_failed_to_register_is_destroyed_by_the_application),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }

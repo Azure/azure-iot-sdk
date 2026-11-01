@@ -111,6 +111,15 @@ static void test_connection_workspace_return(test_connection_workspace* lent)
   lent->client = NULL;
 }
 
+void az_iot_test_use_mock_mqtt_adapter(az_iot_connection_client_options* opts)
+{
+  static uint8_t s_shared_mqtt_workspace[AZ_IOT_MOCK_MQTT_WORKSPACE_SIZE];
+  opts->mqtt_adapter = az_iot_mock_mqtt_get_adapter();
+  opts->mqtt_limits = az_iot_mock_mqtt_limits;
+  opts->mqtt_workspace = s_shared_mqtt_workspace;
+  opts->mqtt_workspace_size = sizeof(s_shared_mqtt_workspace);
+}
+
 az_iot_result az_iot_test_connection_client_init(
     az_iot_connection_client* client,
     const az_iot_connection_client_options* opts)
@@ -129,16 +138,19 @@ az_iot_result az_iot_test_connection_client_init(
   bool const lend_workspace = with_defaults.workspace == NULL
       && az_iot_connection_client_get_workspace_size(&opts->limits)
           <= AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE;
+  if (with_defaults.mqtt_adapter == NULL)
+  {
+    with_defaults.mqtt_adapter = az_iot_mock_mqtt_get_adapter();
+  }
   const az_iot_mqtt_limits* mqtt_limits = &with_defaults.mqtt_limits;
-  if (with_defaults.mqtt_adapter != NULL && mqtt_limits->send_buffer_size == 0
-      && mqtt_limits->receive_buffer_size == 0 && mqtt_limits->max_in_flight_messages == 0
-      && mqtt_limits->message_store_size == 0 && mqtt_limits->connect_strings_size == 0)
+  if (mqtt_limits->send_buffer_size == 0 && mqtt_limits->receive_buffer_size == 0
+      && mqtt_limits->max_in_flight_messages == 0 && mqtt_limits->message_store_size == 0
+      && mqtt_limits->connect_strings_size == 0)
   {
     with_defaults.mqtt_limits = az_iot_mock_mqtt_limits;
   }
   /* 0 when the adapter or limits are invalid: init() reports that. */
-  size_t const mqtt_workspace_size = with_defaults.mqtt_adapter != NULL
-          && with_defaults.mqtt_workspace == NULL
+  size_t const mqtt_workspace_size = with_defaults.mqtt_workspace == NULL
           && with_defaults.mqtt_adapter->get_workspace_size != NULL
       ? with_defaults.mqtt_adapter->get_workspace_size(&with_defaults.mqtt_limits)
       : 0;
