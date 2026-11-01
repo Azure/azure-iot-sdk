@@ -469,6 +469,26 @@ static bool sync_parent_directory(const char* path)
 }
 #endif
 
+bool sample_file_remove_durably(const char* path)
+{
+  if (path == NULL)
+  {
+    return false;
+  }
+  /* Synced on ENOENT too: an earlier removal may not have reached storage. */
+  if (remove(path) != 0 && errno != ENOENT)
+  {
+    return false;
+  }
+#ifndef _WIN32
+  if (!sync_parent_directory(path))
+  {
+    fprintf(stderr, "%s: gone, but its directory could not be synced to storage\n", path);
+  }
+#endif
+  return true;
+}
+
 bool sample_file_replace(const char* source_path, const char* destination_path)
 {
   if (source_path == NULL || destination_path == NULL)
