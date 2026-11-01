@@ -64,6 +64,11 @@
   "SharedAccessSignature sr=broker.example%2Fdevices%2Fut-device&sig=BRrnGeCm9r2C4ThgRfkk" \
   "iZDw7C0H8EGZaA%2BwJ03WJx8%3D&se=1700003600"
 
+/* Distinct retry delays, too long to elapse during a test: tests fire a retry
+ * with az_iot_test_make_retry_due_now(). */
+#define RECONNECT_MS 20000u
+#define IDENTITY_MS 30000u
+
 /* A provider with trust anchors but no certificate for any role, as the managed
  * provider is without a bootstrap identity before issuance. */
 static az_iot_result ca_only_load(
@@ -792,8 +797,8 @@ static void each_retry_without_unix_time_is_reported(void** state)
   az_iot_connection_client_options opts = hub_sas_options();
   opts.unix_time.get_time = switchable_time;
   opts.unix_time.user_ctx = &now;
-  opts.reconnection_policy.initial_delay_ms = 20;
-  opts.reconnection_policy.max_delay_ms = 20;
+  opts.reconnection_policy.initial_delay_ms = RECONNECT_MS;
+  opts.reconnection_policy.max_delay_ms = RECONNECT_MS;
   opts.reconnection_policy.jitter_pct = 0;
   init_and_open(fx, &opts);
   az_iot_test_state_log log = { 0 };
@@ -810,7 +815,7 @@ static void each_retry_without_unix_time_is_reported(void** state)
   for (int attempt = 0; attempt < 2; ++attempt)
   {
     log.count = 0;
-    fx->client.reconnect_due_ms = az_iot_time_mono_ms();
+    az_iot_test_make_retry_due_now(&fx->client);
     (void)az_iot_connection_client_do_work(&fx->client, 0);
     assert_int_equal(log.count, 2);
     assert_int_equal(log.states[0], AZ_IOT_CONN_STATE_SETTING_UP);
@@ -857,9 +862,6 @@ static void no_provider_and_no_key_is_credential_incomplete(void** state)
 
 /* ---- credential fallback --------------------------------------------------- */
 
-#define RECONNECT_MS 20u
-#define IDENTITY_MS 30u
-
 static void with_policies(az_iot_connection_client_options* opts)
 {
   opts->reconnection_policy.initial_delay_ms = RECONNECT_MS;
@@ -885,12 +887,10 @@ static void connack(fixture* fx, az_iot_result status)
   pump(fx, 3);
 }
 
-static void wait_and_fire_retry(fixture* fx)
+/* Let the pending retry's backoff pass and fire it. */
+static void fire_retry(fixture* fx)
 {
-  assert_int_not_equal(fx->client.reconnect_due_ms, 0);
-  while (az_iot_time_mono_ms() < fx->client.reconnect_due_ms)
-  {
-  }
+  az_iot_test_make_retry_due_now(&fx->client);
   pump(fx, 2);
 }
 
@@ -960,7 +960,7 @@ static void a_kept_secondary_key_wraps_to_the_primary_when_rejected(void** state
   /* A drop is not a rejection: the secondary key is kept. */
   assert_true(az_iot_mock_mqtt_client_inject_disconnected(newest_mock_client(fx)));
   pump(fx, 2);
-  wait_and_fire_retry(fx);
+  fire_retry(fx);
   assert_string_equal(last_connect(fx)->password, SECONDARY_HUB_TOKEN);
 
   connack(fx, AZ_IOT_ERR_IDENTITY_REJECTED);
@@ -996,7 +996,7 @@ static void a_fully_rejected_pass_goes_to_identity_recovery_then_restarts(void**
   assert_int_equal(e->attempt, 1);
   assert_int_equal(e->delay_ms, IDENTITY_MS);
 
-  wait_and_fire_retry(fx);
+  fire_retry(fx);
   assert_string_equal(last_connect(fx)->password, "");
 }
 
@@ -1253,7 +1253,7 @@ static void a_retry_from_the_first_source_starts_a_new_pass(void** state)
 
   connack(fx, AZ_IOT_ERR_TIMEOUT);
   g_late_cert_ready = true;
-  wait_and_fire_retry(fx);
+  fire_retry(fx);
   assert_string_equal(last_connect(fx)->password, "");
 
   connack(fx, AZ_IOT_ERR_IDENTITY_REJECTED);
@@ -1332,7 +1332,7 @@ static void a_vanished_fallback_certificate_ends_the_pass(void** state)
   assert_int_equal(fx->client.state[AZ_IOT_CONN_SCOPE_HUB], AZ_IOT_CONN_STATE_RETRY_PENDING);
   assert_true(fx->client.reconnect_due_ms > az_iot_time_mono_ms());
 
-  wait_and_fire_retry(fx);
+  fire_retry(fx);
   assert_string_equal(last_connect(fx)->password, HUB_TOKEN);
 }
 
@@ -2719,7 +2719,7 @@ static void an_undelivered_user_token_times_out(void** state)
   assert_int_equal(supply_user_token(fx, AZ_IOT_CONN_SCOPE_HUB), AZ_IOT_OK);
   pump(fx, 1);
   assert_true(no_connect_pending(fx));
-  wait_and_fire_retry(fx);
+  fire_retry(fx);
   assert_string_equal(last_connect(fx)->password, USER_TOKEN);
   assert_int_equal(g_fake.calls, 1);
 }
@@ -2863,7 +2863,7 @@ static void a_rejected_user_token_ends_the_pass(void** state)
   const recorded_event* e = last_event(fx, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_RETRY_PENDING);
   assert_int_equal(e->source, AZ_IOT_AUTH_SOURCE_USER_PROVIDED);
   assert_int_equal(e->delay_ms, IDENTITY_MS);
-  wait_and_fire_retry(fx);
+  fire_retry(fx);
   assert_string_equal(last_connect(fx)->password, HUB_TOKEN);
   assert_int_equal(g_fake.calls, 1);
 }
@@ -3090,7 +3090,7 @@ static void a_new_assignment_asks_for_a_new_hub_token(void** state)
   assert_true(az_iot_mock_mqtt_client_inject_event(hub, &lost));
   pump(fx, 1);
   assert_true(fx->client.needs_reprovision);
-  wait_and_fire_retry(fx);
+  fire_retry(fx);
   az_iot_mock_mqtt_client* dps = newest_mock_client(fx);
   assert_string_equal(last_connect(fx)->password, DPS_TOKEN);
   assert_true(az_iot_mock_mqtt_client_inject_connected(dps, AZ_IOT_OK));
@@ -3304,7 +3304,7 @@ static void a_token_after_the_deadline_is_kept_for_the_retry(void** state)
   const recorded_event* e = last_event(fx, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_RETRY_PENDING);
   assert_int_equal(e->reason, AZ_IOT_ERR_TIMEOUT);
   assert_true(fx->client.sas_token_request[AZ_IOT_CONN_SCOPE_HUB].held);
-  wait_and_fire_retry(fx);
+  fire_retry(fx);
   assert_string_equal(last_connect(fx)->password, USER_TOKEN);
   assert_int_equal(g_fake.calls, 1);
 }
@@ -3929,7 +3929,7 @@ static void the_certificate_that_connected_is_kept(void** state)
 
   assert_true(az_iot_mock_mqtt_client_inject_disconnected(newest_mock_client(fx)));
   pump(fx, 2);
-  wait_and_fire_retry(fx);
+  fire_retry(fx);
   assert_string_equal(last_connect(fx)->connect.client_cert_path, "boot-1.pem");
 
   connack(fx, AZ_IOT_ERR_IDENTITY_REJECTED);
@@ -3990,7 +3990,7 @@ static void a_new_operational_certificate_replaces_a_kept_bootstrap_one(void** s
   g_multi.count[1] = 1;
   assert_true(az_iot_mock_mqtt_client_inject_disconnected(newest_mock_client(fx)));
   pump(fx, 2);
-  wait_and_fire_retry(fx);
+  fire_retry(fx);
   assert_string_equal(last_connect(fx)->connect.client_cert_path, "op-0.pem");
   connack(fx, AZ_IOT_OK);
   assert_int_equal(
@@ -4027,7 +4027,7 @@ static void a_kept_certificate_is_dropped_when_index_0_is_gone(void** state)
   g_multi.no_index_0 = true;
   assert_true(az_iot_mock_mqtt_client_inject_disconnected(newest_mock_client(fx)));
   pump(fx, 2);
-  wait_and_fire_retry(fx);
+  fire_retry(fx);
   assert_string_equal(last_connect(fx)->connect.client_cert_path, "");
   assert_string_equal(last_connect(fx)->password, HUB_TOKEN);
 }
@@ -4051,7 +4051,7 @@ static void a_kept_dps_certificate_is_dropped_when_index_0_is_gone(void** state)
   g_multi.no_index_0 = true;
   assert_true(az_iot_mock_mqtt_client_inject_disconnected(newest_mock_client(fx)));
   pump(fx, 2);
-  wait_and_fire_retry(fx);
+  fire_retry(fx);
   assert_string_equal(last_connect(fx)->connect.client_cert_path, "");
   assert_string_equal(last_connect(fx)->password, DPS_TOKEN);
 }
@@ -4352,7 +4352,7 @@ static void an_https_hub_token_keeps_the_secondary_key_while_reconnecting(void**
       AZ_IOT_OK);
   assert_true(az_iot_mock_mqtt_client_inject_disconnected(newest_mock_client(fx)));
   pump(fx, 2);
-  wait_and_fire_retry(fx);
+  fire_retry(fx);
   assert_int_equal(g_signed_result, AZ_IOT_OK);
   assert_string_equal(g_signed_token, SECONDARY_HUB_TOKEN);
   assert_string_equal(last_connect(fx)->password, SECONDARY_HUB_TOKEN);
@@ -4379,7 +4379,7 @@ static void an_https_hub_token_keeps_the_primary_key_with_a_ca_only_provider(voi
       AZ_IOT_OK);
   assert_true(az_iot_mock_mqtt_client_inject_disconnected(newest_mock_client(fx)));
   pump(fx, 2);
-  wait_and_fire_retry(fx);
+  fire_retry(fx);
   assert_int_equal(g_signed_result, AZ_IOT_OK);
   assert_string_equal(g_signed_token, HUB_TOKEN);
   assert_string_equal(last_connect(fx)->password, HUB_TOKEN);
