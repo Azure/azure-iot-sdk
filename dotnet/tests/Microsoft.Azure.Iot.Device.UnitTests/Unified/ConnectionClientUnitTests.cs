@@ -22,6 +22,29 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
         private const string CompletedResponse = """{"certificates":["issued-certificate"],"correlationId":"correlation-id"}""";
 
         [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task DefaultHubSessionExpiryIsCompatibleWithDisconnect(bool isMqtt5)
+        {
+            using MockConnectionMqttClient mqttClient = new();
+            using ConnectionClient connectionClient = new(new() { MqttClient = mqttClient });
+            MqttConnect? sentConnect = null;
+            mqttClient.OnConnect = packet =>
+            {
+                sentConnect = packet;
+                return Task.FromResult(new MqttConnectAck() { ResultCode = MqttConnectReasonCode.Success });
+            };
+
+            await connectionClient.ConnectToHubAsync(GetMockConnectionContext(isMqtt5), TestContext.Current.CancellationToken);
+            await connectionClient.DisconnectAsync(cancellationToken: TestContext.Current.CancellationToken);
+
+            Assert.NotNull(sentConnect);
+            Assert.Equal(isMqtt5 ? MqttProtocolVersion.V500 : MqttProtocolVersion.V311, sentConnect.ProtocolVersion);
+            Assert.Equal(isMqtt5 ? 3600u : 0u, sentConnect.SessionExpiryInterval);
+            Assert.Equal(3600u, Assert.Single(mqttClient.DisconnectRequests).SessionExpiryInterval);
+        }
+
+        [Theory]
         [InlineData(0u)]
         [InlineData(300u)]
         [InlineData(uint.MaxValue)]

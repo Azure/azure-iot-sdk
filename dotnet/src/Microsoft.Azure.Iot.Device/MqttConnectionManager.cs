@@ -188,6 +188,8 @@ namespace Microsoft.Azure.Iot.Device
         }
 
         private MqttConnect? _mostRecentConnect;
+        private MqttProtocolVersion _protocolVersionAtConnect;
+        private uint _sessionExpiryIntervalAtConnect;
         private bool _isDisposed;
 
         private bool _isDesiredConnected;
@@ -357,9 +359,12 @@ namespace Microsoft.Azure.Iot.Device
             }
         }
 
-        private Task<MqttConnect> DelegateConnectingAsync(MqttConnect connect, CancellationToken cancellationToken)
+        private async Task<MqttConnect> DelegateConnectingAsync(MqttConnect connect, CancellationToken cancellationToken)
         {
-            return _connecting.InvokeAsync(connect, cancellationToken);
+            MqttConnect packet = await _connecting.InvokeAsync(connect, cancellationToken);
+            _protocolVersionAtConnect = packet.ProtocolVersion;
+            _sessionExpiryIntervalAtConnect = packet.SessionExpiryInterval;
+            return packet;
         }
 
         private async Task DelegateDisconnectedAsync(MqttClientDisconnectedEventArgs args)
@@ -480,9 +485,9 @@ namespace Microsoft.Azure.Iot.Device
         /// caller is closing for good: any in-progress retry loop is cancelled and this layer stops maintaining the connection.
         /// </param>
         /// <param name="options">
-        /// The DISCONNECT to send. Its <see cref="MqttDisconnect.SessionExpiryInterval"/> of 0 is omitted from the packet by
-        /// MQTTnet, so the broker keeps the session for the interval requested at CONNECT. This is what lets an SDK-initiated
-        /// reconnect resume the session; MQTT 5 forbids a DISCONNECT from raising the interval when the CONNECT's was 0.
+        /// The DISCONNECT to send. A nonzero session expiry interval is replaced with 0 if the MQTT 5 CONNECT used 0,
+        /// because MQTT 5 forbids increasing a zero CONNECT expiry at DISCONNECT. MQTTnet omits a value of 0 from the
+        /// packet, leaving the session expiry established at CONNECT unchanged.
         /// </param>
         public async Task DisconnectAsync(bool desireReconnection, MqttDisconnect? options = null, CancellationToken cancellationToken = default)
         {
@@ -490,6 +495,19 @@ namespace Microsoft.Azure.Iot.Device
             cancellationToken.ThrowIfCancellationRequested();
 
             options ??= new MqttDisconnect();
+
+            if (_protocolVersionAtConnect == MqttProtocolVersion.V500
+                && _sessionExpiryIntervalAtConnect == 0
+                && options.SessionExpiryInterval != 0)
+            {
+                options = new MqttDisconnect()
+                {
+                    Reason = options.Reason,
+                    ReasonString = options.ReasonString,
+                    SessionExpiryInterval = 0,
+                    UserProperties = options.UserProperties,
+                };
+            }
 
             if (!desireReconnection)
             {
