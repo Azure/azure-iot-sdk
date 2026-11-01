@@ -42,6 +42,7 @@ set(_az_iot_export_names
     az_iot_crypto_openssl                crypto_openssl
     az_iot_crypto_mbedtls                crypto_mbedtls
     az_iot_certificate_provider_managed  certificate_provider_managed
+    az_iot_su_delta                      su_delta
 )
 
 set(_az_iot_targets "")
@@ -136,6 +137,7 @@ set(_az_iot_adapter_headers
     az_iot_crypto_openssl                adapters/crypto_openssl/az_iot_crypto_openssl.h
     az_iot_crypto_mbedtls                adapters/crypto_mbedtls/az_iot_crypto_mbedtls.h
     az_iot_certificate_provider_managed  adapters/cert_openssl/az_iot_certificate_provider_managed.h
+    az_iot_su_delta                      adapters/su/delta/az_iot_su_delta.h
 )
 list(LENGTH _az_iot_adapter_headers _n)
 math(EXPR _last "${_n} - 1")

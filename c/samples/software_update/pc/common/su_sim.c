@@ -86,6 +86,62 @@ const char* su_sample_operation_name(az_iot_su_operation operation)
   return SU_SAMPLE_NAME_OF(k_su_operation_names, operation);
 }
 
+bool su_sample_decode_file_id(
+    const az_iot_su_client_update_manifest_file* file,
+    char* name,
+    size_t name_size)
+{
+  az_span decoded;
+  if (name_size == 0
+      || az_iot_su_decode_manifest_string(
+             file->id, az_span_create((uint8_t*)name, (int32_t)(name_size - 1)), &decoded)
+          != AZ_IOT_OK
+      || !sample_is_plain_file_name(decoded))
+  {
+    return false;
+  }
+  name[az_span_size(decoded)] = '\0';
+  return true;
+}
+
+int32_t su_sim_get_update_file_path(
+    const az_iot_su_client_update_manifest_file* file,
+    uint32_t file_index,
+    char* path,
+    size_t path_size,
+    void* user_ctx)
+{
+  (void)file_index;
+  const su_simulation_control* s = (const su_simulation_control*)user_ctx;
+  char name[SU_SAMPLE_FILE_NAME_SIZE];
+  if (s->file_directory == NULL || !su_sample_decode_file_id(file, name, sizeof(name)))
+  {
+    return AZ_IOT_SU_RESULT_FAILURE;
+  }
+  int n = snprintf(path, path_size, "%s/%s", s->file_directory, name);
+  return (n >= 0 && (size_t)n < path_size) ? AZ_IOT_SU_RESULT_SUCCESS : AZ_IOT_SU_RESULT_FAILURE;
+}
+
+/* Writes @p size zero bytes to @p path. */
+static int32_t write_zero_filled_file(const char* path, int64_t size)
+{
+  FILE* f = sample_file_open_private(path, true);
+  if (f == NULL)
+  {
+    return AZ_IOT_SU_RESULT_FAILURE;
+  }
+  static const uint8_t k_zeros[4096] = { 0 };
+  int ok = 1;
+  for (int64_t left = size; ok && left > 0;)
+  {
+    size_t n = left < (int64_t)sizeof(k_zeros) ? (size_t)left : sizeof(k_zeros);
+    ok = fwrite(k_zeros, 1, n, f) == n;
+    left -= (int64_t)n;
+  }
+  ok = (fclose(f) == 0) && ok;
+  return ok ? AZ_IOT_SU_RESULT_SUCCESS : AZ_IOT_SU_RESULT_FAILURE;
+}
+
 int32_t simulate_update_file_download(
     const az_iot_su_client_update_manifest_file* file,
     az_span url,
@@ -96,12 +152,60 @@ int32_t simulate_update_file_download(
   (void)url;
   su_simulation_control* s = (su_simulation_control*)user_ctx;
   printf(
-      "  [download] file %u/%u (%lld bytes) [simulated]\n",
+      "  [download] %.*s for file %u/%u (%lld bytes) [simulated]\n",
+      (int)az_span_size(file->file_name),
+      (const char*)az_span_ptr(file->file_name),
       file_index + 1,
       file_count,
       (long long)file->size_in_bytes);
   sample_sleep_ms(s->delay_ms);
+  if (s->file_directory != NULL)
+  {
+    char path[1024];
+    if (su_sim_get_update_file_path(file, file_index, path, sizeof(path), s)
+            != AZ_IOT_SU_RESULT_SUCCESS
+        || write_zero_filled_file(path, file->size_in_bytes) != AZ_IOT_SU_RESULT_SUCCESS)
+    {
+      fprintf(stderr, "  [download] could not write the file in %s\n", s->file_directory);
+      return AZ_IOT_SU_RESULT_FAILURE;
+    }
+  }
   return AZ_IOT_SU_RESULT_SUCCESS;
+}
+
+int32_t simulate_delta_apply(
+    const char* source_path,
+    const char* delta_path,
+    const char* target_path,
+    void* user_ctx)
+{
+  (void)user_ctx;
+  printf(
+      "  [delta] %s + %s -> %s [simulated: copies the source]\n",
+      source_path,
+      delta_path,
+      target_path);
+  FILE* in = fopen(source_path, "rb");
+  if (in == NULL)
+  {
+    return AZ_IOT_SU_RESULT_FAILURE;
+  }
+  /* The handler created target_path and holds a lock on it: write that file, not a new one. */
+  FILE* out = sample_file_rewrite_existing_no_follow(target_path);
+  int ok = out != NULL;
+  uint8_t buffer[4096];
+  size_t n = 0;
+  while (ok && (n = fread(buffer, 1, sizeof(buffer), in)) > 0)
+  {
+    ok = fwrite(buffer, 1, n, out) == n;
+  }
+  ok = ok && !ferror(in);
+  (void)fclose(in);
+  if (out != NULL)
+  {
+    ok = (fclose(out) == 0) && ok;
+  }
+  return ok ? AZ_IOT_SU_RESULT_SUCCESS : AZ_IOT_SU_RESULT_FAILURE;
 }
 
 /* Serve deterministic payload bytes so the SHA-256 the core computes is
