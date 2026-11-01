@@ -374,6 +374,15 @@
 
 ### Bugs Fixed
 
+- ESP32 samples (`software_update/esp32`, `unified/esp32`) build with every ESP-IDF 6 release:
+  they pinned `espressif/ethernet_init` to `==1.2.0`, while ESP-IDF v6.0.2 and later need
+  `^1.3.0`. The version now comes from ESP-IDF's `protocol_examples_common`. CI builds the ESP32
+  samples and runs the ESP32 QEMU e2e with ESP-IDF v6.1, and builds both samples with v6.0.
+- ESP32 with the Digital Signature peripheral (esp32c3, esp32s3, esp32c6) connects with ESP-IDF
+  v6.0.1 and later: the `esp_secure_cert` certificate provider imports the DS key in the layout
+  those releases expect (an `esp_rsa_ds_opaque_key_t`; v6.0 keeps the old one), and az_mqtt's
+  mbedTLS backend wraps a PSA key that cannot export its public key (TF-PSA-Crypto 1.1, ESP-IDF
+  v6.0.3 and later) with the client certificate's public key.
 - Connection client, events drained in one `process_loop()`: a failed acknowledgement (PUBACK,
   SUBACK, UNSUBACK) becomes connection error detail only when it fails the connection. A presence,
   gated or DPS SUBACK drained after a session-ending event is ignored; a FAILS_SELF refusal is still
