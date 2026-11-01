@@ -32,6 +32,7 @@
 #else
 #include <dirent.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #endif
@@ -199,16 +200,60 @@ static HANDLE create_private_file(const char* path, bool* collided)
   LocalFree(sd);
   return h;
 }
+#else
+/**
+ * @brief Flush the directory holding @p path to storage, so a rename into it
+ * survives a power loss.
+ * @return true on success.
+ */
+static bool sync_parent_directory(const char* path)
+{
+  const char* last_slash = strrchr(path, '/');
+  char* directory = NULL;
+  if (last_slash == NULL)
+  {
+    directory = dup_str(".");
+  }
+  else
+  {
+    size_t length = (last_slash == path) ? 1u : (size_t)(last_slash - path);
+    directory = (char*)malloc(length + 1u);
+    if (directory != NULL)
+    {
+      memcpy(directory, path, length);
+      directory[length] = '\0';
+    }
+  }
+  if (directory == NULL)
+  {
+    return false;
+  }
+  int directory_fd = open(directory, O_RDONLY | O_DIRECTORY);
+  free(directory);
+  if (directory_fd < 0)
+  {
+    return false;
+  }
+  bool synced = fsync(directory_fd) == 0;
+  (void)close(directory_fd);
+  return synced;
+}
 #endif
 
 /**
- * @brief Replace @p path with @p data, all-or-nothing.
+ * @brief Replace @p path with @p data, all-or-nothing and durably.
  *
  * Writes a new file next to @p path that only the current user can access
  * (0600 / owner-only DACL), created exclusively under a unique name so an
  * existing file or link there is never opened, flushes it, then renames it over
  * @p path. The rename replaces a link at @p path rather than following it. On
  * failure @p path is untouched and the temporary file is removed.
+ *
+ * The rename is then flushed to storage: MOVEFILE_WRITE_THROUGH on Windows, an
+ * fsync() of the parent directory on POSIX. If that directory sync fails, the
+ * result is still AZ_IOT_OK: the new file has already replaced @p path and is
+ * what every reader gets, so reporting failure would break the all-or-nothing
+ * contract. Only its survival across a power loss is then not guaranteed.
  */
 static az_iot_result write_file_private(const char* path, const char* data, size_t len)
 {
@@ -300,6 +345,10 @@ static az_iot_result write_file_private(const char* path, const char* data, size
   if (!ok)
   {
     (void)unlink(tmp);
+  }
+  else
+  {
+    (void)sync_parent_directory(path); /* replaced already: see the function comment */
   }
 #endif
   free(tmp);
@@ -572,6 +621,7 @@ static void remove_stale_temps(const char* path, const file_ids* excluded)
   (void)for_each_staged(path, excluded, delete_staged, NULL);
 }
 
+/** @brief Write @p key to @p path as unencrypted PEM (deliberate: see the header). */
 static az_iot_result write_key_file(const char* path, EVP_PKEY* key)
 {
   BIO* mem = BIO_new(BIO_s_mem());
