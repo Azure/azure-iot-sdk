@@ -121,6 +121,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
                 ConnectionRetryPolicy = options.ConnectionRetryPolicy,
                 ConnectionAttemptTimeout = options.ConnectionAttemptTimeout,
                 EnableMqttLogging = options.EnableMqttLogging,
+                SessionExpiryInterval = options.SessionExpiryInterval,
                 ReceiveDesiredPropertyUpdates = options.EnableTwin,
                 ReceiveReportedPropertiesUponConnect = options.EnableTwin,
                 // MqttClient = options.MqttClient, //TODO See above for why this isn't passed to the MQTTv5 client, but this design feels a bit off, but needs testing of websocket + proxy support when using unified client to connect to MQTTv5 hub
