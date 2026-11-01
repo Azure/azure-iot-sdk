@@ -475,14 +475,15 @@ bool sample_file_remove_durably(const char* path)
   {
     return false;
   }
-  if (remove(path) != 0)
+  /* Synced on ENOENT too: an earlier removal may not have reached storage. */
+  if (remove(path) != 0 && errno != ENOENT)
   {
-    return errno == ENOENT;
+    return false;
   }
 #ifndef _WIN32
   if (!sync_parent_directory(path))
   {
-    fprintf(stderr, "%s: removed, but its directory could not be synced to storage\n", path);
+    fprintf(stderr, "%s: gone, but its directory could not be synced to storage\n", path);
   }
 #endif
   return true;

@@ -148,6 +148,8 @@ static void file_remove_durably_removes_and_accepts_a_missing_file(void** state)
   assert_true(sample_file_remove_durably(DESTINATION_FILE));
   assert_null(sample_file_open_read_no_follow(DESTINATION_FILE));
   assert_true(sample_file_remove_durably(DESTINATION_FILE));
+  /* Nothing stored, and no directory to sync: still a success. */
+  assert_true(sample_file_remove_durably("missing_directory.tmp/name"));
   assert_false(sample_file_remove_durably(NULL));
 #if !defined(_WIN32)
   /* Write and search but no read: the removal succeeds, the directory sync does not. */

@@ -206,9 +206,10 @@ bool sample_file_flush_to_storage(FILE* file);
  * @brief Remove @p path so the removal survives a power loss. Succeeds when
  * @p path does not exist.
  *
- * On POSIX the directory is synced after the removal. If that sync fails, a
- * line is written to stderr and true is still returned, as in
- * sample_file_replace(): only then may a power loss bring the file back.
+ * On POSIX the directory is then synced, also when @p path did not exist, in
+ * case an earlier removal had not reached storage. If that sync fails, a line
+ * is written to stderr and true is still returned, as in sample_file_replace():
+ * only then may a power loss bring the file back.
  *
  * @param[in] path File to remove.
  * @return true when @p path is gone.
