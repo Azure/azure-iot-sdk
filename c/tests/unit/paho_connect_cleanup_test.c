@@ -131,9 +131,24 @@ static void stop_failing_malloc(void) { s_malloc_countdown = -1; }
 
 typedef struct
 {
-  az_iot_mqtt_factory* factory;
+  uint8_t workspace[AZ_IOT_PAHO_WORKSPACE_SIZE];
   az_iot_mqtt_client* client;
 } fixture;
+
+/** @brief Builds a @p version client in @p workspace with the Paho adapter. */
+static az_iot_mqtt_client* build_client(
+    az_iot_mqtt_version version,
+    uint8_t* workspace,
+    size_t workspace_size)
+{
+  /* Paho sizes its own buffers: the limits only have to be valid. */
+  static const az_iot_mqtt_limits limits = { 1024, 1024, 4, 0, 0 };
+  az_iot_mqtt_client* client = NULL;
+  assert_int_equal(
+      az_iot_paho_get_adapter()->init(version, &limits, workspace, workspace_size, &client),
+      AZ_IOT_OK);
+  return client;
+}
 
 static int setup(void** state)
 {
@@ -142,10 +157,7 @@ static int setup(void** state)
 
   fixture* fx = (fixture*)calloc(1, sizeof(fixture));
   assert_non_null(fx);
-  fx->factory = az_iot_paho_factory_create_v3_1_1();
-  assert_non_null(fx->factory);
-  fx->client = fx->factory->create(fx->factory->factory_ctx);
-  assert_non_null(fx->client);
+  fx->client = build_client(AZ_IOT_MQTT_VERSION_3_1_1, fx->workspace, sizeof(fx->workspace));
   *state = fx;
   return 0;
 }
@@ -159,7 +171,6 @@ static int teardown(void** state)
     {
       fx->client->iface->destroy(fx->client);
     }
-    az_iot_paho_factory_destroy(fx->factory);
     free(fx);
   }
   fake_custody_reset();
@@ -567,13 +578,9 @@ static void a_v5_client_initiated_disconnect_reports_disconnected(void** state)
   mock_paho_reset();
   fake_custody_reset();
 
-  az_iot_mqtt_factory* f = az_iot_paho_factory_create_v5();
-  assert_non_null(f);
   fixture local;
   memset(&local, 0, sizeof(local));
-  local.factory = f;
-  local.client = f->create(f->factory_ctx);
-  assert_non_null(local.client);
+  local.client = build_client(AZ_IOT_MQTT_VERSION_5, local.workspace, sizeof(local.workspace));
 
   evt_sink sink = { 0 };
   az_iot_result rc = AZ_IOT_OK;
@@ -584,7 +591,6 @@ static void a_v5_client_initiated_disconnect_reports_disconnected(void** state)
   assert_int_equal(sink.disconnected, 1);
 
   local.client->iface->destroy(local.client);
-  az_iot_paho_factory_destroy(f);
 }
 
 /* A disconnect that completes with a FAILURE still ends the session, so it is

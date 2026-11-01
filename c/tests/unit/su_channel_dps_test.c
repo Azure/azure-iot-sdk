@@ -2131,7 +2131,7 @@ static void the_session_survives_while_held_and_closes_when_released(void** stat
 
 /* A status report whose answer never comes, on a session that stays up, does
  * not keep the session -- and the hub session waiting for it -- for ever: past
- * AZ_IOT_SU_CHANNEL_REPORT_RESPONSE_TIMEOUT_MS the engine is told to retry it,
+ * AZ_IOT_SU_CHANNEL_RESPONSE_TIMEOUT_MS the engine is told to retry it,
  * and the session is released meanwhile. */
 static void an_unanswered_report_releases_the_session_for_a_retry(void** state)
 {
@@ -2144,10 +2144,9 @@ static void an_unanswered_report_releases_the_session_for_a_retry(void** state)
   assert_int_equal(fx->channel.vtable->report(fx->channel.ctx, &report), AZ_IOT_OK);
   assert_true(fx->channel_state.request_pending);
   uint64_t now = az_iot_time_mono_ms();
-  assert_true(fx->channel_state.report_response_deadline_ms > now);
+  assert_true(fx->channel_state.response_deadline_ms > now);
   assert_true(
-      fx->channel_state.report_response_deadline_ms
-      <= now + AZ_IOT_SU_CHANNEL_REPORT_RESPONSE_TIMEOUT_MS);
+      fx->channel_state.response_deadline_ms <= now + AZ_IOT_SU_CHANNEL_RESPONSE_TIMEOUT_MS);
 
   /* Awaited while the bound stands. */
   size_t results = fx->result_count;
@@ -2158,11 +2157,41 @@ static void an_unanswered_report_releases_the_session_for_a_retry(void** state)
   assert_true(fx->client.dps_session_wanted);
 
   /* Past it: retried by the engine, and the session let go. */
-  fx->channel_state.report_response_deadline_ms = az_iot_time_mono_ms();
+  fx->channel_state.response_deadline_ms = az_iot_time_mono_ms();
   assert_int_equal(fx->channel.vtable->do_work(fx->channel.ctx), AZ_IOT_OK);
   assert_false(fx->channel_state.request_pending);
   assert_int_equal(fx->result_count, results + 1u);
   assert_int_equal(fx->last_op, AZ_IOT_SU_OP_REPORT_STATUS);
+  assert_int_equal(fx->last_result, AZ_IOT_ERR_TIMEOUT);
+  assert_int_equal(fx->last_action, AZ_IOT_SU_ERROR_ACTION_RETRY);
+  assert_false(fx->client.dps_session_wanted);
+  (void)az_iot_connection_client_do_work(&fx->client, 0);
+  assert_null(fx->client.dps_mqtt);
+}
+
+/* An update check sent but never answered, on a session that stays up, does
+ * not keep the session for ever either, even when the caller set no timeout:
+ * past AZ_IOT_SU_CHANNEL_RESPONSE_TIMEOUT_MS the engine is told to retry it, and
+ * the session is released meanwhile. */
+static void an_unanswered_check_releases_the_session_for_a_retry(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  (void)open_session_for_an_operation(fx);
+  assert_int_equal(fx->channel.vtable->do_work(fx->channel.ctx), AZ_IOT_OK);
+  assert_int_equal(
+      fx->channel.vtable->request_update(fx->channel.ctx, AZ_IOT_SU_OP_GET_UPDATE), AZ_IOT_OK);
+  assert_true(fx->channel_state.request_pending);
+  uint64_t const now = az_iot_time_mono_ms();
+  assert_true(fx->channel_state.response_deadline_ms > now);
+  assert_true(
+      fx->channel_state.response_deadline_ms <= now + AZ_IOT_SU_CHANNEL_RESPONSE_TIMEOUT_MS);
+
+  size_t const results = fx->result_count;
+  fx->channel_state.response_deadline_ms = az_iot_time_mono_ms();
+  assert_int_equal(fx->channel.vtable->do_work(fx->channel.ctx), AZ_IOT_OK);
+  assert_false(fx->channel_state.request_pending);
+  assert_int_equal(fx->result_count, results + 1u);
+  assert_int_equal(fx->last_op, AZ_IOT_SU_OP_GET_UPDATE);
   assert_int_equal(fx->last_result, AZ_IOT_ERR_TIMEOUT);
   assert_int_equal(fx->last_action, AZ_IOT_SU_ERROR_ACTION_RETRY);
   assert_false(fx->client.dps_session_wanted);
@@ -2182,15 +2211,13 @@ static void an_awaited_report_bounds_the_connection_wait_to_its_deadline(void** 
   report.extended_result_codes = "00000000";
   assert_int_equal(fx->channel.vtable->report(fx->channel.ctx, &report), AZ_IOT_OK);
 
-  (void)az_iot_connection_client_do_work(
-      &fx->client, 2u * AZ_IOT_SU_CHANNEL_REPORT_RESPONSE_TIMEOUT_MS);
+  (void)az_iot_connection_client_do_work(&fx->client, 2u * AZ_IOT_SU_CHANNEL_RESPONSE_TIMEOUT_MS);
   assert_true(
       az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_PROCESS_LOOP)->timeout_ms
-      <= AZ_IOT_SU_CHANNEL_REPORT_RESPONSE_TIMEOUT_MS);
+      <= AZ_IOT_SU_CHANNEL_RESPONSE_TIMEOUT_MS);
 
-  fx->channel_state.report_response_deadline_ms = az_iot_time_mono_ms();
-  (void)az_iot_connection_client_do_work(
-      &fx->client, 2u * AZ_IOT_SU_CHANNEL_REPORT_RESPONSE_TIMEOUT_MS);
+  fx->channel_state.response_deadline_ms = az_iot_time_mono_ms();
+  (void)az_iot_connection_client_do_work(&fx->client, 2u * AZ_IOT_SU_CHANNEL_RESPONSE_TIMEOUT_MS);
   assert_int_equal(
       az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_PROCESS_LOOP)->timeout_ms, 0u);
 }
@@ -2289,7 +2316,7 @@ static void a_report_lost_with_its_session_past_its_deadline_keeps_the_session_p
   (void)az_iot_connection_client_do_work(&fx->client, 0);
   assert_null(fx->client.dps_mqtt);
   assert_true(fx->client.dps_user_retry_blocked);
-  fx->channel_state.report_response_deadline_ms = az_iot_time_mono_ms();
+  fx->channel_state.response_deadline_ms = az_iot_time_mono_ms();
 
   /* Lost with its session: retried by the engine, with the interest kept. */
   assert_int_equal(fx->channel.vtable->do_work(fx->channel.ctx), AZ_IOT_OK);
@@ -3851,6 +3878,8 @@ int main(void)
         the_session_survives_while_held_and_closes_when_released, setup, teardown),
     cmocka_unit_test_setup_teardown(
         an_unanswered_report_releases_the_session_for_a_retry, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        an_unanswered_check_releases_the_session_for_a_retry, setup, teardown),
     cmocka_unit_test_setup_teardown(
         an_awaited_report_bounds_the_connection_wait_to_its_deadline, setup, teardown),
     cmocka_unit_test_setup_teardown(
