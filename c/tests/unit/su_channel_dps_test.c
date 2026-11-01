@@ -2482,7 +2482,7 @@ static void a_report_refused_at_send_pauses_and_lets_the_session_go(void** state
   (void)az_iot_connection_client_do_work(&fx->client, 0);
   m = drive_existing_session(fx);
   assert_int_equal(fx->channel.vtable->report(fx->channel.ctx, &report), AZ_IOT_OK);
-  assert_int_equal(fx->channel_state.publish_refusals, 0);
+  assert_int_equal(fx->channel_state.publish_pauses, 0);
 }
 
 /* A report refused as too large is not paused at once, so the report sent again
@@ -2517,8 +2517,57 @@ static void a_report_refused_as_too_large_can_be_sent_again_at_once(void** state
       fx->channel.vtable->report(fx->channel.ctx, &report), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
   assert_int_equal(fx->channel.vtable->report(fx->channel.ctx, &report), AZ_IOT_OK);
   assert_int_equal(az_iot_mock_mqtt_client_count_of(m, AZ_IOT_MOCK_CALL_PUBLISH), publishes + 4u);
-  assert_int_equal(fx->channel_state.publish_refusals, 0);
+  assert_int_equal(fx->channel_state.publish_pauses, 0);
   assert_false(fx->channel_state.publish_refused_too_large);
+}
+
+/* A provisioning session asked for that connects but never acknowledges its
+ * SUBSCRIBE is let go past AZ_IOT_SU_CHANNEL_SESSION_READY_TIMEOUT_MS: publishing
+ * pauses, so the report is refused until the pause ends, and the hub session
+ * reconnects meanwhile. */
+static void a_session_never_ready_is_let_go_and_the_hub_resumes(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_mock_mqtt_client* hub = connect_hub_after_assignment(fx);
+  assert_int_equal(fx->channel.vtable->open(fx->channel.ctx, on_update, on_result, fx), AZ_IOT_OK);
+  az_iot_su_report report;
+  memset(&report, 0, sizeof(report));
+  report.workflow_id = "wf-1";
+  report.extended_result_codes = "00000000";
+
+  /* The report asks for a session: the hub session ends and one is created. */
+  assert_int_equal(fx->channel.vtable->report(fx->channel.ctx, &report), AZ_IOT_ERR_NOT_CONNECTED);
+  assert_int_equal(fx->channel.vtable->do_work(fx->channel.ctx), AZ_IOT_OK);
+  assert_true(fx->channel_state.session_ready_deadline_ms > az_iot_time_mono_ms());
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(hub));
+  (void)az_iot_connection_client_do_work(&fx->client, 0);
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  assert_non_null(m);
+  assert_non_null(fx->client.dps_mqtt);
+
+  /* Connected, never subscribed: still waiting within the bound. */
+  assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(&fx->client, 0);
+  assert_false(az_iot_connection_client__dps_session_ready(&fx->client));
+  assert_int_equal(fx->channel.vtable->do_work(fx->channel.ctx), AZ_IOT_OK);
+  assert_int_equal(fx->client.dps_user_count, 1);
+
+  /* Past it: let go and paused; the report is refused before asking again. */
+  fx->channel_state.session_ready_deadline_ms = 1;
+  assert_int_equal(fx->channel.vtable->do_work(fx->channel.ctx), AZ_IOT_OK);
+  assert_int_equal(fx->client.dps_user_count, 0);
+  assert_int_equal(fx->channel_state.session_demand, 0);
+  assert_int_equal(fx->channel_state.session_ready_deadline_ms, 0);
+  assert_true(fx->channel_state.publish_resume_at_ms > az_iot_time_mono_ms());
+  assert_int_equal(fx->channel.vtable->report(fx->channel.ctx, &report), AZ_IOT_ERR_BUSY);
+
+  /* The provisioning session ends and the hub session reconnects. */
+  (void)az_iot_connection_client_do_work(&fx->client, 0);
+  (void)az_iot_connection_client_do_work(&fx->client, 0);
+  assert_null(fx->client.dps_mqtt);
+  az_iot_mock_mqtt_client* hub_again = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  assert_non_null(hub_again);
+  assert_ptr_equal(az_iot_mock_mqtt_client_from(fx->client.active_client), hub_again);
 }
 
 /* An update check's deadline bounds the connection's wait, waiting for a
@@ -3842,6 +3891,8 @@ int main(void)
         a_report_refused_at_send_pauses_and_lets_the_session_go, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_report_refused_as_too_large_can_be_sent_again_at_once, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_session_never_ready_is_let_go_and_the_hub_resumes, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_pending_check_bounds_the_connection_wait_to_its_deadline, setup, teardown),
     cmocka_unit_test_setup_teardown(

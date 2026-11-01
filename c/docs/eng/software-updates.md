@@ -127,7 +127,9 @@ tick, so the hub session is not ended for it, and `az_iot_connection_client_do_w
 longer than a check's deadline. A publish the adapter refuses pauses the channel's publishing
 (1 s doubling to 60 s per refusal in a row) and, without other work, releases the session, so the
 hub session resumes meanwhile. A first refusal as too large does not pause, so the report sent again
-at once without its details still goes out. A status report waits at most
+at once without its details still goes out. A provisioning session the channel asked for that is not
+ready (no SUBACK) within `AZ_IOT_SU_CHANNEL_SESSION_READY_TIMEOUT_MS` (default 60 s) is let go and
+publishing pauses the same way; the operations are retried after the pause. A status report waits at most
 `AZ_IOT_SU_CHANNEL_REPORT_RESPONSE_TIMEOUT_MS` (default 60 s, the same value) for its answer, and
 `az_iot_connection_client_do_work()` waits no longer than that; past it the session is released
 and the report, still owed, is sent again on the retry backoff (1 s doubling to 60 s, ±20%), as
