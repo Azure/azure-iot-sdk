@@ -53,7 +53,6 @@ typedef struct
 {
   const su_error_case* error_case;
   az_iot_connection_client client;
-  az_iot_mqtt_factory* factory;
   az_iot_test_state_log log;
 
   az_iot_su_channel_dps channel_state;
@@ -185,7 +184,11 @@ static const az_iot_crypto k_stub_crypto = {
   .verify_rs256 = stub_verify_rs256,
 };
 
-static int setup(void** state)
+/**
+ * @brief The fixture, its MQTT clients built by @p mqtt_adapter in a workspace
+ * az_iot_test_connection_client_init() lends.
+ */
+static int setup_with_adapter(void** state, const az_iot_mqtt_adapter* mqtt_adapter)
 {
   fixture* fx = (fixture*)calloc(1, sizeof(*fx));
   assert_non_null(fx);
@@ -198,14 +201,12 @@ static int setup(void** state)
   /* Short so the advisory-expiry case is testable without a long wait. */
   opts.dps_hold_timeout_ms = 50;
   opts.crypto = &k_stub_crypto;
+  opts.mqtt_adapter = mqtt_adapter;
   assert_int_equal(az_iot_test_connection_client_init(&fx->client, &opts), AZ_IOT_OK);
 
   assert_int_equal(
       az_iot_connection_client_add_state_observer(&fx->client, az_iot_test_on_state, &fx->log),
       AZ_IOT_OK);
-
-  fx->factory = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
-  assert_non_null(fx->factory);
 
   az_iot_su_device_properties device_properties = { 0 };
   device_properties.manufacturer = "Contoso";
@@ -229,6 +230,21 @@ static int setup(void** state)
   return 0;
 }
 
+/** @brief The fixture over the MQTT 3.1.1 mock adapter: the provisioning and assigned hub
+ * sessions. */
+static int setup(void** state)
+{
+  return setup_with_adapter(
+      state, az_iot_mock_mqtt_get_adapter_for_version(AZ_IOT_MQTT_VERSION_3_1_1));
+}
+
+/** @brief The fixture over a mock adapter that builds only MQTT 5 clients, so no provisioning
+ * session can be created. */
+static int setup_without_mqtt_3_1_1(void** state)
+{
+  return setup_with_adapter(state, az_iot_mock_mqtt_get_adapter_for_version(AZ_IOT_MQTT_VERSION_5));
+}
+
 static int teardown(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -236,7 +252,6 @@ static int teardown(void** state)
   {
     fx->channel.vtable->close(fx->channel.ctx);
     az_iot_test_connection_client_deinit(&fx->client);
-    az_iot_mock_mqtt_factory_destroy(fx->factory);
     free(fx);
   }
   return 0;
@@ -248,7 +263,7 @@ static int teardown(void** state)
  * already exists. */
 static az_iot_mock_mqtt_client* drive_existing_session(fixture* fx)
 {
-  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_adapter_last_client();
   assert_non_null(m);
   assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_OK));
   (void)az_iot_connection_client_do_work(&fx->client, 0);
@@ -263,10 +278,8 @@ static az_iot_mock_mqtt_client* drive_existing_session(fixture* fx)
 /* CONNACK -> SUBACK, which is what makes the provisioning session usable. */
 static az_iot_mock_mqtt_client* open_to_registering(fixture* fx)
 {
-  assert_int_equal(
-      az_iot_connection_client_register_mqtt_factory(&fx->client, fx->factory), AZ_IOT_OK);
   assert_int_equal(az_iot_connection_client_open(&fx->client), AZ_IOT_OK);
-  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_adapter_last_client();
   assert_non_null(m);
   assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_OK));
   (void)az_iot_connection_client_do_work(&fx->client, 0);
@@ -775,8 +788,6 @@ static void a_request_during_a_delay_does_not_ask_for_a_session(void** state)
 {
   fixture* fx = (fixture*)*state;
   assert_int_equal(fx->channel.vtable->open(fx->channel.ctx, on_update, on_result, fx), AZ_IOT_OK);
-  assert_int_equal(
-      az_iot_connection_client_register_mqtt_factory(&fx->client, fx->factory), AZ_IOT_OK);
 
   /* Provisioned, with no session up -- the state in which a request would
    * otherwise open one. */
@@ -820,8 +831,6 @@ static void a_delay_stops_the_tick_reopening_the_session(void** state)
 {
   fixture* fx = (fixture*)*state;
   assert_int_equal(fx->channel.vtable->open(fx->channel.ctx, on_update, on_result, fx), AZ_IOT_OK);
-  assert_int_equal(
-      az_iot_connection_client_register_mqtt_factory(&fx->client, fx->factory), AZ_IOT_OK);
 
   fx->client.dps_phase = AZ_IOT_DPS_PHASE_DONE;
   assert_false(az_iot_connection_client__dps_session_ready(&fx->client));
@@ -1883,10 +1892,8 @@ static void a_zero_hold_timeout_selects_the_default(void** state)
   opts.dps.id_scope = "0ne00000000";
   opts.dps.registration_id = "ut-device";
   opts.dps_hold_timeout_ms = 0; /* -> AZ_IOT_DPS_HOLD_TIMEOUT_MS */
+  opts.mqtt_adapter = az_iot_mock_mqtt_get_adapter_for_version(AZ_IOT_MQTT_VERSION_3_1_1);
   assert_int_equal(az_iot_test_connection_client_init(&fx->client, &opts), AZ_IOT_OK);
-
-  fx->factory = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
-  assert_non_null(fx->factory);
 
   az_iot_su_device_properties device_properties = { 0 };
   device_properties.manufacturer = "Contoso";
@@ -1914,7 +1921,6 @@ static void a_zero_hold_timeout_selects_the_default(void** state)
 
   fx->channel.vtable->close(fx->channel.ctx);
   az_iot_test_connection_client_deinit(&fx->client);
-  az_iot_mock_mqtt_factory_destroy(fx->factory);
   free(fx);
 }
 
@@ -2009,10 +2015,7 @@ static void a_session_is_opened_on_demand_after_provisioning(void** state)
   /* No interest is taken at bind. */
   assert_false(fx->client.dps_session_wanted);
 
-  /* Provisioning is over and nothing is open. The factory has to be registered
-   * for a session to be creatable at all. */
-  assert_int_equal(
-      az_iot_connection_client_register_mqtt_factory(&fx->client, fx->factory), AZ_IOT_OK);
+  /* Provisioning is over and nothing is open. */
   fx->client.dps_phase = AZ_IOT_DPS_PHASE_DONE;
   assert_false(az_iot_connection_client__dps_session_ready(&fx->client));
   assert_int_equal(fx->channel.vtable->do_work(fx->channel.ctx), AZ_IOT_OK);
@@ -2039,8 +2042,6 @@ static void a_session_without_the_registration_ref_never_registers(void** state)
 {
   fixture* fx = (fixture*)*state;
 
-  assert_int_equal(
-      az_iot_connection_client_register_mqtt_factory(&fx->client, fx->factory), AZ_IOT_OK);
   fx->client.dps_session_wanted = true;
   fx->client.dps_phase = AZ_IOT_DPS_PHASE_DONE;
   assert_int_equal(az_iot_connection_client__dps_session_ensure(&fx->client), AZ_IOT_ERR_BUSY);
@@ -2065,8 +2066,6 @@ static void a_session_without_the_registration_ref_never_registers(void** state)
 static az_iot_mock_mqtt_client* open_session_for_an_operation(fixture* fx)
 {
   assert_int_equal(fx->channel.vtable->open(fx->channel.ctx, on_update, on_result, fx), AZ_IOT_OK);
-  assert_int_equal(
-      az_iot_connection_client_register_mqtt_factory(&fx->client, fx->factory), AZ_IOT_OK);
   fx->client.dps_phase = AZ_IOT_DPS_PHASE_DONE;
   assert_int_equal(
       fx->channel.vtable->request_update(fx->channel.ctx, AZ_IOT_SU_OP_GET_UPDATE),
@@ -2203,8 +2202,6 @@ static void an_abandoned_unaccepted_check_drops_its_session_demand(void** state)
 {
   fixture* fx = (fixture*)*state;
   assert_int_equal(fx->channel.vtable->open(fx->channel.ctx, on_update, on_result, fx), AZ_IOT_OK);
-  assert_int_equal(
-      az_iot_connection_client_register_mqtt_factory(&fx->client, fx->factory), AZ_IOT_OK);
   fx->client.dps_phase = AZ_IOT_DPS_PHASE_DONE;
 
   /* A check refused for want of a session, then abandoned: the next tick lets
@@ -2326,7 +2323,7 @@ static az_iot_mock_mqtt_client* connect_hub_after_assignment(fixture* fx)
   {
     (void)az_iot_connection_client_do_work(&fx->client, 0);
   }
-  az_iot_mock_mqtt_client* hub = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  az_iot_mock_mqtt_client* hub = az_iot_mock_mqtt_adapter_last_client();
   assert_non_null(hub);
   assert_true(az_iot_mock_mqtt_client_inject_connected(hub, AZ_IOT_OK));
   (void)az_iot_connection_client_do_work(&fx->client, 0);
@@ -2534,7 +2531,7 @@ static void a_session_never_ready_ends_as_failed_and_the_hub_resumes(void** stat
   assert_int_equal(fx->client.dps_session_ready_deadline_ms, 0);
   assert_true(az_iot_mock_mqtt_client_inject_disconnected(hub));
   (void)az_iot_connection_client_do_work(&fx->client, 0);
-  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_adapter_last_client();
   assert_non_null(fx->client.dps_mqtt);
   assert_true(fx->client.dps_session_ready_deadline_ms > az_iot_time_mono_ms());
 
@@ -2557,7 +2554,7 @@ static void a_session_never_ready_ends_as_failed_and_the_hub_resumes(void** stat
   assert_true(fx->client.dps_session_wanted);
   assert_int_not_equal(fx->channel_state.session_demand, 0);
   (void)az_iot_connection_client_do_work(&fx->client, 0);
-  az_iot_mock_mqtt_client* hub_again = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  az_iot_mock_mqtt_client* hub_again = az_iot_mock_mqtt_adapter_last_client();
   assert_ptr_equal(az_iot_mock_mqtt_client_from(fx->client.active_client), hub_again);
   assert_string_equal(
       az_iot_mock_mqtt_client_last_of(hub_again, AZ_IOT_MOCK_CALL_CONNECT)->connect.host,
@@ -2642,7 +2639,7 @@ static void the_hub_session_ends_before_the_channel_session_opens(void** state)
   assert_int_equal(fx->channel.vtable->do_work(fx->channel.ctx), AZ_IOT_OK);
   (void)az_iot_connection_client_do_work(&fx->client, 0);
   assert_null(fx->client.dps_mqtt);
-  hub = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  hub = az_iot_mock_mqtt_adapter_last_client();
   assert_non_null(hub);
   assert_ptr_equal(az_iot_mock_mqtt_client_from(fx->client.active_client), hub);
   const az_iot_mock_call* connect = az_iot_mock_mqtt_client_last_of(hub, AZ_IOT_MOCK_CALL_CONNECT);
@@ -2663,8 +2660,6 @@ static void a_refused_request_causes_a_session_to_be_opened(void** state)
 {
   fixture* fx = (fixture*)*state;
   assert_int_equal(fx->channel.vtable->open(fx->channel.ctx, on_update, on_result, fx), AZ_IOT_OK);
-  assert_int_equal(
-      az_iot_connection_client_register_mqtt_factory(&fx->client, fx->factory), AZ_IOT_OK);
 
   /* Provisioned, and the ordinary flow has taken its session away. */
   fx->client.dps_phase = AZ_IOT_DPS_PHASE_DONE;
@@ -2704,8 +2699,6 @@ static void a_satisfied_session_demand_stops_reopening_sessions(void** state)
 {
   fixture* fx = (fixture*)*state;
   assert_int_equal(fx->channel.vtable->open(fx->channel.ctx, on_update, on_result, fx), AZ_IOT_OK);
-  assert_int_equal(
-      az_iot_connection_client_register_mqtt_factory(&fx->client, fx->factory), AZ_IOT_OK);
 
   /* Provisioned, and the ordinary flow has taken its session away. */
   fx->client.dps_phase = AZ_IOT_DPS_PHASE_DONE;
@@ -2742,7 +2735,7 @@ static void a_satisfied_session_demand_stops_reopening_sessions(void** state)
     (void)az_iot_connection_client_do_work(&fx->client, 0);
   }
   assert_null(fx->client.dps_mqtt);
-  assert_null(az_iot_mock_mqtt_factory_last_client(fx->factory));
+  assert_null(az_iot_mock_mqtt_adapter_last_client());
   assert_false(fx->client.dps_session_wanted);
   assert_int_equal(fx->channel_state.session_demand, 0);
 }
@@ -2753,8 +2746,6 @@ static void closing_the_channel_drops_the_session_demand(void** state)
 {
   fixture* fx = (fixture*)*state;
   assert_int_equal(fx->channel.vtable->open(fx->channel.ctx, on_update, on_result, fx), AZ_IOT_OK);
-  assert_int_equal(
-      az_iot_connection_client_register_mqtt_factory(&fx->client, fx->factory), AZ_IOT_OK);
   fx->client.dps_phase = AZ_IOT_DPS_PHASE_DONE;
 
   assert_int_equal(
@@ -2778,10 +2769,8 @@ static void a_demand_queued_before_the_hold_expires_runs_on_the_kept_session(voi
 {
   fixture* fx = (fixture*)*state;
   assert_int_equal(fx->channel.vtable->open(fx->channel.ctx, on_update, on_result, fx), AZ_IOT_OK);
-  assert_int_equal(
-      az_iot_connection_client_register_mqtt_factory(&fx->client, fx->factory), AZ_IOT_OK);
   assert_int_equal(az_iot_connection_client_open(&fx->client), AZ_IOT_OK);
-  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_adapter_last_client();
   assert_non_null(m);
   assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_OK));
   (void)az_iot_connection_client_do_work(&fx->client, 0);
@@ -2962,7 +2951,7 @@ static void a_persistent_session_failure_is_logged_once_per_episode(void** state
   az_iot_log_set_global_sink(&sink);
 
   assert_int_equal(fx->channel.vtable->open(fx->channel.ctx, on_update, on_result, fx), AZ_IOT_OK);
-  /* No MQTT factory registered, so starting a session fails outright -- not
+  /* The adapter builds no MQTT 3.1.1 client, so starting a session fails outright -- not
    * BUSY, which is the ordinary "coming up" answer. */
   fx->client.dps_phase = AZ_IOT_DPS_PHASE_DONE;
   assert_int_equal(
@@ -3010,8 +2999,6 @@ static void a_lost_session_is_retried_a_bounded_number_of_times(void** state)
 {
   fixture* fx = (fixture*)*state;
   assert_int_equal(fx->channel.vtable->open(fx->channel.ctx, on_update, on_result, fx), AZ_IOT_OK);
-  assert_int_equal(
-      az_iot_connection_client_register_mqtt_factory(&fx->client, fx->factory), AZ_IOT_OK);
   fx->client.dps_phase = AZ_IOT_DPS_PHASE_DONE;
 
   /* The connection client paces its own re-opening of a user-held provisioning
@@ -3053,7 +3040,7 @@ static void a_lost_session_is_retried_a_bounded_number_of_times(void** state)
 
     /* The session dies under the outstanding request: a transport drop, which
      * kills it no matter who holds an interest. */
-    az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+    az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_adapter_last_client();
     assert_non_null(m);
     assert_true(az_iot_mock_mqtt_client_inject_disconnected(m));
     (void)az_iot_connection_client_do_work(&fx->client, 0);
@@ -3091,8 +3078,6 @@ static void abandoning_an_operation_does_not_reopen_a_session(void** state)
 {
   fixture* fx = (fixture*)*state;
   assert_int_equal(fx->channel.vtable->open(fx->channel.ctx, on_update, on_result, fx), AZ_IOT_OK);
-  assert_int_equal(
-      az_iot_connection_client_register_mqtt_factory(&fx->client, fx->factory), AZ_IOT_OK);
   fx->client.dps_phase = AZ_IOT_DPS_PHASE_DONE;
 
   /* One loss short of the bound, so the next one abandons. */
@@ -3106,7 +3091,7 @@ static void abandoning_an_operation_does_not_reopen_a_session(void** state)
   assert_int_equal(
       fx->channel.vtable->request_update(fx->channel.ctx, AZ_IOT_SU_OP_GET_UPDATE), AZ_IOT_OK);
 
-  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_adapter_last_client();
   assert_non_null(m);
   assert_true(az_iot_mock_mqtt_client_inject_disconnected(m));
   (void)az_iot_connection_client_do_work(&fx->client, 0);
@@ -3350,8 +3335,6 @@ static void binding_from_a_state_observer_takes_the_seat_later(void** state)
       az_iot_connection_client_add_state_observer(
           &fx->client, bind_channel_on_dps_connecting, NULL),
       AZ_IOT_OK);
-  assert_int_equal(
-      az_iot_connection_client_register_mqtt_factory(&fx->client, fx->factory), AZ_IOT_OK);
 
   g_bind_from_observer_fx = fx;
   g_bind_from_observer_result = AZ_IOT_ERR_INTERNAL;
@@ -3383,8 +3366,6 @@ static void a_deferred_seat_refused_by_a_full_pool_refuses_operations(void** sta
       az_iot_connection_client_add_state_observer(
           &fx->client, bind_channel_on_dps_connecting, NULL),
       AZ_IOT_OK);
-  assert_int_equal(
-      az_iot_connection_client_register_mqtt_factory(&fx->client, fx->factory), AZ_IOT_OK);
 
   g_bind_from_observer_fx = fx;
   g_bind_from_observer_result = AZ_IOT_ERR_INTERNAL;
@@ -3449,7 +3430,7 @@ static void a_hub_fault_after_the_kept_session_ends_stops_the_channel(void** sta
   (void)az_iot_connection_client_do_work(&fx->client, 0);
   assert_true(az_iot_connection_client__dps_session_ready(&fx->client));
   assert_null(fx->client.active_client);
-  assert_ptr_equal(az_iot_mock_mqtt_factory_last_client(fx->factory), m);
+  assert_ptr_equal(az_iot_mock_mqtt_adapter_last_client(), m);
 
   /* The kept session serves the next operation at once. */
   size_t results = fx->result_count;
@@ -3467,7 +3448,7 @@ static void a_hub_fault_after_the_kept_session_ends_stops_the_channel(void** sta
   assert_false(fx->client.dps_session_wanted);
   (void)az_iot_connection_client_do_work(&fx->client, 0);
   assert_null(fx->client.dps_mqtt);
-  az_iot_mock_mqtt_client* hub = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  az_iot_mock_mqtt_client* hub = az_iot_mock_mqtt_adapter_last_client();
   assert_non_null(hub);
   assert_true(az_iot_mock_mqtt_client_inject_connected(hub, AZ_IOT_ERR_TIMEOUT));
   (void)az_iot_connection_client_do_work(&fx->client, 0);
@@ -3812,7 +3793,9 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         a_verdict_without_a_response_forwards_an_empty_diagnosis, setup, teardown),
     cmocka_unit_test_setup_teardown(
-        a_persistent_session_failure_is_logged_once_per_episode, setup, teardown),
+        a_persistent_session_failure_is_logged_once_per_episode,
+        setup_without_mqtt_3_1_1,
+        teardown),
     cmocka_unit_test_setup_teardown(
         a_lost_session_is_retried_a_bounded_number_of_times, setup, teardown),
     cmocka_unit_test_setup_teardown(an_answered_operation_clears_the_retry_count, setup, teardown),
