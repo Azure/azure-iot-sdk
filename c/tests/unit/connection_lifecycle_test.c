@@ -1249,10 +1249,9 @@ static void the_dispatch_guard_survives_nesting(void** state)
   az_iot_connection_client_options opts = az_iot_test_mqtt_v3_options();
   opts.dps.id_scope = "0ne00000000";
   opts.dps.registration_id = "ut-device";
+  opts.mqtt_adapter = az_iot_mock_mqtt_get_adapter_for_version(AZ_IOT_MQTT_VERSION_3_1_1);
   az_iot_connection_client c;
   assert_int_equal(az_iot_test_connection_client_init(&c, &opts), AZ_IOT_OK);
-  az_iot_mqtt_factory* f = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
-  assert_int_equal(az_iot_connection_client_register_mqtt_factory(&c, f), AZ_IOT_OK);
   memset(&g_nested, 0, sizeof(g_nested));
   g_nested.client = &c;
   g_nested.late_add = AZ_IOT_OK;
@@ -1265,7 +1264,7 @@ static void the_dispatch_guard_survives_nesting(void** state)
   /* The saved hub connects first, then ends for the feature session, which
    * starts from the hub's RETRY_PENDING. */
   assert_int_equal(az_iot_connection_client_open(&c), AZ_IOT_OK);
-  az_iot_mock_mqtt_client* hub = az_iot_mock_mqtt_factory_last_client(f);
+  az_iot_mock_mqtt_client* hub = az_iot_mock_mqtt_adapter_last_client();
   assert_non_null(hub);
   assert_true(az_iot_mock_mqtt_client_inject_connected(hub, AZ_IOT_OK));
   (void)az_iot_connection_client_do_work(&c, 0);
@@ -1291,7 +1290,6 @@ static void the_dispatch_guard_survives_nesting(void** state)
 
   az_iot_connection_client__dps_session_release(&c);
   assert_int_equal(az_iot_test_connection_client_deinit(&c), AZ_IOT_OK);
-  az_iot_mock_mqtt_factory_destroy(f);
 }
 
 static void adding_is_refused_from_inside_an_observer_but_removing_is_not(void** state)

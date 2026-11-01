@@ -3,9 +3,10 @@
 // information.
 
 /* SPDX-License-Identifier: MIT */
-/* az_mqtt adapter: factories and clients, a registered factory destroyed after deinit(), the
- * arguments connect(), publish() and subscribe() refuse, and a CONNECT that cannot be encoded,
- * without a network; PUBACK classification against an in-process server.
+/* az_mqtt adapter: clients of each version, from the adapter and from factories, a registered
+ * factory destroyed after deinit(), the arguments connect(), publish() and subscribe() refuse, and
+ * a CONNECT that cannot be encoded, without a network; PUBACK classification against an in-process
+ * server.
  */
 #include <stdarg.h>
 #include <stddef.h>
@@ -45,14 +46,13 @@ typedef socklen_t test_socklen;
 #include "azure/iot/az_iot_mqtt_iface.h"
 #include "az_iot_test_mqtt_server.h"
 
+#include <az_mqtt/az_mqtt_core.h>
 #include <az_mqtt5/az_mqtt5_codec.h>
 #include <stdio.h>
 
-static void check_client(az_iot_mqtt_factory* f, az_iot_mqtt_version version)
+/** @brief @p c is a @p version client, not connected; destroys it. */
+static void check_unconnected_client(az_iot_mqtt_client* c, az_iot_mqtt_version version)
 {
-  assert_non_null(f);
-  assert_int_equal(f->version, version);
-  az_iot_mqtt_client* c = f->create(f->factory_ctx);
   assert_non_null(c);
   assert_int_equal(c->iface->version, version);
   assert_int_equal(c->iface->disconnect(c), AZ_IOT_ERR_NOT_CONNECTED);
@@ -61,6 +61,13 @@ static void check_client(az_iot_mqtt_factory* f, az_iot_mqtt_version version)
   assert_int_equal(c->iface->publish(c, &msg, NULL), AZ_IOT_ERR_NOT_CONNECTED);
   assert_int_equal(c->iface->process_loop(c, 0), AZ_IOT_OK);
   c->iface->destroy(c);
+}
+
+static void check_client(az_iot_mqtt_factory* f, az_iot_mqtt_version version)
+{
+  assert_non_null(f);
+  assert_int_equal(f->version, version);
+  check_unconnected_client(f->create(f->factory_ctx), version);
 }
 
 static void factories_create_clients_of_their_version(void** state)
@@ -102,15 +109,77 @@ static az_iot_mqtt_connect_options valid_connect(void)
   return o;
 }
 
+static const az_iot_mqtt_version k_versions[]
+    = { AZ_IOT_MQTT_VERSION_3_1_1, AZ_IOT_MQTT_VERSION_5 };
+
+/** @brief This build's buffers with a send buffer of @p send_buffer_size bytes, a message store for
+ * one packet, and room for the largest connect strings of these tests. */
+static az_iot_mqtt_limits client_limits(size_t send_buffer_size)
+{
+  az_iot_mqtt_limits const limits = {
+    .send_buffer_size = send_buffer_size,
+    .receive_buffer_size = (size_t)AZ_IOT_AZ_MQTT_RECEIVE_BUFFER_SIZE,
+    .max_in_flight_messages = (uint16_t)AZ_IOT_AZ_MQTT_INFLIGHT_MAX,
+    .message_store_size = send_buffer_size + AZ_MQTT_INFLIGHT_MESSAGE_OVERHEAD,
+    .connect_strings_size = (size_t)512u * 1024u,
+  };
+  return limits;
+}
+
+/** @brief A @p version client the adapter builds with @p limits in a heap workspace, returned in
+ * @p out_workspace and freed by destroy_client(). */
+static az_iot_mqtt_client* create_client(
+    az_iot_mqtt_version version,
+    az_iot_mqtt_limits const* limits,
+    uint8_t** out_workspace)
+{
+  size_t const size = az_iot_az_mqtt_get_workspace_size(limits);
+  if (size == 0)
+  {
+    fail_msg("invalid limits");
+  }
+  *out_workspace = (uint8_t*)malloc(size);
+  assert_non_null(*out_workspace);
+  az_iot_mqtt_client* c = NULL;
+  assert_int_equal(
+      az_iot_az_mqtt_get_adapter()->init(version, limits, *out_workspace, size, &c), AZ_IOT_OK);
+  return c;
+}
+
+/** @brief A @p version client with this build's buffers; see create_client(). */
+static az_iot_mqtt_client* create_default_client(
+    az_iot_mqtt_version version,
+    uint8_t** out_workspace)
+{
+  az_iot_mqtt_limits const limits = client_limits((size_t)AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE);
+  return create_client(version, &limits, out_workspace);
+}
+
+/** @brief Destroys @p c, then frees its @p workspace. */
+static void destroy_client(az_iot_mqtt_client* c, uint8_t* workspace)
+{
+  c->iface->destroy(c);
+  free(workspace);
+}
+
+static void the_adapter_builds_clients_of_the_version_asked(void** state)
+{
+  (void)state;
+  for (size_t i = 0; i < 2; i++)
+  {
+    uint8_t* workspace = NULL;
+    check_unconnected_client(create_default_client(k_versions[i], &workspace), k_versions[i]);
+    free(workspace);
+  }
+}
+
 static void connect_refuses_malformed_pointer_count_pairs(void** state)
 {
   (void)state;
-  az_iot_mqtt_factory* fs[]
-      = { az_iot_az_mqtt_factory_create_v3_1_1(), az_iot_az_mqtt_factory_create_v5() };
   for (size_t i = 0; i < 2; i++)
   {
-    az_iot_mqtt_client* c = fs[i]->create(fs[i]->factory_ctx);
-    assert_non_null(c);
+    uint8_t* workspace = NULL;
+    az_iot_mqtt_client* c = create_default_client(k_versions[i], &workspace);
     az_iot_mqtt_connect_options o = valid_connect();
     o.lwt.topic = "will";
     o.lwt.payload_len = 4; // No payload.
@@ -119,22 +188,20 @@ static void connect_refuses_malformed_pointer_count_pairs(void** state)
     o.user_properties_count = 1; // No properties.
     assert_int_equal(
         c->iface->connect(c, &o),
-        fs[i]->version == AZ_IOT_MQTT_VERSION_5 ? AZ_IOT_ERR_INVALID_ARG : AZ_IOT_OK);
-    if (fs[i]->version == AZ_IOT_MQTT_VERSION_3_1_1)
+        k_versions[i] == AZ_IOT_MQTT_VERSION_5 ? AZ_IOT_ERR_INVALID_ARG : AZ_IOT_OK);
+    if (k_versions[i] == AZ_IOT_MQTT_VERSION_3_1_1)
     {
       (void)c->iface->disconnect(c); // MQTT 3.1.1 ignores user properties: it started.
     }
-    c->iface->destroy(c);
-    az_iot_az_mqtt_factory_destroy(fs[i]);
+    destroy_client(c, workspace);
   }
 }
 
 static void a_psa_client_key_is_refused_unless_alone_on_mbedtls(void** state)
 {
   (void)state;
-  az_iot_mqtt_factory* f = az_iot_az_mqtt_factory_create_v5();
-  az_iot_mqtt_client* c = f->create(f->factory_ctx);
-  assert_non_null(c);
+  uint8_t* workspace = NULL;
+  az_iot_mqtt_client* c = create_default_client(AZ_IOT_MQTT_VERSION_5, &workspace);
   az_iot_mqtt_connect_options o = valid_connect();
   o.tls.client_cert_pem = "CERT";
   o.tls.client_key_psa_id = 0x7FFF0001u;
@@ -149,19 +216,16 @@ static void a_psa_client_key_is_refused_unless_alone_on_mbedtls(void** state)
   o.tls.client_key_pem = NULL;
   assert_int_equal(c->iface->connect(c, &o), AZ_IOT_ERR_NOT_SUPPORTED);
 #endif
-  c->iface->destroy(c);
-  az_iot_az_mqtt_factory_destroy(f);
+  destroy_client(c, workspace);
 }
 
 static void invalid_qos_and_v3_password_without_user_are_refused(void** state)
 {
   (void)state;
-  az_iot_mqtt_factory* fs[]
-      = { az_iot_az_mqtt_factory_create_v3_1_1(), az_iot_az_mqtt_factory_create_v5() };
   for (size_t i = 0; i < 2; i++)
   {
-    az_iot_mqtt_client* c = fs[i]->create(fs[i]->factory_ctx);
-    assert_non_null(c);
+    uint8_t* workspace = NULL;
+    az_iot_mqtt_client* c = create_default_client(k_versions[i], &workspace);
     az_iot_mqtt_message msg = { 0 };
     msg.topic = "t";
     msg.qos = (az_iot_mqtt_qos)3;
@@ -173,14 +237,13 @@ static void invalid_qos_and_v3_password_without_user_are_refused(void** state)
     assert_int_equal(c->iface->connect(c, &o), AZ_IOT_ERR_INVALID_ARG);
     o = valid_connect();
     o.password = "p";
-    bool const v5 = fs[i]->version == AZ_IOT_MQTT_VERSION_5;
+    bool const v5 = k_versions[i] == AZ_IOT_MQTT_VERSION_5;
     assert_int_equal(c->iface->connect(c, &o), v5 ? AZ_IOT_OK : AZ_IOT_ERR_INVALID_ARG);
     if (v5)
     {
       (void)c->iface->disconnect(c);
     }
-    c->iface->destroy(c);
-    az_iot_az_mqtt_factory_destroy(fs[i]);
+    destroy_client(c, workspace);
   }
 }
 
@@ -200,16 +263,18 @@ static void record_connect(const az_iot_mqtt_event* evt, void* ctx)
   }
 }
 
-/** @brief connect() accepts @p o; the first process_loop() reports @p expected; then a new
- * connect() is accepted. */
-static void connect_fails_before_any_io(az_iot_mqtt_connect_options o, az_iot_result expected)
+/** @brief With a send buffer of @p send_buffer_size bytes, connect() accepts @p o; the first
+ * process_loop() reports @p expected; then a new connect() is accepted. */
+static void connect_fails_before_any_io(
+    az_iot_mqtt_connect_options o,
+    size_t send_buffer_size,
+    az_iot_result expected)
 {
-  az_iot_mqtt_factory* fs[]
-      = { az_iot_az_mqtt_factory_create_v3_1_1(), az_iot_az_mqtt_factory_create_v5() };
+  az_iot_mqtt_limits const limits = client_limits(send_buffer_size);
   for (size_t i = 0; i < 2; i++)
   {
-    az_iot_mqtt_client* c = fs[i]->create(fs[i]->factory_ctx);
-    assert_non_null(c);
+    uint8_t* workspace = NULL;
+    az_iot_mqtt_client* c = create_client(k_versions[i], &limits, &workspace);
     connect_result r = { 0 };
     c->iface->set_inbound_cb(c, record_connect, &r);
     assert_int_equal(c->iface->connect(c, &o), AZ_IOT_OK);
@@ -221,20 +286,15 @@ static void connect_fails_before_any_io(az_iot_mqtt_connect_options o, az_iot_re
     assert_int_equal(c->iface->connect(c, &next), AZ_IOT_OK);
     (void)c->iface->disconnect(c);
     c->iface->set_inbound_cb(c, NULL, NULL);
-    c->iface->destroy(c);
-    az_iot_az_mqtt_factory_destroy(fs[i]);
+    destroy_client(c, workspace);
   }
 }
 
 static void a_connect_larger_than_the_send_buffer_fails_the_attempt(void** state)
 {
   (void)state;
-  // Five fields of 65,000 bytes (each under the MQTT limit): more than the send buffer.
+  // Five fields of 65,000 bytes (each under the MQTT limit): more than the 64 KiB send buffer.
   static char text[65001];
-  if (5u * (sizeof(text) - 1) <= AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE)
-  {
-    skip(); // A send buffer this large holds any CONNECT.
-  }
   memset(text, 'a', sizeof(text) - 1);
   az_iot_mqtt_connect_options o = valid_connect();
   o.client_id = text;
@@ -243,7 +303,7 @@ static void a_connect_larger_than_the_send_buffer_fails_the_attempt(void** state
   o.lwt.topic = text;
   o.lwt.payload = (const uint8_t*)text;
   o.lwt.payload_len = sizeof(text) - 1;
-  connect_fails_before_any_io(o, AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+  connect_fails_before_any_io(o, (size_t)64u * 1024u, AZ_IOT_ERR_NOT_ENOUGH_SPACE);
 }
 
 static void a_connect_the_encoder_refuses_fails_the_attempt(void** state)
@@ -254,7 +314,7 @@ static void a_connect_the_encoder_refuses_fails_the_attempt(void** state)
   o.lwt.topic = "will";
   o.lwt.payload = will;
   o.lwt.payload_len = sizeof(will);
-  connect_fails_before_any_io(o, AZ_IOT_ERR_INVALID_ARG);
+  connect_fails_before_any_io(o, (size_t)AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE, AZ_IOT_ERR_INVALID_ARG);
 }
 
 // ──────────────────────── PUBACK, against an in-process server ──────────────────
@@ -417,14 +477,14 @@ static void wait_for_ack(az_iot_mqtt_client* c, puback_recorder* r, int before)
 
 /** @brief Each PUBACK reason code becomes the status az_iot_mqtt_puback_result() gives it,
  * with the code itself as protocol_code. MQTT 3.1.1: no code, so only success. */
-static void run_pubacks(az_iot_mqtt_factory* f)
+static void run_pubacks(az_iot_mqtt_version version)
 {
-  bool const v5 = f->version == AZ_IOT_MQTT_VERSION_5;
+  bool const v5 = version == AZ_IOT_MQTT_VERSION_5;
   uint16_t port = 0;
   test_sock listener = listen_loopback(&port);
   puback_recorder r = { 0 };
-  az_iot_mqtt_client* c = f->create(f->factory_ctx);
-  assert_non_null(c);
+  uint8_t* workspace = NULL;
+  az_iot_mqtt_client* c = create_default_client(version, &workspace);
   c->iface->set_inbound_cb(c, record_puback, &r);
   az_iot_mqtt_connect_options o = valid_connect();
   o.host = "127.0.0.1";
@@ -464,7 +524,7 @@ static void run_pubacks(az_iot_mqtt_factory* f)
 
   (void)c->iface->disconnect(c);
   c->iface->set_inbound_cb(c, NULL, NULL);
-  c->iface->destroy(c);
+  destroy_client(c, workspace);
   test_closesock(conn);
   test_closesock(listener);
 }
@@ -472,19 +532,13 @@ static void run_pubacks(az_iot_mqtt_factory* f)
 static void puback_codes_are_classified_v3(void** state)
 {
   (void)state;
-  az_iot_mqtt_factory* f = az_iot_az_mqtt_factory_create_v3_1_1();
-  assert_non_null(f);
-  run_pubacks(f);
-  az_iot_az_mqtt_factory_destroy(f);
+  run_pubacks(AZ_IOT_MQTT_VERSION_3_1_1);
 }
 
 static void puback_codes_are_classified_v5(void** state)
 {
   (void)state;
-  az_iot_mqtt_factory* f = az_iot_az_mqtt_factory_create_v5();
-  assert_non_null(f);
-  run_pubacks(f);
-  az_iot_az_mqtt_factory_destroy(f);
+  run_pubacks(AZ_IOT_MQTT_VERSION_5);
 }
 
 // ──────────── CONNACK / DISCONNECT Reason Strings, against an in-process server ─────────────
@@ -648,13 +702,11 @@ static az_iot_result wide_cursor_next(
 static void publish_accepts_a_user_property_cursor_past_int32_max(void** state)
 {
   (void)state;
-  az_iot_mqtt_factory* f = az_iot_az_mqtt_factory_create_v5();
-  assert_non_null(f);
   uint16_t port = 0;
   test_sock listener = listen_loopback(&port);
   puback_recorder r = { 0 };
-  az_iot_mqtt_client* c = f->create(f->factory_ctx);
-  assert_non_null(c);
+  uint8_t* workspace = NULL;
+  az_iot_mqtt_client* c = create_default_client(AZ_IOT_MQTT_VERSION_5, &workspace);
   c->iface->set_inbound_cb(c, record_puback, &r);
   az_iot_mqtt_connect_options o = valid_connect();
   o.host = "127.0.0.1";
@@ -683,10 +735,9 @@ static void publish_accepts_a_user_property_cursor_past_int32_max(void** state)
 
   (void)c->iface->disconnect(c);
   c->iface->set_inbound_cb(c, NULL, NULL);
-  c->iface->destroy(c);
+  destroy_client(c, workspace);
   test_closesock(conn);
   test_closesock(listener);
-  az_iot_az_mqtt_factory_destroy(f);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -1002,6 +1053,7 @@ int main(void)
 #endif
   const struct CMUnitTest tests[] = {
     cmocka_unit_test(factories_create_clients_of_their_version),
+    cmocka_unit_test(the_adapter_builds_clients_of_the_version_asked),
     cmocka_unit_test(codec_next_user_property_skips_other_properties),
     cmocka_unit_test(codec_next_user_property_reports_malformed_blocks),
     cmocka_unit_test(codec_encodes_user_properties_from_a_reader),

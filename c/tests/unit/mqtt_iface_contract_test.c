@@ -65,6 +65,20 @@ static void on_event(const az_iot_mqtt_event* evt, void* ctx)
 
 /* ------------------------------------------------------------------------- */
 
+static uint8_t g_mqtt_workspace[AZ_IOT_MOCK_MQTT_WORKSPACE_SIZE];
+
+/** @brief A @p version mock client the mock adapter builds in g_mqtt_workspace. */
+static az_iot_mqtt_client* build_mock_client(az_iot_mqtt_version version)
+{
+  az_iot_mqtt_client* c = NULL;
+  assert_int_equal(
+      az_iot_mock_mqtt_get_adapter()->init(
+          version, &az_iot_mock_mqtt_limits, g_mqtt_workspace, sizeof(g_mqtt_workspace), &c),
+      AZ_IOT_OK);
+  assert_non_null(c);
+  return c;
+}
+
 static void factory_advertises_version(void** state)
 {
   (void)state;
@@ -77,8 +91,7 @@ static void factory_advertises_version(void** state)
 static void client_carries_iface_pointer_with_version(void** state)
 {
   (void)state;
-  az_iot_mqtt_factory* f = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_5);
-  az_iot_mqtt_client* c = f->create(f->factory_ctx);
+  az_iot_mqtt_client* c = build_mock_client(AZ_IOT_MQTT_VERSION_5);
   assert_non_null(c);
   assert_non_null(c->iface);
   assert_int_equal(c->iface->version, AZ_IOT_MQTT_VERSION_5);
@@ -91,14 +104,13 @@ static void client_carries_iface_pointer_with_version(void** state)
   assert_non_null(c->iface->process_loop);
   assert_non_null(c->iface->set_inbound_cb);
   assert_non_null(c->iface->destroy);
-  az_iot_mock_mqtt_factory_destroy(f);
+  c->iface->destroy(c);
 }
 
 static void publish_records_topic_payload_and_assigns_packet_id(void** state)
 {
   (void)state;
-  az_iot_mqtt_factory* f = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
-  az_iot_mqtt_client* c = f->create(f->factory_ctx);
+  az_iot_mqtt_client* c = build_mock_client(AZ_IOT_MQTT_VERSION_3_1_1);
 
   az_iot_mqtt_message msg = { 0 };
   msg.topic = "devices/dev1/messages/events/";
@@ -121,14 +133,13 @@ static void publish_records_topic_payload_and_assigns_packet_id(void** state)
   assert_int_equal(call->qos, AZ_IOT_MQTT_QOS_1);
   assert_int_equal(call->packet_id, pid);
 
-  az_iot_mock_mqtt_factory_destroy(f);
+  c->iface->destroy(c);
 }
 
 static void scripted_failure_propagates_to_caller(void** state)
 {
   (void)state;
-  az_iot_mqtt_factory* f = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
-  az_iot_mqtt_client* c = f->create(f->factory_ctx);
+  az_iot_mqtt_client* c = build_mock_client(AZ_IOT_MQTT_VERSION_3_1_1);
   az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_client_from(c);
 
   az_iot_mock_mqtt_client_set_next_result(m, AZ_IOT_MOCK_CALL_CONNECT, AZ_IOT_ERR_MQTT);
@@ -138,14 +149,13 @@ static void scripted_failure_propagates_to_caller(void** state)
   /* Override is one-shot; second call returns AZ_IOT_OK again. */
   assert_int_equal(c->iface->connect(c, &copts), AZ_IOT_OK);
 
-  az_iot_mock_mqtt_factory_destroy(f);
+  c->iface->destroy(c);
 }
 
 static void process_loop_drains_one_event_per_call(void** state)
 {
   (void)state;
-  az_iot_mqtt_factory* f = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
-  az_iot_mqtt_client* c = f->create(f->factory_ctx);
+  az_iot_mqtt_client* c = build_mock_client(AZ_IOT_MQTT_VERSION_3_1_1);
   az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_client_from(c);
 
   collected_events col = { 0 };
@@ -173,19 +183,17 @@ static void process_loop_drains_one_event_per_call(void** state)
   assert_int_equal(c->iface->process_loop(c, 0), AZ_IOT_OK);
   assert_int_equal(col.count, 2);
 
-  az_iot_mock_mqtt_factory_destroy(f);
+  c->iface->destroy(c);
 }
 
 static void destroy_via_iface_is_recorded(void** state)
 {
   (void)state;
-  az_iot_mqtt_factory* f = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
-  az_iot_mqtt_client* c = f->create(f->factory_ctx);
-  /* Calling destroy through the iface frees the client; the factory's
+  az_iot_mqtt_client* c = build_mock_client(AZ_IOT_MQTT_VERSION_3_1_1);
+  /* Calling destroy through the iface ends the client; the adapter's
    * last_client back-pointer is cleared. */
   c->iface->destroy(c);
-  assert_null(az_iot_mock_mqtt_factory_last_client(f));
-  az_iot_mock_mqtt_factory_destroy(f);
+  assert_null(az_iot_mock_mqtt_adapter_last_client());
 }
 
 /* ---- CONNACK code mapping -------------------------------------------------
@@ -285,8 +293,7 @@ static void connack_unknown_version_never_rejects_the_identity(void** state)
 static void mapped_connack_status_reaches_the_inbound_callback(void** state)
 {
   (void)state;
-  az_iot_mqtt_factory* f = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_5);
-  az_iot_mqtt_client* c = f->create(f->factory_ctx);
+  az_iot_mqtt_client* c = build_mock_client(AZ_IOT_MQTT_VERSION_5);
   az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_client_from(c);
 
   collected_events col = { 0 };
@@ -303,7 +310,7 @@ static void mapped_connack_status_reaches_the_inbound_callback(void** state)
   assert_int_equal(col.kinds[0], AZ_IOT_MQTT_EVT_CONNECTED);
   assert_int_equal(col.statuses[0], AZ_IOT_ERR_IDENTITY_REJECTED);
 
-  az_iot_mock_mqtt_factory_destroy(f);
+  c->iface->destroy(c);
 }
 
 /* ---- SUBACK code mapping ---------------------------------------------------
