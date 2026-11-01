@@ -279,11 +279,14 @@ and what the application observes is:
   QoS 1 publishes awaiting a PUBACK complete with `AZ_IOT_ERR_NOT_CONNECTED`.
 - These disconnects are planned: they count toward no reconnection backoff and not toward
   `dps.max_hub_connect_attempts_before_reprovision`.
-- The hub is not held indefinitely. An update check waits at most its request timeout (default
-  60 s; 0 is refused). Once sent, a check or a status report waits at
-  most 120 s for its answer, and a provisioning session at most 120 s to become ready; then the
-  provisioning session is released, the hub reconnects, and the request is sent again later on
-  the software updates retry backoff (1 s doubling to 60 s).
+- The hub is not held indefinitely. An update check, retries included, waits at most its request
+  timeout (default 60 s; 0 is refused); then it is abandoned and not sent again.
+- Once sent, a check or a status report waits at most 120 s for its answer; then the provisioning
+  session is released, the hub reconnects, and the request is sent again later on the software
+  updates retry backoff (1 s doubling to 60 s), a check only while its request timeout lasts.
+- A provisioning session that is not ready (no SUBACK) within 120 s ends as failed, and the hub
+  reconnects. The next provisioning session is paced by `reconnection_policy`, not by the software
+  updates backoff; with retries disabled, none is opened automatically.
 - `close()` and `deinit()` end whichever session exists, the hub's wait included.
 
 ## Reconnection
