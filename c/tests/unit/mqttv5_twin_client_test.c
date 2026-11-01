@@ -555,6 +555,18 @@ static void issue_get(fixture* fx, get_record* rec, uint8_t out_corr[16])
   memcpy(out_corr, pub->correlation_data, 16);
 }
 
+/** @brief End the time limit of every twin request the tracker holds, without the clock. */
+static void expire_held_twin_requests(fixture* fx)
+{
+  for (size_t i = 0; i < AZ_IOT_MQTTV5_TWIN_TRACKED_MESSAGES; ++i)
+  {
+    if (fx->twin._internal.requests[i].kind != 0)
+    {
+      az_iot_deadline__expire_now(&fx->twin._internal.tracker_entries[i]._internal.deadline);
+    }
+  }
+}
+
 /* ------------------------------------------------------------------------- */
 /* topic binding                                                             */
 /* ------------------------------------------------------------------------- */
@@ -2004,13 +2016,12 @@ static void an_in_order_patch_while_behind_fetches_again(void** state)
 {
   fixture* fx = (fixture*)*state;
   open_to_connected(fx);
-  assert_int_equal(az_iot_mqttv5_twin_client_set_request_timeout(&fx->twin, 1), AZ_IOT_OK);
   desired_record rec = { 0 };
   set_desired(fx, &rec);
 
   inject_desired(fx, 1, "{\"a\":1}");
   inject_desired(fx, 4, "{}"); /* gap: GET */
-  az_iot_test_wait_ms(5);
+  expire_held_twin_requests(fx);
   assert_int_equal(az_iot_mqttv5_twin_client_do_work(&fx->twin), AZ_IOT_OK); /* GET lost */
   size_t before = count_gets(fx);
 
@@ -2259,17 +2270,26 @@ static void the_default_get_options_request_both_sections(void** state)
   assert_int_equal(opts.if_not_match_reported, 0);
 }
 
-/* An unanswered request completes once, with AZ_IOT_ERR_TIMEOUT; nothing is re-sent. */
+/* An unanswered request completes once, with AZ_IOT_ERR_TIMEOUT; nothing is re-sent. Its time
+ * limit is the configured request timeout, counted from the call. */
 static void an_unanswered_get_times_out_without_a_retry(void** state)
 {
   fixture* fx = (fixture*)*state;
   open_to_connected(fx);
-  assert_int_equal(az_iot_mqttv5_twin_client_set_request_timeout(&fx->twin, 1), AZ_IOT_OK);
+  uint32_t const request_timeout_ms = 30000u;
+  assert_int_equal(
+      az_iot_mqttv5_twin_client_set_request_timeout(&fx->twin, request_timeout_ms), AZ_IOT_OK);
 
   get_record rec = { 0 };
   uint8_t corr[16];
+  uint64_t const called_after_ms = az_iot_time_mono_ms();
   issue_get(fx, &rec, corr);
-  az_iot_test_wait_ms(5);
+  uint64_t const returned_before_ms = az_iot_time_mono_ms();
+  assert_in_range(
+      fx->twin._internal.tracker_entries[0]._internal.deadline._internal.at_ms,
+      called_after_ms + request_timeout_ms,
+      returned_before_ms + request_timeout_ms);
+  expire_held_twin_requests(fx);
   assert_int_equal(az_iot_mqttv5_twin_client_do_work(&fx->twin), AZ_IOT_OK);
 
   assert_true(rec.fired);
@@ -2287,7 +2307,6 @@ static void an_unanswered_patch_times_out_and_frees_its_slot(void** state)
 {
   fixture* fx = (fixture*)*state;
   open_to_connected(fx);
-  assert_int_equal(az_iot_mqttv5_twin_client_set_request_timeout(&fx->twin, 1), AZ_IOT_OK);
 
   patch_record recs[AZ_IOT_TWIN_MAX_PENDING];
   memset(recs, 0, sizeof(recs));
@@ -2299,7 +2318,7 @@ static void an_unanswered_patch_times_out_and_frees_its_slot(void** state)
             &fx->twin, patch, sizeof(patch) - 1, on_patch, &recs[i]),
         AZ_IOT_OK);
   }
-  az_iot_test_wait_ms(5);
+  expire_held_twin_requests(fx);
   assert_int_equal(az_iot_mqttv5_twin_client_do_work(&fx->twin), AZ_IOT_OK);
   for (int i = 0; i < AZ_IOT_TWIN_MAX_PENDING; ++i)
   {
@@ -2319,13 +2338,12 @@ static void an_unanswered_snapshot_is_re_requested_by_the_next_gap(void** state)
 {
   fixture* fx = (fixture*)*state;
   open_to_connected(fx);
-  assert_int_equal(az_iot_mqttv5_twin_client_set_request_timeout(&fx->twin, 1), AZ_IOT_OK);
   desired_record rec = { 0 };
   set_desired(fx, &rec);
 
   inject_desired(fx, 3, "{}");
   assert_int_equal(count_gets(fx), 1);
-  az_iot_test_wait_ms(5);
+  expire_held_twin_requests(fx);
   assert_int_equal(az_iot_mqttv5_twin_client_do_work(&fx->twin), AZ_IOT_OK);
   assert_int_equal(az_iot_mqttv5_twin_client_do_work(&fx->twin), AZ_IOT_OK);
   assert_int_equal(count_gets(fx), 1);
@@ -2413,18 +2431,6 @@ static void a_session_ended_for_a_provisioning_session_resends_the_snapshot_afte
   answer_last_get(fx, 3, "{\"s\":3}");
   assert_int_equal(rec.kind, AZ_IOT_MQTTV5_TWIN_DESIRED_SNAPSHOT);
   assert_int_equal(rec.version, 3);
-}
-
-/* End the time limit of every twin request the tracker holds. */
-static void expire_held_twin_requests(fixture* fx)
-{
-  for (size_t i = 0; i < AZ_IOT_MQTTV5_TWIN_TRACKED_MESSAGES; ++i)
-  {
-    if (fx->twin._internal.requests[i].kind != 0)
-    {
-      az_iot_deadline__expire_now(&fx->twin._internal.tracker_entries[i]._internal.deadline);
-    }
-  }
 }
 
 /* A snapshot whose time limit passed during the outage is replaced at CONNECTED by a new one,
@@ -2641,12 +2647,11 @@ static void a_request_times_out_without_the_twin_do_work(void** state)
 {
   fixture* fx = (fixture*)*state;
   open_to_connected(fx);
-  assert_int_equal(az_iot_mqttv5_twin_client_set_request_timeout(&fx->twin, 1), AZ_IOT_OK);
 
   get_record rec = { 0 };
   uint8_t corr[16];
   issue_get(fx, &rec, corr);
-  az_iot_test_wait_ms(5);
+  expire_held_twin_requests(fx);
   assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
   assert_true(rec.fired);
   assert_int_equal(rec.status, AZ_IOT_ERR_TIMEOUT);
@@ -2676,13 +2681,7 @@ static void queue_an_expired_get(fixture* fx, az_iot_mqttv5_twin_get_callback cb
 {
   az_iot_mock_mqtt_client_set_next_result(fx->mock, AZ_IOT_MOCK_CALL_PUBLISH, AZ_IOT_ERR_BUSY);
   assert_int_equal(az_iot_mqttv5_twin_client_get(&fx->twin, cb, ctx), AZ_IOT_OK);
-  for (size_t i = 0; i < AZ_IOT_MQTTV5_TWIN_TRACKED_MESSAGES; ++i)
-  {
-    if (fx->twin._internal.requests[i].kind != 0)
-    {
-      az_iot_deadline__expire_now(&fx->twin._internal.tracker_entries[i]._internal.deadline);
-    }
-  }
+  expire_held_twin_requests(fx);
 }
 
 typedef struct nested_call
