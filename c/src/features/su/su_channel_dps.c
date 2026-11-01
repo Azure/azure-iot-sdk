@@ -99,9 +99,8 @@ static void lower_wait_to_deadline(uint64_t deadline_ms, uint64_t* remaining_ms)
 }
 
 /**
- * @brief Lower @p remaining_ms to the awaited status report's response deadline,
- * the engine's next deadline and the session-ready deadline, so the
- * connection's wait ends by then.
+ * @brief Lower @p remaining_ms to the awaited status report's response deadline
+ * and the engine's next deadline, so the connection's wait ends by then.
  *
  * @param c            The channel.
  * @param remaining_ms The connection's wait bound, lowered in place.
@@ -116,7 +115,6 @@ static void lower_wait_to_next_deadline(const az_iot_su_channel_dps* c, uint64_t
   {
     lower_wait_to_deadline(c->engine_deadline_cb(c->engine_ctx), remaining_ms);
   }
-  lower_wait_to_deadline(c->session_ready_deadline_ms, remaining_ms);
 }
 
 /**
@@ -349,17 +347,17 @@ static bool publish_paused(az_iot_su_channel_dps* c)
 }
 
 /**
- * @brief Pause publishing -- after the adapter refused a publish, or a session
- * asked for was not ready in time -- doubling from
+ * @brief Pause publishing after the adapter refused a publish, doubling from
  * #AZ_IOT_SU_CHANNEL_PUBLISH_RETRY_BASE_MS to #AZ_IOT_SU_CHANNEL_PUBLISH_RETRY_MAX_MS
- * per pause in a row.
+ * per refusal in a row.
  *
  * @param c The channel.
  */
-static void pause_publishing(az_iot_su_channel_dps* c)
+static void pause_publishing_after_refusal(az_iot_su_channel_dps* c)
 {
   uint64_t delay = AZ_IOT_SU_CHANNEL_PUBLISH_RETRY_BASE_MS;
-  for (uint8_t i = 0; i < c->publish_pauses && delay < AZ_IOT_SU_CHANNEL_PUBLISH_RETRY_MAX_MS; ++i)
+  for (uint8_t i = 0; i < c->publish_refusals && delay < AZ_IOT_SU_CHANNEL_PUBLISH_RETRY_MAX_MS;
+       ++i)
   {
     delay *= 2u;
   }
@@ -367,9 +365,9 @@ static void pause_publishing(az_iot_su_channel_dps* c)
   {
     delay = AZ_IOT_SU_CHANNEL_PUBLISH_RETRY_MAX_MS;
   }
-  if (c->publish_pauses < UINT8_MAX)
+  if (c->publish_refusals < UINT8_MAX)
   {
-    c->publish_pauses++;
+    c->publish_refusals++;
   }
   c->publish_resume_at_ms = az_iot_time_mono_ms() + delay;
 }
@@ -470,7 +468,7 @@ static az_iot_result publish_operation(
     else
     {
       c->publish_refused_too_large = false;
-      pause_publishing(c);
+      pause_publishing_after_refusal(c);
     }
     if (!c->request_pending && !c->wants_session && !session_kept_for_pre_registration_check(c))
     {
@@ -478,7 +476,7 @@ static az_iot_result publish_operation(
     }
     return r;
   }
-  c->publish_pauses = 0;
+  c->publish_refusals = 0;
   c->publish_refused_too_large = false;
 
   /* Recorded only after the publish is accepted, so a failed send does not
@@ -903,9 +901,8 @@ static void channel_close(void* ctx)
    * start, not a continuation of someone else's backoff. */
   c->retry_after_deadline_ms = 0;
   c->publish_resume_at_ms = 0;
-  c->publish_pauses = 0;
+  c->publish_refusals = 0;
   c->publish_refused_too_large = false;
-  c->session_ready_deadline_ms = 0;
   c->session_loss_attempts = 0;
 }
 
@@ -1213,34 +1210,14 @@ static az_iot_result channel_do_work(void* ctx)
   if (az_iot_connection_client__dps_session_ready(c->connection))
   {
     clear_session_demand(c);
-    c->session_ready_deadline_ms = 0;
   }
   else if (connection_settled_in_fault(c))
   {
     /* Nothing to ask for until close(); the demand is raised again after it. */
     clear_session_demand(c);
-    c->session_ready_deadline_ms = 0;
-  }
-  else if (
-      c->session_ready_deadline_ms != 0 && had_work
-      && az_iot_time_mono_ms() >= c->session_ready_deadline_ms)
-  {
-    /* Not ready in time (e.g. no SUBACK): the session is let go below, so the
-     * hub session resumes, and the operations, refused BUSY while publishing
-     * is paused, ask for a session again after the pause. */
-    AZ_IOT_LOG_ERROR(
-        AZ_IOT_LOG_COMPONENT_SU, "the provisioning session was not ready in time; retrying later");
-    clear_session_demand(c);
-    c->session_ready_deadline_ms = 0;
-    pause_publishing(c);
   }
   else if (c->update_cb != NULL && had_work && !publish_paused(c))
   {
-    if (c->session_ready_deadline_ms == 0)
-    {
-      c->session_ready_deadline_ms
-          = az_iot_time_mono_ms() + (uint64_t)AZ_IOT_SU_CHANNEL_SESSION_READY_TIMEOUT_MS;
-    }
     /* Not fatal, so the tick continues either way -- but not silent. BUSY is
      * the ordinary answer (a session is coming up, or the hub session is being
      * ended for it: ask again next tick); anything else means no session will
@@ -1307,7 +1284,6 @@ static az_iot_result channel_do_work(void* ctx)
   }
   else if (!retrying_lost_request && !c->request_pending && !c->wants_session)
   {
-    c->session_ready_deadline_ms = 0;
     release_session_interest(c);
   }
   return sr;

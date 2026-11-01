@@ -269,21 +269,12 @@ extern "C"
 #define AZ_IOT_SU_CHANNEL_REPORT_RESPONSE_TIMEOUT_MS AZ_IOT_SU_REQUEST_DEFAULT_TIMEOUT_MS
 #endif
 
-/** @brief First pause of publishing, in milliseconds; doubles per pause in a row. */
+/** @brief First pause, in milliseconds, after the adapter refuses a publish; doubles per refusal
+ * in a row. */
 #define AZ_IOT_SU_CHANNEL_PUBLISH_RETRY_BASE_MS 1000u
 
-/** @brief Longest pause of publishing, in milliseconds. */
+/** @brief Longest pause, in milliseconds, after the adapter refuses publishes in a row. */
 #define AZ_IOT_SU_CHANNEL_PUBLISH_RETRY_MAX_MS 60000u
-
-/**
- * @brief Longest wait for a provisioning session the channel asked for to be
- * ready (SUBACK), in milliseconds. Past it the session is let go and
- * publishing pauses, so a session that never becomes ready does not keep the
- * hub session waiting. Defaults to AZ_IOT_SU_REQUEST_DEFAULT_TIMEOUT_MS.
- */
-#ifndef AZ_IOT_SU_CHANNEL_SESSION_READY_TIMEOUT_MS
-#define AZ_IOT_SU_CHANNEL_SESSION_READY_TIMEOUT_MS AZ_IOT_SU_REQUEST_DEFAULT_TIMEOUT_MS
-#endif
 
   typedef struct az_iot_su_channel_dps
   {
@@ -375,20 +366,16 @@ extern "C"
      * schedule the service asked for and hammering it on our own. */
     uint64_t retry_after_deadline_ms;
 
-    /* When publishing may resume after the adapter refused a publish or a
-     * session asked for was not ready in time (monotonic ms; 0 when not
-     * paused), and the pauses in a row since the last accepted publish. Either
-     * would otherwise hold the session, and the hub session waiting for it,
-     * without bound. */
+    /* When publishing may resume after the adapter refused a publish (monotonic
+     * ms; 0 when not paused), and the refusals in a row that set it. A refusing
+     * adapter would otherwise hold the session, and the hub session waiting for
+     * it, tick after tick. */
     uint64_t publish_resume_at_ms;
-    uint8_t publish_pauses;
+    uint8_t publish_refusals;
     /* The last publish was refused as too large and did not pause: the engine
      * sends a report again at once without its details, and only a refusal
      * after that pauses. */
     bool publish_refused_too_large;
-    /* When the session the channel asked for must be ready by (monotonic ms; 0
-     * when not waiting for one). */
-    uint64_t session_ready_deadline_ms;
 
     /* Consecutive session losses that cost an operation its answer.
      *

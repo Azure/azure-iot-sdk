@@ -1786,6 +1786,10 @@ extern "C"
     uint8_t dps_hold_count;
     bool dps_hold_active;
     uint64_t dps_hold_deadline_ms;
+    /* When a provisioning session opened for its users, not for a registration,
+     * must be ready (SUBACK) by; past it the session ends as failed. 0 when no
+     * such attempt is waiting. */
+    uint64_t dps_session_ready_deadline_ms;
 
     /* Who needs the provisioning session. It exists exactly while this total is
      * non-zero: the connection client holds dps_registration_ref while the

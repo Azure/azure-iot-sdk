@@ -2659,6 +2659,14 @@ static void apply_user_token(
   *pending = true;
 }
 
+/**
+ * @brief Longest wait, in milliseconds, for a provisioning session opened for
+ * its users (not a registration) to be ready (SUBACK). Past it the session ends
+ * as failed: a hub session it paused resumes, and the next attempt waits out
+ * the reconnection policy.
+ */
+#define DPS_SESSION_READY_TIMEOUT_MS 60000u
+
 static void dps_teardown_mqtt(az_iot_connection_client* c)
 {
   c->dps_subscription_confirmed = false;
@@ -2669,6 +2677,7 @@ static void dps_teardown_mqtt(az_iot_connection_client* c)
    * holds again rather than racing past. */
   c->dps_hold_active = false;
   c->dps_hold_deadline_ms = 0;
+  c->dps_session_ready_deadline_ms = 0;
   if (c->dps_mqtt && c->dps_mqtt->iface && c->dps_mqtt->iface->destroy)
   {
     c->dps_mqtt->iface->destroy(c->dps_mqtt);
@@ -3528,6 +3537,7 @@ static void on_dps_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
         return;
       }
       c->dps_subscription_confirmed = true;
+      c->dps_session_ready_deadline_ms = 0;
 
       /* The SUBACK is what makes the session usable, so it is DPS:CONNECTED.
        * Only RECORDED here, so observers do not run inside this adapter's
@@ -4076,6 +4086,8 @@ static az_iot_result dps_connect_session(az_iot_connection_client* c)
 
   c->dps_mqtt = mc;
   c->dps_phase = DPS_PHASE_CONNECTING;
+  c->dps_session_ready_deadline_ms
+      = c->dps_registration_ref ? 0 : az_iot_time_mono_ms() + DPS_SESSION_READY_TIMEOUT_MS;
   c->dps_cert_awaits_adoption = false;
   c->dps_cert_withheld = false;
   c->dps_pending_finalize = false;
@@ -6387,7 +6399,8 @@ static void process_sas_token_request(az_iot_connection_client* c)
  * connection deadline: a SAS token request's bound (none while one waits to be
  * asked, as do_work() asks it), a session's SAS token renewal, a planned hub
  * session end's disconnect bound, the presence SUBACK or birth-ack timeout, an open
- * certificate renewal's response timeout, or a feature observer's NEXT_DEADLINE.
+ * certificate renewal's response timeout, a provisioning session's readiness
+ * bound, or a feature observer's NEXT_DEADLINE.
  */
 static uint32_t limit_wait_to_connection_deadlines(az_iot_connection_client* c, uint32_t timeout_ms)
 {
@@ -6467,6 +6480,12 @@ static uint32_t limit_wait_to_connection_deadlines(az_iot_connection_client* c, 
   {
     uint64_t const csr_left = c->csr_op.deadline_ms > now ? c->csr_op.deadline_ms - now : 0;
     remaining = csr_left < remaining ? csr_left : remaining;
+  }
+  if (c->dps_session_ready_deadline_ms != 0)
+  {
+    uint64_t const ready_left
+        = c->dps_session_ready_deadline_ms > now ? c->dps_session_ready_deadline_ms - now : 0;
+    remaining = ready_left < remaining ? ready_left : remaining;
   }
   az_iot_connection_feature_event const deadline_query
       = { AZ_IOT_CONNECTION_FEATURE_EVENT_NEXT_DEADLINE,
@@ -7884,6 +7903,19 @@ static az_iot_result do_work_pass(az_iot_connection_client* client, uint32_t tim
     {
       dps_finalize(client, AZ_IOT_ERR_TIMEOUT, false);
       client->dps_phase = DPS_PHASE_DONE;
+    }
+
+    /* A session opened for its users that is not ready in time (no SUBACK)
+     * ends as failed, so a hub session it paused resumes and the users' next
+     * attempt waits out the reconnection policy. */
+    if (!client->dps_registration_ref && !client->dps_pending_finalize
+        && client->dps_session_ready_deadline_ms != 0
+        && az_iot_time_mono_ms() >= client->dps_session_ready_deadline_ms)
+    {
+      AZ_IOT_LOG_ERROR(
+          AZ_IOT_LOG_COMPONENT_DPS, "the provisioning session was not ready in time; ending it");
+      client->dps_session_ready_deadline_ms = 0;
+      dps_finalize(client, AZ_IOT_ERR_TIMEOUT, false);
     }
 
     /* Leave the pre-registration hold once every holder has released, or once
