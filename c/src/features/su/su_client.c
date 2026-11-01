@@ -3315,6 +3315,7 @@ void az_iot_su_client_deinit(az_iot_su_client* client)
 #define AZ_IOT_SU_PERSIST_MAGIC1 'U'
 #define AZ_IOT_SU_PERSIST_MAGIC2 'C'
 #define AZ_IOT_SU_PERSIST_MAGIC3 'P'
+/* Bump on any change to the layout above: resume() ignores a record of another version. */
 #define AZ_IOT_SU_PERSIST_VERSION 3u
 #define AZ_IOT_SU_PERSIST_FLAG_HAVE_REQUEST 0x2u
 #define AZ_IOT_SU_PERSIST_FLAG_REPORT_OWED 0x4u
