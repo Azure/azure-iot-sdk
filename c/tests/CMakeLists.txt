@@ -629,6 +629,13 @@ if(TARGET az_iot_certificate_provider_managed)
         # GetNamedSecurityInfoA and friends, to check the written files' DACLs.
         target_link_libraries(az_iot_tests_certificate_provider_managed PRIVATE advapi32)
     endif()
+    # Directory-sync cases wrap fsync(). --wrap is a GNU ld / lld feature;
+    # without it those cases are not registered and every other case still runs.
+    if(UNIX AND NOT APPLE)
+        target_link_options(az_iot_tests_certificate_provider_managed PRIVATE -Wl,--wrap=fsync)
+        target_compile_definitions(az_iot_tests_certificate_provider_managed PRIVATE
+            AZ_IOT_TEST_WRAP_FSYNC=1)
+    endif()
 endif()
 
 # The samples' platform helpers (samples/common/sample_utils.c).
