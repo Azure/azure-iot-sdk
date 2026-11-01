@@ -270,7 +270,8 @@ endif()
 # library and the application have to be built against the same value, hence
 # compiling the mqttv3 source into this target rather than linking az_iot_mqttv3,
 # which carries the default. Running the whole suite against a raised rid bound
-# is what proves the knob reaches every buffer derived from it.
+# is what proves the knob reaches every buffer derived from it. A single
+# in-flight slot (AZ_IOT_DM_MAX_INFLIGHT=1) proves no test or loop assumes two.
 az_iot_add_cmocka_test(az_iot_tests_mqttv3_direct_method_client_tuned
     unit/mqttv3_direct_method_client_test.c
     ${PROJECT_SOURCE_DIR}/src/mqttv3/direct_method_client.c)
@@ -279,7 +280,8 @@ target_include_directories(az_iot_tests_mqttv3_direct_method_client_tuned PRIVAT
     ${PROJECT_SOURCE_DIR}/src/core
     ${PROJECT_SOURCE_DIR}/src/mqttv3)
 target_compile_definitions(az_iot_tests_mqttv3_direct_method_client_tuned PRIVATE
-    AZ_IOT_DM_RID_MAX=200)
+    AZ_IOT_DM_RID_MAX=200
+    AZ_IOT_DM_MAX_INFLIGHT=1)
 if(UNIX)
     target_compile_definitions(az_iot_tests_mqttv3_direct_method_client_tuned PRIVATE
         _POSIX_C_SOURCE=200809L)
@@ -299,7 +301,8 @@ endif()
 # same value -- hence the mqttv5 sources are compiled into this target rather than
 # linked from az_iot_mqttv5, which carries the default. Running the whole suite
 # against an overridden limit proves the knob reaches every pool, loop and
-# admission check, and catches anyone reintroducing a hardcoded bound.
+# admission check, and catches anyone reintroducing a hardcoded bound. It is set
+# to 1, the smallest, through its documented default AZ_IOT_DM_MAX_INFLIGHT.
 az_iot_add_cmocka_test(az_iot_tests_mqttv5_direct_method_client_tuned
     unit/mqttv5_direct_method_client_test.c
     ${PROJECT_SOURCE_DIR}/src/mqttv5/direct_method_client.c
@@ -311,7 +314,7 @@ target_include_directories(az_iot_tests_mqttv5_direct_method_client_tuned PRIVAT
     ${PROJECT_SOURCE_DIR}/src/core
     ${PROJECT_SOURCE_DIR}/src/mqttv5)
 target_compile_definitions(az_iot_tests_mqttv5_direct_method_client_tuned PRIVATE
-    AZ_IOT_MQTTV5_DM_MAX_CONCURRENT=2
+    AZ_IOT_DM_MAX_INFLIGHT=1
     AZ_IOT_MQTTV5_DM_NOTICE_QUEUE_MAX=4)
 if(UNIX)
     target_compile_definitions(az_iot_tests_mqttv5_direct_method_client_tuned PRIVATE
