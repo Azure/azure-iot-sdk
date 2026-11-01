@@ -1666,7 +1666,7 @@ static void an_adopted_session_waits_past_its_readiness_bound(void** state)
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
   assert_int_equal(
       az_iot_connection_client_register_mqtt_factory(fx->client, fx->factory), AZ_IOT_OK);
-  assert_int_equal(az_iot_connection_client__dps_user_acquire(fx->client), AZ_IOT_OK);
+  fx->client->dps_session_wanted = true;
   assert_int_equal(az_iot_connection_client__dps_session_ensure(fx->client), AZ_IOT_ERR_BUSY);
   az_iot_mock_mqtt_client* dps = az_iot_mock_mqtt_factory_last_client(fx->factory);
   assert_non_null(dps);
@@ -1686,7 +1686,7 @@ static void an_adopted_session_waits_past_its_readiness_bound(void** state)
   assert_true(dps_wait > 0u);
   assert_ptr_equal(az_iot_mock_mqtt_client_from(fx->client->dps_mqtt), dps);
   az_iot_mock_mqtt_client_set_process_loop_hook(dps, NULL, NULL);
-  az_iot_connection_client__dps_user_release(fx->client);
+  az_iot_connection_client__dps_session_release(fx->client);
 }
 
 /* A session user must not be able to open one while a registration retry is
