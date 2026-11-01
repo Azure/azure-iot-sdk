@@ -166,8 +166,26 @@ extern "C"
    */
   const az_iot_mqtt_adapter* az_iot_mock_mqtt_get_adapter(void);
 
+/** @brief Upper bound of the mock adapter's get_workspace_size(), for static arrays; checked by
+ * the mock at compile time. */
+#define AZ_IOT_MOCK_MQTT_WORKSPACE_SIZE (2u * 1024u * 1024u)
+
+  /** @brief Valid limits for the mock adapter's clients, which it checks and otherwise ignores. */
+  extern const az_iot_mqtt_limits az_iot_mock_mqtt_limits;
+
+  /**
+   * @brief The mock adapter building only @p version clients, as a factory of that version does:
+   * init() refuses the other version with AZ_IOT_ERR_NOT_SUPPORTED. Same clients and counts as
+   * az_iot_mock_mqtt_get_adapter().
+   */
+  const az_iot_mqtt_adapter* az_iot_mock_mqtt_get_adapter_for_version(az_iot_mqtt_version version);
+
   /** @brief The newest client the mock adapter built that is not destroyed yet, or NULL. */
   az_iot_mock_mqtt_client* az_iot_mock_mqtt_adapter_last_client(void);
+
+  /** @brief The newest @p version client the mock adapter built that is not destroyed yet, or NULL.
+   */
+  az_iot_mock_mqtt_client* az_iot_mock_mqtt_adapter_last_client_of(az_iot_mqtt_version version);
 
 /** @brief init() calls whose requested version the mock adapter records. */
 #define AZ_IOT_MOCK_MQTT_ADAPTER_VERSION_HISTORY 8u
@@ -179,6 +197,7 @@ extern "C"
     size_t destroyed; /**< Destroyed by destroy(). */
     size_t live; /**< Built and not destroyed. */
     size_t max_live; /**< Most live at once. */
+    size_t disconnected_destroyed; /**< Destroyed after a disconnect() call. */
   } az_iot_mock_mqtt_adapter_stats;
 
   az_iot_mock_mqtt_adapter_stats az_iot_mock_mqtt_adapter_get_stats(void);
@@ -190,7 +209,7 @@ extern "C"
       size_t index,
       az_iot_mqtt_version* out_version);
 
-  /** @brief Clears the stats, requested versions, last client and armed failure; call with no
+  /** @brief Clears the stats, requested versions, last clients and armed failure; call with no
    * client of the adapter alive. */
   void az_iot_mock_mqtt_adapter_reset(void);
 

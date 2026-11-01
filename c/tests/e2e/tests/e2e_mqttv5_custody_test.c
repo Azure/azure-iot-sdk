@@ -31,13 +31,7 @@
 #include <time.h>
 
 /* The MQTT adapter this build of the suite uses (see tests/e2e/CMakeLists.txt). */
-#if defined(AZ_IOT_E2E_ADAPTER_PAHO)
-#include "azure/iot/adapters/az_iot_adapter_paho.h"
-#elif defined(AZ_IOT_E2E_ADAPTER_AZ_MQTT)
-#include "azure/iot/adapters/az_iot_adapter_az_mqtt.h"
-#else
-#error "Define AZ_IOT_E2E_ADAPTER_PAHO or AZ_IOT_E2E_ADAPTER_AZ_MQTT"
-#endif
+#include "e2e_mqtt_adapter.h"
 #include "azure/iot/az_iot.h"
 
 #include "az_iot_e2e_service.h"
@@ -78,8 +72,7 @@ typedef struct
   custody_config config;
   custody_provider provider;
   az_iot_connection_client conn;
-  az_iot_mqtt_factory* factory_v3;
-  az_iot_mqtt_factory* factory_v5;
+  uint8_t* mqtt_workspace; /* Heap; freed after deinit(). */
   bool conn_ok;
   az_iot_connection_state conn_state;
   az_iot_result conn_reason;
@@ -265,6 +258,13 @@ static int device_connect(fixture* fx)
   {
     copts.dps.global_endpoint = fx->config.global_endpoint;
   }
+  /* Both generations, so an mqttv3 assignment still connects and the first test names it. */
+  fx->mqtt_workspace = e2e_use_mqtt_adapter(&copts);
+  if (fx->mqtt_workspace == NULL)
+  {
+    fprintf(stderr, "[e2e] no memory for the MQTT workspace\n");
+    return -1;
+  }
   if (az_iot_connection_client_init(&fx->conn, &copts) != AZ_IOT_OK)
   {
     fprintf(stderr, "[e2e] connection client init failed\n");
@@ -279,21 +279,6 @@ static int device_connect(fixture* fx)
   if (az_iot_connection_client_add_state_observer(&fx->conn, on_state, fx) != AZ_IOT_OK)
   {
     fprintf(stderr, "[e2e] state observer registration failed\n");
-    return -1;
-  }
-
-  /* Both generations, so an mqttv3 assignment still connects and the first test names it. */
-#if defined(AZ_IOT_E2E_ADAPTER_PAHO)
-  fx->factory_v3 = az_iot_paho_factory_create_v3_1_1();
-  fx->factory_v5 = az_iot_paho_factory_create_v5();
-#elif defined(AZ_IOT_E2E_ADAPTER_AZ_MQTT)
-  fx->factory_v3 = az_iot_az_mqtt_factory_create_v3_1_1();
-  fx->factory_v5 = az_iot_az_mqtt_factory_create_v5();
-#endif
-  if (az_iot_connection_client_register_mqtt_factory(&fx->conn, fx->factory_v3) != AZ_IOT_OK
-      || az_iot_connection_client_register_mqtt_factory(&fx->conn, fx->factory_v5) != AZ_IOT_OK)
-  {
-    fprintf(stderr, "[e2e] MQTT factory registration failed\n");
     return -1;
   }
 
@@ -370,13 +355,8 @@ static int group_teardown(void** state)
     az_iot_connection_client_deinit(&fx->conn);
     fx->conn_ok = false;
   }
-#if defined(AZ_IOT_E2E_ADAPTER_PAHO)
-  az_iot_paho_factory_destroy(fx->factory_v3);
-  az_iot_paho_factory_destroy(fx->factory_v5);
-#elif defined(AZ_IOT_E2E_ADAPTER_AZ_MQTT)
-  az_iot_az_mqtt_factory_destroy(fx->factory_v3);
-  az_iot_az_mqtt_factory_destroy(fx->factory_v5);
-#endif
+  free(fx->mqtt_workspace);
+  fx->mqtt_workspace = NULL;
   if (fx->service != NULL)
   {
     az_iot_e2e_service_destroy(fx->service);

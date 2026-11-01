@@ -29,8 +29,10 @@ void az_iot_test_provider_init(az_iot_test_provider* provider, const char* trust
 
 /**
  * @brief az_iot_connection_client_init() with a shared az_iot_test_provider
- * (no CA) when @p opts has no certificate_provider, and a default-size
- * workspace lent to @p client when @p opts has no workspace, until
+ * (no CA) when @p opts has no certificate_provider, a default-size
+ * workspace lent to @p client when @p opts has no workspace, and, when @p opts
+ * has an mqtt_adapter but no mqtt_workspace, an mqtt_workspace sized for its
+ * mqtt_limits (az_iot_mock_mqtt_limits when all are 0) lent too, until
  * az_iot_test_connection_client_deinit().
  */
 AZ_NODISCARD az_iot_result az_iot_test_connection_client_init(

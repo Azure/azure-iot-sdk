@@ -154,19 +154,18 @@ static az_iot_connection_client_options fixture_options(payload_fixture* fx)
   return opts;
 }
 
-/* init + register the mock factory + wire the state log. */
+/* init with the mock adapter + wire the state log. */
 static void fixture_init(payload_fixture* fx, const az_iot_connection_client_options* opts)
 {
-  assert_int_equal(az_iot_test_connection_client_init(&fx->conn.client_storage, opts), AZ_IOT_OK);
+  az_iot_connection_client_options with_adapter = *opts;
+  with_adapter.mqtt_adapter = az_iot_mock_mqtt_get_adapter_for_version(AZ_IOT_MQTT_VERSION_3_1_1);
+  assert_int_equal(
+      az_iot_test_connection_client_init(&fx->conn.client_storage, &with_adapter), AZ_IOT_OK);
   fx->conn.client = &fx->conn.client_storage;
   assert_int_equal(
       az_iot_connection_client_add_state_observer(
           fx->conn.client, az_iot_test_on_state, &fx->conn.log),
       AZ_IOT_OK);
-  fx->conn.factory = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
-  assert_non_null(fx->conn.factory);
-  assert_int_equal(
-      az_iot_connection_client_register_mqtt_factory(fx->conn.client, fx->conn.factory), AZ_IOT_OK);
 }
 
 static void fixture_destroy(payload_fixture* fx)
@@ -179,7 +178,6 @@ static void fixture_destroy(payload_fixture* fx)
   {
     az_iot_test_connection_client_deinit(&fx->conn.client_storage);
   }
-  az_iot_mock_mqtt_factory_destroy(fx->conn.factory);
   free(fx);
 }
 
@@ -187,13 +185,13 @@ static void fixture_destroy(payload_fixture* fx)
  *
  * The returned mock is valid ONLY while the provisioning session survives that
  * attempt. A register PUBLISH the SDK refuses to build (a body buffer too
- * small) faults the client, which tears the DPS session down and FREES this
+ * small) faults the client, which tears the DPS session down and DESTROYS this
  * mock -- so a failure-path test must not touch the returned pointer. Use
  * drive_to_failed_register() there instead. */
 static az_iot_mock_mqtt_client* drive_to_register(payload_fixture* fx)
 {
   assert_int_equal(az_iot_connection_client_open(fx->conn.client), AZ_IOT_OK);
-  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->conn.factory);
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_adapter_last_client();
   assert_non_null(m);
 
   assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_OK));
@@ -221,9 +219,9 @@ static void drive_to_failed_register(payload_fixture* fx)
   assert_int_equal(
       az_iot_test_reason_for(&fx->conn.log, AZ_IOT_CONN_STATE_FAULTED),
       AZ_IOT_ERR_NOT_ENOUGH_SPACE);
-  /* The session really is gone: the mock detaches itself from the factory when
+  /* The session really is gone: the mock detaches itself from the adapter when
    * it is destroyed, so this also guards the use-after-free above. */
-  assert_null(az_iot_mock_mqtt_factory_last_client(fx->conn.factory));
+  assert_null(az_iot_mock_mqtt_adapter_last_client());
 }
 
 /* Assert the register PUBLISH carried exactly `expected`. */
