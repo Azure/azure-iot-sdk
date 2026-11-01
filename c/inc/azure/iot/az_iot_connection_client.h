@@ -1303,7 +1303,9 @@ extern "C"
    * invalidated again. Not fired without a held hub (a first registration), nor
    * for az_iot_connection_client_request_reprovision(), which the application
    * decided. It reports a decision: the client registers with DPS next with or
-   * without it, and attached feature clients are not affected.
+   * without it, and does not fall back to the invalidated hub, even across
+   * close() and open(), until an assignment is adopted. Attached feature clients
+   * are not affected.
    *
    * Runs from az_iot_connection_client_do_work(), after that call's state
    * callbacks. az_iot_connection_client_close(), _open() and _deinit() return

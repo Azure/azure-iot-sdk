@@ -20,6 +20,7 @@
  *
  * Requires OpenSSL 3.0+ and the Paho or az_mqtt adapter. See README.md.
  */
+#include <errno.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -71,6 +72,7 @@ typedef struct
   const char* assignment_path; /**< Where the assignment is saved. */
   bool assigned; /**< This run adopted a DPS assignment. */
   bool assignment_saved; /**< This run saved it. */
+  bool invalidated_assignment_kept; /**< An invalidated assignment could not be deleted. */
 } sample_context;
 
 /** @brief Reads one non-empty line into @p dst without its line ending. */
@@ -138,6 +140,8 @@ static void on_assignment(const az_iot_dps_assignment* assignment, void* user_ct
       && sample_file_write_atomically(ctx->assignment_path, record, (size_t)record_length);
   ctx->assigned = true;
   ctx->assignment_saved = ok;
+  /* A saved replacement overwrites an invalidated record that could not be deleted. */
+  ctx->invalidated_assignment_kept = ctx->invalidated_assignment_kept && !ok;
   fprintf(
       stderr,
       "[persist] assigned hub=%s device_id=%s profile=%s; save to %s: %s\n",
@@ -148,19 +152,22 @@ static void on_assignment(const az_iot_dps_assignment* assignment, void* user_ct
       ok ? "ok" : "failed");
 }
 
-/** @brief Deletes the saved assignment: the client will not use it again, so a
- *  restart must register with DPS instead of restoring it. */
+/** @brief Deletes the saved assignment durably: the client will not use it
+ *  again, so a restart must register with DPS instead of restoring it. A
+ *  failure is recorded; main() retries and reports it. */
 static void on_assignment_invalidated(az_iot_result reason, void* user_ctx)
 {
   sample_context* ctx = (sample_context*)user_ctx;
-  /* No file is not an error: there is nothing left to restore. */
-  bool deleted = remove(ctx->assignment_path) == 0;
+  bool deleted = sample_file_delete(ctx->assignment_path);
+  int delete_errno = deleted ? 0 : errno;
+  ctx->invalidated_assignment_kept = !deleted;
   fprintf(
       stderr,
-      "[persist] saved assignment invalidated (%s); %s %s\n",
+      "[persist] saved assignment invalidated (%s); delete %s: %s (errno %d)\n",
       az_iot_result_to_string(reason),
-      deleted ? "deleted" : "nothing deleted at",
-      ctx->assignment_path);
+      ctx->assignment_path,
+      deleted ? "ok" : "failed",
+      delete_errno);
 }
 
 /** @brief Logs transitions and records the ones the main loop acts on. */
@@ -340,6 +347,18 @@ int main(void)
     uint64_t tick = sample_now_ms();
     (void)az_iot_connection_client_do_work(&client, SAMPLE_TICK_MS);
     sample_sleep_until_tick_end(tick, SAMPLE_TICK_MS);
+  }
+
+  /* Retried once: left in place, it would be restored on the next run. */
+  if (ctx.invalidated_assignment_kept && !sample_file_delete(ctx.assignment_path))
+  {
+    fprintf(
+        stderr,
+        "[persist] %s still holds an invalidated assignment (errno %d); delete it before the "
+        "next run\n",
+        ctx.assignment_path,
+        errno);
+    rc = 1;
   }
 
 cleanup:

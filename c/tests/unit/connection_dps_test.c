@@ -6144,6 +6144,76 @@ static void close_open_and_deinit_from_the_invalidated_callback_are_refused(void
   assert_string_equal(last_connect_host(dps), DPS_GLOBAL);
 }
 
+/** @brief Fails the start of the registration that is due, and returns the
+ * attempt that follows it. */
+static az_iot_mock_mqtt_client* fail_registration_start(az_iot_test_conn* fx)
+{
+  az_iot_mock_mqtt_adapter_fail_next_connect(AZ_IOT_ERR_TLS);
+  az_iot_test_wait_ms(REPROVISION_DELAY_MS + 5u);
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_int_equal(
+      az_iot_connection_client_get_state(fx->client, AZ_IOT_CONN_SCOPE_DPS),
+      AZ_IOT_CONN_STATE_RETRY_PENDING);
+  az_iot_test_wait_ms(REPROVISION_DELAY_MS + 5u);
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  az_iot_mock_mqtt_client* next = newest_mock_client(fx);
+  assert_non_null(next);
+  return next;
+}
+
+/* A registration that fails to start retries DPS, not the invalidated hub. */
+static void a_failed_registration_start_does_not_fall_back_to_an_invalidated_hub(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  use_reprovision_mode(fx);
+  az_iot_mock_mqtt_client* hub = saved_hub_open(fx);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(hub, AZ_IOT_ERR_IDENTITY_REJECTED));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_true(fx->client->held_assignment_invalidated);
+
+  assert_string_equal(last_connect_host(fail_registration_start(fx)), DPS_GLOBAL);
+}
+
+/* After request_reprovision() the saved hub stays the fallback of a
+ * registration that fails to start. */
+static void a_failed_requested_registration_start_falls_back_to_the_saved_hub(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  az_iot_mock_mqtt_client* hub = saved_hub_open(fx);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(hub, AZ_IOT_ERR_MQTT));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_int_equal(az_iot_connection_client_request_reprovision(fx->client), AZ_IOT_OK);
+
+  assert_string_equal(last_connect_host(fail_registration_start(fx)), SAVED_HUB);
+}
+
+/* close() during the registration that replaces an invalidated hub, then
+ * open(): DPS again, not that hub. */
+static void reopening_during_registration_does_not_reuse_an_invalidated_hub(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  use_reprovision_mode(fx);
+  az_iot_mock_mqtt_client* dps = refuse_saved_hub(fx, saved_hub_open(fx));
+  assert_string_equal(last_connect_host(dps), DPS_GLOBAL);
+
+  assert_int_equal(az_iot_connection_client_close(fx->client), AZ_IOT_OK);
+  assert_string_equal(last_connect_host(dps_open(fx)), DPS_GLOBAL);
+}
+
+/* close() during a registration request_reprovision() asked for, then open():
+ * the saved hub, as before. */
+static void reopening_during_a_requested_registration_reuses_the_saved_hub(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  assert_int_equal(az_iot_connection_client_request_reprovision(fx->client), AZ_IOT_OK);
+  assert_string_equal(last_connect_host(dps_open(fx)), DPS_GLOBAL);
+
+  assert_int_equal(az_iot_connection_client_close(fx->client), AZ_IOT_OK);
+  (void)saved_hub_open(fx);
+}
+
 /* A NULL callback unregisters. */
 static void a_null_invalidated_callback_unregisters(void** state)
 {
@@ -6200,6 +6270,18 @@ int main(void)
         close_open_and_deinit_from_the_invalidated_callback_are_refused, setup_saved_hub, teardown),
     cmocka_unit_test_setup_teardown(
         a_null_invalidated_callback_unregisters, setup_saved_hub, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_failed_registration_start_does_not_fall_back_to_an_invalidated_hub,
+        setup_saved_hub,
+        teardown),
+    cmocka_unit_test_setup_teardown(
+        a_failed_requested_registration_start_falls_back_to_the_saved_hub,
+        setup_saved_hub,
+        teardown),
+    cmocka_unit_test_setup_teardown(
+        reopening_during_registration_does_not_reuse_an_invalidated_hub, setup_saved_hub, teardown),
+    cmocka_unit_test_setup_teardown(
+        reopening_during_a_requested_registration_reuses_the_saved_hub, setup_saved_hub, teardown),
     cmocka_unit_test(set_dps_assignment_invalidated_callback_rejects_a_null_client),
     /* endpoint + version selection */
     cmocka_unit_test_setup_teardown(

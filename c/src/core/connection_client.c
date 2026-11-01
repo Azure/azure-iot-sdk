@@ -1909,6 +1909,17 @@ static void invalidate_held_assignment(az_iot_connection_client* c, az_iot_resul
   }
 }
 
+/**
+ * @brief Whether a failed or interrupted registration may fall back to the held
+ * hub: one is held and has not been invalidated.
+ *
+ * @param[in] c Client.
+ */
+static bool held_assignment_is_usable(const az_iot_connection_client* c)
+{
+  return c->opts.iothub_hostname != NULL && !c->held_assignment_invalidated;
+}
+
 static void schedule_reconnect(
     az_iot_connection_client* c,
     az_iot_connection_scope failure_scope,
@@ -6384,7 +6395,7 @@ static void fail_sas_token_attempt(
       /* As any registration that failed to start: re-registered, or the
        * cached hub tried; see do_work(). */
       c->dps_registration_ref = false;
-      c->needs_reprovision = c->needs_reprovision || c->opts.iothub_hostname == NULL;
+      c->needs_reprovision = c->needs_reprovision || !held_assignment_is_usable(c);
       schedule_reconnect(c, AZ_IOT_CONN_SCOPE_DPS, reason);
     }
     else
@@ -6444,7 +6455,7 @@ static void resume_sas_token_attempt(az_iot_connection_client* c, az_iot_connect
     if (c->dps_mqtt != NULL && c->dps_registration_ref)
     {
       /* Provisioning is under way now; see open(). */
-      c->needs_reprovision = false;
+      c->needs_reprovision = c->held_assignment_invalidated;
     }
     return;
   }
@@ -6455,7 +6466,7 @@ static void resume_sas_token_attempt(az_iot_connection_client* c, az_iot_connect
   if (c->dps_registration_ref)
   {
     c->dps_registration_ref = false;
-    c->needs_reprovision = c->needs_reprovision || c->opts.iothub_hostname == NULL;
+    c->needs_reprovision = c->needs_reprovision || !held_assignment_is_usable(c);
     schedule_reconnect(c, AZ_IOT_CONN_SCOPE_DPS, r);
     return;
   }
@@ -7846,10 +7857,11 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_open(az_iot_connection_clien
     }
     /* Consumed only once provisioning is really under way, so a failed start
      * still leaves the demand standing for the next open(). A start waiting
-     * for its token is not under way yet. */
+     * for its token is not under way yet. An invalidated assignment keeps it
+     * standing until one is adopted: a close() now must not reopen that hub. */
     if (client->sas_token_request[AZ_IOT_CONN_SCOPE_DPS].request_id == 0)
     {
-      client->needs_reprovision = false;
+      client->needs_reprovision = client->held_assignment_invalidated;
     }
     return r;
   }
@@ -8464,8 +8476,9 @@ static az_iot_result do_work_pass(az_iot_connection_client* client, uint32_t tim
        * a fallback if the hub path has somewhere to go. With no assignment
        * (opts.iothub_hostname still NULL) an ordinary retry would hand the adapter a NULL
        * endpoint and the client would never reach DPS again, so the demand
-       * survives and the next retry provisions. */
-      client->needs_reprovision = (client->opts.iothub_hostname == NULL);
+       * survives and the next retry provisions. An invalidated assignment is
+       * no fallback either. */
+      client->needs_reprovision = !held_assignment_is_usable(client);
       /* session_role stays the cached hub's: the provisioning session carries
        * its own role, and the hub fallback must keep the assigned protocol. */
       attempted = AZ_IOT_CONN_SCOPE_DPS;

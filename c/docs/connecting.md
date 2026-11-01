@@ -241,7 +241,9 @@ opts.dps.registration_id = "<registration-id>";
   hub refused the identity in `AZ_IOT_IDENTITY_RECOVERY_REPROVISION` mode
   (`AZ_IOT_ERR_IDENTITY_REJECTED`), or `dps.max_hub_connect_attempts_before_reprovision` connects
   failed (the last failure). Without it, a restart before a new assignment is adopted restores
-  the old one. It does not fire for `az_iot_connection_client_request_reprovision()`, which the
+  the old one. Until one is adopted, the client itself does not go back to that hub, even when a
+  registration fails to start or `close()` and `open()` interrupt it. It does not fire for
+  `az_iot_connection_client_request_reprovision()`, which the
   application decided, nor on a first registration. It runs from `do_work()`, after that call's
   state callbacks; `open()`, `close()` and `deinit()` return `AZ_IOT_ERR_BUSY` there.
 - `open()` connects to the saved hub; DPS is not contacted while it accepts the device.
