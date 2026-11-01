@@ -2109,8 +2109,8 @@ static void a_held_dps_session_starts_once_the_hub_session_ends(void** state)
 }
 
 /* A provisioning session asked for while a SAS renewal lets a PUBACK settle
- * takes over the end: the pause and the hub's reconnect after it are not
- * reported as a credential renewal. */
+ * takes over the end once the PUBACK is in: the pause and the hub's reconnect
+ * after it are not reported as a credential renewal. */
 static void a_provisioning_session_takes_over_a_settling_renewal(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -2127,12 +2127,17 @@ static void a_provisioning_session_takes_over_a_settling_renewal(void** state)
   connack(fx, AZ_IOT_OK);
   assert_int_equal(fx->client.state[AZ_IOT_CONN_SCOPE_HUB], AZ_IOT_CONN_STATE_CONNECTED);
   int acks = 0;
-  (void)publish_awaiting_puback(fx, &acks);
+  uint16_t const packet_id = publish_awaiting_puback(fx, &acks);
   az_iot_mock_mqtt_client* hub = start_settling_renewal(fx);
   size_t const from = fx->log_count;
 
   fx->client.dps_session_wanted = true;
   assert_int_equal(az_iot_connection_client__dps_session_ensure(&fx->client), AZ_IOT_ERR_BUSY);
+  assert_true(fx->client.planned_hub_session_end.for_provisioning_session);
+  assert_int_equal(az_iot_mock_mqtt_client_count_of(hub, AZ_IOT_MOCK_CALL_DISCONNECT), 0);
+  assert_true(az_iot_mock_mqtt_client_inject_puback(hub, packet_id, AZ_IOT_OK));
+  pump(fx, 1);
+  assert_int_equal(acks, 1);
   assert_false(fx->client.sas_token_renewal_in_progress[AZ_IOT_CONN_SCOPE_HUB]);
   assert_int_equal(az_iot_mock_mqtt_client_count_of(hub, AZ_IOT_MOCK_CALL_DISCONNECT), 1);
   assert_true(az_iot_mock_mqtt_client_inject_disconnected(hub));
@@ -2155,6 +2160,45 @@ static void a_provisioning_session_takes_over_a_settling_renewal(void** state)
     }
   }
   assert_true(hub_reconnected);
+}
+
+/* A provisioning session released before a settle it took over from a SAS renewal ends: the
+ * renewal goes on, and its reconnect is reported as one. */
+static void a_released_provisioning_session_leaves_a_settling_renewal_to_renew(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  uint64_t now = NOW;
+  az_iot_connection_client_options opts = hub_sas_options();
+  opts.unix_time.get_time = switchable_time;
+  opts.unix_time.user_ctx = &now;
+  opts.hub_auth.sas.token_lifetime_seconds = 100;
+  opts.hub_auth.sas.renewal_percent = 50;
+  opts.dps.id_scope = "0ne00000001";
+  opts.dps.registration_id = "ut-device";
+  opts.dps_auth.sas.primary_key_base64 = KEY_B64;
+  init_and_open(fx, &opts);
+  connack(fx, AZ_IOT_OK);
+  int acks = 0;
+  uint16_t const packet_id = publish_awaiting_puback(fx, &acks);
+  az_iot_mock_mqtt_client* hub = start_settling_renewal(fx);
+
+  fx->client.dps_session_wanted = true;
+  assert_int_equal(az_iot_connection_client__dps_session_ensure(&fx->client), AZ_IOT_ERR_BUSY);
+  az_iot_connection_client__dps_session_release(&fx->client);
+  pump(fx, 1);
+  assert_false(fx->client.planned_hub_session_end.for_provisioning_session);
+  assert_true(fx->client.sas_token_renewal_in_progress[AZ_IOT_CONN_SCOPE_HUB]);
+  assert_true(az_iot_connection_client__holds_sends_for_session_end(&fx->client));
+
+  assert_true(az_iot_mock_mqtt_client_inject_puback(hub, packet_id, AZ_IOT_OK));
+  pump(fx, 1);
+  assert_int_equal(az_iot_mock_mqtt_client_count_of(hub, AZ_IOT_MOCK_CALL_DISCONNECT), 1);
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(hub));
+  pump(fx, 1);
+  const recorded_event* e = last_event(fx, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_RETRY_PENDING);
+  assert_non_null(e);
+  assert_true(e->renewal);
+  assert_false(fx->client.hub_waits_for_provisioning_session);
 }
 
 /* A monotonic clock that stopped in suspend: the renewal starts when Unix time
@@ -4408,6 +4452,8 @@ int main(void)
         a_held_dps_session_starts_once_the_hub_session_ends, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_provisioning_session_takes_over_a_settling_renewal, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_released_provisioning_session_leaves_a_settling_renewal_to_renew, setup, teardown),
     cmocka_unit_test_setup_teardown(a_suspended_monotonic_clock_still_renews, setup, teardown),
     cmocka_unit_test_setup_teardown(
         the_default_renewal_time_is_80_percent_of_an_hour, setup, teardown),

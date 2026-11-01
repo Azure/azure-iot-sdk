@@ -265,7 +265,7 @@ static void flush(az_iot_delivery_tracker* t, bool skip_requeued)
   TI(t).send_refused = 0u;
   uint8_t priority = 0;
   uint64_t sequence = 0; /* Sequences start at 1, so (0, 0) precedes every entry. */
-  /* Held while a SAS renewal lets the session's deliveries settle. */
+  /* Held while a planned hub session end lets the session's deliveries settle. */
   while (az_iot_connection_client__is_connected(connection)
          && !az_iot_connection_client__holds_sends_for_session_end(connection))
   {

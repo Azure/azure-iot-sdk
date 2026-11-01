@@ -1560,8 +1560,8 @@ extern "C"
     AZ_IOT_CONNECTION_FEATURE_EVENT_IDENTITY_CHANGED = 16,
     AZ_IOT_CONNECTION_FEATURE_EVENT_NEXT_DEADLINE
     = 32, /**< Before do_work() waits; see remaining_ms. */
-    /** Before a SAS renewal ends the session: set *unsettled if a delivery awaits its PUBACK or
-     *  response. */
+    /** Before a SAS renewal or a pause for a provisioning session ends the hub session: set
+     *  *unsettled if a delivery awaits its PUBACK or response. */
     AZ_IOT_CONNECTION_FEATURE_EVENT_UNSETTLED_QUERY = 64,
   } az_iot_connection_feature_event_kind;
   /** @brief Why an MQTT session ended. */
@@ -2080,8 +2080,9 @@ extern "C"
     /* A hub session being ended on purpose: DISCONNECT sent, its completion
      * awaited until `disconnect_deadline` (none: no planned end). `reason`
      * AZ_IOT_OK (SAS renewal) reconnects at once; a failure reconnects with it,
-     * or faults without a reconnection policy. A SAS renewal first lets deliveries
-     * settle until `drain_deadline` (none: not draining), holding new tracked sends. */
+     * or faults without a reconnection policy. A SAS renewal or a pause for a
+     * provisioning session first lets deliveries settle until `drain_deadline`
+     * (none: not draining), holding new tracked sends. */
     struct
     {
       az_iot_deadline disconnect_deadline;
@@ -2117,7 +2118,7 @@ extern "C"
     uint64_t sas_token_expiry_ms[AZ_IOT_CONN_SCOPE_COUNT];
     uint64_t sas_token_expiry_unix_seconds[AZ_IOT_CONN_SCOPE_COUNT];
     /* Expiry of the token the hub session connected with, by each clock (0: unknown). Bounds a
-     * SAS renewal's settle. */
+     * SAS renewal's settle; its Unix-time expiry ends any settle. */
     uint64_t hub_session_token_expiry_ms;
     uint64_t hub_session_token_expiry_unix_seconds;
     /* Each scope's next token request is not asked before this (monotonic
