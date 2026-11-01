@@ -8460,6 +8460,41 @@ static bool all_zero(const void* p, size_t len)
 
 /* The standalone entry points take the backend directly. Parsing verifies
  * signatures, so it needs verify_rs256; a file-hash check needs only SHA-256. */
+/* az_iot_su_decode_manifest_string() decodes escaped ids, in place too, and refuses malformed ones.
+ */
+static void decode_manifest_string_decodes_escaped_ids(void** state)
+{
+  (void)state;
+  uint8_t buffer[16];
+  az_span decoded;
+  assert_int_equal(
+      az_iot_su_decode_manifest_string(
+          AZ_SPAN_FROM_STR("f\\u0031\\/x"), AZ_SPAN_FROM_BUFFER(buffer), &decoded),
+      AZ_IOT_OK);
+  assert_true(az_span_is_content_equal(decoded, AZ_SPAN_FROM_STR("f1/x")));
+
+  char in_place[] = "a\\u0062c";
+  az_span escaped = az_span_create((uint8_t*)in_place, (int32_t)strlen(in_place));
+  assert_int_equal(az_iot_su_decode_manifest_string(escaped, escaped, &decoded), AZ_IOT_OK);
+  assert_true(az_span_is_content_equal(decoded, AZ_SPAN_FROM_STR("abc")));
+
+  assert_int_equal(
+      az_iot_su_decode_manifest_string(
+          AZ_SPAN_FROM_STR("abc"), az_span_create(buffer, 2), &decoded),
+      AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+  assert_int_equal(
+      az_iot_su_decode_manifest_string(
+          AZ_SPAN_FROM_STR("a\\x"), AZ_SPAN_FROM_BUFFER(buffer), &decoded),
+      AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(
+      az_iot_su_decode_manifest_string(
+          AZ_SPAN_FROM_STR("\\u0000"), AZ_SPAN_FROM_BUFFER(buffer), &decoded),
+      AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(
+      az_iot_su_decode_manifest_string(AZ_SPAN_FROM_STR("a"), AZ_SPAN_FROM_BUFFER(buffer), NULL),
+      AZ_IOT_ERR_INVALID_ARG);
+}
+
 static void standalone_entry_points_check_the_backend_they_need(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -11786,6 +11821,7 @@ int main(void)
     cmocka_unit_test_setup_teardown(init_requires_a_crypto_backend_that_verifies, setup, teardown),
     cmocka_unit_test_setup_teardown(
         standalone_entry_points_check_the_backend_they_need, setup, teardown),
+    cmocka_unit_test(decode_manifest_string_decodes_escaped_ids),
     cmocka_unit_test_setup_teardown(
         standalone_manifest_verification_reports_why_it_fails, setup, teardown),
     cmocka_unit_test_setup_teardown(do_work_drives_the_channel, setup, teardown),

@@ -38,6 +38,8 @@ sequenceDiagram
   mbedTLS); mbedTLS PSA Crypto (manifest verification); `esp_http_client` + `app_update` (OTA).
 - Optional [production security profile](#production-security-profile-optional),
   off by default.
+- No download handler: the reference `microsoft/delta:1` handler is POSIX only, so a file with a
+  delta is always downloaded in full.
 
 ### How the OTA flow works
 

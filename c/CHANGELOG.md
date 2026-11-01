@@ -77,6 +77,14 @@
   `AZ_IOT_SU_FACILITY_DELTA` (`0xA`) extended result code (`AZ_IOT_SU_DELTA_ERROR_*` sub-codes)
   and short result details. `workflow_succeeded_fn` is called once a workflow with such a file
   succeeds. `download_fn` and `read_file_fn` also get related files.
+- Software updates: the reference `microsoft/delta:1` download handler, `az_iot_su_delta.h`
+  (`-DAZ_IOT_WITH_SU_DELTA=ON`, component `su_delta`, POSIX only). It rebuilds a file from a delta
+  related file and the file of an earlier update, kept in a source cache with the Device Update
+  reference agent's layout (default `/var/lib/adu/sdc`, latest update per provider). The default
+  delta processor, `libadudiffapi.so`, is loaded at run time; without it files are downloaded in
+  full. The `pc/http_download` and `pc/simulated_regular` samples register it.
+- Software updates: `az_iot_su_decode_manifest_string()` decodes a manifest string the parser keeps
+  escaped, such as a file id (`f\u0031` is `f1`).
 - Software updates: the parsed manifest keeps each file's `mimeType`, `properties`,
   `downloadHandler` id and related files (`relatedFiles`, delta updates), and the request accepts
   their `fileUrls`. New `az_iot_su_limits::max_related_files` (default
