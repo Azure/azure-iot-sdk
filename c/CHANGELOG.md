@@ -4,6 +4,12 @@
 
 ### Features Added
 
+- Connection client: `az_iot_connection_client_options::mqtt_adapter`, `mqtt_limits`,
+  `mqtt_workspace` and `mqtt_workspace_size` build each session's MQTT client in application
+  memory (e.g. `az_iot_az_mqtt_get_adapter()`), instead of registered factories (still used when
+  `mqtt_adapter` is NULL). `init()` checks the workspace size; `deinit()` wipes it. The workspace
+  holds one client at a time: a DPS or hub session start while the other session's client exists
+  fails with `AZ_IOT_ERR_BUSY` and is retried.
 - SAS token renewal lets the session's deliveries settle before its DISCONNECT: publishes
   awaiting a PUBACK and SDK requests awaiting a response (twin), for up to 5 s (not past the
   token's expiry). Meanwhile a new QoS 1 publish returns `AZ_IOT_ERR_BUSY`; once the DISCONNECT

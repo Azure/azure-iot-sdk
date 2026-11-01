@@ -121,6 +121,8 @@ target_include_directories(az_iot_test_support PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}
 )
 target_link_libraries(az_iot_test_support PUBLIC az_iot_core)
+# The mock adapter checks az_iot_mqtt_limits as the real adapters do (internal/mqtt_limits.h).
+target_include_directories(az_iot_test_support PRIVATE ${PROJECT_SOURCE_DIR}/src/core)
 az_iot_apply_warnings(az_iot_test_support)
 
 az_iot_add_cmocka_test(az_iot_tests_smoke unit/smoke_test.c)
@@ -131,6 +133,12 @@ target_link_libraries(az_iot_tests_mqtt_iface_contract PRIVATE az_iot_test_suppo
 az_iot_add_cmocka_test(az_iot_tests_connection_client_workspace unit/connection_client_workspace_test.c)
 target_link_libraries(az_iot_tests_connection_client_workspace
     PRIVATE az_iot_test_support az_iot_mqttv3 az_iot_mqttv5)
+# MQTT clients built in an application workspace (opts.mqtt_adapter).
+az_iot_add_cmocka_test(az_iot_tests_connection_client_mqtt_adapter
+    unit/connection_client_mqtt_adapter_test.c)
+target_link_libraries(az_iot_tests_connection_client_mqtt_adapter PRIVATE az_iot_test_support)
+target_include_directories(az_iot_tests_connection_client_mqtt_adapter PRIVATE
+    ${PROJECT_SOURCE_DIR}/src/core)
 # Default limits: built in, a user's definition, and a config file, resolved as documented.
 foreach(_case DEFAULT OVERRIDE CONFIG_FILE)
     set(_t az_iot_tests_connection_client_config_${_case})
@@ -960,6 +968,14 @@ if(AZ_IOT_WITH_AZ_MQTT)
         az_iot_adapter_az_mqtt az_mqttv3 az_mqttv5)
     if(WIN32)
         target_link_libraries(az_iot_tests_az_mqtt_adapter_workspace PRIVATE ws2_32)
+    endif()
+    # The connection client sized for the az_mqtt adapter and its transport (az_mqtt_core).
+    target_link_libraries(az_iot_tests_connection_client_mqtt_adapter PRIVATE
+        az_iot_adapter_az_mqtt az_mqtt_core)
+    target_compile_definitions(az_iot_tests_connection_client_mqtt_adapter PRIVATE
+        AZ_IOT_TEST_WITH_AZ_MQTT_ADAPTER)
+    if(WIN32)
+        target_link_libraries(az_iot_tests_connection_client_mqtt_adapter PRIVATE ws2_32)
     endif()
 
     # The adapter with recording malloc and free: freed memory holds no credential.
