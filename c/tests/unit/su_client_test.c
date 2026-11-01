@@ -942,7 +942,6 @@ typedef struct
   fake_channel chan;
   az_iot_su_channel channel;
   az_iot_su_client su;
-  az_iot_mqtt_factory* factory;
   az_iot_mock_mqtt_client* mock;
 
   hook_log log;
@@ -1270,10 +1269,8 @@ static int setup(void** state)
   opts.port = 8883;
   opts.device_id = "ut-device";
   opts.crypto = &fx->crypto.base;
+  opts.mqtt_adapter = az_iot_mock_mqtt_get_adapter_for_version(AZ_IOT_MQTT_VERSION_3_1_1);
   assert_int_equal(az_iot_test_connection_client_init(&fx->conn, &opts), AZ_IOT_OK);
-
-  fx->factory = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
-  assert_non_null(fx->factory);
 
   memset(&fx->chan, 0, sizeof(fx->chan));
   fx->chan.report_result = AZ_IOT_OK;
@@ -1307,7 +1304,6 @@ static int teardown(void** state)
     az_iot_su_client_deinit(&fx->su);
 
     az_iot_test_connection_client_deinit(&fx->conn);
-    az_iot_mock_mqtt_factory_destroy(fx->factory);
     free(fx);
   }
   return 0;
@@ -1315,10 +1311,8 @@ static int teardown(void** state)
 
 static void open_to_connected(fixture* fx)
 {
-  assert_int_equal(
-      az_iot_connection_client_register_mqtt_factory(&fx->conn, fx->factory), AZ_IOT_OK);
   assert_int_equal(az_iot_connection_client_open(&fx->conn), AZ_IOT_OK);
-  fx->mock = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  fx->mock = az_iot_mock_mqtt_adapter_last_client();
   assert_non_null(fx->mock);
   assert_true(az_iot_mock_mqtt_client_inject_connected(fx->mock, AZ_IOT_OK));
   assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
@@ -10305,6 +10299,7 @@ static int setup_wire_error_case(void** state)
   opts.dps.registration_id = "ut-device";
   opts.dps_hold_timeout_ms = 60000;
   opts.crypto = &fx->crypto.base;
+  opts.mqtt_adapter = az_iot_mock_mqtt_get_adapter_for_version(AZ_IOT_MQTT_VERSION_3_1_1);
   assert_int_equal(az_iot_test_connection_client_init(&fx->conn, &opts), AZ_IOT_OK);
 
   az_iot_su_platform_hooks hooks;
@@ -10323,10 +10318,8 @@ static int setup_wire_error_case(void** state)
   assert_int_equal(az_iot_su_client_init(&fx->su, &fx->conn, &su_opts), AZ_IOT_OK);
   assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
 
-  assert_int_equal(
-      az_iot_connection_client_register_mqtt_factory(&fx->conn, fx->factory), AZ_IOT_OK);
   assert_int_equal(az_iot_connection_client_open(&fx->conn), AZ_IOT_OK);
-  fx->mock = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  fx->mock = az_iot_mock_mqtt_adapter_last_client();
   assert_non_null(fx->mock);
   assert_true(az_iot_mock_mqtt_client_inject_connected(fx->mock, AZ_IOT_OK));
   assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);

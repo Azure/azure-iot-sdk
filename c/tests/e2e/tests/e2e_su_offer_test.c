@@ -79,13 +79,7 @@
 #include <azure/core/az_json.h>
 
 /* The MQTT adapter this build of the suite uses (see tests/e2e/CMakeLists.txt). */
-#if defined(AZ_IOT_E2E_ADAPTER_PAHO)
-#include "azure/iot/adapters/az_iot_adapter_paho.h"
-#elif defined(AZ_IOT_E2E_ADAPTER_AZ_MQTT)
-#include "azure/iot/adapters/az_iot_adapter_az_mqtt.h"
-#else
-#error "Define AZ_IOT_E2E_ADAPTER_PAHO or AZ_IOT_E2E_ADAPTER_AZ_MQTT"
-#endif
+#include "e2e_mqtt_adapter.h"
 #include "azure/iot/az_iot_certificate_provider_pem.h"
 #include "azure/iot/az_iot_connection_client.h"
 #include "azure/iot/az_iot_log.h"
@@ -1028,7 +1022,7 @@ typedef struct
 {
   az_iot_certificate_provider_pem certs;
   az_iot_connection_client conn;
-  az_iot_mqtt_factory* factory;
+  uint8_t* mqtt_workspace; /**< free() after az_iot_connection_client_deinit(). */
   az_iot_su_channel_dps channel_state;
   uint8_t channel_body[AZ_IOT_SU_DEFAULT_MAX_MESSAGE_SIZE];
   char channel_device_properties
@@ -1279,17 +1273,12 @@ static void fixture_open(fixture* fx, const fixture_options* o)
   assert_int_equal(az_iot_certificate_provider_pem_init(&fx->certs, &pem), AZ_IOT_OK);
   fx->have_certs = true;
   opts.certificate_provider = &fx->certs.base;
+  fx->mqtt_workspace = e2e_use_mqtt_adapter(&opts);
+  assert_non_null(fx->mqtt_workspace);
   assert_int_equal(az_iot_connection_client_init(&fx->conn, &opts), AZ_IOT_OK);
   fx->have_conn = true;
   assert_int_equal(
       az_iot_connection_client_add_state_observer(&fx->conn, on_conn_state, fx), AZ_IOT_OK);
-#if defined(AZ_IOT_E2E_ADAPTER_PAHO)
-  fx->factory = az_iot_paho_factory_create_v3_1_1();
-#elif defined(AZ_IOT_E2E_ADAPTER_AZ_MQTT)
-  fx->factory = az_iot_az_mqtt_factory_create_v3_1_1();
-#endif
-  assert_int_equal(
-      az_iot_connection_client_register_mqtt_factory(&fx->conn, fx->factory), AZ_IOT_OK);
 
   az_iot_su_device_properties device_properties = { 0 };
   device_properties.manufacturer = o->manufacturer;
@@ -1371,12 +1360,8 @@ static void fixture_close(fixture* fx)
     az_iot_connection_client_deinit(&fx->conn);
     fx->have_conn = false;
   }
-#if defined(AZ_IOT_E2E_ADAPTER_PAHO)
-  az_iot_paho_factory_destroy(fx->factory);
-#elif defined(AZ_IOT_E2E_ADAPTER_AZ_MQTT)
-  az_iot_az_mqtt_factory_destroy(fx->factory);
-#endif
-  fx->factory = NULL;
+  free(fx->mqtt_workspace);
+  fx->mqtt_workspace = NULL;
   if (fx->have_certs)
   {
     az_iot_certificate_provider_pem_deinit(&fx->certs);
