@@ -338,15 +338,8 @@ endif()
 # environment has, so it is built only when AZ_IOT_BUILD_E2E_MQTTV5 is set.
 # ---------------------------------------------------------------------------
 if(AZ_IOT_BUILD_E2E_MQTTV5)
-    # The telemetry size cases publish up to 1 MiB + 4 KiB to test the hub's limit; az_mqtt's
-    # send buffer (264 KiB by default) must hold that, or they would test the client's.
-    set(_e2e_send_buffer_min 1114112)
-    if(TARGET az_iot_adapter_az_mqtt AND (AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE STREQUAL ""
-       OR AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE LESS _e2e_send_buffer_min))
-        message(FATAL_ERROR "AZ_IOT_BUILD_E2E_MQTTV5=ON with az_mqtt needs "
-            "-DAZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE=${_e2e_send_buffer_min} or more "
-            "(got '${AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE}').")
-    endif()
+    # The telemetry size cases publish up to 1 MiB + 4 KiB to test the hub's limit: the send buffer
+    # in E2E_MQTT_SEND_BUFFER_SIZE (tests/e2e_mqtt_adapter.h) holds that and its MQTT headers.
     az_iot_add_e2e_suite(az_iot_tests_e2e_mqttv5_custom_topic
         SOURCES tests/e2e_mqttv5_custom_topic_test.c tests/e2e_device.c
         LIBS az_iot_e2e_service az_iot_mqttv5)

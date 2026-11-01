@@ -37,7 +37,6 @@ typedef struct completion
 typedef struct fixture
 {
   az_iot_connection_client connection;
-  az_iot_mqtt_factory* factory;
   az_iot_mock_mqtt_client* mock;
   az_iot_delivery_tracker tracker;
   az_iot_delivery_tracker_entry entries[ENTRY_COUNT];
@@ -151,7 +150,7 @@ static void do_work(fixture* fx) { (void)az_iot_connection_client_do_work(&fx->c
 static void connect(fixture* fx)
 {
   assert_int_equal(az_iot_connection_client_open(&fx->connection), AZ_IOT_OK);
-  fx->mock = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  fx->mock = az_iot_mock_mqtt_adapter_last_client();
   assert_non_null(fx->mock);
   assert_true(az_iot_mock_mqtt_client_inject_connected(fx->mock, AZ_IOT_OK));
   do_work(fx);
@@ -229,10 +228,8 @@ static int setup(void** state)
   fixture* fx = (fixture*)calloc(1, sizeof(*fx));
   assert_non_null(fx);
   az_iot_connection_client_options options = az_iot_test_mqtt_v3_options();
+  options.mqtt_adapter = az_iot_mock_mqtt_get_adapter_for_version(AZ_IOT_MQTT_VERSION_3_1_1);
   assert_int_equal(az_iot_test_connection_client_init(&fx->connection, &options), AZ_IOT_OK);
-  fx->factory = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
-  assert_int_equal(
-      az_iot_connection_client_register_mqtt_factory(&fx->connection, fx->factory), AZ_IOT_OK);
   fx->qos = AZ_IOT_MQTT_QOS_1;
   fx->failing_send_result = AZ_IOT_ERR_BUSY;
   assert_int_equal(
@@ -249,7 +246,6 @@ static int teardown(void** state)
   fixture* fx = (fixture*)*state;
   az_iot_delivery_tracker__unbind(&fx->tracker);
   az_iot_test_connection_client_deinit(&fx->connection);
-  az_iot_mock_mqtt_factory_destroy(fx->factory);
   free(fx);
   return 0;
 }

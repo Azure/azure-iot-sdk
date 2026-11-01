@@ -59,7 +59,9 @@ static unsigned long conf_now_ms(void)
 /* shared state for the suite (set by az_iot_conformance_run)            */
 /* ------------------------------------------------------------------------- */
 
-static az_iot_mqtt_factory* g_factory = NULL;
+static const az_iot_mqtt_adapter* g_adapter = NULL;
+/* The suite's MQTT version: every client the suite builds is of it. */
+static az_iot_mqtt_version g_version = AZ_IOT_MQTT_VERSION_3_1_1;
 static const char* g_host = "localhost";
 static uint16_t g_port = 1883;
 /* Adapter capabilities and end-to-end custody material, from
@@ -665,8 +667,7 @@ static int saw_disconnected(const conf_recorder* r)
  * than repeating a v3/v5 branch each time they need a refusal. */
 static az_iot_test_mqtt_version conf_mqtt_version(void)
 {
-  return (g_factory->version == AZ_IOT_MQTT_VERSION_5) ? AZ_IOT_TEST_MQTT_V5
-                                                       : AZ_IOT_TEST_MQTT_V3_1_1;
+  return (g_version == AZ_IOT_MQTT_VERSION_5) ? AZ_IOT_TEST_MQTT_V5 : AZ_IOT_TEST_MQTT_V3_1_1;
 }
 
 static az_iot_test_mqtt_packet conf_connack(az_iot_test_mqtt_reason reason)
@@ -715,11 +716,58 @@ static void unique_client_id(char* buf, size_t cap, const char* prefix)
   snprintf(buf, cap, "%s-%lu-%lu", prefix, conf_process_id(), conf_now_ms());
 }
 
+/* Sizes of every client the suite builds: room for its largest packet (a 600-byte payload), the
+ * TLS PEM a connect copies, and a message store for the resumed sessions. */
+static const az_iot_mqtt_limits k_client_limits = { 8192, 8192, 16, 16384, 16384 };
+
+/* Clients alive at once. */
+#define CONF_CLIENTS_MAX 8
+
+/** @brief A client the suite built and the heap workspace it lives in; NULL client: free. */
+typedef struct conf_client_slot
+{
+  az_iot_mqtt_client* client;
+  uint8_t* workspace;
+} conf_client_slot;
+
+static conf_client_slot g_client_slots[CONF_CLIENTS_MAX];
+
+/** @brief The slot holding @p client, or a free one when @p client is NULL; NULL if none. */
+static conf_client_slot* conf_client_slot_of(const az_iot_mqtt_client* client)
+{
+  for (size_t i = 0; i < CONF_CLIENTS_MAX; ++i)
+  {
+    if (g_client_slots[i].client == client)
+    {
+      return &g_client_slots[i];
+    }
+  }
+  return NULL;
+}
+
+/* Each client in its own heap workspace, freed by destroy_client(): a client used after destroy()
+ * is a use-after-free the sanitizers report. */
 static az_iot_mqtt_client* make_client(void)
 {
-  az_iot_mqtt_client* c = g_factory->create(g_factory->factory_ctx);
-  assert_non_null(c);
-  assert_non_null(c->iface);
+  conf_client_slot* slot = conf_client_slot_of(NULL);
+  assert_non_null(slot);
+  size_t const size = g_adapter->get_workspace_size(&k_client_limits);
+  assert_true(size > 0);
+  uint8_t* workspace = (uint8_t*)malloc(size);
+  assert_non_null(workspace);
+  az_iot_mqtt_client* c = NULL;
+  az_iot_result const r = g_adapter->init(g_version, &k_client_limits, workspace, size, &c);
+  /* Judged before the workspace, which holds the client, is freed. */
+  if (r != AZ_IOT_OK || c == NULL || c->iface == NULL)
+  {
+    const char* const what = r != AZ_IOT_OK ? "failed"
+        : c == NULL                         ? "gave no client"
+                                            : "gave no iface";
+    free(workspace);
+    fail_msg("adapter init() %s (%d)", what, (int)r);
+  }
+  slot->client = c;
+  slot->workspace = workspace;
   return c;
 }
 
@@ -729,7 +777,54 @@ static void destroy_client(az_iot_mqtt_client* c)
   {
     c->iface->destroy(c);
   }
+  conf_client_slot* slot = c != NULL ? conf_client_slot_of(c) : NULL;
+  if (slot != NULL)
+  {
+    free(slot->workspace);
+    slot->workspace = NULL;
+    slot->client = NULL;
+  }
 }
+
+/**
+ * @brief Per-test teardown: destroys the clients a case left behind (a failed assertion skips its
+ * destroy_client()) and frees their workspaces.
+ */
+static int conf_release_clients(void** state)
+{
+  (void)state;
+  for (size_t i = 0; i < CONF_CLIENTS_MAX; ++i)
+  {
+    if (g_client_slots[i].client != NULL)
+    {
+      destroy_client(g_client_slots[i].client);
+    }
+  }
+  return 0;
+}
+
+/** @brief Runs this process's shard of @p tests, each followed by conf_release_clients(). */
+static int conf_run_group(const char* group_name, const struct CMUnitTest* tests, size_t count)
+{
+  struct CMUnitTest* with_release = (struct CMUnitTest*)malloc(sizeof(*with_release) * count);
+  if (with_release == NULL)
+  {
+    fprintf(stderr, "%s: out of memory\n", group_name);
+    return 1;
+  }
+  for (size_t i = 0; i < count; ++i)
+  {
+    with_release[i] = tests[i];
+    with_release[i].teardown_func = conf_release_clients;
+  }
+  int const failed = az_iot_test_shard_run_group(group_name, with_release, count, NULL, NULL);
+  free(with_release);
+  return failed;
+}
+
+/** @brief conf_run_group() named after the @p group_tests array. */
+#define CONF_RUN_GROUP(group_tests) \
+  conf_run_group(#group_tests, group_tests, sizeof(group_tests) / sizeof((group_tests)[0]))
 
 static void connect_client(az_iot_mqtt_client* c, conf_recorder* rec, const char* client_id)
 {
@@ -1392,7 +1487,7 @@ static void reconnect_after_network_drop(void** state)
  * Interval to a v3.1.1 broker would be emitting bytes the protocol has no place
  * for; "absent" is therefore asserted, not merely "not equal". */
 
-static int conf_is_v5(void) { return g_factory->version == AZ_IOT_MQTT_VERSION_5; }
+static int conf_is_v5(void) { return g_version == AZ_IOT_MQTT_VERSION_5; }
 
 /* Stand the proxy up in front of the configured broker and point `copts` at
  * it, leaving the caller to set whatever session terms it is asserting on. */
@@ -1774,8 +1869,7 @@ static void connect_connack_error_is_reported(void** state)
     }
   }
   assert_true(ack >= 0);
-  assert_int_equal(
-      rec.protocol_codes[ack], (g_factory->version == AZ_IOT_MQTT_VERSION_5) ? 0x87 : 0x05);
+  assert_int_equal(rec.protocol_codes[ack], (g_version == AZ_IOT_MQTT_VERSION_5) ? 0x87 : 0x05);
 
   (void)c->iface->disconnect(c);
   destroy_client(c);
@@ -1866,7 +1960,7 @@ static az_iot_mqtt_client* connect_to_synthetic_broker(
  *
  * MQTT 3.1.1 has no server-sent DISCONNECT packet, so this case belongs only to
  * the v5 suite. It is registered there and nowhere else rather than checking
- * g_factory->version and skipping: the two harness executables are built from
+ * g_version and skipping: the two harness executables are built from
  * separate mains, so the version cannot vary within a run, and a suite that
  * declines part of its job at run time is one nobody notices has shrunk. */
 static void server_disconnect_is_reported(void** state)
@@ -2339,7 +2433,7 @@ static void assert_refused_subscribe_is_reported(
     }
   }
   assert_true(ack >= 0);
-  assert_int_equal(rec.statuses[ack], az_iot_mqtt_suback_result(g_factory->version, (int)code));
+  assert_int_equal(rec.statuses[ack], az_iot_mqtt_suback_result(g_version, (int)code));
   assert_int_equal(rec.protocol_codes[ack], code);
   assert_reason_string_recorded(&rec, (size_t)ack, reason_string);
   assert_int_equal(az_iot_test_proxy_rule_hits(proxy, (size_t)refuse_id), 1);
@@ -2353,10 +2447,10 @@ static void a_refused_subscribe_is_reported(void** state)
 {
   (void)state;
   az_iot_test_mqtt_packet const suback = conf_suback(AZ_IOT_TEST_MQTT_REASON_REFUSED);
-  int32_t const code = (g_factory->version == AZ_IOT_MQTT_VERSION_5) ? 0x87 : 0x80;
+  int32_t const code = (g_version == AZ_IOT_MQTT_VERSION_5) ? 0x87 : 0x80;
   /* A refusal the broker will repeat: the status reported must say so. */
   assert_int_equal(
-      az_iot_mqtt_suback_result(g_factory->version, (int)code), AZ_IOT_ERR_SUBSCRIPTION_REFUSED);
+      az_iot_mqtt_suback_result(g_version, (int)code), AZ_IOT_ERR_SUBSCRIPTION_REFUSED);
   assert_refused_subscribe_is_reported(&suback, code, NULL);
 }
 
@@ -4452,17 +4546,17 @@ static void a_proxy_that_refuses_the_tunnel_fails_the_connect(void** state)
 #define TLS_TESTS
 #endif
 
-int az_iot_conformance_run(az_iot_conformance_suite suite_kind, az_iot_mqtt_factory* factory)
+int az_iot_conformance_run(az_iot_conformance_suite suite_kind, const az_iot_mqtt_adapter* adapter)
 {
-  return az_iot_conformance_run_with_options(suite_kind, factory, NULL);
+  return az_iot_conformance_run_with_options(suite_kind, adapter, NULL);
 }
 
 int az_iot_conformance_run_with_options(
     az_iot_conformance_suite suite_kind,
-    az_iot_mqtt_factory* factory,
+    const az_iot_mqtt_adapter* adapter,
     const az_iot_conformance_options* options)
 {
-  if (!factory)
+  if (!adapter || !adapter->get_workspace_size || !adapter->init)
   {
     return 1;
   }
@@ -4578,20 +4672,6 @@ int az_iot_conformance_run_with_options(
     return 1;
   }
 
-  /* Validate the factory's advertised version matches the requested suite. */
-  az_iot_mqtt_version want = (suite_kind == AZ_IOT_CONFORMANCE_SUITE_V5)
-      ? AZ_IOT_MQTT_VERSION_5
-      : AZ_IOT_MQTT_VERSION_3_1_1;
-  if (factory->version != want)
-  {
-    fprintf(
-        stderr,
-        "conformance: factory version mismatch (got %d, want %d)\n",
-        (int)factory->version,
-        (int)want);
-    return 1;
-  }
-
   /* Resolve broker config from env. */
   const char* host = getenv("AZ_IOT_MQTT_BROKER_HOST");
   const char* port = getenv("AZ_IOT_MQTT_BROKER_PORT");
@@ -4611,7 +4691,9 @@ int az_iot_conformance_run_with_options(
     return 1;
   }
 
-  g_factory = factory;
+  g_adapter = adapter;
+  g_version = (suite_kind == AZ_IOT_CONFORMANCE_SUITE_V5) ? AZ_IOT_MQTT_VERSION_5
+                                                          : AZ_IOT_MQTT_VERSION_3_1_1;
   g_host = host;
   g_port = port ? (uint16_t)atoi(port) : (uint16_t)1883;
 
@@ -4649,14 +4731,14 @@ int az_iot_conformance_run_with_options(
             cmocka_unit_test(v5_many_properties_survive_a_roundtrip),
             cmocka_unit_test(v5_many_properties_from_the_server_are_all_surfaced),
             cmocka_unit_test(v5_session_present_from_connack_is_reported) };
-    failed = az_iot_test_shard_run_group_tests(v5_tests, NULL, NULL);
+    failed = CONF_RUN_GROUP(v5_tests);
   }
   else
   {
     const struct CMUnitTest v3_tests[]
         = { AZ_IOT_CONFORMANCE_COMMON_TESTS,
             cmocka_unit_test(v3_1_1_publish_ignores_the_v5_only_fields) };
-    failed = az_iot_test_shard_run_group_tests(v3_tests, NULL, NULL);
+    failed = CONF_RUN_GROUP(v3_tests);
   }
 
   /* Before the custody groups: they load the key's provider process-wide, after
@@ -4666,7 +4748,7 @@ int az_iot_conformance_run_with_options(
 #ifdef AZ_IOT_CONFORMANCE_WITH_TLS
     const struct CMUnitTest pem_tests[]
         = { cmocka_unit_test(mutual_tls_does_not_read_pem_after_returning) };
-    failed += az_iot_test_shard_run_group_tests(pem_tests, NULL, NULL);
+    failed += CONF_RUN_GROUP(pem_tests);
 #else
     char allow[16];
     failed += az_iot_conformance_report_unproven_capability(
@@ -4694,7 +4776,7 @@ int az_iot_conformance_run_with_options(
     {
       const struct CMUnitTest custody_tests[]
           = { cmocka_unit_test(key_custody_completes_a_tls_handshake) };
-      failed += az_iot_test_shard_run_group_tests(custody_tests, NULL, NULL);
+      failed += CONF_RUN_GROUP(custody_tests);
     }
     else
     {
@@ -4725,7 +4807,7 @@ int az_iot_conformance_run_with_options(
     {
       const struct CMUnitTest sign_tests[]
           = { cmocka_unit_test(key_custody_sign_hook_completes_a_tls_handshake) };
-      failed += az_iot_test_shard_run_group_tests(sign_tests, NULL, NULL);
+      failed += CONF_RUN_GROUP(sign_tests);
     }
     else
     {
@@ -4756,7 +4838,7 @@ int az_iot_conformance_run_with_options(
     {
       const struct CMUnitTest psa_tests[]
           = { cmocka_unit_test(key_custody_psa_key_completes_a_tls_handshake_and_reconnects) };
-      failed += az_iot_test_shard_run_group_tests(psa_tests, NULL, NULL);
+      failed += CONF_RUN_GROUP(psa_tests);
     }
     else
     {
@@ -4799,7 +4881,7 @@ int az_iot_conformance_run_with_options(
       (void)(a_websocket_session_carries_a_large_payload);
       const struct CMUnitTest ws_tests[]
           = { cmocka_unit_test(a_websocket_session_completes_a_roundtrip) };
-      failed += az_iot_test_shard_run_group_tests(ws_tests, NULL, NULL);
+      failed += CONF_RUN_GROUP(ws_tests);
     }
     else
     {
@@ -4827,7 +4909,7 @@ int az_iot_conformance_run_with_options(
             cmocka_unit_test(a_proxy_rejects_a_missing_credential),
             cmocka_unit_test(a_tunnel_dropped_mid_session_is_reported),
             cmocka_unit_test(a_proxy_that_refuses_the_tunnel_fails_the_connect) };
-    failed += az_iot_test_shard_run_group_tests(proxy_tests, NULL, NULL);
+    failed += CONF_RUN_GROUP(proxy_tests);
   }
 
   return (failed == 0) ? 0 : 1;

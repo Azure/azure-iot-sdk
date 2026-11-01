@@ -429,15 +429,6 @@ static int run_control(
     const char* cert_path,
     const char* label)
 {
-  az_iot_mqtt_factory* f = (suite_kind == AZ_IOT_CONFORMANCE_SUITE_V5)
-      ? az_iot_paho_factory_create_v5()
-      : az_iot_paho_factory_create_v3_1_1();
-  if (f == NULL)
-  {
-    fprintf(stderr, "sign-negative[%s]: could not create the factory\n", label);
-    return 1;
-  }
-
   az_iot_conformance_options opts = { 0 };
   opts.capabilities |= (uint32_t)AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY_SIGN;
   opts.sign = negative_sign_stub;
@@ -489,11 +480,10 @@ static int run_control(
       remove(log_path);
     }
     fprintf(stderr, "sign-negative[%s]: could not capture the suite's output\n", label);
-    az_iot_paho_factory_destroy(f);
     return 1;
   }
 
-  int suite_rc = az_iot_conformance_run_with_options(suite_kind, f, &opts);
+  int suite_rc = az_iot_conformance_run_with_options(suite_kind, az_iot_paho_get_adapter(), &opts);
 
   /* The log IS the evidence, so a write that failed means the evidence is
    * incomplete -- and an incomplete log can hold the expected failure while
@@ -517,7 +507,6 @@ static int run_control(
   az_iot_close(saved_out);
   az_iot_close(saved_err);
   const int close_failed = (fclose(log) != 0);
-  az_iot_paho_factory_destroy(f);
   print_sanitizer_reports_from_log(log_path, label);
 
   if (flush_failed || close_failed)

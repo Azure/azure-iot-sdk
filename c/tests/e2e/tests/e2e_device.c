@@ -6,16 +6,8 @@
 #include "e2e_device.h"
 #include "e2e_connect_clock.h"
 #include "e2e_defensive_timeout.h"
+#include "e2e_mqtt_adapter.h"
 #include "support/test_env.h"
-
-/* The MQTT adapter this build of the suite uses (see tests/e2e/CMakeLists.txt). */
-#if defined(AZ_IOT_E2E_ADAPTER_PAHO)
-#include "azure/iot/adapters/az_iot_adapter_paho.h"
-#elif defined(AZ_IOT_E2E_ADAPTER_AZ_MQTT)
-#include "azure/iot/adapters/az_iot_adapter_az_mqtt.h"
-#else
-#error "Define AZ_IOT_E2E_ADAPTER_PAHO or AZ_IOT_E2E_ADAPTER_AZ_MQTT"
-#endif
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -219,6 +211,13 @@ int e2e_device_connect_with(e2e_device* dev, const e2e_device_connect_options* o
   copts.twin_push.push_reported = opts != NULL && opts->twin_push_reported;
   copts.workspace = dev->connection_workspace;
   copts.workspace_size = sizeof(dev->connection_workspace);
+  /* The MQTT adapter this build of the suite uses (see tests/e2e/CMakeLists.txt). */
+  dev->mqtt_workspace = e2e_use_mqtt_adapter(&copts);
+  if (dev->mqtt_workspace == NULL)
+  {
+    fprintf(stderr, "[e2e] no memory for the MQTT workspace\n");
+    return 1;
+  }
 
   if (az_iot_connection_client_init(&dev->conn, &copts) != AZ_IOT_OK)
   {
@@ -232,20 +231,6 @@ int e2e_device_connect_with(e2e_device* dev, const e2e_device_connect_options* o
     return 1;
   }
   az_iot_connection_client_add_state_observer(&dev->conn, on_conn_state, dev);
-
-#if defined(AZ_IOT_E2E_ADAPTER_PAHO)
-  dev->factory_v3 = az_iot_paho_factory_create_v3_1_1();
-  dev->factory_v5 = az_iot_paho_factory_create_v5();
-#elif defined(AZ_IOT_E2E_ADAPTER_AZ_MQTT)
-  dev->factory_v3 = az_iot_az_mqtt_factory_create_v3_1_1();
-  dev->factory_v5 = az_iot_az_mqtt_factory_create_v5();
-#endif
-  if (az_iot_connection_client_register_mqtt_factory(&dev->conn, dev->factory_v3) != AZ_IOT_OK
-      || az_iot_connection_client_register_mqtt_factory(&dev->conn, dev->factory_v5) != AZ_IOT_OK)
-  {
-    fprintf(stderr, "[e2e] MQTT factory registration failed\n");
-    return 1;
-  }
 
   if (opts != NULL && opts->before_open != NULL
       && opts->before_open(dev, opts->before_open_ctx) != 0)
@@ -325,15 +310,8 @@ void e2e_device_disconnect(e2e_device* dev)
     az_iot_connection_client_deinit(&dev->conn);
     dev->conn_ok = false;
   }
-#if defined(AZ_IOT_E2E_ADAPTER_PAHO)
-  az_iot_paho_factory_destroy(dev->factory_v3);
-  az_iot_paho_factory_destroy(dev->factory_v5);
-#elif defined(AZ_IOT_E2E_ADAPTER_AZ_MQTT)
-  az_iot_az_mqtt_factory_destroy(dev->factory_v3);
-  az_iot_az_mqtt_factory_destroy(dev->factory_v5);
-#endif
-  dev->factory_v3 = NULL;
-  dev->factory_v5 = NULL;
+  free(dev->mqtt_workspace);
+  dev->mqtt_workspace = NULL;
   if (dev->certs_ok)
   {
     az_iot_certificate_provider_pem_deinit(&dev->certs);
