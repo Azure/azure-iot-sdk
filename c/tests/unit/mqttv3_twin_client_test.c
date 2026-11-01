@@ -920,11 +920,20 @@ static void an_unanswered_request_times_out(void** state)
   assert_int_equal(az_iot_mqttv3_twin_client_set_request_timeout(NULL, 1), AZ_IOT_ERR_INVALID_ARG);
   assert_int_equal(
       fx->twin._internal.request_timeout_ms, AZ_IOT_MQTTV3_TWIN_REQUEST_TIMEOUT_MS_DEFAULT);
-  assert_int_equal(az_iot_mqttv3_twin_client_set_request_timeout(&fx->twin, 1), AZ_IOT_OK);
+  uint32_t const request_timeout_ms = 30000u;
+  assert_int_equal(
+      az_iot_mqttv3_twin_client_set_request_timeout(&fx->twin, request_timeout_ms), AZ_IOT_OK);
 
   get_record rec = { 0 };
+  uint64_t const called_after_ms = az_iot_time_mono_ms();
   assert_int_equal(az_iot_mqttv3_twin_client_get(&fx->twin, on_get, &rec), AZ_IOT_OK);
-  az_iot_test_wait_ms(5);
+  uint64_t const returned_before_ms = az_iot_time_mono_ms();
+  az_iot_deadline* const deadline = &fx->twin._internal.tracker_entries[0]._internal.deadline;
+  assert_in_range(
+      deadline->_internal.at_ms,
+      called_after_ms + request_timeout_ms,
+      returned_before_ms + request_timeout_ms);
+  az_iot_deadline__expire_now(deadline);
   assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
   assert_true(rec.fired);
   assert_int_equal(rec.status, AZ_IOT_ERR_TIMEOUT);
