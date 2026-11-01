@@ -11,28 +11,30 @@ option in full.
 
 ```c
 static uint8_t workspace[AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE];
+/* Last argument: TLS state bound, 8 KB for OpenSSL or mbedTLS; about 197 KB for Schannel. */
+static uint8_t mqtt_workspace[AZ_IOT_AZ_MQTT_WORKSPACE_SIZE(4096, 4096, 8, 8192, 4096, 8192)];
 az_iot_connection_client_options opts = az_iot_connection_client_options_default();
 opts.workspace = workspace; /* required; see client-configuration.md */
 opts.workspace_size = sizeof(workspace);
+opts.mqtt_adapter = az_iot_az_mqtt_get_adapter(); /* or az_iot_paho_get_adapter() */
+opts.mqtt_limits = (az_iot_mqtt_limits){ .send_buffer_size = 4096,
+                                         .receive_buffer_size = 4096,
+                                         .max_in_flight_messages = 8,
+                                         .message_store_size = 8192, /* resumed hub session */
+                                         .connect_strings_size = 4096 };
+opts.mqtt_workspace = mqtt_workspace; /* wiped by deinit() */
+opts.mqtt_workspace_size = sizeof(mqtt_workspace);
 opts.dps.id_scope = "<id-scope>";
 opts.dps.registration_id = "<registration-id>";
 opts.certificate_provider = &certs.base; /* e.g. az_iot_certificate_provider_pem */
 
-az_iot_mqtt_factory* v3 = az_iot_paho_factory_create_v3_1_1();
-az_iot_mqtt_factory* v5 = az_iot_paho_factory_create_v5();
 if (az_iot_connection_client_init(&client, &opts) != AZ_IOT_OK)
 {
-  az_iot_paho_factory_destroy(v3);
-  az_iot_paho_factory_destroy(v5);
   return 1;
 }
-if (az_iot_connection_client_add_state_observer(&client, on_state, ctx) != AZ_IOT_OK
-    || az_iot_connection_client_register_mqtt_factory(&client, v3) != AZ_IOT_OK
-    || az_iot_connection_client_register_mqtt_factory(&client, v5) != AZ_IOT_OK)
+if (az_iot_connection_client_add_state_observer(&client, on_state, ctx) != AZ_IOT_OK)
 {
   az_iot_connection_client_deinit(&client);
-  az_iot_paho_factory_destroy(v3); /* NULL: no-op */
-  az_iot_paho_factory_destroy(v5);
   return 1;
 }
 
@@ -41,8 +43,6 @@ if (az_iot_connection_client_open(&client) != AZ_IOT_OK)
 {
   /* deinit feature clients, then: */
   az_iot_connection_client_deinit(&client);
-  az_iot_paho_factory_destroy(v3);
-  az_iot_paho_factory_destroy(v5);
   return 1;
 }
 for (;;)
@@ -54,39 +54,18 @@ for (;;)
 Start from `az_iot_connection_client_options_default()`. A zero-initialized options struct has
 reconnection disabled.
 
-### MQTT clients in application memory (recommended)
+### MQTT clients in application memory
 
-Instead of factories, set an adapter and a workspace: the connection client builds each session's
-MQTT client there, with no factory to create, register or destroy and, with az_mqtt, no
-allocation. Sizing and rules: [client configuration](client-configuration.md#connection-client-az_iot_connection_clienth).
-
-```c
-/* Last argument: TLS state bound, 8 KB for OpenSSL or mbedTLS; about 197 KB for Schannel. */
-static uint8_t mqtt_workspace[AZ_IOT_AZ_MQTT_WORKSPACE_SIZE(4096, 4096, 8, 8192, 4096, 8192)];
-opts.mqtt_adapter = az_iot_az_mqtt_get_adapter(); /* or az_iot_paho_get_adapter() */
-opts.mqtt_limits = (az_iot_mqtt_limits){ .send_buffer_size = 4096,
-                                         .receive_buffer_size = 4096,
-                                         .max_in_flight_messages = 8,
-                                         .message_store_size = 8192, /* resumed hub session */
-                                         .connect_strings_size = 4096 };
-opts.mqtt_workspace = mqtt_workspace; /* wiped by deinit() */
-opts.mqtt_workspace_size = sizeof(mqtt_workspace);
-```
+`mqtt_adapter`, `mqtt_limits` and `mqtt_workspace` are required: the connection client builds each
+session's MQTT client in the workspace with the adapter, with nothing to create or destroy and,
+with az_mqtt, no allocation. `init()` returns `AZ_IOT_ERR_INVALID_ARG` without an adapter. Sizing
+and rules: [client configuration](client-configuration.md#connection-client-az_iot_connection_clienth).
 
 The workspace holds one MQTT client at a time, which is enough because the client runs
 [one MQTT session at a time](#one-mqtt-session-at-a-time).
 
-## MQTT factory ownership
-
-- The application owns every factory it creates with `az_iot_paho_factory_create_*()`.
-- `az_iot_connection_client_register_mqtt_factory()` lends the factory to the connection client.
-  Keep it alive until `az_iot_connection_client_deinit()` returns, then destroy it with
-  `az_iot_paho_factory_destroy()`. Destroying it earlier is a use-after-free.
-- A factory that was never registered, or whose registration failed, can be destroyed at any time.
-- Registering the same factory twice returns `AZ_IOT_OK` and keeps one registration.
-
-The same rules apply to the az_mqtt adapter factories, and match the certificate providers:
-the application creates them, and destroys them after the connection client.
+The adapters are constants; like the certificate providers, the workspace is the application's
+again once `az_iot_connection_client_deinit()` returns, which wipes it.
 Each sample that connects is also built on az_mqtt, from the same `main.c`
 ([samples](../samples/README.md#build)).
 
@@ -95,8 +74,6 @@ Teardown:
 ```c
 /* deinit feature clients, then: */
 az_iot_connection_client_deinit(&client);
-az_iot_paho_factory_destroy(v3);
-az_iot_paho_factory_destroy(v5);
 ```
 
 To skip DPS and connect straight to a hub, set `iothub_hostname` and `device_id` instead of the `dps` fields,

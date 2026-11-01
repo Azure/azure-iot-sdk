@@ -5,7 +5,7 @@
 /* SPDX-License-Identifier: MIT */
 /* The connection client building its MQTT clients in an application workspace
  * (opts.mqtt_adapter): init() checks, one client at a time across the DPS and hub sessions,
- * adapter errors, and the wipe at deinit(). The factory path is covered by the other suites. */
+ * adapter errors, and the wipe at deinit(). */
 
 #include <stdarg.h>
 #include <stddef.h>
@@ -212,6 +212,26 @@ static void assert_connects_to(az_iot_mock_mqtt_client* m, const char* host)
   assert_string_equal(connect->connect.host, host);
 }
 
+/* mqtt_adapter is required: without it there is no way to build an MQTT client. */
+static void init_refuses_a_null_mqtt_adapter(void** state)
+{
+  adapter_fixture* fx = (adapter_fixture*)*state;
+  static uint8_t untouched[sizeof(az_iot_connection_client)];
+  memset(&fx->client, 0x5A, sizeof(fx->client));
+  memset(untouched, 0x5A, sizeof(untouched));
+
+  az_iot_connection_client_options opts = direct_options();
+  opts.mqtt_limits = k_limits;
+  opts.mqtt_workspace = fx->mqtt_workspace;
+  opts.mqtt_workspace_size = fx->mqtt_workspace_size;
+  assert_int_equal(az_iot_connection_client_init(&fx->client, &opts), AZ_IOT_ERR_INVALID_ARG);
+  assert_memory_equal(&fx->client, untouched, sizeof(fx->client));
+
+  opts.mqtt_adapter = az_iot_mock_mqtt_get_adapter();
+  assert_int_equal(az_iot_connection_client_init(&fx->client, &opts), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client_deinit(&fx->client), AZ_IOT_OK);
+}
+
 static void init_checks_the_mqtt_workspace(void** state)
 {
   adapter_fixture* fx = (adapter_fixture*)*state;
@@ -341,7 +361,6 @@ static void a_direct_hub_connect_builds_its_client_in_the_workspace(void** state
   adapter_fixture* fx = (adapter_fixture*)*state;
   init_with_mock_adapter(fx, direct_options());
 
-  /* No factory registered: the adapter builds the client. */
   assert_int_equal(az_iot_connection_client_open(&fx->client), AZ_IOT_OK);
   az_iot_mock_mqtt_client* hub = az_iot_mock_mqtt_adapter_last_client();
   assert_non_null(hub);
@@ -821,6 +840,7 @@ int main(void)
     cmocka_unit_test(a_failed_test_helper_init_leaves_no_loan_behind),
     cmocka_unit_test_setup_teardown(
         the_mock_adapter_reports_its_newest_live_client, setup, teardown),
+    cmocka_unit_test_setup_teardown(init_refuses_a_null_mqtt_adapter, setup, teardown),
     cmocka_unit_test_setup_teardown(init_checks_the_mqtt_workspace, setup, teardown),
     cmocka_unit_test_setup_teardown(init_refuses_overlapping_workspaces, setup, teardown),
     cmocka_unit_test_setup_teardown(init_accepts_adjacent_workspaces, setup, teardown),

@@ -78,8 +78,8 @@ mapfile -t first_party < <(
             while read -r x; do
                 printf '%s\n' "${x}" "${x}_new" "${x}_free" "d2i_${x}" "i2d_${x}" "${x}_it" "${x}_?"
             done
-        # Names an object-like macro stands for (#define _AZM_FACTORY_CREATE
-        # az_iot_az_mqtt_factory_create_v5): a definition may use the macro.
+        # Names an object-like macro stands for (#define _AZM_INIT
+        # az_iot_az_mqtt__init_v5): a definition may use the macro.
         grep -rhoE --include='*.c' --include='*.h' \
             '^[[:space:]]*#[[:space:]]*define[[:space:]]+[A-Za-z_][A-Za-z0-9_]*[[:space:]]+[a-z_][a-z0-9_]*[[:space:]]*$' \
             "${root_dir}/src" "${root_dir}/adapters" |

@@ -79,15 +79,6 @@ static az_iot_mqtt_client* build_mock_client(az_iot_mqtt_version version)
   return c;
 }
 
-static void factory_advertises_version(void** state)
-{
-  (void)state;
-  az_iot_mqtt_factory* f = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
-  assert_non_null(f);
-  assert_int_equal(f->version, AZ_IOT_MQTT_VERSION_3_1_1);
-  az_iot_mock_mqtt_factory_destroy(f);
-}
-
 static void client_carries_iface_pointer_with_version(void** state)
 {
   (void)state;
@@ -664,7 +655,6 @@ int main(void)
     cmocka_unit_test(user_properties_find_matches_whole_keys_and_the_first),
     cmocka_unit_test(user_properties_malformed_sources_are_reported),
     cmocka_unit_test(user_properties_null_arguments_are_refused),
-    cmocka_unit_test(factory_advertises_version),
     cmocka_unit_test(client_carries_iface_pointer_with_version),
     cmocka_unit_test(publish_records_topic_payload_and_assigns_packet_id),
     cmocka_unit_test(scripted_failure_propagates_to_caller),

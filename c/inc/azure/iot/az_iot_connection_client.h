@@ -958,8 +958,8 @@ extern "C"
     uint32_t csr_response_timeout_ms;
     /**
      * @brief MQTT implementation that builds each session's MQTT client in mqtt_workspace, e.g.
-     * az_iot_az_mqtt_get_adapter(). NULL: clients come from the factories registered with
-     * az_iot_connection_client_register_mqtt_factory(); otherwise those are not used.
+     * az_iot_az_mqtt_get_adapter(). Required: init() fails with AZ_IOT_ERR_INVALID_ARG when it is
+     * NULL or lacks get_workspace_size or init.
      *
      * One MQTT client at a time: a provisioning session cannot start while the hub session's
      * client exists, nor the reverse. Such a start fails with AZ_IOT_ERR_BUSY, reported and
@@ -967,14 +967,17 @@ extern "C"
      * provisioning session beside the hub session.
      */
     const az_iot_mqtt_adapter* mqtt_adapter;
-    /** @brief Sizes of each MQTT client mqtt_adapter builds. Unused without mqtt_adapter. */
+    /**
+     * @brief Sizes of each MQTT client mqtt_adapter builds. Required: init() fails with
+     * AZ_IOT_ERR_INVALID_ARG when mqtt_adapter->get_workspace_size() rejects them.
+     */
     az_iot_mqtt_limits mqtt_limits;
     /**
      * @brief Memory for the MQTT client, owned by the client from init() to deinit(), which wipes
-     * it. At least mqtt_adapter->get_workspace_size(&mqtt_limits) bytes, any alignment. Required
-     * with mqtt_adapter: init() fails with AZ_IOT_ERR_INVALID_ARG when it is NULL, and with
+     * it. At least mqtt_adapter->get_workspace_size(&mqtt_limits) bytes, any alignment. Required:
+     * init() fails with AZ_IOT_ERR_INVALID_ARG when it is NULL, and with
      * AZ_IOT_ERR_NOT_ENOUGH_SPACE when it is too small. Must not overlap workspace: init() fails
-     * with AZ_IOT_ERR_INVALID_ARG when the two share a byte. Unused without mqtt_adapter.
+     * with AZ_IOT_ERR_INVALID_ARG when the two share a byte.
      */
     uint8_t* mqtt_workspace;
     size_t mqtt_workspace_size; /**< Bytes in mqtt_workspace. */
@@ -1363,9 +1366,6 @@ extern "C"
 #error "Connection client sizes are no longer set by macros: use az_iot_connection_client_limits."
 #endif
 
-/* MQTT adapter factories one client can register. */
-#define AZ_IOT_MAX_MQTT_FACTORIES 4
-
 /* Defaults applied when the corresponding option is left at 0. */
 #ifndef AZ_IOT_DEFAULT_KEEP_ALIVE_SECONDS
 #define AZ_IOT_DEFAULT_KEEP_ALIVE_SECONDS 30
@@ -1728,8 +1728,6 @@ extern "C"
   {
     az_iot_connection_client_options opts;
 
-    az_iot_mqtt_factory factories[AZ_IOT_MAX_MQTT_FACTORIES];
-    size_t factory_count;
     /* The session's MQTT client built in opts.mqtt_workspace, or NULL. */
     az_iot_mqtt_client* mqtt_workspace_client;
 
@@ -2238,8 +2236,7 @@ extern "C"
    * mode on the returned struct before az_iot_connection_client_init():
    *   - Always: workspace and workspace_size (AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE
    *     bytes for the default limits).
-   *   - MQTT: mqtt_adapter, mqtt_limits, mqtt_workspace and mqtt_workspace_size, or factories
-   *     registered with az_iot_connection_client_register_mqtt_factory() after init().
+   *   - Always: mqtt_adapter, mqtt_limits, mqtt_workspace and mqtt_workspace_size.
    *   - DPS (iothub_hostname==NULL): dps.id_scope, dps.registration_id.
    *   - Direct hub connect: iothub_hostname, device_id; also set
    *     connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5 for an IoT Hub
@@ -2264,10 +2261,8 @@ extern "C"
   /**
    * @brief Deinitialize the client.
    *
-   * Destroys the MQTT clients, then wipes workspace and mqtt_workspace. Does not destroy factories
-   * registered with az_iot_connection_client_register_mqtt_factory(): the application owns them
-   * and destroys them after this returns. Not callable from a callback the client runs: call it
-   * after do_work() returns.
+   * Destroys the MQTT clients, then wipes workspace and mqtt_workspace. Not callable from a
+   * callback the client runs: call it after do_work() returns.
    *
    * Not AZ_NODISCARD: teardown op commonly called fire-and-forget.
    *
@@ -2275,29 +2270,6 @@ extern "C"
    * callback, with nothing released.
    */
   az_iot_result az_iot_connection_client_deinit(az_iot_connection_client* client);
-
-  /**
-   * @brief Register an MQTT factory in the client's adapter registry.
-   *
-   * The client may hold multiple factories; at session-open time it picks the one whose version
-   * matches the session (DPS and mqttv3: v3.1.1; mqttv5: v5).
-   *
-   * Ownership: the application owns the factory. The struct is copied and need not outlive this
-   * call; factory_ctx is borrowed and must stay valid until az_iot_connection_client_deinit()
-   * returns. Adapter factories (Paho, az_mqtt) are their own factory_ctx, so destroy them
-   * (e.g. az_iot_paho_factory_destroy()) only after deinit(). Registering the same factory again
-   * returns AZ_IOT_OK and changes nothing. On any other result nothing is borrowed; the application
-   * may release the factory at once.
-   *
-   * @param client A client initialized with az_iot_connection_client_init().
-   * @param factory The factory.
-   * @retval AZ_IOT_OK Registered (or already registered).
-   * @retval AZ_IOT_ERR_INVALID_ARG NULL client, factory, or factory->create.
-   * @retval AZ_IOT_ERR_NOT_SUPPORTED The registry is full (AZ_IOT_MAX_MQTT_FACTORIES).
-   */
-  AZ_NODISCARD az_iot_result az_iot_connection_client_register_mqtt_factory(
-      az_iot_connection_client* client,
-      const az_iot_mqtt_factory* factory);
 
   /* Ask to be told about every connection-state transition.
    *

@@ -11,13 +11,9 @@
  *   - inject inbound MQTT events (CONNECTED / MESSAGE / *_ACK / DISCONNECTED / ERROR)
  *     that get delivered to the registered callback when process_loop() runs
  *
- * Lifetime: az_iot_mock_mqtt_factory_create() returns a factory whose create()
- * function produces az_iot_mqtt_client instances backed by this mock. The factory
- * keeps a back-pointer to the most-recently-created client so a test can introspect
- * it. When the test is done, call az_iot_mock_mqtt_factory_destroy() to free
- * everything (any client still alive is destroyed first).
- *
- * az_iot_mock_mqtt_get_adapter() builds the same clients in application memory instead.
+ * Lifetime: az_iot_mock_mqtt_get_adapter() builds az_iot_mqtt_client instances backed by
+ * this mock in application memory, and keeps the newest live one so a test can introspect
+ * it (az_iot_mock_mqtt_adapter_last_client()).
  *
  * Not thread-safe; tests are single-threaded.
  */
@@ -144,19 +140,7 @@ extern "C"
 
   typedef struct az_iot_mock_mqtt_client az_iot_mock_mqtt_client;
 
-  /* Construct a factory that produces mock MQTT clients of the given version.
-   * Caller owns and must destroy. */
-  az_iot_mqtt_factory* az_iot_mock_mqtt_factory_create(az_iot_mqtt_version version);
-
-  void az_iot_mock_mqtt_factory_destroy(az_iot_mqtt_factory* factory);
-
-  /* The most-recently-created client from this factory, or NULL if none. */
-  az_iot_mock_mqtt_client* az_iot_mock_mqtt_factory_last_client(const az_iot_mqtt_factory* factory);
-
-  /* Clients of this factory destroyed after a disconnect() call. */
-  size_t az_iot_mock_mqtt_factory_disconnected_destroyed(const az_iot_mqtt_factory* factory);
-
-  /* Cast an az_iot_mqtt_client to its mock backing if it came from this factory. */
+  /* Cast an az_iot_mqtt_client to its mock backing if the mock adapter built it. */
   az_iot_mock_mqtt_client* az_iot_mock_mqtt_client_from(az_iot_mqtt_client* c);
 
   /**
@@ -174,9 +158,8 @@ extern "C"
   extern const az_iot_mqtt_limits az_iot_mock_mqtt_limits;
 
   /**
-   * @brief The mock adapter building only @p version clients, as a factory of that version does:
-   * init() refuses the other version with AZ_IOT_ERR_NOT_SUPPORTED. Same clients and counts as
-   * az_iot_mock_mqtt_get_adapter().
+   * @brief The mock adapter building only @p version clients: init() refuses the other version with
+   * AZ_IOT_ERR_NOT_SUPPORTED. Same clients and counts as az_iot_mock_mqtt_get_adapter().
    */
   const az_iot_mqtt_adapter* az_iot_mock_mqtt_get_adapter_for_version(az_iot_mqtt_version version);
 
@@ -214,7 +197,7 @@ extern "C"
   void az_iot_mock_mqtt_adapter_reset(void);
 
   /** @brief Arms a one-shot CONNECT failure with @p result on the next client the mock adapter
-   * builds, as az_iot_mock_mqtt_factory_fail_next_connect() does for a factory. */
+   * builds: for code paths that build their client inside the call under test. */
   void az_iot_mock_mqtt_adapter_fail_next_connect(az_iot_result result);
 
   /* Value of the User Property named `key` on a recorded call, or NULL if the
@@ -231,13 +214,6 @@ extern "C"
   /* Script the next return code for the given call kind. By default every call
    * returns AZ_IOT_OK. The override is one-shot: it applies to the next call of
    * the kind, then reverts to AZ_IOT_OK. */
-  /* Arm a one-shot CONNECT failure on the NEXT client this factory creates.
-   * For code paths that build their own adapter inside the call under test,
-   * where there is no client object to script beforehand. */
-  void az_iot_mock_mqtt_factory_fail_next_connect(
-      az_iot_mqtt_factory* factory,
-      az_iot_result result);
-
   void az_iot_mock_mqtt_client_set_next_result(
       az_iot_mock_mqtt_client* m,
       az_iot_mock_call_kind kind,

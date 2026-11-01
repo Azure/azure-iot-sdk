@@ -896,7 +896,7 @@ connection failure path:
 | `AZ_IOT_ERR_PROTOCOL` | A service payload could not be parsed. |
 | `AZ_IOT_ERR_MQTT` | The catch-all for transport and broker failures. **The great majority of wire failures land here**, including every CONNACK code that is not an identity refusal, every SUBACK refusal the broker may not repeat, and every PUBACK failure that is not `AZ_IOT_ERR_PUBLISH_REFUSED` or quota exceeded. |
 | `AZ_IOT_ERR_DPS` | Registration returned a failed or disabled status. |
-| `AZ_IOT_ERR_NOT_SUPPORTED` | No adapter factory for the required protocol version, or `opts.mqtt_adapter` does not build it; a fixed-size registry is full; a service-supplied string is longer than its buffer. |
+| `AZ_IOT_ERR_NOT_SUPPORTED` | `opts.mqtt_adapter` does not build the required protocol version; a fixed-size registry is full; a service-supplied string is longer than its buffer. |
 | `AZ_IOT_ERR_BUSY` | A single-slot operation is already in flight, or the service is throttling. |
 | `AZ_IOT_ERR_NOT_ENOUGH_SPACE` | A compile-time buffer bound was exceeded. |
 | `AZ_IOT_ERR_NOT_FOUND` | A required field was absent from a service payload. |
@@ -969,7 +969,6 @@ a slow path. Constants are `#ifndef`-guarded and can be raised at build time, ex
 
 | Constant | Value | What it bounds | Result when exceeded |
 | --- | --- | --- | --- |
-| `AZ_IOT_MAX_MQTT_FACTORIES` | 4 | Registered adapter factories | `AZ_IOT_ERR_NOT_SUPPORTED` |
 | `limits.max_pending_publishes` | 16 | QoS-1 publishes awaiting a PUBACK **with an ack callback**: per-feature-client reservations plus a shared pool | `AZ_IOT_ERR_BUSY` when the caller's pool is full — nothing is sent; a reservation that does not fit fails with `AZ_IOT_ERR_NOT_ENOUGH_SPACE`, one whose slots publishes in flight occupy with `AZ_IOT_ERR_BUSY` |
 | `limits.max_persistent_subscriptions` | 8 | Persistent subscription registry | `AZ_IOT_ERR_NOT_ENOUGH_SPACE` |
 | `AZ_IOT_PERSISTENT_SUB_TOPIC_MAX` | 128 | Persistent topic-filter string | `AZ_IOT_ERR_INVALID_ARG` |
@@ -1030,7 +1029,7 @@ connection client itself, or a feature client.
 | Handshake | TLS alert detail | not in the result | `paho_ssl_error_callback` | logged only | The OpenSSL error queue is drained line by line to the trace log when `AZ_IOT_PAHO_SSL` is built and tracing is enabled. It is the only place the concrete reason appears. |
 | Handshake | **Client certificate rejected during the handshake** | `AZ_IOT_ERR_MQTT` | Paho negative code | reconnect | No MQTT session exists, so no CONNACK code is available. Correctly **not** treated as an identity rejection: the negative-code rule exists for exactly this. Consequence: a device whose operational certificate has been revoked retries forever instead of re-provisioning. |
 | CONNACK | **Client certificate accepted by TLS, identity refused at CONNACK** (`rc=5` / `0x87 Not authorized`) | `AZ_IOT_ERR_IDENTITY_REJECTED` | `az_iot_mqtt_connack_result()` | identity ladder; `dps_start()` in `REPROVISION` mode, the cached hub in `RETRY_HUB` | The distinction between this row and the previous one is exactly the distinction the negative-code rule encodes, and it is the reason adapters must not flatten codes. |
-| Configuration | TLS is selected by any of: a client certificate, a trusted CA, key custody, or the explicit `use_tls` flag | — | `paho_factory_create` | scheme selected as `ssl://` or `tcp://` | There is deliberately **no** option to disable server-certificate validation: whenever a TLS session is established, the chain **and** the hostname are validated unconditionally. `use_tls` exists for a connection carrying no other TLS material, such as server-authentication-only; it replaced `verify_server`, which could switch validation off and did so for any caller who left a zero-initialised struct alone. |
+| Configuration | TLS is selected by any of: a client certificate, a trusted CA, key custody, or the explicit `use_tls` flag | — | `build_server_uri()` (Paho adapter) | scheme selected as `ssl://` or `tcp://` | There is deliberately **no** option to disable server-certificate validation: whenever a TLS session is established, the chain **and** the hostname are validated unconditionally. `use_tls` exists for a connection carrying no other TLS material, such as server-authentication-only; it replaced `verify_server`, which could switch validation off and did so for any caller who left a zero-initialised struct alone. |
 
 #### 9.5.3 Phase 3 — CONNECT / CONNACK
 
@@ -1046,9 +1045,8 @@ connection client itself, or a feature client.
 | CONNECT | No CONNACK within the connect timeout | `AZ_IOT_ERR_MQTT` | Paho | ordinary failed attempt | 30 s by default, configurable; the same value is used for the DPS bootstrap connect. |
 | CONNACK | Arrives after `close()` | ignored | connection client | logged at debug, `break` — the pending DISCONNECTED event settles the session to `IDLE` | Guarded on `user_close || state == DISCONNECTING`. Correct. |
 | CONNACK | v5 refusal carrying a Reason String | as for its code | adapter | as for its code; the Reason String becomes `error->message` (source `MQTT`), truncated to 128 bytes | az_mqtt reports it; Paho does not, because it passes none of a refused CONNACK's properties. |
-| CONNECT | No factory registered for the version the role requires | `AZ_IOT_ERR_NOT_SUPPORTED` | `find_factory()` | `open()` transitions back to `IDLE` and returns the error | Role → version: DPS and the MQTTv3 hub are v3.1.1, the MQTTv5 hub is v5. |
 | CONNECT | The other session's MQTT client still exists | `AZ_IOT_ERR_INTERNAL` | DPS and hub connect | as for any failed start: retried under the policy, or `IDLE` and returned from `open()` | One MQTT session at a time: callers end, or wait for, the other session first, so this is a defect. Checked before `create_session_mqtt_client()`, whose `AZ_IOT_ERR_BUSY` for an occupied MQTT workspace it therefore precedes. The live client is not touched. |
-| CONNECT | `opts.mqtt_adapter`: `init()` fails | `AZ_IOT_ERR_NOT_SUPPORTED` (version not built), `AZ_IOT_ERR_NOT_ENOUGH_SPACE`; otherwise `AZ_IOT_ERR_INTERNAL` | `create_session_mqtt_client()` | as for a missing factory | `init()` of the connection client already checked the workspace size. |
+| CONNECT | `opts.mqtt_adapter`: `init()` fails | `AZ_IOT_ERR_NOT_SUPPORTED` (version not built), `AZ_IOT_ERR_NOT_ENOUGH_SPACE`; otherwise `AZ_IOT_ERR_INTERNAL` | `create_session_mqtt_client()` | `open()` transitions back to `IDLE` and returns the error | Role → version: DPS and the MQTTv3 hub are v3.1.1, the MQTTv5 hub is v5. `init()` of the connection client already checked the workspace size. |
 
 #### 9.5.4 Phase 4 — DPS provisioning
 
@@ -1139,7 +1137,7 @@ registry carries MQTTv3 feature filters and application custom topics.
 | Twin | Pending-request pool full (9th) | `AZ_IOT_ERR_NOT_SUPPORTED` | twin client | the request is rejected | Contained. Distinct from the `429` row above, which is the point. |
 | Direct methods | In-flight pool full (5th) | **none** | direct-method client | **the invocation is dropped**, with a warning logged | A slot is released by responding, or reclaimed by `requests_expire_stale()` after `response_timeout_seconds`. |
 | Direct methods (mqttv5) | Probe-ack, result or abandon while the hub is not `CONNECTED` (e.g. between CONNACK and the birth-ack) | `AZ_IOT_ERR_NOT_CONNECTED` from the publish; `respond()` returns `AZ_IOT_OK` | direct-method client | held, with its ready token or slot, and published on the next `HUB:CONNECTED` | Dropped if its budget runs out first. Probe rejections and abandons share `AZ_IOT_MQTTV5_DM_MAX_CONCURRENT` held entries; past that they are dropped with a warning. |
-| Connect | No factory for the required version | `AZ_IOT_ERR_NOT_SUPPORTED` | `find_factory()` | back to `IDLE`, error returned from `open()` | |
+| Connect | `opts.mqtt_adapter` does not build the required version | `AZ_IOT_ERR_NOT_SUPPORTED` | `create_session_mqtt_client()` | back to `IDLE`, error returned from `open()` | |
 | Connect | The other session's MQTT client still exists | `AZ_IOT_ERR_INTERNAL` | DPS and hub connect | the start fails and is retried like any other | One MQTT session at a time; precedes the MQTT workspace's `AZ_IOT_ERR_BUSY`. |
 | Registry | Session-end handler registry full (5th distinct context) | `AZ_IOT_ERR_NOT_SUPPORTED` | connection client | the registration fails | Re-registering the same context upserts rather than consuming a slot. |
 | Registry | Inbound dispatch table full (9th) | `AZ_IOT_ERR_NOT_SUPPORTED` | dispatch | the registration fails | |
@@ -1164,7 +1162,7 @@ registry carries MQTTv3 feature filters and application custom topics.
 | `deinit()` with PUBACKs pending | — | none | connection client | the table is zeroed **without** invoking the callbacks | Deliberate: on deinit the context those callbacks close over may already be gone, and calling into it would turn cleanup into a use-after-free. Contrast session teardown, where the callbacks **do** fire. |
 | `deinit()` with session handlers registered | — | none | connection client | cleared without invoking them | Same reasoning. |
 | `deinit()` with a CSR in flight | — | none | connection client | no callback fires | The slot is irrelevant after destruction. |
-| `deinit()` mid-handshake | — | none | `teardown_active()` | the presence phase is reset; the hub and DPS adapters are destroyed; registered factories are left to the application | |
+| `deinit()` mid-handshake | — | none | `teardown_active()` | the presence phase is reset; the hub and DPS adapters are destroyed and `mqtt_workspace` is wiped | |
 
 ---
 

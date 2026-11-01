@@ -12,9 +12,10 @@
  * written when called and wait only while the socket send buffer is full, at most
  * AZ_MQTT_TRANSPORT_SEND_TIMEOUT_MS (over WebSockets, up to twice that).
  *
- * Register one or both factories with the connection client; the SDK picks one by MQTT
- * version (v3.1.1 for DPS and mqttv3, v5 for mqttv5). Each client the factory creates owns its
- * buffers, sized at build time (see the AZ_IOT_AZ_MQTT_* CMake cache variables).
+ * Set az_iot_connection_client_options::mqtt_adapter to az_iot_az_mqtt_get_adapter(): the
+ * connection client builds each session's client in mqtt_workspace, of the MQTT version the
+ * session needs (v3.1.1 for DPS and mqttv3, v5 for mqttv5), with the buffer sizes of
+ * mqtt_limits. AZ_IOT_AZ_MQTT_WORKSPACE_SIZE() sizes a static workspace.
  *
  * TLS backend: OpenSSL 3 or mbedTLS on Linux, Schannel on Windows, ESP-IDF's mbedTLS on ESP32
  * (platforms/esp32; with no trusted CA, the server is verified against the ESP-IDF certificate
@@ -36,30 +37,6 @@
 extern "C"
 {
 #endif
-
-  /**
-   * @brief Create a factory of MQTT 3.1.1 clients.
-   * @return The factory, or NULL when out of memory. Release it with
-   * az_iot_az_mqtt_factory_destroy().
-   */
-  az_iot_mqtt_factory* az_iot_az_mqtt_factory_create_v3_1_1(void);
-
-  /**
-   * @brief Create a factory of MQTT 5 clients.
-   * @return The factory, or NULL when out of memory. Release it with
-   * az_iot_az_mqtt_factory_destroy().
-   */
-  az_iot_mqtt_factory* az_iot_az_mqtt_factory_create_v5(void);
-
-  /**
-   * @brief Destroy a factory from either function above (NULL: no-op). Clients it created are
-   * not destroyed; they follow the az_iot_mqtt_iface destroy() contract.
-   *
-   * The application owns the factory; registering it only lends it to the connection client.
-   * A registered factory must stay alive until az_iot_connection_client_deinit() returns;
-   * destroy it after that, or at any time if it was never registered or registration failed.
-   */
-  void az_iot_az_mqtt_factory_destroy(az_iot_mqtt_factory* factory);
 
   /**
    * @brief The az_mqtt adapter: builds MQTT 3.1.1 and MQTT 5 clients in application memory, with

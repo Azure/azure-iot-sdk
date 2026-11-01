@@ -30,14 +30,22 @@ void az_iot_test_provider_init(az_iot_test_provider* provider, const char* trust
 /**
  * @brief az_iot_connection_client_init() with a shared az_iot_test_provider
  * (no CA) when @p opts has no certificate_provider, a default-size
- * workspace lent to @p client when @p opts has no workspace, and, when @p opts
- * has an mqtt_adapter but no mqtt_workspace, an mqtt_workspace sized for its
+ * workspace lent to @p client when @p opts has no workspace, the mock MQTT
+ * adapter (az_iot_mock_mqtt_get_adapter()) when @p opts has no mqtt_adapter,
+ * and, when @p opts has no mqtt_workspace, an mqtt_workspace sized for its
  * mqtt_limits (az_iot_mock_mqtt_limits when all are 0) lent too, until
  * az_iot_test_connection_client_deinit().
  */
 AZ_NODISCARD az_iot_result az_iot_test_connection_client_init(
     az_iot_connection_client* client,
     const az_iot_connection_client_options* opts);
+
+/**
+ * @brief Has @p opts build its MQTT clients with the mock adapter, in one MQTT
+ * workspace every caller shares: for connections never opened, or opened one
+ * at a time. Leaves the certificate provider and workspace as they are.
+ */
+void az_iot_test_use_mock_mqtt_adapter(az_iot_connection_client_options* opts);
 
 /**
  * @brief az_iot_connection_client_deinit(), then frees the workspace

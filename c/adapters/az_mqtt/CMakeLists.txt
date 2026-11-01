@@ -2,27 +2,26 @@
 # Licensed under the MIT license. See LICENSE file in the project root for full license information.
 
 # az_mqtt MQTT adapter (AZ_IOT_WITH_AZ_MQTT). Builds az_mqtt from deps/az_mqtt with the SDK's
-# azure-sdk-for-c, then the adapter: one library with the MQTT 3.1.1 and MQTT 5 factories.
+# azure-sdk-for-c, then the adapter: one library with the MQTT 3.1.1 and MQTT 5 clients.
 
-# Per-client sizes: defaults in az_iot_az_mqtt_config.h. Each option below is passed to the
+# Compile-time limits: defaults in az_iot_az_mqtt_config.h. Each option below is passed to the
 # compiler only when set, so a value from AZ_IOT_AZ_MQTT_CONFIG_FILE or the footprint applies.
-if(DEFINED AZ_IOT_AZ_MQTT_BUFFER_SIZE)
-    message(FATAL_ERROR "AZ_IOT_AZ_MQTT_BUFFER_SIZE was replaced by AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE "
-        "and AZ_IOT_AZ_MQTT_RECEIVE_BUFFER_SIZE: unset it (-UAZ_IOT_AZ_MQTT_BUFFER_SIZE)")
-endif()
+# Buffer sizes and requests in flight are run-time values (az_iot_mqtt_limits).
+foreach(_v BUFFER_SIZE SEND_BUFFER_SIZE RECEIVE_BUFFER_SIZE INFLIGHT_MAX)
+    if(DEFINED AZ_IOT_AZ_MQTT_${_v} AND NOT AZ_IOT_AZ_MQTT_${_v} STREQUAL "")
+        message(FATAL_ERROR "AZ_IOT_AZ_MQTT_${_v} was removed: set the MQTT client's sizes in "
+            "az_iot_connection_client_options::mqtt_limits, and unset it (-UAZ_IOT_AZ_MQTT_${_v})")
+    endif()
+    unset(AZ_IOT_AZ_MQTT_${_v} CACHE) # The empty entry an earlier configure left.
+endforeach()
+unset(_v)
 set(AZ_IOT_AZ_MQTT_FOOTPRINT "" CACHE STRING
-    "az_mqtt adapter: size defaults, DEFAULT or CONSTRAINED (empty: DEFAULT)")
+    "az_mqtt adapter: limit defaults, DEFAULT or CONSTRAINED (empty: DEFAULT)")
 set_property(CACHE AZ_IOT_AZ_MQTT_FOOTPRINT PROPERTY STRINGS "" DEFAULT CONSTRAINED)
-set(AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE "" CACHE STRING
-    "az_mqtt adapter: largest outgoing packet (empty: footprint's)")
-set(AZ_IOT_AZ_MQTT_RECEIVE_BUFFER_SIZE "" CACHE STRING
-    "az_mqtt adapter: largest incoming packet; MQTT 5: also the Maximum Packet Size advertised (empty: footprint's)")
-set(AZ_IOT_AZ_MQTT_INFLIGHT_MAX "" CACHE STRING
-    "az_mqtt adapter: requests in flight at once, 1-32767; MQTT 5: also the Receive Maximum advertised (empty: footprint's)")
 set(AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX "" CACHE STRING
     "az_mqtt adapter: MQTT 5 user properties on CONNECT (empty: footprint's)")
 set(AZ_IOT_AZ_MQTT_CONFIG_FILE "" CACHE STRING
-    "az_mqtt adapter: header with size definitions, as written in a quoted #include (empty: none)")
+    "az_mqtt adapter: header with limit definitions, as written in a quoted #include (empty: none)")
 
 if(WIN32)
     set(_az_mqtt_tls schannel)
@@ -94,13 +93,10 @@ elseif(NOT _az_mqtt_footprint STREQUAL "")
         "AZ_IOT_AZ_MQTT_FOOTPRINT must be DEFAULT or CONSTRAINED (got '${AZ_IOT_AZ_MQTT_FOOTPRINT}')")
 endif()
 unset(_az_mqtt_footprint)
-foreach(_v SEND_BUFFER_SIZE RECEIVE_BUFFER_SIZE INFLIGHT_MAX USER_PROPERTIES_MAX)
-    if(NOT AZ_IOT_AZ_MQTT_${_v} STREQUAL "")
-        target_compile_definitions(az_iot_adapter_az_mqtt PRIVATE
-            AZ_IOT_AZ_MQTT_${_v}=${AZ_IOT_AZ_MQTT_${_v}})
-    endif()
-endforeach()
-unset(_v)
+if(NOT AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX STREQUAL "")
+    target_compile_definitions(az_iot_adapter_az_mqtt PRIVATE
+        AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX=${AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX})
+endif()
 if(NOT AZ_IOT_AZ_MQTT_CONFIG_FILE STREQUAL "")
     target_compile_definitions(az_iot_adapter_az_mqtt PRIVATE
         AZ_IOT_AZ_MQTT_CONFIG_FILE="${AZ_IOT_AZ_MQTT_CONFIG_FILE}")

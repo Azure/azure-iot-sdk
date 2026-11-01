@@ -15,6 +15,7 @@
 #include "azure/iot/az_iot_version.h"
 
 #include "install_test.h"
+#include "install_test_mqtt_adapter.h"
 
 static az_iot_connection_client g_conn;
 static uint8_t g_connection_workspace[AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE];
@@ -30,6 +31,7 @@ int main(void)
   options.device_id = "install-test";
   options.workspace = g_connection_workspace;
   options.workspace_size = sizeof(g_connection_workspace);
+  install_test_use_stub_mqtt_adapter(&options);
   CHECK(az_iot_connection_client_init(&g_conn, &options) == AZ_IOT_OK);
   CHECK(
       az_iot_connection_client_get_state(&g_conn, AZ_IOT_CONN_SCOPE_HUB) == AZ_IOT_CONN_STATE_IDLE);

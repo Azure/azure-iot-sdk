@@ -3,10 +3,9 @@
 // information.
 
 /* SPDX-License-Identifier: MIT */
-/* az_mqtt adapter: clients of each version, from the adapter and from factories, a registered
- * factory destroyed after deinit(), the arguments connect(), publish() and subscribe() refuse, and
- * a CONNECT that cannot be encoded, without a network; PUBACK classification against an in-process
- * server.
+/* az_mqtt adapter: clients of each version, the arguments connect(), publish() and subscribe()
+ * refuse, and a CONNECT that cannot be encoded, without a network; PUBACK classification against an
+ * in-process server.
  */
 #include <stdarg.h>
 #include <stddef.h>
@@ -40,9 +39,7 @@ typedef socklen_t test_socklen;
 
 #include <cmocka.h>
 
-#include "az_iot_az_mqtt_config.h"
 #include "azure/iot/adapters/az_iot_adapter_az_mqtt.h"
-#include "azure/iot/az_iot_connection_client.h"
 #include "azure/iot/az_iot_mqtt_iface.h"
 #include "az_iot_test_mqtt_server.h"
 
@@ -63,44 +60,6 @@ static void check_unconnected_client(az_iot_mqtt_client* c, az_iot_mqtt_version 
   c->iface->destroy(c);
 }
 
-static void check_client(az_iot_mqtt_factory* f, az_iot_mqtt_version version)
-{
-  assert_non_null(f);
-  assert_int_equal(f->version, version);
-  check_unconnected_client(f->create(f->factory_ctx), version);
-}
-
-static void factories_create_clients_of_their_version(void** state)
-{
-  (void)state;
-  az_iot_mqtt_factory* v3 = az_iot_az_mqtt_factory_create_v3_1_1();
-  check_client(v3, AZ_IOT_MQTT_VERSION_3_1_1);
-  az_iot_az_mqtt_factory_destroy(v3);
-  az_iot_mqtt_factory* v5 = az_iot_az_mqtt_factory_create_v5();
-  check_client(v5, AZ_IOT_MQTT_VERSION_5);
-  az_iot_az_mqtt_factory_destroy(v5);
-  az_iot_az_mqtt_factory_destroy(NULL);
-}
-
-static uint8_t g_connection_workspace[AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE];
-
-static void a_registered_factory_is_destroyed_by_the_application_after_deinit(void** state)
-{
-  (void)state;
-  az_iot_connection_client conn;
-  az_iot_connection_client_options options = az_iot_connection_client_options_default();
-  options.iothub_hostname = "hub.example";
-  options.device_id = "az-mqtt-adapter-test";
-  options.workspace = g_connection_workspace;
-  options.workspace_size = sizeof(g_connection_workspace);
-  assert_int_equal(az_iot_connection_client_init(&conn, &options), AZ_IOT_OK);
-  az_iot_mqtt_factory* v5 = az_iot_az_mqtt_factory_create_v5();
-  assert_int_equal(az_iot_connection_client_register_mqtt_factory(&conn, v5), AZ_IOT_OK);
-  az_iot_connection_client_deinit(&conn);
-  // Under a leak checker: nothing left, and no double free.
-  az_iot_az_mqtt_factory_destroy(v5);
-}
-
 static az_iot_mqtt_connect_options valid_connect(void)
 {
   az_iot_mqtt_connect_options o = { 0 };
@@ -112,14 +71,19 @@ static az_iot_mqtt_connect_options valid_connect(void)
 static const az_iot_mqtt_version k_versions[]
     = { AZ_IOT_MQTT_VERSION_3_1_1, AZ_IOT_MQTT_VERSION_5 };
 
-/** @brief This build's buffers with a send buffer of @p send_buffer_size bytes, a message store for
+/** @brief Default buffer sizes and requests in flight of these tests' clients. */
+#define TEST_SEND_BUFFER_SIZE ((size_t)264u * 1024u)
+#define TEST_RECEIVE_BUFFER_SIZE ((size_t)264u * 1024u)
+#define TEST_MAX_IN_FLIGHT_MESSAGES 64u
+
+/** @brief The default buffers with a send buffer of @p send_buffer_size bytes, a message store for
  * one packet, and room for the largest connect strings of these tests. */
 static az_iot_mqtt_limits client_limits(size_t send_buffer_size)
 {
   az_iot_mqtt_limits const limits = {
     .send_buffer_size = send_buffer_size,
-    .receive_buffer_size = (size_t)AZ_IOT_AZ_MQTT_RECEIVE_BUFFER_SIZE,
-    .max_in_flight_messages = (uint16_t)AZ_IOT_AZ_MQTT_INFLIGHT_MAX,
+    .receive_buffer_size = TEST_RECEIVE_BUFFER_SIZE,
+    .max_in_flight_messages = (uint16_t)TEST_MAX_IN_FLIGHT_MESSAGES,
     .message_store_size = send_buffer_size + AZ_MQTT_INFLIGHT_MESSAGE_OVERHEAD,
     .connect_strings_size = (size_t)512u * 1024u,
   };
@@ -146,12 +110,12 @@ static az_iot_mqtt_client* create_client(
   return c;
 }
 
-/** @brief A @p version client with this build's buffers; see create_client(). */
+/** @brief A @p version client with the default buffers; see create_client(). */
 static az_iot_mqtt_client* create_default_client(
     az_iot_mqtt_version version,
     uint8_t** out_workspace)
 {
-  az_iot_mqtt_limits const limits = client_limits((size_t)AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE);
+  az_iot_mqtt_limits const limits = client_limits(TEST_SEND_BUFFER_SIZE);
   return create_client(version, &limits, out_workspace);
 }
 
@@ -314,7 +278,7 @@ static void a_connect_the_encoder_refuses_fails_the_attempt(void** state)
   o.lwt.topic = "will";
   o.lwt.payload = will;
   o.lwt.payload_len = sizeof(will);
-  connect_fails_before_any_io(o, (size_t)AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE, AZ_IOT_ERR_INVALID_ARG);
+  connect_fails_before_any_io(o, TEST_SEND_BUFFER_SIZE, AZ_IOT_ERR_INVALID_ARG);
 }
 
 // ──────────────────────── PUBACK, against an in-process server ──────────────────
@@ -1052,7 +1016,6 @@ int main(void)
   }
 #endif
   const struct CMUnitTest tests[] = {
-    cmocka_unit_test(factories_create_clients_of_their_version),
     cmocka_unit_test(the_adapter_builds_clients_of_the_version_asked),
     cmocka_unit_test(codec_next_user_property_skips_other_properties),
     cmocka_unit_test(codec_next_user_property_reports_malformed_blocks),
@@ -1063,7 +1026,6 @@ int main(void)
     cmocka_unit_test(codec_refuses_native_property_sizes_that_overflow),
     cmocka_unit_test(codec_refuses_an_oversized_topic),
     cmocka_unit_test(codec_refuses_a_reader_that_does_not_advance),
-    cmocka_unit_test(a_registered_factory_is_destroyed_by_the_application_after_deinit),
     cmocka_unit_test(connect_refuses_malformed_pointer_count_pairs),
     cmocka_unit_test(a_psa_client_key_is_refused_unless_alone_on_mbedtls),
     cmocka_unit_test(invalid_qos_and_v3_password_without_user_are_refused),

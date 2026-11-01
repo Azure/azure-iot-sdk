@@ -4,6 +4,19 @@
 
 ### Features Added
 
+- Breaking: the MQTT factory API is removed; the connection client builds every session's MQTT
+  client with `az_iot_connection_client_options::mqtt_adapter` in `mqtt_workspace`, sized by
+  `mqtt_limits`. All three are required: `init()` returns `AZ_IOT_ERR_INVALID_ARG` when
+  `mqtt_adapter` is NULL. Removed: `az_iot_mqtt_factory`,
+  `az_iot_connection_client_register_mqtt_factory()`, `AZ_IOT_MAX_MQTT_FACTORIES` (defining it is
+  a compile error), `az_iot_paho_factory_create_v3_1_1()`, `az_iot_paho_factory_create_v5()`,
+  `az_iot_paho_factory_destroy()`, `az_iot_az_mqtt_factory_create_v3_1_1()`,
+  `az_iot_az_mqtt_factory_create_v5()` and `az_iot_az_mqtt_factory_destroy()`. The az_mqtt
+  adapter's sizes are run-time values only: `AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE`,
+  `AZ_IOT_AZ_MQTT_RECEIVE_BUFFER_SIZE`, `AZ_IOT_AZ_MQTT_INFLIGHT_MAX` and
+  `AZ_IOT_AZ_MQTT_MESSAGE_STORAGE_SIZE` (macros, and the first three as CMake options) are removed;
+  defining one fails the build. The footprint now selects only
+  `AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX`. Neither adapter allocates its client any more.
 - Breaking: `AZ_IOT_SU_REQUEST_NO_TIMEOUT` is removed, and `az_iot_su_client_request_update()` and
   `az_iot_su_client_request_onboarding_update()` return `AZ_IOT_ERR_INVALID_ARG` for a timeout of
   0. The hub session is down while a check runs, so every check is bounded; pass
@@ -35,8 +48,8 @@
   `__dps_user_acquire()` and `__dps_user_release()` are removed. Behavior is unchanged.
 - Connection client: `az_iot_connection_client_options::mqtt_adapter`, `mqtt_limits`,
   `mqtt_workspace` and `mqtt_workspace_size` build each session's MQTT client in application
-  memory (e.g. `az_iot_az_mqtt_get_adapter()`), instead of registered factories (still used when
-  `mqtt_adapter` is NULL). `init()` checks the workspace size; `deinit()` wipes it. The workspace
+  memory (e.g. `az_iot_az_mqtt_get_adapter()`), instead of registered factories. `init()` checks
+  the workspace size; `deinit()` wipes it. The workspace
   holds one client at a time, as one MQTT session runs at a time.
 - Samples: the software updates samples (PC and ESP32) build their MQTT client in a static
   workspace through `mqtt_adapter`, like the other samples, instead of registering MQTT factories.
@@ -171,7 +184,7 @@
   `AZ_IOT_ERR_INVALID_ARG` without one. `AZ_IOT_MAX_PENDING_PUBACKS`, `AZ_IOT_MAX_PUBACK_RESERVATIONS`,
   `AZ_IOT_MAX_PERSISTENT_SUBS`, `AZ_IOT_MAX_SESSION_HANDLERS`, `AZ_IOT_MAX_FEATURE_STATE_OBSERVERS`,
   `AZ_IOT_MAX_APP_STATE_OBSERVERS`, `AZ_IOT_MAX_FEATURE_CLIENT_BINDS` and
-  `AZ_IOT_MAX_INBOUND_HANDLERS` are removed. `AZ_IOT_MAX_MQTT_FACTORIES`, `AZ_IOT_DPS_HOST_BUF`,
+  `AZ_IOT_MAX_INBOUND_HANDLERS` are removed. `AZ_IOT_DPS_HOST_BUF`,
   `AZ_IOT_DPS_DEVICE_ID_BUF`, `AZ_IOT_DPS_OPERATION_ID_MAX`, `AZ_IOT_CONNECTION_PROFILE_RAW_BUF`,
   `AZ_IOT_MQTT_USERNAME_BUF`, `AZ_IOT_PERSISTENT_SUB_TOPIC_MAX` and `AZ_IOT_DISPATCH_PREFIX_MAX` are
   fixed. Defining any of them before including the headers is a compile error, so no build of the
@@ -187,14 +200,14 @@
   and receive buffers, in-flight messages, message store and connect-string copies.
   `az_iot_az_mqtt_get_workspace_size()` gives the exact size; `AZ_IOT_AZ_MQTT_WORKSPACE_SIZE()` a
   constant-expression bound for static arrays. The client's `destroy()` wipes the workspace and
-  frees nothing. The factories are unchanged; they now allocate one workspace per client.
+  frees nothing.
 - Paho adapter in application memory: `az_iot_paho_get_adapter()` returns an
   `az_iot_mqtt_adapter` descriptor. The workspace holds the adapter's own state
   (`AZ_IOT_PAHO_WORKSPACE_SIZE`); Paho still allocates its internals and sizes its own buffers,
   so the limits are only checked. `destroy()` releases those internals, wipes the workspace
-  and frees nothing else. The factories are unchanged.
-- az_mqtt adapter: `AZ_IOT_AZ_MQTT_MESSAGE_STORAGE_SIZE` may be 0, for devices that only use clean
-  sessions: no message store is allocated, and a connect whose session outlives the connection
+  and frees nothing else.
+- az_mqtt adapter: `az_iot_mqtt_limits::message_store_size` may be 0, for devices that only use
+  clean sessions: no message store is reserved, and a connect whose session outlives the connection
   (`clean_start` false; MQTT 5: with `session_expiry_seconds` > 0) returns `AZ_IOT_ERR_NOT_SUPPORTED`.
 - Retry policy: `az_iot_retry_policy::jitter_mode`. `AZ_IOT_RETRY_JITTER_ADDITIVE` only lengthens a
   delay (+0..`jitter_pct`); the default `AZ_IOT_RETRY_JITTER_SYMMETRIC` keeps the existing ± jitter.
@@ -220,9 +233,10 @@
   over the bundled `deps/az_mqtt` client, with no adapter thread (connect and receive in
   `process_loop()`, sends written when called); TLS through OpenSSL 3
   or mbedTLS (`AZ_IOT_AZ_MQTT_TLS`), Schannel on Windows (X.509 and in-memory PEM included);
-  WebSockets, HTTP CONNECT proxy, and key references through an OpenSSL 3 provider. Per-client sizes are set when compiled, with or
-  without CMake: a footprint (`AZ_IOT_AZ_MQTT_FOOTPRINT`), separate send and receive sizes, or a
-  config header. See [docs/client-configuration.md](docs/client-configuration.md#az_mqtt-adapter-sizes).
+  WebSockets, HTTP CONNECT proxy, and key references through an OpenSSL 3 provider. Buffer sizes
+  are run-time values (`az_iot_mqtt_limits`); the MQTT 5 CONNECT user property bound is set when
+  compiled, with or without CMake: a footprint (`AZ_IOT_AZ_MQTT_FOOTPRINT`), a definition, or a
+  config header. See [docs/client-configuration.md](docs/client-configuration.md#az_mqtt-adapter-limits).
 - Logging for support diagnostics: rotating file sink (`az_iot_log_file_sink_open()`), lines
   `<UTC ISO 8601 time> [LEVEL] [component] [thread] [file:line] message` from the built-in sinks, connection configuration,
   state changes and retries at `INFO`, and a `...` marker on truncated messages.
@@ -233,7 +247,7 @@
   `az_iot_log_emit*(level, component, file, line, ...)` and `az_iot_log_sink_callback` gain a
   `component` argument; SDK values are the `AZ_IOT_LOG_COMPONENT_*` macros in `az_iot_log_components.h`. See [docs/logging.md](docs/logging.md).
 - Breaking: every connection attempt now starts in the new `AZ_IOT_CONN_STATE_SETTING_UP`, so an
-  attempt that fails on the device (credential load, SAS signing, missing factory, buffer too
+  attempt that fails on the device (credential load, SAS signing, MQTT client creation, buffer too
   small) produces a state event on each retry. Such failures carry the new error source
   `AZ_IOT_CONN_ERR_SRC_LOCAL`. `AZ_IOT_CONN_STATE_RECONNECTING` is renamed
   `AZ_IOT_CONN_STATE_RETRY_PENDING`. See [docs/connecting.md](docs/connecting.md#connection-states).
@@ -355,8 +369,7 @@
   [docs/client-configuration.md](docs/client-configuration.md#installed-dependencies).
 - Breaking: the application owns MQTT factories. `az_iot_mqtt_factory` loses `destroy`, and
   `az_iot_connection_client_deinit()` no longer destroys registered factories: registration only
-  lends a factory to the client. Destroy each factory (e.g. `az_iot_paho_factory_destroy()`) after
-  `az_iot_connection_client_deinit()`. See [docs/connecting.md](docs/connecting.md#mqtt-factory-ownership).
+  lends a factory to the client. The factory API was later removed (see the first entry above).
 - Breaking: mqttv3 C2D properties are read on demand instead of being decoded into SDK buffers.
   `az_iot_c2d_message` keeps `payload`/`payload_len` and gains `properties`, a read-only view of
   the topic property bag; `content_type`, the `properties` array, `properties_count`,
