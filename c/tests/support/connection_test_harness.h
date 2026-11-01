@@ -257,6 +257,27 @@ static inline void az_iot_test_wait_ms(unsigned ms)
   }
 }
 
+/* Ask the feature observers whether a delivery is unsettled, as a settling SAS renewal does. */
+static inline bool az_iot_test_has_unsettled_deliveries(const az_iot_connection_client* conn)
+{
+  bool unsettled = false;
+  az_iot_connection_feature_event const event = { AZ_IOT_CONNECTION_FEATURE_EVENT_UNSETTLED_QUERY,
+                                                  NULL,
+                                                  AZ_IOT_CONNECTION_SESSION_END_PLANNED,
+                                                  NULL,
+                                                  &unsettled };
+  for (size_t i = 0; i < conn->opts.limits.max_feature_observers; ++i)
+  {
+    const az_iot_connection_feature_observer* observer = &conn->feature_observers[i];
+    if (observer->cb != NULL
+        && (observer->events & AZ_IOT_CONNECTION_FEATURE_EVENT_UNSETTLED_QUERY))
+    {
+      observer->cb(&event, observer->user_ctx);
+    }
+  }
+  return unsettled;
+}
+
 /* Spin until `deadline_ms` on the monotonic clock has passed, plus a small
  * margin.
  *
