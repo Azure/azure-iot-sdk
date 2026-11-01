@@ -482,12 +482,13 @@ jobs:
           # Set for completeness. This step excludes the conformance suites
           # anyway (-E conformance): running a live-broker network suite under
           # valgrind is slow and its failures would be about the broker, not
-          # about memory.
+          # about memory. az_iot_tests_fixed_sizes_refuse_overrides is excluded
+          # too: it runs CMake and the compiler, not SDK code; other jobs run it.
           AZ_IOT_MQTT_BROKER_HOST: localhost
           AZ_IOT_MQTT_BROKER_PORT: '1883'
         working-directory: c/build/linux-gcc-debug
         run: |
-          ctest --output-on-failure -E conformance \
+          ctest --output-on-failure -E 'conformance|^az_iot_tests_fixed_sizes_refuse_overrides$' \
             --overwrite MemoryCheckCommand=/usr/bin/valgrind \
             --overwrite "MemoryCheckCommandOptions=--error-exitcode=1 --leak-check=full --show-leak-kinds=definite,possible --track-origins=yes --errors-for-leak-kinds=definite,possible" \
             -T memcheck
@@ -1486,7 +1487,7 @@ jobs:
       # actually had -- coverage computed over fewer tests than anyone thought.
       # Now that no suite decides at run time whether to participate, the count
       # is deterministic, so assert it exactly. Bump this when adding a suite.
-      EXPECTED_TESTS: '80'
+      EXPECTED_TESTS: '81'
     services:
       mosquitto:
         image: eclipse-mosquitto:2

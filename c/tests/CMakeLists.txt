@@ -347,6 +347,35 @@ az_iot_add_cmocka_test(az_iot_tests_su_client_layout_mismatch unit/su_client_lay
 target_compile_definitions(az_iot_tests_su_client_layout_mismatch PRIVATE
     AZ_IOT_TEST_SU_MAX_STEP_COUNT=${_az_iot_test_su_other_step_count}
     AZ_IOT_TEST_SU_EXPECTED_MISMATCH="AZ_IOT_SU_MAX_STEP_COUNT")
+# Fixed feature-client sizes: the headers compile included twice (built here),
+# and defining any fixed size, even to its default, fails on its guard
+# (az_iot_tests_fixed_sizes_refuse_overrides builds each such case).
+add_library(az_iot_tests_fixed_sizes OBJECT compile/fixed_sizes_test.c)
+target_link_libraries(az_iot_tests_fixed_sizes PRIVATE az_iot_core)
+az_iot_apply_warnings(az_iot_tests_fixed_sizes)
+set(_az_iot_fixed_size_cases "")
+foreach(_case
+        AZ_IOT_DM_METHOD_NAME_MAX=96 AZ_IOT_DM_METHOD_NAME_MAX=128
+        AZ_IOT_DM_RID_MAX=32 AZ_IOT_DM_RID_MAX=64
+        AZ_IOT_DM_CORR_DATA_MAX=64 AZ_IOT_DM_CORR_DATA_MAX=128
+        AZ_IOT_MQTTV5_DM_TOPIC_MAX=192 AZ_IOT_MQTTV5_DM_TOPIC_MAX=256
+        AZ_IOT_LOG_FILE_PATH_MAX=256 AZ_IOT_LOG_FILE_PATH_MAX=512)
+    string(REPLACE "=" "_" _name "${_case}")
+    string(TOLOWER "az_iot_tests_fixed_size_${_name}" _name)
+    add_library(${_name} OBJECT EXCLUDE_FROM_ALL compile/fixed_sizes_test.c)
+    target_link_libraries(${_name} PRIVATE az_iot_core)
+    target_compile_definitions(${_name} PRIVATE ${_case})
+    list(APPEND _az_iot_fixed_size_cases ${_name})
+endforeach()
+string(REPLACE ";" "," _az_iot_fixed_size_cases "${_az_iot_fixed_size_cases}")
+add_test(NAME az_iot_tests_fixed_sizes_refuse_overrides
+    COMMAND ${CMAKE_COMMAND}
+        -DBUILD_DIR=${CMAKE_BINARY_DIR} -DCONFIG=$<CONFIG> -DTARGETS=${_az_iot_fixed_size_cases}
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/compile/check_fixed_sizes.cmake)
+# Builds in the build tree: one at a time with anything else that does.
+set_tests_properties(az_iot_tests_fixed_sizes_refuse_overrides PROPERTIES RESOURCE_LOCK build_tree)
+unset(_az_iot_fixed_size_cases)
+
 az_iot_add_cmocka_test(az_iot_tests_su_protocol unit/su_protocol_test.c)
 az_iot_add_cmocka_test(az_iot_tests_su_manifest unit/su_manifest_test.c)
 target_include_directories(az_iot_tests_su_manifest PRIVATE ${PROJECT_SOURCE_DIR}/src/features/su)
