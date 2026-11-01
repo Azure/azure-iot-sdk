@@ -575,7 +575,8 @@ extern "C"
        * assignment would then be retried until the reconnection policy gives
        * up -- never asking DPS where the device actually lives now. This bounds
        * that. A hub that refuses the identity answered, so it is not counted
-       * here and resets the count.
+       * here and resets the count. Nor is a hub session ended for a provisioning
+       * session (software updates): that end is planned.
        *
        * Under the default policy (1s initial, 60s cap, +/-20% jitter) the delays
        * run 1, 2, 4, 8, 16, 32 then 60s, so attempt N >= 7 falls at roughly
@@ -988,7 +989,11 @@ extern "C"
     AZ_IOT_CONN_STATE_CONNECTING,
     AZ_IOT_CONN_STATE_CONNECTED,
     /** @brief A retry is scheduled; nothing is in flight. The next attempt
-     * starts in AZ_IOT_CONN_STATE_SETTING_UP. */
+     * starts in AZ_IOT_CONN_STATE_SETTING_UP. On the hub scope, reason
+     * AZ_IOT_OK without az_iot_connection_state_event::is_credential_renewal
+     * means the hub session waits for a provisioning session (software
+     * updates): only one MQTT session runs at a time, and the hub session
+     * reconnects to its assignment once that session ends. */
     AZ_IOT_CONN_STATE_RETRY_PENDING,
     AZ_IOT_CONN_STATE_DISCONNECTING,
     /* The connection gave up: either no reconnection policy is configured, or
@@ -1563,7 +1568,8 @@ extern "C"
   typedef enum az_iot_connection_session_end_reason
   {
     AZ_IOT_CONNECTION_SESSION_END_LOST = 0, /**< Link failure, refusal or timeout. */
-    AZ_IOT_CONNECTION_SESSION_END_PLANNED = 1, /**< close(), or a reconnect to renew a SAS token. */
+    /** @brief close(), a reconnect to renew a SAS token, or a pause for a provisioning session. */
+    AZ_IOT_CONNECTION_SESSION_END_PLANNED = 1,
   } az_iot_connection_session_end_reason;
   /** @brief One event for a feature observer; valid only during the call. */
   typedef struct az_iot_connection_feature_event
@@ -1809,6 +1815,10 @@ extern "C"
     uint8_t dps_hold_count;
     bool dps_hold_active;
     uint64_t dps_hold_deadline_ms;
+    /* When a provisioning session opened for its users, not for a registration,
+     * must be ready (SUBACK) by; past it the session ends as failed. 0 when no
+     * such attempt is waiting. */
+    uint64_t dps_session_ready_deadline_ms;
 
     /* Who needs the provisioning session. It exists exactly while this total is
      * non-zero: the connection client holds dps_registration_ref while the
@@ -1816,8 +1826,8 @@ extern "C"
      *
      * Registration is a task performed on the session, not a property of it --
      * it runs only while dps_registration_ref is held, which is what keeps a
-     * session opened for its other users from registering and tearing down the
-     * hub connection beside it. */
+     * session opened for its other users from registering and moving the hub
+     * session to a new assignment. */
     bool dps_registration_ref;
     uint8_t dps_user_count;
 
@@ -1837,11 +1847,12 @@ extern "C"
      * rather than for a registration.
      *
      * Such a session is not put through schedule_reconnect(): that begins with
-     * teardown_active(), so a side channel dropping would destroy a healthy hub
-     * connection. It settles the DPS scope at IDLE instead. But IDLE is exactly
-     * the state dps_session_ensure() lets through, so without a deadline the
-     * next pump tick opened another session -- a full TLS handshake, CONNECT
-     * and SUBSCRIBE per tick, against a service that is already failing.
+     * teardown_active() and a hub retry, which a feature client's session
+     * dropping does not call for. It settles the DPS scope at IDLE instead.
+     * But IDLE is exactly the state dps_session_ensure() lets through, so
+     * without a deadline the next pump tick opened another session -- a full
+     * TLS handshake, CONNECT and SUBSCRIBE per tick, against a service that is
+     * already failing.
      *
      * A THIRD ladder, deliberately separate from retry_attempt[DPS]. That one
      * is the registration ladder; spending it on a user session's outage would
@@ -2073,7 +2084,14 @@ extern "C"
       az_iot_deadline disconnect_deadline;
       az_iot_deadline drain_deadline;
       az_iot_result reason;
+      /* The end makes way for a provisioning session: the hub session then
+       * waits (hub_waits_for_provisioning_session) instead of reconnecting. */
+      bool for_provisioning_session;
     } planned_hub_session_end;
+    /* The hub session waits at HUB:RETRY_PENDING, reason AZ_IOT_OK and no retry
+     * scheduled, while a provisioning session is in use: the two sessions never
+     * coexist. do_work() starts it again once none is. */
+    bool hub_waits_for_provisioning_session;
     bool sas_token_renewal_in_progress[AZ_IOT_CONN_SCOPE_COUNT];
     /* User-provided SAS token request per scope; request_id 0: none. The
      * callback is called from do_work() (asked); ready once the token is in

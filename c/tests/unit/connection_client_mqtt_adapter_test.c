@@ -461,7 +461,10 @@ static void a_reconnect_after_a_drop_reuses_the_workspace(void** state)
   assert_adapter_stats(2, 1);
 }
 
-static void a_hub_session_beside_a_held_provisioning_session_is_refused_busy(void** state)
+/* One MQTT session at a time: the hub session after registration waits for a
+ * held provisioning session, whose client keeps the workspace, then is built in
+ * its place. */
+static void a_hub_session_waits_for_a_held_provisioning_session(void** state)
 {
   adapter_fixture* fx = (adapter_fixture*)*state;
   az_iot_connection_client_options opts = dps_options();
@@ -472,25 +475,23 @@ static void a_hub_session_beside_a_held_provisioning_session_is_refused_busy(voi
   az_iot_mock_mqtt_client* dps = register_to_the_assigned_hub(fx);
   size_t dps_calls = az_iot_mock_mqtt_client_call_count(dps);
 
-  /* The held DPS client is live and untouched; the hub start is refused and retried. */
+  /* The held DPS client is live and untouched; the hub session waits. */
   assert_ptr_equal(fx->client.dps_mqtt, dps);
   assert_ptr_equal(az_iot_mock_mqtt_adapter_last_client(), dps);
   assert_int_equal(az_iot_mock_mqtt_client_count_of(dps, AZ_IOT_MOCK_CALL_DESTROY), 0);
   assert_true(az_iot_connection_client__dps_session_ready(&fx->client));
   assert_null(fx->client.active_client);
   assert_adapter_stats(1, 1);
-  size_t refused = last_event_on(&fx->log, AZ_IOT_CONN_SCOPE_HUB);
-  assert_int_equal(fx->log.states[refused], AZ_IOT_CONN_STATE_RETRY_PENDING);
-  assert_local_error(
-      &fx->log, refused, AZ_IOT_ERR_BUSY, "mqtt_workspace holds the other session's MQTT client");
+  size_t waiting = last_event_on(&fx->log, AZ_IOT_CONN_SCOPE_HUB);
+  assert_int_equal(fx->log.states[waiting], AZ_IOT_CONN_STATE_RETRY_PENDING);
+  assert_int_equal(fx->log.reasons[waiting], AZ_IOT_OK);
   assert_int_equal(az_iot_mock_mqtt_client_call_count(dps), dps_calls);
 
-  /* Released, the DPS session closes and the retry builds the hub client in its place. */
+  /* Released, the DPS session closes and the hub client is built in its place. */
   az_iot_connection_client__dps_user_release(&fx->client);
   (void)az_iot_connection_client_do_work(&fx->client, 0);
-  assert_null(fx->client.dps_mqtt);
-  az_iot_test_wait_until_ms(fx->client.reconnect_due_ms);
   (void)az_iot_connection_client_do_work(&fx->client, 0);
+  assert_null(fx->client.dps_mqtt);
   az_iot_mock_mqtt_client* hub = az_iot_mock_mqtt_adapter_last_client();
   assert_ptr_equal(fx->client.active_client, hub);
   assert_ptr_equal(hub, dps);
@@ -498,7 +499,10 @@ static void a_hub_session_beside_a_held_provisioning_session_is_refused_busy(voi
   assert_adapter_stats(2, 1);
 }
 
-static void a_provisioning_session_beside_the_hub_session_is_refused_busy(void** state)
+/* One MQTT session at a time: a provisioning session asked for beside the hub
+ * session ends it first, and its client is built in the workspace the hub client
+ * leaves. */
+static void a_provisioning_session_ends_the_hub_session_and_takes_its_workspace(void** state)
 {
   adapter_fixture* fx = (adapter_fixture*)*state;
   init_with_mock_adapter(fx, dps_options());
@@ -506,23 +510,21 @@ static void a_provisioning_session_beside_the_hub_session_is_refused_busy(void**
   az_iot_mock_mqtt_client* hub = az_iot_mock_mqtt_adapter_last_client();
   assert_true(az_iot_mock_mqtt_client_inject_connected(hub, AZ_IOT_OK));
   (void)az_iot_connection_client_do_work(&fx->client, 0);
-  size_t hub_calls = az_iot_mock_mqtt_client_call_count(hub);
 
   assert_int_equal(az_iot_connection_client__dps_user_acquire(&fx->client), AZ_IOT_OK);
   assert_int_equal(az_iot_connection_client__dps_session_ensure(&fx->client), AZ_IOT_ERR_BUSY);
-
   assert_null(fx->client.dps_mqtt);
   assert_ptr_equal(fx->client.active_client, hub);
-  assert_ptr_equal(az_iot_mock_mqtt_adapter_last_client(), hub);
-  assert_int_equal(az_iot_mock_mqtt_client_call_count(hub), hub_calls);
-  assert_int_equal(
-      az_iot_connection_client_get_state(&fx->client, AZ_IOT_CONN_SCOPE_HUB),
-      AZ_IOT_CONN_STATE_CONNECTED);
+  assert_int_equal(az_iot_mock_mqtt_client_count_of(hub, AZ_IOT_MOCK_CALL_DISCONNECT), 1);
   assert_adapter_stats(2, 1);
-  size_t refused = last_event_on(&fx->log, AZ_IOT_CONN_SCOPE_DPS);
-  assert_int_equal(fx->log.states[refused], AZ_IOT_CONN_STATE_IDLE);
-  assert_local_error(
-      &fx->log, refused, AZ_IOT_ERR_BUSY, "mqtt_workspace holds the other session's MQTT client");
+
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(hub));
+  (void)az_iot_connection_client_do_work(&fx->client, 0);
+  assert_null(fx->client.active_client);
+  az_iot_mock_mqtt_client* dps = az_iot_mock_mqtt_adapter_last_client();
+  assert_ptr_equal(fx->client.dps_mqtt, dps);
+  assert_ptr_equal(dps, hub);
+  assert_adapter_stats(3, 1);
   az_iot_connection_client__dps_user_release(&fx->client);
 }
 
@@ -722,9 +724,9 @@ int main(void)
         registration_then_an_mqtt_v5_hub_session_reuse_the_workspace, setup, teardown),
     cmocka_unit_test_setup_teardown(a_reconnect_after_a_drop_reuses_the_workspace, setup, teardown),
     cmocka_unit_test_setup_teardown(
-        a_hub_session_beside_a_held_provisioning_session_is_refused_busy, setup, teardown),
+        a_hub_session_waits_for_a_held_provisioning_session, setup, teardown),
     cmocka_unit_test_setup_teardown(
-        a_provisioning_session_beside_the_hub_session_is_refused_busy, setup, teardown),
+        a_provisioning_session_ends_the_hub_session_and_takes_its_workspace, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_failed_hub_connect_releases_the_workspace_for_the_retry, setup, teardown),
     cmocka_unit_test_setup_teardown(

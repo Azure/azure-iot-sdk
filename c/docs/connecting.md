@@ -119,7 +119,7 @@ Values of `az_iot_connection_state` (`AZ_IOT_CONN_STATE_*`):
 | `SETTING_UP` | A connection or registration attempt's local steps: feature-client binds, adapter creation, credential load or SAS signing, registration body. Entered by every attempt, including each retry. |
 | `CONNECTING` | The network connect is starting: announced just before it is issued, then held while the handshake is in flight. |
 | `CONNECTED` | Ready. Every required subscription is in place. |
-| `RETRY_PENDING` | A retry is scheduled; nothing is in flight. The next attempt starts in `SETTING_UP`. |
+| `RETRY_PENDING` | A retry is scheduled; nothing is in flight. The next attempt starts in `SETTING_UP`. On the hub scope, reason `AZ_IOT_OK` without `is_credential_renewal` means the hub session waits for a provisioning session (see [One MQTT session at a time](#one-mqtt-session-at-a-time)). |
 | `DISCONNECTING` | A session is closing: `close()` was called, or the provisioning session ends after registration. |
 | `FAULTED` | Stopped after a failure. The SDK does not retry from here. Call `close()` to return to `IDLE`, then `open()` again. |
 
@@ -248,6 +248,30 @@ opts.dps.registration_id = "<registration-id>";
   the callback runs (the managed provider writes it to `operational_cert_pem_path`).
 
 Sample: [`samples/authentication/dps_persist_assignment`](../samples/authentication/dps_persist_assignment/README.md).
+
+### One MQTT session at a time
+
+The client runs one MQTT session at a time: the provisioning session and the hub session never
+overlap. Only software updates (`az_iot_su.h`) uses the provisioning session after registration,
+and what the application observes is:
+
+- **First boot.** While the software updates client still needs the provisioning session when the
+  device registers (its onboarding check, typically), the hub connect waits. Once it is done, the
+  provisioning session closes and the hub connects to the assignment just received, without
+  registering again. `HUB:RETRY_PENDING` with reason `AZ_IOT_OK` marks the wait.
+- **After registration.** Each update check or status report made while the hub is connected
+  disconnects the hub: `HUB:RETRY_PENDING` with reason `AZ_IOT_OK` (`is_credential_renewal` false,
+  no `recovery` info), then the provisioning session's events. When the software updates client
+  has no work left, the hub reconnects (`SETTING_UP`, `CONNECTING`, `CONNECTED`) to its cached
+  assignment. Feature clients see an ordinary session end and resume as after any reconnect;
+  QoS 1 publishes awaiting a PUBACK complete with `AZ_IOT_ERR_NOT_CONNECTED`.
+- These disconnects are planned: they count toward no reconnection backoff and not toward
+  `dps.max_hub_connect_attempts_before_reprovision`.
+- The hub is not held indefinitely. An update check waits at most its request timeout (default
+  60 s; none with `AZ_IOT_SU_REQUEST_NO_TIMEOUT`). A status report waits at most 60 s for its
+  answer; then the provisioning session is released, the hub reconnects, and the report is sent
+  again later on the software updates retry backoff (1 s doubling to 60 s).
+- `close()` and `deinit()` end whichever session exists, the hub's wait included.
 
 ## Reconnection
 

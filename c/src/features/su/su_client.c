@@ -2245,9 +2245,10 @@ static void settle_terminal_report(az_iot_su_client* client, az_iot_result resul
 /**
  * @brief Pace the next fetch/report after a retryable verdict that named no delay.
  *
- * Exponential backoff with jitter. Service verdicts only: a lost session is
- * paced by the connection client, and a service-named delay by the channel.
- * Never moves a fetch deadline.
+ * Exponential backoff with jitter. Service verdicts, and a report the channel
+ * stopped awaiting (AZ_IOT_ERR_TIMEOUT), only: a lost session is paced by the
+ * connection client, and a service-named delay by the channel. Never moves a
+ * fetch deadline.
  *
  * @return true if this verdict armed the backoff.
  */
@@ -2257,7 +2258,7 @@ static bool arm_retry_backoff(
     az_iot_su_error_action action,
     const az_iot_su_service_error* service_error)
 {
-  if (result != AZ_IOT_ERR_DPS
+  if ((result != AZ_IOT_ERR_DPS && result != AZ_IOT_ERR_TIMEOUT)
       || (action != AZ_IOT_SU_ERROR_ACTION_RETRY && action != AZ_IOT_SU_ERROR_ACTION_RETRY_AFTER)
       || (service_error != NULL && service_error->retry_after_ms != 0))
   {
@@ -2447,11 +2448,19 @@ static void on_channel_result(
   {
     case AZ_IOT_SU_OP_REPORT_STATUS:
       SU_I(client).terminal_report_in_flight = false;
-      /* A report queued since keeps its own pacing; one send covers both. */
+      /* One send covers this report and one queued since. That one keeps its own pacing, unless
+       * this report went unanswered: then it waits out the backoff too, so it does not reopen the
+       * session at once. */
       if (!SU_I(client).device_properties_report_pending)
       {
         SU_I(client).device_properties_report_pending = true;
         SU_I(client).report_paced = paced;
+        SU_I(client).report_paced_by_timeout = paced && result == AZ_IOT_ERR_TIMEOUT;
+      }
+      else if (paced && result == AZ_IOT_ERR_TIMEOUT)
+      {
+        SU_I(client).report_paced = true;
+        SU_I(client).report_paced_by_timeout = true;
       }
       break;
     case AZ_IOT_SU_OP_GET_ONBOARDING_UPDATE:
@@ -2591,16 +2600,23 @@ static bool expire_fetch_in_flight(az_iot_su_client* client)
   return true;
 }
 
-static void drive_pending_fetch(az_iot_su_client* client)
+/**
+ * @brief Abandon an update check whose deadline passed, awaited or queued, and
+ * tell the channel, so it stops asking for a session for it.
+ *
+ * @param client The software updates client.
+ * @return true if a check was abandoned.
+ */
+static bool abandon_expired_fetch(az_iot_su_client* client)
 {
   if (expire_fetch_in_flight(client))
   {
-    return;
+    return true;
   }
   uint8_t requested = SU_I(client).pending_fetch;
   if (requested == SU_FETCH_NONE)
   {
-    return;
+    return false;
   }
   az_iot_su_operation operation = fetch_operation(requested);
 
@@ -2632,9 +2648,49 @@ static void drive_pending_fetch(az_iot_su_client* client)
       SU_I(client).channel.vtable->cancel_update(
           SU_I(client).channel.ctx, fetch_operation(in_flight));
     }
+    /* The channel stops asking for a session for the abandoned request too. */
+    if ((in_flight == SU_FETCH_NONE || fetch_operation(in_flight) != operation)
+        && SU_I(client).channel.vtable != NULL
+        && SU_I(client).channel.vtable->cancel_update != NULL)
+    {
+      SU_I(client).channel.vtable->cancel_update(SU_I(client).channel.ctx, operation);
+    }
     raise_abandoned(client, operation, AZ_IOT_ERR_TIMEOUT, &k_no_service_error);
+    return true;
+  }
+  return false;
+}
+
+/**
+ * @brief The update check's deadline, queued or awaited, for the channel to
+ * bound the connection's wait by; 0 when there is none (or no timeout).
+ *
+ * @param engine_ctx The software updates client.
+ */
+static uint64_t next_fetch_deadline(void* engine_ctx)
+{
+  const az_iot_su_client* client = (const az_iot_su_client*)engine_ctx;
+  if (client == NULL || SU_I(client).detached
+      || (SU_I(client).pending_fetch == SU_FETCH_NONE
+          && SU_I(client).fetch_in_flight == SU_FETCH_NONE))
+  {
+    return 0;
+  }
+  return SU_I(client).pending_fetch_deadline_ms;
+}
+
+static void drive_pending_fetch(az_iot_su_client* client)
+{
+  if (abandon_expired_fetch(client))
+  {
     return;
   }
+  uint8_t requested = SU_I(client).pending_fetch;
+  if (requested == SU_FETCH_NONE)
+  {
+    return;
+  }
+  az_iot_su_operation operation = fetch_operation(requested);
   /* After the deadline check: pacing must not postpone an abandonment. A newer
    * application request is not paced: the application owns its cadence. */
   if (SU_I(client).pending_fetch_paced && !az_iot_retry_state__due(&SU_I(client).retry))
@@ -3055,6 +3111,10 @@ static az_iot_result su_client_init_core(
   {
     memset(client, 0, sizeof(*client));
     return r;
+  }
+  if (channel->vtable->set_engine_deadline_cb != NULL)
+  {
+    channel->vtable->set_engine_deadline_cb(channel->ctx, next_fetch_deadline);
   }
 
   /* Report the initial Idle agent state + installed update id on startup. */
@@ -4270,9 +4330,13 @@ az_iot_result az_iot_su_client_do_work(az_iot_su_client* client)
     return AZ_IOT_ERR_DETACHED;
   }
 
-  /* Give the channel its tick first. A channel with asynchronous work of its
-   * own reports lost operations here, and the engine's own pending flags are
-   * re-armed from that, so this has to run before they are read below. */
+  /* An expired update check is given up first, so the channel's tick does not
+   * ask for a session (ending the hub session) for it. */
+  (void)abandon_expired_fetch(client);
+
+  /* Give the channel its tick before the rest. A channel with asynchronous work
+   * of its own reports lost operations here, and the engine's own pending flags
+   * are re-armed from that, so this has to run before they are read below. */
   if (SU_I(client).channel.vtable != NULL && SU_I(client).channel.vtable->do_work != NULL)
   {
     (void)SU_I(client).channel.vtable->do_work(SU_I(client).channel.ctx);
@@ -4944,6 +5008,25 @@ az_iot_result az_iot_su_client_remove_observer(
   return AZ_IOT_ERR_NOT_FOUND;
 }
 
+/**
+ * @brief Tell the channel a queued update check of another kind, not yet
+ * accepted, is replaced by @p requested, so it stops asking for a session for
+ * it. One awaiting its answer keeps waiting.
+ *
+ * @param client    The software updates client.
+ * @param requested The SU_FETCH_* kind replacing it.
+ */
+static void cancel_replaced_unaccepted_fetch(az_iot_su_client* client, uint8_t requested)
+{
+  uint8_t replaced = SU_I(client).pending_fetch;
+  if (replaced == SU_FETCH_NONE || replaced == requested || replaced == SU_I(client).fetch_in_flight
+      || SU_I(client).channel.vtable == NULL || SU_I(client).channel.vtable->cancel_update == NULL)
+  {
+    return;
+  }
+  SU_I(client).channel.vtable->cancel_update(SU_I(client).channel.ctx, fetch_operation(replaced));
+}
+
 AZ_NODISCARD az_iot_result
 az_iot_su_client_request_onboarding_update(az_iot_su_client* client, uint32_t timeout_ms)
 {
@@ -4951,6 +5034,7 @@ az_iot_su_client_request_onboarding_update(az_iot_su_client* client, uint32_t ti
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
+  cancel_replaced_unaccepted_fetch(client, SU_FETCH_ONBOARDING);
   SU_I(client).pending_fetch = SU_FETCH_ONBOARDING;
   SU_I(client).last_requested_fetch = SU_FETCH_ONBOARDING;
   SU_I(client).pending_fetch_paced = false;
@@ -4965,6 +5049,7 @@ az_iot_su_client_request_update(az_iot_su_client* client, uint32_t timeout_ms)
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
+  cancel_replaced_unaccepted_fetch(client, SU_FETCH_REGULAR);
   SU_I(client).pending_fetch = SU_FETCH_REGULAR;
   SU_I(client).last_requested_fetch = SU_FETCH_REGULAR;
   SU_I(client).pending_fetch_paced = false;
@@ -4997,8 +5082,12 @@ AZ_NODISCARD az_iot_result az_iot_su_client_update_device_properties(
       = SU_I(client).state != AZ_IOT_SU_STATE_IDLE && SU_I(client).state != AZ_IOT_SU_STATE_FAILED;
   if (running || SU_I(client).report_owed || SU_I(client).terminal_report_in_flight)
   {
+    /* A report waiting out an unanswered report's backoff keeps it. */
+    if (!SU_I(client).device_properties_report_pending || !SU_I(client).report_paced_by_timeout)
+    {
+      SU_I(client).report_paced = false;
+    }
     SU_I(client).device_properties_report_pending = true;
-    SU_I(client).report_paced = false;
   }
   return AZ_IOT_OK;
 }

@@ -26,6 +26,7 @@
 #include "azure/iot/az_iot_connection_client.h"
 #include "azure/iot/az_iot_log_components.h"
 
+#include "internal/connection_client_internal.h"
 #include "internal/mono_time.h"
 #include "../../src/features/su/internal/su_channel_internal.h"
 #include "../../src/features/su/internal/su_internal.h"
@@ -9442,10 +9443,122 @@ static void a_superseded_in_flight_request_is_cancelled_with_the_newer_one(void*
 
   assert_int_equal(fx->abandoned_count, 1);
   assert_int_equal(fx->last_abandoned_operation, AZ_IOT_SU_OP_GET_ONBOARDING_UPDATE);
-  assert_int_equal(fx->chan.cancel_count, 1);
-  assert_int_equal(fx->chan.last_cancel_operation, AZ_IOT_SU_OP_GET_UPDATE);
+  /* The accepted one is cancelled, and the abandoned one's demand dropped. */
+  assert_int_equal(fx->chan.cancel_count, 2);
+  assert_int_equal(fx->chan.last_cancel_operation, AZ_IOT_SU_OP_GET_ONBOARDING_UPDATE);
   assert_int_equal(fx->su._internal.pending_fetch, 0);
   assert_int_equal(fx->su._internal.fetch_in_flight, 0);
+}
+
+/* A check the channel never accepted (no session) and the deadline ends is
+ * cancelled on the channel too, so it stops asking for a session for it. */
+static void an_unaccepted_check_abandoned_at_its_deadline_is_cancelled(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  fx->chan.request_update_result = AZ_IOT_ERR_NOT_CONNECTED;
+  fx->abandoned_count = 0;
+  assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
+
+  assert_int_equal(az_iot_su_client_request_update(&fx->su, UT_TIMEOUT_MS), AZ_IOT_OK);
+  (void)az_iot_su_client_do_work(&fx->su);
+  assert_int_not_equal(fx->su._internal.pending_fetch, 0);
+  assert_int_equal(fx->su._internal.fetch_in_flight, 0);
+  assert_int_equal(fx->chan.cancel_count, 0);
+
+  fx->su._internal.pending_fetch_deadline_ms = 1;
+  (void)az_iot_su_client_do_work(&fx->su);
+
+  assert_int_equal(fx->abandoned_count, 1);
+  assert_int_equal(fx->last_abandoned_operation, AZ_IOT_SU_OP_GET_UPDATE);
+  assert_int_equal(fx->chan.cancel_count, 1);
+  assert_int_equal(fx->chan.last_cancel_operation, AZ_IOT_SU_OP_GET_UPDATE);
+}
+
+/* A report the channel stopped awaiting (AZ_IOT_ERR_TIMEOUT) stays owed and is
+ * sent again on the engine's backoff, not on the next tick. */
+static void a_report_left_unanswered_is_retried_on_the_backoff(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  finish_with_report_unacknowledged(fx);
+  int sent = fx->chan.report_count;
+
+  fx->chan.result_cb(
+      AZ_IOT_SU_OP_REPORT_STATUS,
+      AZ_IOT_ERR_TIMEOUT,
+      AZ_IOT_SU_ERROR_ACTION_RETRY,
+      NULL,
+      fx->chan.engine_ctx);
+  assert_true(fx->su._internal.device_properties_report_pending);
+  assert_true(fx->su._internal.report_paced);
+  assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  assert_int_equal(fx->chan.report_count, sent);
+
+  fx->su._internal.retry._internal.due_ms = az_iot_time_mono_ms();
+  assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  assert_int_equal(fx->chan.report_count, sent + 1);
+}
+
+/* Properties for a report queued by az_iot_su_client_update_device_properties(). */
+static void queue_device_properties_report(fixture* fx)
+{
+  az_iot_su_device_properties device_properties = { 0 };
+  device_properties.manufacturer = "Contoso";
+  device_properties.model = "Foobar2";
+  device_properties.installed_update_id.provider = "Contoso";
+  device_properties.installed_update_id.name = "Foobar";
+  device_properties.installed_update_id.version = "2.0";
+  assert_int_equal(
+      az_iot_su_client_update_device_properties(&fx->su, &device_properties), AZ_IOT_OK);
+}
+
+/* A report the channel stopped awaiting, then the newer one queued since are sent on its backoff,
+ * not on the next tick. */
+static void assert_report_waits_out_the_backoff(fixture* fx, int sent)
+{
+  assert_true(fx->su._internal.device_properties_report_pending);
+  assert_true(fx->su._internal.report_paced);
+  assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  assert_int_equal(fx->chan.report_count, sent);
+
+  fx->su._internal.retry._internal.due_ms = az_iot_time_mono_ms();
+  assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  assert_int_equal(fx->chan.report_count, sent + 1);
+}
+
+/* A report queued while the previous one is awaited waits out that one's timeout backoff too. */
+static void a_report_queued_before_a_timeout_waits_out_its_backoff(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  finish_with_report_unacknowledged(fx);
+  int sent = fx->chan.report_count;
+  queue_device_properties_report(fx);
+  assert_true(fx->su._internal.device_properties_report_pending);
+  assert_false(fx->su._internal.report_paced);
+
+  fx->chan.result_cb(
+      AZ_IOT_SU_OP_REPORT_STATUS,
+      AZ_IOT_ERR_TIMEOUT,
+      AZ_IOT_SU_ERROR_ACTION_RETRY,
+      NULL,
+      fx->chan.engine_ctx);
+  assert_report_waits_out_the_backoff(fx, sent);
+}
+
+/* A report queued after a timeout does not cut the backoff short. */
+static void a_report_queued_after_a_timeout_keeps_its_backoff(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  finish_with_report_unacknowledged(fx);
+  int sent = fx->chan.report_count;
+
+  fx->chan.result_cb(
+      AZ_IOT_SU_OP_REPORT_STATUS,
+      AZ_IOT_ERR_TIMEOUT,
+      AZ_IOT_SU_ERROR_ACTION_RETRY,
+      NULL,
+      fx->chan.engine_ctx);
+  queue_device_properties_report(fx);
+  assert_report_waits_out_the_backoff(fx, sent);
 }
 
 /* AZ_IOT_SU_REQUEST_NO_TIMEOUT waits for the answer indefinitely too. */
@@ -10191,6 +10304,45 @@ static void wire_pending_response(fixture* fx, int32_t status, const char* query
   wire_response(fx, rid, status, query, body);
 }
 
+/**
+ * @brief Brings a provisioning session up for the next operation once the last one ended: the hub
+ * session that took over is connected, then ended for it. Points fx->mock at the new session.
+ */
+static void wire_session_for_next_operation(fixture* fx)
+{
+  if (az_iot_connection_client__dps_session_ready(&fx->conn))
+  {
+    return;
+  }
+  assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
+  assert_non_null(fx->conn.active_client);
+  az_iot_mock_mqtt_client* hub = az_iot_mock_mqtt_client_from(fx->conn.active_client);
+  if (az_iot_connection_client_get_state(&fx->conn, AZ_IOT_CONN_SCOPE_HUB)
+      != AZ_IOT_CONN_STATE_CONNECTED)
+  {
+    assert_true(az_iot_mock_mqtt_client_inject_connected(hub, AZ_IOT_OK));
+    assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
+  }
+  /* The operation is refused, then the channel asks for a session. */
+  assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  assert_non_null(az_iot_mock_mqtt_client_last_of(hub, AZ_IOT_MOCK_CALL_DISCONNECT));
+  assert_null(fx->conn.dps_mqtt);
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(hub));
+  assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
+  assert_null(fx->conn.active_client);
+  assert_non_null(fx->conn.dps_mqtt);
+  fx->mock = az_iot_mock_mqtt_client_from(fx->conn.dps_mqtt);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(fx->mock, AZ_IOT_OK));
+  assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
+  const az_iot_mock_call* sub
+      = az_iot_mock_mqtt_client_last_of(fx->mock, AZ_IOT_MOCK_CALL_SUBSCRIBE);
+  assert_non_null(sub);
+  assert_true(az_iot_mock_mqtt_client_inject_suback(fx->mock, sub->packet_id, AZ_IOT_OK));
+  assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
+  assert_true(az_iot_connection_client__dps_session_ready(&fx->conn));
+}
+
 static void wire_fetch(fixture* fx, az_iot_su_operation operation)
 {
   assert_int_equal(
@@ -10198,6 +10350,7 @@ static void wire_fetch(fixture* fx, az_iot_su_operation operation)
           ? az_iot_su_client_request_onboarding_update(&fx->su, UT_TIMEOUT_MS)
           : az_iot_su_client_request_update(&fx->su, UT_TIMEOUT_MS),
       AZ_IOT_OK);
+  wire_session_for_next_operation(fx);
   assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
   assert_true(wire_channel(fx)->request_pending);
   assert_int_equal(wire_channel(fx)->pending_operation, operation);
@@ -11711,6 +11864,14 @@ int main(void)
         a_retryable_verdict_after_the_deadline_abandons, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_superseded_in_flight_request_is_cancelled_with_the_newer_one, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        an_unaccepted_check_abandoned_at_its_deadline_is_cancelled, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_report_left_unanswered_is_retried_on_the_backoff, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_report_queued_before_a_timeout_waits_out_its_backoff, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_report_queued_after_a_timeout_keeps_its_backoff, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_disabled_timeout_waits_for_an_answer_indefinitely, setup, teardown),
     cmocka_unit_test_setup_teardown(each_request_carries_its_own_timeout, setup, teardown),
