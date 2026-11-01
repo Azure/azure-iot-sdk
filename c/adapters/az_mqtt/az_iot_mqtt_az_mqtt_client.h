@@ -66,8 +66,11 @@
 #include <stdlib.h>
 #include <string.h>
 
-/** @brief Copies of unacknowledged QoS 1/2 PUBLISH; at least one of the largest. 0: none, and a
- * connect with clean_start false (MQTT 5: and session_expiry_seconds > 0) is refused. */
+/** @brief Copies of unacknowledged QoS 1 PUBLISH on a session that outlives the connection, each
+ * its encoded size + AZ_MQTT_INFLIGHT_MESSAGE_OVERHEAD until its PUBACK; at least one of the
+ * largest. Full: publish returns AZ_IOT_ERR_BUSY. 0: none, and a connect with clean_start false
+ * (MQTT 5: and session_expiry_seconds > 0) is refused. Never resent: see
+ * az_iot_mqtt_limits.message_store_size. */
 #ifndef AZ_IOT_AZ_MQTT_MESSAGE_STORAGE_SIZE
 #define AZ_IOT_AZ_MQTT_MESSAGE_STORAGE_SIZE \
   (AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE + AZ_MQTT_INFLIGHT_MESSAGE_OVERHEAD)

@@ -520,12 +520,19 @@ extern "C"
     size_t send_buffer_size;
     /** @brief Largest incoming packet, in bytes. MQTT 5: the Maximum Packet Size advertised. */
     size_t receive_buffer_size;
-    /** @brief QoS 1/2 exchanges at once, 1-32767. MQTT 5: also the Receive Maximum advertised. */
+    /** @brief QoS 1 exchanges at once (the SDK uses no QoS 2), 1-32767. MQTT 5: also the Receive
+     * Maximum advertised. */
     uint16_t max_in_flight_messages;
     /**
-     * @brief Bytes for copies of unacknowledged QoS 1/2 PUBLISH, resent on a resumed session. 0:
-     * clean sessions only (a connect whose session outlives the connection is refused); otherwise
-     * at least one packet of send_buffer_size plus the adapter's per-message overhead.
+     * @brief Bytes for the copies of unacknowledged QoS 1 PUBLISH an adapter keeps while the
+     * session outlives the connection. 0: clean sessions only (az_mqtt refuses a connect whose
+     * session outlives the connection with AZ_IOT_ERR_NOT_SUPPORTED); otherwise at least one
+     * packet of send_buffer_size plus the adapter's per-message overhead. az_mqtt keeps each copy
+     * (encoded size + 18 bytes) until its PUBACK; a publish that does not fit returns
+     * AZ_IOT_ERR_BUSY.
+     *
+     * The SDK never asks an adapter to resend these copies: it destroys the client at every
+     * session end and creates a new one for the next session, and the layer above retries.
      */
     size_t message_store_size;
     /**
