@@ -530,11 +530,24 @@ bool sample_file_write_atomically(const char* path, const void* data, size_t siz
   {
     return false;
   }
-  bool written
-      = (size == 0 || fwrite(data, 1, size, file) == size) && sample_file_flush_to_storage(file);
+  bool written = size == 0 || fwrite(data, 1, size, file) == size;
+  return sample_file_complete_atomic_write(file, temporary_path, path, written);
+}
+
+bool sample_file_complete_atomic_write(
+    FILE* file,
+    char* temporary_path,
+    const char* path,
+    bool contents_written)
+{
+  bool replaced = file != NULL && contents_written && sample_file_flush_to_storage(file);
   /* fclose() can report a delayed write failure. */
-  bool replaced = fclose(file) == 0 && written && sample_file_replace(temporary_path, path);
-  if (!replaced)
+  if (file != NULL && fclose(file) != 0)
+  {
+    replaced = false;
+  }
+  replaced = replaced && temporary_path != NULL && sample_file_replace(temporary_path, path);
+  if (!replaced && temporary_path != NULL)
   {
     (void)remove(temporary_path);
   }

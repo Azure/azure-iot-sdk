@@ -250,6 +250,25 @@ bool sample_file_replace(const char* source_path, const char* destination_path);
 bool sample_file_write_atomically(const char* path, const void* data, size_t size);
 
 /**
+ * @brief Finish what sample_file_write_atomically() does, for contents written
+ * piece by piece: flush and close @p file, then move @p temporary_path over
+ * @p path with sample_file_replace(). When @p contents_written is false, or a
+ * step fails, @p temporary_path is removed and @p path is left as it was.
+ *
+ * @param[in] file             Stream from sample_file_create_private_unique();
+ *                             closed in all cases.
+ * @param[in] temporary_path   Its name, from the same call; freed in all cases.
+ * @param[in] path             File to replace; the @p path given to that call.
+ * @param[in] contents_written Whether every write to @p file succeeded.
+ * @return true when @p path holds what was written.
+ */
+bool sample_file_complete_atomic_write(
+    FILE* file,
+    char* temporary_path,
+    const char* path,
+    bool contents_written);
+
+/**
  * @brief Delete @p path durably: the deletion survives a power loss. A missing
  * file counts as deleted.
  *
