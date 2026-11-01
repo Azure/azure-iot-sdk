@@ -16,9 +16,9 @@
  *   update's files into the source cache, replacing entries no build uses, and removes the other
  *   entries of the update provider, so the cache keeps only the latest update per provider. A
  *   source chosen for a build is locked until the build ends (or, when the client downloads the
- *   full file instead, until the workflow ends), and no handler sharing the cache, in this process
- *   or another, removes it meanwhile. Such handlers store and evict a provider's entries one at a
- *   time: workflow_ended_fn waits while another does.
+ *   full file instead, until the next choice, the workflow's end or deinit), and no handler
+ *   sharing the cache, in this process or another, removes it meanwhile. Such handlers store and
+ *   evict a provider's entries one at a time: workflow_ended_fn waits while another does.
  *
  * Cache entries are `<directory>/<provider>/<algorithm>-<hash>`: in `<provider>` and
  * `<algorithm>`, characters other than letters, digits and `-` become `_`; in the base64 hash,
