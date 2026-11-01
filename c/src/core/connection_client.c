@@ -2404,7 +2404,7 @@ static void dps_user_retry_reset(az_iot_connection_client* c)
  *
  * Distinct from schedule_reconnect(): nothing is torn down and no state change
  * is announced. The DPS scope has already settled at IDLE by the time this
- * runs; all that is recorded is when a holder may ask again. */
+ * runs; all that is recorded is when it may be asked for again. */
 static void dps_user_retry_schedule(az_iot_connection_client* c, uint32_t retry_after_secs)
 {
   /* 0 disables retrying, and az_iot_retry_policy__delay_ms() would return a 0 ms
@@ -2444,20 +2444,22 @@ static void dps_user_retry_schedule(az_iot_connection_client* c, uint32_t retry_
 
 static bool dps_refs_held(const az_iot_connection_client* c)
 {
-  return c->dps_registration_ref || c->dps_user_count > 0 || c->dps_standing_ref;
+  return c->dps_registration_ref || c->dps_session_wanted || c->dps_standing_ref;
 }
 
 /**
- * @brief Whether anyone may ask for a session through dps_session_ensure(): a
- * feature client holding a user ref, or a provision_only client's standing ref.
+ * @brief Whether a session may be opened through dps_session_ensure(): a
+ * feature client wants it, or a provision_only client holds its standing ref.
  *
  * The registration ref is excluded: a registration starts its own session from
  * open(), and a second entry point would duplicate that.
  */
 static bool dps_session_demanded(const az_iot_connection_client* c)
 {
-  return c->dps_user_count > 0 || c->dps_standing_ref;
+  return c->dps_session_wanted || c->dps_standing_ref;
 }
+
+static az_iot_result dps_session_ensure(az_iot_connection_client* client);
 
 /**
  * @brief Whether a provisioning session exists or is starting. No hub session
@@ -4412,8 +4414,8 @@ static void dps_apply_deferred(az_iot_connection_client* c)
           "the provisioning session ended with an error (%d)",
           (int)status);
       /* Only while a session is still wanted. This runs from the pump, so the
-       * last holder can have released since the failure -- and release already
-       * cleared the ladder. Pacing here would hand the next holder a latch it
+       * demand can have been released since the failure -- and release already
+       * cleared the ladder. Pacing here would hand the next demand a latch it
        * did not earn. */
       if (dps_session_demanded(c))
       {
@@ -6570,33 +6572,16 @@ static void process_sas_token_request(az_iot_connection_client* c)
 
 /**
  * @brief @p timeout_ms, capped so a process_loop() wait ends by the next
- * connection deadline: a SAS token request's bound (none while one waits to be
- * asked, as do_work() asks it), a session's SAS token renewal, a planned hub
- * session end's settle and disconnect bounds, the presence SUBACK or birth-ack timeout, an open
+ * connection deadline: a session's SAS token renewal, a planned hub session
+ * end's settle and disconnect bounds, the presence SUBACK or birth-ack timeout, an open
  * certificate renewal's response timeout, a provisioning session's readiness
  * bound, or a feature observer's NEXT_DEADLINE.
+ * A token request's deadline is not one: its attempt has no session to wait on.
  */
 static uint32_t limit_wait_to_connection_deadlines(az_iot_connection_client* c, uint32_t timeout_ms)
 {
   uint64_t now = az_iot_time_mono_ms();
   uint64_t remaining = UINT64_MAX;
-  for (int i = 0; i < (int)AZ_IOT_CONN_SCOPE_COUNT; ++i)
-  {
-    if (c->sas_token_request[i].request_id == 0 || c->sas_token_request[i].for_renewal)
-    {
-      continue;
-    }
-    uint64_t due = c->sas_token_request[i].asked ? c->sas_token_request[i].deadline_ms : now;
-    if (!c->sas_token_request[i].asked && c->sas_token_ask_after_ms[i] > now)
-    {
-      due = c->sas_token_ask_after_ms[i];
-    }
-    if (due != 0)
-    {
-      uint64_t left = due > now ? due - now : 0;
-      remaining = left < remaining ? left : remaining;
-    }
-  }
   const az_iot_connection_scope scopes[] = { AZ_IOT_CONN_SCOPE_DPS, AZ_IOT_CONN_SCOPE_HUB };
   for (size_t i = 0; i < sizeof(scopes) / sizeof(scopes[0]); ++i)
   {
@@ -7766,7 +7751,7 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_open(az_iot_connection_clien
     client->dps_standing_ref = true;
     /* BUSY is the ordinary answer: started, and the caller waits for
      * DPS:CONNECTED as a hub client waits for HUB:CONNECTED. */
-    az_iot_result r = az_iot_connection_client__dps_session_ensure(client);
+    az_iot_result r = dps_session_ensure(client);
     if (r == AZ_IOT_ERR_BUSY || r == AZ_IOT_OK)
     {
       return AZ_IOT_OK;
@@ -7852,11 +7837,11 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_open(az_iot_connection_clien
   return r;
 }
 
-/* End the provisioning session, whoever was holding it.
+/* End the provisioning session, whoever wanted it.
  *
- * Its users' refs SURVIVE: a ref is a standing interest in having a session,
- * not in this one. It is NOT reopened automatically: its users ask again
- * through dps_session_ensure() when they next have something to send. */
+ * A feature client's demand SURVIVES: it is for a session, not for this one.
+ * It is NOT reopened automatically: the feature client asks again through
+ * dps_session_ensure() when it next has something to send. */
 static void dps_close_session(az_iot_connection_client* c)
 {
   if (!c->dps_mqtt)
@@ -7946,11 +7931,11 @@ az_iot_result az_iot_connection_client_close(az_iot_connection_client* client)
     return AZ_IOT_OK; /* idempotent */
   }
 
-  /* Before every branch below, because a provisioning session can be live in
-   * ALL of them: a session its users hold outlives registration, so a hub
-   * retry, a fault, or an ordinary close can each find one still up. Each
-   * branch used to return without touching it, and the pump would not collect
-   * it either while a ref was held -- so close() left a connection running. */
+  /* Before the branches below, because a provisioning session kept for a
+   * feature client outlives registration: a hub retry, a hub waiting for it,
+   * or a fault can find one still up. Each branch used to return without
+   * touching it, and the pump would not collect it either while it was wanted
+   * -- so close() left a connection running. */
   dps_close_session(client);
 
   /* close() is the documented exit from a settled refusal, so it clears the
@@ -8133,10 +8118,10 @@ static az_iot_result do_work_pass(az_iot_connection_client* client, uint32_t tim
   }
 
   /* Pump the provisioning session whenever one EXISTS, not only while a
-   * registration is running through its phases. A session kept for the feature
-   * clients holding it sits at DPS_PHASE_DONE, and a phase-gated pump would
-   * never service it -- so nothing inbound would ever arrive on the very
-   * session the refcount kept alive. */
+   * registration is running through its phases. A session kept for a feature
+   * client sits at DPS_PHASE_DONE, and a phase-gated pump would never service
+   * it -- so nothing inbound would ever arrive on the very session kept for
+   * it. */
   if (client->dps_mqtt == NULL && client->dps_standing_ref)
   {
     /* A provision_only device has no hub connect to fall back on, so only the
@@ -8149,7 +8134,7 @@ static az_iot_result do_work_pass(az_iot_connection_client* client, uint32_t tim
      * reported here rather than being swallowed; do_work() still returns the
      * pump's own result, since one tick failing to start a session is not a
      * reason to stop servicing the rest of the client. */
-    az_iot_result sr = az_iot_connection_client__dps_session_ensure(client);
+    az_iot_result sr = dps_session_ensure(client);
     if (sr != AZ_IOT_OK && sr != AZ_IOT_ERR_BUSY && sr != AZ_IOT_ERR_NOT_SUPPORTED)
     {
       AZ_IOT_LOG_ERRORF(
@@ -8294,7 +8279,7 @@ static az_iot_result do_work_pass(az_iot_connection_client* client, uint32_t tim
   {
     if (dps_session_demanded(client))
     {
-      (void)az_iot_connection_client__dps_session_ensure(client);
+      (void)dps_session_ensure(client);
     }
     if (!provisioning_session_in_use(client))
     {
@@ -9060,49 +9045,31 @@ static az_iot_result run_feature_client_binds(az_iot_connection_client* c)
 
 /* --- provisioning-session seam ------------------------------------------- */
 
-az_iot_result az_iot_connection_client__dps_user_acquire(az_iot_connection_client* client)
+void az_iot_connection_client__dps_session_release(az_iot_connection_client* client)
 {
-  if (client == NULL)
-  {
-    return AZ_IOT_ERR_INVALID_ARG;
-  }
-  if (client->dps_user_count == UINT8_MAX)
-  {
-    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
-  }
-  client->dps_user_count++;
-  return AZ_IOT_OK;
-}
-
-void az_iot_connection_client__dps_user_release(az_iot_connection_client* client)
-{
-  if (client == NULL || client->dps_user_count == 0)
+  if (client == NULL || !client->dps_session_wanted)
   {
     return;
   }
-  client->dps_user_count--;
-  if (client->dps_user_count == 0)
+  client->dps_session_wanted = false;
+  /* The demand is gone. A later one is NEW demand and must not inherit a
+   * backoff, a latched refusal, or a credential fallback pass, earned by the
+   * one before it. A registration owns its own pass. */
+  dps_user_retry_reset(client);
+  if (!client->dps_registration_ref && !client->dps_standing_ref)
   {
-    /* The demand is gone. A later holder is NEW demand and must not inherit a
-     * backoff, a latched refusal, or a credential fallback pass, earned by
-     * whoever came before it. A registration owns its own pass. */
-    dps_user_retry_reset(client);
-    if (!client->dps_registration_ref && !client->dps_standing_ref)
+    client->dps_demand_epoch++;
+    /* A session still up keeps its pass: it may be wanted again before the
+     * pump closes it. The pump clears the pass when it does. */
+    if (client->dps_mqtt == NULL)
     {
-      client->dps_demand_epoch++;
-      /* A session still up keeps its pass: a holder may re-acquire it before
-       * the pump closes it. The pump clears the pass when it does. */
-      if (client->dps_mqtt == NULL)
-      {
-        client->auth[AZ_IOT_CONN_SCOPE_DPS].first = AZ_IOT_AUTH_SOURCE_NONE;
-        client->auth[AZ_IOT_CONN_SCOPE_DPS].pass_from = AZ_IOT_AUTH_SOURCE_NONE;
-      }
+      client->auth[AZ_IOT_CONN_SCOPE_DPS].first = AZ_IOT_AUTH_SOURCE_NONE;
+      client->auth[AZ_IOT_CONN_SCOPE_DPS].pass_from = AZ_IOT_AUTH_SOURCE_NONE;
     }
   }
-  /* The session is NOT torn down here even if this was the last ref. Release
-   * is reachable from inside a message callback, and freeing the adapter there
-   * would free the object it is still dispatching on. The pump notices the
-   * count reached zero and closes at a safe point. */
+  /* The session is NOT torn down here. Release is reachable from inside a
+   * message callback, and freeing the adapter there would free the object it
+   * is still dispatching on. The pump closes it at a safe point. */
 }
 
 bool az_iot_connection_client__dps_registration_pending(const az_iot_connection_client* client)
@@ -9116,9 +9083,18 @@ az_iot_result az_iot_connection_client__dps_session_ensure(az_iot_connection_cli
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
-  /* Only a holder may ask: the demand is already recorded, so this asks
-   * whether the session it is entitled to is usable yet. */
-  if (!dps_session_demanded(client) || !dps_configured(client))
+  client->dps_session_wanted = true;
+  return dps_session_ensure(client);
+}
+
+/**
+ * @brief Whether the provisioning session dps_session_demanded() asks for is
+ * usable; opens one if there is none. Returns as
+ * az_iot_connection_client__dps_session_ensure().
+ */
+static az_iot_result dps_session_ensure(az_iot_connection_client* client)
+{
+  if (!dps_configured(client))
   {
     return AZ_IOT_ERR_NOT_SUPPORTED;
   }
@@ -9153,7 +9129,7 @@ az_iot_result az_iot_connection_client__dps_session_ensure(az_iot_connection_cli
    * retry fires on its own, so the next attempt lets this through again.
    *
    * Here rather than in each caller: the rule is a property of the connection
-   * state, and every holder would otherwise need its own copy. */
+   * state, and every caller would otherwise need its own copy. */
   for (size_t i = 0; i < AZ_IOT_CONN_SCOPE_COUNT; ++i)
   {
     if (client->state[i] == AZ_IOT_CONN_STATE_FAULTED)
@@ -9175,13 +9151,13 @@ az_iot_result az_iot_connection_client__dps_session_ensure(az_iot_connection_cli
     return AZ_IOT_ERR_BUSY;
   }
 
-  /* The core's own pacing for a session held by its users. Without it a failed
+  /* The core's own pacing for a session wanted by its users. Without it a failed
    * session was re-opened on the very next pump tick, for as long as the
    * application kept pumping. */
   if (client->dps_user_retry_blocked)
   {
     /* Settled, like FAULTED: retries are off or the budget is spent, and the
-     * core will not re-open on its own. A holder that keeps asking gets a
+     * core will not re-open on its own. A caller that keeps asking gets a
      * stable answer it can report, rather than a session attempt per tick. */
     return AZ_IOT_ERR_NOT_SUPPORTED;
   }
@@ -9317,6 +9293,8 @@ az_iot_result az_iot_connection_client__dps_publish(
     return AZ_IOT_ERR_NOT_SUPPORTED;
   }
 
+  /* Kept for the response. */
+  client->dps_session_wanted = true;
   uint16_t pid = 0;
   return client->dps_mqtt->iface->publish(client->dps_mqtt, msg, &pid);
 }

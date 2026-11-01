@@ -333,20 +333,10 @@ extern "C"
      * reprovisions needs its check held on that session too. */
     bool wants_hold;
 
-    /* Interest in the provisioning session itself, held only while the channel
-     * has work for it (a request outstanding or waiting for a session, or the
-     * pre-registration check owed on a registration under way): the hub
-     * session is paused while a provisioning session is up. Distinct from
-     * wants_hold, which only delays a registration that is about to happen. */
-    bool holds_user;
-
-    /* An operation was refused because no session was up. The tick reads this
-     * to know a session is actually wanted -- opening one speculatively would
-     * just linger and close again. */
-    bool wants_session;
-
-    /** Operations (bit 1 << az_iot_su_operation) refused for want of a session;
-     * an abandoned fetch drops its own bit, and wants_session goes with the last. */
+    /* Operations (bit 1 << az_iot_su_operation) refused because no session was
+     * up. The tick asks for a session only while one is set -- opening one
+     * speculatively would just linger and close again; an abandoned fetch drops
+     * its own bit. */
     uint8_t session_demand;
 
     /** When an outstanding status report stops being awaited (monotonic ms). */
