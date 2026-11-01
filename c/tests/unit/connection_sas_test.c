@@ -1760,7 +1760,7 @@ static void count_puback(az_iot_result status, void* user_ctx)
 /** @brief Publishes a QoS 1 message whose PUBACK is awaited; returns its packet id. */
 static uint16_t publish_awaiting_puback(fixture* fx, int* acks)
 {
-  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  az_iot_mock_mqtt_client* m = newest_mock_client(fx);
   az_iot_mqtt_message msg = { 0 };
   msg.topic = "devices/ut-device/messages/events/";
   msg.qos = AZ_IOT_MQTT_QOS_1;
@@ -1772,7 +1772,7 @@ static uint16_t publish_awaiting_puback(fixture* fx, int* acks)
 /** @brief Makes the renewal due and pumps once: with a delivery unsettled, no DISCONNECT yet. */
 static az_iot_mock_mqtt_client* start_settling_renewal(fixture* fx)
 {
-  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  az_iot_mock_mqtt_client* m = newest_mock_client(fx);
   fx->client.sas_token_renewal_due_ms[AZ_IOT_CONN_SCOPE_HUB] = az_iot_time_mono_ms();
   pump(fx, 1);
   assert_true(fx->client.sas_token_renewal_in_progress[AZ_IOT_CONN_SCOPE_HUB]);
@@ -1955,7 +1955,7 @@ static void a_delivery_expiring_on_the_tick_ends_the_settle_at_once(void** state
           report_unsettled_until_tick,
           &unsettled),
       AZ_IOT_OK);
-  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  az_iot_mock_mqtt_client* m = newest_mock_client(fx);
   fx->client.sas_token_renewal_due_ms[AZ_IOT_CONN_SCOPE_HUB] = az_iot_time_mono_ms();
   pump(fx, 1);
   assert_false(unsettled);
@@ -1994,7 +1994,7 @@ static void a_renewal_of_an_expired_token_does_not_settle(void** state)
   open_renewable_hub(fx, &now, NULL);
   int acks = 0;
   (void)publish_awaiting_puback(fx, &acks);
-  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  az_iot_mock_mqtt_client* m = newest_mock_client(fx);
   fx->client.hub_session_token_expiry_ms = az_iot_time_mono_ms() - 1u;
   fx->client.sas_token_renewal_due_ms[AZ_IOT_CONN_SCOPE_HUB] = az_iot_time_mono_ms();
   pump(fx, 1);
@@ -2008,7 +2008,7 @@ static void a_renewal_of_a_token_expired_by_unix_time_does_not_settle(void** sta
   open_renewable_hub(fx, &now, NULL);
   int acks = 0;
   (void)publish_awaiting_puback(fx, &acks);
-  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  az_iot_mock_mqtt_client* m = newest_mock_client(fx);
   now = NOW + 101u;
   pump(fx, 1);
   assert_int_equal(az_iot_mock_mqtt_client_count_of(m, AZ_IOT_MOCK_CALL_DISCONNECT), 1);
@@ -2740,7 +2740,7 @@ static void a_user_token_renewal_settles_no_longer_than_the_old_token_lives(void
   /* Rounded down from the time left since delivery: never later than the token's real expiry. */
   uint64_t const expiry_unix_seconds = fx->client.hub_session_token_expiry_unix_seconds;
   assert_true(expiry_unix_seconds == NOW + 100u || expiry_unix_seconds == NOW + 99u);
-  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  az_iot_mock_mqtt_client* m = newest_mock_client(fx);
   int acks = 0;
   (void)publish_awaiting_puback(fx, &acks);
 
