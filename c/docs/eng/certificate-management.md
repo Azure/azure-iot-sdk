@@ -174,7 +174,8 @@ support it.
 - **Recovery:** a renewal open when the session ends fails with `AZ_IOT_ERR_NOT_CONNECTED`; pass
   its `request_id` to resubmit once reconnected. `replace` supersedes an active hub-side operation:
   a renewal the hub accepted (`202`) before the session ended may still be active, and its
-  resubmission then fails with a `409` code; resubmit with `replace` and a new `request_id`.
+  resubmission then fails with a `409` code; resubmit with `replace` and a new `request_id`. If
+  that fails with `412`, the request ended meanwhile: send it again without `replace`.
 - **Errors:** routed on the response status (`202`/`200`/other). The JSON body's `errorCode`
   is surfaced as `service_code`, `retryAfter` as `retry_after_s`, `info.credentialError` as
   `credential_error`, `info.credentialMessage` as `credential_message` and `trackingId` as
