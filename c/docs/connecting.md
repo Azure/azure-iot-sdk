@@ -387,15 +387,16 @@ makes the service push sections that the device drops.
 Session 0) on every connect unless `session_continuity` is `AZ_IOT_SESSION_CONTINUITY_CLEAN`,
 including the first connect after a reboot. Why:
 
-- mqttv3 IoT Hub keeps the cloud-to-device messages queued while the device was away only for a
-  session that is not clean; a clean connect drops them.
+- mqttv3 IoT Hub keeps the device's subscriptions and in-flight QoS 1 deliveries only for a
+  session that is not clean. A clean connect discards them; it does not lose the hub's
+  cloud-to-device queue, which is delivered once the device re-subscribes.
 - mqttv5: the broker keeps the subscriptions and redelivers QoS 1 messages to the device across a
   drop. The backlog is bounded: Event Grid keeps a disconnected session at most
   `session_expiry_seconds` (default 1 hour, clamped to 8 hours) and at most 100 messages / 1 MB;
   past that the session is lost.
 
-DPS sessions are always clean. Choose `CLEAN` for a device that should not replay a backlog after
-a long absence.
+DPS sessions are always clean. On mqttv5, choose `CLEAN` for a device that should not replay the
+broker's backlog after a long absence.
 
 **Retries.** Each session gets a new MQTT client, destroyed when the session ends. What was sent
 on it and not yet confirmed (by a PUBACK or a response) is retried on a later session by the

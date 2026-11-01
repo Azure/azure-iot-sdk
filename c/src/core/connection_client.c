@@ -1060,11 +1060,12 @@ static void resolve_connect_transport(
  *
  *  - HUB_MQTT_V3 (v3.1.1): a PERSISTENT session, which is the behaviour this
  *    role already had and is kept deliberately. MQTTv3 IoT Hub holds a
- *    device's subscriptions, and the cloud-to-device messages that arrived
- *    while it was away, only for a session that is NOT clean; connecting clean
- *    would silently drop whatever was queued during an outage. The SUBSCRIBEs
- *    are re-issued on every connect either way (begin_feature_subscriptions),
- *    so resuming costs nothing and losing the queue costs delivery.
+ *    device's subscriptions and in-flight QoS 1 deliveries only for a session
+ *    that is NOT clean. Connecting clean does not lose the hub's
+ *    cloud-to-device queue, which is delivered once the device re-subscribes,
+ *    but it discards in-flight deliveries. The SUBSCRIBEs are re-issued on
+ *    every connect either way (begin_feature_subscriptions), so resuming costs
+ *    nothing.
  *
  *  - HUB_MQTT_V5 (v5): a resumed session as well, with a Session Expiry Interval
  *    so there is something left to resume. The presence design is explicit that
