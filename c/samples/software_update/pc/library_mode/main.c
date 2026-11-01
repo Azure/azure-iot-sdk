@@ -106,8 +106,6 @@ typedef struct
 
   az_iot_certificate_provider_pem certs;
   az_iot_connection_client connection_client;
-  az_iot_mqtt_factory* factory_v3;
-  az_iot_mqtt_factory* factory_v5;
   const az_iot_crypto* crypto;
   az_iot_su_client su_client;
 
@@ -148,13 +146,6 @@ static void sample_state_destroy(sample_state* s)
   az_iot_su_client_deinit(&s->su_client);
 
   az_iot_connection_client_deinit(&s->connection_client);
-#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
-  az_iot_paho_factory_destroy(s->factory_v3);
-  az_iot_paho_factory_destroy(s->factory_v5);
-#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
-  az_iot_az_mqtt_factory_destroy(s->factory_v3);
-  az_iot_az_mqtt_factory_destroy(s->factory_v5);
-#endif
   az_iot_certificate_provider_pem_deinit(&s->certs);
   sample_config_release(&s->config);
 
@@ -781,8 +772,8 @@ static void on_su_event(const az_iot_su_event* event, void* user_ctx)
 
 /**
  * @brief Create the certificate provider and the connection client, observed
- * by on_connection_state_event_received() and with both MQTT factories
- * registered. The device registers and connects to its hub.
+ * by on_connection_state_event_received() and building its MQTT clients in a
+ * static workspace. The device registers and connects to its hub.
  *
  * @param[in,out] state Sample state; its config must be loaded.
  * @return 0 on success, nonzero on failure. sample_state_destroy() releases
@@ -815,25 +806,20 @@ static int initialize_connection_client(sample_state* state)
   copts.certificate_provider = &state->certs.base;
   /* Verifies update manifests; the application hashes downloaded files with it too. */
   copts.crypto = state->crypto;
+  /* The adapter builds each session's MQTT client in this workspace, one at a time: MQTT 3.1.1
+   * for DPS and an MQTTv3 hub, MQTT 5 for an MQTTv5 hub. Limits: sample_utils.h. */
+  static uint8_t mqtt_workspace[SAMPLE_MQTT_WORKSPACE_SIZE];
+#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
+  copts.mqtt_adapter = az_iot_paho_get_adapter();
+#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
+  copts.mqtt_adapter = az_iot_az_mqtt_get_adapter();
+#endif
+  copts.mqtt_limits = SAMPLE_MQTT_LIMITS;
+  copts.mqtt_workspace = mqtt_workspace;
+  copts.mqtt_workspace_size = sizeof(mqtt_workspace);
   if (az_iot_connection_client_init(&state->connection_client, &copts) != AZ_IOT_OK
       || az_iot_connection_client_add_state_observer(
              &state->connection_client, on_connection_state_event_received, state)
-          != AZ_IOT_OK)
-  {
-    return 1;
-  }
-
-#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
-  state->factory_v3 = az_iot_paho_factory_create_v3_1_1();
-  state->factory_v5 = az_iot_paho_factory_create_v5();
-#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
-  state->factory_v3 = az_iot_az_mqtt_factory_create_v3_1_1();
-  state->factory_v5 = az_iot_az_mqtt_factory_create_v5();
-#endif
-  if (az_iot_connection_client_register_mqtt_factory(&state->connection_client, state->factory_v3)
-          != AZ_IOT_OK
-      || az_iot_connection_client_register_mqtt_factory(
-             &state->connection_client, state->factory_v5)
           != AZ_IOT_OK)
   {
     return 1;

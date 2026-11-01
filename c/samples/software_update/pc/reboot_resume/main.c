@@ -329,8 +329,6 @@ int main(void)
   az_iot_certificate_provider_pem certs = { 0 };
   az_iot_connection_client connection;
   az_iot_su_client su;
-  az_iot_mqtt_factory* factory_v3 = NULL;
-  az_iot_mqtt_factory* factory_v5 = NULL;
   int connection_ready = 0;
   int su_ready = 0;
   char installed_provider[SU_SIM_ID_PART_SIZE];
@@ -383,22 +381,24 @@ int main(void)
 #elif defined(AZ_IOT_SAMPLE_CRYPTO_MBEDTLS)
   copts.crypto = az_iot_crypto_mbedtls(); /* verifies manifests and file hashes */
 #endif
+  /* The adapter builds each session's MQTT client in this workspace, one at a time: MQTT 3.1.1
+   * for DPS and an MQTTv3 hub, MQTT 5 for an MQTTv5 hub. Limits: sample_utils.h. */
+  static uint8_t mqtt_workspace[SAMPLE_MQTT_WORKSPACE_SIZE];
+#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
+  copts.mqtt_adapter = az_iot_paho_get_adapter();
+#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
+  copts.mqtt_adapter = az_iot_az_mqtt_get_adapter();
+#endif
+  copts.mqtt_limits = SAMPLE_MQTT_LIMITS;
+  copts.mqtt_workspace = mqtt_workspace;
+  copts.mqtt_workspace_size = sizeof(mqtt_workspace);
   if (az_iot_connection_client_init(&connection, &copts) != AZ_IOT_OK)
   {
     goto cleanup;
   }
   connection_ready = 1;
-#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
-  factory_v3 = az_iot_paho_factory_create_v3_1_1();
-  factory_v5 = az_iot_paho_factory_create_v5();
-#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
-  factory_v3 = az_iot_az_mqtt_factory_create_v3_1_1();
-  factory_v5 = az_iot_az_mqtt_factory_create_v5();
-#endif
   if (az_iot_connection_client_add_state_observer(&connection, on_connection_state, &flags)
-          != AZ_IOT_OK
-      || az_iot_connection_client_register_mqtt_factory(&connection, factory_v3) != AZ_IOT_OK
-      || az_iot_connection_client_register_mqtt_factory(&connection, factory_v5) != AZ_IOT_OK)
+      != AZ_IOT_OK)
   {
     goto cleanup;
   }
@@ -535,13 +535,6 @@ cleanup:
   {
     az_iot_connection_client_deinit(&connection);
   }
-#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
-  az_iot_paho_factory_destroy(factory_v3);
-  az_iot_paho_factory_destroy(factory_v5);
-#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
-  az_iot_az_mqtt_factory_destroy(factory_v3);
-  az_iot_az_mqtt_factory_destroy(factory_v5);
-#endif
   az_iot_certificate_provider_pem_deinit(&certs);
   sample_config_release(&config);
   free(hooks_context.state_file);

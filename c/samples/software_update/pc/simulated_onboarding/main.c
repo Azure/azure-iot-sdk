@@ -105,8 +105,6 @@ typedef struct
 
   az_iot_certificate_provider_pem certs;
   az_iot_connection_client connection_client;
-  az_iot_mqtt_factory* factory_v3;
-  az_iot_mqtt_factory* factory_v5;
   az_iot_su_client su_client;
 
   /* Device identity, kept past init() only so it can be printed. */
@@ -142,13 +140,6 @@ static void sample_state_destroy(sample_state* s)
   az_iot_su_client_deinit(&s->su_client);
 
   az_iot_connection_client_deinit(&s->connection_client);
-#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
-  az_iot_paho_factory_destroy(s->factory_v3);
-  az_iot_paho_factory_destroy(s->factory_v5);
-#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
-  az_iot_az_mqtt_factory_destroy(s->factory_v3);
-  az_iot_az_mqtt_factory_destroy(s->factory_v5);
-#endif
   az_iot_certificate_provider_pem_deinit(&s->certs);
   sample_config_release(&s->config);
 
@@ -298,7 +289,8 @@ static void on_su_event(const az_iot_su_event* event, void* user_ctx)
 
 /**
  * @brief Create the certificate provider and the provision_only connection
- * client, observed by on_connection_state_event_received() and with both MQTT factories registered.
+ * client, observed by on_connection_state_event_received() and building its MQTT client in a
+ * static workspace.
  *
  * The reconnection policy is the default from
  * az_iot_connection_client_options_default().
@@ -342,6 +334,17 @@ static int initialize_connection_client(sample_state* state)
 #elif defined(AZ_IOT_SAMPLE_CRYPTO_MBEDTLS)
   copts.crypto = az_iot_crypto_mbedtls();
 #endif
+  /* The adapter builds the provisioning session's MQTT 3.1.1 client in this workspace (this
+   * device has no hub session). Limits: sample_utils.h. */
+  static uint8_t mqtt_workspace[SAMPLE_MQTT_WORKSPACE_SIZE];
+#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
+  copts.mqtt_adapter = az_iot_paho_get_adapter();
+#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
+  copts.mqtt_adapter = az_iot_az_mqtt_get_adapter();
+#endif
+  copts.mqtt_limits = SAMPLE_MQTT_LIMITS;
+  copts.mqtt_workspace = mqtt_workspace;
+  copts.mqtt_workspace_size = sizeof(mqtt_workspace);
   if (az_iot_connection_client_init(&state->connection_client, &copts) != AZ_IOT_OK)
   {
     return 1;
@@ -349,22 +352,6 @@ static int initialize_connection_client(sample_state* state)
   if (az_iot_connection_client_add_state_observer(
           &state->connection_client, on_connection_state_event_received, state)
       != AZ_IOT_OK)
-  {
-    return 1;
-  }
-
-#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
-  state->factory_v3 = az_iot_paho_factory_create_v3_1_1();
-  state->factory_v5 = az_iot_paho_factory_create_v5();
-#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
-  state->factory_v3 = az_iot_az_mqtt_factory_create_v3_1_1();
-  state->factory_v5 = az_iot_az_mqtt_factory_create_v5();
-#endif
-  if (az_iot_connection_client_register_mqtt_factory(&state->connection_client, state->factory_v3)
-          != AZ_IOT_OK
-      || az_iot_connection_client_register_mqtt_factory(
-             &state->connection_client, state->factory_v5)
-          != AZ_IOT_OK)
   {
     return 1;
   }
