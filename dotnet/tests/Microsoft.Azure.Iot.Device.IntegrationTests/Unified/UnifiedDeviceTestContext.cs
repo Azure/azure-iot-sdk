@@ -68,7 +68,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
                     }
                 }
                 catch (Exception)
-                { 
+                {
                     // Device identity may have already been deleted or the test may have failed to provision it. In either case,
                     // ignore failures
                 }
