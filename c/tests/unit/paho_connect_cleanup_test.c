@@ -651,6 +651,114 @@ static void proxy_credentials_are_wiped_before_they_are_freed(void** state)
 }
 #endif
 
+/* ------------------------------------------------------------------------- */
+/* MQTT v5 publish failures                                                   */
+/* ------------------------------------------------------------------------- */
+
+/* Keeps the last PUBLISH_ACK the adapter raises. */
+typedef struct
+{
+  int count;
+  az_iot_mqtt_event last;
+} puback_sink;
+
+static void on_puback(const az_iot_mqtt_event* e, void* ctx)
+{
+  puback_sink* s = (puback_sink*)ctx;
+  if (e->kind == AZ_IOT_MQTT_EVT_PUBLISH_ACK)
+  {
+    s->count++;
+    s->last = *e;
+  }
+}
+
+/** @brief A v5 client, connected, with one QoS 1 publish sent. */
+static az_iot_mqtt_client* publish_on_a_v5_client(az_iot_mqtt_factory* f, puback_sink* sink)
+{
+  az_iot_mqtt_client* client = f->create(f->factory_ctx);
+  assert_non_null(client);
+  client->iface->set_inbound_cb(client, on_puback, sink);
+  az_iot_mqtt_connect_options opts;
+  memset(&opts, 0, sizeof(opts));
+  opts.host = "broker.invalid";
+  opts.port = 8883;
+  opts.client_id = "ut-device";
+  opts.tls.client_cert_path = "/dev/null/device.pem";
+  opts.tls.client_key_path = "/dev/null/device.key";
+  assert_int_equal(client->iface->connect(client, &opts), AZ_IOT_OK);
+  az_iot_mqtt_message msg;
+  memset(&msg, 0, sizeof(msg));
+  msg.topic = "devices/ut-device/messages/events/";
+  msg.qos = AZ_IOT_MQTT_QOS_1;
+  uint16_t packet_id = 0;
+  assert_int_equal(client->iface->publish(client, &msg, &packet_id), AZ_IOT_OK);
+  assert_non_null(mock_paho_last_send_response()->onFailure5);
+  return client;
+}
+
+/** @brief Drains the adapter's queue until a PUBLISH_ACK arrives. */
+static void wait_for_puback(az_iot_mqtt_client* client, puback_sink* sink)
+{
+  for (int i = 0; i < 20 && sink->count == 0; ++i)
+  {
+    (void)client->iface->process_loop(client, 1);
+  }
+  assert_int_equal(sink->count, 1);
+}
+
+/* A publish whose write failed: Paho 1.3.16 leaves reasonCode and properties uninitialized
+ * (MQTTAsync_writeComplete()). They are not read: an ERR_MQTT failure with no protocol code. */
+static void a_v5_publish_write_failure_ignores_its_uninitialized_reason_code(void** state)
+{
+  (void)state;
+  mock_paho_reset();
+  az_iot_mqtt_factory* f = az_iot_paho_factory_create_v5();
+  assert_non_null(f);
+  puback_sink sink = { 0 };
+  az_iot_mqtt_client* client = publish_on_a_v5_client(f, &sink);
+
+  const MQTTAsync_responseOptions* resp = mock_paho_last_send_response();
+  MQTTAsync_failureData5 data;
+  memset(&data, 0x5A, sizeof(data)); /* stack garbage, as Paho leaves it: reasonCode >= 0x80 */
+  data.token = 7;
+  data.code = -1;
+  data.message = NULL;
+  data.packet_type = 3; /* PUBLISH */
+  resp->onFailure5(resp->context, &data);
+  wait_for_puback(client, &sink);
+  assert_int_equal(sink.last.packet_id, 7);
+  assert_int_equal(sink.last.status, AZ_IOT_ERR_MQTT);
+  assert_int_equal(sink.last.protocol_code, 0);
+  assert_int_equal(sink.last.reason_string_len, 0);
+
+  client->iface->destroy(client);
+  az_iot_paho_factory_destroy(f);
+}
+
+/* A PUBACK refusal keeps its reason code. */
+static void a_v5_puback_refusal_keeps_its_reason_code(void** state)
+{
+  (void)state;
+  mock_paho_reset();
+  az_iot_mqtt_factory* f = az_iot_paho_factory_create_v5();
+  assert_non_null(f);
+  puback_sink sink = { 0 };
+  az_iot_mqtt_client* client = publish_on_a_v5_client(f, &sink);
+
+  const MQTTAsync_responseOptions* resp = mock_paho_last_send_response();
+  MQTTAsync_failureData5 data = MQTTAsync_failureData5_initializer;
+  data.token = 7;
+  data.reasonCode = MQTTREASONCODE_NOT_AUTHORIZED;
+  resp->onFailure5(resp->context, &data);
+  wait_for_puback(client, &sink);
+  assert_int_equal(sink.last.packet_id, 7);
+  assert_int_not_equal(sink.last.status, AZ_IOT_OK);
+  assert_int_equal(sink.last.protocol_code, MQTTREASONCODE_NOT_AUTHORIZED);
+
+  client->iface->destroy(client);
+  az_iot_paho_factory_destroy(f);
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -685,6 +793,9 @@ int main(void)
         a_failed_disconnect_completion_carries_the_error, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_refused_disconnect_still_reports_disconnected, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_v5_publish_write_failure_ignores_its_uninitialized_reason_code, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_v5_puback_refusal_keeps_its_reason_code, setup, teardown),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }

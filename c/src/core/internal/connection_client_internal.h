@@ -194,7 +194,7 @@ extern "C"
 
   /**
    * @brief Whether new tracked sends wait: the hub session is being ended on purpose, and a SAS
-   *        renewal first lets its deliveries settle (see
+   *        renewal or a pause for a provisioning session first lets its deliveries settle (see
    *        AZ_IOT_CONNECTION_FEATURE_EVENT_UNSETTLED_QUERY).
    */
   bool az_iot_connection_client__holds_sends_for_session_end(
@@ -416,8 +416,8 @@ extern "C"
    * @retval AZ_IOT_ERR_NOT_CONNECTED Not in CONNECTED state, or the session is being ended on
    *         purpose (DISCONNECT sent).
    * @retval AZ_IOT_ERR_BUSY QoS 1 with @p ack_cb and every slot of the pool it draws from is in
-   *         use, or any QoS 1 while a SAS renewal lets the session's deliveries settle (at most
-   *         5 s). Nothing was sent.
+   *         use, or any QoS 1 while a SAS renewal or a pause for a provisioning session lets the
+   *         session's deliveries settle (at most 5 s). Nothing was sent.
    * @return Otherwise the adapter's result.
    */
   az_iot_result az_iot_connection_client__publish(
