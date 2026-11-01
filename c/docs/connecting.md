@@ -272,11 +272,17 @@ and what the application observes is:
   provisioning session closes and the hub connects to the assignment just received, without
   registering again. `HUB:RETRY_PENDING` with reason `AZ_IOT_OK` marks the wait.
 - **After registration.** Each update check or status report made while the hub is connected
-  disconnects the hub: `HUB:RETRY_PENDING` with reason `AZ_IOT_OK` (`is_credential_renewal` false,
-  no `recovery` info), then the provisioning session's events. When the software updates client
-  has no work left, the hub reconnects (`SETTING_UP`, `CONNECTING`, `CONNECTED`) to its cached
-  assignment. Feature clients see an ordinary session end and resume as after any reconnect;
-  QoS 1 publishes awaiting a PUBACK complete with `AZ_IOT_ERR_NOT_CONNECTED`.
+  disconnects the hub. First the hub session's deliveries settle, for up to 5 s, as before a
+  [SAS token renewal](#authentication): publishes awaiting a PUBACK, and SDK requests awaiting a
+  response (twin reported-property updates, a certificate renewal). Meanwhile a new QoS 1 publish
+  returns `AZ_IOT_ERR_BUSY` (QoS 0 is sent). So the provisioning session starts at most 5 s later,
+  plus up to 5 s for the hub to report its disconnect. Then `HUB:RETRY_PENDING` with reason
+  `AZ_IOT_OK` (`is_credential_renewal` false, no `recovery` info), then the provisioning session's
+  events. When the software updates client has no work left, the hub reconnects (`SETTING_UP`,
+  `CONNECTING`, `CONNECTED`) to its cached assignment; if it has none left before the settle ends,
+  the hub session stays. Feature clients see an ordinary session end and resume as after any
+  reconnect; QoS 1 publishes still awaiting a PUBACK complete with `AZ_IOT_ERR_NOT_CONNECTED`. A
+  link lost during the settle ends the session as any lost session.
 - These disconnects are planned: they count toward no reconnection backoff and not toward
   `dps.max_hub_connect_attempts_before_reprovision`.
 - The hub is not held indefinitely. An update check waits at most its request timeout (default

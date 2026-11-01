@@ -59,6 +59,7 @@ static void* s_disconnected_context;
 static MQTTProperty s_user_properties[MOCK_PAHO_MAX_USER_PROPERTIES];
 static int s_user_property_count;
 static int s_send_calls;
+static MQTTAsync_responseOptions s_last_send_response;
 static int s_properties_add_fail_at = -1;
 static int s_properties_add_calls;
 
@@ -92,6 +93,7 @@ void mock_paho_reset(void)
   s_disconnected_context = NULL;
   s_user_property_count = 0;
   s_send_calls = 0;
+  memset(&s_last_send_response, 0, sizeof(s_last_send_response));
   s_properties_add_fail_at = -1;
   s_properties_add_calls = 0;
 }
@@ -322,7 +324,10 @@ int MQTTAsync_sendMessage(
   (void)handle;
   (void)destinationName;
   (void)msg;
-  (void)response;
+  if (response != NULL)
+  {
+    s_last_send_response = *response;
+  }
   return MQTTASYNC_SUCCESS;
 }
 
@@ -366,6 +371,11 @@ void mock_paho_set_properties_add_fail_at(int call)
 }
 
 int mock_paho_send_calls(void) { return s_send_calls; }
+
+const MQTTAsync_responseOptions* mock_paho_last_send_response(void)
+{
+  return &s_last_send_response;
+}
 
 void MQTTProperties_free(MQTTProperties* properties) { (void)properties; }
 
