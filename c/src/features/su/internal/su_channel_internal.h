@@ -263,8 +263,8 @@ extern "C"
  *
  * The hub session waits while a request is outstanding, so an answer lost on a
  * live session must not keep it waiting: past this the request is retried on the
- * engine's pacing and the session released meanwhile. It also bounds an update
- * check made with AZ_IOT_SU_REQUEST_NO_TIMEOUT once the channel has sent it.
+ * engine's pacing and the session released meanwhile. It applies to each send,
+ * within the check's own request timeout.
  */
 #ifndef AZ_IOT_SU_CHANNEL_RESPONSE_TIMEOUT_MS
 #define AZ_IOT_SU_CHANNEL_RESPONSE_TIMEOUT_MS 120000u

@@ -1114,7 +1114,7 @@ static az_iot_result channel_do_work(void* ctx)
   az_iot_result sr = channel_observe_deferred(c);
 
   /* A request not answered in time -- a status report, or an update check
-   * even with AZ_IOT_SU_REQUEST_NO_TIMEOUT -- is retried on the engine's pacing,
+   * within its own request timeout -- is retried on the engine's pacing,
    * and the session released meanwhile: the hub session waits while it is up.
    * Only on the request's own session, still ready: one lost with its session is
    * handled below, which keeps the session interest and so its pacing. */

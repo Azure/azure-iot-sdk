@@ -518,8 +518,8 @@ int main(void)
    * and looks exactly like "no update available".
    *
    * AZ_IOT_SU_REQUEST_DEFAULT_TIMEOUT_MS is the default for an application
-   * with no policy of its own. Pass your own value when you have one, or
-   * AZ_IOT_SU_REQUEST_NO_TIMEOUT to keep retrying indefinitely. */
+   * with no policy of its own. Pass your own value when you have one; 0 is
+   * refused, since a check pauses the hub session while it runs. */
   /* Only from Idle: a workflow restored by resume() is finished first, since a
    * check now could deliver a different workflow, which supersedes it. */
   if (az_iot_su_client_get_state(&state.su_client) == AZ_IOT_SU_STATE_IDLE
