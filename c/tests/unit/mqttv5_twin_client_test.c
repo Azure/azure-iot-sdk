@@ -2401,8 +2401,13 @@ static void a_session_ended_for_a_provisioning_session_resends_the_snapshot_afte
   uint8_t first_corr[16];
   memcpy(first_corr, first->correlation_data, sizeof(first_corr));
 
-  /* The hub session ends first; the provisioning session opens once it is gone. */
+  /* The hub session ends first, at the settle bound with the snapshot still awaited; the
+   * provisioning session opens once it is gone. */
   assert_int_equal(az_iot_connection_client__dps_session_ensure(&fx->conn), AZ_IOT_ERR_BUSY);
+  assert_int_equal(az_iot_mock_mqtt_client_count_of(fx->mock, AZ_IOT_MOCK_CALL_DISCONNECT), 0);
+  az_iot_connection_client__planned_hub_session_end_force_timeout(&fx->conn);
+  assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
+  assert_int_equal(az_iot_mock_mqtt_client_count_of(fx->mock, AZ_IOT_MOCK_CALL_DISCONNECT), 1);
   assert_true(az_iot_mock_mqtt_client_inject_disconnected(fx->mock));
   assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
   assert_null(fx->conn.active_client);
