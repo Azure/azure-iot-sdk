@@ -749,23 +749,64 @@ static void the_mock_adapter_reports_its_newest_live_client(void** state)
   free(older_workspace);
 }
 
-/* The test helper's deinit gives its loaned workspaces back and forgets them, so
- * a second deinit (a teardown after an explicit one) does not wipe them. */
-static void the_test_helper_forgets_its_returned_workspaces(void** state)
+static void count_ticks(const az_iot_connection_feature_event* event, void* user_ctx)
 {
-  (void)state;
-  az_iot_connection_client client;
+  (void)event;
+  ++*(int*)user_ctx;
+}
+
+/** @brief Initializes @p client through the test helper, on the mock adapter. */
+static az_iot_result init_through_the_test_helper(
+    az_iot_connection_client* client,
+    const char* primary_key_base64)
+{
   az_iot_connection_client_options opts = { 0 };
   opts.iothub_hostname = "broker.example";
   opts.device_id = "ut-device";
+  opts.hub_auth.sas.primary_key_base64 = primary_key_base64;
   opts.mqtt_adapter = az_iot_mock_mqtt_get_adapter();
-  assert_int_equal(az_iot_test_connection_client_init(&client, &opts), AZ_IOT_OK);
-  assert_non_null(client.opts.workspace);
-  assert_non_null(client.opts.mqtt_workspace);
+  return az_iot_test_connection_client_init(client, &opts);
+}
 
-  assert_int_equal(az_iot_test_connection_client_deinit(&client), AZ_IOT_OK);
+/* The test helper's deinit gives its loaned workspaces back and forgets them, so
+ * a second deinit (a teardown after an explicit one) touches nothing, even once
+ * another client has borrowed them. */
+static void the_test_helper_forgets_its_returned_workspaces(void** state)
+{
+  (void)state;
+  az_iot_connection_client first;
+  assert_int_equal(init_through_the_test_helper(&first, NULL), AZ_IOT_OK);
+  const void* const workspace = first.opts.workspace;
+  assert_int_equal(az_iot_test_connection_client_deinit(&first), AZ_IOT_OK);
+  assert_null(first.opts.workspace);
+  assert_null(first.opts.mqtt_workspace);
+
+  /* Another client borrows the same workspace; the first one's second deinit leaves it alone. */
+  az_iot_connection_client second;
+  assert_int_equal(init_through_the_test_helper(&second, NULL), AZ_IOT_OK);
+  assert_ptr_equal(second.opts.workspace, workspace);
+  int ticks = 0;
+  assert_int_equal(
+      az_iot_connection_client__add_feature_observer(
+          &second, AZ_IOT_CONNECTION_FEATURE_EVENT_TICK, count_ticks, &ticks),
+      AZ_IOT_OK);
+  (void)az_iot_test_connection_client_deinit(&first);
+  (void)az_iot_connection_client_do_work(&second, 0);
+  assert_int_equal(ticks, 1);
+  az_iot_connection_client__remove_feature_observer(&second, count_ticks, &ticks);
+  assert_int_equal(az_iot_test_connection_client_deinit(&second), AZ_IOT_OK);
+}
+
+/* A late initialization failure leaves nothing of the loan in the client, so a
+ * deinit after it touches nothing. */
+static void a_failed_test_helper_init_leaves_no_loan_behind(void** state)
+{
+  (void)state;
+  az_iot_connection_client client;
+  memset(&client, 0xA5, sizeof(client));
+  az_iot_result const r = init_through_the_test_helper(&client, "not base64!");
+  assert_int_not_equal(r, AZ_IOT_OK);
   assert_null(client.opts.workspace);
-  assert_int_equal(client.opts.workspace_size, 0);
   assert_null(client.opts.mqtt_workspace);
   assert_int_equal(client.opts.mqtt_workspace_size, 0);
   (void)az_iot_test_connection_client_deinit(&client);
@@ -775,6 +816,7 @@ int main(void)
 {
   const struct CMUnitTest tests[] = {
     cmocka_unit_test(the_test_helper_forgets_its_returned_workspaces),
+    cmocka_unit_test(a_failed_test_helper_init_leaves_no_loan_behind),
     cmocka_unit_test_setup_teardown(
         the_mock_adapter_reports_its_newest_live_client, setup, teardown),
     cmocka_unit_test_setup_teardown(init_checks_the_mqtt_workspace, setup, teardown),
