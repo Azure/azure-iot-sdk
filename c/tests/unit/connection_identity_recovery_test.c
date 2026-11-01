@@ -29,9 +29,15 @@
 #define HUB_HOST "myhub.azure-devices.net"
 #define DPS_HOST "global.azure-devices-provisioning.net"
 
-/* Distinct delays, so the ladder a retry climbed is visible in the event. */
-#define RECONNECT_MS 20u
-#define IDENTITY_MS 30u
+/* Distinct delays, so the ladder a retry climbed is visible in the event.
+ * Too long to elapse during a test: fire_retry() ages the schedule instead. */
+#define RECONNECT_MS 20000u
+#define IDENTITY_MS 30000u
+
+/* identity_recovery.max_duration_seconds of the bounded episodes: longer than
+ * IDENTITY_MS, so the first identity retry is scheduled. */
+#define MAX_DURATION_S 60u
+#define MAX_DURATION_MS (MAX_DURATION_S * 1000u)
 
 #define DPS_RESPONSE_TOPIC_ASSIGNED "$dps/registrations/res/200/?$rid=1"
 
@@ -159,12 +165,19 @@ static void reject_identity(az_iot_test_conn* fx)
   pump(fx, 2);
 }
 
-/* Wait out the pending retry and fire it. */
+/* Let the pending retry's backoff pass and fire it. */
 static void fire_retry(az_iot_test_conn* fx)
 {
-  assert_int_not_equal(fx->client->reconnect_due_ms, 0);
-  az_iot_test_wait_until_ms(fx->client->reconnect_due_ms);
+  az_iot_test_make_retry_due_now(fx->client);
   pump(fx, 1);
+}
+
+/* Let the bounded episode reach its MAX_DURATION_S deadline. */
+static void reach_identity_deadline(az_iot_test_conn* fx)
+{
+  uint64_t deadline = fx->client->identity_recovery_started_ms + MAX_DURATION_MS;
+  uint64_t now = az_iot_time_mono_ms();
+  az_iot_test_age_retry_schedule_ms(fx->client, deadline > now ? deadline - now : 0u);
 }
 
 /* The HUB:RETRY_PENDING event the newest refusal produced. */
@@ -336,12 +349,12 @@ static void mqttv5_mid_session_not_authorized_faults_without_a_policy(void** sta
 static void identity_backoff_grows_until_max_attempts_faults(void** state)
 {
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
-  fx->client->opts.identity_recovery.policy.initial_delay_ms = 10;
-  fx->client->opts.identity_recovery.policy.max_delay_ms = 40;
+  fx->client->opts.identity_recovery.policy.initial_delay_ms = 10000;
+  fx->client->opts.identity_recovery.policy.max_delay_ms = 40000;
   fx->client->opts.identity_recovery.policy.max_attempts = 3;
   assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
 
-  static const uint32_t expected[] = { 10, 20, 40 };
+  static const uint32_t expected[] = { 10000, 20000, 40000 };
   for (size_t n = 0; n < 3; ++n)
   {
     reject_identity(fx);
@@ -368,9 +381,9 @@ static void identity_backoff_grows_until_max_attempts_faults(void** state)
 static void identity_recovery_stops_at_max_duration(void** state)
 {
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
-  fx->client->opts.identity_recovery.policy.initial_delay_ms = 400;
-  fx->client->opts.identity_recovery.policy.max_delay_ms = 400;
-  fx->client->opts.identity_recovery.max_duration_seconds = 1;
+  fx->client->opts.identity_recovery.policy.initial_delay_ms = 25000;
+  fx->client->opts.identity_recovery.policy.max_delay_ms = 25000;
+  fx->client->opts.identity_recovery.max_duration_seconds = MAX_DURATION_S;
   assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
 
   for (int n = 0; n < 6 && az_iot_test_last_state(&fx->log) != AZ_IOT_CONN_STATE_FAULTED; ++n)
@@ -378,7 +391,9 @@ static void identity_recovery_stops_at_max_duration(void** state)
     reject_identity(fx);
     if (az_iot_test_last_state(&fx->log) == AZ_IOT_CONN_STATE_RETRY_PENDING)
     {
-      assert_true(fx->client->reconnect_due_ms < fx->client->identity_recovery_started_ms + 1000u);
+      assert_true(
+          fx->client->reconnect_due_ms
+          < fx->client->identity_recovery_started_ms + MAX_DURATION_MS);
       fire_retry(fx);
     }
   }
@@ -392,12 +407,12 @@ static void identity_recovery_stops_at_max_duration(void** state)
 static void a_retry_due_before_the_deadline_does_not_start_after_it(void** state)
 {
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
-  fx->client->opts.identity_recovery.max_duration_seconds = 1;
+  fx->client->opts.identity_recovery.max_duration_seconds = MAX_DURATION_S;
   assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
   reject_identity(fx);
   assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_RETRY_PENDING);
 
-  az_iot_test_wait_until_ms(fx->client->identity_recovery_started_ms + 1000u);
+  reach_identity_deadline(fx);
   pump(fx, 1);
   assert_null(az_iot_mock_mqtt_adapter_last_client());
   assert_int_equal(fx->client->reconnect_due_ms, 0);
@@ -440,7 +455,7 @@ static void a_disabled_reconnection_policy_faults_on_the_first_refusal(void** st
 static void max_duration_bounds_transient_retries_after_a_refusal(void** state)
 {
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
-  fx->client->opts.identity_recovery.max_duration_seconds = 1;
+  fx->client->opts.identity_recovery.max_duration_seconds = MAX_DURATION_S;
   assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
   reject_identity(fx);
   fire_retry(fx);
@@ -559,13 +574,13 @@ static void reprovision_cycles_are_bounded(void** state)
 {
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
   fx->client->opts.identity_recovery.mode = AZ_IOT_IDENTITY_RECOVERY_REPROVISION;
-  fx->client->opts.identity_recovery.policy.initial_delay_ms = 10;
-  fx->client->opts.identity_recovery.policy.max_delay_ms = 40;
+  fx->client->opts.identity_recovery.policy.initial_delay_ms = 10000;
+  fx->client->opts.identity_recovery.policy.max_delay_ms = 40000;
   fx->client->opts.identity_recovery.policy.max_attempts = 3;
   assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
   provision(fx);
 
-  static const uint32_t expected[] = { 10, 20, 40 };
+  static const uint32_t expected[] = { 10000, 20000, 40000 };
   for (size_t n = 0; n < 3; ++n)
   {
     reject_identity(fx);
@@ -695,12 +710,12 @@ static void a_dps_refusal_is_not_on_the_identity_ladder(void** state)
   assert_int_equal(fx->client->identity_retry_attempt, 0);
 }
 
-/* Hub refuses in REPROVISION mode with a 1 s bound; the retry registers and
+/* Hub refuses in REPROVISION mode with a MAX_DURATION_S bound; the retry registers and
  * returns the DPS adapter with the register PUBLISH issued. */
 static az_iot_mock_mqtt_client* reprovision_after_a_bounded_refusal(az_iot_test_conn* fx)
 {
   fx->client->opts.identity_recovery.mode = AZ_IOT_IDENTITY_RECOVERY_REPROVISION;
-  fx->client->opts.identity_recovery.max_duration_seconds = 1;
+  fx->client->opts.identity_recovery.max_duration_seconds = MAX_DURATION_S;
   assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
   provision(fx);
   reject_identity(fx);
@@ -738,8 +753,8 @@ static void assert_identity_recovery_stopped(az_iot_test_conn* fx)
 static void a_failed_registration_past_the_identity_deadline_faults_both_scopes(void** state)
 {
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
-  fx->client->opts.reconnection_policy.initial_delay_ms = 2000u;
-  fx->client->opts.reconnection_policy.max_delay_ms = 2000u;
+  fx->client->opts.reconnection_policy.initial_delay_ms = 2u * MAX_DURATION_MS;
+  fx->client->opts.reconnection_policy.max_delay_ms = 2u * MAX_DURATION_MS;
   az_iot_mock_mqtt_client* dps = reprovision_after_a_bounded_refusal(fx);
   assert_int_equal(
       az_iot_connection_client_get_state(fx->client, AZ_IOT_CONN_SCOPE_HUB),
@@ -770,7 +785,7 @@ static void a_delayed_registration_retry_past_the_deadline_faults_both_scopes(vo
       AZ_IOT_CONN_STATE_RETRY_PENDING);
   assert_int_not_equal(fx->client->reconnect_due_ms, 0);
 
-  az_iot_test_wait_until_ms(fx->client->identity_recovery_started_ms + 1000u);
+  reach_identity_deadline(fx);
   pump(fx, 1);
   assert_identity_recovery_stopped(fx);
   assert_null(az_iot_mock_mqtt_adapter_last_client());
@@ -785,7 +800,7 @@ static void a_retry_after_past_the_identity_deadline_stops_recovery(void** state
   static const char k_throttled[] = "{\"errorCode\":429001,\"message\":\"Too many requests.\"}";
   assert_true(az_iot_mock_mqtt_client_inject_message(
       dps,
-      "$dps/registrations/res/429/?$rid=1&retry-after=30",
+      "$dps/registrations/res/429/?$rid=1&retry-after=120",
       (const uint8_t*)k_throttled,
       strlen(k_throttled),
       AZ_IOT_MQTT_QOS_1));
@@ -809,7 +824,9 @@ static void a_registration_polling_past_the_identity_deadline_is_abandoned(void*
       AZ_IOT_MQTT_QOS_1));
   pump(fx, 1);
 
-  az_iot_test_wait_until_ms(fx->client->identity_recovery_started_ms + 1000u);
+  reach_identity_deadline(fx);
+  /* The status query is due as well. */
+  fx->client->dps_poll_due_ms = az_iot_time_mono_ms();
   pump(fx, 3);
   assert_null(fx->client->dps_mqtt);
   assert_identity_recovery_stopped(fx);
@@ -967,8 +984,8 @@ static void options_default_retries_a_new_assignment_on_a_short_bounded_ladder(v
 /* ------------------------------------------------------------------------- */
 
 /* Delays distinct from RECONNECT_MS and IDENTITY_MS. */
-#define AFTER_ASSIGNMENT_INITIAL_MS 5u
-#define AFTER_ASSIGNMENT_MAX_MS 10u
+#define AFTER_ASSIGNMENT_INITIAL_MS 5000u
+#define AFTER_ASSIGNMENT_MAX_MS 10000u
 
 static void use_after_assignment_policy(az_iot_test_conn* fx, uint32_t max_attempts)
 {
@@ -999,7 +1016,8 @@ static void refusals_after_an_assignment_retry_on_the_short_ladder_first(void** 
   assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
   provision(fx);
 
-  static const uint32_t expected[] = { 5, 10, 10 };
+  static const uint32_t expected[]
+      = { AFTER_ASSIGNMENT_INITIAL_MS, AFTER_ASSIGNMENT_MAX_MS, AFTER_ASSIGNMENT_MAX_MS };
   for (uint32_t n = 0; n < 3; ++n)
   {
     reject_identity_expecting(fx, expected[n], n + 1);
@@ -1074,9 +1092,9 @@ static void the_short_ladder_stops_at_max_duration(void** state)
 {
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
   use_after_assignment_policy(fx, 0);
-  fx->client->opts.identity_recovery.after_assignment_policy.initial_delay_ms = 400;
-  fx->client->opts.identity_recovery.after_assignment_policy.max_delay_ms = 400;
-  fx->client->opts.identity_recovery.max_duration_seconds = 1;
+  fx->client->opts.identity_recovery.after_assignment_policy.initial_delay_ms = 25000;
+  fx->client->opts.identity_recovery.after_assignment_policy.max_delay_ms = 25000;
+  fx->client->opts.identity_recovery.max_duration_seconds = MAX_DURATION_S;
   assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
   provision(fx);
 
@@ -1101,12 +1119,12 @@ static void a_short_ladder_retry_past_the_deadline_reports_its_attempt(void** st
 {
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
   use_after_assignment_policy(fx, 3);
-  fx->client->opts.identity_recovery.max_duration_seconds = 1;
+  fx->client->opts.identity_recovery.max_duration_seconds = MAX_DURATION_S;
   assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
   provision(fx);
   reject_identity_expecting(fx, AFTER_ASSIGNMENT_INITIAL_MS, 1);
 
-  az_iot_test_wait_until_ms(fx->client->identity_recovery_started_ms + 1000u);
+  reach_identity_deadline(fx);
   pump(fx, 1);
   assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_FAULTED);
   const az_iot_connection_recovery_info* r = last_hub_recovery(fx, AZ_IOT_CONN_STATE_FAULTED);

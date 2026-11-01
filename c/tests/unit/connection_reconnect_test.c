@@ -31,10 +31,10 @@
 
 #include "support/connection_test_harness.h"
 
-/* Backoff long enough that a single do_work() cannot cross the deadline in the
- * same call that schedules it (which would hide the RETRY_PENDING state), yet
- * short enough to keep the suite fast. No jitter: timing must be exact. */
-#define RETRY_DELAY_MS 20u
+/* Backoff too long to elapse during a test, so pumping cannot fire a retry
+ * before the test has observed RETRY_PENDING; tests fire it with
+ * az_iot_test_make_retry_due_now(). No jitter: timing must be exact. */
+#define RETRY_DELAY_MS 60000u
 
 static az_iot_connection_client_options reconnect_options(uint32_t max_attempts)
 {
@@ -121,11 +121,11 @@ static az_iot_mock_mqtt_client* open_to_connected(az_iot_test_conn* fx)
   return m;
 }
 
-/* Let the backoff elapse and pump until the retry CONNECT has been issued;
+/* Let the backoff pass and pump until the retry CONNECT has been issued;
  * returns the adapter instance created for the new attempt. */
 static az_iot_mock_mqtt_client* advance_to_retry(az_iot_test_conn* fx)
 {
-  az_iot_test_wait_ms(RETRY_DELAY_MS + 5u);
+  az_iot_test_make_retry_due_now(fx->client);
   (void)az_iot_connection_client_do_work(fx->client, 0);
   az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_adapter_last_client();
   assert_non_null(m);
@@ -579,7 +579,7 @@ static void removing_one_owner_leaves_the_other_owners_filters(void** state)
   az_iot_mock_mqtt_client_clear_calls(m);
   assert_true(az_iot_mock_mqtt_client_inject_disconnected(m));
   (void)az_iot_connection_client_do_work(fx->client, 0);
-  az_iot_test_wait_ms(RETRY_DELAY_MS + 5u);
+  az_iot_test_make_retry_due_now(fx->client);
   (void)az_iot_connection_client_do_work(fx->client, 0);
 
   az_iot_mock_mqtt_client* m2 = az_iot_mock_mqtt_adapter_last_client();
@@ -615,7 +615,7 @@ static void a_withdrawn_filter_is_not_restored_on_reconnect(void** state)
   az_iot_mock_mqtt_client_clear_calls(m);
   assert_true(az_iot_mock_mqtt_client_inject_disconnected(m));
   (void)az_iot_connection_client_do_work(fx->client, 0);
-  az_iot_test_wait_ms(RETRY_DELAY_MS + 5u);
+  az_iot_test_make_retry_due_now(fx->client);
   (void)az_iot_connection_client_do_work(fx->client, 0);
 
   az_iot_mock_mqtt_client* m2 = az_iot_mock_mqtt_adapter_last_client();
@@ -876,7 +876,7 @@ static void a_refused_self_scoped_filter_keeps_the_connection(void** state)
   az_iot_mock_mqtt_client_clear_calls(m);
   assert_true(az_iot_mock_mqtt_client_inject_disconnected(m));
   (void)az_iot_connection_client_do_work(fx->client, 0);
-  az_iot_test_wait_ms(RETRY_DELAY_MS + 5u);
+  az_iot_test_make_retry_due_now(fx->client);
   (void)az_iot_connection_client_do_work(fx->client, 0);
 
   az_iot_mock_mqtt_client* m2 = az_iot_mock_mqtt_adapter_last_client();
@@ -981,7 +981,7 @@ static void a_refused_self_scoped_filter_after_a_server_disconnect_is_reported(v
   assert_string_equal(fx->log.error_message[i], reason);
 
   /* Dropped from the registry, so the reconnect does not reissue it. */
-  az_iot_test_wait_ms(RETRY_DELAY_MS + 5u);
+  az_iot_test_make_retry_due_now(fx->client);
   (void)az_iot_connection_client_do_work(fx->client, 0);
   az_iot_mock_mqtt_client* m2 = az_iot_mock_mqtt_adapter_last_client();
   assert_non_null(m2);
@@ -1098,7 +1098,7 @@ static void a_filter_registered_after_a_server_disconnect_waits_for_the_next_ses
   assert_int_equal(actor.probe.calls, 1);
   assert_int_equal(actor.reregister_result, AZ_IOT_OK);
 
-  az_iot_test_wait_ms(RETRY_DELAY_MS + 5u);
+  az_iot_test_make_retry_due_now(fx->client);
   (void)az_iot_connection_client_do_work(fx->client, 0);
   az_iot_mock_mqtt_client* m2 = az_iot_mock_mqtt_adapter_last_client();
   assert_non_null(m2);
@@ -1376,7 +1376,7 @@ static void a_dropped_session_clears_the_gate(void** state)
   (void)az_iot_connection_client_do_work(fx->client, 0);
   assert_int_not_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_FAULTED);
 
-  az_iot_test_wait_ms(RETRY_DELAY_MS + 5u);
+  az_iot_test_make_retry_due_now(fx->client);
   (void)az_iot_connection_client_do_work(fx->client, 0);
   az_iot_mock_mqtt_client* m2 = az_iot_mock_mqtt_adapter_last_client();
   assert_non_null(m2);
