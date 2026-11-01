@@ -269,7 +269,7 @@ static void file_rewrite_existing_no_follow_keeps_the_file_and_refuses_a_link(vo
   (void)state;
   assert_null(sample_file_rewrite_existing_no_follow(NULL));
   assert_null(sample_file_rewrite_existing_no_follow(DESTINATION_FILE));
-  assert_null(fopen(DESTINATION_FILE, "rb"));
+  assert_null(sample_file_open_read_no_follow(DESTINATION_FILE));
 
   write_text_file(DESTINATION_FILE, "old contents");
 #if !defined(_WIN32)
