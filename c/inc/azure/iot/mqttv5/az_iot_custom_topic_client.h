@@ -145,9 +145,10 @@ extern "C"
    *         its array, or a user property with an empty key or NULL value. Nothing was sent.
    * @retval AZ_IOT_ERR_NOT_SUPPORTED @p client is not initialized.
    * @retval AZ_IOT_ERR_NOT_CONNECTED The connection is not connected, or its session is being ended
-   *         on purpose.
-   * @retval AZ_IOT_ERR_BUSY QoS 1, and every pending-acknowledgement slot it may use is taken;
-   *         nothing was sent, retry later.
+   *         on purpose and its DISCONNECT is sent.
+   * @retval AZ_IOT_ERR_BUSY QoS 1, and every pending-acknowledgement slot it may use is taken, or a
+   *         SAS renewal is letting the session's deliveries settle before its DISCONNECT (QoS 0
+   *         is still sent; docs/connecting.md); nothing was sent, retry later.
    */
   AZ_NODISCARD az_iot_result az_iot_mqttv5_custom_topic_client_publish(
       az_iot_mqttv5_custom_topic_client* client,
