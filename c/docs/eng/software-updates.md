@@ -1782,7 +1782,7 @@ match.
 `get_file_path_fn(file, file_index, ...)` returns the path at which `download_fn` stores `file`
 and `read_file_fn` reads it. It is called for related files too, with the owning file's index as
 `download_fn` gets. The handler reads the delta at the related file's path and writes the built
-file at the update file's path. The samples use their download path: `SAMPLE_DOWNLOAD_PREFIX<file
+file at the update file's path, which may be the same. The samples use their download path: `SAMPLE_DOWNLOAD_PREFIX<file
 id>` in `pc/http_download`, `SU_SIM_FILE_DIR/<file id>` in `pc/simulated_regular`.
 
 **Source cache.** The reference agent's layout, so both can share a cache:
@@ -1792,8 +1792,9 @@ and `_3D`.
 
 - When a workflow succeeds, and a file of the update names `microsoft/delta:1` (the client calls a
   handler on success only then), each file of the update with a SHA-256 hash is moved (renamed, or copied
-  across file systems) from its `get_file_path_fn` path into the cache, unless an entry of the same
-  size is already there.
+  across file systems) from its `get_file_path_fn` path into the cache. It replaces the entry
+  there, which may hold other bytes, unless a handler builds from it. Without that file (e.g.
+  already moved), an entry of the file's size counts as stored.
 - Then every other entry of the update's provider is removed: the cache keeps the latest update
   per provider, the sources of its next delta. Entries a handler builds from are kept.
 - Handlers sharing the cache, in one process or several, store and evict a provider's entries one
@@ -1825,7 +1826,7 @@ or later. ESP32 and Windows register no handler: their files are always download
 
 | Test | What |
 |---|---|
-| `az_iot_tests_su_delta` | Unit: cache path encoding, lookup, store and eviction; the rebuild through a fake `apply_delta_fn` and the samples' `simulate_delta_apply`, with partial target cleanup; handlers sharing a cache keep their own build files, do not evict a source being built from or an entry stored again since opened, and store and evict a provider's entries one at a time; a missing library or symbol declines. |
+| `az_iot_tests_su_delta` | Unit: cache path encoding, lookup, store and eviction; the rebuild through a fake `apply_delta_fn` and the samples' `simulate_delta_apply`, with partial target cleanup and a delta at the target's path; a stored entry is refreshed from the application's file unless built from; handlers sharing a cache keep their own build files, do not evict a source being built from or an entry stored again since opened, and store and evict a provider's entries one at a time; a missing library or symbol declines. |
 | `az_iot_tests_su_delta_interop` | The real `libadudiffapi.so` rebuilds the committed `target.swu` from `source.swu` and `delta.bin` (SHA-256 checked); a truncated delta fails and leaves no target. |
 
 - The vectors are in `tests/unit/data/su_delta/`, with `SHA256SUMS`. They are regenerated, byte for

@@ -663,12 +663,12 @@ static int32_t su_delta_build_file_from_related(
   }
 
   /* The processor writes a file only handlers can reach, so nothing planted in the
-   * application's directory is written through; the result then replaces target_path. */
+   * application's directory is written through; the result then replaces target_path, which
+   * may be delta_path until then. */
   if (!handler->_internal.build_in_progress)
   {
     su_delta_release_build_file(handler, false);
     su_delta_remove_abandoned_build_files(handler);
-    (void)unlink(target_path);
     if (!su_delta_create_build_file(handler))
     {
       AZ_IOT_LOG_ERROR(AZ_IOT_LOG_COMPONENT_SU, "delta: cannot create a file to build into");
@@ -705,6 +705,35 @@ static int32_t su_delta_build_file_from_related(
   }
   su_delta_end_build(handler, true);
   return AZ_IOT_SU_RESULT_SUCCESS;
+}
+
+/**
+ * @brief Move the application's file at @p file_path to the cache entry @p cache_path, replacing
+ * an entry no handler builds from.
+ *
+ * @return false when not moved, or when a handler builds from the entry, which is kept.
+ */
+static bool su_delta_replace_cache_entry(const char* file_path, const char* cache_path)
+{
+  int existing = open(cache_path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
+  if (existing >= 0)
+  {
+    struct stat info;
+    /* Held until the rename, so no handler pins the entry meanwhile. */
+    bool replaceable = fstat(existing, &info) == 0 && S_ISREG(info.st_mode)
+        && flock(existing, LOCK_EX | LOCK_NB) == 0 && su_delta_is_still_named(existing, cache_path);
+    if (!replaceable)
+    {
+      (void)close(existing);
+      return false;
+    }
+  }
+  bool moved = su_delta_move_file(file_path, cache_path);
+  if (existing >= 0)
+  {
+    (void)close(existing);
+  }
+  return moved;
 }
 
 /** @brief Create @p path and its missing parents. */
@@ -944,22 +973,25 @@ static void su_delta_workflow_succeeded(
     {
       continue;
     }
+    /* The application's file, verified by the client, refreshes the entry: one of the same size
+     * may hold other bytes, and a link is never built from. */
     struct stat info;
-    /* A link is replaced: choose_related_file_fn never builds from one. */
-    if (lstat(cache_path, &info) == 0 && S_ISREG(info.st_mode)
-        && (int64_t)info.st_size == file->size_in_bytes)
-    {
-      cached_count++;
-      continue;
-    }
     uint32_t file_slot = 0;
     if (su_delta_find_file_slot(manifest, file, &file_slot)
         && options->get_file_path_fn(
                file, file_slot, file_path, sizeof(file_path), options->user_ctx)
             == AZ_IOT_SU_RESULT_SUCCESS
-        && su_delta_move_file(file_path, cache_path))
+        && lstat(file_path, &info) == 0 && S_ISREG(info.st_mode)
+        && su_delta_replace_cache_entry(file_path, cache_path))
     {
       AZ_IOT_LOG_INFOF(AZ_IOT_LOG_COMPONENT_SU, "delta: cached source '%s'", cache_path);
+      cached_count++;
+    }
+    /* Otherwise, e.g. moved by an earlier call, or kept while a handler builds from it. */
+    else if (
+        lstat(cache_path, &info) == 0 && S_ISREG(info.st_mode)
+        && (int64_t)info.st_size == file->size_in_bytes)
+    {
       cached_count++;
     }
     else

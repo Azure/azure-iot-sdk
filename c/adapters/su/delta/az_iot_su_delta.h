@@ -12,11 +12,12 @@
  *   `microsoft.sourceFileHash` and `microsoft.sourceFileHashAlgorithm` properties, is in the
  *   source cache.
  * - build_file_from_related_fn applies the downloaded delta to that source, writing the file.
- * - workflow_succeeded_fn moves the update's files into the source cache and removes the other
- *   entries of the update provider, so the cache keeps only the latest update per provider. A
- *   source chosen for a build is locked until the build ends, and no handler sharing the cache,
- *   in this process or another, removes it meanwhile. Such handlers store and evict a provider's
- *   entries one at a time: workflow_succeeded_fn waits while another does.
+ * - workflow_succeeded_fn moves the update's files into the source cache, replacing entries no
+ *   build uses, and removes the other entries of the update provider, so the cache keeps only
+ *   the latest update per provider. A source chosen for a build is locked until the build ends,
+ *   and no handler sharing the cache, in this process or another, removes it meanwhile. Such
+ *   handlers store and evict a provider's entries one at a time: workflow_succeeded_fn waits
+ *   while another does.
  *
  * Cache entries are `<directory>/<provider>/<algorithm>-<hash>`: in `<provider>` and
  * `<algorithm>`, characters other than letters, digits and `-` become `_`; in the base64 hash,
