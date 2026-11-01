@@ -285,20 +285,37 @@ static inline bool az_iot_test_has_unsettled_deliveries(const az_iot_connection_
  *
  * Lets a suite use backoffs too long to elapse while it runs, so a retry
  * cannot fire on the real clock before the test has observed RETRY_PENDING.
+ *
+ * The monotonic clock starts near zero at boot, so a timestamp cannot move
+ * further back than its value. Any part of @p elapsed_ms beyond that is waited
+ * out on the real clock instead, which only happens shortly after boot.
  */
 static inline void az_iot_test_age_retry_schedule_ms(
     az_iot_connection_client* conn,
     uint64_t elapsed_ms)
 {
+  uint64_t ageable_ms = elapsed_ms;
+  if (conn->reconnect_due_ms != 0 && conn->reconnect_due_ms <= ageable_ms)
+  {
+    /* Keeps the retry pending: 0 means none. */
+    ageable_ms = conn->reconnect_due_ms - 1u;
+  }
+  if (conn->identity_recovery_active && conn->identity_recovery_started_ms < ageable_ms)
+  {
+    ageable_ms = conn->identity_recovery_started_ms;
+  }
+
   if (conn->reconnect_due_ms != 0)
   {
-    assert_true(conn->reconnect_due_ms > elapsed_ms);
-    conn->reconnect_due_ms -= elapsed_ms;
+    conn->reconnect_due_ms -= ageable_ms;
   }
   if (conn->identity_recovery_active)
   {
-    assert_true(conn->identity_recovery_started_ms >= elapsed_ms);
-    conn->identity_recovery_started_ms -= elapsed_ms;
+    conn->identity_recovery_started_ms -= ageable_ms;
+  }
+  if (elapsed_ms > ageable_ms)
+  {
+    az_iot_test_wait_ms((unsigned)(elapsed_ms - ageable_ms));
   }
 }
 
