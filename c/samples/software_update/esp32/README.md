@@ -417,7 +417,7 @@ The SDK logs at `INFO`; change the level in `app_main()` for more detail.
 | What | Code |
 |------|------|
 | Device certificate and key | `az_iot_certificate_provider_esp_secure_cert_init()` |
-| az_mqtt adapter (MQTT 3.1.1 + 5) | `az_iot_az_mqtt_factory_create_v3_1_1()`, `az_iot_az_mqtt_factory_create_v5()` |
+| az_mqtt adapter (MQTT 3.1.1 + 5) | `copts.mqtt_adapter = az_iot_az_mqtt_get_adapter()`, `mqtt_workspace` (sized from menuconfig) |
 | Crypto backend | `copts.crypto = az_iot_crypto_mbedtls()` |
 | OTA hooks, root keys | `az_iot_su_esp32_ota_get_platform_hooks()`, `az_iot_su_microsoft_root_keys()` |
 | Compatibility properties | `device_properties.manufacturer`, `device_properties.model` |
