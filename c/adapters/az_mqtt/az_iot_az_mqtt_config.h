@@ -71,8 +71,8 @@
 #define AZ_IOT_AZ_MQTT_RECEIVE_BUFFER_SIZE (264 * 1024)
 #endif
 
-/** @brief QoS 1/2 exchanges in flight at once, both directions together (MQTT 5: also the
- * Receive Maximum advertised). */
+/** @brief QoS 1 exchanges in flight at once (the SDK uses no QoS 2), both directions together
+ * (MQTT 5: also the Receive Maximum advertised). */
 #ifndef AZ_IOT_AZ_MQTT_INFLIGHT_MAX
 #define AZ_IOT_AZ_MQTT_INFLIGHT_MAX 64
 #endif
