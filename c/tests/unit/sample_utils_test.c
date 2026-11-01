@@ -222,6 +222,60 @@ static void file_remove_durably_fails_when_the_path_cannot_be_removed(void** sta
 #endif
 }
 
+#if defined(AZ_IOT_TEST_WRAP_FSYNC)
+/* fsync() seam (GNU ld --wrap; registered only where CMake can ask for it).
+ * Records each directory synced and whether the watched file existed then.
+ * File syncs pass through uncounted. */
+int __real_fsync(int fd);
+int __wrap_fsync(int fd);
+
+static size_t s_directory_sync_count;
+static struct stat s_synced_directory;
+static const char* s_watched_file;
+static bool s_watched_file_existed_at_sync;
+
+int __wrap_fsync(int fd)
+{
+  struct stat st;
+  if (fstat(fd, &st) == 0 && S_ISDIR(st.st_mode))
+  {
+    struct stat watched;
+    s_directory_sync_count++;
+    s_synced_directory = st;
+    s_watched_file_existed_at_sync = s_watched_file != NULL && stat(s_watched_file, &watched) == 0;
+  }
+  return __real_fsync(fd);
+}
+
+/** @brief Assert sample_file_remove_durably(@p path) synced @p directory once, with
+ *  @p path already gone. */
+static void assert_removal_syncs_directory(const char* path, const char* directory)
+{
+  struct stat expected;
+  s_directory_sync_count = 0;
+  s_watched_file = path;
+  s_watched_file_existed_at_sync = true;
+  assert_true(sample_file_remove_durably(path));
+  s_watched_file = NULL;
+  assert_int_equal(s_directory_sync_count, 1);
+  assert_false(s_watched_file_existed_at_sync);
+  assert_int_equal(stat(directory, &expected), 0);
+  assert_true(expected.st_dev == s_synced_directory.st_dev);
+  assert_true(expected.st_ino == s_synced_directory.st_ino);
+}
+
+static void file_remove_durably_syncs_the_directory_also_for_a_missing_file(void** state)
+{
+  (void)state;
+  assert_int_equal(mkdir(DIRECTORY, 0700), 0);
+  write_text_file(DIRECTORY "/" DESTINATION_FILE, "old");
+
+  assert_removal_syncs_directory(DIRECTORY "/" DESTINATION_FILE, DIRECTORY);
+  /* Missing: an earlier removal may not have reached storage. */
+  assert_removal_syncs_directory(DIRECTORY "/" DESTINATION_FILE, DIRECTORY);
+}
+#endif
+
 static void file_flush_to_storage_writes_through_the_buffer(void** state)
 {
   (void)state;
@@ -550,6 +604,10 @@ int main(void)
         file_remove_durably_removes_and_accepts_a_missing_file, setup, teardown),
     cmocka_unit_test_setup_teardown(
         file_remove_durably_fails_when_the_path_cannot_be_removed, setup, teardown),
+#if defined(AZ_IOT_TEST_WRAP_FSYNC)
+    cmocka_unit_test_setup_teardown(
+        file_remove_durably_syncs_the_directory_also_for_a_missing_file, setup, teardown),
+#endif
     cmocka_unit_test_setup_teardown(
         file_flush_to_storage_writes_through_the_buffer, setup, teardown),
     cmocka_unit_test_setup_teardown(file_open_private_creates_an_owner_only_file, setup, teardown),
