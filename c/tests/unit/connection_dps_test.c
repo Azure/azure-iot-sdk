@@ -5379,10 +5379,11 @@ static az_iot_mock_mqtt_client* refuse_saved_hub(az_iot_test_conn* fx, az_iot_mo
   return next;
 }
 
-/* Register on DPS adapter @p dps and return the assigned hub's adapter. */
-static az_iot_mock_mqtt_client* register_to_assigned_hub(
+/** @brief Registers on DPS adapter @p dps and answers with @p body. */
+static void answer_registration(
     az_iot_test_conn* fx,
-    az_iot_mock_mqtt_client* dps)
+    az_iot_mock_mqtt_client* dps,
+    const char* body)
 {
   assert_string_equal(last_connect_host(dps), DPS_GLOBAL);
   assert_true(az_iot_mock_mqtt_client_inject_connected(dps, AZ_IOT_OK));
@@ -5391,11 +5392,19 @@ static az_iot_mock_mqtt_client* register_to_assigned_hub(
   assert_non_null(sub);
   assert_true(az_iot_mock_mqtt_client_inject_suback(dps, sub->packet_id, AZ_IOT_OK));
   (void)az_iot_connection_client_do_work(fx->client, 0);
-  assert_true(inject_dps_response(dps, DPS_RESPONSE_TOPIC_ASSIGNED, k_assigned_body));
+  assert_true(inject_dps_response(dps, DPS_RESPONSE_TOPIC_ASSIGNED, body));
   for (int i = 0; i < 5; ++i)
   {
     (void)az_iot_connection_client_do_work(fx->client, 0);
   }
+}
+
+/* Register on DPS adapter @p dps and return the assigned hub's adapter. */
+static az_iot_mock_mqtt_client* register_to_assigned_hub(
+    az_iot_test_conn* fx,
+    az_iot_mock_mqtt_client* dps)
+{
+  answer_registration(fx, dps, k_assigned_body);
   az_iot_mock_mqtt_client* hub = newest_mock_client(fx);
   assert_non_null(hub);
   return hub;
@@ -5915,6 +5924,249 @@ static void set_dps_assignment_callback_rejects_a_null_client(void** state)
       AZ_IOT_ERR_INVALID_ARG);
 }
 
+/* ------------------------------------------------------------------------- */
+/* assignment invalidation (delete the saved copy)                           */
+/* ------------------------------------------------------------------------- */
+
+typedef struct invalidation_record
+{
+  int count;
+  az_iot_result reason;
+  /* Read in the callback. */
+  uint32_t identity_changes;
+  az_iot_connection_state hub_state;
+  /* Set: call close(), open() and deinit() on it from the callback. */
+  az_iot_connection_client* lifecycle_client;
+  az_iot_result close_result;
+  az_iot_result open_result;
+  az_iot_result deinit_result;
+} invalidation_record;
+
+typedef struct invalidation_watch
+{
+  az_iot_connection_client* client;
+  invalidation_record rec;
+} invalidation_watch;
+
+static void record_invalidation(az_iot_result reason, void* user_ctx)
+{
+  invalidation_watch* w = (invalidation_watch*)user_ctx;
+  w->rec.count++;
+  w->rec.reason = reason;
+  w->rec.identity_changes = w->client->identity_changes;
+  w->rec.hub_state = az_iot_connection_client_get_state(w->client, AZ_IOT_CONN_SCOPE_HUB);
+  if (w->rec.lifecycle_client != NULL)
+  {
+    w->rec.close_result = az_iot_connection_client_close(w->rec.lifecycle_client);
+    w->rec.open_result = az_iot_connection_client_open(w->rec.lifecycle_client);
+    w->rec.deinit_result = az_iot_connection_client_deinit(w->rec.lifecycle_client);
+  }
+}
+
+/** @brief Registers record_invalidation() on @p client with @p w. */
+static void watch_invalidation(az_iot_connection_client* client, invalidation_watch* w)
+{
+  memset(w, 0, sizeof(*w));
+  w->client = client;
+  assert_int_equal(
+      az_iot_connection_client_set_dps_assignment_invalidated_callback(
+          client, record_invalidation, w),
+      AZ_IOT_OK);
+}
+
+/* A re-registration the client rejects invalidates the saved hub, once, and
+ * request_reprovision() alone does not. */
+static void a_rejected_assignment_invalidates_the_saved_one(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  invalidation_watch w;
+  watch_invalidation(fx->client, &w);
+  assignment_record rec = { 0 };
+  assert_int_equal(
+      az_iot_connection_client_set_dps_assignment_callback(fx->client, record_assignment, &rec),
+      AZ_IOT_OK);
+
+  assert_int_equal(az_iot_connection_client_request_reprovision(fx->client), AZ_IOT_OK);
+  az_iot_mock_mqtt_client* dps = dps_open(fx);
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_int_equal(w.rec.count, 0);
+
+  answer_registration(fx, dps, k_assigned_profile_unknown);
+  assert_true(az_iot_test_saw_state(&fx->log, AZ_IOT_CONN_STATE_FAULTED));
+  assert_int_equal(w.rec.count, 1);
+  assert_int_equal(w.rec.reason, AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED);
+  assert_int_equal(w.rec.identity_changes, 0);
+  assert_int_equal(rec.count, 0);
+  assert_string_equal(az_iot_connection_client_get_iothub_address(fx->client), SAVED_HUB);
+
+  /* The same held hub is not invalidated twice. */
+  assert_int_equal(az_iot_connection_client_close(fx->client), AZ_IOT_OK);
+  dps = dps_open(fx);
+  answer_registration(fx, dps, k_assigned_profile_unknown);
+  assert_int_equal(w.rec.count, 1);
+}
+
+/* An assignment for the other generation than the attached feature clients
+ * require invalidates the saved hub. */
+static void a_mismatched_assignment_invalidates_the_saved_one(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  invalidation_watch w;
+  watch_invalidation(fx->client, &w);
+  assert_int_equal(
+      az_iot_connection_client__require_profile(fx->client, AZ_IOT_CONNECTION_PROFILE_MQTT_V3),
+      AZ_IOT_OK);
+
+  assert_int_equal(az_iot_connection_client_request_reprovision(fx->client), AZ_IOT_OK);
+  answer_registration(fx, dps_open(fx), k_assigned_mqtt_v5);
+
+  assert_int_equal(w.rec.count, 1);
+  assert_int_equal(w.rec.reason, AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH);
+  az_iot_connection_client__release_profile(fx->client);
+}
+
+/* In REPROVISION mode a refusal of the saved identity invalidates it before
+ * the registration, without an identity change; the adoption is reported by the
+ * assignment callback only. */
+static void a_saved_hub_identity_refusal_invalidates_it(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  use_reprovision_mode(fx);
+  invalidation_watch w;
+  watch_invalidation(fx->client, &w);
+  assignment_record rec = { 0 };
+  assert_int_equal(
+      az_iot_connection_client_set_dps_assignment_callback(fx->client, record_assignment, &rec),
+      AZ_IOT_OK);
+
+  az_iot_mock_mqtt_client* dps = refuse_saved_hub(fx, saved_hub_open(fx));
+  assert_int_equal(w.rec.count, 1);
+  assert_int_equal(w.rec.reason, AZ_IOT_ERR_IDENTITY_REJECTED);
+  assert_int_equal(w.rec.hub_state, AZ_IOT_CONN_STATE_RETRY_PENDING);
+  assert_int_equal(w.rec.identity_changes, 0);
+  assert_int_equal(fx->client->identity_changes, 0);
+
+  (void)register_to_assigned_hub(fx, dps);
+  assert_int_equal(rec.count, 1);
+  assert_int_equal(w.rec.count, 1);
+}
+
+/* In RETRY_HUB mode a refusal keeps the saved hub: nothing is invalidated. */
+static void a_saved_hub_identity_refusal_in_retry_hub_mode_invalidates_nothing(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  fx->client->opts.identity_recovery.mode = AZ_IOT_IDENTITY_RECOVERY_RETRY_HUB;
+  invalidation_watch w;
+  watch_invalidation(fx->client, &w);
+  (void)refuse_saved_hub(fx, saved_hub_open(fx));
+  assert_int_equal(w.rec.count, 0);
+}
+
+/* The unreachable-hub threshold invalidates the saved hub when it is crossed,
+ * with the last failure as the reason. */
+static void an_unreachable_saved_hub_is_invalidated_at_the_threshold(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  invalidation_watch w;
+  watch_invalidation(fx->client, &w);
+
+  az_iot_mock_mqtt_client* second = fail_hub_attempt(fx, saved_hub_open(fx));
+  assert_int_equal(w.rec.count, 0);
+
+  az_iot_mock_mqtt_client* dps = fail_hub_attempt(fx, second);
+  assert_string_equal(last_connect_host(dps), DPS_GLOBAL);
+  assert_int_equal(w.rec.count, 1);
+  assert_int_equal(w.rec.reason, AZ_IOT_ERR_MQTT);
+}
+
+/* request_reprovision() and the assignment it adopts invalidate nothing. */
+static void a_requested_reprovision_invalidates_nothing(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  invalidation_watch w;
+  watch_invalidation(fx->client, &w);
+  assert_int_equal(az_iot_connection_client_request_reprovision(fx->client), AZ_IOT_OK);
+  (void)register_to_assigned_hub(fx, dps_open(fx));
+  assert_int_equal(w.rec.count, 0);
+}
+
+/* A first registration holds no hub: adopting or rejecting its assignment
+ * invalidates nothing. */
+static void a_first_registration_invalidates_nothing(void** state)
+{
+  (void)state;
+  for (int rejected = 0; rejected < 2; ++rejected)
+  {
+    profile_fixture pf = { 0 };
+    profile_fixture_open(&pf);
+    invalidation_watch w;
+    watch_invalidation(&pf.c, &w);
+    profile_assign(&pf, rejected ? k_assigned_profile_unknown : k_assigned_mqtt_v5);
+    assert_int_equal(az_iot_test_saw_state(&pf.log, AZ_IOT_CONN_STATE_FAULTED), rejected != 0);
+    assert_int_equal(w.rec.count, 0);
+    profile_fixture_close(&pf);
+  }
+}
+
+/* An adopted assignment replaces the invalidated one, so it can be invalidated
+ * in turn. */
+static void an_adopted_assignment_can_be_invalidated_again(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  use_reprovision_mode(fx);
+  invalidation_watch w;
+  watch_invalidation(fx->client, &w);
+
+  az_iot_mock_mqtt_client* hub = provision_to_hub_connecting(fx);
+  assert_int_equal(w.rec.count, 0);
+  hub = reprovision_with(fx, hub, k_assigned_body);
+  assert_int_equal(w.rec.count, 1);
+  (void)reprovision_with(fx, hub, k_assigned_body);
+  assert_int_equal(w.rec.count, 2);
+  assert_int_equal(w.rec.reason, AZ_IOT_ERR_IDENTITY_REJECTED);
+}
+
+/* close(), open() and deinit() from the invalidated callback are refused; the
+ * registration still starts. */
+static void close_open_and_deinit_from_the_invalidated_callback_are_refused(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  use_reprovision_mode(fx);
+  invalidation_watch w;
+  watch_invalidation(fx->client, &w);
+  w.rec.lifecycle_client = fx->client;
+
+  az_iot_mock_mqtt_client* dps = refuse_saved_hub(fx, saved_hub_open(fx));
+  assert_int_equal(w.rec.count, 1);
+  assert_int_equal(w.rec.close_result, AZ_IOT_ERR_BUSY);
+  assert_int_equal(w.rec.open_result, AZ_IOT_ERR_BUSY);
+  assert_int_equal(w.rec.deinit_result, AZ_IOT_ERR_BUSY);
+  assert_string_equal(last_connect_host(dps), DPS_GLOBAL);
+}
+
+/* A NULL callback unregisters. */
+static void a_null_invalidated_callback_unregisters(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  use_reprovision_mode(fx);
+  invalidation_watch w;
+  watch_invalidation(fx->client, &w);
+  assert_int_equal(
+      az_iot_connection_client_set_dps_assignment_invalidated_callback(fx->client, NULL, NULL),
+      AZ_IOT_OK);
+  (void)refuse_saved_hub(fx, saved_hub_open(fx));
+  assert_int_equal(w.rec.count, 0);
+}
+
+static void set_dps_assignment_invalidated_callback_rejects_a_null_client(void** state)
+{
+  (void)state;
+  assert_int_equal(
+      az_iot_connection_client_set_dps_assignment_invalidated_callback(
+          NULL, record_invalidation, NULL),
+      AZ_IOT_ERR_INVALID_ARG);
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -5926,6 +6178,29 @@ int main(void)
     cmocka_unit_test(a_restored_assignment_connects_without_registering),
     cmocka_unit_test(a_null_assignment_callback_unregisters),
     cmocka_unit_test(set_dps_assignment_callback_rejects_a_null_client),
+    /* assignment invalidation */
+    cmocka_unit_test_setup_teardown(
+        a_rejected_assignment_invalidates_the_saved_one, setup_saved_hub, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_mismatched_assignment_invalidates_the_saved_one, setup_saved_hub, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_saved_hub_identity_refusal_invalidates_it, setup_saved_hub, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_saved_hub_identity_refusal_in_retry_hub_mode_invalidates_nothing,
+        setup_saved_hub,
+        teardown),
+    cmocka_unit_test_setup_teardown(
+        an_unreachable_saved_hub_is_invalidated_at_the_threshold, setup_saved_hub, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_requested_reprovision_invalidates_nothing, setup_saved_hub, teardown),
+    cmocka_unit_test(a_first_registration_invalidates_nothing),
+    cmocka_unit_test_setup_teardown(
+        an_adopted_assignment_can_be_invalidated_again, setup_with_reconnect, teardown),
+    cmocka_unit_test_setup_teardown(
+        close_open_and_deinit_from_the_invalidated_callback_are_refused, setup_saved_hub, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_null_invalidated_callback_unregisters, setup_saved_hub, teardown),
+    cmocka_unit_test(set_dps_assignment_invalidated_callback_rejects_a_null_client),
     /* endpoint + version selection */
     cmocka_unit_test_setup_teardown(
         dps_connects_to_the_global_endpoint_by_default, setup, teardown),

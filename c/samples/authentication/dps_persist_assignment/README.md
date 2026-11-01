@@ -15,7 +15,8 @@ flowchart TD
     E --> F[hub connect]
     B -- yes --> G[opts.iothub_hostname, device_id, connection_profile from the file]
     G --> F
-    F -- identity refused --> C
+    F -- identity refused --> H[invalidated callback: delete the file]
+    H --> C
 ```
 
 See [`main.c`](main.c) and [connecting.md](../../../docs/connecting.md#saved-hub-with-dps-fallback).
@@ -53,6 +54,9 @@ mqttv5 hubs.
 - Identity recovery is `AZ_IOT_IDENTITY_RECOVERY_REPROVISION`, paced by the reconnection policy
   instead of the 5 minute default: if the hub refuses the saved identity, the client registers
   with DPS and the new assignment is saved. The refusal does not end the run.
+- When the client gives up on the saved assignment (the hub refused it, stopped answering, or DPS
+  returned an assignment the client rejected), the invalidated callback deletes
+  `dps_assignment.txt`, so the next run registers with DPS even if this one ends first.
 - Exit code 0 when the hub connects and any new assignment was saved; otherwise 1.
 - The record is written to a new file beside `dps_assignment.txt`, named after it plus a unique
   suffix, flushed to storage, and renamed over it (on POSIX the directory is then synced), through

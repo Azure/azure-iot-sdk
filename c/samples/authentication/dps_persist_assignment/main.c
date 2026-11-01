@@ -14,7 +14,9 @@
  * Later runs: the saved assignment is loaded into opts.iothub_hostname, opts.device_id and
  * opts.connection_profile, so open() connects straight to the hub with the
  * persisted operational certificate. DPS stays configured: if the hub refuses
- * the identity, the client re-provisions and the new assignment is saved.
+ * the identity, the client re-provisions and the new assignment is saved. When
+ * the client gives up on the saved assignment, the file is deleted, so a
+ * restart registers with DPS instead of restoring it.
  *
  * Requires OpenSSL 3.0+ and the Paho or az_mqtt adapter. See README.md.
  */
@@ -146,6 +148,21 @@ static void on_assignment(const az_iot_dps_assignment* assignment, void* user_ct
       ok ? "ok" : "failed");
 }
 
+/** @brief Deletes the saved assignment: the client will not use it again, so a
+ *  restart must register with DPS instead of restoring it. */
+static void on_assignment_invalidated(az_iot_result reason, void* user_ctx)
+{
+  sample_context* ctx = (sample_context*)user_ctx;
+  /* No file is not an error: there is nothing left to restore. */
+  bool deleted = remove(ctx->assignment_path) == 0;
+  fprintf(
+      stderr,
+      "[persist] saved assignment invalidated (%s); %s %s\n",
+      az_iot_result_to_string(reason),
+      deleted ? "deleted" : "nothing deleted at",
+      ctx->assignment_path);
+}
+
 /** @brief Logs transitions and records the ones the main loop acts on. */
 static void on_conn_state(const az_iot_connection_state_event* event, void* user_ctx)
 {
@@ -271,6 +288,9 @@ int main(void)
   if (az_iot_connection_client_init(&client, &opts) != AZ_IOT_OK
       || az_iot_connection_client_add_state_observer(&client, on_conn_state, &ctx) != AZ_IOT_OK
       || az_iot_connection_client_set_dps_assignment_callback(&client, on_assignment, &ctx)
+          != AZ_IOT_OK
+      || az_iot_connection_client_set_dps_assignment_invalidated_callback(
+             &client, on_assignment_invalidated, &ctx)
           != AZ_IOT_OK)
   {
     fprintf(stderr, "[persist] connection client setup failed\n");

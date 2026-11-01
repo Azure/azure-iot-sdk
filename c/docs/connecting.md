@@ -152,9 +152,10 @@ and its buffer); a refusal there starts no attempt, raises no event, and is repo
 - `close()` then `open()` reconnects after `FAULTED`. Feature clients and observers survive it.
 - `open()`, `close()` and `deinit()` cannot be called from a callback the client runs: state
   observers, publish completion callbacks, the SAS token callback, the DPS operational-certificate,
-  registration-payload and assignment callbacks, CSR callbacks, subscription-failure callbacks,
-  and feature clients' message and response handlers. There they return `AZ_IOT_ERR_BUSY` and
-  change nothing. Record the decision in the callback and call them after `do_work()` returns.
+  registration-payload, assignment and assignment-invalidated callbacks, CSR callbacks,
+  subscription-failure callbacks, and feature clients' message and response handlers. There they
+  return `AZ_IOT_ERR_BUSY` and change nothing. Record the decision in the callback and call them
+  after `do_work()` returns.
   Feature clients' own `deinit()` stays callable from callbacks.
 - The client reconnects by itself under `reconnection_policy`. To decide yourself, use
   `az_iot_connection_client_get_disabled_retry_policy()`: a failure then ends in `FAULTED`.
@@ -233,6 +234,16 @@ opts.dps.registration_id = "<registration-id>";
   `az_iot_connection_client_set_dps_assignment_callback()`. It fires each time an assignment is
   adopted (first registration and every re-provision), before the hub connect. A rejected
   assignment is not reported, and its issued certificate is not stored.
+- Delete the saved values in the callback set with
+  `az_iot_connection_client_set_dps_assignment_invalidated_callback()`. It fires once when the
+  client decides the assignment it holds (saved or adopted) must not be used again: DPS returned
+  an assignment the client rejected (`AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED`, `_MISMATCH`), the
+  hub refused the identity in `AZ_IOT_IDENTITY_RECOVERY_REPROVISION` mode
+  (`AZ_IOT_ERR_IDENTITY_REJECTED`), or `dps.max_hub_connect_attempts_before_reprovision` connects
+  failed (the last failure). Without it, a restart before a new assignment is adopted restores
+  the old one. It does not fire for `az_iot_connection_client_request_reprovision()`, which the
+  application decided, nor on a first registration. It runs from `do_work()`, after that call's
+  state callbacks; `open()`, `close()` and `deinit()` return `AZ_IOT_ERR_BUSY` there.
 - `open()` connects to the saved hub; DPS is not contacted while it accepts the device.
 - It goes to DPS under the same conditions as a cached assignment (above). With
   `options_default()`, `identity_recovery.mode` is `RETRY_HUB`, so a hub that refuses the identity
