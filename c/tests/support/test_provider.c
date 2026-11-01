@@ -183,6 +183,17 @@ az_iot_result az_iot_test_connection_client_deinit(az_iot_connection_client* cli
       = result == AZ_IOT_OK ? test_connection_workspace_lent_to(client) : NULL;
   if (lent != NULL)
   {
+    /* A later deinit (a teardown after an explicit one) must not wipe a returned loan. */
+    if (client->opts.mqtt_workspace == lent->mqtt_workspace)
+    {
+      client->opts.mqtt_workspace = NULL;
+      client->opts.mqtt_workspace_size = 0;
+    }
+    if (client->opts.workspace == lent->workspace)
+    {
+      client->opts.workspace = NULL;
+      client->opts.workspace_size = 0;
+    }
     test_connection_workspace_return(lent);
   }
   return result;

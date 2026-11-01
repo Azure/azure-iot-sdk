@@ -749,9 +749,32 @@ static void the_mock_adapter_reports_its_newest_live_client(void** state)
   free(older_workspace);
 }
 
+/* The test helper's deinit gives its loaned workspaces back and forgets them, so
+ * a second deinit (a teardown after an explicit one) does not wipe them. */
+static void the_test_helper_forgets_its_returned_workspaces(void** state)
+{
+  (void)state;
+  az_iot_connection_client client;
+  az_iot_connection_client_options opts = { 0 };
+  opts.iothub_hostname = "broker.example";
+  opts.device_id = "ut-device";
+  opts.mqtt_adapter = az_iot_mock_mqtt_get_adapter();
+  assert_int_equal(az_iot_test_connection_client_init(&client, &opts), AZ_IOT_OK);
+  assert_non_null(client.opts.workspace);
+  assert_non_null(client.opts.mqtt_workspace);
+
+  assert_int_equal(az_iot_test_connection_client_deinit(&client), AZ_IOT_OK);
+  assert_null(client.opts.workspace);
+  assert_int_equal(client.opts.workspace_size, 0);
+  assert_null(client.opts.mqtt_workspace);
+  assert_int_equal(client.opts.mqtt_workspace_size, 0);
+  (void)az_iot_test_connection_client_deinit(&client);
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
+    cmocka_unit_test(the_test_helper_forgets_its_returned_workspaces),
     cmocka_unit_test_setup_teardown(
         the_mock_adapter_reports_its_newest_live_client, setup, teardown),
     cmocka_unit_test_setup_teardown(init_checks_the_mqtt_workspace, setup, teardown),
