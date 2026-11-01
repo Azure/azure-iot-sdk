@@ -26,6 +26,7 @@
 #include <string.h>
 
 #if !defined(_WIN32)
+#include <dirent.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -277,6 +278,67 @@ static void file_open_read_no_follow_refuses_a_link_and_a_missing_file(void** st
 }
 
 #if !defined(_WIN32)
+/** @brief Number of entries in @p directory, "." and ".." excluded. */
+static int count_directory_entries(const char* directory)
+{
+  DIR* opened = opendir(directory);
+  assert_non_null(opened);
+  int count = 0;
+  struct dirent* entry;
+  while ((entry = readdir(opened)) != NULL)
+  {
+    if (strcmp(entry->d_name, ".") != 0 && strcmp(entry->d_name, "..") != 0)
+    {
+      ++count;
+    }
+  }
+  assert_int_equal(closedir(opened), 0);
+  return count;
+}
+#endif
+
+static void file_write_atomically_replaces_the_destination(void** state)
+{
+  (void)state;
+  assert_true(sample_file_write_atomically(DESTINATION_FILE, "old", 3));
+  assert_file_holds(DESTINATION_FILE, "old");
+  assert_true(sample_file_write_atomically(DESTINATION_FILE, "new", 3));
+  assert_file_holds(DESTINATION_FILE, "new");
+  assert_true(sample_file_write_atomically(DESTINATION_FILE, NULL, 0));
+  assert_file_holds(DESTINATION_FILE, "");
+#if !defined(_WIN32)
+  struct stat st;
+  assert_int_equal(stat(DESTINATION_FILE, &st), 0);
+  assert_int_equal(st.st_mode & 0777, 0600);
+  /* No temporary file is left beside the destination. */
+  assert_int_equal(mkdir(DIRECTORY, 0700), 0);
+  assert_true(sample_file_write_atomically(DIRECTORY "/" DESTINATION_FILE, "new", 3));
+  assert_true(sample_file_write_atomically(DIRECTORY "/" DESTINATION_FILE, "newer", 5));
+  assert_file_holds(DIRECTORY "/" DESTINATION_FILE, "newer");
+  assert_int_equal(count_directory_entries(DIRECTORY), 1);
+#endif
+}
+
+static void file_write_atomically_fails_and_keeps_the_destination(void** state)
+{
+  (void)state;
+  write_text_file(DESTINATION_FILE, "old");
+
+  assert_false(sample_file_write_atomically(DESTINATION_FILE, NULL, 3));
+  assert_false(sample_file_write_atomically(NULL, "new", 3));
+  assert_false(sample_file_write_atomically("missing_directory.tmp/name", "new", 3));
+
+  assert_file_holds(DESTINATION_FILE, "old");
+#if !defined(_WIN32)
+  /* The rename fails over a directory: the temporary file is removed. */
+  assert_int_equal(mkdir(DIRECTORY, 0700), 0);
+  assert_int_equal(mkdir(DIRECTORY "/" DESTINATION_FILE, 0700), 0);
+  assert_false(sample_file_write_atomically(DIRECTORY "/" DESTINATION_FILE, "new", 3));
+  assert_int_equal(count_directory_entries(DIRECTORY), 1);
+#endif
+}
+
+#if !defined(_WIN32)
 /**
  * @brief Whether @p signal_number, raised in a new child process after
  * sample_install_stop_handler(), moves the stop request from false to true without
@@ -359,6 +421,10 @@ int main(void)
         file_create_private_unique_creates_a_new_name_beside_the_path, setup, teardown),
     cmocka_unit_test_setup_teardown(
         file_open_read_no_follow_refuses_a_link_and_a_missing_file, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        file_write_atomically_replaces_the_destination, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        file_write_atomically_fails_and_keeps_the_destination, setup, teardown),
     cmocka_unit_test(stop_handler_records_sigterm_and_sigint),
     cmocka_unit_test(sleep_until_tick_end_waits_out_the_rest_of_the_tick),
     cmocka_unit_test(sleep_until_tick_end_returns_at_once_after_the_tick),

@@ -244,17 +244,10 @@ int32_t save_update_workflow_to_file(const uint8_t* blob, size_t len, void* user
     printf("  [persist] cleared %s\n", s->state_file);
     return AZ_IOT_SU_RESULT_SUCCESS;
   }
-  s->persist_failed = 1;
-  FILE* f = sample_file_open_private(s->state_file, false);
-  if (f == NULL)
+  /* Not rewritten in place: a crash then leaves the previous record, not a torn one. */
+  if (!sample_file_write_atomically(s->state_file, blob, len))
   {
-    return AZ_IOT_SU_RESULT_FAILURE;
-  }
-  size_t w = fwrite(blob, 1, len, f);
-  /* fclose() can report a delayed write failure. */
-  int closed = fclose(f);
-  if (w != len || closed != 0)
-  {
+    s->persist_failed = 1;
     return AZ_IOT_SU_RESULT_FAILURE;
   }
   s->persist_failed = 0;

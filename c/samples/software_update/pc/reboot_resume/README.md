@@ -46,8 +46,9 @@ flowchart TD
 ## Sample features
 
 - Target platforms: **Linux** and **Windows**.
-- `persist_workflow_state_fn` writes a file atomically and durably (temporary file flushed to
-  storage, then `sample_file_replace()`) and erases it on a zero-length write.
+- `persist_workflow_state_fn` writes a file atomically and durably through
+  `sample_file_write_atomically()`: a new, uniquely named file beside it, flushed to storage, then
+  `sample_file_replace()`. It erases the file on a zero-length write.
   `load_workflow_state_fn` reads it back.
 - `SAMPLE_REBOOT_AT=install:<n>` or `apply:<n>` picks where a reboot is needed (1-based step).
   - After an install reboot, the step resumes at Apply.

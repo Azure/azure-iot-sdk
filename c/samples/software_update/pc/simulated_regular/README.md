@@ -35,7 +35,7 @@ The simulated hooks are shared with the onboarding sample, in
 | `read_file_fn` | **Simulated** — serves the same deterministic bytes back so core can run the **real** streaming SHA-256 hash check |
 | `install_fn` / `apply_fn` / `backup_fn` / `restore_fn` | **Simulated** — log only; optional forced failure or reboot |
 | `is_installed_fn` | Reports "already installed" for a manifest whose update id equals the installed one; the workflow then ends as skipped |
-| `persist_workflow_state_fn` / `load_workflow_state_fn` | Read/write the resume blob to a file so `resume()` can be exercised |
+| `persist_workflow_state_fn` / `load_workflow_state_fn` | Read/write the resume blob to a file so `resume()` can be exercised; written atomically and durably (`sample_file_write_atomically()`), so a crash leaves the previous blob, never a partial one |
 
 The simulated update payload is **zero-filled** on purpose: the device synthesizes
 the same zero bytes the import manifest declares, so the **real** per-file SHA-256
