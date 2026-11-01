@@ -113,6 +113,22 @@ The SDK decides these per session role and hands them to `connect`. An adapter t
 
 A v3.1.1 adapter may ignore all v5-only fields (they will always be NULL/zero when passed to `publish`).
 
+### Resumed sessions: no resend
+
+Each session gets a fresh client (`create()` or `init()`), and the SDK destroys it when the session
+ends, even when the next connect resumes the broker session. An adapter therefore need not resend
+unacknowledged PUBLISH or PUBREL packets on a resumed session, and the SDK never asks it to. At the
+session end the SDK completes the publishes still awaiting a PUBACK with
+`AZ_IOT_ERR_NOT_CONNECTED`, and the layer above (the application, or the SDK for its own messages)
+sends them again with new packet identifiers. This deliberately deviates from MQTT section 4.4,
+`MQTT-4.4.0-1`: see [Connecting](connecting.md#resumed-sessions-and-retries).
+
+- `az_iot_mqtt_limits.message_store_size` is memory for the copies your MQTT library needs while a
+  session outlives the connection. az_mqtt requires it for QoS 1 on such a session, and with 0
+  refuses the connect with `AZ_IOT_ERR_NOT_SUPPORTED`. When it is full, return `AZ_IOT_ERR_BUSY`
+  from `publish`.
+- The SDK never passes a QoS 2 PUBLISH to `publish`.
+
 ### The single-thread contract (important)
 
 `azure-iot-sdk` is a **single-threaded pump**. All inbound callbacks (the one registered via `set_inbound_cb`) **must fire on the thread that calls `process_loop()`**, not on whatever I/O thread your underlying MQTT client uses internally.

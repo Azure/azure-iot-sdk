@@ -9463,7 +9463,7 @@ static az_iot_result publish_tracked(
   }
   bool const has_cb = ack_cb != NULL || result_cb != NULL;
 
-  /* QoS 1/2 with a callback: reserve the correlation slot BEFORE publishing,
+  /* QoS 1 with a callback: reserve the correlation slot BEFORE publishing,
    * so a full pool sends nothing and the caller can retry without
    * duplicating. The reserved slot has no callback, so neither the PUBACK match
    * nor teardown_active() acts on it. Adapters deliver events only from
@@ -9515,8 +9515,9 @@ static az_iot_result publish_tracked(
     return r;
   }
 
-  /* QoS 0: there is no PUBACK on the wire. Complete synchronously. QoS 1/2
-   * without a callback: the future PUBACK is silently absorbed. */
+  /* QoS 0: there is no PUBACK on the wire. Complete synchronously. QoS 1
+   * without a callback: the future PUBACK is silently absorbed. Feature clients
+   * never pass QoS 2. */
   if (msg->qos == AZ_IOT_MQTT_QOS_0)
   {
     complete_publish(client, ack_cb, result_cb, user_ctx, AZ_IOT_OK, NULL);
