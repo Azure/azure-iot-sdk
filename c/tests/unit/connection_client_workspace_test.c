@@ -250,9 +250,8 @@ static bool example_device_connects(bool mqtt_v5, const az_iot_connection_client
   opts.workspace = g_workspace;
   opts.workspace_size = az_iot_connection_client_get_workspace_size(limits);
   assert_true(opts.workspace_size <= TEST_WORKSPACE_MAX);
-  az_iot_mqtt_factory* factory = az_iot_mock_mqtt_factory_create(
+  opts.mqtt_adapter = az_iot_mock_mqtt_get_adapter_for_version(
       mqtt_v5 ? AZ_IOT_MQTT_VERSION_5 : AZ_IOT_MQTT_VERSION_3_1_1);
-  assert_non_null(factory);
   memset(&g_device, 0, sizeof(g_device));
   assert_int_equal(az_iot_test_connection_client_init(&g_device.connection, &opts), AZ_IOT_OK);
   az_iot_connection_client* c = &g_device.connection;
@@ -280,15 +279,11 @@ static bool example_device_connects(bool mqtt_v5, const az_iot_connection_client
   }
   if (result == AZ_IOT_OK)
   {
-    result = az_iot_connection_client_register_mqtt_factory(c, factory);
-  }
-  if (result == AZ_IOT_OK)
-  {
     result = az_iot_connection_client_open(c);
   }
   if (result == AZ_IOT_OK)
   {
-    az_iot_mock_mqtt_client* mock = az_iot_mock_mqtt_factory_last_client(factory);
+    az_iot_mock_mqtt_client* mock = az_iot_mock_mqtt_adapter_last_client();
     assert_non_null(mock);
     assert_true(az_iot_mock_mqtt_client_inject_connected(mock, AZ_IOT_OK));
     result = az_iot_connection_client_do_work(c, 0);
@@ -331,8 +326,7 @@ static bool example_device_connects(bool mqtt_v5, const az_iot_connection_client
       az_iot_mqttv3_telemetry_client_deinit(&g_device.telemetry_v3);
     }
   }
-  az_iot_connection_client_deinit(c);
-  az_iot_mock_mqtt_factory_destroy(factory);
+  az_iot_test_connection_client_deinit(c);
   return connects;
 }
 

@@ -11,18 +11,17 @@
  * any specific adapter implementation. To validate a new adapter, the
  * customer:
  *
- *   1. Builds their adapter as a static or shared library that exposes a
- *      function returning an `az_iot_mqtt_factory*` for one or both
- *      MQTT versions.
+ *   1. Builds their adapter as a static or shared library that exposes an
+ *      `az_iot_mqtt_adapter` building clients of one or both MQTT versions.
  *   2. Links the conformance library (`az_iot_conformance`) and produces
  *      one harness exe per (version, role) tuple that calls
- *      `az_iot_conformance_run()` with the factory and the suite to run.
+ *      `az_iot_conformance_run()` with the adapter and the suite to run.
  *
  * The suite is split by MQTT version so adapters that only implement v3.1.1
  * or only v5 can still pass the relevant suite.
  *
  * Tests in the suite are designed to be self-contained: each test creates a
- * fresh client from the factory, connects, exercises the iface, and tears
+ * fresh client with the adapter, connects, exercises the iface, and tears
  * down. State leakage between tests is therefore disallowed at the iface
  * level.
  *
@@ -215,7 +214,8 @@ extern "C"
     uint32_t client_key_psa_id;
   } az_iot_conformance_options;
 
-  /* Run the conformance suite for `suite_kind` against the given factory.
+  /* Run the conformance suite for `suite_kind` against the given adapter, which
+   * builds each client of the suite's MQTT version in a heap workspace.
    * Returns:
    *   0  on success: all tests passed and every declared capability was
    *      exercised -- UNLESS AZ_IOT_CONFORMANCE_ALLOW_UNPROVEN=1 was set in
@@ -233,7 +233,9 @@ extern "C"
    * Equivalent to az_iot_conformance_run_with_options() with no capabilities
    * declared. An adapter that implements an optional feature should call that
    * instead, or the suite cannot hold it to the feature's contract. */
-  int az_iot_conformance_run(az_iot_conformance_suite suite_kind, az_iot_mqtt_factory* factory);
+  int az_iot_conformance_run(
+      az_iot_conformance_suite suite_kind,
+      const az_iot_mqtt_adapter* adapter);
 
   /* Result of az_iot_conformance_custody_material_state(): either NONE,
    * or PARTIAL, or the OR of the route bits whose material is complete. */
@@ -288,7 +290,7 @@ extern "C"
    * which means the same as declaring nothing. */
   int az_iot_conformance_run_with_options(
       az_iot_conformance_suite suite_kind,
-      az_iot_mqtt_factory* factory,
+      const az_iot_mqtt_adapter* adapter,
       const az_iot_conformance_options* options);
 
 #ifdef __cplusplus
