@@ -86,6 +86,53 @@ static void assert_file_holds(const char* path, const char* expected)
   assert_string_equal(contents, expected);
 }
 
+static void file_delete_removes_the_file(void** state)
+{
+  (void)state;
+  write_text_file(DESTINATION_FILE, "old");
+
+  assert_true(sample_file_delete(DESTINATION_FILE));
+
+  assert_null(sample_file_open_read_no_follow(DESTINATION_FILE));
+}
+
+static void file_delete_treats_a_missing_file_as_deleted(void** state)
+{
+  (void)state;
+  assert_true(sample_file_delete(DESTINATION_FILE));
+  assert_false(sample_file_delete(NULL));
+}
+
+static void file_delete_fails_when_the_file_stays(void** state)
+{
+  (void)state;
+#if !defined(_WIN32)
+  /* A directory that is not empty cannot be removed. */
+  assert_int_equal(mkdir(DIRECTORY, 0700), 0);
+  write_text_file(DIRECTORY "/" DESTINATION_FILE, "old");
+
+  assert_false(sample_file_delete(DIRECTORY));
+
+  assert_file_holds(DIRECTORY "/" DESTINATION_FILE, "old");
+#endif
+}
+
+static void file_delete_reports_a_done_removal_when_the_directory_sync_fails(void** state)
+{
+  (void)state;
+#if !defined(_WIN32)
+  /* Write and search but no read: the removal succeeds, opening the directory
+   * for its sync does not (unless run as root). */
+  assert_int_equal(mkdir(DIRECTORY, 0700), 0);
+  write_text_file(DIRECTORY "/" DESTINATION_FILE, "old");
+  assert_int_equal(chmod(DIRECTORY, 0300), 0);
+  bool deleted = sample_file_delete(DIRECTORY "/" DESTINATION_FILE);
+  assert_int_equal(chmod(DIRECTORY, 0700), 0);
+  assert_true(deleted);
+  assert_null(sample_file_open_read_no_follow(DIRECTORY "/" DESTINATION_FILE));
+#endif
+}
+
 static void file_replace_overwrites_the_destination(void** state)
 {
   (void)state;
@@ -485,6 +532,11 @@ int main(void)
 {
   const struct CMUnitTest tests[] = {
     cmocka_unit_test_setup_teardown(file_replace_overwrites_the_destination, setup, teardown),
+    cmocka_unit_test_setup_teardown(file_delete_removes_the_file, setup, teardown),
+    cmocka_unit_test_setup_teardown(file_delete_treats_a_missing_file_as_deleted, setup, teardown),
+    cmocka_unit_test_setup_teardown(file_delete_fails_when_the_file_stays, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        file_delete_reports_a_done_removal_when_the_directory_sync_fails, setup, teardown),
     cmocka_unit_test_setup_teardown(
         file_replace_creates_a_missing_destination_given_with_a_directory, setup, teardown),
     cmocka_unit_test_setup_teardown(
