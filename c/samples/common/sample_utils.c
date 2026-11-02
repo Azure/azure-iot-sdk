@@ -1,3 +1,7 @@
+// Copyright (c) Microsoft. All rights reserved.
+// Licensed under the MIT license. See LICENSE file in the project root for full license
+// information.
+
 /* Must precede every system header: glibc gates clock_gettime, CLOCK_MONOTONIC,
  * O_NOFOLLOW and fsync on it, and the first header included fixes the choice. */
 #ifndef _WIN32
