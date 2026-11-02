@@ -13,7 +13,7 @@ run it, and what to expect.
 | [`unified/`](unified/) | mqttv3 (MQTT 3.1.1) **or** mqttv5 (MQTT 5), whichever DPS assigns | Default. The device does not control which hub it is provisioned to. |
 | [`mqttv5/`](mqttv5/) | mqttv5 only | The device is known to be on an mqttv5 hub. |
 | [`authentication/`](authentication/README.md) | Either | Certificate providers, certificates issued by DPS, renewal, keys in hardware. |
-| [`software_update/`](software_update/) | Either | Software updates agent. |
+| [`software_update/`](software_update/) | Either | Software updates agent. Start with the [Software Update guide](../docs/software-update.md#samples). |
 
 | Sample | What it shows |
 | --- | --- |
