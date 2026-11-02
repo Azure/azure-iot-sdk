@@ -174,13 +174,13 @@ extern "C"
 
   /* --- Provisioning-session seam ------------------------------------------- */
   /*
-   * A feature client that rides the device's PROVISIONING session, not the hub
-   * session, and runs BEFORE the device is registered cannot use
-   * az_iot_connection_client__publish(): it publishes on the active hub client
-   * and requires CONNECTED.
+   * The device-update operations ride the device's PROVISIONING session, not the
+   * hub session, and the bootstrap check runs BEFORE the device is registered --
+   * so az_iot_connection_client__publish() cannot serve them: it publishes on
+   * the active hub client and requires CONNECTED.
    *
-   * These expose the provisioning session directly, for such a feature. Not for
-   * general use.
+   * These expose the provisioning session directly, for the one feature that
+   * legitimately needs it. Not for general use.
    */
 
   /* True when a provisioning session exists and is far enough along to carry a

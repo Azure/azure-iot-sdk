@@ -30,9 +30,8 @@ name: ci-c-e2e-mqttv5
 on:
   # releases/public-preview only: its nightly dispatcher (ci-c-public-preview-nightly.yml) runs it.
   workflow_dispatch:
-  # Pull requests: every one to releases/public-preview, so the gate job always
-  # reports there (never on main); the `changes` job decides whether the e2e
-  # legs run.
+  # Pull requests: every one, so the gate job always reports; the `changes` job
+  # decides whether the e2e legs run.
   pull_request:
     branches: [ releases/public-preview ]
 

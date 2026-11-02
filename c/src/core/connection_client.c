@@ -3542,7 +3542,7 @@ static void on_dps_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
       {
         break;
       }
-      /* Offer the message to the feature observer first: it shares this
+      /* Offer the message to the device-update observer first: it shares this
        * session and its responses arrive on the same subscribed filter, but the
        * provisioning parser below would reject them as malformed registration
        * responses and fault the attempt. */
@@ -6961,7 +6961,7 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_open(az_iot_connection_clien
    *
    * Any non-IDLE HUB value is a refusal. The DPS scope is the application's
    * only while this client drives it, so a session a FEATURE client opened for
-   * itself must not block open() -- otherwise a feature client that
+   * itself must not block open() -- otherwise a device-update client that
    * pumped first would wedge it at ALREADY_INITIALIZED for ever.
    *
    * A standing ref is an open client whatever the DPS scope says: between a

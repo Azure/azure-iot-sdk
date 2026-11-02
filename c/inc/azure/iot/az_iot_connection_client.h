@@ -1722,7 +1722,7 @@ extern "C"
     az_iot_mqtt_client* dps_mqtt;
 
     /* Observer for provisioning-session messages the provisioning flow itself
-     * does not claim, for a feature client that shares this session. Stored
+     * does not claim -- the device-update operations share this session. Stored
      * as a function pointer, not erased through void*: ISO C does not guarantee
      * that function and object pointers share a representation. */
     az_iot_dps_message_observer dps_message_observer;
@@ -2183,8 +2183,8 @@ extern "C"
    * a DPS-provisioned device runs two, and they move independently.
    *
    * AZ_IOT_CONN_SCOPE_HUB is what "am I connected?" means for telemetry, twin,
-   * c2d, direct methods and file upload. AZ_IOT_CONN_SCOPE_DPS is the
-   * provisioning session, and it stays IDLE for the life of a client that
+   * c2d, direct methods and file upload. AZ_IOT_CONN_SCOPE_DPS is what the
+   * device-update client rides, and it stays IDLE for the life of a client that
    * connects directly to a hub -- that is the answer, not an error.
    *
    * Returns AZ_IOT_CONN_STATE_IDLE for a NULL client or an unknown scope. */
