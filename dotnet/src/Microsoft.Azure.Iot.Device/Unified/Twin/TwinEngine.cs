@@ -928,13 +928,14 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
 
             // An earlier attempt that is still waiting to be sent (for example, held until the device reconnects) is superseded
             // by this one, so it must never be sent.
-            _ = fetch.AttemptCancellation?.CancelAsync();
+            RetireGetTwinAttempt(fetch);
             CancellationTokenSource attemptCancellation = CancellationTokenSource.CreateLinkedTokenSource(fetch.Cancellation.Token);
+            CancellationToken attemptCancellationToken = attemptCancellation.Token;
             fetch.AttemptCancellation = attemptCancellation;
 
             // The connection client may hold the publish until the device has reconnected, so it is sent off this thread. That
             // way, a caller can stop waiting for the response, and the publish is never sent while holding a lock.
-            _ = Task.Run(() => PublishGetTwinAsync(fetch, getId, request, attemptCancellation.Token));
+            fetch.AttemptPublish = Task.Run(() => PublishGetTwinAsync(fetch, getId, request, attemptCancellationToken));
         }
 
         private async Task PublishGetTwinAsync(GetTwinFetch fetch, Guid getId, GetTwinRequest request, CancellationToken attemptCancellationToken)
@@ -1003,6 +1004,27 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
                 Trace.TraceWarning("Failed to publish a get twin request: {0}", e);
                 FailGetTwinFetchAttempt(getId, e);
             }
+        }
+
+        // Must be called while holding _getTwinLock. Cancels the latest attempt (if any), so that it is never sent if it is still
+        // waiting to be, and then disposes its cancellation source, which unregisters it from the GET's cancellation. That waits
+        // until the cancellation callbacks have run and the attempt's publish has finished, since either may still use it.
+        private static void RetireGetTwinAttempt(GetTwinFetch fetch)
+        {
+            CancellationTokenSource? attemptCancellation = fetch.AttemptCancellation;
+            if (attemptCancellation == null)
+            {
+                return;
+            }
+
+            fetch.AttemptCancellation = null;
+            Task cancelled = attemptCancellation.CancelAsync();
+            Task published = fetch.AttemptPublish;
+            _ = Task.WhenAll(cancelled, published).ContinueWith(
+                _ => attemptCancellation.Dispose(),
+                CancellationToken.None,
+                TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
         }
 
         // Must be called while holding _getTwinLock.
@@ -1116,7 +1138,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
 
             // Callbacks registered on these tokens run asynchronously so that they never run while holding the lock.
             _ = fetch.Cancellation.CancelAsync();
-            _ = fetch.AttemptCancellation?.CancelAsync();
+            RetireGetTwinAttempt(fetch);
 
             if (_nextGetTwinFetch == fetch)
             {
@@ -1187,7 +1209,13 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
                 return;
             }
 
-            RecordAuthoritativeVersions(_connection.ConnectionNonce, response.DesiredVersion, response.ReportedVersion);
+            // A resync's GET belongs to the connection that the resync started on, so a response to it that arrives once that
+            // connection was replaced (for example, by one as a different identity) says nothing about the new connection.
+            Guid? connectionNonce = _connection.ConnectionNonce;
+            if (resync == null || resync.ConnectionNonce == connectionNonce)
+            {
+                RecordAuthoritativeVersions(connectionNonce, response.DesiredVersion, response.ReportedVersion);
+            }
 
             // The resync goes first, since it may find this device's copy of the twin invalid (see ResetLocalDesiredVersionIfInvalid).
             DesiredStateOutcome outcome = new();
@@ -2240,6 +2268,9 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
             // Cancelled when a newer attempt starts (or the GET ends), so that a superseded attempt still waiting to be sent is
             // never sent.
             public CancellationTokenSource? AttemptCancellation { get; set; }
+
+            // Sends the latest attempt.
+            public Task AttemptPublish { get; set; } = Task.CompletedTask;
 
             // The ID of the latest attempt.
             public Guid? GetId { get; set; }

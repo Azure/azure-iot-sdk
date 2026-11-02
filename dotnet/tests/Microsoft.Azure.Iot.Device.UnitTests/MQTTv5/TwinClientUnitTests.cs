@@ -1124,6 +1124,23 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
         }
 
         [Fact]
+        public async Task DesiredPatchGap_ResyncResponseAfterTheConnectionChangedDoesNotRevealVersionsForTheNewConnection()
+        {
+            (MockFeatureConnectionClient connection, Guid nonce) = CreateConnectionWithNonce();
+            using TwinClient twinClient = new(connection);
+            await ReceiveTwinPushAsync(connection, nonce, 1, "{}");
+
+            await ReceiveDesiredPatchAsync(connection, nonce, 3, "{\"a\":3}");
+            MqttPublish getPublish = await connection.WaitForPublishedMessagesAsync(1);
+            connection.ConnectionNonce = Guid.NewGuid();
+
+            await ReceiveGetResponseAsync(connection, getPublish, 3, "{\"a\":3}", reportedVersion: 9, reportedPayload: "{}");
+
+            Assert.Null(twinClient.AuthoritativeDesiredPropertiesVersion);
+            Assert.Null(twinClient.AuthoritativeReportedPropertiesVersion);
+        }
+
+        [Fact]
         public async Task GetTwinAsync_SharingTheResyncGet_FailsWhenABufferedPatchIsMalformed()
         {
             (MockFeatureConnectionClient connection, Guid nonce) = CreateConnectionWithNonce();
