@@ -280,8 +280,9 @@ reports an `AZ_IOT_SU_FACILITY_DELTA` extended code so you can see why.
   time ([install script](../eng/install-su-delta-processor.sh)). Without it, files are downloaded in
   full.
 - It keeps the files of the last successful update per provider in a source cache, as the sources
-  of the next delta. The first update is therefore a full download, unless you seed the cache
-  (`az_iot_su_delta_handler_get_source_cache_path()`).
+  of the next delta. Only an update with a file that names `microsoft/delta:1` (related files or
+  not) is cached, so name it in the first, full update too. Otherwise, or to make that first update
+  a delta, seed the cache yourself at `az_iot_su_delta_handler_get_source_cache_path()`.
 
 **Your own handler:** fill an `az_iot_su_download_handler` (`choose_related_file_fn`,
 `build_file_from_related_fn`, optional `workflow_ended_fn`). On Windows and ESP32, where the
@@ -366,7 +367,8 @@ is valid only during the callback. Names below omit the `AZ_IOT_SU_EVENT_` prefi
   downloading is dropped for the new one. From the first install it waits (`UPDATE_DEFERRED`) until
   the current one ends, and after its reboot if it asked for one.
 - **Cancellation** is done from the service: it stops offering the update. The device has no cancel
-  call.
+  call, and a device that already received the update finishes it; its SUCCEEDED or FAILED report
+  replaces the service's CANCELED outcome.
 
 ## Troubleshooting
 
@@ -379,7 +381,7 @@ Turn on the `su` and `dps` log components at `DEBUG` ([logging.md](logging.md)).
 | `OPERATION_ABANDONED`, `UPDATE_ACCOUNT_NOT_LINKED` or `..._ACCESS_DENIED` | ADR namespace not linked to Device Update | Fix the link; provisioning is not blocked |
 | `FAILED`, facility `0x1` (`AZ_IOT_SU_FACILITY_MANIFEST`) | Signature not trusted: unknown or disabled root key | Pass the right root keys; the sub-code says which check failed |
 | `FAILED`, facility `0x3` (`HASH`) | A downloaded file differs from the signed one | Check `download_fn` and `read_file_fn` |
-| `UPDATE_REFUSED` with `AZ_IOT_ERR_NOT_ENOUGH_SPACE` | The update exceeds `max_update_size` or the file limits | Raise the limit ([Memory and limits](#memory-and-limits)) |
+| `UPDATE_REFUSED` with `AZ_IOT_ERR_NOT_ENOUGH_SPACE` | The update's metadata exceeds `max_update_size`, or it has too many files | Raise the limit ([Memory and limits](#memory-and-limits)) |
 | `init()` returns `AZ_IOT_ERR_INVALID_ARG` | Missing hooks, root keys, properties or workspace; or a build mismatch | The `ERROR` log names the cause |
 
 For support, include the event's `service_error.tracking_id`.
@@ -388,8 +390,10 @@ For support, include the event's `service_error.tracking_id`.
 
 The client lives in memory you provide: `AZ_IOT_SU_WORKSPACE_DEFAULT_SIZE` bytes for the default
 `az_iot_su_limits`, or `az_iot_su_workspace_size()` / `AZ_IOT_SU_WORKSPACE_SIZE()` for your own. The
-largest update accepted is 64 KiB by default; steps and files per update are build options (10 and
-10). Every limit: [client-configuration.md § Software updates](client-configuration.md#software-updates-az_iot_suh).
+update metadata (manifest, signature and file URLs) may be up to 64 KiB by default
+(`max_update_size`); the files themselves are downloaded by your hooks and are not limited by it.
+Steps and files per update are build options (10 and 10). Every limit:
+[client-configuration.md § Software updates](client-configuration.md#software-updates-az_iot_suh).
 
 ## Samples
 
