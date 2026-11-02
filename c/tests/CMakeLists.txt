@@ -334,34 +334,6 @@ if(AZ_IOT_WITH_PAHO)
         target_compile_definitions(az_iot_tests_paho_key_custody PRIVATE ${_paho_defs})
     endif()
 
-    # Paho 1.3.14+ takes const MQTTProperties* in its getters; the MQTTAsync
-    # mock (support/mock_paho_async.c) must match the headers in use.
-    include(CheckCSourceCompiles)
-    set(CMAKE_REQUIRED_QUIET ON)
-    set(CMAKE_REQUIRED_INCLUDES ${AZ_IOT_PAHO_INCLUDE_DIRS})
-    # MSVC only warns (C4028) on a parameter that differs from the declaration.
-    # Elsewhere, Paho 1.3.16's anonymous unions would fail a -pedantic -Werror
-    # build; the tests include those headers as system headers.
-    if(MSVC)
-        set(CMAKE_REQUIRED_FLAGS "/we4028")
-    else()
-        set(CMAKE_REQUIRED_FLAGS "-Wno-pedantic")
-    endif()
-    unset(AZ_IOT_TEST_PAHO_CONST_PROPERTIES CACHE)
-    check_c_source_compiles("
-        #include <MQTTProperties.h>
-        int MQTTProperties_propertyCount(const MQTTProperties* props, enum MQTTPropertyCodes propid)
-        { (void)props; (void)propid; return 0; }
-        int main(void) { return 0; }"
-        AZ_IOT_TEST_PAHO_CONST_PROPERTIES)
-    unset(CMAKE_REQUIRED_INCLUDES)
-    unset(CMAKE_REQUIRED_QUIET)
-    unset(CMAKE_REQUIRED_FLAGS)
-    set(_paho_mock_defs "")
-    if(AZ_IOT_TEST_PAHO_CONST_PROPERTIES)
-        set(_paho_mock_defs AZ_IOT_TEST_PAHO_CONST_PROPERTIES=1)
-    endif()
-
     # The same custody code against a REAL PKCS#11 token. Built only when a
     # token is going to be supplied (AZ_IOT_TEST_PKCS11_KEY_URI); it fails
     # loudly rather than skipping when the environment is missing.
@@ -400,9 +372,6 @@ if(AZ_IOT_WITH_PAHO)
     endif()
     if(_paho_defs)
         target_compile_definitions(az_iot_tests_paho_connect_cleanup PRIVATE ${_paho_defs})
-    endif()
-    if(_paho_mock_defs)
-        target_compile_definitions(az_iot_tests_paho_connect_cleanup PRIVATE ${_paho_mock_defs})
     endif()
     if(WIN32)
         target_link_libraries(az_iot_tests_paho_connect_cleanup PRIVATE ws2_32 crypt32)
@@ -444,9 +413,6 @@ if(AZ_IOT_WITH_PAHO)
     if(_paho_defs)
         target_compile_definitions(az_iot_tests_paho_transport_proxy PRIVATE ${_paho_defs})
     endif()
-    if(_paho_mock_defs)
-        target_compile_definitions(az_iot_tests_paho_transport_proxy PRIVATE ${_paho_mock_defs})
-    endif()
     if(WIN32)
         target_link_libraries(az_iot_tests_paho_transport_proxy PRIVATE ws2_32 crypt32)
     endif()
@@ -485,9 +451,6 @@ if(AZ_IOT_WITH_PAHO)
     endif()
     if(_paho_defs)
         target_compile_definitions(az_iot_tests_paho_event_queue_race PRIVATE ${_paho_defs})
-    endif()
-    if(_paho_mock_defs)
-        target_compile_definitions(az_iot_tests_paho_event_queue_race PRIVATE ${_paho_mock_defs})
     endif()
     if(WIN32)
         target_link_libraries(az_iot_tests_paho_event_queue_race PRIVATE ws2_32 crypt32)
@@ -793,21 +756,12 @@ if(AZ_IOT_WITH_PAHO)
         target_compile_definitions(az_iot_conformance_paho_v3 PRIVATE ${_paho_defs})
     endif()
 
-    add_executable(az_iot_conformance_paho_v5 conformance/paho_v5_main.c)
-    target_link_libraries(az_iot_conformance_paho_v5 PRIVATE
-        az_iot_conformance az_iot_adapter_paho)
-    az_iot_apply_warnings(az_iot_conformance_paho_v5)
-    if(_paho_defs)
-        target_compile_definitions(az_iot_conformance_paho_v5 PRIVATE ${_paho_defs})
-    endif()
-
     if(AZ_IOT_BUILD_CONFORMANCE_TESTS)
         add_test(NAME az_iot_conformance_paho_v3 COMMAND az_iot_conformance_paho_v3)
-        add_test(NAME az_iot_conformance_paho_v5 COMMAND az_iot_conformance_paho_v5)
         # Paho runs its own threads: run under helgrind and DRD too. shardable:
         # honours AZ_IOT_TEST_SHARD (support/test_shard.h), so
         # eng/run-race-detectors.sh splits each across parallel processes.
-        set_tests_properties(az_iot_conformance_paho_v3 az_iot_conformance_paho_v5
+        set_tests_properties(az_iot_conformance_paho_v3
             PROPERTIES LABELS "race;shardable")
     endif()
 
@@ -846,7 +800,7 @@ if(AZ_IOT_WITH_AZ_MQTT)
     # The adapter's limits: its az_iot_az_mqtt_config.h, with the same definitions.
     get_target_property(_az_mqtt_adapter_defs az_iot_adapter_az_mqtt COMPILE_DEFINITIONS)
     set(_az_mqtt_size_defs "${_az_mqtt_adapter_defs}")
-    list(FILTER _az_mqtt_size_defs INCLUDE REGEX "^AZ_IOT_AZ_MQTT_(CONFIG_FILE|USER_PROPERTIES_|MBEDTLS$)")
+    list(FILTER _az_mqtt_size_defs INCLUDE REGEX "^AZ_IOT_AZ_MQTT_(CONFIG_FILE|MBEDTLS$)")
     az_iot_add_cmocka_test(az_iot_tests_az_mqtt_adapter unit/az_mqtt_adapter_test.c)
     # Needs a broker, as the conformance suites: registered under the same option.
     az_iot_add_cmocka_test(az_iot_az_mqtt_adapter_broker
@@ -858,8 +812,6 @@ if(AZ_IOT_WITH_AZ_MQTT)
             $<TARGET_PROPERTY:az_iot_adapter_az_mqtt,INCLUDE_DIRECTORIES>)
         target_compile_definitions(${_t} PRIVATE ${_az_mqtt_size_defs})
     endforeach()
-    # The CONNACK and DISCONNECT Reason String cases build their packets with the test server's.
-    target_link_libraries(az_iot_tests_az_mqtt_adapter PRIVATE az_iot_test_mqtt_server)
     if(WIN32)
         # The PUBACK cases run an in-process server.
         target_link_libraries(az_iot_tests_az_mqtt_adapter PRIVATE ws2_32)
@@ -872,7 +824,7 @@ if(AZ_IOT_WITH_AZ_MQTT)
     # in-process server.
     az_iot_add_cmocka_test(az_iot_tests_az_mqtt_adapter_sizes unit/az_mqtt_adapter_sizes_test.c)
     target_link_libraries(az_iot_tests_az_mqtt_adapter_sizes PRIVATE
-        az_iot_adapter_az_mqtt az_mqttv3 az_mqttv5)
+        az_iot_adapter_az_mqtt az_mqttv3)
     if(WIN32)
         target_link_libraries(az_iot_tests_az_mqtt_adapter_sizes PRIVATE ws2_32)
     endif()
@@ -881,11 +833,10 @@ if(AZ_IOT_WITH_AZ_MQTT)
     az_iot_add_cmocka_test(az_iot_tests_az_mqtt_adapter_ack
         unit/az_mqtt_adapter_ack_test.c
         ${PROJECT_SOURCE_DIR}/adapters/az_mqtt/az_iot_mqtt_az_mqtt.c
-        ${PROJECT_SOURCE_DIR}/adapters/az_mqtt/az_iot_mqtt_az_mqtt_adapter.c
-        ${PROJECT_SOURCE_DIR}/adapters/az_mqtt/az_iot_mqtt_az_mqtt_v3.c)
+        ${PROJECT_SOURCE_DIR}/adapters/az_mqtt/az_iot_mqtt_az_mqtt_adapter.c)
     target_include_directories(az_iot_tests_az_mqtt_adapter_ack PRIVATE
         ${PROJECT_SOURCE_DIR}/inc ${PROJECT_SOURCE_DIR}/adapters/az_mqtt ${PROJECT_SOURCE_DIR}/src/core)
-    target_link_libraries(az_iot_tests_az_mqtt_adapter_ack PRIVATE az_mqttv3 az_mqttv5)
+    target_link_libraries(az_iot_tests_az_mqtt_adapter_ack PRIVATE az_mqttv3)
     if(WIN32)
         target_link_libraries(az_iot_tests_az_mqtt_adapter_ack PRIVATE ws2_32)
     endif()
@@ -894,11 +845,10 @@ if(AZ_IOT_WITH_AZ_MQTT)
     az_iot_add_cmocka_test(az_iot_tests_az_mqtt_adapter_psa
         unit/az_mqtt_adapter_psa_test.c
         ${PROJECT_SOURCE_DIR}/adapters/az_mqtt/az_iot_mqtt_az_mqtt.c
-        ${PROJECT_SOURCE_DIR}/adapters/az_mqtt/az_iot_mqtt_az_mqtt_adapter.c
-        ${PROJECT_SOURCE_DIR}/adapters/az_mqtt/az_iot_mqtt_az_mqtt_v3.c)
+        ${PROJECT_SOURCE_DIR}/adapters/az_mqtt/az_iot_mqtt_az_mqtt_adapter.c)
     target_include_directories(az_iot_tests_az_mqtt_adapter_psa PRIVATE
         ${PROJECT_SOURCE_DIR}/inc ${PROJECT_SOURCE_DIR}/adapters/az_mqtt ${PROJECT_SOURCE_DIR}/src/core)
-    target_link_libraries(az_iot_tests_az_mqtt_adapter_psa PRIVATE az_mqttv3 az_mqttv5)
+    target_link_libraries(az_iot_tests_az_mqtt_adapter_psa PRIVATE az_mqttv3)
     if(WIN32)
         target_link_libraries(az_iot_tests_az_mqtt_adapter_psa PRIVATE ws2_32)
     endif()
@@ -906,7 +856,7 @@ if(AZ_IOT_WITH_AZ_MQTT)
     # The adapter building its clients in application memory.
     az_iot_add_cmocka_test(az_iot_tests_az_mqtt_adapter_workspace unit/az_mqtt_adapter_workspace_test.c)
     target_link_libraries(az_iot_tests_az_mqtt_adapter_workspace PRIVATE
-        az_iot_adapter_az_mqtt az_mqttv3 az_mqttv5)
+        az_iot_adapter_az_mqtt az_mqttv3)
     if(WIN32)
         target_link_libraries(az_iot_tests_az_mqtt_adapter_workspace PRIVATE ws2_32)
     endif()
@@ -922,7 +872,7 @@ if(AZ_IOT_WITH_AZ_MQTT)
     # The adapter with no message store (az_iot_mqtt_limits.message_store_size 0).
     az_iot_add_cmocka_test(az_iot_tests_az_mqtt_adapter_no_store unit/az_mqtt_adapter_no_store_test.c)
     target_link_libraries(az_iot_tests_az_mqtt_adapter_no_store PRIVATE
-        az_iot_adapter_az_mqtt az_mqttv3 az_mqttv5)
+        az_iot_adapter_az_mqtt az_mqttv3)
     if(WIN32)
         target_link_libraries(az_iot_tests_az_mqtt_adapter_no_store PRIVATE ws2_32)
     endif()
@@ -931,27 +881,15 @@ if(AZ_IOT_WITH_AZ_MQTT)
     az_iot_add_cmocka_test(az_iot_tests_az_mqtt_adapter_release
         unit/az_mqtt_adapter_release_test.c
         ${PROJECT_SOURCE_DIR}/adapters/az_mqtt/az_iot_mqtt_az_mqtt.c
-        ${PROJECT_SOURCE_DIR}/adapters/az_mqtt/az_iot_mqtt_az_mqtt_adapter.c
-        ${PROJECT_SOURCE_DIR}/adapters/az_mqtt/az_iot_mqtt_az_mqtt_v3.c)
+        ${PROJECT_SOURCE_DIR}/adapters/az_mqtt/az_iot_mqtt_az_mqtt_adapter.c)
     target_include_directories(az_iot_tests_az_mqtt_adapter_release PRIVATE
         ${PROJECT_SOURCE_DIR}/inc ${PROJECT_SOURCE_DIR}/adapters/az_mqtt ${PROJECT_SOURCE_DIR}/src/core)
-    target_link_libraries(az_iot_tests_az_mqtt_adapter_release PRIVATE az_mqttv3 az_mqttv5)
+    target_link_libraries(az_iot_tests_az_mqtt_adapter_release PRIVATE az_mqttv3)
     if(WIN32)
         target_link_libraries(az_iot_tests_az_mqtt_adapter_release PRIVATE ws2_32)
     endif()
 
-    # The default, a user's definition and a config file: resolved as documented.
-    foreach(_case DEFAULT OVERRIDE CONFIG_FILE)
-        set(_t az_iot_tests_az_mqtt_config_${_case})
-        add_executable(${_t} unit/az_mqtt_config_test.c)
-        target_include_directories(${_t} PRIVATE
-            ${PROJECT_SOURCE_DIR}/adapters/az_mqtt ${CMAKE_CURRENT_SOURCE_DIR}/unit)
-        target_compile_definitions(${_t} PRIVATE AZ_IOT_AZ_MQTT_CONFIG_TEST_${_case})
-        az_iot_apply_warnings(${_t})
-        add_test(NAME ${_t} COMMAND ${_t})
-    endforeach()
-    # The removed footprint, from a compiler flag and from a config file, fails on its guard,
-    # which names the replacement.
+    # The removed footprint, from a compiler flag and from a config file, fails on its guard.
     set(_az_mqtt_footprint_cases "")
     foreach(_case flag file)
         set(_t az_iot_tests_az_mqtt_config_footprint_${_case})
@@ -969,7 +907,7 @@ if(AZ_IOT_WITH_AZ_MQTT)
     add_test(NAME az_iot_tests_az_mqtt_config_refuses_footprint
         COMMAND ${CMAKE_COMMAND}
             -DBUILD_DIR=${CMAKE_BINARY_DIR} -DCONFIG=$<CONFIG> -DTARGETS=${_az_mqtt_footprint_cases}
-            "-DEXPECTED=AZ_IOT_AZ_MQTT_FOOTPRINT was removed: define AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX"
+            "-DEXPECTED=AZ_IOT_AZ_MQTT_FOOTPRINT was removed"
             -P ${CMAKE_CURRENT_SOURCE_DIR}/compile/check_build_refused.cmake)
     # Builds in the build tree: one at a time with anything else that does.
     set_tests_properties(az_iot_tests_az_mqtt_config_refuses_footprint
@@ -982,7 +920,7 @@ if(AZ_IOT_WITH_AZ_MQTT)
         # The harness imports its PSA key with the mbedTLS install az_mqtt found.
         find_package(MbedTLS CONFIG QUIET)
     endif()
-    foreach(_v 3 5)
+    foreach(_v 3)
         set(_t az_iot_conformance_az_mqtt_v${_v})
         add_executable(${_t} conformance/az_mqtt_main.c)
         target_link_libraries(${_t} PRIVATE az_iot_conformance az_iot_adapter_az_mqtt)

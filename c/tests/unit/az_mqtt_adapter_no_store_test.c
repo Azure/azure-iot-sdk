@@ -19,10 +19,7 @@
 #include "azure/iot/adapters/az_iot_adapter_az_mqtt.h"
 #include "azure/iot/az_iot_mqtt_iface.h"
 
-static az_iot_result connect_once(
-    az_iot_mqtt_version version,
-    bool clean_start,
-    uint32_t session_expiry_seconds)
+static az_iot_result connect_once(az_iot_mqtt_version version, bool clean_start)
 {
   az_iot_mqtt_limits const limits = {
     .send_buffer_size = 1024,
@@ -41,7 +38,6 @@ static az_iot_result connect_once(
   o.host = "h";
   o.client_id = "c";
   o.clean_start = clean_start;
-  o.session_expiry_seconds = session_expiry_seconds;
   az_iot_result rc = c->iface->connect(c, &o);
   (void)c->iface->disconnect(c);
   c->iface->destroy(c);
@@ -52,17 +48,8 @@ static az_iot_result connect_once(
 static void v3_only_a_clean_session_is_accepted(void** state)
 {
   (void)state;
-  assert_int_equal(connect_once(AZ_IOT_MQTT_VERSION_3_1_1, true, 0), AZ_IOT_OK);
-  assert_int_equal(connect_once(AZ_IOT_MQTT_VERSION_3_1_1, false, 0), AZ_IOT_ERR_NOT_SUPPORTED);
-}
-
-static void v5_only_a_session_with_expiry_and_no_clean_start_is_refused(void** state)
-{
-  (void)state;
-  assert_int_equal(connect_once(AZ_IOT_MQTT_VERSION_5, true, 0), AZ_IOT_OK);
-  assert_int_equal(connect_once(AZ_IOT_MQTT_VERSION_5, true, 60), AZ_IOT_OK);
-  assert_int_equal(connect_once(AZ_IOT_MQTT_VERSION_5, false, 0), AZ_IOT_OK);
-  assert_int_equal(connect_once(AZ_IOT_MQTT_VERSION_5, false, 60), AZ_IOT_ERR_NOT_SUPPORTED);
+  assert_int_equal(connect_once(AZ_IOT_MQTT_VERSION_3_1_1, true), AZ_IOT_OK);
+  assert_int_equal(connect_once(AZ_IOT_MQTT_VERSION_3_1_1, false), AZ_IOT_ERR_NOT_SUPPORTED);
 }
 
 /* The init-time check refuses exactly the sessions connect() refuses: those that outlive their
@@ -96,7 +83,6 @@ int main(void)
 {
   const struct CMUnitTest tests[] = {
     cmocka_unit_test(v3_only_a_clean_session_is_accepted),
-    cmocka_unit_test(v5_only_a_session_with_expiry_and_no_clean_start_is_refused),
     cmocka_unit_test(the_session_usage_check_matches_connect),
   };
   return cmocka_run_group_tests_name("az_mqtt_adapter_no_store", tests, NULL, NULL);

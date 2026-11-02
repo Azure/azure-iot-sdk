@@ -67,7 +67,7 @@ function(_az_iot_pc_deps tgt openssl_req)
             list(APPEND _requires_private libssl)
         elseif(_item STREQUAL "OpenSSL::Crypto")
             list(APPEND _requires_private "libcrypto${openssl_req}")
-        elseif(_item MATCHES "^az_mqtt(v3|v5|_core)$")
+        elseif(_item MATCHES "^az_mqtt(v3|_core)$")
             # Bundled az_mqtt (deps/az_mqtt) libraries: link them and their own dependencies.
             list(APPEND _libs_private "-l${_item}")
             get_target_property(_az_mqtt_deps ${_item} LINK_LIBRARIES)
