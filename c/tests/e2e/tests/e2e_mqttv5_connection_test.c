@@ -83,6 +83,7 @@ typedef struct
   az_iot_mqttv5_telemetry_client telemetry;
   bool telemetry_ok;
   az_iot_mqttv5_twin_client twin;
+  uint8_t twin_workspace[AZ_IOT_MQTTV5_TWIN_CLIENT_DEFAULT_WORKSPACE_SIZE];
   bool twin_ok;
   az_iot_mqttv5_direct_method_client methods;
   bool methods_ok;
@@ -309,7 +310,12 @@ static int observe_a_with_twin(e2e_device* dev, void* ctx)
 {
   fixture* fx = (fixture*)ctx;
   if (observe_a(dev, ctx) != 0
-      || az_iot_mqttv5_twin_client_init(&fx->twin, &dev->conn) != AZ_IOT_OK)
+      || az_iot_mqttv5_twin_client_init(
+             &fx->twin,
+             &dev->conn,
+             &(az_iot_mqttv5_twin_client_options){ .workspace = fx->twin_workspace,
+                                                   .workspace_size = sizeof(fx->twin_workspace) })
+          != AZ_IOT_OK)
   {
     return 1;
   }

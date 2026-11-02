@@ -187,9 +187,6 @@ extern "C"
 /** @brief Largest encoded GET body: three varint fields. */
 #define AZ_IOT_MQTTV5_TWIN_GET_BODY_MAX 33u
 
-/** @brief Tracked twin requests: the application's, plus the client's own snapshot GET. */
-#define AZ_IOT_MQTTV5_TWIN_TRACKED_MESSAGES (AZ_IOT_TWIN_MAX_PENDING + 1)
-
   /** @brief A twin request held for its tracker entry. Internal; treat as opaque. */
   typedef struct az_iot_mqttv5_twin_request
   {
@@ -205,6 +202,34 @@ extern "C"
     } cb;
     void* user_ctx;
   } az_iot_mqttv5_twin_request;
+
+/**
+ * @brief Workspace bytes for @p max_pending_requests, as a constant expression for static arrays.
+ * Pass the default written out in place of 0. Equal to
+ * az_iot_mqttv5_twin_client_get_workspace_size() for the same value. Holds one request more than
+ * @p max_pending_requests: the client's own snapshot GET.
+ */
+#define AZ_IOT_MQTTV5_TWIN_CLIENT_WORKSPACE_SIZE(max_pending_requests)             \
+  (15u                                                                             \
+   + AZ_IOT_CONNECTION_CLIENT_WORKSPACE_ALIGN(                                     \
+       ((size_t)(max_pending_requests) + 1u) * sizeof(az_iot_mqttv5_twin_request)) \
+   + AZ_IOT_CONNECTION_CLIENT_WORKSPACE_ALIGN(                                     \
+       ((size_t)(max_pending_requests) + 1u) * sizeof(az_iot_delivery_tracker_entry)))
+
+/** @brief Workspace bytes for the default limits, as a constant expression for static arrays. */
+#define AZ_IOT_MQTTV5_TWIN_CLIENT_DEFAULT_WORKSPACE_SIZE \
+  AZ_IOT_MQTTV5_TWIN_CLIENT_WORKSPACE_SIZE(AZ_IOT_TWIN_CLIENT_DEFAULT_MAX_PENDING_REQUESTS)
+
+  /** @brief Options for az_iot_mqttv5_twin_client_init(). */
+  typedef struct az_iot_mqttv5_twin_client_options
+  {
+    /** Request counts; 0 fields select the defaults. */
+    az_iot_twin_client_limits limits;
+    /** Required. The client's requests, owned by the client until deinit(), which wipes it. At
+     * least az_iot_mqttv5_twin_client_get_workspace_size(&limits) bytes, any alignment. */
+    uint8_t* workspace;
+    size_t workspace_size; /**< Bytes in workspace. */
+  } az_iot_mqttv5_twin_client_options;
 
   /** @brief MQTT v5 twin client. Caller-allocated; treat as opaque. */
   typedef struct az_iot_mqttv5_twin_client
@@ -247,8 +272,13 @@ extern "C"
         uint64_t received_desired_version;
         uint64_t received_reported_version;
       } twin_push_wait;
-      /* The request each tracker entry holds (index = entry). Kind 0: none. */
-      az_iot_mqttv5_twin_request requests[AZ_IOT_MQTTV5_TWIN_TRACKED_MESSAGES];
+      /* The request each tracker entry holds (index = entry), in the workspace. Kind 0: none. */
+      az_iot_mqttv5_twin_request* requests;
+      size_t max_pending_requests;
+      /* Requests and tracker entries: max_pending_requests plus the snapshot GET. */
+      size_t tracked_message_count;
+      uint8_t* workspace;
+      size_t workspace_size;
       size_t submitting_entry; /* The entry being submitted, while submit_in_progress. */
       bool submit_in_progress;
       az_iot_result
@@ -258,9 +288,17 @@ extern "C"
       uint8_t get_body[AZ_IOT_MQTTV5_TWIN_GET_BODY_MAX];
       az_iot_mqtt_user_property outbound_type;
       az_iot_delivery_tracker tracker;
-      az_iot_delivery_tracker_entry tracker_entries[AZ_IOT_MQTTV5_TWIN_TRACKED_MESSAGES];
     } _internal;
   } az_iot_mqttv5_twin_client;
+
+  /**
+   * @brief Workspace bytes az_iot_mqttv5_twin_client_init() needs for @p limits (0 fields:
+   * defaults).
+   *
+   * @return The size, or 0 when @p limits is NULL or a value is above its maximum.
+   */
+  AZ_NODISCARD size_t
+  az_iot_mqttv5_twin_client_get_workspace_size(const az_iot_twin_client_limits* limits);
 
   /**
    * @brief Initialize the client on @p conn.
@@ -268,13 +306,20 @@ extern "C"
    * Receives on `ih/{device_id}/dev/twin`, which the presence subscription
    * already covers. @p conn need not be open.
    *
+   * @p options is read during the call only; its workspace is used until deinit().
+   *
    * @return AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH if @p conn is known to be
-   *         MQTTv3, or an mqttv3 twin client is attached.
+   *         MQTTv3, or an mqttv3 twin client is attached; AZ_IOT_ERR_INVALID_ARG when @p options
+   *         is NULL, a limit is above its maximum or the workspace is NULL;
+   *         AZ_IOT_ERR_NOT_ENOUGH_SPACE when the workspace is too small. Both workspace errors
+   *         log the size needed.
    */
-  AZ_NODISCARD az_iot_result
-  az_iot_mqttv5_twin_client_init(az_iot_mqttv5_twin_client* client, az_iot_connection_client* conn);
+  AZ_NODISCARD az_iot_result az_iot_mqttv5_twin_client_init(
+      az_iot_mqttv5_twin_client* client,
+      az_iot_connection_client* conn,
+      const az_iot_mqttv5_twin_client_options* options);
 
-  /** @brief Detach from the connection and zero @p client. */
+  /** @brief Detach from the connection, wipe the workspace and zero @p client. */
   void az_iot_mqttv5_twin_client_deinit(az_iot_mqttv5_twin_client* client);
 
   /** @brief Returns GET options for both sections with no filters. */
@@ -286,7 +331,7 @@ extern "C"
    * Sent now, or once connected; sent again on the next session if its session ends
    * unanswered.
    *
-   * @return AZ_IOT_ERR_NOT_SUPPORTED when AZ_IOT_TWIN_MAX_PENDING requests are in flight;
+   * @return AZ_IOT_ERR_NOT_SUPPORTED when limits.max_pending_requests requests are in flight;
    *         AZ_IOT_ERR_NOT_CONNECTED before the device id is known.
    *         AZ_IOT_ERR_BUSY from a twin callback run by another request call.
    */

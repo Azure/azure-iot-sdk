@@ -294,12 +294,39 @@ extern "C"
       size_t payload_len,
       void* user_ctx);
 
-/* Max concurrent in-flight twin requests (GET + reported patch) one client can
- * hold. Each awaits a service response, so the slots live in a bounded pool
- * inside the caller-allocated client struct rather than on the heap. */
-#ifndef AZ_IOT_TWIN_MAX_PENDING
-#define AZ_IOT_TWIN_MAX_PENDING 8
+#ifdef AZ_IOT_TWIN_MAX_PENDING
+#error \
+    "AZ_IOT_TWIN_MAX_PENDING is removed: set az_iot_twin_client_limits::max_pending_requests in the twin client's options"
 #endif
+
+/** @brief Default az_iot_twin_client_limits::max_pending_requests. */
+#ifndef AZ_IOT_TWIN_CLIENT_DEFAULT_MAX_PENDING_REQUESTS
+#define AZ_IOT_TWIN_CLIENT_DEFAULT_MAX_PENDING_REQUESTS 8
+#endif
+
+/** @brief Largest az_iot_twin_client_limits::max_pending_requests. */
+#define AZ_IOT_TWIN_CLIENT_MAX_PENDING_REQUESTS_LIMIT 1024
+
+#if AZ_IOT_TWIN_CLIENT_DEFAULT_MAX_PENDING_REQUESTS < 1 \
+    || AZ_IOT_TWIN_CLIENT_DEFAULT_MAX_PENDING_REQUESTS  \
+        > AZ_IOT_TWIN_CLIENT_MAX_PENDING_REQUESTS_LIMIT
+#error "AZ_IOT_TWIN_CLIENT_DEFAULT_MAX_PENDING_REQUESTS must be 1-1024"
+#endif
+
+  /**
+   * @brief How many requests a twin client (mqttv3 or mqttv5) holds. 0 selects the default.
+   *
+   * Run-time values: the client struct does not depend on them. The requests live in the
+   * workspace of the client's init options.
+   */
+  typedef struct az_iot_twin_client_limits
+  {
+    /** Twin requests (GET and reported patch) awaiting their answer. A request past it is
+     * refused with AZ_IOT_ERR_NOT_SUPPORTED. Default
+     * AZ_IOT_TWIN_CLIENT_DEFAULT_MAX_PENDING_REQUESTS (8), at most
+     * AZ_IOT_TWIN_CLIENT_MAX_PENDING_REQUESTS_LIMIT (1024). */
+    size_t max_pending_requests;
+  } az_iot_twin_client_limits;
 
   /**
    * @brief Delivers the result of a twin GET.

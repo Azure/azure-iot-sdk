@@ -25,6 +25,7 @@
 #include "internal/delivery_tracker.h"
 #include "internal/log_internal.h"
 #include "internal/span_writer.h"
+#include "internal/workspace.h"
 
 #define TWIN_RESPONSE_PREFIX "$iothub/twin/res/"
 #define TWIN_DESIRED_PREFIX "$iothub/twin/PATCH/properties/desired/"
@@ -61,11 +62,11 @@
 /* Tracker entry of the request carrying @p rid, or -1. */
 static int find_request_by_rid(const az_iot_mqttv3_twin_client* t, uint32_t rid)
 {
-  for (int i = 0; i < AZ_IOT_TWIN_MAX_PENDING; ++i)
+  for (size_t i = 0; i < TI(t).max_pending_requests; ++i)
   {
     if (TI(t).requests[i].kind != TWIN_PENDING_NONE && TI(t).requests[i].rid == rid)
     {
-      return i;
+      return (int)i;
     }
   }
   return -1;
@@ -368,7 +369,7 @@ static az_iot_mqttv3_twin_request* request_of_entry(
     az_iot_mqttv3_twin_client* t,
     size_t entry_index)
 {
-  if (entry_index >= AZ_IOT_TWIN_MAX_PENDING
+  if (entry_index >= TI(t).max_pending_requests
       || TI(t).requests[entry_index].kind == TWIN_PENDING_NONE)
   {
     return NULL;
@@ -479,15 +480,15 @@ static az_iot_result submit_twin_request(
     return AZ_IOT_ERR_BUSY;
   }
   size_t entry = 0;
-  while (entry < AZ_IOT_TWIN_MAX_PENDING && TI(t).requests[entry].kind != TWIN_PENDING_NONE)
+  while (entry < TI(t).max_pending_requests && TI(t).requests[entry].kind != TWIN_PENDING_NONE)
   {
     ++entry;
   }
-  if (entry == AZ_IOT_TWIN_MAX_PENDING)
+  if (entry == TI(t).max_pending_requests)
   {
     AZ_IOT_LOG_WARN(
         AZ_IOT_LOG_COMPONENT_MQTTV3_TWIN,
-        "refusing a request -- AZ_IOT_TWIN_MAX_PENDING requests are in flight");
+        "refusing a request -- limits.max_pending_requests requests are in flight");
     return AZ_IOT_ERR_NOT_SUPPORTED;
   }
   az_iot_mqttv3_twin_request* held = &TI(t).requests[entry];
@@ -539,16 +540,60 @@ static az_iot_result submit_twin_request(
 /* public API                                                                 */
 /* ------------------------------------------------------------------------- */
 
-AZ_NODISCARD az_iot_result
-az_iot_mqttv3_twin_client_init(az_iot_mqttv3_twin_client* client, az_iot_connection_client* conn)
+/**
+ * @brief Writes @p limits' max_pending_requests, with 0 replaced by the default, to @p out.
+ * @return false when it is above its maximum.
+ */
+static bool limits_resolve_max_pending_requests(
+    const az_iot_twin_client_limits* limits,
+    size_t* out)
 {
-  if (client == NULL || conn == NULL)
+  *out = limits->max_pending_requests == 0u
+      ? (size_t)AZ_IOT_TWIN_CLIENT_DEFAULT_MAX_PENDING_REQUESTS
+      : limits->max_pending_requests;
+  return *out <= AZ_IOT_TWIN_CLIENT_MAX_PENDING_REQUESTS_LIMIT;
+}
+
+AZ_NODISCARD size_t
+az_iot_mqttv3_twin_client_get_workspace_size(const az_iot_twin_client_limits* limits)
+{
+  size_t max_pending_requests = 0;
+  return limits != NULL && limits_resolve_max_pending_requests(limits, &max_pending_requests)
+      ? AZ_IOT_MQTTV3_TWIN_CLIENT_WORKSPACE_SIZE(max_pending_requests)
+      : 0u;
+}
+
+AZ_NODISCARD az_iot_result az_iot_mqttv3_twin_client_init(
+    az_iot_mqttv3_twin_client* client,
+    az_iot_connection_client* conn,
+    const az_iot_mqttv3_twin_client_options* options)
+{
+  if (client == NULL || conn == NULL || options == NULL)
   {
+    AZ_IOT_LOG_ERROR(AZ_IOT_LOG_COMPONENT_MQTTV3_TWIN, "init: invalid arguments");
     return AZ_IOT_ERR_INVALID_ARG;
   }
-
+  size_t max_pending_requests = 0;
+  if (!limits_resolve_max_pending_requests(&options->limits, &max_pending_requests))
+  {
+    AZ_IOT_LOG_ERROR(
+        AZ_IOT_LOG_COMPONENT_MQTTV3_TWIN, "init: limits.max_pending_requests is above its maximum");
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  const size_t workspace_size = AZ_IOT_MQTTV3_TWIN_CLIENT_WORKSPACE_SIZE(max_pending_requests);
   az_iot_result result
-      = az_iot_connection_client__require_profile(conn, AZ_IOT_CONNECTION_PROFILE_MQTT_V3);
+      = az_iot_workspace__check(options->workspace, options->workspace_size, workspace_size);
+  if (result != AZ_IOT_OK)
+  {
+    AZ_IOT_LOG_ERRORF(
+        AZ_IOT_LOG_COMPONENT_MQTTV3_TWIN,
+        "init: the workspace is NULL or has %lu bytes; %lu needed",
+        (unsigned long)options->workspace_size,
+        (unsigned long)workspace_size);
+    return result;
+  }
+
+  result = az_iot_connection_client__require_profile(conn, AZ_IOT_CONNECTION_PROFILE_MQTT_V3);
   if (result != AZ_IOT_OK)
   {
     memset(client, 0, sizeof(*client));
@@ -557,6 +602,15 @@ az_iot_mqttv3_twin_client_init(az_iot_mqttv3_twin_client* client, az_iot_connect
 
   memset(client, 0, sizeof(*client));
   TI(client).conn = conn;
+  memset(options->workspace, 0, workspace_size);
+  uint8_t* cursor = az_iot_workspace__start(options->workspace);
+  TI(client).requests
+      = az_iot_workspace__take(&cursor, max_pending_requests, sizeof(az_iot_mqttv3_twin_request));
+  az_iot_delivery_tracker_entry* tracker_entries = az_iot_workspace__take(
+      &cursor, max_pending_requests, sizeof(az_iot_delivery_tracker_entry));
+  TI(client).max_pending_requests = max_pending_requests;
+  TI(client).workspace = options->workspace;
+  TI(client).workspace_size = options->workspace_size;
   TI(client).next_rid = 1;
   TI(client).request_timeout_ms = AZ_IOT_MQTTV3_TWIN_REQUEST_TIMEOUT_MS_DEFAULT;
 
@@ -592,13 +646,7 @@ az_iot_mqttv3_twin_client_init(az_iot_mqttv3_twin_client* client, az_iot_connect
   if (result == AZ_IOT_OK)
   {
     result = az_iot_delivery_tracker__init(
-        &TI(client).tracker,
-        TI(client).tracker_entries,
-        AZ_IOT_TWIN_MAX_PENDING,
-        0,
-        NULL,
-        0,
-        client);
+        &TI(client).tracker, tracker_entries, max_pending_requests, 0, NULL, 0, client);
   }
   if (result == AZ_IOT_OK)
   {
@@ -628,6 +676,7 @@ void az_iot_mqttv3_twin_client_deinit(az_iot_mqttv3_twin_client* client)
   }
   withdraw_registrations(TI(client).conn, client);
   az_iot_connection_client__release_profile(TI(client).conn);
+  memset(TI(client).workspace, 0, TI(client).workspace_size);
   memset(client, 0, sizeof(*client));
 }
 

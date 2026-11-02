@@ -117,10 +117,12 @@ typedef struct
   bool clients_built;
   az_iot_mqttv3_telemetry_client mqttv3_telemetry;
   az_iot_mqttv3_twin_client mqttv3_twin;
+  uint8_t mqttv3_twin_workspace[AZ_IOT_MQTTV3_TWIN_CLIENT_DEFAULT_WORKSPACE_SIZE];
   az_iot_mqttv3_direct_method_client mqttv3_methods;
   uint8_t mqttv3_methods_workspace[AZ_IOT_MQTTV3_DIRECT_METHOD_CLIENT_DEFAULT_WORKSPACE_SIZE];
   az_iot_mqttv5_telemetry_client mqttv5_telemetry;
   az_iot_mqttv5_twin_client mqttv5_twin;
+  uint8_t mqttv5_twin_workspace[AZ_IOT_MQTTV5_TWIN_CLIENT_DEFAULT_WORKSPACE_SIZE];
   az_iot_mqttv5_direct_method_client mqttv5_methods;
   /* Set by callbacks, acted on by the loop: clients are not rebuilt inside do_work(). */
   az_iot_connection_state hub_state;
@@ -535,7 +537,13 @@ static az_iot_result build_clients(hub_device* d, az_iot_connection_profile prof
   if (profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5)
   {
     r = az_iot_mqttv5_telemetry_client_init(&d->mqttv5_telemetry, &d->connection);
-    r = r == AZ_IOT_OK ? az_iot_mqttv5_twin_client_init(&d->mqttv5_twin, &d->connection) : r;
+    r = r == AZ_IOT_OK ? az_iot_mqttv5_twin_client_init(
+                             &d->mqttv5_twin,
+                             &d->connection,
+                             &(az_iot_mqttv5_twin_client_options){
+                                 .workspace = d->mqttv5_twin_workspace,
+                                 .workspace_size = sizeof(d->mqttv5_twin_workspace) })
+                       : r;
     r = r == AZ_IOT_OK ? az_iot_mqttv5_twin_client_set_encode_buffer(
                              &d->mqttv5_twin, AZ_SPAN_FROM_BUFFER(s_mqttv5_twin_encode_buffer))
                        : r;
@@ -552,7 +560,13 @@ static az_iot_result build_clients(hub_device* d, az_iot_connection_profile prof
   else if (profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V3)
   {
     r = az_iot_mqttv3_telemetry_client_init(&d->mqttv3_telemetry, &d->connection);
-    r = r == AZ_IOT_OK ? az_iot_mqttv3_twin_client_init(&d->mqttv3_twin, &d->connection) : r;
+    r = r == AZ_IOT_OK ? az_iot_mqttv3_twin_client_init(
+                             &d->mqttv3_twin,
+                             &d->connection,
+                             &(az_iot_mqttv3_twin_client_options){
+                                 .workspace = d->mqttv3_twin_workspace,
+                                 .workspace_size = sizeof(d->mqttv3_twin_workspace) })
+                       : r;
     r = r == AZ_IOT_OK
         ? az_iot_mqttv3_twin_client_set_desired_handler(&d->mqttv3_twin, on_desired_mqttv3, d)
         : r;

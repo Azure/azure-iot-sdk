@@ -26,6 +26,7 @@
 #include <cmocka.h>
 
 #include "azure/iot/az_iot_connection_client.h"
+#include "azure/iot/az_iot_log.h"
 #include "azure/iot/az_iot_mqtt_iface.h"
 #include "azure/iot/az_iot_result.h"
 #include "azure/iot/mqttv5/az_iot_twin_client.h"
@@ -180,11 +181,22 @@ typedef struct fixture
   az_iot_connection_client conn;
   az_iot_mqttv5_twin_client twin;
   az_iot_mock_mqtt_client* mock;
+  uint8_t workspace[AZ_IOT_MQTTV5_TWIN_CLIENT_DEFAULT_WORKSPACE_SIZE];
+  az_iot_mqttv5_twin_client_options options;
   /* The birth nonce of the current connection, which backend-initiated
    * messages must carry to be accepted. */
   uint8_t nonce[16];
   uint8_t encode_buffer[256];
 } fixture;
+
+/** @brief Options with the default limits, in @p workspace of the default size. */
+static az_iot_mqttv5_twin_client_options default_options(uint8_t* workspace)
+{
+  az_iot_mqttv5_twin_client_options options = { 0 };
+  options.workspace = workspace;
+  options.workspace_size = AZ_IOT_MQTTV5_TWIN_CLIENT_DEFAULT_WORKSPACE_SIZE;
+  return options;
+}
 
 static void init_connection_ex(az_iot_connection_client* conn, bool push_desired)
 {
@@ -207,7 +219,8 @@ static int setup_ex(void** state, bool push_desired)
 
   init_connection_ex(&fx->conn, push_desired);
 
-  assert_int_equal(az_iot_mqttv5_twin_client_init(&fx->twin, &fx->conn), AZ_IOT_OK);
+  fx->options = default_options(fx->workspace);
+  assert_int_equal(az_iot_mqttv5_twin_client_init(&fx->twin, &fx->conn, &fx->options), AZ_IOT_OK);
   assert_int_equal(
       az_iot_mqttv5_twin_client_set_encode_buffer(
           &fx->twin, AZ_SPAN_FROM_BUFFER(fx->encode_buffer)),
@@ -558,11 +571,12 @@ static void issue_get(fixture* fx, get_record* rec, uint8_t out_corr[16])
 /** @brief End the time limit of every twin request the tracker holds, without the clock. */
 static void expire_held_twin_requests(fixture* fx)
 {
-  for (size_t i = 0; i < AZ_IOT_MQTTV5_TWIN_TRACKED_MESSAGES; ++i)
+  for (size_t i = 0; i < fx->twin._internal.tracked_message_count; ++i)
   {
     if (fx->twin._internal.requests[i].kind != 0)
     {
-      az_iot_deadline__expire_now(&fx->twin._internal.tracker_entries[i]._internal.deadline);
+      az_iot_deadline__expire_now(
+          &fx->twin._internal.tracker._internal.entries[i]._internal.deadline);
     }
   }
 }
@@ -762,7 +776,7 @@ static void correlation_data_of_the_wrong_length_is_dropped(void** state)
  * -- no type, an unknown type, or the other request kind -- must release the
  * slot rather than strand it. The service sends one answer per request, so
  * waiting for a better one would hold the slot until the session ends, and
- * AZ_IOT_TWIN_MAX_PENDING of these would wedge the client. */
+ * AZ_IOT_TWIN_CLIENT_DEFAULT_MAX_PENDING_REQUESTS of these would wedge the client. */
 static void a_response_with_an_unusable_type_releases_the_slot(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -912,8 +926,10 @@ static void get_before_the_device_id_is_assigned_is_refused(void** state)
   az_iot_connection_client conn;
   assert_int_equal(az_iot_test_connection_client_init(&conn, &opts), AZ_IOT_OK);
 
+  static uint8_t workspace[AZ_IOT_MQTTV5_TWIN_CLIENT_DEFAULT_WORKSPACE_SIZE];
+  const az_iot_mqttv5_twin_client_options options = default_options(workspace);
   az_iot_mqttv5_twin_client twin;
-  assert_int_equal(az_iot_mqttv5_twin_client_init(&twin, &conn), AZ_IOT_OK);
+  assert_int_equal(az_iot_mqttv5_twin_client_init(&twin, &conn, &options), AZ_IOT_OK);
 
   get_record rec = { 0 };
   assert_int_equal(az_iot_mqttv5_twin_client_get(&twin, on_get, &rec), AZ_IOT_ERR_NOT_CONNECTED);
@@ -927,9 +943,9 @@ static void get_with_a_full_pending_table_is_rejected(void** state)
   fixture* fx = (fixture*)*state;
   open_to_connected(fx);
 
-  get_record recs[AZ_IOT_TWIN_MAX_PENDING];
+  get_record recs[AZ_IOT_TWIN_CLIENT_DEFAULT_MAX_PENDING_REQUESTS];
   memset(recs, 0, sizeof(recs));
-  for (int i = 0; i < AZ_IOT_TWIN_MAX_PENDING; ++i)
+  for (int i = 0; i < AZ_IOT_TWIN_CLIENT_DEFAULT_MAX_PENDING_REQUESTS; ++i)
   {
     assert_int_equal(az_iot_mqttv5_twin_client_get(&fx->twin, on_get, &recs[i]), AZ_IOT_OK);
   }
@@ -1094,7 +1110,7 @@ static void a_patch_larger_than_the_encode_buffer_is_refused(void** state)
   uint8_t big[AZ_IOT_MQTTV5_TWIN_ENCODE_OVERHEAD * 2];
   memset(big, 'x', sizeof(big));
   patch_record rec = { 0 };
-  for (int i = 0; i < AZ_IOT_TWIN_MAX_PENDING + 2; ++i)
+  for (int i = 0; i < AZ_IOT_TWIN_CLIENT_DEFAULT_MAX_PENDING_REQUESTS + 2; ++i)
   {
     assert_int_equal(
         az_iot_mqttv5_twin_client_patch_reported(&fx->twin, big, sizeof(big), on_patch, &rec),
@@ -1704,7 +1720,7 @@ static void init_on_a_live_connection_adopts_the_birth_ack(void** state)
   az_iot_mqttv5_twin_client_deinit(&fx->twin);
   open_to_connected_with_versions(fx, 5, 9);
 
-  assert_int_equal(az_iot_mqttv5_twin_client_init(&fx->twin, &fx->conn), AZ_IOT_OK);
+  assert_int_equal(az_iot_mqttv5_twin_client_init(&fx->twin, &fx->conn, &fx->options), AZ_IOT_OK);
   assert_int_equal(
       az_iot_mqttv5_twin_client_set_encode_buffer(
           &fx->twin, AZ_SPAN_FROM_BUFFER(fx->encode_buffer)),
@@ -1976,7 +1992,7 @@ static void a_refused_get_is_sent_again_and_a_refused_patch_is_busy(void** state
 
   static const uint8_t patch[] = "{}";
   patch_record refused = { 0 };
-  for (int i = 0; i < AZ_IOT_TWIN_MAX_PENDING + 1; ++i)
+  for (int i = 0; i < AZ_IOT_TWIN_CLIENT_DEFAULT_MAX_PENDING_REQUESTS + 1; ++i)
   {
     az_iot_mock_mqtt_client_set_next_result(fx->mock, AZ_IOT_MOCK_CALL_PUBLISH, AZ_IOT_ERR_BUSY);
     assert_int_equal(
@@ -2091,9 +2107,9 @@ static void the_snapshot_does_not_take_an_app_slot(void** state)
   set_desired(fx, &des);
   inject_desired(fx, 3, "{}"); /* snapshot in flight */
 
-  get_record recs[AZ_IOT_TWIN_MAX_PENDING];
+  get_record recs[AZ_IOT_TWIN_CLIENT_DEFAULT_MAX_PENDING_REQUESTS];
   memset(recs, 0, sizeof(recs));
-  for (int i = 0; i < AZ_IOT_TWIN_MAX_PENDING; ++i)
+  for (int i = 0; i < AZ_IOT_TWIN_CLIENT_DEFAULT_MAX_PENDING_REQUESTS; ++i)
   {
     assert_int_equal(az_iot_mqttv5_twin_client_get(&fx->twin, on_get, &recs[i]), AZ_IOT_OK);
   }
@@ -2286,7 +2302,7 @@ static void an_unanswered_get_times_out_without_a_retry(void** state)
   issue_get(fx, &rec, corr);
   uint64_t const returned_before_ms = az_iot_time_mono_ms();
   assert_in_range(
-      fx->twin._internal.tracker_entries[0]._internal.deadline._internal.at_ms,
+      fx->twin._internal.tracker._internal.entries[0]._internal.deadline._internal.at_ms,
       called_after_ms + request_timeout_ms,
       returned_before_ms + request_timeout_ms);
   expire_held_twin_requests(fx);
@@ -2308,10 +2324,10 @@ static void an_unanswered_patch_times_out_and_frees_its_slot(void** state)
   fixture* fx = (fixture*)*state;
   open_to_connected(fx);
 
-  patch_record recs[AZ_IOT_TWIN_MAX_PENDING];
+  patch_record recs[AZ_IOT_TWIN_CLIENT_DEFAULT_MAX_PENDING_REQUESTS];
   memset(recs, 0, sizeof(recs));
   static const uint8_t patch[] = "{}";
-  for (int i = 0; i < AZ_IOT_TWIN_MAX_PENDING; ++i)
+  for (int i = 0; i < AZ_IOT_TWIN_CLIENT_DEFAULT_MAX_PENDING_REQUESTS; ++i)
   {
     assert_int_equal(
         az_iot_mqttv5_twin_client_patch_reported(
@@ -2320,7 +2336,7 @@ static void an_unanswered_patch_times_out_and_frees_its_slot(void** state)
   }
   expire_held_twin_requests(fx);
   assert_int_equal(az_iot_mqttv5_twin_client_do_work(&fx->twin), AZ_IOT_OK);
-  for (int i = 0; i < AZ_IOT_TWIN_MAX_PENDING; ++i)
+  for (int i = 0; i < AZ_IOT_TWIN_CLIENT_DEFAULT_MAX_PENDING_REQUESTS; ++i)
   {
     assert_int_equal(recs[i].status, AZ_IOT_ERR_TIMEOUT);
     assert_false(recs[i].had_result);
@@ -2607,17 +2623,17 @@ static void every_pending_get_is_sent_again_not_just_the_first(void** state)
   fixture* fx = (fixture*)*state;
   open_to_connected(fx);
 
-  get_record recs[AZ_IOT_TWIN_MAX_PENDING];
+  get_record recs[AZ_IOT_TWIN_CLIENT_DEFAULT_MAX_PENDING_REQUESTS];
   memset(recs, 0, sizeof(recs));
-  for (int i = 0; i < AZ_IOT_TWIN_MAX_PENDING; ++i)
+  for (int i = 0; i < AZ_IOT_TWIN_CLIENT_DEFAULT_MAX_PENDING_REQUESTS; ++i)
   {
     assert_int_equal(az_iot_mqttv5_twin_client_get(&fx->twin, on_get, &recs[i]), AZ_IOT_OK);
   }
 
   reconnect_with_versions(fx, 0, 0);
   assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
-  assert_int_equal(count_gets(fx), AZ_IOT_TWIN_MAX_PENDING);
-  for (int i = 0; i < AZ_IOT_TWIN_MAX_PENDING; ++i)
+  assert_int_equal(count_gets(fx), AZ_IOT_TWIN_CLIENT_DEFAULT_MAX_PENDING_REQUESTS);
+  for (int i = 0; i < AZ_IOT_TWIN_CLIENT_DEFAULT_MAX_PENDING_REQUESTS; ++i)
   {
     assert_false(recs[i].fired);
   }
@@ -2666,7 +2682,7 @@ static void a_patch_while_disconnected_is_refused(void** state)
 
   static const uint8_t patch[] = "{}";
   patch_record rec = { 0 };
-  for (int i = 0; i < AZ_IOT_TWIN_MAX_PENDING + 1; ++i)
+  for (int i = 0; i < AZ_IOT_TWIN_CLIENT_DEFAULT_MAX_PENDING_REQUESTS + 1; ++i)
   {
     assert_int_equal(
         az_iot_mqttv5_twin_client_patch_reported(
@@ -2969,14 +2985,17 @@ static void a_pending_patch_is_failed_with_no_verdict(void** state)
 static void init_rejects_a_null_client(void** state)
 {
   fixture* fx = (fixture*)*state;
-  assert_int_equal(az_iot_mqttv5_twin_client_init(NULL, &fx->conn), AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(
+      az_iot_mqttv5_twin_client_init(NULL, &fx->conn, &fx->options), AZ_IOT_ERR_INVALID_ARG);
 }
 
 static void init_rejects_a_null_connection(void** state)
 {
   (void)state;
+  static uint8_t workspace[AZ_IOT_MQTTV5_TWIN_CLIENT_DEFAULT_WORKSPACE_SIZE];
+  const az_iot_mqttv5_twin_client_options options = default_options(workspace);
   az_iot_mqttv5_twin_client local;
-  assert_int_equal(az_iot_mqttv5_twin_client_init(&local, NULL), AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(az_iot_mqttv5_twin_client_init(&local, NULL, &options), AZ_IOT_ERR_INVALID_ARG);
 }
 
 static void init_against_an_mqtt_v3_connection_is_rejected(void** state)
@@ -2992,9 +3011,12 @@ static void init_against_an_mqtt_v3_connection_is_rejected(void** state)
   az_iot_connection_client conn;
   assert_int_equal(az_iot_test_connection_client_init(&conn, &opts), AZ_IOT_OK);
 
+  static uint8_t workspace[AZ_IOT_MQTTV5_TWIN_CLIENT_DEFAULT_WORKSPACE_SIZE];
+  const az_iot_mqttv5_twin_client_options options = default_options(workspace);
   az_iot_mqttv5_twin_client twin;
   assert_int_equal(
-      az_iot_mqttv5_twin_client_init(&twin, &conn), AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH);
+      az_iot_mqttv5_twin_client_init(&twin, &conn, &options),
+      AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH);
 
   az_iot_test_connection_client_deinit(&conn);
 }
@@ -3019,7 +3041,7 @@ static void deinit_zeroes_the_client(void** state)
     assert_int_equal(raw[i], 0);
   }
 
-  assert_int_equal(az_iot_mqttv5_twin_client_init(&fx->twin, &fx->conn), AZ_IOT_OK);
+  assert_int_equal(az_iot_mqttv5_twin_client_init(&fx->twin, &fx->conn, &fx->options), AZ_IOT_OK);
 }
 
 static void deinit_is_idempotent(void** state)
@@ -3031,7 +3053,7 @@ static void deinit_is_idempotent(void** state)
    * now-NULL connection pointer into unregister. */
   az_iot_mqttv5_twin_client_deinit(&fx->twin);
 
-  assert_int_equal(az_iot_mqttv5_twin_client_init(&fx->twin, &fx->conn), AZ_IOT_OK);
+  assert_int_equal(az_iot_mqttv5_twin_client_init(&fx->twin, &fx->conn, &fx->options), AZ_IOT_OK);
 }
 
 static void deinit_unregisters_the_inbound_handler(void** state)
@@ -3056,7 +3078,7 @@ static void deinit_unregisters_the_inbound_handler(void** state)
   assert_false(des.fired);
   assert_false(get.fired);
 
-  assert_int_equal(az_iot_mqttv5_twin_client_init(&fx->twin, &fx->conn), AZ_IOT_OK);
+  assert_int_equal(az_iot_mqttv5_twin_client_init(&fx->twin, &fx->conn, &fx->options), AZ_IOT_OK);
 }
 
 static void deinit_frees_the_connect_time_bind_slot(void** state)
@@ -3073,9 +3095,11 @@ static void deinit_frees_the_connect_time_bind_slot(void** state)
   init_connection(&conn);
 
   az_iot_mqttv5_twin_client twins[AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_FEATURE_CLIENTS + 2];
+  static uint8_t workspace[AZ_IOT_MQTTV5_TWIN_CLIENT_DEFAULT_WORKSPACE_SIZE];
+  const az_iot_mqttv5_twin_client_options options = default_options(workspace);
   for (size_t i = 0; i < sizeof(twins) / sizeof(twins[0]); ++i)
   {
-    assert_int_equal(az_iot_mqttv5_twin_client_init(&twins[i], &conn), AZ_IOT_OK);
+    assert_int_equal(az_iot_mqttv5_twin_client_init(&twins[i], &conn, &options), AZ_IOT_OK);
     az_iot_mqttv5_twin_client_deinit(&twins[i]);
   }
 
@@ -3099,7 +3123,7 @@ static void a_deinitialized_twin_client_is_not_called_on_a_later_session_end(voi
 
   assert_false(rec.fired);
 
-  assert_int_equal(az_iot_mqttv5_twin_client_init(&fx->twin, &fx->conn), AZ_IOT_OK);
+  assert_int_equal(az_iot_mqttv5_twin_client_init(&fx->twin, &fx->conn, &fx->options), AZ_IOT_OK);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -3154,7 +3178,8 @@ static int setup_twin_push(void** state, bool push_desired, bool push_reported, 
           &fx->conn, az_iot_test_on_state, &s_twin_push_states),
       AZ_IOT_OK);
 
-  assert_int_equal(az_iot_mqttv5_twin_client_init(&fx->twin, &fx->conn), AZ_IOT_OK);
+  fx->options = default_options(fx->workspace);
+  assert_int_equal(az_iot_mqttv5_twin_client_init(&fx->twin, &fx->conn, &fx->options), AZ_IOT_OK);
   *state = fx;
   return 0;
 }
@@ -3413,7 +3438,7 @@ static void a_twin_client_attached_after_the_birth_waits(void** state)
   open_to_birth(fx);
   push_twin(fx);
   az_iot_mqttv5_twin_client_deinit(&fx->twin);
-  assert_int_equal(az_iot_mqttv5_twin_client_init(&fx->twin, &fx->conn), AZ_IOT_OK);
+  assert_int_equal(az_iot_mqttv5_twin_client_init(&fx->twin, &fx->conn, &fx->options), AZ_IOT_OK);
   ack_birth(fx, 1, 1);
   az_iot_test_ack_subscriptions(&fx->conn, fx->mock);
   assert_twin_push_wait_for_attempt(fx, 1);
@@ -3425,7 +3450,7 @@ static void a_twin_client_attached_to_a_connected_session_waits(void** state)
   fixture* fx = (fixture*)*state;
   open_to_push_expected(fx);
   az_iot_mqttv5_twin_client_deinit(&fx->twin);
-  assert_int_equal(az_iot_mqttv5_twin_client_init(&fx->twin, &fx->conn), AZ_IOT_OK);
+  assert_int_equal(az_iot_mqttv5_twin_client_init(&fx->twin, &fx->conn, &fx->options), AZ_IOT_OK);
   assert_twin_push_wait_for_attempt(fx, 1);
 }
 
@@ -3534,7 +3559,7 @@ static void a_push_after_a_late_attach_cancels_the_wait(void** state)
   fixture* fx = (fixture*)*state;
   open_to_birth(fx);
   az_iot_mqttv5_twin_client_deinit(&fx->twin);
-  assert_int_equal(az_iot_mqttv5_twin_client_init(&fx->twin, &fx->conn), AZ_IOT_OK);
+  assert_int_equal(az_iot_mqttv5_twin_client_init(&fx->twin, &fx->conn, &fx->options), AZ_IOT_OK);
   push_twin(fx);
   ack_birth(fx, 1, 1);
   az_iot_test_ack_subscriptions(&fx->conn, fx->mock);
@@ -3698,6 +3723,157 @@ static void ending_the_hub_session_needs_a_connected_session(void** state)
   assert_false(az_iot_mqttv5_twin_client__twin_push_remaining(NULL, NULL));
 }
 
+/* ------------------------------------------------------------------------- */
+/* run-time limits and workspace                                             */
+/* ------------------------------------------------------------------------- */
+
+/* The size query and the constant-expression macro agree, 0 selects the default, and a NULL or
+ * out-of-range limit has no size. */
+static void the_workspace_size_matches_the_macro(void** state)
+{
+  (void)state;
+  az_iot_twin_client_limits limits = { 0 };
+  assert_int_equal(
+      az_iot_mqttv5_twin_client_get_workspace_size(&limits),
+      AZ_IOT_MQTTV5_TWIN_CLIENT_DEFAULT_WORKSPACE_SIZE);
+  limits.max_pending_requests = 1;
+  assert_int_equal(
+      az_iot_mqttv5_twin_client_get_workspace_size(&limits),
+      AZ_IOT_MQTTV5_TWIN_CLIENT_WORKSPACE_SIZE(1));
+  limits.max_pending_requests = AZ_IOT_TWIN_CLIENT_MAX_PENDING_REQUESTS_LIMIT;
+  assert_int_equal(
+      az_iot_mqttv5_twin_client_get_workspace_size(&limits),
+      AZ_IOT_MQTTV5_TWIN_CLIENT_WORKSPACE_SIZE(AZ_IOT_TWIN_CLIENT_MAX_PENDING_REQUESTS_LIMIT));
+  limits.max_pending_requests = AZ_IOT_TWIN_CLIENT_MAX_PENDING_REQUESTS_LIMIT + 1u;
+  assert_int_equal(az_iot_mqttv5_twin_client_get_workspace_size(&limits), 0);
+  assert_int_equal(az_iot_mqttv5_twin_client_get_workspace_size(NULL), 0);
+}
+
+typedef struct error_capture
+{
+  int error_count;
+  char last_error[AZ_IOT_LOG_MESSAGE_MAX];
+} error_capture;
+
+static void capture_errors(
+    void* user_ctx,
+    az_iot_log_level level,
+    const char* component,
+    const char* file,
+    int line,
+    const char* msg)
+{
+  (void)component;
+  (void)file;
+  (void)line;
+  error_capture* c = (error_capture*)user_ctx;
+  if (level == AZ_IOT_LOG_LEVEL_ERROR && msg != NULL)
+  {
+    c->error_count++;
+    snprintf(c->last_error, sizeof(c->last_error), "%s", msg);
+  }
+}
+
+/** @brief Runs init with @p options on a fresh client, capturing ERROR logs in @p c. */
+static az_iot_result init_capturing_errors(
+    fixture* fx,
+    const az_iot_mqttv5_twin_client_options* options,
+    error_capture* c)
+{
+  memset(c, 0, sizeof(*c));
+  az_iot_log_sink sink = { 0 };
+  sink.sink = capture_errors;
+  sink.user_ctx = c;
+  sink.min_level = AZ_IOT_LOG_LEVEL_ERROR;
+  az_iot_log_set_global_sink(&sink);
+  az_iot_mqttv5_twin_client twin;
+  az_iot_result result = az_iot_mqttv5_twin_client_init(&twin, &fx->conn, options);
+  az_iot_log_set_global_sink(NULL);
+  return result;
+}
+
+/* A limit above its maximum, NULL options, and a NULL or too-small workspace are refused with an
+ * ERROR log, before anything is attached to the connection. */
+static void init_rejects_invalid_limits_and_workspaces(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_mqttv5_twin_client_deinit(&fx->twin);
+  error_capture cap;
+
+  az_iot_mqttv5_twin_client_options options = fx->options;
+  options.limits.max_pending_requests = AZ_IOT_TWIN_CLIENT_MAX_PENDING_REQUESTS_LIMIT + 1u;
+  assert_int_equal(init_capturing_errors(fx, &options, &cap), AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(cap.error_count, 1);
+  assert_non_null(strstr(cap.last_error, "max_pending_requests"));
+
+  assert_int_equal(init_capturing_errors(fx, NULL, &cap), AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(cap.error_count, 1);
+
+  options = fx->options;
+  options.workspace = NULL;
+  assert_int_equal(init_capturing_errors(fx, &options, &cap), AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(cap.error_count, 1);
+  assert_non_null(strstr(cap.last_error, "needed"));
+
+  options = fx->options;
+  options.workspace_size = AZ_IOT_MQTTV5_TWIN_CLIENT_DEFAULT_WORKSPACE_SIZE - 1u;
+  assert_int_equal(init_capturing_errors(fx, &options, &cap), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+  assert_int_equal(cap.error_count, 1);
+  assert_non_null(strstr(cap.last_error, "needed"));
+
+  /* Nothing was attached: the client can still be initialized. */
+  assert_int_equal(fx->conn.required_profile_refs, 0);
+  assert_int_equal(az_iot_mqttv5_twin_client_init(&fx->twin, &fx->conn, &fx->options), AZ_IOT_OK);
+}
+
+/* At a limit of 1, in a workspace of exactly that size at an odd address, one request is held,
+ * the next is refused, and answering the first makes room again. */
+static void a_limit_of_one_holds_one_request(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_mqttv5_twin_client_deinit(&fx->twin);
+  static uint8_t unaligned[AZ_IOT_MQTTV5_TWIN_CLIENT_WORKSPACE_SIZE(1) + 1u];
+  az_iot_mqttv5_twin_client_options options = { 0 };
+  options.limits.max_pending_requests = 1;
+  options.workspace = unaligned + 1;
+  options.workspace_size = AZ_IOT_MQTTV5_TWIN_CLIENT_WORKSPACE_SIZE(1);
+  assert_int_equal(az_iot_mqttv5_twin_client_init(&fx->twin, &fx->conn, &options), AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_mqttv5_twin_client_set_encode_buffer(
+          &fx->twin, AZ_SPAN_FROM_BUFFER(fx->encode_buffer)),
+      AZ_IOT_OK);
+  open_to_connected(fx);
+
+  get_record first = { 0 };
+  uint8_t corr[16];
+  issue_get(fx, &first, corr);
+  get_record second = { 0 };
+  assert_int_equal(
+      az_iot_mqttv5_twin_client_get(&fx->twin, on_get, &second), AZ_IOT_ERR_NOT_SUPPORTED);
+
+  static const uint8_t body[] = { 0x08, 0x01 };
+  inject_twin(fx, "get-response:1", corr, body, sizeof(body));
+  assert_true(first.fired);
+  assert_int_equal(first.status, AZ_IOT_OK);
+  assert_int_equal(az_iot_mqttv5_twin_client_get(&fx->twin, on_get, &second), AZ_IOT_OK);
+}
+
+/* deinit wipes the workspace: it held requests and their callbacks. */
+static void deinit_wipes_the_workspace(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  get_record rec = { 0 };
+  assert_int_equal(az_iot_mqttv5_twin_client_get(&fx->twin, on_get, &rec), AZ_IOT_OK);
+
+  az_iot_mqttv5_twin_client_deinit(&fx->twin);
+  for (size_t i = 0; i < sizeof(fx->workspace); ++i)
+  {
+    assert_int_equal(fx->workspace[i], 0);
+  }
+  assert_int_equal(az_iot_mqttv5_twin_client_init(&fx->twin, &fx->conn, &fx->options), AZ_IOT_OK);
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -3817,6 +3993,10 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         get_before_the_device_id_is_assigned_is_refused, setup, teardown),
     cmocka_unit_test_setup_teardown(get_with_a_full_pending_table_is_rejected, setup, teardown),
+    cmocka_unit_test(the_workspace_size_matches_the_macro),
+    cmocka_unit_test_setup_teardown(init_rejects_invalid_limits_and_workspaces, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_limit_of_one_holds_one_request, setup, teardown),
+    cmocka_unit_test_setup_teardown(deinit_wipes_the_workspace, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_refused_get_is_sent_again_and_a_refused_patch_is_busy, setup, teardown),
     cmocka_unit_test_setup_teardown(patch_frames_if_match_from_the_birth_ack, setup, teardown),
