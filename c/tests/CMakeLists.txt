@@ -984,7 +984,7 @@ if(AZ_IOT_WITH_AZ_MQTT)
     # The adapter's limits: its az_iot_az_mqtt_config.h, with the same definitions.
     get_target_property(_az_mqtt_adapter_defs az_iot_adapter_az_mqtt COMPILE_DEFINITIONS)
     set(_az_mqtt_size_defs "${_az_mqtt_adapter_defs}")
-    list(FILTER _az_mqtt_size_defs INCLUDE REGEX "^AZ_IOT_AZ_MQTT_(FOOTPRINT|CONFIG_FILE|USER_PROPERTIES_|MBEDTLS$)")
+    list(FILTER _az_mqtt_size_defs INCLUDE REGEX "^AZ_IOT_AZ_MQTT_(CONFIG_FILE|USER_PROPERTIES_|MBEDTLS$)")
     az_iot_add_cmocka_test(az_iot_tests_az_mqtt_adapter unit/az_mqtt_adapter_test.c)
     # Needs a broker, as the conformance suites: registered under the same option.
     az_iot_add_cmocka_test(az_iot_az_mqtt_adapter_broker
@@ -1078,8 +1078,8 @@ if(AZ_IOT_WITH_AZ_MQTT)
         target_link_libraries(az_iot_tests_az_mqtt_adapter_release PRIVATE ws2_32)
     endif()
 
-    # Each footprint, a user's definition over it, and a config file: resolved as documented.
-    foreach(_case DEFAULT CONSTRAINED OVERRIDE CONFIG_FILE)
+    # The default, a user's definition and a config file: resolved as documented.
+    foreach(_case DEFAULT OVERRIDE CONFIG_FILE)
         set(_t az_iot_tests_az_mqtt_config_${_case})
         add_executable(${_t} unit/az_mqtt_config_test.c)
         target_include_directories(${_t} PRIVATE

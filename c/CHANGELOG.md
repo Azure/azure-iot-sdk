@@ -4,6 +4,11 @@
 
 ### Features Added
 
+- Breaking: the az_mqtt adapter footprint is removed. `AZ_IOT_AZ_MQTT_FOOTPRINT` (macro, with
+  `AZ_IOT_AZ_MQTT_FOOTPRINT_DEFAULT` and `_CONSTRAINED`, and CMake option `DEFAULT` or
+  `CONSTRAINED`) selected only `AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX`, which is now the one setting
+  (default 16; `CONSTRAINED` was 4). Defining the macro or setting the CMake option fails the
+  build. `AZ_IOT_AZ_MQTT_CONFIG_FILE` stays.
 - Breaking: feature-client string and topic sizes that lay out public structs are fixed:
   `AZ_IOT_DM_METHOD_NAME_MAX` (96), `AZ_IOT_DM_RID_MAX` (32), `AZ_IOT_DM_CORR_DATA_MAX` (64),
   `AZ_IOT_MQTTV5_DM_TOPIC_MAX` (192) and `AZ_IOT_LOG_FILE_PATH_MAX` (256). Defining any of them
@@ -22,8 +27,7 @@
   adapter's sizes are run-time values only: `AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE`,
   `AZ_IOT_AZ_MQTT_RECEIVE_BUFFER_SIZE`, `AZ_IOT_AZ_MQTT_INFLIGHT_MAX` and
   `AZ_IOT_AZ_MQTT_MESSAGE_STORAGE_SIZE` (macros, and the first three as CMake options) are removed;
-  defining one fails the build. The footprint now selects only
-  `AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX`. Neither adapter allocates its client any more.
+  defining one fails the build. Neither adapter allocates its client any more.
 - Breaking: `AZ_IOT_SU_REQUEST_NO_TIMEOUT` is removed, and `az_iot_su_client_request_update()` and
   `az_iot_su_client_request_onboarding_update()` return `AZ_IOT_ERR_INVALID_ARG` for a timeout of
   0. The hub session is down while a check runs, so every check is bounded; pass
@@ -242,8 +246,7 @@
   or mbedTLS (`AZ_IOT_AZ_MQTT_TLS`), Schannel on Windows (X.509 and in-memory PEM included);
   WebSockets, HTTP CONNECT proxy, and key references through an OpenSSL 3 provider. Buffer sizes
   are run-time values (`az_iot_mqtt_limits`); the MQTT 5 CONNECT user property bound is set when
-  compiled, with or without CMake: a footprint (`AZ_IOT_AZ_MQTT_FOOTPRINT`), a definition, or a
-  config header. See [docs/client-configuration.md](docs/client-configuration.md#az_mqtt-adapter-limits).
+  compiled, with or without CMake: a definition or a config header. See [docs/client-configuration.md](docs/client-configuration.md#az_mqtt-adapter-limits).
 - Logging for support diagnostics: rotating file sink (`az_iot_log_file_sink_open()`), lines
   `<UTC ISO 8601 time> [LEVEL] [component] [thread] [file:line] message` from the built-in sinks, connection configuration,
   state changes and retries at `INFO`, and a `...` marker on truncated messages.
