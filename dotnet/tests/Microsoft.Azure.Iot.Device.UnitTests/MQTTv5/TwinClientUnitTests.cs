@@ -1122,6 +1122,24 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
         }
 
         [Fact]
+        public async Task GetTwinAsync_SharingTheResyncGet_FailsWhenABufferedPatchIsMalformed()
+        {
+            (MockFeatureConnectionClient connection, Guid nonce) = CreateConnectionWithNonce();
+            using TwinClient twinClient = new(connection);
+            await ReceiveTwinPushAsync(connection, nonce, 5, "{}");
+
+            await ReceiveDesiredPatchAsync(connection, nonce, 7, "{\"a\":7}");
+            MqttPublish getPublish = await connection.WaitForPublishedMessagesAsync(1);
+            Task<DeviceTwin> getTask = twinClient.GetTwinAsync(getReported: false, cancellationToken: TestContext.Current.CancellationToken);
+            await ReceiveDesiredPatchAsync(connection, nonce, 8, "not json");
+
+            await Assert.ThrowsAnyAsync<JsonException>(() => ReceiveGetResponseAsync(connection, getPublish, 7, "{\"a\":7}"));
+
+            Assert.Single(connection.PublishedMessages);
+            await Assert.ThrowsAnyAsync<JsonException>(() => getTask.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
+        }
+
+        [Fact]
         public async Task TwinPush_DuringResync_ResolvesResyncAndLaterGetResponseIsDropped()
         {
             (MockFeatureConnectionClient connection, Guid nonce) = CreateConnectionWithNonce();

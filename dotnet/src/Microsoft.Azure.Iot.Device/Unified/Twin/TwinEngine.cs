@@ -1172,23 +1172,37 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
 
             // The resync goes first, since it may find this device's copy of the twin invalid (see ResetLocalDesiredVersionIfInvalid).
             DesiredStateOutcome outcome = new();
-            if (resync != null)
+            try
             {
-                ApplyDesiredResyncGetResponse(resync, response, desired, outcome);
-            }
-
-            if (desired != null && waiters.Any(waiter => waiter.Request.GetDesired))
-            {
-                lock (_desiredStateLock)
+                if (resync != null)
                 {
-                    // The application fetched the desired properties, so this device's view of them is now at least this version.
-                    AdvanceLocalDesiredVersion(response.DesiredVersion, desired, isPatch: false);
+                    ApplyDesiredResyncGetResponse(resync, response, desired, outcome);
+                }
+
+                if (desired != null && waiters.Any(waiter => waiter.Request.GetDesired))
+                {
+                    lock (_desiredStateLock)
+                    {
+                        // The application fetched the desired properties, so this device's view of them is now at least this version.
+                        AdvanceLocalDesiredVersion(response.DesiredVersion, desired, isPatch: false);
+                    }
+                }
+
+                if (reported != null && waiters.Any(waiter => waiter.Request.GetReported))
+                {
+                    AdvanceLocalReportedVersion(response.ReportedVersion, reported);
                 }
             }
-
-            if (reported != null && waiters.Any(waiter => waiter.Request.GetReported))
+            catch (Exception e)
             {
-                AdvanceLocalReportedVersion(response.ReportedVersion, reported);
+                // These calls are no longer attached to any GET, so nothing else would complete them (for example, when a
+                // malformed patch that the resync buffered fails to parse).
+                foreach (GetTwinWaiter waiter in waiters)
+                {
+                    waiter.Response.TrySetException(e);
+                }
+
+                throw;
             }
 
             foreach (GetTwinWaiter waiter in waiters)
