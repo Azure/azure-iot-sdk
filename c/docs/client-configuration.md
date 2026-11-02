@@ -339,7 +339,8 @@ Defaults used when the matching option is left at 0:
 
 #### Feature clients ([az_iot_message.h](../inc/azure/iot/az_iot_message.h) and the client headers)
 
-Run-time limits are fields of a client's init options (`limits`); 0 selects the default. The
+Run-time limits are fields of a client's init options (`limits`, from `<client>_options_default()`);
+0 selects the default. The
 entries live in the options' `workspace` (static, stack or heap), owned by the client until
 `deinit()`, which wipes it:
 
@@ -361,11 +362,11 @@ entries live in the options' `workspace` (static, stack or heap), owned by the c
 ```c
 /* mqttv3 direct methods, one invocation at a time. */
 static uint8_t methods_workspace[AZ_IOT_MQTTV3_DIRECT_METHOD_CLIENT_WORKSPACE_SIZE(1)];
-az_iot_mqttv3_direct_method_client_options methods_options = {
-  .limits = { .max_in_flight_invocations = 1 },
-  .workspace = methods_workspace,
-  .workspace_size = sizeof(methods_workspace),
-};
+az_iot_mqttv3_direct_method_client_options methods_options
+    = az_iot_mqttv3_direct_method_client_options_default();
+methods_options.limits.max_in_flight_invocations = 1;
+methods_options.workspace = methods_workspace;
+methods_options.workspace_size = sizeof(methods_workspace);
 result = az_iot_mqttv3_direct_method_client_init(&methods, &connection, &methods_options);
 ```
 
@@ -535,7 +536,7 @@ always the same thing.
 | `az_iot_retry_policy` (`az_iot_connection_client_get_default_retry_policy()`, `_get_disabled_retry_policy()`, `_get_fixed_interval_retry_policy()`) | Backoff and retry limit | [Connecting a device](connecting.md#reconnection), [az_iot_retry_policy.h](../inc/azure/iot/az_iot_retry_policy.h) |
 | `az_iot_certificate_provider_pem_options` (`az_iot_certificate_provider_pem_options_default()`) | Certificate, key and CA files | [az_iot_certificate_provider_pem.h](../inc/azure/iot/az_iot_certificate_provider_pem.h) |
 | `az_iot_certificate_provider_managed_options` | Bootstrap and operational certificate and key files, key type (EC P-256, EC P-384 or RSA 2048) | [az_iot_certificate_provider_managed.h](../adapters/cert_openssl/az_iot_certificate_provider_managed.h), [sample](../samples/authentication/dps_csr_managed/README.md) |
-| `az_iot_mqttv3_direct_method_client_options` (zero-initialized: default limits) | Invocations held, and the workspace that holds them | [Feature clients](#feature-clients-az_iot_messageh-and-the-client-headers), [az_iot_direct_method_client.h](../inc/azure/iot/mqttv3/az_iot_direct_method_client.h) |
+| `az_iot_mqttv3_direct_method_client_options` (`az_iot_mqttv3_direct_method_client_options_default()`) | Invocations held, and the workspace that holds them | [Feature clients](#feature-clients-az_iot_messageh-and-the-client-headers), [az_iot_direct_method_client.h](../inc/azure/iot/mqttv3/az_iot_direct_method_client.h) |
 | `az_iot_su_client_config_options` (`az_iot_su_client_config_options_default()`) | Platform hooks, root keys, device properties, replacement policy. Crypto comes from the connection client. | [az_iot_su.h](../inc/azure/iot/az_iot_su.h), [samples](../samples/software_update/pc/simulated_onboarding/README.md) |
 | `az_iot_mqttv5_twin_get_options` (`az_iot_mqttv5_twin_get_options_default()`) | Per request to `az_iot_mqttv5_twin_client_get_with_options()`: sections to fetch, and versions to skip if unchanged | [az_iot_twin_client.h](../inc/azure/iot/mqttv5/az_iot_twin_client.h) |
 

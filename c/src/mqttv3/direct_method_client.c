@@ -269,6 +269,13 @@ static bool limits_resolve_max_in_flight_invocations(
   return *out <= AZ_IOT_MQTTV3_DIRECT_METHOD_CLIENT_MAX_IN_FLIGHT_INVOCATIONS_LIMIT;
 }
 
+AZ_NODISCARD az_iot_mqttv3_direct_method_client_options
+az_iot_mqttv3_direct_method_client_options_default(void)
+{
+  az_iot_mqttv3_direct_method_client_options options = { 0 };
+  return options;
+}
+
 AZ_NODISCARD size_t az_iot_mqttv3_direct_method_client_get_workspace_size(
     const az_iot_mqttv3_direct_method_client_limits* limits)
 {
