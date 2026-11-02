@@ -64,6 +64,9 @@
   provisioning session is released, the hub reconnects, and the request is sent again on the retry
   backoff. A provisioning session opened for an operation waits at most 120 s (was 60 s) to become
   ready.
+- Software updates: `AZ_IOT_SU_REQUEST_DEFAULT_TIMEOUT_MS` is 120 s (was 60 s). It is the whole
+  wall-clock budget of a check, session setup and retries included, and no longer shorter than the
+  120 s one sent request may wait for its answer (`AZ_IOT_SU_CHANNEL_RESPONSE_TIMEOUT_MS`).
 - Connection client: `az_iot_connection_client_set_dps_assignment_invalidated_callback()` reports,
   once, when the client will not use the assignment it holds again: DPS returned an assignment it
   rejected, the hub refused the identity in `AZ_IOT_IDENTITY_RECOVERY_REPROVISION` mode, or
