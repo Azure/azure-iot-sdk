@@ -5124,6 +5124,83 @@ static void the_smallest_limits_hold_one_method_and_a_small_result(void** state)
   assert_non_null(find_phase(fx->mock, "result:1"));
 }
 
+#define LARGEST_CONCURRENCY AZ_IOT_MQTTV5_DIRECT_METHOD_CLIENT_MAX_CONCURRENT_INVOCATIONS_LIMIT
+
+/* At the largest concurrency limit, on a connection with room for its reserved PUBACK slots and in
+ * a workspace of exactly its size: every probe is accepted, the next is refused DEVICE_BUSY, and
+ * the first token still runs its method. */
+static void the_largest_concurrency_limit_holds_every_token(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_mqttv5_direct_method_client_deinit(&fx->dm);
+  assert_int_equal(az_iot_test_connection_client_deinit(&fx->conn), AZ_IOT_OK);
+
+  static uint8_t connection_workspace[AZ_IOT_CONNECTION_CLIENT_WORKSPACE_SIZE(
+      AZ_IOT_MQTTV5_DM_RESERVED_PUBACKS(LARGEST_CONCURRENCY) + 4u,
+      AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_PUBLISH_RESERVATIONS,
+      AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_PERSISTENT_SUBSCRIPTIONS,
+      AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_FEATURE_OBSERVERS,
+      AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_APPLICATION_STATE_OBSERVERS,
+      AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_FEATURE_CLIENTS,
+      AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_INBOUND_HANDLERS)];
+  az_iot_connection_client_options opts = { 0 };
+  opts.iothub_hostname = "broker.example";
+  opts.port = 8883;
+  opts.device_id = "ut-device";
+  opts.connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5;
+  opts.mqtt_adapter = az_iot_mock_mqtt_get_adapter_for_version(AZ_IOT_MQTT_VERSION_5);
+  opts.limits.max_pending_publishes = AZ_IOT_MQTTV5_DM_RESERVED_PUBACKS(LARGEST_CONCURRENCY) + 4u;
+  opts.workspace = connection_workspace;
+  opts.workspace_size = sizeof(connection_workspace);
+  assert_int_equal(az_iot_test_connection_client_init(&fx->conn, &opts), AZ_IOT_OK);
+
+  static uint8_t workspace[AZ_IOT_MQTTV5_DIRECT_METHOD_CLIENT_WORKSPACE_SIZE(
+      LARGEST_CONCURRENCY,
+      AZ_IOT_MQTTV5_DIRECT_METHOD_CLIENT_DEFAULT_MAX_METHODS,
+      LARGEST_CONCURRENCY,
+      AZ_IOT_MQTTV5_DIRECT_METHOD_CLIENT_DEFAULT_MAX_RESULT_BODY_SIZE)];
+  az_iot_mqttv5_direct_method_client_options options
+      = az_iot_mqttv5_direct_method_client_options_default();
+  options.limits.max_concurrent_invocations = LARGEST_CONCURRENCY;
+  options.workspace = workspace;
+  options.workspace_size = sizeof(workspace);
+  assert_int_equal(
+      az_iot_mqttv5_direct_method_client_init(&fx->dm, &fx->conn, &options), AZ_IOT_OK);
+  assert_int_equal(
+      az_iot_mqttv5_direct_method_client_register_method(&fx->dm, "reboot", 0, on_method, fx),
+      AZ_IOT_OK);
+  open_to_connected(fx);
+
+  invocation_record rec = { 0 };
+  fx->rec = &rec;
+  uint8_t first_request_id[16];
+  uint8_t first_ready_id[16];
+  make_request_id(first_request_id, 0);
+  probe_and_accept(fx, first_request_id, "reboot", 300, first_ready_id);
+  for (int i = 1; i < LARGEST_CONCURRENCY; ++i)
+  {
+    uint8_t request_id[16];
+    make_request_id(request_id, (uint8_t)i);
+    uint8_t ready_id[16];
+    probe_and_accept(fx, request_id, "reboot", 300, ready_id);
+  }
+
+  uint8_t overflow_id[16];
+  make_request_id(overflow_id, (uint8_t)LARGEST_CONCURRENCY);
+  uint8_t frame[128];
+  size_t frame_len = build_probe(frame, "reboot", 300);
+  az_iot_mock_mqtt_client_clear_calls(fx->mock);
+  inject_dm(fx, DEV_TOPIC, "probe:1", overflow_id, 16, frame, frame_len, 30);
+  assert_int_equal(
+      probe_ack_rejected_reason(find_phase(fx->mock, "probe-ack:1")),
+      AZ_IOT_MQTTV5_DM_PROBE_REJECT_DEVICE_BUSY);
+
+  uint8_t exec[64];
+  size_t exec_len = build_exec(exec, first_ready_id, 16, NULL, 0);
+  inject_dm(fx, DEV_TOPIC, "exec:1", first_request_id, 16, exec, exec_len, 300);
+  assert_true(rec.fired);
+}
+
 /* deinit wipes the workspace: it held method names, tokens and results. */
 static void deinit_wipes_the_workspace(void** state)
 {
@@ -5200,6 +5277,8 @@ int main(void)
     cmocka_unit_test_setup_teardown(init_rejects_invalid_limits_and_workspaces, setup, teardown),
     cmocka_unit_test_setup_teardown(
         the_smallest_limits_hold_one_method_and_a_small_result, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        the_largest_concurrency_limit_holds_every_token, setup, teardown),
     cmocka_unit_test_setup_teardown(deinit_wipes_the_workspace, setup, teardown),
     cmocka_unit_test_setup_teardown(a_broker_rejected_result_is_reported, setup, teardown),
     cmocka_unit_test_setup_teardown(
