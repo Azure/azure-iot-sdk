@@ -708,11 +708,12 @@ extern "C"
  * @brief A default request timeout, in milliseconds, for callers with no policy
  * of their own.
  *
- * Two minutes, so one attempt can use its whole
- * AZ_IOT_SU_CHANNEL_RESPONSE_TIMEOUT_MS. A check not answered within it --
- * still being retried, or sent and awaiting its response -- is abandoned and
- * told to the application, which can ask again when it chooses instead of the
- * client waiting or retrying silently.
+ * Two minutes of wall-clock time for the whole check, session setup and
+ * retries included; no shorter than AZ_IOT_SU_CHANNEL_RESPONSE_TIMEOUT_MS,
+ * the longest one sent request waits for its answer. A check not answered
+ * within it -- still being retried, or sent and awaiting its response -- is
+ * abandoned and told to the application, which can ask again when it chooses
+ * instead of the client waiting or retrying silently.
  *
  * Only a default. The bound is a required per-call argument of
  * az_iot_su_client_request_update() / _request_onboarding_update(), because
