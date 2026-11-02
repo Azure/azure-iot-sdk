@@ -113,16 +113,17 @@ static void paho_cond_wait_ms(paho_cond* c, paho_mutex* m, uint32_t timeout_ms)
 typedef struct paho_client paho_client;
 
 /**
- * @brief Paho's callback context for one accepted publish, freed with the PUBLISH_ACK event that
- * reports it. Paho reports a publish whose write failed with token 0 (MQTTAsync_processCommand),
- * so the event takes its packet id from here, on the application thread.
+ * @brief The PUBLISH_ACK event of one accepted publish, allocated by publish() before Paho can
+ * complete it and passed to Paho as its callback context, so a completion allocates and frees
+ * nothing. Paho reports a publish whose write failed with token 0 (MQTTAsync_processCommand), so
+ * the event takes its packet id from here, on the application thread.
  */
-typedef struct paho_publish_context
+typedef struct paho_publish_completion
 {
   paho_client* client;
   /** @brief Set by publish() once Paho accepts it; read only on the application thread. */
   uint16_t packet_id;
-} paho_publish_context;
+} paho_publish_completion;
 
 typedef struct queued_event
 {
@@ -143,8 +144,8 @@ typedef struct queued_event
   size_t correlation_data_len;
   /* v5 Reason String (heap copy); evt.reason_string points here. */
   char* reason_string;
-  /* AZ_IOT_MQTT_EVT_PUBLISH_ACK: the publish it reports, whose packet id it carries. */
-  paho_publish_context* publish_context;
+  /* AZ_IOT_MQTT_EVT_PUBLISH_ACK of a publish: client non-NULL, and the event's packet id. */
+  paho_publish_completion publish;
   struct queued_event* next;
 } queued_event;
 
@@ -251,7 +252,6 @@ static void q_free(queued_event* n)
   free(n->content_type);
   free(n->correlation_data);
   free(n->reason_string);
-  free(n->publish_context);
   free(n);
 }
 
@@ -960,41 +960,27 @@ static void paho_subscribe_failure(void* context, MQTTAsync_failureData* respons
   }
 }
 
-/* A PUBLISH_ACK event for @p publish (Paho's callback context), taking ownership of it. NULL when
- * out of memory: the publish is then freed and goes unreported, like any event lost to memory. */
-static queued_event* publish_ack_event_new(void* publish, az_iot_result status)
+/* The PUBLISH_ACK event publish() allocated, passed back by Paho as @p context, with @p status. */
+static queued_event* publish_completion_event(void* context, az_iot_result status)
 {
-  queued_event* n = (queued_event*)calloc(1, sizeof(*n));
-  if (!n)
-  {
-    free(publish);
-    return NULL;
-  }
-  n->evt.kind = AZ_IOT_MQTT_EVT_PUBLISH_ACK;
+  queued_event* n = (queued_event*)context;
   n->evt.status = status;
-  n->publish_context = (paho_publish_context*)publish;
   return n;
 }
 
 static void paho_publish_success(void* context, MQTTAsync_successData* response)
 {
   (void)response;
-  queued_event* n = publish_ack_event_new(context, AZ_IOT_OK);
-  if (n)
-  {
-    q_push(n->publish_context->client, n);
-  }
+  queued_event* n = publish_completion_event(context, AZ_IOT_OK);
+  q_push(n->publish.client, n);
 }
 
 static void paho_publish_failure(void* context, MQTTAsync_failureData* response)
 {
   /* v3.1.1 PUBACKs carry no code: this is a publish that ended without one. */
-  queued_event* n = publish_ack_event_new(context, AZ_IOT_ERR_MQTT);
-  if (n)
-  {
-    n->evt.transport_code = response ? paho_transport_code(response->code) : 0;
-    q_push(n->publish_context->client, n);
-  }
+  queued_event* n = publish_completion_event(context, AZ_IOT_ERR_MQTT);
+  n->evt.transport_code = response ? paho_transport_code(response->code) : 0;
+  q_push(n->publish.client, n);
 }
 
 /* MQTTv5 variants. Paho dispatches to onSuccess5/onFailure5 (not the v3
@@ -1102,11 +1088,8 @@ static void paho_subscribe_failure5(void* context, MQTTAsync_failureData5* respo
 static void paho_publish_success5(void* context, MQTTAsync_successData5* response)
 {
   (void)response;
-  queued_event* n = publish_ack_event_new(context, AZ_IOT_OK);
-  if (n)
-  {
-    q_push(n->publish_context->client, n);
-  }
+  queued_event* n = publish_completion_event(context, AZ_IOT_OK);
+  q_push(n->publish.client, n);
 }
 
 /* Paho calls this for a PUBACK reason code >= 0x80 (reasonCode, with the PUBACK's properties, and
@@ -1116,12 +1099,8 @@ static void paho_publish_success5(void* context, MQTTAsync_successData5* respons
  * return, so the Reason String is copied. */
 static void paho_publish_failure5(void* context, MQTTAsync_failureData5* response)
 {
-  queued_event* n = publish_ack_event_new(context, AZ_IOT_ERR_MQTT);
-  if (!n)
-  {
-    return;
-  }
-  paho_client* m = n->publish_context->client;
+  queued_event* n = publish_completion_event(context, AZ_IOT_ERR_MQTT);
+  paho_client* m = n->publish.client;
   if (response)
   {
     int const code = response->code == MQTTASYNC_SUCCESS ? (int)response->reasonCode : 0;
@@ -1951,15 +1930,15 @@ static az_iot_result paho_iface_publish(
   }
 
   MQTTAsync_responseOptions resp = MQTTAsync_responseOptions_initializer;
-  paho_publish_context* publish = (paho_publish_context*)malloc(sizeof(*publish));
-  if (!publish)
+  queued_event* completion = (queued_event*)calloc(1, sizeof(*completion));
+  if (!completion)
   {
     MQTTProperties_free(&props);
     return AZ_IOT_ERR_OUT_OF_MEMORY;
   }
-  publish->client = m;
-  publish->packet_id = 0;
-  resp.context = publish;
+  completion->evt.kind = AZ_IOT_MQTT_EVT_PUBLISH_ACK;
+  completion->publish.client = m;
+  resp.context = completion;
   if (m->version == AZ_IOT_MQTT_VERSION_5)
   {
     resp.onSuccess5 = paho_publish_success5;
@@ -1979,12 +1958,12 @@ static az_iot_result paho_iface_publish(
   }
   if (rc != MQTTASYNC_SUCCESS)
   {
-    /* Refused: Paho runs no callback, so the context is still ours. */
-    free(publish);
+    /* Refused: Paho runs no callback, so the event is still ours. */
+    free(completion);
     return AZ_IOT_ERR_MQTT;
   }
-  /* A callback may already have queued the event: it is dispatched on this thread, later. */
-  publish->packet_id = (uint16_t)resp.token;
+  /* Paho may already have queued the event; it is dispatched on this thread, so after this. */
+  completion->publish.packet_id = (uint16_t)resp.token;
   return AZ_IOT_OK;
 }
 
@@ -2015,9 +1994,9 @@ static bool paho_dispatch_queued_events(paho_client* m)
   while ((n = q_pop(m)) != NULL)
   {
     dispatched = true;
-    if (n->publish_context)
+    if (n->publish.client != NULL)
     {
-      n->evt.packet_id = n->publish_context->packet_id;
+      n->evt.packet_id = n->publish.packet_id;
     }
     if (m->inbound_cb)
     {

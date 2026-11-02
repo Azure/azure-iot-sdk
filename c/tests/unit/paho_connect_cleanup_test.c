@@ -71,6 +71,25 @@ void* __wrap_malloc(size_t size)
   return p;
 }
 
+/* calloc() fails with malloc(), from the same countdown: the adapter allocates its events with it.
+ */
+void* __real_calloc(size_t count, size_t size);
+void* __wrap_calloc(size_t count, size_t size);
+
+void* __wrap_calloc(size_t count, size_t size)
+{
+  if (s_malloc_countdown >= 0)
+  {
+    if (s_malloc_countdown == 0)
+    {
+      s_malloc_countdown = -1;
+      return NULL;
+    }
+    --s_malloc_countdown;
+  }
+  return __real_calloc(count, size);
+}
+
 /* Freed proxy credentials: malloc records each block while tracking is on; free
  * reports a block that still holds s_secret. */
 void __real_free(void* p);
@@ -122,6 +141,8 @@ void __wrap_free(void* p)
 }
 static void fail_malloc_after(int allowed) { s_malloc_countdown = allowed; }
 static void stop_failing_malloc(void) { s_malloc_countdown = -1; }
+/* Whether the allocation fail_malloc_after() set up to fail is still to come. */
+static bool malloc_failure_pending(void) { return s_malloc_countdown == 0; }
 
 #endif /* AZ_IOT_TEST_WRAP_MALLOC */
 
@@ -916,8 +937,8 @@ static void a_completion_queued_at_destroy_is_freed(void** state)
 }
 
 #if defined(AZ_IOT_TEST_WRAP_MALLOC)
-/* The publish's context cannot be allocated: nothing is sent. */
-static void a_publish_without_memory_for_its_context_is_not_sent(void** state)
+/* The publish's completion event cannot be allocated: nothing is sent. */
+static void a_publish_without_memory_for_its_completion_is_not_sent(void** state)
 {
   (void)state;
   mock_paho_reset();
@@ -936,6 +957,44 @@ static void a_publish_without_memory_for_its_context_is_not_sent(void** state)
   client->iface->destroy(client);
 }
 #endif
+
+/* Paho may complete a publish before MQTTAsync_sendMessage() returns (a write that fails at once,
+ * token 0). The completion allocates nothing, so it cannot fail and free what publish() still
+ * writes, and the event carries the packet id publish() returned. */
+static void a_publish_completed_before_publish_returns_reports_its_packet_id(void** state)
+{
+  (void)state;
+  static const az_iot_mqtt_version versions[]
+      = { AZ_IOT_MQTT_VERSION_3_1_1, AZ_IOT_MQTT_VERSION_5 };
+  for (size_t i = 0; i < sizeof(versions) / sizeof(versions[0]); ++i)
+  {
+    mock_paho_reset();
+    uint8_t workspace[AZ_IOT_PAHO_WORKSPACE_SIZE];
+    puback_sink sink = { 0 };
+    az_iot_mqtt_client* client
+        = connect_publishing_client(versions[i], workspace, sizeof(workspace), &sink);
+
+    mock_paho_set_send_completes_at_once(true);
+    uint16_t packet_id = 0;
+#if defined(AZ_IOT_TEST_WRAP_MALLOC)
+    /* Only the publish's own allocation succeeds. */
+    fail_malloc_after(1);
+#endif
+    assert_int_equal(publish_one(client, &packet_id), AZ_IOT_OK);
+#if defined(AZ_IOT_TEST_WRAP_MALLOC)
+    bool const completion_allocated = !malloc_failure_pending();
+    stop_failing_malloc();
+    assert_false(completion_allocated);
+#endif
+    assert_int_not_equal(packet_id, 0);
+    wait_for_puback(client, &sink);
+    assert_int_equal(sink.last.packet_id, packet_id);
+    assert_int_equal(sink.last.status, AZ_IOT_ERR_MQTT);
+    assert_int_equal(sink.last.transport_code, MQTTASYNC_FAILURE);
+
+    client->iface->destroy(client);
+  }
+}
 
 int main(void)
 {
@@ -984,8 +1043,10 @@ int main(void)
     cmocka_unit_test_setup_teardown(a_completion_queued_at_destroy_is_freed, setup, teardown),
 #if defined(AZ_IOT_TEST_WRAP_MALLOC)
     cmocka_unit_test_setup_teardown(
-        a_publish_without_memory_for_its_context_is_not_sent, setup, teardown),
+        a_publish_without_memory_for_its_completion_is_not_sent, setup, teardown),
 #endif
+    cmocka_unit_test_setup_teardown(
+        a_publish_completed_before_publish_returns_reports_its_packet_id, setup, teardown),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }

@@ -126,8 +126,8 @@ receives.
 The Paho adapter has the same descriptor (`az_iot_paho_get_adapter()`; bound
 `AZ_IOT_PAHO_WORKSPACE_SIZE`). Its workspace holds only the adapter's state: Paho allocates its
 own internals and sizes its own buffers, so the limits are only checked (the ranges az_mqtt accepts).
-The adapter allocates its queued events and a small context per publish until its completion is
-dispatched.
+The adapter allocates its queued events, including the completion event of each publish, which
+`publish()` allocates before sending.
 
 ### Limits in the public headers
 

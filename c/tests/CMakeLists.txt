@@ -513,7 +513,7 @@ if(AZ_IOT_WITH_PAHO)
     # --wrap is a GNU ld / lld feature. Without it the allocation-failure and
     # freed-credential cases are not registered; every other case still runs.
     if(UNIX AND NOT APPLE)
-        target_link_options(az_iot_tests_paho_connect_cleanup PRIVATE -Wl,--wrap=malloc -Wl,--wrap=free)
+        target_link_options(az_iot_tests_paho_connect_cleanup PRIVATE -Wl,--wrap=malloc -Wl,--wrap=calloc -Wl,--wrap=free)
         target_compile_definitions(az_iot_tests_paho_connect_cleanup PRIVATE
             AZ_IOT_TEST_WRAP_MALLOC=1)
     endif()

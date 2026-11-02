@@ -140,8 +140,14 @@ int mock_paho_send_calls(void);
  *         An accepted one gets token N, the N-th call since mock_paho_reset(). */
 void mock_paho_set_send_rc(int rc);
 
-/** @brief The response options of the last MQTTAsync_sendMessage() call: its completion callbacks
- *         and context. */
+/** @brief Whether an accepted MQTTAsync_sendMessage() fails the send (MQTTASYNC_FAILURE, token 0)
+ *         before it returns, as Paho's send thread may. Reset: false. */
+void mock_paho_set_send_completes_at_once(bool completes_at_once);
+
+/** @brief The response options of the last accepted MQTTAsync_sendMessage() call: its completion
+ *         callbacks and context, which complete the send through the mock. Paho completes each
+ *         send once: a second completion aborts, and MQTTAsync_destroy() fails the sends still
+ *         pending (MQTTASYNC_OPERATION_INCOMPLETE). */
 const MQTTAsync_responseOptions* mock_paho_last_send_response(void);
 
 #endif /* AZ_IOT_TEST_MOCK_PAHO_ASYNC_H */
