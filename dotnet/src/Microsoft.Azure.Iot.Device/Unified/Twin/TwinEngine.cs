@@ -1615,7 +1615,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
                     {
                         // In pull mode, IoT hub pushes neither the desired properties nor their patches, so fetch them when they changed.
                         Trace.TraceInformation("This device holds version {0} of the desired properties, but IoT hub has version {1}. Fetching the desired properties.", _localDesiredVersion, birthAck.DesiredVersion);
-                        StartDesiredResync(connectionNonce, null, outcome);
+                        StartDesiredResync(connectionNonce, null, birthAck.DesiredVersion);
                     }
                 }
             }

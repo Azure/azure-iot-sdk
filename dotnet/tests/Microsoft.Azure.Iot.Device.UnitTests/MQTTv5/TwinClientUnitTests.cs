@@ -1445,7 +1445,8 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
 
             await ReceiveBirthAckAsync(connection, nonce, desiredVersion: 5, reportedVersion: 1);
 
-            MqttPublish get = Assert.Single(connection.PublishedMessages);
+            MqttPublish get = await connection.WaitForPublishedMessagesAsync(1);
+            Assert.Single(connection.PublishedMessages);
             Assert.Equal("get:1", GetType(get));
             Assert.Equal(Sections.Desired, TwinGet.Parser.ParseFrom(get.Payload).Sections);
 
