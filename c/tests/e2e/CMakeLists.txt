@@ -56,7 +56,7 @@ function(az_iot_add_e2e_suite name)
         az_iot_add_cmocka_test(${t} ${no_ctest} ${arg_SOURCES})
         target_compile_definitions(${t} PRIVATE AZ_IOT_E2E_ADAPTER_${ADAPTER})
         target_link_libraries(${t} PRIVATE ${arg_LIBS} az_iot_adapter_${adapter})
-        # e2e_defensive_timeout.h sets the internal defensive-timeout schedule.
+        # Some suites use internal headers.
         target_include_directories(${t} PRIVATE ${PROJECT_SOURCE_DIR}/src/core)
     endforeach()
 endfunction()
@@ -288,63 +288,5 @@ if(AZ_IOT_BUILD_E2E_PKCS11)
     az_iot_add_e2e_suite(az_iot_tests_e2e_custody ADAPTERS ${AZ_IOT_E2E_KEY_REF_ADAPTERS}
         SOURCES tests/e2e_custody_test.c
         LIBS az_iot_e2e_service az_iot_mqttv3)
-endif()
-
-
-
-# ---------------------------------------------------------------------------
-# az_iot_tests_e2e_mqttv5_custom_topic
-#
-# mqttv5 custom topics. Needs an mqttv5 hub with the custom topic templates
-# e2e/{deviceId}/# and e2e/shared/#, which only the ci-c-e2e-mqttv5 workflow's
-# environment has, so it is built only when AZ_IOT_BUILD_E2E_MQTTV5 is set.
-# ---------------------------------------------------------------------------
-if(AZ_IOT_BUILD_E2E_MQTTV5)
-    # The telemetry size cases publish up to 1 MiB + 4 KiB to test the hub's limit: the send buffer
-    # in E2E_MQTT_SEND_BUFFER_SIZE (tests/e2e_mqtt_adapter.h) holds that and its MQTT headers.
-    az_iot_add_e2e_suite(az_iot_tests_e2e_mqttv5_custom_topic
-        SOURCES tests/e2e_mqttv5_custom_topic_test.c tests/e2e_device.c
-        LIBS az_iot_e2e_service az_iot_mqttv5)
-
-    # mqttv5 twin: desired delivery (push and pull), reported patches, GET options, push_reported.
-    az_iot_add_e2e_suite(az_iot_tests_e2e_mqttv5_twin
-        SOURCES tests/e2e_mqttv5_twin_test.c tests/e2e_device.c
-        LIBS az_iot_e2e_service az_iot_mqttv5)
-
-    # mqttv5 connection lifecycle: DPS profile, saved hub with DPS fallback, reopen, eviction.
-    az_iot_add_e2e_suite(az_iot_tests_e2e_mqttv5_connection
-        SOURCES tests/e2e_mqttv5_connection_test.c tests/e2e_device.c
-        LIBS az_iot_e2e_service az_iot_mqttv5)
-
-    # mqttv5 telemetry: delivery, properties as the service sees them, order and size limits.
-    az_iot_add_e2e_suite(az_iot_tests_e2e_mqttv5_telemetry
-        SOURCES tests/e2e_mqttv5_telemetry_test.c tests/e2e_device.c
-        LIBS az_iot_e2e_service az_iot_mqttv5)
-
-    # mqttv5 direct methods: probe rejections, timeouts, result size, concurrency.
-    az_iot_add_e2e_suite(az_iot_tests_e2e_mqttv5_direct_method
-        SOURCES tests/e2e_mqttv5_direct_method_test.c tests/e2e_device.c
-        LIBS az_iot_e2e_service az_iot_mqttv5)
-
-    # mqttv5 over WebSockets and through an HTTP CONNECT proxy. Needs a proxy and
-    # its access log (AZ_IOT_PROXY_HOST, AZ_IOT_PROXY_PORT, AZ_IOT_E2E_PROXY_LOG); fails
-    # without them.
-    az_iot_add_e2e_suite(az_iot_tests_e2e_mqttv5_transport
-        SOURCES tests/e2e_mqttv5_transport_test.c tests/e2e_device.c
-        LIBS az_iot_e2e_service az_iot_mqttv5)
-    # setenv()/unsetenv(), as for az_iot_tests_e2e_transport.
-    foreach(_t az_iot_tests_e2e_mqttv5_transport az_iot_tests_e2e_mqttv5_transport_az_mqtt)
-        if(TARGET ${_t} AND _e2e_posix)
-            target_compile_definitions(${_t} PRIVATE ${_e2e_posix})
-        endif()
-    endforeach()
-
-    # mqttv5 key custody: the device key inside a PKCS#11 token (eng/setup-softhsm.sh), as
-    # az_iot_tests_e2e_custody. Needs AZ_IOT_CLIENT_KEY_URI; fails without it.
-    if(AZ_IOT_BUILD_E2E_PKCS11)
-        az_iot_add_e2e_suite(az_iot_tests_e2e_mqttv5_custody ADAPTERS ${AZ_IOT_E2E_KEY_REF_ADAPTERS}
-            SOURCES tests/e2e_mqttv5_custody_test.c
-            LIBS az_iot_e2e_service az_iot_mqttv5)
-    endif()
 endif()
 

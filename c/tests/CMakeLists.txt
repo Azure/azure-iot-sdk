@@ -133,7 +133,7 @@ az_iot_add_cmocka_test(az_iot_tests_mqtt_iface_contract unit/mqtt_iface_contract
 target_link_libraries(az_iot_tests_mqtt_iface_contract PRIVATE az_iot_test_support)
 az_iot_add_cmocka_test(az_iot_tests_connection_client_workspace unit/connection_client_workspace_test.c)
 target_link_libraries(az_iot_tests_connection_client_workspace
-    PRIVATE az_iot_test_support az_iot_mqttv3 az_iot_mqttv5)
+    PRIVATE az_iot_test_support az_iot_mqttv3)
 # MQTT clients built in an application workspace (opts.mqtt_adapter).
 az_iot_add_cmocka_test(az_iot_tests_connection_client_mqtt_adapter
     unit/connection_client_mqtt_adapter_test.c)
@@ -241,17 +241,6 @@ az_iot_add_cmocka_test(
     az_iot_tests_mqttv3_telemetry_client unit/mqttv3_telemetry_client_test.c)
 target_link_libraries(
     az_iot_tests_mqttv3_telemetry_client PRIVATE az_iot_test_support az_iot_mqttv3)
-az_iot_add_cmocka_test(
-    az_iot_tests_mqttv5_telemetry_client unit/mqttv5_telemetry_client_test.c)
-target_link_libraries(
-    az_iot_tests_mqttv5_telemetry_client PRIVATE az_iot_test_support az_iot_mqttv5)
-az_iot_add_cmocka_test(
-    az_iot_tests_mqttv5_custom_topic_client unit/mqttv5_custom_topic_client_test.c)
-target_link_libraries(
-    az_iot_tests_mqttv5_custom_topic_client PRIVATE az_iot_test_support az_iot_mqttv5)
-# connection_test_harness.h includes internal headers.
-target_include_directories(az_iot_tests_mqttv5_custom_topic_client PRIVATE
-    ${PROJECT_SOURCE_DIR}/src/core)
 az_iot_add_cmocka_test(az_iot_tests_mqttv3_c2d_client unit/mqttv3_c2d_client_test.c)
 target_link_libraries(az_iot_tests_mqttv3_c2d_client PRIVATE az_iot_test_support az_iot_mqttv3)
 target_include_directories(az_iot_tests_mqttv3_c2d_client PRIVATE
@@ -279,38 +268,6 @@ if(UNIX)
     target_compile_definitions(az_iot_tests_mqttv3_direct_method_client_tuned PRIVATE
         _POSIX_C_SOURCE=200809L)
 endif()
-az_iot_add_cmocka_test(az_iot_tests_mqttv5_direct_method_client unit/mqttv5_direct_method_client_test.c)
-target_link_libraries(az_iot_tests_mqttv5_direct_method_client PRIVATE az_iot_test_support az_iot_mqttv5)
-target_include_directories(az_iot_tests_mqttv5_direct_method_client PRIVATE
-    ${PROJECT_SOURCE_DIR}/src/core)
-if(UNIX)
-    # Two MQTTv5 direct-method budgets are only observable once a real second has
-    # passed, so the suite calls nanosleep().
-    target_compile_definitions(az_iot_tests_mqttv5_direct_method_client PRIVATE
-        _POSIX_C_SOURCE=200809L)
-endif()
-# The whole suite again, against the library, at run-time limits of one concurrent invocation
-# and four queued notices: proves the limits reach every pool, loop and admission check, and
-# catches anyone reintroducing a hardcoded bound.
-az_iot_add_cmocka_test(az_iot_tests_mqttv5_direct_method_client_tuned
-    unit/mqttv5_direct_method_client_test.c)
-target_link_libraries(az_iot_tests_mqttv5_direct_method_client_tuned PRIVATE az_iot_test_support az_iot_mqttv5)
-target_include_directories(az_iot_tests_mqttv5_direct_method_client_tuned PRIVATE
-    ${PROJECT_SOURCE_DIR}/src/core)
-target_compile_definitions(az_iot_tests_mqttv5_direct_method_client_tuned PRIVATE
-    TEST_MAX_CONCURRENT_INVOCATIONS=1
-    TEST_MAX_QUEUED_NOTICES=4)
-if(UNIX)
-    target_compile_definitions(az_iot_tests_mqttv5_direct_method_client_tuned PRIVATE
-        _POSIX_C_SOURCE=200809L)
-endif()
-# The MQTTv5 direct-method protobuf codec is hand-rolled, so its wire format is
-# pinned here against bytes taken from the .proto rather than from itself.
-az_iot_add_cmocka_test(
-    az_iot_tests_mqttv5_direct_method_codec unit/mqttv5_direct_method_codec_test.c)
-target_link_libraries(az_iot_tests_mqttv5_direct_method_codec PRIVATE az_iot_test_support az_iot_mqttv5)
-target_include_directories(az_iot_tests_mqttv5_direct_method_codec PRIVATE
-    ${PROJECT_SOURCE_DIR}/src/mqttv5)
 # The shared proto3 codec, pinned against bytes taken from the protobuf spec
 # rather than from itself. The twin and presence clients only exercise the paths
 # their own protocols take, so the boundaries are covered here.
@@ -322,10 +279,6 @@ az_iot_add_cmocka_test(az_iot_tests_mqttv3_twin_client unit/mqttv3_twin_client_t
 target_link_libraries(az_iot_tests_mqttv3_twin_client PRIVATE az_iot_test_support az_iot_mqttv3)
 target_include_directories(az_iot_tests_mqttv3_twin_client PRIVATE
     ${PROJECT_SOURCE_DIR}/src/core)
-az_iot_add_cmocka_test(az_iot_tests_mqttv5_twin_client unit/mqttv5_twin_client_test.c)
-target_link_libraries(az_iot_tests_mqttv5_twin_client PRIVATE az_iot_test_support az_iot_mqttv5)
-target_include_directories(az_iot_tests_mqttv5_twin_client PRIVATE
-    ${PROJECT_SOURCE_DIR}/src/core ${PROJECT_SOURCE_DIR}/src/mqttv5)
 
 # Fixed feature-client sizes and removed count macros: the headers compile included
 # twice (built here), and defining any of them, even to its former default, fails on
@@ -337,13 +290,9 @@ set(_az_iot_fixed_size_cases "")
 foreach(_case
         AZ_IOT_DM_METHOD_NAME_MAX=96 AZ_IOT_DM_METHOD_NAME_MAX=128
         AZ_IOT_DM_RID_MAX=32 AZ_IOT_DM_RID_MAX=64
-        AZ_IOT_DM_CORR_DATA_MAX=64 AZ_IOT_DM_CORR_DATA_MAX=128
-        AZ_IOT_MQTTV5_DM_TOPIC_MAX=192 AZ_IOT_MQTTV5_DM_TOPIC_MAX=256
         AZ_IOT_LOG_FILE_PATH_MAX=256 AZ_IOT_LOG_FILE_PATH_MAX=512
         AZ_IOT_DM_MAX_INFLIGHT=4 AZ_IOT_DM_MAX_INFLIGHT=1
-        AZ_IOT_TWIN_MAX_PENDING=8 AZ_IOT_TWIN_MAX_PENDING=1
-        AZ_IOT_MQTTV5_DM_MAX_CONCURRENT=4 AZ_IOT_MQTTV5_DM_NOTICE_QUEUE_MAX=4
-        AZ_IOT_MQTTV5_DM_MAX_METHODS=8 AZ_IOT_MQTTV5_DM_RESULT_BODY_MAX=512)
+        AZ_IOT_TWIN_MAX_PENDING=8 AZ_IOT_TWIN_MAX_PENDING=1)
     string(REPLACE "=" "_" _name "${_case}")
     string(TOLOWER "az_iot_tests_fixed_size_${_name}" _name)
     add_library(${_name} OBJECT EXCLUDE_FROM_ALL compile/fixed_sizes_test.c)
@@ -361,12 +310,11 @@ set_tests_properties(az_iot_tests_fixed_sizes_refuse_overrides PROPERTIES RESOUR
 unset(_az_iot_fixed_size_cases)
 
 # File upload is HTTPS-only (stateless request-build/response-parse helpers), so
-# these tests need neither the mqtt mock nor internal headers. mqttv5 is linked
-# only so the profile-pin test can show a released pin admits the other
-# generation.
+# these tests need no mqtt mock; one pins a profile through the internal header.
 az_iot_add_cmocka_test(az_iot_tests_mqttv3_file_upload unit/mqttv3_file_upload_client_test.c)
 target_link_libraries(az_iot_tests_mqttv3_file_upload PRIVATE
-    az_iot_mqttv3 az_iot_mqttv5 az_iot_test_support)
+    az_iot_mqttv3 az_iot_test_support)
+target_include_directories(az_iot_tests_mqttv3_file_upload PRIVATE ${PROJECT_SOURCE_DIR}/src/core)
 
 az_iot_add_cmocka_test(az_iot_tests_certificate_provider_pem unit/certificate_provider_pem_test.c)
 

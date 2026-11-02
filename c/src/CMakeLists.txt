@@ -78,23 +78,11 @@ target_link_libraries(az_iot_mqttv3 PUBLIC az_iot_core)
 az_iot_apply_warnings(az_iot_mqttv3)
 az_iot_apply_coverage(az_iot_mqttv3)
 
-add_library(az_iot_mqttv5 ${AZ_IOT_MQTTV5_SOURCES})
-add_library(azure::iot::mqttv5 ALIAS az_iot_mqttv5)
-# mqttv5's own internal headers live under mqttv5/internal/; core's are reached
-# through the core entry, exactly as mqttv3 does.
-target_include_directories(az_iot_mqttv5 PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/core
-    ${CMAKE_CURRENT_SOURCE_DIR}/mqttv5
-)
-target_link_libraries(az_iot_mqttv5 PUBLIC az_iot_core)
-az_iot_apply_warnings(az_iot_mqttv5)
-az_iot_apply_coverage(az_iot_mqttv5)
-
 # Shared builds carry no ABI guarantee (docs/struct_versioning.md). The full
 # version in the soname (Linux) and DLL name (Windows) makes the loader refuse
 # a library from any other release instead of letting it misread our structs.
 # The pre-release label is included: previews may break the ABI between them.
-foreach(_tgt IN ITEMS az_iot_core az_iot_mqttv3 az_iot_mqttv5)
+foreach(_tgt IN ITEMS az_iot_core az_iot_mqttv3)
     set_target_properties(${_tgt} PROPERTIES
         VERSION ${AZ_IOT_VERSION_FULL}
         SOVERSION ${AZ_IOT_VERSION_FULL}

@@ -33,7 +33,7 @@ set(AZ_IOT_VERSION_FULL "${_az_iot_ver_STRING}")
 
 project(azure-iot-sdk
     VERSION ${_az_iot_ver_MAJOR}.${_az_iot_ver_MINOR}.${_az_iot_ver_PATCH}
-    DESCRIPTION "C99 client SDK for Azure IoT Hub (MQTTv3 + MQTTv5)"
+    DESCRIPTION "C99 client SDK for Azure IoT Hub (MQTTv3)"
     LANGUAGES C
 )
 
