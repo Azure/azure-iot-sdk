@@ -61,6 +61,8 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
                 EnableTwin = enableTwin,
                 EnableDirectMethods = enableDirectMethods,
                 EnableCloudToDeviceMessages = enableCloudToDeviceMessages,
+                ReceiveDesiredPropertyUpdates = true,
+                ReceiveReportedPropertiesUponConnect = true,
                 ConnectionRetryPolicy = new ExponentialBackoffRetryPolicy(uint.MaxValue, TimeSpan.Zero, useJitter: false),
             };
             using Device.Unified.Connection.ConnectionClient connectionClient = new(options);
@@ -68,6 +70,8 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             options.EnableTwin = !enableTwin;
             options.EnableDirectMethods = !enableDirectMethods;
             options.EnableCloudToDeviceMessages = !enableCloudToDeviceMessages;
+            options.ReceiveDesiredPropertyUpdates = false;
+            options.ReceiveReportedPropertiesUponConnect = false;
 
             await connectionClient.ConnectToHubAsync(GetMockConnectionContext(), TestContext.Current.CancellationToken)
                 .WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
@@ -92,10 +96,26 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             Assert.Equal(2, births.Length);
             Assert.All(births, publish =>
             {
+                // EnableTwin only applies to MQTTv3 IoT hubs. MQTTv5 births carry the push options as configured.
                 Birth birth = Birth.Parser.ParseFrom(publish.Payload);
-                Assert.Equal(enableTwin, birth.PushDesired);
-                Assert.Equal(enableTwin, birth.PushReported);
+                Assert.True(birth.PushDesired);
+                Assert.True(birth.PushReported);
             });
+        }
+
+        [Fact]
+        public async Task UnifiedBirthRequestsNoTwinPushByDefault()
+        {
+            using MockConnectionMqttClient mockMqttClient = new() { AutoRespondToBirth = true };
+            using Device.Unified.Connection.ConnectionClient connectionClient = new(new ConnectionClientOptions() { MqttClient = mockMqttClient });
+
+            await connectionClient.ConnectToHubAsync(GetMockConnectionContext(), TestContext.Current.CancellationToken)
+                .WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+
+            Birth birth = Birth.Parser.ParseFrom(mockMqttClient.SentMqttTrafficInOrder
+                .Select(traffic => traffic.Publish).OfType<MqttPublish>().Single().Payload);
+            Assert.False(birth.PushDesired);
+            Assert.False(birth.PushReported);
         }
 
         [Theory]
@@ -253,6 +273,8 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             {
                 MqttClient = mockMqttClient,
                 SessionExpiryInterval = 120,
+                ReceiveDesiredPropertyUpdates = true,
+                ReceiveReportedPropertiesUponConnect = true,
                 ConnectionRetryPolicy = new ExponentialBackoffRetryPolicy(uint.MaxValue, TimeSpan.Zero, useJitter: false),
             };
             using ConnectionClient connectionClient = new(options);
@@ -313,6 +335,8 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             MqttV5ConnectionClientOptions options = new()
             {
                 MqttClient = mockMqttClient,
+                ReceiveDesiredPropertyUpdates = true,
+                ReceiveReportedPropertiesUponConnect = true,
                 ConnectionRetryPolicy = new ExponentialBackoffRetryPolicy(uint.MaxValue, TimeSpan.Zero, useJitter: false),
             };
             using ConnectionClient connectionClient = new(options);
@@ -382,6 +406,8 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             MqttV5ConnectionClientOptions options = new()
             {
                 MqttClient = mockMqttClient,
+                ReceiveDesiredPropertyUpdates = true,
+                ReceiveReportedPropertiesUponConnect = true,
                 ConnectionRetryPolicy = new ExponentialBackoffRetryPolicy(uint.MaxValue, TimeSpan.Zero, useJitter: false),
             };
             using ConnectionClient connectionClient = new(options);
@@ -422,6 +448,8 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             MqttV5ConnectionClientOptions options = new()
             {
                 MqttClient = mockMqttClient,
+                ReceiveDesiredPropertyUpdates = true,
+                ReceiveReportedPropertiesUponConnect = true,
                 ConnectionRetryPolicy = new ExponentialBackoffRetryPolicy(uint.MaxValue, TimeSpan.Zero, useJitter: false),
             };
             using ConnectionClient connectionClient = new(options);

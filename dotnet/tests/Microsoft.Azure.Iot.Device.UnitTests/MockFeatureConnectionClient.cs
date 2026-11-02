@@ -44,6 +44,13 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
         global::Microsoft.Azure.Iot.Device.MQTTv5.Connection.BirthAckVersions? global::Microsoft.Azure.Iot.Device.Unified.Connection.IConnectionClient.LatestBirthAck => LatestBirthAck;
 
+        /// <summary>Whether the connection client's births ask IoT hub to push desired properties. False simulates pull mode.</summary>
+        public bool IsDesiredPushRequested { get; set; } = true;
+
+        bool global::Microsoft.Azure.Iot.Device.MQTTv5.Connection.IConnectionClient.IsDesiredPushRequested => IsDesiredPushRequested;
+
+        bool global::Microsoft.Azure.Iot.Device.Unified.Connection.IConnectionClient.IsDesiredPushRequested => IsDesiredPushRequested;
+
         public event Action? ConnectionLost;
 
         event Action? global::Microsoft.Azure.Iot.Device.MQTTv5.Connection.IConnectionClient.ConnectionLost

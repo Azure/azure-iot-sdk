@@ -53,7 +53,11 @@ twin. An unreadable file is ignored, which is always safe because IoT Hub then p
 ### Connecting
 
 - **Choose the push options once.** `ReceiveDesiredPropertyUpdates` and `ReceiveReportedPropertiesUponConnect` are
-  set on `ConnectionClientOptions` and can't change while the connection client exists.
+  set on `ConnectionClientOptions` and can't change while the connection client exists. Both default to false (pull
+  mode), so this sample sets them to true. In pull mode, IoT Hub sends no desired properties updates while the device
+  is connected, so `DesiredPatchReceived` is never raised. Instead, the SDK fetches the desired properties each time
+  the device connects (if they changed) and raises `TwinPushReceived` with them, and later changes are only seen upon
+  reconnecting or by calling `GetTwinAsync`.
 - **Start from the persisted twin.** Passing it to the `TwinClient` constructor tells IoT Hub which versions the
   device already holds, so IoT Hub only pushes the sections whose versions differ, rather than the device fetching the
   whole twin each time it starts. If a persisted version is newer than IoT Hub's (for example, because the device's

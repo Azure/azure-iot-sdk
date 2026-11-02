@@ -44,6 +44,8 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
 
         BirthAckVersions? IConnectionClient.LatestBirthAck => _latestBirthAck;
 
+        bool IConnectionClient.IsDesiredPushRequested => _receiveDesiredPropertyUpdates;
+
         event Action? IConnectionClient.ConnectionLost
         {
             add => HubConnectionLost += value;

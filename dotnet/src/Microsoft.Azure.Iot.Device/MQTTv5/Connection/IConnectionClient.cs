@@ -69,6 +69,13 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
         internal BirthAckVersions? LatestBirthAck => null;
 
         /// <summary>
+        /// Whether this connection client's births ask IoT hub to push desired properties (push_desired). If not, IoT hub
+        /// sends no desired properties patches, so twin clients fetch the desired properties upon connecting when IoT hub's
+        /// version is newer than the device's. Only consulted for IoT hubs that use MQTTv5, since only they send birth acks.
+        /// </summary>
+        internal bool IsDesiredPushRequested => true;
+
+        /// <summary>
         /// Raised whenever the connection to IoT hub is lost or closed, before any reconnection starts.
         /// </summary>
         /// <remarks>
