@@ -242,18 +242,19 @@ static void init_rejects_a_null_connection(void** state)
   assert_int_equal(az_iot_mqttv3_c2d_client_init(&c, NULL), AZ_IOT_ERR_INVALID_ARG);
 }
 
-static void init_against_an_mqtt_v5_connection_is_rejected(void** state)
+static void init_while_another_profile_is_required_is_rejected(void** state)
 {
   (void)state;
 
-  /* A direct connection declares its generation up front, so the pin can be
-   * answered at init rather than deferred to connect. */
+  /* A feature client of another profile already pins the connection. */
   az_iot_connection_client_options opts = { 0 };
   opts.iothub_hostname = "broker.example";
   opts.device_id = "ut-device";
-  opts.connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5;
   az_iot_connection_client conn;
   assert_int_equal(az_iot_test_connection_client_init(&conn, &opts), AZ_IOT_OK);
+  /* No supported profile other than mqttv3 exists to require; pin one directly. */
+  conn.required_profile = AZ_IOT_CONNECTION_PROFILE_UNKNOWN;
+  conn.required_profile_refs = 1;
 
   az_iot_mqttv3_c2d_client c2d;
   assert_int_equal(
@@ -1028,7 +1029,7 @@ int main(void)
   const struct CMUnitTest tests[] = {
     cmocka_unit_test_setup_teardown(init_rejects_a_null_client, setup, teardown),
     cmocka_unit_test(init_rejects_a_null_connection),
-    cmocka_unit_test(init_against_an_mqtt_v5_connection_is_rejected),
+    cmocka_unit_test(init_while_another_profile_is_required_is_rejected),
     cmocka_unit_test_setup_teardown(
         the_devicebound_filter_is_subscribed_on_connect, setup, teardown),
     cmocka_unit_test_setup_teardown(the_subscription_uses_qos_1, setup, teardown),

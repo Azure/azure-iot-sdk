@@ -15,12 +15,10 @@ set(AZ_IOT_CORE_SOURCES
     core/cert_util.c
     core/mono_time.c
     core/retry_policy.c
-    core/defensive_timeout.c
     core/deadline.c
     core/delivery_tracker.c
     core/env.c
     core/dispatch.c
-    core/proto3.c
     core/span_writer.c
     core/json_string.c
     core/base64.c

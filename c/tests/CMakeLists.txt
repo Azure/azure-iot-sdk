@@ -194,9 +194,6 @@ target_include_directories(az_iot_tests_connection_dps_payload PRIVATE
 az_iot_add_cmocka_test(az_iot_tests_retry_policy unit/retry_policy_test.c)
 target_include_directories(az_iot_tests_retry_policy PRIVATE
     ${PROJECT_SOURCE_DIR}/src/core)
-az_iot_add_cmocka_test(az_iot_tests_defensive_timeout unit/defensive_timeout_test.c)
-target_include_directories(az_iot_tests_defensive_timeout PRIVATE
-    ${PROJECT_SOURCE_DIR}/src/core)
 az_iot_add_cmocka_test(az_iot_tests_deadline unit/deadline_test.c)
 target_include_directories(az_iot_tests_deadline PRIVATE
     ${PROJECT_SOURCE_DIR}/src/core)
@@ -241,6 +238,7 @@ az_iot_add_cmocka_test(
     az_iot_tests_mqttv3_telemetry_client unit/mqttv3_telemetry_client_test.c)
 target_link_libraries(
     az_iot_tests_mqttv3_telemetry_client PRIVATE az_iot_test_support az_iot_mqttv3)
+target_include_directories(az_iot_tests_mqttv3_telemetry_client PRIVATE ${PROJECT_SOURCE_DIR}/src/core)
 az_iot_add_cmocka_test(az_iot_tests_mqttv3_c2d_client unit/mqttv3_c2d_client_test.c)
 target_link_libraries(az_iot_tests_mqttv3_c2d_client PRIVATE az_iot_test_support az_iot_mqttv3)
 target_include_directories(az_iot_tests_mqttv3_c2d_client PRIVATE
@@ -268,13 +266,6 @@ if(UNIX)
     target_compile_definitions(az_iot_tests_mqttv3_direct_method_client_tuned PRIVATE
         _POSIX_C_SOURCE=200809L)
 endif()
-# The shared proto3 codec, pinned against bytes taken from the protobuf spec
-# rather than from itself. The twin and presence clients only exercise the paths
-# their own protocols take, so the boundaries are covered here.
-az_iot_add_cmocka_test(az_iot_tests_proto3 unit/proto3_test.c)
-target_link_libraries(az_iot_tests_proto3 PRIVATE az_iot_test_support az_iot_core)
-target_include_directories(az_iot_tests_proto3 PRIVATE ${PROJECT_SOURCE_DIR}/src/core)
-
 az_iot_add_cmocka_test(az_iot_tests_mqttv3_twin_client unit/mqttv3_twin_client_test.c)
 target_link_libraries(az_iot_tests_mqttv3_twin_client PRIVATE az_iot_test_support az_iot_mqttv3)
 target_include_directories(az_iot_tests_mqttv3_twin_client PRIVATE
