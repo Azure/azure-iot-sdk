@@ -146,12 +146,12 @@ static void open_from_faulted_is_rejected(void** state)
 }
 
 /* The MQTT client is built for the session's MQTT version; an MQTTv3 (v3.1.1)
- * session cannot use an adapter that builds no v3.1.1 client. */
+ * session cannot use an adapter that only builds v5 clients. */
 static void open_rejects_an_adapter_of_the_wrong_version(void** state)
 {
   (void)state;
   az_iot_connection_client_options opts = az_iot_test_mqtt_v3_options();
-  opts.mqtt_adapter = az_iot_mock_mqtt_get_adapter_building_no_client();
+  opts.mqtt_adapter = az_iot_mock_mqtt_get_adapter_for_version(AZ_IOT_MQTT_VERSION_5);
   az_iot_connection_client c;
   assert_int_equal(az_iot_test_connection_client_init(&c, &opts), AZ_IOT_OK);
 

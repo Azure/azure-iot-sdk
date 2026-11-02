@@ -125,19 +125,25 @@ static void init_needs_the_whole_workspace_at_any_alignment(void** state)
   size_t const size = az_iot_az_mqtt_get_workspace_size(&limits);
   assert_true(size < g_workspace_size);
   az_iot_mqtt_adapter const* adapter = az_iot_az_mqtt_get_adapter();
-  az_iot_mqtt_client* client = NULL;
-  /* Exactly the size. */
-  assert_int_equal(
-      adapter->init(AZ_IOT_MQTT_VERSION_3_1_1, &limits, g_workspace + 1, size - 1, &client),
-      AZ_IOT_ERR_NOT_ENOUGH_SPACE);
-  assert_null(client);
-  /* Start one byte in: the adapter aligns inside the workspace. */
-  assert_int_equal(
-      adapter->init(AZ_IOT_MQTT_VERSION_3_1_1, &limits, g_workspace + 1, size, &client), AZ_IOT_OK);
-  assert_non_null(client);
-  assert_non_null(client->iface);
-  assert_true((uint8_t*)client >= g_workspace + 1 && (uint8_t*)client < g_workspace + 1 + size);
-  client->iface->destroy(client);
+  az_iot_mqtt_version const versions[] = { AZ_IOT_MQTT_VERSION_3_1_1, AZ_IOT_MQTT_VERSION_5 };
+  for (size_t i = 0; i < sizeof(versions) / sizeof(versions[0]); i++)
+  {
+    az_iot_mqtt_client* client = NULL;
+    if (versions[i] == AZ_IOT_MQTT_VERSION_5) /* The largest client: exactly the size. */
+    {
+      assert_int_equal(
+          adapter->init(versions[i], &limits, g_workspace + 1, size - 1, &client),
+          AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+      assert_null(client);
+    }
+    /* Start one byte in: the adapter aligns inside the workspace. */
+    assert_int_equal(
+        adapter->init(versions[i], &limits, g_workspace + 1, size, &client), AZ_IOT_OK);
+    assert_non_null(client);
+    assert_non_null(client->iface);
+    assert_true((uint8_t*)client >= g_workspace + 1 && (uint8_t*)client < g_workspace + 1 + size);
+    client->iface->destroy(client);
+  }
 }
 
 static void init_rejects_bad_arguments(void** state)
@@ -149,16 +155,16 @@ static void init_rejects_bad_arguments(void** state)
   az_iot_mqtt_adapter const* adapter = az_iot_az_mqtt_get_adapter();
   az_iot_mqtt_client* client = NULL;
   assert_int_equal(
-      adapter->init(AZ_IOT_MQTT_VERSION_3_1_1, &limits, g_workspace, g_workspace_size, NULL),
+      adapter->init(AZ_IOT_MQTT_VERSION_5, &limits, g_workspace, g_workspace_size, NULL),
       AZ_IOT_ERR_INVALID_ARG);
   assert_int_equal(
-      adapter->init(AZ_IOT_MQTT_VERSION_3_1_1, NULL, g_workspace, g_workspace_size, &client),
+      adapter->init(AZ_IOT_MQTT_VERSION_5, NULL, g_workspace, g_workspace_size, &client),
       AZ_IOT_ERR_INVALID_ARG);
   assert_int_equal(
-      adapter->init(AZ_IOT_MQTT_VERSION_3_1_1, &bad, g_workspace, g_workspace_size, &client),
+      adapter->init(AZ_IOT_MQTT_VERSION_5, &bad, g_workspace, g_workspace_size, &client),
       AZ_IOT_ERR_INVALID_ARG);
   assert_int_equal(
-      adapter->init(AZ_IOT_MQTT_VERSION_3_1_1, &limits, NULL, g_workspace_size, &client),
+      adapter->init(AZ_IOT_MQTT_VERSION_5, &limits, NULL, g_workspace_size, &client),
       AZ_IOT_ERR_INVALID_ARG);
   assert_int_equal(
       adapter->init((az_iot_mqtt_version)99, &limits, g_workspace, g_workspace_size, &client),
@@ -173,6 +179,7 @@ static az_iot_result connect_with(az_iot_mqtt_client* client, char const* passwo
   options.username = "u";
   options.password = password;
   options.clean_start = clean;
+  options.session_expiry_seconds = clean ? 0 : 60;
   return client->iface->connect(client, &options);
 }
 
@@ -182,7 +189,7 @@ static void one_workspace_serves_each_version_in_turn_and_is_wiped(void** state)
   az_iot_mqtt_limits const limits = small_limits();
   size_t const size = az_iot_az_mqtt_get_workspace_size(&limits);
   az_iot_mqtt_adapter const* adapter = az_iot_az_mqtt_get_adapter();
-  az_iot_mqtt_version const versions[] = { AZ_IOT_MQTT_VERSION_3_1_1 };
+  az_iot_mqtt_version const versions[] = { AZ_IOT_MQTT_VERSION_3_1_1, AZ_IOT_MQTT_VERSION_5 };
   for (size_t i = 0; i < sizeof(versions) / sizeof(versions[0]); i++)
   {
     az_iot_mqtt_client* client = NULL;
@@ -206,7 +213,7 @@ static void copies_are_wiped_at_the_next_connect(void** state)
   (void)state;
   az_iot_mqtt_limits const limits = small_limits();
   size_t const size = az_iot_az_mqtt_get_workspace_size(&limits);
-  az_iot_mqtt_version const versions[] = { AZ_IOT_MQTT_VERSION_3_1_1 };
+  az_iot_mqtt_version const versions[] = { AZ_IOT_MQTT_VERSION_3_1_1, AZ_IOT_MQTT_VERSION_5 };
   for (size_t i = 0; i < sizeof(versions) / sizeof(versions[0]); i++)
   {
     az_iot_mqtt_client* client = NULL;
@@ -232,7 +239,7 @@ static void connect_strings_that_do_not_fit_are_refused(void** state)
   az_iot_mqtt_client* client = NULL;
   assert_int_equal(
       az_iot_az_mqtt_get_adapter()->init(
-          AZ_IOT_MQTT_VERSION_3_1_1, &limits, g_workspace, size, &client),
+          AZ_IOT_MQTT_VERSION_5, &limits, g_workspace, size, &client),
       AZ_IOT_OK);
   assert_int_equal(connect_with(client, "a-longer-password", true), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
   assert_int_equal(connect_with(client, "pw", true), AZ_IOT_OK);
@@ -248,7 +255,7 @@ static void a_session_that_outlives_the_connection_needs_a_message_store(void** 
   az_iot_mqtt_adapter const* adapter = az_iot_az_mqtt_get_adapter();
   az_iot_mqtt_client* client = NULL;
   assert_int_equal(
-      adapter->init(AZ_IOT_MQTT_VERSION_3_1_1, &limits, g_workspace, size, &client), AZ_IOT_OK);
+      adapter->init(AZ_IOT_MQTT_VERSION_5, &limits, g_workspace, size, &client), AZ_IOT_OK);
   assert_int_equal(connect_with(client, "pw", false), AZ_IOT_ERR_NOT_SUPPORTED);
   client->iface->destroy(client);
 
@@ -256,7 +263,7 @@ static void a_session_that_outlives_the_connection_needs_a_message_store(void** 
   size = az_iot_az_mqtt_get_workspace_size(&limits);
   assert_true(size <= g_workspace_size);
   assert_int_equal(
-      adapter->init(AZ_IOT_MQTT_VERSION_3_1_1, &limits, g_workspace, size, &client), AZ_IOT_OK);
+      adapter->init(AZ_IOT_MQTT_VERSION_5, &limits, g_workspace, size, &client), AZ_IOT_OK);
   assert_int_equal(connect_with(client, "pw", false), AZ_IOT_OK);
   (void)client->iface->disconnect(client);
   client->iface->destroy(client);

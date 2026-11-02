@@ -219,9 +219,14 @@ static void mqtt_version_to_string_covers_every_version(void** state)
 {
   (void)state;
   assert_mapped(az_iot_mqtt_version_to_string(AZ_IOT_MQTT_VERSION_3_1_1), "MQTT?", "v3.1.1");
+  assert_mapped(az_iot_mqtt_version_to_string(AZ_IOT_MQTT_VERSION_5), "MQTT?", "v5");
+  assert_string_not_equal(
+      az_iot_mqtt_version_to_string(AZ_IOT_MQTT_VERSION_3_1_1),
+      az_iot_mqtt_version_to_string(AZ_IOT_MQTT_VERSION_5));
   /* The wire version is what a reader correlates against a packet capture, so
    * the strings name the protocol rather than the enumerator. */
   assert_string_equal(az_iot_mqtt_version_to_string(AZ_IOT_MQTT_VERSION_3_1_1), "MQTTv3.1.1");
+  assert_string_equal(az_iot_mqtt_version_to_string(AZ_IOT_MQTT_VERSION_5), "MQTTv5");
 }
 
 static void mqtt_version_to_string_reports_unknown_for_an_unmapped_version(void** state)

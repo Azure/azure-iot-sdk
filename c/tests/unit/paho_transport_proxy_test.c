@@ -174,7 +174,7 @@ static void a_plaintext_websocket_connect_uses_ws_and_80(void** state)
   assert_string_equal(mock_paho_last_server_uri(), "ws://localhost:80/$iothub/websocket");
 }
 
-/* connect timeout: connect_timeout_seconds reaches Paho. 0 keeps
+/* connect timeout: connect_timeout_seconds reaches Paho, on both versions. 0 keeps
  * Paho's 30 s default. */
 static void the_connect_timeout_reaches_paho(void** state)
 {
@@ -215,6 +215,21 @@ static void a_huge_connect_timeout_is_clamped(void** state)
   opts.connect_timeout_seconds = UINT32_MAX;
   assert_int_equal(do_connect(fx, &opts), AZ_IOT_OK);
   assert_int_equal(mock_paho_last_connect_timeout(), INT_MAX / 1000);
+}
+
+static void the_connect_timeout_reaches_paho_on_v5(void** state)
+{
+  (void)state;
+  mock_paho_reset();
+  uint8_t workspace[AZ_IOT_PAHO_WORKSPACE_SIZE];
+  az_iot_mqtt_client* c = build_client(AZ_IOT_MQTT_VERSION_5, workspace, sizeof(workspace));
+  az_iot_mqtt_connect_options opts;
+  base_options(&opts);
+  opts.connect_timeout_seconds = 9;
+
+  assert_int_equal(c->iface->connect(c, &opts), AZ_IOT_OK);
+  assert_int_equal(mock_paho_last_connect_timeout(), 9);
+  c->iface->destroy(c);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -570,6 +585,7 @@ int main(void)
     cmocka_unit_test_setup_teardown(the_connect_timeout_reaches_paho, setup, teardown),
     cmocka_unit_test_setup_teardown(a_zero_connect_timeout_keeps_the_paho_default, setup, teardown),
     cmocka_unit_test_setup_teardown(a_huge_connect_timeout_is_clamped, setup, teardown),
+    cmocka_unit_test(the_connect_timeout_reaches_paho_on_v5),
   };
   return cmocka_run_group_tests_name("paho_transport_proxy", tests, NULL, NULL);
 }

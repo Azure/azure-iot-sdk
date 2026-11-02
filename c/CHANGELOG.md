@@ -4,9 +4,10 @@
 
 ### Features Added
 
-- Breaking: the az_mqtt adapter footprint is removed: `AZ_IOT_AZ_MQTT_FOOTPRINT` (macro, with
+- Breaking: the az_mqtt adapter footprint is removed. `AZ_IOT_AZ_MQTT_FOOTPRINT` (macro, with
   `AZ_IOT_AZ_MQTT_FOOTPRINT_DEFAULT` and `_CONSTRAINED`, and CMake option `DEFAULT` or
-  `CONSTRAINED`). Defining the macro or setting the CMake option fails the
+  `CONSTRAINED`) selected only `AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX`, which is now the one setting
+  (default 16; `CONSTRAINED` was 4). Defining the macro or setting the CMake option fails the
   build. `AZ_IOT_AZ_MQTT_CONFIG_FILE` stays.
 - Breaking: `az_iot_mqtt_adapter` gains an optional `validate_limits_for_session_usage()`, which
   `az_iot_connection_client_init()` calls with whether the hub session outlives its connection
@@ -42,9 +43,9 @@
   `mqtt_limits`. All three are required: `init()` returns `AZ_IOT_ERR_INVALID_ARG` when
   `mqtt_adapter` is NULL. Removed: `az_iot_mqtt_factory`,
   `az_iot_connection_client_register_mqtt_factory()`, `AZ_IOT_MAX_MQTT_FACTORIES` (defining it is
-  a compile error), `az_iot_paho_factory_create_v3_1_1()`,
-  `az_iot_paho_factory_destroy()`, `az_iot_az_mqtt_factory_create_v3_1_1()`
-  and `az_iot_az_mqtt_factory_destroy()`. The az_mqtt
+  a compile error), `az_iot_paho_factory_create_v3_1_1()`, `az_iot_paho_factory_create_v5()`,
+  `az_iot_paho_factory_destroy()`, `az_iot_az_mqtt_factory_create_v3_1_1()`,
+  `az_iot_az_mqtt_factory_create_v5()` and `az_iot_az_mqtt_factory_destroy()`. The az_mqtt
   adapter's sizes are run-time values only: `AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE`,
   `AZ_IOT_AZ_MQTT_RECEIVE_BUFFER_SIZE`, `AZ_IOT_AZ_MQTT_INFLIGHT_MAX` and
   `AZ_IOT_AZ_MQTT_MESSAGE_STORAGE_SIZE` (macros, and the first three as CMake options) are removed;
@@ -78,15 +79,22 @@
   connection and is sent again on the next session when its session ends unanswered; a reported
   patch is sent at once or refused (`AZ_IOT_ERR_BUSY` or `AZ_IOT_ERR_NOT_CONNECTED`) and fails
   with `AZ_IOT_ERR_NOT_CONNECTED` at a session end.
-- Breaking: `az_iot_subscription_failed_callback` takes the refused SUBACK's Reason String
+- Breaking: `az_iot_subscription_failed_callback` takes the refused SUBACK's MQTT 5 Reason String
   (`reason_string`, `reason_string_len`, after `protocol_code`). On a session-scoped filter the
-  Reason String is reported as `az_iot_connection_state_event.error->message`.
+  Reason String is reported as `az_iot_connection_state_event.error->message`. Both adapters report
+  it on `AZ_IOT_MQTT_EVT_SUBSCRIBE_ACK`.
 - Certificate renewal: `az_iot_connection_client_options::csr_response_timeout_ms` sets how long
   `az_iot_connection_client_send_csr()` waits for a terminal response (0: 120 s,
   `AZ_IOT_DEFAULT_CSR_RESPONSE_TIMEOUT_MS`). A renewal open when the session ends (a drop or
   `close()`) now fails with `AZ_IOT_CSR_FAILED` / `AZ_IOT_ERR_NOT_CONNECTED` instead of staying
   open; resubmit it with the same request id once reconnected. `deinit()` calls no renewal
   callback.
+- Connection client: on MQTT 5, the Reason String of a refused CONNACK or of a server DISCONNECT
+  with a nonzero reason code is reported as `az_iot_connection_state_event.error->message` (source
+  `AZ_IOT_CONN_ERR_SRC_MQTT`), truncated to `AZ_IOT_CONN_ERROR_MESSAGE_MAX` bytes.
+  `az_iot_mqtt_event.reason_string` now also carries it on `AZ_IOT_MQTT_EVT_DISCONNECTED` (both
+  adapters) and on a failed `AZ_IOT_MQTT_EVT_CONNECTED` (az_mqtt adapter; Paho does not expose it).
+  The Paho adapter keeps 128 bytes of a DISCONNECT Reason String.
 - Connection client: a hub that refuses the device right after a DPS assignment, before the new
   registration reaches it, is retried soon: `identity_recovery.after_assignment_policy` (default
   `az_iot_connection_client_get_default_identity_recovery_after_assignment_policy()`: 5 s doubling
@@ -144,7 +152,7 @@
   CMake options of the same names); `AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE` sizes a static
   workspace for them.
 - az_mqtt adapter in application memory: `az_iot_az_mqtt_get_adapter()` returns an
-  `az_iot_mqtt_adapter` whose `init()` builds an MQTT 3.1.1 client in a workspace the
+  `az_iot_mqtt_adapter` whose `init()` builds an MQTT 3.1.1 or MQTT 5 client in a workspace the
   application provides, with no allocation. Sizes are run-time values (`az_iot_mqtt_limits`): send
   and receive buffers, in-flight messages, message store and connect-string copies.
   `az_iot_az_mqtt_get_workspace_size()` gives the exact size; `AZ_IOT_AZ_MQTT_WORKSPACE_SIZE()` a
@@ -159,7 +167,7 @@
   clean sessions: no message store is reserved, `az_iot_connection_client_init()` refuses it
   unless `session_continuity` is `AZ_IOT_SESSION_CONTINUITY_CLEAN` or `dps.provision_only` is set,
   and a connect whose session
-  outlives the connection (`clean_start` false) returns
+  outlives the connection (`clean_start` false; MQTT 5: with `session_expiry_seconds` > 0) returns
   `AZ_IOT_ERR_NOT_SUPPORTED`.
 - Retry policy: `az_iot_retry_policy::jitter_mode`. `AZ_IOT_RETRY_JITTER_ADDITIVE` only lengthens a
   delay (+0..`jitter_pct`); the default `AZ_IOT_RETRY_JITTER_SYMMETRIC` keeps the existing ± jitter.
@@ -175,12 +183,13 @@
   derives a registration ID from the endorsement key. Sample
   [authentication/dps_tpm](samples/authentication/dps_tpm/README.md), with a TPM simulated in
   software. See [docs/connecting.md](docs/connecting.md#authentication).
-- az_mqtt MQTT adapter (`AZ_IOT_WITH_AZ_MQTT=ON`, `az_iot_adapter_az_mqtt.h`): MQTT 3.1.1
+- az_mqtt MQTT adapter (`AZ_IOT_WITH_AZ_MQTT=ON`, `az_iot_adapter_az_mqtt.h`): MQTT 3.1.1 and 5
   over the bundled `deps/az_mqtt` client, with no adapter thread (connect and receive in
   `process_loop()`, sends written when called); TLS through OpenSSL 3
   or mbedTLS (`AZ_IOT_AZ_MQTT_TLS`), Schannel on Windows (X.509 and in-memory PEM included);
   WebSockets, HTTP CONNECT proxy, and key references through an OpenSSL 3 provider. Buffer sizes
-  are run-time values (`az_iot_mqtt_limits`). See [docs/client-configuration.md](docs/client-configuration.md#az_mqtt-adapter-limits).
+  are run-time values (`az_iot_mqtt_limits`); the MQTT 5 CONNECT user property bound is set when
+  compiled, with or without CMake: a definition or a config header. See [docs/client-configuration.md](docs/client-configuration.md#az_mqtt-adapter-limits).
 - Logging for support diagnostics: rotating file sink (`az_iot_log_file_sink_open()`), lines
   `<UTC ISO 8601 time> [LEVEL] [component] [thread] [file:line] message` from the built-in sinks, connection configuration,
   state changes and retries at `INFO`, and a `...` marker on truncated messages.
@@ -235,9 +244,11 @@
 - Hub certificate renewal: `AZ_IOT_CSR_FAILED` now carries the hub's `info.credentialError`,
   `info.credentialMessage` and `trackingId` as `credential_error`, `credential_message` and
   `tracking_id` on `az_iot_csr_event` (never NULL; empty when absent).
-- PUBACK codes: `az_iot_mqtt_puback_result()` maps a PUBACK code to a result. The az_mqtt adapter
-  uses it; publish callbacks receive it unchanged, and the connection client logs the code of a
-  failed PUBACK.
+- PUBACK reason codes: `az_iot_mqtt_puback_result()` maps a PUBACK code to a result. An MQTT 5
+  refusal the broker will repeat (`0x87`, `0x90`, `0x99`), or `0x95` for a publish over the
+  server's Maximum Packet Size, is the new `AZ_IOT_ERR_PUBLISH_REFUSED`, quota exceeded (`0x97`) is `AZ_IOT_ERR_BUSY`, other failures stay
+  `AZ_IOT_ERR_MQTT`. The az_mqtt adapter uses it; publish callbacks receive it unchanged, and the
+  connection client logs the code of a failed PUBACK.
 - Breaking: the connection client no longer reads `AZ_IOT_DEVICE_ID` or
   `AZ_IOT_DPS_CONNECTION_PROFILE_OVERRIDE`. DPS now returns `connectionProfile`.
 - Breaking: telemetry `send()` returns `AZ_IOT_ERR_NOT_CONNECTED` (was
@@ -268,6 +279,16 @@
   `connection_profile` is now declared, so a feature client for another profile fails
   with `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH` instead of attaching to a session of the wrong
   profile. See [docs/connecting.md](docs/connecting.md#saved-hub-with-dps-fallback).
+- Breaking: MQTT 5 user properties are no longer copied into fixed arrays or capped.
+  `az_iot_mqtt_message.user_properties` is now an `az_iot_mqtt_user_properties` view, read with
+  `az_iot_mqtt_user_properties_next()` / `_find()` (`az_iot_mqtt_user_property_view`: UTF-8 with
+  lengths, not NUL-terminated); `user_properties_count` is removed, and
+  `az_iot_mqtt_user_properties_from_array()` wraps an array. Inbound, every property reaches the
+  SDK; the az_mqtt adapter dropped those past `AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX` (4 or 16), which
+  now limits CONNECT user properties only.
+  MQTT adapters, including your own, must implement and read the view: see
+  [docs/how_to_byo_mqtt_client.md](docs/how_to_byo_mqtt_client.md). The vendored az_mqtt is
+  patched for it (`deps/az_mqtt/VENDORED.md`).
 - Threading contract documented: the SDK does not lock its state against other threads, so every
   SDK call in a process must come from one thread or be serialized by the application
   ([docs/architecture.md](docs/architecture.md)). `tls.sign` and the certificate provider's
@@ -323,7 +344,8 @@
   `az_platform_sleep_msec()` with `esp_timer` and FreeRTOS, so the az_mqtt adapter's idle wait
   sleeps instead of returning at once.
 - Paho and az_mqtt adapters: `AZ_IOT_MQTT_EVT_DISCONNECTED` carries `AZ_IOT_OK` only for a
-  completed `disconnect()`. A lost connection (Paho) now reports `AZ_IOT_ERR_NOT_CONNECTED`.
+  completed `disconnect()`. A lost connection (Paho) and a server DISCONNECT with reason 0x00
+  (`az_iot_mqtt_disconnect_result()`) now report `AZ_IOT_ERR_NOT_CONNECTED`.
 - Paho adapter: `process_loop()` returns as soon as an event is queued and dispatches it, instead
   of sleeping its whole timeout and dispatching it on the next call.
 - Builds with OpenSSL 4.0 and 4.1 without deprecation warnings, which failed the build (Windows
@@ -334,8 +356,13 @@
   on Windows without OpenSSL (az_mqtt over Schannel) and what that leaves out.
 - az_mqtt adapter: the bundled az_mqtt is updated to main `3a2c61b` (was `58a0799` plus selected
   changes; see `deps/az_mqtt/VENDORED.md`). Invalid options are refused with `AZ_ERROR_ARG` before
-  anything is sent: Will, SUBSCRIBE and PUBLISH QoS above 2. The connection is closed
-  when a CONNACK reports Session Present after Clean Session. An mbedTLS verify callback's rejection is reported as a
+  anything is sent: Will, SUBSCRIBE and PUBLISH QoS above 2; MQTT 5 Retain Handling above 2, No
+  Local on a shared subscription, Authentication Data without Authentication Method, and AUTH reason
+  codes other than Success, Continue authentication and Re-authenticate. The connection is closed
+  when a CONNACK reports Session Present after Clean Session (MQTT 3.1.1) or Clean Start (MQTT 5),
+  and, in MQTT 5, as soon as a received packet's fixed header announces more than the advertised
+  Maximum Packet Size (the receive buffer size), after DISCONNECT 0x95; that session ends with
+  `AZ_IOT_ERR_NOT_ENOUGH_SPACE`, as before. An mbedTLS verify callback's rejection is reported as a
   TLS verification failure.
 - Paho: the bundled v1.3.16 is patched with two upstream fixes for data races between the
   application thread and Paho's threads: `MQTTAsync_destroy()` against the send thread on the
@@ -355,8 +382,10 @@
   destroyed. The adapter now passes the HTTP proxy as `http://...`, which Paho 1.3.14+ requires.
   With `proxy` unset, Paho now reads `http_proxy` / `https_proxy` only when
   `PAHO_C_CLIENT_USE_HTTP_PROXY=TRUE` is set (it then honours `no_proxy`); 1.3.13 read them always.
-- Paho adapter: UNSUBACKs are now reported
-  (`AZ_IOT_MQTT_EVT_UNSUBSCRIBE_ACK`). The conformance suite requires it of every adapter.
+- Paho adapter: a refused MQTT 5 PUBACK is reported with its reason code, the status
+  `az_iot_mqtt_puback_result()` gives it (`AZ_IOT_ERR_PUBLISH_REFUSED`, `AZ_IOT_ERR_BUSY` for quota)
+  and its Reason String; it was `AZ_IOT_ERR_MQTT` with no code. UNSUBACKs are now reported
+  (`AZ_IOT_MQTT_EVT_UNSUBSCRIBE_ACK`). The conformance suite requires both of every adapter.
 
 - Builds without Paho (`AZ_IOT_WITH_PAHO=OFF`): an MQTT adapter's header is installed only with
   the adapter. `AZ_IOT_BUILD_E2E` without Paho or az_mqtt, `AZ_IOT_BUILD_PKCS11_TESTS` without

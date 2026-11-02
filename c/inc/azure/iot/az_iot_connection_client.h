@@ -135,7 +135,8 @@ extern "C"
   typedef enum az_iot_identity_recovery_mode
   {
     /** @brief A CONNACK refusal makes the next attempt a DPS registration
-     * (when dps.id_scope is set). With dps.request_operational_certificate, every registration
+     * (when dps.id_scope is set); an MQTT 5 Not authorized DISCONNECT retries
+     * the hub. With dps.request_operational_certificate, every registration
      * requests a new certificate. Zero, the earlier behaviour. */
     AZ_IOT_IDENTITY_RECOVERY_REPROVISION = 0,
     /** @brief Retry the cached hub. DPS is contacted only through
@@ -517,7 +518,8 @@ extern "C"
      * automatic attempts.
      *
      * A hub refusal is retried on identity_recovery: a CONNACK refusal once
-     * every source of the pass is refused.
+     * every source of the pass is refused, an MQTT 5 DISCONNECT refusal at
+     * once.
      *
      * az_iot_connection_client_options_default() fills this with
      * az_iot_connection_client_get_default_retry_policy(). Use
@@ -757,7 +759,8 @@ extern "C"
      * @brief Recovery after the hub refuses the device identity.
      *
      * Covers a hub CONNACK that rejects the identity
-     * (AZ_IOT_ERR_IDENTITY_REJECTED). Such a refusal does not say why: the device
+     * (AZ_IOT_ERR_IDENTITY_REJECTED) and an MQTT 5 hub DISCONNECT with Not
+     * authorized (AZ_IOT_ERR_AUTH). Such a refusal does not say why: the device
      * may be disabled, its credential revoked, or its assignment changed.
      *
      * Retries climb a ladder separate from the reconnection ladders. It
@@ -765,7 +768,8 @@ extern "C"
      * and close(). Recovery stops at AZ_IOT_CONN_STATE_FAULTED, with the
      * refusal as the reason, when the ladder's max_attempts or
      * max_duration_seconds is reached first. A disabled reconnection_policy
-     * faults on the CONNACK refusal that ends a credential pass (see az_iot_auth).
+     * faults on the first MQTT 5 DISCONNECT refusal, or on the CONNACK refusal
+     * that ends a credential pass (see az_iot_auth).
      *
      * A hub that DPS has just assigned may refuse the device until the new
      * registration reaches it. Until HUB:CONNECTED, refusals after a DPS
@@ -991,7 +995,8 @@ extern "C"
     AZ_IOT_CONN_ERR_SRC_NONE = 0,
     /** @brief Below MQTT: TLS, socket, DNS. `code` is adapter-defined. */
     AZ_IOT_CONN_ERR_SRC_TRANSPORT,
-    /** @brief A code off the wire: CONNACK or SUBACK. */
+    /** @brief A code off the wire: CONNACK, SUBACK, or a server-sent MQTT 5
+     * DISCONNECT reason. */
     AZ_IOT_CONN_ERR_SRC_MQTT,
     /** @brief The provisioning service's own verdict. `code` is
      * `extended_error_code` (e.g. 401001). */

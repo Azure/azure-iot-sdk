@@ -259,8 +259,10 @@ Why each one:
   in-flight delivery, so resuming is the cheaper default. This is also the behaviour the role
   already had before the terms were set explicitly.
 
-Two rules that hold everywhere:
+Three rules that hold everywhere:
 
+- **No v5-only property is sent.** Every role speaks v3.1.1: its CONNECT has no field for Session
+  Expiry or Will Delay, and its DISCONNECT has no reason code.
 - **The SDK sets no Will of its own.** `opts.lwt` is the application's, and defaults to none. A
   CONNECT carries one Will, and taking the slot would deny the application its own "device went
   away" signal. It is never put on a provisioning session, whatever that session's lifetime:
@@ -675,8 +677,9 @@ cannot be expressed to the TLS stack — not by a handshake, certificate, chain 
 Those all reach the core as `AZ_IOT_ERR_MQTT`, because the adapter signals its own failures with
 negative codes and [`az_iot_mqtt_connack_result()`](../../src/core/mqtt_iface.c) maps every negative
 code to `AZ_IOT_ERR_MQTT` by design (a failure that never reached a broker carries no verdict about
-the identity). `AZ_IOT_ERR_AUTH` on a hub DISCONNECTED event (a server DISCONNECT carrying
-`0x87 Not authorized`, which no MQTT 3.1.1 adapter reports) is classified non-retriable.
+the identity). `AZ_IOT_ERR_AUTH` is produced by `az_iot_mqtt_disconnect_result()` for a server DISCONNECT
+carrying `0x87 Not authorized` — authorization revoked mid-session — and is classified
+non-retriable.
 
 ### 9.2 CONNACK mapping
 
@@ -687,12 +690,14 @@ call it rather than reporting a blanket `AZ_IOT_ERR_MQTT` — the rule is normat
 
 | Input | Result | Why |
 | --- | --- | --- |
-| `0` | `AZ_IOT_OK` | Accepted. |
+| `0` (either version) | `AZ_IOT_OK` | Accepted. |
 | Any **negative** code | `AZ_IOT_ERR_MQTT` | The adapter's own failure — refused socket, TLS handshake, client-library error. It never reached a broker, so it says nothing about the identity. |
 | v3.1.1 `2 identifier rejected`, `4 bad user name or password`, `5 not authorized` | `AZ_IOT_ERR_IDENTITY_REJECTED` | The broker refused the identity. |
 | v3.1.1 `1 unacceptable protocol version` | `AZ_IOT_ERR_MQTT` | **Deliberately excluded** from the identity set: it says nothing about who the device claims to be. |
 | v3.1.1 `3 Connection Refused, Server unavailable` | `AZ_IOT_ERR_MQTT` | **Deliberately excluded**: the canonical transient failure. |
-| Any code, with a version the function does not know | `AZ_IOT_ERR_MQTT` | Guessing a scheme would be guessing whether to abandon a credential. This is a public entry point that adapters call with a version they supply, so the value is genuinely untrusted. |
+| v5 `0x85 Client Identifier not valid`, `0x86 Bad User Name or Password`, `0x87 Not authorized`, `0x8C Bad authentication method` | `AZ_IOT_ERR_IDENTITY_REJECTED` | `0x86` is included alongside the three the core strictly needs because it is the v5 spelling of v3.1.1's `4`; treating the same refusal differently per protocol version would make the re-provisioning trigger depend on the hub flavour. |
+| Every other non-zero v5 code | `AZ_IOT_ERR_MQTT` | Not an identity verdict. |
+| Any code, with a version the function does not know | `AZ_IOT_ERR_MQTT` | The two schemes overlap numerically — `2`, `4` and `5` are identity refusals in v3.1.1 and mean something else entirely in v5 — so guessing a scheme would be guessing whether to abandon a credential. This is a public entry point that adapters call with a version they supply, so the value is genuinely untrusted. |
 
 `AZ_IOT_ERR_IDENTITY_REJECTED` from the hub, like `AZ_IOT_ERR_AUTH` from an MQTT 5 DISCONNECT, is
 retried on the identity ladder. A CONNACK refusal sends the next attempt (or the next `open()`) to
@@ -706,8 +711,11 @@ is subject to the same "do not flatten codes" rule.
 
 | Input | Result | Why |
 | --- | --- | --- |
-| `0x00`–`0x02` | `AZ_IOT_OK` | A grant, including one below the QoS requested: the subscription exists and delivery is `min(publish QoS, granted QoS)`. Reading a downgrade as a refusal would fail a session no broker objected to. |
+| `0x00`–`0x02` (either version) | `AZ_IOT_OK` | A grant, including one below the QoS requested: the subscription exists and delivery is `min(publish QoS, granted QoS)`. Reading a downgrade as a refusal would fail a session no broker objected to. |
 | Any **negative** code | `AZ_IOT_ERR_MQTT` | The adapter's own failure. It never reached a broker, so it carries no verdict about the filter and stays retryable. |
+| v5 `0x87 Not authorized`, `0x8F Topic Filter invalid`, `0x9E Shared Subscriptions not supported`, `0xA1 Subscription Identifiers not supported`, `0xA2 Wildcard Subscriptions not supported` | `AZ_IOT_ERR_SUBSCRIPTION_REFUSED` | The broker will repeat this answer to the same filter. |
+| v5 `0x91 Packet Identifier in use` | `AZ_IOT_ERR_MQTT` | Not in the refusal set, so it takes the retryable path. |
+| v5 `0x80 Unspecified error`, `0x83 Implementation specific error`, `0x97 Quota exceeded` | `AZ_IOT_ERR_MQTT` | **Deliberately excluded** from the refusal set: this is how a transient service-side fault presents, and re-subscribing is the right response. |
 | v3.1.1 `0x80 Failure` | `AZ_IOT_ERR_SUBSCRIPTION_REFUSED` | No reason code exists to consult. The classification comes from what an MQTTv3 device can subscribe to — a topic set fixed at compile time — which makes a refusal a property of the filter rather than of the moment. |
 | Any code, with a version the function does not know | `AZ_IOT_ERR_MQTT` | Same reasoning as the CONNACK mapper. |
 
@@ -789,11 +797,15 @@ connection client itself, or a feature client.
 | Phase | Trigger | Surfaced as | Mapped by | SDK action | Notes / limits |
 | --- | --- | --- | --- | --- | --- |
 | CONNACK | Accepted | `AZ_IOT_OK` | adapter | Straight to the subscription gate. `CONNECTED` once the gate settles. Attempt counter reset. | |
-| CONNACK | Identity refused — v3 `2`/`4`/`5` | `AZ_IOT_ERR_IDENTITY_REJECTED` | `az_iot_mqtt_connack_result()` | `schedule_identity_recovery()`: per `identity_recovery.mode`, the cached hub (`RETRY_HUB`), `dps_start()` (`REPROVISION`, zero; `needs_reprovision` is set whatever the policy, so the next `open()` registers too) or `FAULTED` (`NONE`). Paced by `after_assignment_policy` first after a DPS assignment, then `policy`. `FAULTED` when the ladder or `max_duration_seconds` is spent, or a policy is disabled. | The identity ladders survive registrations, so DPS-accept / hub-reject cycles stay bounded. No certificate is requested in `RETRY_HUB` mode. |
+| CONNACK | Identity refused — v3 `2`/`4`/`5`, v5 `0x85`/`0x86`/`0x87`/`0x8C` | `AZ_IOT_ERR_IDENTITY_REJECTED` | `az_iot_mqtt_connack_result()` | `schedule_identity_recovery()`: per `identity_recovery.mode`, the cached hub (`RETRY_HUB`), `dps_start()` (`REPROVISION`, zero; `needs_reprovision` is set whatever the policy, so the next `open()` registers too) or `FAULTED` (`NONE`). Paced by `after_assignment_policy` first after a DPS assignment, then `policy`. `FAULTED` when the ladder or `max_duration_seconds` is spent, or a policy is disabled. | The identity ladders survive registrations, so DPS-accept / hub-reject cycles stay bounded. No certificate is requested in `RETRY_HUB` mode. |
 | CONNACK | v3 `1 unacceptable protocol version` | `AZ_IOT_ERR_MQTT` | `az_iot_mqtt_connack_result()` | **retried** under policy | Excluded from the identity set: `1` says nothing about the identity. |
 | CONNACK | v3 `3 Server unavailable` | `AZ_IOT_ERR_MQTT` | `az_iot_mqtt_connack_result()` | retried | Correct: the canonical transient refusal. |
+| CONNACK | v5 deterministic refusals — `0x81`, `0x82`, `0x84`, `0x95`, `0x8A`, `0x90`, `0x99`, `0x9A`, `0x9B` | `AZ_IOT_ERR_MQTT` | `az_iot_mqtt_connack_result()` | **retried** | Same defect as v3 `1`. The four Will-related codes arise only when `opts.lwt` is set; the SDK sets no Will of its own. |
+| CONNACK | v5 transient refusals — `0x88`, `0x89`, `0x97`, `0x9F`, `0x80`, `0x83` | `AZ_IOT_ERR_MQTT` | `az_iot_mqtt_connack_result()` | retried with jitter | Correct. |
+| CONNACK | v5 redirection — `0x9C Use another server`, `0x9D Server moved` | `AZ_IOT_ERR_MQTT` | `az_iot_mqtt_connack_result()` | **retried against the same host** | The Server Reference property is not read. |
 | CONNECT | No CONNACK within the connect timeout | `AZ_IOT_ERR_MQTT` | Paho | ordinary failed attempt | 30 s by default, configurable; the same value is used for the DPS bootstrap connect. |
 | CONNACK | Arrives after `close()` | ignored | connection client | logged at debug, `break` — the pending DISCONNECTED event settles the session to `IDLE` | Guarded on `user_close || state == DISCONNECTING`. Correct. |
+| CONNACK | v5 refusal carrying a Reason String | as for its code | adapter | as for its code; the Reason String becomes `error->message` (source `MQTT`), truncated to 128 bytes | az_mqtt reports it; Paho does not, because it passes none of a refused CONNACK's properties. |
 | CONNECT | The other session's MQTT client still exists | `AZ_IOT_ERR_INTERNAL` | DPS and hub connect | as for any failed start: retried under the policy, or `IDLE` and returned from `open()` | One MQTT session at a time: callers end, or wait for, the other session first, so this is a defect. Checked before `create_session_mqtt_client()`, whose `AZ_IOT_ERR_BUSY` for an occupied MQTT workspace it therefore precedes. The live client is not touched. |
 | CONNECT | `opts.mqtt_adapter`: `init()` fails | `AZ_IOT_ERR_NOT_SUPPORTED` (version not built), `AZ_IOT_ERR_NOT_ENOUGH_SPACE`; otherwise `AZ_IOT_ERR_INTERNAL` | `create_session_mqtt_client()` | `open()` transitions back to `IDLE` and returns the error | Role → version: every role is v3.1.1. `init()` of the connection client already checked the workspace size. |
 
@@ -830,9 +842,10 @@ The registry carries MQTTv3 feature filters and application-supplied topics.
 
 | Phase | Trigger | Surfaced as | Mapped by | SDK action | Notes / limits |
 | --- | --- | --- | --- | --- | --- |
-| SUBACK | Granted, at or below the requested QoS | `AZ_IOT_OK` | `az_iot_mqtt_suback_result()` | the gate entry settles; `CONNECTED` once none are outstanding | `0x00`–`0x02` is a grant. This SDK never requests QoS 2, so a downgrade does not arise. |
+| SUBACK | Granted, at or below the requested QoS | `AZ_IOT_OK` | `az_iot_mqtt_suback_result()` | the gate entry settles; `CONNECTED` once none are outstanding | `0x00`–`0x02` is a grant in both versions. This SDK never requests QoS 2, so a downgrade does not arise. |
 | SUBACK | Refused on a `FAILS_SESSION` filter, code the broker will repeat | `AZ_IOT_ERR_SUBSCRIPTION_REFUSED` | `az_iot_mqtt_suback_result()` | `fail_subscription_restore()` → **`DEFER_FAULT`, even with a policy configured** | The one failure that is terminal regardless of policy. Reconnecting would re-issue the same filter and be refused again. |
-| SUBACK | Failed on a `FAILS_SESSION` filter without a refusal code (the adapter's own failure) | `AZ_IOT_ERR_MQTT` | `az_iot_mqtt_suback_result()` | `DEFER_RECONNECT`, or `DEFER_FAULT` with no policy | Correctly separated from the row above. |
+| SUBACK | Refused on a `FAILS_SESSION` filter, transient code (`0x80`, `0x83`, `0x97`) | `AZ_IOT_ERR_MQTT` | `az_iot_mqtt_suback_result()` | `DEFER_RECONNECT`, or `DEFER_FAULT` with no policy | Correctly separated from the row above. |
+| SUBACK | v5 refusal on a `FAILS_SESSION` filter carrying a Reason String | as for its code | adapter | as for its code; the Reason String becomes `error->message` (source `MQTT`), truncated to 128 bytes | Both adapters report it, except az_mqtt for an ack it holds past the receive buffer. |
 | SUBACK | Refused on a `FAILS_SELF` filter | `AZ_IOT_ERR_SUBSCRIPTION_REFUSED` or `AZ_IOT_ERR_MQTT` | `report_and_drop_subscription()` | the entry is dropped, `on_failed(topic, reason, protocol_code, reason_string, reason_string_len, owner)` fires with the SUBACK's Reason String, the connection stays up | The entry is released *before* the callback, so a callback that re-registers immediately claims the slot and goes live in the same session. |
 | SUBSCRIBE | The subscribe call fails synchronously | the adapter's result | connection client | scoped the same way its refusal would be | A SUBSCRIBE that could not be written is not treated more leniently than one the broker refused. |
 | SUBACK | No SUBACK within `subscription_ack_timeout_seconds` (default 60) | `AZ_IOT_ERR_TIMEOUT` | connection client | `DEFER_RECONNECT` — transient, so a policy retries it | The gate is cleared first, so the next attempt starts a fresh batch. |
@@ -844,9 +857,12 @@ The registry carries MQTTv3 feature filters and application-supplied topics.
 
 | Phase | Trigger | Surfaced as | Mapped by | SDK action | Notes / limits |
 | --- | --- | --- | --- | --- | --- |
+| PUBACK | v5 PUBACK `< 0x80`, including `0x10 No matching subscribers` | `AZ_IOT_OK` | `paho_publish_success5` | the ack callback fires with success | Correct — `0x10` is a success. Paho routes reason codes `>= 0x80` to the failure callback, so success5 only sees grants. |
+| PUBACK | v5 PUBACK `>= 0x80` — `0x87 Not authorized`, `0x90 Topic Name invalid`, `0x97 Quota exceeded`, `0x99 Payload format invalid` | `az_iot_mqtt_puback_result()`: `AZ_IOT_ERR_PUBLISH_REFUSED` for `0x87`, `0x90`, `0x99`; `AZ_IOT_ERR_BUSY` for `0x97`; else `AZ_IOT_ERR_MQTT` | `paho_publish_failure5` | the ack callback fires with that status, the wire code and the Reason String; the connection survives | Correct. A failure without a reason code (the publish ended without a PUBACK) is `AZ_IOT_ERR_MQTT` with Paho's code as `transport_code`. |
 | PUBACK | v3.1.1 PUBACK | `AZ_IOT_OK` / `AZ_IOT_ERR_MQTT` | `paho_publish_success` / `_failure` | as above | v3.1.1 PUBACK carries no reason code; a failure is a publish that ended without one. |
-| PUBACK | az_mqtt adapter, any PUBACK | `AZ_IOT_OK`; `AZ_IOT_ERR_MQTT` (code `0x80`) for a publish az_mqtt dropped unacknowledged | `az_iot_mqtt_puback_result()` | the ack callback fires with that status; the connection survives | |
+| PUBACK | az_mqtt adapter, any PUBACK | `AZ_IOT_OK` below `0x80`; `AZ_IOT_ERR_PUBLISH_REFUSED` for `0x87`, `0x90`, `0x99`, and `0x95` (reported by az_mqtt for a publish over the server's Maximum Packet Size, not a wire PUBACK code); `AZ_IOT_ERR_BUSY` for `0x97`; else `AZ_IOT_ERR_MQTT` | `az_iot_mqtt_puback_result()` | the ack callback fires with that status and the Reason String; the connection logs `protocol_code` and the Reason String and survives | Correct. A Reason String is dropped for an event held past the receive buffer. |
 | PUBACK | Unknown packet id | dropped | connection client | nothing | Deliberate: a publish issued without an ack callback has no table entry. |
+| DISCONNECT | Server-initiated v5 DISCONNECT | `az_iot_mqtt_disconnect_result()`: `AZ_IOT_ERR_NOT_CONNECTED` for `0x00`, `AZ_IOT_ERR_AUTH` for `0x87`, `AZ_IOT_ERR_MQTT` otherwise; a nonzero wire code is carried as `error->code`, its Reason String as `error->message` (truncated to 128 bytes); `0x00` carries no error detail | `paho_disconnected`, az_mqtt `_azm_on_disconnect` | `DEFER_RECONNECT` for every code while a policy is configured, `DEFER_IDLE` otherwise (`DEFER_FAULT` for `0x87`); `0x87` (`AZ_IOT_ERR_AUTH`) climbs the identity ladder | `0x87` is reported non-retriable and retries the same hub on `identity_recovery`; `0x8E Session taken over` is not named, so it reconnects like a routine drop. |
 | Keep-alive | Local keep-alive expiry | DISCONNECTED with no status: reported as `AZ_IOT_ERR_NOT_CONNECTED` on `RETRY_PENDING`, `AZ_IOT_OK` on `IDLE` | Paho `connectionLost` | `DEFER_RECONNECT` while a policy is configured, `DEFER_IDLE` otherwise | Keep-alive is 30 s by default. |
 | Transport | Adapter raises `AZ_IOT_MQTT_EVT_ERROR` | the event's status, or `AZ_IOT_ERR_MQTT` | adapter | `DEFER_RECONNECT` or `DEFER_FAULT` | |
 | Inbound | Message matching no dispatch prefix | dropped | `az_iot_dispatch_route()` | nothing; the return value is explicitly discarded | Correct and deliberate — the behaviour brokers rely on for filters that outlive their subscriber. |
@@ -913,11 +929,14 @@ reports the result, and the raw string stays readable.
 - **Fatal-failure classification is reported, not acted on.** Every failure carries
   `is_retriable`, but the retry decision is `reconnect_enabled()`. Only one family is terminal
   under a reconnection policy: a SUBACK refusal the broker will repeat, on a `FAILS_SESSION` hub
-  subscription. Everything else — CONNACK `1 unacceptable protocol version`,
-  deterministic TLS failures, and refused provisioning filters — is
+  subscription. Everything else — CONNACK `1 unacceptable protocol version`, the deterministic v5
+  CONNACK codes, deterministic TLS failures, and refused provisioning filters — is
   retried until the policy is exhausted.
-- **Reason-code fidelity.** CONNACK and SUBACK have mappers that keep the wire code. An MQTT 3.1.1
-  PUBACK carries no code, so both adapters report a failed publish as `AZ_IOT_ERR_MQTT`.
+- **Reason-code fidelity.** CONNACK and SUBACK have mappers that keep the wire code. A server
+  DISCONNECT keeps its wire code in `error->code`, but only `0x87` maps to its own result
+  (`AZ_IOT_ERR_AUTH`); `0x8E Session taken over` is not distinguished. The Paho adapter
+  collapses PUBACK failures to one result, so a caller cannot tell a refusal it must not retry
+  from a quota it should back off on; the az_mqtt adapter uses `az_iot_mqtt_puback_result()`.
 - **The reconnection policy is parameters only.** A caller cannot supply its own backoff
   function.
 

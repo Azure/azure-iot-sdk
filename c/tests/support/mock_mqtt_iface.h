@@ -46,6 +46,10 @@ extern "C"
 /* Covers an mqttv3 C2D topic whose property bag overruns the SDK's decode
  * buffers, which tests must be able to inject without the mock truncating it. */
 #define AZ_IOT_MOCK_TOPIC_MAX 1024
+/* User Properties recorded per PUBLISH. Feature clients have no limit, so a
+ * call also records how many were offered (user_properties_offered): a test
+ * sending more than this asserts on that count. */
+#define AZ_IOT_MOCK_MAX_USER_PROPS 40
 #define AZ_IOT_MOCK_PAYLOAD_MAX 4096
 #define AZ_IOT_MOCK_HISTORY_MAX 64
 
@@ -59,6 +63,24 @@ extern "C"
     bool retain;
     uint16_t packet_id; /* the packet_id this call returned (0 if N/A) */
     uint32_t timeout_ms; /* for process_loop */
+    /* MQTT v5 PUBLISH extras, captured for tests. */
+    uint8_t correlation_data[64];
+    size_t correlation_data_len;
+    size_t correlation_data_offered_len; /* before truncation to correlation_data */
+    char user_type[64]; /* value of the "type" User Property, "" if none */
+    /* Every User Property in order, so a test can assert what a feature client
+     * actually forwarded rather than only the "type" marker. Properties past
+     * the bound are dropped; assert on the count if that matters. */
+    struct
+    {
+      char key[64];
+      char value[128];
+    } user_properties[AZ_IOT_MOCK_MAX_USER_PROPS];
+    size_t user_properties_count;
+    size_t user_properties_offered; /* every property the view yielded */
+    az_iot_result user_properties_end; /* what ended the iteration: AZ_IOT_ERR_NOT_FOUND */
+    char content_type[64]; /* PUBLISH Content Type, "" if none */
+    uint32_t message_expiry_seconds; /* PUBLISH Message Expiry Interval, 0 if none */
     char username[256]; /* CONNECT username, "" if none */
     char password[1024]; /* CONNECT password, "" if none */
     /* CONNECT options, captured so tests can assert which endpoint/identity the
@@ -100,6 +122,11 @@ extern "C"
       uint16_t proxy_port;
       char proxy_username[128];
       char proxy_password[128];
+      /* Session semantics, captured so a test can assert the options the core
+       * chose for the role it was connecting in rather than only that it
+       * connected. */
+      uint32_t session_expiry_seconds;
+      uint8_t disconnect_reason_code;
       /* Last Will, as handed to the adapter. `lwt_topic` is empty when no Will
        * was requested, which is the assertion most cases need. */
       char lwt_topic[AZ_IOT_MOCK_TOPIC_MAX];
@@ -107,6 +134,7 @@ extern "C"
       size_t lwt_payload_len;
       az_iot_mqtt_qos lwt_qos;
       bool lwt_retain;
+      uint32_t lwt_will_delay_seconds;
     } connect;
   } az_iot_mock_call;
 
@@ -134,10 +162,6 @@ extern "C"
    * AZ_IOT_ERR_NOT_SUPPORTED. Same clients and counts as az_iot_mock_mqtt_get_adapter().
    */
   const az_iot_mqtt_adapter* az_iot_mock_mqtt_get_adapter_for_version(az_iot_mqtt_version version);
-
-  /** @brief A mock adapter whose init() builds no client: AZ_IOT_ERR_NOT_SUPPORTED for every
-   * version. Same counts as az_iot_mock_mqtt_get_adapter(). */
-  const az_iot_mqtt_adapter* az_iot_mock_mqtt_get_adapter_building_no_client(void);
 
   /** @brief The newest client the mock adapter built that is not destroyed yet, or NULL. */
   az_iot_mock_mqtt_client* az_iot_mock_mqtt_adapter_last_client(void);
@@ -175,6 +199,10 @@ extern "C"
   /** @brief Arms a one-shot CONNECT failure with @p result on the next client the mock adapter
    * builds: for code paths that build their client inside the call under test. */
   void az_iot_mock_mqtt_adapter_fail_next_connect(az_iot_result result);
+
+  /* Value of the User Property named `key` on a recorded call, or NULL if the
+   * call did not carry one. */
+  const char* az_iot_mock_call_user_property(const az_iot_mock_call* c, const char* key);
 
   /* Recorded call history. Newest call is at index (count - 1). */
   size_t az_iot_mock_mqtt_client_call_count(const az_iot_mock_mqtt_client* m);
@@ -216,8 +244,8 @@ extern "C"
   /* Convenience: queue a DISCONNECTED event (peer- or transport-initiated). */
   bool az_iot_mock_mqtt_client_inject_disconnected(az_iot_mock_mqtt_client* m);
 
-  /* Convenience: queue a DISCONNECTED event for a server DISCONNECT with @p reason_code and,
-   * unless NULL, @p reason_string. */
+  /* Convenience: queue an MQTT 5 server DISCONNECT with @p reason_code and, unless NULL,
+   * @p reason_string. */
   bool az_iot_mock_mqtt_client_inject_server_disconnect(
       az_iot_mock_mqtt_client* m,
       int32_t reason_code,

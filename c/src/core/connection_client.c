@@ -830,7 +830,12 @@ static az_iot_result create_session_mqtt_client(
       version, &c->opts.mqtt_limits, c->opts.mqtt_workspace, c->opts.mqtt_workspace_size, &mc);
   if (r == AZ_IOT_ERR_NOT_SUPPORTED)
   {
-    stage_local_error(c, scope, r, "the MQTT adapter does not build MQTT 3.1.1 clients");
+    stage_local_error(
+        c,
+        scope,
+        r,
+        version == AZ_IOT_MQTT_VERSION_5 ? "the MQTT adapter does not build MQTT 5 clients"
+                                         : "the MQTT adapter does not build MQTT 3.1.1 clients");
     return r;
   }
   if (r == AZ_IOT_ERR_NOT_ENOUGH_SPACE)
@@ -955,7 +960,10 @@ static bool does_hub_session_resume(const az_iot_connection_client_options* opts
  * The hub role may be overridden by the caller through
  * opts.session_continuity; DPS may not, because the provisioning service does
  * not implement session persistence at all and honouring a request for it
- * would be promising something the service does not do. */
+ * would be promising something the service does not do.
+ *
+ * Every role speaks v3.1.1, so no Session Expiry Interval or Will Delay Interval
+ * is set: a v3.1.1 CONNECT has no property field to carry them. */
 static void resolve_session_options(
     const az_iot_connection_client* c,
     az_iot_mqtt_connect_options* copts,
@@ -969,6 +977,8 @@ static void resolve_session_options(
   {
     copts->clean_start = !does_hub_session_resume(&c->opts);
   }
+  copts->session_expiry_seconds = 0;
+  copts->disconnect_reason_code = (uint8_t)AZ_IOT_MQTT_DISCONNECT_NORMAL;
 
   /* The Will belongs to the hub session. Nothing consumes a will published from
    * a provisioning session: DPS has no device-lifecycle protocol to

@@ -224,8 +224,10 @@ Why each one:
   in-flight delivery, so resuming is the cheaper default. This is also the behaviour the role
   already had before the terms were set explicitly.
 
-Two rules that hold everywhere:
+Three rules that hold everywhere:
 
+- **No v5-only property is sent.** Every role speaks v3.1.1: its CONNECT has no field for Session
+  Expiry or Will Delay, and its DISCONNECT has no reason code.
 - **The SDK sets no Will of its own.** `opts.lwt` is the application's, and defaults to none. A
   CONNECT carries one Will, and taking the slot would deny the application its own "device went
   away" signal. It is never put on a provisioning session, whatever that session's lifetime:

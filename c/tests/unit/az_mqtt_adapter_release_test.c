@@ -3,8 +3,8 @@
 // information.
 
 /* SPDX-License-Identifier: MIT */
-/* az_mqtt adapter, MQTT 3.1.1 client, compiled in: a connect() refused after the busy check
- * releases the copies of the previous connect's strings (credentials). */
+/* az_mqtt adapter, MQTT 5 client, compiled in: a connect() refused after the busy check releases
+ * the copies of the previous connect's strings (credentials). */
 
 #include <stdarg.h>
 #include <stddef.h>
@@ -14,7 +14,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "az_iot_mqtt_az_mqtt_v3.c"
+#include "az_iot_mqtt_az_mqtt_v5.c"
 
 #include <cmocka.h>
 
@@ -34,15 +34,12 @@ static az_iot_mqtt_client* connected_once(uint8_t** out_workspace)
   assert_non_null(*out_workspace);
   az_iot_mqtt_client* c = NULL;
   assert_int_equal(
-      az_iot_az_mqtt_get_adapter()->init(
-          AZ_IOT_MQTT_VERSION_3_1_1, &limits, *out_workspace, size, &c),
+      az_iot_az_mqtt_get_adapter()->init(AZ_IOT_MQTT_VERSION_5, &limits, *out_workspace, size, &c),
       AZ_IOT_OK);
   az_iot_mqtt_connect_options o = { 0 };
   o.host = "h";
   o.client_id = "c";
-  o.username = "u"; // MQTT 3.1.1: no password without a user name.
   o.password = "secret";
-  o.clean_start = true; // No message store: MQTT 3.1.1 sessions must be clean.
   assert_int_equal(c->iface->connect(c, &o), AZ_IOT_OK);
   assert_true(_azm_self(c)->connect_strings_used > 0);
   (void)c->iface->disconnect(c);

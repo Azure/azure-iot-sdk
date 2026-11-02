@@ -5,7 +5,7 @@
 /* SPDX-License-Identifier: MIT */
 /**
  * @file az_iot_mqtt_az_mqtt_internal.h
- * @brief Helpers of the az_mqtt adapter.
+ * @brief Helpers shared by the MQTT 3.1.1 and MQTT 5 builds of the az_mqtt adapter.
  */
 #ifndef AZ_IOT_MQTT_AZ_MQTT_INTERNAL_H
 #define AZ_IOT_MQTT_AZ_MQTT_INTERNAL_H
@@ -28,8 +28,18 @@
 /** @brief Workspace bytes for one MQTT 3.1.1 client with @p limits; 0 when they are invalid. */
 size_t az_iot_az_mqtt__get_workspace_size_v3_1_1(az_iot_mqtt_limits const* limits);
 
+/** @brief Workspace bytes for one MQTT 5 client with @p limits; 0 when they are invalid. */
+size_t az_iot_az_mqtt__get_workspace_size_v5(az_iot_mqtt_limits const* limits);
+
 /** @brief Builds an MQTT 3.1.1 client in @p workspace. See az_iot_mqtt_adapter::init. */
 az_iot_result az_iot_az_mqtt__init_v3_1_1(
+    az_iot_mqtt_limits const* limits,
+    uint8_t* workspace,
+    size_t workspace_size,
+    az_iot_mqtt_client** out_client);
+
+/** @brief Builds an MQTT 5 client in @p workspace. See az_iot_mqtt_adapter::init. */
+az_iot_result az_iot_az_mqtt__init_v5(
     az_iot_mqtt_limits const* limits,
     uint8_t* workspace,
     size_t workspace_size,

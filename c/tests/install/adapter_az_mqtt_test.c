@@ -3,7 +3,7 @@
 // information.
 
 /* SPDX-License-Identifier: MIT */
-/* azure::iot::adapter_az_mqtt: the adapter builds an MQTT 3.1.1 client in a
+/* azure::iot::adapter_az_mqtt: the adapter builds clients of both versions in a
  * workspace, and a connection client takes it. No network I/O. */
 #include <stddef.h>
 #include <stdlib.h>
@@ -37,6 +37,7 @@ int main(void)
   uint8_t* mqtt_workspace = (uint8_t*)malloc(mqtt_workspace_size);
   CHECK(mqtt_workspace != NULL);
   check_client(mqtt_workspace, mqtt_workspace_size, AZ_IOT_MQTT_VERSION_3_1_1);
+  check_client(mqtt_workspace, mqtt_workspace_size, AZ_IOT_MQTT_VERSION_5);
 
   az_iot_connection_client_options options = az_iot_connection_client_options_default();
   options.iothub_hostname = "hub.example";

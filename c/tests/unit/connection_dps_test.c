@@ -829,6 +829,10 @@ static void dps_connects_with_a_clean_session_and_no_will(void** state)
   assert_non_null(call);
   assert_true(call->connect.clean_start);
   assert_string_equal(call->connect.lwt_topic, "");
+  assert_int_equal(call->connect.lwt_will_delay_seconds, 0);
+  /* v3.1.1: no session expiry property and no DISCONNECT reason code. */
+  assert_int_equal(call->connect.session_expiry_seconds, 0);
+  assert_int_equal(call->connect.disconnect_reason_code, 0);
 
   az_iot_test_connection_client_deinit(&c);
 }
@@ -837,7 +841,7 @@ static void dps_without_v3_1_1_clients_is_not_supported(void** state)
 {
   (void)state;
   az_iot_connection_client_options opts = dps_options();
-  opts.mqtt_adapter = az_iot_mock_mqtt_get_adapter_building_no_client();
+  opts.mqtt_adapter = az_iot_mock_mqtt_get_adapter_for_version(AZ_IOT_MQTT_VERSION_5);
 
   az_iot_connection_client c;
   assert_int_equal(az_iot_test_connection_client_init(&c, &opts), AZ_IOT_OK);
@@ -2525,7 +2529,7 @@ static void dps_suback_failure_after_a_server_disconnect_is_ignored(void** state
   az_iot_mqtt_event disconnect;
   memset(&disconnect, 0, sizeof(disconnect));
   disconnect.kind = AZ_IOT_MQTT_EVT_DISCONNECTED;
-  disconnect.status = AZ_IOT_ERR_MQTT;
+  disconnect.status = az_iot_mqtt_disconnect_result(AZ_IOT_MQTT_VERSION_5, 0x8B);
   disconnect.protocol_code = 0x8B;
   disconnect.reason_string = reason;
   disconnect.reason_string_len = sizeof(reason) - 1;
@@ -4390,7 +4394,7 @@ static void a_server_disconnect_reason_string_reaches_the_app_as_the_message(voi
   az_iot_mqtt_event disconnect;
   memset(&disconnect, 0, sizeof(disconnect));
   disconnect.kind = AZ_IOT_MQTT_EVT_DISCONNECTED;
-  disconnect.status = AZ_IOT_ERR_MQTT;
+  disconnect.status = az_iot_mqtt_disconnect_result(AZ_IOT_MQTT_VERSION_5, 0x97);
   disconnect.protocol_code = 0x97;
   disconnect.reason_string = reason;
   disconnect.reason_string_len = sizeof(reason) - 1;
@@ -4667,7 +4671,7 @@ static void a_server_disconnect_reason_reaches_the_app_with_retries_disabled(voi
   az_iot_mqtt_event disc;
   memset(&disc, 0, sizeof(disc));
   disc.kind = AZ_IOT_MQTT_EVT_DISCONNECTED;
-  disc.status = AZ_IOT_ERR_MQTT;
+  disc.status = az_iot_mqtt_disconnect_result(AZ_IOT_MQTT_VERSION_5, 0x97);
   disc.protocol_code = 0x97;
   assert_true(az_iot_mock_mqtt_client_inject_event(hub, &disc));
   for (int i = 0; i < 3; ++i)
@@ -4689,6 +4693,25 @@ static void a_server_disconnect_reason_reaches_the_app_with_retries_disabled(voi
   assert_int_equal(fx->log.error_codes[i_evt], 0x97);
   /* Quota clears with time, so another attempt is worth making. */
   assert_true(fx->log.is_retriable[i_evt]);
+}
+
+/* 0x00 is an ordinary close: retriable, and not AZ_IOT_OK, which only a
+ * disconnect the client asked for reports. */
+static void a_normal_server_disconnect_is_not_a_requested_disconnect(void** state)
+{
+  (void)state;
+  assert_int_equal(
+      az_iot_mqtt_disconnect_result(AZ_IOT_MQTT_VERSION_5, 0x00), AZ_IOT_ERR_NOT_CONNECTED);
+  /* v3.1.1 has no reason code at all. */
+  assert_int_equal(
+      az_iot_mqtt_disconnect_result(AZ_IOT_MQTT_VERSION_3_1_1, 0), AZ_IOT_ERR_NOT_CONNECTED);
+  /* A refused credential is named, so is_retriable can say "do not bother". */
+  assert_int_equal(az_iot_mqtt_disconnect_result(AZ_IOT_MQTT_VERSION_5, 0x87), AZ_IOT_ERR_AUTH);
+  /* Transient service-side conditions stay retriable. */
+  assert_int_equal(az_iot_mqtt_disconnect_result(AZ_IOT_MQTT_VERSION_5, 0x8D), AZ_IOT_ERR_MQTT);
+  assert_int_equal(az_iot_mqtt_disconnect_result(AZ_IOT_MQTT_VERSION_5, 0x97), AZ_IOT_ERR_MQTT);
+  /* An adapter's own negative code carries no verdict from the server. */
+  assert_int_equal(az_iot_mqtt_disconnect_result(AZ_IOT_MQTT_VERSION_5, -1), AZ_IOT_ERR_MQTT);
 }
 
 /* A failed client-initiated disconnect has an adapter code and used to drop it,
@@ -6584,6 +6607,8 @@ int main(void)
         a_server_disconnect_reason_reaches_the_app_with_retries_disabled,
         setup_with_reconnect,
         teardown),
+    cmocka_unit_test_setup_teardown(
+        a_normal_server_disconnect_is_not_a_requested_disconnect, setup_with_reconnect, teardown),
     cmocka_unit_test_setup_teardown(
         a_failed_disconnect_carries_the_adapter_code, setup_with_reconnect, teardown),
     cmocka_unit_test_setup_teardown(

@@ -2,8 +2,10 @@
 # Licensed under the MIT license. See LICENSE file in the project root for full license information.
 
 # az_mqtt MQTT adapter (AZ_IOT_WITH_AZ_MQTT). Builds az_mqtt from deps/az_mqtt with the SDK's
-# azure-sdk-for-c, then the adapter: one library with the MQTT 3.1.1 client.
+# azure-sdk-for-c, then the adapter: one library with the MQTT 3.1.1 and MQTT 5 clients.
 
+# Compile-time limits: defaults in az_iot_az_mqtt_config.h. Each option below is passed to the
+# compiler only when set, so a value from AZ_IOT_AZ_MQTT_CONFIG_FILE applies.
 # Buffer sizes and requests in flight are run-time values (az_iot_mqtt_limits).
 foreach(_v BUFFER_SIZE SEND_BUFFER_SIZE RECEIVE_BUFFER_SIZE INFLIGHT_MAX)
     if(DEFINED AZ_IOT_AZ_MQTT_${_v} AND NOT AZ_IOT_AZ_MQTT_${_v} STREQUAL "")
@@ -14,9 +16,12 @@ foreach(_v BUFFER_SIZE SEND_BUFFER_SIZE RECEIVE_BUFFER_SIZE INFLIGHT_MAX)
 endforeach()
 unset(_v)
 if(DEFINED AZ_IOT_AZ_MQTT_FOOTPRINT AND NOT AZ_IOT_AZ_MQTT_FOOTPRINT STREQUAL "")
-    message(FATAL_ERROR "AZ_IOT_AZ_MQTT_FOOTPRINT was removed: unset it (-UAZ_IOT_AZ_MQTT_FOOTPRINT)")
+    message(FATAL_ERROR "AZ_IOT_AZ_MQTT_FOOTPRINT was removed: set AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX "
+        "instead (DEFAULT was 16, CONSTRAINED 4), and unset it (-UAZ_IOT_AZ_MQTT_FOOTPRINT)")
 endif()
 unset(AZ_IOT_AZ_MQTT_FOOTPRINT CACHE) # The empty entry an earlier configure left.
+set(AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX "" CACHE STRING
+    "az_mqtt adapter: MQTT 5 user properties on CONNECT (empty: the config file's, else 16)")
 set(AZ_IOT_AZ_MQTT_CONFIG_FILE "" CACHE STRING
     "az_mqtt adapter: header with limit definitions, as written in a quoted #include (empty: none)")
 
@@ -37,7 +42,7 @@ else()
     set(AZ_MQTT_TLS_BACKEND ${_az_mqtt_tls} CACHE STRING "" FORCE)
 endif()
 set(AZ_MQTT_ENABLE_MQTTV3 ON CACHE BOOL "" FORCE)
-set(AZ_MQTT_ENABLE_MQTTV5 OFF CACHE BOOL "" FORCE)
+set(AZ_MQTT_ENABLE_MQTTV5 ON CACHE BOOL "" FORCE)
 set(AZ_MQTT_BUILD_SAMPLES OFF CACHE BOOL "" FORCE)
 set(AZ_MQTT_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(AZ_MQTT_BUILD_FUZZERS OFF CACHE BOOL "" FORCE) # Its sources are not vendored.
@@ -63,6 +68,7 @@ unset(_az_iot_pic)
 add_library(az_iot_adapter_az_mqtt STATIC
     az_iot_mqtt_az_mqtt.c
     az_iot_mqtt_az_mqtt_v3.c
+    az_iot_mqtt_az_mqtt_v5.c
     az_iot_mqtt_az_mqtt_adapter.c
 )
 add_library(azure::iot::adapter_az_mqtt ALIAS az_iot_adapter_az_mqtt)
@@ -78,7 +84,12 @@ target_link_libraries(az_iot_adapter_az_mqtt
         az_iot_core
     PRIVATE
         az_mqttv3
+        az_mqttv5
 )
+if(NOT AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX STREQUAL "")
+    target_compile_definitions(az_iot_adapter_az_mqtt PRIVATE
+        AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX=${AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX})
+endif()
 if(NOT AZ_IOT_AZ_MQTT_CONFIG_FILE STREQUAL "")
     target_compile_definitions(az_iot_adapter_az_mqtt PRIVATE
         AZ_IOT_AZ_MQTT_CONFIG_FILE="${AZ_IOT_AZ_MQTT_CONFIG_FILE}")

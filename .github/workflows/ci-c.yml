@@ -839,7 +839,7 @@ jobs:
           -DAZ_IOT_WITH_AZ_MQTT=ON -DAZ_IOT_AZ_MQTT_TLS=${{ matrix.tls }}
           -DAZ_IOT_BUILD_CONFORMANCE_TESTS=ON -DAZ_IOT_BUILD_CONFORMANCE_TESTS_TLS=ON
       - name: Build
-        run: cmake --build build/az-mqtt --target az_iot_conformance_az_mqtt_v3 az_iot_az_mqtt_adapter_broker
+        run: cmake --build build/az-mqtt --target az_iot_conformance_az_mqtt_v3 az_iot_conformance_az_mqtt_v5 az_iot_az_mqtt_adapter_broker
       - name: Conformance
         env:
           AZ_IOT_MQTT_BROKER_HOST: 127.0.0.1
@@ -1476,7 +1476,7 @@ jobs:
       # actually had -- coverage computed over fewer tests than anyone thought.
       # Now that no suite decides at run time whether to participate, the count
       # is deterministic, so assert it exactly. Bump this when adding a suite.
-      EXPECTED_TESTS: '66'
+      EXPECTED_TESTS: '67'
     services:
       mosquitto:
         image: eclipse-mosquitto:2

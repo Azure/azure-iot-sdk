@@ -199,6 +199,17 @@ static void copy_str(char* dst, size_t cap, const char* src)
   dst[n] = '\0';
 }
 
+/* As copy_str, for a string that is not NUL-terminated. */
+static void copy_view(char* dst, size_t cap, const char* src, size_t n)
+{
+  if (n >= cap)
+  {
+    n = cap - 1;
+  }
+  memcpy(dst, src, n);
+  dst[n] = '\0';
+}
+
 static void copy_bytes(uint8_t* dst, size_t cap, const uint8_t* src, size_t n, size_t* out_n)
 {
   /* A NULL source records nothing: reporting the caller's length would leave
@@ -272,6 +283,8 @@ static az_iot_result mock_connect(az_iot_mqtt_client* self, const az_iot_mqtt_co
     c->connect.proxy_port = opts->proxy.port;
     copy_str(c->connect.proxy_username, sizeof(c->connect.proxy_username), opts->proxy.username);
     copy_str(c->connect.proxy_password, sizeof(c->connect.proxy_password), opts->proxy.password);
+    c->connect.session_expiry_seconds = opts->session_expiry_seconds;
+    c->connect.disconnect_reason_code = opts->disconnect_reason_code;
     copy_str(c->connect.lwt_topic, sizeof(c->connect.lwt_topic), opts->lwt.topic);
     copy_bytes(
         c->connect.lwt_payload,
@@ -281,6 +294,7 @@ static az_iot_result mock_connect(az_iot_mqtt_client* self, const az_iot_mqtt_co
         &c->connect.lwt_payload_len);
     c->connect.lwt_qos = opts->lwt.qos;
     c->connect.lwt_retain = opts->lwt.retain;
+    c->connect.lwt_will_delay_seconds = opts->lwt.will_delay_seconds;
   }
   return take_override(m, AZ_IOT_MOCK_CALL_CONNECT);
 }
@@ -326,6 +340,22 @@ static az_iot_result mock_unsubscribe(
   return take_override(m, AZ_IOT_MOCK_CALL_UNSUBSCRIBE);
 }
 
+const char* az_iot_mock_call_user_property(const az_iot_mock_call* c, const char* key)
+{
+  if (!c || !key)
+  {
+    return NULL;
+  }
+  for (size_t i = 0; i < c->user_properties_count; ++i)
+  {
+    if (strcmp(c->user_properties[i].key, key) == 0)
+    {
+      return c->user_properties[i].value;
+    }
+  }
+  return NULL;
+}
+
 static az_iot_result mock_publish(
     az_iot_mqtt_client* self,
     const az_iot_mqtt_message* msg,
@@ -339,6 +369,39 @@ static az_iot_result mock_publish(
     copy_bytes(c->payload, sizeof(c->payload), msg->payload, msg->payload_len, &c->payload_len);
     c->qos = msg->qos;
     c->retain = msg->retain;
+    /* Capture the MQTT v5 correlation data and "type" property so tests can
+     * assert what the client published. */
+    copy_bytes(
+        c->correlation_data,
+        sizeof(c->correlation_data),
+        msg->correlation_data,
+        msg->correlation_data_len,
+        &c->correlation_data_len);
+    c->correlation_data_offered_len = msg->correlation_data ? msg->correlation_data_len : 0;
+    copy_str(c->content_type, sizeof(c->content_type), msg->content_type);
+    c->message_expiry_seconds = msg->message_expiry_seconds;
+    size_t cursor = 0;
+    az_iot_mqtt_user_property_view up;
+    while ((c->user_properties_end
+            = az_iot_mqtt_user_properties_next(&msg->user_properties, &cursor, &up))
+           == AZ_IOT_OK)
+    {
+      c->user_properties_offered++;
+      if (up.key_len == 4 && memcmp(up.key, "type", 4) == 0)
+      {
+        copy_view(c->user_type, sizeof(c->user_type), up.value, up.value_len);
+      }
+      if (c->user_properties_count < AZ_IOT_MOCK_MAX_USER_PROPS)
+      {
+        size_t k = c->user_properties_count++;
+        copy_view(c->user_properties[k].key, sizeof(c->user_properties[k].key), up.key, up.key_len);
+        copy_view(
+            c->user_properties[k].value,
+            sizeof(c->user_properties[k].value),
+            up.value,
+            up.value_len);
+      }
+    }
   }
   c->packet_id = alloc_packet_id(m);
   if (out_packet_id)
@@ -444,6 +507,11 @@ static const az_iot_mqtt_iface s_iface_template_v3 = { AZ_IOT_MQTT_VERSION_3_1_1
                                                        mock_set_inbound_cb,
                                                        mock_destroy };
 
+static const az_iot_mqtt_iface s_iface_template_v5
+    = { AZ_IOT_MQTT_VERSION_5, mock_connect,        mock_disconnect,
+        mock_subscribe,        mock_unsubscribe,    mock_publish,
+        mock_process_loop,     mock_set_inbound_cb, mock_destroy };
+
 /* ------------------------------------------------------------------------- */
 /* client setup                                                              */
 /* ------------------------------------------------------------------------- */
@@ -457,8 +525,7 @@ static void mock_client_setup(
     az_iot_mqtt_version version,
     mock_client_source* source)
 {
-  (void)version;
-  m->iface_storage = s_iface_template_v3;
+  m->iface_storage = (version == AZ_IOT_MQTT_VERSION_5) ? s_iface_template_v5 : s_iface_template_v3;
   m->base.iface = &m->iface_storage;
   m->next_packet_id = 0;
   m->owner = source;
@@ -522,7 +589,8 @@ static az_iot_result mock_adapter_build(
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
-  if (mqtt_version != AZ_IOT_MQTT_VERSION_3_1_1 || (versions & (1u << (unsigned)mqtt_version)) == 0)
+  if ((mqtt_version != AZ_IOT_MQTT_VERSION_3_1_1 && mqtt_version != AZ_IOT_MQTT_VERSION_5)
+      || (versions & (1u << (unsigned)mqtt_version)) == 0)
   {
     return AZ_IOT_ERR_NOT_SUPPORTED;
   }
@@ -546,6 +614,7 @@ static az_iot_result mock_adapter_build(
 }
 
 #define MOCK_ADAPTER_V3 (1u << (unsigned)AZ_IOT_MQTT_VERSION_3_1_1)
+#define MOCK_ADAPTER_V5 (1u << (unsigned)AZ_IOT_MQTT_VERSION_5)
 
 static az_iot_result mock_adapter_init(
     az_iot_mqtt_version mqtt_version,
@@ -555,7 +624,12 @@ static az_iot_result mock_adapter_init(
     az_iot_mqtt_client** out_client)
 {
   return mock_adapter_build(
-      MOCK_ADAPTER_V3, mqtt_version, limits, workspace, workspace_size, out_client);
+      MOCK_ADAPTER_V3 | MOCK_ADAPTER_V5,
+      mqtt_version,
+      limits,
+      workspace,
+      workspace_size,
+      out_client);
 }
 
 static az_iot_result mock_adapter_v3_init(
@@ -569,14 +643,15 @@ static az_iot_result mock_adapter_v3_init(
       MOCK_ADAPTER_V3, mqtt_version, limits, workspace, workspace_size, out_client);
 }
 
-static az_iot_result mock_adapter_no_client_init(
+static az_iot_result mock_adapter_v5_init(
     az_iot_mqtt_version mqtt_version,
     const az_iot_mqtt_limits* limits,
     uint8_t* workspace,
     size_t workspace_size,
     az_iot_mqtt_client** out_client)
 {
-  return mock_adapter_build(0u, mqtt_version, limits, workspace, workspace_size, out_client);
+  return mock_adapter_build(
+      MOCK_ADAPTER_V5, mqtt_version, limits, workspace, workspace_size, out_client);
 }
 
 const az_iot_mqtt_limits az_iot_mock_mqtt_limits = { 1024, 1024, 4, 0, 1024 };
@@ -591,22 +666,16 @@ static const az_iot_mqtt_adapter s_mock_adapter_v3 = {
   .init = mock_adapter_v3_init,
 };
 
-static const az_iot_mqtt_adapter s_mock_adapter_no_client = {
+static const az_iot_mqtt_adapter s_mock_adapter_v5 = {
   .get_workspace_size = mock_adapter_get_workspace_size,
-  .init = mock_adapter_no_client_init,
+  .init = mock_adapter_v5_init,
 };
 
 const az_iot_mqtt_adapter* az_iot_mock_mqtt_get_adapter(void) { return &s_mock_adapter; }
 
 const az_iot_mqtt_adapter* az_iot_mock_mqtt_get_adapter_for_version(az_iot_mqtt_version version)
 {
-  (void)version;
-  return &s_mock_adapter_v3;
-}
-
-const az_iot_mqtt_adapter* az_iot_mock_mqtt_get_adapter_building_no_client(void)
-{
-  return &s_mock_adapter_no_client;
+  return version == AZ_IOT_MQTT_VERSION_5 ? &s_mock_adapter_v5 : &s_mock_adapter_v3;
 }
 
 az_iot_mock_mqtt_client* az_iot_mock_mqtt_adapter_last_client(void)
@@ -799,11 +868,7 @@ bool az_iot_mock_mqtt_client_inject_server_disconnect(
   az_iot_mqtt_event evt;
   memset(&evt, 0, sizeof(evt));
   evt.kind = AZ_IOT_MQTT_EVT_DISCONNECTED;
-  /* The classification the core expects: 0x87 Not authorized refuses the credential; any other
-   * code, 0x00 included, ends the session with an error. */
-  evt.status = reason_code == 0x87 ? AZ_IOT_ERR_AUTH
-      : reason_code == 0x00        ? AZ_IOT_ERR_NOT_CONNECTED
-                                   : AZ_IOT_ERR_MQTT;
+  evt.status = az_iot_mqtt_disconnect_result(AZ_IOT_MQTT_VERSION_5, (int)reason_code);
   evt.protocol_code = reason_code;
   evt.reason_string = reason_string;
   evt.reason_string_len = reason_string != NULL ? strlen(reason_string) : 0;

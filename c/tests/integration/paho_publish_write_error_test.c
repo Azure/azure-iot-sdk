@@ -162,8 +162,8 @@ static int find_socket_to_server(uint16_t server_port)
 
 /* Connects, makes the PUBLISH write fail, and checks the adapter reports that publish by its
  * packet id. Paho then frees what it stored for retry: at the session end when the session ends
- * with the connection (@p clean_start), else at destroy. */
-static void publish_whose_write_fails(az_iot_mqtt_version version, bool clean_start)
+ * with the connection, else at destroy. */
+static void publish_whose_write_fails(az_iot_mqtt_version version, uint32_t session_expiry_seconds)
 {
   uint16_t port = 0;
   int const listener = listen_on_loopback(&port);
@@ -186,9 +186,11 @@ static void publish_whose_write_fails(az_iot_mqtt_version version, bool clean_st
   opts.client_id = "az-publish-write-error";
   opts.keep_alive_seconds = 30;
   opts.connect_timeout_seconds = 5u * az_iot_test_timeout_scale();
-  opts.clean_start = clean_start;
+  opts.clean_start = true;
+  opts.session_expiry_seconds = session_expiry_seconds;
   assert_int_equal(c->iface->connect(c, &opts), AZ_IOT_OK);
-  int const server_fd = accept_and_acknowledge_connect(listener, AZ_IOT_TEST_MQTT_V3_1_1);
+  int const server_fd = accept_and_acknowledge_connect(
+      listener, version == AZ_IOT_MQTT_VERSION_5 ? AZ_IOT_TEST_MQTT_V5 : AZ_IOT_TEST_MQTT_V3_1_1);
   assert_true(pump_until(c, &log.connected));
 
   int const client_fd = find_socket_to_server(port);
@@ -223,21 +225,28 @@ static void publish_whose_write_fails(az_iot_mqtt_version version, bool clean_st
 static void a_v3_publish_whose_write_fails_is_reported_and_freed_once(void** state)
 {
   (void)state;
-  publish_whose_write_fails(AZ_IOT_MQTT_VERSION_3_1_1, true);
+  publish_whose_write_fails(AZ_IOT_MQTT_VERSION_3_1_1, 0);
 }
 
-static void a_v3_publish_whose_write_fails_is_reported_and_freed_once_at_destroy(void** state)
+static void a_v5_publish_whose_write_fails_is_reported_and_freed_once_at_session_end(void** state)
+{
+  (void)state;
+  publish_whose_write_fails(AZ_IOT_MQTT_VERSION_5, 0);
+}
+
+static void a_v5_publish_whose_write_fails_is_reported_and_freed_once_at_destroy(void** state)
 {
   (void)state;
   /* What the SDK's hub session does: its session outlives the connection. */
-  publish_whose_write_fails(AZ_IOT_MQTT_VERSION_3_1_1, false);
+  publish_whose_write_fails(AZ_IOT_MQTT_VERSION_5, 3600);
 }
 
 int main(void)
 {
   const struct CMUnitTest tests[] = {
     cmocka_unit_test(a_v3_publish_whose_write_fails_is_reported_and_freed_once),
-    cmocka_unit_test(a_v3_publish_whose_write_fails_is_reported_and_freed_once_at_destroy),
+    cmocka_unit_test(a_v5_publish_whose_write_fails_is_reported_and_freed_once_at_session_end),
+    cmocka_unit_test(a_v5_publish_whose_write_fails_is_reported_and_freed_once_at_destroy),
   };
   return cmocka_run_group_tests_name("paho_publish_write_error", tests, NULL, NULL);
 }

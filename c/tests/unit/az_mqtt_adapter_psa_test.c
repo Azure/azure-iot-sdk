@@ -15,7 +15,7 @@
 #include <string.h>
 
 #define AZ_IOT_AZ_MQTT_MBEDTLS
-#include "az_iot_mqtt_az_mqtt_v3.c"
+#include "az_iot_mqtt_az_mqtt_v5.c"
 
 #include <cmocka.h>
 
@@ -34,7 +34,7 @@ static void a_psa_only_credential_reaches_the_tls_options(void** state)
   assert_non_null(workspace);
   az_iot_mqtt_client* c = NULL;
   assert_int_equal(
-      az_iot_az_mqtt_get_adapter()->init(AZ_IOT_MQTT_VERSION_3_1_1, &limits, workspace, size, &c),
+      az_iot_az_mqtt_get_adapter()->init(AZ_IOT_MQTT_VERSION_5, &limits, workspace, size, &c),
       AZ_IOT_OK);
   az_iot_mqtt_connect_options o = { 0 };
   o.host = "broker.example";

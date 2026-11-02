@@ -5,7 +5,7 @@
 /* SPDX-License-Identifier: MIT */
 /* az_mqtt adapter against a broker (AZ_IOT_MQTT_BROKER_HOST / _PORT): process_loop() returns when
  * an event callback raises more events; a publish too large or to an invalid topic, an empty filter
- * and a wildcard in a Will are refused. */
+ * and a wildcard in a Will or Response Topic are refused. */
 #include <stdarg.h>
 #include <stddef.h>
 #include <setjmp.h>
@@ -63,7 +63,8 @@ static void events_raised_by_a_callback_wait_for_the_next_process_loop(az_iot_mq
   az_iot_mqtt_connect_options o = { 0 };
   o.host = host != NULL ? host : "localhost";
   o.port = (uint16_t)(port != NULL ? atoi(port) : 1883);
-  o.client_id = "az-iot-az-mqtt-drain-3";
+  o.client_id
+      = version == AZ_IOT_MQTT_VERSION_5 ? "az-iot-az-mqtt-drain-5" : "az-iot-az-mqtt-drain-3";
   o.clean_start = true;
   o.connect_timeout_seconds = 10;
   o.lwt.topic = "will/+";
@@ -89,6 +90,12 @@ static void events_raised_by_a_callback_wait_for_the_next_process_loop(az_iot_mq
     az_iot_mqtt_message bad = { 0 };
     bad.topic = bad_topics[i];
     assert_int_equal(r.client->iface->publish(r.client, &bad, NULL), AZ_IOT_ERR_INVALID_ARG);
+    if (version == AZ_IOT_MQTT_VERSION_5)
+    {
+      bad.topic = "az-iot/az-mqtt-adapter-test";
+      bad.response_topic = bad_topics[i];
+      assert_int_equal(r.client->iface->publish(r.client, &bad, NULL), AZ_IOT_ERR_INVALID_ARG);
+    }
   }
   // Not a Topic Filter: empty, or a wildcard not filling a level ('#': the last).
   char const* const bad_filters[] = { "", "a/+b", "a/#/b" };
@@ -122,10 +129,17 @@ static void v3(void** state)
   events_raised_by_a_callback_wait_for_the_next_process_loop(AZ_IOT_MQTT_VERSION_3_1_1);
 }
 
+static void v5(void** state)
+{
+  (void)state;
+  events_raised_by_a_callback_wait_for_the_next_process_loop(AZ_IOT_MQTT_VERSION_5);
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
     cmocka_unit_test(v3),
+    cmocka_unit_test(v5),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }

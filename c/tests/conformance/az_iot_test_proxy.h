@@ -276,7 +276,8 @@ extern "C"
 #define AZ_IOT_TEST_PROXY_PKT_DISCONNECT 14
 #define AZ_IOT_TEST_PROXY_PKT_AUTH 15
 
-/* Injected packets are hand-built acknowledgements. */
+/* Injected packets are hand-built: acknowledgements, and PUBLISHes carrying
+ * many User Properties. */
 #define AZ_IOT_TEST_PROXY_RULE_BYTES_MAX 512
 #define AZ_IOT_TEST_PROXY_RULES_MAX 8
 
@@ -370,15 +371,22 @@ extern "C"
     /* 0 until a CONNECT has been decoded on this connection; everything below
      * is meaningless while it is 0. */
     int seen;
-    /* Protocol level byte: 4 for MQTT 3.1.1. */
+    /* Protocol level byte: 4 for MQTT 3.1.1, 5 for MQTT 5. */
     uint8_t protocol_level;
-    /* CONNECT flags bit 1: Clean Session. */
+    /* CONNECT flags bit 1: Clean Session in 3.1.1, Clean Start in 5. */
     int clean_flag;
     int will_flag;
     uint8_t will_qos;
     int will_retain;
     char will_topic[AZ_IOT_TEST_PROXY_WILL_TOPIC_MAX];
     size_t will_payload_len;
+    /* MQTT 5 CONNECT properties. `has_*` distinguishes "absent" from "present
+     * and zero", which is the distinction a v3.1.1 assertion rests on: a
+     * v3.1.1 CONNECT has no property field at all, so these are never set. */
+    int has_session_expiry;
+    uint32_t session_expiry_seconds;
+    int has_will_delay;
+    uint32_t will_delay_seconds;
     /* User Name and Password, by presence, length and 64-bit FNV-1a digest
      * only: the bytes themselves are never kept. Enough to assert the CONNECT
      * carried exactly the credentials the adapter was given. */
@@ -399,9 +407,10 @@ extern "C"
       az_iot_test_proxy* proxy,
       az_iot_test_proxy_connect_fields* out);
 
-  /* First body byte of the last DISCONNECT the CLIENT sent on this connection.
-   * Returns 1 and writes it when one has been seen, 0 otherwise. A 3.1.1
-   * DISCONNECT has an empty body, which reports 0. */
+  /* Reason code of the last DISCONNECT the CLIENT sent on this connection.
+   * Returns 1 and writes the code when one has been seen, 0 otherwise. A
+   * DISCONNECT with an empty body -- every 3.1.1 one, and a v5 one that omits
+   * the code -- reports 0, which is what both mean: Normal Disconnection. */
   int az_iot_test_proxy_last_client_disconnect_reason(az_iot_test_proxy* proxy, uint8_t* out_code);
 
   /* CONNECT-mode observability. All cumulative, all zero in passthrough mode.
