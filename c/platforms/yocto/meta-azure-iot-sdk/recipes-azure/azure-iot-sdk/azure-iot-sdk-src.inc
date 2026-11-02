@@ -3,14 +3,14 @@
 
 # Azure IoT SDK C library source, shared by azure-iot-sdk and its pkg-config consumer test.
 #
-# To build another revision, bump SRCREV_sdk to a commit on main, and PV to its
+# To build another revision, bump SRCREV_sdk to a commit on releases/public-preview, and PV to its
 # version. Both can be overridden from local.conf, e.g. to build a local checkout:
 #   AZ_IOT_SDK_GIT_URI = "git:///path/to/azure-iot-sdk;protocol=file;nobranch=1"
 #   SRCREV_sdk = "<commit>"
 
 HOMEPAGE = "https://github.com/Azure/azure-iot-sdk"
 
-AZ_IOT_SDK_GIT_URI ?= "git://github.com/Azure/azure-iot-sdk.git;protocol=https;branch=main"
+AZ_IOT_SDK_GIT_URI ?= "git://github.com/Azure/azure-iot-sdk.git;protocol=https;branch=releases/public-preview"
 SRCREV_sdk ?= "92a3a80baefae800e73d0e7faab28f7ccf416e06"
 
 SRC_URI = "${AZ_IOT_SDK_GIT_URI};name=sdk"
