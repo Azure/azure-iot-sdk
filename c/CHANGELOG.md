@@ -6,7 +6,8 @@
 
 - Breaking: the mqttv3 direct method client holds its in-flight invocations in a workspace the
   application provides, sized at run time. `az_iot_mqttv3_direct_method_client_init()` takes
-  `az_iot_mqttv3_direct_method_client_options`: `limits.max_in_flight_invocations` (0: the default
+  `az_iot_mqttv3_direct_method_client_options` (`az_iot_mqttv3_direct_method_client_options_default()`):
+  `limits.max_in_flight_invocations` (0: the default
   `AZ_IOT_MQTTV3_DIRECT_METHOD_CLIENT_DEFAULT_MAX_IN_FLIGHT_INVOCATIONS`, 4; at most 1024),
   `workspace` and `workspace_size` (`az_iot_mqttv3_direct_method_client_get_workspace_size()`,
   `AZ_IOT_MQTTV3_DIRECT_METHOD_CLIENT_WORKSPACE_SIZE()`). `init()` returns `AZ_IOT_ERR_INVALID_ARG`

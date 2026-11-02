@@ -78,7 +78,8 @@ static void sleep_past_one_second(void)
 /** @brief Options at the suite's limit, with @p workspace of TEST_WORKSPACE_SIZE bytes. */
 static az_iot_mqttv3_direct_method_client_options options_with(uint8_t* workspace)
 {
-  az_iot_mqttv3_direct_method_client_options options = { 0 };
+  az_iot_mqttv3_direct_method_client_options options
+      = az_iot_mqttv3_direct_method_client_options_default();
   options.limits.max_in_flight_invocations = LIMIT_UNDER_TEST;
   options.workspace = workspace;
   options.workspace_size = TEST_WORKSPACE_SIZE;
@@ -1474,7 +1475,11 @@ static void an_invocation_after_deinit_reaches_nobody(void** state)
 static void the_workspace_size_matches_the_macro(void** state)
 {
   (void)state;
-  az_iot_mqttv3_direct_method_client_limits limits = { 0 };
+  const az_iot_mqttv3_direct_method_client_options defaults
+      = az_iot_mqttv3_direct_method_client_options_default();
+  assert_null(defaults.workspace);
+  assert_int_equal(defaults.workspace_size, 0);
+  az_iot_mqttv3_direct_method_client_limits limits = defaults.limits;
   assert_int_equal(
       az_iot_mqttv3_direct_method_client_get_workspace_size(&limits),
       AZ_IOT_MQTTV3_DIRECT_METHOD_CLIENT_DEFAULT_WORKSPACE_SIZE);
