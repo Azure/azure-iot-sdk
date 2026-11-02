@@ -5,7 +5,7 @@
 # azure-sdk-for-c, then the adapter: one library with the MQTT 3.1.1 and MQTT 5 clients.
 
 # Compile-time limits: defaults in az_iot_az_mqtt_config.h. Each option below is passed to the
-# compiler only when set, so a value from AZ_IOT_AZ_MQTT_CONFIG_FILE or the footprint applies.
+# compiler only when set, so a value from AZ_IOT_AZ_MQTT_CONFIG_FILE applies.
 # Buffer sizes and requests in flight are run-time values (az_iot_mqtt_limits).
 foreach(_v BUFFER_SIZE SEND_BUFFER_SIZE RECEIVE_BUFFER_SIZE INFLIGHT_MAX)
     if(DEFINED AZ_IOT_AZ_MQTT_${_v} AND NOT AZ_IOT_AZ_MQTT_${_v} STREQUAL "")
@@ -15,11 +15,13 @@ foreach(_v BUFFER_SIZE SEND_BUFFER_SIZE RECEIVE_BUFFER_SIZE INFLIGHT_MAX)
     unset(AZ_IOT_AZ_MQTT_${_v} CACHE) # The empty entry an earlier configure left.
 endforeach()
 unset(_v)
-set(AZ_IOT_AZ_MQTT_FOOTPRINT "" CACHE STRING
-    "az_mqtt adapter: limit defaults, DEFAULT or CONSTRAINED (empty: DEFAULT)")
-set_property(CACHE AZ_IOT_AZ_MQTT_FOOTPRINT PROPERTY STRINGS "" DEFAULT CONSTRAINED)
+if(DEFINED AZ_IOT_AZ_MQTT_FOOTPRINT AND NOT AZ_IOT_AZ_MQTT_FOOTPRINT STREQUAL "")
+    message(FATAL_ERROR "AZ_IOT_AZ_MQTT_FOOTPRINT was removed: set AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX "
+        "instead (DEFAULT was 16, CONSTRAINED 4), and unset it (-UAZ_IOT_AZ_MQTT_FOOTPRINT)")
+endif()
+unset(AZ_IOT_AZ_MQTT_FOOTPRINT CACHE) # The empty entry an earlier configure left.
 set(AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX "" CACHE STRING
-    "az_mqtt adapter: MQTT 5 user properties on CONNECT (empty: footprint's)")
+    "az_mqtt adapter: MQTT 5 user properties on CONNECT (empty: the config file's, else 16)")
 set(AZ_IOT_AZ_MQTT_CONFIG_FILE "" CACHE STRING
     "az_mqtt adapter: header with limit definitions, as written in a quoted #include (empty: none)")
 
@@ -84,15 +86,6 @@ target_link_libraries(az_iot_adapter_az_mqtt
         az_mqttv3
         az_mqttv5
 )
-string(TOUPPER "${AZ_IOT_AZ_MQTT_FOOTPRINT}" _az_mqtt_footprint)
-if(_az_mqtt_footprint MATCHES "^(DEFAULT|CONSTRAINED)$")
-    target_compile_definitions(az_iot_adapter_az_mqtt PRIVATE
-        AZ_IOT_AZ_MQTT_FOOTPRINT=AZ_IOT_AZ_MQTT_FOOTPRINT_${_az_mqtt_footprint})
-elseif(NOT _az_mqtt_footprint STREQUAL "")
-    message(FATAL_ERROR
-        "AZ_IOT_AZ_MQTT_FOOTPRINT must be DEFAULT or CONSTRAINED (got '${AZ_IOT_AZ_MQTT_FOOTPRINT}')")
-endif()
-unset(_az_mqtt_footprint)
 if(NOT AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX STREQUAL "")
     target_compile_definitions(az_iot_adapter_az_mqtt PRIVATE
         AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX=${AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX})

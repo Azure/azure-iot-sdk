@@ -38,5 +38,8 @@ menu "Azure IoT SDK az_mqtt adapter"
         int "MQTT 5 user properties on CONNECT"
         range 1 32767
         default 4
+        help
+            AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX of the adapter (16 elsewhere). A CONNECT
+            with more user properties is refused; PUBLISH user properties are not limited.
 
 endmenu
