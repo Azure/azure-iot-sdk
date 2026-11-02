@@ -50,6 +50,13 @@ int main(void)
   options.mqtt_workspace_size = mqtt_workspace_size;
   CHECK(az_iot_connection_client_init(&g_conn, &options) == AZ_IOT_OK);
   az_iot_connection_client_deinit(&g_conn);
+
+  /* No message store: only clean hub sessions. */
+  options.mqtt_limits.message_store_size = 0u;
+  CHECK(az_iot_connection_client_init(&g_conn, &options) == AZ_IOT_ERR_INVALID_ARG);
+  options.session_continuity = AZ_IOT_SESSION_CONTINUITY_CLEAN;
+  CHECK(az_iot_connection_client_init(&g_conn, &options) == AZ_IOT_OK);
+  az_iot_connection_client_deinit(&g_conn);
   free(mqtt_workspace);
   return 0;
 }

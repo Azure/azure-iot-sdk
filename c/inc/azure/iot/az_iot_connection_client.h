@@ -790,7 +790,9 @@ extern "C"
      * link benefits from resuming; a device that has been away long enough to
      * accumulate a large queue may be better off starting clean than replaying
      * a backlog. Ignored for DPS, which does not support session persistence
-     * and is always connected clean. */
+     * and is always connected clean. A resumed session must suit mqtt_limits:
+     * with az_mqtt, a message_store_size of 0 fails init() unless CLEAN (or
+     * dps.provision_only, which never connects to a hub). */
     az_iot_session_continuity session_continuity;
 
     /* Session Expiry Interval requested on an MQTT v5 hub session, in seconds.
@@ -969,7 +971,9 @@ extern "C"
     const az_iot_mqtt_adapter* mqtt_adapter;
     /**
      * @brief Sizes of each MQTT client mqtt_adapter builds. Required: init() fails with
-     * AZ_IOT_ERR_INVALID_ARG when mqtt_adapter->get_workspace_size() rejects them.
+     * AZ_IOT_ERR_INVALID_ARG when mqtt_adapter->get_workspace_size() rejects them, or when
+     * mqtt_adapter->validate_limits_for_session_usage() rejects them for the hub session (whether
+     * it outlives its connection: see session_continuity).
      */
     az_iot_mqtt_limits mqtt_limits;
     /**
