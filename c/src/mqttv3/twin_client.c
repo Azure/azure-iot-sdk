@@ -554,6 +554,12 @@ static bool limits_resolve_max_pending_requests(
   return *out <= AZ_IOT_TWIN_CLIENT_MAX_PENDING_REQUESTS_LIMIT;
 }
 
+AZ_NODISCARD az_iot_mqttv3_twin_client_options az_iot_mqttv3_twin_client_options_default(void)
+{
+  az_iot_mqttv3_twin_client_options options = { 0 };
+  return options;
+}
+
 AZ_NODISCARD size_t
 az_iot_mqttv3_twin_client_get_workspace_size(const az_iot_twin_client_limits* limits)
 {

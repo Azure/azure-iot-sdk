@@ -192,7 +192,7 @@ typedef struct fixture
 /** @brief Options with the default limits, in @p workspace of the default size. */
 static az_iot_mqttv5_twin_client_options default_options(uint8_t* workspace)
 {
-  az_iot_mqttv5_twin_client_options options = { 0 };
+  az_iot_mqttv5_twin_client_options options = az_iot_mqttv5_twin_client_options_default();
   options.workspace = workspace;
   options.workspace_size = AZ_IOT_MQTTV5_TWIN_CLIENT_DEFAULT_WORKSPACE_SIZE;
   return options;
@@ -3732,7 +3732,10 @@ static void ending_the_hub_session_needs_a_connected_session(void** state)
 static void the_workspace_size_matches_the_macro(void** state)
 {
   (void)state;
-  az_iot_twin_client_limits limits = { 0 };
+  const az_iot_mqttv5_twin_client_options defaults = az_iot_mqttv5_twin_client_options_default();
+  assert_null(defaults.workspace);
+  assert_int_equal(defaults.workspace_size, 0);
+  az_iot_twin_client_limits limits = defaults.limits;
   assert_int_equal(
       az_iot_mqttv5_twin_client_get_workspace_size(&limits),
       AZ_IOT_MQTTV5_TWIN_CLIENT_DEFAULT_WORKSPACE_SIZE);
