@@ -1210,12 +1210,26 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
             }
 
             // A resync's GET belongs to the connection that the resync started on, so a response to it that arrives once that
-            // connection was replaced (for example, by one as a different identity) says nothing about the new connection.
+            // connection was replaced (for example, by one as a different identity) describes a twin that this device may no
+            // longer have. It is dropped, and the calls sharing it fail as if the connection had been lost before it arrived.
             Guid? connectionNonce = _connection.ConnectionNonce;
-            if (resync == null || resync.ConnectionNonce == connectionNonce)
+            if (resync != null && resync.ConnectionNonce != connectionNonce)
             {
-                RecordAuthoritativeVersions(connectionNonce, response.DesiredVersion, response.ReportedVersion);
+                Trace.TraceInformation("Dropping a get twin response that arrived after the connection it was requested on was replaced.");
+                lock (_desiredStateLock)
+                {
+                    DiscardDesiredResyncFromPreviousConnection(connectionNonce);
+                }
+
+                foreach (GetTwinWaiter waiter in waiters)
+                {
+                    waiter.Response.TrySetException(CreateGetTwinConnectionLostException());
+                }
+
+                return;
             }
+
+            RecordAuthoritativeVersions(connectionNonce, response.DesiredVersion, response.ReportedVersion);
 
             // The resync goes first, since it may find this device's copy of the twin invalid (see ResetLocalDesiredVersionIfInvalid).
             DesiredStateOutcome outcome = new();

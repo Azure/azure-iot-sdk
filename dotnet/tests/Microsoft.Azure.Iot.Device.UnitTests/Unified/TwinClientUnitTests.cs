@@ -498,6 +498,28 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
         }
 
         [Fact]
+        public async Task GetTwinAsync_Classic_SharedResyncResponseAfterTheConnectionChangedFailsTheCallAsRetryable()
+        {
+            MockFeatureConnectionClient connection = CreateClassicConnection();
+            using TwinClient twinClient = new(connection);
+            await CompleteConnectSyncAsync(connection, desiredVersion: 1);
+            List<ulong> snapshotVersions = new();
+            twinClient.TwinPushReceived += args => snapshotVersions.Add(args.Desired!.PropertiesVersion);
+            int publishCount = connection.PublishedMessages.Count;
+
+            await ReceiveClassicDesiredPatchAsync(connection, 3, "{\"fanSpeed\":3}");
+            MqttPublish resyncGet = await connection.WaitForPublishedMessagesAsync(publishCount + 1);
+            Task<DeviceTwin> getTask = twinClient.GetTwinAsync(TestContext.Current.CancellationToken);
+            connection.ConnectionNonce = Guid.NewGuid();
+
+            await RespondClassicAsync(connection, resyncGet, 200, payload: ClassicTwin(3, "{\"fanSpeed\":3}", 1, "{}"));
+
+            DeviceException exception = await Assert.ThrowsAsync<DeviceException>(() => getTask);
+            Assert.Equal(ErrorRetryability.Retryable, exception.Retryability);
+            Assert.Empty(snapshotVersions);
+        }
+
+        [Fact]
         public async Task UpdateReportedPropertiesAsync_Classic_ResentAfterTheNextConnectSyncWhenTheConnectionIsLost()
         {
             MockFeatureConnectionClient connection = CreateClassicConnection();

@@ -1124,7 +1124,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
         }
 
         [Fact]
-        public async Task DesiredPatchGap_ResyncResponseAfterTheConnectionChangedDoesNotRevealVersionsForTheNewConnection()
+        public async Task DesiredPatchGap_ResyncResponseAfterTheConnectionChangedIsDroppedAndFailsTheCallsSharingIt()
         {
             (MockFeatureConnectionClient connection, Guid nonce) = CreateConnectionWithNonce();
             using TwinClient twinClient = new(connection);
@@ -1132,12 +1132,17 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
 
             await ReceiveDesiredPatchAsync(connection, nonce, 3, "{\"a\":3}");
             MqttPublish getPublish = await connection.WaitForPublishedMessagesAsync(1);
+            Task<DeviceTwin> getTask = twinClient.GetTwinAsync(getReported: false, cancellationToken: TestContext.Current.CancellationToken);
             connection.ConnectionNonce = Guid.NewGuid();
 
             await ReceiveGetResponseAsync(connection, getPublish, 3, "{\"a\":3}", reportedVersion: 9, reportedPayload: "{}");
 
             Assert.Null(twinClient.AuthoritativeDesiredPropertiesVersion);
             Assert.Null(twinClient.AuthoritativeReportedPropertiesVersion);
+
+            // The call sharing the GET fails rather than adopting the replaced connection's twin.
+            DeviceException exception = await Assert.ThrowsAsync<DeviceException>(() => getTask);
+            Assert.Equal(ErrorRetryability.Retryable, exception.Retryability);
         }
 
         [Fact]
@@ -1225,10 +1230,21 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
                 return Task.FromResult(new MqttPublishAck() { ReasonCode = MqttPublishAckReasonCode.Success });
             };
 
+            // The timeout is scheduled once the publish returns, so the test waits for the second schedule rather than the publish.
             List<int> timedOutAttempts = new();
+            TaskCompletionSource secondAttemptScheduled = new(TaskCreationOptions.RunContinuationsAsynchronously);
             twinClient.DesiredResyncTimeoutSchedule = attempt =>
             {
-                timedOutAttempts.Add(attempt);
+                lock (timedOutAttempts)
+                {
+                    timedOutAttempts.Add(attempt);
+                }
+
+                if (attempt == 2)
+                {
+                    secondAttemptScheduled.TrySetResult();
+                }
+
                 return attempt == 1 ? TimeSpan.FromMilliseconds(10) : TimeSpan.FromHours(1);
             };
 
@@ -1238,8 +1254,12 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             await ReceiveDesiredPatchAsync(connection, nonce, 3, payload: null);
             Assert.True(await getPublished.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
             Assert.True(await getPublished.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
+            await secondAttemptScheduled.Task.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
 
-            Assert.Equal(new[] { 1, 2 }, timedOutAttempts);
+            lock (timedOutAttempts)
+            {
+                Assert.Equal(new[] { 1, 2 }, timedOutAttempts);
+            }
             Assert.NotEqual(connection.PublishedMessages[0].CorrelationData, connection.PublishedMessages[1].CorrelationData);
 
             // Only the response to the latest attempt is applied.
