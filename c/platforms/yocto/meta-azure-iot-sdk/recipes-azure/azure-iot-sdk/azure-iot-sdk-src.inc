@@ -11,11 +11,11 @@
 HOMEPAGE = "https://github.com/Azure/azure-iot-sdk"
 
 AZ_IOT_SDK_GIT_URI ?= "git://github.com/Azure/azure-iot-sdk.git;protocol=https;branch=main"
-SRCREV_sdk ?= "92a3a80baefae800e73d0e7faab28f7ccf416e06"
+SRCREV_sdk ?= "55cb419cb5aa5baa3dda86b9911e51c11caf621f"
 
 SRC_URI = "${AZ_IOT_SDK_GIT_URI};name=sdk"
 SRCREV_FORMAT = "sdk"
 
 # AZ_IOT_VERSION_STRING at SRCREV_sdk, "-" -> "~" so a pre-release sorts before
 # its release. Bump together with SRCREV_sdk.
-PV = "0.0.1+git"
+PV = "1.0.0"
