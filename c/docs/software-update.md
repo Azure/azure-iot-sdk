@@ -414,8 +414,10 @@ PC samples run on Linux and Windows.
 - Updates go over DPS only; there is no IoT Hub route.
 - Only X.509 device authentication is supported for Software Update.
 - No root key package download or rotation, and no signing-key revocation.
-- Not supported: component targeting, proxy (gateway-to-leaf) updates, reference steps, step
-  handlers (apt, script, swupdate), Delivery Optimization, log upload.
+- Not supported: component targeting, proxy (gateway-to-leaf) updates, reference steps, mini
+  (detached) update manifests, step handlers (apt, script, swupdate), Delivery Optimization, log
+  upload. A mini manifest, or a manifest with a reference step or no step, fails before anything
+  is downloaded (`AZ_IOT_SU_MANIFEST_ERROR_*`).
 - No built-in health check or automatic rollback after a reboot.
 - `AZ_IOT_SU_REPLACEMENT_ROLLBACK` is not supported yet.
 - An update refused by the device (`UPDATE_REFUSED`) is not reported to the service, which keeps

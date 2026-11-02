@@ -54,6 +54,23 @@ extern "C"
       uint32_t file_urls_count);
 
   /**
+   * @brief Check that a parsed manifest is one the client can install: not a mini manifest, with
+   * steps, all inline.
+   *
+   * The one place these are refused; the reason is logged.
+   *
+   * @param manifest           A parsed manifest.
+   * @param out_manifest_error Set to the AZ_IOT_SU_MANIFEST_ERROR_* sub-code on failure; else 0.
+   * @return AZ_IOT_OK; AZ_IOT_ERR_NOT_SUPPORTED for a mini manifest
+   * (AZ_IOT_SU_MANIFEST_ERROR_DETACHED_MANIFEST) or a reference step
+   * (AZ_IOT_SU_MANIFEST_ERROR_REFERENCE_STEP); AZ_IOT_ERR_INVALID_ARG with no steps
+   * (AZ_IOT_SU_MANIFEST_ERROR_NO_STEPS).
+   */
+  az_iot_result az_iot_su__check_manifest_supported(
+      const az_iot_su_client_update_manifest* manifest,
+      uint32_t* out_manifest_error);
+
+  /**
    * @brief Find the manifest file with id @p id.
    *
    * Ids are compared decoded: `f\u0031` and `f1` are the same id.
