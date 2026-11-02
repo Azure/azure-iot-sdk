@@ -160,12 +160,12 @@ static void get_device_id_returns_the_direct_client_id(void** state)
   assert_string_equal(az_iot_connection_client_get_iothub_address(fx->client), "broker.example");
 }
 
-static int setup_with_a_v5_only_adapter(void** state)
+static int setup_with_an_adapter_building_no_client(void** state)
 {
-  return setup_direct(state, az_iot_mock_mqtt_get_adapter_for_version(AZ_IOT_MQTT_VERSION_5));
+  return setup_direct(state, az_iot_mock_mqtt_get_adapter_building_no_client());
 }
 
-/* The MQTT 3.1.1 session needs a client the MQTT 5 only adapter cannot build. */
+/* The MQTT 3.1.1 session needs a client the adapter cannot build. */
 static void open_when_the_adapter_lacks_the_mqtt_version_returns_not_supported(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -546,28 +546,21 @@ static void mqtt_v3_connect_asks_to_resume_the_session(void** state)
   const az_iot_mock_call* connect = connect_options_of_first_attempt(fx);
 
   assert_false(connect->connect.clean_start);
-  /* v3.1.1 has no property field to carry either of these. */
-  assert_int_equal(connect->connect.session_expiry_seconds, 0);
-  assert_int_equal(connect->connect.disconnect_reason_code, 0);
   assert_string_equal(connect->connect.lwt_topic, "");
 }
 
-/* The caller can ask for a clean session, and that must reach the wire. Session
- * Expiry is an MQTT 5 property and is never sent to a v3.1.1 broker. */
-static void mqtt_v3_honors_continuity_but_sends_no_expiry_property(void** state)
+/* The caller can ask for a clean session, and that must reach the wire. */
+static void mqtt_v3_honors_a_clean_session_continuity(void** state)
 {
   fixture* fx = (fixture*)*state;
   fx->client->opts.session_continuity = AZ_IOT_SESSION_CONTINUITY_CLEAN;
   const az_iot_mock_call* connect = connect_options_of_first_attempt(fx);
 
   assert_true(connect->connect.clean_start);
-  assert_int_equal(connect->connect.session_expiry_seconds, 0);
 }
 
-/* A Will configured by the application rides the MQTTv3 CONNECT, but the
- * v5-only parts of it do not: v3.1.1 has no Will Delay Interval and no
- * DISCONNECT reason codes. */
-static void a_will_rides_the_mqtt_v3_connect_without_v5_fields(void** state)
+/* A Will configured by the application rides the MQTTv3 CONNECT. */
+static void a_will_rides_the_mqtt_v3_connect(void** state)
 {
   fixture* fx = (fixture*)*state;
   const az_iot_mock_call* connect = connect_options_of_first_attempt(fx);
@@ -577,9 +570,6 @@ static void a_will_rides_the_mqtt_v3_connect_without_v5_fields(void** state)
   assert_memory_equal(connect->connect.lwt_payload, k_will_body, sizeof(k_will_body));
   assert_int_equal(connect->connect.lwt_qos, AZ_IOT_MQTT_QOS_1);
   assert_true(connect->connect.lwt_retain);
-  assert_int_equal(connect->connect.lwt_will_delay_seconds, 0);
-  assert_int_equal(connect->connect.session_expiry_seconds, 0);
-  assert_int_equal(connect->connect.disconnect_reason_code, 0);
   assert_false(connect->connect.clean_start);
 }
 
@@ -3405,7 +3395,7 @@ int main(void)
     cmocka_unit_test_setup_teardown(get_device_id_returns_the_direct_client_id, setup, teardown),
     cmocka_unit_test_setup_teardown(
         open_when_the_adapter_lacks_the_mqtt_version_returns_not_supported,
-        setup_with_a_v5_only_adapter,
+        setup_with_an_adapter_building_no_client,
         teardown),
     cmocka_unit_test_setup_teardown(
         open_invokes_connect_and_transitions_to_connecting, setup, teardown),
@@ -3435,10 +3425,9 @@ int main(void)
     cmocka_unit_test_setup_teardown(inbound_message_routes_through_dispatch, setup, teardown),
     cmocka_unit_test_setup_teardown(mqtt_v3_connack_announces_connected_at_once, setup, teardown),
     cmocka_unit_test_setup_teardown(mqtt_v3_connect_asks_to_resume_the_session, setup, teardown),
+    cmocka_unit_test_setup_teardown(mqtt_v3_honors_a_clean_session_continuity, setup, teardown),
     cmocka_unit_test_setup_teardown(
-        mqtt_v3_honors_continuity_but_sends_no_expiry_property, setup, teardown),
-    cmocka_unit_test_setup_teardown(
-        a_will_rides_the_mqtt_v3_connect_without_v5_fields, setup_mqtt_v3_with_will, teardown),
+        a_will_rides_the_mqtt_v3_connect, setup_mqtt_v3_with_will, teardown),
     cmocka_unit_test_setup_teardown(
         max_unconfirmed_delivery_timeout_defaults_and_resolves_zero, setup, teardown),
     cmocka_unit_test(open_rejects_operational_cert_without_csr_provider),

@@ -10,8 +10,8 @@
  * shapes them without knowing what they mean. Something still has to produce
  * the bytes a synthetic broker answers with, and before this module that job
  * fell to the tests themselves, which hand-assembled fixed headers and reason
- * codes inline. Wire layout then lived in every case that needed a refusal, in
- * two versions, restated each time.
+ * codes inline. Wire layout then lived in every case that needed a refusal,
+ * restated each time.
  *
  * This module owns that knowledge instead. A test says what it wants to happen
  * -- refuse the subscription -- and gets the bytes for the version under test.
@@ -38,20 +38,18 @@ extern "C"
 {
 #endif
 
-  /* Acknowledgements, control packets, and PUBLISHes with many User Properties.
-   * The bound matches AZ_IOT_TEST_PROXY_RULE_BYTES_MAX, which is what an
-   * injected packet has to fit into. */
+  /* Acknowledgements and control packets. The bound matches AZ_IOT_TEST_PROXY_RULE_BYTES_MAX, which
+   * is what an injected packet has to fit into. */
 #define AZ_IOT_TEST_MQTT_PACKET_MAX 512
 
   typedef enum az_iot_test_mqtt_version
   {
-    AZ_IOT_TEST_MQTT_V3_1_1 = 0,
-    AZ_IOT_TEST_MQTT_V5 = 1
+    AZ_IOT_TEST_MQTT_V3_1_1 = 0
   } az_iot_test_mqtt_version;
 
-  /* What a test means, rather than the byte that expresses it. The two wire
-   * versions disagree on the codes and MQTT 3.1.1 collapses several of these
-   * into one value, so mapping them here keeps that spread out of the tests.
+  /* What a test means, rather than the byte that expresses it. MQTT 3.1.1
+   * collapses several of these into one value, so mapping them here keeps that
+   * out of the tests.
    *
    * When the specific byte *is* the assertion -- an unknown or reserved code,
    * say -- use the _raw builders instead. */
@@ -59,18 +57,16 @@ extern "C"
   {
     AZ_IOT_TEST_MQTT_REASON_SUCCESS = 0,
     AZ_IOT_TEST_MQTT_REASON_NOT_AUTHORIZED,
-    AZ_IOT_TEST_MQTT_REASON_REFUSED,
-    AZ_IOT_TEST_MQTT_REASON_SERVER_SHUTTING_DOWN
+    AZ_IOT_TEST_MQTT_REASON_REFUSED
   } az_iot_test_mqtt_reason;
 
   typedef struct az_iot_test_mqtt_packet
   {
     uint8_t bytes[AZ_IOT_TEST_MQTT_PACKET_MAX];
     /* 0 means the packet is not expressible in the requested version -- a
-     * server DISCONNECT in 3.1.1, or a PUBACK carrying a failure reason, which
-     * 3.1.1 has no field for. Callers do not need to check: a zero-length
-     * injection is rejected by the proxy, so the test fails where it is set up
-     * rather than silently asserting nothing. */
+     * PUBACK carrying a failure reason, which 3.1.1 has no field for. Callers do not need to check:
+     * a zero-length injection is rejected by the proxy, so the test fails where it is set up rather
+     * than silently asserting nothing. */
     size_t len;
     /* Where an acknowledgement carries the id of the packet it answers, or 0
      * when the packet carries no id at all -- offset 0 is the fixed header, so
@@ -94,51 +90,13 @@ extern "C"
       az_iot_test_mqtt_version version,
       az_iot_test_mqtt_reason reason);
 
-  /* PUBACK. Carries a packet id. A non-success reason is v5 only: MQTT 3.1.1
-   * has no reason code in a PUBACK, so that combination yields len == 0. */
+  /* PUBACK. Carries a packet id. MQTT 3.1.1 has no reason code in a PUBACK,
+   * so a non-success reason yields len == 0. */
   az_iot_test_mqtt_packet az_iot_test_mqtt_puback(
       az_iot_test_mqtt_version version,
       az_iot_test_mqtt_reason reason);
 
-  /* Server-sent DISCONNECT. v5 only; MQTT 3.1.1 has no such packet, so that
-   * combination yields len == 0. */
-  az_iot_test_mqtt_packet az_iot_test_mqtt_disconnect(
-      az_iot_test_mqtt_version version,
-      az_iot_test_mqtt_reason reason);
-
-  /* Identical in both versions. */
   az_iot_test_mqtt_packet az_iot_test_mqtt_pingresp(void);
-
-  /* One MQTT v5 User Property, as a broker would put it on a PUBLISH.
-   *
-   * `key` and `value` are length-delimited on the wire, so NULL and "" are the
-   * same thing here: a zero-length UTF-8 string, which MQTT 5.0 permits and
-   * which a client must surface as an empty value rather than as nothing. */
-  typedef struct az_iot_test_mqtt_user_property
-  {
-    const char* key;
-    const char* value;
-  } az_iot_test_mqtt_user_property;
-
-  /* QoS 0 PUBLISH carrying v5 properties, for driving a client's inbound
-   * property extraction from the broker side.
-   *
-   * v5 only, and QoS 0 only: the packet carries no id, so nothing has to be
-   * echoed into it and it needs no acknowledgement back. `content_type` may be
-   * NULL to omit that property; `user_properties` are emitted in the order
-   * given, duplicate keys included, because the order and the duplicates are
-   * exactly what a client must not collapse.
-   *
-   * Yields len == 0 -- which the proxy rejects, so the test fails where it is
-   * set up -- when the result would not fit AZ_IOT_TEST_MQTT_PACKET_MAX. Lengths
-   * of 128 and more take a multi-byte Variable Byte Integer. */
-  az_iot_test_mqtt_packet az_iot_test_mqtt_publish_v5(
-      const char* topic,
-      const uint8_t* payload,
-      size_t payload_len,
-      const az_iot_test_mqtt_user_property* user_properties,
-      size_t user_properties_count,
-      const char* content_type);
 
   /* Escape hatches for when the exact code is the subject of the test. */
   az_iot_test_mqtt_packet az_iot_test_mqtt_connack_raw(
@@ -148,23 +106,6 @@ extern "C"
   az_iot_test_mqtt_packet az_iot_test_mqtt_suback_raw(
       az_iot_test_mqtt_version version,
       uint8_t code);
-  /* MQTT 5 PUBACK with reason @p code and, unless @p reason_string is NULL, a Reason String
-   * property. Carries a packet id. len == 0 when it would not fit AZ_IOT_TEST_MQTT_PACKET_MAX. */
-  az_iot_test_mqtt_packet az_iot_test_mqtt_puback_v5_raw(uint8_t code, const char* reason_string);
-  /* MQTT 5 CONNACK, session present clear, with reason @p code and, unless @p reason_string is
-   * NULL, a Reason String property. len == 0 when it would not fit AZ_IOT_TEST_MQTT_PACKET_MAX. */
-  az_iot_test_mqtt_packet az_iot_test_mqtt_connack_v5_raw(uint8_t code, const char* reason_string);
-  /* MQTT 5 server DISCONNECT with reason @p code (at bytes[2] while the Remaining Length is under
-   * 128) and, unless @p reason_string is NULL, a Reason String property. len == 0 as for
-   * az_iot_test_mqtt_connack_v5_raw(). */
-  az_iot_test_mqtt_packet az_iot_test_mqtt_disconnect_v5_raw(
-      uint8_t code,
-      const char* reason_string);
-  /* MQTT 5 SUBACK for one filter with reason @p code and, unless @p reason_string is NULL, a
-   * Reason String property. Carries a packet id. len == 0 as for
-   * az_iot_test_mqtt_connack_v5_raw(). */
-  az_iot_test_mqtt_packet az_iot_test_mqtt_suback_v5_raw(uint8_t code, const char* reason_string);
-
   /* Pin the packet id and clear the echo flag, for an acknowledgement that is
    * meant to answer something the client never sent. Does nothing to a packet
    * that carries no id, or if the recorded offset does not fit the packet. */

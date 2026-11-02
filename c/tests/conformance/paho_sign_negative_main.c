@@ -31,7 +31,7 @@
  *   - the hook was never actually called: if it were, the route was accepted,
  *     not refused, and this control's premise no longer holds.
  *
- * Runs both suite kinds, and in both adapter build modes: without
+ * Runs in both adapter build modes: without
  * AZ_IOT_PAHO_KEY_CUSTODY the adapter still refuses a sign hook with the same
  * result, so there is no configuration in which this exits green without having
  * dispatched the case.
@@ -687,15 +687,11 @@ static int run_control_isolated(
 
 int main(void)
 {
-  /* Both suite kinds. The dispatch is shared, but only a run proves that: a
-   * change that filtered the case out of the v5 list alone would leave
-   * az_iot_conformance_paho_v5 green, since that harness declares the URI route
-   * only. */
   static const struct
   {
     az_iot_conformance_suite kind;
     const char* label;
-  } suites[] = { { AZ_IOT_CONFORMANCE_SUITE_V3_1_1, "v3" }, { AZ_IOT_CONFORMANCE_SUITE_V5, "v5" } };
+  } suites[] = { { AZ_IOT_CONFORMANCE_SUITE_V3_1_1, "v3" } };
 
   char origin[1024];
   if (az_iot_getcwd(origin, sizeof(origin)) == NULL)

@@ -3,7 +3,7 @@
 // information.
 
 /* SPDX-License-Identifier: MIT */
-/* azure::iot::adapter_paho: the adapter builds clients of both versions in a
+/* azure::iot::adapter_paho: the adapter builds an MQTT 3.1.1 client in a
  * workspace, and a connection client takes it. No network I/O. */
 #include <stddef.h>
 
@@ -34,7 +34,6 @@ static void check_client(az_iot_mqtt_version version)
 int main(void)
 {
   check_client(AZ_IOT_MQTT_VERSION_3_1_1);
-  check_client(AZ_IOT_MQTT_VERSION_5);
 
   az_iot_connection_client_options options = az_iot_connection_client_options_default();
   options.iothub_hostname = "hub.example";

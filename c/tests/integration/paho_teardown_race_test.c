@@ -152,12 +152,6 @@ static void test_teardown_under_load_v3(void** state)
   teardown_under_load(AZ_IOT_MQTT_VERSION_3_1_1, 0);
 }
 
-static void test_teardown_under_load_v5(void** state)
-{
-  (void)state;
-  teardown_under_load(AZ_IOT_MQTT_VERSION_5, ROUNDS_PER_VERSION);
-}
-
 int main(void)
 {
   g_host = az_iot_test_env_dup("AZ_IOT_MQTT_BROKER_HOST");
@@ -181,7 +175,6 @@ int main(void)
 
   const struct CMUnitTest tests[] = {
     cmocka_unit_test(test_teardown_under_load_v3),
-    cmocka_unit_test(test_teardown_under_load_v5),
   };
   int rc = cmocka_run_group_tests_name("paho_teardown_race", tests, NULL, NULL);
   free(g_host);

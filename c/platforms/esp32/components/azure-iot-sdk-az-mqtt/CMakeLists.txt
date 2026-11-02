@@ -12,7 +12,6 @@ idf_component_register(
     SRCS
         "${AZ_IOT_ROOT}/adapters/az_mqtt/az_iot_mqtt_az_mqtt.c"
         "${AZ_IOT_ROOT}/adapters/az_mqtt/az_iot_mqtt_az_mqtt_v3.c"
-        "${AZ_IOT_ROOT}/adapters/az_mqtt/az_iot_mqtt_az_mqtt_v5.c"
         "${AZ_IOT_ROOT}/adapters/az_mqtt/az_iot_mqtt_az_mqtt_adapter.c"
     PRIV_INCLUDE_DIRS "${AZ_IOT_ROOT}/src/core"
     REQUIRES azure-iot-sdk
@@ -20,9 +19,3 @@ idf_component_register(
 )
 
 target_compile_definitions(${COMPONENT_LIB} PRIVATE AZ_IOT_AZ_MQTT_MBEDTLS)
-
-# Kconfig values are not set during ESP-IDF's requirement expansion.
-if(NOT CMAKE_BUILD_EARLY_EXPANSION)
-    target_compile_definitions(${COMPONENT_LIB} PRIVATE
-        AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX=${CONFIG_AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX})
-endif()
