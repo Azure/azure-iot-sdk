@@ -36,6 +36,7 @@ forbidden_mqttv5=(
 )
 
 # Scanned: tracked files only.
+# Keep in sync with the ga_scope filter in .github/workflows/ci-c.yml.
 scope=(
     c
     ':(glob).github/workflows/ci-c*.yml'
