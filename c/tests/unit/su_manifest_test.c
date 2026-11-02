@@ -536,19 +536,32 @@ static void a_mini_manifest_keeps_its_detached_manifest_file_id(void** state)
 static void step_type_and_detached_manifest_file_id_are_parsed(void** state)
 {
   (void)state;
+  /* At most two steps per parse, so the test also runs with AZ_IOT_SU_MAX_STEP_COUNT 2. */
   assert_int_equal(
       parse("{\"instructions\":{\"steps\":["
-            "{\"handler\":\"h\"},"
-            "{\"type\":\"inline\",\"handler\":\"h\"},"
-            "{\"type\":\"reference\",\"detachedManifestFileId\":\"fileId2\"}]}}"),
+            "{\"handler\":\"h\"},{\"type\":\"inline\",\"handler\":\"h\"}]}}"),
       AZ_IOT_OK);
-  assert_int_equal(g_manifest.instructions.steps_count, 3);
+  assert_int_equal(g_manifest.instructions.steps_count, 2);
   assert_int_equal(g_manifest.instructions.steps[0].type, AZ_IOT_SU_STEP_TYPE_INLINE);
   assert_int_equal(g_manifest.instructions.steps[1].type, AZ_IOT_SU_STEP_TYPE_INLINE);
-  assert_int_equal(g_manifest.instructions.steps[2].type, AZ_IOT_SU_STEP_TYPE_REFERENCE);
-  assert_span_equal(g_manifest.instructions.steps[2].detached_manifest_file_id, "fileId2");
-  assert_int_equal(az_span_size(g_manifest.instructions.steps[2].handler), 0);
+
+  assert_int_equal(
+      parse("{\"instructions\":{\"steps\":["
+            "{\"type\":\"reference\",\"detachedManifestFileId\":\"fileId2\"}]}}"),
+      AZ_IOT_OK);
+  assert_int_equal(g_manifest.instructions.steps_count, 1);
+  assert_int_equal(g_manifest.instructions.steps[0].type, AZ_IOT_SU_STEP_TYPE_REFERENCE);
+  assert_span_equal(g_manifest.instructions.steps[0].detached_manifest_file_id, "fileId2");
+  assert_int_equal(az_span_size(g_manifest.instructions.steps[0].handler), 0);
   assert_int_equal(az_span_size(g_manifest.detached_manifest_file_id), 0);
+
+  /* Names and the type value are compared decoded. */
+  assert_int_equal(
+      parse("{\"instructions\":{\"steps\":["
+            "{\"\\u0074ype\":\"ref\\u0065rence\",\"detachedManifestFile\\u0049d\":\"f2\"}]}}"),
+      AZ_IOT_OK);
+  assert_int_equal(g_manifest.instructions.steps[0].type, AZ_IOT_SU_STEP_TYPE_REFERENCE);
+  assert_span_equal(g_manifest.instructions.steps[0].detached_manifest_file_id, "f2");
 
   assert_int_equal(parse("{\"instructions\":{\"steps\":[{\"type\":1}]}}"), AZ_IOT_ERR_INVALID_ARG);
   assert_int_equal(
@@ -568,12 +581,18 @@ static void unsupported_manifests_are_refused_with_their_sub_code(void** state)
     uint32_t manifest_error;
   } cases[] = {
     { k_mini_manifest, AZ_IOT_ERR_NOT_SUPPORTED, AZ_IOT_SU_MANIFEST_ERROR_DETACHED_MANIFEST },
+    { "{\"detachedManifestFile\\u0049d\":\"f1\"}",
+      AZ_IOT_ERR_NOT_SUPPORTED,
+      AZ_IOT_SU_MANIFEST_ERROR_DETACHED_MANIFEST },
     { "{\"instructions\":{\"steps\":[]}}",
       AZ_IOT_ERR_INVALID_ARG,
       AZ_IOT_SU_MANIFEST_ERROR_NO_STEPS },
     { "{}", AZ_IOT_ERR_INVALID_ARG, AZ_IOT_SU_MANIFEST_ERROR_NO_STEPS },
     { "{\"instructions\":{\"steps\":[{\"handler\":\"h\"},"
       "{\"type\":\"reference\",\"detachedManifestFileId\":\"fileId2\"}]}}",
+      AZ_IOT_ERR_NOT_SUPPORTED,
+      AZ_IOT_SU_MANIFEST_ERROR_REFERENCE_STEP },
+    { "{\"instructions\":{\"steps\":[{\"\\u0074ype\":\"ref\\u0065rence\"}]}}",
       AZ_IOT_ERR_NOT_SUPPORTED,
       AZ_IOT_SU_MANIFEST_ERROR_REFERENCE_STEP },
     { "{\"instructions\":{\"steps\":[{\"type\":\"inline\",\"handler\":\"h\"},{\"handler\":\"h\"}]}"

@@ -80,10 +80,6 @@ extern "C"
   /** @brief A step of the manifest instructions. */
   typedef struct az_iot_su_client_update_manifest_instructions_step
   {
-    /** Step type; any `type` other than `reference` is inline. */
-    az_iot_su_client_update_manifest_step_type type;
-    /** Of a reference step: id of the file holding its child update manifest; else empty. */
-    az_span detached_manifest_file_id;
     /** Update handler of the step, e.g. `microsoft/swupdate:1`. */
     az_span handler;
     /** Ids of the files the step uses; see az_iot_su_client_update_manifest.files. Raw JSON
@@ -93,6 +89,10 @@ extern "C"
     uint32_t files_count;
     /** Properties for the handler. */
     az_iot_su_client_update_manifest_instructions_step_handler_properties handler_properties;
+    /** Step type; any `type` other than `reference` is inline. */
+    az_iot_su_client_update_manifest_step_type type;
+    /** Of a reference step: id of the file holding its child update manifest; else empty. */
+    az_span detached_manifest_file_id;
   } az_iot_su_client_update_manifest_instructions_step;
 
   /** @brief Instructions of an update manifest. */
@@ -148,9 +148,6 @@ extern "C"
     az_span manifest_version;
     /** Identity of the update. */
     az_iot_su_client_update_manifest_update_id update_id;
-    /** Of a mini (detached) manifest: id of the `files` entry holding the full manifest; else
-     * empty. */
-    az_span detached_manifest_file_id;
     /** Steps to run. */
     az_iot_su_client_update_manifest_instructions instructions;
     /** Files the steps use. */
@@ -164,6 +161,9 @@ extern "C"
     uint32_t related_files_count;
     /** Creation date and time. */
     az_span create_date_time;
+    /** Of a mini (detached) manifest: id of the `files` entry holding the full manifest; else
+     * empty. */
+    az_span detached_manifest_file_id;
   } az_iot_su_client_update_manifest;
 
   /* --- Update request ------------------------------------------------------ */

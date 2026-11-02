@@ -177,15 +177,17 @@ static void parse_step(
   }
   while (!*is_error && json_next_property(jr, &name, is_error))
   {
-    if (az_json_token_is_text_equal(&name, AZ_SPAN_FROM_STR("type")))
+    /* Decoded comparisons: an escaped spelling must not hide a reference step. */
+    if (az_iot_json_string_equals(name.slice, AZ_SPAN_FROM_STR("type"), false))
     {
       if (json_token_is_kind(jr, AZ_JSON_TOKEN_STRING, is_error)
-          && az_json_token_is_text_equal(&jr->token, AZ_SPAN_FROM_STR("reference")))
+          && az_iot_json_string_equals(jr->token.slice, AZ_SPAN_FROM_STR("reference"), false))
       {
         step->type = AZ_IOT_SU_STEP_TYPE_REFERENCE;
       }
     }
-    else if (az_json_token_is_text_equal(&name, AZ_SPAN_FROM_STR("detachedManifestFileId")))
+    else if (az_iot_json_string_equals(
+                 name.slice, AZ_SPAN_FROM_STR("detachedManifestFileId"), false))
     {
       json_read_string(jr, &step->detached_manifest_file_id, is_error);
     }
@@ -649,7 +651,8 @@ az_iot_result az_iot_su__parse_update_manifest(
     {
       parse_update_id(&jr, &out_manifest->update_id, &is_error);
     }
-    else if (az_json_token_is_text_equal(&name, AZ_SPAN_FROM_STR("detachedManifestFileId")))
+    else if (az_iot_json_string_equals(
+                 name.slice, AZ_SPAN_FROM_STR("detachedManifestFileId"), false))
     {
       json_read_string(&jr, &out_manifest->detached_manifest_file_id, &is_error);
     }
