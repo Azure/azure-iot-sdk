@@ -52,7 +52,7 @@ Device features by IoT Hub generation:
 | Cloud-to-device messages | Yes | No |
 | File upload | Yes | No |
 | Certificate renewal over IoT Hub | Yes | No |
-| Software updates | Yes, over DPS | Yes, over DPS |
+| [Software updates](docs/software-update.md) | Yes, over DPS | Yes, over DPS |
 
 ## Getting Started
 
