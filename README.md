@@ -3,7 +3,7 @@
 [![ci-c](https://github.com/Azure/azure-iot-sdk/actions/workflows/ci-c.yml/badge.svg?branch=main)](https://github.com/Azure/azure-iot-sdk/actions/workflows/ci-c.yml)
 [![ci-dotnet](https://github.com/Azure/azure-iot-sdk/actions/workflows/ci-dotnet.yml/badge.svg?branch=main)](https://github.com/Azure/azure-iot-sdk/actions/workflows/ci-dotnet.yml)
 
-Device SDKs for Azure IoT Hub Device Provisioning Service (DPS), Azure IoT Hub and Software Update, all in one repository.
+Device SDKs for Azure IoT Hub Device Provisioning Service (DPS) and Azure IoT Hub, all in one repository.
 
 ## Table of Contents
 

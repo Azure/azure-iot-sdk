@@ -319,10 +319,9 @@ jobs:
         run: >
           bash eng/check-race-suppressions.sh
           && bash eng/check-race-suppressions.sh --self-test
-      # Software updates only until the MQTT 5 removal lands; then every category.
       - name: Check GA scope
         run: >
-          bash eng/check-ga-scope.sh --only su
+          bash eng/check-ga-scope.sh
           && bash eng/check-ga-scope.sh --self-test
       # Pinned: clang-format output differs between major versions, so an
       # unpinned binary would make the gate flap when the runner image moves.
