@@ -50,18 +50,17 @@ static void adapter_builds_a_v3_client(void** state)
   c->iface->destroy(c);
 }
 
-static void adapter_builds_a_v5_client(void** state)
+/* MQTT 5 (value 1) is refused like any version the adapter does not build. */
+static void adapter_refuses_a_v5_client(void** state)
 {
   (void)state;
   uint8_t workspace[AZ_IOT_PAHO_WORKSPACE_SIZE];
   az_iot_mqtt_client* c = NULL;
   assert_int_equal(
       az_iot_paho_get_adapter()->init(
-          AZ_IOT_MQTT_VERSION_5, &k_limits, workspace, sizeof(workspace), &c),
-      AZ_IOT_OK);
-  assert_non_null(c);
-  assert_int_equal(c->iface->version, AZ_IOT_MQTT_VERSION_5);
-  c->iface->destroy(c);
+          (az_iot_mqtt_version)1, &k_limits, workspace, sizeof(workspace), &c),
+      AZ_IOT_ERR_NOT_SUPPORTED);
+  assert_null(c);
 }
 
 /* A client in an application workspace: same vtable; destroy() wipes the state and frees
@@ -78,7 +77,7 @@ static void adapter_runs_a_client_in_a_workspace(void** state)
 
   assert_int_equal(
       AZ_IOT_ERR_NOT_ENOUGH_SPACE,
-      adapter->init(AZ_IOT_MQTT_VERSION_5, &limits, workspace, size - 1, &c));
+      adapter->init(AZ_IOT_MQTT_VERSION_3_1_1, &limits, workspace, size - 1, &c));
   assert_null(c);
   assert_int_equal(
       AZ_IOT_ERR_NOT_SUPPORTED,
@@ -86,16 +85,18 @@ static void adapter_runs_a_client_in_a_workspace(void** state)
   limits.max_in_flight_messages = 0;
   assert_int_equal(0, adapter->get_workspace_size(&limits));
   assert_int_equal(
-      AZ_IOT_ERR_INVALID_ARG, adapter->init(AZ_IOT_MQTT_VERSION_5, &limits, workspace, size, &c));
+      AZ_IOT_ERR_INVALID_ARG,
+      adapter->init(AZ_IOT_MQTT_VERSION_3_1_1, &limits, workspace, size, &c));
   limits.max_in_flight_messages = 4;
   limits.message_store_size = limits.send_buffer_size; /* Under one packet plus overhead. */
   assert_int_equal(0, adapter->get_workspace_size(&limits));
   limits.message_store_size = 0;
 
-  assert_int_equal(AZ_IOT_OK, adapter->init(AZ_IOT_MQTT_VERSION_5, &limits, workspace, size, &c));
+  assert_int_equal(
+      AZ_IOT_OK, adapter->init(AZ_IOT_MQTT_VERSION_3_1_1, &limits, workspace, size, &c));
   size_t const offset = (size_t)((uint8_t*)c - workspace);
   assert_true(offset < 16u);
-  assert_int_equal(c->iface->version, AZ_IOT_MQTT_VERSION_5);
+  assert_int_equal(c->iface->version, AZ_IOT_MQTT_VERSION_3_1_1);
   assert_int_equal(c->iface->disconnect(c), AZ_IOT_ERR_NOT_CONNECTED);
   assert_int_equal(c->iface->process_loop(c, 0), AZ_IOT_OK);
   c->iface->destroy(c);
@@ -167,7 +168,7 @@ int main(void)
 {
   const struct CMUnitTest tests[] = {
     cmocka_unit_test(adapter_builds_a_v3_client),
-    cmocka_unit_test(adapter_builds_a_v5_client),
+    cmocka_unit_test(adapter_refuses_a_v5_client),
     cmocka_unit_test(adapter_runs_a_client_in_a_workspace),
     cmocka_unit_test(the_shared_limits_check_bounds_each_size),
   };

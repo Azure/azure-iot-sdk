@@ -261,16 +261,6 @@ static void a_set_callbacks_failure_releases_the_key_reference(void** state)
   assert_false(fake_custody_reference_file_exists());
 }
 
-static void a_set_disconnected_failure_releases_the_key_reference(void** state)
-{
-  fixture* fx = (fixture*)*state;
-  mock_paho_set_set_disconnected_rc(MQTTASYNC_FAILURE);
-
-  assert_int_equal(connect_with_custody(fx), AZ_IOT_ERR_MQTT);
-  assert_non_null(fake_custody_reference_path());
-  assert_false(fake_custody_reference_file_exists());
-}
-
 static void a_connect_failure_releases_the_key_reference(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -499,11 +489,11 @@ static void a_plaintext_connect_stays_plaintext(void** state)
 /* ------------------------------------------------------------------------- */
 /* client-initiated disconnect completion                                     */
 /*                                                                            */
-/* Paho reports a disconnect the PEER caused through connectionLost() and the  */
-/* v5 disconnected() callback, but reports the one the application asked for   */
-/* only through the completion callbacks passed to MQTTAsync_disconnect. With  */
-/* none supplied the event never arrived and a caller waiting for the session  */
-/* to settle waited forever.                                                   */
+/* Paho reports a disconnect the PEER caused through connectionLost(), but    */
+/* reports the one the application asked for only through the completion      */
+/* callbacks passed to MQTTAsync_disconnect. With none supplied the event     */
+/* never arrived and a caller waiting for the session to settle waited        */
+/* forever.                                                                   */
 /* ------------------------------------------------------------------------- */
 
 /* Collects the events the adapter raises. */
@@ -586,32 +576,6 @@ static void a_client_initiated_disconnect_reports_disconnected(void** state)
   assert_true(mock_paho_disconnect_had_callbacks());
   assert_int_equal(sink.disconnected, 1);
   assert_int_equal(sink.last_status, AZ_IOT_OK);
-}
-
-/* Same on MQTT v5. Only the v3 completion callbacks are set, which is correct:
- * for a DISCONNECT command Paho calls onSuccess when it is set and falls back
- * to onSuccess5 only when it is not, so one pair serves both versions. This
- * pins that, because setting the wrong pair fails silently -- the disconnect
- * still succeeds and the event simply never arrives. */
-static void a_v5_client_initiated_disconnect_reports_disconnected(void** state)
-{
-  (void)state;
-  mock_paho_reset();
-  fake_custody_reset();
-
-  fixture local;
-  memset(&local, 0, sizeof(local));
-  local.client = build_client(AZ_IOT_MQTT_VERSION_5, local.workspace, sizeof(local.workspace));
-
-  evt_sink sink = { 0 };
-  az_iot_result rc = AZ_IOT_OK;
-  connect_then_disconnect(&local, &sink, &rc);
-
-  assert_int_equal(rc, AZ_IOT_OK);
-  assert_true(mock_paho_disconnect_had_callbacks());
-  assert_int_equal(sink.disconnected, 1);
-
-  local.client->iface->destroy(local.client);
 }
 
 /* A disconnect that completes with a FAILURE still ends the session, so it is
@@ -757,84 +721,6 @@ static void wait_for_puback(az_iot_mqtt_client* client, puback_sink* sink)
   assert_int_equal(sink->count, 1);
 }
 
-/* A publish whose write failed: Paho 1.3.16 leaves reasonCode and properties uninitialized
- * (MQTTAsync_writeComplete()). They are not read: an ERR_MQTT failure with no protocol code. */
-static void a_v5_publish_write_failure_ignores_its_uninitialized_reason_code(void** state)
-{
-  (void)state;
-  mock_paho_reset();
-  uint8_t workspace[AZ_IOT_PAHO_WORKSPACE_SIZE];
-  puback_sink sink = { 0 };
-  uint16_t packet_id = 0;
-  az_iot_mqtt_client* client
-      = publish_on_a_client(AZ_IOT_MQTT_VERSION_5, workspace, sizeof(workspace), &sink, &packet_id);
-
-  const MQTTAsync_responseOptions* resp = mock_paho_last_send_response();
-  MQTTAsync_failureData5 data;
-  memset(&data, 0x5A, sizeof(data)); /* stack garbage, as Paho leaves it: reasonCode >= 0x80 */
-  data.token = packet_id;
-  data.code = -1;
-  data.message = NULL;
-  data.packet_type = 3; /* PUBLISH */
-  resp->onFailure5(resp->context, &data);
-  wait_for_puback(client, &sink);
-  assert_int_equal(sink.last.packet_id, packet_id);
-  assert_int_equal(sink.last.status, AZ_IOT_ERR_MQTT);
-  assert_int_equal(sink.last.protocol_code, 0);
-  assert_int_equal(sink.last.reason_string_len, 0);
-
-  client->iface->destroy(client);
-}
-
-/* A PUBACK refusal keeps its reason code. */
-static void a_v5_puback_refusal_keeps_its_reason_code(void** state)
-{
-  (void)state;
-  mock_paho_reset();
-  uint8_t workspace[AZ_IOT_PAHO_WORKSPACE_SIZE];
-  puback_sink sink = { 0 };
-  uint16_t packet_id = 0;
-  az_iot_mqtt_client* client
-      = publish_on_a_client(AZ_IOT_MQTT_VERSION_5, workspace, sizeof(workspace), &sink, &packet_id);
-
-  const MQTTAsync_responseOptions* resp = mock_paho_last_send_response();
-  MQTTAsync_failureData5 data = MQTTAsync_failureData5_initializer;
-  data.token = packet_id;
-  data.reasonCode = MQTTREASONCODE_NOT_AUTHORIZED;
-  resp->onFailure5(resp->context, &data);
-  wait_for_puback(client, &sink);
-  assert_int_equal(sink.last.packet_id, packet_id);
-  assert_int_not_equal(sink.last.status, AZ_IOT_OK);
-  assert_int_equal(sink.last.protocol_code, MQTTREASONCODE_NOT_AUTHORIZED);
-
-  client->iface->destroy(client);
-}
-
-/* Paho 1.3.16 reports a PUBLISH it failed to write with token 0 (MQTTAsync_processCommand()):
- * the event still names the publish, from the adapter's own context. */
-static void a_v5_publish_whose_write_failed_reports_its_packet_id(void** state)
-{
-  (void)state;
-  mock_paho_reset();
-  uint8_t workspace[AZ_IOT_PAHO_WORKSPACE_SIZE];
-  puback_sink sink = { 0 };
-  uint16_t packet_id = 0;
-  az_iot_mqtt_client* client
-      = publish_on_a_client(AZ_IOT_MQTT_VERSION_5, workspace, sizeof(workspace), &sink, &packet_id);
-
-  const MQTTAsync_responseOptions* resp = mock_paho_last_send_response();
-  MQTTAsync_failureData5 data = MQTTAsync_failureData5_initializer;
-  data.code = MQTTASYNC_FAILURE; /* SOCKET_ERROR */
-  resp->onFailure5(resp->context, &data);
-  wait_for_puback(client, &sink);
-  assert_int_equal(sink.last.packet_id, packet_id);
-  assert_int_equal(sink.last.status, AZ_IOT_ERR_MQTT);
-  assert_int_equal(sink.last.protocol_code, 0);
-  assert_int_equal(sink.last.transport_code, MQTTASYNC_FAILURE);
-
-  client->iface->destroy(client);
-}
-
 static void a_v3_publish_whose_write_failed_reports_its_packet_id(void** state)
 {
   (void)state;
@@ -859,41 +745,27 @@ static void a_v3_publish_whose_write_failed_reports_its_packet_id(void** state)
   client->iface->destroy(client);
 }
 
-/* A PUBACK reports the publish it acknowledges, on both versions. */
+/* A PUBACK reports the publish it acknowledges. */
 static void a_puback_reports_its_packet_id(void** state)
 {
   (void)state;
-  static const az_iot_mqtt_version versions[]
-      = { AZ_IOT_MQTT_VERSION_3_1_1, AZ_IOT_MQTT_VERSION_5 };
-  for (size_t i = 0; i < sizeof(versions) / sizeof(versions[0]); ++i)
-  {
-    mock_paho_reset();
-    uint8_t workspace[AZ_IOT_PAHO_WORKSPACE_SIZE];
-    puback_sink sink = { 0 };
-    uint16_t packet_id = 0;
-    az_iot_mqtt_client* client
-        = publish_on_a_client(versions[i], workspace, sizeof(workspace), &sink, &packet_id);
+  mock_paho_reset();
+  uint8_t workspace[AZ_IOT_PAHO_WORKSPACE_SIZE];
+  puback_sink sink = { 0 };
+  uint16_t packet_id = 0;
+  az_iot_mqtt_client* client = publish_on_a_client(
+      AZ_IOT_MQTT_VERSION_3_1_1, workspace, sizeof(workspace), &sink, &packet_id);
 
-    const MQTTAsync_responseOptions* resp = mock_paho_last_send_response();
-    if (versions[i] == AZ_IOT_MQTT_VERSION_5)
-    {
-      MQTTAsync_successData5 data = MQTTAsync_successData5_initializer;
-      data.token = packet_id;
-      resp->onSuccess5(resp->context, &data);
-    }
-    else
-    {
-      MQTTAsync_successData data;
-      memset(&data, 0, sizeof(data));
-      data.token = packet_id;
-      resp->onSuccess(resp->context, &data);
-    }
-    wait_for_puback(client, &sink);
-    assert_int_equal(sink.last.packet_id, packet_id);
-    assert_int_equal(sink.last.status, AZ_IOT_OK);
+  const MQTTAsync_responseOptions* resp = mock_paho_last_send_response();
+  MQTTAsync_successData data;
+  memset(&data, 0, sizeof(data));
+  data.token = packet_id;
+  resp->onSuccess(resp->context, &data);
+  wait_for_puback(client, &sink);
+  assert_int_equal(sink.last.packet_id, packet_id);
+  assert_int_equal(sink.last.status, AZ_IOT_OK);
 
-    client->iface->destroy(client);
-  }
+  client->iface->destroy(client);
 }
 
 /* A publish Paho refuses runs no callback: publish() reports it and keeps nothing. */
@@ -904,7 +776,7 @@ static void a_refused_publish_reports_an_error_and_no_event(void** state)
   uint8_t workspace[AZ_IOT_PAHO_WORKSPACE_SIZE];
   puback_sink sink = { 0 };
   az_iot_mqtt_client* client
-      = connect_publishing_client(AZ_IOT_MQTT_VERSION_5, workspace, sizeof(workspace), &sink);
+      = connect_publishing_client(AZ_IOT_MQTT_VERSION_3_1_1, workspace, sizeof(workspace), &sink);
 
   mock_paho_set_send_rc(MQTTASYNC_DISCONNECTED);
   uint16_t packet_id = 0;
@@ -924,13 +796,14 @@ static void a_completion_queued_at_destroy_is_freed(void** state)
   uint8_t workspace[AZ_IOT_PAHO_WORKSPACE_SIZE];
   puback_sink sink = { 0 };
   uint16_t packet_id = 0;
-  az_iot_mqtt_client* client
-      = publish_on_a_client(AZ_IOT_MQTT_VERSION_5, workspace, sizeof(workspace), &sink, &packet_id);
+  az_iot_mqtt_client* client = publish_on_a_client(
+      AZ_IOT_MQTT_VERSION_3_1_1, workspace, sizeof(workspace), &sink, &packet_id);
 
   const MQTTAsync_responseOptions* resp = mock_paho_last_send_response();
-  MQTTAsync_failureData5 data = MQTTAsync_failureData5_initializer;
+  MQTTAsync_failureData data;
+  memset(&data, 0, sizeof(data));
   data.code = MQTTASYNC_FAILURE;
-  resp->onFailure5(resp->context, &data);
+  resp->onFailure(resp->context, &data);
 
   client->iface->destroy(client);
   assert_int_equal(sink.count, 0);
@@ -964,36 +837,31 @@ static void a_publish_without_memory_for_its_completion_is_not_sent(void** state
 static void a_publish_completed_before_publish_returns_reports_its_packet_id(void** state)
 {
   (void)state;
-  static const az_iot_mqtt_version versions[]
-      = { AZ_IOT_MQTT_VERSION_3_1_1, AZ_IOT_MQTT_VERSION_5 };
-  for (size_t i = 0; i < sizeof(versions) / sizeof(versions[0]); ++i)
-  {
-    mock_paho_reset();
-    uint8_t workspace[AZ_IOT_PAHO_WORKSPACE_SIZE];
-    puback_sink sink = { 0 };
-    az_iot_mqtt_client* client
-        = connect_publishing_client(versions[i], workspace, sizeof(workspace), &sink);
+  mock_paho_reset();
+  uint8_t workspace[AZ_IOT_PAHO_WORKSPACE_SIZE];
+  puback_sink sink = { 0 };
+  az_iot_mqtt_client* client
+      = connect_publishing_client(AZ_IOT_MQTT_VERSION_3_1_1, workspace, sizeof(workspace), &sink);
 
-    mock_paho_set_send_completes_at_once(true);
-    uint16_t packet_id = 0;
+  mock_paho_set_send_completes_at_once(true);
+  uint16_t packet_id = 0;
 #if defined(AZ_IOT_TEST_WRAP_MALLOC)
-    /* Only the publish's own allocation succeeds. */
-    fail_malloc_after(1);
+  /* Only the publish's own allocation succeeds. */
+  fail_malloc_after(1);
 #endif
-    assert_int_equal(publish_one(client, &packet_id), AZ_IOT_OK);
+  assert_int_equal(publish_one(client, &packet_id), AZ_IOT_OK);
 #if defined(AZ_IOT_TEST_WRAP_MALLOC)
-    bool const completion_allocated = !malloc_failure_pending();
-    stop_failing_malloc();
-    assert_false(completion_allocated);
+  bool const completion_allocated = !malloc_failure_pending();
+  stop_failing_malloc();
+  assert_false(completion_allocated);
 #endif
-    assert_int_not_equal(packet_id, 0);
-    wait_for_puback(client, &sink);
-    assert_int_equal(sink.last.packet_id, packet_id);
-    assert_int_equal(sink.last.status, AZ_IOT_ERR_MQTT);
-    assert_int_equal(sink.last.transport_code, MQTTASYNC_FAILURE);
+  assert_int_not_equal(packet_id, 0);
+  wait_for_puback(client, &sink);
+  assert_int_equal(sink.last.packet_id, packet_id);
+  assert_int_equal(sink.last.status, AZ_IOT_ERR_MQTT);
+  assert_int_equal(sink.last.transport_code, MQTTASYNC_FAILURE);
 
-    client->iface->destroy(client);
-  }
+  client->iface->destroy(client);
 }
 
 int main(void)
@@ -1003,8 +871,6 @@ int main(void)
     cmocka_unit_test_setup_teardown(a_create_failure_releases_the_key_reference, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_set_callbacks_failure_releases_the_key_reference, setup, teardown),
-    cmocka_unit_test_setup_teardown(
-        a_set_disconnected_failure_releases_the_key_reference, setup, teardown),
     cmocka_unit_test_setup_teardown(a_connect_failure_releases_the_key_reference, setup, teardown),
 #if defined(AZ_IOT_TEST_WRAP_MALLOC)
     cmocka_unit_test_setup_teardown(
@@ -1025,16 +891,9 @@ int main(void)
         a_client_initiated_disconnect_reports_disconnected, setup, teardown),
     cmocka_unit_test_setup_teardown(a_lost_connection_reports_an_error, setup, teardown),
     cmocka_unit_test_setup_teardown(
-        a_v5_client_initiated_disconnect_reports_disconnected, setup, teardown),
-    cmocka_unit_test_setup_teardown(
         a_failed_disconnect_completion_carries_the_error, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_refused_disconnect_still_reports_disconnected, setup, teardown),
-    cmocka_unit_test_setup_teardown(
-        a_v5_publish_write_failure_ignores_its_uninitialized_reason_code, setup, teardown),
-    cmocka_unit_test_setup_teardown(a_v5_puback_refusal_keeps_its_reason_code, setup, teardown),
-    cmocka_unit_test_setup_teardown(
-        a_v5_publish_whose_write_failed_reports_its_packet_id, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_v3_publish_whose_write_failed_reports_its_packet_id, setup, teardown),
     cmocka_unit_test_setup_teardown(a_puback_reports_its_packet_id, setup, teardown),

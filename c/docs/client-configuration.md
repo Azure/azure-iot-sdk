@@ -22,7 +22,7 @@ it adds `c/`.
 | `AZ_IOT_WITH_CRYPTO_MBEDTLS` | `ON` | Build the mbedTLS crypto backend, `az_iot_crypto_mbedtls()`. Built only when mbedTLS 3.6 LTS or 4.1+ is found. |
 | `AZ_IOT_WITH_AZ_MQTT` | `OFF` | Build the az_mqtt MQTT adapter (`az_iot_adapter_az_mqtt.h`) and the bundled `deps/az_mqtt` client. |
 | `AZ_IOT_AZ_MQTT_TLS` | `openssl` | TLS backend of the az_mqtt adapter: `openssl` (3.0+, with key references) or `mbedtls`. Windows uses Schannel. |
-| `AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX`, `AZ_IOT_AZ_MQTT_CONFIG_FILE` | empty | The az_mqtt adapter's one compile-time limit, MQTT 5 user properties on CONNECT, or a header that defines it. Empty: 16. Each is also a compile-time macro, so builds without CMake can set them. Buffer sizes are run-time values. See [az_mqtt adapter limits](#az_mqtt-adapter-limits). |
+| `AZ_IOT_AZ_MQTT_CONFIG_FILE` | empty | A header the az_mqtt adapter reads first (also a compile-time macro). The adapter has no compile-time limits: buffer sizes are run-time values. See [az_mqtt adapter limits](#az_mqtt-adapter-limits). |
 | `AZ_IOT_BUILD_SAMPLES` | `ON` | Build the samples. |
 | `AZ_IOT_BUILD_TESTS` | `OFF` | Build the unit tests (the presets turn it on). |
 | `AZ_IOT_INSTALL` | `ON` when `c/` is the top-level project | Generate install rules and the `azure-iot-sdk` CMake package. |
@@ -69,27 +69,9 @@ Buffer sizes and requests in flight are run-time values, `az_iot_mqtt_limits` (s
 `AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE`, `AZ_IOT_AZ_MQTT_RECEIVE_BUFFER_SIZE`,
 `AZ_IOT_AZ_MQTT_INFLIGHT_MAX` and `AZ_IOT_AZ_MQTT_MESSAGE_STORAGE_SIZE` fail the build when
 defined, and so does setting one of the first three as a CMake option. The removed footprint
-(`AZ_IOT_AZ_MQTT_FOOTPRINT`, macro or CMake option) fails the build too: set
-`AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX` instead (`DEFAULT` was 16, `CONSTRAINED` 4).
-
-The one compile-time limit is in [az_iot_az_mqtt_config.h](../adapters/az_mqtt/az_iot_az_mqtt_config.h):
-
-| Macro | Default | Effect |
-| --- | --- | --- |
-| `AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX` | 16 | MQTT 5 user properties on CONNECT; more is refused. PUBLISH user properties are not limited (sent and received in place). |
-
-Override it with a compiler `-D`, in the file named by `AZ_IOT_AZ_MQTT_CONFIG_FILE`, or with CMake
-(which passes each option only when set). The value applies where the adapter sources are compiled;
-defining it only for the application has no effect. Without CMake, compile the adapter with it:
-
-```sh
-cc -DAZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX=6 ...
-cc -DAZ_IOT_AZ_MQTT_CONFIG_FILE='"my_az_mqtt_config.h"' ...   # a header on the include path
-```
-
-With CMake: `-DAZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX=<n>` or `-DAZ_IOT_AZ_MQTT_CONFIG_FILE=<header>`
-(an absolute path, or a name on the include path). The ESP32 component sets it from Kconfig
-(`CONFIG_AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX`, default 4).
+(`AZ_IOT_AZ_MQTT_FOOTPRINT`, macro or CMake option) fails the build too. A removed limit defined in
+the file named by `AZ_IOT_AZ_MQTT_CONFIG_FILE` ([az_iot_az_mqtt_config.h](../adapters/az_mqtt/az_iot_az_mqtt_config.h))
+fails it as well.
 
 #### Clients in application memory
 
@@ -99,24 +81,23 @@ stack or heap), with no allocation by the adapter, sized by `az_iot_mqtt_limits`
 | Field | Meaning |
 | --- | --- |
 | `send_buffer_size` | Largest outgoing packet. A larger connect or publish fails. |
-| `receive_buffer_size` | Largest incoming packet; MQTT 5: the Maximum Packet Size advertised, and the server drops larger messages. MQTT 3.1.1: a larger packet ends the session. |
-| `max_in_flight_messages` | QoS 1 exchanges at once (the SDK uses no QoS 2), 1-32767; MQTT 5: the Receive Maximum advertised. |
-| `message_store_size` | Copies of unacknowledged QoS 1 PUBLISH the adapter keeps while a session outlives the connection (at least one packet of `send_buffer_size` plus 18 bytes); never resent (see [Message store](#message-store)). 0: clean sessions only. The connection client's `init()` returns `AZ_IOT_ERR_INVALID_ARG` unless `session_continuity` is `AZ_IOT_SESSION_CONTINUITY_CLEAN` or `dps.provision_only` is set; used without the connection client, a connect with `clean_start` false (MQTT 5: and `session_expiry_seconds` > 0) returns `AZ_IOT_ERR_NOT_SUPPORTED`. |
-| `connect_strings_size` | Copies a connect makes of its strings (host, credentials, TLS paths or PEM, proxy, will, user properties), one NUL each. |
+| `receive_buffer_size` | Largest incoming packet; a larger packet ends the session. |
+| `max_in_flight_messages` | QoS 1 exchanges at once (the SDK uses no QoS 2), 1-32767. |
+| `message_store_size` | Copies of unacknowledged QoS 1 PUBLISH the adapter keeps while a session outlives the connection (at least one packet of `send_buffer_size` plus 18 bytes); never resent (see [Message store](#message-store)). 0: clean sessions only. The connection client's `init()` returns `AZ_IOT_ERR_INVALID_ARG` unless `session_continuity` is `AZ_IOT_SESSION_CONTINUITY_CLEAN` or `dps.provision_only` is set; used without the connection client, a connect with `clean_start` false returns `AZ_IOT_ERR_NOT_SUPPORTED`. |
+| `connect_strings_size` | Copies a connect makes of its strings (host, credentials, TLS paths or PEM, proxy, will), one NUL each. |
 
 IoT Hub limits: device-to-cloud messages 256 KB, direct method payloads 128 KB, cloud-to-device
 messages 64 KB, twin documents 32 KB. Size the buffers for the messages the device sends and
 receives.
 
-- `az_iot_az_mqtt_get_workspace_size(&limits)`: the exact size, for the largest of the MQTT 3.1.1
-  and MQTT 5 clients, with this build's TLS backend.
+- `az_iot_az_mqtt_get_workspace_size(&limits)`: the exact size of the MQTT 3.1.1 client, with this
+  build's TLS backend.
 - `AZ_IOT_AZ_MQTT_WORKSPACE_SIZE(send, receive, in_flight, store, connect_strings, max_tls_state)`:
   a constant-expression bound for static arrays. `max_tls_state` must be at least the TLS backend's
   state (measured: OpenSSL 560 B, mbedTLS 4.2-4.6 KB, Schannel about 197 KB).
 - `init()` returns `AZ_IOT_ERR_NOT_ENOUGH_SPACE` if the workspace is too small and logs the size
   needed. A connect whose string copies do not fit `connect_strings_size` returns the same.
 - The client's `destroy()` wipes the whole workspace (credentials included) and frees nothing.
-- `AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX` stays a compile-time value.
 
 The Paho adapter has the same descriptor (`az_iot_paho_get_adapter()`; bound
 `AZ_IOT_PAHO_WORKSPACE_SIZE`). Its workspace holds only the adapter's state: Paho allocates its

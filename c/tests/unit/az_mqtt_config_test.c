@@ -5,38 +5,23 @@
 /* SPDX-License-Identifier: MIT */
 /**
  * @file az_mqtt_config_test.c
- * @brief Checks, when compiled, how az_iot_az_mqtt_config.h resolves the adapter limits. One
- * case per build: AZ_IOT_AZ_MQTT_CONFIG_TEST_<case>. Definitions made in code, before the
- * header, as an application compiling the adapter would. The FOOTPRINT_FILE case, and DEFAULT
- * built with -DAZ_IOT_AZ_MQTT_FOOTPRINT, must fail on the removed-footprint guard
+ * @brief Checks, when compiled, how az_iot_az_mqtt_config.h refuses the removed footprint. One
+ * case per build: AZ_IOT_AZ_MQTT_CONFIG_TEST_<case>. The FOOTPRINT_FILE case, and DEFAULT built
+ * with -DAZ_IOT_AZ_MQTT_FOOTPRINT, must fail on the removed-footprint guard
  * (check_build_refused.cmake).
  */
 
 // Each case sets its own inputs: drop any from the build (e.g. CMAKE_C_FLAGS).
 #undef AZ_IOT_AZ_MQTT_CONFIG_FILE
-#undef AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX
 
 #if defined(AZ_IOT_AZ_MQTT_CONFIG_TEST_DEFAULT)
-#define EXPECTED_PROPERTIES 16
-#elif defined(AZ_IOT_AZ_MQTT_CONFIG_TEST_OVERRIDE)
-#define AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX 6
-#define EXPECTED_PROPERTIES 6
-#elif defined(AZ_IOT_AZ_MQTT_CONFIG_TEST_CONFIG_FILE)
-// The file sets USER_PROPERTIES_MAX.
-#define AZ_IOT_AZ_MQTT_CONFIG_FILE "az_mqtt_config_test_user.h"
-#define EXPECTED_PROPERTIES 2
 #elif defined(AZ_IOT_AZ_MQTT_CONFIG_TEST_FOOTPRINT_FILE)
 // The file defines the removed AZ_IOT_AZ_MQTT_FOOTPRINT.
 #define AZ_IOT_AZ_MQTT_CONFIG_FILE "az_mqtt_config_test_footprint.h"
-#define EXPECTED_PROPERTIES 16
 #else
 #error "Define AZ_IOT_AZ_MQTT_CONFIG_TEST_<case>"
 #endif
 
 #include "az_iot_az_mqtt_config.h"
-
-#if AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX != EXPECTED_PROPERTIES
-#error "AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX"
-#endif
 
 int main(void) { return 0; }

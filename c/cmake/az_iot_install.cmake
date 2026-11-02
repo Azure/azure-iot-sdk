@@ -93,7 +93,7 @@ endforeach()
 
 # az_mqtt (deps/az_mqtt) libraries the az_mqtt adapter links. Exported, not components.
 set(_az_iot_az_mqtt_targets "")
-foreach(_tgt IN ITEMS az_mqtt_core az_mqttv3 az_mqttv5)
+foreach(_tgt IN ITEMS az_mqtt_core az_mqttv3)
     if(TARGET az_iot_adapter_az_mqtt AND TARGET ${_tgt})
         set_target_properties(${_tgt} PROPERTIES EXPORT_NAME ${_tgt})
         list(APPEND _az_iot_az_mqtt_targets ${_tgt})
