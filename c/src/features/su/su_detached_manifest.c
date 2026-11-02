@@ -80,7 +80,7 @@ static az_iot_su__detached_manifest_error find_update_manifest_property(
       break;
     }
     bool is_update_manifest
-        = az_json_token_is_text_equal(&jr.token, AZ_SPAN_FROM_STR("updateManifest"));
+        = az_iot_json_string_equals(jr.token.slice, AZ_SPAN_FROM_STR("updateManifest"), false);
     if (az_result_failed(az_json_reader_next_token(&jr))
         || az_result_failed(az_json_reader_skip_children(&jr)))
     {

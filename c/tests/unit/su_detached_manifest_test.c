@@ -120,8 +120,12 @@ static void set_file(const char* text)
   g_detached_file.hashes_count = 1;
 }
 
-/** @brief set_file() to `{<before>"updateManifest":"<manifest, escaped>"<after>}`. */
-static void set_wrapped_manifest(const char* before, const char* manifest, const char* after)
+/** @brief set_file() to `{<before>"<name>":"<manifest, escaped>"<after>}`. */
+static void set_wrapped_property(
+    const char* before,
+    const char* name,
+    const char* manifest,
+    const char* after)
 {
   char text[sizeof(g_file) + 1];
   size_t n = 0;
@@ -130,7 +134,12 @@ static void set_wrapped_manifest(const char* before, const char* manifest, const
   {
     text[n++] = *c;
   }
-  for (const char* c = "\"updateManifest\":\""; *c != '\0'; ++c)
+  text[n++] = '"';
+  for (const char* c = name; *c != '\0'; ++c)
+  {
+    text[n++] = *c;
+  }
+  for (const char* c = "\":\""; *c != '\0'; ++c)
   {
     text[n++] = *c;
   }
@@ -151,6 +160,12 @@ static void set_wrapped_manifest(const char* before, const char* manifest, const
   assert_true(n < sizeof(text));
   text[n] = '\0';
   set_file(text);
+}
+
+/** @brief set_wrapped_property() with the name `updateManifest`. */
+static void set_wrapped_manifest(const char* before, const char* manifest, const char* after)
+{
+  set_wrapped_property(before, "updateManifest", manifest, after);
 }
 
 /** @brief Run the routine on g_file_content into g_manifest and g_error. */
@@ -212,6 +227,23 @@ static void other_wrapper_properties_are_ignored(void** state)
       "\"a\":{\"updateManifest\":1},\"b\":[\"updateManifest\",2],", FULL_MANIFEST, ",\"c\":null");
   assert_int_equal(process(), AZ_IOT_OK);
   assert_span_equal(g_manifest.update_id.name, "Toaster");
+}
+
+static void escaped_property_name_is_decoded(void** state)
+{
+  (void)state;
+  set_wrapped_property("", "\\u0075pdateManifest", FULL_MANIFEST, "");
+  assert_int_equal(process(), AZ_IOT_OK);
+  assert_span_equal(g_manifest.update_id.name, "Toaster");
+
+  /* The last one wins, however it is spelled. */
+  set_wrapped_property("\"updateManifest\":5,", "\\u0075pdateManifest", FULL_MANIFEST, "");
+  assert_int_equal(process(), AZ_IOT_OK);
+  set_wrapped_manifest("", FULL_MANIFEST, ",\"\\u0075pdateManifest\":5");
+  assert_rejected(
+      process(),
+      AZ_IOT_ERR_INVALID_ARG,
+      AZ_IOT_SU__DETACHED_MANIFEST_ERROR_UPDATE_MANIFEST_MISSING);
 }
 
 static void wrong_size_is_rejected(void** state)
@@ -368,6 +400,7 @@ int main(void)
   const struct CMUnitTest tests[] = {
     cmocka_unit_test(full_manifest_is_unwrapped_and_parsed),
     cmocka_unit_test(other_wrapper_properties_are_ignored),
+    cmocka_unit_test(escaped_property_name_is_decoded),
     cmocka_unit_test(wrong_size_is_rejected),
     cmocka_unit_test(wrong_hash_is_rejected),
     cmocka_unit_test(file_not_json_object_is_rejected),
