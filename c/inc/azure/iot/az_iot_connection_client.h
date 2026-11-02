@@ -791,7 +791,8 @@ extern "C"
      * accumulate a large queue may be better off starting clean than replaying
      * a backlog. Ignored for DPS, which does not support session persistence
      * and is always connected clean. A resumed session must suit mqtt_limits:
-     * with az_mqtt, a message_store_size of 0 fails init() unless CLEAN. */
+     * with az_mqtt, a message_store_size of 0 fails init() unless CLEAN (or
+     * dps.provision_only, which never connects to a hub). */
     az_iot_session_continuity session_continuity;
 
     /* Session Expiry Interval requested on an MQTT v5 hub session, in seconds.

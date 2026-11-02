@@ -7267,8 +7267,10 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_init(
   }
   if (mqtt_adapter->validate_limits_for_session_usage != NULL)
   {
+    /* A provision_only client never connects to a hub, and DPS sessions are always clean. */
     const az_iot_mqtt_session_usage session_usage
-        = { .session_outlives_connection = does_hub_session_resume(opts) };
+        = { .session_outlives_connection
+            = !opts->dps.provision_only && does_hub_session_resume(opts) };
     if (mqtt_adapter->validate_limits_for_session_usage(&opts->mqtt_limits, &session_usage)
         != AZ_IOT_OK)
     {

@@ -837,7 +837,69 @@ static void init_fails_when_the_adapter_refuses_the_limits_for_the_session_usage
   assert_int_equal(az_iot_connection_client_deinit(&fx->client), AZ_IOT_OK);
 }
 
+/* A provision_only client never connects to a hub, so whatever session_continuity says, init()
+ * tells the adapter no session outlives its connection, and the DPS CONNECT is clean. */
+static void init_tells_the_adapter_no_session_of_a_provision_only_client_outlives_its_connection(
+    void** state)
+{
+  adapter_fixture* fx = (adapter_fixture*)*state;
+  static const az_iot_session_continuity continuities[] = { AZ_IOT_SESSION_CONTINUITY_DEFAULT,
+                                                            AZ_IOT_SESSION_CONTINUITY_RESUME,
+                                                            AZ_IOT_SESSION_CONTINUITY_CLEAN };
+  for (size_t i = 0; i < sizeof(continuities) / sizeof(continuities[0]); ++i)
+  {
+    az_iot_mock_mqtt_adapter_reset();
+    const az_iot_mqtt_adapter* adapter = mock_adapter_validating_session_usage();
+    az_iot_connection_client_options opts = dps_options();
+    opts.dps.provision_only = true;
+    opts.session_continuity = continuities[i];
+    init_with_adapter(fx, opts, adapter);
+    assert_int_equal(g_session_usage_validations, 1);
+    assert_false(g_validated_session_usage.session_outlives_connection);
+
+    assert_int_equal(az_iot_connection_client_open(&fx->client), AZ_IOT_OK);
+    az_iot_mock_mqtt_client* dps = az_iot_mock_mqtt_adapter_last_client();
+    assert_non_null(dps);
+    assert_ptr_equal(fx->client.dps_mqtt, dps);
+    const az_iot_mock_call* connect
+        = az_iot_mock_mqtt_client_last_of(dps, AZ_IOT_MOCK_CALL_CONNECT);
+    assert_non_null(connect);
+    assert_true(connect->connect.clean_start);
+    assert_int_equal(az_iot_test_connection_client_deinit(&fx->client), AZ_IOT_OK);
+    fx->initialized = false;
+  }
+}
+
 #ifdef AZ_IOT_TEST_WITH_AZ_MQTT_ADAPTER
+/* az_mqtt with no message store accepts a provision_only client whatever session_continuity says:
+ * it never connects to a hub, and its DPS sessions are clean. */
+static void init_accepts_az_mqtt_without_a_message_store_for_a_provision_only_client(void** state)
+{
+  (void)state;
+  static az_iot_connection_client client;
+  const az_iot_mqtt_limits limits = { 4096, 4096, 8, 0, 4096 };
+  const size_t needed = az_iot_az_mqtt_get_workspace_size(&limits);
+  assert_true(needed > 0);
+  uint8_t* workspace = (uint8_t*)malloc(needed);
+  assert_non_null(workspace);
+  static const az_iot_session_continuity continuities[] = { AZ_IOT_SESSION_CONTINUITY_DEFAULT,
+                                                            AZ_IOT_SESSION_CONTINUITY_RESUME,
+                                                            AZ_IOT_SESSION_CONTINUITY_CLEAN };
+  for (size_t i = 0; i < sizeof(continuities) / sizeof(continuities[0]); ++i)
+  {
+    az_iot_connection_client_options opts = dps_options();
+    opts.dps.provision_only = true;
+    opts.session_continuity = continuities[i];
+    opts.mqtt_adapter = az_iot_az_mqtt_get_adapter();
+    opts.mqtt_limits = limits;
+    opts.mqtt_workspace = workspace;
+    opts.mqtt_workspace_size = needed;
+    assert_int_equal(az_iot_connection_client_init(&client, &opts), AZ_IOT_OK);
+    assert_int_equal(az_iot_connection_client_deinit(&client), AZ_IOT_OK);
+  }
+  free(workspace);
+}
+
 /* az_mqtt with no message store: init() refuses a hub session that outlives its connection, on
  * either hub protocol version and through DPS, and accepts clean sessions. */
 static void init_refuses_az_mqtt_without_a_message_store_for_a_resumed_hub_session(void** state)
@@ -1043,7 +1105,12 @@ int main(void)
         init_tells_the_adapter_whether_the_hub_session_outlives_its_connection, setup, teardown),
     cmocka_unit_test_setup_teardown(
         init_fails_when_the_adapter_refuses_the_limits_for_the_session_usage, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        init_tells_the_adapter_no_session_of_a_provision_only_client_outlives_its_connection,
+        setup,
+        teardown),
 #ifdef AZ_IOT_TEST_WITH_AZ_MQTT_ADAPTER
+    cmocka_unit_test(init_accepts_az_mqtt_without_a_message_store_for_a_provision_only_client),
     cmocka_unit_test(init_refuses_az_mqtt_without_a_message_store_for_a_resumed_hub_session),
     cmocka_unit_test_setup_teardown(
         init_sizes_the_mqtt_workspace_for_the_az_mqtt_adapter, setup, teardown),

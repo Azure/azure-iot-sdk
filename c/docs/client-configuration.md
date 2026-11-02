@@ -106,7 +106,7 @@ stack or heap), with no allocation by the adapter, sized by `az_iot_mqtt_limits`
 | `send_buffer_size` | Largest outgoing packet. A larger connect or publish fails. |
 | `receive_buffer_size` | Largest incoming packet; MQTT 5: the Maximum Packet Size advertised, and the server drops larger messages. MQTT 3.1.1: a larger packet ends the session. |
 | `max_in_flight_messages` | QoS 1 exchanges at once (the SDK uses no QoS 2), 1-32767; MQTT 5: the Receive Maximum advertised. |
-| `message_store_size` | Copies of unacknowledged QoS 1 PUBLISH the adapter keeps while a session outlives the connection (at least one packet of `send_buffer_size` plus 18 bytes); never resent (see [Message store](#message-store)). 0: clean sessions only. The connection client's `init()` returns `AZ_IOT_ERR_INVALID_ARG` unless `session_continuity` is `AZ_IOT_SESSION_CONTINUITY_CLEAN`; used without the connection client, a connect with `clean_start` false (MQTT 5: and `session_expiry_seconds` > 0) returns `AZ_IOT_ERR_NOT_SUPPORTED`. |
+| `message_store_size` | Copies of unacknowledged QoS 1 PUBLISH the adapter keeps while a session outlives the connection (at least one packet of `send_buffer_size` plus 18 bytes); never resent (see [Message store](#message-store)). 0: clean sessions only. The connection client's `init()` returns `AZ_IOT_ERR_INVALID_ARG` unless `session_continuity` is `AZ_IOT_SESSION_CONTINUITY_CLEAN` or `dps.provision_only` is set; used without the connection client, a connect with `clean_start` false (MQTT 5: and `session_expiry_seconds` > 0) returns `AZ_IOT_ERR_NOT_SUPPORTED`. |
 | `connect_strings_size` | Copies a connect makes of its strings (host, credentials, TLS paths or PEM, proxy, will, user properties), one NUL each. |
 
 IoT Hub limits: device-to-cloud messages 256 KB, direct method payloads 128 KB, cloud-to-device
@@ -490,7 +490,8 @@ each, and never below the minimum of `send_buffer_size + 18` (a nonzero store be
 
 0 reserves no store and allows only clean sessions: with `session_continuity` other than
 `AZ_IOT_SESSION_CONTINUITY_CLEAN`, `init()` fails with `AZ_IOT_ERR_INVALID_ARG` and logs that
-`message_store_size` 0 allows only clean sessions. DPS sessions are always clean. Paho ignores
+`message_store_size` 0 allows only clean sessions. DPS sessions are always clean, so a
+`dps.provision_only` client, which never connects to a hub, is accepted. Paho ignores
 `message_store_size`.
 
 The SDK never resends these copies: each session gets a new MQTT client, and unacknowledged

@@ -510,10 +510,10 @@ extern "C"
      * @brief Bytes for the copies of unacknowledged QoS 1 PUBLISH an adapter keeps while the
      * session outlives the connection. 0: clean sessions only (with az_mqtt,
      * az_iot_connection_client_init() fails with AZ_IOT_ERR_INVALID_ARG unless session_continuity
-     * is AZ_IOT_SESSION_CONTINUITY_CLEAN, and a connect whose session outlives the connection
-     * fails with AZ_IOT_ERR_NOT_SUPPORTED); otherwise at least one packet of send_buffer_size
-     * plus the adapter's per-message overhead. az_mqtt keeps each copy (encoded size + 18 bytes)
-     * until its PUBACK; a publish that does not fit returns AZ_IOT_ERR_BUSY.
+     * is AZ_IOT_SESSION_CONTINUITY_CLEAN or dps.provision_only is set, and a connect whose session
+     * outlives the connection fails with AZ_IOT_ERR_NOT_SUPPORTED); otherwise at least one packet
+     * of send_buffer_size plus the adapter's per-message overhead. az_mqtt keeps each copy (encoded
+     * size + 18 bytes) until its PUBACK; a publish that does not fit returns AZ_IOT_ERR_BUSY.
      *
      * The SDK never asks an adapter to resend these copies: it destroys the client at every
      * session end and creates a new one for the next session, and the layer above retries.
