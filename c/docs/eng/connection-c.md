@@ -989,8 +989,8 @@ a slow path. Constants are `#ifndef`-guarded and can be raised at build time, ex
 | `AZ_IOT_DPS_REGISTRATION_PAYLOAD_MAX` | 512 | Caller-supplied DPS registration payload | `AZ_IOT_ERR_NOT_ENOUGH_SPACE` |
 | `limits.max_pending_requests` | 8 | Pending twin requests, per client, at run time ([MQTTv3](../../inc/azure/iot/mqttv3/az_iot_twin_client.h), [MQTTv5](../../inc/azure/iot/mqttv5/az_iot_twin_client.h)) | `AZ_IOT_ERR_NOT_SUPPORTED` |
 | `limits.max_in_flight_invocations` | 4 | In-flight MQTTv3 direct-method requests, at run time ([MQTTv3](../../inc/azure/iot/mqttv3/az_iot_direct_method_client.h)) | No result — the invocation is dropped and a warning is logged. |
-| `AZ_IOT_MQTTV5_DM_MAX_CONCURRENT` | 4 | MQTTv5 direct-method invocations probed or awaiting an answer ([MQTTv5](../../inc/azure/iot/mqttv5/az_iot_direct_method_client.h)) | Probe refused `DEVICE_BUSY`. |
-| `AZ_IOT_MQTTV5_DM_MAX_METHODS` | 8 | Registered MQTTv5 direct-method handlers | `AZ_IOT_ERR_NOT_ENOUGH_SPACE` |
+| `limits.max_concurrent_invocations` | 4 | MQTTv5 direct-method invocations probed or awaiting an answer, at run time ([MQTTv5](../../inc/azure/iot/mqttv5/az_iot_direct_method_client.h)) | Probe refused `DEVICE_BUSY`. |
+| `limits.max_methods` | 8 | Registered MQTTv5 direct-method handlers, at run time | `AZ_IOT_ERR_NOT_ENOUGH_SPACE` |
 | CSR slot | 1 | In-flight hub CSR renewals | `AZ_IOT_ERR_BUSY` |
 | `AZ_IOT_DEFAULT_CONNECT_TIMEOUT_SECONDS` | 30 | Connect attempt, hub and DPS alike | Adapter-reported failure → `AZ_IOT_ERR_MQTT` |
 | `AZ_IOT_DEFAULT_KEEP_ALIVE_SECONDS` | 30 | MQTT keep-alive in CONNECT | — |
@@ -1137,7 +1137,7 @@ registry carries MQTTv3 feature filters and application custom topics.
 | Publish | Pending-PUBACK table full (17th unacknowledged publish with a callback) | `AZ_IOT_ERR_BUSY` | connection client | nothing is sent | The slot is reserved before the publish and released if the publish fails. |
 | Twin | Pending-request pool full (9th) | `AZ_IOT_ERR_NOT_SUPPORTED` | twin client | the request is rejected | Contained. Distinct from the `429` row above, which is the point. |
 | Direct methods | In-flight pool full (5th) | **none** | direct-method client | **the invocation is dropped**, with a warning logged | A slot is released by responding, or reclaimed by `requests_expire_stale()` after `response_timeout_seconds`. |
-| Direct methods (mqttv5) | Probe-ack, result or abandon while the hub is not `CONNECTED` (e.g. between CONNACK and the birth-ack) | `AZ_IOT_ERR_NOT_CONNECTED` from the publish; `respond()` returns `AZ_IOT_OK` | direct-method client | held, with its ready token or slot, and published on the next `HUB:CONNECTED` | Dropped if its budget runs out first. Probe rejections and abandons share `AZ_IOT_MQTTV5_DM_MAX_CONCURRENT` held entries; past that they are dropped with a warning. |
+| Direct methods (mqttv5) | Probe-ack, result or abandon while the hub is not `CONNECTED` (e.g. between CONNACK and the birth-ack) | `AZ_IOT_ERR_NOT_CONNECTED` from the publish; `respond()` returns `AZ_IOT_OK` | direct-method client | held, with its ready token or slot, and published on the next `HUB:CONNECTED` | Dropped if its budget runs out first. Probe rejections and abandons share `limits.max_queued_notices` held entries; past that they are dropped with a warning. |
 | Connect | `opts.mqtt_adapter` does not build the required version | `AZ_IOT_ERR_NOT_SUPPORTED` | `create_session_mqtt_client()` | back to `IDLE`, error returned from `open()` | |
 | Connect | The other session's MQTT client still exists | `AZ_IOT_ERR_INTERNAL` | DPS and hub connect | the start fails and is retried like any other | One MQTT session at a time; precedes the MQTT workspace's `AZ_IOT_ERR_BUSY`. |
 | Registry | Session-end handler registry full (5th distinct context) | `AZ_IOT_ERR_NOT_SUPPORTED` | connection client | the registration fails | Re-registering the same context upserts rather than consuming a slot. |

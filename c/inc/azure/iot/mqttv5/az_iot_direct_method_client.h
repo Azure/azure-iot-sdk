@@ -27,58 +27,108 @@ extern "C"
 /** @brief Longest topic this client builds: "ih/" + device id + "/dev/methods". Fixed. */
 #define AZ_IOT_MQTTV5_DM_TOPIC_MAX 192
 
-/* Bytes of a result body this client can frame into a protobuf Result. The
- * frame is built in a buffer inside the client rather than on the heap, one per
- * AZ_IOT_MQTTV5_DM_MAX_CONCURRENT slot so a result can be held until the
- * connection is CONNECTED, so this is the hard limit on what az_iot_mqttv5_direct_method_respond()
- * will send; a larger body is refused with AZ_IOT_ERR_NOT_ENOUGH_SPACE. */
-#ifndef AZ_IOT_MQTTV5_DM_RESULT_BODY_MAX
-#define AZ_IOT_MQTTV5_DM_RESULT_BODY_MAX 512
+#if defined(AZ_IOT_MQTTV5_DM_MAX_CONCURRENT) || defined(AZ_IOT_MQTTV5_DM_NOTICE_QUEUE_MAX) \
+    || defined(AZ_IOT_MQTTV5_DM_MAX_METHODS) || defined(AZ_IOT_MQTTV5_DM_RESULT_BODY_MAX)
+#error \
+    "AZ_IOT_MQTTV5_DM_MAX_CONCURRENT, _NOTICE_QUEUE_MAX, _MAX_METHODS and _RESULT_BODY_MAX are removed: set az_iot_mqttv5_direct_method_client_limits"
 #endif
 
 /* Bytes the protobuf framing adds around a result body: a tag and a worst-case
  * ten-byte status varint, then a tag and a five-byte length varint. */
 #define AZ_IOT_MQTTV5_DM_RESULT_FRAME_OVERHEAD 17u
 
-/* The cap on concurrent direct method state machines this device will hold:
- * ready tokens awaiting their execute authorization, plus invocations the
- * application has not answered yet. A probe arriving at the cap is refused with
- * DEVICE_BUSY, creating no token and reserving nothing.
- *
- * Finite by construction -- it bounds arrays inside the client -- and meant to
- * be tuned to the device class. Override it at compile time (for example
- * -DAZ_IOT_MQTTV5_DM_MAX_CONCURRENT=2) before this header is included.
- *
- * It sizes az_iot_mqttv5_direct_method_client, so the SDK and the application
- * MUST be compiled with the same value. Defining it for the application alone
- * leaves the SDK writing past a struct the application sized smaller. Set it on
- * the whole build, not on one target.
- *
- * Each pool is sized to this value because either can hold the whole budget on
- * its own -- all tokens waiting, or all invocations running -- while their sum
- * is what the limit caps. */
-#ifndef AZ_IOT_MQTTV5_DM_MAX_CONCURRENT
-#define AZ_IOT_MQTTV5_DM_MAX_CONCURRENT 4
+/** @brief Default az_iot_mqttv5_direct_method_client_limits::max_concurrent_invocations. */
+#ifndef AZ_IOT_MQTTV5_DIRECT_METHOD_CLIENT_DEFAULT_MAX_CONCURRENT_INVOCATIONS
+#define AZ_IOT_MQTTV5_DIRECT_METHOD_CLIENT_DEFAULT_MAX_CONCURRENT_INVOCATIONS 4
 #endif
 
-/* Probe rejections and abandons the client keeps until their PUBACK, to publish
- * again after a reconnect. Accepted probe-acks and results are kept with their
- * ready token or slot instead, so they never compete for these. When all are in
- * use, a new one is still published untracked while CONNECTED, and dropped while
- * not; with no PUBACK slot left beyond those kept for probe-acks and results, it
- * is published untracked. Both are advisory:
- * losing one leaves the caller to time out. Sizes
- * az_iot_mqttv5_direct_method_client, so set it on the whole build, as
- * AZ_IOT_MQTTV5_DM_MAX_CONCURRENT. */
-#ifndef AZ_IOT_MQTTV5_DM_NOTICE_QUEUE_MAX
-#define AZ_IOT_MQTTV5_DM_NOTICE_QUEUE_MAX AZ_IOT_MQTTV5_DM_MAX_CONCURRENT
+/** @brief Default az_iot_mqttv5_direct_method_client_limits::max_methods. */
+#ifndef AZ_IOT_MQTTV5_DIRECT_METHOD_CLIENT_DEFAULT_MAX_METHODS
+#define AZ_IOT_MQTTV5_DIRECT_METHOD_CLIENT_DEFAULT_MAX_METHODS 8
 #endif
 
-/* Distinct method names one client can declare. The protocol answers a probe
- * by name, so this is how many methods the device can advertise. */
-#ifndef AZ_IOT_MQTTV5_DM_MAX_METHODS
-#define AZ_IOT_MQTTV5_DM_MAX_METHODS 8
+/** @brief Default az_iot_mqttv5_direct_method_client_limits::max_result_body_size. */
+#ifndef AZ_IOT_MQTTV5_DIRECT_METHOD_CLIENT_DEFAULT_MAX_RESULT_BODY_SIZE
+#define AZ_IOT_MQTTV5_DIRECT_METHOD_CLIENT_DEFAULT_MAX_RESULT_BODY_SIZE 512
 #endif
+
+/** @brief Largest az_iot_mqttv5_direct_method_client_limits::max_concurrent_invocations. */
+#define AZ_IOT_MQTTV5_DIRECT_METHOD_CLIENT_MAX_CONCURRENT_INVOCATIONS_LIMIT 255
+/** @brief Largest az_iot_mqttv5_direct_method_client_limits::max_methods. */
+#define AZ_IOT_MQTTV5_DIRECT_METHOD_CLIENT_MAX_METHODS_LIMIT 1024
+/** @brief Largest az_iot_mqttv5_direct_method_client_limits::max_queued_notices. */
+#define AZ_IOT_MQTTV5_DIRECT_METHOD_CLIENT_MAX_QUEUED_NOTICES_LIMIT 1024
+/** @brief Largest az_iot_mqttv5_direct_method_client_limits::max_result_body_size: the IoT Hub
+ * direct method payload limit, 128 KiB. */
+#define AZ_IOT_MQTTV5_DIRECT_METHOD_CLIENT_MAX_RESULT_BODY_SIZE_LIMIT 131072
+
+#if AZ_IOT_MQTTV5_DIRECT_METHOD_CLIENT_DEFAULT_MAX_CONCURRENT_INVOCATIONS < 1 \
+    || AZ_IOT_MQTTV5_DIRECT_METHOD_CLIENT_DEFAULT_MAX_CONCURRENT_INVOCATIONS  \
+        > AZ_IOT_MQTTV5_DIRECT_METHOD_CLIENT_MAX_CONCURRENT_INVOCATIONS_LIMIT \
+    || AZ_IOT_MQTTV5_DIRECT_METHOD_CLIENT_DEFAULT_MAX_METHODS < 1             \
+    || AZ_IOT_MQTTV5_DIRECT_METHOD_CLIENT_DEFAULT_MAX_METHODS                 \
+        > AZ_IOT_MQTTV5_DIRECT_METHOD_CLIENT_MAX_METHODS_LIMIT                \
+    || AZ_IOT_MQTTV5_DIRECT_METHOD_CLIENT_DEFAULT_MAX_RESULT_BODY_SIZE < 1    \
+    || AZ_IOT_MQTTV5_DIRECT_METHOD_CLIENT_DEFAULT_MAX_RESULT_BODY_SIZE        \
+        > AZ_IOT_MQTTV5_DIRECT_METHOD_CLIENT_MAX_RESULT_BODY_SIZE_LIMIT
+#error "AZ_IOT_MQTTV5_DIRECT_METHOD_CLIENT_DEFAULT_MAX_*: each must be from 1 to its _LIMIT"
+#endif
+
+  /**
+   * @brief How much the client holds. 0 fields select the defaults.
+   *
+   * Run-time values: the client struct does not depend on them. Everything they count lives in
+   * az_iot_mqttv5_direct_method_client_options::workspace.
+   */
+  typedef struct az_iot_mqttv5_direct_method_client_limits
+  {
+    /** Direct method state machines held at once: ready tokens awaiting their execute
+     * authorization, plus invocations not answered yet. A probe past it is refused with
+     * DEVICE_BUSY, creating no token and reserving nothing. The client reserves twice this many of
+     * the connection's limits.max_pending_publishes (AZ_IOT_MQTTV5_DM_RESERVED_PUBACKS()). Default
+     * AZ_IOT_MQTTV5_DIRECT_METHOD_CLIENT_DEFAULT_MAX_CONCURRENT_INVOCATIONS (4), at most
+     * AZ_IOT_MQTTV5_DIRECT_METHOD_CLIENT_MAX_CONCURRENT_INVOCATIONS_LIMIT (255). */
+    size_t max_concurrent_invocations;
+    /** Method names one client can declare. Default
+     * AZ_IOT_MQTTV5_DIRECT_METHOD_CLIENT_DEFAULT_MAX_METHODS (8), at most
+     * AZ_IOT_MQTTV5_DIRECT_METHOD_CLIENT_MAX_METHODS_LIMIT (1024). */
+    size_t max_methods;
+    /** Probe rejections and abandons kept until their PUBACK, to publish again after a
+     * reconnect. Accepted probe-acks and results are kept with their token or invocation instead.
+     * When all are in use, a new one is published untracked while CONNECTED and dropped while
+     * not; both are advisory, and losing one leaves the caller to time out. Default
+     * max_concurrent_invocations, at most
+     * AZ_IOT_MQTTV5_DIRECT_METHOD_CLIENT_MAX_QUEUED_NOTICES_LIMIT (1024). */
+    size_t max_queued_notices;
+    /** Bytes of a result body az_iot_mqttv5_direct_method_respond() sends; a larger one is refused
+     * with AZ_IOT_ERR_NOT_ENOUGH_SPACE. The client keeps one result buffer per concurrent
+     * invocation, so a result can wait for CONNECTED and be published again if its PUBACK is lost
+     * with the connection. Default AZ_IOT_MQTTV5_DIRECT_METHOD_CLIENT_DEFAULT_MAX_RESULT_BODY_SIZE
+     * (512), at most AZ_IOT_MQTTV5_DIRECT_METHOD_CLIENT_MAX_RESULT_BODY_SIZE_LIMIT (131072). */
+    size_t max_result_body_size;
+  } az_iot_mqttv5_direct_method_client_limits;
+
+  /** @brief Options for az_iot_mqttv5_direct_method_client_init(). */
+  typedef struct az_iot_mqttv5_direct_method_client_options
+  {
+    /** Counts and sizes; 0 fields select the defaults. */
+    az_iot_mqttv5_direct_method_client_limits limits;
+    /** Required. The client's tokens, invocations, methods, notices and result buffers, owned by
+     * the client until deinit(), which wipes it. At least
+     * az_iot_mqttv5_direct_method_client_get_workspace_size(&limits) bytes, any alignment. */
+    uint8_t* workspace;
+    size_t workspace_size; /**< Bytes in workspace. */
+  } az_iot_mqttv5_direct_method_client_options;
+
+  /**
+   * @brief Returns options with the default limits (0 fields) and no workspace.
+   *
+   * Set workspace and workspace_size before az_iot_mqttv5_direct_method_client_init().
+   *
+   * @return The options.
+   */
+  AZ_NODISCARD az_iot_mqttv5_direct_method_client_options
+  az_iot_mqttv5_direct_method_client_options_default(void);
 
 /* The protocol fixes both ids at 16 bytes: the request id is a binary UUID in
  * MQTT v5 Correlation Data, and the ready id is the device's half of the
@@ -226,13 +276,67 @@ extern "C"
     } _internal;
   } az_iot_mqttv5_direct_method_notice;
 
-/* limits.max_pending_publishes slots one client reserves: a probe-ack and a result or abandon
- * per invocation. */
-#define AZ_IOT_MQTTV5_DM_RESERVED_PUBACKS (2u * (size_t)AZ_IOT_MQTTV5_DM_MAX_CONCURRENT)
+  /** @brief Internal: one invocation, in the workspace. */
+  typedef struct az_iot_mqttv5_direct_method_invocation
+  {
+    az_iot_direct_method_slot slot;
+    /* The execution budget it was admitted with, and when it was admitted. Held here rather than
+     * on az_iot_direct_method_slot because the two generations time out on different inputs --
+     * mqttv5 on the budget the service declared, mqttv3 on a locally configured one. */
+    uint32_t exec_budget_seconds;
+    uint64_t exec_received_at_ms;
+    /* Monotonic milliseconds at and after which no result is published -- receipt time plus the
+     * execution budget, less the safety margin; receipt time plus the connection's
+     * max_unconfirmed_delivery_timeout_ms when the exec carried no expiry. */
+    uint64_t exec_deadline_ms;
+    /* seq of the last unanswered invocation reclaimed at its result deadline, so respond() on it
+     * still returns AZ_IOT_ERR_TIMEOUT. */
+    uint32_t expired_request_seq;
+    /* Its encoded result, in the workspace (max_result_body_size plus
+     * AZ_IOT_MQTTV5_DM_RESULT_FRAME_OVERHEAD bytes). The invocation stays taken until the result
+     * is acknowledged by the broker or its result deadline passes, so a result whose PUBACK is
+     * lost with the connection is published again on the next CONNECTED. */
+    uint8_t* result_frame;
+    size_t result_frame_len;
+    /** Delivery tracker entry of the result, plus one; 0: not answered yet. */
+    size_t result_tracker_entry;
+  } az_iot_mqttv5_direct_method_invocation;
 
-/* Messages one client tracks at once: a probe-ack or result per invocation, and the notices. */
-#define AZ_IOT_MQTTV5_DM_TRACKED_MESSAGES \
-  ((size_t)AZ_IOT_MQTTV5_DM_MAX_CONCURRENT + (size_t)AZ_IOT_MQTTV5_DM_NOTICE_QUEUE_MAX)
+/** @brief limits.max_pending_publishes slots one client reserves: a probe-ack and a result or
+ * abandon per invocation. */
+#define AZ_IOT_MQTTV5_DM_RESERVED_PUBACKS(max_concurrent_invocations) \
+  (2u * (size_t)(max_concurrent_invocations))
+
+/**
+ * @brief Workspace bytes for these limits, as a constant expression for static arrays. Pass the
+ * values az_iot_mqttv5_direct_method_client_limits would hold, with the defaults written out in
+ * place of 0. Equal to az_iot_mqttv5_direct_method_client_get_workspace_size() for the same values.
+ */
+#define AZ_IOT_MQTTV5_DIRECT_METHOD_CLIENT_WORKSPACE_SIZE(                                    \
+    max_concurrent_invocations, max_methods, max_queued_notices, max_result_body_size)        \
+  (15u                                                                                        \
+   + AZ_IOT_CONNECTION_CLIENT_WORKSPACE_ALIGN(                                                \
+       (size_t)(max_concurrent_invocations) * sizeof(az_iot_mqttv5_direct_method_invocation)) \
+   + AZ_IOT_CONNECTION_CLIENT_WORKSPACE_ALIGN(                                                \
+       (size_t)(max_concurrent_invocations) * sizeof(az_iot_mqttv5_direct_method_ready_slot)) \
+   + AZ_IOT_CONNECTION_CLIENT_WORKSPACE_ALIGN(                                                \
+       (size_t)(max_methods) * sizeof(az_iot_mqttv5_direct_method_registration))              \
+   + AZ_IOT_CONNECTION_CLIENT_WORKSPACE_ALIGN(                                                \
+       (size_t)(max_queued_notices) * sizeof(az_iot_mqttv5_direct_method_notice))             \
+   + AZ_IOT_CONNECTION_CLIENT_WORKSPACE_ALIGN(                                                \
+       ((size_t)(max_concurrent_invocations) + (size_t)(max_queued_notices))                  \
+       * sizeof(az_iot_delivery_tracker_entry))                                               \
+   + AZ_IOT_CONNECTION_CLIENT_WORKSPACE_ALIGN(                                                \
+       (size_t)(max_concurrent_invocations)                                                   \
+       * ((size_t)(max_result_body_size) + AZ_IOT_MQTTV5_DM_RESULT_FRAME_OVERHEAD)))
+
+/** @brief Workspace bytes for the default limits, as a constant expression for static arrays. */
+#define AZ_IOT_MQTTV5_DIRECT_METHOD_CLIENT_DEFAULT_WORKSPACE_SIZE            \
+  AZ_IOT_MQTTV5_DIRECT_METHOD_CLIENT_WORKSPACE_SIZE(                         \
+      AZ_IOT_MQTTV5_DIRECT_METHOD_CLIENT_DEFAULT_MAX_CONCURRENT_INVOCATIONS, \
+      AZ_IOT_MQTTV5_DIRECT_METHOD_CLIENT_DEFAULT_MAX_METHODS,                \
+      AZ_IOT_MQTTV5_DIRECT_METHOD_CLIENT_DEFAULT_MAX_CONCURRENT_INVOCATIONS, \
+      AZ_IOT_MQTTV5_DIRECT_METHOD_CLIENT_DEFAULT_MAX_RESULT_BODY_SIZE)
 
   /* MQTTv5 direct methods (MQTT v5).
    *
@@ -257,34 +361,21 @@ extern "C"
       az_iot_connection_client* conn;
       az_iot_mqttv5_direct_method_probe_callback probe_handler;
       void* probe_handler_ctx;
-      az_iot_direct_method_slot req_pool[AZ_IOT_MQTTV5_DM_MAX_CONCURRENT];
-      /* Parallel to req_pool: the execution budget each in-flight invocation
-       * was admitted with, and when it was admitted. Held here rather than on
-       * az_iot_direct_method_slot because the two generations time out on
-       * different inputs -- mqttv5 on the budget the service declared, mqttv3 on a
-       * locally configured one -- so neither belongs on the shared type. */
-      uint32_t exec_budget_seconds[AZ_IOT_MQTTV5_DM_MAX_CONCURRENT];
-      uint64_t exec_received_at_ms[AZ_IOT_MQTTV5_DM_MAX_CONCURRENT];
-      /* Parallel to req_pool: monotonic milliseconds at and after which no
-       * result is published -- receipt time plus the execution budget, less the
-       * safety margin; receipt time plus the connection's
-       * max_unconfirmed_delivery_timeout_ms when the exec carried no expiry. */
-      uint64_t exec_deadline_ms[AZ_IOT_MQTTV5_DM_MAX_CONCURRENT];
-      /* Parallel to req_pool: seq of the last unanswered invocation reclaimed at its result
-       * deadline, so respond() on it still returns AZ_IOT_ERR_TIMEOUT. */
-      uint32_t expired_request_seq[AZ_IOT_MQTTV5_DM_MAX_CONCURRENT];
+      /* limits.max_concurrent_invocations entries, in the workspace. */
+      az_iot_mqttv5_direct_method_invocation* invocations;
       /* Bumped on every acquire and copied into the request handed out, so a
        * request naming a slot that has since been reused no longer matches. */
       uint32_t next_seq;
-      /* Next req_pool index to try. Allocation cycles rather than always taking
+      /* Next invocations index to try. Allocation cycles rather than always taking
        * the lowest free slot, so a slot just reclaimed from an application that
        * never answered is the last one reused, not the first. */
       size_t next_slot;
       /* Ready tokens and in-flight invocations draw on the one
-       * AZ_IOT_MQTTV5_DM_MAX_CONCURRENT budget, so a probe is only accepted when
-       * a request slot will be free to run it. */
-      az_iot_mqttv5_direct_method_ready_slot ready_pool[AZ_IOT_MQTTV5_DM_MAX_CONCURRENT];
-      az_iot_mqttv5_direct_method_registration methods[AZ_IOT_MQTTV5_DM_MAX_METHODS];
+       * limits.max_concurrent_invocations budget, so a probe is only accepted when
+       * an invocation will be free to run it. In the workspace. */
+      az_iot_mqttv5_direct_method_ready_slot* ready_pool;
+      /* limits.max_methods entries, in the workspace. */
+      az_iot_mqttv5_direct_method_registration* methods;
       /* Built by the connect-time bind callback, once the assigned device id is
        * authoritative. Empty before the first connect. */
       char inbound_topic[AZ_IOT_MQTTV5_DM_TOPIC_MAX];
@@ -292,23 +383,28 @@ extern "C"
       /* Ready-id generator state. Uniqueness, not unpredictability: the token
        * is single-use and the service only knows it because we sent it. */
       uint64_t rng_state;
-      /* Parallel to req_pool: each invocation's encoded result and its delivery
-       * tracker entry. The slot stays taken until the result is acknowledged by
-       * the broker or its result deadline passes, so a result whose PUBACK is
-       * lost with the connection is published again on the next CONNECTED. */
-      uint8_t
-          result_frame[AZ_IOT_MQTTV5_DM_MAX_CONCURRENT]
-                      [AZ_IOT_MQTTV5_DM_RESULT_BODY_MAX + AZ_IOT_MQTTV5_DM_RESULT_FRAME_OVERHEAD];
-      size_t result_frame_len[AZ_IOT_MQTTV5_DM_MAX_CONCURRENT];
-      /** Delivery tracker entry of each result, plus one; 0: not answered yet. */
-      size_t result_tracker_entry[AZ_IOT_MQTTV5_DM_MAX_CONCURRENT];
-      /* Probe rejections and abandons kept until their PUBACK. */
-      az_iot_mqttv5_direct_method_notice notices[AZ_IOT_MQTTV5_DM_NOTICE_QUEUE_MAX];
+      /* Probe rejections and abandons kept until their PUBACK: limits.max_queued_notices
+       * entries, in the workspace. */
+      az_iot_mqttv5_direct_method_notice* notices;
+      /* Resolved: no field is 0. */
+      az_iot_mqttv5_direct_method_client_limits limits;
+      /* PUBACK slots of the reservation kept for probe-acks and results: one per invocation. */
+      uint8_t slots_kept_for_replies;
+      uint8_t* workspace;
+      size_t workspace_size;
       /* Sends, resends and expires the probe-acks, results and notices. */
       az_iot_delivery_tracker tracker;
-      az_iot_delivery_tracker_entry tracker_entries[AZ_IOT_MQTTV5_DM_TRACKED_MESSAGES];
     } _internal;
   } az_iot_mqttv5_direct_method_client;
+
+  /**
+   * @brief Workspace bytes az_iot_mqttv5_direct_method_client_init() needs for @p limits (0
+   * fields: defaults).
+   *
+   * @return The size, or 0 when @p limits is NULL or a value is above its maximum.
+   */
+  AZ_NODISCARD size_t az_iot_mqttv5_direct_method_client_get_workspace_size(
+      const az_iot_mqttv5_direct_method_client_limits* limits);
 
   /**
    * @brief Initialize the MQTT v5 direct method client.
@@ -321,8 +417,8 @@ extern "C"
    * the connection resolves, which fails it before it reports CONNECTED. The
    * same error is returned when an mqttv3 client is already attached.
    *
-   * Reserves AZ_IOT_MQTTV5_DM_RESERVED_PUBACKS (2 * AZ_IOT_MQTTV5_DM_MAX_CONCURRENT) of the
-   * connection's limits.max_pending_publishes slots until deinit. Returns
+   * Reserves AZ_IOT_MQTTV5_DM_RESERVED_PUBACKS(limits.max_concurrent_invocations) (twice that
+   * limit) of the connection's limits.max_pending_publishes slots until deinit. Returns
    * AZ_IOT_ERR_NOT_ENOUGH_SPACE if they do not fit, or AZ_IOT_ERR_BUSY if
    * tracked publishes in flight still occupy them (retry once acknowledged).
    * Also observes the connection state, to publish held messages on CONNECTED:
@@ -342,11 +438,18 @@ extern "C"
    * untracked: with every pending-PUBACK slot in use it waits for one. They are
    * kept in memory only, so a device restart loses them; they are dropped when
    * the hub or device id changes.
+   *
+   * @p options is read during the call only; its workspace is used until deinit(). Returns
+   * AZ_IOT_ERR_INVALID_ARG when @p options is NULL, a limit is above its maximum or the workspace
+   * is NULL, and AZ_IOT_ERR_NOT_ENOUGH_SPACE when the workspace is too small; both workspace
+   * errors log the size needed.
    */
   AZ_NODISCARD az_iot_result az_iot_mqttv5_direct_method_client_init(
       az_iot_mqttv5_direct_method_client* client,
-      az_iot_connection_client* conn);
+      az_iot_connection_client* conn,
+      const az_iot_mqttv5_direct_method_client_options* options);
 
+  /** @brief Detaches the client and wipes its workspace. */
   void az_iot_mqttv5_direct_method_client_deinit(az_iot_mqttv5_direct_method_client* client);
 
   /**
@@ -390,7 +493,7 @@ extern "C"
    *
    * @return AZ_IOT_ERR_INVALID_ARG for a NULL @p handler, or a NULL, empty or
    *         over-long name; AZ_IOT_ERR_NOT_ENOUGH_SPACE when
-   *         AZ_IOT_MQTTV5_DM_MAX_METHODS names are already declared.
+   *         limits.max_methods names are already declared.
    */
   AZ_NODISCARD az_iot_result az_iot_mqttv5_direct_method_client_register_method(
       az_iot_mqttv5_direct_method_client* client,
@@ -481,7 +584,7 @@ extern "C"
    *         mqttv3 client, AZ_IOT_ERR_INVALID_ARG if it was already answered, if
    *         its slot was reclaimed and reused, or if it never came from this
    *         client, AZ_IOT_ERR_NOT_ENOUGH_SPACE if
-   *         @p payload_len exceeds AZ_IOT_MQTTV5_DM_RESULT_BODY_MAX,
+   *         @p payload_len exceeds limits.max_result_body_size,
    *         AZ_IOT_ERR_TIMEOUT if the result deadline has been reached -- nothing
    *         is sent in that case, because the service has given up or would
    *         before the result arrived; also when its slot was already

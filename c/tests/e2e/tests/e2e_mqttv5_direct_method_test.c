@@ -71,11 +71,16 @@
 #define E2E_BODY_MAX 4096
 #define E2E_MAX_CALLS 8
 #define E2E_MAX_DECLARED 4
-/* Parallel invocations: the device's limit, capped by the service's request handles. */
-#define E2E_CONCURRENT                                                       \
-  ((AZ_IOT_MQTTV5_DM_MAX_CONCURRENT) < (AZ_IOT_E2E_SERVICE_MAX_REQUESTS - 1) \
-       ? (AZ_IOT_MQTTV5_DM_MAX_CONCURRENT)                                   \
+/* Parallel invocations: the device's limit (the default), capped by the service's request
+ * handles. */
+#define E2E_CONCURRENT                                                           \
+  ((AZ_IOT_MQTTV5_DIRECT_METHOD_CLIENT_DEFAULT_MAX_CONCURRENT_INVOCATIONS)       \
+           < (AZ_IOT_E2E_SERVICE_MAX_REQUESTS - 1)                               \
+       ? (AZ_IOT_MQTTV5_DIRECT_METHOD_CLIENT_DEFAULT_MAX_CONCURRENT_INVOCATIONS) \
        : (AZ_IOT_E2E_SERVICE_MAX_REQUESTS - 1))
+/* Result body limit set at run time, above the default, so the result-size tests prove the
+ * run-time limit reaches the hub. */
+#define E2E_RESULT_BODY_MAX 1024
 
 /** @brief One invocation the handler received, held until the test answers it. */
 typedef struct
@@ -105,6 +110,11 @@ typedef struct
   e2e_device dev;
   az_iot_e2e_service* service;
   az_iot_mqttv5_direct_method_client dm;
+  uint8_t dm_workspace[AZ_IOT_MQTTV5_DIRECT_METHOD_CLIENT_WORKSPACE_SIZE(
+      AZ_IOT_MQTTV5_DIRECT_METHOD_CLIENT_DEFAULT_MAX_CONCURRENT_INVOCATIONS,
+      AZ_IOT_MQTTV5_DIRECT_METHOD_CLIENT_DEFAULT_MAX_METHODS,
+      AZ_IOT_MQTTV5_DIRECT_METHOD_CLIENT_DEFAULT_MAX_CONCURRENT_INVOCATIONS,
+      E2E_RESULT_BODY_MAX)];
   bool dm_ok;
   invocation calls[E2E_MAX_CALLS];
   size_t calls_used;
@@ -419,7 +429,11 @@ static void padded_json_string(char* out, size_t len, const char* marker)
 static int attach_methods(e2e_device* dev, void* ctx)
 {
   fixture* fx = (fixture*)ctx;
-  if (az_iot_mqttv5_direct_method_client_init(&fx->dm, &dev->conn) != AZ_IOT_OK)
+  az_iot_mqttv5_direct_method_client_options options = { 0 };
+  options.limits.max_result_body_size = E2E_RESULT_BODY_MAX;
+  options.workspace = fx->dm_workspace;
+  options.workspace_size = sizeof(fx->dm_workspace);
+  if (az_iot_mqttv5_direct_method_client_init(&fx->dm, &dev->conn, &options) != AZ_IOT_OK)
   {
     fprintf(stderr, "[e2e] direct method client init failed\n");
     return 1;
@@ -768,18 +782,18 @@ static void result_body_at_max_is_delivered(void** state)
   make_marker(marker, sizeof(marker), "dmMax");
   char payload[E2E_MARKER_MAX + 16];
   marked_payload(payload, sizeof(payload), marker);
-  static char body[AZ_IOT_MQTTV5_DM_RESULT_BODY_MAX + 1];
-  padded_json_string(body, AZ_IOT_MQTTV5_DM_RESULT_BODY_MAX, marker);
+  static char body[E2E_RESULT_BODY_MAX + 1];
+  padded_json_string(body, E2E_RESULT_BODY_MAX, marker);
 
   service_call c;
   call_start(fx, &c, "big", payload, E2E_RESPONSE_TIMEOUT_S);
   expect_invocations(fx, &c, 1, 1);
-  assert_int_equal(answer(fx, 0, 200, body, AZ_IOT_MQTTV5_DM_RESULT_BODY_MAX), AZ_IOT_OK);
+  assert_int_equal(answer(fx, 0, 200, body, E2E_RESULT_BODY_MAX), AZ_IOT_OK);
   wait_done(fx, &c, 1, E2E_CALL_DEADLINE_S);
   assert_answered(&c, 200);
   if (strstr(c.body, body) == NULL)
   {
-    fail_msg("the %d byte result did not arrive intact", AZ_IOT_MQTTV5_DM_RESULT_BODY_MAX);
+    fail_msg("the %d byte result did not arrive intact", E2E_RESULT_BODY_MAX);
   }
 }
 
@@ -792,15 +806,14 @@ static void oversized_result_can_be_answered_again(void** state)
   make_marker(marker, sizeof(marker), "dmOver");
   char payload[E2E_MARKER_MAX + 16];
   marked_payload(payload, sizeof(payload), marker);
-  static char oversized[AZ_IOT_MQTTV5_DM_RESULT_BODY_MAX + 2];
-  padded_json_string(oversized, AZ_IOT_MQTTV5_DM_RESULT_BODY_MAX + 1, marker);
+  static char oversized[E2E_RESULT_BODY_MAX + 2];
+  padded_json_string(oversized, E2E_RESULT_BODY_MAX + 1, marker);
 
   service_call c;
   call_start(fx, &c, "big", payload, E2E_RESPONSE_TIMEOUT_S);
   expect_invocations(fx, &c, 1, 1);
   assert_int_equal(
-      answer(fx, 0, 200, oversized, AZ_IOT_MQTTV5_DM_RESULT_BODY_MAX + 1),
-      AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+      answer(fx, 0, 200, oversized, E2E_RESULT_BODY_MAX + 1), AZ_IOT_ERR_NOT_ENOUGH_SPACE);
 
   char short_marker[E2E_MARKER_MAX];
   make_marker(short_marker, sizeof(short_marker), "dmShort");

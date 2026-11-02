@@ -124,6 +124,7 @@ typedef struct
   az_iot_mqttv5_twin_client mqttv5_twin;
   uint8_t mqttv5_twin_workspace[AZ_IOT_MQTTV5_TWIN_CLIENT_DEFAULT_WORKSPACE_SIZE];
   az_iot_mqttv5_direct_method_client mqttv5_methods;
+  uint8_t mqttv5_methods_workspace[AZ_IOT_MQTTV5_DIRECT_METHOD_CLIENT_DEFAULT_WORKSPACE_SIZE];
   /* Set by callbacks, acted on by the loop: clients are not rebuilt inside do_work(). */
   az_iot_connection_state hub_state;
   TickType_t offline_since; /* when hub_state last left CONNECTED, or the loop started */
@@ -488,7 +489,7 @@ static void on_echo_mqttv5(
     void* user_ctx)
 {
   hub_device* d = (hub_device*)user_ctx;
-  bool const fits = length <= AZ_IOT_MQTTV5_DM_RESULT_BODY_MAX;
+  bool const fits = length <= AZ_IOT_MQTTV5_DIRECT_METHOD_CLIENT_DEFAULT_MAX_RESULT_BODY_SIZE;
   az_iot_result const r = az_iot_mqttv5_direct_method_respond(
       &d->mqttv5_methods, request, fits ? 200 : 413, fits ? payload : NULL, fits ? length : 0);
   if (r != AZ_IOT_OK)
@@ -550,7 +551,12 @@ static az_iot_result build_clients(hub_device* d, az_iot_connection_profile prof
     r = r == AZ_IOT_OK
         ? az_iot_mqttv5_twin_client_set_desired_handler(&d->mqttv5_twin, on_desired_mqttv5, d)
         : r;
-    r = r == AZ_IOT_OK ? az_iot_mqttv5_direct_method_client_init(&d->mqttv5_methods, &d->connection)
+    r = r == AZ_IOT_OK ? az_iot_mqttv5_direct_method_client_init(
+                             &d->mqttv5_methods,
+                             &d->connection,
+                             &(az_iot_mqttv5_direct_method_client_options){
+                                 .workspace = d->mqttv5_methods_workspace,
+                                 .workspace_size = sizeof(d->mqttv5_methods_workspace) })
                        : r;
     // 0: no declared run time, so any caller timeout is enough.
     r = r == AZ_IOT_OK ? az_iot_mqttv5_direct_method_client_register_method(

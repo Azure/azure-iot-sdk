@@ -232,6 +232,7 @@ typedef struct example_device
   uint8_t twin_v3_workspace[AZ_IOT_MQTTV3_TWIN_CLIENT_DEFAULT_WORKSPACE_SIZE];
   az_iot_mqttv5_telemetry_client telemetry_v5;
   az_iot_mqttv5_direct_method_client direct_method_v5;
+  uint8_t direct_method_v5_workspace[AZ_IOT_MQTTV5_DIRECT_METHOD_CLIENT_DEFAULT_WORKSPACE_SIZE];
   az_iot_mqttv5_twin_client twin_v5;
   uint8_t twin_v5_workspace[AZ_IOT_MQTTV5_TWIN_CLIENT_DEFAULT_WORKSPACE_SIZE];
 } example_device;
@@ -265,7 +266,12 @@ static bool example_device_connects(bool mqtt_v5, const az_iot_connection_client
   attached += result == AZ_IOT_OK ? 1u : 0u;
   if (result == AZ_IOT_OK)
   {
-    result = mqtt_v5 ? az_iot_mqttv5_direct_method_client_init(&g_device.direct_method_v5, c)
+    result = mqtt_v5 ? az_iot_mqttv5_direct_method_client_init(
+                           &g_device.direct_method_v5,
+                           c,
+                           &(az_iot_mqttv5_direct_method_client_options){
+                               .workspace = g_device.direct_method_v5_workspace,
+                               .workspace_size = sizeof(g_device.direct_method_v5_workspace) })
                      : az_iot_mqttv3_direct_method_client_init(
                            &g_device.direct_method_v3,
                            c,
@@ -382,17 +388,22 @@ static void the_mqttv3_sizing_example_holds_its_feature_clients_exactly(void** s
   assert_example_limits_are_exact(false, &limits);
 }
 
+/** @brief PUBACK slots an mqttv5 direct method client reserves at its default limits. */
+#define DEFAULT_RESERVED_PUBACKS     \
+  AZ_IOT_MQTTV5_DM_RESERVED_PUBACKS( \
+      AZ_IOT_MQTTV5_DIRECT_METHOD_CLIENT_DEFAULT_MAX_CONCURRENT_INVOCATIONS)
+
 static void the_mqttv5_sizing_example_holds_its_feature_clients_exactly(void** state)
 {
   (void)state;
   /* docs/client-configuration.md, "Sizing the limits": telemetry, direct methods, twin. The
-   * direct method client reserves AZ_IOT_MQTTV5_DM_RESERVED_PUBACKS slots; 4 are left to share. */
+   * direct method client reserves DEFAULT_RESERVED_PUBACKS slots; 4 are left to share. */
   const az_iot_connection_client_limits limits
-      = { AZ_IOT_MQTTV5_DM_RESERVED_PUBACKS + 4u, 1, 1, 4, 1, 2, 2 };
+      = { DEFAULT_RESERVED_PUBACKS + 4u, 1, 1, 4, 1, 2, 2 };
   assert_example_limits_are_exact(true, &limits);
 
   az_iot_connection_client_limits reserved_only = limits;
-  reserved_only.max_pending_publishes = AZ_IOT_MQTTV5_DM_RESERVED_PUBACKS;
+  reserved_only.max_pending_publishes = DEFAULT_RESERVED_PUBACKS;
   assert_true(example_device_connects(true, &reserved_only));
   reserved_only.max_pending_publishes--;
   assert_false(example_device_connects(true, &reserved_only));
