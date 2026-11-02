@@ -79,7 +79,7 @@ on:
       - '.github/workflows/ci-c-e2e-csr.yml'
       - '.github/actions/install-openssl/**'
   push:
-    branches: [ main ]
+    branches: [ main, 'releases/public-preview' ]
     paths:
       - 'c/src/core/connection_client.c'
       - 'c/src/core/cert_util.c'

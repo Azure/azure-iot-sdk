@@ -250,8 +250,9 @@ ctest --test-dir build/windows-msvc-debug -C Debug -R e2e --output-on-failure
 ### Triggers
 
 - `pull_request` touching `c/**` or `common/**` (fast scenarios)
-- `push` to `main`
-- nightly `schedule` (cron `0 11 * * *`, 4am PST)
+- `push` to `main` and `releases/public-preview`
+- nightly `schedule` (cron `0 11 * * *`, 4am PST); on `releases/public-preview` at 14:00 UTC, dispatched by
+  [`ci-c-public-preview-nightly.yml`](../../../.github/workflows/ci-c-public-preview-nightly.yml)
 - `workflow_dispatch`
 
 ### Authentication
