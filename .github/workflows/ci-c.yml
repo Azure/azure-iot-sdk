@@ -5,7 +5,7 @@ name: ci-c
 
 on:
   push:
-    branches: [ main, 'dev/c' ]
+    branches: [ main, 'dev/c', 'releases/public-preview' ]
   # No workflow-level `paths:` filter. Path filtering happens in the `changes`
   # job below and is applied per job via `if:`. A workflow that never triggers
   # reports no checks at all, which deadlocks any required status check on a PR

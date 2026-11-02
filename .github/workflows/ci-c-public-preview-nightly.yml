@@ -1,0 +1,76 @@
+# Copyright (c) Microsoft. All rights reserved.
+# Licensed under the MIT license. See LICENSE file in the project root for full license information.
+
+# Runs the scheduled C workflows on releases/public-preview.
+#
+# GitHub runs `schedule:` triggers only from the default branch, so the nightly
+# and weekly C workflows never run on releases/public-preview by themselves. This
+# workflow dispatches them there (`gh workflow run --ref`), using the workflow
+# files on that branch. Its slots are 3 hours after main's, so the two
+# branches' e2e runs do not share the Azure resources at the same time:
+#
+#   main (own schedule)                      releases/public-preview (here)
+#   11:00 ci-c-e2e                           14:00
+#   11:30 ci-c-e2e-mqttv5                    14:30
+#   12:00 ci-c-e2e-csr, ci-c-e2e-adu         15:00
+#   12:00 Mon codeql-c                       15:00 Mon
+#   13:00 ci-c-coverage-combined             16:00
+#   04:17 Mon,Thu ci-c-yocto                 07:17 Mon,Thu
+#
+# A manual run dispatches the listed workflows now (default: all of them).
+
+name: ci-c-public-preview-nightly
+
+on:
+  schedule:
+    - cron: '0 14 * * *'
+    - cron: '30 14 * * *'
+    - cron: '0 15 * * *'
+    - cron: '0 16 * * *'
+    - cron: '17 7 * * 1,4'
+  workflow_dispatch:
+    inputs:
+      workflows:
+        description: 'Space-separated workflow files to dispatch (default: all listed above)'
+        required: false
+        type: string
+
+permissions: {}
+
+jobs:
+  dispatch:
+    name: dispatch on releases/public-preview
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      SCHEDULE: ${{ github.event.schedule }}
+      REQUESTED: ${{ inputs.workflows }}
+    steps:
+      - name: Dispatch
+        run: |
+          set -euo pipefail
+          set -f
+          all="ci-c-e2e.yml ci-c-e2e-mqttv5.yml ci-c-e2e-csr.yml ci-c-e2e-adu.yml codeql-c.yml ci-c-coverage-combined.yml ci-c-yocto.yml"
+          case "$SCHEDULE" in
+            '0 14 * * *')   workflows="ci-c-e2e.yml" ;;
+            '30 14 * * *')  workflows="ci-c-e2e-mqttv5.yml" ;;
+            '0 15 * * *')
+              workflows="ci-c-e2e-csr.yml ci-c-e2e-adu.yml"
+              if [ "$(date -u +%u)" = 1 ]; then workflows="$workflows codeql-c.yml"; fi ;;
+            '0 16 * * *')   workflows="ci-c-coverage-combined.yml" ;;
+            '17 7 * * 1,4') workflows="ci-c-yocto.yml" ;;
+            '')             workflows="${REQUESTED:-$all}" ;;
+            *) echo "::error::no workflows for schedule '$SCHEDULE'"; exit 1 ;;
+          esac
+          for workflow in $workflows; do
+            case " $all " in
+              *" $workflow "*) ;;
+              *) echo "::error::$workflow is not one of: $all"; exit 1 ;;
+            esac
+            gh workflow run "$workflow" --repo "$REPO" --ref releases/public-preview
+            echo "dispatched $workflow on releases/public-preview"
+          done

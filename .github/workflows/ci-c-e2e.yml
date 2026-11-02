@@ -77,7 +77,7 @@ on:
       - '.github/workflows/ci-c-e2e.yml'
       - '.github/actions/install-openssl/**'
   push:
-    branches: [ main ]
+    branches: [ main, 'releases/public-preview' ]
     paths:
       - 'c/**'
       - '!c/**/*.md'
