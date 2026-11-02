@@ -55,6 +55,9 @@ set(BUILD_SHARED_LIBS ${_sdk_save_bsl} CACHE BOOL "Build shared libraries" FORCE
 unset(_sdk_save_bsl)
 
 if(TARGET cmocka)
+    # cmocka.c needs gnu99 (sigjmp_buf, strdup); without this, the SDK's
+    # CMAKE_C_EXTENSIONS OFF makes some CMake versions add -std=c99 after it.
+    set_property(TARGET cmocka PROPERTY C_EXTENSIONS ON)
     if(MSVC)
         set_property(TARGET cmocka PROPERTY
             MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")

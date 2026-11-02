@@ -219,12 +219,12 @@ configure_package_config_file(
     INSTALL_DESTINATION ${_az_iot_pkg_cmake_dir}
 )
 # Numeric only: CMake package versions have no pre-release label, so
-# X.Y.Z-<label> and X.Y.Z both report X.Y.Z. SameMinorVersion while in preview;
-# revisit (SameMajorVersion) once stable releases guarantee API compatibility.
+# X.Y.Z-<label> and X.Y.Z both report X.Y.Z. SameMajorVersion: stable releases
+# keep the API compatible within a major version.
 write_basic_package_version_file(
     "${PROJECT_BINARY_DIR}/${_az_iot_pkg}-config-version.cmake"
     VERSION ${PROJECT_VERSION}
-    COMPATIBILITY SameMinorVersion
+    COMPATIBILITY SameMajorVersion
 )
 install(FILES
     "${PROJECT_BINARY_DIR}/${_az_iot_pkg}-config.cmake"
