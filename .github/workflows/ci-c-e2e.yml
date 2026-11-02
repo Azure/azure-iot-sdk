@@ -16,11 +16,7 @@
 # Scope
 # -----
 # This workflow runs the fast scenarios (telemetry/c2d/method/twin) and the file
-# upload suite. It previously also ran a mocked Device Update (ADU) suite
-# (az_iot_tests_e2e_adu) that drove a signed deployment through the device twin.
-# That suite retired with the removal of ADU's twin delivery channel and is
-# awaiting a rewrite against the new channel, so it is not built or run here.
-# The separate ci-c-e2e-adu.yml workflow is parked for the same reason.
+# upload suite.
 #
 # Stages
 # ------
@@ -458,10 +454,9 @@ jobs:
           # proxy; its proxy scenarios skip themselves when no proxy is
           # configured for the leg), the DPS TPM suite, and the AMQP link,
           # notification-time, HTTP header parsing and telemetry capture tests (no Azure resources).
-          # The mocked ADU suite retired with ADU's twin delivery channel
-          # and is not built. The CSR enrollment test is not built
-          # here -- it needs a DPS enrollment linked to a signing CA, which only
-          # ci-c-e2e-csr provisions, so it lives behind AZ_IOT_BUILD_E2E_CSR.
+          # The CSR enrollment test is not built here -- it needs a DPS
+          # enrollment linked to a signing CA, which only ci-c-e2e-csr
+          # provisions, so it lives behind AZ_IOT_BUILD_E2E_CSR.
           # The crypto_openssl unit test is not matched by the e2e name
           # filter, so it stays out of this job.
           # The custody suite is excluded here and run by its own step below: it
