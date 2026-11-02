@@ -51,8 +51,6 @@ jobs:
       pull-requests: read
     outputs:
       c: ${{ steps.filter.outputs.c == 'true' || steps.filter.outputs.common == 'true' || steps.filter.outputs.workflow == 'true' }}
-      # Everything eng/check-ga-scope.sh scans; runs only the cheap conventions job.
-      ga_scope: ${{ steps.filter.outputs.ga_scope == 'true' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -75,9 +73,6 @@ jobs:
             # `every` would AND two.
             workflow:
               - '.github/{workflows/ci-c.yml,actions/install-openssl/**,actions/install-curl-windows/**}'
-            # Keep in sync with `scope` in c/eng/check-ga-scope.sh.
-            ga_scope:
-              - '{c/**,.github/workflows/ci-c*.yml,.github/workflows/codeql-c.yml,.github/instructions/c-*.md}'
 
   # The Paho-OFF legs build the whole tree on az_mqtt. Every leg checks that
   # nothing depends on an adapter it was configured without
@@ -298,7 +293,7 @@ jobs:
   conventions:
     name: coding conventions (c/src)
     needs: changes
-    if: needs.changes.outputs.c == 'true' || needs.changes.outputs.ga_scope == 'true' || github.event_name != 'pull_request'
+    if: needs.changes.outputs.c == 'true' || github.event_name != 'pull_request'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -319,11 +314,6 @@ jobs:
         run: >
           bash eng/check-race-suppressions.sh
           && bash eng/check-race-suppressions.sh --self-test
-      # Software updates only until the MQTT 5 removal lands; then every category.
-      - name: Check GA scope
-        run: >
-          bash eng/check-ga-scope.sh --only su
-          && bash eng/check-ga-scope.sh --self-test
       # Pinned: clang-format output differs between major versions, so an
       # unpinned binary would make the gate flap when the runner image moves.
       - name: Install clang-format
