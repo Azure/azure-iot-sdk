@@ -37,25 +37,22 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
         private const string AzureEventGridIncomingTwinPublishTopic = "ih/" + IConnectionClient.DeviceIdPlaceholder + "/dev/twin";
         private const string AzureEventGridIncomingPresencePublishTopic = "ih/" + IConnectionClient.DeviceIdPlaceholder + "/dev/presence";
 
-        // Guards _getTwinExchangesByRequest, _getTwinExchangesById, _activeGetTwinExchange, _queuedGetTwinExchanges and
-        // _getTwinLostConnectionNonce.
-        private readonly object _getTwinExchangesLock = new();
+        // Guards _activeGetTwinFetch, _nextGetTwinFetch, _getTwinLostConnectionNonce and the state of each GetTwinFetch. It may be
+        // taken while holding _desiredStateLock, but never the other way around.
+        private readonly object _getTwinLock = new();
 
-        // The get twin exchange for each distinct get twin request, whether active or queued. Identical concurrent requests share one exchange.
-        private readonly Dictionary<GetTwinRequest, GetTwinExchange> _getTwinExchangesByRequest = new();
+        // The one GET request that may be out to IoT hub, as the twin protocol recommends. It serves the application's get twin
+        // calls and this client's desired properties resync alike. Calls whose request it covers share its response.
+        private GetTwinFetch? _activeGetTwinFetch;
 
-        // The one get twin exchange that may have a request out to IoT hub. Application get twin requests are sent one at a
-        // time, as the twin protocol recommends, so the others wait in _queuedGetTwinExchanges.
-        private GetTwinExchange? _activeGetTwinExchange;
+        // The calls (and resync) that the active GET doesn't cover, combined into the one GET that is sent once the active one ends.
+        private GetTwinFetch? _nextGetTwinFetch;
 
-        // The get twin exchanges waiting for the active one to end, in the order they were made.
-        private readonly LinkedList<GetTwinExchange> _queuedGetTwinExchanges = new();
-
-        // The outstanding get twin exchanges, keyed by the ID of their latest attempt. Responses to earlier attempts are dropped.
-        private readonly Dictionary<Guid, GetTwinExchange> _getTwinExchangesById = new();
-
-        // The connection nonce of the latest connection that was lost, as far as get twin exchanges know.
+        // The connection nonce of the latest connection that was lost, as far as GET requests know.
         private Guid? _getTwinLostConnectionNonce;
+
+        // What a desired properties resync requests: the desired properties in full.
+        private static readonly GetTwinRequest s_desiredResyncGetTwinRequest = new(GetDesired: true, GetReported: false, IfNotMatchDesired: 0, IfNotMatchReported: 0);
 
         // Guards the reported patch state below.
         private readonly object _reportedPatchLock = new();
@@ -295,9 +292,13 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
         /// However, this SDK will parse the twin that the service returns to filter out unrequested sections to mimic the behavior of MQTTv5 IoT hubs.
         /// </para>
         /// <para>
-        /// Concurrent calls with identical arguments share a single request to IoT hub and all receive its response. Calls with
-        /// different arguments are sent to IoT hub one at a time, each once the previous one has completed. If IoT hub
-        /// doesn't respond within a defensive timeout (5 to 15 minutes, growing with each attempt), the request is sent again.
+        /// This client has at most one GET request out to IoT hub at a time, which it shares with its own desired properties
+        /// resync (and, for MQTTv3 IoT hubs, the GET it sends upon connecting). A call whose sections and if-not-match versions
+        /// that request covers shares its response. Other concurrent calls are combined into the one request sent after it,
+        /// which asks for every section any of them asked for (and only keeps an if-not-match version that they all agree on).
+        /// Each call's twin only includes the sections that it asked for and that its own if-not-match versions don't exclude.
+        /// If IoT hub doesn't respond within a defensive timeout (5 to 15 minutes, growing with each attempt), the request is
+        /// sent again.
         /// </para>
         /// </remarks>
         /// <exception cref="ArgumentException">Thrown when neither desired nor reported properties are requested.</exception>
@@ -316,46 +317,24 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
 
             EnsureConnected();
 
-            GetTwinRequest request = new(getDesired, getReported, ifNotMatchDesired, ifNotMatchReported);
-            GetTwinExchange? exchange;
-            bool isActivated = false;
-            lock (_getTwinExchangesLock)
+            GetTwinWaiter waiter = new(new GetTwinRequest(getDesired, getReported, ifNotMatchDesired, ifNotMatchReported));
+            lock (_getTwinLock)
             {
-                if (!_getTwinExchangesByRequest.TryGetValue(request, out exchange))
-                {
-                    exchange = new GetTwinExchange(request);
-                    _getTwinExchangesByRequest[request] = exchange;
-                    if (_activeGetTwinExchange == null)
-                    {
-                        _activeGetTwinExchange = exchange;
-                        isActivated = true;
-                    }
-                    else
-                    {
-                        exchange.QueueNode = _queuedGetTwinExchanges.AddLast(exchange);
-                    }
-                }
-
-                exchange.WaiterCount++;
+                ObjectDisposedException.ThrowIf(_isDisposed, typeof(TwinClient));
+                AddToGetTwinFetch(waiter.Request, waiter, null, isNewAttemptRequired: false);
             }
 
             try
             {
-                if (isActivated)
-                {
-                    SendNextGetTwinAttempt(exchange);
-                }
-
-                return await exchange.Response.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+                return await waiter.Response.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
             }
             finally
             {
-                lock (_getTwinExchangesLock)
+                if (!waiter.Response.Task.IsCompleted)
                 {
-                    // Stop retrying the request once nobody is waiting for its response.
-                    if (--exchange.WaiterCount == 0)
+                    lock (_getTwinLock)
                     {
-                        EndGetTwinExchange(exchange);
+                        RemoveGetTwinWaiter(waiter);
                     }
                 }
             }
@@ -773,36 +752,184 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
             return JsonNode.Parse(attempt.Payload)!.AsObject();
         }
 
-        // Sends the first attempt of the exchange, or a new attempt (with a new ID, so that responses to earlier attempts are dropped).
-        private void SendNextGetTwinAttempt(GetTwinExchange exchange)
+        // Must be called while holding _getTwinLock. Adds a call (or the desired properties resync) to the active GET if that GET
+        // covers its request, and otherwise to the next GET. If isNewAttemptRequired, the active GET is sent again (now covering
+        // this request too) even if an earlier attempt covers it, since the response to that attempt may never arrive.
+        private void AddToGetTwinFetch(GetTwinRequest request, GetTwinWaiter? waiter, DesiredResync? resync, bool isNewAttemptRequired)
         {
-            Guid getId = Guid.NewGuid();
-            lock (_getTwinExchangesLock)
+            GetTwinFetch? active = _activeGetTwinFetch;
+            if (active == null)
             {
-                if (exchange.IsEnded)
-                {
-                    return;
-                }
-
-                if (exchange.GetId is Guid previousGetId)
-                {
-                    _getTwinExchangesById.Remove(previousGetId);
-                }
-
-                exchange.GetId = getId;
-                _getTwinExchangesById[getId] = exchange;
-                exchange.Timer?.Dispose();
-                exchange.Timer = null;
+                active = new GetTwinFetch(request);
+                AttachToGetTwinFetch(active, waiter, resync);
+                _activeGetTwinFetch = active;
+                StartGetTwinAttempt(active);
             }
+            else if (active.IsFailed || isNewAttemptRequired)
+            {
+                // A failed GET only waits for its timeout so that the resync isn't retried in a tight loop, so a new call
+                // retries it straight away.
+                active.Request = CombineGetTwinRequests(active.Request, request);
+                AttachToGetTwinFetch(active, waiter, resync);
+                StartGetTwinAttempt(active);
+            }
+            else if (CoversGetTwinRequest(active.Request, request))
+            {
+                AttachToGetTwinFetch(active, waiter, resync);
+            }
+            else
+            {
+                if (_nextGetTwinFetch == null)
+                {
+                    _nextGetTwinFetch = new GetTwinFetch(request);
+                }
+                else
+                {
+                    _nextGetTwinFetch.Request = CombineGetTwinRequests(_nextGetTwinFetch.Request, request);
+                }
 
-            // The connection client may hold the publish until the device has reconnected, so it is sent off this thread. That
-            // way, a caller can stop waiting for the response.
-            _ = Task.Run(() => PublishGetTwinAsync(exchange, getId));
+                AttachToGetTwinFetch(_nextGetTwinFetch, waiter, resync);
+            }
         }
 
-        private async Task PublishGetTwinAsync(GetTwinExchange exchange, Guid getId)
+        private static void AttachToGetTwinFetch(GetTwinFetch fetch, GetTwinWaiter? waiter, DesiredResync? resync)
         {
-            GetTwinRequest request = exchange.Request;
+            if (waiter != null)
+            {
+                waiter.Fetch = fetch;
+                fetch.Waiters.Add(waiter);
+            }
+
+            if (resync != null)
+            {
+                fetch.Resync = resync;
+            }
+        }
+
+        // Whether the response to a GET with fetchRequest also answers request. MQTTv3 IoT hubs always return the full twin.
+        private bool CoversGetTwinRequest(GetTwinRequest fetchRequest, GetTwinRequest request)
+        {
+            return IsClassicConnection()
+                || (CoversSection(fetchRequest.GetDesired, fetchRequest.IfNotMatchDesired, request.GetDesired, request.IfNotMatchDesired)
+                    && CoversSection(fetchRequest.GetReported, fetchRequest.IfNotMatchReported, request.GetReported, request.IfNotMatchReported));
+
+            // IoT hub returns a section's properties for an if-not-match version of 0, and for any other version that doesn't match.
+            static bool CoversSection(bool fetchGets, ulong fetchIfNotMatch, bool gets, ulong ifNotMatch)
+            {
+                return !gets || (fetchGets && (fetchIfNotMatch == 0 || fetchIfNotMatch == ifNotMatch));
+            }
+        }
+
+        // The request whose response answers both requests: it asks for every section that either asks for, with an
+        // if-not-match version only where both ask for that section with the same one.
+        private static GetTwinRequest CombineGetTwinRequests(GetTwinRequest first, GetTwinRequest second)
+        {
+            return new GetTwinRequest(
+                first.GetDesired || second.GetDesired,
+                first.GetReported || second.GetReported,
+                CombineIfNotMatch(first.GetDesired, first.IfNotMatchDesired, second.GetDesired, second.IfNotMatchDesired),
+                CombineIfNotMatch(first.GetReported, first.IfNotMatchReported, second.GetReported, second.IfNotMatchReported));
+
+            static ulong CombineIfNotMatch(bool firstGets, ulong firstIfNotMatch, bool secondGets, ulong secondIfNotMatch)
+            {
+                if (!firstGets || !secondGets)
+                {
+                    return firstGets ? firstIfNotMatch : secondGets ? secondIfNotMatch : 0;
+                }
+
+                return firstIfNotMatch == secondIfNotMatch ? firstIfNotMatch : 0;
+            }
+        }
+
+        // Must be called while holding _getTwinLock. A call stopped waiting for its response.
+        private void RemoveGetTwinWaiter(GetTwinWaiter waiter)
+        {
+            GetTwinFetch? fetch = waiter.Fetch;
+            if (fetch != null && fetch.Waiters.Remove(waiter))
+            {
+                waiter.Fetch = null;
+                UpdateGetTwinFetchAfterRemoval(fetch);
+            }
+        }
+
+        // Must be called while holding _desiredStateLock. The resync no longer needs a GET.
+        private void DetachDesiredResyncFromGetTwinFetch(DesiredResync resync)
+        {
+            lock (_getTwinLock)
+            {
+                foreach (GetTwinFetch? fetch in new[] { _activeGetTwinFetch, _nextGetTwinFetch })
+                {
+                    if (fetch != null && fetch.Resync == resync)
+                    {
+                        fetch.Resync = null;
+                        UpdateGetTwinFetchAfterRemoval(fetch);
+                        return;
+                    }
+                }
+            }
+        }
+
+        // Must be called while holding _getTwinLock, once a call or the resync no longer waits for this GET. A GET that nobody
+        // needs is stopped (or never sent), and a GET that isn't sent yet only asks for what is still needed.
+        private void UpdateGetTwinFetchAfterRemoval(GetTwinFetch fetch)
+        {
+            if (fetch.IsEnded)
+            {
+                return;
+            }
+
+            if (fetch.Waiters.Count == 0 && fetch.Resync == null)
+            {
+                EndGetTwinFetch(fetch);
+            }
+            else if (fetch == _nextGetTwinFetch)
+            {
+                GetTwinRequest? request = fetch.Resync != null ? s_desiredResyncGetTwinRequest : null;
+                foreach (GetTwinWaiter remaining in fetch.Waiters)
+                {
+                    request = request == null ? remaining.Request : CombineGetTwinRequests(request.Value, remaining.Request);
+                }
+
+                fetch.Request = request!.Value;
+            }
+        }
+
+        // Must be called while holding _getTwinLock. Sends the first attempt of the active GET, or a new attempt (with a new ID,
+        // so that responses to earlier attempts are dropped). A new attempt also carries everything waiting for the next GET.
+        private void StartGetTwinAttempt(GetTwinFetch fetch)
+        {
+            if (fetch.IsEnded)
+            {
+                return;
+            }
+
+            GetTwinFetch? next = _nextGetTwinFetch;
+            if (next != null && fetch == _activeGetTwinFetch)
+            {
+                _nextGetTwinFetch = null;
+                fetch.Request = CombineGetTwinRequests(fetch.Request, next.Request);
+                foreach (GetTwinWaiter waiter in next.Waiters)
+                {
+                    AttachToGetTwinFetch(fetch, waiter, null);
+                }
+
+                AttachToGetTwinFetch(fetch, null, next.Resync);
+            }
+
+            Guid getId = Guid.NewGuid();
+            fetch.GetId = getId;
+            fetch.IsFailed = false;
+            fetch.Timer?.Dispose();
+            fetch.Timer = null;
+            GetTwinRequest request = fetch.Request;
+
+            // The connection client may hold the publish until the device has reconnected, so it is sent off this thread. That
+            // way, a caller can stop waiting for the response, and the publish is never sent while holding a lock.
+            _ = Task.Run(() => PublishGetTwinAsync(fetch, getId, request));
+        }
+
+        private async Task PublishGetTwinAsync(GetTwinFetch fetch, Guid getId, GetTwinRequest request)
+        {
             MqttPublish publish = IsClassicConnection()
                 ? CreateClassicGetTwinPublish(getId)
                 : CreateGetTwinPublish(
@@ -816,12 +943,13 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
                 Trace.TraceInformation("Publishing 'GetTwin' request on topic " + publish.Topic);
 
                 // The connection client returns the PUBACK as-is, so a rejected request must be surfaced here.
-                MqttPublishAck puback = await _connection.PublishAsync(publish, exchange.Cancellation.Token);
+                MqttPublishAck puback = await _connection.PublishAsync(publish, fetch.Cancellation.Token);
                 MqttAckValidator.ThrowIfPubackHasErrorCode(puback);
-                lock (_getTwinExchangesLock)
+                List<GetTwinWaiter> abandoned;
+                lock (_getTwinLock)
                 {
                     // For example, the response already arrived.
-                    if (exchange.IsEnded || exchange.GetId != getId)
+                    if (fetch.IsEnded || fetch.GetId != getId)
                     {
                         return;
                     }
@@ -831,116 +959,287 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
                     Guid? connectionNonce = _connection.ConnectionNonce;
                     if (connectionNonce == null || connectionNonce != _getTwinLostConnectionNonce)
                     {
-                        exchange.SentGetId = getId;
+                        fetch.SentGetId = getId;
 
                         // Only once sent, so that a request that is waiting for the device to reconnect isn't sent again.
-                        exchange.Timer = new System.Threading.Timer(
-                            _ => HandleGetTwinTimeout(exchange, getId),
-                            null,
-                            GetTwinTimeoutSchedule(exchange.Attempt),
-                            Timeout.InfiniteTimeSpan);
+                        ArmGetTwinTimer(fetch, getId);
                         return;
                     }
 
-                    EndGetTwinExchange(exchange);
+                    // The resync (if any) ends along with the connection.
+                    abandoned = TakeGetTwinWaiters(fetch);
+                    EndGetTwinFetch(fetch);
                 }
 
-                exchange.Response.TrySetException(CreateGetTwinConnectionLostException());
+                foreach (GetTwinWaiter waiter in abandoned)
+                {
+                    waiter.Response.TrySetException(CreateGetTwinConnectionLostException());
+                }
             }
-            catch (OperationCanceledException) when (exchange.Cancellation.IsCancellationRequested)
+            catch (OperationCanceledException) when (fetch.Cancellation.IsCancellationRequested)
             {
-                // The exchange already ended.
+                // The GET already ended.
             }
             catch (Exception e)
             {
-                lock (_getTwinExchangesLock)
-                {
-                    if (exchange.IsEnded || exchange.GetId != getId)
-                    {
-                        return;
-                    }
-
-                    EndGetTwinExchange(exchange);
-                }
-
-                exchange.Response.TrySetException(e);
+                Trace.TraceWarning("Failed to publish a get twin request: {0}", e);
+                FailGetTwinFetchAttempt(getId, e);
             }
         }
 
-        private void HandleGetTwinTimeout(GetTwinExchange exchange, Guid getId)
+        // Must be called while holding _getTwinLock.
+        private void ArmGetTwinTimer(GetTwinFetch fetch, Guid getId)
         {
-            lock (_getTwinExchangesLock)
+            fetch.Timer?.Dispose();
+            TimeSpan timeout = fetch.Resync != null ? DesiredResyncTimeoutSchedule(fetch.Attempt) : GetTwinTimeoutSchedule(fetch.Attempt);
+            fetch.Timer = new System.Threading.Timer(
+                _ => HandleGetTwinTimeout(fetch, getId),
+                null,
+                timeout,
+                Timeout.InfiniteTimeSpan);
+        }
+
+        private void HandleGetTwinTimeout(GetTwinFetch fetch, Guid getId)
+        {
+            DesiredResync? resync;
+            lock (_getTwinLock)
             {
-                if (_isDisposed || exchange.IsEnded || exchange.GetId != getId)
+                if (_isDisposed || fetch.IsEnded || fetch.GetId != getId)
                 {
                     return;
                 }
 
-                exchange.Attempt++;
+                resync = fetch.Resync;
             }
 
-            Trace.TraceWarning("Timed out waiting for the response to a get twin request. Sending it again.");
-            SendNextGetTwinAttempt(exchange);
+            if (resync != null)
+            {
+                // A resync doesn't outlive its connection. _desiredStateLock must be taken before _getTwinLock.
+                lock (_desiredStateLock)
+                {
+                    DiscardDesiredResyncFromPreviousConnection(_connection.ConnectionNonce);
+                }
+            }
+
+            lock (_getTwinLock)
+            {
+                if (_isDisposed || fetch.IsEnded || fetch.GetId != getId)
+                {
+                    return;
+                }
+
+                Trace.TraceWarning("Timed out waiting for the response to a get twin request. Sending it again.");
+                fetch.Attempt++;
+                StartGetTwinAttempt(fetch);
+            }
         }
 
-        // Must be called while holding _getTwinExchangesLock.
-        private void EndGetTwinExchange(GetTwinExchange exchange)
+        // The latest attempt of the active GET failed (for example, IoT hub rejected it), so the calls waiting for it fail. If the
+        // resync is waiting for it too, it is sent again once it times out, or sooner if another call needs a GET meanwhile.
+        private void FailGetTwinFetchAttempt(Guid getId, Exception exception)
         {
-            if (exchange.IsEnded)
+            List<GetTwinWaiter> failed;
+            lock (_getTwinLock)
+            {
+                GetTwinFetch? fetch = _activeGetTwinFetch;
+                if (fetch == null || fetch.GetId != getId)
+                {
+                    return;
+                }
+
+                failed = TakeGetTwinWaiters(fetch);
+                if (fetch.Resync == null)
+                {
+                    EndGetTwinFetch(fetch);
+                }
+                else if (_nextGetTwinFetch != null)
+                {
+                    StartGetTwinAttempt(fetch);
+                }
+                else
+                {
+                    fetch.IsFailed = true;
+                    if (fetch.Timer == null)
+                    {
+                        ArmGetTwinTimer(fetch, getId);
+                    }
+                }
+            }
+
+            foreach (GetTwinWaiter waiter in failed)
+            {
+                waiter.Response.TrySetException(exception);
+            }
+        }
+
+        // Must be called while holding _getTwinLock.
+        private static List<GetTwinWaiter> TakeGetTwinWaiters(GetTwinFetch fetch)
+        {
+            List<GetTwinWaiter> waiters = new(fetch.Waiters);
+            fetch.Waiters.Clear();
+            foreach (GetTwinWaiter waiter in waiters)
+            {
+                waiter.Fetch = null;
+            }
+
+            return waiters;
+        }
+
+        // Must be called while holding _getTwinLock. Once the active GET ends, the next one is sent.
+        private void EndGetTwinFetch(GetTwinFetch fetch)
+        {
+            if (fetch.IsEnded)
             {
                 return;
             }
 
-            exchange.IsEnded = true;
-            if (_getTwinExchangesByRequest.TryGetValue(exchange.Request, out GetTwinExchange? current) && current == exchange)
-            {
-                _getTwinExchangesByRequest.Remove(exchange.Request);
-            }
-
-            if (exchange.GetId is Guid getId)
-            {
-                _getTwinExchangesById.Remove(getId);
-            }
-
-            if (exchange.QueueNode != null)
-            {
-                _queuedGetTwinExchanges.Remove(exchange.QueueNode);
-                exchange.QueueNode = null;
-            }
-
-            exchange.Timer?.Dispose();
+            fetch.IsEnded = true;
+            fetch.Timer?.Dispose();
 
             // Callbacks registered on this token run asynchronously so that they never run while holding the lock.
-            _ = exchange.Cancellation.CancelAsync();
+            _ = fetch.Cancellation.CancelAsync();
 
-            if (_activeGetTwinExchange == exchange)
+            if (_nextGetTwinFetch == fetch)
             {
-                _activeGetTwinExchange = null;
-                if (!_isDisposed && _queuedGetTwinExchanges.First is LinkedListNode<GetTwinExchange> next)
-                {
-                    _queuedGetTwinExchanges.RemoveFirst();
-                    next.Value.QueueNode = null;
-                    _activeGetTwinExchange = next.Value;
+                _nextGetTwinFetch = null;
+            }
 
-                    // This lock is reentrant, and the request itself is published off this thread.
-                    SendNextGetTwinAttempt(next.Value);
+            if (_activeGetTwinFetch == fetch)
+            {
+                // Once disposed, the next GET is never sent; it is left for AbandonAllGetTwinFetches to fail its waiters.
+                if (_isDisposed)
+                {
+                    _activeGetTwinFetch = null;
+                    return;
                 }
+
+                _activeGetTwinFetch = _nextGetTwinFetch;
+                _nextGetTwinFetch = null;
+                if (_activeGetTwinFetch != null)
+                {
+                    StartGetTwinAttempt(_activeGetTwinFetch);
+                }
+            }
+        }
+
+        // Ends the active GET if its latest attempt has this ID, and returns who was waiting for its response.
+        private bool TryTakeGetTwinFetch(
+            Guid getId,
+            [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out List<GetTwinWaiter>? waiters,
+            out DesiredResync? resync)
+        {
+            lock (_getTwinLock)
+            {
+                GetTwinFetch? fetch = _activeGetTwinFetch;
+                if (fetch == null || fetch.GetId != getId)
+                {
+                    waiters = null;
+                    resync = null;
+                    return false;
+                }
+
+                waiters = TakeGetTwinWaiters(fetch);
+                resync = fetch.Resync;
+                EndGetTwinFetch(fetch);
+                return true;
+            }
+        }
+
+        // Delivers the response to the active GET whose latest attempt has this ID (if any) to the resync and the calls waiting for it.
+        private async Task HandleGetTwinResponseAsync(Guid getId, TwinGetResponse response, bool isClassic)
+        {
+            JsonObject? desired;
+            JsonObject? reported;
+            try
+            {
+                desired = response.HasDesiredPayload ? ParseSectionPayload(response.DesiredPayload) : null;
+                reported = response.HasReportedPayload ? ParseSectionPayload(response.ReportedPayload) : null;
+            }
+            catch (JsonException e)
+            {
+                Trace.TraceWarning("Received a get twin response with a malformed twin section: {0}", e);
+                FailGetTwinFetchAttempt(getId, e);
+                return;
+            }
+
+            if (!TryTakeGetTwinFetch(getId, out List<GetTwinWaiter>? waiters, out DesiredResync? resync))
+            {
+                Trace.TraceInformation("Dropping a get twin response that does not match the outstanding get twin request.");
+                return;
+            }
+
+            RecordAuthoritativeVersions(_connection.ConnectionNonce, response.DesiredVersion, response.ReportedVersion);
+
+            // The resync goes first, since it may find this device's copy of the twin invalid (see ResetLocalDesiredVersionIfInvalid).
+            DesiredStateOutcome outcome = new();
+            if (resync != null)
+            {
+                ApplyDesiredResyncGetResponse(resync, response, desired, outcome);
+            }
+
+            if (desired != null && waiters.Any(waiter => waiter.Request.GetDesired))
+            {
+                lock (_desiredStateLock)
+                {
+                    // The application fetched the desired properties, so this device's view of them is now at least this version.
+                    AdvanceLocalDesiredVersion(response.DesiredVersion, desired, isPatch: false);
+                }
+            }
+
+            if (reported != null && waiters.Any(waiter => waiter.Request.GetReported))
+            {
+                AdvanceLocalReportedVersion(response.ReportedVersion, reported);
+            }
+
+            foreach (GetTwinWaiter waiter in waiters)
+            {
+                GetTwinRequest request = waiter.Request;
+                waiter.Response.TrySetResult(new DeviceTwin()
+                {
+                    Desired = IsSectionIncluded(request.GetDesired, request.IfNotMatchDesired, response.DesiredVersion, desired)
+                        ? desired!.DeepClone().AsObject()
+                        : null,
+                    Reported = IsSectionIncluded(request.GetReported, request.IfNotMatchReported, response.ReportedVersion, reported)
+                        ? reported!.DeepClone().AsObject()
+                        : null,
+                    DesiredVersion = response.DesiredVersion,
+                    ReportedVersion = response.ReportedVersion,
+                });
+            }
+
+            await CompleteAsync(outcome);
+
+            // Each call only gets the sections it asked for, without those its if-not-match versions exclude, as if IoT hub had
+            // answered its request alone. MQTTv3 IoT hubs don't support if-not-match, so this client applies it for them.
+            bool IsSectionIncluded(bool isRequested, ulong ifNotMatch, ulong version, JsonObject? properties)
+            {
+                return isRequested
+                    && properties != null
+                    && (ifNotMatch == 0 || (isClassic ? ifNotMatch < version : ifNotMatch != version));
             }
         }
 
         // Twin exchanges can't outlive the connection they were sent on, since IoT hub never sends their responses on a later one.
         private void HandleConnectionLost()
         {
-            lock (_getTwinExchangesLock)
+            // A GET that is still waiting to be sent (for example, one made while reconnecting) is sent on the next connection
+            // instead. The resync (if any) ends along with the connection.
+            List<GetTwinWaiter> abandoned = new();
+            lock (_getTwinLock)
             {
                 _getTwinLostConnectionNonce = _connection.ConnectionNonce;
+                GetTwinFetch? active = _activeGetTwinFetch;
+                if (active != null && active.GetId != null && active.SentGetId == active.GetId)
+                {
+                    abandoned = TakeGetTwinWaiters(active);
+                    EndGetTwinFetch(active);
+                }
             }
 
-            // A request that is still waiting to be sent (for example, one made while reconnecting) is sent on the next
-            // connection instead.
-            AbandonGetTwinExchanges(
-                exchange => exchange.GetId != null && exchange.SentGetId == exchange.GetId,
-                CreateGetTwinConnectionLostException);
+            foreach (GetTwinWaiter waiter in abandoned)
+            {
+                waiter.Response.TrySetException(CreateGetTwinConnectionLostException());
+            }
 
             // Reported patches are kept and sent again on the next connection. IoT hub may have applied the attempt in flight,
             // in which case the next attempt's if-match is rejected with the version that it was applied at, and so on.
@@ -1004,21 +1303,25 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
             };
         }
 
-        private void AbandonGetTwinExchanges(Func<GetTwinExchange, bool> shouldAbandon, Func<Exception> createException)
+        private void AbandonAllGetTwinFetches(Func<Exception> createException)
         {
-            List<GetTwinExchange> getTwinExchanges;
-            lock (_getTwinExchangesLock)
+            List<GetTwinWaiter> abandoned = new();
+            lock (_getTwinLock)
             {
-                getTwinExchanges = _getTwinExchangesByRequest.Values.Where(shouldAbandon).ToList();
-                foreach (GetTwinExchange exchange in getTwinExchanges)
+                // The next GET first, so that ending the active one doesn't send it.
+                foreach (GetTwinFetch? fetch in new[] { _nextGetTwinFetch, _activeGetTwinFetch })
                 {
-                    EndGetTwinExchange(exchange);
+                    if (fetch != null)
+                    {
+                        abandoned.AddRange(TakeGetTwinWaiters(fetch));
+                        EndGetTwinFetch(fetch);
+                    }
                 }
             }
 
-            foreach (GetTwinExchange exchange in getTwinExchanges)
+            foreach (GetTwinWaiter waiter in abandoned)
             {
-                exchange.Response.TrySetException(createException());
+                waiter.Response.TrySetException(createException());
             }
         }
 
@@ -1120,14 +1423,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
                     return;
                 }
 
-                GetTwinExchange? exchange = TryTakeGetTwinExchange(getResponseCorrelationData.Value);
-                if (exchange == null)
-                {
-                    await HandleDesiredResyncGetResponseAsync(getResponseCorrelationData.Value, twinGetResponse);
-                    return;
-                }
-
-                HandleGetTwinExchangeResponse(exchange, twinGetResponse);
+                await HandleGetTwinResponseAsync(getResponseCorrelationData.Value, twinGetResponse, isClassic: false);
             }
             else if (type.Equals("reported-patch-response"))
             {
@@ -1236,65 +1532,6 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
             }
         }
 
-        // Returns the get twin exchange whose latest attempt has this ID, if any, and ends it.
-        private GetTwinExchange? TryTakeGetTwinExchange(Guid getId)
-        {
-            lock (_getTwinExchangesLock)
-            {
-                if (_getTwinExchangesById.TryGetValue(getId, out GetTwinExchange? exchange))
-                {
-                    EndGetTwinExchange(exchange);
-                }
-
-                return exchange;
-            }
-        }
-
-        private void HandleGetTwinExchangeResponse(GetTwinExchange exchange, TwinGetResponse twinGetResponse)
-        {
-            GetTwinRequest request = exchange.Request;
-            RecordAuthoritativeVersions(_connection.ConnectionNonce, twinGetResponse.DesiredVersion, twinGetResponse.ReportedVersion);
-
-            DeviceTwin twin;
-            try
-            {
-                twin = new()
-                {
-                    Desired = request.GetDesired
-                        && twinGetResponse.HasDesiredPayload
-                        ? JsonObject.Parse(twinGetResponse.DesiredPayload.Span)!.AsObject()
-                        : null,
-                    Reported = request.GetReported
-                        && twinGetResponse.HasReportedPayload
-                        ? JsonObject.Parse(twinGetResponse.ReportedPayload.Span)!.AsObject()
-                        : null,
-                    DesiredVersion = twinGetResponse.DesiredVersion,
-                    ReportedVersion = twinGetResponse.ReportedVersion,
-                };
-            }
-            catch (Exception e)
-            {
-                exchange.Response.TrySetException(e);
-                return;
-            }
-
-            if (request.GetDesired && twinGetResponse.HasDesiredPayload)
-            {
-                lock (_desiredStateLock)
-                {
-                    // The application fetched the desired properties, so this device's view of them is now at least this version.
-                    AdvanceLocalDesiredVersion(twinGetResponse.DesiredVersion, twin.Desired!, isPatch: false);
-                }
-            }
-
-            if (request.GetReported && twinGetResponse.HasReportedPayload)
-            {
-                AdvanceLocalReportedVersion(twinGetResponse.ReportedVersion, twin.Reported);
-            }
-
-            exchange.Response.TrySetResult(twin);
-        }
-
         private async Task HandleReceivedPresencePublishAsync(MqttPublish publish)
         {
             // The connection client validates and acts on the birth ack's other contents. This client only adopts its twin versions.
@@ -1354,7 +1591,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
                         _connection.ReplaceDesiredPropertiesVersion(0);
                         if (_desiredResync == null)
                         {
-                            StartDesiredResync(connectionNonce, null, outcome);
+                            StartDesiredResync(connectionNonce, null, birthAck.DesiredVersion);
                         }
                     }
                 }
@@ -1438,7 +1675,9 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
             {
                 if (!patch.HasPayload)
                 {
-                    // A version probe. The outstanding resync GET will return at least this version.
+                    // A version probe. The resync's GET may have been sent before IoT hub had this version (since the resync may
+                    // share the application's GET), so the resync only ends once it has observed at least this version.
+                    _desiredResync.MinimumDesiredVersion = Math.Max(_desiredResync.MinimumDesiredVersion, patch.Version);
                     return;
                 }
 
@@ -1456,7 +1695,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
                     // The response to a new GET will include every patch buffered so far (and this one), so they can be dropped.
                     Trace.TraceWarning("Too many desired property patches were received while resyncing the desired properties. Requesting the desired properties again.");
                     _desiredResync.Buffer.Clear();
-                    SendNewDesiredResyncGet(_desiredResync, outcome);
+                    RequestDesiredResyncGet(_desiredResync, isNewAttemptRequired: true);
                     return;
                 }
 
@@ -1470,7 +1709,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
                 if (patch.Version > _localDesiredVersion)
                 {
                     Trace.TraceInformation("Received a desired properties version probe with version {0}, but this device has only observed version {1}. Resyncing the desired properties.", patch.Version, _localDesiredVersion);
-                    StartDesiredResync(connectionNonce, null, outcome);
+                    StartDesiredResync(connectionNonce, null, patch.Version);
                 }
 
                 // Otherwise, this device is already up to date (or the probe is stale), so drop it.
@@ -1486,7 +1725,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
             if (patch.Version > _localDesiredVersion + 1)
             {
                 Trace.TraceInformation("Received desired property patch with version {0}, but this device has only observed version {1}. Resyncing the desired properties.", patch.Version, _localDesiredVersion);
-                StartDesiredResync(connectionNonce, patch, outcome);
+                StartDesiredResync(connectionNonce, patch, 0);
                 return;
             }
 
@@ -1497,12 +1736,6 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
                 DesiredProperties = desiredProperties,
                 DesiredPropertiesVersion = patch.Version,
             });
-        }
-
-        // Must be called while holding _desiredStateLock. Returns null if the snapshot is not newer than this device's view.
-        private TwinPushSection? TryApplyDesiredSnapshot(ulong version, ByteString payload)
-        {
-            return version <= _localDesiredVersion ? null : TryApplyDesiredSnapshot(version, ParseSectionPayload(payload));
         }
 
         // Must be called while holding _desiredStateLock. Returns null if the snapshot is not newer than this device's view.
@@ -1694,15 +1927,15 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
         }
 
         // Must be called while holding _desiredStateLock.
-        private void StartDesiredResync(Guid? connectionNonce, DesiredPatch? firstBufferedPatch, DesiredStateOutcome outcome)
+        private void StartDesiredResync(Guid? connectionNonce, DesiredPatch? firstBufferedPatch, ulong minimumDesiredVersion)
         {
-            _desiredResync = new DesiredResync(connectionNonce);
+            _desiredResync = new DesiredResync(connectionNonce) { MinimumDesiredVersion = minimumDesiredVersion };
             if (firstBufferedPatch != null)
             {
                 _desiredResync.Buffer.Add(firstBufferedPatch);
             }
 
-            SendNewDesiredResyncGet(_desiredResync, outcome);
+            RequestDesiredResyncGet(_desiredResync, isNewAttemptRequired: false);
         }
 
         // Must be called while holding _desiredStateLock. Ends the resync (if any) and applies its buffered patches that are newer than this device's view.
@@ -1723,19 +1956,31 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
             }
         }
 
-        // Must be called while holding _desiredStateLock.
-        private void SendNewDesiredResyncGet(DesiredResync resync, DesiredStateOutcome outcome)
+        // Must be called while holding _desiredStateLock. The resync shares the one GET request to IoT hub with the application's
+        // get twin calls: it waits for the active GET if that returns the desired properties in full, and otherwise for the next.
+        // If isNewAttemptRequired, the GET it waits for is sent again (for example, because earlier attempts may not reach this
+        // client), unless it isn't sent yet.
+        private void RequestDesiredResyncGet(DesiredResync resync, bool isNewAttemptRequired)
         {
-            Guid getId = Guid.NewGuid();
-            resync.GetId = getId;
-            resync.Timer?.Dispose();
-            resync.Timer = new System.Threading.Timer(
-                _ => HandleDesiredResyncTimeout(resync, getId),
-                null,
-                DesiredResyncTimeoutSchedule(resync.Attempt),
-                Timeout.InfiniteTimeSpan);
-            outcome.ResyncGetId = getId;
-            outcome.ResyncCancellation = resync.Cancellation.Token;
+            lock (_getTwinLock)
+            {
+                if (_isDisposed || _nextGetTwinFetch?.Resync == resync)
+                {
+                    return;
+                }
+
+                if (_activeGetTwinFetch?.Resync == resync)
+                {
+                    if (isNewAttemptRequired)
+                    {
+                        StartGetTwinAttempt(_activeGetTwinFetch);
+                    }
+
+                    return;
+                }
+
+                AddToGetTwinFetch(s_desiredResyncGetTwinRequest, null, resync, isNewAttemptRequired);
+            }
         }
 
         // Must be called while holding _desiredStateLock.
@@ -1743,10 +1988,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
         {
             if (_desiredResync != null)
             {
-                _desiredResync.Timer?.Dispose();
-
-                // Callbacks registered on this token run asynchronously so that they never run while holding the lock.
-                _ = _desiredResync.Cancellation.CancelAsync();
+                DetachDesiredResyncFromGetTwinFetch(_desiredResync);
                 _desiredResync = null;
             }
         }
@@ -1760,33 +2002,9 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
             }
         }
 
-        private void HandleDesiredResyncTimeout(DesiredResync resync, Guid getId)
+        // Applies the response to a GET that the resync waited for, unless the resync already ended (for example, a twin push resolved it).
+        private void ApplyDesiredResyncGetResponse(DesiredResync resync, TwinGetResponse response, JsonObject? desired, DesiredStateOutcome outcome)
         {
-            DesiredStateOutcome outcome = new();
-            lock (_desiredStateLock)
-            {
-                if (_isDisposed || _desiredResync != resync || resync.GetId != getId)
-                {
-                    return;
-                }
-
-                if (resync.ConnectionNonce != _connection.ConnectionNonce)
-                {
-                    CancelDesiredResync();
-                    return;
-                }
-
-                Trace.TraceWarning("Timed out waiting for the response to the GET request for resyncing the desired properties. Sending it again.");
-                resync.Attempt++;
-                SendNewDesiredResyncGet(resync, outcome);
-            }
-
-            _ = CompleteAsync(outcome);
-        }
-
-        private async Task HandleDesiredResyncGetResponseAsync(Guid getId, TwinGetResponse response)
-        {
-            DesiredStateOutcome outcome = new();
             DesiredResync? connectSync = null;
             TwinPushReceivedEventArgs connectSyncPush = new();
             lock (_desiredStateLock)
@@ -1794,21 +2012,28 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
                 Guid? connectionNonce = _connection.ConnectionNonce;
                 DiscardDesiredResyncFromPreviousConnection(connectionNonce);
 
-                if (_desiredResync == null || _desiredResync.GetId != getId)
+                if (_desiredResync != resync)
                 {
-                    Trace.TraceInformation("Dropping a get twin response that does not match any outstanding get twin request.");
                     return;
                 }
 
-                RecordAuthoritativeVersions(connectionNonce, response.DesiredVersion, response.ReportedVersion);
-                if (_desiredResync.IsConnectSync)
+                ulong latestBufferedVersion = resync.Buffer.Count == 0 ? 0 : resync.Buffer.Max(patch => patch.Version);
+                if (Math.Max(response.DesiredVersion, latestBufferedVersion) < resync.MinimumDesiredVersion)
                 {
-                    connectSync = _desiredResync;
+                    // The shared GET was answered before IoT hub had the version that this resync waits for, and no buffered patch
+                    // reaches it either.
+                    RequestDesiredResyncGet(resync, isNewAttemptRequired: false);
+                    return;
+                }
+
+                if (resync.IsConnectSync)
+                {
+                    connectSync = resync;
                     ResetLocalDesiredVersionIfInvalid(connectSync, response);
                 }
 
-                TwinPushSection? snapshot = response.HasDesiredPayload
-                    ? TryApplyDesiredSnapshot(response.DesiredVersion, response.DesiredPayload)
+                TwinPushSection? snapshot = desired != null
+                    ? TryApplyDesiredSnapshot(response.DesiredVersion, desired)
                     : null;
 
                 if (snapshot != null)
@@ -1824,12 +2049,10 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
             {
                 CompleteClassicConnectSync(connectSync, response, connectSyncPush, outcome);
             }
-
-            await CompleteAsync(outcome);
         }
 
-        // Raises the events and sends the GET request that the desired section state machine decided on, outside of _desiredStateLock.
-        private async Task CompleteAsync(DesiredStateOutcome outcome)
+        // Raises the events that the desired section state machine decided on, outside of _desiredStateLock.
+        private Task CompleteAsync(DesiredStateOutcome outcome)
         {
             foreach (EventArgs delivery in outcome.Deliveries)
             {
@@ -1856,33 +2079,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
                 StartSendingReportedPatchesAfterConnectSync(outcome.CompletedConnectSync);
             }
 
-            if (outcome.ResyncGetId is Guid getId)
-            {
-                await SendDesiredResyncGetAsync(getId, outcome.ResyncCancellation);
-            }
-        }
-
-        private async Task SendDesiredResyncGetAsync(Guid getId, CancellationToken cancellationToken)
-        {
-            MqttPublish publish = IsClassicConnection()
-                ? CreateClassicGetTwinPublish(getId)
-                : CreateGetTwinPublish(getId, Sections.Desired, ifNotMatchDesired: 0, ifNotMatchReported: 0);
-
-            try
-            {
-                Trace.TraceInformation("Publishing 'GetTwin' request on topic " + publish.Topic + " to resync the desired properties");
-                MqttPublishAck puback = await _connection.PublishAsync(publish, cancellationToken);
-                MqttAckValidator.ThrowIfPubackHasErrorCode(puback);
-            }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-            {
-                // The resync ended (for example, the connection was lost), so this request must not be sent.
-            }
-            catch (Exception e)
-            {
-                // The defensive timeout sends this request again later.
-                Trace.TraceWarning("Failed to publish the GET request for resyncing the desired properties: {0}", e);
-            }
+            return Task.CompletedTask;
         }
 
         private static JsonObject ParseSectionPayload(ByteString payload)
@@ -1943,13 +2140,10 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
         {
             public Guid? ConnectionNonce { get; } = connectionNonce;
 
-            public Guid GetId { get; set; }
-
-            public int Attempt { get; set; } = 1;
-
             public List<DesiredPatch> Buffer { get; } = new();
 
-            public System.Threading.Timer? Timer { get; set; }
+            // The resync only ends once it observes at least this version of the desired properties, which IoT hub announced.
+            public ulong MinimumDesiredVersion { get; set; }
 
             // Whether this is the GET that this client sends upon connecting to an MQTTv3 IoT hub, in place of a twin push.
             public bool IsConnectSync { get; set; }
@@ -1958,9 +2152,6 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
             public ulong DesiredVersionAtStart { get; set; }
 
             public ulong ReportedVersionAtStart { get; set; }
-
-            // Cancelled when the resync ends, so that a GET request still waiting to be sent is never sent.
-            public CancellationTokenSource Cancellation { get; } = new();
         }
 
         private sealed class AuthoritativeVersions(Guid? connectionNonce)
@@ -1976,24 +2167,35 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
         {
             public List<EventArgs> Deliveries { get; } = new();
 
-            public Guid? ResyncGetId { get; set; }
-
-            public CancellationToken ResyncCancellation { get; set; }
-
             // The connect sync that completed, after whose deliveries this client starts sending reported properties patches.
             public DesiredResync? CompletedConnectSync { get; set; }
         }
 
         private readonly record struct GetTwinRequest(bool GetDesired, bool GetReported, ulong IfNotMatchDesired, ulong IfNotMatchReported);
 
-        // A get twin request that is outstanding until IoT hub responds, the connection is lost or nobody is waiting for it.
-        private sealed class GetTwinExchange(GetTwinRequest request)
+        // An application's get twin call, waiting for the response to a GET.
+        private sealed class GetTwinWaiter(GetTwinRequest request)
         {
             public GetTwinRequest Request { get; } = request;
 
             public TaskCompletionSource<DeviceTwin> Response { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-            // Cancelled when the exchange ends, so that an attempt still waiting to be sent is never sent.
+            // Guarded by _getTwinLock. The GET this call waits for, if it still waits.
+            public GetTwinFetch? Fetch { get; set; }
+        }
+
+        // A GET request to IoT hub (sent, or waiting to be sent), and who waits for its response. Guarded by _getTwinLock.
+        private sealed class GetTwinFetch(GetTwinRequest request)
+        {
+            // What this GET asks for, which covers what each of its waiters (and the resync) asked for.
+            public GetTwinRequest Request { get; set; } = request;
+
+            public List<GetTwinWaiter> Waiters { get; } = new();
+
+            // The desired properties resync waiting for this GET, if any.
+            public DesiredResync? Resync { get; set; }
+
+            // Cancelled when the GET ends, so that an attempt still waiting to be sent is never sent.
             public CancellationTokenSource Cancellation { get; } = new();
 
             // The ID of the latest attempt.
@@ -2004,10 +2206,8 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
 
             public int Attempt { get; set; } = 1;
 
-            public int WaiterCount { get; set; }
-
-            // This exchange's place in _queuedGetTwinExchanges while it waits to become the active exchange.
-            public LinkedListNode<GetTwinExchange>? QueueNode { get; set; }
+            // Whether the latest attempt failed, in which case this GET only waits for its timeout to be sent again for the resync.
+            public bool IsFailed { get; set; }
 
             public bool IsEnded { get; set; }
 
@@ -2072,7 +2272,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
                 pendingPatch.Response?.TrySetException(new ObjectDisposedException(nameof(TwinClient)));
             }
 
-            AbandonGetTwinExchanges(_ => true, () => new ObjectDisposedException(nameof(TwinClient)));
+            AbandonAllGetTwinFetches(() => new ObjectDisposedException(nameof(TwinClient)));
         }
 
         /// <summary>

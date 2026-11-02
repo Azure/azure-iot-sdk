@@ -326,7 +326,8 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
             await ReceiveClassicDesiredPatchAsync(connection, 3, "{\"fanSpeed\":3}");
 
             Assert.Equal(0, patchCount);
-            MqttPublish resyncGet = Assert.Single(connection.PublishedMessages.Skip(publishCount));
+            MqttPublish resyncGet = await connection.WaitForPublishedMessagesAsync(publishCount + 1);
+            Assert.Single(connection.PublishedMessages.Skip(publishCount));
             Assert.StartsWith(ClassicGetTopicPrefix, resyncGet.Topic);
 
             await RespondClassicAsync(connection, resyncGet, 200, payload: ClassicTwin(3, "{\"fanSpeed\":3,\"mode\":\"eco\"}", 1, "{}"));

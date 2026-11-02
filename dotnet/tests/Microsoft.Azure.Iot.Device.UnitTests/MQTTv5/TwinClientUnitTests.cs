@@ -1,4 +1,4 @@
-// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
+﻿// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
 // See LICENSE file in the project root for full license information.
 
 using Google.Protobuf;
@@ -379,7 +379,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
         }
 
         [Fact]
-        public async Task GetTwinAsync_IdenticalConcurrentCallsShareOneRequestAndDifferentOnesAreSentOneAtATime()
+        public async Task GetTwinAsync_ConcurrentCallsTheInFlightRequestCoversShareItAndEachGetsWhatItAskedFor()
         {
             MockFeatureConnectionClient connection = new()
             {
@@ -391,31 +391,148 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             Task<DeviceTwin> first = twinClient.GetTwinAsync(getReported: false, cancellationToken: TestContext.Current.CancellationToken);
             Task<DeviceTwin> cancelled = twinClient.GetTwinAsync(getReported: false, cancellationToken: cancelledCaller.Token);
             Task<DeviceTwin> second = twinClient.GetTwinAsync(getReported: false, cancellationToken: TestContext.Current.CancellationToken);
-            Task<DeviceTwin> different = twinClient.GetTwinAsync(getReported: false, ifNotMatchDesired: 1, cancellationToken: TestContext.Current.CancellationToken);
+            Task<DeviceTwin> unchanged = twinClient.GetTwinAsync(getReported: false, ifNotMatchDesired: 3, cancellationToken: TestContext.Current.CancellationToken);
 
-            // The different request waits until IoT hub responds to the first.
-            await connection.WaitForPublishedMessagesAsync(1);
-            await Task.Delay(100, TestContext.Current.CancellationToken);
-            Assert.Single(connection.PublishedMessages);
+            MqttPublish getPublish = await connection.WaitForPublishedMessagesAsync(1);
+            Assert.Equal(0ul, TwinGet.Parser.ParseFrom(getPublish.Payload).IfNotMatchDesired);
 
             // One caller giving up doesn't abandon the request for the others.
             cancelledCaller.Cancel();
             await Assert.ThrowsAnyAsync<OperationCanceledException>(() => cancelled);
 
-            await ReceiveGetResponseAsync(connection, connection.PublishedMessages[0], 3, "{\"fanSpeed\":3}");
-            Assert.Equal(3ul, (await first).DesiredVersion);
-            Assert.Same(await first, await second);
-            Assert.False(different.IsCompleted);
+            await ReceiveGetResponseAsync(connection, getPublish, 3, "{\"fanSpeed\":3}");
+            DeviceTwin firstTwin = await first;
+            DeviceTwin secondTwin = await second;
+            Assert.Equal(3, (int)firstTwin.Desired!["fanSpeed"]!);
+            Assert.Equal(3, (int)secondTwin.Desired!["fanSpeed"]!);
+            Assert.NotSame(firstTwin.Desired, secondTwin.Desired);
 
-            MqttPublish differentPublish = await connection.WaitForPublishedMessagesAsync(2);
-            Assert.Equal(1ul, TwinGet.Parser.ParseFrom(differentPublish.Payload).IfNotMatchDesired);
-            await ReceiveGetResponseAsync(connection, differentPublish, 4, "{\"fanSpeed\":4}");
-            Assert.Equal(4ul, (await different).DesiredVersion);
+            // The shared response is filtered by each call's if-not-match version, as if IoT hub had answered it alone.
+            DeviceTwin unchangedTwin = await unchanged;
+            Assert.Null(unchangedTwin.Desired);
+            Assert.Equal(3ul, unchangedTwin.DesiredVersion);
+
+            await Task.Delay(100, TestContext.Current.CancellationToken);
+            Assert.Single(connection.PublishedMessages);
 
             // Once the shared request completes, a new call sends a new request.
             Task<DeviceTwin> later = twinClient.GetTwinAsync(getReported: false, cancellationToken: TestContext.Current.CancellationToken);
-            await ReceiveGetResponseAsync(connection, await connection.WaitForPublishedMessagesAsync(3), 5, "{\"fanSpeed\":5}");
+            await ReceiveGetResponseAsync(connection, await connection.WaitForPublishedMessagesAsync(2), 5, "{\"fanSpeed\":5}");
             Assert.Equal(5ul, (await later).DesiredVersion);
+        }
+
+        [Fact]
+        public async Task GetTwinAsync_CallsTheInFlightRequestDoesNotCoverAreCombinedIntoOneNextRequest()
+        {
+            MockFeatureConnectionClient connection = new()
+            {
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv5, DeviceId),
+            };
+            using TwinClient twinClient = new(connection);
+            using CancellationTokenSource conflictingCaller = new();
+
+            Task<DeviceTwin> active = twinClient.GetTwinAsync(getReported: false, cancellationToken: TestContext.Current.CancellationToken);
+            MqttPublish activePublish = await connection.WaitForPublishedMessagesAsync(1);
+
+            Task<DeviceTwin> reportedOnly = twinClient.GetTwinAsync(getDesired: false, cancellationToken: TestContext.Current.CancellationToken);
+            Task<DeviceTwin> both = twinClient.GetTwinAsync(ifNotMatchDesired: 5, cancellationToken: TestContext.Current.CancellationToken);
+            Task<DeviceTwin> conflicting = twinClient.GetTwinAsync(ifNotMatchDesired: 7, cancellationToken: conflictingCaller.Token);
+
+            // The combined request is recomputed when a caller gives up, so its if-not-match version is no longer in conflict.
+            conflictingCaller.Cancel();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => conflicting);
+
+            await ReceiveGetResponseAsync(connection, activePublish, 4, "{\"fanSpeed\":4}");
+            Assert.Equal(4ul, (await active).DesiredVersion);
+
+            MqttPublish nextPublish = await connection.WaitForPublishedMessagesAsync(2);
+            TwinGet nextGet = TwinGet.Parser.ParseFrom(nextPublish.Payload);
+            Assert.Equal(Sections.Both, nextGet.Sections);
+            Assert.Equal(5ul, nextGet.IfNotMatchDesired);
+            Assert.Equal(0ul, nextGet.IfNotMatchReported);
+
+            await ReceiveGetResponseAsync(connection, nextPublish, 6, "{\"fanSpeed\":6}", 2, "{\"temperature\":20}");
+            DeviceTwin reportedOnlyTwin = await reportedOnly;
+            Assert.Null(reportedOnlyTwin.Desired);
+            Assert.Equal(20, (int)reportedOnlyTwin.Reported!["temperature"]!);
+            DeviceTwin bothTwin = await both;
+            Assert.Equal(6, (int)bothTwin.Desired!["fanSpeed"]!);
+            Assert.Equal(20, (int)bothTwin.Reported!["temperature"]!);
+
+            await Task.Delay(100, TestContext.Current.CancellationToken);
+            Assert.Equal(2, connection.PublishedMessages.Count);
+        }
+
+        [Fact]
+        public async Task GetTwinAsync_ConflictingIfNotMatchVersionsAreCombinedIntoAnUnconditionalRequest()
+        {
+            MockFeatureConnectionClient connection = new()
+            {
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv5, DeviceId),
+            };
+            using TwinClient twinClient = new(connection);
+
+            Task<DeviceTwin> active = twinClient.GetTwinAsync(getDesired: false, cancellationToken: TestContext.Current.CancellationToken);
+            MqttPublish activePublish = await connection.WaitForPublishedMessagesAsync(1);
+            Task<DeviceTwin> five = twinClient.GetTwinAsync(getReported: false, ifNotMatchDesired: 5, cancellationToken: TestContext.Current.CancellationToken);
+            Task<DeviceTwin> seven = twinClient.GetTwinAsync(getReported: false, ifNotMatchDesired: 7, cancellationToken: TestContext.Current.CancellationToken);
+
+            await ReceiveGetResponseAsync(connection, activePublish, 1, "{}", 1, "{}");
+            await active;
+
+            MqttPublish nextPublish = await connection.WaitForPublishedMessagesAsync(2);
+            Assert.Equal(0ul, TwinGet.Parser.ParseFrom(nextPublish.Payload).IfNotMatchDesired);
+
+            await ReceiveGetResponseAsync(connection, nextPublish, 7, "{\"fanSpeed\":7}");
+            Assert.Equal(7, (int)(await five).Desired!["fanSpeed"]!);
+            Assert.Null((await seven).Desired);
+        }
+
+        [Fact]
+        public async Task DesiredResync_SharesTheApplicationsGetTwinRequest()
+        {
+            (MockFeatureConnectionClient connection, Guid nonce) = CreateConnectionWithNonce();
+            using TwinClient twinClient = new(connection);
+            await ReceiveTwinPushAsync(connection, nonce, 5, "{\"fanSpeed\":50}");
+
+            List<ulong> snapshotVersions = new();
+            twinClient.TwinPushReceived += args => snapshotVersions.Add(args.Desired!.PropertiesVersion);
+
+            Task<DeviceTwin> getTask = twinClient.GetTwinAsync(cancellationToken: TestContext.Current.CancellationToken);
+            await ReceiveDesiredPatchAsync(connection, nonce, 7, "{\"fanSpeed\":70}");
+            MqttPublish getPublish = await connection.WaitForPublishedMessagesAsync(1);
+
+            await ReceiveGetResponseAsync(connection, getPublish, 7, "{\"fanSpeed\":70}", 1, "{}");
+
+            Assert.Equal(7ul, (await getTask).DesiredVersion);
+            Assert.Equal(new[] { 7ul }, snapshotVersions);
+            await Task.Delay(100, TestContext.Current.CancellationToken);
+            Assert.Single(connection.PublishedMessages);
+        }
+
+        [Fact]
+        public async Task DesiredResync_SharingAGetAnsweredBeforeTheProbedVersion_RequestsTheDesiredPropertiesAgain()
+        {
+            (MockFeatureConnectionClient connection, Guid nonce) = CreateConnectionWithNonce();
+            using TwinClient twinClient = new(connection);
+            await ReceiveTwinPushAsync(connection, nonce, 5, "{\"fanSpeed\":50}");
+
+            List<ulong> snapshotVersions = new();
+            twinClient.TwinPushReceived += args => snapshotVersions.Add(args.Desired!.PropertiesVersion);
+
+            Task<DeviceTwin> getTask = twinClient.GetTwinAsync(getReported: false, cancellationToken: TestContext.Current.CancellationToken);
+            MqttPublish getPublish = await connection.WaitForPublishedMessagesAsync(1);
+            await ReceiveDesiredPatchAsync(connection, nonce, 7, payload: null);
+
+            // IoT hub answered the shared GET before it had the probed version.
+            await ReceiveGetResponseAsync(connection, getPublish, 6, "{\"fanSpeed\":60}");
+            Assert.Equal(6ul, (await getTask).DesiredVersion);
+            Assert.Empty(snapshotVersions);
+
+            MqttPublish resyncPublish = await connection.WaitForPublishedMessagesAsync(2);
+            Assert.Equal(Sections.Desired, TwinGet.Parser.ParseFrom(resyncPublish.Payload).Sections);
+            await ReceiveGetResponseAsync(connection, resyncPublish, 7, "{\"fanSpeed\":70}");
+            Assert.Equal(new[] { 7ul }, snapshotVersions);
         }
 
         [Fact]
@@ -784,6 +901,21 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
         }
 
         [Fact]
+        public async Task GetTwinAsync_Dispose_FailsCallWaitingForTheNextRequestWhileOnlyTheResyncWaitsForTheActiveOne()
+        {
+            (MockFeatureConnectionClient connection, Guid nonce) = CreateConnectionWithNonce();
+            TwinClient twinClient = new(connection);
+            await ReceiveTwinPushAsync(connection, nonce, 5, "{}");
+            await ReceiveDesiredPatchAsync(connection, nonce, 7, payload: null);
+            await connection.WaitForPublishedMessagesAsync(1);
+
+            Task<DeviceTwin> queued = twinClient.GetTwinAsync(getDesired: false, cancellationToken: TestContext.Current.CancellationToken);
+            twinClient.Dispose();
+
+            await Assert.ThrowsAsync<ObjectDisposedException>(() => queued);
+        }
+
+        [Fact]
         public async Task GetTwinAsync_ThrowsAfterDispose()
         {
             MockFeatureConnectionClient connection = new()
@@ -933,7 +1065,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
 
             await ReceiveDesiredPatchAsync(connection, nonce, 7, payload: null);
 
-            MqttPublish getPublish = Assert.Single(connection.PublishedMessages);
+            MqttPublish getPublish = await connection.WaitForPublishedMessagesAsync(1);
             Assert.Equal(OutgoingTwinTopic, getPublish.Topic);
             Assert.Equal("get:1", GetType(getPublish));
             Assert.Equal(Sections.Desired, TwinGet.Parser.ParseFrom(getPublish.Payload).Sections);
@@ -980,7 +1112,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             twinClient.TwinPushReceived += args => snapshotVersions.Add(args.Desired!.PropertiesVersion);
 
             await ReceiveDesiredPatchAsync(connection, nonce, 3, "{\"a\":3}");
-            MqttPublish getPublish = Assert.Single(connection.PublishedMessages);
+            MqttPublish getPublish = await connection.WaitForPublishedMessagesAsync(1);
             await ReceiveDesiredPatchAsync(connection, nonce, 4, "{\"a\":4}");
 
             await ReceiveGetResponseAsync(connection, getPublish, 3, "{\"a\":3}");
@@ -996,7 +1128,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             using TwinClient twinClient = new(connection);
 
             await ReceiveDesiredPatchAsync(connection, nonce, 4, payload: null);
-            MqttPublish getPublish = Assert.Single(connection.PublishedMessages);
+            MqttPublish getPublish = await connection.WaitForPublishedMessagesAsync(1);
             await ReceiveDesiredPatchAsync(connection, nonce, 5, "{\"a\":5}");
             await ReceiveDesiredPatchAsync(connection, nonce, 6, "{\"a\":6}");
 
@@ -1025,14 +1157,14 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             twinClient.TwinPushReceived += args => snapshotVersions.Add(args.Desired!.PropertiesVersion);
 
             await ReceiveDesiredPatchAsync(connection, nonce, 2, payload: null);
-            MqttPublish firstGet = Assert.Single(connection.PublishedMessages);
+            MqttPublish firstGet = await connection.WaitForPublishedMessagesAsync(1);
 
             for (ulong version = 3; version < 3 + TwinClient.DesiredResyncBufferCapacity + 1; version++)
             {
                 await ReceiveDesiredPatchAsync(connection, nonce, version, "{}");
             }
 
-            Assert.Equal(2, connection.PublishedMessages.Count);
+            await connection.WaitForPublishedMessagesAsync(2);
             MqttPublish secondGet = connection.PublishedMessages[1];
             Assert.Equal("get:1", GetType(secondGet));
             Assert.NotEqual(firstGet.CorrelationData, secondGet.CorrelationData);
@@ -1089,7 +1221,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             twinClient.TwinPushReceived += _ => eventRaised = true;
 
             await ReceiveDesiredPatchAsync(connection, nonce, 3, payload: null);
-            MqttPublish getPublish = Assert.Single(connection.PublishedMessages);
+            MqttPublish getPublish = await connection.WaitForPublishedMessagesAsync(1);
 
             connection.ConnectionNonce = Guid.NewGuid();
             await ReceiveGetResponseAsync(connection, getPublish, 3, "{}");
@@ -1107,7 +1239,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             twinClient.TwinPushReceived += _ => eventRaised = true;
 
             await ReceiveDesiredPatchAsync(connection, nonce, 3, payload: null);
-            MqttPublish getPublish = Assert.Single(connection.PublishedMessages);
+            MqttPublish getPublish = await connection.WaitForPublishedMessagesAsync(1);
 
             // Even before the device reconnects (with the same nonce, as seen by this client), the resync is abandoned.
             connection.SimulateConnectionLost();
@@ -1273,7 +1405,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             await ReceiveBirthAckAsync(connection, nonce, desiredVersion: 5, reportedVersion: 1);
 
             Assert.Equal(new[] { 10ul, 0ul }, connection.ReplacedDesiredPropertiesVersions);
-            MqttPublish get = Assert.Single(connection.PublishedMessages);
+            MqttPublish get = await connection.WaitForPublishedMessagesAsync(1);
             Assert.Equal("get:1", GetType(get));
 
             await ReceiveGetResponseAsync(connection, get, 5, "{\"fanSpeed\":50}");
@@ -1549,13 +1681,25 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             }
         }
 
-        private static Task ReceiveGetResponseAsync(MockFeatureConnectionClient connection, MqttPublish getPublish, ulong desiredVersion, string desiredPayload)
+        private static Task ReceiveGetResponseAsync(
+            MockFeatureConnectionClient connection,
+            MqttPublish getPublish,
+            ulong desiredVersion,
+            string desiredPayload,
+            ulong reportedVersion = 0,
+            string? reportedPayload = null)
         {
             var response = new TwinGetResponse()
             {
                 DesiredVersion = desiredVersion,
                 DesiredPayload = ByteString.CopyFromUtf8(desiredPayload),
+                ReportedVersion = reportedVersion,
             };
+
+            if (reportedPayload != null)
+            {
+                response.ReportedPayload = ByteString.CopyFromUtf8(reportedPayload);
+            }
 
             return connection.SimulateReceiveAsync(CreateInboundTwinPublish("get-response:1", getPublish.CorrelationData!, response.ToByteArray()));
         }
