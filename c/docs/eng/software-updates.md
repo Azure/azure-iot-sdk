@@ -34,7 +34,9 @@ The `su_client` is a **feature client** in the azure-iot-sdk SDK that implements
 - adu-shell or privilege escalation (we assume the application has sufficient privileges).
 - Component-level targeting (component enumerators).
 - Proxy/nested updates (IoT Edge parent proxying updates to leaf devices).
-- Reference steps with detached manifests (`"type": "reference"` + `detachedManifestFileId`).
+- Reference steps with detached manifests (`"type": "reference"` + `detachedManifestFileId`), and
+  mini (detached) update manifests: refused with `AZ_IOT_SU_MANIFEST_ERROR_REFERENCE_STEP` /
+  `_DETACHED_MANIFEST`.
 
 ---
 
@@ -544,7 +546,7 @@ sub-code for internal failures) so a device-side failure can be diagnosed from
 the cloud without on-device logs. When a failure has no meaningful sub-code, the
 low bits MUST be `0`.
 
-Facility `0x1` sub-codes (`AZ_IOT_SU_MANIFEST_ERROR_*`) say why verification failed:
+Facility `0x1` sub-codes (`AZ_IOT_SU_MANIFEST_ERROR_*`) say why verification or validation failed:
 
 | Sub-code | Name | Cause |
 |---|---|---|
@@ -556,11 +558,15 @@ Facility `0x1` sub-codes (`AZ_IOT_SU_MANIFEST_ERROR_*`) say why verification fai
 | `0x6` | `ROOT_SIGNATURE` | `sjwk` rejected by the root key (`verify_rs256`: `AZ_IOT_ERR_AUTH` or `AZ_IOT_ERR_INVALID_ARG`) |
 | `0x7` | `SIGNATURE` | manifest rejected by the `sjwk` signing key (as for `0x6`) |
 | `0x8` | `HASH` | manifest SHA-256 ≠ signed hash |
+| `0x9` | `DETACHED_MANIFEST` | verified mini manifest (`detachedManifestFileId`), not supported |
+| `0xA` | `NO_STEPS` | verified manifest has no step |
+| `0xB` | `REFERENCE_STEP` | verified manifest has a `"type": "reference"` step, not supported |
 
 Entering Failed raises `AZ_IOT_SU_EVENT_WORKFLOW_STATE_CHANGED` with
 `extended_result_code` (the first failed step's code, else the overall one) and
 `reason`: `AZ_IOT_ERR_AUTH` for facility `0x1`/`0x3` (`0x1` sub-code `CRYPTO`:
-`AZ_IOT_ERR_INTERNAL`), `AZ_IOT_ERR_PROTOCOL` for `0xF`, `AZ_IOT_ERR_INTERNAL`
+`AZ_IOT_ERR_INTERNAL`; `DETACHED_MANIFEST`, `REFERENCE_STEP`: `AZ_IOT_ERR_NOT_SUPPORTED`;
+`NO_STEPS`: `AZ_IOT_ERR_PROTOCOL`), `AZ_IOT_ERR_PROTOCOL` for `0xF`, `AZ_IOT_ERR_INTERNAL`
 otherwise.
 
 **`result_details`.** OPTIONAL free-form string (the service allows 1024 characters). When set,
@@ -2056,9 +2062,9 @@ update before processing (`AZ_IOT_SU_EVENT_UPDATE_REFUSED`, `AZ_IOT_ERR_NOT_ENOU
 
 The largest status report grows 117 bytes per step, so `AZ_IOT_SU_MIN_MESSAGE_SIZE` is
 2176 + 128 × `AZ_IOT_SU_MAX_STEP_COUNT` (3456 by default; the base fits a 128-byte workflow id, fully
-escaped). Memory cost of the default limits against 2/2 on 64-bit: `az_iot_su_client` 7984 bytes
-(4016), default workspace 96400 (89424), parsed manifest
-3792 (592). See [client-configuration.md](../client-configuration.md#software-updates-manifest-limits).
+escaped). Memory cost of the default limits against 2/2 on 64-bit: `az_iot_su_client` 8240 bytes
+(4080), default workspace 96400 (89424), parsed manifest
+4048 (656). See [client-configuration.md](../client-configuration.md#software-updates-manifest-limits).
 
 ### Not Parsed (Matches Our Non-Goals)
 

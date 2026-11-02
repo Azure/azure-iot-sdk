@@ -1363,22 +1363,30 @@ static az_iot_result decode_manifest(az_iot_su_client* client)
 }
 
 /**
- * @brief Parse the verified manifest_text into current_manifest, and check that every step file
- * is described by it and has a download URL.
+ * @brief Parse the verified manifest_text into current_manifest, check that the client can install
+ * it, and that every step file is described by it and has a download URL.
  *
  * current_manifest holds spans into manifest_text (client-owned request_buffer).
  *
- * @param client The client; decode_manifest() and verify_manifest() succeeded.
+ * @param client             The client; decode_manifest() and verify_manifest() succeeded.
+ * @param out_manifest_error Set to the AZ_IOT_SU_MANIFEST_ERROR_* sub-code when the manifest is
+ *                           not supported; else 0.
  * @return AZ_IOT_OK; AZ_IOT_ERR_NOT_ENOUGH_SPACE when over a limit; AZ_IOT_ERR_INVALID_ARG when
- * malformed or a step file is unresolved.
+ * malformed, without steps or a step file is unresolved; AZ_IOT_ERR_NOT_SUPPORTED for a mini
+ * manifest or a reference step.
  */
-static az_iot_result parse_manifest(az_iot_su_client* client)
+static az_iot_result parse_manifest(az_iot_su_client* client, uint32_t* out_manifest_error)
 {
+  *out_manifest_error = 0;
   az_iot_result r = az_iot_su__parse_update_manifest(
       SU_I(client).manifest_text,
       SU_I(client).related_file_storage,
       SU_I(client).max_related_files,
       &SU_I(client).current_manifest);
+  if (r == AZ_IOT_OK)
+  {
+    r = az_iot_su__check_manifest_supported(&SU_I(client).current_manifest, out_manifest_error);
+  }
   if (r == AZ_IOT_OK)
   {
     r = az_iot_su__check_step_file_references(
@@ -2172,8 +2180,18 @@ static az_iot_result failure_reason(int32_t extended_result_code)
   switch ((code >> 28) & 0xFu)
   {
     case AZ_IOT_SU_FACILITY_MANIFEST:
-      return ((code & 0x0FFFFFFFu) == AZ_IOT_SU_MANIFEST_ERROR_CRYPTO) ? AZ_IOT_ERR_INTERNAL
-                                                                       : AZ_IOT_ERR_AUTH;
+      switch (code & 0x0FFFFFFFu)
+      {
+        case AZ_IOT_SU_MANIFEST_ERROR_CRYPTO:
+          return AZ_IOT_ERR_INTERNAL;
+        case AZ_IOT_SU_MANIFEST_ERROR_DETACHED_MANIFEST:
+        case AZ_IOT_SU_MANIFEST_ERROR_REFERENCE_STEP:
+          return AZ_IOT_ERR_NOT_SUPPORTED;
+        case AZ_IOT_SU_MANIFEST_ERROR_NO_STEPS:
+          return AZ_IOT_ERR_PROTOCOL;
+        default:
+          return AZ_IOT_ERR_AUTH;
+      }
     case AZ_IOT_SU_FACILITY_HASH:
       return AZ_IOT_ERR_AUTH;
     case AZ_IOT_SU_FACILITY_INTERNAL:
@@ -3937,14 +3955,17 @@ AZ_NODISCARD az_iot_result az_iot_su_client_resume(az_iot_su_client* client)
         = az_span_create(SU_I(client).request_buffer + rd_u32le(u + 8), (int32_t)rd_u32le(u + 12));
   }
 
-  /* Any step still to run must be able to download its files. A record taken
-   * after the current step's install needs URLs only for the later steps. */
+  /* The manifest must be supported, and any step still to run must be able to download its
+   * files. A record taken after the current step's install needs URLs only for the later steps. */
   bool step_installed = state == (uint32_t)AZ_IOT_SU_STATE_INSTALL_COMPLETE
       || state == (uint32_t)AZ_IOT_SU_STATE_APPLY_STARTED;
   uint32_t from = step_installed ? step + 1u : step;
-  if (az_iot_su__check_step_file_references(
-          &SU_I(client).current_manifest, from, req->file_urls, url_count)
-      != AZ_IOT_OK)
+  uint32_t manifest_error = 0;
+  if (az_iot_su__check_manifest_supported(&SU_I(client).current_manifest, &manifest_error)
+          != AZ_IOT_OK
+      || az_iot_su__check_step_file_references(
+             &SU_I(client).current_manifest, from, req->file_urls, url_count)
+          != AZ_IOT_OK)
   {
     /* It can never be resumed, so retire it rather than refuse it every boot. */
     SU_I(client).checkpoint_stored = true;
@@ -4470,10 +4491,16 @@ az_iot_result az_iot_su_client_do_work(az_iot_su_client* client)
         (void)az_iot_su__report_state(client);
         break;
       }
-      if (parse_manifest(client) != AZ_IOT_OK)
+      uint32_t manifest_error = 0;
+      if (parse_manifest(client, &manifest_error) != AZ_IOT_OK)
       {
+        /* An unsupported manifest has its own sub-code; any other parse failure is internal. */
         result_init_steps(client, 1);
-        result_step_failure(client, 0, AZ_IOT_SU_FACILITY_INTERNAL, 0);
+        result_step_failure(
+            client,
+            0,
+            manifest_error != 0 ? AZ_IOT_SU_FACILITY_MANIFEST : AZ_IOT_SU_FACILITY_INTERNAL,
+            (int32_t)manifest_error);
         fail_workflow(client);
         (void)az_iot_su__report_state(client);
         break;
@@ -5222,6 +5249,11 @@ AZ_NODISCARD az_iot_result az_iot_su_parse_update_request(
   az_iot_su_client_update_manifest manifest;
   r = az_iot_su__parse_update_manifest(
       manifest_text, storage->related_files, storage->max_related_files, &manifest);
+  if (r == AZ_IOT_OK)
+  {
+    uint32_t manifest_error = 0;
+    r = az_iot_su__check_manifest_supported(&manifest, &manifest_error);
+  }
   if (r == AZ_IOT_OK)
   {
     r = az_iot_su__check_step_file_references(&manifest, 0, req.file_urls, req.file_urls_count);
