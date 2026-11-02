@@ -6,7 +6,7 @@
 Keep devices up to date with [Azure Device Update](https://learn.microsoft.com/azure/iot-hub-device-update/):
 the device asks for updates, verifies them, installs them through your code, and reports the
 result. The API is [`az_iot_su.h`](../inc/azure/iot/az_iot_su.h), which documents every function,
-option and event in full. The design is in [eng/software-updates.md](eng/software-updates.md).
+option and event in full.
 
 - [How it works](#how-it-works)
 - [Before you start](#before-you-start)
@@ -49,8 +49,10 @@ sequenceDiagram
     SU-->>App: events
 ```
 
-The client runs inside your `do_work()` loop, single-threaded and non-blocking, with no heap
-allocation: you provide its memory.
+The client runs inside your `do_work()` loop, single-threaded, with no heap allocation: you provide
+its memory. Each `do_work()` does one bounded piece of work, provided your hooks return
+`IN_PROGRESS` for long work. The reference delta processor is the exception: by default it builds a
+whole file in one call ([Delta updates](#delta-updates)).
 
 ## Before you start
 
@@ -75,7 +77,7 @@ allocation: you provide its memory.
 |---|---|---|---|
 | **Managed** (most devices) | [Platform hooks](#platform-hooks): download, install, apply, persist | Checks, verification, workflow, retries, reports | [simulated_regular](../samples/software_update/pc/simulated_regular/README.md) |
 | **Library mode** (you already have an update agent) | Download, install, report through `az_iot_su_client_report_status()` | Checks, verification, report delivery and retries | [library_mode](../samples/software_update/pc/library_mode/README.md) |
-| **Primitives** (your own transport) | Everything except the trust checks | `az_iot_su_verify_manifest()`, `az_iot_su_parse_update_request()`, `az_iot_su_verify_file_hash()`, `az_iot_su_build_report()` | [eng §5.3](eng/software-updates.md#53-library-mode-and-transport-free-primitives) |
+| **Primitives** (your own transport) | Everything except the trust checks | `az_iot_su_verify_manifest()`, `az_iot_su_parse_update_request()`, `az_iot_su_verify_file_hash()`, `az_iot_su_build_report()` | [`az_iot_su.h`](../inc/azure/iot/az_iot_su.h) ("Transport-free primitives") |
 
 ## Quick start
 
@@ -132,11 +134,17 @@ for (;;)
 {
   (void)az_iot_connection_client_do_work(&connection, 50);
   (void)az_iot_su_client_do_work(&su);
+  if (az_iot_su_client_get_reboot_state(&su) == AZ_IOT_SU_REBOOT_READY)
+  {
+    my_reboot(); /* state is saved; resume() continues after the restart */
+  }
   /* request_update() again on your schedule: see Checking for updates */
 }
 ```
 
-> **Note** Add the observer before `resume()`: a resumed workflow is reported through it.
+> **Note** Add the observer before `resume()`: a resumed workflow is reported through it. Reboot
+> as soon as the client asks ([Reboot and resume](#reboot-and-resume)): until then the next
+> `do_work()` carries on as if the device had restarted.
 
 ## Checking for updates
 
@@ -173,7 +181,7 @@ Your code does the device-side work. Every hook gets `hooks.user_ctx`, returns a
 | Hook | Needed | Called | May return |
 |---|---|---|---|
 | `download_fn` | Yes | Once per file (and per related file, see [Delta updates](#delta-updates)) | `SUCCESS`, `IN_PROGRESS`, `FAILURE` |
-| `read_file_fn` | Recommended; required with download handlers | After each download, to check its SHA-256. NULL skips the check. | `SUCCESS`, `FAILURE` |
+| `read_file_fn` | Yes, unless your platform checks each file's integrity itself; required with download handlers | After each download, to check its SHA-256 against the signed manifest. NULL skips the check: the signature covers the manifest, not the downloaded bytes. | `SUCCESS`, `FAILURE` |
 | `is_installed_fn` | Optional | Before anything is downloaded | `ALREADY_INSTALLED` (reported `SKIPPED`), `SUCCESS` |
 | `backup_fn` | Optional | Before each step's install | `SUCCESS`, `IN_PROGRESS`, `FAILURE` |
 | `install_fn` | Yes | Once per step | `SUCCESS`, `IN_PROGRESS`, `REBOOT_REQUIRED`, `FAILURE` |
@@ -219,7 +227,7 @@ flowchart LR
 
 Sample: [multi_step](../samples/software_update/pc/multi_step/README.md). Limits:
 [client-configuration.md § Software updates manifest limits](client-configuration.md#software-updates-manifest-limits).
-Result codes: [eng § Result-Code Mapping](eng/software-updates.md#result-code-mapping).
+Result codes: `AZ_IOT_SU_FACILITY_*` and `AZ_IOT_SU_MANIFEST_ERROR_*` in [`az_iot_su.h`](../inc/azure/iot/az_iot_su.h).
 
 ## Reboot and resume
 
@@ -260,6 +268,9 @@ reports an `AZ_IOT_SU_FACILITY_DELTA` extended code so you can see why.
 - Register it: `az_iot_su_delta_handler_init()`, then put
   `az_iot_su_delta_handler_get_download_handler()` in `download_handlers` of the client options.
 - Tell it where your `download_fn` stores each file (`get_file_path_fn`).
+- The default processor builds a file in one `do_work()` call, which blocks your loop for that
+  long. To keep the loop responsive, set `apply_delta_fn` to run the processor elsewhere and return
+  `AZ_IOT_SU_RESULT_IN_PROGRESS` until it is done.
 - It loads the delta processor `libadudiffapi.so` from
   [Azure/iot-hub-device-update-delta](https://github.com/Azure/iot-hub-device-update-delta) at run
   time ([install script](../eng/install-su-delta-processor.sh)). Without it, files are downloaded in
@@ -274,8 +285,8 @@ reference handler is not available, files are downloaded in full unless you regi
 
 Samples: [http_download § Delta updates](../samples/software_update/pc/http_download/README.md#delta-updates),
 [simulated_regular § Delta updates](../samples/software_update/pc/simulated_regular/README.md#delta-updates).
-Design: [eng § Delta Downloads](eng/software-updates.md#delta-downloads-download-handlers),
-[eng §8.2](eng/software-updates.md#82-delta-updates-the-reference-microsoftdelta1-handler).
+API: `az_iot_su_download_handler` and `AZ_IOT_SU_DELTA_ERROR_*` in [`az_iot_su.h`](../inc/azure/iot/az_iot_su.h);
+the reference handler's options in [`az_iot_su_delta.h`](../adapters/su/delta/az_iot_su_delta.h).
 
 ## Library mode
 
@@ -308,9 +319,6 @@ roots, pass your own `az_iot_su_root_key` array (up to `limits.max_root_keys`, 8
 
 > **Note** Root keys change only with a firmware update: plan key updates into your firmware.
 
-Design: [eng §6](eng/software-updates.md#6-cryptographic-verification--pluggable-backend),
-[eng §7](eng/software-updates.md#7-root-key-provisioning--rotation).
-
 ## Device properties
 
 Sent on every check, so the service offers the right update:
@@ -338,7 +346,7 @@ is valid only during the callback. Names below omit the `AZ_IOT_SU_EVENT_` prefi
 | `REPORT_ACCEPTED` | The service accepted a report | — |
 | `OPERATION_ABANDONED` | A check or report was given up (`reason`, `service_error`) | Log `service_error`; ask again later on the **same** route |
 | `UPDATE_REFUSED` | An offer is too large or malformed; not processed | Raise the limit named by `reason`, or fix the update |
-| `UPDATE_DEFERRED` | A new update waits for the current one (or its reboot) | Ask again once the current one ends |
+| `UPDATE_DEFERRED` | A new update waits: the current one has started installing (or awaits its reboot) | Ask again once the current one ends |
 | `UPDATE_DUPLICATE` | The same update was offered again | — |
 | `UPDATE_RETRY_WAIT` | A failed update was offered before its retry time | Ask again after `retry_after_ms` |
 | `PERSIST_FAILED` / `PERSIST_RECOVERED` | `persist_workflow_state_fn` is failing / works again | Do not reboot while failing |
@@ -350,8 +358,9 @@ is valid only during the callback. Names below omit the `AZ_IOT_SU_EVENT_` prefi
   `Retry-After`), within the request timeout.
 - **A failed update** offered again is retried after 1 h, doubling up to 24 h, with jitter. The wait
   survives a restart when persistence is set.
-- **A new update while one runs** waits (`UPDATE_DEFERRED`) until the current one ends, and after
-  its reboot if it asked for one.
+- **A new update while one runs** replaces it until its first `install_fn` call: an update still
+  downloading is dropped for the new one. From the first install it waits (`UPDATE_DEFERRED`) until
+  the current one ends, and after its reboot if it asked for one.
 - **Cancellation** is done from the service: it stops offering the update. The device has no cancel
   call.
 
