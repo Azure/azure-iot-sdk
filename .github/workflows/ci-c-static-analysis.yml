@@ -8,7 +8,7 @@ name: ci-c-static-analysis
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, 'releases/public-preview' ]
   # No workflow-level `paths:` filter, same as ci-c.yml: a workflow that never triggers reports
   # no check, which would block a required check. The `changes` job below skips work instead.
   pull_request:
