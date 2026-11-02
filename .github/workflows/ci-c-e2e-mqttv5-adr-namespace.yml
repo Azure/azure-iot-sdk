@@ -12,6 +12,9 @@
 # as the first job of the mqttv5 e2e workflow
 # (workflow_call), so tests start against a linked namespace.
 #
+# The mqttv5 e2e environment serves releases/public-preview, which holds the
+# script: a run on main (the schedule's branch) checks out that branch.
+#
 #   vars:    E2E_MQTTV5_SHARED_SUBSCRIPTION_ID, E2E_MQTTV5_SHARED_RESOURCE_GROUP,
 #            E2E_MQTTV5_SHARED_HUB_NAME, E2E_MQTTV5_SHARED_DPS_NAME,
 #            E2E_MQTTV5_SHARED_ADR_NAMESPACE,
@@ -59,6 +62,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
+          ref: ${{ github.ref == 'refs/heads/main' && 'releases/public-preview' || '' }}
           sparse-checkout: c/eng
 
       - name: Azure Login via OIDC

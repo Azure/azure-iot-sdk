@@ -60,8 +60,8 @@ Waive a rule only with a per-file, per-symbol comment naming the reason:
 ## Building strings
 
 ```c
-char topic[AZ_IOT_MQTTV5_DM_TOPIC_MAX];
-const char* parts[] = { "ih/", device_id, "/dev/methods" };
+char topic[AZ_IOT_PERSISTENT_SUB_TOPIC_MAX];
+const char* parts[] = { "devices/", device_id, "/messages/devicebound/#" };
 if (az_iot_span_writer_build_str(AZ_SPAN_FROM_BUFFER(topic), NULL, parts, 3) != AZ_IOT_OK)
 {
     return AZ_IOT_ERR_INTERNAL;

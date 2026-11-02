@@ -369,8 +369,8 @@ static az_iot_result mock_publish(
     copy_bytes(c->payload, sizeof(c->payload), msg->payload, msg->payload_len, &c->payload_len);
     c->qos = msg->qos;
     c->retain = msg->retain;
-    /* Capture the MQTT v5 correlation data + "type" property so presence/
-     * birth tests can read the client's nonce and assert the message type. */
+    /* Capture the MQTT v5 correlation data and "type" property so tests can
+     * assert what the client published. */
     copy_bytes(
         c->correlation_data,
         sizeof(c->correlation_data),

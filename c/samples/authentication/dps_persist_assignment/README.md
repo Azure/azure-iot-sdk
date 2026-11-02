@@ -27,7 +27,7 @@ As [`dps_csr_managed`](../dps_csr_managed/README.md): the same Azure resources, 
 identity, enrollment group and environment variables.
 
 The assignment is saved to `dps_assignment.txt` in the working directory: three lines, hub
-hostname, device id, and `mqttv3` or `mqttv5`. Delete it to
+hostname, device id, and `mqttv3`. Delete it to
 register again. Keep it with `AZ_IOT_OPERATIONAL_KEY` and `AZ_IOT_OPERATIONAL_CERT`: the
 saved identity is only usable with the certificate issued alongside it. Key files are for
 development; see [Production keys](../../../docs/connecting.md#production-keys).
@@ -46,8 +46,7 @@ cmake --build --preset linux-gcc-debug --target az_iot_sample_auth_dps_persist_a
 With az_mqtt (`-DAZ_IOT_WITH_AZ_MQTT=ON`), target `az_iot_sample_auth_dps_persist_assignment_az_mqtt` builds the same sample in
 `az_mqtt/` next to that binary ([adapters](../../README.md#build)).
 
-Built when OpenSSL 3.0+ is available (`AZ_IOT_WITH_CERT_PROVIDER_MANAGED`). Connects to mqttv3 and
-mqttv5 hubs.
+Built when OpenSSL 3.0+ is available (`AZ_IOT_WITH_CERT_PROVIDER_MANAGED`). Connects to mqttv3 hubs.
 
 ## Behavior
 

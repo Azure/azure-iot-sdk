@@ -5,11 +5,8 @@
 /* SPDX-License-Identifier: MIT */
 /* MQTTv3 hub file upload unit tests. The client performs HTTPS through an
  * application transport hook, so these tests drive it offline via a mock hook +
- * an unopened direct-host (MQTTv3) connection client -- no live hub, no MQTT.
- *
- * There is no mqttv5 counterpart to exercise: file upload is not carried on the
- * MQTT v5 hub, and this client pins MQTTv3. What used to be the MQTTv5-dispatch
- * section is now a single test that the pin refuses an MQTT v5 connection. */
+ * an unopened direct-host (MQTTv3) connection client -- no live hub, no MQTT. */
+
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stddef.h>
@@ -24,8 +21,7 @@
 #include "azure/iot/az_iot_connection_client.h"
 #include "azure/iot/az_iot_result.h"
 #include "azure/iot/mqttv3/az_iot_file_upload_client.h"
-/* Only to prove a released MQTTv3 pin admits the other generation. */
-#include "azure/iot/mqttv5/az_iot_telemetry_client.h"
+#include "internal/connection_client_internal.h"
 #include "support/test_provider.h"
 
 #define TEST_HUB "myhub.azure-devices.net"
@@ -640,7 +636,7 @@ static void deinit_is_idempotent(void** state)
 
 /* Re-initializing after deinit() rebinds the instance and leaves it usable.
  *
- * Deliberately NOT a double-init: init() takes a generation reference on the
+ * Deliberately NOT a double-init: init() takes a profile reference on the
  * connection, and initializing over a live instance would strand the one the
  * live instance still holds. The struct is caller-allocated, so the client
  * cannot tell a live instance from an uninitialized one and cannot refuse it --
@@ -891,8 +887,7 @@ static void requests_resume_when_the_endpoint_returns(void** state)
 }
 
 /* The MQTTv3 path is stateless per call, so starting the next request from
- * inside the completion callback is legal. Locking this in matters because the
- * MQTTv5 path will hold per-request state and must preserve the behaviour. */
+ * inside the completion callback is legal. */
 typedef struct
 {
   az_iot_mqttv3_file_upload_client* fu;
@@ -939,13 +934,12 @@ static void get_sas_uri_is_reentrant_from_callback(void** state)
 }
 
 /* ------------------------------------------------------------------------- */
-/* generation pinning                                                        */
+/* profile pinning                                                           */
 /* ------------------------------------------------------------------------- */
 
-/* File upload is not carried on the MQTT v5 hub, so this client pins MQTTv3.
- * A direct connection declares its generation up front, which is what lets the
- * pin be answered at init() rather than deferred to connect. */
-static void init_against_an_mqtt_v5_connection_is_rejected(void** state)
+/* This client pins MQTTv3, so a connection already pinned to another profile
+ * refuses it at init(). */
+static void init_while_another_profile_is_required_is_rejected(void** state)
 {
   (void)state;
 
@@ -954,11 +948,13 @@ static void init_against_an_mqtt_v5_connection_is_rejected(void** state)
   opts.iothub_hostname = TEST_HUB;
   opts.port = 8883;
   opts.device_id = TEST_DEVICE;
-  opts.connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5;
   opts.workspace = g_connection_workspace;
   opts.workspace_size = sizeof(g_connection_workspace);
   az_iot_test_use_mock_mqtt_adapter(&opts);
   assert_int_equal(az_iot_connection_client_init(&conn, &opts), AZ_IOT_OK);
+  /* No supported profile other than mqttv3 exists to require; pin one directly. */
+  conn.required_profile = AZ_IOT_CONNECTION_PROFILE_UNKNOWN;
+  conn.required_profile_refs = 1;
 
   az_iot_mqttv3_file_upload_client fu2;
   az_iot_file_upload_http_transport http = { mock_send, NULL };
@@ -991,10 +987,8 @@ static void init_without_an_http_hook_is_rejected(void** state)
  * missing-hook checks both run before __require_profile(), so they can never
  * exercise this. A DPS connection with no assigned hub fails there.
  *
- * Proved by admitting an mqttv5 client afterwards: a leaked MQTTv3 reference
- * would make that return AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH, and the
- * connection would be stuck refusing a generation on behalf of a client that
- * does not exist. */
+ * Proved by the connection holding no profile reference afterwards: a leaked
+ * one would pin MQTTv3 on behalf of a client that does not exist. */
 static void a_post_pin_init_failure_releases_the_profile_pin(void** state)
 {
   (void)state;
@@ -1016,9 +1010,7 @@ static void a_post_pin_init_failure_releases_the_profile_pin(void** state)
         az_iot_mqttv3_file_upload_client_init(&fu2, &conn, &http), AZ_IOT_ERR_NOT_CONNECTED);
   }
 
-  az_iot_mqttv5_telemetry_client t;
-  assert_int_equal(az_iot_mqttv5_telemetry_client_init(&t, &conn), AZ_IOT_OK);
-  az_iot_mqttv5_telemetry_client_deinit(&t);
+  assert_int_equal(conn.required_profile_refs, 0);
 
   az_iot_connection_client_deinit(&conn);
 }
@@ -1026,9 +1018,7 @@ static void a_post_pin_init_failure_releases_the_profile_pin(void** state)
 /* The pre-pin refusals take no reference to release, so they cannot strand one.
  *
  * Uses its own DPS connection, not the fixture's: the fixture holds a live
- * MQTTv3 client, and its legitimate pin would refuse the mqttv5 client below for
- * an honest reason, hiding a leak. An unresolved connection with no live client
- * is the only state where "was a pin taken?" is observable. */
+ * MQTTv3 client, whose legitimate pin would hide a leak. */
 static void init_without_an_http_hook_takes_no_profile_pin(void** state)
 {
   (void)state;
@@ -1049,12 +1039,7 @@ static void init_without_an_http_hook_takes_no_profile_pin(void** state)
         az_iot_mqttv3_file_upload_client_init(&fu2, &conn, NULL), AZ_IOT_ERR_INVALID_ARG);
   }
 
-  /* Asserted through the OTHER generation on purpose: another MQTTv3 client is
-   * admitted whether or not a pin leaked, so only an mqttv5 client -- which a
-   * leaked MQTTv3 pin would refuse -- can observe the difference. */
-  az_iot_mqttv5_telemetry_client t;
-  assert_int_equal(az_iot_mqttv5_telemetry_client_init(&t, &conn), AZ_IOT_OK);
-  az_iot_mqttv5_telemetry_client_deinit(&t);
+  assert_int_equal(conn.required_profile_refs, 0);
 
   az_iot_connection_client_deinit(&conn);
 }
@@ -1832,9 +1817,9 @@ int main(void)
         notify_complete_oversized_correlation_id_is_refused, setup, teardown),
     cmocka_unit_test(max_length_endpoint_still_builds_a_url),
 
-    /* generation pinning */
+    /* profile pinning */
     cmocka_unit_test_setup_teardown(
-        init_against_an_mqtt_v5_connection_is_rejected, setup, teardown),
+        init_while_another_profile_is_required_is_rejected, setup, teardown),
     cmocka_unit_test_setup_teardown(init_without_an_http_hook_is_rejected, setup, teardown),
     cmocka_unit_test(a_post_pin_init_failure_releases_the_profile_pin),
     cmocka_unit_test(init_without_an_http_hook_takes_no_profile_pin),

@@ -94,7 +94,6 @@ macros, all in [az_iot_log_components.h](../inc/azure/iot/az_iot_log_components.
 | `paho` | Paho MQTT adapter and TLS |
 | `az_mqtt` | az_mqtt MQTT adapter |
 | `mqttv3_telemetry`, `mqttv3_twin`, `mqttv3_direct_method`, `mqttv3_file_upload`, `c2d` | mqttv3 feature clients |
-| `mqttv5_telemetry`, `mqttv5_twin`, `mqttv5_direct_method`, `mqttv5_custom_topic` | mqttv5 feature clients |
 
 `app` (`AZ_IOT_LOG_COMPONENT_APP`) is for applications and never used by the SDK, for example
 `AZ_IOT_LOG_INFO(AZ_IOT_LOG_COMPONENT_APP, "firmware 2.1 started")`. Any other string works as an
@@ -125,4 +124,4 @@ Then, by symptom:
 | --- | --- | --- |
 | Device does not connect or keeps reconnecting | `DEBUG` | `AZ_IOT_PAHO_TRACE=protocol` with `TRACE` for TLS failures. |
 | Provisioning fails | `DEBUG` | Lines with the `dps` prefix carry the service error code. |
-| Twin, direct method, telemetry or cloud-to-device issue | `DEBUG` | The relevant `mqttv3_*` or `mqttv5_*` component. |
+| Twin, direct method, telemetry or cloud-to-device issue | `DEBUG` | The relevant `mqttv3_*` or `c2d` component. |

@@ -6,23 +6,12 @@
 /* unified/direct_method_responder - sample.
  *
  * Answer direct methods for ~60 seconds, from inside the handler, on whichever
- * hub DPS assigns: MQTTv3 or MQTTv5, including after the device is
- * moved to a hub of the other generation. The MQTTv5-only route is
- * mqttv5/direct_method_responder. Same shape as unified/telemetry: build for an
- * assumed generation before open(), rebuild when DPS assigns the other one.
+ * hub DPS assigns (MQTTv3). Same shape as unified/telemetry.
  *
- * Direct methods are where the two generations differ most, so each gets its
- * own setup:
- *
- *   - MQTTv3 has no method registry and no probe. One handler receives EVERY
- *     invocation, with its arguments already on the wire, so routing by name and
- *     turning down unknown names (404) is the application's job. MQTTv3 never
- *     learns the caller's timeout either, so the SDK applies a local one.
- *
- *   - MQTTv5 asks before it calls. Methods are DECLARED with register_method(); a
- *     probe for any other name is answered METHOD_NOT_FOUND by the SDK before
- *     the arguments are sent. An optional probe handler lets the device decline
- *     a declared method with a reason (e.g. DEVICE_BUSY).
+ * MQTTv3 has no method registry and no probe. One handler receives EVERY
+ * invocation, with its arguments already on the wire, so routing by name and
+ * turning down unknown names (404) is the application's job. MQTTv3 never
+ * learns the caller's timeout either, so the SDK applies a local one.
  *
  * DPS is handled internally by the connection client when dps.id_scope is set.
  */
@@ -50,7 +39,7 @@
 #define STATUS_NOT_FOUND 404
 #define STATUS_PAYLOAD_TOO_LARGE 413
 
-/* MQTTv3 only: longer than this device's slowest method, and well under the
+/* Longer than this device's slowest method, and well under the
  * 300 s service maximum. */
 #define RESPONSE_TIMEOUT_SECONDS 60u
 
@@ -62,16 +51,9 @@ typedef struct
   sample_config config;
   az_iot_certificate_provider_pem certs;
   az_iot_connection_client connection_client;
-  /* Only the one matching `profile` is ever initialized. */
   az_iot_mqttv3_direct_method_client mqttv3;
-  /* The memory of whichever client is initialized, for the default limits. */
-  uint8_t methods_workspace
-      [AZ_IOT_MQTTV5_DIRECT_METHOD_CLIENT_DEFAULT_WORKSPACE_SIZE
-               > AZ_IOT_MQTTV3_DIRECT_METHOD_CLIENT_DEFAULT_WORKSPACE_SIZE
-           ? AZ_IOT_MQTTV5_DIRECT_METHOD_CLIENT_DEFAULT_WORKSPACE_SIZE
-           : AZ_IOT_MQTTV3_DIRECT_METHOD_CLIENT_DEFAULT_WORKSPACE_SIZE];
-  az_iot_mqttv5_direct_method_client mqttv5;
-  az_iot_connection_profile profile;
+  /* The client's memory, for the default limits. */
+  uint8_t methods_workspace[AZ_IOT_MQTTV3_DIRECT_METHOD_CLIENT_DEFAULT_WORKSPACE_SIZE];
   int methods_initialized;
 } sample_state;
 
@@ -81,31 +63,21 @@ typedef struct
   az_iot_connection_state conn_state;
   int connected_count;
   int faulted; /* terminal: nothing this sample can do about it */
-  int rebuild; /* DPS assigned `assigned_profile`; rebuild for it */
-  az_iot_connection_profile assigned_profile;
 } user_context;
 
-static void clients_destroy(sample_state* s, user_context* ctx)
+static void clients_destroy(sample_state* s)
 {
-  (void)ctx;
   if (!s->methods_initialized)
   {
     return;
   }
-  if (s->profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5)
-  {
-    az_iot_mqttv5_direct_method_client_deinit(&s->mqttv5);
-  }
-  else
-  {
-    az_iot_mqttv3_direct_method_client_deinit(&s->mqttv3);
-  }
+  az_iot_mqttv3_direct_method_client_deinit(&s->mqttv3);
   s->methods_initialized = 0;
 }
 
 static void sample_state_destroy(sample_state* s)
 {
-  clients_destroy(s, NULL);
+  clients_destroy(s);
   az_iot_connection_client_deinit(&s->connection_client);
   az_iot_certificate_provider_pem_deinit(&s->certs);
   sample_config_release(&s->config);
@@ -115,20 +87,10 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
 {
   user_context* ctx = (user_context*)user_ctx;
 
-  /* Only record it: feature clients must not be destroyed from inside the
-   * callback, which runs nested in do_work(). */
-  if (event->state == AZ_IOT_CONN_STATE_FAULTED
-      && event->reason == AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH && event->profile != NULL)
-  {
-    ctx->assigned_profile = event->profile->connection_profile;
-    ctx->rebuild = 1;
-    return;
-  }
-
   if (event->state == AZ_IOT_CONN_STATE_FAULTED)
   {
     ctx->faulted = 1;
-    /* DPS assigned a hub generation newer than this SDK. */
+    /* DPS assigned a hub generation this SDK does not support. */
     if (event->reason == AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED && event->profile != NULL)
     {
       printf(
@@ -151,11 +113,9 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
   }
 }
 
-/* ---- MQTTv3 (mqttv3) -------------------------------------------------------- */
-
 /* Every invocation lands here, including names this device has never heard of.
- * Answering 404 is the closest MQTTv3 gets to MQTTv5's METHOD_NOT_FOUND, and it
- * arrives after the caller's arguments have already crossed the wire. */
+ * Answering 404 turns them down, but only after the caller's arguments have
+ * already crossed the wire. */
 static void on_method_mqttv3(
     az_iot_direct_method_request request,
     const char* method_name,
@@ -203,114 +163,29 @@ static void on_method_mqttv3(
   }
 }
 
-/* ---- MQTTv5 (mqttv5) ------------------------------------------------------------ */
-
-/* Optional. The SDK has already checked that the name is declared and that the
- * caller's timeout covers the declared run time, so this only answers whether
- * the device will take the work right now. Answer promptly: the service is
- * holding the caller's connect timeout open. */
-static az_iot_mqttv5_direct_method_probe_result on_probe_mqttv5(
-    const az_iot_mqttv5_direct_method_probe* probe,
-    void* user_ctx)
+static az_iot_result clients_build(sample_state* s, user_context* ctx)
 {
-  (void)user_ctx;
-  printf(
-      "probe for method '%s', caller waits %u second(s) for a result\n",
-      probe->method_name,
-      (unsigned)probe->response_timeout_seconds);
-  return AZ_IOT_MQTTV5_DM_PROBE_ACCEPT;
-}
-
-/* Only ever called for ECHO_METHOD, after the probe was accepted and the
- * service sent the arguments. */
-static void on_echo_mqttv5(
-    az_iot_direct_method_request request,
-    const char* method_name,
-    const uint8_t* payload,
-    size_t payload_len,
-    void* user_ctx)
-{
-  user_context* ctx = (user_context*)user_ctx;
-  printf(
-      "method '%s' invoked, %zu byte payload\n", method_name ? method_name : "(null)", payload_len);
-
-  /* The reply is bounded by limits.max_result_body_size, the arguments are
-   * not. A reply that does not fit is refused and the slot KEPT, so answer
-   * short rather than ignore that result. */
-  if (payload_len > AZ_IOT_MQTTV5_DIRECT_METHOD_CLIENT_DEFAULT_MAX_RESULT_BODY_SIZE)
-  {
-    (void)az_iot_mqttv5_direct_method_respond(
-        &ctx->state->mqttv5, request, STATUS_PAYLOAD_TOO_LARGE, NULL, 0);
-    return;
-  }
-
-  az_iot_result result = az_iot_mqttv5_direct_method_respond(
-      &ctx->state->mqttv5, request, STATUS_OK, payload, payload_len);
+  /* Default limits: 0 fields. */
+  az_iot_result result = az_iot_mqttv3_direct_method_client_init(
+      &s->mqttv3,
+      &s->connection_client,
+      &(az_iot_mqttv3_direct_method_client_options){
+          .workspace = s->methods_workspace, .workspace_size = sizeof(s->methods_workspace) });
   if (result != AZ_IOT_OK)
   {
-    printf("response was not sent: %s\n", az_iot_result_to_string(result));
+    return result;
   }
-}
-
-/* Pins the connection to `profile`: an assignment to the other generation is
- * then refused with AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH. */
-static az_iot_result clients_build(
-    sample_state* s,
-    az_iot_connection_profile profile,
-    user_context* ctx)
-{
-  az_iot_result result;
-  switch (profile)
+  s->methods_initialized = 1;
+  result = az_iot_mqttv3_direct_method_client_set_handler(&s->mqttv3, on_method_mqttv3, ctx);
+  if (result == AZ_IOT_OK)
   {
-    case AZ_IOT_CONNECTION_PROFILE_MQTT_V5:
-      result = az_iot_mqttv5_direct_method_client_init(
-          &s->mqttv5,
-          &s->connection_client,
-          &(az_iot_mqttv5_direct_method_client_options){
-              .workspace = s->methods_workspace, .workspace_size = sizeof(s->methods_workspace) });
-      if (result != AZ_IOT_OK)
-      {
-        return result;
-      }
-      s->profile = profile;
-      s->methods_initialized = 1;
-      /* 0: no declared run time, so any positive caller budget is enough. Names
-       * match byte for byte. */
-      result = az_iot_mqttv5_direct_method_client_register_method(
-          &s->mqttv5, ECHO_METHOD, 0, on_echo_mqttv5, ctx);
-      if (result == AZ_IOT_OK)
-      {
-        result = az_iot_mqttv5_direct_method_client_set_probe_handler(
-            &s->mqttv5, on_probe_mqttv5, ctx);
-      }
-      return result;
-    case AZ_IOT_CONNECTION_PROFILE_MQTT_V3:
-      /* Default limits: 0 fields. */
-      result = az_iot_mqttv3_direct_method_client_init(
-          &s->mqttv3,
-          &s->connection_client,
-          &(az_iot_mqttv3_direct_method_client_options){
-              .workspace = s->methods_workspace, .workspace_size = sizeof(s->methods_workspace) });
-      if (result != AZ_IOT_OK)
-      {
-        return result;
-      }
-      s->profile = profile;
-      s->methods_initialized = 1;
-      result = az_iot_mqttv3_direct_method_client_set_handler(&s->mqttv3, on_method_mqttv3, ctx);
-      if (result == AZ_IOT_OK)
-      {
-        /* How long a request stays answerable before the SDK reclaims its slot.
-         * Without it, handlers that never answer would eventually consume all
-         * limits.max_in_flight_invocations slots. */
-        result = az_iot_mqttv3_direct_method_client_set_response_timeout(
-            &s->mqttv3, RESPONSE_TIMEOUT_SECONDS);
-      }
-      return result;
-    case AZ_IOT_CONNECTION_PROFILE_UNKNOWN:
-    default:
-      return AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED;
+    /* How long a request stays answerable before the SDK reclaims its slot.
+     * Without it, handlers that never answer would eventually consume all
+     * limits.max_in_flight_invocations slots. */
+    result = az_iot_mqttv3_direct_method_client_set_response_timeout(
+        &s->mqttv3, RESPONSE_TIMEOUT_SECONDS);
   }
+  return result;
 }
 
 static void pump(sample_state* s, uint32_t timeout_ms)
@@ -354,8 +229,8 @@ int main(void)
   copts.dps.registration_id = state.config.reg_id;
   copts.dps.global_endpoint = state.config.dps_global_endpoint; /* NULL: the global default */
   copts.certificate_provider = &state.certs.base;
-  /* The adapter builds each session's MQTT client in this workspace, one at a time: MQTT 3.1.1
-   * for DPS and an MQTTv3 hub, MQTT 5 for an MQTTv5 hub. Limits: sample_utils.h. */
+  /* The adapter builds each session's MQTT 3.1.1 client in this workspace, one at a time: DPS,
+   * then the hub. Limits: sample_utils.h. */
   static uint8_t mqtt_workspace[SAMPLE_MQTT_WORKSPACE_SIZE];
 #if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
   copts.mqtt_adapter = az_iot_paho_get_adapter();
@@ -373,8 +248,7 @@ int main(void)
   }
   az_iot_connection_client_add_state_observer(&state.connection_client, on_conn_state, &user_ctx);
 
-  /* Assume a generation until DPS says otherwise; see unified/telemetry. */
-  if (clients_build(&state, AZ_IOT_CONNECTION_PROFILE_MQTT_V3, &user_ctx) != AZ_IOT_OK
+  if (clients_build(&state, &user_ctx) != AZ_IOT_OK
       || az_iot_connection_client_open(&state.connection_client) != AZ_IOT_OK)
   {
     sample_state_destroy(&state);
@@ -385,23 +259,6 @@ int main(void)
   while (!user_ctx.faulted && sample_now_ms() < end_ms)
   {
     pump(&state, 100);
-
-    if (user_ctx.rebuild)
-    {
-      user_ctx.rebuild = 0;
-      printf(
-          "DPS assigned %s; rebuilding the feature client.\n",
-          az_iot_connection_profile_to_string(user_ctx.assigned_profile));
-      clients_destroy(&state, &user_ctx);
-      az_iot_connection_client_close(&state.connection_client);
-      if (clients_build(&state, user_ctx.assigned_profile, &user_ctx) != AZ_IOT_OK
-          || az_iot_connection_client_open(&state.connection_client) != AZ_IOT_OK)
-      {
-        user_ctx.faulted = 1; /* recovery failed */
-        break;
-      }
-      continue;
-    }
   }
 
   int rc = (user_ctx.connected_count > 0 && !user_ctx.faulted) ? 0 : 1;

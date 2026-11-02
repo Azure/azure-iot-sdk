@@ -6,8 +6,7 @@
 /* authentication/hub_renew
  *
  * Runtime operational-certificate renewal against a connected MQTTv3 hub
- * (D7). Connects to whichever hub DPS assigns; renewal through send_csr() is
- * MQTTv3-only, so on an MQTTv5 hub the sample reports that and exits non-zero.
+ * (D7). Connects to whichever hub DPS assigns.
  * End to end:
  *   1. Connect, then call az_iot_connection_client_send_csr(); the SDK gets the
  *      CSR from the managed provider.
@@ -156,8 +155,8 @@ int main(void)
   copts.certificate_provider = &provider.base;
   AZ_IOT_CSR_PAYLOAD_STORAGE(csr_payload_buf);
   copts.csr_payload_buffer = az_span_create(csr_payload_buf, sizeof(csr_payload_buf));
-  /* The adapter builds each session's MQTT client in this workspace, one at a time: MQTT 3.1.1
-   * for DPS and an MQTTv3 hub, MQTT 5 for an MQTTv5 hub. Limits: sample_utils.h. */
+  /* The adapter builds each session's MQTT 3.1.1 client in this workspace, one at a time: DPS,
+   * then the hub. Limits: sample_utils.h. */
   static uint8_t mqtt_workspace[SAMPLE_MQTT_WORKSPACE_SIZE];
 #if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
   copts.mqtt_adapter = az_iot_paho_get_adapter();

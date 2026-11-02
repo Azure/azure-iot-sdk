@@ -9,10 +9,10 @@ identical, so the difference between the two `main.c` files is exactly the featu
 
 ## Sample features
 
-- Hub generations: mqttv3 (MQTT 3.1.1) and mqttv5 (MQTT 5), whichever DPS assigns, including after the device is moved to a hub of the other generation.
+- Hub: mqttv3 (MQTT 3.1.1).
 - The whole feature is one option: `copts.transport = AZ_IOT_MQTT_TRANSPORT_WEBSOCKET;`. The port follows the transport (443) as long as `copts.port` stays 0.
 - Applies to the DPS connect as well as the hub connect.
-- The resource path defaults to `/$iothub/websocket` for DPS and an mqttv3 hub, and `/mqtt` for an mqttv5 hub.
+- The resource path defaults to `/$iothub/websocket`.
 - Combine with [`proxy`](../proxy/README.md) for a network that needs a proxy **and** only passes 443.
 - Platforms: Linux and Windows.
 
@@ -21,7 +21,6 @@ identical, so the difference between the two `main.c` files is exactly the featu
 - An Azure IoT Hub Device Provisioning Service (DPS) instance linked to an IoT Hub.
 - An X.509 enrollment (individual or group) for the device. For an mqttv3 hub,
   [Quickstart: Provision an X.509 certificate simulated device](https://learn.microsoft.com/azure/iot-dps/quick-create-simulated-device-x509) walks through the setup.
-- To exercise mqttv5, the device's enrollment must assign it to an mqttv5 IoT Hub.
 
 ## Configure
 
@@ -35,7 +34,7 @@ The sample reads these environment variables:
 | `AZ_IOT_CLIENT_KEY` | yes | Device private key (PEM file). A key file is for development; see [Production keys](../../../docs/connecting.md#production-keys). |
 | `AZ_IOT_TRUSTED_CA` | yes | CA bundle (PEM file) that validates the DPS and IoT Hub server certificates, e.g. `/etc/ssl/certs/ca-certificates.crt`. |
 | `AZ_IOT_DPS_GLOBAL_ENDPOINT` | no | Provisioning endpoint. Default `global.azure-devices-provisioning.net`. |
-| `AZ_IOT_MQTT_WEBSOCKET_PATH` | no | WebSocket resource path. Set only for a gateway that serves WebSockets elsewhere. Default `/$iothub/websocket` (DPS, mqttv3 hub) and `/mqtt` (mqttv5 hub); a set value applies to every session. |
+| `AZ_IOT_MQTT_WEBSOCKET_PATH` | no | WebSocket resource path. Set only for a gateway that serves WebSockets elsewhere. Default `/$iothub/websocket`; a set value applies to every session. |
 
 ```sh
 export AZ_IOT_DPS_ID_SCOPE='<id-scope>'
@@ -88,11 +87,10 @@ Runs about 60 seconds. Exit code 0 when at least one message was sent and the co
 The sample prints a summary line at the end; SDK warnings and errors go to stderr.
 
 ```
-Sent 11 message(s) on AZ_IOT_CONNECTION_PROFILE_MQTT_V3, 0 failed.
+Sent 11 message(s), 0 failed.
 ```
 
-The count depends on how long connecting took. When DPS assigns the other generation, the
-sample first prints `DPS assigned AZ_IOT_CONNECTION_PROFILE_MQTT_V5; rebuilding the telemetry client.`
+The count depends on how long connecting took.
 
 ## Troubleshooting
 
@@ -101,7 +99,7 @@ sample first prints `DPS assigned AZ_IOT_CONNECTION_PROFILE_MQTT_V5; rebuilding 
 | `Required env var <NAME> not set.`, exit 1 | A required variable is missing. |
 | SDK line `dps register: errorCode=<code> errorMessage=<text>` | DPS refused the registration: no matching enrollment, the certificate's common name differs from `AZ_IOT_DPS_REGISTRATION_ID`, or the enrollment is disabled. DPS verdicts are retried until the sample's run time ends. |
 | Repeated `paho: connect failed: ... TCP/TLS connect failure` | DPS or the hub is unreachable (network, proxy, `AZ_IOT_DPS_GLOBAL_ENDPOINT`), or server certificate validation fails (`AZ_IOT_TRUSTED_CA`). |
-| `Unsupported hub generation "<value>". Upgrade the SDK.` | DPS assigned a connection profile this SDK version does not know. |
+| `Unsupported hub generation "<value>". Upgrade the SDK.` | DPS assigned a connection profile this SDK does not support. |
 
 ## Where to look in `main.c`
 
