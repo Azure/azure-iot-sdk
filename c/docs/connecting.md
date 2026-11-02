@@ -263,7 +263,7 @@ and what the application observes is:
 - These disconnects are planned: they count toward no reconnection backoff and not toward
   `dps.max_hub_connect_attempts_before_reprovision`.
 - The hub is not held indefinitely. An update check, retries included, waits at most its request
-  timeout (default 60 s; 0 is refused); then it is abandoned and not sent again.
+  timeout (default 120 s; 0 is refused); then it is abandoned and not sent again.
 - Once sent, a check or a status report waits at most 120 s for its answer; then the provisioning
   session is released, the hub reconnects, and the request is sent again later on the software
   updates retry backoff (1 s doubling to 60 s), a check only while its request timeout lasts.

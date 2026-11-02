@@ -708,17 +708,18 @@ extern "C"
  * @brief A default request timeout, in milliseconds, for callers with no policy
  * of their own.
  *
- * One minute. A check not answered within it -- still being retried, or sent
- * and awaiting its response -- is abandoned and told to the application, which
- * can ask again when it chooses instead of the client waiting or retrying
- * silently.
+ * Two minutes, so one attempt can use its whole
+ * AZ_IOT_SU_CHANNEL_RESPONSE_TIMEOUT_MS. A check not answered within it --
+ * still being retried, or sent and awaiting its response -- is abandoned and
+ * told to the application, which can ask again when it chooses instead of the
+ * client waiting or retrying silently.
  *
  * Only a default. The bound is a required per-call argument of
  * az_iot_su_client_request_update() / _request_onboarding_update(), because
  * only the application knows how long it can wait for a given check -- a
  * boot-time onboarding probe and a nightly background poll do not share a
  * deadline. */
-#define AZ_IOT_SU_REQUEST_DEFAULT_TIMEOUT_MS 60000u
+#define AZ_IOT_SU_REQUEST_DEFAULT_TIMEOUT_MS 120000u
 
   /**
    * @brief Exact az_iot_su_limits::device_properties_size needed to cache @p device_properties.
