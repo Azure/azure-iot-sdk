@@ -29,9 +29,10 @@ extern "C"
    * @brief Whether no watcher waits for another device's file-upload notification @p body, so a
    * watcher accepts it rather than releasing it back to the hub-wide endpoint.
    *
-   * True when its `blobName` is outside #AZ_IOT_E2E_FILE_UPLOAD_BLOB_DIRECTORY or tagged
+   * True when its blob (`blobName` decoded, after "<device id>/") does not start with
+   * #AZ_IOT_E2E_FILE_UPLOAD_BLOB_DIRECTORY or starts with it followed by
    * #AZ_IOT_E2E_UNWATCHED_BLOB_TAG, or when it was enqueued more than @p stale_after_s before
-   * @p now_s. @p body must be NUL-terminated.
+   * @p now_s. A blob name that cannot be read decides nothing. @p body must be NUL-terminated.
    */
   bool e2e_notify_has_no_watcher(const char* body, int64_t now_s, int64_t stale_after_s);
 

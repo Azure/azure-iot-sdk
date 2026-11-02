@@ -139,8 +139,49 @@ static void test_no_watcher_for_unwatched_or_stale_blobs(void** state)
       60,
       600));
   assert_true(e2e_notify_has_no_watcher(notification("sample-data/test.txt"), 60, 600));
+  /* The directory counts only at the start of the blob name. */
+  assert_true(e2e_notify_has_no_watcher(
+      notification("archive/" AZ_IOT_E2E_FILE_UPLOAD_BLOB_DIRECTORY "sample.txt"), 60, 600));
   /* Without a blobName or an enqueued time, it may have a watcher. */
   assert_false(e2e_notify_has_no_watcher("{\"deviceId\":\"dev\"}", 60, 600));
+}
+
+/* blobName is decoded as a JSON string; one that cannot be read leaves only its age to decide. */
+static void test_blob_name_is_decoded_or_decides_nothing(void** state)
+{
+  (void)state;
+  /* "/" may be escaped. */
+  assert_false(e2e_notify_has_no_watcher(
+      "{\"blobName\":\"dev\\/e2e-fileupload\\/ok-1.txt\","
+      "\"enqueuedTimeUtc\":\"1970-01-01T00:01:00Z\"}",
+      60,
+      600));
+  assert_true(e2e_notify_has_no_watcher(
+      "{\"blobName\" : \"dev\\/e2e-fileupload\\/unwatched-sas.txt\"}", 60, 600));
+
+  const char* const unreadable[] = {
+    "{\"blobName\":\"dev/sample-data/test.txt", /* truncated */
+    "{\"blobName\":\"dev/sample-data/test.txt\\", /* truncated in an escape */
+    "{\"blobName\":\"dev/sample\\u002ddata/test.txt\"}", /* \u escape */
+    "{\"blobName\":\"sample-data\"}", /* no device id prefix */
+    "{\"blobName\":42}",
+    "{\"blobName\" \"dev/sample-data/test.txt\"}",
+  };
+  for (size_t i = 0; i < sizeof(unreadable) / sizeof(unreadable[0]); i++)
+  {
+    assert_false(e2e_notify_has_no_watcher(unreadable[i], 60, 600));
+  }
+  /* Too long for the decoder: unreadable too. */
+  char body[700];
+  int n = snprintf(body, sizeof(body), "{\"blobName\":\"dev/");
+  memset(body + n, 'x', 600);
+  (void)snprintf(body + n + 600, sizeof(body) - (size_t)n - 600, "\"}");
+  assert_false(e2e_notify_has_no_watcher(body, 60, 600));
+  /* Its age still decides: stale, it has no watcher. */
+  static const char unreadable_but_dated[] = "{\"blobName\":\"dev/sample\\u002ddata/test.txt\","
+                                             "\"enqueuedTimeUtc\":\"1970-01-01T00:01:00Z\"}";
+  assert_false(e2e_notify_has_no_watcher(unreadable_but_dated, 660, 600));
+  assert_true(e2e_notify_has_no_watcher(unreadable_but_dated, 661, 600));
 }
 
 int main(void)
@@ -153,6 +194,7 @@ int main(void)
     cmocka_unit_test(test_missing_field_rejected),
     cmocka_unit_test(test_separator),
     cmocka_unit_test(test_no_watcher_for_unwatched_or_stale_blobs),
+    cmocka_unit_test(test_blob_name_is_decoded_or_decides_nothing),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }
