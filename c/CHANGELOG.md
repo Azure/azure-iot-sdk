@@ -25,7 +25,8 @@
   and `AZ_IOT_MQTTV5_TWIN_TRACKED_MESSAGES` are removed (defining the first is a compile error).
 - Breaking: the mqttv5 direct method client holds its tokens, invocations, declared methods, queued
   notices and result buffers in a workspace the application provides, sized at run time.
-  `az_iot_mqttv5_direct_method_client_init()` takes `az_iot_mqttv5_direct_method_client_options`:
+  `az_iot_mqttv5_direct_method_client_init()` takes `az_iot_mqttv5_direct_method_client_options`
+  (`az_iot_mqttv5_direct_method_client_options_default()`):
   `limits` (`az_iot_mqttv5_direct_method_client_limits`; 0 fields select the defaults):
   `max_concurrent_invocations` (4, at most 255), `max_methods` (8, at most 1024),
   `max_queued_notices` (`max_concurrent_invocations`, at most 1024) and `max_result_body_size` (512,

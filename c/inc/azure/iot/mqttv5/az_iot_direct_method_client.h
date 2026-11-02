@@ -120,6 +120,16 @@ extern "C"
     size_t workspace_size; /**< Bytes in workspace. */
   } az_iot_mqttv5_direct_method_client_options;
 
+  /**
+   * @brief Returns options with the default limits (0 fields) and no workspace.
+   *
+   * Set workspace and workspace_size before az_iot_mqttv5_direct_method_client_init().
+   *
+   * @return The options.
+   */
+  AZ_NODISCARD az_iot_mqttv5_direct_method_client_options
+  az_iot_mqttv5_direct_method_client_options_default(void);
+
 /* The protocol fixes both ids at 16 bytes: the request id is a binary UUID in
  * MQTT v5 Correlation Data, and the ready id is the device's half of the
  * single-use execution token. */

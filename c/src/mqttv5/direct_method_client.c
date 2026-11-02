@@ -887,6 +887,13 @@ static size_t workspace_size_of(const az_iot_mqttv5_direct_method_client_limits*
       l->max_result_body_size);
 }
 
+AZ_NODISCARD az_iot_mqttv5_direct_method_client_options
+az_iot_mqttv5_direct_method_client_options_default(void)
+{
+  az_iot_mqttv5_direct_method_client_options options = { 0 };
+  return options;
+}
+
 AZ_NODISCARD size_t az_iot_mqttv5_direct_method_client_get_workspace_size(
     const az_iot_mqttv5_direct_method_client_limits* limits)
 {
