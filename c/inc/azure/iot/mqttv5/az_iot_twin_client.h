@@ -231,6 +231,15 @@ extern "C"
     size_t workspace_size; /**< Bytes in workspace. */
   } az_iot_mqttv5_twin_client_options;
 
+  /**
+   * @brief Returns options with the default limits (0 fields) and no workspace.
+   *
+   * Set workspace and workspace_size before az_iot_mqttv5_twin_client_init().
+   *
+   * @return The options.
+   */
+  AZ_NODISCARD az_iot_mqttv5_twin_client_options az_iot_mqttv5_twin_client_options_default(void);
+
   /** @brief MQTT v5 twin client. Caller-allocated; treat as opaque. */
   typedef struct az_iot_mqttv5_twin_client
   {

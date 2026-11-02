@@ -6,7 +6,8 @@
 
 - Breaking: the mqttv3 direct method client holds its in-flight invocations in a workspace the
   application provides, sized at run time. `az_iot_mqttv3_direct_method_client_init()` takes
-  `az_iot_mqttv3_direct_method_client_options`: `limits.max_in_flight_invocations` (0: the default
+  `az_iot_mqttv3_direct_method_client_options` (`az_iot_mqttv3_direct_method_client_options_default()`):
+  `limits.max_in_flight_invocations` (0: the default
   `AZ_IOT_MQTTV3_DIRECT_METHOD_CLIENT_DEFAULT_MAX_IN_FLIGHT_INVOCATIONS`, 4; at most 1024),
   `workspace` and `workspace_size` (`az_iot_mqttv3_direct_method_client_get_workspace_size()`,
   `AZ_IOT_MQTTV3_DIRECT_METHOD_CLIENT_WORKSPACE_SIZE()`). `init()` returns `AZ_IOT_ERR_INVALID_ARG`
@@ -15,7 +16,7 @@
 - Breaking: the mqttv3 and mqttv5 twin clients hold their pending requests in a workspace the
   application provides, sized at run time. `az_iot_mqttv3_twin_client_init()` and
   `az_iot_mqttv5_twin_client_init()` take `az_iot_mqttv3_twin_client_options` and
-  `az_iot_mqttv5_twin_client_options`: `limits.max_pending_requests` (`az_iot_twin_client_limits`;
+  `az_iot_mqttv5_twin_client_options` (`_options_default()`): `limits.max_pending_requests` (`az_iot_twin_client_limits`;
   0: the default `AZ_IOT_TWIN_CLIENT_DEFAULT_MAX_PENDING_REQUESTS`, 8; at most 1024), `workspace`
   and `workspace_size` (`az_iot_mqttv3_twin_client_get_workspace_size()`,
   `AZ_IOT_MQTTV3_TWIN_CLIENT_WORKSPACE_SIZE()` and the mqttv5 equivalents). `init()` returns
