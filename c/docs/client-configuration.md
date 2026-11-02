@@ -22,7 +22,7 @@ it adds `c/`.
 | `AZ_IOT_WITH_CRYPTO_MBEDTLS` | `ON` | Build the mbedTLS crypto backend, `az_iot_crypto_mbedtls()`. Built only when mbedTLS 3.6 LTS or 4.1+ is found. |
 | `AZ_IOT_WITH_AZ_MQTT` | `OFF` | Build the az_mqtt MQTT adapter (`az_iot_adapter_az_mqtt.h`) and the bundled `deps/az_mqtt` client. |
 | `AZ_IOT_AZ_MQTT_TLS` | `openssl` | TLS backend of the az_mqtt adapter: `openssl` (3.0+, with key references) or `mbedtls`. Windows uses Schannel. |
-| `AZ_IOT_AZ_MQTT_FOOTPRINT`, `AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX`, `AZ_IOT_AZ_MQTT_CONFIG_FILE` | empty | Compile-time limits of the az_mqtt adapter. Empty: the value of the footprint (`DEFAULT` or `CONSTRAINED`). Each is also a compile-time macro, so builds without CMake can set them. Buffer sizes are run-time values. See [az_mqtt adapter limits](#az_mqtt-adapter-limits). |
+| `AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX`, `AZ_IOT_AZ_MQTT_CONFIG_FILE` | empty | The az_mqtt adapter's one compile-time limit, MQTT 5 user properties on CONNECT, or a header that defines it. Empty: 16. Each is also a compile-time macro, so builds without CMake can set them. Buffer sizes are run-time values. See [az_mqtt adapter limits](#az_mqtt-adapter-limits). |
 | `AZ_IOT_WITH_SU_DELTA` | `OFF` (`ON` in the Linux presets) | Build the reference `microsoft/delta:1` software updates download handler (`az_iot_su_delta.h`), POSIX only. See [delta updates](eng/software-updates.md#82-delta-updates-the-reference-microsoftdelta1-handler). |
 | `AZ_IOT_SU_DELTA_TEST_LIBRARY` | empty | Path of `libadudiffapi.so`: also builds the handler's interop test with it. Configuring fails when the file is missing. |
 | `AZ_IOT_BUILD_SAMPLES` | `ON` | Build the samples. |
@@ -71,30 +71,28 @@ Buffer sizes and requests in flight are run-time values, `az_iot_mqtt_limits` (s
 [Clients in application memory](#clients-in-application-memory)). The removed
 `AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE`, `AZ_IOT_AZ_MQTT_RECEIVE_BUFFER_SIZE`,
 `AZ_IOT_AZ_MQTT_INFLIGHT_MAX` and `AZ_IOT_AZ_MQTT_MESSAGE_STORAGE_SIZE` fail the build when
-defined, and so does setting one of the first three as a CMake option.
+defined, and so does setting one of the first three as a CMake option. The removed footprint
+(`AZ_IOT_AZ_MQTT_FOOTPRINT`, macro or CMake option) fails the build too: set
+`AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX` instead (`DEFAULT` was 16, `CONSTRAINED` 4).
 
-The compile-time defaults are in [az_iot_az_mqtt_config.h](../adapters/az_mqtt/az_iot_az_mqtt_config.h).
-Each value comes from, in order:
+The one compile-time limit is in [az_iot_az_mqtt_config.h](../adapters/az_mqtt/az_iot_az_mqtt_config.h):
 
-1. a definition: a compiler `-D`, the file named by `AZ_IOT_AZ_MQTT_CONFIG_FILE`, or CMake
-   (which passes each option only when set);
-2. the footprint, `AZ_IOT_AZ_MQTT_FOOTPRINT`;
-3. the `DEFAULT` footprint.
+| Macro | Default | Effect |
+| --- | --- | --- |
+| `AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX` | 16 | MQTT 5 user properties on CONNECT; more is refused. PUBLISH user properties are not limited (sent and received in place). |
 
-| Macro | `DEFAULT` | `CONSTRAINED` | Effect |
-| --- | --- | --- | --- |
-| `AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX` | 16 | 4 | MQTT 5 user properties on CONNECT; more is refused. PUBLISH user properties are not limited (sent and received in place). |
-
-The values apply where the adapter sources are compiled; defining them only for the application
-has no effect. Without CMake, compile the adapter with them:
+Override it with a compiler `-D`, in the file named by `AZ_IOT_AZ_MQTT_CONFIG_FILE`, or with CMake
+(which passes each option only when set). The value applies where the adapter sources are compiled;
+defining it only for the application has no effect. Without CMake, compile the adapter with it:
 
 ```sh
-cc -DAZ_IOT_AZ_MQTT_FOOTPRINT=AZ_IOT_AZ_MQTT_FOOTPRINT_CONSTRAINED -DAZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX=6 ...
+cc -DAZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX=6 ...
 cc -DAZ_IOT_AZ_MQTT_CONFIG_FILE='"my_az_mqtt_config.h"' ...   # a header on the include path
 ```
 
-With CMake: `-DAZ_IOT_AZ_MQTT_FOOTPRINT=CONSTRAINED`, `-DAZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX=<n>`,
-or `-DAZ_IOT_AZ_MQTT_CONFIG_FILE=<header>` (an absolute path, or a name on the include path).
+With CMake: `-DAZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX=<n>` or `-DAZ_IOT_AZ_MQTT_CONFIG_FILE=<header>`
+(an absolute path, or a name on the include path). The ESP32 component sets it from Kconfig
+(`CONFIG_AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX`, default 4).
 
 #### Clients in application memory
 
