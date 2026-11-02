@@ -498,6 +498,15 @@
 
 ### Bugs Fixed
 
+- Software updates: a verified manifest with no step, a mini (detached) manifest
+  (`detachedManifestFileId`) or a `"type": "reference"` step is refused before any hook runs: the
+  workflow fails with `AZ_IOT_SU_MANIFEST_ERROR_NO_STEPS`, `_DETACHED_MANIFEST` or
+  `_REFERENCE_STEP`, library mode does not offer it, and `az_iot_su_parse_update_request()`
+  returns `AZ_IOT_ERR_INVALID_ARG` or `AZ_IOT_ERR_NOT_SUPPORTED`. Such a manifest was run as a
+  step with no handler and no files, or with no step at all, and reported SUCCEEDED. The parsed
+  manifest has `detached_manifest_file_id`, and each step its `type` and
+  `detached_manifest_file_id`.
+
 - Paho: a QoS 1 publish whose write fails with a socket error no longer crashes the application.
   Paho 1.3.16 freed the message's topic and payload twice: when the session was cleaned, or in
   `MQTTAsync_destroy()` for the hub session. IoT Hub triggers it by resetting the connection on a
