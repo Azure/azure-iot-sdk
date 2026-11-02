@@ -15,7 +15,7 @@ If you can produce a static or shared library that exposes an `az_iot_mqtt_adapt
 - Implementations may speak both; one adapter builds clients of every version it supports.
 - C99 source-level compatibility for the adapter glue (the underlying client may be C++/Rust/etc., as long as it exposes a C ABI).
 
-The SDK internally determines which MQTT version is required for each Azure service (DPS uses v3.1.1, MQTTv5 uses v5) and asks your adapter's `init()` for a client of that version. Refuse a version you do not support with `AZ_IOT_ERR_NOT_SUPPORTED`.
+The SDK internally determines which MQTT version is required for each Azure service (DPS and the IoT Hub use v3.1.1) and asks your adapter's `init()` for a client of that version. Refuse a version you do not support with `AZ_IOT_ERR_NOT_SUPPORTED`.
 
 ## Files you need to write
 
@@ -48,9 +48,9 @@ The contract is in [inc/azure/iot/az_iot_mqtt_iface.h](../inc/azure/iot/az_iot_m
 | `set_inbound_cb`  | Register the callback the SDK uses to receive `az_iot_mqtt_event` notifications.                |
 | `destroy`         | Tear down the client. The SDK may call this even on a never-connected client.                        |
 
-### MQTT v5 property handling (critical for HUB_MQTT_V5)
+### MQTT v5 property handling
 
-The SDK's feature clients (direct methods, twin, telemetry) use MQTT v5 properties extensively when connected to an MQTTv5 IoT Hub. Your v5 adapter **must**:
+Your v5 adapter **must**:
 
 **On outbound PUBLISH** — propagate these `az_iot_mqtt_message` fields as MQTT v5 properties:
 - `correlation_data` / `correlation_data_len` → Correlation Data property
@@ -431,20 +431,7 @@ if (az_iot_connection_client_init(&client, &opts) != AZ_IOT_OK)
 - **Reusing a single underlying client across DPS → Hub transitions.** Each session asks `init()` for a fresh client in the workspace; do not cache.
 - **Gating server certificate validation on a caller flag.** There is no such flag, and `use_tls` is not one — it only selects TLS. Validate the chain and the hostname every time.
 - **Ignoring a key reference you cannot honour.** Connecting anyway means the session carries none of the credential the caller asked to authenticate with. Fail with `AZ_IOT_ERR_NOT_SUPPORTED` instead.
-- **Wrong version.** An adapter that builds only v3.1.1 clients, used with MQTTv5 (which requires v5), fails at connection time with `AZ_IOT_ERR_NOT_SUPPORTED`.
 - **Allocating or keeping pointers past `destroy()`.** The workspace may be reused for the next session's client as soon as `destroy()` returns; anything the client allocated must be released by then.
-
-## Feature clients and what they need from the adapter
-
-The following feature clients depend on v5 adapter properties being correctly passed through:
-
-| Feature Client | Outbound v5 properties used | Inbound v5 properties expected |
-|----------------|----------------------------|---------------------------------|
-| Direct Method  | `correlation_data`, `response_topic` | `correlation_data`, `response_topic` |
-| Twin           | `correlation_data` | `correlation_data` |
-| Telemetry      | `content_type`, `correlation_data`, `user_properties` | (none — send only) |
-
-If your v5 adapter does not propagate these properties, the feature clients will silently fail to correlate responses or deliver incomplete data to the application.
 
 ## Reference
 

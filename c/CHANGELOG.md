@@ -15,8 +15,7 @@
   limits. Positional initializers of the struct need a third member (NULL). The az_mqtt adapter
   refuses `message_store_size` 0 unless `session_continuity` is `AZ_IOT_SESSION_CONTINUITY_CLEAN`
   or `dps.provision_only` is set, so this fails at init instead of at every connect. Paho, and
-  adapters that leave it NULL, are unaffected. Defining `AZ_IOT_DEFAULT_SESSION_EXPIRY_SECONDS` as
-  0 is a compile error.
+  adapters that leave it NULL, are unaffected.
 - Breaking: the mqttv3 direct method client holds its in-flight invocations in a workspace the
   application provides, sized at run time. `az_iot_mqttv3_direct_method_client_init()` takes
   `az_iot_mqttv3_direct_method_client_options` (`az_iot_mqttv3_direct_method_client_options_default()`):
@@ -26,36 +25,19 @@
   `AZ_IOT_MQTTV3_DIRECT_METHOD_CLIENT_WORKSPACE_SIZE()`). `init()` returns `AZ_IOT_ERR_INVALID_ARG`
   for a limit above its maximum or a NULL workspace, and `AZ_IOT_ERR_NOT_ENOUGH_SPACE` for one too
   small; `deinit()` wipes it. `AZ_IOT_DM_MAX_INFLIGHT` is removed (defining it is a compile error).
-- Breaking: the mqttv3 and mqttv5 twin clients hold their pending requests in a workspace the
-  application provides, sized at run time. `az_iot_mqttv3_twin_client_init()` and
-  `az_iot_mqttv5_twin_client_init()` take `az_iot_mqttv3_twin_client_options` and
-  `az_iot_mqttv5_twin_client_options` (`_options_default()`): `limits.max_pending_requests` (`az_iot_twin_client_limits`;
+- Breaking: the mqttv3 twin client holds its pending requests in a workspace the
+  application provides, sized at run time. `az_iot_mqttv3_twin_client_init()` takes
+  `az_iot_mqttv3_twin_client_options` (`_options_default()`): `limits.max_pending_requests` (`az_iot_twin_client_limits`;
   0: the default `AZ_IOT_TWIN_CLIENT_DEFAULT_MAX_PENDING_REQUESTS`, 8; at most 1024), `workspace`
   and `workspace_size` (`az_iot_mqttv3_twin_client_get_workspace_size()`,
-  `AZ_IOT_MQTTV3_TWIN_CLIENT_WORKSPACE_SIZE()` and the mqttv5 equivalents). `init()` returns
+  `AZ_IOT_MQTTV3_TWIN_CLIENT_WORKSPACE_SIZE()`). `init()` returns
   `AZ_IOT_ERR_INVALID_ARG` for a limit above its maximum or a NULL workspace, and
   `AZ_IOT_ERR_NOT_ENOUGH_SPACE` for one too small; `deinit()` wipes it. `AZ_IOT_TWIN_MAX_PENDING`
-  and `AZ_IOT_MQTTV5_TWIN_TRACKED_MESSAGES` are removed (defining the first is a compile error).
-- Breaking: the mqttv5 direct method client holds its tokens, invocations, declared methods, queued
-  notices and result buffers in a workspace the application provides, sized at run time.
-  `az_iot_mqttv5_direct_method_client_init()` takes `az_iot_mqttv5_direct_method_client_options`
-  (`az_iot_mqttv5_direct_method_client_options_default()`):
-  `limits` (`az_iot_mqttv5_direct_method_client_limits`; 0 fields select the defaults):
-  `max_concurrent_invocations` (4, at most 255), `max_methods` (8, at most 1024),
-  `max_queued_notices` (`max_concurrent_invocations`, at most 1024) and `max_result_body_size` (512,
-  at most 131072); `workspace` and `workspace_size`
-  (`az_iot_mqttv5_direct_method_client_get_workspace_size()`,
-  `AZ_IOT_MQTTV5_DIRECT_METHOD_CLIENT_WORKSPACE_SIZE()`). `init()` returns `AZ_IOT_ERR_INVALID_ARG`
-  for a limit above its maximum or a NULL workspace, and `AZ_IOT_ERR_NOT_ENOUGH_SPACE` for one too
-  small; `deinit()` wipes it. `AZ_IOT_MQTTV5_DM_MAX_CONCURRENT`, `AZ_IOT_MQTTV5_DM_MAX_METHODS`,
-  `AZ_IOT_MQTTV5_DM_NOTICE_QUEUE_MAX` and `AZ_IOT_MQTTV5_DM_RESULT_BODY_MAX` are removed (defining
-  one is a compile error), as is `AZ_IOT_MQTTV5_DM_TRACKED_MESSAGES`;
-  `AZ_IOT_MQTTV5_DM_RESERVED_PUBACKS(max_concurrent_invocations)` now takes the limit.
+  is removed (defining it is a compile error).
 - Breaking: feature-client string and topic sizes that lay out public structs are fixed:
-  `AZ_IOT_DM_METHOD_NAME_MAX` (96), `AZ_IOT_DM_RID_MAX` (32), `AZ_IOT_DM_CORR_DATA_MAX` (64),
-  `AZ_IOT_MQTTV5_DM_TOPIC_MAX` (192) and `AZ_IOT_LOG_FILE_PATH_MAX` (256). Defining any of them
-  before including the headers is a compile error, so these sizes cannot differ between the
-  application and the SDK.
+  `AZ_IOT_DM_METHOD_NAME_MAX` (96), `AZ_IOT_DM_RID_MAX` (32) and `AZ_IOT_LOG_FILE_PATH_MAX` (256).
+  Defining any of them before including the headers is a compile error, so these sizes cannot
+  differ between the application and the SDK.
 - Breaking: the MQTT factory API is removed; the connection client builds every session's MQTT
   client with `az_iot_connection_client_options::mqtt_adapter` in `mqtt_workspace`, sized by
   `mqtt_limits`. All three are required: `init()` returns `AZ_IOT_ERR_INVALID_ARG` when
@@ -97,11 +79,6 @@
   connection and is sent again on the next session when its session ends unanswered; a reported
   patch is sent at once or refused (`AZ_IOT_ERR_BUSY` or `AZ_IOT_ERR_NOT_CONNECTED`) and fails
   with `AZ_IOT_ERR_NOT_CONNECTED` at a session end.
-- mqttv5 twin: requests go through the delivery tracker. A GET waits for a connection and is sent
-  again on the next session when its session ends unanswered; a reported patch is still sent at
-  once or refused (now `AZ_IOT_ERR_BUSY` when the connection cannot send it now) and fails with
-  `AZ_IOT_ERR_NOT_CONNECTED` at a session end. `az_iot_connection_client_do_work()` times requests
-  out, so `az_iot_mqttv5_twin_client_do_work()` is optional. The client uses two feature observers.
 - Breaking: `az_iot_subscription_failed_callback` takes the refused SUBACK's MQTT 5 Reason String
   (`reason_string`, `reason_string_len`, after `protocol_code`). On a session-scoped filter the
   Reason String is reported as `az_iot_connection_state_event.error->message`. Both adapters report
@@ -157,11 +134,7 @@
   when a DPS assignment replaces a different hub or device id, before the assignment callback.
 - `az_iot_connection_client_options::max_unconfirmed_delivery_timeout_ms` bounds how long an SDK
   message whose peer set no Message Expiry is kept for confirmation or resend. 0 selects
-  `AZ_IOT_DEFAULT_MAX_UNCONFIRMED_DELIVERY_TIMEOUT_MS` (300000); it cannot be disabled. It applies
-  to mqttv5 direct methods: a result for an exec with no Message Expiry now has a deadline (receipt
-  time plus this value), and a queued abandon or probe-ack rejection with no budget is dropped
-  after it. Both were kept and resent without limit. Such an exec is abandoned as insufficient time
-  unless the timeout exceeds the method's declared minimum. The Message Expiry sent is unchanged
+  `AZ_IOT_DEFAULT_MAX_UNCONFIRMED_DELIVERY_TIMEOUT_MS` (300000); it cannot be disabled. The Message Expiry sent is unchanged
   (none).
 - Breaking: connection client entry counts are run-time limits
   (`az_iot_connection_client_options::limits`, 0 = default) instead of compile-time macros. The
@@ -198,7 +171,7 @@
   `AZ_IOT_ERR_NOT_SUPPORTED`.
 - Retry policy: `az_iot_retry_policy::jitter_mode`. `AZ_IOT_RETRY_JITTER_ADDITIVE` only lengthens a
   delay (+0..`jitter_pct`); the default `AZ_IOT_RETRY_JITTER_SYMMETRIC` keeps the existing ± jitter.
-- Initial preview of the C SDK for Azure IoT Hub (mqttv3 and mqttv5).
+- Initial preview of the C SDK for Azure IoT Hub (mqttv3).
 - DPS assignment notification: `az_iot_connection_client_set_dps_assignment_callback()` reports the
   hub, device id and profile each time an assignment is adopted, so an application can persist it
   and connect directly after a restart. See
@@ -210,12 +183,6 @@
   derives a registration ID from the endorsement key. Sample
   [authentication/dps_tpm](samples/authentication/dps_tpm/README.md), with a TPM simulated in
   software. See [docs/connecting.md](docs/connecting.md#authentication).
-- mqttv5 custom topics (`az_iot_custom_topic_client.h`): publish to the topics an mqttv5 hub's topic
-  templates allow, at QoS 0 or 1, with content type, user properties and message expiry.
-  `az_iot_mqttv5_custom_topic_client_format_topic()` replaces `{deviceId}` with the device id.
-  Topics the hub would refuse are rejected locally. Publish only. At QoS 1 the completion
-  (`az_iot_publish_result`) carries the hub's PUBACK reason code and Reason String. Sample:
-  [samples/mqttv5/custom_topic_publisher](samples/mqttv5/custom_topic_publisher/README.md).
 - az_mqtt MQTT adapter (`AZ_IOT_WITH_AZ_MQTT=ON`, `az_iot_adapter_az_mqtt.h`): MQTT 3.1.1 and 5
   over the bundled `deps/az_mqtt` client, with no adapter thread (connect and receive in
   `process_loop()`, sends written when called); TLS through OpenSSL 3
@@ -277,21 +244,15 @@
 - Hub certificate renewal: `AZ_IOT_CSR_FAILED` now carries the hub's `info.credentialError`,
   `info.credentialMessage` and `trackingId` as `credential_error`, `credential_message` and
   `tracking_id` on `az_iot_csr_event` (never NULL; empty when absent).
-- PUBACK reason codes: `az_iot_mqtt_puback_result()` maps a PUBACK code to a result. An mqttv5
+- PUBACK reason codes: `az_iot_mqtt_puback_result()` maps a PUBACK code to a result. An MQTT 5
   refusal the broker will repeat (`0x87`, `0x90`, `0x99`), or `0x95` for a publish over the
   server's Maximum Packet Size, is the new `AZ_IOT_ERR_PUBLISH_REFUSED`, quota exceeded (`0x97`) is `AZ_IOT_ERR_BUSY`, other failures stay
   `AZ_IOT_ERR_MQTT`. The az_mqtt adapter uses it; publish callbacks receive it unchanged, and the
   connection client logs the code of a failed PUBACK.
-- Breaking: the connection client no longer reads `AZ_IOT_HUB_MQTT_V5_MOCK_ENDPOINT`,
-  `AZ_IOT_DEVICE_ID` or `AZ_IOT_DPS_CONNECTION_PROFILE_OVERRIDE`. DPS now returns
-  `connectionProfile`; to connect to an mqttv5 hub without DPS, set `opts.iothub_hostname`,
-  `opts.device_id`, `opts.port` and `opts.connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5`. The local mqttv5 hub mock
-  scripts (`tests/manual`) are removed.
-- Breaking: mqttv5 telemetry sends `$.cid` as the native MQTT v5 Correlation Data (UTF-8, at
-  most 65535 bytes, else `AZ_IOT_ERR_INVALID_ARG`) instead of a user property; the hub reads the
-  correlation id only from there. Telemetry `send()` on both generations returns
-  `AZ_IOT_ERR_NOT_CONNECTED` (was `AZ_IOT_ERR_NOT_INITIALIZED`) before a provisioning connection
-  has a device id. The delivery contract is documented in [docs/telemetry.md](docs/telemetry.md).
+- Breaking: the connection client no longer reads `AZ_IOT_DEVICE_ID` or
+  `AZ_IOT_DPS_CONNECTION_PROFILE_OVERRIDE`. DPS now returns `connectionProfile`.
+- Breaking: telemetry `send()` returns `AZ_IOT_ERR_NOT_CONNECTED` (was
+  `AZ_IOT_ERR_NOT_INITIALIZED`) before a provisioning connection has a device id. The delivery contract is documented in [docs/telemetry.md](docs/telemetry.md).
 - Build against installed dependencies: `AZ_IOT_USE_INSTALLED_AZURE_SDK_FOR_C` and
   `AZ_IOT_USE_INSTALLED_PAHO` (both `OFF`) use installed azure-sdk-for-c and Eclipse Paho C instead
   of fetching them. `c/vcpkg.json` has a `builtin-baseline` and an `installed-paho` feature. See
@@ -315,17 +276,16 @@
   `iothub_hostname` and `device_id`.
 - Saved hub with DPS fallback: `iothub_hostname`, `device_id` and `connection_profile` set together with the
   `dps` fields connect to that hub first and use DPS only when a re-provision is due. The saved
-  `connection_profile` is now declared, so a feature client for the other hub generation fails
+  `connection_profile` is now declared, so a feature client for another profile fails
   with `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH` instead of attaching to a session of the wrong
-  generation. See [docs/connecting.md](docs/connecting.md#saved-hub-with-dps-fallback).
-- Breaking: mqttv5 user properties are no longer copied into fixed arrays or capped.
+  profile. See [docs/connecting.md](docs/connecting.md#saved-hub-with-dps-fallback).
+- Breaking: MQTT 5 user properties are no longer copied into fixed arrays or capped.
   `az_iot_mqtt_message.user_properties` is now an `az_iot_mqtt_user_properties` view, read with
   `az_iot_mqtt_user_properties_next()` / `_find()` (`az_iot_mqtt_user_property_view`: UTF-8 with
   lengths, not NUL-terminated); `user_properties_count` is removed, and
   `az_iot_mqtt_user_properties_from_array()` wraps an array. Inbound, every property reaches the
   SDK; the az_mqtt adapter dropped those past `AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX` (4 or 16), which
-  now limits CONNECT user properties only. mqttv5 telemetry sends every application property;
-  `AZ_IOT_MQTTV5_TELEMETRY_MAX_USER_PROPERTIES` (16, extras dropped with a warning) is removed.
+  now limits CONNECT user properties only.
   MQTT adapters, including your own, must implement and read the view: see
   [docs/how_to_byo_mqtt_client.md](docs/how_to_byo_mqtt_client.md). The vendored az_mqtt is
   patched for it (`deps/az_mqtt/VENDORED.md`).
@@ -347,7 +307,7 @@
   builds until they get an IPv4 address.
 - ESP32 IoT Hub sample [unified/esp32](samples/unified/esp32/README.md): DPS with the
   `esp_secure_cert` identity, then telemetry, the `echo` direct method and desired-twin
-  acknowledgements on the assigned hub (mqttv3 or mqttv5). CI builds it for esp32, esp32c3,
+  acknowledgements on the assigned mqttv3 hub. CI builds it for esp32, esp32c3,
   esp32s3 and esp32c6, and boots its QEMU build on esp32, esp32s3 and esp32c3.
 - ESP32 end-to-end test: `ci-c-e2e` runs the ESP32 IoT Hub sample in QEMU on esp32 and esp32c3
   against an IoT Hub (telemetry, the `echo` method, a desired-version acknowledgement), with
@@ -374,11 +334,11 @@
   mbedTLS backend wraps a PSA key that cannot export its public key (TF-PSA-Crypto 1.1, ESP-IDF
   v6.0.3 and later) with the client certificate's public key.
 - Connection client, events drained in one `process_loop()`: a failed acknowledgement (PUBACK,
-  SUBACK, UNSUBACK) becomes connection error detail only when it fails the connection. A presence,
-  gated or DPS SUBACK drained after a session-ending event is ignored; a FAILS_SELF refusal is still
+  SUBACK, UNSUBACK) becomes connection error detail only when it fails the connection. A gated
+  or DPS SUBACK drained after a session-ending event is ignored; a FAILS_SELF refusal is still
   reported. A later end event of an ended session does not replace the server DISCONNECT's code,
   and an identity refusal is acted on whatever came first. While `close()` disconnects, a late
-  SUBACK neither announces CONNECTED nor publishes the birth, and a new filter waits for the next
+  SUBACK does not announce CONNECTED, and a new filter waits for the next
   session.
 - ESP32: the `azure-sdk-for-c` component implements `az_platform_clock_msec()` and
   `az_platform_sleep_msec()` with `esp_timer` and FreeRTOS, so the az_mqtt adapter's idle wait
@@ -388,17 +348,6 @@
   (`az_iot_mqtt_disconnect_result()`) now report `AZ_IOT_ERR_NOT_CONNECTED`.
 - Paho adapter: `process_loop()` returns as soon as an event is queued and dispatches it, instead
   of sleeping its whole timeout and dispatching it on the next call.
-- mqttv5: the connection's `process_loop()` wait ends by the presence SUBACK and birth-ack
-  deadlines, so an ack that arrives in time is not taken for a timeout.
-- mqttv5 twin: with `twin_push.push_desired` or `push_reported` set, a session whose twin-push
-  (expected for the requested sections the birth-ack shows out of sync) does not arrive within the mqttv5 defensive timeout of hub CONNECTED (5 to 15 minutes, longer
-  after consecutive misses, as for the birth-ack) is now ended with a DISCONNECT and reconnected (or
-  faulted with `AZ_IOT_ERR_TIMEOUT` without a reconnection policy). Before, no timeout was armed and
-  a lost push left the device without desired patches until the next reconnect.
-- mqttv5: a malformed birth-ack is ignored instead of completing the handshake with partly
-  decoded twin versions; the birth-ack timeout ends the session.
-- mqttv5: a presence SUBACK or birth-ack timeout now ends the session with a DISCONNECT, as a SAS
-  token renewal does, instead of dropping the connection.
 - Builds with OpenSSL 4.0 and 4.1 without deprecation warnings, which failed the build (Windows
   `/sdl`, Linux `-Werror`): the Paho key custody adapter uses `ASN1_STRING_set1_string()` on
   OpenSSL 4.1+, and the tests no longer use deprecated or now-const X.509 name accessors.
@@ -420,16 +369,6 @@
   command queue (eclipse-paho/paho.mqtt.c#1709), and `MQTTAsync_connect()` against the timeout and
   retry checks on the client's state (#1714). An installed Paho is not patched. See
   [docs/dependencies.md](docs/dependencies.md#races-on-the-command-queue-and-client-state).
-- mqttv5 direct methods: a result is no longer published at or after its deadline -- the exec's
-  receipt time plus its budget, less the safety margin. `az_iot_mqttv5_direct_method_respond()`
-  past it publishes nothing, releases the slot and returns `AZ_IOT_ERR_TIMEOUT`; a held result is
-  dropped. Results were sent while a whole second of budget was left, ignoring the margin.
-- mqttv5: the birth-ack timeout follows the presence schedule instead of a fixed 60 s. Armed after
-  the birth PUBLISH, it waits 5–10 min, then 6–11, 8–13 and 10–15 min for consecutive misses (base
-  plus uniform 0–5 min jitter); on expiry the client disconnects and reconnects. `open()` and a
-  birth-ack in time reset it. `AZ_IOT_PRESENCE_BIRTH_ACK_TIMEOUT_MS` is removed; the presence
-  `dev/#` SUBACK now uses `subscription_ack_timeout_seconds`
-  (`AZ_IOT_DEFAULT_SUBSCRIPTION_ACK_TIMEOUT_SECONDS`, 60 s).
 - az_mqtt adapter: the copies `connect()` makes of credentials (password or SAS token, PEM key and
   certificate, proxy credentials) are zeroed before they are freed, and `destroy()` zeroes the send
   buffer, which holds the CONNECT, before freeing it.
@@ -447,25 +386,7 @@
   `az_iot_mqtt_puback_result()` gives it (`AZ_IOT_ERR_PUBLISH_REFUSED`, `AZ_IOT_ERR_BUSY` for quota)
   and its Reason String; it was `AZ_IOT_ERR_MQTT` with no code. UNSUBACKs are now reported
   (`AZ_IOT_MQTT_EVT_UNSUBSCRIBE_ACK`). The conformance suite requires both of every adapter.
-- mqttv5 direct methods: a probe-ack, result or abandon that cannot be published because the hub is
-  not `CONNECTED` (for example between CONNACK and the birth-ack) is held with its ready token or
-  slot and published on the next `CONNECTED`, instead of being dropped. `respond()` returns
-  `AZ_IOT_OK` for a held result. The client now holds one result buffer per
-  `AZ_IOT_MQTTV5_DM_MAX_CONCURRENT` slot.
-- mqttv5 direct methods: a probe-ack, result or abandon that ends without a PUBACK (for example,
-  the connection closed) is published again on the next `CONNECTED`, until its Message Expiry runs
-  out (for a result, until its result deadline); one the broker refuses
-  (`AZ_IOT_ERR_PUBLISH_REFUSED`) is not. A failed re-publish stays queued and is retried on the
-  next `CONNECTED`, hub PUBACK or method message, never from the PUBACK that reported its own
-  failure. A result keeps its slot until its PUBACK, and a probe-ack or
-  result waits for a free pending-PUBACK slot instead of being sent untracked. Probe rejections and
-  abandons are kept in a queue of `AZ_IOT_MQTTV5_DM_NOTICE_QUEUE_MAX` entries (default
-  `AZ_IOT_MQTTV5_DM_MAX_CONCURRENT`). All are dropped when the hub or device id changes (for
-  example after DPS re-provisioning).
 
-- MQTT over WebSockets to an mqttv5 hub: the hub session now uses the hub's path `/mqtt`
-  (`AZ_IOT_MQTT_HUB_V5_WEBSOCKET_PATH`) when `websocket_path` is NULL. The mqttv5 hub refuses
-  `/$iothub/websocket` (HTTP 412). DPS and the mqttv3 hub keep `/$iothub/websocket`.
 - Builds without Paho (`AZ_IOT_WITH_PAHO=OFF`): an MQTT adapter's header is installed only with
   the adapter. `AZ_IOT_BUILD_E2E` without Paho or az_mqtt, `AZ_IOT_BUILD_PKCS11_TESTS` without
   Paho, and the `AZ_IOT_BUILD_E2E_*` options without `AZ_IOT_BUILD_E2E`, fail the configure step
