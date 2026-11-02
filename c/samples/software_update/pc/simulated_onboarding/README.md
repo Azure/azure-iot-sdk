@@ -250,7 +250,7 @@ apt-get install -y git build-essential cmake ninja-build libssl-dev \
     ca-certificates pkg-config
 update-ca-certificates   # populates /etc/ssl/certs/ca-certificates.crt
 
-git clone https://github.com/Azure/azure-iot-sdk.git
+git clone -b releases/public-preview https://github.com/Azure/azure-iot-sdk.git
 cd azure-iot-sdk/c
 cmake --preset linux-gcc-debug
 cmake --build --preset linux-gcc-debug --target az_iot_sample_software_update_simulated_onboarding
