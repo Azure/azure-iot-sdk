@@ -1533,6 +1533,42 @@ static void a_limit_of_one_holds_one_request(void** state)
   assert_int_equal(az_iot_mqttv3_twin_client_get(&fx->twin, on_get, &second), AZ_IOT_OK);
 }
 
+/* At the largest limit, in a workspace of exactly its size: every request is held, the next is
+ * refused, and answering one makes room again. */
+static void the_largest_limit_holds_every_request(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_mqttv3_twin_client_deinit(&fx->twin);
+  static uint8_t workspace[AZ_IOT_MQTTV3_TWIN_CLIENT_WORKSPACE_SIZE(
+      AZ_IOT_TWIN_CLIENT_MAX_PENDING_REQUESTS_LIMIT)];
+  az_iot_mqttv3_twin_client_options options = az_iot_mqttv3_twin_client_options_default();
+  options.limits.max_pending_requests = AZ_IOT_TWIN_CLIENT_MAX_PENDING_REQUESTS_LIMIT;
+  options.workspace = workspace;
+  options.workspace_size = sizeof(workspace);
+  assert_int_equal(az_iot_mqttv3_twin_client_init(&fx->twin, &fx->conn, &options), AZ_IOT_OK);
+  open_to_connected(fx);
+
+  get_record first = { 0 };
+  assert_int_equal(az_iot_mqttv3_twin_client_get(&fx->twin, on_get, &first), AZ_IOT_OK);
+  /* Never answered: they share one record. */
+  get_record unanswered = { 0 };
+  for (size_t i = 1; i < AZ_IOT_TWIN_CLIENT_MAX_PENDING_REQUESTS_LIMIT; ++i)
+  {
+    assert_int_equal(az_iot_mqttv3_twin_client_get(&fx->twin, on_get, &unanswered), AZ_IOT_OK);
+  }
+  get_record refused = { 0 };
+  assert_int_equal(
+      az_iot_mqttv3_twin_client_get(&fx->twin, on_get, &refused), AZ_IOT_ERR_NOT_SUPPORTED);
+
+  static const uint8_t body[] = "{}";
+  assert_true(az_iot_mock_mqtt_client_inject_message(
+      fx->mock, "$iothub/twin/res/200/?$rid=1", body, sizeof(body) - 1, AZ_IOT_MQTT_QOS_0));
+  assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
+  assert_true(first.fired);
+  assert_int_equal(first.status, AZ_IOT_OK);
+  assert_int_equal(az_iot_mqttv3_twin_client_get(&fx->twin, on_get, &refused), AZ_IOT_OK);
+}
+
 /* deinit wipes the workspace: it held requests and their callbacks. */
 static void deinit_wipes_the_workspace(void** state)
 {
@@ -1594,6 +1630,7 @@ int main(void)
     cmocka_unit_test(the_workspace_size_matches_the_macro),
     cmocka_unit_test_setup_teardown(init_rejects_invalid_limits_and_workspaces, setup, teardown),
     cmocka_unit_test_setup_teardown(a_limit_of_one_holds_one_request, setup, teardown),
+    cmocka_unit_test_setup_teardown(the_largest_limit_holds_every_request, setup, teardown),
     cmocka_unit_test_setup_teardown(deinit_wipes_the_workspace, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_refused_get_is_sent_again_and_a_refused_patch_is_busy, setup, teardown),

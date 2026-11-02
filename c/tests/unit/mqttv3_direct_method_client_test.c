@@ -1603,6 +1603,47 @@ static void a_workspace_of_the_exact_size_at_any_alignment_holds_the_limit(void*
   assert_false(rec.fired);
 }
 
+#define LARGEST_LIMIT AZ_IOT_MQTTV3_DIRECT_METHOD_CLIENT_MAX_IN_FLIGHT_INVOCATIONS_LIMIT
+
+/* At the largest limit, in a workspace of exactly its size: every invocation is held, the next is
+ * dropped, and the last can be answered and its slot reused. */
+static void the_largest_limit_holds_every_invocation(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_mqttv3_direct_method_client_deinit(&fx->dm);
+  static uint8_t workspace[AZ_IOT_MQTTV3_DIRECT_METHOD_CLIENT_WORKSPACE_SIZE(LARGEST_LIMIT)];
+  az_iot_mqttv3_direct_method_client_options options
+      = az_iot_mqttv3_direct_method_client_options_default();
+  options.limits.max_in_flight_invocations = LARGEST_LIMIT;
+  options.workspace = workspace;
+  options.workspace_size = sizeof(workspace);
+  assert_int_equal(
+      az_iot_mqttv3_direct_method_client_init(&fx->dm, &fx->conn, &options), AZ_IOT_OK);
+  open_to_connected(fx);
+
+  invocation_record rec = { 0 };
+  assert_int_equal(
+      az_iot_mqttv3_direct_method_client_set_handler(&fx->dm, on_method, &rec), AZ_IOT_OK);
+  for (int i = 0; i < LARGEST_LIMIT; ++i)
+  {
+    rec.fired = false;
+    inject_invocation(fx, i);
+    assert_true(rec.fired);
+  }
+  const az_iot_direct_method_request last = rec.request;
+  assert_int_equal(last._internal.slot, LARGEST_LIMIT - 1);
+
+  rec.fired = false;
+  inject_invocation(fx, LARGEST_LIMIT);
+  assert_false(rec.fired);
+
+  assert_int_equal(az_iot_mqttv3_direct_method_respond(&fx->dm, last, 200, NULL, 0), AZ_IOT_OK);
+  rec.fired = false;
+  inject_invocation(fx, LARGEST_LIMIT + 1);
+  assert_true(rec.fired);
+  assert_int_equal(rec.request._internal.slot, LARGEST_LIMIT - 1);
+}
+
 /* deinit wipes the workspace: it held method names and request ids. */
 static void deinit_wipes_the_workspace(void** state)
 {
@@ -2084,6 +2125,7 @@ int main(void)
     cmocka_unit_test_setup_teardown(init_rejects_invalid_limits_and_workspaces, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_workspace_of_the_exact_size_at_any_alignment_holds_the_limit, setup, teardown),
+    cmocka_unit_test_setup_teardown(the_largest_limit_holds_every_invocation, setup, teardown),
     cmocka_unit_test_setup_teardown(deinit_wipes_the_workspace, setup, teardown),
     cmocka_unit_test(set_handler_rejects_a_null_client),
     cmocka_unit_test_setup_teardown(a_later_set_handler_replaces_the_earlier_one, setup, teardown),
