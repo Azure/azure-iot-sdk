@@ -4,7 +4,8 @@
 
 /* SPDX-License-Identifier: MIT */
 /* az_mqtt adapter with no message store (az_iot_mqtt_limits.message_store_size 0): a connect whose
- * session outlives the connection is refused; any other connect is accepted. */
+ * session outlives the connection is refused, and so is such a session usage at init; any other
+ * connect is accepted. */
 
 #include <stdarg.h>
 #include <stddef.h>
@@ -64,11 +65,39 @@ static void v5_only_a_session_with_expiry_and_no_clean_start_is_refused(void** s
   assert_int_equal(connect_once(AZ_IOT_MQTT_VERSION_5, false, 60), AZ_IOT_ERR_NOT_SUPPORTED);
 }
 
+/* The init-time check refuses exactly the sessions connect() refuses: those that outlive their
+ * connection, and only without a store. */
+static void the_session_usage_check_matches_connect(void** state)
+{
+  (void)state;
+  const az_iot_mqtt_adapter* adapter = az_iot_az_mqtt_get_adapter();
+  assert_non_null(adapter->validate_limits_for_session_usage);
+  az_iot_mqtt_limits limits = {
+    .send_buffer_size = 1024,
+    .receive_buffer_size = 1024,
+    .max_in_flight_messages = 1,
+    .message_store_size = 0,
+    .connect_strings_size = 256,
+  };
+  az_iot_mqtt_session_usage const clean = { .session_outlives_connection = false };
+  az_iot_mqtt_session_usage const outliving = { .session_outlives_connection = true };
+  assert_int_equal(adapter->validate_limits_for_session_usage(&limits, &clean), AZ_IOT_OK);
+  assert_int_equal(
+      adapter->validate_limits_for_session_usage(&limits, &outliving), AZ_IOT_ERR_INVALID_ARG);
+  limits.message_store_size = 1024 + 18;
+  assert_int_equal(adapter->validate_limits_for_session_usage(&limits, &outliving), AZ_IOT_OK);
+  assert_int_equal(
+      adapter->validate_limits_for_session_usage(NULL, &clean), AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(
+      adapter->validate_limits_for_session_usage(&limits, NULL), AZ_IOT_ERR_INVALID_ARG);
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
     cmocka_unit_test(v3_only_a_clean_session_is_accepted),
     cmocka_unit_test(v5_only_a_session_with_expiry_and_no_clean_start_is_refused),
+    cmocka_unit_test(the_session_usage_check_matches_connect),
   };
   return cmocka_run_group_tests_name("az_mqtt_adapter_no_store", tests, NULL, NULL);
 }

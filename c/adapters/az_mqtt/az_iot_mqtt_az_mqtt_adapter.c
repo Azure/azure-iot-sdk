@@ -9,6 +9,8 @@
 #include "az_iot_mqtt_az_mqtt_internal.h"
 
 #include "azure/iot/adapters/az_iot_adapter_az_mqtt.h"
+#include "azure/iot/az_iot_log.h"
+#include "azure/iot/az_iot_log_components.h"
 
 size_t az_iot_az_mqtt_get_workspace_size(const az_iot_mqtt_limits* limits)
 {
@@ -40,9 +42,33 @@ static az_iot_result az_mqtt_adapter_init(
   }
 }
 
+/**
+ * @brief az_iot_mqtt_adapter::validate_limits_for_session_usage: a session that outlives its
+ * connection needs a message store, as connect() checks.
+ */
+static az_iot_result az_mqtt_adapter_validate_limits_for_session_usage(
+    const az_iot_mqtt_limits* limits,
+    const az_iot_mqtt_session_usage* usage)
+{
+  if (limits == NULL || usage == NULL)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  if (usage->session_outlives_connection && limits->message_store_size == 0)
+  {
+    AZ_IOT_LOG_ERROR(
+        AZ_IOT_LOG_COMPONENT_AZ_MQTT,
+        "message_store_size 0 allows only clean sessions: set it, or set session_continuity "
+        "to AZ_IOT_SESSION_CONTINUITY_CLEAN");
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  return AZ_IOT_OK;
+}
+
 static const az_iot_mqtt_adapter az_mqtt_adapter = {
   .get_workspace_size = az_iot_az_mqtt_get_workspace_size,
   .init = az_mqtt_adapter_init,
+  .validate_limits_for_session_usage = az_mqtt_adapter_validate_limits_for_session_usage,
 };
 
 const az_iot_mqtt_adapter* az_iot_az_mqtt_get_adapter(void) { return &az_mqtt_adapter; }
