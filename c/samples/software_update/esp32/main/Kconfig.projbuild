@@ -21,7 +21,7 @@ menu "Software Updates ESP32 Sample Configuration"
             Seconds between update checks on the regular route, once the
             device has connected to its hub. Checks are skipped while a
             deployment is in flight. A check not answered within half
-            the interval (at most 60 s) is abandoned. Checks and reports
+            the interval (at most 120 s) is abandoned. Checks and reports
             from all devices share the provisioning service's request
             budget, which plans for one check per device every 4 hours.
 

@@ -121,7 +121,7 @@ overlap. After registration, each check or status report made while the hub is c
 These ends count toward no reconnection backoff or `max_hub_connect_attempts_before_reprovision`.
 How long the hub waits is bounded, because the hub session is down while the provisioning session
 runs. An update check waits at most its request timeout (default
-`AZ_IOT_SU_REQUEST_DEFAULT_TIMEOUT_MS`, 60 s); a timeout of 0 is refused with
+`AZ_IOT_SU_REQUEST_DEFAULT_TIMEOUT_MS`, 120 s); a timeout of 0 is refused with
 `AZ_IOT_ERR_INVALID_ARG`, so no check can hold the hub indefinitely. When it ends unanswered or
 unaccepted, or a check of the other kind replaces it before it is accepted, the channel stops asking
 for a session for it. An expired check is given up before the channel's tick, so the hub session is
@@ -1259,7 +1259,7 @@ az_iot_su_reboot_state az_iot_su_client_get_reboot_state(const az_iot_su_client*
  *
  * timeout_ms bounds the whole wait in WALL-CLOCK terms and must be greater
  * than 0 (0 returns AZ_IOT_ERR_INVALID_ARG): the hub session is down while a
- * check runs. AZ_IOT_SU_REQUEST_DEFAULT_TIMEOUT_MS (60000) is the default for a caller
+ * check runs. AZ_IOT_SU_REQUEST_DEFAULT_TIMEOUT_MS (120000) is the default for a caller
  * with no policy of its own. The bound covers the retries before the channel
  * accepts the check AND the wait for its answer after. On expiry the request
  * is dropped (the channel stops waiting, so a late answer is ignored) and

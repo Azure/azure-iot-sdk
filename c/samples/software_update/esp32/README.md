@@ -66,7 +66,7 @@ and asks on the regular route (`az_iot_su_client_request_update()`) from then on
 `idf.py erase-flash` returns it to the onboarding route.
 
 An update is offered only on the route matching its job type. A check not
-answered within half the poll interval (at most 60 s) is abandoned and asked again
+answered within half the poll interval (at most 120 s) is abandoned and asked again
 at the next poll. No check is made while a deployment is in flight.
 
 ## Service requirements

@@ -855,7 +855,7 @@ static az_iot_result fake_channel_report(void* ctx, const az_iot_su_report* repo
 static void the_public_timeout_macros_hold_their_contract(void** state)
 {
   (void)state;
-  assert_int_equal(AZ_IOT_SU_REQUEST_DEFAULT_TIMEOUT_MS, 60000u);
+  assert_int_equal(AZ_IOT_SU_REQUEST_DEFAULT_TIMEOUT_MS, 120000u);
 }
 
 /* The request timeout these tests pass to the request functions. */

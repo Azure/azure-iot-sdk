@@ -38,7 +38,7 @@ on the device changes.
   `SAMPLE_DOWNLOAD_PREFIX` + file id too long) in the low bits of the step's extended result code.
 - The regular route: checks at startup, again after each applied update, and every
   `AZ_IOT_SU_POLL_INTERVAL_S` (default 4 hours).
-  Each check waits at most half the interval (60 s cap). The sample exits if it cannot report
+  Each check waits at most half the interval (120 s cap). The sample exits if it cannot report
   an applied update as installed.
 - Requires Azure Device Provisioning service, an Azure IoT Hub and Azure Device Update.
 - Delta updates, in a Linux build with the reference `microsoft/delta:1` download handler

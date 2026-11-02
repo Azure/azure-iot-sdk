@@ -55,7 +55,7 @@
  *                                   14400, 4 h); 0 checks only at startup
  *                                   and after an update. A check not
  *                                   answered within half the interval (at
- *                                   most 60 s) is abandoned.
+ *                                   most 120 s) is abandoned.
  *   AZ_IOT_SU_LOG_LEVEL=<lvl>      trace|debug|info|warn|error|off (default
  *                                   info). The SDK's "su:" and "dps:"
  *                                   protocol lines are emitted at debug.
