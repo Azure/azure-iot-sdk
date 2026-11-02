@@ -371,6 +371,9 @@ unset(_az_iot_fixed_size_cases)
 az_iot_add_cmocka_test(az_iot_tests_su_protocol unit/su_protocol_test.c)
 az_iot_add_cmocka_test(az_iot_tests_su_manifest unit/su_manifest_test.c)
 target_include_directories(az_iot_tests_su_manifest PRIVATE ${PROJECT_SOURCE_DIR}/src/features/su)
+az_iot_add_cmocka_test(az_iot_tests_su_detached_manifest unit/su_detached_manifest_test.c)
+target_include_directories(az_iot_tests_su_detached_manifest PRIVATE
+    ${PROJECT_SOURCE_DIR}/src/features/su)
 target_link_libraries(az_iot_tests_su_client PRIVATE az_iot_test_support)
 # For az_iot_time_mono_ms: the request deadline is a monotonic instant, so a
 # test that exercises it has to speak the same clock.
