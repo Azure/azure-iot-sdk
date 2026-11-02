@@ -8,7 +8,7 @@
  * @brief Includes every header with a fixed feature-client size, twice.
  *
  * Built as is, it must compile: ordinary and repeated includes are accepted.
- * Built with one of the fixed sizes defined (check_fixed_sizes.cmake), it
+ * Built with one of the fixed sizes defined (check_build_refused.cmake), it
  * must fail on that header's guard.
  */
 #include "azure/iot/az_iot_log_file.h"
