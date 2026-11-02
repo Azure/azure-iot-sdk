@@ -64,6 +64,8 @@ typedef struct
   az_iot_connection_client connection_client;
   /* Only the one matching `profile` is ever initialized. */
   az_iot_mqttv3_direct_method_client mqttv3;
+  /* The mqttv3 client's invocations, for its default limits. */
+  uint8_t mqttv3_workspace[AZ_IOT_MQTTV3_DIRECT_METHOD_CLIENT_DEFAULT_WORKSPACE_SIZE];
   az_iot_mqttv5_direct_method_client mqttv5;
   az_iot_connection_profile profile;
   int methods_initialized;
@@ -275,7 +277,12 @@ static az_iot_result clients_build(
       }
       return result;
     case AZ_IOT_CONNECTION_PROFILE_MQTT_V3:
-      result = az_iot_mqttv3_direct_method_client_init(&s->mqttv3, &s->connection_client);
+      /* Default limits: 0 fields. */
+      result = az_iot_mqttv3_direct_method_client_init(
+          &s->mqttv3,
+          &s->connection_client,
+          &(az_iot_mqttv3_direct_method_client_options){
+              .workspace = s->mqttv3_workspace, .workspace_size = sizeof(s->mqttv3_workspace) });
       if (result != AZ_IOT_OK)
       {
         return result;
@@ -287,7 +294,7 @@ static az_iot_result clients_build(
       {
         /* How long a request stays answerable before the SDK reclaims its slot.
          * Without it, handlers that never answer would eventually consume all
-         * AZ_IOT_DM_MAX_INFLIGHT slots. */
+         * limits.max_in_flight_invocations slots. */
         result = az_iot_mqttv3_direct_method_client_set_response_timeout(
             &s->mqttv3, RESPONSE_TIMEOUT_SECONDS);
       }

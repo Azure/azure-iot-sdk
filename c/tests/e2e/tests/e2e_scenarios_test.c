@@ -98,6 +98,9 @@ typedef struct
 
 static e2e_fixture g_fixture;
 
+/* The direct method client's invocations, at a limit of 1: the smallest works against the hub. */
+static uint8_t g_direct_method_workspace[AZ_IOT_MQTTV3_DIRECT_METHOD_CLIENT_WORKSPACE_SIZE(1)];
+
 /* Advance the device MQTT stack for a single slice. */
 static void device_do_work(e2e_fixture* fx, int ms) { e2e_device_do_work(&fx->dev, ms); }
 
@@ -477,8 +480,13 @@ static void test_direct_method(void** state)
 {
   e2e_fixture* fx = (e2e_fixture*)*state;
 
+  const az_iot_mqttv3_direct_method_client_options options
+      = { .limits = { .max_in_flight_invocations = 1 },
+          .workspace = g_direct_method_workspace,
+          .workspace_size = sizeof(g_direct_method_workspace) };
   assert_int_equal(
-      az_iot_mqttv3_direct_method_client_init(&fx->client.direct_method, &fx->dev.conn), AZ_IOT_OK);
+      az_iot_mqttv3_direct_method_client_init(&fx->client.direct_method, &fx->dev.conn, &options),
+      AZ_IOT_OK);
   fx->attached = E2E_FEATURE_CLIENT_DIRECT_METHOD;
   assert_int_equal(
       az_iot_mqttv3_direct_method_client_set_handler(

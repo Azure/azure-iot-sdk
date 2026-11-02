@@ -47,10 +47,7 @@ extern "C"
  *
  * Finite by construction -- it bounds arrays inside the client -- and meant to
  * be tuned to the device class. Override it at compile time (for example
- * -DAZ_IOT_MQTTV5_DM_MAX_CONCURRENT=2) before this header is included. It
- * defaults to the shared AZ_IOT_DM_MAX_INFLIGHT so a device that tunes only
- * that knob still gets a matching mqttv5 limit, but the two can be set apart:
- * mqttv3 has no probe phase and so nothing to hold in a ready state.
+ * -DAZ_IOT_MQTTV5_DM_MAX_CONCURRENT=2) before this header is included.
  *
  * It sizes az_iot_mqttv5_direct_method_client, so the SDK and the application
  * MUST be compiled with the same value. Defining it for the application alone
@@ -61,7 +58,7 @@ extern "C"
  * its own -- all tokens waiting, or all invocations running -- while their sum
  * is what the limit caps. */
 #ifndef AZ_IOT_MQTTV5_DM_MAX_CONCURRENT
-#define AZ_IOT_MQTTV5_DM_MAX_CONCURRENT AZ_IOT_DM_MAX_INFLIGHT
+#define AZ_IOT_MQTTV5_DM_MAX_CONCURRENT 4
 #endif
 
 /* Probe rejections and abandons the client keeps until their PUBACK, to publish
