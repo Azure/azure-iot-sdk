@@ -161,6 +161,16 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
         }
 
         /// <summary>
+        /// How long to wait for the response to the given attempt (starting at 1) of a desired properties resync GET
+        /// request before sending it again.
+        /// </summary>
+        internal Func<int, TimeSpan> DesiredResyncTimeoutSchedule
+        {
+            get => _twinClient.DesiredResyncTimeoutSchedule;
+            set => _twinClient.DesiredResyncTimeoutSchedule = value;
+        }
+
+        /// <summary>
         /// Get the full twin.
         /// </summary>
         /// <param name="cancellationToken">The cancellation token.</param>
