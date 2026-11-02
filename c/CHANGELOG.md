@@ -449,6 +449,13 @@
 
 ### Bugs Fixed
 
+- Paho: a QoS 1 publish whose write fails with a socket error no longer crashes the application.
+  Paho 1.3.16 freed the message's topic and payload twice: when the session was cleaned, or in
+  `MQTTAsync_destroy()` for the hub session. IoT Hub triggers it by resetting the connection on a
+  publish over its Maximum Packet Size. The bundled Paho is patched with the upstream fix
+  (eclipse-paho/paho.mqtt.c#1592); an installed Paho is not. The adapter also reports such a
+  failure with the publish's packet id, where it reported packet id 0, which matched no publish.
+  See [docs/dependencies.md](docs/dependencies.md#publish-freed-twice-after-a-failed-write).
 - ESP32 samples (`software_update/esp32`, `unified/esp32`) build with every ESP-IDF 6 release:
   they pinned `espressif/ethernet_init` to `==1.2.0`, while ESP-IDF v6.0.2 and later need
   `^1.3.0`. The version now comes from ESP-IDF's `protocol_examples_common`. CI builds the ESP32

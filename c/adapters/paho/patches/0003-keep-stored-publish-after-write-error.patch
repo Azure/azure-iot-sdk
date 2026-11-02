@@ -1,0 +1,30 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Ian Craggs <icraggs@gmail.com>
+Date: Sun, 1 Nov 2026 17:13:31 +0000
+Subject: [PATCH] Fix corrupted resend and double free of PUBLISH after a
+ socket write error - issues #1310,#1592
+
+Signed-off-by: Ian Craggs <icraggs@gmail.com>
+---
+ src/MQTTAsyncUtils.c | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/src/MQTTAsyncUtils.c b/src/MQTTAsyncUtils.c
+index c64c96b..e275f88 100644
+--- a/src/MQTTAsyncUtils.c
++++ b/src/MQTTAsyncUtils.c
+@@ -1515,6 +1515,14 @@ static int MQTTAsync_processCommand(void)
+ 				command->client->pending_write = &command->command;
+ 			}
+ 		}
++		else if (rc == SOCKET_ERROR)
++		{
++			/* The message has been stored for retry, which owns the topic and payload now. The
++			 * command is freed below on a socket error, so it mustn't free them too: the stored
++			 * message would be corrupted when resent, and they would be freed twice (#1310, #1592) */
++			command->command.details.pub.payload = NULL;
++			command->command.details.pub.destinationName = NULL;
++		}
+ 		free(p); /* should this be done if the write isn't complete? */
+ 	}
+ 	else if (command->command.type == DISCONNECT)

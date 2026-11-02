@@ -1163,6 +1163,20 @@ if(AZ_IOT_WITH_PAHO)
         add_test(NAME az_iot_paho_teardown_race COMMAND az_iot_paho_teardown_race)
         set_tests_properties(az_iot_paho_teardown_race PROPERTIES LABELS race)
     endif()
+
+    # A QoS 1 publish whose write fails: its packet id is reported and Paho frees what it stored
+    # for retry once. The test is its own server, so it needs no broker. Built only with the
+    # patched bundled Paho (patches/0003): any other Paho frees it twice. POSIX: it shuts down the
+    # adapter's socket to fail the write.
+    get_property(_az_iot_paho_patched GLOBAL PROPERTY AZ_IOT_PAHO_PATCHED)
+    if(UNIX AND _az_iot_paho_patched)
+        az_iot_add_cmocka_test(az_iot_paho_publish_write_error
+            integration/paho_publish_write_error_test.c RACE)
+        target_link_libraries(az_iot_paho_publish_write_error PRIVATE
+            az_iot_adapter_paho az_iot_test_mqtt_server az_iot_test_support)
+        target_compile_definitions(az_iot_paho_publish_write_error PRIVATE
+            _POSIX_C_SOURCE=200809L _DEFAULT_SOURCE)
+    endif()
 endif()
 
 # ---------------------------------------------------------------------------

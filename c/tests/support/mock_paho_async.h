@@ -136,6 +136,10 @@ void mock_paho_set_properties_add_fail_at(int call);
 /** @brief MQTTAsync_sendMessage() calls since mock_paho_reset(). */
 int mock_paho_send_calls(void);
 
+/** @brief Result of MQTTAsync_sendMessage(); a refused call (not MQTTASYNC_SUCCESS) keeps nothing.
+ *         An accepted one gets token N, the N-th call since mock_paho_reset(). */
+void mock_paho_set_send_rc(int rc);
+
 /** @brief The response options of the last MQTTAsync_sendMessage() call: its completion callbacks
  *         and context. */
 const MQTTAsync_responseOptions* mock_paho_last_send_response(void);
