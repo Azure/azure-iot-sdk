@@ -996,6 +996,23 @@ static void resolve_connect_transport(
   copts->port = port ? port : default_port_for_transport(c->opts.transport);
 }
 
+/**
+ * @brief Whether the hub session of a client with @p opts connects with clean_start false.
+ *
+ * resolve_session_options() and init() both use it, so init() validates the same answer every
+ * connect gets. A hub session that is not clean outlives its connection: MQTT 3.1.1 keeps it, and
+ * MQTT 5 gives it a Session Expiry Interval above 0 (guaranteed below). DPS sessions are always
+ * clean.
+ */
+static bool does_hub_session_resume(const az_iot_connection_client_options* opts)
+{
+  return opts->session_continuity != AZ_IOT_SESSION_CONTINUITY_CLEAN;
+}
+
+#if AZ_IOT_DEFAULT_SESSION_EXPIRY_SECONDS == 0
+#error "AZ_IOT_DEFAULT_SESSION_EXPIRY_SECONDS must be above 0: a resumed MQTT 5 session needs it"
+#endif
+
 /* Apply the session semantics for one role: Clean Start / Clean Session, the
  * MQTT 5 Session Expiry Interval, the Last Will, and the reason code the
  * session will be closed with.
@@ -1059,8 +1076,7 @@ static void resolve_session_options(
   }
   else
   {
-    copts->clean_start
-        = (c->opts.session_continuity == AZ_IOT_SESSION_CONTINUITY_CLEAN) ? true : false;
+    copts->clean_start = !does_hub_session_resume(&c->opts);
   }
   copts->session_expiry_seconds = 0;
   copts->disconnect_reason_code = (uint8_t)AZ_IOT_MQTT_DISCONNECT_NORMAL;
@@ -7248,6 +7264,21 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_init(
     AZ_IOT_LOG_ERROR(
         AZ_IOT_LOG_COMPONENT_CONNECTION, "init: mqtt_limits are not valid for mqtt_adapter");
     return AZ_IOT_ERR_INVALID_ARG;
+  }
+  if (mqtt_adapter->validate_limits_for_session_usage != NULL)
+  {
+    const az_iot_mqtt_session_usage session_usage
+        = { .session_outlives_connection = does_hub_session_resume(opts) };
+    if (mqtt_adapter->validate_limits_for_session_usage(&opts->mqtt_limits, &session_usage)
+        != AZ_IOT_OK)
+    {
+      AZ_IOT_LOG_ERRORF(
+          AZ_IOT_LOG_COMPONENT_CONNECTION,
+          "init: mqtt_limits do not suit mqtt_adapter for a hub session that %s its connection "
+          "(session_continuity)",
+          session_usage.session_outlives_connection ? "outlives" : "ends with");
+      return AZ_IOT_ERR_INVALID_ARG;
+    }
   }
   wr = check_init_workspace(
       "mqtt_workspace", opts->mqtt_workspace, opts->mqtt_workspace_size, mqtt_workspace_size);
