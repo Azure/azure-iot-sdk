@@ -68,9 +68,22 @@ extern "C"
     az_span installed_criteria;
   } az_iot_su_client_update_manifest_instructions_step_handler_properties;
 
+  /** @brief Type of a manifest step (`type`). */
+  typedef enum az_iot_su_client_update_manifest_step_type
+  {
+    /** `inline`, or absent: the step names a handler and its files. */
+    AZ_IOT_SU_STEP_TYPE_INLINE = 0,
+    /** `reference`: the step names a child update manifest in `detached_manifest_file_id`. */
+    AZ_IOT_SU_STEP_TYPE_REFERENCE = 1,
+  } az_iot_su_client_update_manifest_step_type;
+
   /** @brief A step of the manifest instructions. */
   typedef struct az_iot_su_client_update_manifest_instructions_step
   {
+    /** Step type; any `type` other than `reference` is inline. */
+    az_iot_su_client_update_manifest_step_type type;
+    /** Of a reference step: id of the file holding its child update manifest; else empty. */
+    az_span detached_manifest_file_id;
     /** Update handler of the step, e.g. `microsoft/swupdate:1`. */
     az_span handler;
     /** Ids of the files the step uses; see az_iot_su_client_update_manifest.files. Raw JSON
@@ -135,6 +148,9 @@ extern "C"
     az_span manifest_version;
     /** Identity of the update. */
     az_iot_su_client_update_manifest_update_id update_id;
+    /** Of a mini (detached) manifest: id of the `files` entry holding the full manifest; else
+     * empty. */
+    az_span detached_manifest_file_id;
     /** Steps to run. */
     az_iot_su_client_update_manifest_instructions instructions;
     /** Files the steps use. */
@@ -244,7 +260,7 @@ extern "C"
 #define AZ_IOT_SU_EXTENDED_RESULT(facility, code) \
   (int32_t)((((uint32_t)(facility) & 0xFu) << 28) | ((uint32_t)(code) & 0x0FFFFFFFu))
 
-/* Sub-codes of AZ_IOT_SU_FACILITY_MANIFEST: why manifest verification failed. */
+/* Sub-codes of AZ_IOT_SU_FACILITY_MANIFEST: why manifest verification or validation failed. */
 #define AZ_IOT_SU_MANIFEST_ERROR_CRYPTO 0x1u /* crypto backend fault, not a rejection */
 #define AZ_IOT_SU_MANIFEST_ERROR_MALFORMED 0x2u /* signature, sjwk or key missing or invalid */
 #define AZ_IOT_SU_MANIFEST_ERROR_TOO_LARGE 0x3u /* a part exceeds its scratch or field limit */
@@ -253,6 +269,10 @@ extern "C"
 #define AZ_IOT_SU_MANIFEST_ERROR_ROOT_SIGNATURE 0x6u /* sjwk does not verify with the root key */
 #define AZ_IOT_SU_MANIFEST_ERROR_SIGNATURE 0x7u /* manifest does not verify with the sjwk key */
 #define AZ_IOT_SU_MANIFEST_ERROR_HASH 0x8u /* manifest SHA-256 differs from the signed one */
+/* A mini manifest (`detachedManifestFileId`), not supported */
+#define AZ_IOT_SU_MANIFEST_ERROR_DETACHED_MANIFEST 0x9u
+#define AZ_IOT_SU_MANIFEST_ERROR_NO_STEPS 0xAu /* the manifest has no step */
+#define AZ_IOT_SU_MANIFEST_ERROR_REFERENCE_STEP 0xBu /* a `reference` step, not supported */
 
 /* Sub-codes of AZ_IOT_SU_FACILITY_DELTA: why a file naming a download handler was downloaded in
  * full. The first in a step is kept. */
@@ -1043,7 +1063,8 @@ extern "C"
      * else the overall one. `reason` is then AZ_IOT_ERR_AUTH when the manifest
      * or a file failed verification (a file hash that cannot be read
      * included), AZ_IOT_ERR_PROTOCOL for a manifest that cannot be decoded or
-     * parsed, AZ_IOT_ERR_INTERNAL otherwise (AZ_IOT_SU_MANIFEST_ERROR_CRYPTO
+     * parsed or has no steps, AZ_IOT_ERR_NOT_SUPPORTED for a mini manifest or a
+     * `reference` step, AZ_IOT_ERR_INTERNAL otherwise (AZ_IOT_SU_MANIFEST_ERROR_CRYPTO
      * included). 0 for other events. */
     int32_t extended_result_code;
     /** REPORT_ACCEPTED: the report carried a terminal outcome. */
@@ -2008,8 +2029,8 @@ extern "C"
    * @brief Verify and parse an `updateMetadata` object without a client.
    *
    * Verifies the manifest with az_iot_su_verify_manifest(), then parses it and
-   * checks that every file of every step is described by the manifest `files`
-   * and has a `fileUrls` entry.
+   * checks that it has steps, all inline, that every file of every step is described by the
+   * manifest `files` and has a `fileUrls` entry, and that it is not a mini manifest.
    * Fail-closed: non-NULL outputs are zeroed on every error.
    *
    * @param request_json   `{ workflowId, updateManifest, updateManifestSignature,
@@ -2027,12 +2048,13 @@ extern "C"
    * @param out_request    Workflow id and file URLs.
    * @param out_manifest   The verified manifest.
    * @return AZ_IOT_OK; AZ_IOT_ERR_NOT_FOUND without `workflowId`;
-   * AZ_IOT_ERR_INVALID_ARG on bad arguments, malformed input, or a step file missing from the
-   * manifest `files` or from `fileUrls`;
+   * AZ_IOT_ERR_INVALID_ARG on bad arguments, malformed input, a manifest without steps, or a step
+   * file missing from the manifest `files` or from `fileUrls`;
    * AZ_IOT_ERR_NOT_ENOUGH_SPACE when the update exceeds AZ_IOT_SU_MAX_STEP_COUNT,
    * AZ_IOT_SU_MAX_FILE_COUNT, AZ_IOT_SU_MAX_FILE_COUNT_PER_STEP, 2 hashes per file or the
    * file URL capacity of @p storage;
-   * AZ_IOT_ERR_NOT_SUPPORTED when @p crypto has no verify_rs256;
+   * AZ_IOT_ERR_NOT_SUPPORTED when @p crypto has no verify_rs256, or for a mini manifest
+   * (`detachedManifestFileId`) or a `reference` step;
    * AZ_IOT_ERR_AUTH when verification fails; AZ_IOT_ERR_INTERNAL when the
    * crypto backend fails. az_iot_su_verify_manifest() reports why.
    */

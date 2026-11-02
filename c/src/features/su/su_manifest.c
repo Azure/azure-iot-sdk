@@ -177,7 +177,19 @@ static void parse_step(
   }
   while (!*is_error && json_next_property(jr, &name, is_error))
   {
-    if (az_json_token_is_text_equal(&name, AZ_SPAN_FROM_STR("handler")))
+    if (az_json_token_is_text_equal(&name, AZ_SPAN_FROM_STR("type")))
+    {
+      if (json_token_is_kind(jr, AZ_JSON_TOKEN_STRING, is_error)
+          && az_json_token_is_text_equal(&jr->token, AZ_SPAN_FROM_STR("reference")))
+      {
+        step->type = AZ_IOT_SU_STEP_TYPE_REFERENCE;
+      }
+    }
+    else if (az_json_token_is_text_equal(&name, AZ_SPAN_FROM_STR("detachedManifestFileId")))
+    {
+      json_read_string(jr, &step->detached_manifest_file_id, is_error);
+    }
+    else if (az_json_token_is_text_equal(&name, AZ_SPAN_FROM_STR("handler")))
     {
       json_read_string(jr, &step->handler, is_error);
     }
@@ -637,6 +649,10 @@ az_iot_result az_iot_su__parse_update_manifest(
     {
       parse_update_id(&jr, &out_manifest->update_id, &is_error);
     }
+    else if (az_json_token_is_text_equal(&name, AZ_SPAN_FROM_STR("detachedManifestFileId")))
+    {
+      json_read_string(&jr, &out_manifest->detached_manifest_file_id, &is_error);
+    }
     else if (az_json_token_is_text_equal(&name, AZ_SPAN_FROM_STR("instructions")))
     {
       parse_instructions(&jr, &out_manifest->instructions, &counts, &is_error);
@@ -735,6 +751,42 @@ az_iot_result az_iot_su__check_step_file_references(
             (const char*)az_span_ptr(id));
         return AZ_IOT_ERR_INVALID_ARG;
       }
+    }
+  }
+  return AZ_IOT_OK;
+}
+
+az_iot_result az_iot_su__check_manifest_supported(
+    const az_iot_su_client_update_manifest* manifest,
+    uint32_t* out_manifest_error)
+{
+  *out_manifest_error = 0;
+  if (az_span_size(manifest->detached_manifest_file_id) > 0)
+  {
+    AZ_IOT_LOG_ERRORF(
+        AZ_IOT_LOG_COMPONENT_SU,
+        "manifest is a mini manifest (detachedManifestFileId '%.*s'), which is not supported",
+        (int)az_span_size(manifest->detached_manifest_file_id),
+        (const char*)az_span_ptr(manifest->detached_manifest_file_id));
+    *out_manifest_error = AZ_IOT_SU_MANIFEST_ERROR_DETACHED_MANIFEST;
+    return AZ_IOT_ERR_NOT_SUPPORTED;
+  }
+  if (manifest->instructions.steps_count == 0)
+  {
+    AZ_IOT_LOG_ERROR(AZ_IOT_LOG_COMPONENT_SU, "manifest has no steps");
+    *out_manifest_error = AZ_IOT_SU_MANIFEST_ERROR_NO_STEPS;
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  for (uint32_t i = 0; i < manifest->instructions.steps_count; ++i)
+  {
+    if (manifest->instructions.steps[i].type == AZ_IOT_SU_STEP_TYPE_REFERENCE)
+    {
+      AZ_IOT_LOG_ERRORF(
+          AZ_IOT_LOG_COMPONENT_SU,
+          "step %u is a reference step, which is not supported",
+          (unsigned)i);
+      *out_manifest_error = AZ_IOT_SU_MANIFEST_ERROR_REFERENCE_STEP;
+      return AZ_IOT_ERR_NOT_SUPPORTED;
     }
   }
   return AZ_IOT_OK;
