@@ -347,18 +347,18 @@ static void report_notification_stats(fixture* fx)
   int delivered = 0;
   int captured = 0;
   int released = 0;
-  int stale = 0;
+  int unwatched = 0;
   int unparsed = 0;
   az_iot_e2e_service_file_notification_stats(
-      fx->svc, &delivered, &captured, &released, &stale, &unparsed);
+      fx->svc, &delivered, &captured, &released, &unwatched, &unparsed);
   fprintf(
       stderr,
       "file-upload notifications: delivered=%d captured=%d "
-      "released(other device)=%d accepted(stale)=%d undecodable=%d\n",
+      "released(other device)=%d accepted(no watcher)=%d undecodable=%d\n",
       delivered,
       captured,
       released,
-      stale,
+      unwatched,
       unparsed);
 }
 
@@ -366,7 +366,8 @@ static void report_notification_stats(fixture* fx)
  * e2e runs sharing one storage account. */
 static void make_blob_name(char* out, size_t cap, const char* tag)
 {
-  (void)snprintf(out, cap, "e2e-fileupload/%s-%lld.txt", tag, (long long)time(NULL));
+  (void)snprintf(
+      out, cap, AZ_IOT_E2E_FILE_UPLOAD_BLOB_DIRECTORY "%s-%lld.txt", tag, (long long)time(NULL));
 }
 
 /* Request a SAS URI and assert the hub granted one. */
@@ -767,7 +768,8 @@ static void test_sas_key_device_uploads_a_file(void** state)
   assert_int_equal(az_iot_mqttv3_file_upload_client_init(&fu, &conn, &http), AZ_IOT_OK);
 
   char blob_name[96];
-  make_blob_name(blob_name, sizeof(blob_name), "sas");
+  /* Reported successful and not watched: tagged so watchers accept its notification. */
+  make_blob_name(blob_name, sizeof(blob_name), AZ_IOT_E2E_UNWATCHED_BLOB_TAG "sas");
   upload_ctx u;
   memset(&u, 0, sizeof(u));
   assert_int_equal(

@@ -5,6 +5,8 @@
 /* SPDX-License-Identifier: MIT */
 #include "e2e_notify_time.h"
 
+#include "az_iot_e2e_service.h"
+
 #include <string.h>
 
 /**
@@ -131,4 +133,20 @@ bool e2e_notify_enqueued_time(const char* body, int64_t* out_epoch_s)
 
   *out_epoch_s = days_from_civil(year, month, day) * 86400 + hour * 3600 + minute * 60 + second;
   return true;
+}
+
+bool e2e_notify_has_no_watcher(const char* body, int64_t now_s, int64_t stale_after_s)
+{
+  /* blobName is "<device id>/<blob name>". */
+  static const char watched[] = "/" AZ_IOT_E2E_FILE_UPLOAD_BLOB_DIRECTORY;
+  static const char unwatched[]
+      = "/" AZ_IOT_E2E_FILE_UPLOAD_BLOB_DIRECTORY AZ_IOT_E2E_UNWATCHED_BLOB_TAG;
+  const char* blob_name = strstr(body, "\"blobName\"");
+  if (blob_name != NULL
+      && (strstr(blob_name, watched) == NULL || strstr(blob_name, unwatched) != NULL))
+  {
+    return true;
+  }
+  int64_t enqueued_s;
+  return e2e_notify_enqueued_time(body, &enqueued_s) && now_s - enqueued_s > stale_after_s;
 }

@@ -3,8 +3,8 @@
 // information.
 
 /* SPDX-License-Identifier: MIT */
-/* Parsing of a file-upload notification's enqueuedTimeUtc. The watcher accepts
- * (deletes) other devices' notifications it parses as stale, so anything
+/* Parsing of a file-upload notification's enqueuedTimeUtc, and which notifications have no
+ * watcher. The watcher accepts (deletes) other devices' notifications without one, so anything
  * malformed must be rejected. No network or Azure resources are used. */
 #include <stdarg.h>
 #include <stddef.h>
@@ -17,6 +17,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "az_iot_e2e_service.h"
 #include "e2e_notify_time.h"
 
 /** @brief Parses `{"enqueuedTimeUtc":"<value>"}`. */
@@ -110,12 +111,48 @@ static void test_separator(void** state)
   assert_false(e2e_notify_enqueued_time("{\"enqueuedTimeUtc\": :\"1970-01-01T00:00:01Z\"}", &s));
 }
 
+/** @brief A notification body for blob @p blob_name of device "dev", enqueued at the epoch + 60 s.
+ */
+static const char* notification(const char* blob_name)
+{
+  static char body[256];
+  (void)snprintf(
+      body,
+      sizeof(body),
+      "{\"deviceId\":\"dev\",\"blobName\":\"dev/%s\","
+      "\"enqueuedTimeUtc\":\"1970-01-01T00:01:00Z\"}",
+      blob_name);
+  return body;
+}
+
+/* Only a recent notification for a watched blob may have a watcher: it is released. */
+static void test_no_watcher_for_unwatched_or_stale_blobs(void** state)
+{
+  (void)state;
+  const char* watched = notification(AZ_IOT_E2E_FILE_UPLOAD_BLOB_DIRECTORY "ok-1-5.txt");
+  assert_false(e2e_notify_has_no_watcher(watched, 60, 600));
+  assert_false(e2e_notify_has_no_watcher(watched, 660, 600));
+  assert_true(e2e_notify_has_no_watcher(watched, 661, 600));
+
+  assert_true(e2e_notify_has_no_watcher(
+      notification(AZ_IOT_E2E_FILE_UPLOAD_BLOB_DIRECTORY AZ_IOT_E2E_UNWATCHED_BLOB_TAG "sas-5.txt"),
+      60,
+      600));
+  assert_true(e2e_notify_has_no_watcher(notification("sample-data/test.txt"), 60, 600));
+  /* Without a blobName or an enqueued time, it may have a watcher. */
+  assert_false(e2e_notify_has_no_watcher("{\"deviceId\":\"dev\"}", 60, 600));
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
-    cmocka_unit_test(test_valid_timestamps),       cmocka_unit_test(test_out_of_range_rejected),
-    cmocka_unit_test(test_bad_suffix_rejected),    cmocka_unit_test(test_truncated_rejected),
-    cmocka_unit_test(test_missing_field_rejected), cmocka_unit_test(test_separator),
+    cmocka_unit_test(test_valid_timestamps),
+    cmocka_unit_test(test_out_of_range_rejected),
+    cmocka_unit_test(test_bad_suffix_rejected),
+    cmocka_unit_test(test_truncated_rejected),
+    cmocka_unit_test(test_missing_field_rejected),
+    cmocka_unit_test(test_separator),
+    cmocka_unit_test(test_no_watcher_for_unwatched_or_stale_blobs),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }

@@ -138,8 +138,8 @@ if(NOT WIN32)
         _DEFAULT_SOURCE _POSIX_C_SOURCE=200112L)
 endif()
 
-# Notification enqueuedTimeUtc parsing (the watcher deletes what it parses as
-# stale). Pure parsing; named `e2e` so the e2e job's filter runs it.
+# Notification enqueuedTimeUtc parsing, and which notifications have no watcher (the watcher
+# deletes those). Pure parsing; named `e2e` so the e2e job's filter runs it.
 az_iot_add_cmocka_test(az_iot_tests_e2e_notify_time
     tests/e2e_notify_time_test.c service/e2e_notify_time.c)
 target_include_directories(az_iot_tests_e2e_notify_time PRIVATE service)
