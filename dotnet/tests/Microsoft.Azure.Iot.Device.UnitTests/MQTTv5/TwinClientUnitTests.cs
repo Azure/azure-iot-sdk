@@ -609,7 +609,9 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             twinClient.GetTwinTimeoutSchedule = _ => TimeSpan.FromMilliseconds(50);
             using CancellationTokenSource caller = new();
 
+            // The request is sent off the calling thread, so wait for it before giving up on the response.
             Task<DeviceTwin> getTask = twinClient.GetTwinAsync(cancellationToken: caller.Token);
+            await connection.WaitForPublishedMessagesAsync(1);
             caller.Cancel();
             await Assert.ThrowsAnyAsync<OperationCanceledException>(() => getTask);
 
