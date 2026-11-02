@@ -56,8 +56,8 @@ extern "C"
   } az_iot_dm_proto_rejected_reason;
 
   /* directmethods.proto AbandonReason. The .proto spells value 2
-   * INSUFFICIENT_TIME_DUP behind a TODO because the name collides with
-   * RejectedReason's; the wire value is what matters and it is 2 either way. */
+   * ABANDON_REASON_INSUFFICIENT_TIME because a bare INSUFFICIENT_TIME would
+   * collide with RejectedReason's; the wire value is 2 either way. */
   typedef enum
   {
     AZ_IOT_DM_PROTO_ABANDON_UNSPECIFIED = 0,
