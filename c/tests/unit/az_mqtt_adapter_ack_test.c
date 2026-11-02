@@ -12,6 +12,7 @@
 #include <setjmp.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "az_iot_mqtt_az_mqtt_v5.c"
@@ -41,10 +42,20 @@ static void record_ack(const az_iot_mqtt_event* evt, void* ctx)
 /** @brief Reports a drop as az_mqtt does: @p status with @p reason_code; returns the event. */
 static ack_recorder drop(az_result status, az_mqtt5_reason_code reason_code)
 {
-  az_iot_mqtt_factory* f = az_iot_az_mqtt_factory_create_v5();
-  assert_non_null(f);
-  az_iot_mqtt_client* c = f->create(f->factory_ctx);
-  assert_non_null(c);
+  az_iot_mqtt_limits const limits = {
+    .send_buffer_size = 1024,
+    .receive_buffer_size = 1024,
+    .max_in_flight_messages = 8,
+    .message_store_size = 0,
+    .connect_strings_size = 256,
+  };
+  size_t const size = az_iot_az_mqtt_get_workspace_size(&limits);
+  uint8_t* workspace = (uint8_t*)malloc(size);
+  assert_non_null(workspace);
+  az_iot_mqtt_client* c = NULL;
+  assert_int_equal(
+      az_iot_az_mqtt_get_adapter()->init(AZ_IOT_MQTT_VERSION_5, &limits, workspace, size, &c),
+      AZ_IOT_OK);
   ack_recorder r = { 0 };
   c->iface->set_inbound_cb(c, record_ack, &r);
   az_iot_mqtt_connect_options o = { 0 };
@@ -66,7 +77,7 @@ static ack_recorder drop(az_result status, az_mqtt5_reason_code reason_code)
   c->iface->set_inbound_cb(c, NULL, NULL);
   (void)c->iface->disconnect(c);
   c->iface->destroy(c);
-  az_iot_az_mqtt_factory_destroy(f);
+  free(workspace);
   return r;
 }
 

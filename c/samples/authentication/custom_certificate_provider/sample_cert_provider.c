@@ -201,23 +201,11 @@ static az_iot_result provider_store(
       break;
     }
   }
-  if (!sample_file_flush_to_storage(f))
+  if (!sample_file_complete_atomic_write(f, tmp, p->operational_cert_path, rc == AZ_IOT_OK)
+      && rc == AZ_IOT_OK)
   {
     rc = AZ_IOT_ERR_INTERNAL;
   }
-  if (fclose(f) != 0)
-  {
-    rc = AZ_IOT_ERR_INTERNAL;
-  }
-  if (rc == AZ_IOT_OK && !sample_file_replace(tmp, p->operational_cert_path))
-  {
-    rc = AZ_IOT_ERR_INTERNAL;
-  }
-  if (rc != AZ_IOT_OK)
-  {
-    (void)remove(tmp);
-  }
-  free(tmp);
 
   if (rc == AZ_IOT_OK)
   {

@@ -107,7 +107,7 @@ sample first prints `DPS assigned AZ_IOT_CONNECTION_PROFILE_MQTT_V5; rebuilding 
 
 | What | Code |
 | --- | --- |
-| Register both MQTT adapters (DPS always uses MQTT 3.1.1) | `az_iot_paho_factory_create_v3_1_1()`, `az_iot_paho_factory_create_v5()`; az_mqtt: `az_iot_az_mqtt_factory_create_v3_1_1()`, `az_iot_az_mqtt_factory_create_v5()` |
+| MQTT adapter and the workspace it builds each MQTT client in | `mqtt_adapter` (`az_iot_paho_get_adapter()`; az_mqtt: `az_iot_az_mqtt_get_adapter()`), `mqtt_limits`, `mqtt_workspace`; sizes in [`sample_utils.h`](../../common/sample_utils.h) |
 | Build the client for an assumed generation before `open()` | `telemetry_build()` with `AZ_IOT_CONNECTION_PROFILE_MQTT_V3` |
 | Detect that DPS assigned the other generation | `on_conn_state()`: `AZ_IOT_CONN_STATE_FAULTED` with `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH`; `event->profile` holds the assigned one |
 | Rebuild and reconnect | main loop: `telemetry_destroy()`, `az_iot_connection_client_close()`, `telemetry_build()`, `az_iot_connection_client_open()` |

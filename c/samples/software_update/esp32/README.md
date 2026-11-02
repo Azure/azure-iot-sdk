@@ -30,7 +30,7 @@ sequenceDiagram
 ```
 
 ## Sample features
-- Target platform: **ESP32** (ESP-IDF v6.0), any chip revision.
+- Target platform: **ESP32** (ESP-IDF v6.0 or later), any chip revision.
 - Real download, install, reboot and automatic rollback; nothing simulated.
 - Asks on the onboarding route until it has connected to its hub, then on the
   regular route every `SU_POLL_INTERVAL_S`. See [Update-check route](#update-check-route).
@@ -38,6 +38,8 @@ sequenceDiagram
   mbedTLS); mbedTLS PSA Crypto (manifest verification); `esp_http_client` + `app_update` (OTA).
 - Optional [production security profile](#production-security-profile-optional),
   off by default.
+- No download handler: the reference `microsoft/delta:1` handler is POSIX only, so a file with a
+  delta is always downloaded in full.
 
 ### How the OTA flow works
 
@@ -64,7 +66,7 @@ and asks on the regular route (`az_iot_su_client_request_update()`) from then on
 `idf.py erase-flash` returns it to the onboarding route.
 
 An update is offered only on the route matching its job type. A check not
-answered within half the poll interval (at most 60 s) is abandoned and asked again
+answered within half the poll interval (at most 120 s) is abandoned and asked again
 at the next poll. No check is made while a deployment is in flight.
 
 ## Service requirements
@@ -175,8 +177,9 @@ production software updates roots compiled into the SDK. See
 
 ### Prerequisites
 
-- **[ESP-IDF v6.0](https://docs.espressif.com/projects/esp-idf/en/v6.0/esp32/get-started/index.html)**,
-  with its environment exported in the shell (`export.sh`, `export.ps1` or `export.bat`).
+- **[ESP-IDF v6.0](https://docs.espressif.com/projects/esp-idf/en/v6.0/esp32/get-started/index.html)
+  or later** (CI builds with v6.1, and v6.0 as the minimum), with its environment exported in the
+  shell (`export.sh`, `export.ps1` or `export.bat`).
 - An **ESP32 board with 4 MB flash** (for example ESP32-DevKitC with an
   ESP32-WROOM-32 module) and its USB serial port.
 - The `azure-sdk-for-c` submodule, which the ESP-IDF build compiles from source:
@@ -185,8 +188,9 @@ production software updates roots compiled into the SDK. See
   git submodule update --init c/deps/azure-sdk-for-c
   ```
 
-From the ESP Component Registry, at exact versions: `espressif/esp_secure_cert_mgr` (device
-identity) and `espressif/ethernet_init` (needed by `protocol_examples_common`).
+From the ESP Component Registry: `espressif/esp_secure_cert_mgr` (device identity, an exact
+version) and `espressif/ethernet_init`, at the version ESP-IDF's `protocol_examples_common`
+requires.
 
 ### Build and flash
 
@@ -205,8 +209,9 @@ Leave the monitor running; see [Expected output](#expected-output).
 CI (`ci-c`, job `esp-idf`) builds this sample for esp32, esp32c3, esp32s3 and
 esp32c6, with the default and the [production security](#production-security-profile-optional)
 profiles, plus the esp32 legacy and virtual eFuse profiles, and the [QEMU](#run-in-qemu) profile
-for esp32, esp32s3 and esp32c3, which it also boots in QEMU until it gets an IPv4 address. Any
-compiler warning fails the build. To run one build the same way, from `c/`:
+for esp32, esp32s3 and esp32c3, which it also boots in QEMU until it gets an IPv4 address. It builds
+with ESP-IDF v6.1, and the default profile for esp32 with v6.0 too, the minimum. Any compiler
+warning fails the build. To run one build the same way, from `c/`:
 
 ```sh
 eng/esp-idf-build.sh samples/software_update/esp32 esp32c3 secure
@@ -412,7 +417,7 @@ The SDK logs at `INFO`; change the level in `app_main()` for more detail.
 | What | Code |
 |------|------|
 | Device certificate and key | `az_iot_certificate_provider_esp_secure_cert_init()` |
-| az_mqtt adapter (MQTT 3.1.1 + 5) | `az_iot_az_mqtt_factory_create_v3_1_1()`, `az_iot_az_mqtt_factory_create_v5()` |
+| az_mqtt adapter (MQTT 3.1.1 + 5) | `copts.mqtt_adapter = az_iot_az_mqtt_get_adapter()`, `mqtt_workspace` (sized from menuconfig) |
 | Crypto backend | `copts.crypto = az_iot_crypto_mbedtls()` |
 | OTA hooks, root keys | `az_iot_su_esp32_ota_get_platform_hooks()`, `az_iot_su_microsoft_root_keys()` |
 | Compatibility properties | `device_properties.manufacturer`, `device_properties.model` |

@@ -49,6 +49,18 @@ static uint16_t g_port = 1883;
 /* AZ_IOT_TEST_TIMEOUT_SCALE; set in main(). */
 static int g_timeout_scale = 1;
 static uint8_t g_connection_workspace[AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE];
+static uint8_t g_mqtt_workspace[AZ_IOT_PAHO_WORKSPACE_SIZE];
+
+/** @brief Has @p opts build its MQTT client with the Paho adapter, in g_mqtt_workspace. */
+static void build_mqtt_client_with_paho(az_iot_connection_client_options* opts)
+{
+  /* Paho sizes its own buffers: the limits only have to be valid. */
+  static const az_iot_mqtt_limits k_limits = { 4096, 4096, 8, 0, 1024 };
+  opts->mqtt_adapter = az_iot_paho_get_adapter();
+  opts->mqtt_limits = k_limits;
+  opts->mqtt_workspace = g_mqtt_workspace;
+  opts->mqtt_workspace_size = sizeof(g_mqtt_workspace);
+}
 
 #if defined(_WIN32)
 static void sleep_ms(unsigned ms) { Sleep(ms); }
@@ -180,15 +192,11 @@ static void reconnect_after_real_drop(void** state)
   opts.reconnection_policy.jitter_pct = 0;
   opts.workspace = g_connection_workspace;
   opts.workspace_size = sizeof(g_connection_workspace);
+  build_mqtt_client_with_paho(&opts);
   assert_int_equal(az_iot_connection_client_init(client, &opts), AZ_IOT_OK);
 
   state_log log = { 0 };
   (void)az_iot_connection_client_add_state_observer(client, on_state, &log);
-
-  az_iot_mqtt_factory* factory = az_iot_paho_factory_create_v3_1_1();
-  assert_non_null(factory);
-  /* Borrowed by the client: destroyed below, after deinit(). */
-  assert_int_equal(az_iot_connection_client_register_mqtt_factory(client, factory), AZ_IOT_OK);
 
   /* First connection must come up (<= 5 s). */
   assert_int_equal(az_iot_connection_client_open(client), AZ_IOT_OK);
@@ -204,7 +212,6 @@ static void reconnect_after_real_drop(void** state)
 
   (void)az_iot_connection_client_close(client);
   az_iot_connection_client_deinit(client);
-  az_iot_paho_factory_destroy(factory);
   free(client);
   az_iot_test_proxy_stop(proxy);
 }
@@ -251,8 +258,7 @@ static az_iot_connection_client* start_client_with_c2d(
     const char* client_id,
     uint32_t subscription_ack_timeout_seconds,
     az_iot_mqttv3_c2d_client* c2d,
-    state_log* log,
-    az_iot_mqtt_factory** factory_out)
+    state_log* log)
 {
   az_iot_connection_client* client = (az_iot_connection_client*)calloc(1, sizeof(*client));
   assert_non_null(client);
@@ -271,13 +277,9 @@ static az_iot_connection_client* start_client_with_c2d(
   opts.reconnection_policy.jitter_pct = 0;
   opts.workspace = g_connection_workspace;
   opts.workspace_size = sizeof(g_connection_workspace);
+  build_mqtt_client_with_paho(&opts);
   assert_int_equal(az_iot_connection_client_init(client, &opts), AZ_IOT_OK);
   (void)az_iot_connection_client_add_state_observer(client, on_state, log);
-
-  az_iot_mqtt_factory* factory = az_iot_paho_factory_create_v3_1_1();
-  assert_non_null(factory);
-  *factory_out = factory;
-  assert_int_equal(az_iot_connection_client_register_mqtt_factory(client, factory), AZ_IOT_OK);
 
   assert_int_equal(az_iot_mqttv3_c2d_client_init(c2d, client), AZ_IOT_OK);
   assert_int_equal(az_iot_mqttv3_c2d_client_set_handler(c2d, on_c2d, NULL), AZ_IOT_OK);
@@ -308,9 +310,8 @@ static void refused_subscription_faults_the_real_stack(void** state)
   state_log log = { 0 };
   az_iot_mqttv3_c2d_client c2d;
   memset(&c2d, 0, sizeof(c2d));
-  az_iot_mqtt_factory* factory = NULL;
   az_iot_connection_client* client
-      = start_client_with_c2d(proxy_port, "az-iot-subrefuse-it", 0, &c2d, &log, &factory);
+      = start_client_with_c2d(proxy_port, "az-iot-subrefuse-it", 0, &c2d, &log);
 
   assert_true(pump_until_count(client, &log, AZ_IOT_CONN_STATE_FAULTED, 1, 200));
   /* The session must never have claimed to be up... */
@@ -322,7 +323,6 @@ static void refused_subscription_faults_the_real_stack(void** state)
 
   az_iot_mqttv3_c2d_client_deinit(&c2d);
   az_iot_connection_client_deinit(client);
-  az_iot_paho_factory_destroy(factory);
   free(client);
   az_iot_test_proxy_stop(proxy);
 }
@@ -343,9 +343,8 @@ static void an_unanswered_subscribe_times_out_the_real_stack(void** state)
   state_log log = { 0 };
   az_iot_mqttv3_c2d_client c2d;
   memset(&c2d, 0, sizeof(c2d));
-  az_iot_mqtt_factory* factory = NULL;
   az_iot_connection_client* client
-      = start_client_with_c2d(proxy_port, "az-iot-subtimeout-it", 1, &c2d, &log, &factory);
+      = start_client_with_c2d(proxy_port, "az-iot-subtimeout-it", 1, &c2d, &log);
 
   assert_true(pump_until_count(client, &log, AZ_IOT_CONN_STATE_RETRY_PENDING, 1, 200));
   /* Silence is not a grant: CONNECTED must never have been announced. */
@@ -354,7 +353,6 @@ static void an_unanswered_subscribe_times_out_the_real_stack(void** state)
   (void)az_iot_connection_client_close(client);
   az_iot_mqttv3_c2d_client_deinit(&c2d);
   az_iot_connection_client_deinit(client);
-  az_iot_paho_factory_destroy(factory);
   free(client);
   az_iot_test_proxy_stop(proxy);
 }

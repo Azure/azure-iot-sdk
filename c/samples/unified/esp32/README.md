@@ -43,14 +43,16 @@ connection profile. If DPS assigns mqttv5, the sample rebuilds them and reconnec
 
 ## Prerequisites
 
-- [ESP-IDF v6.0](https://docs.espressif.com/projects/esp-idf/en/v6.0/esp32/get-started/index.html),
-  with its environment exported (`export.sh`, `export.ps1` or `export.bat`).
+- [ESP-IDF v6.0](https://docs.espressif.com/projects/esp-idf/en/v6.0/esp32/get-started/index.html)
+  or later (CI builds with v6.1, and v6.0 as the minimum), with its environment exported
+  (`export.sh`, `export.ps1` or `export.bat`).
 - An ESP32, ESP32-S3, ESP32-C3 or ESP32-C6 board with 4 MB flash, or [QEMU](#run-in-qemu).
 - The `azure-sdk-for-c` submodule: `git submodule update --init c/deps/azure-sdk-for-c`.
 - A DPS instance linked to an IoT Hub, with an X.509 enrollment for the device certificate.
 
-From the ESP Component Registry, at exact versions: `espressif/esp_secure_cert_mgr` (device
-identity) and `espressif/ethernet_init` (needed by ESP-IDF's `protocol_examples_common`).
+From the ESP Component Registry: `espressif/esp_secure_cert_mgr` (device identity, an exact
+version) and `espressif/ethernet_init`, at the version ESP-IDF's `protocol_examples_common`
+requires.
 
 ## Configure
 
@@ -138,7 +140,8 @@ script does not write DS identities for esp32s3.
 
 CI (`ci-c`, job `esp-idf`) builds this sample for esp32, esp32c3, esp32s3 and esp32c6, and the
 `qemu` profile for esp32, esp32s3 and esp32c3, which it boots in QEMU until it gets an IPv4
-address. Any compiler warning fails the build.
+address, with ESP-IDF v6.1; the default profile for esp32 also with v6.0, the minimum. Any compiler
+warning fails the build.
 
 `ci-c-e2e` (job `esp32-qemu`) runs it in QEMU on esp32 and esp32c3 (key in DS) against an IoT
 Hub: telemetry, the `echo` method and a desired-version acknowledgement

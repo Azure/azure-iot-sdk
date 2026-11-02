@@ -110,6 +110,21 @@ static void paho_cond_wait_ms(paho_cond* c, paho_mutex* m, uint32_t timeout_ms)
 /* event queue                                                               */
 /* ------------------------------------------------------------------------- */
 
+typedef struct paho_client paho_client;
+
+/**
+ * @brief The PUBLISH_ACK event of one accepted publish, allocated by publish() before Paho can
+ * complete it and passed to Paho as its callback context, so a completion allocates and frees
+ * nothing. Paho reports a publish whose write failed with token 0 (MQTTAsync_processCommand), so
+ * the event takes its packet id from here, on the application thread.
+ */
+typedef struct paho_publish_completion
+{
+  paho_client* client;
+  /** @brief Set by publish() once Paho accepts it; read only on the application thread. */
+  uint16_t packet_id;
+} paho_publish_completion;
+
 typedef struct queued_event
 {
   az_iot_mqtt_event evt;
@@ -129,6 +144,8 @@ typedef struct queued_event
   size_t correlation_data_len;
   /* v5 Reason String (heap copy); evt.reason_string points here. */
   char* reason_string;
+  /* AZ_IOT_MQTT_EVT_PUBLISH_ACK of a publish: client non-NULL, and the event's packet id. */
+  paho_publish_completion publish;
   struct queued_event* next;
 } queued_event;
 
@@ -136,7 +153,7 @@ typedef struct queued_event
 /* client state                                                              */
 /* ------------------------------------------------------------------------- */
 
-typedef struct paho_client
+struct paho_client
 {
   az_iot_mqtt_client base; /* MUST be first */
   az_iot_mqtt_iface iface_storage;
@@ -169,10 +186,7 @@ typedef struct paho_client
    * the session that asked for it. Unused on v3.1.1, which has no reason
    * codes. */
   uint8_t disconnect_reason_code;
-
-  /* Factory client: the allocation destroy() frees. NULL: built in an application workspace. */
-  void* allocation;
-} paho_client;
+};
 
 static paho_client* paho_self(az_iot_mqtt_client* c) { return (paho_client*)c; }
 
@@ -946,31 +960,27 @@ static void paho_subscribe_failure(void* context, MQTTAsync_failureData* respons
   }
 }
 
+/* The PUBLISH_ACK event publish() allocated, passed back by Paho as @p context, with @p status. */
+static queued_event* publish_completion_event(void* context, az_iot_result status)
+{
+  queued_event* n = (queued_event*)context;
+  n->evt.status = status;
+  return n;
+}
+
 static void paho_publish_success(void* context, MQTTAsync_successData* response)
 {
-  paho_client* m = (paho_client*)context;
-  uint16_t pid = response ? (uint16_t)response->token : 0;
-  if (m)
-  {
-    enqueue_status(m, AZ_IOT_MQTT_EVT_PUBLISH_ACK, AZ_IOT_OK, pid);
-  }
+  (void)response;
+  queued_event* n = publish_completion_event(context, AZ_IOT_OK);
+  q_push(n->publish.client, n);
 }
 
 static void paho_publish_failure(void* context, MQTTAsync_failureData* response)
 {
-  paho_client* m = (paho_client*)context;
-  uint16_t pid = response ? (uint16_t)response->token : 0;
-  if (m)
-  {
-    /* v3.1.1 PUBACKs carry no code: this is a publish that ended without one. */
-    enqueue_status_codes(
-        m,
-        AZ_IOT_MQTT_EVT_PUBLISH_ACK,
-        AZ_IOT_ERR_MQTT,
-        pid,
-        0,
-        response ? paho_transport_code(response->code) : 0);
-  }
+  /* v3.1.1 PUBACKs carry no code: this is a publish that ended without one. */
+  queued_event* n = publish_completion_event(context, AZ_IOT_ERR_MQTT);
+  n->evt.transport_code = response ? paho_transport_code(response->code) : 0;
+  q_push(n->publish.client, n);
 }
 
 /* MQTTv5 variants. Paho dispatches to onSuccess5/onFailure5 (not the v3
@@ -1077,35 +1087,23 @@ static void paho_subscribe_failure5(void* context, MQTTAsync_failureData5* respo
 
 static void paho_publish_success5(void* context, MQTTAsync_successData5* response)
 {
-  paho_client* m = (paho_client*)context;
-  uint16_t pid = response ? (uint16_t)response->token : 0;
-  if (m)
-  {
-    enqueue_status(m, AZ_IOT_MQTT_EVT_PUBLISH_ACK, AZ_IOT_OK, pid);
-  }
+  (void)response;
+  queued_event* n = publish_completion_event(context, AZ_IOT_OK);
+  q_push(n->publish.client, n);
 }
 
-/* Paho calls this for a PUBACK reason code >= 0x80 (reasonCode, with the PUBACK's properties) and
- * for a publish that ends without one (a negative code). The properties are freed on return, so
- * the Reason String is copied. */
+/* Paho calls this for a PUBACK reason code >= 0x80 (reasonCode, with the PUBACK's properties, and
+ * code 0) and for a publish that ends without one (a non-zero code). For the latter, Paho 1.3.16
+ * leaves reasonCode and properties uninitialized (MQTTAsync_writeComplete(), a full buffer), so
+ * they are read only with code 0, and token 0 for a failed write. The properties are freed on
+ * return, so the Reason String is copied. */
 static void paho_publish_failure5(void* context, MQTTAsync_failureData5* response)
 {
-  paho_client* m = (paho_client*)context;
-  if (!m)
-  {
-    return;
-  }
-  queued_event* n = (queued_event*)calloc(1, sizeof(*n));
-  if (!n)
-  {
-    return;
-  }
-  n->evt.kind = AZ_IOT_MQTT_EVT_PUBLISH_ACK;
-  n->evt.status = AZ_IOT_ERR_MQTT;
+  queued_event* n = publish_completion_event(context, AZ_IOT_ERR_MQTT);
+  paho_client* m = n->publish.client;
   if (response)
   {
-    n->evt.packet_id = (uint16_t)response->token;
-    int const code = (int)response->reasonCode;
+    int const code = response->code == MQTTASYNC_SUCCESS ? (int)response->reasonCode : 0;
     if (code >= 0x80)
     {
       n->evt.status = az_iot_mqtt_puback_result(m->version, code);
@@ -1932,7 +1930,15 @@ static az_iot_result paho_iface_publish(
   }
 
   MQTTAsync_responseOptions resp = MQTTAsync_responseOptions_initializer;
-  resp.context = m;
+  queued_event* completion = (queued_event*)calloc(1, sizeof(*completion));
+  if (!completion)
+  {
+    MQTTProperties_free(&props);
+    return AZ_IOT_ERR_OUT_OF_MEMORY;
+  }
+  completion->evt.kind = AZ_IOT_MQTT_EVT_PUBLISH_ACK;
+  completion->publish.client = m;
+  resp.context = completion;
   if (m->version == AZ_IOT_MQTT_VERSION_5)
   {
     resp.onSuccess5 = paho_publish_success5;
@@ -1945,15 +1951,20 @@ static az_iot_result paho_iface_publish(
   }
 
   int rc = MQTTAsync_sendMessage(m->paho, msg->topic, &paho_msg, &resp);
-  if (m->version == AZ_IOT_MQTT_VERSION_5)
-  {
-    MQTTProperties_free(&props);
-  }
+  MQTTProperties_free(&props);
   if (out_packet_id)
   {
     *out_packet_id = (uint16_t)resp.token;
   }
-  return (rc == MQTTASYNC_SUCCESS) ? AZ_IOT_OK : AZ_IOT_ERR_MQTT;
+  if (rc != MQTTASYNC_SUCCESS)
+  {
+    /* Refused: Paho runs no callback, so the event is still ours. */
+    free(completion);
+    return AZ_IOT_ERR_MQTT;
+  }
+  /* Paho may already have queued the event; it is dispatched on this thread, so after this. */
+  completion->publish.packet_id = (uint16_t)resp.token;
+  return AZ_IOT_OK;
 }
 
 #if defined(AZ_IOT_TEST_PAHO_WAIT_HOOK)
@@ -1983,6 +1994,10 @@ static bool paho_dispatch_queued_events(paho_client* m)
   while ((n = q_pop(m)) != NULL)
   {
     dispatched = true;
+    if (n->publish.client != NULL)
+    {
+      n->evt.packet_id = n->publish.packet_id;
+    }
     if (m->inbound_cb)
     {
       m->inbound_cb(&n->evt, m->inbound_ctx);
@@ -2051,9 +2066,7 @@ static void paho_iface_destroy(az_iot_mqtt_client* self)
   free(m->server_uri);
   proxy_uri_release(&m->proxy_uri);
   free(m->client_id);
-  void* const allocation = m->allocation;
   memset(m, 0, sizeof(*m));
-  free(allocation); /* NULL for a client in an application workspace. */
 }
 
 static const az_iot_mqtt_iface s_iface_template_v3
@@ -2067,7 +2080,7 @@ static const az_iot_mqtt_iface s_iface_template_v5
         paho_iface_process_loop, paho_iface_set_inbound_cb, paho_iface_destroy };
 
 /* ------------------------------------------------------------------------- */
-/* adapter (application workspace) and factory                               */
+/* adapter (application workspace)                                           */
 /* ------------------------------------------------------------------------- */
 
 /* AZ_IOT_PAHO_WORKSPACE_SIZE relies on this bound. */
@@ -2127,62 +2140,3 @@ static const az_iot_mqtt_adapter s_paho_adapter = {
 };
 
 const az_iot_mqtt_adapter* az_iot_paho_get_adapter(void) { return &s_paho_adapter; }
-
-typedef struct paho_factory_state
-{
-  az_iot_mqtt_factory public_;
-} paho_factory_state;
-
-static az_iot_mqtt_client* paho_factory_create(void* factory_ctx)
-{
-  paho_factory_state* st = (paho_factory_state*)factory_ctx;
-  static const az_iot_mqtt_limits limits = { 1, 1, 1, 0, 0 }; /* Paho sizes its own buffers. */
-  size_t const size = az_iot_paho_get_workspace_size(&limits);
-  if (size == 0)
-  {
-    return NULL;
-  }
-  uint8_t* allocation = (uint8_t*)malloc(size);
-  az_iot_mqtt_client* client = NULL;
-  if (allocation == NULL
-      || paho_adapter_init(st->public_.version, &limits, allocation, size, &client) != AZ_IOT_OK)
-  {
-    free(allocation);
-    return NULL;
-  }
-  paho_self(client)->allocation = allocation;
-  return client;
-}
-
-static az_iot_mqtt_factory* build_factory(az_iot_mqtt_version v)
-{
-  paho_factory_state* st = (paho_factory_state*)calloc(1, sizeof(*st));
-  if (!st)
-  {
-    return NULL;
-  }
-  st->public_.version = v;
-  st->public_.create = paho_factory_create;
-  st->public_.factory_ctx = st;
-  return &st->public_;
-}
-
-az_iot_mqtt_factory* az_iot_paho_factory_create_v3_1_1(void)
-{
-  return build_factory(AZ_IOT_MQTT_VERSION_3_1_1);
-}
-
-az_iot_mqtt_factory* az_iot_paho_factory_create_v5(void)
-{
-  return build_factory(AZ_IOT_MQTT_VERSION_5);
-}
-
-void az_iot_paho_factory_destroy(az_iot_mqtt_factory* factory)
-{
-  if (!factory)
-  {
-    return;
-  }
-  paho_factory_state* st = (paho_factory_state*)factory->factory_ctx;
-  free(st);
-}

@@ -1,0 +1,39 @@
+# Copyright (c) Microsoft. All rights reserved.
+# Licensed under the MIT license. See LICENSE file in the project root for full license information.
+
+# Installs the pinned delta processor (libadudiffapi.so) with c/eng/install-su-delta-processor.sh,
+# the package cached under its SHA-256, for the software updates microsoft/delta:1 interop test.
+# Configure with -DAZ_IOT_WITH_SU_DELTA=ON -DAZ_IOT_SU_DELTA_TEST_LIBRARY=<outputs.library>.
+# x86_64 Linux only.
+name: Install the software updates delta processor
+description: Download (cached), verify and extract the pinned libadudiffapi.so.
+outputs:
+  library:
+    description: Path of libadudiffapi.so.
+    value: ${{ steps.install.outputs.library }}
+runs:
+  using: composite
+  steps:
+    - name: Compute cache key
+      id: key
+      shell: bash
+      run: echo "key=su-delta-processor-$(bash "$GITHUB_WORKSPACE/c/eng/install-su-delta-processor.sh" --sha256)" >> "$GITHUB_OUTPUT"
+    - name: Restore the package
+      id: restore
+      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: ${{ runner.temp }}/su-delta-processor/*.deb
+        key: ${{ steps.key.outputs.key }}
+    - name: Install
+      id: install
+      shell: bash
+      run: |
+        set -euo pipefail
+        library="$(bash "$GITHUB_WORKSPACE/c/eng/install-su-delta-processor.sh" "$RUNNER_TEMP/su-delta-processor")"
+        echo "library=$library" >> "$GITHUB_OUTPUT"
+    - name: Save the package
+      if: steps.restore.outputs.cache-hit != 'true'
+      uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: ${{ runner.temp }}/su-delta-processor/*.deb
+        key: ${{ steps.key.outputs.key }}

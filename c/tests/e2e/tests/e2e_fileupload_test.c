@@ -54,13 +54,7 @@
 
 #include "azure/iot/az_iot.h"
 /* The MQTT adapter this build of the suite uses (see tests/e2e/CMakeLists.txt). */
-#if defined(AZ_IOT_E2E_ADAPTER_PAHO)
-#include "azure/iot/adapters/az_iot_adapter_paho.h"
-#elif defined(AZ_IOT_E2E_ADAPTER_AZ_MQTT)
-#include "azure/iot/adapters/az_iot_adapter_az_mqtt.h"
-#else
-#error "Define AZ_IOT_E2E_ADAPTER_PAHO or AZ_IOT_E2E_ADAPTER_AZ_MQTT"
-#endif
+#include "e2e_mqtt_adapter.h"
 
 #include "az_iot_e2e_service.h"
 #include "e2e_connect_clock.h"
@@ -353,18 +347,18 @@ static void report_notification_stats(fixture* fx)
   int delivered = 0;
   int captured = 0;
   int released = 0;
-  int stale = 0;
+  int unwatched = 0;
   int unparsed = 0;
   az_iot_e2e_service_file_notification_stats(
-      fx->svc, &delivered, &captured, &released, &stale, &unparsed);
+      fx->svc, &delivered, &captured, &released, &unwatched, &unparsed);
   fprintf(
       stderr,
       "file-upload notifications: delivered=%d captured=%d "
-      "released(other device)=%d accepted(stale)=%d undecodable=%d\n",
+      "released(other device)=%d accepted(no watcher)=%d undecodable=%d\n",
       delivered,
       captured,
       released,
-      stale,
+      unwatched,
       unparsed);
 }
 
@@ -372,7 +366,8 @@ static void report_notification_stats(fixture* fx)
  * e2e runs sharing one storage account. */
 static void make_blob_name(char* out, size_t cap, const char* tag)
 {
-  (void)snprintf(out, cap, "e2e-fileupload/%s-%lld.txt", tag, (long long)time(NULL));
+  (void)snprintf(
+      out, cap, AZ_IOT_E2E_FILE_UPLOAD_BLOB_DIRECTORY "%s-%lld.txt", tag, (long long)time(NULL));
 }
 
 /* Request a SAS URI and assert the hub granted one. */
@@ -751,15 +746,11 @@ static void test_sas_key_device_uploads_a_file(void** state)
 
   az_iot_connection_state hub_state = AZ_IOT_CONN_STATE_IDLE;
   az_iot_connection_client conn = { 0 };
+  uint8_t* mqtt_workspace = e2e_use_mqtt_adapter(&copts);
+  assert_non_null(mqtt_workspace);
   assert_int_equal(az_iot_connection_client_init(&conn, &copts), AZ_IOT_OK);
   assert_int_equal(
       az_iot_connection_client_add_state_observer(&conn, on_sas_hub_state, &hub_state), AZ_IOT_OK);
-#if defined(AZ_IOT_E2E_ADAPTER_PAHO)
-  az_iot_mqtt_factory* factory = az_iot_paho_factory_create_v3_1_1();
-#elif defined(AZ_IOT_E2E_ADAPTER_AZ_MQTT)
-  az_iot_mqtt_factory* factory = az_iot_az_mqtt_factory_create_v3_1_1();
-#endif
-  assert_int_equal(az_iot_connection_client_register_mqtt_factory(&conn, factory), AZ_IOT_OK);
   assert_int_equal(az_iot_connection_client_open(&conn), AZ_IOT_OK);
   e2e_connect_clock clock;
   e2e_connect_clock_start(&clock);
@@ -777,7 +768,8 @@ static void test_sas_key_device_uploads_a_file(void** state)
   assert_int_equal(az_iot_mqttv3_file_upload_client_init(&fu, &conn, &http), AZ_IOT_OK);
 
   char blob_name[96];
-  make_blob_name(blob_name, sizeof(blob_name), "sas");
+  /* Reported successful and not watched: tagged so watchers accept its notification. */
+  make_blob_name(blob_name, sizeof(blob_name), AZ_IOT_E2E_UNWATCHED_BLOB_TAG "sas");
   upload_ctx u;
   memset(&u, 0, sizeof(u));
   assert_int_equal(
@@ -820,11 +812,7 @@ static void test_sas_key_device_uploads_a_file(void** state)
     (void)az_iot_connection_client_do_work(&conn, 50);
   }
   az_iot_connection_client_deinit(&conn);
-#if defined(AZ_IOT_E2E_ADAPTER_PAHO)
-  az_iot_paho_factory_destroy(factory);
-#elif defined(AZ_IOT_E2E_ADAPTER_AZ_MQTT)
-  az_iot_az_mqtt_factory_destroy(factory);
-#endif
+  free(mqtt_workspace);
   e2e_sas_config_free(&cfg);
 }
 

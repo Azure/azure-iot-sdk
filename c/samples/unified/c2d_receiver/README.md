@@ -8,7 +8,7 @@ properties. C2D is an **mqttv3** IoT Hub feature; there is no mqttv5 counterpart
 
 ## Sample features
 
-- Hub generation: mqttv3 (MQTT 3.1.1) only. Registers only the MQTT 3.1.1 adapter.
+- Hub generation: mqttv3 (MQTT 3.1.1) only.
 - The client subscribes to `devices/<id>/messages/devicebound/#`. Message properties travel percent-encoded in the topic. The handler reads them with `az_iot_c2d_properties_next()` and the typed accessors (`az_iot_c2d_message_get_message_id()` and others for `$.mid`, `$.cid`, `$.exp`, `$.ct`, `$.ce` and `$.uid`), which decode into buffers the application provides.
 - The client pins mqttv3 at `init()`, before `open()`. If DPS assigns an mqttv5 hub, on the first connect or after a move, the connection stops with `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH`; the sample reports that and exits 1. A move to another mqttv3 hub needs nothing from the application.
 - Platforms: Linux and Windows.
@@ -109,7 +109,7 @@ On an mqttv5 hub it prints
 
 | What | Code |
 | --- | --- |
-| Register the MQTT 3.1.1 adapter only | `az_iot_paho_factory_create_v3_1_1()`; az_mqtt: `az_iot_az_mqtt_factory_create_v3_1_1()` |
+| MQTT adapter and the workspace it builds each MQTT client in | `mqtt_adapter` (`az_iot_paho_get_adapter()`; az_mqtt: `az_iot_az_mqtt_get_adapter()`), `mqtt_limits`, `mqtt_workspace`; sizes in [`sample_utils.h`](../../common/sample_utils.h) |
 | Create the client and set the handler | `az_iot_mqttv3_c2d_client_init()`, `az_iot_mqttv3_c2d_client_set_handler()` |
 | Handle a message and its properties | `on_c2d()` |
 | Report an mqttv5 assignment | `on_conn_state()` |

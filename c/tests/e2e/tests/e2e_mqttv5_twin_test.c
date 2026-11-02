@@ -173,7 +173,9 @@ typedef struct
   e2e_device evictor;
   bool evictor_active;
   get_race race;
-  request_record requests[AZ_IOT_TWIN_MAX_PENDING + 1];
+  request_record requests[AZ_IOT_TWIN_CLIENT_DEFAULT_MAX_PENDING_REQUESTS + 1];
+  /* The twin client's requests, at the default limits. */
+  uint8_t twin_workspace[AZ_IOT_MQTTV5_TWIN_CLIENT_DEFAULT_WORKSPACE_SIZE];
 } fixture;
 
 static fixture g_fx;
@@ -337,7 +339,12 @@ static int attach_twin(e2e_device* dev, void* ctx)
 {
   fixture* fx = (fixture*)ctx;
   if (az_iot_connection_client_add_state_observer(&dev->conn, on_state, fx) != AZ_IOT_OK
-      || az_iot_mqttv5_twin_client_init(&fx->twin, &dev->conn) != AZ_IOT_OK)
+      || az_iot_mqttv5_twin_client_init(
+             &fx->twin,
+             &dev->conn,
+             &(az_iot_mqttv5_twin_client_options){ .workspace = fx->twin_workspace,
+                                                   .workspace_size = sizeof(fx->twin_workspace) })
+          != AZ_IOT_OK)
   {
     return 1;
   }
@@ -1489,7 +1496,9 @@ static void desired_change_during_outage_is_fetched_on_reconnect(void** state)
 
 /* With the smallest timeout a GET completes AZ_IOT_ERR_TIMEOUT, and the client stays usable.
  * Deterministic: only the twin client is pumped until it completes, so the answer cannot be
- * dispatched first; it is dropped as stale once the connection is pumped again. */
+ * dispatched first; it is dropped as stale once the connection is pumped again. The limit may
+ * also pass before the GET is sent: get() then returns AZ_IOT_ERR_TIMEOUT itself, with no
+ * callback. */
 static void request_timeout_completes_unanswered_request(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -1510,9 +1519,12 @@ static void request_timeout_completes_unanswered_request(void** state)
       az_iot_result_to_string(r->submit),
       (int)r->done,
       r->done ? az_iot_result_to_string(r->status) : "-");
-  assert_int_equal(r->submit, AZ_IOT_OK);
-  assert_true(r->done);
-  assert_int_equal(r->status, AZ_IOT_ERR_TIMEOUT);
+  if (r->submit != AZ_IOT_ERR_TIMEOUT)
+  {
+    assert_int_equal(r->submit, AZ_IOT_OK);
+    assert_true(r->done);
+    assert_int_equal(r->status, AZ_IOT_ERR_TIMEOUT);
+  }
 
   assert_int_equal(az_iot_mqttv5_twin_client_set_request_timeout(&fx->twin, 0), AZ_IOT_OK);
   pump_for(fx, E2E_SETTLE_S);
@@ -1520,40 +1532,42 @@ static void request_timeout_completes_unanswered_request(void** state)
   assert_int_equal(fx->hub_drops, 0);
 }
 
-/* AZ_IOT_TWIN_MAX_PENDING GETs are accepted back to back; the next is refused with
+/* The default limits.max_pending_requests GETs are accepted back to back; the next is refused with
  * AZ_IOT_ERR_NOT_SUPPORTED; every accepted one is then answered. */
 static void pending_request_limit_is_enforced(void** state)
 {
   fixture* fx = (fixture*)*state;
   pump_for(fx, E2E_SETTLE_S);
-  for (size_t i = 0; i <= AZ_IOT_TWIN_MAX_PENDING; ++i)
+  for (size_t i = 0; i <= AZ_IOT_TWIN_CLIENT_DEFAULT_MAX_PENDING_REQUESTS; ++i)
   {
     fx->requests[i].submit
         = az_iot_mqttv5_twin_client_get(&fx->twin, on_request_get, &fx->requests[i]);
   }
-  for (size_t i = 0; i <= AZ_IOT_TWIN_MAX_PENDING; ++i)
+  for (size_t i = 0; i <= AZ_IOT_TWIN_CLIENT_DEFAULT_MAX_PENDING_REQUESTS; ++i)
   {
     printf("[e2e] GET %zu submit=%s\n", i, az_iot_result_to_string(fx->requests[i].submit));
   }
-  for (size_t i = 0; i < AZ_IOT_TWIN_MAX_PENDING; ++i)
+  for (size_t i = 0; i < AZ_IOT_TWIN_CLIENT_DEFAULT_MAX_PENDING_REQUESTS; ++i)
   {
     assert_int_equal(fx->requests[i].submit, AZ_IOT_OK);
   }
-  assert_int_equal(fx->requests[AZ_IOT_TWIN_MAX_PENDING].submit, AZ_IOT_ERR_NOT_SUPPORTED);
+  assert_int_equal(
+      fx->requests[AZ_IOT_TWIN_CLIENT_DEFAULT_MAX_PENDING_REQUESTS].submit,
+      AZ_IOT_ERR_NOT_SUPPORTED);
 
   size_t done = 0;
-  for (time_t start = time(NULL);
-       done < AZ_IOT_TWIN_MAX_PENDING && (time(NULL) - start) < E2E_DEVICE_REQUEST_WAIT_S;)
+  for (time_t start = time(NULL); done < AZ_IOT_TWIN_CLIENT_DEFAULT_MAX_PENDING_REQUESTS
+       && (time(NULL) - start) < E2E_DEVICE_REQUEST_WAIT_S;)
   {
     pump(fx);
     done = 0;
-    for (size_t i = 0; i < AZ_IOT_TWIN_MAX_PENDING; ++i)
+    for (size_t i = 0; i < AZ_IOT_TWIN_CLIENT_DEFAULT_MAX_PENDING_REQUESTS; ++i)
     {
       done += fx->requests[i].done ? 1u : 0u;
     }
   }
-  bool all_ok = done == AZ_IOT_TWIN_MAX_PENDING;
-  for (size_t i = 0; i < AZ_IOT_TWIN_MAX_PENDING; ++i)
+  bool all_ok = done == AZ_IOT_TWIN_CLIENT_DEFAULT_MAX_PENDING_REQUESTS;
+  for (size_t i = 0; i < AZ_IOT_TWIN_CLIENT_DEFAULT_MAX_PENDING_REQUESTS; ++i)
   {
     const request_record* r = &fx->requests[i];
     printf(
@@ -1563,10 +1577,13 @@ static void pending_request_limit_is_enforced(void** state)
         r->done ? az_iot_result_to_string(r->status) : "-");
     all_ok = all_ok && r->status == AZ_IOT_OK;
   }
-  assert_false(fx->requests[AZ_IOT_TWIN_MAX_PENDING].done);
+  assert_false(fx->requests[AZ_IOT_TWIN_CLIENT_DEFAULT_MAX_PENDING_REQUESTS].done);
   if (!all_ok)
   {
-    fail_msg("%zu of %d GETs completed, not all AZ_IOT_OK", done, AZ_IOT_TWIN_MAX_PENDING);
+    fail_msg(
+        "%zu of %d GETs completed, not all AZ_IOT_OK",
+        done,
+        AZ_IOT_TWIN_CLIENT_DEFAULT_MAX_PENDING_REQUESTS);
   }
   device_get(fx, NULL);
 }

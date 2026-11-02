@@ -184,6 +184,10 @@ if(AZ_IOT_WITH_CERT_PROVIDER_MANAGED)
     add_subdirectory(adapters/cert_openssl)
 endif()
 
+if(AZ_IOT_WITH_SU_DELTA)
+    add_subdirectory(adapters/su/delta)
+endif()
+
 if(AZ_IOT_BUILD_SAMPLES)
     add_subdirectory(samples)
 endif()

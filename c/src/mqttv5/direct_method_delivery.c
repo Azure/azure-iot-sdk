@@ -38,9 +38,9 @@
  * element_holds_tracker_entry()). */
 #define DM_TRACKER_ENTRY_PENDING SIZE_MAX
 
-/* k_slots_kept_for_replies holds the limit in a byte. */
-typedef char
-    az_iot_dm_concurrency_fits_a_byte[(AZ_IOT_MQTTV5_DM_MAX_CONCURRENT <= UINT8_MAX) ? 1 : -1];
+/* slots_kept_for_replies holds the concurrency limit in a byte. */
+typedef char az_iot_dm_concurrency_fits_a_byte
+    [(AZ_IOT_MQTTV5_DIRECT_METHOD_CLIENT_MAX_CONCURRENT_INVOCATIONS_LIMIT <= UINT8_MAX) ? 1 : -1];
 
 /* A held notice stores the encoded frame; the public header sizes it without seeing the codec. */
 typedef char az_iot_dm_notice_frame_fits
@@ -103,7 +103,7 @@ static az_iot_mqttv5_direct_method_ready_slot* find_ready_slot_by_tracker_entry(
 {
   for (int pass = 0; pass < 2; ++pass)
   {
-    for (size_t i = 0; i < AZ_IOT_MQTTV5_DM_MAX_CONCURRENT; ++i)
+    for (size_t i = 0; i < DI(dm).limits.max_concurrent_invocations; ++i)
     {
       az_iot_mqttv5_direct_method_ready_slot* slot = &DI(dm).ready_pool[i];
       if (RI(slot).in_use
@@ -116,23 +116,25 @@ static az_iot_mqttv5_direct_method_ready_slot* find_ready_slot_by_tracker_entry(
   return NULL;
 }
 
-/** @brief The req_pool index whose result is tracker entry @p entry_index, or MAX_CONCURRENT. */
+/** @brief The invocation index whose result is tracker entry @p entry_index, or
+ * limits.max_concurrent_invocations. */
 static size_t find_request_by_tracker_entry(
     az_iot_mqttv5_direct_method_client* dm,
     size_t entry_index)
 {
   for (int pass = 0; pass < 2; ++pass)
   {
-    for (size_t i = 0; i < AZ_IOT_MQTTV5_DM_MAX_CONCURRENT; ++i)
+    for (size_t i = 0; i < DI(dm).limits.max_concurrent_invocations; ++i)
     {
-      if (DI(dm).req_pool[i]._internal.in_use
-          && element_holds_tracker_entry(&DI(dm).result_tracker_entry[i], entry_index, pass == 1))
+      if (DI(dm).invocations[i].slot._internal.in_use
+          && element_holds_tracker_entry(
+              &DI(dm).invocations[i].result_tracker_entry, entry_index, pass == 1))
       {
         return i;
       }
     }
   }
-  return AZ_IOT_MQTTV5_DM_MAX_CONCURRENT;
+  return DI(dm).limits.max_concurrent_invocations;
 }
 
 /** @brief The notice that is tracker entry @p entry_index, or NULL. */
@@ -142,7 +144,7 @@ static az_iot_mqttv5_direct_method_notice* find_notice_by_tracker_entry(
 {
   for (int pass = 0; pass < 2; ++pass)
   {
-    for (size_t i = 0; i < AZ_IOT_MQTTV5_DM_NOTICE_QUEUE_MAX; ++i)
+    for (size_t i = 0; i < DI(dm).limits.max_queued_notices; ++i)
     {
       if (element_holds_tracker_entry(
               &DI(dm).notices[i]._internal.tracker_entry, entry_index, pass == 1))
@@ -290,7 +292,7 @@ static az_iot_result encode_result_message(
 {
   az_iot_mqttv5_direct_method_client* dm = (az_iot_mqttv5_direct_method_client*)owner;
   size_t const index = find_request_by_tracker_entry(dm, entry_index);
-  if (index >= AZ_IOT_MQTTV5_DM_MAX_CONCURRENT)
+  if (index >= DI(dm).limits.max_concurrent_invocations)
   {
     return AZ_IOT_ERR_INTERNAL;
   }
@@ -304,11 +306,12 @@ static az_iot_result encode_result_message(
   return build_reply_message(
       dm,
       &k_result_type,
-      DI(dm).result_frame[index],
-      DI(dm).result_frame_len[index],
-      DI(dm).req_pool[index]._internal.correlation_data,
+      DI(dm).invocations[index].result_frame,
+      DI(dm).invocations[index].result_frame_len,
+      DI(dm).invocations[index].slot._internal.correlation_data,
       az_iot_mqttv5_direct_method_client__remaining_budget_seconds(
-          DI(dm).exec_budget_seconds[index], DI(dm).exec_received_at_ms[index]),
+          DI(dm).invocations[index].exec_budget_seconds,
+          DI(dm).invocations[index].exec_received_at_ms),
       out);
 }
 
@@ -321,11 +324,11 @@ static void on_result_complete(
 {
   az_iot_mqttv5_direct_method_client* dm = (az_iot_mqttv5_direct_method_client*)owner;
   size_t const index = find_request_by_tracker_entry(dm, entry_index);
-  if (index >= AZ_IOT_MQTTV5_DM_MAX_CONCURRENT)
+  if (index >= DI(dm).limits.max_concurrent_invocations)
   {
     return;
   }
-  az_iot_direct_method_slot* s = &DI(dm).req_pool[index];
+  az_iot_direct_method_slot* s = &DI(dm).invocations[index].slot;
   if (outcome == AZ_IOT_DELIVERY_TRACKER_OUTCOME_REFUSED)
   {
     log_broker_refusal(DM_TYPE_RESULT, detail);
@@ -338,7 +341,7 @@ static void on_result_complete(
         "reclaiming its slot",
         RI(s).method_name);
   }
-  DI(dm).result_tracker_entry[index] = DM_NO_TRACKER_ENTRY;
+  DI(dm).invocations[index].result_tracker_entry = DM_NO_TRACKER_ENTRY;
   RI(s).in_use = false;
 }
 
@@ -419,9 +422,6 @@ static const az_iot_delivery_tracker_profile k_notice_profile = {
   NULL,
 };
 
-/* PUBACK slots kept, of the reservation, for probe-acks and results (priority 0). */
-static const uint8_t k_slots_kept_for_replies[] = { (uint8_t)AZ_IOT_MQTTV5_DM_MAX_CONCURRENT };
-
 /**
  * @brief Send a ProbeAck{rejected} or Abandon, keeping it until its PUBACK.
  *
@@ -441,7 +441,7 @@ static void send_notice(
     uint64_t start_ms)
 {
   az_iot_mqttv5_direct_method_notice* n = NULL;
-  for (size_t i = 0; i < AZ_IOT_MQTTV5_DM_NOTICE_QUEUE_MAX && n == NULL; ++i)
+  for (size_t i = 0; i < DI(dm).limits.max_queued_notices && n == NULL; ++i)
   {
     n = (DI(dm).notices[i]._internal.tracker_entry == DM_NO_TRACKER_ENTRY) ? &DI(dm).notices[i]
                                                                            : NULL;
@@ -488,17 +488,17 @@ static void send_notice(
   {
     AZ_IOT_LOG_WARNF(
         AZ_IOT_LOG_COMPONENT_MQTTV5_DIRECT_METHOD,
-        "dropping a '%s' message: not connected and all %d notice-queue entries are in use",
+        "dropping a '%s' message: not connected and all %lu notice-queue entries are in use",
         type->value,
-        (int)AZ_IOT_MQTTV5_DM_NOTICE_QUEUE_MAX);
+        (unsigned long)DI(dm).limits.max_queued_notices);
   }
   else if (result == AZ_IOT_OK)
   {
     AZ_IOT_LOG_INFOF(
         AZ_IOT_LOG_COMPONENT_MQTTV5_DIRECT_METHOD,
-        "sent a '%s' message untracked: all %d notice-queue entries are in use",
+        "sent a '%s' message untracked: all %lu notice-queue entries are in use",
         type->value,
-        (int)AZ_IOT_MQTTV5_DM_NOTICE_QUEUE_MAX);
+        (unsigned long)DI(dm).limits.max_queued_notices);
   }
   else
   {
@@ -551,15 +551,18 @@ void az_iot_mqttv5_direct_method_client__send_abandon(
 
 az_iot_result az_iot_mqttv5_direct_method_client__start_reply_delivery(
     az_iot_mqttv5_direct_method_client* client,
-    az_iot_connection_client* conn)
+    az_iot_connection_client* conn,
+    az_iot_delivery_tracker_entry* tracker_entries)
 {
+  /* PUBACK slots kept, of the reservation, for probe-acks and results (priority 0). */
+  DI(client).slots_kept_for_replies = (uint8_t)DI(client).limits.max_concurrent_invocations;
   az_iot_result result = az_iot_delivery_tracker__init(
       &DI(client).tracker,
-      DI(client).tracker_entries,
-      AZ_IOT_MQTTV5_DM_TRACKED_MESSAGES,
-      AZ_IOT_MQTTV5_DM_RESERVED_PUBACKS,
-      k_slots_kept_for_replies,
-      sizeof(k_slots_kept_for_replies),
+      tracker_entries,
+      DI(client).limits.max_concurrent_invocations + DI(client).limits.max_queued_notices,
+      AZ_IOT_MQTTV5_DM_RESERVED_PUBACKS(DI(client).limits.max_concurrent_invocations),
+      &DI(client).slots_kept_for_replies,
+      1u,
       client);
   if (result == AZ_IOT_OK)
   {
@@ -604,9 +607,9 @@ az_iot_result az_iot_mqttv5_direct_method_client__deliver_result(
   return submit_reply_for_delivery(
       client,
       &k_result_profile,
-      &DI(client).result_tracker_entry[index],
-      DI(client).req_pool[index]._internal.correlation_data,
-      DI(client).exec_deadline_ms[index]);
+      &DI(client).invocations[index].result_tracker_entry,
+      DI(client).invocations[index].slot._internal.correlation_data,
+      DI(client).invocations[index].exec_deadline_ms);
 }
 
 void az_iot_mqttv5_direct_method_client__send_probe_rejection(

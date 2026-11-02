@@ -38,9 +38,24 @@
 
 typedef struct
 {
-  az_iot_mqtt_factory* factory;
+  uint8_t workspace[AZ_IOT_PAHO_WORKSPACE_SIZE];
   az_iot_mqtt_client* client;
 } fixture;
+
+/** @brief Builds a @p version client in @p workspace with the Paho adapter. */
+static az_iot_mqtt_client* build_client(
+    az_iot_mqtt_version version,
+    uint8_t* workspace,
+    size_t workspace_size)
+{
+  /* Paho sizes its own buffers: the limits only have to be valid. */
+  static const az_iot_mqtt_limits limits = { 1024, 1024, 4, 0, 0 };
+  az_iot_mqtt_client* client = NULL;
+  assert_int_equal(
+      az_iot_paho_get_adapter()->init(version, &limits, workspace, workspace_size, &client),
+      AZ_IOT_OK);
+  return client;
+}
 
 static int setup(void** state)
 {
@@ -49,10 +64,7 @@ static int setup(void** state)
 
   fixture* fx = (fixture*)calloc(1, sizeof(fixture));
   assert_non_null(fx);
-  fx->factory = az_iot_paho_factory_create_v3_1_1();
-  assert_non_null(fx->factory);
-  fx->client = fx->factory->create(fx->factory->factory_ctx);
-  assert_non_null(fx->client);
+  fx->client = build_client(AZ_IOT_MQTT_VERSION_3_1_1, fx->workspace, sizeof(fx->workspace));
   *state = fx;
   return 0;
 }
@@ -66,7 +78,6 @@ static int teardown(void** state)
     {
       fx->client->iface->destroy(fx->client);
     }
-    az_iot_paho_factory_destroy(fx->factory);
     free(fx);
   }
   fake_custody_reset();
@@ -210,10 +221,8 @@ static void the_connect_timeout_reaches_paho_on_v5(void** state)
 {
   (void)state;
   mock_paho_reset();
-  az_iot_mqtt_factory* f = az_iot_paho_factory_create_v5();
-  assert_non_null(f);
-  az_iot_mqtt_client* c = f->create(f->factory_ctx);
-  assert_non_null(c);
+  uint8_t workspace[AZ_IOT_PAHO_WORKSPACE_SIZE];
+  az_iot_mqtt_client* c = build_client(AZ_IOT_MQTT_VERSION_5, workspace, sizeof(workspace));
   az_iot_mqtt_connect_options opts;
   base_options(&opts);
   opts.connect_timeout_seconds = 9;
@@ -221,7 +230,6 @@ static void the_connect_timeout_reaches_paho_on_v5(void** state)
   assert_int_equal(c->iface->connect(c, &opts), AZ_IOT_OK);
   assert_int_equal(mock_paho_last_connect_timeout(), 9);
   c->iface->destroy(c);
-  az_iot_paho_factory_destroy(f);
 }
 
 /* ------------------------------------------------------------------------- */

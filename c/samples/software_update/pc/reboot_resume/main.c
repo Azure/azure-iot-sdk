@@ -31,7 +31,6 @@
  *   AZ_IOT_SU_POLL_INTERVAL_S      seconds between checks (default 14400)
  *   AZ_IOT_SU_LOG_LEVEL            trace|debug|info|warn|error|off
  */
-#include <errno.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -159,45 +158,26 @@ static int32_t apply_update_step(
 /**
  * @brief persist_workflow_state_fn: save the workflow so it survives a reboot.
  *
- * Written to a temporary file and renamed over the old one, so a crash
- * mid-write leaves the previous record intact. A zero-length write erases
- * the record: the workflow ended and must not be resumed.
+ * Written with sample_file_write_atomically(), so a crash mid-write leaves the
+ * previous record intact and two runs never share a temporary file. A
+ * zero-length write erases the record with sample_file_remove_durably(), as
+ * the workflow ended and must not be resumed.
  */
 static int32_t save_update_workflow(const uint8_t* blob, size_t len, void* user_ctx)
 {
   update_hooks_context* context = (update_hooks_context*)user_ctx;
   if (len == 0)
   {
-    if (remove(context->state_file) != 0 && errno != ENOENT)
+    if (!sample_file_remove_durably(context->state_file))
     {
       return AZ_IOT_SU_RESULT_FAILURE;
     }
     printf("[persist] erased %s\n", context->state_file);
     return AZ_IOT_SU_RESULT_SUCCESS;
   }
-  char tmp[512];
-  int tmp_len = snprintf(tmp, sizeof(tmp), "%s.tmp", context->state_file);
-  if (tmp_len < 0 || (size_t)tmp_len >= sizeof(tmp))
+  if (!sample_file_write_atomically(context->state_file, blob, len))
   {
     return AZ_IOT_SU_RESULT_FAILURE; /* the old record stays */
-  }
-  FILE* f = sample_file_open_private(tmp, true);
-  if (f == NULL)
-  {
-    return AZ_IOT_SU_RESULT_FAILURE;
-  }
-  size_t written = fwrite(blob, 1, len, f);
-  bool flushed = written == len && sample_file_flush_to_storage(f);
-  int closed = fclose(f); /* reports a delayed write failure */
-  if (!flushed || closed != 0)
-  {
-    (void)remove(tmp);
-    return AZ_IOT_SU_RESULT_FAILURE;
-  }
-  if (!sample_file_replace(tmp, context->state_file))
-  {
-    (void)remove(tmp);
-    return AZ_IOT_SU_RESULT_FAILURE;
   }
   printf("[persist] %zu bytes -> %s\n", len, context->state_file);
   return AZ_IOT_SU_RESULT_SUCCESS;
@@ -348,8 +328,6 @@ int main(void)
   az_iot_certificate_provider_pem certs = { 0 };
   az_iot_connection_client connection;
   az_iot_su_client su;
-  az_iot_mqtt_factory* factory_v3 = NULL;
-  az_iot_mqtt_factory* factory_v5 = NULL;
   int connection_ready = 0;
   int su_ready = 0;
   char installed_provider[SU_SIM_ID_PART_SIZE];
@@ -402,22 +380,24 @@ int main(void)
 #elif defined(AZ_IOT_SAMPLE_CRYPTO_MBEDTLS)
   copts.crypto = az_iot_crypto_mbedtls(); /* verifies manifests and file hashes */
 #endif
+  /* The adapter builds each session's MQTT client in this workspace, one at a time: MQTT 3.1.1
+   * for DPS and an MQTTv3 hub, MQTT 5 for an MQTTv5 hub. Limits: sample_utils.h. */
+  static uint8_t mqtt_workspace[SAMPLE_MQTT_WORKSPACE_SIZE];
+#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
+  copts.mqtt_adapter = az_iot_paho_get_adapter();
+#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
+  copts.mqtt_adapter = az_iot_az_mqtt_get_adapter();
+#endif
+  copts.mqtt_limits = SAMPLE_MQTT_LIMITS;
+  copts.mqtt_workspace = mqtt_workspace;
+  copts.mqtt_workspace_size = sizeof(mqtt_workspace);
   if (az_iot_connection_client_init(&connection, &copts) != AZ_IOT_OK)
   {
     goto cleanup;
   }
   connection_ready = 1;
-#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
-  factory_v3 = az_iot_paho_factory_create_v3_1_1();
-  factory_v5 = az_iot_paho_factory_create_v5();
-#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
-  factory_v3 = az_iot_az_mqtt_factory_create_v3_1_1();
-  factory_v5 = az_iot_az_mqtt_factory_create_v5();
-#endif
   if (az_iot_connection_client_add_state_observer(&connection, on_connection_state, &flags)
-          != AZ_IOT_OK
-      || az_iot_connection_client_register_mqtt_factory(&connection, factory_v3) != AZ_IOT_OK
-      || az_iot_connection_client_register_mqtt_factory(&connection, factory_v5) != AZ_IOT_OK)
+      != AZ_IOT_OK)
   {
     goto cleanup;
   }
@@ -554,13 +534,6 @@ cleanup:
   {
     az_iot_connection_client_deinit(&connection);
   }
-#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
-  az_iot_paho_factory_destroy(factory_v3);
-  az_iot_paho_factory_destroy(factory_v5);
-#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
-  az_iot_az_mqtt_factory_destroy(factory_v3);
-  az_iot_az_mqtt_factory_destroy(factory_v5);
-#endif
   az_iot_certificate_provider_pem_deinit(&certs);
   sample_config_release(&config);
   free(hooks_context.state_file);

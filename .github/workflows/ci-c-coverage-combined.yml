@@ -169,6 +169,14 @@ jobs:
           fi
           echo "pairs=$have" >> "$GITHUB_OUTPUT"
 
+      # The real delta processor: the microsoft/delta:1 interop test covers the handler's
+      # default processor path, as in the coverage job of ci-c.yml. A target commit that
+      # predates the handler has no such action.
+      - name: Install the software updates delta processor
+        id: su-delta
+        if: hashFiles('.github/actions/install-su-delta-processor/action.yml') != ''
+        uses: ./.github/actions/install-su-delta-processor # zizmor: ignore[self-repository]
+
       - name: Build and run unit + conformance at the target commit
         # Produced here rather than downloaded, so this half is guaranteed to be
         # the target commit. It is also cheap: the instrumented build and the
@@ -182,6 +190,7 @@ jobs:
           # cannot exercise that contract; the coverage job in ci-c.yml does,
           # on every push. Accepted deliberately here rather than by accident.
           AZ_IOT_CONFORMANCE_ALLOW_UNPROVEN: '1'
+          SU_DELTA_LIBRARY: ${{ steps.su-delta.outputs.library }}
         working-directory: c
         run: |
           set -euo pipefail
@@ -194,7 +203,7 @@ jobs:
             sleep 1
           done
           mosquitto_pub -h localhost -p 1883 -t probe -m ok
-          cmake --preset linux-gcc-coverage
+          cmake --preset linux-gcc-coverage ${SU_DELTA_LIBRARY:+"-DAZ_IOT_SU_DELTA_TEST_LIBRARY=$SU_DELTA_LIBRARY"}
           cmake --build --preset linux-gcc-coverage
           ctest --preset linux-gcc-coverage -E e2e
           bash eng/collect-coverage.sh build/linux-gcc-coverage traces/unit.json unit

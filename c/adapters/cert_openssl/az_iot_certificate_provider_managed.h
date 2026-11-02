@@ -25,16 +25,23 @@
  *
  * Files it writes (key and chain) are created readable only by the current user
  * (0600 on POSIX, owner-only DACL on Windows), under a unique temporary name
- * ("<path>.aziot-...") next to the destination, then renamed over it. init()
- * deletes such files a stopped process left behind (best effort: one it cannot
- * list or delete is left, and init() continues). The key and chain paths must
- * be used by one provider instance at a time. The private key is stored
- * unencrypted: protect the directory accordingly.
+ * ("<path>.aziot-...") next to the destination, flushed, then renamed over it.
+ * The rename is flushed too (parent directory fsync on POSIX, write-through
+ * on Windows), so a stored chain survives a power loss. If only that directory
+ * sync fails, the write still succeeds: the new file is already in place and
+ * served. init() deletes temporary files a stopped process left behind (best
+ * effort: one it cannot list or delete is left, and init() continues). The key
+ * and chain paths must be used by one provider instance at a time.
  *
- * This is the reference implementation of the CSR provider contract. Deployments
- * with a TPM/HSM/secure element should implement their own provider with a
- * non-extractable key (see the sign() hook and client_key_uri in
- * az_iot_certificate_provider.h). Requires OpenSSL 3.0+.
+ * By design, the operational private key is stored unencrypted (plain PEM),
+ * protected only by the file permissions above: a passphrase would have to be
+ * stored on the same device. Protect the directory accordingly. Devices that
+ * need key protection should keep the key in an HSM/TPM/secure element instead
+ * (PKCS#11 via client_key_uri, a PSA Crypto key via client_key_psa_id, or the
+ * sign() hook; see az_iot_certificate_provider.h) through their own provider.
+ *
+ * This is the reference implementation of the CSR provider contract. Requires
+ * OpenSSL 3.0+.
  */
 #ifndef AZ_IOT_CERTIFICATE_PROVIDER_MANAGED_H
 #define AZ_IOT_CERTIFICATE_PROVIDER_MANAGED_H

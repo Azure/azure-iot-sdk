@@ -302,7 +302,7 @@ extern "C"
      * every disposition and let a failing test report them. */
     int delivered_count; /* deliveries the endpoint handed us, whatever their shape */
     int released_count; /* released because they name another device */
-    int stale_count; /* another device's, too old to have a watcher: accepted */
+    int unwatched_count; /* another device's that no watcher waits for: accepted */
     int unparsed_count; /* body missing or not a DATA body */
 
     uint8_t incoming_buffer[AZ_AMQP_DEFAULT_MAX_FRAME_SIZE];
@@ -353,7 +353,7 @@ extern "C"
       int* out_delivered,
       int* out_captured,
       int* out_released,
-      int* out_stale,
+      int* out_unwatched,
       int* out_unparsed);
 
   /* Detach the receiver and close the connection (best-effort). */
