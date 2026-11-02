@@ -113,10 +113,13 @@ static void with_retries(az_iot_connection_client_options* opts)
   opts->reconnection_policy.jitter_pct = 0;
 }
 
-/** @brief Inits @p fx's client with @p opts and the mock adapter in @p fx's MQTT workspace. */
-static void init_with_mock_adapter(adapter_fixture* fx, az_iot_connection_client_options opts)
+/** @brief Inits @p fx's client with @p opts and @p adapter in @p fx's MQTT workspace. */
+static void init_with_adapter(
+    adapter_fixture* fx,
+    az_iot_connection_client_options opts,
+    const az_iot_mqtt_adapter* adapter)
 {
-  opts.mqtt_adapter = az_iot_mock_mqtt_get_adapter();
+  opts.mqtt_adapter = adapter;
   opts.mqtt_limits = k_limits;
   opts.mqtt_workspace = fx->mqtt_workspace;
   opts.mqtt_workspace_size = fx->mqtt_workspace_size;
@@ -125,6 +128,12 @@ static void init_with_mock_adapter(adapter_fixture* fx, az_iot_connection_client
   assert_int_equal(
       az_iot_connection_client_add_state_observer(&fx->client, az_iot_test_on_state, &fx->log),
       AZ_IOT_OK);
+}
+
+/** @brief Inits @p fx's client with @p opts and the mock adapter in @p fx's MQTT workspace. */
+static void init_with_mock_adapter(adapter_fixture* fx, az_iot_connection_client_options opts)
+{
+  init_with_adapter(fx, opts, az_iot_mock_mqtt_get_adapter());
 }
 
 static void assert_in_mqtt_workspace(const adapter_fixture* fx, const void* object, size_t size)
@@ -253,7 +262,8 @@ static void init_checks_the_mqtt_workspace(void** state)
   opts.mqtt_limits.max_in_flight_messages = 0;
   assert_int_equal(az_iot_connection_client_init(&fx->client, &opts), AZ_IOT_ERR_INVALID_ARG);
 
-  const az_iot_mqtt_adapter no_init = { az_iot_mock_mqtt_get_adapter()->get_workspace_size, NULL };
+  const az_iot_mqtt_adapter no_init
+      = { az_iot_mock_mqtt_get_adapter()->get_workspace_size, NULL, NULL };
   opts.mqtt_limits = k_limits;
   opts.mqtt_adapter = &no_init;
   assert_int_equal(az_iot_connection_client_init(&fx->client, &opts), AZ_IOT_ERR_INVALID_ARG);
@@ -661,7 +671,7 @@ static az_iot_result scripted_init(
 static void adapter_init_errors_fail_the_start(void** state)
 {
   adapter_fixture* fx = (adapter_fixture*)*state;
-  static const az_iot_mqtt_adapter scripted = { scripted_get_workspace_size, scripted_init };
+  static const az_iot_mqtt_adapter scripted = { scripted_get_workspace_size, scripted_init, NULL };
   static const struct
   {
     az_iot_result init_result;
@@ -702,7 +712,237 @@ static void adapter_init_errors_fail_the_start(void** state)
   }
 }
 
+/** @brief Calls of recording_validate_limits_for_session_usage() since the last reset. */
+static size_t g_session_usage_validations;
+/** @brief The session usage of the last such call. */
+static az_iot_mqtt_session_usage g_validated_session_usage;
+/** @brief What such calls return. */
+static az_iot_result g_session_usage_validation_result;
+
+static az_iot_result recording_validate_limits_for_session_usage(
+    const az_iot_mqtt_limits* limits,
+    const az_iot_mqtt_session_usage* usage)
+{
+  assert_non_null(limits);
+  assert_non_null(usage);
+  ++g_session_usage_validations;
+  g_validated_session_usage = *usage;
+  return g_session_usage_validation_result;
+}
+
+/** @brief The mock adapter with recording_validate_limits_for_session_usage(), reset. */
+static const az_iot_mqtt_adapter* mock_adapter_validating_session_usage(void)
+{
+  static az_iot_mqtt_adapter adapter;
+  adapter = *az_iot_mock_mqtt_get_adapter();
+  adapter.validate_limits_for_session_usage = recording_validate_limits_for_session_usage;
+  g_session_usage_validations = 0;
+  memset(&g_validated_session_usage, 0, sizeof(g_validated_session_usage));
+  g_session_usage_validation_result = AZ_IOT_OK;
+  return &adapter;
+}
+
+/** @brief Asserts the hub CONNECT on @p hub outlives its connection exactly when @p outlives. */
+static void assert_hub_connect_outlives_its_connection(
+    az_iot_mock_mqtt_client* hub,
+    az_iot_mqtt_version version,
+    bool outlives)
+{
+  assert_non_null(hub);
+  const az_iot_mock_call* connect = az_iot_mock_mqtt_client_last_of(hub, AZ_IOT_MOCK_CALL_CONNECT);
+  assert_non_null(connect);
+  bool const connect_outlives = !connect->connect.clean_start
+      && (version == AZ_IOT_MQTT_VERSION_3_1_1 || connect->connect.session_expiry_seconds > 0u);
+  assert_int_equal(connect_outlives, outlives);
+}
+
+/* init() tells the adapter whether the hub session outlives its connection, and every hub
+ * connect agrees, over both hub protocol versions, direct and through DPS. */
+static void init_tells_the_adapter_whether_the_hub_session_outlives_its_connection(void** state)
+{
+  adapter_fixture* fx = (adapter_fixture*)*state;
+  static const struct
+  {
+    bool through_dps;
+    az_iot_mqtt_version version;
+    az_iot_session_continuity continuity;
+    bool outlives;
+  } cases[] = {
+    { false, AZ_IOT_MQTT_VERSION_3_1_1, AZ_IOT_SESSION_CONTINUITY_DEFAULT, true },
+    { false, AZ_IOT_MQTT_VERSION_3_1_1, AZ_IOT_SESSION_CONTINUITY_RESUME, true },
+    { false, AZ_IOT_MQTT_VERSION_3_1_1, AZ_IOT_SESSION_CONTINUITY_CLEAN, false },
+    { false, AZ_IOT_MQTT_VERSION_5, AZ_IOT_SESSION_CONTINUITY_DEFAULT, true },
+    { false, AZ_IOT_MQTT_VERSION_5, AZ_IOT_SESSION_CONTINUITY_RESUME, true },
+    { false, AZ_IOT_MQTT_VERSION_5, AZ_IOT_SESSION_CONTINUITY_CLEAN, false },
+    { true, AZ_IOT_MQTT_VERSION_3_1_1, AZ_IOT_SESSION_CONTINUITY_DEFAULT, true },
+    { true, AZ_IOT_MQTT_VERSION_3_1_1, AZ_IOT_SESSION_CONTINUITY_CLEAN, false },
+    { true, AZ_IOT_MQTT_VERSION_5, AZ_IOT_SESSION_CONTINUITY_DEFAULT, true },
+    { true, AZ_IOT_MQTT_VERSION_5, AZ_IOT_SESSION_CONTINUITY_CLEAN, false },
+  };
+  for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i)
+  {
+    az_iot_mock_mqtt_adapter_reset();
+    const az_iot_mqtt_adapter* adapter = mock_adapter_validating_session_usage();
+    az_iot_connection_client_options opts = cases[i].through_dps ? dps_options() : direct_options();
+    if (!cases[i].through_dps && cases[i].version == AZ_IOT_MQTT_VERSION_5)
+    {
+      opts.connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5;
+    }
+    opts.session_continuity = cases[i].continuity;
+    init_with_adapter(fx, opts, adapter);
+    assert_int_equal(g_session_usage_validations, 1);
+    assert_int_equal(g_validated_session_usage.session_outlives_connection, cases[i].outlives);
+
+    if (cases[i].through_dps)
+    {
+      (void)register_with_the_assignment(
+          fx,
+          cases[i].version == AZ_IOT_MQTT_VERSION_5 ? k_assigned_mqtt_v5_body : k_assigned_body);
+    }
+    else
+    {
+      assert_int_equal(az_iot_connection_client_open(&fx->client), AZ_IOT_OK);
+    }
+    assert_hub_connect_outlives_its_connection(
+        az_iot_mock_mqtt_adapter_last_client_of(cases[i].version),
+        cases[i].version,
+        cases[i].outlives);
+    assert_int_equal(az_iot_test_connection_client_deinit(&fx->client), AZ_IOT_OK);
+    fx->initialized = false;
+  }
+}
+
+/* Limits the adapter refuses for the session usage fail init() before it changes the client; an
+ * adapter without the check accepts the same options. */
+static void init_fails_when_the_adapter_refuses_the_limits_for_the_session_usage(void** state)
+{
+  adapter_fixture* fx = (adapter_fixture*)*state;
+  static uint8_t untouched[sizeof(az_iot_connection_client)];
+  memset(&fx->client, 0x5A, sizeof(fx->client));
+  memset(untouched, 0x5A, sizeof(untouched));
+
+  az_iot_connection_client_options opts = direct_options();
+  opts.mqtt_adapter = mock_adapter_validating_session_usage();
+  opts.mqtt_limits = k_limits;
+  opts.mqtt_workspace = fx->mqtt_workspace;
+  opts.mqtt_workspace_size = fx->mqtt_workspace_size;
+  g_session_usage_validation_result = AZ_IOT_ERR_INVALID_ARG;
+  assert_int_equal(az_iot_connection_client_init(&fx->client, &opts), AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(g_session_usage_validations, 1);
+  assert_memory_equal(&fx->client, untouched, sizeof(fx->client));
+
+  opts.mqtt_adapter = az_iot_mock_mqtt_get_adapter();
+  assert_null(opts.mqtt_adapter->validate_limits_for_session_usage);
+  assert_int_equal(az_iot_connection_client_init(&fx->client, &opts), AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client_deinit(&fx->client), AZ_IOT_OK);
+}
+
+/* A provision_only client never connects to a hub, so whatever session_continuity says, init()
+ * tells the adapter no session outlives its connection, and the DPS CONNECT is clean. */
+static void init_tells_the_adapter_no_session_of_a_provision_only_client_outlives_its_connection(
+    void** state)
+{
+  adapter_fixture* fx = (adapter_fixture*)*state;
+  static const az_iot_session_continuity continuities[] = { AZ_IOT_SESSION_CONTINUITY_DEFAULT,
+                                                            AZ_IOT_SESSION_CONTINUITY_RESUME,
+                                                            AZ_IOT_SESSION_CONTINUITY_CLEAN };
+  for (size_t i = 0; i < sizeof(continuities) / sizeof(continuities[0]); ++i)
+  {
+    az_iot_mock_mqtt_adapter_reset();
+    const az_iot_mqtt_adapter* adapter = mock_adapter_validating_session_usage();
+    az_iot_connection_client_options opts = dps_options();
+    opts.dps.provision_only = true;
+    opts.session_continuity = continuities[i];
+    init_with_adapter(fx, opts, adapter);
+    assert_int_equal(g_session_usage_validations, 1);
+    assert_false(g_validated_session_usage.session_outlives_connection);
+
+    assert_int_equal(az_iot_connection_client_open(&fx->client), AZ_IOT_OK);
+    az_iot_mock_mqtt_client* dps = az_iot_mock_mqtt_adapter_last_client();
+    assert_non_null(dps);
+    assert_ptr_equal(fx->client.dps_mqtt, dps);
+    const az_iot_mock_call* connect
+        = az_iot_mock_mqtt_client_last_of(dps, AZ_IOT_MOCK_CALL_CONNECT);
+    assert_non_null(connect);
+    assert_true(connect->connect.clean_start);
+    assert_int_equal(az_iot_test_connection_client_deinit(&fx->client), AZ_IOT_OK);
+    fx->initialized = false;
+  }
+}
+
 #ifdef AZ_IOT_TEST_WITH_AZ_MQTT_ADAPTER
+/* az_mqtt with no message store accepts a provision_only client whatever session_continuity says:
+ * it never connects to a hub, and its DPS sessions are clean. */
+static void init_accepts_az_mqtt_without_a_message_store_for_a_provision_only_client(void** state)
+{
+  (void)state;
+  static az_iot_connection_client client;
+  const az_iot_mqtt_limits limits = { 4096, 4096, 8, 0, 4096 };
+  const size_t needed = az_iot_az_mqtt_get_workspace_size(&limits);
+  assert_true(needed > 0);
+  uint8_t* workspace = (uint8_t*)malloc(needed);
+  assert_non_null(workspace);
+  static const az_iot_session_continuity continuities[] = { AZ_IOT_SESSION_CONTINUITY_DEFAULT,
+                                                            AZ_IOT_SESSION_CONTINUITY_RESUME,
+                                                            AZ_IOT_SESSION_CONTINUITY_CLEAN };
+  for (size_t i = 0; i < sizeof(continuities) / sizeof(continuities[0]); ++i)
+  {
+    az_iot_connection_client_options opts = dps_options();
+    opts.dps.provision_only = true;
+    opts.session_continuity = continuities[i];
+    opts.mqtt_adapter = az_iot_az_mqtt_get_adapter();
+    opts.mqtt_limits = limits;
+    opts.mqtt_workspace = workspace;
+    opts.mqtt_workspace_size = needed;
+    assert_int_equal(az_iot_connection_client_init(&client, &opts), AZ_IOT_OK);
+    assert_int_equal(az_iot_connection_client_deinit(&client), AZ_IOT_OK);
+  }
+  free(workspace);
+}
+
+/* az_mqtt with no message store: init() refuses a hub session that outlives its connection, on
+ * either hub protocol version and through DPS, and accepts clean sessions. */
+static void init_refuses_az_mqtt_without_a_message_store_for_a_resumed_hub_session(void** state)
+{
+  (void)state;
+  static az_iot_connection_client client;
+  const az_iot_mqtt_limits limits = { 4096, 4096, 8, 0, 4096 };
+  const size_t needed = az_iot_az_mqtt_get_workspace_size(&limits);
+  assert_true(needed > 0);
+  uint8_t* workspace = (uint8_t*)malloc(needed);
+  assert_non_null(workspace);
+  static const struct
+  {
+    bool through_dps;
+    az_iot_connection_profile profile;
+  } sessions[] = {
+    { false, AZ_IOT_CONNECTION_PROFILE_MQTT_V3 },
+    { false, AZ_IOT_CONNECTION_PROFILE_MQTT_V5 },
+    { true, AZ_IOT_CONNECTION_PROFILE_MQTT_V3 },
+  };
+  static const az_iot_session_continuity resumed[]
+      = { AZ_IOT_SESSION_CONTINUITY_DEFAULT, AZ_IOT_SESSION_CONTINUITY_RESUME };
+  for (size_t i = 0; i < sizeof(sessions) / sizeof(sessions[0]); ++i)
+  {
+    az_iot_connection_client_options opts
+        = sessions[i].through_dps ? dps_options() : direct_options();
+    opts.connection_profile = sessions[i].profile;
+    opts.mqtt_adapter = az_iot_az_mqtt_get_adapter();
+    opts.mqtt_limits = limits;
+    opts.mqtt_workspace = workspace;
+    opts.mqtt_workspace_size = needed;
+    for (size_t j = 0; j < sizeof(resumed) / sizeof(resumed[0]); ++j)
+    {
+      opts.session_continuity = resumed[j];
+      assert_int_equal(az_iot_connection_client_init(&client, &opts), AZ_IOT_ERR_INVALID_ARG);
+    }
+    opts.session_continuity = AZ_IOT_SESSION_CONTINUITY_CLEAN;
+    assert_int_equal(az_iot_connection_client_init(&client, &opts), AZ_IOT_OK);
+    assert_int_equal(az_iot_connection_client_deinit(&client), AZ_IOT_OK);
+  }
+  free(workspace);
+}
+
 static void init_sizes_the_mqtt_workspace_for_the_az_mqtt_adapter(void** state)
 {
   adapter_fixture* fx = (adapter_fixture*)*state;
@@ -861,7 +1101,17 @@ int main(void)
         a_failed_dps_connect_releases_the_workspace_for_the_retry, setup, teardown),
     cmocka_unit_test_setup_teardown(deinit_wipes_the_mqtt_workspace, setup, teardown),
     cmocka_unit_test_setup_teardown(adapter_init_errors_fail_the_start, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        init_tells_the_adapter_whether_the_hub_session_outlives_its_connection, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        init_fails_when_the_adapter_refuses_the_limits_for_the_session_usage, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        init_tells_the_adapter_no_session_of_a_provision_only_client_outlives_its_connection,
+        setup,
+        teardown),
 #ifdef AZ_IOT_TEST_WITH_AZ_MQTT_ADAPTER
+    cmocka_unit_test(init_accepts_az_mqtt_without_a_message_store_for_a_provision_only_client),
+    cmocka_unit_test(init_refuses_az_mqtt_without_a_message_store_for_a_resumed_hub_session),
     cmocka_unit_test_setup_teardown(
         init_sizes_the_mqtt_workspace_for_the_az_mqtt_adapter, setup, teardown),
 #endif

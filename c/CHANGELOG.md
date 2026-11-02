@@ -4,6 +4,14 @@
 
 ### Features Added
 
+- Breaking: `az_iot_mqtt_adapter` gains an optional `validate_limits_for_session_usage()`, which
+  `az_iot_connection_client_init()` calls with whether the hub session outlives its connection
+  (`az_iot_mqtt_session_usage`); init fails with `AZ_IOT_ERR_INVALID_ARG` when it refuses the
+  limits. Positional initializers of the struct need a third member (NULL). The az_mqtt adapter
+  refuses `message_store_size` 0 unless `session_continuity` is `AZ_IOT_SESSION_CONTINUITY_CLEAN`
+  or `dps.provision_only` is set, so this fails at init instead of at every connect. Paho, and
+  adapters that leave it NULL, are unaffected. Defining `AZ_IOT_DEFAULT_SESSION_EXPIRY_SECONDS` as
+  0 is a compile error.
 - Breaking: the mqttv3 direct method client holds its in-flight invocations in a workspace the
   application provides, sized at run time. `az_iot_mqttv3_direct_method_client_init()` takes
   `az_iot_mqttv3_direct_method_client_options` (`az_iot_mqttv3_direct_method_client_options_default()`):
@@ -224,8 +232,11 @@
   so the limits are only checked. `destroy()` releases those internals, wipes the workspace
   and frees nothing else.
 - az_mqtt adapter: `az_iot_mqtt_limits::message_store_size` may be 0, for devices that only use
-  clean sessions: no message store is reserved, and a connect whose session outlives the connection
-  (`clean_start` false; MQTT 5: with `session_expiry_seconds` > 0) returns `AZ_IOT_ERR_NOT_SUPPORTED`.
+  clean sessions: no message store is reserved, `az_iot_connection_client_init()` refuses it
+  unless `session_continuity` is `AZ_IOT_SESSION_CONTINUITY_CLEAN` or `dps.provision_only` is set,
+  and a connect whose session
+  outlives the connection (`clean_start` false; MQTT 5: with `session_expiry_seconds` > 0) returns
+  `AZ_IOT_ERR_NOT_SUPPORTED`.
 - Retry policy: `az_iot_retry_policy::jitter_mode`. `AZ_IOT_RETRY_JITTER_ADDITIVE` only lengthens a
   delay (+0..`jitter_pct`); the default `AZ_IOT_RETRY_JITTER_SYMMETRIC` keeps the existing ± jitter.
 - Initial preview of the C SDK for Azure IoT Hub (mqttv3 and mqttv5).

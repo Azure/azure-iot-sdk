@@ -47,7 +47,7 @@ static az_iot_result install_test_mqtt_init(
 
 /** @brief The stub adapter. */
 static const az_iot_mqtt_adapter install_test_mqtt_adapter
-    = { install_test_mqtt_get_workspace_size, install_test_mqtt_init };
+    = { install_test_mqtt_get_workspace_size, install_test_mqtt_init, NULL };
 
 /** @brief Workspace for the stub adapter. */
 static uint8_t install_test_mqtt_workspace[INSTALL_TEST_MQTT_WORKSPACE_SIZE];
