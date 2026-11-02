@@ -8,8 +8,7 @@
 A C99 device SDK for Azure IoT Hub and the Azure IoT Hub Device Provisioning Service (DPS),
 built for constrained and embedded devices.
 
-> **Preview** (1.0.0-preview). APIs may change before the first stable release. See the
-> [changelog](CHANGELOG.md).
+> Version 1.0.0. See the [changelog](CHANGELOG.md).
 
 ## Table of Contents
 
