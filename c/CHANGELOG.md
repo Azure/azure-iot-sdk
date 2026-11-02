@@ -105,9 +105,11 @@ software updates. APIs may change before a stable release.
   conformance test suite for it. See [docs/how_to_byo_mqtt_client.md](docs/how_to_byo_mqtt_client.md).
 - MQTT 5 in both adapters and the adapter interface: user properties read through a view
   (`az_iot_mqtt_user_properties_next()` / `_find()`), with no fixed count; Correlation Data and
-  Message Expiry; Reason Strings of a refused CONNACK (az_mqtt only), SUBACK or PUBACK and of a
-  server DISCONNECT, reported in state events (`error->message`) and to
-  `az_iot_subscription_failed_callback`; PUBACK reason codes mapped by
+  Message Expiry; Reason Strings of a refused CONNACK (az_mqtt only) or SUBACK and of a server
+  DISCONNECT, reported in state events (`error->message`) and to
+  `az_iot_subscription_failed_callback`; a refused PUBACK leaves the session up, and its Reason
+  String goes to the publish's result callback (`az_iot_publish_result::reason_string`, e.g. that
+  of `az_iot_mqttv5_custom_topic_client_publish()`); PUBACK reason codes mapped by
   `az_iot_mqtt_puback_result()` (`AZ_IOT_ERR_PUBLISH_REFUSED`, `AZ_IOT_ERR_BUSY` for quota). The
   conformance suite covers MQTT 5.
 
@@ -191,7 +193,9 @@ software updates. APIs may change before a stable release.
   certificates, saved assignments and TPM attestation; certificate renewal over IoT Hub; keys in a
   PKCS#11 token or behind a `sign()` callback; user-provided SAS tokens; custom certificate
   providers.
-- `unified/` and `authentication/` samples serve whichever hub generation DPS assigns.
+- `unified/` and `authentication/` samples serve whichever hub generation DPS assigns, except the
+  mqttv3-only `c2d_receiver`, `file_upload`, `hub_renew` and `dps_csr_managed`, and those that
+  authenticate to the hub with SAS (`dps_sas_key`, `user_provided_sas_token`, `dps_tpm`).
 - [`mqttv5/`](samples/README.md): telemetry, device twin, direct methods (in the handler or later)
   and custom topics on an mqttv5 hub.
 - [`software_update/`](docs/software-update.md#samples): onboarding and regular checks, HTTPS
