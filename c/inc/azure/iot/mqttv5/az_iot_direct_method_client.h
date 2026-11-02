@@ -20,10 +20,12 @@ extern "C"
 {
 #endif
 
-/* Longest topic this client builds: "ih/" + device id + "/dev/methods". */
-#ifndef AZ_IOT_MQTTV5_DM_TOPIC_MAX
-#define AZ_IOT_MQTTV5_DM_TOPIC_MAX 192
+#if defined(AZ_IOT_MQTTV5_DM_TOPIC_MAX)
+#error "AZ_IOT_MQTTV5_DM_TOPIC_MAX is fixed: see c/docs/client-configuration.md."
 #endif
+
+/** @brief Longest topic this client builds: "ih/" + device id + "/dev/methods". Fixed. */
+#define AZ_IOT_MQTTV5_DM_TOPIC_MAX 192
 
 /* Bytes of a result body this client can frame into a protobuf Result. The
  * frame is built in a buffer inside the client rather than on the heap, one per
@@ -103,8 +105,8 @@ extern "C"
    *                          received message, so there is no bound to exceed.
    *   topics                 built once at connect. A device id too long for
    *                          AZ_IOT_MQTTV5_DM_TOPIC_MAX fails the connect attempt
-   *                          with a log naming the limit, rather than binding a
-   *                          truncated topic.
+   *                          with a log naming the fixed limit, rather than
+   *                          binding a truncated topic; use a shorter device id.
    *   result body            outbound only. See
    *                          az_iot_mqttv5_direct_method_respond().
    */

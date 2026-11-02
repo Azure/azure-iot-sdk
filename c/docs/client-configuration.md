@@ -132,7 +132,8 @@ own internals and sizes its own buffers, so the limits are only checked (the ran
 Buffer sizes, pool sizes and default timeouts are `#define`s that you can override at compile
 time, for example `-DAZ_IOT_DEFAULT_KEEP_ALIVE_SECONDS=120`. Connection client entry counts are
 run-time limits instead (below). The sizes are fixed when compiled: they size
-arrays inside caller-allocated structs, or buffers inside the SDK.
+arrays inside caller-allocated structs, or buffers inside the SDK. Constants listed as fixed
+cannot be overridden: defining one before including the headers is a compile error.
 
 **Set every override for the whole build, with the same value for the SDK and the application.**
 
@@ -342,20 +343,25 @@ Defaults used when the matching option is left at 0:
 | --- | --- | --- |
 | `AZ_IOT_TWIN_MAX_PENDING` | 8 | Twin requests in flight per twin client. |
 | `AZ_IOT_DM_MAX_INFLIGHT` | 4 | Direct-method invocations held per client (mqttv3; default for mqttv5). When full, a new mqttv3 invocation is dropped with a `WARN` log and gets no response. |
-| `AZ_IOT_DM_METHOD_NAME_MAX` | 96 | Direct-method name. |
-| `AZ_IOT_DM_RID_MAX` | 32 | mqttv3 request ID. |
-| `AZ_IOT_DM_CORR_DATA_MAX` | 64 | mqttv5 correlation data. |
 | `AZ_IOT_MQTTV3_DM_RESPONSE_TIMEOUT_SECONDS` | 300 | Default for `az_iot_mqttv3_direct_method_client_set_response_timeout()`. |
 | `AZ_IOT_MQTTV5_DM_MAX_CONCURRENT` | `AZ_IOT_DM_MAX_INFLIGHT` | mqttv5 invocations probed or awaiting an answer. A probe past it is refused `DEVICE_BUSY`. The client reserves twice this many `max_pending_publishes` slots. |
 | `AZ_IOT_MQTTV5_DM_MAX_METHODS` | 8 | Method names one mqttv5 client can declare. |
 | `AZ_IOT_MQTTV5_DM_NOTICE_QUEUE_MAX` | `AZ_IOT_MQTTV5_DM_MAX_CONCURRENT` | mqttv5 probe rejections and abandons kept until their PUBACK, to be published again after a reconnect. Past it, one is sent untracked while `CONNECTED` and dropped otherwise. |
 | `AZ_IOT_MQTTV5_DM_RESULT_BODY_MAX` | 512 | mqttv5 direct-method result body. The client holds one result buffer per `AZ_IOT_MQTTV5_DM_MAX_CONCURRENT` slot, so a result can wait for `CONNECTED` and be published again if its PUBACK is lost with the connection. |
-| `AZ_IOT_MQTTV5_DM_TOPIC_MAX` | 192 | mqttv5 direct-method topic. |
 | `AZ_IOT_FILE_UPLOAD_BODY_MAX` | 512 | File-upload request body; bounds the blob name (about 495 bytes once JSON-escaped). |
 | `AZ_IOT_FILE_UPLOAD_URL_MAX` | 512 | File-upload request URL. |
 | `AZ_IOT_FILE_UPLOAD_SAS_URI_MAX` | 2048 | Blob SAS URI. |
 | `AZ_IOT_FILE_UPLOAD_CORR_ID_MAX` | 192 | File-upload correlation ID. |
 | `AZ_IOT_FILE_UPLOAD_AUTHORIZATION_MAX` | 1024 | Hub SAS token passed to the file-upload HTTP hook; at least `AZ_IOT_SAS_TOKEN_SIZE()` of the hub host and device ID lengths (267 bytes together by default). |
+
+Fixed sizes:
+
+| Constant | Value | Bounds |
+| --- | --- | --- |
+| `AZ_IOT_DM_METHOD_NAME_MAX` | 96 | Direct-method name, terminator included. |
+| `AZ_IOT_DM_RID_MAX` | 32 | mqttv3 request ID, terminator included. |
+| `AZ_IOT_DM_CORR_DATA_MAX` | 64 | mqttv5 correlation data. |
+| `AZ_IOT_MQTTV5_DM_TOPIC_MAX` | 192 | mqttv5 direct-method topic, terminator included. |
 
 #### Software updates ([az_iot_su.h](../inc/azure/iot/az_iot_su.h))
 
@@ -439,7 +445,7 @@ Smaller values save memory on constrained devices, for example
 | --- | --- | --- |
 | `AZ_IOT_DISPATCH_PREFIX_MAX` | 128 | Topic prefix of one handler. Fixed. |
 | `AZ_IOT_LOG_MESSAGE_MAX` | 384 | One formatted log message, terminator included. Longer messages are truncated and end in `...`. |
-| `AZ_IOT_LOG_FILE_PATH_MAX` | 256 | Log file path for the file sink, terminator included. |
+| `AZ_IOT_LOG_FILE_PATH_MAX` | 256 | Log file path for the file sink, terminator included. Fixed. |
 | `AZ_IOT_LOG_FILE_DEFAULT_MAX_BYTES` | 1 MiB | Default size at which the file sink rotates. |
 | `AZ_IOT_LOG_FILE_DEFAULT_MAX_FILES` | 3 | Default number of rotated log files kept. |
 

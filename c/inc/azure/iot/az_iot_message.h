@@ -216,19 +216,17 @@ extern "C"
       size_t* out_value_len);
   /** @} */
 
-/* Storage bounds for the request handle below. Compile-time footprint knobs:
- * #define before including to tune. */
-#ifndef AZ_IOT_DM_METHOD_NAME_MAX
+#if defined(AZ_IOT_DM_METHOD_NAME_MAX) || defined(AZ_IOT_DM_RID_MAX) \
+    || defined(AZ_IOT_DM_CORR_DATA_MAX)
+#error "Direct method string sizes are fixed: see c/docs/client-configuration.md."
+#endif
+
+/** @brief Longest direct method name a request handle stores. Fixed: it sizes a public struct. */
 #define AZ_IOT_DM_METHOD_NAME_MAX 96
-#endif
-/* Longest mqttv3 request id ($rid) carried on an invocation. */
-#ifndef AZ_IOT_DM_RID_MAX
+/** @brief Longest mqttv3 request id ($rid) carried on an invocation. Fixed. */
 #define AZ_IOT_DM_RID_MAX 32
-#endif
-/* Longest mqttv5 correlation data echoed back on a response. */
-#ifndef AZ_IOT_DM_CORR_DATA_MAX
+/** @brief Longest mqttv5 correlation data echoed back on a response. Fixed. */
 #define AZ_IOT_DM_CORR_DATA_MAX 64
-#endif
 /* Max concurrent in-flight invocations one client can hold. Requests may
  * outlive the handler (the application can respond asynchronously), so they
  * live in a bounded pool inside the caller-allocated client struct rather than

@@ -4,6 +4,13 @@
 
 ### Features Added
 
+- Breaking: feature-client string and topic sizes that lay out public structs are fixed:
+  `AZ_IOT_DM_METHOD_NAME_MAX` (96), `AZ_IOT_DM_RID_MAX` (32), `AZ_IOT_DM_CORR_DATA_MAX` (64),
+  `AZ_IOT_MQTTV5_DM_TOPIC_MAX` (192) and `AZ_IOT_LOG_FILE_PATH_MAX` (256). Defining any of them
+  before including the headers is a compile error, so these sizes cannot differ between the
+  application and the SDK. The direct method and twin counts (`AZ_IOT_DM_MAX_INFLIGHT`,
+  `AZ_IOT_TWIN_MAX_PENDING`, `AZ_IOT_MQTTV5_DM_*` counts) and `AZ_IOT_MQTTV5_DM_RESULT_BODY_MAX` are
+  still overridable and must match between the two.
 - Breaking: the MQTT factory API is removed; the connection client builds every session's MQTT
   client with `az_iot_connection_client_options::mqtt_adapter` in `mqtt_workspace`, sized by
   `mqtt_limits`. All three are required: `init()` returns `AZ_IOT_ERR_INVALID_ARG` when
