@@ -453,6 +453,50 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
         }
 
         [Fact]
+        public async Task GetTwinAsync_Classic_CancellingOneOfTheSharingCallsDoesNotAffectTheOther()
+        {
+            MockFeatureConnectionClient connection = CreateClassicConnection();
+            using TwinClient twinClient = new(connection);
+            using CancellationTokenSource cancelledCaller = new();
+
+            Task<DeviceTwin> cancelled = twinClient.GetTwinAsync(cancelledCaller.Token);
+            Task<DeviceTwin> remaining = twinClient.GetTwinAsync(TestContext.Current.CancellationToken);
+            MqttPublish getPublish = await connection.WaitForPublishedMessagesAsync(1);
+
+            cancelledCaller.Cancel();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => cancelled);
+            Assert.False(connection.PublishCancellationTokens[0].IsCancellationRequested);
+
+            await RespondClassicAsync(connection, getPublish, 200, payload: ClassicTwin(5, "{}", 7, "{}"));
+            Assert.Equal(5ul, (await remaining).DesiredVersion);
+            Assert.Single(connection.PublishedMessages);
+        }
+
+        [Fact]
+        public async Task GetTwinAsync_Classic_CancellingTheOnlyCallSharingTheDesiredResyncDoesNotAffectTheResync()
+        {
+            MockFeatureConnectionClient connection = CreateClassicConnection();
+            using TwinClient twinClient = new(connection);
+            await CompleteConnectSyncAsync(connection, desiredVersion: 1);
+            List<ulong> snapshotVersions = new();
+            twinClient.TwinPushReceived += args => snapshotVersions.Add(args.Desired!.PropertiesVersion);
+            using CancellationTokenSource cancelledCaller = new();
+            int publishCount = connection.PublishedMessages.Count;
+
+            await ReceiveClassicDesiredPatchAsync(connection, 3, "{\"fanSpeed\":3}");
+            MqttPublish resyncGet = await connection.WaitForPublishedMessagesAsync(publishCount + 1);
+            Task<DeviceTwin> cancelled = twinClient.GetTwinAsync(cancelledCaller.Token);
+
+            cancelledCaller.Cancel();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => cancelled);
+            Assert.False(connection.PublishCancellationTokens[publishCount].IsCancellationRequested);
+
+            await RespondClassicAsync(connection, resyncGet, 200, payload: ClassicTwin(3, "{\"fanSpeed\":3}", 1, "{}"));
+            Assert.Equal(new[] { 3ul }, snapshotVersions);
+            Assert.Equal(publishCount + 1, connection.PublishedMessages.Count);
+        }
+
+        [Fact]
         public async Task UpdateReportedPropertiesAsync_Classic_ResentAfterTheNextConnectSyncWhenTheConnectionIsLost()
         {
             MockFeatureConnectionClient connection = CreateClassicConnection();
