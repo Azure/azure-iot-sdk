@@ -56,6 +56,7 @@ internal class Program
         using ConnectionClient connectionClient = new ConnectionClient(new ConnectionClientOptions()
         {
             ReceiveDesiredPropertyUpdates = true,
+            ReceiveReportedPropertiesUponConnect = true,
         });
 
         // Starting from the persisted twin means the SDK only raises the sections that changed while the device was offline,
