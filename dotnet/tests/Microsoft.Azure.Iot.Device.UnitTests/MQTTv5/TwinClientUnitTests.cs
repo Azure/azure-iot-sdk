@@ -1284,6 +1284,45 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
         }
 
         [Fact]
+        public async Task BirthAck_PullModeAndNewerDesiredVersion_FetchesDesiredProperties()
+        {
+            (MockFeatureConnectionClient connection, Guid nonce) = CreateConnectionWithNonce();
+            connection.IsDesiredPushRequested = false;
+            using TwinClient twinClient = new(connection, new TwinState() { DesiredVersion = 3 });
+
+            TwinPushReceivedEventArgs? snapshot = null;
+            twinClient.TwinPushReceived += args => snapshot = args;
+
+            await ReceiveBirthAckAsync(connection, nonce, desiredVersion: 5, reportedVersion: 1);
+
+            MqttPublish get = Assert.Single(connection.PublishedMessages);
+            Assert.Equal("get:1", GetType(get));
+            Assert.Equal(Sections.Desired, TwinGet.Parser.ParseFrom(get.Payload).Sections);
+
+            await ReceiveGetResponseAsync(connection, get, 5, "{\"fanSpeed\":50}");
+
+            Assert.NotNull(snapshot);
+            Assert.Null(snapshot.Reported);
+            Assert.Equal(5ul, snapshot.Desired!.PropertiesVersion);
+            Assert.Equal(50, snapshot.Desired.Properties["fanSpeed"]!.GetValue<int>());
+            Assert.Equal(5ul, twinClient.GetTwinState().DesiredVersion);
+        }
+
+        [Theory]
+        [InlineData(false, 5ul)] // Pull mode, but this device already holds IoT hub's version.
+        [InlineData(true, 7ul)] // IoT hub pushes the newer desired properties itself.
+        public async Task BirthAck_NoFetchWhenPushRequestedOrDesiredVersionIsCurrent(bool isDesiredPushRequested, ulong birthAckDesiredVersion)
+        {
+            (MockFeatureConnectionClient connection, Guid nonce) = CreateConnectionWithNonce();
+            connection.IsDesiredPushRequested = isDesiredPushRequested;
+            using TwinClient twinClient = new(connection, new TwinState() { DesiredVersion = 5 });
+
+            await ReceiveBirthAckAsync(connection, nonce, desiredVersion: birthAckDesiredVersion, reportedVersion: 1);
+
+            Assert.Empty(connection.PublishedMessages);
+        }
+
+        [Fact]
         public async Task BirthAck_OlderReportedVersionThanHeld_DiscardsHeldVersion()
         {
             (MockFeatureConnectionClient connection, Guid nonce) = CreateConnectionWithNonce();

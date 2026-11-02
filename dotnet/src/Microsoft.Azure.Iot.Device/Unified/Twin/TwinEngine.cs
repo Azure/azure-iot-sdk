@@ -151,6 +151,9 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
         /// Patches are only raised in version order, each exactly one version newer than the desired properties this client
         /// last observed. If a patch is missed, this client fetches the full desired properties from IoT hub and raises
         /// <see cref="TwinPushReceived"/> with them instead, followed by any newer patches.
+        /// IoT hubs that use MQTTv5 only send desired properties patches if the connection client's births request them
+        /// (push_desired). Otherwise, this client fetches the desired properties upon connecting when IoT hub's version is
+        /// newer, and later changes are only seen upon reconnecting or by getting the twin.
         /// </remarks>
         public event Action<DesiredPatchReceivedEventArgs>? DesiredPatchReceived;
 
@@ -1356,6 +1359,12 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
                         {
                             StartDesiredResync(connectionNonce, null, outcome);
                         }
+                    }
+                    else if (!_connection.IsDesiredPushRequested && _localDesiredVersion < birthAck.DesiredVersion && _desiredResync == null)
+                    {
+                        // In pull mode, IoT hub pushes neither the desired properties nor their patches, so fetch them when they changed.
+                        Trace.TraceInformation("This device holds version {0} of the desired properties, but IoT hub has version {1}. Fetching the desired properties.", _localDesiredVersion, birthAck.DesiredVersion);
+                        StartDesiredResync(connectionNonce, null, outcome);
                     }
                 }
             }

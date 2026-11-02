@@ -50,12 +50,41 @@ namespace Microsoft.Azure.Iot.Device.Unified.Models
         /// True (the default) if this device uses twins. False to opt out of twins.
         /// </summary>
         /// <remarks>
-        /// When false, the device presence flow does not subscribe to MQTTv3 twin topics or request automatic MQTTv5 twin
-        /// pushes, and constructing a <see cref="Twin.TwinClient"/> with
-        /// this connection client throws an <see cref="InvalidOperationException"/>.
+        /// When connected to an IoT hub that uses MQTTv3, false makes the device presence flow not subscribe to the twin
+        /// topics. This value is ignored for IoT hubs that use MQTTv5, which send twin traffic according to
+        /// <see cref="ReceiveDesiredPropertyUpdates"/> and <see cref="ReceiveReportedPropertiesUponConnect"/> instead. A device
+        /// that doesn't use twins should leave those false. Since the device may be provisioned to an IoT hub that uses
+        /// MQTTv3, constructing a <see cref="Twin.TwinClient"/> with this connection client throws an
+        /// <see cref="InvalidOperationException"/> when this is false.
         /// This value is read once when the connection client is constructed.
         /// </remarks>
         public bool EnableTwin { get; set; } = true;
+
+        /// <summary>
+        /// When connected to an IoT hub over MQTTv5, true to have IoT hub push the desired properties upon connecting (when
+        /// they changed since the version this device holds) and each desired properties patch while connected. False (the
+        /// default) for pull mode.
+        /// </summary>
+        /// <remarks>
+        /// In pull mode, an IoT hub that uses MQTTv5 sends no desired properties patches while the device is connected, so
+        /// <see cref="Twin.TwinClient.DesiredPatchReceived"/> is never raised. Instead, upon each connection the twin client
+        /// fetches the desired properties if IoT hub's version is newer than the one the device holds, and raises
+        /// <see cref="Twin.TwinClient.TwinPushReceived"/> with them. Later changes are only seen upon reconnecting or by calling
+        /// <see cref="Twin.TwinClient.GetTwinAsync"/>.
+        /// IoT hubs that use MQTTv3 always send desired properties patches, so this value is ignored for them.
+        /// This value is read once when the connection client is constructed.
+        /// </remarks>
+        public bool ReceiveDesiredPropertyUpdates { get; set; }
+
+        /// <summary>
+        /// When connected to an IoT hub over MQTTv5, true to have IoT hub push the reported properties upon connecting or
+        /// reconnecting, when they changed since the version this device holds. False (the default) otherwise.
+        /// </summary>
+        /// <remarks>
+        /// This is meant for devices that don't persist their reported properties and use IoT hub to restore them. This value
+        /// is ignored for IoT hubs that use MQTTv3. This value is read once when the connection client is constructed.
+        /// </remarks>
+        public bool ReceiveReportedPropertiesUponConnect { get; set; }
 
         /// <summary>
         /// True (the default) if this device receives direct methods. False to opt out of direct methods.

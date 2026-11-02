@@ -5,6 +5,7 @@ using Microsoft.Azure.Iot.Device.Authentication;
 using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Models.Twin;
 using Microsoft.Azure.Iot.Device.Unified.Connection;
+using Microsoft.Azure.Iot.Device.Unified.Models;
 using SetupSampleDevice;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -50,7 +51,12 @@ internal class Program
         TwinState? persistedTwin = LoadTwin(twinPath);
         Console.WriteLine($"Loaded this device's twin from {twinPath} (desired version {persistedTwin?.DesiredVersion ?? 0}, reported version {persistedTwin?.ReportedVersion ?? 0})");
 
-        using ConnectionClient connectionClient = new ConnectionClient();
+        // Desired properties updates are pull-only by default for IoT hubs that use MQTTv5. This sample asks to receive each one
+        // while connected. IoT hubs that use MQTTv3 always send them.
+        using ConnectionClient connectionClient = new ConnectionClient(new ConnectionClientOptions()
+        {
+            ReceiveDesiredPropertyUpdates = true,
+        });
 
         // Starting from the persisted twin means the SDK only raises the sections that changed while the device was offline,
         // and sends the reported properties patches that IoT hub hadn't applied when the sample stopped.

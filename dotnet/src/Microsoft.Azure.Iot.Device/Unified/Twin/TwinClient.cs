@@ -69,7 +69,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
         /// //Set all handlers 
         /// twinClient.DesiredPatchReceived += SomeDesiredPatchHandlingMethod;
         /// 
-        /// // Open the connection (and start receiving desired patches)
+        /// // Open the connection (and start receiving desired patches, if requested)
         /// await connectionClient.ProvisionAndConnectAsync();
         /// </code>
         /// </example>
@@ -113,6 +113,8 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
         /// Patches are only raised in version order, each exactly one version newer than the desired properties this client
         /// last observed. If a patch is missed, this client fetches the full desired properties from IoT hub and raises
         /// <see cref="TwinPushReceived"/> with them instead, followed by any newer patches.
+        /// IoT hubs that use MQTTv5 only send desired properties patches if
+        /// <see cref="ConnectionClientOptions.ReceiveDesiredPropertyUpdates"/> is true, which it isn't by default.
         /// </remarks>
         public event Action<DesiredPatchReceivedEventArgs>? DesiredPatchReceived
         {
@@ -126,7 +128,9 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
         /// </summary>
         /// <remarks>
         /// Raised whenever the device connects and its copy of the desired or reported properties is out of date. MQTTv5 IoT
-        /// hubs push these sections. For MQTTv3 IoT hubs, this client gets the twin upon each connection instead. Also raised with
+        /// hubs push the sections requested by <see cref="ConnectionClientOptions.ReceiveDesiredPropertyUpdates"/> and
+        /// <see cref="ConnectionClientOptions.ReceiveReportedPropertiesUponConnect"/>. If the desired section isn't pushed, this
+        /// client fetches it instead. For MQTTv3 IoT hubs, this client gets the twin upon each connection instead. Also raised with
         /// just the desired section when this client resynchronizes its desired properties with IoT hub (for example, after
         /// missing a desired properties patch). The desired properties in the snapshot replace the ones this device held.
         /// </remarks>

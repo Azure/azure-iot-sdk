@@ -57,6 +57,9 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
         /// <inheritdoc cref="MQTTv5.Connection.IConnectionClient.LatestBirthAck"/>
         internal MQTTv5.Connection.BirthAckVersions? LatestBirthAck => null;
 
+        /// <inheritdoc cref="MQTTv5.Connection.IConnectionClient.IsDesiredPushRequested"/>
+        internal bool IsDesiredPushRequested => true;
+
         /// <inheritdoc cref="MQTTv5.Connection.IConnectionClient.ObserveDesiredPropertiesVersion"/>
         internal void ObserveDesiredPropertiesVersion(ulong version) { }
 
@@ -70,7 +73,8 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
         internal void ReplaceReportedPropertiesVersion(ulong version) { }
 
         /// <summary>
-        /// Whether this connection client subscribes to twin topics. See <see cref="ConnectionClientOptions.EnableTwin"/>.
+        /// Whether this connection client subscribes to twin topics when connected to an IoT hub that uses MQTTv3. See
+        /// <see cref="ConnectionClientOptions.EnableTwin"/>.
         /// </summary>
         bool IsTwinEnabled => true;
 

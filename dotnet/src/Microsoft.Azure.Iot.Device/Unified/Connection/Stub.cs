@@ -74,6 +74,8 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
 
         MQTTv5.Connection.BirthAckVersions? MQTTv5.Connection.IConnectionClient.LatestBirthAck => _unifiedConnectionClient.LatestBirthAck;
 
+        bool MQTTv5.Connection.IConnectionClient.IsDesiredPushRequested => _unifiedConnectionClient.IsDesiredPushRequested;
+
         void MQTTv5.Connection.IConnectionClient.ObserveDesiredPropertiesVersion(ulong version) => _unifiedConnectionClient.ObserveDesiredPropertiesVersion(version);
 
         void MQTTv5.Connection.IConnectionClient.ObserveReportedPropertiesVersion(ulong version) => _unifiedConnectionClient.ObserveReportedPropertiesVersion(version);

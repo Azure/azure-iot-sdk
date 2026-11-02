@@ -42,7 +42,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
         /// //Set all handlers 
         /// twinClient.DesiredPatchReceived += SomeDesiredPatchHandlingMethod;
         /// 
-        /// // Open the connection (and start receiving desired patches)
+        /// // Open the connection (and start receiving desired patches, if requested)
         /// await connectionClient.ProvisionAndConnectAsync();
         /// </code>
         /// </example>
@@ -78,6 +78,8 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
         /// Patches are only raised in version order, each exactly one version newer than the desired properties this client
         /// last observed. If a patch is missed, this client fetches the full desired properties from IoT hub and raises
         /// <see cref="TwinPushReceived"/> with them instead, followed by any newer patches.
+        /// IoT hub only sends desired properties patches if <see cref="Models.ConnectionClientOptions.ReceiveDesiredPropertyUpdates"/>
+        /// is true, which it isn't by default.
         /// </remarks>
         public event Action<DesiredPatchReceivedEventArgs>? DesiredPatchReceived
         {
@@ -89,6 +91,9 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
         /// An event that executes whenever this client receives a Twin push message from IoT hub.
         /// </summary>
         /// <remarks>
+        /// IoT hub pushes the sections requested by <see cref="Models.ConnectionClientOptions.ReceiveDesiredPropertyUpdates"/> and
+        /// <see cref="Models.ConnectionClientOptions.ReceiveReportedPropertiesUponConnect"/> upon connecting. If the desired
+        /// section isn't pushed, this client fetches it upon connecting instead, and raises this event with it.
         /// The desired section is only included if it is newer than the desired properties this client last observed. This
         /// event is also raised with just the desired section when this client resynchronizes its desired properties
         /// with IoT hub (for example, after missing a desired properties patch).
