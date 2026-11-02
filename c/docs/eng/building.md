@@ -181,8 +181,9 @@ and shared (`hardening-windows`).
 `releases/public-preview`. [`eng/check-ga-scope.sh`](../../eng/check-ga-scope.sh) fails, listing
 `file:line`, when tracked content in `c/`, the C workflows or the C instructions names a non-GA
 feature, file names included. Its allowlists, each entry with its reason, keep the preview-only
-workflows that must stay on `main` for `workflow_dispatch` and the DPS connection profile value
-that `main` rejects. CI runs it in the `conventions` job of `ci-c.yml`, on every pull request that touches what it scans;
+workflows that must stay on `main` for `workflow_dispatch`, the DPS connection profile value
+that `main` rejects and its test, and the vendored `deps/az_mqtt`, whose MQTT 5 client the SDK
+builds without. CI runs it in the `conventions` job of `ci-c.yml`, on every pull request that touches what it scans;
 `releases/public-preview` reverts it together with the removals.
 
 ```sh

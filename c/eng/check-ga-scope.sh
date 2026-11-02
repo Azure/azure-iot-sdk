@@ -56,6 +56,9 @@ allowed_files=(
     .github/workflows/ci-c-e2e-adu.yml
     # Dispatches the workflows above on releases/public-preview.
     .github/workflows/ci-c-public-preview-nightly.yml
+    # Vendored MQTT library: keeps its own MQTT 5 client, which the SDK builds
+    # without (c/adapters/az_mqtt/CMakeLists.txt, allowed below).
+    c/deps/az_mqtt
 )
 
 # Tokens that may stay on a line: "<path ERE><TAB><token ERE>" pairs. A token
@@ -70,6 +73,11 @@ allowed_tokens_mqttv5=(
     $'.*\t`mqttV5`'
     # References to the preview-only workflow files kept on main (above).
     $'.*\tci-c-e2e-mqttv5[A-Za-z0-9._-]*'
+    # Builds the vendored az_mqtt without its MQTT 5 client.
+    $'c/adapters/az_mqtt/CMakeLists\\.txt\tset\\(AZ_MQTT_ENABLE_MQTTV5 OFF([^A-Za-z0-9_]|$)'
+    # The test that main rejects the mqttV5 profile, and its coverage entry.
+    $'c/tests/unit/connection_dps_test\\.c\t(^|[^A-Za-z0-9_])k_assigned_mqtt_v5([^A-Za-z0-9_]|$)'
+    $'c/(tests/unit/connection_dps_test\\.c|docs/eng/test-coverage\\.md)\t(^|[^A-Za-z0-9_])dps_mqtt_v5_profile_is_unsupported([^A-Za-z0-9_]|$)'
 )
 
 if [ "${1:-}" = "--self-test" ]; then
@@ -138,6 +146,20 @@ if [ "${1:-}" = "--self-test" ]; then
     expect pass mqttv5 .github/workflows/ci-c-e2e-mqttv5.yml 'az_iot_mqttv5'
     expect pass mqttv5 .github/workflows/ci-c-public-preview-nightly.yml 'ci-c-e2e-adu.yml mqttv5'
     expect pass mqttv5 c/eng/check-ga-scope.sh 'mqttv5'
+    expect pass mqttv5 c/deps/az_mqtt/src/az_mqtt5_client.c 'az_mqttv5 AZ_MQTT_ENABLE_MQTTV5'
+    expect pass mqttv5 c/deps/az_mqtt/mqttv5/x.c 'int x;'
+    expect fail mqttv5 c/deps/other/x.c 'az_mqttv5'
+    expect pass mqttv5 c/adapters/az_mqtt/CMakeLists.txt 'set(AZ_MQTT_ENABLE_MQTTV5 OFF CACHE BOOL "" FORCE)'
+    expect fail mqttv5 c/adapters/az_mqtt/CMakeLists.txt 'set(AZ_MQTT_ENABLE_MQTTV5 ON CACHE BOOL "" FORCE)'
+    expect fail mqttv5 c/adapters/az_mqtt/CMakeLists.txt 'set(AZ_MQTT_ENABLE_MQTTV5 OFF) # az_mqttv5'
+    expect fail mqttv5 c/CMakeLists.txt 'set(AZ_MQTT_ENABLE_MQTTV5 OFF CACHE BOOL "" FORCE)'
+    expect pass mqttv5 c/tests/unit/connection_dps_test.c 'profile_assign(&pf, k_assigned_mqtt_v5);'
+    expect pass mqttv5 c/tests/unit/connection_dps_test.c 'cmocka_unit_test(dps_mqtt_v5_profile_is_unsupported),'
+    expect pass mqttv5 c/docs/eng/test-coverage.md '| [dps_mqtt_v5_profile_is_unsupported](x.c#L1) |'
+    expect fail mqttv5 c/tests/unit/connection_dps_test.c 'static void dps_mqtt_v5_profile_is_unsupported_too(void);'
+    expect fail mqttv5 c/tests/unit/connection_dps_test.c 'k_assigned_mqtt_v5 az_iot_mqttv5'
+    expect fail mqttv5 c/tests/unit/connection_twin_test.c 'k_assigned_mqtt_v5'
+    expect fail mqttv5 c/docs/eng/test-coverage.md 'k_assigned_mqtt_v5'
     expect fail su,mqttv5 "${f}" 'az_iot_mqttv5'
     [ "${failures}" -eq 0 ] || exit 1
     echo "self-test: every fixture gave the expected verdict."
