@@ -141,6 +141,10 @@ jobs:
     needs: [ changes, clang-tidy, msvc-analyze ]
     if: always()
     runs-on: ubuntu-24.04
+    # No checkout: the workflow default working-directory c/ would not exist.
+    defaults:
+      run:
+        working-directory: .
     timeout-minutes: 5
     permissions: {}
     steps:

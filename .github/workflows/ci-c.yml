@@ -1840,6 +1840,10 @@ jobs:
     needs: [ changes, build, openssl-4, conventions, c-standards, valgrind, race-detector, asan-windows, asan-ubsan-linux, tsan-linux, crypto-mbedtls, az-mqtt, deps-isolation, windows-no-openssl, hardening-linux, hardening-windows, installed-deps-windows, install, subproject, coverage-c, esp-idf, esp-idf-gate, coverage-gate ]
     if: always()
     runs-on: ubuntu-24.04
+    # No checkout: the workflow default working-directory c/ would not exist.
+    defaults:
+      run:
+        working-directory: .
     timeout-minutes: 5
     permissions: {}
     steps:

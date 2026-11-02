@@ -114,7 +114,11 @@ jobs:
       contents: read
       pull-requests: read
     outputs:
-      run: ${{ github.event_name != 'pull_request' || steps.filter.outputs.csr == 'true' }}
+      # Forks and Dependabot get no secrets or OIDC token, so their PRs skip (as in ci-c-e2e-mqttv5.yml).
+      run: >-
+        ${{ github.event_name != 'pull_request' ||
+            (github.event.pull_request.head.repo.full_name == github.repository &&
+             github.actor != 'dependabot[bot]' && steps.filter.outputs.csr == 'true') }}
     steps:
       - uses: dorny/paths-filter@0e4a8c6effa4802afeda77dc8d303f8176d7dfad # v3.0.4
         if: github.event_name == 'pull_request'
