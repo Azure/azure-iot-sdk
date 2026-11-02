@@ -251,8 +251,8 @@ SDK code (TSan matches patterns as substrings). The script enforces this.
 ## MQTT adapter conformance suite
 
 [`tests/conformance/`](../../tests/conformance/) is a reusable test suite that drives an MQTT
-adapter only through the `az_iot_mqtt_iface` interface. `az_iot_conformance_paho_v3` and
-`az_iot_conformance_paho_v5` run it against the bundled Paho adapter. To run it against your own
+adapter only through the `az_iot_mqtt_iface` interface. `az_iot_conformance_paho_v3` runs it
+against the bundled Paho adapter. To run it against your own
 adapter, see [Bring your own MQTT client](../how_to_byo_mqtt_client.md).
 
 It needs a reachable MQTT broker:
@@ -263,7 +263,7 @@ export AZ_IOT_MQTT_BROKER_PORT=1883
 export AZ_IOT_CONFORMANCE_ALLOW_UNPROVEN=1   # no PKCS#11 token: see below
 cmake --preset linux-gcc-debug
 cmake --build --preset linux-gcc-debug --target az_iot_tests_conformance_capability \
-    az_iot_conformance_paho_v3 az_iot_conformance_paho_v5 az_iot_conformance_paho_sign_negative
+    az_iot_conformance_paho_v3 az_iot_conformance_paho_sign_negative
 ctest --preset linux-gcc-debug --output-on-failure -R conformance
 ```
 

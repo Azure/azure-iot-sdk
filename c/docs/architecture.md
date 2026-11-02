@@ -75,7 +75,7 @@ its clients and a workspace. For every session the client asks the adapter's `in
 client of the required MQTT version, built in that workspace. The workspace holds one client at a
 time.
 
-The Paho C adapter (`az_iot_adapter_paho.h`) builds MQTT 3.1.1 and MQTT 5 clients. So does the
+The Paho C adapter (`az_iot_adapter_paho.h`) builds MQTT 3.1.1 clients. So does the
 az_mqtt adapter (`az_iot_adapter_az_mqtt.h`, built with `AZ_IOT_WITH_AZ_MQTT=ON`): it connects and
 receives inside `process_loop()` and writes sends when called, with no thread of its own, over the
 [az_mqtt](../deps/az_mqtt/README.md) client from this repository. To use another MQTT library, see

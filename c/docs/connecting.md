@@ -113,10 +113,7 @@ with no `CONNECTING`, since nothing new is connected.
 So each failed attempt produces an event, including under a policy that retries forever. A step that
 fails on the device carries `error->source == AZ_IOT_CONN_ERR_SRC_LOCAL`, the step's `az_iot_result`
 as `code`, and the step as `message`, for example `certificate provider load() failed`. A refused
-MQTT 5 CONNACK or a server DISCONNECT with a nonzero reason code carries
-`error->source == AZ_IOT_CONN_ERR_SRC_MQTT`, the reason code as `code`, and the server's Reason
-String, if it sent one, as `message` (at most `AZ_IOT_CONN_ERROR_MESSAGE_MAX` bytes). The Paho
-adapter cannot report a refused CONNACK's Reason String.
+CONNACK carries `error->source == AZ_IOT_CONN_ERR_SRC_MQTT` and its return code as `code`.
 `open()` first validates the configuration (credential shape, CSR support, registration payload
 and its buffer); a refusal there starts no attempt, raises no event, and is reported only by
 `open()`'s return value.
@@ -266,11 +263,10 @@ build the common shapes.
 
 ### Identity recovery
 
-When the hub refuses the identity (a CONNACK with `AZ_IOT_ERR_IDENTITY_REJECTED`, or an MQTT 5
-`Not authorized` DISCONNECT with `AZ_IOT_ERR_AUTH`), the cause is unknown: the device may be
-disabled, its certificate revoked, or its assignment moved. `identity_recovery` controls what
-happens next. For a CONNACK refusal with more than one credential source, this applies once every
-source of a pass is refused (see Fallback); an MQTT 5 DISCONNECT refusal applies at once.
+When the hub refuses the identity (a CONNACK with `AZ_IOT_ERR_IDENTITY_REJECTED`), the cause is
+unknown: the device may be disabled, its certificate revoked, or its assignment moved.
+`identity_recovery` controls what happens next. With more than one credential source, this applies
+once every source of a pass is refused (see Fallback).
 
 | Field | `options_default()` | Zeroed | Meaning |
 | --- | --- | --- | --- |
@@ -282,7 +278,7 @@ source of a pass is refused (see Fallback); an MQTT 5 DISCONNECT refusal applies
 | `mode` | Next attempt after a refusal |
 | --- | --- |
 | `AZ_IOT_IDENTITY_RECOVERY_RETRY_HUB` | The cached hub. No DPS registration, no certificate request. |
-| `AZ_IOT_IDENTITY_RECOVERY_REPROVISION` | A DPS registration after a CONNACK refusal (the earlier behaviour); the hub after an MQTT 5 DISCONNECT refusal. With `dps.request_operational_certificate`, every registration requests a new certificate. |
+| `AZ_IOT_IDENTITY_RECOVERY_REPROVISION` | A DPS registration (the earlier behaviour). With `dps.request_operational_certificate`, every registration requests a new certificate. |
 | `AZ_IOT_IDENTITY_RECOVERY_NONE` | None: the refusal faults. |
 
 - The schedule is separate from the reconnection ladders, and DPS registrations do not reset it.
@@ -294,8 +290,7 @@ source of a pass is refused (see Fallback); an MQTT 5 DISCONNECT refusal applies
   DPS registrations do not restore them. `mode` still decides where each attempt goes.
 - When a limit is reached the client goes to `FAULTED` with the refusal as `reason`, on the HUB scope
   and, if a re-registration was pending, on the DPS scope as well.
-- With `reconnection_policy` disabled, the first MQTT 5 DISCONNECT refusal faults, as does the
-  CONNACK refusal that ends a credential pass.
+- With `reconnection_policy` disabled, the CONNACK refusal that ends a credential pass faults.
 - `az_iot_connection_client_request_reprovision()` makes the next attempt a DPS registration.
   A pending hub retry runs on the next `do_work()`; a pending DPS retry keeps its schedule.
 
@@ -586,12 +581,10 @@ no crypto can leave `crypto` NULL.
 | Result | Meaning |
 | --- | --- |
 | `AZ_IOT_ERR_IDENTITY_REJECTED` | The hub refused the device identity. Retried on `identity_recovery`. |
-| `AZ_IOT_ERR_AUTH` | The hub ended an MQTT 5 session as `Not authorized`. Retried on `identity_recovery`. |
 | `AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED` | DPS assigned a profile this SDK does not support (e.g. `"mqttV5"`). The next `open()` re-provisions. |
 | `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH` | Feature clients do not match the assigned profile. `close()` and `open()`; the next `open()` re-provisions. |
 | `AZ_IOT_ERR_SUBSCRIPTION_REFUSED` | The hub refused a subscription the session needs. Terminal, since a retry would be refused again. |
 | `AZ_IOT_ERR_CREDENTIAL_INCOMPLETE` | The certificate provider returned unusable material, such as a certificate without a key. |
-| `AZ_IOT_ERR_PUBLISH_REFUSED` | Publish callback: the hub refused the message and will refuse it again (MQTT 5 `0x87`, `0x90`, `0x99`), or it is over the hub's Maximum Packet Size (`0x95`). Do not resend unchanged. |
 | `AZ_IOT_ERR_MQTT` | Transport, TLS or broker failure. The adapter log has the detail. |
 | `AZ_IOT_ERR_TIMEOUT` | A handshake step or CSR operation timed out. |
 

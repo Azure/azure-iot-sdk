@@ -914,7 +914,6 @@ static void the_mock_adapter_reports_its_newest_live_client(void** state)
       az_iot_mock_mqtt_adapter_last_client_of(AZ_IOT_MQTT_VERSION_3_1_1),
       az_iot_mock_mqtt_client_from(older));
   assert_ptr_equal(az_iot_mock_mqtt_adapter_last_client(), az_iot_mock_mqtt_client_from(older));
-  assert_null(az_iot_mock_mqtt_adapter_last_client_of(AZ_IOT_MQTT_VERSION_5));
 
   older->iface->destroy(older);
   assert_null(az_iot_mock_mqtt_adapter_last_client_of(AZ_IOT_MQTT_VERSION_3_1_1));
