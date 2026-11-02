@@ -17,6 +17,7 @@
 #include "azure/iot/az_iot_message.h"
 #include "azure/iot/az_iot_mqtt_iface.h"
 #include "azure/iot/mqttv3/az_iot_telemetry_client.h"
+#include "internal/connection_client_internal.h"
 
 #include "support/mock_mqtt_iface.h"
 #include "support/test_provider.h"
@@ -51,10 +52,7 @@ static void on_send(az_iot_result status, void* user_ctx)
   record->status = status;
 }
 
-static int setup_profile(
-    void** state,
-    az_iot_connection_profile profile,
-    az_iot_mqtt_version version)
+static int setup(void** state)
 {
   fixture* test = (fixture*)calloc(1, sizeof(*test));
   assert_non_null(test);
@@ -63,22 +61,11 @@ static int setup_profile(
   options.iothub_hostname = "broker.example";
   options.port = 8883;
   options.device_id = "ut-device";
-  options.connection_profile = profile;
-  options.mqtt_adapter = az_iot_mock_mqtt_get_adapter_for_version(version);
+  options.mqtt_adapter = az_iot_mock_mqtt_get_adapter_for_version(AZ_IOT_MQTT_VERSION_3_1_1);
   assert_int_equal(az_iot_test_connection_client_init(&test->connection, &options), AZ_IOT_OK);
 
   *state = test;
   return 0;
-}
-
-static int setup(void** state)
-{
-  return setup_profile(state, AZ_IOT_CONNECTION_PROFILE_MQTT_V3, AZ_IOT_MQTT_VERSION_3_1_1);
-}
-
-static int setup_v5(void** state)
-{
-  return setup_profile(state, AZ_IOT_CONNECTION_PROFILE_MQTT_V5, AZ_IOT_MQTT_VERSION_5);
 }
 
 static int teardown(void** state)
@@ -121,59 +108,6 @@ static void open_mqtt_v3(fixture* test)
   az_iot_mock_mqtt_client_clear_calls(test->mock);
 }
 
-static void open_v5(fixture* test)
-{
-  assert_int_equal(az_iot_connection_client_open(&test->connection), AZ_IOT_OK);
-  test->mock = az_iot_mock_mqtt_adapter_last_client();
-  assert_non_null(test->mock);
-
-  az_iot_mqtt_event connected = { 0 };
-  connected.kind = AZ_IOT_MQTT_EVT_CONNECTED;
-  connected.status = AZ_IOT_OK;
-  assert_true(az_iot_mock_mqtt_client_inject_event(test->mock, &connected));
-  assert_int_equal(az_iot_connection_client_do_work(&test->connection, 0), AZ_IOT_OK);
-
-  uint16_t packet_ids[16];
-  size_t packet_id_count = 0;
-  size_t call_count = az_iot_mock_mqtt_client_call_count(test->mock);
-  for (size_t i = 0; i < call_count && packet_id_count < ARRAY_SIZE(packet_ids); ++i)
-  {
-    const az_iot_mock_call* call = az_iot_mock_mqtt_client_call_at(test->mock, i);
-    if (call->kind == AZ_IOT_MOCK_CALL_SUBSCRIBE)
-    {
-      packet_ids[packet_id_count++] = call->packet_id;
-    }
-  }
-  assert_true(packet_id_count > 0);
-  for (size_t i = 0; i < packet_id_count; ++i)
-  {
-    az_iot_mqtt_event suback = { 0 };
-    suback.kind = AZ_IOT_MQTT_EVT_SUBSCRIBE_ACK;
-    suback.status = AZ_IOT_OK;
-    suback.packet_id = packet_ids[i];
-    assert_true(az_iot_mock_mqtt_client_inject_event(test->mock, &suback));
-    assert_int_equal(az_iot_connection_client_do_work(&test->connection, 0), AZ_IOT_OK);
-  }
-
-  const az_iot_mock_call* birth = find_publish(test, "ih/ut-device/srv/presence");
-  assert_non_null(birth);
-  assert_int_equal(birth->correlation_data_len, 16);
-
-  uint8_t nonce[16];
-  memcpy(nonce, birth->correlation_data, sizeof(nonce));
-  az_iot_mqtt_user_property type = { "type", "birth-ack:1" };
-  az_iot_mqtt_message message = { 0 };
-  message.topic = "ih/ut-device/dev/presence";
-  message.correlation_data = nonce;
-  message.correlation_data_len = sizeof(nonce);
-  message.user_properties = az_iot_mqtt_user_properties_from_array(&type, 1);
-  az_iot_mqtt_event ack = { 0 };
-  ack.kind = AZ_IOT_MQTT_EVT_MESSAGE;
-  ack.message = &message;
-  assert_true(az_iot_mock_mqtt_client_inject_event(test->mock, &ack));
-  assert_int_equal(az_iot_connection_client_do_work(&test->connection, 0), AZ_IOT_OK);
-}
-
 static void init_contract(void** state)
 {
   fixture* test = (fixture*)*state;
@@ -184,7 +118,7 @@ static void init_contract(void** state)
   az_iot_mqttv3_telemetry_client_deinit(NULL);
 
   memset(&test->telemetry, 0xEE, sizeof(test->telemetry));
-  /* Init records the generation this client needs rather than reading a live
+  /* Init records the profile this client needs rather than reading a live
    * connection, so it succeeds before open(). */
   assert_int_equal(
       az_iot_mqttv3_telemetry_client_init(&test->telemetry, &test->connection), AZ_IOT_OK);
@@ -192,10 +126,12 @@ static void init_contract(void** state)
   az_iot_mqttv3_telemetry_client_deinit(&test->telemetry);
 }
 
-static void init_rejects_v5_profile(void** state)
+static void init_rejects_another_profile(void** state)
 {
   fixture* test = (fixture*)*state;
-  open_v5(test);
+  /* No supported profile other than mqttv3 exists to require; pin one directly. */
+  test->connection.required_profile = AZ_IOT_CONNECTION_PROFILE_UNKNOWN;
+  test->connection.required_profile_refs = 1;
 
   memset(&test->telemetry, 0xEE, sizeof(test->telemetry));
   assert_int_equal(
@@ -363,8 +299,7 @@ static void mqtt_wildcards_in_a_value_cannot_reach_the_topic(void** state)
 }
 
 /* MQTTv3 gives system properties no special treatment on the way out, so a
- * name the SDK has never heard of encodes exactly like an application one. The
- * mqttv5 client does discriminate, which is why this is worth stating on both. */
+ * name the SDK has never heard of encodes exactly like an application one. */
 static void an_unknown_system_property_is_encoded_like_any_other(void** state)
 {
   fixture* test = (fixture*)*state;
@@ -631,7 +566,7 @@ int main(void)
 {
   const struct CMUnitTest tests[] = {
     cmocka_unit_test_setup_teardown(init_contract, setup, teardown),
-    cmocka_unit_test_setup_teardown(init_rejects_v5_profile, setup_v5, teardown),
+    cmocka_unit_test_setup_teardown(init_rejects_another_profile, setup, teardown),
     cmocka_unit_test_setup_teardown(lifecycle_is_deterministic, setup, teardown),
     cmocka_unit_test_setup_teardown(send_rejects_invalid_arguments, setup, teardown),
     cmocka_unit_test_setup_teardown(

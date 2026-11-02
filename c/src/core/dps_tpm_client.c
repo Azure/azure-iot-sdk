@@ -890,10 +890,6 @@ static az_iot_result on_assigned(az_iot_dps_tpm_client* client, const dps_tpm_fi
   {
     a->connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V3;
   }
-  else if (!truncated && strcmp(raw, "mqttV5") == 0)
-  {
-    a->connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5;
-  }
   a->issued_certificate_chain = f->issued_certificate_chain;
   a->hub_key_imported = false;
   if (az_span_size(f->hub_key) > 0)

@@ -121,11 +121,9 @@ extern "C"
    * The connection need not be open: this records that it must resolve to the
    * MQTTv3 profile. Unlike C2D, these topics carry no device id, so they are
    * known before the connection resolves and no connect-time bind is needed.
-   * A connection already known to be MQTT_V5 -- a direct connection, or a DPS
-   * one past assignment -- is rejected here with
+   * A connection already resolved to another profile is rejected here with
    * AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH; otherwise a conflict surfaces when
-   * the connection resolves, which fails it before it reports CONNECTED. The
-   * same error is returned when an mqttv5 client is already attached.
+   * the connection resolves, which fails it before it reports CONNECTED.
    *
    * @p options is read during the call only; its workspace is used until deinit().
    *

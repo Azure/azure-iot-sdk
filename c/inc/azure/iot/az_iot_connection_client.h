@@ -28,13 +28,13 @@ extern "C"
 #endif
 
   /* ---- The connection profile ---------------------------------------------- */
-  /* Which generation of hub this connection speaks to, and therefore which MQTT
+  /* Which hub profile this connection speaks to, and therefore which MQTT
    * version and topic shapes it uses. One type serves both directions:
    *   - DPS connect (iothub_hostname == NULL): LEARNED, from the `connectionProfile`
    *     property of the ASSIGNED payload. opts.connection_profile is ignored.
    *   - Direct connect (iothub_hostname set, no DPS): DECLARED by the caller through
    *     opts.connection_profile, because there is nobody to ask. Defaults to
-   *     MQTT_V3 (MQTT v3.1.1); set MQTT_V5 for an MQTTv5 endpoint.
+   *     MQTT_V3 (MQTT v3.1.1), the only profile this SDK supports.
    *   - Saved hub (iothub_hostname and DPS set): DECLARED, as the saved registration's
    *     profile, until a DPS registration replaces it.
    * Either way az_iot_connection_client_get_hub_profile() reports the result.
@@ -46,10 +46,9 @@ extern "C"
   typedef enum az_iot_connection_profile
   {
     AZ_IOT_CONNECTION_PROFILE_MQTT_V3 = 0, /* "classic" -- also the absent/null default */
-    AZ_IOT_CONNECTION_PROFILE_MQTT_V5 = 1, /* "mqttV5"                                  */
-    /* A value newer than this SDK. Only ever produced by the service; passing it
-     * to az_iot_connection_client_init() is rejected, since the caller cannot
-     * meaningfully declare a profile the SDK does not know how to speak. */
+    /* A value this SDK does not support (e.g. "mqttV5"). Only ever produced by the service; passing
+     * it to az_iot_connection_client_init() is rejected, since the caller cannot meaningfully
+     * declare a profile the SDK does not know how to speak. */
     AZ_IOT_CONNECTION_PROFILE_UNKNOWN = -1
   } az_iot_connection_profile;
 
@@ -60,9 +59,9 @@ extern "C"
    * per-role choice, which is what almost every caller wants. */
   typedef enum az_iot_session_continuity
   {
-    /* Resume where the role's default says to. Today that is: resume on both
-     * hub generations, and always clean for DPS (which does not support
-     * session persistence at all). */
+    /* Resume where the role's default says to. Today that is: resume on the
+     * hub, and always clean for DPS (which does not support session
+     * persistence at all). */
     AZ_IOT_SESSION_CONTINUITY_DEFAULT = 0,
     /* Ask the broker to resume the previous session (clean_start = false, or
      * Clean Session = 0 on MQTT 3.1.1). */
@@ -209,10 +208,8 @@ extern "C"
    * to. They fail, retry and settle independently, so anything scoped to one
    * of them -- today the retry ladders below -- has to say which.
    *
-   * DPS and HUB only. Which hub GENERATION a hub session speaks (MQTTv3 or
-   * MQTT v5) is reported through az_iot_hub_profile, not here: it is one
-   * logical connection either way, and splitting the scope by generation would
-   * make a caller handle two values for it. */
+   * DPS and HUB only. Which profile a hub session speaks is reported through
+   * az_iot_hub_profile, not here. */
   typedef enum az_iot_connection_scope
   {
     AZ_IOT_CONN_SCOPE_DPS = 0,
@@ -252,12 +249,12 @@ extern "C"
   {
     /** @brief Role the token is for. */
     az_iot_connection_scope scope;
-    /** @brief For AZ_IOT_CONN_SCOPE_HUB, the hub generation the token is for.
+    /** @brief For AZ_IOT_CONN_SCOPE_HUB, the hub profile the token is for.
      * AZ_IOT_CONNECTION_PROFILE_MQTT_V3 for DPS. */
     az_iot_connection_profile profile;
     /** @brief The token's `sr` value, NUL-terminated, already URL-encoded:
      * `<id_scope>%2fregistrations%2f<registration_id>` for DPS,
-     * `<hub host>%2Fdevices%2F<device id>` for the hub (mqttv3 and mqttv5). */
+     * `<hub host>%2Fdevices%2F<device id>` for the hub. */
     const char* resource_uri;
     /** @brief The token's `skn` value, NUL-terminated: `registration` for DPS,
      * "" (no `skn`) for the hub. */
@@ -392,12 +389,11 @@ extern "C"
     /** QoS 1 publishes awaiting an acknowledgement with a completion callback, across all
      * feature clients. Default 16, at most 65535. */
     size_t max_pending_publishes;
-    /** Feature clients holding a reservation of max_pending_publishes: an mqttv5 direct method
-     * client takes one, hub certificate renewal one when csr_payload_buffer is set. Default 2, at
-     * most 254. */
+    /** Feature clients holding a reservation of max_pending_publishes: hub certificate renewal
+     * takes one when csr_payload_buffer is set. Default 2, at most 254. */
     size_t max_publish_reservations;
-    /** Topic filters re-subscribed on every session. A fully loaded mqttv3 device uses 5; mqttv5
-     * feature clients use none. Default 8, at most 255. */
+    /** Topic filters re-subscribed on every session. A fully loaded mqttv3 device uses 5. Default
+     * 8, at most 255. */
     size_t max_persistent_subscriptions;
     /** Feature-client observers of connection state, session end, publish completion and the
      * do_work() tick. Default 10. */
@@ -460,12 +456,11 @@ extern "C"
     uint32_t connect_timeout_seconds;
 
     /* How long CONNECTED may be withheld waiting for the SUBACKs of the
-     * persistent filters issued on connect, in seconds. Also bounds the SUBACK
-     * of the mqttv5 presence (dev/#) SUBSCRIBE. 0 selects
+     * persistent filters issued on connect, in seconds. 0 selects
      * AZ_IOT_DEFAULT_SUBSCRIPTION_ACK_TIMEOUT_SECONDS.
      *
      * Nothing else bounds that wait: connect_timeout_seconds covers the CONNACK,
-     * the mqttv5 birth-ack has its own timeout, and keep-alive cannot help
+     * and keep-alive cannot help
      * because the link is alive -- a broker that accepts the connection and then
      * never answers the SUBSCRIBE would otherwise hold the client in CONNECTING
      * indefinitely.
@@ -477,10 +472,10 @@ extern "C"
      * -- silence is not a refusal -- so it reconnects under the policy. */
     uint32_t subscription_ack_timeout_seconds;
     const char* device_id; /* required with iothub_hostname */
-    az_iot_connection_profile connection_profile; /* generation of the hub named by iothub_hostname:
-                                                   * MQTT_V3 (v3.1.1, default) or MQTT_V5
-                                                   * (MQTTv5). Ignored when iothub_hostname is NULL,
-                                                   * where DPS assigns it. */
+    az_iot_connection_profile connection_profile; /* profile of the hub named by iothub_hostname:
+                                                   * MQTT_V3 (v3.1.1, default). Ignored when
+                                                   * iothub_hostname is NULL, where DPS assigns
+                                                   * it. */
     const char* model_id; /* IoT Plug and Play model id announced at
                            * connection (NULL = none). Not used by device
                            * update, which matches a device on the
@@ -682,11 +677,9 @@ extern "C"
     az_iot_mqtt_transport transport;
 
     /* WebSocket resource path; used only when transport is WEBSOCKET. NULL
-     * selects the service's path per session: AZ_IOT_MQTT_DEFAULT_WEBSOCKET_PATH
-     * ("/$iothub/websocket") for DPS and an mqttv3 hub,
-     * AZ_IOT_MQTT_HUB_V5_WEBSOCKET_PATH ("/mqtt") for an mqttv5 hub. A value set
-     * here is used for every session; set it only for a gateway that terminates
-     * WebSockets elsewhere. */
+     * selects AZ_IOT_MQTT_DEFAULT_WEBSOCKET_PATH ("/$iothub/websocket"), the
+     * service's path for DPS and the hub. A value set here is used for every
+     * session; set it only for a gateway that terminates WebSockets elsewhere. */
     const char* websocket_path;
 
     /* HTTP proxy for every MQTT session this client opens, via HTTP CONNECT.
@@ -707,55 +700,14 @@ extern "C"
      * here to be explicit and independent of the environment. */
     az_iot_mqtt_proxy_options proxy;
 
-    /* MQTTv5 hub twin push advertisement. These two bits ride the birth
-     * message on every connection and tell the service which twin traffic this
-     * device wants dispatched to it. They reflect the application's
-     * configuration at init and MUST stay constant for the lifetime of the
-     * client: changing push mode at runtime would desynchronize the device's
-     * expectation from the service's most recently recorded decision.
-     *
-     * Both default to false. With push_desired, the service pushes the desired
-     * snapshot on connect and each desired patch while connected. Without it
-     * (pull mode) the service sends no desired patches: the mqttv5 twin client
-     * fetches the snapshot on connect when behind, and later changes are seen
-     * only on reconnect or after az_iot_mqttv5_twin_client_get(). With
-     * push_reported, a pushed reported section reaches
-     * az_iot_mqttv5_twin_client_set_reported_handler(); without a handler it is
-     * dropped. Ignored for MQTTv3 hubs and for DPS sessions.
-     *
-     * A device that does not use twin initializes no twin client and leaves
-     * both false: the birth then requests no twin session and the service sends
-     * no twin traffic. A bit set without a twin client makes the service push
-     * sections that the device drops.
-     *
-     * Appended, like the options above it and for the same reason: this struct
-     * is filled by callers, so a member inserted anywhere else would shift
-     * every one after it for positional aggregate initializers. */
-    struct
-    {
-      bool push_desired; /* request push of the desired payload on connect,
-                          * plus incremental desired patches while connected */
-      bool push_reported; /* request one-shot rehydration of the reported
-                           * payload on connect (for volatile devices) */
-    } twin_push;
-
     /* Last Will and Testament for the HUB session, announced in CONNECT and
      * published by the broker if the device disappears without an orderly
      * close. Leave zeroed (topic NULL) for no Will, which is the default.
      *
-     * Scope, deliberately:
-     *  - It is applied to the hub session only -- MQTTv3 and MQTTv5 alike. The
-     *    DPS session never carries it: provisioning is a short exchange that is
-     *    fully torn down before the hub session exists, and a Will published
-     *    from it would announce a departure that never happened.
-     *  - `will_delay_seconds` is MQTT 5 only (ignored on an MQTTv3 hub, which
-     *    speaks v3.1.1). On an MQTTv5 session the SDK also raises the session
-     *    expiry to cover the delay, because MQTT 5 ends the delay at whichever
-     *    comes first -- a delay longer than the session expiry is silently no
-     *    delay at all.
-     *  - On an MQTTv5 session, configuring a Will also makes the SDK close with
-     *    DISCONNECT reason 0x04 (Disconnect with Will Message) so an orderly
-     *    close announces the departure too, instead of discarding the Will.
+     * It is applied to the hub session only. The DPS session never carries it:
+     * provisioning is a short exchange that is fully torn down before the hub
+     * session exists, and a Will published from it would announce a departure
+     * that never happened.
      *
      * The SDK sets NO default Will: the topic and payload are an application
      * (or protocol) decision, and this client does not have one to make. See
@@ -774,7 +726,6 @@ extern "C"
       size_t payload_len;
       az_iot_mqtt_qos qos;
       bool retain;
-      uint32_t will_delay_seconds; /* MQTT 5 only; 0 = publish immediately */
     } lwt;
 
     /* MQTT session continuity for the HUB session.
@@ -794,19 +745,6 @@ extern "C"
      * with az_mqtt, a message_store_size of 0 fails init() unless CLEAN (or
      * dps.provision_only, which never connects to a hub). */
     az_iot_session_continuity session_continuity;
-
-    /* Session Expiry Interval requested on an MQTT v5 hub session, in seconds.
-     * 0 selects AZ_IOT_DEFAULT_SESSION_EXPIRY_SECONDS.
-     *
-     * How long the broker keeps the session after the connection drops. It is
-     * only meaningful alongside a resumed session: a session asked to expire
-     * immediately is gone before any reconnect can resume it.
-     *
-     * MQTT 5 only, so it has no effect on an MQTTv3 hub. The Event Grid
-     * namespace clamps this to its configured maximum (8 hours), and a
-     * disconnected session is also bounded by its queue (100 messages / 1 MB) --
-     * overflowing that destroys the session regardless of this value. */
-    uint32_t session_expiry_seconds;
 
     /**
      * @brief Cryptographic backend, e.g. az_iot_crypto_openssl(). Borrowed;
@@ -876,8 +814,8 @@ extern "C"
      * hub connections. Zeroed: X.509 only.
      *
      * With dps.request_operational_certificate, the issued certificate is
-     * tried first. A hub that does not accept SAS -- the mqttv5 hub does not
-     * yet -- rejects it with AZ_IOT_ERR_IDENTITY_REJECTED.
+     * tried first. A hub that does not accept SAS rejects it with
+     * AZ_IOT_ERR_IDENTITY_REJECTED.
      */
     az_iot_auth hub_auth;
 
@@ -942,9 +880,8 @@ extern "C"
      * az_iot_connection_client_options_default() sets
      * #AZ_IOT_DEFAULT_MAX_UNCONFIRMED_DELIVERY_TIMEOUT_MS; init() also turns 0 into it.
      *
-     * Cannot be disabled. Today it bounds mqttv5 direct method results for an
-     * exec with no Message Expiry, and queued abandon and probe-ack rejection
-     * notices with no budget. The Message Expiry sent is unchanged (none).
+     * Cannot be disabled. It bounds a tracked SDK request submitted without a
+     * time limit of its own. The Message Expiry sent is unchanged (none).
      * Appended so positional initializers keep their meaning.
      */
     uint32_t max_unconfirmed_delivery_timeout_ms;
@@ -988,7 +925,7 @@ extern "C"
     AZ_IOT_CONN_STATE_IDLE = 0,
     /** @brief The network connect is starting: announced just before the
      * adapter's connect(), then held while the handshake is in flight (on the
-     * hub, until subscriptions or the birth-ack complete). To cancel the
+     * hub, until subscriptions complete). To cancel the
      * attempt, call close() after the do_work() or open() that announced it
      * returns. */
     AZ_IOT_CONN_STATE_CONNECTING,
@@ -1010,7 +947,7 @@ extern "C"
      * az_iot_connection_client_close() is legal from FAULTED and returns the
      * client to IDLE, from which az_iot_connection_client_open() starts a fresh
      * attempt. Attached feature clients keep working across that; they only
-     * have to be rebuilt when the reason says the hub generation changed.
+     * have to be rebuilt when the reason says the hub profile changed.
      *
      * The application decides whether and when to retry, which is the point of
      * the state: an unattended device can back off, ask for new credentials or
@@ -1035,9 +972,9 @@ extern "C"
    *
    * profile is non-NULL on HUB:CONNECTED, and on a failure whose reason is
    * AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH or _UNSUPPORTED -- an application
-   * needs the assigned generation there to rebuild its feature clients.
+   * needs the assigned profile there to rebuild its feature clients.
    *
-   * NULL on DPS:CONNECTED: the generation comes from the assignment, which does
+   * NULL on DPS:CONNECTED: the profile comes from the assignment, which does
    * not exist at the SUBACK and never will on a provision_only device.
    *
    * It and the event itself are valid only until the callback returns; copy any
@@ -1373,22 +1310,6 @@ extern "C"
 #ifndef AZ_IOT_DEFAULT_CONNECT_TIMEOUT_SECONDS
 #define AZ_IOT_DEFAULT_CONNECT_TIMEOUT_SECONDS 30
 #endif
-/* Session Expiry Interval requested on an MQTT v5 hub session, in seconds.
- *
- * The session is what carries a device's subscriptions and the QoS 1 traffic
- * queued for it across a transient drop, and an expiry of 0 ends it the moment
- * the network connection closes -- so a resumable session needs a non-zero
- * value here as much as it needs clean_start = false.
- *
- * One hour matches the Event Grid namespace default. The namespace maximum is
- * eight hours and the broker clamps anything larger, so this is always
- * accepted. It is deliberately not longer: a disconnected session also has a
- * bounded queue (100 messages / 1 MB), and a device that accumulates past that
- * loses the whole session anyway, so a very long expiry buys little while
- * holding broker state for every absent device. */
-#ifndef AZ_IOT_DEFAULT_SESSION_EXPIRY_SECONDS
-#define AZ_IOT_DEFAULT_SESSION_EXPIRY_SECONDS 3600
-#endif
 /** @brief Default az_iot_connection_client_options::max_unconfirmed_delivery_timeout_ms (5 min). */
 #ifndef AZ_IOT_DEFAULT_MAX_UNCONFIRMED_DELIVERY_TIMEOUT_MS
 #define AZ_IOT_DEFAULT_MAX_UNCONFIRMED_DELIVERY_TIMEOUT_MS 300000u
@@ -1453,9 +1374,8 @@ extern "C"
 #ifndef AZ_IOT_MAX_CERTS_PER_ROLE
 #define AZ_IOT_MAX_CERTS_PER_ROLE 4
 #endif
-/* Default SUBACK wait: the subscription gate and the mqttv5 presence (dev/#)
- * SUBSCRIBE. The broker answers a SUBSCRIBE itself, so this is far shorter than
- * the mqttv5 birth-ack timeout (5 to 15 min), which waits on the service. */
+/* Default SUBACK wait of the subscription gate. The broker answers a SUBSCRIBE
+ * itself, so this is short. */
 #ifndef AZ_IOT_DEFAULT_SUBSCRIPTION_ACK_TIMEOUT_SECONDS
 #define AZ_IOT_DEFAULT_SUBSCRIPTION_ACK_TIMEOUT_SECONDS 60
 #endif
@@ -1469,7 +1389,7 @@ extern "C"
 #define AZ_IOT_DPS_HOST_BUF 128
 #define AZ_IOT_DPS_DEVICE_ID_BUF 128
 /* Holds the verbatim `connectionProfile` string. Sized for a value far longer
- * than the ones defined today ("classic", "mqttV5") because the property is an
+ * than the ones defined today (e.g. "classic") because the property is an
  * extensible union: the whole point is to report values this SDK has never seen.
  * A profile longer than this is reported truncated rather than dropped. */
 #define AZ_IOT_CONNECTION_PROFILE_RAW_BUF 64
@@ -1502,11 +1422,6 @@ extern "C"
 #endif
 /* MQTT user name, terminator included. */
 #define AZ_IOT_MQTT_USERNAME_BUF 256
-/* Buffer sizing the ih/{deviceId}/srv|dev/presence topics built for the
- * MQTTv5 birth handshake. */
-#ifndef AZ_IOT_PRESENCE_TOPIC_BUF
-#define AZ_IOT_PRESENCE_TOPIC_BUF 256
-#endif
 
 /* How long registration may be held for a pre-registration exchange on the
  * provisioning session before it proceeds anyway. The hold is advisory: a
@@ -1544,15 +1459,6 @@ extern "C"
      * order so the existing phase values do not shift. */
     AZ_IOT_DPS_PHASE_HOLD
   };
-  /* MQTTv5 presence (birth) handshake phases. MQTTv3/DPS sessions never
-   * leave AZ_IOT_PRESENCE_PHASE_NONE. */
-  enum
-  {
-    AZ_IOT_PRESENCE_PHASE_NONE = 0,
-    AZ_IOT_PRESENCE_PHASE_SUBSCRIBING,
-    AZ_IOT_PRESENCE_PHASE_BIRTH,
-    AZ_IOT_PRESENCE_PHASE_DONE
-  };
 
   /* Session role: determines which Azure service the connection targets and
    * which MQTT version is required. This is an SDK-internal concept — adapters
@@ -1560,8 +1466,7 @@ extern "C"
   typedef enum az_iot_mqtt_role
   {
     AZ_IOT_MQTT_ROLE_DPS = 0, /* requires MQTT v3.1.1 */
-    AZ_IOT_MQTT_ROLE_HUB_MQTT_V3 = 1, /* requires MQTT v3.1.1 */
-    AZ_IOT_MQTT_ROLE_HUB_MQTT_V5 = 2 /* requires MQTT v5     */
+    AZ_IOT_MQTT_ROLE_HUB_MQTT_V3 = 1 /* requires MQTT v3.1.1 */
   } az_iot_mqtt_role;
 
   /* Inbound provisioning-session messages that the provisioning flow does not
@@ -1648,7 +1553,7 @@ extern "C"
     /* The feature client that registered this filter, so its deinit() can
      * withdraw exactly its own entries without rebuilding the strings. */
     const void* owner;
-    /* The generation this filter was built for. A reconnect that resolves a
+    /* The profile this filter was built for. A reconnect that resolves a
      * different profile drops it instead of re-issuing a filter the new hub
      * will not recognise -- see docs/eng/connection-c.md section 5.3. */
     az_iot_connection_profile profile;
@@ -1802,15 +1707,6 @@ extern "C"
     uint64_t rng_state;
     /* Id of the next tracked publish; never 0. */
     uint64_t next_publish_id;
-    /* Random source for defensive-timeout jitter; NULL draws from rng_state.
-     * Unit tests replace it to make the jitter deterministic. */
-    uint64_t (*defensive_timeout_random_source)(void* context);
-    void* defensive_timeout_random_context;
-    /* Defensive-timeout schedule override; NULL uses the spec's schedule. Only
-     * tests set it (e2e shortens minutes to seconds). */
-    const uint32_t* defensive_timeout_base_ms_by_attempt;
-    size_t defensive_timeout_attempt_count;
-    uint32_t defensive_timeout_jitter_max_ms;
 
     az_iot_dispatch_table dispatch;
 
@@ -1976,9 +1872,9 @@ extern "C"
      * resolves to "classic". */
     bool connection_profile_resolved;
 
-    /* The generation the attached feature clients require, refcounted by them.
+    /* The profile the attached feature clients require, refcounted by them.
      * Checked against connection_profile the moment that becomes authoritative,
-     * so a reassignment to the other generation fails the connection instead of
+     * so a reassignment to another profile fails the connection instead of
      * coming up underneath clients built for the old one. */
     az_iot_connection_profile required_profile;
     uint32_t required_profile_refs;
@@ -2050,30 +1946,6 @@ extern "C"
       uint64_t deadline_ms;
       bool active;
     } subscription_gate;
-
-    /* MQTTv5 presence (birth) handshake. After CONNACK on a HUB_MQTT_V5 (v5)
-     * session the client SUBSCRIBEs to ih/{deviceId}/dev/#, PUBLISHes a birth
-     * message to ih/{deviceId}/srv/presence, and only announces CONNECTED once
-     * it receives a birth-ack -- matched by the exact ih/{deviceId}/dev/presence
-     * topic -- whose correlation data matches `nonce`.
-     * MQTTv3/DPS sessions leave phase == AZ_IOT_PRESENCE_PHASE_NONE. */
-    struct
-    {
-      int phase;
-      bool session_present; /* observed in CONNACK; reported in birth */
-      uint16_t sub_packet_id; /* SUBACK correlation for the dev/# sub */
-      uint8_t nonce[16]; /* connection nonce echoed by birth-ack */
-      az_iot_deadline deadline; /* handshake timeout */
-      /* Birth-acks missed in a row since open() or the last birth-ack in time;
-       * selects the escalating timeout of the next birth. */
-      uint32_t consecutive_birth_ack_timeouts;
-      uint32_t birth_ack_timeout_ms; /* timeout armed for the last birth */
-      uint64_t desired_version; /* authoritative twin versions carried by the */
-      uint64_t reported_version; /* last birth-ack (0 when the service omits them) */
-    } presence;
-    /* Start of the current do_work() pass. Its waits end by the connection's and feature
-     * clients' deadlines, so input it dispatches is late only if a deadline had passed by then. */
-    uint64_t do_work_pass_started_ms;
 
     /* Per scope: where init() put the decoded SAS keys in opts.sas_buffer
      * (NULL when unset), and the credential the last attempt used. */
@@ -2192,8 +2064,8 @@ extern "C"
     /* do_work() still owes assignment_invalidated_cb that invalidation. */
     bool assignment_invalidation_pending;
     az_iot_result assignment_invalidation_reason;
-    /* A stored issued chain awaits adoption of its assignment: the other
-     * generation cannot be required until then. */
+    /* A stored issued chain awaits adoption of its assignment: another
+     * profile cannot be required until then. */
     bool dps_cert_awaits_adoption;
     /* The issued chain was not stored because the assignment was to be
      * rejected; it must not be adopted. */
@@ -2238,9 +2110,8 @@ extern "C"
    *     bytes for the default limits).
    *   - Always: mqtt_adapter, mqtt_limits, mqtt_workspace and mqtt_workspace_size.
    *   - DPS (iothub_hostname==NULL): dps.id_scope, dps.registration_id.
-   *   - Direct hub connect: iothub_hostname, device_id; also set
-   *     connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5 for an IoT Hub
-   *     MQTTv5 (v5) endpoint (defaults to MQTTv3 v3.1.1).
+   *   - Direct hub connect: iothub_hostname, device_id (connection_profile
+   *     defaults to MQTTv3 v3.1.1).
    *   - Saved hub with DPS fallback: both of the above, iothub_hostname, device_id and
    *     connection_profile taken from the previous registration.
    *   - Per role: certificate_provider for X.509, and/or SAS keys and a
@@ -2551,7 +2422,7 @@ extern "C"
   const char* az_iot_connection_client_get_device_id(const az_iot_connection_client* client);
 
   /* Report what this client is connected to, so an application can branch on the
-   * hub generation without inferring it from its own configuration.
+   * hub profile without inferring it from its own configuration.
    *
    * Valid only once the connection has reached CONNECTED; before that it returns
    * AZ_IOT_ERR_NOT_CONNECTED, because on the DPS path the profile is not known

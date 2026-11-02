@@ -41,11 +41,6 @@ static const char k_assigned_body[]
     = "{\"operationId\":\"op-1\",\"status\":\"assigned\","
       "\"registrationState\":{\"registrationId\":\"ut-device\","
       "\"assignedHub\":\"myhub.azure-devices.net\",\"deviceId\":\"assigned-device\"}}";
-static const char k_assigned_mqtt_v5_body[]
-    = "{\"operationId\":\"op-1\",\"status\":\"assigned\","
-      "\"registrationState\":{\"registrationId\":\"ut-device\","
-      "\"assignedHub\":\"myhub.azure-devices.net\",\"connectionProfile\":\"mqttV5\","
-      "\"deviceId\":\"assigned-device\"}}";
 
 static const az_iot_mqtt_limits k_limits = { 1024, 1024, 4, 0, 1024 };
 
@@ -403,68 +398,6 @@ static void registration_then_the_hub_session_reuse_the_workspace(void** state)
   assert_adapter_stats(2, 1);
 }
 
-static void registration_then_an_mqtt_v5_hub_session_reuse_the_workspace(void** state)
-{
-  adapter_fixture* fx = (adapter_fixture*)*state;
-  init_with_mock_adapter(fx, dps_options());
-
-  az_iot_mock_mqtt_client* dps = register_with_the_assignment(fx, k_assigned_mqtt_v5_body);
-  assert_in_mqtt_workspace(fx, dps, sizeof(az_iot_mqtt_client));
-  assert_null(fx->client.dps_mqtt);
-
-  /* DPS asked for MQTT 3.1.1, the assigned hub for MQTT 5. */
-  az_iot_mqtt_version version;
-  assert_true(az_iot_mock_mqtt_adapter_get_requested_version(0, &version));
-  assert_int_equal(version, AZ_IOT_MQTT_VERSION_3_1_1);
-  assert_true(az_iot_mock_mqtt_adapter_get_requested_version(1, &version));
-  assert_int_equal(version, AZ_IOT_MQTT_VERSION_5);
-  assert_false(az_iot_mock_mqtt_adapter_get_requested_version(2, &version));
-
-  /* max_live 1: the DPS client was destroyed before the hub client was built in its place. */
-  az_iot_mock_mqtt_client* hub = az_iot_mock_mqtt_adapter_last_client();
-  assert_ptr_equal(hub, dps);
-  assert_ptr_equal(fx->client.active_client, hub);
-  assert_connects_to(hub, "myhub.azure-devices.net");
-  assert_adapter_stats(2, 1);
-
-  /* MQTT 5: the presence birth-ack, not the CONNACK, connects the session. */
-  assert_true(az_iot_mock_mqtt_client_inject_connected(hub, AZ_IOT_OK));
-  (void)az_iot_connection_client_do_work(&fx->client, 0);
-  assert_int_not_equal(
-      az_iot_connection_client_get_state(&fx->client, AZ_IOT_CONN_SCOPE_HUB),
-      AZ_IOT_CONN_STATE_CONNECTED);
-  const az_iot_mock_call* sub = az_iot_mock_mqtt_client_last_of(hub, AZ_IOT_MOCK_CALL_SUBSCRIBE);
-  assert_non_null(sub);
-  assert_true(az_iot_mock_mqtt_client_inject_suback(hub, sub->packet_id, AZ_IOT_OK));
-  (void)az_iot_connection_client_do_work(&fx->client, 0);
-  const az_iot_mock_call* birth = az_iot_mock_mqtt_client_last_of(hub, AZ_IOT_MOCK_CALL_PUBLISH);
-  assert_non_null(birth);
-  assert_int_equal(birth->correlation_data_len, 16);
-  /* nonce and ack_type must outlive the do_work that delivers the event. */
-  uint8_t nonce[16];
-  memcpy(nonce, birth->correlation_data, sizeof(nonce));
-  az_iot_mqtt_user_property ack_type = { "type", "birth-ack:1" };
-  az_iot_mqtt_message ack_message;
-  memset(&ack_message, 0, sizeof(ack_message));
-  ack_message.topic = "ih/assigned-device/dev/presence";
-  ack_message.correlation_data = nonce;
-  ack_message.correlation_data_len = sizeof(nonce);
-  ack_message.user_properties = az_iot_mqtt_user_properties_from_array(&ack_type, 1);
-  az_iot_mqtt_event ack;
-  memset(&ack, 0, sizeof(ack));
-  ack.kind = AZ_IOT_MQTT_EVT_MESSAGE;
-  ack.message = &ack_message;
-  assert_true(az_iot_mock_mqtt_client_inject_event(hub, &ack));
-  (void)az_iot_connection_client_do_work(&fx->client, 0);
-  assert_int_equal(
-      az_iot_connection_client_get_state(&fx->client, AZ_IOT_CONN_SCOPE_HUB),
-      AZ_IOT_CONN_STATE_CONNECTED);
-  az_iot_hub_profile profile;
-  assert_int_equal(az_iot_connection_client_get_hub_profile(&fx->client, &profile), AZ_IOT_OK);
-  assert_int_equal(profile.connection_profile, AZ_IOT_CONNECTION_PROFILE_MQTT_V5);
-  assert_adapter_stats(2, 1);
-}
-
 static void a_reconnect_after_a_drop_reuses_the_workspace(void** state)
 {
   adapter_fixture* fx = (adapter_fixture*)*state;
@@ -743,51 +676,36 @@ static const az_iot_mqtt_adapter* mock_adapter_validating_session_usage(void)
 }
 
 /** @brief Asserts the hub CONNECT on @p hub outlives its connection exactly when @p outlives. */
-static void assert_hub_connect_outlives_its_connection(
-    az_iot_mock_mqtt_client* hub,
-    az_iot_mqtt_version version,
-    bool outlives)
+static void assert_hub_connect_outlives_its_connection(az_iot_mock_mqtt_client* hub, bool outlives)
 {
   assert_non_null(hub);
   const az_iot_mock_call* connect = az_iot_mock_mqtt_client_last_of(hub, AZ_IOT_MOCK_CALL_CONNECT);
   assert_non_null(connect);
-  bool const connect_outlives = !connect->connect.clean_start
-      && (version == AZ_IOT_MQTT_VERSION_3_1_1 || connect->connect.session_expiry_seconds > 0u);
-  assert_int_equal(connect_outlives, outlives);
+  assert_int_equal(!connect->connect.clean_start, outlives);
 }
 
 /* init() tells the adapter whether the hub session outlives its connection, and every hub
- * connect agrees, over both hub protocol versions, direct and through DPS. */
+ * connect agrees, direct and through DPS. */
 static void init_tells_the_adapter_whether_the_hub_session_outlives_its_connection(void** state)
 {
   adapter_fixture* fx = (adapter_fixture*)*state;
   static const struct
   {
     bool through_dps;
-    az_iot_mqtt_version version;
     az_iot_session_continuity continuity;
     bool outlives;
   } cases[] = {
-    { false, AZ_IOT_MQTT_VERSION_3_1_1, AZ_IOT_SESSION_CONTINUITY_DEFAULT, true },
-    { false, AZ_IOT_MQTT_VERSION_3_1_1, AZ_IOT_SESSION_CONTINUITY_RESUME, true },
-    { false, AZ_IOT_MQTT_VERSION_3_1_1, AZ_IOT_SESSION_CONTINUITY_CLEAN, false },
-    { false, AZ_IOT_MQTT_VERSION_5, AZ_IOT_SESSION_CONTINUITY_DEFAULT, true },
-    { false, AZ_IOT_MQTT_VERSION_5, AZ_IOT_SESSION_CONTINUITY_RESUME, true },
-    { false, AZ_IOT_MQTT_VERSION_5, AZ_IOT_SESSION_CONTINUITY_CLEAN, false },
-    { true, AZ_IOT_MQTT_VERSION_3_1_1, AZ_IOT_SESSION_CONTINUITY_DEFAULT, true },
-    { true, AZ_IOT_MQTT_VERSION_3_1_1, AZ_IOT_SESSION_CONTINUITY_CLEAN, false },
-    { true, AZ_IOT_MQTT_VERSION_5, AZ_IOT_SESSION_CONTINUITY_DEFAULT, true },
-    { true, AZ_IOT_MQTT_VERSION_5, AZ_IOT_SESSION_CONTINUITY_CLEAN, false },
+    { false, AZ_IOT_SESSION_CONTINUITY_DEFAULT, true },
+    { false, AZ_IOT_SESSION_CONTINUITY_RESUME, true },
+    { false, AZ_IOT_SESSION_CONTINUITY_CLEAN, false },
+    { true, AZ_IOT_SESSION_CONTINUITY_DEFAULT, true },
+    { true, AZ_IOT_SESSION_CONTINUITY_CLEAN, false },
   };
   for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i)
   {
     az_iot_mock_mqtt_adapter_reset();
     const az_iot_mqtt_adapter* adapter = mock_adapter_validating_session_usage();
     az_iot_connection_client_options opts = cases[i].through_dps ? dps_options() : direct_options();
-    if (!cases[i].through_dps && cases[i].version == AZ_IOT_MQTT_VERSION_5)
-    {
-      opts.connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5;
-    }
     opts.session_continuity = cases[i].continuity;
     init_with_adapter(fx, opts, adapter);
     assert_int_equal(g_session_usage_validations, 1);
@@ -795,18 +713,14 @@ static void init_tells_the_adapter_whether_the_hub_session_outlives_its_connecti
 
     if (cases[i].through_dps)
     {
-      (void)register_with_the_assignment(
-          fx,
-          cases[i].version == AZ_IOT_MQTT_VERSION_5 ? k_assigned_mqtt_v5_body : k_assigned_body);
+      (void)register_with_the_assignment(fx, k_assigned_body);
     }
     else
     {
       assert_int_equal(az_iot_connection_client_open(&fx->client), AZ_IOT_OK);
     }
     assert_hub_connect_outlives_its_connection(
-        az_iot_mock_mqtt_adapter_last_client_of(cases[i].version),
-        cases[i].version,
-        cases[i].outlives);
+        az_iot_mock_mqtt_adapter_last_client_of(AZ_IOT_MQTT_VERSION_3_1_1), cases[i].outlives);
     assert_int_equal(az_iot_test_connection_client_deinit(&fx->client), AZ_IOT_OK);
     fx->initialized = false;
   }
@@ -917,7 +831,6 @@ static void init_refuses_az_mqtt_without_a_message_store_for_a_resumed_hub_sessi
     az_iot_connection_profile profile;
   } sessions[] = {
     { false, AZ_IOT_CONNECTION_PROFILE_MQTT_V3 },
-    { false, AZ_IOT_CONNECTION_PROFILE_MQTT_V5 },
     { true, AZ_IOT_CONNECTION_PROFILE_MQTT_V3 },
   };
   static const az_iot_session_continuity resumed[]
@@ -1088,8 +1001,6 @@ int main(void)
         a_direct_hub_connect_builds_its_client_in_the_workspace, setup, teardown),
     cmocka_unit_test_setup_teardown(
         registration_then_the_hub_session_reuse_the_workspace, setup, teardown),
-    cmocka_unit_test_setup_teardown(
-        registration_then_an_mqtt_v5_hub_session_reuse_the_workspace, setup, teardown),
     cmocka_unit_test_setup_teardown(a_reconnect_after_a_drop_reuses_the_workspace, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_hub_session_waits_for_a_held_provisioning_session, setup, teardown),

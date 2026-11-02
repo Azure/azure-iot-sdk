@@ -13,7 +13,6 @@ vcpkg_installed/
 
 # Left behind by the removed tests/manual mock scripts; .certs/ holds private keys.
 /tests/manual/.certs/
-/tests/manual/.env-mqttv5/
 /tests/manual/.client-env.ps1
 
 # Written by unit tests run from c/ instead of the build tree.

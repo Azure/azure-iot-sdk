@@ -20,9 +20,6 @@
 #include "azure/iot/mqttv3/az_iot_direct_method_client.h"
 #include "azure/iot/mqttv3/az_iot_telemetry_client.h"
 #include "azure/iot/mqttv3/az_iot_twin_client.h"
-#include "azure/iot/mqttv5/az_iot_direct_method_client.h"
-#include "azure/iot/mqttv5/az_iot_telemetry_client.h"
-#include "azure/iot/mqttv5/az_iot_twin_client.h"
 #include "support/mock_mqtt_iface.h"
 #include "support/test_provider.h"
 
@@ -230,74 +227,52 @@ typedef struct example_device
   uint8_t direct_method_v3_workspace[AZ_IOT_MQTTV3_DIRECT_METHOD_CLIENT_DEFAULT_WORKSPACE_SIZE];
   az_iot_mqttv3_twin_client twin_v3;
   uint8_t twin_v3_workspace[AZ_IOT_MQTTV3_TWIN_CLIENT_DEFAULT_WORKSPACE_SIZE];
-  az_iot_mqttv5_telemetry_client telemetry_v5;
-  az_iot_mqttv5_direct_method_client direct_method_v5;
-  uint8_t direct_method_v5_workspace[AZ_IOT_MQTTV5_DIRECT_METHOD_CLIENT_DEFAULT_WORKSPACE_SIZE];
-  az_iot_mqttv5_twin_client twin_v5;
-  uint8_t twin_v5_workspace[AZ_IOT_MQTTV5_TWIN_CLIENT_DEFAULT_WORKSPACE_SIZE];
 } example_device;
 
 static example_device g_device;
 
 /**
- * @brief Runs a documented sizing example: attaches its feature clients (MQTT 3.1.1: telemetry,
- * C2D, direct methods, twin; MQTT 5: telemetry, direct methods, twin), opens and takes the
- * CONNACK, which binds every feature client's topics.
+ * @brief Runs a documented sizing example: attaches its feature clients (telemetry, C2D,
+ * direct methods, twin), opens and takes the CONNACK, which binds every feature client's topics.
  * @return true if all of it succeeds with @p limits in a workspace of exactly their size.
  */
-static bool example_device_connects(bool mqtt_v5, const az_iot_connection_client_limits* limits)
+static bool example_device_connects(const az_iot_connection_client_limits* limits)
 {
   az_iot_connection_client_options opts = direct_options();
-  opts.connection_profile
-      = mqtt_v5 ? AZ_IOT_CONNECTION_PROFILE_MQTT_V5 : AZ_IOT_CONNECTION_PROFILE_MQTT_V3;
+  opts.connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V3;
   opts.limits = *limits;
   opts.workspace = g_workspace;
   opts.workspace_size = az_iot_connection_client_get_workspace_size(limits);
   assert_true(opts.workspace_size <= TEST_WORKSPACE_MAX);
-  opts.mqtt_adapter = az_iot_mock_mqtt_get_adapter_for_version(
-      mqtt_v5 ? AZ_IOT_MQTT_VERSION_5 : AZ_IOT_MQTT_VERSION_3_1_1);
+  opts.mqtt_adapter = az_iot_mock_mqtt_get_adapter_for_version(AZ_IOT_MQTT_VERSION_3_1_1);
   memset(&g_device, 0, sizeof(g_device));
   assert_int_equal(az_iot_test_connection_client_init(&g_device.connection, &opts), AZ_IOT_OK);
   az_iot_connection_client* c = &g_device.connection;
 
   size_t attached = 0;
-  az_iot_result result = mqtt_v5 ? az_iot_mqttv5_telemetry_client_init(&g_device.telemetry_v5, c)
-                                 : az_iot_mqttv3_telemetry_client_init(&g_device.telemetry_v3, c);
+  az_iot_result result = az_iot_mqttv3_telemetry_client_init(&g_device.telemetry_v3, c);
   attached += result == AZ_IOT_OK ? 1u : 0u;
   if (result == AZ_IOT_OK)
   {
-    result = mqtt_v5 ? az_iot_mqttv5_direct_method_client_init(
-                           &g_device.direct_method_v5,
-                           c,
-                           &(az_iot_mqttv5_direct_method_client_options){
-                               .workspace = g_device.direct_method_v5_workspace,
-                               .workspace_size = sizeof(g_device.direct_method_v5_workspace) })
-                     : az_iot_mqttv3_direct_method_client_init(
-                           &g_device.direct_method_v3,
-                           c,
-                           &(az_iot_mqttv3_direct_method_client_options){
-                               .workspace = g_device.direct_method_v3_workspace,
-                               .workspace_size = sizeof(g_device.direct_method_v3_workspace) });
+    result = az_iot_mqttv3_direct_method_client_init(
+        &g_device.direct_method_v3,
+        c,
+        &(az_iot_mqttv3_direct_method_client_options){
+            .workspace = g_device.direct_method_v3_workspace,
+            .workspace_size = sizeof(g_device.direct_method_v3_workspace) });
     attached += result == AZ_IOT_OK ? 1u : 0u;
   }
   if (result == AZ_IOT_OK)
   {
-    result = mqtt_v5
-        ? az_iot_mqttv5_twin_client_init(
-              &g_device.twin_v5,
-              c,
-              &(az_iot_mqttv5_twin_client_options){ .workspace = g_device.twin_v5_workspace,
-                                                    .workspace_size
-                                                    = sizeof(g_device.twin_v5_workspace) })
-        : az_iot_mqttv3_twin_client_init(
-              &g_device.twin_v3,
-              c,
-              &(az_iot_mqttv3_twin_client_options){ .workspace = g_device.twin_v3_workspace,
-                                                    .workspace_size
-                                                    = sizeof(g_device.twin_v3_workspace) });
+    result = az_iot_mqttv3_twin_client_init(
+        &g_device.twin_v3,
+        c,
+        &(az_iot_mqttv3_twin_client_options){ .workspace = g_device.twin_v3_workspace,
+                                              .workspace_size
+                                              = sizeof(g_device.twin_v3_workspace) });
     attached += result == AZ_IOT_OK ? 1u : 0u;
   }
-  if (result == AZ_IOT_OK && !mqtt_v5)
+  if (result == AZ_IOT_OK)
   {
     result = az_iot_mqttv3_c2d_client_init(&g_device.c2d, c);
     attached += result == AZ_IOT_OK ? 1u : 0u;
@@ -317,39 +292,21 @@ static bool example_device_connects(bool mqtt_v5, const az_iot_connection_client
   const bool connects = result == AZ_IOT_OK
       && (hub == AZ_IOT_CONN_STATE_CONNECTING || hub == AZ_IOT_CONN_STATE_CONNECTED);
 
-  if (mqtt_v5)
+  if (attached > 3)
   {
-    if (attached > 2)
-    {
-      az_iot_mqttv5_twin_client_deinit(&g_device.twin_v5);
-    }
-    if (attached > 1)
-    {
-      az_iot_mqttv5_direct_method_client_deinit(&g_device.direct_method_v5);
-    }
-    if (attached > 0)
-    {
-      az_iot_mqttv5_telemetry_client_deinit(&g_device.telemetry_v5);
-    }
+    az_iot_mqttv3_c2d_client_deinit(&g_device.c2d);
   }
-  else
+  if (attached > 2)
   {
-    if (attached > 3)
-    {
-      az_iot_mqttv3_c2d_client_deinit(&g_device.c2d);
-    }
-    if (attached > 2)
-    {
-      az_iot_mqttv3_twin_client_deinit(&g_device.twin_v3);
-    }
-    if (attached > 1)
-    {
-      az_iot_mqttv3_direct_method_client_deinit(&g_device.direct_method_v3);
-    }
-    if (attached > 0)
-    {
-      az_iot_mqttv3_telemetry_client_deinit(&g_device.telemetry_v3);
-    }
+    az_iot_mqttv3_twin_client_deinit(&g_device.twin_v3);
+  }
+  if (attached > 1)
+  {
+    az_iot_mqttv3_direct_method_client_deinit(&g_device.direct_method_v3);
+  }
+  if (attached > 0)
+  {
+    az_iot_mqttv3_telemetry_client_deinit(&g_device.telemetry_v3);
   }
   az_iot_test_connection_client_deinit(c);
   return connects;
@@ -359,18 +316,16 @@ static bool example_device_connects(bool mqtt_v5, const az_iot_connection_client
  * @brief Asserts that @p limits run the example and that one less of any limit above 1 does not,
  * skipping max_pending_publishes and max_application_state_observers (the application's own).
  */
-static void assert_example_limits_are_exact(
-    bool mqtt_v5,
-    const az_iot_connection_client_limits* limits)
+static void assert_example_limits_are_exact(const az_iot_connection_client_limits* limits)
 {
-  assert_true(example_device_connects(mqtt_v5, limits));
+  assert_true(example_device_connects(limits));
   az_iot_connection_client_limits fewer;
-#define ASSERT_ONE_LESS_FAILS(field)                        \
-  if (limits->field > 1u)                                   \
-  {                                                         \
-    fewer = *limits;                                        \
-    fewer.field--;                                          \
-    assert_false(example_device_connects(mqtt_v5, &fewer)); \
+#define ASSERT_ONE_LESS_FAILS(field)               \
+  if (limits->field > 1u)                          \
+  {                                                \
+    fewer = *limits;                               \
+    fewer.field--;                                 \
+    assert_false(example_device_connects(&fewer)); \
   }
   ASSERT_ONE_LESS_FAILS(max_publish_reservations);
   ASSERT_ONE_LESS_FAILS(max_persistent_subscriptions);
@@ -385,28 +340,7 @@ static void the_mqttv3_sizing_example_holds_its_feature_clients_exactly(void** s
   (void)state;
   /* docs/client-configuration.md, "Sizing the limits": telemetry, C2D, direct methods, twin. */
   const az_iot_connection_client_limits limits = { 4, 1, 4, 2, 1, 1, 4 };
-  assert_example_limits_are_exact(false, &limits);
-}
-
-/** @brief PUBACK slots an mqttv5 direct method client reserves at its default limits. */
-#define DEFAULT_RESERVED_PUBACKS     \
-  AZ_IOT_MQTTV5_DM_RESERVED_PUBACKS( \
-      AZ_IOT_MQTTV5_DIRECT_METHOD_CLIENT_DEFAULT_MAX_CONCURRENT_INVOCATIONS)
-
-static void the_mqttv5_sizing_example_holds_its_feature_clients_exactly(void** state)
-{
-  (void)state;
-  /* docs/client-configuration.md, "Sizing the limits": telemetry, direct methods, twin. The
-   * direct method client reserves DEFAULT_RESERVED_PUBACKS slots; 4 are left to share. */
-  const az_iot_connection_client_limits limits
-      = { DEFAULT_RESERVED_PUBACKS + 4u, 1, 1, 4, 1, 2, 2 };
-  assert_example_limits_are_exact(true, &limits);
-
-  az_iot_connection_client_limits reserved_only = limits;
-  reserved_only.max_pending_publishes = DEFAULT_RESERVED_PUBACKS;
-  assert_true(example_device_connects(true, &reserved_only));
-  reserved_only.max_pending_publishes--;
-  assert_false(example_device_connects(true, &reserved_only));
+  assert_example_limits_are_exact(&limits);
 }
 
 int main(void)
@@ -418,7 +352,6 @@ int main(void)
     cmocka_unit_test(a_workspace_holds_more_than_the_defaults),
     cmocka_unit_test(init_refuses_limits_it_cannot_hold),
     cmocka_unit_test(the_mqttv3_sizing_example_holds_its_feature_clients_exactly),
-    cmocka_unit_test(the_mqttv5_sizing_example_holds_its_feature_clients_exactly),
   };
   return cmocka_run_group_tests_name("connection_client_workspace", tests, NULL, NULL);
 }

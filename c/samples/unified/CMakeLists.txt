@@ -1,8 +1,7 @@
 # Copyright (c) Microsoft. All rights reserved.
 # Licensed under the MIT license. See LICENSE file in the project root for full license information.
 
-# Each serves an MQTTv3 or an MQTTv5 hub, whichever DPS assigns, so each links
-# both generations.
+# Each serves the mqttv3 hub DPS assigns.
 foreach(sample
         telemetry
         connect_first
@@ -13,10 +12,10 @@ foreach(sample
         # is exactly the feature: MQTT over WebSockets, and an HTTP CONNECT proxy.
         websockets
         proxy)
-    az_iot_add_sample(unified ${sample} az_iot_mqttv3 az_iot_mqttv5)
+    az_iot_add_sample(unified ${sample} az_iot_mqttv3)
 endforeach()
 
-# C2D and file upload exist on MQTTv3 IoT Hub only; on an MQTTv5 hub each sample says so.
+# C2D and file upload: mqttv3 features.
 az_iot_add_sample(unified c2d_receiver az_iot_mqttv3)
 az_iot_add_sample(unified file_upload az_iot_mqttv3)
 set(_file_upload_targets ${AZ_IOT_SAMPLE_TARGETS})
@@ -45,4 +44,4 @@ az_iot_add_adapter_sample(az_iot_sample_unified_multithreaded_telemetry
             ${CMAKE_CURRENT_SOURCE_DIR}/multithreaded_telemetry/reading_queue.c
             ${AZ_IOT_SAMPLES_COMMON_DIR}/sample_utils.c
     INCLUDES ${CMAKE_CURRENT_SOURCE_DIR}/multithreaded_telemetry
-    LIBS az_iot_mqttv3 az_iot_mqttv5 Threads::Threads)
+    LIBS az_iot_mqttv3 Threads::Threads)
