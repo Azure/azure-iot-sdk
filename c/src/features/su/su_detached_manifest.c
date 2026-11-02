@@ -122,7 +122,7 @@ static az_iot_result reject_detached_manifest_file(
   return result;
 }
 
-az_iot_result az_iot_su__verify_and_parse_detached_manifest_file(
+AZ_NODISCARD az_iot_result az_iot_su__verify_and_parse_detached_manifest_file(
     const az_iot_crypto* crypto,
     const az_iot_su_client_update_manifest_file* detached_file,
     az_span file_content,
@@ -137,12 +137,16 @@ az_iot_result az_iot_su__verify_and_parse_detached_manifest_file(
   {
     *out_error = AZ_IOT_SU__DETACHED_MANIFEST_ERROR_NONE;
   }
-  if (az_iot_crypto__validate(crypto) != AZ_IOT_OK || detached_file == NULL || out_manifest == NULL
-      || (file_urls == NULL && file_urls_count > 0u))
+  if (out_manifest == NULL)
   {
     return AZ_IOT_ERR_INVALID_ARG;
   }
   memset(out_manifest, 0, sizeof(*out_manifest));
+  if (az_iot_crypto__validate(crypto) != AZ_IOT_OK || detached_file == NULL
+      || (file_urls == NULL && file_urls_count > 0u))
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
 
   if (detached_file->size_in_bytes != (int64_t)az_span_size(file_content))
   {

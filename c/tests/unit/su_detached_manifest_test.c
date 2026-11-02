@@ -179,7 +179,7 @@ static void assert_span_equal(az_span actual, const char* expected)
 /** @brief Assert the last process() failed with @p result and @p error, leaving no manifest. */
 static void assert_rejected(az_iot_result result, az_iot_result expected, int expected_error)
 {
-  static const az_iot_su_client_update_manifest empty;
+  static const az_iot_su_client_update_manifest empty = { 0 };
   assert_int_equal(result, expected);
   assert_int_equal(g_error, expected_error);
   assert_memory_equal(&g_manifest, &empty, sizeof(empty));
@@ -354,10 +354,13 @@ static void invalid_arguments_are_rejected(void** state)
       az_iot_su__verify_and_parse_detached_manifest_file(
           &g_crypto, &g_detached_file, g_file_content, NULL, 0, NULL, 0, NULL, &g_error),
       AZ_IOT_ERR_INVALID_ARG);
+  memset(&g_manifest, 0xA5, sizeof(g_manifest));
   assert_int_equal(
       az_iot_su__verify_and_parse_detached_manifest_file(
           &g_crypto, &g_detached_file, g_file_content, NULL, 1, NULL, 0, &g_manifest, &g_error),
       AZ_IOT_ERR_INVALID_ARG);
+  assert_rejected(
+      AZ_IOT_ERR_INVALID_ARG, AZ_IOT_ERR_INVALID_ARG, AZ_IOT_SU__DETACHED_MANIFEST_ERROR_NONE);
 }
 
 int main(void)
