@@ -175,6 +175,22 @@ Flow Guard, ASLR or DEP, and, on x64, high entropy VA or CET compatibility. CI r
 gcc and clang, static and shared (`hardening-linux` in `ci-c.yml`), and on MSVC, static
 and shared (`hardening-windows`).
 
+## GA scope
+
+`main` carries the GA features only; software updates and the MQTT 5 hub clients live on
+`releases/public-preview`. [`eng/check-ga-scope.sh`](../../eng/check-ga-scope.sh) fails, listing
+`file:line`, when tracked content in `c/`, the C workflows or the C instructions names a non-GA
+feature, file names included. Its allowlists, each entry with its reason, keep the preview-only
+workflows that must stay on `main` for `workflow_dispatch` and the DPS connection profile value
+that `main` rejects. CI runs it in the `conventions` job of `ci-c.yml`;
+`releases/public-preview` reverts it together with the removals.
+
+```sh
+bash eng/check-ga-scope.sh                       # every category
+bash eng/check-ga-scope.sh --only su             # one category (see the script header)
+bash eng/check-ga-scope.sh --self-test
+```
+
 ## Race detection
 
 Tests that start threads are registered with `az_iot_add_cmocka_test(<name> RACE ...)`, which
