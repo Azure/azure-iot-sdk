@@ -1,7 +1,8 @@
 # Software updates client
 
 Design of the software updates feature client (`az_iot_su.h`): the device contract it speaks, the
-engine, the public API, the crypto and platform hooks, and how it is tested.
+engine, the public API, the crypto and platform hooks, and how it is tested. To use it, start with
+the [Software Update guide](../software-update.md).
 
 The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD", "SHOULD NOT", "RECOMMENDED", "MAY", and "OPTIONAL" in this document are to be interpreted as described in [RFC 2119](https://datatracker.ietf.org/doc/html/rfc2119).
 
@@ -1954,8 +1955,8 @@ Operations MUST NOT be long-blocking. Each `do_work` invocation MUST process at 
   check after a conflicting report (§2).
 - **An operational channel over the IoT Hub connection.** Both routes run over DPS.
 - **A reusable conformance suite** for customer platform hooks and crypto backends.
-- **Library-mode persistence and a received-offer accessor.** A delegated update is not stored,
-  and `UPDATE_AVAILABLE` is the only way to see the offer.
+- **Library-mode persistence.** A delegated update is not stored: after a restart the service
+  offers it again.
 
 ---
 
