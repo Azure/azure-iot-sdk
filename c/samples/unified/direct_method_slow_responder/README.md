@@ -6,17 +6,13 @@
 Answers the direct method `slowEcho` **after** the handler returned, for work that does not fit
 inside a callback: the handler keeps the request, and the pump loop answers about 2 seconds later
 with the request payload. Read [`direct_method_responder`](../direct_method_responder/README.md)
-first. For an mqttv5-only device, see
-[`mqttv5/direct_method_slow_responder`](../../mqttv5/direct_method_slow_responder/README.md).
+first.
 
 ## Sample features
 
-- Hub generations: mqttv3 (MQTT 3.1.1) and mqttv5 (MQTT 5), whichever DPS assigns, including after the device is moved to a hub of the other generation.
+- Hub: mqttv3 (MQTT 3.1.1).
 - Keeping the request is a struct copy: nothing is allocated. `method_name` and `payload` point into SDK buffers that do not outlive the handler, so the payload is copied out. A payload larger than that copy (256 bytes) is answered 413 at once.
-- The deadline for the late answer is where the generations differ:
--   - mqttv3 never learns the caller's timeout; the sample sets its own (60 s). While one invocation is held, another is answered 429 after its arguments arrived.
--   - mqttv5 carries the caller's budget. The method is declared with the time it needs (3 s), so a caller whose timeout cannot cover it is refused `INSUFFICIENT_TIME` at the probe; while one invocation is held, the probe answers `DEVICE_BUSY`. Both happen before the arguments are sent.
-- Rebuilds its clients when DPS assigns the other generation, as [`unified/telemetry`](../telemetry/README.md) does.
+- mqttv3 never learns the caller's timeout; the sample sets its own (60 s). While one invocation is held, another is answered 429 after its arguments arrived.
 - Platforms: Linux and Windows.
 
 ## Service requirements
@@ -24,7 +20,6 @@ first. For an mqttv5-only device, see
 - An Azure IoT Hub Device Provisioning Service (DPS) instance linked to an IoT Hub.
 - An X.509 enrollment (individual or group) for the device. For an mqttv3 hub,
   [Quickstart: Provision an X.509 certificate simulated device](https://learn.microsoft.com/azure/iot-dps/quick-create-simulated-device-x509) walks through the setup.
-- To exercise mqttv5, the device's enrollment must assign it to an mqttv5 IoT Hub.
 
 To invoke the method on an mqttv3 hub, use the Azure CLI (`azure-iot` extension) while the
 sample runs:
@@ -100,9 +95,6 @@ One line per invocation:
 method 'slowEcho' invoked, answering in ~2000 ms
 ```
 
-On an mqttv5 hub each invocation is preceded by
-`probe for method 'slowEcho', caller waits <N> second(s) for a result`.
-
 ## Troubleshooting
 
 | Symptom | Likely cause |
@@ -110,7 +102,7 @@ On an mqttv5 hub each invocation is preceded by
 | `Required env var <NAME> not set.`, exit 1 | A required variable is missing. |
 | SDK line `dps register: errorCode=<code> errorMessage=<text>` | DPS refused the registration: no matching enrollment, the certificate's common name differs from `AZ_IOT_DPS_REGISTRATION_ID`, or the enrollment is disabled. DPS verdicts are retried until the sample's run time ends. |
 | Repeated `paho: connect failed: ... TCP/TLS connect failure` | DPS or the hub is unreachable (network, proxy, `AZ_IOT_DPS_GLOBAL_ENDPOINT`), or server certificate validation fails (`AZ_IOT_TRUSTED_CA`). |
-| `Unsupported hub generation "<value>". Upgrade the SDK.` | DPS assigned a connection profile this SDK version does not know. |
+| `Unsupported hub generation "<value>". Upgrade the SDK.` | DPS assigned a connection profile this SDK does not support. |
 
 ## Where to look in `main.c`
 
@@ -119,5 +111,4 @@ On an mqttv5 hub each invocation is preceded by
 | MQTT adapter and the workspace it builds each MQTT client in | `mqtt_adapter` (`az_iot_paho_get_adapter()`; az_mqtt: `az_iot_az_mqtt_get_adapter()`), `mqtt_limits`, `mqtt_workspace`; sizes in [`sample_utils.h`](../../common/sample_utils.h) |
 | Keep the request and return | `on_method_mqttv3()`, `on_slow_echo()` |
 | Answer later from the pump | `deferred_pump()` |
-| mqttv5: declare the method with its time budget; busy probe | `az_iot_mqttv5_direct_method_client_register_method()`, `az_iot_mqttv5_direct_method_client_set_probe_handler()` |
 | mqttv3: local response timeout | `az_iot_mqttv3_direct_method_client_set_response_timeout()` |

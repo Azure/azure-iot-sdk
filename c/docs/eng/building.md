@@ -10,7 +10,7 @@ conformance suite. For a first build, see the [samples overview](../../samples/R
 
 ```
 inc/azure/iot/      public headers
-src/                core, mqttv3 and mqttv5 feature clients
+src/                core and mqttv3 feature clients
 adapters/           MQTT adapters (Paho, az_mqtt), OpenSSL certificate provider,
                     crypto backends (OpenSSL, mbedTLS)
 samples/            samples, one README each
@@ -41,7 +41,7 @@ find_package(azure-iot-sdk CONFIG REQUIRED COMPONENTS mqttv3 adapter_paho)
 target_link_libraries(app PRIVATE azure::iot::mqttv3 azure::iot::adapter_paho)
 ```
 
-- Components: `core`, `mqttv3`, `mqttv5`, and each adapter built (`adapter_paho`,
+- Components: `core`, `mqttv3`, and each adapter built (`adapter_paho`,
   `adapter_az_mqtt`, `crypto_openssl`, `crypto_mbedtls`,
   `certificate_provider_managed`). An MQTT adapter's header is installed only with the adapter.
 - azure-sdk-for-c ships in the package (headers under `include/azure-sdk-for-c`);
@@ -49,7 +49,7 @@ target_link_libraries(app PRIVATE azure::iot::mqttv3 azure::iot::adapter_paho)
 - OpenSSL, and mbedTLS for `crypto_mbedtls`, must be findable by the consumer.
 - MSVC: the libraries use the static CRT; set
   `CMAKE_MSVC_RUNTIME_LIBRARY` to `MultiThreaded$<$<CONFIG:Debug>:Debug>`.
-- `-DBUILD_SHARED_LIBS=ON` builds `core`, `mqttv3` and `mqttv5` as shared
+- `-DBUILD_SHARED_LIBS=ON` builds `core` and `mqttv3` as shared
   libraries. There is no ABI guarantee between releases: rebuild the application
   whenever the library is updated ([struct_versioning.md](../../docs/struct_versioning.md)).
 

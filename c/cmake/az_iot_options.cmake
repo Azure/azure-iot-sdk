@@ -52,9 +52,6 @@ option(AZ_IOT_BUILD_CONFORMANCE_TESTS_TLS "Include the TLS certificate-validatio
 # only the dedicated ci-c-e2e-csr workflow provisions. Same rule as above: the
 # test is built when it is going to be run, not built-and-skipped.
 option(AZ_IOT_BUILD_E2E_CSR    "Build the CSR enrollment e2e test (needs a CA-linked DPS enrollment)" OFF)
-# The mqttv5 e2e suites need an mqttv5 hub configured for them (custom topic
-# templates), which only the ci-c-e2e-mqttv5 workflow has. Same rule as above.
-option(AZ_IOT_BUILD_E2E_MQTTV5 "Build the mqttv5 e2e tests (needs the mqttv5 e2e environment)" OFF)
 # The PKCS#11 custody tests drive a REAL token (SoftHSM2 in CI) through an
 # OpenSSL 3.x pkcs11 provider. Same rule as the conformance suites: the test is
 # built when it is going to be run, not built-and-skipped. The token URI comes
@@ -63,8 +60,7 @@ option(AZ_IOT_BUILD_PKCS11_TESTS "Register the Paho key-custody tests that need 
 # The custody e2e suite runs DPS issuance and hub traffic with a device key that
 # lives inside a PKCS#11 token. It needs BOTH a provisioned token and the
 # standard e2e Azure resources, which only the e2e workflow has, so it follows
-# the same build-it-when-it-will-run rule as AZ_IOT_BUILD_E2E_CSR. With
-# AZ_IOT_BUILD_E2E_MQTTV5 it also builds the mqttv5 custody suite.
+# the same build-it-when-it-will-run rule as AZ_IOT_BUILD_E2E_CSR.
 option(AZ_IOT_BUILD_E2E_PKCS11 "Build the PKCS#11 custody e2e tests (need a token + e2e resources)" OFF)
 # The ESP32 e2e test runs the ESP32 IoT Hub sample's firmware in QEMU against the e2e resources;
 # only the e2e workflow's esp32-qemu legs build that firmware. Same build-it-when-it-will-run rule.
@@ -100,7 +96,7 @@ option(AZ_IOT_USE_INSTALLED_AZURE_SDK_FOR_C "Use an installed azure-sdk-for-c (c
 option(AZ_IOT_USE_INSTALLED_PAHO "Use an installed Eclipse Paho C (find_package(eclipse-paho-mqtt-c)) instead of fetching it" OFF)
 
 # Options that would otherwise create nothing without saying so.
-foreach(_opt AZ_IOT_BUILD_E2E_CSR AZ_IOT_BUILD_E2E_MQTTV5 AZ_IOT_BUILD_E2E_PKCS11
+foreach(_opt AZ_IOT_BUILD_E2E_CSR AZ_IOT_BUILD_E2E_PKCS11
         AZ_IOT_BUILD_E2E_ESP32_QEMU)
     if(${_opt} AND NOT AZ_IOT_BUILD_E2E)
         message(FATAL_ERROR "${_opt}=ON needs AZ_IOT_BUILD_E2E=ON")

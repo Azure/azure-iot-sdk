@@ -51,9 +51,8 @@
 #define SAMPLE_LINE_MAX 256
 /** @brief Where the assignment is saved, in the working directory. */
 #define SAMPLE_ASSIGNMENT_FILE "dps_assignment.txt"
-/** @brief Saved profile names. */
+/** @brief Saved profile name. */
 #define SAMPLE_PROFILE_MQTTV3 "mqttv3"
-#define SAMPLE_PROFILE_MQTTV5 "mqttv5"
 
 /** @brief A saved assignment. */
 typedef struct
@@ -103,18 +102,11 @@ static bool load_assignment(const char* path, saved_assignment* out)
   {
     return false;
   }
-  if (strcmp(profile, SAMPLE_PROFILE_MQTTV3) == 0)
-  {
-    out->profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V3;
-  }
-  else if (strcmp(profile, SAMPLE_PROFILE_MQTTV5) == 0)
-  {
-    out->profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5;
-  }
-  else
+  if (strcmp(profile, SAMPLE_PROFILE_MQTTV3) != 0)
   {
     return false;
   }
+  out->profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V3;
   return true;
 }
 
@@ -124,9 +116,8 @@ static bool load_assignment(const char* path, saved_assignment* out)
 static void on_assignment(const az_iot_dps_assignment* assignment, void* user_ctx)
 {
   sample_context* ctx = (sample_context*)user_ctx;
-  const char* profile = assignment->profile->connection_profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5
-      ? SAMPLE_PROFILE_MQTTV5
-      : SAMPLE_PROFILE_MQTTV3;
+  /* Only mqttv3 assignments are adopted. */
+  const char* profile = SAMPLE_PROFILE_MQTTV3;
   /* Three lines: hub, device id and profile, each shorter than SAMPLE_LINE_MAX. */
   char record[3 * SAMPLE_LINE_MAX];
   int record_length = snprintf(
@@ -280,8 +271,8 @@ int main(void)
         SAMPLE_ASSIGNMENT_FILE);
   }
 
-  /* The adapter builds each session's MQTT client in this workspace, one at a time: MQTT 3.1.1
-   * for DPS and an MQTTv3 hub, MQTT 5 for an MQTTv5 hub. Limits: sample_utils.h. */
+  /* The adapter builds each session's MQTT 3.1.1 client in this workspace, one at a time: DPS,
+   * then the hub. Limits: sample_utils.h. */
   static uint8_t mqtt_workspace[SAMPLE_MQTT_WORKSPACE_SIZE];
 #if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
   opts.mqtt_adapter = az_iot_paho_get_adapter();

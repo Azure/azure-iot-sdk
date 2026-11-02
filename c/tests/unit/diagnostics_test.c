@@ -192,7 +192,6 @@ static void connection_profile_to_string_covers_every_profile(void** state)
     const char* text;
   } all[] = {
     { AZ_IOT_CONNECTION_PROFILE_MQTT_V3, "AZ_IOT_CONNECTION_PROFILE_MQTT_V3" },
-    { AZ_IOT_CONNECTION_PROFILE_MQTT_V5, "AZ_IOT_CONNECTION_PROFILE_MQTT_V5" },
     { AZ_IOT_CONNECTION_PROFILE_UNKNOWN, "AZ_IOT_CONNECTION_PROFILE_UNKNOWN" },
   };
   const size_t n = sizeof(all) / sizeof(all[0]);
@@ -246,7 +245,6 @@ static void mqtt_role_to_string_covers_every_role(void** state)
   } all[] = {
     { AZ_IOT_MQTT_ROLE_DPS, "DPS" },
     { AZ_IOT_MQTT_ROLE_HUB_MQTT_V3, "HUB_MQTT_V3" },
-    { AZ_IOT_MQTT_ROLE_HUB_MQTT_V5, "HUB_MQTT_V5" },
   };
   const size_t n = sizeof(all) / sizeof(all[0]);
   const char* got[sizeof(all) / sizeof(all[0])];

@@ -11,7 +11,7 @@ The `azure-sdk-for-c` component needs the `c/deps/azure-sdk-for-c` submodule.
 
 | Component | Builds | Header |
 |---|---|---|
-| `azure-iot-sdk` | `src/` (core, mqttv3, mqttv5), from [src/sources.cmake](../../src/sources.cmake) | `inc/azure/iot/` |
+| `azure-iot-sdk` | `src/` (core, mqttv3), from [src/sources.cmake](../../src/sources.cmake) | `inc/azure/iot/` |
 | `azure-sdk-for-c` | az_core and az_iot from `deps/azure-sdk-for-c` | |
 | `azure-iot-sdk-crypto-mbedtls` | [adapters/crypto_mbedtls](../../adapters/crypto_mbedtls) | `az_iot_crypto_mbedtls.h` |
 | `azure-iot-sdk-az-mqtt` | [adapters/az_mqtt](../../adapters/az_mqtt): the MQTT adapter, over `c/deps/az_mqtt` and ESP-IDF's mbedTLS. With no CA, the server is verified against the ESP-IDF certificate bundle | `azure/iot/adapters/az_iot_adapter_az_mqtt.h` |

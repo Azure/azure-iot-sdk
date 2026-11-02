@@ -43,7 +43,6 @@ endif()
 # time (the provider that owns the token) -- a deployment property, not a build
 # one, so the Paho build is always made and reports a clear error when the
 # provider is absent. az_mqtt honours key references only over OpenSSL TLS.
-# Serves either hub generation, so it links both mqttv3 and mqttv5.
 set(_hsm_pkcs11_adapters paho)
 if(TARGET az_iot_adapter_az_mqtt)
     get_target_property(_az_mqtt_defs az_iot_adapter_az_mqtt COMPILE_DEFINITIONS)
@@ -54,7 +53,7 @@ if(TARGET az_iot_adapter_az_mqtt)
 endif()
 az_iot_add_adapter_sample(az_iot_sample_auth_hsm_pkcs11 ADAPTERS ${_hsm_pkcs11_adapters}
     SOURCES hsm_pkcs11/main.c ${_auth_common}/sample_utils.c
-    LIBS az_iot_mqttv3 az_iot_mqttv5)
+    LIBS az_iot_mqttv3)
 unset(_hsm_pkcs11_adapters)
 
 # The sign() hook sample brings its own stand-in adapter, so it needs neither
@@ -69,14 +68,14 @@ az_iot_apply_warnings(az_iot_sample_auth_hsm_sign_callback)
 if(AZ_IOT_SAMPLE_CRYPTO)
     az_iot_add_adapter_sample(az_iot_sample_auth_dps_sas_key CRYPTO
         SOURCES dps_sas_key/main.c ${_auth_common}/sample_utils.c
-        LIBS az_iot_mqttv3 az_iot_mqttv5)
+        LIBS az_iot_mqttv3)
 endif()
 
 # The issued-certificate variant uses the OpenSSL crypto backend and the managed provider.
 if(TARGET az_iot_crypto_openssl AND TARGET az_iot_certificate_provider_managed)
     az_iot_add_adapter_sample(az_iot_sample_auth_dps_sas_key_issued_cert
         SOURCES dps_sas_key_issued_cert/main.c ${_auth_common}/sample_utils.c
-        LIBS az_iot_mqttv3 az_iot_mqttv5 az_iot_crypto_openssl
+        LIBS az_iot_mqttv3 az_iot_crypto_openssl
              az_iot_certificate_provider_managed)
 endif()
 
@@ -85,7 +84,7 @@ endif()
 if(TARGET OpenSSL::Crypto)
     az_iot_add_adapter_sample(az_iot_sample_auth_user_provided_sas_token
         SOURCES user_provided_sas_token/main.c ${_auth_common}/sample_utils.c
-        LIBS az_iot_mqttv3 az_iot_mqttv5 OpenSSL::Crypto)
+        LIBS az_iot_mqttv3 OpenSSL::Crypto)
 endif()
 
 # DPS TPM attestation over HTTPS (libcurl), then the hub with SAS tokens signed
