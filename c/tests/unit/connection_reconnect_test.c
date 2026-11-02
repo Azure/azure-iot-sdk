@@ -1129,8 +1129,8 @@ static void a_refused_self_scoped_filter_reports_the_wire_code(void** state)
   assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_OK));
   (void)az_iot_connection_client_do_work(fx->client, 0);
 
-  /* 0x87 Not authorized, as an MQTTv5 topic-space refusal would arrive, with the broker's Reason
-   * String. */
+  /* 0x87 Not authorized, as a broker-side authorization refusal would arrive, with the broker's
+   * Reason String. */
   static const char reason[] = "no topic space allows this filter";
   az_iot_mqtt_event ack;
   memset(&ack, 0, sizeof(ack));

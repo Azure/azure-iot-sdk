@@ -33,3 +33,5 @@ CONFIG_EXAMPLE_CONNECT_IPV6=n
 # azure-sdk-for-c is compiled once, by the azure-sdk-for-c component.
 CONFIG_AZ_MQTT_BUILD_AZ_CORE=n
 CONFIG_AZ_MQTT_AZ_CORE_COMPONENT="azure-sdk-for-c"
+# The SDK uses MQTT 3.1.1 only.
+CONFIG_AZ_MQTT_ENABLE_MQTTV5=n
