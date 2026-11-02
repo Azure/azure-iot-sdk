@@ -3,13 +3,16 @@
 
 # Azure IoT C SDK
 
-[![ci-c](https://github.com/Azure/azure-iot-sdk/actions/workflows/ci-c.yml/badge.svg?branch=main)](https://github.com/Azure/azure-iot-sdk/actions/workflows/ci-c.yml)
+[![ci-c](https://github.com/Azure/azure-iot-sdk/actions/workflows/ci-c.yml/badge.svg?branch=releases/public-preview)](https://github.com/Azure/azure-iot-sdk/actions/workflows/ci-c.yml)
 
 A C99 device SDK for Azure IoT Hub and the Azure IoT Hub Device Provisioning Service (DPS),
 built for constrained and embedded devices.
 
 > **Preview** (2.0.0-preview.1). APIs may change before a stable release. See the
 > [changelog](CHANGELOG.md).
+>
+> This branch (`releases/public-preview`) is the public preview (2.0.0-preview.x); the GA
+> release 1.0.0 (mqttv3 hub, DPS) is on [`main`](https://github.com/Azure/azure-iot-sdk/tree/main/c).
 
 ## Table of Contents
 
