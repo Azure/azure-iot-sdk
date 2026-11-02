@@ -8,10 +8,8 @@
  * @brief Compile-time limits of the az_mqtt adapter. Buffer sizes and requests in flight are
  * run-time values: az_iot_connection_client_options::mqtt_limits.
  *
- * Each value, in order of precedence:
- * 1. A definition from the build (-D) or from the file named by #AZ_IOT_AZ_MQTT_CONFIG_FILE.
- * 2. The value of the selected #AZ_IOT_AZ_MQTT_FOOTPRINT.
- * 3. The default footprint's value.
+ * A value defined by the build (-D) or by the file named by #AZ_IOT_AZ_MQTT_CONFIG_FILE overrides
+ * the default below.
  */
 #ifndef AZ_IOT_AZ_MQTT_CONFIG_H
 #define AZ_IOT_AZ_MQTT_CONFIG_H
@@ -35,25 +33,9 @@
     "AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE, AZ_IOT_AZ_MQTT_RECEIVE_BUFFER_SIZE, AZ_IOT_AZ_MQTT_INFLIGHT_MAX and AZ_IOT_AZ_MQTT_MESSAGE_STORAGE_SIZE were removed: use az_iot_connection_client_options::mqtt_limits"
 #endif
 
-/* Nonzero: an undefined name in #if is 0, so a misspelled footprint fails below. */
-/** @brief Footprint for the IoT Hub limits: 16 MQTT 5 user properties on CONNECT. */
-#define AZ_IOT_AZ_MQTT_FOOTPRINT_DEFAULT 1
-/** @brief Smaller footprint: 4 MQTT 5 user properties on CONNECT. */
-#define AZ_IOT_AZ_MQTT_FOOTPRINT_CONSTRAINED 2
-
-/** @brief Selected footprint: #AZ_IOT_AZ_MQTT_FOOTPRINT_DEFAULT or
- * #AZ_IOT_AZ_MQTT_FOOTPRINT_CONSTRAINED. */
-#ifndef AZ_IOT_AZ_MQTT_FOOTPRINT
-#define AZ_IOT_AZ_MQTT_FOOTPRINT AZ_IOT_AZ_MQTT_FOOTPRINT_DEFAULT
-#endif
-
-#if AZ_IOT_AZ_MQTT_FOOTPRINT == AZ_IOT_AZ_MQTT_FOOTPRINT_CONSTRAINED
-#ifndef AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX
-#define AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX 4
-#endif
-#elif AZ_IOT_AZ_MQTT_FOOTPRINT != AZ_IOT_AZ_MQTT_FOOTPRINT_DEFAULT
+#ifdef AZ_IOT_AZ_MQTT_FOOTPRINT
 #error \
-    "AZ_IOT_AZ_MQTT_FOOTPRINT must be AZ_IOT_AZ_MQTT_FOOTPRINT_DEFAULT or AZ_IOT_AZ_MQTT_FOOTPRINT_CONSTRAINED"
+    "AZ_IOT_AZ_MQTT_FOOTPRINT was removed: define AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX instead (DEFAULT was 16, CONSTRAINED 4)"
 #endif
 
 /** @brief MQTT 5 user properties on CONNECT. A larger count is refused. PUBLISH user properties,

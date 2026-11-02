@@ -263,7 +263,7 @@ and what the application observes is:
 - These disconnects are planned: they count toward no reconnection backoff and not toward
   `dps.max_hub_connect_attempts_before_reprovision`.
 - The hub is not held indefinitely. An update check, retries included, waits at most its request
-  timeout (default 60 s; 0 is refused); then it is abandoned and not sent again.
+  timeout (default 120 s; 0 is refused); then it is abandoned and not sent again.
 - Once sent, a check or a status report waits at most 120 s for its answer; then the provisioning
   session is released, the hub reconnects, and the request is sent again later on the software
   updates retry backoff (1 s doubling to 60 s), a check only while its request timeout lasts.
@@ -396,7 +396,9 @@ including the first connect after a reboot. Why:
   past that the session is lost.
 
 DPS sessions are always clean. On mqttv5, choose `CLEAN` for a device that should not replay the
-broker's backlog after a long absence.
+broker's backlog after a long absence. A resumed session needs an az_mqtt message store:
+with `message_store_size` 0, `init()` fails with `AZ_IOT_ERR_INVALID_ARG` unless
+`session_continuity` is `CLEAN` ([Message store](client-configuration.md#message-store)).
 
 **Retries.** Each session gets a new MQTT client, destroyed when the session ends. What was sent
 on it and not yet confirmed (by a PUBACK or a response) is retried on a later session by the

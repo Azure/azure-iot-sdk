@@ -160,9 +160,11 @@ else()
     endif()
     if(NOT _paho_patched)
         message(WARNING "Paho at ${paho_mqtt_c_SOURCE_DIR} is not v1.3.16 with "
-            "adapters/paho/patches applied, so it keeps the data races those patches fix "
-            "(eclipse-paho/paho.mqtt.c#1709, #1714). See docs/dependencies.md.")
+            "adapters/paho/patches applied, so it keeps the data races and the double free those "
+            "patches fix (eclipse-paho/paho.mqtt.c#1709, #1714, #1592). See docs/dependencies.md.")
     endif()
+    # Tests of what the patches fix need them (tests/CMakeLists.txt). Unset: an installed Paho.
+    set_property(GLOBAL PROPERTY AZ_IOT_PAHO_PATCHED ${_paho_patched})
 
     # Paho v1.3.x warnings are not fatal and the known ones are silenced, so strict
     # CMAKE_C_FLAGS (-Wall -Wextra -Werror) do not break it. Not -w: that would also
