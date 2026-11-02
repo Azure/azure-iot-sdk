@@ -390,6 +390,40 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
         }
 
         [Fact]
+        public async Task GetTwinAsync_Classic_RejectedGetSharedWithTheResyncFailsTheCallAndTheResyncRetriesAfterItsTimeout()
+        {
+            MockFeatureConnectionClient connection = CreateClassicConnection();
+            using TwinClient twinClient = new(connection);
+            await CompleteConnectSyncAsync(connection, desiredVersion: 1);
+            twinClient.DesiredResyncTimeoutSchedule = attempt => attempt == 1 ? TimeSpan.FromSeconds(1) : TimeSpan.FromHours(1);
+            List<ulong> snapshotVersions = new();
+            twinClient.TwinPushReceived += args => snapshotVersions.Add(args.Desired!.PropertiesVersion);
+            List<ulong> patchVersions = new();
+            twinClient.DesiredPatchReceived += args => patchVersions.Add(args.DesiredPropertiesVersion);
+            int publishCount = connection.PublishedMessages.Count;
+
+            await ReceiveClassicDesiredPatchAsync(connection, 3, "{\"fanSpeed\":3}");
+            MqttPublish resyncGet = await connection.WaitForPublishedMessagesAsync(publishCount + 1);
+            Task<DeviceTwin> getTask = twinClient.GetTwinAsync(TestContext.Current.CancellationToken);
+            await RespondClassicAsync(connection, resyncGet, 429);
+
+            await Assert.ThrowsAsync<DeviceException>(() => getTask);
+            Assert.Equal(publishCount + 1, connection.PublishedMessages.Count);
+            Assert.Empty(snapshotVersions);
+
+            // The resync is sent again once its timeout elapses, without another call needing a GET.
+            MqttPublish retry = await connection.WaitForPublishedMessagesAsync(publishCount + 2);
+            Assert.StartsWith(ClassicGetTopicPrefix, retry.Topic);
+            Assert.NotEqual(ExtractRid(resyncGet.Topic), ExtractRid(retry.Topic));
+            await RespondClassicAsync(connection, retry, 200, payload: ClassicTwin(3, "{\"fanSpeed\":3}", 1, "{}"));
+
+            Assert.Equal(new[] { 3ul }, snapshotVersions);
+            await ReceiveClassicDesiredPatchAsync(connection, 4, "{\"fanSpeed\":4}");
+            Assert.Equal(new[] { 4ul }, patchVersions);
+            Assert.Equal(publishCount + 2, connection.PublishedMessages.Count);
+        }
+
+        [Fact]
         public async Task UpdateReportedPropertiesAsync_Classic_ResentAfterTheNextConnectSyncWhenTheConnectionIsLost()
         {
             MockFeatureConnectionClient connection = CreateClassicConnection();
