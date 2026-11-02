@@ -163,7 +163,7 @@
   `AZ_IOT_ERR_NOT_SUPPORTED`.
 - Retry policy: `az_iot_retry_policy::jitter_mode`. `AZ_IOT_RETRY_JITTER_ADDITIVE` only lengthens a
   delay (+0..`jitter_pct`); the default `AZ_IOT_RETRY_JITTER_SYMMETRIC` keeps the existing ± jitter.
-- Initial preview of the C SDK for Azure IoT Hub (mqttv3).
+- Initial release of the C SDK for Azure IoT Hub (mqttv3) and DPS.
 - DPS assignment notification: `az_iot_connection_client_set_dps_assignment_callback()` reports the
   hub, device id and profile each time an assignment is adopted, so an application can persist it
   and connect directly after a restart. See
