@@ -118,6 +118,7 @@ typedef struct
   az_iot_mqttv3_telemetry_client mqttv3_telemetry;
   az_iot_mqttv3_twin_client mqttv3_twin;
   az_iot_mqttv3_direct_method_client mqttv3_methods;
+  uint8_t mqttv3_methods_workspace[AZ_IOT_MQTTV3_DIRECT_METHOD_CLIENT_DEFAULT_WORKSPACE_SIZE];
   az_iot_mqttv5_telemetry_client mqttv5_telemetry;
   az_iot_mqttv5_twin_client mqttv5_twin;
   az_iot_mqttv5_direct_method_client mqttv5_methods;
@@ -555,7 +556,12 @@ static az_iot_result build_clients(hub_device* d, az_iot_connection_profile prof
     r = r == AZ_IOT_OK
         ? az_iot_mqttv3_twin_client_set_desired_handler(&d->mqttv3_twin, on_desired_mqttv3, d)
         : r;
-    r = r == AZ_IOT_OK ? az_iot_mqttv3_direct_method_client_init(&d->mqttv3_methods, &d->connection)
+    r = r == AZ_IOT_OK ? az_iot_mqttv3_direct_method_client_init(
+                             &d->mqttv3_methods,
+                             &d->connection,
+                             &(az_iot_mqttv3_direct_method_client_options){
+                                 .workspace = d->mqttv3_methods_workspace,
+                                 .workspace_size = sizeof(d->mqttv3_methods_workspace) })
                        : r;
     r = r == AZ_IOT_OK
         ? az_iot_mqttv3_direct_method_client_set_handler(&d->mqttv3_methods, on_method_mqttv3, d)

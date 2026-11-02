@@ -5,10 +5,10 @@
 /* SPDX-License-Identifier: MIT */
 /**
  * @file fixed_sizes_test.c
- * @brief Includes every header with a fixed feature-client size, twice.
+ * @brief Includes every header with a fixed feature-client size or a removed count macro, twice.
  *
  * Built as is, it must compile: ordinary and repeated includes are accepted.
- * Built with one of the fixed sizes defined (check_fixed_sizes.cmake), it
+ * Built with one of the fixed sizes or removed macros defined (check_fixed_sizes.cmake), it
  * must fail on that header's guard.
  */
 #include "azure/iot/az_iot_log_file.h"

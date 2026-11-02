@@ -117,6 +117,7 @@ prints `method '<name>' is not implemented here`.
 | --- | --- |
 | MQTT adapter and the workspace it builds each MQTT client in | `mqtt_adapter` (`az_iot_paho_get_adapter()`; az_mqtt: `az_iot_az_mqtt_get_adapter()`), `mqtt_limits`, `mqtt_workspace`; sizes in [`sample_utils.h`](../../common/sample_utils.h) |
 | Build or rebuild the method client for a generation | `clients_build()`, `clients_destroy()` |
+| mqttv3: invocations held, in the sample's workspace | `az_iot_mqttv3_direct_method_client_options` (default limits), `mqttv3_workspace` |
 | mqttv3: one handler, route by name, local timeout | `az_iot_mqttv3_direct_method_client_set_handler()`, `on_method_mqttv3()`, `az_iot_mqttv3_direct_method_client_set_response_timeout()` |
 | mqttv5: declare the method, probe handler | `az_iot_mqttv5_direct_method_client_register_method()`, `az_iot_mqttv5_direct_method_client_set_probe_handler()`, `on_echo_mqttv5()` |
 | Answer | `az_iot_mqttv3_direct_method_respond()` / `az_iot_mqttv5_direct_method_respond()` |

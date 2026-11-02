@@ -227,18 +227,16 @@ extern "C"
 #define AZ_IOT_DM_RID_MAX 32
 /** @brief Longest mqttv5 correlation data echoed back on a response. Fixed. */
 #define AZ_IOT_DM_CORR_DATA_MAX 64
-/* Max concurrent in-flight invocations one client can hold. Requests may
- * outlive the handler (the application can respond asynchronously), so they
- * live in a bounded pool inside the caller-allocated client struct rather than
- * on the heap. */
-#ifndef AZ_IOT_DM_MAX_INFLIGHT
-#define AZ_IOT_DM_MAX_INFLIGHT 4
+
+#ifdef AZ_IOT_DM_MAX_INFLIGHT
+#error \
+    "AZ_IOT_DM_MAX_INFLIGHT is removed: set az_iot_mqttv3_direct_method_client_limits::max_in_flight_invocations (mqttv3) or AZ_IOT_MQTTV5_DM_MAX_CONCURRENT (mqttv5)"
 #endif
 
   /**
    * @brief Storage for one in-flight invocation.
    *
-   * Lives in a bounded pool inside the caller-allocated client. Opaque to
+   * Lives in a bounded pool the client holds. Opaque to
    * applications -- they never hold one; they hold an
    * az_iot_direct_method_request naming it.
    *

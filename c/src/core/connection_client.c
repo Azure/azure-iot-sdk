@@ -51,6 +51,7 @@
 #include "internal/mono_time.h"
 #include "internal/retry_policy.h"
 #include "internal/span_writer.h"
+#include "internal/workspace.h"
 
 #include <azure/az_core.h>
 #include <azure/iot/az_iot_hub_client.h>
@@ -7093,36 +7094,28 @@ size_t az_iot_connection_client_get_workspace_size(const az_iot_connection_clien
   return limits != NULL && limits_resolve(limits, &resolved) ? workspace_size_of(&resolved) : 0;
 }
 
-/** @brief Takes @p count entries of @p entry_size at @p *cursor, which moves past them. */
-static void* workspace_take(uint8_t** cursor, size_t count, size_t entry_size)
-{
-  void* const entries = *cursor;
-  *cursor += AZ_IOT_CONNECTION_CLIENT_WORKSPACE_ALIGN(count * entry_size);
-  return entries;
-}
-
 /** @brief Points @p c's entries into its cleared workspace, laid out as workspace_size_of(). */
 static void workspace_assign(az_iot_connection_client* c, uint8_t* workspace)
 {
   const az_iot_connection_client_limits* l = &c->opts.limits;
-  uint8_t* cursor = (uint8_t*)(((uintptr_t)workspace + 15u) & ~(uintptr_t)15u);
+  uint8_t* cursor = az_iot_workspace__start(workspace);
   c->pending_pubacks
-      = workspace_take(&cursor, l->max_pending_publishes, sizeof(*c->pending_pubacks));
-  c->puback_reservations
-      = workspace_take(&cursor, l->max_publish_reservations, sizeof(*c->puback_reservations));
-  c->persistent_subs
-      = workspace_take(&cursor, l->max_persistent_subscriptions, sizeof(*c->persistent_subs));
-  c->subscription_acks
-      = workspace_take(&cursor, l->max_persistent_subscriptions, sizeof(*c->subscription_acks));
+      = az_iot_workspace__take(&cursor, l->max_pending_publishes, sizeof(*c->pending_pubacks));
+  c->puback_reservations = az_iot_workspace__take(
+      &cursor, l->max_publish_reservations, sizeof(*c->puback_reservations));
+  c->persistent_subs = az_iot_workspace__take(
+      &cursor, l->max_persistent_subscriptions, sizeof(*c->persistent_subs));
+  c->subscription_acks = az_iot_workspace__take(
+      &cursor, l->max_persistent_subscriptions, sizeof(*c->subscription_acks));
   c->feature_observers
-      = workspace_take(&cursor, l->max_feature_observers, sizeof(*c->feature_observers));
-  c->app_state_observers = workspace_take(
+      = az_iot_workspace__take(&cursor, l->max_feature_observers, sizeof(*c->feature_observers));
+  c->app_state_observers = az_iot_workspace__take(
       &cursor, l->max_application_state_observers, sizeof(*c->app_state_observers));
   c->feature_client_binds
-      = workspace_take(&cursor, l->max_feature_clients, sizeof(*c->feature_client_binds));
+      = az_iot_workspace__take(&cursor, l->max_feature_clients, sizeof(*c->feature_client_binds));
   az_iot_dispatch_init(
       &c->dispatch,
-      workspace_take(&cursor, l->max_inbound_handlers, sizeof(az_iot_dispatch_entry)),
+      az_iot_workspace__take(&cursor, l->max_inbound_handlers, sizeof(az_iot_dispatch_entry)),
       l->max_inbound_handlers);
 }
 
@@ -7139,16 +7132,16 @@ static az_iot_result check_init_workspace(
     size_t size,
     size_t needed)
 {
-  if (workspace == NULL)
+  const az_iot_result result = az_iot_workspace__check(workspace, size, needed);
+  if (result == AZ_IOT_ERR_INVALID_ARG)
   {
     AZ_IOT_LOG_ERRORF(
         AZ_IOT_LOG_COMPONENT_CONNECTION,
         "init: no %s; %lu bytes needed",
         name,
         (unsigned long)needed);
-    return AZ_IOT_ERR_INVALID_ARG;
   }
-  if (size < needed)
+  else if (result != AZ_IOT_OK)
   {
     AZ_IOT_LOG_ERRORF(
         AZ_IOT_LOG_COMPONENT_CONNECTION,
@@ -7156,9 +7149,8 @@ static az_iot_result check_init_workspace(
         name,
         (unsigned long)size,
         (unsigned long)needed);
-    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
   }
-  return AZ_IOT_OK;
+  return result;
 }
 
 /** @brief True when [@p a, @p a + @p a_size) and [@p b, @p b + @p b_size) share a byte. */

@@ -29,6 +29,76 @@ extern "C"
 #define AZ_IOT_MQTTV3_DM_RESPONSE_TIMEOUT_SECONDS 300u
 #endif
 
+/** @brief Default az_iot_mqttv3_direct_method_client_limits::max_in_flight_invocations. */
+#ifndef AZ_IOT_MQTTV3_DIRECT_METHOD_CLIENT_DEFAULT_MAX_IN_FLIGHT_INVOCATIONS
+#define AZ_IOT_MQTTV3_DIRECT_METHOD_CLIENT_DEFAULT_MAX_IN_FLIGHT_INVOCATIONS 4
+#endif
+
+/** @brief Largest az_iot_mqttv3_direct_method_client_limits::max_in_flight_invocations. */
+#define AZ_IOT_MQTTV3_DIRECT_METHOD_CLIENT_MAX_IN_FLIGHT_INVOCATIONS_LIMIT 1024
+
+#if AZ_IOT_MQTTV3_DIRECT_METHOD_CLIENT_DEFAULT_MAX_IN_FLIGHT_INVOCATIONS < 1 \
+    || AZ_IOT_MQTTV3_DIRECT_METHOD_CLIENT_DEFAULT_MAX_IN_FLIGHT_INVOCATIONS  \
+        > AZ_IOT_MQTTV3_DIRECT_METHOD_CLIENT_MAX_IN_FLIGHT_INVOCATIONS_LIMIT
+#error "AZ_IOT_MQTTV3_DIRECT_METHOD_CLIENT_DEFAULT_MAX_IN_FLIGHT_INVOCATIONS must be 1-1024"
+#endif
+
+  /**
+   * @brief How many invocations the client holds. 0 selects the default.
+   *
+   * Run-time values: the client struct does not depend on them. The invocations live in
+   * az_iot_mqttv3_direct_method_client_options::workspace.
+   */
+  typedef struct az_iot_mqttv3_direct_method_client_limits
+  {
+    /** Invocations delivered and not answered yet. When all are held, a new invocation is
+     * dropped with a WARN log and gets no response. Default
+     * AZ_IOT_MQTTV3_DIRECT_METHOD_CLIENT_DEFAULT_MAX_IN_FLIGHT_INVOCATIONS (4), at most
+     * AZ_IOT_MQTTV3_DIRECT_METHOD_CLIENT_MAX_IN_FLIGHT_INVOCATIONS_LIMIT (1024). */
+    size_t max_in_flight_invocations;
+  } az_iot_mqttv3_direct_method_client_limits;
+
+  /** @brief Options for az_iot_mqttv3_direct_method_client_init(). */
+  typedef struct az_iot_mqttv3_direct_method_client_options
+  {
+    /** Entry counts; 0 fields select the defaults. */
+    az_iot_mqttv3_direct_method_client_limits limits;
+    /** Required. The client's invocations, owned by the client until deinit(), which wipes it.
+     * At least az_iot_mqttv3_direct_method_client_get_workspace_size(&limits) bytes, any
+     * alignment. */
+    uint8_t* workspace;
+    size_t workspace_size; /**< Bytes in workspace. */
+  } az_iot_mqttv3_direct_method_client_options;
+
+  /** @brief Internal: one in-flight invocation, in the workspace. */
+  typedef struct az_iot_mqttv3_direct_method_invocation
+  {
+    az_iot_direct_method_slot slot;
+    /* When it stops being worth answering. Held here rather than on az_iot_direct_method_slot
+     * so mqttv5, which shares that type, does not carry storage for a timeout it derives from
+     * the exec budget instead. */
+    uint64_t expires_at_ms;
+    /* seq of the last invocation of this entry that a session end (or a respond() refused
+     * NOT_CONNECTED) took, so respond() on it says NOT_CONNECTED rather than INVALID_ARG. A later
+     * one replaces it. */
+    uint32_t ended_by_session_seq;
+  } az_iot_mqttv3_direct_method_invocation;
+
+/**
+ * @brief Workspace bytes for @p max_in_flight_invocations, as a constant expression for static
+ * arrays. Pass the default written out in place of 0. Equal to
+ * az_iot_mqttv3_direct_method_client_get_workspace_size() for the same value.
+ */
+#define AZ_IOT_MQTTV3_DIRECT_METHOD_CLIENT_WORKSPACE_SIZE(max_in_flight_invocations) \
+  (15u                                                                               \
+   + AZ_IOT_CONNECTION_CLIENT_WORKSPACE_ALIGN(                                       \
+       (size_t)(max_in_flight_invocations) * sizeof(az_iot_mqttv3_direct_method_invocation)))
+
+/** @brief Workspace bytes for the default limits, as a constant expression for static arrays. */
+#define AZ_IOT_MQTTV3_DIRECT_METHOD_CLIENT_DEFAULT_WORKSPACE_SIZE \
+  AZ_IOT_MQTTV3_DIRECT_METHOD_CLIENT_WORKSPACE_SIZE(              \
+      AZ_IOT_MQTTV3_DIRECT_METHOD_CLIENT_DEFAULT_MAX_IN_FLIGHT_INVOCATIONS)
+
   /* MQTTv3 hub direct methods (MQTT v3.1.1).
    *
    *   Subscribe  "$iothub/methods/POST/#"
@@ -42,26 +112,30 @@ extern "C"
       az_iot_connection_client* conn;
       az_iot_direct_method_handler_callback handler;
       void* handler_ctx;
-      az_iot_direct_method_slot req_pool[AZ_IOT_DM_MAX_INFLIGHT];
-      /* Parallel to req_pool: when each in-flight invocation stops being worth
-       * answering. Held here rather than on az_iot_direct_method_slot so mqttv5,
-       * which shares that type, does not carry storage for a timeout it derives
-       * from the exec budget instead. */
-      uint64_t req_expires_at_ms[AZ_IOT_DM_MAX_INFLIGHT];
-      /* Parallel to req_pool: seq of the last invocation of each slot that a session end (or a
-       * respond() refused NOT_CONNECTED) took, so respond() on it says NOT_CONNECTED rather
-       * than INVALID_ARG. One per slot: a later one replaces it. */
-      uint32_t ended_by_session_seq[AZ_IOT_DM_MAX_INFLIGHT];
+      /* limits.max_in_flight_invocations entries, in the workspace. */
+      az_iot_mqttv3_direct_method_invocation* invocations;
+      size_t max_in_flight_invocations;
+      uint8_t* workspace;
+      size_t workspace_size;
       uint32_t response_timeout_seconds;
       /* Bumped on every acquire and copied into the request handed out, so a
        * request naming a slot that has since been reused no longer matches. */
       uint32_t next_seq;
-      /* Next pool index to try. Allocation cycles rather than always taking the
-       * lowest free slot, so a slot just reclaimed from an application that
+      /* Next invocation index to try. Allocation cycles rather than always taking the
+       * lowest free entry, so an entry just reclaimed from an application that
        * never answered is the last one reused, not the first. */
       size_t next_slot;
     } _internal;
   } az_iot_mqttv3_direct_method_client;
+
+  /**
+   * @brief Workspace bytes az_iot_mqttv3_direct_method_client_init() needs for @p limits (0
+   * fields: defaults).
+   *
+   * @return The size, or 0 when @p limits is NULL or a value is above its maximum.
+   */
+  AZ_NODISCARD size_t az_iot_mqttv3_direct_method_client_get_workspace_size(
+      const az_iot_mqttv3_direct_method_client_limits* limits);
 
   /**
    * @brief Initialize the MQTTv3 hub direct method client.
@@ -76,10 +150,19 @@ extern "C"
    * Observes the connection: when a session ends, every invocation not answered yet ends with
    * it (IoT Hub fails a pending call when the device disconnects), and its slot is free again.
    * Returns AZ_IOT_ERR_NOT_ENOUGH_SPACE when no feature observer is free.
+   *
+   * @p options is read during the call only; its workspace is used until deinit().
+   *
+   * @return AZ_IOT_ERR_INVALID_ARG when @p options is NULL, a limit is above its maximum or the
+   *         workspace is NULL; AZ_IOT_ERR_NOT_ENOUGH_SPACE when the workspace is too small. Both
+   *         workspace errors log the size needed.
    */
   AZ_NODISCARD az_iot_result az_iot_mqttv3_direct_method_client_init(
       az_iot_mqttv3_direct_method_client* client,
-      az_iot_connection_client* conn);
+      az_iot_connection_client* conn,
+      const az_iot_mqttv3_direct_method_client_options* options);
+
+  /** @brief Detaches the client and wipes its workspace. */
 
   void az_iot_mqttv3_direct_method_client_deinit(az_iot_mqttv3_direct_method_client* client);
 
@@ -94,7 +177,7 @@ extern "C"
    *        takes it back.
    *
    * An application that never answers an invocation would otherwise hold that
-   * slot for the life of the client, and once AZ_IOT_DM_MAX_INFLIGHT are held
+   * slot for the life of the client, and once limits.max_in_flight_invocations are held
    * every further invocation is dropped. Set this above the longest method this
    * device services; @p seconds of 0 restores
    * AZ_IOT_MQTTV3_DM_RESPONSE_TIMEOUT_SECONDS.
