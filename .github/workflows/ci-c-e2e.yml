@@ -63,19 +63,9 @@ name: ci-c-e2e
 
 on:
   workflow_dispatch:
+  # Pull requests: every one, so the gate job always reports; the `changes` job
+  # decides whether the e2e legs run.
   pull_request:
-    paths:
-      - 'c/**'
-      - '!c/**/*.md'
-      - 'common/**'
-      - '!common/**/*.md'
-      # This workflow: a change to it alters what the e2e legs actually do, so
-      # it has to be validated against real Azure rather than merged on the
-      # strength of the other jobs. The provisioning actions now live in
-      # Azure/iot-sdks-e2e-fx and are pinned to a tag, so a change there only
-      # reaches this repository when the pin below is moved.
-      - '.github/workflows/ci-c-e2e.yml'
-      - '.github/actions/install-openssl/**'
   push:
     branches: [ main, 'releases/public-preview' ]
     paths:
@@ -108,12 +98,47 @@ env:
   E2E_SHARED: ${{ vars.E2E_SHARED_ID_SCOPE != '' && github.event_name == 'pull_request' }}
 
 jobs:
+  # On pull requests, whether the e2e legs run; every other event runs them.
+  changes:
+    name: detect changes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    # dorny/paths-filter reads the pull request files through the API.
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      run: ${{ github.event_name != 'pull_request' || steps.filter.outputs.c == 'true' || steps.filter.outputs.common == 'true' || steps.filter.outputs.workflow == 'true' }}
+    steps:
+      - uses: dorny/paths-filter@0e4a8c6effa4802afeda77dc8d303f8176d7dfad # v3.0.4
+        if: github.event_name == 'pull_request'
+        id: filter
+        with:
+          # `every`: a file counts only if it matches all patterns of a filter,
+          # so the `!` patterns exclude Markdown. Hence one filter per path root.
+          predicate-quantifier: every
+          filters: |
+            c:
+              - 'c/**'
+              - '!c/**/*.md'
+            common:
+              - 'common/**'
+              - '!common/**/*.md'
+            # This workflow: a change to it alters what the e2e legs actually do,
+            # so it has to be validated against real Azure rather than merged on
+            # the strength of the other jobs. The provisioning actions live in
+            # Azure/iot-sdks-e2e-fx and are pinned to a tag, so a change there
+            # only reaches this repository when the pin below is moved.
+            workflow:
+              - '.github/{workflows/ci-c-e2e.yml,actions/install-openssl/**}'
+
   setup:
     permissions:
       contents: read
       id-token: write   # azure/login OIDC
     name: setup (provision)
-    if: ${{ !(vars.E2E_SHARED_ID_SCOPE != '' && github.event_name == 'pull_request') }}
+    needs: changes
+    if: ${{ needs.changes.outputs.run == 'true' && !(vars.E2E_SHARED_ID_SCOPE != '' && github.event_name == 'pull_request') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -174,6 +199,8 @@ jobs:
   # cache instead of each building it on a cache miss.
   openssl:
     name: OpenSSL ${{ matrix.openssl }} (${{ matrix.os }})
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
     permissions:
       contents: read
     strategy:
@@ -559,6 +586,8 @@ jobs:
   # index 12 (esp32) and 13 (esp32c3), after the test legs' 0..11.
   esp32-qemu:
     name: esp32 qemu / ${{ matrix.target }}
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     # Runs pull-request code: no Azure OIDC token.
@@ -678,12 +707,12 @@ jobs:
       contents: read
       id-token: write   # azure/login OIDC
     name: teardown (delete resources)
-    needs: [setup, test]
+    needs: [changes, setup, test]
     # `always()` also covers cancellation. The group name comes from the workflow
     # `env` (not from `needs.setup.outputs`), so a cancelled setup still gets torn
     # down; the destroy action no-ops when the group was never created. Skipped in
     # shared mode: the shared group outlives the run.
-    if: ${{ always() && !(vars.E2E_SHARED_ID_SCOPE != '' && github.event_name == 'pull_request') }}
+    if: ${{ always() && needs.changes.outputs.run == 'true' && !(vars.E2E_SHARED_ID_SCOPE != '' && github.event_name == 'pull_request') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -703,3 +732,25 @@ jobs:
         with:
           resource-group: ${{ env.E2E_RESOURCE_GROUP }}
 
+
+  # Single stable check name for rulesets to require: reports on every run and
+  # fails when any job failed or was cancelled (skipped jobs pass).
+  gate:
+    name: ci-c-e2e-gate
+    needs: [ changes, setup, openssl, test, esp32-qemu, coverage, teardown ]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Check every job's result
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          jq -r 'to_entries[] | "\(.key): \(.value.result)"' <<< "$RESULTS"
+          failed=$(jq -r '[to_entries[] | select(.value.result != "success" and .value.result != "skipped") | .key] | join(", ")' <<< "$RESULTS")
+          if [ -n "$failed" ]; then
+            echo "::error::ci-c-e2e-gate: failed or cancelled: $failed"
+            exit 1
+          fi
