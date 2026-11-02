@@ -180,3 +180,25 @@ jobs:
         with:
           path: ${{ runner.temp }}/yocto-sstate
           key: ${{ env.SSTATE_CACHE_PREFIX }}${{ github.run_id }}-${{ github.run_attempt }}
+
+  # Single stable check name for rulesets to require: reports on every run and
+  # fails when any job failed or was cancelled (skipped jobs pass).
+  gate:
+    name: ci-c-yocto-gate
+    needs: [ changes, bitbake ]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Check every job's result
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          jq -r 'to_entries[] | "\(.key): \(.value.result)"' <<< "$RESULTS"
+          failed=$(jq -r '[to_entries[] | select(.value.result != "success" and .value.result != "skipped") | .key] | join(", ")' <<< "$RESULTS")
+          if [ -n "$failed" ]; then
+            echo "::error::ci-c-yocto-gate: failed or cancelled: $failed"
+            exit 1
+          fi

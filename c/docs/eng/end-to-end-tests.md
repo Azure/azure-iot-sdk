@@ -249,11 +249,18 @@ ctest --test-dir build/windows-msvc-debug -C Debug -R e2e --output-on-failure
 
 ### Triggers
 
-- `pull_request` touching `c/**` or `common/**` (fast scenarios)
+- `pull_request`: every pull request; a `changes` job skips the e2e legs unless it touches `c/**` or
+  `common/**` (fast scenarios)
 - `push` to `main` and `releases/public-preview`
 - nightly `schedule` (cron `0 11 * * *`, 4am PST); on `releases/public-preview` at 14:00 UTC, dispatched by
   [`ci-c-public-preview-nightly.yml`](../../../.github/workflows/ci-c-public-preview-nightly.yml)
 - `workflow_dispatch`
+
+Every C e2e workflow ends with a `<workflow>-gate` job (`ci-c-e2e-gate`, `ci-c-e2e-csr-gate`,
+`ci-c-e2e-mqttv5-gate`, `ci-c-e2e-adu-gate`), the single check name for rulesets to require. Since its
+workflow runs on every pull request, it always reports; it fails only when a job failed or was
+cancelled. The other C workflows end with `ci-c-gate`, `ci-c-static-analysis-gate`, `codeql-c-gate`
+and `ci-c-yocto-gate`.
 
 ### Authentication
 

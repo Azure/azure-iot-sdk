@@ -133,3 +133,29 @@ jobs:
       - name: Build with /analyze
         # -k 0: report every failing file, not just the first.
         run: cmake --build build/msvc-analyze -- -k 0
+
+  # Single stable check name for rulesets to require: reports on every run and
+  # fails when any job failed or was cancelled (skipped jobs pass).
+  gate:
+    name: ci-c-static-analysis-gate
+    needs: [ changes, clang-tidy, msvc-analyze ]
+    if: always()
+    runs-on: ubuntu-24.04
+    # No checkout: the workflow default working-directory c/ would not exist.
+    defaults:
+      run:
+        working-directory: .
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Check every job's result
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          jq -r 'to_entries[] | "\(.key): \(.value.result)"' <<< "$RESULTS"
+          failed=$(jq -r '[to_entries[] | select(.value.result != "success" and .value.result != "skipped") | .key] | join(", ")' <<< "$RESULTS")
+          if [ -n "$failed" ]; then
+            echo "::error::ci-c-static-analysis-gate: failed or cancelled: $failed"
+            exit 1
+          fi
