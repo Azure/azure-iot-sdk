@@ -70,8 +70,8 @@ job did not need to run and fails when it failed.
 ### Nightly: combined coverage
 
 [ci-c-coverage-combined.yml](../../../.github/workflows/ci-c-coverage-combined.yml) merges the
-unit tracefile with those of the nightly e2e workflows (`ci-c-e2e`, `ci-c-e2e-csr`) using
-[`eng/combine-coverage.sh`](../../eng/combine-coverage.sh).
+unit tracefile with those of the nightly e2e workflows (`ci-c-e2e`, `ci-c-e2e-csr`,
+`ci-c-e2e-adu`) using [`eng/combine-coverage.sh`](../../eng/combine-coverage.sh).
 
 - It reports on one branch: `main` when scheduled, or the dispatched branch (`main` or
   `releases/public-preview`; `ci-c-public-preview-nightly.yml` dispatches it there nightly).

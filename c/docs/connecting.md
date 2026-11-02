@@ -241,7 +241,36 @@ Sample: [`samples/authentication/dps_persist_assignment`](../samples/authenticat
 ### One MQTT session at a time
 
 The client runs one MQTT session at a time: the provisioning session and the hub session never
-overlap.
+overlap. Only software updates (`az_iot_su.h`) uses the provisioning session after registration,
+and what the application observes is:
+
+- **First boot.** While the software updates client still needs the provisioning session when the
+  device registers (its onboarding check, typically), the hub connect waits. Once it is done, the
+  provisioning session closes and the hub connects to the assignment just received, without
+  registering again. `HUB:RETRY_PENDING` with reason `AZ_IOT_OK` marks the wait.
+- **After registration.** Each update check or status report made while the hub is connected
+  disconnects the hub. First the hub session's deliveries settle, for up to 5 s, as before a
+  [SAS token renewal](#authentication): publishes awaiting a PUBACK, and SDK requests awaiting a
+  response (twin reported-property updates, a certificate renewal). Meanwhile a new QoS 1 publish
+  returns `AZ_IOT_ERR_BUSY` (QoS 0 is sent). So the provisioning session starts at most 5 s later,
+  plus up to 5 s for the hub to report its disconnect. Then `HUB:RETRY_PENDING` with reason
+  `AZ_IOT_OK` (`is_credential_renewal` false, no `recovery` info), then the provisioning session's
+  events. When the software updates client has no work left, the hub reconnects (`SETTING_UP`,
+  `CONNECTING`, `CONNECTED`) to its cached assignment; if it has none left before the settle ends,
+  the hub session stays. Feature clients see an ordinary session end and resume as after any
+  reconnect; QoS 1 publishes still awaiting a PUBACK complete with `AZ_IOT_ERR_NOT_CONNECTED`. A
+  link lost during the settle ends the session as any lost session.
+- These disconnects are planned: they count toward no reconnection backoff and not toward
+  `dps.max_hub_connect_attempts_before_reprovision`.
+- The hub is not held indefinitely. An update check, retries included, waits at most its request
+  timeout (default 120 s; 0 is refused); then it is abandoned and not sent again.
+- Once sent, a check or a status report waits at most 120 s for its answer; then the provisioning
+  session is released, the hub reconnects, and the request is sent again later on the software
+  updates retry backoff (1 s doubling to 60 s), a check only while its request timeout lasts.
+- A provisioning session that is not ready (no SUBACK) within 120 s ends as failed, and the hub
+  reconnects. The next provisioning session is paced by `reconnection_policy`, not by the software
+  updates backoff; with retries disabled, none is opened automatically.
+- `close()` and `deinit()` end whichever session exists, the hub's wait included.
 
 ## Reconnection
 
@@ -310,6 +339,7 @@ What survives a reconnect:
 | The hub assignment and connection profile | In-flight QoS 1 publishes that were not yet acknowledged |
 | Subscriptions registered by feature clients | Pending twin reported-property patches, and mqttv3 direct-method invocations not yet answered |
 | The operational certificate | Desired-property updates sent while disconnected (mqttv3). Call the twin client's `get()` to resynchronize. |
+| Software update progress and unsent reports | |
 
 Re-send the publishes and patches once the connection is back. The SDK resends pending twin get
 requests and mqttv5 direct-method responses itself: see
@@ -435,7 +465,7 @@ storage still yields the key.
 | The key | The provider returns | Adapter | Sample |
 | --- | --- | --- | --- |
 | Can be named (PKCS#11 URI, TPM 2.0 object) and has an OpenSSL 3.x provider | `client_key_uri` + `crypto_engine_id` | Paho (`AZ_IOT_PAHO_KEY_CUSTODY`); az_mqtt with OpenSSL TLS | [`hsm_pkcs11`](../samples/authentication/hsm_pkcs11/README.md) |
-| Is a PSA Crypto key (e.g. the ESP32 Digital Signature peripheral) | `client_key_psa_id` | az_mqtt with mbedTLS TLS (ESP-IDF); others refuse it with `AZ_IOT_ERR_NOT_SUPPORTED` | [ESP32 sample](../samples/unified/esp32/README.md#device-identity) |
+| Is a PSA Crypto key (e.g. the ESP32 Digital Signature peripheral) | `client_key_psa_id` | az_mqtt with mbedTLS TLS (ESP-IDF); others refuse it with `AZ_IOT_ERR_NOT_SUPPORTED` | [ESP32 software updates](../samples/software_update/esp32/README.md#device-identity) |
 | Can only be asked to sign | A `sign()` hook | Your own ([Bring your own MQTT client](how_to_byo_mqtt_client.md)); Paho and az_mqtt refuse it with `AZ_IOT_ERR_NOT_SUPPORTED` | [`hsm_sign_callback`](../samples/authentication/hsm_sign_callback/README.md) |
 
 - **Bootstrap keys** authenticate to DPS; keep them in hardware too.
@@ -578,8 +608,8 @@ copts.trusted_ca.path = "ca.pem";         /* server trust, any credential */
 
 ## Crypto backend
 
-`crypto` supplies SHA-256 to every feature that needs it; today that is SAS token signing. Set
-it once:
+`crypto` supplies SHA-256 and RS256 verification to every feature that needs them; today that
+is software updates. Set it once:
 
 ```c
 copts.crypto = az_iot_crypto_openssl(); /* or az_iot_crypto_mbedtls() */
@@ -592,7 +622,7 @@ copts.crypto = az_iot_crypto_openssl(); /* or az_iot_crypto_mbedtls() */
 
 To bring your own, fill an `az_iot_crypto` with your functions
 ([az_iot_crypto.h](../inc/azure/iot/az_iot_crypto.h)). `init()` rejects a backend without
-SHA-256 or with another `version`. A client that uses
+SHA-256 or with another `version`; software updates also need `verify_rs256`. A client that uses
 no crypto can leave `crypto` NULL.
 
 ## Common results

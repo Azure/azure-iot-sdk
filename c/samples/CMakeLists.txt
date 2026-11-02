@@ -21,7 +21,7 @@ if(NOT AZ_IOT_SAMPLE_ADAPTERS)
         "AZ_IOT_WITH_PAHO=ON or AZ_IOT_WITH_AZ_MQTT=ON (or AZ_IOT_BUILD_SAMPLES=OFF).")
 endif()
 
-# The crypto backend for samples that sign SAS tokens: OpenSSL, else mbedTLS.
+# The crypto backend for samples that sign or verify (SAS tokens, software updates): OpenSSL, else mbedTLS.
 set(AZ_IOT_SAMPLE_CRYPTO "")
 if(TARGET az_iot_crypto_openssl)
     set(AZ_IOT_SAMPLE_CRYPTO openssl)
@@ -95,6 +95,8 @@ endmacro()
 add_subdirectory(unified)
 # MQTTv5 hubs only.
 add_subdirectory(mqttv5)
+# Software Update PC samples; they need a crypto backend.
+add_subdirectory(software_update)
 # Authentication / certificate-management samples. The subdirectory decides
 # per-sample which other dependencies (managed provider, OpenSSL, libcurl) are required.
 add_subdirectory(authentication)

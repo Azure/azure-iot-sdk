@@ -69,8 +69,8 @@ jobs:
 
       - name: Install deps
         # Every optional component whose dependencies the runner can provide is configured, so
-        # its sources are analyzed: libssl (Paho TLS, key custody, OpenSSL crypto,
-        # managed certificate provider), libcurl (file upload sample), mbedTLS below.
+        # its sources are analyzed: libssl (Paho TLS, key custody, software updates OpenSSL
+        # crypto, managed certificate provider), libcurl (file upload sample), mbedTLS below.
         run: |
           sudo apt-get update && sudo apt-get install -y ninja-build libssl-dev libcurl4-openssl-dev
           pipx install "clang-tidy==${CLANG_TIDY_VERSION}"
@@ -88,6 +88,7 @@ jobs:
           -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/mbedtls"
           -DAZ_IOT_BUILD_TESTS=OFF
           -DAZ_IOT_WITH_PAHO=ON
+          -DAZ_IOT_WITH_SU_DELTA=ON
 
       - name: clang-tidy
         run: bash eng/clang-tidy.sh build/clang-tidy

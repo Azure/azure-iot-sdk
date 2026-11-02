@@ -7,9 +7,10 @@
  * @file crypto_contract.h
  * @brief Backend-independent contract suite for az_iot_crypto.
  *
- * Runs committed known-answer vectors (FIPS 180-4 and RFC 4231) through a
- * backend, directly and through the SDK's composed SHA-256 and HMAC-SHA256, so
- * every backend is held to the same accept/reject behaviour.
+ * Runs the committed known-answer vectors (su_crypto_vectors.h and RFC 4231)
+ * through a backend, directly, through the SDK's composed SHA-256 and
+ * HMAC-SHA256, and through az_iot_su_parse_update_request(), so every backend
+ * is held to the same accept/reject behaviour.
  */
 #ifndef CRYPTO_CONTRACT_H
 #define CRYPTO_CONTRACT_H

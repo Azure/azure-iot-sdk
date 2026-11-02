@@ -74,11 +74,11 @@ jobs:
 
       - name: Install deps
         # libcurl: HTTPS path of the file upload sample. libssl: Paho TLS, key custody,
-        # OpenSSL crypto and the managed certificate provider.
+        # software updates OpenSSL crypto and the managed certificate provider.
         run: sudo apt-get update && sudo apt-get install -y ninja-build libssl-dev libcurl4-openssl-dev
 
       - name: Build mbedTLS
-        # Enables the mbedTLS crypto adapter.
+        # Enables the software updates mbedTLS crypto adapter.
         run: bash eng/install-mbedtls.sh 3.6.7 "$RUNNER_TEMP/mbedtls"
 
       - name: Configure
@@ -89,6 +89,7 @@ jobs:
           -DAZ_IOT_BUILD_TESTS=OFF
           -DAZ_IOT_BUILD_SAMPLES=ON
           -DAZ_IOT_WITH_PAHO=ON
+          -DAZ_IOT_WITH_SU_DELTA=ON
 
       - name: Build everything (not analyzed)
         run: cmake --build build/codeql

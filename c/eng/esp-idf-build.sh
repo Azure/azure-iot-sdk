@@ -28,7 +28,7 @@ root=${4:-${RUNNER_TEMP:-/tmp}/esp-idf-build}
 # Absolute: idf.py -C resolves relative paths from the sample directory.
 mkdir -p "$root"
 root=$(cd "$root" && pwd)
-# Name from the sample's last two path components, e.g. unified-esp32.
+# Name from the sample's last two path components, e.g. software_update-esp32.
 sample_name="$(basename "$(dirname "$sample")")-$(basename "$sample")"
 name="${sample_name}-${target}-${profile}"
 work="${root}/${name}"

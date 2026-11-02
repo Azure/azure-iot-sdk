@@ -1,0 +1,28 @@
+menu "Software Updates ESP32 Sample Configuration"
+
+    config SU_DPS_ID_SCOPE
+        string "DPS ID scope"
+        default "0ne00000000"
+        help
+            Device Provisioning Service ID scope.
+
+    config SU_DPS_REGISTRATION_ID
+        string "DPS registration id (device id)"
+        default "su-esp32-device"
+        help
+            DPS registration id. Must match the CN of the embedded device
+            certificate and the device's X.509 enrollment.
+
+    config SU_POLL_INTERVAL_S
+        int "Update check interval (seconds)"
+        range 10 86400
+        default 14400
+        help
+            Seconds between update checks on the regular route, once the
+            device has connected to its hub. Checks are skipped while a
+            deployment is in flight. A check not answered within half
+            the interval (at most 120 s) is abandoned. Checks and reports
+            from all devices share the provisioning service's request
+            budget, which plans for one check per device every 4 hours.
+
+endmenu

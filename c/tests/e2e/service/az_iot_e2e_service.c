@@ -795,7 +795,8 @@ bool az_iot_e2e_service_twin_patch_desired_begin(
   }
   char path[256];
   snprintf(path, sizeof(path), "/twins/%s?api-version=%s", device_id, E2E_API_VERSION);
-  /* Large enough for a ~3 KB desired PATCH wrapped in the properties/desired envelope. */
+  /* Large enough for a software updates deployment desired PATCH (~3 KB: signed JWS +
+   * escaped v5 manifest) wrapped in the properties/desired envelope. */
   char body[4096];
   snprintf(
       body,

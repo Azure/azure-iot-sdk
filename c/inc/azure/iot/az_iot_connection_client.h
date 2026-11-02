@@ -578,7 +578,7 @@ extern "C"
        * up -- never asking DPS where the device actually lives now. This bounds
        * that. A hub that refuses the identity answered, so it is not counted
        * here and resets the count. Nor is a hub session ended for a provisioning
-       * session: that end is planned.
+       * session (software updates): that end is planned.
        *
        * Under the default policy (1s initial, 60s cap, +/-20% jitter) the delays
        * run 1, 2, 4, 8, 16, 32 then 60s, so attempt N >= 7 falls at roughly
@@ -812,7 +812,8 @@ extern "C"
      * @brief Cryptographic backend, e.g. az_iot_crypto_openssl(). Borrowed;
      * must outlive the client.
      *
-     * Required to sign SAS tokens from keys; NULL is fine otherwise. init() rejects a backend
+     * Required by software updates, which also need verify_rs256. NULL is
+     * fine for a client without software updates. init() rejects a backend
      * without SHA-256 or of another version with AZ_IOT_ERR_INVALID_ARG.
      */
     const az_iot_crypto* crypto;
@@ -900,7 +901,9 @@ extern "C"
      * both roles. NULL uses the C library's time(); set it on a platform
      * without one. A time of 0, or one so large the token expiry would
      * overflow, fails the attempt with AZ_IOT_ERR_BUSY: open() returns it; a
-     * reconnect attempt is retried under reconnection_policy.
+     * reconnect attempt is retried under reconnection_policy. The software
+     * updates client also reads it to keep a failed workflow's retry wait
+     * across restarts.
      */
     struct
     {
@@ -962,7 +965,8 @@ extern "C"
      *
      * One MQTT client at a time: a provisioning session cannot start while the hub session's
      * client exists, nor the reverse. Such a start fails with AZ_IOT_ERR_BUSY, reported and
-     * retried like other failed starts.
+     * retried like other failed starts. Today only the software updates DPS channel holds the
+     * provisioning session beside the hub session.
      */
     const az_iot_mqtt_adapter* mqtt_adapter;
     /**
@@ -996,8 +1000,8 @@ extern "C"
     /** @brief A retry is scheduled; nothing is in flight. The next attempt
      * starts in AZ_IOT_CONN_STATE_SETTING_UP. On the hub scope, reason
      * AZ_IOT_OK without az_iot_connection_state_event::is_credential_renewal
-     * means the hub session waits for a provisioning session: only one MQTT
-     * session runs at a time, and the hub session
+     * means the hub session waits for a provisioning session (software
+     * updates): only one MQTT session runs at a time, and the hub session
      * reconnects to its assignment once that session ends. */
     AZ_IOT_CONN_STATE_RETRY_PENDING,
     AZ_IOT_CONN_STATE_DISCONNECTING,
@@ -1858,7 +1862,7 @@ extern "C"
      * (or dps_standing_ref) is set: the connection client holds
      * dps_registration_ref while the device must register, and
      * dps_session_wanted is set while the feature client using the session
-     * has work for it.
+     * (software updates) has work for it.
      *
      * Registration is a task performed on the session, not a property of it --
      * it runs only while dps_registration_ref is held, which is what keeps a

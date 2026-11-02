@@ -38,12 +38,12 @@
 name: ci-c-e2e-adu
 
 on:
-  # releases/public-preview only: its nightly dispatcher (ci-c-public-preview-nightly.yml) runs it.
   workflow_dispatch:
   # Pull requests: every one, so the gate job always reports; the `changes` job
   # decides whether the e2e legs run.
   pull_request:
-    branches: [ releases/public-preview ]
+  schedule:
+    - cron: '0 12 * * *'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
@@ -105,10 +105,9 @@ jobs:
   # As in ci-c-e2e-mqttv5.yml: the namespace (and its Software Update link) can
   # drop out of Azure. Not on pull requests, which rely on the scheduled repair
   # (every 10 minutes) in ci-c-e2e-mqttv5-adr-namespace.yml.
-  # main has no software updates: a dispatch on main (the UI default) does nothing.
   adr-namespace:
     name: ADR namespace
-    if: ${{ github.event_name != 'pull_request' && github.ref != 'refs/heads/main' }}
+    if: ${{ github.event_name != 'pull_request' }}
     permissions:
       contents: read
       id-token: write
@@ -124,7 +123,6 @@ jobs:
     needs: [ changes, adr-namespace ]
     if: >-
       ${{ !cancelled() && needs.changes.outputs.run == 'true' &&
-          github.ref != 'refs/heads/main' &&
           (needs.adr-namespace.result == 'success' || needs.adr-namespace.result == 'skipped') &&
           (github.event_name != 'pull_request' ||
            (github.event.pull_request.head.repo.full_name == github.repository &&

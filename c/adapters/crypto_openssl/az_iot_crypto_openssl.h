@@ -18,7 +18,8 @@ extern "C"
 #endif
 
   /**
-   * @brief Returns the OpenSSL backend. Static storage; stateless.
+   * @brief Returns the OpenSSL backend, with every function including
+   * verify_rs256. Static storage; stateless.
    *
    * @return The backend.
    */

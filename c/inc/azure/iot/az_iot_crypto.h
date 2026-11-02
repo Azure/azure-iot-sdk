@@ -5,7 +5,7 @@
 /* SPDX-License-Identifier: MIT */
 /**
  * @file az_iot_crypto.h
- * @brief Cryptographic backend: SHA-256.
+ * @brief Cryptographic backend: SHA-256 and RS256 verification.
  *
  * Set once on the connection client (az_iot_connection_client_options::crypto);
  * every feature that needs crypto uses it. Shipped backends:
@@ -81,6 +81,34 @@ extern "C"
         const az_iot_crypto* self,
         az_iot_sha256_ctx* ctx,
         uint8_t out[AZ_IOT_SHA256_SIZE]);
+
+    /**
+     * @brief Verifies an RSASSA-PKCS1-v1_5 SHA-256 signature (JWS RS256).
+     * Optional; software updates require it.
+     *
+     * @param[in] self          Backend.
+     * @param[in] modulus       RSA modulus, big-endian.
+     * @param[in] modulus_len   Bytes in @p modulus.
+     * @param[in] exponent      RSA public exponent, big-endian.
+     * @param[in] exponent_len  Bytes in @p exponent.
+     * @param[in] data          Signed data.
+     * @param[in] data_len      Bytes in @p data.
+     * @param[in] signature     Signature.
+     * @param[in] signature_len Bytes in @p signature.
+     * @return AZ_IOT_OK only for a valid signature; AZ_IOT_ERR_INVALID_ARG
+     * for a NULL or empty key or signature, NULL @p data, or a key longer
+     * than the backend supports; another error otherwise.
+     */
+    az_iot_result (*verify_rs256)(
+        const az_iot_crypto* self,
+        const uint8_t* modulus,
+        size_t modulus_len,
+        const uint8_t* exponent,
+        size_t exponent_len,
+        const uint8_t* data,
+        size_t data_len,
+        const uint8_t* signature,
+        size_t signature_len);
   };
 
 #ifdef __cplusplus

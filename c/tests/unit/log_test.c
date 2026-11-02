@@ -744,14 +744,14 @@ static void file_sink_writes_and_escapes_the_component(void** state)
   assert_int_equal(
       AZ_IOT_OK, az_iot_log_file_sink_open(&fs, path, NULL, AZ_IOT_LOG_LEVEL_TRACE, &sink));
   az_iot_log_set_global_sink(&sink);
-  AZ_IOT_LOG_WARN(AZ_IOT_LOG_COMPONENT_DPS, "one");
+  AZ_IOT_LOG_WARN(AZ_IOT_LOG_COMPONENT_SU, "one");
   az_iot_log_emit(AZ_IOT_LOG_LEVEL_WARN, "x\ny", __FILE__, __LINE__, "two");
   az_iot_log_set_global_sink(NULL);
   az_iot_log_file_sink_close(&fs);
 
   assert_true(read_file(path, text, sizeof(text)) > 0);
   assert_int_equal(2, count_lines(text));
-  assert_non_null(strstr(text, "Z [WARN] [dps] "));
+  assert_non_null(strstr(text, "Z [WARN] [su] "));
   assert_non_null(strstr(text, "Z [WARN] [x\\ny] "));
   remove_log_files(path);
 }

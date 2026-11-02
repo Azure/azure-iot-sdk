@@ -3,7 +3,7 @@
 
 # mbedTLS (PSA Crypto) crypto backend, host build: az_iot_crypto_mbedtls().
 # Built only against a maintained mbedTLS branch: 3.6 LTS or 4.1+. ESP-IDF builds
-# compile the source directly (platforms/esp32/components/azure-iot-sdk-crypto-mbedtls).
+# compile the source directly (samples/software_update/esp32).
 # Point CMAKE_PREFIX_PATH (or MbedTLS_DIR) at an mbedTLS install that ships its CMake
 # package; eng/install-mbedtls.sh produces one.
 

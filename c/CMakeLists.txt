@@ -65,6 +65,7 @@ if(WIN32 AND BUILD_SHARED_LIBS AND NOT CMAKE_RUNTIME_OUTPUT_DIRECTORY)
 endif()
 
 include(az_iot_options)
+include(az_iot_su_limits)
 include(compiler_warnings)
 include(az_iot_coverage)
 # Before any dependency is fetched, so dependencies are hardened too.
@@ -181,6 +182,10 @@ endif()
 
 if(AZ_IOT_WITH_CERT_PROVIDER_MANAGED)
     add_subdirectory(adapters/cert_openssl)
+endif()
+
+if(AZ_IOT_WITH_SU_DELTA)
+    add_subdirectory(adapters/su/delta)
 endif()
 
 if(AZ_IOT_BUILD_SAMPLES)

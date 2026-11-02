@@ -16,6 +16,8 @@ target_include_directories(az_iot_core
         # of where in src/ the includer lives. Required for GCC's strict
         # quoted-include resolution.
         ${CMAKE_CURRENT_SOURCE_DIR}/core
+        # Software updates' internal header lives under features/su/internal/.
+        ${CMAKE_CURRENT_SOURCE_DIR}/features/su
 )
 
 # mono_time.c uses clock_gettime(CLOCK_MONOTONIC) on POSIX.
@@ -34,6 +36,9 @@ if(AZ_IOT_RACE_ANNOTATIONS)
     endif()
     target_compile_definitions(az_iot_core PRIVATE AZ_IOT_RACE_ANNOTATIONS=1)
 endif()
+
+# Size the manifest structures in az_iot_su.h; the application must use the same values.
+target_compile_definitions(az_iot_core PUBLIC ${AZ_IOT_SU_LIMIT_DEFINITIONS})
 
 # Default connection client limits (az_iot_connection_client_config.h). Each is passed only when
 # set, so a value from AZ_IOT_CONNECTION_CLIENT_CONFIG_FILE applies. PUBLIC: the application's

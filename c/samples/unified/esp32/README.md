@@ -61,32 +61,9 @@ requires.
 The device certificate and key come from the `esp_secure_cert` partition (0xD000), read by the
 [esp_secure_cert certificate provider](../../../adapters/cert_esp_secure_cert/az_iot_certificate_provider_esp_secure_cert.h);
 the certificate CN must equal `HUB_DPS_REGISTRATION_ID`. On ESP32-S3/C3/C6 the key stays in the
-Digital Signature peripheral; on ESP32 it is a PEM key in the partition.
-
-Write the partition with Espressif's `configure_esp_secure_cert.py`
-(`pip install esp-secure-cert-tool`) after `idf.py flash`; `idf.py flash` leaves it in place,
-`idf.py erase-flash` erases it. These commands are for development:
-
-```sh
-# ESP32-S3/C3/C6: --configure_ds burns the eFuse key block --efuse_key_id (irreversible).
-configure_esp_secure_cert.py -p PORT --target_chip esp32c3 --secure_cert_type cust_flash_tlv \
-    --device-cert device_cert.pem --private-key device_key.pem \
-    --configure_ds --priv_key_algo RSA 2048 --efuse_key_id 3
-# ESP32:
-configure_esp_secure_cert.py -p PORT --target_chip esp32 --secure_cert_type cust_flash_tlv \
-    --device-cert device_cert.pem --private-key device_key.pem
-```
-
-`--priv_key_algo` must match the key (RSA and its size). The tool burns the DS key block
-**without read protection**, so its key can still be read and used to decrypt the DS data off
-the chip. For production, read-protect it right after provisioning and check that
-`espefuse.py -p PORT summary` reports the block as read-protected:
-
-```sh
-espefuse.py --chip esp32c3 -p PORT read_protect_efuse BLOCK_KEY3
-```
-
-For production key custody, see [Production keys](../../../docs/connecting.md#production-keys).
+Digital Signature peripheral; on ESP32 it is a PEM key in the partition. Write the partition
+after `idf.py flash` as the [software updates sample](../../software_update/esp32/README.md#device-identity)
+describes; that README also covers read-protecting the DS key for production.
 
 The DPS and hub server certificates are verified against the ESP-IDF certificate bundle.
 

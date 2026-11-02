@@ -81,7 +81,7 @@ on:
       - '.github/workflows/ci-c-e2e-csr.yml'
       - '.github/actions/install-openssl/**'
   schedule:
-    - cron: '0 12 * * *'  # Nightly at 5am PST (offset from the fast workflow)
+    - cron: '0 12 * * *'  # Nightly at 5am PST (offset from the fast + ADU workflows)
 
 # Cancel superseded runs on the same ref to avoid leaking parallel resource groups.
 concurrency:

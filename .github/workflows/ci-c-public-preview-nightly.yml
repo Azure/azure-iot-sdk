@@ -12,8 +12,7 @@
 #   main (own schedule)                      releases/public-preview (here)
 #   11:00 ci-c-e2e                           14:00
 #   11:30 ci-c-e2e-mqttv5                    14:30
-#   12:00 ci-c-e2e-csr                       15:00
-#   -     ci-c-e2e-adu (preview only)        15:00
+#   12:00 ci-c-e2e-csr, ci-c-e2e-adu         15:00
 #   12:00 Mon codeql-c                       15:00 Mon
 #   13:00 ci-c-coverage-combined             16:00
 #   04:17 Mon,Thu ci-c-yocto                 07:17 Mon,Thu

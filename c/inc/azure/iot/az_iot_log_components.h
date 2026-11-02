@@ -22,6 +22,7 @@
 #define AZ_IOT_LOG_COMPONENT_DPS "dps"
 #define AZ_IOT_LOG_COMPONENT_CERT "cert"
 #define AZ_IOT_LOG_COMPONENT_CERT_PEM "cert_pem"
+#define AZ_IOT_LOG_COMPONENT_SU "su"
 #define AZ_IOT_LOG_COMPONENT_PAHO "paho"
 #define AZ_IOT_LOG_COMPONENT_AZ_MQTT "az_mqtt"
 #define AZ_IOT_LOG_COMPONENT_C2D "c2d"

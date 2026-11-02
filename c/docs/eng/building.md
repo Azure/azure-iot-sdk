@@ -10,9 +10,9 @@ conformance suite. For a first build, see the [samples overview](../../samples/R
 
 ```
 inc/azure/iot/      public headers
-src/                core, mqttv3 and mqttv5 feature clients
+src/                core, mqttv3 and mqttv5 feature clients, software updates
 adapters/           MQTT adapters (Paho, az_mqtt), OpenSSL certificate provider,
-                    crypto backends (OpenSSL, mbedTLS)
+                    crypto backends (OpenSSL, mbedTLS), software updates platform adapters
 samples/            samples, one README each
 tests/              unit, conformance, end-to-end and install tests
 platforms/esp32/    ESP-IDF components
@@ -43,7 +43,7 @@ target_link_libraries(app PRIVATE azure::iot::mqttv3 azure::iot::adapter_paho)
 
 - Components: `core`, `mqttv3`, `mqttv5`, and each adapter built (`adapter_paho`,
   `adapter_az_mqtt`, `crypto_openssl`, `crypto_mbedtls`,
-  `certificate_provider_managed`). An MQTT adapter's header is installed only with the adapter.
+  `certificate_provider_managed`, `su_delta`). An MQTT adapter's header is installed only with the adapter.
 - azure-sdk-for-c ships in the package (headers under `include/azure-sdk-for-c`);
   Paho installs its own `eclipse-paho-mqtt-c` package into the same prefix.
 - OpenSSL, and mbedTLS for `crypto_mbedtls`, must be findable by the consumer.

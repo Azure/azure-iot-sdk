@@ -24,6 +24,7 @@ int main(void)
   const az_iot_crypto* crypto = AZ_IOT_TEST_CRYPTO();
   CHECK(crypto != NULL);
   CHECK(crypto->version == AZ_IOT_CRYPTO_VERSION);
+  CHECK(crypto->verify_rs256 != NULL);
 
   az_iot_sha256_ctx ctx;
   uint8_t digest[AZ_IOT_SHA256_SIZE] = { 0 };

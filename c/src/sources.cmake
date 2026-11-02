@@ -29,6 +29,13 @@ set(AZ_IOT_CORE_SOURCES
     core/crypto.c
     core/sas_token.c
     core/dps_tpm_client.c
+    features/su/su_client.c
+    features/su/su_device_properties.c
+    features/su/su_manifest.c
+    features/su/su_root_keys_microsoft.c
+    features/su/su_report.c
+    features/su/su_channel_dps.c
+    features/su/su_protocol.c
 )
 
 set(AZ_IOT_MQTTV3_SOURCES

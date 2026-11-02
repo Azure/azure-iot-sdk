@@ -3,7 +3,7 @@
 # Licensed under the MIT license. See LICENSE file in the project root for full license information.
 #
 # Build and install a maintained mbedTLS release (crypto + CMake package) for the
-# mbedTLS crypto adapter tests.
+# software updates mbedTLS crypto adapter tests.
 #
 #   eng/install-mbedtls.sh <version> <prefix>
 #

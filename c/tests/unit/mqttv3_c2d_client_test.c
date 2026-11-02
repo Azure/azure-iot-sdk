@@ -945,7 +945,7 @@ static void the_subscription_is_reissued_after_a_reconnect(void** state)
   assert_int_equal(rec.count, 1);
 }
 
-/* A hub session ended for a provisioning session is
+/* A hub session ended for a provisioning session (a software update check) is
  * an ordinary session end: the subscription is reissued on the session that
  * reconnects once the provisioning session is released. */
 static void the_subscription_is_reissued_after_a_provisioning_session(void** state)
