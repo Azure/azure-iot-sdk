@@ -5206,6 +5206,35 @@ static void a_snapshot_missing_a_needed_url_is_refused(void** state)
   assert_int_equal(teardown(&fresh_state), 0);
 }
 
+/* A record whose manifest the client does not support (here a reference step) is refused and
+ * retired, not resumed. */
+static void a_snapshot_of_an_unsupported_manifest_is_refused(void** state)
+{
+  fixture* source = (fixture*)*state;
+  void* fresh_state = NULL;
+  fixture* fresh = resume_distinct_files_from_step_0(source, &fresh_state);
+
+  /* Turn step 0 of the parsed manifest text into a reference step of the same length. */
+  static const char inline_step[] = "\"handler\":\"microsoft/swupdate:1\"";
+  static const char reference_step[] = "\"type\":\"reference\",\"x\":\"aaaaaaa\"";
+  assert_int_equal(sizeof(inline_step), sizeof(reference_step));
+  uint8_t* b = fresh->log.persist_blob;
+  uint8_t* at = NULL;
+  for (size_t i = 0; at == NULL && i + sizeof(inline_step) <= fresh->log.persist_len; ++i)
+  {
+    at = memcmp(&b[i], inline_step, sizeof(inline_step) - 1u) == 0 ? &b[i] : NULL;
+  }
+  assert_non_null(at);
+  memcpy(at, reference_step, sizeof(reference_step) - 1u);
+  blob_reseal(b, fresh->log.persist_len);
+
+  assert_int_equal(az_iot_su_client_resume(&fresh->su), AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(az_iot_su_client_get_state(&fresh->su), AZ_IOT_SU_STATE_IDLE);
+  assert_int_equal(fresh->log.download_calls, 0);
+  assert_false(fresh->log.have_persist);
+  assert_int_equal(teardown(&fresh_state), 0);
+}
+
 /* A record of another magic or format version (versions 1 and 2 included) is
  * ignored, not resumed, with or without a persist hook. */
 static void a_record_of_another_format_is_ignored(void** state)
@@ -7004,6 +7033,34 @@ static size_t append_text(char* buffer, size_t capacity, size_t used, const char
   return used + length;
 }
 
+/* Wrap @p manifest (unescaped JSON) in a signed payload for @p workflow_id with the fileUrls
+ * members @p file_urls. Returns a static buffer, valid until it is called again. */
+static const char* signed_patch_for_manifest(
+    const char* workflow_id,
+    const char* manifest,
+    const char* file_urls)
+{
+  static char patch[SU_TEST_PATCH_SIZE];
+  char item[160];
+  char jws[2048];
+  build_jws(jws, (int32_t)sizeof(jws));
+  (void)snprintf(item, sizeof(item), "{\"workflowId\":\"%s\",\"updateManifest\":\"", workflow_id);
+  size_t used = append_text(patch, sizeof(patch), 0, item);
+  for (const char* c = manifest; *c != '\0'; ++c)
+  {
+    char one[2];
+    one[0] = *c;
+    one[1] = '\0';
+    used = append_text(patch, sizeof(patch), used, *c == '"' ? "\\\"" : one);
+  }
+  used = append_text(patch, sizeof(patch), used, "\",\"updateManifestSignature\":\"");
+  used = append_text(patch, sizeof(patch), used, jws);
+  used = append_text(patch, sizeof(patch), used, "\",\"fileUrls\":{");
+  used = append_text(patch, sizeof(patch), used, file_urls);
+  (void)append_text(patch, sizeof(patch), used, "}}");
+  return patch;
+}
+
 /* Build a signed payload whose manifest has the given shape. Returns a static buffer, valid
  * until the next call. */
 static const char* manifest_limits_patch(const char* workflow_id, manifest_shape shape)
@@ -7063,22 +7120,9 @@ static const char* manifest_limits_patch(const char* workflow_id, manifest_shape
   used = append_text(
       manifest, sizeof(manifest), used, "},\"createdDateTime\":\"2022-07-07T03:02:48.8449038Z\"}");
 
-  static char patch[SU_TEST_PATCH_SIZE];
-  char jws[2048];
-  build_jws(jws, (int32_t)sizeof(jws));
+  char file_urls[1024];
   used = 0;
-  (void)snprintf(item, sizeof(item), "{\"workflowId\":\"%s\",\"updateManifest\":\"", workflow_id);
-  used = append_text(patch, sizeof(patch), used, item);
-  for (const char* c = manifest; *c != '\0'; ++c)
-  {
-    char one[2];
-    one[0] = *c;
-    one[1] = '\0';
-    used = append_text(patch, sizeof(patch), used, *c == '"' ? "\\\"" : one);
-  }
-  used = append_text(patch, sizeof(patch), used, "\",\"updateManifestSignature\":\"");
-  used = append_text(patch, sizeof(patch), used, jws);
-  used = append_text(patch, sizeof(patch), used, "\",\"fileUrls\":{");
+  file_urls[0] = '\0';
   int url_count
       = shape.file_count < AZ_IOT_SU_MAX_FILE_COUNT ? shape.file_count : AZ_IOT_SU_MAX_FILE_COUNT;
   for (int file = 0; file < url_count; ++file)
@@ -7090,10 +7134,9 @@ static const char* manifest_limits_patch(const char* workflow_id, manifest_shape
         file == 0 ? "" : ",",
         file,
         file);
-    used = append_text(patch, sizeof(patch), used, item);
+    used = append_text(file_urls, sizeof(file_urls), used, item);
   }
-  (void)append_text(patch, sizeof(patch), used, "}}");
-  return patch;
+  return signed_patch_for_manifest(workflow_id, manifest, file_urls);
 }
 
 /* The largest manifest the limits allow, by default the Device Update limits (10 steps,
@@ -7251,6 +7294,89 @@ static void manifest_with_delta_file_members_installs(void** state)
   assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_SUCCEEDED);
   assert_int_equal(fx->log.download_calls, 1);
 }
+
+/** @brief A manifest the client does not support, and how it is refused. */
+typedef struct
+{
+  const char* workflow_id;
+  const char* manifest; /* unescaped JSON */
+  const char* file_urls; /* fileUrls members */
+  uint32_t manifest_error; /* AZ_IOT_SU_MANIFEST_ERROR_* reported */
+  az_iot_result failed_reason; /* reason of the FAILED event */
+  az_iot_result parse_result; /* of az_iot_su_parse_update_request() */
+} unsupported_manifest;
+
+/* A mini manifest (the public Device Update documentation example), a manifest without steps,
+ * and one whose second step is a reference step, after a step that would install. */
+static const unsupported_manifest k_unsupported_manifests[] = {
+  { "mini-manifest",
+    "{\"manifestVersion\":\"4\",\"updateId\":{\"provider\":\"Contoso\",\"name\":\"Toaster\","
+    "\"version\":\"1.0\"},\"detachedManifestFileId\":\"fileId1\",\"files\":{\"fileId1\":{"
+    "\"filename\":\"contoso.toaster.1.0.updatemanifest.json\",\"sizeInBytes\":2048,"
+    "\"hashes\":{\"sha256\":\"789s9PDfX4uA9wFUubyC30BWkLFbgmpkpmz1fEdqo2U=\"}}}}",
+    "\"fileId1\":\"http://example.com/manifest.json\"",
+    AZ_IOT_SU_MANIFEST_ERROR_DETACHED_MANIFEST,
+    AZ_IOT_ERR_NOT_SUPPORTED,
+    AZ_IOT_ERR_NOT_SUPPORTED },
+  { "no-steps",
+    "{\"manifestVersion\":\"5\",\"updateId\":{\"provider\":\"Contoso\",\"name\":\"Foobar\","
+    "\"version\":\"1.1\"},\"instructions\":{\"steps\":[]},\"files\":{\"f00\":{"
+    "\"fileName\":\"payload-00.bin\",\"sizeInBytes\":64,"
+    "\"hashes\":{\"sha256\":\"" SU_TEST_FILE_HASH_B64 "\"}}}}",
+    "\"f00\":\"http://example.com/payload-00.bin\"",
+    AZ_IOT_SU_MANIFEST_ERROR_NO_STEPS,
+    AZ_IOT_ERR_PROTOCOL,
+    AZ_IOT_ERR_INVALID_ARG },
+  { "reference-step",
+    "{\"manifestVersion\":\"5\",\"updateId\":{\"provider\":\"Contoso\",\"name\":\"Foobar\","
+    "\"version\":\"1.1\"},\"instructions\":{\"steps\":["
+    "{\"handler\":\"microsoft/swupdate:1\",\"files\":[\"f00\"]},"
+    "{\"type\":\"reference\",\"detachedManifestFileId\":\"f01\"}]},\"files\":{"
+    "\"f00\":{\"fileName\":\"payload-00.bin\",\"sizeInBytes\":64,"
+    "\"hashes\":{\"sha256\":\"" SU_TEST_FILE_HASH_B64 "\"}},"
+    "\"f01\":{\"fileName\":\"leaf.importmanifest.json\",\"sizeInBytes\":64,"
+    "\"hashes\":{\"sha256\":\"" SU_TEST_FILE_HASH_B64 "\"}}}}",
+    "\"f00\":\"http://example.com/payload-00.bin\",\"f01\":\"http://example.com/leaf.json\"",
+    AZ_IOT_SU_MANIFEST_ERROR_REFERENCE_STEP,
+    AZ_IOT_ERR_NOT_SUPPORTED,
+    AZ_IOT_ERR_NOT_SUPPORTED },
+};
+
+/* A verified manifest the client does not support fails before any hook runs, reported with
+ * its sub-code; a normal manifest still installs. */
+static void unsupported_manifest_fails_before_any_hook(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
+
+  for (size_t i = 0; i < sizeof(k_unsupported_manifests) / sizeof(k_unsupported_manifests[0]); ++i)
+  {
+    const unsupported_manifest* c = &k_unsupported_manifests[i];
+    int failed_before = fx->failed_count;
+    inject_patch(fx, signed_patch_for_manifest(c->workflow_id, c->manifest, c->file_urls));
+    pump(fx, 60);
+
+    int32_t expected
+        = (int32_t)AZ_IOT_SU_EXTENDED_RESULT(AZ_IOT_SU_FACILITY_MANIFEST, c->manifest_error);
+    assert_nothing_downloaded_or_installed(fx);
+    assert_int_equal((int)count_ops(&fx->log, OP_IS_INSTALLED), 0);
+    assert_string_equal(fx->chan.last_workflow_id, c->workflow_id);
+    assert_int_equal(fx->chan.last_report.step_results_count, 1);
+    assert_int_equal(fx->chan.last_report.step_results[0].extended_result_code, expected);
+    assert_int_equal(fx->failed_count, failed_before + 1);
+    assert_int_equal(fx->last_failed_reason, c->failed_reason);
+    assert_int_equal(fx->last_failed_extended, expected);
+  }
+
+  const manifest_shape shape
+      = { .step_count = 1, .file_count = 1, .first_step_file_count = 1, .hash_count = 1 };
+  inject_patch(fx, manifest_limits_patch("supported", shape));
+  pump(fx, 60);
+  assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_SUCCEEDED);
+  assert_int_equal((int)count_ops(&fx->log, OP_INSTALL), 1);
+}
+
 /* The update body carries service-issued download URLs; DEBUG logs only its
  * size, TRACE the body. */
 static void update_payload_body_is_logged_only_at_trace(void** state)
@@ -10985,6 +11111,51 @@ static void parsing_an_update_request_rejects_an_unresolved_step_file(void** sta
   assert_true(all_zero(&manifest, sizeof(manifest)));
 }
 
+/* az_iot_su_parse_update_request() refuses a manifest the client does not support, and leaves
+ * its outputs zeroed. */
+static void parsing_an_update_request_rejects_an_unsupported_manifest(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_su_client_update_request request;
+  az_iot_su_client_update_manifest manifest;
+
+  for (size_t i = 0; i < sizeof(k_unsupported_manifests) / sizeof(k_unsupported_manifests[0]); ++i)
+  {
+    const unsupported_manifest* c = &k_unsupported_manifests[i];
+    assert_int_equal(
+        parse_with_roots(
+            &fx->log,
+            signed_patch_for_manifest(c->workflow_id, c->manifest, c->file_urls),
+            k_root_keys,
+            1,
+            &request,
+            &manifest),
+        c->parse_result);
+    assert_true(all_zero(&request, sizeof(request)));
+    assert_true(all_zero(&manifest, sizeof(manifest)));
+  }
+}
+
+/* The application is not offered an update whose manifest the client does not support. */
+static void library_mode_does_not_hand_over_an_unsupported_manifest(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  for (size_t i = 0; i < sizeof(k_unsupported_manifests) / sizeof(k_unsupported_manifests[0]); ++i)
+  {
+    const unsupported_manifest* c = &k_unsupported_manifests[i];
+    inject_patch(fx, signed_patch_for_manifest(c->workflow_id, c->manifest, c->file_urls));
+    pump(fx, 8);
+
+    assert_int_equal(fx->update_available_count, 0);
+    assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_IDLE);
+    assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_FAILED);
+    assert_string_equal(fx->chan.last_workflow_id, c->workflow_id);
+    assert_int_equal(
+        fx->chan.last_report.step_results[0].extended_result_code,
+        (int32_t)AZ_IOT_SU_EXTENDED_RESULT(AZ_IOT_SU_FACILITY_MANIFEST, c->manifest_error));
+  }
+}
+
 /** @brief What an observer read with az_iot_su_client_get_current_update() on entering a state. */
 typedef struct
 {
@@ -11581,6 +11752,7 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         manifest_with_a_non_string_mime_type_fails_before_download, setup, teardown),
     cmocka_unit_test_setup_teardown(manifest_with_delta_file_members_installs, setup, teardown),
+    cmocka_unit_test_setup_teardown(unsupported_manifest_fails_before_any_hook, setup, teardown),
     cmocka_unit_test_setup_teardown(update_metadata_drives_full_workflow, setup, teardown),
     cmocka_unit_test_setup_teardown(escaped_file_url_is_decoded, setup, teardown),
     cmocka_unit_test_setup_teardown(escaped_workflow_id_is_decoded, setup, teardown),
@@ -11824,6 +11996,8 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         resume_without_a_persist_hook_is_not_supported, setup, teardown),
     cmocka_unit_test_setup_teardown(a_snapshot_missing_a_needed_url_is_refused, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_snapshot_of_an_unsupported_manifest_is_refused, setup, teardown),
     cmocka_unit_test_setup_teardown(a_record_of_another_format_is_ignored, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_failed_checkpoint_blocks_apply_until_it_is_written, setup, teardown),
@@ -11910,9 +12084,13 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         library_mode_does_not_hand_over_an_update_with_an_unresolved_file, setup_library, teardown),
     cmocka_unit_test_setup_teardown(
+        library_mode_does_not_hand_over_an_unsupported_manifest, setup_library, teardown),
+    cmocka_unit_test_setup_teardown(
         library_mode_hands_over_an_update_with_escaped_file_ids, setup_library, teardown),
     cmocka_unit_test_setup_teardown(
         parsing_an_update_request_rejects_an_unresolved_step_file, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        parsing_an_update_request_rejects_an_unsupported_manifest, setup, teardown),
     cmocka_unit_test_setup_teardown(
         current_update_is_readable_from_manifest_received_until_idle, setup, teardown),
     cmocka_unit_test_setup_teardown(
