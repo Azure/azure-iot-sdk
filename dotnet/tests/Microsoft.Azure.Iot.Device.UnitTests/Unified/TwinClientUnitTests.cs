@@ -424,6 +424,35 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
         }
 
         [Fact]
+        public async Task ConnectSync_Classic_CancelsTheAttemptOfAGetThatIsStillHeldForReconnection()
+        {
+            MockFeatureConnectionClient connection = CreateClassicConnection();
+            TaskCompletionSource<MqttPublishAck> held = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            int publishes = 0;
+            connection.OnPublish = _ => Interlocked.Increment(ref publishes) == 1
+                ? held.Task
+                : Task.FromResult(new MqttPublishAck() { ReasonCode = MqttPublishAckReasonCode.Success });
+            using TwinClient twinClient = new(connection);
+
+            // The connection client holds the application's GET until the device has reconnected.
+            Task<DeviceTwin> getTask = twinClient.GetTwinAsync(TestContext.Current.CancellationToken);
+            await connection.WaitForPublishedMessagesAsync(1);
+            connection.SimulateConnectionLost();
+            connection.ConnectionNonce = Guid.NewGuid();
+            connection.SimulateClassicDevicePresenceEstablished();
+
+            // The connect sync sends a new attempt, so the held one must never be sent as well.
+            MqttPublish connectSyncGet = await connection.WaitForPublishedMessagesAsync(2);
+            Assert.True(connection.PublishCancellationTokens[0].IsCancellationRequested);
+            Assert.False(connection.PublishCancellationTokens[1].IsCancellationRequested);
+            held.TrySetCanceled(connection.PublishCancellationTokens[0]);
+
+            await RespondClassicAsync(connection, connectSyncGet, 200, payload: ClassicTwin(5, "{}", 7, "{}"));
+            Assert.Equal(5ul, (await getTask).DesiredVersion);
+            Assert.Equal(2, connection.PublishedMessages.Count);
+        }
+
+        [Fact]
         public async Task UpdateReportedPropertiesAsync_Classic_ResentAfterTheNextConnectSyncWhenTheConnectionIsLost()
         {
             MockFeatureConnectionClient connection = CreateClassicConnection();
