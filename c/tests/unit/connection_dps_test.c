@@ -3376,7 +3376,7 @@ static az_iot_result noop_sha256_final(
 }
 
 /* A backend is checked once, at init, rather than failing at first use deep
- * inside a feature. verify_rs256 is optional: only software updates need it. */
+ * inside a feature. */
 static void init_rejects_an_incomplete_crypto_backend(void** state)
 {
   (void)state;

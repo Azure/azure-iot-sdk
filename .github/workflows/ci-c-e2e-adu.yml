@@ -38,41 +38,12 @@
 name: ci-c-e2e-adu
 
 on:
+  # releases/public-preview only: its nightly dispatcher (ci-c-public-preview-nightly.yml) runs it.
   workflow_dispatch:
+  # Pull requests: every one, so the gate job always reports; the `changes` job
+  # decides whether the e2e legs run.
   pull_request:
-    paths:
-      - 'c/src/CMakeLists.txt'
-      - 'c/src/sources.cmake'
-      - 'c/src/core/**'
-      - 'c/src/features/su/**'
-      - 'c/inc/azure/iot/*.h'
-      - 'c/inc/azure/iot/adapters/**'
-      - 'c/adapters/paho/**'
-      - 'c/adapters/az_mqtt/**'
-      - 'c/adapters/crypto_openssl/**'
-      - 'c/adapters/cert_openssl/**'
-      - 'c/adapters/su/**'
-      - 'c/eng/install-su-delta-processor.sh'
-      - 'c/deps/az_mqtt/**'
-      - 'c/CMakeLists.txt'
-      - 'c/CMakePresets.json'
-      - 'c/cmake/**'
-      - 'c/tests/CMakeLists.txt'
-      - 'c/tests/support/**'
-      - 'c/tests/deps/**'
-      - 'c/tests/e2e/**'
-      - 'c/tests/unit/data/su_delta/**'
-      - 'c/eng/e2e-shared-device.ps1'
-      - 'c/eng/e2e-trusted-ca.ps1'
-      - 'c/eng/collect-coverage.sh'
-      - 'c/eng/e2e-mqttv5-adr-namespace.ps1'
-      - '.github/workflows/ci-c-e2e-adu.yml'
-      - '.github/actions/install-curl-windows/**'
-      - '.github/actions/install-openssl/**'
-      - '.github/actions/install-su-delta-processor/**'
-      - '.github/workflows/ci-c-e2e-mqttv5-adr-namespace.yml'
-  schedule:
-    - cron: '0 12 * * *'
+    branches: [ releases/public-preview ]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
@@ -82,12 +53,62 @@ permissions:
   contents: read
 
 jobs:
+  # On pull requests, whether the e2e legs run; every other event runs them.
+  changes:
+    name: detect changes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    # dorny/paths-filter reads the pull request files through the API.
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      run: ${{ github.event_name != 'pull_request' || steps.filter.outputs.e2e == 'true' }}
+    steps:
+      - uses: dorny/paths-filter@0e4a8c6effa4802afeda77dc8d303f8176d7dfad # v3.0.4
+        if: github.event_name == 'pull_request'
+        id: filter
+        with:
+          filters: |
+            e2e:
+              - 'c/src/CMakeLists.txt'
+              - 'c/src/sources.cmake'
+              - 'c/src/core/**'
+              - 'c/src/features/su/**'
+              - 'c/inc/azure/iot/*.h'
+              - 'c/inc/azure/iot/adapters/**'
+              - 'c/adapters/paho/**'
+              - 'c/adapters/az_mqtt/**'
+              - 'c/adapters/crypto_openssl/**'
+              - 'c/adapters/cert_openssl/**'
+              - 'c/adapters/su/**'
+              - 'c/eng/install-su-delta-processor.sh'
+              - 'c/deps/az_mqtt/**'
+              - 'c/CMakeLists.txt'
+              - 'c/CMakePresets.json'
+              - 'c/cmake/**'
+              - 'c/tests/CMakeLists.txt'
+              - 'c/tests/support/**'
+              - 'c/tests/deps/**'
+              - 'c/tests/e2e/**'
+              - 'c/tests/unit/data/su_delta/**'
+              - 'c/eng/e2e-shared-device.ps1'
+              - 'c/eng/e2e-trusted-ca.ps1'
+              - 'c/eng/collect-coverage.sh'
+              - 'c/eng/e2e-mqttv5-adr-namespace.ps1'
+              - '.github/workflows/ci-c-e2e-adu.yml'
+              - '.github/actions/install-curl-windows/**'
+              - '.github/actions/install-openssl/**'
+              - '.github/actions/install-su-delta-processor/**'
+              - '.github/workflows/ci-c-e2e-mqttv5-adr-namespace.yml'
+
   # As in ci-c-e2e-mqttv5.yml: the namespace (and its Software Update link) can
   # drop out of Azure. Not on pull requests, which rely on the scheduled repair
   # (every 10 minutes) in ci-c-e2e-mqttv5-adr-namespace.yml.
+  # main has no software updates: a dispatch on main (the UI default) does nothing.
   adr-namespace:
     name: ADR namespace
-    if: ${{ github.event_name != 'pull_request' }}
+    if: ${{ github.event_name != 'pull_request' && github.ref != 'refs/heads/main' }}
     permissions:
       contents: read
       id-token: write
@@ -100,9 +121,10 @@ jobs:
   # Stages the standing offers once per run; each OS leg below reads them.
   offers:
     name: software updates offers
-    needs: adr-namespace
+    needs: [ changes, adr-namespace ]
     if: >-
-      ${{ !cancelled() &&
+      ${{ !cancelled() && needs.changes.outputs.run == 'true' &&
+          github.ref != 'refs/heads/main' &&
           (needs.adr-namespace.result == 'success' || needs.adr-namespace.result == 'skipped') &&
           (github.event_name != 'pull_request' ||
            (github.event.pull_request.head.repo.full_name == github.repository &&
@@ -351,3 +373,25 @@ jobs:
           name: coverage-trace-e2e-adu
           path: c/coverage/e2e-adu.json
           if-no-files-found: error
+
+  # Single stable check name for rulesets to require: reports on every run and
+  # fails when any job failed or was cancelled (skipped jobs pass).
+  gate:
+    name: ci-c-e2e-adu-gate
+    needs: [ changes, adr-namespace, offers, e2e-su ]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Check every job's result
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          jq -r 'to_entries[] | "\(.key): \(.value.result)"' <<< "$RESULTS"
+          failed=$(jq -r '[to_entries[] | select(.value.result != "success" and .value.result != "skipped") | .key] | join(", ")' <<< "$RESULTS")
+          if [ -n "$failed" ]; then
+            echo "::error::ci-c-e2e-adu-gate: failed or cancelled: $failed"
+            exit 1
+          fi

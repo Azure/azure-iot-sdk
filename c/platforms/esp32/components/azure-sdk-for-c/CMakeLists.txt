@@ -52,10 +52,3 @@ idf_component_register(
 # Upstream uses legacy "func()" declarations and other constructs our strict
 # warnings would reject; relax just this component.
 target_compile_options(${COMPONENT_LIB} PRIVATE -w)
-
-# Software updates manifest limits. PUBLIC: the SDK and the application must
-# compile az_iot_su.h with the same values.
-if(NOT CMAKE_BUILD_EARLY_EXPANSION)
-    include("${AZ_IOT_ROOT}/cmake/az_iot_su_limits.cmake")
-    target_compile_definitions(${COMPONENT_LIB} PUBLIC ${AZ_IOT_SU_LIMIT_DEFINITIONS})
-endif()

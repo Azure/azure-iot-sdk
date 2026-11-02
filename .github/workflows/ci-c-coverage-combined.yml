@@ -74,7 +74,7 @@ jobs:
           # Looked up once; the download step uses these, so both steps agree.
           runs=""
           anchor=""
-          for leg in e2e e2e-csr e2e-adu; do
+          for leg in e2e e2e-csr; do
             out=$(latest_branch_run "ci-c-$leg.yml")
             read -r leg_sha leg_id leg_at <<< "$out"
             echo "$leg: last green run ${leg_id:-none} ${leg_sha:-} ${leg_at:-}"
@@ -172,21 +172,12 @@ jobs:
           }
           add coverage-trace-e2e     e2e
           add coverage-trace-e2e-csr e2e-csr
-          add coverage-trace-e2e-adu e2e-adu
           # Unpinned, the target IS the e2e run's commit, so e2e must be in.
           if [ -z "${PINNED}" ] && [[ " $have" != *" e2e="* ]]; then
             echo "::error::e2e tracefile missing for its own commit $SHA"
             exit 1
           fi
           echo "pairs=$have" >> "$GITHUB_OUTPUT"
-
-      # The real delta processor: the microsoft/delta:1 interop test covers the handler's
-      # default processor path, as in the coverage job of ci-c.yml. A target commit that
-      # predates the handler has no such action.
-      - name: Install the software updates delta processor
-        id: su-delta
-        if: hashFiles('.github/actions/install-su-delta-processor/action.yml') != ''
-        uses: ./.github/actions/install-su-delta-processor # zizmor: ignore[self-repository]
 
       - name: Build and run unit + conformance at the target commit
         # Produced here rather than downloaded, so this half is guaranteed to be
@@ -201,7 +192,6 @@ jobs:
           # cannot exercise that contract; the coverage job in ci-c.yml does,
           # on every push. Accepted deliberately here rather than by accident.
           AZ_IOT_CONFORMANCE_ALLOW_UNPROVEN: '1'
-          SU_DELTA_LIBRARY: ${{ steps.su-delta.outputs.library }}
         working-directory: c
         run: |
           set -euo pipefail
@@ -214,7 +204,7 @@ jobs:
             sleep 1
           done
           mosquitto_pub -h localhost -p 1883 -t probe -m ok
-          cmake --preset linux-gcc-coverage ${SU_DELTA_LIBRARY:+"-DAZ_IOT_SU_DELTA_TEST_LIBRARY=$SU_DELTA_LIBRARY"}
+          cmake --preset linux-gcc-coverage
           cmake --build --preset linux-gcc-coverage
           ctest --preset linux-gcc-coverage -E e2e
           bash eng/collect-coverage.sh build/linux-gcc-coverage traces/unit.json unit

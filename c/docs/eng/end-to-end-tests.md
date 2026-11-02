@@ -22,8 +22,6 @@ The infrastructure was designed to satisfy these requirements:
   resource group.
 - **As parallel as possible.** The OS matrix legs run concurrently, each in its
   own isolated resource group.
-- **Long-running suites out of PRs.** Software updates e2e needs a DPS, ADR namespace and
-  Device Update instance linked together, so it runs in its own workflow, not on PRs.
 - **Cross-platform.** Every scenario runs on both Windows and Linux hosts, except those in
   [Not run on Windows](#not-run-on-windows).
 
@@ -249,11 +247,18 @@ ctest --test-dir build/windows-msvc-debug -C Debug -R e2e --output-on-failure
 
 ### Triggers
 
-- `pull_request` touching `c/**` or `common/**` (fast scenarios)
+- `pull_request`: every pull request; a `changes` job skips the e2e legs unless it touches `c/**` or
+  `common/**` (fast scenarios)
 - `push` to `main` and `releases/public-preview`
 - nightly `schedule` (cron `0 11 * * *`, 4am PST); on `releases/public-preview` at 14:00 UTC, dispatched by
   [`ci-c-public-preview-nightly.yml`](../../../.github/workflows/ci-c-public-preview-nightly.yml)
 - `workflow_dispatch`
+
+Every C e2e workflow ends with a `<workflow>-gate` job (`ci-c-e2e-gate`, `ci-c-e2e-csr-gate`,
+`ci-c-e2e-mqttv5-gate`, `ci-c-e2e-adu-gate`), the single check name for rulesets to require. Since its
+workflow runs on every pull request, it always reports; it fails only when a job failed or was
+cancelled. The other C workflows end with `ci-c-gate`, `ci-c-static-analysis-gate`, `codeql-c-gate`
+and `ci-c-yocto-gate`.
 
 ### Authentication
 
@@ -370,10 +375,6 @@ script as `E2E_MQTTV5_SHARED_IOTHUB_CS`, as the secret of that name holds `iothu
 within Event Hubs' five readers per partition. No SAS: mqttv5 hubs accept X.509 only. Triggers: pull requests touching mqttv5 or core device code, the e2e harness or the
 workflow; nightly; manual. Pull requests from forks and from Dependabot skip.
 
-> **Software updates e2e** runs in its own workflow
-> ([`ci-c-e2e-adu.yml`](../../../.github/workflows/ci-c-e2e-adu.yml), Linux and Windows) on the same shared mqttv5
-> environment and triggers. See [Software updates e2e](#software-updates-e2e).
-
 ---
 
 ## ESP32 in QEMU
@@ -409,111 +410,6 @@ CI: job `esp32-qemu` in `ci-c-e2e.yml`. It runs esp32 and esp32c3 in `espressif/
 devices 12 and 13 issued by `e2e-shared-device.ps1`. It uses the shared environment on every run,
 push and nightly included: the per-run enrollments' RSA-4096 keys exceed DS's 3072 bits, while the
 shared group CA issues RSA-2048. Without the shared environment's secrets, the job fails.
-
----
-
-## Software updates e2e
-
-Two suites, built with `-DAZ_IOT_BUILD_E2E_SU=ON` and selected by
-`ctest -R e2e_su`. Both run the shipping SDK over each MQTT adapter (Paho, az_mqtt) and X.509 against
-the real service. On POSIX the offer suite also needs the `microsoft/delta:1` download handler
-(`-DAZ_IOT_WITH_SU_DELTA=ON`, POSIX only) and the real delta processor:
-`-DAZ_IOT_SU_DELTA_TEST_LIBRARY=<path of libadudiffapi.so>`, installed by
-`eng/install-su-delta-processor.sh`. Without the library its scenario fails; elsewhere (Windows) the
-scenario is not built.
-
-| Suite | What it drives |
-| --- | --- |
-| `az_iot_tests_e2e_su` (`e2e_su_test.c`) | The DPS channel with no update offered: onboarding check, hold release and registration, ETag storage, unknown-workflow report. |
-| `az_iot_tests_e2e_su_offer` (`e2e_su_offer_test.c`) | Offered updates through `az_iot_su_client`: OpenSSL crypto, Microsoft plus test root keys, real download (libcurl) and hash; install/apply recorded, failures injected. A spy around the channel records each report and the service's verdict. |
-
-Offered-update scenarios:
-
-| Scenario | Offer |
-| --- | --- |
-| real update downloaded, verified, installed, reported SUCCEEDED | `AZ_IOT_E2E_SU_OFFER_MODEL` |
-| identical terminal report accepted; conflicting one gets 409000 `REPORT_CONFLICT` | same |
-| incompatible device offered nothing | none |
-| install failure rolled back, reported FAILED | `AZ_IOT_E2E_SU_OFFER_MODEL_INSTALL_FAILURE` |
-| already installed, reported SKIPPED | `AZ_IOT_E2E_SU_OFFER_MODEL_ALREADY_INSTALLED` |
-| manifest verified against the wrong keys, reported FAILED | `AZ_IOT_E2E_SU_OFFER_MODEL_UNTRUSTED` |
-| library mode: verified offer handed to the application, which downloads, hashes and reports progress then SUCCEEDED | `AZ_IOT_E2E_SU_OFFER_MODEL_LIBRARY_MODE` |
-| delta update: the device holds the source, downloads only the related file and builds the file from it; SUCCEEDED with no delta code | `AZ_IOT_E2E_SU_OFFER_MODEL_DELTA` |
-| delta update, device without the source: the handler declines, the file is downloaded in full; SUCCEEDED with the delta `NO_SOURCE` code | `AZ_IOT_E2E_SU_OFFER_MODEL_DELTA_NO_SOURCE` |
-| delta update with the reference `microsoft/delta:1` handler and the real delta processor (POSIX only): built from the cached source, SUCCEEDED with no delta code; the file replaces the source in the cache | `AZ_IOT_E2E_SU_OFFER_MODEL_MICROSOFT_DELTA` |
-
-The two delta offers are alike but for the model, since a device sees each offer once. Their file names
-the download handler `sdke2e/xor-delta:1`, which the suite registers, and has one related file: the
-file XOR a 4096-byte source that `SuE2E.psm1` (`Get-SuE2EDeltaSource`) and the suite
-(`delta_source_byte()`) both generate, with the base64 SHA-256 of that source as its
-`microsoft.sourceFileHash` property. The handler chooses the related file only when the device holds
-the source and that property matches. The suite asserts what ran (choice, related or full download,
-build, `workflow_ended_fn`) and each report's step extended code.
-
-The `MICROSOFT_DELTA` offer is the unit tests' vectors, `tests/unit/data/su_delta`: its file is
-`target.swu`, with the related file `delta.bin` for the download handler `microsoft/delta:1` and
-`microsoft.sourceFileHash` the base64 SHA-256 of `source.swu`. The suite registers the reference
-handler (`az_iot_su_delta.h`) with a per-run source cache holding `source.swu`, and asserts that only
-the related file is downloaded, that the built file matches `target.swu`, and that afterwards the cache
-holds `target.swu` in place of `source.swu`.
-
-The device identity is fixed by its certificate, so offers are told apart by compatibility:
-each is an update compatible only with `AZ_IOT_E2E_SU_OFFER_MANUFACTURER` and its model, with
-its own Azure Device Registry `OnboardingUpdate` job. A job offers nothing until it has a run, so
-each gets one run that starts at once; staging waits until every run is `Active`, then 5 more
-minutes (devices got `401000` for about 3 minutes after a run turned `Active`). An onboarding offer
-reaches a device once: a device that reported it is not offered it again, so every execution of the
-offer suite (one per MQTT adapter) needs its own new device.
-[`scripts/SuE2E.psm1`](../../tests/e2e/scripts/SuE2E.psm1) stages them (`New-SuE2EOffers`),
-checks each job's per-device result (`Test-SuE2EOffers`) and deletes them
-(`Remove-SuE2EOffers`). Since each offer reaches each new device, one staged set can serve many
-runs: `New-SuE2EOffers -Reuse` keeps the updates, jobs and `Active` runs that already exist under
-its `-RunId`, and only waits for runs it creates (or for what is left of the 5 minutes of a kept run
-started less than 5 minutes ago). A reused job may hold several runs, so `Test-SuE2EOffers` looks for
-the device in every `Active` run, then in the newest. `Export-SuE2EOfferVariables` sets the offer
-variables for a `-RunId` without contacting Azure. `Get-SuE2EFixtureTag` hashes the code that defines the offers;
-appended to a reused `-RunId`, a change to that code stages a new set. With `-Reuse`, a failed import
-is treated as done if the update now exists (another run imported it), else retried up to 3 times.
-Each REST request is retried on a transient failure (no response; HTTP 408, 429, 500, 502, 503 or
-504; another 5xx with a transient error code such as `BadGatewayConnection`), up to 5 attempts,
-after `Retry-After` or 2, 4, 8, 16 s (at most 60 s), with a warning per retry; a `401` with
-`invalid_token` is retried once with a new token, and other `4xx` are not retried.
-
-CI ([`ci-c-e2e-adu.yml`](../../../.github/workflows/ci-c-e2e-adu.yml)) runs on the shared mqttv5
-environment, whose ADR namespace is linked to a Device Update instance, on pull requests touching
-core, Software Update or adapter code, the e2e harness or the workflow; nightly; manual. Pull requests
-from forks and from Dependabot skip. Scheduled and manual runs first run the namespace repair
-(`ci-c-e2e-mqttv5-adr-namespace.yml`), which also restores the Software Update link. The `offers`
-job then ensures the standing offers (`New-SuE2EOffers -RunId "s$(Get-SuE2EFixtureTag)" -Reuse`;
-seconds once staged) and passes their state on. The `e2e-su` job, on Linux and on Windows (libcurl
-from [`install-curl-windows`](../../../.github/actions/install-curl-windows/action.yml)), sets the
-offer variables (`Export-SuE2EOfferVariables`), issues a new device per suite execution (4: each
-suite on each adapter) from the enrollment group's CA (`e2e-shared-device.ps1`), installs the delta
-processor on Linux ([`install-su-delta-processor`](../../../.github/actions/install-su-delta-processor/action.yml)),
-runs the suites, then checks the offer devices' job results. The reference `microsoft/delta:1`
-handler is POSIX only: on Windows the offer suite skips the `MICROSOFT_DELTA` scenario, and the
-check skips its result (`Test-SuE2EOffers -Skip`).
-Nothing is deleted per run; offer sets staged by older fixture code are left in place. Inputs:
-variables `E2E_MQTTV5_SHARED_SUBSCRIPTION_ID`, `_RESOURCE_GROUP`, `_ADR_NAMESPACE`, `_ID_SCOPE`,
-`_DPS_HOST`, `_LOCATION`, `_SU_ENDPOINT`, `_SU_STORAGE_ACCOUNT`, `_SU_STORAGE_CONTAINER`, and
-`_SU_INSTANCE` (the Device Update instance the namespace repair links); secrets `E2E_MQTTV5_SHARED_GROUP_CA`,
-`_IOTHUB_SERVICE_CS`, `_EVENTHUB_CS`, `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`.
-
-Every variable is required; a missing one fails the suite or the scenario that needs it.
-
-| Env var | Meaning |
-| --- | --- |
-| `AZ_IOT_E2E_SU_DPS_HOST` | DPS global endpoint |
-| `AZ_IOT_E2E_SU_ID_SCOPE` | DPS id scope |
-| `AZ_IOT_E2E_SU_REG_ID` | registration id the certificate carries |
-| `AZ_IOT_E2E_SU_CERT` / `_KEY` | device certificate and key PEM paths |
-| `AZ_IOT_E2E_SU_TRUSTED_CA` | CA bundle PEM path |
-| `AZ_IOT_E2E_SU_OFFER_*` | offers, as above (set by `New-SuE2EOffers` or `Export-SuE2EOfferVariables`) |
-
-`https_proxy`, when set, is used for the MQTT connection; libcurl reads it as well.
-
-Test root keys are pinned in `e2e_su_test_roots.c`. Not yet covered: the operational route,
-multi-step updates, and reboot/resume.
 
 ---
 
