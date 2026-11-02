@@ -83,8 +83,10 @@ typedef struct
   az_iot_mqttv5_telemetry_client telemetry;
   bool telemetry_ok;
   az_iot_mqttv5_twin_client twin;
+  uint8_t twin_workspace[AZ_IOT_MQTTV5_TWIN_CLIENT_DEFAULT_WORKSPACE_SIZE];
   bool twin_ok;
   az_iot_mqttv5_direct_method_client methods;
+  uint8_t methods_workspace[AZ_IOT_MQTTV5_DIRECT_METHOD_CLIENT_DEFAULT_WORKSPACE_SIZE];
   bool methods_ok;
   /* Callback contexts live as long as the connection: a late completion may still arrive. */
   op_record publishes[E2E_MAX_PUBLISHES];
@@ -309,7 +311,12 @@ static int observe_a_with_twin(e2e_device* dev, void* ctx)
 {
   fixture* fx = (fixture*)ctx;
   if (observe_a(dev, ctx) != 0
-      || az_iot_mqttv5_twin_client_init(&fx->twin, &dev->conn) != AZ_IOT_OK)
+      || az_iot_mqttv5_twin_client_init(
+             &fx->twin,
+             &dev->conn,
+             &(az_iot_mqttv5_twin_client_options){ .workspace = fx->twin_workspace,
+                                                   .workspace_size = sizeof(fx->twin_workspace) })
+          != AZ_IOT_OK)
   {
     return 1;
   }
@@ -327,7 +334,12 @@ static int observe_a_with_clients(e2e_device* dev, void* ctx)
     return 1;
   }
   fx->telemetry_ok = true;
-  if (az_iot_mqttv5_direct_method_client_init(&fx->methods, &dev->conn) != AZ_IOT_OK)
+  if (az_iot_mqttv5_direct_method_client_init(
+          &fx->methods,
+          &dev->conn,
+          &(az_iot_mqttv5_direct_method_client_options){
+              .workspace = fx->methods_workspace, .workspace_size = sizeof(fx->methods_workspace) })
+      != AZ_IOT_OK)
   {
     return 1;
   }

@@ -218,8 +218,6 @@ int main(void)
   sample_context ctx = { 0 };
   az_iot_certificate_provider_managed operational = { 0 };
   az_iot_connection_client client = { 0 };
-  az_iot_mqtt_factory* factory_v3 = NULL;
-  az_iot_mqtt_factory* factory_v5 = NULL;
 
   /* CSR key and issued chain only; no bootstrap certificate. */
   az_iot_certificate_provider_managed_options op_opts
@@ -256,20 +254,22 @@ int main(void)
   AZ_IOT_CSR_PAYLOAD_STORAGE(csr_payload_buf);
   opts.csr_payload_buffer = az_span_create(csr_payload_buf, sizeof(csr_payload_buf));
 
+  /* The adapter builds each session's MQTT client in this workspace, one at a time: MQTT 3.1.1
+   * for DPS and an MQTTv3 hub, MQTT 5 for an MQTTv5 hub. Limits: sample_utils.h. */
+  static uint8_t mqtt_workspace[SAMPLE_MQTT_WORKSPACE_SIZE];
 #if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
-  factory_v3 = az_iot_paho_factory_create_v3_1_1();
-  factory_v5 = az_iot_paho_factory_create_v5();
+  opts.mqtt_adapter = az_iot_paho_get_adapter();
 #elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
-  factory_v3 = az_iot_az_mqtt_factory_create_v3_1_1();
-  factory_v5 = az_iot_az_mqtt_factory_create_v5();
+  opts.mqtt_adapter = az_iot_az_mqtt_get_adapter();
 #endif
+  opts.mqtt_limits = SAMPLE_MQTT_LIMITS;
+  opts.mqtt_workspace = mqtt_workspace;
+  opts.mqtt_workspace_size = sizeof(mqtt_workspace);
+
   if (az_iot_connection_client_init(&client, &opts) != AZ_IOT_OK
       || az_iot_connection_client_add_state_observer(&client, on_conn_state, &ctx) != AZ_IOT_OK
       || az_iot_connection_client_set_operational_cert_callback(&client, on_operational_cert, &ctx)
           != AZ_IOT_OK
-      /* v3.1.1 serves DPS and an mqttv3 hub; v5 serves an mqttv5 hub. */
-      || az_iot_connection_client_register_mqtt_factory(&client, factory_v3) != AZ_IOT_OK
-      || az_iot_connection_client_register_mqtt_factory(&client, factory_v5) != AZ_IOT_OK
       || az_iot_connection_client_open(&client) != AZ_IOT_OK)
   {
     fprintf(stderr, "[dps_sas_key_issued_cert] connection client setup failed\n");
@@ -309,13 +309,6 @@ int main(void)
 
 cleanup:
   az_iot_connection_client_deinit(&client);
-#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
-  az_iot_paho_factory_destroy(factory_v3);
-  az_iot_paho_factory_destroy(factory_v5);
-#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
-  az_iot_az_mqtt_factory_destroy(factory_v3);
-  az_iot_az_mqtt_factory_destroy(factory_v5);
-#endif
   az_iot_certificate_provider_managed_deinit(&operational);
   config_release(&config);
   return rc;

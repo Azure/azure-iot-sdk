@@ -10,9 +10,9 @@ about 2 seconds **after** the handler returned, for work that does not fit insid
 ## Sample features
 
 - Hub generation: mqttv5 (MQTT 5) only. An assignment to an mqttv3 hub fails; use the `unified/` sample instead.
-- Registers both MQTT adapters (v3.1.1 and v5): the hub uses MQTT 5, but DPS always uses MQTT 3.1.1. Registering only the MQTT 5 adapter makes provisioning fail with `AZ_IOT_ERR_NOT_SUPPORTED`.
+- The MQTT adapter builds an MQTT 3.1.1 client for DPS, then an MQTT 5 one for the hub, in turn in one workspace.
 - Builds its client before `open()`: an mqttv5 client records the generation it needs instead of reading it from a live connection.
-- The handler keeps the request (a struct copy, nothing allocated) and returns; the pump loop answers later. `method_name` and `payload` do not outlive the handler, so the payload is copied out.
+- The handler keeps the request (a struct copy, nothing allocated) and returns; the pump loop answers later. `method_name` and `payload` do not outlive the handler, so the payload is copied out. A payload larger than that copy (256 bytes) is answered 413 at once.
 - The method is declared with the time it needs (3 s). A caller whose timeout cannot cover it is refused `INSUFFICIENT_TIME` at the probe, before its arguments are sent.
 - While one invocation is held, the probe handler answers `DEVICE_BUSY`, so the next caller is turned away before its arguments are sent.
 - Platforms: Linux and Windows.
@@ -103,7 +103,7 @@ method 'slowEcho' invoked, answering in ~2000 ms
 
 | What | Code |
 | --- | --- |
-| Register both MQTT adapters | `az_iot_paho_factory_create_v3_1_1()`, `az_iot_paho_factory_create_v5()`; az_mqtt: `az_iot_az_mqtt_factory_create_v3_1_1()`, `az_iot_az_mqtt_factory_create_v5()` |
+| MQTT adapter and the workspace it builds each MQTT client in | `mqtt_adapter` (`az_iot_paho_get_adapter()`; az_mqtt: `az_iot_az_mqtt_get_adapter()`), `mqtt_limits`, `mqtt_workspace`; sizes in [`sample_utils.h`](../../common/sample_utils.h) |
 | Declare the method with its time budget | `az_iot_mqttv5_direct_method_client_register_method()` |
 | Busy probe | `on_probe()` |
 | Keep the request; answer from the pump | `on_slow_echo()`, `deferred_pump()` |

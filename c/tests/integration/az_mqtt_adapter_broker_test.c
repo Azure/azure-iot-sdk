@@ -14,9 +14,13 @@
 
 #include <cmocka.h>
 
-#include "az_iot_az_mqtt_config.h"
 #include "azure/iot/adapters/az_iot_adapter_az_mqtt.h"
 #include "azure/iot/az_iot_mqtt_iface.h"
+
+/** @brief Send buffer of the client under test: a larger publish is refused. */
+#define SEND_BUFFER_SIZE 4096u
+
+static const az_iot_mqtt_limits k_limits = { SEND_BUFFER_SIZE, 4096, 8, 0, 1024 };
 
 typedef struct
 {
@@ -44,19 +48,23 @@ static void republish_on_ack(const az_iot_mqtt_event* evt, void* ctx)
   }
 }
 
-static void events_raised_by_a_callback_wait_for_the_next_process_loop(az_iot_mqtt_factory* f)
+static void events_raised_by_a_callback_wait_for_the_next_process_loop(az_iot_mqtt_version version)
 {
   const char* host = getenv("AZ_IOT_MQTT_BROKER_HOST");
   const char* port = getenv("AZ_IOT_MQTT_BROKER_PORT");
   recorder r = { 0 };
-  r.client = f->create(f->factory_ctx);
-  assert_non_null(r.client);
+  size_t const workspace_size = az_iot_az_mqtt_get_workspace_size(&k_limits);
+  uint8_t* workspace = (uint8_t*)malloc(workspace_size);
+  assert_non_null(workspace);
+  assert_int_equal(
+      az_iot_az_mqtt_get_adapter()->init(version, &k_limits, workspace, workspace_size, &r.client),
+      AZ_IOT_OK);
   r.client->iface->set_inbound_cb(r.client, republish_on_ack, &r);
   az_iot_mqtt_connect_options o = { 0 };
   o.host = host != NULL ? host : "localhost";
   o.port = (uint16_t)(port != NULL ? atoi(port) : 1883);
   o.client_id
-      = f->version == AZ_IOT_MQTT_VERSION_5 ? "az-iot-az-mqtt-drain-5" : "az-iot-az-mqtt-drain-3";
+      = version == AZ_IOT_MQTT_VERSION_5 ? "az-iot-az-mqtt-drain-5" : "az-iot-az-mqtt-drain-3";
   o.clean_start = true;
   o.connect_timeout_seconds = 10;
   o.lwt.topic = "will/+";
@@ -69,7 +77,7 @@ static void events_raised_by_a_callback_wait_for_the_next_process_loop(az_iot_mq
   }
   assert_int_equal(r.connected, 1);
 
-  static uint8_t too_large[AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE + 1];
+  static uint8_t too_large[SEND_BUFFER_SIZE + 1];
   az_iot_mqtt_message msg = { 0 };
   msg.topic = "az-iot/az-mqtt-adapter-test";
   msg.payload = too_large;
@@ -82,7 +90,7 @@ static void events_raised_by_a_callback_wait_for_the_next_process_loop(az_iot_mq
     az_iot_mqtt_message bad = { 0 };
     bad.topic = bad_topics[i];
     assert_int_equal(r.client->iface->publish(r.client, &bad, NULL), AZ_IOT_ERR_INVALID_ARG);
-    if (f->version == AZ_IOT_MQTT_VERSION_5)
+    if (version == AZ_IOT_MQTT_VERSION_5)
     {
       bad.topic = "az-iot/az-mqtt-adapter-test";
       bad.response_topic = bad_topics[i];
@@ -112,20 +120,19 @@ static void events_raised_by_a_callback_wait_for_the_next_process_loop(az_iot_mq
   r.client->iface->set_inbound_cb(r.client, NULL, NULL);
   (void)r.client->iface->disconnect(r.client);
   r.client->iface->destroy(r.client);
-  az_iot_az_mqtt_factory_destroy(f);
+  free(workspace);
 }
 
 static void v3(void** state)
 {
   (void)state;
-  events_raised_by_a_callback_wait_for_the_next_process_loop(
-      az_iot_az_mqtt_factory_create_v3_1_1());
+  events_raised_by_a_callback_wait_for_the_next_process_loop(AZ_IOT_MQTT_VERSION_3_1_1);
 }
 
 static void v5(void** state)
 {
   (void)state;
-  events_raised_by_a_callback_wait_for_the_next_process_loop(az_iot_az_mqtt_factory_create_v5());
+  events_raised_by_a_callback_wait_for_the_next_process_loop(AZ_IOT_MQTT_VERSION_5);
 }
 
 int main(void)

@@ -22,7 +22,9 @@ it adds `c/`.
 | `AZ_IOT_WITH_CRYPTO_MBEDTLS` | `ON` | Build the mbedTLS crypto backend, `az_iot_crypto_mbedtls()`. Built only when mbedTLS 3.6 LTS or 4.1+ is found. |
 | `AZ_IOT_WITH_AZ_MQTT` | `OFF` | Build the az_mqtt MQTT adapter (`az_iot_adapter_az_mqtt.h`) and the bundled `deps/az_mqtt` client. |
 | `AZ_IOT_AZ_MQTT_TLS` | `openssl` | TLS backend of the az_mqtt adapter: `openssl` (3.0+, with key references) or `mbedtls`. Windows uses Schannel. |
-| `AZ_IOT_AZ_MQTT_FOOTPRINT`, `AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE`, `AZ_IOT_AZ_MQTT_RECEIVE_BUFFER_SIZE`, `AZ_IOT_AZ_MQTT_INFLIGHT_MAX`, `AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX`, `AZ_IOT_AZ_MQTT_CONFIG_FILE` | empty | Per-client sizes of the az_mqtt adapter. Empty: the value of the footprint (`DEFAULT` or `CONSTRAINED`). Each is also a compile-time macro, so builds without CMake can set them. See [az_mqtt adapter sizes](#az_mqtt-adapter-sizes). |
+| `AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX`, `AZ_IOT_AZ_MQTT_CONFIG_FILE` | empty | The az_mqtt adapter's one compile-time limit, MQTT 5 user properties on CONNECT, or a header that defines it. Empty: 16. Each is also a compile-time macro, so builds without CMake can set them. Buffer sizes are run-time values. See [az_mqtt adapter limits](#az_mqtt-adapter-limits). |
+| `AZ_IOT_WITH_SU_DELTA` | `OFF` (`ON` in the Linux presets) | Build the reference `microsoft/delta:1` software updates download handler (`az_iot_su_delta.h`), POSIX only. See [delta updates](eng/software-updates.md#82-delta-updates-the-reference-microsoftdelta1-handler). |
+| `AZ_IOT_SU_DELTA_TEST_LIBRARY` | empty | Path of `libadudiffapi.so`: also builds the handler's interop test with it. Configuring fails when the file is missing. |
 | `AZ_IOT_BUILD_SAMPLES` | `ON` | Build the samples. |
 | `AZ_IOT_BUILD_TESTS` | `OFF` | Build the unit tests (the presets turn it on). |
 | `AZ_IOT_INSTALL` | `ON` when `c/` is the top-level project | Generate install rules and the `azure-iot-sdk` CMake package. |
@@ -63,59 +65,51 @@ copied into the `azure-iot-sdk` package: its config file finds it again, so cons
 dependency's prefix on `CMAKE_PREFIX_PATH` too. With MSVC, installed libraries must use the
 static C runtime (`/MT`, `/MTd` for Debug), as the SDK does.
 
-### az_mqtt adapter sizes
+### az_mqtt adapter limits
 
-Defaults are in [az_iot_az_mqtt_config.h](../adapters/az_mqtt/az_iot_az_mqtt_config.h). Each value
-comes from, in order:
+Buffer sizes and requests in flight are run-time values, `az_iot_mqtt_limits` (see
+[Clients in application memory](#clients-in-application-memory)). The removed
+`AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE`, `AZ_IOT_AZ_MQTT_RECEIVE_BUFFER_SIZE`,
+`AZ_IOT_AZ_MQTT_INFLIGHT_MAX` and `AZ_IOT_AZ_MQTT_MESSAGE_STORAGE_SIZE` fail the build when
+defined, and so does setting one of the first three as a CMake option. The removed footprint
+(`AZ_IOT_AZ_MQTT_FOOTPRINT`, macro or CMake option) fails the build too: set
+`AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX` instead (`DEFAULT` was 16, `CONSTRAINED` 4).
 
-1. a definition: a compiler `-D`, the file named by `AZ_IOT_AZ_MQTT_CONFIG_FILE`, or CMake
-   (which passes each option only when set);
-2. the footprint, `AZ_IOT_AZ_MQTT_FOOTPRINT`;
-3. the `DEFAULT` footprint.
+The one compile-time limit is in [az_iot_az_mqtt_config.h](../adapters/az_mqtt/az_iot_az_mqtt_config.h):
 
-| Macro | `DEFAULT` | `CONSTRAINED` | Effect |
-| --- | --- | --- | --- |
-| `AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE` | 270336 (264 KiB) | 8192 (8 KiB) | Largest outgoing packet. A larger connect or publish fails. |
-| `AZ_IOT_AZ_MQTT_RECEIVE_BUFFER_SIZE` | 270336 (264 KiB) | 135168 (132 KiB) | Largest incoming packet. MQTT 5: the Maximum Packet Size advertised; the server drops larger messages. MQTT 3.1.1: a larger packet ends the session. |
-| `AZ_IOT_AZ_MQTT_INFLIGHT_MAX` | 64 | 8 | QoS 1/2 exchanges in flight, 1-32767. MQTT 5: also the Receive Maximum advertised. |
-| `AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX` | 16 | 4 | MQTT 5 user properties on CONNECT; more is refused. PUBLISH user properties are not limited (sent and received in place). |
-| `AZ_IOT_AZ_MQTT_MESSAGE_STORAGE_SIZE` | send size + 18 | send size + 18 | Store of unacknowledged QoS 1/2 PUBLISH, for sessions that outlive the connection. 0: no store; a connect with `clean_start` false (MQTT 5: and `session_expiry_seconds` > 0) returns `AZ_IOT_ERR_NOT_SUPPORTED`. Macro only. |
+| Macro | Default | Effect |
+| --- | --- | --- |
+| `AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX` | 16 | MQTT 5 user properties on CONNECT; more is refused. PUBLISH user properties are not limited (sent and received in place). |
 
-IoT Hub limits: device-to-cloud messages 256 KB, direct method payloads 128 KB, cloud-to-device
-messages 64 KB, twin documents 32 KB. `CONSTRAINED` receives all of these, and sends packets up to
-8 KiB.
-
-Each client allocates, when created, the send and receive buffers, a buffer for the strings of a
-received PUBLISH (receive size + 3 bytes; user properties are read in place) and the
-transport. On its first connect whose session outlives the connection (`clean_start` false; MQTT 5:
-also `session_expiry_seconds` > 0) it also allocates the message store, kept until the client is
-destroyed. Per client: about 792 KiB with `DEFAULT` (1,056 KiB with such a session), 272 KiB with
-`CONSTRAINED` (280 KiB).
-
-The values apply where the adapter sources are compiled; defining them only for the application
-has no effect. Without CMake, compile the adapter with them:
+Override it with a compiler `-D`, in the file named by `AZ_IOT_AZ_MQTT_CONFIG_FILE`, or with CMake
+(which passes each option only when set). The value applies where the adapter sources are compiled;
+defining it only for the application has no effect. Without CMake, compile the adapter with it:
 
 ```sh
-cc -DAZ_IOT_AZ_MQTT_FOOTPRINT=AZ_IOT_AZ_MQTT_FOOTPRINT_CONSTRAINED -DAZ_IOT_AZ_MQTT_RECEIVE_BUFFER_SIZE=36864 ...
+cc -DAZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX=6 ...
 cc -DAZ_IOT_AZ_MQTT_CONFIG_FILE='"my_az_mqtt_config.h"' ...   # a header on the include path
 ```
 
-With CMake: `-DAZ_IOT_AZ_MQTT_FOOTPRINT=CONSTRAINED`, any option above, or
-`-DAZ_IOT_AZ_MQTT_CONFIG_FILE=<header>` (an absolute path, or a name on the include path).
+With CMake: `-DAZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX=<n>` or `-DAZ_IOT_AZ_MQTT_CONFIG_FILE=<header>`
+(an absolute path, or a name on the include path). The ESP32 component sets it from Kconfig
+(`CONFIG_AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX`, default 4).
 
 #### Clients in application memory
 
 `az_iot_az_mqtt_get_adapter()` builds clients in a workspace the application provides (static,
-stack or heap), with no allocation by the adapter. The sizes above become run-time values in
-`az_iot_mqtt_limits`:
+stack or heap), with no allocation by the adapter, sized by `az_iot_mqtt_limits`:
 
 | Field | Meaning |
 | --- | --- |
-| `send_buffer_size` | Largest outgoing packet. |
-| `receive_buffer_size` | Largest incoming packet; MQTT 5: the Maximum Packet Size advertised. |
-| `max_in_flight_messages` | QoS 1/2 exchanges at once, 1-32767; MQTT 5: the Receive Maximum advertised. |
-| `message_store_size` | Copies for resend on a resumed session; 0: clean sessions only. |
+| `send_buffer_size` | Largest outgoing packet. A larger connect or publish fails. |
+| `receive_buffer_size` | Largest incoming packet; MQTT 5: the Maximum Packet Size advertised, and the server drops larger messages. MQTT 3.1.1: a larger packet ends the session. |
+| `max_in_flight_messages` | QoS 1 exchanges at once (the SDK uses no QoS 2), 1-32767; MQTT 5: the Receive Maximum advertised. |
+| `message_store_size` | Copies of unacknowledged QoS 1 PUBLISH the adapter keeps while a session outlives the connection (at least one packet of `send_buffer_size` plus 18 bytes); never resent (see [Message store](#message-store)). 0: clean sessions only. The connection client's `init()` returns `AZ_IOT_ERR_INVALID_ARG` unless `session_continuity` is `AZ_IOT_SESSION_CONTINUITY_CLEAN` or `dps.provision_only` is set; used without the connection client, a connect with `clean_start` false (MQTT 5: and `session_expiry_seconds` > 0) returns `AZ_IOT_ERR_NOT_SUPPORTED`. |
 | `connect_strings_size` | Copies a connect makes of its strings (host, credentials, TLS paths or PEM, proxy, will, user properties), one NUL each. |
+
+IoT Hub limits: device-to-cloud messages 256 KB, direct method payloads 128 KB, cloud-to-device
+messages 64 KB, twin documents 32 KB. Size the buffers for the messages the device sends and
+receives.
 
 - `az_iot_az_mqtt_get_workspace_size(&limits)`: the exact size, for the largest of the MQTT 3.1.1
   and MQTT 5 clients, with this build's TLS backend.
@@ -130,13 +124,16 @@ stack or heap), with no allocation by the adapter. The sizes above become run-ti
 The Paho adapter has the same descriptor (`az_iot_paho_get_adapter()`; bound
 `AZ_IOT_PAHO_WORKSPACE_SIZE`). Its workspace holds only the adapter's state: Paho allocates its
 own internals and sizes its own buffers, so the limits are only checked (the ranges az_mqtt accepts).
+The adapter allocates its queued events, including the completion event of each publish, which
+`publish()` allocates before sending.
 
 ### Limits in the public headers
 
 Buffer sizes, pool sizes and default timeouts are `#define`s that you can override at compile
-time, for example `-DAZ_IOT_DEFAULT_KEEP_ALIVE_SECONDS=120`. Connection client entry counts are
-run-time limits instead (below). The sizes are fixed when compiled: they size
-arrays inside caller-allocated structs, or buffers inside the SDK.
+time, for example `-DAZ_IOT_DEFAULT_KEEP_ALIVE_SECONDS=120`. Connection client and feature client
+entry counts are run-time limits instead (below). The sizes are fixed when compiled: they size
+arrays inside caller-allocated structs, or buffers inside the SDK. Constants listed as fixed
+cannot be overridden: defining one before including the headers is a compile error.
 
 **Set every override for the whole build, with the same value for the SDK and the application.**
 
@@ -177,6 +174,46 @@ Entry counts are run-time values in `az_iot_connection_client_options::limits`
 - Defining one of the former macros (`AZ_IOT_MAX_PENDING_PUBACKS`, `AZ_IOT_DPS_HOST_BUF`, ...)
   before including the header is a compile error.
 
+The client builds each session's MQTT client with `options.mqtt_adapter` (for example
+`az_iot_az_mqtt_get_adapter()`) in `options.mqtt_workspace`, sized for `options.mqtt_limits`
+(see [Clients in application memory](#clients-in-application-memory)). All three are required:
+`init()` fails with `AZ_IOT_ERR_INVALID_ARG` when `mqtt_adapter` is NULL.
+
+- Size `mqtt_workspace` with the adapter's `get_workspace_size(&mqtt_limits)`
+  (`az_iot_az_mqtt_get_workspace_size()`, `az_iot_paho_get_workspace_size()`), or for a static
+  array with `AZ_IOT_AZ_MQTT_WORKSPACE_SIZE(...)` or `AZ_IOT_PAHO_WORKSPACE_SIZE`. Any alignment.
+- `init()` fails with `AZ_IOT_ERR_INVALID_ARG` when the limits are invalid (the adapter's size is
+  0) or the workspace is NULL, and with `AZ_IOT_ERR_NOT_ENOUGH_SPACE` when it is too small; the
+  last two log the size needed. `deinit()` wipes it.
+- `init()` also fails with `AZ_IOT_ERR_INVALID_ARG`, and logs why, when the adapter's optional
+  `validate_limits_for_session_usage()` refuses the limits for the hub session: whether it
+  outlives its connection (see below). az_mqtt implements it; Paho does not.
+- `mqtt_workspace` and `workspace` must be disjoint (adjacent is fine): `init()` fails with
+  `AZ_IOT_ERR_INVALID_ARG` when they share a byte, before it changes the client.
+- The hub session resumes its MQTT session unless `session_continuity` is
+  `AZ_IOT_SESSION_CONTINUITY_CLEAN`. az_mqtt then needs a `message_store_size` of at least
+  `send_buffer_size` plus its 18-byte per-message overhead; with 0, `init()` fails with
+  `AZ_IOT_ERR_INVALID_ARG`. That minimum holds one full-size unacknowledged QoS 1 publish; while
+  it awaits its PUBACK, a publish that does not fit returns `AZ_IOT_ERR_BUSY`. Sizing:
+  [Message store](#message-store).
+- It holds one MQTT client at a time, which is enough because the client runs
+  [one MQTT session at a time](connecting.md#one-mqtt-session-at-a-time): the provisioning session
+  and the hub session never overlap.
+
+```c
+/* The last argument bounds the TLS backend's state: 8 KB covers OpenSSL and mbedTLS; Schannel
+ * (Windows) needs about 197 KB. */
+static uint8_t mqtt_workspace[AZ_IOT_AZ_MQTT_WORKSPACE_SIZE(4096, 4096, 8, 8192, 4096, 8192)];
+opts.mqtt_adapter = az_iot_az_mqtt_get_adapter();
+opts.mqtt_limits = (az_iot_mqtt_limits){ .send_buffer_size = 4096,
+                                         .receive_buffer_size = 4096,
+                                         .max_in_flight_messages = 8,
+                                         .message_store_size = 8192,
+                                         .connect_strings_size = 4096 };
+opts.mqtt_workspace = mqtt_workspace;
+opts.mqtt_workspace_size = sizeof(mqtt_workspace);
+```
+
 The defaults are compile-time values
 ([az_iot_connection_client_config.h](../inc/azure/iot/az_iot_connection_client_config.h)):
 `AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_<LIMIT>`, for example
@@ -215,7 +252,7 @@ topics, when a hub session starts:
 | mqttv3 C2D | | | 1 | | 1 | 1 |
 | mqttv3 direct methods | | | 1 | 1 | | 1 |
 | mqttv3 twin | | | 2 | 1 | | 2 |
-| mqttv5 direct methods | `AZ_IOT_MQTTV5_DM_RESERVED_PUBACKS` (8) | 1 | | 2 | 1 | 1 |
+| mqttv5 direct methods | `AZ_IOT_MQTTV5_DM_RESERVED_PUBACKS(max_concurrent_invocations)` (8) | 1 | | 2 | 1 | 1 |
 | mqttv5 twin | | | | 2 | 1 | 1 |
 | Hub certificate renewal (`csr_payload_buffer` set) | 1 | 1 | 1 | | | 1 |
 | Software updates, DPS channel | | | | 1 | | |
@@ -240,10 +277,10 @@ opts.limits = (az_iot_connection_client_limits){ .max_pending_publishes = 4,
                                                  .max_inbound_handlers = 4 };
 
 /* MQTT 5: telemetry (4 publishes in flight), direct methods, twin. The direct method client
- * reserves AZ_IOT_MQTTV5_DM_RESERVED_PUBACKS (8 with the default
- * AZ_IOT_MQTTV5_DM_MAX_CONCURRENT): 1,263 bytes. */
+ * reserves AZ_IOT_MQTTV5_DM_RESERVED_PUBACKS(4) (8, for the default max_concurrent_invocations):
+ * 1,263 bytes. */
 opts.limits = (az_iot_connection_client_limits){
-  .max_pending_publishes = AZ_IOT_MQTTV5_DM_RESERVED_PUBACKS + 4,
+  .max_pending_publishes = AZ_IOT_MQTTV5_DM_RESERVED_PUBACKS(4) + 4,
   .max_publish_reservations = 1,
   .max_persistent_subscriptions = 1,
   .max_feature_observers = 4,
@@ -253,7 +290,7 @@ opts.limits = (az_iot_connection_client_limits){
 };
 
 static uint8_t workspace[AZ_IOT_CONNECTION_CLIENT_WORKSPACE_SIZE(
-    AZ_IOT_MQTTV5_DM_RESERVED_PUBACKS + 4, 1, 1, 4, 1, 2, 2)];
+    AZ_IOT_MQTTV5_DM_RESERVED_PUBACKS(4) + 4, 1, 1, 4, 1, 2, 2)];
 opts.workspace = workspace;
 opts.workspace_size = sizeof(workspace);
 ```
@@ -267,7 +304,6 @@ Fixed sizes:
 
 | Constant | Value | Bounds |
 | --- | --- | --- |
-| `AZ_IOT_MAX_MQTT_FACTORIES` | 4 | MQTT adapter factories registered with one connection client. |
 | `AZ_IOT_CONNECTION_CLIENT_PUBLISH_COMPLETION_OBSERVERS` | 2 | Feature clients told after each hub PUBACK, to retry publishes held for adapter capacity. The mqttv5 direct method client uses one. |
 | `AZ_IOT_PERSISTENT_SUB_TOPIC_MAX` | 128 | Length of one persistent topic filter. |
 | `AZ_IOT_DPS_HOST_BUF` | 128 | Assigned IoT Hub host name, terminator included. A longer one fails the provisioning attempt with `AZ_IOT_ERR_NOT_SUPPORTED`. |
@@ -306,24 +342,68 @@ Defaults used when the matching option is left at 0:
 
 #### Feature clients ([az_iot_message.h](../inc/azure/iot/az_iot_message.h) and the client headers)
 
+Run-time limits are fields of a client's init options (`limits`, from `<client>_options_default()`);
+0 selects the default. The
+entries live in the options' `workspace` (static, stack or heap), owned by the client until
+`deinit()`, which wipes it:
+
+- `<client>_get_workspace_size(&limits)`: bytes needed, any alignment.
+- `<CLIENT>_WORKSPACE_SIZE(...)`: the same as a constant expression, for static arrays (pass the
+  defaults written out in place of 0). `<CLIENT>_DEFAULT_WORKSPACE_SIZE`: the same for the
+  defaults.
+- `init()` fails with `AZ_IOT_ERR_INVALID_ARG` when the options or the workspace are NULL or a
+  limit is above its maximum, and with `AZ_IOT_ERR_NOT_ENOUGH_SPACE` when the workspace is too
+  small; each logs an `ERROR`, the workspace errors with the size needed.
+- The defaults are compile-time values (`<CLIENT>_DEFAULT_MAX_<LIMIT>`, `#define` before including
+  the header). They do not change the layout of the client struct: if the SDK and the application
+  use different values, `init()` refuses a workspace too small for the SDK's.
+
+| Client (limits struct) | Limit | Default | Bounds |
+| --- | --- | --- | --- |
+| mqttv3 direct methods (`az_iot_mqttv3_direct_method_client_limits`) | `max_in_flight_invocations` | 4 | Invocations held, at most 1024. When all are held, a new invocation is dropped with a `WARN` log and gets no response. |
+| mqttv5 direct methods (`az_iot_mqttv5_direct_method_client_limits`) | `max_concurrent_invocations` | 4 | Invocations probed or awaiting an answer, at most 255. A probe past it is refused `DEVICE_BUSY`. The client reserves `AZ_IOT_MQTTV5_DM_RESERVED_PUBACKS()` (twice this) `max_pending_publishes` slots. |
+| | `max_methods` | 8 | Method names one client can declare, at most 1024. |
+| | `max_queued_notices` | `max_concurrent_invocations` | Probe rejections and abandons kept until their PUBACK, to be published again after a reconnect, at most 1024. Past it, one is sent untracked while `CONNECTED` and dropped otherwise. |
+| | `max_result_body_size` | 512 | Result body bytes, at most 131072 (the IoT Hub direct method payload limit). The client holds one result buffer per concurrent invocation, so a result can wait for `CONNECTED` and be published again if its PUBACK is lost with the connection. A larger body is refused with `AZ_IOT_ERR_NOT_ENOUGH_SPACE`. |
+| mqttv3 and mqttv5 twin (`az_iot_twin_client_limits`) | `max_pending_requests` | 8 | Twin requests (GET, reported patch) awaiting their answer, at most 1024. A request past it is refused with `AZ_IOT_ERR_NOT_SUPPORTED`. The mqttv5 workspace holds one more, for the client's own desired-snapshot GET. |
+
+```c
+/* mqttv3 direct methods, one invocation at a time. */
+static uint8_t methods_workspace[AZ_IOT_MQTTV3_DIRECT_METHOD_CLIENT_WORKSPACE_SIZE(1)];
+az_iot_mqttv3_direct_method_client_options methods_options
+    = az_iot_mqttv3_direct_method_client_options_default();
+methods_options.limits.max_in_flight_invocations = 1;
+methods_options.workspace = methods_workspace;
+methods_options.workspace_size = sizeof(methods_workspace);
+result = az_iot_mqttv3_direct_method_client_init(&methods, &connection, &methods_options);
+```
+
+Defining the removed `AZ_IOT_DM_MAX_INFLIGHT`, `AZ_IOT_TWIN_MAX_PENDING`,
+`AZ_IOT_MQTTV5_DM_MAX_CONCURRENT`, `AZ_IOT_MQTTV5_DM_MAX_METHODS`,
+`AZ_IOT_MQTTV5_DM_NOTICE_QUEUE_MAX` or `AZ_IOT_MQTTV5_DM_RESULT_BODY_MAX` is a compile error.
+
 | Macro | Default | Bounds |
 | --- | --- | --- |
-| `AZ_IOT_TWIN_MAX_PENDING` | 8 | Twin requests in flight per twin client. |
-| `AZ_IOT_DM_MAX_INFLIGHT` | 4 | Direct-method invocations held per client (mqttv3; default for mqttv5). When full, a new mqttv3 invocation is dropped with a `WARN` log and gets no response. |
-| `AZ_IOT_DM_METHOD_NAME_MAX` | 96 | Direct-method name. |
-| `AZ_IOT_DM_RID_MAX` | 32 | mqttv3 request ID. |
-| `AZ_IOT_DM_CORR_DATA_MAX` | 64 | mqttv5 correlation data. |
+| `AZ_IOT_TWIN_CLIENT_DEFAULT_MAX_PENDING_REQUESTS` | 8 | Default `az_iot_twin_client_limits::max_pending_requests`, 1-1024. |
+| `AZ_IOT_MQTTV3_DIRECT_METHOD_CLIENT_DEFAULT_MAX_IN_FLIGHT_INVOCATIONS` | 4 | Default `az_iot_mqttv3_direct_method_client_limits::max_in_flight_invocations`, 1-1024. |
 | `AZ_IOT_MQTTV3_DM_RESPONSE_TIMEOUT_SECONDS` | 300 | Default for `az_iot_mqttv3_direct_method_client_set_response_timeout()`. |
-| `AZ_IOT_MQTTV5_DM_MAX_CONCURRENT` | `AZ_IOT_DM_MAX_INFLIGHT` | mqttv5 invocations probed or awaiting an answer. A probe past it is refused `DEVICE_BUSY`. The client reserves twice this many `max_pending_publishes` slots. |
-| `AZ_IOT_MQTTV5_DM_MAX_METHODS` | 8 | Method names one mqttv5 client can declare. |
-| `AZ_IOT_MQTTV5_DM_NOTICE_QUEUE_MAX` | `AZ_IOT_MQTTV5_DM_MAX_CONCURRENT` | mqttv5 probe rejections and abandons kept until their PUBACK, to be published again after a reconnect. Past it, one is sent untracked while `CONNECTED` and dropped otherwise. |
-| `AZ_IOT_MQTTV5_DM_RESULT_BODY_MAX` | 512 | mqttv5 direct-method result body. The client holds one result buffer per `AZ_IOT_MQTTV5_DM_MAX_CONCURRENT` slot, so a result can wait for `CONNECTED` and be published again if its PUBACK is lost with the connection. |
-| `AZ_IOT_MQTTV5_DM_TOPIC_MAX` | 192 | mqttv5 direct-method topic. |
+| `AZ_IOT_MQTTV5_DIRECT_METHOD_CLIENT_DEFAULT_MAX_CONCURRENT_INVOCATIONS` | 4 | Default `az_iot_mqttv5_direct_method_client_limits::max_concurrent_invocations`, 1-255. |
+| `AZ_IOT_MQTTV5_DIRECT_METHOD_CLIENT_DEFAULT_MAX_METHODS` | 8 | Default `max_methods`, 1-1024. |
+| `AZ_IOT_MQTTV5_DIRECT_METHOD_CLIENT_DEFAULT_MAX_RESULT_BODY_SIZE` | 512 | Default `max_result_body_size`, 1-131072. |
 | `AZ_IOT_FILE_UPLOAD_BODY_MAX` | 512 | File-upload request body; bounds the blob name (about 495 bytes once JSON-escaped). |
 | `AZ_IOT_FILE_UPLOAD_URL_MAX` | 512 | File-upload request URL. |
 | `AZ_IOT_FILE_UPLOAD_SAS_URI_MAX` | 2048 | Blob SAS URI. |
 | `AZ_IOT_FILE_UPLOAD_CORR_ID_MAX` | 192 | File-upload correlation ID. |
 | `AZ_IOT_FILE_UPLOAD_AUTHORIZATION_MAX` | 1024 | Hub SAS token passed to the file-upload HTTP hook; at least `AZ_IOT_SAS_TOKEN_SIZE()` of the hub host and device ID lengths (267 bytes together by default). |
+
+Fixed sizes:
+
+| Constant | Value | Bounds |
+| --- | --- | --- |
+| `AZ_IOT_DM_METHOD_NAME_MAX` | 96 | Direct-method name, terminator included. |
+| `AZ_IOT_DM_RID_MAX` | 32 | mqttv3 request ID, terminator included. |
+| `AZ_IOT_DM_CORR_DATA_MAX` | 64 | mqttv5 correlation data. |
+| `AZ_IOT_MQTTV5_DM_TOPIC_MAX` | 192 | mqttv5 direct-method topic, terminator included. |
 
 #### Software updates ([az_iot_su.h](../inc/azure/iot/az_iot_su.h))
 
@@ -407,7 +487,7 @@ Smaller values save memory on constrained devices, for example
 | --- | --- | --- |
 | `AZ_IOT_DISPATCH_PREFIX_MAX` | 128 | Topic prefix of one handler. Fixed. |
 | `AZ_IOT_LOG_MESSAGE_MAX` | 384 | One formatted log message, terminator included. Longer messages are truncated and end in `...`. |
-| `AZ_IOT_LOG_FILE_PATH_MAX` | 256 | Log file path for the file sink, terminator included. |
+| `AZ_IOT_LOG_FILE_PATH_MAX` | 256 | Log file path for the file sink, terminator included. Fixed. |
 | `AZ_IOT_LOG_FILE_DEFAULT_MAX_BYTES` | 1 MiB | Default size at which the file sink rotates. |
 | `AZ_IOT_LOG_FILE_DEFAULT_MAX_FILES` | 3 | Default number of rotated log files kept. |
 
@@ -422,15 +502,40 @@ is granted only when usable at once: if tracked publishes in flight occupy its s
 | Feature client | QoS 1 publishes | Own bound | Slots |
 | --- | --- | --- | --- |
 | mqttv3 and mqttv5 telemetry `send` | 1 per call | Only the shared pool | Shared pool; the callback is required. |
-| mqttv5 direct methods | Probe ack, result, abandon | `AZ_IOT_MQTTV5_DM_MAX_CONCURRENT` invocations. Not bounded: refused probes are also acknowledged, and refused probes past `AZ_IOT_MQTTV5_DM_NOTICE_QUEUE_MAX` are sent untracked. A result keeps its slot until acknowledged. | Reserves `2 × AZ_IOT_MQTTV5_DM_MAX_CONCURRENT` at init; init fails with `AZ_IOT_ERR_NOT_ENOUGH_SPACE` if they do not fit, or `AZ_IOT_ERR_BUSY` as above. Probe acks and results never go untracked: when all are in use they wait for the next PUBACK. Probe rejections and abandons leave one slot free per invocation that could still need one, and past that are sent untracked. |
+| mqttv5 direct methods | Probe ack, result, abandon | `max_concurrent_invocations` invocations. Not bounded: refused probes are also acknowledged, and refused probes past `max_queued_notices` are sent untracked. A result keeps its slot until acknowledged. | Reserves `2 × max_concurrent_invocations` at init; init fails with `AZ_IOT_ERR_NOT_ENOUGH_SPACE` if they do not fit, or `AZ_IOT_ERR_BUSY` as above. Probe acks and results never go untracked: when all are in use they wait for the next PUBACK. Probe rejections and abandons leave one slot free per invocation that could still need one, and past that are sent untracked. |
 | Certificate renewal | 1 request | 1 operation at a time | Reserves 1 at init when `opts.csr_payload_buffer` is set. Cancel, timeout and a session end give it back at once. |
 
-Not counted: twin and mqttv3 direct methods (QoS 0, bounded by `AZ_IOT_TWIN_MAX_PENDING` and
-`AZ_IOT_DM_MAX_INFLIGHT`), and the provisioning session (DPS registration, software updates).
+Not counted: twin and mqttv3 direct methods (QoS 0, bounded by `max_pending_requests` and
+`max_in_flight_invocations`), and the provisioning session (DPS registration, software updates).
 
 With the defaults, telemetry gets all 16 slots, 8 when an mqttv5 direct method client is
 attached, and one fewer when `opts.csr_payload_buffer` is set. To size it, add the telemetry sends you keep in flight to the reservations. A slot is
 16 bytes on 32-bit targets and 32 bytes on 64-bit targets; a reservation entry is 8 or 16 bytes.
+
+#### Message store
+
+On a session that outlives the connection (the hub session, unless `session_continuity` is
+`AZ_IOT_SESSION_CONTINUITY_CLEAN`), az_mqtt keeps a copy of each unacknowledged QoS 1 publish in
+`message_store_size`: its encoded size plus 18 bytes
+(`AZ_MQTT_INFLIGHT_MESSAGE_OVERHEAD`), until its PUBACK. A publish that does not fit returns
+`AZ_IOT_ERR_BUSY`; retry after a PUBACK. The default, `send_buffer_size + 18`, holds one full-size
+publish, so a second QoS 1 publish in flight can already return `AZ_IOT_ERR_BUSY`.
+
+Size it for the QoS 1 publishes you keep in flight: the sum of their encoded sizes plus 18 bytes
+each, and never below the minimum of `send_buffer_size + 18` (a nonzero store below that fails
+`init()`, and the workspace size query returns 0). How many are in flight is bounded by
+`max_in_flight_messages`, and for publishes with a completion callback by
+`max_pending_publishes` (above).
+
+0 reserves no store and allows only clean sessions: with `session_continuity` other than
+`AZ_IOT_SESSION_CONTINUITY_CLEAN`, `init()` fails with `AZ_IOT_ERR_INVALID_ARG` and logs that
+`message_store_size` 0 allows only clean sessions. DPS sessions are always clean, so a
+`dps.provision_only` client, which never connects to a hub, is accepted. Paho ignores
+`message_store_size`.
+
+The SDK never resends these copies: each session gets a new MQTT client, and unacknowledged
+publishes complete with `AZ_IOT_ERR_NOT_CONNECTED` for the layer above to retry
+([Connecting](connecting.md#resumed-sessions-and-retries)).
 
 ## Run time
 
@@ -446,6 +551,9 @@ always the same thing.
 | `az_iot_retry_policy` (`az_iot_connection_client_get_default_retry_policy()`, `_get_disabled_retry_policy()`, `_get_fixed_interval_retry_policy()`) | Backoff and retry limit | [Connecting a device](connecting.md#reconnection), [az_iot_retry_policy.h](../inc/azure/iot/az_iot_retry_policy.h) |
 | `az_iot_certificate_provider_pem_options` (`az_iot_certificate_provider_pem_options_default()`) | Certificate, key and CA files | [az_iot_certificate_provider_pem.h](../inc/azure/iot/az_iot_certificate_provider_pem.h) |
 | `az_iot_certificate_provider_managed_options` | Bootstrap and operational certificate and key files, key type (EC P-256, EC P-384 or RSA 2048) | [az_iot_certificate_provider_managed.h](../adapters/cert_openssl/az_iot_certificate_provider_managed.h), [sample](../samples/authentication/dps_csr_managed/README.md) |
+| `az_iot_mqttv3_direct_method_client_options` (`az_iot_mqttv3_direct_method_client_options_default()`) | Invocations held, and the workspace that holds them | [Feature clients](#feature-clients-az_iot_messageh-and-the-client-headers), [az_iot_direct_method_client.h](../inc/azure/iot/mqttv3/az_iot_direct_method_client.h) |
+| `az_iot_mqttv5_direct_method_client_options` (`az_iot_mqttv5_direct_method_client_options_default()`) | Invocations, declared methods, queued notices and result size, and the workspace that holds them | [Feature clients](#feature-clients-az_iot_messageh-and-the-client-headers), [az_iot_direct_method_client.h](../inc/azure/iot/mqttv5/az_iot_direct_method_client.h) |
+| `az_iot_mqttv3_twin_client_options`, `az_iot_mqttv5_twin_client_options` (`az_iot_mqttv3_twin_client_options_default()`, `az_iot_mqttv5_twin_client_options_default()`) | Twin requests held, and the workspace that holds them | [Feature clients](#feature-clients-az_iot_messageh-and-the-client-headers), [mqttv3](../inc/azure/iot/mqttv3/az_iot_twin_client.h), [mqttv5](../inc/azure/iot/mqttv5/az_iot_twin_client.h) |
 | `az_iot_su_client_config_options` (`az_iot_su_client_config_options_default()`) | Platform hooks, root keys, device properties, replacement policy. Crypto comes from the connection client. | [az_iot_su.h](../inc/azure/iot/az_iot_su.h), [samples](../samples/software_update/pc/simulated_onboarding/README.md) |
 | `az_iot_mqttv5_twin_get_options` (`az_iot_mqttv5_twin_get_options_default()`) | Per request to `az_iot_mqttv5_twin_client_get_with_options()`: sections to fetch, and versions to skip if unchanged | [az_iot_twin_client.h](../inc/azure/iot/mqttv5/az_iot_twin_client.h) |
 

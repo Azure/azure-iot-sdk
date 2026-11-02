@@ -8,7 +8,7 @@ name: ci-c-static-analysis
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, 'releases/public-preview' ]
   # No workflow-level `paths:` filter, same as ci-c.yml: a workflow that never triggers reports
   # no check, which would block a required check. The `changes` job below skips work instead.
   pull_request:
@@ -88,6 +88,7 @@ jobs:
           -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/mbedtls"
           -DAZ_IOT_BUILD_TESTS=OFF
           -DAZ_IOT_WITH_PAHO=ON
+          -DAZ_IOT_WITH_SU_DELTA=ON
 
       - name: clang-tidy
         run: bash eng/clang-tidy.sh build/clang-tidy

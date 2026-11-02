@@ -207,6 +207,29 @@ static void one_workspace_serves_each_version_in_turn_and_is_wiped(void** state)
   }
 }
 
+/* The previous connect's copies (credentials) are wiped from the workspace by the next connect. */
+static void copies_are_wiped_at_the_next_connect(void** state)
+{
+  (void)state;
+  az_iot_mqtt_limits const limits = small_limits();
+  size_t const size = az_iot_az_mqtt_get_workspace_size(&limits);
+  az_iot_mqtt_version const versions[] = { AZ_IOT_MQTT_VERSION_3_1_1, AZ_IOT_MQTT_VERSION_5 };
+  for (size_t i = 0; i < sizeof(versions) / sizeof(versions[0]); i++)
+  {
+    az_iot_mqtt_client* client = NULL;
+    assert_int_equal(
+        az_iot_az_mqtt_get_adapter()->init(versions[i], &limits, g_workspace, size, &client),
+        AZ_IOT_OK);
+    assert_int_equal(connect_with(client, "FIRST-SECRET", true), AZ_IOT_OK);
+    (void)client->iface->disconnect(client);
+    assert_true(holds(g_workspace, size, "FIRST-SECRET"));
+    assert_int_equal(connect_with(client, "2nd", true), AZ_IOT_OK);
+    assert_false(holds(g_workspace, size, "SECRET")); /* Not just overwritten from its start. */
+    (void)client->iface->disconnect(client);
+    client->iface->destroy(client);
+  }
+}
+
 static void connect_strings_that_do_not_fit_are_refused(void** state)
 {
   (void)state;
@@ -254,6 +277,7 @@ int main(void)
     cmocka_unit_test(init_needs_the_whole_workspace_at_any_alignment),
     cmocka_unit_test(init_rejects_bad_arguments),
     cmocka_unit_test(one_workspace_serves_each_version_in_turn_and_is_wiped),
+    cmocka_unit_test(copies_are_wiped_at_the_next_connect),
     cmocka_unit_test(connect_strings_that_do_not_fit_are_refused),
     cmocka_unit_test(a_session_that_outlives_the_connection_needs_a_message_store),
   };

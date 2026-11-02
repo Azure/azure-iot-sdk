@@ -32,6 +32,7 @@
 #include "internal/mono_time.h"
 #include "internal/span_writer.h"
 #include "internal/twin_client_internal.h"
+#include "internal/workspace.h"
 
 #define TWIN_TOPIC_ROOT "ih/"
 #define TWIN_INBOUND_SUFFIX "/dev/twin"
@@ -94,7 +95,7 @@ typedef char
 static size_t count_application_requests(const az_iot_mqttv5_twin_client* t)
 {
   size_t count = 0;
-  for (size_t i = 0; i < AZ_IOT_MQTTV5_TWIN_TRACKED_MESSAGES; ++i)
+  for (size_t i = 0; i < TI(t).tracked_message_count; ++i)
   {
     int const kind = TI(t).requests[i].kind;
     count += (kind == TWIN_PENDING_GET || kind == TWIN_PENDING_PATCH) ? 1u : 0u;
@@ -105,7 +106,7 @@ static size_t count_application_requests(const az_iot_mqttv5_twin_client* t)
 /** @brief Whether the client's own desired-snapshot GET is in flight. */
 static bool snapshot_in_flight(const az_iot_mqttv5_twin_client* t)
 {
-  for (size_t i = 0; i < AZ_IOT_MQTTV5_TWIN_TRACKED_MESSAGES; ++i)
+  for (size_t i = 0; i < TI(t).tracked_message_count; ++i)
   {
     if (TI(t).requests[i].kind == TWIN_PENDING_SNAPSHOT)
     {
@@ -120,7 +121,7 @@ static az_iot_mqttv5_twin_request* request_of_entry(
     az_iot_mqttv5_twin_client* t,
     size_t entry_index)
 {
-  if (entry_index >= AZ_IOT_MQTTV5_TWIN_TRACKED_MESSAGES
+  if (entry_index >= TI(t).tracked_message_count
       || TI(t).requests[entry_index].kind == TWIN_PENDING_NONE)
   {
     return NULL;
@@ -160,12 +161,12 @@ static int find_request_by_correlation_id(
     const az_iot_mqttv5_twin_client* t,
     const az_iot_mqtt_message* msg)
 {
-  for (int i = 0; i < (int)AZ_IOT_MQTTV5_TWIN_TRACKED_MESSAGES; ++i)
+  for (size_t i = 0; i < TI(t).tracked_message_count; ++i)
   {
     if (TI(t).requests[i].kind != TWIN_PENDING_NONE
         && correlation_is(msg, TI(t).requests[i].correlation_id))
     {
-      return i;
+      return (int)i;
     }
   }
   return -1;
@@ -575,12 +576,11 @@ static az_iot_result submit_twin_request(
     return AZ_IOT_ERR_BUSY;
   }
   size_t entry = 0;
-  while (entry < AZ_IOT_MQTTV5_TWIN_TRACKED_MESSAGES
-         && TI(t).requests[entry].kind != TWIN_PENDING_NONE)
+  while (entry < TI(t).tracked_message_count && TI(t).requests[entry].kind != TWIN_PENDING_NONE)
   {
     ++entry;
   }
-  if (entry == AZ_IOT_MQTTV5_TWIN_TRACKED_MESSAGES)
+  if (entry == TI(t).tracked_message_count)
   {
     return AZ_IOT_ERR_NOT_SUPPORTED;
   }
@@ -633,11 +633,11 @@ static az_iot_result check_application_request_allowed(
     const az_iot_mqttv5_twin_client* t,
     const char* type)
 {
-  if (count_application_requests(t) >= AZ_IOT_TWIN_MAX_PENDING)
+  if (count_application_requests(t) >= TI(t).max_pending_requests)
   {
     AZ_IOT_LOG_WARNF(
         AZ_IOT_LOG_COMPONENT_MQTTV5_TWIN,
-        "refusing a '%s' -- AZ_IOT_TWIN_MAX_PENDING requests are in flight",
+        "refusing a '%s' -- limits.max_pending_requests requests are in flight",
         type);
     return AZ_IOT_ERR_NOT_SUPPORTED;
   }
@@ -1203,6 +1203,7 @@ static void on_connection_event(const az_iot_connection_feature_event* event, vo
       break;
     case AZ_IOT_CONNECTION_FEATURE_EVENT_PUBLISH_COMPLETED:
     case AZ_IOT_CONNECTION_FEATURE_EVENT_IDENTITY_CHANGED:
+    case AZ_IOT_CONNECTION_FEATURE_EVENT_UNSETTLED_QUERY:
     default:
       break;
   }
@@ -1255,23 +1256,85 @@ static void withdraw_registrations(
 /* public API                                                                 */
 /* ------------------------------------------------------------------------- */
 
-AZ_NODISCARD az_iot_result
-az_iot_mqttv5_twin_client_init(az_iot_mqttv5_twin_client* client, az_iot_connection_client* conn)
+/**
+ * @brief Writes @p limits' max_pending_requests, with 0 replaced by the default, to @p out.
+ * @return false when it is above its maximum.
+ */
+static bool limits_resolve_max_pending_requests(
+    const az_iot_twin_client_limits* limits,
+    size_t* out)
 {
-  if (client == NULL || conn == NULL)
+  *out = limits->max_pending_requests == 0u
+      ? (size_t)AZ_IOT_TWIN_CLIENT_DEFAULT_MAX_PENDING_REQUESTS
+      : limits->max_pending_requests;
+  return *out <= AZ_IOT_TWIN_CLIENT_MAX_PENDING_REQUESTS_LIMIT;
+}
+
+AZ_NODISCARD az_iot_mqttv5_twin_client_options az_iot_mqttv5_twin_client_options_default(void)
+{
+  az_iot_mqttv5_twin_client_options options = { 0 };
+  return options;
+}
+
+AZ_NODISCARD size_t
+az_iot_mqttv5_twin_client_get_workspace_size(const az_iot_twin_client_limits* limits)
+{
+  size_t max_pending_requests = 0;
+  return limits != NULL && limits_resolve_max_pending_requests(limits, &max_pending_requests)
+      ? AZ_IOT_MQTTV5_TWIN_CLIENT_WORKSPACE_SIZE(max_pending_requests)
+      : 0u;
+}
+
+AZ_NODISCARD az_iot_result az_iot_mqttv5_twin_client_init(
+    az_iot_mqttv5_twin_client* client,
+    az_iot_connection_client* conn,
+    const az_iot_mqttv5_twin_client_options* options)
+{
+  if (client == NULL || conn == NULL || options == NULL)
   {
+    AZ_IOT_LOG_ERROR(AZ_IOT_LOG_COMPONENT_MQTTV5_TWIN, "init: invalid arguments");
     return AZ_IOT_ERR_INVALID_ARG;
+  }
+  size_t max_pending_requests = 0;
+  if (!limits_resolve_max_pending_requests(&options->limits, &max_pending_requests))
+  {
+    AZ_IOT_LOG_ERROR(
+        AZ_IOT_LOG_COMPONENT_MQTTV5_TWIN, "init: limits.max_pending_requests is above its maximum");
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  const size_t workspace_size = AZ_IOT_MQTTV5_TWIN_CLIENT_WORKSPACE_SIZE(max_pending_requests);
+  az_iot_result result
+      = az_iot_workspace__check(options->workspace, options->workspace_size, workspace_size);
+  if (result != AZ_IOT_OK)
+  {
+    AZ_IOT_LOG_ERRORF(
+        AZ_IOT_LOG_COMPONENT_MQTTV5_TWIN,
+        "init: the workspace is NULL or has %lu bytes; %lu needed",
+        (unsigned long)options->workspace_size,
+        (unsigned long)workspace_size);
+    return result;
   }
 
   memset(client, 0, sizeof(*client));
-  az_iot_result result
-      = az_iot_connection_client__require_profile(conn, AZ_IOT_CONNECTION_PROFILE_MQTT_V5);
+  result = az_iot_connection_client__require_profile(conn, AZ_IOT_CONNECTION_PROFILE_MQTT_V5);
   if (result != AZ_IOT_OK)
   {
     return result;
   }
 
   TI(client).conn = conn;
+  /* One more than the application's: the client's own snapshot GET. */
+  const size_t tracked_message_count = max_pending_requests + 1u;
+  memset(options->workspace, 0, workspace_size);
+  uint8_t* cursor = az_iot_workspace__start(options->workspace);
+  TI(client).requests
+      = az_iot_workspace__take(&cursor, tracked_message_count, sizeof(az_iot_mqttv5_twin_request));
+  az_iot_delivery_tracker_entry* tracker_entries = az_iot_workspace__take(
+      &cursor, tracked_message_count, sizeof(az_iot_delivery_tracker_entry));
+  TI(client).max_pending_requests = max_pending_requests;
+  TI(client).tracked_message_count = tracked_message_count;
+  TI(client).workspace = options->workspace;
+  TI(client).workspace_size = options->workspace_size;
   TI(client).request_timeout_ms = AZ_IOT_MQTTV5_TWIN_REQUEST_TIMEOUT_MS_DEFAULT;
 
   result = az_iot_connection_client__register_feature_client_bind(conn, client, bind_topics);
@@ -1287,13 +1350,7 @@ az_iot_mqttv5_twin_client_init(az_iot_mqttv5_twin_client* client, az_iot_connect
   if (result == AZ_IOT_OK)
   {
     result = az_iot_delivery_tracker__init(
-        &TI(client).tracker,
-        TI(client).tracker_entries,
-        AZ_IOT_MQTTV5_TWIN_TRACKED_MESSAGES,
-        0,
-        NULL,
-        0,
-        client);
+        &TI(client).tracker, tracker_entries, tracked_message_count, 0, NULL, 0, client);
   }
   if (result == AZ_IOT_OK)
   {
@@ -1331,6 +1388,7 @@ void az_iot_mqttv5_twin_client_deinit(az_iot_mqttv5_twin_client* client)
   }
   withdraw_registrations(TI(client).conn, client);
   az_iot_connection_client__release_profile(TI(client).conn);
+  memset(TI(client).workspace, 0, TI(client).workspace_size);
   memset(client, 0, sizeof(*client));
 }
 

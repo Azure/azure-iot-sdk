@@ -13,7 +13,7 @@ name: codeql-c
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, 'releases/public-preview' ]
   # No workflow-level `paths:` filter, same as ci-c.yml: a workflow that never triggers reports
   # no check, which would block a required check. The `changes` job below skips analysis instead.
   pull_request:
@@ -89,6 +89,7 @@ jobs:
           -DAZ_IOT_BUILD_TESTS=OFF
           -DAZ_IOT_BUILD_SAMPLES=ON
           -DAZ_IOT_WITH_PAHO=ON
+          -DAZ_IOT_WITH_SU_DELTA=ON
 
       - name: Build everything (not analyzed)
         run: cmake --build build/codeql

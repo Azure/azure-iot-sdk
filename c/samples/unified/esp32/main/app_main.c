@@ -65,6 +65,13 @@ static const char* TAG = "hub_esp32";
 /** @brief Largest echoed mqttv3 payload: the response must fit the adapter's send buffer, with
  * room for its topic. */
 #define MQTTV3_ECHO_PAYLOAD_MAX (CONFIG_AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE - 256u)
+/** @brief MQTT message store: one full-size message with az_mqtt's 18-byte per-message overhead,
+ * kept for the resumed hub session. */
+#define MQTT_MESSAGE_STORE_SIZE (CONFIG_AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE + 32u)
+/** @brief Copies a connect makes: host, client ID, user name, device certificate and key PEM. */
+#define MQTT_CONNECT_STRINGS_SIZE 8192u
+/** @brief Bound of az_mqtt's TLS state with mbedTLS (about 4.5 KB). */
+#define MQTT_TLS_STATE_SIZE 8192u
 
 /** @brief A wait before the next retry: none, or #TWIN_RETRY_MS from @c started. */
 typedef struct
@@ -110,10 +117,14 @@ typedef struct
   bool clients_built;
   az_iot_mqttv3_telemetry_client mqttv3_telemetry;
   az_iot_mqttv3_twin_client mqttv3_twin;
+  uint8_t mqttv3_twin_workspace[AZ_IOT_MQTTV3_TWIN_CLIENT_DEFAULT_WORKSPACE_SIZE];
   az_iot_mqttv3_direct_method_client mqttv3_methods;
+  uint8_t mqttv3_methods_workspace[AZ_IOT_MQTTV3_DIRECT_METHOD_CLIENT_DEFAULT_WORKSPACE_SIZE];
   az_iot_mqttv5_telemetry_client mqttv5_telemetry;
   az_iot_mqttv5_twin_client mqttv5_twin;
+  uint8_t mqttv5_twin_workspace[AZ_IOT_MQTTV5_TWIN_CLIENT_DEFAULT_WORKSPACE_SIZE];
   az_iot_mqttv5_direct_method_client mqttv5_methods;
+  uint8_t mqttv5_methods_workspace[AZ_IOT_MQTTV5_DIRECT_METHOD_CLIENT_DEFAULT_WORKSPACE_SIZE];
   /* Set by callbacks, acted on by the loop: clients are not rebuilt inside do_work(). */
   az_iot_connection_state hub_state;
   TickType_t offline_since; /* when hub_state last left CONNECTED, or the loop started */
@@ -478,7 +489,7 @@ static void on_echo_mqttv5(
     void* user_ctx)
 {
   hub_device* d = (hub_device*)user_ctx;
-  bool const fits = length <= AZ_IOT_MQTTV5_DM_RESULT_BODY_MAX;
+  bool const fits = length <= AZ_IOT_MQTTV5_DIRECT_METHOD_CLIENT_DEFAULT_MAX_RESULT_BODY_SIZE;
   az_iot_result const r = az_iot_mqttv5_direct_method_respond(
       &d->mqttv5_methods, request, fits ? 200 : 413, fits ? payload : NULL, fits ? length : 0);
   if (r != AZ_IOT_OK)
@@ -527,14 +538,25 @@ static az_iot_result build_clients(hub_device* d, az_iot_connection_profile prof
   if (profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5)
   {
     r = az_iot_mqttv5_telemetry_client_init(&d->mqttv5_telemetry, &d->connection);
-    r = r == AZ_IOT_OK ? az_iot_mqttv5_twin_client_init(&d->mqttv5_twin, &d->connection) : r;
+    r = r == AZ_IOT_OK ? az_iot_mqttv5_twin_client_init(
+                             &d->mqttv5_twin,
+                             &d->connection,
+                             &(az_iot_mqttv5_twin_client_options){
+                                 .workspace = d->mqttv5_twin_workspace,
+                                 .workspace_size = sizeof(d->mqttv5_twin_workspace) })
+                       : r;
     r = r == AZ_IOT_OK ? az_iot_mqttv5_twin_client_set_encode_buffer(
                              &d->mqttv5_twin, AZ_SPAN_FROM_BUFFER(s_mqttv5_twin_encode_buffer))
                        : r;
     r = r == AZ_IOT_OK
         ? az_iot_mqttv5_twin_client_set_desired_handler(&d->mqttv5_twin, on_desired_mqttv5, d)
         : r;
-    r = r == AZ_IOT_OK ? az_iot_mqttv5_direct_method_client_init(&d->mqttv5_methods, &d->connection)
+    r = r == AZ_IOT_OK ? az_iot_mqttv5_direct_method_client_init(
+                             &d->mqttv5_methods,
+                             &d->connection,
+                             &(az_iot_mqttv5_direct_method_client_options){
+                                 .workspace = d->mqttv5_methods_workspace,
+                                 .workspace_size = sizeof(d->mqttv5_methods_workspace) })
                        : r;
     // 0: no declared run time, so any caller timeout is enough.
     r = r == AZ_IOT_OK ? az_iot_mqttv5_direct_method_client_register_method(
@@ -544,11 +566,22 @@ static az_iot_result build_clients(hub_device* d, az_iot_connection_profile prof
   else if (profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V3)
   {
     r = az_iot_mqttv3_telemetry_client_init(&d->mqttv3_telemetry, &d->connection);
-    r = r == AZ_IOT_OK ? az_iot_mqttv3_twin_client_init(&d->mqttv3_twin, &d->connection) : r;
+    r = r == AZ_IOT_OK ? az_iot_mqttv3_twin_client_init(
+                             &d->mqttv3_twin,
+                             &d->connection,
+                             &(az_iot_mqttv3_twin_client_options){
+                                 .workspace = d->mqttv3_twin_workspace,
+                                 .workspace_size = sizeof(d->mqttv3_twin_workspace) })
+                       : r;
     r = r == AZ_IOT_OK
         ? az_iot_mqttv3_twin_client_set_desired_handler(&d->mqttv3_twin, on_desired_mqttv3, d)
         : r;
-    r = r == AZ_IOT_OK ? az_iot_mqttv3_direct_method_client_init(&d->mqttv3_methods, &d->connection)
+    r = r == AZ_IOT_OK ? az_iot_mqttv3_direct_method_client_init(
+                             &d->mqttv3_methods,
+                             &d->connection,
+                             &(az_iot_mqttv3_direct_method_client_options){
+                                 .workspace = d->mqttv3_methods_workspace,
+                                 .workspace_size = sizeof(d->mqttv3_methods_workspace) })
                        : r;
     r = r == AZ_IOT_OK
         ? az_iot_mqttv3_direct_method_client_set_handler(&d->mqttv3_methods, on_method_mqttv3, d)
@@ -633,23 +666,30 @@ void app_main(void)
   options.workspace_size = sizeof(connection_workspace);
   // mqttv5: the hub pushes the desired snapshot on connect and each desired patch.
   options.twin_push.push_desired = true;
+  /* The az_mqtt adapter builds each session's MQTT client in this workspace, one at a time:
+   * MQTT 3.1.1 for DPS and an mqttv3 hub, MQTT 5 for an mqttv5 hub. Sizes: menuconfig. */
+  static uint8_t mqtt_workspace[AZ_IOT_AZ_MQTT_WORKSPACE_SIZE(
+      CONFIG_AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE,
+      CONFIG_AZ_IOT_AZ_MQTT_RECEIVE_BUFFER_SIZE,
+      CONFIG_AZ_IOT_AZ_MQTT_INFLIGHT_MAX,
+      MQTT_MESSAGE_STORE_SIZE,
+      MQTT_CONNECT_STRINGS_SIZE,
+      MQTT_TLS_STATE_SIZE)];
+  options.mqtt_adapter = az_iot_az_mqtt_get_adapter();
+  options.mqtt_limits = (az_iot_mqtt_limits){
+    .send_buffer_size = CONFIG_AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE,
+    .receive_buffer_size = CONFIG_AZ_IOT_AZ_MQTT_RECEIVE_BUFFER_SIZE,
+    .max_in_flight_messages = CONFIG_AZ_IOT_AZ_MQTT_INFLIGHT_MAX,
+    .message_store_size = MQTT_MESSAGE_STORE_SIZE,
+    .connect_strings_size = MQTT_CONNECT_STRINGS_SIZE,
+  };
+  options.mqtt_workspace = mqtt_workspace;
+  options.mqtt_workspace_size = sizeof(mqtt_workspace);
   if (az_iot_connection_client_init(&d->connection, &options) != AZ_IOT_OK)
   {
     restart("connection client init failed");
   }
   az_iot_connection_client_add_state_observer(&d->connection, on_connection_state, d);
-
-  /* MQTT 3.1.1 for DPS and an mqttv3 hub, MQTT 5 for an mqttv5 hub. The factories must outlive
-   * the connection, which lives as long as this task. */
-  if (az_iot_connection_client_register_mqtt_factory(
-          &d->connection, az_iot_az_mqtt_factory_create_v3_1_1())
-          != AZ_IOT_OK
-      || az_iot_connection_client_register_mqtt_factory(
-             &d->connection, az_iot_az_mqtt_factory_create_v5())
-          != AZ_IOT_OK)
-  {
-    restart("registering the MQTT adapters failed");
-  }
 
   if (build_clients(d, AZ_IOT_CONNECTION_PROFILE_MQTT_V3) != AZ_IOT_OK
       || az_iot_connection_client_open(&d->connection) != AZ_IOT_OK)

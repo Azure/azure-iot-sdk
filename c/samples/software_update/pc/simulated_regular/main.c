@@ -55,7 +55,7 @@
  *                                   14400, 4 h); 0 checks only at startup
  *                                   and after an update. A check not
  *                                   answered within half the interval (at
- *                                   most 60 s) is abandoned.
+ *                                   most 120 s) is abandoned.
  *   AZ_IOT_SU_LOG_LEVEL=<lvl>      trace|debug|info|warn|error|off (default
  *                                   info). The SDK's "su:" and "dps:"
  *                                   protocol lines are emitted at debug.
@@ -66,6 +66,11 @@
  *                             this knob) to resume() and finish the workflow.
  *   SU_SIM_DELAY_MS=<ms>     per-download delay so progress is observable
  *   SU_SIM_STATE_FILE=<path> resume blob path (default ./su_sim_regular_state.blob)
+ *   SU_SIM_FILE_DIR=<dir>    existing directory: the simulated download also writes the
+ *                             synthesized files there. In a build with the microsoft/delta:1
+ *                             reference handler (AZ_IOT_WITH_SU_DELTA), it also registers that
+ *                             handler, with a simulated delta processor (see README).
+ *   SU_SIM_DELTA_CACHE_DIR=<dir>  the handler's source cache (default ./su_sim_source_cache)
  */
 #include <stddef.h>
 #include <stdint.h>
@@ -94,6 +99,9 @@
 
 #include "sample_utils.h"
 #include "su_sim.h"
+#if defined(SAMPLE_WITH_SU_DELTA)
+#include "az_iot_su_delta.h"
+#endif
 
 /* Microsoft's software updates production root keys, compiled into the SDK,
  * anchor manifest trust. To accept updates signed by your OWN root, build an
@@ -106,8 +114,6 @@ typedef struct
 
   az_iot_certificate_provider_pem certs;
   az_iot_connection_client connection_client;
-  az_iot_mqtt_factory* factory_v3;
-  az_iot_mqtt_factory* factory_v5;
   az_iot_su_client su_client;
 
   struct su_device_properties
@@ -123,6 +129,13 @@ typedef struct
   } su_device_properties;
 
   su_simulation_control simulation_control;
+
+#if defined(SAMPLE_WITH_SU_DELTA)
+  /* The microsoft/delta:1 reference handler, registered when SU_SIM_FILE_DIR is set. */
+  az_iot_su_delta_handler delta_handler;
+  az_iot_su_download_handler download_handlers[1];
+  char* delta_source_cache_directory; /* SU_SIM_DELTA_CACHE_DIR */
+#endif
 
   /* Set by the observers. */
   az_iot_connection_state connection_state[AZ_IOT_CONN_SCOPE_COUNT];
@@ -143,19 +156,17 @@ static uint8_t g_su_workspace[AZ_IOT_SU_WORKSPACE_DEFAULT_SIZE];
 static void sample_state_destroy(sample_state* s)
 {
   az_iot_su_client_deinit(&s->su_client);
+#if defined(SAMPLE_WITH_SU_DELTA)
+  az_iot_su_delta_handler_deinit(&s->delta_handler);
+  free(s->delta_source_cache_directory);
+#endif
 
   az_iot_connection_client_deinit(&s->connection_client);
-#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
-  az_iot_paho_factory_destroy(s->factory_v3);
-  az_iot_paho_factory_destroy(s->factory_v5);
-#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
-  az_iot_az_mqtt_factory_destroy(s->factory_v3);
-  az_iot_az_mqtt_factory_destroy(s->factory_v5);
-#endif
   az_iot_certificate_provider_pem_deinit(&s->certs);
   sample_config_release(&s->config);
 
   free(s->simulation_control.state_file);
+  free(s->simulation_control.file_directory);
   free(s->su_device_properties.manufacturer);
   free(s->su_device_properties.model);
 }
@@ -315,7 +326,7 @@ static void on_su_event(const az_iot_su_event* event, void* user_ctx)
 
 /**
  * @brief Create the certificate provider and the connection client, observed
- * by on_connection_state_event_received() and with both MQTT factories registered.
+ * by on_connection_state_event_received() and building its MQTT clients in a static workspace.
  *
  * No dps.provision_only: the device registers and connects to its hub, which
  * gives it the device record the regular route needs. The reconnection policy
@@ -353,6 +364,17 @@ static int initialize_connection_client(sample_state* state)
 #elif defined(AZ_IOT_SAMPLE_CRYPTO_MBEDTLS)
   copts.crypto = az_iot_crypto_mbedtls();
 #endif
+  /* The adapter builds each session's MQTT client in this workspace, one at a time: MQTT 3.1.1
+   * for DPS and an MQTTv3 hub, MQTT 5 for an MQTTv5 hub. Limits: sample_utils.h. */
+  static uint8_t mqtt_workspace[SAMPLE_MQTT_WORKSPACE_SIZE];
+#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
+  copts.mqtt_adapter = az_iot_paho_get_adapter();
+#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
+  copts.mqtt_adapter = az_iot_az_mqtt_get_adapter();
+#endif
+  copts.mqtt_limits = SAMPLE_MQTT_LIMITS;
+  copts.mqtt_workspace = mqtt_workspace;
+  copts.mqtt_workspace_size = sizeof(mqtt_workspace);
   if (az_iot_connection_client_init(&state->connection_client, &copts) != AZ_IOT_OK)
   {
     return 1;
@@ -360,22 +382,6 @@ static int initialize_connection_client(sample_state* state)
   if (az_iot_connection_client_add_state_observer(
           &state->connection_client, on_connection_state_event_received, state)
       != AZ_IOT_OK)
-  {
-    return 1;
-  }
-
-#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
-  state->factory_v3 = az_iot_paho_factory_create_v3_1_1();
-  state->factory_v5 = az_iot_paho_factory_create_v5();
-#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
-  state->factory_v3 = az_iot_az_mqtt_factory_create_v3_1_1();
-  state->factory_v5 = az_iot_az_mqtt_factory_create_v5();
-#endif
-  if (az_iot_connection_client_register_mqtt_factory(&state->connection_client, state->factory_v3)
-          != AZ_IOT_OK
-      || az_iot_connection_client_register_mqtt_factory(
-             &state->connection_client, state->factory_v5)
-          != AZ_IOT_OK)
   {
     return 1;
   }
@@ -403,8 +409,10 @@ int main(void)
   state.simulation_control.delay_ms = su_sample_env_long("SU_SIM_DELAY_MS", 0);
   state.simulation_control.state_file
       = sample_env_copy("SU_SIM_STATE_FILE", "./su_sim_regular_state.blob");
+  state.simulation_control.file_directory = sample_env_copy("SU_SIM_FILE_DIR", NULL);
   if (state.simulation_control.state_file == NULL)
   {
+    free(state.simulation_control.file_directory);
     return 1;
   }
 
@@ -428,6 +436,7 @@ int main(void)
   if (sample_config_load(&state.config) != 0)
   {
     free(state.simulation_control.state_file);
+    free(state.simulation_control.file_directory);
     return 1;
   }
 
@@ -516,6 +525,36 @@ int main(void)
   su_opts.limits.result_details_size = AZ_IOT_SU_DEFAULT_RESULT_DETAILS_SIZE;
   su_opts.workspace = g_su_workspace;
   su_opts.workspace_size = sizeof(g_su_workspace);
+#if defined(SAMPLE_WITH_SU_DELTA)
+  /* microsoft/delta:1: rebuild a file from a downloaded delta and the file of an earlier update,
+   * kept in the source cache when that update succeeded. The handler works on files, so it needs
+   * SU_SIM_FILE_DIR. Its delta processor is simulated here; leave apply_delta_fn NULL for the
+   * real one. A failed rebuild falls back to downloading the full file. */
+  if (state.simulation_control.file_directory != NULL)
+  {
+    state.delta_source_cache_directory
+        = sample_env_copy("SU_SIM_DELTA_CACHE_DIR", "./su_sim_source_cache");
+    az_iot_su_delta_handler_options delta_options = az_iot_su_delta_handler_options_default();
+    delta_options.source_cache_directory = state.delta_source_cache_directory;
+    delta_options.get_file_path_fn = su_sim_get_update_file_path;
+    delta_options.apply_delta_fn = simulate_delta_apply;
+    delta_options.user_ctx = &state.simulation_control;
+    if (state.delta_source_cache_directory == NULL
+        || az_iot_su_delta_handler_init(&state.delta_handler, &delta_options) != AZ_IOT_OK)
+    {
+      fprintf(stderr, "az_iot_su_delta_handler_init failed\n");
+      sample_state_destroy(&state);
+      return 1;
+    }
+    state.download_handlers[0] = az_iot_su_delta_handler_get_download_handler(&state.delta_handler);
+    su_opts.download_handlers = state.download_handlers;
+    su_opts.download_handler_count = 1;
+    printf(
+        "Download handler %s registered; source cache %s\n",
+        AZ_IOT_SU_DELTA_DOWNLOAD_HANDLER_ID,
+        state.delta_source_cache_directory);
+  }
+#endif
   if (az_iot_su_client_init(&state.su_client, &state.connection_client, &su_opts) != AZ_IOT_OK)
   {
     fprintf(stderr, "az_iot_su_client_init failed\n");

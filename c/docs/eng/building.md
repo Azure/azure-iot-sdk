@@ -43,7 +43,7 @@ target_link_libraries(app PRIVATE azure::iot::mqttv3 azure::iot::adapter_paho)
 
 - Components: `core`, `mqttv3`, `mqttv5`, and each adapter built (`adapter_paho`,
   `adapter_az_mqtt`, `crypto_openssl`, `crypto_mbedtls`,
-  `certificate_provider_managed`). An MQTT adapter's header is installed only with the adapter.
+  `certificate_provider_managed`, `su_delta`). An MQTT adapter's header is installed only with the adapter.
 - azure-sdk-for-c ships in the package (headers under `include/azure-sdk-for-c`);
   Paho installs its own `eclipse-paho-mqtt-c` package into the same prefix.
 - OpenSSL, and mbedTLS for `crypto_mbedtls`, must be findable by the consumer.
@@ -202,7 +202,8 @@ over all tests (below).
 
 With `-DAZ_IOT_BUILD_CONFORMANCE_TESTS=ON` the real-stack tests are labelled `race` too: the Paho
 conformance suites, `az_iot_reconnect_integration` and `az_iot_paho_teardown_race`. They need the
-broker described under the conformance suite below. The tools slow them ~10-50x, so set
+broker described under the conformance suite below. `az_iot_paho_publish_write_error` (POSIX, bundled Paho) is
+labelled `race` too and needs no broker: it is its own server. The tools slow them ~10-50x, so set
 `AZ_IOT_TEST_TIMEOUT_SCALE` (1-100, default 1): it multiplies their wait budgets and nothing else.
 CI sets 30. Paho 1.3.16 reads and writes some thread flags and thread ids without its own lock;
 the entries in `drd.supp` and `helgrind.supp` cover those frames only.

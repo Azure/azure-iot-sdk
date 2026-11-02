@@ -10,6 +10,17 @@ if(NOT AZ_IOT_SAMPLE_CRYPTO)
     return()
 endif()
 
+# Registers the microsoft/delta:1 reference handler (SAMPLE_WITH_SU_DELTA) in <targets> when it is
+# built (AZ_IOT_WITH_SU_DELTA, POSIX only).
+function(az_iot_sample_use_su_delta)
+    if(TARGET az_iot_su_delta)
+        foreach(t IN LISTS ARGN)
+            target_compile_definitions(${t} PRIVATE SAMPLE_WITH_SU_DELTA)
+            target_link_libraries(${t} PRIVATE az_iot_su_delta)
+        endforeach()
+    endif()
+endfunction()
+
 # pc/<name> builds target az_iot_sample_software_update_<name>, binary
 # az_iot_sample_<name>, like az_iot_add_sample().
 foreach(name simulated_onboarding simulated_regular multi_step reboot_resume library_mode)
@@ -21,6 +32,9 @@ foreach(name simulated_onboarding simulated_regular multi_step reboot_resume lib
         # nanosleep()/struct timespec need the POSIX feature-test macros under -std=c99.
         DEFINES $<$<NOT:$<PLATFORM_ID:Windows>>:_POSIX_C_SOURCE=200809L>
                 $<$<NOT:$<PLATFORM_ID:Windows>>:_DEFAULT_SOURCE>)
+    if(name STREQUAL "simulated_regular")
+        az_iot_sample_use_su_delta(${AZ_IOT_SAMPLE_TARGETS})
+    endif()
 endforeach()
 
 # pc/http_download downloads for real with libcurl; built when libcurl is found.
@@ -33,6 +47,7 @@ if(CURL_FOUND)
         LIBS az_iot_core CURL::libcurl
         DEFINES $<$<NOT:$<PLATFORM_ID:Windows>>:_POSIX_C_SOURCE=200809L>
                 $<$<NOT:$<PLATFORM_ID:Windows>>:_DEFAULT_SOURCE>)
+    az_iot_sample_use_su_delta(${AZ_IOT_SAMPLE_TARGETS})
 else()
     message(STATUS "libcurl not found: samples/software_update/pc/http_download is not built")
 endif()

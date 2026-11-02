@@ -80,8 +80,6 @@ static int env_or_null(const char* name, char* buf, size_t cap, const char** out
 
 int main(void)
 {
-  az_iot_mqtt_factory* f = az_iot_paho_factory_create_v5();
-
   az_iot_conformance_options opts = { 0 };
 #if defined(AZ_IOT_PAHO_KEY_CUSTODY)
   char key_uri[512];
@@ -115,7 +113,6 @@ int main(void)
              &opts.client_cert_path)
           != 0)
   {
-    az_iot_paho_factory_destroy(f);
     return 1;
   }
 #endif
@@ -156,7 +153,6 @@ int main(void)
    * CONNECT proxy, so this is declared unconditionally and is always proved. */
   opts.capabilities |= (uint32_t)AZ_IOT_CONFORMANCE_CAP_PROXY;
 
-  int rc = az_iot_conformance_run_with_options(AZ_IOT_CONFORMANCE_SUITE_V5, f, &opts);
-  az_iot_paho_factory_destroy(f);
-  return rc;
+  return az_iot_conformance_run_with_options(
+      AZ_IOT_CONFORMANCE_SUITE_V5, az_iot_paho_get_adapter(), &opts);
 }

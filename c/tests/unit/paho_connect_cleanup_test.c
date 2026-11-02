@@ -71,6 +71,25 @@ void* __wrap_malloc(size_t size)
   return p;
 }
 
+/* calloc() fails with malloc(), from the same countdown: the adapter allocates its events with it.
+ */
+void* __real_calloc(size_t count, size_t size);
+void* __wrap_calloc(size_t count, size_t size);
+
+void* __wrap_calloc(size_t count, size_t size)
+{
+  if (s_malloc_countdown >= 0)
+  {
+    if (s_malloc_countdown == 0)
+    {
+      s_malloc_countdown = -1;
+      return NULL;
+    }
+    --s_malloc_countdown;
+  }
+  return __real_calloc(count, size);
+}
+
 /* Freed proxy credentials: malloc records each block while tracking is on; free
  * reports a block that still holds s_secret. */
 void __real_free(void* p);
@@ -122,6 +141,8 @@ void __wrap_free(void* p)
 }
 static void fail_malloc_after(int allowed) { s_malloc_countdown = allowed; }
 static void stop_failing_malloc(void) { s_malloc_countdown = -1; }
+/* Whether the allocation fail_malloc_after() set up to fail is still to come. */
+static bool malloc_failure_pending(void) { return s_malloc_countdown == 0; }
 
 #endif /* AZ_IOT_TEST_WRAP_MALLOC */
 
@@ -131,9 +152,24 @@ static void stop_failing_malloc(void) { s_malloc_countdown = -1; }
 
 typedef struct
 {
-  az_iot_mqtt_factory* factory;
+  uint8_t workspace[AZ_IOT_PAHO_WORKSPACE_SIZE];
   az_iot_mqtt_client* client;
 } fixture;
+
+/** @brief Builds a @p version client in @p workspace with the Paho adapter. */
+static az_iot_mqtt_client* build_client(
+    az_iot_mqtt_version version,
+    uint8_t* workspace,
+    size_t workspace_size)
+{
+  /* Paho sizes its own buffers: the limits only have to be valid. */
+  static const az_iot_mqtt_limits limits = { 1024, 1024, 4, 0, 0 };
+  az_iot_mqtt_client* client = NULL;
+  assert_int_equal(
+      az_iot_paho_get_adapter()->init(version, &limits, workspace, workspace_size, &client),
+      AZ_IOT_OK);
+  return client;
+}
 
 static int setup(void** state)
 {
@@ -142,10 +178,7 @@ static int setup(void** state)
 
   fixture* fx = (fixture*)calloc(1, sizeof(fixture));
   assert_non_null(fx);
-  fx->factory = az_iot_paho_factory_create_v3_1_1();
-  assert_non_null(fx->factory);
-  fx->client = fx->factory->create(fx->factory->factory_ctx);
-  assert_non_null(fx->client);
+  fx->client = build_client(AZ_IOT_MQTT_VERSION_3_1_1, fx->workspace, sizeof(fx->workspace));
   *state = fx;
   return 0;
 }
@@ -159,7 +192,6 @@ static int teardown(void** state)
     {
       fx->client->iface->destroy(fx->client);
     }
-    az_iot_paho_factory_destroy(fx->factory);
     free(fx);
   }
   fake_custody_reset();
@@ -567,13 +599,9 @@ static void a_v5_client_initiated_disconnect_reports_disconnected(void** state)
   mock_paho_reset();
   fake_custody_reset();
 
-  az_iot_mqtt_factory* f = az_iot_paho_factory_create_v5();
-  assert_non_null(f);
   fixture local;
   memset(&local, 0, sizeof(local));
-  local.factory = f;
-  local.client = f->create(f->factory_ctx);
-  assert_non_null(local.client);
+  local.client = build_client(AZ_IOT_MQTT_VERSION_5, local.workspace, sizeof(local.workspace));
 
   evt_sink sink = { 0 };
   az_iot_result rc = AZ_IOT_OK;
@@ -584,7 +612,6 @@ static void a_v5_client_initiated_disconnect_reports_disconnected(void** state)
   assert_int_equal(sink.disconnected, 1);
 
   local.client->iface->destroy(local.client);
-  az_iot_paho_factory_destroy(f);
 }
 
 /* A disconnect that completes with a FAILURE still ends the session, so it is
@@ -651,6 +678,324 @@ static void proxy_credentials_are_wiped_before_they_are_freed(void** state)
 }
 #endif
 
+/* ------------------------------------------------------------------------- */
+/* Publish completions                                                        */
+/* ------------------------------------------------------------------------- */
+
+/* Keeps the last PUBLISH_ACK the adapter raises. */
+typedef struct
+{
+  int count;
+  az_iot_mqtt_event last;
+} puback_sink;
+
+static void on_puback(const az_iot_mqtt_event* e, void* ctx)
+{
+  puback_sink* s = (puback_sink*)ctx;
+  if (e->kind == AZ_IOT_MQTT_EVT_PUBLISH_ACK)
+  {
+    s->count++;
+    s->last = *e;
+  }
+}
+
+/** @brief A @p version client in @p workspace, connected, reporting to @p sink. */
+static az_iot_mqtt_client* connect_publishing_client(
+    az_iot_mqtt_version version,
+    uint8_t* workspace,
+    size_t workspace_size,
+    puback_sink* sink)
+{
+  az_iot_mqtt_client* client = build_client(version, workspace, workspace_size);
+  client->iface->set_inbound_cb(client, on_puback, sink);
+  az_iot_mqtt_connect_options opts;
+  memset(&opts, 0, sizeof(opts));
+  opts.host = "broker.invalid";
+  opts.port = 8883;
+  opts.client_id = "ut-device";
+  opts.tls.client_cert_path = "/dev/null/device.pem";
+  opts.tls.client_key_path = "/dev/null/device.key";
+  assert_int_equal(client->iface->connect(client, &opts), AZ_IOT_OK);
+  return client;
+}
+
+/** @brief Publishes one QoS 1 message on @p client; returns what publish() returned. */
+static az_iot_result publish_one(az_iot_mqtt_client* client, uint16_t* packet_id)
+{
+  az_iot_mqtt_message msg;
+  memset(&msg, 0, sizeof(msg));
+  msg.topic = "devices/ut-device/messages/events/";
+  msg.qos = AZ_IOT_MQTT_QOS_1;
+  return client->iface->publish(client, &msg, packet_id);
+}
+
+/** @brief A @p version client, connected, with one QoS 1 publish sent as *packet_id. */
+static az_iot_mqtt_client* publish_on_a_client(
+    az_iot_mqtt_version version,
+    uint8_t* workspace,
+    size_t workspace_size,
+    puback_sink* sink,
+    uint16_t* packet_id)
+{
+  az_iot_mqtt_client* client = connect_publishing_client(version, workspace, workspace_size, sink);
+  /* A first publish, so the one under test does not get the first token. */
+  uint16_t other_packet_id = 0;
+  assert_int_equal(publish_one(client, &other_packet_id), AZ_IOT_OK);
+  assert_int_equal(publish_one(client, packet_id), AZ_IOT_OK);
+  assert_int_not_equal(*packet_id, 0);
+  assert_int_not_equal(*packet_id, other_packet_id);
+  return client;
+}
+
+/** @brief Drains the adapter's queue until a PUBLISH_ACK arrives. */
+static void wait_for_puback(az_iot_mqtt_client* client, puback_sink* sink)
+{
+  for (int i = 0; i < 20 && sink->count == 0; ++i)
+  {
+    (void)client->iface->process_loop(client, 1);
+  }
+  assert_int_equal(sink->count, 1);
+}
+
+/* A publish whose write failed: Paho 1.3.16 leaves reasonCode and properties uninitialized
+ * (MQTTAsync_writeComplete()). They are not read: an ERR_MQTT failure with no protocol code. */
+static void a_v5_publish_write_failure_ignores_its_uninitialized_reason_code(void** state)
+{
+  (void)state;
+  mock_paho_reset();
+  uint8_t workspace[AZ_IOT_PAHO_WORKSPACE_SIZE];
+  puback_sink sink = { 0 };
+  uint16_t packet_id = 0;
+  az_iot_mqtt_client* client
+      = publish_on_a_client(AZ_IOT_MQTT_VERSION_5, workspace, sizeof(workspace), &sink, &packet_id);
+
+  const MQTTAsync_responseOptions* resp = mock_paho_last_send_response();
+  MQTTAsync_failureData5 data;
+  memset(&data, 0x5A, sizeof(data)); /* stack garbage, as Paho leaves it: reasonCode >= 0x80 */
+  data.token = packet_id;
+  data.code = -1;
+  data.message = NULL;
+  data.packet_type = 3; /* PUBLISH */
+  resp->onFailure5(resp->context, &data);
+  wait_for_puback(client, &sink);
+  assert_int_equal(sink.last.packet_id, packet_id);
+  assert_int_equal(sink.last.status, AZ_IOT_ERR_MQTT);
+  assert_int_equal(sink.last.protocol_code, 0);
+  assert_int_equal(sink.last.reason_string_len, 0);
+
+  client->iface->destroy(client);
+}
+
+/* A PUBACK refusal keeps its reason code. */
+static void a_v5_puback_refusal_keeps_its_reason_code(void** state)
+{
+  (void)state;
+  mock_paho_reset();
+  uint8_t workspace[AZ_IOT_PAHO_WORKSPACE_SIZE];
+  puback_sink sink = { 0 };
+  uint16_t packet_id = 0;
+  az_iot_mqtt_client* client
+      = publish_on_a_client(AZ_IOT_MQTT_VERSION_5, workspace, sizeof(workspace), &sink, &packet_id);
+
+  const MQTTAsync_responseOptions* resp = mock_paho_last_send_response();
+  MQTTAsync_failureData5 data = MQTTAsync_failureData5_initializer;
+  data.token = packet_id;
+  data.reasonCode = MQTTREASONCODE_NOT_AUTHORIZED;
+  resp->onFailure5(resp->context, &data);
+  wait_for_puback(client, &sink);
+  assert_int_equal(sink.last.packet_id, packet_id);
+  assert_int_not_equal(sink.last.status, AZ_IOT_OK);
+  assert_int_equal(sink.last.protocol_code, MQTTREASONCODE_NOT_AUTHORIZED);
+
+  client->iface->destroy(client);
+}
+
+/* Paho 1.3.16 reports a PUBLISH it failed to write with token 0 (MQTTAsync_processCommand()):
+ * the event still names the publish, from the adapter's own context. */
+static void a_v5_publish_whose_write_failed_reports_its_packet_id(void** state)
+{
+  (void)state;
+  mock_paho_reset();
+  uint8_t workspace[AZ_IOT_PAHO_WORKSPACE_SIZE];
+  puback_sink sink = { 0 };
+  uint16_t packet_id = 0;
+  az_iot_mqtt_client* client
+      = publish_on_a_client(AZ_IOT_MQTT_VERSION_5, workspace, sizeof(workspace), &sink, &packet_id);
+
+  const MQTTAsync_responseOptions* resp = mock_paho_last_send_response();
+  MQTTAsync_failureData5 data = MQTTAsync_failureData5_initializer;
+  data.code = MQTTASYNC_FAILURE; /* SOCKET_ERROR */
+  resp->onFailure5(resp->context, &data);
+  wait_for_puback(client, &sink);
+  assert_int_equal(sink.last.packet_id, packet_id);
+  assert_int_equal(sink.last.status, AZ_IOT_ERR_MQTT);
+  assert_int_equal(sink.last.protocol_code, 0);
+  assert_int_equal(sink.last.transport_code, MQTTASYNC_FAILURE);
+
+  client->iface->destroy(client);
+}
+
+static void a_v3_publish_whose_write_failed_reports_its_packet_id(void** state)
+{
+  (void)state;
+  mock_paho_reset();
+  uint8_t workspace[AZ_IOT_PAHO_WORKSPACE_SIZE];
+  puback_sink sink = { 0 };
+  uint16_t packet_id = 0;
+  az_iot_mqtt_client* client = publish_on_a_client(
+      AZ_IOT_MQTT_VERSION_3_1_1, workspace, sizeof(workspace), &sink, &packet_id);
+
+  const MQTTAsync_responseOptions* resp = mock_paho_last_send_response();
+  assert_non_null(resp->onFailure);
+  MQTTAsync_failureData data;
+  memset(&data, 0, sizeof(data));
+  data.code = MQTTASYNC_FAILURE; /* SOCKET_ERROR, token 0 */
+  resp->onFailure(resp->context, &data);
+  wait_for_puback(client, &sink);
+  assert_int_equal(sink.last.packet_id, packet_id);
+  assert_int_equal(sink.last.status, AZ_IOT_ERR_MQTT);
+  assert_int_equal(sink.last.transport_code, MQTTASYNC_FAILURE);
+
+  client->iface->destroy(client);
+}
+
+/* A PUBACK reports the publish it acknowledges, on both versions. */
+static void a_puback_reports_its_packet_id(void** state)
+{
+  (void)state;
+  static const az_iot_mqtt_version versions[]
+      = { AZ_IOT_MQTT_VERSION_3_1_1, AZ_IOT_MQTT_VERSION_5 };
+  for (size_t i = 0; i < sizeof(versions) / sizeof(versions[0]); ++i)
+  {
+    mock_paho_reset();
+    uint8_t workspace[AZ_IOT_PAHO_WORKSPACE_SIZE];
+    puback_sink sink = { 0 };
+    uint16_t packet_id = 0;
+    az_iot_mqtt_client* client
+        = publish_on_a_client(versions[i], workspace, sizeof(workspace), &sink, &packet_id);
+
+    const MQTTAsync_responseOptions* resp = mock_paho_last_send_response();
+    if (versions[i] == AZ_IOT_MQTT_VERSION_5)
+    {
+      MQTTAsync_successData5 data = MQTTAsync_successData5_initializer;
+      data.token = packet_id;
+      resp->onSuccess5(resp->context, &data);
+    }
+    else
+    {
+      MQTTAsync_successData data;
+      memset(&data, 0, sizeof(data));
+      data.token = packet_id;
+      resp->onSuccess(resp->context, &data);
+    }
+    wait_for_puback(client, &sink);
+    assert_int_equal(sink.last.packet_id, packet_id);
+    assert_int_equal(sink.last.status, AZ_IOT_OK);
+
+    client->iface->destroy(client);
+  }
+}
+
+/* A publish Paho refuses runs no callback: publish() reports it and keeps nothing. */
+static void a_refused_publish_reports_an_error_and_no_event(void** state)
+{
+  (void)state;
+  mock_paho_reset();
+  uint8_t workspace[AZ_IOT_PAHO_WORKSPACE_SIZE];
+  puback_sink sink = { 0 };
+  az_iot_mqtt_client* client
+      = connect_publishing_client(AZ_IOT_MQTT_VERSION_5, workspace, sizeof(workspace), &sink);
+
+  mock_paho_set_send_rc(MQTTASYNC_DISCONNECTED);
+  uint16_t packet_id = 0;
+  assert_int_equal(publish_one(client, &packet_id), AZ_IOT_ERR_MQTT);
+  assert_int_equal(mock_paho_send_calls(), 1);
+  (void)client->iface->process_loop(client, 1);
+  assert_int_equal(sink.count, 0);
+
+  client->iface->destroy(client);
+}
+
+/* A completion still queued when the client is destroyed is freed with it (leak-checked). */
+static void a_completion_queued_at_destroy_is_freed(void** state)
+{
+  (void)state;
+  mock_paho_reset();
+  uint8_t workspace[AZ_IOT_PAHO_WORKSPACE_SIZE];
+  puback_sink sink = { 0 };
+  uint16_t packet_id = 0;
+  az_iot_mqtt_client* client
+      = publish_on_a_client(AZ_IOT_MQTT_VERSION_5, workspace, sizeof(workspace), &sink, &packet_id);
+
+  const MQTTAsync_responseOptions* resp = mock_paho_last_send_response();
+  MQTTAsync_failureData5 data = MQTTAsync_failureData5_initializer;
+  data.code = MQTTASYNC_FAILURE;
+  resp->onFailure5(resp->context, &data);
+
+  client->iface->destroy(client);
+  assert_int_equal(sink.count, 0);
+}
+
+#if defined(AZ_IOT_TEST_WRAP_MALLOC)
+/* The publish's completion event cannot be allocated: nothing is sent. */
+static void a_publish_without_memory_for_its_completion_is_not_sent(void** state)
+{
+  (void)state;
+  mock_paho_reset();
+  uint8_t workspace[AZ_IOT_PAHO_WORKSPACE_SIZE];
+  puback_sink sink = { 0 };
+  az_iot_mqtt_client* client
+      = connect_publishing_client(AZ_IOT_MQTT_VERSION_3_1_1, workspace, sizeof(workspace), &sink);
+
+  fail_malloc_after(0);
+  uint16_t packet_id = 0;
+  az_iot_result const rc = publish_one(client, &packet_id);
+  stop_failing_malloc();
+  assert_int_equal(rc, AZ_IOT_ERR_OUT_OF_MEMORY);
+  assert_int_equal(mock_paho_send_calls(), 0);
+
+  client->iface->destroy(client);
+}
+#endif
+
+/* Paho may complete a publish before MQTTAsync_sendMessage() returns (a write that fails at once,
+ * token 0). The completion allocates nothing, so it cannot fail and free what publish() still
+ * writes, and the event carries the packet id publish() returned. */
+static void a_publish_completed_before_publish_returns_reports_its_packet_id(void** state)
+{
+  (void)state;
+  static const az_iot_mqtt_version versions[]
+      = { AZ_IOT_MQTT_VERSION_3_1_1, AZ_IOT_MQTT_VERSION_5 };
+  for (size_t i = 0; i < sizeof(versions) / sizeof(versions[0]); ++i)
+  {
+    mock_paho_reset();
+    uint8_t workspace[AZ_IOT_PAHO_WORKSPACE_SIZE];
+    puback_sink sink = { 0 };
+    az_iot_mqtt_client* client
+        = connect_publishing_client(versions[i], workspace, sizeof(workspace), &sink);
+
+    mock_paho_set_send_completes_at_once(true);
+    uint16_t packet_id = 0;
+#if defined(AZ_IOT_TEST_WRAP_MALLOC)
+    /* Only the publish's own allocation succeeds. */
+    fail_malloc_after(1);
+#endif
+    assert_int_equal(publish_one(client, &packet_id), AZ_IOT_OK);
+#if defined(AZ_IOT_TEST_WRAP_MALLOC)
+    bool const completion_allocated = !malloc_failure_pending();
+    stop_failing_malloc();
+    assert_false(completion_allocated);
+#endif
+    assert_int_not_equal(packet_id, 0);
+    wait_for_puback(client, &sink);
+    assert_int_equal(sink.last.packet_id, packet_id);
+    assert_int_equal(sink.last.status, AZ_IOT_ERR_MQTT);
+    assert_int_equal(sink.last.transport_code, MQTTASYNC_FAILURE);
+
+    client->iface->destroy(client);
+  }
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -685,6 +1030,23 @@ int main(void)
         a_failed_disconnect_completion_carries_the_error, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_refused_disconnect_still_reports_disconnected, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_v5_publish_write_failure_ignores_its_uninitialized_reason_code, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_v5_puback_refusal_keeps_its_reason_code, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_v5_publish_whose_write_failed_reports_its_packet_id, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_v3_publish_whose_write_failed_reports_its_packet_id, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_puback_reports_its_packet_id, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_refused_publish_reports_an_error_and_no_event, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_completion_queued_at_destroy_is_freed, setup, teardown),
+#if defined(AZ_IOT_TEST_WRAP_MALLOC)
+    cmocka_unit_test_setup_teardown(
+        a_publish_without_memory_for_its_completion_is_not_sent, setup, teardown),
+#endif
+    cmocka_unit_test_setup_teardown(
+        a_publish_completed_before_publish_returns_reports_its_packet_id, setup, teardown),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }

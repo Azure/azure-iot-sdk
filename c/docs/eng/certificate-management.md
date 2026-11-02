@@ -107,6 +107,18 @@ Providers in the tree:
   a key type (start from `az_iot_certificate_provider_managed_options_default()`). It generates
   the operational key and CSR, and persists the issued chain. Every CSR is over the operational
   key.
+  - **Durable writes.** The key and the chain are written to a temporary file, flushed, and
+    renamed over the destination. The rename is then flushed too (the parent directory is
+    fsynced on POSIX; `MOVEFILE_WRITE_THROUGH` on Windows), so a stored chain survives a power
+    loss. DPS issues a chain once, so the stored file may be its only copy. If only that last
+    directory sync fails, the store still succeeds: the new file has already replaced the old
+    one and is what `load()` serves, so a failure would break the all-or-nothing contract.
+  - **Unencrypted key, by design.** The operational key is written as unencrypted PEM. It is
+    protected only by file permissions: 0600 on POSIX, an owner-only DACL on Windows. Encrypting
+    it would need a passphrase stored on the same device, which adds no protection. Devices that
+    need key protection should keep the key non-extractable instead: an HSM, TPM or secure
+    element through PKCS#11 (`client_key_uri`), a PSA Crypto key (`client_key_psa_id`), or
+    `sign()`. See [Device certificate storage methods](#device-certificate-storage-methods).
 
 **Key stability.** While the connection client is open, a provider's operational key does not
 change: `get_csr()` signs over it, and `store_issued_certificate()` refuses a chain whose leaf
@@ -160,7 +172,10 @@ support it.
   The device id is taken from the connected client id.
 - **Two-phase:** `202 Accepted` (signing in progress), then `200` with the issued chain.
 - **Recovery:** a renewal open when the session ends fails with `AZ_IOT_ERR_NOT_CONNECTED`; pass
-  its `request_id` to resubmit once reconnected. `replace` supersedes an active hub-side operation.
+  its `request_id` to resubmit once reconnected. `replace` supersedes an active hub-side operation:
+  a renewal the hub accepted (`202`) before the session ended may still be active, and its
+  resubmission then fails with a `409` code; resubmit with `replace` and a new `request_id`. If
+  that fails with `412`, the request ended meanwhile: send it again without `replace`.
 - **Errors:** routed on the response status (`202`/`200`/other). The JSON body's `errorCode`
   is surfaced as `service_code`, `retryAfter` as `retry_after_s`, `info.credentialError` as
   `credential_error`, `info.credentialMessage` as `credential_message` and `trackingId` as

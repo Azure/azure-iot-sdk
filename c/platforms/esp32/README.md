@@ -20,4 +20,5 @@ The `azure-sdk-for-c` component needs the `c/deps/azure-sdk-for-c` submodule.
 
 Used by the [ESP32 software updates sample](../../samples/software_update/esp32/README.md) and the
 [ESP32 IoT Hub sample](../../samples/unified/esp32/README.md), which CI builds for esp32, esp32c3,
-esp32s3 and esp32c6, and boots in QEMU on esp32, esp32s3 and esp32c3.
+esp32s3 and esp32c6, and boots in QEMU on esp32, esp32s3 and esp32c3, with ESP-IDF v6.1 (and v6.0,
+the minimum, for esp32).
