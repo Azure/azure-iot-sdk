@@ -370,7 +370,7 @@ string(REPLACE ";" "," _az_iot_fixed_size_cases "${_az_iot_fixed_size_cases}")
 add_test(NAME az_iot_tests_fixed_sizes_refuse_overrides
     COMMAND ${CMAKE_COMMAND}
         -DBUILD_DIR=${CMAKE_BINARY_DIR} -DCONFIG=$<CONFIG> -DTARGETS=${_az_iot_fixed_size_cases}
-        -P ${CMAKE_CURRENT_SOURCE_DIR}/compile/check_fixed_sizes.cmake)
+        "-DEXPECTED=(is|are) (fixed|removed)" -P ${CMAKE_CURRENT_SOURCE_DIR}/compile/check_build_refused.cmake)
 # Builds in the build tree: one at a time with anything else that does.
 set_tests_properties(az_iot_tests_fixed_sizes_refuse_overrides PROPERTIES RESOURCE_LOCK build_tree)
 unset(_az_iot_fixed_size_cases)
@@ -982,7 +982,7 @@ if(AZ_IOT_WITH_AZ_MQTT)
     # The adapter's limits: its az_iot_az_mqtt_config.h, with the same definitions.
     get_target_property(_az_mqtt_adapter_defs az_iot_adapter_az_mqtt COMPILE_DEFINITIONS)
     set(_az_mqtt_size_defs "${_az_mqtt_adapter_defs}")
-    list(FILTER _az_mqtt_size_defs INCLUDE REGEX "^AZ_IOT_AZ_MQTT_(FOOTPRINT|CONFIG_FILE|USER_PROPERTIES_|MBEDTLS$)")
+    list(FILTER _az_mqtt_size_defs INCLUDE REGEX "^AZ_IOT_AZ_MQTT_(CONFIG_FILE|USER_PROPERTIES_|MBEDTLS$)")
     az_iot_add_cmocka_test(az_iot_tests_az_mqtt_adapter unit/az_mqtt_adapter_test.c)
     # Needs a broker, as the conformance suites: registered under the same option.
     az_iot_add_cmocka_test(az_iot_az_mqtt_adapter_broker
@@ -1076,8 +1076,8 @@ if(AZ_IOT_WITH_AZ_MQTT)
         target_link_libraries(az_iot_tests_az_mqtt_adapter_release PRIVATE ws2_32)
     endif()
 
-    # Each footprint, a user's definition over it, and a config file: resolved as documented.
-    foreach(_case DEFAULT CONSTRAINED OVERRIDE CONFIG_FILE)
+    # The default, a user's definition and a config file: resolved as documented.
+    foreach(_case DEFAULT OVERRIDE CONFIG_FILE)
         set(_t az_iot_tests_az_mqtt_config_${_case})
         add_executable(${_t} unit/az_mqtt_config_test.c)
         target_include_directories(${_t} PRIVATE
@@ -1086,6 +1086,31 @@ if(AZ_IOT_WITH_AZ_MQTT)
         az_iot_apply_warnings(${_t})
         add_test(NAME ${_t} COMMAND ${_t})
     endforeach()
+    # The removed footprint, from a compiler flag and from a config file, fails on its guard,
+    # which names the replacement.
+    set(_az_mqtt_footprint_cases "")
+    foreach(_case flag file)
+        set(_t az_iot_tests_az_mqtt_config_footprint_${_case})
+        add_library(${_t} OBJECT EXCLUDE_FROM_ALL unit/az_mqtt_config_test.c)
+        target_include_directories(${_t} PRIVATE
+            ${PROJECT_SOURCE_DIR}/adapters/az_mqtt ${CMAKE_CURRENT_SOURCE_DIR}/unit)
+        list(APPEND _az_mqtt_footprint_cases ${_t})
+    endforeach()
+    target_compile_definitions(az_iot_tests_az_mqtt_config_footprint_flag PRIVATE
+        AZ_IOT_AZ_MQTT_CONFIG_TEST_DEFAULT
+        AZ_IOT_AZ_MQTT_FOOTPRINT=AZ_IOT_AZ_MQTT_FOOTPRINT_CONSTRAINED)
+    target_compile_definitions(az_iot_tests_az_mqtt_config_footprint_file PRIVATE
+        AZ_IOT_AZ_MQTT_CONFIG_TEST_FOOTPRINT_FILE)
+    string(REPLACE ";" "," _az_mqtt_footprint_cases "${_az_mqtt_footprint_cases}")
+    add_test(NAME az_iot_tests_az_mqtt_config_refuses_footprint
+        COMMAND ${CMAKE_COMMAND}
+            -DBUILD_DIR=${CMAKE_BINARY_DIR} -DCONFIG=$<CONFIG> -DTARGETS=${_az_mqtt_footprint_cases}
+            "-DEXPECTED=AZ_IOT_AZ_MQTT_FOOTPRINT was removed: define AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX"
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/compile/check_build_refused.cmake)
+    # Builds in the build tree: one at a time with anything else that does.
+    set_tests_properties(az_iot_tests_az_mqtt_config_refuses_footprint
+        PROPERTIES RESOURCE_LOCK build_tree)
+    unset(_az_mqtt_footprint_cases)
     unset(_case)
     unset(_az_mqtt_size_defs)
 
