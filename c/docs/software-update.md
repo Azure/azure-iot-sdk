@@ -150,8 +150,9 @@ for (;;)
 ## Checking for updates
 
 The application chooses **when** to check and **which route**. The client checks on its own only once
-after the service rejects a final report as conflicting (`REPORT_CONFLICT`), on the route last
-requested; like any check, that one pauses the hub session (see the note below).
+after the service rejects a status report as conflicting (`REPORT_CONFLICT`, or an untyped `409000`),
+final or in progress, on the route last requested. Like any check, that one pauses the hub session
+(see the note below), even while an update is running.
 
 | Route | Call | When |
 |---|---|---|
