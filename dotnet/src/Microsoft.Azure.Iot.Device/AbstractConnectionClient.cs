@@ -1638,7 +1638,6 @@ namespace Microsoft.Azure.Iot.Device
 
                     Debug.Assert(provisioningFlowCompletedArgs.RegistrationResult != null);
 
-                    //TODO do we care about initial twin as returned by DPS?
                     return provisioningFlowCompletedArgs.RegistrationResult;
                 }
             }
