@@ -130,7 +130,8 @@ software updates. APIs may change before a stable release.
   library mode, where the application installs each verified update and reports it
   (`az_iot_su_client_report_status()`); and transport-free primitives
   (`az_iot_su_verify_manifest()`, `az_iot_su_parse_update_request()`,
-  `az_iot_su_verify_file_hash()`, `az_iot_su_build_report()`).
+  `az_iot_su_verify_file_hash()`, `az_iot_su_build_report()`,
+  `az_iot_su_decode_manifest_string()`).
 - Trust: signed manifests verified against root keys (Microsoft's compiled in) and files against
   their SHA-256. Updates with up to 10 steps and 10 files (`AZ_IOT_SU_MAX_STEP_COUNT`,
   `AZ_IOT_SU_MAX_FILE_COUNT`, `AZ_IOT_SU_MAX_FILE_COUNT_PER_STEP`); a manifest over a limit, or
@@ -141,7 +142,8 @@ software updates. APIs may change before a stable release.
   and `az_iot_su_client_get_reboot_state()` says when a reboot is safe. See
   [docs/software-update.md](docs/software-update.md#reboot-and-resume).
 - Delta updates: download handlers (`az_iot_su_download_handler`) build a file from a related
-  file, with fallback to a full download (`AZ_IOT_SU_FACILITY_DELTA` result codes). The reference
+  file, with fallback to a full download (`AZ_IOT_SU_FACILITY_DELTA` result codes, outcome in
+  `workflow_ended_fn`). The reference
   `microsoft/delta:1` handler (`az_iot_su_delta.h`, `AZ_IOT_WITH_SU_DELTA=ON`, POSIX) uses the
   Device Update delta processor, loaded at run time. See
   [docs/software-update.md](docs/software-update.md#delta-updates).
