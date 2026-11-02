@@ -40,7 +40,9 @@ extern "C"
 
   /**
    * @brief The az_mqtt adapter: builds MQTT 3.1.1 and MQTT 5 clients in application memory, with
-   * no allocation. A constant; nothing to create or destroy.
+   * no allocation. A constant; nothing to create or destroy. Its
+   * validate_limits_for_session_usage() refuses az_iot_mqtt_limits::message_store_size 0 for a
+   * session that outlives its connection.
    */
   const az_iot_mqtt_adapter* az_iot_az_mqtt_get_adapter(void);
 

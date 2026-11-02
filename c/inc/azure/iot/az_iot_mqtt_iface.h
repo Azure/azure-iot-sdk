@@ -508,11 +508,12 @@ extern "C"
     uint16_t max_in_flight_messages;
     /**
      * @brief Bytes for the copies of unacknowledged QoS 1 PUBLISH an adapter keeps while the
-     * session outlives the connection. 0: clean sessions only (az_mqtt refuses a connect whose
-     * session outlives the connection with AZ_IOT_ERR_NOT_SUPPORTED); otherwise at least one
-     * packet of send_buffer_size plus the adapter's per-message overhead. az_mqtt keeps each copy
-     * (encoded size + 18 bytes) until its PUBACK; a publish that does not fit returns
-     * AZ_IOT_ERR_BUSY.
+     * session outlives the connection. 0: clean sessions only (with az_mqtt,
+     * az_iot_connection_client_init() fails with AZ_IOT_ERR_INVALID_ARG unless session_continuity
+     * is AZ_IOT_SESSION_CONTINUITY_CLEAN or dps.provision_only is set, and a connect whose session
+     * outlives the connection fails with AZ_IOT_ERR_NOT_SUPPORTED); otherwise at least one packet
+     * of send_buffer_size plus the adapter's per-message overhead. az_mqtt keeps each copy (encoded
+     * size + 18 bytes) until its PUBACK; a publish that does not fit returns AZ_IOT_ERR_BUSY.
      *
      * The SDK never asks an adapter to resend these copies: it destroys the client at every
      * session end and creates a new one for the next session, and the layer above retries.
@@ -525,6 +526,19 @@ extern "C"
      */
     size_t connect_strings_size;
   } az_iot_mqtt_limits;
+
+  /**
+   * @brief How the connection client will use the sessions of the clients an adapter builds,
+   * known at az_iot_connection_client_init(). Zero: every session is clean.
+   */
+  typedef struct az_iot_mqtt_session_usage
+  {
+    /**
+     * @brief Whether a connect may set az_iot_mqtt_connect_options::clean_start false (MQTT 5:
+     * with session_expiry_seconds > 0), so the session outlives its connection.
+     */
+    bool session_outlives_connection;
+  } az_iot_mqtt_session_usage;
 
   /**
    * @brief An MQTT implementation that builds its clients in application memory.
@@ -556,6 +570,17 @@ extern "C"
         uint8_t* workspace,
         size_t workspace_size,
         az_iot_mqtt_client** out_client);
+    /**
+     * @brief Optional (NULL: every @p limits get_workspace_size() accepts suits every session).
+     * Whether @p limits suit the sessions described by @p usage, so a misconfiguration fails
+     * az_iot_connection_client_init() instead of every connect. Logs the reason when they do not.
+     *
+     * @retval AZ_IOT_OK They suit.
+     * @retval AZ_IOT_ERR_INVALID_ARG NULL argument, or @p limits do not suit @p usage.
+     */
+    az_iot_result (*validate_limits_for_session_usage)(
+        const az_iot_mqtt_limits* limits,
+        const az_iot_mqtt_session_usage* usage);
   } az_iot_mqtt_adapter;
 
   const char* az_iot_mqtt_version_to_string(az_iot_mqtt_version v);
