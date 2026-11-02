@@ -124,9 +124,10 @@ sends them again with new packet identifiers. This deliberately deviates from MQ
 `MQTT-4.4.0-1`: see [Connecting](connecting.md#resumed-sessions-and-retries).
 
 - `az_iot_mqtt_limits.message_store_size` is memory for the copies your MQTT library needs while a
-  session outlives the connection. az_mqtt requires it for QoS 1 on such a session, and with 0
-  refuses the connect with `AZ_IOT_ERR_NOT_SUPPORTED`. When it is full, return `AZ_IOT_ERR_BUSY`
-  from `publish`.
+  session outlives the connection. az_mqtt requires it for QoS 1 on such a session: with 0, its
+  `validate_limits_for_session_usage()` makes the connection client's `init()` fail with
+  `AZ_IOT_ERR_INVALID_ARG`, and its connect refuses such a session with
+  `AZ_IOT_ERR_NOT_SUPPORTED`. When it is full, return `AZ_IOT_ERR_BUSY` from `publish`.
 - The SDK never passes a QoS 2 PUBLISH to `publish`.
 
 ### The single-thread contract (important)
@@ -172,7 +173,7 @@ Two obligations, and only one of them is a choice.
 
 ## Step 2 — Implement the adapter
 
-An adapter is a constant struct of two functions (see `az_iot_mqtt_adapter` in [az_iot_mqtt_iface.h](../inc/azure/iot/az_iot_mqtt_iface.h)). The application lends the connection client one workspace, and the connection client builds each session's client in it with `init()`; it runs one session, so one client, at a time:
+An adapter is a constant struct of two functions and an optional third (see `az_iot_mqtt_adapter` in [az_iot_mqtt_iface.h](../inc/azure/iot/az_iot_mqtt_iface.h)). The application lends the connection client one workspace, and the connection client builds each session's client in it with `init()`; it runs one session, so one client, at a time:
 
 ```c
 /* get_workspace_size(): bytes for the largest client this adapter builds with limits, over the
@@ -208,9 +209,28 @@ static az_iot_result mymqtt_init(
     return AZ_IOT_OK;
 }
 
+/* validate_limits_for_session_usage() (optional, may be NULL): refuse limits that cannot serve the
+ * sessions the connection client will run, so its init() fails instead of every connect. */
+static az_iot_result mymqtt_validate_limits_for_session_usage(
+    const az_iot_mqtt_limits* limits,
+    const az_iot_mqtt_session_usage* usage)
+{
+    if (limits == NULL || usage == NULL)
+    {
+        return AZ_IOT_ERR_INVALID_ARG;
+    }
+    if (usage->session_outlives_connection && limits->message_store_size == 0)
+    {
+        /* log why */
+        return AZ_IOT_ERR_INVALID_ARG;
+    }
+    return AZ_IOT_OK;
+}
+
 static const az_iot_mqtt_adapter s_mymqtt_adapter = {
     .get_workspace_size = mymqtt_get_workspace_size,
     .init = mymqtt_init,
+    .validate_limits_for_session_usage = mymqtt_validate_limits_for_session_usage,
 };
 
 const az_iot_mqtt_adapter* az_iot_mymqtt_get_adapter(void) { return &s_mymqtt_adapter; }

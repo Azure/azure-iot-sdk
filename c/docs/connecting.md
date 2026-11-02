@@ -396,7 +396,9 @@ including the first connect after a reboot. Why:
   past that the session is lost.
 
 DPS sessions are always clean. On mqttv5, choose `CLEAN` for a device that should not replay the
-broker's backlog after a long absence.
+broker's backlog after a long absence. A resumed session needs an az_mqtt message store:
+with `message_store_size` 0, `init()` fails with `AZ_IOT_ERR_INVALID_ARG` unless
+`session_continuity` is `CLEAN` ([Message store](client-configuration.md#message-store)).
 
 **Retries.** Each session gets a new MQTT client, destroyed when the session ends. What was sent
 on it and not yet confirmed (by a PUBACK or a response) is retried on a later session by the
