@@ -1574,16 +1574,14 @@ static void on_filenotify_received(
 
   /* The notification node is hub-wide. A notification for someone else is
    * RELEASED so the hub redelivers it to the leg that is waiting for it --
-   * unless it is too old for any leg to be waiting. Nobody settles those, so on
-   * a long-lived hub they pile up and are redelivered to every watcher ahead of
-   * its own; accept them instead. Unparseable times are released, as before. */
+   * unless no leg waits for it: a blob the tests do not watch, or one too old
+   * for any leg to still be waiting. Nobody settles those, and the hub
+   * redelivers them to every watcher ahead of its own; accept them instead. */
   if (f->match[0] != '\0' && strstr(text, f->match) == NULL)
   {
-    int64_t enqueued_s;
-    if (e2e_notify_enqueued_time(text, &enqueued_s)
-        && (int64_t)time(NULL) - enqueued_s > E2E_AMQP_NOTIFY_STALE_S)
+    if (e2e_notify_has_no_watcher(text, (int64_t)time(NULL), E2E_AMQP_NOTIFY_STALE_S))
     {
-      f->stale_count++;
+      f->unwatched_count++;
       E2E_AMQP_DISCARD(az_amqp_link_accept(link, delivery->number));
       return;
     }
@@ -1845,7 +1843,7 @@ void e2e_amqp_filenotify_stats(
     int* out_delivered,
     int* out_captured,
     int* out_released,
-    int* out_stale,
+    int* out_unwatched,
     int* out_unparsed)
 {
   if (out_delivered != NULL)
@@ -1860,9 +1858,9 @@ void e2e_amqp_filenotify_stats(
   {
     *out_released = f->released_count;
   }
-  if (out_stale != NULL)
+  if (out_unwatched != NULL)
   {
-    *out_stale = f->stale_count;
+    *out_unwatched = f->unwatched_count;
   }
   if (out_unparsed != NULL)
   {

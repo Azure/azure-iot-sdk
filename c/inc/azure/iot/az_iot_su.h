@@ -102,7 +102,7 @@ extern "C"
   typedef struct az_iot_su_client_update_manifest_file
   {
     /** File id, as in step `files` and the request's `fileUrls`. A raw JSON string body: escapes
-     * are kept, so compare ids decoded. */
+     * are kept, so compare ids decoded (az_iot_su_decode_manifest_string()). */
     az_span id;
     /** File name. */
     az_span file_name;
@@ -506,11 +506,20 @@ extern "C"
      * Written at a reboot requested by install/apply, and when a workflow ends
      * (carrying its unsent terminal report until the service accepts it).
      *
+     * MUST replace the stored record atomically and be durable when it returns: after a
+     * power loss either the old or the new record survives, never a mix. A torn record
+     * fails its CRC check and is treated as nothing to resume, which loses the workflow
+     * and any owed terminal report. Usual implementations:
+     * - file: write a unique temporary file, fsync() it, rename() it over the record,
+     *   fsync() the directory;
+     * - ESP-IDF NVS: nvs_set_blob() then nvs_commit().
+     *
      * @p state_blob_len == 0 means invalidate: empty or erase the stored record
-     * so a later boot does not resume a workflow that has already ended. Return
+     * so a later boot does not resume a workflow that has already ended; it MUST
+     * succeed when nothing is stored. Return
      * non-zero on failure; the client raises AZ_IOT_SU_EVENT_PERSIST_FAILED and
      * retries from do_work() with back-off, holding the workflow at a reboot
-     * boundary, up to AZ_IOT_SU_PERSIST_MAX_ATTEMPTS.
+     * boundary, up to AZ_IOT_SU_PERSIST_MAX_ATTEMPTS. Not called in library mode.
      */
     int32_t (*persist_workflow_state_fn)(
         const uint8_t* state_blob,
@@ -519,8 +528,17 @@ extern "C"
 
     /**
      * Load previously-persisted workflow state. Return 0 and fill
-     * state_blob/len on success; non-zero if no state persisted. A successful
-     * zero-length read also means nothing to resume.
+     * state_blob/len on success; non-zero if no state persisted or the record is
+     * larger than @p state_blob_capacity. A successful zero-length read also means
+     * nothing to resume.
+     *
+     * A record resumes only if it fits this client's limits: its update copy in
+     * az_iot_su_limits::max_update_size, each step's details in result_details_size,
+     * its download URLs in AZ_IOT_SU_FILE_URL_CAPACITY(max_related_files) and its steps
+     * in AZ_IOT_SU_MAX_STEP_COUNT. Otherwise, or if its format version differs, it is
+     * ignored like a missing record, which loses the workflow and any owed terminal
+     * report. Do not lower these limits in a firmware update while a workflow may be
+     * stored. Not called in library mode.
      */
     int32_t (*load_workflow_state_fn)(
         uint8_t* state_blob,
@@ -530,6 +548,24 @@ extern "C"
 
     void* user_ctx;
   } az_iot_su_platform_hooks;
+
+  /**
+   * @brief Terminal and non-terminal outcomes a device reports for a workflow.
+   *
+   * These are the values the service accepts on the status-report operation.
+   * An engine that declines a deployment reports `SKIPPED`; there is no
+   * protocol-level accept/reject acknowledgement.
+   */
+  typedef enum az_iot_su_outcome
+  {
+    AZ_IOT_SU_OUTCOME_IN_PROGRESS = 0,
+    AZ_IOT_SU_OUTCOME_SUCCEEDED,
+    AZ_IOT_SU_OUTCOME_FAILED,
+    AZ_IOT_SU_OUTCOME_CANCELED, /**< Set by the service, or passed to
+                                 az_iot_su_download_handler::workflow_ended_fn for a workflow a
+                                 new one replaced; the client never reports it. */
+    AZ_IOT_SU_OUTCOME_SKIPPED,
+  } az_iot_su_outcome;
 
   /* --- Download handlers ------------------------------------------------------------------- */
 
@@ -579,10 +615,17 @@ extern "C"
         uint32_t file_index,
         void* user_ctx);
 
-    /** OPTIONAL (MAY be NULL). Called once a workflow succeeds, before its SUCCEEDED report,
-     * when a file of its manifest names this handler's id, built or downloaded in full, e.g. to
-     * keep the files as sources for later updates. Not called for a FAILED or SKIPPED workflow. */
-    void (*workflow_succeeded_fn)(const az_iot_su_client_update_manifest* manifest, void* user_ctx);
+    /**
+     * OPTIONAL (MAY be NULL). Called once when a workflow whose manifest names this handler's id
+     * ends, before its terminal report: @p outcome is SUCCEEDED, FAILED, SKIPPED, or CANCELED
+     * when a new workflow replaced it. Release what the handler holds for the workflow; on
+     * SUCCEEDED, e.g. keep the files as sources for later updates. Not called for a workflow
+     * whose manifest fails verification or parsing, nor on az_iot_su_client_deinit().
+     */
+    void (*workflow_ended_fn)(
+        const az_iot_su_client_update_manifest* manifest,
+        az_iot_su_outcome outcome,
+        void* user_ctx);
 
     void* user_ctx;
   } az_iot_su_download_handler;
@@ -662,28 +705,22 @@ extern "C"
 #endif
 
 /**
- * @brief The `timeout_ms` that asks for NO bound: the request is retried for as
- * long as it takes, and the only abandonment is a channel verdict.
- *
- * Named because a bare 0 at a call site reads like "expire immediately", which
- * is the opposite of what it does. */
-#define AZ_IOT_SU_REQUEST_NO_TIMEOUT 0u
-
-/**
  * @brief A default request timeout, in milliseconds, for callers with no policy
  * of their own.
  *
- * One minute. A check not answered within it -- still being retried, or sent
- * and awaiting its response -- is abandoned and told to the application, which
- * can ask again when it chooses instead of the client waiting or retrying
- * silently.
+ * Two minutes of wall-clock time for the whole check, session setup and
+ * retries included; no shorter than AZ_IOT_SU_CHANNEL_RESPONSE_TIMEOUT_MS,
+ * the longest one sent request waits for its answer. A check not answered
+ * within it -- still being retried, or sent and awaiting its response -- is
+ * abandoned and told to the application, which can ask again when it chooses
+ * instead of the client waiting or retrying silently.
  *
- * Only a default. The bound is a per-call argument of
+ * Only a default. The bound is a required per-call argument of
  * az_iot_su_client_request_update() / _request_onboarding_update(), because
  * only the application knows how long it can wait for a given check -- a
  * boot-time onboarding probe and a nightly background poll do not share a
  * deadline. */
-#define AZ_IOT_SU_REQUEST_DEFAULT_TIMEOUT_MS 60000u
+#define AZ_IOT_SU_REQUEST_DEFAULT_TIMEOUT_MS 120000u
 
   /**
    * @brief Exact az_iot_su_limits::device_properties_size needed to cache @p device_properties.
@@ -701,22 +738,6 @@ extern "C"
   /* --- Update outcome vocabulary ------------------------------------------ */
   /* The structured result the engine produces for a workflow. Public because an
    * application observes it; the transport that carries it is internal. */
-
-  /**
-   * @brief Terminal and non-terminal outcomes a device reports for a workflow.
-   *
-   * These are the values the service accepts on the status-report operation.
-   * An engine that declines a deployment reports `SKIPPED`; there is no
-   * protocol-level accept/reject acknowledgement.
-   */
-  typedef enum az_iot_su_outcome
-  {
-    AZ_IOT_SU_OUTCOME_IN_PROGRESS = 0,
-    AZ_IOT_SU_OUTCOME_SUCCEEDED,
-    AZ_IOT_SU_OUTCOME_FAILED,
-    AZ_IOT_SU_OUTCOME_CANCELED, /**< Set by the service; the client never reports it. */
-    AZ_IOT_SU_OUTCOME_SKIPPED,
-  } az_iot_su_outcome;
 
   /**
    * @brief Which layer a failure came from. `NOT_APPLICABLE` is used for every
@@ -1297,8 +1318,14 @@ extern "C"
       bool pending_fetch_paced;
       /** The pending report was re-armed by a verdict that armed retry. */
       bool report_paced;
+      /** report_paced came from a report left unanswered (AZ_IOT_ERR_TIMEOUT): a report queued
+       * since waits it out too. */
+      bool report_paced_by_timeout;
       /** install_fn was called in the current workflow. */
       bool install_called;
+      /** The current workflow's manifest is parsed and its end is owed to the download handlers'
+       * workflow_ended_fn. */
+      bool download_handler_end_owed;
       /** The last apply asked for a reboot; cleared by the reboot (re-initialization). */
       bool reboot_owed;
       /** install_fn or apply_fn of the current workflow asked for a reboot; cleared on FAILED. */
@@ -1567,7 +1594,8 @@ extern "C"
    * (the client stays Idle) and re-sends it from do_work().
    *
    * @return AZ_IOT_OK if resumed or nothing usable was persisted (including a
-   *   record of another format version); AZ_IOT_ERR_NOT_SUPPORTED for a valid
+   *   record of another format version or one this client's limits cannot hold, see
+   *   load_workflow_state_fn); AZ_IOT_ERR_NOT_SUPPORTED for a valid
    *   record of this format when persist_workflow_state_fn is NULL (it could never be cleared);
    *   AZ_IOT_ERR_INVALID_ARG for a NULL client or
    *   a record whose download URLs do not cover the remaining steps;
@@ -1804,7 +1832,7 @@ extern "C"
    * Asynchronous. Records the request; the NEXT az_iot_su_client_do_work()
    * issues it, and retries on a later tick if the channel is not ready. The
    * result arrives through the engine, not this return value. Returns
-   * AZ_IOT_ERR_INVALID_ARG if @p client is NULL.
+   * AZ_IOT_ERR_INVALID_ARG if @p client is NULL or @p timeout_ms is 0.
    *
    * There is ONE pending slot, and the newest request wins. Calling either
    * request function twice before do_work() does NOT queue two fetches: the
@@ -1833,16 +1861,21 @@ extern "C"
    * @p timeout_ms. If that report loses its session for good, the check is
    * abandoned with AZ_IOT_ERR_NOT_CONNECTED; the report stays owed.
    *
-   * Pass AZ_IOT_SU_REQUEST_NO_TIMEOUT for no bound: the request is then
-   * retried indefinitely and the only abandonment is a channel verdict.
+   * Every check is bounded: the hub session is ended while a check is
+   * outstanding (one MQTT session at a time), so an unbounded check could keep
+   * the device off its hub. A very large @p timeout_ms has that effect for as
+   * long as it lasts: a check the service cannot answer (no device record, no
+   * linked hub) keeps ending the hub session, each attempt for up to
+   * AZ_IOT_SU_CHANNEL_RESPONSE_TIMEOUT_MS (120 s) and repeated on the backoff,
+   * so telemetry, twin and methods go offline again and again.
    * AZ_IOT_SU_REQUEST_DEFAULT_TIMEOUT_MS is available for callers with no
    * policy of their own.
    *
    * @param[in] client   The software updates client.
-   * @param[in] timeout_ms Wall-clock bound in milliseconds;
-   *                     AZ_IOT_SU_REQUEST_NO_TIMEOUT for none.
+   * @param[in] timeout_ms Wall-clock bound in milliseconds; must be greater
+   *                     than 0.
    * @return AZ_IOT_OK when the request is recorded, AZ_IOT_ERR_INVALID_ARG if
-   *         @p client is NULL.
+   *         @p client is NULL or @p timeout_ms is 0.
    *
    * Single-threaded contract: MUST be called on the do_work thread or be
    * externally serialized with do_work().
@@ -2028,6 +2061,22 @@ extern "C"
       const az_iot_crypto* crypto,
       az_iot_su_read_chunk_callback read_chunk,
       void* read_ctx);
+
+  /**
+   * @brief Decode a manifest string the parser keeps escaped, such as a file id: `f\u0031` is
+   * `f1`.
+   *
+   * Handles every JSON escape, `\uXXXX` included. The output is never longer than the input, so
+   * @p out may be @p escaped itself (in-place decoding).
+   *
+   * @param[in] escaped A raw JSON string body, e.g. az_iot_su_client_update_manifest_file::id.
+   * @param[out] out Destination.
+   * @param[out] out_decoded The decoded slice of @p out.
+   * @return AZ_IOT_OK; AZ_IOT_ERR_INVALID_ARG on NULL @p out_decoded, a malformed escape or
+   * `\u0000`; AZ_IOT_ERR_NOT_ENOUGH_SPACE when @p out is too small.
+   */
+  AZ_NODISCARD az_iot_result
+  az_iot_su_decode_manifest_string(az_span escaped, az_span out, az_span* out_decoded);
 
   /**
    * @brief Builds the status-report request body for @p report.

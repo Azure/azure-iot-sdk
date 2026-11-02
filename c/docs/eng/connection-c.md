@@ -69,7 +69,8 @@ stateDiagram-v2
     CONNECTED --> RETRY_PENDING: unexpected drop
     CONNECTED --> IDLE: drop, reconnect disabled
     CONNECTED --> DISCONNECTING: close()
-    RETRY_PENDING --> SETTING_UP: backoff elapsed
+    CONNECTED --> RETRY_PENDING: hub ended for a provisioning session (reason OK)
+    RETRY_PENDING --> SETTING_UP: backoff elapsed, or the provisioning session ended
     RETRY_PENDING --> FAULTED: attempts exhausted
     RETRY_PENDING --> IDLE: close()
     DISCONNECTING --> IDLE: transport closed
@@ -150,7 +151,7 @@ sequenceDiagram
         alt no ref held (dps_refs_held() false)
             Conn->>DPS: DISCONNECT + tear down v3.1.1 adapter
         else a ref is held
-            Note over Conn,DPS: session kept, do_work() pumps it with the hub session
+            Note over Conn,DPS: session kept; the hub session waits until it is released
         end
         Conn->>Conn: resolve connection profile, apply assigned host / client id, pick hub role
     end
@@ -186,10 +187,21 @@ Key ordering guarantees that both clients must honour:
   `ih/{device_id}/dev/#` presence wildcard; MQTTv3 feature filters and application custom topics
   use the persistent-subscription registry.
 
-2. `dps_apply_deferred()` keeps the DPS session after a successful assignment while
-   `dps_refs_held()` — a feature client's `__dps_user_acquire()` ref, or `provision_only`'s standing
-   ref — and tears it down otherwise. A kept session runs alongside the hub session and `do_work()`
-   pumps both. DPS always uses MQTT 3.1.1, even when the hub session uses v5.
+2. **One MQTT session at a time.** `dps_apply_deferred()` keeps the DPS session after a successful
+   assignment while `dps_refs_held()` — a feature client wants it (`dps_session_wanted`, set by
+   `__dps_session_ensure()` or `__dps_publish()`), or `provision_only`'s standing ref — and tears it
+   down otherwise. While a provisioning session is in use (`dps_mqtt`, or a DPS start in
+   `SETTING_UP`) the hub session does not start: it waits at `HUB:RETRY_PENDING`, reason
+   `AZ_IOT_OK`, no retry scheduled (`hub_waits_for_provisioning_session`). When
+   `__dps_session_release()` gives it back the pump closes the DPS session and the hub connects to
+   the assignment just adopted or cached, without registering again. A feature client that asks for a
+   session through `__dps_session_ensure()` while the hub is `CONNECTED` gets `AZ_IOT_ERR_BUSY`; the
+   hub session is ended first as a planned end (`planned_hub_session_end.for_provisioning_session`;
+   feature clients see `AZ_IOT_CONNECTION_SESSION_END_PLANNED`), and `do_work()` opens the DPS
+   session once the hub client is destroyed. These ends are not failures: they do not climb the hub
+   ladder or count toward `max_hub_connect_attempts_before_reprovision`. Creating a DPS client while
+   `active_client` is set, or a hub client while `dps_mqtt` is set, fails with
+   `AZ_IOT_ERR_INTERNAL`. DPS always uses MQTT 3.1.1, even when the hub session uses v5.
 3. The operational certificate is preferred over the bootstrap certificate on every connect attempt,
    including reconnects.
 4. **The software updates bootstrap update check runs inside `open()`, ahead of registration**, once the
@@ -263,7 +275,7 @@ Why each one:
   attempt. That reason is a property of the *service*, not of how long the session lives, so it is
   unaffected by any change to when the provisioning session is torn down: `clean_start` is only
   read at CONNECT, and it is inert at this service whenever it is read. A provisioning session that
-  outlived registration, or ran alongside a hub session, would still take the same terms.
+  outlived registration would still take the same terms.
 - **MQTTv3 resumes.** An MQTTv3 hub holds the device's *subscription* and its in-flight QoS 1 only
   for a session that is not clean. Connecting clean does not lose the hub's server-side C2D queue —
   that is delivered once the device re-subscribes — but it does discard the subscription and any
@@ -460,12 +472,29 @@ CONNACK; the `DPS` counter only when registration succeeds.
   `az_iot_defensive_timeout__ms(N, random)` — a 5, 6, 8, then 10 min base plus a uniform 0–5 min
   jitter. The count grows in `teardown_active()` when a BIRTH wait ends at or past its deadline (timeout, or a DISCONNECTED or ERROR drained first; not a missed SUBACK) and is cleared by
   `open()` and by a birth-ack that arrives in time.
+- A SAS renewal or an end for a provisioning session first settles: `start_settled_hub_session_end()`
+  arms `planned_hub_session_end.drain_deadline` (`HUB_SESSION_SETTLE_TIMEOUT_MS`; for a SAS renewal
+  also not past `hub_session_token_expiry_ms` or `_unix_seconds`, the expiry of the token the session
+  connected with; 0 once it expired); each `do_work()` runs `end_hub_session_once_settled()`, which (after the
+  query, whose observers may release, close or end the session) ends the session once no PUBACK or certificate renewal response is awaited, no feature observer
+  answers `AZ_IOT_CONNECTION_FEATURE_EVENT_UNSETTLED_QUERY`, or at the deadline or the token's Unix-time
+  expiry (rechecked each pass, and again after its TICK; it also caps the wait), with a warning if
+  deliveries are still unsettled. A failure end,
+  `close()` (its DISCONNECT under `PLANNED_DISCONNECT_TIMEOUT_MS`) or a lost session ends the settle. Delivery trackers hold new sends from then until the
+  session ends (`__holds_sends_for_session_end()`); `publish_tracked()` refuses a QoS 1 publish
+  with `AZ_IOT_ERR_BUSY` while settling, and any publish with `AZ_IOT_ERR_NOT_CONNECTED` once the
+  DISCONNECT is sent. A provisioning session asked for while a SAS renewal settles takes that settle
+  over (its bound kept); one no longer demanded before the settle ends drops it, leaving the hub
+  session up, or the renewal it took over to go on. No SAS renewal starts while a settle runs, and its due time does not shorten the `process_loop()` wait. `start_connect_attempt()` clears the session token expiry, so an X.509 session has none.
 - A planned hub session end: `start_planned_hub_session_end()` sends DISCONNECT and arms
   `planned_hub_session_end.disconnect_deadline` (`PLANNED_DISCONNECT_TIMEOUT_MS`); the DISCONNECTED
   event (unless an identity refusal) or the deadline calls `finish_planned_hub_session_end()`.
   Reason `AZ_IOT_OK` (SAS token renewal) reconnects at once; a failure (a presence timeout, or a
   feature client's `az_iot_connection_client__end_hub_session()`, e.g. the mqttv5 twin-push
   timeout) goes through `end_hub_session_with_failure()`: reconnect under the policy, else FAULTED.
+  An end for a provisioning session (`for_provisioning_session`, from `__dps_session_ensure()`) waits
+  instead: `HUB:RETRY_PENDING`, reason `AZ_IOT_OK`, no retry, until no provisioning session is in
+  use; an ERROR during it ends it the same way. It counts toward no ladder or threshold.
   One planned end at a time: a renewal waits for one in progress (and its deadlines do not shorten
   the wait), and a request during one is absorbed. Presence events after it starts are ignored. A malformed birth-ack is ignored (left to the timeout). A presence SUBACK or birth-ack whose deadline passed before the `do_work()` pass dispatching it began is a miss, left to the timeout (`__deadline_passed_before_pass()`; the mqttv5 twin-push wait uses the same rule, so a miss is declared by the first pass begun past its deadline); the `process_loop()` wait ends by those deadlines until a planned end starts.
   `close()` during one sends no other DISCONNECT; its completion, an ERROR, or its bound settles
@@ -683,9 +712,11 @@ sequenceDiagram
 ```
 
 - **Registration is held for the check, not for the install.** A check that finds an update releases
-  the hold like any other verdict; the install, its report and any re-check run afterwards on the DPS
-  session, which the channel's `__dps_user_acquire()` ref keeps up. A bootstrap deployment can
-  chain, so the agent re-checks after installing.
+  the hold like any other verdict. While the channel still has work on the session (a request
+  outstanding, or the check still owed), its `__dps_session_ensure()` keeps the session across
+  registration and the hub session waits (§3, ordering guarantee 2); it starts once the channel lets
+  go. Later operations (the install's reports, a re-check) end the hub session and run on a new DPS
+  session. A bootstrap deployment can chain, so the agent re-checks after installing.
 - Bootstrap progress is stored **in the bootstrap update job**, not on the device's ADR attributes —
   the device resource does not exist yet.
 - Trust comes from the **root-key package** at `serviceConfiguration.rootKeyDownloadUrl` returned by
@@ -707,6 +738,8 @@ sequenceDiagram
     participant GW as Gateway (Hub, or DPS in preview)
     participant Store as Durable software updates state
 
+    Note over Conn: hub CONNECTED, the channel asks for a DPS session
+    Conn->>Conn: end the hub session (planned), then open the DPS session
     Conn-->>SU: DPS:CONNECTED
     Note over SU,Store: on resume(), called by the application at startup
     SU->>Store: load_workflow_state()
@@ -732,7 +765,12 @@ sequenceDiagram
     Note over SU: install continues, report held in durable storage
     Conn-->>SU: DPS:CONNECTED again
     SU->>GW: re-send the report until accepted or rejected; checks continue when the agent asks
+    Note over Conn: no work left: the DPS session closes and the hub reconnects, without registering
 ```
+
+Only one MQTT session runs at a time (§3, ordering guarantee 2): each operational check or report
+made while the hub is connected ends the hub session first, and the hub reconnects once the channel
+has no work left. Consecutive operations reuse the DPS session while the channel keeps working.
 
 `installResult` carries the outcome, its failure origin and the hex
 `extendedResultCodes` list. In-progress reports omit `stepResults`; terminal
@@ -762,10 +800,13 @@ reports include complete per-step outcomes when steps are available — see
   not block provisioning; neither does `DEVICE_NOT_PROVISIONED`, which a later check clears.
 - **"No update" is a success.** It is a 200 with the update metadata omitted, not an error.
 - **Software updates follows the DPS scope, not the hub one.** The channel records both scopes but acts only on
-  `AZ_IOT_CONN_SCOPE_DPS`, so it works whatever the hub state and under `provision_only`. It never opens, closes or reconnects
-  the hub session. It holds registration for the bootstrap check (§7.1), and opens a DPS session
-  after provisioning through `__dps_session_ensure()`. While either scope has settled in
-  `FAULTED`, no new session is opened until `close()`.
+  `AZ_IOT_CONN_SCOPE_DPS`, so it works under `provision_only`. It never opens, closes or reconnects
+  the hub session itself. It holds registration for the bootstrap check (§7.1), and after
+  provisioning asks for a DPS session through `__dps_session_ensure()` when it has work and gives it
+  back with `__dps_session_release()` when it has none. The connection client ends the hub session
+  first and reconnects it after the release, so the application sees the hub disconnect for each
+  operational check or report and reconnect after. While either scope has settled in `FAULTED`, no
+  new session is opened until `close()`.
 - **Compatibility properties are opaque key/value pairs** (1–5) reported by the agent alongside an
   opaque `agentProfile`; the service combines them into a device class. The agent assigns them no
   meaning.
@@ -855,7 +896,7 @@ connection failure path:
 | `AZ_IOT_ERR_PROTOCOL` | A service payload could not be parsed. |
 | `AZ_IOT_ERR_MQTT` | The catch-all for transport and broker failures. **The great majority of wire failures land here**, including every CONNACK code that is not an identity refusal, every SUBACK refusal the broker may not repeat, and every PUBACK failure that is not `AZ_IOT_ERR_PUBLISH_REFUSED` or quota exceeded. |
 | `AZ_IOT_ERR_DPS` | Registration returned a failed or disabled status. |
-| `AZ_IOT_ERR_NOT_SUPPORTED` | No adapter factory for the required protocol version; a fixed-size registry is full; a service-supplied string is longer than its buffer. |
+| `AZ_IOT_ERR_NOT_SUPPORTED` | `opts.mqtt_adapter` does not build the required protocol version; a fixed-size registry is full; a service-supplied string is longer than its buffer. |
 | `AZ_IOT_ERR_BUSY` | A single-slot operation is already in flight, or the service is throttling. |
 | `AZ_IOT_ERR_NOT_ENOUGH_SPACE` | A compile-time buffer bound was exceeded. |
 | `AZ_IOT_ERR_NOT_FOUND` | A required field was absent from a service payload. |
@@ -928,7 +969,6 @@ a slow path. Constants are `#ifndef`-guarded and can be raised at build time, ex
 
 | Constant | Value | What it bounds | Result when exceeded |
 | --- | --- | --- | --- |
-| `AZ_IOT_MAX_MQTT_FACTORIES` | 4 | Registered adapter factories | `AZ_IOT_ERR_NOT_SUPPORTED` |
 | `limits.max_pending_publishes` | 16 | QoS-1 publishes awaiting a PUBACK **with an ack callback**: per-feature-client reservations plus a shared pool | `AZ_IOT_ERR_BUSY` when the caller's pool is full — nothing is sent; a reservation that does not fit fails with `AZ_IOT_ERR_NOT_ENOUGH_SPACE`, one whose slots publishes in flight occupy with `AZ_IOT_ERR_BUSY` |
 | `limits.max_persistent_subscriptions` | 8 | Persistent subscription registry | `AZ_IOT_ERR_NOT_ENOUGH_SPACE` |
 | `AZ_IOT_PERSISTENT_SUB_TOPIC_MAX` | 128 | Persistent topic-filter string | `AZ_IOT_ERR_INVALID_ARG` |
@@ -947,9 +987,10 @@ a slow path. Constants are `#ifndef`-guarded and can be raised at build time, ex
 | `limits.max_publish_reservations` | 2 | Feature clients holding a pending-PUBACK reservation | `AZ_IOT_ERR_NOT_ENOUGH_SPACE` |
 | `AZ_IOT_DPS_OPERATION_ID_MAX` | 64 | DPS `operation_id` from the assigning response | `AZ_IOT_ERR_NOT_SUPPORTED` |
 | `AZ_IOT_DPS_REGISTRATION_PAYLOAD_MAX` | 512 | Caller-supplied DPS registration payload | `AZ_IOT_ERR_NOT_ENOUGH_SPACE` |
-| `AZ_IOT_TWIN_MAX_PENDING` | 8 | Pending twin requests, per generation ([MQTTv3](../../inc/azure/iot/mqttv3/az_iot_twin_client.h), [MQTTv5](../../inc/azure/iot/mqttv5/az_iot_twin_client.h)) | `AZ_IOT_ERR_NOT_SUPPORTED` |
-| `AZ_IOT_DM_MAX_INFLIGHT` | 4 | In-flight direct-method requests ([MQTTv3](../../inc/azure/iot/mqttv3/az_iot_direct_method_client.h); MQTTv5 derives `AZ_IOT_MQTTV5_DM_MAX_CONCURRENT` from it) | No result — the invocation is dropped and a warning is logged. |
-| `AZ_IOT_MQTTV5_DM_MAX_METHODS` | 8 | Registered MQTTv5 direct-method handlers | `AZ_IOT_ERR_NOT_ENOUGH_SPACE` |
+| `limits.max_pending_requests` | 8 | Pending twin requests, per client, at run time ([MQTTv3](../../inc/azure/iot/mqttv3/az_iot_twin_client.h), [MQTTv5](../../inc/azure/iot/mqttv5/az_iot_twin_client.h)) | `AZ_IOT_ERR_NOT_SUPPORTED` |
+| `limits.max_in_flight_invocations` | 4 | In-flight MQTTv3 direct-method requests, at run time ([MQTTv3](../../inc/azure/iot/mqttv3/az_iot_direct_method_client.h)) | No result — the invocation is dropped and a warning is logged. |
+| `limits.max_concurrent_invocations` | 4 | MQTTv5 direct-method invocations probed or awaiting an answer, at run time ([MQTTv5](../../inc/azure/iot/mqttv5/az_iot_direct_method_client.h)) | Probe refused `DEVICE_BUSY`. |
+| `limits.max_methods` | 8 | Registered MQTTv5 direct-method handlers, at run time | `AZ_IOT_ERR_NOT_ENOUGH_SPACE` |
 | CSR slot | 1 | In-flight hub CSR renewals | `AZ_IOT_ERR_BUSY` |
 | `AZ_IOT_DEFAULT_CONNECT_TIMEOUT_SECONDS` | 30 | Connect attempt, hub and DPS alike | Adapter-reported failure → `AZ_IOT_ERR_MQTT` |
 | `AZ_IOT_DEFAULT_KEEP_ALIVE_SECONDS` | 30 | MQTT keep-alive in CONNECT | — |
@@ -989,7 +1030,7 @@ connection client itself, or a feature client.
 | Handshake | TLS alert detail | not in the result | `paho_ssl_error_callback` | logged only | The OpenSSL error queue is drained line by line to the trace log when `AZ_IOT_PAHO_SSL` is built and tracing is enabled. It is the only place the concrete reason appears. |
 | Handshake | **Client certificate rejected during the handshake** | `AZ_IOT_ERR_MQTT` | Paho negative code | reconnect | No MQTT session exists, so no CONNACK code is available. Correctly **not** treated as an identity rejection: the negative-code rule exists for exactly this. Consequence: a device whose operational certificate has been revoked retries forever instead of re-provisioning. |
 | CONNACK | **Client certificate accepted by TLS, identity refused at CONNACK** (`rc=5` / `0x87 Not authorized`) | `AZ_IOT_ERR_IDENTITY_REJECTED` | `az_iot_mqtt_connack_result()` | identity ladder; `dps_start()` in `REPROVISION` mode, the cached hub in `RETRY_HUB` | The distinction between this row and the previous one is exactly the distinction the negative-code rule encodes, and it is the reason adapters must not flatten codes. |
-| Configuration | TLS is selected by any of: a client certificate, a trusted CA, key custody, or the explicit `use_tls` flag | — | `paho_factory_create` | scheme selected as `ssl://` or `tcp://` | There is deliberately **no** option to disable server-certificate validation: whenever a TLS session is established, the chain **and** the hostname are validated unconditionally. `use_tls` exists for a connection carrying no other TLS material, such as server-authentication-only; it replaced `verify_server`, which could switch validation off and did so for any caller who left a zero-initialised struct alone. |
+| Configuration | TLS is selected by any of: a client certificate, a trusted CA, key custody, or the explicit `use_tls` flag | — | `build_server_uri()` (Paho adapter) | scheme selected as `ssl://` or `tcp://` | There is deliberately **no** option to disable server-certificate validation: whenever a TLS session is established, the chain **and** the hostname are validated unconditionally. `use_tls` exists for a connection carrying no other TLS material, such as server-authentication-only; it replaced `verify_server`, which could switch validation off and did so for any caller who left a zero-initialised struct alone. |
 
 #### 9.5.3 Phase 3 — CONNECT / CONNACK
 
@@ -1005,7 +1046,8 @@ connection client itself, or a feature client.
 | CONNECT | No CONNACK within the connect timeout | `AZ_IOT_ERR_MQTT` | Paho | ordinary failed attempt | 30 s by default, configurable; the same value is used for the DPS bootstrap connect. |
 | CONNACK | Arrives after `close()` | ignored | connection client | logged at debug, `break` — the pending DISCONNECTED event settles the session to `IDLE` | Guarded on `user_close || state == DISCONNECTING`. Correct. |
 | CONNACK | v5 refusal carrying a Reason String | as for its code | adapter | as for its code; the Reason String becomes `error->message` (source `MQTT`), truncated to 128 bytes | az_mqtt reports it; Paho does not, because it passes none of a refused CONNACK's properties. |
-| CONNECT | No factory registered for the version the role requires | `AZ_IOT_ERR_NOT_SUPPORTED` | `find_factory()` | `open()` transitions back to `IDLE` and returns the error | Role → version: DPS and the MQTTv3 hub are v3.1.1, the MQTTv5 hub is v5. |
+| CONNECT | The other session's MQTT client still exists | `AZ_IOT_ERR_INTERNAL` | DPS and hub connect | as for any failed start: retried under the policy, or `IDLE` and returned from `open()` | One MQTT session at a time: callers end, or wait for, the other session first, so this is a defect. Checked before `create_session_mqtt_client()`, whose `AZ_IOT_ERR_BUSY` for an occupied MQTT workspace it therefore precedes. The live client is not touched. |
+| CONNECT | `opts.mqtt_adapter`: `init()` fails | `AZ_IOT_ERR_NOT_SUPPORTED` (version not built), `AZ_IOT_ERR_NOT_ENOUGH_SPACE`; otherwise `AZ_IOT_ERR_INTERNAL` | `create_session_mqtt_client()` | `open()` transitions back to `IDLE` and returns the error | Role → version: DPS and the MQTTv3 hub are v3.1.1, the MQTTv5 hub is v5. `init()` of the connection client already checked the workspace size. |
 
 #### 9.5.4 Phase 4 — DPS provisioning
 
@@ -1090,13 +1132,14 @@ registry carries MQTTv3 feature filters and application custom topics.
 
 | Phase | Trigger | Surfaced as | Mapped by | SDK action | Notes / limits |
 | --- | --- | --- | --- | --- | --- |
-| Any | Runtime allocation failure | the PEM provider's `load()` returns `AZ_IOT_ERR_OUT_OF_MEMORY` | `certificate_provider_pem.c`; `start_connect_attempt()` / `dps_start()` | the connect attempt fails with that error and does not connect (the hub path first retries `NOT_FOUND` / `NOT_INITIALIZED` with the bootstrap identity) | The connection-client state machine does not allocate: every buffer is an in-struct fixed array, apart from a Windows-only environment read used by the mock endpoints in dev and test builds. The PEM certificate provider allocates to read PEM files; the Paho adapter allocates for the server URI and duplicated option strings. |
+| Any | Runtime allocation failure | the PEM provider's `load()` returns `AZ_IOT_ERR_OUT_OF_MEMORY` | `certificate_provider_pem.c`; `start_connect_attempt()` / `dps_start()` | the connect attempt fails with that error and does not connect (the hub path first retries `NOT_FOUND` / `NOT_INITIALIZED` with the bootstrap identity) | The connection-client state machine does not allocate: every buffer is an in-struct fixed array, apart from a Windows-only environment read used by the mock endpoints in dev and test builds. The PEM certificate provider allocates to read PEM files; the Paho adapter allocates for the server URI, duplicated option strings, queued events, including the completion event of each publish (a publish returns `AZ_IOT_ERR_OUT_OF_MEMORY` when it cannot). |
 | Publish / subscribe | A bound in [§9.4](#94-compile-time-bounds) is exceeded | see that table | connection client | the call fails before the transport is touched | Never truncated. |
 | Publish | Pending-PUBACK table full (17th unacknowledged publish with a callback) | `AZ_IOT_ERR_BUSY` | connection client | nothing is sent | The slot is reserved before the publish and released if the publish fails. |
 | Twin | Pending-request pool full (9th) | `AZ_IOT_ERR_NOT_SUPPORTED` | twin client | the request is rejected | Contained. Distinct from the `429` row above, which is the point. |
 | Direct methods | In-flight pool full (5th) | **none** | direct-method client | **the invocation is dropped**, with a warning logged | A slot is released by responding, or reclaimed by `requests_expire_stale()` after `response_timeout_seconds`. |
-| Direct methods (mqttv5) | Probe-ack, result or abandon while the hub is not `CONNECTED` (e.g. between CONNACK and the birth-ack) | `AZ_IOT_ERR_NOT_CONNECTED` from the publish; `respond()` returns `AZ_IOT_OK` | direct-method client | held, with its ready token or slot, and published on the next `HUB:CONNECTED` | Dropped if its budget runs out first. Probe rejections and abandons share `AZ_IOT_MQTTV5_DM_MAX_CONCURRENT` held entries; past that they are dropped with a warning. |
-| Connect | No factory for the required version | `AZ_IOT_ERR_NOT_SUPPORTED` | `find_factory()` | back to `IDLE`, error returned from `open()` | |
+| Direct methods (mqttv5) | Probe-ack, result or abandon while the hub is not `CONNECTED` (e.g. between CONNACK and the birth-ack) | `AZ_IOT_ERR_NOT_CONNECTED` from the publish; `respond()` returns `AZ_IOT_OK` | direct-method client | held, with its ready token or slot, and published on the next `HUB:CONNECTED` | Dropped if its budget runs out first. Probe rejections and abandons share `limits.max_queued_notices` held entries; past that they are dropped with a warning. |
+| Connect | `opts.mqtt_adapter` does not build the required version | `AZ_IOT_ERR_NOT_SUPPORTED` | `create_session_mqtt_client()` | back to `IDLE`, error returned from `open()` | |
+| Connect | The other session's MQTT client still exists | `AZ_IOT_ERR_INTERNAL` | DPS and hub connect | the start fails and is retried like any other | One MQTT session at a time; precedes the MQTT workspace's `AZ_IOT_ERR_BUSY`. |
 | Registry | Session-end handler registry full (5th distinct context) | `AZ_IOT_ERR_NOT_SUPPORTED` | connection client | the registration fails | Re-registering the same context upserts rather than consuming a slot. |
 | Registry | Inbound dispatch table full (9th) | `AZ_IOT_ERR_NOT_SUPPORTED` | dispatch | the registration fails | |
 | Init | Invalid or missing arguments | `AZ_IOT_ERR_INVALID_ARG` | explicit guards at each public entry point | the call returns | No layer aborts. Every public entry point checks its arguments explicitly. |
@@ -1120,7 +1163,7 @@ registry carries MQTTv3 feature filters and application custom topics.
 | `deinit()` with PUBACKs pending | — | none | connection client | the table is zeroed **without** invoking the callbacks | Deliberate: on deinit the context those callbacks close over may already be gone, and calling into it would turn cleanup into a use-after-free. Contrast session teardown, where the callbacks **do** fire. |
 | `deinit()` with session handlers registered | — | none | connection client | cleared without invoking them | Same reasoning. |
 | `deinit()` with a CSR in flight | — | none | connection client | no callback fires | The slot is irrelevant after destruction. |
-| `deinit()` mid-handshake | — | none | `teardown_active()` | the presence phase is reset; the hub and DPS adapters are destroyed; registered factories are left to the application | |
+| `deinit()` mid-handshake | — | none | `teardown_active()` | the presence phase is reset; the hub and DPS adapters are destroyed and `mqtt_workspace` is wiped | |
 
 ---
 

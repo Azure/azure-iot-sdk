@@ -67,7 +67,6 @@ typedef struct fixture
 {
   az_iot_connection_client connection;
   az_iot_mqttv5_telemetry_client telemetry;
-  az_iot_mqtt_factory* factory;
   az_iot_mock_mqtt_client* mock;
 } fixture;
 
@@ -105,10 +104,9 @@ static int setup_profile(
   options.port = 8883;
   options.device_id = "ut-device";
   options.connection_profile = profile;
+  options.mqtt_adapter = az_iot_mock_mqtt_get_adapter_for_version(version);
   assert_int_equal(az_iot_test_connection_client_init(&test->connection, &options), AZ_IOT_OK);
 
-  test->factory = az_iot_mock_mqtt_factory_create(version);
-  assert_non_null(test->factory);
   *state = test;
   return 0;
 }
@@ -130,7 +128,6 @@ static int teardown(void** state)
   {
     az_iot_mqttv5_telemetry_client_deinit(&test->telemetry);
     az_iot_test_connection_client_deinit(&test->connection);
-    az_iot_mock_mqtt_factory_destroy(test->factory);
     free(test);
   }
   return 0;
@@ -152,10 +149,8 @@ static const az_iot_mock_call* find_publish(fixture* test, const char* topic)
 
 static void open_mqtt_v3(fixture* test)
 {
-  assert_int_equal(
-      az_iot_connection_client_register_mqtt_factory(&test->connection, test->factory), AZ_IOT_OK);
   assert_int_equal(az_iot_connection_client_open(&test->connection), AZ_IOT_OK);
-  test->mock = az_iot_mock_mqtt_factory_last_client(test->factory);
+  test->mock = az_iot_mock_mqtt_adapter_last_client();
   assert_non_null(test->mock);
   assert_true(az_iot_mock_mqtt_client_inject_connected(test->mock, AZ_IOT_OK));
   assert_int_equal(az_iot_connection_client_do_work(&test->connection, 0), AZ_IOT_OK);
@@ -163,10 +158,8 @@ static void open_mqtt_v3(fixture* test)
 
 static void open_v5(fixture* test)
 {
-  assert_int_equal(
-      az_iot_connection_client_register_mqtt_factory(&test->connection, test->factory), AZ_IOT_OK);
   assert_int_equal(az_iot_connection_client_open(&test->connection), AZ_IOT_OK);
-  test->mock = az_iot_mock_mqtt_factory_last_client(test->factory);
+  test->mock = az_iot_mock_mqtt_adapter_last_client();
   assert_non_null(test->mock);
 
   az_iot_mqtt_event connected = { 0 };

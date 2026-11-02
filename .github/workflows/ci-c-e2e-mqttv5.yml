@@ -114,8 +114,9 @@ jobs:
   # c/tests/support/test_shard.h), each with its own device: run serially on one
   # device they took up to 15 min. The shard count in AZ_IOT_TEST_SHARD must match
   # the matrix's shard list. Jobs that read events spread over consumer groups
-  # e2e-0..e2e-9 (E2E_GROUP_SLOT); the Linux and Windows legs of a job share its slot, so a
-  # group has at most three readers in a run.
+  # e2e-0..e2e-10 (E2E_GROUP_SLOT, group (run id + slot) mod 11); the Linux and Windows legs of a
+  # job share its slot. Custody has slot 10 to itself, so a group has at most two readers in a
+  # run and two overlapping runs stay within Event Hubs' five per partition.
   custom-topics:
     name: custom topics / ${{ matrix.os-name }} / ${{ matrix.adapter }} / shard ${{ matrix.shard }} of 2
     needs: [ adr-namespace, openssl ]
@@ -167,7 +168,7 @@ jobs:
         working-directory: c
         shell: pwsh
         run: |
-          cmake --preset $env:AZ_IOT_PRESET -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_BUILD_E2E_MQTTV5=ON -DAZ_IOT_WITH_PAHO=ON -DAZ_IOT_WITH_AZ_MQTT=ON -DAZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE=1114112
+          cmake --preset $env:AZ_IOT_PRESET -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_BUILD_E2E_MQTTV5=ON -DAZ_IOT_WITH_PAHO=ON -DAZ_IOT_WITH_AZ_MQTT=ON
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cmake --build --preset $env:AZ_IOT_PRESET --target $env:AZ_IOT_E2E_TEST
 
@@ -183,12 +184,12 @@ jobs:
           E2E_GROUP_SLOT: 0
           E2E_ADAPTER_INDEX: ${{ matrix.index }}
           E2E_RUN_ID: ${{ github.run_id }}
-        # Consumer groups e2e-0..e2e-9; Event Hubs allows 5 readers per partition per group.
+        # Consumer groups e2e-0..e2e-10; Event Hubs allows 5 readers per partition per group.
         run: |
           # One consumer group per job of this suite: slot + adapter index * shard count + shard.
           $shard, $count = $env:AZ_IOT_TEST_SHARD -split '/'
           $slot = [long]$env:E2E_GROUP_SLOT + [long]$env:E2E_ADAPTER_INDEX * [long]$count + [long]$shard
-          $group = 'e2e-' + (([long]$env:E2E_RUN_ID + $slot) % 10)
+          $group = 'e2e-' + (([long]$env:E2E_RUN_ID + $slot) % 11)
           ./c/eng/e2e-shared-device.ps1 -Prefix E2E_MQTTV5_SHARED -RegistrationId $env:E2E_REGISTRATION_ID `
             -ConsumerGroup $group -OutFile test_config/set_test_env_vars.ps1
 
@@ -274,7 +275,7 @@ jobs:
         working-directory: c
         shell: pwsh
         run: |
-          cmake --preset $env:AZ_IOT_PRESET -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_BUILD_E2E_MQTTV5=ON -DAZ_IOT_WITH_PAHO=ON -DAZ_IOT_WITH_AZ_MQTT=ON -DAZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE=1114112
+          cmake --preset $env:AZ_IOT_PRESET -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_BUILD_E2E_MQTTV5=ON -DAZ_IOT_WITH_PAHO=ON -DAZ_IOT_WITH_AZ_MQTT=ON
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cmake --build --preset $env:AZ_IOT_PRESET --target $env:AZ_IOT_E2E_TEST
 
@@ -290,7 +291,7 @@ jobs:
           E2E_RUN_ID: ${{ github.run_id }}
         # The twin suite reads no events; the consumer group only satisfies the script.
         run: |
-          $group = 'e2e-' + ([long]$env:E2E_RUN_ID % 10)
+          $group = 'e2e-' + ([long]$env:E2E_RUN_ID % 11)
           ./c/eng/e2e-shared-device.ps1 -Prefix E2E_MQTTV5_SHARED -RegistrationId $env:E2E_REGISTRATION_ID `
             -ConsumerGroup $group -OutFile test_config/set_test_env_vars.ps1
 
@@ -364,7 +365,7 @@ jobs:
         working-directory: c
         shell: pwsh
         run: |
-          cmake --preset $env:AZ_IOT_PRESET -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_BUILD_E2E_MQTTV5=ON -DAZ_IOT_WITH_PAHO=ON -DAZ_IOT_WITH_AZ_MQTT=ON -DAZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE=1114112
+          cmake --preset $env:AZ_IOT_PRESET -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_BUILD_E2E_MQTTV5=ON -DAZ_IOT_WITH_PAHO=ON -DAZ_IOT_WITH_AZ_MQTT=ON
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cmake --build --preset $env:AZ_IOT_PRESET --target az_iot_tests_e2e_mqttv5_connection az_iot_tests_e2e_mqttv5_connection_az_mqtt
 
@@ -379,9 +380,9 @@ jobs:
           E2E_REGISTRATION_ID: ci-mqttv5-cn-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.os-tag }}
           E2E_GROUP_SLOT: 9
           E2E_RUN_ID: ${{ github.run_id }}
-        # Consumer groups e2e-0..e2e-9; Event Hubs allows 5 readers per partition per group.
+        # Consumer groups e2e-0..e2e-10; Event Hubs allows 5 readers per partition per group.
         run: |
-          $group = 'e2e-' + (([long]$env:E2E_RUN_ID + [long]$env:E2E_GROUP_SLOT) % 10)
+          $group = 'e2e-' + (([long]$env:E2E_RUN_ID + [long]$env:E2E_GROUP_SLOT) % 11)
           ./c/eng/e2e-shared-device.ps1 -Prefix E2E_MQTTV5_SHARED -RegistrationId $env:E2E_REGISTRATION_ID `
             -ConsumerGroup $group -OutFile test_config/set_test_env_vars.ps1
 
@@ -455,7 +456,7 @@ jobs:
         working-directory: c
         shell: pwsh
         run: |
-          cmake --preset $env:AZ_IOT_PRESET -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_BUILD_E2E_MQTTV5=ON -DAZ_IOT_WITH_PAHO=ON -DAZ_IOT_WITH_AZ_MQTT=ON -DAZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE=1114112
+          cmake --preset $env:AZ_IOT_PRESET -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_BUILD_E2E_MQTTV5=ON -DAZ_IOT_WITH_PAHO=ON -DAZ_IOT_WITH_AZ_MQTT=ON
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cmake --build --preset $env:AZ_IOT_PRESET --target az_iot_tests_e2e_mqttv5_telemetry az_iot_tests_e2e_mqttv5_telemetry_az_mqtt
 
@@ -470,9 +471,9 @@ jobs:
           E2E_REGISTRATION_ID: ci-mqttv5-te-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.os-tag }}
           E2E_GROUP_SLOT: 8
           E2E_RUN_ID: ${{ github.run_id }}
-        # Consumer groups e2e-0..e2e-9; Event Hubs allows 5 readers per partition per group.
+        # Consumer groups e2e-0..e2e-10; Event Hubs allows 5 readers per partition per group.
         run: |
-          $group = 'e2e-' + (([long]$env:E2E_RUN_ID + [long]$env:E2E_GROUP_SLOT) % 10)
+          $group = 'e2e-' + (([long]$env:E2E_RUN_ID + [long]$env:E2E_GROUP_SLOT) % 11)
           ./c/eng/e2e-shared-device.ps1 -Prefix E2E_MQTTV5_SHARED -RegistrationId $env:E2E_REGISTRATION_ID `
             -ConsumerGroup $group -OutFile test_config/set_test_env_vars.ps1
 
@@ -546,7 +547,7 @@ jobs:
         working-directory: c
         shell: pwsh
         run: |
-          cmake --preset $env:AZ_IOT_PRESET -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_BUILD_E2E_MQTTV5=ON -DAZ_IOT_WITH_PAHO=ON -DAZ_IOT_WITH_AZ_MQTT=ON -DAZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE=1114112
+          cmake --preset $env:AZ_IOT_PRESET -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_BUILD_E2E_MQTTV5=ON -DAZ_IOT_WITH_PAHO=ON -DAZ_IOT_WITH_AZ_MQTT=ON
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cmake --build --preset $env:AZ_IOT_PRESET --target az_iot_tests_e2e_mqttv5_direct_method az_iot_tests_e2e_mqttv5_direct_method_az_mqtt
 
@@ -562,7 +563,7 @@ jobs:
           E2E_RUN_ID: ${{ github.run_id }}
         # The direct method suite reads no events; the consumer group only satisfies the script.
         run: |
-          $group = 'e2e-' + ([long]$env:E2E_RUN_ID % 10)
+          $group = 'e2e-' + ([long]$env:E2E_RUN_ID % 11)
           ./c/eng/e2e-shared-device.ps1 -Prefix E2E_MQTTV5_SHARED -RegistrationId $env:E2E_REGISTRATION_ID `
             -ConsumerGroup $group -OutFile test_config/set_test_env_vars.ps1
 
@@ -692,7 +693,7 @@ jobs:
         working-directory: c
         shell: pwsh
         run: |
-          cmake --preset $env:AZ_IOT_PRESET -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_BUILD_E2E_MQTTV5=ON -DAZ_IOT_WITH_PAHO=ON -DAZ_IOT_WITH_AZ_MQTT=ON -DAZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE=1114112
+          cmake --preset $env:AZ_IOT_PRESET -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_BUILD_E2E_MQTTV5=ON -DAZ_IOT_WITH_PAHO=ON -DAZ_IOT_WITH_AZ_MQTT=ON
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cmake --build --preset $env:AZ_IOT_PRESET --target $env:AZ_IOT_E2E_TEST
 
@@ -708,12 +709,12 @@ jobs:
           E2E_GROUP_SLOT: 4
           E2E_ADAPTER_INDEX: ${{ matrix.index }}
           E2E_RUN_ID: ${{ github.run_id }}
-        # Consumer groups e2e-0..e2e-9; Event Hubs allows 5 readers per partition per group.
+        # Consumer groups e2e-0..e2e-10; Event Hubs allows 5 readers per partition per group.
         run: |
           # One consumer group per job of this suite: slot + adapter index * shard count + shard.
           $shard, $count = $env:AZ_IOT_TEST_SHARD -split '/'
           $slot = [long]$env:E2E_GROUP_SLOT + [long]$env:E2E_ADAPTER_INDEX * [long]$count + [long]$shard
-          $group = 'e2e-' + (([long]$env:E2E_RUN_ID + $slot) % 10)
+          $group = 'e2e-' + (([long]$env:E2E_RUN_ID + $slot) % 11)
           ./c/eng/e2e-shared-device.ps1 -Prefix E2E_MQTTV5_SHARED -RegistrationId $env:E2E_REGISTRATION_ID `
             -ConsumerGroup $group -OutFile test_config/set_test_env_vars.ps1
 
@@ -771,7 +772,7 @@ jobs:
       - name: Build
         working-directory: c
         run: |
-          cmake --preset linux-gcc-debug -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_BUILD_E2E_MQTTV5=ON -DAZ_IOT_BUILD_E2E_PKCS11=ON -DAZ_IOT_WITH_PAHO=ON -DAZ_IOT_WITH_AZ_MQTT=ON -DAZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE=1114112
+          cmake --preset linux-gcc-debug -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_BUILD_E2E_MQTTV5=ON -DAZ_IOT_BUILD_E2E_PKCS11=ON -DAZ_IOT_WITH_PAHO=ON -DAZ_IOT_WITH_AZ_MQTT=ON
           cmake --build --preset linux-gcc-debug --target az_iot_tests_e2e_mqttv5_custody az_iot_tests_e2e_mqttv5_custody_az_mqtt
 
       - name: Issue a device
@@ -783,11 +784,11 @@ jobs:
           E2E_MQTTV5_SHARED_ID_SCOPE: ${{ vars.E2E_MQTTV5_SHARED_ID_SCOPE }}
           E2E_MQTTV5_SHARED_DPS_HOST: ${{ vars.E2E_MQTTV5_SHARED_DPS_HOST }}
           E2E_REGISTRATION_ID: ci-mqttv5-cu-${{ github.run_id }}-${{ github.run_attempt }}
-          E2E_GROUP_SLOT: 8
+          E2E_GROUP_SLOT: 10
           E2E_RUN_ID: ${{ github.run_id }}
-        # Consumer groups e2e-0..e2e-9; Event Hubs allows 5 readers per partition per group.
+        # Consumer groups e2e-0..e2e-10; Event Hubs allows 5 readers per partition per group.
         run: |
-          $group = 'e2e-' + (([long]$env:E2E_RUN_ID + [long]$env:E2E_GROUP_SLOT) % 10)
+          $group = 'e2e-' + (([long]$env:E2E_RUN_ID + [long]$env:E2E_GROUP_SLOT) % 11)
           ./c/eng/e2e-shared-device.ps1 -Prefix E2E_MQTTV5_SHARED -RegistrationId $env:E2E_REGISTRATION_ID `
             -ConsumerGroup $group -OutFile test_config/set_test_env_vars.ps1
 

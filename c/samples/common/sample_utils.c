@@ -184,6 +184,25 @@ char* sample_env_copy(const char* name, const char* fallback)
 #endif
 }
 
+bool sample_is_plain_file_name(az_span name)
+{
+  int32_t size = az_span_size(name);
+  const uint8_t* bytes = az_span_ptr(name);
+  if (size <= 0 || (size == 1 && bytes[0] == '.')
+      || (size == 2 && bytes[0] == '.' && bytes[1] == '.'))
+  {
+    return false;
+  }
+  for (int32_t i = 0; i < size; i++)
+  {
+    if (bytes[i] == '/' || bytes[i] == '\\' || bytes[i] == ':' || bytes[i] == '\0')
+    {
+      return false;
+    }
+  }
+  return true;
+}
+
 bool sample_string_copy(char* dst, size_t dst_size, const char* src)
 {
   size_t n = strlen(src);
@@ -358,6 +377,48 @@ FILE* sample_file_open_read_no_follow(const char* path)
 #endif
 }
 
+FILE* sample_file_rewrite_existing_no_follow(const char* path)
+{
+  if (!path)
+  {
+    return NULL;
+  }
+  FILE* f = NULL;
+  int fd;
+#ifdef _WIN32
+  if (_sopen_s(&fd, path, _O_WRONLY | _O_TRUNC | _O_BINARY, _SH_DENYWR, 0) != 0)
+  {
+    return NULL;
+  }
+  f = _fdopen(fd, "wb");
+  if (!f)
+  {
+    (void)_close(fd);
+  }
+#else
+#ifdef O_NOFOLLOW
+  fd = open(path, O_WRONLY | O_NOFOLLOW | O_NONBLOCK);
+#else
+  fd = open(path, O_WRONLY | O_NONBLOCK);
+#endif
+  if (fd < 0)
+  {
+    return NULL;
+  }
+  /* Emptied only once known to be a regular file; "wb" on a descriptor does not truncate. */
+  struct stat st;
+  if (fstat(fd, &st) == 0 && S_ISREG(st.st_mode) && ftruncate(fd, 0) == 0)
+  {
+    f = fdopen(fd, "wb");
+  }
+  if (!f)
+  {
+    (void)close(fd);
+  }
+#endif
+  return f;
+}
+
 bool sample_file_flush_to_storage(FILE* file)
 {
   if (file == NULL || fflush(file) != 0)
@@ -408,6 +469,26 @@ static bool sync_parent_directory(const char* path)
 }
 #endif
 
+bool sample_file_remove_durably(const char* path)
+{
+  if (path == NULL)
+  {
+    return false;
+  }
+  /* Synced on ENOENT too: an earlier removal may not have reached storage. */
+  if (remove(path) != 0 && errno != ENOENT)
+  {
+    return false;
+  }
+#ifndef _WIN32
+  if (!sync_parent_directory(path))
+  {
+    fprintf(stderr, "%s: gone, but its directory could not be synced to storage\n", path);
+  }
+#endif
+  return true;
+}
+
 bool sample_file_replace(const char* source_path, const char* destination_path)
 {
   if (source_path == NULL || destination_path == NULL)
@@ -435,6 +516,63 @@ bool sample_file_replace(const char* source_path, const char* destination_path)
   }
   return true;
 #endif
+}
+
+bool sample_file_write_atomically(const char* path, const void* data, size_t size)
+{
+  if (data == NULL && size > 0)
+  {
+    return false;
+  }
+  char* temporary_path = NULL;
+  FILE* file = sample_file_create_private_unique(path, &temporary_path);
+  if (file == NULL)
+  {
+    return false;
+  }
+  bool written = size == 0 || fwrite(data, 1, size, file) == size;
+  return sample_file_complete_atomic_write(file, temporary_path, path, written);
+}
+
+bool sample_file_complete_atomic_write(
+    FILE* file,
+    char* temporary_path,
+    const char* path,
+    bool contents_written)
+{
+  bool replaced = file != NULL && contents_written && sample_file_flush_to_storage(file);
+  /* fclose() can report a delayed write failure. */
+  if (file != NULL && fclose(file) != 0)
+  {
+    replaced = false;
+  }
+  replaced = replaced && temporary_path != NULL && sample_file_replace(temporary_path, path);
+  if (!replaced && temporary_path != NULL)
+  {
+    (void)remove(temporary_path);
+  }
+  free(temporary_path);
+  return replaced;
+}
+
+bool sample_file_delete(const char* path)
+{
+  if (path == NULL)
+  {
+    errno = EINVAL;
+    return false;
+  }
+  if (remove(path) != 0)
+  {
+    return errno == ENOENT;
+  }
+#ifndef _WIN32
+  if (!sync_parent_directory(path))
+  {
+    fprintf(stderr, "%s: deleted, but its directory could not be synced to storage\n", path);
+  }
+#endif
+  return true;
 }
 
 /** @brief Set by on_stop_signal(); sig_atomic_t is the only type a handler may write. */

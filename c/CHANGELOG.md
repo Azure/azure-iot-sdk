@@ -4,6 +4,114 @@
 
 ### Features Added
 
+- Breaking: the az_mqtt adapter footprint is removed. `AZ_IOT_AZ_MQTT_FOOTPRINT` (macro, with
+  `AZ_IOT_AZ_MQTT_FOOTPRINT_DEFAULT` and `_CONSTRAINED`, and CMake option `DEFAULT` or
+  `CONSTRAINED`) selected only `AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX`, which is now the one setting
+  (default 16; `CONSTRAINED` was 4). Defining the macro or setting the CMake option fails the
+  build. `AZ_IOT_AZ_MQTT_CONFIG_FILE` stays.
+- Breaking: `az_iot_mqtt_adapter` gains an optional `validate_limits_for_session_usage()`, which
+  `az_iot_connection_client_init()` calls with whether the hub session outlives its connection
+  (`az_iot_mqtt_session_usage`); init fails with `AZ_IOT_ERR_INVALID_ARG` when it refuses the
+  limits. Positional initializers of the struct need a third member (NULL). The az_mqtt adapter
+  refuses `message_store_size` 0 unless `session_continuity` is `AZ_IOT_SESSION_CONTINUITY_CLEAN`
+  or `dps.provision_only` is set, so this fails at init instead of at every connect. Paho, and
+  adapters that leave it NULL, are unaffected. Defining `AZ_IOT_DEFAULT_SESSION_EXPIRY_SECONDS` as
+  0 is a compile error.
+- Breaking: the mqttv3 direct method client holds its in-flight invocations in a workspace the
+  application provides, sized at run time. `az_iot_mqttv3_direct_method_client_init()` takes
+  `az_iot_mqttv3_direct_method_client_options` (`az_iot_mqttv3_direct_method_client_options_default()`):
+  `limits.max_in_flight_invocations` (0: the default
+  `AZ_IOT_MQTTV3_DIRECT_METHOD_CLIENT_DEFAULT_MAX_IN_FLIGHT_INVOCATIONS`, 4; at most 1024),
+  `workspace` and `workspace_size` (`az_iot_mqttv3_direct_method_client_get_workspace_size()`,
+  `AZ_IOT_MQTTV3_DIRECT_METHOD_CLIENT_WORKSPACE_SIZE()`). `init()` returns `AZ_IOT_ERR_INVALID_ARG`
+  for a limit above its maximum or a NULL workspace, and `AZ_IOT_ERR_NOT_ENOUGH_SPACE` for one too
+  small; `deinit()` wipes it. `AZ_IOT_DM_MAX_INFLIGHT` is removed (defining it is a compile error).
+- Breaking: the mqttv3 and mqttv5 twin clients hold their pending requests in a workspace the
+  application provides, sized at run time. `az_iot_mqttv3_twin_client_init()` and
+  `az_iot_mqttv5_twin_client_init()` take `az_iot_mqttv3_twin_client_options` and
+  `az_iot_mqttv5_twin_client_options` (`_options_default()`): `limits.max_pending_requests` (`az_iot_twin_client_limits`;
+  0: the default `AZ_IOT_TWIN_CLIENT_DEFAULT_MAX_PENDING_REQUESTS`, 8; at most 1024), `workspace`
+  and `workspace_size` (`az_iot_mqttv3_twin_client_get_workspace_size()`,
+  `AZ_IOT_MQTTV3_TWIN_CLIENT_WORKSPACE_SIZE()` and the mqttv5 equivalents). `init()` returns
+  `AZ_IOT_ERR_INVALID_ARG` for a limit above its maximum or a NULL workspace, and
+  `AZ_IOT_ERR_NOT_ENOUGH_SPACE` for one too small; `deinit()` wipes it. `AZ_IOT_TWIN_MAX_PENDING`
+  and `AZ_IOT_MQTTV5_TWIN_TRACKED_MESSAGES` are removed (defining the first is a compile error).
+- Breaking: the mqttv5 direct method client holds its tokens, invocations, declared methods, queued
+  notices and result buffers in a workspace the application provides, sized at run time.
+  `az_iot_mqttv5_direct_method_client_init()` takes `az_iot_mqttv5_direct_method_client_options`
+  (`az_iot_mqttv5_direct_method_client_options_default()`):
+  `limits` (`az_iot_mqttv5_direct_method_client_limits`; 0 fields select the defaults):
+  `max_concurrent_invocations` (4, at most 255), `max_methods` (8, at most 1024),
+  `max_queued_notices` (`max_concurrent_invocations`, at most 1024) and `max_result_body_size` (512,
+  at most 131072); `workspace` and `workspace_size`
+  (`az_iot_mqttv5_direct_method_client_get_workspace_size()`,
+  `AZ_IOT_MQTTV5_DIRECT_METHOD_CLIENT_WORKSPACE_SIZE()`). `init()` returns `AZ_IOT_ERR_INVALID_ARG`
+  for a limit above its maximum or a NULL workspace, and `AZ_IOT_ERR_NOT_ENOUGH_SPACE` for one too
+  small; `deinit()` wipes it. `AZ_IOT_MQTTV5_DM_MAX_CONCURRENT`, `AZ_IOT_MQTTV5_DM_MAX_METHODS`,
+  `AZ_IOT_MQTTV5_DM_NOTICE_QUEUE_MAX` and `AZ_IOT_MQTTV5_DM_RESULT_BODY_MAX` are removed (defining
+  one is a compile error), as is `AZ_IOT_MQTTV5_DM_TRACKED_MESSAGES`;
+  `AZ_IOT_MQTTV5_DM_RESERVED_PUBACKS(max_concurrent_invocations)` now takes the limit.
+- Breaking: feature-client string and topic sizes that lay out public structs are fixed:
+  `AZ_IOT_DM_METHOD_NAME_MAX` (96), `AZ_IOT_DM_RID_MAX` (32), `AZ_IOT_DM_CORR_DATA_MAX` (64),
+  `AZ_IOT_MQTTV5_DM_TOPIC_MAX` (192) and `AZ_IOT_LOG_FILE_PATH_MAX` (256). Defining any of them
+  before including the headers is a compile error, so these sizes cannot differ between the
+  application and the SDK.
+- Breaking: the MQTT factory API is removed; the connection client builds every session's MQTT
+  client with `az_iot_connection_client_options::mqtt_adapter` in `mqtt_workspace`, sized by
+  `mqtt_limits`. All three are required: `init()` returns `AZ_IOT_ERR_INVALID_ARG` when
+  `mqtt_adapter` is NULL. Removed: `az_iot_mqtt_factory`,
+  `az_iot_connection_client_register_mqtt_factory()`, `AZ_IOT_MAX_MQTT_FACTORIES` (defining it is
+  a compile error), `az_iot_paho_factory_create_v3_1_1()`, `az_iot_paho_factory_create_v5()`,
+  `az_iot_paho_factory_destroy()`, `az_iot_az_mqtt_factory_create_v3_1_1()`,
+  `az_iot_az_mqtt_factory_create_v5()` and `az_iot_az_mqtt_factory_destroy()`. The az_mqtt
+  adapter's sizes are run-time values only: `AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE`,
+  `AZ_IOT_AZ_MQTT_RECEIVE_BUFFER_SIZE`, `AZ_IOT_AZ_MQTT_INFLIGHT_MAX` and
+  `AZ_IOT_AZ_MQTT_MESSAGE_STORAGE_SIZE` (macros, and the first three as CMake options) are removed;
+  defining one fails the build. Neither adapter allocates its client any more.
+- Breaking: `AZ_IOT_SU_REQUEST_NO_TIMEOUT` is removed, and `az_iot_su_client_request_update()` and
+  `az_iot_su_client_request_onboarding_update()` return `AZ_IOT_ERR_INVALID_ARG` for a timeout of
+  0. The hub session is down while a check runs, so every check is bounded; pass
+  `AZ_IOT_SU_REQUEST_DEFAULT_TIMEOUT_MS` or your own bound.
+- Software updates: an update check the channel sent or a status report waits at most 120 s
+  (`AZ_IOT_SU_CHANNEL_RESPONSE_TIMEOUT_MS`, was 60 s for reports only) for its answer; then the
+  provisioning session is released, the hub reconnects, and the request is sent again on the retry
+  backoff. A provisioning session opened for an operation waits at most 120 s (was 60 s) to become
+  ready.
+- Software updates: `AZ_IOT_SU_REQUEST_DEFAULT_TIMEOUT_MS` is 120 s (was 60 s). It is the whole
+  wall-clock budget of a check, session setup and retries included, and no longer shorter than the
+  120 s one sent request may wait for its answer (`AZ_IOT_SU_CHANNEL_RESPONSE_TIMEOUT_MS`).
+- Connection client: `az_iot_connection_client_set_dps_assignment_invalidated_callback()` reports,
+  once, when the client will not use the assignment it holds again: DPS returned an assignment it
+  rejected, the hub refused the identity in `AZ_IOT_IDENTITY_RECOVERY_REPROVISION` mode, or
+  `dps.max_hub_connect_attempts_before_reprovision` was reached. An application that saves the
+  assignment deletes it there, so a restart registers with DPS instead of restoring it. The
+  `dps_persist_assignment` sample does. See
+  [docs/connecting.md](docs/connecting.md#saved-hub-with-dps-fallback).
+- Breaking: the connection client runs one MQTT session at a time; the provisioning session and the
+  hub session no longer overlap. With software updates bound, the hub connect after registration
+  waits while the update check still needs the provisioning session, then connects to the assigned
+  hub without registering again. After registration, each update check or status report made while
+  the hub is connected ends the hub session and the hub reconnects to its assignment once the
+  software updates client has no work left: the hub scope reports `RETRY_PENDING` with reason
+  `AZ_IOT_OK` (`is_credential_renewal` false, no `recovery`), and feature clients see an ordinary
+  session end (`AZ_IOT_CONNECTION_SESSION_END_PLANNED`) and resume after it. These planned ends do not
+  count toward reconnection backoff or `dps.max_hub_connect_attempts_before_reprovision`. Creating
+  an MQTT client for one session while the other's exists fails with `AZ_IOT_ERR_INTERNAL`.
+- Connection client (internal): the provisioning session is wanted through
+  `__dps_session_ensure()` or `__dps_publish()` and given back with `__dps_session_release()`;
+  `__dps_user_acquire()` and `__dps_user_release()` are removed. Behavior is unchanged.
+- Connection client: `az_iot_connection_client_options::mqtt_adapter`, `mqtt_limits`,
+  `mqtt_workspace` and `mqtt_workspace_size` build each session's MQTT client in application
+  memory (e.g. `az_iot_az_mqtt_get_adapter()`), instead of registered factories. `init()` checks
+  the workspace size; `deinit()` wipes it. The workspace
+  holds one client at a time, as one MQTT session runs at a time.
+- Samples: the software updates samples (PC and ESP32) build their MQTT client in a static
+  workspace through `mqtt_adapter`, like the other samples, instead of registering MQTT factories.
+- SAS token renewal lets the session's deliveries settle before its DISCONNECT: publishes
+  awaiting a PUBACK and SDK requests awaiting a response (twin), for up to 5 s (not past the
+  token's expiry). Meanwhile a new QoS 1 publish returns `AZ_IOT_ERR_BUSY`; once the DISCONNECT
+  is sent, any publish returns `AZ_IOT_ERR_NOT_CONNECTED`. A renewal now takes up to that plus
+  the disconnect bound.
 - mqttv3 twin: requests go through the delivery tracker and time out:
   `az_iot_mqttv3_twin_client_set_request_timeout()` (default
   `AZ_IOT_MQTTV3_TWIN_REQUEST_TIMEOUT_MS_DEFAULT`, 60 s, from the call). A GET waits for a
@@ -50,8 +158,22 @@
   from the related file the handler chooses, verifying the related and the built file's SHA-256.
   If that fails, the file is downloaded in full and its step reports `SUCCEEDED` with an
   `AZ_IOT_SU_FACILITY_DELTA` (`0xA`) extended result code (`AZ_IOT_SU_DELTA_ERROR_*` sub-codes)
-  and short result details. `workflow_succeeded_fn` is called once a workflow with such a file
-  succeeds. `download_fn` and `read_file_fn` also get related files.
+  and short result details. `workflow_ended_fn` is called once a workflow with such a file ends,
+  with its outcome (`CANCELED` when a new workflow replaced it). `download_fn` and `read_file_fn` also get related files.
+- Software updates: the reference `microsoft/delta:1` download handler, `az_iot_su_delta.h`
+  (`-DAZ_IOT_WITH_SU_DELTA=ON`, component `su_delta`, POSIX only). It rebuilds a file from a delta
+  related file and the file of an earlier update, kept in a source cache with the Device Update
+  reference agent's layout (default `/var/lib/adu/sdc`, latest update per provider). The default
+  delta processor, `libadudiffapi.so`, is loaded at run time; without it files are downloaded in
+  full. The `pc/http_download` and `pc/simulated_regular` samples register it.
+- Software updates: `az_iot_su_decode_manifest_string()` decodes a manifest string the parser keeps
+  escaped, such as a file id (`f\u0031` is `f1`).
+- End-to-end tests: the Software Update offer suite runs delta updates against the service, with
+  a test download handler: a device holding the source builds the file from the related file, and
+  one without it falls back to a full download reported with the delta `NO_SOURCE` code; and, on
+  POSIX, with the reference `microsoft/delta:1` handler and the real delta processor. Three new
+  standing offers (`AZ_IOT_E2E_SU_OFFER_MODEL_DELTA`, `_DELTA_NO_SOURCE`, `_MICROSOFT_DELTA`). On
+  POSIX the offer suite now needs `AZ_IOT_WITH_SU_DELTA=ON` and `AZ_IOT_SU_DELTA_TEST_LIBRARY`.
 - Software updates: the parsed manifest keeps each file's `mimeType`, `properties`,
   `downloadHandler` id and related files (`relatedFiles`, delta updates), and the request accepts
   their `fileUrls`. New `az_iot_su_limits::max_related_files` (default
@@ -116,7 +238,7 @@
   `AZ_IOT_ERR_INVALID_ARG` without one. `AZ_IOT_MAX_PENDING_PUBACKS`, `AZ_IOT_MAX_PUBACK_RESERVATIONS`,
   `AZ_IOT_MAX_PERSISTENT_SUBS`, `AZ_IOT_MAX_SESSION_HANDLERS`, `AZ_IOT_MAX_FEATURE_STATE_OBSERVERS`,
   `AZ_IOT_MAX_APP_STATE_OBSERVERS`, `AZ_IOT_MAX_FEATURE_CLIENT_BINDS` and
-  `AZ_IOT_MAX_INBOUND_HANDLERS` are removed. `AZ_IOT_MAX_MQTT_FACTORIES`, `AZ_IOT_DPS_HOST_BUF`,
+  `AZ_IOT_MAX_INBOUND_HANDLERS` are removed. `AZ_IOT_DPS_HOST_BUF`,
   `AZ_IOT_DPS_DEVICE_ID_BUF`, `AZ_IOT_DPS_OPERATION_ID_MAX`, `AZ_IOT_CONNECTION_PROFILE_RAW_BUF`,
   `AZ_IOT_MQTT_USERNAME_BUF`, `AZ_IOT_PERSISTENT_SUB_TOPIC_MAX` and `AZ_IOT_DISPATCH_PREFIX_MAX` are
   fixed. Defining any of them before including the headers is a compile error, so no build of the
@@ -132,15 +254,18 @@
   and receive buffers, in-flight messages, message store and connect-string copies.
   `az_iot_az_mqtt_get_workspace_size()` gives the exact size; `AZ_IOT_AZ_MQTT_WORKSPACE_SIZE()` a
   constant-expression bound for static arrays. The client's `destroy()` wipes the workspace and
-  frees nothing. The factories are unchanged; they now allocate one workspace per client.
+  frees nothing.
 - Paho adapter in application memory: `az_iot_paho_get_adapter()` returns an
   `az_iot_mqtt_adapter` descriptor. The workspace holds the adapter's own state
   (`AZ_IOT_PAHO_WORKSPACE_SIZE`); Paho still allocates its internals and sizes its own buffers,
   so the limits are only checked. `destroy()` releases those internals, wipes the workspace
-  and frees nothing else. The factories are unchanged.
-- az_mqtt adapter: `AZ_IOT_AZ_MQTT_MESSAGE_STORAGE_SIZE` may be 0, for devices that only use clean
-  sessions: no message store is allocated, and a connect whose session outlives the connection
-  (`clean_start` false; MQTT 5: with `session_expiry_seconds` > 0) returns `AZ_IOT_ERR_NOT_SUPPORTED`.
+  and frees nothing else.
+- az_mqtt adapter: `az_iot_mqtt_limits::message_store_size` may be 0, for devices that only use
+  clean sessions: no message store is reserved, `az_iot_connection_client_init()` refuses it
+  unless `session_continuity` is `AZ_IOT_SESSION_CONTINUITY_CLEAN` or `dps.provision_only` is set,
+  and a connect whose session
+  outlives the connection (`clean_start` false; MQTT 5: with `session_expiry_seconds` > 0) returns
+  `AZ_IOT_ERR_NOT_SUPPORTED`.
 - Retry policy: `az_iot_retry_policy::jitter_mode`. `AZ_IOT_RETRY_JITTER_ADDITIVE` only lengthens a
   delay (+0..`jitter_pct`); the default `AZ_IOT_RETRY_JITTER_SYMMETRIC` keeps the existing ± jitter.
 - Initial preview of the C SDK for Azure IoT Hub (mqttv3 and mqttv5).
@@ -165,9 +290,9 @@
   over the bundled `deps/az_mqtt` client, with no adapter thread (connect and receive in
   `process_loop()`, sends written when called); TLS through OpenSSL 3
   or mbedTLS (`AZ_IOT_AZ_MQTT_TLS`), Schannel on Windows (X.509 and in-memory PEM included);
-  WebSockets, HTTP CONNECT proxy, and key references through an OpenSSL 3 provider. Per-client sizes are set when compiled, with or
-  without CMake: a footprint (`AZ_IOT_AZ_MQTT_FOOTPRINT`), separate send and receive sizes, or a
-  config header. See [docs/client-configuration.md](docs/client-configuration.md#az_mqtt-adapter-sizes).
+  WebSockets, HTTP CONNECT proxy, and key references through an OpenSSL 3 provider. Buffer sizes
+  are run-time values (`az_iot_mqtt_limits`); the MQTT 5 CONNECT user property bound is set when
+  compiled, with or without CMake: a definition or a config header. See [docs/client-configuration.md](docs/client-configuration.md#az_mqtt-adapter-limits).
 - Logging for support diagnostics: rotating file sink (`az_iot_log_file_sink_open()`), lines
   `<UTC ISO 8601 time> [LEVEL] [component] [thread] [file:line] message` from the built-in sinks, connection configuration,
   state changes and retries at `INFO`, and a `...` marker on truncated messages.
@@ -178,7 +303,7 @@
   `az_iot_log_emit*(level, component, file, line, ...)` and `az_iot_log_sink_callback` gain a
   `component` argument; SDK values are the `AZ_IOT_LOG_COMPONENT_*` macros in `az_iot_log_components.h`. See [docs/logging.md](docs/logging.md).
 - Breaking: every connection attempt now starts in the new `AZ_IOT_CONN_STATE_SETTING_UP`, so an
-  attempt that fails on the device (credential load, SAS signing, missing factory, buffer too
+  attempt that fails on the device (credential load, SAS signing, MQTT client creation, buffer too
   small) produces a state event on each retry. Such failures carry the new error source
   `AZ_IOT_CONN_ERR_SRC_LOCAL`. `AZ_IOT_CONN_STATE_RECONNECTING` is renamed
   `AZ_IOT_CONN_STATE_RETRY_PENDING`. See [docs/connecting.md](docs/connecting.md#connection-states).
@@ -300,8 +425,7 @@
   [docs/client-configuration.md](docs/client-configuration.md#installed-dependencies).
 - Breaking: the application owns MQTT factories. `az_iot_mqtt_factory` loses `destroy`, and
   `az_iot_connection_client_deinit()` no longer destroys registered factories: registration only
-  lends a factory to the client. Destroy each factory (e.g. `az_iot_paho_factory_destroy()`) after
-  `az_iot_connection_client_deinit()`. See [docs/connecting.md](docs/connecting.md#mqtt-factory-ownership).
+  lends a factory to the client. The factory API was later removed (see the first entry above).
 - Breaking: mqttv3 C2D properties are read on demand instead of being decoded into SDK buffers.
   `az_iot_c2d_message` keeps `payload`/`payload_len` and gains `properties`, a read-only view of
   the topic property bag; `content_type`, the `properties` array, `properties_count`,
@@ -374,6 +498,22 @@
 
 ### Bugs Fixed
 
+- Paho: a QoS 1 publish whose write fails with a socket error no longer crashes the application.
+  Paho 1.3.16 freed the message's topic and payload twice: when the session was cleaned, or in
+  `MQTTAsync_destroy()` for the hub session. IoT Hub triggers it by resetting the connection on a
+  publish over its Maximum Packet Size. The bundled Paho is patched with the upstream fix
+  (eclipse-paho/paho.mqtt.c#1592); an installed Paho is not. The adapter also reports such a
+  failure with the publish's packet id, where it reported packet id 0, which matched no publish.
+  See [docs/dependencies.md](docs/dependencies.md#publish-freed-twice-after-a-failed-write).
+- ESP32 samples (`software_update/esp32`, `unified/esp32`) build with every ESP-IDF 6 release:
+  they pinned `espressif/ethernet_init` to `==1.2.0`, while ESP-IDF v6.0.2 and later need
+  `^1.3.0`. The version now comes from ESP-IDF's `protocol_examples_common`. CI builds the ESP32
+  samples and runs the ESP32 QEMU e2e with ESP-IDF v6.1, and builds both samples with v6.0.
+- ESP32 with the Digital Signature peripheral (esp32c3, esp32s3, esp32c6) connects with ESP-IDF
+  v6.0.1 and later: the `esp_secure_cert` certificate provider imports the DS key in the layout
+  those releases expect (an `esp_rsa_ds_opaque_key_t`; v6.0 keeps the old one), and az_mqtt's
+  mbedTLS backend wraps a PSA key that cannot export its public key (TF-PSA-Crypto 1.1, ESP-IDF
+  v6.0.3 and later) with the client certificate's public key.
 - Connection client, events drained in one `process_loop()`: a failed acknowledgement (PUBACK,
   SUBACK, UNSUBACK) becomes connection error detail only when it fails the connection. A presence,
   gated or DPS SUBACK drained after a session-ending event is ignored; a FAILS_SELF refusal is still

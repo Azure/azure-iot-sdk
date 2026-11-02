@@ -26,6 +26,7 @@
 #include "azure/iot/az_iot_connection_client.h"
 #include "azure/iot/az_iot_log_components.h"
 
+#include "internal/connection_client_internal.h"
 #include "internal/mono_time.h"
 #include "../../src/features/su/internal/su_channel_internal.h"
 #include "../../src/features/su/internal/su_internal.h"
@@ -250,7 +251,7 @@ typedef enum
   OP_RESTORE,
   OP_CHOOSE_RELATED_FILE,
   OP_BUILD_FILE_FROM_RELATED,
-  OP_WORKFLOW_SUCCEEDED
+  OP_WORKFLOW_ENDED
 } op_kind;
 
 #define MAX_OPS 96
@@ -337,7 +338,9 @@ typedef struct
   char build_fail_id[32]; /* build fails for this file */
   int choose_calls;
   int build_calls;
-  int succeeded_calls;
+  int ended_calls;
+  az_iot_su_outcome ended_outcomes[2]; /* of the first calls to workflow_ended_fn */
+  char ended_last_file_id[2][32]; /* the id of the last file of their manifest */
   char built_file_id[32];
   char built_from_id[32];
   uint32_t built_file_index;
@@ -847,15 +850,12 @@ static az_iot_result fake_channel_report(void* ctx, const az_iot_su_report* repo
   return fc->report_result;
 }
 
-/* The public macros mean what the header says they mean. Pinned because a
- * sample or an application compiled against a changed value would fail
- * silently, and because NO_TIMEOUT must stay the value the engine reads as
- * "no bound". */
+/* The public default means what the header says. Pinned because a sample or an
+ * application compiled against a changed value would change silently. */
 static void the_public_timeout_macros_hold_their_contract(void** state)
 {
   (void)state;
-  assert_int_equal(AZ_IOT_SU_REQUEST_NO_TIMEOUT, 0u);
-  assert_int_equal(AZ_IOT_SU_REQUEST_DEFAULT_TIMEOUT_MS, 60000u);
+  assert_int_equal(AZ_IOT_SU_REQUEST_DEFAULT_TIMEOUT_MS, 120000u);
 }
 
 /* The request timeout these tests pass to the request functions. */
@@ -939,7 +939,6 @@ typedef struct
   fake_channel chan;
   az_iot_su_channel channel;
   az_iot_su_client su;
-  az_iot_mqtt_factory* factory;
   az_iot_mock_mqtt_client* mock;
 
   hook_log log;
@@ -1267,10 +1266,8 @@ static int setup(void** state)
   opts.port = 8883;
   opts.device_id = "ut-device";
   opts.crypto = &fx->crypto.base;
+  opts.mqtt_adapter = az_iot_mock_mqtt_get_adapter_for_version(AZ_IOT_MQTT_VERSION_3_1_1);
   assert_int_equal(az_iot_test_connection_client_init(&fx->conn, &opts), AZ_IOT_OK);
-
-  fx->factory = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
-  assert_non_null(fx->factory);
 
   memset(&fx->chan, 0, sizeof(fx->chan));
   fx->chan.report_result = AZ_IOT_OK;
@@ -1304,7 +1301,6 @@ static int teardown(void** state)
     az_iot_su_client_deinit(&fx->su);
 
     az_iot_test_connection_client_deinit(&fx->conn);
-    az_iot_mock_mqtt_factory_destroy(fx->factory);
     free(fx);
   }
   return 0;
@@ -1312,10 +1308,8 @@ static int teardown(void** state)
 
 static void open_to_connected(fixture* fx)
 {
-  assert_int_equal(
-      az_iot_connection_client_register_mqtt_factory(&fx->conn, fx->factory), AZ_IOT_OK);
   assert_int_equal(az_iot_connection_client_open(&fx->conn), AZ_IOT_OK);
-  fx->mock = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  fx->mock = az_iot_mock_mqtt_adapter_last_client();
   assert_non_null(fx->mock);
   assert_true(az_iot_mock_mqtt_client_inject_connected(fx->mock, AZ_IOT_OK));
   assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
@@ -3211,7 +3205,7 @@ static void init_checks_the_workspace(void** state)
       az_iot_su_client__initialize_with_channel(&client, &channel, fx->su._internal.crypto, &o),
       AZ_IOT_ERR_INVALID_ARG);
   assert_false(fc.opened);
-  assert_int_equal(fx->conn.dps_user_count, 0);
+  assert_false(fx->conn.dps_session_wanted);
 
   o.limits.scratch_size = AZ_IOT_SU_VERIFY_SCRATCH_SIZE;
   assert_int_equal(
@@ -3556,14 +3550,14 @@ static void properties_validate_initialization_before_opening_the_channel(void**
       AZ_IOT_ERR_INVALID_ARG);
   assert_false(fc.opened);
   assert_int_equal(az_iot_su_client_init(&client, &fx->conn, &opts), AZ_IOT_ERR_INVALID_ARG);
-  assert_int_equal(fx->conn.dps_user_count, 0);
+  assert_false(fx->conn.dps_session_wanted);
   assert_int_equal(fx->conn.dps_hold_count, 0);
 
   device_properties.manufacturer = "m";
   assert_int_equal(az_iot_su_client_init(&client, &fx->conn, &opts), AZ_IOT_OK);
   assert_string_equal(client._internal.device_properties.manufacturer, "m");
   az_iot_su_client_deinit(&client);
-  assert_int_equal(fx->conn.dps_user_count, 0);
+  assert_false(fx->conn.dps_session_wanted);
   assert_int_equal(
       az_iot_su_client_update_device_properties(&client, &device_properties),
       AZ_IOT_ERR_NOT_ENOUGH_SPACE);
@@ -3899,14 +3893,23 @@ static int32_t test_build_file_from_related(
       : AZ_IOT_SU_RESULT_SUCCESS;
 }
 
-static void test_workflow_succeeded(
+static void test_workflow_ended(
     const az_iot_su_client_update_manifest* manifest,
+    az_iot_su_outcome outcome,
     void* user_ctx)
 {
   delta_handler_log* d = (delta_handler_log*)user_ctx;
   assert_true(manifest->files_count > 0);
-  log_op(d->log, OP_WORKFLOW_SUCCEEDED, 0);
-  d->succeeded_calls++;
+  log_op(d->log, OP_WORKFLOW_ENDED, 0);
+  if (d->ended_calls < 2)
+  {
+    d->ended_outcomes[d->ended_calls] = outcome;
+    span_to_cstr(
+        manifest->files[manifest->files_count - 1].id,
+        d->ended_last_file_id[d->ended_calls],
+        sizeof(d->ended_last_file_id[0]));
+  }
+  d->ended_calls++;
 }
 
 /** @brief Re-initialize fx->su with one test download handler of id @p id. */
@@ -3916,11 +3919,18 @@ static void use_test_download_handler(fixture* fx, const char* id)
   fx->delta.log = &fx->log;
   fx->delta.choose_result = AZ_IOT_SU_RESULT_SUCCESS;
   fx->download_handler = (az_iot_su_download_handler){
-    id, test_choose_related_file, test_build_file_from_related, test_workflow_succeeded, &fx->delta,
+    id, test_choose_related_file, test_build_file_from_related, test_workflow_ended, &fx->delta,
   };
   fx->download_handlers = &fx->download_handler;
   fx->download_handler_count = 1;
   reboot_client(fx);
+}
+
+/** @brief Assert that workflow_ended_fn was called once, with @p outcome. */
+static void assert_workflow_ended_once(const fixture* fx, az_iot_su_outcome outcome)
+{
+  assert_int_equal(fx->delta.ended_calls, 1);
+  assert_int_equal(fx->delta.ended_outcomes[0], outcome);
 }
 
 #define SU_TEST_APPEND(buffer, used, ...)                                             \
@@ -4103,12 +4113,12 @@ static void a_download_handler_builds_a_file_from_a_related_file(void** state)
   assert_string_equal(fx->delta.built_file_id, "s0f0");
   assert_string_equal(fx->delta.built_from_id, "s0f0r1");
   assert_int_equal(fx->delta.built_file_index, 0);
-  assert_int_equal(fx->delta.succeeded_calls, 1);
+  assert_workflow_ended_once(fx, AZ_IOT_SU_OUTCOME_SUCCEEDED);
   static const op_kind expect[] = {
     OP_IS_INSTALLED, OP_CHOOSE_RELATED_FILE,
     OP_DOWNLOAD,     OP_BUILD_FILE_FROM_RELATED,
     OP_BACKUP,       OP_INSTALL,
-    OP_APPLY,        OP_WORKFLOW_SUCCEEDED,
+    OP_APPLY,        OP_WORKFLOW_ENDED,
   };
   assert_true(ops_contain_sequence(&fx->log, expect, sizeof(expect) / sizeof(expect[0])));
   assert_int_equal(fx->failed_count, 0);
@@ -4128,7 +4138,7 @@ static void an_escaped_download_handler_id_selects_its_handler(void** state)
   assert_succeeded_with_delta_code(fx, 0, 0, "");
   assert_downloads(fx, "s0f0r0");
   assert_int_equal(fx->delta.build_calls, 1);
-  assert_int_equal(fx->delta.succeeded_calls, 1);
+  assert_workflow_ended_once(fx, AZ_IOT_SU_OUTCOME_SUCCEEDED);
 }
 
 /* A related file id escaped in the manifest ("s0f0r\u0031") finds its decoded fileUrls id. */
@@ -4159,7 +4169,7 @@ static void an_escaped_related_file_id_finds_its_url(void** state)
   assert_succeeded_with_delta_code(fx, 0, 0, "");
   assert_string_equal(fx->log.download_urls[0], "http://example.com/s0f0r1");
   assert_string_equal(fx->delta.built_from_id, "s0f0r\\u0031");
-  assert_int_equal(fx->delta.succeeded_calls, 1);
+  assert_workflow_ended_once(fx, AZ_IOT_SU_OUTCOME_SUCCEEDED);
 }
 
 /** @brief How a delta fallback case is provoked. */
@@ -4229,8 +4239,15 @@ static void run_delta_fallback_case(
       fx->delta.build_calls,
       (fault == DELTA_FAULT_BUILD || fault == DELTA_FAULT_BUILT_HASH) ? 1 : 0);
   assert_int_equal(fx->log.corrupt_reads, 0);
-  /* The handler hears of a success of an update naming it, built or not. */
-  assert_int_equal(fx->delta.succeeded_calls, fault == DELTA_FAULT_HANDLER_ID ? 0 : 1);
+  /* The handler hears of the end of an update naming it, built or not. */
+  if (fault == DELTA_FAULT_HANDLER_ID)
+  {
+    assert_int_equal(fx->delta.ended_calls, 0);
+  }
+  else
+  {
+    assert_workflow_ended_once(fx, AZ_IOT_SU_OUTCOME_SUCCEEDED);
+  }
   assert_int_equal(fx->failed_count, 0);
 }
 
@@ -4315,7 +4332,7 @@ static void a_built_file_hash_mismatch_falls_back_to_a_full_download(void** stat
 }
 
 /* A full download that fails after a fallback fails the workflow as any download does, and
- * the handler does not hear of it. */
+ * the handler hears of it as FAILED. */
 static void a_failed_full_download_after_a_fallback_fails_the_workflow(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -4335,7 +4352,7 @@ static void a_failed_full_download_after_a_fallback_fails_the_workflow(void** st
   assert_int_equal(fx->chan.last_report.step_results[0].extended_result_code, extended);
   assert_int_equal(fx->last_failed_extended, extended);
   assert_int_equal(fx->delta.build_calls, 0);
-  assert_int_equal(fx->delta.succeeded_calls, 0);
+  assert_workflow_ended_once(fx, AZ_IOT_SU_OUTCOME_FAILED);
   assert_int_equal((int)count_ops(&fx->log, OP_INSTALL), 0);
 }
 
@@ -4378,7 +4395,7 @@ static void download_handler_phases_may_be_in_progress(void** state)
   assert_int_equal(fx->delta.choose_calls, 3);
   assert_int_equal(fx->log.download_calls, 3);
   assert_int_equal(fx->delta.build_calls, 3);
-  assert_int_equal(fx->delta.succeeded_calls, 1);
+  assert_workflow_ended_once(fx, AZ_IOT_SU_OUTCOME_SUCCEEDED);
 }
 
 /* A full download after a fallback may be in progress too; the handler is not asked again. */
@@ -4443,7 +4460,7 @@ static void download_handlers_build_every_file_of_a_step(void** state)
   assert_string_equal(fx->delta.built_file_id, "s0f1");
   assert_string_equal(fx->delta.built_from_id, "s0f1r0");
   assert_int_equal(fx->delta.built_file_index, 1);
-  assert_int_equal(fx->delta.succeeded_calls, 1);
+  assert_workflow_ended_once(fx, AZ_IOT_SU_OUTCOME_SUCCEEDED);
 }
 
 /* Each step's files go through the handler; a fallback is reported on its step only, and the
@@ -4467,7 +4484,7 @@ static void download_handlers_build_files_of_every_step(void** state)
   assert_downloads(fx, "s0f0r0 s1f0r0 s1f0");
   assert_int_equal(fx->delta.choose_calls, 2);
   assert_int_equal(fx->delta.build_calls, 2);
-  assert_int_equal(fx->delta.succeeded_calls, 1);
+  assert_workflow_ended_once(fx, AZ_IOT_SU_OUTCOME_SUCCEEDED);
 }
 
 /** @brief Details of the fallback in run_fallback_details_case(). */
@@ -4562,12 +4579,12 @@ static void a_file_naming_no_download_handler_is_downloaded_as_usual(void** stat
   assert_succeeded_with_delta_code(fx, 0, 0, "");
   assert_downloads(fx, "s0f0");
   assert_int_equal(fx->delta.choose_calls, 0);
-  assert_int_equal(fx->delta.succeeded_calls, 0);
+  assert_int_equal(fx->delta.ended_calls, 0);
 }
 
-/* workflow_succeeded_fn is not called for an update already installed (SKIPPED) or one that
- * fails after its files were built. */
-static void workflow_succeeded_fn_is_called_only_for_a_succeeded_workflow(void** state)
+/* workflow_ended_fn tells the handler how the workflow ended: SKIPPED for an update already
+ * installed, FAILED for one whose install fails after its files were built. */
+static void workflow_ended_fn_is_told_the_outcome(void** state)
 {
   fixture* fx = (fixture*)*state;
   use_test_download_handler(fx, SU_TEST_DELTA_HANDLER_ID);
@@ -4577,7 +4594,7 @@ static void workflow_succeeded_fn_is_called_only_for_a_succeeded_workflow(void**
   pump(fx, 40);
   assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_SKIPPED);
   assert_int_equal(fx->delta.choose_calls, 0);
-  assert_int_equal(fx->delta.succeeded_calls, 0);
+  assert_workflow_ended_once(fx, AZ_IOT_SU_OUTCOME_SKIPPED);
 
   use_test_download_handler(fx, SU_TEST_DELTA_HANDLER_ID);
   fx->log.is_installed_result = AZ_IOT_SU_RESULT_SUCCESS;
@@ -4586,11 +4603,40 @@ static void workflow_succeeded_fn_is_called_only_for_a_succeeded_workflow(void**
   pump(fx, 40);
   assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_FAILED);
   assert_int_equal(fx->delta.build_calls, 1);
-  assert_int_equal(fx->delta.succeeded_calls, 0);
+  assert_workflow_ended_once(fx, AZ_IOT_SU_OUTCOME_FAILED);
+}
+
+/* A workflow whose manifest fails verification, or parses but names a file with no URL, ends
+ * without reaching the handlers. */
+static void workflow_ended_fn_is_not_called_for_a_manifest_not_accepted(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  use_test_download_handler(fx, SU_TEST_DELTA_HANDLER_ID);
+  open_to_connected(fx);
+  fx->log.verify_result = AZ_IOT_SU_RESULT_FAILURE;
+  inject_patch(fx, delta_steps_patch("delta-unverified", 1, 1, SU_TEST_DELTA_HANDLER_ID, 1));
+  pump(fx, 40);
+  assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_FAILED);
+  assert_int_equal(fx->delta.ended_calls, 0);
+
+  use_test_download_handler(fx, SU_TEST_DELTA_HANDLER_ID);
+  fx->log.verify_result = AZ_IOT_SU_RESULT_SUCCESS;
+  char* patch
+      = (char*)(uintptr_t)delta_steps_patch("delta-unresolved", 1, 1, SU_TEST_DELTA_HANDLER_ID, 1);
+  char* url = strstr(patch, "\"s0f0\":\"http");
+  assert_non_null(url);
+  url[1] = 'z';
+  inject_patch(fx, patch);
+  pump(fx, 40);
+  assert_string_equal(fx->chan.last_workflow_id, "delta-unresolved");
+  assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_FAILED);
+  assert_int_equal(fx->delta.choose_calls, 0);
+  assert_int_equal(fx->delta.ended_calls, 0);
 }
 
 /* A new workflow arriving while a file is being built cancels it as it would a download: the
- * new workflow starts its files from the handler's choice. */
+ * new workflow starts its files from the handler's choice, and the handler hears of the replaced
+ * workflow's end as CANCELED. */
 static void a_new_workflow_cancels_a_file_being_built(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -4598,7 +4644,7 @@ static void a_new_workflow_cancels_a_file_being_built(void** state)
   open_to_connected(fx);
   fx->delta.build_in_progress = 1000;
 
-  inject_patch(fx, delta_steps_patch("delta-replaced", 1, 1, SU_TEST_DELTA_HANDLER_ID, 1));
+  inject_patch(fx, delta_steps_patch("delta-replaced", 2, 1, SU_TEST_DELTA_HANDLER_ID, 1));
   pump_to_state(fx, AZ_IOT_SU_STATE_DOWNLOAD_STARTED, 20);
   for (int i = 0; i < 3; ++i)
   {
@@ -4616,7 +4662,12 @@ static void a_new_workflow_cancels_a_file_being_built(void** state)
   assert_int_equal(fx->delta.choose_calls, 2);
   assert_int_equal(fx->delta.build_calls, 4);
   assert_downloads(fx, "s0f0r0 s0f0r0");
-  assert_int_equal(fx->delta.succeeded_calls, 1);
+  /* The replaced workflow ends first, with its own manifest. */
+  assert_int_equal(fx->delta.ended_calls, 2);
+  assert_int_equal(fx->delta.ended_outcomes[0], AZ_IOT_SU_OUTCOME_CANCELED);
+  assert_string_equal(fx->delta.ended_last_file_id[0], "s1f0");
+  assert_int_equal(fx->delta.ended_outcomes[1], AZ_IOT_SU_OUTCOME_SUCCEEDED);
+  assert_string_equal(fx->delta.ended_last_file_id[1], "s0f0");
 }
 
 /* A file being built is not resumed after a reboot: the step resumed from its record starts
@@ -4654,7 +4705,7 @@ static void a_file_being_built_restarts_after_a_reboot(void** state)
   assert_int_equal(fx->delta.choose_calls, 3);
   assert_int_equal(fx->delta.build_calls, 3);
   assert_downloads(fx, "s0f0r0 s1f0r0 s1f0r0");
-  assert_int_equal(fx->delta.succeeded_calls, 1);
+  assert_workflow_ended_once(fx, AZ_IOT_SU_OUTCOME_SUCCEEDED);
 }
 
 /* A delta update keeps its related files and more URLs than AZ_IOT_SU_MAX_FILE_COUNT, in the
@@ -5453,7 +5504,7 @@ static void the_replacement_policy_is_validated(void** state)
       az_iot_su_client__initialize_with_channel(&client, &channel, fx->su._internal.crypto, &opts),
       AZ_IOT_ERR_NOT_SUPPORTED);
   assert_int_equal(az_iot_su_client_init(&client, &fx->conn, &opts), AZ_IOT_ERR_NOT_SUPPORTED);
-  assert_int_equal(fx->conn.dps_user_count, 0);
+  assert_false(fx->conn.dps_session_wanted);
   opts.replacement_policy = (az_iot_su_replacement_policy)2;
   assert_int_equal(
       az_iot_su_client__initialize_with_channel(&client, &channel, fx->su._internal.crypto, &opts),
@@ -5660,8 +5711,7 @@ static void a_held_check_is_abandoned_when_its_report_cannot_be_sent(void** stat
       AZ_IOT_SU_ERROR_ACTION_FATAL,
       NULL,
       fx->chan.engine_ctx);
-  assert_int_equal(
-      az_iot_su_client_request_update(&fx->su, AZ_IOT_SU_REQUEST_NO_TIMEOUT), AZ_IOT_OK);
+  assert_int_equal(az_iot_su_client_request_update(&fx->su, UT_TIMEOUT_MS), AZ_IOT_OK);
   pump(fx, 3);
   int reports = fx->chan.report_count;
   fx->abandoned_count = 0;
@@ -8465,6 +8515,41 @@ static bool all_zero(const void* p, size_t len)
 
 /* The standalone entry points take the backend directly. Parsing verifies
  * signatures, so it needs verify_rs256; a file-hash check needs only SHA-256. */
+/* az_iot_su_decode_manifest_string() decodes escaped ids, in place too, and refuses malformed ones.
+ */
+static void decode_manifest_string_decodes_escaped_ids(void** state)
+{
+  (void)state;
+  uint8_t buffer[16];
+  az_span decoded;
+  assert_int_equal(
+      az_iot_su_decode_manifest_string(
+          AZ_SPAN_FROM_STR("f\\u0031\\/x"), AZ_SPAN_FROM_BUFFER(buffer), &decoded),
+      AZ_IOT_OK);
+  assert_true(az_span_is_content_equal(decoded, AZ_SPAN_FROM_STR("f1/x")));
+
+  char in_place[] = "a\\u0062c";
+  az_span escaped = az_span_create((uint8_t*)in_place, (int32_t)strlen(in_place));
+  assert_int_equal(az_iot_su_decode_manifest_string(escaped, escaped, &decoded), AZ_IOT_OK);
+  assert_true(az_span_is_content_equal(decoded, AZ_SPAN_FROM_STR("abc")));
+
+  assert_int_equal(
+      az_iot_su_decode_manifest_string(
+          AZ_SPAN_FROM_STR("abc"), az_span_create(buffer, 2), &decoded),
+      AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+  assert_int_equal(
+      az_iot_su_decode_manifest_string(
+          AZ_SPAN_FROM_STR("a\\x"), AZ_SPAN_FROM_BUFFER(buffer), &decoded),
+      AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(
+      az_iot_su_decode_manifest_string(
+          AZ_SPAN_FROM_STR("\\u0000"), AZ_SPAN_FROM_BUFFER(buffer), &decoded),
+      AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(
+      az_iot_su_decode_manifest_string(AZ_SPAN_FROM_STR("a"), AZ_SPAN_FROM_BUFFER(buffer), NULL),
+      AZ_IOT_ERR_INVALID_ARG);
+}
+
 static void standalone_entry_points_check_the_backend_they_need(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -9407,54 +9492,162 @@ static void a_superseded_in_flight_request_is_cancelled_with_the_newer_one(void*
 
   assert_int_equal(fx->abandoned_count, 1);
   assert_int_equal(fx->last_abandoned_operation, AZ_IOT_SU_OP_GET_ONBOARDING_UPDATE);
-  assert_int_equal(fx->chan.cancel_count, 1);
-  assert_int_equal(fx->chan.last_cancel_operation, AZ_IOT_SU_OP_GET_UPDATE);
+  /* The accepted one is cancelled, and the abandoned one's demand dropped. */
+  assert_int_equal(fx->chan.cancel_count, 2);
+  assert_int_equal(fx->chan.last_cancel_operation, AZ_IOT_SU_OP_GET_ONBOARDING_UPDATE);
   assert_int_equal(fx->su._internal.pending_fetch, 0);
   assert_int_equal(fx->su._internal.fetch_in_flight, 0);
 }
 
-/* AZ_IOT_SU_REQUEST_NO_TIMEOUT waits for the answer indefinitely too. */
-static void a_disabled_timeout_waits_for_an_answer_indefinitely(void** state)
-{
-  fixture* fx = (fixture*)*state;
-  fx->chan.request_update_result = AZ_IOT_OK;
-  fx->abandoned_count = 0;
-  assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
-
-  assert_int_equal(
-      az_iot_su_client_request_update(&fx->su, AZ_IOT_SU_REQUEST_NO_TIMEOUT), AZ_IOT_OK);
-  for (int i = 0; i < 20; ++i)
-  {
-    (void)az_iot_su_client_do_work(&fx->su);
-  }
-  assert_int_not_equal(fx->su._internal.fetch_in_flight, 0);
-  assert_int_equal(fx->abandoned_count, 0);
-  assert_int_equal(fx->chan.cancel_count, 0);
-}
-
-/* The documented opt-out: AZ_IOT_SU_REQUEST_NO_TIMEOUT retries indefinitely.
- * Passed as the real argument, so the path is covered through the public API
- * rather than by poking the deadline. */
-static void a_disabled_timeout_never_abandons(void** state)
+/* A check the channel never accepted (no session) and the deadline ends is
+ * cancelled on the channel too, so it stops asking for a session for it. */
+static void an_unaccepted_check_abandoned_at_its_deadline_is_cancelled(void** state)
 {
   fixture* fx = (fixture*)*state;
   fx->chan.request_update_result = AZ_IOT_ERR_NOT_CONNECTED;
   fx->abandoned_count = 0;
+  assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
 
-  assert_int_equal(
-      az_iot_su_client_request_update(&fx->su, AZ_IOT_SU_REQUEST_NO_TIMEOUT), AZ_IOT_OK);
-  assert_int_equal(fx->su._internal.pending_fetch_deadline_ms, 0);
-
-  for (int i = 0; i < 20; ++i)
-  {
-    (void)az_iot_su_client_do_work(&fx->su);
-  }
-
-  /* Still queued, still retrying, never abandoned. */
+  assert_int_equal(az_iot_su_client_request_update(&fx->su, UT_TIMEOUT_MS), AZ_IOT_OK);
+  (void)az_iot_su_client_do_work(&fx->su);
   assert_int_not_equal(fx->su._internal.pending_fetch, 0);
-  assert_int_equal(fx->su._internal.pending_fetch_deadline_ms, 0);
-  assert_int_equal(fx->abandoned_count, 0);
-  assert_true(fx->chan.request_update_count >= 20);
+  assert_int_equal(fx->su._internal.fetch_in_flight, 0);
+  assert_int_equal(fx->chan.cancel_count, 0);
+
+  fx->su._internal.pending_fetch_deadline_ms = 1;
+  (void)az_iot_su_client_do_work(&fx->su);
+
+  assert_int_equal(fx->abandoned_count, 1);
+  assert_int_equal(fx->last_abandoned_operation, AZ_IOT_SU_OP_GET_UPDATE);
+  assert_int_equal(fx->chan.cancel_count, 1);
+  assert_int_equal(fx->chan.last_cancel_operation, AZ_IOT_SU_OP_GET_UPDATE);
+}
+
+/* A report the channel stopped awaiting (AZ_IOT_ERR_TIMEOUT) stays owed and is
+ * sent again on the engine's backoff, not on the next tick. */
+static void a_report_left_unanswered_is_retried_on_the_backoff(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  finish_with_report_unacknowledged(fx);
+  int sent = fx->chan.report_count;
+
+  fx->chan.result_cb(
+      AZ_IOT_SU_OP_REPORT_STATUS,
+      AZ_IOT_ERR_TIMEOUT,
+      AZ_IOT_SU_ERROR_ACTION_RETRY,
+      NULL,
+      fx->chan.engine_ctx);
+  assert_true(fx->su._internal.device_properties_report_pending);
+  assert_true(fx->su._internal.report_paced);
+  assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  assert_int_equal(fx->chan.report_count, sent);
+
+  fx->su._internal.retry._internal.due_ms = az_iot_time_mono_ms();
+  assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  assert_int_equal(fx->chan.report_count, sent + 1);
+}
+
+/* Properties for a report queued by az_iot_su_client_update_device_properties(). */
+static void queue_device_properties_report(fixture* fx)
+{
+  az_iot_su_device_properties device_properties = { 0 };
+  device_properties.manufacturer = "Contoso";
+  device_properties.model = "Foobar2";
+  device_properties.installed_update_id.provider = "Contoso";
+  device_properties.installed_update_id.name = "Foobar";
+  device_properties.installed_update_id.version = "2.0";
+  assert_int_equal(
+      az_iot_su_client_update_device_properties(&fx->su, &device_properties), AZ_IOT_OK);
+}
+
+/* A report the channel stopped awaiting, then the newer one queued since are sent on its backoff,
+ * not on the next tick. */
+static void assert_report_waits_out_the_backoff(fixture* fx, int sent)
+{
+  assert_true(fx->su._internal.device_properties_report_pending);
+  assert_true(fx->su._internal.report_paced);
+  assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  assert_int_equal(fx->chan.report_count, sent);
+
+  fx->su._internal.retry._internal.due_ms = az_iot_time_mono_ms();
+  assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  assert_int_equal(fx->chan.report_count, sent + 1);
+}
+
+/* A report queued while the previous one is awaited waits out that one's timeout backoff too. */
+static void a_report_queued_before_a_timeout_waits_out_its_backoff(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  finish_with_report_unacknowledged(fx);
+  int sent = fx->chan.report_count;
+  queue_device_properties_report(fx);
+  assert_true(fx->su._internal.device_properties_report_pending);
+  assert_false(fx->su._internal.report_paced);
+
+  fx->chan.result_cb(
+      AZ_IOT_SU_OP_REPORT_STATUS,
+      AZ_IOT_ERR_TIMEOUT,
+      AZ_IOT_SU_ERROR_ACTION_RETRY,
+      NULL,
+      fx->chan.engine_ctx);
+  assert_report_waits_out_the_backoff(fx, sent);
+}
+
+/* A report queued after a timeout does not cut the backoff short. */
+static void a_report_queued_after_a_timeout_keeps_its_backoff(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  finish_with_report_unacknowledged(fx);
+  int sent = fx->chan.report_count;
+
+  fx->chan.result_cb(
+      AZ_IOT_SU_OP_REPORT_STATUS,
+      AZ_IOT_ERR_TIMEOUT,
+      AZ_IOT_SU_ERROR_ACTION_RETRY,
+      NULL,
+      fx->chan.engine_ctx);
+  queue_device_properties_report(fx);
+  assert_report_waits_out_the_backoff(fx, sent);
+}
+
+/* A request without a bound is refused: while a check is outstanding the hub
+ * session is paused, so every check needs a deadline. */
+static void a_zero_timeout_is_refused(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  assert_int_equal(az_iot_su_client_request_update(&fx->su, 0u), AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(az_iot_su_client_request_onboarding_update(&fx->su, 0u), AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(fx->su._internal.pending_fetch, 0);
+}
+
+/* A check the channel stopped awaiting (AZ_IOT_ERR_TIMEOUT) is asked again on
+ * the engine's backoff, not on the next tick, under its own deadline. */
+static void a_check_left_unanswered_is_retried_on_the_backoff(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  fx->chan.request_update_result = AZ_IOT_OK;
+  assert_int_equal(az_iot_su_client_request_update(&fx->su, UT_TIMEOUT_MS), AZ_IOT_OK);
+  (void)az_iot_su_client_do_work(&fx->su);
+  int const sent = fx->chan.request_update_count;
+  uint64_t const deadline = fx->su._internal.pending_fetch_deadline_ms;
+  assert_int_not_equal(fx->su._internal.fetch_in_flight, 0);
+
+  fx->chan.result_cb(
+      AZ_IOT_SU_OP_GET_UPDATE,
+      AZ_IOT_ERR_TIMEOUT,
+      AZ_IOT_SU_ERROR_ACTION_RETRY,
+      NULL,
+      fx->chan.engine_ctx);
+  assert_int_equal(fx->su._internal.fetch_in_flight, 0);
+  assert_int_not_equal(fx->su._internal.pending_fetch, 0);
+  assert_true(fx->su._internal.pending_fetch_paced);
+  assert_int_equal(fx->su._internal.pending_fetch_deadline_ms, deadline);
+  (void)az_iot_su_client_do_work(&fx->su);
+  assert_int_equal(fx->chan.request_update_count, sent);
+
+  fx->su._internal.retry._internal.due_ms = az_iot_time_mono_ms();
+  (void)az_iot_su_client_do_work(&fx->su);
+  assert_int_equal(fx->chan.request_update_count, sent + 1);
 }
 
 /* The deadline is the CALLER's, in wall-clock terms, and each call carries its
@@ -9575,31 +9768,6 @@ static void a_delay_that_fits_leaves_the_request_queued(void** state)
   assert_int_equal(fx->abandoned_count, 0);
   assert_int_not_equal(fx->su._internal.pending_fetch, 0);
   assert_int_equal(fx->su._internal.pending_fetch_deadline_ms, armed);
-}
-
-/* With no bound, even a delay longer than any budget cannot abandon: there is
- * no deadline for it to fail to fit inside. */
-static void a_delay_cannot_abandon_an_unbounded_request(void** state)
-{
-  fixture* fx = (fixture*)*state;
-  assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
-  fx->abandoned_count = 0;
-  fx->chan.request_update_result = AZ_IOT_ERR_BUSY;
-
-  assert_int_equal(
-      az_iot_su_client_request_update(&fx->su, AZ_IOT_SU_REQUEST_NO_TIMEOUT), AZ_IOT_OK);
-
-  az_iot_su_service_error se
-      = { .code = 429001, .message = "", .tracking_id = "", .retry_after_ms = SERVICE_DELAY_MS };
-  fx->chan.result_cb(
-      AZ_IOT_SU_OP_GET_UPDATE,
-      AZ_IOT_ERR_DPS,
-      AZ_IOT_SU_ERROR_ACTION_RETRY,
-      &se,
-      fx->chan.engine_ctx);
-
-  assert_int_equal(fx->abandoned_count, 0);
-  assert_int_not_equal(fx->su._internal.pending_fetch, 0);
 }
 
 /* --- explicit update requests -------------------------------------------- */
@@ -10098,6 +10266,7 @@ static int setup_wire_error_case(void** state)
   opts.dps.registration_id = "ut-device";
   opts.dps_hold_timeout_ms = 60000;
   opts.crypto = &fx->crypto.base;
+  opts.mqtt_adapter = az_iot_mock_mqtt_get_adapter_for_version(AZ_IOT_MQTT_VERSION_3_1_1);
   assert_int_equal(az_iot_test_connection_client_init(&fx->conn, &opts), AZ_IOT_OK);
 
   az_iot_su_platform_hooks hooks;
@@ -10116,10 +10285,8 @@ static int setup_wire_error_case(void** state)
   assert_int_equal(az_iot_su_client_init(&fx->su, &fx->conn, &su_opts), AZ_IOT_OK);
   assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
 
-  assert_int_equal(
-      az_iot_connection_client_register_mqtt_factory(&fx->conn, fx->factory), AZ_IOT_OK);
   assert_int_equal(az_iot_connection_client_open(&fx->conn), AZ_IOT_OK);
-  fx->mock = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  fx->mock = az_iot_mock_mqtt_adapter_last_client();
   assert_non_null(fx->mock);
   assert_true(az_iot_mock_mqtt_client_inject_connected(fx->mock, AZ_IOT_OK));
   assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
@@ -10156,6 +10323,45 @@ static void wire_pending_response(fixture* fx, int32_t status, const char* query
   wire_response(fx, rid, status, query, body);
 }
 
+/**
+ * @brief Brings a provisioning session up for the next operation once the last one ended: the hub
+ * session that took over is connected, then ended for it. Points fx->mock at the new session.
+ */
+static void wire_session_for_next_operation(fixture* fx)
+{
+  if (az_iot_connection_client__dps_session_ready(&fx->conn))
+  {
+    return;
+  }
+  assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
+  assert_non_null(fx->conn.active_client);
+  az_iot_mock_mqtt_client* hub = az_iot_mock_mqtt_client_from(fx->conn.active_client);
+  if (az_iot_connection_client_get_state(&fx->conn, AZ_IOT_CONN_SCOPE_HUB)
+      != AZ_IOT_CONN_STATE_CONNECTED)
+  {
+    assert_true(az_iot_mock_mqtt_client_inject_connected(hub, AZ_IOT_OK));
+    assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
+  }
+  /* The operation is refused, then the channel asks for a session. */
+  assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  assert_non_null(az_iot_mock_mqtt_client_last_of(hub, AZ_IOT_MOCK_CALL_DISCONNECT));
+  assert_null(fx->conn.dps_mqtt);
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(hub));
+  assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
+  assert_null(fx->conn.active_client);
+  assert_non_null(fx->conn.dps_mqtt);
+  fx->mock = az_iot_mock_mqtt_client_from(fx->conn.dps_mqtt);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(fx->mock, AZ_IOT_OK));
+  assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
+  const az_iot_mock_call* sub
+      = az_iot_mock_mqtt_client_last_of(fx->mock, AZ_IOT_MOCK_CALL_SUBSCRIBE);
+  assert_non_null(sub);
+  assert_true(az_iot_mock_mqtt_client_inject_suback(fx->mock, sub->packet_id, AZ_IOT_OK));
+  assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
+  assert_true(az_iot_connection_client__dps_session_ready(&fx->conn));
+}
+
 static void wire_fetch(fixture* fx, az_iot_su_operation operation)
 {
   assert_int_equal(
@@ -10163,6 +10369,7 @@ static void wire_fetch(fixture* fx, az_iot_su_operation operation)
           ? az_iot_su_client_request_onboarding_update(&fx->su, UT_TIMEOUT_MS)
           : az_iot_su_client_request_update(&fx->su, UT_TIMEOUT_MS),
       AZ_IOT_OK);
+  wire_session_for_next_operation(fx);
   assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
   assert_true(wire_channel(fx)->request_pending);
   assert_int_equal(wire_channel(fx)->pending_operation, operation);
@@ -11437,8 +11644,9 @@ int main(void)
     cmocka_unit_test_setup_teardown(a_fallback_keeps_the_application_details, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_file_naming_no_download_handler_is_downloaded_as_usual, setup, teardown),
+    cmocka_unit_test_setup_teardown(workflow_ended_fn_is_told_the_outcome, setup, teardown),
     cmocka_unit_test_setup_teardown(
-        workflow_succeeded_fn_is_called_only_for_a_succeeded_workflow, setup, teardown),
+        workflow_ended_fn_is_not_called_for_a_manifest_not_accepted, setup, teardown),
     cmocka_unit_test_setup_teardown(a_new_workflow_cancels_a_file_being_built, setup, teardown),
     cmocka_unit_test_setup_teardown(a_file_being_built_restarts_after_a_reboot, setup, teardown),
     cmocka_unit_test_setup_teardown(
@@ -11640,6 +11848,7 @@ int main(void)
     cmocka_unit_test_setup_teardown(init_requires_a_crypto_backend_that_verifies, setup, teardown),
     cmocka_unit_test_setup_teardown(
         standalone_entry_points_check_the_backend_they_need, setup, teardown),
+    cmocka_unit_test(decode_manifest_string_decodes_escaped_ids),
     cmocka_unit_test_setup_teardown(
         standalone_manifest_verification_reports_why_it_fails, setup, teardown),
     cmocka_unit_test_setup_teardown(do_work_drives_the_channel, setup, teardown),
@@ -11665,7 +11874,6 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         a_late_verdict_cannot_resurrect_an_unbounded_request, setup, teardown),
     cmocka_unit_test(the_public_timeout_macros_hold_their_contract),
-    cmocka_unit_test_setup_teardown(a_disabled_timeout_never_abandons, setup, teardown),
     cmocka_unit_test_setup_teardown(
         an_accepted_request_without_an_answer_is_abandoned, setup, teardown),
     cmocka_unit_test_setup_teardown(an_answer_ends_the_in_flight_wait, setup, teardown),
@@ -11676,14 +11884,22 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         a_superseded_in_flight_request_is_cancelled_with_the_newer_one, setup, teardown),
     cmocka_unit_test_setup_teardown(
-        a_disabled_timeout_waits_for_an_answer_indefinitely, setup, teardown),
+        an_unaccepted_check_abandoned_at_its_deadline_is_cancelled, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_report_left_unanswered_is_retried_on_the_backoff, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_check_left_unanswered_is_retried_on_the_backoff, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_zero_timeout_is_refused, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_report_queued_before_a_timeout_waits_out_its_backoff, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_report_queued_after_a_timeout_keeps_its_backoff, setup, teardown),
     cmocka_unit_test_setup_teardown(each_request_carries_its_own_timeout, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_service_delay_does_not_extend_the_callers_deadline, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_delay_that_cannot_fit_abandons_immediately_and_reports_it, setup, teardown),
     cmocka_unit_test_setup_teardown(a_delay_that_fits_leaves_the_request_queued, setup, teardown),
-    cmocka_unit_test_setup_teardown(a_delay_cannot_abandon_an_unbounded_request, setup, teardown),
     cmocka_unit_test_setup_teardown(init_validates_download_handlers, setup, teardown),
     cmocka_unit_test_setup_teardown(
         library_mode_needs_no_platform_hooks_but_a_trust_store, setup_library, teardown),

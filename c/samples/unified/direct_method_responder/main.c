@@ -62,10 +62,14 @@ typedef struct
   sample_config config;
   az_iot_certificate_provider_pem certs;
   az_iot_connection_client connection_client;
-  az_iot_mqtt_factory* factory_v3;
-  az_iot_mqtt_factory* factory_v5;
   /* Only the one matching `profile` is ever initialized. */
   az_iot_mqttv3_direct_method_client mqttv3;
+  /* The memory of whichever client is initialized, for the default limits. */
+  uint8_t methods_workspace
+      [AZ_IOT_MQTTV5_DIRECT_METHOD_CLIENT_DEFAULT_WORKSPACE_SIZE
+               > AZ_IOT_MQTTV3_DIRECT_METHOD_CLIENT_DEFAULT_WORKSPACE_SIZE
+           ? AZ_IOT_MQTTV5_DIRECT_METHOD_CLIENT_DEFAULT_WORKSPACE_SIZE
+           : AZ_IOT_MQTTV3_DIRECT_METHOD_CLIENT_DEFAULT_WORKSPACE_SIZE];
   az_iot_mqttv5_direct_method_client mqttv5;
   az_iot_connection_profile profile;
   int methods_initialized;
@@ -103,13 +107,6 @@ static void sample_state_destroy(sample_state* s)
 {
   clients_destroy(s, NULL);
   az_iot_connection_client_deinit(&s->connection_client);
-#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
-  az_iot_paho_factory_destroy(s->factory_v3);
-  az_iot_paho_factory_destroy(s->factory_v5);
-#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
-  az_iot_az_mqtt_factory_destroy(s->factory_v3);
-  az_iot_az_mqtt_factory_destroy(s->factory_v5);
-#endif
   az_iot_certificate_provider_pem_deinit(&s->certs);
   sample_config_release(&s->config);
 }
@@ -177,8 +174,33 @@ static void on_method_mqttv3(
   }
 
   printf("method '%s' invoked, %zu byte payload\n", method_name, payload_len);
-  (void)az_iot_mqttv3_direct_method_respond(
-      &ctx->state->mqttv3, request, STATUS_OK, payload, payload_len);
+
+  /* The echo must fit the MQTT send buffer with its topic; the arguments can be larger (up to
+   * the receive buffer). An answer that does not fit is refused and the request KEPT, so answer
+   * 413 rather than leave the caller waiting. */
+  int status = payload_len <= SAMPLE_MQTT_ECHO_PAYLOAD_MAX ? STATUS_OK : STATUS_PAYLOAD_TOO_LARGE;
+  az_iot_result result = az_iot_mqttv3_direct_method_respond(
+      &ctx->state->mqttv3,
+      request,
+      status,
+      status == STATUS_OK ? payload : NULL,
+      status == STATUS_OK ? payload_len : 0);
+  if (result == AZ_IOT_ERR_NOT_ENOUGH_SPACE)
+  {
+    status = STATUS_PAYLOAD_TOO_LARGE;
+    result = az_iot_mqttv3_direct_method_respond(&ctx->state->mqttv3, request, status, NULL, 0);
+  }
+  if (result != AZ_IOT_OK)
+  {
+    printf("response was not sent: %s\n", az_iot_result_to_string(result));
+  }
+  else if (status != STATUS_OK)
+  {
+    printf(
+        "payload larger than %u bytes: answered %d\n",
+        (unsigned)SAMPLE_MQTT_ECHO_PAYLOAD_MAX,
+        status);
+  }
 }
 
 /* ---- MQTTv5 (mqttv5) ------------------------------------------------------------ */
@@ -212,10 +234,10 @@ static void on_echo_mqttv5(
   printf(
       "method '%s' invoked, %zu byte payload\n", method_name ? method_name : "(null)", payload_len);
 
-  /* The reply is bounded by AZ_IOT_MQTTV5_DM_RESULT_BODY_MAX, the arguments are
+  /* The reply is bounded by limits.max_result_body_size, the arguments are
    * not. A reply that does not fit is refused and the slot KEPT, so answer
    * short rather than ignore that result. */
-  if (payload_len > AZ_IOT_MQTTV5_DM_RESULT_BODY_MAX)
+  if (payload_len > AZ_IOT_MQTTV5_DIRECT_METHOD_CLIENT_DEFAULT_MAX_RESULT_BODY_SIZE)
   {
     (void)az_iot_mqttv5_direct_method_respond(
         &ctx->state->mqttv5, request, STATUS_PAYLOAD_TOO_LARGE, NULL, 0);
@@ -241,7 +263,11 @@ static az_iot_result clients_build(
   switch (profile)
   {
     case AZ_IOT_CONNECTION_PROFILE_MQTT_V5:
-      result = az_iot_mqttv5_direct_method_client_init(&s->mqttv5, &s->connection_client);
+      result = az_iot_mqttv5_direct_method_client_init(
+          &s->mqttv5,
+          &s->connection_client,
+          &(az_iot_mqttv5_direct_method_client_options){
+              .workspace = s->methods_workspace, .workspace_size = sizeof(s->methods_workspace) });
       if (result != AZ_IOT_OK)
       {
         return result;
@@ -259,7 +285,12 @@ static az_iot_result clients_build(
       }
       return result;
     case AZ_IOT_CONNECTION_PROFILE_MQTT_V3:
-      result = az_iot_mqttv3_direct_method_client_init(&s->mqttv3, &s->connection_client);
+      /* Default limits: 0 fields. */
+      result = az_iot_mqttv3_direct_method_client_init(
+          &s->mqttv3,
+          &s->connection_client,
+          &(az_iot_mqttv3_direct_method_client_options){
+              .workspace = s->methods_workspace, .workspace_size = sizeof(s->methods_workspace) });
       if (result != AZ_IOT_OK)
       {
         return result;
@@ -271,7 +302,7 @@ static az_iot_result clients_build(
       {
         /* How long a request stays answerable before the SDK reclaims its slot.
          * Without it, handlers that never answer would eventually consume all
-         * AZ_IOT_DM_MAX_INFLIGHT slots. */
+         * limits.max_in_flight_invocations slots. */
         result = az_iot_mqttv3_direct_method_client_set_response_timeout(
             &s->mqttv3, RESPONSE_TIMEOUT_SECONDS);
       }
@@ -323,6 +354,17 @@ int main(void)
   copts.dps.registration_id = state.config.reg_id;
   copts.dps.global_endpoint = state.config.dps_global_endpoint; /* NULL: the global default */
   copts.certificate_provider = &state.certs.base;
+  /* The adapter builds each session's MQTT client in this workspace, one at a time: MQTT 3.1.1
+   * for DPS and an MQTTv3 hub, MQTT 5 for an MQTTv5 hub. Limits: sample_utils.h. */
+  static uint8_t mqtt_workspace[SAMPLE_MQTT_WORKSPACE_SIZE];
+#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
+  copts.mqtt_adapter = az_iot_paho_get_adapter();
+#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
+  copts.mqtt_adapter = az_iot_az_mqtt_get_adapter();
+#endif
+  copts.mqtt_limits = SAMPLE_MQTT_LIMITS;
+  copts.mqtt_workspace = mqtt_workspace;
+  copts.mqtt_workspace_size = sizeof(mqtt_workspace);
 
   if (az_iot_connection_client_init(&state.connection_client, &copts) != AZ_IOT_OK)
   {
@@ -330,30 +372,6 @@ int main(void)
     return 1;
   }
   az_iot_connection_client_add_state_observer(&state.connection_client, on_conn_state, &user_ctx);
-
-  /* Both adapters: v3.1.1 serves DPS and an MQTTv3 hub, v5 serves an MQTTv5 hub. */
-#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
-  state.factory_v3 = az_iot_paho_factory_create_v3_1_1();
-#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
-  state.factory_v3 = az_iot_az_mqtt_factory_create_v3_1_1();
-#endif
-  if (az_iot_connection_client_register_mqtt_factory(&state.connection_client, state.factory_v3)
-      != AZ_IOT_OK)
-  {
-    sample_state_destroy(&state);
-    return 1;
-  }
-#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
-  state.factory_v5 = az_iot_paho_factory_create_v5();
-#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
-  state.factory_v5 = az_iot_az_mqtt_factory_create_v5();
-#endif
-  if (az_iot_connection_client_register_mqtt_factory(&state.connection_client, state.factory_v5)
-      != AZ_IOT_OK)
-  {
-    sample_state_destroy(&state);
-    return 1;
-  }
 
   /* Assume a generation until DPS says otherwise; see unified/telemetry. */
   if (clients_build(&state, AZ_IOT_CONNECTION_PROFILE_MQTT_V3, &user_ctx) != AZ_IOT_OK

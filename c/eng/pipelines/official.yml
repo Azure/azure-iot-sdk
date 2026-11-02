@@ -4,11 +4,12 @@
 # TSA (c/.config/tsaoptions.json); third-party sources fetched by CMake are declared in
 # c/cgmanifest.json for Component Governance.
 #
-# PR validation stays on GitHub Actions; this pipeline runs on main and weekly.
+# PR validation stays on GitHub Actions; this pipeline runs on main and releases/public-preview,
+# on push and weekly.
 
 trigger:
   branches:
-    include: [ main ]
+    include: [ main, releases/public-preview ]
   paths:
     include: [ c ]
 
@@ -18,7 +19,7 @@ schedules:
   - cron: '0 9 * * 1'
     displayName: Weekly
     branches:
-      include: [ main ]
+      include: [ main, releases/public-preview ]
     always: true
 
 resources:

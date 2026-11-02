@@ -1,7 +1,8 @@
 # Software updates client
 
 Design of the software updates feature client (`az_iot_su.h`): the device contract it speaks, the
-engine, the public API, the crypto and platform hooks, and how it is tested.
+engine, the public API, the crypto and platform hooks, and how it is tested. To use it, start with
+the [Software Update guide](../software-update.md).
 
 The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD", "SHOULD NOT", "RECOMMENDED", "MAY", and "OPTIONAL" in this document are to be interpreted as described in [RFC 2119](https://datatracker.ietf.org/doc/html/rfc2119).
 
@@ -94,14 +95,53 @@ sequenceDiagram
   fatal or proceed error) releases registration at once. A retryable failure (e.g. 503) keeps
   registration held until the check is answered or `dps_hold_timeout_ms` (default
   `AZ_IOT_DPS_HOLD_TIMEOUT_MS`, 60 s) expires; then the device registers anyway.
-- Registration is held for the check, not for an install: an offered update is installed and
-  reported alongside registration. Follow-up checks the application requests (e.g. to chain
-  onboarding updates) do not hold registration.
+- Registration is held for the check, not for an install. Follow-up checks the application
+  requests (e.g. to chain onboarding updates) do not hold registration.
+- The hub connection waits for the check: while the channel still has work on the provisioning
+  session when the device registers, the session is kept and the hub session starts only once the
+  channel lets go, on the assignment just obtained (no second registration).
 - Onboarding progress is recorded on the onboarding update job, not on a device record, since the
   device has none yet.
 
 The operational route uses `requestSoftwareUpdates` with the same shapes, when the application
 asks.
+
+### One MQTT session at a time
+
+The SDK runs one MQTT session at a time, so the provisioning session and the hub session never
+overlap. After registration, each check or status report made while the hub is connected:
+
+1. ends the hub session as planned: feature clients see an ordinary session end
+   (`AZ_IOT_CONNECTION_SESSION_END_PLANNED`) and the application sees `HUB:RETRY_PENDING` with reason
+   `AZ_IOT_OK` (and `is_credential_renewal` false), not a failure;
+2. opens a provisioning session and runs the operation on it, then any operation the engine issues
+   next on the same session;
+3. closes the provisioning session once the channel has no work left, and the hub reconnects to its
+   assignment without registering again. Feature clients resume as after any reconnect.
+
+These ends count toward no reconnection backoff or `max_hub_connect_attempts_before_reprovision`.
+How long the hub waits is bounded, because the hub session is down while the provisioning session
+runs. An update check waits at most its request timeout (default
+`AZ_IOT_SU_REQUEST_DEFAULT_TIMEOUT_MS`, 120 s); a timeout of 0 is refused with
+`AZ_IOT_ERR_INVALID_ARG`, so no check can hold the hub indefinitely. When it ends unanswered or
+unaccepted, or a check of the other kind replaces it before it is accepted, the channel stops asking
+for a session for it. An expired check is given up before the channel's tick, so the hub session is
+not ended for it, and `az_iot_connection_client_do_work()` waits no longer than a check's deadline.
+A publish the adapter refuses pauses the channel's publishing (1 s doubling to 60 s per refusal in a
+row) and, without other work, releases the session, so the hub session resumes meanwhile. A first
+refusal as too large does not pause, so the report sent again at once without its details still goes
+out. A provisioning session opened for an operation that is not ready (no SUBACK) within 120 s ends
+as failed: the hub session resumes, and the next attempt waits out the reconnection policy. A
+request the channel sent -- a status report, or an update check within its request timeout -- waits
+at most `AZ_IOT_SU_CHANNEL_RESPONSE_TIMEOUT_MS` (default 120 s) for its answer, and
+`az_iot_connection_client_do_work()` waits no longer than that; past it the session is released and
+the request is sent again on the retry backoff (1 s doubling to 60 s, ±20%), as is a report queued
+before or after the timeout. A request lost with its session keeps the channel's interest while the
+engine retries it, so the connection client's pacing of provisioning sessions still applies. A very
+large request timeout is still a bound, but a long one: a check the service cannot answer (no device
+record, no linked hub) keeps ending the hub session until it expires, each attempt for up to 120 s
+and repeated on the backoff, so telemetry, twin and methods go offline again and again. An
+application that must not lose the hub during a check schedules checks when that is acceptable.
 
 ### Request (both fetches)
 
@@ -392,11 +432,14 @@ extended code.
 | `0x6` | `BUILT_HASH` | built file SHA-256 ≠ the file's signed hash | `full download: built file hash mismatch` |
 
 With no handler registered, or for a file naming none, files are downloaded in full with no code,
-as before. Once the workflow succeeds (just before its `SUCCEEDED` report), each registered handler with a
-`workflow_succeeded_fn` whose id a manifest file names is called once, in registration order,
-whether its files were built or downloaded in full (e.g. to keep them as sources for later
-updates); it is not called for a `FAILED` or `SKIPPED` workflow. A new workflow that replaces the
-current one (§4 Cancellation) drops a file being built as it drops a download. The persisted
+as before. When a workflow whose manifest verified and parsed ends (just before its terminal
+report), each registered handler with a `workflow_ended_fn` whose id a manifest file names is
+called once, in registration order, with the outcome: `SUCCEEDED`, `FAILED` or `SKIPPED`, whether
+its files were built or downloaded in full. The handler releases what it holds for the workflow
+and, on `SUCCEEDED`, may keep the files as sources for later updates. A new workflow that replaces
+the current one (§4 Cancellation) drops a file being built as it drops a download, and the handler
+is called with `CANCELED` and the replaced workflow's manifest; the client never reports
+`CANCELED`. The persisted
 record (§4 Persistence) keeps no phase: a step resumed after a reboot starts its files again from
 **Choose**. Library mode (§5.3) refuses download handlers and runs none of this.
 
@@ -636,16 +679,30 @@ re-initialized since: then the new workflow is deferred.
 `persist_workflow_state_fn` / `load_workflow_state_fn` exchange an **opaque, self-contained byte
 blob** that the core serializes and the platform merely stores verbatim (file,
 NVS partition, EEPROM, …). The platform MUST NOT interpret it; the format is
-internal and may change between SDK versions.
+internal and may change between SDK versions. Library mode never calls these hooks (§5.3).
 
+- **Atomic and durable** — `persist_workflow_state_fn` MUST replace the stored record
+  atomically, and the record MUST be durable when it returns: after a power loss either the old
+  or the new record survives, never a mix. A torn record fails the CRC check and is treated as
+  nothing to resume, which loses the workflow and any owed terminal report. A zero-length write
+  erases the record and MUST succeed when nothing is stored. Usual implementations:
+  - file: write a unique temporary file, `fsync()` it, `rename()` it over the record, `fsync()`
+    the directory;
+  - ESP-IDF NVS: `nvs_set_blob()` then `nvs_commit()`.
 - **Size** — at most `AZ_IOT_SU_STATE_BLOB_MAX_SIZE(max_update_size, result_details_size, max_related_files)` bytes; size storage for it.
+  `load_workflow_state_fn` returns non-zero for a stored record larger than its capacity.
+- **Resume capacity** — a record resumes only on a client whose limits can hold it: its update
+  copy in `max_update_size`, each step's details in `result_details_size`, its download URLs in
+  `AZ_IOT_SU_FILE_URL_CAPACITY(max_related_files)` and its steps in `AZ_IOT_SU_MAX_STEP_COUNT`.
+  Otherwise it is ignored like a missing record. Do not lower these limits in a firmware update
+  while a workflow may be stored.
 - **In place** — a workflow record is serialized around the update copy in the workspace: its
   header just before it, its trailer just after. A terminal record has no request and is built
   in a separate workspace part, so a newer update copy is never overwritten. `resume()` loads
   the record in place, so it returns `AZ_IOT_ERR_BUSY` while a workflow is in progress.
 - **Versioned** — magic `"SUCP"` and a `u16` format version (currently 3). A
-  record of any other magic or version (versions 1 and 2 included) is ignored. All integers are
-  little-endian.
+  record of any other magic or version (versions 1 and 2 included) is ignored. Any layout change
+  bumps the version. All integers are little-endian.
 - **Integrity-checked** — a CRC-32 over the rest of the blob, stored in its last four bytes; a record with extra bytes after it is ignored.
 - **Contents** — workflow state, step/file position, flags (have-request,
   report-owed, retry record), the raw request buffer (manifest, workflow id),
@@ -665,7 +722,8 @@ The byte layout is documented next to the serializer in
 #### Resume semantics (`az_iot_su_client_resume()`)
 
 1. Call `load_workflow_state_fn`. If it reports no state (including an empty record), or
-   `magic`/`version`/`crc32` fail validation, `resume()` is a **no-op** returning
+   `magic`/`version`/`crc32` fail validation, or the record exceeds this client's limits
+   (resume capacity above), `resume()` is a **no-op** returning
    success — the agent starts clean and waits for the next update offer. A
    valid record is refused with `AZ_IOT_ERR_NOT_SUPPORTED` when
    `persist_workflow_state_fn` is NULL (it could never be cleared), and with
@@ -847,6 +905,7 @@ typedef struct az_iot_su_platform_hooks
     /**
      * Persist workflow state to non-volatile storage (for reboot survival).
      * OPTIONAL — REQUIRED only if reboot is possible during update.
+     * MUST replace the record atomically and durably (§4 Persistence).
      * state_blob_len == 0 means erase the stored record.
      */
     int32_t (*persist_workflow_state_fn)(
@@ -893,10 +952,11 @@ typedef struct az_iot_su_download_handler
         const az_iot_su_client_update_manifest_file* related_file,
         uint32_t file_index,
         void* user_ctx);
-    /* OPTIONAL: once a workflow with a file naming the handler succeeds
-     * (before its SUCCEEDED report), built or downloaded in full. */
-    void (*workflow_succeeded_fn)(
+    /* OPTIONAL: once a workflow with a file naming the handler ends (before
+     * its terminal report), with its outcome; CANCELED when replaced. */
+    void (*workflow_ended_fn)(
         const az_iot_su_client_update_manifest* manifest,
+        az_iot_su_outcome outcome,
         void* user_ctx);
     void* user_ctx;
 } az_iot_su_download_handler;
@@ -1198,9 +1258,9 @@ az_iot_su_reboot_state az_iot_su_client_get_reboot_state(const az_iot_su_client*
  * Asynchronous: records the request; the NEXT do_work() issues it, retrying on
  * a later tick if the channel is not ready.
  *
- * timeout_ms bounds the whole wait in WALL-CLOCK terms;
- * AZ_IOT_SU_REQUEST_NO_TIMEOUT (0) means no bound, and
- * AZ_IOT_SU_REQUEST_DEFAULT_TIMEOUT_MS (60000) is the default for a caller
+ * timeout_ms bounds the whole wait in WALL-CLOCK terms and must be greater
+ * than 0 (0 returns AZ_IOT_ERR_INVALID_ARG): the hub session is down while a
+ * check runs. AZ_IOT_SU_REQUEST_DEFAULT_TIMEOUT_MS (120000) is the default for a caller
  * with no policy of its own. The bound covers the retries before the channel
  * accepts the check AND the wait for its answer after. On expiry the request
  * is dropped (the channel stops waiting, so a late answer is ignored) and
@@ -1461,6 +1521,12 @@ az_iot_result az_iot_su_verify_file_hash(
     void* read_ctx);
 
 /**
+ * Decode a manifest string the parser keeps escaped, such as a file id
+ * (`f\u0031` is `f1`), before using it as a name or comparing it.
+ */
+az_iot_result az_iot_su_decode_manifest_string(az_span escaped, az_span out, az_span* out_decoded);
+
+/**
  * Build the reportUpdateStatus request body for a report, without a client or
  * a channel: the body the managed client and library mode send. Invalid reports
  * (empty workflow id, incomplete installed update id, outcome / failure-origin
@@ -1673,6 +1739,7 @@ Platform-specific code (Linux libcurl downloads, ESP32 OTA partition writes, etc
 | `adapters/crypto_mbedtls/` | `az_iot_crypto`: `verify_rs256`, `sha256_*` using mbedTLS | mbedTLS |
 | `adapters/crypto_openssl/` | `az_iot_crypto`: `verify_rs256`, `sha256_*` using OpenSSL | OpenSSL |
 | `adapters/su/esp32/` | ESP32 platform hooks (download, OTA install, persistence); ESP-IDF component in `platforms/esp32/components` | ESP-IDF |
+| `adapters/su/delta/` | The reference `microsoft/delta:1` download handler, POSIX (§8.2) | `libdl`; the delta processor at run time |
 | `samples/software_update/` | Samples that wire a crypto backend, platform hooks and the main loop | All of the above |
 
 There is no Linux platform adapter; the PC samples implement their own hooks.
@@ -1690,6 +1757,119 @@ There is no Linux platform adapter; the PC samples implement their own hooks.
 The PC samples verify manifests for real (OpenSSL, Microsoft root keys) and simulate download and
 install; their READMEs list the simulation knobs.
 
+Built with `AZ_IOT_WITH_SU_DELTA`, `pc/http_download` registers the delta handler (§8.2) with the
+real delta processor, and `pc/simulated_regular` registers it with a simulated processor when
+`SU_SIM_FILE_DIR` is set. The ESP32 sample registers no handler.
+
+### 8.2 Delta updates: the reference `microsoft/delta:1` handler
+
+`adapters/su/delta/` implements the `microsoft/delta:1` download handler of the Device Update
+reference agent as an `az_iot_su_download_handler`. It rebuilds an update file from a delta
+related file and the file of an earlier update, the *source*, kept in a source cache.
+
+| | |
+|---|---|
+| Build | `-DAZ_IOT_WITH_SU_DELTA=ON` (default OFF; ON in the Linux presets). POSIX only: configuring it elsewhere fails. |
+| Target, header | `azure::iot::su_delta`, `az_iot_su_delta.h`; pkg-config `azure-iot-sdk-su_delta` |
+| Links | `az_iot_core` and `libdl`. Not the delta processor: it is loaded at run time. |
+
+```c
+az_iot_su_delta_handler_options az_iot_su_delta_handler_options_default(void);
+az_iot_result az_iot_su_delta_handler_init(az_iot_su_delta_handler*, const az_iot_su_delta_handler_options*);
+az_iot_su_download_handler az_iot_su_delta_handler_get_download_handler(az_iot_su_delta_handler*);
+az_iot_result az_iot_su_delta_handler_get_source_cache_path(const az_iot_su_delta_handler*,
+    az_span provider, az_span hash_algorithm, az_span hash, char* path, size_t path_size);
+void az_iot_su_delta_handler_deinit(az_iot_su_delta_handler*);
+```
+
+| Option | Default | Meaning |
+|---|---|---|
+| `get_file_path_fn` | required | Where the application's `download_fn` stores a file (below) |
+| `source_cache_directory` | `/var/lib/adu/sdc` | Source cache; created when needed |
+| `apply_delta_fn` | `NULL`: `libadudiffapi` | Delta processor |
+| `library_path` | `libadudiffapi.so` | The default processor's library, for `dlopen()` |
+| `user_ctx` | `NULL` | Passed to `get_file_path_fn` and `apply_delta_fn` |
+
+**Flow.** For a manifest file whose `downloadHandler` is `microsoft/delta:1`:
+
+1. `choose_related_file_fn` picks the first related file whose source is in the cache. The
+   related file's `properties` name the source: `microsoft.sourceFileHash` (base64) and
+   `microsoft.sourceFileHashAlgorithm` (e.g. `sha256`).
+2. The client downloads that related file with `download_fn` and checks its hash.
+3. `build_file_from_related_fn` applies the delta to the source and writes the update file.
+4. The client checks the built file's hash with `read_file_fn`, as for a downloaded file.
+5. When the workflow ends, `workflow_ended_fn` unlocks the source and removes an unfinished
+   build; if it succeeded, it also stores the update's files in the cache.
+
+The client downloads the full file instead when the handler declines or fails, or a hash does not
+match.
+
+**Storage contract.** The handler works on files, where the application's hooks keep them:
+`get_file_path_fn(file, file_index, ...)` returns the path at which `download_fn` stores `file`
+and `read_file_fn` reads it. It is called for related files too, with the owning file's index as
+`download_fn` gets. The handler reads the delta at the related file's path and writes the built
+file at the update file's path, which may be the same. Files of several steps may share a path,
+e.g. with storage by slot only: the handler caches only the last one downloaded there. The samples
+use their download path: `SAMPLE_DOWNLOAD_PREFIX<file id>` in `pc/http_download`,
+`SU_SIM_FILE_DIR/<file id>` in `pc/simulated_regular`.
+
+**Source cache.** The reference agent's layout, so both can share a cache:
+`<directory>/<provider>/<algorithm>-<hash>`. In `<provider>` and `<algorithm>`, characters other
+than letters, digits and `-` become `_`; in the base64 hash, `+`, `/` and `=` become `_2B`, `_2F`
+and `_3D`.
+
+- When a workflow succeeds, and a file of the update names `microsoft/delta:1` (the client calls a
+  handler on success only then), each file of the update with a SHA-256 hash is moved (renamed, or copied
+  across file systems) from its `get_file_path_fn` path into the cache. It replaces the entry
+  there, which may hold other bytes, unless a handler builds from it. Without that file (e.g.
+  already moved), an entry of the file's size counts as stored.
+- Then every other entry of the update's provider is removed: the cache keeps the latest update
+  per provider, the sources of its next delta. Entries a handler builds from are kept.
+- Handlers sharing the cache, in one process or several, store and evict a provider's entries one
+  at a time, holding a lock on its directory: a success waits while another handler's runs.
+- So the first update of a device is a full download, and seeds the cache when a file of it names
+  `microsoft/delta:1`, related files or not. To make it a delta, or without that name, seed the
+  cache with the factory image at `az_iot_su_delta_handler_get_source_cache_path()`.
+- Failing to store an entry is logged; it does not fail the workflow, whose result is already
+  reported.
+
+**Delta processor.** The default is `libadudiffapi.so` from
+[Azure/iot-hub-device-update-delta](https://github.com/Azure/iot-hub-device-update-delta),
+`dlopen()`ed on first use through its C API (`adu_diff_apply_create_session()`,
+`adu_diff_apply()`...).
+
+- When it cannot be loaded, or lacks a symbol, `choose_related_file_fn` logs a warning and
+  declines, so every file is downloaded in full.
+- It does not check that the source is the expected file. A wrong source builds a wrong file,
+  which the built file's hash check rejects.
+- On failure it leaves a partial file: the handler removes it.
+- It runs inside `az_iot_su_client_do_work()` and blocks it until the file is built. An
+  application that cannot block that long sets `apply_delta_fn` to run the processor elsewhere,
+  returning `AZ_IOT_SU_RESULT_IN_PROGRESS` until it is done.
+
+**Platforms.** POSIX (Linux). The published processor package is Linux x86_64 and needs glibc 2.34
+or later. ESP32 and Windows register no handler: their files are always downloaded in full.
+
+**Tests and CI.**
+
+| Test | What |
+|---|---|
+| `az_iot_tests_su_delta` | Unit: cache path encoding, lookup, store and eviction; the rebuild through a fake `apply_delta_fn` and the samples' `simulate_delta_apply`, with partial target cleanup and a delta at the target's path; files of several steps at one path; a stored entry is refreshed from the application's file unless built from; handlers sharing a cache keep their own build files, do not evict a source being built from or an entry stored again since opened, and store and evict a provider's entries one at a time; a missing library or symbol declines. |
+| `az_iot_tests_su_delta_interop` | The real `libadudiffapi.so` rebuilds the committed `target.swu` from `source.swu` and `delta.bin` (SHA-256 checked); a truncated delta fails and leaves no target. |
+
+- The vectors are in `tests/unit/data/su_delta/`, with `SHA256SUMS`. They are regenerated, byte for
+  byte, by `tests/support/gen_su_delta_vectors.sh` with the pinned DiffGenTool.
+- The interop test is built only when `-DAZ_IOT_SU_DELTA_TEST_LIBRARY=<path>` is set. Configuring
+  fails when that file is missing or the handler is not built.
+- [`eng/install-su-delta-processor.sh`](../../eng/install-su-delta-processor.sh) downloads the
+  pinned `.deb` package, checks its SHA-256 and extracts it with `dpkg-deb -x` (no root). It
+  prints the library path.
+- The composite action
+  [`install-su-delta-processor`](../../../.github/actions/install-su-delta-processor/action.yml)
+  runs it with the package cached under its SHA-256.
+- `ci-c.yml` uses it in the Linux legs of the build job and in the coverage job. The build job
+  fails if the interop test is not registered.
+
 ---
 
 ## 9. Source Layout
@@ -1704,6 +1884,7 @@ src/features/su/
 ├── su_root_keys_microsoft.c     compiled-in Microsoft root keys
 └── internal/                    internal headers
 adapters/su/{crypto_mbedtls,crypto_openssl,esp32}/
+adapters/su/delta/               reference microsoft/delta:1 download handler (§8.2)
 tests/unit/su_*_test.c           unit tests against a fake channel
 tests/e2e/                       software updates e2e suites (see §15)
 ```
@@ -1774,8 +1955,8 @@ Operations MUST NOT be long-blocking. Each `do_work` invocation MUST process at 
   check after a conflicting report (§2).
 - **An operational channel over the IoT Hub connection.** Both routes run over DPS.
 - **A reusable conformance suite** for customer platform hooks and crypto backends.
-- **Library-mode persistence and a received-offer accessor.** A delegated update is not stored,
-  and `UPDATE_AVAILABLE` is the only way to see the offer.
+- **Library-mode persistence.** A delegated update is not stored: after a restart the service
+  offers it again.
 
 ---
 
@@ -1914,6 +2095,7 @@ Every external effect is a hook, so the engine is tested on the host with no net
 | Unit | `tests/unit/su_client_test.c` | The engine against a fake channel, scripted platform hooks and a mock crypto backend: state transitions, multi-step updates, rollback, signature and hash failures, persistence and resume, device properties. |
 | Unit | `tests/unit/su_channel_dps_test.c`, `tests/unit/su_protocol_test.c` | The DPS channel against the connection client, and the wire codec. |
 | Crypto backends | `tests/unit/crypto_mbedtls_test.c`, `tests/unit/crypto_openssl_test.c` | Known-answer RS256, SHA-256 and HMAC-SHA256 vectors through the real library (`tests/support/crypto_contract.c`). |
+| Delta handler | `tests/unit/su_delta_test.c` | The `microsoft/delta:1` handler, and its interop with the real delta processor (§8.2). |
 | End to end | `tests/e2e/tests/e2e_su_test.c`, `tests/e2e/tests/e2e_su_offer_test.c` | The DPS channel and offered updates against the real service. Built with `-DAZ_IOT_BUILD_E2E_SU=ON`. See [end-to-end-tests.md](end-to-end-tests.md#software-updates-e2e). |
 
 Unit and crypto-adapter tests run on every CI build. The end-to-end suites run in their own
@@ -1932,8 +2114,9 @@ sessions ([connection-state-and-error-propagation.md](connection-state-and-error
 
 - The channel registers a feature-client state observer and acts only on the `DPS` scope, so it
   works whatever the hub state and under `dps.provision_only`.
-- It holds registration for the onboarding check and holds the provisioning session open while it
-  needs it. The connection client paces re-establishing a failed session.
+- It holds registration for the onboarding check, and holds the provisioning session only while it
+  has work for it. The hub session waits meanwhile (see [One MQTT session at a time](#one-mqtt-session-at-a-time)).
+  The connection client paces re-establishing a failed session.
 - It survives `close()` → `open()`. Device properties travel on each update check, so there is no
   re-report on reconnect.
 

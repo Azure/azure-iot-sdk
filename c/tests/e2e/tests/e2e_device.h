@@ -73,8 +73,7 @@ extern "C"
     az_iot_certificate_provider_pem certs;
     az_iot_connection_client conn;
     uint8_t connection_workspace[AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE];
-    az_iot_mqtt_factory* factory_v3;
-    az_iot_mqtt_factory* factory_v5;
+    uint8_t* mqtt_workspace; /* Heap; freed after deinit(). */
     az_iot_connection_state conn_state;
     bool certs_ok;
     bool conn_ok;

@@ -102,8 +102,6 @@ int main(void)
   user_context user_ctx = { 0 };
   sample_cert_provider provider = { 0 };
   az_iot_connection_client connection_client = { 0 };
-  az_iot_mqtt_factory* factory_v3 = NULL;
-  az_iot_mqtt_factory* factory_v5 = NULL;
 
   sample_cert_provider_options popts = {
     .bootstrap_cert_path = config.cert,
@@ -130,6 +128,17 @@ int main(void)
   AZ_IOT_CSR_PAYLOAD_STORAGE(csr_payload_buf);
   copts.csr_payload_buffer = az_span_create(csr_payload_buf, sizeof(csr_payload_buf));
   copts.dps.request_operational_certificate = true; /* opt in to CSR enrollment */
+  /* The adapter builds each session's MQTT client in this workspace, one at a time: MQTT 3.1.1
+   * for DPS and an MQTTv3 hub, MQTT 5 for an MQTTv5 hub. Limits: sample_utils.h. */
+  static uint8_t mqtt_workspace[SAMPLE_MQTT_WORKSPACE_SIZE];
+#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
+  copts.mqtt_adapter = az_iot_paho_get_adapter();
+#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
+  copts.mqtt_adapter = az_iot_az_mqtt_get_adapter();
+#endif
+  copts.mqtt_limits = SAMPLE_MQTT_LIMITS;
+  copts.mqtt_workspace = mqtt_workspace;
+  copts.mqtt_workspace_size = sizeof(mqtt_workspace);
 
   if (az_iot_connection_client_init(&connection_client, &copts) != AZ_IOT_OK)
   {
@@ -139,26 +148,6 @@ int main(void)
   az_iot_connection_client_add_state_observer(&connection_client, on_conn_state, &user_ctx);
   az_iot_connection_client_set_operational_cert_callback(
       &connection_client, on_operational_cert, &user_ctx);
-
-  /* Both adapters: v3.1.1 serves DPS and an MQTTv3 hub, v5 serves an MQTTv5 hub. */
-#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
-  factory_v3 = az_iot_paho_factory_create_v3_1_1();
-#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
-  factory_v3 = az_iot_az_mqtt_factory_create_v3_1_1();
-#endif
-  if (az_iot_connection_client_register_mqtt_factory(&connection_client, factory_v3) != AZ_IOT_OK)
-  {
-    goto cleanup;
-  }
-#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
-  factory_v5 = az_iot_paho_factory_create_v5();
-#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
-  factory_v5 = az_iot_az_mqtt_factory_create_v5();
-#endif
-  if (az_iot_connection_client_register_mqtt_factory(&connection_client, factory_v5) != AZ_IOT_OK)
-  {
-    goto cleanup;
-  }
 
   if (az_iot_connection_client_open(&connection_client) != AZ_IOT_OK)
   {
@@ -197,13 +186,6 @@ int main(void)
 
 cleanup:
   az_iot_connection_client_deinit(&connection_client);
-#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
-  az_iot_paho_factory_destroy(factory_v3);
-  az_iot_paho_factory_destroy(factory_v5);
-#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
-  az_iot_az_mqtt_factory_destroy(factory_v3);
-  az_iot_az_mqtt_factory_destroy(factory_v5);
-#endif
   sample_cert_provider_deinit(&provider);
   free(op_key);
   free(op_cert);

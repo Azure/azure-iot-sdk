@@ -189,7 +189,6 @@ int main(void)
   ctx.operational_cert_path = op_cert;
   az_iot_certificate_provider_managed provider = { 0 };
   az_iot_connection_client connection_client = { 0 };
-  az_iot_mqtt_factory* factory_v3 = NULL;
   az_iot_mqttv3_telemetry_client telemetry = { 0 };
   bool telemetry_initialized = false;
 
@@ -239,11 +238,18 @@ int main(void)
         = az_span_create(registration_body_buf, sizeof(registration_body_buf));
   }
 
+  /* The adapter builds each session's MQTT client in this workspace, one at a time: MQTT 3.1.1
+   * for DPS and an MQTTv3 hub, MQTT 5 for an MQTTv5 hub. Limits: sample_utils.h. */
+  static uint8_t mqtt_workspace[SAMPLE_MQTT_WORKSPACE_SIZE];
 #if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
-  factory_v3 = az_iot_paho_factory_create_v3_1_1();
+  opts.mqtt_adapter = az_iot_paho_get_adapter();
 #elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
-  factory_v3 = az_iot_az_mqtt_factory_create_v3_1_1();
+  opts.mqtt_adapter = az_iot_az_mqtt_get_adapter();
 #endif
+  opts.mqtt_limits = SAMPLE_MQTT_LIMITS;
+  opts.mqtt_workspace = mqtt_workspace;
+  opts.mqtt_workspace_size = sizeof(mqtt_workspace);
+
   if (az_iot_connection_client_init(&connection_client, &opts) != AZ_IOT_OK
       || az_iot_connection_client_add_state_observer(&connection_client, on_conn_state, &ctx)
           != AZ_IOT_OK
@@ -252,9 +258,6 @@ int main(void)
           != AZ_IOT_OK
       || az_iot_connection_client_set_registration_payload_callback(
              &connection_client, on_registration_payload, &ctx)
-          != AZ_IOT_OK
-      /* DPS and MQTTv3 IoT Hub both use MQTT 3.1.1. */
-      || az_iot_connection_client_register_mqtt_factory(&connection_client, factory_v3)
           != AZ_IOT_OK)
   {
     fprintf(stderr, "[dps_csr] connection client setup failed\n");
@@ -369,11 +372,6 @@ cleanup:
     az_iot_mqttv3_telemetry_client_deinit(&telemetry);
   }
   az_iot_connection_client_deinit(&connection_client);
-#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
-  az_iot_paho_factory_destroy(factory_v3);
-#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
-  az_iot_az_mqtt_factory_destroy(factory_v3);
-#endif
   az_iot_certificate_provider_managed_deinit(&provider);
   free(op_key);
   free(op_cert);

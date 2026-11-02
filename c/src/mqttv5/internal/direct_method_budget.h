@@ -63,7 +63,7 @@ extern "C"
       uint32_t margin_seconds,
       uint32_t max_unconfirmed_delivery_timeout_ms);
 
-  /** @brief Whether the result deadline of req_pool[@p index] has been reached. */
+  /** @brief Whether the result deadline of invocations[@p index] has been reached. */
   bool az_iot_mqttv5_direct_method_client__result_deadline_has_passed(
       const az_iot_mqttv5_direct_method_client* client,
       size_t index);

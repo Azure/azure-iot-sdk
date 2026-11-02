@@ -83,9 +83,21 @@ if(AZ_IOT_BUILD_E2E_SU)
             "(AZ_IOT_WITH_CRYPTO_OPENSSL=ON).")
     endif()
     find_package(CURL REQUIRED)
+    # On POSIX, the offer suite runs the reference microsoft/delta:1 handler (POSIX only) with the
+    # real delta processor, AZ_IOT_SU_DELTA_TEST_LIBRARY (tests/CMakeLists.txt); without it that
+    # scenario fails.
+    set(_su_offer_delta_libs)
+    if(UNIX)
+        if(NOT TARGET az_iot_su_delta)
+            message(FATAL_ERROR
+                "AZ_IOT_BUILD_E2E_SU needs the microsoft/delta:1 download handler "
+                "(AZ_IOT_WITH_SU_DELTA=ON).")
+        endif()
+        set(_su_offer_delta_libs az_iot_su_delta)
+    endif()
     az_iot_add_e2e_suite(az_iot_tests_e2e_su_offer
         SOURCES tests/e2e_su_offer_test.c tests/e2e_su_env.c tests/e2e_su_test_roots.c
-        LIBS az_iot_core az_iot_crypto_openssl CURL::libcurl)
+        LIBS az_iot_core az_iot_crypto_openssl ${_su_offer_delta_libs} CURL::libcurl)
     # The suites assert on the channel and the codecs, and the offer suite's spy
     # wraps the channel: all internal.
     foreach(_t az_iot_tests_e2e_su az_iot_tests_e2e_su_az_mqtt
@@ -93,6 +105,14 @@ if(AZ_IOT_BUILD_E2E_SU)
         if(TARGET ${_t})
             target_include_directories(${_t} PRIVATE
                 ${PROJECT_SOURCE_DIR}/src/core ${PROJECT_SOURCE_DIR}/src/features/su/internal)
+        endif()
+    endforeach()
+    foreach(_t az_iot_tests_e2e_su_offer az_iot_tests_e2e_su_offer_az_mqtt)
+        if(TARGET ${_t} AND _su_offer_delta_libs)
+            target_compile_definitions(${_t} PRIVATE
+                AZ_IOT_E2E_SU_WITH_REFERENCE_DELTA
+                AZ_IOT_E2E_SU_DELTA_VECTORS_DIRECTORY="${PROJECT_SOURCE_DIR}/tests/unit/data/su_delta"
+                AZ_IOT_E2E_SU_DELTA_LIBRARY="${AZ_IOT_SU_DELTA_TEST_LIBRARY}")
         endif()
     endforeach()
 else()
@@ -118,8 +138,8 @@ if(NOT WIN32)
         _DEFAULT_SOURCE _POSIX_C_SOURCE=200112L)
 endif()
 
-# Notification enqueuedTimeUtc parsing (the watcher deletes what it parses as
-# stale). Pure parsing; named `e2e` so the e2e job's filter runs it.
+# Notification enqueuedTimeUtc parsing, and which notifications have no watcher (the watcher
+# deletes those). Pure parsing; named `e2e` so the e2e job's filter runs it.
 az_iot_add_cmocka_test(az_iot_tests_e2e_notify_time
     tests/e2e_notify_time_test.c service/e2e_notify_time.c)
 target_include_directories(az_iot_tests_e2e_notify_time PRIVATE service)
@@ -338,15 +358,8 @@ endif()
 # environment has, so it is built only when AZ_IOT_BUILD_E2E_MQTTV5 is set.
 # ---------------------------------------------------------------------------
 if(AZ_IOT_BUILD_E2E_MQTTV5)
-    # The telemetry size cases publish up to 1 MiB + 4 KiB to test the hub's limit; az_mqtt's
-    # send buffer (264 KiB by default) must hold that, or they would test the client's.
-    set(_e2e_send_buffer_min 1114112)
-    if(TARGET az_iot_adapter_az_mqtt AND (AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE STREQUAL ""
-       OR AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE LESS _e2e_send_buffer_min))
-        message(FATAL_ERROR "AZ_IOT_BUILD_E2E_MQTTV5=ON with az_mqtt needs "
-            "-DAZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE=${_e2e_send_buffer_min} or more "
-            "(got '${AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE}').")
-    endif()
+    # The telemetry size cases publish up to 1 MiB + 4 KiB to test the hub's limit: the send buffer
+    # in E2E_MQTT_SEND_BUFFER_SIZE (tests/e2e_mqtt_adapter.h) holds that and its MQTT headers.
     az_iot_add_e2e_suite(az_iot_tests_e2e_mqttv5_custom_topic
         SOURCES tests/e2e_mqttv5_custom_topic_test.c tests/e2e_device.c
         LIBS az_iot_e2e_service az_iot_mqttv5)

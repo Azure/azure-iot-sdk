@@ -68,5 +68,5 @@ bool az_iot_mqttv5_direct_method_client__result_deadline_has_passed(
     const az_iot_mqttv5_direct_method_client* client,
     size_t index)
 {
-  return az_iot_time_mono_ms() >= client->_internal.exec_deadline_ms[index];
+  return az_iot_time_mono_ms() >= client->_internal.invocations[index].exec_deadline_ms;
 }

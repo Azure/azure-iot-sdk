@@ -45,9 +45,6 @@ az_iot_result az_iot_az_mqtt__init_v5(
     size_t workspace_size,
     az_iot_mqtt_client** out_client);
 
-/** @brief Copy of @p s (NUL-terminated), or NULL when out of memory. NULL in, NULL out. */
-char* az_iot_az_mqtt_strdup(const char* s);
-
 /** @brief Whether @p s is non-NULL and not empty. */
 bool az_iot_az_mqtt_has_text(const char* s);
 

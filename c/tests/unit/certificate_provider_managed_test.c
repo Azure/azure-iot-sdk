@@ -26,6 +26,7 @@
 #include <aclapi.h>
 #else
 #include <dirent.h>
+#include <errno.h>
 #include <signal.h>
 #include <sys/resource.h>
 #include <sys/stat.h>
@@ -1459,6 +1460,167 @@ static void managed_a_failed_rename_keeps_the_destination(void** state)
   remove_test_files();
 }
 
+#if defined(AZ_IOT_TEST_WRAP_FSYNC)
+/* fsync() seam (GNU ld --wrap; registered only where CMake can ask for it).
+ * Records each directory the provider syncs and, at that moment, the inode of
+ * the file expected in it, and can fail those syncs. File syncs pass through. */
+int __real_fsync(int fd);
+int __wrap_fsync(int fd);
+
+#define SYNC_KEY_DIR "az_iot_managed_test_key_dir"
+#define SYNC_CERT_DIR "az_iot_managed_test_cert_dir"
+#define SYNC_DIR_KEY SYNC_KEY_DIR "/" OP_KEY
+#define SYNC_DIR_CERT SYNC_CERT_DIR "/" OP_CERT
+
+/** @brief What one directory fsync() saw. */
+typedef struct directory_sync
+{
+  dev_t directory_device;
+  ino_t directory_inode;
+  ino_t destination_inode; /**< 0: no destination file at that moment */
+} directory_sync;
+
+static directory_sync s_directory_syncs[4];
+static size_t s_directory_sync_count;
+static const char* s_sync_destination;
+static bool s_fail_directory_sync;
+
+int __wrap_fsync(int fd)
+{
+  struct stat st;
+  if (fstat(fd, &st) != 0 || !S_ISDIR(st.st_mode))
+  {
+    return __real_fsync(fd);
+  }
+  if (s_directory_sync_count < sizeof(s_directory_syncs) / sizeof(s_directory_syncs[0]))
+  {
+    directory_sync* sync = &s_directory_syncs[s_directory_sync_count++];
+    struct stat destination;
+    sync->directory_device = st.st_dev;
+    sync->directory_inode = st.st_ino;
+    sync->destination_inode
+        = (s_sync_destination != NULL && stat(s_sync_destination, &destination) == 0)
+        ? destination.st_ino
+        : 0;
+  }
+  if (s_fail_directory_sync)
+  {
+    errno = EIO;
+    return -1;
+  }
+  return __real_fsync(fd);
+}
+
+/** @brief Forget recorded directory syncs; @p destination is the file to watch. */
+static void start_recording_directory_syncs(const char* destination)
+{
+  s_directory_sync_count = 0;
+  s_sync_destination = destination;
+}
+
+/** @brief Assert @p directory alone was synced, once, after @p destination was replaced. */
+static void assert_directory_synced_after_replace(const char* directory, const char* destination)
+{
+  struct stat expected;
+  struct stat replaced;
+  assert_int_equal(1, (int)s_directory_sync_count);
+  assert_int_equal(0, stat(directory, &expected));
+  assert_true(expected.st_dev == s_directory_syncs[0].directory_device);
+  assert_true(expected.st_ino == s_directory_syncs[0].directory_inode);
+  assert_int_equal(0, stat(destination, &replaced));
+  assert_true(replaced.st_ino == s_directory_syncs[0].destination_inode);
+}
+
+static void remove_sync_test_files(void)
+{
+  (void)remove(SYNC_DIR_KEY);
+  (void)remove(SYNC_DIR_CERT);
+  (void)rmdir(SYNC_KEY_DIR);
+  (void)rmdir(SYNC_CERT_DIR);
+  remove_test_files();
+}
+
+/* Each write syncs the directory of its own path (not the working directory),
+ * after the rename: the generated key at init(), the chain at store. */
+static void managed_each_write_syncs_its_directory_after_the_rename(void** state)
+{
+  (void)state;
+  remove_sync_test_files();
+  assert_int_equal(0, mkdir(SYNC_KEY_DIR, 0700));
+  assert_int_equal(0, mkdir(SYNC_CERT_DIR, 0700));
+  az_iot_certificate_provider_managed_options opts = test_options();
+  opts.operational_key_pem_path = SYNC_DIR_KEY;
+  opts.operational_cert_pem_path = SYNC_DIR_CERT;
+  az_iot_certificate_provider_managed prov;
+  start_recording_directory_syncs(SYNC_DIR_KEY);
+  assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_managed_init(&prov, &opts));
+  assert_directory_synced_after_replace(SYNC_KEY_DIR, SYNC_DIR_KEY);
+
+  char* good = make_cert_base64((EVP_PKEY*)prov.operational_key, 1);
+  az_span chain[1] = { az_span_create_from_str(good) };
+  az_iot_issued_certificate issued = { .certificates = chain, .count = 1 };
+  start_recording_directory_syncs(SYNC_DIR_CERT);
+  assert_int_equal(AZ_IOT_OK, prov.base.vtable->store_issued_certificate(&prov.base, &issued));
+  assert_directory_synced_after_replace(SYNC_CERT_DIR, SYNC_DIR_CERT);
+  az_iot_certificate_provider_managed_deinit(&prov);
+
+  /* A path with no directory part syncs the working directory. */
+  opts = test_options();
+  start_recording_directory_syncs(OP_KEY);
+  assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_managed_init(&prov, &opts));
+  assert_directory_synced_after_replace(".", OP_KEY);
+  az_iot_certificate_provider_managed_deinit(&prov);
+
+  start_recording_directory_syncs(NULL);
+  free(good);
+  remove_sync_test_files();
+}
+
+/* A failed directory sync does not fail the write: the new key and chain are
+ * already in place, served, and found again on restart. */
+static void managed_a_failed_directory_sync_keeps_the_write(void** state)
+{
+  (void)state;
+  remove_sync_test_files();
+  az_iot_certificate_provider_managed_options opts = test_options();
+  az_iot_certificate_provider_managed prov;
+  s_fail_directory_sync = true;
+  start_recording_directory_syncs(NULL);
+  az_iot_result init_result = az_iot_certificate_provider_managed_init(&prov, &opts);
+  size_t init_syncs = s_directory_sync_count;
+  s_fail_directory_sync = false;
+  assert_int_equal(AZ_IOT_OK, init_result);
+  assert_int_equal(1, (int)init_syncs);
+
+  char* good = make_cert_base64((EVP_PKEY*)prov.operational_key, 1);
+  az_span chain[1] = { az_span_create_from_str(good) };
+  az_iot_issued_certificate issued = { .certificates = chain, .count = 1 };
+  s_fail_directory_sync = true;
+  start_recording_directory_syncs(NULL);
+  az_iot_result store_result = prov.base.vtable->store_issued_certificate(&prov.base, &issued);
+  size_t store_syncs = s_directory_sync_count;
+  s_fail_directory_sync = false;
+  assert_int_equal(AZ_IOT_OK, store_result);
+  assert_int_equal(1, (int)store_syncs);
+  assert_true(prov.has_operational);
+  az_iot_certificate_material material;
+  memset(&material, 0, sizeof(material));
+  assert_int_equal(
+      AZ_IOT_OK, prov.base.vtable->load(&prov.base, AZ_IOT_CRED_OPERATIONAL, 0, &material));
+  az_iot_certificate_provider_managed_deinit(&prov);
+
+  char* on_disk = read_chain_base64(OP_CERT);
+  assert_string_equal(on_disk, good);
+  az_iot_certificate_provider_managed restarted;
+  assert_int_equal(AZ_IOT_OK, az_iot_certificate_provider_managed_init(&restarted, &opts));
+  assert_true(restarted.has_operational);
+  az_iot_certificate_provider_managed_deinit(&restarted);
+
+  free(on_disk);
+  free(good);
+  remove_sync_test_files();
+}
+#endif
 /* init() loads an existing key without rewriting it, so its mode is kept. */
 static void managed_init_keeps_an_existing_key_file_mode(void** state)
 {
@@ -1757,6 +1919,10 @@ int main(void)
     cmocka_unit_test(managed_init_keeps_an_existing_key_file_mode),
     cmocka_unit_test(managed_a_failed_write_keeps_the_previous_chain),
     cmocka_unit_test(managed_a_failed_rename_keeps_the_destination),
+#if defined(AZ_IOT_TEST_WRAP_FSYNC)
+    cmocka_unit_test(managed_each_write_syncs_its_directory_after_the_rename),
+    cmocka_unit_test(managed_a_failed_directory_sync_keeps_the_write),
+#endif
     cmocka_unit_test(managed_writes_replace_a_link_instead_of_following_it),
 #endif
     cmocka_unit_test(managed_init_removes_only_its_own_stale_temp_files),

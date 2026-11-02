@@ -34,10 +34,15 @@ extern "C"
 /** @brief A pool element's tracker entry is stored plus one, so 0 means none. */
 #define AZ_IOT_MQTTV5_DM_NO_TRACKER_ENTRY 0u
 
-  /** @brief Set up the client's delivery tracker and reserve its PUBACK slots on @p conn. */
+  /**
+   * @brief Set up the client's delivery tracker in @p tracker_entries
+   * (limits.max_concurrent_invocations plus limits.max_queued_notices) and reserve its PUBACK slots
+   * on @p conn.
+   */
   az_iot_result az_iot_mqttv5_direct_method_client__start_reply_delivery(
       az_iot_mqttv5_direct_method_client* client,
-      az_iot_connection_client* conn);
+      az_iot_connection_client* conn,
+      az_iot_delivery_tracker_entry* tracker_entries);
 
   /** @brief Drop every reply without completing it, and give the PUBACK slots back. */
   void az_iot_mqttv5_direct_method_client__stop_reply_delivery(
@@ -53,8 +58,8 @@ extern "C"
       uint64_t deadline_ms);
 
   /**
-   * @brief Send the encoded result of req_pool[@p index] by its result deadline; its slot is freed
-   *        when the result ends.
+   * @brief Send the encoded result of invocations[@p index] by its result deadline; its slot is
+   * freed when the result ends.
    */
   az_iot_result az_iot_mqttv5_direct_method_client__deliver_result(
       az_iot_mqttv5_direct_method_client* client,
