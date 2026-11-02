@@ -4,7 +4,7 @@
 # SAS keys to DPS and to the hub
 
 Registers with DPS and connects to the assigned hub with SAS tokens the SDK signs from symmetric
-keys, then sends one telemetry message on whichever hub generation DPS assigned. See
+keys, then sends one telemetry message on the hub DPS assigned. See
 [`main.c`](main.c).
 
 ## Sample features
@@ -18,8 +18,7 @@ keys, then sends one telemetry message on whichever hub generation DPS assigned.
 - Tokens last `sas.token_lifetime_seconds` (default one hour). At `sas.renewal_percent` of it
   (default 80) the client reconnects to the hub with a new token; the state callback prints
   `(token renewal)` for those events.
-- A hub that does not accept SAS (the mqttv5 hub, until it does) fails the connect with
-  `AZ_IOT_ERR_IDENTITY_REJECTED`.
+- A hub that does not accept SAS fails the connect with `AZ_IOT_ERR_IDENTITY_REJECTED`.
 
 ## Service requirements
 
@@ -104,11 +103,11 @@ reconnect end with `(token renewal)`.
 | --- | --- |
 | `[dps_sas_key] set AZ_IOT_DPS_ID_SCOPE, ...`, exit 1 | A required variable is missing, or both or neither of the two keys are set. |
 | `AZ_IOT_SAS_TOKEN_RENEWAL_PERCENT must be 1-99`, exit 1 | The renewal point is not a whole number from 1 to 99. |
-| `not connected: AZ_IOT_ERR_IDENTITY_REJECTED` | DPS or the hub refused the token: wrong key, or wrong key kind (individual vs. group), no matching enrollment, a wrong system clock, or an mqttv5 hub, which does not accept SAS yet. |
+| `not connected: AZ_IOT_ERR_IDENTITY_REJECTED` | DPS or the hub refused the token: wrong key, or wrong key kind (individual vs. group), no matching enrollment, or a wrong system clock. |
 | SDK line `dps register: errorCode=<code> errorMessage=<text>`, then `not connected: timeout` | DPS refused the registration. DPS verdicts are retried until the sample's run time ends. |
 | SDK warning `no Unix time yet; cannot sign a SAS token`, then `not connected: timeout` | The system clock is not set, so no token can be signed. |
 | Repeated `paho: connect failed: ...`, then `not connected: timeout` | DPS or the hub is unreachable (network, proxy, `AZ_IOT_DPS_GLOBAL_ENDPOINT`), or server certificate validation fails (`AZ_IOT_TRUSTED_CA`). |
-| `not connected: AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED` | DPS assigned a connection profile this SDK version does not know. |
+| `not connected: AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED` | DPS assigned a connection profile this SDK does not support. |
 
 ## Where to look in `main.c`
 
@@ -118,6 +117,6 @@ reconnect end with `(token renewal)`.
 | Renewal point | `sas.sas.renewal_percent` |
 | HMAC backend and SAS memory | `opts.crypto = az_iot_crypto_openssl()`, `opts.sas_buffer` |
 | Which credential connected | `on_conn_state()`: `event->auth_source`, `event->is_credential_renewal` |
-| Send on the assigned generation | `send_telemetry()` |
+| Send on the assigned hub | `send_telemetry()` |
 
 Design background: [connecting.md](../../../docs/connecting.md#authentication).

@@ -23,12 +23,10 @@
  * that.
  *
  * It applies to the DPS connect as well as the hub connect, because a network
- * that blocks 8883 blocks it for provisioning too. The transport is independent
- * of the hub generation, so it applies to either one DPS assigns.
+ * that blocks 8883 blocks it for provisioning too.
  *
- * The resource path defaults to "/$iothub/websocket" for DPS and an mqttv3 hub,
- * and "/mqtt" for an mqttv5 hub. Set AZ_IOT_MQTT_WEBSOCKET_PATH only when connecting through a
- * gateway that terminates WebSockets somewhere else.
+ * The resource path defaults to "/$iothub/websocket". Set AZ_IOT_MQTT_WEBSOCKET_PATH only when
+ * connecting through a gateway that terminates WebSockets somewhere else.
  *
  * The proxy sample is the other half of this pair; set both options together if
  * your network needs a proxy AND only passes 443.
@@ -61,10 +59,7 @@ typedef struct
   sample_config config;
   az_iot_certificate_provider_pem certs;
   az_iot_connection_client connection_client;
-  /* Only the one matching `profile` is initialized. */
   az_iot_mqttv3_telemetry_client mqttv3;
-  az_iot_mqttv5_telemetry_client mqttv5;
-  az_iot_connection_profile profile;
   int telemetry_initialized;
   /* Owned by the sample, not by the SDK: az_iot_connection_client_init() copies
    * the options struct but not the strings it points at, so anything handed to
@@ -76,8 +71,6 @@ typedef struct
 {
   az_iot_connection_state conn_state;
   int faulted; /* terminal: nothing this sample can do about it */
-  int rebuild; /* DPS assigned `assigned_profile`; rebuild for it */
-  az_iot_connection_profile assigned_profile;
   int send_pending;
   int sent_ok;
   int send_failed;
@@ -89,37 +82,16 @@ static void telemetry_destroy(sample_state* state)
   {
     return;
   }
-  if (state->profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5)
-  {
-    az_iot_mqttv5_telemetry_client_deinit(&state->mqttv5);
-  }
-  else
-  {
-    az_iot_mqttv3_telemetry_client_deinit(&state->mqttv3);
-  }
+  az_iot_mqttv3_telemetry_client_deinit(&state->mqttv3);
   state->telemetry_initialized = 0;
 }
 
-/* Pins the connection to `profile`: an assignment to the other generation is
- * then refused with AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH. */
-static az_iot_result telemetry_build(sample_state* state, az_iot_connection_profile profile)
+static az_iot_result telemetry_build(sample_state* state)
 {
-  az_iot_result result;
-  switch (profile)
-  {
-    case AZ_IOT_CONNECTION_PROFILE_MQTT_V5:
-      result = az_iot_mqttv5_telemetry_client_init(&state->mqttv5, &state->connection_client);
-      break;
-    case AZ_IOT_CONNECTION_PROFILE_MQTT_V3:
-      result = az_iot_mqttv3_telemetry_client_init(&state->mqttv3, &state->connection_client);
-      break;
-    case AZ_IOT_CONNECTION_PROFILE_UNKNOWN:
-    default:
-      return AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED;
-  }
+  az_iot_result result
+      = az_iot_mqttv3_telemetry_client_init(&state->mqttv3, &state->connection_client);
   if (result == AZ_IOT_OK)
   {
-    state->profile = profile;
     state->telemetry_initialized = 1;
   }
   return result;
@@ -139,20 +111,10 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
 {
   user_context* ctx = (user_context*)user_ctx;
 
-  /* Only record it: feature clients must not be destroyed from inside the
-   * callback, which runs nested in do_work(). */
-  if (event->state == AZ_IOT_CONN_STATE_FAULTED
-      && event->reason == AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH && event->profile != NULL)
-  {
-    ctx->assigned_profile = event->profile->connection_profile;
-    ctx->rebuild = 1;
-    return;
-  }
-
   if (event->state == AZ_IOT_CONN_STATE_FAULTED)
   {
     ctx->faulted = 1;
-    /* DPS assigned a hub generation newer than this SDK. */
+    /* DPS assigned a hub generation this SDK does not support. */
     if (event->reason == AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED && event->profile != NULL)
     {
       printf(
@@ -187,10 +149,8 @@ static void on_send_done(az_iot_result status, void* user_ctx)
 
 static az_iot_result send_one(sample_state* state, user_context* ctx)
 {
-  /* The same message on either generation. MQTTv3 URL-encodes every
-   * property into the topic ("$.ct" goes out as "%24.ct", "deg C" as
-   * "deg%20C"); MQTTv5 carries them as MQTT v5 user properties, byte for byte,
-   * with $.ct mapped to the native content type. */
+  /* MQTTv3 URL-encodes every property into the topic ("$.ct" goes out as
+   * "%24.ct", "deg C" as "deg%20C"). */
   static const uint8_t payload[] = "{\"temp\":23}";
   az_iot_telemetry_property props[] = {
     { AZ_IOT_MSG_PROP_CONTENT_TYPE, "application/json" },
@@ -202,9 +162,8 @@ static az_iot_result send_one(sample_state* state, user_context* ctx)
   msg.properties = props;
   msg.properties_count = sizeof(props) / sizeof(props[0]);
 
-  az_iot_result result = state->profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5
-      ? az_iot_mqttv5_telemetry_client_send(&state->mqttv5, &msg, on_send_done, ctx)
-      : az_iot_mqttv3_telemetry_client_send(&state->mqttv3, &msg, on_send_done, ctx);
+  az_iot_result result
+      = az_iot_mqttv3_telemetry_client_send(&state->mqttv3, &msg, on_send_done, ctx);
   ctx->send_pending = (result == AZ_IOT_OK);
   return result;
 }
@@ -252,14 +211,14 @@ int main(void)
    * this reaches 443 rather than 8883 without the caller tracking which port
    * goes with which transport.
    *
-   * websocket_path NULL selects each service's path: "/$iothub/websocket" for
-   * DPS and an mqttv3 hub, "/mqtt" for an mqttv5 hub. The environment variable exists only so this
-   * sample can also be pointed at a gateway that serves a different path. */
+   * websocket_path NULL selects the service's path, "/$iothub/websocket". The environment
+   * variable exists only so this sample can also be pointed at a gateway that serves a different
+   * path. */
   copts.transport = AZ_IOT_MQTT_TRANSPORT_WEBSOCKET;
   state.websocket_path = sample_env_copy("AZ_IOT_MQTT_WEBSOCKET_PATH", NULL);
   copts.websocket_path = state.websocket_path;
-  /* The adapter builds each session's MQTT client in this workspace, one at a time: MQTT 3.1.1
-   * for DPS and an MQTTv3 hub, MQTT 5 for an MQTTv5 hub. Limits: sample_utils.h. */
+  /* The adapter builds each session's MQTT 3.1.1 client in this workspace, one at a time: DPS,
+   * then the hub. Limits: sample_utils.h. */
   static uint8_t mqtt_workspace[SAMPLE_MQTT_WORKSPACE_SIZE];
 #if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
   copts.mqtt_adapter = az_iot_paho_get_adapter();
@@ -277,8 +236,7 @@ int main(void)
   }
   az_iot_connection_client_add_state_observer(&state.connection_client, on_conn_state, &user_ctx);
 
-  /* Assume a generation until DPS says otherwise; see unified/telemetry. */
-  if (telemetry_build(&state, AZ_IOT_CONNECTION_PROFILE_MQTT_V3) != AZ_IOT_OK
+  if (telemetry_build(&state) != AZ_IOT_OK
       || az_iot_connection_client_open(&state.connection_client) != AZ_IOT_OK)
   {
     sample_state_destroy(&state);
@@ -291,24 +249,6 @@ int main(void)
   {
     (void)az_iot_connection_client_do_work(&state.connection_client, 100);
 
-    if (user_ctx.rebuild)
-    {
-      user_ctx.rebuild = 0;
-      printf(
-          "DPS assigned %s; rebuilding the telemetry client.\n",
-          az_iot_connection_profile_to_string(user_ctx.assigned_profile));
-      telemetry_destroy(&state);
-      user_ctx.send_pending = 0; /* lost with the old client */
-      az_iot_connection_client_close(&state.connection_client);
-      if (telemetry_build(&state, user_ctx.assigned_profile) != AZ_IOT_OK
-          || az_iot_connection_client_open(&state.connection_client) != AZ_IOT_OK)
-      {
-        user_ctx.faulted = 1; /* recovery failed */
-        break;
-      }
-      continue;
-    }
-
     if (user_ctx.conn_state == AZ_IOT_CONN_STATE_CONNECTED && !user_ctx.send_pending
         && sample_now_ms() >= next_send_ms)
     {
@@ -320,11 +260,7 @@ int main(void)
     }
   }
 
-  printf(
-      "Sent %d message(s) on %s, %d failed.\n",
-      user_ctx.sent_ok,
-      az_iot_connection_profile_to_string(state.profile),
-      user_ctx.send_failed);
+  printf("Sent %d message(s), %d failed.\n", user_ctx.sent_ok, user_ctx.send_failed);
 
   az_iot_connection_client_close(&state.connection_client);
   for (int i = 0; i < 100 && user_ctx.conn_state != AZ_IOT_CONN_STATE_IDLE; ++i)

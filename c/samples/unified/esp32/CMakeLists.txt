@@ -2,7 +2,7 @@
 # Licensed under the MIT license. See LICENSE file in the project root for full license information.
 
 # ESP32 IoT Hub sample: DPS with X.509, then telemetry, twin and a direct method on the assigned
-# hub (mqttv3 or mqttv5). ESP-IDF v6.0 or later. See README.md.
+# mqttv3 hub. ESP-IDF v6.0 or later. See README.md.
 
 cmake_minimum_required(VERSION 3.16)
 

@@ -15,12 +15,9 @@
  * required at init(). The blob PUT to Azure Storage is always the application's
  * own HTTPS call.
  *
- * There is no MQTT v5 counterpart: file upload is not carried on that hub, and
- * this client pins MQTTv3, so init() on an MQTT v5 connection is refused with
- * AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH. init() also needs the assigned hub,
- * so this sample builds its client the way unified/connect_first does: once
- * CONNECTED, after reading the profile. On an MQTTv5 hub it reports that and
- * exits non-zero. One-shot: it does not wait for the device to be moved.
+ * init() needs the assigned hub, so this sample builds its client the way
+ * unified/connect_first does: once CONNECTED, after reading the profile.
+ * One-shot: it does not wait for the device to be moved.
  *
  * This sample uses libcurl (compiled in when CMake's find_package(CURL) succeeds
  * and defines AZ_IOT_SAMPLE_WITH_CURL) both as the HTTP hook and for the Storage
@@ -443,8 +440,8 @@ int main(void)
   copts.dps.registration_id = state.config.reg_id;
   copts.dps.global_endpoint = state.config.dps_global_endpoint; /* NULL: the global default */
   copts.certificate_provider = &state.certs.base;
-  /* The adapter builds each session's MQTT client in this workspace, one at a time: MQTT 3.1.1
-   * for DPS and an MQTTv3 hub, MQTT 5 for an MQTTv5 hub. Limits: sample_utils.h. */
+  /* The adapter builds each session's MQTT 3.1.1 client in this workspace, one at a time: DPS,
+   * then the hub. Limits: sample_utils.h. */
   static uint8_t mqtt_workspace[SAMPLE_MQTT_WORKSPACE_SIZE];
 #if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
   copts.mqtt_adapter = az_iot_paho_get_adapter();
@@ -490,8 +487,7 @@ int main(void)
   }
   else if (hub_profile.connection_profile != AZ_IOT_CONNECTION_PROFILE_MQTT_V3)
   {
-    /* No mqttv5 file upload client exists; the mqttv3 one would refuse this
-     * connection at init(). */
+    /* The mqttv3 file upload client would refuse this connection at init(). */
     printf("File upload is not available on this hub generation.\n");
   }
   else
