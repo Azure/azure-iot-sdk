@@ -90,6 +90,8 @@ typedef struct
   az_iot_certificate_provider_pem certs;
   az_iot_connection_client connection_client;
   az_iot_mqttv5_direct_method_client methods;
+  /* The method client's tokens, invocations and result buffers, for its default limits. */
+  uint8_t methods_workspace[AZ_IOT_MQTTV5_DIRECT_METHOD_CLIENT_DEFAULT_WORKSPACE_SIZE];
   int methods_initialized;
 } sample_state;
 
@@ -179,7 +181,7 @@ static void on_slow_echo(
       (unsigned)SLOW_ECHO_WORK_MS);
 
   /* The probe declines while one is held, but that is an optimisation rather
-   * than a guarantee: the SDK admits up to AZ_IOT_MQTTV5_DM_MAX_CONCURRENT ready
+   * than a guarantee: the SDK admits up to limits.max_concurrent_invocations ready
    * tokens, and `pending` is only set here -- so two probes can both be
    * accepted before either execute arrives. Without this branch the second
    * execute would overwrite the first request, and that caller would never be
@@ -289,7 +291,12 @@ int main(void)
   }
   az_iot_connection_client_add_state_observer(&state.connection_client, on_conn_state, &user_ctx);
 
-  if (az_iot_mqttv5_direct_method_client_init(&state.methods, &state.connection_client)
+  if (az_iot_mqttv5_direct_method_client_init(
+          &state.methods,
+          &state.connection_client,
+          &(az_iot_mqttv5_direct_method_client_options){ .workspace = state.methods_workspace,
+                                                         .workspace_size
+                                                         = sizeof(state.methods_workspace) })
       != AZ_IOT_OK)
   {
     sample_state_destroy(&state);

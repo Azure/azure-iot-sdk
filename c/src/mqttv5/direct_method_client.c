@@ -39,6 +39,7 @@
 #include "internal/log_internal.h"
 #include "internal/mono_time.h"
 #include "internal/span_writer.h"
+#include "internal/workspace.h"
 
 #define DI(d) ((d)->_internal)
 #define RI(r) ((r)->_internal)
@@ -63,10 +64,6 @@
 typedef char az_iot_dm_result_overhead_agrees
     [(AZ_IOT_MQTTV5_DM_RESULT_FRAME_OVERHEAD == AZ_IOT_DM_PROTO_RESULT_OVERHEAD) ? 1 : -1];
 
-/* The concurrency limit is meant to be tuned down for small devices, but a
- * limit of zero refuses every probe and makes the client inert. */
-typedef char az_iot_dm_concurrency_is_usable[(AZ_IOT_MQTTV5_DM_MAX_CONCURRENT >= 1) ? 1 : -1];
-
 /* ------------------------------------------------------------------------- */
 /* declared methods                                                          */
 /* ------------------------------------------------------------------------- */
@@ -75,7 +72,7 @@ static az_iot_mqttv5_direct_method_registration* method_find(
     az_iot_mqttv5_direct_method_client* dm,
     const char* method_name)
 {
-  for (size_t i = 0; i < AZ_IOT_MQTTV5_DM_MAX_METHODS; ++i)
+  for (size_t i = 0; i < DI(dm).limits.max_methods; ++i)
   {
     az_iot_mqttv5_direct_method_registration* entry = &DI(dm).methods[i];
     if (RI(entry).in_use && strcmp(RI(entry).name, method_name) == 0)
@@ -113,7 +110,7 @@ static az_iot_mqttv5_direct_method_ready_slot* ready_find(
     az_iot_mqttv5_direct_method_client* dm,
     const uint8_t* request_id)
 {
-  for (size_t i = 0; i < AZ_IOT_MQTTV5_DM_MAX_CONCURRENT; ++i)
+  for (size_t i = 0; i < DI(dm).limits.max_concurrent_invocations; ++i)
   {
     az_iot_mqttv5_direct_method_ready_slot* slot = &DI(dm).ready_pool[i];
     if (RI(slot).in_use
@@ -138,7 +135,7 @@ static uint32_t next_sequence(az_iot_mqttv5_direct_method_client* dm)
 
 static az_iot_mqttv5_direct_method_ready_slot* ready_acquire(az_iot_mqttv5_direct_method_client* dm)
 {
-  for (size_t i = 0; i < AZ_IOT_MQTTV5_DM_MAX_CONCURRENT; ++i)
+  for (size_t i = 0; i < DI(dm).limits.max_concurrent_invocations; ++i)
   {
     az_iot_mqttv5_direct_method_ready_slot* slot = &DI(dm).ready_pool[i];
     if (!RI(slot).in_use)
@@ -164,19 +161,20 @@ static bool request_acquire(
     az_iot_direct_method_slot** out_slot,
     size_t* out_index)
 {
-  for (size_t n = 0; n < AZ_IOT_MQTTV5_DM_MAX_CONCURRENT; ++n)
+  for (size_t n = 0; n < DI(dm).limits.max_concurrent_invocations; ++n)
   {
-    size_t i = (DI(dm).next_slot + n) % AZ_IOT_MQTTV5_DM_MAX_CONCURRENT;
-    az_iot_direct_method_slot* s = &DI(dm).req_pool[i];
+    size_t i = (DI(dm).next_slot + n) % DI(dm).limits.max_concurrent_invocations;
+    az_iot_direct_method_slot* s = &DI(dm).invocations[i].slot;
     if (!s->_internal.in_use)
     {
       memset(s, 0, sizeof(*s));
       s->_internal.seq = next_sequence(dm);
       s->_internal.in_use = true;
-      DI(dm).result_tracker_entry[i] = AZ_IOT_MQTTV5_DM_NO_TRACKER_ENTRY;
-      DI(dm).expired_request_seq[i] = 0u; /* A request it held before is reused, not timed out. */
+      DI(dm).invocations[i].result_tracker_entry = AZ_IOT_MQTTV5_DM_NO_TRACKER_ENTRY;
+      DI(dm).invocations[i].expired_request_seq
+          = 0u; /* A request it held before is reused, not timed out. */
       *out_index = i;
-      DI(dm).next_slot = (i + 1u) % AZ_IOT_MQTTV5_DM_MAX_CONCURRENT;
+      DI(dm).next_slot = (i + 1u) % DI(dm).limits.max_concurrent_invocations;
 
       memset(out_request, 0, sizeof(*out_request));
       out_request->_internal.owner = dm;
@@ -189,10 +187,10 @@ static bool request_acquire(
   }
   AZ_IOT_LOG_WARNF(
       AZ_IOT_LOG_COMPONENT_MQTTV5_DIRECT_METHOD,
-      "dropping an invocation, all %d concurrent slots are taken by requests "
-      "still inside their response budget. Raise AZ_IOT_MQTTV5_DM_MAX_CONCURRENT to hold more at "
+      "dropping an invocation, all %lu concurrent slots are taken by requests "
+      "still inside their response budget. Raise limits.max_concurrent_invocations to hold more at "
       "once.",
-      (int)AZ_IOT_MQTTV5_DM_MAX_CONCURRENT);
+      (unsigned long)DI(dm).limits.max_concurrent_invocations);
   return false;
 }
 
@@ -212,14 +210,14 @@ static az_iot_direct_method_slot* request_resolve(
     return NULL;
   }
   size_t i = (size_t)request._internal.slot;
-  if (i >= AZ_IOT_MQTTV5_DM_MAX_CONCURRENT || request._internal.seq == 0u)
+  if (i >= DI(dm).limits.max_concurrent_invocations || request._internal.seq == 0u)
   {
     return NULL;
   }
-  az_iot_direct_method_slot* s = &DI(dm).req_pool[i];
+  az_iot_direct_method_slot* s = &DI(dm).invocations[i].slot;
   /* A result being delivered has already answered the request. */
   if (!s->_internal.in_use || s->_internal.seq != request._internal.seq
-      || DI(dm).result_tracker_entry[i] != AZ_IOT_MQTTV5_DM_NO_TRACKER_ENTRY)
+      || DI(dm).invocations[i].result_tracker_entry != AZ_IOT_MQTTV5_DM_NO_TRACKER_ENTRY)
   {
     return NULL;
   }
@@ -240,18 +238,18 @@ static az_iot_direct_method_slot* request_resolve(
 static bool has_execution_capacity(const az_iot_mqttv5_direct_method_client* dm)
 {
   size_t committed = 0;
-  for (size_t i = 0; i < AZ_IOT_MQTTV5_DM_MAX_CONCURRENT; ++i)
+  for (size_t i = 0; i < DI(dm).limits.max_concurrent_invocations; ++i)
   {
     if (DI(dm).ready_pool[i]._internal.in_use)
     {
       committed++;
     }
-    if (DI(dm).req_pool[i]._internal.in_use)
+    if (DI(dm).invocations[i].slot._internal.in_use)
     {
       committed++;
     }
   }
-  return committed < AZ_IOT_MQTTV5_DM_MAX_CONCURRENT;
+  return committed < DI(dm).limits.max_concurrent_invocations;
 }
 
 /** @brief End ready token @p slot: it is no longer usable, and its probe-ack is not sent again. */
@@ -268,7 +266,7 @@ static void end_ready_token(
 static void ready_expire_stale(az_iot_mqttv5_direct_method_client* dm)
 {
   uint64_t now = az_iot_time_mono_ms();
-  for (size_t i = 0; i < AZ_IOT_MQTTV5_DM_MAX_CONCURRENT; ++i)
+  for (size_t i = 0; i < DI(dm).limits.max_concurrent_invocations; ++i)
   {
     az_iot_mqttv5_direct_method_ready_slot* slot = &DI(dm).ready_pool[i];
     if (!RI(slot).in_use || now < RI(slot).expires_at_ms)
@@ -307,10 +305,11 @@ static void ready_expire_stale(az_iot_mqttv5_direct_method_client* dm)
  * already fired by here, so it has stopped waiting. */
 static void requests_expire_stale(az_iot_mqttv5_direct_method_client* dm)
 {
-  for (size_t i = 0; i < AZ_IOT_MQTTV5_DM_MAX_CONCURRENT; ++i)
+  for (size_t i = 0; i < DI(dm).limits.max_concurrent_invocations; ++i)
   {
-    az_iot_direct_method_slot* s = &DI(dm).req_pool[i];
-    if (!RI(s).in_use || DI(dm).result_tracker_entry[i] != AZ_IOT_MQTTV5_DM_NO_TRACKER_ENTRY
+    az_iot_direct_method_slot* s = &DI(dm).invocations[i].slot;
+    if (!RI(s).in_use
+        || DI(dm).invocations[i].result_tracker_entry != AZ_IOT_MQTTV5_DM_NO_TRACKER_ENTRY
         || !az_iot_mqttv5_direct_method_client__result_deadline_has_passed(dm, i))
     {
       continue;
@@ -320,7 +319,7 @@ static void requests_expire_stale(az_iot_mqttv5_direct_method_client* dm)
         "'%s' was never answered and its response budget has run out; "
         "reclaiming its slot",
         RI(s).method_name);
-    DI(dm).expired_request_seq[i] = RI(s).seq;
+    DI(dm).invocations[i].expired_request_seq = RI(s).seq;
     RI(s).in_use = false;
   }
 }
@@ -616,10 +615,14 @@ static void handle_exec(
   memcpy(RI(req_slot).method_name, RI(slot).method_name, strlen(RI(slot).method_name) + 1u);
   memcpy(RI(req_slot).correlation_data, request_id, AZ_IOT_MQTTV5_DM_REQUEST_ID_LEN);
   RI(req_slot).correlation_data_len = AZ_IOT_MQTTV5_DM_REQUEST_ID_LEN;
-  DI(dm).exec_budget_seconds[index] = exec_budget;
-  DI(dm).exec_received_at_ms[index] = received_at_ms;
-  DI(dm).exec_deadline_ms[index] = az_iot_mqttv5_direct_method_client__result_deadline_ms(
-      received_at_ms, exec_budget, margin, DI(dm).conn->opts.max_unconfirmed_delivery_timeout_ms);
+  DI(dm).invocations[index].exec_budget_seconds = exec_budget;
+  DI(dm).invocations[index].exec_received_at_ms = received_at_ms;
+  DI(dm).invocations[index].exec_deadline_ms
+      = az_iot_mqttv5_direct_method_client__result_deadline_ms(
+          received_at_ms,
+          exec_budget,
+          margin,
+          DI(dm).conn->opts.max_unconfirmed_delivery_timeout_ms);
 
   /* The token is single-use: consumed here, so a redelivered exec cannot run
    * the method a second time. Its handler is read out first -- the slot is
@@ -716,17 +719,18 @@ static void on_method_message(void* user_ctx, const az_iot_mqtt_message* msg)
 static void discard_previous_identity_state(az_iot_mqttv5_direct_method_client* dm)
 {
   size_t dropped = 0;
-  for (size_t i = 0; i < AZ_IOT_MQTTV5_DM_MAX_CONCURRENT; ++i)
+  for (size_t i = 0; i < DI(dm).limits.max_concurrent_invocations; ++i)
   {
-    if (DI(dm).ready_pool[i]._internal.in_use || DI(dm).req_pool[i]._internal.in_use)
+    if (DI(dm).ready_pool[i]._internal.in_use || DI(dm).invocations[i].slot._internal.in_use)
     {
       dropped++;
     }
     end_ready_token(dm, &DI(dm).ready_pool[i]);
-    DI(dm).req_pool[i]._internal.in_use = false;
-    az_iot_mqttv5_direct_method_client__cancel_reply(dm, &DI(dm).result_tracker_entry[i]);
+    DI(dm).invocations[i].slot._internal.in_use = false;
+    az_iot_mqttv5_direct_method_client__cancel_reply(
+        dm, &DI(dm).invocations[i].result_tracker_entry);
   }
-  for (size_t i = 0; i < AZ_IOT_MQTTV5_DM_NOTICE_QUEUE_MAX; ++i)
+  for (size_t i = 0; i < DI(dm).limits.max_queued_notices; ++i)
   {
     if (DI(dm).notices[i]._internal.tracker_entry != AZ_IOT_MQTTV5_DM_NO_TRACKER_ENTRY)
     {
@@ -754,18 +758,18 @@ static void lower_wait_to_next_token_or_request_deadline(
     uint64_t* remaining_ms)
 {
   uint64_t earliest = UINT64_MAX;
-  for (size_t i = 0; i < AZ_IOT_MQTTV5_DM_MAX_CONCURRENT; ++i)
+  for (size_t i = 0; i < DI(dm).limits.max_concurrent_invocations; ++i)
   {
     const az_iot_mqttv5_direct_method_ready_slot* slot = &DI(dm).ready_pool[i];
     if (RI(slot).in_use && RI(slot).expires_at_ms < earliest)
     {
       earliest = RI(slot).expires_at_ms;
     }
-    if (DI(dm).req_pool[i]._internal.in_use
-        && DI(dm).result_tracker_entry[i] == AZ_IOT_MQTTV5_DM_NO_TRACKER_ENTRY
-        && DI(dm).exec_deadline_ms[i] < earliest)
+    if (DI(dm).invocations[i].slot._internal.in_use
+        && DI(dm).invocations[i].result_tracker_entry == AZ_IOT_MQTTV5_DM_NO_TRACKER_ENTRY
+        && DI(dm).invocations[i].exec_deadline_ms < earliest)
     {
-      earliest = DI(dm).exec_deadline_ms[i];
+      earliest = DI(dm).invocations[i].exec_deadline_ms;
     }
   }
   uint64_t const now = az_iot_time_mono_ms();
@@ -840,17 +844,119 @@ static az_iot_result bind_topics(void* owner, az_iot_connection_client* conn)
       conn, DI(client).inbound_topic, on_method_message, client);
 }
 
+/**
+ * @brief Writes @p limits with every 0 replaced by its default to @p out.
+ * @return false when a value is above its maximum.
+ */
+static bool limits_resolve(
+    const az_iot_mqttv5_direct_method_client_limits* limits,
+    az_iot_mqttv5_direct_method_client_limits* out)
+{
+  *out = *limits;
+  if (out->max_concurrent_invocations == 0u)
+  {
+    out->max_concurrent_invocations
+        = AZ_IOT_MQTTV5_DIRECT_METHOD_CLIENT_DEFAULT_MAX_CONCURRENT_INVOCATIONS;
+  }
+  if (out->max_methods == 0u)
+  {
+    out->max_methods = AZ_IOT_MQTTV5_DIRECT_METHOD_CLIENT_DEFAULT_MAX_METHODS;
+  }
+  if (out->max_queued_notices == 0u)
+  {
+    out->max_queued_notices = out->max_concurrent_invocations;
+  }
+  if (out->max_result_body_size == 0u)
+  {
+    out->max_result_body_size = AZ_IOT_MQTTV5_DIRECT_METHOD_CLIENT_DEFAULT_MAX_RESULT_BODY_SIZE;
+  }
+  return out->max_concurrent_invocations
+      <= AZ_IOT_MQTTV5_DIRECT_METHOD_CLIENT_MAX_CONCURRENT_INVOCATIONS_LIMIT
+      && out->max_methods <= AZ_IOT_MQTTV5_DIRECT_METHOD_CLIENT_MAX_METHODS_LIMIT
+      && out->max_queued_notices <= AZ_IOT_MQTTV5_DIRECT_METHOD_CLIENT_MAX_QUEUED_NOTICES_LIMIT
+      && out->max_result_body_size <= AZ_IOT_MQTTV5_DIRECT_METHOD_CLIENT_MAX_RESULT_BODY_SIZE_LIMIT;
+}
+
+/** @brief Workspace bytes for resolved @p l. */
+static size_t workspace_size_of(const az_iot_mqttv5_direct_method_client_limits* l)
+{
+  return AZ_IOT_MQTTV5_DIRECT_METHOD_CLIENT_WORKSPACE_SIZE(
+      l->max_concurrent_invocations,
+      l->max_methods,
+      l->max_queued_notices,
+      l->max_result_body_size);
+}
+
+AZ_NODISCARD size_t az_iot_mqttv5_direct_method_client_get_workspace_size(
+    const az_iot_mqttv5_direct_method_client_limits* limits)
+{
+  az_iot_mqttv5_direct_method_client_limits resolved;
+  return limits != NULL && limits_resolve(limits, &resolved) ? workspace_size_of(&resolved) : 0u;
+}
+
+/**
+ * @brief Points @p client's entries into its cleared @p workspace, laid out as
+ * workspace_size_of(); returns the delivery tracker's entries.
+ */
+static az_iot_delivery_tracker_entry* workspace_assign(
+    az_iot_mqttv5_direct_method_client* client,
+    uint8_t* workspace)
+{
+  const az_iot_mqttv5_direct_method_client_limits* l = &DI(client).limits;
+  uint8_t* cursor = az_iot_workspace__start(workspace);
+  DI(client).invocations = az_iot_workspace__take(
+      &cursor, l->max_concurrent_invocations, sizeof(az_iot_mqttv5_direct_method_invocation));
+  DI(client).ready_pool = az_iot_workspace__take(
+      &cursor, l->max_concurrent_invocations, sizeof(az_iot_mqttv5_direct_method_ready_slot));
+  DI(client).methods = az_iot_workspace__take(
+      &cursor, l->max_methods, sizeof(az_iot_mqttv5_direct_method_registration));
+  DI(client).notices = az_iot_workspace__take(
+      &cursor, l->max_queued_notices, sizeof(az_iot_mqttv5_direct_method_notice));
+  az_iot_delivery_tracker_entry* tracker_entries = az_iot_workspace__take(
+      &cursor,
+      l->max_concurrent_invocations + l->max_queued_notices,
+      sizeof(az_iot_delivery_tracker_entry));
+  const size_t frame_size = l->max_result_body_size + AZ_IOT_MQTTV5_DM_RESULT_FRAME_OVERHEAD;
+  uint8_t* result_frames
+      = az_iot_workspace__take(&cursor, l->max_concurrent_invocations, frame_size);
+  for (size_t i = 0; i < l->max_concurrent_invocations; ++i)
+  {
+    DI(client).invocations[i].result_frame = result_frames + i * frame_size;
+  }
+  return tracker_entries;
+}
+
 AZ_NODISCARD az_iot_result az_iot_mqttv5_direct_method_client_init(
     az_iot_mqttv5_direct_method_client* client,
-    az_iot_connection_client* conn)
+    az_iot_connection_client* conn,
+    const az_iot_mqttv5_direct_method_client_options* options)
 {
-  if (client == NULL || conn == NULL)
+  if (client == NULL || conn == NULL || options == NULL)
   {
+    AZ_IOT_LOG_ERROR(AZ_IOT_LOG_COMPONENT_MQTTV5_DIRECT_METHOD, "init: invalid arguments");
     return AZ_IOT_ERR_INVALID_ARG;
   }
-
+  az_iot_mqttv5_direct_method_client_limits limits;
+  if (!limits_resolve(&options->limits, &limits))
+  {
+    AZ_IOT_LOG_ERROR(
+        AZ_IOT_LOG_COMPONENT_MQTTV5_DIRECT_METHOD, "init: a limit is above its maximum");
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  const size_t workspace_size = workspace_size_of(&limits);
   az_iot_result result
-      = az_iot_connection_client__require_profile(conn, AZ_IOT_CONNECTION_PROFILE_MQTT_V5);
+      = az_iot_workspace__check(options->workspace, options->workspace_size, workspace_size);
+  if (result != AZ_IOT_OK)
+  {
+    AZ_IOT_LOG_ERRORF(
+        AZ_IOT_LOG_COMPONENT_MQTTV5_DIRECT_METHOD,
+        "init: the workspace is NULL or has %lu bytes; %lu needed",
+        (unsigned long)options->workspace_size,
+        (unsigned long)workspace_size);
+    return result;
+  }
+
+  result = az_iot_connection_client__require_profile(conn, AZ_IOT_CONNECTION_PROFILE_MQTT_V5);
   if (result != AZ_IOT_OK)
   {
     memset(client, 0, sizeof(*client));
@@ -859,6 +965,11 @@ AZ_NODISCARD az_iot_result az_iot_mqttv5_direct_method_client_init(
 
   memset(client, 0, sizeof(*client));
   DI(client).conn = conn;
+  DI(client).limits = limits;
+  DI(client).workspace = options->workspace;
+  DI(client).workspace_size = options->workspace_size;
+  memset(options->workspace, 0, workspace_size);
+  az_iot_delivery_tracker_entry* tracker_entries = workspace_assign(client, options->workspace);
   DI(client).rng_state = az_iot_time_mono_ms();
   /* Seeded rather than started from zero: deinit() zeroes the client, so a
    * fresh init would otherwise reissue the same {slot, seq} a request from the
@@ -879,7 +990,8 @@ AZ_NODISCARD az_iot_result az_iot_mqttv5_direct_method_client_init(
   }
   if (result == AZ_IOT_OK)
   {
-    result = az_iot_mqttv5_direct_method_client__start_reply_delivery(client, conn);
+    result
+        = az_iot_mqttv5_direct_method_client__start_reply_delivery(client, conn, tracker_entries);
   }
   if (result != AZ_IOT_OK)
   {
@@ -907,6 +1019,10 @@ void az_iot_mqttv5_direct_method_client_deinit(az_iot_mqttv5_direct_method_clien
   az_iot_connection_client__release_profile(DI(client).conn);
   (void)az_iot_connection_client__remove_subscriptions_for(DI(client).conn, client);
   (void)az_iot_connection_client__unregister_inbound_handlers(DI(client).conn, client);
+  if (DI(client).workspace != NULL)
+  {
+    memset(DI(client).workspace, 0, DI(client).workspace_size);
+  }
   memset(client, 0, sizeof(*client));
 }
 
@@ -952,7 +1068,7 @@ AZ_NODISCARD az_iot_result az_iot_mqttv5_direct_method_client_register_method(
   az_iot_mqttv5_direct_method_registration* entry = method_find(client, method_name);
   if (entry == NULL)
   {
-    for (size_t i = 0; i < AZ_IOT_MQTTV5_DM_MAX_METHODS; ++i)
+    for (size_t i = 0; i < DI(client).limits.max_methods; ++i)
     {
       if (!DI(client).methods[i]._internal.in_use)
       {
@@ -965,10 +1081,10 @@ AZ_NODISCARD az_iot_result az_iot_mqttv5_direct_method_client_register_method(
   {
     AZ_IOT_LOG_ERRORF(
         AZ_IOT_LOG_COMPONENT_MQTTV5_DIRECT_METHOD,
-        "cannot declare '%s', all %d method slots are taken; raise "
-        "AZ_IOT_MQTTV5_DM_MAX_METHODS",
+        "cannot declare '%s', all %lu method slots are taken; raise "
+        "limits.max_methods",
         method_name,
-        (int)AZ_IOT_MQTTV5_DM_MAX_METHODS);
+        (unsigned long)DI(client).limits.max_methods);
     return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
   }
 
@@ -1029,9 +1145,10 @@ az_iot_result az_iot_mqttv5_direct_method_respond(
   az_iot_direct_method_slot* slot = request_resolve(dm, request, &index);
   if (slot == NULL)
   {
-    if (request._internal.owner == dm && request._internal.slot < AZ_IOT_MQTTV5_DM_MAX_CONCURRENT
+    if (request._internal.owner == dm
+        && request._internal.slot < DI(dm).limits.max_concurrent_invocations
         && request._internal.seq != 0u
-        && DI(dm).expired_request_seq[request._internal.slot] == request._internal.seq)
+        && DI(dm).invocations[request._internal.slot].expired_request_seq == request._internal.seq)
     {
       AZ_IOT_LOG_WARN(
           AZ_IOT_LOG_COMPONENT_MQTTV5_DIRECT_METHOD,
@@ -1046,15 +1163,15 @@ az_iot_result az_iot_mqttv5_direct_method_respond(
     return AZ_IOT_ERR_INVALID_ARG;
   }
 
-  if (payload_len > AZ_IOT_MQTTV5_DM_RESULT_BODY_MAX)
+  if (payload_len > DI(dm).limits.max_result_body_size)
   {
     AZ_IOT_LOG_ERRORF(
         AZ_IOT_LOG_COMPONENT_MQTTV5_DIRECT_METHOD,
-        "a %u byte result body does not fit the framing buffer; send a "
+        "a %lu byte result body does not fit the framing buffer; send a "
         "shorter "
-        "one, or raise AZ_IOT_MQTTV5_DM_RESULT_BODY_MAX past %u",
-        (unsigned)payload_len,
-        (unsigned)AZ_IOT_MQTTV5_DM_RESULT_BODY_MAX);
+        "one, or raise limits.max_result_body_size past %lu",
+        (unsigned long)payload_len,
+        (unsigned long)DI(dm).limits.max_result_body_size);
     /* The slot stays held. Nothing was sent and nothing consumed the request,
      * so the obvious recovery -- answer again with a body that fits -- has to
      * still be open. */
@@ -1077,8 +1194,8 @@ az_iot_result az_iot_mqttv5_direct_method_respond(
 
   size_t frame_len = 0;
   az_iot_result result = az_iot_dm_proto_encode_result(
-      DI(dm).result_frame[index],
-      sizeof(DI(dm).result_frame[index]),
+      DI(dm).invocations[index].result_frame,
+      DI(dm).limits.max_result_body_size + AZ_IOT_MQTTV5_DM_RESULT_FRAME_OVERHEAD,
       (int32_t)status_code,
       payload,
       payload_len,
@@ -1094,7 +1211,7 @@ az_iot_result az_iot_mqttv5_direct_method_respond(
     return result;
   }
 
-  DI(dm).result_frame_len[index] = frame_len;
+  DI(dm).invocations[index].result_frame_len = frame_len;
   result = az_iot_mqttv5_direct_method_client__deliver_result(dm, index);
   if (result != AZ_IOT_OK)
   {

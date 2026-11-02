@@ -230,7 +230,7 @@ extern "C"
 
 #ifdef AZ_IOT_DM_MAX_INFLIGHT
 #error \
-    "AZ_IOT_DM_MAX_INFLIGHT is removed: set az_iot_mqttv3_direct_method_client_limits::max_in_flight_invocations (mqttv3) or AZ_IOT_MQTTV5_DM_MAX_CONCURRENT (mqttv5)"
+    "AZ_IOT_DM_MAX_INFLIGHT is removed: set az_iot_mqttv3_direct_method_client_limits::max_in_flight_invocations or az_iot_mqttv5_direct_method_client_limits::max_concurrent_invocations"
 #endif
 
   /**

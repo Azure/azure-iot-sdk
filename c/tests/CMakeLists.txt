@@ -289,26 +289,17 @@ if(UNIX)
     target_compile_definitions(az_iot_tests_mqttv5_direct_method_client PRIVATE
         _POSIX_C_SOURCE=200809L)
 endif()
-# The MQTTv5 design requires the concurrency limit to be configurable. It sizes a
-# public struct, so the library and the application must be built against the
-# same value -- hence the mqttv5 sources are compiled into this target rather than
-# linked from az_iot_mqttv5, which carries the default. Running the whole suite
-# against an overridden limit proves the knob reaches every pool, loop and
-# admission check, and catches anyone reintroducing a hardcoded bound. It is set
-# to 1, the smallest.
+# The whole suite again, against the library, at run-time limits of one concurrent invocation
+# and four queued notices: proves the limits reach every pool, loop and admission check, and
+# catches anyone reintroducing a hardcoded bound.
 az_iot_add_cmocka_test(az_iot_tests_mqttv5_direct_method_client_tuned
-    unit/mqttv5_direct_method_client_test.c
-    ${PROJECT_SOURCE_DIR}/src/mqttv5/direct_method_client.c
-    ${PROJECT_SOURCE_DIR}/src/mqttv5/direct_method_budget.c
-    ${PROJECT_SOURCE_DIR}/src/mqttv5/direct_method_delivery.c
-    ${PROJECT_SOURCE_DIR}/src/mqttv5/direct_method_codec.c)
-target_link_libraries(az_iot_tests_mqttv5_direct_method_client_tuned PRIVATE az_iot_test_support)
+    unit/mqttv5_direct_method_client_test.c)
+target_link_libraries(az_iot_tests_mqttv5_direct_method_client_tuned PRIVATE az_iot_test_support az_iot_mqttv5)
 target_include_directories(az_iot_tests_mqttv5_direct_method_client_tuned PRIVATE
-    ${PROJECT_SOURCE_DIR}/src/core
-    ${PROJECT_SOURCE_DIR}/src/mqttv5)
+    ${PROJECT_SOURCE_DIR}/src/core)
 target_compile_definitions(az_iot_tests_mqttv5_direct_method_client_tuned PRIVATE
-    AZ_IOT_MQTTV5_DM_MAX_CONCURRENT=1
-    AZ_IOT_MQTTV5_DM_NOTICE_QUEUE_MAX=4)
+    TEST_MAX_CONCURRENT_INVOCATIONS=1
+    TEST_MAX_QUEUED_NOTICES=4)
 if(UNIX)
     target_compile_definitions(az_iot_tests_mqttv5_direct_method_client_tuned PRIVATE
         _POSIX_C_SOURCE=200809L)
@@ -358,7 +349,9 @@ foreach(_case
         AZ_IOT_MQTTV5_DM_TOPIC_MAX=192 AZ_IOT_MQTTV5_DM_TOPIC_MAX=256
         AZ_IOT_LOG_FILE_PATH_MAX=256 AZ_IOT_LOG_FILE_PATH_MAX=512
         AZ_IOT_DM_MAX_INFLIGHT=4 AZ_IOT_DM_MAX_INFLIGHT=1
-        AZ_IOT_TWIN_MAX_PENDING=8 AZ_IOT_TWIN_MAX_PENDING=1)
+        AZ_IOT_TWIN_MAX_PENDING=8 AZ_IOT_TWIN_MAX_PENDING=1
+        AZ_IOT_MQTTV5_DM_MAX_CONCURRENT=4 AZ_IOT_MQTTV5_DM_NOTICE_QUEUE_MAX=4
+        AZ_IOT_MQTTV5_DM_MAX_METHODS=8 AZ_IOT_MQTTV5_DM_RESULT_BODY_MAX=512)
     string(REPLACE "=" "_" _name "${_case}")
     string(TOLOWER "az_iot_tests_fixed_size_${_name}" _name)
     add_library(${_name} OBJECT EXCLUDE_FROM_ALL compile/fixed_sizes_test.c)

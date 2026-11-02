@@ -61,6 +61,8 @@ typedef struct
   az_iot_certificate_provider_pem certs;
   az_iot_connection_client connection_client;
   az_iot_mqttv5_direct_method_client methods;
+  /* The method client's tokens, invocations and result buffers, for its default limits. */
+  uint8_t methods_workspace[AZ_IOT_MQTTV5_DIRECT_METHOD_CLIENT_DEFAULT_WORKSPACE_SIZE];
   int methods_initialized;
 } sample_state;
 
@@ -146,12 +148,12 @@ static void on_echo(
       "method '%s' invoked, %zu byte payload\n", method_name ? method_name : "(null)", payload_len);
 
   /* Echoing is not automatically safe: the arguments the caller sent are bounded
-   * by the message, not by AZ_IOT_MQTTV5_DM_RESULT_BODY_MAX, which is what bounds
+   * by the message, not by limits.max_result_body_size, which is what bounds
    * the reply. Sending one back that does not fit is refused with
    * AZ_IOT_ERR_NOT_ENOUGH_SPACE and the slot is KEPT -- so ignoring that result
    * would leave the caller with no answer at all until its budget ran out.
    * Answering short is the recovery the SDK leaves open. */
-  if (payload_len > AZ_IOT_MQTTV5_DM_RESULT_BODY_MAX)
+  if (payload_len > AZ_IOT_MQTTV5_DIRECT_METHOD_CLIENT_DEFAULT_MAX_RESULT_BODY_SIZE)
   {
     (void)az_iot_mqttv5_direct_method_respond(
         &ctx->state->methods, request, STATUS_PAYLOAD_TOO_LARGE, NULL, 0);
@@ -224,7 +226,12 @@ int main(void)
   /* Before open, and before any profile is known: this declares which hub the
    * application is built for, and the connection is failed if it resolves to
    * the other one. */
-  if (az_iot_mqttv5_direct_method_client_init(&state.methods, &state.connection_client)
+  if (az_iot_mqttv5_direct_method_client_init(
+          &state.methods,
+          &state.connection_client,
+          &(az_iot_mqttv5_direct_method_client_options){ .workspace = state.methods_workspace,
+                                                         .workspace_size
+                                                         = sizeof(state.methods_workspace) })
       != AZ_IOT_OK)
   {
     sample_state_destroy(&state);

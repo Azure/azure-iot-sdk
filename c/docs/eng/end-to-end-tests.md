@@ -199,7 +199,7 @@ its policy signs the device delete, sent to the `IOTHUB_CONNECTION_STRING` host)
   which logs the same CONNECT lines).
 - [`e2e_mqttv5_direct_method_test.c`](../../tests/e2e/tests/e2e_mqttv5_direct_method_test.c) —
   methods invoked through the service REST API. Answers (200, 500, no payload, a result body of
-  exactly `AZ_IOT_MQTTV5_DM_RESULT_BODY_MAX`) reach the caller; undeclared, wrong-case, withdrawn,
+  exactly a run-time `max_result_body_size` of 1024) reach the caller; undeclared, wrong-case, withdrawn,
   busy and too-short-timeout calls are refused at the probe without running the handler; an
   unanswered call times out and a late answer is not sent; concurrent calls get their own results.
   One connection for the suite. `ci-c-e2e-mqttv5`.

@@ -11,8 +11,7 @@
   `workspace` and `workspace_size` (`az_iot_mqttv3_direct_method_client_get_workspace_size()`,
   `AZ_IOT_MQTTV3_DIRECT_METHOD_CLIENT_WORKSPACE_SIZE()`). `init()` returns `AZ_IOT_ERR_INVALID_ARG`
   for a limit above its maximum or a NULL workspace, and `AZ_IOT_ERR_NOT_ENOUGH_SPACE` for one too
-  small; `deinit()` wipes it. `AZ_IOT_DM_MAX_INFLIGHT` is removed (defining it is a compile error);
-  `AZ_IOT_MQTTV5_DM_MAX_CONCURRENT` now defaults to 4.
+  small; `deinit()` wipes it. `AZ_IOT_DM_MAX_INFLIGHT` is removed (defining it is a compile error).
 - Breaking: the mqttv3 and mqttv5 twin clients hold their pending requests in a workspace the
   application provides, sized at run time. `az_iot_mqttv3_twin_client_init()` and
   `az_iot_mqttv5_twin_client_init()` take `az_iot_mqttv3_twin_client_options` and
@@ -23,12 +22,25 @@
   `AZ_IOT_ERR_INVALID_ARG` for a limit above its maximum or a NULL workspace, and
   `AZ_IOT_ERR_NOT_ENOUGH_SPACE` for one too small; `deinit()` wipes it. `AZ_IOT_TWIN_MAX_PENDING`
   and `AZ_IOT_MQTTV5_TWIN_TRACKED_MESSAGES` are removed (defining the first is a compile error).
+- Breaking: the mqttv5 direct method client holds its tokens, invocations, declared methods, queued
+  notices and result buffers in a workspace the application provides, sized at run time.
+  `az_iot_mqttv5_direct_method_client_init()` takes `az_iot_mqttv5_direct_method_client_options`:
+  `limits` (`az_iot_mqttv5_direct_method_client_limits`; 0 fields select the defaults):
+  `max_concurrent_invocations` (4, at most 255), `max_methods` (8, at most 1024),
+  `max_queued_notices` (`max_concurrent_invocations`, at most 1024) and `max_result_body_size` (512,
+  at most 131072); `workspace` and `workspace_size`
+  (`az_iot_mqttv5_direct_method_client_get_workspace_size()`,
+  `AZ_IOT_MQTTV5_DIRECT_METHOD_CLIENT_WORKSPACE_SIZE()`). `init()` returns `AZ_IOT_ERR_INVALID_ARG`
+  for a limit above its maximum or a NULL workspace, and `AZ_IOT_ERR_NOT_ENOUGH_SPACE` for one too
+  small; `deinit()` wipes it. `AZ_IOT_MQTTV5_DM_MAX_CONCURRENT`, `AZ_IOT_MQTTV5_DM_MAX_METHODS`,
+  `AZ_IOT_MQTTV5_DM_NOTICE_QUEUE_MAX` and `AZ_IOT_MQTTV5_DM_RESULT_BODY_MAX` are removed (defining
+  one is a compile error), as is `AZ_IOT_MQTTV5_DM_TRACKED_MESSAGES`;
+  `AZ_IOT_MQTTV5_DM_RESERVED_PUBACKS(max_concurrent_invocations)` now takes the limit.
 - Breaking: feature-client string and topic sizes that lay out public structs are fixed:
   `AZ_IOT_DM_METHOD_NAME_MAX` (96), `AZ_IOT_DM_RID_MAX` (32), `AZ_IOT_DM_CORR_DATA_MAX` (64),
   `AZ_IOT_MQTTV5_DM_TOPIC_MAX` (192) and `AZ_IOT_LOG_FILE_PATH_MAX` (256). Defining any of them
   before including the headers is a compile error, so these sizes cannot differ between the
-  application and the SDK. The mqttv5 direct method counts (`AZ_IOT_MQTTV5_DM_*` counts) and
-  `AZ_IOT_MQTTV5_DM_RESULT_BODY_MAX` are still overridable and must match between the two.
+  application and the SDK.
 - Breaking: the MQTT factory API is removed; the connection client builds every session's MQTT
   client with `az_iot_connection_client_options::mqtt_adapter` in `mqtt_workspace`, sized by
   `mqtt_limits`. All three are required: `init()` returns `AZ_IOT_ERR_INVALID_ARG` when

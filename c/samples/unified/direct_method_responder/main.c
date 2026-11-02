@@ -64,8 +64,12 @@ typedef struct
   az_iot_connection_client connection_client;
   /* Only the one matching `profile` is ever initialized. */
   az_iot_mqttv3_direct_method_client mqttv3;
-  /* The mqttv3 client's invocations, for its default limits. */
-  uint8_t mqttv3_workspace[AZ_IOT_MQTTV3_DIRECT_METHOD_CLIENT_DEFAULT_WORKSPACE_SIZE];
+  /* The memory of whichever client is initialized, for the default limits. */
+  uint8_t methods_workspace
+      [AZ_IOT_MQTTV5_DIRECT_METHOD_CLIENT_DEFAULT_WORKSPACE_SIZE
+               > AZ_IOT_MQTTV3_DIRECT_METHOD_CLIENT_DEFAULT_WORKSPACE_SIZE
+           ? AZ_IOT_MQTTV5_DIRECT_METHOD_CLIENT_DEFAULT_WORKSPACE_SIZE
+           : AZ_IOT_MQTTV3_DIRECT_METHOD_CLIENT_DEFAULT_WORKSPACE_SIZE];
   az_iot_mqttv5_direct_method_client mqttv5;
   az_iot_connection_profile profile;
   int methods_initialized;
@@ -230,10 +234,10 @@ static void on_echo_mqttv5(
   printf(
       "method '%s' invoked, %zu byte payload\n", method_name ? method_name : "(null)", payload_len);
 
-  /* The reply is bounded by AZ_IOT_MQTTV5_DM_RESULT_BODY_MAX, the arguments are
+  /* The reply is bounded by limits.max_result_body_size, the arguments are
    * not. A reply that does not fit is refused and the slot KEPT, so answer
    * short rather than ignore that result. */
-  if (payload_len > AZ_IOT_MQTTV5_DM_RESULT_BODY_MAX)
+  if (payload_len > AZ_IOT_MQTTV5_DIRECT_METHOD_CLIENT_DEFAULT_MAX_RESULT_BODY_SIZE)
   {
     (void)az_iot_mqttv5_direct_method_respond(
         &ctx->state->mqttv5, request, STATUS_PAYLOAD_TOO_LARGE, NULL, 0);
@@ -259,7 +263,11 @@ static az_iot_result clients_build(
   switch (profile)
   {
     case AZ_IOT_CONNECTION_PROFILE_MQTT_V5:
-      result = az_iot_mqttv5_direct_method_client_init(&s->mqttv5, &s->connection_client);
+      result = az_iot_mqttv5_direct_method_client_init(
+          &s->mqttv5,
+          &s->connection_client,
+          &(az_iot_mqttv5_direct_method_client_options){
+              .workspace = s->methods_workspace, .workspace_size = sizeof(s->methods_workspace) });
       if (result != AZ_IOT_OK)
       {
         return result;
@@ -282,7 +290,7 @@ static az_iot_result clients_build(
           &s->mqttv3,
           &s->connection_client,
           &(az_iot_mqttv3_direct_method_client_options){
-              .workspace = s->mqttv3_workspace, .workspace_size = sizeof(s->mqttv3_workspace) });
+              .workspace = s->methods_workspace, .workspace_size = sizeof(s->methods_workspace) });
       if (result != AZ_IOT_OK)
       {
         return result;

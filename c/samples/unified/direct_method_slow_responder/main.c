@@ -96,8 +96,12 @@ typedef struct
   az_iot_connection_client connection_client;
   /* Only the one matching `profile` is ever initialized. */
   az_iot_mqttv3_direct_method_client mqttv3;
-  /* The mqttv3 client's invocations, for its default limits. */
-  uint8_t mqttv3_workspace[AZ_IOT_MQTTV3_DIRECT_METHOD_CLIENT_DEFAULT_WORKSPACE_SIZE];
+  /* The memory of whichever client is initialized, for the default limits. */
+  uint8_t methods_workspace
+      [AZ_IOT_MQTTV5_DIRECT_METHOD_CLIENT_DEFAULT_WORKSPACE_SIZE
+               > AZ_IOT_MQTTV3_DIRECT_METHOD_CLIENT_DEFAULT_WORKSPACE_SIZE
+           ? AZ_IOT_MQTTV5_DIRECT_METHOD_CLIENT_DEFAULT_WORKSPACE_SIZE
+           : AZ_IOT_MQTTV3_DIRECT_METHOD_CLIENT_DEFAULT_WORKSPACE_SIZE];
   az_iot_mqttv5_direct_method_client mqttv5;
   az_iot_connection_profile profile;
   int methods_initialized;
@@ -310,7 +314,11 @@ static az_iot_result clients_build(
   switch (profile)
   {
     case AZ_IOT_CONNECTION_PROFILE_MQTT_V5:
-      result = az_iot_mqttv5_direct_method_client_init(&s->mqttv5, &s->connection_client);
+      result = az_iot_mqttv5_direct_method_client_init(
+          &s->mqttv5,
+          &s->connection_client,
+          &(az_iot_mqttv5_direct_method_client_options){
+              .workspace = s->methods_workspace, .workspace_size = sizeof(s->methods_workspace) });
       if (result != AZ_IOT_OK)
       {
         return result;
@@ -333,7 +341,7 @@ static az_iot_result clients_build(
           &s->mqttv3,
           &s->connection_client,
           &(az_iot_mqttv3_direct_method_client_options){
-              .workspace = s->mqttv3_workspace, .workspace_size = sizeof(s->mqttv3_workspace) });
+              .workspace = s->methods_workspace, .workspace_size = sizeof(s->methods_workspace) });
       if (result != AZ_IOT_OK)
       {
         return result;
